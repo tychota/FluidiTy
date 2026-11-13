@@ -744,26 +744,66 @@ TEST(CudaLiquidBoundary3D, OwningCompatibleTransfersRejectInParticleOrder) {
   EXPECT_EQ(CudaGatherLiquidBoundaryParticles3D(gather).status().code(), absl::StatusCode::kFailedPrecondition);
 
   particles[1] = fixture.particle;
+  particles[1].transfer.sorted_world_position.x = 1.75;
+  particles[1].transfer.trial_world_position.x = 1.75;
+  const auto missing_slot = fixture.Slot(FaceNormalAxis::kX, 1, 1, 1);
+  fixture.tags[missing_slot].structurally_eligible = false;
+  fixture.validity[missing_slot] = LiquidFaceValidity3D::kMissing;
+  fixture.old_walls[missing_slot] = {true, 7, {1, 0, 0}, {1, 0, 0}};
+  fixture.new_walls[missing_slot] = {true, 7, {1, 0, 0}, {4, 0, 0}};
+
   const auto deposited = CudaDepositCompatibleMacQuanta3D(deposit);
   const auto expected_deposit = DepositCompatibleMacQuanta3D(deposit);
   ASSERT_TRUE(deposited.ok()) << deposited.status();
   ASSERT_TRUE(expected_deposit.ok()) << expected_deposit.status();
   ASSERT_EQ(deposited->deposits.face_quanta.size(), expected_deposit->face_quanta.size());
   for (std::size_t slot = 0; slot < expected_deposit->face_quanta.size(); ++slot) {
-    EXPECT_EQ(
-        deposited->deposits.face_quanta[slot].mass_quanta_sum,
-        expected_deposit->face_quanta[slot].mass_quanta_sum
-    );
-    EXPECT_EQ(
-        deposited->deposits.face_quanta[slot].pure_momentum_quanta_sum,
-        expected_deposit->face_quanta[slot].pure_momentum_quanta_sum
-    );
+    const auto& actual = deposited->deposits.face_quanta[slot];
+    const auto& expected = expected_deposit->face_quanta[slot];
+    EXPECT_EQ(actual.mass_quanta_sum, expected.mass_quanta_sum);
+    EXPECT_EQ(actual.pure_momentum_quanta_sum, expected.pure_momentum_quanta_sum);
+    EXPECT_EQ(actual.stress_force_quanta_sum, 0);
   }
+  ASSERT_EQ(deposited->deposits.compatible_stencils.size(), particles.size());
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    for (std::size_t component = 0; component < 3; ++component) {
+      for (std::size_t sample = 0; sample < 27; ++sample) {
+        const auto& actual = deposited->deposits.compatible_stencils[index][component][sample];
+        const auto& expected = expected_deposit->compatible_stencils[index][component][sample];
+        EXPECT_EQ(actual.face_slot, expected.face_slot);
+        EXPECT_EQ(actual.compatible, expected.compatible);
+        EXPECT_DOUBLE_EQ(actual.normalized_weight, expected.normalized_weight);
+        boundary_transfer_test::ExpectVec(actual.normalized_weight_gradient, expected.normalized_weight_gradient);
+        boundary_transfer_test::ExpectVec(actual.centered_face_offset, expected.centered_face_offset);
+      }
+    }
+  }
+
   const auto gathered = CudaGatherLiquidBoundaryParticles3D(gather);
+  const auto expected_gather = GatherLiquidBoundaryParticles3D(gather);
   ASSERT_TRUE(gathered.ok()) << gathered.status();
-  ASSERT_EQ(gathered->gathered.particles.size(), particles.size());
-  for (const auto& result : gathered->gathered.particles) {
-    boundary_transfer_test::ExpectVec(result.new_pic_velocity, {3, 3, 3});
+  ASSERT_TRUE(expected_gather.ok()) << expected_gather.status();
+  const auto& actual_gather = gathered->gathered;
+  ASSERT_EQ(actual_gather.particles.size(), particles.size());
+  EXPECT_EQ(actual_gather.old_pic_fallback_particle_count, expected_gather->old_pic_fallback_particle_count);
+  EXPECT_EQ(actual_gather.new_pic_fallback_particle_count, expected_gather->new_pic_fallback_particle_count);
+  EXPECT_EQ(actual_gather.low_mass_fallback_particle_count, expected_gather->low_mass_fallback_particle_count);
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& actual = actual_gather.particles[index];
+    const auto& expected = expected_gather->particles[index];
+    using boundary_transfer_test::ExpectVec;
+    EXPECT_GT(actual.new_pic_velocity.x, 3);
+    ExpectVec(actual.new_pic_velocity, expected.new_pic_velocity);
+    ExpectVec(actual.grid_velocity_increment, expected.grid_velocity_increment);
+    ExpectVec(actual.particle_minus_old_pic_velocity, expected.particle_minus_old_pic_velocity);
+    for (auto row : {&Mat3::x_row, &Mat3::y_row, &Mat3::z_row}) {
+      ExpectVec(actual.fitted_velocity_slopes.*row, expected.fitted_velocity_slopes.*row);
+      ExpectVec(actual.velocity_gradient.*row, expected.velocity_gradient.*row);
+    }
+    EXPECT_EQ(actual.affine_enabled, expected.affine_enabled);
+    EXPECT_EQ(actual.old_pic_fallback, expected.old_pic_fallback);
+    EXPECT_EQ(actual.new_pic_fallback, expected.new_pic_fallback);
+    EXPECT_EQ(actual.low_mass_fallback, expected.low_mass_fallback);
   }
 }
 
