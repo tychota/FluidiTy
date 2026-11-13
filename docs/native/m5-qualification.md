@@ -9313,3 +9313,41 @@ Run the instrumented native scene with
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 The run reproduced 25.473317° and exited 1. The isolated
 source was restored and its worktree was clean.
+
+### Fit the reflected normal field through the stationary wall
+
+On 43ec90c, fit the vertical velocity above the wall as a
+linear function of height with zero intercept. Use donor
+mass divided by one plus squared distance in grid units as
+the least-squares weight. Evaluate the fit at the reflected
+target height with the odd sign. Use the same coefficients
+for continuation and the stress transpose. Keep tangential
+rows and compatible PIC transport as in the baseline.
+
+Using the fit only after the exact reflected donor shortcut
+reproduces the baseline three-second matrix and stationary
+probe at printed precision. Replacing the shortcut with the
+fit gives the following results.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 39.764264° | 0.165163 |
+| Coarse half-step | 42.761533° | 0.152076 |
+| Fine | 35.865342° | 0.157070 |
+| Fine half-step | 37.296256° | 0.154708 |
+
+The stationary strain probe passes all four refinements.
+The absolute stress-work residual is at most 3.5e-16 J.
+The native fine half-step passes the 12 s endpoint, reaching
+32.725723° with radius 0.154708 m. It loses 18.42 mm of height
+from 3 to 12 s, compared with 33.74 mm on the original
+operator. The 6 s and 9 s angles are 34.970927° and
+34.692032°. The replacement improves late retention and
+pushes all four three-second angles above 35°.
+
+Run the experimental native scene binary with
+`--q-sand-single-particle-strain` and
+`--q-sand-symmetric-affine-decay 0 <case> all <seconds>`.
+The 12 s fine half-step exits 0 and the four three-second
+cases with the shortcut replaced exit 1. The isolated
+source was restored after each variant.
