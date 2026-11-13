@@ -6747,3 +6747,35 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Measure elastic energy removed by granular return
+
+On 3008848, repeat the same floor-supported 371-particle cone
+on the native path. For each accepted step, decompose the trial
+elastic map with the existing principal-frame routine and sum
+`V0 * (W(trial) - W(returned))` over particles, where
+`W = mu * sum(log(stretch)^2) + lambda/2 * sum(log(stretch))^2`.
+Prorate a step's contribution by its overlap with each reported
+time window. Final geometry reproduces the preceding cone run
+at printed precision.
+
+| Case | 0–0.75 s (J) | 0.75–3 s (J) | 2.95–3 s (J) |
+|---|---:|---:|---:|
+| Coarse | 0.0120293 | 0.0096710 | 0.0001987 |
+| Coarse half-step | 0.0074824 | 0.0049145 | 0.0001186 |
+| Fine | 0.0144204 | 0.0147929 | 0.0002676 |
+| Fine half-step | 0.0085839 | 0.0070123 | 0.0002102 |
+
+The half-step removes 51% and 47% of the nominal-step energy
+after 0.75 s at the coarse and fine widths, respectively. The
+measurement includes all return branches. It measures the change
+across the local constitutive update only. All four runs exit
+with the expected envelope-angle failure. The fixture and
+instrumentation were restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-cone-energy-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
