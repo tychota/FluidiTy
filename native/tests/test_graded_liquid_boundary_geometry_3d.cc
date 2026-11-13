@@ -6,11 +6,131 @@
 
 #include "../src/graded_liquid_boundary_geometry_3d.h"
 #include "../src/graded_liquid_wet_transition_3d.h"
+#include "../src/graded_sampled_liquid_boundary_geometry_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 #include "gtest/gtest.h"
 
 namespace fluidity {
 namespace {
+
+TEST(GradedLiquidBoundaryGeometry3D, FreezesNonplanarSampledCutAndExplicitPressure) {
+  constexpr std::array keys{AdaptiveMacCellKey3D{{-1, -1, -1}, 0}};
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  std::vector<GradedLiquidCornerSample3D> samples;
+  for (int z = -1; z <= 0; ++z) {
+    for (int y = -1; y <= 0; ++y) {
+      for (int x = -1; x <= 0; ++x) {
+        const double liquid_distance = z == -1 ? -1 : (x == y ? 1.0 : 0.5);
+        samples.push_back({{x, y, z}, liquid_distance, 1});
+      }
+    }
+  }
+  constexpr std::array<std::uint8_t, 1> no_air{0};
+  const auto geometry = FreezeGradedSampledLiquidGeometry3D(*topology, {3, 4, 5}, 0.5, samples, no_air);
+  ASSERT_TRUE(geometry.ok()) << geometry.status();
+  EXPECT_NEAR(geometry->leaves()[0].fluid_volume_m3, 119.0 / 216.0, 1e-14);
+  EXPECT_DOUBLE_EQ(geometry->leaves()[0].world_lower_m.x, 2);
+  ASSERT_EQ(geometry->subfaces().size(), 6);
+  const auto bottom = std::ranges::find_if(geometry->subfaces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kZ && face.face_index.lattice_index.z == -1;
+  });
+  ASSERT_NE(bottom, geometry->subfaces().end());
+  EXPECT_DOUBLE_EQ(bottom->wet_open_area_m2, 1);
+  ASSERT_TRUE(bottom->wet_open_centroid_m);
+  EXPECT_DOUBLE_EQ(bottom->wet_open_centroid_m->x, 2.5);
+  std::array<GradedLiquidPressureCellFields3D, 1> cells{};
+  std::vector<GradedLiquidPressureSubfaceFields3D> faces(geometry->subfaces().size());
+  auto& outlet = faces[static_cast<std::size_t>(bottom - geometry->subfaces().begin())];
+  outlet.inverse_density_m3_per_kg = 1;
+  outlet.exterior_pressure = GradedLiquidPressureExterior3D{.pressure_pa = 1, .distance_m = 0.25};
+  const auto graph = PrepareGradedPlanarLiquidPressure3D(*geometry, cells, faces);
+  ASSERT_TRUE(graph.ok()) << graph.status();
+  outlet.exterior_pressure->distance_m = 0;
+  EXPECT_FALSE(PrepareGradedPlanarLiquidPressure3D(*geometry, cells, faces).ok());
+  outlet.exterior_pressure->distance_m = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(PrepareGradedPlanarLiquidPressure3D(*geometry, cells, faces).ok());
+  outlet.exterior_pressure.reset();
+  const auto top = std::ranges::find_if(geometry->subfaces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kZ && face.face_index.lattice_index.z == 0;
+  });
+  ASSERT_NE(top, geometry->subfaces().end());
+  auto& dry_face = faces[static_cast<std::size_t>(top - geometry->subfaces().begin())];
+  dry_face.inverse_density_m3_per_kg = 1;
+  dry_face.exterior_pressure = GradedLiquidPressureExterior3D{.pressure_pa = 1, .distance_m = 0.25};
+  EXPECT_FALSE(PrepareGradedPlanarLiquidPressure3D(*geometry, cells, faces).ok());
+  EXPECT_FALSE(FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, std::span(samples).first(7), no_air).ok());
+  auto malformed = samples;
+  malformed[1].corner = malformed[0].corner;
+  EXPECT_EQ(
+      FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, malformed, no_air).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+
+  auto with_solid = samples;
+  for (auto& sample : with_solid) {
+    sample.liquid_distance_m = -1;
+    sample.solid_distance_m = sample.corner.x == -1 ? -1 : 1;
+  }
+  const auto solid_cut = FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, with_solid, no_air);
+  ASSERT_TRUE(solid_cut.ok()) << solid_cut.status();
+  EXPECT_NEAR(solid_cut->leaves()[0].fluid_volume_m3, 0.5, 1e-14);
+  for (const auto& face : solid_cut->subfaces()) {
+    EXPECT_DOUBLE_EQ(face.wall_normal_flux_m3_per_s, 0);
+    EXPECT_DOUBLE_EQ(face.wet_open_area_m2 + face.wet_solid_area_m2, 1);
+    EXPECT_EQ(face.wet_open_centroid_m.has_value(), face.wet_open_area_m2 > 0);
+    EXPECT_EQ(face.wet_solid_centroid_m.has_value(), face.wet_solid_area_m2 > 0);
+  }
+
+  for (auto& sample : samples) {
+    sample.liquid_distance_m = 1;
+  }
+  EXPECT_EQ(
+      FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, samples, no_air).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  constexpr std::array<std::uint8_t, 1> air{1};
+  const auto certified = FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, samples, air);
+  ASSERT_TRUE(certified.ok()) << certified.status();
+  EXPECT_TRUE(certified->leaves()[0].known_air);
+  samples.front().solid_distance_m = 0;
+  EXPECT_EQ(
+      FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, samples, air).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
+TEST(GradedLiquidBoundaryGeometry3D, RejectsSampledCutOnSubdividedCoarseSide) {
+  constexpr std::array keys{AdaptiveMacCellKey3D{{-2, 0, 0}, 1}, AdaptiveMacCellKey3D{{0, 0, 0}, 0}};
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  std::vector<GradedLiquidCornerSample3D> samples;
+  for (int z = 0; z <= 2; ++z) {
+    for (int y = 0; y <= 2; ++y) {
+      for (int x : {-2, 0, 1}) {
+        if (x == 0 || (x == -2 && y != 1 && z != 1) || (x == 1 && y <= 1 && z <= 1)) {
+          samples.push_back({{x, y, z}, -1, 1});
+        }
+      }
+    }
+  }
+  constexpr std::array<std::uint8_t, 2> no_air{};
+  const auto full = FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, samples, no_air);
+  ASSERT_TRUE(full.ok()) << full.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_EQ(ownership->interior_face_slots.size(), 1);
+  EXPECT_DOUBLE_EQ(full->subfaces()[ownership->interior_face_slots.front()].wet_open_area_m2, 1);
+  for (auto& sample : samples) {
+    if (sample.corner.x == 0 && sample.corner.y == 2 && sample.corner.z == 1) {
+      sample.liquid_distance_m = 1;
+    }
+  }
+  EXPECT_EQ(
+      FreezeGradedSampledLiquidGeometry3D(*topology, {}, 1, samples, no_air).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
 
 TEST(GradedLiquidBoundaryGeometry3D, ClipsCanonicalSignedCoarseFineWorldSubfaces) {
   constexpr std::array<AdaptiveMacCellKey3D, 5> keys{{
