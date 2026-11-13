@@ -10674,3 +10674,23 @@ fails, with its coarse pile reaching 49.046609° at
 settlement and removing it does not qualify the gate.
 Temporary solver and fixture sources were restored.
 CUDA was untested.
+
+#### Remove only the vertical normal affine term
+
+On 48302e2, repeat the matched timestep control with only
+the yy APIC entry set to zero at deposit. Keep the two
+cross derivatives of vertical velocity.
+
+| Step (ms) | Width (m) | No vertical row | No yy entry |
+|---|---:|---:|---:|
+| 1.56250 | 0.075 | 37.566203° | 40.222214° |
+| 1.56250 | 0.0625 | 30.768585° | 35.961672° |
+| 0.78125 | 0.075 | 52.469166° | 53.173398° |
+| 0.78125 | 0.0625 | 43.640523° | 46.948907° |
+
+Removing yy alone raises every angle more than removing
+the full row. All four cases pass radius, short drift and
+kinetic energy and fail the upper angle bound. The default
+native sand case also fails at 50.248767°. The result
+isolates the dominant vertical feedback to yy in this
+control. Temporary sources were restored. CUDA was untested.
