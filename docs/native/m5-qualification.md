@@ -6943,3 +6943,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Vary applied grid traction while keeping the particle sweep
+
+On 3008848, run the standard 63-particle column with either zero
+grid tangential traction or half the solved face impulse. Keep
+the particle Coulomb sweep and the matched stress transpose and
+deformation gather. The full-strength particle sweep still acts
+on both controls.
+
+| Native case at 3 s | Zero grid traction angle / radius | Half grid traction angle / radius |
+|---|---:|---:|
+| Coarse | 28.433335° / 0.160939 m | 32.352707° / 0.164934 m |
+| Coarse half-step | 33.326321° / 0.149923 m | 37.455386° / 0.151267 m |
+| Fine | 24.949298° / 0.167438 m | 29.492357° / 0.160775 m |
+| Fine half-step | 27.797890° / 0.161517 m | 32.554185° / 0.156271 m |
+
+Increasing traction from zero to half raises every angle by
+3.9–4.8°. The coarse half-step passes at zero and the fine
+half-step passes at half strength. The paired cut stress work
+residual stays within 3.6e-16 J across the eight runs. Both
+controls leave the full gate open. The solver edits were restored.
+
+```powershell
+foreach ($variant in 'no-grid-traction', 'relaxed-grid-traction') {
+  $bin = "out/pr-m5-sand-affine/out/sand-affine-$variant-bin"
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
