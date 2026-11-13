@@ -6479,3 +6479,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain only the vertical derivative of tangent affine velocity
+
+On 3008848, clear the x and z derivatives in both tangent
+rows after the wall sweep. Keep their vertical derivatives
+and the full normal row. Both default native and SM120
+dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 45.251768° | 0.140956 |
+| Coarse half-step | 57.918026° | 0.108565 |
+| Fine | 39.675323° | 0.147197 |
+| Fine half-step | 53.200363° | 0.119056 |
+
+Keeping vertical shear reduces the angles by 1.57–3.08°
+relative to clearing both tangent rows entirely. Every
+radius is in range, and every angle still exceeds 35°.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clear-tangent-plane-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
