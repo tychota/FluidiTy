@@ -10795,3 +10795,23 @@ and the control has lost 5.17° over the final half-second.
 The short-horizon overshoot begins during collapse, and
 its later angle pass does not establish settlement.
 Both native matrices exit 1. Temporary sources were restored.
+
+#### Start uncut retention after the initial collapse
+
+On 68ae076, enable uncut exp(−400 dt) compression retention
+only after the 0.75 s accepted sample. All four angles at
+the switch match baseline. Use the original 1.5 s gate.
+
+| Case | Baseline | Late-only retention | Retention from release |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 29.225909° | 32.888475° |
+| Fine | 26.761332° | 27.022180° | 32.192299° |
+| Coarse half-step | 29.006384° | 29.758772° | 36.841241° |
+| Fine half-step | 27.033753° | 27.565543° | 33.641611° |
+
+Late-only retention raises the final angles by 0.11° to
+0.75° and all four remain below 30°. It passes the default
+native test, which ends at the switch time. The larger
+changes seen when retention starts at release depend on
+earlier history. The temporary solver and fixture were
+restored. CUDA was untested for this control.
