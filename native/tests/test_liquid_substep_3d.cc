@@ -11,10 +11,12 @@
 #include "../src/liquid_adaptive_family_candidate_3d.h"
 #include "../src/liquid_adaptive_step_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
+#include "../src/mac_pressure_3d_system.h"
 #include "../src/viscosity_velocity_block_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "graded_tank_fixture.h"
 #include "gtest/gtest.h"
@@ -131,6 +133,147 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
     EXPECT_EQ(run->committed().adaptive_cells.size(), 5);
   }
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
+}
+
+TEST(LiquidSubstep3D, PublishesProjectedBandOverlapOnlyAfterAcceptance) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  auto options = Options();
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band overlap")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandOverlap(0.01);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt) << scheduler->diagnostics().failure_code;
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto accepted = scheduler->AttemptWithAdaptiveBandOverlap(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  const auto& committed = scheduler->committed();
+  EXPECT_EQ(committed.adaptive_faces[*slot].carrier_velocity, 0.75);
+  EXPECT_EQ(committed.adaptive_faces[*slot].validity, LiquidFaceValidity3D::kValid);
+  EXPECT_EQ(committed.next_particle_id, state.next_particle_id);
+  for (std::size_t leaf = 0; leaf < committed.adaptive_cells.size(); ++leaf) {
+    EXPECT_EQ(committed.adaptive_cells[leaf].material_owner, state.adaptive_cells[leaf].material_owner);
+    EXPECT_EQ(committed.adaptive_cells[leaf].inventory.mass_kg, state.adaptive_cells[leaf].inventory.mass_kg);
+  }
+}
+
+TEST(LiquidSubstep3D, BandOverlapEulerianLowMassFallbackUsesPurePic) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  auto options = Options();
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  options.minimum_face_mass = 1;
+  options.particle_energy_blend = 1;
+  std::vector<LiquidBoundaryParticleGather3D> recorded;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &recorded;
+  backend.update_particles =
+      [](void* context, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+        auto& gather = *static_cast<std::vector<LiquidBoundaryParticleGather3D>*>(context);
+        gather.assign(inputs.gathered.begin(), inputs.gathered.end());
+        const auto cpu = CpuLiquidSubstepBackend3D();
+        return cpu.update_particles(cpu.context, inputs, particles);
+      };
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto accepted = scheduler->AttemptWithAdaptiveBandOverlap(0.01);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  const auto& committed = scheduler->committed();
+  EXPECT_EQ(committed.adaptive_faces[*slot].carrier_velocity, 1);
+  EXPECT_EQ(committed.adaptive_faces[*slot].validity, LiquidFaceValidity3D::kValid);
+  ASSERT_EQ(recorded.size(), committed.particles.size());
+  bool observed_nonzero_residual = false;
+  for (std::size_t ordinal = 0; ordinal < recorded.size(); ++ordinal) {
+    const auto& gather = recorded[ordinal];
+    if (gather.particle_minus_old_pic_velocity.x == 0 && gather.particle_minus_old_pic_velocity.z == 0) {
+      continue;
+    }
+    observed_nonzero_residual = true;
+    EXPECT_TRUE(gather.old_pic_fallback);
+    EXPECT_TRUE(gather.new_pic_fallback);
+    EXPECT_FALSE(gather.affine_enabled);
+    const auto velocity = committed.particles[ordinal].world_velocity;
+    EXPECT_EQ(velocity.x, gather.new_pic_velocity.x);
+    EXPECT_EQ(velocity.y, gather.new_pic_velocity.y);
+    EXPECT_EQ(velocity.z, gather.new_pic_velocity.z);
+  }
+  EXPECT_TRUE(observed_nonzero_residual);
+}
+
+TEST(LiquidSubstep3D, BandOverlapSwellRelaxesTheBlendedPredictorBeforeMixedFluxRefusal) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  auto options = Options();
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  options.ocean_boundary = OceanBoundarySettings3D{
+      .swell = {.still_water_height_m = 4, .water_depth_m = 4, .wave_height_m = 0.05, .wave_period_s = 2},
+      .inlet_wall_x_m = 0,
+      .inlet_interior_x_m = 0.75,
+      .outlet_interior_x_m = 0.875,
+      .outlet_wall_x_m = 1,
+      .inlet_rate_per_s = 8,
+  };
+  const auto swell = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
+  ASSERT_TRUE(swell.ok()) << swell.status();
+  constexpr double kDuration = 0.01;
+  struct PredictorObservation {
+    std::size_t slot;
+    std::optional<double> normal_velocity;
+  };
+  for (const double minimum_face_mass : {0.0, 1.0}) {
+    options.minimum_face_mass = minimum_face_mass;
+    PredictorObservation observation{.slot = *slot};
+    auto backend = CpuLiquidSubstepBackend3D();
+    backend.context = &observation;
+    backend.project_adaptive_in_arena = [](void* context,
+                                           const pressure_internal::PreparedMacPressureSystem3D& system,
+                                           MacPressureSolverOptions3D pressure_options,
+                                           MacPressureWorkspace3D& workspace) {
+      auto& measured = *static_cast<PredictorObservation*>(context);
+      for (const auto& link : system.links()) {
+        if (link.face_slot == measured.slot) {
+          measured.normal_velocity = link.predicted_normal_velocity;
+          break;
+        }
+      }
+      return workspace.ProjectPrepared(system, pressure_options);
+    };
+    auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
+    const auto attempt = scheduler->AttemptWithAdaptiveBandOverlap(kDuration);
+    ASSERT_TRUE(attempt.ok()) << attempt.status();
+    const double old_velocity = minimum_face_mass == 0 ? 0.75 : 1;
+    const auto relaxed = swell->RelaxFace(FaceNormalAxis::kX, {0.5, 1.25, 0.25}, old_velocity, kDuration, kDuration);
+    ASSERT_TRUE(relaxed.ok()) << relaxed.status();
+    ASSERT_TRUE(observation.normal_velocity.has_value());
+    EXPECT_EQ(*observation.normal_velocity, *relaxed);
+    EXPECT_NE(*observation.normal_velocity, old_velocity);
+    EXPECT_EQ(attempt->disposition, LiquidAttemptDisposition3D::kFatal);
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kParticleUpdate);
+    EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+    ExpectIdenticalSerializedState(state, scheduler->committed());
+  }
 }
 
 TEST(LiquidSubstep3D, PublishesProjectedAdaptiveOwnerExchangeOnlyAfterAcceptance) {
