@@ -5103,3 +5103,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
     Where-Object { $_ -like 'fallback reason *' } | Group-Object
 }
 ```
+
+### Average tangent fallback donors by distance
+
+On 3008848, replace the unit nearest-donor coefficient for
+mass-weighted full-rank tangent rows with negative fit
+coefficients by normalized weights proportional to
+1 / (1 + squared distance in cells)^2. The row preserves
+constants, stays within the donor range, and is shared by the
+gather and stress transpose. Rank-deficient and unweighted
+rows keep their prior fallback. Both default dry-scene tests
+pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 32.185587° | 0.169696 m | Radius |
+| Coarse half-step | 40.482629° | 0.156004 m | Angle |
+| Fine | 30.533417° | 0.161951 m | Radius |
+| Fine half-step | 34.571130° | 0.158870 m | Pass |
+
+Both coarse failures persist and nominal fine loses its pass.
+Maximum vertical momentum residual is 6.65e-9 N·s. The
+temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-distance-average-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
