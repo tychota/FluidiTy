@@ -12499,3 +12499,23 @@ All four angles miss the 30–35° band and the matrix exits 1.
 The 6 s fine angle passes therefore do not persist through
 12 s. CUDA and dense sampling were untested at this horizon.
 The temporary solver and fixture edits were restored.
+
+#### Reproduce resident floor compression on SM120 and at dense native sampling
+
+On 6439464, repeat the preceding resident compression edit and
+12 s endpoint. Build both dry-scene targets. Run the CUDA target
+with `--q-sand-column-long-settle 12` and the native target with
+`--q-sand-dense-column-long-settle 6`. Both commands exit 1.
+
+| Case | Sparse SM120 angle at 12 s | Dense native angle at 6 s | Dense native radius (m) | Dense native final drift |
+|---|---:|---:|---:|---:|
+| Coarse | 36.295710° | 33.035818° | 0.172380 | 0.301150° |
+| Fine | 29.959547° | 27.953610° | 0.182183 | 2.063976° |
+| Coarse half-step | 35.255504° | 30.757054° | 0.173835 | 1.157020° |
+| Fine half-step | 28.195258° | 27.423564° | 0.184981 | 0.340904° |
+
+The CUDA sparse cases agree with native within 0.000510° and
+all four miss the angle band. Every dense native radius
+exceeds 0.16 m. Two dense cases miss the angle band and two
+exceed one degree of final drift. Dense CUDA was untested.
+The temporary solver and fixture edits were restored.
