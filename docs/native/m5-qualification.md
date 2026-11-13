@@ -5372,3 +5372,30 @@ foreach ($mode in 'compression-only', 'expansion-only') {
   }
 }
 ```
+
+### Cap positive tangent extension per step
+
+On 3008848, retain the positive diagonal derivative of each
+affected tangent row up to 0.01 divided by the step duration.
+This caps the dimensionless derivative times duration at 0.01.
+Clear the other derivatives on affected rows. Both default
+native and SM120 dry-scene tests pass.
+
+| Native case | Outcome at 3 s |
+|---|---|
+| Coarse | 30.142670° / 0.172523 m, radius fails |
+| Coarse half-step | 32.976917° / 0.159007 m, passes |
+| Fine | 19.749158° / 0.216608 m, angle and radius fail |
+| Fine half-step | Unlabeled FailedPrecondition at step 2310 |
+
+The cap gives the coarse half-step its first complete pass
+in this extension control, with 0.993 mm of radius margin.
+The fine results show that the same bound does not transfer
+across grid widths. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-bounded-extension-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
