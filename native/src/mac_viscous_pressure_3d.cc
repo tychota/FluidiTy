@@ -730,15 +730,11 @@ static absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveWit
     return absl::InvalidArgumentError("graded viscous pressure requires a checked explicit graph");
   }
   const auto links = system.links();
-  for (std::size_t slot = 0; slot < links.size(); ++slot) {
-    if (links[slot].face_slot != slot) {
-      return absl::InvalidArgumentError("graded viscous pressure requires dense canonical face slots");
-    }
-  }
   for (const auto& row : strain_rows) {
     for (const auto& term : std::span(row.terms).first(std::min(row.term_count, row.terms.size()))) {
-      if (term.face_slot < links.size() && links[term.face_slot].open_area == 0.0) {
-        return absl::InvalidArgumentError("adaptive strain must lift sealed velocities into prescribed strain");
+      const auto link = std::ranges::lower_bound(links, term.face_slot, {}, &FrozenMacPressureLink3D::face_slot);
+      if (link == links.end() || link->face_slot != term.face_slot || link->open_area == 0.0) {
+        return absl::InvalidArgumentError("adaptive strain requires an open canonical pressure face");
       }
     }
   }

@@ -304,6 +304,36 @@ TEST(MacPressureExplicitGraph3D, ProjectsExteriorPressureAndSignedWallFlux) {
   const auto prepared = pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, cells, interior, exterior);
   ASSERT_TRUE(prepared.ok()) << prepared.status();
   EXPECT_TRUE(prepared->gauge_cell_ordinals().empty());
+  auto sparse_interior = interior;
+  auto sparse_exterior = exterior;
+  sparse_interior[0].face_slot = 7;
+  sparse_exterior[0].face_slot = 3;
+  sparse_exterior[1].face_slot = 11;
+  const auto sparse =
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, cells, sparse_interior, sparse_exterior);
+  ASSERT_TRUE(sparse.ok()) << sparse.status();
+  MacStrainRow3D row{};
+  row.terms[0] = {1, 1.0};
+  row.term_count = 1;
+  row.quadrature_weight = 0.5;
+  const auto dense_viscous =
+      pressure_internal::ProjectPreparedAdaptiveMacViscousPressure3D(*prepared, 1.0, std::span(&row, 1), {});
+  ASSERT_TRUE(dense_viscous.ok()) << dense_viscous.status();
+  row.terms[0].face_slot = 7;
+  const auto sparse_viscous =
+      pressure_internal::ProjectPreparedAdaptiveMacViscousPressure3D(*sparse, 1.0, std::span(&row, 1), {});
+  ASSERT_TRUE(sparse_viscous.ok()) << sparse_viscous.status();
+  EXPECT_EQ(sparse_viscous->face_velocities, dense_viscous->face_velocities);
+  EXPECT_EQ(sparse_viscous->cell_pressures, dense_viscous->cell_pressures);
+  for (const std::size_t invalid_slot : {1U, 11U}) {
+    row.terms[0].face_slot = invalid_slot;
+    EXPECT_EQ(
+        pressure_internal::ProjectPreparedAdaptiveMacViscousPressure3D(*sparse, 1.0, std::span(&row, 1), {})
+            .status()
+            .code(),
+        absl::StatusCode::kInvalidArgument
+    );
+  }
   const std::array analytic_pressures{1.75, 1.375};
   const auto analytic = EvaluateMacPressure3D(*prepared, analytic_pressures);
   ASSERT_TRUE(analytic.ok()) << analytic.status();

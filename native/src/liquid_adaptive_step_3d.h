@@ -21,8 +21,12 @@ namespace fluidity::liquid_step_internal {
 // Assemble nonzero symmetric-gradient quadratures per leaf from local staggered
 // face anchors and owned apertures. Dynamic viscosity is in Pa s. On a fully
 // blocked face the prescribed Cartesian wall flux divided by its area gives
-// the normal anchor velocity. Nonzero wall flux on a partial aperture returns
-// Unimplemented until separate moving-cut quadrature is available.
+// the normal anchor velocity on the conforming path. For frozen planar
+// geometry, supply the matching canonical topology and signed pressure inputs
+// from the same trial. Wet volumes weight the quadratures. Wet-open centroids
+// locate the unknown velocities and wet-solid centroids locate the prescribed
+// Cartesian components of wall_velocity in m/s. Dry leaves have no rows.
+// A moving partial aperture without frozen geometry returns Unimplemented.
 // All geometric arrays use canonical topology order. An optional scratch span of leaf count + 1 stores
 // row offsets in leaf order; it must be disjoint from inputs and may change on failure.
 // Rank-deficient anchor support fails without rows.
@@ -32,7 +36,9 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     double dynamic_viscosity,
     std::span<const GradedMacFace3D> faces,
     std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
-    std::span<std::size_t> leaf_row_offsets = {}
+    std::span<std::size_t> leaf_row_offsets = {},
+    const FrozenGradedPlanarLiquidGeometry3D* geometry = nullptr,
+    Vec3 wall_velocity = {}
 );
 
 // Canonical rows and identity of one selected step-start particle.

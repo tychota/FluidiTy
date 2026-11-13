@@ -302,7 +302,8 @@ absl::Status AdvancePhysical(
     LiquidSubstepScheduler3D& scheduler,
     double frame_end,
     bool first_frame,
-    absl::FunctionRef<absl::Status()> check_device_epoch
+    absl::FunctionRef<absl::Status()> check_device_epoch,
+    bool viscous
 ) {
   const auto started = scheduler.BeginFrame(frame_end);
   if (!started.ok()) {
@@ -438,6 +439,12 @@ absl::Status AdvancePhysical(
   const double expected_volume_m3 = 1.5 * (1 - wall_coordinate(step_start));
   if (!measurement || std::abs(measurement->step_start_pressure_cell_volume_m3 - expected_volume_m3) > 1e-13) {
     return absl::FailedPreconditionError("Physical replay did not use the measured pressure volume");
+  }
+  if (viscous
+      && (!measurement->viscous_max_momentum_residual_kg_m_per_s
+          || *measurement->viscous_max_momentum_residual_kg_m_per_s > 2e-5
+          || measurement->pressure.max_cell_constraint_defect > 2e-5)) {
+    return absl::FailedPreconditionError("Physical viscous replay exceeded its momentum or pressure residual limit");
   }
   if (!first_frame && std::ranges::none_of(cut_slots, [&](std::size_t slot) {
         return std::abs(scheduler.committed().adaptive_faces[slot].carrier_velocity) > 1e-6;
@@ -586,7 +593,8 @@ absl::Status AdvanceCertifiedQuadraticFamily(
 absl::Status
 Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
   const bool band = scenario == "band";
-  const bool physical_air = scenario == "physical-air";
+  const bool physical_viscous = scenario == "physical-viscous";
+  const bool physical_air = scenario == "physical-air" || physical_viscous;
   const bool wetting = scenario == "physical-wetting";
   const bool wet_transition = wetting || scenario == "physical-drying";
   const bool sampled = scenario == "physical-sampled";
@@ -651,6 +659,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!authored.ok()) {
     return authored;
   }
+  if (physical_viscous) {
+    scene.dynamic_viscosity = 0.125;
+  }
   const auto capacities = [&] {
     if (persistent || overlap) {
       return LiquidStateCapacities3D{
@@ -693,7 +704,8 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_tag = physical_air
+  const std::uint8_t fixture_tag = physical_viscous ? 30
+      : physical_air
       ? 27
       : (persistent
              ? 26
@@ -875,7 +887,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
         return test::AdvanceGradedSampledRuntime3D(*scheduler, true, check_device_epoch);
       }
       if (physical) {
-        return AdvancePhysical(*scheduler, 0.01, true, check_device_epoch);
+        return AdvancePhysical(*scheduler, 0.01, true, check_device_epoch, physical_viscous);
       }
       if (batch) {
         return AdvanceRefinementClosure(*scheduler, check_device_epoch);
@@ -976,7 +988,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       return test::AdvanceGradedSampledRuntime3D(*scheduler, false, check_device_epoch);
     }
     if (physical) {
-      return AdvancePhysical(*scheduler, 0.02, false, check_device_epoch);
+      return AdvancePhysical(*scheduler, 0.02, false, check_device_epoch, physical_viscous);
     }
     if (batch) {
       return scheduler->AdvanceFrame(0.02);
@@ -1036,8 +1048,8 @@ int main(int argc, char** argv) {
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
       && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "physical-air"
       && scenario != "physical-wetting" && scenario != "physical-drying" && scenario != "physical-sampled"
-      && scenario != "quadratic-split" && scenario != "quadratic-merge" && scenario != "quadratic-persistent"
-      && scenario != "exchange" && scenario != "overlap") {
+      && scenario != "physical-viscous" && scenario != "quadratic-split" && scenario != "quadratic-merge"
+      && scenario != "quadratic-persistent" && scenario != "exchange" && scenario != "overlap") {
     return 2;
   }
   const std::string_view backend = argv[1];
