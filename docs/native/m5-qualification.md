@@ -8115,3 +8115,26 @@ The temporary trace was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-material-volume-horizon-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Measure particle-carried volume on the floor and above it
+
+On 255739e, use the fixture's floor tolerance (1e-12 grid widths)
+to group the native fine half-step particles. Sum total material
+Jacobians in each group and report the mean within the group.
+
+| Time (s) | Floor count / mean total Jacobian | Above-floor count / mean total Jacobian |
+|---|---:|---:|
+| 3 | 17 / 1.256 | 46 / 1.009 |
+| 6 | 37 / 1.164 | 26 / 1.045 |
+| 9 | 51 / 1.160 | 12 / 1.072 |
+| 12 | 58 / 1.172 | 5 / 1.088 |
+
+By 12 s, 58 of 63 particle centers lie on the floor and carry
+92.6% of the reconstructed total volume. Group membership
+changes over time, so this comparison cannot assign the volume
+growth to particles that were already in contact. The temporary
+trace was restored. Q-SAND stays open.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-material-volume-bands-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
