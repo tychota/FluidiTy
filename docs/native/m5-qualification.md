@@ -7633,3 +7633,27 @@ The temporary fixture changes were restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-rest-force-probe-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Measure the force balance with gravity on and off for one step
+
+On 255739e, copy the native fine half-step state at 3, 6 and
+9 s. Clear motion and advance each copy once with standard
+gravity or zero gravity. The main trajectory reproduces the
+12 s baseline.
+
+| Time (s) | RMS acceleration, loaded / unloaded (m/s²) | Mean vertical, loaded / unloaded (m/s²) | Grid support, both (mN·s) | Particle support, loaded / unloaded (mN·s) |
+|---|---:|---:|---:|---:|
+| 3 | 3.786 / 7.137 | −1.824 / 5.991 | 11.058 | 3.681 / 0 |
+| 6 | 2.134 / 5.059 | −1.063 / 4.081 | 7.532 | 8.613 / 0 |
+| 9 | 2.491 / 3.158 | −0.881 / 2.429 | 4.483 | 11.997 / 0 |
+
+The reconstructed grid support at a fixed state is unchanged
+in each pair. In the loaded probe, swept support increases
+as reconstructed support falls over time. The unloaded probes
+show upward acceleration and no swept wall impulse. The two
+responses follow different contact branches and cannot be
+combined as a linear force decomposition. The trace was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-rest-gravity-pair-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
