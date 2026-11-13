@@ -7775,3 +7775,25 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check long-horizon creep with denser particle sampling
+
+On 255739e, represent the fine half-step column with 504
+particles at 0.025 m spacing. Keep the release dimensions,
+total mass, grid and timestep. Run the native path to 12 s.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 3 | 30.083739° | 0.204909 |
+| 6 | 25.846978° | 0.212197 |
+| 9 | 24.721483° | 0.212197 |
+| 12 | 24.129897° | 0.212197 |
+
+The denser column loses 23.65 mm of height after 3 s, compared
+with 33.74 mm for 63 particles. It still creeps below 30°
+and spreads beyond the radius limit. The temporary sampling
+change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-dense-long-horizon-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
