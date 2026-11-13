@@ -10076,3 +10076,23 @@ it in 5.1% of contacts. The native diagnostic reproduces the
 previously measured angles and exits 1. The trace measures
 association with timestep and does not isolate a causal wall
 friction change. The temporary solver and fixture were restored.
+
+### Isolate floor friction in the refined paired blend
+
+On cb16ffd, keep the equal paired derivative blend and the
+normal floor sweep. Set only the floor friction coefficient
+to zero in the native fine grid runs through 1.5 s.
+
+| Step (ms) | Angle with friction 0.7 | Angle with friction 0 | Frictionless radius (m) |
+|---|---:|---:|---:|
+| 1.562500 | 28.543189° | 6.568419° | 0.181194 |
+| 0.781250 | 31.796255° | 14.764613° | 0.172055 |
+| 0.390625 | 35.920061° | 24.161425° | 0.158571 |
+| 0.1953125 | 44.069917° | 36.547119° | 0.136994 |
+
+Removing friction reduces the angle at every timestep.
+The angle span across timesteps increases from 15.53° to
+29.98°, so the trend persists without tangential wall
+impulse. The absolute work residual stays below 2.1e-16 J.
+The native diagnostic exits 1. Temporary sources were
+restored and CUDA was untested for this control.
