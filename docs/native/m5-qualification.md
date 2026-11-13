@@ -8708,3 +8708,28 @@ fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-single-load-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
 ```
+
+### Exclude the uniform gravity kick from the deformation donor field
+
+On 5ff4866, subtract the uniform gravity increment from the
+live normal donors before constructing the compatible floor
+deformation field. Leave particle transport and stress work
+accounting on their original fields.
+
+| Timestep (ms) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 1 | 0.950442305223 | 0.857898783916 |
+| 0.5 | 0.950221433598 | 0.857637178762 |
+| 0.25 | 0.950110787173 | 0.857506161210 |
+| 0.125 | 0.950055411196 | 0.857440598579 |
+
+Excluding gravity changes the drift from compression to
+extension and leaves first-order convergence. The stress
+kick and wall reconstruction can therefore generate strain
+in this fixture without the gravity term in the gradient.
+The two fields make this a diagnostic only. The temporary
+solver change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-stationary-gravity-free-gradient-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
+```
