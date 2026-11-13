@@ -8771,3 +8771,25 @@ and the cut work difference is −0.584012 J. The apparent
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-long-gravity-free-gradient-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Use the pre-force normal field for deformation
+
+On 5ff4866, reconstruct normal deformation donors from deposited
+momentum divided by mass, before gravity and stress acceleration.
+Keep tangential deformation, transport and stress scatter on their
+ordinary paths. The stationary particle retains its initial yy
+stretch of 0.95 to printed precision at all four timesteps.
+The total elastic Jacobian still drifts, reaching 0.857499676038
+at 1 ms against 0.857375 initially.
+
+The native fine half-step column reaches 29.619063° at 12 s and
+loses 29.02 mm of height after 3 s. Its radius exceeds the limit
+at 0.175142 m. The cut work difference grows to 2.657 J because
+the deformation and work fields differ. The temporary solver
+change was restored.
+
+```powershell
+$exe = 'out/pr-m5-sand-affine/out/sand-affine-pre-force-normal-gradient-bin/fluidity_m5_dry_scene_tests.exe'
+& $exe --q-sand-single-particle-strain
+& $exe --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
