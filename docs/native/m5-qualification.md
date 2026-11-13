@@ -10526,3 +10526,19 @@ At the smaller step it grows to 3.351345°. Both matrices
 fail, with the coarse smaller-step case alone meeting
 all fixture bounds. Angle is the only failing criterion
 in the other three cases. The temporary fixture was restored.
+
+#### Shift both horizontal grid coordinates at matched timesteps
+
+On f0354f1, shift the grid origin by half a cell in x and z.
+Keep particle coordinates, wall and material fixed.
+
+| Step (s) | Coarse unshifted | Coarse shifted | Fine unshifted | Fine shifted |
+|---|---:|---:|---:|---:|
+| 0.00156250 | 26.727865° | 25.317653° | 26.761332° | 24.650853° |
+| 0.00078125 | 30.385098° | 30.027867° | 27.033753° | 25.059682° |
+
+The coarse smaller-step case still passes, with 0.028°
+margin above the lower bound. At that step the grid-width
+gap increases from 3.351° to 4.968°. The other three cases
+fail angle alone. Native and SM120 agree to six decimal
+places. The temporary fixture was restored.
