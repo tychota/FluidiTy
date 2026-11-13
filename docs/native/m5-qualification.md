@@ -8231,3 +8231,17 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check long-horizon creep with the paired half-normal term
+
+On 255739e, extend the native fine half-step paired half-normal
+control through 12 s. The envelope drops from 34.773384° at
+3 s to 30.756089° at 6 s, 27.343667° at 9 s, and 24.483701°
+at 12 s. The radius stays at 0.155880 m from 3 s onward.
+The control loses 37.25 mm of height after 3 s, 3.51 mm
+more than baseline. The paired cut work residual is
+−1.67e-16 J. The temporary edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-half-normal-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
