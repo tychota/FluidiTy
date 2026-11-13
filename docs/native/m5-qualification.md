@@ -12301,3 +12301,22 @@ The nominal angles change by less than 0.235°. This term
 alone does not explain the timestep sensitivity in the
 sparse pile. CUDA and dense sampling were untested.
 The temporary source edit was restored.
+
+#### Replace low-mass face velocities in granular deformation only
+
+On 288f960, for each ordinary-floor granular stencil sample
+with deposited face mass below the existing force-mass floor,
+replace that sample's velocity by the particle PIC velocity
+component in the deformation gradient only. Apply the change
+as a velocity difference times the existing weight gradient.
+Leave PIC transport, affine storage, force and contact unchanged.
+
+Build the native dry-scene executable and run it without
+arguments and with `--q-sand-column-long-settle 6`.
+The default passes at 32.826018°. The matrix exits 1
+with angles 33.843215°, 23.421113°, 17.104206° and
+13.060128° in coarse, fine, coarse half-step and fine
+half-step order. The largest change from baseline is
+0.003407°. The three shallow cases still miss the angle
+band. CUDA and dense sampling were untested. The temporary
+source edit was restored.
