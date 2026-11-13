@@ -5593,3 +5593,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Test the midpoint grid width at matched timesteps
+
+On 3008848, set the diagnostic grid width to 0.06875 m and
+retain the four original absolute timesteps. Both default
+native and SM120 dry-scene tests pass.
+
+| Absolute dt (s) | Native angle at 3 s | Radius (m) | Failed check |
+|---:|---:|---:|---|
+| 0.00187500 | 32.750738° | 0.161938 | Radius |
+| 0.00156250 | 33.795786° | 0.160039 | Radius |
+| 0.00093750 | 36.768764° | 0.159817 | Angle |
+| 0.00078125 | 39.691141° | 0.156464 | Angle |
+
+At each timestep, the midpoint angle falls between the
+previous coarse and fine angles. The radii do not always
+fall between their endpoint values. All four cases fail,
+including a 0.039 mm radius miss at 0.00156250 s. The
+temporary fixture edit was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-mid-width-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
