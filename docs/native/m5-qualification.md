@@ -10184,3 +10184,25 @@ The largest change is 0.087°. The default native dry-scene
 test passes and Q-SAND fails. The integration order at a
 fixed velocity gradient has little effect on the measured
 angles. The temporary source was restored. CUDA was untested.
+
+### Center the ordinary-floor deformation gradient in time
+
+On 6104805, gather the ordinary granular gradient from
+the pre-force field and the final grid field. Use their
+arithmetic mean for both intervals of the existing swept
+deformation split. Transport and affine storage still use
+the final field. Snow and the compatible-floor path keep
+their original deformation update.
+
+| Case | Final-field gradient | Midpoint gradient |
+|---|---:|---:|
+| Coarse | 29.113507° | 31.045043° |
+| Fine | 26.761332° | 27.864590° |
+| Coarse half-step | 29.006384° | 29.712519° |
+| Fine half-step | 27.033753° | 27.634628° |
+
+All four angles improve. The coarse nominal case passes.
+The other angles remain below 30°, and the fine half-step
+also exceeds the radius bound by 0.247 mm. The default
+native dry-scene test passes and the Q-SAND matrix fails.
+The temporary solver edit was restored. CUDA was untested.
