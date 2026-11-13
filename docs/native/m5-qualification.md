@@ -5236,3 +5236,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain only in-plane spin on tangent fallback rows
+
+On 3008848, retain the skew part of the horizontal 2-by-2
+affine fit on each affected tangent row. Use half the
+difference of the original off-diagonal derivatives with
+opposite signs in the two tangent rows. Other derivatives
+on an affected row are cleared. Both default dry-scene
+tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 33.325732° | 0.170123 m | Radius |
+| Coarse half-step | 40.489845° | 0.156731 m | Angle |
+| Fine | 31.248287° | 0.159796 m | Pass |
+| Fine half-step | 34.525517° | 0.156633 m | Pass |
+
+All four runs reach 3 s. The coarse nominal radius increases
+by 1.912 mm and the coarse half-step angle barely changes.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-in-plane-spin-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
