@@ -10247,3 +10247,23 @@ the angle band and the other three remain below it. The
 normal stress increment accounts for nearly all the effect
 of centering the vertical field in this control. Temporary
 sources were restored. CUDA was untested.
+
+#### Sample deformation before the normal stress kick
+
+On 04b21df, subtract the entire yy stress velocity increment
+from the deformation sample. Keep the complete kick for
+transport, affine storage and contact as in the midpoint test.
+
+| Case | Normal midpoint | Before normal kick |
+|---|---:|---:|
+| Coarse | 30.499204° | 32.330788° |
+| Fine | 27.761428° | 28.336343° |
+| Coarse half-step | 29.729921° | 30.660133° |
+| Fine half-step | 27.633602° | 28.179787° |
+
+Both coarse cases pass at 1.5 s. Both fine cases remain below
+30°, and the fine half-step exceeds the radius limit by
+0.818 mm. The default native dry-scene test passes and
+Q-SAND fails. Earlier sampling improves all four angles
+and leaves the grid-width discrepancy. Temporary source
+was restored. CUDA was untested for this control.
