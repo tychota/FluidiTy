@@ -10225,3 +10225,25 @@ with all rows centered. Only the coarse case passes with
 vertical centering. Both variants pass the default native
 dry-scene test and fail Q-SAND. The temporary sources were
 restored. CUDA was untested for these controls.
+
+#### Center only the vertical normal stress increment
+
+On 6104805, assemble the vertical force from the yy stress
+component separately. Subtract half its velocity increment
+from the final vertical field for the ordinary granular
+deformation gradient. Keep shear, gravity, transport, affine
+storage and contact at their previous time levels.
+
+| Case | Full vertical midpoint | yy stress midpoint |
+|---|---:|---:|
+| Coarse | 30.494929° | 30.499204° |
+| Fine | 27.783781° | 27.761428° |
+| Coarse half-step | 29.710618° | 29.729921° |
+| Fine half-step | 27.652184° | 27.633602° |
+
+The two results agree within 0.023° across the native matrix.
+The default dry-scene test passes. The coarse case reaches
+the angle band and the other three remain below it. The
+normal stress increment accounts for nearly all the effect
+of centering the vertical field in this control. Temporary
+sources were restored. CUDA was untested.
