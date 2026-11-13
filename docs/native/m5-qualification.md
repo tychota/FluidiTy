@@ -12252,3 +12252,27 @@ command exits 1. Both half-step radii increase, and both
 half-step drifts exceed one degree over the final approximately
 one-second window. The sparse radius and drift improvements
 therefore do not hold at dense sampling. CUDA was untested.
+
+#### Check dense surface slopes at fixed physical radii
+
+On 7b0dace, run the unmodified native dense trajectory with
+`--q-sand-dense-column-long-settle 3`. At the final state,
+call the existing quadrant fitter with reference radii
+0.12, 0.14 and 0.16 m as well as the measured maximum radius.
+In each fit, six bins span 15–85% of the supplied radius.
+The table gives the minimum and maximum across all four
+resolved quadrants. The extra fits do not change acceptance.
+
+| Case | 0.12 m | 0.14 m | 0.16 m | Measured maximum radius |
+|---|---:|---:|---:|---:|
+| Coarse | −1.21–3.81° | 35.94–36.01° | 19.72–23.89° | 31.16° |
+| Fine | −11.06–−5.23° | 19.40° | 26.94–31.15° | 43.48–43.90° |
+| Coarse half-step | 0.28–2.85° | −2.38–4.41° | 4.90–7.05° | 14.44° |
+| Fine half-step | −14.92–−13.24° | 12.30° | −2.06–2.03° | 18.08° |
+
+The two half-step cases remain below 30° for every fit, including
+fits that omit the outer edge. The nominal cases vary strongly
+with the interval and give no consistent slope across scales.
+All four original gate results reproduce the native baseline
+and the command exits 1. The supplemental fit was not run on
+CUDA. The temporary fixture edit was restored.
