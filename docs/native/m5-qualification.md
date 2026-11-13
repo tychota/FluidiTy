@@ -12542,3 +12542,27 @@ All dense radii exceed 0.16 m despite decreasing relative to
 the baseline. Dense half-step final drift is below one degree
 in both cases, but neither reaches 30°. CUDA was untested and
 the experimental source edit was restored.
+
+#### Separate volumetric and deviatoric resident floor compression
+
+On 9eaf5c9, decompose the zero-fraction ordinary granular floor
+compression rate q = min(0, incoming yy). In one build add
+diag(-q/2, q, -q/2) to the projected gradient. In the other
+build add diag(q/3, q/3, q/3). The first control preserves
+the gradient trace and the second adds only volumetric
+compression. Both retain the original contact sweep and
+stress scatter. Run the native dry-scene target without
+arguments and with `--q-sand-column-long-settle 6`.
+
+| Case | Trace-preserving angle | Volumetric angle |
+|---|---:|---:|
+| Coarse | 34.023226° | 34.473953° |
+| Fine | 23.585661° | 27.146366° |
+| Coarse half-step | 17.710028° | 28.981326° |
+| Fine half-step | 13.872172° | 25.044496° |
+
+Both default runs pass and both matrices exit 1. The
+volumetric correction raises both half-step angles by
+about 12° from baseline. The trace-preserving correction
+raises them by less than 1°. Neither qualifies Q-SAND.
+CUDA and dense sampling were untested. The source edit was restored.
