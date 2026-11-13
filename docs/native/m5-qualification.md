@@ -8949,3 +8949,21 @@ strain more than offsets normal compression. The smaller
 allocation rejects that phase, and the wider allocation gives
 the same result at the other four phases to printed precision.
 The temporary fixture was restored.
+
+### Resolve stationary half-cell strain into its diagonal components
+
+At horizontal position (2.5, 2.5) m on the unit-width grid,
+repeat the stationary native probe through one second.
+Both horizontal elastic stretch entries agree to printed precision.
+
+| Timestep (ms) | Horizontal stretch | Vertical stretch | Elastic Jacobian |
+|---|---:|---:|---:|
+| 1 | 0.950274279032 | 0.949494228338 | 0.857413422584 |
+| 0.5 | 0.950137195880 | 0.949746914952 | 0.857394181213 |
+| 0.25 | 0.950068612043 | 0.949873407584 | 0.857384583051 |
+| 0.125 | 0.950034309549 | 0.949936691308 | 0.857379789632 |
+
+The two horizontal extensions together outweigh vertical
+compression at every refinement. Both contributions are
+approximately first order in the timestep. The temporary
+fixture was restored.
