@@ -10394,3 +10394,24 @@ residual lowers all four, accounting for the sign of the
 combined midpoint result. Both variants pass default native
 dry scenes and fail Q-SAND. Temporary source was restored.
 CUDA was untested for these controls.
+
+#### Combine gravity-centered displacement and pre-kick deformation
+
+On 8777acf, combine the above-floor gravity midpoint for
+displacement with the pre-kick yy stress deformation sample.
+The final PIC velocity still carries the full impulse into
+contact and storage. The existing swept deformation split
+uses the modified deformation gradient.
+
+| Case | Pre-kick deformation only | Combined timing |
+|---|---:|---:|
+| Coarse | 32.330788° | 32.625579° |
+| Fine | 28.336343° | 28.705882° |
+| Coarse half-step | 30.660133° | 30.998102° |
+| Fine half-step | 28.179787° | 28.526939° |
+
+The combined change raises each angle by 0.29° to 0.37°.
+Both coarse cases pass. Both fine cases remain below 30°
+and the fine half-step radius is 0.162090 m. The default
+native dry-scene test passes and Q-SAND fails. Temporary
+source was restored. CUDA was untested.
