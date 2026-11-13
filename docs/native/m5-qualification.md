@@ -6226,3 +6226,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear vertical affine feedback on structurally cut normal stencils
+
+On 3008848, zero the stored vertical derivative of normal
+velocity after the wall sweep when its current normal stencil
+contains a structurally excluded sample. Keep the derivative
+for fully compatible stencils. Both default native and SM120
+dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.948569° | 0.165319 |
+| Coarse half-step | 40.068228° | 0.155761 |
+| Fine | 31.847958° | 0.156535 |
+| Fine half-step | 34.980838° | 0.155103 |
+
+All radii decrease and both fine cases pass at 3 s. The fine
+half-step angle has only 0.019162° of margin. Both coarse
+failures persist. The temporary solver edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-supported-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
