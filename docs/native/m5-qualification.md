@@ -7274,3 +7274,28 @@ foreach ($case in 'coarse', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear APIC feedback after the column first reaches 3 seconds
+
+Repeat the native coarse and fine half-step runs on 3008848.
+Starting at 3 s, clear the stored affine velocity slopes after
+each accepted step. Keep stored translation and the material
+state. The 3 s geometries match the loaded controls.
+
+| Case | Angle at 6 s | 9 s | 12 s | Radius at 12 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse half-step | 35.790785° | 33.772663° | 31.783084° | 0.164763 |
+| Fine half-step | 32.181182° | 29.992081° | 27.553092° | 0.156304 |
+
+Removing late affine feedback raises the final angle by 2.67°
+on the coarse grid and 2.08° on the fine grid. Both piles
+continue to lose height through 12 s. The coarse radius exceeds
+0.16 m and the fine angle falls below 30°. The temporary
+fixture change was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-late-apic-clear-bin'
+foreach ($case in 'coarse-half', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
