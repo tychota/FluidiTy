@@ -201,8 +201,31 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
 
   double wet_open_area_m2 = 0;
   double wet_solid_area_m2 = 0;
-  double centroid_weight = 0;
-  CartesianVector centroid_fraction{};
+  struct CentroidMoment {
+    double area_m2 = 0;
+    CartesianVector fraction{};
+  };
+  CentroidMoment open_centroid;
+  CentroidMoment solid_centroid;
+  // Accumulate in normalized face coordinates to avoid world-offset cancellation.
+  const auto accumulate_centroid = [&](const ClippingPolygon& polygon, CentroidMoment& centroid) {
+    const auto anchor = polygon[0].cell_width_position;
+    for (std::size_t corner = 1; corner + 1 < polygon.size(); ++corner) {
+      const auto second = polygon[corner].cell_width_position;
+      const auto third = polygon[corner + 1].cell_width_position;
+      const ClippingPolygon triangle{polygon[0], polygon[corner], polygon[corner + 1]};
+      const double area_m2 = boundary_internal::ComputeClippedArea(triangle, nominal_width_m);
+      if (area_m2 == 0) {
+        continue;
+      }
+      centroid.area_m2 += area_m2;
+      const double relative_weight = area_m2 / centroid.area_m2;
+      for (const int axis : {first_axis, second_axis}) {
+        const double triangle_centroid = (anchor[axis] + second[axis] + third[axis]) / 3.0;
+        centroid.fraction[axis] = std::lerp(centroid.fraction[axis], triangle_centroid, relative_weight);
+      }
+    }
+  };
   for (const int middle_corner : {first_bit, second_bit}) {
     const int triangle_corners[]{0, middle_corner, upper_corner};
     const ClippingPolygon triangle{vertices[0], vertices[middle_corner], vertices[upper_corner]};
@@ -220,28 +243,14 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
     const double open_area_m2 = boundary_internal::ComputeOpenFaceArea(wet, fluid_side, nominal_width_m);
     wet_open_area_m2 += open_area_m2;
     if (open_area_m2 > 0) {
-      // Take moments in normalized face coordinates to avoid world-offset
-      // cancellation and avoid changing the pressure area arithmetic.
-      const auto open = boundary_internal::ClipPolygon(wet, fluid_side);
-      const auto anchor = open[0].cell_width_position;
-      for (std::size_t corner = 1; corner + 1 < open.size(); ++corner) {
-        const auto second = open[corner].cell_width_position;
-        const auto third = open[corner + 1].cell_width_position;
-        const ClippingPolygon fan_triangle{open[0], open[corner], open[corner + 1]};
-        const double weight = boundary_internal::ComputeClippedArea(fan_triangle, nominal_width_m);
-        if (weight == 0) {
-          continue;
-        }
-        centroid_weight += weight;
-        const double relative_weight = weight / centroid_weight;
-        for (const int axis : {first_axis, second_axis}) {
-          const double triangle_centroid = (anchor[axis] + second[axis] + third[axis]) / 3.0;
-          centroid_fraction[axis] = std::lerp(centroid_fraction[axis], triangle_centroid, relative_weight);
-        }
-      }
+      accumulate_centroid(boundary_internal::ClipPolygon(wet, fluid_side), open_centroid);
     }
-    wet_solid_area_m2 +=
-        boundary_internal::ComputeClippedArea(boundary_internal::ClipPolygon(wet, solid_side), nominal_width_m);
+    const auto blocked = boundary_internal::ClipPolygon(wet, solid_side);
+    const double solid_area_m2 = boundary_internal::ComputeClippedArea(blocked, nominal_width_m);
+    wet_solid_area_m2 += solid_area_m2;
+    if (solid_area_m2 > 0) {
+      accumulate_centroid(blocked, solid_centroid);
+    }
   }
   if ((wet_open_area_m2 + wet_solid_area_m2) / nominal_full_area_m2 > 1 + kMeasureRoundoff) {
     return absl::OutOfRangeError("Graded liquid wet areas exceed the subface area");
@@ -254,20 +263,31 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
   if (!physical_solid.ok()) {
     return physical_solid.status();
   }
-  std::optional<Vec3> wet_open_centroid_m;
-  if (*physical_open > 0) {
-    if (!std::isnormal(centroid_weight)) {
+  const auto world_centroid = [&](double area_m2,
+                                  const CentroidMoment& centroid) -> absl::StatusOr<std::optional<Vec3>> {
+    if (area_m2 == 0) {
+      return std::nullopt;
+    }
+    if (!std::isnormal(centroid.area_m2)) {
       return absl::OutOfRangeError("Graded liquid wet centroid weight is unrepresentable");
     }
-    auto world_centroid = bounds->lower;
+    auto position = bounds->lower;
     for (const int axis : {first_axis, second_axis}) {
-      const double fraction = centroid_fraction[axis];
+      const double fraction = centroid.fraction[axis];
       if (!std::isfinite(fraction) || fraction < -kMeasureRoundoff || fraction > 1 + kMeasureRoundoff) {
         return absl::OutOfRangeError("Graded liquid wet centroid lies outside its subface");
       }
-      world_centroid[axis] = std::lerp(bounds->lower[axis], bounds->upper[axis], std::clamp(fraction, 0.0, 1.0));
+      position[axis] = std::lerp(bounds->lower[axis], bounds->upper[axis], std::clamp(fraction, 0.0, 1.0));
     }
-    wet_open_centroid_m = ToVec3(world_centroid);
+    return std::optional<Vec3>{ToVec3(position)};
+  };
+  const auto wet_open_centroid_m = world_centroid(*physical_open, open_centroid);
+  if (!wet_open_centroid_m.ok()) {
+    return wet_open_centroid_m.status();
+  }
+  const auto wet_solid_centroid_m = world_centroid(*physical_solid, solid_centroid);
+  if (!wet_solid_centroid_m.ok()) {
+    return wet_solid_centroid_m.status();
   }
   const double wall_normal_flux_m3_per_s = *physical_solid * wall_velocity[normal_axis];
   if (!pressure_internal::arithmetic::IsRepresentablePressureProduct(
@@ -285,8 +305,9 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
       .world_upper_m = ToVec3(bounds->upper),
       .full_area_m2 = physical_full_area_m2,
       .wet_open_area_m2 = *physical_open,
-      .wet_open_centroid_m = wet_open_centroid_m,
+      .wet_open_centroid_m = *wet_open_centroid_m,
       .wet_solid_area_m2 = *physical_solid,
+      .wet_solid_centroid_m = *wet_solid_centroid_m,
       .wall_normal_flux_m3_per_s = wall_normal_flux_m3_per_s,
   };
 }

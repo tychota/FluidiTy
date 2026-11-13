@@ -64,6 +64,14 @@ TEST(GradedLiquidBoundaryGeometry3D, ClipsCanonicalSignedCoarseFineWorldSubfaces
       EXPECT_FALSE(face.wet_open_centroid_m);
     }
     EXPECT_NEAR(face.wet_solid_area_m2, solid_areas[ordinal], 1e-14);
+    if (ordinal == 0) {
+      ASSERT_TRUE(face.wet_solid_centroid_m);
+      EXPECT_DOUBLE_EQ(face.wet_solid_centroid_m->x, 3);
+      EXPECT_NEAR(face.wet_solid_centroid_m->y, -3.75, 1e-14);
+      EXPECT_NEAR(face.wet_solid_centroid_m->z, 8.375, 1e-14);
+    } else {
+      EXPECT_FALSE(face.wet_solid_centroid_m);
+    }
     EXPECT_NEAR(face.wall_normal_flux_m3_per_s, 0.5 * solid_areas[ordinal], 1e-14);
   }
   const std::vector<GradedLiquidPressureCellFields3D> cells(keys.size());

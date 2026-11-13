@@ -38,6 +38,7 @@ struct FrozenGradedLiquidSubface3D {
   double wet_open_area_m2;  // Liquid intersect nonsolid; excludes dry nonsolid area.
   std::optional<Vec3> wet_open_centroid_m;  // World-space area centroid, absent for zero wet-open area.
   double wet_solid_area_m2;  // Liquid intersect solid; excludes dry solid area.
+  std::optional<Vec3> wet_solid_centroid_m;  // World-space area centroid, absent for zero wet-solid area.
   double wall_normal_flux_m3_per_s;  // Wet solid area times wall speed along the positive MAC axis.
 };
 
