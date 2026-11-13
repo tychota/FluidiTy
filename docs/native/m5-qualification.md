@@ -7444,3 +7444,27 @@ trajectory is diagnostic only. The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-frozen-material-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Rebuild stress from the late pile geometry
+
+On 3008848, reset stored motion and set the elastic deformation
+to identity once at 3 s in the native fine half-step column.
+Keep positions and log plastic Jacobians. Gravity and contact
+remain active while stress rebuilds.
+
+| Time (s) | Baseline envelope | Envelope after stress reset |
+|---|---:|---:|
+| 3 | 34.693822° | 34.693822° |
+| 6 | 30.869627° | 31.049366° |
+| 9 | 27.988015° | 28.050038° |
+| 12 | 25.473317° | 25.853116° |
+
+The final radius matches baseline at 0.156304 m. The stress
+reset reduces the 12 s height loss by 1.27 mm, with 32.47 mm
+of height loss remaining. The reset changes stored elastic
+energy and the combined deformation Jacobian, so it is a
+diagnostic intervention. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-stress-rebuild-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
