@@ -2,10 +2,12 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <utility>
 #include <vector>
 
+#include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/mixed_contact_3d.h"
 #include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
@@ -19,6 +21,116 @@ using fluidity::Mat3;
 using fluidity::SparseMacGrid3D;
 
 constexpr Mat3 kIdentity{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+bool TestCachedCompactionReplay(
+    const SparseMacGrid3D& grid,
+    fluidity::LiquidResolvedSceneView3D scene,
+    const fluidity::CoupledInteractionCheckpoint3D& initial,
+    std::span<const fluidity::SnowPressureContributor3D> traction,
+    fluidity::PlanarSnowPressureFrameSettings3D settings,
+    fluidity::MixedPressureProjector3D project
+) {
+  const std::filesystem::path scratch = FLUIDITY_M5_PLANAR_CACHE_SCRATCH_PATH;
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(scratch, cleanup_error);
+  if (cleanup_error) {
+    return false;
+  }
+  const auto cache = fluidity::LiquidCache3D::Create(scratch, scene);
+  const auto fingerprint = fluidity::ResolvedSceneFingerprint(scene);
+  if (!cache.ok() || !fingerprint.ok()) {
+    return false;
+  }
+  const fluidity::LiquidResumeMetadata3D resume{
+      .resolved_fingerprint = *fingerprint,
+      .execution_id = fluidity::LiquidExecutionId3D(*fingerprint),
+      .capacities = {1, 1, 1, 6},
+      .capacity_replay_reservations = {},
+  };
+  const auto publish = [&](const fluidity::LiquidState3D& liquid, const fluidity::SolidInteractionCheckpoint3D& solid) {
+    const auto points = fluidity::BuildLiquidPointFrame3D(liquid);
+    if (!points.ok()) {
+      std::fprintf(stderr, "M5 cached compaction point frame: %s\n", points.status().ToString().c_str());
+      return points.status();
+    }
+    const auto status = liquid.clock.frame_ordinal % 10 == 0
+        ? cache->PublishFrame(*points, &liquid, &resume, {}, &solid)
+        : cache->PublishFrame(*points);
+    if (!status.ok()) {
+      std::fprintf(stderr, "M5 cached compaction publish: %s\n", status.ToString().c_str());
+    }
+    return status;
+  };
+  if (!publish(initial.liquid, initial.solid).ok()) {
+    return false;
+  }
+  auto uninterrupted = cache->ReadCheckpoint();
+  if (!uninterrupted.ok() || !uninterrupted->solid.has_value()) {
+    return false;
+  }
+  constexpr double frame_duration = 0.001953125;
+  settings.nominal_step_duration = frame_duration;
+  const auto advance = [&](fluidity::LiquidCheckpoint3D& state, std::uint64_t frame) {
+    settings.target_time = frame * frame_duration;
+    auto next = fluidity::AdvancePlanarSnowPressureFrame3D(
+        grid,
+        state.state,
+        state.solid->plastic_particles,
+        traction,
+        settings,
+        project
+    );
+    if (!next.ok()) {
+      std::fprintf(
+          stderr,
+          "M5 cached compaction frame %llu: %s\n",
+          static_cast<unsigned long long>(frame),
+          next.status().ToString().c_str()
+      );
+      return false;
+    }
+    state.state = std::move(next->liquid);
+    state.solid->accepted_step = state.state.clock.accepted_step_ordinal;
+    state.solid->plastic_particles = std::move(next->snow);
+    return state.state.clock.frame_ordinal == frame;
+  };
+  for (std::uint64_t frame = 1; frame <= 10; ++frame) {
+    if (!advance(*uninterrupted, frame) || !publish(uninterrupted->state, *uninterrupted->solid).ok()) {
+      return false;
+    }
+  }
+  const auto reopened = fluidity::LiquidCache3D::OpenForReplay(scratch, *fingerprint);
+  if (!reopened.ok()) {
+    return false;
+  }
+  auto restarted = reopened->ReadCheckpoint();
+  if (!restarted.ok() || !restarted->solid.has_value() || restarted->state.clock.frame_ordinal != 10
+      || restarted->state != uninterrupted->state || restarted->resume != resume
+      || restarted->solid->plastic_particles.size() != initial.solid.plastic_particles.size()
+      || restarted->solid->plastic_particles.front().log_plastic_jacobian >= 0) {
+    return false;
+  }
+  for (std::uint64_t frame = 11; frame <= 20; ++frame) {
+    if (!advance(*uninterrupted, frame) || !advance(*restarted, frame)
+        || !publish(restarted->state, *restarted->solid).ok()) {
+      return false;
+    }
+  }
+  const auto persisted = reopened->ReadCheckpoint();
+  if (!persisted.ok() || !persisted->solid.has_value() || persisted->state.clock.frame_ordinal != 20) {
+    return false;
+  }
+  const auto expected = fluidity::EncodeResolvedCoupledCheckpoint3D(
+      scene,
+      uninterrupted->state,
+      *uninterrupted->solid,
+      uninterrupted->resume,
+      {}
+  );
+  const auto actual =
+      fluidity::EncodeResolvedCoupledCheckpoint3D(scene, persisted->state, *persisted->solid, persisted->resume, {});
+  return expected.ok() && actual.ok() && *actual == *expected;
+}
 
 bool TestPlanarMixedContactDetection() {
   fluidity::LiquidParticleState3D water{
@@ -526,6 +638,7 @@ bool TestPlanarMixedContactDetection() {
   accepted_liquid.particles[0].world_position = {-0.5, 0.25, 0.25};
   accepted_liquid.particles[0].world_velocity = {};
   accepted_liquid.particles[0].volume_ratio = 0.95;
+  accepted_liquid.particles[0].affine_enabled = false;
   accepted_liquid.cells[0].cell_index = first_frozen->cell.cell_index;
   for (std::size_t ordinal = 0; ordinal < first_frozen->faces.size(); ++ordinal) {
     const auto index = first_frozen->faces[ordinal].face_index;
@@ -575,6 +688,7 @@ bool TestPlanarMixedContactDetection() {
   if (!accepted_attempt.ok() || accepted_attempt->outcome.disposition != fluidity::LiquidAttemptDisposition3D::kAccepted
       || !accepted_attempt->pressure.has_value() || committed.clock.time != 0.0625
       || committed.clock.accepted_step_ordinal != 1 || committed.clock.epoch != 1
+      || committed.particles[0].affine_enabled || !committed.particles[0].pic_initialized
       || std::abs(committed.cells[0].previous_pressure - 12) > 1e-12
       || std::abs(committed.faces[first_frozen->wall_face_ordinal].carrier_velocity - 2) > 1e-12
       || std::abs(committed.particles[0].world_position.x + 0.375) > 1e-12
@@ -598,6 +712,21 @@ bool TestPlanarMixedContactDetection() {
       .nominal_step_duration = 0.125,
       .maximum_path_length = 0.20,
   };
+  accepted_liquid.cells[0].occupancy = fluidity::LiquidCellOccupancy3D::kAir;
+  const auto air_pressure_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&committed_snow, 1},
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (air_pressure_frame.status().message() != "planar pressure transaction requires liquid cell occupancy"
+      || accepted_liquid.cells[0].occupancy != fluidity::LiquidCellOccupancy3D::kAir
+      || accepted_liquid.clock.time != 0) {
+    return false;
+  }
+  accepted_liquid.cells[0].occupancy = fluidity::LiquidCellOccupancy3D::kLiquid;
   const auto frame = fluidity::AdvancePlanarSnowPressureFrame3D(
       *grid,
       accepted_liquid,
@@ -634,19 +763,363 @@ bool TestPlanarMixedContactDetection() {
       || frame_snow.transfer.particle_velocity.x != 4) {
     return false;
   }
-  const fluidity::DrySolidMaterial3D checkpoint_snow = fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4};
-  const std::array checkpoint_bindings{
-      fluidity::PlasticSolidCheckpointBinding3D{snow.body_id, snow.material_id, checkpoint_snow},
+  std::array deforming_snow{frame_snow, frame_snow};
+  deforming_snow[0].elastic_deformation = kIdentity;
+  deforming_snow[0].log_plastic_jacobian = 0;
+  deforming_snow[1] = deforming_snow[0];
+  deforming_snow[1].particle_id = 4;
+  deforming_snow[1].transfer.trial_world_position.x = -1.125;
+  deforming_snow[1].transfer.particle_velocity.x = 3;
+  auto deformation_settings = frame_settings;
+  deformation_settings.target_time = 0.0625;
+  deformation_settings.nominal_step_duration = 0.0625;
+  deformation_settings.maximum_path_length = 0.25;
+  const std::array scene_bindings{
+      fluidity::PlasticSolidCheckpointBinding3D{
+          snow.body_id,
+          snow.material_id,
+          fluidity::SnowParameters3D{12, 7, 0.025, 0.01, 4}
+      },
   };
-  const auto save_frame = [&](const fluidity::PlanarSnowPressureFrame3D& saved) {
+  const fluidity::SolidInteractionCheckpoint3D initial_solid{
+      .accepted_step = 0,
+      .plastic_particles = {deforming_snow.begin(), deforming_snow.end()},
+  };
+  const auto initial_bytes =
+      fluidity::EncodeCoupledInteractionCheckpoint3D(accepted_liquid, initial_solid, scene_bindings);
+  if (!initial_bytes.ok()) {
+    return false;
+  }
+  const std::array upstream{fluidity::LiquidUpstreamContent3D{
+      .role = fluidity::LiquidUpstreamRole3D::kInitialParticles,
+      .ordinal = 0,
+      .byte_length = initial_bytes->size(),
+      .digest = fluidity::LiquidContentDigest3D(*initial_bytes),
+  }};
+  const auto scene_bytes = fluidity::EncodeLiquidResolvedScene3D({
+      .geometry = grid->geometry(),
+      .model_version = fluidity::kPlasticBodyResolvedModel3D,
+      .upstream = upstream,
+      .plastic_bodies = scene_bindings,
+  });
+  if (!scene_bytes.ok()) {
+    return false;
+  }
+  const auto resolved_scene = fluidity::DecodeLiquidResolvedScene3D(scene_bytes->values());
+  if (!resolved_scene.ok() || resolved_scene->plastic_bodies.size() != 1) {
+    return false;
+  }
+  const auto initial = fluidity::DecodeResolvedCoupledInitialState3D(resolved_scene->View(), *initial_bytes, {});
+  auto corrupt_initial = *initial_bytes;
+  corrupt_initial.back() ^= 1;
+  const auto rejected_initial =
+      fluidity::DecodeResolvedCoupledInitialState3D(resolved_scene->View(), corrupt_initial, {});
+  if (!initial.ok() || initial->liquid != accepted_liquid
+      || rejected_initial.status().code() != absl::StatusCode::kDataLoss) {
+    return false;
+  }
+  auto mismatched_initial_scene = resolved_scene->View();
+  ++mismatched_initial_scene.random_seed;
+  if (fluidity::DecodeResolvedCoupledInitialState3D(mismatched_initial_scene, *initial_bytes, {}).status().code()
+      != absl::StatusCode::kFailedPrecondition) {
+    return false;
+  }
+  const auto checkpoint_bindings = resolved_scene->View().plastic_bodies;
+  deformation_settings.snow_layer_binding = checkpoint_bindings.front();
+  if (!TestCachedCompactionReplay(
+          *grid,
+          resolved_scene->View(),
+          *initial,
+          single_traction,
+          deformation_settings,
+          project
+      )) {
+    std::fprintf(stderr, "M5 cached compaction replay failed\n");
+    return false;
+  }
+  auto wrong_material_settings = deformation_settings;
+  ++wrong_material_settings.snow_layer_binding->material_id;
+  const auto wrong_material = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      deforming_snow,
+      single_traction,
+      wrong_material_settings,
+      project
+  );
+  if (wrong_material.status().code() != absl::StatusCode::kInvalidArgument || accepted_liquid.clock.time != 0
+      || deforming_snow[0].log_plastic_jacobian != 0) {
+    return false;
+  }
+  const auto compressed_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      initial->liquid,
+      initial->solid.plastic_particles,
+      single_traction,
+      deformation_settings,
+      project
+  );
+  if (!compressed_frame.ok()) {
+    std::fprintf(stderr, "M5 pressure-driven snow deformation: %s\n", compressed_frame.status().ToString().c_str());
+    return false;
+  }
+  if (compressed_frame->snow.size() != deforming_snow.size()) {
+    return false;
+  }
+  if (std::abs(compressed_frame->snow[0].transfer.trial_world_position.x + 0.75) > 1e-12
+      || std::abs(compressed_frame->snow[1].transfer.trial_world_position.x + 0.9375) > 1e-12
+      || std::abs(compressed_frame->liquid.cells[0].previous_pressure - 12) > 1e-12) {
+    std::fprintf(
+        stderr,
+        "M5 compression positions %.17g %.17g pressure %.17g\n",
+        compressed_frame->snow[0].transfer.trial_world_position.x,
+        compressed_frame->snow[1].transfer.trial_world_position.x,
+        compressed_frame->liquid.cells[0].previous_pressure
+    );
+    return false;
+  }
+  for (const auto& particle : compressed_frame->snow) {
+    const double elastic_jacobian = particle.elastic_deformation.x_row.x;
+    if (std::abs(elastic_jacobian - 0.975) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - 0.75) > 1e-12) {
+      std::fprintf(
+          stderr,
+          "M5 compression Jacobians %.17g %.17g\n",
+          elastic_jacobian,
+          std::exp(particle.log_plastic_jacobian)
+      );
+      return false;
+    }
+  }
+  const std::array rear_traction{fluidity::SnowPressureContributor3D{4, 1}};
+  auto stale_wall_settings = deformation_settings;
+  stale_wall_settings.snow_layer_binding.reset();
+  auto stationary_snow = deforming_snow;
+  for (auto& particle : stationary_snow) {
+    particle.transfer.particle_velocity = {};
+  }
+  const auto rejected_stationary_rear = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      stationary_snow,
+      rear_traction,
+      stale_wall_settings,
+      project
+  );
+  if (rejected_stationary_rear.status().message() != "planar snow pressure contributor is off the front layer") {
+    std::fprintf(stderr, "M5 stationary rear traction: %s\n", rejected_stationary_rear.status().ToString().c_str());
+    return false;
+  }
+  auto split_front = deforming_snow;
+  split_front[0].transfer.particle_velocity.x = -3;
+  split_front[1].transfer.trial_world_position.x = -0.875;
+  const auto rejected_stale_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      split_front,
+      single_traction,
+      stale_wall_settings,
+      project
+  );
+  if (rejected_stale_wall.status().message() != "planar pressure wall disagrees with the advected snow front"
+      || accepted_liquid.clock.time != 0 || split_front[0].transfer.trial_world_position.x != -0.875
+      || split_front[1].transfer.trial_world_position.x != -0.875) {
+    std::fprintf(stderr, "M5 inconsistent wall pose: %s\n", rejected_stale_wall.status().ToString().c_str());
+    return false;
+  }
+  auto high_wall_snow = deforming_snow;
+  for (auto& particle : high_wall_snow) {
+    particle.transfer.trial_world_position.x = -1 - particle.transfer.trial_world_position.x;
+    particle.transfer.particle_velocity.x = -particle.transfer.particle_velocity.x;
+  }
+  auto high_wall_settings = deformation_settings;
+  high_wall_settings.wall_on_low_face = false;
+  // The water starts at x = -0.5 m, the reflection plane of the unit cell.
+  const auto high_wall_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      high_wall_snow,
+      single_traction,
+      high_wall_settings,
+      project
+  );
+  if (!high_wall_frame.ok()) {
+    std::fprintf(stderr, "M5 high-wall compression: %s\n", high_wall_frame.status().ToString().c_str());
+    return false;
+  }
+  if (high_wall_frame->snow.size() != high_wall_snow.size()
+      || std::abs(high_wall_frame->liquid.particles[0].world_position.x + 0.625) > 1e-12
+      || std::abs(high_wall_frame->liquid.cells[0].previous_pressure - 12) > 1e-12
+      || std::abs(high_wall_frame->snow[0].transfer.trial_world_position.x + 0.25) > 1e-12
+      || std::abs(high_wall_frame->snow[1].transfer.trial_world_position.x + 0.0625) > 1e-12) {
+    return false;
+  }
+  for (const auto& particle : high_wall_frame->snow) {
+    const double elastic_jacobian = particle.elastic_deformation.x_row.x;
+    if (std::abs(elastic_jacobian - 0.975) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - 0.75) > 1e-12) {
+      return false;
+    }
+  }
+  high_wall_settings.snow_layer_binding.reset();
+  const auto rejected_high_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      high_wall_snow,
+      rear_traction,
+      high_wall_settings,
+      project
+  );
+  if (rejected_high_wall.status().message() != "planar snow pressure contributor is off the front layer"
+      || accepted_liquid.clock.time != 0 || high_wall_snow[0].transfer.trial_world_position.x != -0.125
+      || high_wall_snow[1].transfer.trial_world_position.x != 0.125) {
+    return false;
+  }
+  auto retreating_snow = deforming_snow[0];
+  retreating_snow.transfer.particle_velocity.x = -12;
+  auto retreat_settings = stale_wall_settings;
+  retreat_settings.maximum_path_length = 1;
+  const auto rejected_retreat = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&retreating_snow, 1},
+      single_traction,
+      retreat_settings,
+      project
+  );
+  if (rejected_retreat.status().message() != "planar snow front is outside the selected wall cell"
+      || accepted_liquid.clock.time != 0 || retreating_snow.transfer.trial_world_position.x != -0.875) {
+    std::fprintf(stderr, "M5 wall retreat past its cell: %s\n", rejected_retreat.status().ToString().c_str());
+    return false;
+  }
+  auto stiff_settings = deformation_settings;
+  auto& stiff_material = std::get<fluidity::SnowParameters3D>(stiff_settings.snow_layer_binding->material);
+  stiff_material.shear_modulus = 1200;
+  stiff_material.lame_lambda = 700;
+  const auto stiff_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      deforming_snow,
+      single_traction,
+      stiff_settings,
+      project
+  );
+  if (!stiff_frame.ok() || stiff_frame->rejected_attempts == 0 || stiff_frame->liquid.clock.time != 0.0625
+      || accepted_liquid.clock.time != 0 || deforming_snow[0].log_plastic_jacobian != 0) {
+    std::fprintf(stderr, "M5 stiff layer retry: %s\n", stiff_frame.status().ToString().c_str());
+    return false;
+  }
+  auto middle = deforming_snow[1];
+  middle.particle_id = 5;
+  middle.transfer.trial_world_position.x = -1;
+  middle.transfer.particle_velocity.x = 0;
+  const std::array nonaffine_snow{deforming_snow[0], deforming_snow[1], middle};
+  const auto rejected_deformation = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      nonaffine_snow,
+      single_traction,
+      deformation_settings,
+      project
+  );
+  if (rejected_deformation.status().code() != absl::StatusCode::kFailedPrecondition || accepted_liquid.clock.time != 0
+      || nonaffine_snow[0].transfer.trial_world_position.x != -0.875 || nonaffine_snow[0].log_plastic_jacobian != 0) {
+    return false;
+  }
+
+  const auto save_frame = [&](const fluidity::PlanarSnowPressureFrame3D& saved, bool bind_scene = false) {
     const fluidity::SolidInteractionCheckpoint3D solid{
         .accepted_step = saved.liquid.clock.accepted_step_ordinal,
         .bodies = {},
         .sides = {},
         .plastic_particles = saved.snow,
     };
-    return fluidity::EncodeCoupledInteractionCheckpoint3D(saved.liquid, solid, checkpoint_bindings);
+    return bind_scene ? fluidity::EncodeResolvedCoupledCheckpoint3D(resolved_scene->View(), saved.liquid, solid)
+                      : fluidity::EncodeCoupledInteractionCheckpoint3D(saved.liquid, solid, checkpoint_bindings);
   };
+  const auto compressed_checkpoint = save_frame(*compressed_frame, true);
+  if (!compressed_checkpoint.ok()) {
+    std::fprintf(stderr, "M5 compressed frame checkpoint: %s\n", compressed_checkpoint.status().ToString().c_str());
+    return false;
+  }
+  const auto restored_compression =
+      fluidity::DecodeResolvedCoupledCheckpoint3D(resolved_scene->View(), *compressed_checkpoint);
+  if (!restored_compression.ok() || restored_compression->solid.plastic_particles.size() != deforming_snow.size()) {
+    return false;
+  }
+  deformation_settings.target_time = 0.125;
+  const auto continue_compression = [&](const auto& liquid, const auto& layer) {
+    return fluidity::AdvancePlanarSnowPressureFrame3D(
+        *grid,
+        liquid,
+        layer,
+        single_traction,
+        deformation_settings,
+        project
+    );
+  };
+  const auto uninterrupted_compression = continue_compression(compressed_frame->liquid, compressed_frame->snow);
+  const auto restarted_compression =
+      continue_compression(restored_compression->liquid, restored_compression->solid.plastic_particles);
+  if (!uninterrupted_compression.ok() || !restarted_compression.ok()) {
+    std::fprintf(
+        stderr,
+        "M5 second compression frame, continuous %s, restarted %s\n",
+        uninterrupted_compression.status().ToString().c_str(),
+        restarted_compression.status().ToString().c_str()
+    );
+    return false;
+  }
+  const auto uninterrupted_compression_checkpoint = save_frame(*uninterrupted_compression, true);
+  const auto restarted_compression_checkpoint = save_frame(*restarted_compression, true);
+  if (!uninterrupted_compression_checkpoint.ok() || !restarted_compression_checkpoint.ok()
+      || *uninterrupted_compression_checkpoint != *restarted_compression_checkpoint
+      || restarted_compression->liquid.clock.time != 0.125 || restarted_compression->liquid.clock.frame_ordinal != 2
+      || restarted_compression->liquid.clock.accepted_step_ordinal != 2
+      || restarted_compression->snow.size() != deforming_snow.size()) {
+    return false;
+  }
+  // At the second step the first compaction supplies a compressive axial stress.
+  // Equal masses and reference volumes give equal and opposite elastic kicks.
+  constexpr double elastic_stretch = 0.975;
+  constexpr double first_thickness = 0.1875;
+  constexpr double step_duration = 0.0625;
+  constexpr double snow_mass = 0.375;
+  const double hardened_scale = std::exp(4 * (1 - 0.75 / elastic_stretch));
+  const double axial_stress = hardened_scale * (2 * 12 + 7) * (elastic_stretch - 1) * elastic_stretch;
+  const double front_kick = -step_duration * 0.001 * 2 * axial_stress / (first_thickness * snow_mass);
+  const double wall_speed = (2 + front_kick) * 6.0 / 11.0;
+  const double expected_pressure = 5 * wall_speed;
+  const double expected_rear_x = -0.9375 + step_duration * (3 - front_kick);
+  const double expected_front_x = -0.75 + step_duration * wall_speed;
+  const double expected_total_jacobian = (expected_front_x - expected_rear_x) / 0.25;
+  const double front_x = restarted_compression->snow.front().transfer.trial_world_position.x;
+  const double rear_x = restarted_compression->snow.back().transfer.trial_world_position.x;
+  if (std::abs(rear_x - expected_rear_x) > kFrameTolerance || std::abs(front_x - expected_front_x) > kFrameTolerance
+      || std::abs(restarted_compression->liquid.cells[0].previous_pressure - expected_pressure) > kFrameTolerance) {
+    std::fprintf(
+        stderr,
+        "M5 elastic feedback pressure %.17g, expected %.17g\n",
+        restarted_compression->liquid.cells[0].previous_pressure,
+        expected_pressure
+    );
+    return false;
+  }
+  const double final_snow_momentum = snow_mass
+      * (restarted_compression->snow.front().transfer.particle_velocity.x
+         + restarted_compression->snow.back().transfer.particle_velocity.x);
+  if (std::abs(final_snow_momentum - snow_mass * 5 + step_duration * expected_pressure) > kFrameTolerance) {
+    return false;
+  }
+  for (const auto& particle : restarted_compression->snow) {
+    const double elastic_jacobian = particle.elastic_deformation.x_row.x;
+    if (std::abs(elastic_jacobian - elastic_stretch) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - expected_total_jacobian)
+            > kFrameTolerance) {
+      return false;
+    }
+  }
+
   const auto checkpoint = save_frame(*frame);
   if (!checkpoint.ok()) {
     std::fprintf(stderr, "M5 planar frame checkpoint: %s\n", checkpoint.status().ToString().c_str());

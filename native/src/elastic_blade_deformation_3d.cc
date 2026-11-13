@@ -4,6 +4,8 @@
 #include <cmath>
 #include <limits>
 
+#include "liquid_boundary_transfer_3d_internal.h"
+
 namespace fluidity {
 namespace {
 
@@ -350,24 +352,14 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
   }
   std::vector<double> stress_force_sums(mac_grid.face_count());
   for (std::size_t particle_index = 0; particle_index < particles.size(); ++particle_index) {
-    const auto& stress = stresses[particle_index];
-    const std::array stress_rows{stress.x_row, stress.y_row, stress.z_row};
-    const double reference_volume = checkpoint.elastic_particles[particle_index].reference_volume;
-    for (std::size_t axis = 0; axis < stress_rows.size(); ++axis) {
-      const Vec3 stress_row = stress_rows[axis];
-      for (const auto& sample : deposits->compatible_stencils[particle_index][axis]) {
-        if (!sample.compatible) {
-          continue;
-        }
-        const auto gradient = sample.normalized_weight_gradient;
-        const double stress_force_contribution =
-            -reference_volume * ((stress_row.x * gradient.x + stress_row.y * gradient.y) + stress_row.z * gradient.z);
-        auto& stress_force_sum = stress_force_sums[sample.face_slot];
-        stress_force_sum += stress_force_contribution;
-        if (!std::isfinite(stress_force_sum)) {
-          return absl::OutOfRangeError("nonfinite elastic face force");
-        }
-      }
+    const auto status = internal::AccumulateCompatibleSolidStress3D(
+        deposits->compatible_stencils[particle_index],
+        checkpoint.elastic_particles[particle_index].reference_volume,
+        stresses[particle_index],
+        stress_force_sums
+    );
+    if (!status.ok()) {
+      return status;
     }
   }
   ElasticBladeGridStepResult3D result;

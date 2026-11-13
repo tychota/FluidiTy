@@ -35,28 +35,35 @@ struct DrySolidStep3D {
   double acoustic_cfl;  // Discrete acoustic safety factor in (0, 1].
   std::optional<DrySolidPlaten3D> platen;
   double particle_energy_blend = 0;  // [0, 1], applied to stored velocity only.
+  bool compatible_floor = false;  // Granular, stationary floor, PIC storage only.
 };
 
 struct DrySolidStepBudget3D {
   double proposed_stress_impulse_l1 = 0;  // Sum of absolute face impulses before mass regularization, N s.
   double omitted_stress_impulse_l1 = 0;  // Sum of absolute face impulses removed by regularization, N s.
   double applied_stress_work = 0;  // Applied stress impulse paired with the accepted face field, J.
+  double cut_stress_work = 0;  // Complete particle stress work plus unregularized compatible grid stress work, J.
   double omitted_stress_work = 0;  // Omitted stress impulse paired with that same field, J.
   double grid_wall_impulse_y = 0;  // Signed impulse from normal grid constraints on solid, N s.
   Vec3 wall_impulse_on_particles{};  // World impulse from the stored-velocity sweep on solid, N s.
   std::size_t particle_wall_contacts = 0;  // Count of swept particle contacts.
+  std::size_t granular_projected_particles = 0;  // Granular trials changed by the return above relative roundoff.
+  std::size_t granular_plastic_volume_changes = 0;  // Granular returns changing log plastic volume above roundoff.
+  double particle_wall_kinetic_energy_change = 0;  // Signed translational kinetic energy change across the sweep, J.
 };
 
 // Advances a single dry body on a fixed uniform MAC layout with complete quadratic supports.
-// Uses APIC deposits, PIC advection, uncut stress quadrature and a stationary floor with an optional platen.
-// When enabled, the stored velocity retains 0.99 times the blend times the incoming particle residual against
+// The default uses APIC deposits, PIC advection, uncut stress quadrature, and a stationary floor with an optional
+// platen. When enabled, the stored velocity retains 0.99 times the blend times the incoming particle residual against
 // the pre-force grid. The supplied particle state seeds that history. Low-mass support uses PIC storage.
 // The retained correction has zero net momentum over the eligible particles of this dry body.
 // Snow grid normal constraints use face anchors. A continuous halfspace sweep constrains particle transport.
 // Granular floor impacts without a platen split the deformation update at impact. The post-impact velocity
 // gradient uses the active Coulomb response derivative.
 // The force-acceleration denominator is floored at 1e-4 times the smallest particle mass for low-mass faces.
-// The bounded dry path uses no liquid pressure, cut support reconstruction, or body mixing.
+// The compatible floor uses normalized face weights for deposit and PIC,
+// and a complete same-side ghost gather for deformation and affine feedback.
+// Compatible-floor transfer is bounded by the boundary transfer capacities.
 // Requires the platen gap to exceed one cell throughout the step and enforces motion and acoustic bounds.
 // Invalid inputs return InvalidArgument, inadmissible material or unsupported motion return FailedPrecondition,
 // and unrepresentable arithmetic returns OutOfRange. If provided, budget must be disjoint from all inputs.

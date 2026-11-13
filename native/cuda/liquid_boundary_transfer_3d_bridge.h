@@ -107,6 +107,7 @@ struct BoundaryTransferQuery3D {
   double particle_energy_blend{};  // e in [0,1].
   double friction_coefficient{};  // Nonnegative dimensionless Coulomb coefficient.
   double penetration_tolerance{};  // Nonnegative meters.
+  bool same_history_samples = false;  // Owning gather validated identical borrowed sample arrays.
 };
 inline constexpr unsigned kBoundaryTransferErrorCodeCount = static_cast<unsigned>(boundary_internal::Error::kRange) + 1;
 inline constexpr auto kNoParallelTransferError = ~0ULL;

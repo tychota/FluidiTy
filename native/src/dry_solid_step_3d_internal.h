@@ -3,6 +3,7 @@
 #include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "fluidity/host/dry_solid_step_3d.h"
+#include "fluidity/host/liquid_boundary_transfer_3d.h"
 #include "fluidity/host/transfers_3d.h"
 
 namespace fluidity::internal {
@@ -46,6 +47,12 @@ absl::Status AccumulateDrySolidStress3D(
     std::span<double> face_force
 );
 
+struct DrySolidFloorTransfers3D {
+  MacDepositQuantization3D quantization;
+  absl::FunctionRef<absl::StatusOr<LiquidBoundaryFaceDeposits3D>(const LiquidBoundaryDepositInputs3D&)> deposit;
+  absl::FunctionRef<absl::StatusOr<LiquidBoundaryGatherResults3D>(const LiquidBoundaryGatherInputs3D&)> gather;
+};
+
 // Shares the dry step and its transactional publication across transfer backends.
 absl::Status AdvanceDrySolidWithTransfers3D(
     const SparseMacGrid3D& grid,
@@ -54,7 +61,8 @@ absl::Status AdvanceDrySolidWithTransfers3D(
     std::span<DrySolidParticle3D> particles,
     DrySolidDeposit3D deposit,
     DrySolidGather3D gather,
-    DrySolidStepBudget3D* budget
+    DrySolidStepBudget3D* budget,
+    const DrySolidFloorTransfers3D* floor_transfers = nullptr
 );
 
 }  // namespace fluidity::internal

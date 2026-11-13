@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "dry_solid_step_3d_internal.h"
@@ -11,6 +12,7 @@
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "fluidity/host/views.h"
+#include "liquid_boundary_transfer_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -44,21 +46,29 @@ bool ReturnState(
   return ReturnSnowDeformation3D(trial, previous_log_plastic_jacobian, std::get<SnowParameters3D>(material), state);
 }
 
-bool MatchesAcceptedState(const DrySolidParticle3D& particle, const SolidDeformationState3D& returned) {
-  constexpr double kReturnTolerance = 1e-12;
+constexpr double kReturnTolerance = 1e-12;
+
+bool MatchesPlasticVolume(double log_plastic_jacobian, const SolidDeformationState3D& returned) {
+  const double plastic_scale = std::max(1.0, std::abs(log_plastic_jacobian));
+  return std::abs(log_plastic_jacobian - returned.log_plastic_jacobian) <= kReturnTolerance * plastic_scale;
+}
+
+bool MatchesDeformationState(
+    Mat3 elastic_deformation,
+    double log_plastic_jacobian,
+    const SolidDeformationState3D& returned
+) {
   double map_scale = 0;
   double maximum_difference = 0;
   for (const auto row : kRows) {
     for (const auto component : kComponents) {
-      const double input = (particle.elastic_deformation.*row).*component;
+      const double input = (elastic_deformation.*row).*component;
       const double output = (returned.elastic_deformation.*row).*component;
       map_scale = std::max(map_scale, std::abs(input));
       maximum_difference = std::max(maximum_difference, std::abs(input - output));
     }
   }
-  const double plastic_scale = std::max(1.0, std::abs(particle.log_plastic_jacobian));
-  return maximum_difference <= kReturnTolerance * map_scale
-      && std::abs(particle.log_plastic_jacobian - returned.log_plastic_jacobian) <= kReturnTolerance * plastic_scale;
+  return maximum_difference <= kReturnTolerance * map_scale && MatchesPlasticVolume(log_plastic_jacobian, returned);
 }
 
 bool AcousticBound(
@@ -153,7 +163,7 @@ internal::EvaluateAcceptedDrySolid3D(const DrySolidParticle3D& particle, const D
   AcceptedDrySolid3D accepted{};
   const double reference_density = particle.mass / particle.reference_volume;
   if (!ReturnState(particle.elastic_deformation, particle.log_plastic_jacobian, material, accepted.state)
-      || !MatchesAcceptedState(particle, accepted.state)
+      || !MatchesDeformationState(particle.elastic_deformation, particle.log_plastic_jacobian, accepted.state)
       || !AcousticBound(accepted.state, reference_density, material, accepted.wave_speed_squared)) {
     return absl::FailedPreconditionError("inadmissible dry material state");
   }
@@ -188,7 +198,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     std::span<DrySolidParticle3D> particles,
     DrySolidDeposit3D deposit,
     DrySolidGather3D gather,
-    DrySolidStepBudget3D* budget
+    DrySolidStepBudget3D* budget,
+    const DrySolidFloorTransfers3D* floor_transfers
 ) {
   if (budget != nullptr) {
     const auto disjoint = CheckWritableViews(
@@ -210,6 +221,12 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   if (!solid_detail::NonnegativeFinite(settings.particle_energy_blend) || settings.particle_energy_blend > 1) {
     return absl::InvalidArgumentError("invalid dry particle energy blend");
   }
+  const bool compatible_floor = settings.compatible_floor;
+  if (compatible_floor
+      && (floor_transfers == nullptr || !std::holds_alternative<GranularParameters3D>(material)
+          || settings.platen.has_value() || settings.particle_energy_blend != 0)) {
+    return absl::InvalidArgumentError("compatible floor requires granular PIC storage without a platen");
+  }
   const double cell_width = grid.geometry().cell_width;
   const double maximum_displacement = 0.45 * cell_width;
   if (settings.platen.has_value()) {
@@ -225,6 +242,10 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<MacTransferParticle3D> transfer_particles;
   transfer_particles.reserve(particles.size());
   std::vector<double> face_force(grid.face_count());
+  std::vector<Mat3> particle_stresses;
+  if (compatible_floor) {
+    particle_stresses.reserve(particles.size());
+  }
   double minimum_particle_mass = std::numeric_limits<double>::infinity();
   for (const auto& particle : particles) {
     const auto accepted = internal::EvaluateAcceptedDrySolid3D(particle, material);
@@ -235,15 +256,19 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     if (settings.duration * std::sqrt(accepted->wave_speed_squared) > settings.acoustic_cfl * cell_width) {
       return DurationExceeded("dry acoustic step bound");
     }
-    const auto stress = internal::AccumulateDrySolidStress3D(
-        grid,
-        particle.world_position,
-        particle.reference_volume,
-        accepted->state.kirchhoff_stress,
-        face_force
-    );
-    if (!stress.ok()) {
-      return stress;
+    if (compatible_floor) {
+      particle_stresses.push_back(accepted->state.kirchhoff_stress);
+    } else {
+      const auto stress = internal::AccumulateDrySolidStress3D(
+          grid,
+          particle.world_position,
+          particle.reference_volume,
+          accepted->state.kirchhoff_stress,
+          face_force
+      );
+      if (!stress.ok()) {
+        return stress;
+      }
     }
     transfer_particles.push_back({
         .sorted_world_position = particle.world_position,
@@ -255,9 +280,57 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   }
 
   std::vector<MacFaceDeposit3D> deposits(grid.face_count());
-  const auto deposited = deposit(grid, transfer_particles, deposits);
-  if (!deposited.ok()) {
-    return deposited;
+  std::vector<LiquidBoundaryFaceTag3D> floor_tags;
+  std::vector<LiquidBoundaryParticle3D> boundary_particles;
+  LiquidBoundaryFaceDeposits3D boundary_deposits;
+  if (compatible_floor) {
+    floor_tags.resize(grid.face_count());
+    const auto layout = grid.view();
+    for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
+      const auto face = layout.FaceIndex(slot);
+      if (!face.ok()) {
+        return face.status();
+      }
+      const auto anchor = layout.FaceWorldAnchor(*face);
+      if (!anchor.ok()) {
+        return anchor.status();
+      }
+      floor_tags[slot].structurally_eligible = anchor->y >= 0;
+    }
+    boundary_particles.reserve(particles.size());
+    for (const auto& particle : transfer_particles) {
+      boundary_particles.push_back({.transfer = particle});
+    }
+    const auto quantization = floor_transfers->quantization;
+    auto deposited = floor_transfers->deposit({grid, boundary_particles, floor_tags, quantization});
+    if (!deposited.ok()) {
+      return deposited.status();
+    }
+    boundary_deposits = std::move(*deposited);
+    for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
+      const auto& quanta = boundary_deposits.face_quanta[slot];
+      deposits[slot] = {
+          .deposited_mass = static_cast<double>(quanta.mass_quanta_sum) * quantization.mass_per_quantum,
+          .deposited_pure_momentum =
+              static_cast<double>(quanta.pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum,
+      };
+    }
+    for (std::size_t index = 0; index < particles.size(); ++index) {
+      const auto status = AccumulateCompatibleSolidStress3D(
+          boundary_deposits.compatible_stencils[index],
+          particles[index].reference_volume,
+          particle_stresses[index],
+          face_force
+      );
+      if (!status.ok()) {
+        return status;
+      }
+    }
+  } else {
+    const auto deposited = deposit(grid, transfer_particles, deposits);
+    if (!deposited.ok()) {
+      return deposited;
+    }
   }
   std::vector<double> velocities(grid.face_count());
   const bool blend_stored_velocity = settings.particle_energy_blend > 0;
@@ -325,9 +398,50 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
 
   std::vector<MacParticleGatherResult3D> gathers(particles.size());
   const auto& history = blend_stored_velocity ? old_velocities : velocities;
-  const auto gathered = gather(grid, transfer_particles, history, velocities, gathers);
-  if (!gathered.ok()) {
-    return gathered;
+  if (compatible_floor) {
+    std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
+    const std::vector<LiquidPrescribedWallSample3D> walls(grid.face_count());
+    for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
+      if (deposits[slot].deposited_mass > 0) {
+        validity[slot] = LiquidFaceValidity3D::kValid;
+      }
+    }
+    const auto gathered = floor_transfers->gather({
+        grid,
+        boundary_particles,
+        0,
+        settings.duration,
+        {0, 0, history, validity, floor_tags, walls},
+        {settings.duration, settings.duration, velocities, validity, floor_tags, walls},
+    });
+    if (!gathered.ok()) {
+      return gathered.status();
+    }
+    trial_budget.cut_stress_work = trial_budget.applied_stress_work + trial_budget.omitted_stress_work;
+    for (std::size_t index = 0; index < particles.size(); ++index) {
+      auto& result = gathers[index];
+      const auto& complete = gathered->particles[index];
+      result.velocity_gradient = complete.velocity_gradient;
+      result.fitted_velocity_slopes = complete.affine_enabled ? complete.fitted_velocity_slopes : Mat3{};
+      // Compatible PIC is the transpose of the mass deposit. Use the complete
+      // ghost field for the affine fit and the true deformation derivative.
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        for (const auto& sample : boundary_deposits.compatible_stencils[index][axis]) {
+          if (sample.compatible) {
+            result.new_pic_velocity.*kComponents[axis] += sample.normalized_weight * velocities[sample.face_slot];
+          }
+        }
+        if (budget != nullptr) {
+          trial_budget.cut_stress_work += settings.duration * particles[index].reference_volume
+              * solid_detail::Dot(particle_stresses[index].*kRows[axis], complete.velocity_gradient.*kRows[axis]);
+        }
+      }
+    }
+  } else {
+    const auto gathered = gather(grid, transfer_particles, history, velocities, gathers);
+    if (!gathered.ok()) {
+      return gathered;
+    }
   }
   struct RetainedVelocity {
     Vec3 correction{};
@@ -438,7 +552,18 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       const Vec3 wall_velocity_change = solid_detail::Combine(contact->stored_world_velocity, 1, stored_velocity, -1);
       trial_budget.wall_impulse_on_particles =
           solid_detail::Combine(trial_budget.wall_impulse_on_particles, 1, wall_velocity_change, particle.mass);
+      const Vec3 midpoint_velocity = solid_detail::Combine(stored_velocity, 0.5, contact->stored_world_velocity, 0.5);
+      trial_budget.particle_wall_kinetic_energy_change +=
+          particle.mass * solid_detail::Dot(midpoint_velocity, wall_velocity_change);
       ++trial_budget.particle_wall_contacts;
+    }
+    if (budget != nullptr && std::holds_alternative<GranularParameters3D>(material)) {
+      if (!MatchesDeformationState(trial, particle.log_plastic_jacobian, state)) {
+        ++trial_budget.granular_projected_particles;
+      }
+      if (!MatchesPlasticVolume(particle.log_plastic_jacobian, state)) {
+        ++trial_budget.granular_plastic_volume_changes;
+      }
     }
     particle.world_position = contact->world_position;
     particle.world_velocity = contact->stored_world_velocity;
@@ -450,7 +575,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       && (!solid_detail::Finite(trial_budget.wall_impulse_on_particles)
           || !std::isfinite(trial_budget.grid_wall_impulse_y) || !std::isfinite(trial_budget.proposed_stress_impulse_l1)
           || !std::isfinite(trial_budget.omitted_stress_impulse_l1) || !std::isfinite(trial_budget.applied_stress_work)
-          || !std::isfinite(trial_budget.omitted_stress_work))) {
+          || !std::isfinite(trial_budget.omitted_stress_work) || !std::isfinite(trial_budget.cut_stress_work)
+          || !std::isfinite(trial_budget.particle_wall_kinetic_energy_change))) {
     return absl::OutOfRangeError("nonfinite dry step budget");
   }
   std::ranges::copy(trial_particles, particles.begin());
@@ -467,6 +593,11 @@ absl::Status AdvanceDrySolid3D(
     std::span<DrySolidParticle3D> particles,
     DrySolidStepBudget3D* budget
 ) {
+  const internal::DrySolidFloorTransfers3D floor_transfers{
+      {0x1p-42, 0x1p-38, particles.size()},
+      DepositCompatibleMacQuanta3D,
+      GatherLiquidBoundaryParticles3D,
+  };
   return internal::AdvanceDrySolidWithTransfers3D(
       grid,
       material,
@@ -474,7 +605,8 @@ absl::Status AdvanceDrySolid3D(
       particles,
       DepositMac3D,
       GatherMac3D,
-      budget
+      budget,
+      &floor_transfers
   );
 }
 

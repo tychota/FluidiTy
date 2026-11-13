@@ -48,6 +48,19 @@ FLUIDITY_HD inline int CheckConstitutiveCases() {
       || !Near(::log(state.elastic_stretches.z), -0.1 - shear_offset) || !Near(state.log_plastic_jacobian, 0.2)) {
     return 4;
   }
+  // At zero friction, a compressed return is purely volumetric even if the modulus ratio overflows.
+  constexpr GranularParameters3D frictionless_sand{
+      .shear_modulus = 1e-310,
+      .lame_lambda = 3,
+      .friction_angle = 0,
+      .cohesion_log_strain = 0,
+  };
+  if (!ReturnGranularPrincipal3D({::exp(0.4), ::exp(-0.1), ::exp(-0.6)}, 0.2, frictionless_sand, state)
+      || !Near(state.elastic_stretches.x, ::exp(-0.1)) || !Near(state.elastic_stretches.y, ::exp(-0.1))
+      || !Near(state.elastic_stretches.z, ::exp(-0.1)) || !Near(state.log_plastic_jacobian, 0.2)) {
+    return 17;
+  }
+
   const SnowParameters3D
       snow{.shear_modulus = 2, .lame_lambda = 3, .compression_limit = 0.1, .stretch_limit = 0.05, .hardening = 5};
   if (!fluidity::ReturnSnowPrincipal3D({0.7, 1.2, 0.98}, 0, snow, state) || !Near(state.elastic_stretches.x, 0.9)
@@ -80,6 +93,73 @@ FLUIDITY_HD inline int CheckConstitutiveCases() {
       || !Near(state.log_plastic_jacobian, before.log_plastic_jacobian)
       || !Near(state.kirchhoff_stress.x, before.kirchhoff_stress.x)) {
     return 8;
+  }
+  // The cohesionless 30-degree law matches the triaxial compression ratio
+  // (1 + sin(30 degrees)) / (1 - sin(30 degrees)) = 3. These trial
+  // stretches give stresses (-5, -1, -1) Pa with the moduli above.
+  auto cohesionless_sand = sand;
+  cohesionless_sand.cohesion_log_strain = 0;
+  const Vec3 triaxial_trial{::exp(-11.0 / 13), ::exp(2.0 / 13), ::exp(2.0 / 13)};
+  if (!ReturnGranularPrincipal3D(triaxial_trial, 0, cohesionless_sand, state) || !Near(state.kirchhoff_stress.x, -4.2)
+      || !Near(state.kirchhoff_stress.y, -1.4) || !Near(state.kirchhoff_stress.z, -1.4)
+      || !Near(state.log_plastic_jacobian, 0)) {
+    return 9;
+  }
+  // Plane strain with only normal compression and shear has lateral stress
+  // set by lambda. The principal log strains are the eigenvalues of its
+  // symmetric 2x2 compression/shear block, plus a zero out-of-plane strain.
+  constexpr double kCompression = 0.01;
+  const double alpha = ::sqrt(2.0 / 3) * 0.4;
+  constexpr double kLambdaValues[]{700, 1280};
+  constexpr double kShearFactors[]{0.999, 1.001};
+  for (const double lambda : kLambdaValues) {
+    const double shear_modulus = (1600 - lambda) / 2;
+    const GranularParameters3D plane_strain{shear_modulus, lambda, 0.5235987755982989, 0};
+    const double cone_scale = (3 * lambda + 2 * shear_modulus) * alpha / shear_modulus;
+    const double yield_shear = kCompression * ::sqrt(0.5 * (cone_scale * cone_scale - 8.0 / 3));
+    for (const double factor : kShearFactors) {
+      const double radius = ::hypot(kCompression, factor * yield_shear);
+      const Vec3 trial{
+          ::exp(0.5 * (-kCompression + radius)),
+          1,
+          ::exp(0.5 * (-kCompression - radius)),
+      };
+      if (!ReturnGranularPrincipal3D(trial, 0, plane_strain, state)
+          || Near(state.elastic_stretches.x, trial.x) != (factor < 1) || !Near(state.log_plastic_jacobian, 0)) {
+        return 10;
+      }
+    }
+  }
+  // In axes aligned with an inclined layer, prescribe normal traction
+  // -p and shear p*t. Equal lateral compression -(1 + 2*t*t)*p
+  // minimizes the Drucker-Prager stress ratio for this traction.
+  // For a 30-degree cone the limiting t is sqrt(4/3), not tan(30 degrees).
+  constexpr double kNormalPressure = 1;
+  const double traction_limit = ::sqrt(4.0 / 3);
+  for (const double factor : kShearFactors) {
+    const double shear = kNormalPressure * factor * traction_limit;
+    const double lateral_pressure = kNormalPressure + 2 * shear * shear / kNormalPressure;
+    const double average_pressure = 0.5 * (lateral_pressure + kNormalPressure);
+    const double principal_split = ::hypot(0.5 * (lateral_pressure - kNormalPressure), shear);
+    const Vec3 principal_stress{
+        -average_pressure - principal_split,
+        -lateral_pressure,
+        -average_pressure + principal_split
+    };
+    const double trace_stress = principal_stress.x + principal_stress.y + principal_stress.z;
+    const double trace_strain =
+        trace_stress / (2 * cohesionless_sand.shear_modulus + 3 * cohesionless_sand.lame_lambda);
+    const double volumetric_stress = cohesionless_sand.lame_lambda * trace_strain;
+    const double inverse_shear_scale = 0.5 / cohesionless_sand.shear_modulus;
+    const Vec3 trial{
+        ::exp((principal_stress.x - volumetric_stress) * inverse_shear_scale),
+        ::exp((principal_stress.y - volumetric_stress) * inverse_shear_scale),
+        ::exp((principal_stress.z - volumetric_stress) * inverse_shear_scale),
+    };
+    if (!ReturnGranularPrincipal3D(trial, 0, cohesionless_sand, state)
+        || Near(state.elastic_stretches.x, trial.x) != (factor < 1) || !Near(state.log_plastic_jacobian, 0)) {
+      return 11;
+    }
   }
   return 0;
 }

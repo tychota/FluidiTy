@@ -543,6 +543,7 @@ absl::Status GatherCore(
   if (!new_status.ok()) {
     return new_status;
   }
+  const bool same_samples = internal::SameBoundaryVelocitySamples3D(inputs.old_history, inputs.new_history);
   std::ranges::fill(result.particles, LiquidBoundaryParticleGather3D{});
   std::ranges::fill(filled_old, 0.0);
   std::ranges::fill(filled_new, 0.0);
@@ -579,15 +580,16 @@ absl::Status GatherCore(
         if (!old_continued_velocity.ok()) {
           return old_continued_velocity.status();
         }
-        const auto new_continued_velocity = FillVelocity(
-            inputs.new_history,
-            anchors,
-            sample.face_slot,
-            component,
-            particle.side_tag,
-            bounded,
-            squared_radius
-        );
+        const auto new_continued_velocity = same_samples ? old_continued_velocity
+                                                         : FillVelocity(
+                                                               inputs.new_history,
+                                                               anchors,
+                                                               sample.face_slot,
+                                                               component,
+                                                               particle.side_tag,
+                                                               bounded,
+                                                               squared_radius
+                                                           );
         if (!new_continued_velocity.ok()) {
           return new_continued_velocity.status();
         }
@@ -1019,4 +1021,27 @@ absl::StatusOr<LiquidBoundaryVelocityHistory3D> LiquidBoundaryWorkspace3D::SaveH
       bank.walls.values(),
   };
 }
+absl::Status internal::AccumulateCompatibleSolidStress3D(
+    const std::array<CompatibleMacFaceStencil3D, 3>& stencils,
+    double reference_volume,
+    Mat3 kirchhoff_stress,
+    std::span<double> face_force
+) {
+  for (std::size_t axis = 0; axis < stencils.size(); ++axis) {
+    const auto stress_row = kirchhoff_stress.*kVelocitySlopeRows[axis];
+    for (const auto& sample : stencils[axis]) {
+      if (!sample.compatible) {
+        continue;
+      }
+      const double stress_force_contribution = -reference_volume * Dot(stress_row, sample.normalized_weight_gradient);
+      auto& stress_force_sum = face_force[sample.face_slot];
+      stress_force_sum += stress_force_contribution;
+      if (!std::isfinite(stress_force_sum)) {
+        return absl::OutOfRangeError("nonfinite compatible solid face force");
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace fluidity
