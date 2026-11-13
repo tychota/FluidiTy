@@ -8882,3 +8882,27 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Balance the initial normal strain increment in the stationary probe
+
+On 43ec90c, interpolate the one-step change in elastic yy
+stretch between loads of 0.25 and 0.5 m/s². The zero of that
+response is at gravity −0.466768979359 m/s². Hold that load
+fixed for four one-second native refinements.
+
+| Timestep (ms) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 1 | 0.949999855312 | 0.857499545466 |
+| 0.5 | 0.949999963774 | 0.857437320415 |
+| 0.25 | 0.949999990937 | 0.857406172152 |
+| 0.125 | 0.949999997734 | 0.857390589067 |
+
+The residual normal drift decreases by about fourfold on
+each halving, while total volume drift from 0.857375 halves.
+The load cancels the leading normal contribution only.
+Position and vertical velocity remain zero at the endpoints.
+The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-balanced-stationary-load-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-balanced-load
+```
