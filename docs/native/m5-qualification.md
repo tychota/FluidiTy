@@ -9122,3 +9122,25 @@ The stress kick adds 0.160047 J of grid kinetic energy from
 the same interval. The kick can release elastic energy, so a
 full balance needs the material energy change and transfer
 losses as well. The trace was restored.
+
+### Account for accepted elastic energy and plastic return loss
+
+On 43ec90c, evaluate the reference-volume-weighted Hencky
+energy at the accepted start, trial and returned state on
+each native fine half-step. The trial change is the accepted
+change plus the energy removed by return.
+
+| Interval | Accepted elastic energy change (J) | Return loss (J) | Trial elastic energy change (J) |
+|---|---:|---:|---:|
+| 0–3 s | 0.087729 | 2.043434 | 2.131164 |
+| 3–6 s | −0.047380 | 0.055651 | 0.008271 |
+| 6–9 s | −0.018459 | 0.014636 | −0.003823 |
+| 9–12 s | −0.005119 | 0.005571 | 0.000452 |
+
+From 3 to 12 s, return removes 0.075858 J, while accepted
+elastic energy falls 0.070958 J. The net trial gain is only
+0.004900 J. Over the same interval the final-velocity stress
+work is −0.004815 J, close to the negative of the trial gain.
+The separate midpoint grid work remains 0.160047 J. A full
+energy balance must account for the work evaluated at different
+stages and for transfers. The temporary trace was restored.
