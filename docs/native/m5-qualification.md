@@ -8856,3 +8856,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Project mean normal motion within each floor-patch column
+
+On 5ff4866, group occupied normal faces in the floor patch by
+horizontal anchor. Subtract the mass-weighted velocity mean in
+each column before ghost reconstruction. Apply the transpose to
+the scattered normal force column by column and record the
+net force change in the wall impulse budget.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 31.679662° | 0.181636 |
+| Coarse half-step | 37.547069° | 0.180934 |
+| Fine | 30.247284° | 0.165754 |
+| Fine half-step | 35.398363° | 0.162887 |
+
+The paired work residual stays within 7.4e-16 J. All four radii
+exceed 0.16 m, as with the patch-wide projection. The temporary
+solver changes were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-paired-column-projection-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
