@@ -7221,3 +7221,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Extend the coarse half-step through 12 seconds
+
+On 3008848, keep the coarse half-step solver and the original
+63-particle column. Extend the endpoint to 12 s and sample
+at exact multiples of 3 s by splitting steps at those times.
+
+| Time (s) | Envelope | Maximum radius (m) |
+|---|---:|---:|
+| 3 | 40.500210° | 0.156714 |
+| 6 | 34.203495° | 0.164440 |
+| 9 | 31.747950° | 0.164440 |
+| 12 | 29.115071° | 0.164440 |
+
+The angle drops into the band at 6 and 9 s while the radius
+exceeds the limit. By 12 s the angle has fallen below 30°.
+Its drift over the final 0.05 s is only 0.038°, yet its
+change from 9 to 12 s is 2.63°. The short drift window
+therefore misses continued creep in this case. No sampled
+time passes both bounds. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-coarse-long-horizon-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 coarse-half all 3
+```
+
+The final argument selects the temporarily extended diagnostic
+mode. In the unmodified runner it selects 3 s.
