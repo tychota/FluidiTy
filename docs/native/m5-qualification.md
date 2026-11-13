@@ -6858,3 +6858,30 @@ the loaded Q-SAND settlement. Temporary edits were restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-cone-energy-unloaded-tall-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine all 3
 ```
+
+### Check the loaded cone apex against its nearest neighbors
+
+Repeat the loaded native cone cases on 3008848 and rank the final
+particle positions by height. Measure the apex's Euclidean distance
+to its nearest neighbor and its stored vertical speed. All four
+cases reproduce the reported Q-SAND angle failures.
+
+| Case | Apex height (mm) | Second height (mm) | Apex nearest-neighbor distance (mm) | Apex vertical speed (mm/s) |
+|---|---:|---:|---:|---:|
+| Coarse | 122.105 | 104.927 | 18.355 | −7.035 |
+| Coarse half-step | 131.281 | 110.615 | 21.740 | −3.320 |
+| Fine | 116.677 | 100.849 | 17.278 | −6.823 |
+| Fine half-step | 127.410 | 108.148 | 20.693 | −5.028 |
+
+The apex is descending in each case and its nearest neighbor is
+closer than the initial 25 mm spacing. These distances give no
+evidence of an isolated airborne apex in the loaded runs. The
+maximum-height estimator remains sensitive to the apex. The
+temporary fixture changes were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-cone-top-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
