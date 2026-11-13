@@ -7111,3 +7111,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Measure low-mass stress omission and donor pruning separately
+
+Run the four native column cases on unmodified 3008848 with
+temporary tracing at donor removal. The existing impulse budget
+measures force regularization after stress has been scattered.
+The trace counts removal events across all steps and passes.
+
+| Case | Proposed stress impulse L1 (N·s) | Omitted impulse at 1e-9 N·s precision | Donor removals |
+|---|---:|---:|---:|
+| Coarse | 81.872 | 0 | 570 |
+| Coarse half-step | 97.020 | 0 | 0 |
+| Fine | 75.667 | 0 | 485 |
+| Fine half-step | 94.605 | 0 | 0 |
+
+The measured omission after scattering is below reporting
+precision. The donor-selection safeguard does change the
+operator on both nominal runs, and neither half-step activates
+that safeguard. In particular, the 40.50° coarse half-step
+failure occurs without donor pruning. The trace was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-donor-pruning-receipt-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
