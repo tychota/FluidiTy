@@ -8245,3 +8245,20 @@ more than baseline. The paired cut work residual is
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-half-normal-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Increase the paired wall-normal diagonal by half
+
+On 255739e, multiply the yy contribution by 1.5 for
+particles starting on the floor in both stress scatter and
+deformation gather. Run the native fine half-step to 12 s.
+The angle is 35.851866° at 3 s, 31.591160° at 6 s,
+28.328116° at 9 s and 26.114338° at 12 s. Radius stays at
+0.157848 m from 3 s onward. The apex loses 36.68 mm after 3 s,
+2.94 mm more than baseline despite the higher final angle.
+The paired work residual is −2.41e-16 J. Scaling the paired
+normal term in either direction leaves late creep unresolved.
+The temporary edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-strong-normal-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
