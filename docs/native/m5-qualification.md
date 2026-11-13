@@ -12320,3 +12320,19 @@ half-step order. The largest change from baseline is
 0.003407°. The three shallow cases still miss the angle
 band. CUDA and dense sampling were untested. The temporary
 source edit was restored.
+
+#### Include gravity on empty vertical faces in the ordinary gather
+
+On 160298e, set the post-force velocity of zero-deposited-mass
+vertical faces to dt times gravity on the ordinary granular
+path. Keep stress omission, occupied faces, old grid velocity,
+and all other paths unchanged. Build both dry-scene targets.
+Run the native executable with `--q-sand-column-long-settle 6`
+and the SM120 executable without arguments.
+
+All four native angles reproduce the baseline to six printed
+decimal places. The native command exits 1. The SM120 default
+passes at the baseline 32.825896°. Empty-face gravity is ruled
+out as a cause of the measured native sparse angle deficit at
+this precision. The CUDA long-window matrix and dense sampling
+were untested for this control. The source edit was restored.
