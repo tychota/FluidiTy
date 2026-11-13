@@ -5894,3 +5894,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Increase accumulated traction iterations from eight to 32
+
+On 3008848, repeat the accumulated Coulomb control with 32
+alternating sweeps. The reaction points and full per-point
+Coulomb disk are the same as in the eight-sweep control.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.789543° | 0.166766 |
+| Coarse half-step | 40.839192° | 0.155087 |
+| Fine | 31.410407° | 0.158782 |
+| Fine half-step | 34.652251° | 0.155721 |
+
+Compared with eight accumulated sweeps, angles change by
+less than 0.035° and radii by at most 0.091 mm. Both coarse
+failures persist. These are geometry sensitivity measurements
+rather than a residual bound on the friction solve. The
+temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-accumulated-32-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
