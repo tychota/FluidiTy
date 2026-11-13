@@ -4872,3 +4872,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Raise only the stress donor eligibility threshold
+
+On 3008848, raise the minimum eligible donor mass to
+2e-4 times minimum particle mass. The force acceleration
+denominator, wall traction and stored velocity eligibility
+still use the original floor of 1e-4 times minimum particle
+mass. Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 35.177342° | 0.168437 m | 0.330278 |
+| Coarse half-step | 40.945395° | 0.155414 m | 0.161780 |
+| Fine | 32.048381° | 0.158799 m | 0.187090 |
+| Fine half-step | 35.673307° | 0.155929 m | 0.107808 |
+
+Both fine cases accumulate less plastic volume, but the fine
+half-step exceeds the angle bound. The coarse nominal case
+fails both geometry checks and the coarse half-step remains
+too steep. The donor cutoff changes pile geometry even when
+the force denominator is held fixed. The source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-double-donor-support-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
