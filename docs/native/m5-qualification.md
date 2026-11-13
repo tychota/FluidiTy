@@ -6664,3 +6664,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Remove the release gap on bounded tangent clearing
+
+On 3008848, place the same 63-particle column on the
+floor by setting the release gap to zero. Keep the
+original solver, grid widths, timesteps and checks.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---|
+| Coarse | 34.248555° | 0.160189 | 0.120513 |
+| Coarse half-step | 40.108370° | 0.151751 | 0.044122 |
+| Fine | 31.795111° | 0.150788 | 0.081606 |
+| Fine half-step | 34.767398° | 0.152390 | 0.066415 |
+
+Removing the drop reduces radius and plastic volume in
+all four runs. The coarse nominal radius is 0.189 mm above
+the limit, and the coarse half-step angle stays above 40°.
+Both fine cases pass at 3 s. The original release was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-floor-release-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
