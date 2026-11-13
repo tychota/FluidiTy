@@ -11974,3 +11974,25 @@ response to late yield suppression. It does not isolate
 the effects of shear return from tensile stress. The
 native command exits 1. CUDA was untested and the fixture
 was restored.
+
+
+#### Suppress only the compressive shear return during late settlement
+
+On 33ee019, disable deviator projection for compressive
+granular trials beginning at 3 s. Keep the cohesionless
+tensile apex and the original grid and wall path. The
+diagnostic uses a distinct host-only return function
+and admits stresses outside the specified yield cone.
+
+| Case | Baseline angle at 6 s | No late shear return |
+|---|---:|---:|
+| Coarse | 33.842809° | 36.473024° |
+| Fine | 23.424520° | 23.424520° |
+| Coarse half-step | 17.104058° | 17.104058° |
+| Fine half-step | 13.060319° | 13.113389° |
+
+The three shallow cases change by at most 0.054°. The
+coarse nominal case overshoots the upper bound. Unlike
+raising cohesion, suppressing only the compressive shear
+return does not further flatten all four cases. The native
+command exits 1. CUDA was untested and edits were restored.
