@@ -9044,3 +9044,24 @@ Three cases exceed the angle limit and the fine nominal exceeds
 the radius limit. Compared with the reaction-map control, all
 four radii decrease. The cut stress work residual stays within
 1.2e-16 J. The temporary edits were restored.
+
+### Run projected normal contact on the stationary refinement probe
+
+On 43ec90c, apply the four normal grid sweeps to the stationary
+particle. The exact-zero check rejects step zero. A temporary
+1e-12 position and velocity tolerance accepts all steps and
+retains the original impulse balance bound. Under that tolerance
+the original strain bound still fails at 1 ms.
+
+| Timestep (ms) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 1 | 0.952442859155 | 0.859703998878 |
+| 0.5 | 0.951177532112 | 0.858499990218 |
+| 0.25 | 0.950646483309 | 0.857989605033 |
+| 0.125 | 0.950331207800 | 0.857689499379 |
+
+All support moves to the grid at 1 N. The normal strain drift
+changes to extension and is larger in magnitude at every
+refinement. Support at the particle's interpolated velocity
+does not constrain the local deformation gradient. Temporary
+diagnostic tolerances and solver edits were restored.
