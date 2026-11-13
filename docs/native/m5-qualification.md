@@ -7492,3 +7492,30 @@ volume. The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-isochoric-reset-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Extend the fine quarter-step through 12 seconds
+
+On 3008848, repeat the loaded fine column with a 0.0625 m grid
+width and a 0.000390625 s timestep, half the preceding fine
+half-step duration. Keep the solver and sample at exact
+multiples of 3 s.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 3 | 43.450751° | 0.143295 |
+| 6 | 34.615322° | 0.156462 |
+| 9 | 32.515366° | 0.156462 |
+| 12 | 30.772573° | 0.156462 |
+
+This case passes the fixture's checks at 12 s. Its angle
+still drops by 1.74° between 9 and 12 s, with a final
+0.05 s drift of only 0.029°. Timestep reduction delays
+the height loss. The full matrix and long-term settlement
+remain open. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-fine-quarter-horizon-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
+
+The temporary runner maps `fine-half` to the quarter-step and
+the final argument to 12 s.
