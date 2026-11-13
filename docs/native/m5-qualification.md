@@ -9025,3 +9025,22 @@ All four cases miss at least one bound. The absolute cut work
 residual stays below 1.9e-16 J. This control uses the updated
 normal reaction in a subsequent tangential solve, with no
 coupled iteration between them. The temporary edits were restored.
+
+### Apply grid friction at the projected particle contacts
+
+On 43ec90c, use the compatible tangent stencils to gather and
+scatter friction at each particle after the four normal sweeps.
+The Coulomb cap uses that particle's projected normal impulse.
+This replaces the stress-reaction tangential solve for the trial.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---|
+| Coarse | 37.038025° | 0.150993 |
+| Coarse half-step | 40.657314° | 0.143107 |
+| Fine | 31.283617° | 0.161880 |
+| Fine half-step | 37.217962° | 0.148860 |
+
+Three cases exceed the angle limit and the fine nominal exceeds
+the radius limit. Compared with the reaction-map control, all
+four radii decrease. The cut stress work residual stays within
+1.2e-16 J. The temporary edits were restored.
