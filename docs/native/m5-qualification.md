@@ -6840,3 +6840,21 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Resolve the fine unload rejection to missing destination support
+
+Trace the fine nominal unload on 3008848. The first rejection comes
+from the destination MAC stencil check at step 1441. The attempted
+destination is approximately (0.001065, 0.656510, 0.000105) m on the
+vertical face stencil. Expanding the allocation on every side exceeds
+the bounded transfer capacity at initialization. Adding only one
+vertical block layer permits all steps through 3 s. The cone then
+reaches 0.902773 m maximum height, 79.761397° envelope angle and
+0.009589 J kinetic energy. The widened diagnostic still exits on the
+angle check. The unloaded top particle travels well beyond the loaded
+cone height, so the late unload is a different physical regime from
+the loaded Q-SAND settlement. Temporary edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-cone-energy-unloaded-tall-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine all 3
+```
