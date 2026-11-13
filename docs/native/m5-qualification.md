@@ -11764,3 +11764,23 @@ elastic log Jacobian. This identifies continued expansion
 but does not isolate its source in transfer or contact.
 The native command reproduces baseline and exits 1. CUDA
 was untested and the temporary fixture edit was restored.
+
+
+#### Compare compatible-floor work receipts
+
+For the six-second compatible-floor matrix above, native and
+parallel SM120 agree at printed precision on both reported work
+quantities. The original serial SM120 run also matches the first
+three completed cases in fixture order (coarse, coarse half-step,
+fine). Its fine half-step result was pending at this comparison.
+
+| Case | Cut stress work (J) | Wall particle kinetic change (J) |
+|---|---:|---:|
+| Coarse | −0.707868066 | −3.12828179 |
+| Coarse half-step | −0.0830633094 | −2.20779397 |
+| Fine | −0.505290049 | −2.67737705 |
+| Fine half-step | −0.0839133049 | −1.88997347 |
+
+The reported cut work is separate from Q-SOLID's uncut identity.
+The parallel change reproduces this work receipt along with the
+failing pile geometry. It does not resolve the cut work imbalance.
