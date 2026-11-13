@@ -8481,3 +8481,25 @@ foreach ($variant in 'late-floor-vertical-reset', 'late-above-floor-reset') {
   & "out/pr-m5-sand-affine/out/sand-affine-$variant-bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 12
 }
 ```
+
+### Shift the vertical grid phase through late settlement
+
+On 255739e, set the fine grid origin to (0, h/2, 0) while
+keeping the world-space floor, release and half-step duration.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 3 | 33.904352° | 0.165444 |
+| 6 | 30.013632° | 0.166312 |
+| 9 | 27.514416° | 0.168046 |
+| 12 | 25.801822° | 0.169707 |
+
+The shifted apex loses 29.15 mm after 3 s, compared with
+33.74 mm in the aligned case. The radius continues growing
+and the endpoint misses both bounds. Late creep persists
+when the floor lies between normal velocity faces. The
+temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-vertical-half-phase-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
