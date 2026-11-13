@@ -10433,3 +10433,40 @@ Only the coarse nominal case passes at 3 s. The coarse
 half-step loses 3.18° after its earlier pass and the two
 fine cases flatten further. The native matrix exits 1.
 The temporary solver and fixture were restored.
+
+#### Check persistence of the combined timing control
+
+On b06dea6, extend the same combined timing runs to 6 s
+with the original angle, radius and short drift bounds.
+
+| Case | Angle at 3 s | Angle at 6 s | Radius at 6 s (m) |
+|---|---:|---:|---:|
+| Coarse | 34.231526° | 33.098793° | 0.153019 |
+| Fine | 26.184369° | 24.760041° | 0.158969 |
+| Coarse half-step | 27.815078° | 27.422196° | 0.158282 |
+| Fine half-step | 24.097968° | 19.515452° | 0.164120 |
+
+The coarse nominal case still passes the endpoint. It
+loses 4.37 mm of height from 3 to 6 s at fixed radius.
+The fine half-step loses 15.24 mm of height at fixed
+radius. The native matrix exits 1. The sources were
+restored and CUDA was untested for this extension.
+
+#### Localize pre-kick deformation by height
+
+On b06dea6, keep the above-floor gravity midpoint displacement.
+Apply the pre-kick normal stress sample only within one grid
+cell of the floor, then repeat above that layer only.
+
+| Case | Full pre-kick sample | Within one cell | Above one cell |
+|---|---:|---:|---:|
+| Coarse | 32.625579° | 33.637073° | 30.179197° |
+| Fine | 28.705882° | 29.742537° | 27.063117° |
+| Coarse half-step | 30.998102° | 31.096001° | 29.424344° |
+| Fine half-step | 28.526939° | 28.918862° | 27.331978° |
+
+The near-floor variant raises every angle relative to the
+whole-pile correction. Both fine cases still miss 30° and
+the fine half-step radius is 0.160757 m. Both default native
+dry-scene tests pass and both Q-SAND matrices fail. CUDA was
+untested. The temporary solver source was restored.
