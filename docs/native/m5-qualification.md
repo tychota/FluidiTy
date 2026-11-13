@@ -4624,3 +4624,17 @@ $b = 'out/build/m5-main-d6e8c6e-release'
 & "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-column-long-settle
 & "$b/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-column-long-settle
 ```
+
+The compatible-floor 1.5 s matrix also reproduced the
+previous geometry on native and SM120. Both commands exited
+1. The logs agree except for the last reported digits of the
+two fine-grid vertical momentum residuals. Only the coarse
+half-step passed the pile checks. The coarse nominal,
+coarse half-step, fine nominal and fine half-step angles
+were 29.962967°, 32.042153°, 27.424648° and 29.277572°.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+& "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle
+& "$b/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle
+```
