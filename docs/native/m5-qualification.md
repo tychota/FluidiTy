@@ -8793,3 +8793,20 @@ $exe = 'out/pr-m5-sand-affine/out/sand-affine-pre-force-normal-gradient-bin/flui
 & $exe --q-sand-single-particle-strain
 & $exe --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Use the full pre-force field for deformation
+
+On 5ff4866, build all three deformation donor components
+from deposited momentum divided by mass, before the force
+and wall kicks. The stationary native particle retains yy
+stretch 0.95 and Jacobian 0.857375 at all four tested steps,
+to printed precision. The grid and swept support stay at
+0.066681283 N and 0.933318717 N respectively.
+
+In the native fine half-step pile, this control reaches
+35.231817° and a 0.187719 m radius at 3 s. The difference
+between deformation and force-work fields accumulates
+1.250275 J. The stationary result identifies the post-force
+field as necessary for the observed drift in that probe.
+The unmatched update fails both pile bounds. The temporary
+solver change was restored.
