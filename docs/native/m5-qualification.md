@@ -8262,3 +8262,21 @@ The temporary edits were restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-strong-normal-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Suppress positive normal strain during sustained floor contact
+
+On 255739e, keep the existing scatter and wall reaction.
+For trial deformation only, cap the yy velocity-gradient
+component at zero when the particle starts and ends on the
+floor. On the native fine half-step the envelope falls from
+35.497491° at 3 s to 32.505937° at 6 s, 30.767982° at 9 s,
+and 27.060967° at 12 s. The radius stays at 0.156454 m.
+
+The control delays the drop below 30° and still loses
+31.66 mm of height after 3 s. The stress work receipt uses
+the original derivative, so it cannot certify the capped
+deformation. The temporary solver change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-sustained-normal-extension-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
