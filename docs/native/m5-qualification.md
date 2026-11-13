@@ -6252,3 +6252,28 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Extend cut-stencil vertical clearing to six seconds
+
+Repeat the cut-stencil control on 3008848 with the explicit
+diagnostic endpoint changed to 6 s. Both default native and
+SM120 dry-scene tests pass. The extended matrix ran on native.
+
+| Case | Angle at 6 s | Radius (m) | Result |
+|---|---:|---:|---|
+| Coarse | 29.629389° | 0.165319 | Angle and radius |
+| Coarse half-step | 34.306636° | 0.163234 | Radius |
+| Fine | 26.083211° | 0.156535 | Angle |
+| Fine half-step | 31.239504° | 0.155103 | Pass |
+
+The nominal fine angle drops 5.765° after 3 s even though
+its radius matches at printed precision. Only the fine
+half-step passes, as in the six-second baseline without
+cut-stencil clearing. The temporary edits were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-supported-six-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
+}
+```
