@@ -11699,3 +11699,21 @@ It measures their combined support and does not identify
 one term as the cause. All main trajectories reproduce the
 baseline. The command exits 1, CUDA was untested, and the
 temporary fixture edit was restored.
+
+
+#### Inspect the stress carried above the floor
+
+Repeat the preceding native probe and evaluate the accepted
+Kirchhoff stress before clearing motion. Across the three
+cases that fail angle at 6 s, all eight particles above
+1e-8 m have both vertical and mean normal stress zero at
+printed precision. Each accelerates downward in the probe.
+The fine half-step apex has zero stress and accelerates
+downward at 6.243399 m/s². The coarse nominal apex carries
+−33.234156 Pa of vertical stress and accelerates upward at
+1.598239 m/s². Its other elevated particle is stress-free
+and also accelerates upward, so nearby particle stress can
+support a particle with zero local stress.
+
+The native command reproduces the baseline and exits 1.
+CUDA was untested and the temporary fixture edit was restored.
