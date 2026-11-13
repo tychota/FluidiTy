@@ -10143,3 +10143,25 @@ the existing mass floor into that same update gives
 This locates the retry in thin support above the pile.
 The other three angles reproduce the preceding control.
 Temporary sources were restored.
+
+### Limit thin-face stress acceleration by the motion bound
+
+On 6104805, use actual deposited mass for granular faces
+below the existing acceleration mass floor if the gravity
+and deposited motion stay inside 99% of the face speed
+limit. Bound the stress increment to the remaining speed
+interval and use the resulting effective mass in the work
+and omitted impulse receipts. Run the ordinary native
+Q-SAND matrix.
+
+| Case | Existing mass floor | Motion-limited stress |
+|---|---:|---:|
+| Coarse | 29.113507° | 29.113649° |
+| Fine | 26.761332° | 26.754162° |
+| Coarse half-step | 29.006384° | 29.002684° |
+| Fine half-step | 27.033753° | 27.032133° |
+
+All cases reach the endpoint. Reported omitted stress impulse
+is at most 2e-9 N·s and the angles move by less than 0.008°.
+The default native dry-scene test passes. Q-SAND still fails.
+The temporary source was restored. CUDA was untested.
