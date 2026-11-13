@@ -8810,3 +8810,20 @@ between deformation and force-work fields accumulates
 field as necessary for the observed drift in that probe.
 The unmatched update fails both pile bounds. The temporary
 solver change was restored.
+
+### Remove the mean normal kick on the active floor patch
+
+On 5ff4866, compute the mass-weighted post-force minus deposited
+normal velocity over occupied faces in the active floor patch.
+Subtract that common increment from those deformation donors
+before ghost reconstruction. Transport and the original force
+work still use the post-force field.
+
+The stationary particle ends at yy stretch 0.950379238675 at
+1 ms and 0.950047497192 at 0.125 ms. The extension persists
+and decreases approximately in proportion to timestep. The
+native fine half-step pile reaches 34.557628° and a radius of
+0.156856 m at 3 s, with a cut work difference of −0.073219 J.
+This field subtraction preserves relative increments within
+the patch but changes the work pairing. Temporary edits were
+restored and Q-SAND remains open.
