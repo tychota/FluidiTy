@@ -6011,3 +6011,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear all affine feedback on the paired floor path
+
+On 3008848, zero the stored affine fit after the wall sweep
+for all compatible-floor particles. Keep the paired stress
+transfer and the deformation derivative. Both default native
+and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 53.887524° | 0.108952 | 0.002887 |
+| Coarse half-step | 62.499203° | 0.092496 | 0.000676 |
+| Fine | 45.499702° | 0.122369 | 0.016953 |
+| Fine half-step | 58.423082° | 0.100748 | 0.001858 |
+
+All four angles exceed 35°. Compared with component-wise
+clearing, this control greatly reduces both the pile radius
+and accumulated plastic volume. The effect is substantially
+larger than the donor and traction controls. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clear-all-compatible-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
