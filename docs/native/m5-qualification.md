@@ -4725,3 +4725,34 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Trace-consistent volume increment with bounded tangent clearing
+
+On 3008848, enable the existing volume scaling for the compatible
+floor deformation increment. It rescales the Euler increment to
+determinant exp(dt times trace of the gathered gradient). The
+gather and stress transpose still use the same velocity field.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 34.417264° | 0.167651 m | 0.326613 |
+| Coarse half-step | 40.522656° | 0.156163 m | 0.162437 |
+| Fine | 31.458649° | 0.159095 m | 0.228256 |
+| Fine half-step | 34.674819° | 0.156565 m | 0.142554 |
+
+The correction changes mean log plastic Jacobian by less than
+0.007 in each case and keeps the same two fine passes and two
+coarse failures. This control does not implicate the Euler
+determinant approximation as the dominant source of the geometry
+error in this candidate. Both default CTest targets fail without
+an assertion label. The isolated compatible-floor wall fixture
+expects the Euler determinant of 0.99 under a normal gradient
+of minus one per second, whereas the control uses exp(-0.01).
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-trace-volume-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
