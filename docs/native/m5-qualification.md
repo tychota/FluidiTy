@@ -4556,3 +4556,36 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Cap negative weight in the mass-weighted tangent fit
+
+For mass-weighted full-rank tangent rows with negative
+coefficients, blend the affine row with its nearest-donor
+fallback. Limit the affine fraction to the smaller of one
+and 0.125 divided by the total negative weight before
+blending. This preserves constants and caps the negative
+weight of the resulting row at 0.125. Use the same row in
+the gather and stress transpose. Retain the fallback flag
+and use the original nearest-donor rule without masses.
+
+Both default native and SM120 dry-scene tests pass. The
+direct unweighted extrapolation oracle continues to check
+the original rule.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 35.361725° | 0.168221 m | Angle and radius |
+| Coarse half-step | 41.013383° | 0.156062 m | Angle |
+| Fine | 31.906038° | 0.161153 m | Radius |
+| Fine half-step | 34.970133° | 0.156398 m | Pass |
+
+Both coarse cases still miss. The fine nominal radius crosses
+the limit, leaving only one passing case. The temporary source
+was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-negative-budget-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
