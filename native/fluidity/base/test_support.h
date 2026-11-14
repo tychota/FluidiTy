@@ -20,7 +20,7 @@
 //   digest  a 64-bit number computed from bytes (FNV-1a), equal for equal bytes and almost never for different ones
 // Owns:    ToBits, Tolerance, CheckWithinTolerance, CheckSameBitsOrBothNaN, BuildBufferHolding, ReadAll,
 //          ComputeResultDigest, WriteResultDigestToFile, WriteResultDigest, FindResultDigestFile,
-//          kResultDigestFileVariable, BuildMixedValues
+//          kResultDigestFileVariable, BuildMixedValues, BuildKeysWithManyTies, BuildKeysDifferingInTopByte
 // Uses:    Buffer, BuildBuffer, WriteBuffer, ReadBuffer (base/buffer.h), RunOn (base/run_on.h), CPU-only guard
 //          (base/cpu_only.h), GoogleTest
 // Used by: the tests of base/ (the library fluidity_base_test_support)
@@ -103,6 +103,15 @@ std::vector<Value> ReadAll(const Buffer<Value>& buffer) {
 // sum.
 // Example: the first value is (0 - 1001) / 13 * 1e-3 = -0.077.
 std::vector<double> BuildMixedValues(std::size_t count);
+
+// `count` keys with many ties: 1,009 distinct values from a fixed integer formula, each repeated in all four 16-bit
+// parts of the key, so every byte of the key varies and the CPU skips no pass of the stable order.
+// Example: key 1 is 7919 % 1009 = 856 times 0x0001000100010001.
+std::vector<std::uint64_t> BuildKeysWithManyTies(std::size_t count);
+
+// `count` keys that differ only in the top byte: seven values, so the CPU skips seven passes of the stable order.
+// Example: key 1 is 31 % 7 = 3, shifted left by 56 bits.
+std::vector<std::uint64_t> BuildKeysDifferingInTopByte(std::size_t count);
 
 // The environment variable that names the file WriteResultDigest appends to.
 inline constexpr std::string_view kResultDigestFileVariable = "FLUIDITY_RESULT_DIGEST_FILE";

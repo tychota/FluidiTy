@@ -95,6 +95,14 @@ TEST(BuildMixedValues, TwoCalls_GiveTheSameValues) {
   EXPECT_EQ(ToBits(BuildMixedValues(1000)), ToBits(BuildMixedValues(1000)));
 }
 
+TEST(BuildKeysWithManyTies, SecondKey_RepeatsItsValueInEvery16BitPart) {
+  EXPECT_EQ(BuildKeysWithManyTies(2)[1], 856U * 0x0001000100010001ULL);
+}
+
+TEST(BuildKeysDifferingInTopByte, SecondKey_HasOnlyItsTopByteSet) {
+  EXPECT_EQ(BuildKeysDifferingInTopByte(2)[1], std::uint64_t{3} << 56U);
+}
+
 TEST(ComputeResultDigest, NoBytes_IsTheStartingValue) {
   EXPECT_EQ(ComputeResultDigest({}), 0xcbf29ce484222325ULL);
 }

@@ -73,6 +73,22 @@ std::vector<double> BuildMixedValues(std::size_t count) {
   return values;
 }
 
+std::vector<std::uint64_t> BuildKeysWithManyTies(std::size_t count) {
+  std::vector<std::uint64_t> keys(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    keys[index] = std::uint64_t{(index * 7919) % 1009} * 0x0001000100010001ULL;
+  }
+  return keys;
+}
+
+std::vector<std::uint64_t> BuildKeysDifferingInTopByte(std::size_t count) {
+  std::vector<std::uint64_t> keys(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    keys[index] = std::uint64_t{(index * 31) % 7} << 56U;
+  }
+  return keys;
+}
+
 std::uint64_t ComputeResultDigest(std::span<const std::byte> bytes) {
   // FNV-1a, 64 bits: start from its fixed starting value, then for each byte xor it in and multiply by the prime.
   constexpr std::uint64_t kStartingValue = 0xcbf29ce484222325ULL;

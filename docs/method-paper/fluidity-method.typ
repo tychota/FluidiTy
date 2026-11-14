@@ -21,6 +21,7 @@
 #import "figures/buffer_layers.typ": buffer-layers-figure
 #import "figures/one_operation_two_processors.typ": run-on-figure
 #import "figures/tree_sum.typ": tree-sum-figure
+#import "figures/stable_order.typ": stable-order-figure
 
 #let serif = ("Equity OT A", "Libertinus Serif")
 #let sans = ("Hermes Maia OT 3", "Libertinus Sans")
@@ -75,8 +76,8 @@ springy solids for Blender. The paper is written for a good C++ programmer who h
 paper, and it grows section by section: each module of the code adds its section in the same commit as its code,
 and each code file names the section it follows on its `Read:` line. A section shows its idea in a drawn figure
 and its main procedure as numbered steps, and the steps match the `// Step N:` comments in the code. Today the paper
-holds what every module shares: the conventions, the notation, how one operation runs on either processor, and
-how a sum of many doubles is added in one fixed order.
+holds what every module shares: the conventions, the notation, how one operation runs on either processor, how a
+sum of many doubles is added in one fixed order, and how items are put in an order that never depends on timing.
 
 = Conventions <sec-conventions>
 
@@ -403,6 +404,102 @@ wait for their right side, at most one per layer. A count fits in 64 bits, so 64
 CPU code needs no memory beyond them, and its sum buffers hold nothing. Both add the same pairs, so both give the
 same bits. On the GPU, the dot product writes its products to the sum buffers first and then sums them with the same steps;
 the CPU computes each product as the tree reaches it.
+
+= Ordering that never depends on timing <sec-stable-order>
+
+The grid builder, the particle-to-grid transfer and the batches all put items in order before they add anything:
+particles by the cell that holds them, cells by their id, items by the place they write to. Each item gets an
+unsigned 64-bit key, and `BuildStableOrder` in `base/stable_order.h` returns the order of the items by ascending
+key: `order[i]` is the index of the item at place `i`.
+
+Many items share a key. Two particles in the same cell have the same cell key, and they write to the same faces.
+The order in which their contributions are added decides the rounding, so it decides the bits of the face sums
+(@sec-fixed-order-sums). A sort that may swap two items with equal keys would let that order change from run to
+run, or between the CPU and the GPU. So the sort is stable: items with equal keys keep the order they came in,
+which is index order, or the order of a given `previous_order`. Stability also makes two keys easy. Sort by the
+minor key first, then sort by the major key with the first order as `previous_order`. Items with equal major keys
+then keep their minor order.
+
+The sort works on one digit of the key at a time, a digit being one byte, from the lowest byte up (papers call
+this a least-significant-digit radix sort). Each digit takes one counting pass (@fig-stable-order). The pass
+counts how many items have each of the 256 digit values. An exclusive prefix sum turns these counts into first
+places: the first place of a value is the number of items with a smaller value. Then the pass walks the sequence
+from front to back. Each item goes to the first place of its digit plus the number of earlier items with the same
+digit. An earlier item therefore always lands before a later item with the same digit, so the pass is stable.
+After the pass for the highest byte, the items are in order of their whole key, and ties are still in their
+starting order.
+
+#figure(
+  stable-order-figure(),
+  placement: auto,
+  caption: [One counting pass over eight items. The boxes hold item indexes, and the digit of each item is above
+    it. The counts per digit, added up from the left, give each digit's first place. Items 0, 3 and 6 share digit 2:
+    they fill places 4, 5 and 6 in the order they came in.],
+) <fig-stable-order>
+
+#procedure(
+  [`BuildStableOrder(keys, count, previous_order, order, buffers)`, the order by key that keeps ties],
+  <proc-stable-order>,
+  inputs: [`count` keys of 64 bits; optionally `previous_order`, a permutation of the indexes `0` to
+    `count − 1`.],
+  outputs: [`order`: the indexes by ascending key; equal keys in the order of `previous_order`, or of their
+    index.],
+  ([Start], [The sequence is `previous_order`, or the indexes `0`, `1`, ..., `count − 1`.]),
+  ([Count the digits], [For the current byte of the key, starting with the lowest, count how many items of the
+    sequence have each of the 256 digit values.]),
+  ([Find the first places], [The exclusive prefix sum of the counts gives the first place of each digit value.]),
+  ([Place the items in order], [Walk the sequence from front to back. An item with digit `d` goes to the first
+    place of `d` plus the number of earlier items in the sequence with digit `d`. The result is the next
+    sequence.]),
+  ([Next byte], [Repeat steps 2 to 4 for each of the eight bytes. A byte that is the same for every item may be
+    skipped: its pass would leave every item where it is.]),
+  ([Return], [The last sequence is the order.]),
+)
+
+Only integers take part: counts, places and indexes, never a rounded value. Where an item lands is a formula of
+the keys and of the starting sequence, not of which thread finished first. The CPU and the GPU compute the same
+formula, so they give the same order, bit for bit, and so does every run. The CPU counts the digits of all eight
+bytes in one read of the keys, since a count does not depend on the order of the sequence, and skips the bytes
+that are equal for every item. The GPU runs all eight passes; skipping changes nothing, so the results agree.
+
+On the GPU, the sequence is cut into chunks of 1,024 places, and one thread block of 256 threads (the threads of one
+GPU launch unit, which can share fast memory and wait for each other) takes one chunk. Thread `d` of the thread block
+reads the chunk's digits from front to back and counts the items with digit `d`. A table holds these counts, digit
+by digit, and chunk by chunk within a digit. Its exclusive prefix sum gives, for each digit and chunk, the place where that chunk's first item with that digit lands: all items with a smaller digit come before
+it, then the items with the same digit in earlier chunks. Thread `d` then walks its chunk again and places its
+items one after another from there. No two threads write the same place, no counter is shared, and no thread's place
+depends on when another thread runs.
+
+`ComputeExclusivePrefixSum` is the prefix sum both processors use, also on its own: `sums[i]` is the sum of the
+values before index `i`, and `sums[count]` is the total. The arithmetic is exact. The total is computed first, in
+64 bits, and a total above 2#super[32] − 1 is reported as an error before anything is written. On the GPU the
+values are cut into chunks of 1,024. Each chunk's total goes to a layer above, whose chunks are added up the same
+way, until one total is left. Then each layer is turned into running sums from the top down, and each chunk adds
+its running sum to the sums of its own values. In-place use is safe, because a thread block reads all values of its
+chunk before it writes any sum.
+
+`BuildGroupsByDestination` puts items into groups: `item_order` lists the items of destination 0, then destination
+1, and so on, and `first_of_group[d]` is where the group of destination `d` starts. Like the order and the prefix sum,
+it takes an `OrderBuffers`, working buffers built once, and allocates nothing. It is one stable order with the
+destination as the key, so each group lists its items in ascending index. The start of a group is the number of
+items with a smaller destination, so an empty group starts where the next one does.
+
+#procedure(
+  [`BuildGroupsByDestination`, items grouped by destination],
+  <proc-groups-by-destination>,
+  inputs: [`item_count` destinations, each below `destination_count`.],
+  outputs: [`item_order`: the items of destination 0, then 1, and so on, each group in ascending index;
+    `first_of_group`: where each group starts, `destination_count + 1` entries.],
+  fails: [a buffer is too small, or a destination is `destination_count` or more; nothing is written. Every buffer
+    on one processor is a precondition, checked in debug builds only.],
+  ([Check the buffers], [Each buffer is large enough.]),
+  ([Take the order buffers], [The caller's `OrderBuffers`, built for at least `item_count` items.]),
+  ([Check the destinations], [Every destination is below `destination_count`, before anything is written.]),
+  ([Order the items], [@proc-stable-order with the destination as the key and no previous order.]),
+  ([Find the group starts], [The start of group `d` is the number of items whose destination is below `d`. The
+    CPU counts each destination and adds the counts up from the left; the GPU searches the destinations in group
+    order for the first one not below `d`.]),
+)
 
 // Every floating figure and procedure is placed before the references start.
 #place.flush()
