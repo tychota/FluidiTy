@@ -14324,3 +14324,21 @@ half-step stays within the angle band across the final second.
 Both commands exit 1. The shift lowers the coarse overshoot
 but also moves both fine cases below the band. CUDA and dense
 sampling were untested. Both temporary edits were restored.
+
+
+#### Return to the granular cone between sticking half increments
+
+On 5510126, repeat the two half-duration deformation increments
+at ordinary zero-fraction granular sticking contacts. After the
+first increment return to the cone and carry its elastic map
+and plastic Jacobian into the second. Keep the sweep and scatter.
+Run the native default and `--q-sand-column-long-settle` at
+1.5 and 6 s.
+
+At six seconds the four angles are 36.442749°, 30.155022°,
+34.574903°, and 30.087675° in coarse, fine, coarse half-step
+and fine half-step order. All nine endpoint angles change by
+at most 0.000022° relative to splitting the increment without
+an intermediate return. The coarse nominal overshoot persists
+and all three commands exit 1. Dense and CUDA were untested.
+The temporary solver edit was restored.
