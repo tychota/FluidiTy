@@ -14289,3 +14289,20 @@ Exactly two particles in each sparse case exceed half the
 apex height. The dense cases retain 20–28 such particles,
 but all four exceed the radius limit. Both matrices exit 1.
 CUDA was untested for this diagnostic. The fixture was restored.
+
+
+#### Retain rotation about the wall normal at sticking contacts
+
+On 0bdb1e9, retain the incoming skew xz component alongside
+compressive yy at ordinary granular zero-fraction sticking
+contacts. Keep the other projected entries, sweep and stress
+scatter. Run the native dry-scene executable without arguments
+and with `--q-sand-column-long-settle` at 1.5 and 6 s.
+
+All nine endpoint angles match the sticking compression
+reference to six decimal places. The default reaches 35.674372°.
+At six seconds coarse nominal overshoots at 36.442893°, and the
+other three stay in range throughout the final second. All three
+commands exit 1. The isolated spin term has no measured angle
+effect at this precision. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
