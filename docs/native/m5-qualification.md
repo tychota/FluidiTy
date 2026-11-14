@@ -13405,3 +13405,21 @@ cmake --build out/requalified --target fluidity_m5_dry_scene_tests fluidity_cuda
 & ./out/requalified/fluidity_m5_dry_scene_tests.exe
 & ./out/requalified/fluidity_cuda_m5_dry_scene_tests.exe
 ```
+
+#### Recheck the six-second sparse matrix after scatter validation
+
+On be0d159, build the native and SM120 dry-scene targets and
+run both with `--q-sand-column-long-settle 6`. Both commands
+exit 1. All 47 native output lines match the baseline from
+the full-window diagnostic before the scatter change.
+
+| Case | Native angle | SM120 angle | Native final window | SM120 final window |
+|---|---:|---:|---:|---:|
+| Coarse | 33.842809° | 33.842809° | 33.033516–33.842809° | 33.033516–33.842809° |
+| Fine | 23.424520° | 23.424520° | 23.089546–23.424520° | 23.089546–23.424520° |
+| Coarse half-step | 17.104058° | 17.104058° | 17.104058–18.851623° | 17.104058–18.851623° |
+| Fine half-step | 13.060319° | 13.060318° | 13.060319–15.249811° | 13.060318–15.249811° |
+
+Both backends agree on all gate outcomes. The coarse nominal
+case passes, and the other three remain below 30° throughout
+the final window. This comparison covers sparse sampling.
