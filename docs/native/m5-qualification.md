@@ -13200,3 +13200,27 @@ Run the native dry-scene target without arguments and with
 33.939206°. All dense angles and radii miss their bounds.
 Radii decrease by 0.84–1.77 mm from baseline and the dense
 command exits 1. CUDA was untested. The solver edit was restored.
+
+#### Partition the outer particle stress kick by source height
+
+On c89a558, accumulate an additional stress force array from
+ordinary granular particles below one cell width. At particle
+78 in the dense coarse nominal native column, gather this
+force and the full force using the original stencil, actual
+force mass denominator and timestep. Project both kicks onto
+the outward diagonal (-1, 0, -1) / sqrt(2). The extra gather
+does not update the trajectory.
+
+| Receiving steps through first floor arrival | Full stress sum (m/s) | Sources below one cell (m/s) |
+|---|---:|---:|
+| All 961 steps | 2.999957 | 2.180594 |
+| Steps starting at or above one cell | 1.286001 | 0.511620 |
+
+Below-cell sources account for 72.7% of the signed stress
+kick over the full trace and 39.8% while the receiver starts
+at or above one cell. These are velocity increments rather
+than displacement shares. Run the native dry-scene target
+with the dense three-second selector restricted to the coarse
+nominal case. The original 29.703637° angle is reproduced
+and the command exits 1. Other receivers and CUDA were
+untested. The temporary instrumentation was restored.
