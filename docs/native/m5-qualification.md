@@ -13914,3 +13914,22 @@ The dense angles and radii reproduce the constant-1.4 control
 to the displayed precision. Returning to the original floor
 friction after collapse does not reduce the measured spread.
 CUDA was untested. The temporary fixture was restored.
+
+
+#### Use fitted affine slopes only when a granular particle misses the floor
+
+On e837d6e, use the gathered affine fit as the deformation
+gradient only on ordinary granular steps without a floor hit
+or platen. Preserve the differentiated velocity gradient for
+the impact split and preserve scatter, transport, and stored
+affine slopes. Run the native dry-scene executable without
+arguments and with `--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default passes at 32.977920°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+30.359980°, 27.626512°, 29.032880°, and 27.267543°.
+The 6 s angles are 35.712193°, 24.470802°, 18.687381°,
+and 13.877397°. Both matrices exit 1. The coarse nominal
+case overshoots at 6 s and the other three stay below 30°.
+All radii pass. Dense sampling and CUDA were untested.
+The temporary solver edit was restored.
