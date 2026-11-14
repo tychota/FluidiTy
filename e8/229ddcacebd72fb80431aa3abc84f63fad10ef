@@ -1,0 +1,33 @@
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_7880f51bafe99d 35-36,42-44,54-55
+native/fluidity/base/check_can_run_on_math_test.cc
+  s_4f0877e2acdcf0::t_2c0c9d06d8d9c0 8
+native/fluidity/base/shared_math_gpu_test.cc
+  s_4f0877e2acdcf0::t_9f6ec9467e035c 1-111
+native/fluidity/base/shared_math_test_gpu.cu
+  s_4f0877e2acdcf0::t_9b897a315090ce 1-62
+native/fluidity/base/shared_math_test_gpu.h
+  s_4f0877e2acdcf0::t_d4875af5307591 1-105
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_fb2a9b34438c40 1-38
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_d6baa15f4846bb 1-48
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_c9ff303eb0c17f 1-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e8229ddcacebd72fb80431aa3abc84f63fad10ef",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
