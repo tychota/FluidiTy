@@ -13246,3 +13246,23 @@ All dense radii remain above 0.16 m despite reductions of
 the band, but its final drift is 2.221714°. The default angle
 is 35.042638°. Both commands exit 1. CUDA was untested.
 The temporary solver edit was restored.
+
+#### Center only horizontal sweep velocity at dense sampling
+
+On 9d7c281, average the pre-force and post-force PIC velocity
+for x and z in the ordinary granular sweep. Keep the vertical
+sweep velocity, stored velocity, stress and deformation
+gradient unchanged. Run the native dry-scene target with
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|
+| Coarse | 29.751616° | 0.167446 |
+| Fine | 26.991456° | 0.179908 |
+| Coarse half-step | 21.925674° | 0.170528 |
+| Fine half-step | 20.676814° | 0.183843 |
+
+The native matrix exits 1. Dense radii shrink by 1.82–2.84 mm,
+and all four still fail radius, angle and persistence. The
+angle changes are under 0.073°. CUDA was untested. The
+temporary solver edit was restored.
