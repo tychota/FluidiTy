@@ -13821,3 +13821,23 @@ are in vertical support of the remaining elevated particles.
 The copied-state probes preserve all baseline trajectory angles.
 Both matrices exit 1. CUDA and dense sampling were untested.
 The temporary fixture was restored.
+
+
+#### Retain both signs of normal strain at resident sticking contacts
+
+On 237f160, use the incoming yy velocity gradient as the
+projected yy gradient at zero-fraction ordinary granular
+floor hits with zero tangential advection. This retains
+normal unloading as well as loading. Leave the contact sweep
+and stress scatter unchanged. Run the native dry-scene target
+without arguments and with `--q-sand-column-long-settle` at
+endpoints 1.5 and 6.
+
+The default passes at 32.201301°. In coarse, fine, coarse
+half-step and fine half-step order the 1.5 s angles are
+24.726926°, 23.894080°, 30.470306°, and 29.616725°.
+The 6 s angles are 0°, 0°, 12.662061°, and 12.488222°.
+Both nominal piles lose all height, and both half-step
+piles remain below 30° throughout the final second. All
+radii pass. Both matrices exit 1. CUDA and dense sampling
+were untested. The temporary solver edit was restored.
