@@ -1,0 +1,21 @@
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_cacd33c0302ef6 54-56
+tools/run_gpu_tests.ps1
+  s_4f0877e2acdcf0::t_d57134b0df5a45 37-38,52-53,394-395,409
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a4016a09648a1e29890a4b4fe73c7dc07cdb7e5f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
