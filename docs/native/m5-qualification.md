@@ -12844,3 +12844,22 @@ exits 1. The largest change from baseline is 0.000031°.
 Spatial centering on the hit path does not materially change
 the observed flattening. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+#### Match absolute timesteps across grid widths with resident compression
+
+On d5584e9, repeat the zero-fraction resident normal compression
+control at 6 s. Use 0.001875 s and 0.0009375 s on both grids
+by replacing the two fine durations in the ordinary column matrix.
+Build the native dry-scene target and run
+`--q-sand-column-long-settle 6`.
+
+| Timestep (s) | Coarse angle | Fine angle | Fine radius (m) | Fine final drift |
+|---|---:|---:|---:|---:|
+| 0.001875 | 36.442893° | 31.450098° | 0.145866 | 0.008558° |
+| 0.0009375 | 34.609817° | 30.095979° | 0.151478 | 0.570024° |
+
+Both fine cases and the coarse half-step pass at this endpoint.
+The coarse nominal case still overshoots, and the matrix exits 1.
+At equal timesteps the finer grid remains 4.51–4.99° shallower.
+The matched run leaves the original qualification matrix unchanged.
+CUDA and dense sampling were untested. Both temporary edits were restored.
