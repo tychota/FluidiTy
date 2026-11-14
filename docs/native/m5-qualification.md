@@ -14568,3 +14568,26 @@ angle band throughout the sampled window. All four radii exceed
 zero-fraction compression experiment at dense sampling, each
 endpoint moves less than 0.14°. CUDA was untested for this
 dense comparison. The temporary solver edit was restored.
+
+
+#### Locate dense radius crossings relative to first floor arrival
+
+On 3c41921, for each particle at or beyond 0.16 m at the
+three-second endpoint, classify its first accepted sample
+at or beyond that radius relative to its first accepted
+sample at y <= 1e-8 m. Run the native dry-scene executable
+with `--q-sand-dense-column-long-settle 3`. The diagnostics
+do not change the trajectory or acceptance tests.
+
+| Case | Before floor arrival | At first floor sample | After first floor sample |
+|---|---:|---:|---:|
+| Coarse | 12 | 0 | 0 |
+| Fine | 20 | 0 | 0 |
+| Coarse half-step | 12 | 0 | 0 |
+| Fine half-step | 20 | 0 | 0 |
+
+Every particle outside the radius limit at the endpoint
+first crosses it before its first floor sample. This measures
+the particle's own wall arrival. Other particles may already
+be in contact and transmit forces through the grid. The matrix
+exits 1. CUDA was untested. The temporary fixture was restored.
