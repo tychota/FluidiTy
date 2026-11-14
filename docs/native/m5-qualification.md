@@ -14842,3 +14842,23 @@ with compressive-only feedback throughout, all four dense
 radii increase by 7.8–13.6 mm. Dense coarse nominal also
 crosses the radius limit. CUDA was untested. The temporary
 fixture edit was restored.
+
+
+#### Retain compressive-only affine feedback and sticking strain throughout
+
+On 40e133f, retain only compressive yy in every extended column
+deposit and retain negative incoming yy at ordinary zero-fraction
+sticking contacts. Run the native sparse and dense selectors at 3 s.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 37.182802° | 0.120609 | 33.222523° | 0.145018 |
+| Fine | 37.816831° | 0.120740 | 32.878671° | 0.144550 |
+| Coarse half-step | 40.938997° | 0.097034 | 38.189605° | 0.125299 |
+| Fine half-step | 39.130484° | 0.101306 | 36.491914° | 0.129278 |
+
+All dense radii pass. Dense fine nominal alone passes all
+criteria. Dense coarse nominal fails persistence and both
+dense half-step cases overshoot. All sparse angles exceed
+35°. Both commands exit 1. CUDA and six-second endpoints
+were untested. Both temporary files were restored.
