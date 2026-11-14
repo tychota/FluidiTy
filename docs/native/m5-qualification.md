@@ -13791,3 +13791,33 @@ the absolute time and velocity scales under this simultaneous
 rescaling. It persists when the ratios of the step duration to
 the elastic and gravitational time scales stay fixed. CUDA and
 dense sampling were untested. The fixture was restored.
+
+
+#### Compare from-rest force balance on the ordinary floor
+
+On ab25b5a, take copies of each native sparse column at the
+1.5 and 6 s endpoints. Clear translation and affine velocity
+in each copy. Advance once with gravity and the ordinary floor
+at the trajectory timestep and again from a fresh copy at
+half that timestep. Divide stored velocity by probe duration.
+Classify particles by their height before the probe. Run
+`fluidity_m5_dry_scene_tests.exe --q-sand-column-long-settle`
+at both endpoints.
+
+| Case | Elevated count at 1.5 s | Elevated mean vertical acceleration (m/s²) | Elevated count at 6 s | Elevated mean vertical acceleration (m/s²) |
+|---|---:|---:|---:|---:|
+| Coarse | 24 | −7.642477 | 2 | +1.663006 |
+| Fine | 17 | −7.267797 | 3 | −3.882381 |
+| Coarse half-step | 33 | −8.191271 | 2 | −6.076605 |
+| Fine half-step | 33 | −8.495345 | 3 | −8.247484 |
+
+Each pair of probes agrees to six decimal places in mean
+vertical acceleration, RMS elevated horizontal acceleration,
+and wall impulse divided by duration. The floor group has zero
+mean vertical acceleration at printed precision. Elevated
+horizontal RMS falls from 1.306549–1.507304 m/s² at 1.5 s to
+zero at printed precision at 6 s. The largest late differences
+are in vertical support of the remaining elevated particles.
+The copied-state probes preserve all baseline trajectory angles.
+Both matrices exit 1. CUDA and dense sampling were untested.
+The temporary fixture was restored.
