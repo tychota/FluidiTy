@@ -1,0 +1,28 @@
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_687a6967cea923 204-205
+  s_4f0877e2acdcf0::t_a087e1287ec123 11
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_ff623cd7a84730 90-102
+README.md
+  s_4f0877e2acdcf0::t_18a47f5854e69b 44-49
+AGENTS.md
+  s_4f0877e2acdcf0::t_8f78d564577439 393-394,415-417
+.github/workflows/checks.yml
+  s_4f0877e2acdcf0::t_cf99dc27610da9 1-231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c189e2941f629fd9b6f61d26c8f363e6f770a502",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
