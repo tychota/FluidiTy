@@ -1,0 +1,29 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_907055104bc85a 131-137,340-361
+native/fluidity/base/memory_count.h
+  s_4f0877e2acdcf0::t_fe5548144ff9a1 18,68
+native/fluidity/base/per_particle_velocity.h
+  s_4f0877e2acdcf0::t_6019c01b2b1284 19
+native/fluidity/base/processor_description.h
+  s_4f0877e2acdcf0::t_aa5908681c0e77 13
+native/fluidity/base/processor_description_test.cc
+  s_4f0877e2acdcf0::t_a97f8038a84a0e 32-37
+native/fluidity/base/processor_description_text.h
+  s_4f0877e2acdcf0::t_4594c4844477e8 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dfb0c75c350797a46b91f76227fe274b830ccb1e",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
