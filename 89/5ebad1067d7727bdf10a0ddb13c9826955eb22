@@ -1,0 +1,29 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_8cb6bd97a99ff4 285-292
+docs/glossary.md
+  s_4f0877e2acdcf0::t_96016390f40141 183
+native/fluidity/base/check_can_run_on_gpu.cu
+  s_4f0877e2acdcf0::t_d3ff95ebb9fe9a 24-25
+native/fluidity/base/gpu_launch.cuh
+  s_4f0877e2acdcf0::t_31a42a9df6c24e 15,43-44,55,72
+native/fluidity/base/run_on_call.h
+  s_4f0877e2acdcf0::t_3f8b0633b11fde 1,9-13,16-18,41-42,44-46,50-51,54-57,59-61
+native/fluidity/base/run_on_call_test.cc
+  s_4f0877e2acdcf0::t_39fd97dc9a1939 11-13,16-17,20-21,24-25,28-29,32-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "895ebad1067d7727bdf10a0ddb13c9826955eb22",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
