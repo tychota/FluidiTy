@@ -1,0 +1,21 @@
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_3c11d108d948fa 3,894-898,911
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_dd9d3bcb8c37cb 314-321
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1d2e37321faa90cf06f2c4758d6b88155e78af09",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
