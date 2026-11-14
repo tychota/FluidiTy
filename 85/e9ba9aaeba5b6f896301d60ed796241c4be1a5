@@ -1,0 +1,19 @@
+native/fluidity/base/check_can_run_on_gpu.h
+  s_4f0877e2acdcf0::t_e91ba55f579911 3-4,7-9,13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "85e9ba9aaeba5b6f896301d60ed796241c4be1a5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
