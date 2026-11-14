@@ -13688,3 +13688,21 @@ At 6 s, the angles are 36.081744°, 28.937929°, 28.293980°,
 and 24.359077°. All four fail angle and persistence. Radius,
 short drift, and kinetic energy pass in both matrices.
 CUDA and dense sampling were untested. The source edit was restored.
+
+
+#### Freeze the Coulomb attenuation factor in the sliding gradient
+
+On ff407bc, retain the sliding tangential velocity fraction
+in the two tangential gradient rows and omit its spatial
+derivative. Normal and sticking rows retain their previous
+behavior. Run the native dry-scene executable without arguments,
+with `--q-sand-column-long-settle`, and with
+`--q-sand-column-long-settle 6`.
+
+The default passes at 32.785069°. In coarse, fine, coarse
+half-step and fine half-step order, the registered 1.5 s
+angles are 29.158576°, 26.647253°, 29.006384°, and 27.033753°.
+At 6 s, the angles are 34.034745°, 23.477401°, 17.104058°,
+and 13.060319°. Only the coarse nominal case meets the angle
+and persistence criteria at 6 s. Both matrices exit 1.
+CUDA and dense sampling were untested. The source edit was restored.
