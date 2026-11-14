@@ -14674,3 +14674,25 @@ fails persistence. All dense cases miss the angle band at the
 endpoint. Three dense radii pass, as in the PIC-only control.
 Both commands exit 1. CUDA was untested. The temporary solver
 and fixture edits were restored.
+
+
+#### Retain only vertical affine momentum during collapse
+
+On 1d505b0, clear the x and z rows of each particle's stored
+affine slopes before steps starting before 0.75 s. Retain the
+y row, translation, and material state. Run the native sparse
+and dense column selectors at 3 s.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 37.980786° | 0.131660 | 33.180664° | 0.168694 |
+| Fine | 35.370881° | 0.140696 | 29.708418° | 0.175541 |
+| Coarse half-step | 30.072909° | 0.128638 | 27.051037° | 0.165439 |
+| Fine half-step | 28.699663° | 0.145935 | 24.289868° | 0.182030 |
+
+Restoring vertical affine deposition relative to PIC-only
+collapse raises all four dense endpoint angles and increases
+all four dense radii by 10.1–22.4 mm. Dense coarse nominal
+stays in the angle band throughout the final second, but all
+dense radii fail. Both commands exit 1. CUDA was untested.
+The temporary fixture was restored.
