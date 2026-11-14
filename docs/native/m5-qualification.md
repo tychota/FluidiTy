@@ -14591,3 +14591,23 @@ first crosses it before its first floor sample. This measures
 the particle's own wall arrival. Other particles may already
 be in contact and transmit forces through the grid. The matrix
 exits 1. CUDA was untested. The temporary fixture was restored.
+
+
+#### Halve the initial column drop
+
+On 038f10a, reduce the release gap from 0.10 to 0.05 m in
+the ordinary column selector. Keep all other fixture inputs
+and thresholds. Run the native sparse and dense selectors
+`--q-sand-column-long-settle 3` and `--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 23.204899° | 0.137335 | 26.436268° | 0.169532 |
+| Fine | 18.679845° | 0.147363 | 24.295566° | 0.178815 |
+| Coarse half-step | 22.170182° | 0.143227 | 20.513323° | 0.172316 |
+| Fine half-step | 20.038543° | 0.154145 | 19.472682° | 0.183066 |
+
+The dense radii decrease by 0.7–3.3 mm relative to the
+0.10 m release trace and all remain above 0.16 m. All
+eight angles miss and both commands exit 1. CUDA was
+untested. The original release fixture was restored.
