@@ -349,6 +349,9 @@ FluidiTy's own array file holds only the saved state and internal run records.
   Host code uses `-ffp-contract=off` (GCC, Clang) and `/fp:precise` (MSVC). No fast-math anywhere.
 - **Format.** Google C++ style through the repository's clang-format 23.1 settings: 120 columns, two-space
   indent, `//` comments, braces on every control-flow body.
+- **Targets.** Every C++ and CUDA target is created through the helpers of `cmake/fluidity_targets.cmake`
+  (`fluidity_add_test`, `fluidity_add_test_library`, or `fluidity_apply_compile_flags` for the library), because the
+  numerical flags are set per target. Configuring fails, naming the target, for one created any other way.
 
 ## Checklist for each file
 
