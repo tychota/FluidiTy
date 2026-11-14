@@ -14862,3 +14862,23 @@ criteria. Dense coarse nominal fails persistence and both
 dense half-step cases overshoot. All sparse angles exceed
 35°. Both commands exit 1. CUDA and six-second endpoints
 were untested. Both temporary files were restored.
+
+
+#### Retain half the sticking strain with compressive-only affine feedback
+
+On 41bb20d, keep the compressive yy-only deposit for every
+extended column step and retain half the negative incoming yy
+at ordinary zero-fraction sticking contacts. Run native sparse
+and dense column selectors at 6 s.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 43.334589° | 37.539740° | 0.158238 |
+| Fine | 44.229882° | 37.647455° | 0.151072 |
+| Coarse half-step | 26.397069° | 28.270529° | 0.134707 |
+| Fine half-step | 26.670613° | 28.300475° | 0.139063 |
+
+All radii pass. Both nominal angles overshoot and both
+half-step angles undershoot in each sampling. No case stays
+in range throughout the final second. Both commands exit 1.
+CUDA was untested. Both temporary files were restored.
