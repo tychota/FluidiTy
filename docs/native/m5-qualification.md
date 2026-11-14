@@ -12758,3 +12758,20 @@ Both dense half-step radii pass, but all dense angles overshoot
 and all dense final drifts exceed one degree. Neither sparse
 nominal radius passes. The two effects do not combine into
 a qualifying result. CUDA was untested. The solver edit was restored.
+
+#### Blend the fitted and differentiated gradients on the ordinary granular floor
+
+On 137c774, average the gathered quadratic velocity derivative
+and the fitted APIC slope before the ordinary granular deformation
+update. Both estimates reproduce affine velocity fields on complete
+stencils. Use the blend for both parts of the sweep split, keeping
+stress scatter and stored affine slope unchanged. This is a
+gradient-only sensitivity control.
+
+Build the native dry-scene target and run it without arguments
+and with `--q-sand-column-long-settle 6`. The default passes at
+32.902857°. The six-second angles are 35.098515°, 23.992068°,
+17.865474°, and 13.465275° in coarse, fine, coarse half-step
+and fine half-step order. The matrix exits 1. The half-step
+deficit persists and the coarse nominal angle exceeds 35°.
+CUDA and dense sampling were untested. The source edit was restored.
