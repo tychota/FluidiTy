@@ -12775,3 +12775,21 @@ and with `--q-sand-column-long-settle 6`. The default passes at
 and fine half-step order. The matrix exits 1. The half-step
 deficit persists and the coarse nominal angle exceeds 35°.
 CUDA and dense sampling were untested. The source edit was restored.
+
+#### Center ordinary granular stress and deformation in time together
+
+On 518ac2b, predict ordinary granular stress by returning a half
+step of deformation driven by the stored particle APIC slope.
+For the accepted update, average the velocity derivatives before
+and after the grid force kick. Use that derivative for both sweep
+segments and keep translation, affine storage, and the sweep on
+their original paths. This is an explicit predictor using two
+different gradient estimates.
+
+Build the native dry-scene target and run it without arguments
+and with `--q-sand-column-long-settle 6`. The default passes at
+33.567886°. The six-second angles are 34.190576°, 24.030630°,
+22.358646°, and 15.505871° in coarse, fine, coarse half-step
+and fine half-step order. The matrix exits 1. Both half-step
+angles improve, but three angles and the fine half-step radius
+fail. CUDA and dense sampling were untested. The edit was restored.
