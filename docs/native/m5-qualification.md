@@ -14511,3 +14511,20 @@ sticking-only control, by at most 0.027° at either endpoint.
 Both sparse matrices fail on coarse nominal, and all radii
 pass. CUDA and dense sampling were untested. The temporary
 solver edit was restored.
+
+
+#### Retain sticking compression at low incident normal speed
+
+On 725533d, retain negative incoming yy at ordinary granular
+zero-fraction sticking contacts only when the incoming normal
+speed is at most abs(gravity) times step duration. Keep the
+contact sweep and scatter. Run the native sparse
+`--q-sand-column-long-settle` selector at 1.5 and 6 s.
+
+All eight endpoint angles and all four final-window extrema
+pairs match the native baseline to six decimals. Both commands
+exit 1, with only coarse nominal staying in range throughout
+the final second. Retaining compression in this low-speed regime
+alone does not reproduce the support of the full sticking
+control. CUDA and dense sampling were untested. The temporary
+solver edit was restored.
