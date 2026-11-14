@@ -1,0 +1,39 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_48bc3fca642b76 493-494
+  s_4f0877e2acdcf0::t_3d70cf3286527e 491-492
+  s_962d32d496dec8::t_d3224dd74dd05c 504-505
+docs/glossary.md
+  s_4f0877e2acdcf0::t_75d22af6b6660b 171
+native/fluidity/base/stable_order_digit.h
+  s_4f0877e2acdcf0::t_6bdc7105db34d0 6-9,15,34-35,38-39
+native/fluidity/base/stable_order_gpu.cu
+  s_4f0877e2acdcf0::t_5cd2636b9295a3 7-15,18-24,26-28,50-52,55-56,60,98,103,114,117,125,145,155,184,196,215
+native/fluidity/base/stable_order_steps.h
+  s_4f0877e2acdcf0::t_15b67bacaaf9a9 3-4,7-15,20-26,41-42,45-46,62-63,78-80,137-138,157-159,164,166,173-174,176-177
+native/fluidity/base/stable_order_steps_test.cc
+  s_4f0877e2acdcf0::t_f047bcefa5367c 2-6,18,29-32,34-35,43-44,53-54,56,58-60,67,73,75-76,82,93,95-96,103,109-111,114-116,124-125,136-139,143-146,149-150,155-156,213-222,228-230,232,242-252,255-263,283-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e89b031a624693f2f23914890fb14176e83ae973",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_962d32d496dec8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a0c13605dc94fcac7",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
