@@ -14822,3 +14822,23 @@ by more than 2° between final-window endpoints. Both half-step
 dense cases settle below 30°. Both matrices exit 1. The longer
 restriction reduces all four dense radii relative to the
 collapse-only control. CUDA was untested. The fixture was restored.
+
+
+#### Restore only wall-parallel affine rows after compressive-only collapse
+
+On 40e246f, retain only compressive yy before 0.75 s. For
+subsequent steps retain the full x and z affine rows and
+zero the y row. Run native sparse and dense column selectors at 6 s.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 41.201240° | 36.623445° | 0.162002 |
+| Fine | 41.165235° | 35.581995° | 0.156526 |
+| Coarse half-step | 21.287394° | 25.142657° | 0.145896 |
+| Fine half-step | 23.184444° | 25.258747° | 0.150143 |
+
+Both matrices exit 1 and all eight angles miss. Compared
+with compressive-only feedback throughout, all four dense
+radii increase by 7.8–13.6 mm. Dense coarse nominal also
+crosses the radius limit. CUDA was untested. The temporary
+fixture edit was restored.
