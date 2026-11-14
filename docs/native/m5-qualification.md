@@ -12717,3 +12717,22 @@ overshoots the angle band. The command exits 1. Elevated
 translation suffices to reproduce this control at printed
 precision. CUDA and dense sampling were untested. The temporary
 source edit was restored.
+
+#### Check elevated-particle translation at dense sampling
+
+Run the native executable from the preceding elevated-translation
+control with `--q-sand-dense-column-long-settle 3`. The fixture
+uses 504 particles. The diagnostic deposit and acceptance
+criteria are unchanged.
+
+| Case | Angle | Radius (m) | Final ≈1 s drift |
+|---|---:|---:|---:|
+| Coarse | 35.602237° | 0.183283 | 1.087018° |
+| Fine | 32.813826° | 0.189250 | 0.362673° |
+| Coarse half-step | 34.090560° | 0.181174 | 1.404309° |
+| Fine half-step | 31.556021° | 0.185804 | 1.059072° |
+
+The matrix exits 1. Three angles are in band, and all radii
+exceed 0.16 m. All four radii increase relative to the dense
+baseline, by 0.14–13.0 mm. Elevated-particle compression alone
+does not control dense spreading. CUDA was untested.
