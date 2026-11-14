@@ -1,0 +1,53 @@
+native/fluidity/base/ordered_sums_cpu.cc
+  s_4f0877e2acdcf0::t_6902f7c1248b92 2,4-5,11,15,21-52,55-63,65-69,74-99,102-109,112-137,139-142,144-145,147-148,152-154,159-161,163,167-170,176-189,200-220,226-238,249-261,263
+  s_4f0877e2acdcf0::t_b4d012c5c24d24 262
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_47b63b96b7a087 23,100-105
+native/fluidity/base/ordered_sums.h
+  s_4f0877e2acdcf0::t_e4124d645c3d15 7-16,19-23,33,35,38,42-84,87-88,94,96,100-110,115-116,123,125,130-139,143-144,147,149,153-204
+native/fluidity/base/ordered_sums_gpu_test.cc
+  s_4f0877e2acdcf0::t_8fe75b1bc3904f 13,20-21,51-52,56-107,156,176-182,200
+native/fluidity/base/ordered_sums_gpu.h
+  s_4f0877e2acdcf0::t_8badbbc31f1ee4 5-11,13-14,21-22,26-30,33-34,36-52
+native/fluidity/base/tree_sum_layers.h
+  s_4f0877e2acdcf0::t_2a1e5ecaf2c184 1-74
+  s_4f0877e2acdcf0::t_6d735f6d3473ca 75-88
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_337d9e5f757b96 5,56-65,67-68,70
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_b031235eb03b40 27,51-53,59-60,65
+native/fluidity/base/tree_sum_test.cc
+  s_4f0877e2acdcf0::t_bb938198976434 12-13,39-43,85,92,110,115
+native/fluidity/base/tree_sum_layers_test.cc
+  s_4f0877e2acdcf0::t_523d4ddb5a13db 1-184
+native/fluidity/base/ordered_sums_gpu.cu
+  s_4f0877e2acdcf0::t_221e969c97e67f 4-9,16,18,20,25,27-28,32,34-35,39,41-44,51-52,58-59,61,63,66-75,80,83-84,86-87,90,95-96,99-109,111,114-115,117-118,124
+native/fluidity/base/ordered_sums_no_gpu_test.cc
+  s_4f0877e2acdcf0::t_fbfca86d46cb3c 1-24
+native/fluidity/base/ordered_sums_test.cc
+  s_4f0877e2acdcf0::t_2cbb1236daa8b6 15,23-25,28-32,35-42,44-124,129,136,143,150,165,178-179,190-191,198-199,214-215,227-228,235-236,243,259,267,274,282,290
+native/fluidity/base/shared_math_gpu_test.cc
+  s_4f0877e2acdcf0::t_dc1db7ef8ea3c4 39-41
+native/fluidity/base/shared_math_test_gpu.h
+  s_4f0877e2acdcf0::t_4f9637929a4f82 7-12,17-18,24-25,30,39-40,84-101
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_b1db7a424ca823 76-83
+native/fluidity/base/tree_sum.h
+  s_4f0877e2acdcf0::t_6224c083c86a24 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fc3c447c8ce01c61741f1c446c5225f812828ce4",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
