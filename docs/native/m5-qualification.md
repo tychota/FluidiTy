@@ -13980,3 +13980,23 @@ angles reproduce the uncapped sticking-only control to printed
 precision. The coarse nominal case still overshoots, while
 the other three pass. All three commands exit 1. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+
+#### Project ordinary-floor normal face velocities before gather
+
+On b77028e, zero negative normal velocities on occupied y faces
+at or below the wall before gathering on the ordinary granular
+path. In a second build remove half the inward velocity. Account
+for the corresponding grid wall impulse and retain the particle
+sweep. Run the native `--q-sand-column-long-settle` selector at
+1.5 and 6 s.
+
+Full projection rejects all four trajectories with
+FAILED_PRECONDITION before 0.75 s. Half projection rejects
+both half-step trajectories before 0.75 s. The nominal coarse
+and fine trajectories complete but reach 7.837415° and
+14.364537° at 1.5 s, then 2.625895° and 15.140421° at 6 s.
+All four commands exit 1. The direct face clamp changes the
+incoming normal speed available to the swept Coulomb response
+and does not provide qualifying support. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
