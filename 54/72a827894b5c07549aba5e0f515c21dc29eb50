@@ -1,0 +1,43 @@
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_5f7231ab7a8139 16,549,551,748
+  s_4f0877e2acdcf0::t_59ab9968ac3773 220,224-231
+native/fluidity/base/run_on.h
+  s_4f0877e2acdcf0::t_424d17449e88b4 1-40
+native/fluidity/base/cpu_only.h
+  s_4f0877e2acdcf0::t_31ee8c17466dfb 1-21
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_43204656e80d49 3,5,7-8,13-14,19
+tools/check_rules_allowed_names.txt
+  s_4f0877e2acdcf0::t_3f5518a571b17d 1,4-8
+native/fluidity/base/run_on_gpu_check.h
+  s_4f0877e2acdcf0::t_3131f68b023ca7 1-33
+native/fluidity/base/check_can_run_on.h
+  s_4f0877e2acdcf0::t_74a4b70e85dfb2 1-56
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_46904ed2fb7572 348-361
+  s_4f0877e2acdcf0::t_41a5acabe62774 297-303
+.clang-format
+  s_4f0877e2acdcf0::t_7090d7f212034d 28-41
+.clang-tidy
+  s_4f0877e2acdcf0::t_8b82fc5bbc7dd2 55-57
+native/fluidity/base/check_can_run_on.cc
+  s_4f0877e2acdcf0::t_73949f4013a110 1-62
+native/fluidity/base/check_can_run_on_test.cc
+  s_4f0877e2acdcf0::t_599623a238b323 1-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5472a827894b5c07549aba5e0f515c21dc29eb50",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
