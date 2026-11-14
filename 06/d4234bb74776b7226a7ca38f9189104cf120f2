@@ -1,0 +1,27 @@
+CMakeLists.txt
+  s_4f0877e2acdcf0::t_df39b528a0786b 28-33
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_bddeb4c36e4e23 22-25,103-105,111-125,160,174-175,191,200-201
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_e06a437568065b 27-31,81-82,87-90,178-182,184,186-188,192-200,441
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_8adf5f3cb2c7e1 33-37,62-63,66,241-242,246-271
+tools/fluidity_targets_test.py
+  s_4f0877e2acdcf0::t_44c9abb2d904af 6,15-17,79-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "06d4234bb74776b7226a7ca38f9189104cf120f2",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
