@@ -14247,3 +14247,23 @@ retains more height in each shallow case than the 0.25–0.75 s
 window, and produces the coarse overshoot by itself.
 All commands exit 1. CUDA and dense sampling were untested.
 Both temporary files were restored.
+
+
+#### Center the retained sticking strain across the grid force kick
+
+On 052849c, gather the pre-force normal gradient as well as
+the original post-force gradient. Retain the compressive part
+of their mean as projected yy at ordinary zero-fraction
+granular sticking contacts. Keep transport, stress scatter, and
+the other deformation terms unchanged. Run the native dry-scene
+executable without arguments and with `--q-sand-column-long-settle`
+at 1.5 and 6 s.
+
+The default reaches 36.433648°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+38.864658°, 35.460421°, 33.744069°, and 34.169723°.
+At 6 s they are 36.673558°, 31.180677°, 37.773265°, and
+30.627617°. Both fine cases stay in the band through the
+final sampled second. Both coarse cases overshoot. All radii
+pass and all commands exit 1. CUDA and dense sampling were
+untested. The temporary solver edit was restored.
