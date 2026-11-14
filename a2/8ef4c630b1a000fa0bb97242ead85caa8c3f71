@@ -1,0 +1,39 @@
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_7ecbfec5586c1f 69,76-81
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_74f683e7a03a26 8,11,21,40-41
+native/fluidity/base/check_can_run_on_gpu.cu
+  s_4f0877e2acdcf0::t_ab6c14207806e6 3-5,16-17,19,24-25,33,35-38,49-50,56,59,63-74,77-78,80-83,85,88,92,141
+native/fluidity/base/check_can_run_on_math_test.cc
+  s_4f0877e2acdcf0::t_1708232085109a 1
+native/fluidity/base/gpu_launch.cuh
+  s_962d32d496dec8::t_d0abf57717a4e7 1-131
+native/fluidity/base/run_on_call.h
+  s_962d32d496dec8::t_bce98dbff6f91e 1-64
+native/fluidity/base/run_on_call_test.cc
+  s_962d32d496dec8::t_5c068a62ee4568 1-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a28ef4c630b1a000fa0bb97242ead85caa8c3f71",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_962d32d496dec8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a0c13605dc94fcac7",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
