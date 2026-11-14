@@ -14342,3 +14342,20 @@ at most 0.000022° relative to splitting the increment without
 an intermediate return. The coarse nominal overshoot persists
 and all three commands exit 1. Dense and CUDA were untested.
 The temporary solver edit was restored.
+
+
+#### Use the fitted normal slope at sticking floor contacts
+
+On 4c4b2b1, set projected yy to the compressive part of the
+fitted APIC normal slope at ordinary zero-fraction granular
+sticking contacts. Keep the differentiated gradient for the
+rest of the deformation update and retain contact and scatter.
+Run the native default and `--q-sand-column-long-settle`
+at 1.5 and 6 s.
+
+All nine endpoint angles reproduce the differentiated
+sticking-compression control to six decimals. The default is
+35.674372°. At six seconds coarse nominal overshoots at
+36.442893°, and the other three stay in range throughout the
+final second. All three commands exit 1. Dense sampling and
+CUDA were untested. The temporary solver edit was restored.
