@@ -12646,3 +12646,29 @@ in all four cases. The altered stresses feed back on the
 trajectory, so these results do not partition force at a
 fixed state. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+#### Separate pre-force and force-induced resident normal compression
+
+On fc4b8d9, at zero-fraction ordinary granular floor hits,
+differentiate the vertical face field before the force kick
+and differentiate the post-minus-pre-force field separately.
+Use zero for empty faces. In each build replace the projected
+yy entry with the compressive part of one of those derivatives.
+Use the original sweep, stress and other gradient entries.
+Run the native target without arguments and with
+`--q-sand-column-long-settle 6`.
+
+| Case | Pre-force angle | Force increment angle |
+|---|---:|---:|
+| Coarse | 35.988065° | 33.842809° |
+| Fine | 31.925407° | 23.424520° |
+| Coarse half-step | 38.096627° | 17.104058° |
+| Fine half-step | 31.747293° | 13.078997° |
+
+Both matrices exit 1. The force-increment control changes
+the baseline by at most 0.018678° and passes the default test.
+The pre-force control puts both fine cases in band, but
+overshoots both coarse angles and fails the default at
+38.990592°. The principal response comes from the pre-force
+field in these controls. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
