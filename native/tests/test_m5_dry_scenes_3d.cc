@@ -165,6 +165,8 @@ bool TestScene(
   double early_envelope_angle = 0;
   double long_window_angle = 0;
   double long_window_sample_time = 0;
+  double long_window_minimum_angle = 180;
+  double long_window_maximum_angle = 0;
   double late_projection_particle_seconds = 0;
   double late_plastic_volume_particle_seconds = 0;
   double late_particle_seconds = 0;
@@ -265,7 +267,8 @@ bool TestScene(
     const bool late_drift_sample = !snow && t < settling_sample_time && next_time == settling_sample_time;
     const bool original_endpoint = extended_column && t < 0.75 && next_time == 0.75;
     const bool long_window_sample = extended_column && t < time - 1 && next_time >= time - 1;
-    if (late_drift_sample || original_endpoint || long_window_sample) {
+    const bool in_long_window = extended_column && time >= 3 && next_time >= time - 1;
+    if (late_drift_sample || original_endpoint || long_window_sample || in_long_window) {
       double height = 0;
       double radius = 0;
       for (const auto& particle : particles) {
@@ -273,6 +276,11 @@ bool TestScene(
         radius = std::fmax(radius, std::hypot(particle.world_position.x, particle.world_position.z));
       }
       const double angle = kDegreesPerRadian * std::atan2(height, radius);
+      if (in_long_window) {
+        const double angle = kDegreesPerRadian * std::atan2(height, radius);
+        long_window_minimum_angle = std::min(long_window_minimum_angle, angle);
+        long_window_maximum_angle = std::max(long_window_maximum_angle, angle);
+      }
       if (long_window_sample) {
         long_window_angle = angle;
         long_window_sample_time = next_time;
@@ -447,6 +455,13 @@ bool TestScene(
   const bool persistence_drift_in_range = persistence_drift <= kPersistenceDriftLimitDegrees;
   const bool persistence_in_range =
       !persistence_required || (has_persistence_sample && persistence_sample_in_range && persistence_drift_in_range);
+  if (persistence_required && has_persistence_sample) {
+    std::printf(
+        "sand persistence window_min_degrees=%.6f window_max_degrees=%.6f\n",
+        long_window_minimum_angle,
+        long_window_maximum_angle
+    );
+  }
   if (persistence_required) {
     std::printf(
         "sand persistence sample=%s sample_angle=%s drift=%s drift_limit_degrees=%.1f\n",
