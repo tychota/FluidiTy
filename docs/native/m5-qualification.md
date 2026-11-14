@@ -14128,3 +14128,23 @@ The six-second coarse nominal case overshoots, while the other
 three stay in range for every sampled step of the final second.
 All three commands exit 1. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+
+#### Scale sticking compression by the quadratic acoustic margin
+
+On 310f861, multiply retained compressive yy by max(0, 1 - f²)
+at ordinary zero-fraction granular sticking contacts, where f is
+the accepted acoustic Courant number divided by the configured
+limit. Keep the particle sweep and stress scatter. Run the native
+dry-scene executable without arguments and with
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default reaches 35.415474°. In coarse, fine, coarse
+half-step and fine half-step order the 1.5 s angles are
+36.792724°, 33.461272°, 32.109284°, and 32.522288°.
+At 6 s they are 36.442327°, 29.994633°, 34.320297°, and
+29.952200°. All radii pass. Only coarse half-step stays in
+range for the full final second. Both fine endpoints lose
+their passing angles relative to the uncapped sticking control,
+and the coarse nominal overshoot persists. All commands exit 1.
+CUDA and dense sampling were untested. The solver edit was restored.
