@@ -13025,3 +13025,25 @@ at 32.969025°. The matrix exits 1 with angles 35.233292°,
 coarse half-step and fine half-step order. All four radii pass.
 Both half-step angles remain below the band. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+#### Add a third particle density to the coarse nominal column
+
+On 2c27d3d, run the ordinary native column to 3 s at
+h = 0.075 m and dt = 0.001875 s with a sampling multiplier
+of three. Temporarily select this case with
+`--q-sand-dense-column-long-settle 3`. The 1701 particles
+represent the same initial column and mass.
+
+| Particles | Angle | Radius (m) |
+|---:|---:|---:|
+| 63 | 30.519543° | 0.137319 |
+| 504 | 29.703637° | 0.170290 |
+| 1701 | 30.988024° | 0.180906 |
+
+At 1701 particles the final angle is in band, but the radius
+exceeds 0.16 m and the final approximately one-second drift
+is 2.410359°. The command exits 1. The fitted surface slopes
+range from 34.338659° to 43.592505° across the four quadrants.
+The radius increases again as the particle spacing decreases.
+The experiment covers one width and timestep on native. The
+temporary fixture edit was restored.
