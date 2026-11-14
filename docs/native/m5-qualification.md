@@ -13007,3 +13007,21 @@ The default angle is 35.403258°. All six-second radii pass,
 but both fine angles fall below the band and the coarse
 nominal angle stays above it. CUDA and dense sampling were
 untested. The temporary solver edit was restored.
+
+#### Bound sticking compression by accepted elastic volume
+
+On 8fc3502, at zero-fraction ordinary granular sticking hits,
+retain the incoming compressive yy rate. When the accepted
+elastic Jacobian is in (0, 1], limit the magnitude of the
+added rate times the remaining duration to
+max(0, log(1.05) + log(J_E)). This diagnostic bounds the
+increment in the rate-times-duration approximation. It does
+not impose a determinant constraint on the accepted state.
+
+Build the native dry-scene target and run without arguments
+and with `--q-sand-column-long-settle 6`. The default passes
+at 32.969025°. The matrix exits 1 with angles 35.233292°,
+24.654518°, 19.693978°, and 15.234264° in coarse, fine,
+coarse half-step and fine half-step order. All four radii pass.
+Both half-step angles remain below the band. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
