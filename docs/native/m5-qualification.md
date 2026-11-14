@@ -13747,3 +13747,27 @@ and 13.061550° at 6 s. The 1.5 s results move by less than
 nominal case meets the 6 s angle and persistence criteria.
 Both commands exit 1. CUDA and dense sampling were untested.
 The temporary source edit was restored.
+
+
+#### Combine partial resident compression and volumetric APIC attenuation
+
+On b5d7c4d, add half of min(0, incoming yy) to the projected
+normal gradient on ordinary granular floor hits at zero
+fraction. At deposit, subtract one quarter of max(0,
+min(horizontal trace, total trace)) from each horizontal
+diagonal of the ordinary granular affine slope. Build the
+native dry-scene target. Run without arguments, with
+`--q-sand-column-long-settle`, with that selector at 6 s,
+and with `--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle at 1.5 s | Sparse angle at 6 s | Dense angle at 3 s |
+|---|---:|---:|---:|
+| Coarse | 37.231063° | 37.798608° | 35.106480° |
+| Fine | 35.252256° | 31.389268° | 32.202886° |
+| Coarse half-step | 35.049612° | 29.720430° | 26.573009° |
+| Fine half-step | 32.518617° | 28.095787° | 25.341230° |
+
+All four commands exit 1. The default angle is 40.416202°.
+The fine nominal sparse run alone passes the 6 s angle
+and persistence criteria. All dense radii fail. CUDA was
+untested. The temporary solver edit was restored.
