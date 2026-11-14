@@ -125,6 +125,19 @@ def test_all_steps_pass_exits_zero(monkeypatch, capsys, repo):
     ]
 
 
+def test_rules_step_lints_the_workflow_files(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    assert fake.commands[-1] == ["actionlint"]
+
+
+def test_failing_actionlint_fails_the_rules_step(monkeypatch, capsys, repo):
+    fake = FakeRun(failing=lambda command: command == ["actionlint"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    assert exit_code == 1
+    assert lines[0].startswith("FAIL rules: `actionlint")
+
+
 def test_read_line_with_unknown_label_fails_paper_step(monkeypatch, capsys, repo):
     header = repo / "native" / "fluidity" / "b.h"
     header.write_text("// B.\n//\n// Read:    docs/method-paper/fluidity-method.typ <sec-missing>\n", encoding="utf-8")

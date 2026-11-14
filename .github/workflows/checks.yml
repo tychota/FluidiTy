@@ -1,0 +1,232 @@
+# Checks that CI runs on every push and pull request.
+#
+# STATUS: this workflow is linted with actionlint (`uv run actionlint .github/workflows/checks.yml`) and has run on
+# GitHub on the scratch branch `rebuild-ci`: every job passed on Linux (GCC 13), macOS (Xcode 16.4), Windows (VS 2022)
+# and in the CUDA compile job, so the Windows CPU code has been compiled and its tests run. The commit rule stays the
+# local gate, `uv run python tools/check_commit.py`.
+#
+# What each job proves:
+#   rules         The C++ and CUDA sources are clang-format 23.1 clean, tools/check_rules.py reports no FAIL under
+#                 native/, the pytest suite of tools/ passes, and this file is accepted by actionlint.
+#   cpu           The strict CPU build (warnings as errors) of `<os>-<configuration>-cpu` configures, builds and passes
+#                 all its tests (a CPU build registers only `cpu` tests) on Linux (GCC 13), macOS (Xcode 16.4) and
+#                 Windows (VS 2022). The Windows job is the only place the Windows CPU code is compiled; the
+#                 Windows CUDA build has never been compiled or run, and the owner's hardware run is its first.
+#   cuda-compile  Everything of `linux-release-cuda` compiles and links with nvcc, every `.cu` file and the `gpu` tests
+#                 included, and the tests labelled `cpu` and `no_gpu` pass.
+#
+# NO CI JOB RUNS GPU CODE. A hosted runner has no GPU, so GPU code is compiled, not run (docs/gpu-runs.md records the
+# owner's hardware run). GPU tests are registered only in a CUDA build; the cpu jobs build none, and the CUDA job runs
+# `ctest -L '^(cpu|no_gpu)$'` through the gate. ctest labels are regular expressions, so a bare `-L gpu` would also
+# match `no_gpu`; CI never runs `^gpu$`.
+#
+# Left out on purpose:
+#   paper   `check_commit.py --only paper` needs typst and the licensed fonts of the method paper; a hosted runner has
+#           neither. The paper stays a local-gate check.
+#   tidy    `--only tidy` needs the compile commands of a finished debug build; it stays a local-gate check.
+# The workflow uses no secret and uploads no artifact.
+
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer run of the same ref makes the older, superseded run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rules:
+    name: rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # uv 0.13.7 is the version of tools/cuda-container/Dockerfile. It installs Python 3.13 (pyproject.toml's
+      # requires-python) and the tools of uv.lock; `--frozen` never rewrites the lockfile.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      - name: Install the tools of uv.lock
+        run: uv sync --frozen
+
+      # These two steps are the gate's own `format` and `rules` steps, so CI and the local gate cannot disagree.
+      - name: Gate step format
+        run: uv run --frozen python tools/check_commit.py --only format
+
+      - name: Gate step rules
+        run: uv run --frozen python tools/check_commit.py --only rules
+
+  cpu:
+    name: cpu ${{ matrix.platform }} ${{ matrix.configuration }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+        platform: [linux, macos, windows]
+        include:
+          # `toolchain` names the compiler and goes into the Conan cache key. Each runner's compiler is selected in
+          # the "Select the compiler" steps below, never left to whatever the image makes the default.
+          - platform: linux
+            runner: ubuntu-24.04
+            toolchain: gcc-13
+          - platform: macos
+            runner: macos-15
+            toolchain: xcode-16.4
+          - platform: windows
+            runner: windows-2022
+            toolchain: msvc-vs2022-14.44
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PRESET: ${{ matrix.platform }}-${{ matrix.configuration }}-cpu
+      BUILD_TYPE: ${{ matrix.configuration == 'debug' && 'Debug' || 'Release' }}
+      # The gate keeps Conan's home under out/ too, so a profile of the runner's own is never read.
+      CONAN_HOME: ${{ github.workspace }}/out/conan-home
+      UV_PYTHON_PREFERENCE: only-managed
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      # Linux. The ubuntu-24.04 image has GCC 13 (the distribution's default) beside other versions, as `gcc-13` and
+      # `g++-13`. Naming them makes Conan's profile detection and CMake agree on GCC 13.
+      - name: Select the compiler (GCC 13)
+        if: runner.os == 'Linux'
+        run: |
+          'CC=gcc-13' >> $env:GITHUB_ENV
+          'CXX=g++-13' >> $env:GITHUB_ENV
+
+      # macOS. The macos-15 image has several Xcode versions under /Applications. DEVELOPER_DIR picks 16.4 for
+      # `clang`, `clang++` and the SDK, whatever the image's default is.
+      - name: Select the compiler (AppleClang from Xcode 16.4)
+        if: runner.os == 'macOS'
+        run: |
+          'DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer' >> $env:GITHUB_ENV
+          'CC=clang' >> $env:GITHUB_ENV
+          'CXX=clang++' >> $env:GITHUB_ENV
+
+      # Windows. The windows-2022 image has Visual Studio 2022 (MSVC 14.4x). Ninja, the generator of the presets,
+      # does not start a developer environment, so this step runs VsDevCmd.bat for x64 (toolset 14.44, Windows SDK
+      # 26100) and copies the compiler variables and the new PATH entries into the environment of the later steps.
+      # The two cmd lines go through a temporary .cmd file: passing a quoted path to `cmd.exe /d /c` from pwsh 7
+      # escapes the embedded quotes as `\"`, which cmd does not understand.
+      # The toolset and SDK numbers are assumptions about the image; the step fails if vswhere finds no VS 2022.
+      - name: Select the compiler (MSVC from Visual Studio 2022, x64)
+        if: runner.os == 'Windows'
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -version '[17.0,18.0)' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -or !$installation) { throw 'Visual Studio 2022 C++ tools are required.' }
+          $devCmd = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          $script = Join-Path $env:RUNNER_TEMP 'vsdevcmd-environment.cmd'
+          @(
+            "@echo off",
+            "call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=14.44 -winsdk=10.0.26100.0",
+            "if errorlevel 1 exit /b 1",
+            "set"
+          ) | Set-Content -Path $script -Encoding ascii
+          $variables = & cmd.exe /d /c $script
+          if ($LASTEXITCODE) { throw 'VsDevCmd failed.' }
+          $nativeVariables = @(
+            'INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VCToolsInstallDir', 'VCToolsVersion',
+            'VisualStudioVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'WindowsSDKVersion',
+            'UniversalCRTSdkDir', 'UCRTVersion', 'VSCMD_VER', 'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH'
+          )
+          foreach ($line in $variables) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $Matches[1]
+              $value = $Matches[2]
+              if ($name -in $nativeVariables) {
+                "$name=$value" >> $env:GITHUB_ENV
+              }
+              if ($name -eq 'Path') {
+                $addedPaths = @($value -split ';' | Where-Object { $_ -and $_ -notin ($env:Path -split ';') })
+                [array]::Reverse($addedPaths)
+                $addedPaths >> $env:GITHUB_PATH
+              }
+            }
+          }
+
+      - name: Install the tools of uv.lock
+        run: uv sync --frozen
+
+      # The `env` context holds only variables the workflow sets, not the runner's process environment, so the image
+      # version the runner provides in ImageVersion is copied into the workflow environment for the cache key. It may
+      # be empty on a runner that does not set it; the key then simply has no image part.
+      - name: Record the runner image version
+        run: '"IMAGE_VERSION=$env:ImageVersion" >> $env:GITHUB_ENV'
+
+      # Conan packages only, never a build tree. Conan keeps its package store in $CONAN_HOME/p. The key holds what
+      # decides whether a stored package can be reused: the lockfile, conanfile.py, the operating system and CPU, the
+      # compiler, the build type, and the runner image version (a new image can ship a new compiler patch release).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out/conan-home/p
+          key: conan-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ matrix.configuration }}-${{ env.IMAGE_VERSION }}-${{ hashFiles('conan.lock', 'conanfile.py') }}
+
+      # The steps below are the commands of Gate.check_cpu_preset in tools/check_commit.py, one step each, for the
+      # preset `<os>-<configuration>-cpu`. The gate's own `cpu` step runs the debug and the release preset together
+      # in one go, so the matrix cannot call it per configuration.
+      - name: Detect the Conan profile
+        run: uv run --frozen conan profile detect --exist-ok
+
+      - name: Install the Conan packages
+        run: >
+          uv run --frozen conan install . --lockfile conan.lock -of out/conan/${{ env.PRESET }}
+          -s build_type=${{ env.BUILD_TYPE }} -s compiler.cppstd=23 -s:b compiler.cppstd=23 --build=missing
+
+      - name: Configure
+        run: uv run --frozen cmake --preset ${{ env.PRESET }}
+
+      - name: Build
+        run: uv run --frozen cmake --build --preset ${{ env.PRESET }}
+
+      - name: Test
+        run: uv run --frozen ctest --preset ${{ env.PRESET }}
+
+  # The CUDA compile reuses the gate's `cuda` step instead of retyping it. That step builds
+  # tools/cuda-container/Dockerfile and runs the container script of tools/check_commit.py, so the image digest
+  # (CUDA_IMAGE and the Dockerfile's FROM line) and the commands exist in one place and cannot drift from this job.
+  # The digest is a multi-platform index (linux/arm64 and linux/amd64), checked with `docker buildx imagetools
+  # inspect`. The gate picks `linux/amd64` on this x86-64 runner, so nothing is emulated. docker is on the ubuntu
+  # runner already; the gate's `docker info` check passes there.
+  cuda-compile:
+    name: cuda-compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      # The gate needs only the Python standard library, so no development tool is installed on the runner. The
+      # Conan packages and the build tree live in a Docker volume of this run and are fetched anew each time.
+      - name: Gate step cuda
+        run: uv run --frozen --no-dev python tools/check_commit.py --only cuda

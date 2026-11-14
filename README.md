@@ -42,6 +42,13 @@ first), so that CMake finds the MSVC compiler. In PowerShell, the first line is
 Only the macOS presets have been run so far, and `linux-release-cuda` has been built in the container below. The
 other Linux and Windows presets are written but not yet run.
 
+### CI
+
+`.github/workflows/checks.yml` describes the checks CI runs: format and rules, the CPU build and tests on Linux, macOS and Windows,
+and the CUDA compile. It is linted with actionlint and has run on GitHub (scratch branch `rebuild-ci`) with every job green, so the
+Windows CPU code has been compiled and its tests run. No CI job runs GPU code, and the Windows CUDA build has never
+been compiled. The local gate, `tools/check_commit.py`, remains the commit rule.
+
 ### GPU code
 
 The GPU code is compiled in a Linux container that has the CUDA compiler. Docker must be running (on macOS,

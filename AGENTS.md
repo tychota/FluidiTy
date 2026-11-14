@@ -441,7 +441,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     tracked C++ or CUDA file. Another version fails the step and names both versions.
   - `rules note: <path>:<line>: NOTE <rule> <text>`: a word banned in one sense only, on a line the staged changes
     add. Read it and keep the word only in its allowed sense; a note never fails the gate.
-  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `native/`, and the pytest suite of `tools/` passes.
+  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `native/`, the pytest suite of `tools/` passes, and
+    `actionlint` accepts the files of `.github/workflows/`.
   - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (every
     run, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
@@ -472,6 +473,10 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   - `NOT RUN <check>`: an earlier check failed, so this one did not run.
 
   The exit code is 0 only when every check reads PASS. A commit lands only then.
+- CI: `.github/workflows/checks.yml` describes the checks CI will run (format and rules, the CPU build on Linux, macOS
+  and Windows, and the CUDA compile). It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every
+  job green on Linux, macOS, Windows and the CUDA compile, so the Windows CPU code has been compiled and its tests run.
+  No CI job runs GPU code, and the Windows CUDA build has never been compiled. The local gate remains the commit rule.
 - GPU targets: the CUDA presets compile for RTX 30 (`86-real`), RTX 40 (`89-real`) and RTX 50 (`120-real`, plus
   `120-virtual`). The owner's hardware run is on an RTX 5060 Ti; it is not recorded yet in `docs/gpu-runs.md`, so
   even that card is untested today. RTX 30 and 40 are compiled for, unverified. On a machine with a GPU, the tests

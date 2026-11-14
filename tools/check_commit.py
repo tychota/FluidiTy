@@ -9,9 +9,9 @@ change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Stag
 The steps, in order:
   format  check that the clang-format on PATH is the version pyproject.toml pins, then clang-format, as a dry run,
           on every tracked C++ and CUDA file.
-  rules   tools/check_rules.py on native/, then the pytest suite of tools/. The rules check prints a NOTE only for a
-          line the staged changes add; the gate prints each such note on a line `rules note: <note>` before the PASS
-          or FAIL line.
+  rules   tools/check_rules.py on native/, then the pytest suite of tools/, then actionlint on .github/workflows/.
+          The rules check prints a NOTE only for a line the staged changes add; the gate prints each such note on a
+          line `rules note: <note>` before the PASS or FAIL line.
   cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
           debug and the release CPU presets of the platform the gate runs on.
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
@@ -316,6 +316,8 @@ class Gate:
             "rules",
             [
                 [sys.executable, "-m", "pytest", "-q", str(tools)],
+                # With no argument actionlint finds the workflow files of the repository it runs in.
+                ["actionlint"],
             ],
         )
         return Outcome(outcome.passed, outcome.reason, notes)
