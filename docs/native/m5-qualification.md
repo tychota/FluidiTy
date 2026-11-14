@@ -12863,3 +12863,24 @@ The coarse nominal case still overshoots, and the matrix exits 1.
 At equal timesteps the finer grid remains 4.51–4.99° shallower.
 The matched run leaves the original qualification matrix unchanged.
 CUDA and dense sampling were untested. Both temporary edits were restored.
+
+#### Check resident compression at the intermediate grid width
+
+On 12e33f5, apply the same zero-fraction resident normal compression
+and run two additional sparse cases at h = 0.06875 m. Match the
+coarse and fine controls at dt = 0.001875 s and 0.0009375 s.
+Build the native dry-scene target and temporarily select those two
+cases with `--q-sand-column-long-settle 6`.
+
+| Timestep (s) | Angle | Radius (m) | Final drift |
+|---|---:|---:|---:|
+| 0.001875 | 34.333569° | 0.143437 | 0.013097° |
+| 0.0009375 | 34.041633° | 0.146712 | 0.410078° |
+
+Both additional cases pass at six seconds. At equal timesteps
+their angles lie between the coarse and fine results. The
+nominal angle changes monotonically across the three widths,
+and so does the half-step angle. The result confirms a
+grid-width dependence over this interval. The original coarse
+nominal failure remains. CUDA and dense sampling were untested.
+Both temporary edits were restored.
