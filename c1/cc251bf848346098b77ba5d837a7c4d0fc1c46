@@ -1,0 +1,33 @@
+native/fluidity/base/scalar_math_test.cc
+  s_4f0877e2acdcf0::t_948e5161d779a0 1-137
+native/fluidity/base/scalar_math.h
+  s_4f0877e2acdcf0::t_5f44fb8565dea6 1-234
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_61a58025ceb89f 141-149
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_64b388254625aa 5,11
+native/fluidity/base/mat3.h
+  s_4f0877e2acdcf0::t_0aba095d005614 15-22,25,30,175-242
+native/fluidity/base/mat3_test.cc
+  s_4f0877e2acdcf0::t_bd0dda8cc84306 6-9,223-381
+native/fluidity/base/vec3.h
+  s_4f0877e2acdcf0::t_89fbd19c7ed1d0 12-16,23,87-120
+native/fluidity/base/vec3_test.cc
+  s_4f0877e2acdcf0::t_1125795389eed5 6,78-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c1cc251bf848346098b77ba5d837a7c4d0fc1c46",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
