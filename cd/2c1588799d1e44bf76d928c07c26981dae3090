@@ -1,0 +1,31 @@
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_62a9993dcc67f8 14-21,39-49,56-61,74-79,90,216-268,330,335
+AGENTS.md
+  s_4f0877e2acdcf0::t_512155e1953ac5 397-400,407-410,416-423
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_c8d4d4403bbb29 10-11,13-14,17-20,23-32,43,61,63-68,76-77,86-88,105-108,133,151-182,215,217,219,222-239,274-276,281-295,303,334-336,356-357,360,370,418-421,424-429,432-444,447-452
+README.md
+  s_4f0877e2acdcf0::t_59c2a51540b475 60-66
+tools/cuda-container/Dockerfile
+  s_4f0877e2acdcf0::t_eb2a4c5b16f3ec 4-5
+CMakeLists.txt
+  s_4f0877e2acdcf0::t_08ddae975bb58f 64
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_b73d1df2b507a5 132-141,175-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cd2c1588799d1e44bf76d928c07c26981dae3090",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
