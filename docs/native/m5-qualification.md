@@ -13126,3 +13126,29 @@ All final drift magnitudes fall below one degree, but both
 half-step angles are below 30° and all radii exceed 0.16 m.
 The nominal coarse angle exceeds 35° by 0.030341°. The native
 matrix exits 1. CUDA was untested for this control.
+
+#### Separate transfer and stress increments on an outer dense trajectory
+
+On 7f72554, retain the old grid field for the ordinary gather
+even with PIC storage. Trace dense coarse nominal particle 78
+through the first step ending at the floor. For each step,
+project the pre-force PIC velocity minus the stored particle
+velocity, and the post-force PIC velocity minus the pre-force
+PIC velocity, onto the outward horizontal diagonal
+(-1, 0, -1) / sqrt(2). The second difference is the horizontal
+stress kick, as gravity acts vertically. Sum each signed
+difference over the 961 steps.
+
+| Contribution | Sum (m/s) | Sum of magnitudes (m/s) |
+|---|---:|---:|
+| Pre-force transfer | -2.996078 | 3.296349 |
+| Stress kick | 2.999957 | 2.999957 |
+
+Stress supplies outward velocity and the pre-force transfer
+largely cancels it over the trajectory. The sums measure
+changes in velocity, while accumulated displacement also
+depends on the velocities between steps. Run the native
+dry-scene target with the dense three-second selector limited
+to the coarse nominal case. It reproduces 29.703637° and
+exits 1. The temporary instrumentation was restored.
+Other particles, grid widths, timesteps and CUDA were untested.
