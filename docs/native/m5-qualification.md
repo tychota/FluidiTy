@@ -13933,3 +13933,27 @@ and 13.877397°. Both matrices exit 1. The coarse nominal
 case overshoots at 6 s and the other three stay below 30°.
 All radii pass. Dense sampling and CUDA were untested.
 The temporary solver edit was restored.
+
+
+#### Recheck registered M5 and the production mixed-scene gate
+
+On 6dcd970, build the registered M5 native and SM120 targets
+and rerun the CTest selection above. Eleven of thirteen pass.
+Only QSand.native and QSand.cuda fail. Both reproduce all four
+1.5 s angles from the a2ed1a7 recheck to the printed precision.
+
+Build the CLI and its fixture, then run:
+
+```powershell
+cmake --build out/requalified --target fluidity_simulate fluidity_simulate_fixture
+ctest --test-dir out/requalified -R '^SimulateCli.execution_validation$' --no-tests=error --output-on-failure
+```
+
+The validation test passes, including the mixed input preflight.
+M6 wide-coupled qualification at 996a34e covers floating-box
+pressure. The rotating-box tip 8dda003 changes fixed-orientation
+tangential contact. Neither supplies production snow stress
+evolution or a reconstructed moving snow–water interface.
+The bounded planar and checkpoint tests pass, and the authored
+snow–water execution still requires the production integration
+described above.
