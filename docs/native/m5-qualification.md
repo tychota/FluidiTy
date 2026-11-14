@@ -13654,3 +13654,19 @@ four angles agree at printed precision and are 29.113507°,
 half-step and fine half-step order. All four pass radius, short
 drift, and kinetic energy. The dense and longer runs are separate
 commands. This CTest run does not repeat the authored Blender bake.
+
+#### Limit sticking normal compression to the incoming volume rate
+
+On f577352, at ordinary granular zero-fraction sticking
+contacts set projected yy to min(0, max(incoming yy, tr L)).
+This retains compression only if both the incoming normal
+rate and full trace are negative, and caps its magnitude at
+the smaller of the two. The sweep and stress are unchanged.
+Run the native dry-scene executable without arguments and
+with `--q-sand-column-long-settle 6`.
+
+The default passes at 33.879300°. In coarse, fine, coarse
+half-step and fine half-step order the six-second angles are
+36.257700°, 28.631408°, 27.037958° and 23.794735°. All radii
+pass, but all angles miss the band and the matrix exits 1.
+CUDA and dense sampling were untested. The source edit was restored.
