@@ -14070,3 +14070,22 @@ six decimal places. All radii pass, and the coarse nominal
 angle remains above the band at both endpoints. All three
 commands exit 1. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+
+#### Bound resident compression by the gravitational cell timescale
+
+On cf5c427, at ordinary granular zero-fraction sticking contacts
+retain a compressive rate of q / (1 + q / r), where q is the
+positive magnitude of incoming normal compression and
+r = sqrt(abs(gravity) / cell width). With zero gravity retain
+the original projection. Leave transport and scatter unchanged.
+Run the native dry-scene target without arguments and with
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default angle is 35.042551°. The 1.5 s angles are
+35.883539°, 32.901328°, 31.448252°, and 31.558075° in coarse,
+fine, coarse half-step and fine half-step order. The 6 s angles
+are 36.789443°, 29.852859°, 32.092946°, and 28.843850°.
+All radii pass. Only the coarse half-step meets both the 6 s
+angle and persistence criteria. All three commands exit 1.
+CUDA and dense sampling were untested. The edit was restored.
