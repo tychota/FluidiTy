@@ -89,6 +89,35 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "linux-release-cuda",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "FLUIDITY_ENABLE_CUDA": true,
+        "CMAKE_CUDA_ARCHITECTURES": "86-real;89-real;120-real;120-virtual"
+      }
+    },
+    {
+      "name": "windows-debug-cuda",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FLUIDITY_ENABLE_CUDA": true,
+        "CMAKE_CUDA_ARCHITECTURES": "86-real;89-real;120-real;120-virtual",
+        "CMAKE_CUDA_RUNTIME_LIBRARY": "Shared"
+      }
+    },
+    {
+      "name": "windows-release-cuda",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "FLUIDITY_ENABLE_CUDA": true,
+        "CMAKE_CUDA_ARCHITECTURES": "86-real;89-real;120-real;120-virtual",
+        "CMAKE_CUDA_RUNTIME_LIBRARY": "Shared"
+      }
     }
   ],
   "buildPresets": [
@@ -115,6 +144,18 @@
     {
       "name": "windows-release-cpu",
       "configurePreset": "windows-release-cpu"
+    },
+    {
+      "name": "linux-release-cuda",
+      "configurePreset": "linux-release-cuda"
+    },
+    {
+      "name": "windows-debug-cuda",
+      "configurePreset": "windows-debug-cuda"
+    },
+    {
+      "name": "windows-release-cuda",
+      "configurePreset": "windows-release-cuda"
     }
   ],
   "testPresets": [
@@ -157,6 +198,21 @@
       "name": "windows-release-cpu",
       "inherits": "test-base",
       "configurePreset": "windows-release-cpu"
+    },
+    {
+      "name": "linux-release-cuda",
+      "inherits": "test-base",
+      "configurePreset": "linux-release-cuda"
+    },
+    {
+      "name": "windows-debug-cuda",
+      "inherits": "test-base",
+      "configurePreset": "windows-debug-cuda"
+    },
+    {
+      "name": "windows-release-cuda",
+      "inherits": "test-base",
+      "configurePreset": "windows-release-cuda"
     }
   ]
 }

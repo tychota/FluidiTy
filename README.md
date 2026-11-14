@@ -39,4 +39,31 @@ On Windows, use the `windows-` presets from a Visual Studio Developer shell (or 
 first), so that CMake finds the MSVC compiler. In PowerShell, the first line is
 `$env:CONAN_HOME = "$PWD/out/conan-home"`; the other commands are the same.
 
-Only the macOS presets have been run so far. The Linux and Windows presets are written but not yet run.
+Only the macOS presets have been run so far, and `linux-release-cuda` has been built in the container below. The
+other Linux and Windows presets are written but not yet run.
+
+### GPU code
+
+The GPU code is compiled in a Linux container that has the CUDA compiler. Docker must be running (on macOS,
+`colima start`). From the repository root:
+
+```sh
+uv run python tools/check_commit.py --only cuda
+```
+
+This builds the image of `tools/cuda-container/Dockerfile` and runs it with the repository mounted read-only. The
+tools, the Conan packages and the build tree live in a Docker volume named after this checkout's path,
+`fluidity-cuda-out-<hash>`, so only the first run fetches them and two checkouts never share a build tree. Inside,
+it builds everything of the preset `linux-release-cuda`, tidies the `.cc` files only that build compiles, and runs
+the tests labelled `cpu` and `no_gpu`. The container has no GPU, so the GPU code is compiled, not run. The output
+of the last run is in `out/check-commit/cuda.log`. To start again from nothing, or to remove the volume of a deleted
+checkout, list the volumes with `docker volume ls --filter name=fluidity-cuda-out` and remove one with
+`docker volume rm <name>`.
+
+The CUDA presets compile for RTX 30, 40 and 50 GPUs. The owner's RTX 5060 Ti is the card for the hardware run,
+which `docs/gpu-runs.md` will record; until then no card is tested. RTX 30 and 40 are compiled for, unverified. On
+a machine with a GPU, run the GPU tests with `ctest --preset linux-release-cuda -L '^gpu$'` (labels are regular
+expressions, and a bare `gpu` also matches `no_gpu`).
+
+Stage your changes first: the full gate that every commit passes, `uv run python tools/check_commit.py`, refuses
+unstaged or untracked files; `AGENTS.md` ("Commands") says what each line of its output means.

@@ -4,14 +4,26 @@
 #include "fluidity/base/check_can_run_on.h"
 #include "fluidity/base/run_on.h"
 
+#if defined(FLUIDITY_HAS_GPU)
+#include "fluidity/base/check_can_run_on_gpu.h"
+#endif
+
 namespace fluidity {
 
 std::expected<void, RunOnError> CheckCanRunOn(RunOn run_on) {
   if (run_on == RunOn::kCpu) {
     return {};
   }
+#if defined(FLUIDITY_HAS_GPU)
+  RunOnError gpu_error = RunOnError::kNone;
+  if (!CheckGpuMath(&gpu_error)) {
+    return std::unexpected(gpu_error);
+  }
+  return {};
+#else
   // This build was made without the CUDA preset, so there is no GPU code to run.
   return std::unexpected(RunOnError::kGpuNotBuilt);
+#endif
 }
 
 std::string_view ToMessage(RunOnError error) {

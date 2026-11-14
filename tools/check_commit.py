@@ -1,0 +1,567 @@
+"""Runs every check a commit must pass, in order, and prints one line per check.
+
+Usage: uv run python tools/check_commit.py [--only format|rules|cpu|tidy|paper|cuda] [--allow-dirty]
+
+The gate checks what will be committed. Before any step it reads `git status`: an untracked file or an unstaged
+change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Staged changes are fine. With
+--allow-dirty it prints `NOTE tree: unstaged or untracked files are being tested` and goes on, for work in progress.
+
+The steps, in order:
+  format  check that the clang-format on PATH is the version pyproject.toml pins, then clang-format, as a dry run,
+          on every tracked C++ and CUDA file.
+  rules   tools/check_rules.py on native/, then the pytest suite of tools/. The rules check prints a NOTE only for a
+          line the staged changes add; the gate prints each such note on a line `rules note: <note>` before the PASS
+          or FAIL line.
+  cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
+          debug and the release CPU presets of the platform the gate runs on.
+  tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
+          debug preset, over every tracked .cc file under native/ that the CPU build compiles, and over each
+          header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
+          build compiles, such as a GPU-only test, is tidied by the cuda step.
+  paper   compile the method paper with typst, and check that every label named on a `Read:` line under native/
+          (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper.
+  cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run
+          clang-tidy over the .cc files that only the CUDA build compiles (the list CMake writes to
+          gpu_only_sources.txt), and run the tests labelled cpu and no_gpu. The container has no GPU, so GPU code is
+          compiled, not run. Then every tracked .cc and .cu file under native/ must appear in the CUDA build's compile
+          commands, and every tracked .h and .cuh file under native/ must be compiled alone there, as a header-alone
+          file (header_check/<include path>.cc or .cu, which fluidity_add_headers writes): a file that is neither
+          fails the step by name. The exception is a test header (`test` as a word of its file name, such as
+          test_support.h): the header-alone files belong to the library, which does not link GoogleTest, so a test
+          header is compiled by the test programs that include it.
+
+The container keeps its tools, Conan packages and build tree in a Docker volume named after a short hash of the
+repository's absolute path (cuda_out_volume), so two checkouts never share a build tree. List the volumes with
+`docker volume ls --filter name=fluidity-cuda-out` and remove one that belongs to a deleted checkout with
+`docker volume rm <name>`.
+
+Output: `PASS <step>` or `FAIL <step>: <reason>`, one line each. The cpu step prints one line per preset. After a
+failure the later lines read `NOT RUN <step>`. The output of each step's commands goes to out/check-commit/<step>.log,
+which keeps the last run.
+The exit code is 0 when every step passed and 1 otherwise. No step is ever reported as passed without running.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STEP_NAMES = ("format", "rules", "cpu", "tidy", "paper", "cuda")
+
+# The CUDA image, pinned by digest: tag 13.4.1-devel-ubuntu24.04, nvcc 13.4.59. It exists for linux/arm64 and
+# linux/amd64; container_platform() picks the one that runs without emulation here.
+CUDA_IMAGE = "nvidia/cuda@sha256:a3f014424ccc86cf66c84d700d2896491424205dd9457e3116ed4f0e96381311"
+CUDA_BUILD_IMAGE = "fluidity-cuda-build"
+CUDA_OUT_VOLUME_PREFIX = "fluidity-cuda-out"
+CUDA_PRESET = "linux-release-cuda"
+# The repository as the container sees it.
+CONTAINER_SOURCE_ROOT = "/src"
+# Printed by the container for each file of the CUDA build's compile commands.
+COMPILED_MARKER = "compiled: "
+# The tools whose version the gate checks against pyproject.toml before it runs them.
+PINNED_TOOLS = ("clang-format", "clang-tidy")
+
+PAPER_DIRECTORY = Path("docs") / "method-paper"
+PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
+PAPER_PDF = Path("out") / "paper" / "fluidity-method.pdf"
+LOG_DIRECTORY = Path("out") / "check-commit"
+
+CPP_PATTERNS = ("*.cc", "*.h", "*.cu", "*.cuh")
+# The sources a build compiles; every tracked one must be in the CUDA build.
+COMPILED_PATTERNS = ("native/*.cc", "native/*.cu", "native/*.h", "native/*.cuh")
+HEADER_EXTENSIONS = (".h", ".cuh")
+DOCKER_NOT_RUNNING = "Docker is not running (start it with: colima start)"
+DOCKER_NOT_FOUND = "Docker is not installed (no docker command on PATH)"
+DOCKER_INFO_TIMEOUT_SECONDS = 10
+HEADER_CHECK_FOLDER = "header_check"
+# Where the CUDA build writes the header-alone files: <this>/<include path>.cc or .cu, for native/<include path>.
+CONTAINER_HEADER_CHECK_ROOT = f"/out/build/{CUDA_PRESET}/{HEADER_CHECK_FOLDER}/"
+# A test header has `test` as a word of its file name: test_support.h, shared_math_test_gpu.h.
+_TEST_HEADER_STEM = re.compile(r"(^|_)test(_|$)")
+
+# Runs inside the container. /src is the repository, read-only; /out is the named volume, which keeps the Python
+# tools, the Conan packages and the build tree between runs. The presets write to ${sourceDir}/out, which is
+# read-only here, so the build folder (-B) and the toolchain file (--toolchain) are given on the command line;
+# both take precedence over the preset's values. After the build it prints one `compiled: <path>` line per file of
+# the compile commands, which the gate compares with the tracked sources, and tidies the .cc files that only this
+# build compiles (CMake lists them in gpu_only_sources.txt), with the clang-tidy of uv.lock.
+CONTAINER_SCRIPT = f"""
+set -euo pipefail
+export CONAN_HOME=/out/conan-home
+export UV_PROJECT_ENVIRONMENT=/out/venv
+export UV_CACHE_DIR=/out/uv-cache
+export UV_PYTHON_INSTALL_DIR=/out/uv-python
+cd /src
+uv sync --frozen --quiet
+export PATH=/out/venv/bin:$PATH
+conan profile detect --exist-ok > /dev/null
+toolchain_folder=/out/conan/{CUDA_PRESET}
+# Always, so a change to conanfile.py or conan.lock reaches the toolchain; packages already built are reused.
+conan install /src --lockfile /src/conan.lock -of "$toolchain_folder" -s build_type=Release \\
+    -s compiler.cppstd=23 -s:b compiler.cppstd=23 --build=missing
+cmake --preset {CUDA_PRESET} -B /out/build/{CUDA_PRESET} --toolchain "$toolchain_folder/conan_toolchain.cmake"
+cmake --build /out/build/{CUDA_PRESET}
+python -c 'import json, sys; [print("{COMPILED_MARKER}" + entry["file"]) for entry in json.load(open(sys.argv[1]))]' \\
+    /out/build/{CUDA_PRESET}/compile_commands.json
+# One path per line; with no path, nothing runs.
+xargs --no-run-if-empty clang-tidy -p /out/build/{CUDA_PRESET} --quiet < /out/build/{CUDA_PRESET}/gpu_only_sources.txt
+# ctest labels are regular expressions: a bare `gpu` would also match `no_gpu`.
+ctest --test-dir /out/build/{CUDA_PRESET} -L '^(cpu|no_gpu)$' --no-tests=error --output-on-failure
+"""
+
+# A label in Typst text: <sec-run-on>, <eq:pressure>.
+_LABEL = re.compile(r"<([A-Za-z][A-Za-z0-9_:.-]*)>")
+# A label cited on a `Read:` line has a kind prefix, so `<expected>` or `<first author>` there is not a citation.
+_CITED_LABEL = re.compile(r"<((?:sec|fig|proc|eq|tab)[-:][A-Za-z0-9_:.-]+)>")
+# Raw text in Typst files, where `<name>` is code, not a label: fenced blocks first, then inline spans.
+_TYPST_RAW = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+_TYPST_LINE_COMMENT = re.compile(r"(?<!:)//[^\n]*")
+_TYPST_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+# A comment line that continues the previous labelled section: `//` and at least two spaces, as in
+# `//          <fig-axes>`. A line that starts a new section (`// Fails: ...`) has only one space.
+_READ_CONTINUATION = re.compile(r"^\s*//\s{2,}\S")
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """The result of one line of the gate. `reason` is empty when the line passed."""
+
+    passed: bool
+    reason: str = ""
+    notes: tuple[str, ...] = ()  # Lines printed before PASS or FAIL.
+    output: str = ""  # What the command printed, standard output and standard error together.
+
+
+@dataclass(frozen=True)
+class Check:
+    """One line of the gate: the step it belongs to, the text printed after PASS or FAIL, and how to run it."""
+
+    step: str
+    title: str
+    run: Callable[[], Outcome]
+
+
+def container_platform() -> str:
+    """The Docker platform that matches this processor, so the CUDA image runs without emulation."""
+    is_arm = platform.machine().lower() in {"arm64", "aarch64"}
+    return "linux/arm64" if is_arm else "linux/amd64"
+
+
+def cuda_out_volume(repo_root: Path) -> str:
+    """The Docker volume of this checkout's CUDA build: the prefix and 12 hex digits of the SHA-256 of its absolute
+    path. Two checkouts get two volumes, so Ninja never compares one checkout's sources with another's build."""
+    digest = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
+    return f"{CUDA_OUT_VOLUME_PREFIX}-{digest[:12]}"
+
+
+def pinned_versions(pyproject_text: str) -> dict[str, str]:
+    """The `name==version` pins of pyproject.toml, by name."""
+    return dict(re.findall(r'"([A-Za-z0-9_.-]+)==([^"]+)"', pyproject_text))
+
+
+def read_tool_version(version_output: str) -> str | None:
+    """The first `version X.Y.Z` of a `--version` output, or None."""
+    match = re.search(r"\bversion (\d+(?:\.\d+)+)", version_output)
+    return match.group(1) if match else None
+
+
+def is_test_header(path: str) -> bool:
+    """Whether `path` is a header of test code, which the header-alone check does not cover."""
+    return path.endswith(HEADER_EXTENSIONS) and _TEST_HEADER_STEM.search(Path(path).stem) is not None
+
+
+def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[str]:
+    """The tracked files that no `compiled: <path>` line of the container covers, in tracked order.
+
+    The container sees the repository at /src, so `/src/native/a.cc` covers `native/a.cc`. A header is covered by its
+    header-alone file: `/out/build/<preset>/header_check/fluidity/a.h.cc` (or `.h.cu`) covers `native/fluidity/a.h`.
+    A test header (is_test_header) is never reported."""
+    prefix = CONTAINER_SOURCE_ROOT + "/"
+    compiled = set()
+    for line in compiled_output.splitlines():
+        if not line.startswith(COMPILED_MARKER):
+            continue
+        path = line[len(COMPILED_MARKER) :].strip()
+        if path.startswith(prefix):
+            compiled.add(path[len(prefix) :])
+        elif path.startswith(CONTAINER_HEADER_CHECK_ROOT):
+            include_path = str(Path(path[len(CONTAINER_HEADER_CHECK_ROOT) :]).with_suffix(""))
+            compiled.add("native/" + include_path)
+    return [path for path in tracked if path not in compiled and not is_test_header(path)]
+
+
+def host_cpu_presets() -> tuple[str, str]:
+    """The debug and release CPU presets of the platform the gate runs on."""
+    prefix = {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux")
+    return f"{prefix}-debug-cpu", f"{prefix}-release-cpu"
+
+
+class Gate:
+    """Runs the checks for one repository. Every command goes through `subprocess.run`."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+        self.environment = dict(os.environ, CONAN_HOME=str(repo_root / "out" / "conan-home"))
+        self.started_logs: set[str] = set()
+
+    def command(self, log_name: str, arguments: Sequence[str]) -> Outcome:
+        """Runs one command from the repository root and adds its output to the step's log, which keeps the last run."""
+        try:
+            completed = subprocess.run(
+                list(arguments),
+                cwd=self.repo_root,
+                env=self.environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return Outcome(False, f"{arguments[0]} was not found on PATH")
+        log_path = self.repo_root / LOG_DIRECTORY / f"{log_name}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if log_name in self.started_logs else "w"
+        self.started_logs.add(log_name)
+        output = completed.stdout or ""
+        with log_path.open(mode, encoding="utf-8") as log:
+            log.write(f"$ {' '.join(arguments)}\n{output}\n")
+        if completed.returncode == 0:
+            return Outcome(True, output=output)
+        shown = " ".join(arguments[:3])
+        relative_log = log_path.relative_to(self.repo_root).as_posix()
+        return Outcome(False, f"`{shown} ...` exited with {completed.returncode} (log: {relative_log})", output=output)
+
+    def check_tool_version(self, log_name: str, tool: str) -> Outcome:
+        """Fails unless `tool --version` prints the version pyproject.toml pins for it."""
+        try:
+            pins = pinned_versions((self.repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+        except OSError as error:
+            return Outcome(False, f"pyproject.toml cannot be read: {error}")
+        pinned = pins.get(tool)
+        if pinned is None:
+            return Outcome(False, f"pyproject.toml pins no version of {tool}")
+        asked = self.command(log_name, [tool, "--version"])
+        if not asked.passed:
+            return asked
+        running = read_tool_version(asked.output)
+        if running != pinned:
+            return Outcome(False, f"{tool} {running} runs, but pyproject.toml pins {pinned} (run: uv sync --frozen)")
+        return Outcome(True)
+
+    def commands(self, log_name: str, command_list: Sequence[Sequence[str]]) -> Outcome:
+        """Runs commands in order and stops at the first failure."""
+        for arguments in command_list:
+            outcome = self.command(log_name, arguments)
+            if not outcome.passed:
+                return outcome
+        return Outcome(True)
+
+    def tracked_files(self, patterns: Sequence[str]) -> list[str] | None:
+        """Tracked files that match the git pathspecs, or None when git fails."""
+        try:
+            completed = subprocess.run(
+                ["git", "ls-files", "--", *patterns],
+                cwd=self.repo_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+        if completed.returncode != 0:
+            return None
+        return [line for line in (completed.stdout or "").splitlines() if line.strip()]
+
+    # Steps ------------------------------------------------------------------------------------------------
+
+    def check_format(self) -> Outcome:
+        files = self.tracked_files(CPP_PATTERNS)
+        if files is None:
+            return Outcome(False, "git ls-files failed")
+        if not files:
+            return Outcome(False, "no tracked C++ or CUDA file was found")
+        version = self.check_tool_version("format", "clang-format")
+        if not version.passed:
+            return version
+        return self.command("format", ["clang-format", "--dry-run", "--Werror", *files])
+
+    def check_rules(self) -> Outcome:
+        tools = self.repo_root / "tools"
+        rules = self.command(
+            "rules",
+            [
+                sys.executable,
+                str(tools / "check_rules.py"),
+                str(self.repo_root / "native"),
+                "--notes-on-staged-lines",
+                "--repository",
+                str(self.repo_root),
+            ],
+        )
+        notes = tuple(f"rules note: {line}" for line in rules.output.splitlines() if ": NOTE " in line)
+        if not rules.passed:
+            return Outcome(False, rules.reason, notes)
+        outcome = self.commands(
+            "rules",
+            [
+                [sys.executable, "-m", "pytest", "-q", str(tools)],
+            ],
+        )
+        return Outcome(outcome.passed, outcome.reason, notes)
+
+    def check_cpu_preset(self, preset: str) -> Outcome:
+        # Conan runs every time, so a change to conanfile.py or conan.lock reaches the toolchain file.
+        toolchain_folder = Path("out") / "conan" / preset
+        build_type = "Debug" if "-debug-" in preset else "Release"
+        command_list: list[list[str]] = [
+            ["conan", "profile", "detect", "--exist-ok"],
+            [
+                "conan",
+                "install",
+                ".",
+                "--lockfile",
+                "conan.lock",
+                "-of",
+                toolchain_folder.as_posix(),
+                "-s",
+                f"build_type={build_type}",
+                "-s",
+                "compiler.cppstd=23",
+                "-s:b",
+                "compiler.cppstd=23",
+                "--build=missing",
+            ],
+        ]
+        command_list.append(["cmake", "--preset", preset])
+        command_list.append(["cmake", "--build", "--preset", preset])
+        command_list.append(["ctest", "--preset", preset])
+        return self.commands(f"cpu-{preset}", command_list)
+
+    def check_tidy(self) -> Outcome:
+        version = self.check_tool_version("tidy", "clang-tidy")
+        if not version.passed:
+            return version
+        debug_preset = host_cpu_presets()[0]
+        build_folder = Path("out") / "build" / debug_preset
+        compile_commands_path = self.repo_root / build_folder / "compile_commands.json"
+        if not compile_commands_path.exists():
+            return Outcome(False, f"{build_folder.as_posix()}/compile_commands.json is missing; run the cpu step first")
+        try:
+            entries = json.loads(compile_commands_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            return Outcome(False, f"{build_folder.as_posix()}/compile_commands.json cannot be read: {error}")
+        try:
+            compiled = {Path(entry["directory"], entry["file"]).resolve() for entry in entries}
+        except (TypeError, KeyError) as error:
+            # Not a list of objects with "directory" and "file": the build folder is broken, not the sources.
+            reason = f"is malformed ({type(error).__name__}: {error}); delete {build_folder.as_posix()} and run cpu"
+            return Outcome(False, f"{build_folder.as_posix()}/compile_commands.json {reason}")
+        files = self.tracked_files(["native/*.cc"])
+        if files is None:
+            return Outcome(False, "git ls-files failed")
+        files = [path for path in files if path.endswith(".cc")]
+        # A file outside the CPU build, such as a GPU-only test, is tidied by the cuda step, and the cuda step fails
+        # for a tracked source that no build compiles.
+        in_build = [path for path in files if (self.repo_root / path).resolve() in compiled]
+        if not in_build:
+            return Outcome(False, "no tracked .cc file under native/ is in the CPU build")
+        header_checks = sorted(
+            str(path) for path in compiled if HEADER_CHECK_FOLDER in path.parts and path.name.endswith(".h.cc")
+        )
+        tidy = ["clang-tidy", "-p", build_folder.as_posix(), "--quiet"]
+        command_list = [[*tidy, *in_build]]
+        if header_checks:
+            # A header-alone file includes its header and uses nothing from it, which is its purpose, so the
+            # include check is off for it. The header itself is still checked through HeaderFilterRegex.
+            command_list.append([*tidy, "--checks=-misc-include-cleaner", *header_checks])
+        return self.commands("tidy", command_list)
+
+    def check_paper(self) -> Outcome:
+        compiled = self.command("paper", ["typst", "compile", PAPER_TYPST_FILE.as_posix(), PAPER_PDF.as_posix()])
+        if not compiled.passed:
+            return compiled
+        defined = self.paper_labels()
+        missing = []
+        for path in sorted((self.repo_root / "native").rglob("*")):
+            if not path.is_file() or path.suffix not in {".h", ".cuh", ".cc", ".cu"}:
+                continue
+            relative = path.relative_to(self.repo_root).as_posix()
+            for number, cited_text in read_line_texts(path.read_text(encoding="utf-8")):
+                for label in _CITED_LABEL.findall(cited_text):
+                    if label not in defined:
+                        missing.append(f"{relative}:{number} cites <{label}>, which the paper does not define")
+        if not missing:
+            return Outcome(True)
+        more = f" (and {len(missing) - 1} more)" if len(missing) > 1 else ""
+        return Outcome(False, missing[0] + more)
+
+    def paper_labels(self) -> set[str]:
+        """Labels defined in the method paper's Typst files. Code and comments are left out."""
+        labels: set[str] = set()
+        for path in sorted((self.repo_root / PAPER_DIRECTORY).rglob("*.typ")):
+            text = _TYPST_RAW.sub(" ", path.read_text(encoding="utf-8"))
+            text = _TYPST_BLOCK_COMMENT.sub(" ", text)
+            text = _TYPST_LINE_COMMENT.sub(" ", text)
+            labels.update(_LABEL.findall(text))
+        return labels
+
+    def check_cuda(self) -> Outcome:
+        try:
+            docker_info = subprocess.run(
+                ["docker", "info"],
+                cwd=self.repo_root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=DOCKER_INFO_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError:
+            return Outcome(False, DOCKER_NOT_FOUND)
+        except subprocess.TimeoutExpired:
+            # A stopped colima virtual machine can leave the client waiting instead of failing.
+            return Outcome(False, DOCKER_NOT_RUNNING)
+        if docker_info.returncode != 0:
+            return Outcome(False, DOCKER_NOT_RUNNING)
+        tracked = self.tracked_files(COMPILED_PATTERNS)
+        if tracked is None:
+            return Outcome(False, "git ls-files failed")
+        tracked = [path for path in tracked if path.endswith((".cc", ".cu", *HEADER_EXTENSIONS))]
+        container_folder = self.repo_root / "tools" / "cuda-container"
+        docker_platform = container_platform()
+        image = self.command(
+            "cuda", ["docker", "build", "--platform", docker_platform, "-t", CUDA_BUILD_IMAGE, str(container_folder)]
+        )
+        if not image.passed:
+            return image
+        built = self.command(
+            "cuda",
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--platform",
+                docker_platform,
+                "-v",
+                f"{self.repo_root}:{CONTAINER_SOURCE_ROOT}:ro",
+                "-v",
+                f"{cuda_out_volume(self.repo_root)}:/out",
+                CUDA_BUILD_IMAGE,
+                "bash",
+                "-c",
+                CONTAINER_SCRIPT,
+            ],
+        )
+        if not built.passed:
+            return built
+        missing = sources_not_compiled(tracked, built.output)
+        if missing:
+            return Outcome(False, "not compiled by the CUDA build: " + ", ".join(missing))
+        return Outcome(True)
+
+    def dirty_paths(self) -> list[str] | None:
+        """Untracked files and files with unstaged changes, or None when git fails. Ignored files are left out.
+
+        `-z` ends each entry with a NUL byte and never quotes a path, so a path with a space or a non-ASCII
+        character is printed as it is."""
+        try:
+            completed = subprocess.run(
+                ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                cwd=self.repo_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+        if completed.returncode != 0:
+            return None
+        dirty = []
+        entries = iter((completed.stdout or "").split("\0"))
+        for entry in entries:
+            # Two status letters, a space, the path. The first letter is the index, the second the working tree.
+            if len(entry) < 4:
+                continue
+            index_status, tree_status, path = entry[0], entry[1], entry[3:]
+            if index_status in "RC":
+                # A rename or a copy is followed by a second entry, the original path, which is not dirty itself.
+                next(entries, None)
+            if index_status == "?" or tree_status != " ":
+                dirty.append(path)
+        return dirty
+
+    def checks(self) -> list[Check]:
+        debug_preset, release_preset = host_cpu_presets()
+        return [
+            Check("format", "format", self.check_format),
+            Check("rules", "rules", self.check_rules),
+            Check("cpu", f"cpu {debug_preset}", lambda: self.check_cpu_preset(debug_preset)),
+            Check("cpu", f"cpu {release_preset}", lambda: self.check_cpu_preset(release_preset)),
+            Check("tidy", "tidy", self.check_tidy),
+            Check("paper", "paper", self.check_paper),
+            Check("cuda", "cuda", self.check_cuda),
+        ]
+
+
+def read_line_texts(text: str) -> list[tuple[int, str]]:
+    """The text after each `Read:` and of the comment lines that continue it, with 1-based line numbers."""
+    found = []
+    in_read = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        if "Read:" in line:
+            found.append((number, line.split("Read:", 1)[1]))
+            in_read = True
+        elif in_read and _READ_CONTINUATION.match(line):
+            found.append((number, line))
+        else:
+            in_read = False
+    return found
+
+
+def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
+    parser = argparse.ArgumentParser(description="Run every check a commit must pass.")
+    parser.add_argument("--only", choices=STEP_NAMES, help="run one step only")
+    parser.add_argument(
+        "--allow-dirty", action="store_true", help="test the working tree even with unstaged or untracked files"
+    )
+    arguments = parser.parse_args(argv)
+    gate = Gate(repo_root)
+    checks = [check for check in gate.checks() if arguments.only in (None, check.step)]
+    failed = False
+    dirty = gate.dirty_paths()
+    if dirty is None:
+        print("FAIL tree: git status failed", flush=True)
+        failed = True
+    elif dirty and arguments.allow_dirty:
+        print("NOTE tree: unstaged or untracked files are being tested", flush=True)
+    elif dirty:
+        print(f"FAIL tree: unstaged or untracked: {', '.join(dirty)}", flush=True)
+        failed = True
+    for check in checks:
+        if failed:
+            print(f"NOT RUN {check.title}", flush=True)
+            continue
+        outcome = check.run()
+        for note in outcome.notes:
+            print(note, flush=True)
+        if outcome.passed:
+            print(f"PASS {check.title}", flush=True)
+        else:
+            print(f"FAIL {check.title}: {outcome.reason}", flush=True)
+            failed = True
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

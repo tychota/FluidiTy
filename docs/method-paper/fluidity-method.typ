@@ -232,11 +232,14 @@ for bit.
 The check can demand equal bits where whole operations cannot. It computes one value at a time, with no sum whose
 order differs between the processors. It evaluates the shared vector and matrix helpers: a cross product, a dot
 product, a fixed rotation matrix times a vector, a determinant, a length, a square root and a floor. These use only
-operations that IEEE 754 defines as correctly rounded: addition, subtraction, multiplication, division, square root
-and floor. The numerical flags make both processors round them the same way. They forbid fused multiply-add, which
-rounds $a times b + c$ once instead of twice. They forbid flush-to-zero, which replaces very small numbers by zero.
-They demand correctly rounded division and square root. A wrong flag or a broken driver therefore shows up as a
-differing bit.
+operations that IEEE 754 defines as correctly rounded: addition, subtraction, multiplication, square root and floor.
+On an NVIDIA GPU, double-precision arithmetic always keeps subnormal numbers, the numbers below the smallest normal
+double, and always rounds division and square root correctly. Of the four device flags, only #box[`--fmad=false`]
+changes double results: it forbids fused multiply-add, which rounds $a times b + c$ once instead of twice. The other
+three, #box[`--ftz=false`], #box[`--prec-div=true`] and #box[`--prec-sqrt=true`], govern single precision; they are
+set so that no float code escapes the rule. On the CPU, `-ffp-contract=off` and `/fp:precise` forbid fusing, and the
+absence of fast-math keeps subnormal numbers. A fused multiply-add on either processor, flush-to-zero on the CPU (a
+fast-math build, or a process that turns it on), or a broken driver therefore shows up as a differing bit.
 
 #procedure(
   [`CheckCanRunOn(RunOn::kGpu)`, the GPU math check],
@@ -245,12 +248,12 @@ differing bit.
   outputs: [Success, or one of the three reasons below.],
   fails: [No GPU found; a GPU call failed; the shared math gave different numbers on the GPU.],
   ([Find a GPU], [Ask the CUDA runtime how many GPUs it sees. Fail with "no GPU found" if there is none or no
-    driver answers.]),
-  ([Build the fixed inputs], [Generate 32 inputs in the code from a small integer formula, so both processors
-    start from the same doubles on every run. Several are smaller than the smallest normal double (papers call
-    them subnormal): flush-to-zero would replace them by zero. Several products are picked so that fused
-    multiply-add would round their sum differently. None produces a NaN or an infinity, because the bit pattern
-    of a NaN can differ between processors even when both are right.]),
+    driver answers. Fail with "a GPU call failed" if the runtime reports any other error.]),
+  ([Build the fixed inputs], [Generate 32 inputs in the code from a small integer formula, so both processors start
+    from the same doubles on every run. Several inputs are so small that their products are below the smallest
+    normal double (papers call such numbers subnormal): flush-to-zero would replace them by zero. Several products
+    are picked so that fused multiply-add would round their sum differently. None produces a NaN or an infinity,
+    because the bit pattern of a NaN can differ between processors even when both are right.]),
   ([Compute on the GPU], [Copy the inputs to the GPU (a `Write`), evaluate the shared math there with one input
     per thread, and copy the results back (a `Read`). Fail with "a GPU call failed" if any call reports an
     error.]),

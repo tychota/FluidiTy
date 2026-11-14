@@ -279,6 +279,18 @@ that calls it compiles without the CUDA compiler. The rules check skips the back
 whose stem ends in `_gpu` (`.h`, `.cu`), and fails an `#include` of a `*_gpu.h` header from another folder or from
 a header that is not itself `_gpu`.
 
+**The two halves of an operation.** The public function lives in `<name>_cpu.cc`: it checks its inputs, chooses the
+half by `RunOn`, runs the CPU loop itself, and calls the GPU half under `#if defined(FLUIDITY_HAS_GPU)`. The GPU half
+is `<name>_gpu.cu`, declared in the private `<name>_gpu.h`. It returns a `RunOnCallStatus` (`base/run_on_call.h`),
+which the CPU half maps into its own error with one mapping function. A `.cu` file starts GPU functions, waits for
+the GPU and holds temporary GPU memory of its own only through the helpers of `base/gpu_launch.cuh`
+(`ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). It may call the CUDA runtime directly for a copy or a fill
+(`cudaMemcpy`, `cudaMemset`) and for a device query (such as `cudaGetDeviceCount`); the status of every direct copy
+or fill goes through `ToRunOnCallStatus`, which gives `kCallFailed` for any failure. A GPU function is a thin loop
+around shared per-item or per-thread functions marked `FLUIDITY_CPU_AND_GPU`, which live in a shared header; CPU
+tests call them over every item, or every thread block and thread in launch order and in reverse, so the GPU
+arithmetic is tested without a GPU.
+
 **`RunOn` is the caller's choice.** `enum class RunOn : std::uint8_t { kCpu, kGpu }` lives in the shared header
 `base/run_on.h`, so any shared type can carry it. The caller chooses it when the simulation is built.
 `CheckCanRunOn(RunOn)` answers whether that choice can run here. Nothing ever changes it silently: when the GPU
@@ -346,7 +358,9 @@ FluidiTy's own array file holds only the saved state and internal run records.
   There is no project macro, because `assert` already does this and needs no new name.
 - **No Abseil.**
 - **Numerical flags.** Device code is compiled with `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`.
-  Host code uses `-ffp-contract=off` (GCC, Clang) and `/fp:precise` (MSVC). No fast-math anywhere.
+  For doubles only `--fmad=false` matters: an NVIDIA GPU always keeps subnormal doubles and rounds double division
+  and square root correctly, so the last three flags matter for single precision only. Host code uses
+  `-ffp-contract=off` (GCC, Clang) and `/fp:precise` (MSVC). No fast-math anywhere.
 - **Format.** Google C++ style through the repository's clang-format 23.1 settings: 120 columns, two-space
   indent, `//` comments, braces on every control-flow body.
 - **Targets.** Every C++ and CUDA target is created through the helpers of `cmake/fluidity_targets.cmake`
@@ -397,7 +411,52 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 
 ## Commands
 
-- Gate for every commit: not written yet. It is added here together with the gate script.
+- Gate for every commit. The gate checks what will be committed, so the order is: stage (`git add`), run the gate
+  from the repository root, `uv run python tools/check_commit.py`, then commit. Add `--only <step>` to run one
+  step: `format`, `rules`, `cpu`, `tidy`, `paper` or `cuda`. It prints one line per check, in this order:
+  - `FAIL tree: unstaged or untracked: <paths>`: printed first, only when a file is untracked or has unstaged
+    changes outside the ignored paths; every step is then `NOT RUN`. Staged changes are fine. With `--allow-dirty`
+    the gate prints `NOTE tree: unstaged or untracked files are being tested` instead and goes on; use it for work
+    in progress, never for a commit.
+  - `PASS format`: the clang-format on `PATH` is the version `pyproject.toml` pins, and it reports no change in any
+    tracked C++ or CUDA file. Another version fails the step and names both versions.
+  - `rules note: <path>:<line>: NOTE <rule> <text>`: a word banned in one sense only, on a line the staged changes
+    add. Read it and keep the word only in its allowed sense; a note never fails the gate.
+  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `native/`, and the pytest suite of `tools/` passes.
+  - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (every
+    run, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
+    builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
+    platform.
+  - `PASS tidy`: the clang-tidy on `PATH` is the pinned version, and it reports nothing, with the debug preset's
+    compile commands, on every tracked `.cc` file under `native/` that the CPU build compiles, and on each header
+    compiled alone (`header_check/`). A `.cc` file that only the CUDA build compiles, such as a GPU-only test, is
+    tidied by the `cuda` step.
+  - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `native/`,
+    including its continuation lines, is defined in the paper. A label starts with its kind: `<sec-...>`,
+    `<fig-...>`, `<proc-...>`, `<eq-...>` or `<tab-...>` (`:` may replace `-`); other text in angle brackets, such as
+    `<first author>`, is not a label.
+  - `PASS cuda`: in the CUDA container (`tools/cuda-container/Dockerfile`), everything of the preset
+    `linux-release-cuda` compiled and linked, every `.cu` file and the `gpu` tests included; clang-tidy reported
+    nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`); the tests
+    labelled `cpu` and `no_gpu` passed (`ctest -L '^(cpu|no_gpu)$'`); every tracked `.cc` and `.cu` file under
+    `native/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `native/` is compiled
+    alone there, through its header-alone file (`header_check/`), except a test header (`test` as a word of its file
+    name), which the test programs that include it compile (`FAIL cuda: not compiled by the CUDA build: <paths>`
+    otherwise).
+    Nothing ran on a GPU: the container has none, so GPU code stays "compiled, not run". The container keeps its
+    tools, packages and build tree in a Docker volume named `fluidity-cuda-out-<hash>`, one per checkout path; list
+    them with `docker volume ls --filter name=fluidity-cuda-out` and remove one of a deleted checkout with
+    `docker volume rm <name>`.
+  - `FAIL <check>: <reason>`: that check failed. The reason names the command; the full output of the step's
+    commands is in `out/check-commit/<step>.log`. `FAIL cuda: Docker is not running (start it with: colima start)`
+    means exactly that: the cuda step is never skipped and never passes without running.
+  - `NOT RUN <check>`: an earlier check failed, so this one did not run.
+
+  The exit code is 0 only when every check reads PASS. A commit lands only then.
+- GPU targets: the CUDA presets compile for RTX 30 (`86-real`), RTX 40 (`89-real`) and RTX 50 (`120-real`, plus
+  `120-virtual`). The owner's hardware run is on an RTX 5060 Ti; it is not recorded yet in `docs/gpu-runs.md`, so
+  even that card is untested today. RTX 30 and 40 are compiled for, unverified. On a machine with a GPU, the tests
+  that need it are `ctest --preset linux-release-cuda -L '^gpu$'` (a bare `-L gpu` would also match `no_gpu`).
 - Windows GPU run for the owner: not written yet. It is added here together with its script.
 - Session note, after each commit: `uv run python tools/add_session_note.py --session <url> --models <id>[,<id>...]
   [<commit>]` writes or replaces the note of `<commit>` (default `HEAD`) in `refs/notes/claude-session`: the lines

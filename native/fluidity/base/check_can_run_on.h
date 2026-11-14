@@ -14,6 +14,7 @@
 //   code  the stable snake_case name of an error value, such as "gpu_not_built"
 // Owns:    CheckCanRunOn, ToMessage(RunOnError), ToName(RunOnError)
 // Uses:    RunOn, RunOnError (base/run_on.h), CPU-only guard (base/cpu_only.h)
+// Implementation uses: in a build with GPU code, the GPU math check (base/check_can_run_on_gpu.h)
 // Used by: every function asked to run on the GPU, which checks first; the command line, the Blender add-on,
 //          every test that runs on both processors
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>, <proc-check-can-run-on>

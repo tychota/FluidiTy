@@ -168,6 +168,7 @@ module may add stages; each new stage name enters this list in the commit that a
 | `tolerance` | An allowed error. | margin, epsilon (for an allowed error), resolution (for an allowed error) |
 | `blob`, `blob_id`, `BlobHistory` | One connected body of liquid, or one air pocket. | component (for this), lineage |
 | `ingredient` | One substance in a mixture. | component (for this) |
+| `thread block`, `kThreadBlockSize`, `kMaxThreadBlockCount`, `LaunchSize` | The threads of one GPU launch unit, which can share fast memory and wait for each other (`base/run_on_call.h`). `kThreadBlockSize` is the threads in each thread block of a simple GPU function, `kMaxThreadBlockCount` the most thread blocks it starts. Never `block` or `group` alone in that sense. CUDA: thread block. | |
 
 ## Materials
 
