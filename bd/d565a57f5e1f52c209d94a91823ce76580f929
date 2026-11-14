@@ -1,0 +1,56 @@
+native/fluidity/base/run_on_gpu_check_math_test.cc
+  s_4f0877e2acdcf0::t_f35c0d5706694b 1-80
+  s_4f0877e2acdcf0::t_5cc8916e92a391 81-86
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_c93ba6fcbdc7ea 1-146
+native/fluidity/base/run_on_gpu_check_math.h
+  s_4f0877e2acdcf0::t_68bfacde08308d 1-143
+  s_4f0877e2acdcf0::t_bfa6a57a09403c 144-158
+tools/cuda-container/Dockerfile
+  s_4f0877e2acdcf0::t_90c7264c77ab58 1-15
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_a087e1287ec123 1-319
+  s_4f0877e2acdcf0::t_9922d6fbeb4240 320-327
+native/fluidity/base/check_can_run_on_gpu.cu
+  s_4f0877e2acdcf0::t_767191e8add154 1-189
+AGENTS.md
+  s_4f0877e2acdcf0::t_703c2943c67b8e 371-390
+CMakeLists.txt
+  s_4f0877e2acdcf0::t_61f4cec58a09db 11-12,14-19,40-44
+CMakePresets.json
+  s_4f0877e2acdcf0::t_c7928020823d18 92-120,147-158,201-215
+README.md
+  s_4f0877e2acdcf0::t_23d4ac0c0df583 41-60
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_b7f3e0f2c98c61 13-15,25-27,33,39-40,51-53,63-76,80-90,100-101,117-120
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_5bf0ae8d011c20 245
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_83a058805a1462 9,15,22-25
+native/fluidity/base/base_constants_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_6126b68b747721 1-85
+native/fluidity/base/check_can_run_on_gpu_test.cc
+  s_4f0877e2acdcf0::t_cf5d10e27f0314 1-26
+native/fluidity/base/check_can_run_on_no_gpu_test.cc
+  s_4f0877e2acdcf0::t_533610e59b7aa0 1-20
+native/fluidity/base/mat3.h
+  s_4f0877e2acdcf0::t_d0c3cf0f81c2c1 37-39,69,83,98,113,128,149,170,182
+native/fluidity/base/run_on_gpu_check.h
+  s_4f0877e2acdcf0::t_a684d653210de3 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bdd565a57f5e1f52c209d94a91823ce76580f929",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
