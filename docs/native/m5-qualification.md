@@ -14359,3 +14359,24 @@ sticking-compression control to six decimals. The default is
 36.442893°, and the other three stay in range throughout the
 final second. All three commands exit 1. Dense sampling and
 CUDA were untested. The temporary solver edit was restored.
+
+
+#### Compare native and SM120 for sticking-only compression
+
+On 362a550, retain negative incoming yy only at ordinary
+zero-fraction granular sticking floor contacts. Build the
+native and SM120 dry-scene targets. Run each executable
+with `--q-sand-column-long-settle 6`.
+
+| Case | Native angle | SM120 angle | Full final window in band |
+|---|---:|---:|---|
+| Coarse | 36.442893° | 36.442893° | No |
+| Fine | 30.159032° | 30.159032° | Yes |
+| Coarse half-step | 34.583457° | 34.583458° | Yes |
+| Fine half-step | 30.091364° | 30.091364° | Yes |
+
+Both backends pass all radii and agree on all qualification
+outcomes. Both commands exit 1 due to coarse nominal angle
+and persistence. The endpoint difference is at most 0.000001°
+at printed precision. Dense sampling was untested for this
+control. The temporary solver edit was restored.
