@@ -14443,3 +14443,28 @@ only coarse nominal stays in range throughout the final
 second. Pairing changes each 6 s endpoint by less than
 0.36° relative to the stress-only split. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+
+#### Measure sticking occupancy and incident compression on the baseline
+
+On 41d891a, count zero-fraction ordinary granular contacts
+with zero tangential advection. Divide by the number of
+particle updates. Separately sum the compressive part of
+incoming yy times the remaining duration over those same
+contacts and divide by particle count. All particles in a case
+have equal mass. Run the native `--q-sand-column-long-settle`
+selector at 1.5 and 6 s with no changes to the dynamics.
+
+| Case | Sticking share through 1.5 s | Sticking share through 6 s | Compression path at 1.5 s | Compression path at 6 s |
+|---|---:|---:|---:|---:|
+| Coarse | 38.44% | 76.46% | 0.073086686 | 0.073086686 |
+| Fine | 40.60% | 78.89% | 0.075544524 | 0.075544524 |
+| Coarse half-step | 25.67% | 63.27% | 0.076841919 | 0.076879695 |
+| Fine half-step | 26.88% | 69.20% | 0.077630611 | 0.077630611 |
+
+Sticking accounts for a larger share of updates by six seconds,
+but the measured incident compression path grows by at most
+0.000038 after 1.5 s. The native matrices reproduce the
+baseline angles and exit 1. This measures the unmodified
+trajectory. CUDA and dense sampling were untested. Both
+instrumentation files were restored.
