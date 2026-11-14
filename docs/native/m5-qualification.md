@@ -14802,3 +14802,23 @@ Dense coarse nominal loses its three-second pass by
 overshooting. Dense coarse half-step enters the band by the
 endpoint but fails persistence. Both commands exit 1. CUDA
 was untested. The temporary fixture edit was restored.
+
+
+#### Retain compressive-only affine feedback throughout settlement
+
+On dba7b1e, retain only min(0, yy) in the stored affine slope
+before every step of the extended column. Run the native sparse
+and dense column selectors at 6 s.
+
+| Case | Sparse angle | Dense angle | Dense final sampled range | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 36.343172° | 34.756749° | 31.963392–34.756749° | 0.151616 |
+| Fine | 40.330746° | 35.691082° | 33.191006–35.691082° | 0.148737 |
+| Coarse half-step | 24.165871° | 26.610545° | 26.610545–28.752714° | 0.132344 |
+| Fine half-step | 24.845484° | 26.224787° | 26.224787–27.896427° | 0.136594 |
+
+All radii pass. Dense coarse nominal stays in band but drifts
+by more than 2° between final-window endpoints. Both half-step
+dense cases settle below 30°. Both matrices exit 1. The longer
+restriction reduces all four dense radii relative to the
+collapse-only control. CUDA was untested. The fixture was restored.
