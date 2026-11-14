@@ -13047,3 +13047,25 @@ range from 34.338659° to 43.592505° across the four quadrants.
 The radius increases again as the particle spacing decreases.
 The experiment covers one width and timestep on native. The
 temporary fixture edit was restored.
+
+#### Compare radial distributions across three particle densities
+
+On 76bc791, run the unmodified coarse nominal native trajectory
+to 3 s at sampling multipliers 1, 2 and 3. Sort the final
+particle radii and read percentiles at floor(p * (N - 1)).
+Count particles at or beyond 0.16 m. All particles have equal
+mass within each case, so count fractions are mass fractions.
+These measurements leave the maximum-radius gate in place.
+
+| Particles | Median (m) | 95th percentile (m) | Maximum (m) | At or beyond 0.16 m |
+|---:|---:|---:|---:|---:|
+| 63 | 0.090052 | 0.129222 | 0.137319 | 0 |
+| 504 | 0.085809 | 0.147554 | 0.170290 | 12 |
+| 1701 | 0.089580 | 0.151377 | 0.180906 | 44 |
+
+Run the native dry-scene target with the temporary three-density
+selector `--q-sand-dense-column-long-settle 3`. The command
+exits 1. The median remains within 4.25 mm across the three
+samplings. The upper tail broadens, with 2.38% and 2.59% of
+the mass at or beyond 0.16 m in the two denser cases. The
+temporary fixture edit was restored. CUDA was untested.
