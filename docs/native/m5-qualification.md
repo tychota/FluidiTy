@@ -14423,3 +14423,23 @@ only coarse nominal stays in band across the final second.
 The endpoint changes at 6 s from the aligned baseline are
 below 0.35°. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+
+#### Pair near-floor stress quadrature with the deformation gradient
+
+On 3e7b6a0, repeat the two-point vertical stress quadrature and
+gather the differentiated velocity gradient at the same two
+samples. Average the two gradients with equal weights. Keep
+the mass deposit, PIC velocity, and affine feedback centered
+on the particle. Run the native default and
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default passes at 32.895379°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+29.122002°, 26.921863°, 29.058258°, and 27.058825°.
+The 6 s angles are 33.724440°, 23.649633°, 17.415285°,
+and 13.215119°. Both matrices exit 1. All radii pass and
+only coarse nominal stays in range throughout the final
+second. Pairing changes each 6 s endpoint by less than
+0.36° relative to the stress-only split. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
