@@ -13287,3 +13287,24 @@ loss over this window. These totals include exchange with
 affine motion and omit contact and stored affine energy.
 The original angles reproduce at printed precision, and the
 command exits 1. CUDA was untested. Both edits were restored.
+
+#### Retain only the vertical stored velocity residual
+
+On a8b3aa2, set the column fixture energy blend to 0.6.
+Clear x and z of the granular stored residual correction
+before its existing mass-weighted mean subtraction. Keep
+the PIC sweep and force unchanged. Run the native target
+with `--q-sand-column-long-settle 6` and
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle at 6 s | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 34.584213° | 39.329010° | 0.169545 |
+| Fine | 32.507461° | 34.342390° | 0.176543 |
+| Coarse half-step | 39.684134° | 34.519722° | 0.167899 |
+| Fine half-step | 32.309501° | 31.442275° | 0.184124 |
+
+Both matrices exit 1. Three sparse cases pass and the
+coarse half-step overshoots. Three dense angles enter the
+band, but all dense radii exceed 0.16 m. CUDA was untested.
+The temporary solver and fixture edits were restored.
