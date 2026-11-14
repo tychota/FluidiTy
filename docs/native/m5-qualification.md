@@ -13423,3 +13423,12 @@ the full-window diagnostic before the scatter change.
 Both backends agree on all gate outcomes. The coarse nominal
 case passes, and the other three remain below 30° throughout
 the final window. This comparison covers sparse sampling.
+
+#### Recheck valid sand trajectories after stress overflow rejection
+
+On 50beafa, run the native and SM120 dry-scene executables with
+`--q-sand-column-long-settle 6`. Both commands exit 1. All 47
+output lines for each backend match its preceding scatter
+validation baseline exactly. The coarse nominal case passes,
+and the other three remain below 30° throughout the final
+second. This comparison covers the sparse matrix.
