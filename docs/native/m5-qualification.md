@@ -13386,3 +13386,22 @@ trajectory and Q-SAND acceptance rules are unchanged.
 No accepted sample in the final one-second window enters
 the target band. Every radius exceeds 0.16 m. The command
 exits 1. This run measured the native path.
+
+#### Verify uncut stress force and torque balance
+
+On 3cdf186, extend the affine work fixture to sum grid force
+and torque about the particle center for a symmetric Kirchhoff
+stress on an uncut stencil. Compare each norm with 1e-12 in
+its respective SI units. The native and SM120-enabled default
+dry-scene executables both pass with force norm 7.38e-16 N,
+torque norm 7.63e-16 N m, and scaled work residual 3.25e-16.
+Both executables exercise the same host stress scatter. Their
+work checks use the respective native and CUDA gather paths.
+The tested scatter uses reference volume, as required for
+Kirchhoff stress.
+
+```powershell
+cmake --build out/requalified --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+& ./out/requalified/fluidity_m5_dry_scene_tests.exe
+& ./out/requalified/fluidity_cuda_m5_dry_scene_tests.exe
+```

@@ -827,6 +827,8 @@ bool TestUncutStressWork() {
   }
   std::vector<double> velocities(view.face_count());
   double grid_power = 0;
+  fluidity::Vec3 net_force{};
+  fluidity::Vec3 net_torque{};
   const fluidity::Vec3 rows[]{gradient.x_row, gradient.y_row, gradient.z_row};
   for (std::size_t slot = 0; slot < view.face_count(); ++slot) {
     const auto face = view.FaceIndex(slot);
@@ -840,6 +842,27 @@ bool TestUncutStressWork() {
     const auto row = rows[static_cast<int>(face->axis)];
     velocities[slot] = row.x * anchor->x + row.y * anchor->y + row.z * anchor->z;
     grid_power += velocities[slot] * forces[slot];
+    const double force = forces[slot];
+    const double x_offset = anchor->x - position.x;
+    const double y_offset = anchor->y - position.y;
+    const double z_offset = anchor->z - position.z;
+    switch (face->axis) {
+      case fluidity::FaceNormalAxis::kX:
+        net_force.x += force;
+        net_torque.y += z_offset * force;
+        net_torque.z -= y_offset * force;
+        break;
+      case fluidity::FaceNormalAxis::kY:
+        net_force.y += force;
+        net_torque.x -= z_offset * force;
+        net_torque.z += x_offset * force;
+        break;
+      case fluidity::FaceNormalAxis::kZ:
+        net_force.z += force;
+        net_torque.x += y_offset * force;
+        net_torque.y -= x_offset * force;
+        break;
+    }
   }
   const fluidity::MacTransferParticle3D particle{.sorted_world_position = position, .trial_world_position = position};
   fluidity::MacParticleGatherResult3D result{};
@@ -858,6 +881,12 @@ bool TestUncutStressWork() {
       * (10 * measured.x_row.x + 2 * measured.x_row.y + 3 * measured.x_row.z + 2 * measured.y_row.x
          + 20 * measured.y_row.y + 4 * measured.y_row.z + 3 * measured.z_row.x + 4 * measured.z_row.y
          - 30 * measured.z_row.z);
+  const double net_force_norm = std::hypot(net_force.x, net_force.y, net_force.z);
+  const double net_torque_norm = std::hypot(net_torque.x, net_torque.y, net_torque.z);
+  std::printf("uncut stress balance force_N=%.3g torque_Nm=%.3g\n", net_force_norm, net_torque_norm);
+  if (!(net_force_norm <= 1e-12 && net_torque_norm <= 1e-12)) {
+    return false;
+  }
   constexpr double kExpectedPower = 87.5;
   const double scaled_error = std::abs(grid_power + particle_power) / kExpectedPower;
   std::printf(
