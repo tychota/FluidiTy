@@ -14228,3 +14228,22 @@ stays in range throughout the final second. The later part
 of collapse alone retains some height in the shallow cases
 but does not reproduce the full sticking control. CUDA and
 dense sampling were untested. Both temporary files were restored.
+
+
+#### Restrict resident sticking compression to the first 0.25 s
+
+On 5ee1e84, repeat the preceding window control with retained
+normal compression enabled only on steps beginning before
+0.25 s. Run the native dry-scene executable without arguments
+and with `--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default reaches 35.416659°. In coarse, fine, coarse
+half-step and fine half-step order the 1.5 s angles are
+36.880087°, 33.493648°, 31.386409°, and 31.613307°.
+At 6 s they are 36.432091°, 30.036746°, 32.099854°, and
+29.111103°. All radii pass. Fine nominal and coarse half-step
+stay in range throughout the final second. The first window
+retains more height in each shallow case than the 0.25–0.75 s
+window, and produces the coarse overshoot by itself.
+All commands exit 1. CUDA and dense sampling were untested.
+Both temporary files were restored.
