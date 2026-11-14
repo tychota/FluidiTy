@@ -20,6 +20,7 @@
 #import "figures/buffer_crossings.typ": buffer-crossings-figure
 #import "figures/buffer_layers.typ": buffer-layers-figure
 #import "figures/one_operation_two_processors.typ": run-on-figure
+#import "figures/tree_sum.typ": tree-sum-figure
 
 #let serif = ("Equity OT A", "Libertinus Serif")
 #let sans = ("Hermes Maia OT 3", "Libertinus Sans")
@@ -74,7 +75,8 @@ springy solids for Blender. The paper is written for a good C++ programmer who h
 paper, and it grows section by section: each module of the code adds its section in the same commit as its code,
 and each code file names the section it follows on its `Read:` line. A section shows its idea in a drawn figure
 and its main procedure as numbered steps, and the steps match the `// Step N:` comments in the code. Today the paper
-holds what every module shares: the conventions, the notation, and how one operation runs on either processor.
+holds what every module shares: the conventions, the notation, how one operation runs on either processor, and
+how a sum of many doubles is added in one fixed order.
 
 = Conventions <sec-conventions>
 
@@ -133,14 +135,17 @@ Papers write these three moments as superscripts; @sec-notation lists them.
 The promise: the same build, run twice on the same GPU with the same input, writes the same bytes in every output
 (papers call this determinism). The CPU path makes the same promise on one machine with one build. Three rules keep
 it. Every sum is made of plain doubles added in a fixed order, never with floating-point atomics, whose order depends
-on which thread arrives first. Reductions follow a fixed tree. When several items fail, the one reported is the
-first by stable id. Repeat-run tests hold the code to this promise: they demand identical bytes.
+on which thread arrives first. Reductions follow a fixed tree (@sec-fixed-order-sums). When several items fail,
+the one reported is the first by stable id. Repeat-run tests hold the code to this promise: they demand identical
+bytes.
 
-What it does not promise: the CPU and the GPU do not give the same bits. They agree within a tolerance that each
-module states, as an absolute floor plus a term relative to the size of the value. Nor are results bit-identical
-across GPU models, compilers or machines. The reason is that floating-point addition depends on order. In doubles,
-(0.1 + 0.2) + 0.3 gives 0.6000000000000001, while 0.1 + (0.2 + 0.3) gives 0.6. The CPU loop and the GPU function
-add the same numbers in different orders, so their last bits can differ.
+What it does not promise: the CPU and the GPU do not give the same bits for a whole operation. They agree within a
+tolerance that each module states, as an absolute floor plus a term relative to the size of the value. Nor are
+results bit-identical across GPU models, compilers or machines. The reason is that floating-point addition depends
+on order. In doubles, (0.1 + 0.2) + 0.3 gives 0.6000000000000001, while 0.1 + (0.2 + 0.3) gives 0.6. The CPU loop
+and the GPU function add the same numbers in different orders, so their last bits can differ. The sums of
+@sec-fixed-order-sums are the exception: they add the same pairs in the same order on both processors, so they give
+the same bits, unless the result is NaN, whose bits IEEE 754 leaves open.
 
 A single math function has no sum whose order could differ, so it is a narrower case than a whole operation, and
 the math functions that the shared formulas call come in two groups. Floor, absolute value, minimum, maximum and
@@ -326,6 +331,78 @@ which pick the processor and copy with `memcpy` on the CPU or with the CUDA runt
   caption: [The two layers of `Buffer`. The byte functions exist once for every value type and are defined in one
     CPU source file, so the templates hold no conditional compilation and name no GPU call.],
 ) <fig-buffer-layers>
+
+= Sums in a fixed order <sec-fixed-order-sums>
+
+Every solver tests whether it has converged with a sum, and every conservation check adds up a total. A computer
+rounds the result of each addition of two doubles, so the order of the additions changes the result: in
+@sec-conventions, (0.1 + 0.2) + 0.3 and 0.1 + (0.2 + 0.3) differ in the last bit. A CPU loop adds from left to
+right. GPU threads finish in an order that changes from run to run. Left alone, the two would give different
+bits, and the GPU would not even agree with itself.
+
+So every sum of many doubles goes through one fixed order, which depends only on the number of values and their
+indexes. The values are padded with zeros up to the next power of two and added in a binary tree (@fig-tree-sum). In
+ordinary tree words, each node is its left child plus its right child, and the values are at the bottom of the tree.
+This paper and the code call a node a pair sum, and its two children its left side and right side. Each pair sum
+adds its left side and its right side, left first, and rounds once; a side is a value or a pair sum of the layer
+below. Each layer halves the number of sums, so seven values padded to eight take three layers. The pair sum at the
+top covers every index and is the result.
+
+#figure(
+  tree-sum-figure(),
+  placement: auto,
+  caption: [The tree over seven values. Each box is labelled with the indexes it covers. Index 7 is padding, a zero
+    that is never kept in memory, so the pair sum 6–7 is value 6 plus +0.0. On the GPU each row is one layer, all of
+    whose pairs are added at the same time.],
+) <fig-tree-sum>
+
+The padding is never written to memory. A pair whose right side covers only padding adds +0.0 to its left side,
+because a sum of zeros is +0.0. Adding +0.0 gives back every number unchanged, bit for bit, with one exception:
+in IEEE arithmetic −0.0 + 0.0 is +0.0. (A NaN stays NaN, though its bits may change: a signalling NaN comes back
+quiet.) So the sum of the single value −0.0 is −0.0, since one value needs no padding and no addition. The sum
+of three values −0.0 is +0.0, because the third one is paired with padding.
+
+IEEE 754 defines the rounded result of every addition exactly, and the tree fixes which pairs are added. The CPU and
+the GPU therefore give the same bits for these sums, not only the same bits from run to run, unless the result is
+NaN, whose bits IEEE 754 leaves open. The dot product, the sum of `first[i] * second[i]`, rounds each product once
+before the tree adds it. A fused multiply-add would round a product and the next addition together, so the flags
+#box[`-ffp-contract=off`] and, on MSVC, #box[`/fp:precise`] on the CPU and #box[`--fmad=false`] on the GPU forbid
+it. The largest magnitude, the largest absolute value, needs no fixed order: picking the larger of two values rounds
+nothing. It is NaN when any value is NaN, so a NaN in a solver can never hide behind a comparison.
+
+The order changes the answer. Take the four values 1e16, 1, −1e16 and 1. Near 1e16 the doubles are 2 apart, so
+1e16 + 1 lies halfway between two doubles and rounds to 1e16 (a tie goes to the double whose last bit is even).
+From left to right, 1e16 + 1 gives 1e16, minus 1e16 gives 0, and plus 1 gives 1. The tree adds the pairs first:
+#box[(1e16 + 1) + (−1e16 + 1)] is #box[1e16 + (−1e16)], which is 0. The exact sum is 2. Neither 1 nor 0 is "the
+right answer". The point of the tree is that its order is fixed, not that it is more accurate. A tree is chosen
+over a left-to-right loop because a GPU can add all the pairs of one layer at the same time, and because the bound
+on the rounding error grows with the depth of the tree, about log#sub[2] of the count, rather than with the count.
+
+#procedure(
+  [`math::TreeSum(values, count)`, the sum in a fixed order],
+  <proc-tree-sum>,
+  inputs: [`count` doubles, `values[0]` to `values[count − 1]`.],
+  outputs: [Their sum: the same bits on every run and on both processors, unless the result is NaN, whose bits
+    IEEE 754 leaves open.],
+  ([No values], [If `count` is 0, return +0.0.]),
+  ([Add the pairs with real values on the right], [Think of the values as padded with zeros up to the next power of
+    two. Every pair sum whose right side covers at least one real value is its left side plus its right side,
+    left first, rounded once.]),
+  ([Add the pairs with padding on the right], [Every pair sum whose right side covers only padding is its left
+    side plus +0.0. This gives the bits that adding the padded zeros one by one would give.]),
+  ([Return the top], [Return the pair sum that covers every index. With one value, that is the value itself, and
+    no pair is added.]),
+)
+
+The steps fix which two sides make each pair sum, not when it is computed. The GPU computes one layer at a time, all
+the pairs of a layer at once, and keeps the sums of a layer in temporary GPU memory. That memory belongs to a
+`SumBuffers`, working buffers built once for up to a largest count and passed to every sum, so a solver that sums
+every iteration allocates nothing. The CPU reads the values once
+from left to right and computes each pair sum as soon as its two sides exist. It keeps the left sides that still
+wait for their right side, at most one per layer. A count fits in 64 bits, so 64 waiting sums are enough, and the
+CPU code needs no memory beyond them, and its sum buffers hold nothing. Both add the same pairs, so both give the
+same bits. On the GPU, the dot product writes its products to the sum buffers first and then sums them with the same steps;
+the CPU computes each product as the tree reaches it.
 
 // Every floating figure and procedure is placed before the references start.
 #place.flush()

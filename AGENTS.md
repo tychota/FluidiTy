@@ -294,6 +294,15 @@ around shared per-item or per-thread functions marked `FLUIDITY_CPU_AND_GPU`, wh
 tests call them over every item, or every thread block and thread in launch order and in reverse, so the GPU
 arithmetic is tested without a GPU.
 
+**Working buffers.** An operation that needs temporary arrays takes them as working buffers: a move-only
+`<Name>Buffers` built once by `Build<Name>Buffers(run_on, max_count)`, whose exact bytes
+`Compute<Name>BuffersSize(run_on)` gives for memory plans (`SumBuffers` in `base/ordered_sums.h` is the first).
+Working buffers hold their memory in one `Buffer` of bytes, so their GPU memory is held through `Buffer`, not through
+`GpuArray`, and the GPU half receives plain pointers into it. Their contents mean nothing between calls. Each function
+has one form, which takes its working buffers and allocates nothing, so `kOutOfMemory` comes only from
+`Build<Name>Buffers` and `BuildBuffer`. A count above `max_count()` is `kSizeMismatch`, and a failed GPU call is
+`kRunOnCallFailed`. The working buffers live on the processor of the other buffers: a precondition ("Language").
+
 **`RunOn` is the caller's choice.** `enum class RunOn : std::uint8_t { kCpu, kGpu }` lives in the shared header
 `base/run_on.h`, so any shared type can carry it. The caller chooses it when the simulation is built.
 `CheckCanRunOn(RunOn)` answers whether that choice can run here. Nothing ever changes it silently: when the GPU
@@ -329,7 +338,10 @@ nothing else depends on it.
 **Exactness.**
 
 - Same GPU and same input give identical output on every run.
-- CPU and GPU agree within a tolerance. They are not bit-identical.
+- Discrete outputs (integers, orders, counts, flags) are equal on the CPU and the GPU. Floating-point results agree
+  within a tolerance, except a function whose header promises the same bits on both processors (unless the result
+  is NaN). Today: the functions so marked in `base/scalar_math.h`, `base/vec3.h` and `base/mat3.h`, and every
+  function of `base/tree_sum.h` and `base/ordered_sums.h`.
 
 Sums are plain doubles in a fixed order, never floating-point atomics. Each module states its own tolerance.
 

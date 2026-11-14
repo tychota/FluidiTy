@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -60,6 +61,16 @@ std::vector<std::uint64_t> ToBits(std::span<const double> values) {
   }
   return ::testing::AssertionFailure() << std::hexfloat << "expected " << expected << " but got " << actual
                                        << ", which has other bits";
+}
+
+std::vector<double> BuildMixedValues(std::size_t count) {
+  constexpr std::array kScales = {1e-3, 1.0, 7.0, 1e6, 1e12};
+  std::vector<double> values(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto spread = static_cast<double>((index * 7919) % 2003) - 1001.0;
+    values[index] = spread / 13.0 * kScales[index % kScales.size()];
+  }
+  return values;
 }
 
 std::uint64_t ComputeResultDigest(std::span<const std::byte> bytes) {

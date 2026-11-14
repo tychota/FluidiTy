@@ -58,3 +58,6 @@ CheckOptions:
   readability-identifier-naming.LocalConstantPrefix: ''
   readability-identifier-naming.ClassConstantCase: CamelCase
   readability-identifier-naming.ClassConstantPrefix: k
+  # Working buffers are written only by the GPU path, which the CPU-only build that clang-tidy sees compiles out;
+  # making the parameter const would change the public signature.
+  misc-const-correctness.AllowedTypes: '::fluidity::SumBuffers'

@@ -118,4 +118,34 @@
   content(name + ".center", align(center, body))
 }
 
+// Padding: a value that the method assumes but never keeps in memory, such as the zeros that fill a tree sum up to
+// a power of two. Drawn dashed in a muted grey, so it reads as "not really there" in colour and in greyscale.
+#let padding-line-colour = palette.muted.darken(35%)
+#let padding-text-colour = palette.muted.darken(45%)
+#let padding-stroke = (paint: padding-line-colour, thickness: geometry-stroke, dash: "dashed")
+
+// Draws a dashed padding box named `name` centred on `box-centre`, `width` by `height` units, holding `body` in
+// the padding text colour. The same shape as `labelled-box`, so a padded entry lines up with the real ones.
+#let padding-box(name, box-centre, width, height, body) = {
+  import cetz.draw: *
+  let (center-x, center-y) = box-centre
+  rect(
+    (center-x - width / 2, center-y - height / 2),
+    (center-x + width / 2, center-y + height / 2),
+    name: name,
+    radius: 0.12,
+    fill: white,
+    stroke: padding-stroke,
+  )
+  content(name + ".center", align(center, text(fill: padding-text-colour, body)))
+}
+
+// Draws an arrow from `from` to `to` in the padding style, for an edge that carries only padding.
+#let padding-arrow(from, to) = cetz.draw.line(
+  from,
+  to,
+  stroke: padding-stroke,
+  mark: coloured-mark(padding-line-colour, small: true),
+)
+
 // `cell-grid(...)`, which draws cells of mixed sizes, arrives with the grid module.

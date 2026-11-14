@@ -4,25 +4,30 @@
 //   CPU's: bit for bit for the functions that promise the same bits, within a tolerance for the others.
 //
 // Idea: ComputeSharedMathResults computes, for one input, one result per shared function. It is marked
-//   FLUIDITY_CPU_AND_GPU, so the GPU function and the CPU loop of the test call the same code. The results come in
-//   two arrays: same_bits for Floor, Abs, Sqrt, Min, Max, IsFinite, Length and Normalized, which IEEE 754 rounds
-//   exactly; last_bits for Cbrt, Exp, Expm1, Log, Pow, Sin, Cos and Rotation, which call each processor's own
-//   library. ComputeSharedMathOnGpu copies the inputs to the GPU, runs one thread per input, and copies the results
-//   back. Each Sqrt of a negative value gives NaN on both processors, whose bits may differ.
+//   FLUIDITY_CPU_AND_GPU, so the GPU function and the CPU loop of the test call the same code. The results come in two
+//   arrays: same_bits for Floor, Abs, Sqrt, Min, Max, IsFinite, Length, Normalized, TreeSum, TreeSumOf and
+//   LargerMagnitude, which IEEE 754 rounds exactly; last_bits for Cbrt, Exp, Expm1, Log, Pow, Sin, Cos and Rotation,
+//   which call each processor's own library. ComputeSharedMathOnGpu copies the inputs to the GPU, runs one thread per
+//   input, and copies the results back. Each Sqrt of a negative value gives NaN on both processors, whose bits may
+//   differ.
 //
 // Owns:    kSharedMathInputCount, kSameBitsResultCount, kLastBitsResultCount, SharedMathInputs, SharedMathResult,
 //          BuildSharedMathInput, ComputeSharedMathResults, ComputeSharedMathOnGpu
 // Uses:    Vec3 (base/vec3.h), Mat3 and math::Rotation (base/mat3.h), the scalar math (base/scalar_math.h),
-//          RunOnCallStatus (base/run_on_call.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h)
+//          math::TreeSum, math::TreeSumOf and math::LargerMagnitude (base/tree_sum.h), RunOnCallStatus
+//          (base/run_on_call.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h)
 // Used by: shared_math_gpu_test.cc, and shared_math_test_gpu.cu, which defines ComputeSharedMathOnGpu
 // Read:    docs/method-paper/fluidity-method.typ <sec-conventions>
 
 #pragma once
 
+#include <cstddef>
+
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/base/mat3.h"
 #include "fluidity/base/run_on_call.h"
 #include "fluidity/base/scalar_math.h"
+#include "fluidity/base/tree_sum.h"
 #include "fluidity/base/vec3.h"
 
 namespace fluidity {
@@ -31,8 +36,8 @@ namespace fluidity {
 inline constexpr int kSharedMathInputCount = 64;
 
 // Results that must have the same bits on both processors, or both be NaN: Floor, Abs, Sqrt, Min, Max, IsFinite (1
-// or 0) twice, Length, and the three axes of Normalized.
-inline constexpr int kSameBitsResultCount = 11;
+// or 0) twice, Length, the three axes of Normalized, TreeSum and TreeSumOf of seven values, and LargerMagnitude.
+inline constexpr int kSameBitsResultCount = 14;
 
 // Results that may differ in the last bits: Cbrt, Exp, Expm1, Log, Pow, Sin, Cos and the nine entries of Rotation.
 inline constexpr int kLastBitsResultCount = 16;
@@ -77,6 +82,24 @@ FLUIDITY_CPU_AND_GPU inline SharedMathResult ComputeSharedMathResults(SharedMath
   results.same_bits[8] = normalized.x;
   results.same_bits[9] = normalized.y;
   results.same_bits[10] = normalized.z;
+  // Seven values whose sum rounds differently in another order: the tree's order is what is compared. A C array:
+  // GPU code cannot call std::array's member functions.
+  constexpr std::size_t kTreeValueCount = 7;
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): see the comment above.
+  const double tree_values[kTreeValueCount] = {
+      input.value,
+      1e16,
+      input.other,
+      -1e16,
+      input.value * input.other,
+      -0.0,
+      0.5,
+  };
+  results.same_bits[11] = math::TreeSum(tree_values, kTreeValueCount);
+  results.same_bits[12] = math::TreeSumOf(kTreeValueCount, [&tree_values, input](std::size_t index) {
+    return tree_values[index] * input.other;
+  });
+  results.same_bits[13] = math::LargerMagnitude(input.value, input.other);
   const Mat3 rotation = math::Rotation(input.vector * 0.1);
   results.last_bits[0] = math::Cbrt(input.value);
   results.last_bits[1] = math::Exp(input.value);

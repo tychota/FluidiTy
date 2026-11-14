@@ -20,7 +20,7 @@
 //   digest  a 64-bit number computed from bytes (FNV-1a), equal for equal bytes and almost never for different ones
 // Owns:    ToBits, Tolerance, CheckWithinTolerance, CheckSameBitsOrBothNaN, BuildBufferHolding, ReadAll,
 //          ComputeResultDigest, WriteResultDigestToFile, WriteResultDigest, FindResultDigestFile,
-//          kResultDigestFileVariable
+//          kResultDigestFileVariable, BuildMixedValues
 // Uses:    Buffer, BuildBuffer, WriteBuffer, ReadBuffer (base/buffer.h), RunOn (base/run_on.h), CPU-only guard
 //          (base/cpu_only.h), GoogleTest
 // Used by: the tests of base/ (the library fluidity_base_test_support)
@@ -97,6 +97,12 @@ std::vector<Value> ReadAll(const Buffer<Value>& buffer) {
   EXPECT_TRUE(read.has_value()) << ToName(read.error());
   return values;
 }
+
+// `count` doubles from a fixed integer formula, with magnitudes from 1e-3 to 1e12 and both signs, so the order of
+// the additions changes the rounding of a sum. The same on every run and in every test that compares a CPU and a GPU
+// sum.
+// Example: the first value is (0 - 1001) / 13 * 1e-3 = -0.077.
+std::vector<double> BuildMixedValues(std::size_t count);
 
 // The environment variable that names the file WriteResultDigest appends to.
 inline constexpr std::string_view kResultDigestFileVariable = "FLUIDITY_RESULT_DIGEST_FILE";

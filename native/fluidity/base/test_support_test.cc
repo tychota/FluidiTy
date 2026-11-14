@@ -87,6 +87,14 @@ TEST(BuildBufferHolding, OnCpu_ReadAllGivesTheValuesBack) {
   EXPECT_EQ(ReadAll(buffer), (std::vector{1.5, -2.0, 3.25}));
 }
 
+TEST(BuildMixedValues, FirstValue_FollowsTheFormula) {
+  EXPECT_EQ(BuildMixedValues(3)[0], -1001.0 / 13.0 * 1e-3);
+}
+
+TEST(BuildMixedValues, TwoCalls_GiveTheSameValues) {
+  EXPECT_EQ(ToBits(BuildMixedValues(1000)), ToBits(BuildMixedValues(1000)));
+}
+
 TEST(ComputeResultDigest, NoBytes_IsTheStartingValue) {
   EXPECT_EQ(ComputeResultDigest({}), 0xcbf29ce484222325ULL);
 }

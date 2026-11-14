@@ -36,6 +36,9 @@ constexpr std::array<const char*, kSameBitsResultCount> kSameBitsNames = {
     "Normalized x",
     "Normalized y",
     "Normalized z",
+    "TreeSum",
+    "TreeSumOf",
+    "LargerMagnitude",
 };
 
 constexpr std::array<const char*, kLastBitsResultCount> kLastBitsNames = {
