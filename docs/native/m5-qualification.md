@@ -12949,3 +12949,18 @@ maximum final angle shift is 0.472° and the radius increases
 by 1.50–2.27 mm. This is a sensitivity check for one
 deterministic perturbation. CUDA was untested and the
 temporary fixture edit was restored.
+
+#### Reverse particle traversal in the dense column
+
+On f3ba955, reverse the initialized 504-particle vector just
+before starting the simulation. Preserve all particle state
+and the solver. Build the native dry-scene target and run
+`--q-sand-dense-column-long-settle 3`.
+
+In coarse, fine, coarse half-step and fine half-step order,
+the angles are 29.703637°, 26.954622°, 21.853351° and 20.623778°.
+The angles and radii match the forward-order baseline to six
+printed decimals. All four cases fail angle, radius and
+persistence. The command exits 1. This reversal does not
+account for the dense failures. CUDA was untested and the
+temporary fixture edit was restored.
