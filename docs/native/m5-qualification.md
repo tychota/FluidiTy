@@ -13352,3 +13352,20 @@ Three sparse cases pass and the coarse half-step still exceeds
 35°. Its final drift is 1.460427°. The native command exits 1.
 CUDA and dense sampling were untested. Both temporary edits
 were restored.
+
+#### Check time-scaled vertical retention at dense sampling
+
+Use the same native executable as the preceding time-scaled
+vertical residual control. Run
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Angle at 3 s | Radius (m) | Final drift |
+|---|---:|---:|---:|
+| Coarse | 39.348933° | 0.169524 | 1.210048° |
+| Fine | 32.560659° | 0.189992 | 2.852193° |
+| Coarse half-step | 42.952930° | 0.170530 | 3.066236° |
+| Fine half-step | 33.732831° | 0.184375 | 4.339711° |
+
+Both fine angles enter the band. Every dense radius exceeds
+0.16 m and every final drift exceeds one degree. The native
+command exits 1. CUDA was untested for this diagnostic.
