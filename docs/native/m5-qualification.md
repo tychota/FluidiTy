@@ -13891,3 +13891,26 @@ increase by 28.5 mm from the coarsest to finest grid. Increasing
 quadrature density changes the primary failure from loss of
 height to an overly wide pile in this refinement comparison.
 CUDA was untested. The temporary fixture was restored.
+
+
+#### Limit higher floor friction to the initial collapse
+
+On 65342c1, use floor friction 1.4 before the 0.75 s
+sampling boundary and 0.7 after it. Keep the 30° material
+friction angle and the original column and gate criteria.
+Run the native dry-scene target with
+`--q-sand-column-long-settle 3` and
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 30.712768° | 0.138248 | 30.234763° | 0.172830 |
+| Fine | 23.918569° | 0.147504 | 27.427657° | 0.183087 |
+| Coarse half-step | 22.856989° | 0.143314 | 22.114128° | 0.173651 |
+| Fine half-step | 20.822540° | 0.155405 | 21.043314° | 0.185892 |
+
+All eight persistence checks fail and both commands exit 1.
+The dense angles and radii reproduce the constant-1.4 control
+to the displayed precision. Returning to the original floor
+friction after collapse does not reduce the measured spread.
+CUDA was untested. The temporary fixture was restored.
