@@ -12672,3 +12672,31 @@ overshoots both coarse angles and fails the default at
 38.990592°. The principal response comes from the pre-force
 field in these controls. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+#### Separate translation and affine contributions to resident compression
+
+On cc205aa, make a second ordinary granular deposit with zero
+affine slopes. At zero-fraction floor hits, reconstruct the
+pre-force normal gradient using either this translation
+momentum or the difference from the full deposit, divided by
+the original face mass. Empty faces contribute zero. Use
+only the compressive part as the projected yy entry. Keep
+the actual grid velocity, stress, and sweep unchanged.
+
+Build the native dry-scene target for each control and run
+without arguments and with `--q-sand-column-long-settle 6`.
+
+| Case | Translation only | Affine only |
+|---|---:|---:|
+| Coarse | 34.440162° | 35.390673° |
+| Fine | 32.163320° | 23.874034° |
+| Coarse half-step | 37.241163° | 19.435941° |
+| Fine half-step | 31.584749° | 13.421292° |
+
+Both matrices exit 1. Translation alone preserves the fine
+cases' angle passes from the full pre-force control. It fails
+the coarse nominal radius and the coarse half-step angle.
+The default fails at 40.239740° with translation alone and
+passes at 33.133681° with affine alone. The affine-only
+matrix puts every angle outside the band. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
