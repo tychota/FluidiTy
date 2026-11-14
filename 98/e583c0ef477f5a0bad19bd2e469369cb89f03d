@@ -1,0 +1,38 @@
+native/fluidity/base/vec3.h
+  s_4f0877e2acdcf0::t_e887350211b451 24-25
+  s_4f0877e2acdcf0::t_c90448ac9ad2bb 1-23,26-84
+native/fluidity/base/cpu_and_gpu.h
+  s_4f0877e2acdcf0::t_9479ad160da618 1-24
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_d347b0ed49f8e2 1-60
+CMakeLists.txt
+  s_4f0877e2acdcf0::t_a10a6c6ef2dcc6 46
+  s_4f0877e2acdcf0::t_fb30a60411650e 1-45,47-56
+native/fluidity/base/vec3_test.cc
+  s_4f0877e2acdcf0::t_a5562cc4717629 16-18,22-24,28-30,34-40,44-46,51-53,58-60,64-67
+  s_4f0877e2acdcf0::t_2853f056fcee7b 1-15,19-21,25-27,31-33,41-43,47-50,54-57,61-63,68-71
+CMakePresets.json
+  s_4f0877e2acdcf0::t_fd8674ee1aac7e 1-162
+README.md
+  s_4f0877e2acdcf0::t_19675c457e9af4 18-35
+conan.lock
+  s_4f0877e2acdcf0::t_3c7afdbf66fd94 1-11
+conanfile.py
+  s_4f0877e2acdcf0::t_2fc15ee144b3c8 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "98e583c0ef477f5a0bad19bd2e469369cb89f03d",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
