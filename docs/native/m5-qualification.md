@@ -13069,3 +13069,22 @@ exits 1. The median remains within 4.25 mm across the three
 samplings. The upper tail broadens, with 2.38% and 2.59% of
 the mass at or beyond 0.16 m in the two denser cases. The
 temporary fixture edit was restored. CUDA was untested.
+
+#### Track the first floor sample of particles beyond the radius limit
+
+On 66f6ef0, run the unmodified 504-particle coarse nominal
+native column to 3 s. For each particle store its radius at
+the first accepted sample with y <= 1e-8 m. At the endpoint
+report this value for each particle at or beyond 0.16 m.
+Temporarily select this single case with
+`--q-sand-dense-column-long-settle 3`.
+
+Each of the 12 outer particles reaches its final radius by
+the first sampled floor arrival, to nine decimal places.
+Three groups of four reach 0.161270946 m, 0.165806263 m and
+0.170290335 m. This includes the step on which they arrive,
+so the check does not resolve movement within that step.
+Subsequent floor motion does not account for the radius
+excess in this case. The native command exits 1. Other
+widths, timesteps and CUDA were untested. The fixture
+edit was restored.
