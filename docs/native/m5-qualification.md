@@ -12604,3 +12604,22 @@ cases also fail radius and persistence. The one-cell normal
 travel estimate increases the half-step angles relative to
 baseline, while increasing spread. CUDA and dense sampling
 were untested. The source edit was restored.
+
+#### Reconstruct resident normal strain with a reflected wall stencil
+
+On 73d7542, for ordinary granular zero-fraction floor hits,
+use the vertical stencil to recompute the normal strain rate.
+Set wall velocity to zero and reflect each below-wall normal
+face from the opposite above-wall face at the same horizontal
+coordinates, with opposite sign. Use zero if no donor is
+present. Retain only the compressive part of the resulting
+yy rate. The other gradient entries, sweep and scatter use
+the original path. This tests aligned grids.
+
+Build the native dry-scene target and run it without arguments
+and with `--q-sand-column-long-settle 6`. The default angle
+is 43.042325°. Six-second angles are 34.298857°, 29.164190°,
+35.521469°, and 31.811544° in coarse, fine, coarse half-step
+and fine half-step order. Both commands exit 1. All four
+matrix radii fail. CUDA and dense sampling were untested.
+The temporary source edit was restored.
