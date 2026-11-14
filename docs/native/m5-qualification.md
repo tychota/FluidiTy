@@ -13496,3 +13496,18 @@ stay below it. Earlier freezing preserves more height than
 freezing at 3 s, but the control removes ongoing material
 response and is not a solver candidate. CUDA and dense
 sampling were untested. The fixture edit was restored.
+
+#### Freeze history only for particles on the floor at the collapse sample
+
+On 047c8aa, repeat the 0.75 s material-history snapshot control
+only for particles with y <= 1e-8 m at the snapshot. Membership
+is fixed from that sample. Restore their elastic deformation and
+plastic log volume after each subsequent accepted step.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+All four final angles, radii and final-window extrema reproduce
+the ordinary baseline to printed precision. The coarse nominal
+passes and three cases remain below 30°. The command exits 1.
+The height preservation from freezing the entire material state
+does not occur when only the initial floor cohort is frozen.
+CUDA and dense sampling were untested. The fixture edit was restored.
