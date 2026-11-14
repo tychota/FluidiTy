@@ -13543,3 +13543,28 @@ matches the elevated material freeze, but the shape does
 not. The matrix exits 1. Retaining plastic volume alone
 does not reproduce the height preservation. CUDA and dense
 sampling were untested. The temporary fixture was restored.
+
+#### Restore elevated-particle elastic volume with admissibility checking
+
+On 108a8e5, select particles elevated at the 0.75 s sample.
+After each accepted step rescale their elastic deformation
+uniformly to the snapshot determinant and compensate log J_pl
+to preserve total volume for that rescaling. If the resulting
+state is inadmissible, restore the full snapshot elastic
+deformation and the step's accepted log J_pl. That fallback
+does not preserve total volume and can also change elastic shape.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+| Case | Final angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.753345° | 0.139858 |
+| Fine | 28.944545° | 0.146986 |
+| Coarse half-step | 26.198014° | 0.162808 |
+| Fine half-step | 18.876430° | 0.158026 |
+
+The matrix exits 1. Both half-step angles improve relative to
+baseline but stay below 30°. The coarse half-step also exceeds
+the radius limit. Fallback frequency was not measured, so the
+results describe the combined diagnostic, not an isolated
+elastic-volume response. CUDA and dense sampling were untested.
+The temporary fixture edit was restored.
