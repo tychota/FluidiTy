@@ -140,6 +140,17 @@ across GPU models, compilers or machines. The reason is that floating-point addi
 (0.1 + 0.2) + 0.3 gives 0.6000000000000001, while 0.1 + (0.2 + 0.3) gives 0.6. The CPU loop and the GPU function
 add the same numbers in different orders, so their last bits can differ.
 
+A single math function has no sum whose order could differ, so it is a narrower case than a whole operation, and
+the math functions that the shared formulas call come in two groups. Floor, absolute value, minimum, maximum and
+square root give the same bits on both processors, and so does a formula built from them with addition,
+subtraction, multiplication and division, such as the length of a vector. IEEE 754 fixes their results exactly:
+the square root is correctly rounded, and both processors follow that rule for doubles. A NaN result, such as the
+square root of −1, is the exception, since IEEE 754 leaves the bits of a NaN open. Cube root, exponential,
+logarithm, power, sine and cosine call each processor's own library, which IEEE 754 does not require to round
+correctly, so their last bits can differ, and so can a rotation built from them. A test that compares the
+processors demands equal bits for a formula of the first group and a tolerance for any formula that uses the
+second.
+
 = Notation <sec-notation>
 
 The code uses words, never paper symbols. @tab-notation pairs each symbol this paper uses with its code word; a
@@ -189,7 +200,8 @@ memory layout and scheduling are not shared, because each processor wants its ow
   run-on-figure(),
   placement: auto,
   caption: [The two implementations share their formulas, not their loops. Whole operations are compared within a
-    tolerance; the shared formulas alone are checked bit for bit.],
+    tolerance; the shared formulas that use only correctly rounded operations are checked bit for bit
+    (@sec-conventions).],
 ) <fig-run-on>
 
 == The caller chooses where it runs
@@ -219,11 +231,11 @@ for bit.
 
 The check can demand equal bits where whole operations cannot. It computes one value at a time, with no sum whose
 order differs between the processors. It evaluates the shared vector and matrix helpers: a cross product, a dot
-product, a rotation times a vector, a determinant, a length, a square root and a floor. These use only operations
-that IEEE 754 defines as correctly rounded: addition, subtraction, multiplication, division, square root and floor.
-The numerical flags make both processors round them the same way. They forbid fused multiply-add, which rounds
-$a times b + c$ once instead of twice. They forbid flush-to-zero, which replaces very small numbers by zero. They
-demand correctly rounded division and square root. A wrong flag or a broken driver therefore shows up as a
+product, a fixed rotation matrix times a vector, a determinant, a length, a square root and a floor. These use only
+operations that IEEE 754 defines as correctly rounded: addition, subtraction, multiplication, division, square root
+and floor. The numerical flags make both processors round them the same way. They forbid fused multiply-add, which
+rounds $a times b + c$ once instead of twice. They forbid flush-to-zero, which replaces very small numbers by zero.
+They demand correctly rounded division and square root. A wrong flag or a broken driver therefore shows up as a
 differing bit.
 
 #procedure(

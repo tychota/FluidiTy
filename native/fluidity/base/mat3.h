@@ -8,18 +8,27 @@
 //   the two apart: +1 for a rotation, -1 for a mirror image (papers call this a reflection).
 //
 // Words:
-//   matrix row  three entries side by side. The first letter of an entry's name says which matrix row it is in.
-//   transpose   the matrix mirrored along its diagonal, so entry xy and entry yx change places.
-//   determinant a number that says how the matrix changes volume. Its sign says whether it keeps the order
-//               in which the corners of a triangle go round.
-// Owns:    Mat3, its arithmetic operators, kIdentity, math::Transpose, math::Determinant
-// Uses:    Vec3 (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h)
+//   matrix row       three entries side by side. The first letter of an entry's name says which matrix row it
+//                    is in.
+//   transpose        the matrix mirrored along its diagonal, so entry xy and entry yx change places.
+//   determinant      a number that says how the matrix changes volume. Its sign says whether it keeps the order
+//                    in which the corners of a triangle go round.
+//   rotation vector  a vector that describes a turn: its direction is the axis of the turn and its length is
+//                    the angle in radians. The turn is right-handed: with the thumb of the right hand along the
+//                    vector, the fingers curl the way the turn goes.
+//   cross matrix     the matrix that computes a cross: the cross matrix of r times v equals Cross(r, v).
+// Owns:    Mat3, its arithmetic operators, kIdentity, math::Transpose, math::Determinant, math::IsFinite(Mat3),
+//          math::Rotation
+// Uses:    Vec3 and math::Dot (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
+//          math::Sqrt, math::Sin and math::IsFinite (base/scalar_math.h)
 // Used by: every module that turns or scales vectors
 // Read:    docs/method-paper/fluidity-method.typ <sec-conventions>
+//          Rodrigues' rotation formula
 
 #pragma once
 
 #include "fluidity/base/cpu_and_gpu.h"
+#include "fluidity/base/scalar_math.h"
 #include "fluidity/base/vec3.h"
 
 namespace fluidity {
@@ -164,6 +173,74 @@ FLUIDITY_CPU_AND_GPU constexpr double Determinant(Mat3 matrix) noexcept {
   const double minor_y = matrix.yx * matrix.zz - matrix.yz * matrix.zx;
   const double minor_z = matrix.yx * matrix.zy - matrix.yy * matrix.zx;
   return matrix.xx * minor_x - matrix.xy * minor_y + matrix.xz * minor_z;
+}
+
+// Says whether every entry is an ordinary number: false when any entry is plus or minus infinity or NaN.
+//
+// Method: same bits on CPU and GPU, as IsFinite(double).
+// Example: IsFinite(kIdentity) is true. kIdentity with entry zz set to NaN is not finite.
+// Read: docs/method-paper/fluidity-method.typ <sec-conventions>
+FLUIDITY_CPU_AND_GPU inline bool IsFinite(Mat3 matrix) noexcept {
+  const bool matrix_row_x_is_finite = IsFinite(matrix.xx) && IsFinite(matrix.xy) && IsFinite(matrix.xz);
+  const bool matrix_row_y_is_finite = IsFinite(matrix.yx) && IsFinite(matrix.yy) && IsFinite(matrix.yz);
+  const bool matrix_row_z_is_finite = IsFinite(matrix.zx) && IsFinite(matrix.zy) && IsFinite(matrix.zz);
+  return matrix_row_x_is_finite && matrix_row_y_is_finite && matrix_row_z_is_finite;
+}
+
+// Computes the rotation that a rotation vector describes: a right-handed turn by Length(rotation_vector) radians
+// about the direction of rotation_vector. A zero vector gives kIdentity exactly.
+//
+// Method: may differ in the last bits between CPU and GPU, because it uses Sin. With r the rotation vector, a its
+//   length and K its cross matrix, Rodrigues' rotation formula gives
+//     rotation = I + (sin(a) / a) K + ((1 - cos(a)) / a^2) K^2.
+//   Below a = 1e-4 rad the two factors come from their short series instead, which never divides by a. So a tiny
+//   vector, even one whose length underflows to zero, still gives the identity plus its first-order turn K.
+// Units: the rotation vector is in radians. The matrix has no unit.
+// Example: Rotation({0, 0, pi / 2}) is the quarter turn about Z with matrix rows {0, -1, 0}, {1, 0, 0}, {0, 0, 1},
+//   within a few rounding units. It sends +X to +Y. Rotation({1e-12, 0, 0}) has entry zy = 1e-12 and
+//   entry yz = -1e-12, and its diagonal is 1.
+// Read: docs/method-paper/fluidity-method.typ <sec-conventions>
+//       Rodrigues' rotation formula
+FLUIDITY_CPU_AND_GPU inline Mat3 Rotation(Vec3 rotation_vector) noexcept {
+  // Steps: 1 return the identity for a zero vector  2 compute the two factors  3 add up the three terms
+  // Step 1: the identity, exactly, with no rounding from the formula.
+  const bool is_zero_vector = rotation_vector.x == 0 && rotation_vector.y == 0 && rotation_vector.z == 0;
+  if (is_zero_vector) {
+    return kIdentity;
+  }
+
+  // Step 2: the factor of K is sin(a) / a, and the factor of K^2 is (1 - cos(a)) / a^2.
+  // Below this angle the series 1 - a^2 / 6 and 1/2 - a^2 / 24 leave out terms under a^4 / 120 < 1e-18. That is
+  // far below the rounding unit of 1, so the short series is as good as the full formula.
+  constexpr double kShortSeriesAngleSquaredLimit = 1e-8;  // rad^2: an angle of 1e-4 rad.
+  const double angle_squared = Dot(rotation_vector, rotation_vector);
+  // Start from the short series; a larger angle replaces both factors with the full formula below.
+  double cross_matrix_factor = 1 - angle_squared / 6;
+  double cross_matrix_squared_factor = 0.5 - angle_squared / 24;
+  if (angle_squared >= kShortSeriesAngleSquaredLimit) {
+    const double angle = Sqrt(angle_squared);
+    const double half_angle = 0.5 * angle;
+    cross_matrix_factor = Sin(angle) / angle;
+    // 1 - cos(a) = 2 sin(a / 2)^2. Computing 1 - Cos(a) directly would lose digits for a small angle.
+    const double half_angle_sine_ratio = Sin(half_angle) / half_angle;
+    cross_matrix_squared_factor = 0.5 * half_angle_sine_ratio * half_angle_sine_ratio;
+  }
+
+  // Step 3: with r = {x, y, z}, K has matrix rows {0, -z, y}, {z, 0, -x}, {-y, x, 0}, and K^2 = r r^T - a^2 I.
+  const double x = rotation_vector.x;
+  const double y = rotation_vector.y;
+  const double z = rotation_vector.z;
+  return {
+      .xx = 1 - cross_matrix_squared_factor * (y * y + z * z),
+      .xy = -cross_matrix_factor * z + cross_matrix_squared_factor * (x * y),
+      .xz = cross_matrix_factor * y + cross_matrix_squared_factor * (x * z),
+      .yx = cross_matrix_factor * z + cross_matrix_squared_factor * (x * y),
+      .yy = 1 - cross_matrix_squared_factor * (x * x + z * z),
+      .yz = -cross_matrix_factor * x + cross_matrix_squared_factor * (y * z),
+      .zx = -cross_matrix_factor * y + cross_matrix_squared_factor * (x * z),
+      .zy = cross_matrix_factor * x + cross_matrix_squared_factor * (y * z),
+      .zz = 1 - cross_matrix_squared_factor * (x * x + y * y),
+  };
 }
 
 }  // namespace math
