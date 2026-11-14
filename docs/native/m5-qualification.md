@@ -13670,3 +13670,21 @@ half-step and fine half-step order the six-second angles are
 36.257700°, 28.631408°, 27.037958° and 23.794735°. All radii
 pass, but all angles miss the band and the matrix exits 1.
 CUDA and dense sampling were untested. The source edit was restored.
+
+
+#### Retain half the incoming normal compression at sticking contacts
+
+On 9231ce0, add 0.5 times min(0, incoming yy) to projected
+yy at ordinary granular zero-fraction sticking contacts.
+Run the native dry-scene executable without arguments, with
+`--q-sand-column-long-settle`, and with
+`--q-sand-column-long-settle 6`.
+
+The default passes at 34.320743°. In coarse, fine, coarse
+half-step and fine half-step order, the registered 1.5 s
+angles are 34.159356°, 31.511967°, 30.521271°, and 29.676413°.
+The fine half-step misses the angle band and the command exits 1.
+At 6 s, the angles are 36.081744°, 28.937929°, 28.293980°,
+and 24.359077°. All four fail angle and persistence. Radius,
+short drift, and kinetic energy pass in both matrices.
+CUDA and dense sampling were untested. The source edit was restored.
