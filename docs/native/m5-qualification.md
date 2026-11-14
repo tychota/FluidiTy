@@ -14187,3 +14187,24 @@ the final second. Both matrices exit 1. Requiring lateral
 convergence removes the improvement in the three shallow
 cases observed with unconditional sticking compression.
 CUDA and dense sampling were untested. The edit was restored.
+
+
+#### Attenuate sticking compression using accepted normal stress
+
+On a487a59, divide the retained compressive yy rate at ordinary
+zero-fraction sticking contacts by 1 + r², with r the ratio of
+compressive Kirchhoff normal stress to reference density times
+gravity magnitude times cell width. Leave the transport and
+stress scatter unchanged. Run the native dry-scene executable
+without arguments and with `--q-sand-column-long-settle` at
+1.5 and 6 s.
+
+The default passes at 34.127061°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+33.863161°, 30.952831°, 30.619671°, and 29.691947°.
+The 6 s angles are 36.111911°, 28.694363°, 28.824217°,
+and 24.359193°. Both matrices exit 1. All radii pass at 6 s,
+and all angles miss the band throughout the final second.
+The stress attenuation leaves the coarse overshoot and weakens
+support in the other cases. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
