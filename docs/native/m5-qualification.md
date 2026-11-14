@@ -14208,3 +14208,23 @@ and all angles miss the band throughout the final second.
 The stress attenuation leaves the coarse overshoot and weakens
 support in the other cases. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+
+#### Restrict resident sticking compression to the latter part of collapse
+
+On bd71276, retain the negative incoming yy rate at ordinary
+zero-fraction granular sticking contacts for steps beginning
+in [0.25, 0.75) s. Before and after that interval use the
+original projection. Run the native dry-scene executable
+without arguments and with `--q-sand-column-long-settle` at
+1.5 and 6 s.
+
+The default passes at 33.275906°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+30.608690°, 28.323033°, 29.873525°, and 28.173767°.
+At 6 s they are 35.563823°, 25.856557°, 23.404519°, and
+18.382700°. All radii pass. Both matrices exit 1, and none
+stays in range throughout the final second. The later part
+of collapse alone retains some height in the shallow cases
+but does not reproduce the full sticking control. CUDA and
+dense sampling were untested. Both temporary files were restored.
