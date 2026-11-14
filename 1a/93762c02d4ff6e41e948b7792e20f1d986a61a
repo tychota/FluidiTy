@@ -1,0 +1,19 @@
+native/fluidity/base/memory_count_test.cc
+  s_4f0877e2acdcf0::t_239aa1e0685f2d 23-30,36-43,93-100,106-113,119-126,132-139,146-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1a93762c02d4ff6e41e948b7792e20f1d986a61a",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
