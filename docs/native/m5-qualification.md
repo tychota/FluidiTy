@@ -14782,3 +14782,23 @@ stays in band throughout the last second but its endpoint
 drift exceeds 2°. Both dense nominal radii move above 0.16 m
 and the coarse nominal angle overshoots. Both matrices exit 1.
 CUDA was untested. Both temporary source edits were restored.
+
+
+#### Extend compressive-only affine collapse to six seconds
+
+On 2e027ed, repeat the compressive-yy-only affine deposit
+before 0.75 s, then use the ordinary transfer. Run the native
+sparse and dense column selectors at 6 s.
+
+| Case | Sparse angle | Dense angle | Dense final sampled range | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 40.912262° | 36.239119° | 36.239119–36.521490° | 0.158750 |
+| Fine | 33.889116° | 31.714145° | 31.314948–31.720793° | 0.159322 |
+| Coarse half-step | 24.870511° | 30.237922° | 28.849311–30.237922° | 0.158693 |
+| Fine half-step | 24.844200° | 28.100448° | 27.263414–28.100448° | 0.166182 |
+
+Fine nominal is the only passing case in each sampling.
+Dense coarse nominal loses its three-second pass by
+overshooting. Dense coarse half-step enters the band by the
+endpoint but fails persistence. Both commands exit 1. CUDA
+was untested. The temporary fixture edit was restored.
