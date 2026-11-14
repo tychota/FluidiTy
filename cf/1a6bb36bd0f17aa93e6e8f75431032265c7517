@@ -1,0 +1,21 @@
+native/fluidity/base/ordered_sums_test.cc
+  s_4f0877e2acdcf0::t_600e972c6ec1c9 176-182
+native/fluidity/base/tree_sum.h
+  s_4f0877e2acdcf0::t_5b91e5aa2a4b54 95,105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cf1a6bb36bd0f17aa93e6e8f75431032265c7517",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
