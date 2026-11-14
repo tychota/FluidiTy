@@ -14760,3 +14760,25 @@ and fine half-step also misses radius. All four dense radii
 decrease by 12.2–16.9 mm relative to retaining both signs of yy.
 The command exits 1. Sparse, CUDA and six-second runs were
 untested. The temporary fixture was restored.
+
+
+#### Combine compressive vertical affine feedback with sticking compression
+
+On 63aa922, retain only compressive yy in the affine deposit
+before 0.75 s and retain negative incoming yy at ordinary
+zero-fraction sticking contacts. Run the native sparse and
+dense column selectors at 3 s.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 42.789122° | 0.139289 | 36.534292° | 0.164837 |
+| Fine | 35.406208° | 0.137846 | 34.073494° | 0.162638 |
+| Coarse half-step | 33.662615° | 0.121958 | 31.066747° | 0.156360 |
+| Fine half-step | 33.469161° | 0.133450 | 29.584906° | 0.166886 |
+
+Dense half-step endpoints gain 2.88° and 3.34° relative to
+the compressive-deposit-only control. Dense coarse half-step
+stays in band throughout the last second but its endpoint
+drift exceeds 2°. Both dense nominal radii move above 0.16 m
+and the coarse nominal angle overshoots. Both matrices exit 1.
+CUDA was untested. Both temporary source edits were restored.
