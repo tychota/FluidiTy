@@ -14738,3 +14738,25 @@ by less than 0.055°. All four radii fail and the command
 exits 1. The normal diagonal accounts for most of the
 measured spread effect of the vertical row in this control.
 Sparse sampling and CUDA were untested. The fixture was restored.
+
+
+#### Retain only compressive vertical affine feedback during collapse
+
+On 4e8a8e4, before extended column steps starting before 0.75 s
+clear all stored affine entries except min(0, yy). Preserve
+translation and material state. Run the native dense
+`--q-sand-dense-column-long-settle 3` selector.
+
+| Case | Angle | Final sampled range | Radius (m) |
+|---|---:|---:|---:|
+| Coarse | 33.660180° | 32.421850–33.660180° | 0.156329 |
+| Fine | 32.185272° | 30.597097–32.185272° | 0.159322 |
+| Coarse half-step | 28.190518° | 28.190518–32.360529° | 0.152605 |
+| Fine half-step | 26.248289° | 26.248289–28.679516° | 0.165104 |
+
+Both nominal cases pass the three-second checks, including
+full sampled angle coverage. Both half-step cases miss angle,
+and fine half-step also misses radius. All four dense radii
+decrease by 12.2–16.9 mm relative to retaining both signs of yy.
+The command exits 1. Sparse, CUDA and six-second runs were
+untested. The temporary fixture was restored.
