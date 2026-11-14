@@ -12585,3 +12585,22 @@ The matrix exits 1. The large response to volumetric
 compression at zero-fraction hits is absent in the
 positive-time impact control. CUDA and dense sampling
 were untested. The temporary source edit was restored.
+
+#### Reconstruct resident compression from incoming normal travel
+
+On 1d44fad, at ordinary granular floor contacts with zero
+incoming duration, set the projected yy gradient to
+min(0, incoming PIC normal speed / cell width). This replaces
+the gathered normal derivative in the resident compression
+control with a one-cell difference from the stationary wall.
+Keep the sweep, remaining gradient entries, and stress unchanged.
+
+Build the native dry-scene target and run it without arguments
+and with `--q-sand-column-long-settle 6`. The default angle is
+43.751317°. The six-second angles are 18.779850°, 17.825465°,
+25.304388°, and 26.519294° in coarse, fine, coarse half-step
+and fine half-step order. Both commands exit 1. All matrix
+cases also fail radius and persistence. The one-cell normal
+travel estimate increases the half-step angles relative to
+baseline, while increasing spread. CUDA and dense sampling
+were untested. The source edit was restored.
