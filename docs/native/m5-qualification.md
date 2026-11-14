@@ -14401,3 +14401,25 @@ and 19.806653°. All radii pass, and both matrices exit 1.
 The cap does not resolve the coarse overshoot and reduces
 the height retained in the other cases. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+
+#### Split near-floor stress quadrature vertically
+
+On c3429eb, scatter the ordinary granular stress of particles
+strictly between the floor and one cell above it at two points.
+Use half the reference volume at each point and offsets
+±min(particle height, one eighth of the cell width). Keep the
+particle-centered mass deposit and gather. The control changes
+the pairing between stress scatter and the deformation gradient.
+Run the native dry-scene executable without arguments and with
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default passes at 32.913769°. In coarse, fine, coarse
+half-step and fine half-step order the 1.5 s angles are
+29.284447°, 26.991485°, 29.062988°, and 27.057928°.
+The 6 s angles are 34.083096°, 23.766253°, 17.423062°,
+and 13.254406°. Both matrices exit 1. All radii pass and
+only coarse nominal stays in band across the final second.
+The endpoint changes at 6 s from the aligned baseline are
+below 0.35°. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
