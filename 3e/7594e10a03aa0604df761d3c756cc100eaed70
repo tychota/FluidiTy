@@ -1,0 +1,23 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_c34f48d1a29f4f 403-406
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_2578f8f7ae6184 18-19,89-90,249-254,287,347-350,353,365-366,368,370-373
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_00efeb126eafd6 118-119,121,124-133,257,267-281,283-284,291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3e7594e10a03aa0604df761d3c756cc100eaed70",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
