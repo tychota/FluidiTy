@@ -1,2 +1,6 @@
-# Names that AGENTS.md "Allowed verbs" does not list, approved by the owner.
+# Names that AGENTS.md "Allowed verbs" does not list, and names the backend-name rule would flag, approved by the owner.
 # Format: Name  # one-line reason
+kGpuNotBuilt  # decided error value of RunOnError (Foundation plan)
+kNoGpuFound  # decided error value of RunOnError (Foundation plan)
+kGpuCallFailed  # decided error value of RunOnError (Foundation plan)
+kGpuMathDiffers  # decided error value of RunOnError (Foundation plan)

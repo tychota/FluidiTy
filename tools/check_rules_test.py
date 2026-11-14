@@ -310,6 +310,21 @@ def test_main_exit_code_follows_failures_only(tmp_path, glossary, capsys):
     assert "b.cc:1: FAIL banned-word" in capsys.readouterr().out
 
 
+def test_allowed_name_without_reason_is_an_error(tmp_path, glossary):
+    write(tmp_path / "src", "a.h", FULL_HEADER)
+    names = write(tmp_path, "names.txt", "# header comment\nGoodName  # reason\nBadName\nEmptyReason  #   \n")
+    with pytest.raises(check_rules.RulesFileError, match=r"names\.txt:3.*BadName"):
+        run(tmp_path / "src", glossary, names)
+
+
+def test_allowed_name_without_reason_exits_with_two(tmp_path, glossary, capsys):
+    write(tmp_path / "src", "a.h", FULL_HEADER)
+    names = write(tmp_path, "names.txt", "BadName\n")
+    arguments = [str(tmp_path / "src"), "--glossary", str(glossary), "--allowed-names", str(names)]
+    assert check_rules.main(arguments) == 2
+    assert "BadName" in capsys.readouterr().err
+
+
 def test_glossary_with_wrong_header_is_an_error(tmp_path):
     bad = tmp_path / "glossary.md"
     bad.write_text("| Word | Meaning |\n| --- | --- |\n| a | b |\n", encoding="utf-8")
@@ -361,6 +376,20 @@ def test_declared_names_are_still_checked(tmp_path, glossary, line):
 def test_run_on_enumerator_use_is_allowed_in_any_header(tmp_path, glossary):
     write(tmp_path, "a.h", FULL_HEADER + "struct Settings {\n  RunOn run_on = RunOn::kGpu;\n};\n")
     assert run(tmp_path, glossary) == []
+
+
+def test_listed_name_is_exempt_from_backend_name(tmp_path, glossary):
+    write(tmp_path / "src", "a.h", FULL_HEADER + "bool CheckGpuMath(int* error);\nvoid WriteGpuBuffer();\n")
+    names = write(tmp_path, "names.txt", "CheckGpuMath  # private to base/\n")
+    findings = run(tmp_path / "src", glossary, names)
+    assert rules(findings) == ["backend-name"]
+    assert "WriteGpuBuffer" in findings[0].text
+
+
+def test_listed_enumerator_is_exempt_from_backend_name(tmp_path, glossary):
+    write(tmp_path / "src", "a.h", FULL_HEADER + "enum class Error { kNone, kGpuNotBuilt };\n")
+    names = write(tmp_path, "names.txt", "kGpuNotBuilt  # decided error value\n")
+    assert run(tmp_path / "src", glossary, names) == []
 
 
 def test_backend_word_is_still_a_failure_next_to_run_on(tmp_path, glossary):

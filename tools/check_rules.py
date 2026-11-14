@@ -1,7 +1,7 @@
 """Applies the mechanical items of the AGENTS.md checklist to files.
 
-Usage: uv run python tools/check_rules.py [PATH ...] [--notes-on-staged-lines [--repository PATH]]
-                                         (default path: native)
+Usage: uv run python tools/check_rules.py [PATH ...] [--glossary PATH] [--allowed-names PATH]
+                                         [--notes-on-staged-lines [--repository PATH]]   (default path: native)
 
 Output lines are `path:line: FAIL <rule-id> <text>` and `path:line: NOTE <rule-id> <text>`.
 The exit code is 1 when any FAIL was printed, 2 when an input is missing or malformed, otherwise 0.
@@ -16,6 +16,7 @@ come from the "Allowed verbs" section of AGENTS.md. Words are matched on tokens,
 Which rules apply to which files (a deliberate choice, written down here):
 - `file-header`, `bare-bool` and `verb` apply to `.h` and `.cuh` files, where the public declarations are.
 - `backend-name` applies to `.h` files only, because a `.cuh` file is allowed to name its backend.
+  Names listed in the allowed-names file are exempt from it, as from `verb`.
 - `role-suffix` applies to every C++ file; the word rules and `milestone-code` apply to every scanned file.
 - `shared-by-reference` applies to C++ files that contain FLUIDITY_CPU_AND_GPU: they take Vec3 and Mat3 by value,
   because GPU code cannot bind a reference to a namespace-scope constexpr constant such as kIdentity.
@@ -245,14 +246,18 @@ def load_allowed_verbs(agents_path: Path) -> tuple[set[str], set[str]]:
 
 
 def load_allowed_names(allowed_names_path: Path | None) -> set[str]:
-    """Reads owner-approved function names, one `Name  # reason` per line."""
+    """Reads owner-approved names, one `Name  # reason` per line; a name without a reason is an error."""
     if allowed_names_path is None or not allowed_names_path.exists():
         return set()
     names = set()
-    for line in allowed_names_path.read_text(encoding="utf-8").splitlines():
-        name = line.split("#", 1)[0].strip()
-        if name:
-            names.add(name)
+    for number, line in enumerate(allowed_names_path.read_text(encoding="utf-8").splitlines(), start=1):
+        name, _, reason = line.partition("#")
+        name = name.strip()
+        if not name:
+            continue
+        if not reason.strip():
+            raise RulesFileError(f"{allowed_names_path}:{number}: '{name}' has no reason after '#'")
+        names.add(name)
     return names
 
 
@@ -573,9 +578,9 @@ def _check_role_suffix(lines: list[ScannedLine], reporter: _Reporter) -> None:
                 reporter.add(line.number, FAIL, "role-suffix", text, key=name)
 
 
-def _check_backend_names(lines: list[ScannedLine], reporter: _Reporter) -> None:
+def _check_backend_names(lines: list[ScannedLine], allowed_names: set[str], reporter: _Reporter) -> None:
     code_text = "\n".join(line.code for line in lines)
-    exempt = set(BACKEND_EXEMPT_IDENTIFIERS)
+    exempt = set(BACKEND_EXEMPT_IDENTIFIERS) | allowed_names
     for match in re.finditer(r"\benum\s+(?:class\s+|struct\s+)?RunOn\b[^{;]*\{([^}]*)\}", code_text):
         exempt.update(_identifiers(match.group(1)))
     for line in lines:
@@ -845,7 +850,7 @@ def check_text(
     if suffix in HEADER_SUFFIXES:
         _check_declarations(lines, None if is_private_gpu_file else verbs, exact_names, allowed_names, reporter)
     if suffix == ".h" and not is_private_gpu_file:
-        _check_backend_names(lines, reporter)
+        _check_backend_names(lines, allowed_names, reporter)
     return sorted(reporter.findings(), key=lambda finding: (finding.line, finding.rule_id))
 
 
@@ -956,6 +961,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--glossary", default=str(DEFAULT_GLOSSARY_PATH), help="path of docs/glossary.md")
     parser.add_argument(
+        "--allowed-names",
+        default=str(DEFAULT_ALLOWED_NAMES_PATH),
+        help="path of the owner-approved names (tools/check_rules_allowed_names.txt)",
+    )
+    parser.add_argument(
         "--notes-on-staged-lines",
         action="store_true",
         help="print a NOTE only for a line that the staged changes add (FAIL lines are always printed)",
@@ -975,7 +985,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"nothing was scanned: no {' '.join(sorted(SCANNED_SUFFIXES))} files under {listed}", file=sys.stderr)
         return 2
     try:
-        findings = check_paths(paths, Path(arguments.glossary))
+        findings = check_paths(paths, Path(arguments.glossary), Path(arguments.allowed_names))
     except (GlossaryError, RulesFileError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
