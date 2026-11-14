@@ -14025,3 +14025,28 @@ through the final second, and both fine cases remain below 30°.
 Reversing below-floor velocity lowers all four six-second angles.
 CUDA and dense sampling were untested. The temporary source edit
 was restored.
+
+
+#### Combine the wall-constrained gradient with resident compression
+
+On 33cce2e, zero inward normal face velocities at and below
+the floor for the deformation gather only. At ordinary granular
+zero-fraction sticking contacts, retain the negative yy entry
+from that constrained gradient after the Coulomb projection.
+The original gather still drives swept contact and stored
+affine slopes. Run the native dry-scene executable without
+arguments and with `--q-sand-column-long-settle` at 1.5 and 6 s.
+
+| Case | Angle at 1.5 s | Angle at 6 s | Radius at 6 s (m) |
+|---|---:|---:|---:|
+| Coarse | 37.245644° | 31.464912° | 0.201599 |
+| Fine | 29.304562° | 28.771109° | 0.185939 |
+| Coarse half-step | 39.588874° | 33.191044° | 0.181759 |
+| Fine half-step | 32.209802° | 30.644791° | 0.180533 |
+
+Both coarse cases meet the six-second angle and persistence
+criteria. The fine half-step enters the band at the endpoint,
+but its window minimum is 29.721677°. All radii exceed the
+limit at both endpoints, and all three commands exit 1.
+The default exits before printing the pile summary. CUDA and
+dense sampling were untested. The temporary solver edit was restored.
