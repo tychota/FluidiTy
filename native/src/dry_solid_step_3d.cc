@@ -177,13 +177,20 @@ absl::Status internal::AccumulateDrySolidStress3D(
     Mat3 kirchhoff_stress,
     std::span<double> face_force
 ) {
+  if (face_force.size() != grid.face_count()) {
+    return absl::InvalidArgumentError("dry stress force extent does not match owned faces");
+  }
+  std::array<MacFaceStencil3D, 3> stencils;
   for (int axis = 0; axis < 3; ++axis) {
     const auto stencil = BuildOwnedMacFaceStencil3D(grid, kAxes[axis], world_position, world_position);
     if (!stencil.ok()) {
       return stencil.status();
     }
+    stencils[axis] = *stencil;
+  }
+  for (int axis = 0; axis < 3; ++axis) {
     const Vec3 stress_row = kirchhoff_stress.*kRows[axis];
-    for (const auto& sample : *stencil) {
+    for (const auto& sample : stencils[axis]) {
       const double force_contribution = -reference_volume * solid_detail::Dot(stress_row, sample.weight_gradient);
       face_force[sample.face_slot] += force_contribution;
     }
