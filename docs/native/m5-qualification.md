@@ -13609,3 +13609,20 @@ The matrix exits 1. Rejection ranges from 40.4% to 99.8%,
 so this experiment cannot determine whether preserving shape
 would retain height if all replacements were admissible.
 CUDA and dense sampling were untested. The fixture was restored.
+
+#### Center the granular volume rate on ordinary steps without a floor hit
+
+On ebbbb7e, retain the Euler trial stretch ratios. For ordinary
+granular steps without floor contact and with a positive trial
+determinant, rescale the trial to the accepted determinant
+times exp(dt times the midpoint trace). Compute that trace
+from the mean of pre-force and post-force face velocities.
+Keep the swept update and constitutive return unchanged.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+The final angles are 34.105289°, 23.928965°, 21.827275° and
+14.887363° in coarse, fine, coarse half-step and fine half-step
+order. The coarse nominal passes, while the other three stay
+below 30°. The fine half-step also exceeds the radius limit.
+The command exits 1. CUDA and dense sampling were untested.
+The temporary source edit was restored.
