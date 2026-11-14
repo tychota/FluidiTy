@@ -1,0 +1,26 @@
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_50f68b88ae354b 37-45
+  s_4f0877e2acdcf0::t_4ede57a99f6f71 46
+native/fluidity/base/shared_math_test_gpu.h
+  s_4f0877e2acdcf0::t_b0d1c31801a57b 69-70,124-125
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_c11013ed494502 66-67
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_f42f025ce08dec 45-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "20ddf425cb3328f766f2125414adcd1e8af7fc0f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
