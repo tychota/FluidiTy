@@ -1,0 +1,46 @@
+conanfile.py
+  s_4f0877e2acdcf0::t_2fc15ee144b3c8 1-13
+native/fluidity/base/vec3.h
+  s_4f0877e2acdcf0::t_e887350211b451 24-25
+  s_4f0877e2acdcf0::t_c90448ac9ad2bb 1-23,26-84
+conan.lock
+  s_4f0877e2acdcf0::t_3c7afdbf66fd94 1-11
+README.md
+  s_4f0877e2acdcf0::t_94b2f88adafd9d 36-41
+  s_4f0877e2acdcf0::t_19675c457e9af4 18-35
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_bc79bedf1f3a70 36-53
+  s_4f0877e2acdcf0::t_ba69e9f8863040 82
+  s_4f0877e2acdcf0::t_d650afd311c33a 61-62,64-66
+  s_4f0877e2acdcf0::t_d347b0ed49f8e2 1-35,54-60,63,67-81,83
+CMakePresets.json
+  s_4f0877e2acdcf0::t_fd8674ee1aac7e 1-162
+native/fluidity/base/cpu_and_gpu.h
+  s_4f0877e2acdcf0::t_9479ad160da618 1-24
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_a9e4e1758a4a64 1-6
+CMakeLists.txt
+  s_4f0877e2acdcf0::t_fb30a60411650e 1-32,34-40
+  s_4f0877e2acdcf0::t_a10a6c6ef2dcc6 33
+  s_4f0877e2acdcf0::t_6d771994de5d8c 41-42
+native/fluidity/base/vec3_test.cc
+  s_4f0877e2acdcf0::t_a5562cc4717629 16-18,22-24,28-30,34-40,44-46,51-53,58-60,71-74
+  s_4f0877e2acdcf0::t_c4190be0a46dc6 63-69
+  s_4f0877e2acdcf0::t_2853f056fcee7b 1-15,19-21,25-27,31-33,41-43,47-50,54-57,61-62,70,75-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "559e2ed63c08236ed39a58ac068455ac68469f49",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
