@@ -14111,3 +14111,20 @@ and 26.622177°. All radii pass. No case stays in the angle
 band across the final second. Both extended runs exit 1.
 CUDA and dense sampling were untested. The temporary solver
 edit was restored.
+
+
+#### Limit sticking-contact lateral strain to rates above the gravity scale
+
+On cea5a1a, retain incoming normal compression q at ordinary
+zero-fraction granular sticking contacts. Apply lateral expansion
+equal to Poisson ratio times max(0, q - sqrt(abs(gravity) / cell
+width)) in each horizontal direction. Leave the sweep and stress
+scatter unchanged. Run the native dry-scene executable without
+arguments and with `--q-sand-column-long-settle` at 1.5 and 6 s.
+
+All nine endpoint angles reproduce the traction-capped sticking
+control to six decimal places. The default reaches 35.674372°.
+The six-second coarse nominal case overshoots, while the other
+three stay in range for every sampled step of the final second.
+All three commands exit 1. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
