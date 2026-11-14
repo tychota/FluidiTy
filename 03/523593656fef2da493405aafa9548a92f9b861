@@ -1,0 +1,23 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_b9525541a0804a 152-153
+native/fluidity/base/scalar_math.h
+  s_4f0877e2acdcf0::t_f4c837372ec095 13-14,45,75-77,79
+native/fluidity/base/vec3.h
+  s_4f0877e2acdcf0::t_6b0d9004cf30dd 89-90,107-108,112-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "03523593656fef2da493405aafa9548a92f9b861",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
