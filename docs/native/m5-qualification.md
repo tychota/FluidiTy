@@ -12964,3 +12964,25 @@ printed decimals. All four cases fail angle, radius and
 persistence. The command exits 1. This reversal does not
 account for the dense failures. CUDA was untested and the
 temporary fixture edit was restored.
+
+#### Separate sticking and sliding resident floor compression
+
+On 0e68e04, retain min(0, incoming yy) on zero-fraction ordinary
+granular floor hits. In separate builds, apply this only when
+both projected tangential advection components are zero, or
+only when either component is nonzero. Keep contact and scatter
+unchanged. Run the native target with `--q-sand-column-long-settle 6`.
+
+| Case | Sticking only | Sliding only |
+|---|---:|---:|
+| Coarse | 36.442893° | 33.877097° |
+| Fine | 30.159032° | 23.433129° |
+| Coarse half-step | 34.583457° | 17.104058° |
+| Fine half-step | 30.091364° | 13.060319° |
+
+Sticking-only compression reproduces the all-resident angles
+within 0.027° and passes three of four cases. Sliding-only
+compression stays within 0.035° of the unmodified baseline.
+Both matrices exit 1. The coarse nominal case still overshoots
+with sticking compression. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
