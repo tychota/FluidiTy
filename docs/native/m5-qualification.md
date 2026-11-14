@@ -13568,3 +13568,23 @@ the radius limit. Fallback frequency was not measured, so the
 results describe the combined diagnostic, not an isolated
 elastic-volume response. CUDA and dense sampling were untested.
 The temporary fixture edit was restored.
+
+#### Keep the accepted state when elastic volume restoration fails
+
+On 1371ed0, repeat the elevated elastic determinant control,
+including plastic compensation, but skip each inadmissible
+rescaling instead of restoring the snapshot elastic tensor.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+| Case | Attempts | Rejected | Final angle | Radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 103637 | 934 | 34.359739° | 0.139858 |
+| Fine | 124320 | 65 | 28.944373° | 0.146986 |
+| Coarse half-step | 252045 | 24 | 26.198017° | 0.162808 |
+| Fine half-step | 309120 | 2141 | 18.871190° | 0.158087 |
+
+Fewer than 1% of attempts are rejected in each case. The
+half-step angle improvements persist relative to the ordinary
+baseline, but three angles remain below 30° and the coarse
+half-step fails radius. The matrix exits 1. CUDA and dense
+sampling were untested. The temporary fixture was restored.
