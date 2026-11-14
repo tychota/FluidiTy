@@ -14882,3 +14882,25 @@ All radii pass. Both nominal angles overshoot and both
 half-step angles undershoot in each sampling. No case stays
 in range throughout the final second. Both commands exit 1.
 CUDA was untested. Both temporary files were restored.
+
+
+#### Extend full sticking strain with compressive-only transfer to six seconds
+
+On f200f3f, retain only compressive yy in every extended column
+affine deposit and retain all negative incoming yy at ordinary
+zero-fraction sticking contacts. Run native sparse and dense
+column selectors at 6 s, matching the half-retention horizon.
+
+| Case | Sparse angle | Dense angle | Dense final sampled range | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 45.323938° | 39.119526° | 36.829090–39.119526° | 0.163140 |
+| Fine | 43.983460° | 39.013963° | 37.127009–39.013963° | 0.155531 |
+| Coarse half-step | 28.829081° | 30.064636° | 30.064636–31.246028° | 0.137799 |
+| Fine half-step | 29.294114° | 29.967698° | 29.965206–30.479363° | 0.141330 |
+
+Both commands exit 1. Full retention puts dense coarse half-step
+in range throughout the final second and leaves dense fine
+half-step 0.032302° below the lower endpoint limit. Both dense
+nominal angles overshoot and coarse nominal exceeds the radius
+limit. All sparse angles miss. CUDA was untested. The two
+temporary source edits were restored.
