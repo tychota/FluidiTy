@@ -14921,3 +14921,25 @@ cases fail the existing angle gate, with identical printed
 and fine half-step order the ranges are 22.969048–29.113507°,
 22.622216–26.761332°, 23.690122–29.006384°, and
 23.109339–27.033753°.
+
+
+#### Compare dense surface and envelope estimators at the registered horizon
+
+On b33bec8, run native `--q-sand-dense-column-long-settle 1.5`
+with the current leave-one-out report. Compare with the
+six-second baseline from 885e375. The four dense cases at
+1.5 s retain their envelope angle to six decimals when any
+one particle is omitted.
+
+| Case | Envelope at 1.5 s | Quadrant fit at 1.5 s | Envelope at 6 s | Quadrant fit at 6 s |
+|---|---:|---:|---:|---:|
+| Coarse | 26.634632° | 15.398842° | 32.940463° | −1.839981–1.781221° |
+| Fine | 25.002454° | 21.925421° | 26.443410° | 12.700312–13.295404° |
+| Coarse half-step | 26.113921° | 6.973853° | 21.968179° | 28.287145–28.956470° |
+| Fine half-step | 23.529643° | 13.925098° | 20.800137° | 24.460914–24.782634° |
+
+At 1.5 s both estimators are below 30° for every case and all
+radii exceed 0.16 m. At 6 s the coarse nominal envelope is in
+band while its fitted surface is nearly flat. The fit is a
+secondary diagnostic and the acceptance estimator remains the
+full-cloud envelope. CUDA was untested in this comparison.
