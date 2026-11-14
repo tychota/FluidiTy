@@ -13152,3 +13152,29 @@ dry-scene target with the dense three-second selector limited
 to the coarse nominal case. It reproduces 29.703637° and
 exits 1. The temporary instrumentation was restored.
 Other particles, grid widths, timesteps and CUDA were untested.
+
+#### Compare all twelve outer trajectories through first floor arrival
+
+On d13ff71, repeat the preceding pre-force and post-force
+velocity trace for the twelve outer particles in the coarse
+nominal dense native case. Project velocity changes onto
+each particle's outward horizontal quadrant diagonal.
+For each particle sum the signed changes through its first
+accepted step ending at y <= 1e-8 m. Also sum the actual
+endpoint-minus-start radius change on steps starting at
+least one cell width (0.075 m) above the floor.
+
+| Arrival radius (m) | Particles | Total outward travel (m) | Travel on steps starting above one cell | Transfer sum (m/s) | Stress sum (m/s) |
+|---:|---:|---:|---:|---:|---:|
+| 0.161270946 | 4 | 0.072882599 | 74.108% | -2.997414 | 3.003507 |
+| 0.165806263 | 4 | 0.077417915 | 78.270% | -2.968290 | 2.973103 |
+| 0.170290335 | 4 | 0.081901987 | 81.700% | -2.996078 | 2.999957 |
+
+The four members of each group agree at printed precision.
+The horizontal stress kick and transfer changes nearly
+cancel in each group, while most outward displacement
+accumulates on steps starting above the bottom cell. The
+dense three-second selector was temporarily limited to
+this case. The angle remains 29.703637° and the native
+command exits 1. The instrumentation was restored. Other
+widths, timesteps and CUDA were untested.
