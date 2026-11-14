@@ -14148,3 +14148,23 @@ range for the full final second. Both fine endpoints lose
 their passing angles relative to the uncapped sticking control,
 and the coarse nominal overshoot persists. All commands exit 1.
 CUDA and dense sampling were untested. The solver edit was restored.
+
+
+#### Split the resident sticking deformation increment
+
+On c12a9ad, retain negative incoming yy at ordinary granular
+zero-fraction sticking contacts. Compose two half-duration
+Euler deformation increments using that frozen gradient before
+the existing constitutive return. Keep stress scatter and the
+contact sweep. Run the native dry-scene executable without
+arguments and with `--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default reaches 35.669255°. In coarse, fine, coarse half-step
+and fine half-step order, the 1.5 s angles are 37.350104°,
+33.925345°, 32.195558°, and 32.662864°. The 6 s angles are
+36.442749°, 30.155036°, 34.574881°, and 30.087677°.
+All 6 s angles move by less than 0.009° from the one-increment
+sticking control. The coarse nominal case still overshoots, and
+the other three remain in range throughout the final second.
+All three commands exit 1. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
