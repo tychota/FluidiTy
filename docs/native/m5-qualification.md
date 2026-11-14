@@ -13224,3 +13224,25 @@ with the dense three-second selector restricted to the coarse
 nominal case. The original 29.703637° angle is reproduced
 and the command exits 1. Other receivers and CUDA were
 untested. The temporary instrumentation was restored.
+
+#### Reduce the horizontal stress kick below one cell
+
+On 8705b1b, repeat the horizontal stress scatter control
+with the affected source height below one grid cell. Multiply
+the x and z rows of ordinary granular stress by 0.75 there.
+Keep the vertical row, accepted state, transfer and sweep
+unchanged. Run the native dry-scene target without arguments
+and with `--q-sand-dense-column-long-settle 3`.
+
+| Case | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|
+| Coarse | 31.141223° | 0.169628 |
+| Fine | 28.087343° | 0.181312 |
+| Coarse half-step | 23.457813° | 0.170427 |
+| Fine half-step | 22.095402° | 0.183481 |
+
+All dense radii remain above 0.16 m despite reductions of
+0.66–2.55 mm from baseline. The coarse nominal angle enters
+the band, but its final drift is 2.221714°. The default angle
+is 35.042638°. Both commands exit 1. CUDA was untested.
+The temporary solver edit was restored.
