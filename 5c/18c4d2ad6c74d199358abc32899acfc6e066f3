@@ -1,0 +1,21 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_67434ba00dc8b7 299-302
+native/fluidity/base/buffer_bytes.h
+  s_4f0877e2acdcf0::t_3b83ce14a0d90c 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5c18c4d2ad6c74d199358abc32899acfc6e066f3",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
