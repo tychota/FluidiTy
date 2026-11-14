@@ -13626,3 +13626,31 @@ order. The coarse nominal passes, while the other three stay
 below 30°. The fine half-step also exceeds the radius limit.
 The command exits 1. CUDA and dense sampling were untested.
 The temporary source edit was restored.
+
+#### Recheck all registered M5 tests on upstream main
+
+On a2ed1a7, build the eleven executable targets used by the
+thirteen registered M5 and QSand entries in the SM120 build,
+then run:
+
+```powershell
+ctest --test-dir out/requalified -R '^(M5|QSand)' --no-tests=error --output-on-failure
+```
+
+| Registered suite | Native | SM120 |
+|---|---|---|
+| Dry scenes | Pass | Pass |
+| Sand qualification | Fail | Fail |
+| Planar coupling | Pass | Pass |
+| Plastic checkpoint | Pass | Pass |
+| Snow compaction | Pass | Pass |
+| Contact scatter | Pass | Covered by native host fixture |
+| Constitutive invariants | Pass | Pass |
+
+CTest exits 8 with eleven passes. Both registered QSand commands
+use the sparse column selector's default 1.5 s endpoint. Their
+four angles agree at printed precision and are 29.113507°,
+26.761332°, 29.006384°, and 27.033753° in coarse, fine, coarse
+half-step and fine half-step order. All four pass radius, short
+drift, and kinetic energy. The dense and longer runs are separate
+commands. This CTest run does not repeat the authored Blender bake.
