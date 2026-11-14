@@ -13866,3 +13866,28 @@ have unchanged radii to printed precision between 1.5 and 6 s,
 while their heights continue to fall. This comparison does
 not measure joint grid and particle refinement. CUDA and
 dense sampling were untested. The temporary fixture was restored.
+
+
+#### Repeat matched-timestep grid refinement with dense sampling
+
+On 4b8caa9, repeat the four matched-timestep widths above
+with 504 particles at 0.025 m spacing. Keep the original
+physical column, timestep 0.00078125 s and gate limits.
+Run the native `--q-sand-dense-column-long-settle` selector
+at endpoints 1.5 and 6.
+
+| Grid width (m) | Angle at 1.5 s | Angle at 6 s | Height at 6 s (m) | Radius at 6 s (m) |
+|---|---:|---:|---:|---:|
+| 0.075 | 27.342640° | 20.575754° | 0.065276 | 0.173887 |
+| 0.0625 | 23.529643° | 20.800137° | 0.070528 | 0.185666 |
+| 0.050 | 21.152362° | 19.913111° | 0.070854 | 0.195591 |
+| 0.0375 | 19.162558° | 18.692792° | 0.068461 | 0.202343 |
+
+All four cases fail angle and radius at both endpoints
+and persistence at 6 s. At 0.0375 m the dense pile retains
+0.068461 m of height at 6 s, compared with zero for the sparse
+pile. The dense six-second heights span 5.6 mm, while radii
+increase by 28.5 mm from the coarsest to finest grid. Increasing
+quadrature density changes the primary failure from loss of
+height to an overly wide pile in this refinement comparison.
+CUDA was untested. The temporary fixture was restored.
