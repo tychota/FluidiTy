@@ -13088,3 +13088,24 @@ Subsequent floor motion does not account for the radius
 excess in this case. The native command exits 1. Other
 widths, timesteps and CUDA were untested. The fixture
 edit was restored.
+
+#### Attenuate horizontal affine expansion only on descending particles
+
+On 3db0e38, halve positive horizontal APIC trace at deposit
+only for ordinary granular particles with y > 0 and stored
+vy < 0. Apply the correction equally to xx and zz. Keep
+stress, advection, and contact unchanged.
+
+| Case | Dense angle at 3 s | Dense radius (m) | Final drift |
+|---|---:|---:|---:|
+| Coarse | 32.794847° | 0.162763 | 0.668052° |
+| Fine | 29.268760° | 0.177578 | 0.161254° |
+| Coarse half-step | 30.288746° | 0.153540 | 6.016420° |
+| Fine half-step | 26.744627° | 0.176222 | 4.671231° |
+
+Build the native dry-scene target and run without arguments
+and with `--q-sand-dense-column-long-settle 3`. Both commands
+exit 1. The default angle is 47.949808°. Every dense radius
+decreases from baseline, but only the coarse half-step meets
+the radius limit and its drift exceeds six degrees. CUDA
+was untested. The temporary solver edit was restored.
