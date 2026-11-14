@@ -13308,3 +13308,26 @@ Both matrices exit 1. Three sparse cases pass and the
 coarse half-step overshoots. Three dense angles enter the
 band, but all dense radii exceed 0.16 m. CUDA was untested.
 The temporary solver and fixture edits were restored.
+
+#### Retain only the horizontal stored velocity residual
+
+On e025972, repeat the directional energy blend control with
+energy blend 0.6 and clear y instead of x and z before the
+mass-weighted mean subtraction. Keep PIC sweep and force
+unchanged. Run the native target with
+`--q-sand-column-long-settle 6` and
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle at 6 s | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 20.945768° | 22.976445° | 0.191765 |
+| Fine | 11.449431° | 19.665596° | 0.210523 |
+| Coarse half-step | 12.279811° | 17.303027° | 0.191819 |
+| Fine half-step | 8.932510° | 15.654676° | 0.209234 |
+
+Both native matrices exit 1 and all angles fall below 30°.
+Every dense radius increases relative to baseline by
+18.84–28.45 mm. The horizontal-only control therefore
+does not reproduce the height improvement of vertical
+retention and worsens dense spread. CUDA was untested.
+Both temporary edits were restored.
