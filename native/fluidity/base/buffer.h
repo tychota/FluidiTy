@@ -28,7 +28,7 @@
 // Words:
 //   buffer             an array of fixed size on the processor chosen by the caller
 //   slice              `count` items of a buffer starting at index `first`
-//   locked for copies  CPU memory that the operating software never moves or swaps out, so the GPU copies it
+//   locked for copies  CPU memory that the operating system never moves or swaps out, so the GPU copies it
 //                      directly; papers and the CUDA manual call it page-locked or pinned memory
 // Owns:    Buffer, BufferValue, BufferError, CpuMemory, BuildBuffer, WriteBuffer, ReadBuffer, CopyBuffer,
 //          ToMessage(BufferError), ToName(BufferError), ToBufferError, kBufferAlignmentBytes, CheckSliceIsInside

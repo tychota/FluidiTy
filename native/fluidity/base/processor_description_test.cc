@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <expected>
+#include <string>
 
 #include "fluidity/base/buffer.h"
 #include "fluidity/base/run_on.h"
@@ -23,7 +24,27 @@ TEST(ReadMemoryAvailable, OnCpu_FreeIsNotAboveTotal) {
   EXPECT_LE(memory->free_bytes, memory->total_bytes);
 }
 
+TEST(ReadProcessorDescription, OnCpu_ModelIsNotEmpty) {
+  const ProcessorDescription description = ReadProcessorDescription(RunOn::kCpu);
+  EXPECT_FALSE(description.model.empty());
+}
+
+TEST(ReadProcessorDescription, OnCpu_DriverIsNotEmpty) {
+  EXPECT_FALSE(ReadProcessorDescription(RunOn::kCpu).driver.empty());
+}
+
+TEST(ReadProcessorDescription, OnCpu_RuntimeIsNotEmpty) {
+  EXPECT_FALSE(ReadProcessorDescription(RunOn::kCpu).runtime.empty());
+}
+
 #if !defined(FLUIDITY_HAS_GPU)
+TEST(ReadProcessorDescription, OnGpuInBuildWithoutGpuCode_AllFieldsEmpty) {
+  const ProcessorDescription description = ReadProcessorDescription(RunOn::kGpu);
+  EXPECT_TRUE(description.model.empty());
+  EXPECT_TRUE(description.driver.empty());
+  EXPECT_TRUE(description.runtime.empty());
+}
+
 TEST(ReadMemoryAvailable, OnGpuInBuildWithoutGpuCode_IsRunOnCallFailed) {
   const std::expected<MemoryAvailable, BufferError> memory = ReadMemoryAvailable(RunOn::kGpu);
   ASSERT_FALSE(memory.has_value());

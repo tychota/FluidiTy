@@ -176,6 +176,7 @@ module may add stages; each new stage name enters this list in the commit that a
 | no suffix | A type is named after its content. Whether it owns memory is said in its comment and by `std::span` fields. | View (as a suffix), Record (as a suffix), Layout (as a suffix), payload |
 | `max_...` | A hard limit: the code refuses to go past it. | capacity, reserve (for a limit), budget (for a hard limit) |
 | `budget` | A planned cost shown to the user, such as a memory budget or a time budget. The code reports it and does not enforce it. | |
+| `MemoryEstimateEntry`, memory estimate | One line of the memory estimate (`base/memory_count.h`): a named array a module will allocate, what its item count scales with, the bytes of one item, how many copies exist, how long it is kept and where. The memory estimate is the list of these entries. | |
 | `tolerance` | An allowed error. | margin, epsilon (for an allowed error), resolution (for an allowed error) |
 | `blob`, `blob_id`, `BlobHistory` | One connected body of liquid, or one air pocket. | component (for this), lineage |
 | `ingredient` | One substance in a mixture. | component (for this) |

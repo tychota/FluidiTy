@@ -17,5 +17,12 @@ TEST(ReadMemoryAvailable, OnGpuWithoutAGpu_IsRunOnCallFailed) {
   EXPECT_EQ(memory.error(), BufferError::kRunOnCallFailed) << ToName(memory.error());
 }
 
+TEST(ReadProcessorDescription, OnGpuWithoutAGpu_AllFieldsEmpty) {
+  const ProcessorDescription description = ReadProcessorDescription(RunOn::kGpu);
+  EXPECT_TRUE(description.model.empty());
+  EXPECT_TRUE(description.driver.empty());
+  EXPECT_TRUE(description.runtime.empty());
+}
+
 }  // namespace
 }  // namespace fluidity

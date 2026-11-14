@@ -131,6 +131,14 @@ a grid quantity ends its name with the moment it was saved:
 
 Papers write these three moments as superscripts; @sec-notation lists them.
 
+== Two velocities per particle <sec-particle-velocities>
+
+A particle carries two velocities, held together in one value of the type `PerParticleVelocity<T>` from
+`base/per_particle_velocity.h`. Its field `for_next_step` is kept on the particle for the next step, and its field
+`for_this_step` moves the particle during this step. They differ, for example, when a particle meets a solid that
+does not react: it slides along the surface for the rest of the step but keeps the velocity it had before the hit for
+the next step.
+
 == What "same GPU, same input, identical output" promises
 
 The promise: the same build, run twice on the same GPU with the same input, writes the same bytes in every output
@@ -332,6 +340,40 @@ which pick the processor and copy with `memcpy` on the CPU or with the CUDA runt
   caption: [The two layers of `Buffer`. The byte functions exist once for every value type and are defined in one
     CPU source file, so the templates hold no conditional compilation and name no GPU call.],
 ) <fig-buffer-layers>
+
+=== The memory estimate and the processor description <sec-memory-estimate>
+
+Before a run builds its buffers, it compares the memory they need with the memory the chosen processor has. Each
+module lists the arrays it will allocate in a memory estimate (`base/memory_count.h`). One entry of it gives the
+bytes of one item, the number of copies, and which count of the scene, such as the particles or the cell blocks,
+gives the number of items. `ComputeMemoryBytes` adds the entries as if every array were alive at once, so the sum is
+a peak that never falls below the real need. Its products and sums stop at the largest 64-bit number instead of
+wrapping around, so a scene too large to count is reported as too large, never as small. `ReadMemoryAvailable` reads
+the total and the free memory of the chosen processor: a reading at one moment, not a promise, since other programs
+take and give back memory. `ReadProcessorDescription` gives the run report the processor's name, the software that
+drives it and the software the program was built with, as text the machine reports.
+
+@tab-memory-estimate works a small estimate. An entry's bytes are its item count times its bytes per item times
+its copies: 1,000 particles with a position of 24 bytes (three doubles), kept in two copies (the committed state and
+the try), give 1,000 × 24 × 2 = 48,000 bytes.
+
+#figure(
+  align(left, table(
+    columns: (auto, auto, auto, auto, auto, auto),
+    align: (left, left, right, right, right, right),
+    table.hline(stroke: 0.6pt),
+    table.header([*Entry*], [*Counted per*], [*Items*], [*Bytes each*], [*Copies*], [*Bytes*]),
+    table.hline(stroke: 0.4pt),
+    [positions], [particle], [1,000], [24], [2], [48,000],
+    [velocities (two per particle)], [particle], [1,000], [48], [1], [48,000],
+    [working buffers], [given count], [256], [4], [1], [1,024],
+    table.hline(stroke: 0.4pt),
+    [*sum*], [], [], [], [], [*97,024*],
+    table.hline(stroke: 0.6pt),
+  )),
+  caption: [A memory estimate of three entries for a run of 1,000 particles. Each entry gives items × bytes each ×
+    copies; the sum is the peak with every array alive at once.],
+) <tab-memory-estimate>
 
 = Sums in a fixed order <sec-fixed-order-sums>
 

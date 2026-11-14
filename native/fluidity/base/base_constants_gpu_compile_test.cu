@@ -1,9 +1,10 @@
 // Proves that the shared headers of base/ compile as GPU code: label no_gpu.
 //
 // The GPU function below is never launched. Building it makes the CUDA compiler generate GPU code for every
-// function of scalar_math.h, vec3.h, mat3.h, axis.h and tree_sum.h, and for reads of the class-type constants kUp and
-// kIdentity at run time. A shared function that calls a CPU-only function, or a constant that GPU code cannot read,
-// fails this build. The test only takes the function's address, which needs no GPU.
+// function of scalar_math.h, vec3.h, mat3.h, axis.h and tree_sum.h, for PerParticleVelocity<Vec3>, and for reads of
+// the class-type constants kUp and kIdentity at run time. A shared function that calls a CPU-only function, or a
+// constant that GPU code cannot read, fails this build. The test only takes the function's address, which needs no
+// GPU.
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,7 @@
 
 #include "fluidity/base/axis.h"
 #include "fluidity/base/mat3.h"
+#include "fluidity/base/per_particle_velocity.h"
 #include "fluidity/base/scalar_math.h"
 #include "fluidity/base/tree_sum.h"
 #include "fluidity/base/vec3.h"
@@ -83,6 +85,9 @@ __global__ void ComputeWithEverySharedFunction(const double* values, double* res
     return values[index] * values[index];
   });
   results[result_index++] = math::LargerMagnitude(value, gravity);
+  // per_particle_velocity.h
+  const PerParticleVelocity<Vec3> particle_velocity = {.for_next_step = vector, .for_this_step = gravity_vector};
+  results[result_index++] = particle_velocity.for_next_step.x + particle_velocity.for_this_step.z;
 }
 
 TEST(ComputeWithEverySharedFunction, BuiltForTheGpu_HasAnAddress) {
