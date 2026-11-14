@@ -12700,3 +12700,20 @@ The default fails at 40.239740° with translation alone and
 passes at 33.133681° with affine alone. The affine-only
 matrix puts every angle outside the band. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+#### Isolate elevated particle translation in resident compression
+
+On 8d0ce95, repeat the translation-only resident compression
+control, but zero translation from particles at y <= 1e-8 m
+in the diagnostic deposit. Preserve those particles' deposited
+mass and use the original full field for transport and contact.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+The angles are 34.440162°, 32.163320°, 37.241163°, and
+31.584749° in coarse, fine, coarse half-step and fine half-step
+order. Each matches the full translation control to six decimals.
+The coarse nominal radius is 0.168620 m and the coarse half-step
+overshoots the angle band. The command exits 1. Elevated
+translation suffices to reproduce this control at printed
+precision. CUDA and dense sampling were untested. The temporary
+source edit was restored.
