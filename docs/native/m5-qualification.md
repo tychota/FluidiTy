@@ -14000,3 +14000,28 @@ All four commands exit 1. The direct face clamp changes the
 incoming normal speed available to the swept Coulomb response
 and does not provide qualifying support. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+
+#### Constrain floor donors for the deformation gradient only
+
+On 304b522, gather a second gradient on the ordinary granular
+path using a copy of the post-force face velocities. Set inward
+normal velocities to zero at and below the floor. In a second
+build, reverse inward velocities strictly below the floor and
+keep the zero at the floor. Use the original gather for particle
+transport, swept contact and stored affine slopes. Run the native
+`--q-sand-column-long-settle` selector at 1.5 and 6 s.
+
+| Case | Zero at 1.5 s | Zero at 6 s | Reverse at 1.5 s | Reverse at 6 s |
+|---|---:|---:|---:|---:|
+| Coarse | 36.328689° | 31.977575° | 34.341872° | 28.822044° |
+| Fine | 29.399970° | 26.863965° | 27.811605° | 19.365204° |
+| Coarse half-step | 35.474188° | 31.864843° | 38.380056° | 29.251989° |
+| Fine half-step | 32.609033° | 27.288894° | 31.852600° | 26.796721° |
+
+All trajectories complete and all four commands exit 1.
+With zero continuation both coarse cases stay in the angle band
+through the final second, and both fine cases remain below 30°.
+Reversing below-floor velocity lowers all four six-second angles.
+CUDA and dense sampling were untested. The temporary source edit
+was restored.
