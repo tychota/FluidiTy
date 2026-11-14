@@ -14652,3 +14652,25 @@ dense radii come inside 0.16 m. The fine half-step radius
 also decreases, from 0.185666 to 0.168943 m. Removing early
 affine feedback curbs spread but leaves the dense piles too
 shallow. CUDA was untested. The temporary fixture was restored.
+
+
+#### Combine PIC-only collapse with sticking compression
+
+On dbff7f0, clear stored affine slopes before steps starting
+before 0.75 s. Also retain negative incoming yy at ordinary
+zero-fraction sticking contacts. Run the native sparse and
+dense column selectors at 3 s.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 33.548302° | 0.120022 | 27.384020° | 0.149414 |
+| Fine | 35.497380° | 0.129553 | 28.114328° | 0.158906 |
+| Coarse half-step | 31.318533° | 0.124841 | 25.591310° | 0.156375 |
+| Fine half-step | 32.038758° | 0.137338 | 24.211120° | 0.169199 |
+
+Sparse coarse nominal and fine half-step stay in range throughout
+the final second. Fine nominal overshoots, and coarse half-step
+fails persistence. All dense cases miss the angle band at the
+endpoint. Three dense radii pass, as in the PIC-only control.
+Both commands exit 1. CUDA was untested. The temporary solver
+and fixture edits were restored.
