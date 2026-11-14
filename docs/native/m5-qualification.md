@@ -13527,3 +13527,19 @@ both fine cases fail, and the command exits 1. The elevated
 cohort alone reproduces the height preservation in this control.
 This freeze removes ongoing constitutive response. CUDA and
 dense sampling were untested. The fixture edit was restored.
+
+#### Freeze only elevated-particle plastic volume after collapse
+
+On e0766e3, repeat the elevated-cohort snapshot at 0.75 s.
+After each accepted step restore only log J_pl from the
+snapshot and leave elastic deformation on its normal path.
+Run the native target with `--q-sand-column-long-settle 6`.
+This diagnostic overrides the plastic part of the accepted
+volume history.
+
+All four angles, radii and final-window extrema match the
+ordinary baseline at printed precision. The mean log J_pl
+matches the elevated material freeze, but the shape does
+not. The matrix exits 1. Retaining plastic volume alone
+does not reproduce the height preservation. CUDA and dense
+sampling were untested. The temporary fixture was restored.
