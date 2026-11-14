@@ -12906,3 +12906,23 @@ so the twelve-second pass is specific to the measured window.
 This is an additional sparse control at h = 0.06875 m. The
 original coarse and fine qualification cases are still open.
 CUDA and dense sampling were untested. Both edits were restored.
+
+#### Repeat the twelve-second intermediate-grid cases at dense sampling
+
+On 893c39f, repeat the preceding two intermediate-grid controls
+with the same resident compression, grid width, and absolute
+timesteps, but pass a sampling multiplier of two to both
+TestScene calls. Select those calls with the temporary
+`--q-sand-dense-column-long-settle 6` selector, with both
+TestScene endpoints set to 12 s.
+
+| Timestep (s) | Sparse angle | Dense angle | Dense radius (m) | Dense final drift |
+|---|---:|---:|---:|---:|
+| 0.001875 | 34.330527° | 1.678780° | 0.176568 | 5.451659° |
+| 0.0009375 | 31.731821° | 28.562173° | 0.178961 | 0.229744° |
+
+The native command exits 1. Neither sparse pass survives
+particle refinement. Both dense radii exceed 0.16 m, and
+the nominal case nearly flattens by 12 s. The control was
+not tested on CUDA. The temporary solver and fixture edits
+were restored.
