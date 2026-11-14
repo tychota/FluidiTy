@@ -14267,3 +14267,25 @@ At 6 s they are 36.673558°, 31.180677°, 37.773265°, and
 final sampled second. Both coarse cases overshoot. All radii
 pass and all commands exit 1. CUDA and dense sampling were
 untested. The temporary solver edit was restored.
+
+
+#### Measure elevated mass in the six-second sand piles
+
+On 885e375, sum the mass strictly above half a cell and
+strictly above half the measured apex height, then divide by
+total mass. The diagnostic reads the final accepted state and
+leaves the angle estimator and acceptance intact. Run the
+native `--q-sand-column-long-settle 6` and
+`--q-sand-dense-column-long-settle 6` selectors.
+
+| Case | Sparse above half cell | Sparse above half apex | Dense above half cell | Dense above half apex |
+|---|---:|---:|---:|---:|
+| Coarse | 3.1746% | 3.1746% | 7.1429% | 5.5556% |
+| Fine | 3.1746% | 3.1746% | 8.7302% | 5.5556% |
+| Coarse half-step | 1.5873% | 3.1746% | 3.9683% | 3.9683% |
+| Fine half-step | 1.5873% | 3.1746% | 7.1429% | 5.5556% |
+
+Exactly two particles in each sparse case exceed half the
+apex height. The dense cases retain 20–28 such particles,
+but all four exceed the radius limit. Both matrices exit 1.
+CUDA was untested for this diagnostic. The fixture was restored.
