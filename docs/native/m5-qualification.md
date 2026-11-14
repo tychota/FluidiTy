@@ -14089,3 +14089,25 @@ are 36.789443°, 29.852859°, 32.092946°, and 28.843850°.
 All radii pass. Only the coarse half-step meets both the 6 s
 angle and persistence criteria. All three commands exit 1.
 CUDA and dense sampling were untested. The edit was restored.
+
+
+#### Add the uniaxial-stress lateral strain at sticking floor contacts
+
+On 30dcb4f, retain negative incoming yy at zero-fraction
+ordinary granular sticking contacts and set both horizontal
+diagonal rates to minus Poisson ratio times that normal
+rate. Compute Poisson ratio from the material Lamé moduli.
+This gives zero incremental lateral stress in the linearized
+elastic relation before the granular return. Keep the contact
+sweep and stress scatter. Run the native dry-scene executable
+without arguments and with `--q-sand-column-long-settle`
+at 1.5 and 6 s.
+
+The default passes at 34.654762°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+35.002942°, 32.292187°, 30.891628°, and 30.414653°.
+The 6 s angles are 36.510201°, 29.161990°, 30.008283°,
+and 26.622177°. All radii pass. No case stays in the angle
+band across the final second. Both extended runs exit 1.
+CUDA and dense sampling were untested. The temporary solver
+edit was restored.
