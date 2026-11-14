@@ -1,0 +1,35 @@
+.gitattributes
+  s_4f0877e2acdcf0::t_7d7ee223ada776 1-2
+README.md
+  s_4f0877e2acdcf0::t_f3d11eb7622ae9 1-17
+AGENTS.md
+  s_4f0877e2acdcf0::t_6400ba9f7ccda6 268-269
+  s_4f0877e2acdcf0::t_286c367cf85b3e 285
+  s_4f0877e2acdcf0::t_44cccddee7800a 215-216
+  s_4f0877e2acdcf0::t_a0395cb8fd0c8b 99-100,102
+  s_4f0877e2acdcf0::t_e50250a7464a1b 264
+  s_4f0877e2acdcf0::t_a5b6047958f21f 1-98,101,103-214,217-263,265-267,270-284,286-368
+.gitignore
+  s_4f0877e2acdcf0::t_e014d60962b556 1-11
+docs/glossary.md
+  s_4f0877e2acdcf0::t_b2240b3f66d2a1 123
+  s_4f0877e2acdcf0::t_70db351d5e2c2d 1-122,124-199
+docs/design/programme.md
+  s_4f0877e2acdcf0::t_731609331ba8c7 1-363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d522048e36d44d2b986a40b345ba9960c4d74d8e",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
