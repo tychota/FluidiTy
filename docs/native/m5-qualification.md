@@ -14468,3 +14468,26 @@ but the measured incident compression path grows by at most
 baseline angles and exit 1. This measures the unmodified
 trajectory. CUDA and dense sampling were untested. Both
 instrumentation files were restored.
+
+
+#### Separate the lower and upper parts of incident sticking compression
+
+On ccd9770, at ordinary granular zero-fraction sticking contacts,
+split the magnitude q of incoming normal compression at
+r = 0.25 sqrt(abs(gravity) / cell width). Retain min(q, r) in
+one build and max(0, q - r) in another. Each run otherwise uses the
+original sweep and scatter. Run the native
+`--q-sand-column-long-settle 6` selector.
+
+| Case | Lower rate angle | Upper rate angle |
+|---|---:|---:|
+| Coarse | 37.017051° | 36.725543° |
+| Fine | 29.682024° | 27.949857° |
+| Coarse half-step | 32.458778° | 20.842422° |
+| Fine half-step | 29.347767° | 15.491507° |
+
+Both matrices exit 1 and all radii pass. The lower-rate
+portion retains substantially more height in the half-step piles.
+The coarse nominal overshoot occurs with either portion, and
+neither retains all four angles in range. CUDA and dense sampling
+were untested. The temporary solver edit was restored.
