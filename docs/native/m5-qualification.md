@@ -13957,3 +13957,26 @@ evolution or a reconstructed moving snow–water interface.
 The bounded planar and checkpoint tests pass, and the authored
 snow–water execution still requires the production integration
 described above.
+
+
+#### Cap resident sticking compression by estimated wall traction
+
+On bd97f98, at zero-fraction ordinary granular sticking hits,
+estimate the wall reaction as particle mass times incoming
+downward PIC speed divided by step duration and reference
+area (reference volume to the two-thirds power). Retain
+only compressive yy, limiting the rate so the linearized
+normal stress increase using the longitudinal Lamé modulus
+fits within the remaining margin to that reaction estimate.
+Leave the contact sweep and stress scatter unchanged.
+
+Run the native dry-scene executable without arguments and with
+`--q-sand-column-long-settle` at 1.5 and 6 s. The default
+fails at 35.674372°. In coarse, fine, coarse half-step and
+fine half-step order, the 1.5 s angles are 37.360886°,
+33.933252°, 32.198574°, and 32.666782°. The 6 s angles are
+36.442893°, 30.159032°, 34.583457°, and 30.091364°. The six-second
+angles reproduce the uncapped sticking-only control to printed
+precision. The coarse nominal case still overshoots, while
+the other three pass. All three commands exit 1. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
