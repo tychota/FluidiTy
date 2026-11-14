@@ -13706,3 +13706,25 @@ At 6 s, the angles are 34.034745°, 23.477401°, 17.104058°,
 and 13.060319°. Only the coarse nominal case meets the angle
 and persistence criteria at 6 s. Both matrices exit 1.
 CUDA and dense sampling were untested. The source edit was restored.
+
+
+#### Shift the ordinary floor grid in both horizontal axes
+
+On 7ca2e6a, pass grid origin (h/2, 0, h/2) to all four
+ordinary sparse column cases while retaining the release center,
+particle positions and acceptance settings. Run
+`fluidity_m5_dry_scene_tests.exe --q-sand-column-long-settle 1.5`
+and repeat with endpoint 6.
+
+| Case | Angle at 1.5 s | Angle at 6 s | Final second angle range |
+|---|---:|---:|---:|
+| Coarse | 27.028300° | 31.181198° | 30.555530–31.181198° |
+| Fine | 24.650853° | 25.007161° | 24.669229–25.007161° |
+| Coarse half-step | 28.363688° | 16.186329° | 16.186329–17.743491° |
+| Fine half-step | 25.059682° | 15.000830° | 15.000830–16.462000° |
+
+Both matrices exit 1. At 1.5 s all four angles are 0.64–2.11°
+below the aligned results in the registered recheck. The smaller
+timesteps still lose angle during the extended run. Radius,
+kinetic energy and short drift pass throughout. CUDA and dense
+sampling were untested. The fixture was restored.
