@@ -12623,3 +12623,26 @@ is 43.042325°. Six-second angles are 34.298857°, 29.164190°,
 and fine half-step order. Both commands exit 1. All four
 matrix radii fail. CUDA and dense sampling were untested.
 The temporary source edit was restored.
+
+#### Isolate mean and deviatoric stress scattered from floor particles
+
+On 8b141bc, for ordinary granular particles starting at
+y <= 1e-8 m, scatter only the isotropic or deviatoric part
+of the accepted Kirchhoff stress in separate builds.
+Elevated particles scatter the full tensor. Keep the
+accepted state, constitutive return, and contact unchanged.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+| Case | Full stress angle | Isotropic only | Deviatoric only |
+|---|---:|---:|---:|
+| Coarse | 33.842809° | 7.026112° | 0.000000° |
+| Fine | 23.424520° | 6.246532° | 0.000000° |
+| Coarse half-step | 17.104058° | 12.260547° | 10.890136° |
+| Fine half-step | 13.060319° | 12.221954° | 8.368249° |
+
+Both matrices exit 1. Every radius remains within bounds.
+Removing either component reduces the final pile height
+in all four cases. The altered stresses feed back on the
+trajectory, so these results do not partition force at a
+fixed state. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
