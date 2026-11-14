@@ -13266,3 +13266,24 @@ The native matrix exits 1. Dense radii shrink by 1.82–2.84 mm,
 and all four still fail radius, angle and persistence. The
 angle changes are under 0.073°. CUDA was untested. The
 temporary solver edit was restored.
+
+#### Compare horizontal PIC energy changes at two timesteps
+
+On 9d51857, retain the pre-force grid field for the ordinary
+gather even with PIC storage. Sum the changes in horizontal
+particle translational kinetic energy from stored velocity to
+pre-force PIC velocity and from pre-force to post-force PIC
+velocity. Sum accepted steps through 0.75 s, before applying
+the contact response in each energy sample. Temporarily select
+the two coarse dense cases with the native three-second selector.
+
+| Timestep (s) | Pre-force transfer change (J) | Grid stress change (J) |
+|---:|---:|---:|
+| 0.001875 | -0.305238 | 0.453743 |
+| 0.0009375 | -0.301720 | 0.429639 |
+
+Halving the timestep does not double the measured transfer
+loss over this window. These totals include exchange with
+affine motion and omit contact and stored affine energy.
+The original angles reproduce at printed precision, and the
+command exits 1. CUDA was untested. Both edits were restored.
