@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -825,6 +826,16 @@ bool TestUncutStressWork() {
   const auto invalid_extent =
       fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, {&undersized_force, 1});
   if (invalid_extent.code() != absl::StatusCode::kInvalidArgument || undersized_force != 7) {
+    return false;
+  }
+  constexpr double kMaximum = std::numeric_limits<double>::max();
+  std::vector<double> overflow_forces(view.face_count(), kMaximum);
+  const auto overflow =
+      fluidity::internal::AccumulateDrySolidStress3D(*grid, position, kMaximum / 16, stress, overflow_forces);
+  if (overflow.code() != absl::StatusCode::kOutOfRange
+      || !std::all_of(overflow_forces.begin(), overflow_forces.end(), [](double force) {
+           return force == kMaximum;
+         })) {
     return false;
   }
   const auto deposited = fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, forces);
