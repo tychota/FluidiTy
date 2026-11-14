@@ -12793,3 +12793,19 @@ and with `--q-sand-column-long-settle 6`. The default passes at
 and fine half-step order. The matrix exits 1. Both half-step
 angles improve, but three angles and the fine half-step radius
 fail. CUDA and dense sampling were untested. The edit was restored.
+
+#### Center ordinary granular sweep velocity without changing stored velocity
+
+On 296abaf, advance the ordinary granular contact sweep using
+the mean of the pre-force and post-force PIC velocities.
+Keep the stored velocity, stress scatter and gradient samples
+at their original time levels. The sweep still determines
+the duration of each deformation segment.
+
+Build the native dry-scene executable and run it without
+arguments and with `--q-sand-column-long-settle 6`. The default
+passes at 31.878876°. The six-second angles are 27.767141°,
+16.222215°, 17.624930° and 13.549266° in coarse, fine, coarse
+half-step and fine half-step order. All four radii pass, but
+all angles and persistence checks fail. The matrix exits 1.
+CUDA and dense sampling were untested. The source edit was restored.
