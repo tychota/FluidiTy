@@ -1,0 +1,21 @@
+native/fluidity/base/mat3_test.cc
+  s_4f0877e2acdcf0::t_cb4a98c2c2f4fc 380-394
+native/fluidity/base/scalar_math_test.cc
+  s_4f0877e2acdcf0::t_5c4b3c95a6da34 92,95-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6afe6d6f3aa6c64b013009c3b221a4230536f6b1",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
