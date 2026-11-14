@@ -14631,3 +14631,24 @@ All four fail angle, radius and persistence. Removing the gap
 reduces the radius by 0.6–4.5 mm relative to the 0.10 m release.
 The original radius excess persists without the added drop.
 The command exits 1. CUDA was untested. The fixture was restored.
+
+
+#### Use PIC-only momentum deposition through the initial collapse
+
+On 396bd0f, clear each particle's stored affine slopes before
+each step starting before 0.75 s. Preserve translation and
+the material state. Resume the ordinary affine deposition at
+0.75 s. Run the native sparse and dense column selectors at 3 s.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 26.230621° | 0.114823 | 23.104807° | 0.146264 |
+| Fine | 28.741512° | 0.126506 | 23.808112° | 0.157138 |
+| Coarse half-step | 29.025031° | 0.123226 | 24.433172° | 0.155353 |
+| Fine half-step | 28.540301° | 0.136742 | 22.506019° | 0.168943 |
+
+The sparse and dense matrices both exit 1 on angle. Three
+dense radii come inside 0.16 m. The fine half-step radius
+also decreases, from 0.185666 to 0.168943 m. Removing early
+affine feedback curbs spread but leaves the dense piles too
+shallow. CUDA was untested. The temporary fixture was restored.
