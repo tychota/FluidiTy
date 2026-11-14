@@ -1,0 +1,50 @@
+docs/method-paper/figures/tree_sum.typ
+  s_4f0877e2acdcf0::t_2ba0012969bffd 1-82
+native/fluidity/base/ordered_sums_gpu.h
+  s_4f0877e2acdcf0::t_3fa8cf5c7e6b8e 1-42
+native/fluidity/base/ordered_sums.h
+  s_4f0877e2acdcf0::t_ba9420c953e4da 1-76
+native/fluidity/base/tree_sum.h
+  s_4f0877e2acdcf0::t_19737e5894079b 1-162
+  s_4f0877e2acdcf0::t_bfc90c0d7db364 163-165
+native/fluidity/base/ordered_sums_cpu.cc
+  s_4f0877e2acdcf0::t_c6ce189cdc1350 1-132
+  s_4f0877e2acdcf0::t_c25783c54d0d72 133-134
+native/fluidity/base/ordered_sums_test.cc
+  s_4f0877e2acdcf0::t_3646082bbbea40 1-194
+native/fluidity/base/ordered_sums_gpu_test.cc
+  s_4f0877e2acdcf0::t_1109dce782ff34 1-172
+  s_4f0877e2acdcf0::t_3d75679bd7fafe 173-178
+native/fluidity/base/ordered_sums_gpu.cu
+  s_4f0877e2acdcf0::t_cc24e1e2d25b97 1-244
+  s_4f0877e2acdcf0::t_2b387bd29db21b 245-249
+native/fluidity/base/tree_sum_test.cc
+  s_4f0877e2acdcf0::t_80e74e468c17fc 1-143
+  s_4f0877e2acdcf0::t_2656ad18b61350 144
+AGENTS.md
+  s_4f0877e2acdcf0::t_4b403b445b7a7e 311-312
+docs/glossary.md
+  s_4f0877e2acdcf0::t_03b361c3575222 166-167
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_23318d84c87bc0 19,74-75,134,137,141-142,308-372
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_53795d430cc4a0 10-11,18,22-23,33-34,37
+native/fluidity/base/base_constants_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_716c1852852901 4-6,10-11,15,80-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "88b4befdf58f35d35fd2540ccc252ee94d1ca31f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
