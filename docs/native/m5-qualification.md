@@ -12926,3 +12926,26 @@ particle refinement. Both dense radii exceed 0.16 m, and
 the nominal case nearly flattens by 12 s. The control was
 not tested on CUDA. The temporary solver and fixture edits
 were restored.
+
+#### Perturb dense column sampling symmetrically by layer
+
+On 27dee49, perturb only the initial horizontal coordinates of
+the 504-particle column. Move every x and z coordinate away
+from its center plane by 0.1 particle spacing (2.5 mm) on
+even-numbered layers, and toward it by the same amount on odd
+layers, starting the layer count at zero. Preserve reflection
+symmetry, mass, vertical sampling and the production solver.
+Run the native executable with `--q-sand-dense-column-long-settle 3`.
+
+| Case | Baseline angle | Perturbed angle | Perturbed radius (m) |
+|---|---:|---:|---:|
+| Coarse | 29.703637° | 29.842311° | 0.171881 |
+| Fine | 26.954622° | 27.370794° | 0.183571 |
+| Coarse half-step | 21.853351° | 21.994743° | 0.175245 |
+| Fine half-step | 20.623778° | 21.095098° | 0.187424 |
+
+All four cases fail angle, radius and persistence. The
+maximum final angle shift is 0.472° and the radius increases
+by 1.50–2.27 mm. This is a sensitivity check for one
+deterministic perturbation. CUDA was untested and the
+temporary fixture edit was restored.
