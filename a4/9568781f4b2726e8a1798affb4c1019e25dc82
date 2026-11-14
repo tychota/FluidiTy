@@ -1,0 +1,45 @@
+native/fluidity/base/stable_order_steps_test.cc
+  s_4f0877e2acdcf0::t_5266740baf851f 1-315
+  s_4f0877e2acdcf0::t_ee135a8705090d 316-326
+native/fluidity/base/stable_order_steps.h
+  s_4f0877e2acdcf0::t_78182cedeeef22 1-258
+  s_4f0877e2acdcf0::t_7c6a6e6d0243c5 259-266
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_ad9da510ca3445 470-471,484-485
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_5bba76aa13fd60 26,55-57,64-65
+native/fluidity/base/stable_order.h
+  s_4f0877e2acdcf0::t_8954c2fd512f15 46-47,126-148,152-153,191-192,246-247
+native/fluidity/base/stable_order_cpu.cc
+  s_4f0877e2acdcf0::t_7bef678d1ebbd3 15,198-202,246-291,430-431,433,437-446,448,457,478,483,495-520
+native/fluidity/base/stable_order_gpu.cu
+  s_4f0877e2acdcf0::t_582647ffbe2d30 27-29,38-39,42,50-52,55-56,58-61,69,72-73,75,78-79,82,89-90,92,95,97,99-100,103-104,107,113-114,116,118-121,123-126,128,132-138,142-149,153-162,166,171,182-185,189,194-200,206,215,225,228-230,236-237,240,242,247-249,255,267-268,282-283,288-293,299,306,309,320-321,323-332,336-338,341-342,346,351,354-355,358-367,373-381,383,386,394-395,397,400-402,406,411-413,416-417,419-421,424-426,428
+native/fluidity/base/stable_order_gpu.h
+  s_4f0877e2acdcf0::t_1c240b7c07cd1b 6-8,13-14,23,25,43,52-54,64-65
+native/fluidity/base/stable_order_gpu_test.cc
+  s_4f0877e2acdcf0::t_8c3e06bd1d5d54 15,27,32,46,57,90,100,109-111,161,165-166,187-188,197,208-210,226,228,236,262,285-292,296,312-343
+native/fluidity/base/stable_order_test.cc
+  s_4f0877e2acdcf0::t_b56e5c4244bd99 15,26,44,75-80,83,91-99,105,116,127,148,150,165-166,183,191,200,208-209,217-218,232,241-242,263,265,291-292,310,312,319,330,342,351,362,373,385,396,408,418,436-473,481
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_2069496ad51f3c 66-81
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_527dc669d040e1 23,106-114
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_76fe33ce34fba5 84-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a49568781f4b2726e8a1798affb4c1019e25dc82",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
