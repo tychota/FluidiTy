@@ -14380,3 +14380,24 @@ outcomes. Both commands exit 1 due to coarse nominal angle
 and persistence. The endpoint difference is at most 0.000001°
 at printed precision. Dense sampling was untested for this
 control. The temporary solver edit was restored.
+
+
+#### Cap retained sticking compression by cell overburden
+
+On dfaa346, at ordinary zero-fraction granular sticking
+contacts, cap the compressive yy increment by the positive
+margin between one cell of reference-density overburden and
+the accepted compressive Kirchhoff normal stress. Convert that
+margin to a rate with the longitudinal Lamé modulus and step
+duration. This is a linearized stress cap on the added increment.
+Keep transport and scatter. Run the native default and
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default passes at 33.359816°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+31.618663°, 28.772108°, 30.098575°, and 28.484863°.
+The 6 s angles are 36.614550°, 27.186909°, 25.483264°,
+and 19.806653°. All radii pass, and both matrices exit 1.
+The cap does not resolve the coarse overshoot and reduces
+the height retained in the other cases. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
