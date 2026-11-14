@@ -12736,3 +12736,25 @@ The matrix exits 1. Three angles are in band, and all radii
 exceed 0.16 m. All four radii increase relative to the dense
 baseline, by 0.14–13.0 mm. Elevated-particle compression alone
 does not control dense spreading. CUDA was untested.
+
+#### Pair elevated-translation compression with above-floor affine attenuation
+
+On 5ec4251, combine the elevated-translation resident compression
+control with the above-floor APIC attenuation. Both use their
+original formulas and only affect the ordinary granular floor
+path. Build the native dry-scene target and run it without
+arguments, with `--q-sand-column-long-settle 6`, and with
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse 6 s angle | Dense 3 s angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 36.598770° | 41.117354° | 0.181242 |
+| Fine | 32.590496° | 37.957227° | 0.184764 |
+| Coarse half-step | 47.433442° | 41.865351° | 0.147956 |
+| Fine half-step | 41.681197° | 40.328496° | 0.156332 |
+
+All three commands exit 1. The default angle is 53.087644°.
+Both dense half-step radii pass, but all dense angles overshoot
+and all dense final drifts exceed one degree. Neither sparse
+nominal radius passes. The two effects do not combine into
+a qualifying result. CUDA was untested. The solver edit was restored.
