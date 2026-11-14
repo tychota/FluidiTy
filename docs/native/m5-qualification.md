@@ -13331,3 +13331,24 @@ Every dense radius increases relative to baseline by
 does not reproduce the height improvement of vertical
 retention and worsens dense spread. CUDA was untested.
 Both temporary edits were restored.
+
+#### Scale vertical-only retention by elapsed time
+
+On 26ba380, repeat the vertical-only residual control using the
+fixture's exponential retention with decay rate
+-log(0.594) / 0.001875 per second. The nominal coarse step
+matches the fixed-blend retention of 0.594. The fixture still
+caps retention at 0.99. Build the native dry-scene target and
+run `--q-sand-column-long-settle 6`.
+
+| Case | Fixed blend angle | Time-scaled angle | Time-scaled radius (m) |
+|---|---:|---:|---:|
+| Coarse | 34.584213° | 34.583951° | 0.159528 |
+| Fine | 32.507461° | 32.942141° | 0.142815 |
+| Coarse half-step | 39.684134° | 38.314077° | 0.147770 |
+| Fine half-step | 32.309501° | 32.458966° | 0.149234 |
+
+Three sparse cases pass and the coarse half-step still exceeds
+35°. Its final drift is 1.460427°. The native command exits 1.
+CUDA and dense sampling were untested. Both temporary edits
+were restored.
