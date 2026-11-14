@@ -13432,3 +13432,22 @@ output lines for each backend match its preceding scatter
 validation baseline exactly. The coarse nominal case passes,
 and the other three remain below 30° throughout the final
 second. This comparison covers the sparse matrix.
+
+#### Increase stationary-floor friction in the dense ordinary column
+
+On 069c8bd, set the floor friction coefficient to 1.4 instead of
+0.7 for the dense native column. Keep the internal 30° friction
+angle, release, solver and acceptance thresholds. Build the native
+dry-scene target and run `--q-sand-dense-column-long-settle 3`.
+
+| Case | Angle at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 30.234763° | 0.172830 |
+| Fine | 27.427657° | 0.183087 |
+| Coarse half-step | 22.114128° | 0.173651 |
+| Fine half-step | 21.043314° | 0.185892 |
+
+All four radii increase relative to the original floor coefficient
+and exceed 0.16 m. The coarse nominal final angle enters the band,
+but its persistence check fails. The matrix exits 1. CUDA was
+untested and the temporary fixture edit was restored.
