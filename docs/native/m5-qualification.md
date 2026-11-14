@@ -14528,3 +14528,21 @@ the final second. Retaining compression in this low-speed regime
 alone does not reproduce the support of the full sticking
 control. CUDA and dense sampling were untested. The temporary
 solver edit was restored.
+
+
+#### Retain sticking compression above the gravity-step incident speed
+
+On 491e3a8, run the complementary sticking control. Retain
+negative incoming yy at ordinary zero-fraction granular sticking
+contacts only when incoming normal speed exceeds abs(gravity)
+times step duration. Keep the contact sweep and scatter. Run the
+native `--q-sand-column-long-settle` selector at 1.5 and 6 s.
+
+All eight endpoint angles reproduce unconditional sticking
+compression to six decimal places. At 6 s coarse nominal
+reaches 36.442893°, and the other three cases stay in range
+throughout the final second. Both matrices exit 1. The
+higher-speed control reproduces the full sticking result at
+this precision, and the low-speed control reproduces baseline.
+CUDA and dense sampling were untested. The temporary solver
+edit was restored.
