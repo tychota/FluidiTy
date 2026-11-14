@@ -25,6 +25,17 @@ TEST(CheckCanRunOn, Cpu_Succeeds) {
   EXPECT_TRUE(result.has_value());
 }
 
+TEST(CheckCanRunOn, GpuTwice_GivesTheSameAnswer) {
+  // The GPU answer is computed once per process and remembered, so the second call must repeat the first. That
+  // the answer is remembered rather than computed again cannot be observed from a test; only the agreement can.
+  const std::expected<void, RunOnError> first_result = CheckCanRunOn(RunOn::kGpu);
+  const std::expected<void, RunOnError> second_result = CheckCanRunOn(RunOn::kGpu);
+  ASSERT_EQ(first_result.has_value(), second_result.has_value());
+  if (!first_result.has_value()) {
+    EXPECT_EQ(first_result.error(), second_result.error());
+  }
+}
+
 #if !defined(FLUIDITY_HAS_GPU)
 TEST(CheckCanRunOn, GpuInBuildWithoutGpuCode_IsNotBuilt) {
   const std::expected<void, RunOnError> result = CheckCanRunOn(RunOn::kGpu);

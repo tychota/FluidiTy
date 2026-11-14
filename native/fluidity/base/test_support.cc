@@ -4,13 +4,30 @@
 
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <ios>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace fluidity {
 
 std::uint64_t ToBits(double value) {
   return std::bit_cast<std::uint64_t>(value);
+}
+
+std::vector<std::uint64_t> ToBits(std::span<const double> values) {
+  std::vector<std::uint64_t> bits;
+  bits.reserve(values.size());
+  for (const double value : values) {
+    bits.push_back(ToBits(value));
+  }
+  return bits;
 }
 
 ::testing::AssertionResult CheckWithinTolerance(double reference, double compared, Tolerance tolerance) {
@@ -43,6 +60,57 @@ std::uint64_t ToBits(double value) {
   }
   return ::testing::AssertionFailure() << std::hexfloat << "expected " << expected << " but got " << actual
                                        << ", which has other bits";
+}
+
+std::uint64_t ComputeResultDigest(std::span<const std::byte> bytes) {
+  // FNV-1a, 64 bits: start from its fixed starting value, then for each byte xor it in and multiply by the prime.
+  constexpr std::uint64_t kStartingValue = 0xcbf29ce484222325ULL;
+  constexpr std::uint64_t kPrime = 0x100000001b3ULL;
+  std::uint64_t digest = kStartingValue;
+  for (const std::byte byte : bytes) {
+    digest ^= std::to_integer<std::uint64_t>(byte);
+    digest *= kPrime;
+  }
+  return digest;
+}
+
+void WriteResultDigestToFile(
+    const std::filesystem::path& path,
+    std::string_view name,
+    std::span<const std::byte> bytes
+) {
+  constexpr int kHexDigitCount = 16;
+  std::string hex_digits(kHexDigitCount, '0');
+  std::uint64_t digest = ComputeResultDigest(bytes);
+  for (int position = kHexDigitCount - 1; position >= 0; --position) {
+    hex_digits[position] = "0123456789abcdef"[digest & 0xFU];
+    digest >>= 4U;
+  }
+  // One write per line, so two test programs that append in turn never mix their lines.
+  const std::string line = std::string(name) + " " + hex_digits + "\n";
+  std::ofstream file(path, std::ios::app | std::ios::binary);
+  file << line;
+  file.flush();
+  EXPECT_TRUE(file.good()) << "cannot append to the digest file " << path.string();
+}
+
+std::string FindResultDigestFile() {
+  const std::string variable(kResultDigestFileVariable);
+#if defined(_MSC_VER)
+  // MSVC deprecates getenv (warning C4996, an error under /WX); _dupenv_s returns a copy the caller frees.
+  char* path = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&path, &length, variable.c_str()) != 0 || path == nullptr) {
+    return {};
+  }
+  std::string copy(path);
+  std::free(path);
+  return copy;
+#else
+  // Tests read the environment from one thread, so getenv's shared buffer is safe here.
+  const char* const path = std::getenv(variable.c_str());
+  return path != nullptr ? std::string(path) : std::string();
+#endif
 }
 
 }  // namespace fluidity

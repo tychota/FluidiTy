@@ -154,13 +154,16 @@ module may add stages; each new stage name enters this list in the commit that a
 
 | Say | Plain meaning | Never say |
 | --- | --- | --- |
-| `buffers` | Preallocated, reused every step. | workspace, arena, storage (for the preallocated reused buffers) |
+| `buffers` | Preallocated, reused every step. Each one is a `Buffer` (below) built once and kept. | workspace, arena, staging, bank, storage (for the preallocated reused buffers) |
 | `saved_state` | On disk; lets a run continue. Written in FluidiTy's own array file. | checkpoint, store (for saving a run to disk) |
 | `playback_cache` | Output files for playback: particles, surface, foam and spray, volumes and solid motion. Written in open formats (Alembic, USD, OpenVDB) so they read with the add-on disabled. | point cache, frame cache |
 | `scene_file` | What the artist set up, as exported from Blender. | |
 | `ready_scene` | Scene with defaults filled in and checked. | resolved scene |
 | `file_list` | Which files belong to a run. | manifest |
 | `BufferLoan` | A borrowed GPU buffer. | lease |
+| `Buffer`, `BuildBuffer`, `WriteBuffer`, `ReadBuffer`, `CopyBuffer` | An array of fixed size on the processor the caller chose (`base/buffer.h`). `WriteBuffer` and `ReadBuffer` copy between CPU memory and a buffer, the only way values enter or leave the GPU; `CopyBuffer` copies between two buffers on one processor. The plural `buffers` (above) names the ones kept and reused every step. | |
+| `slice`, `first`, `count` | `count` items of an array starting at index `first`. | |
+| `CpuMemory::kLockedForCopies`, locked for copies | CPU memory that is never moved or swapped out, so the GPU copies it directly. Papers and the CUDA manual: page-locked or pinned memory. | pinned (as a name) |
 | `OnStepDone` and similar | A callback is named after its event or question (`ChooseCellSize`). | Observer, Hook, Provider, Selector |
 | no suffix | A type is named after its content. Whether it owns memory is said in its comment and by `std::span` fields. | View (as a suffix), Record (as a suffix), Layout (as a suffix), payload |
 | `max_...` | A hard limit: the code refuses to go past it. | capacity, reserve (for a limit), budget (for a hard limit) |

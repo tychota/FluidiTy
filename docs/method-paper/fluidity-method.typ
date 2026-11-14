@@ -17,6 +17,8 @@
 
 #import "pseudocode.typ": procedure
 #import "figures/axes.typ": axes-figure
+#import "figures/buffer_crossings.typ": buffer-crossings-figure
+#import "figures/buffer_layers.typ": buffer-layers-figure
 #import "figures/one_operation_two_processors.typ": run-on-figure
 
 #let serif = ("Equity OT A", "Libertinus Serif")
@@ -227,7 +229,10 @@ std::expected<void, RunOnError> CheckCanRunOn(
 It first settles two cases. Asked for the CPU, it succeeds. Asked for the GPU in a build that has no GPU code, it
 fails with "GPU not built". Otherwise it runs the GPU math check of @proc-check-can-run-on: it does more than look
 for a GPU, it evaluates the shared math on the GPU with fixed inputs and compares the results with the CPU's, bit
-for bit.
+for bit. The check runs once per process, at the first call that asks for the GPU; every later call, from any thread,
+returns the remembered answer. Many calls ask (every GPU buffer does, @sec-buffer), and the answer does not change
+while the program runs. A GPU that fails the check therefore stays failed until the program restarts, and a GPU lost
+after the check is reported by the next GPU call that fails.
 
 The check can demand equal bits where whole operations cannot. It computes one value at a time, with no sum whose
 order differs between the processors. It evaluates the shared vector and matrix helpers: a cross product, a dot
@@ -261,7 +266,9 @@ fast-math build, or a process that turns it on), or a broken driver therefore sh
   ([Compare bit for bit], [Compare the 64 bits of each GPU result with those of the CPU result, as integers.
     Compare bits, not values: the operator `==` treats +0 and −0 as equal. Fail with "different numbers" at the
     first result that differs.]),
-  ([Report], [Succeed. The check changes nothing: it never switches the choice to the CPU.]),
+  ([Report], [Succeed. The check changes nothing: it never switches the choice to the CPU. The answer, success or
+    the reason for failure, is remembered for the rest of the process; later calls return it without running these
+    steps again.]),
 )
 
 Module tests compare the two implementations of an operation as whole operations. They run the same cases on both
@@ -273,6 +280,52 @@ $ |"cpu" - "gpu"| <= "absolute floor" + "relative term" times |"cpu"|. $
 
 A repeat-run test on one GPU demands identical bytes. Until #box[`docs/gpu-runs.md`] records a run on real hardware,
 every GPU path is compiled, not run.
+
+== Arrays on the chosen processor <sec-buffer>
+
+Every module keeps its arrays (per cell, per face, per particle) in a buffer from `base/buffer.h`: an array of
+fixed size built for one processor.
+
+```cpp
+std::expected<Buffer<double>, BufferError> buffer =
+    BuildBuffer<double>(RunOn::kGpu, size);
+```
+
+Building a GPU buffer first asks `CheckCanRunOn`, whose answer is remembered after the first call (@sec-run-on), so
+the math check does not run again for every buffer. A buffer never grows: a new size is a new buffer. Its memory
+starts as zero bytes, is aligned to 64 bytes, and is freed when the buffer is destroyed.
+
+Values cross between the processors only through `WriteBuffer` (CPU memory to a buffer) and `ReadBuffer` (a buffer
+to CPU memory) (@fig-buffer-crossings). Every copy to or from the GPU is therefore visible where it is called.
+`CopyBuffer` copies between two buffers on the same processor. Two buffers on different processors are a bug in the
+caller, not an error the call reports: same processor is a precondition, checked by an assertion in debug builds
+only. Each copy also has a form that takes a slice: `count` items starting at index `first`. Sizes, slices and overlap are checked
+before any memory is touched, so a call stopped by one of these checks writes nothing. Two overlapping ranges, such
+as two slices of one buffer or a span that points into the buffer it is copied to, are not copied, because a plain
+byte copy between them would mix old and new values. A GPU call that fails during the copy is different: the values
+of the target slice are then unspecified, a mix of old and new, while values outside the slice are unchanged.
+
+A CPU buffer that is copied to the GPU every step can ask for memory locked for copies, which the GPU reads
+directly. Without a usable GPU it gets ordinary memory, since nothing would gain from locking.
+
+#figure(
+  buffer-crossings-figure(),
+  placement: auto,
+  caption: [A buffer lives in the memory of one processor. Values enter or leave a buffer only through
+    `WriteBuffer` and `ReadBuffer`, the only calls that cross between CPU and GPU memory. `CopyBuffer` copies
+    between two buffers of the same processor; two buffers of different processors break its precondition.],
+) <fig-buffer-crossings>
+
+`Buffer` has two layers (@fig-buffer-layers). Its typed functions, templates in `base/buffer.h`, check sizes and
+slices, the only checks that need the value type. They then call untyped byte functions (`base/buffer_bytes.h`),
+which pick the processor and copy with `memcpy` on the CPU or with the CUDA runtime on the GPU.
+
+#figure(
+  buffer-layers-figure(),
+  placement: auto,
+  caption: [The two layers of `Buffer`. The byte functions exist once for every value type and are defined in one
+    CPU source file, so the templates hold no conditional compilation and name no GPU call.],
+) <fig-buffer-layers>
 
 // Every floating figure and procedure is placed before the references start.
 #place.flush()

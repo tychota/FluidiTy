@@ -279,14 +279,17 @@ that calls it compiles without the CUDA compiler. The rules check skips the back
 whose stem ends in `_gpu` (`.h`, `.cu`), and fails an `#include` of a `*_gpu.h` header from another folder or from
 a header that is not itself `_gpu`.
 
-**The two halves of an operation.** The public function lives in `<name>_cpu.cc`: it checks its inputs, chooses the
-half by `RunOn`, runs the CPU loop itself, and calls the GPU half under `#if defined(FLUIDITY_HAS_GPU)`. The GPU half
-is `<name>_gpu.cu`, declared in the private `<name>_gpu.h`. It returns a `RunOnCallStatus` (`base/run_on_call.h`),
-which the CPU half maps into its own error with one mapping function. A `.cu` file starts GPU functions, waits for
-the GPU and holds temporary GPU memory of its own only through the helpers of `base/gpu_launch.cuh`
-(`ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). It may call the CUDA runtime directly for a copy or a fill
-(`cudaMemcpy`, `cudaMemset`) and for a device query (such as `cudaGetDeviceCount`); the status of every direct copy
-or fill goes through `ToRunOnCallStatus`, which gives `kCallFailed` for any failure. A GPU function is a thin loop
+**The two halves of an operation.** The public function lives in `<name>_cpu.cc`: it checks its inputs, chooses the half
+by `RunOn`, runs the CPU loop itself, and calls the GPU half under `#if defined(FLUIDITY_HAS_GPU)`. `Buffer` is laid out
+differently: its public functions are templates in `base/buffer.h` that call the byte functions of
+`base/buffer_bytes.h`, which `base/buffer_cpu.cc` defines and which call the GPU half. The GPU half is `<name>_gpu.cu`,
+declared in the private `<name>_gpu.h`. It returns a `RunOnCallStatus` (`base/run_on_call.h`), which the CPU half maps
+into its own error with one mapping function. A `.cu` file starts GPU functions, waits for the GPU and holds temporary
+GPU memory of its own only through the helpers of `base/gpu_launch.cuh` (`ApplyGpuFunction`, `CheckGpuWork`,
+`GpuArray`). It may call the CUDA runtime directly for a copy or a fill (`cudaMemcpy`, `cudaMemset`), for a device query
+(such as `cudaGetDeviceCount`), and in `base/buffer_gpu.cu` to allocate and free the memory of a `Buffer`; the status
+of every direct copy, fill or free goes through `ToRunOnCallStatus`, which gives `kCallFailed` for any failure, and
+only a failed allocation gives `kOutOfMemory`. A GPU function is a thin loop
 around shared per-item or per-thread functions marked `FLUIDITY_CPU_AND_GPU`, which live in a shared header; CPU
 tests call them over every item, or every thread block and thread in launch order and in reverse, so the GPU
 arithmetic is tested without a GPU.
@@ -307,6 +310,10 @@ particle, which face or what size. A function that can fail returns `std::expect
 - `std::string_view ToMessage(<Module>Error error)`: the plain-language message.
 - `std::string_view ToName(<Module>Error error)`: the stable code used by the CLI and the add-on. It is the
   value's name in snake_case without the `k`: `kSolidTooThin` becomes `solid_too_thin`.
+
+`base/` is the one exception: its functions return the bare enums `RunOnError` and `BufferError`
+(`std::expected<T, BufferError>`), because they have no context worth adding. A module maps them into its own
+`<Module>Failure`, adding the context it knows.
 
 Inner code returns the enum and context and never allocates. Text is added by `ToMessage` at the outer
 boundary. When several items fail on the GPU, the one reported is the first in a fixed order (by stable id), so

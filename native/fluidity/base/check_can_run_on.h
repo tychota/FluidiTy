@@ -38,7 +38,10 @@ namespace fluidity {
 // into a CPU run: the caller sees the error and decides.
 //
 // Method: the CPU always succeeds. The GPU fails with kGpuNotBuilt in a build with no GPU code. In a build with GPU
-//   code it succeeds only when a GPU is found and its results equal the CPU's.
+//   code it succeeds only when a GPU is found and its results equal the CPU's. That GPU check runs once per
+//   process, at the first call that asks for the GPU; later calls, from any thread, return the remembered answer.
+//   A GPU that fails once therefore stays failed until the program restarts, and a GPU lost after the check is
+//   reported by the next GPU call, not here.
 // Example: CheckCanRunOn(RunOn::kCpu) succeeds on every machine. In a build made without the CUDA preset,
 //   CheckCanRunOn(RunOn::kGpu) returns kGpuNotBuilt, and ToName gives "gpu_not_built".
 // Fails: kGpuNotBuilt     the GPU was asked for in a build with no GPU code

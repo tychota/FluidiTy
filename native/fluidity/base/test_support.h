@@ -1,17 +1,28 @@
 // Functions that the tests of base/ share, so no test file keeps its own copy.
 //
-// Purpose: give every test one way to compare doubles bit for bit, one form of the method paper's tolerance and one
-//   check for "same bits, or both NaN".
+// Purpose: give every test one way to compare doubles bit for bit, one form of the method paper's tolerance, one
+//   check for "same bits, or both NaN", one way to fill and read a buffer, and one record of GPU results for the
+//   repeat run.
 //
 // Idea: a test that demands equal bits compares the 64 bits of two doubles (ToBits), because == treats +0 and -0
 //   as equal and a NaN as unequal to itself. CheckSameBitsOrBothNaN accepts two NaNs whatever their bits, since IEEE
 //   754 leaves the bits of a NaN open. CheckWithinTolerance is the comparison of a CPU and a GPU result that the
 //   method paper states, with the CPU result as the reference: |reference - compared| <= absolute floor + relative
 //   term * |reference|.
+//   BuildBufferHolding and ReadAll fill a buffer from CPU memory and read it back, failing the calling test when
+//   a call fails. WriteResultDigest appends a named digest of result bytes to the file that the environment
+//   variable FLUIDITY_RESULT_DIGEST_FILE names, and does nothing when it is unset: tools/run_gpu_tests.ps1 sets it
+//   for each of its two runs of the gpu tests and demands identical files, so "repeat run: PASS" means the GPU
+//   wrote the same bytes twice.
 //   Example: CheckWithinTolerance(1.0, 1.0 + 2e-16, {.absolute_floor = 1e-15, .relative_term = 1e-15}) passes.
 //
-// Owns:    ToBits, Tolerance, CheckWithinTolerance, CheckSameBitsOrBothNaN
-// Uses:    CPU-only guard (base/cpu_only.h), GoogleTest
+// Words:
+//   digest  a 64-bit number computed from bytes (FNV-1a), equal for equal bytes and almost never for different ones
+// Owns:    ToBits, Tolerance, CheckWithinTolerance, CheckSameBitsOrBothNaN, BuildBufferHolding, ReadAll,
+//          ComputeResultDigest, WriteResultDigestToFile, WriteResultDigest, FindResultDigestFile,
+//          kResultDigestFileVariable
+// Uses:    Buffer, BuildBuffer, WriteBuffer, ReadBuffer (base/buffer.h), RunOn (base/run_on.h), CPU-only guard
+//          (base/cpu_only.h), GoogleTest
 // Used by: the tests of base/ (the library fluidity_base_test_support)
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>
 
@@ -22,12 +33,27 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <ranges>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/run_on.h"
 
 namespace fluidity {
 
 // Converts a double to its 64 bits, so +0.0 and -0.0 differ and every bit is compared.
 std::uint64_t ToBits(double value);
+
+// Converts every double of `values` to its 64 bits, in order, so two arrays compare bit for bit with ==.
+std::vector<std::uint64_t> ToBits(std::span<const double> values);
 
 // The allowed difference between a reference result (the CPU's) and a compared one (the GPU's): absolute_floor +
 // relative_term * |reference|.
@@ -45,5 +71,64 @@ struct Tolerance {
 // Checks that two doubles have the same 64 bits, or are both NaN (IEEE 754 leaves the bits of a NaN open).
 // Example: (+0.0, -0.0) fails; (NaN, -NaN) passes; (1.0, 1.0) passes.
 ::testing::AssertionResult CheckSameBitsOrBothNaN(double expected, double actual);
+
+// Builds a buffer on `run_on` holding `values` (a std::vector, a std::array or a span). Fails the calling test, and
+// returns an empty CPU buffer, when building or writing fails.
+// Example: BuildBufferHolding(RunOn::kCpu, std::array{1.0, 2.0}) is a CPU buffer of 2 doubles.
+template <std::ranges::contiguous_range Values>
+Buffer<std::ranges::range_value_t<Values>> BuildBufferHolding(RunOn run_on, const Values& values) {
+  using Value = std::ranges::range_value_t<Values>;
+  const std::span<const Value> value_span(std::ranges::data(values), std::ranges::size(values));
+  std::expected<Buffer<Value>, BufferError> buffer = BuildBuffer<Value>(run_on, value_span.size());
+  EXPECT_TRUE(buffer.has_value()) << ToName(buffer.error());
+  if (!buffer.has_value()) {
+    return {};
+  }
+  const std::expected<void, BufferError> written = WriteBuffer(value_span, *buffer);
+  EXPECT_TRUE(written.has_value()) << ToName(written.error());
+  return std::move(*buffer);
+}
+
+// Reads every value of a buffer into CPU memory. Fails the calling test when reading fails.
+template <BufferValue Value>
+std::vector<Value> ReadAll(const Buffer<Value>& buffer) {
+  std::vector<Value> values(buffer.size());
+  const std::expected<void, BufferError> read = ReadBuffer(buffer, std::span<Value>(values));
+  EXPECT_TRUE(read.has_value()) << ToName(read.error());
+  return values;
+}
+
+// The environment variable that names the file WriteResultDigest appends to.
+inline constexpr std::string_view kResultDigestFileVariable = "FLUIDITY_RESULT_DIGEST_FILE";
+
+// Computes the 64-bit FNV-1a digest of `bytes`. Equal bytes give equal digests on every machine.
+// Example: no bytes give 0xcbf29ce484222325, the FNV-1a starting value.
+std::uint64_t ComputeResultDigest(std::span<const std::byte> bytes);
+
+// Appends the line `<name> <digest as 16 hex digits>` to the file at `path`. Fails the calling test when the file
+// cannot be written.
+void WriteResultDigestToFile(
+    const std::filesystem::path& path,
+    std::string_view name,
+    std::span<const std::byte> bytes
+);
+
+// Appends the digest line of `values` to the file named by FLUIDITY_RESULT_DIGEST_FILE; does nothing when that
+// variable is unset or empty. `name` names the result, unique among the gpu tests.
+// Example: WriteResultDigest("ComputeTreeSum mixed values", std::span<const double>(&sum, 1)).
+template <typename Value>
+void WriteResultDigest(std::string_view name, std::span<const Value> values);
+
+// The file named by FLUIDITY_RESULT_DIGEST_FILE, or an empty text when the variable is unset.
+std::string FindResultDigestFile();
+
+template <typename Value>
+void WriteResultDigest(std::string_view name, std::span<const Value> values) {
+  const std::string path = FindResultDigestFile();
+  if (path.empty()) {
+    return;
+  }
+  WriteResultDigestToFile(path, name, std::as_bytes(values));
+}
 
 }  // namespace fluidity

@@ -10,14 +10,31 @@
 
 namespace fluidity {
 
+#if defined(FLUIDITY_HAS_GPU)
+namespace {
+
+// The answer of the GPU math check: kNone when the GPU can run, otherwise the reason it cannot.
+RunOnError ComputeGpuCheckAnswer() {
+  RunOnError gpu_error = RunOnError::kNone;
+  if (!CheckGpuMath(&gpu_error)) {
+    return gpu_error;
+  }
+  return RunOnError::kNone;
+}
+
+}  // namespace
+#endif
+
 std::expected<void, RunOnError> CheckCanRunOn(RunOn run_on) {
   if (run_on == RunOn::kCpu) {
     return {};
   }
 #if defined(FLUIDITY_HAS_GPU)
-  RunOnError gpu_error = RunOnError::kNone;
-  if (!CheckGpuMath(&gpu_error)) {
-    return std::unexpected(gpu_error);
+  // Every GPU buffer asks this question, so the full check runs once per process. C++ runs the initializer of a
+  // function-local static once, even when several threads arrive together; the others wait for it.
+  static const RunOnError gpu_answer = ComputeGpuCheckAnswer();
+  if (gpu_answer != RunOnError::kNone) {
+    return std::unexpected(gpu_answer);
   }
   return {};
 #else
