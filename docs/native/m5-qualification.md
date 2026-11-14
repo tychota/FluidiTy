@@ -14717,3 +14717,24 @@ increases all four dense radii by 12.1–21.5 mm and lowers
 every dense endpoint angle. Both commands exit 1. All eight
 angles and all four dense radii miss. CUDA was untested.
 The temporary fixture was restored.
+
+
+#### Retain only the normal diagonal of the affine deposit during collapse
+
+On 6ca3fad, clear all affine slopes except yy before each
+extended column step beginning before 0.75 s. Run native
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Final angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.235142° | 0.168486 |
+| Fine | 29.761378° | 0.175428 |
+| Coarse half-step | 27.068030° | 0.165373 |
+| Fine half-step | 24.307074° | 0.181982 |
+
+Relative to retaining the entire vertical row, each dense
+radius changes by at most 0.21 mm and each angle changes
+by less than 0.055°. All four radii fail and the command
+exits 1. The normal diagonal accounts for most of the
+measured spread effect of the vertical row in this control.
+Sparse sampling and CUDA were untested. The fixture was restored.
