@@ -458,9 +458,10 @@ bool TestScene(
       !persistence_required || (has_persistence_sample && persistence_sample_in_range && persistence_drift_in_range);
   if (persistence_required && has_persistence_sample) {
     std::printf(
-        "sand persistence window_min_degrees=%.6f window_max_degrees=%.6f\n",
+        "sand persistence window_min_degrees=%.6f window_max_degrees=%.6f all_sampled_angles_in_band=%s\n",
         long_window_minimum_angle,
-        long_window_maximum_angle
+        long_window_maximum_angle,
+        long_window_minimum_angle >= 30 && long_window_maximum_angle <= 35 ? "yes" : "no"
     );
   }
   if (persistence_required) {
