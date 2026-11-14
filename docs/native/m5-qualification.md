@@ -14168,3 +14168,22 @@ sticking control. The coarse nominal case still overshoots, and
 the other three remain in range throughout the final second.
 All three commands exit 1. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+
+#### Require lateral convergence for sticking floor compression
+
+On 0758555, retain negative incoming yy at ordinary granular
+zero-fraction sticking contacts only when incoming xx and zz
+are both nonpositive. Run the native dry-scene executable
+without arguments and with `--q-sand-column-long-settle` at
+1.5 and 6 s.
+
+The default passes at 32.892782°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+29.423627°, 26.763018°, 29.025285°, and 27.033753°.
+At 6 s they are 34.473454°, 23.442551°, 17.324353°,
+and 13.060319°. Only coarse nominal stays in range across
+the final second. Both matrices exit 1. Requiring lateral
+convergence removes the improvement in the three shallow
+cases observed with unconditional sticking compression.
+CUDA and dense sampling were untested. The edit was restored.
