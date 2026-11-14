@@ -1,0 +1,21 @@
+native/fluidity/base/processor_description.h
+  s_4f0877e2acdcf0::t_fbe721df571b20 13-17
+native/fluidity/base/processor_description_text.h
+  s_4f0877e2acdcf0::t_3e6e963850ce55 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2af3c83c9bd3eed72c32642f87b1bece7fbde001",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
