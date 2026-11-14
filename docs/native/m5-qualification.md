@@ -13369,3 +13369,20 @@ vertical residual control. Run
 Both fine angles enter the band. Every dense radius exceeds
 0.16 m and every final drift exceeds one degree. The native
 command exits 1. CUDA was untested for this diagnostic.
+
+#### Measure the dense baseline throughout the final second
+
+On 2f68b4a, build the native dry-scene target and run
+`--q-sand-dense-column-long-settle 3`. The production
+trajectory and Q-SAND acceptance rules are unchanged.
+
+| Case | Minimum angle | Maximum angle | Final radius (m) |
+|---|---:|---:|---:|
+| Coarse | 27.454340° | 29.703637° | 0.170290 |
+| Fine | 25.648390° | 26.954622° | 0.182075 |
+| Coarse half-step | 21.853351° | 23.823039° | 0.172975 |
+| Fine half-step | 20.623778° | 21.975051° | 0.185666 |
+
+No accepted sample in the final one-second window enters
+the target band. Every radius exceeds 0.16 m. The command
+exits 1. This run measured the native path.
