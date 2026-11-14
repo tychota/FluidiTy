@@ -1144,9 +1144,21 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true) || !TestStoredVelocityResidual()
-      || !TestStoredResidualMomentum() || !TestCompatibleFloorStressWork() || !TestUncutStressWork()
-      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  const auto check = [](const char* name, bool passed) {
+    if (!passed) {
+      std::fprintf(stderr, "M5 dry scene check failed: %s\n", name);
+    }
+    return passed;
+  };
+  if (!check("sand surface fit", TestSandSurfaceFit())
+      || !check("ordinary wall impulse budget", TestWallImpulseBudget())
+      || !check("compatible wall impulse budget", TestWallImpulseBudget(true))
+      || !check("stored velocity residual", TestStoredVelocityResidual())
+      || !check("stored residual momentum", TestStoredResidualMomentum())
+      || !check("compatible floor stress work", TestCompatibleFloorStressWork())
+      || !check("uncut stress work", TestUncutStressWork())
+      || !check("unsupported destination rollback", TestRollbackOnUnsupportedDestination())
+      || !check("inadmissible initial state", TestRejectsInadmissibleInitialState())) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);
