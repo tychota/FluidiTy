@@ -12986,3 +12986,24 @@ compression stays within 0.035° of the unmodified baseline.
 Both matrices exit 1. The coarse nominal case still overshoots
 with sticking compression. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+#### Retain the normal gradient row at compressive sticking contacts
+
+On 16ed801, at ordinary granular zero-fraction hits with zero
+tangential advection and negative incoming yy, retain the entire
+incoming normal gradient row. Compare with the preceding
+sticking-only control that retains only the yy component.
+
+| Case | Normal row at 6 s | Radius (m) | Final drift |
+|---|---:|---:|---:|
+| Coarse | 36.269710° | 0.142682 | 0.448922° |
+| Fine | 29.372680° | 0.150946 | 0.488840° |
+| Coarse half-step | 33.383098° | 0.145358 | 0.871744° |
+| Fine half-step | 28.450544° | 0.155952 | 0.390217° |
+
+Build the native dry-scene target and run without arguments
+and with `--q-sand-column-long-settle 6`. Both commands exit 1.
+The default angle is 35.403258°. All six-second radii pass,
+but both fine angles fall below the band and the coarse
+nominal angle stays above it. CUDA and dense sampling were
+untested. The temporary solver edit was restored.
