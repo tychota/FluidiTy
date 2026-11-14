@@ -420,6 +420,30 @@ bool TestScene(
     );
   }
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
+  if (extended_column && particles.size() > 1) {
+    double minimum_omission_angle = 180;
+    double maximum_omission_angle = 0;
+    for (std::size_t omitted = 0; omitted < particles.size(); ++omitted) {
+      double sampled_height = 0;
+      double sampled_radius = 0;
+      for (std::size_t index = 0; index < particles.size(); ++index) {
+        if (index == omitted) {
+          continue;
+        }
+        const auto position = particles[index].world_position;
+        sampled_height = std::max(sampled_height, position.y);
+        sampled_radius = std::max(sampled_radius, std::hypot(position.x, position.z));
+      }
+      const double sampled_angle = kDegreesPerRadian * std::atan2(sampled_height, sampled_radius);
+      minimum_omission_angle = std::min(minimum_omission_angle, sampled_angle);
+      maximum_omission_angle = std::max(maximum_omission_angle, sampled_angle);
+    }
+    std::printf(
+        "sand leave-one-out envelope range_degrees=[%.6f,%.6f]\n",
+        minimum_omission_angle,
+        maximum_omission_angle
+    );
+  }
   const double settling_drift = std::abs(envelope_angle - early_envelope_angle);
   std::printf("sand envelope_degrees=%.6f drift_degrees=%.6f\n", envelope_angle, settling_drift);
   if (extended_column && long_window_sample_time > 0) {

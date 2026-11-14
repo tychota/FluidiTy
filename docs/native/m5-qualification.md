@@ -14904,3 +14904,20 @@ half-step 0.032302° below the lower endpoint limit. Both dense
 nominal angles overshoot and coarse nominal exceeds the radius
 limit. All sparse angles miss. CUDA was untested. The two
 temporary source edits were restored.
+
+
+#### Report single-particle sensitivity in extended column runs
+
+On b6e87d5, build both dry-scene targets with the leave-one-out
+report. The range recomputes the same estimator after dropping
+each particle in turn from the final accepted sample. It
+measures sensitivity within one cloud. The acceptance checks
+still use the full cloud.
+
+Run `ctest --test-dir out/requalified -R '^(M5DryScenes|QSand)\.' --no-tests=error --output-on-failure`.
+The native and SM120 default suites pass. Both registered sand
+cases fail the existing angle gate, with identical printed
+1.5 s leave-one-out ranges. In coarse, fine, coarse half-step
+and fine half-step order the ranges are 22.969048–29.113507°,
+22.622216–26.761332°, 23.690122–29.006384°, and
+23.109339–27.033753°.
