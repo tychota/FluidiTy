@@ -14491,3 +14491,23 @@ portion retains substantially more height in the half-step piles.
 The coarse nominal overshoot occurs with either portion, and
 neither retains all four angles in range. CUDA and dense sampling
 were untested. The temporary solver edit was restored.
+
+
+#### Retain compression continuously across sticking and sliding
+
+On e74f424, at ordinary granular zero-fraction contacts with
+inward PIC velocity, multiply compressive yy by the fraction
+of incoming tangential speed removed by Coulomb friction.
+Use one when tangential speed is zero. Keep the particle sweep
+and scatter unchanged. Run the native default and
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The default reaches 35.674372°. In coarse, fine, coarse
+half-step and fine half-step order, the 1.5 s angles are
+37.360886°, 33.933252°, 32.208768°, and 32.693618°.
+At 6 s they are 36.442893°, 30.159032°, 34.609419°, and
+30.112373°. Only the half-step angles differ from the
+sticking-only control, by at most 0.027° at either endpoint.
+Both sparse matrices fail on coarse nominal, and all radii
+pass. CUDA and dense sampling were untested. The temporary
+solver edit was restored.
