@@ -14696,3 +14696,24 @@ all four dense radii by 10.1–22.4 mm. Dense coarse nominal
 stays in the angle band throughout the final second, but all
 dense radii fail. Both commands exit 1. CUDA was untested.
 The temporary fixture was restored.
+
+
+#### Retain only horizontal affine momentum during collapse
+
+On 90a539e, clear the y row of each particle's stored affine
+slopes before steps starting before 0.75 s. Preserve the x
+and z rows, translation, and material state. Run the native
+sparse and dense column selectors at 3 s.
+
+| Case | Sparse angle | Sparse radius (m) | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 23.604984° | 0.129285 | 21.075155° | 0.161691 |
+| Fine | 25.301227° | 0.142970 | 21.583266° | 0.178594 |
+| Coarse half-step | 27.183310° | 0.134485 | 23.188593° | 0.167450 |
+| Fine half-step | 26.764012° | 0.148673 | 21.509814° | 0.183785 |
+
+Compared with PIC-only collapse, restoring horizontal rows
+increases all four dense radii by 12.1–21.5 mm and lowers
+every dense endpoint angle. Both commands exit 1. All eight
+angles and all four dense radii miss. CUDA was untested.
+The temporary fixture was restored.
