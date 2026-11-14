@@ -14546,3 +14546,25 @@ higher-speed control reproduces the full sticking result at
 this precision, and the low-speed control reproduces baseline.
 CUDA and dense sampling were untested. The temporary solver
 edit was restored.
+
+
+#### Check sticking-only compression on the dense six-second matrix
+
+On cc68b23, retain negative incoming yy only at ordinary
+granular zero-fraction sticking contacts, as in the sparse
+native and SM120 comparison. Run the native dry-scene
+executable with `--q-sand-dense-column-long-settle 6`.
+
+| Case | Final angle | Final-window range | Radius (m) |
+|---|---:|---:|---:|
+| Coarse | 33.024592° | 32.960541–33.338217° | 0.172349 |
+| Fine | 27.984056° | 27.984056–30.009040° | 0.182198 |
+| Coarse half-step | 30.653258° | 29.501591–30.653258° | 0.173860 |
+| Fine half-step | 27.286335° | 26.919969–27.286335° | 0.185096 |
+
+The dense coarse nominal is the only case that stays in the
+angle band throughout the sampled window. All four radii exceed
+0.16 m, and the command exits 1. Compared with the full
+zero-fraction compression experiment at dense sampling, each
+endpoint moves less than 0.14°. CUDA was untested for this
+dense comparison. The temporary solver edit was restored.
