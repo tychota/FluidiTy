@@ -14306,3 +14306,21 @@ other three stay in range throughout the final second. All three
 commands exit 1. The isolated spin term has no measured angle
 effect at this precision. CUDA and dense sampling were untested.
 The temporary solver edit was restored.
+
+
+#### Shift horizontal grid alignment with resident sticking compression
+
+On 51d433f, add half the cell width to both horizontal grid
+origin coordinates while keeping the physical release fixed.
+At ordinary zero-fraction granular sticking contacts retain
+negative incoming yy. Run the native sparse
+`--q-sand-column-long-settle` selector at 1.5 and 6 s.
+
+In coarse, fine, coarse half-step and fine half-step order,
+the 1.5 s angles are 34.388440°, 29.896100°, 29.845389°,
+and 27.697394°. The 6 s angles are 35.221434°, 28.980933°,
+31.634207°, and 26.862392°. All radii pass. Only coarse
+half-step stays within the angle band across the final second.
+Both commands exit 1. The shift lowers the coarse overshoot
+but also moves both fine cases below the band. CUDA and dense
+sampling were untested. Both temporary edits were restored.
