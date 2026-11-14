@@ -13841,3 +13841,28 @@ Both nominal piles lose all height, and both half-step
 piles remain below 30° throughout the final second. All
 radii pass. Both matrices exit 1. CUDA and dense sampling
 were untested. The temporary solver edit was restored.
+
+
+#### Refine the ordinary-floor grid at a matched timestep
+
+On 51ddfb1, use the ordinary sparse column selector with
+grid widths 0.075, 0.0625, 0.050, and 0.0375 m. Set all
+four timesteps to 0.00078125 s. Retain the same 63 particles,
+0.050 m initial particle spacing, geometry, and acceptance
+criteria. Run the native `--q-sand-column-long-settle`
+selector at endpoints 1.5 and 6.
+
+| Grid width (m) | Angle at 1.5 s | Angle at 6 s | Radius at 6 s (m) |
+|---|---:|---:|---:|
+| 0.075 | 30.385098° | 18.186985° | 0.144753 |
+| 0.0625 | 27.033753° | 13.060319° | 0.155423 |
+| 0.050 | 20.562883° | 2.821687° | 0.159485 |
+| 0.0375 | 13.868597° | 0.000000° | 0.152640 |
+
+All four radii pass and both matrices exit 1. At fixed
+timestep and sparse quadrature, reducing grid width lowers
+the pile angle at both endpoints. The two finest grids
+have unchanged radii to printed precision between 1.5 and 6 s,
+while their heights continue to fall. This comparison does
+not measure joint grid and particle refinement. CUDA and
+dense sampling were untested. The temporary fixture was restored.
