@@ -14050,3 +14050,23 @@ but its window minimum is 29.721677°. All radii exceed the
 limit at both endpoints, and all three commands exit 1.
 The default exits before printing the pile summary. CUDA and
 dense sampling were untested. The temporary solver edit was restored.
+
+
+#### Retain only compression common to the original and wall gradients
+
+On 4c16ce4, compute the zero-continuation wall gradient in a
+second gather. Leave the original gather in use everywhere
+except the projected yy entry for zero-fraction ordinary
+granular sticking contacts. At those contacts set that entry
+to min(0, max(original yy, constrained yy)). Rigid translation
+with zero original gradient therefore contributes no compression.
+Run the native dry-scene executable without arguments and with
+`--q-sand-column-long-settle` at 1.5 and 6 s.
+
+The ordinary wall impulse budget check passes. The default
+pile still fails at 35.674372°. The four 1.5 s angles and
+four 6 s angles match the traction-capped sticking control to
+six decimal places. All radii pass, and the coarse nominal
+angle remains above the band at both endpoints. All three
+commands exit 1. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
