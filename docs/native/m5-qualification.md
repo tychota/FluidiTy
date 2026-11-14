@@ -14611,3 +14611,23 @@ The dense radii decrease by 0.7–3.3 mm relative to the
 0.10 m release trace and all remain above 0.16 m. All
 eight angles miss and both commands exit 1. CUDA was
 untested. The original release fixture was restored.
+
+
+#### Remove the added dense column release gap
+
+On b308a60, set the additional initial gap to zero while
+keeping the bottom particle centers half a particle spacing
+above the floor. Run the native
+`--q-sand-dense-column-long-settle 3` selector.
+
+| Case | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 20.436712° | 0.169194 |
+| Fine | 20.599779° | 0.177612 |
+| Coarse half-step | 19.040202° | 0.172389 |
+| Fine half-step | 18.155661° | 0.182388 |
+
+All four fail angle, radius and persistence. Removing the gap
+reduces the radius by 0.6–4.5 mm relative to the 0.10 m release.
+The original radius excess persists without the added drop.
+The command exits 1. CUDA was untested. The fixture was restored.
