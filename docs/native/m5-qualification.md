@@ -13473,3 +13473,26 @@ scattered stress after 3 s leaves three cases below 30°.
 This freezes all material history, including dilation, and
 does not isolate one constitutive term. CUDA and dense
 sampling were untested. The fixture edit was restored.
+
+#### Freeze granular material history at the 0.75 s collapse sample
+
+On 117deaf, repeat the frozen-state control with the snapshot
+taken at the first step starting at or after 0.75 s. Restore
+elastic deformation and plastic log volume after each subsequent
+accepted step and let position, translation and affine slope
+continue evolving. Run the native target with
+`--q-sand-column-long-settle 6`.
+
+| Case | Final angle | Final window | Radius (m) |
+|---|---:|---:|---:|
+| Coarse | 33.852974° | 33.852974–34.131054° | 0.139211 |
+| Fine | 28.615953° | 28.387421–28.615953° | 0.146942 |
+| Coarse half-step | 31.444870° | 31.342935–31.448861° | 0.156926 |
+| Fine half-step | 24.823254° | 24.823254–25.087146° | 0.157221 |
+
+The native matrix exits 1. The coarse half-step stays in
+band throughout the final window, while both fine cases
+stay below it. Earlier freezing preserves more height than
+freezing at 3 s, but the control removes ongoing material
+response and is not a solver candidate. CUDA and dense
+sampling were untested. The fixture edit was restored.
