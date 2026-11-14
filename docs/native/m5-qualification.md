@@ -13451,3 +13451,25 @@ All four radii increase relative to the original floor coefficient
 and exceed 0.16 m. The coarse nominal final angle enters the band,
 but its persistence check fails. The matrix exits 1. CUDA was
 untested and the temporary fixture edit was restored.
+
+#### Freeze the accepted elastic and plastic state during late settlement
+
+On ec4ac11, snapshot the sparse native column's particle
+material state at the first step starting at or after 3 s.
+After each subsequent accepted step, restore only its elastic
+deformation and log plastic Jacobian from the snapshot.
+Positions, velocities and affine slopes continue to evolve.
+Run `--q-sand-column-long-settle 6`.
+
+| Case | Baseline angle | Frozen-state angle |
+|---|---:|---:|
+| Coarse | 33.842809° | 32.648906° |
+| Fine | 23.424520° | 23.424520° |
+| Coarse half-step | 17.104058° | 17.104058° |
+| Fine half-step | 13.060319° | 13.650498° |
+
+The matrix exits 1. Preventing further changes in the
+scattered stress after 3 s leaves three cases below 30°.
+This freezes all material history, including dilation, and
+does not isolate one constitutive term. CUDA and dense
+sampling were untested. The fixture edit was restored.
