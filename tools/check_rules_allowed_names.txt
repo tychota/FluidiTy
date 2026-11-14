@@ -1,0 +1,2 @@
+# Names that AGENTS.md "Allowed verbs" does not list, approved by the owner.
+# Format: Name  # one-line reason

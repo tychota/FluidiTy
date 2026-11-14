@@ -396,3 +396,18 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 
 - Gate for every commit: not written yet. It is added here together with the gate script.
 - Windows GPU run for the owner: not written yet. It is added here together with its script.
+- Session note, after each commit: `uv run python tools/add_session_note.py --session <url> --models <id>[,<id>...]
+  [<commit>]` writes or replaces the note of `<commit>` (default `HEAD`) in `refs/notes/claude-session`: the lines
+  `session: <url>` and `models: <ids>`, the ids de-duplicated and ordered opus, sonnet, haiku, fable, then others.
+  It refuses an empty model list and a link that is not https. Every clone needs this once, so notes follow amend and
+  rebase and show in `git log`:
+
+  ```sh
+  git config notes.rewriteRef refs/notes/claude-session
+  git config notes.rewriteMode cat_sort_uniq
+  git config --add notes.displayRef refs/notes/claude-session
+  ```
+
+  Notes stay local; they leave the machine only when pushed on purpose with
+  `git push <remote> refs/notes/claude-session:refs/notes/claude-session`. The gate does not check for a note,
+  because it runs before the commit exists.

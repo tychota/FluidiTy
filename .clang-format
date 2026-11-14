@@ -1,0 +1,41 @@
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+ColumnLimit: 120
+IndentWidth: 2
+ContinuationIndentWidth: 4
+UseTab: Never
+InsertNewlineAtEOF: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+AlignAfterOpenBracket: BlockIndent
+AlignOperands: DontAlign
+AlignEscapedNewlines: DontAlign
+AlignTrailingComments:
+  Kind: Never
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortCaseExpressionOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+AttributeMacros: [FLUIDITY_CPU_AND_GPU, __host__, __device__, __global__, __constant__, __shared__, __managed__]
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeBinaryOperators: NonAssignment
+# The guard cpu_only.h is always the first include, so GPU code that reaches a CPU-only header stops there.
+# Then the library headers in angle brackets, then ours. IncludeCategories replaces the Google style's list.
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"fluidity/base/cpu_only\.h"$'
+    Priority: -1
+  - Regex: '^<ext/.*\.h>'
+    Priority: 2
+  - Regex: '^<.*\.h>'
+    Priority: 1
+  - Regex: '^<.*'
+    Priority: 2
+  - Regex: '.*'
+    Priority: 3

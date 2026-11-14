@@ -1,0 +1,60 @@
+# Used by `uv run clang-tidy -p out/build/<preset>` over host sources (.cc and the .h they include).
+# .cu and .cuh files are not tidied. The rules check (tools/check_rules.py) owns names and magic numbers.
+# readability-use-concise-preprocessor-directives is off: the project writes `#if defined(NAME)` for feature and
+# platform conditions, so a condition can grow a second term without changing form, and `#elifdef` is C++23, which
+# shared CPU-and-GPU headers cannot use.
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-pro-type-member-init,
+  misc-const-correctness,
+  misc-include-cleaner,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-math-missing-parentheses,
+  -readability-use-concise-preprocessor-directives
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'native/fluidity/.*'
+FormatStyle: none
+CheckOptions:
+  # Google style as AGENTS.md uses it.
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.UnionCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  readability-identifier-naming.TypeTemplateParameterCase: CamelCase
+  readability-identifier-naming.ValueTemplateParameterCase: CamelCase
+  readability-identifier-naming.ValueTemplateParameterPrefix: k
+  readability-identifier-naming.FunctionCase: CamelCase
+  readability-identifier-naming.MethodCase: CamelCase
+  # Google style: an accessor is named like its field (size(), run_on()), so lower_case methods are allowed too.
+  readability-identifier-naming.MethodIgnoredRegexp: '^[a-z][a-z0-9_]*$'
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.ParameterCase: lower_case
+  readability-identifier-naming.MemberCase: lower_case
+  readability-identifier-naming.PrivateMemberCase: lower_case
+  readability-identifier-naming.PrivateMemberSuffix: _
+  readability-identifier-naming.ConstantCase: CamelCase
+  readability-identifier-naming.ConstantPrefix: k
+  readability-identifier-naming.ConstexprVariableCase: CamelCase
+  readability-identifier-naming.ConstexprVariablePrefix: k
+  readability-identifier-naming.GlobalConstantCase: CamelCase
+  readability-identifier-naming.GlobalConstantPrefix: k
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.EnumConstantPrefix: k
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  # A constant field of a struct is still a field; keep it lower_case.
+  readability-identifier-naming.ConstantMemberCase: lower_case
+  readability-identifier-naming.ConstantParameterCase: lower_case
+  readability-identifier-naming.LocalConstantCase: lower_case
+  readability-identifier-naming.LocalConstantPrefix: ''
+  readability-identifier-naming.ClassConstantCase: CamelCase
+  readability-identifier-naming.ClassConstantPrefix: k
