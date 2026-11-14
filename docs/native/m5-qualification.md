@@ -12809,3 +12809,20 @@ passes at 31.878876°. The six-second angles are 27.767141°,
 half-step and fine half-step order. All four radii pass, but
 all angles and persistence checks fail. The matrix exits 1.
 CUDA and dense sampling were untested. The source edit was restored.
+
+#### Center granular stress, deformation and transport together
+
+On 419d9b7, combine the half-step APIC stress predictor with
+midpoint PIC transport and the midpoint deformation derivative
+on the ordinary granular floor. Keep the stored velocity and
+affine fit at the end of the step. Use the original post-force
+PIC velocity to evaluate the Coulomb gradient projection.
+Build the native dry-scene executable and run it without
+arguments and with `--q-sand-column-long-settle 6`.
+
+The default passes at 32.644255°. The sparse matrix exits 1.
+Its angles are 31.281196°, 19.653738°, 21.210125°, and
+15.335547° in coarse, fine, coarse half-step and fine half-step
+order. The coarse case is in band, the other three are below
+30°, and the fine half-step exceeds the radius limit. CUDA and
+dense sampling were untested. The temporary solver edit was restored.
