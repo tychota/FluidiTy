@@ -1,0 +1,27 @@
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_03f37dd46da4ec 2,4,9-10
+native/fluidity/base/axis.h
+  s_4f0877e2acdcf0::t_3f2d070bc7e5d0 1-58
+native/fluidity/base/axis_test.cc
+  s_4f0877e2acdcf0::t_f348d5902b002b 1-41
+native/fluidity/base/mat3.h
+  s_4f0877e2acdcf0::t_51c7a49101a60c 1-164
+native/fluidity/base/mat3_test.cc
+  s_4f0877e2acdcf0::t_9e099baa9b723e 1-173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "536741b484be1b4007a9131c985b12b2b7feb31c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
