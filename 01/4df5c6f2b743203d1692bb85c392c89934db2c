@@ -1,0 +1,29 @@
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_35aec145b69e95 46,56
+native/fluidity/base/buffer_gpu_test.cc
+  s_4f0877e2acdcf0::t_3fb24e8bd1cf72 9,15,33-36,50,53,67-72,92
+native/fluidity/base/buffer_test.cc
+  s_4f0877e2acdcf0::t_202ed36c9ad917 19,32-36,39,118-119,141,148,155,164,174,180,187,194,199-203,205,210,219,228,241-242,251-252,258-259,266-267,273-274,280-281,288,296
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_c632efd9e0b3b3 7,9-11,13-16,24-32,55-105
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_3c7f165b052cf6 3-5,12-16,19-25,36,38-48,55-57,74-132
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_34aa0f0594a9a4 5-9,11-17,65-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "014df5c6f2b743203d1692bb85c392c89934db2c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
