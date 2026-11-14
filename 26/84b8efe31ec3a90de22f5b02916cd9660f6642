@@ -1,0 +1,25 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_fe52a82576878f 291-296,332-335
+docs/design/programme.md
+  s_4f0877e2acdcf0::t_0133356a9a3a1e 88
+docs/glossary.md
+  s_4f0877e2acdcf0::t_9003f9125632e0 168
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_c09d62379517e9 387-389,392-394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2684b8efe31ec3a90de22f5b02916cd9660f6642",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
