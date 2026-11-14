@@ -13109,3 +13109,20 @@ exit 1. The default angle is 47.949808°. Every dense radius
 decreases from baseline, but only the coarse half-step meets
 the radius limit and its drift exceeds six degrees. CUDA
 was untested. The temporary solver edit was restored.
+
+#### Extend descending-particle affine attenuation to six seconds
+
+Use the same native executable as the preceding descending-only
+control and run `--q-sand-dense-column-long-settle 6`.
+
+| Case | Angle at 6 s | Radius (m) | Final drift |
+|---|---:|---:|---:|
+| Coarse | 35.030341° | 0.162763 | 0.035581° |
+| Fine | 28.953276° | 0.177578 | 0.591381° |
+| Coarse half-step | 26.393717° | 0.160434 | 0.167602° |
+| Fine half-step | 24.637614° | 0.178922 | 0.006262° |
+
+All final drift magnitudes fall below one degree, but both
+half-step angles are below 30° and all radii exceed 0.16 m.
+The nominal coarse angle exceeds 35° by 0.030341°. The native
+matrix exits 1. CUDA was untested for this control.
