@@ -13588,3 +13588,24 @@ half-step angle improvements persist relative to the ordinary
 baseline, but three angles remain below 30° and the coarse
 half-step fails radius. The matrix exits 1. CUDA and dense
 sampling were untested. The temporary fixture was restored.
+
+#### Restore elevated elastic shape at the accepted elastic volume
+
+On 2582abb, for particles elevated at the 0.75 s snapshot,
+rescale the snapshot elastic tensor to the determinant of the
+new accepted tensor after each step. Leave plastic log volume
+unchanged and retain the accepted tensor if the replacement
+fails the granular state check. Build the native dry-scene
+target and run `--q-sand-column-long-settle 6`.
+
+| Case | Attempts | Rejected | Final angle |
+|---|---:|---:|---:|
+| Coarse | 103637 | 50386 | 33.842356° |
+| Fine | 124320 | 50236 | 23.423281° |
+| Coarse half-step | 252045 | 251497 | 17.104054° |
+| Fine half-step | 309120 | 240727 | 12.756178° |
+
+The matrix exits 1. Rejection ranges from 40.4% to 99.8%,
+so this experiment cannot determine whether preserving shape
+would retain height if all replacements were admissible.
+CUDA and dense sampling were untested. The fixture was restored.
