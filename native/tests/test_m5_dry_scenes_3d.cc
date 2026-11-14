@@ -821,6 +821,12 @@ bool TestUncutStressWork() {
   constexpr double volume = 0.5;
   const auto view = grid->view();
   std::vector<double> forces(view.face_count());
+  double undersized_force = 7;
+  const auto invalid_extent =
+      fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, {&undersized_force, 1});
+  if (invalid_extent.code() != absl::StatusCode::kInvalidArgument || undersized_force != 7) {
+    return false;
+  }
   const auto deposited = fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, forces);
   if (!deposited.ok()) {
     return false;

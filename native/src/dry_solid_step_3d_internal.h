@@ -38,7 +38,7 @@ Mat3 ProjectStationaryFloorVelocityGradient3D(
 );
 
 // Accumulates one particle's uncut reference-volume stress into private step scratch.
-// The caller provides one initialized force slot per owned face. On failure discard scratch.
+// Requires one initialized force slot per owned face. An extent or stencil error leaves force slots unchanged.
 absl::Status AccumulateDrySolidStress3D(
     const SparseMacGrid3D& grid,
     Vec3 world_position,
