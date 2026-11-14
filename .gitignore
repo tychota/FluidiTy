@@ -1,0 +1,11 @@
+# Build outputs.
+out/
+.venv/
+__pycache__/
+docs/method-paper/**/*.pdf
+
+# Operating system files.
+.DS_Store
+
+# Local working notes of the coding agents; never committed.
+.superpowers/
