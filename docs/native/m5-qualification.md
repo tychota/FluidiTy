@@ -13728,3 +13728,22 @@ below the aligned results in the registered recheck. The smaller
 timesteps still lose angle during the extended run. Radius,
 kinetic energy and short drift pass throughout. CUDA and dense
 sampling were untested. The fixture was restored.
+
+
+#### Smooth the force mass floor without changing its scale
+
+On 290721a, replace max(face mass, minimum force mass)
+with hypot(face mass, minimum force mass) in the force
+acceleration denominator. Keep the minimum force mass at
+0.0001 times the minimum particle mass. Leave the transfer
+normalization and wall updates unchanged. Run the native
+`--q-sand-column-long-settle` selector at endpoints 1.5 and 6.
+
+In coarse, fine, coarse half-step and fine half-step order,
+the angles are 29.113580°, 26.762277°, 29.007095° and
+27.034087° at 1.5 s, and 33.842902°, 23.424453°, 17.105240°
+and 13.061550° at 6 s. The 1.5 s results move by less than
+0.001° from the aligned registered recheck. Only the coarse
+nominal case meets the 6 s angle and persistence criteria.
+Both commands exit 1. CUDA and dense sampling were untested.
+The temporary source edit was restored.
