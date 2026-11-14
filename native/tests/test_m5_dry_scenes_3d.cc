@@ -440,9 +440,22 @@ bool TestScene(
   const bool radius_in_range = release_cone || (maximum_radius > 0.10 && maximum_radius < 0.16);
   const bool kinetic_energy_in_range = kinetic_energy < 0.01;
   const bool persistence_required = extended_column && time >= 3;
-  const bool persistence_in_range = !persistence_required
-      || (long_window_sample_time > 0 && long_window_angle >= 30 && long_window_angle <= 35
-          && std::abs(envelope_angle - long_window_angle) <= 2);
+  const bool has_persistence_sample = long_window_sample_time > 0;
+  const bool persistence_sample_in_range = long_window_angle >= 30 && long_window_angle <= 35;
+  const double persistence_drift = std::abs(envelope_angle - long_window_angle);
+  constexpr double kPersistenceDriftLimitDegrees = 2;
+  const bool persistence_drift_in_range = persistence_drift <= kPersistenceDriftLimitDegrees;
+  const bool persistence_in_range =
+      !persistence_required || (has_persistence_sample && persistence_sample_in_range && persistence_drift_in_range);
+  if (persistence_required) {
+    std::printf(
+        "sand persistence sample=%s sample_angle=%s drift=%s drift_limit_degrees=%.1f\n",
+        has_persistence_sample ? "present" : "missing",
+        has_persistence_sample ? (persistence_sample_in_range ? "pass" : "fail") : "not checked",
+        has_persistence_sample ? (persistence_drift_in_range ? "pass" : "fail") : "not checked",
+        kPersistenceDriftLimitDegrees
+    );
+  }
   const bool passed =
       angle_in_range && short_drift_in_range && radius_in_range && kinetic_energy_in_range && persistence_in_range;
   if (!passed) {
