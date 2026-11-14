@@ -1,0 +1,35 @@
+.gitattributes
+  s_4f0877e2acdcf0::t_7d7ee223ada776 1-2
+README.md
+  s_4f0877e2acdcf0::t_f3d11eb7622ae9 1-17
+docs/design/programme.md
+  s_4f0877e2acdcf0::t_731609331ba8c7 1-363
+.gitignore
+  s_4f0877e2acdcf0::t_e014d60962b556 1-11
+docs/glossary.md
+  s_4f0877e2acdcf0::t_b2240b3f66d2a1 123
+  s_4f0877e2acdcf0::t_70db351d5e2c2d 1-122,124-199
+AGENTS.md
+  s_4f0877e2acdcf0::t_e50250a7464a1b 268
+  s_4f0877e2acdcf0::t_44cccddee7800a 219-220
+  s_4f0877e2acdcf0::t_a5b6047958f21f 1-102,105,107-218,221-267,269-271,274-288,290-372
+  s_4f0877e2acdcf0::t_a0395cb8fd0c8b 103-104,106
+  s_4f0877e2acdcf0::t_6400ba9f7ccda6 272-273
+  s_4f0877e2acdcf0::t_286c367cf85b3e 289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "789e3134e82ad90c503c14678f03491fb46e0c5c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
