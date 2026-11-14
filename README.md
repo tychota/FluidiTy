@@ -61,8 +61,14 @@ checkout, list the volumes with `docker volume ls --filter name=fluidity-cuda-ou
 `docker volume rm <name>`.
 
 The CUDA presets compile for RTX 30, 40 and 50 GPUs. The owner's RTX 5060 Ti is the card for the hardware run,
-which `docs/gpu-runs.md` will record; until then no card is tested. RTX 30 and 40 are compiled for, unverified. On
-a machine with a GPU, run the GPU tests with `ctest --preset linux-release-cuda -L '^gpu$'` (labels are regular
+which `docs/gpu-runs.md` will record; until then no card is tested. RTX 30 and 40 are compiled for, unverified.
+That file also says how to run it on Windows:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File tools/run_gpu_tests.ps1
+```
+
+On a machine with a GPU, run the GPU tests with `ctest --preset linux-release-cuda -L '^gpu$'` (labels are regular
 expressions, and a bare `gpu` also matches `no_gpu`).
 
 Stage your changes first: the full gate that every commit passes, `uv run python tools/check_commit.py`, refuses

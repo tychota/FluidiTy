@@ -476,7 +476,20 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   `120-virtual`). The owner's hardware run is on an RTX 5060 Ti; it is not recorded yet in `docs/gpu-runs.md`, so
   even that card is untested today. RTX 30 and 40 are compiled for, unverified. On a machine with a GPU, the tests
   that need it are `ctest --preset linux-release-cuda -L '^gpu$'` (a bare `-L gpu` would also match `no_gpu`).
-- Windows GPU run for the owner: not written yet. It is added here together with its script.
+- Test labels: `cpu` tests run everywhere, `no_gpu` tests run only in the CUDA container (a machine without a GPU,
+  because they assert that no GPU is usable), and `gpu` tests run only on hardware.
+- GPU run for the owner, on Windows with an NVIDIA GPU, in PowerShell 7, from the repository root:
+  `pwsh -NoProfile -ExecutionPolicy Bypass -File tools/run_gpu_tests.ps1`. It builds the preset
+  `windows-release-cuda`, runs the `cpu` tests (never the `no_gpu` tests, which fail on a machine with a GPU), runs
+  the `gpu` tests twice and compares the result digests the two runs write (`docs/gpu-runs.md`), runs each `gpu`
+  test program under `compute-sanitizer --tool memcheck`, and prints a block
+  of ten lines (a title and nine lines) ending in `result: PASS` or `result: FAIL`; the owner pastes that block
+  back. Its full logs are in `out/gpu-run/<UTC time>/`. The script selects the GPU tests with `ctest -L '^gpu$'`: a
+  label is a regular expression, so a bare `-L gpu` would also run the `no_gpu` tests. The script was parsed with
+  PowerShell 7.4 in a Linux container and exercised there with stand-in tools; it has never run on Windows or
+  against a GPU, so its first real run is the one on the owner's machine. A module's row in `docs/gpu-runs.md` is
+  added in that module's hand-over task, as `compiled, not run`, and changes only when a run recorded by this
+  script says otherwise.
 - Session note, after each commit: `uv run python tools/add_session_note.py --session <url> --models <id>[,<id>...]
   [<commit>]` writes or replaces the note of `<commit>` (default `HEAD`) in `refs/notes/claude-session`: the lines
   `session: <url>` and `models: <ids>`, the ids de-duplicated and ordered opus, sonnet, haiku, fable, then others.
