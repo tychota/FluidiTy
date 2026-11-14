@@ -13511,3 +13511,19 @@ passes and three cases remain below 30°. The command exits 1.
 The height preservation from freezing the entire material state
 does not occur when only the initial floor cohort is frozen.
 CUDA and dense sampling were untested. The fixture edit was restored.
+
+#### Freeze history only for particles elevated at the collapse sample
+
+On 1b46e01, repeat the 0.75 s snapshot with its membership
+reversed. Restore material history only for particles whose
+snapshot y exceeds 1e-8 m, after each subsequent accepted step.
+Run the native target with `--q-sand-column-long-settle 6`.
+
+The final angles are 33.852974°, 28.615953°, 31.444870° and
+24.823254° in coarse, fine, coarse half-step and fine half-step
+order. All final radii, angles and window extrema match the
+all-particle freeze to printed precision. The coarse cases pass,
+both fine cases fail, and the command exits 1. The elevated
+cohort alone reproduces the height preservation in this control.
+This freeze removes ongoing constitutive response. CUDA and
+dense sampling were untested. The fixture edit was restored.
