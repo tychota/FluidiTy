@@ -13771,3 +13771,23 @@ All four commands exit 1. The default angle is 40.416202°.
 The fine nominal sparse run alone passes the 6 s angle
 and persistence criteria. All dense radii fail. CUDA was
 untested. The temporary solver edit was restored.
+
+
+#### Check physical time similarity of the ordinary sparse sand cases
+
+On 0d20fde, halve the physical step duration while keeping the
+nominal step sequence and observation indices. Quadruple both
+Lamé moduli and gravity, double the momentum quantum, and keep
+mass, geometry and friction fixed. Compare kinetic energy in
+the original time units and integrate the gravity impulse over
+the rescaled physical duration.
+
+Run the native `--q-sand-column-long-settle` selector at 1.5
+and 6 nominal seconds. Both commands exit 1 at the angle gate.
+All eight endpoint angles and all four six-second persistence
+ranges match the aligned native baseline to the printed six
+decimal places. This confirms the tested creep is invariant to
+the absolute time and velocity scales under this simultaneous
+rescaling. It persists when the ratios of the step duration to
+the elastic and gravitational time scales stay fixed. CUDA and
+dense sampling were untested. The fixture was restored.
