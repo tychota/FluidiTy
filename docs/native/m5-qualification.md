@@ -12826,3 +12826,21 @@ Its angles are 31.281196°, 19.653738°, 21.210125°, and
 order. The coarse case is in band, the other three are below
 30°, and the fine half-step exceeds the radius limit. CUDA and
 dense sampling were untested. The temporary solver edit was restored.
+
+#### Sample gradients at each swept granular segment midpoint
+
+On 7be0c6d, on ordinary granular floor hits, gather the frozen
+post-force grid derivative at the midpoint of the incoming
+sweep segment and at the midpoint of the projected remainder.
+Use the original velocity for the Coulomb derivative and keep
+the original sweep, stress, and no-hit update.
+Build the native dry-scene executable and run it without
+arguments and with `--q-sand-column-long-settle 6`.
+
+The default passes at 32.825894°. The six-second sparse angles
+are 33.842812°, 23.424489°, 17.104056° and 13.060318° in coarse,
+fine, coarse half-step and fine half-step order. The matrix
+exits 1. The largest change from baseline is 0.000031°.
+Spatial centering on the hit path does not materially change
+the observed flattening. CUDA and dense sampling were untested.
+The temporary solver edit was restored.
