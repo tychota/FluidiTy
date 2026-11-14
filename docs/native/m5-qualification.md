@@ -12884,3 +12884,25 @@ and so does the half-step angle. The result confirms a
 grid-width dependence over this interval. The original coarse
 nominal failure remains. CUDA and dense sampling were untested.
 Both temporary edits were restored.
+
+#### Extend intermediate-grid resident compression to twelve seconds
+
+On ea88f37, repeat the two preceding intermediate-grid cases
+with the same resident compression edit and change both
+diagnostic TestScene endpoints to 12 s. Build the native dry
+scene executable and use the same temporary selector
+`--q-sand-column-long-settle 6`; the selected cases explicitly
+override the endpoint to 12 s.
+
+| Timestep (s) | Angle at 6 s | Angle at 12 s | Radius (m) | Final drift |
+|---|---:|---:|---:|---:|
+| 0.001875 | 34.333569° | 34.330527° | 0.143437 | 0.002197° |
+| 0.0009375 | 34.041633° | 31.731821° | 0.146712 | 0.246440° |
+
+The native command exits 0. Both angles remain in band and
+both radii agree with their six-second values at printed
+precision. The half-step angle drops 2.31° between endpoints,
+so the twelve-second pass is specific to the measured window.
+This is an additional sparse control at h = 0.06875 m. The
+original coarse and fine qualification cases are still open.
+CUDA and dense sampling were untested. Both edits were restored.
