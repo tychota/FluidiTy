@@ -13178,3 +13178,25 @@ dense three-second selector was temporarily limited to
 this case. The angle remains 29.703637° and the native
 command exits 1. The instrumentation was restored. Other
 widths, timesteps and CUDA were untested.
+
+#### Reduce the horizontal stress kick above one cell
+
+On 4daaecd, at ordinary granular stress scatter, multiply the
+x and z rows by 0.75 for particles at least one cell width
+above the floor. Keep the vertical row, accepted material
+state, transfer, and sweep unchanged. The diagnostic scatter
+tensor need not be symmetric and does not replace the
+constitutive model.
+
+| Case | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|
+| Coarse | 29.854496° | 0.168938 |
+| Fine | 27.556813° | 0.181220 |
+| Coarse half-step | 22.365907° | 0.171207 |
+| Fine half-step | 21.172541° | 0.184822 |
+
+Run the native dry-scene target without arguments and with
+`--q-sand-dense-column-long-settle 3`. The default passes at
+33.939206°. All dense angles and radii miss their bounds.
+Radii decrease by 0.84–1.77 mm from baseline and the dense
+command exits 1. CUDA was untested. The solver edit was restored.
