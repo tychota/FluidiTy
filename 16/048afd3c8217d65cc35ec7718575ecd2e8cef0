@@ -1,0 +1,45 @@
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_d84b5219678b13 1436,1446,1449,1457,1464,2044-2045,2051-2054,2060,2076-2080,2381-2469,2476-2477,2480-2483,2485,2490-2529,2535-2554,2557-2586,2590-2603,2606-2646
+  s_4f0877e2acdcf0::t_18861bdb9b8142 893,1433-1435,1444,1447-1448,1462,1826-1877,1906-1921,1954-2038,2072,2074-2075
+  s_4f0877e2acdcf0::t_ccd7c5f094fa82 1878-1905
+  s_4f0877e2acdcf0::t_546b6ae49fd42a 9-11,891-892,1427-1429,1432,1439,1445,1450-1456,1458-1461,1463,2039-2043,2046-2050,2055-2059,2061-2071,2073,2081-2083,2470-2475,2478-2479,2484,2486-2489,2530-2534,2555-2556,2589,2604-2605,2649-2736,2841-2863,2867-2895,2898-2899
+  s_078d1bd3e9d58c::t_7061602ec9b6ae 1922-1953,2587-2588,2647-2648,2737-2840,2864-2866,2896-2897
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_a7e1c9e9140069 26,781-791,802-815,818-856,862-873,876-887,908,913-914,919
+  s_4f0877e2acdcf0::t_c3243ecc4b7e48 27-31,41-43,47-55,897-898,909,918,962-963,971-972,993-994,1011,1017,1023-1025
+  s_4f0877e2acdcf0::t_10ef40c69fc377 792-801,816-817,857-861,874-875,949-958
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_e5e8965d253763 31
+  s_4f0877e2acdcf0::t_7637556ccd167f 32-33
+  s_4f0877e2acdcf0::t_0c78620ae9d47c 71,76
+  s_078d1bd3e9d58c::t_d9a57893d2f454 65-69,72-75
+docs/glossary.md
+  s_4f0877e2acdcf0::t_3d1e2f309ec79e 84-85
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_cd93d1e1240d46 11-12,25-26,62-66,73-74,77-78,87-89,97,100
+  s_4f0877e2acdcf0::t_a390a73db2c162 67-70,98-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "16048afd3c8217d65cc35ec7718575ecd2e8cef0",
+  "prompts": {},
+  "sessions": {
+    "s_078d1bd3e9d58c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ad6e673554d296874",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
