@@ -889,26 +889,33 @@ TEST(FindFirstHit, Success_WritesNoCloseCall) {
   EXPECT_EQ(first_hit.solid_index, 0U);
 }
 
-TEST(FindFirstHit, CloseCall_LeavesFirstHitUnchanged) {
+TEST(FindFirstHit, CloseCall_NamesTurningSolid) {
   // A particle at rest 2^-17 m above the top face of a box turning at 1 rad/s, on its turn axis: the gap never
   // changes, but each advance of the stepping search is only about Sqrt(2 g / K), so the search runs out of advances
-  // before the end of the sweep, the step is too close to call, and the first hit keeps what it held.
+  // before the end of the sweep and the step is too close to call. The first hit then names the box, index 1 after a
+  // fixed flat solid far below, and holds nothing else.
   const std::array solids = {
+      ToSolid(
+          FlatSolid{.point_on_surface = {.x = 0, .y = 0, .z = -5}, .normal_out_of_solid = {.x = 0, .y = 0, .z = 1}},
+          kNoMotion,
+          1
+      ),
       ToSolid(
           Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
           {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}},
-          1
+          2
       ),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  FirstHit first_hit = {.elapsed = 7, .solid_index = 3, .at_hit = {}};
+  FirstHit first_hit = {.elapsed = 7, .solid_index = 3, .at_hit = {.distance = 7, .normal_out_of_solid = {}}};
   ContactCloseCall close_call = ContactCloseCall::kNone;
   const ContactError error =
       FindFirstHit(inputs, {.x = 0, .y = 0, .z = 0.5 + 0x1p-17}, kAtRest, 0, 1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kTooCloseToCall);
   EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
-  EXPECT_EQ(first_hit.elapsed, 7);
-  EXPECT_EQ(first_hit.solid_index, 3U);
+  EXPECT_EQ(first_hit.solid_index, 1U);
+  EXPECT_EQ(first_hit.elapsed, 0);
+  EXPECT_EQ(first_hit.at_hit.distance, 0);
 }
 
 // --- A sphere ---
@@ -1963,6 +1970,7 @@ TEST(FindFirstHit, TurningBoxHoverOnSpinAxisBeyondAdvanceLimit_IsCloseCall) {
       FindFirstHit(inputs, {.x = 0, .y = 0, .z = 0.5 + 0x1p-17}, kAtRest, 0, 1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kTooCloseToCall);
   EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
+  EXPECT_EQ(first_hit.solid_index, 0U);
 }
 
 TEST(FindFirstHit, HeadOnSlowlyTurningBox_HitsJustBeforeGapOverSpeed) {
@@ -2062,9 +2070,10 @@ Solid BuildPlateWithNormalZ(Vec3 angular_velocity) {
 
 TEST(FindFirstHit, SpinningFlatSolid_IsClosedForm) {
   // A flat solid is unbounded sideways, so a spin about its normal leaves its shape as it is (plan decision P17): it
-  // is not a turning solid, and the closed form gives the bits of the floor without the spin.
+  // is not a turning solid, and the closed form gives the bits of the floor without the spin. 1 rad/s keeps the turn
+  // within kMaxTurnPerStep, so a spin counted as a turn shows here as another hit time, not as a refused solid.
   const Path path = {.start = {.x = 0.3, .y = 0, .z = 0.5}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1};
-  const std::array spinning = {BuildSpinningFloor(5)};
+  const std::array spinning = {BuildSpinningFloor(1)};
   const FirstHit first_hit = FindHit(BuildInputs(spinning, 1), path);
   const std::array still = {BuildSpinningFloor(0)};
   const FirstHit still_hit = FindHit(BuildInputs(still, 1), path);
@@ -2087,9 +2096,9 @@ TEST(FindFirstHit, RestingOnSpinningFlatSolid_TouchingRuleFrees) {
 }
 
 TEST(FindFirstHit, SpinningPlateAboutNormal_IsClosedForm) {
-  // A plate is unbounded sideways too, so its spin about the normal is not a turn either.
+  // A plate is unbounded sideways too, so its spin about the normal is not a turn either (1 rad/s, as above).
   const Path path = {.start = {.x = 0.3, .y = 0, .z = 0.5}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1};
-  const std::array spinning = {BuildPlateWithNormalZ({.x = 0, .y = 0, .z = 5})};
+  const std::array spinning = {BuildPlateWithNormalZ({.x = 0, .y = 0, .z = 1})};
   const FirstHit first_hit = FindHit(BuildInputs(spinning, 1), path);
   const std::array still = {BuildPlateWithNormalZ({})};
   const FirstHit still_hit = FindHit(BuildInputs(still, 1), path);
@@ -2122,6 +2131,130 @@ TEST(FindFirstHit, PlateTurningAboutAxisInItsPlane_IsTurning) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+}
+
+// The tilted normal {0, sin 0.3, cos 0.3}, on which a spin about the normal leaves a part across it of a few rounding
+// units at most rates (9e-16 rad/s at 5 rad/s), and the two unit directions {1, 0, 0} and {0, cos 0.3, -sin 0.3} in
+// its plane.
+Vec3 ComputeTiltedNormal() {
+  return {.x = 0, .y = std::sin(0.3), .z = std::cos(0.3)};
+}
+Vec3 ComputeAlongTiltedPlane() {
+  return {.x = 0, .y = std::cos(0.3), .z = -std::sin(0.3)};
+}
+
+// The flat solid through the origin with normal ComputeTiltedNormal(), spinning about that normal at spin_rate rad/s.
+Solid BuildSpinningTiltedFloor(double spin_rate) {
+  return ToSolid(
+      FlatSolid{.point_on_surface = {}, .normal_out_of_solid = ComputeTiltedNormal()},
+      {.linear_velocity = {}, .angular_velocity = spin_rate * ComputeTiltedNormal()},
+      1
+  );
+}
+
+TEST(FindFirstHit, FallingOnFastSpinningTiltedFloor_IsClosedForm) {
+  // 100 rad/s about the tilted normal in a step of 0.1 s, 10 rad of spin: the part across the normal that rounding
+  // leaves is far below kNegligibleTurnShare, so the floor does not turn, and the closed form gives the bits of the
+  // still floor: a hit about (0.5 - tol) / 10 s in.
+  const Path path = {.start = 0.5 * ComputeTiltedNormal(), .velocity = -10 * ComputeTiltedNormal(), .duration = 0.1};
+  const std::array spinning = {BuildSpinningTiltedFloor(100)};
+  const std::array still = {BuildSpinningTiltedFloor(0)};
+  const FirstHit spinning_hit = FindHit(BuildInputs(spinning, 0.1), path);
+  const FirstHit still_hit = FindHit(BuildInputs(still, 0.1), path);
+  EXPECT_EQ(spinning_hit.solid_index, 0U);
+  EXPECT_EQ(spinning_hit.elapsed, still_hit.elapsed);
+  EXPECT_NEAR(spinning_hit.elapsed, (0.5 - kTolerance) / 10, 1e-15);
+  EXPECT_EQ(spinning_hit.at_hit.face, SolidFace::kHighZ);
+}
+
+TEST(FindFirstHit, RestingOnFastSpinningTiltedFloor_TouchingRuleFrees) {
+  // At rest one tolerance above the tilted floor spinning at 100 rad/s: the touching rule frees it, with no close call.
+  // Counted as turning on its rounding bits, the floor would hit it at 0 in every sweep.
+  const std::array solids = {BuildSpinningTiltedFloor(100)};
+  FirstHit first_hit;
+  ContactCloseCall close_call = ContactCloseCall::kTooManyHits;
+  const Vec3 start = Vec3{.x = 0.3, .y = 0, .z = 0} + kTolerance * ComputeTiltedNormal();
+  const ContactError error = FindFirstHit(BuildInputs(solids, 0.1), start, kAtRest, 0, 0.1, &first_hit, &close_call);
+  EXPECT_EQ(error, ContactError::kNone);
+  EXPECT_EQ(close_call, ContactCloseCall::kNone);
+  ExpectFree(first_hit);
+}
+
+TEST(FindFirstHit, SlidingOnFastSpinningTiltedFloor_TouchingRuleFrees) {
+  // Sliding along the spinning tilted floor at 3 m/s in each of two directions of its plane, one tolerance above it,
+  // over 0.1 s and over 1/240 s: free by the touching rule, never a close call (the stepping search gave close calls
+  // on every such path).
+  const std::array solids = {BuildSpinningTiltedFloor(100)};
+  const Vec3 start = Vec3{.x = 0.3, .y = 0, .z = 0} + kTolerance * ComputeTiltedNormal();
+  for (const Vec3 direction : {Vec3{.x = 1, .y = 0, .z = 0}, ComputeAlongTiltedPlane()}) {
+    for (const double step_duration : {0.1, 1.0 / 240}) {
+      FirstHit first_hit;
+      ContactCloseCall close_call = ContactCloseCall::kTooManyHits;
+      const ContactError error = FindFirstHit(
+          BuildInputs(solids, step_duration),
+          start,
+          3 * direction,
+          0,
+          step_duration,
+          &first_hit,
+          &close_call
+      );
+      EXPECT_EQ(error, ContactError::kNone) << step_duration;
+      EXPECT_EQ(close_call, ContactCloseCall::kNone) << step_duration;
+      ExpectFree(first_hit);
+    }
+  }
+}
+
+TEST(FindFirstHit, TiltedPlateTurningAboutAxisInItsPlane_IsTurning) {
+  // The tilted plate turning at 1 rad/s about {1, 0, 0}, an axis in its plane: a real turn, so the resting particle
+  // is hit at 0 (a turning solid has no touching rule).
+  const std::array solids = {
+      ToSolid(
+          Plate{.center = {}, .normal = ComputeTiltedNormal(), .half_thickness = 0.01},
+          {.linear_velocity = {}, .angular_velocity = {.x = 1, .y = 0, .z = 0}},
+          1
+      ),
+  };
+  const Path path = {
+      .start = Vec3{.x = 0.3, .y = 0, .z = 0} + (0.01 + kTolerance) * ComputeTiltedNormal(),
+      .velocity = {.x = 1, .y = 0, .z = 0},
+      .duration = 0.1,
+  };
+  const FirstHit first_hit = FindHit(BuildInputs(solids, 0.1), path);
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.elapsed, 0);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+}
+
+TEST(ComputeIsTurningSolid, GeneratedSpinsAboutNormal_AreNeverTurning) {
+  // 20000 flat solids and plates, alternately, with random normals (three NextSigned(), drawn again while their
+  // length is below 0.1, then Normalized) spinning about that normal at 10^(-3 + 6 Next()) rad/s: none may turn,
+  // although the part across the normal computes to more than zero on most of them (counted, so the set bites).
+  CaseGenerator generator;
+  int turning_count = 0;
+  int rounded_across_count = 0;
+  constexpr int kSolidCount = 20000;
+  for (int solid_index = 0; solid_index < kSolidCount; ++solid_index) {
+    Vec3 direction{};
+    do {
+      direction = Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+    } while (math::Length(direction) < 0.1);
+    const Vec3 normal = math::Normalized(direction);
+    const double spin_rate = std::pow(10.0, -3 + 6 * generator.Next());  // rad/s
+    const SolidMotion spin = {.linear_velocity = {}, .angular_velocity = spin_rate * normal};
+    const Solid solid = solid_index % 2 == 0
+        ? ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, spin, 1)
+        : ToSolid(Plate{.center = {}, .normal = normal, .half_thickness = 0.01}, spin, 1);
+    const std::array solids = {solid};
+    turning_count += ComputeIsTurningSolid(BuildInputs(solids, 0.1), 0) ? 1 : 0;
+    const Vec3 own_z_axis = ToColumn(solid.pose_at_step_start.axes, 2);
+    const Vec3 rounded_across = spin.angular_velocity - math::Dot(spin.angular_velocity, own_z_axis) * own_z_axis;
+    rounded_across_count += math::Length(rounded_across) > 0 ? 1 : 0;
+  }
+  EXPECT_EQ(turning_count, 0);
+  EXPECT_GT(rounded_across_count, kSolidCount / 3);
+  testing::Test::RecordProperty("rounded_across_count", rounded_across_count);
 }
 
 TEST(FindFirstHit, TurningSolidCloseCallAfterEarlierHit_IsHit) {
@@ -2176,6 +2309,55 @@ TEST(FindFirstHit, TurningSolidHitBeforeClosedFormHit_Wins) {
   EXPECT_EQ(first_hit.solid_index, 1U);
   EXPECT_NEAR(first_hit.elapsed, 0.3 + std::acos((0.5 + kTolerance) / 0.6), kTurningHitTimeTolerance);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+}
+
+TEST(FindFirstHit, TurningSolidTiesClosedFormSolidAtZero_LowerIndexWins) {
+  // Solid 0, a turning box, holds the particle at rest on its face kHighX (distance tol): a hit at 0 by the stepping
+  // search, which runs second. Solid 1, a flat solid filling x <= 0.6, holds the same particle 0.1 m inside: a hit at 0
+  // by its closed form, which runs first. Equal times keep the lower index whatever the order of the search.
+  const std::array solids = {
+      BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}}),
+      ToSolid(
+          FlatSolid{.point_on_surface = {.x = 0.6, .y = 0, .z = 0}, .normal_out_of_solid = {.x = 1, .y = 0, .z = 0}},
+          kNoMotion,
+          2
+      ),
+  };
+  const FirstHit first_hit = FindHit(
+      BuildInputs(solids, 0.1),
+      {.start = {.x = 0.5 + kTolerance, .y = 0, .z = 0}, .velocity = kAtRest, .duration = 0.1}
+  );
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.elapsed, 0);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+}
+
+TEST(ComputeEarlierHit, EqualTimes_LowerIndexWins) {
+  const FirstHit kept = {.elapsed = 0.5, .solid_index = 1, .at_hit = {}};
+  EXPECT_EQ(ComputeEarlierHit(kept, {.elapsed = 0.5, .solid_index = 0, .at_hit = {}}).solid_index, 0U);
+  EXPECT_EQ(ComputeEarlierHit(kept, {.elapsed = 0.5, .solid_index = 2, .at_hit = {}}).solid_index, 1U);
+  EXPECT_EQ(ComputeEarlierHit(kept, {.elapsed = 0.25, .solid_index = 2, .at_hit = {}}).solid_index, 2U);
+  EXPECT_EQ(ComputeEarlierHit(kept, FirstHit{}).solid_index, 1U);
+  EXPECT_EQ(ComputeEarlierHit(FirstHit{}, kept).solid_index, 1U);
+}
+
+TEST(ComputeSecondOrderAdvance, LargeRateTinyGap_RootWithoutCancellation) {
+  // gdot = 1, K = 1 and g = 2^-60: the root is gdot + Sqrt(gdot^2 + 2 g K) = 2 exactly in doubles. The form
+  // 2 g / (Sqrt(...) - gdot) subtracts equal numbers there and gives an infinite advance.
+  EXPECT_EQ(ComputeSecondOrderAdvance({.gap = 0x1p-60, .gap_rate = 1, .gap_curvature_bound = 1}, 10), 2);
+  EXPECT_EQ(ComputeSecondOrderAdvance({.gap = 0x1p-32, .gap_rate = 1, .gap_curvature_bound = 1}, 10), 2 + 0x1p-32);
+}
+
+TEST(ComputeSecondOrderAdvance, NoCurvature_GapOverClosingSpeedOrWholeSweep) {
+  // K = 0: a closing gap is reached at g / -gdot; a gap that does not close takes the whole sweep.
+  EXPECT_EQ(ComputeSecondOrderAdvance({.gap = 1, .gap_rate = -2, .gap_curvature_bound = 0}, 10), 0.5);
+  EXPECT_EQ(ComputeSecondOrderAdvance({.gap = 1, .gap_rate = 0, .gap_curvature_bound = 0}, 10), 10);
+  EXPECT_EQ(ComputeSecondOrderAdvance({.gap = 1, .gap_rate = 3, .gap_curvature_bound = 0}, 10), 10);
+}
+
+TEST(ComputeSecondOrderAdvance, UnderflowedRoot_GivesNoAdvance) {
+  // 2 K g = 2^-1199 underflows to 0 with gdot = 0: no second-order advance, so the first-order one stands.
+  EXPECT_EQ(ComputeSecondOrderAdvance({.gap = 0x1p-600, .gap_rate = 0, .gap_curvature_bound = 0x1p-600}, 10), 0);
 }
 
 TEST(HasConvexDistance, TurningShapesYes_DomainBoxNo) {

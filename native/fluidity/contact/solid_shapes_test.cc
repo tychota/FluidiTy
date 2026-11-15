@@ -258,6 +258,60 @@ TEST(ComputeShapeTurningAngularVelocity, FlatSolidAndPlateSpinAboutNormal_IsNoTu
   ExpectSameVec3(ComputeShapeTurningAngularVelocity(box), {.x = 2, .y = 0, .z = 100});
 }
 
+// The part of an angular velocity across an own z axis, computed as ComputeShapeTurningAngularVelocity computes it
+// before it drops rounding.
+Vec3 ComputeRoundedPartAcross(Vec3 angular_velocity, Vec3 own_z_axis) {
+  return angular_velocity - math::Dot(angular_velocity, own_z_axis) * own_z_axis;
+}
+
+TEST(ComputeShapeTurningAngularVelocity, SpinAboutTiltedNormal_IsNoTurn) {
+  // Spins about tilted normals at several rates. In exact arithmetic the part across the normal is zero; rounded,
+  // it is a few rounding units on some of them (checked below), which must not count as a turn.
+  const std::array normals = {
+      math::Normalized({.x = 1, .y = 2, .z = 3}),
+      Vec3{.x = 0, .y = std::sin(0.3), .z = std::cos(0.3)},
+      math::Normalized({.x = -0.7, .y = 0.2, .z = 0.4}),
+      math::Normalized({.x = 0.36, .y = 0.48, .z = -0.8}),
+  };
+  int rounded_across_count = 0;
+  for (const Vec3 normal : normals) {
+    for (const double spin_rate : {1.0, 5.0, 100.0, 1e4}) {
+      const SolidMotion spin = BuildTurning(spin_rate * normal);
+      const Solid floor = ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, spin, 6);
+      const Solid plate = ToSolid(Plate{.center = {}, .normal = normal, .half_thickness = 0.01}, spin, 8);
+      ExpectSameVec3(ComputeShapeTurningAngularVelocity(floor), {.x = 0, .y = 0, .z = 0});
+      ExpectSameVec3(ComputeShapeTurningAngularVelocity(plate), {.x = 0, .y = 0, .z = 0});
+      const Vec3 own_z_axis = ToColumnZ(floor.pose_at_step_start.axes);
+      rounded_across_count += math::Length(ComputeRoundedPartAcross(spin.angular_velocity, own_z_axis)) > 0 ? 1 : 0;
+    }
+  }
+  // The review's cases: {0, sin 0.3, cos 0.3} at 5 rad/s and Normalized({1, 2, 3}) at 100 rad/s round to a part
+  // across of 9e-16 and 1.6e-14 rad/s.
+  EXPECT_GT(math::Length(ComputeRoundedPartAcross(5 * normals[1], normals[1])), 0);
+  EXPECT_GT(math::Length(ComputeRoundedPartAcross(100 * normals[0], normals[0])), 0);
+  EXPECT_GE(rounded_across_count, 4);
+}
+
+// A flat solid with normal {0, sin 0.3, cos 0.3} spinning at 100 rad/s about it, plus across_share * 100 rad/s about
+// {1, 0, 0}, an axis in its plane.
+Solid BuildTiltedFloorWithPartAcross(double across_share) {
+  const Vec3 normal = {.x = 0, .y = std::sin(0.3), .z = std::cos(0.3)};
+  const Vec3 angular_velocity = 100 * normal + Vec3{.x = across_share * 100, .y = 0, .z = 0};
+  return ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, BuildTurning(angular_velocity), 6);
+}
+
+TEST(ComputeShapeTurningAngularVelocity, PartAcrossJustBelowShare_IsNoTurn) {
+  // 2^-47 across the normal, half of kNegligibleTurnShare (2^-46), plus rounding of about 2^-50: within the share.
+  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildTiltedFloorWithPartAcross(0x1p-47)), {.x = 0, .y = 0, .z = 0});
+}
+
+TEST(ComputeShapeTurningAngularVelocity, PartAcrossJustAboveShare_IsTurn) {
+  // 2^-45 across the normal, twice kNegligibleTurnShare: a turn, returned as the part across. A larger share would
+  // lose the bound of tol / 8 that kNegligibleTurnShare's comment proves.
+  const Vec3 shape_turning = ComputeShapeTurningAngularVelocity(BuildTiltedFloorWithPartAcross(0x1p-45));
+  EXPECT_NEAR(shape_turning.x, 0x1p-45 * 100, 1e-3 * 0x1p-45 * 100);
+}
+
 TEST(ComputeShapeTurningAngularVelocity, CylinderAlongXSpinningAboutX_IsZero) {
   const Solid solid = BuildCylinderAlongX(BuildTurning({.x = 100, .y = 0, .z = 0}));
 
@@ -519,6 +573,32 @@ TEST(CheckSolid, FlatSolidAndPlateSpinningFastAboutNormal_AreAccepted) {
   EXPECT_EQ(close_call, ContactCloseCall::kSolidTurnsTooFar);
 }
 
+TEST(CheckSolid, FlatSolidSpinningFastAboutTiltedNormal_IsAccepted) {
+  // 100 rad/s about {0, sin 0.3, cos 0.3} for 0.1 s: 10 rad of spin, and the part across the normal is rounding.
+  const Vec3 normal = {.x = 0, .y = std::sin(0.3), .z = std::cos(0.3)};
+  const SolidMotion spinning = BuildTurning(100 * normal);
+  EXPECT_EQ(
+      CheckSolid(ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, spinning, 6), 0.1),
+      ContactError::kNone
+  );
+  EXPECT_EQ(
+      CheckSolid(ToSolid(Plate{.center = {}, .normal = normal, .half_thickness = 0.01}, spinning, 8), 0.1),
+      ContactError::kNone
+  );
+}
+
+TEST(ComputeSolidVelocity, SpinningTiltedFloor_SurfaceVelocityKeepsTheSpin) {
+  // The spin about the tilted normal no longer counts as a turn, but the surface moves with it, so friction feels it:
+  // at {0.3, 0, 0} on the floor the velocity is Cross(100 n, {0.3, 0, 0}) = 30 * {0, cos 0.3, -sin 0.3}.
+  const Vec3 normal = {.x = 0, .y = std::sin(0.3), .z = std::cos(0.3)};
+  const Solid floor =
+      ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, BuildTurning(100 * normal), 6);
+  ExpectSameVec3(ComputeShapeTurningAngularVelocity(floor), {.x = 0, .y = 0, .z = 0});
+  const Vec3 velocity = ComputeSolidVelocity(floor, ComputeSolidPose(floor, 0), {.x = 0.3, .y = 0, .z = 0});
+  ExpectSameVec3(velocity, math::Cross(100 * normal, {.x = 0.3, .y = 0, .z = 0}));
+  EXPECT_NEAR(math::Length(velocity), 30, 1e-12);
+}
+
 TEST(CheckSolid, SpinningFastAboutTiltedAxis_IsNone) {
   // A cylinder along world x spinning at 100 rad/s about x for 0.1 s: 10 rad of spin, no change of shape.
   EXPECT_EQ(CheckSolid(BuildCylinderAlongX(BuildTurning({.x = 100, .y = 0, .z = 0})), 0.1), ContactError::kNone);
@@ -612,7 +692,8 @@ TEST(ComputeSolidVelocity, Turning_IsLinearPlusAngularCrossArm) {
 
 TEST(ComputeSolidVelocity, SpinningPlate_SurfaceVelocityKeepsTheSpin) {
   // A spin about the normal is not a turn of the shape, but the surface still moves with it, so friction feels it:
-  // Cross({0, 0, 5}, {0.3, 0, 0.01}) = {0, 1.5, 0}.
+  // Cross({0, 0, 5}, {0.3, 0, 0.01}) = {0, 1.5, 0}. ComputeSolidVelocity did not change with the spin rule; this pins
+  // that it still uses the full angular velocity.
   const Solid plate = BuildPlateWithNormalZ(BuildTurning({.x = 0, .y = 0, .z = 5}));
 
   const Vec3 velocity = ComputeSolidVelocity(plate, ComputeSolidPose(plate, 0), {.x = 0.3, .y = 0, .z = 0.01});

@@ -27,12 +27,11 @@
 //                   inside the grown solid. Not the rest gap, which is the distance kept at rest (tol): at rest the
 //                   gap is 0
 // Owns:    FindFirstHit, MoveParticle
-// Uses:    Vec3, math::IsFinite (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError,
-//          ContactCloseCall, ContactFailure (contact/contact_error.h), Solid, kNoSolid, CheckSolid
-//          (contact/solid_shapes.h), SolidContactInputs, SolidContactResult, FirstHit, kMaxAdvanceCount,
-//          kTurningSolidHitGapShare (contact/solid_contact_types.h), ComputeIsTurningSolid, FindFirstHitOnSolid,
-//          ComputeEarlierHit, FindEarliestHitWithTurningSolids, Sweep, ParticleMove, CheckSolidContactInputs,
-//          CheckStartOutsideSolids, ApplyHit, ApplySettleAtEnd, CheckEndOutsideSolids (contact/solid_contact_steps.h)
+// Uses:    Vec3 (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError, ContactCloseCall,
+//          ContactFailure (contact/contact_error.h), Solid, kNoSolid (contact/solid_shapes.h), SolidContactInputs,
+//          SolidContactResult, FirstHit (contact/solid_contact_types.h), Sweep, TouchedSurfaces, FindFirstHitOfSweep,
+//          ParticleMove, CheckSolidContactInputs, CheckStartOutsideSolids, ApplyHit, ApplySettleAtEnd,
+//          CheckEndOutsideSolids (contact/solid_contact_steps.h)
 // Used by: the MoveParticles stage
 // Read:    docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
 //          <fig-sweep-hit-slide>, <proc-move-particle>, <sec-contact-response>
@@ -70,8 +69,8 @@ namespace fluidity::contact {
 //     grown caps' planes when it comes before both exits (plan decision P15). A hit counts when its time is at most
 //     duration.
 //   2 Turning solid: a box whose angular velocity is not exactly {0, 0, 0} (plan decision P7), a flat solid or a plate
-//     whose angular velocity has a part across its normal that is not exactly {0, 0, 0}, or a cylinder whose axis
-//     tilts by more than plan decision P17's bound. Its gap is not linear in time, so the stepping search advances
+//     whose angular velocity has a part across its normal longer than kNegligibleTurnShare of it, or a cylinder whose
+//     axis tilts by more than plan decision P17's bound. Its gap is not linear in time, so the stepping search advances
 //     from t = 0. With bound = Length(velocity_for_this_step - linear_velocity) + Length(angular_velocity) * r_max,
 //     r_max the larger distance from the path's two ends to the solid's origin at those times, the gap cannot shrink
 //     faster than bound, so the first-order advance g(t) / bound passes no crossing. A shape whose distance is convex
@@ -112,12 +111,13 @@ namespace fluidity::contact {
 //   solid, that solid is a plate and the side is kAlongNormal or kAgainstNormal (an id that names no solid sees
 //   every plate with both faces; MoveParticle refuses it).
 // Fails: kTooCloseToCall  the search toward a turning solid needs more than kMaxAdvanceCount advances before the
-//                         earliest hit of the other solids: the path hovers near it with too little motion along its
-//                         normal, which is rare (FindHitOnTurningSolid: Cost). *close_call is
-//                         kSlowApproachToTurningSolid; the caller shortens the step and tries again.
-//        kBadInput        a solid is of an unknown shape; a debug build stops at an assertion first.
-//        When close_call is not null, *close_call is always written: kNone unless the error is kTooCloseToCall. On
-//        failure *first_hit is unchanged.
+//                         earliest hit of the other solids: the path hovers near it or grazes it, with too little
+//                         motion along its normal, which is rare (FindHitOnTurningSolid: Cost). *close_call is
+//                         kSlowApproachToTurningSolid, and *first_hit is FirstHit{} but for solid_index, the index of
+//                         that turning solid, so the caller can name it; the caller shortens the step and tries again.
+//        kBadInput        a solid is of an unknown shape; a debug build stops at an assertion first. *first_hit is
+//                         unchanged.
+//        When close_call is not null, *close_call is always written: kNone unless the error is kTooCloseToCall.
 // Read: docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
 //       <fig-sweep-hit-slide>, <sec-round-solids>
 //
@@ -134,51 +134,16 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
     ContactCloseCall* close_call
 ) {
   // NOLINTEND(bugprone-easily-swappable-parameters)
-  assert(first_hit != nullptr);
-  assert(inputs.solids != nullptr || inputs.solid_count == 0);
-  assert(math::IsFinite(start) && math::IsFinite(velocity_for_this_step));
-  assert(math::IsFinite(start_elapsed) && start_elapsed >= 0 && math::IsFinite(duration) && duration >= 0);
-  // With duration >= 0 this also keeps start_elapsed within the step.
-  assert(duration <= inputs.step_duration - start_elapsed);
-  assert(math::IsFinite(inputs.contact_tolerance) && inputs.contact_tolerance >= 0);
-  if (close_call != nullptr) {
-    *close_call = ContactCloseCall::kNone;
-  }
-  // Steps 1 and 2 run in FindFirstHitOnSolid, one solid at a time; step 3 keeps the earliest hit here. The solids
-  // that do not turn go first, so every turning solid is searched only up to the earliest hit found so far.
-  FirstHit earliest;
-  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
-    assert(CheckSolid(inputs.solids[solid_index], inputs.step_duration) == ContactError::kNone);
-    if (ComputeIsTurningSolid(inputs, solid_index)) {
-      continue;
-    }
-    FirstHit hit_on_solid;
-    const ContactError error =
-        FindFirstHitOnSolid(inputs, solid_index, start, velocity_for_this_step, start_elapsed, duration, &hit_on_solid);
-    // A solid that does not turn fails only for an unknown shape, a caller bug that CheckSolid catches first.
-    if (error != ContactError::kNone) {
-      return error;
-    }
-    // Step 3: solids come in index order here, so a later one wins only when strictly earlier.
-    earliest = ComputeEarlierHit(earliest, hit_on_solid);
-  }
-  // The turning solids: a close call is passed on, with its reason, which is always the slow approach. The step is
-  // shortened and tried again.
+  // FindFirstHitOfSweep asserts the preconditions.
+  // The sweep with no earlier hit in the step: no solid gets the touching rule of a touched solid.
   const Sweep sweep = {
       .start = start,
       .velocity_for_this_step = velocity_for_this_step,
       .start_elapsed = start_elapsed,
       .duration = duration,
   };
-  const ContactError turning_error = FindEarliestHitWithTurningSolids(inputs, sweep, &earliest);
-  if (turning_error != ContactError::kNone) {
-    if (turning_error == ContactError::kTooCloseToCall && close_call != nullptr) {
-      *close_call = ContactCloseCall::kSlowApproachToTurningSolid;
-    }
-    return turning_error;
-  }
-  *first_hit = earliest;
-  return ContactError::kNone;
+  const TouchedSurfaces no_touched_surfaces;
+  return FindFirstHitOfSweep(inputs, sweep, no_touched_surfaces, first_hit, close_call);
 }
 
 // Finds the first hit as the seven-argument form does, without saying why a call was too close to call.
@@ -206,16 +171,24 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //   1 Check inputs (CheckSolidContactInputs).
 //   2 Classify the start: a start inside a solid at time 0, d < 0, fails; a start within one tolerance, 0 <= d < tol,
 //     sweeps from where it is, and the touching rule decides whether its path pushes into that solid.
-//   3 Find the first hit (FindFirstHit) from the current position along velocity.for_this_step, with the solids posed
-//     at the time already used and duration = step_duration - elapsed, computed afresh before every sweep. With no
-//     hit the particle advances by velocity.for_this_step times that duration, and the hits end.
+//   3 Find the first hit (FindFirstHitOfSweep, FindFirstHit with the touched surfaces) from the current position
+//     along velocity.for_this_step, with the solids posed at the time already used and duration = step_duration -
+//     elapsed, computed afresh before every sweep. With no hit the particle advances by velocity.for_this_step times
+//     that duration, and the hits end.
 //   4 Respond (ApplyHit): the particle moves to the hit, both velocities get ComputeContactResponse with the solid
 //     velocity at the hit and friction times the solid's friction_scale, the first hit fills the record, and the
 //     change of velocity.for_next_step counts in the reaction of a solid with reports_reaction (plan decision P5).
-//   5 Slide: the solid and its normal join the touched surfaces and the sweep starts again at step 3 with the new
-//     velocity.for_this_step. A solid that does not turn is not hit again by a path along its surface (the touching
-//     rule). A turning solid has no touching rule, so a particle it hit is hit again at time 0 by every later sweep
-//     and the move ends in kTooManyHits.
+//   5 Slide: the solid, its normal and the approach the response may have left by rounding (its allowance, from
+//     ComputeLargestApproachLeftAfterResponse) join the touched surfaces, and the sweep starts again at step 3 with the
+//     new velocity.for_this_step. The sweep gives a touched solid that does not turn a touching rule of its own, on
+//     every surface of it (a domain box touched on one side, on every side): a start gap up to tol / 16 rests on it,
+//     and it is hit at 0 only when the path approaches it faster than the largest allowance of all touched surfaces,
+//     since the latest response, at any solid, leaves rounding along every normal. So rounding does not make a solid
+//     hit again, while a solid that is really approached again, by a push from another solid or because it moves, is
+//     hit. Departure from the method paper's
+//     step 5, for now: a turning solid has no touching rule, so a particle it hit is hit again at time 0 by every later
+//     sweep and the move ends in kTooManyHits instead of sliding in the solid's axes. A shorter step does not help;
+//     only a hit exactly at the end of the step succeeds.
 //   6 Settle and check the end (ApplySettleAtEnd, CheckEndOutsideSolids): each touched surface closer than tol at the
 //     end pose moves the particle back to the rest gap, then every solid must be at least tol / 2 away.
 //   Without a hit the end position is start_position + velocity.for_this_step * step_duration, one multiply and one
@@ -229,15 +202,20 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //   {1 - 2^-30, 0, 0} = {0.9999999990686774, 0, 0} m, both velocities {0, 0, 0}, hit_count 1. A fixed floor
 //   with normal {0, 0, 1} and friction 0.5: a particle at {0.2, 0.5, 0.1} moving at {3, 0, -1} m/s for 0.2 s hits it
 //   at 0.1 - 2^-30 s, slips on at {2.5, 0, 0} m/s and ends at x = 0.75 - 2^-31, z = 2^-30.
-// Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9).
-// Fails: kBadInput          a value is not finite or out of range, the solid_ids are not strictly ascending, or the
-//                           plate side names no plate (CheckSolidContactInputs).
-//        kStartsInsideSolid the start is inside a solid; the failure names it, with the depth
-//        (CheckStartOutsideSolids). kTooCloseToCall    the step is too long for a safe answer; the step shortens it and
-//        tries again.
-//                           *failure's close_call says why: kTooManyHits (a fifth hit), kSecondReactingSolid (a
-//                           second solid with reports_reaction), kEndsTooCloseToSolid (the end check), or
-//                           kSlowApproachToTurningSolid (passed on from FindFirstHit, with solid_id 0).
+// Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9). At every
+//   hit, the sum of the absolute axes of velocity.for_this_step and of the solid velocity, times the time left, is at
+//   most 2^40 tol (asserted), so that each allowance, 2^-46 times that sum, times the time left is at most tol / 64,
+//   and the particle approaches a touched solid by at most tol / 16 over the step. With the contact tolerance of
+//   ComputeContactTolerance, at least 2^-40 of the largest coordinate, it holds whenever those speeds times the step
+//   stay within the largest coordinate.
+// Fails: kBadInput           a value is not finite or out of range, the solid_ids are not strictly ascending, or the
+//                            plate side names no plate (CheckSolidContactInputs).
+//        kStartsInsideSolid  the start is inside a solid; the failure names it, with the depth
+//                            (CheckStartOutsideSolids).
+//        kTooCloseToCall     the step is too long for a safe answer; the step shortens it and tries again.
+//                            *failure's close_call says why: kTooManyHits (a fifth hit), kSecondReactingSolid (a
+//                            second solid with reports_reaction), kEndsTooCloseToSolid (the end check), or
+//                            kSlowApproachToTurningSolid (passed on from the sweep, with that turning solid's id).
 //        On failure *result is unchanged. When failure is not null, *failure is always written: ContactFailure{} on
 //        success; on failure the error, the close call, the solid's solid_id (never its index) and the magnitude of
 //        plan decision P6. particle_id stays 0.
@@ -271,22 +249,25 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
     if (duration <= 0) {
       break;
     }
-    // Step 3: FindFirstHit fails only for a turning solid it cannot search safely (a close call), or a bad shape.
+    // Step 3: the sweep fails only for a turning solid it cannot search safely (a close call, which names that solid),
+    // or a bad shape. The touched surfaces keep rounding at the earlier hits from counting as new hits.
     FirstHit first_hit;
     ContactCloseCall close_call = ContactCloseCall::kNone;
     const Vec3 velocity_for_this_step = move.result.velocity.for_this_step;
-    error = FindFirstHit(
-        inputs,
-        move.result.position,
-        velocity_for_this_step,
-        move.elapsed,
-        duration,
-        &first_hit,
-        &close_call
-    );
+    const Sweep sweep = {
+        .start = move.result.position,
+        .velocity_for_this_step = velocity_for_this_step,
+        .start_elapsed = move.elapsed,
+        .duration = duration,
+    };
+    const TouchedSurfaces touched_surfaces = {.surfaces = move.touched_surfaces, .count = move.result.hit_count};
+    error = FindFirstHitOfSweep(inputs, sweep, touched_surfaces, &first_hit, &close_call);
     if (error != ContactError::kNone) {
       move_failure.error = error;
       move_failure.close_call = close_call;
+      if (error == ContactError::kTooCloseToCall) {
+        move_failure.solid_id = inputs.solids[first_hit.solid_index].solid_id;
+      }
       break;
     }
     if (first_hit.solid_index == kNoSolid) {

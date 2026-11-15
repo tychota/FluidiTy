@@ -48,8 +48,8 @@ std::string_view ToMessage(ContactCloseCall close_call) {
       return "A particle is squeezed between two solids that close on it. Use a shorter step or keep the solids "
              "apart.";
     case ContactCloseCall::kSlowApproachToTurningSolid:
-      return "A particle approaches a turning solid too slowly to find the hit safely. Use a shorter step or turn "
-             "the solid more slowly.";
+      return "A particle hovers near a turning solid or grazes it, too slowly for the hit to be found safely. Use a "
+             "shorter step or turn the solid more slowly.";
     case ContactCloseCall::kTurningSolidNearOtherSolid:
       return "A turning solid is too near another solid for a safe slide. Use a shorter step or keep the two "
              "solids apart.";

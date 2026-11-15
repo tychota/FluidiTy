@@ -858,7 +858,11 @@ at the hit, or no solid when the path is free. @proc-find-first-hit lists the st
 
 A box turns when its angular velocity is not exactly (0, 0, 0). A flat solid or a plate turns when the part of its
 angular velocity across its normal, $bold(omega) - (bold(omega) dot bold(e)_z) bold(e)_z$ with $bold(e)_z$ the normal,
-is not exactly (0, 0, 0): both are unbounded sideways, so a spin about the normal leaves the shape as it is. The spin
+is longer than $2^(-46) |bold(omega)|$: both are unbounded sideways, so a spin about the normal leaves the shape as it
+is, and a part across that short is the rounding a spin about a tilted normal leaves, not a turn. Such a part keeps
+the normal within $2 times 2^(-46)$ of its start however far the solid spins, so the face moves by less than
+$"tol"\/8$ at any point within $2 sqrt(3) L$ of its origin, $L$ the largest coordinate of the contact scale
+(`kNegligibleTurnShare`; the proof is in the code). The spin
 still moves the surface, and friction feels it through the solid velocity. A sphere never counts as turning, and a
 cylinder only when its axis tilts (@sec-round-solids). One that does not turn only translates, so each of its face
 planes moves at $bold(v)_"lin"$, and the gap to a face changes linearly with time:
@@ -904,6 +908,30 @@ touching rule belongs to the closed forms of a solid that does not turn; a turni
 A start deeper than $"tol"$ inside the grown solid, $g(0) < -"tol"$, is hit at $t = 0$; `MoveParticle` never sweeps
 from there. For a flat solid with surface at $z = 0$, a particle at $z = "tol"$ moving at $(5, 0, -"tol"\/4)$ m/s for
 1 s slides freely; at (5, 0, −1) m/s it hits at 0.
+
+A solid the particle already touched earlier in the same step gets a stricter form of the rule. After a hit the
+particle stands at $d = "tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an
+approach of a few rounding units (@sec-contact-response). With the rule above such a start would count as outside, and
+the closed form would hit the same solid again from two rounding-sized numbers. So `MoveParticle` passes the sweep
+its touched surfaces: for each hit, the solid, the normal at the hit and the bound $b$ of the approach that response
+may leave, computed from the velocity it received. For a touched solid that does not turn, on every surface of it (a
+domain box touched on one side, on every side), a start gap up to $"tol"\/16$ counts as resting, and the solid is hit
+at $t = 0$ only when $"rate" < -b$, a real approach, with $b$ the largest bound of all touched surfaces so far;
+otherwise the path is free of it. The largest, not the solid's own: the velocity comes from the latest response,
+wherever it was, and its rounding lies along every normal, so a fast solid hit second leaves along the first solid's
+normal more rounding than the first response did. The bound is carried, not recomputed: its derivation
+(@sec-contact-response) proves it from the velocity the response received, and a bound from the returned velocity
+can be far smaller than what is left, for example after a slip just below the stick limit, where the friction blend
+rounds by a share of the incoming speed while the returned velocity is tiny. What it costs: a free path may still
+approach at up to $b$, and the largest bound grows with later hits. `MoveParticle` requires $b t_"left" <= "tol"\/64$
+for every bound at its own hit. Between two hits the largest bound is one of an earlier hit, whose time left was
+longer, so each stretch adds at most $"tol"\/64$, and the at most four hits of a step add at most $"tol"\/16$. With
+$b = 2^(-46) A$, $A$ the sum of the absolute axes of the speeds involved, that is $A t_"left" <= 2^40 "tol"$, true
+whenever those speeds over one step stay within the largest coordinate. Nothing skips a touched solid: a start farther
+than $"tol"\/16$ takes the closed form, a real approach is a hit, and a turning solid keeps no touching rule. For the
+fixed flat solid with normal (0.6, 0, 0.8) through the origin and a particle from (0.125, 0, 0.125) at (−2, 0, −2) m/s
+for 0.5 s (this paper's numbers), the hit position is $2.8 times 10^(-18)$ m outside the rest gap and the response's
+approach is $-2^(-55)$ m/s: the touched solid is not hit again.
 
 === A turning solid
 
@@ -961,8 +989,8 @@ the hit.
 
 The search stops with a hit when $g(t) <= "tol"\/4$, and with no hit when $t >= "duration"$. More than 128 advances
 (`kMaxAdvanceCount`) is "too close to call, slow approach to a turning solid", and the step is tried again shorter.
-With the second-order advance this is rare: it remains for a path that hovers near the solid with almost no motion
-along its normal, where each advance is only about $sqrt(2 g\/K)$. A particle at rest $2^(-17)$ m above the top face
+With the second-order advance this is rare: it remains for a path that hovers near the solid or grazes it, with almost no
+motion along its normal (a graze is the same thing near the tangent point), where each advance is only about $sqrt(2 g\/K)$. A particle at rest $2^(-17)$ m above the top face
 of a box of half size 0.5 m turning at (0, 0, 1) rad/s, on its turn axis, never gets closer, but needs 182 advances
 to reach the end of a 1 s sweep. On the generated paths of the tests, 30,000 sweeps toward turning boxes, plates, flat
 solids, cylinders, a quarter-turn arm and a paddle, there was no close call. A box that turns uses this search, and
@@ -999,8 +1027,8 @@ When several solids are hit, the earliest time wins, and equal times keep the lo
   fails: [a search toward a turning solid needs more than 128 advances: "too close to call, slow approach to a
     turning solid".],
   ([Solid that does not turn], [First, for each solid in array order that does not turn (a box with angular
-    velocity exactly zero, a flat solid or plate whose angular velocity has no part across its normal, so one that
-    at most spins about its normal, any sphere, a cylinder whose axis does not tilt), sampled at $t_0$: if the
+    velocity exactly zero, a flat solid or plate whose angular velocity has no part across its normal longer than
+    $2^(-46) |bold(omega)|$, so one that at most spins about its normal, any sphere, a cylinder whose axis does not tilt), sampled at $t_0$: if the
     start's gap is in $[-"tol", 0]$ for the surface that gives $d$, the solid is hit at 0 when $"rate" times
     "duration" < -"tol"$ and not hit otherwise; if the gap is below $-"tol"$, it is hit at 0. Otherwise use the
     closed form of its shape: one face plane for a flat solid, a committed plate or each closed domain side; entry
@@ -1346,9 +1374,11 @@ is charged to the newest solid. Only `for_next_step` counts, because it is the v
 into the force on the solid. That force then comes from the very velocity changes that stopped the particles, so
 the same geometry decides both, as Batty, Bertails and Bridson argue for coupling liquids and solids [21]. A
 particle pushes at most one reacting solid per step; a second, different one is "too close to call, second reacting
-solid".
+solid". A change of exactly zero adds nothing, so it neither fills the record nor conflicts: a solid's count of hits
+counts only the particles whose `for_next_step` changed at it.
 
-The slide follows each hit. The solid joins the list of surfaces the particle is on. For each earlier surface that
+The slide follows each hit. The solid joins the list of surfaces the particle is on, its touched surfaces, with the
+normal at the hit and the bound of the approach the response may have left. For each earlier surface that
 the new velocities still approach, that approach is removed, without friction. If the newest surface is then
 approached again, as in a corner sharper than a right angle, both velocities become the newest solid's velocity.
 If an earlier surface is still approached after that, the solids are closing on the particle: "too close to call,
@@ -1416,13 +1446,13 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     then, if $d$ before the move was negative or either velocity approaches, respond to both velocities, add the
     solid to the surfaces, count one hit and fill the record if it is empty.]),
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
-    with the solids sampled at the time already used. With no hit, advance by `for_this_step` times the time left
-    and go to step 6.]),
+    with the solids sampled at the time already used and the touched surfaces' stricter touching rule. With no hit,
+    advance by `for_this_step` times the time left and go to step 6.]),
   ([Respond], [A hit that @proc-cylinder-first-hit found in a rim region is first moved along the rim normal to
     $d = "tol"$. Apply the response to both velocities with the solid velocity at the hit and `friction` times
     `friction_scale`. Fill the record if it is empty and count the hit. If the solid reports its reaction, add the
     change of `for_next_step`; fail on a second reacting solid.]),
-  ([Slide], [Add the solid to the surfaces. Remove, without friction, any approach to an earlier surface; if the
+  ([Slide], [Add the solid to the touched surfaces, with its normal and approach bound. Remove, without friction, any approach to an earlier surface; if the
     newest is then approached again, take its solid velocity; if an earlier one still is, fail. Add each change of
     `for_next_step` to the reaction when the solid it is charged to (the earlier surface's for a removal, the
     newest for the corner case) reports its reaction; fail on a second reacting solid. A solid that does not turn:

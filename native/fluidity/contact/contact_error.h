@@ -42,7 +42,9 @@ enum class ContactCloseCall : std::uint8_t {
   kNone,  // The failure is not a close call.
   kTooManyHits,  // The path hit more solids than one step allows.
   kSqueezedBetweenSolids,  // Two solids close on the particle and no position is safe between them.
-  kSlowApproachToTurningSolid,  // The particle approaches a turning solid too slowly to find the hit safely.
+  // The stepping search toward a turning solid ran out of advances: the particle hovers near the solid or grazes it,
+  // with almost no motion along its normal.
+  kSlowApproachToTurningSolid,
   kTurningSolidNearOtherSolid,  // A turning solid is near another solid, so the slide along it is not safe.
   kSecondReactingSolid,  // A second solid that reports a reaction was hit; one record cannot hold both.
   kSolidTurnsTooFar,  // A solid turns more than one step allows.

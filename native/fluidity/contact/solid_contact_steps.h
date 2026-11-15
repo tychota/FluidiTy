@@ -41,8 +41,9 @@
 //   z = tol: the floor is a touched surface, so the settle lifts it.
 //
 // Words:
-//   touched surface  a surface a particle met during the step: the solid's index and the normal recorded at the hit.
-//                    A solid may be touched more than once
+//   touched surface  a surface a particle met during the step: the solid's index, the normal recorded at the hit and
+//                    the approach allowance of that response. A solid may be touched more than once. A later sweep
+//                    of the same step gives a touched solid that does not turn its own touching rule
 //   settle         at the end of the step, the move of the particle along a touched surface's normal back to the rest
 //                  gap, for each touched surface it is closer to than tol
 //   end check      the last test of a particle's move: every solid at least tol / 2 away at its pose at the end of
@@ -55,8 +56,9 @@
 //   rim corner     the part of a cylinder grown with sharp edges that is farther than tol from the rim: a point
 //                  beyond the wall and beyond a cap, by at most tol from each
 //   turning solid  a solid whose shape turns during the step: a box with an angular velocity other than {0, 0, 0},
-//                  a flat solid or a plate with an angular velocity whose part across the normal is not {0, 0, 0},
-//                  or a cylinder whose axis tilts beyond plan decision P17's bound. It has no touching rule
+//                  a flat solid or a plate with an angular velocity whose part across the normal is more than
+//                  rounding (kNegligibleTurnShare of it), or a cylinder whose axis tilts beyond plan decision P17's
+//                  bound. It has no touching rule
 //   second-order advance  the advance of the stepping search toward a solid whose distance is convex: the positive
 //                  root of g + gdot s - K s^2 / 2, gdot the gap rate and K the gap curvature bound
 // Owns:    Sweep, FacePlane, StartCase, OwnPath, HitTime, ComputeCoordinate, ComputeColumn, ToFacePlane,
@@ -64,8 +66,9 @@
 //          FindEntryThroughFacePlanes, FindHitOnConvexSolid, FindHitOnDomainBox, FindSphereHit, TimeInterval,
 //          ComputeTimeInsideGrownWall, ComputeTimeBetweenGrownCaps, FindCylinderHit, HasConvexDistance, GapLowerModel,
 //          ComputeSecondOrderAdvance, FindHitOnTurningSolid, ComputeIsTurningSolid, FindFirstHitOnSolid,
-//          ComputeEarlierHit, FindEarliestHitWithTurningSolids, TouchedSurface, ParticleMove, CheckSolidContactInputs,
-//          CheckStartOutsideSolids, ToSideAtHit, ApplyReactionChange, ApplyHit, MoveToRestGap, ApplySettleAtEnd,
+//          ComputeEarlierHit, FindEarliestHitWithTurningSolids, TouchedSurface, TouchedSurfaces, TouchedSolid,
+//          ComputeTouchedSolid, FindFirstHitOfSweep, ParticleMove, CheckSolidContactInputs, CheckStartOutsideSolids,
+//          ToSideAtHit, ApplyReactionChange, ApplyResponseAtSurface, ApplyHit, MoveToRestGap, ApplySettleAtEnd,
 //          CheckEndOutsideSolids
 // Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), Mat3, kIdentity, math::Transpose
 //          (base/mat3.h), Axis (base/axis.h), math::Abs, math::Sqrt, math::Max (base/scalar_math.h),
@@ -73,9 +76,10 @@
 //          ContactError, ContactCloseCall, ContactFailure (contact/contact_error.h), Solid, SolidShape, SolidFace,
 //          SolidSide, PlateSide, SolidPose, ClosedSides, DistanceToSolid, kNoSolid, ComputeSolidPose,
 //          ComputeSolidVelocity, ComputeDistanceToSolid, ComputeDistanceToSphere, ComputeDistanceToCylinder,
-//          ComputeShapeTurningAngularVelocity (contact/solid_shapes.h), SolidContactInputs, SolidContactResult,
-//          SolidReaction, ContactKind, FirstHit, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare,
-//          ComputeContactResponse (contact/solid_contact_types.h)
+//          ComputeShapeTurningAngularVelocity, kNegligibleTurnShare (contact/solid_shapes.h), SolidContactInputs,
+//          SolidContactResult, SolidReaction, ContactKind, FirstHit, kMaxHitsPerStep, kMaxAdvanceCount,
+//          kTurningSolidHitGapShare, kTouchedSolidRestingGapShare, ComputeContactResponse,
+//          ComputeLargestApproachLeftAfterResponse (contact/solid_contact_types.h)
 // Used by: contact/solid_contact.h, whose FindFirstHit calls FindFirstHitOnSolid for each solid and whose MoveParticle
 //          calls the steps of a particle's move
 // Read:    docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
@@ -123,6 +127,67 @@ enum class StartCase : std::uint8_t {
   kRestingAndFree,  // The touching rule: the particle rests on the surface and the path does not push into it.
   kHitAtStart,  // The path pushes into the surface it rests on, or starts deeper than tol inside: a hit at time 0.
 };
+
+// One surface a particle met during the step: the solid, the normal recorded at the hit, and the approach the response
+// there may have left by rounding. A solid may appear more than once in the list of touched surfaces, so nothing
+// assumes one entry per solid.
+struct TouchedSurface {
+  std::uint32_t solid_index = kNoSolid;  // Index into solids, not the solid_id.
+  Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the hit.
+  // m/s. ComputeLargestApproachLeftAfterResponse of the velocity_for_this_step passed to the response and the solid
+  // velocity there: the rounding that response may leave in any direction. A touched solid's rule uses the largest of
+  // all entries (ComputeTouchedSolid). It is carried, not recomputed: the bound is proved from the velocity the
+  // response received (contact/solid_contact_types.h), and a bound from the returned velocity can be far smaller than
+  // what is left, for example after a slip just below the stick limit, where the friction blend rounds by a share of
+  // the incoming speed while the returned velocity is tiny.
+  double approach_allowance = 0;
+};
+
+// The touched surfaces a sweep reads: count entries from surfaces, in hit order. An empty list is a sweep with no
+// earlier hit in the step, as FindFirstHit runs it.
+struct TouchedSurfaces {
+  const TouchedSurface* surfaces = nullptr;
+  int count = 0;
+};
+
+// What a sweep knows about one solid from the touched surfaces: whether the particle already touched it in this step,
+// and the approach allowance its touching rule uses.
+struct TouchedSolid {
+  bool is_touched = false;
+  double approach_allowance = 0;  // m/s, zero or more.
+};
+
+// Computes what the touched surfaces say about one solid: touched when any entry names it, with the largest approach
+// allowance of all entries, its own and every other solid's.
+//
+// Method: the velocity of the next sweep comes from the latest response, wherever it was, and that response leaves
+//   rounding along every direction, the normal of an earlier surface included. Its size is bounded by the allowance of
+//   that latest response, which can be far larger than the touched solid's own: after a hit on a fixed solid A, a
+//   response at a solid B that chases the particle at 100 m/s leaves along A's normal an approach of B's rounding. So
+//   the largest allowance of all entries covers the latest response, and every earlier one. The touched flag is per
+//   solid: a domain box touched on one side applies the rule, with this allowance, on every side.
+//   Cost, as in ComputeStartCase: a free path may approach the touched solid at up to this allowance for the time left.
+//   That approach adds up over the rest of the step while the largest allowance grows with later entries. Each entry j
+//   asserted b_j * t_left_j <= tol / 64 = tol / (16 kMaxHitsPerStep) at its own hit. Between one entry k and the next
+//   the largest allowance is some b_j with j <= k and t_left_j >= t_left_k, so at most tol / (64 t_left_k), over at
+//   most t_left_k: that piece adds at most tol / 64. At most kMaxHitsPerStep entries make at most four pieces, so the
+//   particle comes closer to a touched solid by at most tol / 16 in the step.
+// Example: entries {solid 0, allowance 2^-46} and {solid 2, allowance 2^-40}: solid 0 is touched with 2^-40, solid 1
+//   is not touched.
+// Requires: touched_surfaces.surfaces points to touched_surfaces.count entries (it may be null when the count is 0).
+// Read: docs/method-paper/fluidity-method.typ <sec-first-hit>
+FLUIDITY_CPU_AND_GPU constexpr TouchedSolid
+ComputeTouchedSolid(TouchedSurfaces touched_surfaces, std::uint32_t solid_index) {
+  assert(touched_surfaces.surfaces != nullptr || touched_surfaces.count == 0);
+  TouchedSolid touched;
+  for (int surface_index = 0; surface_index < touched_surfaces.count; ++surface_index) {
+    const TouchedSurface surface = touched_surfaces.surfaces[surface_index];
+    touched.is_touched = touched.is_touched || surface.solid_index == solid_index;
+    touched.approach_allowance = math::Max(touched.approach_allowance, surface.approach_allowance);
+  }
+  // A solid not touched keeps the allowance too, unread: ComputeStartCase reads it only for a touched solid.
+  return touched;
+}
 
 // A sweep measured from a solid that does not turn, in the solid's own axes at the pose of the sweep's start.
 struct OwnPath {
@@ -248,22 +313,39 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceForParticle(
 //
 // Method: with tol = inputs.contact_tolerance, gap = at_start.distance - tol and
 //   rate = Dot(at_start.normal_out_of_solid, relative_velocity) (plan decisions P2 and P16):
-//   gap > 0           kOutside.
+//   gap > limit       kOutside. The limit is 0, or kTouchedSolidRestingGapShare * tol = tol / 16 for a solid the
+//                     particle already touched in this step (touched.is_touched).
 //   gap < -tol        kHitAtStart: deeper inside than one tolerance.
-//   otherwise         the touching rule: kHitAtStart when rate * duration < -tol, kRestingAndFree when it is -tol or
-//                     more. The limit is free: such a path ends on the surface, not inside it.
+//   otherwise         the touching rule. For a solid not touched before: kHitAtStart when rate * duration < -tol,
+//                     kRestingAndFree when it is -tol or more; the limit is free, such a path ends on the surface, not
+//                     inside it. For a touched solid: kHitAtStart when rate < -touched.approach_allowance, the path
+//                     really approaching; kRestingAndFree otherwise, since an approach within the allowance is what
+//                     the responses so far left by rounding (ComputeTouchedSolid).
+//   Why a touched solid differs: after a hit the particle stands at the rest gap only up to rounding, possibly a few
+//   rounding units outside, and its velocity keeps a rounding-sized approach (method paper <sec-contact-response>).
+//   With the limit 0 such a start would be kOutside, and the closed form would hit the same solid again from the two
+//   rounding-sized numbers. What the allowance costs: a free path may approach at up to the allowance, so its gap falls
+//   by at most approach_allowance * duration, and over the whole step by at most tol / 16 (ComputeTouchedSolid).
 //   The rule is the same for a flat face and a round surface. Same bits on CPU and GPU: only + - * and comparisons.
-// Units: m for the distance, m/s for the velocity, s for the duration.
+// Units: m for the distance, m/s for the velocity and the allowance, s for the duration.
 // Example: tol 2^-30, at_start {tol, {0, 0, 1}, kHighZ} (the rest gap): the relative velocity {5, 0, -tol / 4} for
-//   1 s gives kRestingAndFree; {5, 0, -1} gives kHitAtStart. With at_start.distance 2 tol: kOutside.
+//   1 s gives kRestingAndFree; {5, 0, -1} gives kHitAtStart. With at_start.distance 2 tol: kOutside. Touched with an
+//   allowance of 2^-44 m/s: at_start.distance tol + 2^-60 m and the velocity {5, 0, -2^-55} give kRestingAndFree, where
+//   a solid not touched gives kOutside; {5, 0, -tol / 4} gives kHitAtStart.
 // Requires: at_start is the distance of the surface that gives the distance to the solid at the sweep's start: a face
 //   of the solid, or one closed side of a domain box. relative_velocity is in the axes of at_start's normal.
 // Read: docs/method-paper/fluidity-method.typ <sec-first-hit>, <sec-round-solids>
-FLUIDITY_CPU_AND_GPU inline StartCase
-ComputeStartCase(const SolidContactInputs& inputs, DistanceToSolid at_start, Vec3 relative_velocity, double duration) {
+FLUIDITY_CPU_AND_GPU inline StartCase ComputeStartCase(
+    const SolidContactInputs& inputs,
+    DistanceToSolid at_start,
+    Vec3 relative_velocity,
+    double duration,
+    TouchedSolid touched
+) {
   const double contact_tolerance = inputs.contact_tolerance;
   const double start_gap = at_start.distance - contact_tolerance;  // m
-  if (start_gap > 0) {
+  const double resting_gap_limit = touched.is_touched ? kTouchedSolidRestingGapShare * contact_tolerance : 0;  // m
+  if (start_gap > resting_gap_limit) {
     return StartCase::kOutside;
   }
   // MoveParticle never sweeps from deeper than one tolerance inside; this answer only keeps a caller's error safe.
@@ -271,11 +353,13 @@ ComputeStartCase(const SolidContactInputs& inputs, DistanceToSolid at_start, Vec
     return StartCase::kHitAtStart;
   }
   // The touching rule: the solid lies behind this surface's plane (a round solid behind its tangent plane, since it
-  // is convex), and along the path the gap is at least start_gap + rate * t >= start_gap - tol while
-  // rate * duration >= -tol, so the path never goes below distance 0 by more than the window absorbs.
+  // is convex), and along the path the gap is at least start_gap + rate * t. Not touched before: rate * duration >=
+  // -tol keeps it at least start_gap - tol, so the path never goes below distance 0 by more than the window absorbs.
+  // Touched: rate >= -allowance keeps it at least start_gap - allowance * duration >= start_gap - tol / 16.
   // Method paper <eq:hit-time>:  rate = n . (v - v_lin)
   const double gap_rate = math::Dot(at_start.normal_out_of_solid, relative_velocity);  // m/s
-  const bool pushes_into_surface = gap_rate * duration < -contact_tolerance;
+  const bool pushes_into_surface =
+      touched.is_touched ? gap_rate < -touched.approach_allowance : gap_rate * duration < -contact_tolerance;
   return pushes_into_surface ? StartCase::kHitAtStart : StartCase::kRestingAndFree;
 }
 
@@ -291,12 +375,17 @@ ComputeStartCase(const SolidContactInputs& inputs, DistanceToSolid at_start, Vec
 // Requires: solid_index < inputs.solid_count, and the solid does not turn. at_start is the distance of the surface
 //   that gives the distance to the solid at the sweep's start: a face of the solid, or one closed side of a domain box.
 // Read: docs/method-paper/fluidity-method.typ <sec-first-hit>
-FLUIDITY_CPU_AND_GPU inline StartCase
-ComputeStartCase(const SolidContactInputs& inputs, std::uint32_t solid_index, Sweep sweep, DistanceToSolid at_start) {
+FLUIDITY_CPU_AND_GPU inline StartCase ComputeStartCase(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    Sweep sweep,
+    DistanceToSolid at_start,
+    TouchedSolid touched
+) {
   assert(solid_index < inputs.solid_count);
   const Solid& solid = inputs.solids[solid_index];
   const Vec3 relative_velocity = sweep.velocity_for_this_step - solid.motion.linear_velocity;
-  return ComputeStartCase(inputs, at_start, relative_velocity, sweep.duration);
+  return ComputeStartCase(inputs, at_start, relative_velocity, sweep.duration, touched);
 }
 
 // Computes a sweep measured from one solid that does not turn, in the solid's own axes at the pose of start_elapsed.
@@ -440,10 +529,10 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindEntryThroughFacePlanes(
 // the surface that gives the distance, then the entry through the solid's face planes.
 //
 // Method: at_start = ComputeDistanceForParticle at the start, at the pose of sweep.start_elapsed, with the particle's
-//   plate side. ComputeStartCase of at_start: kHitAtStart gives a hit at 0 with at_start; kRestingAndFree gives no
-//   hit, for the whole solid, which lies behind the surface the particle rests on; kOutside gives
-//   FindEntryThroughFacePlanes. The planes' largest distance is the distance at_start holds, bit for bit, so a start
-//   outside by one test is outside by the other.
+//   plate side. ComputeStartCase of at_start, with what the touched surfaces say of this solid: kHitAtStart gives a hit
+//   at 0 with at_start; kRestingAndFree gives no hit, for the whole solid, which lies behind the surface the particle
+//   rests on; kOutside gives FindEntryThroughFacePlanes. The planes' largest distance is the distance at_start holds,
+//   bit for bit, so a start outside by one test is outside by the other.
 // Units: m, m/s and s, world.
 // Example: a fixed flat solid with normal {0, 0, 1} and a start at z = tol moving at {5, 0, -1} for 1 s: a hit at 0,
 //   distance tol, face kHighZ.
@@ -455,13 +544,14 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindHitOnConvexSolid(
     std::uint32_t solid_index,
     Sweep sweep,
     const FacePlane* face_planes,
-    int face_plane_count
+    int face_plane_count,
+    TouchedSolid touched
 ) {
   assert(solid_index < inputs.solid_count);
   const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], sweep.start_elapsed);
   const DistanceToSolid at_start =
       ComputeDistanceForParticle(inputs, solid_index, pose, sweep.start, inputs.plate_side);
-  switch (ComputeStartCase(inputs, solid_index, sweep, at_start)) {
+  switch (ComputeStartCase(inputs, solid_index, sweep, at_start, touched)) {
     case StartCase::kOutside:
       return FindEntryThroughFacePlanes(inputs, solid_index, sweep, face_planes, face_plane_count);
     case StartCase::kRestingAndFree:
@@ -477,7 +567,8 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindHitOnConvexSolid(
 //
 // Method: for each closed side in face order, at_start = ComputeFaceDistance of that side at the start, at the pose
 //   of sweep.start_elapsed (the distance into the box, as ComputeDistanceToSolid gives for that side), then
-//   ComputeStartCase: kHitAtStart is a hit at 0 on that side, kRestingAndFree no hit on it, kOutside
+//   ComputeStartCase with what the touched surfaces say of the domain box: kHitAtStart is a hit at 0 on that side,
+//   kRestingAndFree no hit on it, kOutside
 //   FindEntryThroughFacePlanes of that one plane. A particle in a corner rests on two or three sides at once, so
 //   every side needs its own touching rule, not only the nearest one.
 // Units: m, m/s and s, world.
@@ -487,7 +578,7 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindHitOnConvexSolid(
 // Requires: solid_index < inputs.solid_count, and that solid is a domain box with a closed side.
 // Read: docs/method-paper/fluidity-method.typ <sec-first-hit>, <proc-find-first-hit>
 FLUIDITY_CPU_AND_GPU inline FirstHit
-FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, Sweep sweep) {
+FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, Sweep sweep, TouchedSolid touched) {
   assert(solid_index < inputs.solid_count);
   const Solid& solid = inputs.solids[solid_index];
   assert(solid.shape == SolidShape::kDomainBox);
@@ -502,7 +593,7 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
     }
     const DistanceToSolid at_start = ComputeFaceDistance(pose, sweep.start, side_plane);
     FirstHit side_hit;
-    switch (ComputeStartCase(inputs, solid_index, sweep, at_start)) {
+    switch (ComputeStartCase(inputs, solid_index, sweep, at_start, touched)) {
       case StartCase::kOutside:
         side_hit = FindEntryThroughFacePlanes(inputs, solid_index, sweep, &side_plane, 1);
         break;
@@ -565,8 +656,13 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
 // Requires: solid_index < inputs.solid_count, and that solid is a sphere. own_path is a sweep measured from it
 //   (ComputeOwnPath).
 // Read: docs/method-paper/fluidity-method.typ <proc-sphere-first-hit>, <eq:sphere-hit-time>
-FLUIDITY_CPU_AND_GPU inline HitTime
-FindSphereHit(const SolidContactInputs& inputs, std::uint32_t solid_index, OwnPath own_path, double duration) {
+FLUIDITY_CPU_AND_GPU inline HitTime FindSphereHit(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    OwnPath own_path,
+    double duration,
+    TouchedSolid touched
+) {
   assert(solid_index < inputs.solid_count);
   const Solid& solid = inputs.solids[solid_index];
   assert(solid.shape == SolidShape::kSphere);
@@ -577,7 +673,7 @@ FindSphereHit(const SolidContactInputs& inputs, std::uint32_t solid_index, OwnPa
   const Vec3 start = own_path.start;
   const Vec3 velocity = own_path.velocity;
   const DistanceToSolid at_start = ComputeDistanceToSphere(start, radius, kIdentity);
-  switch (ComputeStartCase(inputs, at_start, velocity, duration)) {
+  switch (ComputeStartCase(inputs, at_start, velocity, duration, touched)) {
     case StartCase::kOutside:
       break;
     case StartCase::kRestingAndFree:
@@ -750,8 +846,13 @@ ComputeTimeBetweenGrownCaps(OwnPath own_path, Vec3 half_size, double contact_tol
 // Requires: solid_index < inputs.solid_count, and that solid is a cylinder whose axis keeps its direction. own_path is
 //   a sweep measured from it (ComputeOwnPath).
 // Read: docs/method-paper/fluidity-method.typ <proc-cylinder-first-hit>, <eq:cylinder-hit-time>
-FLUIDITY_CPU_AND_GPU inline HitTime
-FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, OwnPath own_path, double duration) {
+FLUIDITY_CPU_AND_GPU inline HitTime FindCylinderHit(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    OwnPath own_path,
+    double duration,
+    TouchedSolid touched
+) {
   assert(solid_index < inputs.solid_count);
   const Solid& solid = inputs.solids[solid_index];
   assert(solid.shape == SolidShape::kCylinder);
@@ -762,7 +863,7 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Own
   const double contact_tolerance = inputs.contact_tolerance;
   const Vec3 start = own_path.start;
   const DistanceToSolid at_start = ComputeDistanceToCylinder(start, half_size, kIdentity);
-  switch (ComputeStartCase(inputs, at_start, own_path.velocity, duration)) {
+  switch (ComputeStartCase(inputs, at_start, own_path.velocity, duration, touched)) {
     case StartCase::kOutside:
       break;
     case StartCase::kRestingAndFree:
@@ -779,7 +880,8 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Own
   const bool is_in_rim_corner = wall_gap <= 0 && cap_gap <= 0;
   if (is_in_rim_corner) {
     const double gap_rate = math::Dot(at_start.normal_out_of_solid, own_path.velocity);  // m/s
-    const bool approaches_rim = gap_rate < 0;
+    // A cylinder the particle already touched: an approach within the allowance is the response's rounding.
+    const bool approaches_rim = gap_rate < -touched.approach_allowance;
     return approaches_rim ? HitTime{.has_hit = true, .elapsed = 0} : HitTime{};
   }
 
@@ -899,8 +1001,8 @@ FLUIDITY_CPU_AND_GPU inline double ComputeSecondOrderAdvance(GapLowerModel gap_m
 //   the example. On the 30,000 generated paths of the tests (turning boxes, plates, flat solids, cylinders, a
 //   quarter-turn arm and a paddle) the mean is 3.5 to 8 advances per set, the 99th percentile at most 41, and there
 //   is no close call; first order alone gave close calls on up to 80 % of a set. A close call remains for a path that
-//   hovers near the solid with almost no motion along the normal, where each advance is only about Sqrt(2 g / K): a
-//   particle at rest 2^-17 m above a box's face, on its turn axis, needs 182 advances.
+//   hovers near the solid or grazes it, with almost no motion along the normal, where each advance is only about
+//   Sqrt(2 g / K): a particle at rest 2^-17 m above a box's face, on its turn axis, needs 182 advances.
 //   There is no touching rule: a turning face does not stay in its plane, so the touching rule's plane argument fails.
 //   A particle resting on the solid, at distance tol, has g(0) = 0 and is hit at 0 in every step; the response and
 //   the slide in the solid's axes then carry it with the solid (plan decisions P2 and P7). The gap is read only
@@ -915,8 +1017,8 @@ FLUIDITY_CPU_AND_GPU inline double ComputeSecondOrderAdvance(GapLowerModel gap_m
 // Requires: solid_index < inputs.solid_count; hit_on_solid is not null (advance_count may be null).
 //   sweep.start_elapsed and sweep.duration are finite and zero or more, and their sum is at most inputs.step_duration
 //   up to rounding. inputs.contact_tolerance is zero or more.
-// Fails: kTooCloseToCall  more than kMaxAdvanceCount advances: the path hovers near the solid with too little motion
-//                         along the normal (see Cost). The caller shortens the step and tries again.
+// Fails: kTooCloseToCall  more than kMaxAdvanceCount advances: the path hovers near the solid or grazes it, with
+//                         too little motion along the normal (see Cost). The caller shortens the step and tries again.
 //        On failure *hit_on_solid is unchanged. *advance_count, when advance_count is not null, holds the advances
 //        made on every return.
 // Read: docs/method-paper/fluidity-method.typ <sec-first-hit>, <proc-find-first-hit>
@@ -988,9 +1090,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindHitOnTurningSolid(
   // in [tol, 1.25 tol] (a second-order advance usually lands near tol). An advance that reaches duration covers the
   // rest of the sweep, which is then free. Rounding: a computed distance is off by about 32 rounding units of the
   // largest coordinate, at most 1/128 of tol, which holds 4096 of them (contact/contact_tolerance.h); gdot is off by
-  // a few rounding units of |v| + |omega| r_max, which over one advance moves the model by far less; the bound, K,
-  // the root and the division change an advance by a few rounding units of itself. So the path stays farther than
-  // about tol - tol / 64 before the hit. A bound of 0 means the gap cannot change: the advance is infinite and the
+  // a few rounding units of |v| + |v_lin| + |omega| r_max, which over one advance moves the model by far less; the
+  // bound, K, the root and the division change an advance by a few rounding units of itself. So the path stays farther
+  // than about tol - tol / 64 before the hit. A bound of 0 means the gap cannot change: the advance is infinite and the
   // path is free.
   double elapsed = 0;  // s, since the start of the sweep.
   while (true) {
@@ -1003,8 +1105,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindHitOnTurningSolid(
       *hit_on_solid = {.elapsed = elapsed, .solid_index = solid_index, .at_hit = at_position};
       return ContactError::kNone;
     }
-    // A path that hovers near the solid with little motion along the normal runs out of advances here (Cost in the
-    // docstring).
+    // A path that hovers near the solid or grazes it, with little motion along the normal runs out of advances here
+    // (Cost in the docstring).
     if (*advances_made == kMaxAdvanceCount) {
       return ContactError::kTooCloseToCall;
     }
@@ -1041,9 +1143,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindHitOnTurningSolid(
 // Method: with shape_turning = ComputeShapeTurningAngularVelocity(solid), the part of the angular velocity that
 //   changes the shape. A flat solid, a plate or a box turns when shape_turning is not exactly {0, 0, 0} (plan
 //   decision P7): for a flat solid and a plate it is the part across the normal, so a spin about the normal is not a
-//   turn (plan decision P17). A spin given about a tilted normal may leave a part of a few rounding units, which
-//   makes the solid turning: safe, it then takes the stepping search. A sphere never turns: shape_turning is
-//   {0, 0, 0}. A cylinder turns when Length(shape_turning) * step_duration * Length(half_size) > tol / 8 (plan
+//   turn (plan decision P17), and it is {0, 0, 0} when that part is no longer than kNegligibleTurnShare of the
+//   angular velocity, which is all a spin about a tilted normal leaves by rounding. A sphere never turns: shape_turning
+//   is {0, 0, 0}. A cylinder turns when Length(shape_turning) * step_duration * Length(half_size) > tol / 8 (plan
 //   decision P17): its axis then tilts enough to move its surface by more than tol / 8 during the step. Below that,
 //   which includes a spin about a tilted axis that rounding leaves with a tiny part across it, the closed form at the
 //   pose of start_elapsed holds. A domain box never moves. Same bits on CPU and GPU: only + - * and Sqrt.
@@ -1071,10 +1173,10 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsTurningSolid(const SolidContactInputs&
 // FindFirstHit for that solid.
 //
 // Method: ComputeIsTurningSolid says whether the solid's shape turns during the step: a box whose angular velocity is
-//   not exactly {0, 0, 0}, a flat solid or a plate whose angular velocity has a part across its normal, or a cylinder
-//   whose axis tilts beyond plan decision P17's bound; never a sphere or a domain box. One switch over the shape gives
-//   a turning solid FindHitOnTurningSolid, the same search for every shape that can turn, and every other solid its
-//   closed form:
+//   not exactly {0, 0, 0}, a flat solid or a plate whose angular velocity has a part across its normal (beyond
+//   rounding), or a cylinder whose axis tilts beyond plan decision P17's bound; never a sphere or a domain box. One
+//   switch over the shape gives a turning solid FindHitOnTurningSolid, the same search for every shape that can turn,
+//   and every other solid its closed form:
 //   flat solid  FindHitOnConvexSolid with its one face plane, kHighZ at own z = 0.
 //   plate       FindHitOnConvexSolid with kLowZ and kHighZ at own z = -half_thickness and +half_thickness, or only
 //               the committed face (ToFacePlane) when inputs.plate_side names this plate.
@@ -1082,6 +1184,8 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsTurningSolid(const SolidContactInputs&
 //   domain box  FindHitOnDomainBox.
 //   sphere      FindSphereHit of the sweep in the sphere's own axes (ComputeOwnPath), then ToFirstHit.
 //   cylinder    FindCylinderHit likewise.
+//   touched says whether the particle already touched this solid in the step (ComputeTouchedSolid): the closed forms'
+//   touching rule then reads it (ComputeStartCase); the stepping search has no touching rule and ignores it.
 //   *hit_on_solid has solid_index kNoSolid when the path is free. Same bits on CPU and GPU when the angular velocity
 //   is zero: only + - * /, Abs, Sqrt and comparisons, since ComputeSolidPose of a solid that does not move its axes
 //   needs no Sin. A turning solid, and a spinning sphere or cylinder, pose their axes with Sin, which may differ in the
@@ -1109,6 +1213,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
     Vec3 velocity_for_this_step,
     double start_elapsed,
     double duration,
+    TouchedSolid touched,
     FirstHit* hit_on_solid
 ) {
   // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -1133,7 +1238,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       }
       // Step 1: one face plane.
       const FacePlane surface = {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = 0};
-      *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, &surface, 1);
+      *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, &surface, 1, touched);
       return ContactError::kNone;
     }
     case SolidShape::kPlate: {
@@ -1146,7 +1251,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       const PlateSide plate_side = inputs.plate_side;
       if (plate_side.plate_id == solid.solid_id) {
         const FacePlane committed_face = ToFacePlane(plate_side.side, half_size.z);
-        *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, &committed_face, 1);
+        *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, &committed_face, 1, touched);
         return ContactError::kNone;
       }
       // A C array: GPU code cannot call std::array's member functions (nvcc without --expt-relaxed-constexpr).
@@ -1155,7 +1260,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
           {.face = SolidFace::kLowZ, .axis = Axis::kZ, .sign_out_of_solid = -1, .offset = half_size.z},
           {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = half_size.z},
       };
-      *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, plate_faces, 2);
+      *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, plate_faces, 2, touched);
       return ContactError::kNone;
     }
     case SolidShape::kBox: {
@@ -1172,19 +1277,20 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
           {.face = SolidFace::kLowZ, .axis = Axis::kZ, .sign_out_of_solid = -1, .offset = half_size.z},
           {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = half_size.z},
       };
-      *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, box_faces, 6);
+      *hit_on_solid = FindHitOnConvexSolid(inputs, solid_index, sweep, box_faces, 6, touched);
       return ContactError::kNone;
     }
     case SolidShape::kDomainBox:
       // Step 1: CheckSolid refuses a domain box that moves, so it never turns.
       assert(!is_turning_solid);
-      *hit_on_solid = FindHitOnDomainBox(inputs, solid_index, sweep);
+      *hit_on_solid = FindHitOnDomainBox(inputs, solid_index, sweep, touched);
       return ContactError::kNone;
     case SolidShape::kSphere: {
       // Step 1: a spin about the centre moves the surface but not the shape (plan decision P17), so a sphere never
       // turns and always has its closed form, the touching rule included.
       assert(!is_turning_solid);
-      const HitTime hit_time = FindSphereHit(inputs, solid_index, ComputeOwnPath(inputs, solid_index, sweep), duration);
+      const HitTime hit_time =
+          FindSphereHit(inputs, solid_index, ComputeOwnPath(inputs, solid_index, sweep), duration, touched);
       *hit_on_solid = ToFirstHit(inputs, solid_index, sweep, hit_time);
       return ContactError::kNone;
     }
@@ -1195,7 +1301,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       }
       // Step 1: the wall, the caps and the rims, with the touching rule and the rim corner.
       const HitTime hit_time =
-          FindCylinderHit(inputs, solid_index, ComputeOwnPath(inputs, solid_index, sweep), duration);
+          FindCylinderHit(inputs, solid_index, ComputeOwnPath(inputs, solid_index, sweep), duration, touched);
       *hit_on_solid = ToFirstHit(inputs, solid_index, sweep, hit_time);
       return ContactError::kNone;
     }
@@ -1241,7 +1347,7 @@ FLUIDITY_CPU_AND_GPU constexpr FirstHit ComputeEarlierHit(FirstHit kept, FirstHi
 //   The requirements of FindFirstHitOnSolid for every solid.
 // Fails: kTooCloseToCall  a turning solid's search needs more than kMaxAdvanceCount advances before the cap
 //                         (FindHitOnTurningSolid: Cost).
-//        *earliest holds the hits kept before the failing solid; FindFirstHit then writes nothing.
+//        *earliest is then FirstHit{} with solid_index the failing solid's index, so the caller can name it.
 // Read: docs/method-paper/fluidity-method.typ <proc-find-first-hit>, <sec-first-hit>
 FLUIDITY_CPU_AND_GPU inline ContactError
 FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, FirstHit* earliest) {
@@ -1253,6 +1359,8 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
     const bool has_earlier_hit = earliest->solid_index != kNoSolid;
     const double search_duration = has_earlier_hit ? earliest->elapsed : sweep.duration;  // s
     FirstHit hit_on_solid;
+    // A turning solid has no touching rule, so what the touched surfaces say of it does not matter.
+    const TouchedSolid not_touched;
     const ContactError error = FindFirstHitOnSolid(
         inputs,
         solid_index,
@@ -1260,10 +1368,12 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
         sweep.velocity_for_this_step,
         sweep.start_elapsed,
         search_duration,
+        not_touched,
         &hit_on_solid
     );
-    // A turning solid fails only with a close call.
+    // A turning solid fails only with a close call, which names this solid.
     if (error != ContactError::kNone) {
+      *earliest = {.elapsed = 0, .solid_index = solid_index, .at_hit = {}};
       return error;
     }
     *earliest = ComputeEarlierHit(*earliest, hit_on_solid);
@@ -1271,12 +1381,85 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
   return ContactError::kNone;
 }
 
-// One surface a particle met during the step: the solid and the normal recorded at the hit. A solid may appear more
-// than once in the list of touched surfaces, so nothing assumes one entry per solid.
-struct TouchedSurface {
-  std::uint32_t solid_index = kNoSolid;  // Index into solids, not the solid_id.
-  Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the hit.
-};
+// Finds the first hit of one sweep over every solid, as FindFirstHit does, with the touched surfaces of the
+// particle's move: a solid the particle already touched in this step gets the touching rule of a touched solid.
+//
+// Method: first every solid that does not turn, in array order, by FindFirstHitOnSolid with what the touched surfaces
+//   say of it (ComputeTouchedSolid); then the turning solids (FindEarliestHitWithTurningSolids), each searched only up
+//   to the earliest hit found so far. Nothing skips a solid: a touched solid is hit again when the path really
+//   approaches it at the start, or later in the sweep when the start is farther than tol / 16 from its rest gap. With
+//   an empty list this is FindFirstHit, bit for bit.
+// Units: m, m/s and s, world.
+// Ties: equal hit times keep the lower solid index, then the face that comes first in face order.
+// Example: a fixed flat solid with normal {0.6, 0, 0.8} through the origin, a particle at the rest gap after a hit
+//   there, 2.8e-18 m outside it by rounding, moving at the response's {-0.32, 0, 0.24} m/s, whose approach -2^-55 m/s
+//   is rounding: with the solid in the list and an allowance of 2^-44 m/s the path is free; with an empty list the
+//   closed form hits the solid again.
+// Requires: as FindFirstHit. touched_surfaces.surfaces points to touched_surfaces.count entries.
+// Fails: as FindFirstHit. On kTooCloseToCall, *first_hit is FirstHit{} with solid_index the turning solid that could
+//   not be searched; *close_call, when not null, is always written.
+// Read: docs/method-paper/fluidity-method.typ <proc-find-first-hit>, <sec-first-hit>
+FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOfSweep(
+    const SolidContactInputs& inputs,
+    Sweep sweep,
+    TouchedSurfaces touched_surfaces,
+    FirstHit* first_hit,
+    ContactCloseCall* close_call
+) {
+  assert(first_hit != nullptr);
+  assert(inputs.solids != nullptr || inputs.solid_count == 0);
+  assert(math::IsFinite(sweep.start) && math::IsFinite(sweep.velocity_for_this_step));
+  assert(math::IsFinite(sweep.start_elapsed) && sweep.start_elapsed >= 0);
+  assert(math::IsFinite(sweep.duration) && sweep.duration >= 0);
+  // With duration >= 0 this also keeps start_elapsed within the step.
+  assert(sweep.duration <= inputs.step_duration - sweep.start_elapsed);
+  assert(math::IsFinite(inputs.contact_tolerance) && inputs.contact_tolerance >= 0);
+  if (close_call != nullptr) {
+    *close_call = ContactCloseCall::kNone;
+  }
+  // Steps 1 and 2 of FindFirstHit run in FindFirstHitOnSolid, one solid at a time; step 3 keeps the earliest hit
+  // here. The solids that do not turn go first, so every turning solid is searched only up to the earliest hit.
+  FirstHit earliest;
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    assert(CheckSolid(inputs.solids[solid_index], inputs.step_duration) == ContactError::kNone);
+    if (ComputeIsTurningSolid(inputs, solid_index)) {
+      continue;
+    }
+    FirstHit hit_on_solid;
+    const ContactError error = FindFirstHitOnSolid(
+        inputs,
+        solid_index,
+        sweep.start,
+        sweep.velocity_for_this_step,
+        sweep.start_elapsed,
+        sweep.duration,
+        ComputeTouchedSolid(touched_surfaces, solid_index),
+        &hit_on_solid
+    );
+    // A solid that does not turn fails only for an unknown shape, a caller bug that CheckSolid catches first.
+    if (error != ContactError::kNone) {
+      return error;
+    }
+    // Step 3: solids come in index order here, so a later one wins only when strictly earlier.
+    earliest = ComputeEarlierHit(earliest, hit_on_solid);
+  }
+  // The turning solids: a close call is passed on with its reason, always the stepping search running out of
+  // advances (a hover or a graze), and its solid. The step
+  // is shortened and tried again.
+  const ContactError turning_error = FindEarliestHitWithTurningSolids(inputs, sweep, &earliest);
+  if (turning_error == ContactError::kTooCloseToCall) {
+    if (close_call != nullptr) {
+      *close_call = ContactCloseCall::kSlowApproachToTurningSolid;
+    }
+    *first_hit = earliest;
+    return turning_error;
+  }
+  if (turning_error != ContactError::kNone) {
+    return turning_error;
+  }
+  *first_hit = earliest;
+  return ContactError::kNone;
+}
 
 // One particle's move through the solids while MoveParticle works on it: the result so far, the part of the step
 // used and the list of touched surfaces.
@@ -1394,18 +1577,25 @@ FLUIDITY_CPU_AND_GPU constexpr SolidSide ToSideAtHit(const Solid& solid, SolidFa
 // Adds one change of velocity.for_next_step, made against one solid, to the reaction of a particle's move (plan
 // decision P5), and fails when a second reacting solid would need the one record.
 //
-// Method: a solid without reports_reaction changes nothing. The first reacting solid fills the reaction: its index,
-//   the position of the change and the change itself, bit for bit. Later changes against the same solid are added
-//   to the change; hit_position stays the first. A change against a different reacting solid fails, even a change
-//   of zero, because the solid was hit and one record cannot hold both.
+// Method: a solid without reports_reaction, and a change of exactly {0, 0, 0}, change nothing: a zero change adds
+//   nothing to the push on the solid, so it neither claims the record nor conflicts with it (an exact test, the same
+//   branch on CPU and GPU). The first reacting solid with a change fills the reaction: its index, the position of the
+//   change and the change itself, bit for bit. Later changes against the same solid are added to the change;
+//   hit_position stays the first. A change against a different reacting solid fails, because one record cannot hold
+//   both.
 // Units: m, world, for the position; m/s, world, for the change.
 // Example: two changes {-1, 0, 0} and {0, 0, 2} m/s against the same reacting solid sum to {-1, 0, 2} m/s, with the
-//   position of the first.
+//   position of the first. A change {0, 0, 0} against a second reacting solid leaves the reaction as it is.
 // Requires: solid_index < inputs.solid_count; reaction and failure are not null.
-// Fails: kTooCloseToCall  a second, different solid with reports_reaction was hit in this step. *failure is
-//                         kSecondReactingSolid with that solid's solid_id. A shorter step separates the two hits.
+// Fails: kTooCloseToCall  a second, different solid with reports_reaction changed velocity.for_next_step in this
+//                         step. *failure is kSecondReactingSolid with that solid's solid_id. A shorter step separates
+//                         the two hits.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-response>, <proc-move-particle>
+//
+// clang-tidy: the position and the change are a point in m and a velocity in m/s, both Vec3; the swappable-parameters
+// check flags the two.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 FLUIDITY_CPU_AND_GPU inline ContactError ApplyReactionChange(
     const SolidContactInputs& inputs,
     std::uint32_t solid_index,
@@ -1414,17 +1604,20 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyReactionChange(
     SolidReaction* reaction,
     ContactFailure* failure
 ) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
   assert(solid_index < inputs.solid_count);
   assert(reaction != nullptr && failure != nullptr);
   const Solid& solid = inputs.solids[solid_index];
-  if (!solid.reports_reaction) {
+  const Vec3 change = velocity_for_next_step_change;
+  const bool is_zero_change = change.x == 0 && change.y == 0 && change.z == 0;
+  if (!solid.reports_reaction || is_zero_change) {
     return ContactError::kNone;
   }
   if (reaction->solid_index == kNoSolid) {
     *reaction = {
         .solid_index = solid_index,
         .hit_position = change_position,
-        .velocity_for_next_step_change = velocity_for_next_step_change,
+        .velocity_for_next_step_change = change,
     };
     return ContactError::kNone;
   }
@@ -1438,65 +1631,59 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyReactionChange(
     };
     return ContactError::kTooCloseToCall;
   }
-  reaction->velocity_for_next_step_change = reaction->velocity_for_next_step_change + velocity_for_next_step_change;
+  reaction->velocity_for_next_step_change = reaction->velocity_for_next_step_change + change;
   return ContactError::kNone;
 }
 
-// Applies one hit of a sweep to a particle's move: moves the particle to the hit, gives both velocities the response,
-// fills the record when it is the first hit, adds the change of velocity.for_next_step to the reaction, and adds the
-// surface to the touched surfaces.
+// Applies the response at one surface of a particle's move, where the particle now is: both velocities get the
+// response, the record is filled when it is the first hit, the change of velocity.for_next_step goes to the reaction,
+// and the surface joins the touched surfaces with its approach allowance.
 //
 // Method (method paper <proc-move-particle>, steps 4 and 5):
-//   1 A fifth hit fails: kMaxHitsPerStep hits are the three sides of a corner and the slide that leaves it.
-//   2 The position becomes position + velocity_for_this_step * first_hit.elapsed and the elapsed time grows by
-//     first_hit.elapsed: the expressions FindFirstHit evaluates the hit with, so the solid is posed at the same time.
-//   3 With the solid velocity u = ComputeSolidVelocity at the hit position and pose, and friction times the solid's
-//     friction_scale, each velocity gets ComputeContactResponse with the normal at the hit.
-//   4 The first hit fills the record: kind kHit, hit_fraction = elapsed / step_duration, the normal, both approach
+//   1 With the solid velocity u = ComputeSolidVelocity at the particle's position and the pose of move->elapsed, and
+//     friction times the solid's friction_scale, each velocity gets ComputeContactResponse with at_surface's normal.
+//   2 The first hit fills the record: kind kHit, hit_fraction = elapsed / step_duration, the normal, both approach
 //     speeds Dot(normal, velocity - u) before the response, the solid's index, the face and, for a plate, the side.
-//   5 ApplyReactionChange with velocity.for_next_step after minus before (plan decision P5).
-//   6 The solid and the normal join the touched surfaces, and hit_count grows by one.
-//   Same bits on CPU and GPU when the solid's angular velocity is zero: only + - * /, Length and comparisons.
+//   3 ApplyReactionChange with velocity.for_next_step after minus before (plan decision P5).
+//   4 The solid, the normal and the approach allowance join the touched surfaces, and hit_count grows by one. The
+//     allowance is ComputeLargestApproachLeftAfterResponse(velocity_for_this_step before the response, u): the next
+//     sweeps follow velocity_for_this_step, and the bound is proved for the velocity passed to the response; one
+//     built from the velocity it returns can be far smaller than what is left, for example after a slip just below
+//     the stick limit. Cost of the allowance: a later sweep lets the particle approach a touched solid at up to it, so
+//     for the time left it may come closer by allowance * (step_duration - elapsed). The assert keeps that at most
+//     tol / 64 for each entry, so that at most kMaxHitsPerStep entries add up to at most tol / 16 over the step
+//     (ComputeTouchedSolid; MoveParticle: Requires); the particle, resting at tol, never reaches the solid.
+//   Same bits on CPU and GPU when the solid's angular velocity is zero: only + - * /, Abs, Length and comparisons.
 // Units: s for times; m and m/s, world.
-// Example: the move of the particle at {0.9, 0, 0} moving at {1, 0, 0} m/s, with the flat solid of surface x = 1 and
-//   normal {-1, 0, 0} hit at 0.1 - tol s: position {1 - tol, 0, 0}, both velocities {0, 0, 0}, approach speeds -1 m/s,
-//   hit_fraction (0.1 - tol) / 0.2 for a step of 0.2 s, hit_count 1.
-// Requires: first_hit is a hit of FindFirstHit on move's position and velocity_for_this_step, from move->elapsed;
-//   move and failure are not null.
-// Fails: kTooCloseToCall  a fifth hit (kTooManyHits, with the hit solid's solid_id) or a second reacting solid
-//                         (kSecondReactingSolid, ApplyReactionChange). A shorter step has fewer hits.
+// Example: the particle at {1 - tol, 0, 0} moving at {1, 0, 0} m/s against the fixed flat solid of surface x = 1 and
+//   normal {-1, 0, 0}, 0.1 - tol s into a step of 0.2 s: both velocities {0, 0, 0}, approach speeds -1 m/s,
+//   hit_fraction (0.1 - tol) / 0.2, allowance 2^-46 m/s, hit_count 1.
+// Requires: solid_index < inputs.solid_count, hit_count < kMaxHitsPerStep; at_surface is the distance to that solid at
+//   the particle's position and the pose of move->elapsed; move and failure are not null. The speeds involved, summed
+//   over their axes, times the time left are at most 2^40 tol (the allowance bound above).
+// Fails: kTooCloseToCall  a second reacting solid (kSecondReactingSolid, ApplyReactionChange). A shorter step
+//                         separates the two hits.
 //        *failure is written only on failure; *move is then unspecified.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>, <eq:contact-response>
-FLUIDITY_CPU_AND_GPU inline ContactError
-ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* move, ContactFailure* failure) {
-  assert(first_hit.solid_index < inputs.solid_count);
+FLUIDITY_CPU_AND_GPU inline ContactError ApplyResponseAtSurface(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    DistanceToSolid at_surface,
+    ParticleMove* move,
+    ContactFailure* failure
+) {
+  assert(solid_index < inputs.solid_count);
   assert(move != nullptr && failure != nullptr);
-  // Steps: 1 the hit limit  2 move to the hit  3 respond  4 record  5 reaction  6 touched surface
-  const Solid& solid = inputs.solids[first_hit.solid_index];
   SolidContactResult& result = move->result;
-  // Step 1: a particle that keeps hitting solids in one step is in a gap too narrow for this step length.
-  if (result.hit_count == kMaxHitsPerStep) {
-    *failure = {
-        .error = ContactError::kTooCloseToCall,
-        .close_call = ContactCloseCall::kTooManyHits,
-        .particle_id = 0,
-        .solid_id = solid.solid_id,
-        .magnitude = 0,
-    };
-    return ContactError::kTooCloseToCall;
-  }
-
-  // Step 2: these are FindFirstHit's own expressions, so the position and the pose are those of the hit.
-  const PerParticleVelocity<Vec3> before = result.velocity;
-  result.position = result.position + before.for_this_step * first_hit.elapsed;
-  move->elapsed = move->elapsed + first_hit.elapsed;
-
-  // Step 3: each velocity gets the response with its own approach (method paper <sec-contact-response>).
+  assert(result.hit_count < kMaxHitsPerStep);
+  // Steps: 1 respond  2 record  3 reaction  4 touched surface
+  // Step 1: each velocity gets the response with its own approach (method paper <sec-contact-response>).
   // Method paper <eq:contact-response>:  a = n . (v - u),  mu = friction * friction_scale
-  const Vec3 hit_position = result.position;
-  const SolidPose hit_pose = ComputeSolidPose(solid, move->elapsed);
-  const Vec3 solid_velocity = ComputeSolidVelocity(solid, hit_pose, hit_position);
-  const Vec3 normal = first_hit.at_hit.normal_out_of_solid;
+  const Solid& solid = inputs.solids[solid_index];
+  const PerParticleVelocity<Vec3> before = result.velocity;
+  const Vec3 position = result.position;
+  const Vec3 solid_velocity = ComputeSolidVelocity(solid, ComputeSolidPose(solid, move->elapsed), position);
+  const Vec3 normal = at_surface.normal_out_of_solid;
   const double friction_at_solid = inputs.friction * solid.friction_scale;
   const PerParticleVelocity<Vec3> after = {
       .for_next_step = ComputeContactResponse(before.for_next_step, solid_velocity, normal, friction_at_solid),
@@ -1504,7 +1691,7 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
   };
   result.velocity = after;
 
-  // Step 4: the record describes the first hit only.
+  // Step 2: the record describes the first hit only.
   if (result.hit_count == 0) {
     result.kind = ContactKind::kHit;
     result.hit_fraction = move->elapsed / inputs.step_duration;
@@ -1513,18 +1700,17 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
         .for_next_step = math::Dot(normal, before.for_next_step - solid_velocity),
         .for_this_step = math::Dot(normal, before.for_this_step - solid_velocity),
     };
-    result.solid_index = first_hit.solid_index;
-    result.face = first_hit.at_hit.face;
-    result.side_at_hit = ToSideAtHit(solid, first_hit.at_hit.face);
+    result.solid_index = solid_index;
+    result.face = at_surface.face;
+    result.side_at_hit = ToSideAtHit(solid, at_surface.face);
   }
 
-  // Step 5: only for_next_step counts, because it is the velocity the particle keeps.
-  const Vec3 velocity_for_next_step_change = after.for_next_step - before.for_next_step;
+  // Step 3: only for_next_step counts, because it is the velocity the particle keeps.
   const ContactError reaction_error = ApplyReactionChange(
       inputs,
-      first_hit.solid_index,
-      hit_position,
-      velocity_for_next_step_change,
+      solid_index,
+      position,
+      after.for_next_step - before.for_next_step,
       &result.reaction,
       failure
   );
@@ -1532,10 +1718,62 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
     return reaction_error;
   }
 
-  // Step 6: the normal is the one recorded at the hit, which a later slide rule reads.
-  move->touched_surfaces[result.hit_count] = {.solid_index = first_hit.solid_index, .normal_out_of_solid = normal};
+  // Step 4: the normal recorded here is what a later slide rule reads; the allowance is what the response may have
+  // left, computed from the velocity it received.
+  // Method paper <sec-contact-response>:  b = 2^-46 (sum of |v_i| + sum of |u_i|)
+  const double approach_allowance = ComputeLargestApproachLeftAfterResponse(before.for_this_step, solid_velocity);
+  // The time left is step_duration - elapsed, in s.
+  assert(
+      approach_allowance * (inputs.step_duration - move->elapsed)
+      <= kTouchedSolidRestingGapShare / kMaxHitsPerStep * inputs.contact_tolerance
+  );
+  move->touched_surfaces[result.hit_count] = {
+      .solid_index = solid_index,
+      .normal_out_of_solid = normal,
+      .approach_allowance = approach_allowance,
+  };
   ++result.hit_count;
   return ContactError::kNone;
+}
+
+// Applies one hit of a sweep to a particle's move: moves the particle to the hit, then the response at that surface
+// (ApplyResponseAtSurface).
+//
+// Method (method paper <proc-move-particle>, steps 4 and 5):
+//   1 A fifth hit fails: kMaxHitsPerStep hits are the three sides of a corner and the slide that leaves it.
+//   2 The position becomes position + velocity_for_this_step * first_hit.elapsed and the elapsed time grows by
+//     first_hit.elapsed: the expressions FindFirstHit evaluates the hit with, so the solid is posed at the same time.
+//   3 ApplyResponseAtSurface with first_hit.at_hit.
+// Units: s for times; m and m/s, world.
+// Example: the particle at {0.9, 0, 0} moving at {1, 0, 0} m/s, with the flat solid of surface x = 1 and normal
+//   {-1, 0, 0} hit at 0.1 - tol s: position {1 - tol, 0, 0}, then the response of ApplyResponseAtSurface's example.
+// Requires: first_hit is a hit of FindFirstHit on move's position and velocity_for_this_step, from move->elapsed;
+//   move and failure are not null. As ApplyResponseAtSurface for the speeds.
+// Fails: kTooCloseToCall  a fifth hit (kTooManyHits, with the hit solid's solid_id) or a second reacting solid
+//                         (kSecondReactingSolid). A shorter step has fewer hits.
+//        *failure is written only on failure; *move is then unspecified.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+FLUIDITY_CPU_AND_GPU inline ContactError
+ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* move, ContactFailure* failure) {
+  assert(first_hit.solid_index < inputs.solid_count);
+  assert(move != nullptr && failure != nullptr);
+  SolidContactResult& result = move->result;
+  // Step 1: a particle that keeps hitting solids in one step is in a gap too narrow for this step length.
+  if (result.hit_count == kMaxHitsPerStep) {
+    *failure = {
+        .error = ContactError::kTooCloseToCall,
+        .close_call = ContactCloseCall::kTooManyHits,
+        .particle_id = 0,
+        .solid_id = inputs.solids[first_hit.solid_index].solid_id,
+        .magnitude = 0,
+    };
+    return ContactError::kTooCloseToCall;
+  }
+  // Step 2: these are FindFirstHit's own expressions, so the position and the pose are those of the hit.
+  result.position = result.position + result.velocity.for_this_step * first_hit.elapsed;
+  move->elapsed = move->elapsed + first_hit.elapsed;
+  // Step 3: the response, the record, the reaction and the touched surface.
+  return ApplyResponseAtSurface(inputs, first_hit.solid_index, first_hit.at_hit, move, failure);
 }
 
 // Computes the point moved along the normal of one solid to distance contact_tolerance from it: the rest gap.
@@ -1561,8 +1799,13 @@ MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, Solid
 // contact tolerance, at the solid's pose at the end of the step, moves it to the rest gap (MoveToRestGap).
 //
 // Method: the touched surfaces in hit order; for each, d = ComputeDistanceForParticle at the end position and pose,
-//   and MoveToRestGap when d < tol. A solid that was not hit does not move the particle: the end check decides
-//   for it. A solid listed twice is settled twice, which moves the particle by rounding at most the second time.
+//   and MoveToRestGap when d < tol. The distance and normal are read afresh at the end pose, not the normal recorded
+//   at the hit, because a moving solid's surface has moved and a turning one's normal has turned since. So the move
+//   follows the solid's nearest surface there, which for a box or a domain box may be another face than the one hit:
+//   two entries of one domain box can settle two different sides, each by up to tol, and a side never hit can be the
+//   one settled. A solid that was not hit does not move the particle: the end check decides for it. One pass: with two
+//   touched surfaces at an acute angle the second move can take the particle back toward the first; the end check then
+//   fails, safely.
 // Units: m, world.
 // Example: a particle that ends a slide along a fixed floor with normal {0, 0, 1} at z = tol / 4 ends at z = tol.
 // Requires: move is not null and its touched surfaces index inputs.solids.
@@ -1577,6 +1820,10 @@ FLUIDITY_CPU_AND_GPU inline void ApplySettleAtEnd(const SolidContactInputs& inpu
     const SolidPose end_pose = ComputeSolidPose(inputs.solids[solid_index], inputs.step_duration);
     const double end_distance =
         ComputeDistanceForParticle(inputs, solid_index, end_pose, position, inputs.plate_side).distance;
+    // A touched solid that does not turn ends at d >= tol - tol / 16 up to rounding: its touching rule lets the
+    // particle approach it by at most tol / 16 in the step. Deeper than -2 tol means a hit at a wrong pose or
+    // position, which the move below would silently repair, so a debug build stops.
+    assert(end_distance >= -2 * inputs.contact_tolerance);
     if (end_distance < inputs.contact_tolerance) {
       position = MoveToRestGap(inputs, solid_index, end_pose, position);
     }

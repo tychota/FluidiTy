@@ -42,7 +42,7 @@
 //   nearest solid surface  the surface, among all solids, with the smallest distance from a point
 //   search distance  the largest distance at which ComputeSolidVelocitySample looks for that surface
 // Owns:    SolidShape, SolidFace, SolidSide, PlateSide, FlatSolid, Plate, Box, Sphere, Cylinder, ClosedSides,
-//          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, ToSolid,
+//          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, kNegligibleTurnShare, ToSolid,
 //          ComputeShapeTurningAngularVelocity, CheckSolid, DistanceToSolid, ComputeSolidPose, ComputeSolidVelocity,
 //          ComputeDistanceToSphere, ComputeDistanceToCylinder, ComputeDistanceToSolid, FindSolidSide,
 //          SolidVelocitySample, ComputeSolidVelocitySample, DomainSide, ToSolidFace
@@ -201,6 +201,21 @@ inline constexpr std::uint32_t kNoSolid = 0xFFFFFFFFU;
 // asks for a shorter step.
 inline constexpr double kMaxTurnPerStep = 1.5707963267948966;
 
+// No unit. A flat solid's or a plate's angular velocity whose part across the normal is at most this share of its
+// length counts as a spin about the normal alone (plan decision P17): the part across is rounding, not a turn.
+// Why it is safe: let n0 be the normal at the step's start (|n0|^2 within 2^-40 of 1, CheckSolid) and
+// s = |omega x n0| / |omega|. The part of n0 across omega, of length s, turns on a circle while the part along omega
+// stays, so at any time, after any number of turns, the normal is within 2 s of n0. A point at distance r from the
+// solid's origin then sees its distance to the face differ from the one of the face that only translates by at most
+// 2 s r. The computed part across bounds s: it differs from omega - (omega . n0) n0 by at most about 6 rounding units
+// of |omega|, and that vector is at least |omega x n0| / |n0| long, so s <= (2^-46 + 2^-50.4) (1 + 2^-41). A particle
+// and a solid's origin have coordinates of at most the largest coordinate L of the contact scale, so r <= 2 Sqrt(3) L,
+// and the difference is at most 4 Sqrt(3) (2^-46 + 2^-50.4) (1 + 2^-41) L < 0.91 * 2^-43 L. Since tol >= 2^-40 L,
+// that is within tol / 8, the cylinder's budget of plan decision P17, whatever the spin rate. Rounding alone leaves at
+// most about 2^-50 of |omega| on a spin given about a unit normal (2^-50.3 measured over random normals), 16 times
+// below the share.
+inline constexpr double kNegligibleTurnShare = 0x1p-46;
+
 // Builds the Solid of a flat solid. Its origin is the point on the surface and its own z axis is the normal.
 //
 // Method: the x axis is Cross(e, normal) normalised, e the world axis on which the normal has its smallest part
@@ -317,11 +332,15 @@ FLUIDITY_CPU_AND_GPU inline Solid ToSolid(Cylinder shape, SolidMotion motion, st
 // Method: a spin moves the surface of a sphere or a cylinder but not its shape. A sphere gives {0, 0, 0}. A
 //   cylinder gives the part across its own z axis e_z, the z column of its axes at the start of the step. A flat
 //   solid and a plate give the part across their normal, which is their own z axis, by the same formula: both are
-//   unbounded along their own x and y, so a turn about the normal leaves the shape unchanged (plan decision P17). A
-//   box and a domain box give their full angular velocity.
+//   unbounded along their own x and y, so a turn about the normal leaves the shape unchanged (plan decision P17).
+//   For them a part across no longer than kNegligibleTurnShare of |omega| gives {0, 0, 0}: a spin given about a
+//   tilted normal leaves a few rounding units across it, which must not make the solid turning. A box and a domain
+//   box give their full angular velocity. Same bits on CPU and GPU: only + - *, Sqrt and comparisons.
 // Units: rad/s, world.
 // Example: a cylinder along z turning at {2, 0, 100} rad/s gives {2, 0, 0}, and so do a flat solid and a plate with
-//   normal {0, 0, 1}; a sphere turning at {2, 0, 100} rad/s gives {0, 0, 0}; a box gives {2, 0, 100}.
+//   normal {0, 0, 1}; a sphere turning at {2, 0, 100} rad/s gives {0, 0, 0}; a box gives {2, 0, 100}. A flat solid
+//   with normal Normalized({1, 2, 3}) spinning at 100 times that normal gives {0, 0, 0}, although the part across
+//   computes to about 1.6e-14 rad/s.
 // Read: docs/method-paper/fluidity-method.typ <sec-round-solids>, <sec-first-hit>
 FLUIDITY_CPU_AND_GPU inline Vec3 ComputeShapeTurningAngularVelocity(const Solid& solid) {
   const Vec3 angular_velocity = solid.motion.angular_velocity;
@@ -337,7 +356,12 @@ FLUIDITY_CPU_AND_GPU inline Vec3 ComputeShapeTurningAngularVelocity(const Solid&
       const Mat3 axes = solid.pose_at_step_start.axes;
       const Vec3 own_z_axis = {.x = axes.xz, .y = axes.yz, .z = axes.zz};
       const double along_axis_rate = math::Dot(angular_velocity, own_z_axis);
-      return angular_velocity - along_axis_rate * own_z_axis;
+      const Vec3 across_axis = angular_velocity - along_axis_rate * own_z_axis;
+      // A cylinder keeps its own bound on the tilt (plan decision P17, in the stepping search's choice); a flat solid
+      // and a plate drop a part across that rounding alone can leave (kNegligibleTurnShare).
+      const bool is_flat_shape = solid.shape != SolidShape::kCylinder;
+      const bool is_rounding_only = math::Length(across_axis) <= kNegligibleTurnShare * math::Length(angular_velocity);
+      return is_flat_shape && is_rounding_only ? Vec3{} : across_axis;
     }
     case SolidShape::kBox:
     case SolidShape::kDomainBox:

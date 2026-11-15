@@ -355,6 +355,29 @@ inline std::vector<MoveParticleCase> BuildSeveralHitCases() {
           .friction = 0,
       }),
   });
+  // The two reacting solids, with for_next_step {-1, 0, -2}: it approaches the floor but moves away from the upright,
+  // so the upright's response changes for_next_step by exactly zero.
+  SolidContactInputs zero_change_inputs = BuildCaseInputs({
+      .start_position = {.x = 0.8, .y = 0, .z = 0.1},
+      .velocity = {.x = 2, .y = 0, .z = -2},
+      .step_duration = 0.2,
+      .friction = 0,
+  });
+  zero_change_inputs.velocity.for_next_step = {.x = -1, .y = 0, .z = -2};
+  cases.push_back({
+      .name = "SecondReactingSolidWithZeroChange",
+      .solids = {reacting_floor, reacting_upright},
+      .inputs = zero_change_inputs,
+  });
+  // The reacting upright alone, with for_next_step {-1, 0, 0} moving away from it: a zero change.
+  SolidContactInputs away_inputs = BuildCaseInputs({
+      .start_position = {.x = 0.9, .y = 0, .z = 0},
+      .velocity = kUnitX,
+      .step_duration = 0.2,
+      .friction = 0,
+  });
+  away_inputs.velocity.for_next_step = -kUnitX;
+  cases.push_back({.name = "ReactingSolidWithZeroChange", .solids = {reacting_upright}, .inputs = away_inputs});
   cases.push_back({
       .name = "ReactingUprightAfterFloor",
       .solids = {BuildFloor(1), reacting_upright},
@@ -402,17 +425,93 @@ inline std::vector<MoveParticleCase> BuildSeveralHitCases() {
           .friction = 0,
       }),
   });
-  // A floor rising at 0.25 m/s and an upright flat solid at x = 1 tilted so slightly that its response leaves the
-  // particle approaching the floor at 1.5 tol m/s: over the 0.5 s left that is 0.75 tol, too little for the touching
-  // rule to call a hit on the floor.
+  // A fixed floor and an upright flat solid at x = 1 tilted so slightly that its response leaves the particle
+  // approaching the floor at 1.5 tol m/s: a real approach, far above the floor's approach allowance, so the touched
+  // floor is hit again at once.
   const double tilt = 1.5 * kTolerance;  // No unit.
+  cases.push_back({
+      .name = "TiltedUprightPushesBackToFloor",
+      .solids = {BuildFloor(1), BuildFlatSolid(kUnitX, math::Normalized({.x = -1, .y = 0, .z = -tilt}), kNoMotion, 2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5, .y = 0, .z = 0.1},
+          .velocity = {.x = 1, .y = 0, .z = -1},
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // The same tilted upright over a floor rising at 0.25 m/s: the floor carries the particle into the overhang, a real
+  // approach to the touched floor after the upright's response, so the moving floor is hit again.
   const Solid rising_floor = BuildFlatSolid({}, kUnitZ, {.linear_velocity = {.x = 0, .y = 0, .z = 0.25}}, 1);
   cases.push_back({
-      .name = "SettleOnRisingFloorAfterTiltedUpright",
+      .name = "TiltedUprightOverRisingFloor",
       .solids = {rising_floor, BuildFlatSolid(kUnitX, math::Normalized({.x = -1, .y = 0, .z = -tilt}), kNoMotion, 2)},
       .inputs = BuildCaseInputs({
           .start_position = {.x = 0.5, .y = 0, .z = 0.1},
           .velocity = {.x = 1, .y = 0, .z = -1},
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // A slip just below the stick limit on one fixed flat solid through the origin: the response returns about
+  // {1.5e-7, 5.4e-8, 2.4e-7} m/s with an approach of -3.8e-17 m/s, rounding of the incoming speed. The bound of the
+  // incoming velocity, 7.3e-14 m/s, covers it; one from the returned velocity, 6.3e-21 m/s, would not.
+  // The y axis of this random normal is close to 1 / Sqrt(pi) by chance, not by meaning.
+  // NOLINTNEXTLINE(modernize-use-std-numbers): see the comment above.
+  const Vec3 near_stick_normal = {.x = -0.7462749575584682, .y = 0.5645329322916014, .z = 0.3526701803092409};
+  cases.push_back({
+      .name = "NearStickSlipOnObliqueFlatSolid",
+      .solids = {BuildFlatSolid({}, near_stick_normal, kNoMotion, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = -0.13431360048800245, .y = 0.033902899848675824, .z = -0.07045626995076695},
+          .velocity = {.x = 2.7659064005760463, .y = -0.16737819979015056, .z = 2.2161120245085217},
+          .step_duration = 1,
+          .friction = 2.374646385678357,
+      }),
+  });
+  // The reviewer's chasing solid: a fixed flat solid A through the origin, and a flat solid B 10 m away along a normal
+  // at right angles to A's up to rounding, chasing the particle at 100 m/s. A is hit at 0.05 s, B 0.37 ms later; B's
+  // response leaves along A's normal rounding of B's speeds, larger than A's own allowance.
+  const Vec3 first_normal = {.x = 0.5752141167476622, .y = 0.014005927519369528, .z = 0.8178829707779282};
+  const Vec3 chasing_normal = {.x = -0.32394700710139007, .y = 0.9220068524474481, .z = 0.2120417426593205};
+  cases.push_back({
+      .name = "ChasingSolidAtRightAngles",
+      .solids =
+          {
+              BuildFlatSolid({}, first_normal, kNoMotion, 1),
+              BuildFlatSolid(10 * chasing_normal, -chasing_normal, {.linear_velocity = -100 * chasing_normal}, 2),
+          },
+      .inputs = BuildCaseInputs({
+          .start_position = 0.05 * first_normal,
+          .velocity = {.x = -0.45638497505415865, .y = -0.35221335191322467, .z = -0.8956634031667221},
+          .step_duration = 0.2,
+          .friction = 0,
+      }),
+  });
+  // The reviewer's input: one fixed flat solid with normal {0.6, 0, 0.8} through the origin. Rounding leaves the hit
+  // position 2.8e-18 m outside the rest gap, and the response leaves an approach of -2^-55 m/s.
+  cases.push_back({
+      .name = "ObliqueFlatSolidRoundingAtHit",
+      .solids = {BuildFlatSolid({}, {.x = 0.6, .y = 0, .z = 0.8}, kNoMotion, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.125, .y = 0, .z = 0.125},
+          .velocity = {.x = -2, .y = 0, .z = -2},
+          .step_duration = 0.5,
+          .friction = 0,
+      }),
+  });
+  // A box turning at 1 rad/s about z and a particle at rest on the path of its face kHighX: the face reaches it at
+  // 0.8857 s; with no touching rule on a turning solid the particle is hit again at 0 by each later sweep.
+  const Solid turning_box_beside_particle = ToSolid(
+      Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
+      {.linear_velocity = {}, .angular_velocity = kUnitZ},
+      1
+  );
+  cases.push_back({
+      .name = "TurningBoxHitsRestingParticle",
+      .solids = {turning_box_beside_particle},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.6 * std::cos(0.3), .y = 0.6 * std::sin(0.3), .z = 0},
+          .velocity = {},
           .step_duration = 1,
           .friction = 0,
       }),
@@ -503,7 +602,7 @@ inline std::vector<MoveParticleCase> BuildStartAndEndCases() {
       1
   );
   cases.push_back({
-      .name = "TurningBoxSlowApproach",
+      .name = "TurningBoxHoverOnSpinAxis",
       .solids = {turning_box},
       .inputs = BuildCaseInputs({
           .start_position = {.x = 0, .y = 0, .z = 0.5 + 0x1p-17},
