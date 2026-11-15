@@ -8,7 +8,8 @@
 //   solids grown by the contact tolerance, so the hit is the first time the gap, the distance minus the tolerance,
 //   reaches zero. For a solid that does not turn the gap to a face changes linearly with time, so the hit time is the
 //   gap divided by the speed at which it closes. A particle that already rests on a surface is not hit by it again
-//   unless the path pushes into it (the touching rule, contact/solid_contact_steps.h).
+//   unless the path pushes into it (the touching rule, contact/solid_contact_steps.h). Toward a turning solid the
+//   sweep steps forward instead, each advance no longer than the gap allows (the stepping search).
 //   Example: a flat solid with surface x = 1 and normal {-1, 0, 0}, and a path from x = 0.9 at {1, 0, 0} m/s: gap
 //   0.1 - tol, closed at 1 m/s, so the hit is at 0.1 - tol s.
 //
@@ -21,8 +22,8 @@
 // Owns:    FindFirstHit
 // Uses:    Vec3, math::IsFinite (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError,
 //          ContactCloseCall (contact/contact_error.h), Solid, kNoSolid, CheckSolid (contact/solid_shapes.h),
-//          SolidContactInputs, FirstHit (contact/solid_contact_types.h), FindFirstHitOnSolid
-//          (contact/solid_contact_steps.h)
+//          SolidContactInputs, FirstHit, kMaxAdvanceCount, kTurningSolidHitGapShare (contact/solid_contact_types.h),
+//          FindFirstHitOnSolid (contact/solid_contact_steps.h)
 // Used by: the MoveParticles stage, through the contact functions that move one particle
 // Read:    docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
 //          <fig-sweep-hit-slide>
@@ -58,15 +59,23 @@ namespace fluidity::contact {
 //     into the cylinder grown by tol with sharp edges, the later of its entries into the grown wall and between the
 //     grown caps' planes when it comes before both exits (plan decision P15). A hit counts when its time is at most
 //     duration.
-//   2 Turning solid: this code has no search toward a turning solid yet, so a flat solid, a plate or a box whose
-//     angular velocity is not exactly {0, 0, 0}, or a cylinder whose axis tilts by more than plan decision P17's
-//     bound, makes the call too close to call. A spin about a sphere's centre or a cylinder's axis is not a turn.
+//   2 Turning solid: a flat solid, a plate or a box whose angular velocity is not exactly {0, 0, 0} (plan decision
+//     P7), or a cylinder whose axis tilts by more than plan decision P17's bound. Its gap is not linear in time, so
+//     the stepping search advances from t = 0 by g(t) / bound, with bound = Length(velocity_for_this_step -
+//     linear_velocity) + Length(angular_velocity) * r_max and r_max the larger distance from the path's two ends to
+//     the solid's origin at those times: the gap cannot shrink faster, so no advance passes a crossing. It stops with
+//     a hit when g(t) <= tol / 4 (kTurningSolidHitGapShare), after at least one advance at a distance in
+//     [tol, 1.25 tol], and with no hit once t >= duration. It needs about ln(4 g / tol) * bound / rate advances, rate
+//     the speed at which the gap really closes. There is no touching rule: a particle resting on a turning solid is
+//     hit at 0. A spin about a sphere's centre or a cylinder's axis is not a turn.
 //   3 The smallest hit time wins. *first_hit holds its time, the solid's index and at_hit: the distance, normal and
 //     face at the hit position (one tolerance from the entering face up to rounding; between tol and Sqrt(2) tol from
-//     a cylinder's rim, whose face it then reports), or, for a hit at 0, the distance at the start. A free path gives
+//     a cylinder's rim, whose face it then reports; between tol and 1.25 tol from a turning solid), or, for a hit at
+//     0, the distance at the start. A free path gives
 //     solid_index kNoSolid, elapsed 0 and at_hit at its defaults.
 //   The inputs are not checked here (plan decision P9). Same bits on CPU and GPU when every solid's angular velocity
-//   is zero: only + - * /, Abs, Sqrt and comparisons.
+//   is zero: only + - * /, Abs, Sqrt and comparisons. A turning or spinning solid is posed with Sin, which may differ
+//   in the last bits, so a turning solid's hit time may differ too.
 // Units: m and m/s, world, for the path; s for start_elapsed, duration and the result's elapsed, which counts from
 //   start_elapsed.
 // Ties: equal hit times keep the lower solid index, then the face that comes first in face order.
@@ -75,7 +84,9 @@ namespace fluidity::contact {
 //   kHighZ, normal {-1, 0, 0}, distance 2^-30 m up to rounding. The same path starting at {1 - 2^-30, 0, 0} moving at
 //   {0, 0, 1} m/s rests on the surface and is free; at {1, 0, 0} m/s it pushes in and is hit at 0. A fixed sphere of
 //   radius 0.5 m at the origin and the path from {-2, 0.3, 0} at {1, 0, 0} m/s for 2 s: elapsed
-//   2 - Sqrt((0.5 + 2^-30)^2 - 0.09) = 1.5999999988358469 s, face kCurved, normal near {-0.8, 0.6, 0}.
+//   2 - Sqrt((0.5 + 2^-30)^2 - 0.09) = 1.5999999988358469 s, face kCurved, normal near {-0.8, 0.6, 0}. A box of half
+//   size 0.5 m at the origin turning at {0, 0, 1} rad/s and a particle at rest at 0.6 * {cos 0.3, sin 0.3, 0} m for
+//   1 s: after 30 advances, elapsed 0.8857 s on kHighX, 4e-10 s before 0.3 + acos((0.5 + 2^-30) / 0.6).
 // Requires: first_hit is not null. inputs.solids points to inputs.solid_count solids (it may be null when the count
 //   is 0), each of which passed CheckSolid for inputs.step_duration. start and velocity_for_this_step are finite.
 //   start_elapsed and duration are finite and zero or more, and duration is at most inputs.step_duration -
@@ -83,8 +94,10 @@ namespace fluidity::contact {
 //   inputs.contact_tolerance is finite and zero or more. When inputs.plate_side.plate_id is the solid_id of a
 //   solid, that solid is a plate and the side is kAlongNormal or kAgainstNormal (an id that names no solid sees
 //   every plate with both faces; MoveParticle refuses it).
-// Fails: kTooCloseToCall  a solid turns: *close_call is kSlowApproachToTurningSolid. A shorter step does not fix it
-//                         yet; the search toward a turning solid will.
+// Fails: kTooCloseToCall  the search toward a turning solid needs more than kMaxAdvanceCount advances: the path
+//                         closes on it at a small share of the bound, or passes near it or grazes it, which is common
+//                         near a turning solid (FindHitOnTurningSolid: Cost). *close_call is
+//                         kSlowApproachToTurningSolid; the caller shortens the step and tries again.
 //        kBadInput        a solid is of an unknown shape; a debug build stops at an assertion first.
 //        When close_call is not null, *close_call is always written: kNone unless the error is kTooCloseToCall. On
 //        failure *first_hit is unchanged.

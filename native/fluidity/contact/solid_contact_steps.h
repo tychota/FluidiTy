@@ -23,6 +23,12 @@
 //   centre or the cylinder's axis moves the surface but not the shape, so it does not make the solid turn here.
 //   Example: a sphere of radius 0.5 m at the origin and a path from {-2, 0, 0} at {1, 0, 0} m/s: the hit is at
 //   1.5 - tol s, normal {-1, 0, 0}.
+//   A turning solid's gap is not linear in time and its faces do not keep their direction, so no closed form holds.
+//   The gap cannot shrink faster than the particle's speed relative to the solid, which a bound caps;
+//   the stepping search advances along the path by the gap over that bound, so it never passes the moment the path
+//   reaches the grown solid, and stops once the gap is a quarter of a tolerance.
+//   Example: a box of half size 0.5 m at the origin turning at {0, 0, 1} rad/s and a particle at rest at
+//   0.6 * {cos 0.3, sin 0.3, 0} m: the bound is 0.6 m/s, and after 30 advances face kHighX is hit at 0.8857 s.
 //
 // Words:
 //   touching rule  how a sweep treats a start whose gap is in [-tol, 0] for the surface that gives the distance: the
@@ -32,16 +38,21 @@
 //                  a convex function along the path, which gives the same rule
 //   rim corner     the part of a cylinder grown with sharp edges that is farther than tol from the rim: a point
 //                  beyond the wall and beyond a cap, by at most tol from each
+//   turning solid  a solid whose shape turns during the step: a flat solid, a plate or a box with an angular velocity
+//                  other than {0, 0, 0}, or a cylinder whose axis tilts beyond plan decision P17's bound. It has no
+//                  touching rule
 // Owns:    Sweep, FacePlane, StartCase, OwnPath, HitTime, ComputeCoordinate, ComputeColumn, ToFacePlane,
 //          ComputeFaceDistance, ComputeDistanceForParticle, ComputeStartCase, ComputeOwnPath, ToFirstHit,
 //          FindEntryThroughFacePlanes, FindHitOnConvexSolid, FindHitOnDomainBox, FindSphereHit, TimeInterval,
-//          ComputeTimeInsideGrownWall, ComputeTimeBetweenGrownCaps, FindCylinderHit, FindFirstHitOnSolid
-// Uses:    Vec3, math::Dot, math::Length (base/vec3.h), Mat3, kIdentity, math::Transpose (base/mat3.h),
-//          Axis (base/axis.h), math::Abs, math::Sqrt (base/scalar_math.h), FLUIDITY_CPU_AND_GPU
-//          (base/cpu_and_gpu.h), ContactError (contact/contact_error.h), Solid, SolidShape, SolidFace, SolidSide,
-//          PlateSide, SolidPose, ClosedSides, DistanceToSolid, kNoSolid, ComputeSolidPose, ComputeDistanceToSolid,
-//          ComputeDistanceToSphere, ComputeDistanceToCylinder, ComputeShapeTurningAngularVelocity
-//          (contact/solid_shapes.h), SolidContactInputs, FirstHit (contact/solid_contact_types.h)
+//          ComputeTimeInsideGrownWall, ComputeTimeBetweenGrownCaps, FindCylinderHit, FindHitOnTurningSolid,
+//          FindFirstHitOnSolid
+// Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), Mat3, kIdentity, math::Transpose
+//          (base/mat3.h), Axis (base/axis.h), math::Abs, math::Sqrt, math::Max (base/scalar_math.h),
+//          FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError (contact/contact_error.h), Solid, SolidShape,
+//          SolidFace, SolidSide, PlateSide, SolidPose, ClosedSides, DistanceToSolid, kNoSolid, ComputeSolidPose,
+//          ComputeDistanceToSolid, ComputeDistanceToSphere, ComputeDistanceToCylinder,
+//          ComputeShapeTurningAngularVelocity (contact/solid_shapes.h), SolidContactInputs, FirstHit, kMaxAdvanceCount,
+//          kTurningSolidHitGapShare (contact/solid_contact_types.h)
 // Used by: contact/solid_contact.h, whose FindFirstHit calls FindFirstHitOnSolid for each solid
 // Read:    docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
 //          <sec-round-solids>, <eq:sphere-hit-time>, <eq:cylinder-hit-time>, <proc-sphere-first-hit>,
@@ -767,6 +778,113 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Own
   return {.has_hit = true, .elapsed = entry_elapsed};
 }
 
+// Finds the first hit of a straight path on one turning solid by the stepping search: from the sweep's start, each
+// advance is the gap divided by the fastest the gap can shrink, so no advance can pass the moment the path reaches
+// the solid grown by the tolerance.
+//
+// Method (method paper <sec-first-hit>), with tol = inputs.contact_tolerance, x(t) = sweep.start +
+//   velocity_for_this_step * t and the gap g(t) = ComputeDistanceForParticle(x(t)) - tol, at the pose of
+//   start_elapsed + t and with the particle's plate side:
+//   1 bound = Length(velocity_for_this_step - linear_velocity) + Length(angular_velocity) * r_max, with r_max the
+//     larger of the distances from x(0) to the solid's origin at start_elapsed and from x(duration) to it at
+//     start_elapsed + duration. The gap changes no faster than bound (the proof is in the body).
+//   2 From t = 0: a hit at t when g(t) <= kTurningSolidHitGapShare * tol, with at_hit the distance there; otherwise
+//     t <- t + g(t) / bound, and the path is free once t >= duration. A hit after at least one advance is at a
+//     distance in [tol, 1.25 tol] up to rounding; a hit at 0 reports the start's distance, at most 1.25 tol and
+//     possibly below tol.
+//   3 When kMaxAdvanceCount advances end neither way, the search cannot answer: the close call.
+//   Cost: each advance closes the gap by the share rate / bound of it, rate the speed at which the gap really
+//   closes, so reaching tol / 4 from a gap g takes about ln(4 g / tol) * bound / rate advances: 30 in the example
+//   below, where rate / bound is about 0.5 near the hit. A hit approached at less than about a sixth of the bound,
+//   a path that passes within millimetres, and a graze all need more than 128 and give the close call. These are
+//   common near a turning solid: on generated paths 3 to 6 % of random sweeps, 7 % of sweeps aimed at a rim and
+//   20 % of sweeps aimed at an edge or a corner were close calls.
+//   There is no touching rule: a turning face does not stay in its plane, so the touching rule's plane argument fails.
+//   A particle resting on the solid, at distance tol, has g(0) = 0 and is hit at 0 in every step; the response and
+//   the slide in the solid's axes then carry it with the solid (plan decisions P2 and P7). The gap is read only
+//   through ComputeDistanceForParticle and may come from any face, so any distance that changes no faster than the
+//   point it is measured at fits the search. Same bits on CPU and GPU cannot be promised: ComputeSolidPose turns the
+//   axes with Sin. Every other operation is + - * /, Sqrt or a comparison.
+// Units: m, m/s and s, world.
+// Example: a box of half size 0.5 m at the origin turning at {0, 0, 1} rad/s, tol 2^-30 m, and a particle at rest at
+//   0.6 * {cos 0.3, sin 0.3, 0} m for 1 s: bound 0.6 m/s; after 30 advances a hit on kHighX at 0.8857 s, 4e-10 s
+//   before 0.3 + acos((0.5 + tol) / 0.6), the time the true distance reaches tol.
+// Requires: solid_index < inputs.solid_count; hit_on_solid is not null. sweep.start_elapsed and sweep.duration are
+//   finite and zero or more, and their sum is at most inputs.step_duration up to rounding. inputs.contact_tolerance
+//   is zero or more.
+// Fails: kTooCloseToCall  more than kMaxAdvanceCount advances: the path closes on the solid at a small share of the
+//                         bound, passes close to it or grazes it (see Cost). The caller shortens the step and tries
+//                         again; a shorter step lowers the count only through ln(4 g / tol).
+//        On failure *hit_on_solid is unchanged.
+// Read: docs/method-paper/fluidity-method.typ <sec-first-hit>, <proc-find-first-hit>
+FLUIDITY_CPU_AND_GPU inline ContactError FindHitOnTurningSolid(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    Sweep sweep,
+    FirstHit* hit_on_solid
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(hit_on_solid != nullptr);
+  assert(math::IsFinite(sweep.start_elapsed) && sweep.start_elapsed >= 0);
+  assert(math::IsFinite(sweep.duration) && sweep.duration >= 0);
+  assert(inputs.contact_tolerance >= 0);
+  // Steps (method paper <proc-find-first-hit>): 1 the bound on how fast the gap shrinks  2 advance until a hit, the
+  //   end of the sweep or the last advance
+  const Solid& solid = inputs.solids[solid_index];
+  const double contact_tolerance = inputs.contact_tolerance;
+  const Vec3 relative_velocity = sweep.velocity_for_this_step - solid.motion.linear_velocity;  // m/s, world
+
+  // Step 1: why no gap shrinks faster than the bound. Relative to the solid the particle is at the own point
+  // p(t) = Transpose(A(t)) (x(t) - o(t)), A the axes and o the origin, and it moves at
+  // Transpose(A(t)) (relative_velocity - angular_velocity x (x(t) - o(t))). A(t) is a rotation, so that speed is at
+  // most |relative_velocity| + |angular_velocity| |x(t) - o(t)|. Every distance ComputeDistanceForParticle gives
+  // changes no faster than p moves: a plane's distance, the largest of a box's plane distances, and the true distance
+  // to a cylinder each grow by at most the length of a move of p. Finally x(t) - o(t) = (x(0) - o(0)) +
+  // relative_velocity * t is a straight line in t, whose length is largest at one end of the sweep, r_max.
+  // Method paper <sec-first-hit>:  bound = |v - v_lin| + |omega| r_max
+  const Vec3 end_position = sweep.start + sweep.velocity_for_this_step * sweep.duration;
+  const Vec3 origin_at_start = ComputeSolidPose(solid, sweep.start_elapsed).origin;
+  const Vec3 origin_at_end = ComputeSolidPose(solid, sweep.start_elapsed + sweep.duration).origin;
+  const double largest_distance_to_origin =
+      math::Max(math::Length(sweep.start - origin_at_start), math::Length(end_position - origin_at_end));  // m, r_max
+  const double gap_rate_bound = math::Length(relative_velocity)
+      + math::Length(solid.motion.angular_velocity) * largest_distance_to_origin;  // m/s
+
+  // Step 2: why an advance never passes a crossing. From a sample at t with gap g > 0, for every s in
+  // [t, t + g / bound] the gap is at least g - bound * (s - t) >= 0: the path stays at distance tol or more over the
+  // whole advance, its end included, so it cannot reach the grown solid between two samples, still less pass through
+  // the solid. The first sample with g <= tol / 4 therefore comes no later than the moment the path first reaches the
+  // grown solid, and after at least one advance its distance is in [tol, 1.25 tol]. An advance that reaches duration
+  // covers the rest of the sweep, which is then free. Rounding: a computed distance is off by about 32 rounding units
+  // of the largest coordinate, at most 1/128 of tol, which holds 4096 of them (contact/contact_tolerance.h), and the
+  // bound and the division change an advance by a few rounding units of itself. So the path stays farther than about
+  // 0.99 tol before the hit. A bound of 0 means the gap cannot change: the advance is infinite and the path is free.
+  double elapsed = 0;  // s, since the start of the sweep.
+  int advance_count = 0;
+  while (true) {
+    const Vec3 position = sweep.start + sweep.velocity_for_this_step * elapsed;
+    const SolidPose pose = ComputeSolidPose(solid, sweep.start_elapsed + elapsed);
+    const DistanceToSolid at_position =
+        ComputeDistanceForParticle(inputs, solid_index, pose, position, inputs.plate_side);
+    const double gap = at_position.distance - contact_tolerance;  // m
+    if (gap <= kTurningSolidHitGapShare * contact_tolerance) {
+      *hit_on_solid = {.elapsed = elapsed, .solid_index = solid_index, .at_hit = at_position};
+      return ContactError::kNone;
+    }
+    // Each advance closes the gap by the share of the bound the approach uses (Cost in the docstring): a slow or
+    // oblique approach, a close pass or a graze runs out of advances here.
+    if (advance_count == kMaxAdvanceCount) {
+      return ContactError::kTooCloseToCall;
+    }
+    elapsed += gap / gap_rate_bound;
+    ++advance_count;
+    if (elapsed >= sweep.duration) {
+      *hit_on_solid = FirstHit{};
+      return ContactError::kNone;
+    }
+  }
+}
+
 // Finds the first hit of a straight path on one solid: the steps "solid that does not turn" and "turning solid" of
 // FindFirstHit for that solid.
 //
@@ -776,7 +894,8 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Own
 //   A cylinder turns when Length(shape_turning) * step_duration * Length(half_size) > tol / 8 (plan decision P17):
 //   its axis then tilts enough to move its surface by more than tol / 8 during the step. Below that, which includes
 //   a spin about a tilted axis that rounding leaves with a tiny part across it, the closed form at the pose of
-//   start_elapsed holds. One switch over the shape:
+//   start_elapsed holds. A domain box never moves. One switch over the shape gives a turning solid
+//   FindHitOnTurningSolid, the same search for every shape that can turn, and every other solid its closed form:
 //   flat solid  FindHitOnConvexSolid with its one face plane, kHighZ at own z = 0.
 //   plate       FindHitOnConvexSolid with kLowZ and kHighZ at own z = -half_thickness and +half_thickness, or only
 //               the committed face (ToFacePlane) when inputs.plate_side names this plate.
@@ -784,18 +903,20 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Own
 //   domain box  FindHitOnDomainBox.
 //   sphere      FindSphereHit of the sweep in the sphere's own axes (ComputeOwnPath), then ToFirstHit.
 //   cylinder    FindCylinderHit likewise.
-//   A solid that turns is kTooCloseToCall: this code has no search toward a turning solid yet.
 //   *hit_on_solid has solid_index kNoSolid when the path is free. Same bits on CPU and GPU when the angular velocity
 //   is zero: only + - * /, Abs, Sqrt and comparisons, since ComputeSolidPose of a solid that does not move its axes
-//   needs no Sin. A spinning sphere or cylinder poses its axes with Sin, which may differ in the last bits.
+//   needs no Sin. A turning solid, and a spinning sphere or cylinder, pose their axes with Sin, which may differ in the
+//   last bits.
 // Units: s for start_elapsed and duration; m and m/s, world, for the path.
 // Example: a box of half size 0.5 m at the origin and the path from {-1, 0.1, 0.2} at {2, 0, 0} m/s for 1 s: elapsed
 //   0.25 - tol / 2 on kLowX. A sphere of radius 0.5 m at the origin and the path from {-2, 0, 0} at {1, 0, 0} m/s for
-//   2 s: elapsed 1.5 - tol on kCurved.
+//   2 s: elapsed 1.5 - tol on kCurved. The same box turning at {0, 0, 1} rad/s and a particle at rest at
+//   0.6 * {cos 0.3, sin 0.3, 0} m for 1 s: elapsed 0.8857 s on kHighX, by the stepping search.
 // Requires: solid_index < inputs.solid_count; hit_on_solid is not null. The solid's shape is one of SolidShape's
 //   values.
 // Fails: kBadInput        the solid is of an unknown shape; a debug build stops at an assertion first.
-//        kTooCloseToCall  the solid turns; the only close call is kSlowApproachToTurningSolid.
+//        kTooCloseToCall  the stepping search toward a turning solid needs more than kMaxAdvanceCount advances; the
+//                         only close call is kSlowApproachToTurningSolid.
 //        On failure *hit_on_solid is unchanged.
 // Read: docs/method-paper/fluidity-method.typ <proc-find-first-hit>, <sec-first-hit>, <sec-round-solids>
 //
@@ -824,13 +945,22 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       .duration = duration,
   };
   const Vec3 shape_turning = ComputeShapeTurningAngularVelocity(solid);
-  const bool shape_turns = shape_turning.x != 0 || shape_turning.y != 0 || shape_turning.z != 0;
   const Vec3 half_size = solid.half_size;
+  // Plan decision P7: a flat solid, a plate or a box turns on any angular velocity other than exactly zero.
+  const bool has_shape_turning = shape_turning.x != 0 || shape_turning.y != 0 || shape_turning.z != 0;
+  // Plan decision P17: rounding leaves a tiny part across a cylinder's axis even in a spin about a tilted axis, so
+  // its test is a bound on how far the tilt moves the surface, not an exact zero.
+  // Method paper <sec-round-solids>:  |omega_across| T |half_size| <= tol / 8
+  const double surface_movement_from_tilt =
+      math::Length(shape_turning) * inputs.step_duration * math::Length(half_size);  // m
+  const bool tilt_moves_surface_beyond_bound = surface_movement_from_tilt > inputs.contact_tolerance / 8;
+  const bool is_turning_solid =
+      solid.shape == SolidShape::kCylinder ? tilt_moves_surface_beyond_bound : has_shape_turning;
   switch (solid.shape) {
     case SolidShape::kFlatSolid: {
       // Step 2: the closed forms below hold only while the faces keep their direction.
-      if (shape_turns) {
-        return ContactError::kTooCloseToCall;
+      if (is_turning_solid) {
+        return FindHitOnTurningSolid(inputs, solid_index, sweep, hit_on_solid);
       }
       // Step 1: one face plane.
       const FacePlane surface = {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = 0};
@@ -838,8 +968,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       return ContactError::kNone;
     }
     case SolidShape::kPlate: {
-      if (shape_turns) {
-        return ContactError::kTooCloseToCall;
+      if (is_turning_solid) {
+        return FindHitOnTurningSolid(inputs, solid_index, sweep, hit_on_solid);
       }
       // Step 1: a committed particle sees only the committed face (plan decision P3). For every start this gives the
       // two-face result: a start outside the committed half space is beyond the committed face, which both forms
@@ -860,8 +990,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       return ContactError::kNone;
     }
     case SolidShape::kBox: {
-      if (shape_turns) {
-        return ContactError::kTooCloseToCall;
+      if (is_turning_solid) {
+        return FindHitOnTurningSolid(inputs, solid_index, sweep, hit_on_solid);
       }
       // Step 1: six face planes, in face order, so equal entry times keep the first face.
       // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as above.
@@ -878,25 +1008,21 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
     }
     case SolidShape::kDomainBox:
       // Step 1: CheckSolid refuses a domain box that moves, so it never turns.
-      assert(!shape_turns);
+      assert(!is_turning_solid);
       *hit_on_solid = FindHitOnDomainBox(inputs, solid_index, sweep);
       return ContactError::kNone;
     case SolidShape::kSphere: {
       // Step 1: a spin about the centre moves the surface but not the shape (plan decision P17), so a sphere never
       // turns and always has its closed form, the touching rule included.
-      assert(!shape_turns);
+      assert(!is_turning_solid);
       const HitTime hit_time = FindSphereHit(inputs, solid_index, ComputeOwnPath(inputs, solid_index, sweep), duration);
       *hit_on_solid = ToFirstHit(inputs, solid_index, sweep, hit_time);
       return ContactError::kNone;
     }
     case SolidShape::kCylinder: {
-      // Step 2: a turn across the axis tilts it. Rounding leaves a tiny part across the axis even in a spin about a
-      // tilted axis, so the test is a bound on how far the tilt moves the surface, not an exact zero.
-      // Method paper <sec-round-solids>:  |omega_across| T |half_size| <= tol / 8
-      const double surface_movement_from_tilt =
-          math::Length(shape_turning) * inputs.step_duration * math::Length(half_size);  // m
-      if (surface_movement_from_tilt > inputs.contact_tolerance / 8) {
-        return ContactError::kTooCloseToCall;
+      // Step 2: an axis that tilts beyond plan decision P17's bound.
+      if (is_turning_solid) {
+        return FindHitOnTurningSolid(inputs, solid_index, sweep, hit_on_solid);
       }
       // Step 1: the wall, the caps and the rims, with the touching rule and the rim corner.
       const HitTime hit_time =

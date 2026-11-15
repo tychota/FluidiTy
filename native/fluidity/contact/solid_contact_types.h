@@ -28,8 +28,9 @@
 //                   compute the force on it
 //   approach left after the response  the approach speed that rounding leaves in a velocity the response returned:
 //                   zero up to a few rounding units, of either sign
-// Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, SolidContactInputs, SolidReaction, SolidContactResult,
-//          FirstHit, kApproachLeftAfterResponseShare, ComputeLargestApproachLeftAfterResponse, ComputeContactResponse
+// Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare, SolidContactInputs, SolidReaction,
+//          SolidContactResult, FirstHit, kApproachLeftAfterResponseShare, ComputeLargestApproachLeftAfterResponse,
+//          ComputeContactResponse
 // Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), math::Abs (base/scalar_math.h),
 //          PerParticleVelocity (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Solid,
 //          PlateSide, SolidFace, SolidSide, DistanceToSolid, kNoSolid (contact/solid_shapes.h)
@@ -61,10 +62,18 @@ enum class ContactKind : std::uint8_t {
 // The most hits one step allows. A particle in a corner rests on three faces, one per axis; one more hit is the
 // slide that leaves the corner.
 inline constexpr int kMaxHitsPerStep = 4;
-// The most search steps toward a turning solid in one sweep. Each step advances by the gap divided by the fastest
-// the gap can shrink, so a particle that approaches at a fair share of that speed reaches the solid in a few steps;
-// more than this many means it approaches too slowly to find the hit safely.
+// The most advances of the stepping search toward a turning solid in one sweep, a cap on its cost. Each advance is
+// the gap divided by the fastest the gap can shrink, so reaching the hit takes about ln(4 gap / tol) * bound / rate
+// advances, rate the speed at which the gap really closes: 30 in the method paper's example. A slow or oblique
+// approach, a close pass or a graze needs more and ends in a close call, which is common near a turning solid
+// (FindHitOnTurningSolid states measured shares).
 inline constexpr int kMaxAdvanceCount = 128;
+// No unit. The stepping search toward a turning solid stops with a hit once the gap is at most this share of the
+// contact tolerance, so a hit after at least one advance sits between tol and 1.25 tol from the surface (a hit at 0
+// reports the start's distance, at most 1.25 tol). A quarter gives the search a range of tol / 4 to land in, while
+// the hit stays far from the touching rule's window [-tol, 0] and from the end check at tol / 2. A power of two
+// keeps the test exact.
+inline constexpr double kTurningSolidHitGapShare = 0.25;
 
 // What one particle's move through the solids reads for one step.
 struct SolidContactInputs {
