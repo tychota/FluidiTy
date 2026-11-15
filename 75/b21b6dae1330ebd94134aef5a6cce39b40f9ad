@@ -1,0 +1,23 @@
+.github/workflows/checks.yml
+  s_4f0877e2acdcf0::t_e754d61c42adb1 3-6,13-14
+AGENTS.md
+  s_4f0877e2acdcf0::t_1914452c0c380e 481-483
+README.md
+  s_4f0877e2acdcf0::t_840986347eda09 47-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "75b21b6dae1330ebd94134aef5a6cce39b40f9ad",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
