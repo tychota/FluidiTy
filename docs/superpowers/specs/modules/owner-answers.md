@@ -46,6 +46,9 @@ the `rebuild` branch.
 | A37 | Grid room on the GPU | As planned: no default; planner-sized with 25 % headroom; build working buffers exist once and are lent; outgrowing the room stops with a raise-limits result. (2026-11-14) |
 | A38 | Known-open tests | `DISABLED_` prefix plus a second registration as an expected failure under the label `known_open`, listed in docs/known-open-physics.md; the gate runs that label. (2026-11-14) |
 | A39 | Commit attribution | No `Co-Authored-By`. Each commit ends with one `Assisted-by: Claude Code:<model id>` line per model that worked on it (kernel style; for example `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-2` for the session that directed and reviewed), then the `Claude-Session:` line. The owner is the sole author. Applies to `rebuild` and `rebuild-planning`. (2026-11-15) |
+| A40 | Resuming a run | The resumed run reuses the recorded run mode. If that mode no longer fits in memory, the resume refuses with a clear message and names the flag that continues in another mode on purpose. (2026-11-15) |
+| A41 | Choosing the size of new cells | One shared size rule, written once and run on either processor, with fixed inputs (distance to the surface, to solids, to user regions, a refinement map). No CPU callback, no copies for it, no CPU grid copy kept for it in a GPU run. (2026-11-15) |
+| A42 | Constants and viscous modelling choices | Accepted: one solve piece may use 25 % of the GPU budget (4 values per cell of direct-solve room in that layout); only a band of material (1.5 cell widths) is solved with a viscous liquid; where two materials share a face the heavier one is what the liquid sticks to. Not accepted as proposed, asked again: the warning margins (+10 % memory, +25 % copies), the viscous-effect threshold 2.5e-4, the 70 % GPU budget with 1.25 grid headroom, guided solids holding forbidden motion, no drag total for driven plates. (2026-11-15) |
 
 ## Everything else
 

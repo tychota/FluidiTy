@@ -34,7 +34,7 @@ Rules every design follows:
 
 ## (a) Foundation `base/`
 
-Built on the `rebuild` branch (Foundation, 2026-11-14, re-copied after the final review) in
+Built on the `rebuild` branch (Foundation, 2026-11-14, re-copied after the owner's review, 2026-11-15) in
 `native/fluidity/base/`, included as `"fluidity/base/<name>.h"`. The declarations below are copied from the built
 headers; where they and a design differ, the headers are right. Everything is `namespace fluidity` unless shown.
 Function bodies of inline and `constexpr` functions are left out.
@@ -57,22 +57,23 @@ Rules the built headers follow:
   per-item or per-thread functions (`FLUIDITY_CPU_AND_GPU`, in a shared header) that CPU tests run over every item,
   or every thread block and thread in launch order and in reverse. Callers use the public header; public
   identifiers never say `Gpu`. The GPU sense is always "thread block", never "block" or "group" alone.
-- **Scratch.** An operation that needs temporary arrays owns them in a move-only `<Name>Scratch` built by
-  `Build<Name>Scratch(run_on, max_count)`, with its exact bytes from `Compute<Name>ScratchSize(run_on)`; each
-  function has a scratch form that allocates nothing (`kRunOnMismatch` for a scratch on the other processor,
-  `kSizeMismatch` for a count above `max_count()`; never `kOutOfMemory`) and a form without it that checks, then
-  builds one (`kOutOfMemory` when that allocation fails). A scratch holds its memory in one `Buffer`. `SumScratch`
-  and `OrderScratch` are the two in `base/`.
+- **Working buffers.** An operation that needs temporary arrays takes them from the caller in a move-only
+  `<Name>Buffers` built once by `Build<Name>Buffers(run_on, max_count)`, with its exact bytes from
+  `Compute<Name>BuffersSize(run_on)`. Each function has ONE form, which takes its buffers and allocates nothing
+  (`kSizeMismatch` for a count above `max_count()`); `kOutOfMemory` comes only from `Build<Name>Buffers` and
+  `BuildBuffer`. Working buffers hold their memory in one `Buffer`, and their contents mean nothing between calls.
+  `SumBuffers` and `OrderBuffers` are the two in `base/`.
+- **Preconditions.** A function that takes two buffers (`CopyBuffer`, `ComputeTreeDot`) or a buffer and its working
+  buffers (the sums, the order, the prefix sum, the grouping) requires them on one processor. Its comment says so
+  on a `Requires:` line, and `assert` (`<cassert>`) checks it in debug builds only; there is no error value for it,
+  so a module has nothing to map. The checks that remain run sizes, then values.
 - **Exactness.** Discrete outputs (integers, orders, counts, flags) are equal on CPU and GPU. Floating-point
   results agree within a tolerance, except the functions whose header promises the same bits: the marked
   functions of `scalar_math.h`, `vec3.h`, `mat3.h`, and every function of `tree_sum.h` and `ordered_sums.h`.
 - "Same bits on CPU and GPU" always means: unless the result is NaN, whose bits IEEE 754 leaves open.
 - Verbs used by `base/` beyond `Compute`, `Build`, `Check`, `Find`, `Apply`, `Solve`, `Read`, `Write`: `Copy`
-  (`CopyBuffer`) and `Release` (`ReleaseBufferBytes`, private).
+  (`CopyBuffer`), `Free` (`FreeBufferBytes`, private; `GpuArray::Free`) and `Take` (none in `base/` yet).
 - `Mat3`, like `Vec3`, is taken by value by every function, so GPU code may pass `kIdentity`.
-- A buffer function whose buffers must share one processor returns `BufferError::kRunOnMismatch` when they do
-  not (`CopyBuffer`, `ComputeTreeDot`, every scratch form, `BuildGroupsByDestination`); a module maps it to its own
-  `kBadInput`.
 - `base/` returns the bare enum (`RunOnError`, `BufferError`), the one exception to the module error rule; a
   module turns it into its own failure (`kOutOfMemory` or `kRunOnCallFailed` of its enum; a module with no
   `kOutOfMemory` reports `kRunOnCallFailed` with the bytes asked in its magnitude field). A failed check writes
@@ -151,7 +152,7 @@ struct GridStride {
 };
 __device__ inline GridStride ComputeGridStride();
 template <typename T>
-class GpuArray {   // GPU memory for one call, freed on every path. Build(count), Release(), values().
+class GpuArray {   // GPU memory for one call, freed on every path. Build(count), Free(), values().
 };
 ```
 
@@ -295,7 +296,6 @@ enum class BufferError : std::uint8_t {
   // overlap; or a count or a total is above what the function can index (each function's Fails says which). The
   // last case can come from a scene that is too large, not only from a bug in the caller.
   kSizeMismatch,
-  kRunOnMismatch,  // Two buffers that must live on the same processor do not.
 };
 // kDone gives kNone, kOutOfMemory kOutOfMemory, kSizeMismatch kSizeMismatch, kCallFailed kRunOnCallFailed. The one
 // mapping every GPU half's status goes through.
@@ -350,8 +350,9 @@ ReadBuffer(const Buffer<Value>& buffer, std::size_t first, std::type_identity_t<
 template <BufferValue Value>
 std::expected<void, BufferError>
 ReadBuffer(const Buffer<Value>& buffer, std::type_identity_t<std::span<Value>> values);
-// On the processor both buffers live on. kRunOnMismatch first; kSizeMismatch for a slice outside its buffer or
-// two slices that overlap in one buffer (a buffer copied onto itself included); count 0 copies nothing.
+// On the processor both buffers live on. Requires: from.run_on() == to.run_on() (assert in debug builds).
+// kSizeMismatch for a slice outside its buffer or two slices that overlap in one buffer (a buffer copied onto
+// itself included); count 0 copies nothing.
 template <BufferValue Value>
 std::expected<void, BufferError>
 CopyBuffer(const Buffer<Value>& from, std::size_t first, std::size_t count, Buffer<Value>& to, std::size_t to_first);
@@ -384,116 +385,91 @@ ProcessorDescription ReadProcessorDescription(RunOn run_on);   // Never fails.
 ### `base/ordered_sums.h` (CPU only; private `ordered_sums_cpu.cc`, `ordered_sums_gpu.h`, `ordered_sums_gpu.cu`)
 
 ```cpp
-class SumScratch;
-// Temporary arrays of the three sums on one processor, for up to max_count values (GPU: the products of a dot and
+class SumBuffers;
+// Working buffers of the three sums on one processor, for up to max_count values (GPU: the products of a dot and
 // the two layer arrays; CPU: nothing). kOutOfMemory (byte count or memory), kRunOnCallFailed.
-std::expected<SumScratch, BufferError> BuildSumScratch(RunOn run_on, std::size_t max_count);
-// Exact bytes BuildSumScratch allocates: bytes_per_item * max_count + fixed_bytes.
-struct SumScratchSize {
+std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count);
+// Exact bytes BuildSumBuffers allocates: bytes_per_item * max_count + fixed_bytes.
+struct SumBuffersSize {
   std::uint32_t bytes_per_item = 0;  // Bytes for each value of max_count.
   std::uint64_t fixed_bytes = 0;  // Bytes that do not depend on max_count.
 };
-SumScratchSize ComputeSumScratchSize(RunOn run_on);   // kGpu {14, 128}; kCpu {0, 0}.
-// Scratch forms: allocate nothing. kRunOnMismatch (buffer and scratch), then kSizeMismatch (count above a buffer or
-// scratch.max_count()), then kRunOnCallFailed.
+SumBuffersSize ComputeSumBuffersSize(RunOn run_on);   // kGpu {14, 128}; kCpu {0, 0}.
+// The one form of each sum: allocates nothing. Requires: every buffer and `buffers` on one processor (assert in
+// debug builds). kSizeMismatch (count above a buffer or buffers.max_count()), kRunOnCallFailed. The first `count`
+// values in the order of math::TreeSum; same bits on every run and on both processors.
+std::expected<double, BufferError> ComputeTreeSum(const Buffer<double>& values, std::size_t count, SumBuffers& buffers);
+// Sum of first[i] * second[i]; each product rounded, never fused.
 std::expected<double, BufferError>
-ComputeTreeSum(const Buffer<double>& values, std::size_t count, SumScratch& scratch);
-std::expected<double, BufferError> ComputeTreeDot(
-    const Buffer<double>& first,
-    const Buffer<double>& second,
-    std::size_t count,
-    SumScratch& scratch
-);
-std::expected<double, BufferError>
-ComputeLargestMagnitude(const Buffer<double>& values, std::size_t count, SumScratch& scratch);
-// Forms without a scratch: check, build one for `count` values, call the scratch form. The first `count` values in
-// the order of math::TreeSum; same bits on every run and on both processors. kSizeMismatch (count above the size),
-// kOutOfMemory (scratch), kRunOnCallFailed.
-std::expected<double, BufferError> ComputeTreeSum(const Buffer<double>& values, std::size_t count);
-// Sum of first[i] * second[i]; each product rounded, never fused. Also kRunOnMismatch.
-std::expected<double, BufferError>
-ComputeTreeDot(const Buffer<double>& first, const Buffer<double>& second, std::size_t count);
+ComputeTreeDot(const Buffer<double>& first, const Buffer<double>& second, std::size_t count, SumBuffers& buffers);
 // math::LargerMagnitude over the values: exact in any order; NaN anywhere gives NaN; count 0 gives 0.0.
-std::expected<double, BufferError> ComputeLargestMagnitude(const Buffer<double>& values, std::size_t count);
-class SumScratch {   // Move-only; a moved-from scratch has max_count() 0 and keeps its run_on().
+std::expected<double, BufferError>
+ComputeLargestMagnitude(const Buffer<double>& values, std::size_t count, SumBuffers& buffers);
+class SumBuffers {   // Move-only; moved-from buffers have max_count() 0 and keep their run_on().
  public:
-  [[nodiscard]] std::size_t max_count() const;   // The most values one call may use this scratch for.
+  [[nodiscard]] std::size_t max_count() const;   // The most values one call may use these buffers for.
   [[nodiscard]] RunOn run_on() const;
-  [[nodiscard]] std::size_t byte_count() const;  // ComputeSumScratchSize(run_on()) applied to max_count().
+  [[nodiscard]] std::size_t byte_count() const;  // ComputeSumBuffersSize(run_on()) applied to max_count().
 };
 ```
 
 ### `base/stable_order.h` (CPU only; private `stable_order_cpu.cc`, `stable_order_digit.h`, `stable_order_gpu.h`, `stable_order_gpu.cu`)
 
 ```cpp
-class OrderScratch;
-// Temporary arrays of BuildStableOrder, ComputeExclusivePrefixSum and BuildGroupsByDestination on one processor, for
-// up to max_count items, so none allocates per call. kSizeMismatch (max_count above 2^32 - 1), kOutOfMemory,
+class OrderBuffers;
+// Working buffers of BuildStableOrder, ComputeExclusivePrefixSum and BuildGroupsByDestination on one processor, for
+// up to max_count items, so none allocates. kSizeMismatch (max_count above 2^32 - 1), kOutOfMemory,
 // kRunOnCallFailed.
-std::expected<OrderScratch, BufferError> BuildOrderScratch(RunOn run_on, std::size_t max_count);
-// As BuildStableOrder below, allocating nothing. kRunOnMismatch, then kSizeMismatch (count above 2^32 - 1, a
-// buffer or scratch.max_count(); previous_order == &order), then kRunOnCallFailed.
+std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count);
+// Each function below: one form, allocates nothing. Requires: every buffer and `buffers` on one processor (assert
+// in debug builds).
+// order[i] becomes the index of the item at place i when items are sorted by ascending key. Items with equal keys
+// keep the order they have in previous_order (index order when it is null). kSizeMismatch (count above 2^32 - 1, a
+// buffer or buffers.max_count(); previous_order == &order), kRunOnCallFailed.
 std::expected<void, BufferError> BuildStableOrder(
     const Buffer<std::uint64_t>& keys,
     std::size_t count,
     const Buffer<std::uint32_t>* previous_order,
     Buffer<std::uint32_t>& order,
-    OrderScratch& scratch
-);
-// order[i] becomes the index of the item at place i when items are sorted by ascending key. Items with equal
-// keys keep the order they have in previous_order (index order when it is null). Two passes sort by two keys.
-std::expected<void, BufferError> BuildStableOrder(
-    const Buffer<std::uint64_t>& keys,
-    std::size_t count,
-    const Buffer<std::uint32_t>* previous_order,
-    Buffer<std::uint32_t>& order
+    OrderBuffers& buffers
 );
 // sums[i] = values[0] + ... + values[i - 1] for i in [0, count]; sums[count] is the total. Exact unsigned
-// arithmetic; a total above 2^32 - 1 is kSizeMismatch. sums.size() >= count + 1. `sums` may be the same buffer
-// as `values` (in place). Allocates nothing. Same bytes on CPU and GPU.
+// arithmetic; a total above 2^32 - 1 is kSizeMismatch (sizes, then values). sums.size() >= count + 1. `sums` may be
+// the same buffer as `values` (in place). Same bytes on CPU and GPU.
 std::expected<void, BufferError> ComputeExclusivePrefixSum(
     const Buffer<std::uint32_t>& values,
     std::size_t count,
     Buffer<std::uint32_t>& sums,
-    OrderScratch& scratch
+    OrderBuffers& buffers
 );
-// As BuildGroupsByDestination below, allocating nothing. kRunOnMismatch (any of the three buffers or the scratch),
-// then kSizeMismatch (item_count above 2^32 - 1, a buffer or scratch.max_count(); first_of_group too small; two
-// buffers the same; a destination of destination_count or more), then kRunOnCallFailed.
+// Groups items by destination: item_order lists the items of destination 0, then 1, ..., each group in ascending
+// item index; first_of_group has destination_count + 1 entries. kSizeMismatch (sizes, then values: item_count above
+// 2^32 - 1, a buffer or buffers.max_count(); first_of_group too small; two buffers the same; a destination of
+// destination_count or more), kRunOnCallFailed.
 std::expected<void, BufferError> BuildGroupsByDestination(
     const Buffer<std::uint32_t>& destination,
     std::size_t item_count,
     std::uint32_t destination_count,
     Buffer<std::uint32_t>& first_of_group,
     Buffer<std::uint32_t>& item_order,
-    OrderScratch& scratch
+    OrderBuffers& buffers
 );
-// Groups items by destination: item_order lists the items of destination 0, then 1, ..., each group in
-// ascending item index; first_of_group has destination_count + 1 entries. Checks, builds a scratch, calls the
-// scratch form (also kOutOfMemory).
-std::expected<void, BufferError> BuildGroupsByDestination(
-    const Buffer<std::uint32_t>& destination,
-    std::size_t item_count,
-    std::uint32_t destination_count,
-    Buffer<std::uint32_t>& first_of_group,
-    Buffer<std::uint32_t>& item_order
-);
-// Exact bytes BuildOrderScratch allocates: bytes_per_item * max_count + fixed_bytes.
-struct OrderScratchSize {
+// Exact bytes BuildOrderBuffers allocates: bytes_per_item * max_count + fixed_bytes.
+struct OrderBuffersSize {
   std::uint32_t bytes_per_item = 0;  // Bytes for each item of max_count.
   std::uint64_t fixed_bytes = 0;  // Bytes that do not depend on max_count.
 };
-OrderScratchSize ComputeOrderScratchSize(RunOn run_on);   // kCpu {4, 8192}; kGpu {6, 4096}.
-class OrderScratch {   // Move-only; a moved-from scratch has max_count() 0 and keeps its run_on().
+OrderBuffersSize ComputeOrderBuffersSize(RunOn run_on);   // kCpu {4, 8192}; kGpu {6, 4096}.
+class OrderBuffers {   // Move-only; moved-from buffers have max_count() 0 and keep their run_on().
  public:
-  OrderScratch(const OrderScratch&) = delete;
-  OrderScratch& operator=(const OrderScratch&) = delete;
-  OrderScratch(OrderScratch&& other) noexcept;
-  OrderScratch& operator=(OrderScratch&& other) noexcept;
-  ~OrderScratch() = default;
-  [[nodiscard]] std::size_t max_count() const;   // The most items one call may use this scratch for.
+  OrderBuffers(const OrderBuffers&) = delete;
+  OrderBuffers& operator=(const OrderBuffers&) = delete;
+  OrderBuffers(OrderBuffers&& other) noexcept;
+  OrderBuffers& operator=(OrderBuffers&& other) noexcept;
+  ~OrderBuffers() = default;
+  [[nodiscard]] std::size_t max_count() const;   // The most items one call may use these buffers for.
   [[nodiscard]] RunOn run_on() const;
-  [[nodiscard]] std::size_t byte_count() const;  // ComputeOrderScratchSize(run_on()) applied to max_count().
+  [[nodiscard]] std::size_t byte_count() const;  // ComputeOrderBuffersSize(run_on()) applied to max_count().
 };
 ```
 
@@ -542,7 +518,7 @@ cell_resize_estimate = {})`.
 
 ### Private to `base/`, listed so no module includes them
 
-`buffer_bytes.h` (`BufferBytes`, `BuildBufferBytes`, `ReleaseBufferBytes`, `WriteBufferBytes`, `ReadBufferBytes`,
+`buffer_bytes.h` (`BufferBytes`, `BuildBufferBytes`, `FreeBufferBytes`, `WriteBufferBytes`, `ReadBufferBytes`,
 `CopyBufferBytes`), the five `<name>_gpu.h` halves, `stable_order_digit.h` (shared digit rule of the counting
 passes), `stable_order_steps.h` (the per-thread steps of the GPU order and prefix sum: `PassSource`, `ChunkItems`,
 `CopyChunkItem`, `ComputeChunkDigitCount`, `CopyChunkItemsOfDigit`, `ComputeThreadValues`, `ApplyHalvingRound`,

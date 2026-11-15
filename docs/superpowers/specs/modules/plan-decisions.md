@@ -2007,11 +2007,11 @@ Step additions from the pressure plan's field: stage 10 calls `ToFreeSolidsForVi
 `BuildPressureEquations` and fills `free_solid_motion_before_pressure` from it (stage 12 passes it empty); step-owned
 row `"step: free solid motion before pressure"` (48 B per free solid).
 
-## Foundation after the final review (2026-11-14)
+## Foundation after the final review (2026-11-14, owner review 2026-11-15)
 
 The final whole-branch review of Foundation, and the touch-up after its re-review, changed or added the declarations
-below; they are copied from the headers of the `rebuild` branch after the touch-up fold (the tree of fixup tip
-077a3fe2). A plan that uses an earlier form follows these. Section (a) of `shared-interface.md` follows the same
+below; they are copied from the headers of the `rebuild` branch after the owner-review fold (the tree of fixup tip
+d918805a, A28 to A32). A plan that uses an earlier form follows these. Section (a) of `shared-interface.md` follows the same
 headers.
 
 ### Rules a module now copies
@@ -2026,11 +2026,17 @@ headers.
   per-thread functions in a shared header; `cpu` tests call those functions over every item, or every thread block and
   thread in launch order and in reverse (phase by phase where the GPU function waits), against a plain reference
   (`base/tree_sum_layers_test.cc`, `base/stable_order_steps_test.cc` are the examples).
-- **Scratch pattern.** `<Name>Scratch` (move-only), `Build<Name>Scratch(run_on, max_count)`,
-  `Compute<Name>ScratchSize(run_on)` returning `<Name>ScratchSize { bytes_per_item; fixed_bytes; }` (exact bytes,
-  one definition), a scratch form of each function that allocates nothing (`kRunOnMismatch`, `kSizeMismatch` for
-  `count > max_count()`; never `kOutOfMemory`), and a form without scratch that checks, builds one and calls the
-  scratch form (`kOutOfMemory` when that allocation fails). A scratch holds its memory in one `Buffer`.
+- **Working buffers.** `<Name>Buffers` (move-only), `Build<Name>Buffers(run_on, max_count)`,
+  `Compute<Name>BuffersSize(run_on)` returning `<Name>BuffersSize { bytes_per_item; fixed_bytes; }` (exact bytes,
+  one definition). ONE form per function, which takes its buffers and allocates nothing (`kSizeMismatch` for
+  `count > max_count()`); `kOutOfMemory` comes only from `Build<Name>Buffers` and `BuildBuffer`. The buffers hold
+  their memory in one `Buffer`; their contents mean nothing between calls (A31).
+- **Preconditions.** Two buffers (or a buffer and its working buffers) on one processor is a precondition, stated on
+  a `Requires:` line and checked by `assert` from `<cassert>` in debug builds only; there is no error value for it
+  (`BufferError::kRunOnMismatch` is removed, A30). Checks that remain run sizes, then values.
+- **Verbs.** `Copy`, `Free` (frees memory: `FreeBufferBytes`, `GpuArray::Free`) and `Take` (gets preallocated
+  buffers back out of an object no longer needed); `Release` is not a verb (A29). Naming rule 9 has no exception:
+  the step's input is `StepInputs` (A28).
 - **Vocabulary.** The GPU sense is always "thread block" (`kThreadBlockSize`, `LaunchSize::thread_block_count`);
   never "block" or "group" alone in that sense. "group" is a destination group, "cell block" the grid's.
 - **Exactness.** Discrete outputs are equal on CPU and GPU; floating-point results agree within a tolerance,
@@ -2106,7 +2112,7 @@ struct GridStride {
 };
 __device__ inline GridStride ComputeGridStride();
 template <typename T>
-class GpuArray;   // RunOnCallStatus Build(std::size_t count); RunOnCallStatus Release(); T* values() const;
+class GpuArray;   // RunOnCallStatus Build(std::size_t count); RunOnCallStatus Free(); T* values() const;
 ```
 
 ### `base/buffer.h` (changed and new)
@@ -2122,56 +2128,81 @@ enum class BufferError : std::uint8_t {
   // overlap; or a count or a total is above what the function can index (each function's Fails says which). The
   // last case can come from a scene that is too large, not only from a bug in the caller.
   kSizeMismatch,
-  kRunOnMismatch,  // Two buffers that must live on the same processor do not.
 };
 
 BufferError ToBufferError(RunOnCallStatus status);
+
+// Requires: from.run_on() == to.run_on(), checked by assert in debug builds.
+template <BufferValue Value>
+std::expected<void, BufferError>
+CopyBuffer(const Buffer<Value>& from, std::size_t first, std::size_t count, Buffer<Value>& to, std::size_t to_first);
 ```
 
-Only the building functions (`BuildBuffer`, the scratch builders) return `kOutOfMemory`; a GPU copy or query that
-fails for any reason, a memory error included, is `kRunOnCallFailed`.
+Only the building functions (`BuildBuffer`, `BuildSumBuffers`, `BuildOrderBuffers`) return `kOutOfMemory`; a GPU
+copy or query that fails for any reason, a memory error included, is `kRunOnCallFailed`.
 
-### `base/ordered_sums.h` (new scratch and scratch forms)
+### `base/ordered_sums.h` (working buffers; one form per sum)
 
 ```cpp
-class SumScratch;
-std::expected<SumScratch, BufferError> BuildSumScratch(RunOn run_on, std::size_t max_count);
-struct SumScratchSize {
+class SumBuffers;
+std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count);
+struct SumBuffersSize {
   std::uint32_t bytes_per_item = 0;  // Bytes for each value of max_count.
   std::uint64_t fixed_bytes = 0;  // Bytes that do not depend on max_count.
 };
-SumScratchSize ComputeSumScratchSize(RunOn run_on);
+SumBuffersSize ComputeSumBuffersSize(RunOn run_on);
+// Each Requires: values (and second) and buffers on one processor, checked by assert in debug builds.
+std::expected<double, BufferError> ComputeTreeSum(const Buffer<double>& values, std::size_t count, SumBuffers& buffers);
 std::expected<double, BufferError>
-ComputeTreeSum(const Buffer<double>& values, std::size_t count, SumScratch& scratch);
-std::expected<double, BufferError> ComputeTreeDot(
-    const Buffer<double>& first,
-    const Buffer<double>& second,
-    std::size_t count,
-    SumScratch& scratch
-);
+ComputeTreeDot(const Buffer<double>& first, const Buffer<double>& second, std::size_t count, SumBuffers& buffers);
 std::expected<double, BufferError>
-ComputeLargestMagnitude(const Buffer<double>& values, std::size_t count, SumScratch& scratch);
-class SumScratch {   // Move-only; max_count(), run_on(), byte_count(); a moved-from scratch has max_count() 0.
+ComputeLargestMagnitude(const Buffer<double>& values, std::size_t count, SumBuffers& buffers);
+class SumBuffers {   // Move-only; max_count(), run_on(), byte_count(); moved-from buffers have max_count() 0.
 };
 ```
 
-The forms without a scratch keep their signatures; they check, build a scratch for `count` values and call the
-scratch form. `ComputeSumScratchSize(RunOn::kGpu)` is `{14, 128}`, `ComputeSumScratchSize(RunOn::kCpu)` is `{0, 0}`.
+There is no form without buffers (A31). `ComputeSumBuffersSize(RunOn::kGpu)` is `{14, 128}`,
+`ComputeSumBuffersSize(RunOn::kCpu)` is `{0, 0}`; CPU sum buffers hold no bytes but still check the count.
 
-### `base/stable_order.h` (new scratch form)
+### `base/stable_order.h` (working buffers; one form per function)
 
 ```cpp
+class OrderBuffers;
+std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count);
+// Each Requires: every buffer and the order buffers on one processor, checked by assert in debug builds.
+std::expected<void, BufferError> BuildStableOrder(
+    const Buffer<std::uint64_t>& keys,
+    std::size_t count,
+    const Buffer<std::uint32_t>* previous_order,
+    Buffer<std::uint32_t>& order,
+    OrderBuffers& buffers
+);
+std::expected<void, BufferError> ComputeExclusivePrefixSum(
+    const Buffer<std::uint32_t>& values,
+    std::size_t count,
+    Buffer<std::uint32_t>& sums,
+    OrderBuffers& buffers
+);
 std::expected<void, BufferError> BuildGroupsByDestination(
     const Buffer<std::uint32_t>& destination,
     std::size_t item_count,
     std::uint32_t destination_count,
     Buffer<std::uint32_t>& first_of_group,
     Buffer<std::uint32_t>& item_order,
-    OrderScratch& scratch
+    OrderBuffers& buffers
 );
+struct OrderBuffersSize {
+  std::uint32_t bytes_per_item = 0;  // Bytes for each item of max_count.
+  std::uint64_t fixed_bytes = 0;  // Bytes that do not depend on max_count.
+};
+OrderBuffersSize ComputeOrderBuffersSize(RunOn run_on);
+class OrderBuffers {   // Move-only; max_count(), run_on(), byte_count(); moved-from buffers have max_count() 0.
+};
 ```
 
-The form without a scratch keeps its signature. `OrderScratch` now also serves the grouping.
+There is no form without buffers (A31). `ComputeOrderBuffersSize(RunOn::kCpu)` is `{4, 8192}`,
+`ComputeOrderBuffersSize(RunOn::kGpu)` is `{6, 4096}`. The same `OrderBuffers` serves the order, the prefix sum and
+the grouping.
 
 ### `base/tree_sum_layers.h` (shared, private to the sums)
 
