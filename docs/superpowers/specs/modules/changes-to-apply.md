@@ -278,83 +278,113 @@ A design must no longer say "until the owner answers".
   investigated here with the eight-step diagnosis; the module is done when all eight pass or the owner decides
   otherwise.
 
-## 01b Mesh solids (A80)
+## 01b Mesh solids (A80; owner answers A81 to A88 applied 2026-11-15)
 
-Written 2026-11-15 from `01b-mesh-solids-design.md` (draft). **Pending: apply none of these until the owner has
-answered that design's section 11**; entries marked (Q2), (Q3), (Q5) depend on that question. Entries for module 1's
-remaining plan tasks are the exception: they cost nothing, hold whatever the owner answers, and apply now. Each
-edit is marked `(A80)` where it lands. Names are those of the 01b design, sections 3.1 to 3.3.
+Written 2026-11-15 from `01b-mesh-solids-design.md`. The owner has answered its questions (A81 to A88), so every
+entry below is to apply; each edit is marked `(A80)` where it lands (thin-part edits `(A85)`). Order (A82): the
+contact entries when the contact part of 1b is planned, right after module 1's Task 18; every other module's
+entries when that module's plan is next touched. Names are those of the 01b design, sections 3.1 to 3.3. One
+question is still with the owner (01b Q9: thin-walled containers of liquid); the entries below are its option (a).
 
-**01 Contact (plan `2026-11-14-rebuild-01-contact.md`; apply now):**
+**01 Contact (plan `2026-11-14-rebuild-01-contact.md`; applied to the plan already unless stated):**
 - Task 8, 8a: private helpers of `solid_contact_steps.h` that evaluate a solid take `const SolidContactInputs&
-  inputs` and a `solid_index` (`ComputeDistanceForParticle(inputs, solid_index, pose, point)`); `FindFirstHit` calls
-  one private `FindFirstHitOnSolid(inputs, solid_index, start, velocity, start_elapsed, duration, FirstHit*)` whose
-  `switch` on the shape has no computing `default`; the touching rule stays inside each shape's branch.
+  inputs` and a `solid_index` (`ComputeDistanceForParticle(inputs, solid_index, pose, point, plate_side)`, the
+  plan's form with its trailing `PlateSide`); `FindFirstHit` calls one private `FindFirstHitOnSolid(inputs,
+  solid_index, start, velocity, start_elapsed, duration, FirstHit*)` whose `switch` on the shape has no computing
+  `default`; the touching rule stays inside each shape's branch.
 - Task 9: the stepping search reads the gap only through `ComputeDistanceForParticle`.
 - Task 10: a surface list entry holds the solid index and the normal recorded at the hit; a solid may appear more
   than once; no line skips "the solid just hit".
 - Task 11 (and Task 10 step 6): the move to `d = tol` is one private `MoveToRestGap(inputs, solid_index, pose, point)`.
 - Task 13: the carry in a turning solid's axes is one private function taking `inputs` and `solid_index`.
 - Task 14: the "ends outside every solid, control enters" check is a helper in `contact_test_cases.h` over any solids.
-- Task 15: `static_assert(sizeof(Solid) == 200)` beside the memory estimate.
+- Task 15: `static_assert(sizeof(Solid) == 200)` beside the memory estimate (checked: 200 bytes, 7 trailing padding
+  bytes; `mesh_index` goes at offset 196).
 - Task 16: the per-particle GPU function takes its scalar inputs as one struct.
-- Design, after the owner's answers: 3.1 `ContactError::kMeshNotUsable`, `MeshProblem`, `ContactFailure::mesh_problem`;
-  3.2 `SolidShape::kMesh`, `SolidFace::kMeshTriangle`, `kNoMesh`, `Solid::mesh_index`, the `ToSolid` form; 3.4 and 3.5
-  `MeshShapes meshes` in `SolidContactInputs` and `MoveParticlesInputs`; section 1 "Owns" names the mesh shape; 5.7's
-  "each convex solid is hit at most once" gains "a mesh may be hit several times (01b 5.6)".
+- Design, with the contact part of 1b: 3.1 `ContactError::kMeshNotUsable`, `MeshProblem`,
+  `ContactFailure::mesh_problem`; 3.2 `SolidShape::kMesh`, `SolidFace::kMeshTriangle`, `kNoMesh`,
+  `Solid::mesh_index`, the `ToSolid` form, **`PlateSide::part`, `IsOnOppositeSides`, `FindPlateSide` (A85)**; 3.4 and
+  3.5 `MeshShapes meshes` in `SolidContactInputs` and `MoveParticlesInputs`; section 1 "Owns" names the mesh shape;
+  5.7's "each convex solid is hit at most once" gains "a mesh may be hit several times (01b 5.6)". Glossary: the
+  `same_side` row's meaning becomes "not on opposite sides of the same plate or thin part".
 
-**02 Grid, 03 Particles, 07 Materials, 09 Gas:** no edit. (Grid 5.9 and particles 5.6 each gain one sentence
-pointing at 01b 5.3 and 5.5 for the 1-Lipschitz distance and the start-inside rule.)
+**02 Grid, 09 Gas:** no edit. (Grid 5.9 gains one sentence pointing at 01b 5.3 for the 1-Lipschitz distance.)
 
-**04 Transfer:** plan Task 5 fixture `BuildSolidsAtFaces` calls the mesh-aware `ComputeSolidVelocitySample`; one
-test `BuildSolidsAtFaces, MeshCube_EqualsBox`. Decision 5 gains a note: a mesh part thinner than a cell has no
-sides (Q5).
+**03 Particles (A85):** 3.5 and plan Task 9 `FindNeighbourhood`: the kept-face test "`face_side` null or equal to
+`side`" becomes "`face_side` null or `!contact::IsOnOppositeSides(face_side, side)`"; `MergeParticles` merges
+"only when not on opposite sides" (two particles with no side, or one with none, may merge as today's equal
+sides do); test `FindNeighbourhood, FaceWithNoSide_IsKeptForEitherSide`. 5.6 gains one sentence pointing at 01b 5.5.
 
-**05 Pressure:** `plan-decisions.md` "Pressure" (the thin-solid sentence) and design decision 7 gain "for a mesh,
-solids' thickness finding (01b 5.2 check 8) keeps that case out or reports it" (Q5). No interface edit.
+**04 Transfer (A85):** 5.1 `same_side` becomes "`outside_solid && !contact::IsOnOppositeSides(face side, particle
+side)`"; plan Task 6 `FindSameSideFaces` and 5.4 step 1's "side `s`" sources use the same test; decision 5 gains:
+"a face near the rim of a thin mesh part can meet particles of side A, side B and no side; how the face's stored
+values (`kMaxSidesAtFace`) serve the third is decided in this plan (01b section 11, not settled)". Plan Task 5
+fixture `BuildSolidsAtFaces` calls the mesh-aware `ComputeSolidVelocitySample` and `FindPlateSide`. Tests:
+`BuildSolidsAtFaces, MeshCube_EqualsBox`; `MeshSheet_FacesEitherSideHaveOppositeSides`;
+`ParticlesToGrid, MeshSheetQuarterCellThick_NoMomentumCrosses` (01b 5.10); every plate test unchanged
+(`IsOnOppositeSides` equals equality for the one plate).
+
+**05 Pressure (A85):** no interface or method edit. `plan-decisions.md` "Pressure", the thin-solid sentence,
+becomes: "`kCellSplitBySolid` is decided from corner samples only: a solid thinner than a cell that passes between
+corners is not seen. Solids' thickness rule, for the plate and for every thin part of a mesh
+(`MeshShape::thinnest_sheet`, finding `mesh_sheet_too_thin_for_liquid`), keeps that case out." Design decision 7
+gains: "sides on thin mesh parts (01b 5.11) separate particles and the particle-face exchange, not the solve; two
+cell equations per split cell stay not built; see 01b Q9."
 
 **06 Viscosity:** design 3 `ViscosityInputs` gains `contact::MeshShapes meshes` beside `solids`; 4 and plan Task 10
 call `ComputeSolidVelocitySample(..., meshes)`; 5.7 states that a mesh solid counts as inclined (excluded until
-Task 21); test `ShearChannel` twin with a tilted mesh slab, 5 %. (Q3: with a volume, Task 10's rule (a) and the
-`1e-9 w` on-surface test need a tolerance instead.)
+Task 21); test `ShearChannel` twin with a tilted mesh slab, 5 %.
+
+**07 Materials (A85):** `PlatesInScene` / `has_plate_side` is true also when a mesh has a thin part. Nothing else.
 
 **08 Solids:** sections 1 and 10 drop "solid meshes (none)"; 3.2 `SolidSettings::mesh_index`,
 `SolidsSettings::meshes`; 5.1 `BuildTry` and `BuildContactSolids` handle `kMesh`; 5.4 `ComputeSolidsAtFaces` and
 `ComputeSolidCoverage` (and plan Task 18's GPU halves) take `MeshShapes` and pass the coverage cap as
-`largest_distance`; `ComputeSolidsSummary::has_inclined_solid` is true for any mesh; `CheckSolidsCanRun` gains the
-findings "mesh part thinner than the smallest cell" and "triangles much smaller than a cell"; plan Task 10
-`kSolidsTooClose` samples a free mesh at its bounding box corners and centre (Q2); tests
+`largest_distance`; `ComputeSolidsSummary::has_inclined_solid` is true for any mesh; plan Task 10 `kSolidsTooClose`
+samples a free mesh at its bounding box corners and centre (A83). **Thin parts (A85):** 5.4 step 1: `side` comes
+from `contact::FindPlateSide` of the nearest solid, plate or mesh; 5.9 `ApplyPlateSides` rewrites, every step, the
+side of each particle within `kSolidReachInCells * w` of a mesh (the plate's write-once rule unchanged);
+5.9 "Supported thickness": `CheckSolidsCanRun`, when `has_liquid_or_gas`, applies `ComputeMinPlateThickness` to
+every mesh's `thinnest_sheet` (blocking finding `mesh_sheet_too_thin_for_liquid`); NOTE findings "two thin parts
+closer than `2 * kSolidReachInCells` cells" and "triangles under an eighth of a cell" (A86). Tests
 `ComputeSolidCoverage, MeshCube_EqualsBox`, `..., Icosphere_BlockedAreaConverges`,
-`Hydrostatic_PushIsWeightOfDisplacedLiquid` with a mesh, a driven mesh paddle.
+`Hydrostatic_PushIsWeightOfDisplacedLiquid` with a mesh, a driven mesh paddle,
+`ApplyPlateSides, ParticleRoundTheRim_ChangesSideThroughNoSide`,
+`CheckSolidsCanRun, MeshSheetOneCellThickWithLiquid_IsBlocked` and `..., WithSnowOnly_Passes`.
 
 **10 Step:** 3.2 and 3.6: the step owns one `contact::MeshShapeBuffers`; stages 3, 11, 16, 19 and
 `FoamAndSprayInputs` fill `meshes`; 5.14 `CheckSceneCanRun` calls the mesh-aware `CheckSolid` and
-`ComputeContactScale`, and `CheckMeshShape` once (`CapabilityReason::kMeshNotUsable`, NEW); 5.9 `BuildRunPlan` adds
-`BuildMeshShapeMemoryEstimate`; 5.15 `BuildStartCells` takes `MeshShapes` (CPU) and tests the face centre as a
-fifth point in "against a solid"; plan Tasks 7, 8, 8a, 26 gain a mesh scene (`BuildDrivenMeshScene`).
+`ComputeContactScale`, and `CheckMeshShape` once (`CapabilityReason::kMeshNotUsable`, NEW; and
+`kMeshSheetTooThinForLiquid`, NEW, A85); 5.9 `BuildRunPlan` adds `BuildMeshShapeMemoryEstimate`; 5.15
+`BuildStartCells` takes `MeshShapes` (CPU) and tests the face centre as a fifth point in "against a solid"; plan
+Tasks 7, 8, 8a, 26 gain a mesh scene (`BuildDrivenMeshScene`, `BuildFreeMeshScene` (A83)).
 
 **11 Cell resize and batches:** 5.9 and plan Task 38: mesh rows are whole-run rows on the processor in every
 batch. No interface edit.
 
 **12 I/O and CLI:** scene file `solids[].shape` gains `mesh`, new field `mesh_file`; scene schema version raised;
-new `io/mesh_solid.h` (read PLY, `contact::BuildMeshShape`, findings, volume, centre of mass, inertia;
-re-centring for a free solid (Q2)); run folder `inputs/mesh_solids` listed and read on resume; mesh files in the
-fingerprint; `BuildStartParticles` calls the mesh-aware distance; memory entry "io: mesh solids"; 5.10 budget
-lines show mesh bytes; plan gains a task after Task 29d.
+new `io/mesh_solid.h` (read PLY, `contact::BuildMeshShape` with `sheet_thickness_limit` from the smallest cell
+width (A85), findings, volume, centre of mass, inertia, re-centring for a free solid (A83)); run folder
+`inputs/mesh_solids` listed and read on resume; mesh files in the fingerprint; `BuildStartParticles` calls the
+mesh-aware distance; memory entry "io: mesh solids"; 5.10 budget lines show mesh bytes; plan gains a task after
+Task 29d.
 
 **13 Surface, foam and spray:** `FrameInputs` and `MotionSample` carry `contact::MeshShapes` (CPU); 5.3, 5.5,
 5.6 call the mesh-aware distance with `largest_distance` 4 spacings; tests `BuildSurfaceField, BesideAMeshSolid_SameHeight`,
 `MoveFoamParticles, StopsAtAMeshSolid`.
 
-**14 Blender add-on:** 3.2 `Shape.MESH`; 5.1 item 2 exports the evaluated mesh as PLY (`inputs/solids/solid_<id>.ply`,
-fan rule, scale applied); 10 drops "evaluated mesh shapes"; findings `solid_mesh_not_closed`, `solid_mesh_deforms`,
-`solid_mesh_thinner_than_cell`, `solid_mesh_triangles_small`, `solid_mesh_too_many_triangles`; the digest covers
-solid mesh files; default shape (Q8); subdivision level (Q6).
+**14 Blender add-on:** 3.2 `Shape.MESH`, the default for a `SOLID` object that is not exactly a box, sphere or
+cylinder (A88); 5.1 item 2 exports the render-level evaluated mesh (A86) as PLY (`inputs/solids/solid_<id>.ply`,
+fan rule, scale applied); 10 drops "evaluated mesh shapes"; findings `solid_mesh_not_closed` (blocking, A87; the
+repair button is later work), `solid_mesh_deforms` (blocking, A84), `mesh_sheet_too_thin_for_liquid` (blocking,
+A85; repair text: thicken to the bound or shrink cells near solids), `solid_mesh_triangles_small` (NOTE, A86),
+`solid_mesh_too_many_triangles`; the digest covers solid mesh files.
 
-**15 Sand:** no edit.
+**15 Sand (A85):** no interface edit; one test in the sand plan: sand either side of a thin mesh sheet does not
+exchange momentum.
 
 **`shared-interface.md`:** (b) and (c) Contact gain the names of 01b 3.1 to 3.3. **`tradeoff-particles.md`:** 1.3
-gains one line: mesh solids, 58 B per triangle on the processor (Q3).
+gains one line: mesh solids, 60 B per triangle on the processor.
 
 ## Names changed while the first designs were updated
 

@@ -743,8 +743,17 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
 - Consumes: Tasks 4, 7.
 - Produces: `FindFirstHit` (design 3.4) for solids with zero angular velocity; turning solids return
   `kTooCloseToCall/kSlowApproachToTurningSolid` until Task 9 (no test relies on that). Private:
-  `ComputeDistanceForParticle(const Solid&, SolidPose, Vec3 point, PlateSide plate_side)` in
-  `solid_contact_steps.h` (P3 distance).
+  `ComputeDistanceForParticle(const SolidContactInputs& inputs, std::uint32_t solid_index, SolidPose pose,
+  Vec3 point, PlateSide plate_side)` in `solid_contact_steps.h` (P3 distance; A80: `inputs` and `solid_index`, not a
+  bare `Solid`). `FindFirstHit` loops over the solids and calls one private `FindFirstHitOnSolid(inputs,
+  solid_index, start, velocity, start_elapsed, duration, FirstHit*)`.
+
+**Room for module 1b (mesh solids) (A80):** 1b adds a mesh table to `inputs` and a `case` to one `switch`; these
+three habits mean no call site and no loop is rewritten. (1) Every private helper of `solid_contact_steps.h` that
+evaluates a solid takes `const SolidContactInputs& inputs` and `solid_index`, never a bare `const Solid&`. (2) The
+`switch (solid.shape)` of `FindFirstHitOnSolid` writes every shape out and has no `default` that computes; an
+unknown shape asserts in debug and returns `kBadInput`. (3) The touching rule lives inside each shape's branch,
+never in the loop.
 - Replaces: `main:native/src/liquid_wall_contact_3d.cc:24-131` (`CompareBoxSweepTimes`, `SelectBoxImpactFace`)
   and the linear hit time of `liquid_wall_contact_math_3d.h:420-480`.
 
@@ -781,7 +790,7 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
 - [ ] **Step 5: Commit.** Subject: `Find the first hit of a straight path on solids that do not turn`.
   New names: `FindFirstHit`.
 
-**Amended 2026-11-15 (A74):** `FindFirstHit` dispatches per shape; the `kSphere` and `kCylinder` branches arrive in
+**Amended 2026-11-15 (A74):** `FindFirstHit` dispatches per shape (through `FindFirstHitOnSolid`, A80); the `kSphere` and `kCylinder` branches arrive in
 Task 8a (until then they hold a debug assertion; no Task 8 test builds them). The order of step 3 (smallest time,
 then lower solid index) covers every shape.
 
@@ -799,7 +808,12 @@ then lower solid index) covers every shape.
   (a sphere never turns; a cylinder whose `omega_across` is below P17's bound is swept here; a cylinder turning
   across its axis goes to the Task 9 search). Private helpers in `solid_contact_steps.h`, names decided here:
   `FindSphereHit(...)` and `FindCylinderHit(...)`, each taking the start and relative velocity in the solid's axes,
-  the solid, `contact_tolerance` and `duration`, returning the hit time or "free". No port: `main` has none.
+  `inputs` and `solid_index` (A80, not a bare `Solid`), `contact_tolerance` and `duration`, returning the hit time
+  or "free". No port: `main` has none.
+
+**Room for module 1b (mesh solids) (A80):** the three habits of Task 8 apply here unchanged: the two branches are
+`case`s of `FindFirstHitOnSolid`'s `switch` with no computing `default`, and the touching rule (P16) stays inside
+each branch.
 
 - [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance`; expected times within `0x1p-44` relative unless
   stated; normals within `1e-8`):
@@ -862,7 +876,10 @@ then lower solid index) covers every shape.
 **Interfaces:**
 - Consumes: Task 8, `ComputeSolidPose`; `ComputeShapeTurningAngularVelocity` (Task 3) to decide whether a cylinder's
   shape turns (P17): use it, write no second helper.
-- Produces: `FindFirstHit` for turning solids (design 5.3 step 2).
+- Produces: `FindFirstHit` for turning solids (design 5.3 step 2). **Room for module 1b (mesh solids) (A80):** the
+  stepping search reads `g(t)` only through `ComputeDistanceForParticle` and decides "turning" only through
+  `ComputeShapeTurningAngularVelocity`; it must not assume that the distance belongs to one face (1b gives it a
+  distance that comes from a triangle).
 - Port the idea only: `main:native/src/rigid_body_3d.cc:861-881` (`RigidBodySweepDistanceBound3D`, the bound
   `translation + radius * angle`) and `:883-1130` (`SweepRigidBoxPoint3D`); not its bisection, stack or rounding
   slack.
@@ -910,6 +927,12 @@ then lower solid index) covers every shape.
 **Files:**
 - Create: `native/fluidity/contact/move_particle_test.cc`
 - Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `contact_test_cases.h`
+
+**Room for module 1b (mesh solids) (A80):** a mesh can be hit several times in one sweep, so the surface list of
+the slide stores, per entry, the solid index and the normal recorded at the hit (it has `kMaxHitsPerStep`
+entries), and nothing assumes a solid appears once. "A convex solid is hit once per sweep" stays a consequence of
+the touching rule; no line of code skips "the solid just hit". Step 6's move to `d = tol` is Task 11's
+`MoveToRestGap`: call it, write no second copy.
 
 **Interfaces:**
 - Consumes: Tasks 6 to 9.
@@ -979,6 +1002,10 @@ then lower solid index) covers every shape.
 **Interfaces:**
 - Consumes: Task 10.
 - Produces: step 2 of design 5.5 in full, with P3, P4, P6 and P12.
+- **Room for module 1b (mesh solids) (A80):** "move the point to `d = tol`" is one private
+  `MoveToRestGap(inputs, solid_index, pose, point)` in `solid_contact_steps.h`, used by this task's step 2 and by
+  step 6 of `MoveParticle` (Task 10's settle calls it too). For the six shapes it is one move along the normal;
+  1b adds the mesh case inside it.
 
 - [ ] **Step 1: Failing tests** (fixed floor at `z = 0` unless stated):
 
@@ -1152,7 +1179,9 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 
 **Interfaces:**
 - Consumes: Tasks 9, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper.
-- Produces: design 5.5 step 5 for a turning solid, with P7.
+- Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
+  in the solid's axes is one private function of `solid_contact_steps.h` taking `inputs` and `solid_index`, so 1b
+  can sweep that remainder against a mesh.
 - Port: `main:native/src/liquid_wall_contact_3d.cc:349-400` (from the comment "Carry the corrected relative
   remainder in the moving face coordinates"), without the rounding bound.
 
@@ -1203,6 +1232,9 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 - Consumes: `MoveParticle`, `FindFirstHit`, `ComputeContactResponse`, `ComputeDistanceToSolid`,
   `ComputeContactTolerance`, `BuildMoveParticleCases`.
 - Produces: test-only `std::vector<MoveParticleCase> BuildObliqueCases(int count)` (used again in Task 16).
+  **Room for module 1b (mesh solids) (A80):** the check "every end distance is at least `tol / 2`, and the naive
+  control enters" is one helper of `contact_test_cases.h` that takes any list of solids (the test below calls it
+  for the oblique set and for the round set); 1b runs it on meshes.
 
 Oblique set (generator P11; draw in this order). Per case: normal `{w, w, w}` redrawn while `Length < 0.25`,
 then `Normalized`; `point_on_surface = 1e3 * {w, w, w}`; `linear_velocity = 10 * {w, w, w}`; `gap = 0.01 * next() + 2 * tol`; tangent
@@ -1310,6 +1342,13 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
 12a and 13 through `BuildMoveParticleCases()` (no new test name); `BuildContactMemoryEstimate` is unchanged
 (`sizeof(Solid)` does not change: the round shapes reuse `half_size`).
 
+**Room for module 1b (mesh solids) (A80):** `solid_shapes.h` has no assertion on `sizeof(Solid)` yet. Computed from
+its fields, it is 200 bytes: `shape` at 0, `solid_id` at 4, `pose_at_step_start` (96) at 8, `motion` (48) at 104,
+`half_size` (24) at 152, `closed` (6) at 176, `friction_scale` at 184, `reports_reaction` at 192, then 7 bytes of
+trailing padding. Add `static_assert(sizeof(Solid) == 200, ...)` in `solid_shapes.h` after `Solid`, beside the
+memory estimate's use of `sizeof(Solid)`, so that 1b's 4-byte `mesh_index` is proven to fit: it goes at offset 196,
+inside that padding, and the size stays 200.
+
 - [ ] **Step 1: Failing tests** (`move_particles_test.cc`, label `cpu`):
 
   ```cpp
@@ -1371,7 +1410,10 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   functions in `move_particles_steps.h` (plan decisions; `inline FLUIDITY_CPU_AND_GPU`):
   - `struct MoveParticlesView` — the plain pointers and counts of `MoveParticlesInputs` and `MovedParticles` and the
     buffers' per-particle failure array, copied by the CPU half (the shared header cannot include the CPU-only
-    `move_particles.h`).
+    `move_particles.h`). **Room for module 1b (mesh solids) (A80):** its scalar inputs (step duration, contact
+    tolerance, start overlap tolerance, solid count) are fields of this one struct too, and
+    `ApplyMoveParticleAt` takes it, never a positional scalar list, so 1b's `MeshShapes` field is one line. Leave
+    about 400 B of thread stack unassumed (the tree search's 48 indexes and the surface list).
   - `void ApplyMoveParticleAt(MoveParticlesView view, std::size_t index)` — runs `MoveParticle` on particle
     `index`, writes its outputs, record and reaction, and its `ContactFailure` (`kNone` on success, `particle_id`
     filled).
