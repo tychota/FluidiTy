@@ -1,0 +1,19 @@
+tools/run_gpu_tests.ps1
+  s_4f0877e2acdcf0::t_572bb0d51f32ec 369-370,375,377,389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "696a8d025a4b76c55ae0de6517e56c6530fb94cf",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
