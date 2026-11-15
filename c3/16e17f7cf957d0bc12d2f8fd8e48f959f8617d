@@ -1,0 +1,26 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_6159dfdfc6e918 741,744-745
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_bf7839079acea8 511
+  s_4f0877e2acdcf0::t_4e48a9670d1b9b 554-555
+  s_4f0877e2acdcf0::t_a2ee7e94bdfca5 516-517
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_3d08efc46e6f09 675-676
+  s_4f0877e2acdcf0::t_eb49053f9a79be 662-664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c316e17f7cf957d0bc12d2f8fd8e48f959f8617d",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
