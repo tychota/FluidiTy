@@ -211,7 +211,7 @@ constexpr SolidFace ToSolidFace(DomainSide side);
 
 // D name, N here (added for transfer and viscosity). The nearest solid surface seen from one point.
 struct SolidVelocitySample {
-  bool has_solid = false;               // A solid surface lies within `reach` of the point.
+  bool has_solid = false;               // A solid surface lies within `search_distance` of the point.
   std::uint32_t solid_index = kNoSolid; // Index into the solids array.
   PlateSide side{};                     // The plate side that surface faces. {0, kNoPlate} for any other shape.
   Vec3 normal_out_of_solid{};           // Unit vector, world. Zero without a solid.
@@ -219,9 +219,9 @@ struct SolidVelocitySample {
   double distance = 0;                  // m. Positive outside the solid, negative inside.
 };
 // Samples every solid `elapsed` seconds into the step and keeps the one with the smallest distance; ties keep
-// the lower solid index. has_solid is false when that distance is larger than `reach`.
+// the lower solid index. has_solid is false when that distance is larger than `search_distance`.
 SolidVelocitySample ComputeSolidVelocitySample(const Solid* solids, std::uint32_t solid_count, double elapsed,
-                                               Vec3 point, double reach);
+                                               Vec3 point, double search_distance);
 ```
 
 Solid-frame conventions (stated in the header, drawn in the paper): a flat solid fills `z <= 0` and its only

@@ -455,7 +455,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
     `ObliqueFloor()` = `contact::FlatSolid{.point_on_surface = {0.6, 0.6, 0.25}, .normal_out_of_solid =
     {0.6, 0, 0.8}}`.
   - `BuildSolidsAtFaces(const grid::StaggeredGrid&, std::span<const contact::Solid>, double elapsed, RunOn)`:
-    for every face, `ComputeSolidVelocitySample(..., elapsed, face position, reach = 2 * cell width of the
+    for every face, `ComputeSolidVelocitySample(..., elapsed, face position, search_distance = 2 * cell width of the
     face)`; `outside_solid = 1` unless some solid's `ComputeDistanceToSolid` is `<= 0`; `side` from
     `FindSolidSide` of the plate (`{kPlateId, side}`, or `{0, kNoPlate}`). Bound to the grid; `time = elapsed`.
   - `ParticleSpec { std::uint64_t id; Vec3 position; Vec3 velocity; Mat3 fitted_velocity_change; double mass;

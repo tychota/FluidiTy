@@ -886,7 +886,7 @@ tests through `LINKS`; `ReadAllBytes` reads through `ReadAll` of the test suppor
 - Modify: `solids_on_grid.h`
 
 **Interfaces:**
-- Produces both `ComputeSolidsAtFaces` forms exactly. Reach `kSolidReachInCells * w`, `w` the width of the face's
+- Produces both `ComputeSolidsAtFaces` forms exactly. Search distance `kSolidReachInCells * w`, `w` the width of the face's
   block level (`grid::ComputeCellWidth`); position `grid::ComputeFacePosition`.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):

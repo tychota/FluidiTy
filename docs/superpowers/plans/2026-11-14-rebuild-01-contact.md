@@ -620,7 +620,8 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
   TEST(ComputeSolidVelocitySample, NoSolids_HasNoSolid)
   TEST(ComputeSolidVelocitySample, TwoSolids_KeepsNearest)     // distances 0.3 and 0.1: index 1
   TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex)
-  TEST(ComputeSolidVelocitySample, BeyondReach_HasNoSolid)     // distance 0.3, reach 0.2: defaults (P10)
+  TEST(ComputeSolidVelocitySample, BeyondSearchDistance_HasNoSolid)  // distance 0.3, search distance 0.2: defaults (P10)
+  TEST(ComputeSolidVelocitySample, AtSearchDistance_HasSolid)  // distance equal to the search distance: has_solid
   TEST(ComputeSolidVelocitySample, Plate_ReportsSideWithPlateId)  // solid_id 5, above: {5, kAlongNormal}
   TEST(ComputeSolidVelocitySample, TurningBox_VelocityAtNearestSurfacePoint)  // box half 1 at origin, angular
                                                                // {0,0,1}, point {3,0,0}: velocity at {1,0,0} ==
@@ -1174,9 +1175,9 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
       // box half 0.5 at origin, angular {0,0,1}; fixed floor id 2 at z -0.5 (touching the box's bottom); particle
       // at rest at {0.5 + tol, 0, -0.45} (d == tol from kHighX, 0.05 above the floor), friction 0. Hit at 0
       // (time_left = T); v_local = {0, -(0.5 + tol), 0}, r = Sqrt((0.5 + tol)^2 + 0.45^2) = 0.67268120, so P7's
-      // reach is T * (0.5 + tol + 0.67268120) = 1.17268120 T against d_floor - tol = 0.05 - tol; it fires for
-      // T >= 0.0426373. T 0.1 (reach 0.1172681): kTooCloseToCall/kTurningSolidNearOtherSolid. T 0.04 (reach
-      // 0.0469072): no error, hit_fraction 0, face kHighX, end distance to the box at
+      // swept distance is T * (0.5 + tol + 0.67268120) = 1.17268120 T against d_floor - tol = 0.05 - tol; it fires for
+      // T >= 0.0426373. T 0.1 (swept distance 0.1172681): kTooCloseToCall/kTurningSolidNearOtherSolid. T 0.04 (swept
+      // distance 0.0469072): no error, hit_fraction 0, face kHighX, end distance to the box at
       // ComputeSolidPose(box, 0.04) in [tol / 2, 2 tol], end z -0.45 within 2 tol (floor not hit)
   // Amended 2026-11-15 (A74, P17): a cylinder turning across its axis slides as a turning solid
   TEST(MoveParticle, CylinderTurningAcrossAxisHitsRestingParticle_EndsOnWallAtEndPose)

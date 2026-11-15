@@ -464,7 +464,7 @@ ingredient in each cell that holds particles; this design first wrote `transfer:
 owner A8; every liquid is in that set).
 Transfer reads nothing from this module; it records `kFromSolve` for faces this solve wrote.
 Contact (PROVIDED by contact 3.2): `contact::Solid`, `SolidVelocitySample` (DECIDED name) and
-`ComputeSolidVelocitySample(solids, solid_count, elapsed, point, reach)`.
+`ComputeSolidVelocitySample(solids, solid_count, elapsed, point, search_distance)`.
 Materials (PROVIDED by materials 3): `materials::MaterialTable::ingredient_viscosity()`, Pa s by scene
 ingredient index (zero for snow and springy solids; zero for gas).
 Solids (PROVIDED by solids 3, NEW A26, A27): `solids::ViscousMaterialFace` (`BuildViscousMaterialFaces`,

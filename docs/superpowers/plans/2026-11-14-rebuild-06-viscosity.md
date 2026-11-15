@@ -856,9 +856,9 @@ piece does.
     Elapsed time 0: the snapshot's geometry is at the step start.
   - **Usable face** of a nominal pair: a face piece with `face_inertia > 0` (solved), or with `open_area == 0`
     whose centre is on a solid surface (`|distance| <= 1e-9 x cell_width` from `ComputeSolidVelocitySample`
-    with reach `cell_width`): a given face whose value is `velocity_before_pressure`. Anything else is missing.
+    with search distance `cell_width`): a given face whose value is `velocity_before_pressure`. Anything else is missing.
   - **Rule (a), solid between:** for a missing face `F` with usable partner `P` along the derivative axis,
-    sample the solids at `P`'s centre with reach `cell_width`; if a solid lies between (`0 < distance <=
+    sample the solids at `P`'s centre with search distance `cell_width`; if a solid lies between (`0 < distance <=
     cell_width` and its normal points from the solid toward `P`), the derivative is `(u_P - v_solid) / distance`
     with the sign of `P`'s side: coefficient on `P` is `+-0.5 / distance`, `rate_from_solids -= +-0.5 x
     v_solid / distance` (`v_solid`: the solid velocity's component along the face axis). A domain side gives
