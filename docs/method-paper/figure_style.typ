@@ -148,4 +148,26 @@
   mark: coloured-mark(padding-line-colour, small: true),
 )
 
+// Solids and particles, first used by the contact figures. A solid is filled in a light tint of the solid colour
+// and its surface is drawn in the solid colour itself; a particle is a small disc in the particle colour.
+#let fill-solid = palette.solid.lighten(80%)
+#let surface-stroke = 1.2 * geometry-stroke + palette.solid
+#let particle-radius = 0.09
+
+// Draws a particle at `point`: a disc in `colour`, outlined in black so it reads on any fill.
+#let particle-dot(point, colour: palette.particle) = cetz.draw.circle(
+  point,
+  radius: particle-radius,
+  fill: colour,
+  stroke: 0.5 * geometry-stroke + black,
+)
+
+// Draws a dimension between two 2D points `from` and `to`: a thin line with a small arrowhead at each end.
+#let dimension-line(from, to, colour: black) = cetz.draw.line(
+  from,
+  to,
+  stroke: guide-stroke + colour,
+  mark: (start: "stealth", end: "stealth", fill: colour, scale: small-arrow-scale),
+)
+
 // `cell-grid(...)`, which draws cells of mixed sizes, arrives with the grid module.
