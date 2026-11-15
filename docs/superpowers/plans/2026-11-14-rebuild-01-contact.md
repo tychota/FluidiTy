@@ -96,9 +96,9 @@ Contact's own:
   Design section 3 is the contract: names, fields, defaults and signatures are copied from it exactly.
 - Every function of the shared headers is `inline FLUIDITY_CPU_AND_GPU` (and `constexpr` where the body allows),
   defined in the header so device code sees it without relocatable device code.
-- Constants (design 3.3, 3.4, 5.2): `kContactToleranceRelative = 0x1p-40`, `kContactToleranceFloorInCellWidths =
+- Constants (design 3.2, 3.3, 3.4, 5.2): `kContactToleranceRelative = 0x1p-40`, `kContactToleranceFloorInCellWidths =
   0x1p-30`, `kMinFeatureInTolerances = 1024`, `kMaxHitsPerStep = 4`, `kMaxAdvanceCount = 128`, `kMaxTurnPerStep =
-  1.5707963267948966`, `kNoSolid = 0xFFFFFFFFu`. A unit vector or rotation column is accepted when its squared
+  1.5707963267948966` (declared in `solid_shapes.h` since Task 3), `kNoSolid = 0xFFFFFFFFu`. A unit vector or rotation column is accepted when its squared
   length is within `0x1p-40` of 1.
 - Order: solids are visited in array order (ascending `solid_id`), faces in `kLowX, kHighX, kLowY, kHighY, kLowZ,
   kHighZ` (**amended 2026-11-15, A74:** then `kCurved, kLowRim, kHighRim`; a round solid's face comes from its region,
@@ -538,7 +538,9 @@ closed-form hits (P15). Its five subsections are, in order, `<sec-solid-shapes>`
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
 - [ ] **Step 3: Implement** design 5.1. `p = Transpose(axes) * (point - origin)`. Plate face: `kHighZ` when
-  `p.z >= 0`; box face on an axis: `kLow` when `p.axis < 0`, else `kHigh`. Domain box sides point into the box.
+  `p.z >= 0`; box face on an axis: `kLow` when `p.axis <= 0`, else `kHigh` (a box reports its low face on its middle plane; the
+  face-order tie rule covers the box and the domain box; a plate and a cylinder's caps take `kHighZ` at `p.z = 0`;
+  an inside tie in a cylinder goes to the wall). Domain box sides point into the box.
   Each formula carries the matching `<eq:solid-distance>` line in `Read:`.
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Compute a solid's pose, surface velocity and distance`. New names:
@@ -684,9 +686,9 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
 - Modify: `CMakeLists.txt`, `docs/glossary.md`
 
 **Interfaces:**
-- Consumes: `Vec3`, `math::Dot`, `math::Length`.
+- Consumes: `Vec3`, `math::Dot`, `math::Length`; `kMaxTurnPerStep` from Task 3 (`solid_shapes.h`, not declared here).
 - Produces: `ComputeContactResponse` (design 3.4), and in `solid_contact.h` the declarations `ContactKind`,
-  `kMaxHitsPerStep`, `kMaxAdvanceCount`, `kMaxTurnPerStep`, `SolidContactInputs`, `SolidReaction`,
+  `kMaxHitsPerStep`, `kMaxAdvanceCount`, `SolidContactInputs`, `SolidReaction`,
   `SolidContactResult`, `FirstHit` exactly as design 3.4 (bodies of `FindFirstHit` and `MoveParticle` arrive in
   Tasks 8 to 13).
 - Port: `main:native/include/fluidity/base/liquid_wall_contact_math_3d.h:101-149` (`ApplyOneWayResponse`),
@@ -722,7 +724,7 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Remove the approach and apply friction at a solid surface`. New names:
   `ComputeContactResponse`, `ContactKind`, `SolidContactInputs`, `SolidReaction`, `SolidContactResult`,
-  `FirstHit`, `kMaxHitsPerStep`, `kMaxAdvanceCount`, `kMaxTurnPerStep`.
+  `FirstHit`, `kMaxHitsPerStep`, `kMaxAdvanceCount`.
 
 ### Task 8: First hit on solids that do not turn
 
@@ -736,7 +738,7 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
 - Consumes: Tasks 4, 7.
 - Produces: `FindFirstHit` (design 3.4) for solids with zero angular velocity; turning solids return
   `kTooCloseToCall/kSlowApproachToTurningSolid` until Task 9 (no test relies on that). Private:
-  `ComputeDistanceForParticle(const Solid&, const SolidPose&, Vec3 point, PlateSide plate_side)` in
+  `ComputeDistanceForParticle(const Solid&, SolidPose, Vec3 point, PlateSide plate_side)` in
   `solid_contact_steps.h` (P3 distance).
 - Replaces: `main:native/src/liquid_wall_contact_3d.cc:24-131` (`CompareBoxSweepTimes`, `SelectBoxImpactFace`)
   and the linear hit time of `liquid_wall_contact_math_3d.h:420-480`.
@@ -786,7 +788,8 @@ then lower solid index) covers every shape.
 - Modify: `native/fluidity/contact/solid_contact_steps.h`, `solid_contact.h`, `find_first_hit_test.cc`
 
 **Interfaces:**
-- Consumes: Tasks 4a, 8.
+- Consumes: Tasks 4a, 8; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's `omega_across`: use it, write no
+  second helper.
 - Produces: the closed-form `kSphere` and `kCylinder` branches of `FindFirstHit` (design 5.7) with P15, P16 and P17
   (a sphere never turns; a cylinder whose `omega_across` is below P17's bound is swept here; a cylinder turning
   across its axis goes to the Task 9 search). Private helpers in `solid_contact_steps.h`, names decided here:
@@ -852,7 +855,8 @@ then lower solid index) covers every shape.
 - Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `find_first_hit_test.cc`
 
 **Interfaces:**
-- Consumes: Task 8, `ComputeSolidPose`.
+- Consumes: Task 8, `ComputeSolidPose`; `ComputeShapeTurningAngularVelocity` (Task 3) to decide whether a cylinder's
+  shape turns (P17): use it, write no second helper.
 - Produces: `FindFirstHit` for turning solids (design 5.3 step 2).
 - Port the idea only: `main:native/src/rigid_body_3d.cc:861-881` (`RigidBodySweepDistanceBound3D`, the bound
   `translation + radius * angle`) and `:883-1130` (`SweepRigidBoxPoint3D`); not its bisection, stack or rounding
@@ -882,7 +886,8 @@ then lower solid index) covers every shape.
   turns; `ComputeDistanceToSolid` (Task 4a) gives `g(t)`, the bound is unchanged.
   The third test needs the close call: `FindFirstHit` writes it through a pointer decided here,
   `FindFirstHit(..., FirstHit* first_hit, ContactCloseCall* close_call)` (plan decision; may be null), the
-  design's six-argument form forwarding null.
+  design's six-argument form forwarding null. The close-call output follows `CheckSolid`'s rule: whenever the
+  pointer is not null and the failure is not a close call, `kNone` is written.
 - [ ] **Step 2: Run.** Expected: the new tests fail.
 - [ ] **Step 3: Implement** design 5.3 step 2: `bound = Length(velocity_for_this_step - linear_velocity) +
   Length(angular_velocity) * radius`, `radius` the larger of the path ends' distances to the solid's origin at the
@@ -1070,7 +1075,7 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 8a, 11, 12, and (amended 2026-11-15) Task 13 for the test
+- Consumes: Tasks 8a, 11, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17 in step 5, no second helper; and (amended 2026-11-15) Task 13 for the test
   `TurningCylinderRimHit_IsNotMoved`: it needs the slide on a turning solid to finish the step, so **run Task 12a
   after Task 13**.
 - Produces: `MoveParticle` step 4's rim move (P15: a hit position that the cylinder's closed form (Task 8a) finds in
@@ -1141,7 +1146,7 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 9, 12.
+- Consumes: Tasks 9, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper.
 - Produces: design 5.5 step 5 for a turning solid, with P7.
 - Port: `main:native/src/liquid_wall_contact_3d.cc:349-400` (from the comment "Carry the corrected relative
   remainder in the moving face coordinates"), without the rounding bound.

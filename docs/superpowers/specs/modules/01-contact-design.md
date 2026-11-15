@@ -162,14 +162,22 @@ struct Solid {                          // D name. What the sweep consumes: shap
 };
 inline constexpr std::uint32_t kNoSolid = 0xFFFFFFFFu;  // N. "No solid" as an index into the solids array.
 
-Solid ToSolid(const FlatSolid& shape, const SolidMotion& motion, std::uint32_t solid_id);
-Solid ToSolid(const Plate& shape, const SolidMotion& motion, std::uint32_t solid_id);
-Solid ToSolid(const Box& shape, const SolidMotion& motion, std::uint32_t solid_id);
-Solid ToSolid(const DomainBox& shape, std::uint32_t solid_id);
-Solid ToSolid(const Sphere& shape, const SolidMotion& motion, std::uint32_t solid_id);    // NEW (A74)
-Solid ToSolid(const Cylinder& shape, const SolidMotion& motion, std::uint32_t solid_id);  // NEW (A74)
+// Shape structs, SolidMotion and SolidPose are passed by value in shared functions (AGENTS.md: small structs by
+// value); Solid stays const Solid&.
+Solid ToSolid(FlatSolid shape, SolidMotion motion, std::uint32_t solid_id);
+Solid ToSolid(Plate shape, SolidMotion motion, std::uint32_t solid_id);
+Solid ToSolid(Box shape, SolidMotion motion, std::uint32_t solid_id);
+Solid ToSolid(DomainBox shape, std::uint32_t solid_id);
+Solid ToSolid(Sphere shape, SolidMotion motion, std::uint32_t solid_id);    // NEW (A74)
+Solid ToSolid(Cylinder shape, SolidMotion motion, std::uint32_t solid_id);  // NEW (A74)
+inline constexpr double kMaxTurnPerStep = 1.5707963267948966;  // rad. N. A quarter turn, as on main. Declared here
+                                                               // (Task 3), not in solid_contact.h.
+// NEW (A74). The part of solid.motion.angular_velocity that changes the shape, rad/s, world: zero for a sphere, the
+// part across the cylinder's own axis (omega - Dot(omega, e_z) e_z) for a cylinder, all of it for the others.
+Vec3 ComputeShapeTurningAngularVelocity(const Solid& solid);
 
-// Fails: kBadInput (not finite, axes not a rotation, size not positive, id 0, a moving DomainBox; NEW (A74):
+// Fails: kBadInput (not finite, axes not a rotation, size not positive, id 0, a moving DomainBox, a DomainBox whose
+//        axes are not exactly the identity; NEW (A74):
 //        a sphere whose three half_size values differ, a cylinder whose half_size.x != half_size.y),
 //        kTooCloseToCall/kSolidTurnsTooFar (turn during the step above kMaxTurnPerStep; NEW (A74): for a sphere
 //        and a cylinder only the shape-changing turn counts, see 5.7: never for a sphere, the turn across the
@@ -179,15 +187,15 @@ ContactError CheckSolid(const Solid& solid, double step_duration);
 // Pose `elapsed` seconds after the start of the step, 0 <= elapsed <= step_duration.
 SolidPose ComputeSolidPose(const Solid& solid, double elapsed);
 // Velocity of the solid's surface at a world point, m/s.            D word: solid_velocity
-Vec3 ComputeSolidVelocity(const Solid& solid, const SolidPose& pose, Vec3 point);
+Vec3 ComputeSolidVelocity(const Solid& solid, SolidPose pose, Vec3 point);
 struct DistanceToSolid {                // N
   double distance = 0;                  // m. Positive outside the solid, negative inside.
   Vec3 normal_out_of_solid{};           // Unit vector, world, of the nearest face.
   SolidFace face = SolidFace::kHighZ;
 };
-DistanceToSolid ComputeDistanceToSolid(const Solid& solid, const SolidPose& pose, Vec3 point);
+DistanceToSolid ComputeDistanceToSolid(const Solid& solid, SolidPose pose, Vec3 point);
 // Side of a plate a point is on. kNoPlate when the solid is not a plate or the point is inside its thickness.
-SolidSide FindSolidSide(const Solid& solid, const SolidPose& pose, Vec3 point);
+SolidSide FindSolidSide(const Solid& solid, SolidPose pose, Vec3 point);
 
 // N (added for pressure's open-sea settings). The Blender names of the six domain sides, in SolidFace order:
 // kLeft = kLowX, kRight = kHighX, kFront = kLowY, kBack = kHighY, kBottom = kLowZ, kTop = kHighZ.
@@ -248,7 +256,7 @@ ContactError CheckContactTolerance(const ContactScale& scale, double contact_tol
 enum class ContactKind : std::uint8_t { kNone, kHit, kStartedInsideSolid };  // D
 inline constexpr int kMaxHitsPerStep = 4;        // N. Three sides of a corner plus one.
 inline constexpr int kMaxAdvanceCount = 128;     // N. Search steps toward a turning solid.
-inline constexpr double kMaxTurnPerStep = 1.5707963267948966;  // rad. N. A quarter turn, as on main.
+// kMaxTurnPerStep (a quarter turn) lives in solid_shapes.h (3.2).
 
 struct SolidContactInputs {              // D (first six fields), N (the rest)
   Vec3 start_position{};                 // m, world, at the start of the step.
@@ -469,7 +477,9 @@ linear_velocity * t`, `axes = math::Rotation(angular_velocity * t) * axes0` (the
 the solid's axes: flat solid `d = p.z`; plate `d = |p.z| - half_thickness`; box `d = max over axes of
 (|p.axis| - half_size.axis)` (the gap to the nearest face plane, positive exactly when outside); domain box
 `d = min over closed sides of (half_size.axis - s * p.axis)`, `s = -1` for the low side. Ties take the first
-face in the order `kLowX, kHighX, kLowY, kHighY, kLowZ, kHighZ`. Sphere and cylinder (NEW, A74): see 5.7; their
+face in the order `kLowX, kHighX, kLowY, kHighY, kLowZ, kHighZ`; so a box reports its low face on its middle plane
+(`p.axis <= 0` is `kLow`), a plate and a cylinder's caps report `kHighZ` at `p.z = 0`, and an inside tie in a cylinder
+goes to the wall. Sphere and cylinder (NEW, A74): see 5.7; their
 distance is the true (Euclidean) signed distance to the surface, not a largest face gap.
 
 **5.2 Tolerance (new, replaces `ProjectionBounds`, `NudgeOutward`, `CertifyContactSide`).**
@@ -667,7 +677,8 @@ later step under gravity or pressure; over many steps it follows the curve (test
 
 *Spin about a symmetry axis.* A turn about a sphere's centre or about a cylinder's own axis moves the surface but
 not the shape. The *shape-changing turn* is: none for a sphere; for a cylinder `omega_across = omega - Dot(omega,
-e_z) e_z`, `e_z` its own z axis (its `axis`) at the start of the sweep. A sphere is always swept and slid as a solid that does not turn
+e_z) e_z`, `e_z` its own z axis (its `axis`) at the start of the sweep. Code computes it with the public
+`ComputeShapeTurningAngularVelocity` (3.2); no other helper does. A sphere is always swept and slid as a solid that does not turn
 (closed form); a cylinder is too when `Length(omega_across) * step_duration * Length(half_size) <= tol / 8` (the
 shape moves less than `tol / 8` during the step: a spin given along the axis, up to rounding), and otherwise as a turning solid (5.3 step 2, P7 slide in its axes; the `kMaxTurnPerStep`
 limit applies to `Length(omega_across) * step_duration`). In every case `ComputeSolidVelocity` uses the full
