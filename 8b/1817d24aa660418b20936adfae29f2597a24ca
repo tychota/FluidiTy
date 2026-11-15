@@ -1,0 +1,44 @@
+docs/method-paper/figure_style.typ
+  s_4f0877e2acdcf0::t_81f6183204c588 151-172
+docs/method-paper/figures/contact_tolerance.typ
+  s_4f0877e2acdcf0::t_ed11ba7e321641 1-83
+docs/method-paper/figures/contact_solid_shapes.typ
+  s_4f0877e2acdcf0::t_a5f6604266dc75 5-118,120,123,125-137
+  s_4f0877e2acdcf0::t_a37a96dabc19f5 138-146
+docs/method-paper/figures/contact_sweep_hit_slide.typ
+  s_4f0877e2acdcf0::t_600ceccdd1f448 1-115
+  s_4f0877e2acdcf0::t_50a94f114b5db3 116-117
+docs/method-paper/figures/contact_response.typ
+  s_4f0877e2acdcf0::t_a9cd427d1362f3 1-60
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_5e64014e6de890 26-29,72-83,99-100,207-216,637-686,689-697,705-713,718-719,722-727,728-731,740-747,748-767,771-774,782-794,797-817,821-847,851-873,876-883,887-905,909-927,935-941,1134-1198,1203-1223,1226-1234,1237-1279,1283-1287,1290-1293,1297-1300
+native/fluidity/base/stable_order_steps_test.cc
+  s_4f0877e2acdcf0::t_6acd89a864de54 262-265
+native/fluidity/base/scalar_math.h
+  s_4f0877e2acdcf0::t_c8718eebe26f65 199-202,223-226
+  s_4f0877e2acdcf0::t_6b6ac81c175712 193-194,217-218
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_cff458195832d2 123-127
+.github/workflows/checks.yml
+  s_4f0877e2acdcf0::t_e754d61c42adb1 3-6,13-14
+AGENTS.md
+  s_4f0877e2acdcf0::t_1914452c0c380e 481-483
+README.md
+  s_4f0877e2acdcf0::t_840986347eda09 47-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8b1817d24aa660418b20936adfae29f2597a24ca",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
