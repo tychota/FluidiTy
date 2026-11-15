@@ -1,0 +1,24 @@
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_30460c21816ff2 39
+  s_4f0877e2acdcf0::t_7d5cdc8683926f 38,554-556,616-622
+docs/glossary.md
+  s_4f0877e2acdcf0::t_eba9dfc969576e 59
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_b09ad9850e72a7 892-893,1169-1193,1197-1202,1204,1212-1220,1320,1324-1329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "efce8aeac5e172a5d1470368c93af34baae87ca1",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
