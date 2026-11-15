@@ -308,9 +308,17 @@ struct FirstHit {                        // N
 // solid. Solids are sampled `start_elapsed` seconds into the step. Fails with kTooCloseToCall.
 ContactError FindFirstHit(const SolidContactInputs& inputs, Vec3 start, Vec3 velocity_for_this_step,
                           double start_elapsed, double duration, FirstHit* first_hit);
+// No unit. Share of the speeds involved that bounds the approach speed left after the response.
+inline constexpr double kApproachLeftAfterResponseShare = 0x1p-46;
+// m/s. The largest approach speed rounding can leave in a result of ComputeContactResponse(velocity, solid_velocity,
+// ...): kApproachLeftAfterResponseShare * (Length(velocity) + Length(solid_velocity)).
+double ComputeLargestApproachLeftAfterResponse(Vec3 velocity, Vec3 solid_velocity);
 // One velocity after meeting a surface: no speed into the solid, sideways speed reduced by friction.
 Vec3 ComputeContactResponse(Vec3 velocity, Vec3 solid_velocity, Vec3 normal_out_of_solid, double friction);
 ```
+
+`MoveParticle` and `FindFirstHit` are declared in this header when their bodies arrive (Tasks 8 to 13 of the plan),
+not before, because every function in a shared header is defined there. The listing above is the finished header.
 
 Deviations from the naming review's sketch, all forced by the shared-header rule: `hit_fraction` is a plain
 `double` read together with `kind` (no `std::optional` on the device); `MoveParticle` returns the enum and
@@ -549,7 +557,16 @@ Sphere and cylinder (NEW, A74): step 1 has a closed form for each (5.7); step 2 
    `into_solid_speed = -approach_speed`. If `sideways_speed == 0` or
    `friction >= sideways_speed / into_solid_speed`, the particle sticks: `velocity = solid_velocity`. Otherwise
    `velocity += (friction * into_solid_speed / sideways_speed) * (solid_velocity - velocity)`. The comparison is
-   written as a division so a large friction cannot overflow.
+   written as a division, as the paper's equation is, because the product form `friction * into_solid_speed >=
+   sideways_speed` rounds differently at the limit: with sideways speed 3 m/s and approach -0.7 m/s, the friction
+   `3 / 0.7` rounded to a double sticks by the quotient, while the product rounds to `2.9999999999999996 < 3` and
+   would slip at 4.4e-16 m/s. Overflow is no reason for either form: an infinite product still compares correctly.
+
+After the response the approach speed `Dot(normal, result - solid_velocity)` is zero only up to rounding (a stick
+leaves exactly 0). `ComputeLargestApproachLeftAfterResponse(velocity, solid_velocity)`, which returns
+`kApproachLeftAfterResponseShare * (Length(velocity) + Length(solid_velocity))` with
+`kApproachLeftAfterResponseShare = 0x1p-46`, bounds what is left, and every later test of that sign compares with the
+bound (`approach >= -bound` means no longer approaching), never with 0.
 
 The velocity for the next step and the velocity for this step each get the response with their own approach
 speed.

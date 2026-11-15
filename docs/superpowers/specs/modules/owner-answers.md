@@ -98,6 +98,7 @@ the `rebuild` branch.
 | A86 | Mesh solids: which mesh Blender exports (2026-11-15) | The render-level evaluated mesh ("as Blender would render it"), with a note when triangles are smaller than an eighth of a cell. Design 01b question 6. |
 | A87 | Mesh solids: open meshes (2026-11-15) | A mesh that is not closed is a blocking finding first; a repair button in the add-on (thicken) comes later. Design 01b question 7. |
 | A88 | Mesh solids: default shape (2026-11-15) | "Mesh" is the default for any object marked Solid that is not exactly a box, sphere or cylinder. Design 01b question 8. |
+| A89 | Mesh solids: thin-walled containers of liquid (2026-11-15) | "Grow thin parts for the grid now": the first version of 1b includes thickening thin parts for the grid only, so the pressure solve sees a wall of workable thickness while particles still stop at the true surface. Chosen over refusing such scenes first (the recommendation) and over two pressure unknowns per split cell. Design 01b question 9. |
 
 ## Everything else
 

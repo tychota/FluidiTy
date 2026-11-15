@@ -171,9 +171,9 @@ Plan decisions (the design left these open; every task respects them, the paper 
   `has_solid` is false every other field keeps its default; a plate gives `{solid_id, FindSolidSide(...)}` and
   `{0, kNoPlate}` when the point is inside the thickness.
 - **P11 Generated cases.** Every generated test set uses one integer generator, typed in
-  `contact_test_cases.h`: `state` starts at `0x2545F4914F6CDD1D`; `next()` sets `state = state *
+  `contact_test_cases.h`: `state` starts at `0x2545F4914F6CDD1D`; `CaseGenerator::Next()` sets `state = state *
   6364136223846793005 + 1442695040888963407` (wrapping `std::uint64_t`) and returns `(state >> 11) * 0x1p-53`,
-  in `[0, 1)`; `w()` is `2 * next() - 1`. Draw order is part of each set's definition.
+  in `[0, 1)`; `NextSigned()` is `2 * Next() - 1`. Draw order is part of each set's definition.
 - **P12 Start inside the tolerance (coordinator, 2026-11-14).** A start with
   `-start_overlap_tolerance <= d < tol` is moved along that solid's normal to `d = tol` before the sweep, whatever
   its velocity. With `d < 0` this is `kStartedInsideSolid` with the response (design 5.5 step 2). With
@@ -1051,7 +1051,10 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
   `contact_test_cases.h`, `docs/glossary.md`
 
 **Interfaces:**
-- Consumes: Task 11.
+- Consumes: Task 11; `ComputeLargestApproachLeftAfterResponse` (Task 7). The rule "approaches again" is
+  `approach >= -bound` means no longer approaching, never `approach >= 0`: `bound` is the function's result for the
+  velocity passed to that response (or to that frictionless removal), and the approach is computed as
+  `Dot(normal, result - solid_velocity)`.
 - Produces: design 5.5 step 5's earlier-surface rule (removal without friction, the sharp-corner stop,
   `kSqueezedBetweenSolids`), with P5's reaction for each change it makes (amended 2026-11-15: a removal is charged
   to the earlier surface's solid, the corner case to the newest solid).
@@ -1088,6 +1091,15 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
       // hit_count 2, velocities {0,0,0}, reaction.solid_index 0, velocity_for_next_step_change {-0.5,0,1.5}
       // within 1e-15 (it is {0,0,1} if the corner case is left out or charged to the wedge, {-1,0,1} if the whole
       // slide is charged to the floor), hit_position {1 - (1 + Sqrt(2)) tol, 0, tol} within 2 tol
+  // Rounding residue of the response (design 5.4): the test fails if the comparison is with 0
+  TEST(MoveParticle, ObliqueCornerResidue_SlidesOnWithoutSqueezeOrStop)
+      // two fixed flat solids, friction 0: plate A point {0,0,0} normal {0.6,0,0.8}; wall B point {-0.2,0,0}
+      // normal {1,0,0}; start {0.3,0,0.4}, both velocities {-2,0,-2}, T 1. A's first response of that velocity
+      // leaves an approach of exactly -2^-55 (pinned in contact_response_test.cc), below 0 but within the bound
+      // 4.0e-14. The particle slides along A at {-0.32,0,0.24}, hits B, and must slide on along the corner line.
+      // Expected: no error (not kSqueezedBetweenSolids), hit_count 2, velocities {0,0,0.24} within 1e-15 (not
+      // {0,0,0}), end x -0.2 + tol within 2 tol, end z 0.24 within 1e-3 (a stop at the first hit would end near
+      // z 0.043). Fails if "approaches again" tests `approach >= 0` instead of `approach >= -bound`
   ```
 - [ ] **Step 2: Run.** Expected: the first two fail (`ClosingCeiling` passes through the floor or loops), and the
   two reaction tests fail until step 5 adds its changes to the reaction.
@@ -1107,7 +1119,8 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 8a, 11, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17 in step 5, no second helper; and (amended 2026-11-15) Task 13 for the test
+- Consumes: Tasks 8a, 11, 12 (including its rule that "approaches again" is `approach >= -bound` means no longer
+  approaching, never `approach >= 0`, with `bound` from `ComputeLargestApproachLeftAfterResponse`); `ComputeShapeTurningAngularVelocity` (Task 3) for P17 in step 5, no second helper; and (amended 2026-11-15) Task 13 for the test
   `TurningCylinderRimHit_IsNotMoved`: it needs the slide on a turning solid to finish the step, so **run Task 12a
   after Task 13**.
 - Produces: `MoveParticle` step 4's rim move (P15: a hit position that the cylinder's closed form (Task 8a) finds in
@@ -1178,7 +1191,9 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 9, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper.
+- Consumes: Tasks 9, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper;
+  `ComputeLargestApproachLeftAfterResponse` (Task 7), through Task 12's rule: "approaches again" is
+  `approach >= -bound` means no longer approaching, never `approach >= 0`.
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
   in the solid's axes is one private function of `solid_contact_steps.h` taking `inputs` and `solid_index`, so 1b
   can sweep that remainder against a mesh.
@@ -1236,12 +1251,12 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   control enters" is one helper of `contact_test_cases.h` that takes any list of solids (the test below calls it
   for the oblique set and for the round set); 1b runs it on meshes.
 
-Oblique set (generator P11; draw in this order). Per case: normal `{w, w, w}` redrawn while `Length < 0.25`,
-then `Normalized`; `point_on_surface = 1e3 * {w, w, w}`; `linear_velocity = 10 * {w, w, w}`; `gap = 0.01 * next() + 2 * tol`; tangent
-`Normalized(Cross(normal, {w, w, w}))`, redrawn while the cross product's length is below 0.25; `sideways = 5 * w`;
-`hit_share = 0.1 + 0.8 * next()`; `for_this_step = linear_velocity + sideways * tangent - gap / (T * hit_share) *
-normal`; `for_next_step = for_this_step + 0.5 * {w, w, w}`; `start = point_on_surface + gap * normal + 50 * w *
-tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = ComputeContactTolerance({1100, 0.01,
+Oblique set (generator P11; draw in this order). Per case: normal `{NextSigned(), NextSigned(), NextSigned()}` redrawn while `Length < 0.25`,
+then `Normalized`; `point_on_surface = 1e3 * {NextSigned(), NextSigned(), NextSigned()}`; `linear_velocity = 10 * {NextSigned(), NextSigned(), NextSigned()}`; `gap = 0.01 * Next() + 2 * tol`; tangent
+`Normalized(Cross(normal, {NextSigned(), NextSigned(), NextSigned()}))`, redrawn while the cross product's length is below 0.25; `sideways = 5 * NextSigned()`;
+`hit_share = 0.1 + 0.8 * Next()`; `for_this_step = linear_velocity + sideways * tangent - gap / (T * hit_share) *
+normal`; `for_next_step = for_this_step + 0.5 * {NextSigned(), NextSigned(), NextSigned()}`; `start = point_on_surface + gap * normal + 50 * NextSigned() *
+tangent`; `friction = Next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = ComputeContactTolerance({1100, 0.01,
 0.01})`, `start_overlap_tolerance = 0`.
 
 - [ ] **Step 1: Failing tests.**
@@ -1272,13 +1287,13 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
       // at least 4500 cases are hits (every cylinder case aims inside; print the count)
   ```
   **Amended 2026-11-15 (A74):** also produces test-only `std::vector<MoveParticleCase> BuildRoundCases(int count)`
-  (used again in Task 16). Draw order (P11): `is_sphere = next() < 0.5`; `centre = 1e3 * {w, w, w}`; `radius = 0.05 +
-  0.45 * next()`; `half_height = 0.05 + 0.45 * next()` (drawn for both, used by the cylinder); `axis = {w, w, w}`
-  redrawn while `Length < 0.25`, then `Normalized` (drawn for both); `linear_velocity = 10 * {w, w, w}`; `direction`
-  drawn as the axis was; `start = centre + (Length(half_size) + 0.01 + 0.05 * next()) * direction`; `target = centre +
-  axes * (0.9 * half_size` times `{w, w, w}` component by component`)`; `hit_share = 0.1 + 0.8 * next()`;
+  (used again in Task 16). Draw order (P11): `is_sphere = Next() < 0.5`; `centre = 1e3 * {NextSigned(), NextSigned(), NextSigned()}`; `radius = 0.05 +
+  0.45 * Next()`; `half_height = 0.05 + 0.45 * Next()` (drawn for both, used by the cylinder); `axis = {NextSigned(), NextSigned(), NextSigned()}`
+  redrawn while `Length < 0.25`, then `Normalized` (drawn for both); `linear_velocity = 10 * {NextSigned(), NextSigned(), NextSigned()}`; `direction`
+  drawn as the axis was; `start = centre + (Length(half_size) + 0.01 + 0.05 * Next()) * direction`; `target = centre +
+  axes * (0.9 * half_size` times `{NextSigned(), NextSigned(), NextSigned()}` component by component`)`; `hit_share = 0.1 + 0.8 * Next()`;
   `for_this_step = linear_velocity + (target - start) / (T * hit_share)`; `for_next_step = for_this_step + 0.5 *
-  {w, w, w}`; `friction = next()`. One solid id 1 at rest in pose (only `linear_velocity`, no turn), `T = 0x1p-6`,
+  {NextSigned(), NextSigned(), NextSigned()}`; `friction = Next()`. One solid id 1 at rest in pose (only `linear_velocity`, no turn), `T = 0x1p-6`,
   `tol = ComputeContactTolerance({1100, 0.01, 0.01})`, `start_overlap_tolerance = 0`. The control of the oblique
   set is not repeated (the rest gap's proof is shape-free).
 - [ ] **Step 2: Run.** Expected: they pass if Tasks 10 to 13 (and 12a) are right. Then prove the control: temporarily set
@@ -1516,8 +1531,8 @@ inside that padding, and the size stays 200.
 
   ```cpp
   TEST(MoveParticles, FrictionlessHitsOnReactingSphere_ChangeHasNoMomentAboutCentre)
-      // reacting sphere r 0.5 at {1,2,3}; 100 particles (P11, in this order per particle: direction {w,w,w}
-      // redrawn while Length < 0.25 then Normalized; jitter 0.3 * {w,w,w}): start centre + 2 * direction, both
+      // reacting sphere r 0.5 at {1,2,3}; 100 particles (P11, in this order per particle: direction {NextSigned(), NextSigned(), NextSigned()}
+      // redrawn while Length < 0.25 then Normalized; jitter 0.3 * {NextSigned(), NextSigned(), NextSigned()}): start centre + 2 * direction, both
       // velocities -direction + jitter, T 3, friction 0: per particle with a hit,
       // |Cross(hit_position - centre, change)| <= 1e-12 * |change| (every normal passes through the centre)
   TEST(MoveParticle, RestingOnTopOfSphere_Stays)

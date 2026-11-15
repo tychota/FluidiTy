@@ -278,13 +278,14 @@ A design must no longer say "until the owner answers".
   investigated here with the eight-step diagnosis; the module is done when all eight pass or the owner decides
   otherwise.
 
-## 01b Mesh solids (A80; owner answers A81 to A88 applied 2026-11-15)
+## 01b Mesh solids (A80; owner answers A81 to A89 applied 2026-11-15)
 
-Written 2026-11-15 from `01b-mesh-solids-design.md`. The owner has answered its questions (A81 to A88), so every
-entry below is to apply; each edit is marked `(A80)` where it lands (thin-part edits `(A85)`). Order (A82): the
+Written 2026-11-15 from `01b-mesh-solids-design.md`. The owner has answered its questions (A81 to A89), so every
+entry below is to apply; each edit is marked `(A80)` where it lands (thin-part edits `(A85)`, growth `(A89)`). Order (A82): the
 contact entries when the contact part of 1b is planned, right after module 1's Task 18; every other module's
-entries when that module's plan is next touched. Names are those of the 01b design, sections 3.1 to 3.3. One
-question is still with the owner (01b Q9: thin-walled containers of liquid); the entries below are its option (a).
+entries when that module's plan is next touched. Names are those of the 01b design, sections 3.1 to 3.3. Two
+questions are still with the owner (01b Q10: where liquid stops at a grown thin part; Q11: the same growth for
+the plate); the entries below take Q10's option (a) and leave the plate as it is.
 
 **01 Contact (plan `2026-11-14-rebuild-01-contact.md`; applied to the plan already unless stated):**
 - Task 8, 8a: private helpers of `solid_contact_steps.h` that evaluate a solid take `const SolidContactInputs&
@@ -303,7 +304,8 @@ question is still with the owner (01b Q9: thin-walled containers of liquid); the
 - Task 16: the per-particle GPU function takes its scalar inputs as one struct.
 - Design, with the contact part of 1b: 3.1 `ContactError::kMeshNotUsable`, `MeshProblem`,
   `ContactFailure::mesh_problem`; 3.2 `SolidShape::kMesh`, `SolidFace::kMeshTriangle`, `kNoMesh`,
-  `Solid::mesh_index`, the `ToSolid` form, **`PlateSide::part`, `IsOnOppositeSides`, `FindPlateSide` (A85)**; 3.4 and
+  `Solid::mesh_index`, the `ToSolid` form, **`PlateSide::part`, `IsOnOppositeSides`, `FindPlateSide` (A85)**; **`MeshSurface`,
+  `MeshShapes::surface` (A89)**; 3.4 and
   3.5 `MeshShapes meshes` in `SolidContactInputs` and `MoveParticlesInputs`; section 1 "Owns" names the mesh shape;
   5.7's "each convex solid is hit at most once" gains "a mesh may be hit several times (01b 5.6)". Glossary: the
   `same_side` row's meaning becomes "not on opposite sides of the same plate or thin part".
@@ -326,13 +328,15 @@ fixture `BuildSolidsAtFaces` calls the mesh-aware `ComputeSolidVelocitySample` a
 
 **05 Pressure (A85):** no interface or method edit. `plan-decisions.md` "Pressure", the thin-solid sentence,
 becomes: "`kCellSplitBySolid` is decided from corner samples only: a solid thinner than a cell that passes between
-corners is not seen. Solids' thickness rule, for the plate and for every thin part of a mesh
-(`MeshShape::thinnest_sheet`, finding `mesh_sheet_too_thin_for_liquid`), keeps that case out." Design decision 7
+corners is not seen. Solids keep that case out: the plate by its thickness rule, a mesh by growing its thin parts
+for the grid (01b 5.12, A89), so coverage always holds a whole layer of cells inside a thin part." Scene tests
+(written into the step's plan): the thin-walled glass, the two-level tank (01b section 7). Design decision 7
 gains: "sides on thin mesh parts (01b 5.11) separate particles and the particle-face exchange, not the solve; two
-cell equations per split cell stay not built; see 01b Q9."
+cell equations per split cell stay not built; the solve is protected by growth (01b 5.12)."
 
 **06 Viscosity:** design 3 `ViscosityInputs` gains `contact::MeshShapes meshes` beside `solids`; 4 and plan Task 10
-call `ComputeSolidVelocitySample(..., meshes)`; 5.7 states that a mesh solid counts as inclined (excluded until
+call `ComputeSolidVelocitySample(..., meshes)` with `meshes.surface = kGrownForGrid` (A89: the wall viscosity
+sees is the wall pressure sees); 5.7 states that a mesh solid counts as inclined (excluded until
 Task 21); test `ShearChannel` twin with a tilted mesh slab, 5 %.
 
 **07 Materials (A85):** `PlatesInScene` / `has_plate_side` is true also when a mesh has a thin part. Nothing else.
@@ -344,47 +348,53 @@ Task 21); test `ShearChannel` twin with a tilted mesh slab, 5 %.
 samples a free mesh at its bounding box corners and centre (A83). **Thin parts (A85):** 5.4 step 1: `side` comes
 from `contact::FindPlateSide` of the nearest solid, plate or mesh; 5.9 `ApplyPlateSides` rewrites, every step, the
 side of each particle within `kSolidReachInCells * w` of a mesh (the plate's write-once rule unchanged);
-5.9 "Supported thickness": `CheckSolidsCanRun`, when `has_liquid_or_gas`, applies `ComputeMinPlateThickness` to
-every mesh's `thinnest_sheet` (blocking finding `mesh_sheet_too_thin_for_liquid`); NOTE findings "two thin parts
+**growth (A89):** 5.4 steps 1, 2 and 5, the motion map and `kSolidsTooClose` call contact with `meshes.surface =
+kGrownForGrid`; a coverage corner within the cap of a grown triangle marks its cells `wants_smallest_cells`;
+5.9 "Supported thickness" states that a mesh has no minimum (the plate's rule is unchanged, 01b Q11); NOTE findings
+`mesh_thin_part_grown` (largest growth in metres and cells) and `mesh_passage_closed_for_liquid` (place, true gap,
+gap left); NOTE findings "two thin parts
 closer than `2 * kSolidReachInCells` cells" and "triangles under an eighth of a cell" (A86). Tests
 `ComputeSolidCoverage, MeshCube_EqualsBox`, `..., Icosphere_BlockedAreaConverges`,
 `Hydrostatic_PushIsWeightOfDisplacedLiquid` with a mesh, a driven mesh paddle,
 `ApplyPlateSides, ParticleRoundTheRim_ChangesSideThroughNoSide`,
-`CheckSolidsCanRun, MeshSheetOneCellThickWithLiquid_IsBlocked` and `..., WithSnowOnly_Passes`.
+`ComputeSolidCoverage, MeshSheetQuarterCellThick_HasAFullLayerOfCellsInside`,
+`CheckSolidsCanRun, PipeBoreThreeCells_ReportsPassageClosed`, the free thin-walled boat (01b section 7).
 
 **10 Step:** 3.2 and 3.6: the step owns one `contact::MeshShapeBuffers`; stages 3, 11, 16, 19 and
 `FoamAndSprayInputs` fill `meshes`; 5.14 `CheckSceneCanRun` calls the mesh-aware `CheckSolid` and
-`ComputeContactScale`, and `CheckMeshShape` once (`CapabilityReason::kMeshNotUsable`, NEW; and
-`kMeshSheetTooThinForLiquid`, NEW, A85); 5.9 `BuildRunPlan` adds `BuildMeshShapeMemoryEstimate`; 5.15
+`ComputeContactScale`, and `CheckMeshShape` once (`CapabilityReason::kMeshNotUsable`, NEW); **stage 16 sets `meshes.surface` per
+material (A89): `kGrownForGrid` for liquids, mixtures and gas markers, `kTrue` otherwise**; 5.9 `BuildRunPlan` adds `BuildMeshShapeMemoryEstimate`; 5.15
 `BuildStartCells` takes `MeshShapes` (CPU) and tests the face centre as a fifth point in "against a solid"; plan
 Tasks 7, 8, 8a, 26 gain a mesh scene (`BuildDrivenMeshScene`, `BuildFreeMeshScene` (A83)).
 
 **11 Cell resize and batches:** 5.9 and plan Task 38: mesh rows are whole-run rows on the processor in every
-batch. No interface edit.
+batch. 5.3 (A89): `wants_smallest_cells` near a grown thin part comes from solids' coverage and is not overridden
+by the refinement factor. No interface edit.
 
 **12 I/O and CLI:** scene file `solids[].shape` gains `mesh`, new field `mesh_file`; scene schema version raised;
-new `io/mesh_solid.h` (read PLY, `contact::BuildMeshShape` with `sheet_thickness_limit` from the smallest cell
-width (A85), findings, volume, centre of mass, inertia, re-centring for a free solid (A83)); run folder
+new `io/mesh_solid.h` (read PLY, `contact::BuildMeshShape` with `sheet_thickness_limit` and
+`grown_sheet_thickness` both `2.75 x` the smallest cell width (A85, A89), findings, volume, centre of mass, inertia, re-centring for a free solid (A83)); run folder
 `inputs/mesh_solids` listed and read on resume; mesh files in the fingerprint; `BuildStartParticles` calls the
-mesh-aware distance; memory entry "io: mesh solids"; 5.10 budget lines show mesh bytes; plan gains a task after
+mesh-aware distance, on the grown surface for liquid and gas (A89); memory entry "io: mesh solids"; 5.10 budget lines show mesh bytes; plan gains a task after
 Task 29d.
 
 **13 Surface, foam and spray:** `FrameInputs` and `MotionSample` carry `contact::MeshShapes` (CPU); 5.3, 5.5,
-5.6 call the mesh-aware distance with `largest_distance` 4 spacings; tests `BuildSurfaceField, BesideAMeshSolid_SameHeight`,
+5.6 call the mesh-aware distance with `largest_distance` 4 spacings; **(A89) 5.3 must carry the liquid across the
+grown layer to the true surface of a thin part (up to 1.375 cells; not designed: 01b section 11, not settled)**; tests `BuildSurfaceField, BesideAMeshSolid_SameHeight`,
 `MoveFoamParticles, StopsAtAMeshSolid`.
 
 **14 Blender add-on:** 3.2 `Shape.MESH`, the default for a `SOLID` object that is not exactly a box, sphere or
 cylinder (A88); 5.1 item 2 exports the render-level evaluated mesh (A86) as PLY (`inputs/solids/solid_<id>.ply`,
 fan rule, scale applied); 10 drops "evaluated mesh shapes"; findings `solid_mesh_not_closed` (blocking, A87; the
-repair button is later work), `solid_mesh_deforms` (blocking, A84), `mesh_sheet_too_thin_for_liquid` (blocking,
-A85; repair text: thicken to the bound or shrink cells near solids), `solid_mesh_triangles_small` (NOTE, A86),
+repair button is later work), `solid_mesh_deforms` (blocking, A84), `mesh_thin_part_grown` and `mesh_passage_closed_for_liquid`
+(NOTE, A89; text: thicken the part or shrink cells near solids), `solid_mesh_triangles_small` (NOTE, A86),
 `solid_mesh_too_many_triangles`; the digest covers solid mesh files.
 
 **15 Sand (A85):** no interface edit; one test in the sand plan: sand either side of a thin mesh sheet does not
 exchange momentum.
 
 **`shared-interface.md`:** (b) and (c) Contact gain the names of 01b 3.1 to 3.3. **`tradeoff-particles.md`:** 1.3
-gains one line: mesh solids, 60 B per triangle on the processor.
+gains one line: mesh solids, 64 B per triangle on the processor.
 
 ## Names changed while the first designs were updated
 
