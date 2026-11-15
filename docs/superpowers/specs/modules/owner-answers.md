@@ -99,6 +99,7 @@ the `rebuild` branch.
 | A87 | Mesh solids: open meshes (2026-11-15) | A mesh that is not closed is a blocking finding first; a repair button in the add-on (thicken) comes later. Design 01b question 7. |
 | A88 | Mesh solids: default shape (2026-11-15) | "Mesh" is the default for any object marked Solid that is not exactly a box, sphere or cylinder. Design 01b question 8. |
 | A89 | Mesh solids: thin-walled containers of liquid (2026-11-15) | "Grow thin parts for the grid now": the first version of 1b includes thickening thin parts for the grid only, so the pressure solve sees a wall of workable thickness while particles still stop at the true surface. Chosen over refusing such scenes first (the recommendation) and over two pressure unknowns per split cell. Design 01b question 9. |
+| A90 | Mesh solids: thin walls, second thoughts (2026-11-15) | Liquid and gas stop "at the true surface". "I'm wondering if growing the wall is the correct way; CPIC used a coloured distance field for instance. Ideally we adapt cells close to the wall. Search what papers recommend for contained fluid." Asked whether plates should be grown too: "see previous answer". So A89's growth for the grid is not settled: the published methods for a thin wall that holds liquid are surveyed first (cells made small near the wall, sides from a coloured distance, cut cells with one unknown per side), then the owner decides. Design 01b questions 10 and 11. |
 
 ## Everything else
 

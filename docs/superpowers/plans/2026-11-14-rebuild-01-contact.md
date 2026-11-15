@@ -8,13 +8,20 @@ on both processors, with the method-paper section that explains them. **Amended 
 include the sphere and the finite cylinder (distance, normal, surface velocity, first hit, slide), beside the flat
 solid, plate, box and domain box.
 
-**Architecture:** Four shared headers (`contact_error.h`, `solid_shapes.h`, `contact_tolerance.h`,
-`solid_contact.h`) hold every formula, inline and `FLUIDITY_CPU_AND_GPU`, so the CPU loop and the GPU thread run
+**Architecture:** Shared headers (`contact_error.h`, `solid_shapes.h`, `contact_tolerance.h`, `solid_contact_types.h`,
+`solid_contact_steps.h`, `solid_contact.h`; see the header layout below) hold every formula, inline and `FLUIDITY_CPU_AND_GPU`, so the CPU loop and the GPU thread run
 the same `MoveParticle`. One CPU-only header, `move_particles.h`, declares the batch operation on plain pointers;
 `move_particles_cpu.cc` holds the public function and the CPU loop, `move_particles_gpu.cu` one thread per particle
 and an integer reduction of the failures. Contact includes only `base/`. **Amended 2026-11-15 (A74):** the sphere
 and cylinder are two more `SolidShape` values handled by the same shared functions (a branch per shape in
 `ComputeDistanceToSolid` and in the closed-form first hit); no new header, no new public operation.
+
+**Header layout (as built through Task 8):** `contact/solid_contact_types.h` holds the design 3.4 types, the constants
+and `ComputeContactResponse` / `ComputeLargestApproachLeftAfterResponse`; `contact/solid_contact_steps.h` holds the
+private per-step functions and includes the types header; `contact/solid_contact.h` includes both and holds the public
+functions (`FindFirstHit` now, `MoveParticle` later). No forward declarations. New private steps go to
+`solid_contact_steps.h`, new public functions to `solid_contact.h`, new types and constants to
+`solid_contact_types.h`.
 
 **Tech Stack:** as Foundation: C++23 host, CUDA C++20 device, CMake presets + Ninja, Conan 2 (GoogleTest), uv,
 clang-format and clang-tidy 23.1 (the versions `pyproject.toml` pins), Docker via colima, Typst with CeTZ for the method paper. Nothing is added.
@@ -687,12 +694,12 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
 **Kind:** numerics
 
 **Files:**
-- Create: `native/fluidity/contact/solid_contact.h`, `contact_response_test.cc`
+- Create: `native/fluidity/contact/solid_contact_types.h` (built; the plan first said `solid_contact.h`), `contact_response_test.cc`
 - Modify: `CMakeLists.txt`, `docs/glossary.md`
 
 **Interfaces:**
 - Consumes: `Vec3`, `math::Dot`, `math::Length`; `kMaxTurnPerStep` from Task 3 (`solid_shapes.h`, not declared here).
-- Produces: `ComputeContactResponse` (design 3.4), and in `solid_contact.h` the declarations `ContactKind`,
+- Produces: `ComputeContactResponse` (design 3.4), and in `solid_contact_types.h` the declarations `ContactKind`,
   `kMaxHitsPerStep`, `kMaxAdvanceCount`, `SolidContactInputs`, `SolidReaction`,
   `SolidContactResult`, `FirstHit` exactly as design 3.4 (bodies of `FindFirstHit` and `MoveParticle` arrive in
   Tasks 8 to 13).
@@ -772,7 +779,9 @@ never in the loop.
   TEST(FindFirstHit, BoxEdgeGraze_StaysFree)                   // same box, start {0,1 + 4 * tol,0.5}, v {1,1,0}
   TEST(FindFirstHit, TwoSolidsSameTime_LowerIndexWins)         // two flat solids at the same plane, ids 3 and 4
   TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace)     // plate h 0.01, start p.z -0.005, v {0,0,1},
-                                                               // committed kAlongNormal: free; uncommitted: hit at 0
+                                                               // both are hits at 0 (P3's half space holds the
+                                                               // whole thickness): committed kAlongNormal gives
+                                                               // kHighZ, distance -0.015; uncommitted kLowZ, -0.005
   TEST(FindFirstHit, DomainBoxOpenTop_ExitIsFree)              // {0,0,0}..{1,1,1}, start {0.5,0.5,0.9}, v {0,0,1}
   TEST(FindFirstHit, MovingSolid_UsesRelativeVelocity)         // plate h 1/32, centre {-1,0,0} moving {2,0,0},
                                                                // particle at rest at origin, 1 s:
@@ -799,7 +808,7 @@ then lower solid index) covers every shape.
 **Kind:** numerics
 
 **Files:**
-- Modify: `native/fluidity/contact/solid_contact_steps.h`, `solid_contact.h`, `find_first_hit_test.cc`
+- Modify: `native/fluidity/contact/solid_contact_steps.h` (new private steps), `find_first_hit_test.cc`; `solid_contact.h` only if a public function changes
 
 **Interfaces:**
 - Consumes: Tasks 4a, 8; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's `omega_across`: use it, write no
@@ -871,10 +880,15 @@ each branch.
 **Kind:** numerics
 
 **Files:**
-- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `find_first_hit_test.cc`
+- Modify: `native/fluidity/contact/solid_contact_steps.h` (new private steps), `solid_contact.h` (public functions only), `find_first_hit_test.cc`
 
 **Interfaces:**
-- Consumes: Task 8, `ComputeSolidPose`; `ComputeShapeTurningAngularVelocity` (Task 3) to decide whether a cylinder's
+- Consumes: Task 8, `ComputeSolidPose`; the seven-argument form `FindFirstHit(inputs, start, velocity_for_this_step,
+  start_elapsed, duration, FirstHit* first_hit, ContactCloseCall* close_call)` already exists since Task 8 (the
+  six-argument form passes `nullptr`) and maps `kTooCloseToCall` to `kSlowApproachToTurningSolid`; Task 9 fills in the
+  turning case behind `FindFirstHitOnSolid` and must keep the rule "writes `kNone` whenever the pointer is not null and
+  the failure is not a close call". Preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side.
+  Also `ComputeShapeTurningAngularVelocity` (Task 3) to decide whether a cylinder's
   shape turns (P17): use it, write no second helper.
 - Produces: `FindFirstHit` for turning solids (design 5.3 step 2). **Room for module 1b (mesh solids) (A80):** the
   stepping search reads `g(t)` only through `ComputeDistanceForParticle` and decides "turning" only through
@@ -926,7 +940,7 @@ each branch.
 
 **Files:**
 - Create: `native/fluidity/contact/move_particle_test.cc`
-- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `contact_test_cases.h`
+- Modify: `native/fluidity/contact/solid_contact.h` (`MoveParticle`, public), `solid_contact_steps.h` (new private steps), `contact_test_cases.h`
 
 **Room for module 1b (mesh solids) (A80):** a mesh can be hit several times in one sweep, so the surface list of
 the slide stores, per entry, the solid index and the normal recorded at the hit (it has `kMaxHitsPerStep`
@@ -935,7 +949,7 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
 `MoveToRestGap`: call it, write no second copy.
 
 **Interfaces:**
-- Consumes: Tasks 6 to 9.
+- Consumes: Tasks 6 to 9. Preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side.
 - Produces: `MoveParticle` (design 3.4) with steps 1, 3, 4, 5 (re-sweep with the time left, no earlier-surface
   rule yet) and 6; step 2 only returns `kStartsInsideSolid` for `d < 0` and treats `0 <= d <= tol` as free
   (Task 11 replaces it). Docstring as the naming review
@@ -996,11 +1010,11 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
 **Kind:** numerics
 
 **Files:**
-- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+- Modify: `native/fluidity/contact/solid_contact.h` (`MoveParticle`, public), `solid_contact_steps.h` (new private steps), `move_particle_test.cc`,
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Task 10.
+- Consumes: Task 10. Preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side.
 - Produces: step 2 of design 5.5 in full, with P3, P4, P6 and P12.
 - **Room for module 1b (mesh solids) (A80):** "move the point to `d = tol`" is one private
   `MoveToRestGap(inputs, solid_index, pose, point)` in `solid_contact_steps.h`, used by this task's step 2 and by
@@ -1047,11 +1061,11 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
 **Kind:** numerics
 
 **Files:**
-- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+- Modify: `native/fluidity/contact/solid_contact.h` (`MoveParticle`, public), `solid_contact_steps.h` (new private steps), `move_particle_test.cc`,
   `contact_test_cases.h`, `docs/glossary.md`
 
 **Interfaces:**
-- Consumes: Task 11; `ComputeLargestApproachLeftAfterResponse` (Task 7). The rule "approaches again" is
+- Consumes: Task 11; `ComputeLargestApproachLeftAfterResponse` (Task 7, `solid_contact_types.h`). Preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. The rule "approaches again" is
   `approach >= -bound` means no longer approaching, never `approach >= 0`: `bound` is the function's result for the
   velocity passed to that response (or to that frictionless removal), and the approach is computed as
   `Dot(normal, result - solid_velocity)`.
@@ -1115,11 +1129,11 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 **Kind:** numerics
 
 **Files:**
-- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+- Modify: `native/fluidity/contact/solid_contact.h` (`MoveParticle`, public), `solid_contact_steps.h` (new private steps), `move_particle_test.cc`,
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 8a, 11, 12 (including its rule that "approaches again" is `approach >= -bound` means no longer
+- Consumes: Tasks 8a, 11, 12; preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. (Task 12's rule follows, including its rule that "approaches again" is `approach >= -bound` means no longer
   approaching, never `approach >= 0`, with `bound` from `ComputeLargestApproachLeftAfterResponse`); `ComputeShapeTurningAngularVelocity` (Task 3) for P17 in step 5, no second helper; and (amended 2026-11-15) Task 13 for the test
   `TurningCylinderRimHit_IsNotMoved`: it needs the slide on a turning solid to finish the step, so **run Task 12a
   after Task 13**.
@@ -1187,12 +1201,12 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 **Kind:** numerics
 
 **Files:**
-- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+- Modify: `native/fluidity/contact/solid_contact.h` (`MoveParticle`, public), `solid_contact_steps.h` (new private steps), `move_particle_test.cc`,
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 9, 12; `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper;
-  `ComputeLargestApproachLeftAfterResponse` (Task 7), through Task 12's rule: "approaches again" is
+- Consumes: Tasks 9, 12; preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper;
+  `ComputeLargestApproachLeftAfterResponse` (Task 7, `solid_contact_types.h`), through Task 12's rule: "approaches again" is
   `approach >= -bound` means no longer approaching, never `approach >= 0`.
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
   in the solid's axes is one private function of `solid_contact_steps.h` taking `inputs` and `solid_index`, so 1b
@@ -1317,7 +1331,7 @@ tangent`; `friction = Next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   `LINKS fluidity_base_test_support`), `docs/glossary.md`
 
 **Interfaces:**
-- Consumes: `MoveParticle`; `RunOn`, `CheckCanRunOn`; `Buffer`, `BuildBuffer` (both forms), `WriteBuffer`,
+- Consumes: `MoveParticle` (`solid_contact.h`); `RunOn`, `CheckCanRunOn`; `Buffer`, `BuildBuffer` (both forms), `WriteBuffer`,
   `ReadBuffer`, `BufferError`, `ToBufferError`, `RunOnCallStatus`; `RunMemory`, `BuildRunMemory`,
   `ComputeRunMemoryBytes` (Foundation Task 17); `MemoryEstimateEntry`, `CountedPer`, `KeptFor`,
   `ComputeMemoryBytes`; `PerParticleVelocity`; test support `ToBits`, `BuildBufferHolding`, `ReadAll`.
@@ -1414,7 +1428,7 @@ inside that padding, and the size stays 200.
   `fluidity_add_gpu_sources(move_particles_gpu.cu)`; `move_particles_steps_test` `LABEL cpu`;
   `move_particles_gpu_test` and `shared_formulas_gpu_test` (`SOURCES shared_formulas_gpu_test.cc
   shared_formulas_test_gpu.cu`) `LABEL gpu`; `move_particles_no_gpu_test` `LABEL no_gpu`; every test
-  `LINKS fluidity_base_test_support`), `solid_shapes.h`, `solid_contact.h`, `contact_tolerance.h` (the same-bits
+  `LINKS fluidity_base_test_support`), `solid_shapes.h`, `solid_contact_types.h`, `contact_tolerance.h` (the same-bits
   sentence below)
 
 **Interfaces:**
@@ -1445,7 +1459,7 @@ inside that padding, and the size stays 200.
   `ReadBuffer`; `CheckGpuWork` before the read. No floating-point value is summed. Every per-call array is a
   `GpuArray`; `ContactBuffers` already holds the per-step arrays.
 - Same-bits promise (deliberate, plan decision): the headers of `solid_shapes.h`, `contact_tolerance.h` and
-  `solid_contact.h` state that `ComputeDistanceToSolid`, `FindSolidSide`, `ComputeSolidVelocitySample`,
+  `solid_contact_types.h` state that `ComputeDistanceToSolid`, `FindSolidSide`, `ComputeSolidVelocitySample`,
   `ComputeContactResponse` and `ComputeContactTolerance` give the same bits on CPU and GPU, unless NaN, for solids
   that do not turn, because they use only `+`, `-`, `*`, `/` and `math::Sqrt`, each correctly rounded on both with
   `--fmad=false`; with turning they call `math::Rotation` (may differ in the last bits) and agree within design 6.

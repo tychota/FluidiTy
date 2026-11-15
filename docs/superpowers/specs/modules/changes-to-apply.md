@@ -278,14 +278,23 @@ A design must no longer say "until the owner answers".
   investigated here with the eight-step diagnosis; the module is done when all eight pass or the owner decides
   otherwise.
 
-## 01b Mesh solids (A80; owner answers A81 to A89 applied 2026-11-15)
+## 01b Mesh solids (A80; owner answers A81 to A90, 2026-11-15)
 
-Written 2026-11-15 from `01b-mesh-solids-design.md`. The owner has answered its questions (A81 to A89), so every
-entry below is to apply; each edit is marked `(A80)` where it lands (thin-part edits `(A85)`, growth `(A89)`). Order (A82): the
-contact entries when the contact part of 1b is planned, right after module 1's Task 18; every other module's
-entries when that module's plan is next touched. Names are those of the 01b design, sections 3.1 to 3.3. Two
-questions are still with the owner (01b Q10: where liquid stops at a grown thin part; Q11: the same growth for
-the plate); the entries below take Q10's option (a) and leave the plate as it is.
+Written 2026-11-15 from `01b-mesh-solids-design.md`. Entries from A81 to A88 are to apply; each edit is marked
+`(A80)` where it lands (thin-part sides `(A85)`). Order (A82): the contact entries when the contact part of 1b
+is planned, right after module 1's Task 18; every other module's entries when that module's plan is next touched.
+
+**PENDING THE OWNER'S CHOICE (A90; 01b section 5.12, questions Q10 to Q12): every entry below marked `(A89)`.**
+A89's growth for the grid is not settled. Do not apply any `(A89)` entry. They describe the growth option
+(5.12 option 4) and are kept only so the choice can be compared; if the owner takes the recommended option
+(whole faces closed where the line between two cell centres crosses a thin part) they are replaced by the
+"pending Q10" rows of 01b section 5.10: contact `FindThinPartCrossing`; solids a per-face-piece array
+(`closed_by_thin_part`, owner, effective normal velocity) and one motion-map entry per closed face; pressure reads
+it through `SolidCoverage` and drops `kCellSplitBySolid` for meshes; transfer's `CellsFromParticles` counts by
+side; viscosity and gas use the wall's velocity across a closed face; findings `mesh_gap_narrower_than_a_cell`
+and `mesh_thin_part_in_use`; the plate's thickness minimum goes. Memory with that option: 60 B per triangle.
+Liquid stops at the true surface in every option (A90): the `(A89)` entries that send liquid to the grown
+surface are void whatever the choice.
 
 **01 Contact (plan `2026-11-14-rebuild-01-contact.md`; applied to the plan already unless stated):**
 - Task 8, 8a: private helpers of `solid_contact_steps.h` that evaluate a solid take `const SolidContactInputs&

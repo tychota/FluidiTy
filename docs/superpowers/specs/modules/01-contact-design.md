@@ -171,7 +171,7 @@ Solid ToSolid(DomainBox shape, std::uint32_t solid_id);
 Solid ToSolid(Sphere shape, SolidMotion motion, std::uint32_t solid_id);    // NEW (A74)
 Solid ToSolid(Cylinder shape, SolidMotion motion, std::uint32_t solid_id);  // NEW (A74)
 inline constexpr double kMaxTurnPerStep = 1.5707963267948966;  // rad. N. A quarter turn, as on main. Declared here
-                                                               // (Task 3), not in solid_contact.h.
+                                                               // (Task 3), not in solid_contact_types.h.
 // NEW (A74). The part of solid.motion.angular_velocity that changes the shape, rad/s, world: zero for a sphere, the
 // part across the cylinder's own axis (omega - Dot(omega, e_z) e_z) for a cylinder, all of it for the others.
 Vec3 ComputeShapeTurningAngularVelocity(const Solid& solid);
@@ -258,6 +258,11 @@ ContactError CheckContactTolerance(ContactScale scale, double contact_tolerance)
 ```
 
 ### 3.4 `contact/solid_contact.h` (shared)
+
+Header layout (as built through plan Task 8): the types below, the constants, `ComputeContactResponse` and
+`ComputeLargestApproachLeftAfterResponse` live in the shared header `contact/solid_contact_types.h`; the private
+per-step functions live in `contact/solid_contact_steps.h`, which includes the types header; `contact/solid_contact.h`
+includes both and holds the public functions (`FindFirstHit` now, `MoveParticle` later). No forward declarations.
 
 ```cpp
 enum class ContactKind : std::uint8_t { kNone, kHit, kStartedInsideSolid };  // D

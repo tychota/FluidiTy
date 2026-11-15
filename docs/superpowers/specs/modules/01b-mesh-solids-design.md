@@ -1,9 +1,11 @@
 # Mesh solids module design
 
-Status: updated 2026-11-15 with the owner's answers A81 to A89 (section 11 "Decisions"; thin parts: 5.11, A85;
-thin parts grown for the grid: 5.12, A89).
-Module 1b of the rebuild (owner answer A80). No implementation plan yet. Two questions remain for the owner (section 11, Q10 and Q11). The edits other designs need are listed in `changes-to-apply.md`, section "01b Mesh solids
-(A80)". Literature claims are marked
+Status: updated 2026-11-15 with the owner's answers A81 to A90 (section 11 "Decisions"; thin parts: 5.11, A85).
+How a thin wall holds liquid is **open again** (A90): section 5.12 compares the real options on the survey in
+`literature-thin-walls.md` and recommends one; section 11 holds three questions for the owner. Module 1b of the
+rebuild (owner answer A80). No implementation plan yet. The edits other designs need are listed in
+`changes-to-apply.md`, section "01b Mesh solids (A80)"; those that depend on 5.12 are marked pending there.
+Literature claims are marked
 (checked) when the citation was confirmed on the web on 2026-11-15 and (memory) when not.
 
 ## 1. Purpose
@@ -113,25 +115,15 @@ struct MeshShape {                    // One mesh on one processor. Borrowed arr
                                               // weighted by its angle there (Baerentzen and Aanaes 2005).
   const std::uint16_t* sheet_sides = nullptr; // NEW (A85). Per triangle: 0, or 2 * part - 1 (the part's
                                               // kAlongNormal face) or 2 * part (its kAgainstNormal face). 5.11.
-  const float* grid_growth = nullptr;         // NEW (A89). m, per triangle, zero or more: how far the triangle
-                                              // is grown for the grid (5.12). 0 for a triangle of no thin part.
   const MeshTreeBox* tree = nullptr;          // tree_box_count. Box 0 is the root.
   std::uint32_t vertex_count = 0, triangle_count = 0, tree_box_count = 0;
   Vec3 half_size{};                   // m. Largest |coordinate| of a vertex per own axis.
   double thinnest_part = 0;           // m. Smallest thickness the builder measured (5.2 check 7).
   double thinnest_sheet = 0;          // m. NEW (A85). Smallest thickness between two faces back to back (5.11);
                                       // +infinity when the mesh has no thin part.
-  double largest_grid_growth = 0;     // m. NEW (A89). Largest grid_growth; widens the tree search (5.12).
   double smallest_triangle_height = 0;// m.
 };
-enum class MeshSurface : std::uint8_t {   // NEW (A89). Which surface of a mesh a question is asked of (5.12).
-  kTrue,            // The triangles.
-  kGrownForGrid,    // The triangles, each thin part's grown by its grid_growth.
-};
-struct MeshShapes {                       // Passed by value.
-  const MeshShape* meshes = nullptr; std::uint32_t mesh_count = 0;
-  MeshSurface surface = MeshSurface::kTrue;   // NEW (A89). The caller sets it; every mesh-aware function obeys it.
-};
+struct MeshShapes { const MeshShape* meshes = nullptr; std::uint32_t mesh_count = 0; };   // Passed by value.
 inline constexpr int kMaxMeshTreeDepth = 48;         // The builder guarantees it; the search keeps 48 indexes.
 inline constexpr int kMaxHitsPerMeshPerStep = 16;    // 5.6.
 inline constexpr int kMaxMoveOutCount = 4;           // 5.5.
@@ -145,14 +137,21 @@ struct DistanceToMesh {
 // `largest_distance`: the search gives up beyond it and returns distance == largest_distance (sign from the
 // tree's root box: positive), so far points cost one box test. Pass +infinity for the true value everywhere.
 DistanceToMesh ComputeDistanceToMesh(const MeshShape& mesh, Vec3 own_point, double largest_distance);
-// NEW (A89). The same for the grown surface: min(true distance, min over triangles of
-// (distance to the triangle - its grid_growth)). Equal to the true one for a mesh with no thin part.
-DistanceToMesh ComputeDistanceToGrownMesh(const MeshShape& mesh, Vec3 own_point, double largest_distance);
 struct MeshFirstHit { double elapsed = 0; bool is_hit = false; DistanceToMesh at_hit{}; };
 // First time own_start + own_velocity * t, 0 <= t <= duration, comes within contact_tolerance of the mesh (5.4).
 MeshFirstHit FindFirstHitOnMesh(const MeshShape& mesh, Vec3 own_start, Vec3 own_velocity, double duration,
-                                double contact_tolerance, MeshSurface surface);   // kGrownForGrid: each triangle
-                                                         // is grown by contact_tolerance + its grid_growth.
+                                double contact_tolerance);
+// NEW (5.12, the recommended option; pending the owner's choice, section 11 Q10). Whether the straight segment
+// between two points crosses a thin part of the mesh: an exact test of the segment against the sheet triangles
+// (those with a nonzero sheet_sides entry) through the tree. A segment that touches a shared edge or vertex
+// counts once (the rule of Woop et al. 2013). The first crossing from own_start is reported.
+struct ThinPartCrossing { bool crosses = false; std::uint32_t triangle_index = 0; Vec3 own_point{}; };
+ThinPartCrossing FindThinPartCrossing(const MeshShape& mesh, Vec3 own_start, Vec3 own_end);
+// The same over every mesh solid of a list, at the poses `elapsed` seconds into the step; the lower solid index
+// wins a tie in distance from `start`. solid_index is kNoSolid when nothing is crossed.
+struct SolidThinPartCrossing { std::uint32_t solid_index = kNoSolid; Vec3 point{}; };
+SolidThinPartCrossing FindThinPartCrossing(const Solid* solids, std::uint32_t solid_count, double elapsed,
+                                           Vec3 start, Vec3 end, MeshShapes meshes);
 
 // The mesh-aware forms of module 1's point functions. The forms without `meshes` stay and are these with
 // MeshShapes{}; given a kMesh solid without its table they assert (debug) and treat it as absent.
@@ -181,16 +180,15 @@ PlateSide FindPlateSide(const Solid& solid, SolidPose pose, Vec3 point, double l
 ```cpp
 struct MeshShapeArrays {              // Owns one mesh's arrays in CPU memory. Movable.
   std::vector<Vec3> vertices; std::vector<std::uint32_t> triangles, neighbours;
-  std::vector<Vec3> vertex_normals; std::vector<std::uint16_t> sheet_sides; std::vector<float> grid_growth;
-  std::vector<MeshTreeBox> tree; double largest_grid_growth = 0;
+  std::vector<Vec3> vertex_normals; std::vector<std::uint16_t> sheet_sides; std::vector<MeshTreeBox> tree;
   Vec3 half_size{}; double thinnest_part = 0; double thinnest_sheet = 0; double smallest_triangle_height = 0;
 };
 MeshShape ToMeshShape(const MeshShapeArrays& arrays);          // The borrowed form, CPU memory.
 inline constexpr std::uint32_t kMaxMeshTriangles = 1u << 24;   // 16.8 million per mesh.
 struct MeshCheckSettings { double contact_tolerance = 0; bool checks_self_crossing = true;
-                           double sheet_thickness_limit = 0;     // m. 0: label no thin part (5.11).
-                           double grown_sheet_thickness = 0; };  // m. NEW (A89). 0: grow nothing (5.12).
-inline constexpr double kGrownSheetThicknessInCells = 2.75;      // NEW (A89). Of the smallest cell width.
+                           double sheet_thickness_limit = 0; };  // m. 0: label no thin part (5.11).
+inline constexpr double kSheetThicknessLimitInCells = 2.75;      // Of the smallest cell width: the largest value
+                                                                 // of the plate's bound (5.11, 5.12).
 // Builds the arrays from vertices (m, own axes) and triangles, then runs the checks of 5.2. Same input, same
 // bytes. Fails kMeshNotUsable (mesh_problem, magnitude), kBadInput (not finite, an index out of range).
 std::expected<MeshShapeArrays, ContactFailure> BuildMeshShape(std::span<const Vec3> vertices,
@@ -208,9 +206,9 @@ std::vector<MemoryEstimateEntry> BuildMeshShapeMemoryEstimate(std::uint64_t vert
 
 Memory rows (all `kRunOn`, `kWholeRun`, given counts): "contact: mesh vertices" 24 B, "contact: mesh triangles"
 12 B, "contact: mesh neighbours" 12 B, "contact: mesh vertex normals" 24 B, "contact: mesh sheet sides" 2 B,
-"contact: mesh grid growth" 4 B, "contact: mesh tree" 32 B, "contact: mesh table" `sizeof(MeshShape)`. With a closed mesh (vertices about half the
-triangles) and at most 4 triangles per end box (tree boxes about half the triangles): **about 64 B per triangle**:
-6.4 MB for 100,000 triangles, 64 MB for one million. I/O keeps the same arrays in CPU memory for the CPU-only consumers ("io: mesh solids", `kCpu`).
+"contact: mesh tree" 32 B, "contact: mesh table" `sizeof(MeshShape)`. With a closed mesh (vertices about half the
+triangles) and at most 4 triangles per end box (tree boxes about half the triangles): **about 60 B per triangle**:
+6 MB for 100,000 triangles, 60 MB for one million. I/O keeps the same arrays in CPU memory for the CPU-only consumers ("io: mesh solids", `kCpu`).
 
 ## 4. Consumes from other modules
 
@@ -236,7 +234,7 @@ own axes, `u` the particle's velocity for this step minus the solid's, in own ax
 | What it is | `d` sampled on a lattice in own axes, read by interpolation. Papers: signed distance field, level set; sparse form: OpenVDB (Museth 2013, checked), NanoVDB (Museth 2021, checked) | The triangles, exact nearest-point and path queries through a tree of boxes (Ericson 2005 5.1.5, memory; Karras 2012, checked) | Volume for grid-side numbers, triangles for particles |
 | Error at the surface | `h^2 x curvature / 8` on smooth parts, of order `h` at edges (own derivation; no citable bound found). At `h = 2 mm`: micrometres to millimetres, 10^5 to 10^8 tolerances. The solid becomes "what the lattice says", not the mesh | Rounding only, about 100 `epsilon` x largest coordinate: the same order as module 1 and far below `tol` | Two answers to "where is the surface", differing by (a)'s error |
 | Thin parts | A part thinner than about two samples vanishes or leaks. Production practice thickens it: Houdini advises volume plus surface collision because thin colliders leak; Bifrost asks for a thickness of one voxel or more (both checked) | Kept down to 1024 `tol` (about a micrometre) | Particles stop; the volume side still loses it |
-| Memory, 2 m object | Dense: 32 MB at 1 cm, **4.0 GB** at 2 mm. Near the surface only (3 samples each side, 12 to 48 m2 of surface, real block filling): 6 to 30 MB at 1 cm, **150 to 700 MB** at 2 mm | **6.4 MB** per 100,000 triangles, **64 MB** per million, whatever the cell size | The sum |
+| Memory, 2 m object | Dense: 32 MB at 1 cm, **4.0 GB** at 2 mm. Near the surface only (3 samples each side, 12 to 48 m2 of surface, real block filling): 6 to 30 MB at 1 cm, **150 to 700 MB** at 2 mm | **6 MB** per 100,000 triangles, **60 MB** per million, whatever the cell size | The sum |
 | Cost per particle per step | 8 reads; far particles one read | Far particles (the usual case): one box test. Near: 20 to 60 box tests and 4 to 20 triangle tests (memory; to measure) | As (b) for particles |
 | Same result on CPU and GPU | Same bits (reads, `+ - *`) | Same bits: only `+ - * /`, `Sqrt`, comparisons, a fixed visiting order | Same bits |
 | Mesh that changes shape | A volume per key, seconds each at 2 mm, uploaded per key | New vertex positions and the boxes resized per step; the tree's shape is kept | Both |
@@ -449,6 +447,7 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 |---|---|---|
 | Stages, `SolidsAtFaces`, 5.4 step 4 (unit normal) | No change | The mesh normal is unit by construction. |
 | 5.1 `same_side` ("outside_solid && face side == particle side"), plan Task 6 `FindSameSideFaces`; 5.4 fill sources "side `s`" | Change | `!IsOnOppositeSides(face side, particle side)` (5.11). With it, particles on the two faces of a thin mesh part no longer exchange through shared grid faces: CPIC's rule. Test: two particle clouds either side of a mesh sheet a quarter cell thick, one at rest, one moving along it: the resting cloud's momentum stays exactly 0. |
+| `CellsFromParticles` (decision 9) | Change, pending Q10 | A cell counts the particles not on the opposite side from its centre (5.12 item 4). |
 | Decision 5, `kMaxSidesAtFace = 2`, `kTooManySidesAtFace` | Verify | A face near a rim can meet particles with side A, side B and none. Whether "none" needs a third stored value or joins both is for the transfer plan; near two thin parts closer than `2 * kSolidReachInCells` cells, solids reports the limit (08). |
 | Plan Task 5 fixture `BuildSolidsAtFaces` | Change (small) | Calls the mesh-aware `ComputeSolidVelocitySample`; one test with a mesh cube equal to the box. |
 
@@ -457,7 +456,7 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | Place | Status | What |
 |---|---|---|
 | `SolidCoverage`, open areas, volumes (5 steps 3, 4) | No change | Generic over corner distances ("any sampled field"). |
-| `kCellSplitBySolid` (5 step 8, decision 7), `plan-decisions.md` Pressure lines 88-89 "a solid thinner than a cell that passes between corners is not seen. Solids' plate-thickness rule is what keeps that case out." | Change (text), no change (method) | Sides do not reach the solve (5.11); the solve is protected by growth (5.12): coverage is computed on the grown surface, so a layer of cells lies inside every thin part and `kCellSplitBySolid` cannot come from a mesh. The sentence becomes "Solids keep that case out: the plate by its thickness rule, a mesh by growing its thin parts for the grid (01b 5.12)". Two cell equations per split cell stay not built (decision 7). |
+| `kCellSplitBySolid` (5 step 8, decision 7), `plan-decisions.md` Pressure lines 88-89 "a solid thinner than a cell that passes between corners is not seen. Solids' plate-thickness rule is what keeps that case out." | Change, pending Q10 | With 5.12's recommended option: `SolidCoverage` gains per face piece `closed_by_thin_part` and the wall's normal velocity; a closed face has open area 0, an open face near a thin part its whole area; `kCellSplitBySolid` no longer comes from a mesh. One pressure per cell stays; equations, multigrid and ladder are untouched. Sides alone (5.11) do not reach the solve. |
 | Scene tests | Add | The glass and the two-level tank (section 7), in the step's plan once pressure exists. |
 | One distance per corner; sharp mesh edges inside a cell | Verify | Blocked area converges as for the box; add `ComputeSolidCoverage, MeshCube_EqualsBox` and an icosphere twin of `Sphere_BlockedAreaConverges` (solids' tests). |
 
@@ -466,7 +465,8 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | Place | Status | What |
 |---|---|---|
 | 3 `ViscosityInputs::solids`; 4; plan Task 10: `ComputeSolidVelocitySample(solids, count, elapsed, point, search_distance)` | Change | Takes `MeshShapes` (a field beside `solids`) and calls the mesh-aware form. |
-| Plan Task 10 rule (a), `(u_P - v_solid) / distance`, on-surface test `1e-9 w` | No change | Needs an exact distance: the grown surface's is exact too (5.12), and is the one viscosity reads, so it agrees with pressure on where the wall is. |
+| Plan Task 10 rule (a), `(u_P - v_solid) / distance`, on-surface test `1e-9 w` | No change | Needs the true distance: a reason for 5.1's choice. |
+| Velocity differences across a face closed by a thin part | Change, pending Q10 | Use the wall's velocity (stick or the slip rule) instead of the far cell's (5.12 item 6). To write in the viscosity plan. |
 | "Inclined" test on the normal (plan 853-855); `has_inclined_solid` (solids 3.4) | Change | A mesh is inclined whatever its pose: solids' summary must say so. Until viscosity Task 21 lifts `kInclinedSolidNotSupported`, a viscous liquid with a mesh solid is excluded. |
 | Memory | No change | Nothing scales with the mesh. |
 | Tests | Add | Tilted plate (Task 21) as a mesh slab within the same 5 %. |
@@ -491,8 +491,8 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | Free solid: "origin is the centre of mass", `inertia_in_own_axes` principal | Change in I/O | I/O moves the mesh to its centre of mass and principal axes at build (12 below). |
 | 5.4 step 1 `ComputeSolidsAtFaces`: `side` from `FindSolidSide` for the scene's plate | Change | `side` from `FindPlateSide` of the nearest solid (plate or mesh), reach `kSolidReachInCells * w`. |
 | 5.9 `ApplyPlateSides` (written once, never changed), `ApplyPlateRemoval` | Change | For a mesh the side is rewritten every step from `FindPlateSide` at the particle (5.11: contact keeps a particle from crossing, so it can only change through "no side", around the rim). The plate's once-only rule is unchanged. |
-| 5.9 "Supported thickness", `ComputeMinPlateThickness`, `CheckSolidsCanRun` | Change | No thickness minimum for a mesh: thin parts are grown for the grid (5.12, A89). NOTE findings `mesh_thin_part_grown`, `mesh_passage_closed_for_liquid` (5.12 item 4); two thin parts closer than `2 * kSolidReachInCells` cells; triangles much smaller than a cell. The plate's rule is unchanged (Q11). |
-| 5.4 steps 1, 2, 5; 5.5 motion map; `kSolidsTooClose` | Change | Called with `meshes.surface = kGrownForGrid` (5.12 table). A coverage corner within the cap of a grown triangle marks its cells `wants_smallest_cells`. Test `FreeBoat` (section 7). |
+| 5.9 "Supported thickness", `ComputeMinPlateThickness`, `CheckSolidsCanRun` | Change, pending Q10 | With 5.12's recommended option a mesh has no thickness minimum (and, if the owner extends it, neither has the plate). NOTE findings `mesh_gap_narrower_than_a_cell`, `mesh_thin_part_in_use`; two thin parts closer than `2 * kSolidReachInCells` cells; triangles much smaller than a cell. |
+| 5.4 `FindSolidSurfaces`; 5.5 motion map | Change, pending Q10 | New per-face-piece array: `closed_by_thin_part`, owner solid, the wall's effective normal velocity, from `contact::FindThinPartCrossing` between the two cell centres at the start and end poses (5.12 items 2, 5). One motion-map entry per closed face piece. Test `FreeBoat` (section 7). |
 | `has_inclined_solid` | Change | True for any mesh. |
 | `kMaxPlateCount = 1`, cutting by a driven plate | No change | Still one plate. A thin mesh part separates material the same way but is not a cutting tool in the first version (no `ComputeCutWork` for it). |
 | Memory (plan Task 13 "solids: solids copy") | No change | `sizeof(Solid)` unchanged; mesh rows are contact's (3.3). |
@@ -502,13 +502,13 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 
 | Place | Status | What |
 |---|---|---|
-| All (sees solids through `SolidCoverage`, `solid_volume_rate`, open-to-sky marks; markers through `MoveParticles`) | No change | Test fixtures use functions, not shapes. |
+| All (sees solids through `SolidCoverage`, `solid_volume_rate`, open-to-sky marks; markers through `MoveParticles`) | No change, except pending Q10 | Reads the closed faces of 5.12 through `SolidCoverage` like pressure. Test fixtures use functions, not shapes. |
 
 **10 Step**
 
 | Place | Status | What |
 |---|---|---|
-| 3.2 `ReadyScene`; stage 16 `MoveParticlesInputs`; stage 11 `ViscosityInputs`; `FoamAndSprayInputs` | Change | The step owns one `contact::MeshShapeBuffers` for the run and fills the `meshes` fields, with `surface` by 5.12's table: stage 16 passes `kGrownForGrid` for liquids, mixtures and gas markers and `kTrue` for the other materials (Q10). |
+| 3.2 `ReadyScene`; stage 16 `MoveParticlesInputs`; stage 11 `ViscosityInputs`; `FoamAndSprayInputs` | Change | The step owns one `contact::MeshShapeBuffers` for the run and fills the `meshes` fields. Every particle stops at the true surface (A90). |
 | 5.14 `CheckSceneCanRun`, stage 3 and 19 `CheckSolid` | Change | Mesh-aware `CheckSolid`, `ComputeContactScale`; `CheckMeshShape` once with the run's tolerance; new `CapabilityReason` for `kMeshNotUsable`. |
 | 5.15 `BuildStartCells` (distance per candidate cell per solid, CPU; "four corners inside one solid") | Change (call), verify (rule) | Mesh-aware call. The four-corner test can be wrong for a non-convex solid (a face spanning a groove): add the face centre as a fifth point. |
 | 5.9 `BuildRunPlan` | Change | Adds `BuildMeshShapeMemoryEstimate`. |
@@ -521,7 +521,6 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 |---|---|---|
 | Size rule from `SolidCoverage` corners; refinement volume | No change | |
 | `ResizeCells` step 6: `ComputeSolidsAtFaces` on the new grid, all blocks | Verify | Cost with a mesh (tree searches at corners near the solid only). |
-| 5.3 size rule, `wants_smallest_cells` | Change | Set for cells near a grown thin part, from solids' coverage (5.12 item 1); the refinement factor does not override it. |
 | `BuildBatchPlan` whole-grid rows | Change | Mesh rows are whole-run, on the processor in every batch: counted like `kSolids` whole-grid rows; a mesh is never split per batch. |
 
 **12 I/O and CLI**
@@ -531,7 +530,7 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | Scene file `solids[]` (plan Task 26; strict, unknown fields are errors) | Change | `shape` gains `mesh`; new field `mesh_file` (binary PLY, the zone format of Task 29d); scene schema version raised. |
 | New `io/mesh_solid.h` (CPU only) | Change | `ReadMeshSolid` (PLY into vertices and triangles, scale applied), calls `contact::BuildMeshShape`, maps `MeshProblem` to findings with the field path; volume, centre of mass and inertia by the closed-form sums over triangles (Mirtich 1996, checked; Eberly 2002, checked), mesh re-expressed about the centre of mass and principal axes for a free solid. |
 | Run folder, resume (5.3, 5.4; "resume never reads the scene file again") | Change | `inputs/mesh_solids` (FluidiTy array file with every built array), listed, read on resume, never rebuilt; mesh files in the fingerprint. Not in `ready_scene` (2 GB limit). |
-| `BuildStartParticles` ("at least w/4 from every solid") | Change (call) | Mesh-aware distance, on the grown surface for liquid and gas (5.12). The builder call passes `grown_sheet_thickness = 2.75 w_min`. |
+| `BuildStartParticles` ("at least w/4 from every solid") | Change (call) | Mesh-aware distance (the true surface). The builder call passes `sheet_thickness_limit = 2.75 w_min`. |
 | Memory: `BuildIoMemoryEstimate`; budget text 5.10 | Change | "io: mesh solids" (`kCpu`); the planned-cost lines show mesh bytes. |
 | Inertia closed forms (5.1) | Change | The mesh case above. |
 | Reuse | - | PLY reader and layout, closed count, the `inputs/` pattern. The ray-parity raster is **not** reused: it answers inside or outside on the refinement lattice only. |
@@ -542,7 +541,6 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | Place | Status | What |
 |---|---|---|
 | 5.3 surface field: `ComputeDistanceToSolid` at every lattice point, CPU, per frame; 5.5 foam; 5.6 foam volume | Change (call), verify (cost) | Mesh-aware calls with `largest_distance` = 4 spacings (the field's own cap), so only points near the mesh search the tree. CPU arrays from I/O. |
-| 5.3: "where liquid touches a solid, the zero set lies on the solid's surface"; 8 "a surface that overlaps solids to hide the seam" not promised | Change, not settled | Liquid stops `grid_growth` short of a thin part (5.12). The field must carry the liquid across that layer to the true surface, or the render shows a gap of up to 1.375 cells. To design in this module's plan. |
 | `FrameInputs::solids`, `MotionSample::solids` | Change | Carry `MeshShapes` (CPU). |
 | Solid motion writers | No change | Pose only. |
 
@@ -551,7 +549,7 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | Place | Status | What |
 |---|---|---|
 | 3.2 `Shape`; 5.1 item 2 "declared, not guessed"; 10 "evaluated mesh shapes" not ported | Change | `Shape.MESH` for the `SOLID` role, the default for any object that is not exactly a box, sphere or cylinder (A88); the render-level evaluated mesh (A86). Export: the evaluated mesh (`evaluated_get(depsgraph).to_mesh()`, modifiers and subdivision applied; Blender API, checked), quads and n-gons by the fan rule, through `zone_mesh.py`'s writer, to `inputs/solids/solid_<id>.ply`; object scale applied to vertices. |
-| Findings (3.4) | Change | `solid_mesh_not_closed` (blocking, with the open edge count), `solid_mesh_deforms` (blocking in the first version: a vertex moves in object coordinates between frames), `mesh_thin_part_grown` and `mesh_passage_closed_for_liquid` (NOTE, from the native check, A89) and `solid_mesh_triangles_small` (NOTE: triangles under an eighth of a cell, A86), `solid_mesh_too_many_triangles`. |
+| Findings (3.4) | Change | `solid_mesh_not_closed` (blocking, with the open edge count), `solid_mesh_deforms` (blocking in the first version: a vertex moves in object coordinates between frames), `mesh_gap_narrower_than_a_cell` and `mesh_thin_part_in_use` (NOTE, from the native check, pending Q10) and `solid_mesh_triangles_small` (NOTE: triangles under an eighth of a cell, A86), `solid_mesh_too_many_triangles`. |
 | Per-frame pose keys, `motion_not_keys` | No change | |
 | Digest | Change | Covers the solid mesh files, as it covers zone meshes. |
 | Tests | Add | `test_mesh_solid_exports_evaluated_triangles` (a subdivided cube: triangle count of the evaluated mesh), closed or not, deforms. |
@@ -565,17 +563,16 @@ The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
 | 5.4 "hit point = start + velocity * duration" | Verify | With several hits on one mesh in a step, the record holds the first; as for several solids today. |
 
 **Shared files.** `shared-interface.md` (b) and (c) Contact: the new names of 3.1 to 3.3. `tradeoff-particles.md`
-1.3: no allowance for solid geometry exists; with (b) one million triangles are 64 MB of 13.05 GB (0.5 %), so
+1.3: no allowance for solid geometry exists; with (b) one million triangles are 60 MB of 13.05 GB (0.5 %), so
 no verdict of 1.6 changes.
 
 ### 5.11 Thin parts of a mesh (A85)
 
 The owner's answer: "I think that is covered in cpuc of mls mpm", that is CPIC, compatible particle-in-cell, of
-Hu et al. 2018 (reference [3]). The paper could not be fetched on 2026-11-15 (the file is larger than the fetch
-limit), so the description of CPIC below is **from memory** and must be checked against the paper when the plan
-is written; the description of the rebuild is from its designs and code.
+Hu et al. 2018 (reference [3]). The paper has since been read in full (`literature-thin-walls.md` section 1); the
+description below is checked against it. The description of the rebuild is from its designs and code.
 
-**What CPIC is (memory).** An explicit particle-grid method with no pressure solve. Each grid point near a thin
+**What CPIC is (checked).** An explicit particle-grid method with no pressure solve. Each grid point near a thin
 surface holds, per nearby solid, whether it is near (within the reach of the weights and with a nearest point on
 the surface) and on which side (the sign of its offset from the nearest surface element along that element's
 normal). Each particle gets the same from the grid points around it and keeps its side while it stays near.
@@ -602,7 +599,7 @@ thickness, and liquid only at a thick one.
 **The same mechanism on a mesh.**
 
 1. *Which triangles form a thin part* (builder, once; needs `sheet_thickness_limit`, which I/O sets to
-   `ComputeMinPlateThickness` for the smallest cell width, 2.74 cells at most). From each triangle's centre a ray
+   `kSheetThicknessLimitInCells` times the smallest cell width). From each triangle's centre a ray
    goes inward along its normal (the ray of check 7). The triangle is a *sheet triangle* when the first triangle
    met is nearer than the limit and faces the other way (`Dot` of the two normals at most `-0.5`): two faces back
    to back. A wedge, a cone's tip or a box's edge is not a sheet (the normals are not opposed). Sheet triangles
@@ -644,114 +641,127 @@ thickness, and liquid only at a thick one.
 
 **First version.** Built: 1 to 5 above (contact: 2 bytes per triangle, one ray per triangle at build, nothing
 per query beyond the search already made); the exchange test in transfer and particles; solids' face and
-particle sides. For liquid and gas the pressure solve's blindness is answered by 5.12 (A89), not by a finding.
+particle sides. For liquid and gas the pressure solve's blindness is the subject of 5.12.
 
-### 5.12 Thin parts grown for the grid (A89)
+### 5.12 A thin wall that holds liquid: the options (A89 reopened by A90)
 
-The owner's answer to Q9: "Grow thin parts for the grid now." Published practice: production solvers ask for
-exactly this as a user setting (Bifrost: a collider thickness of one voxel or more, shell mode for thin planes,
-thickening rounds corners; Mantaflow shifts the solid's zero set outward by a thickness; both checked). What is
-new here is that the amount is computed, per triangle, and that the true surface is kept beside the grown one.
-The behaviour of liquid at a thickened collider (the visible gap) is from memory of those tools, not checked.
+The owner (A90): liquid stops "at the true surface"; "I'm wondering if growing the wall is the correct way; CPIC
+used a coloured distance field for instance. Ideally we adapt cells close to the wall. Search what papers
+recommend for contained fluid"; later, "ideally search recent (post 2018) papers compatible with MLS-MPM". The
+survey is `literature-thin-walls.md`; R below means read in the source there. Fixed points: the triangles are
+the solid (A81); particles stop at the true surface (A90); two sides for the exchange (5.11).
 
-**1. What "grown" means.** Each sheet triangle `T` (5.11) gets a growth, fixed at build:
+**What the survey found, in four lines.** (i) Recent work compatible with MLS-MPM has no answer for a pressure
+solve: it is explicit (CPIC, R) or sees only solids of grid size (IQ-MPM, Ando and Batty 2020, R). (ii) Face
+fractions cannot hold a wall thinner than a cell; their authors say so (Batty 2007, Zarifi and Batty 2017, R).
+(iii) Two forms can: one pressure per cell with whole faces closed where the line between two cell centres
+crosses the wall (Guendelman 2005, Robinson-Mosher 2008, R: the only form shown with free-surface water in a
+thin cup and with a floating shell), or one pressure per side of a cut cell (Azevedo 2016 and successors, R:
+smoke only, solids at rest). (iv) Small cells near solids are published for flow detail, never as the seal;
+tools thicken the collider and render the thin wall (R).
 
-```text
-grid_growth_T = max(0, (grown_sheet_thickness - thickness_T) / 2)        thickness_T: its inward ray's length
-grown_sheet_thickness = kGrownSheetThicknessInCells * smallest_cell_width   (2.75 w_min)
-```
+**The options for this solver.**
 
-and the **grown solid** is the true solid together with every point within `grid_growth_T` of a sheet triangle
-`T`. Its distance is `d_grown(x) = min(d_true(x), min over T of (distance(x, T) - grid_growth_T))`: one tree
-search, with a box skipped when its distance minus `largest_grid_growth` is not below the best found. It is a
-true distance to a set: 1-Lipschitz, never above `d_true`, continuous. Not a second set of faces and not a
-middle surface: each thin part simply becomes as thick as the bound, symmetric about its true middle, at most
-`1.375 w_min` beyond each true face.
+*(1) Small cells near thin walls until the wall is seen.* The wall needs `w <= t / 2.75` for fractions alone
+(two cells across it in the best direction). Today cells near any solid are already the smallest (`w_min`); going
+below `w_min` only near thin walls would put surface cells of two sizes side by side where the liquid's surface
+meets the wall, the case A61 set aside until "coarser cells on calm surfaces". Cost (literature file, section 4):
+a 2 mm glass needs 1 mm cells, 1.8e5 of them (fine) and 4,000 steps per second (ten times a 1 cm grid); a 5 cm
+hull is fine; a 1 cm hull needs 1.4e7 smallest cells and a 1 mm sheet 9.6e7, against about one million cells on
+16 GB. So it serves thick-walled things and stops at millimetre walls and large sheets. No paper uses it as
+the seal.
 
-- *Why 2.75 cells, and of the smallest width.* `ComputeMinPlateThickness` needs 2 to 2.74 cell widths, by
-  direction, for a layer of cells to lie wholly inside; the constant is its largest value, so the growth does not
-  depend on the pose and is computed once. The smallest width, because cells near a solid are the smallest
-  (grid 5.9: within `solid_reach_in_cell_widths`); to make that certain, a cell with a corner within the coverage
-  cap of a grown triangle `wants_smallest_cells` whatever the refinement factor says (edit to solids' coverage
-  and cell resize, 5.10). `sheet_thickness_limit` (5.11) is the same `2.75 w_min`.
-- *Where a thin part joins a thick one* (a glass's side on its base): the grown faces end in a rounded step of
-  height `grid_growth` on the thick part's surface. No gap: the union is closed.
-- *At a free rim:* the grown faces round the rim and reach `grid_growth` past it. The grid sees the sheet end that
-  much later; nothing leaks, liquid still turns the corner.
-- *Two thin parts, or a thin part and another solid, closer than their growths plus two cells:* the grown
-  surfaces meet or leave a passage the grid cannot carry flow through. Finding, item 4.
+*(2) Sides carried into the pressure solve: whole faces closed (Guendelman's form with CPIC's sides).* Every
+cell belongs to the side its centre is on. A face (or face piece, between cells of two sizes) is **closed** when
+the segment between the centres of its two cells crosses a thin part (`FindThinPartCrossing`, exact, on the
+triangles; no field on the grid is needed because the triangles are at hand). A closed face has open area 0 and
+the wall's velocity; every other face near a thin part is whole (area fractions are not used there: the corner
+distances of a thin part say nothing useful). One pressure per cell stays. What the unknown of a cut cell
+means: the pressure of the liquid on its centre's side. Whether the wall passes between two centres or through
+one makes no difference: the centre is on one side (or inside the wall, then all its faces toward liquid are
+closed), and the wall the solve sees is the nearest staircase of cell faces, at most half a cell from the true
+one. No growth. The liquid in the slice of a cell beyond the wall from its centre (at most half a cell thick,
+a quarter on average) has no pressure of its own: by 5.11 its particles exchange only with faces of their own
+side, and a cell counts only particles not opposite to its centre. Guendelman's warning applies to that slice:
+"thin films of water can quickly compress and lose mass against thin solid objects if one is not careful";
+their remedy, used here, is the wall's effective velocity over the step on closed faces. What is lost: a gap
+narrower than a cell between two walls has no centre in it and no pressure (Azevedo's criticism: "collapsed
+away"); CPIC states the same limit.
 
-**2. Which stage reads which surface.**
+*(3) One pressure per side of a cut cell (Azevedo's form).* Exact topology, narrow gaps included. Changes: the
+cell is no longer the unit of the solve (pressure equations, their multigrid, the transfers between sizes, the
+batches' border cells, viscosity, gas and every per-cell array need a sub-cell); cells are clipped by triangles
+every step for a moving wall. Published only on smoke with solids at rest; FLIP was unstable in small cut cells
+and they fell back to PIC there (R); the newest solver of the family still names liquid and moving walls as
+future work (R). The largest change in the rebuild for the least published evidence on liquid.
 
-| Stage or quantity | Surface | Why |
-|---|---|---|
-| `MoveParticles` for snow, sand, springy solids, foam and spray | True | No solve to protect; they should touch the wall. |
-| `MoveParticles` for liquids, mixtures and gas markers | **Grown** (Q10; the true one is the alternative) | See 3. The grown solid contains the true one, so "never ends inside the solid" holds for both. |
-| Sides (`FindPlateSide`, `ApplyPlateSides`, face sides) | True | Which face is nearest does not change with growth. |
-| `CheckSolid`, `CheckMeshShape`, the contact tolerance | True | They are about the triangles. |
-| `ComputeSolidCoverage`: corner distances, owners, corner velocities; pressure's open areas, open volumes, `kCellSplitBySolid`; gas | Grown | The purpose: a whole layer of cells lies inside, so no cell is split and the wall blocks the solve. |
-| `ComputeSolidsAtFaces`: `outside_solid`, `solid_velocity` | Grown | Transfer must not use faces the solve treats as solid. |
-| Viscosity: distance, normal and velocity of the nearest solid; sticking | Grown | Viscosity and pressure must agree on where the wall is. |
-| Grid size rule, cell resize, `BuildStartCells` | Grown | Read from coverage; `d_grown <= d_true` keeps every bound valid. |
-| `BuildStartParticles` (liquid, gas) | Grown | No particle is created in the layer. |
-| Open-to-sky flood | Grown | Needs a distance that never overestimates: `d_grown` is one. |
-| Materials' travel rule (interpolated coverage) | Grown | Reads coverage. |
-| Force of the liquid on the solid (motion map, pressure and viscous push) | Grown | It is summed over blocked parts of grid faces, so it uses the geometry the solve used; every blocked corner still has one owner solid, so the sums and the free solid's balance are unchanged. |
-| Contact reactions on a solid | Where the particle hit | Grown for liquid: the arm is off by at most `grid_growth`. |
-| `kSolidsTooClose` (free solids) | Grown | Two grown layers must not overlap. |
-| Render output: surface field, liquid-to-solid vertices | True, with the layer bridged (13, not settled) | The picture should show liquid touching the wall. |
+*(4) Growth for the grid (the previous 5.12), with liquid stopping at the true surface as A90 asks.* Each thin
+part is treated by the grid as 2.75 cells thick. The solve then holds any wall, and the pieces are small. But
+liquid enters the layer between the true surface and the grown one (up to 1.375 cells a face), where every face
+is solid for the solve: it takes the wall's velocity, stops feeling gravity and pressure, stays as a film when
+the level falls, and can pack without limit, so the simulated liquid loses volume as particles wander in. The
+tools that grow colliders do not stop particles at the thin wall (R); the combination is not published. Honest
+only if liquid stops at the grown surface, which A90 excludes.
 
-Callers choose with `MeshShapes::surface`; no signature differs.
+*(5) Combinations.* (2) at whatever cell width the scene has, with (1) as the artist's accuracy knob (the
+scene's smallest width, and refinement zones): the staircase error is half a cell, so halving the cells halves
+it. Or (2) now and (3) later only for cells holding two walls.
 
-**3. The layer between the true surface and the grown one** (up to `1.375 w_min` thick on each face).
+| | (1) small cells | (2) closed faces | (3) cut cells | (4) growth, true-surface stop |
+|---|---|---|---|---|
+| Thin glass holds its level | Yes, once `w <= t / 2.75` | Yes (shown: Guendelman's cup) | Yes | Level holds; film left on the wall |
+| Two heights kept apart | Yes | Yes | Yes | Yes |
+| Volume drift | None new | The slice of at most half a cell can pack; bounded by the effective-velocity rule; to measure | None expected; unpublished for liquid | Loss into the layer, unbounded |
+| Visible gap, liquid to wall | None | None systematic (pressure boundary within half a cell either way) | None | None, but a stuck film |
+| Free thin-walled boat | Right, at the cost above | Draught within about half a cell, either way (shown: floating shell, R) | Right | Rides about 1.25 cells high |
+| Narrow gap (under a cell) | Resolved by cells | Lost; finding | Kept | Closed; finding |
+| Work | Cell resize, grid (two surface sizes) | Contact (one query), solids (flags, owner), pressure (flag in, split error out), transfer (cell counts by side), viscosity, gas | Grid, pressure, viscosity, gas, transfer, batches | Contact, solids |
+| Risk | Cost; A61's open case | New assembly: not published with APIC transfers and mixed sizes | Highest | Known defect |
 
-*As designed (Q10 option a): liquid and gas stop at the grown surface.* The first hit of 5.4 runs unchanged with
-each triangle grown by `tol + grid_growth_T` instead of `tol`; a grown triangle is still convex, so the touching
-rule, the move-out and the stepping search hold word for word. The layer holds no liquid, ever: nothing drains,
-sticks or compresses there, and no volume is lost or gained by it. What it costs is geometric and visible: the
-container the liquid lives in is smaller than the mesh by `grid_growth` per wetted thin face. A glass of inner
-radius 40 mm with `w_min` 5 mm and a 1 mm wall holds liquid of radius `40 - 6.4 = 33.6` mm: 71 % of the true
-cross-section. The scene's liquid is seeded in what remains, so levels are as authored; a poured volume fills it
-sooner. The NOTE finding of item 4 states the growth in metres and cells so the artist can shrink cells near
-solids.
+**Recommendation: (5) as (2) with (1) as the knob.** Reasons: it is the only form with published evidence for
+exactly the owner's cases (water in a thin cup, a floating shell); it keeps one pressure per cell, so pressure,
+multigrid, the size transfers and the batches keep their shape; it needs no thickness and no growth, so liquid
+reaches the true wall as A90 asks; it uses the triangles (A81) and the sides (5.11) already designed; and its
+error is one the artist can shrink with cells. How it answers "adapt cells close to the wall": cells near every
+solid are already the smallest in the scene, and making them smaller makes the staircase finer, but the seal
+does not depend on it, which is what lets a 1 mm sheet work at all. Where evidence is thin, plainly: nobody has
+published this with MLS-MPM or APIC transfers, face fractions elsewhere and cells of several sizes; the volume
+behaviour of the half-cell slice is described only in words by its authors; the tests below are the evidence
+this design will have to produce.
 
-*The alternative (Q10 option b, A89's words "particles still stop at the true surface").* Liquid particles then
-enter the layer by their own velocity while every grid face there is solid for the solve. They take the wall's
-velocity from those faces and stop feeling gravity and pressure: a film up to `1.375 w_min` thick sticks to
-every thin part, stays when the level falls, and can be packed without limit because no pressure resists entry.
-The grid no longer counts that liquid, so the liquid it does simulate loses volume as particles wander in. This
-is the leak and loss that push-out colliders are known for (Houdini's documentation advises against relying on
-volume collision alone, checked). It can be bounded only by also pushing particles out of the layer, which is
-option (a) by another route.
+**The recommended option in detail** (pending Q10).
 
-**4. What still cannot work.**
+1. *Geometry* (contact, with 1b's contact part): `FindThinPartCrossing`. Sheet triangles are those of 5.11 with
+   the limit `kSheetThicknessLimitInCells = 2.75` smallest cell widths: a wall at least that thick is seen by
+   the corner distances and needs none of this.
+2. *Faces* (solids, stage `FindSolidSurfaces`, at the start and end poses): for every face piece with a cell
+   centre within `kSolidReachInCells` cells of a thin part, one segment query between its two cell centres.
+   Result per face piece, a new array beside `SolidsAtFaces`: `closed_by_thin_part` (0 or 1), the owner solid,
+   and the wall's normal velocity there (its displacement over the step divided by the step, Guendelman's
+   effective velocity). A grid-edge face has one centre: never closed by this rule.
+3. *Pressure:* reads the array through `SolidCoverage`: a closed face has open area 0 and the given velocity;
+   an open face with a cell centre within reach of a thin part has its whole area. `kCellSplitBySolid` no longer
+   fires for a mesh (a split cell is the normal case here). Nothing else changes: equations, multigrid, ladder.
+4. *Which particles a cell counts* (transfer `CellsFromParticles`, pressure's liquid cells): those not on the
+   opposite side from the cell's centre (`IsOnOppositeSides` with the centre's `FindPlateSide`).
+5. *Force on the solid:* a closed face is a blocked part with an owner, so the motion map gains one entry per
+   closed face piece (full area, the face's axis); the sums and a free solid's balance are unchanged in form.
+   The staircase encloses the hull's volume to within half a cell of surface either way, so buoyancy is right on
+   average.
+6. *Viscosity and gas:* a velocity difference taken across a closed face uses the wall's velocity (stick or the
+   slip rule) instead of the far cell's; gas reads the same closed faces. To write in those plans.
+7. *The plate* (A90: "see previous answer"): the same rule serves module 1's plate and would replace its
+   thickness minimum; part of Q10.
 
-- *A passage narrower, after growth, than two smallest cells* (the bore of a thin pipe, the gap between two
-  blades, a thin part close to another solid): the grid carries no flow through it. The builder already casts a
-  ray outward from each sheet triangle; when `gap - growths < 2 w_min`, finding `mesh_passage_closed_for_liquid`
-  with the place, the true gap and the gap left. Level NOTE, not blocking: a dry decorative pipe is harmless and
-  the check cannot know which passages liquid is meant to use; the text says plainly that liquid will not pass.
-- *The smaller container and the visible gap:* finding `mesh_thin_part_grown` (NOTE) whenever any growth is not
-  zero: the largest growth, in metres and in cells.
-- *A thin part among large cells:* cannot arise, by the `wants_smallest_cells` rule above.
-- *A thin part that only moves and turns fast:* nothing new; the growth is fixed in the solid's own axes.
-- Not a finding any more: a sheet thinner than the bound beside liquid (`mesh_sheet_too_thin_for_liquid` is
-  withdrawn).
+**What stays a finding** (NOTE; solids' check): `mesh_gap_narrower_than_a_cell`: two thin parts, or a thin part
+and another solid, closer than two smallest cells (the bore of a thin pipe): liquid there has no pressure of its
+own and is carried by its neighbours. `mesh_thin_part_in_use`: the scene has thin parts, with the half-cell
+figure in metres, so the artist knows the knob.
 
-**5. Cost and place of the tasks.** Memory: 4 B per triangle (64 B per triangle in all). Build: nothing beyond
-5.11's ray. Queries: the grown search visits boxes within `largest_grid_growth` more than the true one, and a
-liquid particle within `1.375 w_min` of a thin part tests the triangles in that range; near thick parts nothing
-changes. To measure with the size test of section 7. With 1b's contact part: `grid_growth`, `MeshSurface`,
-`ComputeDistanceToGrownMesh`, the grown first hit, their tests. With solids: coverage and faces on the grown
-surface, the two findings, `wants_smallest_cells`, the boat test. With pressure and viscosity: no code, text
-only; the glass and two-level tests run in the step's scene tests once pressure exists. With the step: the
-surface chosen per material in stage `MoveParticles`. With I/O: `grown_sheet_thickness` from the scene's
-smallest cell width at build, and start particles on the grown surface.
-
-**6. Module 1's plate.** A plate thinner than the bound beside liquid or gas is a blocking finding today
-(`ComputeMinPlateThickness`, Q38). The same growth would serve it with one line (the grid reads
-`|p.z| - max(half_thickness, 1.375 w_min)`), and one rule for plates and meshes is simpler to explain. It
-changes behaviour the owner approved, so it is Q11, not applied.
+**Cost.** Memory: nothing per triangle; per face piece 1 B flag, 4 B owner, 8 B velocity where a grid has thin
+parts (about 13 B times 3 faces a cell, under 4 % of a cell's arrays). Time: one segment query per face piece
+near a thin part, twice a step. Place: item 1 with 1b's contact part; 2 and 5 with solids; 3 with pressure; 4
+with transfer; 6 with viscosity and gas.
 
 ## 6. CPU and GPU
 
@@ -813,12 +823,10 @@ Analytic, first hit and move:
 - Bowl slide: 2 m/s along the bowl's inside, 1,000 steps: no error, never rests by the 16-hit rule when the
   travel per step is under 8 triangle edges; a control with travel of 40 edges per step rests and stays at
   `d >= tol / 2`.
-- *Grown thin parts (A89; geometric, with the contact part).* A slab 0.02 thick, `grown_sheet_thickness` 0.11
-  (`w_min` 0.04): `grid_growth` 0.045 on both faces, 0 on the rim; `ComputeDistanceToGrownMesh` 0.1 off a face is
-  0.055, 0.03 off is -0.015, in the slab's middle plane equals the true distance; beyond the rim in the middle
-  plane at 0.03: `0.03 - 0.045 = -0.015` within `0x1p-40` (the rounded end); a cube: equal to the true distance
-  everywhere, same bits. First hit with `kGrownForGrid` head-on to a face: at distance `0.045 + tol`; the 10,000
-  fast-particle cases on the fin with `kGrownForGrid`: every end has `d_grown >= tol / 2`.
+- *Crossing a thin part (5.12; geometric, with the contact part).* A slab 0.02 thick, limit 0.11: a segment through
+  both large faces crosses (first crossing on the face nearer the start, point within `0x1p-40`); a segment
+  ending inside the slab crosses; one passing beyond the rim does not; one through a shared edge of two sheet
+  triangles crosses once; a cube 1 m wide (no thin part): never crosses; same bits on CPU and GPU.
 - *Thin fin.* A fin `1e-4` m thick (2 triangles per side and a rim), smallest cell 0.01: a particle crossing it
   at 10 m in one step is stopped (hit reported, end on the start's side).
 - *A fast particle never passes through.* 10,000 generated cases (P11's generator) on the bowl, the torus and the
@@ -830,27 +838,31 @@ Analytic, first hit and move:
 - `SceneTurnedRigidly_ResultTurnsWithIt` for the mesh cases, relative `0x1p-40`.
 
 Size (`cpu`, and the same on the GPU run): an icosphere of 1,310,720 triangles: `BuildMeshShape` in at most 10 s
-on one thread and 84 MB handed out (`ComputeRunMemoryBytes` of the estimate, exact); 1,000,000 particles within
+on one thread and 79 MB handed out (`ComputeRunMemoryBytes` of the estimate, exact); 1,000,000 particles within
 half a cell of it moved in at most 4 times the time of the same particles against the analytic sphere. Both
 timings are to calibrate on the first run (known-open test form, A38) and are the trigger for the hybrid
 (A81) if missed.
 
-Scene tests for grown thin parts (A89; they need pressure, solids and the step, and are written into those
-plans; `w` is the smallest cell width, the wall is `0.2 w` thick so every growth is `1.275 w`):
+Scene tests for a thin wall that holds liquid (5.12's recommended option, pending Q10; they need pressure,
+solids and the step, and are written into those plans; `w` is the smallest cell width; every bound is to
+calibrate on the first run, known-open form, because no published number exists):
 
-- *A thin-walled glass holds its water.* Mesh glass, inner radius `8 w`, water at rest to a depth of `12 w`,
-  2,000 steps: the mean surface height drifts by at most `0.05 w`; the summed liquid volume by at most 0.1 %; no
-  particle ever has `d_grown < tol / 2` (so none crosses the wall or enters the layer); nothing outside the glass.
-- *Two sides at independent heights.* A closed box split by a mesh sheet `0.25 w` thick, water `6 w` deep on
-  one side and `12 w` on the other, 2,000 steps: each height changes by at most `0.05 w`; no particle changes
-  side; the run never returns `kCellSplitBySolid`.
+- *A thin-walled glass holds its water.* Mesh glass, wall `0.2 w`, inner radius `8 w`, water at rest `12 w`
+  deep, 2,000 steps: the mean surface height drifts by at most `0.1 w`; particle count unchanged; the largest
+  number of particles in any cell at most 1.5 times the rest count (the slice does not pack); no particle
+  crosses the wall; nothing outside the glass; the run never returns `kCellSplitBySolid`. Repeated with the
+  glass shifted by a third of a cell on each axis and tilted 20 degrees (the staircase changes; the bounds hold).
+- *Two sides at independent heights.* A closed box split by a mesh sheet `0.25 w` thick, off the cell faces by
+  `0.3 w`, water `6 w` deep on one side and `12 w` on the other, 2,000 steps: each height changes by at most
+  `0.1 w`; no particle changes side.
 - *A free thin-walled boat floats at the right depth.* An open box hull `20 w` square, wall `0.25 w`, mass set
-  for a true draught of `6 w`: after settling (4,000 steps) the draught of the true hull bottom is within
-  `0.25 w` of `6 w - 1.25 w` (the grown hull displaces from `1.25 w` lower, so the boat rides that much higher;
-  the test states the offset instead of hiding it in a loose bound), and the vertical force balance closes
-  within 2 %.
-- *A closed passage is reported.* A pipe of bore `3 w` with a `0.2 w` wall: `mesh_passage_closed_for_liquid`
-  with gap left `0.45 w`; bore `6 w`: no finding and water runs through.
+  for a draught of `6 w`: after settling (4,000 steps) the draught is within `0.5 w` of `6 w`, and within
+  `0.25 w` of it in the mean over four starts shifted by a quarter cell (the staircase error has no sign); the
+  vertical force balance closes within 2 %.
+- *Small cells shrink the error.* The glass with `w` halved: the drift bound and the boat's draught error
+  halve (within a factor 1.5).
+- *A narrow gap is reported.* A pipe of bore `1.5 w` with a `0.2 w` wall: `mesh_gap_narrower_than_a_cell`; bore
+  `4 w`: no finding and water runs through.
 
 Reference and proofs: none. Every expected value is a closed form or the analytic twin.
 
@@ -868,8 +880,7 @@ Memory: `BuildMeshShapeBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`; one p
 triangles are the solid (the tolerance); distance and the inside test `<eq:mesh-distance>`; the triangle grown by
 the tolerance and its three kinds of pieces `<eq:mesh-hit-time>`; the touching rule per triangle with its
 convexity argument; the repeated move out of a corner; several hits on one mesh and the rest rule; a turning
-mesh; thin parts and their sides (5.11), and thin parts grown for the grid with the table of which stage reads which
-surface (5.12). Figures: `<fig-mesh-thin-part>`
+mesh; thin parts and their sides (5.11); how a thin wall holds liquid, once the owner has chosen (5.12). Figures: `<fig-mesh-thin-part>`
 (a sheet in cut: its two faces, the rim with no side, a face centre and a particle on opposite sides, and a cell the
 sheet splits); `<fig-mesh-distance>` (a concave cut with the three regions of the nearest point and the outward
 direction at a face, an edge and a vertex); `<fig-mesh-grown-triangle>` (side cut of one triangle grown by `tol`,
@@ -895,7 +906,7 @@ a conservative search, not by a root finder on a moving triangle). None is in th
 | (none) | `kMaxHitsPerMeshPerStep`, `kMaxMoveOutCount`, `MoveToRestGap` (private, module 1) | NEW |
 | (none) | `thin part`, `sheet triangle`, `sheet_sides`, `thinnest_sheet`, `PlateSide::part`, `FindPlateSide`, `IsOnOppositeSides` (papers: CPIC's colour or tag, and compatibility) | NEW (A85) |
 | `same_side` (equality of two `PlateSide`s) | `same_side` now means "not on opposite sides of the same plate or thin part" (`!IsOnOppositeSides`); glossary row to amend | DECIDED word, meaning widened (A85) |
-| (none) | `grid_growth`, `largest_grid_growth`, `grown_sheet_thickness`, `kGrownSheetThicknessInCells`, `MeshSurface` (`kTrue`, `kGrownForGrid`), `ComputeDistanceToGrownMesh`, "grown for the grid" (papers and tools: collider thickness, offset) | NEW (A89) |
+| (none) | `FindThinPartCrossing`, `ThinPartCrossing`, `SolidThinPartCrossing`, `closed_by_thin_part`, `kSheetThicknessLimitInCells` (papers: visibility by ray casting, Neumann face) | NEW (5.12, pending Q10) |
 | (none) | `largest_distance` (not `search distance`, which is `ComputeSolidVelocitySample`'s; not `reach`, which is a solid's) | NEW |
 
 Checked against `docs/glossary.md`: "distance to the solid, negative inside" is used, never the banned
@@ -907,7 +918,7 @@ never "validate"; "saved state" never "checkpoint".
 
 Nothing exists on `main`. Deliberately not built in the first version: a distance volume (5.1); meshes that
 change shape (5.8); open surfaces (a single sheet with no inside: blocking finding, A87); contact between two solids; a
-plate side for thin mesh parts (cutting stays the plate's); automatic repair of bad meshes (the checks report,
+plate side for thin mesh parts (cutting stays the plate's); growing thin parts for the grid (A89, set aside by A90: 5.12 option 4); automatic repair of bad meshes (the checks report,
 the artist fixes).
 
 ## 11. Decisions
@@ -926,7 +937,7 @@ Owner answer A84.
 
 **Q5. A mesh part thinner than one cell.** The owner pointed to CPIC (Hu 2018). Decision: sides on thin mesh
 parts, as designed in 5.11, in the first version; they separate snow, sand and springy solids fully and the
-particle-face exchange of liquid. The pressure solve is not helped by sides; that is answered by Q9 (5.12).
+particle-face exchange of liquid. The pressure solve is not helped by sides alone; that is 5.12 and Q10.
 Owner answer A85.
 
 **Q6. Which mesh Blender exports for a subdivision surface.** Decision: (a) the render-level evaluated mesh, with
@@ -938,29 +949,44 @@ answer A87.
 **Q8. Default shape of a mesh object marked Solid.** Decision: (b) "Mesh" for any object that is not exactly a
 box, sphere or cylinder. Owner answer A88.
 
-**Q9. Thin-walled containers of liquid.** Decision: (b) thin parts are grown for the grid in the first version
-(5.12); the blocking finding of the earlier draft is withdrawn. Owner answer A89.
+**Q9. Thin-walled containers of liquid.** First answer (A89): grow thin parts for the grid. Reopened by A90:
+liquid stops at the true surface, and the growth is not settled until the published methods are compared. The
+comparison is 5.12; the choice is Q10.
 
-**Still for the owner**
+**Still for the owner** (three questions)
 
-**Q10. Where liquid stops at a grown thin part.** A89 as recorded says "particles still stop at the true
-surface". Worked through (5.12 item 3), that leaves liquid in a layer where the solve treats every cell as
-solid: a film that never drains and a slow loss of simulated volume. Options: (a) liquid and gas markers stop at
-the grown surface; snow, sand, springy solids, foam and spray at the true one. Nothing is in the layer, volume
-is exact, and the container is visibly smaller by the growth (at most 1.375 cells per thin face; render output
-must bridge it). (b) Every particle stops at the true surface, as recorded, accepting the film and the loss.
-Recommendation: (a); the design is written for it and (b) is one setting in the step
-(`MeshShapes::surface` in stage `MoveParticles`). Changes: the three scene tests' bounds hold for (a) only.
+**Q10. How a thin wall holds liquid in the first version** (5.12; evidence in `literature-thin-walls.md`).
+(a) Whole faces closed where the line between two cell centres crosses the wall, one pressure per cell, with the
+sides of 5.11 and the scene's cell size as the accuracy knob: the only form published with water in a thin cup
+and a floating shell (Guendelman 2005); error up to half a cell in where the solve puts the wall; narrow gaps
+lost; not yet published with our transfers. (b) Small cells only: the wall must span 2.75 cells; honest and
+simple, affordable for a glass at ten times the steps and for thick hulls, impossible for millimetre walls on
+large objects; thinner walls are a blocking finding. (c) One pressure per side of a cut cell (Azevedo 2016):
+exact, the largest change, published on smoke only. (d) Growth for the grid with liquid stopping at the true
+surface: small, but leaves a film and loses volume in the layer. Recommendation: (a). Changes: section 3's
+`FindThinPartCrossing`, the pending entries of the edit list, the scene tests; with (b) nothing is built and the
+earlier blocking finding returns; with (c) pressure, grid, viscosity, gas and batches are redesigned. The same
+answer applies to module 1's plate ("see previous answer", A90): with (a) the plate's thickness minimum goes.
 
-**Q11. The same growth for module 1's plate.** Today a plate thinner than 2 to 2.74 cells beside liquid or gas
-blocks the run (Q38, approved). Options: (a) grow it for the grid as meshes are, one rule for both, and the
-finding becomes the same NOTE; (b) keep the plate as approved. Recommendation: (a), when the solids module is
-planned. Changes: solids 5.9 "Supported thickness" and one line of coverage.
+**Q11. Cells smaller than the scene's smallest, only near thin walls** (your "ideally we adapt cells close to
+the wall"). Today cells near every solid are already the scene's smallest; going below that only at thin walls
+puts surface cells of two sizes side by side where the liquid's surface meets the wall, which A61 set aside
+until "coarser cells on calm surfaces". (a) Not in the first version: the artist's smallest width and refinement
+zones are the knob. (b) Design a wall floor now (a second smallest width within two cells of thin parts),
+together with the two-size surface condition it needs. Recommendation: (a); with Q10 (a) the seal does not
+depend on it. Changes: with (b), grid 5.9, cell resize and pressure's surface condition gain work before 1b
+can finish.
+
+**Q12. A gap narrower than a cell between two walls** (a thin pipe's bore, two blades). With Q10 (a) the
+liquid there has no pressure of its own. (a) NOTE finding, the run goes on. (b) Blocking finding.
+Recommendation: (a): a dry decorative pipe is harmless and the check cannot tell which gaps liquid is meant to
+use. Changes: the finding's level.
 
 **Not settled here (for the plan, not the owner):** the rounding bound of the nearest-point arithmetic and the
 two thresholds of checks 4 and 5 (to derive and prove with a generated test); the cost of coverage and of the
 surface field with a large mesh (to measure; trigger for the hybrid); whether sixteen hits per mesh per step is
 the right limit; the exact GPU stack need; CPIC as published, read from the paper itself (5.11 is from memory);
 how transfer stores a face's value when particles with side A, side B and no side all reach it (transfer
-decision 5); how render output carries the liquid across the grown layer to the true wall (5.12); the time cost
-of the grown search; whether 2.75 cells, the largest value of the plate bound, can be lowered per direction.
+decision 5); for 5.12's recommended option: how much the half-cell slice packs or drains in practice (only the
+tests can say), the rule for viscosity across a closed face, face pieces between cells of two sizes at a thin
+part, and whether 2.75 cells, the largest value of the plate bound, can be lowered per direction.
