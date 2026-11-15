@@ -2,8 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <numbers>
 #include <type_traits>
@@ -1351,6 +1353,355 @@ TEST(ComputeSolidVelocity, TurningSphere_IsAngularCrossArm) {
   const Vec3 velocity = ComputeSolidVelocity(solid, solid.pose_at_step_start, {.x = 0.5, .y = 0, .z = 0});
 
   ExpectSameVec3(velocity, {.x = 0, .y = 1, .z = 0});
+}
+
+TEST(FindSolidSide, AboveAlongNormal_IsAlongNormal) {
+  const Solid solid = BuildFlatLyingPlate();
+
+  EXPECT_EQ(FindSolidSide(solid, solid.pose_at_step_start, {.x = 0, .y = 0, .z = 0.5}), SolidSide::kAlongNormal);
+}
+
+TEST(FindSolidSide, BelowAgainstNormal_IsAgainstNormal) {
+  const Solid solid = BuildFlatLyingPlate();
+
+  EXPECT_EQ(FindSolidSide(solid, solid.pose_at_step_start, {.x = 0, .y = 0, .z = -0.5}), SolidSide::kAgainstNormal);
+}
+
+TEST(FindSolidSide, InsideThickness_IsNoPlate) {
+  const Solid solid = BuildFlatLyingPlate();
+  const SolidPose pose = solid.pose_at_step_start;
+
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0, .z = 0.05}), SolidSide::kNoPlate);
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0, .z = -0.05}), SolidSide::kNoPlate);
+  // A point on a face is not beyond it: both faces belong to the thickness.
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0, .z = 0.1}), SolidSide::kNoPlate);
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0, .z = -0.1}), SolidSide::kNoPlate);
+}
+
+TEST(FindSolidSide, NotAPlate_IsNoPlate) {
+  // The point is beyond the box's kHighZ face, where a plate's rule would say kAlongNormal.
+  const Solid solid = BuildUnitBox(kNoMotion);
+
+  EXPECT_EQ(FindSolidSide(solid, solid.pose_at_step_start, {.x = 0, .y = 0, .z = 3}), SolidSide::kNoPlate);
+}
+
+TEST(FindSolidSide, SphereOrCylinder_IsNoPlate) {
+  const Solid sphere = BuildSphere(0.5, kNoMotion);
+  const Solid cylinder = BuildUprightCylinder(kNoMotion);
+  const Vec3 above = {.x = 0, .y = 0, .z = 3};
+
+  EXPECT_EQ(FindSolidSide(sphere, sphere.pose_at_step_start, above), SolidSide::kNoPlate);
+  EXPECT_EQ(FindSolidSide(cylinder, cylinder.pose_at_step_start, above), SolidSide::kNoPlate);
+}
+
+TEST(FindSolidSide, TiltedPlate_UsesOwnZAxis) {
+  // Normal {0, -0.6, 0.8}: the point {0, 0, 0.5} is at own z 0.4 and {0, 0.5, 0} at own z -0.3, so a side read from
+  // world z alone would be wrong for the second. {0, 0.25, 0.25} is at own z 0.05, inside the thickness.
+  const Plate plate = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .normal = {.x = 0, .y = -0.6, .z = 0.8},
+      .half_thickness = 0.1,
+  };
+  const Solid solid = ToSolid(plate, kNoMotion, 5);
+  const SolidPose pose = solid.pose_at_step_start;
+
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0, .z = 0.5}), SolidSide::kAlongNormal);
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0.5, .z = 0}), SolidSide::kAgainstNormal);
+  EXPECT_EQ(FindSolidSide(solid, pose, {.x = 0, .y = 0.25, .z = 0.25}), SolidSide::kNoPlate);
+}
+
+TEST(FindSolidSide, MovedPose_UsesGivenPose) {
+  // Raised to z = 1, the plate fills 0.9 <= z <= 1.1: the point z = 0.5, above the start pose, is now below it.
+  const Solid solid = BuildFlatLyingPlate();
+  const SolidPose raised_pose = {.origin = {.x = 0, .y = 0, .z = 1}, .axes = solid.pose_at_step_start.axes};
+
+  EXPECT_EQ(FindSolidSide(solid, raised_pose, {.x = 0, .y = 0, .z = 0.5}), SolidSide::kAgainstNormal);
+  EXPECT_EQ(FindSolidSide(solid, raised_pose, {.x = 0, .y = 0, .z = 0.95}), SolidSide::kNoPlate);
+}
+
+constexpr Vec3 kOrigin = {.x = 0, .y = 0, .z = 0};
+constexpr Vec3 kUp = {.x = 0, .y = 0, .z = 1};
+constexpr Vec3 kDown = {.x = 0, .y = 0, .z = -1};
+
+// A flat solid through point_on_surface with the given normal and motion.
+Solid BuildFlatSolid(Vec3 point_on_surface, Vec3 normal, SolidMotion motion, std::uint32_t solid_id) {
+  const FlatSolid flat_solid = {.point_on_surface = point_on_surface, .normal_out_of_solid = normal};
+  return ToSolid(flat_solid, motion, solid_id);
+}
+
+SolidMotion BuildMoving(Vec3 linear_velocity) {
+  return {.linear_velocity = linear_velocity, .angular_velocity = {.x = 0, .y = 0, .z = 0}};
+}
+
+void ExpectNoSolidSample(const SolidVelocitySample& sample) {
+  EXPECT_FALSE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, kNoSolid);
+  EXPECT_EQ(sample.side, PlateSide());
+  ExpectSameVec3(sample.normal_out_of_solid, kOrigin);
+  ExpectSameVec3(sample.solid_velocity, kOrigin);
+  EXPECT_EQ(sample.distance, 0);
+}
+
+// Design 7's tolerance for velocities and fractions: |actual - expected| <= 2^-44 * max(|actual|, |expected|,
+// reference), with reference the largest input value of its kind in the test.
+void ExpectNearRelative(double actual, double expected, double reference) {
+  const double largest = std::max({std::abs(actual), std::abs(expected), reference});
+  EXPECT_NEAR(actual, expected, 0x1p-44 * largest);
+}
+
+void ExpectVec3NearRelative(Vec3 actual, Vec3 expected, double reference) {
+  ExpectNearRelative(actual.x, expected.x, reference);
+  ExpectNearRelative(actual.y, expected.y, reference);
+  ExpectNearRelative(actual.z, expected.z, reference);
+}
+
+TEST(ComputeSolidVelocitySample, NoSolids_HasNoSolid) {
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(nullptr, 0, 0, kOrigin, 1);
+
+  ExpectNoSolidSample(sample);
+}
+
+TEST(ComputeSolidVelocitySample, TwoSolids_KeepsNearest) {
+  // Two flat solids below the origin, at distances 0.3 and 0.1, each with its own velocity, in both orders: the nearer
+  // one wins wherever it sits in the array.
+  const Solid far_flat_solid =
+      BuildFlatSolid({.x = 0, .y = 0, .z = -0.3}, kUp, BuildMoving({.x = 1, .y = 0, .z = 0}), 2);
+  const Solid near_flat_solid =
+      BuildFlatSolid({.x = 0, .y = 0, .z = -0.1}, kUp, BuildMoving({.x = 0, .y = 2, .z = 0}), 3);
+  const std::array<Solid, 2> near_last = {far_flat_solid, near_flat_solid};
+  const std::array<Solid, 2> near_first = {near_flat_solid, far_flat_solid};
+
+  const SolidVelocitySample sample_near_last = ComputeSolidVelocitySample(near_last.data(), 2, 0, kOrigin, 1);
+  const SolidVelocitySample sample_near_first = ComputeSolidVelocitySample(near_first.data(), 2, 0, kOrigin, 1);
+
+  EXPECT_TRUE(sample_near_last.has_solid);
+  EXPECT_EQ(sample_near_last.solid_index, 1U);
+  EXPECT_EQ(sample_near_last.distance, 0.1);
+  ExpectSameVec3(sample_near_last.normal_out_of_solid, kUp);
+  ExpectSameVec3(sample_near_last.solid_velocity, {.x = 0, .y = 2, .z = 0});
+  EXPECT_TRUE(sample_near_first.has_solid);
+  EXPECT_EQ(sample_near_first.solid_index, 0U);
+  EXPECT_EQ(sample_near_first.distance, 0.1);
+  ExpectSameVec3(sample_near_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
+}
+
+TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex) {
+  // A flat solid 0.1 below the origin and one 0.1 above it: both distances are exactly 0.1. The first in the array is
+  // kept in either order; the normal and the velocity tell which one it is.
+  const Solid solid_below = BuildFlatSolid({.x = 0, .y = 0, .z = -0.1}, kUp, BuildMoving({.x = 1, .y = 0, .z = 0}), 2);
+  const Solid solid_above = BuildFlatSolid({.x = 0, .y = 0, .z = 0.1}, kDown, BuildMoving({.x = 0, .y = 2, .z = 0}), 3);
+  const std::array<Solid, 2> below_first = {solid_below, solid_above};
+  const std::array<Solid, 2> above_first = {solid_above, solid_below};
+
+  const SolidVelocitySample sample_below_first = ComputeSolidVelocitySample(below_first.data(), 2, 0, kOrigin, 1);
+  const SolidVelocitySample sample_above_first = ComputeSolidVelocitySample(above_first.data(), 2, 0, kOrigin, 1);
+
+  EXPECT_EQ(sample_below_first.solid_index, 0U);
+  EXPECT_EQ(sample_below_first.distance, 0.1);
+  ExpectSameVec3(sample_below_first.normal_out_of_solid, kUp);
+  ExpectSameVec3(sample_below_first.solid_velocity, {.x = 1, .y = 0, .z = 0});
+  EXPECT_EQ(sample_above_first.solid_index, 0U);
+  EXPECT_EQ(sample_above_first.distance, 0.1);
+  ExpectSameVec3(sample_above_first.normal_out_of_solid, kDown);
+  ExpectSameVec3(sample_above_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
+}
+
+TEST(ComputeSolidVelocitySample, BeyondReach_HasNoSolid) {
+  // Distance 0.3 and reach 0.2: every field keeps its default, the solid's velocity included (P10).
+  const std::array<Solid, 1> solids = {
+      BuildFlatSolid({.x = 0, .y = 0, .z = -0.3}, kUp, BuildMoving({.x = 1, .y = 0, .z = 0}), 2),
+  };
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, kOrigin, 0.2);
+
+  ExpectNoSolidSample(sample);
+}
+
+TEST(ComputeSolidVelocitySample, AtReach_HasSolid) {
+  // Distance 0.25 and reach 0.25: only a distance larger than the reach is out of reach.
+  const std::array<Solid, 1> solids = {BuildFlatSolid({.x = 0, .y = 0, .z = -0.25}, kUp, kNoMotion, 2)};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, kOrigin, 0.25);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 0U);
+  EXPECT_EQ(sample.distance, 0.25);
+}
+
+TEST(ComputeSolidVelocitySample, Plate_ReportsSideWithPlateId) {
+  const std::array<Solid, 1> solids = {BuildFlatLyingPlate()};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0, .y = 0, .z = 0.5}, 1);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.side, (PlateSide{.plate_id = 5, .side = SolidSide::kAlongNormal}));
+  // 0.5 - 0.1 in double is 0.4.
+  EXPECT_EQ(sample.distance, 0.4);
+  ExpectSameVec3(sample.normal_out_of_solid, kUp);
+}
+
+TEST(ComputeSolidVelocitySample, PlateBelow_ReportsAgainstNormal) {
+  const std::array<Solid, 1> solids = {BuildFlatLyingPlate()};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0, .y = 0, .z = -0.5}, 1);
+
+  EXPECT_EQ(sample.side, (PlateSide{.plate_id = 5, .side = SolidSide::kAgainstNormal}));
+  ExpectSameVec3(sample.normal_out_of_solid, kDown);
+}
+
+TEST(ComputeSolidVelocitySample, PlateInsideThickness_HasSolidOnNoSide) {
+  // Inside the thickness the plate is still the nearest solid, but the point is on neither side (P10).
+  const std::array<Solid, 1> solids = {BuildFlatLyingPlate()};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0, .y = 0, .z = 0.05}, 1);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 0U);
+  EXPECT_EQ(sample.side, (PlateSide{.plate_id = 0, .side = SolidSide::kNoPlate}));
+  EXPECT_EQ(sample.distance, 0.05 - 0.1);
+}
+
+TEST(ComputeSolidVelocitySample, TurningBox_VelocityAtNearestSurfacePoint) {
+  // The nearest surface point is {3, 0, 0} - 2 * {1, 0, 0} = {1, 0, 0}, where Cross({0, 0, 1}, {1, 0, 0}) is
+  // {0, 1, 0}. At the sample point itself the box would move at {0, 3, 0}.
+  const std::array<Solid, 1> solids = {BuildUnitBox(BuildTurning({.x = 0, .y = 0, .z = 1}))};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 3, .y = 0, .z = 0}, 5);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 0U);
+  EXPECT_EQ(sample.side, PlateSide());
+  EXPECT_EQ(sample.distance, 2);
+  ExpectSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  ExpectSameVec3(sample.solid_velocity, {.x = 0, .y = 1, .z = 0});
+}
+
+TEST(ComputeSolidVelocitySample, TurningSphere_VelocityAtNearestSurfacePoint) {
+  // The nearest surface point is {1, 0, 0}, where Cross({0, 0, 1}, {1, 0, 0}) is {0, 1, 0}.
+  const std::array<Solid, 1> solids = {BuildSphere(1, BuildTurning({.x = 0, .y = 0, .z = 1}))};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 3, .y = 0, .z = 0}, 5);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 0U);
+  EXPECT_EQ(sample.side, (PlateSide{.plate_id = 0, .side = SolidSide::kNoPlate}));
+  EXPECT_EQ(sample.distance, 2);
+  ExpectSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  ExpectSameVec3(sample.solid_velocity, {.x = 0, .y = 1, .z = 0});
+}
+
+TEST(ComputeSolidVelocitySample, TurningCylinder_VelocityAtNearestSurfacePoint) {
+  // The cylinder along x, radius 0.5, spinning at {2, 0, 0} rad/s. The point {0, 0, 1.5} is 1 beyond the wall; the
+  // nearest surface point {0, 0, 0.5} moves at Cross({2, 0, 0}, {0, 0, 0.5}) = {0, -1, 0}.
+  const std::array<Solid, 1> solids = {BuildCylinderAlongX(BuildTurning({.x = 2, .y = 0, .z = 0}))};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0, .y = 0, .z = 1.5}, 5);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.side, PlateSide());
+  EXPECT_EQ(sample.distance, 1);
+  ExpectVec3Near(sample.normal_out_of_solid, kUp, kRoundSolidTolerance);
+  ExpectVec3Near(sample.solid_velocity, {.x = 0, .y = -1, .z = 0}, kRoundSolidTolerance);
+}
+
+TEST(ComputeSolidVelocitySample, MovingSphereAtElapsed_UsesPoseAtThatTime) {
+  // A sphere of radius 1 leaves the origin at {1, 0, 0} m/s, spinning at {0, 0, 1} rad/s. After 2 s its centre is at
+  // {2, 0, 0}: the point {5, 0, 0} is 2 from its surface, not 4, and the nearest surface point {3, 0, 0} moves at
+  // {1, 0, 0} + Cross({0, 0, 1}, {1, 0, 0}) = {1, 1, 0}. An arm from the start centre would give {1, 3, 0}.
+  const SolidMotion motion = {.linear_velocity = {.x = 1, .y = 0, .z = 0}, .angular_velocity = kUp};
+  const std::array<Solid, 1> solids = {BuildSphere(1, motion)};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 2, {.x = 5, .y = 0, .z = 0}, 5);
+
+  EXPECT_TRUE(sample.has_solid);
+  // The spin turns the sphere's axes through Sin and Cos, whose last bits differ between libraries, so the turn into
+  // its own axes and back rounds differently. Design 7's relative tolerance leaves room for that: reference 2 m for
+  // the distance, 1 for the normal, and the largest input speed, 3 m/s at the point, for the velocity.
+  ExpectNearRelative(sample.distance, 2, 2);
+  ExpectVec3NearRelative(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0}, 1);
+  ExpectVec3NearRelative(sample.solid_velocity, {.x = 1, .y = 1, .z = 0}, 3);
+}
+
+TEST(ComputeSolidVelocitySample, DeepInsideSolid_HasSolid) {
+  // Distance 0.2 - 1 = -0.8, far below minus the reach 0.5: a point inside a solid always has a solid, however deep.
+  // On x, own x 0.2 > 0 gives the largest gap on kHighX; y and z give -1.
+  const std::array<Solid, 1> solids = {BuildUnitBox(kNoMotion)};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0.2, .y = 0, .z = 0}, 0.5);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 0U);
+  EXPECT_EQ(sample.distance, 0.2 - 1);
+  ExpectSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+}
+
+TEST(ComputeSolidVelocitySample, MovingPlate_SideFromPoseAtElapsed) {
+  // The plate rises from z = 0 at 1 m/s; after 1 s it fills 0.9 <= z <= 1.1. The point z = 0.5, above the start
+  // pose, is now 0.4 below the plate: side kAgainstNormal, normal {0, 0, -1}, and its surface moves at {0, 0, 1}.
+  const Plate plate = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .normal = kUp,
+      .half_thickness = 0.1,
+  };
+  const std::array<Solid, 1> solids = {ToSolid(plate, BuildMoving(kUp), 5)};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 1, {.x = 0, .y = 0, .z = 0.5}, 1);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.side, (PlateSide{.plate_id = 5, .side = SolidSide::kAgainstNormal}));
+  EXPECT_EQ(sample.distance, 0.5 - 0.1);
+  ExpectSameVec3(sample.normal_out_of_solid, kDown);
+  ExpectSameVec3(sample.solid_velocity, kUp);
+}
+
+// The box {0.4, 0.6} x {0.4, 0.6} x {0.4, 0.6} in the middle of the domain box from {0, 0, 0} to {1, 1, 1}, moving at
+// {1, 0, 0} m/s.
+Solid BuildSmallBoxInDomain() {
+  const Box box = {
+      .center = {.x = 0.5, .y = 0.5, .z = 0.5},
+      .axes = kIdentity,
+      .half_size = {.x = 0.1, .y = 0.1, .z = 0.1},
+  };
+  return ToSolid(box, BuildMoving({.x = 1, .y = 0, .z = 0}), 7);
+}
+
+TEST(ComputeSolidVelocitySample, DomainBoxSideNearest_NormalPointsIntoDomain) {
+  // The point {0.5, 0.5, 0.1} is 0.1 above side_bottom and 0.3 below the small box: the domain box wins, with its
+  // normal pointing into the box, so point - distance * normal lies on side_bottom, which does not move.
+  const std::array<Solid, 2> solids = {BuildValidDomainBox(), BuildSmallBoxInDomain()};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 2, 0, {.x = 0.5, .y = 0.5, .z = 0.1}, 1);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 0U);
+  EXPECT_EQ(sample.side, PlateSide());
+  // 0.5 + (0.1 - 0.5) rounds to one unit below 0.1.
+  EXPECT_NEAR(sample.distance, 0.1, 1e-16);
+  ExpectSameVec3(sample.normal_out_of_solid, kUp);
+  ExpectSameVec3(sample.solid_velocity, kOrigin);
+}
+
+TEST(ComputeSolidVelocitySample, BoxNearerThanDomainSide_BoxWins) {
+  // The point {0.5, 0.5, 0.25} is 0.15 below the small box and 0.25 above side_bottom: the box wins, after the domain
+  // box in the array, with its kLowZ normal and its velocity.
+  const std::array<Solid, 2> solids = {BuildValidDomainBox(), BuildSmallBoxInDomain()};
+
+  const SolidVelocitySample sample =
+      ComputeSolidVelocitySample(solids.data(), 2, 0, {.x = 0.5, .y = 0.5, .z = 0.25}, 1);
+
+  EXPECT_TRUE(sample.has_solid);
+  EXPECT_EQ(sample.solid_index, 1U);
+  EXPECT_EQ(sample.distance, 0.25 - 0.1);
+  ExpectSameVec3(sample.normal_out_of_solid, kDown);
+  ExpectSameVec3(sample.solid_velocity, {.x = 1, .y = 0, .z = 0});
+}
+
+TEST(ComputeSolidVelocitySample, NaNPoint_HasNoSolid) {
+  const std::array<Solid, 1> solids = {BuildUnitBox(kNoMotion)};
+
+  const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = kNaN, .y = 0, .z = 0}, 5);
+
+  ExpectNoSolidSample(sample);
 }
 
 }  // namespace

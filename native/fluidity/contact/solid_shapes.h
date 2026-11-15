@@ -1,9 +1,10 @@
-// The shapes of solids, their pose and motion during one step, the check that a solid is usable, and the distance
-// from a point to a solid.
+// The shapes of solids, their pose and motion during one step, the check that a solid is usable, the distance
+// from a point to a solid, the side of a plate a point is on, and the nearest solid surface.
 //
 // Purpose: describe every solid that particles cannot enter in one form, Solid, that the contact code reads,
 //   check it once per step before any particle is moved, and give its pose, its surface velocity and the distance
-//   to it at any time within the step.
+//   to it at any time within the step. Give, for one point, the side of a plate it is on and the nearest solid
+//   surface with the velocity of that surface.
 //
 // Idea: each shape is described in its own axes, so one formula per shape serves any position and turn. A solid's
 //   pose places those axes in the world: an origin and a rotation whose columns are the solid's own x, y and z axes.
@@ -37,22 +38,26 @@
 //   spin        a turn about a sphere's centre or a cylinder's axis: it moves the surface but not the shape
 //   degenerate normal  the normal chosen where several directions are equally near: at a sphere's centre, and
 //                      on a cylinder's axis where the wall is nearer than the caps. Minus the solid's own x axis
+//   nearest solid surface  the surface, among all solids, with the smallest distance from a point
 // Owns:    SolidShape, SolidFace, SolidSide, PlateSide, FlatSolid, Plate, Box, Sphere, Cylinder, ClosedSides,
 //          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, ToSolid,
 //          ComputeShapeTurningAngularVelocity, CheckSolid, DistanceToSolid, ComputeSolidPose, ComputeSolidVelocity,
-//          ComputeDistanceToSphere, ComputeDistanceToCylinder, ComputeDistanceToSolid, DomainSide, ToSolidFace
+//          ComputeDistanceToSphere, ComputeDistanceToCylinder, ComputeDistanceToSolid, FindSolidSide,
+//          SolidVelocitySample, ComputeSolidVelocitySample, DomainSide, ToSolidFace
 // Uses:    Vec3, math::Cross, math::Dot, math::Length, math::Normalized, math::IsFinite (base/vec3.h),
 //          Mat3, kIdentity, math::Determinant, math::Transpose, math::Rotation (base/mat3.h), Axis,
 //          math::UnitVector (base/axis.h),
 //          math::Abs, math::Max, math::Sqrt (base/scalar_math.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
 //          ContactError, ContactCloseCall (contact/contact_error.h)
-// Used by: every contact function, the solids module, which builds the solids of a scene, and the step
+// Used by: every contact function, the solids module, which builds the solids of a scene, the step, and every
+//          module that needs the velocity of the nearest solid surface at a point
 // Read:    docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>, <sec-round-solids>
 //          Hu 2018, doi:10.1145/3197517.3201293
 
 #pragma once
 
 #include <cassert>
+#include <cfloat>
 #include <cstdint>
 
 #include "fluidity/base/axis.h"
@@ -724,6 +729,121 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& 
   // An unknown shape has no formula, so reaching this line is a caller bug: CheckSolid refuses it.
   assert(false && "ComputeDistanceToSolid has no formula for this shape");
   return DistanceToSolid{};
+}
+
+// Finds the side of a plate a world point is on, at a given pose of the plate.
+//
+// Method: turns the point into the plate's own axes as ComputeDistanceToSolid does, p = Transpose(pose.axes) *
+//   (point - pose.origin). The point is on the kAlongNormal side when p.z > half_thickness and on the kAgainstNormal
+//   side when p.z < -half_thickness. A point inside the thickness, on a face included, gives kNoPlate, and so does
+//   every solid that is not a plate: only a plate has sides. A NaN in the point gives kNoPlate. Same bits on CPU and
+//   GPU: only + - * and comparisons.
+// Units: m, world, at the time of the pose.
+// Example: a plate through {0, 0, 0} with normal {0, 0, 1} and half_thickness 0.1. The point {0, 0, 0.5} is on the
+//   kAlongNormal side and {0, 0, -0.5} on the kAgainstNormal side; {0, 0, 0.05} and {0, 0, 0.1} give kNoPlate.
+// Requires: pose.axes is a rotation (the pose of a solid that passed CheckSolid, from ComputeSolidPose).
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
+FLUIDITY_CPU_AND_GPU constexpr SolidSide FindSolidSide(const Solid& solid, SolidPose pose, Vec3 point) {
+  if (solid.shape != SolidShape::kPlate) {
+    return SolidSide::kNoPlate;
+  }
+  // Method paper <sec-solid-shapes>:  p = A^T (x - o)
+  // The same expression as ComputeDistanceToSolid, so a point beyond a face by this test is outside by its distance.
+  const double own_height = (math::Transpose(pose.axes) * (point - pose.origin)).z;
+  const double half_thickness = solid.half_size.z;
+  if (own_height > half_thickness) {
+    return SolidSide::kAlongNormal;
+  }
+  if (own_height < -half_thickness) {
+    return SolidSide::kAgainstNormal;
+  }
+  return SolidSide::kNoPlate;
+}
+
+// The nearest solid surface seen from one point, with the velocity of that surface.
+struct SolidVelocitySample {
+  bool has_solid = false;  // A solid surface lies within reach of the point.
+  std::uint32_t solid_index = kNoSolid;  // Index into the solids array, not the solid_id.
+  // The plate side the point is on: {solid_id, side} for a plate, {0, kNoPlate} inside a plate's thickness and for
+  // every other shape.
+  PlateSide side{};
+  Vec3 normal_out_of_solid{};  // No unit, unit vector, world. Zero without a solid.
+  // m/s, world, at point - distance * normal_out_of_solid: the nearest surface point, except outside a box's edge or
+  // corner, where it is the point on the nearest face plane. Zero without a solid.
+  Vec3 solid_velocity{};
+  double distance = 0;  // m. Positive outside the solid, negative inside. 0 without a solid.
+};
+
+// Finds the nearest solid surface seen from a point, elapsed seconds into the step, and the velocity of that
+// surface there.
+//
+// Method: poses each solid with ComputeSolidPose(solid, elapsed) and measures ComputeDistanceToSolid at the point.
+//   The smallest distance wins. When it is larger than reach, has_solid is false and every other field keeps its
+//   default. Otherwise the sample holds that solid's index, distance and normal, and solid_velocity is
+//   ComputeSolidVelocity at point - distance * normal: the nearest surface point for every shape except a box seen
+//   from outside an edge or a corner, where it is the point on the nearest face plane. A plate gives side
+//   {solid_id, FindSolidSide(...)}, or {0, kNoPlate} when the point is inside its thickness; every other shape gives
+//   {0, kNoPlate}. A NaN in the point or in reach gives has_solid false. Same bits on CPU and GPU when every
+//   solid's angular velocity is zero; otherwise the Sin inside math::Rotation may differ in the last bits.
+// Units: seconds for elapsed; m, world, for point and reach.
+// Ties: equal distances keep the solid that comes first in the array.
+// Example: a box at the origin with world axes and half sizes {1, 1, 1}, turning at {0, 0, 1} rad/s, and the point
+//   {3, 0, 0} at elapsed 0 with reach 5: distance 2, normal {1, 0, 0}, nearest surface point {1, 0, 0}, so
+//   solid_velocity Cross({0, 0, 1}, {1, 0, 0}) = {0, 1, 0}, side {0, kNoPlate}. With reach 1.5: has_solid false.
+// Requires: solids points to solid_count solids (it may be null when solid_count is 0), each of which passed
+//   CheckSolid. elapsed is finite and zero or more; it is at most the step duration. point has no infinite
+//   coordinate; a NaN coordinate is allowed.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
+
+// clang-tidy: the count follows its array, as in every pointer-and-count pair, and elapsed follows them, as contact
+// design 3.2 orders the parameters; the swappable-parameters check flags the count and elapsed.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU inline SolidVelocitySample
+ComputeSolidVelocitySample(const Solid* solids, std::uint32_t solid_count, double elapsed, Vec3 point, double reach) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
+  assert(solids != nullptr || solid_count == 0);
+  // An infinite coordinate makes 0 * inf a NaN in some own coordinates only, so the winner would depend on the order
+  // of the array. An infinite value is larger than DBL_MAX; a NaN compares false and passes.
+  assert(!(math::Abs(point.x) > DBL_MAX) && !(math::Abs(point.y) > DBL_MAX) && !(math::Abs(point.z) > DBL_MAX));
+  // Steps: 1 find the nearest solid  2 compare with the reach  3 fill the sample
+  // Step 1: a later solid wins only when strictly nearer, so a tie keeps the earlier one. The array holds fewer than
+  // kNoSolid solids, so kNoSolid is free to mean "none yet".
+  std::uint32_t nearest_index = kNoSolid;
+  SolidPose nearest_pose;
+  DistanceToSolid nearest;
+  for (std::uint32_t solid_index = 0; solid_index < solid_count; ++solid_index) {
+    const SolidPose pose = ComputeSolidPose(solids[solid_index], elapsed);
+    const DistanceToSolid candidate = ComputeDistanceToSolid(solids[solid_index], pose, point);
+    const bool is_nearer = nearest_index == kNoSolid || candidate.distance < nearest.distance;
+    if (is_nearer) {
+      nearest_index = solid_index;
+      nearest_pose = pose;
+      nearest = candidate;
+    }
+  }
+
+  // Step 2: written as "within reach", so a NaN distance or reach is out of reach rather than a sample of NaN.
+  const bool is_within_reach = nearest_index != kNoSolid && nearest.distance <= reach;
+  if (!is_within_reach) {
+    return SolidVelocitySample{};
+  }
+
+  // Step 3: the velocity is taken on the surface, not at the point: away from the axis of a turn they differ.
+  const Solid& nearest_solid = solids[nearest_index];
+  const Vec3 surface_point = point - nearest.distance * nearest.normal_out_of_solid;
+  const SolidSide side = FindSolidSide(nearest_solid, nearest_pose, point);
+  PlateSide plate_side;
+  if (side != SolidSide::kNoPlate) {
+    plate_side = {.plate_id = nearest_solid.solid_id, .side = side};
+  }
+  return {
+      .has_solid = true,
+      .solid_index = nearest_index,
+      .side = plate_side,
+      .normal_out_of_solid = nearest.normal_out_of_solid,
+      .solid_velocity = ComputeSolidVelocity(nearest_solid, nearest_pose, surface_point),
+      .distance = nearest.distance,
+  };
 }
 
 // The Blender names of the six sides of the domain box, in SolidFace order.

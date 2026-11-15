@@ -59,12 +59,14 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `degenerate normal` | The normal chosen where several directions are equally near the surface: at a sphere's centre, and on a cylinder's axis where the wall is nearer than the caps. It is minus the solid's own x axis, the normal of `kLowX`, as a box's tie gives. | |
 | `spin` | A turn about a sphere's centre or a cylinder's axis. It moves the surface but not the shape, so it does not count toward the turn limit of a step. | |
 | `plate side`, `PlateSide`, `SolidSide` | One of the two sides of one plate, as a stable identity: the plate's id and the side. Particles on different plate sides never exchange values. | side_tag |
+| `side of a plate`, `kAlongNormal`, `kAgainstNormal` | Where a point is relative to a plate: beyond the face its normal points to (`kAlongNormal`), or beyond the other face (`kAgainstNormal`). A point inside the thickness, or near a solid that is not a plate, is on no side (`kNoPlate`). `FindSolidSide` gives it. | |
 | `solid face`, `SolidFace` | One part of a solid's surface, named in the solid's own axes: `kLowX` to `kHighZ` for flat faces, `kCurved`, `kLowRim`, `kHighRim` for round ones. | |
 | `pose`, `SolidPose` | Where a solid is: the origin of its own axes, m, and the rotation whose columns are those axes in the world. | |
 | `motion`, `SolidMotion` | How a solid moves during one step: the linear velocity of its origin, m/s, and its angular velocity about the origin, rad/s. Constant during the step. | |
 | `fixed`, `driven`, `free` | Motion: never moves; follows a given path; pushed by the liquid. Combine with a shape: `DrivenFlatSolid`, `DrivenPlate`, `FreeBox`. | prescribed, rigid body, floating (for motion) |
 | `wave_paddle` (a variable, not a type) | The driven flat solid that makes waves. It is its own solid, not part of the domain box. | piston |
 | `solid_velocity`, `SolidVelocitySample` | m/s. Velocity of a solid's surface. | wall_velocity, LiquidPrescribedWallSample3D |
+| `nearest solid surface` | The surface, among all solids, with the smallest distance from a point; equal distances keep the solid that comes first. `ComputeSolidVelocitySample` gives it, with its velocity, when it lies within reach. | |
 | `same_side` | Both are on the same side of a plate, so they may exchange data. | compatible (for two things on the same side of a plate) |
 | `elapsed` | Clock time: `work_elapsed_seconds`. In contact and solids, seconds since the start of the step: `ComputeSolidPose(solid, elapsed)`, `start_elapsed`. | wall (for time) |
 | `close call`, `ContactCloseCall` | A step that contact cannot answer safely. The step is shortened and tried again. | near miss, edge case (for this) |
