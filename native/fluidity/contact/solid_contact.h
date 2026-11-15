@@ -53,37 +53,43 @@ namespace fluidity::contact {
 //     enters the grown solid through its face planes, the latest crossing into a plane if no plane is left before
 //     it, with the entering face; each closed side of the domain box is a flat face of its own. A plate seen by a
 //     particle committed to one of its sides (inputs.plate_side) is the half space behind its committed face, so it
-//     has that one face (plan decision P3). A hit counts when its time is at most duration.
+//     has that one face (plan decision P3). A sphere and a cylinder use their true distance for the touching rule
+//     (plan decision P16), then a closed form: the first root of the path on the sphere grown by tol, or the entry
+//     into the cylinder grown by tol with sharp edges, the later of its entries into the grown wall and between the
+//     grown caps' planes when it comes before both exits (plan decision P15). A hit counts when its time is at most
+//     duration.
 //   2 Turning solid: this code has no search toward a turning solid yet, so a flat solid, a plate or a box whose
-//     angular velocity is not exactly {0, 0, 0} makes the call too close to call.
+//     angular velocity is not exactly {0, 0, 0}, or a cylinder whose axis tilts by more than plan decision P17's
+//     bound, makes the call too close to call. A spin about a sphere's centre or a cylinder's axis is not a turn.
 //   3 The smallest hit time wins. *first_hit holds its time, the solid's index and at_hit: the distance, normal and
-//     face at the hit position (one tolerance from the entering face up to rounding), or, for a hit at 0, the
-//     distance at the start. A free path gives solid_index kNoSolid, elapsed 0 and at_hit at its defaults.
-//   The inputs are not checked here (plan decision P9); the solids' angular velocities are zero for every success.
-//   Same bits on CPU and GPU when no solid turns: only + - * / and comparisons.
+//     face at the hit position (one tolerance from the entering face up to rounding; between tol and Sqrt(2) tol from
+//     a cylinder's rim, whose face it then reports), or, for a hit at 0, the distance at the start. A free path gives
+//     solid_index kNoSolid, elapsed 0 and at_hit at its defaults.
+//   The inputs are not checked here (plan decision P9). Same bits on CPU and GPU when every solid's angular velocity
+//   is zero: only + - * /, Abs, Sqrt and comparisons.
 // Units: m and m/s, world, for the path; s for start_elapsed, duration and the result's elapsed, which counts from
 //   start_elapsed.
 // Ties: equal hit times keep the lower solid index, then the face that comes first in face order.
 // Example: a fixed flat solid with surface x = 1 and normal {-1, 0, 0}, contact tolerance 2^-30 m, and the path from
 //   {0.9, 0, 0} at {1, 0, 0} m/s for 0.2 s: elapsed (1 - 0.9) - 2^-30 = 0.0999999990686774 s, solid_index 0, face
 //   kHighZ, normal {-1, 0, 0}, distance 2^-30 m up to rounding. The same path starting at {1 - 2^-30, 0, 0} moving at
-//   {0, 0, 1} m/s rests on the surface and is free; at {1, 0, 0} m/s it pushes in and is hit at 0.
+//   {0, 0, 1} m/s rests on the surface and is free; at {1, 0, 0} m/s it pushes in and is hit at 0. A fixed sphere of
+//   radius 0.5 m at the origin and the path from {-2, 0.3, 0} at {1, 0, 0} m/s for 2 s: elapsed
+//   2 - Sqrt((0.5 + 2^-30)^2 - 0.09) = 1.5999999988358469 s, face kCurved, normal near {-0.8, 0.6, 0}.
 // Requires: first_hit is not null. inputs.solids points to inputs.solid_count solids (it may be null when the count
-//   is 0), each of which passed CheckSolid for inputs.step_duration, none a sphere or a cylinder. start and
-//   velocity_for_this_step are finite. start_elapsed and duration are finite and zero or more,
-//   and duration is at most inputs.step_duration - start_elapsed as computed (the time left in the step), so every
-//   pose stays within the step.
+//   is 0), each of which passed CheckSolid for inputs.step_duration. start and velocity_for_this_step are finite.
+//   start_elapsed and duration are finite and zero or more, and duration is at most inputs.step_duration -
+//   start_elapsed as computed (the time left in the step), so every pose stays within the step.
 //   inputs.contact_tolerance is finite and zero or more. When inputs.plate_side.plate_id is the solid_id of a
 //   solid, that solid is a plate and the side is kAlongNormal or kAgainstNormal (an id that names no solid sees
 //   every plate with both faces; MoveParticle refuses it).
 // Fails: kTooCloseToCall  a solid turns: *close_call is kSlowApproachToTurningSolid. A shorter step does not fix it
 //                         yet; the search toward a turning solid will.
-//        kBadInput        a solid is a sphere, a cylinder or of an unknown shape; a debug build stops at an
-//                         assertion first.
+//        kBadInput        a solid is of an unknown shape; a debug build stops at an assertion first.
 //        When close_call is not null, *close_call is always written: kNone unless the error is kTooCloseToCall. On
 //        failure *first_hit is unchanged.
 // Read: docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
-//       <fig-sweep-hit-slide>
+//       <fig-sweep-hit-slide>, <sec-round-solids>
 //
 // clang-tidy: start_elapsed and duration follow the path, as contact design 3.4 orders the parameters; the
 // swappable-parameters check flags the two doubles.

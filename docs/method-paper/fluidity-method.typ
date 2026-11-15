@@ -1034,26 +1034,37 @@ paper's numbers): $alpha = 4$, $beta = -4$, $gamma = 4.09 - R^2$, and $t_"hit" =
 is $0.8 - 0.625 "tol"$ s. The hit point is (−0.4, 0.3, 0) less $1.25 "tol"$ along x, with normal (−0.8, 0.6, 0).
 
 *Cylinder.* The cylinder is grown with sharp edges: radius $R = "radius" + "tol"$, half height $H =
-"half_height" + "tol"$. Two candidates are tried, each kept only inside the other's range:
+"half_height" + "tol"$. The grown cylinder is the part shared by the grown wall, taken as unbounded along the axis,
+and the space between the planes of the grown caps, so the path is inside it exactly while it is inside both. Each
+of the two is entered and left at most once along a straight path, as a box's face plane is:
 
 $
-  t_"wall" & = gamma_rho / (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)), \
-  & "kept when" |q_z + w_z t_"wall"| <= H, \
-  t_"cap" & = (|q_z| - H) / (-sigma_0 w_z), \
-  & "kept when" (q_x + w_x t_"cap")^2 + (q_y + w_y t_"cap")^2 <= R^2.
+  "wall:" & quad [t_"wall", t'_"wall"] = [gamma_rho / (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)),
+    (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)) / alpha_rho], \
+  "caps:" & quad [t_"cap", t'_"cap"] = [(d_"cap" - "tol") / (-sigma_0 w_z), (|q_z| + H) / (-sigma_0 w_z)], \
+  "hit:" & quad t_"hit" = max(t_"wall", t_"cap") quad "when" t_"hit" <= t'_"wall", t_"hit" <= t'_"cap"
+    "and" t_"hit" <= "duration".
 $ <eq:cylinder-hit-time>
 
-The wall time is the sphere's root computed with the x and y parts only: $alpha_rho = w_x^2 + w_y^2$, $beta_rho =
-q_x w_x + q_y w_y$ and $gamma_rho = (rho_0 - "radius" - "tol") (rho_0 + R)$, again from the gap, with $rho_0 =
-sqrt(q_x^2 + q_y^2)$. It is tried when the start is outside the grown radius ($rho_0 > R$), the path moves in the
-x–y plane ($alpha_rho > 0$) and toward the axis ($beta_rho < 0$), and the root exists ($beta_rho^2 >= alpha_rho
-gamma_rho$). The cap time is tried for the cap the start is beyond, $|q_z| > H$ with $sigma_0$ the sign of $q_z$,
-when the path moves toward it ($sigma_0 w_z < 0$); its disc test compares squared distances from the axis, with no
-square root. The earliest kept time at most `duration` is the hit; equal times keep the wall, since both name the
-same point. This is the entry into the part shared by the grown slab and the grown unbounded cylinder, so no third
-equation is needed for the rim: both tests include the sharp edge (the $<=$), and a path through it is caught. The
-face, normal and distance reported are those of @eq:cylinder-distance at the hit position, so a hit in the sharp
-corner reports a rim.
+The wall interval comes from the sphere's quadratic in the x and y parts only: $alpha_rho = w_x^2 + w_y^2$,
+$beta_rho = q_x w_x + q_y w_y$ and $gamma_rho = (d_"wall" - "tol") (rho_0 + R)$, from the gap, with $rho_0 =
+sqrt(q_x^2 + q_y^2)$ and $d_"wall" = rho_0 - "radius"$ as @eq:cylinder-distance computes it. When the start is beyond
+the grown wall, $d_"wall" - "tol" > 0$, the interval is the one written above, and it is empty when the path does not
+move toward the axis ($alpha_rho = 0$ or $beta_rho >= 0$) or the root does not exist ($beta_rho^2 < alpha_rho
+gamma_rho$). Otherwise the path is inside the grown wall from $t = 0$ until the larger root, written $-gamma_rho \/
+(beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho))$ when $beta_rho > 0$ so that nothing cancels, or for ever when
+$alpha_rho = 0$. The caps' interval is the one written above when the start is beyond a grown cap, $d_"cap" - "tol" >
+0$ with $sigma_0$ the sign of $q_z$, and empty unless the path moves toward that cap ($sigma_0 w_z < 0$); otherwise
+the path is between the grown caps from $t = 0$ until it reaches the grown cap it moves toward, or for ever when
+$w_z = 0$. A start the distance puts beyond the grown wall or a cap is beyond it here, bit for bit, since both read
+the same computed gaps. The hit is the later entry, provided it comes no later than either exit: the same test of
+entry and exit as for a box. Both limits count, so a path that meets the sharp rim edge exactly is a hit. A path
+that goes into the cylinder through the rim edge leaves both regions long after it enters them, so the rounding of
+the two entry times can change which one is later but cannot make the path miss; only a path that grazes the edge
+sits on the limit, where a hit and a miss are both safe. (Accepting each entry only where the path is inside the
+other region at that time is the same in exact arithmetic, but there a path through the edge can have both entries
+rejected by rounding and pass through the solid.) The face, normal and distance reported are those of
+@eq:cylinder-distance at the hit position, so a hit in the sharp corner reports a rim.
 
 That hit sits between $"tol"$ and $sqrt(2) "tol"$ from the true rim, never closer than $"tol"$. Its gap $d -
 "tol"$ is then between 0 and $0.414 "tol"$, a value that neither the touching rule ($[-"tol", 0]$) nor a start
@@ -1062,18 +1073,18 @@ rim normal to $d = "tol"$ before the response, a move of at most $(sqrt(2) - 1) 
 by the stepping search toward a turning cylinder is not moved: it stops at $d <= 1.25 "tol"$ in any region. The end
 check ($d >= "tol"\/2$) never fires wrongly there: before the move $d >= "tol"$, after it $d = "tol"$. For a fixed
 cylinder of radius 0.5 m and half height 1 m and a particle from $(0.5 + "tol"\/2, 0, 3)$ at (0, 0, −1) m/s (the
-tests' numbers), the wall is never tried ($alpha_rho = 0$) and the top cap is hit at $2 - "tol"$ s, at $(0.5 +
-"tol"\/2, 0, 1 + "tol")$, inside the grown disc. There $d_"wall" = "tol"\/2$ and $d_"cap" = "tol"$: the point faces
+tests' numbers), the path is inside the grown wall all along ($alpha_rho = 0$) and enters between the grown caps at
+$2 - "tol"$ s, at $(0.5 + "tol"\/2, 0, 1 + "tol")$. There $d_"wall" = "tol"\/2$ and $d_"cap" = "tol"$: the point faces
 the high rim at the true distance $sqrt(1.25) "tol"$, and it is moved along the rim normal $(1, 0, 2)\/sqrt(5)$ to
 $(0.5 + "tol"\/sqrt(5), 0, 1 + 2 "tol"\/sqrt(5))$, at $d = "tol"$, face `kHighRim`.
 
 The other examples of a cylinder of radius 0.5 m and half height 0.25 m at the origin (this paper's numbers): from
 (0.2, 0, 1) at (0, 0, −2) m/s the top cap is hit at $(1 - 0.25 - "tol")\/2 = 0.375 - "tol"\/2$ s, at $(0.2, 0,
 0.25 + "tol")$; from (−1.5, 0.3, 0) at (2, 0, 0.2) m/s the wall is hit at $0.55 - 0.625 "tol"$ s near (−0.4, 0.3,
-0.11), with normal (−0.8, 0.6, 0). From the same start at (2, 0, 0.5) m/s the cylinder is not hit: the start is not
-beyond a cap, so there is no cap candidate, and the wall root comes when the path is at height 0.275 m, above the
-grown cap, so it is rejected. Seen as geometry, the path crosses the cap's height 0.25 m at $rho = 0.58$ m, outside
-the disc: it passes over the rim.
+0.11), with normal (−0.8, 0.6, 0). From the same start at (2, 0, 0.5) m/s the cylinder is not hit: the path leaves
+the space between the grown caps at $0.5 + 2 "tol"$ s, before it enters the grown wall at about 0.55 s, when it is at
+height 0.275 m. Seen as geometry, the path crosses the cap's height 0.25 m at $rho = 0.58$ m, outside the disc: it
+passes over the rim.
 
 #figure(
   round-first-hit-figure(),
@@ -1095,9 +1106,9 @@ position, so along the straight path $d(t) >= d(0) + "rate" times t >= d(0) - "t
 sweep at $d = "tol"$ (a hit, the rim move or the start move put it there), so $d(t) >= "tol" - "tol" = 0$; the
 part of the window below 0 only absorbs rounding, and the settle at the end of `MoveParticle` puts the particle
 back at $"tol"$. It is the same tolerance as for a flat face, with no term for the curvature. A cylinder start
-inside the grown sharp cylinder ($rho_0 <= R$ and $|q_z| <= H$) with a positive gap $g_0$ lies in a rim corner (up
-to rounding, since these tests and the gap are computed separately); it is hit at $t = 0$ when it approaches
-($"rate" < 0$) and free otherwise. For a sphere of radius 0.5 m at the origin, a particle at $(-(0.5 + "tol"), 0,
+inside the grown sharp cylinder ($d_"wall" - "tol" <= 0$ and $d_"cap" - "tol" <= 0$, the gaps computed as
+@eq:cylinder-distance computes the distances) with a positive gap $g_0$ lies in a rim corner: both distances are then
+in $(0, "tol"]$. It is hit at $t = 0$ when it approaches ($"rate" < 0$) and free otherwise. For a sphere of radius 0.5 m at the origin, a particle at $(-(0.5 + "tol"), 0,
 0)$ moving at (0, 1, 0) m/s, along the tangent, is free; moving at (1, 0, 0) m/s it is hit at 0 (the tests'
 numbers).
 
@@ -1127,14 +1138,16 @@ numbers).
   ([Read the start], [Compute the true distance and the gap $g_0$. Below $-"tol"$: hit at 0. In $[-"tol", 0]$: the
     touching rule. Above 0 but inside the sharp grown cylinder (a rim corner): hit at 0 when the path approaches,
     no hit otherwise.]),
-  ([Try the wall], [When the start is outside the grown radius and approaches the axis, and the root exists,
-    compute the wall root of @eq:cylinder-hit-time, the constant from the gap; keep it when the path is within the
-    grown height then.]),
-  ([Try the cap], [When the start is beyond the grown half height and moves toward that cap, compute the time it
-    reaches the cap's plane; keep it when the squared distance from the axis then is at most the squared grown
-    radius.]),
-  ([Keep the earliest], [The earliest kept time at most `duration` is the hit; equal times keep the wall. A hit in
-    a rim region is moved to $d = "tol"$ by `MoveParticle`, not here.]),
+  ([Inside the wall], [Compute the times the path is inside the grown wall, unbounded along the axis, with
+    @eq:cylinder-hit-time, the constant from the gap: from the first root to the second when the start is beyond
+    the grown wall ($d_"wall" - "tol" > 0$), empty when it does not approach the axis or the root does not exist;
+    from 0 to the larger root, or for ever, otherwise.]),
+  ([Between the caps], [Compute the times the path is between the grown caps' planes: from $(d_"cap" - "tol") \/
+    (-sigma_0 w_z)$ to the far grown cap when the start is beyond a grown cap, empty when it does not move toward
+    that cap; from 0 to the grown cap it moves toward, or for ever, otherwise.]),
+  ([Keep the entry], [The later of the two entries is the hit when neither interval is empty and it comes no later
+    than either exit and no later than `duration`. A hit in a rim region is moved to $d = "tol"$ by `MoveParticle`,
+    not here.]),
 )
 
 === Slide and spin
