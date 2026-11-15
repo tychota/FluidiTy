@@ -93,6 +93,7 @@ enum class RenderOutputError : std::uint8_t {
   kRunOnCallFailed,     // RecordStep only: the simulation's processor failed.
   kFormatNotInBuild,    // NEW. A writer was asked for a format that is not a candidate of that kind in this build.
   kFileWriteFailed,     // NEW. The library or io::OutputFile failed. The file is not listed.
+  kTooManyFieldParts,   // NEW (reconcile item 26). RenderLimits::max_field_parts reached. The surface is left out.
 };
 struct RenderOutputFailure {
   RenderOutputError error = RenderOutputError::kNone;
@@ -192,7 +193,7 @@ struct RecordedInterval {              // What one output interval offered. Move
   // order, so one try recorded in batches gives the bytes of one call. The volume target of 5.3 step 5.
   cell_resize::LiquidTotals liquid_totals_at_frame{};
 };
-class StepRecorder;                    // Move-only. Holds device scratch sized by BuildRenderOutputMemoryEstimate.
+class StepRecorder;                    // Move-only. Holds device working buffers sized by BuildRenderOutputMemoryEstimate.
 std::expected<StepRecorder, RenderOutputFailure> BuildStepRecorder(
     RunOn run_on, const MotionSettings& motion, const FoamSourceSettings* sources /* null: no foam */,
     const RenderLimits& limits, double frame_duration, double first_frame_time);
@@ -252,8 +253,12 @@ struct SurfaceFieldInputs {            // snapshot: particles (kOutputSnapshotFi
   std::span<const contact::Solid> solids;    const contact::DomainBox* domain_box;
   const grid::GridFrame* grid_frame;         double spacing = 0, smoothing_width = 0;
 };
+// CHANGED (A31): order_buffers (CPU, at least the group's field parts) orders the field parts of 5.3 step 3;
+// RenderOutput::frame_order_buffers in a run. kTooManyFieldParts above limits.max_field_parts.
+// Requires: order_buffers.run_on() == RunOn::kCpu (debug assertion, A30).
 std::expected<SurfaceField, RenderOutputFailure> BuildSurfaceField(const SurfaceFieldInputs& inputs,
-                                                                   const RenderLimits& limits);
+                                                                   const RenderLimits& limits,
+                                                                   OrderBuffers& order_buffers);
 // surface_mesh.h
 struct SurfaceVertex {                 // 64 bytes with padding.
   std::uint64_t id = 0;                // Nonzero. Kept while the vertex is moved from frame to frame.
@@ -315,7 +320,7 @@ struct SurfaceFrame { std::uint64_t material_group = 0; SurfaceMesh mesh; std::v
 // The whole strategy of 5.3 for one group. Never fails for a mesh reason: the report says what happened.
 std::expected<SurfaceFrame, RenderOutputFailure> BuildSurfaceFrame(
     const SurfaceFieldInputs& inputs, const OutputInterval& interval, const SurfaceMesh* last_mesh,
-    const SurfaceSettings& settings, const RenderLimits& limits);
+    const SurfaceSettings& settings, const RenderLimits& limits, OrderBuffers& order_buffers);  // CHANGED (A31).
 ```
 
 ### 3.5 `foam_and_spray/` headers
@@ -378,7 +383,9 @@ struct VolumeFrame {                   // One volume object. Every channel share
 std::expected<VolumeFrame, RenderOutputFailure> BuildFoamVolume(
     const foam_and_spray::FoamParticles& particles, const foam_and_spray::FoamSettings& settings,
     const LatticeFrame& frame,
-    const contact::DomainBox& domain_box, std::span<const contact::Solid> solids, const RenderLimits& limits);
+    const contact::DomainBox& domain_box, std::span<const contact::Solid> solids, const RenderLimits& limits,
+    OrderBuffers& order_buffers);   // CHANGED (A31): CPU, at least the foam particle count; the grouping of 5.6.
+                                    // Requires: order_buffers.run_on() == RunOn::kCpu (debug assertion, A30).
 // `gas` is gas::ToGasSnapshot(*snapshot->gas, *gas_law, grid_frame) of the frame's step snapshot (FrameInputs).
 std::expected<VolumeFrame, RenderOutputFailure> BuildGasVolume(
     const gas::GasSnapshot& gas, const grid::GridFrame& grid_frame, const LatticeFrame& frame,
@@ -457,7 +464,9 @@ const FormatChoice& ReadFormatChoice(GeometryKind kind);
 
 // render_frame.h
 struct RenderLimits { std::uint32_t max_lattice_blocks = 1u << 20; std::uint64_t max_vertices = 1u << 26,
-                      max_foam_particles = 1u << 24; };          // D pattern max_... .
+                      max_foam_particles = 1u << 24,
+                      max_field_parts = 1u << 26; };             // D pattern max_... . max_field_parts: NEW
+                                                                 // (reconcile item 26), the parts of 5.3 step 2.
 struct VolumeSettings { double spacing = 0; };   // m. 0: the smallest cell width of the scene.
 struct RenderSettings { MotionSettings motion; std::optional<SurfaceSettings> surface;
                         std::optional<FoamSettings> foam; std::optional<VolumeSettings> foam_volume, gas_volume;
@@ -468,9 +477,13 @@ std::expected<void, RenderOutputFailure> CheckRenderSettings(const RenderSetting
                                                              double smallest_cell_width,
                                                              const materials::MaterialTable& materials);
 class RenderOutput;                    // Move-only. What is kept from frame to frame: per group the last mesh,
-                                       // the foam particles, the last motion sample, the last frame number.
-RenderOutput BuildRenderOutput(const RenderSettings& settings, const contact::DomainBox& domain_box,
-                               const grid::GridFrame& grid_frame, Vec3 gravity);
+                                       // the foam particles, the last motion sample, the last frame number,
+                                       // and (A31) the CPU frame_order_buffers for max(max_field_parts,
+                                       // max_foam_particles) items that every frame lends to the field and
+                                       // the foam volume. CHANGED: fails kOutOfMemory when they cannot be built.
+std::expected<RenderOutput, RenderOutputFailure> BuildRenderOutput(
+    const RenderSettings& settings, const contact::DomainBox& domain_box, const grid::GridFrame& grid_frame,
+    Vec3 gravity);
 struct FrameIdentity { std::uint64_t frame = 0, state_version = 0; double time = 0;   // Same in every product.
                        double frames_per_second = 0; };   // NEW. 1/s. Time code rate of USD and Alembic files.
 struct FrameInputs { FrameIdentity identity; const step::SimulationSnapshot* snapshot;
@@ -517,19 +530,19 @@ struct PointObject {                   // One object in a points file. Borrowed 
   std::span<const std::uint64_t> id;   // Written as the low 31 bits (5.7).
   std::span<const PointChannelValues> channels;
 };
-struct PointScratch;                   // Float copies made by the ToPointObject builders; reused frame to frame.
+struct PointObjectBuffers;                   // Float copies made by the ToPointObject builders; reused frame to frame.
 // The points of one material of an output snapshot: position, velocity_for_next_step, radius
 // cbrt(3 rest_volume volume_ratio / (4 pi)), id, volume_ratio, size_level, share_<ingredient> with two or more
 // ingredients, and every field of `extra_fields` (I/O's RequestedOutputs::particle_fields) under its 5.7 name.
 // Fails: kBadInput (a requested field the snapshot does not carry).
 std::expected<PointObject, RenderOutputFailure> ToPointObject(
     const particles::ParticlesSnapshot::Material& material, particles::FieldList extra_fields,
-    std::span<const std::string> ingredient_export_names, PointScratch& scratch);
-PointObject ToPointObject(std::span<const surface::Droplet> droplets, PointScratch& scratch);
+    std::span<const std::string> ingredient_export_names, PointObjectBuffers& point_object_buffers);
+PointObject ToPointObject(std::span<const surface::Droplet> droplets, PointObjectBuffers& point_object_buffers);
 // Three objects, spray, foam, bubbles (empty objects included), age at frame_time.
 std::array<PointObject, 3> ToPointObjects(const foam_and_spray::FoamParticles& particles,
                                           const foam_and_spray::FoamSettings& settings, double frame_time,
-                                          PointScratch& scratch);
+                                          PointObjectBuffers& point_object_buffers);
 
 // interchange/write_points_file.h, write_surface_file.h, write_volume_file.h, write_solid_motion_file.h.
 // Target fluidity_interchange only. Each writes one frame of one product into an io::OutputFile that I/O
@@ -622,7 +635,8 @@ calls on `snapshot->gas` with `FrameInputs::gas_law` before `BuildGasVolume`.
 **Cell resize and batches (PROVIDED, cell resize and batches design 3.5):**
 `cell_resize::LiquidTotals { mass; rest_volume; current_volume; }`,
 `ComputeLiquidTotals(const particles::ParticlesTry&, const GridOnlyAmounts&, std::span<const std::uint8_t>
-material_is_counted, const grid::StaggeredGrid&, grid::CellBlockRange)` (called with the liquid set's mask, so
+material_is_counted, const grid::StaggeredGrid&, grid::CellBlockRange, SumBuffers&)` (one form since A31, given
+the recorder's `sum_buffers`; called with the liquid set's mask, so
 gas markers are left out), `GridOnlyAmounts` (built in `RecordStep` from the try `GridFields`). Its design
 asks this module to count grid-only cells as liquid, to take volume targets from `ComputeLiquidTotals`, and
 to do no whole-grid sum inside one `make_foam_and_spray` call: 5.2, 5.3 step 1 and 5.
@@ -842,7 +856,7 @@ Absent blocks are air; a block exists wherever `liquid > 0` can occur, so no cro
 6. Droplets: a particle whose position has `value >= 0` lies outside every mesh. It is written as a droplet
    with `radius = cbrt(3 volume / (4 pi))`, so liquid never vanishes from the picture. Its volume is
    reported apart and is in no blob's `material_volume`.
-7. Reaching `max_vertices` or `max_lattice_blocks`: the group has `origin = kNotBuilt` with the reason;
+7. Reaching `max_vertices`, `max_lattice_blocks` or `max_field_parts`: the group has `origin = kNotBuilt` with the reason;
    the other products of the frame are built.
 
 **Several materials in a group.** One outer mesh. `triangle_material_index` is the material with the largest
@@ -1156,7 +1170,7 @@ use oneTBB threads inside a call; the decoded content does not depend on it).
 **Shared formula headers:** `lattice.h` (`ToBlockKey`, `ComputePointPosition`, `FindLowPoint`),
 `foam_source.h`, `foam_motion.h`.
 
-**`RecordStep` on the GPU.** Device scratch, owned by the recorder, kept for the whole run and sized by
+**`RecordStep` on the GPU.** Device working buffers, owned by the recorder, kept for the whole run and sized by
 `RenderLimits` and `MotionSettings`: per listed lattice point `LatticeCoord` (12 bytes), cell place (4),
 velocity (12), distance (4), known (1), normal (12), order (4); per event 64 bytes; a count per cell place
 (4). Work: one launch per range for the count, one for the fill, one for values, one for normals, one for
@@ -1165,7 +1179,7 @@ threads: each lattice point is one thread's and reads its faces and its 26 neigh
 Returned to the CPU per call: the event count and the events (64 bytes each, ordered within the call), four
 counters; for a kept sample only, the point arrays (33 bytes per point); on the try that ends at a frame
 time, one `LiquidTotals` per block of the range (24 bytes each). Each of these `ReadBuffer` calls is one counted
-copy (`ReadRecorderCopyCounts`, `bytes_from_processor`; step plan Appendix A row M13); the recorder's scratch is
+copy (`ReadRecorderCopyCounts`, `bytes_from_processor`; step plan Appendix A row M13); the recorder's working buffers are
 `where = kRunOn` and sends nothing to the processor. The CPU loop has the same five passes over
 cell places in index order; a thread takes whole cell blocks. The velocity pass reads the one liquid set (5.2).
 
@@ -1184,11 +1198,12 @@ order. Threads take whole lattice blocks (field, volumes) or index ranges with n
 particles); every sum at one lattice point is made by one thread in the order of 5.3 step 3 or 5.6 step 1.
 `CheckSurfaceMesh` orders triangle boxes by (low x, index) and reports pairs in that order.
 
-**Memory estimate entries** (`BuildRenderOutputMemoryEstimate`): on the simulation's processor, the scratch above
-(`kGivenCount`, `kWholeRun`); in CPU memory per queued frame, `samples_per_frame + 1` samples at 33 bytes per
+**Memory estimate entries** (`BuildRenderOutputMemoryEstimate`): on the simulation's processor, the working buffers above
+(`kGivenCount`, `kWholeRun`); in CPU memory for the whole run, `RenderOutput::frame_order_buffers` at
+`max(max_field_parts, max_foam_particles)` items of `ComputeOrderBuffersSize(RunOn::kCpu)` (reconcile item 26); in CPU memory per queued frame, `samples_per_frame + 1` samples at 33 bytes per
 recorded point and the events (`kOneSnapshot`, multiplied by `ReadyScene::snapshots_kept_at_once`); for the
 worker, field blocks at `512 * (4 + 4 + 4 * ingredients)` bytes, vertices at 64 and triangles at 17, foam
-particles at 73 (`kOneCall`); for the writers, the `PointScratch` float copies at `4 * (8 + ingredients +
+particles at 73 (`kOneCall`); for the writers, the `PointObjectBuffers` float copies at `4 * (8 + ingredients +
 requested components)` bytes per simulation particle (`kOneCall`, the largest material). Memory the libraries
 allocate inside a call is not counted (to verify by measuring the reference scenes; reported in the run
 report).
@@ -1289,7 +1304,7 @@ float against double), `ExtractSurfaceMesh3D` on a sphere field whose crossings 
 
 GPU tests (listed for the hardware run; "GPU: compiled, not run" until then): `RecordStep` on the
 linear-velocity case, a dam break of 20 steps and a breaking-wave piece, against the CPU within 6's
-tolerance; the repeat-run test on events and samples (identical bytes); reject leaves the device scratch
+tolerance; the repeat-run test on events and samples (identical bytes); reject leaves the device working buffers
 unused; `ReadRecorderCopyCounts, OnGpuFrameTry_CountsEveryReadBack` (NEW, A17: event count, events, counters,
 kept points and liquid totals: `copy_count` and bytes equal the sizes read). In a container with no GPU:
 `ReadRecorderCopyCounts, CpuRecorder_IsEmpty` (NEW, A17, label `cpu`), every worker test, every `RecordStep` test on the CPU, and the CUDA
@@ -1383,6 +1398,7 @@ author (or project) and year until entries exist (decision 9).
 | (none) | `WriteSolidMotionFile`, `OutputProduct::kSolidMotion`, `fluidity_interchange`, `ReadInterchangeLibraries` | NEW (A14) |
 | (none) | `liquid_totals_at_frame`, `liquid_volume_outside_surfaces` | NEW (the cell resize module's volume target) |
 | state velocity | the velocity for the next step (`velocity_for_next_step`) | A1 |
+| `PointScratch`, "scratch" (replaced 2026-11-14) | `PointObjectBuffers`, "working buffers"; `RenderOutput::frame_order_buffers` | A31 |
 
 Verify and Open words met: `carrier` (O7) verified for this module as above; `eligible` (O5) is not used
 (a source point is "a point with a known velocity near the surface"); `owner` (O5, owner Q5) is not used;
@@ -1557,6 +1573,19 @@ instruction, 2026-11-14) except where an owner answer is named.
     tries into 2 and 5 sub-ranges: a local computation by range, not two run modes, so it keeps exact bytes.
     Decision: kept exact; the text no longer says a batched run records the bytes of a one-piece run (3.3, 6).
     Owner answer A15.
+16. **(A31) No "scratch"; one form per function.** `PointScratch` is `PointObjectBuffers`; the recorder's device
+    memory is its working buffers. The once-per-frame CPU orders no longer build their own working memory:
+    `BuildSurfaceField`, `BuildSurfaceFrame` and `BuildFoamVolume` take an `OrderBuffers&`, which `RenderOutput`
+    owns for the run (`frame_order_buffers`), so `BuildRenderOutput` returns `std::expected` (`kOutOfMemory`).
+    `cell_resize::ComputeLiquidTotals` is called in its one form with the recorder's `SumBuffers`. Decision: as
+    listed. Source: `owner-answers.md` A31; render output plan Tasks 17, 18, 26, 37, 44, 45.
+17. **(A30) Buffers on different processors.** A precondition (`Requires:`, debug assertion), not an error value.
+    Decision: as listed. Source: `owner-answers.md` A30.
+18. **(Reconcile item 26) A bound for the field parts.** The stable order of 5.3 step 3 had no bound, so no memory
+    estimate entry. `RenderLimits::max_field_parts = 1u << 26` (as `max_vertices`) bounds it; reaching it leaves the
+    surface of that group out of the frame (`kTooManyFieldParts`, appended as value 15); the estimate counts
+    `frame_order_buffers` at `max(max_field_parts, max_foam_particles)`, `kWholeRun`, `kCpu`. Decision: as listed
+    (the default is new, for the owner to confirm). Source: `reconcile-todo.md` item 26; plan Tasks 10, 17, 44.
 
 **Open** (for the owner):
 

@@ -46,8 +46,10 @@ Foundation's list, unchanged:
   the `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive
   with the code. A commit must pass every part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -69,11 +71,13 @@ Foundation's list, unchanged:
   one mapping function; it launches, waits and holds per-call GPU memory only through `base/gpu_launch.cuh`. Each
   GPU function is a thin loop over `FLUIDITY_CPU_AND_GPU` per-item functions of the shared `step_recorder_steps.h`,
   which a `cpu` test runs for every thread block and thread, in launch order and in reverse, against the CPU loop:
-  the main evidence until the hardware run. Scratch: the recorder owns, for the whole run, a `SumScratch` and an
-  `OrderScratch` on its processor, and passes them to the scratch forms of `ComputeLiquidTotals`,
-  `BuildStableOrder` and `ComputeExclusivePrefixSum`; `BuildRenderOutputMemoryEstimate` counts them with
-  `ComputeSumScratchSize` / `ComputeOrderScratchSize`. The frame work on the CPU worker runs once per frame, not
-  per step, and keeps the forms that build their scratch for the call (counted as `kOneCall`, `kCpu`). Errors: a
+  the main evidence until the hardware run. Working buffers: the recorder owns, for the whole run, a `SumBuffers`
+  and an `OrderBuffers` on its processor, and passes them to `ComputeLiquidTotals`, `BuildStableOrder` and
+  `ComputeExclusivePrefixSum` (each has one form, which takes its buffers, A31); `BuildRenderOutputMemoryEstimate`
+  counts them with `ComputeSumBuffersSize` / `ComputeOrderBuffersSize`. The frame work on the CPU worker runs once
+  per frame and uses one CPU `OrderBuffers` that `RenderOutput` owns for the run (`frame_order_buffers`, sized
+  from `RenderLimits::max_field_parts` and `max_foam_particles`; amended 2026-11-14, A31, reconcile item 26).
+  Buffers passed together live on the same processor: a `Requires:` precondition with a debug assertion (A30). Errors: a
   failed check writes nothing; after `kRunOnCallFailed` the recorder's pending record is unspecified and the run
   stops; `kOutOfMemory` comes only from building forms. Exactness: discrete outputs equal on CPU and GPU;
   floating-point within the tolerances below unless a header promises the same bits unless NaN
@@ -157,12 +161,12 @@ The module's own (values from the design; never change one without the owner):
 - **Test labels (amended 2026-11-14, Foundation as built):** shared-formula and operation tests `LABEL cpu` (the
   container's `cuda` step runs them too); device tests `gpu`; the `_gpu.cu` operation also has `no_gpu` "on the GPU
   without a GPU gives `kRunOnCallFailed`" (plan-decisions). Interchange tests are
-  `fluidity_add_test(<name> SOURCES ... LABEL cpu LINKS fluidity_interchange_test_helpers fluidity_interchange
+  `fluidity_add_test(<name> SOURCES ... LABEL cpu LINKS fluidity_interchange_test_support fluidity_interchange
   fluidity_base_test_support)`: the earlier helper `fluidity_add_interchange_test` (label `cpu` or `no_gpu` by build,
   plus `interchange`) is not added, since `fluidity_add_test` takes one label and the container runs `cpu` tests.
   The design marks no test known-open.
 - **Inputs of later modules are hand-built in tests** (the Blender add-on). Earlier modules are called for real:
-  step test scenes (`fluidity_step_test_helpers`), transfer and pressure test scenes, I/O's `RunFolder` and
+  step test scenes (`fluidity_step_test_support`), transfer and pressure test scenes, I/O's `RunFolder` and
   `OutputFile`. Nothing is stubbed.
 - **Code comments** number `RecordStep`, `BuildSurfaceFrame`, `BuildRenderFrame` and `MoveFoamParticles`
   `// Step N:` with the numbers of their procedures in the method paper (Tasks 1 to 3), which follow design 5.2,
@@ -180,10 +184,10 @@ design section 4, `SimulationSnapshot` with the region arrays, `Module::kRenderO
 `path_while_writing`, `BuildOutputFile`, `WriteListedFile`, `CheckAfterWrite::kSizeOnly`).
 
 **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides `base/run_on_call.h`
-(`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the scratch forms of the sums (`SumScratch`) and of
-the stable order, prefix sum and grouping (`OrderScratch`), `base/test_support.h` (library
-`fluidity_base_test_support`) and `fluidity_add_test_library`; cell resize provides the scratch form of
-`ComputeLiquidTotals`. Read `AGENTS.md` "Structure" before the first task. The gate prints seven `PASS` lines:
+(`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the sums with their `SumBuffers` and the stable
+order, prefix sum and grouping with their `OrderBuffers` (one form each, A31), `base/test_support.h` (library
+`fluidity_base_test_support`) and `fluidity_add_test_library`; cell resize provides
+`ComputeLiquidTotals`, whose one form takes a `SumBuffers&`. Read `AGENTS.md` "Structure" before the first task. The gate prints seven `PASS` lines:
 `format`, `rules`, `cpu` debug, `cpu` release, `tidy`, `paper`, `cuda`.
 
 Prove it: `uv run python tools/check_commit.py` prints `PASS` on every line, and
@@ -523,6 +527,8 @@ cannot register its schema types still stops the task.
 
 ### Task 10: Errors, limits and frame identity
 
+**Amended 2026-11-14 (A31, reconcile item 26):** `RenderLimits::max_field_parts` (default `1u << 26`) and `RenderOutputError::kTooManyFieldParts` (value 15, appended) added.
+
 **Kind:** mechanical
 
 **Files:**
@@ -533,17 +539,18 @@ cannot register its schema types still stops the task.
   (return type of `CheckUsdResources` as Task 9 says)
 
 **Interfaces:**
-- Produces: design 3.1 exactly (`RenderOutputError` with 15 values, `RenderOutputFailure`, `ToMessage`, `ToName`);
+- Produces: design 3.1 exactly (`RenderOutputError` with 16 values, `RenderOutputFailure`, `ToMessage`, `ToName`);
   `RenderLimits` (design 3.6, moved here, **Plan decision**); `FrameIdentity` (design 3.6, moved here).
 
 - [ ] **Step 1: Failing tests:**
 
   ```cpp
-  TEST(ToName, EveryError_LowerSnakeCase)        // all 15; kFormatNotInBuild -> "format_not_in_build",
+  TEST(ToName, EveryError_LowerSnakeCase)        // all 16; kFormatNotInBuild -> "format_not_in_build",
                                                  // kTooManyLatticeBlocks -> "too_many_lattice_blocks"; distinct
   TEST(ToMessage, EveryError_IsDistinctAndNotEmpty)
-  TEST(RenderOutputError, NumbersNeverChange)    // static_assert kNone == 0 ... kFileWriteFailed == 14
-  TEST(RenderLimits, Defaults)                   // 1 << 20, 1 << 26, 1 << 24
+  TEST(RenderOutputError, NumbersNeverChange)    // static_assert kNone == 0 ... kFileWriteFailed == 14,
+                                                 // kTooManyFieldParts == 15
+  TEST(RenderLimits, Defaults)                   // 1 << 20, 1 << 26, 1 << 24, max_field_parts 1 << 26
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** Messages say what the user can do ("The surface needs more
   vertices than max_vertices allows. Raise the limit or coarsen the surface spacing.").
@@ -558,7 +565,7 @@ cannot register its schema types still stops the task.
   `manifold`); the six defects; `known` (never `validity`, `mask` alone); measured, reconstructed, display only;
   witness, witness test, format table, default of a kind (never `fallback`).
 - [ ] **Step 5: Run** the gate. **Commit.** Subject: `Add render output's errors, limits and frame identity`.
-  New names: `RenderOutputError` and its 15 values, `RenderOutputFailure`, `ToMessage`, `ToName`, `RenderLimits`,
+  New names: `RenderOutputError` and its 16 values, `RenderOutputFailure`, `ToMessage`, `ToName`, `RenderLimits`,
   `FrameIdentity`.
 
 ### Task 11: The output channel table
@@ -596,24 +603,26 @@ cannot register its schema types still stops the task.
 
 ### Task 12: Interchange test support and points of a particles material
 
+**Amended 2026-11-14 (A31):** `PointScratch` renamed `PointObjectBuffers` (parameter `point_object_buffers`); test `BuffersReused_NoNewAllocationSecondTime`.
+
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** `fluidity_interchange_test_helpers` is made with `fluidity_add_test_library` and linked through
+**Amended 2026-11-14 (Foundation as built):** `fluidity_interchange_test_support` is made with `fluidity_add_test_library` and linked through
 `LINKS`; tests `LABEL cpu`.
 
 **Files:**
 - Create: `native/fluidity/render_output/interchange/point_objects.h`, `point_objects.cc`, `point_objects_test.cc`,
-  `interchange_test_helpers.h`, `interchange_test_helpers.cc` (test-only library
-  `fluidity_interchange_test_helpers`, never linked by `fluidity_interchange` or the CLI)
-- Modify: `CMakeLists.txt` (`fluidity_add_test_library(fluidity_interchange_test_helpers SOURCES
-  interchange_test_helpers.cc LINKS fluidity_interchange fluidity_base_test_support)`;
-  `point_objects_test` `LABEL cpu LINKS fluidity_interchange_test_helpers`)
+  `interchange_test_support.h`, `interchange_test_support.cc` (test-only library
+  `fluidity_interchange_test_support`, never linked by `fluidity_interchange` or the CLI)
+- Modify: `CMakeLists.txt` (`fluidity_add_test_library(fluidity_interchange_test_support SOURCES
+  interchange_test_support.cc LINKS fluidity_interchange fluidity_base_test_support)`;
+  `point_objects_test` `LABEL cpu LINKS fluidity_interchange_test_support`)
 
 **Interfaces:**
 - Consumes: `particles::ParticlesSnapshot::Material`, `particles::FieldList`, `HasField`; I/O's
   `BuildNewRunFolder`, `WriteOutputDeclarations`, `BuildOutputFile`, `WriteListedFile`.
-- Produces: `PointChannelValues`, `PointObject`, `PointScratch`, and the first `ToPointObject` (particles) of
-  design 3.6. **Plan decisions:** `PointScratch` is complete in `point_objects.h` (callers own one): float and
+- Produces: `PointChannelValues`, `PointObject`, `PointObjectBuffers`, and the first `ToPointObject` (particles) of
+  design 3.6. **Plan decisions:** `PointObjectBuffers` is complete in `point_objects.h` (callers own one): float and
   int32 vectors reused from frame to frame. `PointChannelValues` gains `std::string_view ingredient_export_name;
   // Pattern rows only: the name that replaces <ingredient_export_name>.` Test support, namespace
   `fluidity::render_output::testing`:
@@ -641,12 +650,12 @@ cannot register its schema types still stops the task.
   TEST(ToPointObject, TwoIngredients_TwoShareChannels)      // "share_water", "share_salt", point-major
   TEST(ToPointObject, MassRequested_IsAChannel)
   TEST(ToPointObject, FieldNotCarried_IsBadInput)           // kMass requested, mass array empty
-  TEST(ToPointObject, ScratchReused_NoNewAllocationSecondTime)  // same sizes twice: allocation count unchanged
+  TEST(ToPointObject, BuffersReused_NoNewAllocationSecondTime)   // same sizes twice: allocation count unchanged
   TEST(BuildTestOutputFile, ListedFileExists)               // the helper's own check
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** Channels in `ReadOutputChannels()` order. **Step 4:** gate.
   **Commit.** Subject: `Turn a particles snapshot into points for the writers`. New names: `PointChannelValues`,
-  `PointObject`, `PointScratch`, `ToPointObject`.
+  `PointObject`, `PointObjectBuffers`, `ToPointObject`.
 
 ### Task 13: Points to Alembic
 
@@ -774,18 +783,23 @@ cannot register its schema types still stops the task.
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** `fluidity_render_output_test_helpers` is made with `fluidity_add_test_library`; the stable order of
-the field parts is the form that builds its scratch for the call (CPU, once per frame).
+**Amended 2026-11-14 (Foundation as built):** `fluidity_render_output_test_support` is made with `fluidity_add_test_library`; the stable order of
+the field parts built its own working memory per call (CPU, once per frame); replaced by the A31 amendment below.
+
+**Amended 2026-11-14 (A31, reconcile item 26):** one form: `ComputeAddedVolume` takes the caller's CPU
+`OrderBuffers& order_buffers` (`RenderOutput::frame_order_buffers` in a run, built locally in the tests); the field
+parts are bounded by the new `RenderLimits::max_field_parts` (default `1u << 26`), above which the group is not
+built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFieldParts` added.
 
 **Files:**
 - Create: `native/fluidity/surface/surface_settings.h`, `surface_field.h` (types only in this task),
   `surface_field_steps.h` (private), `surface_field_points.cc`, `surface_field_points_test.cc`,
-  `native/fluidity/render_output/render_output_test_helpers.h`, `render_output_test_helpers.cc` (test-only library
-  `fluidity_render_output_test_helpers`)
+  `native/fluidity/render_output/render_output_test_support.h`, `render_output_test_support.cc` (test-only library
+  `fluidity_render_output_test_support`)
 - Modify: `native/fluidity/surface/CMakeLists.txt`, `native/fluidity/render_output/CMakeLists.txt`
-  (`fluidity_add_test_library(fluidity_render_output_test_helpers SOURCES render_output_test_helpers.cc LINKS
-  fluidity_step_test_helpers fluidity_transfer_test_scenes fluidity_pressure_test_scenes fluidity_base_test_support)`;
-  tests `LABEL cpu LINKS fluidity_render_output_test_helpers`)
+  (`fluidity_add_test_library(fluidity_render_output_test_support SOURCES render_output_test_support.cc LINKS
+  fluidity_step_test_support fluidity_transfer_test_scenes fluidity_pressure_test_scenes fluidity_base_test_support)`;
+  tests `LABEL cpu LINKS fluidity_render_output_test_support`)
 
 **Interfaces:**
 - Consumes: `step::SimulationSnapshot` (`particles`, `active_cells`, `is_grid_only_region`,
@@ -794,9 +808,11 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
   Private (**Plan decision**): `BuildFieldPoints(const SurfaceFieldInputs&) -> std::vector<FieldPoint>` (5.3 steps
   1 and 2: particles with `volume = rest_volume * volume_ratio`, `width = cbrt(volume)`; grid-only cells as one
   point at the centre; points wider than `spacing` split into `k^3` parts, `k = ceil(width / spacing)` at most 8);
-  `ComputeAddedVolume(points, frame, limits) -> std::expected<AddedVolume, RenderOutputFailure>` (step 3: blocks and
-  trilinear sums in the order of Global Constraints; amended: `BuildStableOrder` in its form without scratch, CPU,
-  whose `kOutOfMemory` maps to `kOutOfMemory`). Test support, namespace `fluidity::render_output::testing`:
+  `ComputeAddedVolume(points, frame, limits, OrderBuffers& order_buffers) -> std::expected<AddedVolume,
+  RenderOutputFailure>` (step 3: blocks and trilinear sums in the order of Global Constraints; amended: the parts
+  ordered by `BuildStableOrder` with `order_buffers`, allocating nothing; more parts than `limits.max_field_parts`
+  is `kTooManyFieldParts` with `id` the material group, checked before the order; `order_buffers.max_count()`
+  below the part count is `kBadInput`; Requires: `order_buffers.run_on() == RunOn::kCpu`, debug assertion). Test support, namespace `fluidity::render_output::testing`:
   `BuildSnapshotWithParticles(std::uint64_t material_id, std::span<const Vec3> positions, double rest_volume)`,
   `BuildSlabPositions(double top, double spacing_between, Vec3 low, Vec3 high)`,
   `BuildSpherePositions(Vec3 centre, double radius, double spacing_between)`,
@@ -810,11 +826,14 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
   TEST(BuildFieldPoints, VeryWidePoint_SplitsIntoAtMost512)    // width 20 spacings: k == 8
   TEST(ComputeAddedVolume, SumEqualsPointVolume)               // 10,000 random points: 1e-12 relative
   TEST(ComputeAddedVolume, SameInputTwice_SameBytes)
+  TEST(ComputeAddedVolume, TooManyParts_IsTooManyFieldParts)   // max_field_parts 26, a point split into 27 parts
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Spread particles and
   grid-only liquid onto the surface lattice`. New names: the design 3.4 settings and field types.
 
 ### Task 18: The surface field
+
+**Amended 2026-11-14 (A31):** `BuildSurfaceField` takes `OrderBuffers& order_buffers`.
 
 **Kind:** numerics
 
@@ -824,7 +843,8 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
 
 **Interfaces:**
 - Consumes: Task 17's private functions; `contact::ComputeDistanceToSolid`, `ComputeSolidPose`, `DomainBox`.
-- Produces: `BuildSurfaceField` of design 3.4, 5.3 "Field" steps 4 to 7 and `<eq:surface-field>`: separable
+- Produces (amended 2026-11-14, A31: `BuildSurfaceField` takes `OrderBuffers& order_buffers` last and passes it to
+  `ComputeAddedVolume`): `BuildSurfaceField` of design 3.4, 5.3 "Field" steps 4 to 7 and `<eq:surface-field>`: separable
   Gaussian of `smoothing_width` cut at `round(4 * smoothing_width / spacing)`; `open_share = clamp(0.5 +
   distance_to_solid / spacing, 0, 1)` over all solids and the domain sides; `value = 0.5 - liquid / open` where
   `open >= 0.05`, else `+0.5`; then `value = max(value, -clamp(distance_to_solid / spacing, -0.5, 0.5))`; shares the
@@ -842,7 +862,7 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
   TEST(BuildSurfaceField, SameAsMainWithoutSolid)    // main's BuildSurfaceDensity3D on the same particles turned
       // by (x, y, z) -> (x, -z, y): every value within 1e-6 (float against double)
   ```
-  The `main` numbers: export `main` as plan-decisions says, write a scratch driver that calls
+  The `main` numbers: export `main` as plan-decisions says, write a throwaway driver that calls
   `BuildSurfaceDensity3D` (`native/src/surface_field_3d.cc:20-177`) on 200 particles of a fixed formula, rotate
   the lattice values back to Z-up, commit only the numbers as `testdata/surface_field_main.json` with a note
   saying how they were made. Never the only test of the task.
@@ -1041,13 +1061,17 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
 
 ### Task 26: The frame strategy
 
+**Amended 2026-11-14 (A31):** `BuildSurfaceFrame` takes `OrderBuffers& order_buffers`.
+
 **Kind:** numerics
 
 **Files:**
 - Create: `native/fluidity/surface/surface_frame.h`, `build_surface_frame.cc`, `build_surface_frame_test.cc`
 
 **Interfaces:**
-- Produces: `SurfaceOrigin`, `Droplet`, `SurfaceReport`, `SurfaceFrame`, `BuildSurfaceFrame` of design 3.4, steps 1
+- Produces (amended 2026-11-14, A31: `BuildSurfaceFrame` takes `OrderBuffers& order_buffers` last, for
+  `BuildSurfaceField`; `kTooManyFieldParts` is a not-built reason like `kTooManyVertices`): `SurfaceOrigin`,
+  `Droplet`, `SurfaceReport`, `SurfaceFrame`, `BuildSurfaceFrame` of design 3.4, steps 1
   to 4 and 7 of 5.3 "Frame strategy" (steps 5 and 6 in Task 27, which completes this function): per blob the moved
   pieces when not rejected, else the built ones; then `CheckSurfaceMesh` on the whole and, if unsafe, `built` for
   every blob; new vertices get new ids in vertex order and the nearest moved old vertex's age within one spacing
@@ -1079,7 +1103,7 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
 - Produces: 5.3 steps 5 and 6 inside `BuildSurfaceFrame`: per blob `material_volume` (field points with `value <
   0` in that blob), `ApplyVolumeOffset`, `blobs_outside_volume_tolerance`; droplets for particles at `value >= 0`
   with `radius = cbrt(3 volume / (4 pi))`, `droplet_volume`. `ToPointObject(std::span<const surface::Droplet>,
-  PointScratch&)` of design 3.6 (object `droplets`).
+  PointObjectBuffers&)` of design 3.6 (object `droplets`).
 
 - [ ] **Step 1: Failing tests:**
 
@@ -1155,8 +1179,11 @@ the field parts is the form that builds its scratch for the call (CPU, once per 
 **Kind:** integration
 
 **Amended 2026-11-14 (Foundation as built):** `step_recorder_steps.h` is shared (`FLUIDITY_CPU_AND_GPU`), so Task 32's GPU functions call it; the
-recorder owns an `OrderScratch` and a `SumScratch` built once by `BuildStepRecorder`; the block-key order uses the
-scratch form of `BuildStableOrder`.
+recorder owns an `OrderBuffers` and a `SumBuffers` built once by `BuildStepRecorder`; the block-key order passes the
+recorder's `order_buffers` to `BuildStableOrder`.
+
+**Amended 2026-11-14 (A31):** `BuildStableOrder` has one form; test `ScratchesSizedFromLimits` renamed
+`BuffersSizedFromLimits`.
 
 **Files:**
 - Create: `native/fluidity/render_output/step_recorder.h`, `step_recorder.cc`, `step_recorder_cpu.cc`,
@@ -1177,12 +1204,12 @@ scratch form of `BuildStableOrder`.
   frame_duration)`; a sample is kept for the first commit in each of `samples_per_frame` equal parts and for the
   commit at a frame time; `RecordStep` reads `particles_try` and `fields` only on a try that ends at a frame time
   (both may be null otherwise); `after_pressure` must hold exactly one entry, else `kBadInput`.
-- **Plan decision (amended 2026-11-14, Foundation as built):** `StepRecorder` owns `OrderScratch order_scratch`
-  (`BuildOrderScratch(run_on, limits.max_lattice_blocks)`: the stable order of recorded blocks by block key and the
-  prefix sums of per-block counts) and `SumScratch sum_scratch` (`BuildSumScratch(run_on, 1)`: `ComputeLiquidTotals`
+- **Plan decision (amended 2026-11-14, Foundation as built):** `StepRecorder` owns `OrderBuffers order_buffers`
+  (`BuildOrderBuffers(run_on, limits.max_lattice_blocks)`: the stable order of recorded blocks by block key and the
+  prefix sums of per-block counts) and `SumBuffers sum_buffers` (`BuildSumBuffers(run_on, 1)`: `ComputeLiquidTotals`
   is called once per cell block, Task 31), built by `BuildStepRecorder` (`kOutOfMemory` when they cannot be built);
   `RecordStep` allocates nothing for them. A recorded range with more blocks than `max_lattice_blocks` is the
-  existing `kTooManyLatticeBlocks` count, never a scratch overflow.
+  existing `kTooManyLatticeBlocks` count, never a working-buffers overflow.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -1198,26 +1225,28 @@ scratch form of `BuildStableOrder`.
   TEST(RecordStep, TryEndOneUlpFromFrameTime_KeepsFrameSample)  // Review Focus 3: end = nextafter(frame time)
   TEST(RecordStep, PointsFartherThanReach_AreNotListed)
   TEST(RecordStep, WrongGridVersion_IsWrongGridVersion)
-  TEST(BuildStepRecorder, ScratchesSizedFromLimits)      // amended: order_scratch.max_count() == max_lattice_blocks,
-                                                         // sum_scratch.max_count() == 1, both on run_on
+  TEST(BuildStepRecorder, BuffersSizedFromLimits)        // amended: order_buffers.max_count() == max_lattice_blocks,
+                                                         // sum_buffers.max_count() == 1, both on run_on
   ```
-  Tests `LABEL cpu`, `LINKS fluidity_render_output_test_helpers fluidity_base_test_support`.
+  Tests `LABEL cpu`, `LINKS fluidity_render_output_test_support fluidity_base_test_support`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** the CPU loop as design 6 describes (five passes over cell
   places in index order; this task: count, fill, values). **Step 4:** gate. **Commit.** Subject: `Record the
   liquid's motion near its surface under try and commit`. New names: the design 3.3 recorder names.
 
 ### Task 31: The step recorder on the CPU, events, liquid totals and batches
 
+**Amended 2026-11-14 (A31):** `cell_resize::ComputeLiquidTotals` in its one form with the recorder's `sum_buffers`.
+
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** the per-block liquid totals call the scratch form of `cell_resize::ComputeLiquidTotals` with the
-recorder's `sum_scratch`; the normals, strength and event passes join the shared `step_recorder_steps.h`.
+**Amended 2026-11-14 (Foundation as built):** the per-block liquid totals call `cell_resize::ComputeLiquidTotals` (its one form, A31) with the
+recorder's `sum_buffers`; the normals, strength and event passes join the shared `step_recorder_steps.h`.
 
 **Files:**
 - Modify: `step_recorder_cpu.cc`, `step_recorder.cc`, `step_recorder_steps.h`, `step_recorder_test.cc`
 
 **Interfaces:**
-- Consumes: Task 29's formulas; `cell_resize::ComputeLiquidTotals` (the scratch form, with `recorder.sum_scratch`;
+- Consumes: Task 29's formulas; `cell_resize::ComputeLiquidTotals` (one form, with `recorder.sum_buffers`;
   cell resize plan Task 23), `GridOnlyAmounts` (view of the try `GridFields`), `math::TreeSum`.
 - Produces: the normals and strength passes and events of 5.4; `CommitRecordedStep` ordering events by (step,
   block key, point), keeping the `max_events_per_step` largest `volume_time` (ties: lower block key, then point),
@@ -1241,12 +1270,14 @@ recorder's `sum_scratch`; the normals, strength and event passes join the shared
 
 ### Task 32: The step recorder on the GPU
 
+**Amended 2026-11-14 (A31):** test `OnGpuRejectedTry_BuffersLeftUnused` (was `..._ScratchLeftUnused`).
+
 **Amended 2026-11-14 (A17, batched-run buffers):** the recorder's read-backs are counted, so the run's measured
 copies per step include them (step plan Appendix A row M13; `plan-decisions.md` "Copies counted").
 
 **Amended 2026-11-14 (Foundation as built):** private `step_recorder_gpu.h` returning `RunOnCallStatus`; GPU functions as thin loops over
 `step_recorder_steps.h` with a `cpu` test over every thread block and thread; the prefix sum and the block-key order
-through the scratch forms with the recorder's `order_scratch`; digests; the CPU-recorder copy-count test is `cpu`.
+with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recorder copy-count test is `cpu`.
 
 **Kind:** device
 
@@ -1256,15 +1287,15 @@ through the scratch forms with the recorder's `order_scratch`; digests; the CPU-
 - Modify: `step_recorder_cpu.cc` (the `kGpu` branch under `#if defined(FLUIDITY_HAS_GPU)`, the mapping of
   `RunOnCallStatus` through `ToBufferError` into `RenderOutputFailure`), `CMakeLists.txt` (`fluidity_add_gpu_sources`;
   the steps test `LABEL cpu`, the GPU test `LABEL gpu`, the no-GPU test `LABEL no_gpu`, all `LINKS
-  fluidity_render_output_test_helpers fluidity_base_test_support`)
+  fluidity_render_output_test_support fluidity_base_test_support`)
 
 **Interfaces:**
 - Produces: the device side of `RecordStep` (design 6): device memory owned by the recorder for the whole run,
-  sized by `RenderLimits` and `MotionSettings`, with its `order_scratch` and `sum_scratch` (Task 30); one launch per
+  sized by `RenderLimits` and `MotionSettings`, with its `order_buffers` and `sum_buffers` (Task 30); one launch per
   range for count, fill, values, normals, strength and events, each through `ApplyGpuFunction` with
   `ComputeLaunchSize`, each GPU function a grid-stride loop over a `step_recorder_steps.h` function; a prefix sum
-  between count and fill (`ComputeExclusivePrefixSum(counts, block_count, first, recorder.order_scratch)`),
-  `BuildStableOrder(keys, block_count, nullptr, order, recorder.order_scratch)` by block key; no sum across threads,
+  between count and fill (`ComputeExclusivePrefixSum(counts, block_count, first, recorder.order_buffers)`),
+  `BuildStableOrder(keys, block_count, nullptr, order, recorder.order_buffers)` by block key; no sum across threads,
   no allocation per call. Copies back per call: event count, events, four counters; point arrays for kept samples
   only; one `LiquidTotals` per block on a frame-ending try. Private entry points named for what they do
   (plan-decisions), `_gpu` only in file names.
@@ -1288,7 +1319,7 @@ through the scratch forms with the recorder's `order_scratch`; digests; the CPU-
   TEST(RecordStep, OnGpuDamBreak20Steps_EqualsCpuWithinTolerance)  // BuildFallingBlockScene(1.0)
   TEST(RecordStep, OnGpuBreakingWave_EqualsCpuWithinTolerance)     // BuildWaveScene
   TEST(RecordStep, OnGpuTwice_IdenticalEventsAndSamples)
-  TEST(RecordStep, OnGpuRejectedTry_ScratchLeftUnused)            // the next commit's record equals a fresh run
+  TEST(RecordStep, OnGpuRejectedTry_BuffersLeftUnused)            // the next commit's record equals a fresh run
   TEST(ReadRecorderCopyCounts, OnGpuFrameTry_CountsEveryReadBack)   // A17: event count, events, counters, kept
       // points and liquid totals: copy_count and bytes equal the sizes read
   // label no_gpu
@@ -1414,8 +1445,12 @@ through the scratch forms with the recorder's `order_scratch`; digests; the CPU-
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** the grouping is `BuildGroupsByDestination` in its form that builds a CPU `OrderScratch` for the
+**Amended 2026-11-14 (Foundation as built):** the grouping is `BuildGroupsByDestination` in its form that builds a CPU `OrderBuffers` for the
 call (once per frame on the worker), counted by Task 44 as a `kOneCall`, `kCpu` entry at `max_foam_particles`.
+
+**Amended 2026-11-14 (A31):** one form: `BuildFoamVolume` takes the caller's CPU `OrderBuffers& order_buffers`
+(`RenderOutput::frame_order_buffers` in a run; built locally in the tests); nothing allocated per frame for the
+grouping.
 
 **Files:**
 - Create: `native/fluidity/render_output/build_foam_volume.cc`, `build_foam_volume_test.cc`; modify `volume_frame.h`
@@ -1425,8 +1460,9 @@ call (once per frame on the worker), counted by Task 44 as a `kOneCall`, `kCpu` 
   foam and bubble particles add `count_per_particle` with trilinear weights, weights of unknown points given to
   the known ones, none known: `value_outside_known_count`; channels `kFoamCountDensity`, `kBubbleCountDensity`,
   `kBubbleVolumeFraction` (bubble sum times `4/3 pi bubble_radius^3` over `spacing^3`); spray adds nothing; sums
-  by lattice point then id through `BuildGroupsByDestination` (amended: the form without scratch, on CPU buffers; its
-  `kOutOfMemory` maps to `kOutOfMemory`, any other `BufferError` to `kBadInput`, since nothing here runs on a GPU).
+  by lattice point then id through `BuildGroupsByDestination` (amended: with the given CPU `order_buffers`, allocating nothing; a
+  `BufferError` maps to `kBadInput`, since nothing here builds memory or runs on a GPU; Requires:
+  `order_buffers.run_on() == RunOn::kCpu`, debug assertion).
 
 - [ ] **Step 1: Failing tests:**
 
@@ -1447,7 +1483,7 @@ call (once per frame on the worker), counted by Task 44 as a `kOneCall`, `kCpu` 
 - Modify: `point_objects.h`, `point_objects.cc`, `point_objects_test.cc`
 
 **Interfaces:**
-- Produces: `ToPointObjects(const FoamParticles&, const FoamSettings&, double frame_time, PointScratch&)` of design
+- Produces: `ToPointObjects(const FoamParticles&, const FoamSettings&, double frame_time, PointObjectBuffers&)` of design
   3.6: three objects `spray`, `foam`, `bubbles` (empty ones included), `constant_radius = display_radius`, `id`,
   `age = frame_time - start_time`.
 
@@ -1555,7 +1591,7 @@ call (once per frame on the worker), counted by Task 44 as a `kOneCall`, `kCpu` 
 **Amended 2026-11-14 (A16):** a witness record holds one Blender result, for Blender 5.3; the choice rule and the
 tests follow.
 
-**Amended 2026-11-14 (Foundation as built):** `writers_test.cc` is `fluidity_add_test(... LABEL cpu LINKS fluidity_interchange_test_helpers
+**Amended 2026-11-14 (Foundation as built):** `writers_test.cc` is `fluidity_add_test(... LABEL cpu LINKS fluidity_interchange_test_support
 fluidity_interchange)` (no `interchange` label).
 
 **Kind:** mechanical
@@ -1600,7 +1636,7 @@ fluidity_interchange)` (no `interchange` label).
   TEST(FormatTable, NotRunRecords_HaveNoEvidence)  // and every kDocumented record has evidence
   TEST(FormatTable, MeasuredRecords_NameBlender53)  // every kPassed or kFailed record's evidence contains
       // "Blender 5.3." (none today: the test passes on the initial table and guards the add-on's write-back)
-  // writers_test.cc, LABEL cpu, LINKS fluidity_interchange_test_helpers
+  // writers_test.cc, LABEL cpu, LINKS fluidity_interchange_test_support
   TEST(Writers, FormatNotInBuild)               // design 7: OpenVDB for points (and for surface, solid motion);
       // kFormatNotInBuild, nothing listed
   TEST(Writers, EveryCandidateHasAWriter)       // each candidate of each kind, on a tiny input: never
@@ -1615,8 +1651,12 @@ fluidity_interchange)` (no `interchange` label).
 
 **Kind:** mechanical
 
-**Amended 2026-11-14 (Foundation as built):** the estimate adds the recorder's two scratches (`where = kRunOn`, `kWholeRun`) and the foam
-volume's per-frame order scratch (`kOneCall`, `kCpu`).
+**Amended 2026-11-14 (Foundation as built):** the estimate adds the recorder's two working buffers (`where = kRunOn`, `kWholeRun`) and the foam
+volume's per-frame order buffers (`kOneCall`, `kCpu`).
+
+**Amended 2026-11-14 (A31, reconcile item 26):** the foam-volume entry becomes `"render output: frame order
+buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the whole run by `RenderOutput`; test
+`RecorderScratchEntriesMatchTheRecorder` renamed, `FrameOrderEntriesMatchTheRenderOutput` added.
 
 **Files:**
 - Create: `native/fluidity/render_output/render_frame.h` (settings in this task), `check_render_settings.cc`,
@@ -1626,16 +1666,17 @@ volume's per-frame order scratch (`kOneCall`, `kCpu`).
 - Consumes: `materials::MaterialTable`, `MaterialKind`, `gas_ingredient_index()`; `MemoryEstimateEntry`, `CountedPer`,
   `KeptFor`, `MemoryWhere`.
 - Produces: `VolumeSettings`, `RenderSettings`, `CheckRenderSettings`, `BuildRenderOutputMemoryEstimate` of design 3.6.
-  Rows as design 6 "Memory estimate entries", with `sizeof` of the real types (`static_assert` on each): device scratch
-  (`kGivenCount`, `kWholeRun`, `kRunOn`); per queued frame the samples and events (`kOneSnapshot`, `kCpu`); the
-  worker's field blocks, vertices, triangles, foam particles (`kOneCall`, `kCpu`); the `PointScratch` copies of the
-  largest material (`kOneCall`, `kCpu`). Amended (Foundation as built): `"render output: recorder order scratch"`
-  (`kGivenCount` = `limits.max_lattice_blocks`, `bytes_each = ComputeOrderScratchSize(run_on).bytes_per_item`) and
-  `"render output: recorder order scratch fixed bytes"` (`kGivenCount` = `fixed_bytes`, 1 byte each),
-  `"render output: recorder sum scratch"` (`kGivenCount` 1, `ComputeSumScratchSize(run_on).bytes_per_item`) and its
-  fixed bytes, all `kWholeRun`, `kRunOn`; `"render output: foam volume order scratch"` (`kGivenCount` =
-  `max_foam_particles`, `ComputeOrderScratchSize(RunOn::kCpu).bytes_per_item`) and its fixed bytes, `kOneCall`,
-  `kCpu`.
+  Rows as design 6 "Memory estimate entries", with `sizeof` of the real types (`static_assert` on each): the recorder's device
+  working buffers (`kGivenCount`, `kWholeRun`, `kRunOn`); per queued frame the samples and events (`kOneSnapshot`, `kCpu`); the
+  worker's field blocks, vertices, triangles, foam particles (`kOneCall`, `kCpu`); the `PointObjectBuffers` copies of the
+  largest material (`kOneCall`, `kCpu`). Amended (Foundation as built): `"render output: recorder order buffers"`
+  (`kGivenCount` = `limits.max_lattice_blocks`, `bytes_each = ComputeOrderBuffersSize(run_on).bytes_per_item`) and
+  `"render output: recorder order buffers fixed bytes"` (`kGivenCount` = `fixed_bytes`, 1 byte each),
+  `"render output: recorder sum buffers"` (`kGivenCount` 1, `ComputeSumBuffersSize(run_on).bytes_per_item`) and its
+  fixed bytes, all `kWholeRun`, `kRunOn`; `"render output: frame order buffers"` (`kGivenCount` =
+  `max(limits.max_field_parts, limits.max_foam_particles)`, `ComputeOrderBuffersSize(RunOn::kCpu).bytes_per_item`;
+  the field parts of `ComputeAddedVolume` and the foam grouping of `BuildFoamVolume`, reconcile item 26) and its
+  fixed bytes, `kWholeRun`, `kCpu`.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -1648,14 +1689,18 @@ volume's per-frame order scratch (`kOneCall`, `kCpu`).
   TEST(CheckRenderSettings, SamplesPerFrame65_IsBadInput)
   TEST(BuildRenderOutputMemoryEstimate, OnCpu_NoRunOnRowsBesideCpu)  // every row's where is kCpu with RunOn::kCpu
   TEST(BuildRenderOutputMemoryEstimate, NoSurfaceNoFoam_OnlyMotionRows)
-  TEST(BuildRenderOutputMemoryEstimate, RecorderScratchEntriesMatchTheRecorder)  // amended: the four recorder
-      // scratch entries equal order_scratch.byte_count() + sum_scratch.byte_count() of a CPU BuildStepRecorder
+  TEST(BuildRenderOutputMemoryEstimate, RecorderBufferEntriesMatchTheRecorder)  // amended: the four recorder
+      // buffers entries equal order_buffers.byte_count() + sum_buffers.byte_count() of a CPU BuildStepRecorder
+  TEST(BuildRenderOutputMemoryEstimate, FrameOrderEntriesMatchTheRenderOutput)  // A31, reconcile item 26: the two
+      // frame order entries equal frame_order_buffers.byte_count() of BuildRenderOutput at the limits
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Check render settings
   and count render output's memory`. New names: `VolumeSettings`, `RenderSettings`, `CheckRenderSettings`,
   `BuildRenderOutputMemoryEstimate`.
 
 ### Task 45: One output frame
+
+**Amended 2026-11-14 (A31, reconcile item 26):** `RenderOutput` owns the frame's CPU `frame_order_buffers`; `BuildRenderOutput` can fail with `kOutOfMemory`.
 
 **Kind:** integration
 
@@ -1670,7 +1715,11 @@ volume's per-frame order scratch (`kOneCall`, `kCpu`).
   the kept sample); the interval copied into one vector (kept sample, recorded samples, sample at frame); per
   group `BuildSurfaceFrame`; foam add, move, remove; volumes; `liquid_volume_outside_surfaces =
   recorded.liquid_totals_at_frame.current_volume` minus every group's blob `material_volume` and `droplet_volume`;
-  on failure `output` unchanged. Threads as design 6 "The worker".
+  on failure `output` unchanged. Threads as design 6 "The worker". Amended 2026-11-14 (A31, reconcile item 26):
+  `BuildRenderOutput` builds `RenderOutput::frame_order_buffers` (`BuildOrderBuffers(RunOn::kCpu,
+  max(limits.max_field_parts, limits.max_foam_particles))`, so it returns `std::expected<RenderOutput,
+  RenderOutputFailure>` with `kOutOfMemory`), and `BuildRenderFrame` passes it to `BuildSurfaceFrame` and
+  `BuildFoamVolume` in turn; no frame allocates working buffers.
 
 - [ ] **Step 1: Failing tests** (inputs from `step::TestScene`, `Simulation`, `ReadSnapshot` and a recorder on the
   step's callbacks, as I/O will compose them):
@@ -1753,12 +1802,12 @@ volume's per-frame order scratch (`kOneCall`, `kCpu`).
 
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** tests `LABEL cpu` with `LINKS fluidity_render_output_test_helpers fluidity_base_test_support`.
+**Amended 2026-11-14 (Foundation as built):** tests `LABEL cpu` with `LINKS fluidity_render_output_test_support fluidity_base_test_support`.
 
 **Files:**
 - Create: `native/fluidity/render_output/render_output_scene_test.cc`, `surface_sequence_test.cc`
 - Modify: `native/fluidity/render_output/CMakeLists.txt` (both tests `LABEL cpu LINKS
-  fluidity_render_output_test_helpers fluidity_base_test_support`)
+  fluidity_render_output_test_support fluidity_base_test_support`)
 
 - [ ] **Step 1: Tests:**
 
@@ -1783,10 +1832,12 @@ volume's per-frame order scratch (`kOneCall`, `kCpu`).
 
 ### Task 49: Comment pass and hand-over
 
+**Amended 2026-11-14 (A31):** hand-over lists the frame order buffers, `max_field_parts` and the one-form `ComputeLiquidTotals`.
+
 **Amended 2026-11-14 (A16, A19):** the hand-over lists the pinned library versions and says the witness tests run in
 Blender 5.3 only.
 
-**Amended 2026-11-14 (Foundation as built):** the hand-over records the recorder's scratches, the shared `step_recorder_steps.h` and its `cpu`
+**Amended 2026-11-14 (Foundation as built):** the hand-over records the recorder's working buffers, the shared `step_recorder_steps.h` and its `cpu`
 test as the GPU evidence until the hardware run, the use of the `RTTI` argument (from I/O Task 34) and the retired `fluidity_add_interchange_test`.
 
 **Files:**
@@ -1803,8 +1854,9 @@ test as the GPU evidence until the hardware run, the use of the `RTTI` argument 
   names (`WritePointsFile, ReadBack`, `WriteSurfaceFile, ReadBack`, `WriteSolidMotionFile, ReadBack` per format;
   `BuildGasVolume, ThreeStates` across Tasks 15 and 45), the library versions pinned by Tasks 4 to 9 (each the
   newest on Conan Center when pinned, A19) with every Boost or Blosc option of Task 8, the measured library
-  build times and sizes, the `SurfaceSequence` numbers; Foundation as built: `StepRecorder::order_scratch` and
-  `sum_scratch`, the scratch form of `ComputeLiquidTotals` used, `fluidity_apply_compile_flags(... RTTI ON)` for
+  build times and sizes, the `SurfaceSequence` numbers; Foundation as built: `StepRecorder::order_buffers` and
+  `sum_buffers`, `RenderOutput::frame_order_buffers` and `RenderLimits::max_field_parts` (A31, reconcile item 26),
+  the one form of `ComputeLiquidTotals` used, `fluidity_apply_compile_flags(... RTTI ON)` for
   `fluidity_interchange`, interchange tests through `fluidity_add_test` with `LABEL cpu`.
 - [ ] **Step 4: `docs/gpu-runs.md`:** a row for render output, "compiled, not run", listing the `gpu` tests of Task
   32 (and naming `StepRecorderSteps, EveryThreadOrder_EqualsCpu` as the CPU evidence until the run). Run the gate; commit (subject: `Record render output as compiled, not run`).

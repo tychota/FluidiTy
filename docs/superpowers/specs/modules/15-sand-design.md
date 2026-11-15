@@ -321,7 +321,7 @@ Until then `kSandSettlingCreep` is reported as a known limit (decision 1).
   particle index, and the
   solids from the copy contact already keeps on the processor.
 - Arrays: none new. A sand material uses the per-particle buffers of materials 6 (72 B internal force, 8 B
-  friction, 16 B shares, 9 B scratch) and the particles' two state arrays (72 B and 8 B, committed and try).
+  friction, 16 B shares, 9 B working buffers) and the particles' two state arrays (72 B and 8 B, committed and try).
 - Fixed order: as materials 6; `hit_corrected_count` is an integer sum.
 - Tolerance, CPU versus GPU: as materials 6; `LimitCase` exact except within `1e-12` of the cone or the tip,
   where either case is accepted.

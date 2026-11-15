@@ -20,7 +20,7 @@ amounts per cell deeper down (`grid_only_region`).
 
 **Part B, batches.** When a scene does not fit the GPU, the particles live in CPU memory and pass through the
 GPU in batches of cell blocks, twice per step try. The solves run on the whole grid on the GPU when their arrays
-fit; otherwise (A15) their scratch lives in CPU memory and goes through the GPU one loaded piece at a time, while
+fit; otherwise (A15) their working buffers live in CPU memory and goes through the GPU one loaded piece at a time, while
 the state and the geometry stay whole on the GPU. This module owns that schedule, chooses among the three ways to
 run, and says what each costs in memory and copies.
 
@@ -176,7 +176,7 @@ inline constexpr double kAmountTolerance = 1e-12;  // No unit, relative to the t
 // NEW (reconcile, decision 33). Who holds the two CPU grids (committed grid, resized grid) of a resize on a GPU grid.
 enum class GridCopies : std::uint8_t {
   kNone,              // A CPU grid: no copy.
-  kHeldByCellResize,  // One-piece GPU run: two CPU GridBuffers of this CellResize sharing one CPU grid::GridScratch;
+  kHeldByCellResize,  // One-piece GPU run: two CPU GridBuffers of this CellResize sharing one CPU grid::GridBuilderBuffers;
                       //   the committed grid is a grid::ReadGrid copy.
   kHeldByStep,        // Batched GPU run: the committed grid is step::FindCpuGridCopy(simulation); the resized CPU
                       //   grid is built into ResizeTry::free_cpu_grid_copy_buffers(). This module allocates none.
@@ -234,8 +234,8 @@ double ReadLargestGridOnlySpeed(const CellResize& cell_resize);    // NEW (2026-
 // Changed (A17): grid_run_on. With kGpu the rows add "cell resize: cell list upload" (8 B per cell place,
 // where = kRunOn). A CellResize with run_on = kCpu in a GPU run also counts its CPU mirrors (where = kCpu, 5.8).
 // Changed (reconcile, decision 33): grid_copies. With kHeldByCellResize the rows add "cell resize: committed grid
-// copy" and "cell resize: resized grid on the CPU": two GridBuffers sharing one CPU GridScratch, entries
-// grid::BuildGridMemoryEstimate(kCpu, 2, grid::ScratchSharing::kOneForAllBuffers) at limits.max_cell_blocks with
+// copy" and "cell resize: resized grid on the CPU": two GridBuffers sharing one CPU GridBuilderBuffers, entries
+// grid::BuildGridMemoryEstimate(kCpu, 2, grid::BuilderBuffersSharing::kOneForAllGrids) at limits.max_cell_blocks with
 // where = kCpu; with kHeldByStep neither CPU grid is allocated or counted. Rows are named "cell resize: <row>",
 // sizeof of the stored type.
 std::vector<MemoryEstimateEntry> BuildCellResizeMemoryEstimate(std::uint32_t ingredient_count,
@@ -358,7 +358,10 @@ struct LiquidTotals {
 std::expected<LiquidTotals, CellResizeFailure> ComputeLiquidTotals(
     const particles::ParticlesTry& particles_try, const GridOnlyAmounts& amounts,
     std::span<const std::uint8_t> material_is_counted, const grid::StaggeredGrid& grid,
-    grid::CellBlockRange blocks);
+    grid::CellBlockRange blocks, SumBuffers& sum_buffers);
+// CHANGED (A31): one form, taking the caller's SumBuffers (ResizeCells and the step callbacks pass
+// CellResize's, render output its recorder's); allocates nothing. kBadInput when blocks.count is above
+// sum_buffers.max_count(). Requires: sum_buffers.run_on() is the grid's processor (debug assertion, A30).
 ```
 
 ### 3.6 `remap_grid_values.h` and `remap_math.h` (S)
@@ -513,8 +516,8 @@ class BatchedRun;
 std::expected<BatchedRun, BatchesFailure> BuildBatchedRun(const BatchPlan& plan, const step::ReadyScene& scene);
 const BatchReport& ReadLastReport(const BatchedRun& batched_run);
 // The loaded rows at max_loaded_blocks: grid::BuildGridMemoryEstimate(run_on, 1,
-// grid::ScratchSharing::kOneForAllBuffers) without its "build scratch:" entries (changed, reconcile: the loaded
-// try's grid buffers borrow the step's grid::GridScratch), the loaded StepTry rows of
+// grid::BuilderBuffersSharing::kOneForAllGrids) without its "builder buffers:" entries (changed, reconcile: the loaded
+// try's grid buffers borrow the step's grid::GridBuilderBuffers), the loaded StepTry rows of
 // every material set, the loaded particles (particles::BuildParticlesMemoryEstimate at max_loaded_particles), the
 // block partial sums; rows where = kRunOn. For reporting only: the step's batched layout is built from the step's
 // own rows, so nothing is counted twice.
@@ -546,8 +549,11 @@ std::expected<void, BatchesFailure> WriteBatch(BatchedRun& batched_run, step::St
 std::expected<void, BatchesFailure> ReadBatch(BatchedRun& batched_run, step::StepTry& step_try,
                                               grid::CellBlockRange range, StagePlace pass);
 // A sum over the whole grid from one partial per cell block: math::TreeSum over the blocks by block index.
-// ComputeTreeSum over block_count() values; a failed GPU read returns a quiet NaN (documented).
-double ComputeSumOverBlocks(const grid::CellBlockValues<double>& block_partial_sums);
+// ComputeTreeSum over block_count() values with `sum_buffers`, allocating nothing; a block count above
+// sum_buffers.max_count() or a failed GPU read returns a quiet NaN (documented). CHANGED (A31): one form, taking
+// the caller's SumBuffers (BatchedRun::sum_buffers in a run). Requires: sum_buffers.run_on() is the values'
+// processor (debug assertion, A30).
+double ComputeSumOverBlocks(const grid::CellBlockValues<double>& block_partial_sums, SumBuffers& sum_buffers);
 ```
 
 `stacked_border.h` (private, CPU only; stated here because it is the A17 form of the stacked border of 5.8):
@@ -575,7 +581,7 @@ std::uint64_t allowed_cpu_bytes = 0;        // Step 3 of BuildRunPlan applied to
 ```
 
 `kBatched`: particle stages in batches, every solve once on the whole grid on the run's processor.
-`kBatchedWithSolvesInPieces`: as `kBatched`, and the solvers' scratch lives in CPU memory and goes through the GPU
+`kBatchedWithSolvesInPieces`: as `kBatched`, and the solvers' working buffers live in CPU memory and go through the GPU
 one loaded piece at a time (pressure's `SolveBatches`, built by the step into `PressureBuffers`, `ViscosityBuffers`
 and `GasBuffers` with `max_loaded_blocks = RunPlan::max_solve_loaded_blocks`). A CPU run can be given
 `max_loaded_blocks > 0` too (tests in the container): the loaded piece is then on the CPU and every copy is CPU to
@@ -611,14 +617,15 @@ std::expected<MemoryAvailable, BufferError> ReadMemoryAvailable(RunOn run_on);  
 std::uint64_t ComputeMemoryBytes(std::span<const MemoryEstimateEntry> rows, const MemoryCounts& counts, MemoryWhere where);
 ```
 
-`BufferError::kRunOnMismatch` (Foundation as built: two buffers that must live on the same processor do not;
-returned by `CopyBuffer` and the ordered sums) is reported as `kBadInput`.
+Buffers (and working buffers) passed together live on the same processor: a documented precondition, checked by
+an assertion in debug builds (A30; `BufferError::kRunOnMismatch` is removed, so this module maps nothing for it).
+Every function below that takes buffers states it as `Requires:`.
 
 **Grid (PROVIDED, grid 3.1 to 3.7):** `StaggeredGrid` (move-only; `version()`, `counts()`, `all_blocks()`,
 `tables()`, `max_cell_blocks()`), `GridTables`, `GridFrame`, `GridInputs`, `GridSettings`, `GridVersion` (a
 built grid has 1 or more), `GridFailure`, `CellId`, `FacePieceId`, `CellBlockId`, `SizeLevel`, `ToCellId`,
 `ToSizeLevel`, `ToCellCoord`, `ComputeBigCell`, `ComputeSmallCell`, `ComputeCellEighth`, `ComesBefore`,
-`GridBuffers`, `BuildGrid(const GridInputs&, GridBuffers&)`, `ReleaseBuffers(StaggeredGrid&&)`,
+`GridBuffers`, `BuildGrid(const GridInputs&, GridBuffers&)`, `TakeBuffers(StaggeredGrid&&)`,
 `ComputeGridCounts`, `CheckSizeStepRule`, `FindCellPlace`, `FindFacePlace`, `FindCellAt`, `FindTouchingCells`,
 `FindFacePieces`, `FindCellLow`, `FindCellHigh`, `ToAxis`, `ComputeFaceArea`, `ComputeCellWidth`,
 `ComputeCellCenter`, `ComputeCellCenterDistance`, `ComputeFacePosition`, `FindNearbyFaces`, `ToMaskOfAll`,
@@ -630,10 +637,10 @@ face and block forms, `ApplyGridVersion(values, grid)`, `ReadValues`, `WriteValu
 `std::span<CellBlockIndex>` and returning the count), `GridPiece` (`grid()`, `range()`, `range_in_whole_grid()`,
 `block_in_whole_grid()`; blocks in the whole grid's fixed order), `BuildGridPiece(const StaggeredGrid& whole,
 CellBlockRange range, std::span<const CellBlockIndex> border_blocks, GridBuffers& storage)` (CPU whole grid),
-`ReleaseBuffers(GridPiece&&)`, `FacePieceKind::kOutsidePiece`, `BuildGridMemoryEstimate(RunOn run_on,
-std::uint32_t storage_count, ScratchSharing scratch_sharing = ScratchSharing::kOnePerBuffers)` (changed,
-reconcile: this module counts the piece storage with `(run_on, 1, kOneForAllBuffers)` at `max_loaded_blocks` without
-the `build scratch:` entries, and its two CPU grids with `(kCpu, 2, kOneForAllBuffers)`). The
+`TakeBuffers(GridPiece&&)`, `FacePieceKind::kOutsidePiece`, `BuildGridMemoryEstimate(RunOn run_on,
+std::uint32_t storage_count, BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid)` (changed,
+reconcile: this module counts the piece storage with `(run_on, 1, kOneForAllGrids)` at `max_loaded_blocks` without
+the `builder buffers:` entries, and its two CPU grids with `(kCpu, 2, kOneForAllGrids)`). The
 border of `kTouchingCells` includes blocks storing a face piece of a touching cell (grid 5.5); the stacked
 border of 5.8 relies on it. Values bound to a piece are bound again at every load, and every check compares
 both `grid_version()` and `block_count()`. `CellBlockRange` is in the shared `grid_ids.h`.
@@ -658,12 +665,12 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(const StaggeredGrid& whole,
                                                      const Buffer<CellBlockIndex>& border_blocks,
                                                      std::uint32_t border_block_count, GridBuffers& buffers);
 const Buffer<CellBlockIndex>& GridPiece::block_in_whole_grid_buffer() const;  // Piece map on grid().run_on().
-// NEW (reconcile; grid 3.3): one build scratch lent to several buffers. GridSettings::max_cell_blocks has no
+// NEW (reconcile; grid 3.3): one builder buffers lent to several buffers. GridSettings::max_cell_blocks has no
 // default room (0 is kBadInput).
-class GridScratch { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
-std::expected<GridScratch, GridFailure> BuildGridScratch(RunOn run_on, std::uint32_t max_cell_blocks);
-std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings, GridScratch& scratch);
-enum class ScratchSharing : std::uint8_t { kOnePerBuffers, kOneForAllBuffers };
+class GridBuilderBuffers { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
+std::expected<GridBuilderBuffers, GridFailure> BuildGridBuilderBuffers(RunOn run_on, std::uint32_t max_cell_blocks);
+std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings, GridBuilderBuffers& builder_buffers);
+enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids };
 ```
 
 **Particles (PROVIDED, particles 3.1 to 3.8):** `ParticlesTry`, `ParticleFields`, `ParticleFieldsToChange`,
@@ -735,8 +742,9 @@ records.
 
 **Materials (PROVIDED, materials 3):** `MaterialTable` (`materials()`, `MaterialKind`,
 `first_ingredient_of_material()`, `ingredients()`), `BuildParticlesSettings` (which materials keep their
-count), `InternalForceTotals`, `ApplyInternalForce(..., std::span<InternalForceTotals> totals_of_block)` (a
-batch passes the sub-span of the step's whole-grid budgets at `range_in_whole_grid()`),
+count), `InternalForceTotals`, `ApplyInternalForce(..., std::span<InternalForceTotals> totals_of_block, MaterialBuffers& buffers)` (one form,
+buffers last, A31; a batch passes the sub-span of the step's whole-grid budgets at `range_in_whole_grid()` and the
+loaded instance's `MaterialBuffers`),
 `ComputeInternalForceTotal`.
 
 **Solids (PROVIDED, per `changes-to-apply.md` 08):** `ComputeSolidsAtFaces` (the resized grid at the committed
@@ -775,7 +783,7 @@ for this module:
    with read access on `StepTry` to the try grid, each set's `GridFromParticles` and `CellsFromParticles`, the
    geometry snapshot, `velocity_after_pressure`, both `GridFields`, `step_duration` and the cancel flag.
 3. `ResizeTry` also gives: the last try's geometry snapshot, `SolidCoverage` and end-pose `SolidsAtFaces`
-   (scratch still valid for the committed grid), the committed step's duration, the material table, the
+   (still valid for the committed grid), the committed step's duration, the material table, the
    material sets, writable air pockets (`AirPocketArrays` of the try, their `first_cell_index` belongs to a
    grid version), `SolidsAtFaces` storage for the resized grid, and the free `grid::GridBuffers` that
    `BuildGrid` writes the resized grid into.
@@ -835,7 +843,8 @@ for this module:
                                                             const RunPlan* batched_plan = nullptr);
    ```
    The placement rule of 5.7 decides `whole_place`; `ReadStepArrays` reports it. The loaded `StepTry` owns one
-   instance of `transfer::TransferScratch`, `materials::MaterialBuffers`, `contact::ContactBuffers` and
+   instance of `transfer::TransferBuffers` (built by `BuildTransferBuffers(run_on, max_particle_count,
+   material_count)`; every transfer stage has one form, taking it last, A31), `materials::MaterialBuffers`, `contact::ContactBuffers` and
    `solids::SolidsBuffers` (at `max_loaded_particles` per material and `max_loaded_blocks`). The step keeps CPU
    mirrors of committed values (`"step: committed gas volume on the CPU"`, `"... gas velocity ..."`, `"...
    grid-only marks ..."`, `"step: keep active on the CPU"`) ~~and refreshes its CPU grid copy after a committed
@@ -961,7 +970,7 @@ measured in the sand module.
 9. `step::CommitResize(simulation, resize_try, resized_grid)`. `state_version` grows by one; time and
    `step_count` do not change.
 
-Any failure from step 2 on calls `RejectResize` (and `grid::ReleaseBuffers` on a resized grid already built):
+Any failure from step 2 on calls `RejectResize` (and `grid::TakeBuffers` on a resized grid already built):
 the committed step, the previous grid, the regions and every particle are untouched to the byte, time stays
 advanced, and the step is not replayed (report, architecture "The physical step keeps a fixed topology").
 `merge_ready_duration` is part of the try, so a failed resize also earns no wait time. The run continues on
@@ -1160,7 +1169,7 @@ hold is `momentum_not_carried`, reported.
 A run is batched when `step::BuildRunPlan` says so. Then:
 
 - **CPU memory:** every particle array (committed and try, `CpuMemory::kLockedForCopies`), the per-particle
-  scratch, and the per-try face and cell arrays that only particle stages read (the two grid snapshots of
+  working buffers, and the per-try face and cell arrays that only particle stages read (the two grid snapshots of
   each material set, `SolidsAtFaces`).
 - **GPU, whole grid, for the whole run:** the grid tables of the committed and the try grid, `GridFields`
   (both copies), the geometry snapshot, each solved set's `velocity_before_pressure`, the six cell arrays of
@@ -1173,7 +1182,7 @@ A run is batched when `step::BuildRunPlan` says so. Then:
   The `BorderSearchBuffers` and two border buffers of `BatchedRun` are on the run's processor too (A17).
 
 **With solves in pieces (`kBatchedWithSolvesInPieces`, A15).** Rule: state and geometry stay whole on the GPU;
-solver scratch goes to the CPU.
+solver buffers go to the CPU.
 
 - *Whole grid, on the GPU, for the run:* both grids' tables; `GridFields` (both copies); gas amounts (both
   copies); every array written in pass 1 by `ComputeDistanceToSurface` and `FindLiquidSurface` and the gas
@@ -1188,7 +1197,7 @@ solver scratch goes to the CPU.
   loaded batch.
 - About 15 kB per full block stays on the GPU for a liquid scene (27 kB with viscosity, about 22 kB with gas),
   against 55 kB (190 kB) when the solves are whole; the run is then limited by CPU memory (about 400 kB per
-  block of particles plus the streamed scratch), as A15 asks.
+  block of particles plus the streamed working buffers), as A15 asks.
 
 **Placement rule (plan decision, 2026-11-14, buffers in batched runs; owner principle A17; the full inventory is
 the step plan's Appendix A).** In both batched modes, on either processor: a whole try array lives on the run's
@@ -1198,7 +1207,7 @@ passes); an array read and written only inside one pass has no whole instance, o
 `step::ReadStepArrays` reports each array's `ArrayPlace`; `kStagePlaces` is the input of the rule (test in 7).
 Besides:
 
-- *Loaded instances:* the loaded `StepTry` owns, on the run's processor, one `transfer::TransferScratch`,
+- *Loaded instances:* the loaded `StepTry` owns, on the run's processor, one `transfer::TransferBuffers`,
   `materials::MaterialBuffers`, `contact::ContactBuffers` and `solids::SolidsBuffers` at `max_loaded_particles`
   per material and `max_loaded_blocks`, beside the piece `PressureBuffers`; the whole instances keep their
   per-particle rows at zero particles. So `bytes_per_loaded_block` and `bytes_per_loaded_particle` include them.
@@ -1208,7 +1217,7 @@ Besides:
   `ReadBatch` after pass 1 and counted in `BatchReport`.
 - *CPU copy of the grid (batched GPU run):* stage 2 builds the needed cell list on the CPU, uploads it (`"step:
   active cell list"`, `kRunOn`) for `grid::BuildGrid` on the GPU, and builds a CPU copy of the same grid with the
-  CPU builder (`"step: grid copy on the CPU"`, `kCpu`; the pair shares one CPU `grid::GridScratch`, reconcile).
+  CPU builder (`"step: grid copy on the CPU"`, `kCpu`; the pair shares one CPU `grid::GridBuilderBuffers`, reconcile).
   Grouping, `choose_cell_size`, marker upkeep and `ResizeCells` read it through `step::FindCpuGridCopy`. After a
   committed resize it is the CPU resized grid `ResizeCells` built into `free_cpu_grid_copy_buffers()` and handed over
   with `step::ApplyResizedCpuGridCopy`: no `ReadGrid` refresh (reconcile, decision 33).
@@ -1220,7 +1229,7 @@ Besides:
   reads back, handed through the three-argument `step::ApplyGridPiece`.
 
 Per full smallest-size block (64 cells, 512 liquid particles), from the rows of the finished designs:
-particles and their scratch about 345 kB, transfer and solids arrays about 105 kB for one material set (each
+particles and their working buffers about 345 kB, transfer and solids arrays about 105 kB for one material set (each
 extra set adds about 49 kB), whole-grid arrays about 55 kB (190 kB with viscosity). With one set the
 whole-grid arrays are a ninth of the total, which is why they can stay.
 
@@ -1276,7 +1285,7 @@ A17). Now:
 | Solve place | What happens | When |
 |---|---|---|
 | `kWholeGridOnProcessor` | Each solve runs once on the whole grid on the run's processor, as in a one-piece run: no copy per iteration, no pressure given at a batch border. 55 kB per block on the GPU for the run (190 kB with viscosity) | The whole rows with every solver row on the processor fit within `max_whole_grid_share * allowed_bytes` |
-| `kInPieces` | The same iteration in the out-of-core form (pressure's `SolveBatches`, owned by pressure, viscosity and gas): solver scratch in CPU memory, one loaded solve piece on the GPU, every iteration a few sweeps over the solve batches; state and geometry stay whole on the GPU (5.7). No signature of a solver changes and the step's stage calls 9 to 13 do not change | Otherwise, when the solve piece holds three of the largest layers and the CPU rows fit |
+| `kInPieces` | The same iteration in the out-of-core form (pressure's `SolveBatches`, owned by pressure, viscosity and gas): solver buffers in CPU memory, one loaded solve piece on the GPU, every iteration a few sweeps over the solve batches; state and geometry stay whole on the GPU (5.7). No signature of a solver changes and the step's stage calls 9 to 13 do not change | Otherwise, when the solve piece holds three of the largest layers and the CPU rows fit |
 
 What this module owns of the solve in pieces: the choice and the sizes (`BuildBatchPlan`), the run mode copied into
 the step's plan, the report of planned and measured copies, and the cancel and failure seams (a solver's
@@ -1309,8 +1318,8 @@ RunPlan::allowed_bytes`.
    `3 * layer`: `kBatchDoesNotFit` with the bytes; the loaded batch then gets `(1 - solve_piece_share) * room`
    instead of `room` below.
 2. `bytes_per_loaded_block` = the loaded rows (transfer for every set, the step's per-try cell and face rows,
-   `grid::BuildGridMemoryEstimate(run_on, 1, grid::ScratchSharing::kOneForAllBuffers)` without its `build scratch:`
-   entries, since the loaded try's buffers borrow the step's grid scratch; changed, reconcile item 11) at one cell
+   `grid::BuildGridMemoryEstimate(run_on, 1, grid::BuilderBuffersSharing::kOneForAllGrids)` without its `builder buffers:`
+   entries, since the loaded try's buffers borrow the step's `grid::GridBuilderBuffers`; changed, reconcile item 11) at one cell
    block and no particle; `bytes_per_loaded_particle` the same at
    one particle and no block; `particles_per_block = ceil(512 * start_limit_headroom)` per material (8 per cell).
 3. `max_loaded_blocks = min((allowed - whole) / (bytes_per_loaded_block + particles_per_block *
@@ -1322,7 +1331,7 @@ RunPlan::allowed_bytes`.
    T / (T + 8)`; `batch_count = ceil(start blocks / max_blocks_per_batch)`; `bytes_copied_per_try = (2 /
    range_share_of_loaded + 2) * start blocks * (per block + particles_per_block * per particle)`.
 5. CPU: every `where = kCpu` row (the particles, the per-try arrays only particle stages read, and in `kInPieces`
-   the solvers' scratch) at most `RunPlan::allowed_cpu_bytes`, else `kStateDoesNotFitCpu`.
+   the solvers' working buffers) at most `RunPlan::allowed_cpu_bytes`, else `kStateDoesNotFitCpu`.
 6. Report: `max_solve_loaded_blocks`, `solve_batch_count` (start grid, bisection as `pressure::ApplySolveBatches`
    would cut it), `bytes_on_processor` and `bytes_on_cpu` (sums of the rows by `where`), `pass_loads_per_try`,
    `solve_loads_per_iteration`, `solve_bytes_per_iteration` (3.7).
@@ -1352,7 +1361,7 @@ correction and check (2 sweeps); `BatchReport` measures them.
   allowed). With whole-grid solves a batched run reaches at most about nine times that before the whole-grid
   arrays fill the GPU; with solves in pieces about 15 kB per block stays on the GPU (27 kB with viscosity), so
   the limit is CPU memory: about five times one piece before 64 GB of CPU memory is full (about 400 kB per block
-  plus the streamed scratch).
+  plus the streamed working buffers).
 - A try copies about 0.3 GB per thousand full blocks. At a few GB per second that is seconds per try for a
   100,000-block scene, on top of the CPU-side grouping of all particles. Expect a batched step to take
   several times as long as the same step would on a GPU that held it.
@@ -1423,7 +1432,7 @@ writes one destination.
 
 **Batched runs.** Every buffer of a batched run follows the placement rule of 5.7 (plan decision, 2026-11-14,
 buffers in batched runs; A17: a run is all CPU or all GPU, and in a batched GPU run only the particles and, with
-solves in pieces, the solver scratch stay in CPU memory, moved in planned copies the planner counts and the
+solves in pieces, the solver buffers stay in CPU memory, moved in planned copies the planner counts and the
 reports measure). This module adds no buffer or copy the step plan's Appendix A does not list. Its own copies:
 the piece map read back per load and `WriteBlockPartialsRange` (both in `BatchReport`, part of a load), the
 resize's `ReadGrid` copy (one piece), cell list upload and mirrors (`ResizeCellsReport::bytes_copied`,
@@ -1438,10 +1447,10 @@ resize's `ReadGrid` copy (one piece), cell list upload and mirrors (`ResizeCells
 | `ResizeMap`: source kind and old index (`CellResize`) | `uint8` + `uint32` | cell place and face place of the new grid | one call |
 | amounts of removed particles per cell; refill list (`CellResize`) | `double` x (3 + ingredients); `particles::NewParticles` arrays | cell place; `max_added_per_try` | one call |
 | block partial sums (`BatchedRun`, `CellResize`) | `double` | cell block x sums in use | one step try |
-| loaded piece storage (built by the step, counted by `BuildBatchesMemoryEstimate` for reporting; borrows the step's `grid::GridScratch`, reconcile) | `grid::BuildGridMemoryEstimate(kGpu, 1, kOneForAllBuffers)` without the `build scratch:` entries | cell block at `max_loaded_blocks` | whole run |
+| loaded piece storage (built by the step, counted by `BuildBatchesMemoryEstimate` for reporting; borrows the step's `grid::GridBuilderBuffers`, reconcile) | `grid::BuildGridMemoryEstimate(kGpu, 1, kOneForAllGrids)` without the `builder buffers:` entries | cell block at `max_loaded_blocks` | whole run |
 | border search (`BatchedRun`, A17) | `grid::BuildBorderSearchMemoryEstimate(run_on)` + two `CellBlockIndex` buffers | cell block at `max_loaded_blocks` | whole run |
 | piece map copy (`BatchedRun`, A17; `where = kCpu`) | `uint32` | loaded cell block | whole run |
-| committed grid copy, resized grid on the CPU (`CellResize`, A17, grid on the GPU, `GridCopies::kHeldByCellResize` only; `where = kCpu`; changed, reconcile: not built or counted with `kHeldByStep`, where the step's CPU copy pair serves) | `grid::BuildGridMemoryEstimate(kCpu, 2, kOneForAllBuffers)`: two buffers, one CPU `GridScratch` | cell block at the limit | whole run |
+| committed grid copy, resized grid on the CPU (`CellResize`, A17, grid on the GPU, `GridCopies::kHeldByCellResize` only; `where = kCpu`; changed, reconcile: not built or counted with `kHeldByStep`, where the step's CPU copy pair serves) | `grid::BuildGridMemoryEstimate(kCpu, 2, kOneForAllGrids)`: two buffers, one CPU `GridBuilderBuffers` | cell block at the limit | whole run |
 | cell list upload (`CellResize`, A17; `where = kRunOn`) | `grid::CellId` | cell place | whole run |
 | CPU mirrors (`CellResize` with `run_on = kCpu` in a GPU run; `where = kCpu`) | as the mirrored arrays | cell and face place | whole run |
 
@@ -1638,6 +1647,10 @@ Other NEW words: `depth_below_surface`, `wanted cell width`, `whole-grid arrays`
 border`, `pass`, `block partial sum`, `filled share`, `excess`; (A15) `solve batch`, `loaded solve piece`,
 `sweep`, `budget` (a planned cost shown to the user, A22).
 
+Replaced on 2026-11-14 (A29, A31): `grid::ReleaseBuffers` -> `grid::TakeBuffers`; `SumScratch` / `OrderScratch`
+-> `SumBuffers` / `OrderBuffers`; `GridScratch` -> `grid::GridBuilderBuffers`; "scratch" -> "working buffers";
+the overload pairs of `ComputeLiquidTotals` and `ComputeSumOverBlocks` -> one form each, taking `SumBuffers&`.
+
 ## 10. Not ported
 
 - Flow exchange between the regions with a mass correction on one particle, and its exact-sum machinery:
@@ -1793,7 +1806,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     CPU rows exceed `RunPlan::allowed_cpu_bytes`. `BatchSettings::solve_piece_share = 0.25`; `BatchPlan` carries the
     memory budgets and planned copies (A22 "budget"), `BatchReport` the measured solve copies. Source:
     `plan-decisions.md` "Batched solves (A15)", "Planner and report"; the constant is an Open point.
-16. **(A15) What lives where with solves in pieces.** State and geometry stay whole on the GPU; solver scratch
+16. **(A15) What lives where with solves in pieces.** State and geometry stay whole on the GPU; solver buffers
     goes to the CPU (`CpuMemory::kLockedForCopies`) and through one loaded solve piece (5.7). Pass 1's geometry
     reaches the whole buffers through `pressure::WriteSnapshotRange`, called by `ReadBatch`. Source:
     `plan-decisions.md` "Batched solves (A15)".
@@ -1833,7 +1846,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     value and the step reads it only in `CommitStep`. Source: `plan-decisions.md` "Cell resize and batches".
 24. **Test support.** Step test scenes added by this module (`BuildDeepTankScene`, `BuildMixedSizeColumnScene`,
     `BuildRisingFloorScene`, `BuildStandingWaveTankScene`, `BuildTwoLiquidsDeepScene`,
-    `BuildSmokeOverDeepWaterScene`, `BuildFloatingCubeScene`); test library `fluidity_cell_resize_test_helpers`.
+    `BuildSmokeOverDeepWaterScene`, `BuildFloatingCubeScene`); test library `fluidity_cell_resize_test_support`.
     Source: `plan-decisions.md` "Cell resize and batches".
 25. **Method paper.** `<proc-apply-stages-in-batches>`; outline item 9 gives the three ways to run (8). Source:
     plan decision, 2026-11-14 (plan Task 34).
@@ -1871,8 +1884,8 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
 33. **(Reconcile) Who holds the CPU grids of a resize.** `enum class GridCopies { kNone, kHeldByCellResize,
     kHeldByStep }`, `CellResizeSettings::grid_copies` (set by I/O from the run plan's mode; mismatch with
     `grid_run_on` is `kBadInput`), `BuildCellResizeMemoryEstimate(ingredient_count, grid_run_on, grid_copies)`. One
-    piece on the GPU: two CPU `GridBuffers` sharing one CPU `grid::GridScratch` (`grid::BuildGridMemoryEstimate(kCpu,
-    2, kOneForAllBuffers)`, `where = kCpu`). Batched GPU run: neither is allocated or counted; the committed grid is
+    piece on the GPU: two CPU `GridBuffers` sharing one CPU `grid::GridBuilderBuffers` (`grid::BuildGridMemoryEstimate(kCpu,
+    2, kOneForAllGrids)`, `where = kCpu`). Batched GPU run: neither is allocated or counted; the committed grid is
     `step::FindCpuGridCopy`, the CPU resized grid is built into `ResizeTry::free_cpu_grid_copy_buffers()` and handed to
     the step with `step::ApplyResizedCpuGridCopy`, so the step's CPU copy needs no `ReadGrid` refresh after a committed
     resize (step Appendix B row B5 withdrawn). Decision: as listed. Source: `plan-decisions.md`, Reconcile pass,
@@ -1887,11 +1900,21 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     real tables in a CPU run; version 0 and null arrays in a one-piece GPU run (then `ChooseCellSize` reads its own
     CPU copy); `FindCpuGridCopy(...)->tables(kCpu)` in a batched GPU run. The one-piece copies stay an owner question
     (Open 2). Decision: as listed. Source: `plan-decisions.md`, Reconcile pass item 13 and coordinator item (2).
-36. **(Reconcile) Grid buffers sized by the planner, one build scratch.** The grid has no default room
+36. **(Reconcile) Grid buffers sized by the planner, one builder buffers.** The grid has no default room
     (`GridSettings::max_cell_blocks` 0 is `kBadInput`); the loaded try's grid buffers borrow the step's
-    `grid::GridScratch`, so `bytes_per_loaded_block` and `BuildBatchesMemoryEstimate` count
-    `grid::BuildGridMemoryEstimate(run_on, 1, kOneForAllBuffers)` without its `build scratch:` entries. Decision: as
+    `grid::GridBuilderBuffers`, so `bytes_per_loaded_block` and `BuildBatchesMemoryEstimate` count
+    `grid::BuildGridMemoryEstimate(run_on, 1, kOneForAllGrids)` without its `builder buffers:` entries. Decision: as
     listed. Source: `plan-decisions.md`, Reconcile pass item 11; cell resize plan Task 38.
+37. **(A29) `Take`, not `Release`.** `grid::ReleaseBuffers` is renamed `grid::TakeBuffers` (for a grid and a
+    piece): it gets the preallocated buffers back out of a grid no longer needed. Decision: as listed. Source:
+    `owner-answers.md` A29.
+38. **(A30) Buffers on different processors.** A precondition checked by a debug assertion, not an error:
+    `BufferError::kRunOnMismatch` is gone, `ToCellResizeFailure` maps nothing for it, and `ComputeLiquidTotals` /
+    `ComputeSumOverBlocks` state `Requires:` same processor. Decision: as listed. Source: `owner-answers.md` A30.
+39. **(A31) No "scratch"; one form per function.** Reusable working memory is "working buffers" (`SumBuffers`,
+    `OrderBuffers`, `grid::GridBuilderBuffers`). `ComputeLiquidTotals` and `ComputeSumOverBlocks` each have one
+    form, which takes a `SumBuffers&` (the forms that built their own are removed; tests build their buffers).
+    Decision: as listed. Source: `owner-answers.md` A31; cell resize plan Tasks 23, 37.
 
 **Open**
 

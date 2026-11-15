@@ -41,8 +41,8 @@ Copied from Foundation:
   function, and launches, waits and holds temporary GPU memory only through `base/gpu_launch.cuh`
   (`ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). Every GPU function is a thin loop over
   `FLUIDITY_CPU_AND_GPU` per-item functions in a shared header, and `cpu` tests run those functions for every
-  thread block and thread, in launch order and in reverse, against the CPU loop. Scratch: an operation's temporary
-  arrays follow the scratch pattern and per-step scratch lives in the module's buffers (contact needs none). Errors:
+  thread block and thread, in launch order and in reverse, against the CPU loop. Working buffers (A31): an operation's reused
+  arrays are buffers built once and held by the module's buffers (contact needs none). Errors:
   a failed check writes nothing; after `kRunOnCallFailed` the outputs are unspecified and the run stops;
   `kOutOfMemory` comes only from building forms. Exactness: discrete outputs equal on CPU and GPU, floating-point
   results within the module's tolerance unless a header promises the same bits unless NaN. Tests link
@@ -55,7 +55,10 @@ Copied from Foundation:
   release presets, and the CUDA build compiled in the container (its `cuda` step fails, naming the file, for a
   tracked `.cc` or `.cu` file that no build compiles). clang-format and clang-tidy are the pinned 23.1.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -151,8 +154,8 @@ Foundation (`docs/superpowers/plans/2026-11-13-rebuild-foundation.md` in the `ma
 `per_particle_velocity.h`, `buffer.h`, `memory_count.h`; `cmake/fluidity_targets.cmake` with
 `fluidity_add_test`; the method paper with `figure_style.typ`, `pseudocode.typ` and `references.typ`;
 `docs/gpu-runs.md`. No other module exists. **Amended 2026-11-14 (Foundation as built):** Foundation as built also
-provides `base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the scratch forms of
-the sums (`SumScratch`) and of the stable order and grouping (`OrderScratch`), `base/test_support.h` (library
+provides `base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the sums with their
+`SumBuffers` and the stable order and grouping with their `OrderBuffers` (one form each, A31), `base/test_support.h` (library
 `fluidity_base_test_support`) and `fluidity_add_test_library`; read `AGENTS.md` "Structure" before the first task.
 Prove it from the worktree:
 
@@ -969,13 +972,13 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   TEST(MoveParticles, ReactionSum_EqualsSumOfVelocityChanges)  // particles of the first 100 oblique cases against
       // the solid of case 0 with reports_reaction: per particle, change == after - before within 0x1p-44 relative
   ```
-- [ ] **Step 2: Produce the old numbers.** On `main` (read-only; build it in a detached scratch worktree:
-  `git worktree add --detach <scratchpad>/fluidity-main main`, then its own presets as `main:AGENTS.md` and
-  `main:docs/native/toolchains.md` say), write a scratch program that calls `ResolveLiquidWallContact3D` for every
+- [ ] **Step 2: Produce the old numbers.** On `main` (read-only; build it in a detached temporary worktree:
+  `git worktree add --detach <temp-dir>/fluidity-main main`, then its own presets as `main:AGENTS.md` and
+  `main:docs/native/toolchains.md` say), write a throwaway program that calls `ResolveLiquidWallContact3D` for every
   half-space and slab call in `main:native/tests/liquid_wall_contact_3d_cases.h:209-398` and `:441-487` (not the
   tank rows `:38-144`, not the rounding-machinery rows `:399-440`), about twenty rows, and prints inputs and
   outputs as hex floats. Turn each into Z-up with `(x, y, z) -> (x, -z, y)` and store it in
-  `contact_main_comparison_cases.h` with the source line of each row. Remove the scratch worktree afterwards
+  `contact_main_comparison_cases.h` with the source line of each row. Remove the temporary worktree afterwards
   (`git worktree remove`). If `main` does not build here, stop and tell the owner; the conservation tests still
   land.
 - [ ] **Step 3: Comparison test.**

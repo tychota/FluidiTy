@@ -14,8 +14,8 @@ run) on the GPU.
 in CPU memory on both processors; each per-place operation has one public CPU-only header and private
 `_cpu.cc` / `_gpu.cu` files that call the same shared formula headers (`solid_state.h`, `solid_dynamics.h`,
 `motion_map_math.h`, `material_contact.h`). Every per-solid or scene total is one partial per cell block in the
-grid's fixed block order, then `math::TreeSum`; contact reactions are ordered by `particle_id`. Scratch lives in
-one `SolidsBuffers` built once.
+grid's fixed block order, then `math::TreeSum`; contact reactions are ordered by `particle_id`. Working buffers
+live in one `SolidsBuffers` built once.
 
 **Tech Stack:** C++23 host, CUDA C++20 device, CMake presets + Ninja, Conan 2 (GoogleTest), uv, clang-format and
 clang-tidy 23.1 (the versions `pyproject.toml` pins), Docker via colima, Typst + CeTZ for the method paper. Nothing new.
@@ -47,13 +47,17 @@ particles, transfer, pressure, viscosity and materials designs.
   `base/gpu_launch.cuh` (`ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). Every GPU function is
   a thin loop over `FLUIDITY_CPU_AND_GPU` per-item or per-thread functions in a shared header; a `cpu` test runs
   them for every thread block and thread of the launch, in launch order and in reverse, against the CPU loop (the
-  main evidence until the hardware run). Scratch: `SolidsBuffers` owns an `OrderScratch order_scratch`, built once
-  by `BuildSolidsBuffers` and passed to the scratch forms of `BuildStableOrder`, `ComputeExclusivePrefixSum` and
+  main evidence until the hardware run). Working buffers: `SolidsBuffers` owns an `OrderBuffers order_buffers`, built
+  once by `BuildSolidsBuffers` and passed to `BuildStableOrder`, `ComputeExclusivePrefixSum` and
   `BuildGroupsByDestination` in every step; `BuildSolidsMemoryEstimate` counts its bytes with
-  `ComputeOrderScratchSize`. (Solids makes no `ComputeTreeSum` call: every total is block partials then
+  `ComputeOrderBuffersSize`. (Solids makes no `ComputeTreeSum` call: every total is block partials then
   `math::TreeSum`, on the GPU one thread per solid and component around `math::TreeSumOf`, so it owns no
-  `SumScratch`.) Errors: a failed check writes nothing; after `kRunOnCallFailed` the outputs are unspecified and the
-  run stops; `kOutOfMemory` comes only from building forms. Exactness: discrete outputs equal on CPU and GPU,
+  `SumBuffers`.) Errors: a failed check writes nothing; after `kRunOnCallFailed` the outputs are unspecified and the
+  run stops; `kOutOfMemory` comes only from building forms
+  (`SolidsError::kOutOfMemory`, returned only by `BuildSolidsBuffers`; reconcile item 25). Buffers and arrays passed
+  together live on one processor: a precondition (`Requires:`, debug assertion), not an error value (A30); each base
+  order, prefix sum and grouping has one form, which takes its buffers (A31). **Amended 2026-11-14
+  (A30|A31|reconcile).** Exactness: discrete outputs equal on CPU and GPU,
   floating-point within design 6 unless a header promises the same bits unless NaN. Tests link
   `fluidity_base_test_support` (`ToBits`, `BuildBufferHolding`, `ReadAll`, `CheckWithinTolerance`,
   `CheckSameBitsOrBothNaN`) and the module's helper libraries made with `fluidity_add_test_library`, named in
@@ -61,8 +65,10 @@ particles, transfer, pressure, viscosity and materials designs.
   behaviour on a machine without a GPU, `gpu` only on hardware. Every target is created through the helpers of
   `cmake/fluidity_targets.cmake` and every source file is listed in the folder's `CMakeLists.txt`.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -85,7 +91,8 @@ Solids' own constraints (values from the design; never change one without the ow
   `SolidsError` (`kNone` on success). The failure reported is the smallest `solid_id`, then `particle_id`, then
   `face`; on the GPU chosen by an integer minimum on that key. On failure no output of the call is valid. A
   `BufferError`, `GridError`, `TransferError`, `PressureError`, `ContactError` or `ParticlesFailure` from below
-  becomes `kRunOnCallFailed` (`magnitude` = bytes asked, for out of memory) or `kBadInput` (a size mismatch).
+  becomes `kRunOnCallFailed` or `kBadInput` (a size mismatch); out of memory in `BuildSolidsBuffers` is
+  `kOutOfMemory` (`magnitude` = bytes asked; reconcile item 25, was `kRunOnCallFailed`).
   **Amended 2026-11-14 (Foundation as built):** a failed check writes nothing (the tests that say "bytes
   unchanged" after a check stay); after `kRunOnCallFailed` from a failed GPU call the outputs are unspecified and
   the run stops. A GPU half's `RunOnCallStatus` reaches `SolidsFailure` through `ToBufferError`, then
@@ -131,7 +138,7 @@ Solids' own constraints (values from the design; never change one without the ow
   `CheckCanRunOn` lives in the CPU-only `base/check_can_run_on.h`, included only by `_cpu.cc` / `.cc` files.
   Transfer arrays are built with `transfer::BuildSolidsAtFaces`, `BuildGridFromParticles`, `BuildGridSnapshot`,
   `BuildCellsFromParticles`; every transfer stage a test or loop here calls uses the form that takes a
-  `transfer::TransferScratch` (from `BuildTransferScratch`) as its last argument. `pressure::OpenSeaSettings`
+  `transfer::TransferBuffers` (from `BuildTransferBuffers`) as its last argument. `pressure::OpenSeaSettings`
   carries `contact::DomainBox domain_box`. `particles::ParticleFields` carries `run_on`, and its pointers point
   at particle 0 of the material with whole-material `group_begin` indexes.
 - **CPU against GPU (design 6):** owners, sides, `outside_solid`, counts, open-to-sky marks exact; a double `a`
@@ -156,7 +163,7 @@ Solids' own constraints (values from the design; never change one without the ow
      breaks the travel or turn limit (Task 21).
   6. `MotionMap` is a move-only view into `SolidsBuffers` with `try_id`, `time`, `grid_version` and the buffers'
      build number; a map from an earlier build on the same buffers gives `kWrongTime` (Task 20).
-  7. `CollideSolids` scratch is one `double` per face place per material set, for at most
+  7. `CollideSolids` working buffers are one `double` per face place per material set, for at most
      `blocking_materials.size() + 1` sets; more sets give `kBuffersTooSmall` (Task 13, Task 25).
   8. `DriveWaves` has a private `drive_waves_gpu.cu`, declared in `drive_waves_gpu.h`, that forms the block
      partials where the arrays live (Task 30; amended 2026-11-14, Foundation as built).
@@ -187,10 +194,10 @@ transfer (with `fluidity_transfer_test_scenes`), pressure (with `fluidity_pressu
 `ComputeBlockedCornerAreas`, `ComputeEquationIndexes`, `ApplyOpenSeaRelaxation`), viscosity
 (`SolveViscosityAndPressure`) and materials (`AtSolidFaces`, `MaterialKind::kSnow`, `kSpringySolid`,
 `OwnMotionSettings`). **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides
-`base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, `SumScratch` and the scratch
-forms of the sums, `OrderScratch` and the scratch forms of the order, prefix sum and grouping, `base/test_support.h`
+`base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, `SumBuffers` taken by
+the sums, `OrderBuffers` taken by the order, prefix sum and grouping (one form each, A31), `base/test_support.h`
 (library `fluidity_base_test_support`) and `fluidity_add_test_library`. Read `AGENTS.md` "Structure" (two halves,
-private GPU headers, scratch) and copy that shape, as contact's `MoveParticles` does. The gate's expected output is
+private GPU headers, working buffers) and copy that shape, as contact's `MoveParticles` does. The gate's expected output is
 seven `PASS` lines: format, rules, cpu debug, cpu release, tidy, paper, cuda.
 
 Prove it: `uv run python tools/check_commit.py` prints seven `PASS` lines, and
@@ -299,7 +306,7 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 - Modify: the CMake file that lists module folders; `docs/glossary.md`
 
 **Interfaces:**
-- Produces design 3.1 and 3.2 exactly: `SolidsError` (17 values), `SolidsFailure`, `ToMessage`, `ToName`,
+- Produces design 3.1 and 3.2 exactly: `SolidsError` (18 values with `kOutOfMemory`, reconcile item 25), `SolidsFailure`, `ToMessage`, `ToName`,
   `SolidMotionKind`, `PathKey`, `AfterPath`, `DrivenPath`, `FreeMotionLimits`, `FreeSolidSettings`,
   `SolidSettings`, `MaterialTheLiquidCannotEnter`, `SolidsSettings`, `kSolidReachInCells`,
   `kCoverageCapInCells`, `kFaceStopReachInCells`, `kMaxPlateCount`, `kMaxFreeSolidCount`.
@@ -584,6 +591,8 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 
 ### Task 13: Buffers, coverage arrays and memory estimate entries
 
+**Amended 2026-11-14 (A30|A31|reconcile):** working buffers are `order_buffers`; out of memory is the new `SolidsError::kOutOfMemory`, returned only by `BuildSolidsBuffers` (reconcile item 25); `ToSolidsFailure` maps no processor mismatch (A30).
+
 **Amended 2026-11-14 (A18):** the row of pushes owed to particles becomes the rows of blocking-material faces.
 
 **Amended 2026-11-14 (A17, batched-run buffers):** a batched run builds up to three `SolidsBuffers` (whole on the
@@ -595,7 +604,7 @@ plan Appendix A rows M9, M10).
 
 **Kind:** mechanical
 
-**Amended 2026-11-14 (Foundation as built):** `SolidsBuffers` owns an `OrderScratch` and a copy of the try's
+**Amended 2026-11-14 (Foundation as built):** `SolidsBuffers` owns an `OrderBuffers` and a copy of the try's
 contact solids for the GPU halves, with their rows, and holds the one mapping `ToSolidsFailure`.
 
 **Files:**
@@ -615,7 +624,7 @@ contact solids for the GPU halves, with their rows, and holds the one mapping `T
   `max_motion_map_entries`, 56); blocking-material faces (given `max_motion_map_entries`,
   `sizeof(pressure::BlockingMaterialFace)` + 4 for the count per block); per-set pushes on blocking sets (given
   `blocking_materials.size()`, 24, `MemoryWhere::kCpu`); reaction keys
-  and order (particle, 16); before-relaxation copy (face place, 8); `CollideSolids` scratch (face place,
+  and order (particle, 16); before-relaxation copy (face place, 8); `CollideSolids` working buffers (face place,
   `8 * (blocking_materials.size() + 1)`); block partials (cell block, `80 * moving solids + 32`); per-solid
   results (given solid count, 128, `MemoryWhere::kCpu`).
 - **Plan decision (A17, batched-run buffers):** `BuildSolidsBuffers` keeps its signature; with
@@ -623,26 +632,28 @@ contact solids for the GPU halves, with their rows, and holds the one mapping `T
   processors may coexist (the step's whole instance with zero particles, its loaded instance, its CPU stage-17
   instance); no buffer holds a pointer into another instance, and `SolidsTry` never keeps a pointer into a
   `SolidsBuffers` across calls (Task 28).
-- **Plan decision (amended 2026-11-14, Foundation as built), scratch and solids copy.** `SolidsBuffers` holds
-  `OrderScratch order_scratch` (private, reached through `solids_buffers_access.h`), built once by
-  `BuildSolidsBuffers` on `settings.run_on` with `BuildOrderScratch`, for `max_particle_count + 64 *
+- **Plan decision (amended 2026-11-14, Foundation as built), working buffers and solids copy.** `SolidsBuffers` holds
+  `OrderBuffers order_buffers` (private, reached through `solids_buffers_access.h`), built once by
+  `BuildSolidsBuffers` on `settings.run_on` with `BuildOrderBuffers`, for `max_particle_count + 64 *
   max_cell_blocks + 2 * settings.max_motion_map_entries` items: the hits ordered by `BuildStableOrder` (Task 29,
   at most one per particle), the per-cell and per-block counts summed by `ComputeExclusivePrefixSum` (Tasks 20, 23,
   23a, 24) and the entries grouped by `BuildGroupsByDestination` (Task 24, at most `2 * max_motion_map_entries`).
   The sum is a bound that never sits below the largest call and lets the rows be counted per particle and per cell
   place. It also holds `Buffer<contact::Solid> solids_copy` (`settings.solids.size()` entries) that every GPU half
   fills with one `WriteBuffer` per call, so no GPU half allocates. Rows, all `kWholeRun`, `kRunOn` (`kCpu` when
-  `settings.run_on = kCpu`): `"solids: order scratch per particle"` (particle,
-  `ComputeOrderScratchSize(run_on).bytes_per_item`), `"solids: order scratch per cell place"` (cell place, the same
-  bytes), `"solids: order scratch per motion map entry"` (given `2 * max_motion_map_entries`, the same bytes),
-  `"solids: order scratch fixed bytes"` (given `fixed_bytes`, 1 byte), `"solids: solids copy"` (given
+  `settings.run_on = kCpu`): `"solids: order buffers per particle"` (particle,
+  `ComputeOrderBuffersSize(run_on).bytes_per_item`), `"solids: order buffers per cell place"` (cell place, the same
+  bytes), `"solids: order buffers per motion map entry"` (given `2 * max_motion_map_entries`, the same bytes),
+  `"solids: order buffers fixed bytes"` (given `fixed_bytes`, 1 byte), `"solids: solids copy"` (given
   `settings.solids.size()`, `sizeof(contact::Solid)`). `BuildSolidsMemoryEstimate(settings)` keeps its signature
   (it already has `run_on` and the motion map limit; the per-particle and per-cell rows take their counts from
-  `MemoryCounts`). Solids owns no `SumScratch` (no `ComputeTreeSum` call; Global Constraints).
+  `MemoryCounts`). Solids owns no `SumBuffers` (no `ComputeTreeSum` call; Global Constraints).
 - **Plan decision (amended 2026-11-14, Foundation as built), one mapping.** In `solids_buffers_access.h`:
   `SolidsFailure ToSolidsFailure(BufferError error, std::uint64_t bytes_asked);` (`kOutOfMemory` ->
-  `kRunOnCallFailed` with `magnitude` the bytes asked; `kSizeMismatch` and `kRunOnMismatch` -> `kBadInput`;
-  `kRunOnCallFailed` -> `kRunOnCallFailed`). Every GPU half's `RunOnCallStatus` goes through `ToBufferError`, then
+  `kOutOfMemory` with `magnitude` the bytes asked, reachable only from `BuildSolidsBuffers`; `kSizeMismatch` ->
+  `kBadInput`; `kRunOnCallFailed` -> `kRunOnCallFailed`). **Amended 2026-11-14 (A30|reconcile):** no processor
+  mismatch is mapped (buffers on one processor are a precondition, A30); out of memory is `kOutOfMemory`
+  (reconcile item 25). Every GPU half's `RunOnCallStatus` goes through `ToBufferError`, then
   this function.
 
 - [ ] **Step 1: Failing tests:**
@@ -651,7 +662,7 @@ contact solids for the GPU halves, with their rows, and holds the one mapping `T
   // LABEL cpu
   TEST(SolidsTypes, Sizes_AreThePlannedOnes)     // CornerOwner 16, MotionMapEntry 24, SolidVelocitySample 72
   TEST(BuildSolidsMemoryEstimate, SumEqualsAllocatedBytes)   // 10 blocks, 1000 particles, 2 blocking materials
-      // (amended, Foundation as built: the order scratch rows equal order_scratch.byte_count())
+      // (amended, Foundation as built: the order buffers rows equal order_buffers.byte_count())
   TEST(BuildSolidsBuffers, ZeroBlocks_IsBadInput)
   TEST(BuildSolidsMemoryEstimate, CpuInstance_EveryRowOnCpu)   // A17: settings.run_on kCpu: every row where kCpu
   TEST(BuildSolidCoverageValues, OnCpu_HasRoomForBlocks)
@@ -901,11 +912,13 @@ every thread block and thread; digests in the `gpu` test.
 
 ### Task 20: `BuildMotionMap` on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Kind:** numerics
 
 **Amended 2026-11-14 (Foundation as built):** the count and fill of one cell and the block partial of one solid
 are shared per-item functions (`motion_map_steps.h`) that Task 24's GPU functions reuse; the prefix sum is
-`ComputeExclusivePrefixSum` with `buffers.order_scratch`.
+`ComputeExclusivePrefixSum` with `buffers.order_buffers`.
 
 **Files:**
 - Create: `native/fluidity/solids/motion_map.h`, `motion_map_cpu.cc`, `motion_map_steps.h` (private, shared),
@@ -938,7 +951,7 @@ are shared per-item functions (`motion_map_steps.h`) that Task 24's GPU function
   CopyEntriesOfCell(...)` and (Task 21) `FLUIDITY_CPU_AND_GPU SolidBlockPartial ComputeBlockPartialOfSolid(...)`
   (one block's push, turning push, work and swept volume of one solid, the block's entries in order); the CPU loop
   calls them cell by cell, and the counts are summed by `ComputeExclusivePrefixSum(counts, cell_count, starts,
-  buffers.order_scratch)`. **Step 4: Run** the gate. **Commit.** Subject: `Build the motion map of the solids`.
+  buffers.order_buffers)`. **Step 4: Run** the gate. **Commit.** Subject: `Build the motion map of the solids`.
 
 ### Task 21: `ApplyPressureToSolids` on the CPU
 
@@ -1004,6 +1017,8 @@ are shared per-item functions (`motion_map_steps.h`) that Task 24's GPU function
 
 ### Task 23: Blocking-material faces for the liquid solve, and their velocity after it
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Amended 2026-11-14 (A18):** replaces the push returned to particles one step late; solids now builds the faces
 the liquid solve holds and writes their solved velocity back to each set in the same step.
 
@@ -1031,7 +1046,7 @@ changes.
 
 **Amended 2026-11-14 (Foundation as built):** the count and fill of one block and the per-set partial are shared
 per-item functions (`blocking_material_faces_steps.h`) for Task 24's GPU half; the prefix sum is
-`ComputeExclusivePrefixSum` with `buffers.order_scratch`.
+`ComputeExclusivePrefixSum` with `buffers.order_buffers`.
 
 **Files:**
 - Create: `native/fluidity/solids/blocking_material_faces.h`, `blocking_material_faces_cpu.cc`,
@@ -1122,6 +1137,8 @@ per-item functions (`blocking_material_faces_steps.h`) for Task 24's GPU half; t
 
 ### Task 23a: The material faces the viscous solve moves
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Amended 2026-11-14 (A26):** new task. In a viscous scene the liquid sticks to a blocking material, so the
 material's faces near the liquid become velocity unknowns of viscosity's joint solve (`plan-decisions.md` "A viscous
 liquid sticks, and free solids in the viscous solve (A26, A27)"). The CPU form is here; the GPU form is in Task 24.
@@ -1130,7 +1147,7 @@ liquid sticks, and free solids in the viscous solve (A26, A27)"). The CPU form i
 
 **Amended 2026-11-14 (Foundation as built):** the count and fill of one block are shared per-item functions in
 `blocking_material_faces_steps.h` (reused by Task 24's GPU half); the prefix sum is `ComputeExclusivePrefixSum` with
-`buffers.order_scratch`.
+`buffers.order_buffers`.
 
 **Files:**
 - Create: `native/fluidity/solids/viscous_material_faces.h`, `viscous_material_faces_cpu.cc`,
@@ -1346,6 +1363,8 @@ So the box's velocity before pressure is `{0, 0, -0.01962}` m/s, its turn rate 0
 
 ### Task 24: The motion map on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Amended 2026-11-14 (A18):** adds `BuildBlockingMaterialFaces` and the new `ApplyPressureToMaterials` on the GPU.
 
 **Amended 2026-11-14 (A26, A27):** adds the GPU forms of Tasks 23a, 23b and 23c: `BuildViscousMaterialFaces`,
@@ -1355,7 +1374,7 @@ So the box's velocity before pressure is `{0, 0, -0.01962}` m/s, its turn rate 0
 
 **Amended 2026-11-14 (Foundation as built):** three private `_gpu.h` headers returning `RunOnCallStatus`; GPU
 functions as thin loops over `motion_map_steps.h` and `blocking_material_faces_steps.h`; prefix sums and grouping
-through Foundation's scratch forms with `buffers.order_scratch`; a `cpu` test over every thread block and thread;
+through Foundation's functions taking `buffers.order_buffers`; a `cpu` test over every thread block and thread;
 digests in the `gpu` tests.
 
 **Files:**
@@ -1387,9 +1406,9 @@ digests in the `gpu` tests.
   `WriteResultDigest` on its entries, written velocities and per-solid sums. CPU against GPU: entries, counts and
   written velocities exact (copies, no arithmetic); sums within design 6 (`CheckWithinTolerance`).
 - [ ] **Step 2: Implement** the two-pass build (count GPU function, `ComputeExclusivePrefixSum(...,
-  buffers.order_scratch)`, fill GPU function, each a grid-stride loop started by `ApplyGpuFunction(...,
+  buffers.order_buffers)`, fill GPU function, each a grid-stride loop started by `ApplyGpuFunction(...,
   ComputeLaunchSize(count), ...)`); per-solid sums grouped by `BuildGroupsByDestination(...,
-  buffers.order_scratch)` and reduced with the tree of `math::TreeSum` (one thread per solid and component around
+  buffers.order_buffers)` and reduced with the tree of `math::TreeSum` (one thread per solid and component around
   `ComputeSumOfGroup`); `CheckGpuWork` before each read-back; only two `Vec3` per solid and the counts come back to
   the CPU. Every array is in `SolidsBuffers` (no `GpuArray`). A26/A27:
   `BuildViscousMaterialFaces` is two passes like the blocking faces; `ApplyViscousSolveToMaterials` is one thread
@@ -1400,6 +1419,8 @@ digests in the `gpu` tests.
   `CUDA: compiled, not run`.
 
 ### Task 25: `CollideSolids`, the rule at solids
+
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
 
 **Kind:** numerics
 
@@ -1426,7 +1447,7 @@ digests in the `gpu` tests.
   TEST(CollideSolids, SolidsAtFacesOfOtherTime_IsWrongTime)
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** design 5.7 step 1 (all reads before writes, through the
-  scratch), ported from `git show main:native/src/dry_solid_step_3d.cc` lines 367-378, generalised to any normal.
+  working buffers), ported from `git show main:native/src/dry_solid_step_3d.cc` lines 367-378, generalised to any normal.
 - [ ] **Step 4: Run** the gate. **Commit.** Subject: `Stop snow and springy faces at solids`.
 
 ### Task 26: `CollideSolids`, two sets on one face
@@ -1458,6 +1479,8 @@ digests in the `gpu` tests.
 
 ### Task 27: `CollideSolids` on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** private `collide_solids_gpu.h` returning `RunOnCallStatus`; the GPU
@@ -1468,7 +1491,7 @@ thread; digests in the `gpu` tests.
 - Create: `native/fluidity/solids/collide_solids_gpu.cu`, `collide_solids_gpu.h` (private),
   `collide_solids_steps_test.cc` (label `cpu`), `collide_solids_gpu_test.cc`, `collide_solids_no_gpu_test.cc`
 - Modify: `collide_solids_cpu.cc` (dispatch under `#if defined(FLUIDITY_HAS_GPU)`), `collide_solids_math.h`
-  (`ApplyCollideSolidsToFace`, the whole per-face work of steps 1 to 6 reading the scratch and writing its own
+  (`ApplyCollideSolidsToFace`, the whole per-face work of steps 1 to 6 reading the working buffers and writing its own
   face, called by the CPU loop too), `CMakeLists.txt`
 
 - [ ] **Step 1: Tests:** `cpu` (`collide_solids_steps_test.cc`, the main evidence until the hardware run):
@@ -1530,10 +1553,12 @@ those partials by range, and per-solid results kept in `SolidsTry`, make that wo
 
 ### Task 29: `ApplyContactReactions` on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** private `contact_reactions_gpu.h` returning `RunOnCallStatus`;
-compaction, order and grouping through Foundation's scratch forms with `buffers.order_scratch`; per-hit and
+compaction, order and grouping through Foundation's functions taking `buffers.order_buffers`; per-hit and
 per-solid functions in `contact_reactions_steps.h` run by a `cpu` test; digests in the `gpu` tests.
 
 **Files:**
@@ -1552,9 +1577,9 @@ per-solid functions in `contact_reactions_steps.h` run by a `cpu` test; digests 
   a regrouping), each with `WriteResultDigest` on the per-solid push, turning push and work; `no_gpu`:
   `ApplyContactReactions, OnGpuWithoutAGpu_IsRunOnCallFailed`.
 - [ ] **Step 2: Implement:** compact the hits (flag GPU function, `ComputeExclusivePrefixSum(...,
-  buffers.order_scratch)`, copy GPU function), two passes of `BuildStableOrder(..., buffers.order_scratch)` (id,
+  buffers.order_buffers)`, copy GPU function), two passes of `BuildStableOrder(..., buffers.order_buffers)` (id,
   then solid, the second given the first as previous order), `BuildGroupsByDestination(...,
-  buffers.order_scratch)` by solid, reduce per solid (one thread per solid and component). Nothing allocates.
+  buffers.order_buffers)` by solid, reduce per solid (one thread per solid and component). Nothing allocates.
 - [ ] **Step 3: Gate; commit.** Subject: `Sum contact pushes on the GPU`. Body: `CUDA: compiled, not run`.
 
 ### Task 30: `DriveWaves`
@@ -1704,6 +1729,8 @@ that the GPU function wraps and a `cpu` test runs over every thread block and th
 
 ### Task 34: A hand-written liquid step loop for scene tests
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
+
 **Kind:** integration
 
 **Amended 2026-11-14 (Foundation as built):** the library is made with `fluidity_add_test_library` and linked by
@@ -1725,7 +1752,7 @@ tests through `LINKS`.
   PressureOnSolids pressure; ContactOnSolids contact; ExchangeReport exchange; Vec3 liquid_momentum;
   Vec3 liquid_turning_momentum; double filled_volume_above(double height) const; }` (copies of the values).
 - One step, in this order: `BuildTry`; `ComputeSolidsAtFaces` (0), `ComputeSolidCoverage`,
-  `FindGridEdgesOpenToSky`; `ParticlesToGrid`, `SaveGridBeforeForces` (scratch forms, one `TransferScratch`
+  `FindGridEdgesOpenToSky`; `ParticlesToGrid`, `SaveGridBeforeForces` (each taking one `TransferBuffers`
   built with the loop); gravity on `kFromParticles` Z faces;
   `DriveWaves` when `open_sea`; `ComputeDistanceToSurface`, `FindLiquidSurface`, `FindAirPockets` (no committed
   pockets), `BuildMotionMap`, `BuildPressureEquations` (density uniform, `bulk_stiffness` +infinity, carried 0,
@@ -1790,12 +1817,14 @@ The tank is `AddTank(id 1, ..., kDriven)` (never moves; its reactions are report
 
 ### Task 37: Comparison with the proof of concept
 
+**Amended 2026-11-14 (A31):** the old numbers are produced in a temporary directory.
+
 **Kind:** integration
 
 **Files:**
 - Create: `native/fluidity/solids/testdata/coupled_turned_box.json`, `proof_of_concept_test.cc`
 
-- [ ] **Step 1: Produce the old numbers** (plan-decisions: export `main` with `git archive` to the scratchpad,
+- [ ] **Step 1: Produce the old numbers** (plan-decisions: export `main` with `git archive` to a temporary directory,
   build its CPU preset there): run `main`'s coupled turned box (`liquid_substep_3d.cc` lines 1806-1993) for one
   step on its same-size grid with a flat surface; print the velocity after pressure; turn it into Z-up
   (`(x, y, z) -> (x, -z, y)`); store it with the `main` commit hash and the scene. The driver is not committed;
@@ -1806,6 +1835,8 @@ The tank is `AddTank(id 1, ..., kDriven)` (never moves; its reactions are report
 - [ ] **Step 3: Gate; commit.** Subject: `Compare the free-solid solve with the proof of concept`.
 
 ### Task 38: Comment pass and hand-over
+
+**Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
 
 **Amended 2026-11-14 (A18):** the design check records plan decision 9 and Task 21's change.
 
@@ -1837,7 +1868,7 @@ Foundation adoptions.
   the known-open test, the A17
   batched-run buffer changes of Tasks 13 and 28 (amended 2026-11-14: several instances, `WriteBlockPartialsRange`,
   results kept in `SolidsTry`), and the scene tests left to the step plan (below); (Foundation as built) the
-  `OrderScratch` and solids copy in `SolidsBuffers` with their rows, `ToSolidsFailure`, the private `_gpu.h`
+  `OrderBuffers` and solids copy in `SolidsBuffers` with their rows, `ToSolidsFailure`, the private `_gpu.h`
   headers and the shared step headers with their `cpu` tests, `open_to_sky.cc` renamed `open_to_sky_cpu.cc`.
 - [ ] **Step 4: `docs/gpu-runs.md`:** a `solids` row, result `compiled, not run`, listing every `gpu` test of
   Tasks 18, 19 (A17), 24, 27, 29, 30, 31, 32.

@@ -90,3 +90,15 @@ Not committed to `rebuild`. Collected from the agents' reports. One cleanup pass
     pick one suffix and apply it (Foundation's is built: prefer `_test_support` everywhere, or rename base's).
 30. Known-open tests: `DISABLED_` prefix + a second registration with `WILL_FAIL` and label `known_open`
     (owner to confirm the form).
+
+## Controller rulings after the A28–A33 pass (2026-11-15; apply when each module starts)
+31. Every module error enum has `kOutOfMemory`, returned only by its building functions, APPENDED at the end of
+    the enum (never inserted, so earlier values keep their numbers): pressure, gas, transfer too; move the value
+    the pass inserted in viscosity and solids to the end.
+32. A30 applies to module functions: a span (CPU) form called on a GPU grid, or a CPU list with GPU buffers, is a
+    precondition with a debug assertion, not `kBadInput` (`FindBorderBlocks`, `BuildGridPiece`, the grid checks).
+33. Accepted as written: allocating `BuildGrid(inputs, settings)` removed in favour of test-only `BuildTestGrid`;
+    span forms of `ComputeGridCounts` / `CheckSizeStepRule` kept; `ComputeAmounts`, `ComputeWorkRates`,
+    `CheckMaterialState` stay one allocating form each; `kBadStepInputs`, `step_inputs`; `max_field_parts = 1u << 26`
+    with one frame `OrderBuffers`. Sand Task 7's per-call GPU copy: settle in the sand module.
+34. Known-open test form is confirmed by the owner (A38).

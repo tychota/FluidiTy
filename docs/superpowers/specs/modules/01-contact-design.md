@@ -313,7 +313,7 @@ The pointer fields are how the cycle with the particles module (built later) is 
 particles header. The step fills `MoveParticlesInputs` from `particles::ParticleFields` (`id`, `position`,
 `velocity`, `plate_side`) and `MovedParticles` from `particles::ParticleFieldsToChange` (`position.write`,
 `velocity.for_next_step.write`), one call per material and range of cell blocks. `record` and `reaction` point
-into `Buffer<ParticleContact>` and `Buffer<SolidReaction>` that the step owns as scratch. `BuildContactBuffers`
+into `Buffer<ParticleContact>` and `Buffer<SolidReaction>` that the step owns as working buffers. `BuildContactBuffers`
 maps a `BufferError` to `kBuffersTooSmall` (`kOutOfMemory`, `kSizeMismatch`) or `kRunOnCallFailed`. Gas marker
 particles are moved by the same call with `friction` 0; contact has no gas-specific case.
 
@@ -389,7 +389,7 @@ with friction 0. Gas's closed sides are `DomainBox::closed`.
 **Step (PROVIDED, step 3.1 and 5.5):** calls `ComputeContactScale`, `ComputeContactTolerance`,
 `CheckContactTolerance` and `CheckSolid` in its capability check and once per step (`kSolidTooThin` becomes
 `CapabilityReason::kSolidThinnerThanTolerance`); owns the `Buffer<ParticleContact>` and `Buffer<SolidReaction>`
-scratch; fills `MoveParticlesInputs` and `MovedParticles` from the particles' try, one call per material and
+working buffers; fills `MoveParticlesInputs` and `MovedParticles` from the particles' try, one call per material and
 range; runs `MoveParticles` in stage `Stage::kMoveParticles`; turns `kTooCloseToCall` into
 `RejectReason::kContactTooCloseToCall` and retries with a shorter step; owns the travel limit per step.
 
@@ -523,7 +523,7 @@ lowest `particle_id`; the chunks are merged in chunk order. Counts are integer s
 **GPU (`move_particles_gpu.cu`):** one thread per particle. Arrays (owner in brackets): `particle_id` `uint64`,
 `start_position` `Vec3`, `velocity.for_next_step` and `velocity.for_this_step` `Vec3`, `friction` `double`,
 `plate_side` `PlateSide` (particles, read only); trial `position`, trial `velocity_for_next_step` (particles,
-written); `ParticleContact`, optional `SolidReaction` (step scratch, written, read later by materials and solids on
+written); `ParticleContact`, optional `SolidReaction` (step working buffers, written, read later by materials and solids on
 the device); the solids copy and one `ContactFailure` per particle (`ContactBuffers`). All stay on the device. Per
 call the CPU sends the solids (`solid_count * sizeof(Solid)`, well under a megabyte) and the scalar inputs, and
 receives one `MoveParticlesResult` and one `ContactFailure`. A second function reduces the failures to the one
@@ -671,6 +671,7 @@ Words marked Verify or Open that this module met:
   face centre is outside the plate's thickness" (`liquid_wall_contact_3d.cc:674-680`). That fits the final name
   `transfer::SolidsAtFaces::outside_solid` (transfer's decision 6).
 - `wall`: in these files always the surface of a solid or a tank side, never clock time.
+- "scratch" (step-owned contact records): replaced by "working buffers" (owner answer A31).
 
 ## 10. Not ported
 
@@ -768,3 +769,7 @@ snow on shared faces) are left to module 7 as `CollideSolids`. Confirm they are 
 
 Decision: they are not contact's; `solids::CollideSolids` owns them, applied between material sets (owner
 answer A8 for the sets; owner-questions Q46, recommended option, owner's standing instruction, 2026-11-14).
+
+**Q9. Working memory (owner answer A31, 2026-11-14).** The word "scratch" is not used; reusable working memory is
+"buffers". Decision: the step's `Buffer<ParticleContact>` and `Buffer<SolidReaction>` are called working buffers;
+contact holds no `OrderBuffers` or `SumBuffers`, so no declaration changes. Source: `owner-answers.md` A31.

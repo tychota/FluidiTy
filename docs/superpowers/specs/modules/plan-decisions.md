@@ -7,9 +7,9 @@ this file wins (the designs are not edited again).
 ## Applies to every plan
 
 - **Running the proof of concept for comparison numbers.** Never check `main` out into the worktree. Export it
-  with `git -C /Users/tychota/Documents/Code/openSource/FluidiTy archive main | tar -x -C <scratch dir>` (or
-  `git worktree add --detach <scratch dir> main` outside the rebuild worktree), build and run there, and commit
-  only the resulting numbers as a `testdata` file with a note saying how they were produced. The scratch driver
+  with `git -C /Users/tychota/Documents/Code/openSource/FluidiTy archive main | tar -x -C <temp dir>` (or
+  `git worktree add --detach <temp dir> main` outside the rebuild worktree), build and run there, and commit
+  only the resulting numbers as a `testdata` file with a note saying how they were produced. The throwaway driver
   is never committed.
 - **A `no_gpu` test "on the GPU without a GPU gives `kRunOnCallFailed`"** exists for every operation that has a
   `_gpu.cu`, not only where a design lists it.
@@ -37,10 +37,11 @@ this file wins (the designs are not edited again).
 
 ## Transfer
 
-- **Scratch.** `transfer::TransferScratch` with `BuildTransferScratch(...)` holds the per-particle sums and the
+- **Working buffers** (A31, 2026-11-14: one form per stage, below). `transfer::TransferBuffers` with `BuildTransferBuffers(run_on, max_particle_count, material_count)` holds the per-particle sums and the
   small status record. Every stage (`ParticlesToGrid`, `SaveGridBeforeForces`, `SaveGridAfterPressure`,
-  `GridToParticles`, `ComputeCellsFromParticles`) has a form that takes the scratch as its last argument and
-  allocates nothing; the step uses that form. The forms without it allocate for one call (tests and tools).
+  `GridToParticles`, `ComputeCellsFromParticles`) takes the buffers as its last argument and
+  allocates nothing. (The forms without them, which allocated for one call, are removed by A31: tests and tools
+  build a `TransferBuffers`.)
 - **Builders.** `BuildSolidsAtFaces`, `BuildGridFromParticles`, `BuildGridSnapshot(..., FilledFromSolved)`
   with `enum class FilledFromSolved { kNotKept, kKept }`, `BuildCellsFromParticles`,
   `ToSolidsAtFacesOnProcessor`, `ToGridSnapshotOnProcessor`.
@@ -95,9 +96,10 @@ this file wins (the designs are not edited again).
 
 ## Commits
 
-- Every commit message ends with these two lines:
-  `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Every commit message ends with one `Assisted-by: Claude Code:<model id>` line per model that worked on it (the
+  implementer's model, plus `claude-fable-5-2` for the session that directs and reviews), then
+  `Claude-Session: <session link>`. No `Co-Authored-By`; the owner is the
+  sole author (owner answer A39, 2026-11-15; replaces the earlier `Co-Authored-By: Claude Fable 5.2` line).
 
 ## Grid (continued)
 
@@ -293,7 +295,7 @@ name uses the new one.
 
 | Old (in designs and early plans) | New | Banned word |
 |---|---|---|
-| `GridStorage`, `BuildGridStorage`, `ReleaseStorage` | `GridBuffers`, `BuildGridBuffers`, `ReleaseBuffers` | storage (say buffers) |
+| `GridStorage`, `BuildGridStorage`, `ReleaseStorage` | `GridBuffers`, `BuildGridBuffers`, `TakeBuffers` (A29) | storage (say buffers) |
 | `InternalForceBudget`, `budget_of_block`, `ComputeInternalForceBudgetTotal` | `InternalForceTotals`, `totals_of_block`, `ComputeInternalForceTotal` | budget |
 | `ContactRecord` | `ParticleContact` | Record (no role suffix) |
 | `SolveOutputs`, `AirPocketOutputs`, `SolveGasOutputs` | `SolvedArrays`, `AirPocketArrays`, `SolvedGasArrays` | role suffix other than Inputs, Settings, Result |
@@ -340,7 +342,7 @@ this ...", "textbook: ...", "also called ...") is exempt from the banned-word ch
 | Old | New | Banned word |
 |---|---|---|
 | `step::Support` (enum of the capability check), `kSupported` | `step::CapabilityLevel`, `kCanRun` (`kExperimental`, `kUnavailable` unchanged) | support |
-| test libraries `fluidity_step_test_support`, `fluidity_interchange_test_support`, `fluidity_render_output_test_support` | `fluidity_step_test_helpers`, `fluidity_interchange_test_helpers`, `fluidity_render_output_test_helpers` | support |
+| test libraries `fluidity_step_test_helpers`, `fluidity_interchange_test_helpers`, `fluidity_render_output_test_helpers` (replaced by `_test_support`, reconcile item 29) | `fluidity_step_test_support`, `fluidity_interchange_test_support`, `fluidity_render_output_test_support` | support |
 | `StoredFrameInputs`, `FileList::ignored_tail_bytes` | `KeptFrameInputs`, `ignored_end_bytes` | stored, tail |
 
 ## I/O and CLI
@@ -348,7 +350,7 @@ this ...", "textbook: ...", "also called ...") is exempt from the banned-word ch
 - Targets: `io/` sources are part of the library target `fluidity` (links FlatBuffers, BLAKE3, Threads
   privately); `cli/` sources form the OBJECT library `fluidity_cli_parts` and the program `fluidity_cli`;
   `cli/read_command_line.cc` is alone in the OBJECT library `fluidity_command_line` (exceptions and RTTI on).
-  Test library `fluidity_io_test_helpers` (namespace `fluidity::io::testing`).
+  Test library `fluidity_io_test_support` (namespace `fluidity::io::testing`).
 - I/O includes no `render_output/` header. Its seams: `FrameWriter` (with `start(void* context)`),
   `FrameOutput` and `KeptFrameInputs` carrying `std::int64_t frame` and `double time`, a `file_pattern` without
   extension (the writer appends its own), an empty scene table `outputs.render: RenderSection`, and the
@@ -396,7 +398,7 @@ this ...", "textbook: ...", "also called ...") is exempt from the banned-word ch
 - If the guard test on stage order (batched pass order against the one-piece order of stages 16 to 18) fails,
   or a stage rejects on incomplete inputs in the outer border blocks of a piece, the implementer stops and
   reports: the fix belongs in the commits of the module that owns the stage.
-- Test library `fluidity_cell_resize_test_helpers`.
+- Test library `fluidity_cell_resize_test_support`.
 
 ## Names that broke the glossary (continued)
 
@@ -547,7 +549,8 @@ up. The grid plan (`plans/2026-11-14-rebuild-02-grid.md`, Tasks 6 to 11 and 20 t
   };
   ```
   When `active_cell_buffer` is set it is the list and `active_cells` must be empty. A list on another processor
-  than the `GridBuffers` (for the one-argument forms: than the CPU) is `kBadInput`, except an empty list.
+  than the `GridBuffers` (for the span forms: than the CPU) is a `Requires:` precondition checked in debug builds
+  (A30; was `kBadInput`), except an empty list.
 - **Building.** `BuildGrid(const GridInputs&, GridBuffers&)` keeps its signature. With GPU buffers it validates,
   sorts and builds every table on the GPU and reads back only a private status record (`GridBuildStatus`: first
   failure key, error, two cells, block count, split-cell count, result count, active cells, active cells per
@@ -569,8 +572,8 @@ up. The grid plan (`plans/2026-11-14-rebuild-02-grid.md`, Tasks 6 to 11 and 20 t
   `std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, GridBuffers& cpu_buffers);`
   (456 B per block; for tests, tools and a caller that accepts the transfer).
 - **Memory** (`BuildGridMemoryEstimate`): a CPU grid unchanged (456 B per block on `kRunOn`, 516 B on `kCpu`). A GPU
-  grid: everything `kRunOn`, nothing `kCpu`: 456 B tables + 1,536 B build scratch (cell ids, sort keys, two
-  orders) + 4 B piece map = 1,996 B per block, plus `64 x ComputeOrderScratchSize(kGpu).bytes_per_item` per block,
+  grid: everything `kRunOn`, nothing `kCpu`: 456 B tables + 1,536 B builder buffers (cell ids, sort keys, two
+  orders) + 4 B piece map = 1,996 B per block, plus `64 x ComputeOrderBuffersSize(kGpu).bytes_per_item` per block,
   `fixed_bytes`, 8 B and `sizeof(GridBuildStatus)` per storage. `GridSettings::max_cell_blocks` at most
   `grid::kMaxCellBlocksLimit = (1u << 26) - 1`.
 - **Values.** `ApplyGridVersion` runs on the CPU for every grid (it records version and block count, launches and
@@ -612,20 +615,20 @@ up. The grid plan (`plans/2026-11-14-rebuild-02-grid.md`, Tasks 6 to 11 and 20 t
   ```cpp
   // Temporary arrays of BuildStableOrder and ComputeExclusivePrefixSum on one processor, for up to max_count
   // items, so that neither allocates per call. Move-only.
-  class OrderScratch { public: std::size_t max_count() const; RunOn run_on() const; };
-  std::expected<OrderScratch, BufferError> BuildOrderScratch(RunOn run_on, std::size_t max_count);
-  // Exact bytes BuildOrderScratch allocates: bytes_per_item * max_count + fixed_bytes.
-  struct OrderScratchSize { std::uint32_t bytes_per_item; std::uint64_t fixed_bytes; };
-  OrderScratchSize ComputeOrderScratchSize(RunOn run_on);
-  // As BuildStableOrder, allocating nothing. kSizeMismatch when count > scratch.max_count().
+  class OrderBuffers { public: std::size_t max_count() const; RunOn run_on() const; };
+  std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count);
+  // Exact bytes BuildOrderBuffers allocates: bytes_per_item * max_count + fixed_bytes.
+  struct OrderBuffersSize { std::uint32_t bytes_per_item; std::uint64_t fixed_bytes; };
+  OrderBuffersSize ComputeOrderBuffersSize(RunOn run_on);
+  // As BuildStableOrder, allocating nothing. kSizeMismatch when count > order_buffers.max_count().
   std::expected<void, BufferError> BuildStableOrder(const Buffer<std::uint64_t>& keys, std::size_t count,
                                                     const Buffer<std::uint32_t>* previous_order,
-                                                    Buffer<std::uint32_t>& order, OrderScratch& scratch);
+                                                    Buffer<std::uint32_t>& order, OrderBuffers& order_buffers);
   // sums[i] = values[0] + ... + values[i - 1] for i in [0, count]; sums[count] is the total. Exact unsigned
   // arithmetic; a total above 2^32 - 1 is kSizeMismatch. sums.size() >= count + 1. `sums` may be the same buffer
   // as `values` (in place). Allocates nothing. Same bytes on CPU and GPU.
   std::expected<void, BufferError> ComputeExclusivePrefixSum(const Buffer<std::uint32_t>& values, std::size_t count,
-                                                             Buffer<std::uint32_t>& sums, OrderScratch& scratch);
+                                                             Buffer<std::uint32_t>& sums, OrderBuffers& order_buffers);
   ```
 - **Left to the plans that consume these (not changed by the grid plan):** the batches plan's
   `FindStackedBorder`, `WriteStepArrayBlocks` / `BlockCopy` runs (computed on the CPU from the piece map) and
@@ -637,10 +640,10 @@ up. The grid plan (`plans/2026-11-14-rebuild-02-grid.md`, Tasks 6 to 11 and 20 t
 
 ## Foundation as built: `Buffer` (controller rulings, 2026-11-14)
 
-- `BufferError` gains a fifth value, after `kSizeMismatch`: `kRunOnMismatch` ("Two buffers that must live on the
-  same processor do not."). `CopyBuffer`, the scratch forms of `BuildStableOrder` and
-  `ComputeExclusivePrefixSum`, and the ordered sums return it for mixed processors. A module maps it to its own
-  `kBadInput`.
+- (Replaced by A30, 2026-11-14: `kRunOnMismatch` is removed; buffers on one processor are a `Requires:`
+  precondition checked in debug builds, and modules map nothing.) `BufferError` gained a fifth value, after
+  `kSizeMismatch`, for mixed processors in `CopyBuffer`, `BuildStableOrder`, `ComputeExclusivePrefixSum` and the
+  ordered sums.
 - `MemoryAvailable` and `ReadMemoryAvailable` live in `base/processor_description.h` from Foundation Task 13
   (private `processor_description_cpu.cc`, `processor_description_gpu.cu`); Task 16 adds `ProcessorDescription`
   to the same header.
@@ -763,7 +766,7 @@ block rules below.
 
 - `enum class RunMode : std::uint8_t { kOnePiece, kBatched, kBatchedWithSolvesInPieces };` (step `run_plan.h`).
   `kBatched`: particle stages in batches, every solve once on the whole grid on the run's processor (as before).
-  `kBatchedWithSolvesInPieces`: as `kBatched`, and the solvers' scratch lives in CPU memory and goes through the
+  `kBatchedWithSolvesInPieces`: as `kBatched`, and the solvers' working buffers live in CPU memory and goes through the
   GPU one loaded piece at a time. `step::BuildRunPlan` still chooses only `kOnePiece` or `kBatched`; the caller
   (I/O `Run`, tests) copies `batches::BuildBatchPlan`'s choice into the plan.
 - `step::RunPlan` gains `std::uint32_t max_solve_loaded_blocks = 0;` (from `BatchPlan`) and
@@ -774,7 +777,7 @@ block rules below.
 
 ### What lives where in `kBatchedWithSolvesInPieces`
 
-Rule: **state and geometry stay whole on the GPU; solver scratch goes to the CPU.**
+Rule: **state and geometry stay whole on the GPU; solver buffers go to the CPU.**
 
 - *Whole grid, on the GPU, for the run:* both grids' tables; `GridFields` (both copies); gas amounts (both
   copies); every array written in pass 1 by `ComputeDistanceToSurface` and `FindLiquidSurface` (corner and centre
@@ -787,14 +790,14 @@ Rule: **state and geometry stay whole on the GPU; solver scratch goes to the CPU
   liquid `PressureBuffers`, the gas `PressureBuffers`, `ViscosityBuffers` and `GasBuffers` that is counted per
   cell place, face place, corner place, sample or coefficient: `CellEquation` and equation of cell, connections and
   their lists, the material-face and gas-blob term lists, rung-0 weights, solve vectors, `volume_error`, air-pocket
-  and label scratch, viscosity's samples, coefficients, face and cell vectors and kept directions, gas scratch.
+  and label working buffers, viscosity's samples, coefficients, face and cell vectors and kept directions, gas working buffers.
 - Each module's memory estimate entries say it: built with `max_loaded_blocks > 0`, `BuildPressureMemoryEstimate`,
   `BuildViscosityMemoryEstimate` and `BuildGasMemoryEstimate` return those rows with `where = MemoryWhere::kCpu` at the
   limits, the same rows again with `where = kRunOn` at `max_loaded_blocks` (the loaded piece), and
   `BuildSolveBatchesMemoryEstimate`. One allocation table, as before.
 - With this rule, about 15 kB per full block stays on the GPU for a liquid scene (27 kB with viscosity, about 22
   kB with gas), against 55 kB (190 kB) when the solves are whole. On a 16 GB GPU with 64 GB of CPU memory the run
-  is then limited by CPU memory (about 400 kB per block of particles plus the streamed scratch), as A15 asks.
+  is then limited by CPU memory (about 400 kB per block of particles plus the streamed working buffers), as A15 asks.
 
 ### The shared mechanism: `pressure/solve_batches.h` (CPU only)
 
@@ -803,7 +806,7 @@ call pressure), its own tests need it, and the batches module comes after all th
 (`BuildBatchPlan`) and the step builds the solvers' buffers with it. Pressure includes no later module.
 
 ```cpp
-// The cut of one grid into batches for a solve whose scratch is in CPU memory, the one loaded piece, the
+// The cut of one grid into batches for a solve whose working buffers are in CPU memory, the one loaded piece, the
 // staging buffer and the copy counts. Move-only. Held inside PressureBuffers, ViscosityBuffers and GasBuffers
 // built with max_loaded_blocks > 0; one-piece buffers hold none.
 class SolveBatches {
@@ -1054,7 +1057,7 @@ void ResetSolveCopyReport(SolveBatches& batches);
 
 Written 2026-11-14. Closes "Batched solves (A15)" open points 5 (in batched runs; the one-piece GPU case stays
 open, below) and 6, and owner question round 2 items 11 and 12. Principle (A17): a run is all CPU or all GPU; in a
-batched GPU run only what does not fit (the particles, and in `kBatchedWithSolvesInPieces` the solver scratch)
+batched GPU run only what does not fit (the particles, and in `kBatchedWithSolvesInPieces` the solver buffers)
 stays in CPU memory, moved in planned copies that the planner counts and the reports measure. The owner: "warning
 the user about the expected cost (memory and time) is nice"; `budget` is a planned cost shown to the user (A22).
 Plans (amended tasks carry "Amended 2026-11-14 (A17, batched-run buffers)"): step Tasks 8, 9, 10, 12, 14, 27, 29,
@@ -1073,7 +1076,7 @@ step's own planned copies are its **Appendix B**. Rules every plan follows:
   passes); an array read and written only inside one pass has **no** whole instance, only the loaded one.
   `ReadStepArrays` reports each array's place; a test checks every array against the rule.
 - **Loaded instances.** The loaded `StepTry` owns, on the run's processor, one instance of every module buffer a
-  pass stage uses: `transfer::TransferScratch`, `materials::MaterialBuffers`, `contact::ContactBuffers`,
+  pass stage uses: `transfer::TransferBuffers`, `materials::MaterialBuffers`, `contact::ContactBuffers`,
   `solids::SolidsBuffers` (each at `max_loaded_particles` per material and `max_loaded_blocks`), beside the piece
   `pressure::PressureBuffers` of A15. The simulation's whole instances keep their per-particle rows at zero
   particles, except the stage-17 solids instance below. No module signature changes: the builders take the
@@ -1093,8 +1096,8 @@ step's own planned copies are its **Appendix B**. Rules every plan follows:
   `Buffer<grid::CellId>` (row `"step: active cell list"`, 8 B per cell place, `where = kRunOn`, counted) for
   `grid::BuildGrid` on the GPU, and builds a CPU copy of the same grid with the CPU builder from the same list
   (rows `"step: grid copy on the CPU"` = ~~`grid::BuildGridMemoryEstimate(RunOn::kCpu, 2)`~~ **replaced** (small fix b,
-  A26/A27 pass): `grid::BuildGridMemoryEstimate(RunOn::kCpu, 2, grid::ScratchSharing::kOneForAllBuffers)` (the pair
-  shares one CPU `GridScratch`, reconcile item 11) with every row's `where` set
+  A26/A27 pass): `grid::BuildGridMemoryEstimate(RunOn::kCpu, 2, grid::BuilderBuffersSharing::kOneForAllGrids)` (the pair
+  shares one CPU `GridBuilderBuffers`, reconcile item 11) with every row's `where` set
   to `kCpu`; no copy, A17 makes the tables equal; version and block count compared, a difference is
   `kStageFailed`). The copy is swapped with the grid at commit, released with it on reject, and ~~refreshed after a
   committed resize with `grid::ReadGrid` (456 B per block, counted)~~ **replaced** (reconcile pass): after a
@@ -1158,7 +1161,7 @@ step's own planned copies are its **Appendix B**. Rules every plan follows:
 ### The budget (I/O `io/run_budget.h`, CPU only)
 
 ```cpp
-enum class ModeReason : std::uint8_t { kFitsProcessor, kParticlesDoNotFitProcessor, kSolverScratchDoesNotFitProcessor,
+enum class ModeReason : std::uint8_t { kFitsProcessor, kParticlesDoNotFitProcessor, kSolverBuffersDoNotFitProcessor,
                                        kStateDoesNotFitCpu, kLayerDoesNotFitProcessor, kOnePieceDoesNotFitCpu };
 enum class BudgetVerdict : std::uint8_t { kFits, kDoesNotFitCpu, kDoesNotFitProcessor };
 struct MemoryBudget { std::uint64_t budget_bytes = 0, allowed_bytes = 0, total_bytes = 0, free_bytes = 0; };
@@ -1218,7 +1221,7 @@ std::expected<RunBudget, IoFailure> BuildSceneBudget(const RunScene& scene, cons
   projected finish is printed after 3 frames` (or `time: not estimated` when it does not fit); last line `fits:
   yes` or `fits: no. To fit (estimates): at most <n> particles (now <n>), or a smallest cell of at least <w> m (now
   <w> m), or <b> more <p> memory`. Reasons: `everything fits the <p>`; `the particles do not fit the <p>; particle
-  stages run in <n> batches, solves on the whole grid`; `the particles and the solver scratch do not fit the <p>;
+  stages run in <n> batches, solves on the whole grid`; `the particles and the solver buffers do not fit the <p>;
   particle stages run in <n> batches, solves in <m> pieces`; `in one piece it does not fit the <p>, and in batches
   the state does not fit cpu memory`; `one layer of cell blocks with its border does not fit the <p>`; `the scene
   does not fit cpu memory`.
@@ -1282,7 +1285,7 @@ TimeProjection ComputeTimeProjection(std::span<const FrameMark> frames_done_in_t
   `schemas/simulate/v2/run_budget.fbs` (tables `RunBudget`, `MemoryBudget`, `ModuleBudget`, `CopyBudget`,
   `FitSuggestion`, `RunCost`, `StageSeconds`; enums as stable lower-snake strings: `run_mode` `one_piece`,
   `batched`, `batched_with_solves_in_pieces`; `mode_reason` `fits_processor`, `particles_do_not_fit_processor`,
-  `solver_scratch_does_not_fit_processor`, `state_does_not_fit_cpu`, `layer_does_not_fit_processor`,
+  `solver_buffers_do_not_fit_processor`, `state_does_not_fit_cpu`, `layer_does_not_fit_processor`,
   `one_piece_does_not_fit_cpu`; `verdict` `fits`, `does_not_fit_cpu`, `does_not_fit_processor`; `module` and
   `stage` by I/O's stable names), included by `run_report.fbs` and `events.fbs`. Field names carry their unit
   (`_bytes`, `_seconds`, `_m` for `smallest_cell_width_m` and `min_smallest_cell_width_m`).
@@ -1339,7 +1342,7 @@ Copied from the built headers in `FluidiTy-rebuild/native/fluidity/base/` (the s
   Rules: a slice is `count` items from index `first`; every copy has a slice form. The value type is deduced from
   the buffer only (`std::type_identity_t`), so a `std::vector` or `std::array` passes as the span directly (a
   braced list does not). A span that overlaps the slice, overlapping slices of one buffer, and a buffer copied onto
-  itself are `kSizeMismatch`; `CopyBuffer` across processors is `kRunOnMismatch`. A failed check writes nothing;
+  itself are `kSizeMismatch`; `CopyBuffer` across processors is a precondition (A30; was `kRunOnMismatch`). A failed check writes nothing;
   after `kRunOnCallFailed` the target slice is unspecified. Every module's array element type satisfies
   `BufferValue` (a `static_assert` in its memory estimate is enough).
 - **`tree_sum.h` (shared, `namespace fluidity::math`):**
@@ -1369,11 +1372,12 @@ Copied from the built headers in `FluidiTy-rebuild/native/fluidity/base/` (the s
   itself `_gpu`. (This replaces the contact entry's `move_particles_gpu_calls.h` naming for new code only where a
   plan says so; existing `_gpu_calls.h` names in plans stay, they are not `_gpu.h` headers.)
 - **Allowed verbs** (`AGENTS.md` "Allowed verbs"): `Compute`, `Build`, `Check`, `Find`, `Apply`, `Solve`, `Read`,
-  `Write`, `Copy` (values between two arrays on the same processor), `Release` (gives back what a `Build` took,
-  `ReleaseBuffers`), `To<Type>`; plain math words in `namespace math`. So `CopyBuffer` and `ReleaseBuffers` need no
+  `Write`, `Copy` (values between two arrays on the same processor), `Take` (gets preallocated buffers back out of an object
+  no longer needed, `TakeBuffers`) and `Free` (frees memory) since A29 (`Release` is not allowed), `To<Type>`; plain
+  math words in `namespace math`. So `CopyBuffer` and `TakeBuffers` need no
   allowed-names entry.
-- **`stable_order.h`:** `OrderScratch` also has `[[nodiscard]] std::size_t byte_count() const;` (bytes held:
-  `ComputeOrderScratchSize(run_on())` applied to `max_count()`, 0 after a move). `ComputeOrderScratchSize` gives
+- **`stable_order.h`:** `OrderBuffers` also has `[[nodiscard]] std::size_t byte_count() const;` (bytes held:
+  `ComputeOrderBuffersSize(run_on())` applied to `max_count()`, 0 after a move). `ComputeOrderBuffersSize` gives
   `{4, 8192}` on the CPU and `{6, 4096}` on the GPU.
 - **`run_on.h` (shared):** `enum class RunOn : std::uint8_t { kCpu, kGpu };` and `enum class RunOnError :
   std::uint8_t { kNone, kGpuNotBuilt, kNoGpuFound, kGpuCallFailed, kGpuMathDiffers };` (as "Foundation `base/` (as
@@ -1454,43 +1458,46 @@ plans (tasks marked `**Amended 2026-11-14 (reconcile):**`). Item 4 was an owner 
    Done.
 11. **Grid buffers sized by the planner (plan decision).**
     - `grid::GridSettings::max_cell_blocks` defaults to **0** (the design's `1u << 22` is withdrawn):
-      `BuildGridBuffers` and `BuildGridScratch` with 0 are `kBadInput`; the allocating `BuildGrid(inputs, settings)`
-      with 0 sizes to the list's blocks. No compile-time room is an allocation size.
+      `BuildGridBuffers` and `BuildGridBuilderBuffers` with 0 are `kBadInput`; the test-only `BuildTestGrid(inputs, settings)`
+      (grid test support; the allocating `BuildGrid(inputs, settings)` is removed by A31) with 0 sizes to the list's
+      blocks. No compile-time room is an allocation size.
     - New in `grid/staggered_grid.h` (grid plan Task 6):
 
       ```cpp
-      class GridScratch { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
-      std::expected<GridScratch, GridFailure> BuildGridScratch(RunOn run_on, std::uint32_t max_cell_blocks);
-      std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings, GridScratch& scratch);
-      enum class ScratchSharing : std::uint8_t { kOnePerBuffers, kOneForAllBuffers };
-      std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
-          RunOn run_on, std::uint32_t storage_count, ScratchSharing scratch_sharing = ScratchSharing::kOnePerBuffers);
+      class GridBuilderBuffers { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
+      std::expected<GridBuilderBuffers, GridFailure> BuildGridBuilderBuffers(RunOn run_on, std::uint32_t max_cell_blocks);
+      std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings,
+                                                               GridBuilderBuffers& builder_buffers);
+      enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids };
+      std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(RunOn run_on, std::uint32_t storage_count,
+          BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid);
       ```
-      `GridScratch` holds the `grid: build scratch: ...` arrays (and the `OrderScratch`); the caller owns it and lends
-      it to every `GridBuffers` built with the two-argument form, which must not outlive it; it is not moved while
-      lent; one build or check uses it at a time. No operation on a built grid reads the build scratch. With
-      `kOneForAllBuffers` the scratch entries have `copies = 1`. `BuildGridBuffers(settings)` still owns its scratch
-      (pressure's `SolveBatches`, cell resize, tests and tools are unchanged).
-    - Owner: the step's simulation state owns one `GridScratch` (built first, released last, rebuilt by `ApplyLimits`
+      `GridBuilderBuffers` holds the `grid: builder buffers: ...` arrays (and the `OrderBuffers`); the caller owns it
+      and lends it to every `GridBuffers`, which must not outlive it; it is not moved while
+      lent; one build or check uses it at a time. No operation on a built grid reads the builder buffers. With
+      `kOneForAllGrids` the builder buffers entries have `copies = 1`. (A31, 2026-11-14: the form
+      `BuildGridBuffers(settings)` that owned its own is removed; pressure's `SolveBatches`, cell resize, tests and
+      tools own a `GridBuilderBuffers` too.)
+    - Owner: the step's simulation state owns one `GridBuilderBuffers` (built first, freed last, rebuilt by `ApplyLimits`
       with the storages) lent to the committed and free `GridBuffers` and, in a batched run, the loaded try's
-      buffers; the batched GPU run's CPU grid copy pair shares one CPU `GridScratch`; cell resize's two CPU grids in
-      a one-piece GPU run share one CPU `GridScratch`.
-    - Numbers (GPU): per buffers 460 B per block (456 tables + 4 piece map) plus the status record; scratch 1,920 B
-      per block (`1536 + 64 x 6`) plus 4,096 + 8 B, once. Two grids: 2,840 B per block (was 4,760 with a scratch
-      each). 16 GiB GPU: `allowed_bytes = 0.7 x 17,179,869,184 = 12.03e9 B`; a quarter of it, 3.01e9 B, holds about
-      **1.06 M blocks** (about `2^20`, 67 M cell places) for tables + scratch; the old default `2^22` would take
+      buffers; the batched GPU run's CPU grid copy pair shares one CPU `GridBuilderBuffers`; cell resize's two CPU grids in
+      a one-piece GPU run share one CPU `GridBuilderBuffers`.
+    - Numbers (GPU): per buffers 460 B per block (456 tables + 4 piece map) plus the status record; builder buffers 1,920 B
+      per block (`1536 + 64 x 6`) plus 4,096 + 6 + 8 B, once (the 6 B: the order buffers' extra item, reconcile item 28). Two grids: 2,840 B per block (was 4,760 with builder
+      buffers each). 16 GiB GPU: `allowed_bytes = 0.7 x 17,179,869,184 = 12.03e9 B`; a quarter of it, 3.01e9 B, holds about
+      **1.06 M blocks** (about `2^20`, 67 M cell places) for tables + builder buffers; the old default `2^22` would take
       11.9e9 B.
     - Room: `limits.max_cell_blocks` = the blocks `BuildRunPlan` counts from the scene x `start_limit_headroom`
       (1.25), capped by the domain's blocks at the smallest cell, at least 1. Above `grid::kMaxCellBlocksLimit`, or
       when the estimate does not fit, the plan has `fit = kDoesNotFit` and the budget prints the does-not-fit lines
       before the run. Outgrowing the room during a run is `kTooManyCellBlocks` (`kRaiseLimits`, `ApplyLimits`).
-    - Tests: grid Task 6 `BuildGridMemoryEstimate, SharedScratch_CountedOnce`, `BuildGridBuffers,
-      TwoBuffersShareOneScratch_AllocatedEqualsEstimate`, `..., LentScratchTooSmallOrOtherProcessor_IsBadInput`,
-      `BuildGridScratch, ZeroBlocks_IsBadInput`, `GridSettings, DefaultRoomIsZero_BuildGridBuffersIsBadInput`; grid
-      Task 9 `BuildGrid, SharedScratch_OtherLiveGridUnchanged`, `BuildGrid, DefaultSettings_SizedToTheList`; grid
-      Task 11 `BuildGrid, OnGpuSharedScratch_OtherLiveGridUnchanged`; step Task 8 `BuildRunPlan,
-      BlockRoomFromSceneNotFromDefault`, `BuildStepMemoryEstimate, TwoGridBuffersOneScratch`, `BuildRunPlan,
-      RoomAboveGridLimit_DoesNotFit`; step Task 9 `BuildSimulation, GridBuffersShareOneScratch`.
+    - Tests: grid Task 6 `BuildGridMemoryEstimate, SharedBuilderBuffers_CountedOnce`, `BuildGridBuffers,
+      TwoGridBuffersShareBuilderBuffers_AllocatedEqualsEstimate`, `..., LentBuilderBuffersTooSmall_IsBadInput`,
+      `BuildGridBuilderBuffers, ZeroBlocks_IsBadInput`, `GridSettings, DefaultRoomIsZero_BuildGridBuffersIsBadInput`; grid
+      Task 9 `BuildGrid, SharedBuilderBuffers_OtherLiveGridUnchanged`, `BuildTestGrid, DefaultSettings_SizedToTheList`; grid
+      Task 11 `BuildGrid, OnGpuSharedBuilderBuffers_OtherLiveGridUnchanged`; step Task 8 `BuildRunPlan,
+      BlockRoomFromSceneNotFromDefault`, `BuildStepMemoryEstimate, TwoGridBuffersShareBuilderBuffers`, `BuildRunPlan,
+      RoomAboveGridLimit_DoesNotFit`; step Task 9 `BuildSimulation, GridBuffersShareBuilderBuffers`.
 12. **How the step receives the uploaded resized cell list** (with coordinator item 1). New in step
     `resize_access.h` (step Task 32): `struct ResizedCells { std::span<const grid::CellId> cells; const
     Buffer<grid::CellId>* cell_buffer = nullptr; std::uint32_t cell_buffer_count = 0; const grid::StaggeredGrid*
@@ -2294,7 +2301,7 @@ item 22). Each changed task carries `**Amended 2026-11-14 (Foundation as built):
 1. A: public function in `<name>_cpu.cc` (checks, `RunOn` dispatch, CPU loop, GPU half under `FLUIDITY_HAS_GPU`); GPU half `<name>_gpu.cu` in private `<name>_gpu.h`, returning `RunOnCallStatus`, mapped by `ToBufferError` then one module mapping.
 2. A: launches, waits and per-call GPU memory only through `base/gpu_launch.cuh`; integer atomics allowed, floating-point atomics never.
 3. A: each GPU function is a thin loop over `FLUIDITY_CPU_AND_GPU` per-item functions in a shared header (`<name>_steps.h` unless an existing formula header serves); a `cpu` test `<name>_steps_test.cc` runs them for every thread block and thread, forward and reverse, against the CPU loop: the main evidence until the hardware run.
-4. B: per-step sums and groupings use the scratch forms with a `SumScratch` / `OrderScratch` held by the module's buffers (members `sum_scratch`, `order_scratch`), built once from the module's limits; the estimate adds `"<module>: sum|order scratch"` and `"... fixed bytes"` entries from `ComputeSumScratchSize` / `ComputeOrderScratchSize`. Once-per-frame CPU work may keep the forms that build their own scratch.
+4. B: per-step sums and groupings pass a `SumBuffers` / `OrderBuffers` held by the module's buffers (members `sum_buffers`, `order_buffers`), built once from the module's limits; the estimate adds `"<module>: sum|order buffers"` and `"... fixed bytes"` entries from `ComputeSumBuffersSize` / `ComputeOrderBuffersSize`. (Superseded by A31: every caller passes buffers; there is no form that builds its own.)
 5. C: tests link `fluidity_base_test_support`; module helper libraries are made with `fluidity_add_test_library` and named in `LINKS`; every source is in a CMake file; every target goes through the helpers (a library that needs exceptions or RTTI calls `fluidity_apply_compile_flags` right after `add_library`).
 6. C: labels: `cpu` everywhere (the container runs them), `no_gpu` only for "the GPU was chosen and none is usable", `gpu` only on hardware; `gpu` tests call `WriteResultDigest` on their main outputs.
 7. D: a failed check writes nothing; after `kRunOnCallFailed` outputs are unspecified and the run stops; `kOutOfMemory` only from building forms.
@@ -2324,32 +2331,33 @@ item 22). Each changed task carries `**Amended 2026-11-14 (Foundation as built):
 ### Interface changes that cross plans (exact declarations)
 
 ```cpp
-// pressure (Task 12): the scratch bytes depend on the processor. Consumer: step Task 8 (updated).
+// pressure (Task 12): the working buffers' bytes depend on the processor. Consumer: step Task 8 (updated).
 std::uint64_t ComputeBufferBytes(const BufferSizes& sizes, RunOn run_on);                        // was (sizes)
 std::vector<MemoryEstimateEntry> BuildPressureMemoryEstimate(const BufferSizes& sizes, RunOn run_on);  // was (sizes)
 
 // gas (Task 10). Consumer: step Task 8 (updated).
 std::vector<MemoryEstimateEntry> BuildGasMemoryEstimate(const GasBufferSizes& sizes, RunOn run_on);    // was (sizes)
 
-// cell resize (Task 23), added overload; consumer: render output Task 31. The design's form stays.
+// cell resize (Task 23); consumers: render output Task 31, the step. The only form since A31 (the design's form
+// without SumBuffers is removed).
 std::expected<LiquidTotals, CellResizeFailure> ComputeLiquidTotals(
     const particles::ParticlesTry& particles_try, const GridOnlyAmounts& amounts,
     std::span<const std::uint8_t> material_is_counted, const grid::StaggeredGrid& grid,
-    grid::CellBlockRange blocks, SumScratch& scratch);
+    grid::CellBlockRange blocks, SumBuffers& sum_buffers);
 ```
 
 ### Additive changes inside one plan (no consumer edit needed)
 
-- Grid Task 6: `GridScratch` follows the pattern: `struct GridScratchSize { bytes_per_cell_block; fixed_bytes; }`,
-  `GridScratchSize ComputeGridScratchSize(RunOn run_on);`, `GridScratch::byte_count()`. Grid's own `LaunchShape`,
+- Grid Task 6: `GridBuilderBuffers` follows the pattern: `struct GridBuilderBuffersSize { bytes_per_cell_block; fixed_bytes; }`,
+  `GridBuilderBuffersSize ComputeGridBuilderBuffersSize(RunOn run_on);`, `GridBuilderBuffers::byte_count()`. Grid's own `LaunchShape`,
   `ComputeLaunchShape`, `kBuildLaunchBlocks` dropped for `ComputeLaunchSize`.
 - Pressure Task 12: `launch_size.h` deleted (base's `ComputeLaunchSize`); Task 28: `block_sums.h` CPU-only with
-  `ComputeTotalOfBlocks(const Buffer<double>& block_partials, std::uint32_t block_count, SumScratch& scratch)`, the
+  `ComputeTotalOfBlocks(const Buffer<double>& block_partials, std::uint32_t block_count, SumBuffers& sum_buffers)`, the
   per-block partial in shared `block_sum_steps.h`. Task 55: `solve_batches.cc` -> `solve_batches_cpu.cc`;
-  `SolveBatches` owns an `OrderScratch`.
-- Batches Task 37: `double ComputeSumOverBlocks(const grid::CellBlockValues<double>& block_partial_sums, SumScratch& scratch);`
-- Scratch members: `PressureBuffers`, `GasBuffers`, `ViscosityBuffers`, `CellResize` (both), `particles` storage
-  (both), `step::TryArrays` (both), `StepRecorder` (both), `BatchedRun::sum_scratch`, `GasAmounts` (sum),
+  `SolveBatches` owns an `OrderBuffers`.
+- Batches Task 37: `double ComputeSumOverBlocks(const grid::CellBlockValues<double>& block_partial_sums, SumBuffers& sum_buffers);`
+- Working buffers members: `PressureBuffers`, `GasBuffers`, `ViscosityBuffers`, `CellResize` (both), `particles` storage
+  (both), `step::TryArrays` (both), `StepRecorder` (both), `BatchedRun::sum_buffers`, `GasAmounts` (sum),
   `BorderSearchBuffers`, `SolidsBuffers` (order; plus `Buffer<contact::Solid> solids_copy`, so no GPU half allocates).
   Materials, contact and transfer need none. No `Build<Module>Buffers` signature changed.
 - One mapping per module: `ToContactFailure(BufferError)`, `ToViscosityFailure(BufferError, std::uint64_t)`,
@@ -2360,3 +2368,104 @@ std::expected<LiquidTotals, CellResizeFailure> ComputeLiquidTotals(
   `ComputeAmounts`; materials' per-cell-block budget of `ApplyInternalForce` and `ComputeParticleFriction`; pressure
   `ComputeDistanceToSurface`; gas `BuildTry`, `ComputeGasSeenByLiquid`, `FindMarkerChanges`; step
   `ComputeVelocityAfterGravity`.
+
+## Owner's review of the Foundation rulings applied (A28–A33)
+
+Applied 2026-11-14/15 to the fifteen module plans, the Foundation plan (names only), every module design,
+`shared-interface.md` (not section (a)) and this file (not "Foundation after the final review", which is
+regenerated from the code). Changed tasks carry `**Amended 2026-11-14 (A28|A29|A30|A31|reconcile):**`; each design's
+section 11 has one entry per answer applied and its vocabulary section lists the replaced names once. A32 and A33
+approve Foundation as built and change no plan text. A39 (commit attribution) is applied to every plan's Global
+Constraints and to "Commits" above.
+
+### Renames (old -> new)
+
+| Old | New | Answer |
+|---|---|---|
+| `OrderScratch`, `BuildOrderScratch`, `OrderScratchSize`, `ComputeOrderScratchSize` | `OrderBuffers`, `BuildOrderBuffers`, `OrderBuffersSize`, `ComputeOrderBuffersSize` | A31 |
+| `SumScratch`, `BuildSumScratch`, `SumScratchSize`, `ComputeSumScratchSize` | `SumBuffers`, `BuildSumBuffers`, `SumBuffersSize`, `ComputeSumBuffersSize` | A31 |
+| members `order_scratch`, `sum_scratch`; parameters `scratch` | `order_buffers`, `sum_buffers`; the buffers' name (`order_buffers`, `sum_buffers`, `builder_buffers`, `transfer_buffers`, `point_object_buffers`, `packing_buffers`) | A31 |
+| grid `GridScratch`, `BuildGridScratch`, `GridScratchSize`, `ComputeGridScratchSize` | `GridBuilderBuffers`, `BuildGridBuilderBuffers`, `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize` (not `GridBuildBuffers`: it would give `BuildGridBuildBuffers`; `GridBuffers` already names one grid's tables) | A31 |
+| grid `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`, `scratch_sharing` | `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }` (declared in `staggered_grid.h`, reconcile item 20), `builder_buffers_sharing` | A31 |
+| entries `grid: build scratch: ...`, `... ordering`, `border ordering` | `grid: builder buffers: ...`, `... order buffers`, `border order buffers` | A31 |
+| variables `grid_scratch`, `cpu_grid_scratch` | `grid_builder_buffers`, `cpu_grid_builder_buffers` | A31 |
+| transfer `TransferScratch`, `BuildTransferScratch(run_on, max_particle_count)`, `ComputeTransferScratchSize`, `transfer_scratch.h` | `TransferBuffers` (+ `material_count()`), `BuildTransferBuffers(run_on, max_particle_count, material_count)`, `ComputeTransferBuffersSize`, `transfer_buffers.h` | A31, reconcile 27 |
+| render output `PointScratch` | `PointObjectBuffers` | A31 |
+| I/O (private) `SnapshotArraysScratch` | `SnapshotPackingBuffers` | A31 |
+| step `ModeReason::kSolverScratchDoesNotFitProcessor`, `solver_scratch_does_not_fit_processor` | `kSolverBuffersDoNotFitProcessor`, `solver_buffers_do_not_fit_processor` | A31 |
+| `grid::ReleaseBuffers(StaggeredGrid&&)`, `ReleaseBuffers(GridPiece&&)` | `grid::TakeBuffers(...)` (the only `Release...` identifiers in plans and designs; `ReleaseBufferBytes` is Foundation's, section (a)) | A29 |
+| `step::StepRequest`, parameter `request` | `StepInputs`, parameter `step_inputs` (not `inputs`: the stages already use `inputs` for the module input structs they build); no earlier `StepInputs` existed | A28 |
+| `step::RejectKind::kBadRequest` | `kBadStepInputs` | A28 |
+| test libraries `fluidity_<module>_test_helpers` | `fluidity_<module>_test_support` | reconcile 29 |
+| tests: grid `SharedScratch_CountedOnce`, `TwoBuffersShareOneScratch_AllocatedEqualsEstimate`, `LentScratchTooSmallOrOtherProcessor_IsBadInput`, `SharedScratch_OtherLiveGridUnchanged`, `OnGpuSharedScratch_OtherLiveGridUnchanged`, `CpuScratch_EqualsByteCountAndScratchRows`, `ComputeGridCounts, IntoBuffers_EqualsAllocatingForm`, `BuildGrid, DefaultSettings_SizedToTheList`, `BuildGrid, OnGpuWithoutAGpu_IsRunOnCallFailed` (Task 9), `BuildGridBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed` | `SharedBuilderBuffers_CountedOnce`, `TwoGridBuffersShareBuilderBuffers_AllocatedEqualsEstimate`, `LentBuilderBuffersTooSmall_IsBadInput`, `SharedBuilderBuffers_OtherLiveGridUnchanged`, `OnGpuSharedBuilderBuffers_OtherLiveGridUnchanged`, `CpuBuilderBuffers_EqualsByteCountAndBuilderBuffersRows`, `IntoBuffers_EqualsSpanForm`, `BuildTestGrid, DefaultSettings_SizedToTheList`, `BuildTestGrid, OnGpuWithoutAGpu_IsRunOnCallFailed`, `BuildGridBuilderBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed` | A30, A31 |
+| tests: Foundation `CountAboveScratchMaxCount_IsSizeMismatch`; transfer `ScratchRow_Is168BytesPerParticle`, `OnCpu_HasTheAskedCount`; pressure `ScratchRowsMatchScratchSizes`, `OnCpu_ScratchBytesMatchRows`, `ShortOrMisplacedBuffers_AreBadInput`; viscosity `ScratchRows_MatchScratchByteCounts`; gas `ScratchRowsMatchScratchSizes`; step `StepScratchEntries_FromScratchSizes`, `StepScratchBuiltAtTheLimits`, `StepScratchRaised`, `BuildStepMemoryEstimate, TwoGridBuffersOneScratch`, `BuildSimulation, GridBuffersShareOneScratch`, `ListOnOtherProcessorOrNoCpuGridOnGpu_IsBadInput` | `CountAboveBuffersMaxCount_IsSizeMismatch`; `NearbyFaceSumsBuffersEntry_Is168BytesPerParticle`, `OnCpu_HasTheAskedCounts`; `BuffersRowsMatchBuffersSizes`, `OnCpu_BuffersBytesMatchRows`, `ShortBuffers_AreBadInput`; `BuffersRows_MatchBuffersByteCounts`; `WorkingBufferRowsMatchBuffersSizes`; `StepWorkingBufferEntries_FromBuffersSizes`, `StepWorkingBuffersBuiltAtTheLimits`, `StepWorkingBuffersRaised`, `TwoGridBuffersShareBuilderBuffers`, `GridBuffersShareBuilderBuffers`, `NoCpuGridOnGpu_IsBadInput` | A30, A31 |
+| tests: cell resize and batches `ScratchEntriesMatchScratchBytes`, `ComputeLiquidTotals, ScratchTooSmall_IsBadInput`, `ComputeSumOverBlocks, ScratchTooSmall_IsQuietNaN`, `SumScratchEntriesMatchTheScratch`; render output `ScratchReused_NoNewAllocationSecondTime`, `ScratchesSizedFromLimits`, `OnGpuRejectedTry_ScratchLeftUnused`, `RecorderScratchEntriesMatchTheRecorder` | `WorkingBufferEntriesMatchTheBuffers`, `BuffersTooSmall_IsBadInput`, `BuffersTooSmall_IsQuietNaN`, `SumBuffersEntriesMatchTheBuffers`; `BuffersReused_NoNewAllocationSecondTime`, `BuffersSizedFromLimits`, `OnGpuRejectedTry_BuffersLeftUnused`, `RecorderBufferEntriesMatchTheRecorder` | A31 |
+| prose "scratch"; temporary-work senses (`<scratchpad>`, scratch program, driver, worktree, folder) | "working buffers" or the buffers' name; `<temp-dir>`, throwaway program or driver, temporary worktree or folder | A31 |
+
+New names: test-only `grid::testing::TestGrid` / `BuildTestGrid(const GridInputs&, const GridSettings& = {})` in
+`fluidity_grid_test_support` (replaces the allocating `BuildGrid(inputs, settings)` in tests);
+`RenderLimits::max_field_parts = 1u << 26`, `RenderOutputError::kTooManyFieldParts` (value 15, 16 values),
+`RenderOutput::frame_order_buffers`; `ViscosityError::kOutOfMemory` (15 values), `SolidsError::kOutOfMemory`
+(18 values); `transfer::TransferBuffers::material_count()`.
+
+### One form per function (A31)
+
+Every function that needs working memory has one form, which takes its buffers; the caller owns them (in its
+module buffers, or built locally in a test or tool). Foundation's `BuildStableOrder`, `ComputeExclusivePrefixSum`,
+`BuildGroupsByDestination`, `ComputeTreeSum`, `ComputeTreeDot`, `ComputeLargestMagnitude` always take their
+buffers, also for once-per-frame CPU work. Module functions that had two forms:
+
+- `grid::BuildGridBuffers(settings)` and `(settings, lent)`: only `BuildGridBuffers(settings, builder_buffers)`.
+  Pressure's `SolveBatches` owns a `GridBuilderBuffers` for its loaded piece; cell resize and the step lend theirs.
+- `grid::BuildGrid(inputs, settings)` (allocating): removed; tests use `BuildTestGrid`, tools build both buffers.
+- Kept with a stated reason: `grid::ComputeGridCounts` and `CheckSizeStepRule` keep a span form beside the buffers
+  form (the planner counts beyond any room; cell resize checks CPU lists while it splits, before grid buffers exist).
+- Transfer stages (`ParticlesToGrid`, `SaveGridBeforeForces`, `SaveGridAfterPressure`, `GridToParticles`,
+  `ComputeCellsFromParticles`): one form, `TransferBuffers& transfer_buffers` last.
+- Materials `ApplyInternalForce` and `ComputeCellSqueezeValues`: one form, `MaterialBuffers` last.
+- `cell_resize::ComputeLiquidTotals` and `batches::ComputeSumOverBlocks`: one form, `SumBuffers& sum_buffers` last
+  ("Interface changes that cross plans" above: no added overload).
+- Render output's per-frame CPU work (`ComputeAddedVolume`, `BuildSurfaceField`, `BuildSurfaceFrame`,
+  `BuildFoamVolume`): take `OrderBuffers&`, owned by `RenderOutput::frame_order_buffers`; `BuildRenderOutput` now
+  returns `std::expected<RenderOutput, RenderOutputFailure>` (`kOutOfMemory`).
+- Kept as one allocating form, reason in the task: `particles::ComputeAmounts` (callers pass views of particles of
+  any owner, with no buffers to lend; a caller that must not allocate uses `ComputeAmountsPerBlock`),
+  `materials::ComputeWorkRates` (test oracle) and `CheckMaterialState` (scene load): none runs per step.
+- Kept: gas `FindMarkerChanges` amounts form and CPU form (they differ by processor, not working memory).
+- Removed tests that only compared two forms: Foundation `BuildStableOrder, WithScratch_EqualsFormWithoutScratch`;
+  materials `ApplyInternalForce, BuffersForm_SameBytesAsOneCallForm`; cell resize
+  `ComputeLiquidTotals, ScratchForm_SameBytesAsFormWithout`; `ComputeSumOverBlocks, CutsGiveEqualBytes` compares
+  cuts only.
+
+### Same processor is a precondition (A30)
+
+`BufferError::kRunOnMismatch` is gone. A function taking two buffers (or buffers and their working buffers, or a
+view and the module's buffers) requires them on one processor: stated as `Requires:` in its description, checked
+by an assertion in debug builds, never an error value. No module maps it. A caller-facing boundary that receives
+the processor choice from the user (`StepSettings::run_on`, I/O, the CLI, the add-on's command) still reports a
+wrong or unavailable processor as an error. Removed tests: Foundation `BuildStableOrder,
+ScratchOnOtherProcessor_IsRunOnMismatch`; grid `ApplyGridVersion, ValuesOnOtherProcessor_IsBadInput`,
+`CheckSizeStepRule, OnGpuBuffersWithCpuList_IsBadInput`, `ComputeGridCounts, GpuBufferListInOneArgumentForm_IsBadInput`,
+`BuildGridPiece, SpanFormOnGpuWhole_IsBadInput`. Narrowed: grid `LentBuilderBuffersTooSmall_IsBadInput` (too small
+only), pressure `CoupledVelocityPieces, ShortBuffers_AreBadInput`, step `BuildResizedGrid, NoCpuGridOnGpu_IsBadInput`.
+Mappings removed: `ToViscosityFailure`, `ToSolidsFailure`, `ToCellResizeFailure`, the step's and the pressure,
+grid, gas, materials, transfer and particles designs' section 4.
+
+### Reconcile items done
+
+- 19: the step's CPU grid-copy pair is `BuildGridMemoryEstimate(RunOn::kCpu, 2, kOneForAllGrids)` (step Task 8).
+- 20: `BuilderBuffersSharing` is declared in `staggered_grid.h` (grid Task 6, design 3.3).
+- 24: pressure and gas designs' section 3 take `RunOn run_on` in `ComputeBufferBytes`, `BuildPressureMemoryEstimate`,
+  `BuildGasMemoryEstimate`; `fluidity_apply_compile_flags(<target> EXCEPTIONS <ON|OFF> [RTTI <ON|OFF>])` recorded
+  (pressure decision 20, gas decision 19).
+- 25: `ViscosityError::kOutOfMemory` and `SolidsError::kOutOfMemory` (magnitude = bytes asked), returned only by
+  `BuildViscosityBuffers` / `BuildSolidsBuffers`; value counts updated.
+- 26: render output's per-field-part stable order is bounded by `RenderLimits::max_field_parts`
+  (`kTooManyFieldParts` beyond it) and counted by `"render output: frame order buffers"` (+ fixed bytes, `kWholeRun`,
+  `kCpu`).
+- 27: `BuildTransferBuffers` takes `material_count` (`transfer: material offsets`, 8 B per material).
+- 28: the grid's GPU `OrderBuffers` holds `64 * max_cell_blocks + 1` items; the extra item's 6 B were in no entry. The
+  fixed-part entry is now `fixed_bytes + bytes_per_item` (builder buffers fixed bytes 4,096 + 6 + 8); the border
+  search's `OrderBuffers` gets the same fix.
+- 29: one suffix, `_test_support`, everywhere.
+- 30: the known-open form is kept as written (owner confirmation pending).

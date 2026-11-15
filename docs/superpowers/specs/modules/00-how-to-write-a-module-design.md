@@ -4,7 +4,7 @@ Working brief for the rebuild's module designs. Not committed to the `rebuild` b
 
 ## What you are doing
 
-FluidiTy is being rebuilt from scratch on an orphan branch, module by module. The current `main` branch is a
+FluidiTy is being rebuilt from the ground up on an orphan branch, module by module. The current `main` branch is a
 proof of concept that is read for its proven maths and never copied wholesale. You write the design for one
 module. A later engineer who has never seen this code base will write a task-by-task plan from your design
 without being able to ask anyone. The owner will review all module designs together in one sitting, so every

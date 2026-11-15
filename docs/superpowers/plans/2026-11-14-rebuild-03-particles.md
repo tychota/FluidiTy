@@ -28,8 +28,10 @@ untracked) and `docs/superpowers/specs/2026-11-13-production-rebuild-design.md` 
   names listed in the commit message with a one-line reason; tests arrive with the code. A commit must pass every
   part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written, so Foundation ends without a hardware run. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -52,12 +54,14 @@ untracked) and `docs/superpowers/specs/2026-11-13-production-rebuild-design.md` 
   (`ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). Every GPU function is a thin loop over
   `FLUIDITY_CPU_AND_GPU` per-item or per-thread functions in a shared header (`<name>_steps.h` unless an existing
   shared formula header holds them); `cpu` tests run those functions over every item, or every thread block and
-  thread of `ComputeLaunchSize(count)` in launch order and in reverse, against the CPU loop. Scratch pattern
-  (`<Name>Scratch`, `Build<Name>Scratch`, `Compute<Name>ScratchSize`); per-step callers pass a scratch built once
-  and owned by the module's storage (`sum_scratch`, `order_scratch`), and the memory estimate counts it with
-  `ComputeSumScratchSize` / `ComputeOrderScratchSize`. Errors: a failed check writes nothing; after
-  `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building or
-  allocating forms. Exactness: discrete outputs equal on CPU and GPU; floating-point within the module's tolerance
+  thread of `ComputeLaunchSize(count)` in launch order and in reverse, against the CPU loop. Working buffers
+  (`<Name>Buffers`, `Build<Name>Buffers`, `Compute<Name>BuffersSize`): every function that needs working memory
+  has one form, which takes its buffers; callers pass buffers built once and owned by the module's storage
+  (`sum_buffers`, `order_buffers`), and the memory estimate counts them with `ComputeSumBuffersSize` /
+  `ComputeOrderBuffersSize`. Buffers and their working buffers on the same processor are a precondition
+  (`Requires:`, asserted in debug builds), not an error value (A30). Errors: a failed check writes nothing; after
+  `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building
+  functions and from `ComputeAmounts`' one-call GPU memory (Task 17). Exactness: discrete outputs equal on CPU and GPU; floating-point within the module's tolerance
   unless the function's header promises the same bits unless NaN. Tests link `fluidity_base_test_support`
   (`ToBits`, `BuildBufferHolding`, `ReadAll`, `CheckWithinTolerance`, `CheckSameBitsOrBothNaN`) and the module's
   helper library made with `fluidity_add_test_library`, named in `LINKS`; `gpu` tests call `WriteResultDigest` on
@@ -95,7 +99,7 @@ Particles-specific (every task respects these):
 - **Amounts return failures (coordinator decision, changes design 3.2).** Retyped declarations:
 
   ```cpp
-  // Chooses the processor from fields.run_on. kOutOfMemory (the GPU form's one-call scratch of one
+  // Chooses the processor from fields.run_on. kOutOfMemory (the GPU path's one-call GpuArray of one
   // ParticleAmounts per block), kRunOnCallFailed. Never NaN as a failure signal.
   std::expected<ParticleAmounts, ParticlesFailure> ComputeAmounts(const ParticleFields& fields);
   // kBadInput when per_block.size() != fields.cell_blocks.block_count; kOutOfMemory, kRunOnCallFailed.
@@ -158,7 +162,7 @@ Particles-specific (every task respects these):
   unless the result is NaN (Task 17), because both processors run the same shared per-block function (additions and
   multiplications only, in a fixed order, no fused multiply-add under the flags) and the tree sum over block partials
   runs on the CPU for both.
-- **Test fixtures** (`particles_test_helpers.h`, Task 9, in the test library `fluidity_particles_test_helpers`
+- **Test fixtures** (`particles_test_support.h`, Task 9, in the test library `fluidity_particles_test_support`
   made with `fluidity_add_test_library` and linked by every particles test through `LINKS`; tests use only these
   and `fluidity_base_test_support` unless a task says otherwise).
   Frame: origin `{0, 0, 0}`, `biggest_cell_width = 1`, `size_level_count = 3` (widths 1, 0.5, 0.25). Domain:
@@ -190,26 +194,26 @@ Particles-specific (every task respects these):
     kVelocityForNextStep})`; `v += {0, 0, -9.81 dt}`, then `x += v dt`; `CommitTry(time + dt)`.
   - Test-only setters in `particles_storage.h` (Task 10): `ApplyNextParticleIdForTest(Particles&, std::uint64_t)`,
     `ApplyCommittedIdForTest(Particles&, material_index, particle_index, std::uint64_t id)`.
-- **Memory estimate entries** (`BuildParticlesMemoryEstimate`, plan decision; the design's 32 B of scratch is split into what is
+- **Memory estimate entries** (`BuildParticlesMemoryEstimate`, plan decision; the design's 32 B of working memory is split into what is
   really allocated). Per material, all `CountedPer::kGivenCount`. Committed + try (`kWholeRun`, `copies = 2`,
   `given_count = max_particle_count`): `id` 8, `position` 24, `position_when_grouped` 24,
   `velocity.for_next_step` 24, `fitted_velocity_change` 72, `mass` 8, `rest_volume` 8, `volume_ratio` 8, `flags`
   1, `size_level` 1; when carried `ingredient_fractions` 8 N, `springy_deformation` 72, `permanent_volume_change`
   8, `plate_side` 8; `group_begin` 8 (`max_cell_blocks + 1`); `cell_begin` 4 (`max_cell_blocks * 64`). Try only
   (`kOneStepTry`, `copies = 1`): `velocity.for_this_step` 24 and removal marks 1 (`max_particle_count`); written
-  marks 2 and loaded block origin 4 (`max_cell_blocks`). Scratch (`kOneCall`): grouping keys 8 and two orders
+  marks 2 and loaded block origin 4 (`max_cell_blocks`). Working buffers (`kOneCall`): grouping keys 8 and two orders
   4 + 4 (`max_particle_count + max_added_per_try`); lane copy 8 (`max_particle_count`); waiting list
   (`max_added_per_try`, bytes = the carried arrays without `position_when_grouped`). One liquid: 2 x 178 + 24 +
   1 + 24 = 405 B per particle (design 6.4 says 412). **Amended 2026-11-14 (Foundation as built):** once per
-  `Particles` (not per material), `kWholeRun`, `where = kRunOn`: `"particles: order scratch"` (`kGivenCount`,
+  `Particles` (not per material), `kWholeRun`, `where = kRunOn`: `"particles: order buffers"` (`kGivenCount`,
   `given_count` = the largest `max_particle_count + max_added_per_try` over materials, `bytes_each =
-  ComputeOrderScratchSize(run_on).bytes_per_item`), `"particles: order scratch fixed bytes"` (`kGivenCount`,
-  `given_count = ComputeOrderScratchSize(run_on).fixed_bytes`, `bytes_each = 1`), `"particles: sum scratch"`
-  (the largest `max_particle_count`, `ComputeSumScratchSize(run_on).bytes_per_item`), `"particles: sum scratch
+  ComputeOrderBuffersSize(run_on).bytes_per_item`), `"particles: order buffers fixed bytes"` (`kGivenCount`,
+  `given_count = ComputeOrderBuffersSize(run_on).fixed_bytes`, `bytes_each = 1`), `"particles: sum buffers"`
+  (the largest `max_particle_count`, `ComputeSumBuffersSize(run_on).bytes_per_item`), `"particles: sum buffers
   fixed bytes"`, `"particles: lowest failing id"` (1 x 8) and `"particles: GPU failure"` (1 x
-  `sizeof(ParticlesFailure)`). These hold the `OrderScratch` of the two
-  `BuildStableOrder` passes and of `ComputeExclusivePrefixSum`, and the `SumScratch` of `ComputeLargestMagnitude`,
-  members `order_scratch` and `sum_scratch` of `particles_storage.h`, built by `BuildParticles` and rebuilt by
+  `sizeof(ParticlesFailure)`). These hold the `OrderBuffers` of the two
+  `BuildStableOrder` passes and of `ComputeExclusivePrefixSum`, and the `SumBuffers` of `ComputeLargestMagnitude`,
+  members `order_buffers` and `sum_buffers` of `particles_storage.h`, built by `BuildParticles` and rebuilt by
   `ApplyParticleLimits` from `settings.run_on` and the limits it already has (no signature changes). Per particle
   that adds 4 B on the CPU and 6 + 14 = 20 B on the GPU to the 405 B above.
 - **Proof of concept is Y-up.** Rotate its vectors and matrices with `R = rows {1,0,0},{0,0,-1},{0,1,0}`
@@ -222,8 +226,8 @@ Particles-specific (every task respects these):
 On branch `rebuild` in `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuild`: Foundation complete
 (including `base/` Tasks 12 to 16: `scalar_math.h`, `buffer.h` with slice forms and `CpuMemory`, `tree_sum.h`,
 `ordered_sums.h`, `stable_order.h`, `per_particle_velocity.h`, `memory_count.h`; **amended 2026-11-14
-(Foundation as built):** also `run_on_call.h`, `gpu_launch.cuh`, `ToBufferError`, `SumScratch` and `OrderScratch`
-with the scratch forms of the sums and of the stable order, `test_support.h` in the library
+(Foundation as built):** also `run_on_call.h`, `gpu_launch.cuh`, `ToBufferError`, `SumBuffers` and `OrderBuffers`
+(the sums and the stable order, each in its one form taking buffers), `test_support.h` in the library
 `fluidity_base_test_support`, and `fluidity_add_test_library`; read `AGENTS.md` "Structure" before Task 1), the contact module
 (`contact::PlateSide` in `contact/solid_shapes.h`) and the grid module (design 3.1 to 3.7, including
 `GridPiece`, `BuildGridPiece`, `FindBorderBlocks`, `BuildRanges`, `ComputeCompleteWeightedSpread`). Prove it:
@@ -503,7 +507,7 @@ and exited 0 in this task.
 **Files:**
 - Modify: `native/fluidity/particles/split_and_merge_math.h`, `split_and_merge_math_test.cc`
 - Create: `native/fluidity/particles/testdata/proof_of_concept_split_merge_refill.txt`
-- Scratch only: `<scratchpad>/poc-main/` (a detached worktree of `main`), `<scratchpad>/poc-main/generate_values.cc`
+- Temporary only: `<temp-dir>/poc-main/` (a detached worktree of `main`), `<temp-dir>/poc-main/generate_values.cc`
 
 **Interfaces:**
 - Produces: `RefillCell`, `ComputeRefillParticle` (design 3.6).
@@ -526,14 +530,14 @@ and exited 0 in this task.
   then `7 - p`; eighth bit 0 = high x, bit 1 = high y, bit 2 = high z, offset `+-h/4`; `velocity = v + C *
   offset`; `fitted_velocity_change = C`; `volume_ratio` from the cell. Cite `<sec-add-remove>`.
 - [ ] **Step 3: Produce the old numbers.** `git -C /Users/tychota/Documents/Code/openSource/FluidiTy worktree
-  add --detach <scratchpad>/poc-main main`. In it, write `generate_values.cc` (scratch, never committed)
+  add --detach <temp-dir>/poc-main main`. In it, write `generate_values.cc` (temporary, never committed)
   linked to `main`'s library with preset `macos-release-cpu`. It builds 20 split parents, 20 merge groups
   (2 to 8 particles, gap well above zero, masses powers of two so `main`'s exactness checks pass) and 9 refill
   cells from `SplitMix64` seed 20261114, in Z-up; rotates each input into Y-up with `R^T`, calls
   `SplitUniformLiquidParticle3D`, `MergeUniformLiquidParticles3D` (`kQuadratic`, an admissibility callback that
   returns OK) and `ReseedLiquidCoreCell3D`, rotates outputs back with `R`, and prints one line per value
   (`%.17g`). The testdata file starts with comment lines naming the `main` commit hash and these steps. Remove
-  the scratch worktree afterwards (`git worktree remove`).
+  the temporary worktree afterwards (`git worktree remove`).
 - [ ] **Step 4: The comparison test** reads the file (path from a compile definition set in the particles
   CMake), recomputes with Tasks 5, 6 and this task's functions, matches split children by position, and
   checks `1e-12` relative.
@@ -544,15 +548,15 @@ and exited 0 in this task.
 
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** the fixtures are the test library `fluidity_particles_test_helpers` made with
+**Amended 2026-11-14 (Foundation as built):** the fixtures are the test library `fluidity_particles_test_support` made with
 `fluidity_add_test_library`; tests name it and `fluidity_base_test_support` in `LINKS`.
 
 **Files:**
 - Modify: `native/fluidity/particles/split_and_merge_math.h`, `native/fluidity/particles/CMakeLists.txt`
-  (`fluidity_add_test_library(fluidity_particles_test_helpers SOURCES particles_test_helpers.cc LINKS
+  (`fluidity_add_test_library(fluidity_particles_test_support SOURCES particles_test_support.cc LINKS
   fluidity_base_test_support)`; every particles test from here on is `fluidity_add_test(... LINKS
-  fluidity_particles_test_helpers)`, and `split_and_merge_math_test` gains that `LINKS`)
-- Create: `native/fluidity/particles/particles_test_helpers.h`, `particles_test_helpers.cc` (test-only, never
+  fluidity_particles_test_support)`, and `split_and_merge_math_test` gains that `LINKS`)
+- Create: `native/fluidity/particles/particles_test_support.h`, `particles_test_support.cc` (test-only, never
   linked by `fluidity`), `find_neighbourhood_test.cc`
 
 **Interfaces:**
@@ -590,7 +594,7 @@ and exited 0 in this task.
 
 **Kind:** mechanical
 
-**Amended 2026-11-14 (Foundation as built):** `particles_storage.h` also holds `order_scratch`, `sum_scratch` and the lowest-failing-id buffer,
+**Amended 2026-11-14 (Foundation as built):** `particles_storage.h` also holds `order_buffers`, `sum_buffers` and the lowest-failing-id buffer,
 built and rebuilt with the arrays and counted in the memory estimate (Global Constraints); the GPU test compares
 with the `kGpu` estimate.
 
@@ -633,11 +637,11 @@ with the `kGpu` estimate.
   TEST(BuildParticles, OnGpuWithoutAGpu_IsRunOnCallFailed)
   // particles_gpu_test.cc, label gpu
   TEST(BuildParticles, OnGpu_AllocatesTheSameRowsAsCpu)  // amended: the same entries as the CPU estimate except
-      // the scratch entries, which follow ComputeOrderScratchSize(kGpu) and ComputeSumScratchSize(kGpu);
+      // the buffers entries, which follow ComputeOrderBuffersSize(kGpu) and ComputeSumBuffersSize(kGpu);
       // ComputeAllocatedBytes == ComputeMemoryBytes(BuildParticlesMemoryEstimate(gpu settings), {}); its digest
       // (WriteResultDigest) is that byte count
   ```
-  `ComputeAllocatedBytes` adds `order_scratch.byte_count()` and `sum_scratch.byte_count()`.
+  `ComputeAllocatedBytes` adds `order_buffers.byte_count()` and `sum_buffers.byte_count()`.
 - [ ] **Step 2: Implement.** `BuildParticles` calls `CheckCanRunOn(settings.run_on)` first, then allocates
   every buffer from `BuildParticlesMemoryEstimate`' table walk (one function walks the material's arrays for both,
   so they cannot drift); on any failure frees everything and returns `kOutOfMemory` or `kRunOnCallFailed`.
@@ -645,8 +649,8 @@ with the `kGpu` estimate.
   arrays at the new particle limits, `group_begin`, `cell_begin`, written marks and loaded block origin at the
   new `max_cell_blocks`), copies the committed part with slice `CopyBuffer` (`group_begin`: committed block
   count + 1 entries; `cell_begin`: committed block count * 64), then swaps; any failure leaves the particles
-  unchanged. `Particles` is move-only. The scratches are built with `BuildOrderScratch(settings.run_on, ...)` and
-  `BuildSumScratch(settings.run_on, ...)` at the counts of Global Constraints; `ApplyParticleLimits` builds the new
+  unchanged. `Particles` is move-only. The working buffers are built with `BuildOrderBuffers(settings.run_on, ...)` and
+  `BuildSumBuffers(settings.run_on, ...)` at the counts of Global Constraints; `ApplyParticleLimits` builds the new
   ones before the swap.
 - [ ] **Step 3: Run** the tests (they fail before Step 2), then the gate. **Commit.** Subject:
   `Add the particle arrays and their memory estimate entries`. Body:
@@ -714,8 +718,10 @@ GPU, so the step counts them (step plan Appendix A row M1).
 
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** the two `BuildStableOrder` passes use the scratch form with the particles' `order_scratch`, so
+**Amended 2026-11-14 (Foundation as built):** the two `BuildStableOrder` passes take the particles' `order_buffers`, so
 grouping allocates no temporary order arrays.
+
+**Amended 2026-11-14 (A31):** `BuildStableOrder` has one form, which takes its `OrderBuffers`.
 
 **Files:**
 - Create: `native/fluidity/particles/group_particles_by_block.h`, `group_particles_by_block_cpu.cc`,
@@ -723,8 +729,8 @@ grouping allocates no temporary order arrays.
 - Read: `docs/method-paper/fluidity-method.typ` `<proc-group-particles>` (step numbers for the code)
 
 **Interfaces:**
-- Consumes: `BuildStableOrder` (scratch form: `keys, count, previous_order, order, OrderScratch&`, with
-  `order_scratch` of `particles_storage.h`), `grid::FindCellAt(tables, position)`,
+- Consumes: `BuildStableOrder` (`keys, count, previous_order, order, OrderBuffers&`, with
+  `order_buffers` of `particles_storage.h`), `grid::FindCellAt(tables, position)`,
   `grid::StaggeredGrid::tables(kCpu)`, `version()`, `counts()`.
 - Produces: `GroupingSettings`, `GroupParticlesByBlock`, `CheckGrouping` (design 3.4), CPU path.
 
@@ -763,7 +769,7 @@ grouping allocates no temporary order arrays.
   `cell_begin` byte for byte and then group the "cloud" on an 88-block grid: the fixture frame with level-0
   cells x 0..79, y, z 0..7 (80 blocks) plus the centre split (8 blocks), `GridSettings{.max_cell_blocks = 128}`;
   before the raise the same grouping is `kTooManyParticles`)
-- Modify: `particles_test_helpers.h/.cc` (add `RunTestStep`)
+- Modify: `particles_test_support.h/.cc` (add `RunTestStep`)
 
 - Read: `docs/method-paper/fluidity-method.typ` `<proc-commit-try>`
 
@@ -805,7 +811,7 @@ grouping allocates no temporary order arrays.
 **Files:**
 - Create: `native/fluidity/particles/particles_snapshot.h`, `particles_snapshot_cpu.cc`,
   `particles_snapshot_test.cc`
-- Modify: `particles_test_helpers.h/.cc` (add `ExpectSameBytes(const ParticlesSnapshot&, const ParticlesSnapshot&)`
+- Modify: `particles_test_support.h/.cc` (add `ExpectSameBytes(const ParticlesSnapshot&, const ParticlesSnapshot&)`
   comparing every member with `std::memcmp`, and `ExpectSnapshotsClose(cpu, gpu)` with design 6.6 tolerances
   through `CheckWithinTolerance` of `base/test_support.h`, discrete members with `==`)
 
@@ -843,8 +849,10 @@ grouping allocates no temporary order arrays.
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** two halves (`_gpu.h` returning `RunOnCallStatus`), launches through `base/gpu_launch.cuh`,
-kernel bodies in `group_particles_by_block_steps.h` with a `cpu` test over every thread block and thread, scratch
-forms with the particles' `order_scratch` and `sum_scratch`, result digests.
+kernel bodies in `group_particles_by_block_steps.h` with a `cpu` test over every thread block and thread, the
+order and sums taking the particles' `order_buffers` and `sum_buffers`, result digests.
+
+**Amended 2026-11-14 (A30, A31):** one form per Foundation call (with buffers); same processor for buffers and working buffers is a `Requires:` precondition.
 
 **Files:**
 - Create: `native/fluidity/particles/group_particles_by_block_gpu.cu`, `group_particles_by_block_gpu.h`
@@ -852,11 +860,11 @@ forms with the particles' `order_scratch` and `sum_scratch`, result digests.
   `group_particles_by_block_gpu_test.cc`
 - Modify: `group_particles_by_block_cpu.cc` (dispatch on `run_on`; the CPU loop calls the same per-particle
   functions), `CMakeLists.txt` (`fluidity_add_gpu_sources(group_particles_by_block_gpu.cu)`, the header in
-  `fluidity_add_headers`, the `cpu` steps test and the `gpu` test with `LINKS fluidity_particles_test_helpers`)
+  `fluidity_add_headers`, the `cpu` steps test and the `gpu` test with `LINKS fluidity_particles_test_support`)
 
 **Interfaces:**
 - Consumes: `material_arrays_view.h`, `grid::GridTables` from `grid.tables(RunOn::kGpu)`, `BuildStableOrder`
-  (scratch form) on GPU buffers with `order_scratch`, `ComputeLargestMagnitude(values, count, sum_scratch)`;
+  on GPU buffers with `order_buffers`, `ComputeLargestMagnitude(values, count, sum_buffers)`;
   `ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork` (`base/gpu_launch.cuh`), `ToBufferError`.
 - Produces: no new public name. Private, in `group_particles_by_block_steps.h`, `FLUIDITY_CPU_AND_GPU`: the
   per-particle key and outside flag (`ComputeGroupingKey`), the per-item gather and lane copy
@@ -878,10 +886,10 @@ forms with the particles' `order_scratch` and `sum_scratch`, result digests.
   Each `gpu` test passes its snapshot's ids, positions, `group_begin` and `cell_begin` to `WriteResultDigest`.
 - [ ] **Step 2: Implement** (design 6.3): one thread per particle computes its key (and the outside flag,
   lowest id by integer `atomicMin` into the storage's lowest-failing-id buffer); two `BuildStableOrder` passes
-  with `order_scratch`; one gather GPU function per array (or the lane pair for an in-place regroup);
+  with `order_buffers`; one gather GPU function per array (or the lane pair for an in-place regroup);
   `group_begin` and `cell_begin` by binary search of the sorted keys, one thread per block and per place;
   `CheckGrouping` excess per particle, lowest failing id by integer minimum, largest excess by
-  `ComputeLargestMagnitude` with `sum_scratch`. Each GPU function is a grid-stride loop (`ComputeGridStride`)
+  `ComputeLargestMagnitude` with `sum_buffers`. Each GPU function is a grid-stride loop (`ComputeGridStride`)
   around one steps function, started with `ApplyGpuFunction`. The CPU half maps a `RunOnCallStatus` with
   `ToBufferError`, then into `ParticlesFailure` through the module's one mapping function, and reads the lowest
   failing id with `ReadBuffer`. Nothing in this task allocates: every array is in `particles_storage.h`.
@@ -900,7 +908,7 @@ forms with the particles' `order_scratch` and `sum_scratch`, result digests.
   `remove_particles_gpu.h` (private), `remove_particles_steps.h` (shared), `remove_particles_steps_test.cc`,
   `remove_particles_test.cc`, `remove_particles_gpu_test.cc`
 - Modify: `CMakeLists.txt` (headers, `remove_particles_cpu.cc`, `fluidity_add_gpu_sources(remove_particles_gpu.cu)`,
-  the tests with `LINKS fluidity_particles_test_helpers`)
+  the tests with `LINKS fluidity_particles_test_support`)
 
 **Interfaces:**
 - Produces: `RemoveReason`, `RemoveParticlesResult`, `RemoveParticles` (design 3.5). Private, shared:
@@ -986,7 +994,9 @@ its CPU-against-GPU test compares with `CheckSameBitsOrBothNaN`; result digests.
   ```
 - [ ] **Step 2: Implement** per Global Constraints sum orders; GPU (`fields.run_on == kGpu`): one thread per
   block runs `ComputeBlockAmounts` into a one-call `GpuArray<ParticleAmounts>` held by the GPU half (the view has
-  no storage to own it, so `ComputeAmounts` stays an allocating form and keeps `kOutOfMemory`), copied to the CPU
+  no storage to own it; amended 2026-11-14, A31: `ComputeAmounts` keeps its one form, which holds this
+  one-call GPU memory through `GpuArray` and keeps `kOutOfMemory`, because its callers pass views of particles
+  of any owner, with no buffers to lend; a caller that must not allocate uses `ComputeAmountsPerBlock`), copied to the CPU
   and tree-summed there, which is `ComputeTreeSum`'s order; the GPU half returns `RunOnCallStatus`, mapped with
   `ToBufferError` and then to `kOutOfMemory` or `kRunOnCallFailed`. The header of `ComputeAmounts` states the
   same-bits promise and its reason. Check failure on the GPU: integer `atomicMin` of failing ids into the
@@ -1080,7 +1090,7 @@ promises the same bits for these formulas); result digests.
   per-call body of a split and of a merge, checks after grouping included, as shared functions `ApplySplitParticle`
   and `ApplyMergeParticles` that the CPU path calls), `CMakeLists.txt` (the two `.cu` files through
   `fluidity_add_gpu_sources`; `fluidity_add_test(split_and_merge_gpu_test SOURCES split_and_merge_gpu_test.cc
-  split_and_merge_math_test_gpu.cu LABEL gpu LINKS fluidity_particles_test_helpers)`)
+  split_and_merge_math_test_gpu.cu LABEL gpu LINKS fluidity_particles_test_support)`)
 - Read: `split_particle_test.cc`, `merge_particles_test.cc`, `split_and_merge_math_test.cc`,
   `find_neighbourhood_test.cc` (the cases repeated here)
 
@@ -1145,7 +1155,7 @@ promises the same bits for these formulas); result digests.
 
 **Amended 2026-11-14 (Foundation as built):** `adjust_particle_count_gpu.h` returning `RunOnCallStatus`; kernel bodies in
 `adjust_particle_count_steps.h`, which the CPU loop of Task 21 then calls too, with a `cpu` test over every thread
-block and thread; the prefix sum through `ComputeExclusivePrefixSum` with the particles' `order_scratch`; result
+block and thread; the prefix sum through `ComputeExclusivePrefixSum` with the particles' `order_buffers`; result
 digests.
 
 **Files:**
@@ -1154,11 +1164,11 @@ digests.
   `adjust_particle_count_gpu_test.cc`
 - Modify: `adjust_particle_count_cpu.cc` (dispatch; its loops call the steps functions), `CMakeLists.txt`
   (`fluidity_add_gpu_sources(adjust_particle_count_gpu.cu)`, the header, the `cpu` steps test and the `gpu` test
-  with `LINKS fluidity_particles_test_helpers`)
+  with `LINKS fluidity_particles_test_support`)
 - Read: `adjust_particle_count_test.cc` (the cases repeated here)
 
 **Interfaces:**
-- Consumes: `ComputeExclusivePrefixSum(values, count, sums, OrderScratch&)` with `order_scratch`;
+- Consumes: `ComputeExclusivePrefixSum(values, count, sums, OrderBuffers&)` with `order_buffers`;
   `ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`; `ToBufferError`.
 - Produces: no new public name. Private, `adjust_particle_count_steps.h`, `FLUIDITY_CPU_AND_GPU`: the per-particle
   split test (`ComputeSplitDecision`), the per-cell merge chunks (`ComputeMergeChunks`) and the per-item write
@@ -1173,7 +1183,7 @@ digests.
   result counts, the new ids and the snapshot bytes after grouping to `WriteResultDigest`.
 - [ ] **Step 2: Implement** (design 6.3): kernel A, one thread per particle: split test, children count,
   refusal; kernel B, one thread per active cell: merge chunks; integer prefix sums over the per-block counts
-  (`ComputeExclusivePrefixSum` with `order_scratch`) give each thread its places and ids (`next_particle_id +
+  (`ComputeExclusivePrefixSum` with `order_buffers`) give each thread its places and ids (`next_particle_id +
   place`); kernel C writes; block partials of counts and energy copied to the CPU and tree-summed. Each kernel is a
   grid-stride loop around one steps function.
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Keep the particle count right on the GPU`. Body:
@@ -1230,18 +1240,18 @@ the loaded slices unspecified (the run stops), a failed check writes nothing.
 
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** `particles_test_support_gpu.cu` is a `GPU_SOURCES` file of `fluidity_particles_test_helpers`;
+**Amended 2026-11-14 (Foundation as built):** `particles_test_support_gpu.cu` is a `GPU_SOURCES` file of `fluidity_particles_test_support`;
 `LoadedOnGpu_SameBytesAsWhole` runs the whole try on the GPU too (one processor, so bytes compare); `gpu` tests
 write result digests.
 
 **Files:**
 - Create: `native/fluidity/particles/particles_scene_test.cc`, `particles_scene_gpu_test.cc`,
   `particles_test_support_gpu.cu` (test-only: `RunTestStep`'s position and velocity change as a GPU function, a
-  grid-stride loop over a `FLUIDITY_CPU_AND_GPU` per-particle change in `particles_test_helpers.h` that the CPU
+  grid-stride loop over a `FLUIDITY_CPU_AND_GPU` per-particle change in `particles_test_support.h` that the CPU
   `RunTestStep` calls too)
-- Modify: `CMakeLists.txt` (`fluidity_add_test_library(fluidity_particles_test_helpers SOURCES
-  particles_test_helpers.cc GPU_SOURCES particles_test_support_gpu.cu LINKS fluidity_base_test_support)`; the
-  scene tests `LABEL cpu` and `LABEL gpu` with `LINKS fluidity_particles_test_helpers`)
+- Modify: `CMakeLists.txt` (`fluidity_add_test_library(fluidity_particles_test_support SOURCES
+  particles_test_support.cc GPU_SOURCES particles_test_support_gpu.cu LINKS fluidity_base_test_support)`; the
+  scene tests `LABEL cpu` and `LABEL gpu` with `LINKS fluidity_particles_test_support`)
 
 - [ ] **Step 1: Tests.**
 
@@ -1268,8 +1278,8 @@ write result digests.
 
 **Kind:** mechanical
 
-**Amended 2026-11-14 (Foundation as built):** Step 3 also records the storage scratches and failure buffers, the `ComputeAmounts` same-bits
-promise, and `fluidity_particles_test_helpers` with its `GPU_SOURCES`.
+**Amended 2026-11-14 (Foundation as built):** Step 3 also records the storage's working buffers and failure buffers, the `ComputeAmounts` same-bits
+promise, and `fluidity_particles_test_support` with its `GPU_SOURCES`.
 
 **Files:**
 - Modify: any file of `native/fluidity/particles/`, `docs/glossary.md`, `docs/method-paper/`, `docs/gpu-runs.md`
@@ -1285,7 +1295,7 @@ promise, and `fluidity_particles_test_helpers` with its `GPU_SOURCES`.
   differently: `max_cell_blocks` in `ParticlesSettings`; `ComputeMergedFractions`; 405 B per liquid particle;
   `AddParticles` without `.cu`; `run_on` in both views and `std::expected` from `ComputeAmounts` and
   `ComputeAmountsPerBlock` (coordinator); `ApplyParticleLimits` taking `max_cell_blocks` (coordinator); split
-  visit order inside a block; unfitted particles not candidates; `order_scratch`, `sum_scratch` and the two
+  visit order inside a block; unfitted particles not candidates; `order_buffers`, `sum_buffers` and the two
   failure buffers in `particles_storage.h` and their memory estimate entries; the same-bits promise of
   `ComputeAmounts`; Lean proof status from Task 7 ("built in a
   Lean container" or "written, not built here"), outside the gate; theorem rename.

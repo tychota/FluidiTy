@@ -8,14 +8,14 @@ behind its exclusion, lifted in Task 42), air pockets, the open sea, the cell eq
 parallel solve with its ladder, the pieces the joint viscous solve and gas reuse, and the one stop rule, on CPU
 and (compiled, not run) GPU. Owner answer A18 (Tasks 43 to 50): a blocking material's inertia and a sealed
 tracked-gas blob's springiness are solved inside the liquid pressure solve, not handed over one step late.
-Owner answer A15 (Tasks 54 to 61): when the solve's scratch does not fit the GPU, the same solve runs batch by
-batch with its scratch in CPU memory (`SolveBatches`, shared with viscosity and gas), agreeing with the one-piece
+Owner answer A15 (Tasks 54 to 61): when the solve's working buffers do not fit the GPU, the same solve runs batch by
+batch with its working buffers in CPU memory (`SolveBatches`, shared with viscosity and gas), agreeing with the one-piece
 solve within the solve's tolerance.
 
 **Architecture:** Folder `native/fluidity/pressure/`, namespace `fluidity::pressure`. Each operation has one
 public CPU-only header and private `_cpu.cc` / `_gpu.cu` files; every per-element formula lives in a shared
 header that both the CPU loop and the GPU function call. All arrays are `grid::CellValues`, `FaceValues`,
-`CornerValues` on the processor chosen by `RunOn`; scratch lives in one `PressureBuffers` that allocates once.
+`CornerValues` on the processor chosen by `RunOn`; working buffers live in one `PressureBuffers` that allocates once.
 Every total is one partial per cell block in the grid's block order, then `math::TreeSum`.
 
 **Tech Stack:** C++23 host, CUDA C++20 device, CMake presets + Ninja, Conan 2 (GoogleTest), uv (Python
@@ -37,7 +37,10 @@ material-set rule of `04-transfer-design.md`, 3.2 of `01-contact-design.md`.
   the `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive
   with the code. A commit must pass every part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -62,12 +65,17 @@ material-set rule of `04-transfer-design.md`, 3.2 of `01-contact-design.md`.
   formula headers, or a `<name>_steps.h`); a `cpu` test (`<name>_steps_test.cc`) runs them for every thread block
   and thread of the launch, in launch order and in reverse (phase by phase where the GPU function waits), against
   the CPU loop: the main evidence until the hardware run. Integer atomics are allowed; floating-point atomics never.
-  *Scratch:* per-step callers of `ComputeTreeSum`, `ComputeTreeDot`, `ComputeLargestMagnitude`,
-  `BuildStableOrder`, `ComputeExclusivePrefixSum` and `BuildGroupsByDestination` use the scratch forms with the
-  `SumScratch` / `OrderScratch` that the module's buffers own (members `sum_scratch`, `order_scratch`, built once,
+  *Working buffers:* callers of `ComputeTreeSum`, `ComputeTreeDot`, `ComputeLargestMagnitude`,
+  `BuildStableOrder`, `ComputeExclusivePrefixSum` and `BuildGroupsByDestination` pass the
+  `SumBuffers` / `OrderBuffers` that the module's buffers own (A31: these functions have one form, which takes its
+  buffers; a test builds its own with `BuildSumBuffers` / `BuildOrderBuffers`) (members `sum_buffers`, `order_buffers`, built once,
   sized from the buffers' limits), and `Build<Module>MemoryEstimate` counts their bytes with
-  `ComputeSumScratchSize` / `ComputeOrderScratchSize`. *Errors:* a failed check writes nothing; after
+  `ComputeSumBuffersSize` / `ComputeOrderBuffersSize`. *Errors:* a failed check writes nothing; after
   `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building forms.
+  *Same processor (A30):* buffers, working buffers and arrays passed together to one function live on one
+  processor; this is a documented precondition (`Requires:`), checked by an assertion in debug builds, never an
+  error value. **Amended 2026-11-14 (A30|A31):** one form per function taking its buffers; mixed processors a
+  precondition.
   *Exactness:* discrete outputs are equal on CPU and GPU; floating-point results agree within this plan's
   tolerances, unless the function's header promises the same bits unless NaN (compared with
   `CheckSameBitsOrBothNaN`). *Tests:* every test links `fluidity_base_test_support` (`ToBits`,
@@ -140,7 +148,7 @@ Pressure's own constraints (values from the design; never change one without the
   (`base/gpu_launch.cuh`); the module has no launch-size header of its own. Every device task adds a
   `<name>_steps_test.cc` (`cpu`) that runs its per-item functions over every thread block and thread of the launch,
   in launch order and in reverse; every total over cell blocks goes through `block_sums.h` (Task 28) and the
-  buffers' `sum_scratch`; every stable order, prefix sum and grouping uses the buffers' `order_scratch`.
+  buffers' `sum_buffers`; every stable order, prefix sum and grouping uses the buffers' `order_buffers`.
 - **Tolerances, CPU against GPU (design section 6):** counts, classes, labels, `blob_id` equal; geometry,
   equations and one application of the equations `|a - b| <= 1e-12 * scale + 1e-300` (`scale` = largest
   magnitude of that array); velocity after a solve `<= 2 * max_volume_error_rate * cell width + 1e-9 * max
@@ -182,8 +190,8 @@ On branch `rebuild` in `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuil
   ask the owner: this plan does not create them.
 
 - **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides `base/run_on_call.h`
-  (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the `SumScratch` and `OrderScratch` scratch
-  forms of the sums, the stable order, the prefix sum and the grouping, `base/test_support.h` (library
+  (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, `SumBuffers` and `OrderBuffers` taken by
+  the sums, the stable order, the prefix sum and the grouping (one form each, A31), `base/test_support.h` (library
   `fluidity_base_test_support`) and the CMake helper `fluidity_add_test_library`; read `AGENTS.md` "Structure"
   before the first task. The gate prints seven `PASS` lines: format, rules, cpu debug, cpu release, tidy, paper,
   cuda.
@@ -663,8 +671,10 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
 
 ### Task 12: Pressure buffers, memory estimate entries and launch sizes
 
+**Amended 2026-11-14 (A31):** the module's working buffers are `SumBuffers sum_buffers` and `OrderBuffers order_buffers`; tests renamed `BuffersRowsMatchBuffersSizes`, `OnCpu_BuffersBytesMatchRows`; no form of a base function builds its own buffers.
+
 **Amended 2026-11-14 (Foundation as built):** `launch_size.h` and its test removed (base's `ComputeLaunchSize`);
-`PressureBuffers` owns `sum_scratch` and `order_scratch`; `ComputeBufferBytes` and `BuildPressureMemoryEstimate` take
+`PressureBuffers` owns `sum_buffers` and `order_buffers`; `ComputeBufferBytes` and `BuildPressureMemoryEstimate` take
 `RunOn` (cross-plan).
 
 **Kind:** mechanical
@@ -683,23 +693,23 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
   `constexpr LaunchSize ComputeLaunchSize(std::uint64_t element_count)` (256 threads per block).~~ (Foundation as
   built: base's `LaunchSize` and `ComputeLaunchSize` in `base/run_on_call.h` replace it.)
 - **Plan decisions (Foundation as built):**
-  - The two functions that count the table take the processor, because the scratch bytes depend on it (this
+  - The two functions that count the table take the processor, because the working buffers' bytes depend on it (this
     changes the design's declarations; consumers: step plan, gas plan):
     ```cpp
     std::uint64_t ComputeBufferBytes(const BufferSizes& sizes, RunOn run_on);
     std::vector<MemoryEstimateEntry> BuildPressureMemoryEstimate(const BufferSizes& sizes, RunOn run_on);
     ```
-  - `PressureBuffers` owns `SumScratch sum_scratch` (built with `BuildSumScratch(run_on, max_cells / 64)`: every
-    total is a tree sum over one partial per cell block, Task 28) and `OrderScratch order_scratch` (built with
-    `BuildOrderScratch(run_on, n)`, `n` the largest item count any stable order, prefix sum or grouping of the
+  - `PressureBuffers` owns `SumBuffers sum_buffers` (built with `BuildSumBuffers(run_on, max_cells / 64)`: every
+    total is a tree sum over one partial per cell block, Task 28) and `OrderBuffers order_buffers` (built with
+    `BuildOrderBuffers(run_on, n)`, `n` the largest item count any stable order, prefix sum or grouping of the
     module makes: `max_face_pieces` in one piece, raised to `max_blocking_material_faces` when that is larger
-    (Task 44); the batched layout of Task 56 sets its own `n`). No function of the module calls a form of these
-    base functions that builds its own scratch.
-  - Rows `"pressure: sum scratch"` (given count `max_cells / 64`, `bytes_each =
-    ComputeSumScratchSize(run_on).bytes_per_item`), `"pressure: sum scratch fixed bytes"` (given count
-    `ComputeSumScratchSize(run_on).fixed_bytes`, `bytes_each = 1`) and the two `"pressure: order scratch"` rows the
-    same way with `ComputeOrderScratchSize(run_on)` and `n`; `where = kRunOn`, `KeptFor::kWholeRun`.
-    `BuildPressureBuffers` builds the two scratches with `BuildSumScratch` / `BuildOrderScratch` (the walk over the
+    (Task 44); the batched layout of Task 56 sets its own `n`). Every call of these base
+    functions passes these buffers (A31: the base functions have no other form).
+  - Rows `"pressure: sum buffers"` (given count `max_cells / 64`, `bytes_each =
+    ComputeSumBuffersSize(run_on).bytes_per_item`), `"pressure: sum buffers fixed bytes"` (given count
+    `ComputeSumBuffersSize(run_on).fixed_bytes`, `bytes_each = 1`) and the two `"pressure: order buffers"` rows the
+    same way with `ComputeOrderBuffersSize(run_on)` and `n`; `where = kRunOn`, `KeptFor::kWholeRun`.
+    `BuildPressureBuffers` builds the two working buffers with `BuildSumBuffers` / `BuildOrderBuffers` (the walk over the
     other rows skips them); a `BufferError` from either is `kRunOnCallFailed` (Global Constraints).
 - `PressureBuffers` members are private; later tasks add accessors in a private `pressure_buffers_access.h`.
   Rows (all `KeptFor::kOneStepTry`, `copies = 1`), names prefixed `"pressure: "`:
@@ -718,7 +728,7 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
   | direct-solve factors | cell place | 32 x 8 |
   | solve vectors `p`, error, `z`, `d`, `q`, products and `volume_error` | cell place | 7 x 8 |
   | labels, `PressureBlob`, block partials | cell place; cell place; cell block | 8; `sizeof(PressureBlob)`; 8 |
-  | air pocket scratch: overlap keys and order | cell place | 16 |
+  | air pocket working buffers: overlap keys and order | cell place | 16 |
   | free solids: impulse sums | given count `max_free_solids` | 48 |
   | progress record | given count 1 | 64 |
 
@@ -728,10 +738,10 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
   // LABEL cpu
   TEST(ComputeBufferBytes, EqualsSumOfMemoryEstimate)       // sizes for 10 blocks, both flags on and off, kCpu
                                                             // and kGpu (rows only, no GPU needed)
-  TEST(BuildPressureMemoryEstimate, ScratchRowsMatchScratchSizes)  // Foundation as built: 10 blocks, kCpu and kGpu:
-      // the four scratch rows give ComputeSumScratchSize(run_on) at 10 values and ComputeOrderScratchSize(run_on)
+  TEST(BuildPressureMemoryEstimate, BuffersRowsMatchBuffersSizes)  // Foundation as built: 10 blocks, kCpu and kGpu:
+      // the four sum and order buffers rows give ComputeSumBuffersSize(run_on) at 10 values and ComputeOrderBuffersSize(run_on)
       // at 2400 items (bytes_per_item * count + fixed_bytes)
-  TEST(BuildPressureBuffers, OnCpu_ScratchBytesMatchRows)   // sum_scratch.byte_count() 0, order_scratch.byte_count()
+  TEST(BuildPressureBuffers, OnCpu_BuffersBytesMatchRows)   // sum_buffers.byte_count() 0, order_buffers.byte_count()
                                                             // == 4 * 2400 + 8192
   TEST(ComputeBufferBytes, ViscousFlag_AddsEighthsAndCentres)   // 10 blocks: difference == 640 * 96 + 2400 * 24
   TEST(BuildPressureBuffers, CellsNotAMultipleOf64_IsBadInput)
@@ -746,6 +756,8 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
 
 ### Task 13: Test scenes for the pressure tests
 
+**Amended 2026-11-14 (reconcile):** test libraries end in `_test_support` (reconcile item 29: `fluidity_grid_test_support`).
+
 **Amended 2026-11-14 (reconcile):** the test helper is `EquationSceneArrays` / `BuildEquationSceneArrays` (was
 `EquationArrays`, the name of Task 23's opaque type behind `PressureEquations::arrays`).
 
@@ -758,7 +770,7 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
 - Create: `native/fluidity/pressure/pressure_test_scenes.h`, `pressure_test_scenes.cc`,
   `pressure_test_scenes_test.cc` (a test-only library `fluidity_pressure_test_scenes`, linked by every later
   pressure test, never by `fluidity`). **Foundation as built:** `fluidity_add_test_library(fluidity_pressure_test_scenes
-  SOURCES pressure_test_scenes.cc LINKS fluidity_base_test_support fluidity_grid_test_helpers)`; every later pressure
+  SOURCES pressure_test_scenes.cc LINKS fluidity_base_test_support fluidity_grid_test_support)`; every later pressure
   test is `fluidity_add_test(<name> SOURCES ... LABEL <label> LINKS fluidity_pressure_test_scenes)` and uses
   `base/test_support.h` for bits, tolerances, buffer builders and digests instead of its own copies
 
@@ -832,8 +844,10 @@ run over every thread block and thread by a `cpu` test, results through `WriteRe
 
 ### Task 15: `ComputeDistanceToSurface` on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** two halves (`distance_to_surface_gpu.h`), a `cpu` steps test over every
-thread block and thread, the curvature compaction through the buffers' `order_scratch`; the bit-for-bit test is kept by
+thread block and thread, the curvature compaction through the buffers' `order_buffers`; the bit-for-bit test is kept by
 a deliberate same-bits promise in the header.
 
 **Kind:** device
@@ -855,7 +869,7 @@ a deliberate same-bits promise in the header.
   processors unless NaN, with its reason: every value is a minimum (exact) of `math::Length(position - particle) -
   radius` and of the caps, and `math::Length` is a same-bits function of `base/scalar_math.h`.
 - [ ] **Step 2: Implement.** One thread per sample point calling the shared function of Task 14; curvature
-  samples compacted with the scratch form of `BuildGroupsByDestination` (the buffers' `order_scratch`) into
+  samples compacted with `BuildGroupsByDestination` (the buffers' `order_buffers`) into
   ascending cell order. `distance_to_surface_gpu.cu` returns `RunOnCallStatus`; the CPU half maps it with
   `ToBufferError`, then into `PressureFailure` (`kRunOnCallFailed`).
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Compute the distance to the surface on the GPU`. Body:
@@ -1063,8 +1077,10 @@ shared in `material_boundary_math.h` (created here) and run over every thread bl
 
 ### Task 22: `FindAirPockets` on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** two halves (`air_pockets_gpu.h`), a `cpu` steps test of the propagation
-and pair-sum functions over every thread block and thread, `BuildStableOrder` with the buffers' `order_scratch`,
+and pair-sum functions over every thread block and thread, `BuildStableOrder` with the buffers' `order_buffers`,
 digests.
 
 **Kind:** device
@@ -1082,7 +1098,7 @@ digests.
   equal; volumes and pressures within the geometry tolerance), `FindAirPockets, OnGpuTwice_GivesIdenticalBytes`
   (`pocket_of_cell` and the pocket list through `WriteResultDigest`).
 - [ ] **Step 2: Implement.** Label propagation passes until a pass changes nothing (a device flag read every
-  pass); overlaps by the scratch form of `BuildStableOrder` (the buffers' `order_scratch`) over keys
+  pass); overlaps by `BuildStableOrder` (the buffers' `order_buffers`) over keys
   `(old_pocket << 32) | new_pocket`, then one thread per pair
   run sums in order; the pocket list (at most `max_air_pockets`) is copied to the CPU `pocket_storage`, where the
   history matching runs (it is a small list; the per-cell work stays on the device).
@@ -1178,8 +1194,10 @@ one thread per blob.
 
 ### Task 25: Equations on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** two halves (`pressure_equations_gpu.h`), a `cpu` steps test, the scan and
-the grouping through the buffers' `order_scratch`, digests.
+the grouping through the buffers' `order_buffers`, digests.
 
 **Kind:** device
 
@@ -1196,17 +1214,19 @@ the grouping through the buffers' `order_scratch`, digests.
   24; counts and labels equal, coefficients within 1e-12 * scale), `BuildPressureEquations,
   OnGpuTwice_GivesIdenticalBytes` (rows and connections through `WriteResultDigest`), `ApplyAddedVolumeRate,
   OnGpu_EqualsCpu`, `ComputeBlobOfCell, OnGpu_EqualsCpu`.
-- [ ] **Step 2: Implement.** Equation indexes by an integer scan of "has an equation" per cell block (the scratch
-  form of `ComputeExclusivePrefixSum`); connection lists with the scratch form of `BuildGroupsByDestination` (each
-  list in ascending face piece index), both with the buffers' `order_scratch`; blob labels by Task 21's
+- [ ] **Step 2: Implement.** Equation indexes by an integer scan of "has an equation" per cell block
+  (`ComputeExclusivePrefixSum`); connection lists with `BuildGroupsByDestination` (each
+  list in ascending face piece index), both with the buffers' `order_buffers`; blob labels by Task 21's
   `label_propagation.h`.
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Build the pressure equations on the GPU`. Body:
   `CUDA: compiled, not run`.
 
 ### Task 26: Volume correction rate, CPU and GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** two halves (`volume_correction_gpu.h`), a `cpu` steps test over every
-thread block and thread, the sealed-blob sums by `block_sums.h` with the buffers' `sum_scratch` once Task 28 exists
+thread block and thread, the sealed-blob sums by `block_sums.h` with the buffers' `sum_buffers` once Task 28 exists
 (this task writes the per-group partials directly).
 
 **Kind:** numerics
@@ -1272,14 +1292,16 @@ run over every thread block and thread by a `cpu` test, digests.
 
 ### Task 28: Pieces of the solve on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A24):** the pieces built here are the forms without a blob buffer. From Task 45 on they
 accept equations with blocking-material faces (Task 45 adds the face terms); given equations with
 `sealed_gas_blob_count > 0` they return `kBadInput` because the blob pressure is an input they lack, never because
 of material faces. The forms that carry the sealed gas blob pressures, and `ComputeBlockingMaterialVelocities`, come
 in Task 47 (`plan-decisions.md` "A24: pressure pieces").
 
-**Amended 2026-11-14 (Foundation as built):** `block_sums.h` is CPU-only and its total takes the buffers' `SumScratch`
-(scratch form of `ComputeTreeSum`); the per-block partial is a shared function in `block_sum_steps.h`.
+**Amended 2026-11-14 (Foundation as built):** `block_sums.h` is CPU-only and its total takes the buffers' `SumBuffers`
+(passed to `ComputeTreeSum`); the per-block partial is a shared function in `block_sum_steps.h`.
 
 **Kind:** numerics
 
@@ -1295,8 +1317,8 @@ in Task 47 (`plan-decisions.md` "A24: pressure pieces").
   Constraints) for cell and face values; used by every total from here on. **Plan decision (Foundation as
   built):** the partial of one cell block (its places in ascending index, left to right) is the
   `FLUIDITY_CPU_AND_GPU` function of `block_sum_steps.h`, which the CPU loop and the GPU function both call;
-  `ComputeTotalOfBlocks(const Buffer<double>& block_partials, std::uint32_t block_count, SumScratch& scratch)` calls
-  the scratch form of `ComputeTreeSum` on both processors (the buffers' `sum_scratch`; on the CPU it holds no bytes
+  `ComputeTotalOfBlocks(const Buffer<double>& block_partials, std::uint32_t block_count, SumBuffers& sum_buffers)` calls
+  `ComputeTreeSum` with them on both processors (the buffers' `sum_buffers`; on the CPU it holds no bytes
   and gives the bits of `math::TreeSum`), so no total allocates and a CPU total has the GPU's bits.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
@@ -1348,11 +1370,13 @@ comes in Task 47.
 
 ### Task 30: Pieces on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A24):** the A24 forms of the pieces (Task 47) get their GPU forms in Task 48
 (`CoupledSolvePieces, OnGpu_EqualsCpu`): blob buffers whole on the GPU, blob sums by the per-group rule.
 
 **Amended 2026-11-14 (Foundation as built):** two halves (`solve_pieces_gpu.h`), a `cpu` steps test over every thread
-block and thread, totals through `ComputeTotalOfBlocks` with the buffers' `sum_scratch`, digests.
+block and thread, totals through `ComputeTotalOfBlocks` with the buffers' `sum_buffers`, digests.
 
 **Kind:** device
 
@@ -1369,19 +1393,21 @@ block and thread, totals through `ComputeTotalOfBlocks` with the buffers' `sum_s
   the Task 23 scene, 1e-12 * scale), `CheckFlowImbalance, OnGpuTwice_GivesIdenticalBytes` (the report through
   `WriteResultDigest`).
 - [ ] **Step 2: Implement.** Per-face and per-cell functions over `cell_equation_math.h`; totals through
-  `block_sums.h` (one thread per cell block, then `ComputeTotalOfBlocks`, the scratch form of `ComputeTreeSum` with
-  the buffers' `sum_scratch`, over the block partials).
+  `block_sums.h` (one thread per cell block, then `ComputeTotalOfBlocks`, `ComputeTreeSum` with
+  the buffers' `sum_buffers`, over the block partials).
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Run the pressure pieces on the GPU`. Body:
   `CUDA: compiled, not run`.
 
 ### Task 31: Ladder rungs on the CPU
+
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers. Test library `fluidity_grid_test_support` (reconcile item 29).
 
 **Amended 2026-11-14 (A15):** rung 1 is built block by block so that a batched solve (Tasks 58, 59) streams only
 rung 0 and builds rung 1 per batch; rung 0 is never terminal; the direct solve has a room. One piece uses the same
 layout, so both modes have the same ladder.
 
 **Amended 2026-11-14 (Foundation as built):** tests `LABEL cpu` (was `no_gpu`); every `BuildStableOrder` and
-`ComputeExclusivePrefixSum` uses the scratch form with the buffers' `order_scratch`.
+`ComputeExclusivePrefixSum` takes the buffers' `order_buffers`.
 
 **Kind:** numerics
 
@@ -1405,8 +1431,8 @@ layout, so both modes have the same ladder.
   blocks are 4 cells wide and aligned), so rung 1 is numbered by (block, `blob_index`, merged `CellId.value`): per
   block one thread orders its at most 64 keys, per-block counts go through `ComputeExclusivePrefixSum`, and no
   grid-wide sort is made for rung 1. Rungs 2 and deeper are built from rung 1 by the rule above (two passes of
-  `BuildStableOrder`). (Foundation as built: both calls, and the `ComputeExclusivePrefixSum` above, are the scratch
-  forms with the buffers' `order_scratch`.) Rung 0 is never terminal: a blob of at most 32 equations passes one to
+  `BuildStableOrder`). (Foundation as built: both calls, and the `ComputeExclusivePrefixSum` above, take
+  the buffers' `order_buffers`.) Rung 0 is never terminal: a blob of at most 32 equations passes one to
   one into rung 1, its
   cells are skipped by rung 0's weighted Jacobi, and its direct solve runs at rung 1 (the same mathematics as a
   direct solve of the equations). `BufferSizes` gains `std::uint32_t max_direct_solve_values` (doubles; 0 means
@@ -1425,7 +1451,7 @@ layout, so both modes have the same ladder.
   TEST(BuildPressureLadder, SmallestLevelMergesFirst)
   TEST(BuildPressureLadder, RebuiltBuffers_IsWrongGridVersion)
   TEST(BuildPressureLadder, FirstRungMembersShareOneBlock)     // A15: 100 random three-level grids
-      // (grid_test_helpers), two blobs each: every rung-1 coarse cell's members lie in one block; rung-1 order is
+      // (grid_test_support), two blobs each: every rung-1 coarse cell's members lie in one block; rung-1 order is
       // (block, blob, merged id), checked against a test-side sort
   TEST(BuildPressureLadder, BlobOfTwentyEquations_PassesOneToOneIntoRungOne)  // A15: a 20-cell drop beside a
       // big pool: 20 rung-1 cells with one member each; the drop is terminal at rung 1
@@ -1474,8 +1500,10 @@ room, and no rung-0 smoothing of blobs that pass one to one into rung 1 (Task 31
 
 ### Task 33: Ladder on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** two halves (`pressure_ladder_gpu.h`), a `cpu` steps test over every thread
-block and thread, the sort through the buffers' `order_scratch`, digests.
+block and thread, the sort through the buffers' `order_buffers`, digests.
 
 **Kind:** device
 
@@ -1493,19 +1521,21 @@ block and thread, the sort through the buffers' `order_scratch`, digests.
   (`LABEL gpu`): `BuildPressureLadder, OnGpu_EqualsCpu` (rung count, member lists
   equal; weights within 1e-12 * scale), `ApplyPressureLadder, OnGpu_EqualsCpu`, `ApplyPressureLadder,
   OnGpuTwice_GivesIdenticalBytes` (output through `WriteResultDigest`).
-- [ ] **Step 2: Implement.** Each rung built on the device (sort by merge key with the scratch form of
-  `BuildStableOrder` and the buffers' `order_scratch`, one thread per coarse cell);
+- [ ] **Step 2: Implement.** Each rung built on the device (sort by merge key with
+  `BuildStableOrder` and the buffers' `order_buffers`, one thread per coarse cell);
   gather down, spread up, one thread per terminal blob for the direct solve. No rung is built on the CPU.
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Build and apply the pressure ladder on the GPU`. Body:
   `CUDA: compiled, not run`.
 
 ### Task 34: `SolvePressure` on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** the iteration is written in the arithmetic both modes share, so that Task 59 only
 adds sweep boundaries; `SolveResult` gains `blobs_without_direct_solve`.
 
 **Amended 2026-11-14 (Foundation as built):** `rz`, `dq` and every other total of the iteration go through
-`ComputeTotalOfBlocks` with the buffers' `sum_scratch`; nothing allocates per iteration.
+`ComputeTotalOfBlocks` with the buffers' `sum_buffers`; nothing allocates per iteration.
 
 **Kind:** numerics
 
@@ -1527,7 +1557,7 @@ adds sweep boundaries; `SolveResult` gains `blobs_without_direct_solve`.
   ladder's raw output `z_raw`; `z = z_raw - m_b`; `rz = error . z_raw - sum_b m_b E_b`. Every total by Global
   Constraints' two rules. `SolveResult` gains `std::uint32_t blobs_without_direct_solve = 0;` (Task 31's room).
   (Foundation as built: every grid-wide total of the iteration, `rz`, `dq`, the norms of the stop test, is
-  `ComputeTotalOfBlocks` with the buffers' `sum_scratch`, the scratch form of `ComputeTreeSum`, on both processors;
+  `ComputeTotalOfBlocks` with the buffers' `sum_buffers` (passed to `ComputeTreeSum`), on both processors;
   the solve allocates nothing after `BuildPressureBuffers`.)
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
@@ -1565,8 +1595,10 @@ adds sweep boundaries; `SolveResult` gains `blobs_without_direct_solve`.
 
 ### Task 35: `SolvePressure` on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** two halves (`pressure_solve_gpu.h`), per-cell iteration updates in
-`pressure_solve_steps.h` with a `cpu` steps test, totals with the buffers' `sum_scratch`, digests.
+`pressure_solve_steps.h` with a `cpu` steps test, totals with the buffers' `sum_buffers`, digests.
 
 **Kind:** device
 
@@ -1585,7 +1617,7 @@ adds sweep boundaries; `SolveResult` gains `blobs_without_direct_solve`.
   pressure bounds of the Global Constraints), `SolvePressure, OnGpuTwice_GivesIdenticalBytes` (pressure and
   velocity through `WriteResultDigest`), `SolvePressure, OnGpuCancel_ReturnsCancelled`.
 - [ ] **Step 2: Implement.** `rz`, `dq` and the step sizes stay on the device (totals by `ComputeTotalOfBlocks`
-  with the buffers' `sum_scratch`); the CPU reads the progress record
+  with the buffers' `sum_buffers`); the CPU reads the progress record
   (iteration, finished flag, `PressureFailure`, `rz`, `dq`) at each progress read; every function returns at once
   when the finished flag is set.
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Solve for the pressure on the GPU`. Body:
@@ -1777,8 +1809,10 @@ exclusion until Task 42.
 
 ### Task 41: Sharp boundary between two liquids on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (Foundation as built):** a `cpu` steps test of `ComputeMaterialBoundaryPiece` over every thread
-block and thread; the compaction through the buffers' `order_scratch`; digests.
+block and thread; the compaction through the buffers' `order_buffers`; digests.
 
 **Kind:** device
 
@@ -1794,7 +1828,7 @@ block and thread; the compaction through the buffers' `order_scratch`; digests.
   (`ComputeMaterialBoundaryPiece` over every thread block and thread, launch order and reverse, on Task 40's flat
   boundary and oil drop: bytes equal to the CPU entries).
 - [ ] **Step 2: Implement.** One thread per face piece calling `ComputeMaterialBoundaryPiece`; crossed pieces
-  compacted in ascending index with the scratch form of `BuildGroupsByDestination` (the buffers' `order_scratch`);
+  compacted in ascending index with `BuildGroupsByDestination` (the buffers' `order_buffers`);
   the one-material sample rule of Task 40 in the GPU distance function.
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Compute the sharp boundary between two liquids on the GPU`.
   Body: `CUDA: compiled, not run`.
@@ -1865,13 +1899,15 @@ joint viscous solve carries the same two terms.
 
 ### Task 44: Types, inputs and shared formulas of the coupling
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A18):** new task; the declarations and the method every later coupling task follows.
 
 **Amended 2026-11-14 (reconcile):** `SealedGasBlob` comments copied from `plan-decisions.md` verbatim; the
 rank-one term's sum over connections follows the per-group block rule, not one thread per blob.
 
 **Amended 2026-11-14 (Foundation as built):** shared-formula tests `LABEL cpu` (no `fluidity_add_shared_test`); the
-order scratch covers `max_blocking_material_faces`.
+order buffers covers `max_blocking_material_faces`.
 
 **Kind:** numerics
 
@@ -1965,7 +2001,7 @@ order scratch covers `max_blocking_material_faces`.
 - Memory estimate entries (prefix `"pressure: "`): material faces (given `max_blocking_material_faces`,
   `sizeof(BlockingMaterialFace)` + 16 for `g` and velocity per pressure + 2 x 12 for the per-equation lists + 16
   for a ladder pair); sealed gas blobs (given `max_sealed_gas_blobs`, `sizeof(SealedGasBlob)` + 24 for `D`, `r`,
-  the blob sum); blob of connection (face place, 4). (Foundation as built: the order scratch's item count `n` of
+  the blob sum); blob of connection (face place, 4). (Foundation as built: the order buffers's item count `n` of
   Task 12 becomes the larger of `max_face_pieces` and `max_blocking_material_faces`, since the per-equation
   material lists are grouped with it.)
 
@@ -2108,6 +2144,8 @@ connections as reference ends with own weight `g_c * scale` (no caller today; ke
 
 ### Task 47: Solve, correction and check with both couplings, on the CPU
 
+**Amended 2026-11-14 (A30):** a buffer on another processor than the equations is a precondition (`Requires:`, debug assertion), not `kBadInput`; the test is `ShortBuffers_AreBadInput` without the other-processor case.
+
 **Amended 2026-11-14 (A18):** new task; `SolvePressure` and `CheckFlowImbalance` carry both couplings.
 
 **Amended 2026-11-14 (A15):** the sealed gas blob part of the shared arithmetic: per blob `G_j = sum_c g_c d_c`
@@ -2157,8 +2195,8 @@ free solids as the rank-one term). Six tests added (A26/A27 block of Step 1).
   - `CheckFlowImbalance(equations, pressure, sealed_gas_pressure, velocity, settings, buffers)`: the stop rule with
     the blob pressures given instead of recovered by the elimination; each blob row as above (`kIncluded`) against
     `max_volume_error_rate * gas_volume`, reported as `max_sealed_gas_volume_error_rate`.
-  - A blob buffer shorter than the count or on another processor, or a material span whose size is not the count:
-    `kBadInput`, no output written. Blob sums by the per-group rule of Global Constraints.
+  - A blob buffer shorter than the count, or a material span whose size is not the count: `kBadInput`, no output
+    written. Requires (A30): every blob buffer on the equations' processor (debug assertion, not an error value). Blob sums by the per-group rule of Global Constraints.
 - Produces (A26/A27, for the joint solve only; declared in `coupled_solve_pieces.h` exactly as `plan-decisions.md`
   "A viscous liquid sticks, and free solids in the viscous solve (A26, A27)", subsection "Declarations"):
 
@@ -2217,8 +2255,8 @@ free solids as the rank-one term). Six tests added (A26/A27 block of Step 1).
   - `kBadInput`, no output written: a `CoupledVelocities` pointer null while its count is `> 0`
     (`blocking_material_face_count` for `blocking_material_velocity`, `F` for `free_solid_motion`); a given or output
     buffer (`blocking_material_velocity`, `free_solid_motion`, `material_face_scale`, `blocking_material_push`,
-    `free_solid_push`) shorter than its count (`blocking_material_face_count`, or `6 F`) or on another processor than
-    the equations; the blob buffers as the A24 forms. A null pointer with count 0 is accepted.
+    `free_solid_push`) shorter than its count (`blocking_material_face_count`, or `6 F`); the blob buffers as the A24
+    forms. Requires (A30): every buffer on the equations' processor (debug assertion, not an error value). A null pointer with count 0 is accepted.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
 
@@ -2290,10 +2328,9 @@ free solids as the rank-one term). Six tests added (A26/A27 block of Step 1).
       // the cell's filled_volume, kNotConverged. Task 23's scene after SolvePressure: its pressure and velocity
       // with xi = xi_before + dt M^-1 sum_e push_e p_e (computed in the test): the report equals the A24 form's
       // within 1e-12 relative
-  TEST(CoupledVelocityPieces, ShortOrMisplacedBuffers_AreBadInput)   // each CoupledVelocities form and
+  TEST(CoupledVelocityPieces, ShortBuffers_AreBadInput)   // amended (A30); each CoupledVelocities form and
       // ComputeCoupledPush: blocking_material_velocity null on the two-cell fixture (count 1); free_solid_motion null
-      // on Task 23's scene (F 1); each given or output buffer one entry short (0 of 1, 5 of 6); a buffer on another
-      // processor (container build; RunOn mismatch); nothing written (outputs keep a written pattern). Null
+      // on Task 23's scene (F 1); each given or output buffer one entry short (0 of 1, 5 of 6); nothing written (outputs keep a written pattern). Null
       // pointers on equations with count 0: success. BuildPressureEquations on Task 23's scene with
       // free_solid_motion_before_pressure of size 5: kBadInput; size 0 and 6: success
   ```
@@ -2306,6 +2343,8 @@ free solids as the rank-one term). Six tests added (A26/A27 block of Step 1).
 - [ ] **Step 4: Run** the gate. **Commit.** Subject: `Correct material faces and sealed gas in the pressure solve`.
 
 ### Task 48: The coupling on the GPU
+
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
 
 **Amended 2026-11-14 (A18):** new task; GPU forms of Tasks 45 to 47.
 
@@ -2324,7 +2363,7 @@ thread per cell block writes the solid's partial of that block, entries in ascen
 `math::TreeSum` per component over the solid's block partials in ascending block index), no atomics. Test
 `CoupledVelocityPieces, OnGpu_EqualsCpu`.
 
-**Amended 2026-11-14 (Foundation as built):** the groupings through the buffers' `order_scratch`, a `cpu` steps test of
+**Amended 2026-11-14 (Foundation as built):** the groupings through the buffers' `order_buffers`, a `cpu` steps test of
 the coupled per-cell, per-face and per-cell-block functions, digests.
 
 **Kind:** device
@@ -2350,8 +2389,8 @@ the coupled per-cell, per-face and per-cell-block functions, digests.
   thread, launch order and reverse, on Task 46's column with Task 45's faces and on Task 23's scene: bytes equal to
   the CPU forms). Every `gpu` test of this task passes its main outputs to `WriteResultDigest`.
 - [ ] **Step 2: Implement.** Material faces and blobs copied to the device with the equations; per-equation
-  material lists and each blob's connection list with the scratch form of `BuildGroupsByDestination` (the buffers'
-  `order_scratch`); each blob's sum by the per-group
+  material lists and each blob's connection list with `BuildGroupsByDestination` (the buffers'
+  `order_buffers`); each blob's sum by the per-group
   rule of Global Constraints (one thread per cell block writes the blob's partial of that block, connections in
   ascending `face_piece_index`; then one `math::TreeSum` per blob over its block partials in ascending block
   index), one thread per cell gathers (no atomics).
@@ -2511,6 +2550,8 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 
 ### Task 53: Comparison with the proof of concept
 
+**Amended 2026-11-14 (A31):** the throwaway program is built in a temporary directory.
+
 **Amended 2026-11-14 (A18):** renumbered from Task 45; adds `main`'s one-face snow pressure trial.
 
 **Kind:** integration
@@ -2518,8 +2559,8 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 **Files:**
 - Create: `native/fluidity/pressure/testdata/proof_of_concept.json`, `native/fluidity/pressure/proof_of_concept_test.cc`
 
-- [ ] **Step 1: Produce the old numbers** (plan-decisions: export `main` with `git archive` to the scratchpad and
-  build its CPU preset there). In the scratchpad write a program linked to `main`'s library that runs, on the
+- [ ] **Step 1: Produce the old numbers** (plan-decisions: export `main` with `git archive` to a temporary directory and
+  build its CPU preset there). In a temporary directory write a program linked to `main`'s library that runs, on the
   Task 51 cases rotated back to Y-up and on the hydrostatic column: `PrepareExplicitMacPressureSystem3D`
   (coefficients, right sides), `ProjectMacPressure3D` (pressure, velocity), `ComputeGeometry` in curvature mode
   (`liquid_boundary_geometry_math_3d.h:690-729`), `EvaluateLiquidCavity3D` (`liquid_cavity.cc:104`),
@@ -2540,6 +2581,8 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 
 ### Task 54: Method paper, solving in batches
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** new task; the paper states how a solve too large for the GPU runs batch by batch.
 
 **Kind:** mechanical
@@ -2553,7 +2596,7 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 - Produces labels `<sec-solve-in-batches>`, `<fig-solve-batches>`, `<proc-solve-pressure-in-batches>`.
 
 - [ ] **Step 1: Text** from `plan-decisions.md` "Batched solves (A15)": what stays on the GPU (state, geometry, the
-  coarse rungs) and what goes to CPU memory (equations, vectors, scratch); one arithmetic for both modes, so a
+  coarse rungs) and what goes to CPU memory (equations, vectors, working buffers); one arithmetic for both modes, so a
   batched solve has the one-piece iteration count and normally its bytes; the two sum rules (grid-wide, per group);
   labels joined across batches; the ladder's rung 1 built block by block; the sweeps of one iteration (3, or 4 with
   a sealed blob) and their copy volume; the alternative of overlapping pieces with a coarse correction and why it is
@@ -2571,7 +2614,10 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 **Amended 2026-11-14 (A15):** new task; the shared mechanism of every batched solve (pressure, viscosity, gas).
 
 **Amended 2026-11-14 (Foundation as built):** `solve_batches.cc` is `solve_batches_cpu.cc` (two halves; GPU half in Task
-60); `SolveBatches` owns an `OrderScratch` for its prefix sums, counted in `BuildSolveBatchesMemoryEstimate`.
+60); `SolveBatches` owns an `OrderBuffers` for its prefix sums, counted in `BuildSolveBatchesMemoryEstimate`.
+
+**Amended 2026-11-14 (A31):** `SolveBatches` owns the `GridBuilderBuffers` lent to its loaded `GridBuffers`
+(`BuildGridBuffers` has one form).
 
 **Kind:** integration
 
@@ -2583,7 +2629,8 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 **Interfaces:**
 - Consumes: grid `BuildRanges`, `BorderSearchBuffers`, `BuildBorderSearchBuffers`, the stacked buffer form of
   `FindBorderBlocks`, the buffer form of `BuildGridPiece`, `GridPiece::block_in_whole_grid_buffer`,
-  `BuildGridBuffers`, `BuildGridMemoryEstimate`; Foundation `BuildBuffer(..., CpuMemory::kLockedForCopies)`, the slice
+  `BuildGridBuilderBuffers`, `BuildGridBuffers` (one form, taking lent `GridBuilderBuffers`; A31),
+  `BuildGridMemoryEstimate`; Foundation `BuildBuffer(..., CpuMemory::kLockedForCopies)`, the slice
   forms of `WriteBuffer`, `ReadBuffer`, `CopyBuffer`.
 - Produces exactly the declarations of `plan-decisions.md` "Batched solves (A15)": `SolveBatches`,
   `BuildSolveBatches`, `BuildSolveBatchesMemoryEstimate`, `ApplySolveBatches`, `LoadSolveBatch`, `WriteBatchValues`,
@@ -2603,18 +2650,21 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
   `max_loaded_blocks`), border search (`BuildBorderSearchMemoryEstimate`), two border buffers and the map copy (4 B
   each per loaded block), the per-batch border lists (`where = kCpu`, 4 B per cell block times 2: an upper bound of
   stacked borders over all batches), the staging buffer (`kCpu`, `max_loaded_blocks * 240 * 64` bytes).
-  **Plan decision (Foundation as built):** `SolveBatches` owns an `OrderScratch` built by `BuildSolveBatches` with
-  `BuildOrderScratch(run_on, max_loaded_blocks)`; the loaded begin offsets of `WriteBatchGroups` (an exclusive prefix
-  sum over the loaded blocks' item counts) use the scratch form of `ComputeExclusivePrefixSum` with it, on the
-  processor (a CPU `SolveBatches` holds a CPU scratch). Rows `"pressure: solve batches order scratch"` (given count
-  `max_loaded_blocks`, `bytes_each = ComputeOrderScratchSize(run_on).bytes_per_item`) and `"... order scratch fixed
+  **Plan decision (Foundation as built):** `SolveBatches` owns an `OrderBuffers` built by `BuildSolveBatches` with
+  `BuildOrderBuffers(run_on, max_loaded_blocks)`; the loaded begin offsets of `WriteBatchGroups` (an exclusive prefix
+  sum over the loaded blocks' item counts) pass it to `ComputeExclusivePrefixSum`, on the
+  processor (a CPU `SolveBatches` holds CPU order buffers). **Plan decision (A31):** `SolveBatches` also owns one
+  `GridBuilderBuffers` built by `BuildSolveBatches` with `BuildGridBuilderBuffers(run_on, max_loaded_blocks)` and
+  lent to its loaded `GridBuffers` (`BuildGridBuffers(settings, builder_buffers)`, the only form); the loaded grid
+  buffers row `BuildGridMemoryEstimate(run_on)` (default `BuilderBuffersSharing::kOnePerGrid`) already counts them. Rows `"pressure: solve batches order buffers"` (given count
+  `max_loaded_blocks`, `bytes_each = ComputeOrderBuffersSize(run_on).bytes_per_item`) and `"... order buffers fixed
   bytes"` (given count `fixed_bytes`, `bytes_each = 1`), `where = kRunOn`. Nothing allocates after
   `BuildSolveBatches`.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`, everything on the CPU):
 
   ```cpp
-  TEST(ApplySolveBatches, RangesCoverEveryBlockOnceAndFit)   // 100 random grids (grid_test_helpers), max loaded
+  TEST(ApplySolveBatches, RangesCoverEveryBlockOnceAndFit)   // 100 random grids (grid_test_support), max loaded
       // 3 * CountBlocksInLargestLayer, widths {kTouchingCells} and {kTouchingCells, kTouchingCells}: ranges in
       // order, each block once; range plus stacked border <= max_loaded_blocks
   TEST(ApplySolveBatches, LargestRangeIsChosen)              // one block more per range would not fit some range
@@ -2628,7 +2678,7 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
   TEST(LoadSolveBatch, CancelSet_IsCancelledAndLoadsNothing) // loaded_batch() unchanged
   TEST(ReadSolveCopyReport, CountsLoadsSweepsAndBytes)       // two sweeps of 4 batches: 8 loads, 2 sweeps, bytes
       // equal the sum the test computes from the loaded block counts
-  TEST(BuildSolveBatchesMemoryEstimate, MatchesAllocatedBytes)  // the order scratch rows included
+  TEST(BuildSolveBatchesMemoryEstimate, MatchesAllocatedBytes)  // the order buffers rows included
   // solve_batches_no_gpu_test.cc, LABEL no_gpu
   TEST(BuildSolveBatches, OnGpuWithoutAGpu_IsRunOnCallFailed)
   ```
@@ -2638,12 +2688,14 @@ symplectic Euler, unstable for `omega dt > 2` with factor `((omega dt)^2 - 2 + s
 
 ### Task 56: Batched layout of the buffers, the snapshot from pass 1, labels across batches
 
+**Amended 2026-11-14 (A30|A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers. `WriteSnapshotRange` requires both buffers on one processor (A30).
+
 **Amended 2026-11-14 (A15):** new task.
 
 **Amended 2026-11-14 (reconcile):** adds `ResetSolveCopyReport(PressureBuffers&)` with two tests (the step resets
 the copy report through the buffers; `FindSolveBatches` stays const).
 
-**Amended 2026-11-14 (Foundation as built):** in the batched layout the two scratches stay `kRunOn`, the order scratch
+**Amended 2026-11-14 (Foundation as built):** in the batched layout the sum and order buffers stay `kRunOn`, the order buffers
 sized for the loaded piece or the whole cell count; `solve_batches_cpu.cc` is the file name.
 
 **Kind:** numerics
@@ -2675,12 +2727,12 @@ sized for the loaded piece or the whole cell count; `solve_batches_cpu.cc` is th
   `CpuMemory::kLockedForCopies`) at the limits and again `kRunOn` at `max_loaded_blocks`; `BuildSolveBatches(run_on,
   max_cells / 64, max_loaded_blocks, {kTouchingCells})` is held inside. `WriteSnapshotRange` copies, for the range
   blocks of `piece`, every pass-1 row, and takes the largest of the snapshot's two scalars; both buffers one-piece
-  or the whole one batched, both on one processor (`kBadInput` otherwise). Labels: inside a loaded piece Task 21's
+  or the whole one batched (`kBadInput` otherwise); requires both on one processor (A30: debug assertion). Labels: inside a loaded piece Task 21's
   propagation gives each cell the smallest whole cell place index reachable within the piece; for every border
   cell a `LabelJoin{label given here, label its own batch gave}`; joined on the CPU by union with the smaller label
-  as root. **(Foundation as built)** The `sum_scratch` and `order_scratch` rows stay `where = kRunOn` in the batched
-  layout (they are given-count rows); the sum scratch keeps `max_cells / 64` values (block partials are kept for every
-  block across batches), and the order scratch holds the larger of `max_loaded_blocks * 240` (groupings of one loaded
+  as root. **(Foundation as built)** The `sum_buffers` and `order_buffers` rows stay `where = kRunOn` in the batched
+  layout (they are given-count rows); the sum buffers keeps `max_cells / 64` values (block partials are kept for every
+  block across batches), and the order buffers holds the larger of `max_loaded_blocks * 240` (groupings of one loaded
   piece), `max_cells` (rung 1 and deeper, built whole on the processor) and `max_blocking_material_faces`.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
@@ -2704,14 +2756,16 @@ sized for the loaded piece or the whole cell count; `solve_batches_cpu.cc` is th
   `LABEL no_gpu` (`pressure_buffers_no_gpu_test.cc`):
   `BuildPressureBuffers, BatchedLayoutOnGpuWithoutAGpu_IsRunOnCallFailed`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4: Run** the gate. **Commit.** Subject:
-  `Keep the pressure scratch in CPU memory when the solve runs in batches`.
+  `Keep the pressure working buffers in CPU memory when the solve runs in batches`.
 
 ### Task 57: Air pockets, material boundaries and the equations in batches, on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** new task.
 
-**Amended 2026-11-14 (Foundation as built):** the prefix sum through the buffers' `order_scratch`, the per-group sums
-through `ComputeTotalOfBlocks` and the buffers' `sum_scratch`.
+**Amended 2026-11-14 (Foundation as built):** the prefix sum through the buffers' `order_buffers`, the per-group sums
+through `ComputeTotalOfBlocks` and the buffers' `sum_buffers`.
 
 **Kind:** numerics
 
@@ -2726,8 +2780,8 @@ through `ComputeTotalOfBlocks` and the buffers' `sum_scratch`.
   `BuildPressureEquations` (with `ComputeEquationIndexes`, `ComputeBlobOfCell`, the blob classes and the sealed-blob
   check), `ApplyAddedVolumeRate` and `ComputeVolumeCorrectionRate`. No signature changes.
 - **Plan decisions:** each function cuts with `ApplySolveBatches` on its grid when the bound version differs, then
-  sweeps: equation indexes from per-block counts and one `ComputeExclusivePrefixSum` (scratch form, the buffers'
-  `order_scratch`); rows, connections and the
+  sweeps: equation indexes from per-block counts and one `ComputeExclusivePrefixSum` (the buffers'
+  `order_buffers`); rows, connections and the
   material and blob term lists per batch, written back for the range blocks; blob and pocket labels by Task 56's
   join and one relabel sweep; blob classes, pocket volumes, `incompatible_volume_rate` and the gas blob sums by the
   per-group rule; material boundary entries per batch, concatenated in batch order (that is face-piece order); the
@@ -2790,6 +2844,8 @@ through `ComputeTotalOfBlocks` and the buffers' `sum_scratch`.
 
 ### Task 59: `SolvePressure` and the pieces in batches, on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** new task.
 
 **Amended 2026-11-14 (A24):** the A24 forms of Tasks 45 to 47 run in batches too: the blob buffers stay whole on
@@ -2807,7 +2863,7 @@ rule (per block partials kept across batches, one `math::TreeSum` per component 
 `CoupledVelocityPieces, InBatches_SameAsOnePiece`.
 
 **Amended 2026-11-14 (Foundation as built):** grid-wide totals between sweeps through `ComputeTotalOfBlocks` with the
-buffers' `sum_scratch`.
+buffers' `sum_buffers`.
 
 **Kind:** numerics
 
@@ -2824,7 +2880,7 @@ buffers' `sum_scratch`.
   changed; (2) start: `ComputeStartPressure` and the true error, one sweep, plus the rank-one sums; (3) per
   iteration the sweeps A and B (one sweep when no blob is `kSealed`), the whole rungs, C, D of `plan-decisions.md`,
   computing exactly Task 34's and Task 47's arithmetic; the step sizes and the stop test on the processor between
-  sweeps (every grid-wide total by `ComputeTotalOfBlocks` with the buffers' `sum_scratch`, over block partials
+  sweeps (every grid-wide total by `ComputeTotalOfBlocks` with the buffers' `sum_buffers`, over block partials
   kept across the batches of a sweep); (4) when the running error passes the stop rule: correction and
   `CheckFlowImbalance` (two sweeps), restart
   from the true error (two sweeps) when the check fails; (5) after acceptance, one write-back sweep writes
@@ -2940,6 +2996,8 @@ three cuts identical bytes; the analytic expectation of the original test where 
 
 ### Task 62: Comment pass and hand-over
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A18):** renumbered from Task 46; its lists include Tasks 43 to 50.
 
 **Amended 2026-11-14 (A15):** renumbered from Task 54; its lists include Tasks 54 to 61.
@@ -2948,8 +3006,8 @@ three cuts identical bytes; the analytic expectation of the original test where 
 
 **Amended 2026-11-14 (A26/A27):** the hand-over lists the A26/A27 additions for the joint solve (Step 3).
 
-**Amended 2026-11-14 (Foundation as built):** the hand-over also lists the Foundation-as-built adoption (scratch members
-and rows, the `RunOn` parameter of `ComputeBufferBytes` and `BuildPressureMemoryEstimate`, the removed `launch_size.h`,
+**Amended 2026-11-14 (Foundation as built):** the hand-over also lists the Foundation-as-built adoption (sum and order buffers
+members and rows, the `RunOn` parameter of `ComputeBufferBytes` and `BuildPressureMemoryEstimate`, the removed `launch_size.h`,
 the same-bits promise of `ComputeDistanceToSurface`, `solve_batches_cpu.cc`).
 
 **Kind:** mechanical
@@ -2980,7 +3038,7 @@ the same-bits promise of `ComputeDistanceToSurface`, `solve_batches_cpu.cc`).
   velocity unknowns there, not eliminated; the A24 forms without `CoupledVelocities` no longer called by viscosity
   and kept for `SolvePressure`, which is unchanged; the plan decision
   `EquationInputs::free_solid_motion_before_pressure` as an owner question; free solids left out of the outer diagonal); the remaining known-open test (piston
-  receiving volume); the Foundation-as-built adoption (the `sum_scratch` and `order_scratch` of `PressureBuffers`
+  receiving volume); the Foundation-as-built adoption (the `sum_buffers` and `order_buffers` of `PressureBuffers`
   and of `SolveBatches` with their rows, the `RunOn` parameter of `ComputeBufferBytes` and
   `BuildPressureMemoryEstimate`, the removed `launch_size.h`, the same-bits promise of `ComputeDistanceToSurface`,
   `solve_batches_cpu.cc`, the `_steps_test.cc` files).

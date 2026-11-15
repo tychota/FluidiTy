@@ -92,6 +92,8 @@ enum class ViscosityError : std::uint8_t {
   kPressureSolveDidNotConverge,   // The outer loop used all its iterations or found no usable direction.
   kBuffersTooSmall,            // More samples or coefficients than the buffers were built for.
   kRunOnCallFailed,            // CheckCanRunOn failed for the chosen processor, or a call to it failed.
+  kOutOfMemory,                // NEW (reconcile item 25). BuildViscosityBuffers could not allocate; magnitude =
+                               // bytes asked. Returned only by the building functions.
   kCancelled,                  // NEW. *cancel_requested was set; neither output was written.
   // Capability exclusions (5.7). Each stays until its surface-force test passes. (A24 removed kSnowNotSupported and
   // A27 kFreeSolidNotSupported, which stood first: snow, springy solids and free solids are unknowns of the solve.)
@@ -182,7 +184,11 @@ struct ViscosityBufferSettings {
 };
 std::int64_t ComputeViscosityBufferBytes(const ViscosityBufferSettings& settings);  // Same table as the build.
 
-class ViscosityBuffers;  // Preallocated, reused every step; lives on the CPU or the GPU. Move-only.
+class ViscosityBuffers;  // Preallocated, reused every step; lives on the CPU or the GPU. Move-only. Holds the
+                         // SumBuffers and OrderBuffers every sum, order, prefix sum and grouping takes (A31).
+// kBadInput for inconsistent counts; kRunOnCallFailed when the processor cannot run; kOutOfMemory when an
+// allocation fails (the only function of the module that returns it). Every other function requires the arrays
+// it is given on the buffers' processor (debug assertion, A30).
 std::expected<ViscosityBuffers, ViscosityFailure> BuildViscosityBuffers(const ViscosityBufferSettings& settings);
 // NEW (A15). The buffers' SolveBatches and its copy report; null in one piece.
 const pressure::SolveBatches* FindSolveBatches(const ViscosityBuffers& buffers);
@@ -320,8 +326,8 @@ Foundation `base/` additions (EXISTS, `shared-interface.md` section (a)). This d
 A15: every dot product and `power_lost_to_viscosity` is block partials then `math::TreeSum` in both modes;
 `ComputeTreeDot` over a whole buffer is no longer used for the solve's dots. `ComputeLargestMagnitude` stays
 (exact in any order). Foundation as built also gives `MemoryEstimateEntry::where` (`MemoryWhere { kRunOn, kCpu }`),
-`BuildBuffer(..., CpuMemory::kLockedForCopies)`, `ComputeExclusivePrefixSum` and `BufferError::kRunOnMismatch`
-(mapped to `kBadInput`) (EXISTS, `plan-decisions.md`).
+`BuildBuffer(..., CpuMemory::kLockedForCopies)`, `ComputeExclusivePrefixSum` taking `OrderBuffers` (one form, A31); buffers on one processor are a precondition, so
+no processor mismatch is mapped (A30) (EXISTS, `plan-decisions.md`).
 
 ```cpp
 namespace fluidity {
@@ -815,7 +821,7 @@ a fitted sample, and the four face positions the fit picks. `<fig-viscosity-two-
 the face pass as two gathers, with the fixed order marked.
 
 Pseudocode: `<proc-build-viscosity-samples>` (steps 1 to 5) and `<proc-solve-viscosity-and-pressure>` (steps 6 to 12),
-numbered as in section 5 and in the code. After it, one paragraph on the batched form (A15: scratch in CPU
+numbered as in section 5 and in the code. After it, one paragraph on the batched form (A15: working buffers in CPU
 memory, two sweeps per inner iteration, the outer step's sweeps, possible and slow for a syrup scene), referring
 to pressure's `<sec-solve-in-batches>`.
 
@@ -850,6 +856,7 @@ surface); [9] Larionov, Batty, Bridson 2017 (pressure and viscosity together); [
 | `MacViscousVelocityBlockOptions3D`, `MacPressureSolverOptions3D` | `ViscositySettings` | DECIDED suffix |
 | `MacViscousPressureProjection3D` | `ViscosityResult` | DECIDED suffix |
 | `ViscosityWorkspace`, `VelocityBlockScratch3D` | `ViscosityBuffers` | DECIDED word |
+| (replaced 2026-11-14) `SumScratch`, `OrderScratch`, `sum_scratch`, `order_scratch`, "scratch" | `SumBuffers`, `OrderBuffers`, `sum_buffers`, `order_buffers`, "working buffers" | A31 |
 | traction | surface force per area (in test names and comments) | decision 2 |
 | status codes with empty messages | `ViscosityError`, `ViscosityFailure`, `ToMessage`, `ToName` | owner A2, A13; `ToName` stable code |
 | snow or sand exclusion (`kSnowOrSandNotSupported` in this design's draft) | `kSnowNotSupported`, then removed (A24) | owner A9, A24 |
@@ -865,7 +872,7 @@ surface); [9] Larionov, Batty, Bridson 2017 (pressure and viscosity together); [
 - The one-thread GPU solve and its per-call allocation (`native/cuda/viscosity_velocity_block_3d*`,
   `cuda_viscosity.h`).
 - The six coupled-solve entry points and the velocity-solve callbacks (`mac_viscous_pressure_3d.h`),
-  `RemapStrain`, `OwnProjection`, scratch-arena plumbing.
+  `RemapStrain`, `OwnProjection`, the old working-memory arena plumbing.
 - `ProjectUniformViscosity` and `PrepareCutViscosityGeometry` (`liquid_substep_3d_cpu.cc:540-700`): their
   volumes come from the geometry snapshot, their normal-row edit is step 2.
 - The whole-grid scan and allocation in `FitFaceGradient`; the single-viscosity limit of the mixed-size path.
@@ -998,6 +1005,15 @@ Decisions taken after this design was first written (recorded in the viscosity a
     A27; `plan-decisions.md` A26/A27 section.
 20. **Snow not a validation target.** Decision: snow has no special case; liquid-on-snow is tested only at rest and
     in the step's five-material scene. Source: owner note, 2026-11-14.
+21. **Working buffers, one form (A31).** `ViscosityBuffers` holds `SumBuffers sum_buffers` and `OrderBuffers
+    order_buffers`; every base sum, order, prefix sum and grouping has one form, which takes them. "Working buffers"
+    replaces the old word in prose. Source: owner answer A31 (2026-11-14).
+22. **Processors of the arguments (A30).** Arrays and buffers passed together live on one processor: a documented
+    precondition checked by a debug assertion. `ToViscosityFailure` maps no processor mismatch. Source: owner
+    answer A30 (2026-11-14).
+23. **Out of memory (reconcile item 25).** `ViscosityError::kOutOfMemory` (magnitude = bytes asked) is returned
+    only by `BuildViscosityBuffers`; it replaces "a failed allocation is `kRunOnCallFailed`". `ToViscosityFailure`
+    maps `BufferError::kOutOfMemory` to it. Source: reconcile-todo item 25 (2026-11-14).
 
 **Open** (for the owner; the two A18 open points, sealed gas and springy solids beside a viscous liquid, are
 decided by A24 and option C):

@@ -322,7 +322,7 @@ struct GasBufferSizes {
   std::uint32_t max_cells, max_face_pieces, max_gas_blobs, max_sources;
   std::uint32_t max_loaded_blocks = 0;  // NEW (A15). 0: one piece. Else the batched layout (6, "Batched solve").
 };
-class GasBuffers;  // Owns the scratch arrays of this module on one processor. No allocation after it is built.
+class GasBuffers;  // Owns the working buffers of this module on one processor. No allocation after it is built.
                    // Holds carried_pressure (the committed gas pressure copied before the solve, so that
                    // SolvePressure's output never aliases its input) and, batched, a pressure::SolveBatches.
 std::expected<std::unique_ptr<GasBuffers>, GasFailure> BuildGasBuffers(const GasBufferSizes& sizes, RunOn run_on);
@@ -481,7 +481,7 @@ struct MarkerChanges {            // Lives in GasBuffers. Ordered by cell place,
   particles::NewParticles to_add;                    // mass = ambient density * rest_volume (a sample_weight).
   std::span<const std::size_t> to_remove;            // Ascending indexes in the try's current grouping.
   // NEW (plan decision, 2026-11-14, buffers in batched runs). The GPU form builds the lists in the "gas: marker
-  // changes on the processor" scratch, reads the two counts in its status record, then one slice ReadBuffer per
+  // changes on the processor" array, reads the two counts in its status record, then one slice ReadBuffer per
   // list array into the CPU rows: copy_count = those calls, bytes_copied their bytes; 0 and 0 on the CPU. The
   // spans above point into CPU memory in every case (the step hands them to particles::AddParticles and
   // RemoveParticles, which take CPU spans).
@@ -498,7 +498,8 @@ std::expected<MarkerChanges, GasFailure> FindMarkerChanges(
     const GasLaw& law, const MarkerSettings& settings, GasBuffers& buffers);
 // NEW (plan decision, 2026-11-14, buffers in batched runs). The CPU form, for a batched run (markers in CPU memory,
 // amounts on the run's processor, the step's CPU mirrors of the committed gas volume and gas velocity and its CPU
-// grid copy). Every input in CPU memory (grid tables, both arrays, the markers), else kBadInput; arrays bound to
+// grid copy). Requires: every input in CPU memory (grid tables, both arrays, the markers; checked by an assertion
+// in debug builds, A30); arrays bound to
 // inputs.grid (version and block count), else kWrongGridVersion. Same rule and same lists as the amounts form,
 // which calls it.
 struct MarkerGridInputs {
@@ -573,8 +574,10 @@ std::expected<void, GasFailure> CheckGasCanRun(const GasSceneSummary& scene, con
 // 2026-11-14, buffers in batched runs): the MarkerChanges rows ("gas: marker changes to add", "gas: marker changes
 // to remove") have where = kCpu with either run_on and in every layout (not part of the batched list); with
 // RunOn::kGpu the rows add "gas: marker changes on the processor" (the same given count and element sizes,
-// where = kRunOn, kOneCall), the GPU scratch the lists are built in before their read-back.
-std::vector<MemoryEstimateEntry> BuildGasMemoryEstimate(const GasBufferSizes& sizes);
+// where = kRunOn, kOneCall), the GPU array the lists are built in before their read-back. Changed (Foundation as
+// built, reconcile item 24): takes the processor, because the working-buffer rows (sum and order buffers of
+// GasBuffers and GasAmounts, from ComputeSumBuffersSize / ComputeOrderBuffersSize) and the row above depend on it.
+std::vector<MemoryEstimateEntry> BuildGasMemoryEstimate(const GasBufferSizes& sizes, RunOn run_on);
 ```
 
 **Provided for `shared-interface.md` section (c):** gas markers need only the common particle arrays
@@ -683,7 +686,7 @@ arrays through `BuildResizeTry` and `GasArraysToRemap` when cells are split or m
 `flame` weighted by `gas_volume`; `gas_volume` shared out on a split and summed on a merge;
 `background_pressure` and `pressure` copied on a split, `gas_volume`-weighted on a merge); in a batched run the
 markers pass in batches, and `ApplyGasStepStart` and `SolveGas` run on the whole grid (`kBatched`) or with their
-scratch streamed piece by piece (`kBatchedWithSolvesInPieces`, A15; `batches::BuildBatchPlan` sizes it).
+working buffers streamed piece by piece (`kBatchedWithSolvesInPieces`, A15; `batches::BuildBatchPlan` sizes it).
 
 **I/O and CLI (PROVIDED by I/O 3, after its update):** `GasLaw`, `BurnSettings`, `GasSettings`,
 `MarkerSettings`, `ActiveGasSettings`, the keyed `GasSource` list and `GasWind` in the ready scene (I/O owns the
@@ -982,7 +985,7 @@ cells.
 
 Not excluded: liquid (the one liquid material set, viscous or not, with or without a pressure law), snow, cut,
 driven and free solids (they reach gas only through `SolidCoverage`), sloped solids, mixed cell sizes, a batched run
-(`ApplyGasStepStart` and `SolveGas` run on the whole grid or with their scratch in pieces, A15; the markers pass
+(`ApplyGasStepStart` and `SolveGas` run on the whole grid or with their working buffers in pieces, A15; the markers pass
 in batches like any particles).
 
 ### 5.7 Every material
@@ -1042,7 +1045,7 @@ geometry. `ApplyGasStepStart` and `SolveGas` always take every block of the grid
 
 **Batched solve (NEW, A15; `plan-decisions.md` "Batched solves (A15)").** With `GasBufferSizes::max_loaded_blocks
 > 0` the buffers hold a `pressure::SolveBatches` (`BuildSolveBatches(run_on, max_cells / 64, max_loaded_blocks,
-{kTouchingCells})`). Rule: state and geometry stay whole on the run's processor, solver scratch goes to CPU
+{kTouchingCells})`). Rule: state and geometry stay whole on the run's processor, solver buffers go to CPU
 memory. Kept `where = kRunOn`: the committed and try amounts, the gas `CellGeometry` and `FacePieceGeometry`,
 `blob_of_cell`, the blob lists and every block-counted or given-count row. Moved to `kCpu` at the limits (and
 `kRunOn` at `max_loaded_blocks` for the loaded piece): every other row counted per cell or face place
@@ -1135,7 +1138,7 @@ Analytic and conservation, CPU, each on uniform cells and on two size levels unl
 | `BuildGasMemoryEstimate, BatchedLayout_MarkerChangesNotDuplicated` (plan decision, buffers in batched runs) | Batched layout | One `kCpu` row per list, none at `max_loaded_blocks` | exact |
 | `ResetSolveCopyReport, BatchedGasBuffers_ReportZeroAfterReset` (reconcile) | After one batched `SolveGas` | Every field of `*ReadSolveCopyReport(gas_buffers)` is 0 | exact |
 | **Marker lists in CPU memory (plan decision, 2026-11-14, buffers in batched runs; plan Tasks 10, 20)** | | | |
-| `BuildGasMemoryEstimate, MarkerChangesInCpuMemoryInEveryLayout` | `RunOn::kGpu` (rows only, no GPU needed) and `max_loaded_blocks > 0` | Both list rows `where = kCpu`; the scratch row `kRunOn` only on `kGpu` | exact |
+| `BuildGasMemoryEstimate, MarkerChangesInCpuMemoryInEveryLayout` | `RunOn::kGpu` (rows only, no GPU needed) and `max_loaded_blocks > 0` | Both list rows `where = kCpu`; the on-processor row `kRunOn` only on `kGpu` | exact |
 | `FindMarkerChanges, CpuInputsForm_EqualsAmountsForm` | The 0, 3, 8, 20 markers case through `MarkerGridInputs` (the amounts' `gas_volume` and a velocity copy) | Identical lists; copy fields 0 | exact |
 | `FindMarkerChanges, CpuInputsFormWithArrayOfOtherGrid_IsWrongGridVersion` | An array bound to another grid | `kWrongGridVersion` | exact |
 | `FindMarkerChanges, OnGpu_ListsInCpuMemoryAndCopiesCounted` (label `gpu`) | The same case on the GPU | Spans in CPU memory; `copy_count` == the list arrays read, `bytes_copied` == entries times their `sizeof` | exact |
@@ -1273,6 +1276,7 @@ Old names are the branch's (`origin/codex/m7-low-mach-gas`); VERIFIED means read
 | (none) | `MarkerGridInputs`, `MarkerChanges::copy_count`, `bytes_copied` | NEW (plan decision, 2026-11-14, buffers in batched runs) |
 | (none, plan) | `ComputeLiftFromDensities`, `ComputeJoinedPressure`, `ComputeSourceCoverage`, `ComputeCellEighthCenter`, `carried_pressure` | NEW (plan-decisions "Gas") |
 | absl status codes | `GasError`, `GasFailure`, `kNone`, `kRunOnCallFailed`, `kCancelled`, `ToMessage`, `ToName` | A2, A13; Q11 |
+| "scratch" (Foundation's `SumScratch`, `OrderScratch`; the module's "scratch" rows and arrays) | `SumBuffers`, `OrderBuffers`, "working buffers"; test `ScratchRowsMatchScratchSizes` -> `WorkingBufferRowsMatchBuffersSizes` | A31 (replaced names) |
 
 Words checked and not used: `soot`, `carrier` (naming review: never say, for the grid velocity), `enthalpy`,
 `species`, `advect`, `divergence`, `component`, `draft`, `emitter` (naming review: never say `emit`),
@@ -1437,8 +1441,8 @@ Replaced in part by decision 16 (A24): `SealedGasCoupling` and both `sealed_gas_
 `kReadOneStepLate` reading beside a viscous liquid, and `ComputeSealedGasStepLimit` with its term in
 `step_limit` are removed; the rest of this decision stands.
 
-**11. The gas solve in batches.** Decision: `ApplyGasStepStart` and `SolveGas` also run with their scratch in
-CPU memory, one loaded piece at a time (`GasBufferSizes::max_loaded_blocks > 0`, `pressure::SolveBatches`), for
+**11. The gas solve in batches.** Decision: `ApplyGasStepStart` and `SolveGas` also run with their working buffers
+in CPU memory, one loaded piece at a time (`GasBufferSizes::max_loaded_blocks > 0`, `pressure::SolveBatches`), for
 the step's `RunMode::kBatchedWithSolvesInPieces`; gas amounts and gas geometry stay whole on the run's
 processor; no signature changes; per-blob totals by block partials then `math::TreeSum`, in both modes. A
 batched run agrees with one piece within the tolerances of section 6 and is repeatable byte for byte on its own.
@@ -1467,7 +1471,7 @@ at cell-eighth centres; `FindCellsToKeepActive` marks only cells of the existing
 
 **14. Marker lists in CPU memory, and a CPU form for batched runs.** Decision: the `MarkerChanges` rows are
 `where = kCpu` in every layout (the step hands the lists to `particles::AddParticles` and `RemoveParticles`, which
-take CPU spans); a GPU run adds the `"gas: marker changes on the processor"` scratch, and the GPU form reads its
+take CPU spans); a GPU run adds the `"gas: marker changes on the processor"` array, and the GPU form reads its
 two lists back, counted in the new `MarkerChanges::copy_count` and `bytes_copied`. A batched run (both modes)
 calls the new CPU form `FindMarkerChanges(const MarkerGridInputs&, ...)` on the step's CPU grid copy and its
 mirrors of the committed `gas_volume` and gas velocity. `FindCellsToKeepActive` stays on the amounts' processor;
@@ -1496,6 +1500,25 @@ step test `TryStep, SealedPocketAboveSyrup_NoSealedStepLimit` added. Replaces th
 decision 10 and the matching part of decision 3. Source: owner answer A24; `plan-decisions.md` "Viscous liquids
 with blocking materials and sealed gas (A24), and what counts as viscous (A25)", "A24: step, gas, solids"; gas plan
 Tasks 2, 4, 8, 16, 18, 21, 25, 26, 31, Global Constraints.
+
+**17. Working buffers, one form (A31).** Decision: the word "scratch" is not used; `GasBuffers` and `GasAmounts` own
+`SumBuffers sum_buffers` / `OrderBuffers order_buffers` (Foundation's renamed types), and every Foundation sum,
+prefix sum or grouping gas calls has one form, which takes those buffers. The two forms of `FindMarkerChanges` (the
+amounts form and the CPU form on `MarkerGridInputs`) stay: they differ by processor, not by working memory, and the
+CPU form is needed by batched runs (decision 14). Source: owner answer A31; `plan-decisions.md` "Owner's review of
+the Foundation rulings applied (A28-A33)".
+
+**18. Arguments on one processor are a precondition (A30).** Decision: the CPU form of `FindMarkerChanges` requires
+every input in CPU memory, and the `gas_markers` view lives on the amounts' processor; both are `Requires:` checked
+by an assertion in debug builds, no longer `kBadInput`. Gas never mapped `BufferError::kRunOnMismatch`, which is
+removed. Source: owner answer A30; gas plan Task 20.
+
+**19. The memory estimate takes the processor (reconcile item 24).** Decision: `BuildGasMemoryEstimate(const
+GasBufferSizes& sizes, RunOn run_on)` (section 3), because the working-buffer rows and the GPU marker-list row
+depend on it; the step passes its run's processor. A library that needs exceptions or RTTI calls
+`fluidity_apply_compile_flags(<target> EXCEPTIONS <ON|OFF> [RTTI <ON|OFF>])` right after `add_library`; gas needs
+neither. Source: `reconcile-todo.md` item 24; `plan-decisions.md` "Plans adopt Foundation as built (2026-11-14)";
+gas plan Task 10.
 
 **Open** (left undecided by the plans):
 

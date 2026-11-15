@@ -6,7 +6,7 @@
 which cells split or merge, rebuild the grid in one transaction, remap every grid-carried value without losing
 any, and move liquid between the particle region and the grid-only region. Part B, batches: run a scene whose
 particles do not fit the GPU in batches of cell blocks, with the solves either on the whole grid or, when their
-scratch does not fit either (owner answer A15), batch by batch through pressure's `SolveBatches`; the planner
+working buffers do not fit either (owner answer A15), batch by batch through pressure's `SolveBatches`; the planner
 chooses one piece, batches, or batches with solves in pieces and shows the planned memory and copies. A batched
 run agrees with the one-piece run within the solver's tolerance, and gives the same bytes for every cut and on
 every repeat. CPU first; device code compiled, not run.
@@ -44,8 +44,10 @@ Foundation's list, unchanged:
   the `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive
   with the code. A commit must pass every part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -68,15 +70,17 @@ Foundation's list, unchanged:
   `GpuArray`). Every GPU function is a thin loop over `FLUIDITY_CPU_AND_GPU` per-item functions in a shared
   `<name>_steps.h` (or an existing shared formula header); a `cpu` test `<name>_steps_test.cc` runs them for every
   thread block and thread of `ComputeLaunchSize(count)`, in launch order and in reverse, against the CPU loop: the
-  main evidence until the hardware run. Scratch: per-step sums and prefix sums use the scratch forms of
-  `ComputeTreeSum`, `ComputeLargestMagnitude` and `ComputeExclusivePrefixSum` with the `sum_scratch` and
-  `order_scratch` that `CellResize` and `BatchedRun` own (built once, sized from their limits, counted in their memory
-  estimates with `ComputeSumScratchSize` / `ComputeOrderScratchSize`). Errors: a failed check writes nothing; after
+  main evidence until the hardware run. Working buffers: per-step sums and prefix sums pass to
+  `ComputeTreeSum`, `ComputeLargestMagnitude` and `ComputeExclusivePrefixSum` (one form each, A31) the `sum_buffers` and
+  `order_buffers` that `CellResize` and `BatchedRun` own (built once, sized from their limits, counted in their memory
+  estimates with `ComputeSumBuffersSize` / `ComputeOrderBuffersSize`); a function whose buffers or working buffers
+  live on different processors breaks a documented precondition (`Requires:` same processor, a debug assertion,
+  A30), never an error value. Errors: a failed check writes nothing; after
   `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building forms.
   Exactness: discrete outputs equal on CPU and GPU; floating-point within design 6 unless a header promises the same
   bits unless NaN (`CheckWithinTolerance`, `CheckSameBitsOrBothNaN`). Tests link `fluidity_base_test_support` and the
-  helper libraries they use (`fluidity_grid_test_helpers`, `fluidity_step_test_helpers`,
-  `fluidity_pressure_test_scenes`, this module's `fluidity_cell_resize_test_helpers`, made with
+  helper libraries they use (`fluidity_grid_test_support`, `fluidity_step_test_support`,
+  `fluidity_pressure_test_scenes`, this module's `fluidity_cell_resize_test_support`, made with
   `fluidity_add_test_library`) through `LINKS`; `gpu` tests pass their main outputs to `WriteResultDigest`. Labels:
   `cpu` everywhere, `no_gpu` only for behaviour on a machine without a GPU, `gpu` only on hardware. Every target goes
   through the helpers of `cmake/fluidity_targets.cmake`, and every source file is listed in a CMake file.
@@ -108,7 +112,7 @@ This module's own:
   springy-solid particles are never taken into a record; `ApplyGridOnlyRegionToGrid` writes only into the one
   liquid material set; a grid-only cell never touches a cell that holds gas.
 - **The resize is a transaction (design 5.1):** any failure after `BuildResizeTry` calls `RejectResize` (and
-  `grid::ReleaseBuffers` on a resized grid already built); the committed state stays the same to the byte.
+  `grid::TakeBuffers` on a resized grid already built); the committed state stays the same to the byte.
 - **Batched requirement (design 5.10, amended 2026-11-14, A15):** a batched run gives the same bytes for every cut
   and on every repeat, in each mode (`kBatched`, `kBatchedWithSolvesInPieces`); against the one-piece run of the
   same processor it agrees within the solver's tolerance (one step: pressure's velocity and pressure bounds; whole
@@ -126,14 +130,14 @@ This module's own:
 - **Test labels (amended 2026-11-14, Foundation as built):** shared-formula, operation and scene tests `LABEL cpu`
   (the container's `cuda` step runs them too); device tests `LABEL gpu`. Every operation with a
   `_gpu.cu` has a `no_gpu` test "on the GPU without a GPU gives `kRunOnCallFailed`".
-- **Test scenes** come from the step's `fluidity_step_test_helpers` (`step_test_scenes.h`, extended in Task 1); a
+- **Test scenes** come from the step's `fluidity_step_test_support` (`step_test_scenes.h`, extended in Task 1); a
   step scene used with cell resize gets `has_cell_resize = true` through `scene_to_change()`. This module's
-  test-only library `fluidity_cell_resize_test_helpers` holds the run builders (Tasks 10, 24, 29 and 39); amended
-  2026-11-14 (Foundation as built): it is made with `fluidity_add_test_library(fluidity_cell_resize_test_helpers
-  SOURCES ... LINKS fluidity_step_test_helpers fluidity_grid_test_helpers fluidity_base_test_support)` and each test
+  test-only library `fluidity_cell_resize_test_support` holds the run builders (Tasks 10, 24, 29 and 39); amended
+  2026-11-14 (Foundation as built): it is made with `fluidity_add_test_library(fluidity_cell_resize_test_support
+  SOURCES ... LINKS fluidity_step_test_support fluidity_grid_test_support fluidity_base_test_support)` and each test
   names it in `LINKS`; no test defines its own bit comparison, buffer reader or tolerance check.
 - **Proof-of-concept numbers** are produced as `plan-decisions.md` says (export `main` outside the worktree,
-  build there, a scratch driver never committed), rotated from Y-up with rows `{1,0,0},{0,0,-1},{0,1,0}`: `main`'s
+  build there, a throwaway driver never committed), rotated from Y-up with rows `{1,0,0},{0,0,-1},{0,1,0}`: `main`'s
   `y` neighbours become this code's `z`, `main`'s `+z` neighbour becomes `-y`, and children are matched by their
   centre position after the rotation, not by index. `main`'s sources are under `native/src/`.
 
@@ -160,8 +164,8 @@ Prove it: `uv run python tools/check_commit.py` prints `PASS` on every line, and
 counts at least one in each file. If either fails, stop and ask the owner.
 
 **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides `base/run_on_call.h`
-(`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the scratch forms of the sums (`SumScratch`) and of
-the stable order and prefix sum (`OrderScratch`), `base/test_support.h` (library `fluidity_base_test_support`) and
+(`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the sums with their `SumBuffers` and the stable
+order and prefix sum with their `OrderBuffers` (one form each, A31), `base/test_support.h` (library `fluidity_base_test_support`) and
 `fluidity_add_test_library`; read `AGENTS.md` "Structure" before the first task. The gate prints seven `PASS` lines:
 `format`, `rules`, `cpu` debug, `cpu` release, `tidy`, `paper`, `cuda`.
 
@@ -298,6 +302,8 @@ sources and tests through the helpers.
 
 ### Task 5: Split and merge of an amount
 
+**Amended 2026-11-14 (A31):** test comment says a throwaway search.
+
 **Kind:** numerics
 
 **Amended 2026-11-14 (Foundation as built):** the shared-header tests are `LABEL cpu` (`fluidity_add_shared_test` retired).
@@ -326,7 +332,7 @@ sources and tests through the helpers.
   TEST(ComputeSplitAmounts, Jump_StaysWithinNeighbours)    // x: low 0, B 1, high 10; y, z flat: every 8 * small inside
       // [0, 10] within 1e-14 relative
   TEST(ComputeSplitAmounts, MissingNeighbour_FlatOnThatAxis)
-  TEST(ComputeSplitAmounts, LastCellOutOfRange_AllGetAnEighth)  // Review Focus 3: inputs found once by a scratch
+  TEST(ComputeSplitAmounts, LastCellOutOfRange_AllGetAnEighth)  // Review Focus 3: inputs found once by a throwaway
       // search over random amounts (written into the test with a comment saying so) where B - sum(0..6) falls
       // below the range: every small cell == B / 8 exactly
   TEST(ComputeSplitAmounts, ZeroBigCell_AllZero)           // B 0, neighbours positive: all eight exactly 0
@@ -427,7 +433,7 @@ sources and tests through the helpers.
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** the test links `fluidity_grid_test_helpers` through `LINKS`.
+**Amended 2026-11-14 (Foundation as built):** the test links `fluidity_grid_test_support` through `LINKS`.
 
 **Files:**
 - Modify: `split_and_merge_cells.h`, `split_and_merge_cells_cpu.cc`, `split_and_merge_cells_test.cc`
@@ -446,7 +452,7 @@ sources and tests through the helpers.
       // cells); request level-1 {2,2,2} (touches A's corner at (1,1,1)): result exactly {A, {2,2,2}} in fixed order
   TEST(FindCellsThatMustSplit, ChainOfForcedSplits_Repeats)  // 4 levels, one request forces two more levels
   TEST(FindCellsThatMustSplit, AboveMaxCellCount_IsTooManyCellBlocks)
-  TEST(FindCellsThatMustSplit, ResultPassesSizeStepRule)    // 100 random grids (fluidity_grid_test_helpers), 3 requests
+  TEST(FindCellsThatMustSplit, ResultPassesSizeStepRule)    // 100 random grids (fluidity_grid_test_support), 3 requests
       // each: applying SplitCell to every result cell gives a list CheckSizeStepRule accepts
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** with `// Step N:` from `<proc-find-cells-that-must-split>`.
@@ -460,19 +466,22 @@ sources and tests through the helpers.
 two CPU grids are the step's, so `CellResize` neither allocates nor counts them; `BuildGridMemoryEstimate(kCpu, 1)`
 with its storage count.
 
-**Amended 2026-11-14 (Foundation as built):** `CellResize` also owns a `SumScratch`, an `OrderScratch` and a one-word changed flag, built once and
+**Amended 2026-11-14 (Foundation as built):** `CellResize` also owns a `SumBuffers`, an `OrderBuffers` and a one-word changed flag, built once and
 counted in its memory estimate; the test library is made with `fluidity_add_test_library`.
+
+**Amended 2026-11-14 (A31, A30):** "scratch" wording replaced by "working buffers"; the estimate test is
+`WorkingBufferEntriesMatchTheBuffers`; `ToCellResizeFailure` no longer maps a processor mismatch (none exists).
 
 **Kind:** mechanical
 
 **Files:**
 - Create: `native/fluidity/cell_resize/resize_cells.h` (types and `BuildCellResize` part), `cell_resize.cc`,
   `cell_resize_access.h` (private, CPU only), `cell_resize_test.cc`, `cell_resize_no_gpu_test.cc`; test-only
-  library `fluidity_cell_resize_test_helpers`: `cell_resize_test_helpers.h`, `cell_resize_test_helpers.cc`
-- Modify: `native/fluidity/cell_resize/CMakeLists.txt` (`fluidity_add_test_library(fluidity_cell_resize_test_helpers
-  SOURCES cell_resize_test_helpers.cc LINKS fluidity_step_test_helpers fluidity_grid_test_helpers
+  library `fluidity_cell_resize_test_support`: `cell_resize_test_support.h`, `cell_resize_test_support.cc`
+- Modify: `native/fluidity/cell_resize/CMakeLists.txt` (`fluidity_add_test_library(fluidity_cell_resize_test_support
+  SOURCES cell_resize_test_support.cc LINKS fluidity_step_test_support fluidity_grid_test_support
   fluidity_base_test_support)`; `cell_resize_test` `LABEL cpu`, `cell_resize_no_gpu_test` `LABEL no_gpu`, both with
-  `LINKS fluidity_cell_resize_test_helpers`)
+  `LINKS fluidity_cell_resize_test_support`)
 
 **Interfaces:**
 - Produces design 3.4 `RegionSettings`, `kMaxFilledShare`, `kAmountTolerance`, `CellResizeSettings`,
@@ -494,20 +503,20 @@ counted in its memory estimate; the test library is made with `fluidity_add_test
   | refill list (`particles::NewParticles` arrays) | `Vec3` x 2, `Mat3`, `double` x (3 + ingredients), `std::uint8_t` | added particle | one call |
   | amounts at step start | `double` x (3 + ingredients) | cell place | one step try |
   | block partial sums | `double` x (8 + ingredients) | cell block | one step try |
-  | sum scratch (amended, Foundation as built) | `ComputeSumScratchSize(run_on).bytes_per_item` bytes | cell block | whole run |
-  | sum scratch fixed bytes | 1 byte x `ComputeSumScratchSize(run_on).fixed_bytes` | given count | whole run |
-  | order scratch (amended) | `ComputeOrderScratchSize(run_on).bytes_per_item` bytes | cell place | whole run |
-  | order scratch fixed bytes | 1 byte x `ComputeOrderScratchSize(run_on).fixed_bytes` | given count | whole run |
+  | sum buffers (amended, Foundation as built) | `ComputeSumBuffersSize(run_on).bytes_per_item` bytes | cell block | whole run |
+  | sum buffers fixed bytes | 1 byte x `ComputeSumBuffersSize(run_on).fixed_bytes` | given count | whole run |
+  | order buffers (amended) | `ComputeOrderBuffersSize(run_on).bytes_per_item` bytes | cell place | whole run |
+  | order buffers fixed bytes | 1 byte x `ComputeOrderBuffersSize(run_on).fixed_bytes` | given count | whole run |
   | changed flag (amended) | `std::uint32_t` | given count 1 | whole run |
 
   `cell_resize_access.h` gives the operations of this module writable views of these buffers.
-- **Plan decision (amended 2026-11-14, Foundation as built):** `CellResize` owns `SumScratch sum_scratch` (built by
-  `BuildSumScratch(run_on, limits.max_cell_blocks)`: the block-partial sums of Tasks 22, 23, 26 and 28) and
-  `OrderScratch order_scratch` (`BuildOrderScratch(run_on, 64 * limits.max_cell_blocks)`: the integer prefix sums of
-  the refill ids, Tasks 25 and 28), reached through `cell_resize_access.h`; per-step calls use the scratch forms and
-  allocate nothing. The estimate's scratch entries use the `CellResize`'s own processor, which its arguments already
+- **Plan decision (amended 2026-11-14, Foundation as built):** `CellResize` owns `SumBuffers sum_buffers` (built by
+  `BuildSumBuffers(run_on, limits.max_cell_blocks)`: the block-partial sums of Tasks 22, 23, 26 and 28) and
+  `OrderBuffers order_buffers` (`BuildOrderBuffers(run_on, 64 * limits.max_cell_blocks)`: the integer prefix sums of
+  the refill ids, Tasks 25 and 28), reached through `cell_resize_access.h`; per-step calls pass these buffers and
+  allocate nothing. The estimate's working-buffers entries use the `CellResize`'s own processor, which its arguments already
   fix: `kCpu` when `grid_copies == kHeldByStep` (the batched GPU run resizes on the CPU, Task 43), else
-  `grid_run_on`; so `BuildCellResizeMemoryEstimate` keeps its signature. A failed scratch build is `kOutOfMemory`
+  `grid_run_on`; so `BuildCellResizeMemoryEstimate` keeps its signature. A failed build of these buffers is `kOutOfMemory`
   (or `kRunOnCallFailed`), as for the other buffers of this table; the mapping function `ToCellResizeFailure(BufferError)`
   (private, `cell_resize_access.h`) is the one place a `BufferError`, and through `ToBufferError` a
   `RunOnCallStatus`, becomes a `CellResizeFailure`.
@@ -521,8 +530,8 @@ counted in its memory estimate; the test library is made with `fluidity_add_test
   kHeldByStep };` `CellResizeSettings` gains `GridCopies grid_copies = GridCopies::kNone;` and the estimate becomes
   `BuildCellResizeMemoryEstimate(std::uint32_t ingredient_count, RunOn grid_run_on = RunOn::kCpu, GridCopies
   grid_copies = GridCopies::kNone)`. `kNone` with a CPU grid; `kHeldByCellResize` in a one-piece GPU run (the two
-  CPU grid rows above, built as two `GridBuffers` sharing one CPU `grid::GridScratch`, entries
-  `grid::BuildGridMemoryEstimate(kCpu, 2, grid::ScratchSharing::kOneForAllBuffers)` with `where = kCpu`);
+  CPU grid rows above, built as two `GridBuffers` sharing one CPU `grid::GridBuilderBuffers`, entries
+  `grid::BuildGridMemoryEstimate(kCpu, 2, grid::BuilderBuffersSharing::kOneForAllGrids)` with `where = kCpu`);
   `kHeldByStep` in a batched GPU run (no CPU grid row: the committed grid is `step::FindCpuGridCopy(simulation)` and
   the resized CPU grid is built into `ResizeTry::free_cpu_grid_copy_buffers()`, step plan Task 32). `kBadInput`:
   `kHeldByCellResize` or `kHeldByStep` with `grid_run_on == kCpu`, `kNone` with `kGpu`. I/O sets it from the run
@@ -538,8 +547,8 @@ counted in its memory estimate; the test library is made with `fluidity_add_test
   GridOnGpu_AddsTheGridCopies` (A17); `BuildCellResizeMemoryEstimate, HeldByStep_NoGridCopyRows` (reconcile: no
   `"cell resize: committed grid copy"` or `"resized grid on the CPU"` entry, and `BuildCellResize` allocates none);
   `BuildCellResize, GridCopiesNotMatchingGridRunOn_IsBadInput` (reconcile); `BuildCellResizeMemoryEstimate,
-  ScratchEntriesMatchScratchBytes` (amended, Foundation as built: the four scratch entries sum to
-  `sum_scratch.byte_count() + order_scratch.byte_count()` for `kCpu`, and for `kHeldByStep` they use the CPU sizes);
+  WorkingBufferEntriesMatchTheBuffers` (amended, Foundation as built: the four working-buffers entries sum to
+  `sum_buffers.byte_count() + order_buffers.byte_count()` for `kCpu`, and for `kHeldByStep` they use the CPU sizes);
   `LABEL no_gpu`:
   `BuildCellResize, OnGpuWithoutAGpu_IsRunOnCallFailed`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
@@ -568,8 +577,8 @@ the `kGpu` branch returns `kRunOnCallFailed`; the per-cell pass update is a shar
   nothing, capped at `max_depth`. Paths leaving `blocks` and its touching border are not seen; `ResizeCells` passes
   every block. `kBadInput` for `max_depth <= 0`; `kWrongGridVersion` for an array of another version or block count.
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`, `LINKS fluidity_grid_test_helpers fluidity_base_test_support`;
-  hand-built `GeometrySnapshot` on grids from `grid_test_helpers`; the expected values from a test-side Dijkstra over
+- [ ] **Step 1: Failing tests** (`LABEL cpu`, `LINKS fluidity_grid_test_support fluidity_base_test_support`;
+  hand-built `GeometrySnapshot` on grids from `grid_test_support`; the expected values from a test-side Dijkstra over
   touching cells):
 
   ```cpp
@@ -596,7 +605,7 @@ loop over `ComputeCellDepthInPass`, a `cpu` steps test over every thread block a
   `depth_below_surface_gpu_test.cc`, `cell_resize_no_gpu_test.cc` (extend)
 - Modify: `depth_below_surface_cpu.cc` (the `kGpu` branch under `#if defined(FLUIDITY_HAS_GPU)`), `CMakeLists.txt`
   (`fluidity_add_gpu_sources`; the steps test `LABEL cpu`, the GPU test `LABEL gpu`, both `LINKS
-  fluidity_cell_resize_test_helpers fluidity_base_test_support`)
+  fluidity_cell_resize_test_support fluidity_base_test_support`)
 
 - [ ] **Step 1: Tests.** `LABEL cpu` (`depth_below_surface_steps_test.cc`, the main evidence until the hardware
   run): `ComputeCellDepthInPass, EveryThreadOrder_EqualsCpuPasses` (Task 11 cases: each pass run for every thread
@@ -625,7 +634,7 @@ tolerance instead of equal bytes.
   checks, dispatch, CPU loop), `cell_size_facts_gpu.h` (private), `cell_size_facts_gpu.cu`, `cell_size_facts_steps.h`
   (shared: `ComputeCellSizeFactsOfCell`, one cell place: its facts, wanted width, change and veto, from raw arrays),
   `cell_size_facts_test.cc`, `cell_size_facts_steps_test.cc`, `cell_size_facts_gpu_test.cc`
-- Modify: `CMakeLists.txt` (sources, GPU source, the three tests with `LINKS fluidity_cell_resize_test_helpers
+- Modify: `CMakeLists.txt` (sources, GPU source, the three tests with `LINKS fluidity_cell_resize_test_support
   fluidity_base_test_support`)
 
 **Interfaces:**
@@ -671,7 +680,7 @@ tolerance instead of equal bytes.
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** the test links `fluidity_grid_test_helpers` and `fluidity_base_test_support` through `LINKS`.
+**Amended 2026-11-14 (Foundation as built):** the test links `fluidity_grid_test_support` and `fluidity_base_test_support` through `LINKS`.
 
 **Files:**
 - Create: `native/fluidity/cell_resize/resize_plan.h` (private, CPU only), `resize_plan_cpu.cc`, `resize_plan_test.cc`
@@ -700,8 +709,8 @@ tolerance instead of equal bytes.
   no veto, and no conflict with the split cells; a refused merge whose 8 had waited long enough is counted in
   `refused_merge_count`.
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`, `LINKS fluidity_grid_test_helpers fluidity_base_test_support`;
-  hand-built arrays on grids from `grid_test_helpers`): `BuildResizePlan, MoreSplitsThanTheLimit_FirstInFixedOrder` (5 wanted, limit 3: `wanted_split_count` 5, the first 3
+- [ ] **Step 1: Failing tests** (`LABEL cpu`, `LINKS fluidity_grid_test_support fluidity_base_test_support`;
+  hand-built arrays on grids from `grid_test_support`): `BuildResizePlan, MoreSplitsThanTheLimit_FirstInFixedOrder` (5 wanted, limit 3: `wanted_split_count` 5, the first 3
   and their closure); `BuildResizePlan, ClosureReachesKeepSizeCell_SplitRefusedAndRerun`;
   `BuildResizePlan, MergeAfterUnbrokenWait` (0.1 s per call: no merge at 0.2 s, merge at 0.3 s);
   `BuildResizePlan, BrokenOnce_WaitStartsAgain`; `BuildResizePlan, ZeroElapsed_DurationsUnchanged`;
@@ -872,8 +881,8 @@ block and thread; digests.
   `StepTry::fields().velocity_after_pressure` read in stage 4, which holds the committed values carried onto the try
   grid by `FacePieceId` (step design 5.3 step 3).
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`, `LINKS fluidity_transfer_test_scenes fluidity_grid_test_helpers
-  fluidity_base_test_support`; transfer's builders on grids from `grid_test_helpers`):
+- [ ] **Step 1: Failing tests** (`LABEL cpu`, `LINKS fluidity_transfer_test_scenes fluidity_grid_test_support
+  fluidity_base_test_support`; transfer's builders on grids from `grid_test_support`):
 
   ```cpp
   TEST(ApplyGridOnlyRegionToGrid, BothCellsGridOnly_CarriedVelocityAndMass)  // 4 x 4 x 4 grid-only full cells, record
@@ -963,8 +972,10 @@ the Task 19 steps functions; a `cpu` steps test; discrete equal, values within d
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** private `move_grid_only_liquid_gpu.h` returning `RunOnCallStatus`; per-cell and per-block steps
-functions with a `cpu` test; `moved_volume` and the largest speed from the scratch forms with `CellResize`'s
-`sum_scratch`; digests.
+functions with a `cpu` test; `moved_volume` and the largest speed from the sums with `CellResize`'s
+`sum_buffers`; digests.
+
+**Amended 2026-11-14 (A31):** the sums have one form, which takes `cell_resize.sum_buffers`; "scratch" wording removed.
 
 **Files:**
 - Create: `move_grid_only_liquid_gpu.cu`, `move_grid_only_liquid_gpu.h` (private), `move_grid_only_liquid_steps.h`
@@ -980,8 +991,8 @@ functions with a `cpu` test; `moved_volume` and the largest speed from the scrat
   cell equal; amounts and `moved_volume` within design 6; outputs to `WriteResultDigest`),
   `...OnGpuTwice_GivesIdenticalBytes`. `LABEL no_gpu`: on the GPU without a GPU.
 - [ ] **Step 2: Implement:** one thread per receiving cell; the first failing cell by an integer `atomicMin` over
-  cell places; `moved_volume` from block partials and the scratch form `ComputeTreeSum(partials, block_count,
-  cell_resize.sum_scratch)`, the largest speed with `ComputeLargestMagnitude(..., cell_resize.sum_scratch)`; no
+  cell places; `moved_volume` from block partials and `ComputeTreeSum(partials, block_count,
+  cell_resize.sum_buffers)`, the largest speed with `ComputeLargestMagnitude(..., cell_resize.sum_buffers)`; no
   allocation per call. **Step 3:** gate. **Commit.** Subject:
   `Move grid-only liquid on the GPU`. Body: `CUDA: compiled, not run`.
 
@@ -990,7 +1001,11 @@ functions with a `cpu` test; `moved_volume` and the largest speed from the scrat
 **Kind:** numerics
 
 **Amended 2026-11-14 (Foundation as built):** two halves with `liquid_totals_gpu.h`; per-block partials in a shared steps function with a `cpu`
-test; the sum over blocks with the scratch form of `ComputeTreeSum`; the GPU comparison within design 6.
+test; the sum over blocks with `ComputeTreeSum` and its `SumBuffers`; the GPU comparison within design 6.
+
+**Amended 2026-11-14 (A31, A30):** `ComputeLiquidTotals` has one form, which takes `SumBuffers& sum_buffers` (the
+design's form without buffers and the overload pair are gone); buffers on the other processor are a precondition,
+not `kBadInput`; `ScratchForm_SameBytesAsFormWithout` removed, `ScratchTooSmall_IsBadInput` renamed.
 
 **Files:**
 - Create: `liquid_totals_cpu.cc`, `liquid_totals_gpu.h` (private), `liquid_totals_gpu.cu`, `liquid_totals_steps.h`
@@ -1002,33 +1017,34 @@ test; the sum over blocks with the scratch form of `ComputeTreeSum`; the GPU com
 - Produces design 3.5 `LiquidTotals`, `ComputeLiquidTotals`. **Plan decision:** a private
   `ComputeIngredientTotals` (same rule, one total per scene ingredient) in `liquid_totals_cpu.cc` for the check of
   `ResizeCells` step 8.
-- **Plan decision (amended 2026-11-14, Foundation as built; new overload, the design's form unchanged):**
+- **Plan decision (amended 2026-11-14, Foundation as built; one form since A31, replacing the design's form):**
 
   ```cpp
-  // As the form without scratch, allocating nothing: the block partials are summed with the scratch form of
-  // ComputeTreeSum. kBadInput when scratch.run_on() differs from the grid's processor or the block count is above
-  // scratch.max_count(). Same result bytes as the form without scratch.
+  // Allocates nothing: the block partials are summed by ComputeTreeSum with `sum_buffers`. kBadInput when the
+  // block count is above sum_buffers.max_count(). Requires: sum_buffers.run_on() is the grid's processor (checked
+  // by an assertion in debug builds, A30).
   std::expected<LiquidTotals, CellResizeFailure> ComputeLiquidTotals(
       const particles::ParticlesTry& particles_try, const GridOnlyAmounts& amounts,
       std::span<const std::uint8_t> material_is_counted, const grid::StaggeredGrid& grid,
-      grid::CellBlockRange blocks, SumScratch& scratch);
+      grid::CellBlockRange blocks, SumBuffers& sum_buffers);
   ```
-  The form without scratch checks, builds a `SumScratch` for `blocks.count` on the grid's processor (`kOutOfMemory`),
-  and calls it. `ResizeCells` and the step callbacks pass `cell_resize.sum_scratch`; render output passes its own
-  (render output plan Task 31).
+  `ResizeCells` and the step callbacks pass `cell_resize.sum_buffers`; render output passes its recorder's
+  (render output plan Task 31); tests build their own with `BuildSumBuffers(run_on, blocks.count)`.
 
 - [ ] **Step 1: Tests.** `LABEL cpu`: `ComputeLiquidTotals, ParticlesPlusRecords_TreeSumOfBlocks` (bytes against a
   test-side block-partial sum); `ComputeLiquidTotals, GasMarkersLeftOut` (`BuildSmokeOverDeepWaterScene`, liquid mask);
   `ComputeLiquidTotals, MaskOfWrongLength_IsBadInput`; `ComputeLiquidBlockPartials, EveryThreadOrder_EqualsCpu`
   (steps test, the main evidence until the hardware run: every thread block and thread, launch order and reverse).
   `LABEL gpu`: `ComputeLiquidTotals, OnGpu_EqualsCpu` (within design 6, amounts; totals to `WriteResultDigest`).
-  `ComputeLiquidTotals, ScratchForm_SameBytesAsFormWithout`; `ComputeLiquidTotals, ScratchTooSmall_IsBadInput` (a scratch for 1 block, 2 blocks given).
-  `LABEL no_gpu`: on the GPU without a GPU. The totals over blocks use the scratch form of `ComputeTreeSum` on both
-  processors.
+  `ComputeLiquidTotals, BuffersTooSmall_IsBadInput` (`SumBuffers` for 1 block, 2 blocks given).
+  `LABEL no_gpu`: on the GPU without a GPU. The totals over blocks use `ComputeTreeSum` with the given `SumBuffers` on
+  both processors.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
   `Sum the liquid held by particles and grid-only cells`. Body: `CUDA: compiled, not run`.
 
 ### Task 24: `ResizeCells`, the transaction for cells and grid values
+
+**Amended 2026-11-14 (A29, A31):** `grid::TakeBuffers` (was `ReleaseBuffers`); `ComputeLiquidTotals` in its one form with `cell_resize.sum_buffers`.
 
 **Amended 2026-11-14 (A17):** on a GPU grid the CPU parts read a `ReadGrid` copy; the resized grid is built on the
 CPU for the map and on the GPU by the step from the same cell list.
@@ -1040,14 +1056,14 @@ measured copies per step include the resize (`plan-decisions.md` "Copies counted
 batched GPU run the CPU resized grid goes to the step with `step::ApplyResizedCpuGridCopy`.
 
 **Amended 2026-11-14 (Foundation as built):** the "changes nothing" promise covers every failed check; a failed GPU call (`kRunOnCallFailed`)
-also rejects the resize, but the try's outputs are unspecified and the run stops. Step 8's totals use the scratch
-form of `ComputeLiquidTotals`.
+also rejects the resize, but the try's outputs are unspecified and the run stops. Step 8's totals pass
+`cell_resize.sum_buffers` to `ComputeLiquidTotals` (its one form, A31).
 
 **Kind:** integration
 
 **Files:**
 - Create: `native/fluidity/cell_resize/resize_cells_cpu.cc`, `resize_cells_test.cc`
-- Modify: `resize_cells.h`, `cell_resize.cc`, `cell_resize_test_helpers.h/.cc`
+- Modify: `resize_cells.h`, `cell_resize.cc`, `cell_resize_test_support.h/.cc`
 
 **Interfaces:**
 - Produces design 3.4 `ResizeCells` with design 5.1 steps 1 to 5, 6 without `ApplyRegionTransfer` (Task 25 adds it),
@@ -1068,7 +1084,7 @@ form of `ComputeLiquidTotals`.
   - (Amended, Foundation as built) Any failure after `BuildResizeTry` calls `RejectResize`; for a failed check the
     committed state keeps its bytes (the tests below), and after `kRunOnCallFailed` the try's arrays are unspecified
     and the step reports the failure so the run stops (`AGENTS.md` "Structure"); no test demands bytes after a GPU
-    call failure. Step 8 sums with `ComputeLiquidTotals(..., cell_resize.sum_scratch)`.
+    call failure. Step 8 sums with `ComputeLiquidTotals(..., cell_resize.sum_buffers)`.
   - Step 8 tolerance: `|after - before| <= kAmountTolerance * max(|before|, |after|)`, for mass, rest volume,
     current volume, each ingredient volume (liquid materials) and the gas amount `sum gas_volume * gas_density`.
   - `ResizeResult{resized, module_error = static_cast<std::uint8_t>(failure.error)}`.
@@ -1114,9 +1130,11 @@ form of `ComputeLiquidTotals`.
 
 ### Task 25: Region transfer, rules 1 to 3
 
+**Amended 2026-11-14 (A31):** `ComputeExclusivePrefixSum` named without "scratch form" (one form, A31).
+
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** the refill ids' integer prefix sum is `ComputeExclusivePrefixSum(counts, cell_count, first_ids, cell_resize.order_scratch)`; the public function lives in `region_transfer_cpu.cc` (checks, dispatch, CPU loop).
+**Amended 2026-11-14 (Foundation as built):** the refill ids' integer prefix sum is `ComputeExclusivePrefixSum(counts, cell_count, first_ids, cell_resize.order_buffers)`; the public function lives in `region_transfer_cpu.cc` (checks, dispatch, CPU loop).
 
 **Files:**
 - Create: `native/fluidity/cell_resize/region_transfer_cpu.cc`, `region_transfer_test.cc`
@@ -1131,7 +1149,7 @@ form of `ComputeLiquidTotals`.
   id order; removed particles' amounts added to the record in that order. A refilled cell's velocity is the
   area-weighted mean of its face-piece velocities per axis (`fields_to_fill().velocity_after_pressure`), its
   `fitted_velocity_change` diagonal = (high mean - low mean) / width; refill ids come from an integer prefix sum of
-  per-cell counts (amended: the scratch form of `ComputeExclusivePrefixSum` with `cell_resize.order_scratch`, its
+  per-cell counts (amended: `ComputeExclusivePrefixSum` with `cell_resize.order_buffers`, its
   `BufferError` mapped by `ToCellResizeFailure`). `kTooManyParticles` when the refill passes a limit.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`, through `ResizeCells` on simulations of Task 1's scenes):
@@ -1153,9 +1171,11 @@ form of `ComputeLiquidTotals`.
 
 ### Task 26: Region transfer, rules 4 and 5, the ledger, every failure
 
+**Amended 2026-11-14 (A31):** the ledger sum is `ComputeTreeSum` with `cell_resize.sum_buffers` (one form).
+
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** on a GPU run the ledger's block partials are summed with the scratch form of `ComputeTreeSum` (`cell_resize.sum_scratch`); `FailureAtEachStep_ChangesNothing` covers check failures only.
+**Amended 2026-11-14 (Foundation as built):** on a GPU run the ledger's block partials are summed with `ComputeTreeSum` and `cell_resize.sum_buffers` (its one form, A31); `FailureAtEachStep_ChangesNothing` covers check failures only.
 
 **Files:**
 - Modify: `region_transfer_cpu.cc`, `region_transfer_test.cc`, `resize_cells_cpu.cc`, `resize_cells_test.cc`
@@ -1221,11 +1241,13 @@ form of `ComputeLiquidTotals`.
 
 ### Task 28: Region transfer and the whole resize on the GPU
 
+**Amended 2026-11-14 (A31):** "scratch" wording replaced; the prefix sum and sums take `CellResize`'s buffers (one form).
+
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** private `region_transfer_gpu.h` returning `RunOnCallStatus`; per-cell work in
 `region_transfer_steps.h` with a `cpu` test over every thread block and thread; the prefix sum and the ledger sums
-through the scratch forms with `CellResize`'s scratches; discrete equal, amounts within design 6; digests.
+through Foundation's one-form functions with `CellResize`'s `order_buffers` and `sum_buffers` (A31); discrete equal, amounts within design 6; digests.
 
 **Files:**
 - Create: `region_transfer_gpu.cu`, `region_transfer_gpu.h` (private), `region_transfer_steps.h` (shared:
@@ -1244,8 +1266,8 @@ through the scratch forms with `CellResize`'s scratches; discrete equal, amounts
   `ResizeCells, OnGpuTwice_GivesIdenticalBytes`; every test passes its main outputs to `WriteResultDigest`.
   `LABEL no_gpu`: `ApplyRegionTransfer, OnGpuWithoutAGpu_IsRunOnCallFailed`.
 - [ ] **Step 2: Implement** design 6: one thread per cell sums its particles in id order; the refill list from
-  `ComputeExclusivePrefixSum(counts, cell_count, first_ids, cell_resize.order_scratch)` of per-cell counts; the
-  ledger's totals by `ComputeTreeSum(partials, block_count, cell_resize.sum_scratch)`; returned to the CPU: the counts
+  `ComputeExclusivePrefixSum(counts, cell_count, first_ids, cell_resize.order_buffers)` of per-cell counts; the
+  ledger's totals by `ComputeTreeSum(partials, block_count, cell_resize.sum_buffers)`; returned to the CPU: the counts
   of step 3, the ids to split and merge, one failure record; launches through `ApplyGpuFunction`, no allocation per
   call; the status maps through `ToCellResizeFailure(ToBufferError(status))`. **Step 3:** gate. **Commit.** Subject:
   `Run the region transfer and the resize on the GPU`. Body: `CUDA: compiled, not run`.
@@ -1264,15 +1286,15 @@ arrays, and then `ChooseCellSize` reads its own CPU copy. `BuildCellResizeCallba
 `FindCpuGridCopy`. Replaces the earlier text, which gave null tables in every GPU run and handed
 `step::FindCpuGridCopy(simulation)` to `BuildCellResizeCallbacks`.
 
-**Amended 2026-11-14 (Foundation as built):** the test support lives in `fluidity_cell_resize_test_helpers` (made with `fluidity_add_test_library`)
+**Amended 2026-11-14 (Foundation as built):** the test support lives in `fluidity_cell_resize_test_support` (made with `fluidity_add_test_library`)
 and the tests name it in `LINKS`.
 
 **Kind:** integration
 
 **Files:**
 - Create: `native/fluidity/cell_resize/step_callbacks.cc`, `step_callbacks_test.cc`
-- Modify: `resize_cells.h`, `cell_resize.cc`, `cell_resize_test_helpers.h/.cc`, `CMakeLists.txt` (`step_callbacks_test`
-  `LABEL cpu LINKS fluidity_cell_resize_test_helpers fluidity_base_test_support`)
+- Modify: `resize_cells.h`, `cell_resize.cc`, `cell_resize_test_support.h/.cc`, `CMakeLists.txt` (`step_callbacks_test`
+  `LABEL cpu LINKS fluidity_cell_resize_test_support fluidity_base_test_support`)
 
 **Interfaces:**
 - Produces design 3.4 `ChooseCellSize`, `ApplyGridOnlyRegionInStep`, `MoveGridOnlyLiquidInStep`.
@@ -1398,7 +1420,7 @@ CPU-against-GPU values within design 6.
   `RunOn::kGpu`"), against the CPU within design 6 for one resize and for the stated scene tolerances over the run;
   `CellResizeScene, OnGpuTwice_GivesIdenticalBytes` (deep tank, 20 steps); each test writes the digest of its final
   snapshot with `WriteResultDigest`. `LABEL no_gpu`: `BuildCellResizeTestRun` with `kGpu` gives `kRunOnCallFailed`.
-  CMake: `LINKS fluidity_cell_resize_test_helpers fluidity_base_test_support`.
+  CMake: `LINKS fluidity_cell_resize_test_support fluidity_base_test_support`.
 - [ ] **Step 2:** gate. **Commit.** Subject: `List the cell resize's GPU scene runs`. Body: `CUDA: compiled, not run`.
 
 ---
@@ -1441,7 +1463,7 @@ decision on a springy solid beside a viscous liquid.~~ Option C chosen (A24): te
 five-material step tests run as written (the joint viscous solve carries the material faces, `plan-decisions.md`,
 "Viscous liquids with blocking materials and sealed gas (A24)").
 
-**Amended 2026-11-14 (Foundation as built):** `step_test_helpers.h/.cc` belong to the step's `fluidity_step_test_helpers` library (made with
+**Amended 2026-11-14 (Foundation as built):** `step_test_support.h/.cc` belong to the step's `fluidity_step_test_support` library (made with
 `fluidity_add_test_library`); the new tests link it and `fluidity_base_test_support` through `LINKS`.
 
 **Kind:** integration
@@ -1451,7 +1473,7 @@ This changes files of the step module (design section 4, step item 5) and extend
 **Files:**
 - Modify: `native/fluidity/step/step_stages.h`, `stage_table.cc`, `try_step.cc`, `solids_stages.cc` (stage 3, A17),
   `pressure_stages.cc` (stage 9),
-  `move_particles_cpu.cc` (stage 16), `check_step_cpu.cc` (stage 19), `step_test_helpers.h/.cc`
+  `move_particles_cpu.cc` (stage 16), `check_step_cpu.cc` (stage 19), `step_test_support.h/.cc`
   (`BuildRejectingStageTable` covers both parts), `batched_seam_test.cc`
 
 **Interfaces:**
@@ -1530,8 +1552,12 @@ the step's array places (step plan Task 33a).
 the open decision on a springy solid beside a viscous liquid.~~ Option C chosen (A24): test unblocked. Both layout
 tests run as written.
 
-**Amended 2026-11-14 (Foundation as built):** `ComputeSumOverBlocks` gains a scratch form (the scratch pattern); the folder gets its own
+**Amended 2026-11-14 (Foundation as built):** `ComputeSumOverBlocks` takes a `SumBuffers` (the buffers pattern); the folder gets its own
 `CMakeLists.txt`.
+
+**Amended 2026-11-14 (A31, A30):** `ComputeSumOverBlocks` has one form, which takes `SumBuffers& sum_buffers` (the
+design's form without buffers is gone); buffers on another processor are a precondition, not a NaN;
+`ScratchTooSmall_IsQuietNaN` renamed `BuffersTooSmall_IsQuietNaN`, `CutsGiveEqualBytes` no longer compares two forms.
 
 **Kind:** mechanical
 
@@ -1549,16 +1575,16 @@ tests run as written.
   (plan decision A15: `enum class SolvePlace : std::uint8_t { kWholeGridOnProcessor, kInPieces };` the design's
   `kWholeGridOnCpu` is not built),
   `BatchSettings`, `BatchPlan`, `ComputeSumOverBlocks` (`ComputeTreeSum` over `block_count()` values; a failed GPU
-  read returns a quiet NaN, documented). **Plan decision (amended 2026-11-14, Foundation as built; new overload, the
-  design's form unchanged):**
+  read returns a quiet NaN, documented). **Plan decision (amended 2026-11-14, Foundation as built; one form since
+  A31, replacing the design's form):**
 
   ```cpp
-  // As the form without scratch, allocating nothing (the scratch form of ComputeTreeSum). A scratch on another
-  // processor, a block count above scratch.max_count() or a failed GPU call returns a quiet NaN, documented.
-  double ComputeSumOverBlocks(const grid::CellBlockValues<double>& block_partial_sums, SumScratch& scratch);
+  // Allocates nothing (ComputeTreeSum with `sum_buffers`). A block count above sum_buffers.max_count() or a failed
+  // GPU call returns a quiet NaN, documented. Requires: sum_buffers.run_on() is the values' processor (checked by
+  // an assertion in debug builds, A30).
+  double ComputeSumOverBlocks(const grid::CellBlockValues<double>& block_partial_sums, SumBuffers& sum_buffers);
   ```
-  The form without scratch builds a `SumScratch` for `block_count()` values on the values' processor (a failed build
-  also gives the quiet NaN) and calls it. Per-step callers pass `batched_run.sum_scratch` (Task 39).
+  Per-step callers pass `batched_run.sum_buffers` (Task 39); tests build theirs with `BuildSumBuffers`.
 - **Plan decision, `kStagePlaces`** (design 5.8, with stage 10 whole because every call of step design 5.2 item 10
   either takes `all` or reads arrays pass 1 has written back): `kNone` `kNotRun`; 1, 2, 17, 20, 21
   `kWholeStateOnCpu`; 3 to 9 `kInBatchesBeforeSolve`; 10 to 13 `kWholeGridOnProcessor`; 14, 15, 16, 18, 19
@@ -1573,12 +1599,14 @@ tests run as written.
   `BuildFiveMaterialScene` in the batched layout, the placement rule computed from `kStagePlaces` equals
   `StepArray::whole_place`; also: no range part of pass 1 reads `grid_edge_is_open_to_sky`, else stop and ask the
   owner); `ComputeSumOverBlocks, CutsGiveEqualBytes` (design 7 "Sum over blocks": 10,000 random
-  partials, the partials of 1, 7 and 64 batches placed in one array: equal bytes, with and without a scratch);
-  `ComputeSumOverBlocks, ScratchTooSmall_IsQuietNaN` (a scratch of `max_count` 10 given 11 blocks: NaN). Tests `LABEL cpu`, `LINKS fluidity_base_test_support`.
+  partials, the partials of 1, 7 and 64 batches placed in one array: equal bytes);
+  `ComputeSumOverBlocks, BuffersTooSmall_IsQuietNaN` (`SumBuffers` of `max_count` 10 given 11 blocks: NaN). Tests `LABEL cpu`, `LINKS fluidity_base_test_support`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
   `Name the places of every stage in a batched run`.
 
 ### Task 38: `BuildBatchPlan` and the batches' memory estimate entries
+
+**Amended 2026-11-14 (A31):** `"batches: sum buffers"` entry name; the loaded try borrows the step's `grid::GridBuilderBuffers`; test `SumBuffersEntriesMatchTheBuffers`.
 
 **Amended 2026-11-14 (A15):** the plan chooses between whole-grid solves and solves in pieces, sizes the solve
 piece, checks the CPU, and carries the budgets and copies shown to the user.
@@ -1587,10 +1615,10 @@ piece, checks the CPU, and carries the budgets and copies shown to the user.
 (step plan Tasks 33a, 33b: loaded module instances, the stage-17 solids buffers in CPU memory, the mirrors and the
 CPU grid copy), so the budgets I/O shows (I/O Task 23a) equal what `BuildSimulation` allocates.
 
-**Amended 2026-11-14 (reconcile):** the loaded grid buffers are counted without a build scratch (they borrow the
+**Amended 2026-11-14 (reconcile):** the loaded grid buffers are counted without a builder buffers (they borrow the
 step's).
 
-**Amended 2026-11-14 (Foundation as built):** `BuildBatchesMemoryEstimate(plan)` adds the two entries of `BatchedRun`'s `SumScratch` (Task 39).
+**Amended 2026-11-14 (Foundation as built):** `BuildBatchesMemoryEstimate(plan)` adds the two entries of `BatchedRun`'s `SumBuffers` (Task 39).
 
 **Kind:** numerics
 
@@ -1610,8 +1638,8 @@ step's).
      loaded batch then gets `(1 - solve_piece_share) * room` in item 3 instead of `room`. `BatchSettings` gains
      `double solve_piece_share = 0.25;` (A15; owner to confirm).
   2. `bytes_per_loaded_block` = `ComputeMemoryBytes` of the loaded rows (transfer for every set, the step's per-try
-     cell and face rows, `grid::BuildGridMemoryEstimate(run_on, 1, grid::ScratchSharing::kOneForAllBuffers)` without
-     its `build scratch:` entries, since the loaded try's buffers borrow the step's grid scratch; reconcile item 11)
+     cell and face rows, `grid::BuildGridMemoryEstimate(run_on, 1, grid::BuilderBuffersSharing::kOneForAllGrids)` without
+     its `builder buffers:` entries, since the loaded try's buffers borrow the step's `grid::GridBuilderBuffers`; reconcile item 11)
      at the counts of one cell block and no particle;
      `bytes_per_loaded_particle` the same at one particle and no block; `particles_per_block = ceil(512 *
      start_limit_headroom)` per material (8 per cell, full block).
@@ -1624,7 +1652,7 @@ step's).
      `bytes_copied_per_try = (2 / range_share_of_loaded + 2) * start blocks * (per block + particles_per_block *
      per particle)`.
   5. (A15) CPU: every row with `where = kCpu` (the particles, the per-try arrays only particle stages read, and in
-     `kInPieces` the solvers' scratch) at most `plan.allowed_cpu_bytes`, else `kStateDoesNotFitCpu`.
+     `kInPieces` the solvers' working buffers) at most `plan.allowed_cpu_bytes`, else `kStateDoesNotFitCpu`.
   6. (A15) Report, `BatchPlan` gains: `max_solve_loaded_blocks`, `solve_batch_count` (start grid, bisection as
      `pressure::ApplySolveBatches` would cut it), `bytes_on_processor` and `bytes_on_cpu` (the memory budgets: sums
      of the rows by `where`), `pass_loads_per_try = 2 * batch_count`, `solve_loads_per_iteration` (3, or 4 when the
@@ -1632,14 +1660,14 @@ step's).
      many sweeps of the streamed rows of every loaded block). Zero with `kWholeGridOnProcessor`.
   `BuildBatchesMemoryEstimate(plan)`: design 3.7, rows `where = kRunOn`, for reporting; the step's batched layout
   (built from the step's own rows) is not counted twice. Amended (Foundation as built): it also lists `"batches: sum
-  scratch"` (`kCellBlock`, `ComputeSumScratchSize(plan's run_on).bytes_per_item`) and `"batches: sum scratch fixed
+  buffers"` (`kCellBlock`, `ComputeSumBuffersSize(plan's run_on).bytes_per_item`) and `"batches: sum buffers fixed
   bytes"` (`kGivenCount`, `fixed_bytes` items of 1 byte), `kWholeRun`, `where = kRunOn`, which `BuildBatchedRun`
   allocates.
   7. (A17, batched-run buffers) Every row sum above takes the rows of `step::BuildStepMemoryEstimate(scene, counts,
      &probe_plan)`: per loaded block with a probe plan of `max_loaded_blocks = 1`, `max_loaded_particles = 0`; per
      loaded particle with `0` and `1`; the whole and CPU rows (the mirrors, the CPU grid copy in a GPU run, the
      stage-17 `SolidsBuffers` in CPU memory, the `MarkerChanges` rows) at the limits by their `where`. So
-     `bytes_per_loaded_block` and `bytes_per_loaded_particle` include the loaded `TransferScratch`,
+     `bytes_per_loaded_block` and `bytes_per_loaded_particle` include the loaded `TransferBuffers`,
      `MaterialBuffers`, `ContactBuffers` and `SolidsBuffers`, and `bytes_on_processor` / `bytes_on_cpu` equal the
      allocation of `BuildSimulation` for the copied plan by `where`.
 
@@ -1658,8 +1686,8 @@ step's).
   the per-particle rows of the four loaded module instances, exactly);
   `BuildBatchPlan, LayerWiderThanABatch_IsBatchDoesNotFit`; `BuildBatchPlan, MoreMaterialSets_FewerLoadedBlocks` (1
   and 3 sets); `BuildBatchPlan, RunOnGpuWithoutAGpu_StillPlans` (all design 7 "Batch plan");
-  `BuildBatchesMemoryEstimate, LoadedRowsAtMaxLoadedBlocks`; `BuildBatchesMemoryEstimate, SumScratchEntriesMatchTheScratch`
-  (amended: the two entries equal `batched_run.sum_scratch.byte_count()` at the limits).
+  `BuildBatchesMemoryEstimate, LoadedRowsAtMaxLoadedBlocks`; `BuildBatchesMemoryEstimate, SumBuffersEntriesMatchTheBuffers`
+  (amended: the two entries equal `batched_run.sum_buffers.byte_count()` at the limits).
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
   `Plan the batches of a scene that does not fit the GPU`.
 
@@ -1672,23 +1700,23 @@ once per load; pass 1's geometry reaches the whole buffers through `pressure::Wr
 partials into the stage-17 solids buffers in CPU memory, and foam and spray get the CPU copy of the piece map
 (step plan Appendix A rows M10, M13).
 
-**Amended 2026-11-14 (Foundation as built):** `BatchedRun` owns `sum_scratch`; the test support goes into `fluidity_cell_resize_test_helpers`
+**Amended 2026-11-14 (Foundation as built):** `BatchedRun` owns `sum_buffers`; the test support goes into `fluidity_cell_resize_test_support`
 (made with `fluidity_add_test_library`), which links `fluidity_pressure_test_scenes` for `CountBlocksInLargestLayer`.
 
 **Kind:** integration
 
 **Files:**
 - Create: `native/fluidity/batches/batched_run_cpu.cc`, `stacked_border.h` (private, CPU only), `stacked_border.cc`,
-  `batched_run_test.cc`, `stacked_border_test.cc`; test-only `batches_test_helpers.h/.cc` (in
-  `fluidity_cell_resize_test_helpers`)
+  `batched_run_test.cc`, `stacked_border_test.cc`; test-only `batches_test_support.h/.cc` (in
+  `fluidity_cell_resize_test_support`)
 - Modify: `batched_run.h`, `native/fluidity/batches/CMakeLists.txt`, `native/fluidity/cell_resize/CMakeLists.txt`
-  (amended: `batches_test_helpers.cc` joins the SOURCES of `fluidity_cell_resize_test_helpers`, whose LINKS gain
+  (amended: `batches_test_support.cc` joins the SOURCES of `fluidity_cell_resize_test_support`, whose LINKS gain
   `fluidity_pressure_test_scenes`)
 
 **Interfaces:**
 - Produces design 3.7 `BatchReport`, `BatchedRun`, `BuildBatchedRun`, `ReadLastReport`, `WriteBatch`, `ReadBatch`.
-- **Plan decisions:** (amended, Foundation as built) `BatchedRun` also holds `SumScratch sum_scratch`
-  (`BuildSumScratch(run_on, limits.max_cell_blocks)`, the two entries of Task 38) for `ComputeSumOverBlocks`.
+- **Plan decisions:** (amended, Foundation as built) `BatchedRun` also holds `SumBuffers sum_buffers`
+  (`BuildSumBuffers(run_on, limits.max_cell_blocks)`, the two entries of Task 38) for `ComputeSumOverBlocks`.
   `BatchedRun` holds the plan, a `grid::BorderSearchBuffers` and two `Buffer<CellBlockIndex>` of
   `max_loaded_blocks` on the run's processor (A17), a CPU copy of the piece map (4 B per loaded block, row `"batches:
   piece map copy"`, `where = kCpu`), the current `std::optional<grid::GridPiece>` and the report; the piece is built
@@ -1717,11 +1745,11 @@ partials into the stage-17 solids buffers in CPU memory, and foam and spray get 
   `max_solve_loaded_blocks` forces `kInPieces`); layer counts with `pressure::testing::CountBlocksInLargestLayer`
   (A15: the pressure test library's, not a second copy).
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`, both processors the CPU; `LINKS fluidity_cell_resize_test_helpers
+- [ ] **Step 1: Failing tests** (`LABEL cpu`, both processors the CPU; `LINKS fluidity_cell_resize_test_support
   fluidity_base_test_support`):
 
   ```cpp
-  TEST(FindStackedBorder, PassOne_EqualsRepeatedFindBorderBlocks)  // 100 random grids from grid_test_helpers; the
+  TEST(FindStackedBorder, PassOne_EqualsRepeatedFindBorderBlocks)  // 100 random grids from grid_test_support; the
       // buffer form on CPU buffers against the span form layer by layer (A17)
   TEST(WriteBatch, PieceMapReadBackOncePerLoad)       // A17: the report's bytes_from_processor grows by 4 B per loaded
       // block per load
@@ -1858,6 +1886,8 @@ within tolerance, and cuts of one mode by bytes, in both batched modes.
 
 ### Task 43: Batched runs on the GPU, and the resize beside them
 
+**Amended 2026-11-14 (A31):** the resize's working buffers (was "scratches") are on the CPU in this layout.
+
 **Amended 2026-11-14 (A15, A17):** GPU runs of both batched modes; the resize's CPU mirrors with the grid copy of
 Task 24 instead of CPU tables of a GPU grid.
 
@@ -1868,7 +1898,7 @@ committed grid instead of making its own `ReadGrid` copy (step plan Appendix A r
 grid becomes the step's CPU copy.
 
 **Amended 2026-11-14 (Foundation as built):** `gpu` tests pass their snapshots to `WriteResultDigest`; GPU against CPU within tolerance; the
-resize's scratches are on the CPU in this layout (the estimate uses the CPU sizes, Task 10).
+resize's working buffers are on the CPU in this layout (the estimate uses the CPU sizes, Task 10).
 
 **Kind:** device
 
@@ -1906,7 +1936,7 @@ resize's scratches are on the CPU in this layout (the estimate uses the CPU size
   `BuildBatchedRun, OnGpuWithoutAGpu_IsRunOnCallFailed`; `BuildBatchPlan,
   OnGpuInCudaBuild_StillPlans`. `LABEL cpu`: `BuildCellResizeMemoryEstimate, CpuMirrorsCountedOnCpu`;
   `BuildCellResizeMemoryEstimate, BatchedGpuLayout_NoGridCopyAllocated` (reconcile: a `kHeldByStep` `CellResize`
-  allocates exactly its estimate, which has no CPU grid entry, and its scratch entries are the CPU sizes).
+  allocates exactly its estimate, which has no CPU grid entry, and its working-buffers entries are the CPU sizes).
 - [ ] **Step 2: Implement.** **Step 3:** gate. **Commit.** Subject: `List the batched GPU runs and resize beside
   them`. Body: `CUDA: compiled, not run`.
 
@@ -1915,13 +1945,13 @@ resize's scratches are on the CPU in this layout (the estimate uses the CPU size
 **Amended 2026-11-14 (A15):** new task; the planner's third choice through a whole run, with the planned and the
 measured copies, cancel and failure inside the solve batches.
 
-**Amended 2026-11-14 (Foundation as built):** `BuildPlanForMemory` lives in `fluidity_cell_resize_test_helpers` (`fluidity_add_test_library`);
+**Amended 2026-11-14 (Foundation as built):** `BuildPlanForMemory` lives in `fluidity_cell_resize_test_support` (`fluidity_add_test_library`);
 the scene test names it in `LINKS`.
 
 **Kind:** integration
 
 **Files:**
-- Modify: `native/fluidity/batches/batches_scene_test.cc`, `batches_test_helpers.h/.cc`
+- Modify: `native/fluidity/batches/batches_scene_test.cc`, `batches_test_support.h/.cc`
 
 **Interfaces:**
 - Consumes: Tasks 38 to 43; step `BuildRunPlan`, `BuildSimulation`, `AdvanceTo`, `ReadSnapshot`, `ExpectSameBytes`.
@@ -1953,8 +1983,11 @@ the scene test names it in `LINKS`.
 
 **Amended 2026-11-14 (A15):** renumbered from Task 44; its lists include Task 44 and the A15 and A17 changes.
 
-**Amended 2026-11-14 (Foundation as built):** the hand-over also records the scratch members and overloads, the `_steps.h` headers, and that
+**Amended 2026-11-14 (Foundation as built):** the hand-over also records the working-buffers members, the `_steps.h` headers, and that
 the `cpu` steps tests are the GPU evidence until the hardware run.
+
+**Amended 2026-11-14 (A29, A31):** the hand-over lists the one-form `ComputeLiquidTotals` and `ComputeSumOverBlocks`
+and `grid::TakeBuffers`.
 
 **Kind:** mechanical
 
@@ -1984,9 +2017,9 @@ the `cpu` steps tests are the GPU evidence until the hardware run.
   `grid_run_on` of the resize; A17 batched-run buffers (amended 2026-11-14): `ResizeCellsReport::copy_count`,
   `ChooseCellSize` on a held CPU copy, stage 3's whole part, `kStagePlaces` against the step's array places, the
   planner on the step's batched rows, `WriteBlockPartialsRange` in `ReadBatch`, the piece map handed to
-  `ApplyGridPiece`, the resize reading `FindCpuGridCopy`; Foundation as built: `CellResize::sum_scratch`,
-  `order_scratch` and the changed flag, `BatchedRun::sum_scratch`, the scratch overloads of `ComputeLiquidTotals`
-  and `ComputeSumOverBlocks`, `ToCellResizeFailure`, the shared `*_steps.h` headers and their `cpu` tests, the Jacobi
+  `ApplyGridPiece`, the resize reading `FindCpuGridCopy`; Foundation as built: `CellResize::sum_buffers`,
+  `order_buffers` and the changed flag, `BatchedRun::sum_buffers`, the one-form (A31) `ComputeLiquidTotals`
+  and `ComputeSumOverBlocks` taking `SumBuffers`, `ToCellResizeFailure`, the shared `*_steps.h` headers and their `cpu` tests, the Jacobi
   passes of the depth below the surface.
 - [ ] **Step 4: `docs/gpu-runs.md`:** rows `cell resize` and `batches`, `compiled, not run`, listing every `gpu` test
   of Tasks 12, 13, 17, 20, 22, 23, 28, 33 and 43, and the `cpu` steps tests that stand for them until the run.

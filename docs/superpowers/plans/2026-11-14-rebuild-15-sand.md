@@ -38,8 +38,10 @@ Foundation's list, unchanged:
   names listed in the commit message with a one-line reason; tests arrive with the code. A commit must pass every
   part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written, so Foundation ends without a hardware run. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -60,7 +62,8 @@ Foundation's list, unchanged:
   waits and temporary memory only through `base/gpu_launch.cuh`); every GPU function a thin loop over
   `FLUIDITY_CPU_AND_GPU` per-item functions in a shared header (materials' `*_steps.h`), which `cpu` tests run over
   every thread block and thread of `ComputeLaunchSize(count)`, in launch order and in reverse, against the CPU
-  loop; the scratch pattern, with per-step memory owned by the module's buffers; a failed check writes nothing,
+  loop; the working-buffers pattern, with per-step memory owned by the module's buffers and one form per function
+  that needs working memory (A31); buffers passed together on one processor as a `Requires:` precondition (A30); a failed check writes nothing,
   after `kRunOnCallFailed` the outputs are unspecified and the run stops, `kOutOfMemory` comes only from building or
   allocating forms; discrete outputs equal on CPU and GPU, floating-point within the tolerances below unless a
   header promises the same bits unless NaN; tests link `fluidity_base_test_support` and the modules' helper
@@ -153,7 +156,7 @@ pass done. In particular: materials with `MaterialKind { kLiquid, kGas, kSnow, k
 with `ROLE_TABLE`.
 
 Foundation as built (amended 2026-11-14) also provides `run_on_call.h`, `gpu_launch.cuh`, `ToBufferError`, the
-scratch forms of the sums and of the stable order (`SumScratch`, `OrderScratch`), `test_support.h` in the library
+sums and the stable order with their `SumBuffers` and `OrderBuffers` (one form each, A31), `test_support.h` in the library
 `fluidity_base_test_support`, and `fluidity_add_test_library`; read `AGENTS.md` "Structure" before Task 1.
 
 Prove it: `uv run python tools/check_commit.py` prints seven `PASS` lines (format, rules, cpu debug, cpu release,
@@ -478,6 +481,8 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
 
 ### Task 8: Python reference for sand and the comparison with `main`
 
+**Amended 2026-11-14 (A31):** a throwaway driver in a temporary directory (no "scratch").
+
 **Kind:** numerics
 
 **Files:**
@@ -494,7 +499,7 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
   permanent in `[-0.2, 0.2]`, the pile material's stiffnesses and angle, cohesion 0.03 (so all three cases occur;
   the generator asserts each case appears at least 50 times); 100 sand states (`s` in `[0.9, 1.0]`, inside the cone)
   with 10,000 directions on the sphere. Numbers as `float.hex`.
-- The `main` numbers (`plan-decisions.md`, first entry): export `main` to the scratchpad, build there, run a scratch
+- The `main` numbers (`plan-decisions.md`, first entry): export `main` to a temporary directory, build there, run a throwaway
   driver (never committed) calling `ReturnGranularPrincipal3D` on the sand inputs of
   `native/tests/m5_constitutive_3d_cases.h:26-63` (cases 1 to 4 and 17) and `GranularAcousticBoundSquared3D` on
   ten stretch states of the 100 above, printing inputs and outputs as hex floats. These functions work in the
@@ -682,13 +687,13 @@ the existing `SuggestedChange` values, `kSuggestedChangeCount` + 1, stable name 
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** helpers join the step's `fluidity_add_test_library(fluidity_step_test_helpers ...)`; rung programs are `fluidity_add_test` programs linking it through `LINKS`, registered as the known-open proposal of Global Constraints says.
+**Amended 2026-11-14 (Foundation as built):** helpers join the step's `fluidity_add_test_library(fluidity_step_test_support ...)`; rung programs are `fluidity_add_test` programs linking it through `LINKS`, registered as the known-open proposal of Global Constraints says.
 
 **Files:**
-- Create: `native/fluidity/step/sand_diagnosis_test_helpers.h`, `sand_diagnosis_test_helpers.cc` (in the test
-  library `fluidity_step_test_helpers`), `sand_diagnosis_test.cc`, `sand_record_test.cc`
-- Modify: the step's test CMake lines (`sand_diagnosis_test_helpers.cc` added to the SOURCES of
-  `fluidity_step_test_helpers`; the rung program through `fluidity_add_test(... LINKS fluidity_step_test_helpers
+- Create: `native/fluidity/step/sand_diagnosis_test_support.h`, `sand_diagnosis_test_support.cc` (in the test
+  library `fluidity_step_test_support`), `sand_diagnosis_test.cc`, `sand_record_test.cc`
+- Modify: the step's test CMake lines (`sand_diagnosis_test_support.cc` added to the SOURCES of
+  `fluidity_step_test_support`; the rung program through `fluidity_add_test(... LINKS fluidity_step_test_support
   fluidity_base_test_support)`; CTest tests registered one per rung, label `sand_diagnosis`, `TIMEOUT 3600`, never
   discovered under `cpu`: Global Constraints "Known-open tests")
 
@@ -771,7 +776,7 @@ the existing `SuggestedChange` values, `kSuggestedChangeCount` + 1, stable name 
   **Plan decision:** rung 4's "moves less than 1 % in 3 s" is measured from 0.5 s, after the slab has settled
   onto the floor under its own weight (about 18 % springy shortening under 300 kg/m3 at these stiffnesses, which
   the design's wording would otherwise count as creep). Say so in the hand-over.
-- [ ] **Step 2: Run** each with `FLUIDITY_SAND_RECORD_DIR` set; keep the CSVs in the scratchpad.
+- [ ] **Step 2: Run** each with `FLUIDITY_SAND_RECORD_DIR` set; keep the CSVs in a temporary directory.
 - [ ] **Step 3: Register.** A rung that passes stays plain. A rung that fails becomes known-open (Global
   Constraints) with its measured numbers in its row. Never change its bound.
 - [ ] **Step 4: Gate; commit.** Subject: `Measure the sand slab and the grid shift` (body: each rung's result and
@@ -962,8 +967,8 @@ task of Part 2:
   thrown away (`git restore`, `git clean` of new files); its diff goes into the decision record as a fenced
   `diff` block (or, above 80 lines, its summary and the path of the file it touched). Only the record, its thinned
   data and, when the hypothesis is confirmed, the fix below are committed.
-- **A ladder run** is `FLUIDITY_SAND_RECORD_DIR=<scratch>/<name> ctest --test-dir out/build/cpu -L sand_diagnosis`
-  then `uv run python tools/summarise_sand_records.py <scratch>/<name>`. Its measured quantities: `A5` = |angle(6)
+- **A ladder run** is `FLUIDITY_SAND_RECORD_DIR=<temp-dir>/<name> ctest --test-dir out/build/cpu -L sand_diagnosis`
+  then `uv run python tools/summarise_sand_records.py <temp-dir>/<name>`. Its measured quantities: `A5` = |angle(6)
   - angle(1.5)| per width (rung 5's creep), `K6` = kinetic energy at 6 s, `G6` = rung 6's half-step gap at 1.5 s,
   `R8` = rung 8's relative ratio difference, `O` = sum of `omitted_impulse` over the sum of `m g dt` on
   [0.75, 6] s, `P` = mean `permanent_volume_change` at 6 s.
@@ -985,13 +990,15 @@ task of Part 2:
 
 ### Task 23: Read the ladder
 
+**Amended 2026-11-14 (A31):** full CSVs kept in a temporary directory.
+
 **Kind:** numerics
 
 **Files:**
 - Create: `docs/decisions/sand-01-reading-the-ladder.md`, `docs/decisions/data/sand-01/`
 
-- [ ] **Step 1: Ladder run** on the tip (the baseline every later record compares with). Keep the full CSVs in the
-  scratchpad; commit the thinned ones.
+- [ ] **Step 1: Ladder run** on the tip (the baseline every later record compares with). Keep the full CSVs in a
+  temporary directory; commit the thinned ones.
 - [ ] **Step 2: Write the record.** *Problem:* design 5.7. *Hypothesis:* "the first failing rung names the
   ingredient that causes the creep". *Experiment:* the ladder run. *Result:* the summary table; the first failing
   rung; `O` and `P`; the share of particles in each `LimitCase` over [1.0, 1.5] s; `hit_corrected_count` per step

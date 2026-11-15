@@ -26,7 +26,7 @@ joint solve calls (face inertia, push, correction, volume error, own weight, lad
 outlet; the shared clipping formula of a blocked face piece. NEW (A18): the inertia of blocking materials
 (`BlockingMaterialFace`) and the springiness of sealed tracked-gas blobs (`SealedGasBlob`) inside the liquid
 pressure solve, with the solved material velocities and blob pressures. NEW (A15): `solve_batches.h`, the shared
-mechanism by which the pressure, viscosity and gas solves run batch by batch with their scratch in CPU memory.
+mechanism by which the pressure, viscosity and gas solves run batch by batch with their working buffers in CPU memory.
 
 **Does not own:** the grid and face pieces (grid); `velocity_before_pressure`, per-cell mixture density and
 sensed volume ratio (transfer); solid shapes, `distance_to_solid`, solid velocity and free-solid motion
@@ -242,10 +242,11 @@ struct BufferSizes {
   // 4 * max_cells in the batched layout. Terminal blobs take room in ascending first-cell order.
   std::uint32_t max_direct_solve_values = 0;
 };
-// Owns the scratch arrays of this module on one processor. No allocation after it is built. The committed
+// Owns the working buffers of this module on one processor. No allocation after it is built. The committed
 // pressure, pocket_of_cell and the air-pocket list are not in it: the step owns them (try and committed copy).
 class PressureBuffers;
-std::uint64_t ComputeBufferBytes(const BufferSizes& sizes);  // The same table BuildPressureBuffers allocates from.
+// The same table BuildPressureBuffers allocates from on run_on (the sum and order buffers' bytes depend on it).
+std::uint64_t ComputeBufferBytes(const BufferSizes& sizes, RunOn run_on);
 std::expected<std::unique_ptr<PressureBuffers>, PressureFailure> BuildPressureBuffers(
     const BufferSizes& sizes, RunOn run_on);
 // NEW (A15). The buffers' SolveBatches and its copy report; null in one piece.
@@ -255,7 +256,8 @@ const SolveCopyReport* ReadSolveCopyReport(const PressureBuffers& buffers);
 // (ComputeDistanceToSurface and FindLiquidSurface outputs) and the snapshot's largest values (maxima, exact) from
 // one-piece buffers bound to piece.grid() into whole buffers bound to the whole grid (GPU to GPU, or CPU to CPU).
 // batches::ReadBatch calls it after pass 1. piece_buffers in the one-piece layout, whole_buffers in either, both
-// on one processor (kBadInput otherwise); kWrongGridVersion: a piece of another grid.
+// otherwise kBadInput; kWrongGridVersion: a piece of another grid. Requires: both on one processor (debug
+// assertion, A30).
 std::expected<void, PressureFailure> WriteSnapshotRange(const PressureBuffers& piece_buffers,
                                                         const grid::GridPiece& piece, PressureBuffers& whole_buffers);
 ```
@@ -711,8 +713,8 @@ std::expected<void, PressureFailure> ComputeWasSolved(
     grid::CellValues<std::uint8_t>& cell_was_solved);
 // NEW (A24). One value per sealed gas blob of the equations, entries [0, sealed_gas_blob_count), on the
 // equations' processor: Pa above atmosphere (pressure), m3/s (volume error), m3/(Pa s) (own weight). A blob buffer
-// shorter than the count or on another processor, or a material span of the wrong size: kBadInput, no output
-// written. A blob connection's far-end pressure is sealed_gas_pressure[j] + reference_pressure (kLeftOut: the
+// shorter than the count, or a material span of the wrong size: kBadInput, no output written. Requires: every
+// blob buffer on the equations' processor (debug assertion, A30). A blob connection's far-end pressure is sealed_gas_pressure[j] + reference_pressure (kLeftOut: the
 // reference counts as zero). Blob volume error (section 5 C2): inflow_j(velocity) + heat_volume_rate +
 // boundary_volume_rate - S_j (q_j - c_j) (kIncluded), inflow_j(velocity) - S_j q_j (kLeftOut, open areas only).
 // Blob own weight: S_j + sum_c g_c * connection_scale_c. Blob start value: c_j = pressure_above_atmosphere.
@@ -737,8 +739,9 @@ std::expected<void, PressureFailure> ComputeBlockingMaterialVelocities(const Pre
 // are given, never recovered from `pressure`. F = free solid count (half of free_solid_inverse_inertia); a solid's
 // xi = (V, Omega), entries [6 s, 6 s + 6). kBadInput, no output written: a CoupledVelocities pointer null while its
 // count (blocking_material_face_count, F) is > 0; a given or output buffer shorter than its count (one per
-// BlockingMaterialFace, or 6 F) or on another processor; kIncluded with F > 0 and an empty
+// BlockingMaterialFace, or 6 F); kIncluded with F > 0 and an empty
 // free_solid_motion_before_pressure; the blob buffers as the A24 forms. A null pointer with count 0 is accepted.
+// Requires: every buffer on the equations' processor (debug assertion, A30).
 struct CoupledVelocities {                              // Given velocity unknowns other than the liquid's.
   const Buffer<double>* blocking_material_velocity = nullptr;   // one per BlockingMaterialFace
   const Buffer<double>* free_solid_motion = nullptr;            // 6 per free solid: V then Omega
@@ -803,7 +806,8 @@ std::expected<void, PressureFailure> ComputeCarriedPressure(
 // max_loaded_blocks (the loaded piece); pass-1 rows, rungs 1 and deeper, the direct-solve factors and rows
 // counted per cell block or given count stay kRunOn; plus BuildSolveBatchesMemoryEstimate. One allocation table.
 // NEW (A18). Rows for material faces and sealed gas blobs from max_blocking_material_faces, max_sealed_gas_blobs.
-std::vector<MemoryEstimateEntry> BuildPressureMemoryEstimate(const BufferSizes& sizes);
+// The sum and order buffers rows are counted for run_on (reconcile item 24).
+std::vector<MemoryEstimateEntry> BuildPressureMemoryEstimate(const BufferSizes& sizes, RunOn run_on);
 ```
 
 Added by the coupling decision (A18, `plan-decisions.md` "Coupling inside the pressure solve"); all NEW.
@@ -828,7 +832,7 @@ builds the solvers' buffers with it. Pressure includes no later module.
 
 ```cpp
 // solve_batches.h (CPU only)
-// The cut of one grid into batches for a solve whose scratch is in CPU memory, the one loaded piece, the
+// The cut of one grid into batches for a solve whose working buffers are in CPU memory, the one loaded piece, the
 // staging buffer and the copy counts. Move-only. Held inside PressureBuffers, ViscosityBuffers and GasBuffers
 // built with max_loaded_blocks > 0; one-piece buffers hold none.
 class SolveBatches {
@@ -840,7 +844,7 @@ class SolveBatches {
   std::uint32_t loaded_batch() const;            // grid::kNoIndex when none is loaded.
   const grid::GridPiece& loaded_piece() const;   // Precondition: loaded_batch() != kNoIndex.
 };
-// One allocation: loaded GridBuffers, BorderSearchBuffers, two border buffers and the map copy at
+// One allocation: loaded GridBuffers with the GridBuilderBuffers lent to them, an OrderBuffers, BorderSearchBuffers, two border buffers and the map copy at
 // max_loaded_blocks, the per-batch border lists (CPU), a locked staging buffer of max_loaded_blocks * 240 * 64
 // bytes. kBadInput: max_loaded_blocks 0 or above max_cell_blocks, no width; kRunOnCallFailed: as plan-decisions.
 std::expected<SolveBatches, PressureFailure> BuildSolveBatches(RunOn run_on, std::uint32_t max_cell_blocks,
@@ -975,10 +979,11 @@ template <typename Value> class Buffer; struct MemoryEstimateEntry;
 
 **Foundation as built and the A17 additions (EXISTS; `plan-decisions.md` "Foundation `base/`", "Foundation as
 built", "Grid built on the GPU (A17)"):** `MemoryEstimateEntry::where` (`MemoryWhere { kRunOn, kCpu }`) and
-`ComputeMemoryBytes(rows, counts, where)`; `BufferError::kRunOnMismatch` (mapped to `kBadInput`);
+`ComputeMemoryBytes(rows, counts, where)`; buffers passed together on one processor as a precondition (A30, no
+error value);
 `BuildBuffer(..., CpuMemory::kLockedForCopies)` and the slice forms of `WriteBuffer`, `ReadBuffer`, `CopyBuffer`
-(A15); `OrderScratch`, `BuildOrderScratch`, the scratch form of `BuildStableOrder` and
-`ComputeExclusivePrefixSum` (equation indexes and rung-1 numbering from per-block counts, A15); `RunOn` in the
+(A15); `OrderBuffers`, `BuildOrderBuffers`, `BuildStableOrder` and
+`ComputeExclusivePrefixSum` taking them (one form, A31) (equation indexes and rung-1 numbering from per-block counts, A15); `RunOn` in the
 shared `base/run_on.h`.
 
 **Grid (PROVIDED by grid 3.1 to 3.7).** What this design first wrote, and the grid's declaration that serves it:
@@ -1038,8 +1043,8 @@ no viscous term.
 **Materials (PROVIDED by materials 3):** `materials::MaterialTable::ingredient_pressure_law()`,
 `ingredient_rest_density()`, `surface_tension_max()`, `surface_tension_with_air()` (one value per scene, else
 `kSurfaceTensionsDiffer`), `lightest_density()`; `materials::MaterialPair::surface_tension` for
-`MaterialBoundaryInputs`; `materials::ComputeCellSqueezeValues(inputs, bulk_stiffness, target_volume_ratio)`
-(the mixed `bulk_stiffness` of step 14 at `carried_pressure`, and `target_volume_ratio`). Liquid, gas, snow and
+`MaterialBoundaryInputs`; `materials::ComputeCellSqueezeValues(inputs, bulk_stiffness, target_volume_ratio, buffers)`
+(one form, its `MaterialBuffers` last, A31; the mixed `bulk_stiffness` of step 14 at `carried_pressure`, and `target_volume_ratio`). Liquid, gas, snow and
 springy solid only (A9).
 
 **Solids (PROVIDED by solids 3.5, 3.6):** `solids::ToSolidCoverage(const SolidCoverageValues&)` giving
@@ -1377,7 +1382,7 @@ outlet. No liquid leaves through either side; both stay closed in the equations.
 
 **F. The solve in pieces (NEW, A15; `plan-decisions.md` "Batched solves (A15)", out-of-core form, option (i)).**
 Used when the buffers are in the batched layout (`RunMode::kBatchedWithSolvesInPieces`). Rule: state and
-geometry stay whole on the run's processor; solver scratch goes to CPU memory.
+geometry stay whole on the run's processor; solver buffers go to CPU memory.
 
 - *What stays whole on the processor:* the pass-1 rows (corner and centre distances, `CellGeometry`,
   `FacePieceGeometry`, curvature samples, one-material distances, `CellEighthGeometry`, `FacePieceCentre`), the
@@ -1386,7 +1391,7 @@ geometry stay whole on the run's processor; solver scratch goes to CPU memory.
   pocket, free-solid and gas-blob lists, `D_j` and `r_j`, every per-block partial, per-group total and progress
   record. *What is copied per sweep:* every other per-place row (`CellEquation` and equation of cell,
   connections and their lists, the material-face and blob-term lists, rung-0 weights, solve vectors,
-  `volume_error`, air-pocket and label scratch), streamed through the loaded piece: whole -> loaded with
+  `volume_error`, air-pocket and label working buffers), streamed through the loaded piece: whole -> loaded with
   `WriteBatchValues` / `WriteBatchGroups`, range blocks back with `ReadBatchValues` / `ReadBatchGroups`.
 - *Sweeps.* A sweep loads every batch once, in order (`LoadSolveBatch`, the cancel flag read before every load).
   Per iteration: A (update `p` and `error` with the full `q`; partials of `E_b` and the largest error per block),
@@ -1594,7 +1599,7 @@ Coupling inside the solve (NEW, A18), CPU:
 | `ComputeCoupledPush, MaterialAndFreeSolid` (NEW, A26, A27) | Two-cell fixture p = (1, 0) and (0, 1); the one-cell material fixture p 3000; the free solid with a given p | `1e-4`, `-1e-4`, `0.3` N s (`dt A (p_low - p_high)`); free solid `dt sum_e (force, torque)_per_pressure p_e` computed in the test | `1e-15` relative (material), `1e-14` (solid) |
 | `ComputeOwnWeight, MaterialFaceScale` (NEW, A26) | Two-cell fixture, `material_face_scale` 0.5, then null; `connection_scale` 0.5; the free-solid scene | own weight gains `g * 0.5 = 1e-6` (null: `2e-6`), unchanged by `connection_scale`; free solid left out (bytes equal without it) | `1e-15` relative |
 | `CheckFlowImbalance, CoupledVelocitiesChecked` (NEW, A26, A27) | One-cell material fixture, p 3000, liquid 2/3 m/s, `w = 2/3`; p 10000/3; `w = 2/3 + 1e-3`; the free-solid scene after `SolvePressure` with its recovered `xi` | worst cell error = A24 form's minus `0.01 (2/3 - 0.6) = 6.6667e-4` m3/s; at p 10000/3 both forms agree; `w + 1e-3`: `kNotConverged`; free solid: report equals the A24 form's | `1e-12` relative |
-| `CoupledVelocityPieces, ShortOrMisplacedBuffers_AreBadInput` (NEW, A26, A27) | Null `CoupledVelocities` pointer with count > 0; each buffer one entry short; a buffer on another processor; `free_solid_motion_before_pressure` of size 5 | `kBadInput`, nothing written; null with count 0: success | exact |
+| `CoupledVelocityPieces, ShortBuffers_AreBadInput` (NEW, A26, A27; other-processor case dropped, A30) | Null `CoupledVelocities` pointer with count > 0; each buffer one entry short; `free_solid_motion_before_pressure` of size 5 | `kBadInput`, nothing written; null with count 0: success | exact |
 | `CoupledVelocityPieces, InBatches_SameAsOnePiece` (NEW, A26, A27) | The two material fixtures in `BuildTallBoxGrid(1, {4, 4, 32})`, the free solid's entries in 3 batches | every `CoupledVelocities` form, `ComputeCoupledPush`, the `material_face_scale` form give the one-piece bytes | exact |
 | `CoupledVelocityPieces, OnGpu_EqualsCpu` (NEW, A26, A27, label `gpu`) | The Schur column with material faces; the free-solid scene; given `w`, `xi`, `xi_before`, scale | cell, blob, material-push and free-solid-push values; report | `1e-12 * scale` |
 
@@ -1763,6 +1768,7 @@ McAdams 2010 and [6] Wang 2026 (multilevel solve), [9] Larionov 2017 (coupling w
 | ocean inlet, outlet, absorption | open-sea side, outlet, `ApplyOpenSeaRelaxation` | programme wording; NEW function name |
 | multigrid hierarchy, level | ladder, rung | NEW (`level` means `size_level`) |
 | `MacPressureWorkspace3D`, scratch arena | `PressureBuffers` | DECIDED word |
+| (replaced 2026-11-14) `SumScratch`, `OrderScratch`, `sum_scratch`, `order_scratch`, "scratch" | `SumBuffers`, `OrderBuffers`, `sum_buffers`, `order_buffers`, "working buffers" | A31 |
 | snow pressure trial, plastic solid pressure mobility (`mixed_contact_3d.cc`, `plastic_solid_boundary_3d.cc`) | `BlockingMaterialFace`, face mass, blocking-material face | NEW (A18) |
 | bubble or cavity solved with the liquid | `SealedGasBlob`, sealed gas blob, `sealed_gas_pressure` | NEW (A18) |
 | out-of-core solve, streamed tiles | `SolveBatches`, solve batch, sweep, batched layout, per-group total | NEW (A15) |
@@ -1873,7 +1879,7 @@ Decisions taken after this design was first written (recorded in the pressure pl
    C2). Source: A18 and `literature-coupling.md`. Replaces the one-step-late reading of sealed gas (A10 part of
    this design) and, for the liquid side, solids design decision 3 ("one step late").
    Replaced in part by decision 16 (A24): the pieces of the joint viscous solve no longer refuse such equations.
-10. **Batched solves.** With `max_loaded_blocks > 0` the solve keeps its scratch in CPU memory and runs in sweeps
+10. **Batched solves.** With `max_loaded_blocks > 0` the solve keeps its working buffers in CPU memory and runs in sweeps
     of the same iteration through `SolveBatches` (`solve_batches.h`, in pressure, shared with viscosity and gas);
     no solver signature changes; batched agrees with one piece within the solver's tolerance, each mode is
     repeatable. Option (ii) (overlapping pieces with a coarse correction) rejected. Source: A15, with A17's
@@ -1932,6 +1938,21 @@ Decisions taken after this design was first written (recorded in the pressure pl
     solids as the rank-one term). Source: owner answers A26 and A27; `plan-decisions.md` "A viscous liquid sticks,
     and free solids in the viscous solve (A26, A27)". Replaces in part decision 16 (the joint solve's elimination of
     material faces).
+
+18. **Working buffers, one form (A31).** Reusable working memory is "buffers": the sums and orders take the module's `SumBuffers` /
+    `OrderBuffers` (members `sum_buffers`, `order_buffers` of `PressureBuffers`), and every base function that needs
+    working memory has one form, which takes them. `SolveBatches` also owns the `GridBuilderBuffers` lent to its
+    loaded `GridBuffers` (`BuildGridBuffers` has one form). Source: owner answer A31 (2026-11-14).
+19. **Processors of the arguments (A30).** Buffers passed together to one function (piece and whole buffers of
+    `WriteSnapshotRange`, blob and coupled-velocity buffers beside the equations) live on one processor: a
+    documented precondition checked by a debug assertion, not `kBadInput`; `BufferError` has no processor-mismatch
+    value, so nothing is mapped. Source: owner answer A30 (2026-11-14).
+20. **Memory estimate on a processor; compile flags (reconcile item 24).** `ComputeBufferBytes(sizes, run_on)` and
+    `BuildPressureMemoryEstimate(sizes, run_on)` take the processor, because the sum and order buffers' bytes
+    depend on it (`ComputeSumBuffersSize(run_on)`, `ComputeOrderBuffersSize(run_on)`). Pressure's targets keep the
+    default flags; a target that needs exceptions or RTTI calls
+    `fluidity_apply_compile_flags(<target> EXCEPTIONS <ON|OFF> [RTTI <ON|OFF>])` right after `add_library`.
+    Source: reconcile-todo item 24; `plan-decisions.md` "Plans adopt Foundation as built (2026-11-14)".
 
 **Open** (left undecided by the plans; for the owner):
 

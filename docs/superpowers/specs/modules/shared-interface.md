@@ -590,7 +590,7 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 |---|---|---|---|
 | An error with context | `std::expected<T, <Module>Failure>`, `<Module>Failure { <Module>Error error; ... }`, `ToMessage`, `ToName` | each module | `GridProblem`, `PressureErrorContext`, `ParticlesErrorDetails` |
 | The chosen processor is not usable | `kRunOnCallFailed` | each module | `kProcessorUnavailable`, `kCannotRunOnGpu`, `kGpuCallFailed` |
-| Buffers on two processors where one is required | `BufferError::kRunOnMismatch`, mapped to the module's `kBadInput`; a view or array whose `run_on` differs from the buffers' is `kBadInput` | base, each module | |
+| Buffers on two processors where one is required | A documented precondition (`Requires:` same processor), checked by an assertion in debug builds; no error value (A30). A caller-facing boundary that receives the processor choice from the user (step run settings, I/O, CLI, the add-on's command) still reports a wrong or unavailable processor as an error | base, each module | `BufferError::kRunOnMismatch` mapped to `kBadInput`; "a view or array whose `run_on` differs from the buffers' is `kBadInput`" |
 | An input of another grid version | `kWrongGridVersion` | each module | `kGridChanged` |
 | A cancelled solve | `kCancelled`, input `const std::atomic<bool>* cancel_requested` | pressure, viscosity, gas, ... | `cancel_requested` in settings |
 | The two velocities of a particle | `PerParticleVelocity<T> { for_next_step; for_this_step; }` | base | `{ state; travel; }`, `velocity.state`, `velocity.travel`, `state_velocity`, `travel_velocity` |
@@ -598,16 +598,16 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Change of a particle's next-step velocity by a reacting solid | `contact::SolidReaction::velocity_for_next_step_change` | contact | `state_velocity_change` |
 | Contact's moved velocities | `contact::MovedParticles::velocity_for_next_step`; `FindFirstHit(..., Vec3 velocity_for_this_step, ...)` | contact | `state_velocity`, `travel_velocity` |
 | The grid, owning form | `grid::StaggeredGrid` (move-only; `GridVersion` 1 or more, 0 means "bound to no grid") | grid | `Grid`, `GridLayout`, `MixedSizeGrid` |
-| Building a grid version | `grid::BuildGrid(const GridInputs&, GridBuffers&)` on the run's processor (A17: a GPU run builds on the GPU; `GridInputs::active_cell_buffer`, `active_cell_buffer_count`); buffers from `BuildGridBuffers(const GridSettings&)`, given back with `ReleaseBuffers(StaggeredGrid&&)`; checks `ComputeGridCounts(inputs, buffers)`, `CheckSizeStepRule(inputs, buffers)`; the one copy of a GPU grid `ReadGrid(grid, cpu_buffers)` (g.1) | grid | `BuildGrid(inputs, settings, storage)`; "`BuildGrid` runs on the CPU, also for GPU runs" |
+| Building a grid version | `grid::BuildGrid(const GridInputs&, GridBuffers&)` on the run's processor (A17: a GPU run builds on the GPU; `GridInputs::active_cell_buffer`, `active_cell_buffer_count`); buffers from `BuildGridBuffers(const GridSettings&, GridBuilderBuffers&)`, taken back with `TakeBuffers(StaggeredGrid&&)` (A29, A31); checks `ComputeGridCounts(inputs, buffers)`, `CheckSizeStepRule(inputs, buffers)`; the one copy of a GPU grid `ReadGrid(grid, cpu_buffers)` (g.1) | grid | `BuildGrid(inputs, settings, storage)`; "`BuildGrid` runs on the CPU, also for GPU runs" |
 | The grid for shared formulas | `grid::GridTables` (from `grid.tables(run_on)`; `tables(kCpu)` on a GPU grid is version 0 with null arrays) | grid | `GridOnProcessor`, `GridLayoutFields` |
 | Positions in the arrays of one version | `grid::CellPlaceIndex`, `FacePlaceIndex`, `CornerPlaceIndex`, `CellBlockIndex`; none is `grid::kNoIndex` | grid | raw `cell_index`, `face_index`, `kNoCell`, `-1` |
 | Stable identities | `grid::CellId`, `FacePieceId`, `CellBlockId` | grid | `std::int64_t cell_id` |
 | A run of cell blocks | `grid::CellBlockRange { first_block; block_count; }` | grid | `{ first; end; }` |
 | One value per place | `grid::CellValues<T>`, `FaceValues<T>`, `CornerValues<T>`, `CellBlockValues<T>`, built with `Build...Values(RunOn, std::uint32_t max_cell_blocks)` and bound with `ApplyGridVersion(values, const StaggeredGrid&)` | grid | `ApplyGridVersion(grid, values)`, `CellField`, `FacePieceValues` |
 | A piece of the grid for a batch | class `grid::GridPiece` (in `grid/grid_piece.h`) with `grid()`, `range()`, `range_in_whole_grid()`, `block_in_whole_grid()` (CPU span; empty for a GPU piece), `block_in_whole_grid_buffer()`; `BuildGridPiece(const StaggeredGrid& whole, CellBlockRange, std::span<const CellBlockIndex> border_blocks, GridBuffers&)` (CPU whole grid) and the buffer form `BuildGridPiece(whole, range, const Buffer<CellBlockIndex>& border_blocks, std::uint32_t border_block_count, GridBuffers&)` (either processor; g.1); blocks keep the whole grid's fixed order; `grid::CellBlockRange` is in the shared `grid/grid_ids.h` | grid | struct `GridPiece { grid; range; block_in_whole_grid; }`, `BuildGridPiece(whole, RangeWithBorder, settings)`, `BuildRangeWithBorder` |
-| Border blocks of a range | `grid::FindBorderBlocks(grid, range, border_width)` returning `std::expected<std::vector<CellBlockIndex>, GridFailure>`, and a form writing a span and returning the count (both `kBadInput` on a GPU grid); the buffer form on either processor with `BorderSearchBuffers` from `BuildBorderSearchBuffers(RunOn, max_cell_blocks)`, one stacked layer per call (g.1); the border includes blocks storing a face piece of a touching cell | grid | a plain `std::vector` return |
-| Memory estimate entries of the grid | `grid::BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count, ScratchSharing scratch_sharing = ScratchSharing::kOnePerBuffers)` (a GPU grid: 1,996 B per block, all `kRunOn`, plus order scratch; g.1; the third parameter from the reconcile pass, g.7), `grid::BuildBorderSearchMemoryEstimate(RunOn)` | grid | `kGridMemoryEstimate`, the two-parameter form |
-| Grid build scratch shared by several grids (reconcile) | `grid::GridScratch` (move-only; `max_cell_blocks()`, `run_on()`), `BuildGridScratch(RunOn, std::uint32_t max_cell_blocks)`, `BuildGridBuffers(const GridSettings&, GridScratch&)` (lent scratch), `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`; `GridSettings::max_cell_blocks` defaults to 0 (g.7) | grid (used by step, cell resize, batches) | `GridSettings::max_cell_blocks = 1u << 22` |
+| Border blocks of a range | `grid::FindBorderBlocks(grid, range, border_width)` returning `std::expected<std::vector<CellBlockIndex>, GridFailure>`, and a form writing a span and returning the count (both require a CPU grid: a `Requires:` precondition, A30); the buffer form on either processor with `BorderSearchBuffers` from `BuildBorderSearchBuffers(RunOn, max_cell_blocks)`, one stacked layer per call (g.1); the border includes blocks storing a face piece of a touching cell | grid | a plain `std::vector` return |
+| Memory estimate entries of the grid | `grid::BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count, BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid)` (a GPU grid: 1,996 B per block, all `kRunOn`, plus order buffers; g.1; the third parameter from the reconcile pass, g.7), `grid::BuildBorderSearchMemoryEstimate(RunOn)` | grid | `kGridMemoryEstimate`, the two-parameter form |
+| Grid builder buffers shared by several grids (reconcile) | `grid::GridBuilderBuffers` (move-only; `max_cell_blocks()`, `run_on()`), `BuildGridBuilderBuffers(RunOn, std::uint32_t max_cell_blocks)`, `BuildGridBuffers(const GridSettings&, GridBuilderBuffers&)` (lent builder buffers; the only form, A31), `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`; `GridSettings::max_cell_blocks` defaults to 0 (g.7) | grid (used by step, cell resize, batches, pressure) | `GridSettings::max_cell_blocks = 1u << 22`; `GridScratch`, `BuildGridScratch`, `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`, `BuildGridBuffers(const GridSettings&)` |
 | One value per particle | `Buffer<T>`, or a pointer inside `particles::ParticleFields` | base, particles | `particles::ParticleValues<T>` |
 | Particles in a try | `particles::ParticlesTry`, `ParticleFields`, `ParticleFieldsToChange` | particles | `ParticleGroups` |
 | Particle order | by (`CellPlaceIndex` of the containing active cell, id), `group_begin` per block, `cell_begin` per cell place | particles | (cell block, id) |
@@ -652,12 +652,12 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Gas in the step | `gas::FindMarkerChanges`, `FindCellsToKeepActive`, `BuildTry`, `ComputeGasSeenByLiquid` (in `ChooseActiveCells`), `ApplyGasStepStart` (stage 10, or the start of stage 13 without stage 10; g.2), `SolveGas(inputs, settings, cancel_requested, SolvedGasArrays{velocity_after_pressure, was_solved, cell_was_solved}, amounts_try, gas_buffers, pressure_buffers)`, `GasResult::step_limit` (no sealed term, A24), `GasAmountsTry` | gas | `AddGasFromSources`, `ComputeCellsNeeded`, `ApplyGasToGrid`, `ApplyGasForces`, `ComputeGasGeometry`, `ComputeAddedVolumeRate`, `MoveGas`, `gas::ComputeStepLimit`, `gas::GasTry` |
 | Gas state and output | `gas::GasAmountsSnapshot` with `ReadGasAmountsSnapshot`, `BuildGasAmountsFromSnapshot` (saved state); `GasSnapshot` for volumes, from `ToGasSnapshot(const GasAmountsSnapshot&, const GasLaw&, const grid::GridFrame&)`; render output passes the law through `FrameInputs::gas_law` | gas | `GasSnapshot` in the step snapshot |
 | Gas sources and wind | keyed `gas::GasSource { source_id; low_corner; high_corner; keys; }`, `gas::GasWind { keys; }`, `SampleGasSource`, `SampleGasWind`, `CheckGasSources`; the scene file's top-level `gas_wind: [{time, acceleration}]` (s from the first frame; m/s2, world, Z-up) is written by the Blender add-on from Blender's Wind force fields (`WIND_ACCELERATION_PER_STRENGTH = 1.0` m/s2 per unit of Strength, A20) and read as written: neither I/O nor gas converts | gas, I/O, Blender add-on | box with rates, one acceleration; the add-on's `wind_acceleration` |
-| Stages | `step::Stage` (section e); `TryStepWithStages(Simulation&, const StepRequest&, const StageTable&)` | step | `TryStepWithStages(simulation, request, stages, ranges)` |
+| Stages | `step::Stage` (section e); `TryStepWithStages(Simulation&, const StepInputs&, const StageTable&)` | step | `TryStepWithStages(simulation, request, stages, ranges)` |
 | Callbacks | `step::Callback<Function> { Function* function; void* context; }`; `StepCallbacks` members are pairs | step | one `void* context`, `cell_resize::CallbackContext` used outside cell resize |
 | The run plan | `step::BuildRunPlan(..., std::span<const MemoryEstimateEntry> output_estimate, std::span<const MemoryEstimateEntry> cell_resize_estimate = {})` | step | |
 | Step snapshot | `step::SimulationSnapshot` with `std::optional<gas::GasAmountsSnapshot> gas`, `is_grid_only_region`, `grid_only_current_volume`, `grid_only_ingredient_volume` | step | |
 | Capability names | `step::CapabilityLevel { kCanRun, kExperimental, kUnavailable }` (the full list); `CapabilityReason::kMaterialSetsNotValid`; `SuggestedChange::kPutAllLiquidsInOneSet`; `kCapabilityReasonCount = 16` at most (A24 removed `kViscousLiquidWithSnow`, A27 `kViscousLiquidWithFreeSolid`; lower by one for each of `kViscousLiquidWithInclinedSolid`, `kViscousLiquidWithMovingSolidThroughCells`, `kViscousLiquidAtSizeChange` the viscosity plan lifts, 13 if all three are); `kRejectReasonCount = 23`, `kSuggestedChangeCount = 12` (A27: no `kSetViscosityToZero`; the sand module appends it back with `kViscousLiquidWithSand`, stable name `set_viscosity_to_zero`, and the add-on's repair), `kStepLimitCount = 11` | step | `liquids_that_do_not_mix_are_blended`, `kLiquidsThatDoNotMixTouch`, `step::Support`, `kSupported`; `kViscousLiquidWithSnow`, `"viscous_liquid_with_snow"` (A24); `kViscousLiquidWithFreeSolid`, `"viscous_liquid_with_free_solid"`, `kSetViscosityToZero` and `"set_viscosity_to_zero"` in the main sequence (A27) |
-| Transfer scratch and builders | `transfer::TransferScratch`, `BuildTransferScratch`, `BuildSolidsAtFaces`, `BuildGridFromParticles`, `BuildGridSnapshot(..., FilledFromSolved)`, `BuildCellsFromParticles`, `ToSolidsAtFacesOnProcessor`, `ToGridSnapshotOnProcessor`; each stage's scratch overload (g.5) | transfer | |
+| Transfer buffers and builders | `transfer::TransferBuffers`, `BuildTransferBuffers`, `BuildSolidsAtFaces`, `BuildGridFromParticles`, `BuildGridSnapshot(..., FilledFromSolved)`, `BuildCellsFromParticles`, `ToSolidsAtFacesOnProcessor`, `ToGridSnapshotOnProcessor`; each stage has one form, taking `TransferBuffers&` last (g.5; A31) | transfer | `TransferScratch`, `BuildTransferScratch`; the stage forms without working buffers |
 | Particle limits and amounts | `particles::ApplyParticleLimits(Particles&, max_particle_counts, max_cell_blocks)`; `ComputeAmounts` -> `std::expected<ParticleAmounts, ParticlesFailure>`, `ComputeAmountsPerBlock` -> `std::expected<void, ParticlesFailure>` (g.5) | particles | NaN signalling |
 | Solids buffers | `solids::BuildSolidsBuffers(settings, max_particle_count, max_cell_blocks)`, `BuildSolidCoverageValues(RunOn, max_cell_blocks)`, `MotionMap` (move-only view into `SolidsBuffers`), `WriteBlockPartialsRange` (g.5, g.6) | solids | |
 | Step plumbing | `step::RandomWords`, `ComputeRandomWords`, `ComputeSignedUnitValue`; `StageOutcome` (`step_error.h`); `StageTable::run_whole_grid`; `kStages`; `FindLoadedTry`, `FindLoadedGridBuffers`, `BlockCopy`, `WriteStepArrayBlocks`, three-argument `ApplyGridPiece` (g.5, g.6) | step | two-argument `ApplyGridPiece` |
@@ -671,7 +671,7 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Run modes | `step::RunMode { kOnePiece, kBatched, kBatchedWithSolvesInPieces }` (I/O `ToName`: `"one_piece"`, `"batched"`, `"batched_with_solves_in_pieces"`; `ToName(step::Module)`, 14 lower-snake names; reconcile); `RunPlan::max_solve_loaded_blocks`, `allowed_cpu_bytes`; `batches::SolvePlace { kWholeGridOnProcessor, kInPieces }` (g.3) | step, batches | `batches::SolvePlace::kWholeGridOnCpu` |
 | Solves in pieces | `pressure::SolveBatches` and `solve_batches.h` (`BuildSolveBatches`, `ApplySolveBatches`, `LoadSolveBatch`, `WriteBatchValues`, `ReadBatchValues`, `WriteBatchGroups`, `ReadBatchGroups`, `JoinLabelsAcrossBatches`, `SolveCopyReport`), `max_loaded_blocks` in `BufferSizes`, `ViscosityBufferSettings`, `GasBufferSizes`; `WriteSnapshotRange` (g.3) | pressure (used by viscosity, gas, batches, step) | "the solves are not batched" |
 | Grid-only region | `is_grid_only_region` (`std::uint8_t` per cell place), `cell_resize::ApplyGridOnlyRegionInStep`, `MoveGridOnlyLiquidInStep`, `ReadLargestGridOnlySpeed` | cell resize | `grid::CellRegion` |
-| Liquid totals | `cell_resize::ComputeLiquidTotals(const particles::ParticlesTry&, const GridOnlyAmounts&, std::span<const std::uint8_t> material_is_counted, const grid::StaggeredGrid&, grid::CellBlockRange)` | cell resize | four-argument form |
+| Liquid totals | `cell_resize::ComputeLiquidTotals(const particles::ParticlesTry&, const GridOnlyAmounts&, std::span<const std::uint8_t> material_is_counted, const grid::StaggeredGrid&, grid::CellBlockRange, SumBuffers& sum_buffers)`, the only form (A31) | cell resize | four-argument form; the five-argument form without `SumBuffers` |
 | Foam and spray recording | `render_output::RecordStep(StepRecorder&, const step::FoamAndSprayInputs&)`; `FoamAndSprayInputs::after_pressure` a span with one entry; `CheckRenderSettings(const RenderSettings&, double smallest_cell_width, const materials::MaterialTable&)` | render output, step | `RecordStep(recorder, inputs, ranges)` |
 | Open-format writers | `WritePointsFile`, `WriteSurfaceFile`, `WriteVolumeFile`, `WriteSolidMotionFile` in `fluidity_interchange`; `ReadFormatChoice(kind)`; `kOutputContractVersion = 2`; `InterchangeLibraries::missing_resource_folder`; each library pinned to the newest release on Conan Center when pinned (A19) | render output | I/O's `ParticlesFrame`, `MotionFrame`; versions matched to Blender's bundled libraries |
 | Witness records | `render_output::WitnessRecord { property; blender_5_3; evidence; }`; `capabilities` prints `{"property", "blender_5_3", "evidence"}`; the add-on's `WitnessRecordFact`, `WitnessCaseResult`, `write_witness_records.py` (one Blender 5.3 results file) (g.4) | render output, I/O, Blender add-on | `blender_5_2`, `WitnessOutcome` |
@@ -695,7 +695,7 @@ render output (`contact::Solid` through `solids::BuildContactSolids`). Includes 
 **Grid** (grid design, 3.1 to 3.7). The mixed-size staggered grid. 3.1 ids and indexes, `GridVersion`; 3.2
 `GridTables`; 3.3 `GridBuffers`, `BuildGridBuffers`, `BuildGrid(inputs, buffers)` on the run's processor (A17,
 g.1), the move-only
-`StaggeredGrid`, `ReleaseBuffers`, `CheckSizeStepRule`; 3.4 `CellBlockRange`, `BuildRanges`, `BorderWidth`,
+`StaggeredGrid`, `TakeBuffers`, `CheckSizeStepRule`; 3.4 `CellBlockRange`, `BuildRanges`, `BorderWidth`,
 `FindBorderBlocks`, `GridPiece`, `BuildGridPiece`; 3.5 weight curve and nearby-face weights; 3.6 the value
 arrays, `ApplyGridVersion`, `BuildGridMemoryEstimate`; 3.7 helpers added for other modules. Every later module uses
 it; the step builds a version in `ChooseActiveCells`; the cell resize and batches design builds resized grids
@@ -919,8 +919,8 @@ number, and takes the new grid's counts from `grid.counts()`. With GPU buffers `
 builds every table on the GPU and reads back only a private `GridBuildStatus`; tables, counts and failures equal
 the CPU builder's byte for byte (the CPU builder is the oracle). First failure on both processors: the smallest
 key `(step << 56) | (position << 8) | detail` (1 id checks, 2 overlaps, 3 siblings, 4 size-step rule, 5 and 6
-room); `kTooManyCellBlocks` always has `cell` zero. `ApplyGridVersion` runs on the CPU for every grid; values on
-another processor than the grid's are `kBadInput`. `tables(RunOn::kCpu)` on a GPU grid returns version 0 and null
+room); `kTooManyCellBlocks` always has `cell` zero. `ApplyGridVersion` runs on the CPU for every grid; it requires values on
+the grid's processor (a precondition checked by an assertion in debug builds, A30). `tables(RunOn::kCpu)` on a GPU grid returns version 0 and null
 arrays. `grid::BuildGrid` accepts an empty cell list.
 
 ```cpp
@@ -932,8 +932,8 @@ struct GridInputs {
   std::uint32_t active_cell_buffer_count = 0;          // Entries of *active_cell_buffer used.
   GridVersion version;                                 // 1 or more.
 };
-// With active_cell_buffer set, active_cells must be empty. A list on another processor than the GridBuffers (for
-// the one-argument forms: than the CPU) is kBadInput, except an empty list.
+// With active_cell_buffer set, active_cells must be empty. Requires: a non-empty list on the GridBuffers'
+// processor (for a span list: the CPU); a precondition checked by an assertion in debug builds (A30).
 std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, GridBuffers& buffers);  // Unchanged.
 // Checks before building, on either processor, allocating nothing; the buffers hold no grid before or after.
 std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs, GridBuffers& buffers);
@@ -965,11 +965,11 @@ const Buffer<CellBlockIndex>& block_in_whole_grid_buffer() const;
 }  // namespace fluidity::grid
 ```
 
-The span forms of `FindBorderBlocks` fail `kBadInput` on a GPU grid; `BuildRangeWithBorder` requires a CPU grid;
+The span forms of `FindBorderBlocks` require a CPU grid (a precondition checked in debug builds, A30); `BuildRangeWithBorder` requires a CPU grid;
 `BuildRanges` works on either; the span form of `BuildGridPiece` needs a CPU whole grid and
 `GridPiece::block_in_whole_grid()` is empty for a GPU piece. Memory (`BuildGridMemoryEstimate`): a CPU grid 456 B per
 block on `kRunOn`, 516 B on `kCpu`; a GPU grid everything on `kRunOn`: 1,996 B per block plus
-`64 x ComputeOrderScratchSize(kGpu).bytes_per_item` per block, `fixed_bytes`, 8 B and `sizeof(GridBuildStatus)` per
+`64 x ComputeOrderBuffersSize(kGpu).bytes_per_item` per block, `fixed_bytes`, 8 B and `sizeof(GridBuildStatus)` per
 storage. Cell resize and batches build pieces with the buffer form and find stacked borders one buffer-form
 `FindBorderBlocks` call per layer (batches' private `FindStackedBorder`); `ResizeCells` in a GPU run reads a CPU
 copy of the committed grid made with `ReadGrid`; `solids::FindGridEdgesOpenToSky` on a GPU grid marks boxes of
@@ -1124,7 +1124,7 @@ totals (each blob's, sealed gas blob's, free solid's, air pocket's sums) are, pe
 ascending cell place, then per group `math::TreeSum` over its block partials in ascending block index; labels are
 propagated per loaded piece and joined (`JoinLabelsAcrossBatches`), equal to the one-piece labels. No solver
 signature changes: a function taking `PressureBuffers&`, `ViscosityBuffers&` or `GasBuffers&` runs batch by batch
-when the buffers are in the batched layout. Rule: state and geometry stay whole on the GPU; solver scratch goes to
+when the buffers are in the batched layout. Rule: state and geometry stay whole on the GPU; solver buffers go to
 CPU memory (`CpuMemory::kLockedForCopies`) and through the GPU one loaded piece at a time.
 
 ```cpp
@@ -1152,7 +1152,7 @@ class SolveBatches {             // Move-only. Held inside buffers built with ma
   grid::CellBlockRange range(std::uint32_t batch) const;   // Whole-grid blocks this batch writes.
   std::uint32_t loaded_batch() const;            // grid::kNoIndex when none is loaded.
   const grid::GridPiece& loaded_piece() const;   // Precondition: loaded_batch() != kNoIndex.
-};
+};  // Owns the GridBuilderBuffers it lends to the loaded piece's GridBuffers, and an OrderBuffers (A31).
 std::expected<SolveBatches, PressureFailure> BuildSolveBatches(RunOn run_on, std::uint32_t max_cell_blocks,
                                                                std::uint32_t max_loaded_blocks,
                                                                std::span<const grid::BorderWidth> stacked_widths);
@@ -1236,9 +1236,16 @@ From `plan-decisions.md` sections "Transfer", "Particles", "Particles (continued
 CLI", "Cell resize and batches"; the transfer declarations are copied from the transfer plan's Global Constraints.
 
 ```cpp
-namespace fluidity::transfer {   // transfer_scratch.h (CPU only). Reused by every set and stage in turn. Move-only.
-class TransferScratch { public: RunOn run_on() const; std::size_t max_particle_count() const; };
-std::expected<TransferScratch, TransferFailure> BuildTransferScratch(RunOn run_on, std::size_t max_particle_count);
+namespace fluidity::transfer {   // transfer_buffers.h (CPU only). Reused by every set and stage in turn. Move-only.
+class TransferBuffers {
+ public:
+  RunOn run_on() const;
+  std::size_t max_particle_count() const;
+  std::size_t material_count() const;
+};
+// Bytes depend on material_count (`transfer: material offsets`, 8 B per material; reconcile item 27).
+std::expected<TransferBuffers, TransferFailure> BuildTransferBuffers(RunOn run_on, std::size_t max_particle_count,
+                                                                     std::size_t material_count);
 std::expected<SolidsAtFaces, TransferFailure> BuildSolidsAtFaces(RunOn run_on, std::uint32_t max_cell_blocks);
 std::expected<GridFromParticles, TransferFailure> BuildGridFromParticles(RunOn run_on, std::uint32_t max_cell_blocks);
 enum class FilledFromSolved : std::uint8_t { kNotKept, kKept };  // kNotKept: a set no solve writes.
@@ -1249,7 +1256,8 @@ std::expected<CellsFromParticles, TransferFailure> BuildCellsFromParticles(RunOn
 SolidsAtFacesOnProcessor ToSolidsAtFacesOnProcessor(const SolidsAtFaces& solids);
 GridSnapshotOnProcessor ToGridSnapshotOnProcessor(const GridSnapshot& snapshot);
 // Each stage (ParticlesToGrid, SaveGridBeforeForces, SaveGridAfterPressure, GridToParticles,
-// ComputeCellsFromParticles) has a second overload with TransferScratch& scratch last; the step uses it.
+// ComputeCellsFromParticles) has one form, with TransferBuffers& transfer_buffers last (A31: tests and tools
+// build a TransferBuffers too); it allocates nothing.
 }  // namespace fluidity::transfer
 
 namespace fluidity::particles {
@@ -1299,7 +1307,7 @@ enum class MaterialPreset : std::uint8_t { kCustom, kWater, kSyrup, kSnow, kSpri
 
 From `plan-decisions.md` "Planned cost shown to the user, and buffers in batched runs (2026-11-14)"; the full
 inventory of stages x buffers x processor is the step plan's Appendix A, the step's planned copies its Appendix B.
-Principle (A17): only what does not fit (the particles; in `kBatchedWithSolvesInPieces` also the solver scratch)
+Principle (A17): only what does not fit (the particles; in `kBatchedWithSolvesInPieces` also the solver buffers)
 stays in CPU memory, moved in planned copies the planner counts and the reports measure.
 
 - **Placement rule for whole try arrays** (both batched modes, either processor): a whole array lives on the run's
@@ -1308,7 +1316,7 @@ stays in CPU memory, moved in planned copies the planner counts and the reports 
   and written only inside one pass has no whole instance, only the loaded one. `ReadStepArrays` reports each
   array's place.
 - **Loaded instances.** The loaded `StepTry` owns, on the run's processor, one instance of every module buffer a
-  pass stage uses (`transfer::TransferScratch`, `materials::MaterialBuffers`, `contact::ContactBuffers`,
+  pass stage uses (`transfer::TransferBuffers`, `materials::MaterialBuffers`, `contact::ContactBuffers`,
   `solids::SolidsBuffers`, at `max_loaded_particles` per material and `max_loaded_blocks`) beside the piece
   `pressure::PressureBuffers`. No module signature changes: the builders take the smaller counts.
 - **Stage 17 in CPU memory** in a batched run: `solids::ApplyContactReactions` and `ComputeCutWork` on a separate
@@ -1353,7 +1361,7 @@ std::expected<void, SolidsFailure> WriteBlockPartialsRange(const SolidsBuffers& 
 namespace fluidity::gas {
 struct MarkerGridInputs { const grid::StaggeredGrid* grid; const grid::CellValues<double>* gas_volume; const
   grid::FaceValues<double>* committed_velocity; };
-// CPU form: every input in CPU memory, else kBadInput; same lists as the amounts form.
+// CPU form. Requires: every input in CPU memory (debug assertion, A30); same lists as the amounts form.
 std::expected<MarkerChanges, GasFailure> FindMarkerChanges(const MarkerGridInputs& inputs, grid::CellBlockRange blocks,
     const particles::ParticleFields& gas_markers, const GasLaw& law, const MarkerSettings& settings, GasBuffers& buffers);
 // MarkerChanges gains std::uint32_t copy_count = 0; std::uint64_t bytes_copied = 0; (rows where = kCpu in every GPU
@@ -1384,12 +1392,14 @@ namespace fluidity::gas { void ResetSolveCopyReport(GasBuffers& buffers); }
 // Each zeroes the held SolveBatches' report; does nothing for one-piece buffers; allocates and copies nothing.
 
 namespace fluidity::grid {       // staggered_grid.h (item 11). GridSettings::max_cell_blocks defaults to 0.
-class GridScratch { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
-std::expected<GridScratch, GridFailure> BuildGridScratch(RunOn run_on, std::uint32_t max_cell_blocks);
-std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings, GridScratch& scratch);
-enum class ScratchSharing : std::uint8_t { kOnePerBuffers, kOneForAllBuffers };
-std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
-    RunOn run_on, std::uint32_t storage_count, ScratchSharing scratch_sharing = ScratchSharing::kOnePerBuffers);
+class GridBuilderBuffers { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
+std::expected<GridBuilderBuffers, GridFailure> BuildGridBuilderBuffers(RunOn run_on, std::uint32_t max_cell_blocks);
+// The only form (A31). Requires: builder_buffers on settings' processor (debug assertion, A30).
+std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings,
+                                                         GridBuilderBuffers& builder_buffers);
+enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids };
+std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(RunOn run_on, std::uint32_t storage_count,
+    BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid);
 }  // namespace fluidity::grid
 
 namespace fluidity::step {       // resize_access.h (item 12, coordinator item (6))
@@ -1408,8 +1418,8 @@ std::vector<MemoryEstimateEntry> BuildCellResizeMemoryEstimate(std::uint32_t ing
 }  // namespace fluidity::cell_resize
 ```
 
-`GridScratch` is lent to every `GridBuffers` built with the two-argument form, which must not outlive it; with
-`kOneForAllBuffers` the scratch entries have `copies = 1`. The step owns one `GridScratch` for the committed, free
+`GridBuilderBuffers` (the grid's working buffers for building, A31) is lent to every `GridBuffers`, which must not
+outlive it; with `kOneForAllGrids` the builder buffers entries have `copies = 1`. The step owns one `GridBuilderBuffers` for the committed, free
 and loaded grid buffers. `ApplyResizedGrid(ResizeTry&, const grid::StaggeredGrid&)` stays for a caller that built
 the grid itself. In a batched GPU run (`kHeldByStep`) cell resize's two CPU grids are neither allocated nor
 counted. I/O: `ToName(step::Module)` (14 lower-snake names) and `ToName(step::RunMode)` with
@@ -1543,8 +1553,8 @@ solids' `max_motion_map_entries` x 2, 8 B) and `"step: free solid motion"` (give
 viscosity buffers `max_material_faces` = 2 x `max_motion_map_entries`, `max_free_solids` = the free solid count.
 **Exclusions (A27):** `ViscosityError::kFreeSolidNotSupported`, `ViscositySceneSummary::has_free_solid_touching_liquid`,
 `CapabilityReason::kViscousLiquidWithFreeSolid` (stable names `free_solid_not_supported`,
-`viscous_liquid_with_free_solid`) are lifted: `ViscosityError` 14 values before the viscosity plan's three lifting
-tasks (11 if all are lifted), `kCapabilityReasonCount` 16 at most (13). `SuggestedChange::kSetViscosityToZero` is
+`viscous_liquid_with_free_solid`) are lifted: `ViscosityError` 15 values with `kOutOfMemory` (reconcile item 25) before the viscosity
+plan's three lifting tasks (12 if all are lifted), `kCapabilityReasonCount` 16 at most (13). `SuggestedChange::kSetViscosityToZero` is
 removed from the main sequence (`kSuggestedChangeCount` 12); the sand module appends it back with
 `kViscousLiquidWithSand` (stable name `set_viscosity_to_zero`, the add-on's repair). I/O's per-liquid budget struct
 and schema table are `io::ViscousEffectOfLiquid` / `ViscousEffectOfLiquid` (were `LiquidViscousEffect`, the step's
@@ -1572,7 +1582,7 @@ struct's name).
 - **Step callbacks.** `Callback<Function>{function, context}` pairs. `changes-to-apply.md` final table; step
   design 3.9.
 - **Batched solves.** Pressure, viscosity and gas solves are also batched (A15): `kBatchedWithSolvesInPieces`
-  streams solver scratch through the GPU one loaded piece at a time; a batched run agrees with a one-piece run
+  streams solver buffers through the GPU one loaded piece at a time; a batched run agrees with a one-piece run
   within the solver's tolerance; `border_cell_pressure` removed. `plan-decisions.md`, "Batched solves (A15)",
   (g.3); `changes-to-apply.md` (pressure, cell resize and batches).
 - **Coupling inside the pressure solve.** Sealed gas blobs touching liquid and blocking material sets are
@@ -1596,7 +1606,7 @@ struct's name).
 
 - Section (a): the Foundation "plan" declarations (`Transpose(const Mat3&)`, `Determinant(const Mat3&)`,
   `IsFinite(const Mat3&)`, four-value `BufferError`, span parameters without `std::type_identity_t`, no
-  `OrderScratch`, no `TreeSumOf` or `LargerMagnitude`) by the built headers ("Foundation as built" in
+  `OrderBuffers`, no `TreeSumOf` or `LargerMagnitude`) by the built headers ("Foundation as built" in
   `plan-decisions.md`); the note that `processor_description.h` and the field names of `ProcessorDescription` were
   this file's proposal, by the built header.
 - Rule 5 and conflict "Batched solves": "a run in one piece and a batched run give the same bytes" and "the solves
@@ -1642,3 +1652,11 @@ struct's name).
   of material faces in the joint solve and "`kFreeSolidNotSupported` / `kViscousLiquidWithFreeSolid` stay"; conflict
   "Blocking materials and sealed gas beside a viscous liquid" (free solids excluded): by "A viscous liquid sticks,
   and free solids in the viscous solve (A26, A27)" (g.9).
+- Owner's review of the Foundation rulings (A28 to A31, 2026-11-14; `plan-decisions.md` "Owner's review of the
+  Foundation rulings applied (A28–A33)"): every `...Scratch` name, by its `...Buffers` name (the grid's lent
+  `GridScratch` by `GridBuilderBuffers`, `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }` by
+  `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`); the forms of a function that built their own working
+  buffers (`BuildGridBuffers(const GridSettings&)`, the transfer stages without `TransferBuffers`, the
+  `ComputeLiquidTotals` form without `SumBuffers`), by the one form that takes them; `BufferError::kRunOnMismatch`
+  and every "on another processor is `kBadInput`" between arguments, by a `Requires:` precondition checked in debug
+  builds; `grid::ReleaseBuffers`, by `grid::TakeBuffers`; `StepRequest`, by `StepInputs`.

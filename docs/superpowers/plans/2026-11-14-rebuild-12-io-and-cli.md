@@ -47,8 +47,10 @@ Foundation's list, unchanged:
   the `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive
   with the code. A commit must pass every part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -64,14 +66,16 @@ Foundation's list, unchanged:
 - Deletion is the default: add a dependency, file or tool only when a task here names it.
 - **Amended 2026-11-14 (Foundation as built):** Foundation's structure patterns (`AGENTS.md` "Structure";
   `plan-decisions.md` "Foundation after the final review") hold here as far as a CPU-only module meets them. This
-  module has no GPU half, no `_gpu.h`, no `_steps.h` and no scratch of its own; the two-halves, kernel-wrapper and
-  scratch rules apply to the modules it drives. Errors: a failed check writes nothing; after a module's
+  module has no GPU half, no `_gpu.h`, no `_steps.h` and no working buffers of its own on a processor; the two-halves, kernel-wrapper and
+  working-buffers rules apply to the modules it drives. (Amended 2026-11-14, A30: a processor the user chose that
+  is wrong or unavailable is still reported as an error here, because it is user input; mixing processors between
+  a module's arguments is that module's precondition.) Errors: a failed check writes nothing; after a module's
   `kRunOnCallFailed` the run's outputs are unspecified and the run stops (exit code as design 5.8); `kOutOfMemory`
   comes only from building forms. Exactness: discrete outputs equal on CPU and GPU, floating-point within the
   step's design 6.4 tolerances unless a header promises the same bits unless NaN; CPU-against-CPU and
   GPU-against-GPU runs of one mode keep their byte tests. Tests link `fluidity_base_test_support` (`ToBits`,
   `BuildBufferHolding`, `ReadAll`, `CheckWithinTolerance`, `CheckSameBitsOrBothNaN`, digests) and
-  `fluidity_io_test_helpers`, made with `fluidity_add_test_library` and named in `LINKS`; every `gpu` test calls
+  `fluidity_io_test_support`, made with `fluidity_add_test_library` and named in `LINKS`; every `gpu` test calls
   `WriteResultDigest` on its main outputs. Labels: `cpu` everywhere, `no_gpu` only for behaviour on a machine
   without a GPU, `gpu` only on hardware. Every C++ target is created through the helpers of
   `cmake/fluidity_targets.cmake` (`fluidity_add_test`, `fluidity_add_test_library`) or, for the library parts and
@@ -136,9 +140,9 @@ The module's own:
   headers stay private to `fluidity` and `fluidity_cli_parts`.
 - **Test labels:** `LABEL cpu` for library and process tests; `LABEL gpu` for the owner's run (Task 41);
   `LABEL no_gpu` for the one test that needs a CUDA build without a GPU. Long scene runs get CTest
-  `TIMEOUT 900`. Test helpers: library `fluidity_io_test_helpers` (namespace `fluidity::io::testing`), created with
-  `fluidity_add_test_library(fluidity_io_test_helpers SOURCES io_test_helpers.cc LINKS fluidity_base_test_support
-  fluidity_step_test_helpers)` and named in each test's `LINKS` (amended 2026-11-14, Foundation as built).
+  `TIMEOUT 900`. Test helpers: library `fluidity_io_test_support` (namespace `fluidity::io::testing`), created with
+  `fluidity_add_test_library(fluidity_io_test_support SOURCES io_test_support.cc LINKS fluidity_base_test_support
+  fluidity_step_test_support)` and named in each test's `LINKS` (amended 2026-11-14, Foundation as built).
 - **Names the rules check reports under `verb`** go into `tools/check_rules_allowed_names.txt` with the reason
   `decided I/O name (I/O design 3)`, in the task that adds them: `AdvanceRunTo`, `AdvanceRun`, `RebuildOutputs`,
   `DiscardOutputFile`, `RemoveOutputFiles`, `AddFrameOutput`, `CompareWithRunFolder`.
@@ -159,7 +163,7 @@ The module's own:
 On branch `rebuild` in `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuild`, already committed: Foundation
 with every `base/` piece (`ReadMemoryAvailable`, `ReadProcessorDescription` in `base/processor_description.h`,
 `MemoryEstimateEntry` with `where`), contact, grid, particles, transfer, pressure, viscosity, materials, solids, gas, step
-(with `fluidity_step_test_helpers`: `TestScene`, `ExpectSameBytes`, the small reference scenes of step Task 36)
+(with `fluidity_step_test_support`: `TestScene`, `ExpectSameBytes`, the small reference scenes of step Task 36)
 and cell resize and batches (with `ResizeCells`, `ApplyStagesInBatches`, `BuildCellResize`, `BuildBatchPlan`,
 `BuildBatchedRun` as its design section 3 declares them), each with its comment pass done.
 
@@ -168,8 +172,8 @@ Prove it: `uv run python tools/check_commit.py` prints `PASS` on every line, and
 `step/`, `cell_resize/`, `batches/`. If either fails, stop and ask the owner.
 
 **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides `base/run_on_call.h`,
-`base/gpu_launch.cuh`, the scratch forms of the sums (`SumScratch`) and of the order (`OrderScratch`) that the
-modules this one drives use inside their buffers, `base/test_support.h` (library `fluidity_base_test_support`) and
+`base/gpu_launch.cuh`, the sums and the order with their `SumBuffers` and `OrderBuffers` (one form each, A31) that the
+modules this one drives keep inside their buffers, `base/test_support.h` (library `fluidity_base_test_support`) and
 `fluidity_add_test_library` with `LINKS`; read `AGENTS.md` "Structure" and "Language" (the "Targets" bullet)
 before the first task. The expected gate output is seven `PASS` lines: format, rules, cpu debug, cpu release,
 tidy, paper, cuda.
@@ -386,6 +390,8 @@ and the budget schema) is declared here.
 
 ### Task 6: Digests, the file call table and the executable's digest
 
+**Amended 2026-11-14 (A31):** temporary file wording (no "scratch").
+
 **Kind:** mechanical
 
 **Files:**
@@ -409,7 +415,7 @@ and the budget schema) is declared here.
 - [ ] **Step 1: Failing tests** (`LABEL cpu`): `ComputeFileDigest, KnownBytes_EqualsHasherOfSameBytes` (3 MiB of a
   fixed integer pattern, read in pieces); `ComputeFileDigest, Missing_IsFileNotFound`;
   `ComputeExecutableDigest, TwiceInOneProcess_Equal`; `ComputeExecutableDigest, InjectedPath_DigestOfThatFile`
-  (a test table whose `read_executable_path` returns a scratch file); `Digest, EqualityComparesAllBytes`.
+  (a test table whose `read_executable_path` returns a temporary file); `Digest, EqualityComparesAllBytes`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** Port the executable path lookup from
   `git show main:native/cli/fluidity_simulate.cc` lines 746-790 (`GetModuleFileNameW`, `/proc/self/exe`,
   `_NSGetExecutablePath`), with `std::expected` and `IoFailure` in place of Abseil. Files are read in 1 MiB pieces.
@@ -438,7 +444,7 @@ and the budget schema) is declared here.
   count (u32 LE), the FlatBuffers bytes, then 8 check bytes = first 8 bytes of BLAKE3(entry bytes + previous
   check bytes); the first entry's previous check bytes are 8 zeros.
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`, lists built with the private builders in a scratch folder):
+- [ ] **Step 1: Failing tests** (`LABEL cpu`, lists built with the private builders in a temporary folder):
 
   ```cpp
   TEST(ReadFileList, StartThenThreeListed_ReturnsAllInOrder)   // sequence 0..3, ignored_end_bytes 0
@@ -539,6 +545,8 @@ and the budget schema) is declared here.
 
 ### Task 10: The array file
 
+**Amended 2026-11-14 (A31):** Review Focus 4 comment says packing memory.
+
 **Kind:** integration
 
 **Files:**
@@ -562,7 +570,7 @@ and the budget schema) is declared here.
   TEST(WriteArrayFile, EmptyArray_RoundTrips)
   TEST(WriteArrayFile, TwoToTheTwentyPlusOneItems_RoundTrips) // 2^20 + 1 Vec3 items
   TEST(WriteArrayFile, NameOf255Bytes_RoundTrips)
-  TEST(WriteArrayFile, SameContentTwice_SameBytes)            // Review Focus 4: scratch memory filled with 0xA5
+  TEST(WriteArrayFile, SameContentTwice_SameBytes)            // Review Focus 4: packing memory filled with 0xA5
                                                               // before each write; file digests equal
   TEST(ReadArrayFile, CutAtEvery64ByteBoundary_IsFileDamaged)
   TEST(CheckListedFile, OneFlippedBitAnywhere_IsDigestDiffers) // a flip at 50 spread positions
@@ -716,18 +724,20 @@ solve (stage 12).
 
 ### Task 15: Start regions and explicit start particles
 
-**Amended 2026-11-14 (Foundation as built):** `WriteStartParticlesFile` goes into `fluidity_io_test_helpers`, which
+**Amended 2026-11-14 (A31):** temporary `RunFolder` wording.
+
+**Amended 2026-11-14 (Foundation as built):** `WriteStartParticlesFile` goes into `fluidity_io_test_support`, which
 this task creates with `fluidity_add_test_library` (Task 22 adds to it); the bit tests use `ToBits`.
 
 **Kind:** integration
 
 **Files:**
 - Create: `native/fluidity/io/start_particles.cc` (private), `start_particles_test.cc`,
-  `native/fluidity/io/io_test_helpers.h`, `io_test_helpers.cc` (library `fluidity_io_test_helpers`:
-  `fluidity_add_test_library(fluidity_io_test_helpers SOURCES io_test_helpers.cc LINKS fluidity_base_test_support
-  fluidity_step_test_helpers)`)
+  `native/fluidity/io/io_test_support.h`, `io_test_support.cc` (library `fluidity_io_test_support`:
+  `fluidity_add_test_library(fluidity_io_test_support SOURCES io_test_support.cc LINKS fluidity_base_test_support
+  fluidity_step_test_support)`)
 - Modify: `native/fluidity/io/CMakeLists.txt` (the library, `start_particles.cc`, the test with `LABEL cpu LINKS
-  fluidity_io_test_helpers`), `schemas/simulate/v2/scene_file.fbs` (`start_regions: [StartRegion]` with `id`, `name`, `material_id`,
+  fluidity_io_test_support`), `schemas/simulate/v2/scene_file.fbs` (`start_regions: [StartRegion]` with `id`, `name`, `material_id`,
   `shape` (`box | ball`), `center`, `orientation` (w, x, y, z), `half_size`, `radius`, `velocity`,
   `ingredient_shares`, `same_material_as`; `start_particles_file: string`, `start_particles_file_digest: Digest`)
 
@@ -742,8 +752,8 @@ this task creates with `fluidity_add_test_library` (Task 22 adds to it); the bit
   region of snow or a springy solid gets its own material and `material_id` unless `same_material_as` names one.
 - `start_particles_file`: an array file of kind `kStartParticles` with `particles.<material_id>.position`,
   `.velocity_for_next_step` and optional `.rest_volume`, `.mass`; its digest must equal the scene's
-  (`kDigestDiffers`). Test helper (`fluidity_io_test_helpers`): `WriteStartParticlesFile(const Path& file,
-  std::span<const ExplicitParticle> particles)` (writes through a scratch `RunFolder` and copies the listed file
+  (`kDigestDiffers`). Test helper (`fluidity_io_test_support`): `WriteStartParticlesFile(const Path& file,
+  std::span<const ExplicitParticle> particles)` (writes through a temporary `RunFolder` and copies the listed file
   out).
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`): `SampleStartRegion, BoxOfOneCell_EightParticles`;
@@ -880,9 +890,12 @@ this task creates with `fluidity_add_test_library` (Task 22 adds to it); the bit
 a springy solid beside a viscous liquid (expectation unchanged).~~ Option C chosen (A24): test unblocked.
 `WriteSavedState, RegionArrays_RoundTrip` runs as written (the joint viscous solve carries the material faces).
 
-**Amended 2026-11-14 (Foundation as built):** `saved_state_test` links `fluidity_io_test_helpers` (and through it
-`fluidity_step_test_helpers` for `ExpectSameBytes`, a same-processor comparison); `SnapshotArraysScratch` is stated
-to be CPU-only packing memory, not a processor scratch of the `AGENTS.md` pattern.
+**Amended 2026-11-14 (Foundation as built):** `saved_state_test` links `fluidity_io_test_support` (and through it
+`fluidity_step_test_support` for `ExpectSameBytes`, a same-processor comparison); `SnapshotPackingBuffers` is stated
+to be CPU-only packing memory, not processor working buffers of the `AGENTS.md` pattern.
+
+**Amended 2026-11-14 (A31):** `SnapshotArraysScratch` renamed `SnapshotPackingBuffers` (parameter
+`packing_buffers`); `ToSnapshotArrays` has one form, which takes it.
 
 **Kind:** integration
 
@@ -896,10 +909,10 @@ to be CPU-only packing memory, not a processor scratch of the `AGENTS.md` patter
   `saved_states/<frame:06d>.state`), `ReadSavedState`, `FindSavedState`.
 - Produces (private, plan decision on array names and order; shared with Task 20's digest):
   `std::vector<ArrayToWrite> ToSnapshotArrays(const step::SimulationSnapshot&, SnapshotPacking packing,
-  SnapshotArraysScratch& scratch)` with `enum class SnapshotPacking { kSavedState, kFrameInputs }` (amended
-  2026-11-14, Foundation as built: `SnapshotArraysScratch` is a private, move-only struct of CPU byte vectors that
+  SnapshotPackingBuffers& packing_buffers)` with `enum class SnapshotPacking { kSavedState, kFrameInputs }` (amended
+  2026-11-14, Foundation as built: `SnapshotPackingBuffers` is a private, move-only struct of CPU byte vectors that
   the output worker keeps across frames so packing does not allocate per frame once warm; it never holds a
-  processor buffer, so `Build<Name>Scratch(run_on, max_count)` and a `RunOn` check do not apply; the hand-over
+  processor buffer, so `Build<Name>Buffers(run_on, max_count)` and a `RunOn` check do not apply; the hand-over
   reports its largest size beside `BuildIoMemoryEstimate`).
   Order:
   per material in material index order `particles.<material_id>.<member>` for every member of
@@ -913,7 +926,7 @@ to be CPU-only packing memory, not a processor scratch of the `AGENTS.md` patter
   pockets, `blob_history`, source counters, `step_limits` (every `CommittedStepLimits` field), `solids` (every
   member of `solids::SolidsSnapshot`), `limits`.
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`; snapshots from `fluidity_step_test_helpers` scenes after 5 committed
+- [ ] **Step 1: Failing tests** (`LABEL cpu`; snapshots from `fluidity_step_test_support` scenes after 5 committed
   `step::TryStep` calls, compared with `step::testing::ExpectSameBytes`):
 
   ```cpp
@@ -1003,8 +1016,8 @@ this task adds to it, and `output_queue_test` names it in `LINKS`.
 
 **Files:**
 - Create: `native/fluidity/io/output_queue.h`, `output_queue.cc`, `output_queue_test.cc`
-- Modify: `native/fluidity/io/io_test_helpers.h`, `io_test_helpers.cc` (library `fluidity_io_test_helpers`, Task
-  15), `native/fluidity/io/CMakeLists.txt` (`output_queue_test` with `LABEL cpu LINKS fluidity_io_test_helpers`)
+- Modify: `native/fluidity/io/io_test_support.h`, `io_test_support.cc` (library `fluidity_io_test_support`, Task
+  15), `native/fluidity/io/CMakeLists.txt` (`output_queue_test` with `LABEL cpu LINKS fluidity_io_test_support`)
 
 **Interfaces:**
 - Produces design 3.6: `FrameOutput` (plan decision fields), `ProductsOfFrame`, `FrameWriter` (with
@@ -1016,7 +1029,7 @@ this task adds to it, and `output_queue_test` names it in `LINKS`.
   (with `keeps_frame_inputs`), `WriteFrameDone`, on a saved-state frame `WriteSavedState` then
   `ApplySavedStateRetention`, then `WriteRunReport` (Task 23 supplies it; here a callback), then `on_frame_done`.
   One worker thread, one lock, two condition variables.
-- Produces (test-only, `fluidity_io_test_helpers`): `struct TextFrameWriterLog { std::vector<std::pair<std::int64_t,
+- Produces (test-only, `fluidity_io_test_support`): `struct TextFrameWriterLog { std::vector<std::pair<std::int64_t,
   bool>> calls; std::int64_t fail_folder_write_at_frame = -1; std::int64_t not_built_at_frame = -1; double
   sleep_seconds = 0; };` and `FrameWriter BuildTextFrameWriter(TextFrameWriterLog* log)`: for each declared output
   (or `only_output_ids`) it writes `<file_pattern with the frame>.txt` holding `output_id`, frame, time as hex
@@ -1133,7 +1146,7 @@ part of the budget lines they already print.
     resize. `particle_count` = `counts.start_particles + counts.particles_from_sources`; `smallest_cell_width` from
     the grid frame.
   - Mode and verdict: `fit == kFits` and `kOnePiece`: `kFitsProcessor`, `kFits`; `kBatched`:
-    `kParticlesDoNotFitProcessor`; `kBatchedWithSolvesInPieces`: `kSolverScratchDoesNotFitProcessor`; a GPU run
+    `kParticlesDoNotFitProcessor`; `kBatchedWithSolvesInPieces`: `kSolverBuffersDoNotFitProcessor`; a GPU run
     with `fit == kDoesNotFit` or a `BatchesFailure` `kStateDoesNotFitCpu`: `kStateDoesNotFitCpu`,
     `kDoesNotFitCpu`; `kBatchDoesNotFit`: `kLayerDoesNotFitProcessor`, `kDoesNotFitProcessor`; a CPU run that does
     not fit: `kOnePieceDoesNotFitCpu`, `kDoesNotFitCpu`. `to_fit` by the suggestion formulas of `plan-decisions.md`
@@ -1204,7 +1217,7 @@ part of the budget lines they already print.
       // transfer (2.6e9, 2.1e9), particles (2.2e9, 3.01e10), grid (1.4e9, 0), step (9e8, 1.3e9), solids (3e8, 4e8);
       // pass 6.6e9 B in 24 loads, step 1.25e6 B in 9, solve 1.5e9 B in 15 loads per iteration, limit 200;
       // snapshot 2.4e9. Expected (lines 1, 3, 4 and the last four as above with these numbers):
-      // mode: batches with solves in pieces (the particles and the solver scratch do not fit the gpu; particle
+      // mode: batches with solves in pieces (the particles and the solver buffers do not fit the gpu; particle
       //   stages run in 12 batches, solves in 5 pieces)            <- one line
       // largest on gpu: pressure 3.10 GB, transfer 2.60 GB, particles 2.20 GB, grid 1.40 GB, step 900.00 MB
       // largest in cpu memory: particles 30.10 GB, pressure 4.20 GB, transfer 2.10 GB, step 1.30 GB, solids 400.00 MB
@@ -1816,7 +1829,7 @@ new source and test.
   `fluidity_cli_parts`, with `fluidity`,
   `fluidity_command_line`, `CLI11::CLI11`, `flatbuffers::flatbuffers`, `Threads::Threads`; `OUTPUT_NAME fluidity`;
   its `fluidity_apply_compile_flags(fluidity_cli EXCEPTIONS OFF)` of Task 3 kept; every new `.cc` of this task
-  listed, `advance_run_test` as `LABEL cpu LINKS fluidity_io_test_helpers`)
+  listed, `advance_run_test` as `LABEL cpu LINKS fluidity_io_test_support`)
 
 **Interfaces:**
 - Produces design 3.7 `AdvanceRun` (`run`, `run --start-from`, `run --outputs`, `resume`): builds `RunParts`, then
@@ -1944,7 +1957,7 @@ repeat runs.
 
 **Amended 2026-11-14 (Foundation as built):** every `gpu` test writes `WriteResultDigest` of its run's internal-file
 digests and `FrameDone::snapshot_digest`s, so the owner's repeat run compares them; the two tests are registered in
-the module CMake files with `LINKS fluidity_io_test_helpers`.
+the module CMake files with `LINKS fluidity_io_test_support`.
 
 **Kind:** device
 
@@ -1998,7 +2011,7 @@ packing-memory choices.
   `--assume-cpu-memory`, the lines on standard error, the event and report fields, the two warning constants for
   the owner); Foundation as built (amended 2026-11-14): `fluidity_apply_compile_flags` on `fluidity_cli_parts`,
   `fluidity_cli` and `fluidity_command_line`, the `noexcept` wrapper in place of a test built without exceptions,
-  `fluidity_io_test_helpers` made in Task 15, `SnapshotArraysScratch` as CPU packing memory and its largest size.
+  `fluidity_io_test_support` made in Task 15, `SnapshotPackingBuffers` as CPU packing memory and its largest size.
 - [ ] **Step 4: `docs/gpu-runs.md`:** an `io and cli` row, `compiled, not run`, listing the `gpu` tests of Task 41.
 - [ ] **Step 5: Hand over** in one message: `git log --oneline` of the module, the gate's output, new public names
   with their one-line reasons, the list of Step 3, and the statement that no device code has run.

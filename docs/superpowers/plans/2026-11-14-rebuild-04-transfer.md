@@ -45,8 +45,10 @@ Foundation's list, unchanged:
   Every GPU function is a thin grid-stride loop over `FLUIDITY_CPU_AND_GPU` per-item functions of a shared
   `<name>_steps.h` (which call the shared formula headers), plus at most an integer atomic of the value they
   return, and `cpu` tests run those functions for every thread block and thread, in launch order and in reverse,
-  against the CPU loop: the main evidence until the hardware run. Scratch: per-step memory is the
-  `TransferScratch` and the arrays the builders return (below); temporary GPU memory of one call only through
+  against the CPU loop: the main evidence until the hardware run. Working buffers: per-step memory is the
+  `TransferBuffers` and the arrays the builders return (below); every stage has one form, which takes the
+  `TransferBuffers` (A31), and buffers on another processor than the stage's arrays are a `Requires:`
+  precondition asserted in debug builds, not an error value (A30); temporary GPU memory of one call only through
   `GpuArray`. Errors: a failed check writes nothing; after `kRunOnCallFailed` the outputs are unspecified (the
   output's `step_try` is 0) and the run stops. Exactness: kinds, reasons, counts, keys and failures equal on CPU and
   GPU; floating-point results within the tolerances below unless a header promises the same bits unless NaN
@@ -59,7 +61,10 @@ Foundation's list, unchanged:
   release presets, and the CUDA build compiled in the container (its `cuda` step fails, naming the file, for a
   tracked `.cc` or `.cu` file that no build compiles). clang-format and clang-tidy are the pinned 23.1.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written, so Foundation ends without a hardware run. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -112,15 +117,22 @@ Transfer's own:
   `grid_version()` differs from `inputs.grid.version()` (rebinding would make earlier ranges' values unspecified).
 - **Grouping.** Transfer calls `particles::CheckGrouping(particles_try, grid, particles::GroupingSettings{})`
   (`max_move_since_grouped = 0`) and maps any failure to `kParticlesNotGrouped`. Plan decision; see the hand-over.
-- **Plan decisions beyond design section 3** (the design leaves who owns scratch memory and how arrays are built
+- **Plan decisions beyond design section 3** (the design leaves who owns working buffers and how arrays are built
   open). Declared in Task 4, used everywhere:
 
   ```cpp
-  // transfer_scratch.h (CPU only). Device and host scratch reused by every set and stage in turn. Move-only.
-  class TransferScratch { public: RunOn run_on() const; std::size_t max_particle_count() const; };
-  // max_particle_count: all materials together. Holds 3 x grid::NearbyFaceSums per particle, the per-material
-  // offsets, and the status record (failure key, six reason counts, two face counts).
-  std::expected<TransferScratch, TransferFailure> BuildTransferScratch(RunOn run_on, std::size_t max_particle_count);
+  // transfer_buffers.h (CPU only). Working buffers on run_on, reused by every set and stage in turn. Move-only.
+  class TransferBuffers {
+   public:
+    RunOn run_on() const;
+    std::size_t max_particle_count() const;
+    std::size_t material_count() const;
+  };
+  // max_particle_count: all materials together; material_count: the scene's materials (one offset each; reconcile
+  // item 27). Holds 3 x grid::NearbyFaceSums per particle, the per-material offsets, and the status record
+  // (failure key, six reason counts, two face counts). Zero for either count is kBadInput.
+  std::expected<TransferBuffers, TransferFailure> BuildTransferBuffers(RunOn run_on, std::size_t max_particle_count,
+                                                                       std::size_t material_count);
   // Builders (allocate; the step calls them once per set at max_cell_blocks):
   std::expected<SolidsAtFaces, TransferFailure> BuildSolidsAtFaces(RunOn run_on, std::uint32_t max_cell_blocks);
   std::expected<GridFromParticles, TransferFailure> BuildGridFromParticles(RunOn run_on, std::uint32_t max_cell_blocks);
@@ -134,12 +146,13 @@ Transfer's own:
   GridSnapshotOnProcessor ToGridSnapshotOnProcessor(const GridSnapshot& snapshot);
   ```
 
-  Each stage has a second overload with `TransferScratch& scratch` as its last parameter (the form the step
-  uses; it allocates nothing). The design's form builds a scratch for the one call (tests, tools). **Amended 2026-11-14 (Foundation as built):** this is Foundation's scratch pattern: the scratch form fails `kBadInput` (magnitude = the
-  count) for a scratch on the other processor or a particle count above `max_particle_count()`, and only the
-  forms that build return the builders' allocation failure. Its exact bytes are the estimate's scratch rows
-  (`nearby face sums scratch`, `material offsets`, `status record`, Task 4), the one definition, so no separate
-  `ComputeTransferScratchSize` is added. An empty
+  **Amended 2026-11-14 (A30, A31, reconcile):** each stage has one form, with `TransferBuffers& transfer_buffers` as
+  its last parameter; it allocates nothing (design section 3). Tests and tools build a `TransferBuffers` locally
+  (`test::BuildTransferBuffersFor`, Task 5). A particle count above `max_particle_count()` or a material count
+  above `material_count()` is `kBadInput` (magnitude = the count); buffers on another processor than the arrays
+  are a `Requires:` precondition (debug assertion), not an error. Its exact bytes are the estimate's entries
+  (`nearby face sums buffers`, `material offsets`, `status record`, Task 4), the one definition, so no separate
+  `ComputeTransferBuffersSize` is added. An empty
   `filled_from_solved` is a default-constructed `grid::FaceValues` (`max_cell_blocks() == 0`).
 - **Memory figures (plan decision, differs from design 5.8).** Rows use `sizeof` of the stored element, so the
   estimate cannot drift from the buffers. With `sizeof(contact::PlateSide) == 8`, `sizeof(SidesAtFace) == 20`,
@@ -163,10 +176,10 @@ with their section 3 names (`contact::PlateSide`, `SolidSide`, `SolidVelocitySam
 (`native/fluidity/contact/move_particles.h`, `move_particles_cpu.cc`, `move_particles_gpu.h`,
 `move_particles_gpu.cu`, `move_particles_steps.h`) and copy that shape for every operation here: the private GPU
 header, how a CPU-only build answers `RunOn::kGpu`. **Amended 2026-11-14 (Foundation as built):** Foundation as built
-provides `base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the scratch forms
-of the sums (`SumScratch`) and of the stable order and grouping (`OrderScratch`), `base/test_support.h` (library
+provides `base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the sums
+(`SumBuffers`) and the stable order and grouping (`OrderBuffers`), each in one form taking its buffers, `base/test_support.h` (library
 `fluidity_base_test_support`) and `fluidity_add_test_library`; read `AGENTS.md` "Structure" (the two halves, the
-private GPU headers, scratch) before the first task.
+private GPU headers, working buffers) before the first task.
 
 Proof: from the worktree `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuild`, run
 `uv run python tools/check_commit.py`. Expected: seven `PASS` lines (format, rules, cpu debug, cpu release, tidy,
@@ -308,11 +321,13 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Amended 2026-11-14 (reconcile):** test file named `transfer_memory_estimate_test.cc` (A23).
 
+**Amended 2026-11-14 (A31, reconcile):** `TransferBuffers` (was `TransferScratch`) is built with `material_count` (reconcile item 27); test names say "buffers".
+
 **Kind:** mechanical
 
 **Files:**
 - Create: `solids_at_faces.h`, `grid_from_particles.h`, `grid_snapshot.h` (types only; functions in Task 11),
-  `cells_from_particles.h` (types only; function in Task 16), `on_processor_views.h`, `transfer_scratch.h`,
+  `cells_from_particles.h` (types only; function in Task 16), `on_processor_views.h`, `transfer_buffers.h`,
   `transfer_arrays.cc`, `transfer_memory_estimate.h`, `transfer_memory_estimate.cc`, `transfer_arrays_test.cc`,
   `transfer_memory_estimate_test.cc`
 
@@ -321,8 +336,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   `contact::SolidVelocitySample`, `MemoryEstimateEntry`.
 - Produces design 3: `SolidsAtFaces`, `FaceValueKind`, `SidesAtFace`, `GridFromParticles`, `GridTime`, `FillKind`,
   `FilledVelocity`, `GridSnapshot`, `CellsFromParticles`, `SolidsAtFacesOnProcessor`, `GridSnapshotOnProcessor`,
-  `BuildTransferMemoryEstimate`. Plus the plan decisions of the Global Constraints: `TransferScratch`,
-  `BuildTransferScratch`, `BuildSolidsAtFaces`, `BuildGridFromParticles`, `FilledFromSolved`, `BuildGridSnapshot`,
+  `BuildTransferMemoryEstimate`. Plus the plan decisions of the Global Constraints: `TransferBuffers`,
+  `BuildTransferBuffers`, `BuildSolidsAtFaces`, `BuildGridFromParticles`, `FilledFromSolved`, `BuildGridSnapshot`,
   `BuildCellsFromParticles`, `ToSolidsAtFacesOnProcessor`, `ToGridSnapshotOnProcessor`.
 - Plan decision, members of the two views (pointers on the arrays' `run_on()`, valid for one grid version):
   `SolidsAtFacesOnProcessor { const std::uint8_t* outside_solid; const contact::PlateSide* side;
@@ -345,7 +360,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   TEST(BuildGridSnapshot, NotKept_LeavesFilledFromSolvedEmpty)     // max_cell_blocks() == 0
   TEST(BuildGridSnapshot, Kept_AllocatesFilledFromSolved)
   TEST(BuildCellsFromParticles, ThreeIngredients_BufferIsThreePerCellPlace)  // 8 blocks -> 1536 doubles
-  TEST(BuildTransferScratch, OnCpu_HasTheAskedCount)
+  TEST(BuildTransferBuffers, OnCpu_HasTheAskedCounts)              // max_particle_count and material_count
+  TEST(BuildTransferBuffers, ZeroMaterials_IsBadInput)
   TEST(BuildGridFromParticles, ZeroBlocks_IsBadInput)
   TEST(BuildTransferMemoryEstimate, OneSetWithSolve_PerBlockIs59856Plus512PerIngredient)
       // ComputeMemoryBytes over the rows with MemoryCounts{cell_blocks 1, cell_places 64, face_places 240,
@@ -353,14 +369,14 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
       // 59856 + 512 * 3 + the given-count rows
   TEST(BuildTransferMemoryEstimate, SetWithoutSolve_LeavesOutFilledFromSolved)  // 2 sets, 1 without solve:
       // face-place bytes per block == 2 * (61 + 67 + 67) * 240 + 48 * 240
-  TEST(BuildTransferMemoryEstimate, ScratchRow_Is168BytesPerParticle)
+  TEST(BuildTransferMemoryEstimate, NearbyFaceSumsBuffersEntry_Is168BytesPerParticle)
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
 - [ ] **Step 3: Implement.** Rows (all names start `transfer: `; bytes from `sizeof`; `copies` as stated):
   face sums from particles (face place, 61, sets, `kOneStepTry`); snapshot before forces (face place, 67, sets);
   snapshot after pressure (face place, 67, sets); filled from solved sources (face place, 48,
   `sets - sets_without_solve`); cell sums from particles (cell place, `24 + 8 * ingredient_count`, sets);
-  nearby face sums scratch (particle, 168, 1, `kWholeRun`); material offsets (given count `material_count`, 8,
+  nearby face sums buffers (particle, 168, 1, `kWholeRun`); material offsets (given count `material_count`, 8,
   1); status record (given count 1, `sizeof` of the record, 1). `GridAtParticle` has no row here: the step's
   own rows count it (step design 6.3). `TransferError` has no `kOutOfMemory`, so a builder that gets
   `kOutOfMemory` or `kRunOnCallFailed` from the grid or `base/` returns `kRunOnCallFailed` with `magnitude` = the
@@ -375,6 +391,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 **Kind:** integration
 
 **Amended 2026-11-14 (Foundation as built):** the scenes library is made with `fluidity_add_test_library` and links `fluidity_base_test_support`.
+
+**Amended 2026-11-14 (A31):** adds `BuildTransferBuffersFor`, so every test calls the stages' one form with locally built buffers.
 
 **Files:**
 - Create: `native/fluidity/transfer/transfer_test_scenes.h`, `transfer_test_scenes.cc`,
@@ -405,6 +423,9 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
     `BuildParticlesTry(RunOn, const grid::StaggeredGrid&, std::span<const ParticleSpec>, std::uint32_t
     material_count)`: builds `Particles`, a try, adds, groups. Defaults: `rest_volume = mass / 1000`,
     `flags = kCarriesFittedChange | kHasOwnMotion`, side from the scene's plate if any.
+  - `TransferBuffers BuildTransferBuffersFor(const particles::ParticlesTry&)`: `BuildTransferBuffers` on the
+    try's processor at its total particle limit and `material_count()` (the test fails on an error); every
+    stage call in a test passes one.
   - `BuildCloud(std::uint64_t seed, int count, Vec3 low, Vec3 high)`: positions from `std::mt19937_64(seed)`,
     each draw `x` turned into `(x >> 11) * 0x1.0p-53` (portable; no `std::uniform_real_distribution`), ids
     `1..count`, mass 0.125e-3 kg.
@@ -443,7 +464,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
     `FaceContribution ComputeFaceContribution(const grid::FaceWeight&, Axis, double mass, Vec3 velocity,
     const Mat3* fitted_velocity_change, const Mat3* internal_force_per_area, double rest_volume)`: the four terms
     of design 5.2 step 3 (the fitted term only when the pointer is non-null; the force term only with a matrix).
-  - `struct FaceSumsInputs` (the per-material views, counted material list, scratch sums, solids view) and
+  - `struct FaceSumsInputs` (the per-material views, counted material list, the per-particle sums in `TransferBuffers`, solids view) and
     `FaceSums ComputeFaceSums(const grid::GridTables&, grid::FacePlaceIndex, const FaceSumsInputs&, TransferFailure*)`:
     pass 3 and 4 for one face, in the order of the Global Constraints; `FaceSums` carries mass, momentum, force,
     weight_sum, velocity, `FaceValueKind`, `SidesAtFace`.
@@ -538,13 +559,15 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** numerics
 
+**Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
+
 **Files:**
 - Create: `native/fluidity/transfer/particles_to_grid.h`, `particles_to_grid_cpu.cc`, `particles_to_grid_test.cc`
 
 **Interfaces:**
 - Consumes: Tasks 3 to 6.
-- Produces: design 3 `ParticlesToGridInputs`, `ParticlesToGridResult`, `ParticlesToGrid`, plus the scratch
-  overload (Global Constraints). Fills every member of `GridFromParticles` for the faces of `inputs.blocks`
+- Produces: design 3 `ParticlesToGridInputs`, `ParticlesToGridResult`, `ParticlesToGrid` (one form, taking
+  `TransferBuffers&`; amended 2026-11-14, A31). Fills every member of `GridFromParticles` for the faces of `inputs.blocks`
   (`velocity` 0 unless `kFromParticles`), then `material_set`, `grid_version`, `step_try`.
 
 - [ ] **Step 1: Failing tests** (label `cpu`; `settings` default unless stated).
@@ -572,7 +595,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 - [ ] **Step 2: Run.** Expected: compile error.
 - [ ] **Step 3: Implement** the four passes of `<proc-particles-to-grid>` with `// Step N:` comments. Pass 1 checks
   in this order: mask, grid versions of inputs, grouping, then per counted particle (ascending id across the
-  set) finite position, velocity, fitted change, `mass >= 0`. Pass 2 writes `ParticleSums` to the scratch. Passes
+  set) finite position, velocity, fitted change, `mass >= 0`. Pass 2 writes `ParticleSums` to the `TransferBuffers`. Passes
   3 and 4 call `ComputeFaceSums` once per face of the range in ascending `FacePlaceIndex`, skipping
   `kNotAPiece` places. Result counts are integer sums. Plain single-thread loops (threads are allowed later, one
   writer per face).
@@ -596,13 +619,13 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   fluidity_transfer_test_scenes`)
 
 **Interfaces:**
-- Consumes: `ComputeParticleSums`, `ComputeFaceSums`, `TransferScratch`; `ComputeLaunchSize`, `ApplyGpuFunction`,
+- Consumes: `ComputeParticleSums`, `ComputeFaceSums`, `TransferBuffers`; `ComputeLaunchSize`, `ApplyGpuFunction`,
   `CheckGpuWork`, `ToBufferError`, `ReadBuffer`.
 - Produces: the `RunOnCallStatus ParticlesToGridOnGpu(...)` GPU half (private, plain pointers and the
   on-processor views) and, in `particles_to_grid_steps.h` (plan decision, `FLUIDITY_CPU_AND_GPU`):
   `std::uint64_t ToTransferFailureKey(int pass, std::uint64_t id_or_face)` (`(pass << 56) | id_or_face`),
   `std::uint64_t ApplyParticleSumsAt(...)` (pass 2 for one counted particle: writes its `ParticleSums` to the
-  scratch, returns its failure key or `kNoFailureKey`) and `std::uint64_t ApplyFaceSumsAt(...)` (passes 3 and 4 for
+  `TransferBuffers`, returns its failure key or `kNoFailureKey`) and `std::uint64_t ApplyFaceSumsAt(...)` (passes 3 and 4 for
   one face place of the range: writes its outputs, returns its failure key). The `RunOn::kGpu` path of
   `ParticlesToGrid`.
 
@@ -641,14 +664,16 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** numerics
 
+**Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
+
 **Files:**
 - Create: `fill_face.h`, `filled_velocity.h`, `grid_snapshot_cpu.cc`, `grid_snapshot_test.cc`
 - Modify: `grid_snapshot.h` (functions)
 
 **Interfaces:**
 - Consumes: `SolveLinearFit`, `grid::BuildFaceSearch`, `FindNextFace`, `GridSnapshotOnProcessor`.
-- Produces: design 3 `SaveGridInputs`, `SaveGridBeforeForces`, `FilledVelocityInputs`, `ComputeFilledVelocity`,
-  plus the scratch overload. Private (`fill_face.h`, shared): `FilledVelocity ComputeFill(const grid::GridTables&,
+- Produces: design 3 `SaveGridInputs`, `SaveGridBeforeForces` (one form, taking `TransferBuffers&`; amended
+  2026-11-14, A31), `FilledVelocityInputs`, `ComputeFilledVelocity`. Private (`fill_face.h`, shared): `FilledVelocity ComputeFill(const grid::GridTables&,
   const GridSnapshotOnProcessor&, const SolidsAtFacesOnProcessor&, grid::FacePlaceIndex, contact::PlateSide,
   const std::uint8_t* was_solved, TransferError*)` (`was_solved` null: every source counts), which
   `ComputeFilledVelocity` calls with null.
@@ -684,11 +709,13 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** numerics
 
+**Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
+
 **Files:**
 - Modify: `grid_snapshot.h`, `grid_snapshot_cpu.cc`, `grid_snapshot_test.cc`
 
 **Interfaces:**
-- Produces: design 3 `SaveGridAfterPressure` and its scratch overload.
+- Produces: design 3 `SaveGridAfterPressure` (one form, taking `TransferBuffers&`; amended 2026-11-14, A31).
 - Rules (design 5.5): `velocity` from `velocity_after_pressure`; a `kNoValue` face with `was_solved` becomes
   `kFromSolve`; other kinds kept (`kFromGridOnlyRegion` stays); `is_source` as before forces. `filled` uses every
   source, for particles outside solved cells (spray). Plan decision, because this function receives no
@@ -743,13 +770,16 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** numerics
 
+**Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
+
 **Files:**
 - Create: `grid_at_particle.h`, `grid_to_particles.h`, `grid_to_particles_cpu.cc`, `grid_to_particles_test.cc`
 
 **Interfaces:**
 - Consumes: `SolveSpread`, both snapshot views, grid's weights with `grid::ToMaskOfAll`.
 - Produces: design 3 `GridOnlyReason`, `kGridOnlyReasonCount`, `GridAtParticle`, `GridToParticlesInputs`,
-  `GridToParticlesResult`, `GridToParticles` and its scratch overload. Private shared
+  `GridToParticlesResult`, `GridToParticles` (one form, taking `TransferBuffers&`; amended 2026-11-14, A31). Private
+  shared
   `GridAtParticle ComputeGridAtParticle(const grid::GridTables&, const GridSnapshotOnProcessor& before, const
   GridSnapshotOnProcessor& after, const std::uint8_t* cell_was_solved, Vec3 position, contact::PlateSide side,
   Vec3 velocity, std::uint8_t flags, TransferError*)`.
@@ -829,6 +859,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** numerics
 
+**Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
+
 **Amended 2026-11-14 (Foundation as built):** two-halves pattern (private `cells_from_particles_gpu.h`, per-cell body in `cells_from_particles_steps.h`, `cpu` launch-order test); the bit-for-bit GPU test is kept by a deliberate same-bits promise in `cells_from_particles.h`; digests.
 
 **Files:**
@@ -840,7 +872,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 - Modify: `cells_from_particles.h` (functions), the transfer `CMakeLists.txt`
 
 **Interfaces:**
-- Produces: design 3 `CellsFromParticlesInputs`, `ComputeCellsFromParticles` (and scratch overload),
+- Produces: design 3 `CellsFromParticlesInputs`, `ComputeCellsFromParticles` (one form, taking `TransferBuffers&`; amended
+  2026-11-14, A31),
   `ComputeMixtureDensity`, `ComputeSensedVolumeRatio`.
 - Plan decisions: `ingredient_volume` is the **current** volume of each ingredient: `fraction * volume_ratio *
   rest_volume` (fraction 1 for the material's only ingredient), so a cell's row sums to `current_volume`;
@@ -905,8 +938,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   OnGpuParticleOfSetANeverAddsToSetB` (GPU runs compared with GPU runs; every stage's output bytes to
   `WriteResultDigest`).
 - [ ] **Step 2: Produce the old numbers** (supporting evidence only; never the only test of this task). Export
-  `main` without checking it out: `git archive main | tar -x -C <scratchpad>/main-export`. In that copy add a
-  scratch GoogleTest file (never committed anywhere) that builds 64 particles on `main`'s uniform grid of 12^3
+  `main` without checking it out: `git archive main | tar -x -C <temp-dir>/main-export`. In that copy add a
+  throwaway GoogleTest file (never committed anywhere) that builds 64 particles on `main`'s uniform grid of 12^3
   cells of width 0.1 from the origin, in `main`'s Y-up frame. Particle `i` in `0..63`: position
   `{0.45 + 0.025 (i % 4) + 0.003 (i % 3), 0.45 + 0.025 ((i / 4) % 4) + 0.002 (i % 5), 0.45 + 0.025 (i / 16) +
   0.001 (i % 7)}` m; velocity `{0.1 (i % 5) - 0.2, 0.05 (i % 7) - 0.15, 0.03 (i % 11) - 0.15}` m/s; fitted change
@@ -944,7 +977,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   "uv run python tools/check_commit.py --only rules"`, then the full gate on the tip. Expected: all pass.
 - [ ] **Step 3: Check the design section by section** (1 to 11) against the branch and record, for the
   hand-over, anything delivered differently: at least the plan decisions of the Global Constraints
-  (`TransferScratch` and the builders, the `sizeof`-based memory figures, `ingredient_volume` as current volume,
+  (`TransferBuffers` with `material_count`, one form per stage, and the builders, the `sizeof`-based memory figures, `ingredient_volume` as current volume,
   the grouping rule, `kRunOnCallFailed` for allocation failures, `kMaxFitRows`, the "touches a solved cell"
   reading of Task 12), and from Foundation as built: every GPU half in a private `<name>_gpu.h` returning
   `RunOnCallStatus`, the kernel bodies in `<name>_steps.h` tested on the CPU over every thread block and thread, the

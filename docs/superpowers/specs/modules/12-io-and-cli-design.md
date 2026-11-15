@@ -773,7 +773,7 @@ planned cost shown to the user; a hard limit is still `max_...`).
 
 ```cpp
 // io/run_budget.h
-enum class ModeReason : std::uint8_t { kFitsProcessor, kParticlesDoNotFitProcessor, kSolverScratchDoesNotFitProcessor,
+enum class ModeReason : std::uint8_t { kFitsProcessor, kParticlesDoNotFitProcessor, kSolverBuffersDoNotFitProcessor,
                                        kStateDoesNotFitCpu, kLayerDoesNotFitProcessor, kOnePieceDoesNotFitCpu };
 enum class BudgetVerdict : std::uint8_t { kFits, kDoesNotFitCpu, kDoesNotFitProcessor };
 struct MemoryBudget { std::uint64_t budget_bytes = 0, allowed_bytes = 0, total_bytes = 0, free_bytes = 0; };
@@ -854,7 +854,7 @@ TimeProjection ComputeTimeProjection(std::span<const FrameMark> frames_done_in_t
 Schema `run_budget.fbs`: field names carry their unit (`_bytes`, `_seconds`, `_m` for `smallest_cell_width_m` and
 `min_smallest_cell_width_m`); enums are stable lower-snake strings: `run_mode` `one_piece`, `batched`,
 `batched_with_solves_in_pieces`; `mode_reason` `fits_processor`, `particles_do_not_fit_processor`,
-`solver_scratch_does_not_fit_processor`, `state_does_not_fit_cpu`, `layer_does_not_fit_processor`,
+`solver_buffers_do_not_fit_processor`, `state_does_not_fit_cpu`, `layer_does_not_fit_processor`,
 `one_piece_does_not_fit_cpu`; `verdict` `fits`, `does_not_fit_cpu`, `does_not_fit_processor`; `module` and `stage` by
 this module's stable names. NEW (A25): `RunBudget` gains `viscous_path: string` (`ToName(step::ViscousPath)`:
 `pressure_solve`, `viscous_solve`), `viscous_effect_cell_width_m: double`, `viscous_effect_step_seconds: double`,
@@ -1190,7 +1190,7 @@ snapshot digests the uninterrupted run lists. Every value is stored for a reason
 | last mesh per surface group, foam particles with owed particles, the last motion sample | `render_output::RenderOutputSnapshot` | A continued run builds the same products: the mesh is moved, not rebuilt; foam goes on |
 
 Rebuilt, not stored: the grid tables (`grid::BuildGrid` from the cell ids), `group_begin` and `cell_begin`
-(particles 5.9), every scratch array, the pressure ladder, `SolidsAtFaces` and `SolidCoverage` (computed per
+(particles 5.9), every working buffer, the pressure ladder, `SolidsAtFaces` and `SolidCoverage` (computed per
 try), memory reports and timings.
 
 When: at `first_frame`, then every `saved_state_every_frames` frames, then at the frame a `stop_after_frame`
@@ -1391,12 +1391,12 @@ the one-line text output against 25.12.19 before the first schema commit.
 ### 5.10 The planned and the measured cost (NEW; planned cost, A17, A22)
 
 Principle (A17): a run is all CPU or all GPU; in a batched GPU run only what does not fit (the particles, and in
-`kBatchedWithSolvesInPieces` the solver scratch) stays in CPU memory, moved in planned copies that the planner
+`kBatchedWithSolvesInPieces` the solver buffers) stays in CPU memory, moved in planned copies that the planner
 counts and the reports measure. The owner: "warning the user about the expected cost (memory and time) is nice".
 
 **Three ways to run (A15).** `kOnePiece`; `kBatched` (particle stages in batches, every solve once on the whole
-grid on the run's processor); `kBatchedWithSolvesInPieces` (as `kBatched`, and the solvers' scratch lives in CPU
-memory and goes through the GPU one loaded piece at a time, at most `max_solve_loaded_blocks` blocks).
+grid on the run's processor); `kBatchedWithSolvesInPieces` (as `kBatched`, and the solvers' working buffers live in CPU
+memory and go through the GPU one loaded piece at a time, at most `max_solve_loaded_blocks` blocks).
 `step::BuildRunPlan` chooses only `kOnePiece` or `kBatched`; `BuildSceneBudget` copies `BuildBatchPlan`'s choice.
 `RunPlan::allowed_cpu_bytes` bounds the CPU rows (`kStateDoesNotFitCpu` beyond it). Between modes the rule is
 tolerance, not bytes: a batched run agrees with a one-piece run within the solver's tolerance (step 6.4 over
@@ -1419,7 +1419,7 @@ counts.particles_from_sources`; `smallest_cell_width` from the grid frame. (A25)
 0 < viscous_effect_per_step < viscosity::kSmallestVisibleViscousEffectPerStep`).
 
 **Mode and verdict.** `fit == kFits` and `kOnePiece`: `kFitsProcessor`, `kFits`; `kBatched`:
-`kParticlesDoNotFitProcessor`; `kBatchedWithSolvesInPieces`: `kSolverScratchDoesNotFitProcessor`; a GPU run with
+`kParticlesDoNotFitProcessor`; `kBatchedWithSolvesInPieces`: `kSolverBuffersDoNotFitProcessor`; a GPU run with
 `fit == kDoesNotFit` or a `BatchesFailure` `kStateDoesNotFitCpu`: `kStateDoesNotFitCpu`, `kDoesNotFitCpu`;
 `kBatchDoesNotFit`: `kLayerDoesNotFitProcessor`, `kDoesNotFitProcessor`; a CPU run that does not fit:
 `kOnePieceDoesNotFitCpu`, `kDoesNotFitCpu`.
@@ -1444,7 +1444,7 @@ records, air pockets, gas blobs and per-solid results are not counted`; `time: n
 projected finish is printed after 3 frames` (or `time: not estimated` when it does not fit); last line `fits:
 yes` or `fits: no. To fit (estimates): at most <n> particles (now <n>), or a smallest cell of at least <w> m (now
 <w> m), or <b> more <p> memory`. Reasons: `everything fits the <p>`; `the particles do not fit the <p>; particle
-stages run in <n> batches, solves on the whole grid`; `the particles and the solver scratch do not fit the <p>;
+stages run in <n> batches, solves on the whole grid`; `the particles and the solver buffers do not fit the <p>;
 particle stages run in <n> batches, solves in <m> pieces`; `in one piece it does not fit the <p>, and in batches
 the state does not fit cpu memory`; `one layer of cell blocks with its border does not fit the <p>`; `the scene
 does not fit cpu memory`.
@@ -1517,7 +1517,7 @@ the `SnapshotFields` argument, and its second (overlap packing, copy and writing
   how a stage was cut into ranges. Where each buffer of a batched run lives is the step's placement rule (A17,
   step plan Appendix A: a whole array on the run's processor when a whole-grid part uses it, else in CPU memory
   when a whole-state stage, the commit or a later pass uses it; otherwise only a loaded instance); in a batched
-  GPU run the particles (and, with solves in pieces, the solver scratch) are in CPU memory and the grid state
+  GPU run the particles (and, with solves in pieces, the solver buffers) are in CPU memory and the grid state
   stays on the GPU. `ReadSnapshot` gives the same snapshot in every layout; nothing here changes. This module
   only shows the copies the step, batches, cell resize and render output count (5.10).
 - Memory and copies are reported per processor: `MemoryEstimate::on_cpu` (rows `where = kCpu` plus snapshots)

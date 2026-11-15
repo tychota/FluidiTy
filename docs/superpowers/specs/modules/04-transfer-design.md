@@ -35,7 +35,7 @@ A comparison with `main` must rotate vectors with `R = rows {1,0,0},{0,0,-1},{0,
 
 | Piece | Where | What it does | What is wrong |
 |---|---|---|---|
-| Uniform sums | `native/src/transfers_3d.cc:56-103` (`DepositWithFaceAccumulator`), `:139-197` | mass and momentum per face, 27 faces per axis, built in scratch and copied on success | `:41-53` rounds each contribution to a 64-bit integer (fixed point, decision D7 removes it); needs a complete neighbourhood |
+| Uniform sums | `native/src/transfers_3d.cc:56-103` (`DepositWithFaceAccumulator`), `:139-197` | mass and momentum per face, 27 faces per axis, built in temporary arrays and copied on success | `:41-53` rounds each contribution to a 64-bit integer (fixed point, decision D7 removes it); needs a complete neighbourhood |
 | Same-side sums | `liquid_boundary_transfer_3d.cc:329-460` (`DepositCore`) | keeps faces with `structurally_eligible && side_tag ==`, divides weights by their sum, quotient-rule gradient, offsets recentred on the weighted mean | fixed point again (`:438-455`); 1024-particle and 24576-face limits (`liquid_boundary_transfer_3d.h:16-17`); 5 KB of stored weights per particle (report CUDA 4.1) |
 | Face velocity and kind | `liquid_boundary_transfer_3d.cc:462-516` (`NormalizeCore`) | velocity = momentum / mass; `kMissing`, `kLowMass`, `kValid` from `minimum_face_mass` in kg | a mass threshold in kg does not fit cells of mixed sizes or ingredients of different density; default is 0 |
 | Solid internal force | `transfers_3d.cc:329-374`, `liquid_boundary_transfer_3d.cc:1024-1045`, `dry_solid_step_3d.cc:185-189` | `force = -rest_volume * (internal_force_per_area matrix row) . weight gradient` | three copies; one per-particle call that replaces the whole face array |
@@ -156,7 +156,8 @@ struct ParticlesToGridResult {                                // NEW
   std::uint64_t face_count_too_few_particles;
 };
 std::expected<ParticlesToGridResult, TransferFailure> ParticlesToGrid(
-    const ParticlesToGridInputs& inputs, const TransferSettings& settings, GridFromParticles& grid_from_particles);
+    const ParticlesToGridInputs& inputs, const TransferSettings& settings, GridFromParticles& grid_from_particles,
+    TransferBuffers& transfer_buffers);
 // grid_snapshot.h                              SaveGridBeforeForces, SaveGridAfterPressure DECIDED
 enum class GridTime : std::uint8_t { kBeforeForces, kAfterPressure };       // NEW
 enum class FillKind : std::uint8_t {                          // NEW
@@ -192,7 +193,8 @@ struct SaveGridInputs {                                       // NEW
   const GridFromParticles& grid_from_particles;               // velocity, value_kind and sides_reaching are read.
   const SolidsAtFaces& solids;                                // At the snapshot's time (start pose, end pose).
 };
-std::expected<void, TransferFailure> SaveGridBeforeForces(const SaveGridInputs& inputs, GridSnapshot& before_forces);
+std::expected<void, TransferFailure> SaveGridBeforeForces(const SaveGridInputs& inputs, GridSnapshot& before_forces,
+                                                          TransferBuffers& transfer_buffers);
 // velocity_after_pressure: m/s, the set's face velocity after the solve that wrote it (pressure::SolvePressure
 // or viscosity::SolveViscosityAndPressure for the liquid set, gas::SolveGas through SolvedGasArrays for the gas
 // set). For a set that no solve writes (snow, springy solids), the set's
@@ -202,7 +204,8 @@ std::expected<void, TransferFailure> SaveGridBeforeForces(const SaveGridInputs& 
 // no solve writes a FaceValueKind. Other kinds are kept.
 std::expected<void, TransferFailure> SaveGridAfterPressure(
     const SaveGridInputs& inputs, const grid::FaceValues<double>& velocity_after_pressure,
-    const grid::FaceValues<std::uint8_t>* was_solved, GridSnapshot& after_pressure);
+    const grid::FaceValues<std::uint8_t>* was_solved, GridSnapshot& after_pressure,
+    TransferBuffers& transfer_buffers);
 // filled_velocity.h (formula). For callers that need a value where no particle of the snapshot's set reaches
 // (pressure, on the before-forces snapshot of the set holding the liquid).
 struct FilledVelocityInputs {                                 // NEW
@@ -251,7 +254,8 @@ struct GridToParticlesResult {                                // NEW. Counts of 
 // as the material's particle count. Only the buffers of counted materials are read or written; the others may
 // be empty.
 std::expected<GridToParticlesResult, TransferFailure> GridToParticles(
-    const GridToParticlesInputs& inputs, std::span<Buffer<GridAtParticle>> grid_at_particles);
+    const GridToParticlesInputs& inputs, std::span<Buffer<GridAtParticle>> grid_at_particles,
+    TransferBuffers& transfer_buffers);
 // mix_particle_velocity.h (formula)                                       MixParticleVelocity DECIDED
 struct MixInputs {                                            // NEW
   Vec3 grid_velocity_at_particle;  // m/s.
@@ -314,10 +318,24 @@ struct CellsFromParticlesInputs {
 // cell's sum: counted materials by material_index, then that cell's particles in grouped order (ascending id).
 // Particles of other materials are not read.
 std::expected<void, TransferFailure> ComputeCellsFromParticles(const CellsFromParticlesInputs& inputs,
-                                                               CellsFromParticles& cells_from_particles);
+                                                               CellsFromParticles& cells_from_particles,
+                                                               TransferBuffers& transfer_buffers);
 // kg/m3 and no unit. Both return 0 for a cell with no particle. Shared formulas.
 FLUIDITY_CPU_AND_GPU constexpr double ComputeMixtureDensity(double mass, double current_volume);
 FLUIDITY_CPU_AND_GPU constexpr double ComputeSensedVolumeRatio(double current_volume, double rest_volume);
+
+// transfer_buffers.h (CPU only). Working buffers reused by every set and stage in turn: 3 x grid::NearbyFaceSums
+// per particle, the per-material offsets and the status record. Move-only. Owned by the caller (the step builds
+// one at its limits; a test or tool builds one locally). Every stage takes it as its last parameter and
+// allocates nothing (A31, section 11 item 12). Requires: on the same processor as the stage's arrays (asserted
+// in debug builds; A30, section 11 item 13). A particle count above max_particle_count(), or more materials than
+// material_count(), is kBadInput.
+class TransferBuffers { public: RunOn run_on() const; std::size_t max_particle_count() const;
+                        std::size_t material_count() const; };                      // NEW
+// max_particle_count: all materials together; material_count: the scene's materials (the offsets hold one entry
+// per material, reconcile item 27). Zero for either is kBadInput.
+std::expected<TransferBuffers, TransferFailure> BuildTransferBuffers(RunOn run_on, std::size_t max_particle_count,
+                                                                     std::size_t material_count);  // NEW
 
 // transfer_memory_estimate.h (CPU only). The rows this module's buffers allocate from (base/memory_count.h).
 // Rows of GridFromParticles, both GridSnapshots and CellsFromParticles carry copies = material_set_count;
@@ -469,7 +487,7 @@ numbers of `main` come back to rounding), domain sides, plates and size steps.
 
 1. Check inputs: `material_is_counted` (5.8), grid version, grouping, and for counted materials only finite
    positions, velocities and fitted changes, `mass >= 0`.
-2. Per particle of a counted material, per axis: compute `S`, `G`, `mu` (5.1) into scratch.
+2. Per particle of a counted material, per axis: compute `S`, `G`, `mu` (5.1) into the working buffers (`TransferBuffers`).
 3. Per face of the range: visit the cells from `FindCellsNearFace` in their order, and in each cell the
    particles of counted materials in stable-id order. For each particle with positive `ComputeFaceWeight`:
    record its side in
@@ -624,7 +642,7 @@ liquid set. A scene with one set passes all ones and behaves as before material 
 86 B x 240 = 20 640 B (52 B x 240 = 12 480 B for a set no solve writes: `filled_from_solved` is not
 allocated); `CellsFromParticles` (24 + 8 I) B x 64 = 1 536 + 512 I B. Total 48 576 + 512 I bytes per cell
 block (about 49 kB, 40 416 + 512 I for a set no solve writes). Nothing per particle: `GridAtParticle` is per
-material, and the `NearbyFaceSums` scratch is reused by the sets in turn. The solids design's first estimate
+material, and the `NearbyFaceSums` working buffers (in `TransferBuffers`) are reused by the sets in turn. The solids design's first estimate
 (14 kB + 2 x 9 kB) is replaced by these numbers.
 
 **Materials.** Liquids and mixtures: total mass and momentum; ingredient amounts stay on particles
@@ -664,7 +682,7 @@ between stages.
 
 | Array | Element | Owner | Bytes |
 |---|---|---|---|
-| `grid::NearbyFaceSums` scratch | 3 axes x (`S`, `G`, `mu`) = 21 doubles | transfer, valid inside `ParticlesToGrid` | 168 per particle |
+| `grid::NearbyFaceSums` working buffers (`TransferBuffers`) | 3 axes x (`S`, `G`, `mu`) = 21 doubles | transfer, valid inside `ParticlesToGrid` | 168 per particle |
 | `GridFromParticles` | 5 doubles, kind, `SidesAtFace` | per material set; `velocity`, `value_kind` changed by later stages | 58 per face |
 | `GridSnapshot` x 2 | velocity, kind, flags, side, 2 (4 after pressure) x `FilledVelocity` | per material set, read-only once saved | 52 to 86 per face |
 | `CellsFromParticles` | 3 doubles + 1 per scene ingredient | per material set | 24 + 8 I per cell |
@@ -806,6 +824,7 @@ in the one that moves the particle), [18] Stomakhin 2014 (solids on a staggered 
 | `stencil`, `sample`, `face_slot` | nearby faces, `FaceWeight`, `FacePlaceIndex` | DECIDED |
 | `MacFaceDeposit3D`, `NormalizedLiquidMacFaces3D` | `GridFromParticles` | NEW |
 | `MacParticleGatherResult3D`, `LiquidBoundaryParticleGather3D` | `GridAtParticle` | NEW |
+| per-call scratch of the stages (the plans' `TransferScratch`, `BuildTransferScratch`, `transfer_scratch.h`, replaced) | `TransferBuffers`, `BuildTransferBuffers`, `transfer_buffers.h` (working buffers) | DECIDED (A31) |
 | new names with no old one | `TransferError`, `TransferFailure`, `TransferSettings`, `SidesAtFace`, `GridTime`, `FillKind`, `MixInputs`, `MixResult`, `kMaxSidesAtFace`, `kFillRadiiInCells`, `kWrongMaterialSet`, `ToName`, `FaceValueKind::kFromGridOnlyRegion` (cell resize's request) | NEW |
 
 ## 10. Not ported
@@ -894,3 +913,17 @@ instruction" below means: recommended option (owner's standing instruction, 2026
     Decision: (b). Every stage and `ComputeCellsFromParticles` take `material_is_counted` and run once per
     set (5.8); gas markers form their own set and stay out of the liquid's sums. Owner answers A8 and A10.
     All liquids are in one set, the liquid set (step decision recorded in `changes-to-apply.md`).
+12. **One form per stage; working buffers, not scratch (A31).** The plan gave each stage two overloads, one
+    taking `TransferScratch&` (the step's) and one building it for the call (tests, tools). Decision: one form
+    each, taking `TransferBuffers& transfer_buffers` last (`ParticlesToGrid`, `SaveGridBeforeForces`,
+    `SaveGridAfterPressure`, `GridToParticles`, `ComputeCellsFromParticles`); tests and tools build a
+    `TransferBuffers` locally. The word "scratch" is not used. Source: owner answer A31 (`owner-answers.md`,
+    2026-11-14); transfer plan Global Constraints and Tasks 4, 11 to 16.
+13. **Buffers on different processors are a precondition (A30).** Decision: `TransferBuffers` on another
+    processor than the stage's arrays is a broken precondition (`Requires:`, asserted in debug builds), not
+    `kBadInput`; `BufferError::kRunOnMismatch` no longer exists and nothing maps it. Source: owner answer A30
+    (`owner-answers.md`, 2026-11-14).
+14. **`BuildTransferBuffers` takes `material_count`.** The per-material offsets hold one 8 B entry per material
+    (the estimate's `transfer: material offsets` entry has `given_count = material_count`), so the builder takes
+    `std::size_t material_count` and the buffers report it; a set with more materials is `kBadInput`. Source:
+    reconcile-todo.md item 27 (2026-11-14).

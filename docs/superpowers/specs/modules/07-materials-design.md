@@ -278,8 +278,10 @@ class MaterialBuffers {
   const double* friction(std::size_t material_index) const;  // For contact::MoveParticlesInputs.
   const OwnMotionShares* own_motion_shares(std::size_t material_index) const;
 };
+// max_cell_blocks: room of the per-block budget buffer and the table copy (plan decision, transfer's precedent).
 std::expected<MaterialBuffers, MaterialsFailure> BuildMaterialBuffers(
-    RunOn run_on, const MaterialTable& table, std::span<const std::size_t> max_particle_counts);
+    RunOn run_on, const MaterialTable& table, std::span<const std::size_t> max_particle_counts,
+    std::uint32_t max_cell_blocks);
 std::vector<MemoryEstimateEntry> BuildMaterialsMemoryEstimate(const MaterialTable& table,
                                                 std::span<const std::size_t> max_particle_counts);
 
@@ -305,11 +307,12 @@ struct InternalForceTotals {    // The sums of one cell block, or the total of s
 };
 // velocity += ComputeFacePush(...) on every kFromParticles face of the range that has force. NEW: writes one
 // budget per cell block of the range, totals_of_block[i] for block blocks.first_block + i; the span must hold
-// blocks.block_count entries (else kBadInput).
+// blocks.block_count entries (else kBadInput). One form (A31): allocates nothing; buffers holds the per-block
+// working memory. Requires: buffers and the arrays on one processor (asserted in debug builds; A30).
 std::expected<void, MaterialsFailure> ApplyInternalForce(
     const grid::StaggeredGrid& grid, grid::CellBlockRange blocks, double step_duration,
     const MaterialSettings& settings, transfer::GridFromParticles& grid_from_particles,
-    std::span<InternalForceTotals> totals_of_block);
+    std::span<InternalForceTotals> totals_of_block, MaterialBuffers& buffers);
 // NEW. math::TreeSum over the block budgets in the grid's fixed block order (integer sum for the count). The
 // step keeps one entry per block of the whole grid, so one-piece and batched runs give identical bytes.
 InternalForceTotals ComputeInternalForceTotal(std::span<const InternalForceTotals> totals_of_block);
@@ -362,9 +365,11 @@ struct CellSqueezeInputs {
   const grid::CellValues<double>* carried_pressure = nullptr;  // Pa. Null: zero everywhere.
 };
 // bulk_stiffness: Pa, +infinity where nothing can be squeezed. target_volume_ratio: no unit, 1 in an empty cell.
+// One form (A31): reads the table copy held by buffers, allocates nothing. Requires: buffers and the arrays on
+// one processor (asserted in debug builds; A30).
 std::expected<void, MaterialsFailure> ComputeCellSqueezeValues(
     const CellSqueezeInputs& inputs, grid::CellValues<double>& bulk_stiffness,
-    grid::CellValues<double>& target_volume_ratio);
+    grid::CellValues<double>& target_volume_ratio, const MaterialBuffers& buffers);
 
 // compute_work_rates.h (+ _cpu.cc, _gpu.cu). The test oracle of 5.8; the step may log it.
 struct WorkRates {
@@ -660,7 +665,7 @@ is the same formula in a loop.
   faces, cells. No border cell is read: the reach of a particle onto faces is transfer's concern.
   `ComputeOwnMotionShares` reads the corners of the particle's own cell only.
 - **Memory estimate entries** (`BuildMaterialsMemoryEstimate`): 72 B per particle with internal force, 8 B friction, 16 B
-  shares, 9 B scratch, all `kOneStepTry`, `copies = 1`; 24 B per face place `kOneCall`; 24 B per cell block
+  shares, 9 B working buffers, all `kOneStepTry`, `copies = 1`; 24 B per face place `kOneCall`; 24 B per cell block
   for the block budgets. `bulk_stiffness` and `target_volume_ratio` (8 B per cell place each) belong to the
   step.
 - **Tolerance, CPU versus GPU** (`exp`, `log` differ in the last bits): state arrays
@@ -788,6 +793,7 @@ as "citation needed", not written from memory.
 | snow face clamp at the floor | `AtSolidFaces::kNoMotionIntoSolid` | NEW |
 | `DrySolidStepBudget3D` | `InternalForceTotals`, `MaterialResponseResult` | NEW |
 | (none) | `MaterialsFailure`, `ToName` | DECIDED (A2, stable error codes) |
+| per-call scratch, one-call forms (the plans' wording, replaced) | working buffers in `MaterialBuffers`; one form per function | DECIDED (A31) |
 
 ## 10. Not ported
 
@@ -919,6 +925,19 @@ the particle form of `ApplyPressureToMaterials`, applied one step late (solids d
 blocking-material faces are terms of the liquid's pressure solve, built by `solids::BuildBlockingMaterialFaces`
 in stage 10 and written back by the faces form of `ApplyPressureToMaterials` in stage 12; no materials
 signature changes. Source: plan decision, 2026-11-14 (coupling inside the pressure solve), owner answer A18.
+
+**10. One form per function; working buffers, not scratch (A31).** The plan gave `ApplyInternalForce` and
+`ComputeCellSqueezeValues` two forms (one taking `MaterialBuffers`, one building a one-call copy for tests and
+tools). Decision: one form each, taking `MaterialBuffers` last (section 3); tests build a `MaterialBuffers`
+locally. `ComputeWorkRates` (test oracle) and `CheckMaterialState` (scene load) keep their one form, which holds
+one call's GPU memory through `GpuArray` and may return `kOutOfMemory`: neither runs per step, and both are called
+where no `MaterialBuffers` sized for them exists. Source: owner answer A31 (`owner-answers.md`, 2026-11-14);
+materials plan Global Constraints, Tasks 17, 22, 24, 26.
+
+**11. Arguments on different processors are a precondition (A30).** Decision: a particle view or an array whose
+`run_on` differs from `MaterialBuffers::run_on()` is a broken precondition (`Requires:`, asserted in debug
+builds), no longer `kBadInput`; the module maps no `kRunOnMismatch` (removed from `BufferError`). Source: owner
+answer A30 (`owner-answers.md`, 2026-11-14).
 
 **Open**
 - The material's own volumetric stiffness inside the solve (half of the volumetric response in Fang et al.

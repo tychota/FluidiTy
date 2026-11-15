@@ -27,8 +27,10 @@ review").
   names listed in the commit message with a one-line reason; tests arrive with the code. A commit must pass every
   part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written, so Foundation ends without a hardware run. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -87,7 +89,7 @@ The steps below are kept as the record of how the result was obtained.
 No commit. This decides commit-rule item 3, so it runs first.
 
 **Files:**
-- Create (scratch only): `<scratchpad>/cuda-probe/probe.cu`, `<scratchpad>/cuda-probe/Dockerfile`
+- Create (temporary only): `<temp-dir>/cuda-probe/probe.cu`, `<temp-dir>/cuda-probe/Dockerfile`
 
 **Interfaces:**
 - Produces: three facts used by Task 7: `CUDA_IMAGE` (full image reference with digest), `CUDA_PLATFORM`
@@ -381,7 +383,7 @@ No commit. This decides commit-rule item 3, so it runs first.
 - [ ] **Step 3: Implement.** `cpu_only.h` holds the `#if defined(__CUDACC__)` / `#error` guard so Review
   Focus item 4 holds. `ToMessage` returns plain sentences that say what the user can do
   ("This build has no GPU code. Use a build made with the CUDA preset.").
-- [ ] **Step 4: Prove the guard.** In the scratchpad, compile a one-line file that includes
+- [ ] **Step 4: Prove the guard.** In a temporary directory, compile a one-line file that includes
   `check_can_run_on.h` with
   `-D__CUDACC__`. Expected: the `#error` text. (Not a committed test: it is a must-not-compile case.)
 - [ ] **Step 5: Run** build, tests (20 pass), format, rules.
@@ -715,20 +717,21 @@ later module section reuses.
 **Interfaces:**
 - Consumes: `Buffer`.
 - Produces: `BuildStableOrder`, `BuildGroupsByDestination`, exactly as in `shared-interface.md`.
-- **Amended 2026-11-14 (A17, grid built on the GPU):** also produces `OrderScratch`, `BuildOrderScratch`,
-  `OrderScratchSize`, `ComputeOrderScratchSize`, the scratch form of `BuildStableOrder` (allocates nothing) and
+- **Amended 2026-11-14 (A17, grid built on the GPU):** also produces `OrderBuffers`, `BuildOrderBuffers`,
+  `OrderBuffersSize`, `ComputeOrderBuffersSize`, `BuildStableOrder` taking its `OrderBuffers` (allocates nothing) and
   `ComputeExclusivePrefixSum`, with the exact declarations and comments of `plan-decisions.md`, section
-  "Grid built on the GPU (A17)", item "Needed from Foundation". The form of `BuildStableOrder` without a
-  scratch builds one and calls the scratch form, so the sort is written once per processor.
+  "Grid built on the GPU (A17)", item "Needed from Foundation".
+- **Amended 2026-11-14 (A30, A31):** one form only, the caller owns the `OrderBuffers`; buffers on another processor
+  are a `Requires:` precondition checked by a debug assertion (no `kRunOnMismatch`). Removed tests:
+  `WithScratch_EqualsFormWithoutScratch` (replaced: one form, A31), `ScratchOnOtherProcessor_IsRunOnMismatch`
+  (replaced: precondition, A30); `CountAboveScratchMaxCount_IsSizeMismatch` is now `CountAboveBuffersMaxCount_IsSizeMismatch`.
 
 - [ ] **Step 1: Failing tests.**
 
   ```cpp
-  TEST(BuildOrderScratch, MaxCountZero_Succeeds)
-  TEST(ComputeOrderScratchSize, EqualsBytesBuildOrderScratchAllocates)   // cpu label and gpu label
-  TEST(BuildStableOrder, WithScratch_EqualsFormWithoutScratch)
-  TEST(BuildStableOrder, CountAboveScratchMaxCount_IsSizeMismatch)
-  TEST(BuildStableOrder, ScratchOnOtherProcessor_IsRunOnMismatch)        // the BufferError used for mixed RunOn
+  TEST(BuildOrderBuffers, MaxCountZero_Succeeds)
+  TEST(ComputeOrderBuffersSize, EqualsBytesBuildOrderBuffersAllocates)   // cpu label and gpu label
+  TEST(BuildStableOrder, CountAboveBuffersMaxCount_IsSizeMismatch)
   TEST(ComputeExclusivePrefixSum, FiveValues_GivesRunningSumsAndTotal)   // {3,0,2,5,1} -> {0,3,3,5,10,11}
   TEST(ComputeExclusivePrefixSum, InPlace_EqualsSeparateBuffers)
   TEST(ComputeExclusivePrefixSum, CountZero_WritesZeroTotal)

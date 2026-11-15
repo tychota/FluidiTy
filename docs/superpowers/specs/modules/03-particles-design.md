@@ -247,8 +247,9 @@ inline constexpr double kFractionSumTolerance = 1e-12;  // No unit. 8 ingredient
 // Sums over the cell blocks of `fields`: one partial per block (particles of the block in grouped order), then
 // math::TreeSum over the block partials in block order, per component. The result for a run of blocks is the
 // same whether the run was loaded in one piece or in batches. Chooses the processor from fields.run_on.
-// kOutOfMemory (the GPU form's one-call scratch of one ParticleAmounts per block), kRunOnCallFailed. Never NaN as
-// a failure signal (plan-decisions "Particles").
+// kOutOfMemory (the GPU path's one-call GpuArray of one ParticleAmounts per block), kRunOnCallFailed. Never NaN as
+// a failure signal (plan-decisions "Particles"). One form (A31, 11.11): it takes no buffers because its callers
+// pass views of particles of any owner; a caller that must not allocate uses ComputeAmountsPerBlock.
 std::expected<ParticleAmounts, ParticlesFailure> ComputeAmounts(const ParticleFields& fields);
 // NEW (2026-11-14). The block partials of ComputeAmounts, one per block of fields.cell_blocks, so a caller that
 // sees the grid in several ranges can tree-sum over the whole grid. kBadInput when per_block.size() is not
@@ -901,10 +902,10 @@ copied to the CPU between stages; other modules' `.cu` files receive `ParticleFi
 | `permanent_volume_change` | 8 | 2 | snow | committed + try |
 | `plate_side` | 8 | 2 | when asked | committed + try |
 | `velocity.for_this_step` | 24 | 1 | all | try only |
-| grouping keys and indexes | 32 | 1 | all | scratch |
+| grouping keys and indexes | 32 | 1 | all | working buffers |
 | `group_begin` | 8 per cell block per material | 2 | all | committed + try |
 | `cell_begin` | 256 per cell block per material (4 x 64) | 2 | all | committed + try |
-| waiting list | one buffer of every carried array | 1 | `max_added_per_try` items | scratch |
+| waiting list | one buffer of every carried array | 1 | `max_added_per_try` items | working buffers |
 | written marks (NEW) | 2 per cell block per material (a `FieldList`) | 1 | all | try only |
 | loaded block origin (NEW) | 4 per loaded cell block | 1 | loaded particles of a batched run | try only |
 
@@ -921,7 +922,9 @@ copy (its arrays are bytes, not copies). Plan measure: 405 B per liquid particle
 (plan-decisions "Particles"; the 412 B above is the design's estimate). `BuildParticlesMemoryEstimate` returns exactly
 the entries `BuildParticles` allocates from, as `CountedPer::kGivenCount` entries with `given_count =
 max_particle_count` of each material. "committed + try" is `KeptFor::kWholeRun` with `copies = 2`, "try only"
-is `kOneStepTry`, "scratch" is `kOneCall`.
+is `kOneStepTry`, "working buffers" is `kOneCall`. The storage also holds one `OrderBuffers` (`order_buffers`) and
+one `SumBuffers` (`sum_buffers`), built from the limits, for the grouping's stable orders and prefix sum and the
+largest-magnitude sum (`"particles: order buffers"`, `"particles: sum buffers"` and their fixed-bytes entries).
 
 **6.5 Cell-block ranges.** `BuildFieldsToRead`, `BuildFieldsToChange`, `CheckParticles`, `ComputeAmounts`,
 `AdjustParticleCount` and the key computation of grouping take a `CellBlockRange` and touch only those groups.
@@ -1073,6 +1076,7 @@ cutting). Klar 2016 moves to the sand module.
 | capacity | `max_particle_count`, `max_added_per_try` | DECIDED pattern `max_...` |
 | inventory (of a particle set) | `ParticleAmounts` | NEW; cell resize uses `GridOnlyAmounts` on the cell side |
 | `LiquidStateCapacities3D` growth | `ApplyParticleLimits` | NEW |
+| scratch (working memory of the grouping and the sums; the plans' `OrderScratch`, `SumScratch`, replaced) | working buffers: `order_buffers` (`OrderBuffers`), `sum_buffers` (`SumBuffers`) | DECIDED (A31) |
 | checkpoint read-back, `Readback` | `ReadSnapshot`, `ParticlesSnapshot` | DECIDED words |
 | other NEW names | `ParticleFields`, `ParticleFieldsToChange`, `ArrayToChange`, `Field`, `FieldList`, `ExtraFields`, `CountRule`, `MaterialParticlesSettings`, `ParticlesSettings`, `NewParticles`, `OneParticle`, `MergedParticle`, `RefillCell`, `GroupingSettings`, `size_level` (per particle), `CheckGrouping`, `CheckParticles`, `ComputeAmounts`, `ComputeAmountsPerBlock`, `SnapshotFields`, `kOutputSnapshotFields`, `ToFieldList`, `HasField`, `ToName`, `BuildParticlesMemoryEstimate` | NEW |
 
@@ -1180,3 +1184,17 @@ copy_count = 0;` (one per slice `WriteBuffer` into a buffer outside CPU memory) 
 particles stay in CPU memory and one loaded try lives on the run's processor (placement rule, 6.4). Source: plan
 decision, 2026-11-14 (planned cost; buffers in batched runs); owner principle A17; `plan-decisions.md` "Copies
 counted and the one exception"; particles plan Task 11; step plan Appendix A row M1.
+
+**11.11 One form per function; working buffers, not scratch (A31).** Decision: the word "scratch" is not used;
+working memory is "working buffers". Every Foundation call (`BuildStableOrder`, `ComputeExclusivePrefixSum`,
+`ComputeLargestMagnitude`) takes the storage's `order_buffers` / `sum_buffers`; no form builds its own. No public
+particles signature changes. `ComputeAmounts` keeps its one form, which holds one call's GPU memory (`GpuArray` of
+one `ParticleAmounts` per block) and keeps `kOutOfMemory`: its callers pass views of particles of any owner with
+no buffers to lend; a caller that must not allocate uses `ComputeAmountsPerBlock`. Source: owner answer A31
+(`owner-answers.md`, 2026-11-14); particles plan Tasks 12, 15, 17.
+
+**11.12 Buffers on different processors are a precondition (A30).** Decision: `BufferError::kRunOnMismatch` no
+longer exists. The particles' arrays and their working buffers live on `settings.run_on` by construction; a
+function given buffers and working buffers on different processors is a broken precondition (`Requires:` same
+processor, asserted in debug builds), never an error value. Source: owner answer A30 (`owner-answers.md`,
+2026-11-14).

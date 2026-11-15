@@ -320,8 +320,10 @@ Foundation's list, unchanged:
   the `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive
   with the code. A commit must pass every part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -1407,6 +1409,8 @@ design names it (D1 says why).
 
 ### Task 34: Witness files, the scene and the writer program
 
+**Amended 2026-11-14 (A31):** files are written through a temporary `io::RunFolder` (no "scratch").
+
 **Kind:** integration. **Tests:** (a), with the built programs.
 
 **Amended 2026-11-14 (Foundation as built):** the program is created with `add_executable` plus `fluidity_apply_compile_flags`, its test with
@@ -1429,7 +1433,7 @@ design names it (D1 says why).
   frame inputs of frames 0 to 10 in order with I/O's `ReadFrameInputs`, builds each frame with
   `BuildRenderFrame` exactly as the CLI frame worker of render output Task 47 does (if that composition is not
   a callable function in `cli/`, extract it in this task and make the worker call it), and calls every
-  candidate writer of every kind of `ReadFormatTable()`. Each file is written through a scratch `io::RunFolder`
+  candidate writer of every kind of `ReadFormatTable()`. Each file is written through a temporary `io::RunFolder`
   and `OutputFile` and copied out to `<witness_folder>/<kind>/<format>/<file name of render output 5.7>` (the
   pattern of I/O's `WriteStartParticlesFile`). Then `expected.json` (per kind, format, object and frame: the
   values design 3.12 lists, doubles in shortest round-trip form, plus `frames_per_second` and every file's
@@ -1561,7 +1565,7 @@ with.
   `film_transparent`, orthographic camera along +Y, `ortho_scale` 0.6 m over a 1200 px wide image, emission
   material, `motion_blur_shutter` 0.5) and W3 (`velocity_gives_motion_blur`, points and surface at frame 2) and
   W9 (`transform_gives_object_motion`, solid motion USD and Alembic; JSON in Task 46), design 7.2 rows W3 and
-  W9. Images go to a scratch folder, never committed.
+  W9. Images go to a temporary folder, never committed.
 - [ ] **Step 0: Re-check in Blender 5.3:** the probe of Task 27 with `--only transform_cache`; expected `TRUE`;
   output in the commit body; a `FALSE` stops the task.
 - [ ] **Step 2:** run in Blender 5.3 (record the render time per case in the commit body); update results;
@@ -1781,7 +1785,7 @@ package's manifest keeps `blender_version_min = "5.3.0"`.
 
 **Interfaces:**
 - `build_extension_packages.py --blender <exe> --platform <name> --fluidity <exe> --out <folder>`: copies
-  `blender/fluidity/` to a scratch folder, adds `bin/<platform>/fluidity[.exe]`, `bin/<platform>/build.json`
+  `blender/fluidity/` to a temporary folder, adds `bin/<platform>/fluidity[.exe]`, `bin/<platform>/build.json`
   (`executable_version` from `capabilities`, SHA-256 of the executable) and the USD resource folder beside it
   while a USD candidate is in the build; writes `platforms = ["<platform>"]` into the copy's manifest (never
   changes `blender_version_min`); runs `blender --offline-mode --factory-startup --command extension build

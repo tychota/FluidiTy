@@ -35,8 +35,10 @@ Foundation's list, unchanged:
   names listed in the commit message with a one-line reason; tests arrive with the code. A commit must pass every
   part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written, so Foundation ends without a hardware run. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -60,11 +62,11 @@ Foundation's list, unchanged:
   per-thread functions in a shared header (`<name>_steps.h` unless one of the eight formula headers holds them),
   which the CPU loop calls too; `cpu` tests run those functions over every item, or every thread block and thread
   of `ComputeLaunchSize(count)` in launch order and in reverse (phase by phase where the GPU function waits),
-  against the CPU loop. Scratch pattern (`<Name>Scratch`, `Build<Name>Scratch`, `Compute<Name>ScratchSize`);
-  per-step callers pass memory owned by `MaterialBuffers` (this module calls no `base/` sum or grouping on
-  buffers, so it holds no `SumScratch` or `OrderScratch`). Errors: a failed check writes nothing; after
-  `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building or
-  allocating forms. Exactness: discrete outputs equal on CPU and GPU; floating-point within the module's tolerance
+  against the CPU loop. Working buffers (`<Name>Buffers`, `Build<Name>Buffers`, `Compute<Name>BuffersSize`): one
+  form per function, which takes its buffers (A31); callers pass memory owned by `MaterialBuffers` (this module calls no `base/` sum or grouping on
+  buffers, so it holds no `SumBuffers` or `OrderBuffers`). Errors: a failed check writes nothing; after
+  `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building
+  functions and from the one-call GPU memory of `ComputeWorkRates` and `CheckMaterialState` (design decision 10). Exactness: discrete outputs equal on CPU and GPU; floating-point within the module's tolerance
   unless the function's header promises the same bits unless NaN. Tests link `fluidity_base_test_support`
   (`ToBits`, `BuildBufferHolding`, `ReadAll`, `CheckWithinTolerance`, `CheckSameBitsOrBothNaN`) and the module's
   helper library made with `fluidity_add_test_library`, named in `LINKS`; `gpu` tests call `WriteResultDigest` on
@@ -116,18 +118,19 @@ Materials' own:
   call-level checks in this order: settings, span sizes (`kBadInput`), grid versions and `step_try`
   (`kWrongGridVersion`; a `step_try` of 0 counts as another try), carried arrays (`kWrongFields`), buffer sizes
   (`kBuffersTooSmall`). A particle view (`ParticleFields`, `ParticleFieldsToChange`, both carry `RunOn run_on`
-  per `plan-decisions.md`) or an array whose `run_on` differs from `MaterialBuffers::run_on()` is `kBadInput`,
-  checked with the span sizes. On the GPU the lowest id comes from a 64-bit integer `atomicMin`, never from timing.
+  per `plan-decisions.md`) or an array whose `run_on` differs from `MaterialBuffers::run_on()` is a broken
+  precondition (`Requires:` same processor, asserted in debug builds; amended 2026-11-14, A30), not `kBadInput`.
+  On the GPU the lowest id comes from a 64-bit integer `atomicMin`, never from timing.
 - **`kStepTooLong` (plan decision).** `particle_id = 0`, `material_index` = the material giving the smallest
   limit, `magnitude` = `step_limit`, the smallest `sound_step_share * smallest_cell_width[m] / largest bound of m`
   over the range. A particle failure (collapsed, unstable, not finite) is reported before `kStepTooLong`.
   `step_duration * bound > sound_step_share * width` is strict: equality is accepted.
 - **Buffers without allocation (plan decision, transfer's precedent).** `BuildMaterialBuffers` takes a last
   parameter `std::uint32_t max_cell_blocks` (the per-block budget buffer and the table copy live in
-  `MaterialBuffers`). `ApplyInternalForce` gains an overload with `MaterialBuffers& buffers` last and
-  `ComputeCellSqueezeValues` one with `const MaterialBuffers& buffers` last; these allocate nothing and are the
-  forms the step uses. The design's forms build a one-call scratch (tests, tools). `ComputeWorkRates` (test
-  oracle) and `CheckMaterialState` (scene load) may allocate per call.
+  `MaterialBuffers`). **Amended 2026-11-14 (A31):** `ApplyInternalForce` has one form, with `MaterialBuffers&
+  buffers` last, and `ComputeCellSqueezeValues` one, with `const MaterialBuffers& buffers` last; they allocate
+  nothing; tests build a `MaterialBuffers` locally. `ComputeWorkRates` (test oracle) and `CheckMaterialState`
+  (scene load) keep one form that holds one call's GPU memory (`GpuArray`): neither runs per step.
 - **Memory estimate entries (plan decision, `plan-decisions.md`: `sizeof`).** All `where = kRunOn`, names start
   `materials: `. Per-particle rows are `kGivenCount` from `max_particle_counts` (the counts the buffers are
   built at): internal force `sizeof(Mat3)` (72) over materials with internal force; friction 8, own motion
@@ -158,8 +161,8 @@ Materials' own:
 On `rebuild` already: Foundation (all of `shared-interface.md` section (a), including `math::Expm1`,
 `math::TreeSum`, `math::Rotation`, `Buffer`, `memory_count.h` with `MemoryWhere`; `RunOn` alone in the shared
 header `base/run_on.h`, so shared headers here may name it; `CheckCanRunOn` in the CPU-only
-`base/check_can_run_on.h`; **Amended 2026-11-14 (Foundation as built):** also `run_on_call.h`, `gpu_launch.cuh`, `ToBufferError`, the scratch forms
-of `ordered_sums.h` and `stable_order.h`, `test_support.h` in the library `fluidity_base_test_support`, and
+`base/check_can_run_on.h`; **Amended 2026-11-14 (Foundation as built):** also `run_on_call.h`, `gpu_launch.cuh`, `ToBufferError`, the one-form
+functions of `ordered_sums.h` and `stable_order.h` (each takes its buffers), `test_support.h` in the library `fluidity_base_test_support`, and
 `fluidity_add_test_library`; read `AGENTS.md` "Structure" before Task 1), the gate, the method paper with
 `figure_style.typ` and `pseudocode.typ`; contact (`ParticleContact`, `ContactKind`, `MoveParticlesInputs::friction`), grid (`StaggeredGrid`, `GridTables`, `CellBlockRange` in `grid_ids.h`,
 `CellValues`, `FaceValues`, `CornerValues`, `ApplyGridVersion`, `FindCornerPlaces`, `ComputeCornerPosition`,
@@ -695,8 +698,8 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
   `F = R1 diag(s) R2^T`, `s` in `[0.9, 1.1]`, permanent in `[-0.3, 0.1]`, the test-table snow numbers; 100 snow
   and 100 springy states (`s` in `[0.7, 1.3]`) with 10,000 directions uniform on the sphere. Numbers as
   `float.hex`.
-- The `main` numbers (`plan-decisions.md`, first entry): export `main` to the scratchpad, build there, and run a
-  scratch driver (never committed) that calls `ReturnSnowPrincipal3D` on the snow inputs of
+- The `main` numbers (`plan-decisions.md`, first entry): export `main` to a temporary directory, build there, and run a
+  throwaway driver (never committed) that calls `ReturnSnowPrincipal3D` on the snow inputs of
   `native/tests/m5_constitutive_3d_cases.h:64-93` and `ReturnSnowDeformation3D` on the snow inputs of
   `native/tests/m5_deformation_3d_cases.h:9-35`, printing inputs and outputs as hex floats; rotate deformations
   and forces to Z-up with `F' = R F R^T`, `R` rows `{1,0,0},{0,0,-1},{0,1,0}`; commit only
@@ -832,6 +835,8 @@ shared-formula GPU runner follows Foundation's `shared_math_test_gpu.h/.cu` spli
 
 **Amended 2026-11-14 (Foundation as built):** private `apply_internal_force_gpu.h`; the per-face terms come from a shared `apply_internal_force_steps.h` function the CPU loop calls.
 
+**Amended 2026-11-14 (A31):** one form taking `MaterialBuffers&`; the two-form test `BuffersForm_SameBytesAsOneCallForm` is removed.
+
 **Files:**
 - Create: `apply_internal_force.h`, `apply_internal_force_cpu.cc`, `apply_internal_force_gpu.h` (private),
   `apply_internal_force_steps.h` (shared: `ComputeFaceTerms`, one face place's velocity change and budget terms),
@@ -839,7 +844,8 @@ shared-formula GPU runner follows Foundation's `shared_math_test_gpu.h/.cu` spli
 
 **Interfaces:**
 - Consumes: `ComputeFacePush`, `transfer::GridFromParticles`, `ParticlesToGrid`, `math::TreeSum`.
-- Produces design 3: `InternalForceTotals`, `ApplyInternalForce` (both forms), `ComputeInternalForceTotal`.
+- Produces design 3: `InternalForceTotals`, `ApplyInternalForce` (one form, `MaterialBuffers&` last),
+  `ComputeInternalForceTotal`.
   Per face of each block (ascending place): force 0 contributes nothing; `kFromParticles` gets
   `velocity += push.velocity_change`; any other kind with force adds `|dt force|` to proposed and omitted;
   `weak_face_count` counts faces with force and `weight_sum < min_support_share`. Checks: `totals_of_block.size()
@@ -866,7 +872,6 @@ shared-formula GPU runner follows Foundation's `shared_math_test_gpu.h/.cu` spli
   TEST(ApplyInternalForce, ZeroSupportShare_NothingOmittedOnValuedFaces)
   TEST(ApplyInternalForce, BudgetSpanOfWrongSize_IsBadInput)
   TEST(ApplyInternalForce, StaleStepTry_IsWrongGridVersion)
-  TEST(ApplyInternalForce, BuffersForm_SameBytesAsOneCallForm)
   TEST(ComputeInternalForceTotal, IsTreeSumOfBlocks)   // proposed {1e16, 1, -1e16, 1} -> 0.0 exactly;
                                                              // counts {1,2,3,4} -> 10
   ```
@@ -993,7 +998,7 @@ promises `math::TreeSum`'s bits unless NaN (stated in `apply_internal_force.h`),
 
 **Kind:** integration
 
-**Amended 2026-11-14 (Foundation as built):** private `apply_material_response_gpu.h`; per-particle bodies in the shared `apply_material_response_steps.h`, which the CPU loop calls; `CheckMaterialState`'s per-call GPU memory through `GpuArray` (an allocating form, `kOutOfMemory`).
+**Amended 2026-11-14 (Foundation as built):** private `apply_material_response_gpu.h`; per-particle bodies in the shared `apply_material_response_steps.h`, which the CPU loop calls; `CheckMaterialState`'s per-call GPU memory through `GpuArray` (its one form; `kOutOfMemory`).
 
 **Files:**
 - Create: `apply_material_response.h`, `apply_material_response_cpu.cc`, `apply_material_response_gpu.h`
@@ -1066,6 +1071,8 @@ promises `math::TreeSum`'s bits unless NaN (stated in `apply_internal_force.h`),
 
 **Amended 2026-11-14 (Foundation as built):** private `compute_cell_squeeze_values_gpu.h` returning `RunOnCallStatus`; per-cell body in the shared `compute_cell_squeeze_values_steps.h` with a `cpu` test over every thread block and thread; result digests.
 
+**Amended 2026-11-14 (A31):** one form taking `const MaterialBuffers&`; tests build the buffers locally.
+
 **Files:**
 - Create: `compute_cell_squeeze_values.h`, `_cpu.cc`, `_gpu.cu`, `_gpu.h` (private), `_steps.h` (shared:
   `ComputeCellSqueezeValue`, one cell place, which the CPU loop calls), `_steps_test.cc`, `_test.cc`, `_gpu_test.cc`
@@ -1073,7 +1080,7 @@ promises `math::TreeSum`'s bits unless NaN (stated in `apply_internal_force.h`),
 
 **Interfaces:**
 - Consumes: `pressure::ComputePressureLawState`, `transfer::CellsFromParticles`.
-- Produces design 3: `CellSqueezeInputs`, `ComputeCellSqueezeValues` (both forms). Plan decisions: ingredients
+- Produces design 3: `CellSqueezeInputs`, `ComputeCellSqueezeValues` (one form, `const MaterialBuffers&` last). Plan decisions: ingredients
   with `v_k == 0` are skipped (a gas ingredient's law is never evaluated in a liquid cell); sums in scene
   ingredient order from `0.0`; `PressureError::kPressureLawOutOfRange` becomes `kPressureLawOutOfRange` with
   `ingredient_index` and `magnitude` = the pressure, lowest `CellPlaceIndex`; outputs bound with
@@ -1142,7 +1149,7 @@ promises `math::TreeSum`'s bits unless NaN (stated in `apply_internal_force.h`),
 
 **Kind:** device
 
-**Amended 2026-11-14 (Foundation as built):** GPU half returns `RunOnCallStatus`; the per-call scratch is a `GpuArray` (test oracle, allocating form); a `cpu` test runs the steps functions over every thread block and thread; result digests.
+**Amended 2026-11-14 (Foundation as built):** GPU half returns `RunOnCallStatus`; the per-call GPU memory is a `GpuArray` (test oracle, its one form); a `cpu` test runs the steps functions over every thread block and thread; result digests.
 
 **Files:**
 - Create: `compute_work_rates_gpu.cu`, `compute_work_rates_steps_test.cc`, `compute_work_rates_gpu_test.cc`;
@@ -1213,7 +1220,7 @@ promises `math::TreeSum`'s bits unless NaN (stated in `apply_internal_force.h`),
   format and rules on each rewritten commit and the full gate on the tip.
 - [ ] **Step 3: Check the design section by section** (3 names, 5 method, 6 CPU and GPU, 7 tests, 10 not ported)
   and record in the hand-over everything delivered differently: the plan decisions of the Global Constraints;
-  `BuildMaterialBuffers`'s `max_cell_blocks`; the two buffer overloads; memory estimate entries by `sizeof` with no face-place
+  `BuildMaterialBuffers`'s `max_cell_blocks`; one form per function taking `MaterialBuffers` (A31); memory estimate entries by `sizeof` with no face-place
   row; the `kStepTooLong` context; `atomicMax` on bits; the table check order and the extra ingredient rules; the
   extra `CheckMaterialState` checks; the `-87.5 W` sign; the `1e-8` reference slack; the same-bits promises of the
   per-block budget and of `ComputeParticleFriction`; no `material_buffers_gpu.cu`.

@@ -8,7 +8,7 @@ mixed-size staggered grid, the cell viscosity of ingredient mixtures, sticking t
 viscous ingredient, with its capability check, on CPU and (compiled, not run) GPU. All three geometric
 capability exclusions are lifted inside this plan; no combination of materials is excluded because of viscosity
 (A24: snow and springy solids; A27: free solids). Owner answer A15 (Tasks 26 to 28): when the joint solve's buffers do not
-fit the GPU, it runs batch by batch with its scratch in CPU memory through pressure's `SolveBatches`, agreeing with
+fit the GPU, it runs batch by batch with its working buffers in CPU memory through pressure's `SolveBatches`, agreeing with
 the one-piece solve within its tolerance. Owner answer A24 (Tasks 15a, 15b, 17a, 19a, 27a): the joint solve carries
 the blocking-material face terms and the sealed gas term, as `pressure::SolvePressure` does (A18). Owner answer A25
 (Task 4): a liquid is viscous exactly when its viscosity is above 0; `ComputeViscousEffectPerStep` gives the planner
@@ -54,12 +54,15 @@ and the programme design `docs/superpowers/specs/2026-11-13-production-rebuild-d
   (`ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). Every GPU function is a thin loop over
   `FLUIDITY_CPU_AND_GPU` per-item or per-thread functions in a shared header; a `cpu` test runs them for every
   thread block and thread of the launch, in launch order and in reverse, against the CPU loop (the main evidence
-  until the hardware run). Scratch: `SumScratch` and `OrderScratch` are members `sum_scratch` and `order_scratch`
-  of `ViscosityBuffers`, built once by `BuildViscosityBuffers` from its settings and passed to the scratch forms of
+  until the hardware run). Working buffers: `SumBuffers` and `OrderBuffers` are members `sum_buffers` and
+  `order_buffers` of `ViscosityBuffers`, built once by `BuildViscosityBuffers` from its settings and passed to
   `ComputeTreeSum`, `ComputeLargestMagnitude`, `BuildStableOrder`, `ComputeExclusivePrefixSum` and
   `BuildGroupsByDestination` in every step; `BuildViscosityMemoryEstimate` counts their bytes
-  (`ComputeSumScratchSize`, `ComputeOrderScratchSize`). Errors: a failed check writes nothing; after
-  `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building forms.
+  (`ComputeSumBuffersSize`, `ComputeOrderBuffersSize`). Errors: a failed check writes nothing; after
+  `kRunOnCallFailed` the outputs are unspecified and the run stops; `kOutOfMemory` comes only from building forms (`ViscosityError::kOutOfMemory`, returned only by
+  `BuildViscosityBuffers`; reconcile item 25). Buffers and arrays passed together live on one processor: a
+  precondition (`Requires:`, debug assertion), not an error value (A30). Each base sum, order, prefix sum and
+  grouping has one form, which takes its buffers (A31). **Amended 2026-11-14 (A30|A31|reconcile).**
   Exactness: discrete outputs equal on CPU and GPU, floating-point within this module's tolerances unless a header
   promises the same bits unless NaN. Tests link `fluidity_base_test_support` (`ToBits`, `BuildBufferHolding`,
   `ReadAll`, `CheckWithinTolerance`, `CheckSameBitsOrBothNaN`) and the module's helper libraries made with
@@ -67,8 +70,10 @@ and the programme design `docs/superpowers/specs/2026-11-13-production-rebuild-d
   `cpu` everywhere, `no_gpu` only for behaviour on a machine without a GPU, `gpu` only on hardware. Every target is
   created through the helpers of `cmake/fluidity_targets.cmake` and every source file is listed in a CMake file.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with two lines: `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and
-  `Claude-Session: <session link>`.
+- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
+  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
+  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
+  line; the owner is the sole author (owner answer A39, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
@@ -106,8 +111,8 @@ Viscosity's own constraints (values from the design; never change one without th
   the blocks in block order (A15: replaces `ComputeTreeDot` over the whole buffer wherever Tasks 12, 14, 15 and 17
   say it); largest values: `ComputeLargestMagnitude` (exact in any order). **Amended 2026-11-14 (Foundation as
   built):** where the block partials sit in a buffer, the tree sum over them is `ComputeTreeSum(partials,
-  block_count, buffers.sum_scratch)`, whose header promises `math::TreeSum`'s bits on both processors; largest
-  values are `ComputeLargestMagnitude(values, count, buffers.sum_scratch)`. `power_lost_to_viscosity`: one partial per cell
+  block_count, buffers.sum_buffers)`, whose header promises `math::TreeSum`'s bits on both processors; largest
+  values are `ComputeLargestMagnitude(values, count, buffers.sum_buffers)`. `power_lost_to_viscosity`: one partial per cell
   block (its samples in sample order), in the grid's block order, then `math::TreeSum`. No floating-point
   atomics; CPU threads only split by destination.
 - **Every liquid is in one material set** (shared-interface section d): `cells_from_particles` has exactly one
@@ -176,10 +181,10 @@ On branch `rebuild` in `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuil
   `figure_style.typ` and `pseudocode.typ`, `docs/glossary.md`, `docs/gpu-runs.md`, `docs/known-open-physics.md`,
   the gate.
 - **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides `base/run_on_call.h`
-  (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, `SumScratch` and the scratch forms of the sums
-  (`ordered_sums.h`), `OrderScratch` and the scratch forms of the order, prefix sum and grouping (`stable_order.h`),
+  (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, `SumBuffers` taken by the sums
+  (`ordered_sums.h`), `OrderBuffers` taken by the order, prefix sum and grouping (`stable_order.h`; one form each),
   `base/test_support.h` (library `fluidity_base_test_support`) and `fluidity_add_test_library`; read `AGENTS.md`
-  "Structure" (two halves, private GPU headers, scratch) before the first task. The gate's expected output is seven
+  "Structure" (two halves, private GPU headers, working buffers) before the first task. The gate's expected output is seven
   `PASS` lines: format, rules, cpu debug, cpu release, tidy, paper, cuda.
 - Contact (`contact::Solid`, `DomainBox`, `SolidVelocitySample`, `ComputeSolidVelocitySample`, `ToSolid`), grid (3.1 to 3.7, including `FindCellsAroundEdge`, `FindNearbyFaces`,
   `FindFacePieces`, `ToCellBlockIndex`), particles, transfer (`CellsFromParticles`, `BuildCellsFromParticles`).
@@ -257,6 +262,8 @@ Load the `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cet
 
 ### Task 2: Method paper, the two loops and the exclusions
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** one paragraph on the batched form (Step 3b).
 
 **Amended 2026-11-14 (A24):** the exclusion table has four rows (no snow row); Step 3c states the coupled terms.
@@ -282,7 +289,7 @@ Load the `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cet
   fixed order marked by numbers on the arrows.
 - [ ] **Step 3: Pseudocode** `<proc-solve-viscosity-and-pressure>`: steps 6 to 12, numbered so; "fails when"
   lists `kVelocitySolveDidNotConverge`, `kPressureSolveDidNotConverge`, `kNotFinite`, `kCancelled`.
-- [ ] **Step 3b (A15):** one paragraph after the pseudocode: the same solve in batches (scratch in CPU memory,
+- [ ] **Step 3b (A15):** one paragraph after the pseudocode: the same solve in batches (working buffers in CPU memory,
   two sweeps per inner iteration, the outer step's sweeps, why it is possible and slow for a syrup scene); refer to
   pressure's `<sec-solve-in-batches>`.
 - [ ] **Step 3c (A24):** label `<sec-viscosity-coupled>`, one page: the material face eliminated into the volume
@@ -312,14 +319,15 @@ Load the `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cet
 
 **Interfaces:**
 - **Amended 2026-11-14 (A24):** 15 values; `kSnowNotSupported` is never added. **Amended 2026-11-14 (A27):** 14
-  values; `kFreeSolidNotSupported` is never added either.
-- Produces: design 3 `ViscosityError` (all 14 values, in order), `ViscosityFailure`, `ToMessage(ViscosityError)`,
+  values; `kFreeSolidNotSupported` is never added either. **Amended 2026-11-14 (reconcile item 25):** 15 values
+  with `kOutOfMemory`.
+- Produces: design 3 `ViscosityError` (all 15 values, in order), `ViscosityFailure`, `ToMessage(ViscosityError)`,
   `ToName(ViscosityError)`, exactly. `solve_viscosity_and_pressure.h` includes `base/cpu_only.h` first.
 
 - [ ] **Step 1: Failing tests:**
 
   ```cpp
-  TEST(ToName, EveryError_IsLowerSnakeCaseWithoutK)  // design 7 "Stable codes": all 14 values;
+  TEST(ToName, EveryError_IsLowerSnakeCaseWithoutK)  // design 7 "Stable codes": all 15 values;
       // kMovingSolidNotSupported -> "moving_solid_not_supported", kRunOnCallFailed -> "run_on_call_failed",
       // kVelocitySolveDidNotConverge -> "velocity_solve_did_not_converge"; all distinct
   TEST(ToMessage, EveryError_IsDistinctAndNotEmpty)
@@ -336,7 +344,7 @@ Load the `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cet
   eighths of a cell beside one edge), `given face` (a face piece with `face_inertia == 0`: its velocity is
   known, not solved), `power_lost_to_viscosity`.
 - [ ] **Step 5: Run** the gate. **Commit.** Subject: `Add the viscosity module's errors`. New names:
-  `ViscosityError` and its 14 values, `ViscosityFailure`, `ToMessage`, `ToName`.
+  `ViscosityError` and its 15 values, `ViscosityFailure`, `ToMessage`, `ToName`.
 
 ### Task 4: Sample types and weight formulas
 
@@ -461,9 +469,11 @@ material faces, Task 15a); no springy-solid exclusion (the owner chose option C)
 
 ### Task 7: Buffers and memory estimate entries
 
+**Amended 2026-11-14 (A30|A31|reconcile):** working buffers are `sum_buffers` / `order_buffers` (test `BuffersRows_MatchBuffersByteCounts`); out of memory is the new `ViscosityError::kOutOfMemory`, returned only by `BuildViscosityBuffers` (reconcile item 25); `ToViscosityFailure` maps no processor mismatch (A30).
+
 **Kind:** mechanical
 
-**Amended 2026-11-14 (Foundation as built):** `ViscosityBuffers` owns a `SumScratch` and an `OrderScratch`, with
+**Amended 2026-11-14 (Foundation as built):** `ViscosityBuffers` owns a `SumBuffers` and an `OrderBuffers`, with
 four memory estimate entries, and holds the one mapping from `BufferError` to `ViscosityFailure`.
 
 **Files:**
@@ -477,7 +487,7 @@ four memory estimate entries, and holds the one mapping from `BufferError` to `V
   (returns empty vectors until Task 9 fills samples).
 - **Amended 2026-11-14 (A24):** `ViscosityBufferSettings::max_sealed_gas_blobs` (`std::uint32_t`, 0 without gas)
   and the row `"viscosity: sealed gas blob vectors"` (given count `max_sealed_gas_blobs`, `70 x 8` bytes: pressure,
-  imbalance, diagonal, direction, response, scratch and the `2 x 32` kept entries; always `kRunOn`, also in the
+  imbalance, diagonal, direction, response, working values and the `2 x 32` kept entries; always `kRunOn`, also in the
   batched layout); test `ComputeViscosityBufferBytes, SealedGasBlobRow` (4 blobs add exactly 2,240 bytes).
   **Amended 2026-11-14 (A26, A27):** `max_material_faces` and `max_free_solids` (both `std::uint32_t`, 0 by
   default) and the rows `"viscosity: material face vectors"` (given `max_material_faces`, `12 x 8 + 16` bytes, streamed
@@ -490,7 +500,8 @@ four memory estimate entries, and holds the one mapping from `BufferError` to `V
     `kBadInput`; every value array is a `grid::CellValues` / `FaceValues` built with
     `max_cell_blocks = max_cell_count / 64` and bound with `grid::ApplyGridVersion` at each build.
     `max_sample_count <= 15 x max_cell_count` and `max_coefficient_count <= 8 x max_sample_count`, else
-    `kBadInput`. Out of memory: `kRunOnCallFailed`, magnitude = bytes asked (plan-decisions).
+    `kBadInput`. Out of memory: `kOutOfMemory`, magnitude = bytes asked, returned only by `BuildViscosityBuffers`
+    (reconcile item 25; was `kRunOnCallFailed`).
   - Rows (names prefixed `"viscosity: "`, `KeptFor::kOneStepTry`, `copies = 1`, `MemoryWhere::kRunOn`, bytes
     from `sizeof` with a `static_assert` each):
 
@@ -503,35 +514,37 @@ four memory estimate entries, and holds the one mapping from `BufferError` to `V
     | coefficients by sample; face of coefficient, sample of coefficient, use order | `max_coefficient_count` | 16; 4 + 4 + 4 |
     | first use of face | face place + 1 | 4 |
     | face arrays: `face_inertia`, `velocity_diagonal`, `connection_scale`, `base_momentum`, push, momentum, candidate velocity, search velocity, error, scaled error, direction, operator output | face place | 12 x 8 |
-    | cell arrays: pressure, imbalance, pressure diagonal, pressure direction, response, power partial scratch, plus `2 x 32` kept directions and responses | cell place | 70 x 8 |
+    | cell arrays: pressure, imbalance, pressure diagonal, pressure direction, response, power partial working values, plus `2 x 32` kept directions and responses | cell place | 70 x 8 |
     | block partials of power lost | cell block | 8 |
     | progress record (GPU: two imbalance norms, inner iteration count, error) | given count 1 | 64 |
 
   - `ViscosityBuffers` keeps `RunOn`, the bound `GridVersion`, the built sample and coefficient counts and the
     `step_duration` of the last build; internals reach later tasks through `viscosity_buffers_access.h`.
-  - **Amended 2026-11-14 (Foundation as built), scratch.** `ViscosityBuffers` holds `SumScratch sum_scratch` and
-    `OrderScratch order_scratch` (private members, reached through `viscosity_buffers_access.h`), built once by
-    `BuildViscosityBuffers` on `settings.run_on` with `BuildSumScratch` and `BuildOrderScratch`; no later call
-    allocates. Their `max_count` (one piece; Task 26 gives the batched values): sum scratch `max_face_count` (the
+  - **Amended 2026-11-14 (Foundation as built), working buffers.** `ViscosityBuffers` holds `SumBuffers sum_buffers` and
+    `OrderBuffers order_buffers` (private members, reached through `viscosity_buffers_access.h`), built once by
+    `BuildViscosityBuffers` on `settings.run_on` with `BuildSumBuffers` and `BuildOrderBuffers`; no later call
+    allocates. Their `max_count` (one piece; Task 26 gives the batched values): sum buffers `max_face_count` (the
     largest count passed to `ComputeLargestMagnitude`; the block partials given to `ComputeTreeSum` are fewer);
-    order scratch `max(max_cell_count + 1, max_coefficient_count)` (cells ordered by `BuildStableOrder`, cell counts
+    order buffers `max(max_cell_count + 1, max_coefficient_count)` (cells ordered by `BuildStableOrder`, cell counts
     summed by `ComputeExclusivePrefixSum`, coefficients grouped by `BuildGroupsByDestination`). Four more rows, all
-    `kGivenCount`, `kWholeRun`, `kRunOn`: `"viscosity: sum scratch"` (given count the sum scratch `max_count`,
-    `ComputeSumScratchSize(run_on).bytes_per_item` bytes), `"viscosity: sum scratch fixed bytes"` (given count
-    `fixed_bytes`, 1 byte), and `"viscosity: order scratch"`, `"viscosity: order scratch fixed bytes"` likewise from
-    `ComputeOrderScratchSize(run_on)`. The settings already carry `run_on` and every count, so no signature changes.
+    `kGivenCount`, `kWholeRun`, `kRunOn`: `"viscosity: sum buffers"` (given count the sum buffers `max_count`,
+    `ComputeSumBuffersSize(run_on).bytes_per_item` bytes), `"viscosity: sum buffers fixed bytes"` (given count
+    `fixed_bytes`, 1 byte), and `"viscosity: order buffers"`, `"viscosity: order buffers fixed bytes"` likewise from
+    `ComputeOrderBuffersSize(run_on)`. The settings already carry `run_on` and every count, so no signature changes.
   - **Amended 2026-11-14 (Foundation as built), errors.** One private mapping in `viscosity_buffers_access.h`:
     `ViscosityFailure ToViscosityFailure(BufferError error, std::uint64_t bytes_asked);` (`kOutOfMemory` ->
-    `kRunOnCallFailed` with `magnitude` the bytes asked, as above; `kSizeMismatch` -> `kBuffersTooSmall`;
-    `kRunOnMismatch` -> `kBadInput`; `kRunOnCallFailed` -> `kRunOnCallFailed`). Every GPU half's `RunOnCallStatus`
+    `kOutOfMemory` with `magnitude` the bytes asked, as above, reachable only from `BuildViscosityBuffers`;
+    `kSizeMismatch` -> `kBuffersTooSmall`; `kRunOnCallFailed` -> `kRunOnCallFailed`). **Amended 2026-11-14
+    (A30|reconcile):** no processor-mismatch value is mapped (buffers on one processor are a precondition, A30),
+    and out of memory is `kOutOfMemory` (reconcile item 25). Every GPU half's `RunOnCallStatus`
     goes through `ToBufferError`, then this function.
 
 - [ ] **Step 1: Failing tests:**
 
   ```cpp
   TEST(ComputeViscosityBufferBytes, EqualsSumOfMemoryEstimate)
-  TEST(BuildViscosityMemoryEstimate, ScratchRows_MatchScratchByteCounts)  // amended (Foundation as built): on the
-      // CPU, the four scratch rows equal sum_scratch.byte_count() and order_scratch.byte_count() read through
+  TEST(BuildViscosityMemoryEstimate, BuffersRows_MatchBuffersByteCounts)  // amended (Foundation as built): on the
+      // CPU, the four sum and order buffers rows equal sum_buffers.byte_count() and order_buffers.byte_count() read through
       // viscosity_buffers_access.h; exact
   TEST(ComputeViscosityBufferBytes, SyrupSceneSizing_IsUnderOneGigabyte)   // design 6: 524,288 cells, 1,966,080
       // faces, 3,000,000 samples, 13,000,000 coefficients: prints the figure; between 0.5e9 and 1.0e9 bytes
@@ -630,13 +643,15 @@ tests through `LINKS`.
 
 ### Task 9: Build on the CPU: cell viscosity, stretch samples, order and check
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** samples are ordered by the cell's block first, so that batches number them as one
 piece does.
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** the order, prefix sum and grouping use their scratch forms with
-`buffers.order_scratch`; the count and write passes are per-cell functions the GPU will reuse.
+**Amended 2026-11-14 (Foundation as built):** the order, prefix sum and grouping take
+`buffers.order_buffers`; the count and write passes are per-cell functions the GPU will reuse.
 
 **Files:**
 - Create: `native/fluidity/viscosity/samples_of_cell.h` (private, shared, C++20 subset),
@@ -646,10 +661,10 @@ piece does.
 
 **Interfaces:**
 - Consumes: Tasks 4, 7, 8; `pressure::ComputeFaceInertia`; `grid::FindFacePieces`, `FindTouchingCells`,
-  `ToCellId`; the scratch forms `BuildStableOrder(keys, count, nullptr, order, buffers.order_scratch)`,
-  `ComputeExclusivePrefixSum(values, count, sums, buffers.order_scratch)` and
+  `ToCellId`; `BuildStableOrder(keys, count, nullptr, order, buffers.order_buffers)`,
+  `ComputeExclusivePrefixSum(values, count, sums, buffers.order_buffers)` and
   `BuildGroupsByDestination(destination, item_count, destination_count, first_of_group, item_order,
-  buffers.order_scratch)`.
+  buffers.order_buffers)`.
 - Produces: `ViscosityInputs` (design 3) **plus one field (Plan decision)**:
   `pressure::PressureBuffers* pressure_buffers = nullptr;` — the buffers that built `pressure_equations`; the
   check, the zero mean and the offset of the joint solve need them (their signatures take `PressureBuffers&`)
@@ -763,10 +778,12 @@ piece does.
 
 ### Task 11: Build on the CPU: fitted samples, the by-face view and given faces
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** the by-face view uses the scratch form of
-`BuildGroupsByDestination` with `buffers.order_scratch`.
+**Amended 2026-11-14 (Foundation as built):** the by-face view uses
+`BuildGroupsByDestination` with `buffers.order_buffers`.
 
 **Files:**
 - Modify: `native/fluidity/viscosity/samples_of_cell.h`, `viscosity_samples_cpu.cc`, `viscosity_samples_test.cc`
@@ -780,8 +797,8 @@ piece does.
   (known velocity from `ComputeSolidVelocitySample` at elapsed 0); likewise for `u_b`. The sample is
   `0.5 x (d u_a / d b + d u_b / d a)`: up to 8 face coefficients, merged by face in ascending
   `FacePlaceIndex`; known positions add to `rate_from_solids`. A `GridError` from `FindNearbyFaces` is
-  `kTooFewNearbyFaces`. Step 4's by-face view: `BuildGroupsByDestination(..., buffers.order_scratch)` (the scratch
-  form; it allocates nothing) with destination = face of each coefficient. Step 5: each coefficient whose face has `face_inertia == 0` adds `coefficient x
+  `kTooFewNearbyFaces`. Step 4's by-face view: `BuildGroupsByDestination(..., buffers.order_buffers)` (it
+  allocates nothing) with destination = face of each coefficient. Step 5: each coefficient whose face has `face_inertia == 0` adds `coefficient x
   velocity_before_pressure` to `rate_from_solids` and becomes 0. Then every stored coefficient becomes
   `sqrt(step_duration x sample_weight) x coefficient`; `ReadViscositySamples` divides that factor back out
   (snapshot coefficients are in 1/m).
@@ -857,11 +874,13 @@ piece does.
 
 ### Task 13: Build and passes on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** two GPU halves with private `_gpu.h` headers returning
 `RunOnCallStatus`, launches through `base/gpu_launch.cuh`, GPU functions as thin loops over `samples_of_cell.h`
-and `velocity_solve_steps.h`, Foundation's prefix sum and grouping (scratch forms) instead of a scan written here,
+and `velocity_solve_steps.h`, Foundation's prefix sum and grouping (taking `buffers.order_buffers`) instead of a scan written here,
 `cpu` tests over every thread block and thread, digests in the `gpu` tests.
 
 **Files:**
@@ -879,10 +898,10 @@ and `velocity_solve_steps.h`, Foundation's prefix sum and grouping (scratch form
   `ComputeMomentumOneThreadPerFace(...)`, `ComputePowerPartialsOneThreadPerBlock(...)` (plain pointers and counts;
   no CUDA header). Each starts its GPU functions with `ApplyGpuFunction(function, ComputeLaunchSize(count), ...)`
   and ends with `CheckGpuWork()`; every array is in `ViscosityBuffers`, so nothing allocates (no `GpuArray` here).
-  Build: cell order by `BuildStableOrder(..., buffers.order_scratch)`, count GPU function (one
+  Build: cell order by `BuildStableOrder(..., buffers.order_buffers)`, count GPU function (one
   `BuildSamplesOfCell` call with null `samples` per cell), `ComputeExclusivePrefixSum(counts, cell_count, starts,
-  buffers.order_scratch)` (Foundation's; integers, so exact), write GPU function (one `BuildSamplesOfCell` per cell
-  at its start), then `BuildGroupsByDestination(..., buffers.order_scratch)`. The failing cell is the lowest
+  buffers.order_buffers)` (Foundation's; integers, so exact), write GPU function (one `BuildSamplesOfCell` per cell
+  at its start), then `BuildGroupsByDestination(..., buffers.order_buffers)`. The failing cell is the lowest
   `CellId` whose flag is set (an integer minimum over the per-cell error flags, a shared per-cell function
   `ComputeFailingCellKey` in `samples_of_cell.h`).
 
@@ -915,11 +934,13 @@ and `velocity_solve_steps.h`, Foundation's prefix sum and grouping (scratch form
 
 ### Task 14: The velocity solve on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Kind:** numerics
 
 **Amended 2026-11-14 (Foundation as built):** every dot of the iteration is block partials then
-`ComputeTreeSum(partials, block_count, buffers.sum_scratch)` and every largest `|error|` or `|momentum|` is
-`ComputeLargestMagnitude(values, count, buffers.sum_scratch)`: nothing allocates inside the loop.
+`ComputeTreeSum(partials, block_count, buffers.sum_buffers)` and every largest `|error|` or `|momentum|` is
+`ComputeLargestMagnitude(values, count, buffers.sum_buffers)`: nothing allocates inside the loop.
 
 **Files:**
 - Modify: `native/fluidity/viscosity/velocity_solve.h`, `velocity_solve_cpu.cc`
@@ -960,13 +981,15 @@ and `velocity_solve_steps.h`, Foundation's prefix sum and grouping (scratch form
 
 ### Task 15: The joint solve on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A24):** the open note is removed; the coupled terms are Task 15a's (option C, the owner's
 choice). Until Task 15a is committed, equations holding a material face or a sealed gas blob give `kBadInput` here.
 
 **Kind:** numerics
 
 **Amended 2026-11-14 (Foundation as built):** dots by block partials and `ComputeTreeSum` with
-`buffers.sum_scratch`, largest values by the scratch form of `ComputeLargestMagnitude`; no `ComputeTreeDot`.
+`buffers.sum_buffers`, largest values by `ComputeLargestMagnitude` with the same buffers; no `ComputeTreeDot`.
 
 **Files:**
 - Create: `native/fluidity/viscosity/solve_viscosity_and_pressure_cpu.cc`, `solve_viscosity_and_pressure_private.h`,
@@ -977,7 +1000,7 @@ choice). Until Task 15a is committed, equations holding a material face or a sea
 - Consumes: Tasks 9 to 14; pressure's `ComputePressurePush(..., GivenTerms, ...)`, `ComputeVolumeError`,
   `ComputeOwnWeight`, `ComputeStartPressure`, `ApplyZeroMeanToSealedBlobs`, `ApplyPressureOffset`,
   `CheckFlowImbalance`; `ComputeDotPartialOfBlock` (Task 12) then `ComputeTreeSum(partials, block_count,
-  buffers.sum_scratch)`, and `ComputeLargestMagnitude(values, count, buffers.sum_scratch)` (scratch forms: nothing
+  buffers.sum_buffers)`, and `ComputeLargestMagnitude(values, count, buffers.sum_buffers)` (nothing
   allocates inside the iteration loop).
 - Produces: `ViscosityResult`, `SolveViscosityAndPressure` exactly. Private
   (**Plan decision**, for the cancel test):
@@ -1035,11 +1058,13 @@ choice). Until Task 15a is committed, equations holding a material face or a sea
 
 ### Task 15a: Blocking materials and sealed gas in the joint solve, on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A24):** new task; the method of `plan-decisions.md` "Viscous liquids with blocking materials
 and sealed gas (A24)".
 
 **Amended 2026-11-14 (Foundation as built):** tests are `LABEL cpu`; the cell part of each dot keeps Task 15's
-block partials and `ComputeTreeSum(..., buffers.sum_scratch)`.
+block partials and `ComputeTreeSum(..., buffers.sum_buffers)`.
 
 **Amended 2026-11-14 (A26):** the material-face elimination of this task (Step 6 `g_k` on the diagonal, the
 `ComputeVolumeError` form without `CoupledVelocities`) is replaced in Task 15c, where material faces become
@@ -1363,12 +1388,14 @@ here.
 
 ### Task 17: The joint solve on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** private `solve_viscosity_and_pressure_gpu.h` returning
 `RunOnCallStatus`; vector updates and block partials are shared per-item functions with a `cpu` test over every
 thread block and thread; dots by block partials and `ComputeTreeSum`, largest values by `ComputeLargestMagnitude`,
-both with `buffers.sum_scratch`; digests in the `gpu` tests.
+both with `buffers.sum_buffers`; digests in the `gpu` tests.
 
 **Files:**
 - Create: `native/fluidity/viscosity/solve_viscosity_and_pressure_gpu.h` (private),
@@ -1383,9 +1410,9 @@ both with `buffers.sum_scratch`; digests in the `gpu` tests.
   per-item function of `velocity_solve_steps.h` (plan decision: `ApplySearchStepOfFace` (velocity and error
   updates of one face), `ApplyDirectionUpdateOfFace`, `ApplyPressureUpdateOfCell`, `ComputeDiagonalOfFace`), the
   same functions the CPU loops of Tasks 14 and 15 are changed to call; dots by `ComputeDotPartialOfBlock` per cell
-  block, then `ComputeTreeSum(partials, block_count, buffers.sum_scratch)` (same bits as the CPU's `math::TreeSum`
+  block, then `ComputeTreeSum(partials, block_count, buffers.sum_buffers)` (same bits as the CPU's `math::TreeSum`
   over the same partials, by `ordered_sums.h`'s promise); largest values by `ComputeLargestMagnitude(values,
-  count, buffers.sum_scratch)`; the pressure pieces run on the GPU through pressure's own dispatch. Per outer
+  count, buffers.sum_buffers)`; the pressure pieces run on the GPU through pressure's own dispatch. Per outer
   iteration the CPU reads one record (two imbalance norms, inner iteration count, error code) and reads
   `*cancel_requested` before the next inner solve. The GPU half's functions in
   `solve_viscosity_and_pressure_gpu.h` return `RunOnCallStatus`; launches by `ApplyGpuFunction` and
@@ -1564,7 +1591,7 @@ and removes the line.
   measured error to the owner.
 - [ ] **Step 2: Lift.** Delete `ViscosityError::kInclinedSolidNotSupported`, its message, its line in
   `CheckViscosityCanRun` and `ViscositySceneSummary::has_inclined_solid` (**Plan decision**: a field nothing
-  reads is deleted); update the Task 3 and Task 6 tests (13 values; two exclusions; **A27**: one lower again); the paper's exclusion
+  reads is deleted); update the Task 3 and Task 6 tests (14 values with `kOutOfMemory`; two exclusions; **A27**: one lower again); the paper's exclusion
   table. `grep -rn "InclinedSolidNotSupported\|has_inclined_solid" native docs` finds nothing. (**Amended
   2026-11-14 (A24):** counts one lower than first written, no snow value.)
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Let thick liquid touch inclined solids`. Body lists the
@@ -1586,7 +1613,7 @@ and removes the line.
       // away from the inlets) == 1 / 0.53 Pa within 5 %
   ```
   Same rule as Task 21 if it fails.
-- [ ] **Step 2: Lift** `kMovingSolidNotSupported` and `has_driven_solid_through_cells` as in Task 21 (12 values;
+- [ ] **Step 2: Lift** `kMovingSolidNotSupported` and `has_driven_solid_through_cells` as in Task 21 (13 values with `kOutOfMemory`;
   **amended 2026-11-14 (A24, A27)**: counts two lower, no snow and no free-solid value).
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Let driven solids cut cells of thick liquid`.
 
@@ -1608,7 +1635,7 @@ and removes the line.
   ```
   Same rule as Task 21 if either fails.
 - [ ] **Step 2: Lift** `kSizeChangeNotSupported` and `has_size_change_at_surface_solid_or_viscosity_change`
-  (11 values; no exclusion remains, `CheckViscosityCanRun` then always succeeds and stays for the step's call;
+  (12 values with `kOutOfMemory`; no exclusion remains, `CheckViscosityCanRun` then always succeeds and stays for the step's call;
   **amended 2026-11-14 (A24, A27)**).
 - [ ] **Step 3: Run** the gate. **Commit.** Subject: `Let thick liquid meet a change of cell size`.
 
@@ -1642,12 +1669,14 @@ digests so the hardware run's repeat check covers them.
 
 ### Task 25: Comparison with the proof of concept
 
+**Amended 2026-11-14 (A31):** the old numbers are produced in a temporary directory.
+
 **Kind:** integration
 
 **Files:**
 - Create: `native/fluidity/viscosity/testdata/proof_of_concept.json`, `proof_of_concept_test.cc`
 
-- [ ] **Step 1: Produce the old numbers** (plan-decisions: `git archive main` into the scratchpad, build there,
+- [ ] **Step 1: Produce the old numbers** (plan-decisions: `git archive main` into a temporary directory, build there,
   never commit the driver). The driver builds `main`'s two fixtures of `native/tests/mac_viscous_traction_cases.h`
   for `n = 16`, `dt = 0.005`, ratio 10, and records (a) `AssembleFullCellMacStrain3D` rows of interior cells
   (cells whose four edge cells exist): coefficients and weights; (b) for the Couette fixture only, with the
@@ -1664,6 +1693,8 @@ digests so the hardware run's repeat check covers them.
 
 ### Task 26: Batched layout of the viscosity buffers, samples built batch by batch, on the CPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** new task.
 
 **Amended 2026-11-14 (reconcile):** adds `ResetSolveCopyReport(ViscosityBuffers&)` (the step resets the copy report
@@ -1671,8 +1702,8 @@ through the buffers; `FindSolveBatches` stays const).
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** the two scratches are sized for the loaded piece in the batched
-layout; the per-load grouping uses `buffers.order_scratch`; tests are `LABEL cpu`.
+**Amended 2026-11-14 (Foundation as built):** the sum and order buffers are sized for the loaded piece in the batched
+layout; the per-load grouping uses `buffers.order_buffers`; tests are `LABEL cpu`.
 
 **Files:**
 - Modify: `native/fluidity/viscosity/solve_viscosity_and_pressure.h`, `viscosity_buffers.cc`,
@@ -1696,15 +1727,15 @@ layout; the per-load grouping uses `buffers.order_scratch`; tests are `LABEL cpu
   the limits and again `kRunOn` at `max_loaded_blocks` (samples `15 * 64` and coefficients `8 * 15 * 64` per
   loaded block); block-counted rows and the progress record stay `kRunOn`; `pressure::BuildSolveBatches(run_on,
   max_cell_count / 64, max_loaded_blocks, {kTouchingCells, kTouchingCells})` is held inside. Samples are built per
-  batch for the range cells (count per block, `ComputeExclusivePrefixSum(..., buffers.order_scratch)` over blocks for the whole sample
+  batch for the range cells (count per block, `ComputeExclusivePrefixSum(..., buffers.order_buffers)` over blocks for the whole sample
   index, write)
   and kept grouped by block (the `samples of block starts` row is the begin offsets). The by-face view of a loaded
   piece is rebuilt at each load from its loaded coefficients (`BuildGroupsByDestination(...,
-  buffers.order_scratch)`, piece sample indexes, which follow the whole order because pieces keep the block order).
+  buffers.order_buffers)`, piece sample indexes, which follow the whole order because pieces keep the block order).
   Power lost: block partials of the range, then `math::TreeSum` over every block.
-  **Amended 2026-11-14 (Foundation as built):** in the batched layout the two scratches stay `kRunOn` and are sized
-  for the largest call: sum scratch `max(240 * max_loaded_blocks, max_cell_count / 64)` (largest values of a loaded
-  piece; tree sums over the whole grid's block partials), order scratch `max(64 * max_loaded_blocks + 1,
+  **Amended 2026-11-14 (Foundation as built):** in the batched layout the sum and order buffers stay `kRunOn` and are sized
+  for the largest call: sum buffers `max(240 * max_loaded_blocks, max_cell_count / 64)` (largest values of a loaded
+  piece; tree sums over the whole grid's block partials), order buffers `max(64 * max_loaded_blocks + 1,
   8 * 15 * 64 * max_loaded_blocks, max_cell_count / 64 + 1)` (cells of a batch, coefficients of a loaded piece,
   the block prefix sum of the whole sample index); their four rows take these counts.
 
@@ -1725,15 +1756,17 @@ layout; the per-load grouping uses `buffers.order_scratch`; tests are `LABEL cpu
   TEST(BuildViscosityBuffers, BatchedLayoutOnGpuWithoutAGpu_IsRunOnCallFailed)
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4: Run** the gate. **Commit.** Subject:
-  `Keep the viscosity scratch in CPU memory and build samples in batches`.
+  `Keep the viscosity working buffers in CPU memory and build samples in batches`.
 
 ### Task 27: The joint solve in batches, on the CPU
+
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
 
 **Amended 2026-11-14 (A15):** new task.
 
 **Kind:** numerics
 
-**Amended 2026-11-14 (Foundation as built):** tests are `LABEL cpu`; reductions use the buffers' scratch.
+**Amended 2026-11-14 (Foundation as built):** tests are `LABEL cpu`; reductions use the buffers' `sum_buffers`.
 
 **Files:**
 - Modify: `native/fluidity/viscosity/velocity_solve_cpu.cc`, `solve_viscosity_and_pressure_cpu.cc`
@@ -1751,7 +1784,7 @@ layout; the per-load grouping uses `buffers.order_scratch`; tests are `LABEL cpu
   `pressure::CheckFlowImbalance` (its sweep). Outputs are written only by step 12's write-back sweep; cancel is read
   before every batch load and before each inner solve. A sweep runs all batches and keeps the smallest failure.
   The tree sum over the whole grid's block partials and the largest value of a loaded piece use
-  `buffers.sum_scratch` (scratch forms; nothing allocates in a sweep).
+  `buffers.sum_buffers` (nothing allocates in a sweep).
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`; both processors the CPU; loaded 3, 5 and 7 times
   `CountBlocksInLargestLayer`; tolerances: velocity `1e-9 m/s + 1e-7 x largest speed`, pressure `1e-6 Pa + 1e-6 x
@@ -1811,6 +1844,8 @@ layout; the per-load grouping uses `buffers.order_scratch`; tests are `LABEL cpu
 
 ### Task 28: The joint solve in batches on the GPU
 
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
+
 **Amended 2026-11-14 (A15):** new task.
 
 **Kind:** device
@@ -1833,12 +1868,14 @@ batched per-block functions are shared and run by a `cpu` test; digests in the `
   velocity and pressure. (`LABEL cpu`, in `viscosity_steps_test.cc`, the main evidence until the hardware run):
   `BuildSamplesOfCell, EveryThreadOfLoadedPiece_EqualsBatchedCpuBuild` (Task 26 scenes, every thread block and
   thread of each load, launch order and reverse; bytes).
-- [ ] **Step 2: Implement:** the per-load by-face view (`BuildGroupsByDestination(..., buffers.order_scratch)`) and
+- [ ] **Step 2: Implement:** the per-load by-face view (`BuildGroupsByDestination(..., buffers.order_buffers)`) and
   the block partials on the GPU, each GPU function a loop around the shared per-item functions; copies only through
   `pressure::SolveBatches`. **Step 3: Run** the gate. **Commit.** Subject: `Solve drag and pressure in batches on
   the GPU`. Body: `CUDA: compiled, not run`.
 
 ### Task 29: Comment pass and hand-over
+
+**Amended 2026-11-14 (A31):** working memory is named buffers (`SumBuffers`, `OrderBuffers`, members `sum_buffers`, `order_buffers`); each base sum, order, prefix sum and grouping has one form, which takes those buffers.
 
 **Amended 2026-11-14 (A15):** renumbered from Task 26; its lists include Tasks 26 to 28.
 
@@ -1870,7 +1907,7 @@ diagonal, a second free solid in one sample folded at its velocity before pressu
   the three lifted exclusions and the one known-open test (A24: no snow exclusion); the A24 coupled terms and their
   owner questions (slide at a material face, the material's normal velocity change left out of the stretch samples);
   the A25 number and its constant; the sign of the stretch invariant; the A15 sample order
-  and dot order (both modes) and the batched solve; (Foundation as built) the two scratches in `ViscosityBuffers`
+  and dot order (both modes) and the batched solve; (Foundation as built) the sum and order buffers in `ViscosityBuffers`
   and their rows, `ToViscosityFailure`, the shared step headers (`samples_of_cell.h`, `velocity_solve_steps.h`)
   and their `cpu` tests, the three private `_gpu.h` headers.
 - [ ] **Step 4: `docs/gpu-runs.md`:** a `viscosity` row, result `compiled, not run`, listing every `gpu` test of

@@ -103,6 +103,8 @@ enum class SolidsError : std::uint8_t {
   kNotFinite,              // A computed value is not finite.
   kBuffersTooSmall,        // More motion-map entries or reactions than the buffers were built for.
   kRunOnCallFailed,        // CheckCanRunOn failed for the chosen processor, or a call to it failed.
+  kOutOfMemory,            // NEW (reconcile item 25). BuildSolidsBuffers could not allocate; magnitude = bytes
+                           //   asked. Returned only by the building functions.
 };
 struct SolidsFailure {           // The error value of every std::expected here. Never allocates.
   SolidsError error = SolidsError::kNone;
@@ -436,7 +438,9 @@ std::expected<void, SolidsFailure> ApplySolvedMotionToSolids(const MotionMap&,
 // REMOVED (A18): MaterialPushFields and the particle form of ApplyPressureToMaterials (push returned to
 // blocking-material particles after MoveParticles, one step late). See 3.6a and decision 3.
 class SolidsBuffers;                     // D word. Preallocated: map entries, blocking-material faces, reactions,
-                                         //   sort keys, CollideSolids scratch, block partials.
+                                         //   sort keys, CollideSolids working buffers, block partials, OrderBuffers.
+// kOutOfMemory when an allocation fails (the only function of the module that returns it). Every function that
+// takes these buffers requires its arrays on their processor (debug assertion, A30).
 // Plan decision (plan-decisions "Solids"): max_cell_blocks sizes the per-block arrays. Zero blocks: kBadInput.
 // A17, batched-run buffers: signature unchanged; with settings.run_on = kCpu every entry has where = kCpu. Instances
 // built from one Solids with different counts or processors may coexist (the step's whole instance at zero
@@ -719,7 +723,8 @@ the name as that module's section 3 has it; for a module updated at the same tim
 `KeptFor`, `PerParticleVelocity<T> { T for_next_step; T for_this_step; }` (A1). As built (plan-decisions):
 `MemoryEstimateEntry::where` (`MemoryWhere { kRunOn, kCpu }`; per-solid results, per-set pushes on blocking sets and the
 open-to-sky box arrays are `kCpu` entries), `RunOn` in the shared `base/run_on.h`, `CheckCanRunOn` in the CPU-only
-`base/check_can_run_on.h`, `BufferError::kRunOnMismatch` (mapped to `kBadInput`).
+`base/check_can_run_on.h`; buffers on one processor are a precondition, so no processor mismatch is mapped (A30).
+`OrderBuffers` taken by `BuildStableOrder`, `ComputeExclusivePrefixSum`, `BuildGroupsByDestination` (one form, A31).
 
 **Contact (PROVIDED, contact 3.1 to 3.5):** `Solid`, `SolidShape`, `SolidPose`, `SolidMotion`, `ClosedSides`,
 `DomainBox`, `PlateSide`, `SolidSide`, `kNoSolid`, `ToSolid`, `CheckSolid`, `ComputeSolidPose`,
@@ -757,7 +762,7 @@ exact_velocity_change`; `kMaxSidesAtFace`. Each stage of transfer is called once
 `material_is_counted`; `SaveGridAfterPressure` of a set no solve writes (snow, springy solids) takes the set's
 velocity after `CollideSolids` and, on the pieces the liquid presses, after `ApplyPressureToMaterials` (A18;
 in a viscous scene on the band faces after `ApplyViscousSolveToMaterials`, A26), with `was_solved` null. Builders `BuildSolidsAtFaces`, `BuildGridFromParticles`, `BuildCellsFromParticles` and
-the scratch-taking stage forms (plan-decisions "Transfer") are what tests and the liquid loop use.
+the stage functions, each taking a `transfer::TransferBuffers` (one form, A31; plan-decisions "Transfer"), are what tests and the liquid loop use.
 
 **Pressure (PROVIDED, pressure 3):** `SolidCoverage` (filled here over every active cell), `FreeSolidPush`,
 `EquationInputs::free_solid_pushes` and `free_solid_inverse_inertia`, `GeometrySnapshot`, `CellGeometry::
@@ -1209,7 +1214,7 @@ written only inside one pass has no whole instance, only the loaded one. For sol
 | Instance | Built with | Used by |
 |---|---|---|
 | whole | run's processor, zero particles, `max_cell_blocks` | stages 10 to 12 and `CheckSolidExchange`: motion map, equation of cell, `FreeSolidPush` list, blocking-material faces |
-| loaded (owned by the loaded `StepTry`) | run's processor, `max_loaded_particles` per material, `max_loaded_blocks` | pass stages per batch: `ComputeSolidCoverage`, `CollideSolids` scratch and block partials, `DriveWaves` |
+| loaded (owned by the loaded `StepTry`) | run's processor, `max_loaded_particles` per material, `max_loaded_blocks` | pass stages per batch: `ComputeSolidCoverage`, `CollideSolids` working buffers and block partials, `DriveWaves` |
 | stage 17 (`step::FindContactReactionBuffers`) | `run_on = kCpu`, whole particle limit, `max_cell_blocks`; entries named `"solids: ..."`, all `where = kCpu` | `ApplyContactReactions`, `ComputeCutWork`: reaction keys and order, block partials, per-solid results |
 
 In one piece only the whole instance exists (at the particle limit) and `FindContactReactionBuffers` is null. The
@@ -1243,11 +1248,11 @@ by one thread. Sums use `math::TreeSum` over the fixed orders of section 5.
 | per-set pushes on blocking sets | 24 B, `MemoryWhere::kCpu` | blocking material | `SolidsBuffers` |
 | open-to-sky box occupancy and reached boxes (A17) | 1 + 1 B, `kCpu`; the same on `kRunOn` for a GPU grid | box of the domain's lattice | `SolidsBuffers` |
 | sort keys and order of reactions | 16 B | particle | `SolidsBuffers` |
-| before-relaxation velocity copy; contact pair scratch | 8 B; 8 B | face place | `SolidsBuffers` |
+| before-relaxation velocity copy; contact pair working values | 8 B; 8 B | face place | `SolidsBuffers` |
 | block partials of `CollideSolids` and `DriveWaves` | 3 x 24 + 8 B; 24 + 8 B | cell block x moving solid; cell block | `SolidsBuffers` |
 
 Per cell block this is about 45 kB, of which 39 kB are the two `SolidVelocitySample` arrays transfer
-declared (decision 7). The material sets add nothing here except the `CollideSolids` scratch (`8 *
+declared (decision 7). The material sets add nothing here except the `CollideSolids` working buffers (`8 *
 (blocking_materials.size() + 1)` B per face place): transfer counts their arrays (59,856 + 512 x ingredients
 bytes per set per block, 48,336 + 512 x ingredients for a set with no solve; plan-decisions "Transfer").
 `BuildSolidsMemoryEstimate` returns these entries (the step-owned ones with `KeptFor::kOneStepTry`), each with its
@@ -1526,6 +1531,8 @@ Words marked Verify or Open that this module met:
 - `side_tag` (O2, Q3). Decided a: `contact::PlateSide`.
 - `state` (O3, Q1). Decided by owner A1: `for_next_step` and `for_this_step`.
 - `try` (Q10): `SolidsTry`, `BuildTry`, `CommitTry`, `RejectTry` follow the particles design.
+- (replaced 2026-11-14, A31) `OrderScratch`, `order_scratch`, `TransferScratch`, "scratch": `OrderBuffers`,
+  `order_buffers`, `transfer::TransferBuffers`, "working buffers".
 
 ## 10. Not ported
 
@@ -1728,6 +1735,18 @@ Appendix A rows M9 to M11; solids plan Tasks 13, 28.
   (3.5, section 4).
 - Per-solid and per-set results (entries `where = kCpu`) and `FindGridEdgesOpenToSky`'s box marks are "small
   records", not counted in the copy counts (planned cost; `plan-decisions.md` "Copies counted").
+
+**14. Working buffers, one form (A31).** Decision: `SolidsBuffers` holds `OrderBuffers order_buffers`; every base
+order, prefix sum and grouping has one form, which takes them; the transfer stages the liquid loop calls take one
+`transfer::TransferBuffers`. "Working buffers" replaces the old word. Source: owner answer A31 (2026-11-14).
+
+**15. Processors of the arguments (A30).** Decision: arrays and buffers passed together live on one processor, a
+documented precondition checked by a debug assertion; `ToSolidsFailure` maps no processor mismatch
+(`BufferError` has none). Source: owner answer A30 (2026-11-14).
+
+**16. Out of memory (reconcile item 25).** Decision: `SolidsError::kOutOfMemory` (magnitude = bytes asked),
+returned only by `BuildSolidsBuffers`, replaces "a failed allocation is `kRunOnCallFailed`"; `ToSolidsFailure` maps
+`BufferError::kOutOfMemory` to it. Source: reconcile-todo item 25 (2026-11-14).
 
 **14. Blocking materials beside a viscous liquid (A24).** Decision: `viscosity::SolveViscosityAndPressure`
 carries the blocking-material face terms as `SolvePressure` does, so `BuildBlockingMaterialFaces` and
