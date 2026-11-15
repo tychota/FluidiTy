@@ -42,11 +42,15 @@ struct MemoryAvailable {
 // Method: for RunOn::kCpu, asks the operating system for the physical memory and the memory programs can take
 //   now (Apple computers: free and inactive pages; Linux: MemAvailable of /proc/meminfo, which ignores a container's
 //   memory limit; Windows: available physical memory). When that query fails, total_bytes and free_bytes are 0, meaning
-//   unknown; it is not an error. For RunOn::kGpu, calls CheckCanRunOn(RunOn::kGpu) first, then asks the CUDA runtime
-//   about the current GPU.
+//   unknown; it is not an error. For RunOn::kGpu, calls CheckCanRunOn(RunOn::kGpu) first, then makes sure the GPU
+//   context exists (cudaFree(nullptr)) and only then asks the CUDA runtime about the current GPU: the context and the
+//   GPU code loaded so far take memory, and reading after they exist keeps them outside "free". GPU code loads when
+//   it is first launched, so code launched later may still take a little. The step's run plan computes the allowed
+//   bytes of a run from this free reading. Free memory is a reading at one moment: other programs take and give back
+//   memory, and the CUDA runtime does not promise that all of it can be allocated.
 // Example: a machine with 32 GiB of which 20 GiB can be taken gives {34359738368, 21474836480}.
 // Fails: kRunOnCallFailed RunOn::kGpu was asked for and CheckCanRunOn failed (also in a build without GPU code),
-//                         or the CUDA runtime could not answer
+//                         or creating the context or the CUDA runtime's reading failed
 //        Never fails for RunOn::kCpu. On failure no reading is returned.
 // Read: docs/method-paper/fluidity-method.typ <sec-memory-estimate>
 std::expected<MemoryAvailable, BufferError> ReadMemoryAvailable(RunOn run_on);

@@ -22,8 +22,9 @@
 
 namespace fluidity {
 
-// Reads the total and the free memory of the current GPU, in bytes (cudaMemGetInfo). On failure returns how the call
-// failed and changes neither output.
+// Reads the total and the free memory of the current GPU, in bytes (cudaMemGetInfo), after making sure the GPU context
+// exists (cudaFree(nullptr)), so the context and the GPU code loaded so far are already outside "free". On failure
+// returns how the call failed and changes neither output.
 RunOnCallStatus ReadGpuMemoryAvailable(std::uint64_t* total_bytes, std::uint64_t* free_bytes);
 
 // Reads the name of the current GPU, the driver version and the CUDA runtime version into three text buffers of
