@@ -1,0 +1,48 @@
+# Rulings made on the owner's behalf while building Foundation (2026-11-13 to 2026-11-14)
+
+Copied from the build ledger, in the order they were made. Each says what was decided, why, and what it costs if wrong.
+Not committed to the `rebuild` branch.
+
+- | 2 (self) | `.gitignore` list omits `.superpowers/` | see Ruling 1 |
+- | 4,5,6 (self) | "Expected: N tests pass" counts assume numeric task order | see Ruling 2 |
+- | 2 (self) | commits only the programme design | see Ruling 3 |
+- Ruling 1: `.gitignore` also ignores `.superpowers/` — the SDD workspace lives there and must never be committed — cost if wrong: none.
+- Ruling 2: test-count expectations in the plan are indicative; the requirement is "every test passes and the new tests named in the task exist" — because the execution order differs from the numbering — cost if wrong: none.
+- Ruling 3: module designs and plans stay in the `main` checkout (untracked); each module commits its own design as `docs/design/<module>.md` when it starts — keeps the first commit small as the spec says — cost if wrong: a later docs commit.
+- Ruling 4: glossary bans win over design names (GridStorage->GridBuffers, InternalForceBudget->InternalForceTotals, ContactRecord->ParticleContact, SolveOutputs->SolvedArrays, ...; table in main checkout docs/superpowers/specs/modules/plan-decisions.md) — the vocabulary is the owner's decided input — cost if wrong: a rename back.
+- Ruling 5: Task 3's banned-word check exempts a comment line that introduces the literature word ("papers call this", "textbook:", "also called") — naming rule 1 requires that line — cost if wrong: one banned word per header slips through, visible in review.
+- Ruling 6: commit trailer stays `Co-Authored-By: Claude Fable 5.2` plus the Claude-Session line, as the session's attribution instruction says, whichever model wrote the commit.
+- Ruling 7: `Request` is allowed as a role suffix for the one type `StepRequest` (the naming review's own decided sketch in its section 7.2, and the step design) — rule 9 gets that one exception, flagged for the owner — cost if wrong: one rename.
+- Ruling 8: `floor (for a side)` stays a one-sense ban because `math::Floor` is a fixed Foundation name (shared-interface a); every other ban the review states without a qualifier is restored as absolute.
+- Ruling 9: `.clang-format` AttributeMacros lists `FLUIDITY_CPU_AND_GPU` in place of `FLUIDITY_HD` (the plan said "copy unchanged", but the macro was renamed by owner answer A13) — cost if wrong: formatting of macro-prefixed declarations.
+- Ruling 10: `MoveParticle` goes into tools/check_rules_allowed_names.txt (it is the owner's own example in the naming review's docstring template).
+- Ruling 11: until `native/` exists (Task 4), tasks run the rules check as `uv run python tools/check_rules.py tools` (the default path exits 2 when missing, by design).
+- Ruling 12: the plan's interface wins for the shape (`kGpuNotBuilt` is decided in run_on.cc before `CheckGpuMath`; no index output; `std::expected<void, RunOnError>`), and the paper's stronger inputs win for the content (fixed inputs include subnormals and FMA-sensitive products, no NaN; operations limited to correctly rounded ones incl. floor). Plan Task 7 step 3 was edited to match — the check exists to catch wrong numerical flags — cost if wrong: a weaker self-check.
+- Ruling 13: per-folder `CMakeLists.txt` (`native/fluidity/<module>/CMakeLists.txt` calling `target_sources` with a header file set and `fluidity_add_test`) is adopted now, with one generated `.cc` per public header so each header compiles alone under the library's flags; test discovery uses `DISCOVERY_MODE PRE_TEST` — fifteen modules extend these files, so the shape is fixed before any of them does — cost if wrong: one CMake refactor.
+- Ruling 14: device use of class-type constexpr constants is fine with the pinned toolkit — a probe in the container (nvcc 13.4.59, `kUp * gravity[i]` read at run time in a GPU function) compiled with exit 0 — a permanent compile test is added to Task 7 (`base_constants_gpu_compile_test.cu`); no code change in Task 5 for this finding — cost if wrong: a compile error in the container, caught by that test.
+- Ruling 15: test names `Transpose.SwapsMatrixRowsAndColumns` and `Determinant.SwappedYAndZ_IsMinusOne` stay — each tests one behaviour and the "And" joins two nouns of one description, which is not what rule 13 forbids — cost if wrong: two renames.
+- Ruling 16: ruling 8 of the dispatch stands: extending `CheckGpuMath` with Sqrt, Floor and Length belongs to Task 7 (the function does not exist before it); plan Task 7 already lists them.
+- Ruling 17: the factual-error minors of Task 12 (paper caption contradiction, wrong `--prec-sqrt` reason, imprecise underflow wording, overstated header claim) and the test tighteners are fixed now in the owning commit rather than deferred — the owner's rule is right first time and the commit is still the branch tip — cost: one short fix round.
+- Ruling 18: `.clang-tidy` gets `misc-include-cleaner.IgnoreHeaders: 'expected;__expected/.*'` and `.clang-format` gets include categories that keep `fluidity/base/cpu_only.h` first (both verified by the reviewer with the pinned tools); they land in the Task 6 commit now and Task 11 may move them into the tooling commit 8f8e6c2 — every module would otherwise copy the workarounds.
+- Ruling 19: the source file is `check_can_run_on.cc` (own header first), not `run_on.cc` as the brief said; `run_on_gpu.cu` of Task 7 becomes `check_can_run_on_gpu.cu`, and its tests `check_can_run_on_gpu_test.cc` / `check_can_run_on_no_gpu_test.cc`.
+- Ruling 20: Mat3 by-value stays in the Task 7 commit until Task 11 folds it into the mat3 commit — rebasing mid-plan risks the later commits — cost: one misplaced hunk until the comment pass.
+- Ruling 21: gate FAILs when `git status --porcelain` shows untracked or unstaged changes in built paths (staged is fine) — the gate must test what gets committed — cost: must stage before running the gate.
+- Ruling 22: container runs `ctest -L '^(cpu|no_gpu)$'` (labels are regexes; `gpu` matches `no_gpu`); hardware run uses `-L '^gpu$'`.
+- Ruling 23: CUDA architectures 86-real;89-real;120-real;120-virtual (owner A16).
+- Ruling 24: BufferError gains kRunOnMismatch for buffers on different processors — kSizeMismatch would mislead — cost: module plans map one more value (recorded in plan-decisions.md).
+- Ruling 25: MemoryAvailable/ReadMemoryAvailable go in base/processor_description.h created in Task 13 (shared-interface placement), tests in processor_description_test.cc / _no_gpu_test.cc.
+- Ruling 26: verb `Copy` added to allowed verbs ("copies between two arrays on the same processor") — CopyBuffer is fixed by the shared interface — cost: owner may prefer another verb (to confirm in next question round).
+- Ruling 27: private header `<name>_gpu.h` declares what `<name>_gpu.cu` defines; rules check skips backend-name and verb rules for files whose stem ends `_gpu`; only same-folder files include it. buffer_gpu_calls.h -> buffer_gpu.h now; run_on_gpu_check.h -> check_can_run_on_gpu.h deferred to Task 11.
+- Ruling 28: buffer.h names no GPU call: typed templates call untyped byte functions defined in buffer_cpu.cc (reviewer answer e) — replaces the earlier "templates call GPU calls under #if" decision.
+- Ruling 29: a failed GPU copy may leave the target unspecified; accepted exception to "nothing written on failure" (a staging copy each time is not justified).
+- Ruling 30: WriteBuffer/ReadBuffer/CopyBuffer deduce Value from the buffer only (std::type_identity_t on the span); form-only change to shared-interface.
+- Ruling 31: .clang-tidy MethodIgnoredRegexp '^[a-z][a-z0-9_]*$' for accessors; no NOLINT.
+- Ruling 32: kOutOfMemory for failed GPU scratch, public math::TreeSumOf and math::LargerMagnitude accepted as built.
+- Ruling 33 (corrects the Task 8 dispatch): label rule — `cpu` runs everywhere, `no_gpu` only on a machine without a GPU (the container), `gpu` only on hardware. The hardware script runs '^cpu$' and '^gpu$'.
+- Ruling 34: Task 11 is split. 11a: comment pass + deferred items (task-11-deferred-items.md) as `fixup!` commits on top of c189e29, reviewed before any rewrite. 11b: fold into owning commits (autosquash + scripted moves), invariant: final tree identical to the 11a tip tree; format+rules at every commit; full gate on tip. Backup branch `rebuild-before-comment-pass` = c189e29.
+- Ruling 35: the fold checks every rewritten code commit with CPU build + tests + tidy (not only format/rules), cuda at 4e5ba91, 6ae837b and tip — moved hunks change intermediate commits — cost ~30 min.
+- Ruling 36: scratch memory follows the OrderScratch pattern everywhere (sums get a scratch type; grouping gets a scratch form) — solvers call these every iteration and the bytes must be in the memory estimate — cost: API additions the module plans must use.
+- Ruling 37: a kernel is a thin wrapper over FLUIDITY_CPU_AND_GPU per-item functions tested on the CPU; applied in Foundation where cheap — no GPU until the end of the programme — cost: some restructuring of the sort's kernels.
+- Ruling 38: `Uses:` lists never name standard headers; `Words:` only when a file introduces domain words.
+- Ruling 39: every target must be created through the helpers; configuration fails otherwise.
+- Ruling 40: instead of parking the residuals (the skill allows no second fix wave), a small touch-up fixes I-1 and M1–M8 now, verified by the controller reading the diff plus the per-commit checks — the owner's rule is right first time and modules would copy RunOnCallStatus — cost: one more fold (~30 min).

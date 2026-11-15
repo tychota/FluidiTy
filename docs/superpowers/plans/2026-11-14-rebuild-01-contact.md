@@ -1,0 +1,1020 @@
+# Rebuild Contact Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add `native/fluidity/contact/`: the solid shapes, the contact tolerance, the swept first hit, the
+friction response, the slide, `MoveParticle` (shared by CPU and GPU) and the batch operation `MoveParticles`
+on both processors, with the method-paper section that explains them.
+
+**Architecture:** Four shared headers (`contact_error.h`, `solid_shapes.h`, `contact_tolerance.h`,
+`solid_contact.h`) hold every formula, inline and `FLUIDITY_CPU_AND_GPU`, so the CPU loop and the GPU thread run
+the same `MoveParticle`. One CPU-only header, `move_particles.h`, declares the batch operation on plain pointers;
+`move_particles_cpu.cc` holds the public function and the CPU loop, `move_particles_gpu.cu` one thread per particle
+and an integer reduction of the failures. Contact includes only `base/`.
+
+**Tech Stack:** as Foundation: C++23 host, CUDA C++20 device, CMake presets + Ninja, Conan 2 (GoogleTest), uv,
+clang-format and clang-tidy 23.1 (the versions `pyproject.toml` pins), Docker via colima, Typst with CeTZ for the method paper. Nothing is added.
+
+**Spec:** `docs/superpowers/specs/modules/01-contact-design.md` (the contract; "the design" below) and
+`docs/superpowers/specs/2026-11-13-production-rebuild-design.md` (the programme design), both in the `main`
+checkout `/Users/tychota/Documents/Code/openSource/FluidiTy`, untracked. Owner decisions that override them:
+`docs/superpowers/specs/modules/owner-answers.md`. Cross-module names: `.../modules/shared-interface.md`.
+
+All paths below are relative to the worktree `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuild`
+(branch `rebuild`) unless they start with `main:` (read with `git show main:<path>` from the worktree).
+
+## Global Constraints
+
+Copied from Foundation:
+
+- Work is local. Never `git push`, never open a pull request, never touch `main` or remote branches.
+- Old code is read with `git show main:<path>` from the worktree. Nothing is checked out wholesale.
+- Commit rule (spec section 6): one thing per commit; strict CPU build and all tests pass; CUDA target compiles
+  in the container; clang-format 23.1 clean; clang-tidy 23.1 clean on host sources; every touched file passes the
+  `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive with
+  the code. A commit must pass every part of the gate that exists at that commit.
+- **Amended 2026-11-14 (Foundation as built):** Foundation's structure patterns apply to every task (`AGENTS.md`
+  "Structure"; `specs/modules/plan-decisions.md` "Foundation after the final review"). Two halves: the public
+  function lives in `<name>_cpu.cc` (checks, `RunOn` dispatch, the CPU loop, the GPU half called under
+  `#if defined(FLUIDITY_HAS_GPU)`); the GPU half `<name>_gpu.cu` is declared in the private `<name>_gpu.h`, returns
+  `RunOnCallStatus`, which the CPU half maps with `ToBufferError` and then into `ContactFailure` through one mapping
+  function, and launches, waits and holds temporary GPU memory only through `base/gpu_launch.cuh`
+  (`ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`). Every GPU function is a thin loop over
+  `FLUIDITY_CPU_AND_GPU` per-item functions in a shared header, and `cpu` tests run those functions for every
+  thread block and thread, in launch order and in reverse, against the CPU loop. Scratch: an operation's temporary
+  arrays follow the scratch pattern and per-step scratch lives in the module's buffers (contact needs none). Errors:
+  a failed check writes nothing; after `kRunOnCallFailed` the outputs are unspecified and the run stops;
+  `kOutOfMemory` comes only from building forms. Exactness: discrete outputs equal on CPU and GPU, floating-point
+  results within the module's tolerance unless a header promises the same bits unless NaN. Tests link
+  `fluidity_base_test_support` (`ToBits`, `BuildBufferHolding`, `ReadAll`, `CheckWithinTolerance`,
+  `CheckSameBitsOrBothNaN`) and any module helper library made with `fluidity_add_test_library` (named in
+  `LINKS`); every `gpu` test passes its main outputs to `WriteResultDigest`. Labels: `cpu` everywhere, `no_gpu` only
+  for behaviour on a machine without a GPU, `gpu` only for tests that need hardware. Every target is created through
+  the helpers of `cmake/fluidity_targets.cmake` and every source file is listed in a CMake file.
+- **Amended 2026-11-14 (Foundation as built):** the gate runs at every commit: the CPU build in the debug and the
+  release presets, and the CUDA build compiled in the container (its `cuda` step fails, naming the file, for a
+  tracked `.cc` or `.cu` file that no build compiles). clang-format and clang-tidy are the pinned 23.1.
+- History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
+- Commit messages end with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
+- Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
+  hardware once, after all modules are written. Never claim otherwise.
+- Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header
+  never includes `<expected>`, `<string>` or anything that allocates. No Abseil.
+- Device numerical flags: `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`. Host: `-ffp-contract=off`,
+  `/fp:precise`. No fast-math.
+- Z-up, right-handed. Gravity points along `{0, 0, -1}`.
+- Naming: no `3D` suffix, no `Cuda`/`Gpu`/`Device`/`host` in public names, no bare `bool` parameters, no
+  abbreviations, no milestone codes. Function verbs: `Compute`, `Build`, `Check`, `Find`, `Apply`, `Solve`,
+  `Read`, `Write`, the stage verbs (`Move`), and `To<Type>`; anything else is listed for the owner's review.
+- 120 columns, two-space indent, `//` comments, braces on every control-flow body.
+- Tests are named `TEST(FunctionOrType, Situation_Outcome)`, one behaviour each, in `*_test.cc` beside the code.
+- Deletion is the default: add a dependency, file or tool only when a task here names it.
+
+Contact's own:
+
+- Folder `native/fluidity/contact/`, namespace `fluidity::contact`. Contact includes headers from `base/` only.
+  Design section 3 is the contract: names, fields, defaults and signatures are copied from it exactly.
+- Every function of the shared headers is `inline FLUIDITY_CPU_AND_GPU` (and `constexpr` where the body allows),
+  defined in the header so device code sees it without relocatable device code.
+- Constants (design 3.3, 3.4, 5.2): `kContactToleranceRelative = 0x1p-40`, `kContactToleranceFloorInCellWidths =
+  0x1p-30`, `kMinFeatureInTolerances = 1024`, `kMaxHitsPerStep = 4`, `kMaxAdvanceCount = 128`, `kMaxTurnPerStep =
+  1.5707963267948966`, `kNoSolid = 0xFFFFFFFFu`. A unit vector or rotation column is accepted when its squared
+  length is within `0x1p-40` of 1.
+- Order: solids are visited in array order (ascending `solid_id`), faces in `kLowX, kHighX, kLowY, kHighY, kLowZ,
+  kHighZ`. Equal hit times keep the lower solid index, then the first face. Contact makes no floating-point sum
+  across particles; the GPU reduction is an integer minimum and integer counts.
+- On failure `MoveParticle` leaves `*result` unchanged; `MoveParticles` leaves the trial outputs unspecified.
+- Contact has no material-specific code. Every material (liquid, snow, springy solid, gas markers with friction
+  0) goes through the same call; the step makes one call per material and range of cell blocks.
+- A value from `main` enters through `(x, y, z) -> (x, -z, y)` (old floor `-y` becomes `side_bottom`).
+- Test tolerances (design 7): positions `2 * contact_tolerance` absolute; velocities and fractions
+  `|a - b| <= 0x1p-44 * max(|a|, |b|, reference)` with `reference` the largest input speed of the test (1 for
+  fractions). CPU versus GPU: design section 6. No test in this module is known-open.
+
+Plan decisions (the design left these open; every task respects them, the paper states them):
+
+- **P1 Test tolerance.** Analytic tests pass `contact_tolerance = kTestContactTolerance = 0x1p-30` m (declared in
+  the test-only header `contact/contact_test_cases.h`) unless the test is about the tolerance itself. Expected
+  values include the rest gap: the docstring example ends at `x = 1 - tol` and its `hit_fraction` is
+  `(0.1 - tol) / 0.2`, compared within the relative tolerance above.
+- **P2 Touching face.** In `FindFirstHit`, a face whose gap `g = d - tol` at the path start is in `[-tol, 0]` and
+  is the solid's largest face gap is the face the particle rests on. It is not hit when `rate * duration >= -tol`
+  (the path cannot enter a convex solid, a flat solid or a domain side without crossing that plane); otherwise it
+  is hit at `t = 0`. A start with `g < -tol` is hit at `t = 0` (defensive; `MoveParticle` never sweeps from there).
+- **P3 Committed plate.** For a particle committed to `{plate_id, s}`, that plate is the half space on side `s`:
+  `d = s * p.z - half_thickness`, face `kHighZ` for `kAlongNormal`, `kLowZ` for `kAgainstNormal`. This distance
+  is used in classification, `FindFirstHit`, settling and the end check. "On the other side by more than `tol`"
+  (`kOnWrongSideOfPlate`) means `s * p.z < -(half_thickness + tol)`; a start inside the thickness is pushed to the
+  committed side. A `plate_side` whose `plate_id` names no plate in `solids` is `kBadInput`.
+- **P4 Start hits.** Step 2 visits solids in index order; each qualifying solid gets the response, joins the
+  surface list and counts as one hit. The first one fills the record. `kind` is `kStartedInsideSolid` when any
+  start distance was negative.
+- **P5 Reaction.** Every change of `velocity.for_next_step` made against a solid with `reports_reaction` (step 4
+  response or step 5 removal) is added to `reaction.velocity_for_next_step_change`; `hit_position` is the position
+  of the first such change. A second, different reacting solid is `kTooCloseToCall/kSecondReactingSolid`.
+- **P6 Failure context.** `MoveParticle` fills `ContactFailure::solid_id` (the solid's `solid_id`, never its
+  index) and `magnitude` (`-d` for `kStartsInsideSolid`, `-(s * p.z + half_thickness)` for `kOnWrongSideOfPlate`,
+  `d` for `kEndsTooCloseToSolid`, else 0); `particle_id` stays 0 and `MoveParticles` fills it.
+- **P7 Turning slide.** A solid turns when `angular_velocity != {0, 0, 0}` exactly. After a hit on a turning
+  solid the rest of the step is carried in its axes and ends the hit loop. `kTurningSolidNearOtherSolid` when, for
+  any other solid `j`, `d_j - tol <= time_left * (Length(v_local) + Length(linear_velocity) + Length(angular_velocity)
+  * r + Length(linear_velocity_j) + Length(angular_velocity_j) * r_j)` at the hit, `r` and `r_j` the distances of
+  the hit position to each solid's origin.
+- **P8 Scale.** `ComputeContactScale`: `largest_coordinate` is the largest `|component|` of every solid origin at
+  step start and at step end, plus `Length(half_size)` for a box or domain box; `thinnest_solid` is the smallest
+  of `2 * half_thickness` (plate), `2 * min(half_size)` (box, domain box), or `smallest_cell_width` when there is
+  none. The caller passes particles' extent through the domain box; a scene with no domain box relies on solids.
+- **P9 Unchecked by `MoveParticle`.** `MoveParticle` does not call `CheckSolid` (the step calls it once per step).
+  `FindFirstHit` does not validate its inputs; it accepts `contact_tolerance >= 0` (tests use 0 for the naive
+  control). A domain box with no closed side is `kBadInput` in `CheckSolid`.
+- **P10 Sample.** `ComputeSolidVelocitySample` evaluates `solid_velocity` at `point - distance * normal`; when
+  `has_solid` is false every other field keeps its default; a plate gives `{solid_id, FindSolidSide(...)}` and
+  `{0, kNoPlate}` when the point is inside the thickness.
+- **P11 Generated cases.** Every generated test set uses one integer generator, typed in
+  `contact_test_cases.h`: `state` starts at `0x2545F4914F6CDD1D`; `next()` sets `state = state *
+  6364136223846793005 + 1442695040888963407` (wrapping `std::uint64_t`) and returns `(state >> 11) * 0x1p-53`,
+  in `[0, 1)`; `w()` is `2 * next() - 1`. Draw order is part of each set's definition.
+- **P12 Start inside the tolerance (coordinator, 2026-11-14).** A start with
+  `-start_overlap_tolerance <= d < tol` is moved along that solid's normal to `d = tol` before the sweep, whatever
+  its velocity. With `d < 0` this is `kStartedInsideSolid` with the response (design 5.5 step 2). With
+  `0 <= d < tol` and a velocity approaching the solid it is `kHit` with the response. With `0 <= d < tol` and no
+  approaching velocity the move is silent: velocities, `kind`, `hit_count` and the record are unchanged, and the
+  solid does not join the surface list. So a particle placed near a solid (a source, a resize) never fails the
+  end check for that reason; `kEndsTooCloseToSolid` comes only from solids that close on the particle during the
+  step faster than it can leave.
+
+## Before you start
+
+Foundation (`docs/superpowers/plans/2026-11-13-rebuild-foundation.md` in the `main` checkout) is complete on
+`rebuild`: Tasks 1 to 16 and 11, including `base/vec3.h`, `mat3.h`, `axis.h`, `scalar_math.h` (`math::Length`,
+`Normalized`, `IsFinite`, `Sqrt`, `Abs`, `Rotation`), `cpu_and_gpu.h`, `cpu_only.h`, `run_on.h`,
+`per_particle_velocity.h`, `buffer.h`, `memory_count.h`; `cmake/fluidity_targets.cmake` with
+`fluidity_add_test`; the method paper with `figure_style.typ`, `pseudocode.typ` and `references.typ`;
+`docs/gpu-runs.md`. No other module exists. **Amended 2026-11-14 (Foundation as built):** Foundation as built also
+provides `base/run_on_call.h` (`RunOnCallStatus`, `ComputeLaunchSize`), `base/gpu_launch.cuh`, the scratch forms of
+the sums (`SumScratch`) and of the stable order and grouping (`OrderScratch`), `base/test_support.h` (library
+`fluidity_base_test_support`) and `fluidity_add_test_library`; read `AGENTS.md` "Structure" before the first task.
+Prove it from the worktree:
+
+```bash
+uv run python tools/check_commit.py
+```
+
+Expected: seven `PASS` lines (format, rules, cpu debug, cpu release, tidy, paper, cuda). If any step fails, stop and report; do not start contact on a red gate.
+
+## Review Focus
+
+1. **A particle resting on a face is swept again after every hit.** If the touching-face rule (P2) is wrong,
+   each re-sweep hits the same face at `t = 0` and a plain slide ends in `kTooManyHits`. Pinned in Task 8,
+   `FindFirstHit, SlidingOnTouchedFace_IsNotAHit`.
+2. **Index versus id.** `SolidContactResult::solid_index` and `SolidReaction::solid_index` are array indexes;
+   `ContactFailure::solid_id` is the stable id. Pinned in Task 11,
+   `MoveParticle, StartsInsideSecondSolid_FailureNamesItsId` (ids 7 and 9).
+3. **Committed plate side with a start inside the thickness.** The nearest face is on the wrong side; the particle
+   must go to its committed side (P3). Pinned in Task 11,
+   `MoveParticle, CommittedSideInsideThickness_PushedToCommittedSide`.
+4. **Friction 0 at a fast solid.** A response computed in the solid's frame erases a small sideways velocity.
+   Pinned in Task 7, `ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit`.
+5. **The lowest failing particle on the GPU.** Two failures in different thread blocks, the lower id at the higher
+   index. Pinned in Task 16, `MoveParticles, TwoFailures_ReportsLowestParticleId`.
+
+---
+
+### Task 1: Method paper section "Contact with solids"
+
+**Kind:** mechanical
+
+Load the `typesetting-with-typst` and `drawing-with-cetz` skills first. Figures use `figure_style.typ`,
+procedures use `pseudocode.typ`.
+
+**Files:**
+- Modify: `docs/method-paper/fluidity-method.typ` (new section and notation rows)
+- Create: `docs/method-paper/figures/contact_solid_shapes.typ`, `contact_sweep_hit_slide.typ`,
+  `contact_response.typ`, `contact_tolerance.typ`
+
+**Interfaces:**
+- Produces labels (design 8): `<sec-contact>`, `<sec-solid-shapes>`, `<sec-contact-tolerance>`, `<sec-first-hit>`,
+  `<sec-contact-response>`; `<eq:solid-distance>`, `<eq:contact-tolerance>`, `<eq:hit-time>`,
+  `<eq:contact-response>`; `<fig-solid-shapes>`, `<fig-sweep-hit-slide>`, `<fig-contact-response>`,
+  `<fig-contact-tolerance>`; `<proc-move-particle>`, `<proc-find-first-hit>`.
+
+- [ ] **Step 1: Text.** `= Contact with solids <sec-contact>` after the existing sections, with the four
+  subsections of design 8. Content: design 5.1 (shapes, solid-frame conventions of 3.2, `<eq:solid-distance>`),
+  5.2 (`<eq:contact-tolerance>`, the three rules, the rest gap, why `4096 * epsilon`), 5.3 (`<eq:hit-time>`, the
+  convex entry and exit times, the stepping search toward a turning solid), 5.4 (`<eq:contact-response>`, why the
+  approach is removed in world coordinates, why the stick test is a division) and 5.5 (the slide). State the plan
+  decisions P2, P3, P4, P5, P7 and P12 in plain words where they belong. Decided vocabulary only; `Coulomb friction`
+  appears once in parentheses.
+- [ ] **Step 2: Citations.** Cite by number from `references.typ`: [19] Stomakhin 2013 (friction response),
+  [3] Hu 2018 (moving solids, two sides of a thin solid), [21] Batty 2007 (one sentence: the reaction uses the same
+  geometry as the motion). The stepping search toward a turning solid carries the text "citation needed". Never
+  write a DOI or URL; check each number against `references.typ`.
+- [ ] **Step 3: Figures** (design 8): `<fig-solid-shapes>` the four shapes with their own axes,
+  `normal_out_of_solid`, the two plate sides and the Blender names of the domain sides; `<fig-sweep-hit-slide>`
+  side view of one step against a moving flat solid, sweep, hit, response and slide, `for_next_step` and
+  `for_this_step` drawn separately; `<fig-contact-response>` one velocity split into approach and sideways parts,
+  slip and stick; `<fig-contact-tolerance>` a zoom on the surface: rounding band, rest gap at `tol`, end check at
+  `tol / 2`, a feature 1024 tolerances thick. Each caption states the one thing to see; each is referenced.
+- [ ] **Step 4: Pseudocode.** `<proc-move-particle>` with the six steps of design 5.5 (1 check inputs, 2 classify
+  the start, 3 find the first hit, 4 respond, 5 slide, 6 settle and check the end) and `<proc-find-first-hit>` with
+  the three of 5.3 (1 solid that does not turn, 2 turning solid, 3 keep the earliest). Each lists inputs, outputs and
+  "fails when". Code comments `// Step N:` in Tasks 8 to 13 follow these numbers.
+- [ ] **Step 5: Notation rows** for the symbols this section uses: `T` step duration, `tol` contact tolerance,
+  `d` distance to a solid, `g` gap (`d - tol`), `mu` friction.
+- [ ] **Step 6: Run** `typst compile docs/method-paper/fluidity-method.typ out/paper/fluidity-method.pdf`.
+  Expected: exit 0, no warning. Read every new page; fix overlaps, clipped labels and inconsistent sizes.
+  Run the gate.
+- [ ] **Step 7: Commit.** Subject: `Explain contact with solids in the method paper`.
+
+### Task 2: Contact folder, errors and their names
+
+**Kind:** mechanical
+
+**Amended 2026-11-14 (Foundation as built):** `fluidity_add_shared_test` retired; tests use `fluidity_add_test(... LABEL cpu)`, which the container's `cuda` step also runs.
+
+**Files:**
+- Create: `native/fluidity/contact/contact_error.h`, `contact_error_message.h`, `contact_error_message.cc`,
+  `contact_error_test.cc`
+- Modify: `CMakeLists.txt` (contact sources join the `fluidity` target as `base/` sources do; the folder's own
+  `native/fluidity/contact/CMakeLists.txt` lists headers with `fluidity_add_headers`, sources with
+  `target_sources(fluidity PRIVATE ...)` and tests with `fluidity_add_test`), `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: `FLUIDITY_CPU_AND_GPU`, `base/cpu_only.h`.
+- Produces: design 3.1 exactly: `ContactError` (8 values), `ContactCloseCall` (8 values), `ContactFailure`,
+  `ToMessage(ContactError)`, `ToMessage(ContactCloseCall)`, `ToName(ContactError)`, `ToName(ContactCloseCall)`.
+  CMake: shared-header tests are `fluidity_add_test(<name> SOURCES <files> LABEL cpu)`; the container's `cuda` step
+  runs every `cpu` test, so they run in the CUDA build too (design 7). No new CMake helper.
+
+- [ ] **Step 1: Failing tests** (`contact_error_test.cc`, `fluidity_add_test(contact_error_test ... LABEL cpu)`):
+
+  ```cpp
+  TEST(ToName, EveryContactError_IsSnakeCaseOfEnumerator)   // kSolidTooThin -> "solid_too_thin"; kNone -> "none";
+                                                            // all eight unique
+  TEST(ToName, EveryContactCloseCall_IsSnakeCaseOfEnumerator)  // kSqueezedBetweenSolids -> "squeezed_between_solids"
+  TEST(ToMessage, EveryContactError_HasADistinctNonEmptySentence)
+  TEST(ToMessage, EveryContactCloseCall_HasADistinctNonEmptySentence)
+  TEST(ContactFailure, Default_IsNoneWithZeroContext)       // error kNone, close_call kNone, ids 0, magnitude 0
+  ```
+  The snake-case tests compare against a table typed in the test (enumerator spelling), not against a formula.
+- [ ] **Step 2: Run.** Expected: compile error, headers missing.
+- [ ] **Step 3: Implement.** `contact_error.h` is shared (no `<string_view>`); `contact_error_message.h` is CPU
+  only and includes `base/cpu_only.h` first. Messages say what the user can do
+  ("A solid is thinner than 1024 contact tolerances. Make it thicker or move the scene closer to the origin.").
+  Glossary rows: `close call` (a step contact cannot answer safely; the step is shortened).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Add contact errors and their stable names`. New names: the 3.1 list.
+
+### Task 3: Solid shapes, `ToSolid` and `CheckSolid`
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/contact/solid_shapes.h`, `solid_shapes_test.cc`, `contact_test_cases.h` (test-only)
+- Modify: `CMakeLists.txt`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: `Vec3`, `Mat3`, `kIdentity`, `math::Cross`, `math::Dot`, `math::Transpose`, `math::Determinant`,
+  `math::Length`, `math::Normalized`, `math::IsFinite`; `ContactError`, `ContactCloseCall` (Task 2).
+- Produces: from design 3.2: `SolidShape`, `SolidFace`, `SolidSide`, `PlateSide`, `FlatSolid`, `Plate`, `Box`,
+  `ClosedSides`, `DomainBox`, `SolidMotion`, `SolidPose`, `Solid`, `kNoSolid`, the four `ToSolid`, `CheckSolid`,
+  `DomainSide`, `ToSolidFace`. Test-only: `kTestContactTolerance`, `ExpectVec3Near(actual, expected, tolerance)`.
+  `CheckSolid` returns `ContactError` only; the close call is written through an overload decided here:
+  `ContactError CheckSolid(const Solid& solid, double step_duration, ContactCloseCall* close_call)` (may be null)
+  beside the design's two-argument form, which calls it with null (plan decision: the step needs the reason).
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(ToSolid, FlatSolid_ZAxisIsNormalAndAxesAreARotation)  // normal Normalized({1,2,3}): column z == normal,
+                                                             // Determinant 1 within 1e-15, x along
+                                                             // Cross({1,0,0}, normal) normalised (x is smallest)
+  TEST(ToSolid, Plate_HalfSizeZIsHalfThickness)              // half_thickness 0.25 -> half_size {0,0,0.25}
+  TEST(ToSolid, DomainBox_OriginIsCentreAndHalfSizeIsHalfExtent)  // {0,0,0}..{2,4,6} -> {1,2,3}, {1,2,3}
+  TEST(ToSolidFace, EveryDomainSide_MatchesSolidFaceOrder)   // static_assert all six
+  TEST(PlateSide, SamePlateAndSide_AreEqual)                 // and {1,kAlongNormal} != {1,kAgainstNormal}
+  TEST(CheckSolid, ValidBox_IsNone)
+  TEST(CheckSolid, NonFiniteOrigin_IsBadInput)
+  TEST(CheckSolid, AxesNotARotation_IsBadInput)              // a reflection (swap two columns) and a scaled column
+  TEST(CheckSolid, ZeroHalfSizeBox_IsBadInput)
+  TEST(CheckSolid, IdZero_IsBadInput)
+  TEST(CheckSolid, MovingDomainBox_IsBadInput)
+  TEST(CheckSolid, DomainBoxWithNoClosedSide_IsBadInput)     // P9
+  TEST(CheckSolid, NegativeFrictionScale_IsBadInput)
+  TEST(CheckSolid, TwoRadiansInOneStep_IsSolidTurnsTooFar)   // |angular| 2 rad/s, step 1 s: kTooCloseToCall and
+                                                             // close_call kSolidTurnsTooFar
+  TEST(CheckSolid, QuarterTurnExactly_IsNone)                // |angular| * step == kMaxTurnPerStep
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement** the declarations of design 3.2 exactly, with the solid-frame conventions in the header
+  (design 3.2, last paragraph). `ToSolid(FlatSolid)` and `ToSolid(Plate)`: z column = normal; x column =
+  `Normalized(Cross(UnitVector(axis with smallest |normal part|, first in x, y, z order on ties), normal))`;
+  y column = `Cross(z, x)`. `static_assert(sizeof(PlateSide) == 8)`. Rotation check: each column's squared length
+  within `0x1p-40` of 1, each pair's `|Dot| <= 0x1p-40`, determinant positive.
+  Glossary rows: `solid`, `flat solid`, `plate`, `box`, `domain box`, `plate side`, `solid face`, `pose`,
+  `motion`; never say: `obstacle`, `halfspace`, `slab`, `blade`, `tank`, `side_tag`.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Describe solids by shape, pose and motion`. New names: the 3.2 names above.
+
+### Task 4: Pose, surface velocity and distance to a solid
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_shapes.h`, `solid_shapes_test.cc`
+
+**Interfaces:**
+- Consumes: Task 3; `math::Rotation`.
+- Produces: `ComputeSolidPose`, `ComputeSolidVelocity`, `DistanceToSolid`, `ComputeDistanceToSolid` (design 3.2,
+  formulas design 5.1). Port note: there is no single source on `main`; the pose follows
+  `main:native/src/rigid_body_3d.cc:833-859` (`SampleRigidBodyPose3D`) without its status checks.
+
+- [ ] **Step 1: Failing tests** (exact unless stated):
+
+  ```cpp
+  TEST(ComputeSolidPose, QuarterTurnAboutZ_SendsSolidXToWorldY)   // angular {0,0,pi/2}, elapsed 1: column x
+                                                                  // {0,1,0} within 1e-15
+  TEST(ComputeSolidPose, Translating_MovesOriginOnly)             // origin {1,2,3} + {0.5,0,0} * 2 == {2,2,3}
+  TEST(ComputeSolidVelocity, Turning_IsLinearPlusAngularCrossArm) // linear {1,0,0}, angular {0,0,2}, origin
+                                                                  // {0,0,0}, point {0,3,0}: {-5,0,0}
+  TEST(ComputeDistanceToSolid, FlatSolidAboveAndBelow_IsSignedHeight)  // tilted normal; +0.5 and -0.25, face kHighZ
+  TEST(ComputeDistanceToSolid, PlateEitherSide_IsGapToNearerFace)      // h 0.1: p.z 0.3 -> 0.2 kHighZ;
+                                                                       // p.z -0.3 -> 0.2 kLowZ; p.z 0 -> -0.1 kHighZ
+  TEST(ComputeDistanceToSolid, BoxOutsideOneFace_IsGapToThatFace)      // half {1,1,1}, p {3,0,0}: 2, kHighX, {1,0,0}
+  TEST(ComputeDistanceToSolid, BoxInside_IsMinusDepthOfNearestFace)    // p {0.9,0,0.5}: -0.1, kHighX
+  TEST(ComputeDistanceToSolid, BoxCornerTie_TakesFirstFaceInOrder)     // p {-2,-2,0}: 1, kLowX
+  TEST(ComputeDistanceToSolid, TurnedBox_UsesSolidAxes)                // box turned pi/2 about z, p {0,3,0}: 2, kHighX
+  TEST(ComputeDistanceToSolid, DomainBoxInside_IsGapToNearestClosedSide)  // {0,0,0}..{1,1,1}, p {0.5,0.5,0.1}:
+                                                                          // 0.1, kLowZ, normal {0,0,1}
+  TEST(ComputeDistanceToSolid, DomainBoxOpenTop_IgnoresTop)               // p {0.5,0.5,0.95}: 0.5, kLowX (four
+                                                                          // sides tie); 0.05, kHighZ if top counted
+  TEST(ComputeDistanceToSolid, DomainBoxTie_TakesLeftBeforeFront)         // p {0.2,0.2,0.5}: kLowX
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement** design 5.1. `p = Transpose(axes) * (point - origin)`. Plate face: `kHighZ` when
+  `p.z >= 0`; box face on an axis: `kLow` when `p.axis < 0`, else `kHigh`. Domain box sides point into the box.
+  Each formula carries the matching `<eq:solid-distance>` line in `Read:`.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Compute a solid's pose, surface velocity and distance`. New names:
+  `ComputeSolidPose`, `ComputeSolidVelocity`, `DistanceToSolid`, `ComputeDistanceToSolid`.
+
+### Task 5: Plate side and the nearest solid surface
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_shapes.h`, `solid_shapes_test.cc`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: Task 4.
+- Produces: `FindSolidSide`, `SolidVelocitySample`, `ComputeSolidVelocitySample` (design 3.2, P10). Port note:
+  `FindSolidSide` replaces `main:native/src/liquid_wall_contact_3d.cc:595-628`
+  (`ClassifyInitialElasticBladeSide3D`) without its status handling.
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(FindSolidSide, AboveAlongNormal_IsAlongNormal)          // plate h 0.1, normal {0,0,1}, p.z 0.5
+  TEST(FindSolidSide, BelowAgainstNormal_IsAgainstNormal)      // p.z -0.5
+  TEST(FindSolidSide, InsideThickness_IsNoPlate)               // p.z 0.05 and p.z exactly 0.1
+  TEST(FindSolidSide, NotAPlate_IsNoPlate)                     // a box
+  TEST(ComputeSolidVelocitySample, NoSolids_HasNoSolid)
+  TEST(ComputeSolidVelocitySample, TwoSolids_KeepsNearest)     // distances 0.3 and 0.1: index 1
+  TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex)
+  TEST(ComputeSolidVelocitySample, BeyondReach_HasNoSolid)     // distance 0.3, reach 0.2: defaults (P10)
+  TEST(ComputeSolidVelocitySample, Plate_ReportsSideWithPlateId)  // solid_id 5, above: {5, kAlongNormal}
+  TEST(ComputeSolidVelocitySample, TurningBox_VelocityAtNearestSurfacePoint)  // box half 1 at origin, angular
+                                                               // {0,0,1}, point {3,0,0}: velocity at {1,0,0} ==
+                                                               // {0,1,0}; elapsed 0
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement.** Glossary rows: `side of a plate` (`kAlongNormal`, `kAgainstNormal`), `nearest solid
+  surface`.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Find the plate side and the nearest solid surface of a point`.
+  New names: `FindSolidSide`, `SolidVelocitySample`, `ComputeSolidVelocitySample`.
+
+### Task 6: The contact tolerance
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/contact/contact_tolerance.h`, `contact_tolerance_test.cc`
+- Modify: `CMakeLists.txt`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: `Solid`, `ComputeSolidPose` (Task 4).
+- Produces: design 3.3 exactly: the three constants, `ContactScale`, `ComputeContactScale`,
+  `ComputeContactTolerance`, `CheckContactTolerance`. Rules P8.
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(ComputeContactTolerance, SceneAtOrigin_IsTheCellWidthFloor)   // largest 0, cell 0.01: 0x1p-30 * 0.01 exactly
+  TEST(ComputeContactTolerance, SceneMovedAMillionMeters_ScalesWithIt)  // box at {1,2,3} half 0.5, step 0.01, cell
+                                                                     // 0.01; then moved by {1e6,0,0}: difference
+                                                                     // of tolerances == 0x1p-40 * 1e6 within 1e-12
+                                                                     // relative; largest_coordinate grew by 1e6
+  TEST(ComputeContactScale, BoxAndPlate_TakesThinnestAndLargest)     // plate h 0.002, box half {1,2,3} at {10,0,0}:
+                                                                     // thinnest 0.004, largest 10 + Length({1,2,3})
+  TEST(ComputeContactScale, MovingSolid_UsesEndOfStepOrigin)         // origin {0,0,0}, v {0,0,-5}, step 2: largest 10
+  TEST(ComputeContactScale, NoThinSolid_ThinnestIsCellWidth)         // flat solids only
+  TEST(CheckContactTolerance, PlateThinnerThan1024Tolerances_IsSolidTooThin)  // thinnest 1023 * tol
+  TEST(CheckContactTolerance, Exactly1024Tolerances_IsNone)
+  TEST(CheckContactTolerance, CellNarrowerThan1024Tolerances_IsSolidTooThin)
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement** design 5.2's formula; the header explains with numbers why `0x1p-40` is
+  `4096 * epsilon` and 128 times the evaluation error, and that the tolerance is never enlarged to make contact
+  pass (report 10.4). Glossary rows: `contact tolerance`, `rest gap`; never say: `certified`, `nudge`,
+  `penetration tolerance`, `resolution` (for this).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Add the contact tolerance that follows the scene's scale`. New names: the 3.3 list.
+
+### Task 7: The contact response
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/contact/solid_contact.h`, `contact_response_test.cc`
+- Modify: `CMakeLists.txt`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: `Vec3`, `math::Dot`, `math::Length`.
+- Produces: `ComputeContactResponse` (design 3.4), and in `solid_contact.h` the declarations `ContactKind`,
+  `kMaxHitsPerStep`, `kMaxAdvanceCount`, `kMaxTurnPerStep`, `SolidContactInputs`, `SolidReaction`,
+  `SolidContactResult`, `FirstHit` exactly as design 3.4 (bodies of `FindFirstHit` and `MoveParticle` arrive in
+  Tasks 8 to 13).
+- Port: `main:native/include/fluidity/base/liquid_wall_contact_math_3d.h:101-149` (`ApplyOneWayResponse`),
+  without `CertifyContactSide` (`:83-99`), `NudgeOutward` (`:57-81`) and the `ProjectionBounds` estimate; the
+  normal is a unit vector, so the division by `normal_length_squared` goes. The blend is written
+  `velocity + fraction * (solid_velocity - velocity)` (not `std::lerp`).
+
+- [ ] **Step 1: Failing tests** (floor normal `{0,0,1}` unless stated):
+
+  ```cpp
+  TEST(ComputeContactResponse, HeadOn_BecomesSolidVelocity)       // v {0,0,-2}, solid {0,0,0.5}, friction 0.3:
+                                                                  // == {0,0,0.5} exactly (stick assignment)
+  TEST(ComputeContactResponse, Slip_ReducesSidewaysByFrictionTimesApproach)  // v {3,0,-1}, fixed, 0.5: {2.5,0,0}
+  TEST(ComputeContactResponse, StickAtThreshold_IsSolidVelocity)  // same v, friction 3: == {0,0,0}
+  TEST(ComputeContactResponse, StickAboveThreshold_IsSolidVelocity)  // friction 4
+  TEST(ComputeContactResponse, Leaving_IsUnchangedBitForBit)      // v {1,0,2}
+  TEST(ComputeContactResponse, SidewaysOnly_IsUnchangedBitForBit) // v {3,0,0}
+  TEST(ComputeContactResponse, FixedSolid_NeverRaisesSpeed)       // 1000 cases (P11; draw normal {w,w,w} redrawn
+                                                                  // while Length < 0.25, velocity 10 * {w,w,w},
+                                                                  // friction 2 * next()): Length(after) <=
+                                                                  // Length(before) * (1 + 0x1p-50)
+  TEST(ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit)  // v {1e-9,0,0}, solid {0,0,1e8}:
+                                                                  // x == 1e-9 exactly, z within relative 0x1p-44 of 1e8
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement** design 5.4 steps 1 to 3. Body comment kept: why the approach is removed in world
+  coordinates. Glossary rows: `approach speed`, `sideways speed`, `stick`, `slip`, `friction` (no unit, the
+  Coulomb coefficient); never say: `outward_normal`, `impulse` (for a velocity change).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Remove the approach and apply friction at a solid surface`. New names:
+  `ComputeContactResponse`, `ContactKind`, `SolidContactInputs`, `SolidReaction`, `SolidContactResult`,
+  `FirstHit`, `kMaxHitsPerStep`, `kMaxAdvanceCount`, `kMaxTurnPerStep`.
+
+### Task 8: First hit on solids that do not turn
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/contact/solid_contact_steps.h` (shared, private to `contact/`), `find_first_hit_test.cc`
+- Modify: `native/fluidity/contact/solid_contact.h`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: Tasks 4, 7.
+- Produces: `FindFirstHit` (design 3.4) for solids with zero angular velocity; turning solids return
+  `kTooCloseToCall/kSlowApproachToTurningSolid` until Task 9 (no test relies on that). Private:
+  `ComputeDistanceForParticle(const Solid&, const SolidPose&, Vec3 point, PlateSide plate_side)` in
+  `solid_contact_steps.h` (P3 distance).
+- Replaces: `main:native/src/liquid_wall_contact_3d.cc:24-131` (`CompareBoxSweepTimes`, `SelectBoxImpactFace`)
+  and the linear hit time of `liquid_wall_contact_math_3d.h:420-480`.
+
+- [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance`, start elapsed 0 unless stated):
+
+  ```cpp
+  TEST(FindFirstHit, NoSolids_IsFree)                          // solid_index kNoSolid
+  TEST(FindFirstHit, FlatSolidAhead_HitsAtGapOverApproach)     // face x = 1 (point {1,0,0}, normal {-1,0,0}),
+                                                               // start {0.9,0,0}, v {1,0,0}, 0.2 s:
+                                                               // elapsed 0.1 - tol
+  TEST(FindFirstHit, BoxFace_ReportsEnteringFace)              // box half 0.5 at origin, start {-1,0.1,0.2},
+                                                               // v {2,0,0}, 1 s: (0.5 - tol) / 2, kLowX
+  TEST(FindFirstHit, BoxCornerTieAtEndOfStep_ReportsLowX)      // box centre {1.5,1.5,0.5} half 0.5, start
+                                                               // {-tol,-tol,0.5}, v {1,1,0}, 1 s: elapsed exactly 1,
+                                                               // kLowX
+  TEST(FindFirstHit, BoxEdgeGraze_StaysFree)                   // same box, start {0,1 + 4 * tol,0.5}, v {1,1,0}
+  TEST(FindFirstHit, TwoSolidsSameTime_LowerIndexWins)         // two flat solids at the same plane, ids 3 and 4
+  TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace)     // plate h 0.01, start p.z -0.005, v {0,0,1},
+                                                               // committed kAlongNormal: free; uncommitted: hit at 0
+  TEST(FindFirstHit, DomainBoxOpenTop_ExitIsFree)              // {0,0,0}..{1,1,1}, start {0.5,0.5,0.9}, v {0,0,1}
+  TEST(FindFirstHit, MovingSolid_UsesRelativeVelocity)         // plate h 1/32, centre {-1,0,0} moving {2,0,0},
+                                                               // particle at rest at origin, 1 s:
+                                                               // elapsed (1 - 1/32 - tol) / 2, kHighZ
+  TEST(FindFirstHit, StartElapsed_SamplesSolidLater)           // solid moving {-1,0,0}, start_elapsed 0.5: gap
+                                                               // measured at the later pose
+  TEST(FindFirstHit, SlidingOnTouchedFace_IsNotAHit)           // floor, start {0,0,tol}, v {5,0,-tol/4}, 1 s: free
+  TEST(FindFirstHit, PushingIntoTouchedFace_HitsAtZero)        // same, v {5,0,-1}: elapsed 0
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement** design 5.3 step 1 and step 3 with P2 and P3; `// Step N:` follows
+  `<proc-find-first-hit>`. Glossary rows: `sweep`, `hit`, `hit fraction`, `gap`; never say: `contact_fraction`,
+  `impact`, `swept impact`.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Find the first hit of a straight path on solids that do not turn`.
+  New names: `FindFirstHit`.
+
+### Task 9: First hit on turning solids
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `find_first_hit_test.cc`
+
+**Interfaces:**
+- Consumes: Task 8, `ComputeSolidPose`.
+- Produces: `FindFirstHit` for turning solids (design 5.3 step 2).
+- Port the idea only: `main:native/src/rigid_body_3d.cc:861-881` (`RigidBodySweepDistanceBound3D`, the bound
+  `translation + radius * angle`) and `:883-1130` (`SweepRigidBoxPoint3D`); not its bisection, stack or rounding
+  slack.
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(FindFirstHit, TurningBoxReachesRestingParticle_AtTrigonometricAngle)
+      // box half 0.5 at origin, angular {0,0,1}, particle at rest at 0.6 * {cos 0.3, sin 0.3, 0}, 1 s:
+      // elapsed == 0.3 + acos((0.5 + tol) / 0.6) within 0x1p-30, face kHighX
+  TEST(FindFirstHit, TurningBoxNotReachedInStep_IsFree)             // angular {0,0,-1}, same particle, 0.2 s
+                                                                    // (local angle 0.5 at the end, gap 0.027)
+  TEST(FindFirstHit, GrazingTurningBox_IsSlowApproachToTurningSolid)
+      // particle at rest at {0.5 + 2 * tol, 0, 0}, angular {0,0,1}, 0.1 s: kTooCloseToCall
+  ```
+  The third test needs the close call: `FindFirstHit` writes it through a pointer decided here,
+  `FindFirstHit(..., FirstHit* first_hit, ContactCloseCall* close_call)` (plan decision; may be null), the
+  design's six-argument form forwarding null.
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement** design 5.3 step 2: `bound = Length(velocity_for_this_step - linear_velocity) +
+  Length(angular_velocity) * radius`, `radius` the larger of the path ends' distances to the solid's origin at the
+  matching times; `t += g(t) / bound`; hit when `g <= tol / 4`; free when `t >= duration`; more than
+  `kMaxAdvanceCount` advances is the close call. The bound's derivation goes in a body comment.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Step toward a turning solid until the path reaches it`.
+
+### Task 10: `MoveParticle` with hits on solids that do not turn
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/contact/move_particle_test.cc`
+- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `contact_test_cases.h`
+
+**Interfaces:**
+- Consumes: Tasks 6 to 9.
+- Produces: `MoveParticle` (design 3.4) with steps 1, 3, 4, 5 (re-sweep with the time left, no earlier-surface
+  rule yet) and 6; step 2 only returns `kStartsInsideSolid` for `d < 0` and treats `0 <= d <= tol` as free
+  (Task 11 replaces it). Docstring as the naming review
+  6.3 with the design's example and P1's numbers. Test-only: `struct MoveParticleCase { std::string_view name;
+  std::vector<Solid> solids; SolidContactInputs inputs; }` and `std::vector<MoveParticleCase>
+  BuildMoveParticleCases()` in `contact_test_cases.h`; every `MoveParticle` test from here on adds its inputs
+  there, so Tasks 14 and 16 reuse them.
+- Port: start rules and the free path of `main:native/include/fluidity/base/liquid_wall_contact_math_3d.h:365-554`
+  (`ResolveContact`) without `ProjectionBounds`.
+
+- [ ] **Step 1: Failing tests** (`T` the step, both velocities equal unless stated):
+
+  ```cpp
+  TEST(MoveParticle, NoSolid_EndIsStartPlusVelocityTimesStep)  // EXPECT_EQ per axis to start + v * T
+  TEST(MoveParticle, DocstringExample_StopsOneToleranceShort)  // face x = 1 as in Task 8, T 0.2: hit_fraction
+                                                               // (0.1 - tol) / 0.2, x 1 - tol, speed 0,
+                                                               // approach_speed {-1,-1}, kind kHit, kHighZ
+  TEST(MoveParticle, PlateRowsOnEveryAxisAndNormal_MatchClosedForms)  // below
+  TEST(MoveParticle, FrictionOnSideBottom_LeavesSideways2Point5)  // domain {0,0,0}..{1,1,1}, start {0.2,0.5,0.1},
+                                                               // v {3,0,-1}, friction 0.5, T 0.2: velocity
+                                                               // {2.5,0,0}, z tol, x 0.2 + 3 t + 2.5 (0.2 - t),
+                                                               // t = 0.1 - tol, face kLowZ
+  TEST(MoveParticle, DomainCorner_ThreeSidesHitInOneStep)      // same box, start {0.1,0.2,0.3}, v {-1,-1,-1}, T 0.5:
+                                                               // end {tol,tol,tol}, velocities 0, hit_count 3,
+                                                               // face kLowX, hit_fraction (0.1 - tol) / 0.5
+  TEST(MoveParticle, OctagonRoom_FifthHitIsTooManyHits)        // below
+  TEST(MoveParticle, ReactingSolid_ReactionIsChangeOfNextStepVelocity)  // docstring example, reports_reaction:
+                                                               // reaction.solid_index 0, change == after - before
+                                                               // bit for bit, hit_position x 1 - tol
+  TEST(MoveParticle, TwoReactingSolids_IsSecondReactingSolid)  // floor and wall x = 1 (normal {-1,0,0}) both
+                                                               // reacting, start {0.8,0,0.1}, v {2,0,-2}, T 0.2
+  TEST(MoveParticle, DifferentVelocities_EachGetsItsOwnApproach)  // for_this_step {0,0,-1}, for_next_step {1,0,-3},
+                                                               // floor, friction 0.5: next {0,0,0} (stick at 1/3),
+                                                               // this {0,0,0}; approach_speed {-3,-1}
+  TEST(MoveParticle, NonFiniteStart_IsBadInput)                // and step 0, friction -1, contact_tolerance 0,
+  TEST(MoveParticle, SolidsOutOfIdOrder_IsBadInput)            // ids {2,1}; result unchanged in each
+  ```
+  Plate rows (old fixture `main:reference/src/fluidity_reference/liquid_boundary_3d_fixtures.py:40-80`, as closed
+  forms; plate half thickness `1/32`, `T = 1`, run for each axis `e` and normal `sigma * e`, `sigma = +-1`):
+  row 0: start `-e`, velocity `2e`, plate fixed at 0: `hit_fraction (1 - 1/32 - tol) / 2`, end
+  `-(1/32 + tol) e`, velocities 0, normal `-e`, `approach_speed` -2, `side_at_hit` `kAgainstNormal` for
+  `sigma = +1`, `kAlongNormal` for -1. Row 1: particle at rest at 0, plate centre from `-e` moving `2e`: same
+  fraction, end `(1 + 1/32 + tol) e`, velocities `2e`, normal `+e`. Row 2: particle from 0 at `e`, plate centre
+  from `-e` at `e`: free, end `e`, kind `kNone`.
+  Octagon (friction 0): eight flat solids `k = 0..7`, ids `k + 1`, `point_on_surface =
+  (cos k pi/4, sin k pi/4, 0)`, `normal_out_of_solid = -(cos k pi/4, sin k pi/4, 0)`; start `{0,0,0}`,
+  velocity `{100,20,0}`, `T = 1`: the particle slides along walls 0, 1, 2, 3 and the fifth hit (wall 4) returns
+  `kTooCloseToCall/kTooManyHits` before `t = 0.3`.
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement** `<proc-move-particle>` steps 1, 3, 4, 5 (loop), 6 with P5 and P6; `// Step N:`
+  comments follow the paper. Without a hit the end is one multiply and one add per axis.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Move one particle for one step and stop it at solid surfaces`.
+  New names: `MoveParticle`.
+
+### Task 11: `MoveParticle` start rules
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+  `contact_test_cases.h`
+
+**Interfaces:**
+- Consumes: Task 10.
+- Produces: step 2 of design 5.5 in full, with P3, P4, P6 and P12.
+
+- [ ] **Step 1: Failing tests** (fixed floor at `z = 0` unless stated):
+
+  ```cpp
+  TEST(MoveParticle, FlatSolidPushesRestingParticle_CarriesIt)  // floor moving {0,0,2}, start {0,0,tol}, at rest,
+                                                                // T 0.1: kind kHit, hit_fraction 0, velocities
+                                                                // {0,0,2}, end z 0.2 + tol, approach_speed {-2,-2}
+  TEST(MoveParticle, TouchingAndLeaving_IsFree)                 // start {0,0,tol}, v {0,0,1}: kind kNone
+  TEST(MoveParticle, ShallowOverlap_StartedInsideSolidAndMovedOut)  // start z -0.0005, overlap tolerance 0.001:
+                                                                // kStartedInsideSolid, start moved to z tol
+  TEST(MoveParticle, DeepOverlap_IsStartsInsideSolid)           // z -0.01, overlap tolerance 0.001: magnitude 0.01
+  TEST(MoveParticle, StartsInsideSecondSolid_FailureNamesItsId) // two solids ids 7 and 9, inside id 9: solid_id 9
+  TEST(MoveParticle, CommittedSideInsideThickness_PushedToCommittedSide)  // plate h 0.01, start p.z -0.001,
+                                                                // committed kAlongNormal, overlap 0.05: end p.z
+                                                                // 0.01 + tol, face kHighZ, kStartedInsideSolid;
+                                                                // uncommitted: -(0.01 + tol), kLowZ
+  TEST(MoveParticle, CommittedBeyondOtherFace_IsOnWrongSideOfPlate)  // p.z -0.02: magnitude 0.01 (P6)
+  TEST(MoveParticle, PlateSideOfUnknownPlate_IsBadInput)        // plate_id 99 with no such solid
+  TEST(MoveParticle, StartsWithinToleranceMovingAway_IsMovedOutToOneTolerance)  // P12: start {0,0,tol / 4},
+                                                                // both velocities {1,0,2}, T 0.1: no error, kind
+                                                                // kNone, hit_count 0, velocities unchanged bit for
+                                                                // bit, end {0.1, 0, tol + 0.2} (x exact, z within
+                                                                // 2 tol)
+  TEST(MoveParticle, CeilingClosingFasterThanParticleLeaves_IsEndsTooCloseToSolid)
+      // floor id 1 fixed at z 0; ceiling id 2, point {0,0,3 tol}, normal {0,0,-1}, linear_velocity
+      // {0,0,-1.75 tol}; particle at rest at {0,0,tol}; T 1, friction 0. The ceiling hits at t 4/7 and sets the
+      // velocity to {0,0,-1.75 tol}; over the 3/7 left the floor's rate * time_left is -0.75 tol, above -tol, so
+      // the floor is not hit (P2) and the particle ends at z 0.25 tol with the ceiling at 1.25 tol:
+      // kTooCloseToCall/kEndsTooCloseToSolid, solid_id 1, magnitude 0.25 tol within 0x1p-40 * tol
+  ```
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement.** Every error branch says in its comment why the case can occur and what the caller
+  does (the step turns `kTooCloseToCall` into a shorter step; the others are scene errors).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Classify a particle's start against every solid`.
+
+### Task 12: `MoveParticle` slide rules between surfaces
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+  `contact_test_cases.h`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: Task 11.
+- Produces: design 5.5 step 5's earlier-surface rule (removal without friction, the sharp-corner stop,
+  `kSqueezedBetweenSolids`).
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(MoveParticle, AcuteWedge_StopsWithoutError)      // floor, and flat solid point {1,0,0} normal
+                                                        // Normalized({-1,0,-1}); start {0.5,0,tol}, v {2,0,0},
+                                                        // T 0.5, friction 0: no error, velocities {0,0,0},
+                                                        // hit_count 2, end d >= tol / 2 for both solids
+  TEST(MoveParticle, ClosingCeiling_IsSqueezedBetweenSolids)  // floor fixed; ceiling point {0,0,0.1} normal
+                                                        // {0,0,-1} moving {0,0,-1}; at rest at z 0.05, T 0.1
+  TEST(MoveParticle, RightAngleCorner_SlidesAlongSecondSurface)  // floor and wall x = 1: start {0.5,0,0.2},
+                                                        // v {2,1,-4}, T 0.5: end on the corner line x 1 - tol,
+                                                        // z tol, velocity {0,1,0}, hit_count 2
+  ```
+- [ ] **Step 2: Run.** Expected: the first two fail (`ClosingCeiling` passes through the floor or loops).
+- [ ] **Step 3: Implement.** Glossary row: `slide` (the rest of the step spent moving along a surface).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Slide along several surfaces and refuse a squeeze`.
+
+### Task 13: `MoveParticle` slide on a turning solid
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+  `contact_test_cases.h`
+
+**Interfaces:**
+- Consumes: Tasks 9, 12.
+- Produces: design 5.5 step 5 for a turning solid, with P7.
+- Port: `main:native/src/liquid_wall_contact_3d.cc:349-400` (from the comment "Carry the corrected relative
+  remainder in the moving face coordinates"), without the rounding bound.
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(MoveParticle, TurningBoxHitsRestingParticle_EndsOnFaceAtEndPose)
+      // Task 9's case, T 1, friction 0: hit_fraction 0.3 + acos((0.5 + tol) / 0.6) within 0x1p-30;
+      // ComputeDistanceToSolid at the end pose in [tol / 2, 2 tol], face kHighX
+  TEST(MoveParticle, TurningBoxNearFloor_IsTurningSolidNearOtherSolid)
+      // same box and particle (particle z 0), plus a fixed floor at z -0.05: kTooCloseToCall
+  TEST(MoveParticle, TurningBoxSlide_KeepsSidewaysPartInSolidAxes)
+      // particle at {0.5 + tol, 0, 0} moving {0,0,1} on the box turning {0,0,1}, T 0.1, friction 0: the face moves
+      // {0,0.5,0} there, so the relative velocity in the box's axes is {0,-0.5,1}; end position ==
+      // origin + axes * {0.5 + tol, -0.05, 0.1} at ComputeSolidPose(box, 0.1), within 2 tol; hit_fraction 0
+  ```
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement.** Relative `for_this_step` at the hit into the solid's axes, the face component
+  clamped to zero when it points into the face, advance by the time left, place with
+  `ComputeSolidPose(solid, step_duration)`; then step 6.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Carry a slide on a turning solid in its own axes`.
+
+### Task 14: Tests that replace the rounding enclosures
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/contact/move_particle_tolerance_test.cc`
+- Modify: `native/fluidity/contact/contact_test_cases.h`, `CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: `MoveParticle`, `FindFirstHit`, `ComputeContactResponse`, `ComputeDistanceToSolid`,
+  `ComputeContactTolerance`, `BuildMoveParticleCases`.
+- Produces: test-only `std::vector<MoveParticleCase> BuildObliqueCases(int count)` (used again in Task 16).
+
+Oblique set (generator P11; draw in this order). Per case: normal `{w, w, w}` redrawn while `Length < 0.25`,
+then `Normalized`; `point_on_surface = 1e3 * {w, w, w}`; `linear_velocity = 10 * {w, w, w}`; `gap = 0.01 * next() + 2 * tol`; tangent
+`Normalized(Cross(normal, {w, w, w}))`, redrawn while the cross product's length is below 0.25; `sideways = 5 * w`;
+`hit_share = 0.1 + 0.8 * next()`; `for_this_step = linear_velocity + sideways * tangent - gap / (T * hit_share) *
+normal`; `for_next_step = for_this_step + 0.5 * {w, w, w}`; `start = point_on_surface + gap * normal + 50 * w *
+tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = ComputeContactTolerance({1100, 0.01,
+0.01})`, `start_overlap_tolerance = 0`.
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  TEST(MoveParticle, ObliqueMovingSolidFarFromOrigin_NeverEndsInside)
+      // 10,000 cases: no error; ComputeDistanceToSolid at ComputeSolidPose(solid, T) >= tol / 2 for each.
+      // Control in the same test: FindFirstHit with contact_tolerance 0, ComputeContactResponse on
+      // for_this_step, naive end = hit position + response * (T - elapsed): d < 0 in at least one case
+      // (print the count).
+  TEST(MoveParticle, SlidesTenThousandSteps_NeverStartsInside)
+      // flat solid point {0.3,-0.2,0.1}, normal Normalized({1,2,3}), velocity {0.5,-0.25,0.125}; start
+      // point + tol * normal; both velocities reset each step to the solid velocity + {0.2,0.1,-0.3} - 0.5 *
+      // normal; friction 0.3; T 1/240; tol = ComputeContactTolerance({100, 0.01, 0.01}); each end is the next
+      // start and the solid's pose_at_step_start advances by ComputeSolidPose(solid, T): no error and d in
+      // [tol / 2, 2 tol] after every step
+  TEST(MoveParticle, FastParticleThinPlate_IsStopped)
+      // cell 0.01, plate half thickness 5e-5 at origin, start {0,0,5}, v {0,0,-1000}, T 0.01, tol from
+      // ComputeContactScale and CheckContactTolerance (passes): kHit, hit_fraction (5 - 5e-5 - tol) / 10
+  TEST(MoveParticle, SceneTurnedRigidly_ResultTurnsWithIt)
+      // every BuildMoveParticleCases() case without a DomainBox (world-aligned by definition), under
+      // math::Rotation({0.3,-0.5,0.7}) and under the Y-up to Z-up rows {1,0,0},{0,0,-1},{0,1,0}: positions,
+      // velocities, solid origins, axes and motions turned; discrete fields equal; floating values within
+      // 0x1p-40 * max(|a|, |b|, case scale), scale the largest coordinate (positions) or speed (velocities)
+  ```
+- [ ] **Step 2: Run.** Expected: they pass if Tasks 10 to 13 are right. Then prove the control: temporarily set
+  the settle of step 6 to no-op and the hit at `d == 0`; `NeverEndsInside` must fail; restore. Record the failing
+  count in the commit message.
+- [ ] **Step 3: Run** the gate.
+- [ ] **Step 4: Commit.** Subject: `Show the rest gap keeps particles outside without enclosures`.
+
+### Task 15: `MoveParticles` on the CPU
+
+**Kind:** integration
+
+**Amended 2026-11-14 (Foundation as built):** private GPU header is `move_particles_gpu.h` returning `RunOnCallStatus`; the GPU call's status goes through `ToBufferError` and one mapping into `ContactFailure`; failure wording and test support adopted.
+
+**Files:**
+- Create: `native/fluidity/contact/move_particles.h`, `move_particles_cpu.cc`, `move_particles_gpu.h`
+  (private), `move_particles_test.cc`
+- Modify: `native/fluidity/contact/CMakeLists.txt` (`move_particles_cpu.cc` in `target_sources`, the test with
+  `LINKS fluidity_base_test_support`), `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: `MoveParticle`; `RunOn`, `CheckCanRunOn`; `Buffer`, `BuildBuffer`, `WriteBuffer`, `ReadBuffer`,
+  `BufferError`, `ToBufferError`, `RunOnCallStatus`; `MemoryEstimateEntry`, `CountedPer`, `KeptFor`,
+  `ComputeMemoryBytes`; `PerParticleVelocity`; test support `ToBits`, `BuildBufferHolding`, `ReadAll`.
+- Produces: design 3.5 exactly: `ParticleContact`, `ContactBuffers`, `BuildContactBuffers`, `MoveParticlesInputs`,
+  `MovedParticles`, `MoveParticlesResult`, `MoveParticles`, `BuildContactMemoryEstimate`. Plan decisions:
+  - `ContactBuffers` is move-only with `RunOn run_on() const`, `std::size_t max_particle_count() const`,
+    `std::size_t max_solid_count() const`; it holds `Buffer<Solid>` (max solids), `Buffer<ContactFailure>`
+    (max particles) and `Buffer<ContactFailure>` plus `Buffer<MoveParticlesResult>` of size 1 for the GPU reduction.
+  - `BuildContactMemoryEstimate` rows, all `kGivenCount`, `kWholeRun`: `"contact: solids copy"` (max solids x
+    `sizeof(Solid)`), `"contact: failure per particle"` (max particles x `sizeof(ContactFailure)`),
+    `"contact: call result"` (1 x `sizeof(MoveParticlesResult) + sizeof(ContactFailure)`).
+  - `MoveParticles` (defined in `move_particles_cpu.cc`) checks, in order: `particle_count` or `solids.size()`
+    above the buffers' sizes is `kBuffersTooSmall`; a null required pointer with `particle_count > 0`, or
+    `moved.reaction` null while a solid has `reports_reaction`, is `kBadInput`. A failed check writes nothing.
+    Then `kCpu` runs one loop (one thread for now: the lowest-id rule makes later chunking give the same result);
+    `kGpu` calls `RunOnCallStatus MoveParticlesOneThreadPerParticleOnGpu(inputs, moved, buffers)` declared in the
+    private `move_particles_gpu.h` (defined in Task 16), under `#if defined(FLUIDITY_HAS_GPU)`; without it the call
+    site returns `kRunOnCallFailed`. A status other than `kDone` goes through `ToBufferError` and the one private
+    mapping `ToContactFailure(BufferError)` of `move_particles_cpu.cc` (`kOutOfMemory`, `kSizeMismatch` give
+    `kBuffersTooSmall`; `kRunOnCallFailed` gives `kRunOnCallFailed`), which `BuildContactBuffers` also uses. After
+    `kRunOnCallFailed` the outputs are unspecified and the run stops.
+  - `ParticleContact` is copied field by field from `SolidContactResult`; `static_assert(sizeof(ParticleContact) ==
+    56)` (the design says 64; its fields total 56, see the hand-over).
+
+- [ ] **Step 1: Failing tests** (`move_particles_test.cc`, label `cpu`):
+
+  ```cpp
+  TEST(MoveParticles, EveryCase_SameAsMoveParticle)        // each BuildMoveParticleCases() case as a one-particle
+                                                           // call: position, velocity, record bit for bit
+                                                           // (ToBits); a
+                                                           // failing case gives the same error and close call
+  TEST(MoveParticles, CountsHitsAndStartsInside)           // three particles: free, hit, started inside: {1, 1}
+  TEST(MoveParticles, TwoRanges_SameAsOneCall)             // particles of the first 100 oblique cases against the
+                                                           // solid of case 0, split 0..37 and 37..100: same bytes
+  TEST(MoveParticles, TwoFailuresOnCpu_ReportsLowestParticleId)  // ids 50 at index 2 and 9 at index 7 start 0.01
+                                                           // deep in a floor, overlap tolerance 0: particle_id 9
+  TEST(MoveParticles, MoreParticlesThanBuffers_IsBuffersTooSmall)
+  TEST(MoveParticles, MoreSolidsThanBuffers_IsBuffersTooSmall)
+  TEST(MoveParticles, ReactingSolidWithoutReactionArray_IsBadInput)
+  TEST(BuildContactBuffers, GpuInBuildWithoutGpuCode_IsRunOnCallFailed)  // only without FLUIDITY_HAS_GPU
+  TEST(BuildContactMemoryEstimate, ThousandParticlesFourSolids_MatchesBufferSizes)  // ComputeMemoryBytes ==
+                                                           // 1000 * sizeof(ContactFailure) + 4 * sizeof(Solid) +
+                                                           // sizeof(MoveParticlesResult) + sizeof(ContactFailure)
+  ```
+- [ ] **Step 2: Run.** Expected: compile error.
+- [ ] **Step 3: Implement.** `BuildContactBuffers` maps `BufferError::kOutOfMemory` and `kSizeMismatch` to
+  `kBuffersTooSmall`, `kRunOnCallFailed` to `kRunOnCallFailed` (design 3.5) through `ToContactFailure`. The header explains how the step fills
+  the pointers from `particles::ParticleFields` without contact including a particles header (design 3.5, last
+  paragraph, in plain words). Glossary rows: `contact record`, `reaction` (for `SolidReaction`).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Move a range of particles on the CPU`. New names: the 3.5 list.
+
+### Task 16: `MoveParticles` on the GPU
+
+**Kind:** device
+
+**Amended 2026-11-14 (Foundation as built):** two-halves pattern: GPU half `move_particles_gpu.cu` returning `RunOnCallStatus` through `base/gpu_launch.cuh`; kernel bodies moved to the shared `move_particles_steps.h`, run by a new `cpu` test over every thread block and thread; the shared-formula GPU test follows Foundation's `.cc` test plus `_test_gpu.cu` runner, with a deliberate same-bits promise for solids that do not turn; digests.
+
+**Files:**
+- Create: `native/fluidity/contact/move_particles_gpu.cu`, `move_particles_steps.h` (shared, private to
+  `contact/`), `move_particles_steps_test.cc`, `move_particles_gpu_test.cc`, `move_particles_no_gpu_test.cc`,
+  `shared_formulas_gpu_test.cc`, `shared_formulas_test_gpu.h`, `shared_formulas_test_gpu.cu` (test-only GPU runner,
+  as `base/shared_math_test_gpu.h`)
+- Modify: `native/fluidity/contact/CMakeLists.txt` (`move_particles_steps.h` in `fluidity_add_headers`;
+  `fluidity_add_gpu_sources(move_particles_gpu.cu)`; `move_particles_steps_test` `LABEL cpu`;
+  `move_particles_gpu_test` and `shared_formulas_gpu_test` (`SOURCES shared_formulas_gpu_test.cc
+  shared_formulas_test_gpu.cu`) `LABEL gpu`; `move_particles_no_gpu_test` `LABEL no_gpu`; every test
+  `LINKS fluidity_base_test_support`), `solid_shapes.h`, `solid_contact.h`, `contact_tolerance.h` (the same-bits
+  sentence below)
+
+**Interfaces:**
+- Consumes: `move_particles_gpu.h`, `ContactBuffers` (Task 15), `BuildObliqueCases`, `BuildMoveParticleCases`,
+  the shared headers; `ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`, `GpuArray`, `ComputeGridStride`;
+  test support `CheckWithinTolerance`, `CheckSameBitsOrBothNaN`, `ReadAll`, `WriteResultDigest`.
+- Produces: `MoveParticlesOneThreadPerParticleOnGpu` (private, returns `RunOnCallStatus`). Shared per-item
+  functions in `move_particles_steps.h` (plan decisions; `inline FLUIDITY_CPU_AND_GPU`):
+  - `struct MoveParticlesView` — the plain pointers and counts of `MoveParticlesInputs` and `MovedParticles` and the
+    buffers' per-particle failure array, copied by the CPU half (the shared header cannot include the CPU-only
+    `move_particles.h`).
+  - `void ApplyMoveParticleAt(MoveParticlesView view, std::size_t index)` — runs `MoveParticle` on particle
+    `index`, writes its outputs, record and reaction, and its `ContactFailure` (`kNone` on success, `particle_id`
+    filled).
+  - `std::uint64_t ComputeFailureKey(ContactFailure failure)` — the failing `particle_id`, or
+    `0xFFFFFFFFFFFFFFFF` for `kNone`; the minimum key names the reported failure.
+  - `struct MoveParticleCounts { std::uint64_t hit_count; std::uint64_t started_inside_count; }` (the fields of
+    `MoveParticlesResult`, which lives in the CPU-only header) and `MoveParticleCounts
+    ComputeParticleCounts(ContactKind kind)` — the counts one particle adds (0 or 1 each).
+  Kernels (each a grid-stride loop over these, launched with `ApplyGpuFunction(..., ComputeLaunchSize(count),
+  ...)`): kernel 1 calls `ApplyMoveParticleAt`; kernel 2 does integer `atomicMin` of `ComputeFailureKey` and
+  integer `atomicAdd` of `ComputeParticleCounts` (integer atomics: order-free, so discrete results are the same on
+  every run); kernel 3 copies the failure whose key equals the minimum into the result slot. The CPU writes the
+  solids with `WriteBuffer` (slice form) and reads one `MoveParticlesResult` and one `ContactFailure` with
+  `ReadBuffer`; `CheckGpuWork` before the read. No floating-point value is summed. Every per-call array is a
+  `GpuArray`; `ContactBuffers` already holds the per-step arrays.
+- Same-bits promise (deliberate, plan decision): the headers of `solid_shapes.h`, `contact_tolerance.h` and
+  `solid_contact.h` state that `ComputeDistanceToSolid`, `FindSolidSide`, `ComputeSolidVelocitySample`,
+  `ComputeContactResponse` and `ComputeContactTolerance` give the same bits on CPU and GPU, unless NaN, for solids
+  that do not turn, because they use only `+`, `-`, `*`, `/` and `math::Sqrt`, each correctly rounded on both with
+  `--fmad=false`; with turning they call `math::Rotation` (may differ in the last bits) and agree within design 6.
+
+- [ ] **Step 1: Failing tests.**
+
+  ```cpp
+  // move_particles_steps_test.cc, label cpu: the main evidence until the hardware run
+  TEST(ApplyMoveParticleAt, EveryThreadBlockAndThread_SameAsCpuLoop)
+      // BuildObliqueCases(10000) packed as one call of 10,000 particles against the solid of case 0, plus the
+      // BuildMoveParticleCases() cases as one-particle calls: for every thread block and thread of
+      // ComputeLaunchSize(count), in launch order and in reverse, run ApplyMoveParticleAt over the thread's
+      // grid-stride items; outputs, records and reactions equal the CPU loop's (ToBits)
+  TEST(ComputeFailureKey, TwoFailuresAnyOrder_MinimumIsLowestParticleId)
+      // the Task 15 two-failure case, keys reduced with a plain minimum in launch order and in reverse: 9
+  TEST(ComputeParticleCounts, SummedOverThreads_EqualsCpuCounts)  // the three-particle case of Task 15: {1, 1}
+  // move_particles_gpu_test.cc, label gpu (compiled here, run by the owner)
+  TEST(MoveParticles, SweepAndMoveCasesOnGpu_MatchCpu)      // every BuildMoveParticleCases() case
+  TEST(MoveParticles, ObliqueCasesOnGpu_MatchCpu)           // BuildObliqueCases(10000), one call per case
+  TEST(MoveParticles, SameInputTwice_SameBytes)             // positions, velocities, records, reactions
+  TEST(MoveParticles, TwoFailures_ReportsLowestParticleId)  // 1000 particles; ids 50 at index 5 and 9 at index 700
+                                                            // (another thread block) start 0.01 deep in a floor: 9
+  // shared_formulas_gpu_test.cc with the runner shared_formulas_test_gpu.cu, label gpu
+  TEST(SharedFormulas, OnGpu_MatchCpu)                      // ComputeDistanceToSolid, FindSolidSide,
+                                                            // ComputeSolidVelocitySample, ComputeContactResponse,
+                                                            // ComputeContactTolerance on 32 fixed inputs:
+                                                            // CheckSameBitsOrBothNaN without turning (the promise
+                                                            // above), design 6 tolerance with turning
+  // move_particles_no_gpu_test.cc, label no_gpu
+  TEST(BuildContactBuffers, GpuWithoutAGpu_IsRunOnCallFailed)
+  ```
+  CPU versus GPU comparison (design 6): `kind`, `solid_index`, `face`, `side_at_hit`, `hit_count`, error exact;
+  floating values with `CheckWithinTolerance(cpu, gpu, {floor, 0x1p-40})`, the CPU value the reference (the method
+  paper's form of design 6's `floor + 0x1p-40 * max(|a|, |b|)`), floor `contact_tolerance / 4` (positions),
+  `0x1p-40 * largest input speed` (velocities, speeds), `0x1p-40` (`hit_fraction`). Each test prints the largest
+  difference seen. Every `gpu` test passes its GPU outputs (positions, velocities, records, reactions, the result
+  and the reported failure; the formula results) to `WriteResultDigest` with a unique name, so the hardware run's
+  repeat check covers them.
+- [ ] **Step 2: Run** the gate. Expected before implementing: `FAIL cpu` (the steps test does not compile), then
+  `FAIL cuda` (link error).
+- [ ] **Step 3: Implement** `move_particles_steps.h`, then `move_particles_gpu.cu`: three thin kernels over the
+  per-item functions, launched with `ApplyGpuFunction`, statuses returned as `RunOnCallStatus`. It includes only the
+  shared headers, `move_particles_gpu.h`, `move_particles_steps.h`, `base/gpu_launch.cuh` and `base/`. Free nothing
+  that `ContactBuffers` owns.
+- [ ] **Step 4: Run** the gate. Expected: seven `PASS`; in the container the `cpu` tests (including every
+  shared-header test and `move_particles_steps_test`) and the `no_gpu` test pass.
+- [ ] **Step 5: Commit.** Subject: `Move a range of particles on the GPU, one thread each`. Body: `CUDA: compiled,
+  not run`, the private name `MoveParticlesOneThreadPerParticleOnGpu`, and the new names `MoveParticlesView`,
+  `ApplyMoveParticleAt`, `ComputeFailureKey`, `MoveParticleCounts`, `ComputeParticleCounts`.
+
+### Task 17: Scene-level tests: conservation and comparison with `main`
+
+**Kind:** integration
+
+**Files:**
+- Create: `native/fluidity/contact/move_particles_scene_test.cc`, `contact_main_comparison_cases.h` (test-only)
+- Modify: `CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: `MoveParticles`, `MoveParticle`, `ComputeSolidVelocity`.
+
+- [ ] **Step 1: Conservation tests** (label `cpu`):
+
+  ```cpp
+  TEST(MoveParticles, SymmetricHitsOnReactingBox_SummedChangeHasZeroMoment)
+      // reacting box half {0.5,0.5,0.5} at origin; two particles of equal mass at {-1, 0.25, 0} and
+      // {-1, -0.25, 0}, both velocity {2,0,0}, T 1: sum of velocity_for_next_step_change is {-4,0,0} within
+      // 0x1p-44 relative and sum of Cross(hit_position - origin, change) is {0,0,0} within 1e-15
+  TEST(MoveParticles, ReactionSum_EqualsSumOfVelocityChanges)  // particles of the first 100 oblique cases against
+      // the solid of case 0 with reports_reaction: per particle, change == after - before within 0x1p-44 relative
+  ```
+- [ ] **Step 2: Produce the old numbers.** On `main` (read-only; build it in a detached scratch worktree:
+  `git worktree add --detach <scratchpad>/fluidity-main main`, then its own presets as `main:AGENTS.md` and
+  `main:docs/native/toolchains.md` say), write a scratch program that calls `ResolveLiquidWallContact3D` for every
+  half-space and slab call in `main:native/tests/liquid_wall_contact_3d_cases.h:209-398` and `:441-487` (not the
+  tank rows `:38-144`, not the rounding-machinery rows `:399-440`), about twenty rows, and prints inputs and
+  outputs as hex floats. Turn each into Z-up with `(x, y, z) -> (x, -z, y)` and store it in
+  `contact_main_comparison_cases.h` with the source line of each row. Remove the scratch worktree afterwards
+  (`git worktree remove`). If `main` does not build here, stop and tell the owner; the conservation tests still
+  land.
+- [ ] **Step 3: Comparison test.**
+
+  ```cpp
+  TEST(MoveParticle, MainHalfSpaceAndSlabRows_AgreeAfterTurningToZUp)
+      // each stored row: positions within 2 * tol (the new end rests tol off the surface), velocities within
+      // 0x1p-40 relative, hit or no hit equal
+  ```
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Check contact conserves the reaction and agrees with the old sweep`. Body names
+  the `main` commit the old numbers came from.
+
+### Task 18: Comment pass and hand-over
+
+**Kind:** mechanical
+
+**Amended 2026-11-14 (Foundation as built):** hand-over records the Task 16 same-bits promise instead of `fluidity_add_shared_test`; the GPU tests write result digests.
+
+**Files:**
+- Modify: any file under `native/fluidity/contact/`, `docs/method-paper/`, `docs/glossary.md`,
+  `docs/gpu-runs.md` that the pass changes
+
+- [ ] **Step 1: Comment pass.** Reread every contact file and the paper section from top to bottom as a C++
+  programmer who has never read a fluid paper. For each: every comment true of the final code; says why, not what;
+  a worked example with numbers on every non-trivial public function (`MoveParticle`, `FindFirstHit`,
+  `ComputeContactResponse`, `ComputeContactTolerance`, `MoveParticles`); every word in the glossary; `Words`,
+  `Uses`, `Used by` (the step, solids, transfer, particles, materials, render output through solids), `Read:` lines
+  resolve; `// Step N:` matches `<proc-move-particle>` and `<proc-find-first-hit>`.
+- [ ] **Step 2: Fold each change into the commit that owns the file** (`git commit --fixup <hash>`, then
+  `git rebase --autosquash <first contact commit>~1`). Run
+  `git rebase <first contact commit>~1 --exec "uv run python tools/check_commit.py --only format" --exec
+  "uv run python tools/check_commit.py --only rules"` and the full gate on the tip. Expected: all pass.
+- [ ] **Step 3: Check the design section by section** (3.1 to 3.5, 5, 6, 7, 8, 10) against the branch; record in
+  the hand-over every plan decision P1 to P12, the two signature additions (`CheckSolid` and `FindFirstHit` with a
+  `ContactCloseCall*`), the same-bits promise of Task 16, and `sizeof(ParticleContact) == 56` versus the design's 64.
+- [ ] **Step 4: `docs/gpu-runs.md`.** Add the row: module `contact`, the tip commit, result `compiled, not run`,
+  notes listing the `gpu` tests: `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`,
+  `MoveParticles.ObliqueCasesOnGpu_MatchCpu`, `MoveParticles.SameInputTwice_SameBytes`,
+  `MoveParticles.TwoFailures_ReportsLowestParticleId`, `SharedFormulas.OnGpu_MatchCpu`. Fold into Task 16's commit.
+- [ ] **Step 5: Hand over** in one message: `git log --oneline` of the contact commits; the gate's output; the
+  new public names with their reasons; the deviations of Step 3; the statement that no contact device code has run.
