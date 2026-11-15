@@ -140,6 +140,21 @@ Plan decisions (the design left these open; every task respects them, the paper 
   so the plane argument above does not hold. Consequence, also intended: such a particle runs P7's
   `kTurningSolidNearOtherSolid` test over the whole step, so a turning solid (a paddle) close to another solid (the
   domain floor) can ask for shorter steps (Task 13 test).
+  **Amended 2026-11-15 (Task 10 as built, review ruling 18 and re-review I3): a touched solid has a stricter rule.**
+  `MoveParticle` keeps a touched-surface list, one entry per hit: the solid index, the normal recorded at the hit and
+  the allowance `ComputeLargestApproachLeftAfterResponse` computed from the velocity passed to that response. Every
+  re-sweep passes the list to the private `FindFirstHitOfSweep`; the public `FindFirstHit` passes an empty list and
+  behaves as before. For a listed solid that does not turn, a start gap in `[-tol, tol / 16]`
+  (`kTouchedSolidRestingGapShare = 2^-4`) counts as resting, and the solid is hit at `t = 0` only when the approach
+  rate is below minus the largest allowance of ALL entries so far (not its own entry's: the next sweep's velocity
+  comes from the latest response, wherever it was); otherwise the whole sweep is free of it. An unlisted solid keeps
+  P2 as it was. A listed solid whose start gap is above `tol / 16` takes its closed form. A turning solid has no
+  touching rule. The touched flag is per solid: a domain box touched on one side is strict on every side. Why: at a
+  hit, rounding can leave the gap a hair positive and the response's leftover approach a hair negative, so the solid
+  just hit was hit again (found in Task 10's review). Proof, in one sentence: each entry asserts `allowance * time
+  left <= tol / 16` at its hit and the time left only shrinks, so a free path from a touched solid comes closer to it
+  by at most `tol / 16`. The allowance is the one proved for the velocity the response received (carried, not
+  recomputed from the velocity after it).
 - **P3 Committed plate.** For a particle committed to `{plate_id, s}`, that plate is the half space on side `s`:
   `d = s * p.z - half_thickness`, face `kHighZ` for `kAlongNormal`, `kLowZ` for `kAgainstNormal`. This distance
   is used in classification, `FindFirstHit`, settling and the end check. "On the other side by more than `tol`"
@@ -158,9 +173,18 @@ Plan decisions (the design left these open; every task respects them, the paper 
   to the newest solid's velocity) is charged to the **newest** solid. `hit_position` is the position of the first
   such change. A second, different reacting solid is `kTooCloseToCall/kSecondReactingSolid`. Tests: Task 10
   (response), Task 12 (a slide removal, the corner case).
+  **Amended 2026-11-15 (Task 10 as built, review minor M3; TO CONFIRM WITH THE OWNER):** a change of exactly zero
+  (compared exactly) at a solid neither claims that solid's reaction record nor conflicts with it, so a second
+  reacting solid whose change is zero is not `kSecondReactingSolid`, and a solid's `hit_count` (module 8) counts only
+  particles whose `for_next_step` changed at it. Tests: `ReactingSolidWithZeroChange_LeavesReactionEmpty`,
+  `SecondReactingSolidWithZeroChange_DoesNotConflict`. The plan has no open-points list; this note and the design
+  (3.4, 5.5) carry the mark.
 - **P6 Failure context.** `MoveParticle` fills `ContactFailure::solid_id` (the solid's `solid_id`, never its
   index) and `magnitude` (`-d` for `kStartsInsideSolid`, `-(s * p.z + half_thickness)` for `kOnWrongSideOfPlate`,
   `d` for `kEndsTooCloseToSolid`, else 0); `particle_id` stays 0 and `MoveParticles` fills it.
+  **Amended 2026-11-15 (Task 10 as built, review ruling 19):** on `kTooCloseToCall`, `FindFirstHit` (and the private
+  `FindFirstHitOfSweep`) writes `*first_hit = FirstHit{}` with `solid_index` naming the turning solid that could not
+  be searched, so `MoveParticle` can fill `solid_id`; `kBadInput` leaves `*first_hit` unchanged.
 - **P7 Turning slide.** A solid turns when `angular_velocity != {0, 0, 0}` exactly (amended 2026-11-15: a flat solid
   or a plate when the part across its normal is not exactly zero, P17). After a hit on a turning
   solid the rest of the step is carried in its axes and ends the hit loop. `kTurningSolidNearOtherSolid` when, for
@@ -266,6 +290,12 @@ Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7
   surface velocity `omega x r` has no part along the normal. `CheckSolid`'s `kSolidTurnsTooFar` uses that part, so
   both may spin about their normal at any rate. Friction still sees the full spin through `ComputeSolidVelocity`.
   Task 9b makes the change and its tests.
+  **Amended 2026-11-15 (Task 9b as built, review I1, replaces "a few rounding units ... makes it turning"):** a flat
+  solid or a plate whose angular velocity has a part across its normal of length at most `kNegligibleTurnShare =
+  0x1p-46` of `|omega|` does not count as turning (`ComputeShapeTurningAngularVelocity` returns `{0, 0, 0}`): a spin
+  given about a tilted normal leaves rounding bits across, and those no longer send the solid to the stepping search.
+  Its face then moves by at most `0.907 * 2^-43 * L` (`L` the largest coordinate), within `tol / 8`, since `tol >=
+  2^-40 L`. A cylinder keeps its own bound (`Abs(omega_across) * step_duration * Length(half_size) <= tol / 8`).
 
 Plan decision added 2026-11-15 for the second-order advance (controller ruling 16; Task 9b; the paper states it):
 
@@ -1015,6 +1045,23 @@ each branch.
 
 ### Task 9b: Second-order advance toward a turning solid (P18)
 
+**As built (2026-11-15), where this task's text below differs:**
+- Commit order: this task was implemented after Task 10 (commits 9, 10, 9b), not before it; its brief predates Task 10.
+- Private names beyond the brief: `ComputeIsTurningSolid`, `ComputeEarlierHit`, `FindEarliestHitWithTurningSolids`,
+  `GapLowerModel`, `ComputeSecondOrderAdvance`, `HasConvexDistance(SolidShape)` (constexpr, the one dispatch point
+  for module 1b).
+- P17 amended by review I1: a flat solid or a plate whose angular velocity has a part across its normal of length at
+  most `kNegligibleTurnShare = 0x1p-46` of `|omega|` (in `solid_shapes.h`) does not count as turning, instead of "not
+  exactly zero"; the face then moves by at most `0.907 * 2^-43 * L`, within `tol / 8`. A cylinder keeps its own bound.
+  Tests: `SpinAboutTiltedNormal_IsNoTurn`, `PartAcrossJustBelowShare_IsNoTurn`, `PartAcrossJustAboveShare_IsTurn`.
+- Task 10's scene `TurningBoxSlowApproach` is now `TurningBoxHoverOnSpinAxis` (start `{0, 0, 0.5 + 2^-17}`, the hover);
+  its test is `MoveParticle.TurningBoxHoverOnSpinAxis_PassesOnCloseCall`. `CloseCall_LeavesFirstHitUnchanged` is now
+  `CloseCall_NamesTurningSolid` (Task 10's ruling 19: a close call writes `FirstHit{}` with `solid_index`), with a 1 s
+  step and sweep so the hover stays a close call.
+- The inward set redraws starts that fall inside the arm (`StartsAwayFromSolid`), as the outward set does.
+- The close-call counts of the tables below are the ones measured before and after this task; the counts of the
+  other tasks' generated sets that were measured before it are stale (see Tasks 12 to 14).
+
 Added 2026-11-15 (controller ruling 16, from Task 9's review, "Close calls: recommendation", and minors m4 and m7).
 Task 9 as built is safe but answers "too close to call" too often: 10.75 % of its 17,000 generated paths and 50 to
 62 % of particles near a paddle, and halving the step removes about 5 points of that; the step allows two retries and
@@ -1247,6 +1294,34 @@ advance made 275 mistakes in 1,000 paths and on an L of two boxes 14 in 923; fir
 
 ### Task 10: `MoveParticle` with hits on solids that do not turn
 
+**As built (2026-11-15), where this task's text below differs:**
+- Commit order: the commits are 9, 10, 9b (this task was implemented before Task 9b). The module-end fold will
+  reorder or keep that order, to be decided there. Later tasks: 11, 12, 13, 12a, 14 to 18.
+- The hit loop lives in `MoveParticle` itself (it calls the public `FindFirstHit` family and the layout forbids
+  forward declarations); every other step is a private function of `solid_contact_steps.h`: `TouchedSurface`,
+  `TouchedSurfaces`, `ComputeTouchedSolid`, `FindFirstHitOfSweep`, `ParticleMove`, `CheckSolidContactInputs` (step 1,
+  with the plate-side validation: `{0, side != kNoPlate}` is `kBadInput`), `CheckStartOutsideSolids` (the placeholder
+  step 2), `ApplyHit`, `ApplyResponseAtSurface`, `ApplyReactionChange`, `ToSideAtHit`, `MoveToRestGap(inputs,
+  solid_index, pose, point)`, `ApplySettleAtEnd`, `CheckEndOutsideSolids`. `MoveToRestGap` exists since this task:
+  Task 11 reuses it. Test-only: `ToSolidContactInputs` and `FindMoveParticleCase` beside `BuildMoveParticleCases()`.
+- Touched surfaces (P2 amended, ruling 18 and I3): every re-sweep passes the list of touched surfaces (solid index,
+  normal at the hit, allowance) to `FindFirstHitOfSweep`; a touched solid is hit at 0 only when it is approached
+  beyond the largest allowance of all entries. `TiltedUprightPushesBackToFloor` hits the floor again (`hit_count` 3).
+- P6 amended (ruling 19): a close call from `FindFirstHit` names its solid in `first_hit->solid_index`; `MoveParticle`
+  maps it to `solid_id`.
+- P5 amended (minor M3, to confirm with the owner): an exactly zero change of `for_next_step` neither claims a
+  solid's reaction record nor conflicts with it. Tests `ReactingSolidWithZeroChange_LeavesReactionEmpty`,
+  `SecondReactingSolidWithZeroChange_DoesNotConflict`.
+- A hit on a turning solid is re-swept and ends in `kTooManyHits` until Task 13 (the docstring says so).
+- `MoveParticle`'s `Requires:` states `(sum of the absolute axes of for_this_step and of the solid velocity) * time
+  left <= 2^42 tol` at every hit; it is asserted in debug builds only (see Task 15).
+- The settle asserts `d >= -2 tol` at the end pose (see Task 13).
+- Tests already present from Task 11's list, with its names: `StartsInsideSecondSolid_FailureNamesItsId` and
+  `CeilingClosingFasterThanParticleLeaves_IsEndsTooCloseToSolid`; `PlateSideOfUnknownPlate_IsBadInput` exists as
+  `PlateSideNamingNoSolid_IsBadInput`. 58 tests in `move_particle_test.cc` after review round 2.
+- The analytic `TiltedUprightOverRisingFloor_MovingTouchedFloorIsHitAgain` succeeds with 3 hits; its scene
+  `TiltedUprightOverRisingFloor` stays out of the all-scenes generated set (see Task 12).
+
 **Kind:** numerics
 
 **Files:**
@@ -1331,6 +1406,16 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
   `MoveToRestGap(inputs, solid_index, pose, point)` in `solid_contact_steps.h`, used by this task's step 2 and by
   step 6 of `MoveParticle` (Task 10's settle calls it too). For the six shapes it is one move along the normal;
   1b adds the mesh case inside it.
+- **Amended 2026-11-15 (Task 10 as built):** `MoveToRestGap(inputs, solid_index, pose, point)` already exists
+  (`solid_contact_steps.h`, Task 10's settle calls it): reuse it, write no second copy. It moves unconditionally; the
+  caller tests `d < tol`. Two tests of the list below already exist and are not added again:
+  `StartsInsideSecondSolid_FailureNamesItsId` and `CeilingClosingFasterThanParticleLeaves_IsEndsTooCloseToSolid`
+  (`PlateSideOfUnknownPlate_IsBadInput` exists as `PlateSideNamingNoSolid_IsBadInput`); plate-side validation is
+  already in step 1 (`{0, side != kNoPlate}` is `kBadInput`). Required new test: one that fails if the settle call of
+  `MoveParticle` (step 6) is removed. Mutant M47 (the settle call removed) survives after Task 10, because with the
+  touched-surface rule a touched solid ends at least `tol - tol / 16` away and no Task 10 path needs the settle; this
+  task's start rules (the start moved to `d = tol`) make the settle reachable again, so write the test on a path
+  whose end is closer than `tol` to a touched surface and check the end position against `d = tol`.
 
 - [ ] **Step 1: Failing tests** (fixed floor at `z = 0` unless stated):
 
@@ -1384,6 +1469,24 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
   `kSqueezedBetweenSolids`), with P5's reaction for each change it makes (amended 2026-11-15: a removal is charged
   to the earlier surface's solid, the corner case to the newest solid). **Amended 2026-11-15 (Task 8a as built):**
   every re-sweep keeps Task 10's rule: `MoveParticle` passes `duration = step_duration - elapsed`, computed fresh before every re-sweep (never a running time-left reduced by each hit time: rounding would trip `FindFirstHit`'s assertion), and stops the hit loop when that is `<= 0`.
+- **Amended 2026-11-15 (Task 10 as built; reads the touched-surface list `TouchedSurface`, P2 amended):**
+  - "Still approaching" at an earlier surface is tested against the largest allowance of all entries so far, which is
+    what `ComputeTouchedSolid(list, solid).approach_allowance` returns, not that entry's own bound: the velocity
+    comes from the latest response, wherever it was, and its rounding lies along every normal. Each frictionless
+    removal adds its own bound, `ComputeLargestApproachLeftAfterResponse(velocity passed to the removal, solid
+    velocity)`, under the same assertion (`allowance * time left <= tol / 16`), by updating the entry it acted on or
+    by adding to a running largest; either keeps P2's proof. The charged solid is `entry.solid_index`, through
+    `ApplyReactionChange`; the newest entry is tested last against its own allowance (the corner case).
+  - True squeezes found by the generated tests end in `kTooManyHits` today and must become
+    `kSqueezedBetweenSolids`. The rising-floor scene is `TiltedUprightOverRisingFloor` (`contact_test_cases.h`): its
+    generated paths ping-pong into `kTooManyHits` today, so it stays out of the all-scenes generated set until this
+    task; its analytic test `TiltedUprightOverRisingFloor_MovingTouchedFloorIsHitAgain` succeeds with 3 hits and
+    must keep doing so. Then add the scene to the generated set.
+  - The settle can hide a wrong hit by moving a particle back to the rest gap from inside a touched surface (Task 10
+    found it: mutant M19, a wrong hit position, was invisible in the end position). The tests of this task therefore
+    check the reaction's position (`hit_position`) and the hit time (`hit_fraction`), not only the end position. The
+    one-pass settle can also push a particle back toward the first of two acute touched surfaces, and the end check
+    then fails, safely; `AcuteWedge` will meet it.
 
 - [ ] **Step 1: Failing tests.**
 
@@ -1538,6 +1641,14 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   that does not turn, with the full `omega` in the response); preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper (amended 2026-11-15: a cylinder counts as turning only when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8`, the step's duration, not the sweep's; below the bound it uses the closed form);
   `ComputeLargestApproachLeftAfterResponse` (Task 7, `solid_contact_types.h`), through Task 12's rule: "approaches again" is
   `approach >= -bound` means no longer approaching, never `approach >= 0`.
+- **Amended 2026-11-15 (Task 10 as built):**
+  - The settle asserts `d >= -2 tol` at the end pose (`ApplySettleAtEnd`): the turning carry must revisit that
+    assertion and keep it or change it with its reason in the body comment.
+  - A hit on a turning solid is re-swept in Task 10 and ends in `kTooManyHits` (touching rule absent, hit at 0 again
+    each sweep). This task removes that behaviour and the sentence in `MoveParticle`'s docstring that says so.
+  - The close call left in the turning search is a particle hovering near or grazing a turning face
+    (`TurningBoxHoverOnSpinAxis`). Just above `kNegligibleTurnShare` a fast-spinning flat floor makes slow sliders
+    close calls: a known cost, deferred.
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
   in the solid's axes is one private function of `solid_contact_steps.h` taking `inputs` and `solid_index`, so 1b
   can sweep that remainder against a mesh.
@@ -1593,6 +1704,10 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   case with a turning solid runs through P18's search, so `SceneTurnedRigidly_ResultTurnsWithIt` may see different
   last bits of a turning hit time than before 9b (still within its tolerance) and no case may rely on a close call of
   the old search; the oblique and round sets have no turning solid and do not change.
+- **Amended 2026-11-15 (Tasks 9b and 10 as built):** the scene `TurningBoxSlowApproach` is now
+  `TurningBoxHoverOnSpinAxis`. Generated-set counts in this plan that were measured before Task 9b (close calls on
+  turning solids, and the `kSlowApproachToTurningSolid` and `kTooManyHits` shares of the all-scenes generated test
+  of `move_particle_test.cc`) are stale: to re-measure when this task runs, not to copy.
 - Produces: test-only `std::vector<MoveParticleCase> BuildObliqueCases(int count)` (used again in Task 16).
   **Room for module 1b (mesh solids) (A80):** the check "every end distance is at least `tol / 2`, and the naive
   control enters" is one helper of `contact_test_cases.h` that takes any list of solids (the test below calls it
@@ -1699,6 +1814,12 @@ tangent`; `friction = Next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
     `kRunMemoryTooSmall` give `kOutOfMemory`, which only `BuildContactBuffers` can meet), which `BuildContactBuffers`
     also uses. After
     `kRunOnCallFailed` the outputs are unspecified and the run stops.
+  - **Amended 2026-11-15 (Task 10 as built):** outside debug builds nothing checks the precondition in
+    `MoveParticle`'s `Requires:`, `(sum of the absolute axes of for_this_step and of the solid velocity) * time left <=
+    2^42 tol` (asserted in debug only; it keeps a touched solid's allowance within `tol / 16`). `MoveParticles` relies
+    on the step's travel limit for it. Required: a test at the `MoveParticles` level, or a checked failure there
+    (`kBadInput` or a close call, decided here), that pins what happens when a particle's speed breaks it; the
+    decision is stated in the header.
   - `ParticleContact` is copied field by field from `SolidContactResult`; `static_assert(sizeof(ParticleContact) ==
     56)` (the design says 64; its fields total 56, see the hand-over).
 

@@ -641,7 +641,8 @@ struct ContactOnSolids {                 // Per solid of SolidsTry::solids().
                                          //   mass * SolidReaction::velocity_for_next_step_change.
   std::span<const Vec3> turning_push;    // N m s about the solid's origin at the step start.
   std::span<const double> work;          // J the solid's motion gave to the particles (5.6).
-  std::span<const std::uint64_t> hit_count;
+  std::span<const std::uint64_t> hit_count;  // Particles whose reaction was filled by this solid: an exactly zero
+                                             // change of for_next_step claims no record (contact P5; to confirm).
 };
 // Sums the reactions per solid in ascending particle_id and keeps them in the try; CommitTry adds them to the
 // velocity of free solids. Call once per try, after every MoveParticles call of that try, with the reactions of

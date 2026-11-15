@@ -174,6 +174,9 @@ inline constexpr double kMaxTurnPerStep = 1.5707963267948966;  // rad. N. A quar
                                                                // (Task 3), not in solid_contact_types.h.
 // NEW (A74). The part of solid.motion.angular_velocity that changes the shape, rad/s, world: zero for a sphere, the
 // part across the cylinder's own axis (omega - Dot(omega, e_z) e_z) for a cylinder, all of it for the others.
+// Amended 2026-11-15 (Task 9b as built): for a flat solid and a plate it is the part across the normal
+// (omega - Dot(omega, e_z) e_z), or {0, 0, 0} when that part is no longer than kNegligibleTurnShare = 0x1p-46 of
+// |omega| (a spin about a tilted normal leaves rounding bits across, which must not count as a turn).
 Vec3 ComputeShapeTurningAngularVelocity(const Solid& solid);
 
 // Fails: kBadInput (not finite, axes not a rotation, size not positive, id 0, a moving DomainBox, a DomainBox whose
@@ -285,6 +288,8 @@ struct SolidReaction {                   // N. What a solid needs to compute the
   std::uint32_t solid_index = kNoSolid;  // Index into solids. kNoSolid: no reacting solid was hit.
   Vec3 hit_position{};                   // m, world, where the hit happened.
   Vec3 velocity_for_next_step_change{};  // m/s. velocity.for_next_step after minus before, caused by this solid.
+  // Amended 2026-11-15 (Task 10 as built, plan P5; to confirm with the owner): a change of exactly zero at a solid
+  // neither claims the record nor conflicts with it, so the record only ever holds a nonzero change.
 };
 struct SolidContactResult {              // D (position..kind), N (the rest)
   Vec3 position{};                       // m, world, at the end of the step.
@@ -311,6 +316,10 @@ struct FirstHit {                        // N
 };
 // First time the straight path start + velocity * t, 0 <= t <= duration, comes within contact_tolerance of a
 // solid. Solids are sampled `start_elapsed` seconds into the step. Fails with kTooCloseToCall.
+// Amended 2026-11-15 (Task 10 as built, plan P6): on kTooCloseToCall, *first_hit is written as FirstHit{} with
+// solid_index naming the turning solid that could not be searched, so MoveParticle fills solid_id; on kBadInput
+// *first_hit is unchanged. The public form passes an empty list of touched surfaces to the private
+// FindFirstHitOfSweep, which MoveParticle calls with the list of 5.3 step 1.
 ContactError FindFirstHit(const SolidContactInputs& inputs, Vec3 start, Vec3 velocity_for_this_step,
                           double start_elapsed, double duration, FirstHit* first_hit);
 // No unit. Share of the speeds involved that bounds the approach speed left after the response.
@@ -532,7 +541,20 @@ error. Unit vectors and rotations are accepted when their squared length is with
    `g_face(t) = g_face(0) + rate * t`, `rate = Dot(normal, velocity_for_this_step - linear_velocity)`. *Touching
    rule* (plan P2): when the start's gap is in `[-tol, 0]` for the surface that gives `d` (a plate's or box's face
    with the largest gap, the one face of a flat solid or domain side), that surface is not hit when
-   `rate * duration >= -tol` and is hit at `t = 0` otherwise; a start gap below `-tol` is hit at `t = 0`. Flat solid and each closed domain
+   `rate * duration >= -tol` and is hit at `t = 0` otherwise; a start gap below `-tol` is hit at `t = 0`.
+   *Touched solids (amended 2026-11-15, Task 10 as built, plan P2).* `MoveParticle` keeps a list of touched surfaces,
+   one entry per hit: the solid index, the normal recorded at the hit, and the allowance
+   `ComputeLargestApproachLeftAfterResponse` computed from the `velocity_for_this_step` passed to that response.
+   Every re-sweep passes it to the private `FindFirstHitOfSweep`. For a listed solid that does not turn, a start gap
+   in `[-tol, tol / 16]` (`kTouchedSolidRestingGapShare`) counts as resting, and the solid is hit at `t = 0` only
+   when `rate` is below minus the largest allowance of ALL entries so far; otherwise the sweep is free of it. An
+   unlisted solid keeps the rule above. A listed solid whose start gap is above `tol / 16` takes its closed form. A
+   turning solid has no touching rule. The flag is per solid: a domain box touched on one side is strict on every
+   side. Reason: at a hit, rounding can leave the gap a hair positive and the response's leftover approach a hair
+   negative, so the solid just hit was hit again. Proof: each entry asserts `allowance * time left <= tol / 16` at
+   its hit and the time left only shrinks, so a free path from a touched solid comes closer by at most `tol / 16`;
+   the allowance is the one proved for the velocity the response received. The public `FindFirstHit` passes an empty
+   list. Flat solid and each closed domain
    side: hit at `t = g(0) / -rate` when `rate < 0` and `t <= duration`. Plate and box (convex): entry time is the
    largest `g_face(0) / -rate` over faces with `g_face(0) > 0, rate < 0`; exit time is the smallest
    `-g_face(0) / rate` over faces with `g_face(0) <= 0, rate > 0`; a face with `g_face(0) > 0, rate >= 0` means
@@ -616,6 +638,10 @@ speed.
 4. *Respond* (5.4) to both velocities with `friction * solid.friction_scale`, after moving a rim hit of the
    cylinder's closed form to `d = tol` (5.7); record the first hit; add the change of `velocity.for_next_step` to
    `reaction` when the solid has `reports_reaction`. A second reacting solid in one step is `kSecondReactingSolid`.
+   Amended 2026-11-15 (Task 10 as built, plan P5; to confirm with the owner): a change of exactly zero neither claims
+   that solid's record nor conflicts with it, so a solid's `hit_count` in module 8 counts only particles whose
+   `for_next_step` changed at it. A hit on a turning solid is re-swept and ends in `kTooManyHits` until the slide on a
+   turning solid is built (plan Task 13).
 5. *Slide.* The solid joins the list of surfaces the particle is on. For each earlier surface the new velocities
    still approach, that approach is removed without friction; if the newest surface is then approached again (a
    corner sharper than a right angle) the velocities are set to the newest solid's velocity; if an earlier one is
@@ -744,8 +770,11 @@ limit applies to `Length(omega_across) * step_duration`). In every case `Compute
 `omega`, so friction feels the spin and a frictionless particle is not dragged by it. Amended 2026-11-15 (controller
 rulings 17 and 17 revised, plan P17, Task 9b): a flat solid and a plate, both unbounded in their own x and y, keep
 their shape when they spin about their own normal; their shape-changing turn is the part of `omega` across the
-normal, and each turns only when that part is not exactly zero (a turn about an axis in the plane still turns).
-Friction still feels the full spin.
+normal, and each turns only when that part is longer than `kNegligibleTurnShare = 0x1p-46` of `|omega|` (amended
+2026-11-15, Task 9b as built, replacing "not exactly zero": a spin given about a tilted normal leaves rounding bits
+across, which must not send the solid to the stepping search; a turn about an axis in the plane still turns). Why the
+share is safe: the face then moves by at most `0.907 * 2^-43 * L` (`L` the largest coordinate), within `tol / 8`
+because `tol >= 2^-40 L`; a cylinder keeps its own bound above. Friction still feels the full spin.
 
 *Turning cylinder.* The stepping search of 5.3 step 2 with the cylinder's true distance. The true signed distance to
 a convex body is convex and its normal (in the rim, wall or cap region, the degenerate normal on the axis included)
