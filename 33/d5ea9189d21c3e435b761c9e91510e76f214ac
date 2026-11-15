@@ -1,0 +1,27 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_19478244f31cd5 69-70,73-75
+native/fluidity/contact/contact_tolerance.h
+  s_4f0877e2acdcf0::t_15caa9aec3b84e 20-22,25-26,28,31,58-59,90-91,101-102,166-168
+native/fluidity/contact/contact_tolerance_test.cc
+  s_4f0877e2acdcf0::t_b66258f8f57300 96-104,116,169-170
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_e21c3ecf3e8836 42-43,767,783-790,793-795,811,828-831
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_c91fd8595e3832 1509-1510,1520-1521,1626-1627
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "33d5ea9189d21c3e435b761c9e91510e76f214ac",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
