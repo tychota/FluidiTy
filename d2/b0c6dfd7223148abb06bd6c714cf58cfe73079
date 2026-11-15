@@ -1,0 +1,33 @@
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_96d61b737f2db2 1-509
+  s_4f0877e2acdcf0::t_faa215c2d6ea1b 510-522
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_4106c2f996414b 44-45,47-50,52-53
+  s_4f0877e2acdcf0::t_5651e948aa6916 25-28
+  s_4f0877e2acdcf0::t_dd802d4128c89a 65
+  s_4f0877e2acdcf0::t_860fcea494a3b8 227-348,350-352
+  s_4f0877e2acdcf0::t_d85285d3e3be91 1-2,4-14
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_caf3f717207e7b 1-693,695
+  s_4f0877e2acdcf0::t_d2f70fec1ebf88 694,696-867
+docs/glossary.md
+  s_4f0877e2acdcf0::t_e1a0b403b987fc 78-82
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_2c5d3451b8434f 6,15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d2b0c6dfd7223148abb06bd6c714cf58cfe73079",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
