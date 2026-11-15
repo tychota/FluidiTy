@@ -1162,6 +1162,8 @@ the cell size rule read by the step's stage 2 and by cell resize (`plan-decision
 applied", item 2); `CellSizeSettings` and `CellSizeFacts` move here from `cell_resize/`; there is no
 `ChooseCellSize` callback.
 
+**Amended 2026-11-15 (A66):** the rule also builds the start grid: `step::BuildStartCells` (step plan) passes facts whose depth and solid distance are a cell centre's value minus half the cell diagonal, possibly negative; the header documents that a negative value counts as the surface or the solid, and the new test `NegativeDepthOrDistance_IsSmallest` holds it. The grid's first version is built from `StartCells::cells`, not from particles at `new_cell_size_level`.
+
 **Kind:** numerics
 
 **Files:**
@@ -1205,7 +1207,9 @@ applied", item 2); `CellSizeSettings` and `CellSizeFacts` move here from `cell_r
   the shear term's `c_u = 0.25` called a starting value to calibrate (A62) and sourced to literature-cell-size.md
   5(a); the reference speed `U_ref = max(u_max, sqrt(g w_max))`; why a new cell starts one level finer than its
   nearest committed neighbour (it borders air, so depth 0 and wanted `w_min`, A61, while the cap keeps the
-  size-step rule); the artist regions and the top-view map (A63); why levels come from comparing a table of widths
+  size-step rule); the start grid built by the same rule from the start shapes (A66: centre bounds minus half the
+  diagonal, no shear at the start, then the one-size-step closure; `step::BuildStartCells`); the artist regions and
+  the top-view map (A63); why levels come from comparing a table of widths
   (no `log2`, no `pow`, no fused multiply-add: same bytes on both processors and in any batch cut). Glossary rows:
   `wanted cell width`, `reference speed`, `artist cell size`.
 - [ ] **Step 2: Failing tests** (`cell_size_rule_test.cc`, label `cpu`). Unless stated, frame `biggest_cell_width`
@@ -1229,6 +1233,8 @@ applied", item 2); `CellSizeSettings` and `CellSizeFacts` move here from `cell_r
     each with depth 100: 0.0625.
   - `TEST(ComputeWantedCellWidth, ArtistLevel_CapsWidth)`: `artist_size_level` 2 alone gives 0.25; with depth 1.0
     gives 0.125.
+  - `TEST(ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest)` (A66): depth `-0.03` alone gives 0.0625;
+    distance `-0.03` alone gives 0.0625; depth `-0.03` with `artist_size_level` 2 gives 0.0625; never NaN.
   - `TEST(ComputeWantedSizeLevel, WidthEqualToALevel_GivesThatLevel)`: 0.125 gives 3; `std::nextafter(0.125, 0)`
     gives 4; 0.2 gives 3; 5 gives 0.
   - `TEST(ComputeWantedSizeLevel, BelowSmallestWidth_GivesSmallestLevel)`: 0.01 gives 4.

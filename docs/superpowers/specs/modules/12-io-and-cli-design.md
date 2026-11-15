@@ -6,7 +6,8 @@ particles, transfer, pressure, viscosity, materials, solids, gas, step, cell res
 with foam and spray. Updated again on 2026-11-14 with A15 (batched solves), A17 and the plan decisions "Planned
 cost shown to the user, and buffers in batched runs" and "I/O and CLI" of `plan-decisions.md` (section 11,
 decisions 14 to 22). Updated again on 2026-11-14 with A24, A25 and the reconcile pass's coordinator item (3)
-(decisions 23 to 27), and with A27 (decisions 28 and 29).
+(decisions 23 to 27), and with A27 (decisions 28 and 29). Updated on 2026-11-15 with A40 to A64 (decisions 30
+to 40) and A65 to A68 (decisions 41 to 44: the start on the adaptive grid, particle size changes, the slab limit).
 
 ## 1. Purpose
 
@@ -222,6 +223,13 @@ class RunScene {
   // map levels (row 0 at the domain's low y), with the domain box's low corner and x, y widths. All zero and null
   // without artist inputs. Handed to cell_resize::BuildCellResize, which copies them to the run's processor.
   grid::ArtistCellSizes artist_cell_sizes() const;
+  // NEW (A66; StartRegion and ExplicitParticle from io/start_particles.h, below, which run_scene.h includes).
+  // The start regions, ascending region_id, and their shapes in the same order, contiguous, for
+  // step::BuildStartCells; with a start_particles_file, one kBall shape of radius w_min / 2 per explicit particle
+  // (for the start cells only). No particle is seeded here (BuildStartParticles, below).
+  std::span<const StartRegion> start_regions() const;
+  std::span<const step::StartRegionShape> start_region_shapes() const;
+  std::span<const ExplicitParticle> explicit_start_particles() const;   // NEW (A66). Empty without the file.
 };
 // NEW (A63). Largest width or height of the cell size map, in pixels. A starting value: 64 MiB of levels at most.
 inline constexpr std::uint32_t kMaxCellSizeMapSidePixels = 8192;
@@ -230,12 +238,47 @@ inline constexpr std::uint32_t kMaxCellSizeMapSidePixels = 8192;
 // of materials::BuildMaterialTable, gas::CheckGasSources and render_output::CheckRenderSettings as
 // kModuleFailed. Empty: BuildRunScene succeeds unless a file or memory fails. Touches no processor.
 std::vector<IoFailure> CheckSceneFile(const Path& scene_file, const RunOverrides& overrides);
-// Reads the scene file, checks every value, fills defaults once, derives (5.1), samples the start particles.
+// Reads the scene file, checks every value, fills defaults once, derives (5.1). ~~Samples the start particles.~~
+// (A66: seeds nothing; ready_scene().start_particles is empty until a run or check builds the start.)
 // Fails with the first finding of CheckSceneFile, or kFileNotFound, kFileNotReadable, kSceneTextNotValid,
 // kOutOfMemory. Touches no processor and allocates no simulation buffer.
 std::expected<RunScene, IoFailure> BuildRunScene(const Path& scene_file, const RunOverrides& overrides);
 // The same object from the ready scene a run folder lists. Fills no default: every value is in the file.
 std::expected<RunScene, IoFailure> ReadRunScene(const Path& run_folder, const FileList& file_list);
+
+// io/start_particles.h. NEW (A66): the start is seeded on step::BuildStartCells' cells, about eight particles of
+// each liquid cell's own size (A65).
+struct StartRegion {                          // One start region of the scene, ascending region_id.
+  std::uint64_t region_id = 0;                // The scene file's id; a counter word of the jitter.
+  step::StartRegionShape shape{};             // What step::BuildStartCells reads (pose, size, material_index).
+  Vec3 velocity{};                            // m/s, world. Uniform over the region (no shear at the start).
+  std::span<const double> ingredient_shares;  // Sums to 1. Empty for one ingredient. RunScene owns the storage.
+};
+struct ExplicitParticle {                     // One particle of the scene's start_particles_file.
+  std::uint32_t material_index = 0;
+  Vec3 position{};                            // m, world.
+  Vec3 velocity{};                            // m/s, world.
+  double rest_volume = 0;                     // m3. Absent in the file: (w_min / 2)^3.
+  double mass = 0;                            // kg. Absent in the file: rest density x rest_volume.
+};
+// The start particles of one run, owned here. Move-only: by_material() views stay valid after a move.
+class StartParticleArrays {
+ public:
+  std::span<const step::StartParticles> by_material() const;  // Ascending material_index; what
+                                                              //   ReadyScene::start_particles views.
+  std::uint64_t particle_count() const;                       // Sum over by_material().
+};
+// Each start cell of width w gives the 8 points at its cell-eighth centres (offsets +-w/4, the order of
+// particles::ComputeRefillParticle); a point is kept when the unjittered point lies inside the region's shape and
+// contact::ComputeDistanceToSolid gives at least w/4 to every solid. A kept point moves by w/8 *
+// step::ComputeSignedUnitValue(words.word[a]) on axis a, words = step::ComputeRandomWords({8 x (the cell's position
+// in start_cells.cells) + eighth, region_id}, scene.random_seed). rest_volume (w/2)^3, mass = mixture rest density x
+// rest_volume, size_level = the cell's level, velocity = the region's, fitted_velocity_change zero. Order: regions
+// ascending region_id, start cells in start_cells.cells order, eighths. explicit_particles are copied as given at the
+// smallest size level. Writes nothing on failure. Fails kOutOfMemory. CPU only, no simulation buffer.
+std::expected<StartParticleArrays, IoFailure> BuildStartParticles(const step::ReadyScene& scene,
+    std::span<const StartRegion> regions, std::span<const ExplicitParticle> explicit_particles,
+    const step::StartCells& start_cells);
 ```
 
 ### 3.3 `io/run_folder.h`: file list, writer lock, `OutputFile`, the one way a file gets listed
@@ -458,6 +501,8 @@ struct RunReport {                               // The one description of a run
   // NEW (A60). Of the last committed step of the last listed frame; every solid, ascending solid_id.
   std::vector<solids::LiquidForceOnSolid> liquid_force_on_solids;
   std::vector<RunModeChange> run_mode_changes;   // NEW (A40). Copied from the file list.
+  ParticleSizeChange particle_size_change;       // NEW (A67). The last listed frame's (3.6). JSON flat:
+                                                 //   size_change_kinetic_energy_j, mismatched_particle_count.
   double simulate_elapsed_seconds = 0, snapshot_elapsed_seconds = 0, write_elapsed_seconds = 0,
          output_wait_elapsed_seconds = 0, build_outputs_elapsed_seconds = 0;  // D word elapsed. Clock time.
   std::vector<step::CapabilityFinding> known_limits;   // Findings with kHasKnownLimit.
@@ -553,6 +598,12 @@ std::expected<ParticleFacts, IoFailure> ReadParticle(const Path& run_folder, std
 ### 3.6 `io/output_queue.h` and `io/run.h`
 
 ```cpp
+struct ParticleSizeChange {                      // NEW (A67). Of one listed frame.
+  double size_change_kinetic_energy = 0;         // J, after minus before. Sum of StepReport::size_change_kinetic_energy
+                                                 //   over the committed steps since the previous listed frame, step
+                                                 //   order; rejected tries add nothing. 0 for first_frame's start state.
+  std::uint64_t mismatched_particle_count = 0;   // StepReport's, of the frame's last committed step. 0 at first_frame.
+};
 struct FrameOutput {                             // What one frame hands to the output worker. Owns its data.
   render_output::FrameIdentity identity;
   step::SimulationSnapshot snapshot;             // Immutable from here on. Full on a saved-state frame.
@@ -564,6 +615,7 @@ struct FrameOutput {                             // What one frame hands to the 
   // NEW (A60). StepReport::liquid_force_on_solids of the last committed step at or before the frame time; empty
   // for first_frame's start state. Not in any listed file.
   std::vector<solids::LiquidForceOnSolid> liquid_force_on_solids;
+  ParticleSizeChange particle_size_change;       // NEW (A67). Not in any listed file.
 };
 struct ProductsOfFrame {                         // NEW. What the frame writer did for one frame.
   std::vector<ListedFile> listed;
@@ -614,9 +666,11 @@ struct RunCallbacks {                            // D rule: named after the even
   void* context = nullptr;
   void (*on_progress)(void* context, const RunProgress& progress) = nullptr;          // After every try.
   void (*on_try_done)(void* context, const step::StepResult& result) = nullptr;
-  // Amended (A60): the last parameter is FrameOutput::liquid_force_on_solids of that frame.
+  // Amended (A60): the span is FrameOutput::liquid_force_on_solids of that frame; (A67) the last parameter its
+  // FrameOutput::particle_size_change.
   void (*on_frame_done)(void* context, const FrameDone& frame, const ProductsOfFrame& products,
-                        std::span<const solids::LiquidForceOnSolid> liquid_force_on_solids) = nullptr;
+                        std::span<const solids::LiquidForceOnSolid> liquid_force_on_solids,
+                        const ParticleSizeChange& particle_size_change) = nullptr;
   void (*on_frame_checked)(void* context, std::int64_t frame) = nullptr;
   void (*on_saved_state_listed)(void* context, const ListedFile& saved_state) = nullptr;
 };
@@ -632,11 +686,15 @@ struct RunParts {
 };
 class Run;                                       // RunScene, RunFolder, step::Simulation, OutputQueue, RunReport.
 // A new run: 5.6 steps 1 to 6, then the files of first_frame. Nothing is allocated before the scene is
-// checked. Takes the plan and budget from BuildSceneBudget and keeps the budget in RunReport::budget; a verdict
+// checked. NEW (A66): builds the start first, in this order: step::BuildStartCells on start_region_shapes(),
+// BuildStartParticles, then the plan (BuildSceneBudget, step::BuildRunPlan) and step::BuildSimulation, which builds
+// the first grid from ReadyScene::start_cells (set to StartCells::cells; neither takes a StartCells parameter). Takes the plan and budget from BuildSceneBudget and keeps the budget in RunReport::budget; a verdict
 // other than kFits is kModuleFailed (step, kDoesNotFit) before any folder or buffer exists.
 // Fails: every IoError of BuildNewRunFolder, kModuleFailed (step: kSceneNotSupported, kDoesNotFit, ...).
 std::expected<Run, IoFailure> BuildRun(RunScene&& scene, const Path& run_folder, const RunParts& parts);
-// Continues the run in a folder from its newest good saved state. Fails: kWrongRunFingerprint, kNoSavedState, ...
+// Continues the run in a folder from its newest good saved state. NEW (A66): never builds the start; plans on the
+// saved state (its active cells as ReadyScene::start_cells, its particles as StartParticles) and keeps its grid.
+// Fails: kWrongRunFingerprint, kNoSavedState, ...
 std::expected<Run, IoFailure> BuildRunToContinue(const Path& run_folder, const RunOverrides& overrides,
                                                  const RunParts& parts);
 // A new run whose first state is a saved state of another run (5.2). Its fingerprint names that run.
@@ -753,11 +811,11 @@ since the process started). Every finding, in any event, is one `Finding` table:
 | `capabilities` | executable version and digest, `protocol`, the schema versions, coordinate text `right_handed_z_up_metres`, `run_on_values` (`cpu`, and `gpu` when the build has GPU code), every `CapabilityReason` with its `CapabilityLevel` and message, static limits (`kMaxPlateCount`, `kMaxFreeSolidCount`, `kMaxIngredientCount`, `kMaxSizeLevels`, motion samples 1..64), the format table (`ReadFormatTable()` with every `WitnessRecord`), `ReadOutputChannels()`, `ReadInterchangeLibraries()`; with `--run-on gpu`: the processor description, total and free memory, or `kNoGpuFound` as a finding | last event of `capabilities` |
 | `scene_checked` | `can_run`, every finding (scene file, capability, fit, `run_on_usable`), `filled_defaults`, `run_on_requested`, `run_on_usable`, the plan (`run_mode`, estimate by module, `allowed_bytes`, counts, the batch plan), `budget: RunBudget` (NEW, also when it does not fit), `run_fingerprint`, the output declarations; with `--cache`: `cache` = `CacheComparison` (`simulation`, `differing_part`, `changed_fields`, `outputs[] {output_id, match, changed_fields, needs_simulation}`) | last event of `check` |
 | `started` | `run_fingerprint`, `run_on`, processor, first and last frame, `continues_from_frame` (or null), memory estimate, `allowed_bytes`, `run_mode`, the batch plan, `budget: RunBudget` (NEW), the output declarations, the findings with `has_known_limit` | once, before the first step |
-| `preparing` | `done`, `total`, `what` (`sampling_start_particles`, `building_simulation`, `reading_saved_state`) | while preparing, at most twice a second |
+| `preparing` | `done`, `total`, `what` (~~`sampling_start_particles`~~ NEW (A66) `building_start_cells`, `seeding_start_particles`; `building_simulation`, `reading_saved_state`) | while preparing, at most twice a second |
 | `heartbeat` | the `RunProgress` fields, `last_advance_sent_at`, `simulated_seconds_per_second: double` (0 until known) and `projected_remaining_seconds: double = -1` (-1 until 3 frames of this process are listed) (NEW) | every `kHeartbeatSeconds` = 0.5 (ported); never more than 1 s apart |
 | `try_done` | `frame`, `step_count`, `try_number`, `committed`, `reject_reason`, `rejected_in`, `step_duration`, `time`, `active_limit` | only with `--report-every-try` |
 | `finding` | one `Finding`: a product not built in a frame, a known limit met during the run | when it happens |
-| `frame_done` | `frame`, `time`, files (`output_id` or kind, name, byte count, digest), `not_built[]`, `liquid_force_on_solids[] {solid_id, pressure_force_n, pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}` (NEW, A60), step and try counts, the `MemoryReport` numbers (CPU and GPU in use and largest, `limit_raise_count`), elapsed seconds by category (simulate, snapshot, build outputs, write, wait), `simulated_seconds_per_second`, `projected_remaining_seconds` (NEW, as `heartbeat`) | a `FrameDone` entry was listed |
+| `frame_done` | `frame`, `time`, files (`output_id` or kind, name, byte count, digest), `not_built[]`, `liquid_force_on_solids[] {solid_id, pressure_force_n, pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}` (NEW, A60), step and try counts, the `MemoryReport` numbers (CPU and GPU in use and largest, `limit_raise_count`), elapsed seconds by category (simulate, snapshot, build outputs, write, wait), `simulated_seconds_per_second`, `projected_remaining_seconds` (NEW, as `heartbeat`), `size_change_kinetic_energy_j` and `mismatched_particle_count` (NEW, A67: `ParticleSizeChange`) | a `FrameDone` entry was listed |
 | `frame_checked` | `frame` | a frame computed again after a resume equals the listed one |
 | `saved_state_listed` | `frame`, `byte_count` | a saved state was listed |
 | `stopping` | `request` (`cancel`, `stop_after_frame`, `end_of_input`) | the request was read |
@@ -849,6 +907,11 @@ struct ViscousEffectOfLiquid {               // NEW (A25; renamed A27, was Liqui
   double reynolds_number = 0;                // No unit. U L / nu, U = sqrt(2 g L).
   bool advises_zero_viscosity = false;       // ratio < kNegligibleViscosityRatio or change < kNegligibleViscousChange.
 };
+struct StartCellsAtLevel {                   // NEW (A66). One size level of the start cells.
+  std::uint8_t size_level = 0;
+  double cell_width_m = 0;                   // grid::ComputeCellWidth of the level.
+  std::uint64_t cell_count = 0;              // RunPlan::counts.start_cells_per_level[size_level], above 0.
+};
 struct RunBudget {
   std::string scene_name; RunOn run_on{}; std::string processor_model;
   step::RunMode run_mode{}; step::PlanFit fit{}; ModeReason mode_reason{}; BudgetVerdict verdict{};
@@ -866,6 +929,14 @@ struct RunBudget {
   // NEW (A58). A Windows build planning a GPU run: BuildBudgetLines prints the fallback note once (5.10). A field,
   // so the line tests run on every platform.
   bool notes_windows_gpu_fallback = false;
+  // NEW (A66). The start built on the start cells: one entry per level with cells, smallest width first, and the
+  // exact seeded count (RunPlan::counts.start_particle_count). For the start: line (5.10).
+  std::vector<StartCellsAtLevel> start_cells;
+  std::uint64_t start_particle_count = 0;
+  // NEW (A68). BatchesFailure::slab_limit of kBatchDoesNotFit (batches::SlabLimit: blocks_per_layer,
+  // loaded_layer_count, bytes_per_full_loaded_block, loaded_batch_room_bytes, needed_bytes, plan_area, max_plan_area;
+  // max_plan_area = R x 16 w_min^2 / (n x b), batches' formula). Present with kLayerDoesNotFitProcessor.
+  std::optional<batches::SlabLimit> slab_limit;
   std::vector<std::string> lines;            // BuildBudgetLines, verbatim.
 };
 std::expected<RunBudget, IoFailure> BuildRunBudget(const step::ReadyScene&, const step::StepSettings&,
@@ -874,7 +945,12 @@ std::expected<RunBudget, IoFailure> BuildRunBudget(const step::ReadyScene&, cons
 std::vector<std::string> BuildBudgetLines(const RunBudget&);
 // Reads the memory available (or RunOverrides::assume_memory_bytes / assume_cpu_memory_bytes), plans the run (step,
 // and batches for a batched plan) and builds the budget. Allocates no buffer. Used by check, run and BuildRun.
-std::expected<RunBudget, IoFailure> BuildSceneBudget(const RunScene& scene, const RunOverrides& overrides,
+// Changed (A66): plans on the given start (a new run's from step::BuildStartCells and BuildStartParticles; a
+// resume's from its saved state): a shallow copy of scene.ready_scene() whose start_particles views
+// start_particles.by_material() and whose start_cells is start_cells.cells goes to step::BuildRunPlan. Was (scene, overrides, output_estimate).
+std::expected<RunBudget, IoFailure> BuildSceneBudget(const RunScene& scene, const step::StartCells& start_cells,
+                                                     const StartParticleArrays& start_particles,
+                                                     const RunOverrides& overrides,
                                                      std::span<const MemoryEstimateEntry> output_estimate);
 
 // io/run_cost.h
@@ -933,7 +1009,13 @@ empty), `four_cell_feature_change: double`, `spreading_in_cells: double`, `reyno
 `requested_beyond_plan_bytes`, `reserved_cpu_bytes`, `handed_out_cpu_bytes`, `solve_bytes_per_iteration_max`. NEW
 (A64): `FitSuggestion` gains `deep_particle_count`, `deep_cell_depth_m`. NEW (A60, `run_report.fbs`): `table
 LiquidForceOnSolid { solid_id: uint; pressure_force_n: Vec3; pressure_torque_n_m: Vec3; viscous_force_n: Vec3;
-viscous_torque_n_m: Vec3; }`, included by `events.fbs` for `frame_done`. The
+viscous_torque_n_m: Vec3; }`, included by `events.fbs` for `frame_done`. NEW (A66): `RunBudget` gains `start_cells:
+[StartCellsAtLevel]` (`size_level: ubyte; cell_width_m: double; cell_count: ulong;`) and `start_particle_count:
+ulong`. NEW (A68): `slab_limit: SlabLimit` (`blocks_per_layer: ulong; loaded_layer_count: uint;
+bytes_per_full_loaded_block: ulong; loaded_batch_room_bytes: ulong; needed_bytes: ulong; plan_area_m2: double;
+max_plan_area_m2: double;`). NEW (A67, `run_report.fbs`):
+`RunReport` gains `size_change_kinetic_energy_j: double` (J; C++ `size_change_kinetic_energy`) and `mismatched_particle_count: ulong`; `events.fbs`
+`frame_done` the same two fields. The
 add-on reads these names (its `RunPlanFacts.budget`, drawn verbatim in
 `FLUIDITY_PT_performance`).
 
@@ -973,7 +1055,14 @@ spreading_in_cells, reynolds_number, advises_zero_viscosity}`, `viscous_effect_r
 `BuildCellResize` and `BuildBatchedRun`), NEW (A64) `SceneCounts::start_particles_in_deep_cells` and
 `particles_at_depth_levels`, `ReadyScene::cell_size`, NEW (A40) `BuildRunPlan(..., cell_resize_estimate,
 std::optional<RunMode> forced_mode)`, NEW (A60)
-`StepReport::liquid_force_on_solids`,
+`StepReport::liquid_force_on_solids`, NEW (A66) `StartRegionShape`, `StartCells` (`cells`, `cells_per_level`,
+`refine_passes`, `closure_passes`), `BuildStartCells(regions, solids, frame, cell_size, artist, max_cell_count)`
+(`step/start_cells.h`, failing `StepError::kTooManyCellBlocks` with magnitude the cell count and limit the maximum,
+or `kBadInput`; `StartRegionShape::count_rule` (`particles::CountRule`)), `SceneCounts::{start_cells_per_level,
+start_particle_count, start_cell_blocks}`, `ReadyScene::start_cells` (read by `BuildRunPlan` and `BuildSimulation`,
+which build the first grid from it; no new parameter), `ReadyScene::particle_radius_in_cell_widths`, NEW (A67)
+`StepReport::{size_change_kinetic_energy, mismatched_particle_count}` (given to `on_step_done` by `AdvanceTo`, copied
+from the resize result),
 `RunMode` (`kOnePiece`, `kBatched`, `kBatchedWithSolvesInPieces`; `BuildRunPlan` chooses only the
 first two, this module copies the batch plan's choice), `PlanFit` (`kFits`, `kDoesNotFit`: `BuildRunPlan` returns a
 plan that does not fit, mode `kBatched` with every estimate filled, and `BuildSimulation` fails `kDoesNotFit` on
@@ -999,7 +1088,8 @@ ready scene hashes plain values only.
 **Particles (PROVIDED, 3.7):** `ParticlesSnapshot` and `ParticlesSnapshot::Material` member by member (`id`,
 `rest_volume`, `size_level`, `ingredient_fractions`, `mass`, `position`, `velocity_for_next_step`,
 `fitted_velocity_change`, `volume_ratio`, `flags`, `springy_deformation`, `permanent_volume_change`,
-`plate_side`, `position_when_grouped`, with `next_particle_id`, `is_full`), `SnapshotFields`,
+`plate_side`, `position_when_grouped`, NEW (A67) `merge_wait_passes` (`std::uint8_t`, saved state only), with
+`next_particle_id`, `is_full`), `SnapshotFields`,
 `kOutputSnapshotFields`, `Field`, `FieldList`, `ToFieldList`, `HasField`, `NewParticles`,
 `kMaxIngredientCount`, flag bits.
 
@@ -1040,7 +1130,10 @@ the later group);
 `ToName(BatchesError)`; A15 and planned cost: `BatchPlan::solve_place` (`SolvePlace::kWholeGridOnProcessor`,
 `kInPieces`), `max_solve_loaded_blocks`, `solve_batch_count`, `bytes_on_processor`, `bytes_on_cpu`,
 `bytes_copied_per_try`, `pass_loads_per_try`, `solve_loads_per_iteration`, `solve_bytes_per_iteration`;
-`BatchesFailure` (`needed_bytes`, `allowed_bytes`; errors `kStateDoesNotFitCpu`, `kBatchDoesNotFit`);
+`BatchesFailure` (`needed_bytes`, `allowed_bytes`; errors `kStateDoesNotFitCpu`, `kBatchDoesNotFit`; NEW (A68)
+`BatchesFailure::slab_limit` and `BatchPlan::slab_limit` of type `batches::SlabLimit` (`blocks_per_layer`,
+`loaded_layer_count`, `bytes_per_full_loaded_block`, `loaded_batch_room_bytes`, `needed_bytes`, `plan_area`,
+`max_plan_area`));
 `batches::ReadLastReport` (`BatchReport` with `batch_count`, `bytes_to_processor`, `bytes_from_processor` and the
 solve fields `solve_batch_loads`, `solve_bytes_to_processor`, `solve_bytes_from_processor`); cell resize's
 `ResizeCellsReport::bytes_copied`, `copy_count`; `CellResizeSettings::grid_run_on` (set to the run's `run_on`).
@@ -1110,22 +1203,42 @@ for every material, one internal file format, and open formats for everything a 
      `own_motion.kept` is the file's `own_motion_kept` (0.99 is no longer multiplied in: owner Q33).
      `ingredient_export_names` are the ingredients' names; `BuildMaterialTable` normalises and checks them. A gas
      material takes the gas rules of materials 5.1 (rest density `gas::ComputeAmbientDensity(law)`).
-   - Start particles: each start region (a box or a ball with a pose) is sampled on a lattice of
-     `particle_spacing = smallest_cell_width / 2` (8 per smallest cell), kept where the lattice point is
-     inside the shape and outside every solid, moved by `spacing / 4 * (2 u - 1)` per axis with `u` from
-     `step::ComputeRandomWords(counter = {lattice index, region_id}, key = random_seed)`, in ascending lattice
-     index (z, then y, then x). `rest_volume = spacing^3`, `mass = rest_density * rest_volume` (mixture rest
-     density with the region's ingredient shares). A scene may instead name an array file of explicit
-     particles (`start_particles_file` with its digest).
-   - Sources: the file gives `volume_rate` (m3/s). `rest_volume = particle_spacing^3` at the source's size
-     level, `mass = rest_density * rest_volume`, `particles_per_second = volume_rate / rest_volume`, so a change
+   - Start regions (**replaced**, A66; was: each region sampled on a lattice of `particle_spacing =
+     smallest_cell_width / 2` over the domain box, 8 per smallest cell everywhere, `rest_volume = spacing^3`, jitter
+     `spacing / 4 * (2 u - 1)`): `BuildRunScene` records each start region (a box or a ball with a pose) as a
+     `StartRegion` with its `step::StartRegionShape`, ascending `region_id`, and seeds nothing. A scene may instead
+     name an array file of explicit particles (`start_particles_file` with its digest), read into
+     `ExplicitParticle`s (absent `rest_volume` = `(w_min/2)^3`, absent `mass` = rest density x rest volume), each
+     also a `kBall` shape of radius `w_min / 2` for the start cells.
+   - Start particles (NEW, A66, A65; the start is built by `BuildRun` and `check`, 5.6 step 2a): every liquid cell
+     holds about eight particles of its own size: a particle's `size_level` is its cell's level, its rest volume is
+     one eighth of its cell (`(w/2)^3` for a cell of width `w`), so a cell `k` levels coarser than the smallest holds
+     8 particles each of `8^k` times the smallest particle's volume. `step::BuildStartCells` gives the start cells
+     (refined by the shared cell size rule from the shapes alone, with no shear at the start; snow and springy-solid
+     regions, `count_rule` `kKeepsItsCount`, at the smallest level); `BuildStartParticles` (3.2) seeds each start cell's 8 cell-eighth centres
+     (offsets `±w/4`, `particles::ComputeRefillParticle`'s order) that lie inside the region and at least `w/4` from
+     every solid (unjittered point), moves each by `w/8 * (2 u - 1)` per axis with `u` from
+     `step::ComputeRandomWords(counter = {8 x cell position + eighth, region_id}, key = random_seed)`, with `mass =
+     rest_density * rest_volume` (mixture rest density with the region's ingredient shares), the region's velocity
+     and zero fitted change. For a region aligned with the cells the rest volumes sum to the region's volume
+     exactly; elsewhere the boundary cells are cut at eighth resolution of their own width, so a coarse cell
+     touching the region's boundary is never coarse (the boundary is surface, which the rule keeps at the smallest
+     level unless the region's side lies on a closed domain side or in a solid). Without `cell_resize` the start
+     cells are all smallest (a `cell_size` with `smallest_size_level = new_cell_size_level` and an artist region over the
+     domain at that level, built in `BuildRun`).
+   - Sources: the file gives `volume_rate` (m3/s). `rest_volume = (w_min/2)^3` (**replaced**, A66: was
+     `particle_spacing^3` at the source's size level; sources sit at the surface, where cells are smallest; the
+     scene field `sources[].size_level` is removed), `size_level = smallest_size_level`, `mass = rest_density *
+     rest_volume`, `particles_per_second = volume_rate / rest_volume`, so a change
      of cell width keeps the flow. `main` exposed the particle rate; programme design row 12 drops that control.
    - Solids: `solid_id` is the file's. A driven path is given as keys of time, origin and orientation (w, x,
      y, z, own axes to world); `angular_velocity_until_next = ComputeRotationVector(key, next) / (next.time -
      key.time)`, zero on the last key. A wave paddle (`wave_stroke`) becomes `BuildWavePaddlePath` keys up to
      `end_time`. A free box with no inertia given gets `mass / 3 * (b^2 + c^2, a^2 + c^2, a^2 + b^2)` for half
      sizes `a, b, c`. `blocking_materials`: every material with `HasInternalForce`, `particle_radius =
-     particle_spacing / 2`. `has_liquid_or_gas`: some material is `kLiquid` or `kGas`. Plates are the solids
+     w_min / 4` m (blocking materials are always at the smallest level; was `particle_spacing / 2`, the same value).
+     NEW (A66): the surface distance radius of a particle is the scene setting `particle_radius_in_cell_widths`
+     (top-level scene field into `ReadyScene`, default 0.5, above 0, physical part), scaled by each particle's cell width. `has_liquid_or_gas`: some material is `kLiquid` or `kGas`. Plates are the solids
      of shape `kPlate`. `SolidsSettings::gravity` is the scene's gravity.
    - Gas: `GasSource` keys `{time, fuel_rate, heat_rate}` and wind keys `{time, acceleration}` are copied into
      arrays `RunScene` owns; `gas::CheckGasSources` runs in step 2. NEW (A47): the scene field is `wind` (was
@@ -1299,7 +1412,7 @@ snapshot digests the uninterrupted run lists. Every value is stored for a reason
 | Stored | From | Why |
 |---|---|---|
 | time, `state_version`, `step_count`, frame | `SimulationSnapshot` | The step duration to the next frame time is computed from them |
-| every particle array of every material, in grouped order, `position_when_grouped`; `next_particle_id` | `particles::ParticlesSnapshot` (full) | Sums run in grouped order (owner Q22); ids are never reused; the grouping is restored to the byte |
+| every particle array of every material, in grouped order, `position_when_grouped`; `next_particle_id`; NEW (A67) `merge_wait_passes` | `particles::ParticlesSnapshot` (full) | Sums run in grouped order (owner Q22); ids are never reused; the grouping is restored to the byte; a waiting merge chunk merges at the same pass after a resume (A67) |
 | active cell ids | `active_cells` | The only description of a mixed-size grid (`grid::GridInputs`) |
 | pressure, `has_pressure`; `velocity_after_pressure` when kept | `SimulationSnapshot` | The next step's carried pressure starts from it; gas markers and the velocity gradient of the cell size rule read the committed velocity (grid-only cells: not in the first version, A64) |
 | air pockets, `pocket_of_cell`, `BlobHistory` with `next_blob_id` | pressure through the step | `FindAirPockets` matches against the committed pockets |
@@ -1374,7 +1487,15 @@ markers and the seven arrays (gas beside liquid, A10: both in one file, the mark
 
 1. Build the `RunScene` (5.1).
 2. `step::CheckSceneCanRun`. A blocking finding ends here: nothing was allocated.
-3. `BuildSceneBudget` (5.10): `ReadMemoryAvailable` for the processor and for the CPU (or the overrides
+   2a. NEW (A66), new run and `check` only: `step::BuildStartCells(scene.start_region_shapes(), every solid
+   at `pose_at_step_start` (the `DomainBox` solid included), grid_frame, cell_size, artist, 64 x
+   grid::kMaxCellBlocksLimit)` (with cell resize: `ready.cell_size` and `artist_cell_sizes()`; without: a
+   `cell_size` whose `smallest_size_level` equals `new_cell_size_level` and one region over the domain at that level;
+   each shape's `count_rule` from its region's material), then `BuildStartParticles` (3.2), then
+   `ReadyScene::start_cells = StartCells::cells` in the plan's copy of the ready scene. CPU only; `kTooManyCellBlocks`
+   (magnitude the cell count, limit the maximum) or `kBadInput` ends here. A resume never builds the start: it reads its saved state here and
+   gives the plan its active cells as `ReadyScene::start_cells` (passes 0) and its particles as `StartParticleArrays`.
+3. `BuildSceneBudget` (5.10, with the start of step 2a): `ReadMemoryAvailable` for the processor and for the CPU (or the overrides
    `assume_memory_bytes`, `assume_cpu_memory_bytes`), `step::BuildRunPlan` with the entries of
    `BuildRenderOutputMemoryEstimate` and `BuildIoMemoryEstimate` as `output_estimate` and
    `BuildCellResizeMemoryEstimate` as `cell_resize_estimate`; with a batched plan, `batches::BuildBatchPlan`, whose
@@ -1402,8 +1523,12 @@ markers and the seven arrays (gas beside liquid, A10: both in one file, the mark
    (returns false only on `kRunOnCallFailed`); `on_try_done` and `on_step_done` are this module's: they call
    `CommitRecordedStep` or `RejectRecordedStep`, copy `RunProgress` and `LastTry`, keep the committed try's
    `liquid_force_on_solids` (A60, copied into the next `FrameOutput`), stop at a frame time, and feed the measured
-   cost (`ApplyTryToRunCost`, `ApplyStepToRunCost`, 5.10).
-   Build the simulation: `step::BuildSimulation`, or `ReadSavedState` then `step::BuildSimulationFromSnapshot`;
+   cost (`ApplyTryToRunCost`, `ApplyStepToRunCost`, 5.10); NEW (A67) `on_step_done` adds each committed step's
+   `size_change_kinetic_energy` (step order) and keep its `mismatched_particle_count` for the next
+   `FrameOutput::particle_size_change`.
+   Build the simulation: `step::BuildSimulation` (A66: its first grid is `ReadyScene::start_cells`; the
+   `StartParticleArrays` are freed when it returns), or `ReadSavedState` then `step::BuildSimulationFromSnapshot`
+   (the saved grid, to the byte);
    `FrameWriter::start` with the saved state's render output snapshot. If the newest saved state fails its
    checks, the next older one is tried and the `started` event says so.
 6. New run: hand the start state over as the frame `first_frame`, with a saved state.
@@ -1540,8 +1665,8 @@ sums minus `on_cpu`). `copies`: `step_*` from `planned_step_copies`; `pass_*` fr
 `pressure_solve.max_iterations`; with cell resize on a GPU grid `resize_bytes = (456 + 8 * 64) *
 limits.max_cell_blocks`, `resize_copies = 2` in one piece, and `8 * 64 * limits.max_cell_blocks`, 1 in a batched run
 (the resize reads the step's grid copy), else 0; `snapshot_bytes_per_frame` = the sum of `one_snapshot` over
-`by_module`; the two totals add step, pass and resize. `particle_count` = `counts.start_particles +
-counts.particles_from_sources`; `smallest_cell_width` from the grid frame. (A25) `viscous_path`,
+`by_module`; the two totals add step, pass and resize. `particle_count` = ~~`counts.start_particles`~~
+`counts.start_particle_count` (A66, exact) `+ counts.particles_from_sources`; `smallest_cell_width` from the grid frame. (A25) `viscous_path`,
 `viscous_effect_cell_width_m`, `viscous_effect_step_seconds` from `RunPlan::viscous_path`,
 `viscous_effect_cell_width`, `viscous_effect_step_duration`; `liquids` from `RunPlan::liquid_viscous_effects`
 (name from the ready scene's ingredient at `ingredient_index`, `is_viscous = viscosity > 0`, ~~`effect_not_visible =
@@ -1550,6 +1675,9 @@ from the step's row, `viscous_effect_run_seconds` and `reynolds_length_m` from t
 `allowed_cpu_bytes` are the step's `ComputeAllowedMemoryBytes` of each processor; `memory_share_of_free` and
 `memory_left_free_bytes` copied from `StepSettings` into both `MemoryBudget`s. (A64) `to_fit.deep_particle_count` from
 `counts.start_particles_in_deep_cells`, `deep_cell_depth` from `ReadyScene::cell_size.surface_reach_in_cell_widths` times the smallest cell width.
+(A66) `start_cells` from `counts.start_cells_per_level` (levels with cells, smallest width first, widths from
+`grid::ComputeCellWidth`), `start_particle_count` from `counts.start_particle_count`. (A68) `slab_limit` copied from
+`BatchesFailure::slab_limit` with `kBatchDoesNotFit`.
 
 **Mode and verdict.** `fit == kFits` and `kOnePiece`: `kFitsProcessor`, `kFits`; `kBatched`:
 `kParticlesDoNotFitProcessor`; `kBatchedWithSolvesInPieces`: `kSolverBuffersDoNotFitProcessor`; a GPU run with
@@ -1585,9 +1713,22 @@ the state does not fit cpu memory`; `one layer of cell blocks with its border do
 does not fit cpu memory`. NEW (A58): with `notes_windows_gpu_fallback`, right after the `gpu memory:` line, once:
 `note: on Windows a full GPU makes the run slow instead of failing; see "Prefer No Sysmem Fallback" in the NVIDIA
 Control Panel`. NEW (A64): when the plan does not fit and the largest processor entry of `modules` is particles
-(ties in `Module` order), before the last line: `particles: <n> needed, <m> of them in cells deeper than <d> m below
-the surface; in this version every liquid cell holds particles (deep liquid without particles comes later)` (`<n>`
-`particle_count`, `<m>` `deep_particle_count`, `<d>` `deep_cell_depth` with `%.4f`); the suggestion line is unchanged.
+(ties in `Module` order), before the last line: ~~`particles: <n> needed, <m> of them in cells deeper than <d> m
+below the surface; ...`~~ **replaced** (A65) by exactly `particles: <n> needed (about eight per liquid cell, sized to
+their cell); <m> of them in cells deeper than <d> m below the surface; in this version every liquid cell holds
+particles (deep liquid without particles comes later)` (`<n>` `particle_count`, `<m>` `deep_particle_count`, `<d>`
+`deep_cell_depth` = `8 w_min` at the default reach, `%.4f`); the suggestion line is unchanged. NEW (A66): when
+`start_cells` is not empty, right after the last `largest ...` line: `start: <c> cells (<n> of <w> m, ...), <p>
+particles (about eight per liquid cell, sized to their cell)` (`<c>` the sum, one `<n> of <w> m` per level, smallest
+width first, `%.4f`; `<p>` `start_particle_count`). NEW (A68): with `kLayerDoesNotFitProcessor` and
+`slab_limit->loaded_layer_count != 0`, right before the last line (after the `liquids:` and particles lines):
+`batches: this version cuts batches in horizontal slabs; one slab of <n> block layers at the smallest cell needs <b>
+and the <p> has room for <b>; at this cell size batches hold a plan area up to about <a> m² (this scene: <a> m²);
+batches cut by columns, which remove that limit, come later` (`<n>` `loaded_layer_count`, `<b>` `needed_bytes` then
+`loaded_batch_room_bytes`, `<a>` `max_plan_area` then `plan_area`, two significant digits in fixed notation). The
+limit is the slab rule's (cell resize 5.9): a slab holds `n = T + 8 >= 9` layers of `X Y / (16 w_min^2)` smallest
+blocks inside the room `R`, so `max_plan_area = R x 16 w_min^2 / (n x b)`: about 3.2 m² at 1 cm and 0.8 m² at 0.5 cm
+on a 16 GB GPU (`tradeoff-particles.md` 1.6).
 The deep-cell count is honest about cost: with the depth term the cells below the band number less than `4 A /
 w_min^2` against `8 A / w_min^2` in it, so particles everywhere cost at most about 1.5 times the band (toward 2 with
 discrete levels); scenes whose deep cells cannot coarsen (one level, strong shear, artist regions, a deep solid or
@@ -1883,6 +2024,28 @@ Tests that need render output's writers (21) are in `cli/`'s test target, which 
     `CheckSceneFile, GridOnlyDepthNotAboveParticleDepth_IsValueOutOfRange`; I/O plan Task 42a, after the cell resize
     group's two gating tests pass.
 
+29. **The A65-A68 pass** (NEW, 2026-11-15; I/O plan Tasks 15, 16, 19, 23, 23a, 25, 29e, 29f, 35, 36). Start
+    (three-level grid 0.1, 0.05, 0.025 m): `BuildStartParticles, EightPerCellAtItsLevel` (three hand-built cells, one
+    per level: 24 particles, 8 per cell at its level, rest volume `(w/2)^3` by bits), `BuildStartParticles,
+    MassEqualsRegionVolumeTimesDensity` (water box 1 x 1 x 0.5 m aligned with the cells on `BuildStartCells`' cells:
+    500 kg within 1e-12 relative), `SameSeed_SameBytes`, `OtherSeed_SameCountOtherPositions`,
+    `JitterWithinEighthOfCell`, `PointsInsideSolidLeftOut`, `BallVolume` (r 0.25 m, 5 %),
+    `SnowRegionsGetTheirOwnMaterial` (smallest level), `ExplicitParticles_CopiedAtSmallestLevel`; `BuildRunScene,
+    NoParticleSeeded_ShapesAscendingRegionId`; `BuildRun, StartGridIsTheStartCells`; `BuildRun,
+    BathtubStartNotAboveRunMemory` (bathtub 2 x 1 x 0.5 m at 1 cm, 2 s: start handed-out bytes <= the largest over
+    the run, no limit raised); `ContinueRun, ResumeDoesNotRebuildStartCells` (a dam break with cell resize resumed at
+    frame 10: its grid equals saved state 10's to the byte, which differs from the start cells),
+    `ContinueRun, BudgetCountsTheSavedState`; `ReadSceneText, SourceSizeLevelField_IsUnknownSceneField`. Budget:
+    `BuildBudgetLines, StartCellsLine_ByCellWidth` (`start: 4,608 cells (4,096 of 0.0250 m, 512 of 0.0500 m), 36,864
+    particles (about eight per liquid cell, sized to their cell)`), the A65 particles line in
+    `DoesNotFitCpu_ExactLinesWithWhatWouldFit` and `DeepTankDoesNotFit_NamesDeepParticles`, `BuildBudgetLines,
+    WideSceneLayerDoesNotFit_NamesPlanAreaLimit` (pool 10 x 5 m at 1 cm: `... up to about 3.2 m² (this scene: 50
+    m²) ...`), `BuildRunBudget, LayerDoesNotFit_SlabLimitFromBatches`, `WriteRunReport,
+    StartCellsAndSlabLimitInJson`. Size changes: `WriteSavedState, MergeWaitPasses_RoundTrip`, `AdvanceRunTo,
+    FrameDoneCarriesSizeChange` (bits of the step-order sum of the committed reports), `WriteRunReport,
+    SizeChangeFieldNamesInJson` (`"size_change_kinetic_energy_j"`, `"mismatched_particle_count"`), `EventWriter,
+    FrameDoneCarriesSizeChange` (`"size_change_kinetic_energy_j": -3.75`, 12 particles).
+
 **Reference pieces.** One: `reference/io/read_array_file.py`, written from section 5.3 alone with `struct`
 and the FlatBuffers Python package, no code shared with the writer. It removes the uncertainty a round-trip
 test cannot: that the file is what the specification says, not merely what our reader expects (`main` found
@@ -1963,6 +2126,10 @@ is the step's (its decision 9).
 | refinement region, refinement map | `cell_size_regions`, `cell_size_map`, `grid::CellSizeRegion`, `ArtistCellSizes` | A63 |
 | (old percentage warning margins) | `kMemoryTakenToleranceBytes`; warnings by amount | A43, A58 |
 | (a resume in another mode) | `RunModeChange`, `run_mode_changes`, `--choose-mode-again`, `kRecordedModeDoesNotFit` | A40 |
+| start particles on a lattice of `w_min / 2` over every start region | `StartRegion`, `BuildStartParticles`, `StartParticleArrays`, `step::BuildStartCells`, `StartCellsAtLevel`; "about eight particles per liquid cell, sized to their cell" | A65, A66 |
+| `particle_spacing` (start and sources) | the cell's width `w`: rest volume `(w/2)^3`; sources `(w_min/2)^3` | A66 (the open sea's own `particle_spacing` is unchanged) |
+| (energy of particle splits and merges) | `ParticleSizeChange`, `size_change_kinetic_energy` (JSON `size_change_kinetic_energy_j`), `mismatched_particle_count` | A67 |
+| (why a wide scene cannot run in batches) | `slab_limit` (`batches::SlabLimit`), the `batches:` budget line, plan area | A68 |
 | `Diagnostic { domain, field, object, cause }`, `E-CLI-InvalidArgument` | `IoFailure`, `FailingModule`, `Finding` with `module` and `code` (`ToName`), `ToMessage` | A2; stable codes per changes-to-apply |
 
 ## 10. Not ported
@@ -2097,8 +2264,9 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     springy numbers are to be copied from the add-on's defaults on `main` (`blender/fluidity/__init__.py`)
     and reviewed by you. Start particles: 8 per smallest cell with a quarter-spacing jitter. Confirm both, or
     give the table.
-    Decision: the table as proposed without `kSand` (A9: the sand module adds it), and 8 particles per
-    smallest cell with a quarter-spacing jitter (recommended option, owner's standing instruction,
+    Decision: the table as proposed without `kSand` (A9: the sand module adds it), and ~~8 particles per
+    smallest cell with a quarter-spacing jitter~~ (**replaced** by decision 42, A66: 8 per start cell at its own size,
+    jitter `w/8`) (recommended option, owner's standing instruction,
     2026-11-14). The snow and springy numbers are copied from `main` and stay open to the owner's review.
     Replaced in part (A25): water 0 Pa s (`kWater`: 1000 kg/m3, 0 Pa s, 0.072 N/m), so a water scene uses the
     pressure solve.
@@ -2249,6 +2417,31 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     packaging test (A49).
     Decision: as stated (owner answer A49; `plan-decisions.md` "Owner answers A40-A64 applied", item 9).
 
+41. **Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+    particle's `size_level` is its cell's level, its rest volume is one eighth of its cell (`(w/2)³` for a cell of
+    width `w`), so a cell `k` levels coarser than the smallest holds 8 particles each of `8^k` times the smallest
+    particle's volume. The does-not-fit particles line takes the A65 wording; no text here says one particle size
+    everywhere.
+    Decision: as stated (owner answer A65; `plan-decisions.md` "Owner answers A65-A68 applied", A65).
+42. **A run starts on the adaptive grid (A66).** `BuildRun` (and `check`) build `StartRegionShape`s, call
+    `step::BuildStartCells`, `io::BuildStartParticles` (8 cell-eighth centres per start cell, inside region and outside
+    solids, `rest_volume (w/2)^3`, `size_level` = the cell's, jitter `w/8`), `step::BuildRunPlan` and
+    `step::BuildSimulation` in that order; the plan and the budget count the start exactly (`start:` line); a resume
+    never rebuilds the start and plans on its saved state; sources stay at `(w_min/2)³` without a `size_level` field;
+    explicit particles are balls of radius `w_min / 2` for the start cells; without cell resize the start cells are
+    smallest. **Replaces** decision 12's "8 particles per smallest cell with a quarter-spacing jitter".
+    Decision: as stated (owner answer A66; `plan-decisions.md` "Owner answers A65-A68 applied", A66); the jitter of
+    `w/8`, the explicit-particle balls, the smallest-level artist region without cell resize, the resume plan on the
+    saved state and the removed source field are this design's (see Open 8).
+43. **Particles whose size no longer matches their cell (A67).** The saved state holds `merge_wait_passes`;
+    `frame_done` and `run_report.json` carry `size_change_kinetic_energy_j` (C++ `size_change_kinetic_energy`; J, summed over the frame's committed
+    steps) and `mismatched_particle_count` (the frame's last committed step).
+    Decision: as stated (owner answer A67; `plan-decisions.md` "Owner answers A65-A68 applied", A67).
+44. **Order of the later work; slab batches named (A68).** The first version keeps slab batches and the pinned
+    surface; the budget says so with the `batches:` line and the plan-area limit `R x 16 w_min² / (n x b)` from
+    `batches::SlabLimit`. The grid-only group is the last later group.
+    Decision: as stated (owner answer A68; `plan-decisions.md` "Owner answers A65-A68 applied", A68).
+
 **Open**
 
 1. ~~`kMemoryWarningShare = 1.10` and `kCopyWarningShare = 1.25` are new constants (owner to confirm).~~ Decided
@@ -2263,3 +2456,8 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
 6. The slip length as two scene fields (`slip_length`, `free_slip`) instead of plan-decisions' one field holding
    `"free"` or a number (decision 36); the add-on writes what this schema says. Owner to confirm.
 7. Starting values: `kMaxCellSizeMapSidePixels = 8192`, `kMemoryTakenToleranceBytes = 2 MiB`.
+8. (A66) Details this design chose: start jitter `w/8` per axis (the old quarter-spacing rule at each cell's size);
+   explicit start particles as `kBall` shapes of radius `w_min / 2` for `BuildStartCells`; one smallest-level artist
+   region over the domain when the scene has no `cell_resize`; a resume plans on its saved state's cells and
+   particles; `sources[].size_level` removed; `max_cell_count = 64 x grid::kMaxCellBlocksLimit` (the step's value). Owner to
+   confirm.

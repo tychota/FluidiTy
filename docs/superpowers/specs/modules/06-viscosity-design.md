@@ -763,7 +763,10 @@ k / h`, `sinc(x)^6 ~ 1 - (pi x)^2`); one implicit diffusion step damps it by `1 
 equating the two gives `nu_PIC = h^2 / (4 dt)`, and a liquid that keeps share `alpha` of its own velocity
 (`own_motion_kept`) is filtered on the remaining `1 - alpha`, so `nu_num = (1 - alpha) h^2 / (4 dt)` and `r = nu /
 nu_num = 4 N / (1 - alpha)`. In 3D the filter is a product per axis and the leading term the same Laplacian, so `r`
-does not depend on scale for resolved features. It assumes uniform particles of equal mass (as XPIC does). The
+does not depend on scale for resolved features. It assumes uniform particles of equal mass (as XPIC does): true
+within each cell, which holds about eight particles of its own size (rest volume `(w/2)³`, A65), so `h` is the
+smallest cell width, where the surface and the smallest features are (replaced: "uniform particles of equal mass"
+read as one particle size everywhere). The
 largest step gives the smallest `nu_num`, so `r` is a lower bound. The second number is the decay of the smallest
 faithfully kept feature, a sine `kSmallestVisibleWavelengthInCells = 4` cells long, over the run's duration `T`:
 `1 - exp(-nu (2 pi / (4 h))^2 T) = -expm1(-pi^2 D / 4)`, `D = nu T / h^2`. Advice to set viscosity to 0 when `r <
@@ -976,7 +979,8 @@ displaced by `lambda` (Navier), and the force on every solid read from the solve
 Uhlmann 2005); 8 (label `<sec-viscosity-advice>`) when viscosity is not visible: the derivation of 5.8, stated in
 the paper in these words: "The smoothing figure `nu_num = (1 - alpha) h^2 / (4 dt)` is this project's derivation from
 the filter analysis of Hammerquist and Nairn (2017), not a published value", with the step from `sinc^6` to the
-diffusion step written out, its assumptions (uniform particles of equal mass, quadratic weights) and why the ratio
+diffusion step written out, its assumptions (uniform particles of equal mass within a cell, eight per cell sized to
+it, A65; `h` the smallest cell width; quadratic weights) and why the ratio
 is a lower bound; then the four-cell decay over the run and the Reynolds number, and the note that viscosity 0 also
 switches the liquid from sticking to slipping.
 
@@ -1231,6 +1235,17 @@ Decisions taken after this design was first written (recorded in the viscosity a
 30. **No grid-only region (A64).** Decision: section 4's `ApplyGridOnlyRegionToGrid` input is not in the first
     version; every liquid cell holds particles, so `CellsFromParticles` carries every ingredient volume. Source: owner
     answer A64; `plan-decisions.md` "Owner answers A40-A64 applied" item 1.
+
+31. **Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+    particle's `size_level` is its cell's level, its rest volume `(w/2)³`, so a cell k levels coarser than the smallest holds 8 particles each
+    of `8^k` times the smallest particle's volume. Decision: the advice of 5.8 keeps `h` = the smallest cell width;
+    its "uniform particles of equal mass" holds within each cell (wording changed in 5.8 and section 8). The viscous
+    solve reads cell values only, so nothing else changes. Source: owner answer A65; `plan-decisions.md` "Owner
+    answers A65–A68 applied", A65.
+32. **Other answers of the A65–A68 pass.** A66: the start grid comes from `step::BuildStartCells`; the solve sees a
+    grid version like any other. A67: drifted particles change only particle arrays. A68: a column cut would make the
+    joint solve's loaded pieces tiles (as pressure's `SolveBatches`, later); no task now. Source: `plan-decisions.md`
+    A66, A67, A68.
 
 **Open** (for the owner; the two A18 open points, sealed gas and springy solids beside a viscous liquid, are
 decided by A24 and option C):

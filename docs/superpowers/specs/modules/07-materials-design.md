@@ -1,6 +1,7 @@
 # Materials module design
 
-Status: decisions applied 2026-11-14 (`owner-answers.md`, `changes-to-apply.md`). Module 6 of the build order
+Status: decisions applied 2026-11-14 (`owner-answers.md`, `changes-to-apply.md`); A67 checked 2026-11-15
+(decision 15: no per-particle state to merge). Module 6 of the build order
 (after viscosity, before solids). Sand is not part of this module: it is the sand module, last of the build order, after
 the Blender add-on (owner A9), designed in `15-sand-design.md`; this design names the extension points it
 fills (5.9).
@@ -628,7 +629,13 @@ rule's effect is the separate `omitted_impulse`.
 Per material, in one place: liquids and mixtures carry `volume_ratio` and the table numbers; gas one
 ingredient with the gas rules of 5.1 and `volume_ratio` 1; snow the two state arrays, the limits and the
 support rule; springy solids the whole deformation and `plate_side` (set by solids, respected by transfer);
-moving solids nothing here.
+moving solids nothing here. Verified (A67): the kinds the particles module may split and merge (`kLiquid`,
+`kGas`, `CountRule::kMayBeSplitAndMerged`) carry no per-particle material state beyond `volume_ratio` and
+`ingredient_fractions`; the merge rule of both is the particles module's (rest-volume-weighted ratio,
+current-volume-weighted fractions, particles design 5.6 item 3). This module's per-particle arrays
+(`internal_force_per_area`, `friction`, `own_motion_shares`, sound bounds, error codes in `MaterialBuffers`) are
+`kOneStepTry` working arrays recomputed from the committed state within each step, never carried across a resize,
+so a split or merge needs no rule for them.
 
 ### 5.9 Extension points the sand module fills
 
@@ -717,6 +724,7 @@ is the same formula in a loop.
 | `BuildMaterialTable, ExportNames` (NEW) | `"Red Syrup"`, `"water-2"`; then `"A b"` with `"a_b"`; then `""` | `red_syrup`, `water_2`; `kBadExportName` at index 1; `kBadExportName` at index 0 | exact |
 | `ToName, EveryValue` (NEW) | each `MaterialsError` | lower snake case of the enumerator without `k`, all distinct | exact |
 | `MaterialsError, OutOfMemory_IsTheLastValue` NEW (reconcile 31) | the enum | `kOutOfMemory` is value 15, the last | exact |
+| `BuildParticlesSettings, SplitAndMergedKinds_CarryNoMaterialState` NEW (A67) | AllKinds, without and with plates in the scene | every `kMayBeSplitAndMerged` entry (liquid, gas) has `has_springy_deformation` and `has_permanent_volume_change` false; every entry with either true is `kKeepsItsCount` | exact |
 | `BuildMaterialBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` NEW (A58) | AllKinds, counts {100,50,20,10}, 10 blocks, CPU block of `ComputeRunMemoryBytes` of the estimate | `handed_out_bytes() == reserved_bytes()` | exact |
 | `BuildMaterialBuffers, RunMemoryOnePieceShort_IsOutOfMemory` NEW (A58, release builds) | block 256 B short | `kOutOfMemory`, magnitude = the failing piece's bytes | exact |
 | `ComputeCellSqueezeValues, TwoIngredients_ClosedForm` | volumes 1:3, stiffness 2 and 6 GPa, `p = 1e6` | harmonic mix; ratio from the two laws; all `kCannotBeSqueezed` gives +infinity and 1 | `1e-13` |
@@ -977,3 +985,15 @@ item 11.
 **14. Other answers of the A40–A64 pass.** A64 (particles everywhere), the cell size rule, viscosity advice and
 the solid items change nothing in materials: every particle keeps its material response whatever its cell size.
 Source: `plan-decisions.md` "Owner answers A40–A64 applied".
+**15. Materials that may be split and merged carry no other state (A67).** The particles module now splits and
+merges, at every resize pass, every particle whose size no longer matches its cell. Checked here: `kLiquid` and
+`kGas` (`CountRule::kMayBeSplitAndMerged`, 5.1) carry no per-particle material state beyond `volume_ratio` (gas:
+always 1) and `ingredient_fractions`; their merge rules are the particles module's (`volume_ratio`
+rest-volume-weighted, fractions current-volume-weighted; a split copies both), and gas markers' `mass` (a
+`sample_weight`) is summed like a mass. `springy_deformation` and `permanent_volume_change` belong only to
+`kKeepsItsCount` kinds (snow, springy solid, and later sand, 5.9 item 1), which are never split or merged. The
+`MaterialBuffers` arrays are one-step working arrays (6), not state. Decision: no merge rule is added here; no
+materials signature changes; a later kind that may be split and merged and carries its own per-particle state
+must state its rule (extensive values summed, intensive values mass-weighted) in both designs. Test
+`BuildParticlesSettings, SplitAndMergedKinds_CarryNoMaterialState` (plan Task 6). Source: owner answer A67;
+`plan-decisions.md` "Owner answers A65–A68 applied", A67 "Per-field rule of a merge".

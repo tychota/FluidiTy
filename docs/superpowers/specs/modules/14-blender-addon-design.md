@@ -5,7 +5,8 @@ plan's decisions recorded in `plan-decisions.md` (D1 names under A22, D2 test le
 D8 finding codes, D12 one-version witness records, D13 wind from Blender force fields). Updated again on 2026-11-14 with A24, A25 and
 the reconcile pass's coordinator item (7) (section 11, decisions 17 and 18), and with A27 (decision 19). Updated on
 2026-11-15 with owner answers A40, A47 to A50, A53, A57 to A60, A63 and A64 (`plan-decisions.md`, "Owner answers
-A40-A64 applied"; section 11, decisions 20 to 31). Module 12 of the
+A40-A64 applied"; section 11, decisions 20 to 31), and with A65 to A68 (decision 32: wording and reading only).
+Module 12 of the
 build order ("Blender add-on", file 14 of this folder), the last consumer before sand: it adapts to the final
 designs of I/O and CLI (commands, events, exit codes, scene file, `file_list`, `report`, `check --cache`,
 `run --outputs`), of surface with foam and spray (products, channel table, format table and its witness
@@ -483,7 +484,8 @@ class RunBudgetFacts:                   # NEW (A17, planned cost). scene_checked
     viscous_effect_run_seconds: float   # NEW (A57). s: the run duration T of the four-cell figure.
     reynolds_length_m: float            # NEW (A57). m: the domain box's smallest extent L.
     lines: tuple[str, ...]              # BuildBudgetLines, verbatim (with the liquids: lines, A57, the deep particle
-                                        #   line, A64, and on Windows the fallback note, A58). The add-on computes
+                                        #   line, A64, worded by A65, the start: line, A66, the batches: line, A68, and on Windows the
+                                        #   fallback note, A58). The add-on computes
                                         #   nothing from the numbers.
 @dataclass(frozen=True)
 class ViscousEffectOfLiquidFacts:       # NEW (A57). I/O's ViscousEffectOfLiquid, field for field.
@@ -507,6 +509,9 @@ class RunPlanFacts:
     run_mode: str                       # "one_piece" | "batched" | "batched_with_solves_in_pieces" (A15)
     estimate_by_module: Mapping[str, int]; on_processor_bytes: int; allowed_bytes: int
     counts: Mapping[str, int]; batch_plan: Mapping[str, float] | None
+    # NEW (A66). The plan counts' start_cells_per_level (one int per size level, level order); counts holds
+    # start_particle_count and start_cell_blocks. Empty when the event has none.
+    start_cells_per_level: tuple[int, ...]
     budget: RunBudgetFacts | None       # NEW (A17). None when the event has no `budget`.
 @dataclass(frozen=True)
 class NativeCheck:                      # The `scene_checked` event.
@@ -743,12 +748,13 @@ button that selects its domain).
 
 | Class | Label | Layer | Content |
 |---|---|---|---|
-| `FLUIDITY_PT_everyday` | FluidiTy | everyday | Status line; NEW (A48) the one note of `build_blender_version_note` when it is not None; one primary action chosen from the state (NEW, A40: "Resume in another mode" beside Resume when the findings hold `recorded_mode_does_not_fit`); findings; domain size; smallest cell width with the cell and particle counts and the run mode once checked; frames and seconds; output switches; preset. |
+| `FLUIDITY_PT_everyday` | FluidiTy | everyday | Status line; NEW (A48) the one note of `build_blender_version_note` when it is not None; one primary action chosen from the state (NEW, A40: "Resume in another mode" beside Resume when the findings hold `recorded_mode_does_not_fit`); findings; domain size; smallest cell width with the cell and particle counts (A66: the start's, `sum(plan.start_cells_per_level)` cells and
+`plan.counts["start_particle_count"]` particles) and the run mode once checked; frames and seconds; output switches; preset. |
 | `FLUIDITY_PT_participants` | Participants | everyday | `FLUIDITY_UL_participants`: name, role, shape, motion, finding mark. Below: role, shape, motion and substance of the active row. NEW (A60): one `build_liquid_force_line` per selected `SOLID` participant whose `participant_id` is in the shown run's `RunStatus.liquid_forces` (every solid, any motion); nothing before the first `frame_done`. |
 | `FLUIDITY_PT_outputs` | Outputs | everyday | `FLUIDITY_UL_outputs`: product, format, state (ready, stale and rebuildable, stale and needs a new run, missing files, not built in n frames, not requested), frames, Select. Per row: channels, those not witnessed marked "written, not witnessed". Run menu. Rebuild Outputs. Find Moved Cache. |
 | `FLUIDITY_PT_physical_detail` | Physical Detail | physical | Substances and ingredients, pairs, friction, source rates, free solid mass, NEW (A59) the free solid's Guide (Axes: the four axis ticks; Rail and Hinge: Guide Object), NEW (A53) Slip Length with Free Slip for a `FIXED` or `DRIVEN` solid, drawn only when a liquid substance of the domain has an ingredient with viscosity above 0, open sea, gas law and burn, wind; NEW (A63) a box "Cell size": Cell Size Regions (the collection, then one row per object with its Cell Width), Cell Size Map (the image), the box inactive (`layout.active = False`) with the line "Used when cell resize is on" while `uses_cell_resize` is off. Closed by default. |
 | `FLUIDITY_PT_solver_detail` | Solver Detail | solver | Size levels, cell resize (surface and solid reach; no grid-only depth, A64), step duration, retries, pressure limit, own motion shares, pressure law. Closed. |
-| `FLUIDITY_PT_performance` | Performance | performance | Run on; memory estimate against allowed bytes by module; one piece or batched with the batch plan; NEW (A17): under the heading "Planned cost (estimate)" the last full check's `plan.budget.lines` verbatim, one label per line (nothing when `budget` is None), among them the `liquids:` lines (A25; A57's advice and note lines), the deep particle line (A64) and on Windows the fallback note (A58); NEW (A58): `memory_share_of_free` and Memory Left Free (MiB) beside Run on (no share of total); under "Measured cost" the shown run's `RunStatus.cost.lines` then `cost.warnings` verbatim, one label per line (nothing when `cost` is None); saved state interval and expected work on resume; time by category; memory used. Closed. |
+| `FLUIDITY_PT_performance` | Performance | performance | Run on; memory estimate against allowed bytes by module; one piece or batched with the batch plan; NEW (A17): under the heading "Planned cost (estimate)" the last full check's `plan.budget.lines` verbatim, one label per line (nothing when `budget` is None), among them the `liquids:` lines (A25; A57's advice and note lines), the deep particle line (A64, A65 wording), the `start:` line (A66), the `batches:` slab line (A68) and on Windows the fallback note (A58); NEW (A58): `memory_share_of_free` and Memory Left Free (MiB) beside Run on (no share of total); under "Measured cost" the shown run's `RunStatus.cost.lines` then `cost.warnings` verbatim, one label per line (nothing when `cost` is None); saved state interval and expected work on resume; time by category; memory used. Closed. |
 | `FLUIDITY_PT_inspect` | Inspect | inspect | The three facts with frames; last try and its reject reason and stage; activity; ages of last event and last advance; lock holder; Read Particle; Check Outputs; Open Log; Copy Support Report. Closed. |
 
 ### 3.12 Witness tools (`tools/blender/witness/`, `native/fluidity/cli/write_witness_files.cc`)
@@ -896,7 +902,7 @@ used, as I/O declares them:
 | `heartbeat` | `RunProgress` fields (`activity`, `frame_in_progress`, `last_frame_done`, `last_saved_state_frame`, `last_try`, `waiting_frames`, `preparing_done`, `preparing_total`), `last_advance_sent_at` | ages, activity |
 | `try_done` | as I/O lists; only with `--report-every-try`, which the add-on passes only from Inspect | `last_try` |
 | `finding` | one `Finding` | appended |
-| `frame_done` | `frame`, `time`, files, `not_built[]`, counts, `MemoryReport` numbers, elapsed by category, NEW (A60) `liquid_force_on_solids[] {solid_id, pressure_force_n, pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}` | `last_listed_frame`; `liquid_forces` replaced |
+| `frame_done` | `frame`, `time`, files, `not_built[]`, counts, `MemoryReport` numbers, elapsed by category, NEW (A60) `liquid_force_on_solids[] {solid_id, pressure_force_n, pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}`; NEW (A67) `size_change_kinetic_energy_j`, `mismatched_particle_count` (read by nothing in the add-on; the run report keeps them) | `last_listed_frame`; `liquid_forces` replaced |
 | `frame_checked` | `frame` | `checking_frame` |
 | `saved_state_listed` | `frame`, `byte_count` | `saved_state_frame` |
 | `stopping` | `request` (`cancel`, `stop_after_frame`, `end_of_input`) | `stopping` |
@@ -984,7 +990,8 @@ are omitted when not used (the last two also when `cell_resize` is); any other
 field the add-on leaves out takes the native default and is reported in `filled_defaults`. One surface group
 holds every liquid substance (all liquids are one material set, step decision); `points.material_ids` never
 names the gas. What I/O derives and the add-on therefore never writes (I/O 5.1 step 4): particle rate, mass and
-rest volume of a source from `volume_rate`; the start particles of each region (8 per smallest cell);
+rest volume of a source from `volume_rate`; the start particles of each region (~~8 per smallest cell~~ A66: about eight per start cell, sized to their
+cell, on the start cells I/O builds; the add-on writes only the region's shape, material and velocity);
 `angular_velocity_until_next` of driven paths from the orientations; box inertia from mass and shape; wave
 paddle keys from `wave_stroke`; blocking materials, plates and `has_liquid_or_gas`; material sets.
 
@@ -1174,7 +1181,11 @@ tests.
    smoothing, the change of a feature four cells wide over the run, the cells of spreading and the Reynolds
    number; then `advice: <name>'s viscosity will not be visible: set it to 0` when advised, and for every viscous
    liquid `note: at viscosity 0 <name> slips along solids instead of sticking`. When particles do not fit, the
-   line `particles: <n> needed, ... (deep liquid without particles comes later)` (A64); on Windows the note
+   line `particles: <n> needed (about eight per liquid cell, sized to their cell); ... (deep liquid without particles
+   comes later)` (A64, worded by A65); the start's cells per level, `start: <c> cells (<n> of <w> m, ...), <p>
+   particles (about eight per liquid cell, sized to their cell)` (A66); when slab batches stop a wide scene, `batches:
+   this version cuts batches in horizontal slabs; ... batches cut by columns, which remove that limit, come later`
+   (A68); on Windows the note
    `note: on Windows a full GPU makes the run slow instead of failing; ...` (A58). After a run the panel draws the
    end event's `cost.lines` and `cost.warnings` the same way (A58: `gpu memory: planned ...`, `warning: ...
    requested beyond the planned ...`, `warning: copies per step ... are above the planned ...`, `warning: gpu memory
@@ -1520,6 +1531,9 @@ recorded by hand in `docs/blender-runs.md`. For (b) and (c) the commit names the
 | `test_slip_length_written` (NEW, A53, plan Task 8) | Syrup; a fixed box with slip 0, a driven plate with 0.01 m, a fixed box with Free Slip, a free box; water only with slip 0.01 m | (`slip_length`, `free_slip`) = (0.0, false), (0.01, false), (0.0, true); neither key on the free box; with water neither key |
 | `test_guide_without_object_is_a_finding` (NEW, A59, plan Task 13) | A free solid with Rail and no guide object | `guide_object_missing`, `BLOCKS_RUN`, the participant's id |
 | `test_performance_panel_draws_budget_lines` (NEW, A17, plan Task 32, background Blender) | `FLUIDITY_PT_performance` with a recording layout after a full check with a budget | Each line drawn once, in order, under "Planned cost (estimate)"; nothing when `budget` is None |
+| `test_performance_panel_draws_start_and_slab_lines` (NEW, A66, A68, plan Task 32, background Blender) | Budget lines holding I/O's `BuildBudgetLines, StartCellsLine_ByCellWidth` `start:` line and the `batches:` line of `WideSceneLayerDoesNotFit_NamesPlanAreaLimit` | Each drawn verbatim, once, in order (`m²` kept) |
+| `test_everyday_counts_are_the_start` (NEW, A66, plan Task 32, background Blender) | The plan of the next row | The everyday panel draws "4,608 cells" and "36,864 particles" |
+| `test_start_counts_read_from_scene_checked` (NEW, A66, plan Task 12) | A `scene_checked` whose plan counts hold `start_cells_per_level` [0, 512, 4096] and `start_particle_count` 36864 | `plan.start_cells_per_level == (0, 512, 4096)`, `plan.counts["start_particle_count"] == 36864`; the everyday panel's line shows 4,608 cells and 36,864 particles; without the keys: `()` and no counts drawn |
 | `test_role_table_is_the_only_source` | Import every operator and property | Each `role`, `shape`, `motion` enum equals `to_enum_items(ROLE_TABLE)` |
 | `test_scene_fields_cover_the_scene_file` | Write a description with every field set | Every leaf path of the file has one `SceneField`; every `SceneField` appears; each has a unit and a tooltip |
 | `test_repair_table_covers_suggested_changes` | A recorded `capabilities` | Every `SuggestedChange` name of the step and I/O's four have an entry |
@@ -2006,6 +2020,14 @@ A decision replaced by a later one keeps its text and is marked "Replaced".
 31. **Resume in another mode.** Decision: `StartRequest.choose_mode_again`, `resume ... --choose-mode-again`, the
     5.4 row for `recorded_mode_does_not_fit`, the button "Resume in another mode" (3.5, 3.7, 3.10, 3.11, 5.4).
     Owner answer A40; `plan-decisions.md` "Owner answers A40-A64 applied", item 10.
+32. **Particle size follows the cell; the start on the adaptive grid; size changes; the slab limit (A65 to A68).**
+    The add-on seeds no particle and computes no count: it writes the start regions' shapes (I/O builds the start
+    cells and seeds about eight particles per liquid cell, sized to their cell) and draws I/O's budget lines verbatim,
+    now with the A65 particles wording, the `start:` line and the `batches:` slab line. The everyday panel's cell and
+    particle counts are the start's (`RunPlanFacts.start_cells_per_level` summed, `counts["start_particle_count"]`).
+    `frame_done`'s `size_change_kinetic_energy_j` and `mismatched_particle_count` are not read. No scene field changes
+    (the add-on never wrote `sources[].size_level`, which I/O removes).
+    Decision: as stated (owner answers A65 to A68; `plan-decisions.md` "Owner answers A65-A68 applied").
 
 **Open** (for the owner; nothing here is built on an assumption):
 

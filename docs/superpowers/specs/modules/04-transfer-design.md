@@ -741,6 +741,7 @@ test's own magnitude: `M = sum of |contribution|` for a sum, `U` = largest speed
 | `ParticlesToGrid, AnyCloud_ConservesMassAndMomentum` | 200 random particles over a size step and a plate, random fitted changes | per axis, face totals equal particle totals | `64 eps M` |
 | `ParticlesToGrid, ConstantVelocity_EveryFaceHasIt` | all particles at `{1, -2, 3}` m/s | velocity at each `kFromParticles` face | `8 eps U` |
 | `ParticlesToGrid, LinearFieldCompleteNeighbourhood_IsReproduced` | uniform cells, `v = a + B x`, fitted change `B` | face velocity `a + B x_f` | `1e-13 U` |
+| `ParticlesToGrid, LinearFieldParticlesSizedToTheirCell_IsReproduced` (NEW, A65) | size-step grid; 8 particles per cell at its cell-eighth centres (`±w/4`), mass `1000 (w/2)³` (1 kg in the 0.2 m cells, 0.125 kg in the 0.1 m cells), `v = a + B x`, fitted change `B` | every `kFromParticles` face with centre in `x` `[0.4, 1.2]`, `y`, `z` `[0.2, 0.6]`: `(a + B x_f)_axis`; per axis face mass sum = particle mass sum | `1e-13 U`; `64 eps M` |
 | `ParticlesToGrid, InternalForce_AddsUpToZeroPerParticle` | one particle, random symmetric matrix, with and without a plate | sum of face forces per axis is 0 | `64 eps M` |
 | `ParticlesToGrid, CompleteNeighbourhood_ConservesAngularMomentum` | uniform cells, no plate | `sum x_f x q_f = sum m (x x v + part from fitted change, spread h^2/4)` | `1e-12` scale |
 | `ParticlesToGrid, WeightSumThresholds_SetValueKind` | weight sums 0, at the minimum, above | `kNoValue`, `kTooFewParticles` (velocity 0), `kFromParticles` | exact |
@@ -925,6 +926,9 @@ instruction" below means: recommended option (owner's standing instruction, 2026
 8. **Too-few-particles rule.** `minimum_face_mass` in kg becomes `min_weight_sum_at_face` (no unit, "how
    many particle shares reached the face"), default 0 as on `main`. Confirm the change of unit, or keep kg.
    Decision: `min_weight_sum_at_face`, no unit, default 0. Standing instruction (owner-questions Q34).
+   Amended (A65, 2026-11-15): every liquid cell holds about eight particles of its own size, so the weight sum at a
+   face (a count of particle shares) is about the same at every level and one threshold means the same everywhere;
+   heavier particles of coarse cells enter through `m_p` only.
 9. **Ingredient amounts on the grid.** Pressure and viscosity need density and viscosity per cell for
    mixtures. Options: (a) transfer adds a cell-destination sum with the same order contract when those
    modules ask; (b) each module sums its own. Recommendation: (a), not in the first transfer commits.
@@ -969,3 +973,15 @@ instruction" below means: recommended option (owner's standing instruction, 2026
     value, returned only by the builders (for `BufferError::kOutOfMemory`, `kRunMemoryTooSmall` and the grid's
     `kOutOfMemory`), magnitude = bytes asked; the plan decision that mapped them to `kRunOnCallFailed` is
     **replaced**. Source: `plan-decisions.md` item 11.
+18. **Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+    particle's `size_level` is its cell's level, its rest volume `(w/2)³`, so a cell k levels coarser than the smallest holds 8 particles each
+    of `8^k` times the smallest particle's volume. Decision: no change to the method. The face sums weigh each
+    particle by `m_p n_f` and the fits use the particle's cell width, so a linear field is reproduced across a size
+    change whatever the particle masses (new test `ParticlesToGrid, LinearFieldParticlesSizedToTheirCell_IsReproduced`,
+    plan Task 9); `min_weight_sum_at_face` counts shares, about equal at every level (decision 8, amended). Source:
+    owner answer A65; `plan-decisions.md` "Owner answers A65–A68 applied", A65.
+19. **Other answers of the A65–A68 pass.** A66 (start on the adaptive grid): the first transfer reads the seeded start
+    particles like any step. A67 (drifted particles): a particle whose `size_level` differs from its cell for a few
+    passes is summed and fitted by its cell, as every particle is; split children and merged particles carry the
+    split or merged `C`. A68 (later work): the column cut would change only which blocks a batch holds; transfer's
+    per-block order is unchanged. Source: `plan-decisions.md` A66, A67, A68.

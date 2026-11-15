@@ -844,6 +844,8 @@ Load `drawing-with-cetz` and `visualizing-data`.
 
 ### Task 18: I/O: the sand preset, the scene file and the reference scene
 
+**Amended 2026-11-15 (A65, A66):** the reference scene is seeded by `io::BuildStartParticles` (8 particles per start cell, each of its cell's size); sand keeps its count, so `step::BuildStartCells` puts every sand cell at the smallest level; new test `BuildStartParticles, SandRegion_EightPerSmallestCell`.
+
 **Kind:** integration
 
 **Files:**
@@ -861,14 +863,18 @@ Load `drawing-with-cetz` and `visualizing-data`.
 - `sand_pile.json` (design decision 4): domain `[-0.6, 0.6]^2 x [-0.125, 0.6]`, all closed; smallest cell 0.0625,
   one level; a fixed flat solid floor at `z = 0`, normal up, `friction_scale` 1; one material, preset `sand`,
   `own_motion_kept` 0; one box start region centre `(0, 0, 0.275)`, half size `(0.075, 0.075, 0.175)` (the pile's
-  column, seeded by I/O's rule, 8 particles per smallest cell); frames 0 to 144 at 24 per second (6 s); points of
+  column, seeded by `io::BuildStartParticles`: 8 particles per start cell, each of its cell's size, and every sand
+  cell is of the smallest level because sand keeps its count, A65, A66); frames 0 to 144 at 24 per second (6 s); points of
   the sand material; a saved state every 24 frames.
 
 - [ ] **Step 1: Failing tests** (label `cpu`): `FindMaterialPreset, EveryName_FoundAndUnknownEmpty` (extended);
   `ReadSceneMaterials, SandPresetOnly_FilledFromPreset` (six `FilledDefault` rows, source `kPreset`);
   `ReadSceneMaterials, SandAngleNinetyDegrees_IsModuleFailedFromMaterials` (path `materials[0]`, module code
   `bad_material`); `ReadSceneMaterials, Sand_AtSolidFacesIsParticlesOnly`; `SampleStartRegion,
-  SandRegionsGetTheirOwnMaterial`; `BuildRunScene, SandReferenceScene_Reads` (preset values, floor, a non-zero start
+  SandRegionsGetTheirOwnMaterial`; `BuildStartParticles, SandRegion_EightPerSmallestCell` (A66: the reference
+  scene's box, the grid frame at `(-0.6, -0.6, -0.125)`: 5 x 5 x 11 = 275 particles, `size_level` the smallest,
+  `rest_volume` `0.03125^3` = 3.0517578125e-5 m3, mass 9.1552734375e-3 kg each, exact); `BuildRunScene,
+  SandReferenceScene_Reads` (preset values, floor, a non-zero start
   particle count, every start particle inside the box); `ContinueRun, Sand_FourWaysSameFiles` (as
   `Snow_FourWaysSameFiles`, 20 frames of `sand_pile.json`: both state arrays survive a saved state).
 - [ ] **Step 2: Run** (fail), **implement**, **run**. **Step 3:** gate. **Commit.** Subject:

@@ -298,7 +298,12 @@ struct SurfaceDistanceInputs {
   // NEW (C4). kAllLiquidMaterials: the field of every liquid, the one FindLiquidSurface reads. A material
   // index: the field of that liquid only, kept in its own buffer for FindMaterialBoundaries.
   std::uint32_t material_index = kAllLiquidMaterials;
-  double particle_radius = 0;      // m. A particle counts as a ball of this radius.
+  // NEW (A65; replaces `double particle_radius = 0; // m`). No unit, > 0. A particle counts as a ball of radius
+  // particle_radius_in_cell_widths x grid::ComputeCellWidth(frame, size_level of the particle): particles are sized
+  // to their cell (8 per cell, rest volume (w/2)^3), so one radius in metres would leave the corners of coarse cells
+  // uncovered. One product, no contraction: the same bits on both processors. The step passes
+  // StepSettings::particle_radius_in_cell_widths (0.5).
+  double particle_radius_in_cell_widths = 0.5;
   double surface_tension_max = 0;  // N/m, largest over ingredients. 0 skips around_surface_cells.
   // Not in the first version (A64): `const grid::CellValues<std::uint8_t>* is_grid_only_region` (1 for a cell of
   // the grid-only region, whose corners get -2 cell widths). Every liquid cell holds particles; the field returns
@@ -1170,7 +1175,11 @@ Symbols are used in formulas only. Ported means the maths is the one on `main`.
 **A. Liquid surface (`ComputeDistanceToSurface`, `FindLiquidSurface`)**
 
 1. *Distance (ported idea, new search).* At a point, `distance_to_surface = min over nearby particles of
-   (|point - particle position|) - particle_radius`, capped at `+2 cell widths`. ~~A point inside a
+   (|point - particle position|) - radius_p`, `radius_p = particle_radius_in_cell_widths x` the width of the
+   particle's `size_level` (A65: every liquid cell holds about eight particles of its own size, rest volume `(w/2)³`;
+   a cell's corner is `sqrt(3) w / 4 < w / 2` from its nearest own particle, so with the default 0.5 no point inside a
+   coarse cell reads as air; replaced: "`- particle_radius`", one radius in metres for every particle), capped at
+   `+2 cell widths`. ~~A point inside a
    cell marked `is_grid_only_region` gets `-2 cell widths`.~~ (Not in the first version, A64: every liquid cell
    holds particles, so the distance comes from particles everywhere.) The minimum is exact in any order, so no ordering rule is
    needed. Particles are found through the 27 blocks around the point's block, not by scanning all particles
@@ -1633,6 +1642,7 @@ Analytic and conservation, CPU (label `cpu`), each on uniform cells and on two s
 | `PressureScene, RisingGasPressureFollowedEachSolve` (A18: the path read one step late) | Hydrostatic column, no `SealedGasBlob` given; three solves with gas pressure 100, 150, 225 Pa passed as the committed array | the surface cell's pressure in solve k follows the k-th array (the one-step lag is the caller's) | solve limit |
 | Two liquids at rest (NEW, C4) | Oil (800) over water (1000) in a closed box, two size levels; sigma between them; public path `ComputeDistanceToSurface` -> `FindLiquidSurface` -> `FindMaterialBoundaries` -> `BuildPressureEquations` -> `SolvePressure` | pressure jumps by `rho_oil g h` across layers, `low_share` exact for a flat boundary, velocity after stays 0 (the sharp boundary is delivered; no exclusion test) | solve limit; `1e-12` |
 | `ComputeDistanceToSurface, AllZeroMask_IsNoLiquid` (NEW) | Particles of a gas material only, `material_is_counted` all zero, `kAllLiquidMaterials`; then the same mask with a material index | every distance positive (`+2 cell widths`; A64: no grid-only cell exists), `FindLiquidSurface` gives every open cell `kAir` and no equation; with a material index `kBadInput` | exact |
+| `ComputeDistanceToSurface, ParticlesSizedToTheirCell_NoAirInsideCoarseCells` (NEW, A65; plan Task 14) | Grid of width 0.1 m, two levels: level-0 cells (0.1 m) for `z` in `[0, 0.2)`, level-1 cells (0.05 m) for `z` in `[0.2, 0.4)`, `x`, `y` in `[0, 0.4)`; 8 particles per cell with `z` centre below 0.3 at its cell-eighth centres (`±w/4`), `size_level` of the cell; `particle_radius_in_cell_widths` 0.5 | every corner and centre with `z <= 0.25` negative; the coarse centre `(0.05, 0.05, 0.05)` reads `sqrt(3) 0.025 - 0.05 = -0.0066987298`; the same particles all given level 1 read `+0.0183012702` there (the hole a single radius leaves) | `1e-15` m |
 | `ToName, EveryError` (NEW; CHANGED A58) | Every `PressureError` value | 16 values, `kOutOfMemory` last (`"out_of_memory"`); lower snake case of the name without `k`, all distinct | exact |
 | `BuildPressureBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (NEW, A58) | `BufferSizes` of 10 blocks with every flag on, one piece and batched (loaded 4), `kCpu`; one CPU `RunMemory` of exactly the sum of `ComputeRunMemoryBytes(BuildPressureMemoryEstimate(sizes, kCpu), counts, where)` over both `where`, passed as both blocks (a CPU run) | build succeeds; `handed_out_bytes() == reserved_bytes()` | exact |
 | `BuildPressureBuffers, RunMemoryOneByteShort_IsOutOfMemory` (NEW, A58) | The same with one fewer byte reserved | `kOutOfMemory`, `magnitude` = bytes the last piece asked | exact |
@@ -1819,6 +1829,7 @@ McAdams 2010 and [6] Wang 2026 (multilevel solve), [9] Larionov 2017 (coupling w
 | Old name on `main` | New name | Source |
 |---|---|---|
 | `ProjectMacPressure3D`, projection | `SolvePressure` | DECIDED |
+| particle radius (one, m) | `particle_radius_in_cell_widths` (radius per particle from its `size_level`) | NEW (A65) |
 | `PreparedMacPressureSystem3D` | `PressureEquations` | DECIDED |
 | pressure row; link, edge | `cell_equation`; `cell_connection` | DECIDED |
 | `target_divergence * fluid_volume`, source | `added_volume_rate` | DECIDED |
@@ -2076,6 +2087,23 @@ Decisions taken after this design was first written (recorded in the pressure pl
     returned only by `BuildPressureBuffers` and `BuildSolveBatches` (also for `BufferError::kRunMemoryTooSmall`,
     `magnitude` = bytes asked); out of memory is no longer a `kRunOnCallFailed`. Source: reconcile item 31;
     `plan-decisions.md` "Owner answers A40-A64 applied", item 11.
+26. **Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+    particle's `size_level` is its cell's level, its rest volume `(w/2)³`, so a cell k levels coarser than the smallest holds 8 particles each
+    of `8^k` times the smallest particle's volume. Decision (plan decision of this pass): the surface distance reads a
+    radius per particle, `SurfaceDistanceInputs::particle_radius_in_cell_widths` (default 0.5) times the width of
+    the particle's level, **replacing** `particle_radius` in metres (with one radius of `w_min / 2`, the centre of a cell twice
+    the smallest width reads `+0.018` m at `w_min` 0.05 m, and coarser cells worse: air inside deep liquid). Near the surface every particle is
+    of the smallest level (A67 splits too-large particles there in one pass), so the surface position is unchanged.
+    Test `ComputeDistanceToSurface, ParticlesSizedToTheirCell_NoAirInsideCoarseCells`; plan Task 14 amended. Source:
+    owner answer A65; `plan-decisions.md` "Owner answers A65–A68 applied", A65.
+27. **Start on the adaptive grid (A66).** Changes nothing in pressure: the first `FindLiquidSurface` reads the seeded
+    particles of the start cells like any step. Source: `plan-decisions.md` A66.
+28. **Drifted particles (A67).** Changes nothing in pressure beyond decision 26: a particle of another level than its
+    cell (in a non-surface cell, for at most a few passes) keeps its own radius. Source: `plan-decisions.md` A67.
+29. **Batches cut by columns or tiles (A68, later).** The first version keeps slab batches; the later group "Batches
+    cut by columns or tiles (later)" of the cell resize and batches plan would make `SolveBatches`' loaded pieces x-y
+    tiles with four lateral borders, the fixed-order sums unchanged. No change and no task here now. Source:
+    `plan-decisions.md` A68.
 
 **Open** (left undecided by the plans; for the owner):
 

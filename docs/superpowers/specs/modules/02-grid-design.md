@@ -805,8 +805,10 @@ struct CellWidthsByLevel {                    // NEW. m. width[l] = ComputeCellW
 CellWidthsByLevel ComputeCellWidthsByLevel(const GridFrame& frame);
 struct CellSizeFacts {                        // NEW (A41, moved). What the rule reads about one active cell.
   double cell_width = 0;                      // m.
-  double depth_below_surface = 0;             // m. 0 at the surface; +infinity beyond reach.
-  double distance_to_solid = 0;               // m. +infinity: none within reach.
+  double depth_below_surface = 0;             // m. 0 at the surface; +infinity beyond reach. NEW (A66): a negative
+                                              //   value (step::BuildStartCells' centre bound minus half the cell
+                                              //   diagonal) counts as the surface: max(1, ...) gives w_min.
+  double distance_to_solid = 0;               // m. +infinity: none within reach. Negative: as for the depth (A66).
   double velocity_gradient_size = 0;          // 1/s. Held maximum (cell resize); 0 outside liquid.
   SizeLevel artist_size_level{};              // Finest level an artist region or the map asks here; 0: none (asking
                                               //   for the biggest level asks nothing: the width is clamped to w_max).
@@ -1175,6 +1177,16 @@ width with `CellWidthsByLevel`, never from `log2`; every term is a local read an
 and any batch cut, give the same bytes. The merge hysteresis, the held gradient and the curvature term are cell
 resize's (the last "later").
 
+NEW (A66): the same rule builds the start grid. `step::BuildStartCells` (CPU, before any step) computes facts from
+the start shapes alone, with the depth and solid distance at a cell's centre minus half its diagonal (`sqrt(3) w /
+2`; both distances are 1-Lipschitz, so the value bounds every point of the cell from below and may be negative),
+`velocity_gradient_size` 0 (a start region's velocity is uniform) and the artist level at the centre; it splits
+every cell wider than `ComputeWantedCellWidth`, one level per pass, then closes the one-size-step rule
+(`CheckSizeStepRule` passes on the result). The grid's first version is built from `StartCells::cells` by
+`BuildGrid` like any version; `ComputeNewCellSizeLevel`'s "none found" case no longer decides a start grid (it
+remains for a new cell far from every committed cell). Under A65 every liquid cell then holds about eight particles
+of its own size (rest volume `(w/2)³`), so the batch plan's 512 particles per full block hold at every level.
+
 ## 6. CPU and GPU
 
 - **Shared headers:** `grid_ids.h`, `grid_tables.h`, `weight_curve.h`, `nearby_face_weights.h`. All formulas
@@ -1281,6 +1293,7 @@ smallest level 4, far facts unless named):**
 | `ComputeReferenceSpeed, SlowLiquid_UsesGravityWaveSpeed` | (0.1, 9.81, 1); (5, 9.81, 1) | `sqrt(9.81)` bit for bit; 5 |
 | `ComputeArtistSizeLevel, RegionAndMap_FinestWins` | two regions (levels 2, 4), 4 x 2 map (levels 3, 1) | finest asked; map at every height; high edge maps to last column; outside: 0 |
 | `ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
+| `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest` (NEW, A66) | depth `-0.03` alone; distance `-0.03` alone; depth `-0.03` with artist level 2 | 0.0625; 0.0625; 0.0625, never NaN |
 | `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (`gpu`) | 10,000 fact sets from a fixed formula | identical bytes, levels and artist levels |
 | `ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu` (`gpu`) | random 3-level grid on both processors, 10,000 positions | identical levels |
 
@@ -1675,6 +1688,21 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     Accepted as written: `BuildTestGrid` replaces the allocating `BuildGrid(inputs, settings)`; the span forms of
     `ComputeGridCounts` and `CheckSizeStepRule` are kept. Source: `plan-decisions.md` item 11.
 40. **(A64) Particles everywhere** changes nothing in the grid. Source: `plan-decisions.md` item 1.
+41. **(A65) Particle size follows the cell.** Every liquid cell holds about eight particles of its own size: a
+    particle's `size_level` is its cell's level, its rest volume `(w/2)³`, so a cell k levels coarser than the smallest holds 8 particles each
+    of `8^k` times the smallest particle's volume. Nothing in the grid reads particle sizes; the planner's room
+    (`max_cell_blocks`) comes from the exact start cells (A66). Source: `plan-decisions.md` "Owner answers A65–A68
+    applied", A65.
+42. **(A66) The first grid comes from `step::BuildStartCells`.** Decision: the grid's first version is built from
+    `StartCells::cells` (not from particles at `new_cell_size_level`); `ComputeWantedCellWidth` takes a negative
+    depth or solid distance as the surface or the solid (5.9; test `ComputeWantedCellWidth,
+    NegativeDepthOrDistance_IsSmallest`); `CheckSizeStepRule` is the start grid's test oracle. No new grid name.
+    Source: owner answer A66; `plan-decisions.md` A66.
+43. **(A67) Drifted particles** change nothing in the grid. Source: `plan-decisions.md` A67.
+44. **(A68) Batches cut by columns or tiles (later).** A tile cut needs a batch to be a set of blocks that is not one
+    `CellBlockRange` of the slab order (an x-y tile spanning every height), so `GridPiece` and `FindBorderBlocks`
+    would gain a tile form; that is the later group's work, with no grid task in the first version. Source:
+    `plan-decisions.md` A68.
 
 **Open**
 

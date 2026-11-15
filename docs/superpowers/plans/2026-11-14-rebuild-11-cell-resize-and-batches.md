@@ -14,6 +14,14 @@ chooses one piece, batches, or batches with solves in pieces and shows the plann
 run agrees with the one-piece run within the solver's tolerance, and gives the same bytes for every cut and on
 every repeat. CPU first; device code compiled, not run.
 
+**Amended 2026-11-15 (A65, A66, A67, A68):** every liquid cell holds about eight particles of its own size: a
+particle's `size_level` is its cell's level, its rest volume is one eighth of its cell (`(w/2)³` for a cell of width
+`w`), so a cell k levels coarser than the smallest holds 8 particles each of `8^k` times the smallest particle's volume (A65). A run starts on
+`step::BuildStartCells`' grid, already following the size rule (A66); the test scenes that start all-smallest do so
+on purpose and say so. `ResizeCells` runs the extended `particles::AdjustParticleCount` at every pass, so particles
+that moved across a size change are split or merged (A67). The later groups come in the order of A68; the first
+version keeps slab batches and the pinned surface, and the batch plan exposes `SlabLimit` for the budget line.
+
 **Architecture:** Two folders. `native/fluidity/cell_resize/` (namespace `fluidity::cell_resize`): shared formula
 headers (`remap_math.h`, `velocity_gradient_math.h`, `cell_size_change_math.h`, `cell_resize_error.h`), CPU-only
 list work (`split_and_merge_cells.h`, the resize plan), one public header per operation group
@@ -112,10 +120,19 @@ This module's own:
   grid-only region, record, velocity blend, carried velocity or region transfer in the first version. A cell of size
   level `l` holds particles of `size_level == l`; `particles::AdjustParticleCount` merges eight particles of level
   `l + 1` into one of level `l` when a resize merges their cells and splits one into eight when it splits its cell
-  (C2: only particles at least 1.5 widths inside the change on both grids; drifted ones keep their level and are
-  counted in `skipped_incomplete_count`). One level per cell per resize, so a deep cell coarsens over several
-  resizes and its particles follow level by level. The tasks of the group "Deep liquid without particles (later;
-  needs review)" at the end are not part of this module's done-criteria.
+  ~~(C2: only particles at least 1.5 widths inside the change on both grids; drifted ones keep their level and are
+  counted in `skipped_incomplete_count`)~~ **replaced** (A67): at every pass, over all blocks, every particle whose
+  `size_level` differs from its cell's level is split (repeated to the smallest level in a smallest-level cell) or
+  merged (chunks of eight at once, two to seven after `kMaxMergeWaitPasses = 16` passes, a lone one stays, counted);
+  the both-grid check of C2 stays only for changed cells and counts an incomplete split instead of refusing it. One
+  level per cell per resize, so a deep cell coarsens over several resizes and its particles follow level by level.
+  **A65 wording, used everywhere:** every liquid cell holds about eight particles of its own size: a particle's
+  `size_level` is its cell's level, its rest volume is one eighth of its cell (`(w/2)³`), so a cell k levels coarser than the smallest holds 8
+  particles each of `8^k` times the smallest particle's volume. **A66:** runs start on `step::BuildStartCells`' grid;
+  a test scene that starts all-smallest does so on purpose (it tests coarsening) and says so. The tasks of the later
+  groups at the end ("Can the fine surface band shrink from 8 cells to 4? (later, test only)", "Coarser cells on calm
+  surfaces (later)", "Batches cut by columns or tiles (later)", "Deep liquid without particles (later; needs review)")
+  are not part of this module's done-criteria.
 - **One reserved block per processor (A58; reconcile item 31; `plan-decisions.md` "Owner answers A40–A64 applied"
   items 3 (with its "Correction (same day, reconcile)") and 11).** `BuildCellResize` and `BuildBatchedRun` build on
   both processors, so they take `RunMemory& run_memory, RunMemory& cpu_run_memory` as their last two parameters
@@ -193,6 +210,11 @@ without particles (later; needs review)" after Task 45, beside the later parts o
 17b, 23b, 24b, 28b, 29b, 30c, 31b, 32b) and its two gating tests (Task 32c); Task 7 moved to the grid plan. New
 main-sequence tasks: 1a, 7a, 13a, 27a, 30a, 30b. The group "Coarser cells on calm surfaces (later)" follows. Part A
 is Tasks 1 to 33 without the moved ones.
+**Amended 2026-11-15 (A66, A67, A68):** new main-sequence task 30d (particles that cross a size change, the start on
+the start cells); Tasks 1a, 24, 27, 38, 45 amended. The later groups after Task 45 come in this order (A68): (1) "Can
+the fine surface band shrink from 8 cells to 4? (later, test only)" (Task 45a); (2) "Coarser cells on calm surfaces
+(later)" (Task 46) together with "Batches cut by columns or tiles (later)" (a sketch list, no task); (3) "Deep liquid
+without particles (later; needs review)", last. The first version keeps slab batches and the pinned surface.
 
 ## Before you start
 
@@ -244,6 +266,9 @@ order and prefix sum with their `OrderBuffers` (one form each, A31), `base/test_
 6. **The held gradient across a broken wait (A63).** A shear burst that ends must keep the cells small for the whole
    merge wait, and a break must restart both the time and the step count. Pinned: `ComputeCellSizeChanges,
    ShearBurstEnds_HeldForTheWait` in Task 13.
+7. **A large particle rising into the surface band (A67).** A particle carried up out of a coarse cell must arrive
+   in the smallest cells already split to the smallest size, in the same pass it enters them. Pinned: `ResizeCells,
+   ParticleRisingFromDeepCell_ArrivesSplitToSmallest` in Task 30d.
 
 ---
 
@@ -253,6 +278,12 @@ order and prefix sum with their `OrderBuffers` (one form each, A31), `base/test_
 
 **Amended 2026-11-15 (A64):** unchanged; `BuildRisingFloorScene` and `BuildStandingWaveTankScene` are used only by
 the later group (the deep tank's particles stay in every cell in the first version).
+
+**Amended 2026-11-15 (A66):** these scenes keep their all-smallest start (smallest cells, 8 particles of the smallest
+size per cell) on purpose: the tests that use them exercise splits, merges and the coarsening from that start. A run
+built by I/O starts on `step::BuildStartCells`' grid instead; each scene passes the step's test support the
+all-smallest start cells (the cover of its particles at `smallest_size_level`), as the step plan's A66 test support
+provides. One line in each builder's comment says so.
 
 **Kind:** mechanical
 
@@ -292,6 +323,10 @@ the later group (the deep tank's particles stay in every cell in the first versi
 **Amended 2026-11-15 (A41, A62, A63, A64):** new task; the scenes of the size-rule tests (`plan-decisions.md`
 "Owner answers A40–A64 applied" items 1 and 2).
 
+**Amended 2026-11-15 (A66):** the five scenes below keep the all-smallest start on purpose (the calm-tank and
+calm-pool tests measure the coarsening and its time from it; their comments say so); one new scene starts the calm
+deep tank on `step::BuildStartCells`' grid, as a run does.
+
 **Kind:** mechanical
 
 **Files:**
@@ -313,13 +348,23 @@ the later group (the deep tank's particles stay in every cell in the first versi
                                         //   radius 0.06 m along x through the box centre, velocity x sign(x - 0.32) m/s
   TestScene BuildJetScene();            // w_min 0.02 m; closed box 1.28 x 0.64 x 1.28 m, water to 1.0 m at rest; a
                                         //   liquid source of radius 0.05 m at (0.10, 0.32, 0.40) m along +x at 2 m/s
+  // Amended 2026-11-15 (A66). The calm deep tank on the start cells: step::BuildStartCells on the water box (one
+  // StartRegionShape kBox, centre (0.4, 0.4, 1.0) m, half size (0.4, 0.4, 1.0) m, no solid shape, no artist
+  // sizes), then 8 particles per start cell of width w at its cell-eighth centres (offsets +-w/4, the order of
+  // particles::ComputeRefillParticle), rest_volume (w/2)^3, mass 1000 x rest_volume, size_level the cell's level,
+  // at rest: the rule of io::BuildStartParticles, repeated in test support because I/O comes after this module.
+  TestScene BuildCalmDeepTankSceneOnStartCells();
   ```
 - The cell resize tests run these scenes with `CellResizeSettings::cell_size.smallest_size_level = 4` and the other
   `grid::CellSizeSettings` defaults unless a test names a value.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`): `BuildCalmDeepTankScene, ParticleCountAndMass` (16 x 16 x 40 cells x
   8 = 81,920 particles, mass `1000 * 0.05^3 / 8` each, 1e-15 relative); `BuildCalmPoolScene, ParticleCount` (16 x
-  16 x 50 x 8 = 102,400); `BuildJetScene, SourceSpeedAndRadius`; `BuildLiquidBridgeScene, NoGravityOppositeVelocities`.
+  16 x 50 x 8 = 102,400); `BuildJetScene, SourceSpeedAndRadius`; `BuildLiquidBridgeScene, NoGravityOppositeVelocities`;
+  (A66) `BuildCalmDeepTankSceneOnStartCells, EightPerCellAtItsLevel` (every start cell holds exactly 8 particles of
+  its level; `grid::CheckSizeStepRule` passes; total mass `1000 x 0.8 x 0.8 x 2.0 = 1280 kg` within 1e-12 relative,
+  the box being aligned with the cells; particle count below `BuildCalmDeepTankScene`'s 81,920 and every cell
+  within 8 `w_min` = 0.4 m of the surface at `w_min`).
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** with Task 1's helpers. **Step 4:** gate. **Commit.** Subject:
   `Add test scenes for the shared cell size rule`.
 
@@ -328,6 +373,11 @@ the later group (the deep tank's particles stay in every cell in the first versi
 **Amended 2026-11-15 (A41, A61 to A64):** the size-rule text describes grid's shared rule (five terms, the reference
 speed) as this module uses it, the pass `ComputeCellSizeChanges` and its hysteresis, the artist inputs, and
 particles in every liquid cell; new pseudocode `<proc-compute-cell-size-changes>`; new glossary rows.
+
+**Amended 2026-11-15 (A65, A66, A67):** Step 1's text also gives the A65 wording (every liquid cell holds about eight
+particles of its own size), the start on `step::BuildStartCells`' grid (A66), and particles that cross a size change
+split or merged at every pass with the merge's energy reported (A67, design 5.4); `<proc-resize-cells>` step 3 has
+the particle-only pass; glossary rows `mismatched particle`, `start cells`.
 
 **Kind:** mechanical
 
@@ -1140,6 +1190,12 @@ not `kBadInput`; `ScratchForm_SameBytesAsFormWithout` removed, `ScratchTooSmall_
 `ResizeCellsReport` loses the ledger and gains the particle totals; `RecordsRemapped_TotalsKept` is rewritten on
 the all-particle tank.
 
+**Amended 2026-11-15 (A67):** step 3 "nothing to do" counts mismatched particles: with an empty plan and unchanged
+wait arrays it runs `particles::AdjustParticleCount` on the committed grid as both grids and is "nothing to do" only
+when `mismatched_particle_count == 0` (the call and its tests land in Task 27; this task leaves the seam: an empty
+plan with unchanged wait arrays calls a private `ApplyParticleOnlyPass` that Task 27 fills, returning "no mismatched
+particle" until then).
+
 **Amended 2026-11-14 (A29, A31):** `grid::TakeBuffers` (was `ReleaseBuffers`); `ComputeLiquidTotals` in its one form with `cell_resize.sum_buffers`.
 
 **Amended 2026-11-14 (A17):** on a GPU grid the CPU parts read a `ReadGrid` copy; the resized grid is built on the
@@ -1173,9 +1229,11 @@ also rejects the resize, but the try's outputs are unspecified and the run stops
     committed step's duration) and `steps_since_last_merge_test` (committed step count since then; first call 1);
     on a GPU grid one `ReadBuffer` of the `size_change` row into CPU memory (1 B per cell place, counted in
     `bytes_copied` and `copy_count`); then `BuildResizePlan`.
-  - Step 3 "nothing to do": the plan is empty, no particle wants a split or merge, and no wait array changes (the
-    three "after" rows equal the committed arrays, bytes); a change of the wait arrays alone is committed as a
-    resize with the same cells and `version + 1` (design 5.1 step 3 and 5.3 together). The time and step count of
+  - Step 3 "nothing to do": the plan is empty, ~~no particle wants a split or merge~~ (A67) the particle-only pass
+    finds `mismatched_particle_count == 0`, and no wait array changes (the
+    three "after" rows equal the committed arrays, bytes); a change of the wait arrays alone, or (A67) of mismatched
+    particles alone, is committed as a resize with the same cells and `version + 1` (design 5.1 step 3 and 5.3
+    together). The time and step count of
     the last committed merge test are kept in `CellResize` and move only at a commit.
   - Step 5 remaps: `pressure` (`kPerUnitOfWeight`, weight = `has_pressure` as 0 or 1 in the merge-weight row),
     `has_pressure` (merge: 1 if any; private rule beside the `kLabel` code), `pocket_of_cell` (`kLabel`),
@@ -1255,6 +1313,10 @@ this plan, with its number; not part of the first version (every liquid cell hol
 (no grid-only cell). States how the particles of deep cells follow the resizes (below); the deep-tank cascade test
 is in Task 30a. The step-7 sub-case of `FailureAtEachStep_ChangesNothing` is in Task 27a.
 
+**Amended 2026-11-15 (A67):** `ResizeCells` calls the extended `AdjustParticleCount` at every pass (step 7, and in
+step 3's particle-only pass with the committed grid as both grids); the "drifted particles keep their level"
+statement and its test are replaced; the report fields are wired into `ResizeCellsReport` and `step::ResizeResult`.
+
 **Kind:** integration
 
 **Files:**
@@ -1274,28 +1336,56 @@ is in Task 30a. The step-7 sub-case of `FailureAtEachStep_ChangesNothing` is in 
   allows one level per cell per resize and the merge wait restarts at 0 for a merged cell, a cell `k` levels too
   fine reaches its wanted level after `k` merges, at least `merge_wait_duration` and `min_merge_wait_steps` apart,
   and its particles follow level by level: a big cell holds about the seeded count (8) of particles with `8^k`
-  times the volume. Particles that drifted across a size change keep their level (C2), are counted in
-  `skipped_incomplete_count`, and may make a cell hold more than 8. No new particle code.
+  times the volume. ~~Particles that drifted across a size change keep their level (C2), are counted in
+  `skipped_incomplete_count`, and may make a cell hold more than 8. No new particle code.~~ **Replaced** (A67):
+  particles that moved across a size change are split or merged by the extended `AdjustParticleCount` at the next
+  pass (design 5.4 "Particles whose size no longer matches their cell"); the particle code is the particles plan's
+  A67 task, this task only calls it at every pass. One wording (A65): every liquid cell holds about eight particles of
+  its own size: a particle's `size_level` is its cell's level, its rest volume is one eighth of its cell (`(w/2)³`),
+  so a cell k levels coarser than the smallest holds 8 particles each of `8^k` times the smallest particle's volume.
+- **Every pass (A67, plan decisions):** step 7 runs over all blocks at every pass; step 3's `ApplyParticleOnlyPass`
+  (Task 24's seam) calls `AdjustParticleCount(particles_try, committed grid, committed inputs, committed grid,
+  committed inputs, every block)` (the same grid twice: read-only aliasing the particles design must allow) and
+  returns its result; `mismatched_particle_count == 0` is "nothing to do"; otherwise the same-cell resize goes on
+  and step 7 keeps that result (not run twice). `ResizeCellsReport::particle_count` is the pass's result with its new
+  fields (`mismatched_particle_count`, `waiting_particle_count`, `lone_particle_count`, `incomplete_split_count`,
+  `kinetic_energy_change`); `ResizeCells` returns `step::ResizeResult{resized, module_error,
+  size_change_kinetic_energy = particle_count.kinetic_energy_change, mismatched_particle_count =
+  particle_count.mismatched_particle_count}` (both 0 on a failure or nothing to do; the step plan's A67 task adds
+  the two `ResizeResult` members and copies them into `StepReport`).
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
 
   ```cpp
-  TEST(ResizeCells, FloatingCube_SplitsDeepInsideParticles)   // design 7 "C2": BuildFloatingCubeScene, first resize
-      // splits all 125 cells; particles at least 1.5 old widths inside on both grids are split with the conservation
-      // of particles 5.4 (their tolerances); the others keep their size and are counted in skipped_incomplete_count
-      // (count from positions, test side)
-  TEST(ResizeCells, DriftAcrossSizeChange_NeverSplit)          // design 7 "Drift": BuildMixedSizeColumnScene, one
-      // particle given 0.5 m/s across the size change, 5 steps with a resize each: size_level unchanged, counted
+  TEST(ResizeCells, FloatingCube_SplitsDeepInsideParticles)   // design 7 "C2" (amended A67): BuildFloatingCubeScene,
+      // first resize splits all 125 cells; every particle is split with the conservation of particles 5.4 (their
+      // tolerances); ~~the others keep their size and are counted in skipped_incomplete_count~~ those less than 1.5
+      // old widths inside on either grid are counted in incomplete_split_count (count from positions, test side)
+  TEST(ResizeCells, DriftAcrossSizeChange_MatchedOrCounted)    // A67, replaces DriftAcrossSizeChange_NeverSplit
+      // (design 7 "Drift", replaced): BuildMixedSizeColumnScene, one smallest-level particle given -0.5 m/s (down)
+      // across the size change into a level-1 cell, 20 steps with a resize each: at the first pass after the crossing
+      // mismatched_particle_count >= 1; by 16 passes after it the particle is merged or counted in
+      // lone_particle_count; particle mass within 1e-15 relative and momentum exact to fixed-order rounding per resize
+  TEST(ResizeCells, OnlyMismatchedParticles_PassStillRuns)     // A67 (design 7 "Particles-only pass"):
+      // BuildMixedSizeColumnScene settled (plan empty, wait arrays unchanged at two calls in a row), then one
+      // level-1 particle moved by snapshot edit into a smallest-level cell: the next ResizeCells commits a same-cell
+      // resize, state_version + 1, resized true, that particle replaced by 8 of the smallest level; with no
+      // mismatched particle: resized false, same state_version
+  TEST(ResizeCells, ReportFieldsReachTheStepReport)            // A67 (design 7 "Energy of the pass reported"): the
+      // run above through step::AdvanceTo: ResizeCellsReport::particle_count.kinetic_energy_change and
+      // mismatched_particle_count equal ResizeResult's and StepReport's size_change_kinetic_energy and
+      // mismatched_particle_count, bytes; a split-only pass: |kinetic_energy_change| <= 1e-12 x the particle's energy
   TEST(ResizeCells, RefusedSplitNextToSnowOrJelly_GridUnchangedThere)  // design 7 "Refused split":
       // BuildSnowAndJellyScene with has_cell_resize: a split whose closure reaches a snow cell, then a jelly cell:
       // refused_split_count 1 each, those cells unchanged
   TEST(ResizeCells, MergedCellHoldsParticlesOfItsLevel)        // A64: BuildDeepTankScene with merge_wait 0 and
       // min_merge_wait_steps 0: after the first resize that merges, every merged cell's particles have the cell's
-      // size_level except those counted in skipped_incomplete_count; particle mass and momentum before and after
-      // within kAmountTolerance relative
+      // size_level except those counted in waiting_particle_count and lone_particle_count (amended A67; was
+      // skipped_incomplete_count); particle mass and momentum before and after within kAmountTolerance relative
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
-  `Split and merge particles inside the resize with both grids`.
+  `Split and merge particles inside the resize with both grids` (amended A67: `Bring every particle to its cell's
+  size at each resize`).
 
 ### Task 27a: Every failure of the resize changes nothing
 
@@ -1399,6 +1489,11 @@ moved to the later group (Task 30c).
 **Amended 2026-11-15 (A64, A41, A63):** new task; `plan-decisions.md` item 1 "New tests" and item 2 "Tests" (1),
 (2) and the owner's calm-tank test.
 
+**Amended 2026-11-15 (A65, A66, A67):** the A65 wording in the deep-tank test; the three tests below start
+all-smallest on purpose (they test the coarsening cascade and the calm pool's coarsening time from that start; a run
+starts on `step::BuildStartCells`' grid, tested in Task 30d), and each test's comment says so; the drifted-particle
+exception becomes the waiting and lone counts (A67).
+
 **Kind:** integration
 
 **Files:**
@@ -1410,12 +1505,15 @@ moved to the later group (Task 30c).
 
   ```cpp
   TEST(ResizeCells, CalmDeepTank_CoarsensWithParticlesInEveryCell)  // A64; Review Focus 4: BuildCalmDeepTankScene
-      // (2 m deep, w_min 0.05 m, 5 levels), at rest, 3 s: every cell deeper than 8 w_min = 0.4 m holds the depth
-      // term's level (bottom cells 0.2 m: w_band = 2.0 / 8 = 0.25 m); every liquid cell holds particles of its own
-      // size_level; the count per cell is 1..16 except drifted particles counted in skipped_incomplete_count;
+      // (2 m deep, w_min 0.05 m, 5 levels; all-smallest start on purpose, A66), at rest, 3 s: every cell deeper than
+      // 8 w_min = 0.4 m holds the depth term's level (bottom cells 0.2 m: w_band = 2.0 / 8 = 0.25 m); every liquid
+      // cell holds about eight particles of its own size (A65): the count per cell is 1..16 and after every resize
+      // every particle's size_level equals its cell's level except those counted in waiting_particle_count and
+      // lone_particle_count (A67; was "except drifted particles counted in skipped_incomplete_count");
       // particle mass and momentum before and after each resize within kAmountTolerance (momentum relative to
       // sum m |v| + 1e-12 kg m/s)
-  TEST(ResizeCells, CalmPool_ReachesBiggestCellsThenStays)  // literature-cell-size.md 5(f)2: BuildCalmPoolScene (1 m,
+  TEST(ResizeCells, CalmPool_ReachesBiggestCellsThenStays)  // literature-cell-size.md 5(f)2 (all-smallest start on
+      // purpose: the coarsening time is measured from it, A66): BuildCalmPoolScene (1 m,
       // w_min 0.02 m, 5 levels): every cell deeper than 8 w_min = 0.16 m reaches the depth term's level within
       // 0.25 s x 4 levels + 32 steps of committed time; then for 10 s no split and no merge (wanted_split_count 0,
       // plan empty at every resize)
@@ -1457,6 +1555,53 @@ test.
 - [ ] **Step 2: Run.** A fail of the jet test with `shear_width_factor = 0.25` is a calibration finding: report the
   smallest factor that passes, do not change the default (owner question 3 of `plan-decisions.md`). **Step 3:**
   gate. **Commit.** Subject: `Test sheets, splashes and jets against the size rule`.
+
+### Task 30d: Scene tests, particles that cross a size change, and the start on the start cells
+
+**Amended 2026-11-15 (A66, A67):** new task; `plan-decisions.md` "Owner answers A65–A68 applied" A66 and A67 tests;
+design 7 rows "Start on the start cells", "Rising particle split on the way", "Sinking particles merged".
+**Amended 2026-11-15 (A66):** also `BuildStartCells, DeepTank_SameParticlesAsCoarsenedRun`, handed over by the step
+plan because it runs `ResizeCells`; the all-smallest scenes use the step's `ApplyStartCellsForTest(scene,
+TestStartCells::kAllSmallest)`. Needs the
+particles plan's A67 task (the extended `AdjustParticleCount`) and the step plan's A66 task (`BuildStartCells`).
+
+**Kind:** integration
+
+**Files:**
+- Modify: `cell_resize_scene_test.cc`
+
+- [ ] **Step 1: Tests** (`LABEL cpu`; `smallest_size_level = 4`, defaults otherwise; a resize after every committed
+  step; moves "by snapshot edit" use `BuildSimulationFromSnapshot` on a test-side edited snapshot, as Task 30b's
+  splash test does):
+
+  ```cpp
+  TEST(ResizeCells, CalmDeepTankOnStartCells_NeverSplitsForDepth)  // A66: BuildCalmDeepTankSceneOnStartCells, at
+      // rest, 3 s: wanted_split_count 0 at every resize (the start is never coarser than the rule: Euclidean depth
+      // minus half a diagonal <= the through-liquid depth); mismatched_particle_count 0 at every pass; particle count
+      // never above the start count; after 3 s every cell deeper than 8 w_min = 0.4 m at the depth term's level
+  // Amended 2026-11-15 (A66): handed over by the step plan (the step cannot run ResizeCells).
+  TEST(BuildStartCells, DeepTank_SameParticlesAsCoarsenedRun)  // BuildCalmDeepTankSceneOnStartCells (2 m deep, 8 per
+      // start cell at its level) against BuildCalmDeepTankScene started all-smallest (the step's test-only
+      // ApplyStartCellsForTest(scene, TestStartCells::kAllSmallest)), at rest, a resize after every step, run until a
+      // resize changes nothing (plan empty, wait arrays unchanged, mismatched_particle_count 0; at most 10 s):
+      // coarsened count <= start count <= 1.25 x coarsened count (the start uses the Euclidean depth minus half a
+      // cell diagonal, so it is never coarser and at most about one level finer in places)
+  TEST(ResizeCells, ParticleRisingFromDeepCell_ArrivesSplitToSmallest)  // A67; Review Focus 7: BuildCalmDeepTankScene
+      // run 3 s (all-smallest start on purpose, so the deep cells are coarse), then one particle of a level-2 cell
+      // (0.2 m, depth >= 1.6 m) moved up by 0.5 w_min = 0.025 m before each step (snapshot edit, velocity kept)
+      // until it is within w_min of the surface: after every resize every liquid particle in a smallest-level cell
+      // has size_level 4 (so in every committed step where the particle or a child of it is in a smallest-level cell
+      // it has the smallest size: the split repeats within one pass in such a cell); total particle mass within
+      // 1e-15 relative and momentum within 1e-15 relative of sum m |v| per resize
+  TEST(ResizeCells, SmallParticlesInCoarseCell_MergedByThePass)  // A67: the same coarsened tank, eight level-4
+      // particles moved by snapshot edit into one level-3 cell (0.1 m, depth >= 0.8 m): the next pass merges them
+      // into one level-3 particle (mismatched_particle_count 8, kinetic_energy_change <= 0); mass exact to the
+      // fixed-order sum, momentum within 1e-15 relative
+  TEST(ResizeCells, ThreeSmallParticles_MergedAfterSixteenPasses)  // A67: as above with three particles: unmerged
+      // and waiting_particle_count 3 after passes 1..15, merged into one level-3 particle at pass 16
+  ```
+- [ ] **Step 2: Run.** A fail is a defect in an owning commit (this module's call, or the particles or step task it
+  names). **Step 3:** gate. **Commit.** Subject: `Test particles that cross a size change and the adaptive start`.
 
 ### Task 31: Scene tests, material sets and gas
 
@@ -1508,6 +1653,8 @@ group (Task 32b, the base of the gating test of Task 32c).
 
 **Amended 2026-11-15 (A64):** the rows are those of Tasks 30, 30a, 30b, 31 and 32.
 
+**Amended 2026-11-15 (A66, A67):** and those of Task 30d.
+
 **Kind:** device
 
 **Amended 2026-11-14 (Foundation as built):** the scene runs pass their snapshots to `WriteResultDigest` so the hardware repeat run covers them;
@@ -1516,7 +1663,7 @@ CPU-against-GPU values within design 6.
 **Files:**
 - Create: `native/fluidity/cell_resize/cell_resize_scene_gpu_test.cc`
 
-- [ ] **Step 1: Tests.** `LABEL gpu`: every row of Tasks 30, 30a, 30b, 31 and 32 with `RunOn::kGpu` (design 7 "Every
+- [ ] **Step 1: Tests.** `LABEL gpu`: every row of Tasks 30, 30a, 30b, 30d, 31 and 32 with `RunOn::kGpu` (design 7 "Every
   row on `RunOn::kGpu`"), against the CPU within design 6 for one resize (the `size_change` bytes equal) and for the
   stated scene tolerances over the run; `CellResizeScene, OnGpuTwice_GivesIdenticalBytes` (deep tank, 20 steps); each
   test writes the digest of its final snapshot with `WriteResultDigest`. `LABEL no_gpu`: `BuildCellResizeTestRun`
@@ -1531,6 +1678,10 @@ CPU-against-GPU values within design 6.
 
 **Amended 2026-11-14 (A15):** the solves are no longer "not batched": the text gives the three ways to run and the
 planner's choice; pressure's `<sec-solve-in-batches>` holds the solve itself.
+
+**Amended 2026-11-15 (A68):** Step 1's text also states that this version cuts slab batches, the plan-area limit
+`a_max = R x 16 w_min² / (n b)` with the worked numbers of design 5.9 item 4 (about 3.2 m² at 1 cm, 0.8 m² at 0.5 cm),
+and that batches cut by columns or tiles come later (design 5.11); glossary rows `slab batch`, `plan-area limit`.
 
 **Kind:** mechanical
 
@@ -1732,10 +1883,15 @@ not repeated), so the run's blocks can hold it; `bytes_on_processor` is `Compute
 (pieces rounded to 256 B) and includes those entries; `ReadMemoryReport` names `handed_out_bytes` and
 `handed_out_cpu_bytes`.
 
+**Amended 2026-11-15 (A65, A66, A68):** the 512 particles per full block are stated in the A65 wording (every level);
+start blocks are `counts.start_cell_blocks` (A66); the plan fills design 3.7's `SlabLimit` on success and in the
+pass-slab `kBatchDoesNotFit` failure, the numbers I/O's budget line names (A68).
+
 **Kind:** numerics
 
 **Files:**
-- Modify: `batch_plan.h`, `batch_plan.cc`; Create: `batch_plan_test.cc`
+- Modify: `batch_plan.h`, `batch_plan.cc`, (A68) `batches_error.h` (`SlabLimit`, `BatchesFailure::slab_limit`);
+  Create: `batch_plan_test.cc`
 
 **Interfaces:**
 - Produces design 3.7 `BuildBatchPlan`, `BuildBatchesMemoryEstimate`.
@@ -1754,7 +1910,9 @@ not repeated), so the run's blocks can hold it; `bytes_on_processor` is `Compute
      its `builder buffers:` entries, since the loaded try's buffers borrow the step's `grid::GridBuilderBuffers`; reconcile item 11)
      at the counts of one cell block and no particle;
      `bytes_per_loaded_particle` the same at one particle and no block; `particles_per_block = ceil(512 *
-     start_limit_headroom)` per material (8 per cell, full block).
+     start_limit_headroom)` per material (8 per cell, full block). (A65) 512 holds at every level: every liquid cell
+     holds about eight particles of its own size (a particle's `size_level` is its cell's level, rest volume
+     `(w/2)³`), never `8 · 8^k` in a coarse cell.
   3. `max_loaded_blocks = min((allowed - whole) / (per block + particles_per_block * per particle),
      limits.max_cell_blocks)`; `max_loaded_particles = max_loaded_blocks * particles_per_block`. (Amended
      2026-11-15, A58: `bytes_per_loaded_block` includes `BatchedRun`'s per-loaded-block entries, the border search and
@@ -1765,7 +1923,18 @@ not repeated), so the run's blocks can hold it; `bytes_on_processor` is `Compute
      `kBatchDoesNotFit` when `T < 1` or `max_blocks_per_batch < min_blocks_per_batch`. The exact cut is found per try
      in Task 40. `range_share_of_loaded = T / (T + 8)`; `batch_count = ceil(start blocks / max_blocks_per_batch)`;
      `bytes_copied_per_try = (2 / range_share_of_loaded + 2) * start blocks * (per block + particles_per_block *
-     per particle)`.
+     per particle)`. (A66) `start blocks = counts.start_cell_blocks` (`step::SceneCounts`, the blocks of
+     `step::BuildStartCells`' grid).
+  4a. (A68) `SlabLimit` (design 3.7, in `batches_error.h` beside `BatchesFailure`): `blocks_per_layer = layer`;
+     `bytes_per_full_loaded_block = b = per block + particles_per_block * per particle`; `loaded_batch_room_bytes = R`
+     (item 3's room: `allowed - whole`, or `(1 - solve_piece_share) * room` with `kInPieces`); `T_min = max(1,
+     ceil(min_blocks_per_batch / layer))`, `loaded_layer_count = n = T_min + 8`; `needed_bytes = n * layer * b`
+     (64-bit, exact); `plan_area = X * Y` (domain extents, m²); `max_plan_area = R * 16 * w_min * w_min / (n * b)`
+     (doubles, in this order). Filled in `BatchPlan::slab_limit` on success, and on item 4's `kBatchDoesNotFit` in
+     `BatchesFailure::slab_limit` with `needed_bytes = slab_limit.needed_bytes`, `allowed_bytes = R`; every other
+     failure leaves `slab_limit` zero (`loaded_layer_count == 0`). I/O's `BuildBudgetLines` reads these fields for
+     the line of `plan-decisions.md` A68 (`<n>` = `loaded_layer_count`, the first `<b>` = `needed_bytes`, the second
+     `<b>` = `loaded_batch_room_bytes`, `<a>` = `max_plan_area` and `plan_area`).
   5. (A15) CPU: every row with `where = kCpu` (the particles, the per-try arrays only particle stages read, and in
      `kInPieces` the solvers' working buffers) at most `plan.allowed_cpu_bytes`, else `kStateDoesNotFitCpu`.
   6. (A15) Report, `BatchPlan` gains: `max_solve_loaded_blocks`, `solve_batch_count` (start grid, bisection as
@@ -1808,7 +1977,14 @@ not repeated), so the run's blocks can hold it; `bytes_on_processor` is `Compute
   and 3 sets); `BuildBatchPlan, RunOnGpuWithoutAGpu_StillPlans` (all design 7 "Batch plan");
   `BuildBatchesMemoryEstimate, OnlyWhatBuildBatchedRunBuilds` (A58: six entries, names as above; replaces
   `LoadedRowsAtMaxLoadedBlocks`); the run-memory test of the estimate is Task 39's
-  `BuildBatchedRun, IntoRunMemory_HandsOutExactlyTheEstimate` (replaces `SumBuffersEntriesMatchTheBuffers`).
+  `BuildBatchedRun, IntoRunMemory_HandsOutExactlyTheEstimate` (replaces `SumBuffersEntriesMatchTheBuffers`);
+  (A68, design 7 "Slab limit named") `BuildBatchPlan, LayerDoesNotFit_ReportsSlabLimit` (a closed pool 0.8 x 0.8 x
+  0.4 m at `w_min` 0.0125 m, so `blocks_per_layer` = 16 x 16 = 256; `MemoryAvailable` chosen so that `R = 8 * 256 * b
+  + 100` B: `kBatchDoesNotFit`, `slab_limit.blocks_per_layer` 256, `loaded_layer_count` 9, `needed_bytes = 9 * 256 *
+  b`, `failure.needed_bytes == needed_bytes`, `failure.allowed_bytes == R`, `plan_area` 0.64 m², `max_plan_area ==
+  R * 16 * 0.0125² / (9 b)` to the byte and in [0.5688, 0.5690] m²) and `BuildBatchPlan, Fits_ReportsSlabLimit` (the
+  same pool with `R` = 10 layers: `T` = 2, `max_blocks_per_batch` 512, `plan.slab_limit` by the same formulas);
+  `BuildBatchPlan, SolvePieceBelowThreeLayers_IsBatchDoesNotFit` also checks `slab_limit.loaded_layer_count == 0`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
   `Plan the batches of a scene that does not fit the GPU`.
 
@@ -2132,6 +2308,12 @@ and `grid::TakeBuffers`.
 **Amended 2026-11-15 (A41, A58, A61 to A64):** the lists follow the first version (no grid-only work); the
 hand-over states that the later groups are not done and records the A40 to A64 deliveries.
 
+**Amended 2026-11-15 (A65 to A68):** Step 3 also records: the A65 wording in comments and the paper; the scenes
+that start all-smallest on purpose and `BuildCalmDeepTankSceneOnStartCells` (A66); `AdjustParticleCount` at every
+pass, the particle-only pass of step 3, `step::ResizeResult::size_change_kinetic_energy` and
+`mismatched_particle_count` (A67); `SlabLimit` and the statement that this version keeps slab batches and the
+pinned surface, with the later groups in A68's order, none done (A68).
+
 **Kind:** mechanical
 
 **Files:**
@@ -2174,7 +2356,118 @@ hand-over states that the later groups are not done and records the A40 to A64 d
 
 ---
 
+# After the first version: the later groups, in order (A68)
+
+**Amended 2026-11-15 (A68):** owner answer A68 orders the later work: **(1)** "Can the fine surface band shrink from
+8 cells to 4? (later, test only)", **(2)** "Coarser cells on calm surfaces (later)" together with "Batches cut by
+columns or tiles (later)", **(3)** "Deep liquid without particles (later; needs review)", last. **The first version
+keeps slab batches and the surface pinned to the smallest cells (A61).** When the slab rule is what stops a scene,
+the planner's budget line names the plan-area limit: I/O's `BuildBudgetLines` writes the line (I/O plan) from the
+`SlabLimit` fields Task 38 exposes (`blocks_per_layer`, `loaded_layer_count`, `bytes_per_full_loaded_block`,
+`loaded_batch_room_bytes`, `needed_bytes`, `plan_area`, `max_plan_area`). None of the groups below is in a
+done-criterion of this module.
+
+---
+
+# Can the fine surface band shrink from 8 cells to 4? (later, test only)
+
+**Amended 2026-11-15 (A68):** new group, first after the first version. **Excluded from the module's done-criteria.**
+It adds no production code: it measures the setting `surface_reach_in_cell_widths` (default 8, ported, never
+measured; the fine band is twice the reach in smallest cells, so 16, 12 or 8 cells deep) and proposes a default to
+the owner. Design 5.11 (1).
+
+### Task 45a: Measure the surface reach 8, 6 and 4
+
+**Amended 2026-11-15 (A68):** new task, numbered after Task 45.
+
+**Kind:** integration (measurement; test only)
+
+**Files:**
+- Create: `native/fluidity/cell_resize/surface_reach_measure_test.cc` (`LABEL cpu`, plus `LABEL slow`: not in the
+  gate's default test set), `docs/measurements/surface-reach.md` (the table and the decision)
+- Modify: `CMakeLists.txt`
+
+**Interfaces:**
+- Consumes the existing analytic scene tests that depend on the surface band, each run three times with
+  `grid::CellSizeSettings::surface_reach_in_cell_widths` 8, 6 and 4, everything else unchanged: the standing wave
+  (step's `BuildStandingWaveTankScene`, 10 periods: amplitude and period against linear theory), the dam-break front
+  position (step's dam-break scene against its reference curve), the hydrostatic pressure of a column at rest
+  (pressure's bound), the sloshing tank (step's sloshing scene: kinetic energy and free-surface height at the wall);
+  one visual scene, the bathtub splash (I/O's bathtub scene, 2 x 1 x 0.5 m at 1 cm, rendered by the render-output
+  path at frames 0, 1 s and 2 s).
+- Records per reach: each analytic error and its test's tolerance, the planned memory from `step::BuildRunPlan`
+  (bathtub at 1 cm: about 5.0, 4.3, 3.6 GB expected, `tradeoff-particles.md` 1.7, 6 interpolated), the mean step
+  time over the run, and the cell and particle counts.
+
+- [ ] **Step 1: Tests** (`LABEL cpu slow`): `SurfaceReach, AnalyticScenesAtReach8_6_4` (prints the table; fails only
+  when a run fails to complete, never on an error value: a report, not a gate); `SurfaceReach, BathtubSplashFrames`
+  (writes the frames for the owner).
+- [ ] **Step 2: Decision rule** (write it in `docs/measurements/surface-reach.md` with the numbers): the proposed
+  default is the smallest reach whose every analytic error stays within its test's tolerance **and** within 1.2 x the
+  reach-8 error (1.2 a starting value), and whose bathtub frames the owner accepts beside the reach-8 frames;
+  otherwise 8 stays. The default is changed only by the owner, in grid's `CellSizeSettings`, in its own commit.
+- [ ] **Step 3:** gate (the slow tests excluded). **Commit.** Subject: `Measure the surface reach at 8, 6 and 4`.
+
+---
+
+# Coarser cells on calm surfaces (later)
+
+**Amended 2026-11-15 (A61):** new group (`plan-decisions.md` item 2, "Later group"). **Amended 2026-11-15 (A68):**
+second in the order, together with "Batches cut by columns or tiles (later)" below. **These tasks are excluded from
+the module's done-criteria.** The first version keeps the surface, pockets, gas and solids at the smallest cells,
+which design 5.3 rule 7 relies on (size changes only in bulk liquid).
+
+### Task 46: Curvature term and coarser surface cells
+
+**Amended 2026-11-15 (A61):** new task, numbered after the main sequence.
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/grid/cell_size_rule.h` (grid's, a grid-plan amendment first), `cell_size_changes_steps.h`,
+  `cell_size_changes_test.cc`; pressure's surface condition (a pressure-plan task first)
+
+**Interfaces (decided in `plan-decisions.md`; details for the owner):**
+- `w_curv = c_k / max(|∇²φ|, tiny)`, `c_k = 0.25` (`1/γ_φ` of Ando and Batty 2020: a sphere of radius `R` has
+  `|∇²φ| = 2/R`, so `R/8` cells, about 16 across); `φ` a smoothed distance (not `distance_to_surface`, a union of
+  particle balls); 7-point Laplacian on cells within 2 cells of the surface, clamped to `1 / w_min`; spread by a max
+  over the 26 neighbours, 2 passes (order-independent); surface cells up to 1 or 2 levels coarser where `w_curv` and
+  `w_shear` allow.
+- Needs first: a T-junction-aware free-surface pressure condition (Ando and Batty 2020, Eq. 25) in pressure, and
+  bump-free surface resampling of particles (Ando, Thürey, Wojtan 2013) in particles.
+
+- [ ] **Step 1: Failing tests** (`LABEL cpu`): `ComputeWantedCellWidth, SphereOfRadiusR_GetsREighth` (grid);
+  `ResizeCells, CalmFlatSurface_CoarsensOneLevel`; `ResizeCells, SurfaceTJunction_NoPressureArtefact` (a flat pool at
+  rest with coarse surface cells: largest speed below pressure's bound). **Step 2-4:** as the main tasks. **Commit.**
+  Subject: `Let calm surfaces use coarser cells`.
+
+---
+
+# Batches cut by columns or tiles (later)
+
+**Amended 2026-11-15 (A68):** new group, beside "Coarser cells on calm surfaces (later)". **Excluded from the
+module's done-criteria.** Design 5.11 (2) holds the sketch. The first version keeps slab batches: a slab must hold
+`T + 8 >= 9` layers of smallest-level blocks, each layer `(X / 4 w_min) x (Y / 4 w_min)` blocks at `b` (about 540 kB)
+per loaded block, inside the room `R` (about 9.6 GB of a 13.05 GB budget), so the plan area is capped at
+`a_max = R x 16 w_min² / (9 b)`: about 3.2 m² at 1 cm and 0.8 m² at 0.5 cm (Task 38 item 4a). Tasks, as a sketch list
+only (each becomes a full task, with files, interfaces and tests, when the group is planned):
+
+- Grid: a block-list form of `grid::BuildGridPiece` and of the stacked border search (`FindStackedBorder`), with
+  lateral borders only (four sides of `kBorderLayers = 4` block columns, none above or below).
+- Batches: the tile cut in `BuildBatchPlan` (tile side `s` blocks with `(s + 2 kBorderLayers)² x (blocks per
+  column) x b <= R`), kept only when the slab cut does not fit; `SlabLimit` unchanged for slabs and a matching report
+  for tiles; the per-try cut in `ApplyStagesInBatches` by tiles in ascending first-block order.
+- Pressure, viscosity, gas: solve pieces as tiles with the same lateral borders (their plans).
+- Tests: `ApplyStagesInBatches, TileCut_SameBytesForEveryCut` and `..._WithinStepToleranceOfOnePiece` (the 5.10 rule
+  unchanged: block partials, tree sum in the whole grid's block order); `BuildBatchPlan, WidePool_TilesFit` (pool
+  10 x 5 x 1.5 m at 3.5 cm planned batched); the copy cost of a tall narrow scene against slabs reported.
+- I/O: the budget line drops the plan-area sentence when tiles are on (I/O plan).
+
+---
+
 # Deep liquid without particles (later; needs review)
+
+**Amended 2026-11-15 (A68):** last of the later groups (moved after "Batches cut by columns or tiles (later)").
 
 **Amended 2026-11-15 (A64):** new group. The first version holds particles in every liquid cell; this group holds
 the grid-only region as a later optimisation. **These tasks are excluded from the module's done-criteria.** An
@@ -2800,35 +3093,3 @@ only when both pass.
 - [ ] **Step 2: Run.** A failure is reported to the owner with both numbers; the design is changed, not the
   tolerance. **Step 3:** gate. **Commit.** Subject: `Gate the grid-only region on a standing wave and a sloshing
   tank`.
-
----
-
-# Coarser cells on calm surfaces (later)
-
-**Amended 2026-11-15 (A61):** new group (`plan-decisions.md` item 2, "Later group"). **These tasks are excluded from
-the module's done-criteria.** The first version keeps the surface, pockets, gas and solids at the smallest cells,
-which design 5.3 rule 7 relies on (size changes only in bulk liquid).
-
-### Task 46: Curvature term and coarser surface cells
-
-**Amended 2026-11-15 (A61):** new task, numbered after the main sequence.
-
-**Kind:** numerics
-
-**Files:**
-- Modify: `native/fluidity/grid/cell_size_rule.h` (grid's, a grid-plan amendment first), `cell_size_changes_steps.h`,
-  `cell_size_changes_test.cc`; pressure's surface condition (a pressure-plan task first)
-
-**Interfaces (decided in `plan-decisions.md`; details for the owner):**
-- `w_curv = c_k / max(|∇²φ|, tiny)`, `c_k = 0.25` (`1/γ_φ` of Ando and Batty 2020: a sphere of radius `R` has
-  `|∇²φ| = 2/R`, so `R/8` cells, about 16 across); `φ` a smoothed distance (not `distance_to_surface`, a union of
-  particle balls); 7-point Laplacian on cells within 2 cells of the surface, clamped to `1 / w_min`; spread by a max
-  over the 26 neighbours, 2 passes (order-independent); surface cells up to 1 or 2 levels coarser where `w_curv` and
-  `w_shear` allow.
-- Needs first: a T-junction-aware free-surface pressure condition (Ando and Batty 2020, Eq. 25) in pressure, and
-  bump-free surface resampling of particles (Ando, Thürey, Wojtan 2013) in particles.
-
-- [ ] **Step 1: Failing tests** (`LABEL cpu`): `ComputeWantedCellWidth, SphereOfRadiusR_GetsREighth` (grid);
-  `ResizeCells, CalmFlatSurface_CoarsensOneLevel`; `ResizeCells, SurfaceTJunction_NoPressureArtefact` (a flat pool at
-  rest with coarse surface cells: largest speed below pressure's bound). **Step 2-4:** as the main tasks. **Commit.**
-  Subject: `Let calm surfaces use coarser cells`.

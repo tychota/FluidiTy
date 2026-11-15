@@ -3041,3 +3041,226 @@ rail_direction, hinge_point, hinge_axis}`, `AllowedMotions`, `ComputeAllowedMoti
 7. A viscosity sample next to two solids reports its stress to the lower solid index only (viscosity design Open).
 8. `BuildPressureEquations` in module 5 consumes `solids/guide_math.h` (module 8, header-only): pressure Task 47a
    runs right after solids Task 5a.
+
+## Owner answers A65–A68 applied (2026-11-15)
+
+Source: owner answers A65–A68 and `tradeoff-particles.md` (sections 1.2, 2.2, 4 "Start-state change", 5). Changed
+plan tasks carry `**Amended 2026-11-15 (A65|A66|A67|A68):**`; designs gain one decision per answer. These declarations
+win over earlier text, including the A64 section above where it says otherwise.
+
+### A65. Particle size follows the cell
+
+- One wording everywhere (designs, plans, budget lines, comments): **"every liquid cell holds about eight particles
+  of its own size: a particle's `size_level` is its cell's level, its rest volume is one eighth of its cell (`(w/2)³`
+  for a cell of width `w`), so a cell k levels coarser than the smallest holds 8 particles each of `8^k` times the
+  smallest particle's volume."** (`size_level` 0 is the biggest cell, so "k levels coarser", not "level k".) Option B of `tradeoff-particles.md`. No text may say or imply one particle size everywhere, a lattice
+  of `w_min / 2` over the whole liquid, or `8 · 8^k` particles in a coarse cell.
+- Memory estimates and the planner count particles as **8 per liquid cell at every level** (the start state's exact
+  count, A66, times the 1.25 headroom). The batch plan's 512 particles per full block holds at every level.
+- The does-not-fit particles line (A64 above) becomes: `particles: <n> needed (about eight per liquid cell, sized
+  to their cell); <m> of them in cells deeper than <8 w_min> m below the surface; in this version every liquid cell
+  holds particles (deep liquid without particles comes later)`.
+
+### A66. A run starts on the adaptive grid
+
+- **Start cells (step, CPU only, `step/start_cells.h`):**
+
+  ```cpp
+  struct StartRegionShape {              // A start region of the scene: a box or a ball with a pose, world axes.
+    enum class Kind : std::uint8_t { kBox, kBall } kind = Kind::kBox;
+    contact::SolidPose pose{};           // m, world.
+    Vec3 half_size{};                    // m. kBox.
+    double radius = 0;                   // m. kBall.
+    std::uint32_t material_index = 0;
+    particles::CountRule count_rule = particles::CountRule::kMayBeSplitAndMerged;  // kKeepsItsCount: snow or a
+                                         //   springy solid, its cells forced to smallest_size_level (reconcile).
+  };
+  struct StartCells {
+    std::vector<grid::CellId> cells;                       // Active start cells, the grid's fixed order.
+    std::array<std::uint64_t, grid::kMaxSizeLevels> cells_per_level{};
+    std::uint32_t refine_passes = 0, closure_passes = 0;   // For the report and the termination test.
+  };
+  // Builds the start grid's cell list from the shapes alone, before any step.
+  std::expected<StartCells, StepFailure> BuildStartCells(std::span<const StartRegionShape> regions,
+      std::span<const contact::Solid> solids, const grid::GridFrame& frame, const grid::CellSizeSettings& cell_size,
+      const grid::ArtistCellSizes& artist, std::uint64_t max_cell_count);
+  ```
+
+  Method: (1) begin with the level-0 cells that touch any start region (plus the step's 2.5-width cover, as stage 2
+  marks). (2) Refine pass: for each cell compute `grid::CellSizeFacts` from the shapes: `depth_below_surface` = the
+  distance from the cell centre to the start liquid's free surface (the boundary of the union of start regions,
+  without the parts inside a solid or on a closed domain side) **minus half the cell diagonal** (√3 w / 2),
+  `distance_to_solid` = the solids' distance at the centre minus the same half diagonal (both are 1-Lipschitz, so the
+  value bounds every point of the cell from below and the start is never coarser than the run's rule wants),
+  `velocity_gradient_size = 0` (**no shear at the start**: the start velocity of a region is uniform), the artist
+  level at the centre; split every cell wider than `ComputeWantedCellWidth`. One level per pass, coarse to fine.
+  (3) Closure pass: split every cell that has a touching cell more than one level smaller (the one-size-step
+  rule), repeated. **Termination:** both passes only split, never merge, and a cell cannot pass
+  `smallest_size_level`, so each loop ends after at most `size_level_count - 1` passes (at most 15 each, 30 in all);
+  the result is a fixed point because a split never makes a cell's wanted width smaller than its new width allows
+  (the depth and distance bounds only grow when the half diagonal shrinks). Above `max_cell_count`:
+  `kTooManyCellBlocks`. The through-liquid depth of cell resize 5.2 is never smaller than this Euclidean bound, so
+  the first resizes may coarsen further, never refine for depth.
+- **Seeding (I/O, replaces the `particle_spacing = smallest_cell_width / 2` lattice of I/O 5.1):**
+  `io::BuildStartParticles` gives each start cell of width `w` the 8 points at its cell-eighth centres (offsets
+  `±w/4`, the order of `particles::ComputeRefillParticle`), keeps a point when it lies inside its start region and
+  outside every solid (as today), with `rest_volume = (w/2)³`, `mass = density × rest_volume`, `size_level` = the
+  cell's level, the region's start velocity, `fitted_velocity_change = 0`. Snow and springy-solid regions
+  (`kKeepsItsCount`) are always at the smallest level: their cells keep their size (cell resize 5.3 rule 2), so
+  `BuildStartCells` forces `smallest_size_level` wherever such a region lies. Sources keep `rest_volume =
+  (w_min/2)³` (they are at the surface).
+- **Planner.** `BuildRunPlan` counts the start state exactly: `SceneCounts` gains `std::array<std::uint64_t,
+  grid::kMaxSizeLevels> start_cells_per_level` and `start_particle_count` (exact, from the seeded points), and
+  `start_cell_blocks`; the limits are 1.25 x these plus sources. `particles_at_depth_levels` and
+  `start_particles_in_deep_cells` (A64 pass) are computed from the start cells, not from smallest-cell columns.
+  The grid's first version is built from `StartCells::cells` (not from particles at `new_cell_size_level`).
+- The start cells reach the planner and the build as `ReadyScene::start_cells` (the `StartCells::cells` list; I/O
+  fills it before `BuildRunPlan`; empty only without cell resize; any valid list is accepted, so coarsening tests may
+  pass an all-smallest list); `BuildRunPlan` and `BuildSimulation` keep their parameters (reconcile, step plan Task
+  8a). A resume plans on its saved active cells. The artist level is read over the cell's box, not at its centre
+  (else the fixed point fails). `StepError::kTooManyCellBlocks` sits just before `kOutOfMemory`. A scene without cell resize passes one artist region over the domain at
+  `smallest_size_level`, so every start cell is smallest.
+- **Who calls.** I/O `BuildRun`: read the scene, build `StartRegionShape`s, `step::BuildStartCells`,
+  `io::BuildStartParticles`, `step::BuildRunPlan`, `step::BuildSimulation` (which builds the first grid from the
+  start cells). A resume reads its saved grid and particles and never calls `BuildStartCells`.
+- **Tests.** step `BuildStartCells, DeepTank_TerminatesWithinLevelCountPasses` (2 m deep tank, 6 levels: refine
+  passes ≤ 5, closure passes ≤ 5; the result unchanged by one more refine and closure pass);
+  `BuildStartCells, SurfaceAndSolidCells_AreSmallest`; `BuildStartCells, OneSizeStep_Holds`
+  (`grid::CheckSizeStepRule` passes); cell resize scene test (it runs `ResizeCells`, after the step) `BuildStartCells, DeepTank_SameParticlesAsCoarsenedRun` (the
+  2 m tank seeded on its start cells against the same tank started all-smallest and run until no resize changes
+  anything: start count ≥ coarsened count and ≤ 1.25 x it, because the start uses the Euclidean depth minus half a
+  diagonal); I/O `BuildStartParticles, EightPerCellAtItsLevel`, `BuildStartParticles, MassEqualsRegionVolumeTimesDensity`
+  (box 1 x 1 x 0.5 m of water: total mass 500 kg within 1e-12 relative when the box is aligned with the cells);
+  I/O `BuildRun, BathtubStartNotAboveRunMemory` (bathtub 2 x 1 x 0.5 m at 1 cm: the start state's handed-out
+  bytes ≤ the largest committed need over 2 s of the run, and the run raises no limit); I/O `ContinueRun,
+  ResumeDoesNotRebuildStartCells` (a saved state resumes with its own grid to the byte).
+
+### A67. Particles whose size no longer matches their cell
+
+- **Pass.** `particles::AdjustParticleCount` (extended; no new function), called by `ResizeCells` at **every**
+  resize pass over all blocks; `ResizeCells`' "nothing to do" check (cell resize 5.1 step 3) counts mismatched
+  particles, so a pass with no cell change still runs it when any exist. Candidates: particles of materials with
+  `CountRule::kMayBeSplitAndMerged` whose `size_level` differs from their active cell's level on `grid` (the
+  resized grid). This replaces "a particle that drifts across an existing size change ... keeps its `size_level` for
+  good" (particles 5.4, cell resize 5.4) and the refusal by the old-grid check for such particles.
+- **Too large** (`size_level` below the cell's, the particle is wider than its cell): split once by the existing
+  1-to-8 pattern (offset `(√3/4) H`, children `v + C·offset`, mass and rest volume / 8, `volume_ratio`, `C`,
+  `flags`, fractions, `plate_side` copied, `size_level + 1`). No neighbourhood check refuses it; the both-grid check
+  of C2 remains only for cells the pass changes, and an incomplete neighbourhood is counted, not refused. **Surface
+  safety:** in a cell at `smallest_size_level` the split repeats until the children match (at most
+  `size_level_count - 1` times in one pass), so no too-large particle reaches the next transfer in the surface band;
+  elsewhere one level per pass. A child that lands inside a solid is handled by the next `MoveParticles` like any
+  particle that starts inside (counted in `started_inside_count`).
+- **Too small** (`size_level` above the cell's): merged with particles of the same cell, material, `plate_side`,
+  `flags` and `size_level`, in the **stable order: cell place order, then ascending particle id** (the grouping's
+  order), so CPU, GPU and any batch cut take the same chunks (all of a chunk lie in one cell, so in one block).
+  Chunks of exactly eight merge by the existing 2-to-8 maths. **Fewer than eight wait:** each waiting particle's
+  `merge_wait_passes` (NEW per-particle `std::uint8_t`, saturating at 255, committed and try copies, saved; reset to
+  0 when the particle matches its cell or is created) grows by one per pass; when the chunk's first particle has
+  waited `kMaxMergeWaitPasses = 16` passes (starting value; about 16 committed steps), a chunk of two to seven is
+  merged by the same maths. A single particle cannot merge and stays, a valid particle, counted. A chunk the gap
+  test refuses (`kMergeTooSpread`) is retried at the next pass. Bound: a group of two or more same-level particles
+  persists at most 16 passes after it stops gaining members, unless the gap test refuses it; at most one lone
+  particle per cell, material and level persists without a time bound; both are reported.
+- **Per-field rule of a merge** (the existing 2-to-8 maths, now stated per field): mass and rest volume: sums;
+  position: mass-weighted centre; velocity: mass-weighted mean (momentum exact); fitted change `C*`: the formula of
+  particles 5.5 (angular momentum exact); `volume_ratio`: rest-volume-weighted; ingredient fractions: current-volume-
+  weighted; `flags`, `plate_side`, material: common (equal by the chunk rule); `size_level`: one less; id: new;
+  `merge_wait_passes`: 0. Material fields: only materials with `kMayBeSplitAndMerged` take part (liquid, gas
+  markers); they carry no per-particle material state beyond `volume_ratio` and fractions; snow and springy solids
+  (`kKeepsItsCount`, `springy_deformation`, `permanent_volume_change`) are never split or merged, so no rule is
+  needed for those fields. A split copies every per-particle field except mass and rest volume (divided by 8),
+  position, velocity, `size_level`, id and `merge_wait_passes` (0).
+- **Conservation and report.** Mass and rest volume exact up to the fixed-order sums (each split and merge sums in
+  child or id order); momentum exact (split offsets sum to zero; merge velocity is the mass-weighted mean). The
+  kinetic-energy difference `energy(after) - energy(before)` with `energy(p) = (m_p/2)(|v_p|² + spread(width_p)
+  |C_p|²_F)`, `spread(w) = w²/4`, summed as block partials then `math::TreeSum`: 0 up to rounding for splits (the
+  spread term absorbs the offsets), ≤ 0 for merges with a positive gap. `particles::AdjustParticleCountResult` gains
+  `mismatched_particle_count`, `waiting_particle_count`, `lone_particle_count`, `incomplete_split_count`,
+  `kinetic_energy_change` (J); `step::StepReport` gains `double size_change_kinetic_energy = 0; // J, after minus
+  before, the ResizeCells stage of this try` and `std::uint64_t mismatched_particle_count = 0;`. The step copies them from `ResizeResult` in `AdvanceTo` into the result handed to `on_step_done` (the resize runs
+  after `TryStep`). I/O JSON `frame_done` and `run_report.json` carry both, as `size_change_kinetic_energy_j` and `mismatched_particle_count`.
+- **Memory.** `"particles: merge wait passes"` 1 B per particle x 2 (committed, try), `kRunOn`; split room comes
+  from the particle limit (a split beyond it is `kTooManyParticles`, a limit raise as today).
+- **Tests** (particles unless named): `AdjustParticleCount, TooLargeInSurfaceCell_SplitToSmallestInOnePass` (a level
+  `s-2` particle in a smallest-level cell: 64 particles of level `s` after one pass, mass and momentum within 1e-15
+  relative); cell resize `ResizeCells, ParticleRisingFromDeepCell_ArrivesSplitToSmallest` (a particle carried up
+  from a level-2 cell at 0.5 cell widths per step: in every committed step where it is in a smallest-level cell it
+  has `size_level == smallest`); `AdjustParticleCount, EightSmallInLargeCell_MergeInOnePass`;
+  `AdjustParticleCount, ThreeSmallInLargeCell_MergeAfterSixteenPasses` (merged at pass 16, not 15);
+  `AdjustParticleCount, LoneSmallParticle_StaysAndIsCounted`; `AdjustParticleCount, MergeEnergy_MatchesAnalytic`
+  (eight particles of 1 kg at `(±h/4, ±h/4, ±h/4)` of a cell of width `2h`, velocities `(±1, 0, 0)` m/s by the sign of
+  x, `C = 0`: merged `C*_xx = 0.25 / h` per second, all else 0; energy before `8 x 0.5 x 1² = 4 J`, after `(8/2) x h² x (0.25/h)² = 0.25 J`,
+  change −3.75 J within 1e-12 relative; gap 0.6875); `AdjustParticleCount, SplitThenMerge_MassAndMomentumExact`
+  (fixed-order sums equal to the byte); `AdjustParticleCount, OnGpu_SameBytesAsCpu`; `AdjustParticleCount,
+  AnyBatchCut_SameBytes`; step `TryStep, SizeChangeEnergyReported`.
+
+### A68. Order of the later work
+
+- The cell resize and batches plan lists the later groups in this order, after the first version (none is in a
+  done-criterion): **(1)** "Can the fine surface band shrink from 8 cells to 4? (later, test only)": runs the
+  analytic scene tests that depend on the surface band (standing wave amplitude and period, dam-break front
+  position, hydrostatic pressure, the sloshing tank) and one visual scene (the bathtub splash, rendered) at
+  `surface_reach_in_cell_widths` 8, 6 and 4; records errors, memory (bathtub 1 cm: about 5.0, 4.3, 3.6 GB per
+  `tradeoff-particles.md` 1.7) and step time; decision rule: the default becomes the smallest reach whose every
+  analytic error stays within its test's tolerance and within 1.2 x the reach-8 error, and the owner accepts the
+  visual comparison; otherwise 8 stays. **(2)** "Coarser cells on calm surfaces (later)" together with the new group
+  **"Batches cut by columns or tiles (later)"**. **(3)** "Deep liquid without particles (later; needs review)", last.
+- **Why columns or tiles (design sketch only, marked later).** A slab batch must hold `T + 8 ≥ 9` layers of cell
+  blocks of the smallest level, each layer `(X / 4 w_min) x (Y / 4 w_min)` blocks at about 540 kB per loaded block,
+  inside the room the plan leaves (about 9.6 GB of a 13.05 GB budget). So the plan area is capped near
+  `room x 16 w_min² / (9 x 540 kB)`: about 3.2 m² at 1 cm and 0.8 m² at 0.5 cm (`tradeoff-particles.md` 1.6). A
+  column or tile cut makes each batch an x-y tile of blocks spanning every height: the batch plan chooses a tile
+  side so that tile plus border fits; borders become four lateral sides of `kBorderLayers` block columns (none above
+  or below); solve pieces become tiles with the same borders; the fixed-order rule for sums that cross batches
+  stays (block partials, tree sum in the whole grid's block order); the stage places do not change. Cost: more
+  border blocks per batch (perimeter instead of two faces), so more copies for tall narrow scenes. No task in the
+  first version.
+- **The first version keeps slab batches and the pinned surface.** When the slab rule is what stops a scene
+  (`ModeReason::kLayerDoesNotFitProcessor`), `BuildBudgetLines` says it honestly: `batches: this version cuts
+  batches in horizontal slabs; one slab of <n> block layers at the smallest cell needs <b> and the <p> has room for
+  <b>; at this cell size batches hold a plan area up to about <a> m² (this scene: <a> m²); batches cut by columns,
+  which remove that limit, come later`, with `a_max = room x 16 w_min² / (layers x bytes_per_loaded_block)`. I/O test
+  `BuildBudgetLines, WideSceneLayerDoesNotFit_NamesPlanAreaLimit` (pool 10 x 5 m at 1 cm: plan area 50 m² against
+  about 3.2 m²).
+
+### Reconcile notes (A65–A68 pass)
+
+- Particles: `AdjustParticleCountResult::skipped_incomplete_count` is removed (nothing is skipped);
+  `kinetic_energy_lost` stays (merges only) beside `kinetic_energy_change`. A particle without fitted change is a
+  candidate too, its `C` read as zero. A pass with no cell change calls `AdjustParticleCount` with
+  `grid_before_resize == grid`. A drifted particle's split runs only the children's check (counted, never refused).
+  A repeated split in a smallest-level cell writes only the final `8^k` descendants. `merge_wait_passes` has
+  `Field::kMergeWaitPasses = 1024` and exists only for split-and-merged materials. Bytes per liquid particle: 407 B
+  (plan measure), 414 B (design estimate).
+- Cell resize: `step::ResizeResult` gains `double size_change_kinetic_energy` and `std::uint64_t
+  mismatched_particle_count` (0 on failure or nothing to do), which the step copies into `StepReport`. A pass with only
+  mismatched particles commits a same-cell resize (`version + 1`). The batch plan exposes `batches::SlabLimit {
+  blocks_per_layer, loaded_layer_count, bytes_per_full_loaded_block, loaded_batch_room_bytes, needed_bytes, plan_area,
+  max_plan_area }` in `BatchPlan::slab_limit` and `BatchesFailure::slab_limit` for the plan-area budget line. A merge
+  the both-grid check refuses in a changed cell is merged later by the drift rule. Coarsening tests keep an
+  all-smallest start on purpose; `ResizeCells, CalmDeepTankOnStartCells_NeverSplitsForDepth` covers the A66 start.
+- Pressure: `SurfaceDistanceInputs::particle_radius` (m) becomes `double particle_radius_in_cell_widths = 0.5;` (each
+  particle's radius scales with its cell width), else coarse cells read as air; `ReadyScene` carries it (scene setting).
+  Render output: a wide point splits into `k = min(ceil(width/spacing), max(8, ceil(width/(2 spacing))))` parts per
+  axis. Gas markers take part in split and merge; the marker upkeep counts markers of any level in a cell. Blocking
+  materials stay at the smallest level, so their single radius stays. Grid: a negative depth or distance gives the
+  smallest width. Column or tile batches later need a non-`CellBlockRange` `GridPiece` and `FindBorderBlocks`.
+- Materials: liquid and gas carry no per-particle material state beyond `volume_ratio` and fractions (materials
+  design 5.8, decision 15, test `BuildParticlesSettings, SplitAndMergedKinds_CarryNoMaterialState`).
+
+### New public names (A65–A68)
+
+Step: `StartRegionShape`, `StartCells`, `BuildStartCells`, `SceneCounts::{start_cells_per_level,
+start_particle_count, start_cell_blocks}`, `StepReport::{size_change_kinetic_energy, mismatched_particle_count}`.
+I/O: `BuildStartParticles`. Particles: `merge_wait_passes` (field), `kMaxMergeWaitPasses`,
+`AdjustParticleCountResult::{mismatched_particle_count, waiting_particle_count, lone_particle_count,
+incomplete_split_count, kinetic_energy_change}`.
+
+### Owner questions raised here
+
+1. `kMaxMergeWaitPasses = 16` (starting value) and the rule that a lone particle may persist without a time bound.
+2. Splits no longer refused for an incomplete neighbourhood (counted instead); merges of drifted particles need only
+   the gap test.
+3. The start uses a Euclidean depth bound, so it can be up to one level finer than the run's later grid in places
+   (bounded by the 1.25 test tolerance).

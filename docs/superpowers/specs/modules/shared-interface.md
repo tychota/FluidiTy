@@ -3,7 +3,8 @@
 Status: final cross-module reference, rewritten on 2026-11-14 after the consistency sweep of the fifteen
 module designs, and brought up to date the same day with Foundation as built and with `plan-decisions.md`
 (including the reconcile pass, A24 and A25: g.2, g.7, g.8; A26 and A27: g.9), and on 2026-11-15 with
-`plan-decisions.md` "Owner answers A40–A64 applied (2026-11-15)" (g.10; rows marked "(A<n>, 2026-11-15)"). Not
+`plan-decisions.md` "Owner answers A40–A64 applied (2026-11-15)" (g.10; rows marked "(A<n>, 2026-11-15)") and
+"Owner answers A65–A68 applied (2026-11-15)" (g.11, which also adds the rows the A40–A64 pass missed). Not
 committed to the `rebuild` branch.
 
 It replaces the first version, written from the reconciliation of the first six designs. It records what every
@@ -596,7 +597,7 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Particle order | by (`CellPlaceIndex` of the containing active cell, id), `group_begin` per block, `cell_begin` per cell place | particles | (cell block, id) |
 | Memory estimate entries of particles | `particles::BuildParticlesMemoryEstimate` | particles | `particles::BuildMemoryEstimate` |
 | A complete neighbourhood | `particles::FindNeighbourhood` with `NeighbourhoodInputs { outside_solid; face_side; }`; the field `is_grid_only_region` is not in the first version (A64, 2026-11-15; it returns with "Deep liquid without particles (later; needs review)") | particles | `grid::FindNeighbourhood`, `can_hold_liquid` |
-| Split, merge, count changes | `SplitParticle`, `MergeParticles`, `AdjustParticleCount` taking `grid_before_resize` and `grid` with their `NeighbourhoodInputs`; called only inside the resize transaction; every liquid cell holds particles of its own `size_level` (eight of level `l + 1` merge into one of level `l` when their cells merge, one splits into eight when its cell splits; drifted particles keep their level and are counted) (A64, 2026-11-15) | particles | one-grid forms; "deep liquid needs no particles" |
+| Split, merge, count changes | `SplitParticle`, `MergeParticles`, `AdjustParticleCount` taking `grid_before_resize` and `grid` with their `NeighbourhoodInputs`; called only inside the resize transaction; every liquid cell holds particles of its own `size_level` (eight of level `l + 1` merge into one of level `l` when their cells merge, one splits into eight when its cell splits; drifted particles keep their level and are counted) (A64, 2026-11-15); **every** resize pass also splits a too-large and merges too-small particles of `kMayBeSplitAndMerged` materials (chunks of eight, or two to seven after `kMaxMergeWaitPasses = 16` passes; per-particle `merge_wait_passes`; `AdjustParticleCountResult::{mismatched_particle_count, waiting_particle_count, lone_particle_count, incomplete_split_count, kinetic_energy_change}`; g.11.3) (A67, 2026-11-15) | particles | one-grid forms; "deep liquid needs no particles"; drifted particles keep their level (A64, replaced by A67) |
 | Batch copies of particles | `particles::WriteParticleGroups`, `ReadParticleGroups` | particles | |
 | Restart from a snapshot | `particles::BuildParticlesFromSnapshot(const ParticlesSettings&, const ParticlesSnapshot&, const grid::StaggeredGrid&)`; `SnapshotFields { bool all = true; FieldList fields{}; }`, `kOutputSnapshotFields` | particles | two-argument form |
 | A marker no longer needed | `particles::RemoveReason::kMarkerNotNeeded` | particles | |
@@ -624,7 +625,7 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Material faces in the viscous solve (A26) | `solids::ViscousMaterialFace { face_piece_index; material_set; face_mass; velocity_before_pressure; blocking_face_index; }` (`solids/viscous_material_faces.h`): the band faces of each blocking set (face mass, centre within `kFitReach` cell widths of a liquid cell centre), velocity unknowns of the joint solve, the liquid sticks there; `ViscousMaterialFaces` (move-only view into `SolidsBuffers`), `BuildViscousMaterialFaces(const BlockingMaterialFacesInputs&, const BlockingMaterialFaces&, const pressure::GeometrySnapshot&, SolidsBuffers&)`, `ToViscousMaterialFaces`, `ApplyViscousSolveToMaterials(const ViscousMaterialFaces&, std::span<const double> velocity_after_solve, std::span<const BlockingSet>, SolidsBuffers&)` returning `PressureOnMaterials` (g.9) | solids, viscosity, step | material faces eliminated in the joint solve; the liquid sliding along a material (A24) |
 | Free solids in the viscous solve (A27) | `solids::FreeSolidForViscousSolve { solid_index; mass; inertia_at_start; origin_at_start; velocity_before_pressure; turn_rate_before_pressure; allowed_motions; }` (`AllowedMotions allowed_motions` instead of the guide flags, A59, 2026-11-15), `ToFreeSolidsForViscousSolve(const MotionMap&)`, `FreeSolidMotion { velocity; turn_rate; }`, `ApplySolvedMotionToSolids(const MotionMap&, std::span<const FreeSolidMotion>, const grid::CellValues<double>& pressure, SolidsTry&, SolidsBuffers&)` (`solids/motion_map.h`); `m = column_count` motion unknowns per free solid touching viscous liquid (six when unguided; A59, 2026-11-15), the liquid sticks at its surface (g.9) | solids, viscosity, step | `kFreeSolidNotSupported`, `kViscousLiquidWithFreeSolid` (A27); `FreeMotionLimits limits` held at their value before pressure after the solve (A59) |
 | Guided rigid bodies (A59, 2026-11-15) | `solids::GuideKind { kAxisLimits, kRail, kHinge }`; `FreeMotionLimits` keeps its axis flags and gains `guide_kind`, `rail_direction`, `hinge_point`, `hinge_axis` (world frame); shared `guide_math.h`: `AllowedMotions { columns[6][6]; column_count; prescribed_motion[6]; }`, `ComputeAllowedMotions(const FreeMotionLimits&, Vec3 origin_at_start)`; motion `ξ = J q + ξ_0`; the viscous block `Jᵀ (M + Δt Rᵀ E_sᵀ W E_s R) J`; the pressure solve's free-solid term `(K J) (Jᵀ M J)⁻¹ (K J)ᵀ` (rank m); a hinged body's pose rotates about `hinge_point` at commit; scene `free_solid.guide`; add-on `guide_kind`, `guide_object` (g.10.4) | solids (used by viscosity, pressure, step, I/O, Blender add-on) | axis flags only; rank-6 term `K M⁻¹ Kᵀ`; "a motion a guide forbids keeps its value before pressure after the solve" |
-| Force of the liquid on every solid (A60, 2026-11-15) | `solids::LiquidForceOnSolid { solid_id; pressure_force; pressure_torque; viscous_force; viscous_torque; }` (N, N m; mean over the step; world; torque about the body's origin at the step start), every solid ascending `solid_id`, fixed and domain box included; `SolidsTry::liquid_forces()`; `step::StepReport::liquid_force_on_solids`; `ViscosityResult` returns the per-solid viscous impulse; memory entry `"viscosity: solid sample coefficients"` 52 B per solid sample, `kRunOn`; I/O `liquid_force_on_solids` in `frame_done` and `run_report.json` (g.10.4) | solids, viscosity, step, I/O, Blender add-on | force reported for free solids only |
+| Force of the liquid on every solid (A60, 2026-11-15) | `solids::LiquidForceOnSolid { solid_id; pressure_force; pressure_torque; viscous_force; viscous_torque; }` (N, N m; mean over the step; world; torque about the body's origin at the step start), every solid ascending `solid_id`, fixed and domain box included; `SolidsTry::liquid_forces()`; `step::StepReport::liquid_force_on_solids`; `ViscosityResult::viscous_push_on_solids` returns one `solids::ViscousPushOnSolid { push; turning_push; }` per solid (N s, N m s), stored by `solids::ApplyViscousImpulses` right after `ApplySolvedMotionToSolids` (A60, 2026-11-15; g.11.5); memory entry `"viscosity: solid sample coefficients"` 52 B per solid sample, `kRunOn`; I/O `liquid_force_on_solids` in `frame_done` and `run_report.json` (g.10.4) | solids, viscosity, step, I/O, Blender add-on | force reported for free solids only |
 | Stick and slip on prescribed-motion solids (A53, 2026-11-15) | `solids::SolidSettings::slip_length` (m; 0 full stick, default; `+infinity` free slip; read for fixed and driven solids and the domain box beside a viscous liquid; a value on a free solid gives NOTE `slip_ignored_on_free_solid`); the viscous solve's tangential coefficient `μ / (d + λ)`; scene `slip_length` per solid (`"free"` or a number); add-on `slip_length`, `free_slip` | solids, viscosity, I/O, Blender add-on | full stick on every solid beside a viscous liquid |
 | What counts as viscous (A25) | A liquid ingredient is viscous exactly when its `viscosity` is above 0; the scene is viscous when any liquid is (stage 11, else stage 12), chosen once per run; `ViscositySceneSummary::has_viscous_ingredient`; `viscosity::ComputeViscousEffectPerStep(viscosity, step_duration, density, cell_width)` (`deformation_rate.h`, shared); viscosity advice (A57, 2026-11-15; `viscosity_advice.h`, CPU only): `kNegligibleViscosityRatio = 0.1`, `kSmallestVisibleWavelengthInCells = 4`, `kNegligibleViscousChange = 0.01`, `ComputeViscosityToSmoothingRatio`, `ComputeFourCellFeatureChange`, `ComputeReynoldsNumber`; `step::ViscousPath { kPressureSolve, kViscousSolve }`, `step::LiquidViscousEffect` (A57 fields, 2026-11-15: `viscosity_to_smoothing_ratio`, `four_cell_feature_change`, `spreading_in_cells`, `reynolds_number`, `advises_zero_viscosity`), `RunPlan::liquid_viscous_effects`, `viscous_effect_cell_width`, `viscous_effect_step_duration`, `viscous_effect_run_duration`, `reynolds_length` (A57, 2026-11-15), `viscous_path`; I/O `RunBudget::viscous_path`, `liquids` (`io::ViscousEffectOfLiquid`, schema table `ViscousEffectOfLiquid`, with the A57 fields in place of `effect_not_visible`), `viscous_effect_run_seconds`, `reynolds_length_m` (A57, 2026-11-15) and the `liquids:` budget lines with the advice and the slip note, `ToName(step::ViscousPath)`; the add-on's `RunBudgetFacts.liquids`, `viscous_path` (g.8, g.10.3) | viscosity, step, I/O, Blender add-on | the water preset's 1e-3 Pa s; `io::LiquidViscousEffect` and the schema table `LiquidViscousEffect` (same name as the step's struct, other fields); `kSmallestVisibleViscousEffectPerStep = 2.5e-4`, `effect_not_visible`, the A25 "note" line (A57) |
 | Material kinds | `materials::MaterialKind { kLiquid, kGas, kSnow, kSpringySolid }` (the sand module appends `kSand = 4`) | materials | five values with `kSand` |
@@ -633,14 +634,19 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Internal force | `ApplyInternalForce(..., transfer::GridFromParticles&, std::span<InternalForceTotals> totals_of_block)` returning `std::expected<void, MaterialsFailure>`, `ComputeInternalForceTotal` | materials | one returned budget |
 | Ingredient table | `MaterialTable::first_ingredient_of_material`, `ingredient_viscosity`, `ingredient_rest_density`, `gas_ingredient_index()`, `ingredient_export_names()` | materials | |
 | Solids' scene check | `std::vector<SolidsFailure> CheckSolidsCanRun(const SolidsSettings&, double smallest_cell_width, double largest_cell_width)` (empty: can run); `kMaxPlateCount = 1`, `kMaxFreeSolidCount = 16`; `SolidsSettings::has_liquid_or_gas` | solids | `std::expected<void, ...>` form, `max_free_solid_count` |
-| Solids in a step | `ComputeStepDurationLimit`, `BuildTry(solids, step_duration, smallest_cell_width)`, `BuildMotionMap` with `ToFreeSolidPushes`, `ToFreeSolidInverseInertia`, `ApplyContactReactions`, `BuildBlockingMaterialFaces` (stage 10) and `ApplyPressureToMaterials` (stage 12; g.2), in a viscous scene also `BuildViscousMaterialFaces` and `ToFreeSolidsForViscousSolve` (stage 10) and, at stage 11, `ApplySolvedMotionToSolids` and `ApplyViscousSolveToMaterials` in place of `ApplyPressureToSolids` and `ApplyPressureToMaterials` (A26, A27; g.9), `CommitTry` returning `std::expected<void, SolidsFailure>`, `SolidsSummary`, `BuildSolids(const SolidsSettings&)`, `DriveWaves` | solids | `ComputeSolidsForStep`, `ComputeStepLimits`, `BuildFreeSolidPushes`, `SolidsSceneSummary`; `ApplyPressureToMaterials` at stage 11 (A24, replaced by A26) |
+| Solids in a step | `ComputeStepDurationLimit`, `BuildTry(solids, step_duration, smallest_cell_width)`, `BuildMotionMap` with `ToFreeSolidPushes`, `ToFreeSolidInertia` (A59, 2026-11-15; g.11.5), `ApplyContactReactions`, `BuildBlockingMaterialFaces` (stage 10) and `ApplyPressureToMaterials` (stage 12; g.2), in a viscous scene also `BuildViscousMaterialFaces` and `ToFreeSolidsForViscousSolve` (stage 10) and, at stage 11, `ApplySolvedMotionToSolids`, then `ApplyViscousImpulses` (A60, 2026-11-15; g.11.5), and `ApplyViscousSolveToMaterials` in place of `ApplyPressureToSolids` and `ApplyPressureToMaterials` (A26, A27; g.9), `CommitTry` returning `std::expected<void, SolidsFailure>`, `SolidsSummary`, `BuildSolids(const SolidsSettings&)`, `DriveWaves` | solids | `ComputeSolidsForStep`, `ComputeStepLimits`, `BuildFreeSolidPushes`, `SolidsSceneSummary`; `ToFreeSolidInverseInertia` (A59); `ApplyPressureToMaterials` at stage 11 (A24, replaced by A26) |
 | Solids for other modules | `BuildContactSolids(std::span<const SolidSettings>, const SolidsSnapshot&)`, `ComputeRotationVector(Orientation from, Orientation to)`, `ComputeSolidsAtFaces(grid, range, solids, SolidsAtFaces&)`, `grid_edge_is_open_to_sky` | solids | `contact::BuildContactSolids` |
 | Gas in the step | `gas::FindMarkerChanges`, `FindCellsToKeepActive`, `BuildTry`, `ComputeGasSeenByLiquid` (in `ChooseActiveCells`), `ApplyGasStepStart` (stage 10, or the start of stage 13 without stage 10; g.2), `SolveGas(inputs, settings, cancel_requested, SolvedGasArrays{velocity_after_pressure, was_solved, cell_was_solved}, amounts_try, gas_buffers, pressure_buffers)`, `GasResult::step_limit` (no sealed term, A24), `GasAmountsTry` | gas | `AddGasFromSources`, `ComputeCellsNeeded`, `ApplyGasToGrid`, `ApplyGasForces`, `ComputeGasGeometry`, `ComputeAddedVolumeRate`, `MoveGas`, `gas::ComputeStepLimit`, `gas::GasTry` |
 | Gas state and output | `gas::GasAmountsSnapshot` with `ReadGasAmountsSnapshot`, `BuildGasAmountsFromSnapshot` (saved state); `GasSnapshot` for volumes, from `ToGasSnapshot(const GasAmountsSnapshot&, const GasLaw&, const grid::GridFrame&)`; render output passes the law through `FrameInputs::gas_law` | gas | `GasSnapshot` in the step snapshot |
 | Gas sources and wind | keyed `gas::GasSource { source_id; low_corner; high_corner; keys; }`, `gas::GasWind { keys; }`, `SampleGasSource`, `SampleGasWind`, `CheckGasSources`; the scene file's top-level `wind: [{time, acceleration}]` (renamed from `gas_wind`, A47, 2026-11-15; s from the first frame; m/s2, world, Z-up) is written by the Blender add-on from Blender's Wind force fields whenever one exists (`build_wind_keys(readings)`, no `has_gas`; `WIND_ACCELERATION_PER_STRENGTH = 1.0` m/s2 per unit of Strength, A20) and read as written: neither I/O nor gas converts; `ReadyScene` keeps `gas::GasWind wind`; wind acts on gas in the solver and on spray and foam in render output (`render_output::RenderSettings::wind`, filled by I/O; `kFoamWindDriftDuration = 0.1` s, starting value), never on the liquid body; findings `wind_without_gas` (NOTE, A47 text) and `wind_flow_not_honoured` only when `field.flow != 1.0` (A50) (A47, A50, 2026-11-15) | gas, render output, I/O, Blender add-on | box with rates, one acceleration; the add-on's `wind_acceleration`; scene field `gas_wind`; wind keys written only with gas |
 | Stages | `step::Stage` (section e); `TryStepWithStages(Simulation&, const StepInputs&, const StageTable&)` | step | `TryStepWithStages(simulation, request, stages, ranges)` |
-| Callbacks | `step::Callback<Function> { Function* function; void* context; }`; `StepCallbacks` members are pairs; no `choose_cell_size` (A41, 2026-11-15: stage 2 calls `grid::ComputeNewCellSizeLevel`); `apply_grid_only_region`, `move_grid_only_liquid`, `read_largest_grid_only_speed` are not in the first version (A64, 2026-11-15) | step | one `void* context`, `cell_resize::CallbackContext` used outside cell resize; `choose_cell_size` (A41) |
-| The run plan | `step::BuildRunPlan(..., std::span<const MemoryEstimateEntry> output_estimate, std::span<const MemoryEstimateEntry> cell_resize_estimate = {})`; `SceneCounts`' particle estimate counts every liquid cell of the start grid at the levels the depth term gives, times the seeded count, plus the sources (A64, 2026-11-15) | step | |
+| Callbacks | `step::Callback<Function> { Function* function; void* context; }`; `StepCallbacks` members are pairs; no `choose_cell_size` (A41, 2026-11-15: stage 2 calls `grid::ComputeNewCellSizeLevel`); `apply_grid_only_region`, `move_grid_only_liquid`, `read_largest_grid_only_speed` are not in the first version (A64, 2026-11-15); `limits_raised` (`Callback<bool(void*, Simulation&, const SimulationLimits&)>`, called by `ApplyLimits` before the old blocks are freed) with `FindRunMemory(Simulation&)` / `FindCpuRunMemory(Simulation&)` (A58 reconcile, 2026-11-15; g.11.6) | step | one `void* context`, `cell_resize::CallbackContext` used outside cell resize; `choose_cell_size` (A41) |
+| The run plan | `step::BuildRunPlan(..., std::span<const MemoryEstimateEntry> output_estimate, std::span<const MemoryEstimateEntry> cell_resize_estimate = {})`; `SceneCounts`' particle estimate counts every liquid cell of the start grid at the levels the depth term gives, times the seeded count, plus the sources (A64, 2026-11-15), **replaced by** the exact start state: `SceneCounts::{start_cells_per_level, start_particle_count, start_cell_blocks}` from `step::BuildStartCells` and `io::BuildStartParticles`, 8 particles per liquid cell at every level, limits 1.25 x these plus sources (A65, A66, 2026-11-15; g.11.1, g.11.2); last parameter `std::optional<RunMode> forced_mode = std::nullopt` (A40, 2026-11-15; g.11.6) | step | the start counted at the smallest cell (A64 text) |
+| Particle size (A65, 2026-11-15) | "every liquid cell holds about eight particles of its own size: a particle's `size_level` is its cell's level, its rest volume is one eighth of its cell (`(w/2)³`), so a cell k levels coarser than the smallest holds 8 particles each of `8^k` times the smallest particle's volume" (g.11.1); `pressure::SurfaceDistanceInputs::particle_radius_in_cell_widths` (radius = it x the particle's level width) | particles, step, pressure, I/O | one particle size everywhere; the `w_min / 2` lattice over the whole liquid; `SurfaceDistanceInputs::particle_radius` (m) |
+| Start cells and seeding (A66, 2026-11-15) | `step::StartRegionShape`, `StartCells`, `BuildStartCells` (`step/start_cells.h`, CPU only); `io::BuildStartParticles` (8 points per start cell at its cell-eighth centres); the grid's first version from `StartCells::cells` (g.11.2) | step, I/O, grid | I/O 5.1's `particle_spacing = smallest_cell_width / 2`; the first grid from particles at `new_cell_size_level` |
+| Size change report (A67, 2026-11-15) | `step::StepReport::size_change_kinetic_energy` (J), `StepReport::mismatched_particle_count`; memory row `"particles: merge wait passes"` (g.11.3) | step, particles, I/O | |
+| Later work and the slab limit (A68, 2026-11-15) | later groups in the order "surface band 8 to 4 (test only)", "Coarser cells on calm surfaces" with "Batches cut by columns or tiles", "Deep liquid without particles (needs review)"; the budget line naming the plan-area limit `a_max = room x 16 w_min² / (layers x bytes_per_loaded_block)` (g.11.4) | cell resize and batches, I/O | |
+| Guided free solids in the pressure solve (A59, 2026-11-15) | `pressure::FreeSolidInertia`, `EquationInputs::free_solids`, `GuidedInverseMass`, `ComputeGuidedInverseMass`, `ComputeGuidedSolidMotion`; `solids::ToFreeSolidInertia(const MotionMap&)` (g.11.5) | pressure, solids | `free_solid_inverse_inertia`, `ToFreeSolidInverseInertia` |
 | Memory budget (A58, 2026-11-15) | `StepSettings::memory_share_of_free = kDefaultMemoryShareOfFree` (0.9), `StepSettings::memory_left_free_bytes = kDefaultMemoryLeftFreeBytes` (536,870,912 B, starting value); `step::ComputeAllowedMemoryBytes(MemoryAvailable, double memory_share_of_free, std::uint64_t memory_left_free_bytes)` = `min(share x free, free - left_free)` (0 when negative), the same rule on both processors (`run_plan.h`); suggestion `more_memory_bytes = max(ceil(needed / share), needed + left_free) - free`; the add-on's `memory_share_of_free` (0.9) and `memory_left_free_bytes` (MiB) | step, I/O, Blender add-on | `StepSettings::memory_share_of_total` (0.7), `memory_share_of_free` 0.8, CPU rule min(0.7 total, 0.8 free) |
 | Committed limits (A41, 2026-11-15) | `step::CommittedStepLimits::largest_liquid_speed` (m/s; exact max of particle speed over liquid materials at the last commit, filled by `CommitStep`), read by `ResizeCells` for `grid::ComputeReferenceSpeed`; `CommittedStepLimits::grid_only_speed` is not in the first version (A64) | step, cell resize | `grid_only_speed`; `ReadLargestGridOnlySpeed` |
 | Step grid fields (A63, A64, 2026-11-15) | `step::GridFields` gains, committed and try copies beside `merge_ready_duration`: `grid::CellValues<double> held_velocity_gradient_size` (1/s), `grid::CellValues<std::uint8_t> merge_ready_step_count` (saturating at 255); memory rows `"step: held velocity gradient size"` 8 B x 2, `"step: merge wait steps"` 1 B x 2 per cell place, `kRunOn`; saved in the state. The grid-only arrays (`is_grid_only_region`, `layers_from_grid_only_region`, `grid_only_mass`, `grid_only_rest_volume`, `grid_only_current_volume`, `grid_only_ingredient_volume`) and the mirror `"step: committed grid-only marks on the CPU"` are not in the first version (A64) | step, cell resize | |
@@ -781,7 +787,10 @@ For I/O: `ReadyScene` and `StepSettings` (3.2, 3.3); `CheckSceneCanRun` with eve
 `RunMemory` with the new `MemoryReport` fields (A58); `CommittedStepLimits::largest_liquid_speed`,
 `GridFields::held_velocity_gradient_size`, `merge_ready_step_count` (A41, A63); `RunPlan::viscous_effect_run_duration`,
 `reynolds_length` and the A57 `LiquidViscousEffect` (A57); `StepReport::liquid_force_on_solids` (A60); no
-`choose_cell_size` callback (A41) and no grid-only callbacks or arrays in the first version (A64). It calls every
+`choose_cell_size` callback (A41) and no grid-only callbacks or arrays in the first version (A64);
+`StepCallbacks::limits_raised`, `FindRunMemory`, `FindCpuRunMemory`, `BuildRunPlan`'s `forced_mode` (A58 reconcile,
+A40); `StartRegionShape`, `StartCells`, `BuildStartCells` and the exact `SceneCounts` start fields (A66);
+`StepReport::size_change_kinetic_energy`, `mismatched_particle_count` (A67) (all 2026-11-15; g.11). It calls every
 earlier module through its section 3 and includes no cell resize, batches
 or render output header: those are reached only through the callback pairs I/O sets.
 
@@ -806,7 +815,8 @@ file for `saved_state` and internal records (3.3); fingerprints, `RunReport`, ru
 module, with `stable_names.h` for the step's enums (3.1). Since 2026-11-15: `resume` in the recorded mode,
 `IoError::kRecordedModeDoesNotFit`, `--choose-mode-again`, `run_mode_changes` (A40); the warnings without margins and
 `kMemoryTakenToleranceBytes` (A43, A58); the A57 `liquids:` lines; `liquid_force_on_solids` in `frame_done` and
-`run_report.json` (A60); scene fields `wind`, `cell_size_regions`, `cell_size_map`, `slip_length`,
+`run_report.json` (A60); `BuildStartParticles` and the start order of `BuildRun` (A66), the A67 report fields in
+`frame_done` and `run_report.json`, the A65 particles line and the A68 plan-area line (g.11); scene fields `wind`, `cell_size_regions`, `cell_size_map`, `slip_length`,
 `free_solid.guide`; `RenderSettings::wind` filled from the ready scene (A47). Used by the Blender add-on (CLI,
 events, `report`) and by render output (its writers write into `OutputFile` sinks I/O opens and lists).
 
@@ -1885,6 +1895,198 @@ forms of `ComputeGridCounts` / `CheckSizeStepRule` kept; `ComputeAmounts`, `Comp
 keep one allocating form each; `kBadStepInputs`, `step_inputs`; `max_field_parts = 1u << 26` with one frame
 `OrderBuffers`; sand Task 7's per-call GPU copy is settled in the sand module.
 
+### (g.11) Owner answers A65–A68, and rows missing after the A40–A64 pass (2026-11-15)
+
+From `plan-decisions.md` "Owner answers A65–A68 applied (2026-11-15)" and, for g.11.5 to g.11.7, from the A40–A64
+section's items 3, 5, 10 and the reconcile rulings, whose declarations the designs already carry but this file
+lacked. Where an earlier part of this file differs, this wins. Every row and block is "(A<n>, 2026-11-15)".
+
+#### (g.11.1) Particle size follows the cell (A65, 2026-11-15)
+
+The one wording, used by every design, plan, budget line and comment: **"every liquid cell holds about eight
+particles of its own size: a particle's `size_level` is its cell's level, its rest volume is one eighth of its cell
+(`(w/2)³` for a cell of width `w`), so a cell k levels coarser than the smallest holds 8 particles each of `8^k` times the smallest
+particle's volume."** No text says or implies one particle size everywhere, a lattice of `w_min / 2` over the whole
+liquid, or `8 · 8^k` particles in a coarse cell. Memory estimates and the planner count **8 particles per liquid cell
+at every level** (the start state's exact count times 1.25); the batch plan's 512 particles per full block holds at
+every level. Budget line: `particles: <n> needed (about eight per liquid cell, sized to their cell); <m> of them in
+cells deeper than <8 w_min> m below the surface; in this version every liquid cell holds particles (deep liquid
+without particles comes later)`. Consequences in the module designs (plan decisions of this pass, A65):
+
+- Pressure: `SurfaceDistanceInputs::particle_radius` (m) is **replaced** by `double particle_radius_in_cell_widths
+  = 0.5;` (no unit): a particle counts as a ball of radius `particle_radius_in_cell_widths x
+  grid::ComputeCellWidth(frame, size_level_p)`, so a coarse cell's eight particles cover it (a corner of a cell of
+  width `w` is `sqrt(3) w / 4 < w / 2` from its nearest particle). The step passes
+  `StepSettings::particle_radius_in_cell_widths` unchanged (the step design's stage 9 `FindLiquidSurface` call:
+  replaced "`particle_radius`").
+- Solids: a blocking material's one `particle_radius` stays right: blocking materials keep their count
+  (`kKeepsItsCount`), so their particles are all at `smallest_size_level` (A66 seeding). I/O's `particle_radius =
+  particle_spacing / 2` reads `particle_radius = w_min / 4`.
+- Surface: a field point wider than the spacing is split into `k^3` parts, `k = ceil(width / spacing)` up to 8,
+  beyond that `k = ceil(width / (2 spacing))` (replaced: "at most 8"), so parts are never more than two spacings
+  apart (the default smoothing width) for particles of any level; parts stay at most one per lattice point (one per 8
+  from 16 spacings wide).
+- Gas: markers are 8 per gas cell at the cell's level with `rest_volume = (w/2)³` (unchanged); transfer's
+  `min_weight_sum_at_face` (a count of particle shares) means the same at every level.
+
+#### (g.11.2) A run starts on the adaptive grid (A66, 2026-11-15)
+
+```cpp
+namespace fluidity::step {   // step/start_cells.h (CPU only)
+struct StartRegionShape {              // A start region of the scene: a box or a ball with a pose, world axes.
+  enum class Kind : std::uint8_t { kBox, kBall } kind = Kind::kBox;
+  contact::SolidPose pose{};           // m, world.
+  Vec3 half_size{};                    // m. kBox.
+  double radius = 0;                   // m. kBall.
+  std::uint32_t material_index = 0;
+  particles::CountRule count_rule = particles::CountRule::kMayBeSplitAndMerged;  // kKeepsItsCount: forced smallest.
+};
+struct StartCells {
+  std::vector<grid::CellId> cells;                       // Active start cells, the grid's fixed order.
+  std::array<std::uint64_t, grid::kMaxSizeLevels> cells_per_level{};
+  std::uint32_t refine_passes = 0, closure_passes = 0;   // For the report and the termination test.
+};
+// Builds the start grid's cell list from the shapes alone, before any step. Facts per cell: depth and solid
+// distance at the centre minus half the cell diagonal (sqrt(3) w / 2), velocity_gradient_size 0, the artist level at
+// the cell's box; split while wider than grid::ComputeWantedCellWidth (one level per pass, coarse to fine), then split for
+// the one-size-step rule; smallest_size_level wherever a kKeepsItsCount region lies. At most size_level_count - 1
+// passes each. Above max_cell_count: kTooManyCellBlocks.
+std::expected<StartCells, StepFailure> BuildStartCells(std::span<const StartRegionShape> regions,
+    std::span<const contact::Solid> solids, const grid::GridFrame& frame, const grid::CellSizeSettings& cell_size,
+    const grid::ArtistCellSizes& artist, std::uint64_t max_cell_count);
+// SceneCounts gains (exact, from the start state; limits are 1.25 x these plus sources):
+//   std::array<std::uint64_t, grid::kMaxSizeLevels> start_cells_per_level{};
+//   std::uint64_t start_particle_count = 0;   // From the seeded points.
+//   std::uint64_t start_cell_blocks = 0;
+// particles_at_depth_levels and start_particles_in_deep_cells are computed from the start cells.
+}  // namespace fluidity::step
+// io: BuildStartParticles gives each start cell of width w the 8 points at its cell-eighth centres (offsets +-w/4,
+// the order of particles::ComputeRefillParticle), kept when inside its start region and outside every solid;
+// rest_volume = (w/2)^3, mass = density x rest_volume, size_level = the cell's level, the region's start velocity,
+// fitted_velocity_change = 0. Sources keep rest_volume = (w_min/2)^3. Replaces I/O 5.1's particle_spacing lattice.
+```
+
+Order in I/O `BuildRun`: read the scene, build `StartRegionShape`s (with `count_rule`), `step::BuildStartCells`,
+`io::BuildStartParticles`, set `ReadyScene::start_cells = StartCells::cells` (no new parameter on the planner or the
+build; empty only without cell resize; `StepError::kTooManyCellBlocks` sits just before `kOutOfMemory`),
+`step::BuildRunPlan`, `step::BuildSimulation` (which builds the grid's first version from
+`StartCells::cells`, not from particles at `new_cell_size_level`). A resume reads its saved grid and particles and
+never calls `BuildStartCells`. `grid::ComputeWantedCellWidth` takes a negative depth or solid distance (a cell
+centre's bound minus half the diagonal) as the surface or the solid: the `max(1, ...)` gives `w_min` (grid plan Task
+13a test `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest`).
+
+#### (g.11.3) Particles whose size no longer matches their cell (A67, 2026-11-15)
+
+```cpp
+namespace fluidity::particles {
+// ParticleFields (and the committed and try copies, the snapshot, saved states) gain, per particle:
+//   const std::uint8_t* merge_wait_passes;   // Resize passes waited, too small, for a chunk of eight; saturates
+//                                            // at 255; 0 when it matches its cell or is created. Null for
+//                                            // kKeepsItsCount materials. Field::kMergeWaitPasses.
+inline constexpr std::uint8_t kMaxMergeWaitPasses = 16;   // Starting value, about 16 committed steps.
+// AdjustParticleCountResult gains:
+//   std::size_t mismatched_particle_count, waiting_particle_count, lone_particle_count, incomplete_split_count;
+//   double kinetic_energy_change;   // J, energy(after) - energy(before), energy = (m/2)(|v|^2 + (w^2/4)|C|_F^2).
+}  // namespace fluidity::particles
+namespace fluidity::step {
+// StepReport gains:
+//   double size_change_kinetic_energy = 0;        // J, after minus before, the ResizeCells stage of this try.
+//   std::uint64_t mismatched_particle_count = 0;
+}  // namespace fluidity::step
+```
+
+`AdjustParticleCount` runs at **every** resize pass over all blocks; candidates are particles of
+`kMayBeSplitAndMerged` materials (liquids, gas markers) whose `size_level` differs from their active cell's level.
+Too large: split by the 1-to-8 pattern, repeated in a `smallest_size_level` cell until the children match (at most
+`size_level_count - 1` times in one pass), one level per pass elsewhere; never refused for an incomplete
+neighbourhood (counted). Too small: merged in chunks of eight of the same cell, material, `plate_side`, `flags` and
+`size_level`, in cell place order then ascending id; chunks of two to seven merge after their first particle waited
+`kMaxMergeWaitPasses`; a lone particle stays and is counted. Memory row `"particles: merge wait passes"` 1 B per
+particle x 2, `kRunOn`. I/O JSON `frame_done` and `run_report.json` carry both new `StepReport` fields. Contact
+counts a split child that lands inside a solid as `started_inside_count` at the next `MoveParticles`. Gas's marker
+upkeep counts every marker of a cell whatever its `size_level`. Replaced: "a particle that drifts across an existing
+size change keeps its `size_level` for good" (particles 5.4, cell resize 5.4).
+
+#### (g.11.4) Order of the later work and the plan-area line (A68, 2026-11-15)
+
+Later groups of the cell resize and batches plan, in this order, none in a done-criterion: (1) "Can the fine
+surface band shrink from 8 cells to 4? (later, test only)" (analytic scene tests and the bathtub splash at
+`surface_reach_in_cell_widths` 8, 6, 4; the default becomes the smallest reach whose every analytic error is within
+its tolerance and within 1.2 x the reach-8 error, and the owner accepts the visual comparison); (2) "Coarser cells
+on calm surfaces (later)" together with "Batches cut by columns or tiles (later)" (design sketch only: x-y tiles of
+blocks spanning every height, borders of `kBorderLayers` block columns on four sides, solve pieces become tiles,
+fixed-order sums unchanged; no task in the first version); (3) "Deep liquid without particles (later; needs
+review)", last. The first version keeps slab batches and the pinned surface. When
+`ModeReason::kLayerDoesNotFitProcessor` stops a scene, `BuildBudgetLines` prints: `batches: this version cuts batches
+in horizontal slabs; one slab of <n> block layers at the smallest cell needs <b> and the <p> has room for <b>; at
+this cell size batches hold a plan area up to about <a> m² (this scene: <a> m²); batches cut by columns, which remove
+that limit, come later`, with `a_max = room x 16 w_min² / (layers x bytes_per_loaded_block)` (I/O test
+`BuildBudgetLines, WideSceneLayerDoesNotFit_NamesPlanAreaLimit`: pool 10 x 5 m at 1 cm, 50 m² against about 3.2 m²).
+
+#### (g.11.5) Solids and pressure: viscous push, guided inertia (A59, A60, 2026-11-15)
+
+```cpp
+namespace fluidity::solids {   // motion_map.h
+// The viscous push on one solid, one per SolidsTry::solids() entry, as ViscosityResult::viscous_push_on_solids
+// gives it: N s and N m s about the solid's origin at the step start, world axes ("viscous push", never "impulse").
+struct ViscousPushOnSolid { Vec3 push{}; Vec3 turning_push{}; };
+// Stage 11, right after ApplySolvedMotionToSolids: stores the pushes so liquid_forces() holds viscous_force =
+// push / dt and viscous_torque = turning_push / dt. Another size: kBadInput; not finite: kNotFinite; on failure the
+// try is unchanged. CPU only.
+std::expected<void, SolidsFailure> ApplyViscousImpulses(std::span<const ViscousPushOnSolid> viscous_impulse,
+                                                        SolidsTry& solids_try);
+// One pressure::FreeSolidInertia per free solid, FreeSolidPush::solid_index order, filled by BuildMotionMap with
+// allowed_motions = ComputeAllowedMotions(limits, origin_at_start). Replaces ToFreeSolidInverseInertia.
+std::span<const pressure::FreeSolidInertia> ToFreeSolidInertia(const MotionMap& motion_map);
+}  // namespace fluidity::solids
+namespace fluidity::pressure {
+struct FreeSolidInertia {                    // pressure_equations.h. M = diag(mass I3, inertia_at_start).
+  double mass = 0;                           // kg, > 0.
+  Mat3 inertia_at_start{};                   // kg m2, world axes, about origin_at_start.
+  solids::AllowedMotions allowed_motions{};  // J = columns, xi_0 = prescribed_motion.
+};
+// EquationInputs::free_solids is std::span<const FreeSolidInertia> (replaces free_solid_inverse_inertia).
+// free_solid_guide_math.h (shared). J^T M J factored by Cholesky in a fixed loop order; kBadInput for mass not > 0,
+// a value not finite or a pivot not > 0.
+struct GuidedInverseMass { double values[6][6]; };   // G = J (J^T M J)^-1 J^T, rows and columns (V, Omega).
+FLUIDITY_CPU_AND_GPU PressureError ComputeGuidedInverseMass(const FreeSolidInertia& solid, GuidedInverseMass& result);
+// q = (J^T M J)^-1 J^T (M xi_before + impulse), xi_after = J q + xi_0; solids' ApplyPressureToSolids calls it.
+FLUIDITY_CPU_AND_GPU PressureError ComputeGuidedSolidMotion(const FreeSolidInertia& solid, const double xi_before[6],
+                                                            const double impulse[6], double xi_after[6]);
+}  // namespace fluidity::pressure
+```
+
+#### (g.11.6) Step: raises, run memory, resume (A58, A40, reconcile, 2026-11-15)
+
+```cpp
+namespace fluidity::step {
+// advance_to.h. StepCallbacks gains: called by ApplyLimits after the new blocks are reserved and the step's buffers
+// rebuilt, before the old blocks are freed; I/O rebuilds CellResize, the BatchedRun and the render StepRecorder into
+// FindRunMemory / FindCpuRunMemory and copies what they keep. false: kDoesNotFit, the simulation unchanged, AdvanceTo
+// stops with kLimitsCannotBeRaised. Null: nothing outside the step holds run buffers. BuildSimulation calls none.
+//   Callback<bool(void* context, Simulation& simulation, const SimulationLimits& new_limits)> limits_raised;
+// simulation.h. The run's blocks, for builders outside the step (only between steps); the same object in a CPU run.
+RunMemory& FindRunMemory(Simulation& simulation);
+RunMemory& FindCpuRunMemory(Simulation& simulation);
+// run_plan.h. forced_mode set (a resume reuses its recorded mode, unless --choose-mode-again): mode = *forced_mode,
+// fit = kFits exactly when that mode fits by step 5's test, else kDoesNotFit with the mode kept.
+std::expected<RunPlan, StepFailure> BuildRunPlan(const ReadyScene& scene, const StepSettings& settings,
+                                                 MemoryAvailable on_processor, MemoryAvailable on_cpu,
+                                                 std::span<const MemoryEstimateEntry> output_estimate,
+                                                 std::span<const MemoryEstimateEntry> cell_resize_estimate = {},
+                                                 std::optional<RunMode> forced_mode = std::nullopt);
+}  // namespace fluidity::step
+```
+
+#### (g.11.7) Grid estimate builders take the room (A58 reconcile ruling, 2026-11-15)
+
+`grid::BuildGridMemoryEstimate(RunOn run_on, std::uint32_t storage_count, std::uint32_t max_cell_blocks,
+BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid)` and
+`grid::BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks)`; callers pass
+`limits.max_cell_blocks` (the step: `BuildGridMemoryEstimate(run_on, 2, limits.max_cell_blocks, kOneForAllGrids)`). A
+buffer of a per-item plus fixed size is one `kGivenCount` entry at its exact bytes for that room. Section (a)'s
+`base/memory_count.h` paragraph still quotes the two-parameter forms; it is re-copied after Foundation Task 19.
+
 ## Decided conflicts
 
 - **C1. Who runs the joint velocity-and-pressure solve.** Viscosity, as `SolveViscosityAndPressure`; the
@@ -1941,6 +2143,14 @@ keep one allocating form each; `kBadStepInputs`, `step_inputs`; `max_field_parts
   body; scene field `wind`.
 - **Resume (A40, 2026-11-15).** The recorded run mode is reused; a mode that no longer fits refuses with
   `kRecordedModeDoesNotFit` unless `--choose-mode-again`.
+- **Particle size (A65, 2026-11-15).** Option B of `tradeoff-particles.md`: about eight particles per liquid cell,
+  sized to their cell, at every level; budgets count 8 per liquid cell; (g.11.1).
+- **Start state (A66, 2026-11-15).** The run starts on the adaptive grid from `step::BuildStartCells`, seeded by
+  `io::BuildStartParticles` at each cell's own size; the planner counts that state exactly; (g.11.2).
+- **Drifted particles (A67, 2026-11-15).** Matched to their cell at every resize pass (split, or merged by eights,
+  or two to seven after 16 passes); a lone particle stays, counted; (g.11.3).
+- **Later work (A68, 2026-11-15).** First version: slab batches and the pinned surface, with an honest plan-area
+  line; the later groups in the order of (g.11.4).
 
 ## Replaced on 2026-11-14
 
@@ -2023,3 +2233,16 @@ By `plan-decisions.md` "Owner answers A40–A64 applied (2026-11-15)" (g.10):
 - (b) "Gas sources and wind": scene field `gas_wind`, wind keys written only with gas: by A47.
 - (c) Blender add-on "Blender 5.3 only" as a limit: by A48 (tested with 5.3, no maximum).
 - Rule 3: `kOutOfMemory` at any position: by reconcile item 31 (last value).
+
+By `plan-decisions.md` "Owner answers A65–A68 applied (2026-11-15)" (g.11):
+
+- (b) "Split, merge, count changes": "drifted particles keep their level and are counted", and particles 5.4 / cell
+  resize 5.4 "keeps its `size_level` for good": by A67.
+- (b) "The run plan": the particle estimate from start cells "at the levels the depth term gives, times the seeded
+  count" and every limit sized at the smallest cell: by A66's exact `SceneCounts` fields. I/O 5.1's start lattice
+  `particle_spacing = smallest_cell_width / 2` and the first grid from particles at `new_cell_size_level`: by
+  `BuildStartCells` and `BuildStartParticles`.
+- Any wording of one particle size everywhere, a `w_min / 2` lattice over the whole liquid or `8 · 8^k` particles in
+  a coarse cell; pressure's `SurfaceDistanceInputs::particle_radius` (m); surface's "at most 8" parts per axis: by
+  A65 (g.11.1).
+- (b) "Solids in a step": `ToFreeSolidInverseInertia`, by `ToFreeSolidInertia` (A59; g.11.5).

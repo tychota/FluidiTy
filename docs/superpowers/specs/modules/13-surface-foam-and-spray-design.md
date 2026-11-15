@@ -246,7 +246,8 @@ struct SurfaceGroup {                  // Materials meshed together: they share 
 };
 struct SurfaceSettings {
   std::vector<SurfaceGroup> groups;    // One mesh object per group.
-  double spacing = 0;                  // m. Lattice spacing of the surface field. 0: half the smallest cell width.
+  double spacing = 0;                  // m. Lattice spacing of the surface field. 0: half the smallest cell width
+                                       //   (the width of a smallest-level particle, A65).
   double smoothing_width = 0;          // m. Standard deviation of the Gaussian. 0: 2 * spacing (main's ratio).
   double max_edge_in_spacings = 2.5;   // A moved mesh with a longer edge is rejected.
   double max_pull_back_in_spacings = 0.25;  // Ported. Farthest a moved vertex may be pulled to the surface.
@@ -561,7 +562,8 @@ struct PointObject {                   // One object in a points file. Borrowed 
 };
 struct PointObjectBuffers;                   // Float copies made by the ToPointObject builders; reused frame to frame.
 // The points of one material of an output snapshot: position, velocity_for_next_step, radius
-// cbrt(3 rest_volume volume_ratio / (4 pi)), id, volume_ratio, size_level, share_<ingredient> with two or more
+// cbrt(3 rest_volume volume_ratio / (4 pi)) (per particle: particles are sized to their cell, A65, so the radius
+// grows with the particle's cell; at the surface every particle is of the smallest level, A67), id, volume_ratio, size_level, share_<ingredient> with two or more
 // ingredients, and every field of `extra_fields` (I/O's RequestedOutputs::particle_fields) under its 5.7 name.
 // Fails: kBadInput (a requested field the snapshot does not carry).
 std::expected<PointObject, RenderOutputFailure> ToPointObject(
@@ -839,7 +841,13 @@ a batched run), with a border of two lattice spacings (covered by `BorderWidth::
    smoothed share is continuous where the two regions meet and no inner surface appears). In the first version
    the particles are the one amount `cell_resize::ComputeLiquidTotals` sums as `current_volume`.
 2. A field point wider than the spacing is split into `k^3` equal parts on a regular pattern in its box,
-   `k = ceil(width / spacing)`, at most 8 (fix 2: particles of big cells do not leave gaps).
+   `k = min(ceil(width / spacing), max(8, ceil(width / (2 spacing))))` (fix 2: particles of big cells do not leave
+   gaps). CHANGED (A65): every liquid cell holds about eight particles of its own size (rest volume `(w/2)³`), so a
+   particle `n` levels coarser than the smallest is `2^n` spacings wide, and `n` reaches the depth term's levels,
+   not 2 or 3. Up to 8 spacings wide the parts are at most one spacing apart, as before; beyond, at most two spacings
+   apart, which the Gaussian of the default `smoothing_width` (2 spacings) smooths to within `exp(-2 pi² 2² / 2²) ~
+   3e-9` of uniform, while parts stay at most one per lattice point (one per 8 from 16 spacings wide) (replaced: "at most
+   8", which left parts 8 spacings apart for a particle 6 levels coarser, enough for an inner surface).
 3. Each part adds its volume to the 8 lattice points around it with trilinear weights. Order of the sum at
    one lattice point: parts ordered by (lattice cell, material index, grouped order of the particle, part
    number), through `BuildStableOrder`; the point reads the 8 cells around it in a fixed order.
@@ -1277,6 +1285,7 @@ Analytic and conservation tests (CPU, no GPU needed):
 | `BuildSurfaceField, BesideASolid_SameHeight` | the slab against a `FlatSolid`, and a tilted `Box` moving at 1 m/s | height at the solid equals the height far away; `kLiquidToSolid` triangles within `0.05 * spacing` of the solid | `0.05 * spacing` |
 | ~~`BuildSurfaceField, GridOnlyInside_NoInnerSurface`~~ (A64: moved to this plan's later group "Deep liquid without particles (later; needs review)") | sphere of radius 16 cells, particles in the outer 3 cells, grid-only inside | 1 piece, Euler number 2 | exact |
 | `BuildSurfaceField, BigCellsInside_NoInnerSurface` (NEW, A64) | sphere of radius 16 smallest cells, cells of 2 levels coarser inside the outer 3 cells, particles of each cell's own level everywhere (8 per cell) | 1 piece, Euler number 2 | exact |
+| `BuildSurfaceField, ParticlesSixLevelsCoarser_NoInnerSurface` (NEW, A65) | one cell 128 spacings wide holding its 8 particles of width 64 spacings (`rest_volume` `(64 spacing)³`, cell-eighth centres), no solid | `k = 32` per particle; every lattice point at least 8 spacings inside the cell has `value < -0.4`; mesh 1 piece, Euler number 2 | as stated |
 | `BuildSurfaceField, BigAndSmallParticles_NoGap` | slab across a size change | 1 piece; height step under `0.1 * spacing` | as stated |
 | `BuildSurfaceMesh, RandomFields_AlwaysSafe` | 1,000 smooth fields plus 1,000 noise fields, values at exactly 0 included | `CheckSurfaceMesh(...).is_safe`; no flat triangle | exact |
 | `BuildSurfaceMesh, Sphere` / `Torus` / `TwoSpheres` | radius 8 spacings | volume within 1 %; Euler 2 / 0 / 4; pieces 1 / 1 / 2; normals within 3 degrees | as stated |
@@ -1659,6 +1668,21 @@ instruction, 2026-11-14) except where an owner answer is named.
     `BuildRenderOutputFromSnapshot`, `BuildRenderFrame`); a writer's library `std::bad_alloc` becomes
     `kFileWriteFailed`. Source: owner answer A58, reconcile item 31; `plan-decisions.md` "Owner answers A40-A64
     applied", items 3 (with its same-day correction) and 11. Replaces "`kOutOfMemory` leaves a writer".
+
+22. **Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+    particle's `size_level` is its cell's level, its rest volume `(w/2)³`, so a cell k levels coarser than the smallest holds 8 particles each
+    of `8^k` times the smallest particle's volume. Decision (plan decision of this pass): the field split becomes
+    `k = min(ceil(width / spacing), max(8, ceil(width / (2 spacing))))` (5.3 step 2), so particles of any level leave
+    no inner surface; the point radius `cbrt(3 rest_volume volume_ratio / (4 pi))` is per particle and needs no
+    change; `SurfaceSettings::spacing` 0 stays half the smallest cell width, the smallest particle's width. Tests
+    `BuildFieldPoints, VeryWidePoint_PartsAtMostTwoSpacingsApart` (replaces `VeryWidePoint_SplitsIntoAtMost512`) and
+    `BuildSurfaceField, ParticlesSixLevelsCoarser_NoInnerSurface`. Source: owner answer A65; `plan-decisions.md`
+    "Owner answers A65–A68 applied", A65.
+23. **Other answers of the A65–A68 pass.** A66: the first frame reads the seeded start particles, sized to their
+    start cells, like any frame. A67: a too-large particle never reaches the surface band (split to the smallest level
+    in one pass), so the surface keeps small particles; `size_level` stays a point attribute. A68: the recorder's
+    batch slices follow the batch plan's blocks whatever their shape; the column cut is later. Source:
+    `plan-decisions.md` A66, A67, A68.
 
 **Open** (for the owner):
 

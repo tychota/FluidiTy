@@ -89,6 +89,29 @@ untracked) and `docs/superpowers/specs/2026-11-13-production-rebuild-design.md` 
   is_grid_only_region`, the grid-only clause of `FindNeighbourhood` and the caller of
   `RemoveReason::kIntoGridOnlyRegion` are not in the first version: they move to the group "Deep liquid without
   particles (later; needs review)" at the end of this plan. `AddReason::kRefillRegion` stays (gas markers).
+- **Amended 2026-11-15 (A65):** one wording in every comment, docstring, paper text and commit body of this
+  module: "every liquid cell holds about eight particles of its own size: a particle's `size_level` is its cell's
+  level, its rest volume is one eighth of its cell (`(w/2)³` for a cell of width `w`), so a cell k levels coarser than the smallest holds 8
+  particles each of `8^k` times the smallest particle's volume." Nothing here may say or imply one particle size
+  everywhere, a lattice of `w_min / 2` over the whole liquid, or `8 · 8^k` particles in a coarse cell. Pinned:
+  Task 8 `ComputeRefillParticle, EightParticles_AtCellEighthCentres`.
+- **Amended 2026-11-15 (A66):** start particles are seeded by I/O (`io::BuildStartParticles`) on the start cells
+  of `step::BuildStartCells` at their own level (8 per cell at the cell-eighth centres, the order of
+  `ComputeRefillParticle` with n = 8, `rest_volume = (w/2)³`); no particles code changes for it.
+- **Amended 2026-11-15 (A67; design 5.4 "Consequence", 5.6, 11.18):** `AdjustParticleCount` is extended (no new
+  function): called by `ResizeCells` at every resize pass over all blocks, also with `grid_before_resize ==
+  grid`; candidates are particles of `kMayBeSplitAndMerged` materials whose `size_level` differs from their active
+  cell's level on `grid` (`kCarriesFittedChange` off included, `C` read as zero); too large: split (repeated to the
+  cell's level in one pass in a cell of the frame's smallest level, one level elsewhere), never refused for an
+  incomplete neighbourhood (counted); too small: merged in the stable order (cell place, then id) in chunks of
+  eight, a chunk of two to seven once its first particle's `merge_wait_passes >= kMaxMergeWaitPasses` (16), the gap
+  test the only refusal. New per-particle `std::uint8_t merge_wait_passes` (materials with
+  `kMayBeSplitAndMerged` only; committed + try; saturating at 255; 0 for new, split, merged and matching
+  particles), `Field::kMergeWaitPasses = 1024` (written marks and snapshots; `BuildFieldsToChange` and
+  `ReadParticleGroups` refuse it with `kWrongFields`), `inline constexpr std::uint8_t kMaxMergeWaitPasses = 16;` in
+  `adjust_particle_count.h`, and `AdjustParticleCountResult::{mismatched_particle_count, waiting_particle_count,
+  lone_particle_count, incomplete_split_count, kinetic_energy_change}`; `skipped_incomplete_count` is removed.
+  `SplitParticle` and `MergeParticles` called alone keep every check.
 - **Amended 2026-11-14 (Foundation as built):** the gate runs at every commit: the CPU build in the debug and the
   release preset, and CUDA compiled in the container (its `cuda` step fails for a tracked `.cc` or `.cu` file that no
   build compiles), so a task that adds a source adds it to a CMake file in the same commit.
@@ -173,9 +196,15 @@ Particles-specific (every task respects these):
   `volume_ratio * rest_volume`, `mass * velocity.for_next_step` per component), then `math::TreeSum` over block
   partials, per component. Add and remove amounts: sequential in input / index order. Merge sums: sequential in
   ascending id. Split count changes and refusals in `AdjustParticleCount`: block partials, then `math::TreeSum`.
+  **Amended 2026-11-15 (A67):** `kinetic_energy_change`: per block, `energy(after) - energy(before)` of its splits
+  (grouped order) then its merges (chunk order), `energy(p) = (m_p/2)(|v_p|² + (width_p²/4) |C_p|²_F)`, then
+  `math::TreeSum` over block partials in block order.
 - **Order of new ids in `AdjustParticleCount` (plan decision).** Blocks in order; inside a block, first the
   split children of each split particle in grouped order (cell place, then id), eight consecutive ids per
-  parent in child order; then the merged particles in cell-place order, chunks in order.
+  parent in child order; then the merged particles in cell-place order, chunks in order. **Amended 2026-11-15
+  (A67):** a repeated split gives `8^k` consecutive ids per parent in descendant order (first generation's child
+  index most significant); merge chunks per cell in classes (material, `plate_side`, `flags`, `size_level`) in
+  order of their first member's id.
 - **Tolerances (design 6.6).** Ids, counts, order, flags, `size_level`, `group_begin`, `cell_begin`: exact.
   Floats, CPU against GPU: `|a - b| <= floor + 1e-13 * max(|a|, |b|)`, floor `1e-13 * cell_width` (positions),
   `1e-13 * largest speed in the case` (velocities), `1e-13 * largest value in the case` (amounts, fitted
@@ -216,7 +245,9 @@ Particles-specific (every task respects these):
     on failure `GroupParticlesByBlock`; per material over `all_blocks()` `BuildFieldsToChange({kPosition,
     kVelocityForNextStep})`; `v += {0, 0, -9.81 dt}`, then `x += v dt`; `CommitTry(time + dt)`.
   - Test-only setters in `particles_storage.h` (Task 10): `ApplyNextParticleIdForTest(Particles&, std::uint64_t)`,
-    `ApplyCommittedIdForTest(Particles&, material_index, particle_index, std::uint64_t id)`.
+    `ApplyCommittedIdForTest(Particles&, material_index, particle_index, std::uint64_t id)`; amended 2026-11-15
+    (A67): `ApplyMergeWaitPassesForTest(Particles&, material_index, particle_index, std::uint8_t passes)`
+    (committed value).
 - **Memory estimate entries** (`BuildParticlesMemoryEstimate`, plan decision; the design's 32 B of working memory is split into what is
   really allocated). Per material, all `CountedPer::kGivenCount`. Committed + try (`kWholeRun`, `copies = 2`,
   `given_count = max_particle_count`): `id` 8, `position` 24, `position_when_grouped` 24,
@@ -242,10 +273,14 @@ Particles-specific (every task respects these):
   `BuildStableOrder` passes and of `ComputeExclusivePrefixSum`, and the `SumBuffers` of `ComputeLargestMagnitude`,
   members `order_buffers` and `sum_buffers` of `particles_storage.h`, built by `BuildParticles` and rebuilt by
   `ApplyParticleLimits` from `settings.run_on` and the limits it already has (no signature changes). Per particle
-  that adds 4 B on the CPU and 6 + 14 = 20 B on the GPU to the 405 B above.
+  that adds 4 B on the CPU and 6 + 14 = 20 B on the GPU to the 405 B above. **Amended 2026-11-15 (A67):** per
+  material with `kMayBeSplitAndMerged`, entry `"particles: merge wait passes"` (`kGivenCount`, `given_count =
+  max_particle_count`, 1 B, `copies = 2`, `kWholeRun`, `where = kRunOn`), after `size_level`; one liquid 407 B.
 - **Proof of concept is Y-up.** Rotate its vectors and matrices with `R = rows {1,0,0},{0,0,-1},{0,1,0}`
   (`v' = R v`, `C' = R C R^T`), match split children by position, never by child order.
-- Split, merge and `AdjustParticleCount` act only on materials with `CountRule::kMayBeSplitAndMerged`.
+- Split, merge and `AdjustParticleCount` act only on materials with `CountRule::kMayBeSplitAndMerged`. These carry
+  no per-particle material state beyond `volume_ratio` and `ingredient_fractions` (materials design 11, decision
+  15), so the per-field rule of design 5.6 item 3 covers every array they carry.
 - No floating-point atomics. Integer atomics only for "lowest failing id". A failure names the lowest id.
 
 ## Before you start
@@ -280,6 +315,9 @@ Expected: seven `PASS` lines (format, rules, cpu debug, cpu release, tidy, paper
    relative result as at the origin. Pinned: Task 6, `ComputeMergedParticle, FarFromOrigin_SameAsNearOrigin`.
 5. **Batch copy-in when the whole try wrote an array for some blocks only**: `WriteParticleGroups` must take
    the newest value per block. Pinned: Task 23, `WriteParticleGroups, WholeWrittenForSomeBlocks_CopiesNewestValues`.
+6. **Amended 2026-11-15 (A67): merge waiting off by one.** `merge_wait_passes` grows before the test, so a group
+   that appears at pass 1 merges at pass 16, not 15 or 17; it must persist through commit and a saved state.
+   Pinned: Task 21, `AdjustParticleCount, ThreeSmallInLargeCell_MergeAfterSixteenPasses`; Task 14 snapshot test.
 
 ---
 
@@ -333,6 +371,11 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
 
 **Kind:** numerics
 
+**Amended 2026-11-15 (A65|A67):** the text states the A65 wording (particle size follows the cell) and the rule of
+design 5.6 as rewritten (mismatched particles split or merged at every resize pass, the surface repeat, chunks of
+eight, `kMaxMergeWaitPasses`, the per-field rule, `kinetic_energy_change`); the third `<fig-split>` panel shows the
+drifted particle split on the resized grid with only its children's check, not refused.
+
 **Files:**
 - Modify: `docs/method-paper/fluidity-method.typ`
 - Create: `docs/method-paper/figures/particle_split.typ`, `figures/particle_merge.typ`
@@ -346,13 +389,15 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
   as `<eq:split-offset>` and show in four lines why kinetic energy including the fitted part is kept; merge
   formulas of 5.5 with `<eq:merge-fit>` (the `C*` line) and `<eq:merge-gap>` (the gap line), the energy lost,
   why a positive gap means no energy is gained (cite the Lean theorem named below); the two grids of a
-  resize (C2) and the drifted particle that keeps its size level; the id order of `AdjustParticleCount` from
+  resize (C2) and the drifted particle that is split or merged at the next pass (amended, A67; was "that keeps its
+  size level"); the id order of `AdjustParticleCount` from
   Global Constraints. Cite [1] and [2]. The Lean theorem is `merge_preserves_moments_and_bounds_energy`
   (`proofs/Fluidity/Merge.lean`); name it as the statement, and never write that it has been checked by Lean:
   whether it was built is recorded only in the proof's own commit.
 - [ ] **Step 2: Figures** as design 8 says: `<fig-split>` three panels (parent with eight children at
   `sqrt(3)/4 H`, the grey `H/4` corners and the three spreads as circles; a solid face near one child, refused;
-  committed and resized grids side by side with a drifted particle refused on both). `<fig-merge>` two panels
+  committed and resized grids side by side with a drifted particle split with its children's check, A67).
+  `<fig-merge>` two panels
   (spread ellipse inside the allowed circle, merged; outside, refused). Look at every page.
 - [ ] **Step 3: Pseudocode.** `<proc-split-particle>`: 1 check grouping; 2 check index; 3 check count rule;
   4 check fitted change; 5 check capacity and ids; 6 parent's neighbourhood on `grid_before_resize`; 7 each
@@ -361,7 +406,12 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
   particle's neighbourhood on `grid_before_resize`; 7 compute in id order; 8 gap; 9 merged position's
   neighbourhood on `grid`; 10 capacity and ids; 11 write; 12 mark replaced.
   `<proc-adjust-particle-count>`: 1 check grouping; 2 per block, splits in grouped order; 3 per active cell,
-  merge chunks; 4 place results by prefix sums; 5 tree-sum the block partials.
+  merge chunks; 4 place results by prefix sums; 5 tree-sum the block partials. Amended 2026-11-15 (A67): 1 check
+  grouping; 2 per block, find candidates and reset `merge_wait_passes` of matching particles; 3 too-large
+  particles in grouped order: split, `k` generations in a smallest-level cell, else one; 4 per active cell, classes
+  and chunks in the stable order: eight merge, two to seven grow their counts and merge at 16, one stays; gap test;
+  5 place results by prefix sums; 6 tree-sum the block partials (counts, `kinetic_energy_lost`,
+  `kinetic_energy_change`).
 - [ ] **Step 4: Run** typst and the gate. **Commit.** Subject: `Describe splitting and merging particles`.
 
 ### Task 4: Views, field lists, errors and settings
@@ -369,6 +419,9 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
 **Kind:** mechanical
 
 **Amended 2026-11-15 (reconcile item 31):** `ParticlesError::kOutOfMemory` is the last value; new test `ParticlesError, OutOfMemory_IsTheLastValue`.
+
+**Amended 2026-11-15 (A67):** `ParticleFields` gains `const std::uint8_t* merge_wait_passes = nullptr;` (after
+`size_level`) and `Field` gains `kMergeWaitPasses = 1024`; new test `ToFieldList, MergeWaitPasses_IsBit1024`.
 
 **Files:**
 - Create: `native/fluidity/particles/particle_fields.h`, `particle_fields_test.cc`, `particles.h` (declarations
@@ -391,6 +444,8 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
   ```cpp
   TEST(ToFieldList, ThreeFields_OrsTheirBits)        // {kPosition, kVolumeRatio, kMass} -> bits 1 | 16 | 512
   TEST(HasField, ListWithoutField_IsFalse)           // static_assert as well
+  TEST(ToFieldList, MergeWaitPasses_IsBit1024)       // amended 2026-11-15 (A67): {kMass, kMergeWaitPasses} ->
+                                                     // 512 | 1024; static_assert as well
   TEST(ParticleFields, Default_HasOneIngredientNullArraysAndCpu)  // run_on == RunOn::kCpu; same for
                                                                   // ParticleFieldsToChange
   TEST(ToName, EveryError_LowerSnakeCase)            // all 17 values; kMergeTooSpread -> "merge_too_spread";
@@ -535,6 +590,10 @@ and exited 0 in this task.
 
 **Kind:** numerics
 
+**Amended 2026-11-15 (A65|A66):** n = 8 is the seeding and refill count and I/O's start seeding uses its points;
+new test `ComputeRefillParticle, EightParticles_AtCellEighthCentres`; the docstring of `ComputeRefillParticle`
+carries the A65 wording.
+
 **Files:**
 - Modify: `native/fluidity/particles/split_and_merge_math.h`, `split_and_merge_math_test.cc`
 - Create: `native/fluidity/particles/testdata/proof_of_concept_split_merge_refill.txt`
@@ -552,6 +611,9 @@ and exited 0 in this task.
   TEST(ComputeRefillParticle, OddCount_FirstAtCentre)          // n = 3: particle 0 at the centre, 1 and 2 in
       // eighths 0 and 7 (offsets -h/4 and +h/4 on each axis). exact
   TEST(ComputeRefillParticle, EvenCount_PairsOppositeEighths)  // n = 4: eighths 0, 7, 1, 6. exact
+  TEST(ComputeRefillParticle, EightParticles_AtCellEighthCentres)  // amended 2026-11-15 (A65, A66): centre
+      // {0,0,0}, h = 1, V = 1, density 1000, J = 1, v = 0, C = 0, n = 8: positions at +-0.25 per axis in eighth
+      // order 0, 7, 1, 6, 2, 5, 3, 4 (x bit 0); each rest_volume 0.125 = (h/2)^3, mass 125. exact
   TEST(SplitAndMergeMath, AgreesWithProofOfConcept)            // reads the testdata file; 1e-12 rel
   ```
 - [ ] **Step 2: Implement `ComputeRefillParticle`** (port of `main` `liquid_band_handoff_3d.cc:240-254`
@@ -630,6 +692,8 @@ with the `kGpu` estimate.
 
 **Amended 2026-11-15 (A58):** `BuildParticles(settings, run_memory)` and `ApplyParticleLimits(..., max_cell_blocks, run_memory)`; the buffers entries become one entry per buffer; new tests `BuildParticles, IntoRunMemory_HandsOutExactlyTheEstimate`, `ApplyParticleLimits, IntoNewRunMemory_HandsOutExactlyTheNewEstimate`, `BuildParticles, RunMemoryOnePieceShort_IsOutOfMemory`.
 
+**Amended 2026-11-15 (A67):** materials with `kMayBeSplitAndMerged` get the `merge_wait_passes` buffer pair (entry `"particles: merge wait passes"`, Global Constraints), copied by `ApplyParticleLimits`; new test `BuildParticles, MergeWaitPassesOnlyForSplitAndMergedMaterials`.
+
 **Files:**
 - Modify: `native/fluidity/particles/particles.h` (rest of design 3.2 except `CheckParticles`,
   `kFractionSumTolerance`, `ComputeAmounts*`)
@@ -652,6 +716,10 @@ with the `kGpu` estimate.
       // ComputeAllocatedBytes == ComputeMemoryBytes(BuildParticlesMemoryEstimate(settings), {})
   TEST(BuildParticlesMemoryEstimate, EveryMaterialKind_MatchesAllocation)  // the six fixture materials together,
       // max_particle_count 1000 each, max_added_per_try 100, max_cell_blocks 64: rows sum == allocated bytes
+  TEST(BuildParticles, MergeWaitPassesOnlyForSplitAndMergedMaterials)  // amended 2026-11-15 (A67): the six
+      // fixture materials: merge_wait_passes non-null for liquid, mixture, gas markers, liquid with plate side;
+      // null for snow and springy solid; the estimate has one "particles: merge wait passes" entry per non-null
+      // one, 1 B, copies 2, given_count = max_particle_count
   TEST(BuildParticles, ZeroMaterialIdOrRepeatedId_IsBadInput)
   TEST(BuildParticles, TooManyIngredients_IsBadInput)       // 9
   TEST(BuildParticles, ZeroMaxCellBlocks_IsBadInput)
@@ -705,6 +773,8 @@ GPU, so the step counts them (step plan Appendix A row M1).
 
 **Amended 2026-11-14 (Foundation as built):** the `gpu` tests write result digests.
 
+**Amended 2026-11-15 (A67):** new particles get `merge_wait_passes` 0 when the material carries it (no span in `NewParticles`); new test `AddParticles, NewParticles_WaitZeroPasses`.
+
 **Kind:** mechanical
 
 **Files:**
@@ -738,6 +808,8 @@ GPU, so the step counts them (step plan Appendix A row M1).
   TEST(AddParticles, IdsWouldOverflow_IsIdsExhausted)            // ApplyNextParticleIdForTest(UINT64_MAX - 2),
       // add 3: kIdsExhausted; try and next_particle_id unchanged
   TEST(AddParticles, OnCpu_NoCopyCounted)                        // A17: copy_count 0, bytes_copied 0
+  TEST(AddParticles, NewParticles_WaitZeroPasses)                // amended 2026-11-15 (A67): 5 liquid particles,
+      // after grouping merge_wait_passes all 0; snow: merge_wait_passes null
   // add_particles_gpu_test.cc, label gpu
   TEST(AddParticles, OnGpu_SameIdsAndAmountsAsCpu)
   TEST(AddParticles, OnGpu_CopiesCountedPerArray)                // A17: 5 liquid particles: copy_count == the
@@ -803,6 +875,9 @@ grouping allocates no temporary order arrays.
 
 **Kind:** integration
 
+**Amended 2026-11-15 (A67):** `BuildFieldsToChange` refuses `kMergeWaitPasses` with `kWrongFields` (only
+`AdjustParticleCount` writes it, through a private writer that sets its written marks); the refusal test gains that case.
+
 **Files:**
 - Modify: `native/fluidity/particles/particles_try.h`, `particles_try_cpu.cc`, `particles_try_test.cc`,
   `particles_test.cc` (extend `ApplyParticleLimits, RaisedLimit_KeepsEveryValue` to compare every array of the
@@ -828,7 +903,8 @@ grouping allocates no temporary order arrays.
   TEST(BuildFieldsToChange, SecondRangeOfSameArray_ReadsCommittedValues)  // write blocks [0, 3) to 7.0, then ask
       // [2, 6): read shows 7.0 for blocks 2 and committed values for 3..5; after writing, commit succeeds only
       // once [6, end) is written too
-  TEST(BuildFieldsToChange, MassOrUncarriedArray_IsWrongFields)  // kMass; kSpringyDeformation on a liquid
+  TEST(BuildFieldsToChange, MassOrUncarriedArray_IsWrongFields)  // kMass; kSpringyDeformation on a liquid;
+      // amended 2026-11-15 (A67): kMergeWaitPasses on a liquid
   TEST(BuildFieldsToChange, ThisStepVelocity_ReadIsNullUntilWritten)
   TEST(CheckGrouping, MovedTooFar_IsRefused)  // max_move 0.1, one particle moved 0.2 along y:
       // kMovedTooFarSinceGrouped, its id, magnitude 0.1 within 1e-15
@@ -848,6 +924,10 @@ grouping allocates no temporary order arrays.
 **Kind:** integration
 
 **Amended 2026-11-14 (Foundation as built):** `ExpectSnapshotsClose` uses `CheckWithinTolerance` from `fluidity_base_test_support`.
+
+**Amended 2026-11-15 (A67):** `ParticlesSnapshot::Material` gains `std::vector<std::uint8_t> merge_wait_passes`
+(`Field::kMergeWaitPasses`; filled in a full snapshot for materials that carry it); new test
+`BuildParticlesFromSnapshot, MergeWaitPasses_RoundTrip`.
 
 **Files:**
 - Create: `native/fluidity/particles/particles_snapshot.h`, `particles_snapshot_cpu.cc`,
@@ -870,6 +950,9 @@ grouping allocates no temporary order arrays.
   TEST(BuildParticlesFromSnapshot, UngroupedMove_RestoresOrder)  // BigCells grid, 10 liquid particles,
       // max_move 0.3; a try moves id 3 from {3.9,3.5,3.5} to {4.1,3.5,3.5} without regrouping, commit; full
       // snapshot; rebuild; same order, group_begin, cell_begin; RunTestStep once on both: ExpectSameBytes
+  TEST(BuildParticlesFromSnapshot, MergeWaitPasses_RoundTrip)  // amended 2026-11-15 (A67): liquid particles
+      // with merge_wait_passes 0, 7, 15, 255 set through a test-only setter in particles_storage.h
+      // (ApplyMergeWaitPassesForTest); full snapshot -> build -> snapshot: the four values to the byte; snow: empty
   TEST(BuildParticlesFromSnapshot, OutputSnapshot_IsRefused)     // kOutputSnapshotFields: kBadInput
   TEST(BuildParticlesFromSnapshot, OrderNotAGrouping_IsGroupingStale)  // two particles swapped in the snapshot
   TEST(BuildParticlesFromSnapshot, MaterialsDiffer_IsBadInputOrWrongFields)
@@ -1052,6 +1135,11 @@ its CPU-against-GPU test compares with `CheckSameBitsOrBothNaN`; result digests.
 
 **Kind:** integration
 
+**Amended 2026-11-15 (A67):** `WriteSplitChildren` writes `merge_wait_passes` 0 for each child (when carried) and
+takes a generation count `k` (1 here; Task 21 passes `k > 1` for a smallest-level cell) writing the `8^k`
+descendants in descendant order; `SplitParticle` alone keeps every check. The first row also checks the children's
+`merge_wait_passes` are 0.
+
 **Files:**
 - Create: `native/fluidity/particles/split_particle.h`, `split_particle_cpu.cc`, `count_change_arrays.h`
   (private, shared), `split_particle_test.cc`
@@ -1085,6 +1173,10 @@ its CPU-against-GPU test compares with `CheckSameBitsOrBothNaN`; result digests.
 ### Task 19: Merging particles, on the CPU
 
 **Kind:** integration
+
+**Amended 2026-11-15 (A67):** `WriteMergedParticle` writes `merge_wait_passes` 0 and follows the per-field rule of
+design 5.6 item 3; `MergeParticles` alone keeps every check. `MergeParticles, EightClose_AreMerged` also checks the
+merged particle's `merge_wait_passes` is 0.
 
 **Files:**
 - Create: `native/fluidity/particles/merge_particles.h`, `merge_particles_cpu.cc`, `merge_particles_test.cc`
@@ -1163,6 +1255,8 @@ promises the same bits for these formulas); result digests.
 
 **Amended 2026-11-15 (A64):** deep cells hold particles of their own level; the cascade over several levels (one level per resize) is pinned by the new test `AdjustParticleCount, ThreeLevelCascade_KeepsAmounts`. No new code: steps 1 and 2 of design 5.6 already split and merge by one level.
 
+**Amended 2026-11-15 (A67):** `AdjustParticleCount` follows design 5.6 as rewritten (mismatched particles at every pass, surface repeat, stable-order chunks of eight, `merge_wait_passes` and `kMaxMergeWaitPasses = 16`, no neighbourhood refusal, the five new result fields, `skipped_incomplete_count` removed); two rows **replaced**, ten rows added; Step 2's plan decisions changed.
+
 **Files:**
 - Create: `native/fluidity/particles/adjust_particle_count.h`, `adjust_particle_count_cpu.cc`,
   `adjust_particle_count_test.cc`
@@ -1170,18 +1264,31 @@ promises the same bits for these formulas); result digests.
   `count_change_arrays.h` (reuse their checks and writers)
 
 **Interfaces:**
-- Produces: `AdjustParticleCountResult`, `AdjustParticleCount` (design 3.5).
+- Produces: `AdjustParticleCountResult`, `AdjustParticleCount`, `kMaxMergeWaitPasses` (design 3.5; amended A67).
+- Fixture added to `particles_test_support.h` (amended 2026-11-15, A67): `BuildThreeLevelGrid(GridVersion, RunOn)`
+  = grid A of the cascade row (128-block room), whose level-2 cells are the frame's smallest level.
 
-- [ ] **Step 1: Failing tests.**
+- [ ] **Step 1: Failing tests.** Every A67 row with more than one pass runs one resize-like try per pass:
+  `BuildTry`, `GroupParticlesByBlock(grid)`, `AdjustParticleCount`, `GroupParticlesByBlock(grid)`, `CommitTry`.
 
   | Test | Setup | Expected |
   |---|---|---|
   | `AdjustParticleCount, ParticleInSmallerCells_IsSplitOnce` | "split parent" at `P`; committed `BigCells(1)`, resized `CentreSplit(2)` | `split_count` 1; after grouping, a second call: `split_count` 0; `ComputeAmounts` before and after 1e-13 rel |
   | `AdjustParticleCount, EightInBiggerCell_AreMerged` | "eight close"; committed `CentreSplit(1)`, resized `BigCells(2)` | `merged_group_count` 1; amounts 1e-13 rel |
-  | `AdjustParticleCount, DriftedAcrossSizeChange_KeepsSizeLevel` | committed `CentreSplit(1)`, a level-0 particle at `P`; call 1 with `CentreSplit` as both grids; call 2 with resized `CentreAndFarSplit(2)` | not split in either; `skipped_incomplete_count` 1 each time; its arrays unchanged |
+  | ~~`AdjustParticleCount, DriftedAcrossSizeChange_KeepsSizeLevel`~~ **replaced** (A67) by `DriftedIntoSmallerCells_IsSplitWithoutResize` | committed `CentreSplit(1)`, a level-0 particle at `P`; call 1 with `CentreSplit` as both grids; call 2 with resized `CentreAndFarSplit(2)` | not split in either; `skipped_incomplete_count` 1 each time; its arrays unchanged |
+  | `AdjustParticleCount, DriftedIntoSmallerCells_IsSplitWithoutResize` (A67) | committed `CentreSplit(1)`, the "split parent" (level 0) at `P`; `CentreSplit` as both grids | `mismatched_particle_count` 1, `split_count` 1, `incomplete_split_count` 0; after grouping eight level-1 particles, `merge_wait_passes` 0; a second pass: `mismatched_particle_count` 0, all counts 0; `ComputeAmounts` 1e-13 rel |
+  | `AdjustParticleCount, ChildNextToSolid_IsSplitAndCounted` (A67) | as `SplitParticle, ChildNextToSolid_IsNotSplit` (committed `BigCells(1)`, resized `CentreSplit(2)`, the "solid face" inside a solid) | `split_count` 1, `incomplete_split_count` 1; eight children |
+  | `AdjustParticleCount, TooLargeInSurfaceCell_SplitToSmallestInOnePass` (A67) | `BuildThreeLevelGrid` as both grids; the "split parent" (level 0) at `P`; `max_added_per_try` 64 | one pass: `split_count` 1; after grouping 64 particles of level 2 (`3.5 ± 0.4330127018922193 ± 0.21650635094610965` per axis), ids `next + 0 .. next + 63` in descendant order, each m = 0.125 and `rest_volume` 0.03125 exact; mass and momentum against the parent within 1e-15 rel; `kinetic_energy_change` within 1e-13 of the energy before; with `max_added_per_try` 63: `kTooManyParticles`, try unchanged |
+  | `AdjustParticleCount, EightSmallInLargeCell_MergeInOnePass` (A67) | "eight close" (level 1) on `BigCells(1)` as both grids | first pass: `merged_group_count` 1, `waiting_particle_count` 0; one level-0 particle at `P`, mass 8, `merge_wait_passes` 0; amounts 1e-13 rel |
+  | `AdjustParticleCount, ThreeSmallInLargeCell_MergeAfterSixteenPasses` (A67) | the three lowest ids of "eight close" on `BigCells(1)` as both grids; 16 passes | passes 1 to 15: `merged_group_count` 0, `waiting_particle_count` 3, each particle's committed `merge_wait_passes` = the pass number; pass 16: `merged_group_count` 1, one level-0 particle of mass 3 at their mass-weighted centre; amounts 1e-13 rel |
+  | `AdjustParticleCount, LoneSmallParticle_StaysAndIsCounted` (A67) | one level-1 particle at `{3.25,3.25,3.25}` on `BigCells(1)` as both grids; 260 passes | every pass `lone_particle_count` 1, `merged_group_count` 0; every array byte-equal to the start except `merge_wait_passes`: 20 after pass 20, 255 after passes 255 and 260 |
+  | `AdjustParticleCount, MergeEnergy_MatchesAnalytic` (A67) | "eight close" positions (`h` = 0.5, cell width `2h` = 1), m = 1, velocity `(+1,0,0)` for `x > 3.5` and `(-1,0,0)` otherwise, C = 0; `BigCells(1)` as both grids | merged `C*_xx` = 0.25 / h = 0.5 1/s, other entries 0; velocity 0; gap 0.6875; `kinetic_energy_lost` 3.75 J; `kinetic_energy_change` -3.75 J (before `8 x 0.5 x 1² = 4 J`, after `(8/2) x h² x (0.25/h)² = 0.25 J`); 1e-12 rel |
+  | `AdjustParticleCount, SplitThenMerge_MassAndMomentumExact` (A67) | the "split parent" at `P`: pass 1 committed `BigCells(1)`, resized `CentreSplit(2)`; then a try moves the eight children to the "eight close" positions keeping their velocities; pass 2 committed `CentreSplit(2)`, resized `BigCells(3)` | merged mass 8 and `rest_volume` 2 byte-equal to the parent's; merged momentum byte-equal to the test's own sum of `m_k v_k` in id order; against `m v` of the parent within 1e-15 rel |
+  | `AdjustParticleCount, AnyBatchCut_SameBytes` (A67) | `BuildThreeLevelGrid` as both grids with the "split parent" at `P` (surface repeat), three level-2 particles (m = `rest_volume` = 1/512, v = 0, C = 0, flag on) at `{1.125,1.125,1.125}`, `{1.375,1.125,1.125}`, `{1.125,1.375,1.125}` (one level-1 cell: waiting, merged at pass 16) and one level-2 particle at `{6.25,6.25,6.25}` (a level-1 cell: lone); 17 passes, each pass one call per range of `grid::BuildRanges(grid, n)`, n = all, 1, 3 | identical result numbers per pass and identical committed snapshot bytes after every pass (`merge_wait_passes` included) |
   | `AdjustParticleCount, AnyRangeCut_SameBytes` | committed `CentreSplit(1)` with "eight close" and the "split parent" at `Q`; resized `FarSplit(2)` | ranges from `grid::BuildRanges(grid, n)`, n = all, 1, 3, one call per range: identical result numbers and, after grouping and commit, identical snapshot bytes |
   | `AdjustParticleCount, ChildrenBeyondWaitingLimit_ChangesNothing` | as the first row with `max_added_per_try` 7 | `kTooManyParticles`; try unchanged |
-  | `AdjustParticleCount, SnowAndUnfittedParticles_AreNotCandidates` | snow at `P`; liquid at `Q` with flag off | all counts 0 |
+  | ~~`AdjustParticleCount, SnowAndUnfittedParticles_AreNotCandidates`~~ **replaced** (A67) by the next row | snow at `P`; liquid at `Q` with flag off | all counts 0 |
+  | `AdjustParticleCount, SnowNotCandidate_UnfittedSplitWithZeroChange` (A67) | committed `BigCells(1)`, resized `CentreAndFarSplit(2)`; level-0 snow at `P`; level-0 liquid "split parent" at `Q` with `kCarriesFittedChange` off | snow untouched (its arrays byte-equal); liquid `split_count` 1, `mismatched_particle_count` 1; the eight children have velocity exactly {1,2,3} (C read as zero) and the flag off; `kinetic_energy_change` 0 within 1e-13 rel |
   | `AdjustParticleCount, ThreeLevelCascade_KeepsAmounts` (amended 2026-11-15, A64) | fixture frame (3 levels), `GridSettings{.max_cell_blocks = 128}`; grid A: big cells x, y, z in 1..6 split into level 1 and the level-1 cells of big cells 2..5 split into level 2; grid B: big cells 1..6 split into level 1; grid C: `BigCells`; 64 liquid particles of level 2 at the level-2 cell centres of big cell (3,3,3) (`3.125 + 0.25 i`), `m` = `rest_volume` = 0.015625, `volume_ratio` 1, v {1,2,3}, C = 0, `kCarriesFittedChange` on; four resize calls with regrouping between them: A to B, B to C, C to B, B to A | `merged_group_count` 8 (eight level-1 particles at the level-1 centres `3.25`, `3.75`), then 1 (one level-0 particle at {3.5,3.5,3.5}, mass 1, v {1,2,3}); then `split_count` 1, then 8 (64 level-2 particles); `skipped_*` 0 throughout; `ComputeAmounts` equal before and after each call within 1e-13 rel; `kinetic_energy_lost` 0 within 1e-15 J (uniform velocity) |
 
 - [ ] **Step 2: Implement** following `<proc-adjust-particle-count>` and design 5.6 with these plan decisions:
@@ -1191,8 +1298,22 @@ promises the same bits for these formulas); result digests.
   matching skip count; counts and `kinetic_energy_lost` are block partials then `math::TreeSum`; first pass
   computes per-block counts, a prefix sum gives places in the waiting list (Global Constraints id order), so
   nothing is written when room or ids run out.
+  **Amended 2026-11-15 (A67), replacing the decisions above where they differ:** candidates are particles whose
+  `size_level` differs from their active cell's level on `grid`, `kCarriesFittedChange` off included (`C` read as
+  zero); matching particles get `merge_wait_passes` 0. Too large: `WriteSplitChildren` with `k = c - size_level`
+  when the cell level `c` is `frame.size_level_count - 1`, else `k = 1`; `FindNeighbourhood` is evaluated only to
+  count `incomplete_split_count` (children on `grid`; plus the parent on `grid_before_resize` when its cell
+  differs between the two grids, found with `grid::FindCellAt` on each). Too small: classes by (`plate_side`,
+  `flags`, `size_level`) in order of their first member's id, each in id order, chunks of eight; a remainder of
+  two to seven: increment each member (saturating at 255), merge when the first member's count is `>=
+  kMaxMergeWaitPasses`, else count in `waiting_particle_count`; a remainder of one: increment, count in
+  `lone_particle_count`; a gap refusal: `skipped_too_spread_count` + 1, members count as waiting, retried next pass.
+  `merge_wait_passes` is written through a private writer that marks `kMergeWaitPasses` written for the range.
+  `kinetic_energy_change` and `kinetic_energy_lost` follow Global Constraints "Sum orders". The design 5.6 bound
+  text goes into the docstring.
 - [ ] **Step 3: Run** the gate; add `AdjustParticleCount` to allowed names if needed (`# DECIDED, design 11.2`).
-  **Commit.** Subject: `Split and merge where a resize changed the cells`.
+  **Commit.** Subject: `Split and merge particles whose size does not match their cell` (amended 2026-11-15, A67;
+  was `Split and merge where a resize changed the cells`).
 
 ### Task 22: Keeping the count right on the GPU
 
@@ -1202,6 +1323,11 @@ promises the same bits for these formulas); result digests.
 `adjust_particle_count_steps.h`, which the CPU loop of Task 21 then calls too, with a `cpu` test over every thread
 block and thread; the prefix sum through `ComputeExclusivePrefixSum` with the particles' `order_buffers`; result
 digests.
+
+**Amended 2026-11-15 (A67):** the GPU half of Task 21's extended rule: kernel A gives a surface-cell parent `8^k`
+places in the scan and writes all descendants; kernel B forms the classes and chunks of its cell in the stable
+order and writes `merge_wait_passes` of its cell's particles; new `gpu` test `AdjustParticleCount,
+OnGpu_SameBytesAsCpu`; the `cpu` steps test covers every A67 row of Task 21.
 
 **Files:**
 - Create: `native/fluidity/particles/adjust_particle_count_gpu.cu`, `adjust_particle_count_gpu.h` (private),
@@ -1224,7 +1350,10 @@ digests.
   launch order and reverse, phase by phase (decisions, prefix sum, writes), on the cases of
   `adjust_particle_count_test.cc`, and compares decisions, places, ids, written arrays and block partials with the
   CPU loop exactly. Label `gpu`: every test of `adjust_particle_count_test.cc` on the GPU, CPU-against-GPU within
-  6.6, ids and counts exact; `AdjustParticleCount, OnGpuTwice_GivesIdenticalBytes`. Each `gpu` test passes the
+  6.6, ids and counts exact; `AdjustParticleCount, OnGpuTwice_GivesIdenticalBytes`; amended 2026-11-15 (A67):
+  `AdjustParticleCount, OnGpu_SameBytesAsCpu` (every A67 row of Task 21 on the GPU, multi-pass rows pass by pass:
+  identical result numbers and committed snapshot bytes, `merge_wait_passes` included, because both halves call
+  the same steps functions). Each `gpu` test passes the
   result counts, the new ids and the snapshot bytes after grouping to `WriteResultDigest`.
 - [ ] **Step 2: Implement** (design 6.3): kernel A, one thread per particle: split test, children count,
   refusal; kernel B, one thread per active cell: merge chunks; integer prefix sums over the per-block counts
@@ -1240,6 +1369,9 @@ digests.
 
 **Amended 2026-11-14 (Foundation as built):** the `gpu` test writes the loaded arrays' bytes with `WriteResultDigest`; a failed GPU copy leaves
 the loaded slices unspecified (the run stops), a failed check writes nothing.
+
+**Amended 2026-11-15 (A67):** `WriteParticleGroups` copies `merge_wait_passes` with the other carried arrays;
+`ReadParticleGroups` refuses `kMergeWaitPasses` (`kWrongFields`), added to `ReadParticleGroups, MassField_IsWrongFields`.
 
 **Files:**
 - Create: `native/fluidity/particles/particle_groups.h`, `particle_groups_cpu.cc`, `particle_groups_test.cc`,
@@ -1268,7 +1400,7 @@ the loaded slices unspecified (the run stops), a failed check writes nothing.
   TEST(WriteParticleGroups, WholeWrittenForSomeBlocks_CopiesNewestValues)  // whole changed velocity for the
       // range only before the copy: loaded sees new values in range blocks, committed ones in border blocks
   TEST(ReadParticleGroups, OtherRangeOrRegrouped_Fails)    // kBadInput; kGroupingStale after AddParticles
-  TEST(ReadParticleGroups, MassField_IsWrongFields)
+  TEST(ReadParticleGroups, MassField_IsWrongFields)        // amended 2026-11-15 (A67): kMergeWaitPasses too
   ```
   `particle_groups_gpu_test.cc` (label `gpu`) passes the loaded and read-back arrays to `WriteResultDigest`.
 - [ ] **Step 2: Implement** per design 5.10 and these plan decisions: `WriteParticleGroups` writes into the
@@ -1328,6 +1460,8 @@ promise, and `fluidity_particles_test_support` with its `GPU_SOURCES`.
 
 **Amended 2026-11-15 (A58, A64, reconcile 31):** Step 3 also records the `RunMemory&` parameter of the three builders, the merged buffers entries, `kOutOfMemory` moved last, and that the grid-only pieces are in the later group.
 
+**Amended 2026-11-15 (A65|A67):** Step 1 checks every comment that speaks of particle size uses the A65 wording; Step 3 also records `merge_wait_passes`, `Field::kMergeWaitPasses`, `kMaxMergeWaitPasses`, the five new result fields, `skipped_incomplete_count` removed, unfitted particles now candidates, 407 B per liquid particle.
+
 **Files:**
 - Modify: any file of `native/fluidity/particles/`, `docs/glossary.md`, `docs/method-paper/`, `docs/gpu-runs.md`
 
@@ -1342,7 +1476,8 @@ promise, and `fluidity_particles_test_support` with its `GPU_SOURCES`.
   differently: `max_cell_blocks` in `ParticlesSettings`; `ComputeMergedFractions`; 405 B per liquid particle;
   `AddParticles` without `.cu`; `run_on` in both views and `std::expected` from `ComputeAmounts` and
   `ComputeAmountsPerBlock` (coordinator); `ApplyParticleLimits` taking `max_cell_blocks` (coordinator); split
-  visit order inside a block; unfitted particles not candidates; `order_buffers`, `sum_buffers` and the two
+  visit order inside a block; ~~unfitted particles not candidates~~ (**replaced**, A67: unfitted particles are
+  candidates with `C` read as zero); `order_buffers`, `sum_buffers` and the two
   failure buffers in `particles_storage.h` and their memory estimate entries; the same-bits promise of
   `ComputeAmounts`; Lean proof status from Task 7 ("built in a
   Lean container" or "written, not built here"), outside the gate; theorem rename.

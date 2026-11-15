@@ -219,7 +219,10 @@ the stable name `set_viscosity_to_zero` for `SuggestedChange::kSetViscosityToZer
 the table is `static_assert`ed against `kSuggestedChangeCount`, so step and I/O change in one commit); the material
 kind `sand` and the fields `friction_angle` (rad) and `cohesion` in
 `schemas/simulate/v2/scene_file.fbs`; "each fill object of snow, sand or a springy solid gets its own
-material" in I/O 5.1 step 4.
+material" in I/O 5.1 step 4. NEW (A66): a sand start region is seeded by `io::BuildStartParticles` like every start
+region (8 particles per start cell at its cell-eighth centres, rest volume `(w/2)³`); sand keeps its count
+(`kKeepsItsCount`), so `step::BuildStartCells` makes every cell of a sand region `smallest_size_level` and every sand
+particle has rest volume `(w_min/2)³`.
 
 **Blender add-on (PROVIDED, add-on 3):** `FluiditySubstance`, `SubstancePreset`, `SUBSTANCE_PRESETS`,
 `ReferenceScene`, `REFERENCE_SCENES`, `ROLE_TABLE`, `check_scene_quickly`, the native readers for points. To
@@ -385,6 +388,11 @@ Uncertainty removed: the cone and tip branches on general rotated states, and th
 relative. The pile is not a comparison: weights, contact and the support rule all changed, so its numbers are
 the "expected" column above only.
 
+**Seeding (NEW, A66; I/O, sand plan Task 18):** `BuildStartParticles, SandRegion_EightPerSmallestCell`: the
+reference scene's box (centre `(0, 0, 0.275)`, half size `(0.075, 0.075, 0.175)`, cells 0.0625 m, the grid frame at
+the domain's low corner `(-0.6, -0.6, -0.125)`) gives 5 x 5 x 11 = 275 particles, each `size_level` the smallest,
+`rest_volume` `0.03125³` = 3.0517578125e-5 m³ and mass 300 x that = 9.1552734375e-3 kg, exactly.
+
 **Reference scene and add-on:** the sand reference scene (decision 4) runs end to end through the CLI and
 loads in Blender 5.3 and 5.2 through the native point reader; the sand preset applies its values.
 
@@ -472,8 +480,8 @@ Decision: (a), recommended option (owner's standing instruction, 2026-11-14).
 **4. Sand preset and reference scene.** The add-on's preset values for sand are "copied from the reference
 scenes once those are final" (add-on question 9). Options: (a) the preset is `main`'s pile material
 (`stiffness_against_squeeze` 700 Pa, `stiffness_against_shear` 450 Pa, 30 degrees, cohesion 0, 300 kg/m3,
-friction 0.7), and the reference scene is rung 5's release seeded by I/O's rule (8 particles per smallest
-cell) with cells of 0.0625 m, run for 6 s, recording angle, radius and kinetic energy; (b) physical sand
+friction 0.7), and the reference scene is rung 5's release seeded by I/O's rule (8 particles per start cell, each
+of its cell's size; sand keeps its count, so its cells are all of the smallest level, A65, A66) with cells of 0.0625 m, run for 6 s, recording angle, radius and kinetic energy; (b) physical sand
 (about 1600 kg/m3, megapascal stiffness), which needs far shorter steps and has never been run.
 Recommendation: (a); (b) after the creep is understood. Affects: I/O, Blender.
 
@@ -513,3 +521,14 @@ SandHitWithoutSolidsOnProcessor_IsBadInput` and `ApplyMaterialResponse, OnGpuSan
 particles' arrays, which take `RunMemory&` in their modules); its error values are `MaterialsError`'s
 (`kOutOfMemory` last there). A64: sand particles keep their count (`kKeepsItsCount`) and a sand cell is never split
 (Task 10); no grid-only region touches sand. Source: `plan-decisions.md` items 1, 3, 11.
+
+**10. Particle size and start cells (A65, A66).** Every liquid cell holds about eight particles of its own size: a
+particle's `size_level` is its cell's level, its rest volume `(w/2)³`. Decision: sand keeps its count
+(`kKeepsItsCount`), so its cells are never coarsened and `BuildStartCells` forces `smallest_size_level` wherever a sand
+region lies; every sand particle is therefore `(w_min/2)³` (the reference scene: 275 particles, test `BuildStartParticles, SandRegion_EightPerSmallestCell`, plan Task 18). The pile of rungs 5 to 8
+is a hand-placed test scene and is not seeded (63 particles at 0.05 m, about 0.3 per cell, Task 32's hypothesis).
+Source: owner answers A65, A66; `plan-decisions.md` "Owner answers A65–A68 applied".
+
+**11. Other answers of the A65–A68 pass.** A67: sand is not a candidate of `AdjustParticleCount` (only
+`kMayBeSplitAndMerged` materials are), so sand particles are never split or merged and carry no
+`merge_wait_passes`. A68: no change. Source: `plan-decisions.md` A67, A68.

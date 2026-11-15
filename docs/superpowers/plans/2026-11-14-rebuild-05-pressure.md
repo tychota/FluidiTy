@@ -889,6 +889,8 @@ buffer (sum and order buffers one row each); test `BuildPressureBuffers, IntoRun
 **Amended 2026-11-15 (A64):** no grid-only input: the plan decision on grid-only corners and the test
 `GridOnlyCell_IsMinusTwoWidths` move to Task 63 of the later group "Deep liquid without particles (later; needs review)".
 
+**Amended 2026-11-15 (A65):** particles are sized to their cell, so `SurfaceDistanceInputs::particle_radius` (m) is replaced by `particle_radius_in_cell_widths` (radius per particle = it x the width of the particle's `size_level`); new test `ParticlesSizedToTheirCell_NoAirInsideCoarseCells`.
+
 **Kind:** numerics
 
 **Files:**
@@ -903,10 +905,13 @@ buffer (sum and order buffers one row each); test `BuildPressureBuffers, IntoRun
   **Plan decisions:** the cap at a corner uses the width of the size level the corner is stored at (the
   smaller); ~~a corner of any grid-only cell gets `-2` widths;~~ (A64: Task 63) "touching air" for `around_surface_cells` means
   centre distance `< 0` and some face piece's other cell (or a grid edge) has centre distance `>= 0`; the 18
-  samples are evaluated from particles, not interpolated.
+  samples are evaluated from particles, not interpolated. **(A65)** `radius_p = particle_radius_in_cell_widths *
+  grid::ComputeCellWidth(frame, size_level[p])`, one product, then `math::Length(point - position) - radius_p`;
+  `particle_radius_in_cell_widths` not finite or not > 0 is `kBadInput`.
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`), particles of material 0 on a lattice of spacing 0.025 m filling
-  `z < 0.2`, radius 0.0125, grid 8 x 8 x 8 of 0.05 m:
+- [ ] **Step 1: Failing tests** (`LABEL cpu`), particles of material 0 at the cell-eighth centres of every cell
+  (8 per cell, `size_level` of the cell, spacing 0.025 m) filling `z < 0.2`, `particle_radius_in_cell_widths` 0.25
+  (radius 0.0125 m), grid 8 x 8 x 8 of 0.05 m:
 
   ```cpp
   TEST(ComputeDistanceToSurface, OneParticle_IsDistanceMinusRadius)   // exact, at every corner within 2 w
@@ -918,6 +923,12 @@ buffer (sum and order buffers one row each); test `BuildPressureBuffers, IntoRun
   TEST(ComputeDistanceToSurface, SurfaceTensionZero_HasNoCurvatureSamples)
   TEST(ComputeDistanceToSurface, CurvatureSamplesSorted_OnlySurfaceCells)
   TEST(ComputeDistanceToSurface, ParticleOrderPermuted_SameBytes)    // the minimum is exact in any order
+  TEST(ComputeDistanceToSurface, ParticlesSizedToTheirCell_NoAirInsideCoarseCells)  // A65: grid width 0.1, level 0
+      // (0.1 m) for z in [0, 0.2), level 1 (0.05 m) for z in [0.2, 0.4), x, y in [0, 0.4); 8 particles per cell
+      // whose centre z < 0.3, at +-w/4, size_level of the cell; radius in widths 0.5: every corner and centre with
+      // z <= 0.25 is negative; centre (0.05, 0.05, 0.05) is sqrt(3) * 0.025 - 0.05 = -0.0066987298 within 1e-15 m;
+      // the same particles all given size_level 1 read +0.0183012702 there
+  TEST(ComputeDistanceToSurface, RadiusInWidthsNotPositive_IsBadInput)  // A65: 0 and NaN
   ```
   The all-zero mask is tested end to end in Task 16 (`ComputeDistanceToSurface, AllZeroMask_IsNoLiquid`).
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** design step 1: for each sample point, the 27 same-level

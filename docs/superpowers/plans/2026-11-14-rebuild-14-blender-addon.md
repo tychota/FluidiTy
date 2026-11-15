@@ -24,6 +24,13 @@ the later group "Deep liquid without particles (later; needs review)", Task 53);
 the Flow note (D13, Tasks 2, 7, 13a, 27, 29); Blender 5.3 and later and the CUDA runtime (Tasks 15, 19, 30, 32, 48);
 Resume in another mode (Tasks 14, 18, 31, 32).
 
+**Amended 2026-11-15 (A65, A66, A67, A68):** the add-on seeds no particle and computes no count; I/O builds the start
+on the adaptive grid and prints every line. Changes are reading and wording only: `RunPlanFacts` gains
+`start_cells_per_level` and the everyday panel's counts are the start's (Tasks 12, 32); the budget lines drawn
+verbatim now hold the A65 particles wording, the `start:` line (A66) and the `batches:` slab line (A68) (Task 32);
+`frame_done`'s `size_change_kinetic_energy_j` and `mismatched_particle_count` (A67) are not read. No scene field the
+add-on writes changes (it never wrote `sources[].size_level`, which I/O removes). Design decision 32.
+
 **Architecture:** Folder `blender/fluidity/` is the Python package `fluidity`, installed as a Blender extension.
 Its pure package `logic/` never imports `bpy` and is tested with plain pytest; the files beside it are the thin
 Blender layer (property groups, scene reader, operators, panels, the link routes, the timer). One worker
@@ -859,6 +866,12 @@ the performance panel can show the planned cost before a run.
 and `RunBudgetFacts` gains the run duration and Reynolds length; `RunCostFacts` and `LiquidForceFacts` are read from
 the end events and `frame_done`.
 
+**Amended 2026-11-15 (A66):** `RunPlanFacts` gains `start_cells_per_level: tuple[int, ...]` (the plan counts'
+`start_cells_per_level`, level order; `()` when absent); `counts` holds `start_particle_count` and
+`start_cell_blocks` as any other count. New test `test_start_counts_read_from_scene_checked` (design 7.1: counts
+`start_cells_per_level` [0, 512, 4096], `start_particle_count` 36864: `plan.start_cells_per_level == (0, 512, 4096)`,
+`plan.counts["start_particle_count"] == 36864`; without the keys `()`). The A67 `frame_done` fields are left unread.
+
 **Kind:** logic. **Tests:** (a).
 
 **Files:**
@@ -1603,6 +1616,16 @@ bpy.app.version)` and the domain panel draws it (Task 32). Only 5.4.0 and later 
 **Amended 2026-11-15 (A40, A48, A53, A57, A58, A59, A60, A63, A64):** the version note, Resume in another mode, the
 liquid force line, Guide, Slip Length, the Cell size box, the memory fields and the measured cost lines (Interfaces).
 
+**Amended 2026-11-15 (A65, A66, A68):** `FLUIDITY_PT_everyday`'s cell and particle counts are the start's:
+`sum(plan.start_cells_per_level)` cells and `plan.counts["start_particle_count"]` particles, integers grouped by
+commas (nothing before a full check). The budget lines are still drawn verbatim; `test_budget_deep_particle_line_drawn`
+uses the A65 wording (`particles: <n> needed (about eight per liquid cell, sized to their cell); ... (deep liquid
+without particles comes later)`, from I/O's amended `DeepTankDoesNotFit_NamesDeepParticles`). New tests
+`test_performance_panel_draws_start_and_slab_lines` (the `start:` line of I/O's `BuildBudgetLines,
+StartCellsLine_ByCellWidth` and the `batches:` line of `WideSceneLayerDoesNotFit_NamesPlanAreaLimit`, each drawn once,
+in order, `m²` kept) and `test_everyday_counts_are_the_start` (the plan of `test_start_counts_read_from_scene_checked`:
+the panel draws "4,608 cells" and "36,864 particles").
+
 **Kind:** blender. **Tests:** (b) draw calls with a recording layout; (c) in Task 50.
 
 **Files:**
@@ -1648,7 +1671,8 @@ liquid force line, Guide, Slip Length, the Cell size box, the memory fields and 
   the Windows fallback note: under "Measured cost" each line then each warning once, in order; the note once; no
   widget for `memory_share_of_total`); `test_budget_deep_particle_line_drawn` (A64: the budget lines of I/O's
   `BuildBudgetLines, DeepTankDoesNotFit_NamesDeepParticles`: its `particles: ... (deep liquid without particles comes
-  later)` line drawn once before `fits: no`); `test_newer_blender_note_drawn_once` (A48: `ui_model` note set: the
+  later)` line, amended 2026-11-15 to the A65 wording, drawn once before `fits: no`); 2026-11-15 (A66, A68):
+  `test_performance_panel_draws_start_and_slab_lines`, `test_everyday_counts_are_the_start` (amendment above); `test_newer_blender_note_drawn_once` (A48: `ui_model` note set: the
   everyday panel draws it once; `None`: not drawn); `test_solid_panel_slip_and_force` (design 7.1, A53, A60);
   `test_physical_detail_draws_cell_size_box` (A63: the box with the collection, one row per region object and the
   image; with cell resize off the layout is inactive and draws "Used when cell resize is on"); `test_guide_widgets`

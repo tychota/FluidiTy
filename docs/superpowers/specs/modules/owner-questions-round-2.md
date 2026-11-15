@@ -112,3 +112,11 @@ Not committed to the `rebuild` branch. Each has the option taken meanwhile, so w
     uses a cube. Add a cylinder shape?
 49. A viscosity sample beside two solids credits only one of them (the lower index).
 50. Wording of the CUDA runtime licence note shipped with the add-on.
+51. Ruling 41 (mine, to confirm): a buffer that does not fit its reserved block returns an error in every build
+    (no debug assertion), because raised limits or a planner bug can cause it at run time.
+
+## From the A65–A68 planning pass (2026-11-15)
+52. A mismatched small particle waits up to 16 resize passes for partners before a group of 2 to 7 merges; a single
+    leftover particle may persist with no time bound (counted). Starting value 16: OK?
+53. The surface particle radius became a scene setting in cell widths (0.5), because particles now differ in size.
+54. The start grid may be one level finer than the run's later grid in places (start count up to 1.25 x).

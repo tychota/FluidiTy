@@ -778,6 +778,14 @@ sums. FIXED (defect 8): `mass` is a `sample_weight` of `ComputeAmbientDensity(la
 different cell sizes. FIXED (defect 9): markers are moved by `contact::MoveParticles` like every particle;
 `AdvectMarker` and its half-cell limit are not ported.
 
+NEW (A65, A67): markers follow the rule of every particle, "every cell holds about eight particles of its own size":
+a new marker's `size_level` is its cell's level and its `rest_volume` `(w/2)³`. A marker whose `size_level` differs
+from its cell's (it crossed a size change, or its cell was resized) is split or merged by
+`particles::AdjustParticleCount` at the next resize pass like a liquid particle (`kMayBeSplitAndMerged`; chunks of
+eight, or two to seven after `kMaxMergeWaitPasses`); its `mass` (a sample weight) divides and sums with it. The upkeep
+below counts every marker of a cell whatever its `size_level`; after a split it may remove children (the highest
+ids), which loses no gas amount, since amounts live on the grid.
+
 *Upkeep (`FindMarkerChanges`; NEW rule, replaces `RemapGasApicMarkers3D`).* Per cell that held gas at the
 last commit, in cell place order: fewer than `min_markers_per_cell` markers: add one at each cell-eighth
 centre (`ComputeCellEighthCenter`, shared `gas_marker_math.h`) that holds no marker (eighths ascending) until
@@ -1230,7 +1238,8 @@ comparison scene above. The sizing scene is larger. Z-up. Domain box x, y in [-0
 rate 7 1/s, 4 MJ/kg, smoke 0.2 (the branch's values but for ignition, which there lets fuel burn at room
 temperature): about 5 kW, plume speed about 1.5 m/s. Wind acceleration 0.85 m/s2 along +X from t = 5 s. Cells
 of 1.25 cm for x in [-0.3, 0.5], |y| <= 0.3; 2.5 cm out to x in [-0.5, 0.7], |y| <= 0.5; 5 cm beyond: about 0.97
-million cells, 7.7 million markers (about 3.2 GB of particle arrays). 10 s, 240 frames. No liquid; the
+million cells, 7.7 million markers (8 per cell at every level, each of its cell's size; about 3.2 GB of particle
+arrays). 10 s, 240 frames. No liquid; the
 smoke-over-water row above is the scene of gas beside liquid.
 
 ## 8. Method paper section
@@ -1580,6 +1589,18 @@ answers A40-A64 applied", item 11.
 **23. No grid-only region (A64).** Decision: every liquid cell holds particles in the first version; the gas module
 had no grid-only input, and the `kIntoGridOnlyRegion` reason quoted in decision 3 is not in the first version.
 Source: owner answer A64; `plan-decisions.md` "Owner answers A40-A64 applied", item 1.
+**24. Marker size follows the cell (A65).** Decision: unchanged rule, now the general one: 8 markers per gas cell at
+the cell's level, `rest_volume = (w/2)³`, `mass = ComputeAmbientDensity(law) x rest_volume`; memory counts 8 per gas
+cell at every level (the fire scene's 7.7 million markers). Source: owner answer A65; `plan-decisions.md` "Owner
+answers A65–A68 applied", A65.
+**25. Markers of another size than their cell (A67).** Decision: gas markers are candidates of
+`AdjustParticleCount` (5.2, NEW paragraph); `FindMarkerChanges` counts every marker of a cell whatever its
+`size_level` (test `FindMarkerChanges, MarkerOfAnotherLevel_CountsTowardItsCell`, plan Task 20). The momentum the
+split and merge keep is the markers' own; gas amounts are untouched. Source: owner answer A67; `plan-decisions.md`
+A67.
+**26. Other answers of the A65–A68 pass.** A66: a scene's start gas is grid amounts; markers are added by the first
+upkeep at each gas cell's level, so the start cells need nothing from the gas module. A68: the gas solve's loaded
+pieces would become tiles with a column cut (later, as pressure's); no task now. Source: `plan-decisions.md` A66, A68.
 
 **Open** (left undecided by the plans):
 

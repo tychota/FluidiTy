@@ -821,3 +821,19 @@ change nothing in contact: it reads no cell size and moves gas markers and every
 copy `MoveParticles` writes each call, so sand's GPU hit split needs no per-call allocation (sand design decision
 8). Test `ContactBuffers, SolidsCopy_IsTheLastCallsSolids`. Source: `plan-decisions.md` "Owner answers A40–A64
 applied", item 11.
+
+**Q14. Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+particle's `size_level` is its cell's level, its rest volume `(w/2)³`. Decision: no change; contact moves points and
+reads no particle size or radius (its tolerance is `0x1p-30` of the smallest cell width for every particle). Source:
+`plan-decisions.md` "Owner answers A65–A68 applied", A65.
+
+**Q15. Start cells (A66).** Decision: no change; seeded points inside a solid are dropped by I/O
+(`io::BuildStartParticles` keeps a point outside every solid, as before), using contact's `ComputeDistanceToSolid`.
+Source: `plan-decisions.md` A66.
+
+**Q16. Drifted particles (A67).** Decision: a split child that lands inside a solid is handled by the next
+`MoveParticles` like any particle that starts inside: kind `kStartedInsideSolid`, counted in
+`MoveParticlesResult::started_inside_count` (3.5); no new contact rule or name. Source: `plan-decisions.md` A67.
+
+**Q17. Later work (A68).** Decision: no change; contact works per particle and per call, whatever the batch shape.
+Source: `plan-decisions.md` A68.

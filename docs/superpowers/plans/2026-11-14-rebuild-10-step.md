@@ -14,7 +14,7 @@ show the planned cost.
 **Architecture:** Folder `native/fluidity/step/`, namespace `fluidity::step`. Public headers are the ones of
 design section 3 (`step_error.h`, `step_message.h`, `ready_scene.h`, `step_settings.h`, `capability.h`,
 `run_plan.h`, `simulation.h`, `try_step.h`, `step_duration.h`, `advance_to.h`, `resize_access.h`,
-`step_stages.h`). The six step-owned operations (`add_new_particles`, `choose_active_cells`, `apply_forces`,
+`step_stages.h`, and, A66, `start_cells.h`). The six step-owned operations (`add_new_particles`, `choose_active_cells`, `apply_forces`,
 `move_particles`, `check_step`, `commit_step`) each have one header and private `_cpu.cc` / `_gpu.cu` files;
 every other stage is glue that calls another module's section 3 function. `TryStep` is exactly
 `TryStepWithStages(simulation, step_inputs, kStages)`; the module is built up one stage at a time, so after each
@@ -36,6 +36,14 @@ transfer, pressure, viscosity, materials, solids and gas designs.
 **Amended 2026-11-14 (A28, A30, A31):** `StepInputs`; one form per Foundation function (taking its buffers); arguments on one processor are a precondition, not an error.
 
 **Amended 2026-11-15 (A40, A41, A43, A45, A47, A57, A58, A60, A61-A64, reconcile 31-33):** one reserved block per processor, a budget of free memory, the shared cell size rule, particles everywhere, viscosity advice, liquid force on solids, the forced run mode; the source is `plan-decisions.md` "Owner answers A40-A64 applied (2026-11-15)" with its same-day correction, and design 11.39 to 11.47.
+
+**Amended 2026-11-15 (A65, A66, A67):** every liquid cell holds about eight particles of its own size (A65; no text
+says or implies one particle size everywhere, a `w_min / 2` lattice over the whole liquid, or `8 · 8^k` particles in
+a coarse cell); a run starts on the adaptive grid built by `BuildStartCells` (new Task 8a, `step/start_cells.h`),
+carried in `ReadyScene::start_cells`, counted exactly by `BuildRunPlan` and built by `BuildSimulation`, never by a
+resume (A66); `StepReport` and `ResizeResult` carry `size_change_kinetic_energy` and `mismatched_particle_count`
+(A67). Source: `plan-decisions.md` "Owner answers A65-A68 applied (2026-11-15)" and design 3.12, 5.15, 11.48 to
+11.50. A68 changes nothing here.
 
 Foundation's list, unchanged:
 
@@ -424,6 +432,10 @@ still exists, else `kVelocitySolveDidNotConverge`. Replaced: "the mapping exampl
 **Amended 2026-11-15 (reconcile item 31, A58):** `StepError::kOutOfMemory` is the last value (later values shift by
 one, accepted); a private `ToBuildFailure` maps a builder's `BufferError` (with `kRunMemoryTooSmall`) to it.
 
+**Amended 2026-11-15 (A66):** `StepError::kTooManyCellBlocks` (design 3.1; only from `BuildStartCells`, Task 8a) sits
+between `kRunOnCallFailed` and `kOutOfMemory`, so `kOutOfMemory` stays last; `ToName` gives "too_many_cell_blocks".
+`OutOfMemoryIsTheLastValue` asserts `kOutOfMemory == kTooManyCellBlocks + 1` (replaced: `kRunOnCallFailed + 1`).
+
 **Kind:** mechanical
 
 **Files:**
@@ -469,7 +481,8 @@ one, accepted); a private `ToBuildFailure` maps a builder's `BufferError` (with 
       // kNotConverged -> kPressureNotConverged; any kRunOnCallFailed -> kRunOnCallFailed; any kCancelled ->
       // kCancelRequested; an unlisted error (pressure kEquationsNotPositive) -> kStageFailed
   TEST(ToStageOutcome, ContextCarriesIds)  // particle id, CellId, solid_id and magnitude copied from the failure
-  TEST(StepError, OutOfMemoryIsTheLastValue)  // A58, reconcile 31: static_assert kOutOfMemory == kRunOnCallFailed + 1
+  TEST(StepError, OutOfMemoryIsTheLastValue)  // A58, reconcile 31; amended A66: static_assert kOutOfMemory ==
+      // kTooManyCellBlocks + 1, kTooManyCellBlocks == kRunOnCallFailed + 1
       // and no value above it; ToName(kOutOfMemory) == "out_of_memory"
   TEST(ToBuildFailure, RunMemoryTooSmall_IsOutOfMemoryWithBytes)  // A58: (kRunMemoryTooSmall, Module::kGrid, 4096)
       // -> error kOutOfMemory, context.module kGrid, magnitude 4096; (kOutOfMemory, kPressure, 1e6) the same shape;
@@ -552,6 +565,11 @@ fluidity_base_test_support <earlier modules' test-helper libraries it uses>)` an
 `ReadyScene::gas_wind` is `wind`, `ReadyScene` gains `grid::CellSizeSettings cell_size` and the new comment of
 `new_cell_size_level` (design 3.2, 3.3). Test `StepSettings, DefaultsAreTheBudgetConstants` (share 0.9, left free
 536,870,912, exact).
+
+**Amended 2026-11-15 (A66):** `ReadyScene` gains `std::span<const grid::CellId> start_cells` (design 3.2; empty in
+every scene of this task, none of which has cell resize) and the A66 comment of `start_particles`. Each scene builder
+records its start regions as `step::StartRegionShape`s in `TestScene` (`std::span<const StartRegionShape>
+start_regions() const;`, plan decision) so Task 8a's helper can build start cells for it.
 
 **Kind:** integration
 
@@ -779,6 +797,18 @@ start count; the cell resize rows are the three cell-size arrays.
 
 **Amended 2026-11-15 (A40):** `BuildRunPlan` takes `std::optional<RunMode> forced_mode` last.
 
+**Amended 2026-11-15 (A66, A65):** `BuildRunPlan` counts the start state exactly (design 3.5, 5.9 step 2): the grid
+counts come from `ReadyScene::start_cells` (has_cell_resize with them empty: `kBadInput`; without cell resize and
+without them, the 2.5-width cover as before); `SceneCounts` gains `start_cells_per_level`, `start_particle_count`
+(replaces `start_particles`), `start_cell_blocks`; `particles_at_depth_levels[m]` = the start particles of material
+`m` and `start_particles_in_deep_cells` = liquid start particles with `size_level < cell_size.smallest_size_level`
+(the private `ComputeParticlesAtDepthLevels` and its smallest-cell columns are **replaced**); particle limit
+`ceil(1.25 x (start + from sources))`; `limits.max_cell_blocks = min(ceil(1.25 x start_cell_blocks), domain room)`,
+domain room = the blocks of a smallest-cell grid filling the domain box at every level (replaced: "the blocks of the
+domain box at the smallest cell size"), at least `start_cell_blocks`. Wording of comments (A65): "every liquid cell
+holds about eight particles of its own size". This task follows Task 8a (it needs `BuildStartCells` for
+`BuildDeepWaterScene`); its number is kept.
+
 **Kind:** numerics
 
 **Files:**
@@ -897,9 +927,10 @@ start count; the cell resize rows are the three cell-size arrays.
   `BuildStepMemoryEstimate` with `has_cell_resize` gives three rows (design 6.3): `"step: merge ready duration"` 8 B,
   `"step: held velocity gradient size"` 8 B, `"step: merge wait steps"` 1 B, each per cell place, 2 copies, `kRunOn`,
   `kWholeRun` (replaced: the seven region arrays, 34 + 8 x ingredients B). Test scene `BuildDeepWaterScene()` in
-  `step_test_scenes.h` (closed box 0.4 x 0.4 x 1.0 m, water to 0.8 m at rest, biggest cell 0.1 m, 3 levels, start
-  particles at level 2, 8 per cell at the eighth centres, `has_cell_resize`, `cell_size.smallest_size_level = 2`,
-  `new_cell_size_level = 2`, surface reach 8).
+  `step_test_scenes.h` (amended A66: created by Task 8a) (closed box 0.4 x 0.4 x 1.0 m, water to 0.8 m at rest, biggest cell 0.1 m, 3 levels,
+  `has_cell_resize`, `cell_size.smallest_size_level = 2`, `new_cell_size_level = 2`, surface reach 8, solid reach 2;
+  amended A66: start cells from Task 8a's `ApplyStartCellsForTest(scene, TestStartCells::kFromBuildStartCells)`, 8
+  particles per start cell at its level; replaced: "start particles at level 2, 8 per cell at the eighth centres").
 - **Amended 2026-11-15 (A41).** `planned_step_copies` has no O4 (one piece: O1, O2, O3; batched: B1, B2, B4; B3 is
   in the later group, A64). The row `"step: new cells for the size choice"` is not built.
 - **Amended 2026-11-15 (A40).** `BuildRunPlan(..., std::span<const MemoryEstimateEntry> cell_resize_estimate = {},
@@ -932,11 +963,14 @@ start count; the cell resize rows are the three cell-size arrays.
   TEST(BuildRunPlan, OnProcessorIsRunMemoryBytes)            // A58: RunOn::kGpu plan of BuildFallingBlockScene with one
       // source: on_processor == ComputeRunMemoryBytes(all entries, counts, kRunOn), cpu_run_memory_bytes ==
       // ComputeRunMemoryBytes(kCpu kWholeRun/kOneStepTry entries, counts, kCpu); no kRunOn entry has kOneCall
-  TEST(BuildRunPlan, DeepWaterCountsEveryLiquidCellAtDepthLevels)  // A64: BuildDeepWaterScene: layers 0..15 below the
-      // surface stay at 0.025 m (4,096 cells), layers 16..31 at 0.05 m (512 cells): particles_at_depth_levels[water]
-      // 36,864, start_particles_in_deep_cells 49,152 (start particles of layers 8..31); start 65,536; the water's
-      // particle limit ceil(1.25 x 65,536) = 81,920; the same scene without has_cell_resize: the vector empty, the
-      // limit unchanged (exact)
+  TEST(BuildRunPlan, DeepWaterCountsEveryLiquidCellAtDepthLevels)  // A64, amended A66 (derivation: design 5.15):
+      // BuildDeepWaterScene: start_cells_per_level {0, 16, 9088}; start_cell_blocks 167 (3 + 20 + 144);
+      // limits.max_cell_blocks 183 (min(ceil(1.25 x 167) = 209, domain room 160 + 20 + 3)); start_particle_count
+      // 64,640 (8,064 x 8 + 16 x 8); particles_at_depth_levels[water] 64,640; start_particles_in_deep_cells 128;
+      // the water's particle limit ceil(1.25 x 64,640) = 80,800. The same scene without has_cell_resize (start_cells
+      // empty, the all-smallest start of 65,536 particles): vector empty, deep 0, limit 81,920 (exact). Replaced:
+      // "4,096 cells ... 512 cells ... 36,864 ... 49,152 ... start 65,536 ... 81,920"
+  TEST(BuildRunPlan, CellResizeWithoutStartCells_IsBadInput)  // A66: BuildDeepWaterScene with start_cells emptied
   TEST(BuildRunPlan, ForcedOnePieceThatDoesNotFit_KeepsModeSaysDoesNotFit)  // A40: free bytes so that on_processor
       // is allowed_bytes + 1, forced_mode kOnePiece: mode kOnePiece, fit kDoesNotFit; the same with forced_mode empty:
       // mode kBatched, fit kFits
@@ -959,6 +993,7 @@ start count; the cell resize rows are the three cell-size arrays.
       // Arrays, 34 + 8 x ingredients bytes): the three named rows, 8 + 8 + 1 = 17 B per cell place, two copies each
   TEST(BuildRunPlan, BlockRoomFromSceneNotFromDefault)  // reconcile: BuildFallingBlockScene: limits.max_cell_blocks ==
       // ceil(1.25 * cover blocks), well below 1u << 22; a scene whose domain holds fewer blocks: capped there
+      // (amended A66: at the domain room counted at every level, never below start_cell_blocks)
   TEST(BuildStepMemoryEstimate, TwoGridBuffersShareBuilderBuffers)  // reconcile: RunOn::kGpu plan: the "grid: builder buffers:"
       // entries have copies 1, the other grid entries copies 2; grid bytes == 2840 * max_cell_blocks + fixed
   TEST(BuildRunPlan, RoomAboveGridLimit_DoesNotFit)  // reconcile: a domain of kMaxCellBlocksLimit + 1 cover blocks
@@ -978,7 +1013,84 @@ start count; the cell resize rows are the three cell-size arrays.
   `choose_active_cells_rule.h`, CPU-only, also used by Task 13).
 - [ ] **Step 4: Run** the gate. **Commit.** Subject: `Estimate a scene's memory and choose how it runs`. New
   names (amended 2026-11-15): `ComputeAllowedMemoryBytes`, `MemoryEstimate::cpu_run_memory_bytes`,
-  `SceneCounts::particles_at_depth_levels`, `start_particles_in_deep_cells`, the A57 fields, `forced_mode`.
+  `SceneCounts::particles_at_depth_levels`, `start_particles_in_deep_cells`, the A57 fields, `forced_mode`; A66:
+  `SceneCounts::start_cells_per_level`, `start_particle_count` (was `start_particles`), `start_cell_blocks`.
+
+### Task 8a: `BuildStartCells`, the start grid by the size rule
+
+**Amended 2026-11-15 (A66):** new task (`plan-decisions.md` "Owner answers A65-A68 applied", A66; design 3.12,
+5.15). Executed before Task 8 (whose `BuildDeepWaterScene` uses it); numbers are not changed.
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/step/start_cells.h`, `start_cells.cc`, `start_cell_facts.h` (private, CPU only),
+  `start_cells_test.cc`
+- Modify: `native/fluidity/step/CMakeLists.txt`, `step_test_support.h/.cc`, `step_test_scenes.h/.cc`,
+  `docs/method-paper/sections/step.typ` (subsection "Start cells" in `<sec-sizing>`, pseudocode
+  `<proc-build-start-cells>` numbered as 5.15 items 1 to 6), `docs/glossary.md` (rows "start cells", "start region")
+
+**Interfaces:**
+- Consumes: `grid::CellSizeSettings`, `CellWidthsByLevel`, `CellSizeFacts`, `ComputeWantedCellWidth(settings, widths,
+  reference_speed, facts)`, `ComputeCellWidth`, `CellSizeRegion`, `ArtistCellSizes`, `CheckSizeStepRule(const
+  GridFrame&, std::span<const CellId>)`, `ToCellId`, `kMaxSizeLevels` (grid plan); `contact::Solid`, `SolidPose`,
+  `ComputeDistanceToSolid`, `ToSolid(DomainBox)`; `particles::CountRule`; `kCoveredReachInCellWidths` (Task 5);
+  `StepError::kTooManyCellBlocks` (Task 3).
+- Produces design 3.12 exactly: `StartRegionShape` (with the design's `count_rule` field), `StartCells`,
+  `BuildStartCells`.
+- **Plan decisions.** Private `start_cell_facts.h`: `struct StartCellFacts { grid::CellSizeFacts facts; bool
+  meets_cover; bool meets_region_that_keeps_its_count; };` and `StartCellFacts ComputeStartCellFacts(std::span<const
+  StartRegionShape> regions, std::span<const contact::Solid> solids, const grid::GridFrame& frame, const
+  grid::CellSizeSettings& cell_size, const grid::ArtistCellSizes& artist, grid::CellId cell);` (design 5.15 items
+  1, 2; used by `BuildStartCells` and its tests). The active set is kept as a sorted `std::vector<grid::CellId>`
+  rebuilt per pass (fixed cell order: the result is the same bytes whatever the region order). Touching cells for
+  the closure use grid 5.1 item 2 on that sorted list (26 neighbour positions per level, binary search). Test-only
+  (`step_test_support.h`): `enum class TestStartCells : std::uint8_t { kFromBuildStartCells, kAllSmallest };` and
+  `void ApplyStartCellsForTest(TestScene& test_scene, TestStartCells kind);`: builds the start cells from
+  `test_scene.start_regions()` with `BuildStartCells` (solids of the scene at the start pose with the domain box,
+  no artist input, `max_cell_count` = `64 x grid::kMaxCellBlocksLimit`), or (`kAllSmallest`, for tests of
+  coarsening, at the cell resize agent's request) the `kFromBuildStartCells` list with each cell replaced by all its
+  descendants at `cell_size.smallest_size_level` (still a grid: every split cell keeps its 8 children); it then reseeds the start particles 8 per start cell at its level
+  at the cell-eighth centres (inside a region and outside every solid, unjittered, ids x-fastest per cell in cell
+  order) and sets `scene_to_change().start_cells`. Every test scene with `has_cell_resize` calls it. This task also
+  creates `BuildDeepWaterScene()` (moved here from Task 8, which only uses it; setup as Task 8's A64 amendment
+  states, start cells by `ApplyStartCellsForTest(..., kFromBuildStartCells)`).
+- Termination and fixed point (design 5.15 items 3 to 5): at most `smallest_size_level` refine passes and as many
+  closure passes; no refine split is due after the closure. Count check after every pass.
+
+- [ ] **Step 1: Failing tests** (`LABEL cpu`). The 2 m tank (plan decision, design 7 "Start cells"): closed domain
+  1.6 x 1.6 x 2.4 m, water box `[0, 1.6]² x [0, 2.0]`, biggest cell 0.8 m, 6 levels (`w_min` 0.025 m),
+  `cell_size.smallest_size_level` 5, other settings default, no artist input.
+
+  ```cpp
+  TEST(BuildStartCells, DeepWaterScene_CountsPerLevel)  // BuildDeepWaterScene's regions: cells_per_level
+      // {0, 16, 9088}, refine_passes 2, closure_passes 0, 9,104 cells ascending (design 5.15 worked example)
+  TEST(BuildStartCells, AboveMaxCellCount_IsTooManyCellBlocks)  // same inputs: max_cell_count 9,103 ->
+      // StepError::kTooManyCellBlocks, magnitude 9104, limit 9103; 9,104 -> success
+  TEST(BuildStartCells, DeepTank_TerminatesWithinLevelCountPasses)  // the 2 m tank: refine_passes == 5 (levels 0, 1,
+      // 2 all split: w_solid at the best level-1 centre (0.4 - 0.346) / 2 < 0.4, level-2 cells need depth >= 1.6 and
+      // floor distance >= 0.573 at once; levels 3 and 4 split near the surface and walls), closure_passes <= 5; the
+      // fixed point: every cell's width <= ComputeWantedCellWidth of its ComputeStartCellFacts (kKeepsItsCount cells:
+      // w_min) and CheckSizeStepRule passes, so one more refine and closure pass would change nothing
+  TEST(BuildStartCells, SurfaceAndSolidCells_AreSmallest)  // the 2 m tank: every cell whose box meets z = 2.0, or lies
+      // within w_min of x = 0, x = 1.6, y = 0, y = 1.6 or z = 0, has level 5; level-3 cells exist (centres 0.35..1.05 m
+      // high in the middle columns)
+  TEST(BuildStartCells, KeepsItsCountRegion_IsSmallest)  // the 2 m tank plus a kKeepsItsCount ball of radius 0.1 m at
+      // (0.8, 0.8, 1.0): every cell meeting the ball has level 5; closure_passes >= 1
+  TEST(BuildStartCells, OneSizeStep_Holds)  // grid::CheckSizeStepRule(frame, cells) passes for the three lists above
+  TEST(BuildStartCells, RegionOrder_SameCells)  // the tank's water box and the ball given in both orders: equal lists
+  TEST(BuildStartCells, BadShape_IsBadInput)  // radius 0; half_size with a NaN; smallest_size_level 6 of 6 levels
+  TEST(ApplyStartCellsForTest, AllSmallest_EveryCellAtSmallestLevel)  // BuildDeepWaterScene with kAllSmallest:
+      // every cell level 2, 65,536 particles at level 2, the list passes grid::BuildGrid
+  ```
+  The scene test `BuildStartCells, DeepTank_SameParticlesAsCoarsenedRun` (start count >= the coarsened all-smallest
+  run's and <= 1.25 x it) needs `cell_resize::ResizeCells`, which comes after this module: it is handed to the cell
+  resize plan's scene tests with this setup (the 2 m tank, `ApplyStartCellsForTest` both ways).
+- [ ] **Step 2: Run** (fail). **Step 3: Implement** design 5.15. Comments name the items and say why each bound is
+  conservative (the half diagonal, the box-based artist level).
+- [ ] **Step 4: Run** the gate. **Commit.** Subject: `Build the start grid from the scene's shapes`. New names:
+  `StartRegionShape`, `StartCells`, `BuildStartCells` (A66; `count_rule` added because the declared signature has no
+  material table), test-only `TestStartCells`, `ApplyStartCellsForTest`.
 
 ### Task 9: `Simulation` and `BuildSimulation`
 
@@ -1000,6 +1112,13 @@ that does not fit is refused here.
 anything else and builds every buffer as a piece; `MemoryReport` reports planned, reserved and handed-out bytes;
 `allocated_bytes` / `allocated_cpu_bytes` become `handed_out_bytes` / `handed_out_cpu_bytes`; `FindRunMemory` and
 `FindCpuRunMemory` let I/O build render output and cell resize into the blocks.
+
+**Amended 2026-11-15 (A66):** the first grid is `grid::BuildGrid` of `ReadyScene::start_cells` at version 1 (design
+3.6, 5.9 "The first grid"; on the GPU through `"step: active cell list"`, one counted slice `WriteBuffer`), not the
+cover of the start particles at `new_cell_size_level` (kept only for a scene without cell resize and without start
+cells); each start particle must lie in a start cell of its own `size_level` (`kBadInput` with `particle_id` and
+`cell`); `has_cell_resize` with empty `start_cells` is `kBadInput`. Tests `FirstGridIsTheStartCells`,
+`StartParticleLevelNotItsCell_IsBadInput`, `CellResizeWithoutStartCells_IsBadInput` below.
 
 **Kind:** integration
 
@@ -1085,6 +1204,12 @@ anything else and builds every buffer as a piece; `MemoryReport` reports planned
   TEST(FindRunMemory, OutputRowsHaveRoomAfterBuild)          // A58: a plan with one hand-written output_estimate row
       // of 1000 B kRunOn: after BuildSimulation handed_out_bytes == reserved_bytes - 1024; BuildBuffer<std::byte>(
       // run_on, 1000, FindRunMemory(sim)) succeeds and then handed_out_bytes == reserved_bytes
+  TEST(BuildSimulation, FirstGridIsTheStartCells)            // A66: BuildDeepWaterScene: the committed grid's active
+      // cells (ReadSnapshot after Task 11; here grid().counts()) == start_cells: 9,104 cells {0, 16, 9088},
+      // 167 blocks, version 1; 64,640 particles grouped
+  TEST(BuildSimulation, StartParticleLevelNotItsCell_IsBadInput)  // A66: one particle of a level-2 cell given
+      // size_level 1: kBadInput, context.particle_id that id; nothing reserved afterwards
+  TEST(BuildSimulation, CellResizeWithoutStartCells_IsBadInput)   // A66
   // simulation_no_gpu_test.cc, LABEL no_gpu
   TEST(BuildSimulation, OnGpuWithoutAGpu_IsRunOnCallFailedAndNothingAllocated)  // counter of the replaced new: 0
   ```
@@ -1099,7 +1224,9 @@ anything else and builds every buffer as a piece; `MemoryReport` reports planned
   `solids::BuildSolids`, `BuildSolidsBuffers(solids_settings, max_particle_count, max_cell_blocks)` and
   `BuildSolidCoverageValues(run_on, max_cell_blocks)`,
   `gas::BuildGasAmounts` and `BuildGasBuffers` with gas, `contact::BuildContactBuffers`); add the start
-  particles; `materials::CheckMaterialState`; choose the first active cells with Task 8's rule and group.
+  particles; `materials::CheckMaterialState`; build the first grid from `start_cells` (A66; replaced: "choose the
+  first active cells with Task 8's rule", kept only without cell resize and without start cells), group, and check
+  each particle's level against its cell.
   On any failure every buffer already built is released before returning.
 - [ ] **Step 4: Run** the gate. **Commit.** Subject: `Build a simulation from a ready scene and its plan`. New
   names (amended 2026-11-15, A58): the six `MemoryReport` fields, `handed_out_cpu_bytes`, `reserved_cpu_bytes`,
@@ -1193,6 +1320,9 @@ of the seven region arrays; `BuildSimulationFromSnapshot` reserves its blocks fi
 `BuildSimulationFromSnapshot, CellSizeArraysRoundTrip` (a `has_cell_resize` falling block with hand-set values 0.125
 s, 3.5 1/s and 7 in one cell: `ExpectSameBytes` after the round trip).
 
+**Amended 2026-11-15 (A66):** `BuildSimulationFromSnapshot` never reads `ReadyScene::start_cells` or
+`start_particles` (design 3.6, 5.13); test `BuildSimulationFromSnapshot, IgnoresStartCells`.
+
 **Kind:** integration
 
 Placed this early so that every later "reject after this stage changes nothing" test compares whole
@@ -1230,6 +1360,9 @@ snapshots with `ExpectSameBytes`. The continued-run tests that need the liquid s
   TEST(BuildSimulationFromSnapshot, GridVersionKept)                      // version 1 rebuilt as version 1
   TEST(ReadSnapshot, UnusableSimulation_IsSimulationUnusable)
   TEST(BuildSimulationFromSnapshot, CellSizeArraysRoundTrip)  // A63: see the amendment above
+  TEST(BuildSimulationFromSnapshot, IgnoresStartCells)  // A66: BuildDeepWaterScene after one committed try, snapshot;
+      // the ready scene's start_cells replaced by the kAllSmallest list and start_particles emptied: the rebuilt
+      // grid's cells equal the snapshot's active_cells and ExpectSameBytes holds (a resume never rebuilds start cells)
   ```
   `ReadSnapshot, DuringAResizeTry_IsTryInProgress` is written in Task 32, where `ResizeTry` exists.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject:
@@ -1465,6 +1598,10 @@ block and thread; the bit-equal GPU test rests on that header's same-bits promis
 
 ### Task 17: Stages 9 and 10 for liquid
 
+**Amended 2026-11-15 (A65, pressure's):** stage 9 passes `scene.particle_radius_in_cell_widths` (`ReadyScene`, 0.5)
+as `pressure::SurfaceDistanceInputs::particle_radius_in_cell_widths` (each particle's radius = that x the width of
+its `size_level`); the metre field `particle_radius` is gone.
+
 **Kind:** integration
 
 **Files:**
@@ -1684,6 +1821,13 @@ travel pass; exact in any order), kept by the commit. Test `CheckStep, LargestLi
 
 **Amended 2026-11-15 (A64, A62):** no `read_largest_grid_only_speed`; `ReadLargestGridOnlySpeed_StoredAtCommit`
 moves to Task 39a (later) and is replaced here by `AdvanceTo, LargestLiquidSpeedKeptAcrossSteps`.
+
+**Amended 2026-11-15 (A67):** loop step 6: after `resize_cells` returns `resized == true`, `AdvanceTo` copies
+`ResizeResult::size_change_kinetic_energy` and `mismatched_particle_count` into the committed `StepResult`'s report
+before `on_step_done` (and into `AdvanceResult::last_result`); otherwise both stay 0. `ResizeResult` is exactly
+`{ bool resized = false; std::uint8_t module_error = 0; double size_change_kinetic_energy = 0; std::uint64_t
+mismatched_particle_count = 0; }` (Task 9 declares it; cell resize fills both, 0 on a failure or when there is
+nothing to do). Its test is `TryStep, SizeChangeEnergyReported` in Task 32 (it needs a committing resize).
 
 **Kind:** integration
 
@@ -2312,6 +2456,10 @@ cell list, on the GPU from the list cell resize uploads), `ResizeTry::free_cpu_g
 **Amended 2026-11-14 (Foundation as built):** the `gpu` test writes the digest of the resized grid's tables (grid
 tables are discrete, so the byte comparison with the CPU grid stays).
 
+**Amended 2026-11-15 (A67):** `StepReport` gains `double size_change_kinetic_energy = 0;` (J, after minus before, the
+ResizeCells stage of this try) and `std::uint64_t mismatched_particle_count = 0;` (design 3.7; declared in Task 10's
+`try_step.h`, filled by Task 23's loop); test `TryStep, SizeChangeEnergyReported` below.
+
 **Kind:** integration
 
 **Files:**
@@ -2369,6 +2517,10 @@ tables are discrete, so the byte comparison with the CPU grid stays).
   TEST(BuildResizedGrid, CpuList_EqualsApplyResizedGridOfTheSameGrid)  // reconcile: same tables and bound try
   TEST(BuildResizedGrid, NoCpuGridOnGpu_IsBadInput)        // reconcile; A30: list on the other processor dropped
   TEST(ApplyResizedCpuGridCopy, NotABatchedGpuRun_IsBadInput)  // reconcile (CPU run: free_cpu_grid_copy_buffers null)
+  TEST(TryStep, SizeChangeEnergyReported)  // A67: the hand-written resize commits and returns ResizeResult{true, 0,
+      // -3.75, 7}: the report TryStep itself returned has 0 and 0; the StepResult on_step_done receives and
+      // AdvanceResult::last_result have size_change_kinetic_energy -3.75 (bits) and mismatched_particle_count 7;
+      // a resize returning {false, 1, -3.75, 7}: 0 and 0 (exact)
   // LABEL gpu (step_stages_gpu_test.cc)
   TEST(BuildResizedGrid, OnGpuFromUploadedList_EqualsCpuResizedGrid)  // reconcile: ReadGrid of the result equals
       // cpu_resized_grid byte for byte (discrete tables); WriteResultDigest of the tables
@@ -2833,6 +2985,10 @@ hand-over records the step's working buffers in `TryArrays` and the same-bits pr
   `FindCpuRunMemory`, `ComputeAllowedMemoryBytes`, stage 2's `grid::ComputeNewCellSizeLevel`, `largest_liquid_speed`,
   the three cell-size arrays, `SceneCounts`' depth estimate, the A57 advice fields, `liquid_force_on_solids`,
   `forced_mode`, `kOutOfMemory` last), `StepCallbacks::limits_raised` (reconcile, 2026-11-15), and that Task 39a (later) is not done.
+  **Amended 2026-11-15 (A65-A67):** also `start_cells.h` (`count_rule` added to the declaration), `ReadyScene::
+  start_cells`, the exact start counts and the all-level domain room, `StepError::kTooManyCellBlocks`, the
+  `StepReport` and `ResizeResult` A67 fields, and the scene test `BuildStartCells, DeepTank_SameParticlesAsCoarsenedRun`
+  handed to the cell resize plan.
 
 ---
 

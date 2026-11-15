@@ -601,6 +601,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
 
+**Amended 2026-11-15 (A65):** particles are sized to their cell (8 per cell, rest volume `(w/2)³`); new row `LinearFieldParticlesSizedToTheirCell_IsReproduced` on the size-step grid.
+
 **Files:**
 - Create: `native/fluidity/transfer/particles_to_grid.h`, `particles_to_grid_cpu.cc`, `particles_to_grid_test.cc`
 
@@ -617,6 +619,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   | `AnyCloud_ConservesMassAndMomentum` | size-step grid, `PlateAtY(0.4)` (centre x 0.8), 200 particles `BuildCloud(1, 200, {0.1,0.1,0.1}, {1.5,0.7,0.7})`, velocities and fitted-change entries in `[-1, 1]` from seed 2 | per axis: sum of face mass = sum of particle mass; sum of face momentum = sum of `m v_a` | `64 eps M` |
   | `ConstantVelocity_EveryFaceHasIt` | uniform, 400 particles in `[0.2, 1.0)`, all `{1, -2, 3}`, zero fitted change | every `kFromParticles` face velocity equals its axis component | `8 eps U`, `U = sqrt(14)` |
   | `LinearFieldCompleteNeighbourhood_IsReproduced` | uniform, 8 particles per cell (2 x 2 x 2 at quarter points) in `[0.1, 1.1)`, `v = a + B x`, `a = {1,-2,3}`, `B` rows `{0.5,0.1,-0.2}`, `{0.3,-0.4,0.25}`, `{-0.1,0.2,0.6}`, fitted change `B` | faces with centre in `[0.4, 0.8]`: `(a + B x_f)_axis` | `1e-13 U` |
+  | `LinearFieldParticlesSizedToTheirCell_IsReproduced` (A65) | size-step grid; 8 particles per cell at its cell-eighth centres (`±w/4`), mass `1000 (w/2)^3` (1 kg in 0.2 m cells, 0.125 kg in 0.1 m cells), `rest_volume` `(w/2)^3`; `v`, `a`, `B` as the row above, fitted change `B` | faces with centre `x` in `[0.4, 1.2]`, `y`, `z` in `[0.2, 0.6]`: `(a + B x_f)_axis`; per axis face mass sum = particle mass sum | `1e-13 U`; `64 eps M` |
   | `InternalForce_AddsUpToZeroPerParticle` | one particle at `{0.53,0.47,0.61}`, symmetric matrix entries in `[-1e3, 1e3]` (seed 3), rest volume `1e-3`; then at `{0.57,0.5,0.5}` with `PlateAtX(0.6)` | per axis, face forces sum to 0 | `64 eps M` |
   | `CompleteNeighbourhood_ConservesAngularMomentum` | uniform, 50 interior particles, random `v`, `C` (seed 4) | `sum_f x_f x (q_f e_a) = sum_p m_p (x_p x v_p + (h^2/4) sum_a row_a(C_p) x e_a)` | `1e-12 sum_p m_p (|x_p||v_p| + h^2/4 sum |C_p|)` |
   | `WeightSumThresholds_SetValueKind` | one particle `{0.55,0.55,0.55}`; first run reads the weight sum `w` of X face `(6,5,5)`; second run with `min_weight_sum_at_face = w` | a face with weight sum 0 `kNoValue`; that face `kTooFewParticles`, velocity 0; a face above `w` `kFromParticles` | exact |

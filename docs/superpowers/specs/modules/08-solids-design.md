@@ -179,6 +179,9 @@ struct SolidSettings {
 struct MaterialTheLiquidCannotEnter {    // Snow or a springy solid that liquid must flow around.
   std::uint32_t material_index = 0;      // Of a kSnow or kSpringySolid material. Its own material set (A8).
   double particle_radius = 0;            // m, positive. A particle blocks liquid as a ball of this radius.
+                                         // One radius per material is right (A65, A66): blocking materials keep
+                                         // their count (kKeepsItsCount), so their cells stay at smallest_size_level
+                                         // and every particle has rest volume (w_min/2)^3; I/O gives w_min / 4.
 };
 struct SolidsSettings {                  // Hashed with the scene: no run control lives here.
   std::span<const SolidSettings> solids;               // Ascending solid_id.
@@ -1987,6 +1990,21 @@ answers A40-A64 applied" item 3 and its same-day correction.
 **21. `kOutOfMemory` last (reconcile item 31).** Decision: `SolidsError::kOutOfMemory` already stands last (18
 values); it is returned only by the building functions and also maps `kRunMemoryTooSmall`; the plan's `ToName` test
 counts 18. Source: `plan-decisions.md` "Owner answers A40-A64 applied" item 11.
+
+**22. Particle size follows the cell (A65).** Every liquid cell holds about eight particles of its own size: a
+particle's `size_level` is its cell's level, its rest volume `(w/2)³`, so a cell k levels coarser than the smallest holds 8 particles each of
+`8^k` times the smallest particle's volume. Decision: `MaterialTheLiquidCannotEnter::particle_radius` stays one
+radius per blocking material, because blocking materials (snow, springy solids, sand) keep their count and are seeded
+and kept at `smallest_size_level` (A66: `BuildStartCells` forces that level wherever such a region lies; cell
+resize never coarsens their cells); I/O's value reads `w_min / 4` (replaced: "`particle_spacing / 2`", a start lattice
+that no longer exists). Solids reads no liquid particle size. Source: `plan-decisions.md` "Owner answers A65–A68
+applied", A65, A66.
+
+**23. Other answers of the A65–A68 pass.** A66: the start cells beside a solid are smallest-level (the solid term of
+the cell size rule with the centre distance minus half the diagonal), so solids sees the same cells at a solid as in
+a later step. A67: a split child inside a solid is contact's `kStartedInsideSolid` at the next `MoveParticles`; no
+solids change. A68: a column cut is later; solids' per-block partials and fixed order are unchanged by it. Source:
+`plan-decisions.md` A66, A67, A68.
 
 **Open** (left open by the plans; not decided here):
 

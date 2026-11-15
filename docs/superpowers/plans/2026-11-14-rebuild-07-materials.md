@@ -423,6 +423,12 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
 
 **Kind:** mechanical
 
+**Amended 2026-11-15 (A67):** the particles module splits and merges mismatched particles at every resize pass;
+materials that may be split and merged must carry no per-particle material state beyond `volume_ratio` and
+`ingredient_fractions` (design 5.8 last paragraph, decision 15). Verified: none does; no merge rule is added. New
+test `BuildParticlesSettings, SplitAndMergedKinds_CarryNoMaterialState` pins it; the `BuildParticlesSettings`
+docstring states it.
+
 **Files:**
 - Modify: `material_table.h`, `material_table.cc`, `material_table_test.cc`
 
@@ -447,6 +453,9 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
       // extras, kMayBeSplitAndMerged; gas none; snow springy + permanent, kKeepsItsCount; springy springy +
       // plate_side, kKeepsItsCount; material_id and max_particle_count copied
   TEST(BuildParticlesSettings, PlatesInScene_EveryMaterialHasPlateSide)
+  TEST(BuildParticlesSettings, SplitAndMergedKinds_CarryNoMaterialState)  // amended 2026-11-15 (A67): AllKinds,
+      // without and with plates: every kMayBeSplitAndMerged entry (liquid, gas) has has_springy_deformation and
+      // has_permanent_volume_change false; every entry with either true is kKeepsItsCount. exact
   TEST(BuildParticlesSettings, CountsOfWrongSize_IsEmpty)
   ```
 - [ ] **Step 2: Run, implement, run.** Export-name checks run after every ingredient check (design 5.1 order).

@@ -425,6 +425,8 @@ about it); `ComputeViscousEffectPerStep` stays. The advice moves to Task 4a.
 **Amended 2026-11-15 (A57):** new task; replaces A25's threshold (`plan-decisions.md` "Owner answers A40-A64 applied"
 item 4; design 3 `viscosity_advice.h`, 5.8, decision 24).
 
+**Amended 2026-11-15 (A65):** the paper's assumption reads "uniform particles of equal mass within a cell (eight per cell, sized to it); `h` the smallest cell width", not one particle size everywhere.
+
 **Kind:** numerics
 
 **Files:**
@@ -466,7 +468,8 @@ item 4; design 3 `viscosity_advice.h`, 5.8, decision 24).
   5.8 written out (`sinc^3` per quadratic B-spline, `sinc^6(k h) ~ 1 - (kappa h)^2 / 4`, one diffusion step `1 - nu
   kappa^2 dt`, hence `nu_num = (1 - alpha) h^2 / (4 dt)` and `r = 4 N / (1 - alpha)`), with the sentence "The
   smoothing figure `nu_num = (1 - alpha) h^2 / (4 dt)` is this project's derivation from the filter analysis of
-  Hammerquist and Nairn (2017), not a published value"; its assumptions (uniform particles of equal mass); why the
+  Hammerquist and Nairn (2017), not a published value"; its assumptions (uniform particles of equal mass within a
+  cell, eight per cell sized to it (A65), `h` the smallest cell width); why the
   largest step makes `r` a lower bound; the four-cell decay over the run and the threshold `D = 4.0732477e-3`; the
   Reynolds number; that viscosity 0 also switches the liquid from sticking to slipping. Cite Hammerquist and Nairn
   2017 (URL in `docs/superpowers/specs/modules/literature-practice.md` topic 1) and Bridson's course notes. Run

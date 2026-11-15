@@ -125,7 +125,8 @@ The module's own (values from the design; never change one without the owner):
   `SurfaceSettings` defaults (`spacing` 0 = half the smallest cell width; `smoothing_width` 0 = 2 spacings;
   `max_edge_in_spacings` 2.5; `max_pull_back_in_spacings` 0.25; `volume_tolerance` 0.005;
   `keeps_ids_between_frames` true); Gaussian cut at `round(4 * smoothing_width / spacing)` points; `open >= 0.05`
-  else value `+0.5`; field point split `k = ceil(width / spacing)`, at most 8; mesh tie rule: `|value| <= 1e-8`
+  else value `+0.5`; field point split `k = min(ceil(width / spacing), max(8, ceil(width / (2 spacing))))` (A65,
+  2026-11-15; was "at most 8"); mesh tie rule: `|value| <= 1e-8`
   counts as `+1e-8`; pull back: at most 12 Newton steps, each halved up to 16 times, done at
   `|value| / |value_change| <= min(1e-5 * spacing, 0.01 * smallest triangle height at the vertex)`; volume offset:
   at most 3 passes, limit `0.25 * spacing`, an unsafe pass halved once then dropped; age carried from the nearest
@@ -811,6 +812,8 @@ cannot register its schema types still stops the task.
 grid-only point and its test `BuildFieldPoints, GridOnlyCell_IsOnePointAtItsCentre` move to Task 50 of the later
 group; the commit subject drops "and grid-only liquid".
 
+**Amended 2026-11-15 (A65):** particles are sized to their cell (8 per cell, rest volume `(w/2)³`), so a particle `n` levels coarser is `2^n` spacings wide; the split becomes `k = min(ceil(width / spacing), max(8, ceil(width / (2 spacing))))` (parts at most two spacings apart); `VeryWidePoint_SplitsIntoAtMost512` is replaced by `VeryWidePoint_PartsAtMostTwoSpacingsApart`.
+
 **Amended 2026-11-14 (Foundation as built):** `fluidity_render_output_test_support` is made with `fluidity_add_test_library`; the stable order of
 the field parts built its own working memory per call (CPU, once per frame); replaced by the A31 amendment below.
 
@@ -835,7 +838,8 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
 - Produces: `SurfaceGroup`, `SurfaceSettings`, `FieldPoint`, `SurfaceField`, `SurfaceFieldInputs` of design 3.4.
   Private (**Plan decision**): `BuildFieldPoints(const SurfaceFieldInputs&) -> std::vector<FieldPoint>` (5.3 steps
   1 and 2: particles with `volume = rest_volume * volume_ratio`, `width = cbrt(volume)`; ~~grid-only cells as one
-  point at the centre;~~ (A64: Task 50) points wider than `spacing` split into `k^3` parts, `k = ceil(width / spacing)` at most 8);
+  point at the centre;~~ (A64: Task 50) points wider than `spacing` split into `k^3` parts, `k = min(ceil(width / spacing), max(8, ceil(width / (2 *
+  spacing))))` (A65));
   `ComputeAddedVolume(points, frame, limits, OrderBuffers& order_buffers) -> std::expected<AddedVolume,
   RenderOutputFailure>` (step 3: blocks and trilinear sums in the order of Global Constraints; amended: the parts
   ordered by `BuildStableOrder` with `order_buffers`, allocating nothing; more parts than `limits.max_field_parts`
@@ -851,7 +855,9 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
   ```cpp
   ~~TEST(BuildFieldPoints, GridOnlyCell_IsOnePointAtItsCentre)~~   // A64: moved to Task 50 (later)
   TEST(BuildFieldPoints, WidePoint_SplitsIntoKCubedParts)      // width 2.5 spacings: 27 parts, volumes sum exactly
-  TEST(BuildFieldPoints, VeryWidePoint_SplitsIntoAtMost512)    // width 20 spacings: k == 8
+  ~~TEST(BuildFieldPoints, VeryWidePoint_SplitsIntoAtMost512)~~  // A65: replaced by the next test
+  TEST(BuildFieldPoints, VeryWidePoint_PartsAtMostTwoSpacingsApart)  // A65: width 8 spacings: k == 8; 8.5: 8; 16: 8;
+      // 20: 10; 64: 32; part volumes sum to the point's volume within 1e-12 relative
   TEST(ComputeAddedVolume, SumEqualsPointVolume)               // 10,000 random points: 1e-12 relative
   TEST(ComputeAddedVolume, SameInputTwice_SameBytes)
   TEST(ComputeAddedVolume, TooManyParts_IsTooManyFieldParts)   // max_field_parts 26, a point split into 27 parts
@@ -990,6 +996,8 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
 `BigCellsInside_NoInnerSurface` (big cells holding particles of their own level); the subject drops "grid-only
 liquid".
 
+**Amended 2026-11-15 (A65):** new test `ParticlesSixLevelsCoarser_NoInnerSurface` (particles sized to a cell 128 spacings wide).
+
 **Kind:** numerics
 
 **Files:**
@@ -1009,6 +1017,9 @@ liquid".
       // the outer 3 cells, particles of 2 levels coarser (rest_volume 64 times, 8 per big cell on
       // ComputeRefillParticle's pattern via BuildSpherePositions at 4 times the spacing): 1 piece, Euler number 2,
       // exact
+  TEST(BuildSurfaceField, ParticlesSixLevelsCoarser_NoInnerSurface)  // A65: one cell 128 spacings wide, its 8
+      // particles of width 64 spacings at the cell-eighth centres, no solid: k == 32 each; every lattice point at
+      // least 8 spacings inside the cell has value < -0.4; mesh 1 piece, Euler number 2
   TEST(BuildSurfaceField, BigAndSmallParticles_NoGap)     // slab across a size change: 1 piece, height step under
                                                           // 0.1 spacing
   ```
