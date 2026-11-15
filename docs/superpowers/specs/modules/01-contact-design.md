@@ -541,8 +541,26 @@ error. Unit vectors and rotations are accepted when their squared length is with
 2. *Turning solid (ported idea of `SweepRigidBoxPoint3D`, simplified to stepping forward).* The gap cannot
    shrink faster than `bound = |velocity_for_this_step - linear_velocity| + |angular_velocity| * radius`, `radius` the
    larger of the particle's distances to the solid's origin at both ends of the path. Start at `t = 0`; repeat
-   `t += g(t) / bound`; stop with a hit when `g(t) <= tol / 4`, with no hit when `t >= duration`. More than
-   `kMaxAdvanceCount` steps returns `kTooCloseToCall/kSlowApproachToTurningSolid`. No stack, no bisection.
+   `t += advance`; stop with a hit when `g(t) <= tol / 4`, with no hit when `t >= duration`. More than
+   `kMaxAdvanceCount` advances returns `kTooCloseToCall/kSlowApproachToTurningSolid`. No stack, no bisection.
+   *The advance (amended 2026-11-15, plan P18, Task 9b).* The first-order advance `g(t) / bound` is always safe: the
+   gap cannot shrink by more than `g` in that time. It is the whole advance for a shape whose distance is not convex
+   (none turns in this module: the domain box never moves; a 1b mesh would be one) and the floor for the others. When
+   the distance is convex in the solid's own axes (flat solid, plate, committed plate, box, cylinder: every turning
+   shape here), the advance is the larger of that and the second-order advance, the positive root of
+   `g + gdot * s - K * s^2 / 2 = 0` with `gdot = Dot(normal at the sample, velocity_for_this_step -
+   ComputeSolidVelocity at the sample)` and `K = |angular_velocity| * (2 * |velocity_for_this_step - linear_velocity| +
+   |angular_velocity| * radius)`: `2 g / (Sqrt(gdot^2 + 2 K g) - gdot)` when `gdot <= 0`, `(gdot + Sqrt(gdot^2 + 2 K
+   g)) / K` when `gdot > 0` (infinite when `K == 0` and the denominator is 0). It is safe because the reported normal is
+   a subgradient of a convex distance, so the gap stays above its tangent line in the particle's own-axes position,
+   and that position's second derivative, `-2 omega x v_rel + omega x (omega x (x - o))` turned into the solid's axes,
+   is at most `K` in length while `radius` bounds `|x - o|` over the rest of the sweep: `g(t + s) >= g + gdot * s - K *
+   s^2 / 2`. The hit band (`tol / 4`, the hit used as found) and the advance limit are unchanged. Measured: Task 9's
+   generated paths go from 10.75 % close calls to none, about 5 advances on average; a paddle from about 60 % to at
+   most 0.1 %. A close call remains possible (a particle hovering with no normal motion where `K` overstates the path's
+   curvature) and must stay below 1 in 1000 on the generated sets. Solids that do not turn are searched first and each
+   turning solid only up to the earliest hit found so far (review m4), so a later close call does not spoil an earlier
+   hit.
    There is no touching rule here (amended 2026-11-15, paper review): it belongs to the closed forms of step 1. A
    particle resting on a turning solid at `d = tol` starts with `g(0) = 0 <= tol / 4` and is hit at `t = 0` in every
    step; the response and the slide in the solid's axes (5.5 step 5) carry it with the solid for the rest of the
@@ -723,9 +741,16 @@ e_z) e_z`, `e_z` its own z axis (its `axis`) at the start of the sweep. Code com
 (the step's duration, not the sweep's; below the bound the shape moves less than `tol / 8` during the step, as in a
 spin given along the axis up to rounding, and it uses the closed form); a turning cylinder is swept as a turning solid (5.3 step 2, P7 slide in its axes; the `kMaxTurnPerStep`
 limit applies to `Length(omega_across) * step_duration`). In every case `ComputeSolidVelocity` uses the full
-`omega`, so friction feels the spin and a frictionless particle is not dragged by it.
+`omega`, so friction feels the spin and a frictionless particle is not dragged by it. Amended 2026-11-15 (controller
+rulings 17 and 17 revised, plan P17, Task 9b): a flat solid and a plate, both unbounded in their own x and y, keep
+their shape when they spin about their own normal; their shape-changing turn is the part of `omega` across the
+normal, and each turns only when that part is not exactly zero (a turn about an axis in the plane still turns).
+Friction still feels the full spin.
 
-*Turning cylinder.* The stepping search of 5.3 step 2 with the cylinder's true distance; nothing else changes.
+*Turning cylinder.* The stepping search of 5.3 step 2 with the cylinder's true distance. The true signed distance to
+a convex body is convex and its normal (in the rim, wall or cap region, the degenerate normal on the axis included)
+is a subgradient, so the search takes the larger of the first-order and the second-order advance (plan P18); the
+search starts only outside, `d > 1.25 tol`, where the distance is differentiable. Nothing else changes.
 
 *Response.* Unchanged (5.4): it works on a normal, whichever shape gave it.
 

@@ -161,7 +161,8 @@ Plan decisions (the design left these open; every task respects them, the paper 
 - **P6 Failure context.** `MoveParticle` fills `ContactFailure::solid_id` (the solid's `solid_id`, never its
   index) and `magnitude` (`-d` for `kStartsInsideSolid`, `-(s * p.z + half_thickness)` for `kOnWrongSideOfPlate`,
   `d` for `kEndsTooCloseToSolid`, else 0); `particle_id` stays 0 and `MoveParticles` fills it.
-- **P7 Turning slide.** A solid turns when `angular_velocity != {0, 0, 0}` exactly. After a hit on a turning
+- **P7 Turning slide.** A solid turns when `angular_velocity != {0, 0, 0}` exactly (amended 2026-11-15: a flat solid
+  or a plate when the part across its normal is not exactly zero, P17). After a hit on a turning
   solid the rest of the step is carried in its axes and ends the hit loop. `kTurningSolidNearOtherSolid` when, for
   any other solid `j`, `d_j - tol <= time_left * (Length(v_local) + Length(linear_velocity) + Length(angular_velocity)
   * r + Length(linear_velocity_j) + Length(angular_velocity_j) * r_j)` at the hit, `r` and `r_j` the distances of
@@ -253,7 +254,67 @@ Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7
   form); otherwise it is a turning solid (Task 9 stepping,
   Task 13 slide, P7). `CheckSolid`'s `kSolidTurnsTooFar` uses `Length(omega_across) * step_duration` for a cylinder
   and never fires for a sphere. P7's "turns when `angular_velocity != 0`" stays for the other shapes.
-  `ComputeSolidVelocity` always uses the full `omega`.
+  `ComputeSolidVelocity` always uses the full `omega`. **Amended 2026-11-15 (controller rulings 17 and 17 revised,
+  Task 9b):** a flat solid and a plate spinning about their own normal do not turn either: both are unbounded in their
+  own x and y (checked in every function that reads a plate: `ComputeDistanceToSolid`, `FindSolidSide`, the
+  closed-form first hit with the `kLowZ`/`kHighZ` planes, the committed face of P3, `CheckSolid`'s sizes and
+  `ComputeContactScale` read only `p.z` and `half_size.z`), so a spin about the normal leaves the shape unchanged.
+  `ComputeShapeTurningAngularVelocity` gives both `omega - Dot(omega, e_z) * e_z`, `e_z` the normal (the pose's z
+  column at the step's start), as for a cylinder, and each turns when that is not exactly `{0, 0, 0}` (P7's exact test,
+  applied to the part across the normal; a spin given about a tilted normal may leave a part of a few rounding units,
+  which makes it turning: safe, it then takes the stepping search). The closed form stays exact for such a spin: the
+  surface velocity `omega x r` has no part along the normal. `CheckSolid`'s `kSolidTurnsTooFar` uses that part, so
+  both may spin about their normal at any rate. Friction still sees the full spin through `ComputeSolidVelocity`.
+  Task 9b makes the change and its tests.
+
+Plan decision added 2026-11-15 for the second-order advance (controller ruling 16; Task 9b; the paper states it):
+
+- **P18 Second-order advance toward a convex turning solid.** The stepping search (design 5.3 step 2) advances by the
+  larger of two safe advances when the solid's distance is convex in its own axes, which holds for every turning
+  shape of module 1: flat solid `p.z`, plate `|p.z| - half_thickness`, committed plate `s * p.z - half_thickness`
+  (P3), box `max_k (|p_k| - half_size_k)`, cylinder the true signed distance (P14). With the sample at `t`, its gap
+  `g = d - tol > tol / 4`, `n` its `normal_out_of_solid`, `v_rel = v - linear_velocity` and Task 9's `bound` and
+  `r_max`:
+  `gap_rate = Dot(n, v - ComputeSolidVelocity(solid, pose(t), x(t)))` (`gdot`, m/s),
+  `gap_curvature_bound = Length(omega) * (2 * Length(v_rel) + Length(omega) * r_max)` (`K`, m/s^2),
+  first-order advance `g / bound` (Task 9), second-order advance the positive root of `g + gdot * s - K s^2 / 2 = 0`:
+  `2 * g / (Sqrt(gdot^2 + 2 * K * g) - gdot)` when `gdot <= 0`, `(gdot + Sqrt(gdot^2 + 2 * K * g)) / K` when
+  `gdot > 0` and `K > 0`, infinite when `gdot > 0` and `K == 0`. Each form adds two terms of the same sign, so it has
+  no cancellation; the sum under the root adds non-negative terms, so rounding cannot make it negative; the only zero
+  denominator, `gdot == 0` with `K == 0`, is written as its own branch (an infinite advance: the path is free), as is
+  `K == 0` with `gdot > 0`. The advance taken is the larger of the two. Why it is safe: (1) the reported normal,
+  written in own axes, is a subgradient of the convex distance (a unit vector), so `d(p(s)) >= d(p(t)) +
+  n_own . (p(s) - p(t))` for every `s`; this holds at an edge or corner, where the reported face is one active plane
+  of the max, at the box's `p_k = 0` tie and the plate's middle plane (both `-1` and `+1` lie in the subdifferential
+  of `|.|` at 0), and at a cylinder's rim (the true distance, differentiable outside); (2) with `A' = [omega]x A`,
+  `o' = linear_velocity` and `omega` constant in the step, `p'' = A^T (-2 omega x v_rel + omega x (omega x (x - o)))`,
+  so `|p''| <= K` while `|x - o| <= r_max`, with no small-angle step, so up to `kMaxTurnPerStep` and beyond; a moving
+  origin enters through `v_rel` and the moving origins of `r_max`; (3) `n_own . p'(t) = gdot`. So `g(s) >= g + gdot
+  (s - t) - K (s - t)^2 / 2`, the root is safe, and the larger of two safe advances is safe. The search advances only
+  from `d > 1.25 tol > 0`, outside the solid, and the inequality holds along the whole line, so nothing inside the
+  tolerance band or inside the solid is needed. A committed plate is linear in the whole space, so its "wrong side"
+  breaks nothing: a particle there has `d < 0` and is hit at 0 before any advance; an uncommitted plate is convex on
+  both sides. `r_max` must bound `|x(s) - o(s)|` over every time the advance can reach: Task 9's `r_max` (both path
+  ends, origins at the matching times) does, because the length of the straight line `x - o` is convex in time; an
+  underestimate of either end puts particles inside (measured: `K` from the start alone, 3.8 cm inside a quarter-turn
+  arm; from the end alone, 1.8 mm), the lesson of Task 9's M7 and M10. Rounding margin: none beyond Task 9's. The
+  target is still `g = 0` (`d = tol`); the distance is off by at most `tol / 128`, `gdot` by about `2^-50 (|v| +
+  |omega| r_max)`, which over one advance moves the model by below `2^-40` of a cell for a step that moves the
+  particle or the surface at most 1000 cells, and the root and `K` carry relative rounding only: the path stays
+  farther than `tol - tol / 64` before the hit (the tests' allowance). The hit band and the reported hit are Task 9's:
+  a hit when `g <= kTurningSolidHitGapShare * tol`, `at_hit` as found, so after an advance `d` is in `[tol - tol / 64,
+  1.25 tol + tol / 128]` (a second-order advance usually lands near `d = tol`); P15's "no rim move for a
+  stepping-search hit" and Task 12a are unchanged. `kMaxAdvanceCount` stays 128 and a close call stays possible (a
+  particle hovering with no normal motion where `K` is far above the path's true curvature), but must be rare: at most
+  1 per 1000 paths on every generated set of Tasks 9 and 9b and at most 1 % per kind on the paddle set (measured: 0
+  in 30,000 mirror paths of seven generated sets, 1 in 8,000 broad paths, 0 to 0.1 % in the paddle set with gaps down to the hit band),
+  pinned by the ceilings of `ExpectTurningSweepCounts` and `GeneratedPaddleSweeps_AgreeWithFacePlaneReference`; the
+  remaining close call is pinned by `TurningBoxHoverOnSpinAxisBeyondAdvanceLimit_IsCloseCall`. A shape whose
+  distance is not convex (the domain box's smallest wall gap; a 1b mesh, the smallest triangle distance) uses the
+  first-order advance alone, chosen by the private `HasConvexDistance(SolidShape)`: measured on a test-only turning
+  room, the second-order advance misses walls on 27.5 % of paths, ending up to 0.5 m outside. Also (review m4):
+  `FindFirstHit` searches the turning solids after the others, each with `duration` capped at the earliest hit found
+  so far, so a turning solid's close call after an earlier hit is not reached.
 
 ## Before you start
 
@@ -952,6 +1013,238 @@ each branch.
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Step toward a turning solid until the path reaches it`.
 
+### Task 9b: Second-order advance toward a turning solid (P18)
+
+Added 2026-11-15 (controller ruling 16, from Task 9's review, "Close calls: recommendation", and minors m4 and m7).
+Task 9 as built is safe but answers "too close to call" too often: 10.75 % of its 17,000 generated paths and 50 to
+62 % of particles near a paddle, and halving the step removes about 5 points of that; the step allows two retries and
+then stops the run. This task keeps Task 9's search as the floor and adds P18's second-order advance; it also makes
+the controller's flat-solid and plate ruling (P17 amended) and review m4. Run it after Task 9 and before Task 10.
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact_steps.h` (`FindHitOnTurningSolid`, `FindFirstHitOnSolid`, new private
+  `HasConvexDistance`), `solid_contact.h` (`FindFirstHit`'s loop, m4; docstrings), `solid_shapes.h`
+  (`ComputeShapeTurningAngularVelocity` and `CheckSolid` docstrings for the flat solid and the plate), `solid_contact_types.h`
+  (the `kMaxAdvanceCount` comment), `find_first_hit_test.cc`, `solid_shapes_test.cc`,
+  `docs/method-paper/fluidity-method.typ`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: Task 9 as built after its fix round (`FindHitOnTurningSolid`, `kTurningSolidHitGapShare`,
+  `kMaxAdvanceCount`, the lower-bound reference `IsOutsideGrownSolidThroughout`, `CountTurningSweep`,
+  `ExpectTurningSweepCounts`, `BuildQuarterTurnLongBox`, `BuildOutwardPath`); `ComputeSolidVelocity`,
+  `ComputeShapeTurningAngularVelocity` (Task 3).
+- Produces: P18 inside `FindHitOnTurningSolid`; private `constexpr bool HasConvexDistance(SolidShape shape)` (true for
+  flat solid, plate, box, sphere, cylinder; false for the domain box); `FindHitOnTurningSolid` gains a last parameter
+  `int* advance_count` (may be null; written on every return with the advances made) so tests can read the cost;
+  `FindFirstHitOnSolid` passes null. `FindFirstHit`'s public form and `FirstHit` do not change. P17's flat-solid
+  and plate rule in `ComputeShapeTurningAngularVelocity`. m4 in `FindFirstHit`: first every solid that does not turn, in index
+  order; then every turning solid in index order, each searched with `duration` replaced by the earliest hit time
+  found so far when that is smaller; a turning solid's hit replaces the kept one when its time is smaller, or equal
+  with a lower index; a turning search that reaches the cap is free, and the kept hit stands (safe: the path stayed at
+  `d >= tol` up to then). The close call is returned only when a turning search fails inside its capped duration.
+- **Room for module 1b (mesh solids) (A80):** the choice of advance is `HasConvexDistance(solid.shape)` only, read
+  inside `FindHitOnTurningSolid`; the advance still reads the gap and the normal only through
+  `ComputeDistanceForParticle`. A mesh is not convex: 1b adds `case kMesh: return false;` (first order) unless its
+  design chooses per-triangle second order with measurements (`changes-to-apply.md`, section 01b). Nothing assumes
+  the normal belongs to one face.
+- The plate is unbounded in its own x and y in every function that reads it (P17 amended lists them), so ruling 17
+  revised frees its spin about the normal like the flat solid's. Task 9's `TurningPlateCommitted_SearchUsesCommittedHalfSpace`
+  used a plate spinning about its normal, which is now a closed form: give it angular `{1, 0, 0}` (a turn about an
+  axis in its plane) so it still exercises the search; its expected values (both forms hit at 0, kLowZ at -0.005,
+  committed kHighZ at -0.015) are unchanged.
+
+Checked before writing (mirror of `FindHitOnTurningSolid` in Python, bit-faithful to Task 9; reference that cannot
+miss: Task 9's branch and bound with its own loose rate bound, and for the paddle a face-plane reference whose bound
+`|f''| <= |omega|^2 (r0 + |v_rel| T) + 2 |omega| |v_rel|` on each smooth face-plane gap is derived without convexity;
+scripts in the session scratchpad `task9b/`):
+
+| set | paths | close calls, Task 9 | close calls, 9b | mistakes, 9b | advances, 9b: mean / p99 / max |
+|---|---|---|---|---|---|
+| Task 9's 17,000 (random 5 solids, nearly tight, farthest at end, edges and corners, rims) | 17,000 | 1,828 (10.75 %) | 0 | 0 | 3.5 to 6.6 / 4 to 13 / 27 |
+| outward radial (Task 9 I1 geometry) | 3,000 | 102 per 2,746 (review) | 0 | 0 | 4.5 / 6 / 6 |
+| inward radial, long box | 3,000 | - | 0 | 0 | 5.4 / 7 / 7 |
+| inward through the origin, four shapes, turn up to pi/2 | 4,000 | - | 0 | 0 | - |
+| slide past the radial end face of a quarter-turn arm | 3,000 | - | 0 | 0 | 5.8 / 18 / 86 |
+| broad: faces, edges, corners, rims, random axes, 4 seeds | 8,000 | 72.5 % (review) | 1 | 0 | 10.2 to 10.8 / 35 to 38 / 128 |
+| paddle, gaps 1e-7 to 1e-2 m, three kinds, steps 1/120 to 1/480 | 18,000 | 42 to 62 % | 0 | 0 | 2.0 to 4.4 / 9 to 20 / 38 |
+| paddle, gaps 0.3 tol to 1e-2 m, normal speed down to 1.5e-9 m/s | 18,000 | 69 to 79 % | 0 approach, 0 separate, 0.1 % co-moving | 0 (3,600 checked) | 4.2 to 8.2 / 25 to 54 / 128 |
+
+Mutants of the formula on these sets: `K` from the start's distance alone, 149 mistakes in 3,000 outward paths (3.8 cm
+deep); from the end's alone, 136 in 3,000 end-face paths (5 mm); with the Coriolis term once instead of twice, 197
+(8.7 mm); without it, 1,515 outward; without the centripetal term or halved, almost every hit wrong; `gdot` with the
+wrong sign, from the world velocity, or without the turn's surface velocity, almost every hit wrong; Task 9's M7 (the
+bound from the start alone) is still caught through the first-order floor (283 in 3,000). Two mutants found no
+mistake anywhere: `K` from the distance at the current sample (unsafe in principle: the distance can grow over the
+advance) and the second-order advance without the first-order floor (both advances are safe; the floor changes the
+mean count from 5.41 to 5.4). On a test-only turning room (the domain box's distance, not convex) the second-order
+advance made 275 mistakes in 1,000 paths and on an L of two boxes 14 in 923; first order made none.
+
+- [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance` unless stated; hit times "within 2^-30" use
+  `kTurningHitTimeTolerance`; "in the band" means `at_hit.distance` in `[tol - tol / 64, (1 + kTurningSolidHitGapShare)
+  * tol]`; the quarter-turn long box is `BuildQuarterTurnLongBox({})`, half sizes {0.5, 4, 0.5}, world axes, turning
+  `{0, 0, pi / 2}` rad/s, step 1 s; every value below comes from the mirror and was checked against the true crossing
+  time found by bisection on the distance):
+
+  ```cpp
+  // Task 9 tests that change (m7: a close call that the second-order advance finds in one advance gets a new path)
+  TEST(FindFirstHit, SecondOrderSearchStoppingTimes_PinAdvanceCounts)   // replaces FirstOrderSearchStoppingTimes_...
+      // same cases, stopping times within 1e-13 s (mirror; the implementer records the C++ values and pins them,
+      // explaining any difference above 1e-13 by the order of operations in gdot):
+      // trig box 3 advances, 0.8856855405066031 (Task 9: 30, 0.88568554023775237);
+      // cylinder 3, 0.21488921385342513 (Task 9: 25); slow approach r 0.505859375: 2, 0.15235117303165863 (113);
+      // slow approach r 0.5029296875: 2, 0.1079898627864529 (157, a close call in Task 9);
+      // TurningLongBoxOutwardPath's path: 6, 0.9562428207946203 (32); StartElapsed_MovingTurningBox_...'s: 5,
+      // 0.7981334038631699. Also through FindHitOnTurningSolid's advance_count: 3, 3, 2, 2, 6, 5 exactly
+  TEST(FindFirstHit, TurningBoxSlowApproachBeyondFirstOrderLimit_IsHit)  // replaces ...BeyondAdvanceLimit_IsCloseCall:
+      // at rest at {0.5029296875, 0, 0}, box half 0.5 turning {0,0,1}, 1 s: hit at acos((0.5 + tol) / 0.5029296875)
+      // = 0.10798986286079153 within 4 * 2^-30, kHighX, in the band
+  TEST(FindFirstHit, GrazingTurningBox_HitWhereFaceTurnsOntoParticle)    // replaces GrazingTurningBox_IsSlow...:
+      // at rest at {0.5 + 2 tol, 0, 0}, 0.1 s: hit at acos((0.5 + tol) / (0.5 + 2 tol)) = 6.103515625947391e-05
+      // within 2^-30 (mirror 6.103515613631316e-05, one advance; Task 9 needed 43,154), kHighX, in the band
+  TEST(FindFirstHit, CloseCall_LeavesFirstHitUnchanged)                 // path changed to the hover below at
+      // z = 0.5 + 2^-17; the rest unchanged
+  // The remaining close call, and the advance limit from both sides (libm-free: on the spin axis the own point is
+  // {0, 0, z} exactly, the distance z - 0.5, gdot exactly 0, K = z, so every advance is 2 g / Sqrt(2 K g))
+  TEST(FindFirstHit, TurningBoxHoverOnSpinAxisWithinAdvanceLimit_IsFree)
+      // box half 0.5 at the origin turning {0,0,1}; at rest at {0, 0, 0.5 + 2^-15}, 1 s: free (91 advances; Task 9
+      // needs about 16,400)
+  TEST(FindFirstHit, TurningBoxHoverOnSpinAxisBeyondAdvanceLimit_IsCloseCall)
+      // at rest at {0, 0, 0.5 + 2^-17}: kTooCloseToCall / kSlowApproachToTurningSolid (182 needed; 1 / advance =
+      // 181.02, far from an integer, so the count does not depend on rounding)
+  // The radius bound inside K (P18): each end of r_max is load-bearing
+  TEST(FindFirstHit, TurningLongBoxOutwardPathFromNearOrigin_FarEndOfRadiusBoundsCurvature)
+      // quarter-turn long box; start 0.6 * {sin 1.68125, -cos 1.68125, 0}, velocity 3 * {sin 1.68125, -cos 1.68125,
+      // 0}: hit at 0.98010536766574 within 2^-30 (crossing 0.9801053676657359), kHighX, in the band. K from the
+      // start's distance alone: "hit" 3.8 cm inside after 2 advances
+  TEST(FindFirstHit, TurningLongBoxSlidePastEndFace_CoriolisAndNearEndBoundCurvature)
+      // quarter-turn long box; start {-0.4, 4.05, 0}, velocity {8 - 4.05 * pi / 2, -0.4 * pi / 2, 0} (the end face's
+      // velocity there plus 8 m/s along own x): hit at 0.0815739451161 within 2^-30 (crossing 0.08157394511611948),
+      // kHighY, in the band, 3 advances. K from the end's distance alone: 1.8 mm inside; Coriolis term once: 8.7 mm;
+      // without it: 2.5 cm
+  // Not convex: first order only (P18)
+  TEST(HasConvexDistance, TurningShapesYes_DomainBoxNo)                 // flat solid, plate, box, sphere, cylinder
+                                                                        // true; domain box false
+  TEST(FindHitOnTurningSolid, TurningRoom_NotConvexSoFirstOrder)
+      // test-only Solid of shape kDomainBox built by hand: origin 0, axes kIdentity, half_size {1,1,1}, every side
+      // closed, angular {0, 0, pi / 2} (CheckSolid would refuse it; FindHitOnTurningSolid is called directly);
+      // at {0.5, 0.7, 0} moving {1, -1, 0}, 1 s: hit at 0.66938054133 within 2^-30 (crossing 0.6693805413275088), in
+      // the band. With the second-order advance the search says free after 2 advances and the path ends 0.5 m beyond
+      // a wall
+  // P17 amended (controller rulings 17 and 17 revised): a flat solid or a plate spinning about its normal does not
+  // turn (both are unbounded sideways); a turn about an axis in its plane still does
+  TEST(ComputeShapeTurningAngularVelocity, FlatSolidAndPlateSpinAboutNormal_IsNoTurn)  // normal {0,0,1}: {2,0,100}
+                                                                        // gives {2,0,0} exactly for both; a box gives
+                                                                        // {2,0,100}
+  TEST(CheckSolid, FlatSolidAndPlateSpinningFastAboutNormal_AreAccepted) // {0,0,100} rad/s, step 0.1 s: kNone for
+                                                                        // both (was kSolidTurnsTooFar); {100,0,0}:
+                                                                        // still kSolidTurnsTooFar
+  TEST(FindFirstHit, SpinningFlatSolid_IsClosedForm)                     // floor at the origin, normal {0,0,1},
+      // angular {0,0,5}; start {0.3,0,0.5}, v {0,0,-1}, 1 s: elapsed == 0.5 - tol exactly, the same bits as the floor
+      // without the spin, kHighZ
+  TEST(FindFirstHit, RestingOnSpinningFlatSolid_TouchingRuleFrees)       // same floor; start {0.3,0,tol}, v {1,0,0},
+      // 0.1 s: free (P2); Task 9 gave a hit at 0
+  TEST(FindFirstHit, SpinningPlateAboutNormal_IsClosedForm)              // plate h 0.01 at the origin, normal
+      // {0,0,1}, angular {0,0,5}; start {0.3,0,0.5}, v {0,0,-1}, 1 s: elapsed == (0.5 - 0.01) - tol exactly, the same
+      // bits as the plate without the spin, kHighZ
+  TEST(FindFirstHit, RestingOnSpinningPlate_TouchingRuleFrees)           // same plate; start {0.3,0,0.01 + tol},
+      // v {1,0,0}, 0.1 s: free (P2); Task 9 gave a hit at 0
+  TEST(ComputeSolidVelocity, SpinningPlate_SurfaceVelocityKeepsTheSpin)  // same plate, pose at 0, point {0.3,0,0.01}:
+      // {0,1.5,0} exactly, so friction feels the spin (the MoveParticle test is Task 12a's
+      // SpinningPlatePressedOn_MovesOnlyThroughFriction)
+  TEST(FindFirstHit, PlateTurningAboutAxisInItsPlane_IsTurning)          // same plate with angular {1,0,0}; start
+      // {0.3,0,0.01 + tol}, v {1,0,0}, 0.1 s: hit at 0, kHighZ (a turning solid has no touching rule, P2)
+  // Review m4: turning solids after the others, capped at the earliest hit
+  TEST(FindFirstHit, TurningSolidCloseCallAfterEarlierHit_IsHit)
+      // solid 0: box half 0.5 turning {0,0,1}; solid 1: flat solid point {0,0,0.6}, normal {0,0,-1}, moving {0,0,-1};
+      // at rest at {0, 0, 0.5 + 2^-17}, 1 s: hit on solid 1 at (0.6 - (0.5 + 2^-17)) - tol = 0.09999236967414615
+      // (closed form), kHighZ; the box, searched up to that time, is free in 19 advances. Without m4: kTooCloseToCall
+  TEST(FindFirstHit, TurningSolidHitBeforeClosedFormHit_Wins)
+      // solid 0: flat solid point {0,0,0.95}, normal {0,0,-1}, moving {0,0,-1}; solid 1: the trig box of
+      // TurningBoxReachesRestingParticle; that particle, 1 s: solid_index 1 at 0.3 + acos((0.5 + tol) / 0.6) within
+      // 2^-30 (the flat solid would hit at 0.95 - tol)
+  // Generated sets (P11; reference IsOutsideGrownSolidThroughout unless stated). Every set: 0 mistakes, at most 1
+  // close call per 1000 paths, mean advances <= 10 and 99th percentile <= 30 (from advance_count; recorded with
+  // RecordProperty), except where stated
+  TEST(FindFirstHit, GeneratedTurningSweeps_AgreeWithLowerBoundReference)          // ceiling 85 -> 1 per solid
+  TEST(FindFirstHit, GeneratedNearlyTightBoundSweeps_AgreeWithLowerBoundReference) // ceiling 10 -> 2
+  TEST(FindFirstHit, GeneratedOutwardSweeps_AgreeWithLowerBoundReference)          // ceiling 180 -> 3 (118 today)
+  TEST(FindFirstHit, GeneratedTurningBoxEdgeAndCornerSweeps_AgreeWithLowerBoundReference)  // 1200 -> 4
+  TEST(FindFirstHit, GeneratedTiltingCylinderRimSweeps_AgreeWithLowerBoundReference)       // 440 -> 4
+  TEST(FindFirstHit, GeneratedEndFaceSlideSweeps_AgreeWithLowerBoundReference)     // new, 3000 paths, below
+  TEST(FindFirstHit, GeneratedInwardSweeps_AgreeWithLowerBoundReference)           // new, 3000 paths, below
+  TEST(FindFirstHit, GeneratedPaddleSweeps_AgreeWithFacePlaneReference)            // new, 6000 paths, below
+  ```
+  End-face slide set (kills the end-only `K` and the Coriolis mutants): the quarter-turn long box; per path, in this
+  order: gap `exp(log(1e-6) + Next() * (log(0.5) - log(1e-6)))` m; own start `{0.6 * NextSigned(), 4 + tol + gap,
+  0.4 * NextSigned()}` (equal to world at the step's start); a relative velocity `{w, -Next() * c, 0.3 * NextSigned()}`
+  with `w = 8 * Next()` times -1 when `Next() < 1/3`, and `c` 0, 0.01, 0.1 or 1 by `floor(4 * Next())`; velocity = the
+  surface velocity at the start plus that; sweep 1 s from 0. Measured with the mirror's draws: 0 close calls, mean 5.8,
+  99th percentile 18; the ceilings above hold.
+  Inward set: the quarter-turn long box; per path: start_elapsed 0 when `Next() < 0.5`, else `0.25 * Next()`; r0
+  `1.5 + 2.4 * Next()`; speed `1 + 5 * Next()`; angle `0.2 + 1.8 * Next()`; the particle starts r0 out along the own
+  direction `{sin angle, -cos angle, 0}` at the pose of start_elapsed and moves toward the origin at that speed, to
+  the end of the step (an `OutwardPath` with a negative outward speed and box speed 0). Measured: 0 close calls, mean
+  5.4, 99th percentile 7.
+  Paddle set: a box of half sizes {0.25, 0.01, 0.1} m at the origin, world axes, turning `{0, 0, 6}` rad/s;
+  `contact_tolerance = 0x1p-30 * 0.01` (a 1 cm cell); `step_duration = 1 / 120` s; sweeps from 0 over the whole step;
+  2000 paths per kind, kinds approaching, separating, co-moving in turn (`path_index % 3`). Per path: own x `0.24 *
+  NextSigned()`; own z `0.09 * NextSigned()`; side `+1` when `Next() < 0.5`; gap `exp(log(0.3 tol) + Next() * (log(0.01)
+  - log(0.3 tol)))`; start `{x, side * (0.01 + tol + gap), z}`; slide `0.45 * NextSigned()` m/s along x; normal speed
+  `0.15 * 10^(-8 * Next())` m/s, into the face, out of it, or 0 by kind; velocity = surface velocity at the start +
+  slide + normal speed times `{0, side, 0}`. Reference: `IsOutsideBoxThroughout`, test-only, the face-plane reference
+  (the box distance is the largest of six face-plane gaps, each smooth in time with `|f''| <= |omega|^2 (r0 + |v_rel|
+  T) + 2 |omega| |v_rel|`; on `[a, b]` each is at least its chord minus `M (b - a)^2 / 8`; cut until certain), because
+  the plain lower-bound reference needs about `gap / bound` per sample along a particle hovering a few tolerances off
+  the face and does not finish. Allowance `tol / 64`. Criteria: 0 mistakes; close calls at most 20 per kind (1 %);
+  mean advances <= 12 and 99th percentile <= 80 per kind (measured with the mirror's draws: 0, 0 and 2 close calls
+  per 2000; mean 5.9, 7.0, 8.2; 99th percentile 42, 49, 54; the reference took at most 62 samples per path).
+- [ ] **Step 2: Run.** Expected failures: the stopping-time and advance-count test, the slow approach beyond the old
+  limit and the graze (close calls under Task 9), the hover within the limit (about 16,400 first-order advances), the
+  generated sets' new ceilings and counts, `HasConvexDistance` (does not exist), the flat-solid and spinning-plate tests, and
+  `TurningSolidCloseCallAfterEarlierHit_IsHit`. Passing already: the hover beyond the limit, the two radius tests,
+  the turning room, the plate turning about an axis in its plane, the plate's surface velocity, and `TurningSolidHitBeforeClosedFormHit_Wins` (first order is safe; these pin mutants).
+- [ ] **Step 3: Implement** P18 in `FindHitOnTurningSolid`: compute `K` once beside `bound`; per sample, after the
+  hit and limit checks, `gdot` from `at_position.normal_out_of_solid` and `ComputeSolidVelocity(solid, pose, position)`,
+  the two advances and their maximum, when `HasConvexDistance(solid.shape)`; first order alone otherwise. Body
+  comments: the convexity of each turning shape's distance and the subgradient case by case (ties, the plate's middle
+  plane, the committed plate, the rim), `|p''| <= K`, the lower model, why the larger of two safe advances is safe,
+  the cancellation-free root and the `K == 0` branch, the rounding budget, and why the hit band is unchanged. The
+  docstring's Cost paragraph and example change (3 advances; close calls are now rare: a hover with no normal motion).
+  P17 amended: the flat solid's and the plate's branch of `ComputeShapeTurningAngularVelocity` (one helper for the
+  cylinder's, the flat solid's and the plate's "part across the own z axis", written once). m4 in `FindFirstHit`, with a comment on the cap and the
+  tie order. `kMaxAdvanceCount`'s comment: "3 in the paper's example; first order needed 30".
+- [ ] **Step 4: Mutants** (debug build, full test binary; each must be killed or argued in the report):
+  N1 `K` from the start's distance alone (outward-from-near-origin test, generated outward); N2 from the end's alone
+  (end-face test, generated end-face); N3 from the distance at the current sample (expected to survive: argue that it
+  is unsafe in principle and keep Task 9's `r_max`); N4 without the Coriolis term; N5 with it once (end-face test);
+  N6 without the centripetal term; N7 `K / 2`; N8 `gdot` with its sign flipped; N9 `gdot` from the world velocity;
+  N10 `gdot` from `v - linear_velocity`, without `omega x r`; N11 `HasConvexDistance` true for every shape (turning
+  room); N12 the second-order advance without the first-order floor (expected to survive: both are safe; say so);
+  N13 the first-order advance alone (Task 9: the failing tests); N14 the bound of Task 9 from the start alone and N15
+  its end origin at `duration` (Task 9's M7 and M10: still killed by `TurningLongBoxOutwardPath_...` and
+  `StartElapsed_MovingTurningBox_...`, through the floor); N16 the `gdot <= 0` form used for `gdot > 0` (the
+  cancelling form: argue or kill with the separating paddle kind); N17 no m4 cap; N18 m4 with the turning solids
+  searched first; N19 the flat solid's or the plate's spin about its normal counted as a turn (the old rule; the two
+  touching-rule tests); N20 the plate's whole angular velocity ignored (`PlateTurningAboutAxisInItsPlane_IsTurning`); N21 limits 64 and 256 (the hover pair).
+- [ ] **Step 5: Paper and glossary.** `<sec-first-hit>`, "A turning solid": keep the first-order paragraph as the
+  floor and as what a shape whose distance is not convex uses; add a paragraph with P18's lower model, the three
+  reasons it is safe (convexity with the normal as a subgradient; `|p''| <= K` with the radius over the rest of the
+  sweep; `gdot`), the root in its two forms and "the larger of the two advances"; say that a close call is now rare
+  and when it remains (a hover with no normal motion). Worked example: same box and particle, `K = 0.6` m/s^2, 3
+  advances (Task 9: 30), stopping within the test's `2^(-30)` (this paper's count: give the C++ stopping time).
+  `<proc-find-first-hit>` "Turning solid": "advance by the larger of `g / bound` and the positive root of `g + gdot
+  s - K s^2 / 2` when the distance is convex (every turning shape here), by `g / bound` otherwise"; the m4 order
+  ("solids that do not turn first; then turning solids, each up to the earliest hit so far"); the flat solid's and the
+  plate's spin in "Solid that does not turn". Glossary rows: `second-order advance`, `gap rate` (`gdot`), `gap curvature bound`
+  (`K`), `HasConvexDistance`; the `stepping search, advance` row says "the larger of the first-order and the
+  second-order advance"; the `turning solid` row adds the flat solid's and the plate's spin. Never say: `Newton step`, `certified`.
+- [ ] **Step 6: Run** build, tests, gate (`uv run python tools/check_commit.py`); record the generated sets' counts and
+  run time in the report.
+- [ ] **Step 7: Commit.** Subject: `Advance toward a convex turning solid by a second-order bound`. New names:
+  `HasConvexDistance` (private; listed because 1b extends it).
+
 ### Task 10: `MoveParticle` with hits on solids that do not turn
 
 **Kind:** numerics
@@ -1155,7 +1448,11 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 - Consumes: Tasks 8a, 11, 12; preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. (Task 12's rule follows, including its rule that "approaches again" is `approach >= -bound` means no longer
   approaching, never `approach >= 0`, with `bound` from `ComputeLargestApproachLeftAfterResponse`); `ComputeShapeTurningAngularVelocity` (Task 3) for P17 in step 5, no second helper; and (amended 2026-11-15) Task 13 for the test
   `TurningCylinderRimHit_IsNotMoved`: it needs the slide on a turning solid to finish the step, so **run Task 12a
-  after Task 13**.
+  after Task 13**. **Amended 2026-11-15 (Task 9b):** and Task 9b (P18). The task order is 9, 9b, 10, 11, 12, 13,
+  12a, 14 to 18. What changes here: a stepping-search hit is still in Task 9's band and still never moved, but a
+  second-order advance usually stops near `d = tol`, so the old path of `TurningCylinderRimHit_IsNotMoved` (start
+  `{1,-1,1}`, velocity `{-1,2,-1}`) now stops at 1.0000001 tol after 5 advances, where a rim move could not be seen; the
+  test gets the path below, which stops at 1.11 tol under P18 (1.20 tol under first order).
 - Produces: `MoveParticle` step 4's rim move (P15: a hit position that the cylinder's closed form (Task 8a) finds in
   the rim region is moved along its normal to `d = tol` before the response; the reaction's `hit_position` is the
   moved position). **Amended 2026-11-15 (paper review):** the move is decided by where the hit came from, not by
@@ -1194,14 +1491,19 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
       // axis z, r 1, h 0.5, angular {0,0,2}; start {0.5,0,0.5 + tol}, v {0,0,-1}, T 0.1: friction 0 -> velocity
       // {0,0,0}, end {0.5,0,0.5 + tol}; friction 0.25 -> {0,0.25,0}, end {0.5,0.025,0.5 + tol}; friction 1 ->
       // {0,1,0} (stick), end {0.5,0.1,0.5 + tol}; positions within 2 tol; no close call (P17: spin, not a turn)
+  // Amended 2026-11-15 (Task 9b, P17 amended): a plate spinning about its normal slides as a solid that does not turn
+  TEST(MoveParticle, SpinningPlatePressedOn_MovesOnlyThroughFriction)
+      // plate at the origin, normal {0,0,1}, half thickness 0.5, angular {0,0,2}; the same start, velocity, T and
+      // frictions as the cylinder above, the same expected velocities and ends (the surface moves at {0,1,0} there)
   // Amended 2026-11-15 (paper review, P15): the rim move is for closed-form hits only
   TEST(MoveParticle, TurningCylinderRimHit_IsNotMoved)
       // cylinder at origin, axis z, r 0.5, h 0.5, angular {1e-6,0,0} (across the axis: |omega_across| T
       // |half_size| = 8.7e-7 > tol / 8, so P17 makes it turning; the slow turn keeps the corner within 1e-13 of
-      // its start), reacting; start {1,-1,1}, both velocities {-1,2,-1} (aimed at the corner {0.5,0,0.5} at
-      // t 0.5, obliquely so the search does not converge in one advance), T 1, friction 0.
-      // First, FindFirstHit with the same inputs: elapsed about 0.49999999921 (24 advances in the design's
-      // model), at_hit.face kHighRim, at_hit.distance about 1.205 tol; ASSERT face is a rim and
+      // its start), reacting; amended 2026-11-15 (Task 9b): both velocities 1.5 * Normalized({-cos 0.05, 1,
+      // -sin 0.05}) and start {0.5 + tol / 2, 0, 0.5 + tol / 2} - 0.5 * velocity (aimed just beyond the corner at
+      // t 0.5, obliquely, so the search stops away from d = tol), T 1, friction 0.
+      // First, FindFirstHit with the same inputs: elapsed about 0.49999999958 (4 advances under P18, mirror),
+      // at_hit.face kHighRim, at_hit.distance about 1.110 tol; ASSERT face is a rim and
       // at_hit.distance > tol + tol / 16 (the case's premise). Then MoveParticle: no error, face kHighRim,
       // reaction.hit_position within tol / 1024 of start + velocity * elapsed (on the path: not moved), and
       // ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, elapsed), reaction.hit_position).distance
@@ -1227,7 +1529,13 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 9, 12; preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper (amended 2026-11-15: a cylinder counts as turning only when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8`, the step's duration, not the sweep's; below the bound it uses the closed form);
+- Consumes: Tasks 9, 9b, 12 (amended 2026-11-15, Task 9b: the search behind every turning hit now uses P18, so far
+  fewer sweeps end in `kSlowApproachToTurningSolid`; hit times and faces of this task's tests are unchanged within
+  their tolerances, and `TurningBoxSlide_KeepsSidewaysPartInSolidAxes` and
+  `RestingOnTurningBoxNearFloor_StepLengthDecidesCloseCall` start at `d == tol`, a hit at 0 with no advance, so they do
+  not depend on the advance at all. The second is P7's near-other-solid close call, which Task 9b does not touch: its
+  numbers stand. A flat solid or a plate spinning about its normal no longer turns (P17 amended): it slides as a solid
+  that does not turn, with the full `omega` in the response); preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper (amended 2026-11-15: a cylinder counts as turning only when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8`, the step's duration, not the sweep's; below the bound it uses the closed form);
   `ComputeLargestApproachLeftAfterResponse` (Task 7, `solid_contact_types.h`), through Task 12's rule: "approaches again" is
   `approach >= -bound` means no longer approaching, never `approach >= 0`.
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
@@ -1281,7 +1589,10 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 
 **Interfaces:**
 - Consumes: `MoveParticle`, `FindFirstHit`, `ComputeContactResponse`, `ComputeDistanceToSolid`,
-  `ComputeContactTolerance`, `BuildMoveParticleCases`.
+  `ComputeContactTolerance`, `BuildMoveParticleCases`; Task 9b (amended 2026-11-15): every `BuildMoveParticleCases()`
+  case with a turning solid runs through P18's search, so `SceneTurnedRigidly_ResultTurnsWithIt` may see different
+  last bits of a turning hit time than before 9b (still within its tolerance) and no case may rely on a close call of
+  the old search; the oblique and round sets have no turning solid and do not change.
 - Produces: test-only `std::vector<MoveParticleCase> BuildObliqueCases(int count)` (used again in Task 16).
   **Room for module 1b (mesh solids) (A80):** the check "every end distance is at least `tol / 2`, and the naive
   control enters" is one helper of `contact_test_cases.h` that takes any list of solids (the test below calls it

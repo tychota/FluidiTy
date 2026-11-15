@@ -301,6 +301,22 @@ A89 to A93 bind nothing in the first version. Particles 03, materials 07, gas 09
 - Design 1, 5.5, 5.7 (01b plan Task 18): "Owns" names the mesh shape; 5.7's "each convex solid is hit at most
   once" gains "a mesh may be hit several times (01b 5.6)"; 5.5 step 4 gains "a hit on a mesh is moved to the
   rest gap before the response, which uses the normal recorded at the hit (01b 5.5)".
+- Contact plan P18 and Task 9b (added 2026-11-15, to apply to the 01b design's "a mesh that turns" section and the
+  01b plan's Task 10, which must choose with measurements): the stepping search toward a turning solid now takes the
+  larger of the first-order advance and a second-order advance that is safe only for a distance convex in the solid's
+  own axes (the reported normal a subgradient). A mesh's distance, the smallest distance over its triangles, is not
+  convex, so a turning mesh cannot use the second-order advance on the mesh's distance as a whole: on a test-only
+  turning room (also a smallest-of-several distance) it misses walls on 27.5 % of paths, and on an L of two boxes on
+  1.5 %. `HasConvexDistance(kMesh)` returns false unless 1b chooses otherwise. Options for 1b: (a) first order alone,
+  "Task 9 unchanged" as 01b 5.7 says, with Task 9's close-call rate: 10.75 % of the module-1 generated paths and
+  about 60 % of particles near a turning paddle, which with two retries per step would stop runs near a turning mesh
+  paddle; (b) second order per grown triangle, each convex: advance by the smallest, over the triangles the tree query
+  returns within the sweep's reach, of each triangle's own safe advance (first or second order from that triangle's
+  distance and normal), which is safe because the mesh's gap is the smallest triangle gap and each stays above its own
+  model; it costs one model per candidate triangle per advance and needs the tree query to return every triangle the
+  advance can reach; (c) (b) only for meshes the scene marks convex. The 01b design states the choice with measured
+  close-call shares and advance counts on a mesh paddle and a mesh cube (the cube must match module 1's turning box
+  within the counts of Task 9b's tests), and its Task 10 tests it against the lower-bound reference.
 
 **02 Grid:** design 5.9 gains one sentence: the size rule relies on a 1-Lipschitz distance, which the mesh
 distance is (01b 5.3). No plan edit.
