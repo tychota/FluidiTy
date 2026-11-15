@@ -1,0 +1,33 @@
+native/fluidity/base/ordered_sums.h
+  s_4f0877e2acdcf0::t_fe2a9815c646bd 20-21,38,58-69,171-172
+native/fluidity/base/ordered_sums_cpu.cc
+  s_4f0877e2acdcf0::t_23731f5d038682 6,11,106-110,115-125,128-143
+native/fluidity/base/ordered_sums_gpu_test.cc
+  s_4f0877e2acdcf0::t_f4c884efef7678 15,17,62-93
+native/fluidity/base/ordered_sums_test.cc
+  s_4f0877e2acdcf0::t_bc0c9d7fd201f1 14-15,37-65
+native/fluidity/base/stable_order.h
+  s_4f0877e2acdcf0::t_6cf31be959f399 23-24,41,62-75,205-206
+native/fluidity/base/stable_order_cpu.cc
+  s_4f0877e2acdcf0::t_490a6314ea35f1 11,287-297,303-319
+native/fluidity/base/stable_order_gpu_test.cc
+  s_4f0877e2acdcf0::t_690bca0cf39b3b 13-14,121-154
+native/fluidity/base/stable_order_test.cc
+  s_4f0877e2acdcf0::t_4eb319538d1873 14-15,111-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6d42a538ea938513e2297cac9672abd7074f59b",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
