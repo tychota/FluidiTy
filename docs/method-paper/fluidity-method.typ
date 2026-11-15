@@ -28,6 +28,7 @@
 #import "figures/contact_sweep_hit_slide.typ": sweep-hit-slide-figure
 #import "figures/contact_response.typ": contact-response-figure
 #import "figures/contact_round_solids.typ": round-first-hit-figure, round-solids-figure
+#import "figures/contact_move_off_near_surfaces.typ": move-off-near-surfaces-figure
 
 #let serif = ("Equity OT A", "Libertinus Serif")
 #let sans = ("Hermes Maia OT 3", "Libertinus Sans")
@@ -1345,15 +1346,68 @@ approach speeds, −3 and −1 m/s.
 start, find the first hit, respond, slide, and settle and check the end. Without any hit the end position is
 $bold(x)_0 + bold(v) T$, one multiplication and one addition per axis, and both velocities come back unchanged.
 
-The start is classified against every solid in array order, at the start of the step, and the first solid that
-fails decides. For a committed plate, being more than $"tol"$ beyond its other face is checked first. Then a start
-deeper than `start_overlap_tolerance` inside a solid is an error. A start closer than $"tol"$, down to that depth,
-is moved along that solid's normal to $d = "tol"$ before the sweep, whatever its velocity, so a particle placed
-next to a solid, by a source or by a change of cell size, never fails the end check for that reason. In a corner of
-the domain box each closed side closer than $"tol"$ is a surface of its own, as in the sweep: it moves the start
-along its own normal, since one move would leave the start closer than $"tol"$ to the other sides, and it is
-classified below on its own. A later solid in the array is classified from the moved start. What else happens to each
-surface depends on its $d$ before the move:
+The start is classified against every solid at the start of the step, in three parts. First the checks that fail,
+every solid in array order at the start as given, and the first solid that fails decides. For a committed plate,
+being more than $"tol"$ beyond its other face is checked first. Then a start deeper than `start_overlap_tolerance`
+inside a solid is an error. The depth is read before any move, so a move cannot carry a start that is too deep out
+of the solid and hide it.
+
+Then the start moves once off every surface closer than $"tol"$, of every solid together, before the sweep and
+whatever its velocity, to a point at $d >= "tol"$ from each, so a particle placed next to solids, by a source or by
+a change of cell size, never fails the end check for that reason. With one near solid the move is along its normal
+to $d = "tol"$; in a corner of the domain box each closed side closer than $"tol"$ is a surface of its own, as in the
+sweep. With several, one move per solid in turn would not do: in a wedge sharper than a right angle each solid's move
+pushes the start toward the other (@fig-move-off-near-surfaces, left), and a start resting on both faces failed at
+every step length. The move is the smallest change $bold(w)$ from the start $bold(x)_0$ with $d_i + bold(n)_i dot
+bold(w) >= "tol"$ for each near surface $i$, its *shortfall* $"tol" - d_i$ met along its normal. That problem is
+convex, so its answer meets at most three surfaces as equalities: the solver tries each surface alone, each pair
+and each triple, solves their equations by Cramer's rule, and keeps the shortest change that meets every surface.
+Two flat faces meeting at a wedge angle $a$ (180 degrees minus the angle between their normals) give a move of
+$"tol" \/ sin(a\/2)$ along the bisector from a start on both: 2 tol at 60 degrees.
+
+A round surface's normal turns as the point moves, so the move is solved again from each iterate, $bold(x)_(k+1) =
+bold(x)_0 + bold(w)$ with the distances and normals read at $bold(x)_k$: $d_i (bold(x)_k) + bold(n)_i dot (bold(x)_0
++ bold(w) - bold(x)_k) >= "tol"$. Every shape's distance is convex (@sec-round-solids), so $d_i (bold(y)) >= d_i
+(bold(x)) + bold(n)_i (bold(x)) dot (bold(y) - bold(x))$: each iterate the solver finds is at the rest gap of every
+surface it read, up to the solver's slack, and since it then meets its own equations, the next one is no farther from
+$bold(x)_0$. This holds from the first iterate that was not shortened (below): a deep start can end beyond the rest
+point, still at the rest gap of both surfaces. The slack includes the rounding of composing $bold(w)$, which grows
+with the multipliers, so no iterate is trusted: the last one is kept only after its true distances are read. Under a ball of
+radius $R$ resting on a floor, a *tangent contact*, the free space is a *cusp* whose angle shrinks to 0 at the
+contact. The first iterate from deep in the cusp overshoots out along the floor, where the two tangent planes meet;
+the next ones come back to the rest point $2 sqrt(R "tol")$ from the contact, both distances exactly $"tol"$
+(@fig-move-off-near-surfaces, right): 5 iterates at $R \/ "tol" = 2^29$, within $10^(-4)$ of it after the
+largest number, 8, at $R \/ "tol" = 2^40$. The iterates stop when one moves less than $"tol" \/ 64$ and is within
+$"tol" \/ 1024$ of the rest gap of every solid; a surface that an iterate comes within $"tol"$ of joins the next
+one. The segment from $bold(x)_0$ to each iterate is swept against every other surface, so a long move cannot pass
+through a thin solid: a move that would cross one stops where it first comes within $"tol"$ of it, and that surface
+joins the next iterate, linearised there. Surfaces with the same normal share one equation, the most demanding. The
+particle is displaced without a matching velocity, so each change is shortened to at most $2^22 "tol" = h \/ 256 + L \/ 2^18$ (a 256th of a cell plus 4 micrometres in a one-metre scene), which covers
+the rest point of every tangent contact, $2 sqrt(R "tol") <= 2^21 "tol"$. The last iterate is kept when every solid
+is at least $"tol" - "tol" \/ 128$ from it by its true distances. A start with no such point within that length is
+the scene error "starts in narrow gap": two solids facing each other less than $2 "tol"$ apart, a start within
+rounding of the contact point of a ball on a floor, a pocket too small for a point at $"tol"$ from each side, or a
+start deep at the apex of a flat wedge sharper than about $2^(-21)$ rad. The grown solids overlap there, so a sweep
+stops a moving particle before it, and a shorter step does not help. The same error names a start near surfaces
+facing more than four different ways, which one move cannot read at once; surfaces with the same normal, such as a
+ground lying on the domain's bottom or floors stacked closer than $"tol"$, share one target, the most demanding, up to
+16 surfaces in all. A known limit stands beside the start near the contact point: a wall within $"ulp"(R) \/ (2 sqrt("tol" \/ R))$
+of a cusp's rest point (0.0014 tol for a ball of 0.5 m, 128 tol for 1 km), where the ball's rounded distance moves
+the linearised vertex past the wall, so no subset of the targets has an answer although the rest point fits. The
+failure names the near solid latest in array order.
+
+#figure(
+  move-off-near-surfaces-figure(),
+  placement: top,
+  caption: [The start's move off several near surfaces. Left: at the apex of a 60 degree wedge, moving up off the
+    floor takes the start into the other face, and moving off that face takes it back to 0.25 tol from the floor
+    (faint); one move reaches the point at $"tol"$ from both. Right: the cusp under a ball of radius 12 tol resting
+    on the floor, to scale. Each iterate is measured from the start $x_0$; the first overshoots along the floor,
+    and the next come back to the rest point.],
+) <fig-move-off-near-surfaces>
+
+Then each solid in array order, each near surface with its distance and normal before the move. What happens to it
+depends on that $d$:
 
 - $d < 0$: both velocities get the response with that surface's normal, the solid joins the surfaces the particle is
   on, the move counts as one hit, and the kind is "started inside solid".
@@ -1366,11 +1420,9 @@ surface depends on its $d$ before the move:
   still joins the surfaces the particle is on, without a hit, so that the rounding that response left is not taken
   for a hit on it; at most four solids join this way, and a fifth is "too close to call, too many hits".
 
-Each solid is classified once. In a wedge sharper than a right angle the move away from a later solid can bring the
-start back closer than $"tol"$ to an earlier one, or inside it: today the particle then rests on the earlier solid if
-it is on the list and the end settles it, or the end check fails, or the sweeps hit it at once until the hit limit,
-or the start counts as too deep. Each comes from the start alone, at any step length. A later revision of this step
-moves such a start to the rest gap of both solids.
+No solid is classified twice, nor from a start that another solid's move pushed toward it. In code "approaches"
+compares each velocity with its own bound: a response to a `for_this_step` at rest leaves no rounding in it, but it
+leaves some in a moving `for_next_step`, which compared with 0 would count as an approach to a second solid.
 
 The first solid that responds fills the record, with hit fraction 0. The kind is "started inside solid" when any
 start distance was negative. A flat solid with surface at $z = 0$ rising at 2 m/s, under a particle at rest at $z =
@@ -1416,9 +1468,10 @@ $bold(v)_("lin", j)$, $bold(omega)_j$ solid $j$'s, and $r$, $r_j$ the distances 
 solid's origin. The right side is an upper bound on how fast the particle and solid $j$ can close: each term bounds
 one motion, the speed of a turning solid's points by $|bold(v)_"lin"| + |bold(omega)| r$.
 
-At the end, every surface of the list that the particle is closer to than $"tol"$, at the end pose, moves it along
-its normal to $d = "tol"$, as at the start, every near closed side of a domain box included. Then the end check of
-@sec-contact-tolerance runs against every solid. On any failure the result is left unchanged, and the failure
+At the end the particle moves once more off every surface it is closer to than $"tol"$, at the end pose, as at the
+start: every solid, touched or not, since a move off the touched ones alone could push it into another (a wall beside
+a ball), and since the touching rule may have let it drift up to $"tol"$ toward a solid it never touched. When there
+is no such point the particle stays. Then the end check of @sec-contact-tolerance runs against every solid. On any failure the result is left unchanged, and the failure
 context names the solid by its stable `solid_id`, never by its index in the array, with a length: the depth $-d$ for
 a start too deep inside, the distance $-(s_"plate" p_z + "half_thickness")$ beyond a committed plate, the end
 distance $d$ for an end too close, and 0 otherwise. `MoveParticles` adds the particle's id.
@@ -1448,19 +1501,20 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     `start_overlap_tolerance`, `contact_tolerance` and the particle's `plate_side`.],
   outputs: [The end position, both velocities after the response, the kind, the record of the first hit, the hit
     count and the reaction.],
-  fails: [a bad input; a start too deep inside a solid or on the wrong side of its plate; too close to call, for one
-    of the six reasons named in the text. The result is then unchanged, and the failure names the solid by its
+  fails: [a bad input; a start too deep inside a solid, on the wrong side of its plate, or in a narrow gap; too close
+    to call, for one of the six reasons named in the text. The result is then unchanged, and the failure names the solid by its
     `solid_id` (never its index) with a length.],
   ([Check inputs], [Every value finite, `step_duration` $> 0$, `friction` $>= 0$, `contact_tolerance` $> 0$,
     `start_overlap_tolerance` $>= 0$, solids in strictly ascending `solid_id`, and, for a committed particle, a
     `plate_side` that names a plate among the solids. Otherwise fail with "bad input".]),
-  ([Classify the start], [For each solid in array order, at the start of the step and from the start as moved by
-    the earlier solids: fail when the particle is more than $"tol"$ beyond the other face of its committed plate,
-    then when $d < -$`start_overlap_tolerance`. When $d < "tol"$, move the start along the normal to $d = "tol"$
-    (in a domain box's corner, from each closed side closer than $"tol"$); then, for each such surface whose $d$
-    before the move was negative or that either velocity approaches (below minus the largest approach bound so far),
-    respond to both velocities, add the solid to the surfaces, count one hit and fill the record if it is empty. A
-    solid moved silently joins the surfaces without a hit when another solid responded at the start.]),
+  ([Classify the start], [For each solid in array order, at the start as given: fail when the particle is more than
+    $"tol"$ beyond the other face of its committed plate, then when $d < -$`start_overlap_tolerance`. Move the start
+    once to the rest gap of every surface closer than $"tol"$, of every solid (each closed side of a domain box on its
+    own): the smallest change meeting every shortfall, solved again from each iterate, at most $2^22 "tol"$; fail
+    with "starts in narrow gap" when there is none. Then, for each solid in array order and each surface whose $d$
+    before the move was negative or that either velocity approaches (below minus that velocity's approach bound so
+    far), respond to both velocities, add the solid to the surfaces, count one hit and fill the record if it is
+    empty. A solid moved silently joins the surfaces without a hit when another solid responded at the start.]),
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
     with the solids sampled at the time already used and the touched surfaces' stricter touching rule. With no hit,
     advance by `for_this_step` times the time left and go to step 6.]),
@@ -1475,8 +1529,9 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     go to step 3 for the time left, failing on a fifth hit. A turning solid (never a sphere, nor a cylinder that
     only spins about its axis, nor a flat solid or plate that only spins about its normal): fail if another solid $j$ is within reach by the bound of the text, carry the rest
     of the step in its axes, and go to step 6.]),
-  ([Settle and check the end], [For each surface the particle is on with $d < "tol"$ at the end pose, move it along
-    that normal to $d = "tol"$. Fail when any solid is at $d < "tol"\/2$; otherwise write the result.]),
+  ([Settle and check the end], [At the end pose, move the particle once to the rest gap of every surface of every
+    solid closer than $"tol"$, as at the start; when there is no such point, leave it. Fail when any solid is at
+    $d < "tol"\/2$; otherwise write the result.]),
 )
 
 // Every floating figure and procedure is placed before the references start.

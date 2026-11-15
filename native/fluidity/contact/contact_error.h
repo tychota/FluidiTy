@@ -33,8 +33,15 @@ enum class ContactError : std::uint8_t {
   kBuffersTooSmall,  // More particles or solids than the contact buffers were built for.
   kRunOnCallFailed,  // A call to the chosen processor failed.
   // The run's RunMemory or the processor could not hold a buffer. Only BuildContactBuffers returns it; the context
-  // magnitude is the number of bytes asked for. Last value.
+  // magnitude is the number of bytes asked for.
   kOutOfMemory,
+  // A start has no point at the contact tolerance from every surface it is near within the move cap: two solids facing
+  // each other less than 2 contact tolerances apart, a start within rounding of the contact point of a ball resting on
+  // a floor, or a wall within the rounding window of such a contact's rest point, a pocket too small; or the start is
+  // near surfaces facing more than four different ways, or near more than 16 surfaces, which one move cannot read at
+  // once. A scene error that a shorter step does not cure; only MoveParticle returns it, at the
+  // start. The context names the near solid latest in array order, magnitude 0. Last value.
+  kStartsInNarrowGap,
 };
 
 // Why a call returned kTooCloseToCall. The first value means the failure is not a close call.

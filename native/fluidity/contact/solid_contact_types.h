@@ -28,9 +28,14 @@
 //                   compute the force on it
 //   approach left after the response  the approach speed that rounding leaves in a velocity the response returned:
 //                   zero up to a few rounding units, of either sign
+//   tangent contact  two convex solids touching at a point or along a line, a ball resting on a floor or two touching
+//                   balls; the free space around the contact is a cusp, whose angle shrinks to 0
+//   wedge angle     of two surfaces, 180 degrees minus the angle between their normals
 // Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare, kTouchedSolidRestingGapShare,
-//          SolidContactInputs, SolidReaction, SolidContactResult, FirstHit, kApproachLeftAfterResponseShare,
-//          ComputeLargestApproachLeftAfterResponse, ComputeContactResponse
+//          kMaxRestGapMoveInTolerances, kMaxRestGapIterations, kMaxConstrainingSurfaces, kSameNormalAxisDifference,
+//          kMaxCorrectionRefinements, kVelocityPairLimitShare, kVelocityTripleLimit, SolidContactInputs, SolidReaction,
+//          SolidContactResult, FirstHit, CorrectedQuantity, CorrectionTargets, SmallestCorrection,
+//          kApproachLeftAfterResponseShare, ComputeLargestApproachLeftAfterResponse, ComputeContactResponse
 // Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), math::Abs (base/scalar_math.h),
 //          PerParticleVelocity (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Solid,
 //          PlateSide, SolidFace, SolidSide, DistanceToSolid, kNoSolid (contact/solid_shapes.h)
@@ -80,6 +85,46 @@ inline constexpr double kTurningSolidHitGapShare = 0.25;
 // rule allows below zero. A power of two keeps the test exact.
 inline constexpr double kTouchedSolidRestingGapShare = 0x1p-4;
 
+// No unit, in contact tolerances. The longest move off several near surfaces at once, at the start or in the settle
+// (MoveToRestGapOfNearSurfaces). The particle is displaced without a matching velocity, so the move must stay small
+// against a cell, which the grid and the step's limit on how far a particle moves resolve, not against tol. With tol =
+// 2^-30 h + 2^-40 L (ComputeContactTolerance, h the smallest cell width, L the largest coordinate), 2^22 tol = h / 256
+// + L / 2^18: a 256th of a cell plus 4 micrometres in a one-metre scene. It covers the rest point of every tangent
+// contact: a ball of radius R <= L resting on a floor rests 2 Sqrt(R tol) <= 2 Sqrt(2^40) tol = 2^21 tol from the
+// contact point. A flat wedge needs more only when it is sharper than about 2^-21 rad, where 2 shortfall / wedge angle
+// passes 2^22 tol.
+inline constexpr double kMaxRestGapMoveInTolerances = 0x1p22;
+// The most iterates of the move off several near surfaces. Two flat faces need one, and one more to see that it
+// moves no more. The cusp under a ball resting on a floor needs 5 at R / tol = 2^29, and after 8 it is within 1e-4 of
+// its rest point at R / tol = 2^40, the largest radius a scene allows (both measured, move_particle_test.cc).
+inline constexpr int kMaxRestGapIterations = 8;
+// The most directions one move off near surfaces, or one velocity change, reads at once: the three faces of a corner
+// and one more. Surfaces with the same normal share one (kSameNormalAxisDifference); a start near surfaces facing a
+// fifth way is kStartsInNarrowGap.
+inline constexpr int kMaxConstrainingSurfaces = 4;
+// No unit. Two near surfaces whose unit normals differ by at most this on every axis share one target of the move off
+// near surfaces, the larger: for one normal n, Dot(n, w) >= max(t_1, t_2) meets both. Normals that differ by 2^-40 on
+// each axis let the shared target miss the other by at most Sqrt(3) 2^-40 |w| <= 2^-17 tol within the move cap of
+// 2^22 tol, far below the move's slack of tol / 1024. Coincident and stacked surfaces then count once toward
+// kMaxConstrainingSurfaces: a ground lying on the domain's bottom has exactly the bottom's normal.
+inline constexpr double kSameNormalAxisDifference = 0x1p-40;
+// The most extra solves SolveSmallestCorrection makes for a velocity on the same surfaces, each removing the residual
+// the one before left. Each multiplies the residual by about 2^-52 / (1 + c), c the dot of a pair's normals (measured
+// at most 1.25 rounding units over 1 + c, kVelocityPairLimitShare); at the pair limit below, 3 leave at most 16
+// rounding units of the speeds (measured), so 4 always suffice.
+inline constexpr int kMaxCorrectionRefinements = 4;
+// No unit. A pair of surfaces is used for a velocity only when 1 + Dot(n_A, n_B) >= 2^-40: a wedge angle of at least
+// 2 asin(2^-20.5) = 1.35e-6 rad. One solve leaves at most 0.75 to 1.25 rounding units of 2^-52 over (1 + c) of the
+// target (measured over 3000 pairs at each 1 + c = 2^-40, 2^-28, 2^-16, 2^-4; the test bounds it by 4), so at the
+// limit the extra solves still converge. Every cusp a particle can rest in is above it: at the
+// rest point the angle is about 2 Sqrt(tol / R) >= 2^-19 rad, so 1 + c >= 2^-39. Positions need no such limit: an
+// imprecise iterate is corrected by the next one, and the move's last test reads the true distances.
+inline constexpr double kVelocityPairLimitShare = 0x1p-40;
+// No unit. A triple of surfaces is used for a velocity only when |Dot(n_1, Cross(n_2, n_3))| >= 2^-20, the triple
+// product of their unit normals: three faces whose normals are nearly in one plane leave the velocity's change
+// ill-conditioned, as a pair below kVelocityPairLimitShare does.
+inline constexpr double kVelocityTripleLimit = 0x1p-20;
+
 // What one particle's move through the solids reads for one step.
 struct SolidContactInputs {
   Vec3 start_position{};  // m, world, at the start of the step.
@@ -122,6 +167,40 @@ struct FirstHit {
   double elapsed = 0;  // s, since the start of the sweep.
   std::uint32_t solid_index = kNoSolid;  // Index into solids, not the solid_id. kNoSolid: the path is free.
   DistanceToSolid at_hit{};  // The distance, normal and face at the hit.
+};
+
+// What SolveSmallestCorrection changes: it sets how the surfaces are solved and how much rounding a result may keep.
+enum class CorrectedQuantity : std::uint8_t {
+  // A point (m). No refinement and no conditioning limit: an imprecise iterate is corrected by the next one. A
+  // candidate may also miss each target by the rounding of composing the change, 2^-49 of the summed multipliers.
+  kPosition,
+  // A velocity (m/s). Up to kMaxCorrectionRefinements more solves remove the residual, and a pair or a triple is used
+  // only above kVelocityPairLimitShare or kVelocityTripleLimit.
+  kVelocity,
+};
+
+// What SolveSmallestCorrection reads: count surfaces, each a unit normal and a target. It looks for the smallest
+// change w with Dot(normals[i], w) >= targets[i] for every surface.
+struct CorrectionTargets {
+  // A C array: GPU code cannot call std::array's member functions (nvcc without --expt-relaxed-constexpr).
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): see the comment above.
+  Vec3 normals[kMaxConstrainingSurfaces]{};  // No unit, unit vectors, world.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as above.
+  double targets[kMaxConstrainingSurfaces]{};  // m for a position, m/s for a velocity: the least change along each.
+  int count = 0;  // 1 to kMaxConstrainingSurfaces.
+};
+
+// The smallest change SolveSmallestCorrection found, or none: change = sum over k < used_count of multipliers[k] *
+// normals[used_surfaces[k]], the surfaces it met as equalities.
+struct SmallestCorrection {
+  bool is_found = false;  // false: no subset of one, two or three surfaces meets every target.
+  Vec3 change{};  // m or m/s, world. Zero when none was found.
+  int used_count = 0;  // 1 to 3 when found.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in CorrectionTargets.
+  int used_surfaces[3]{};  // Indexes into the targets, ascending.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in CorrectionTargets.
+  double multipliers[3]{};  // m or m/s: how far the change goes along each used normal, zero or more before refinement.
+  int refinement_count = 0;  // 0 to kMaxCorrectionRefinements; always 0 for a position.
 };
 
 // No unit. The share of the speeds involved that bounds the approach speed left after the response: 64 rounding units

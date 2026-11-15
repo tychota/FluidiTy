@@ -34,6 +34,7 @@ constexpr std::array kErrorNames = {
     ErrorNameEntry{.error = ContactError::kBuffersTooSmall, .name = "buffers_too_small"},
     ErrorNameEntry{.error = ContactError::kRunOnCallFailed, .name = "run_on_call_failed"},
     ErrorNameEntry{.error = ContactError::kOutOfMemory, .name = "out_of_memory"},
+    ErrorNameEntry{.error = ContactError::kStartsInNarrowGap, .name = "starts_in_narrow_gap"},
 };
 
 constexpr std::array kCloseCallNames = {
@@ -53,9 +54,11 @@ constexpr std::array kCloseCallNames = {
     CloseCallNameEntry{.close_call = ContactCloseCall::kEndsTooCloseToSolid, .name = "ends_too_close_to_solid"},
 };
 
-// kOutOfMemory is the last value, so it is the count minus one: a value added after it fails here.
+// kStartsInNarrowGap is the last value, so it is the count minus one: a value added after it fails here. kOutOfMemory
+// keeps its number, 8: values keep their numbers, and a new one is added last.
 static_assert(static_cast<std::uint8_t>(ContactError::kOutOfMemory) == 8);
-static_assert(kErrorNames.size() == 9);
+static_assert(static_cast<std::uint8_t>(ContactError::kStartsInNarrowGap) == 9);
+static_assert(kErrorNames.size() == 10);
 static_assert(static_cast<std::uint8_t>(ContactCloseCall::kEndsTooCloseToSolid) == 7);
 static_assert(kCloseCallNames.size() == 8);
 
@@ -106,6 +109,15 @@ TEST(ToMessage, SolidTooThin_SaysWhatTheUserCanDo) {
       ToMessage(ContactError::kSolidTooThin),
       "A solid is thinner, or a grid cell narrower, than 1024 contact tolerances. Make the solid thicker or the "
       "cells larger, or move the scene closer to the origin."
+  );
+}
+
+TEST(ToMessage, StartsInNarrowGap_SaysWhatTheUserCanDo) {
+  EXPECT_EQ(
+      ToMessage(ContactError::kStartsInNarrowGap),
+      "A particle starts where it cannot be kept one contact tolerance from every solid around it: the gap is too "
+      "narrow, or the particle is near solid surfaces facing more than four different ways, or near more than 16 "
+      "surfaces. Move the solids apart, or the liquid out of the gap."
   );
 }
 

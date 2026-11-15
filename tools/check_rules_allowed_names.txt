@@ -8,3 +8,4 @@ ExpectVec3Near  # test-only check of contact/contact_test_cases.h, named by the 
 MoveParticle  # the contact design's (3.4) one-particle move; Move is the verb of the MoveParticles stage
 MoveToRestGap  # private step named by the contact plan (Task 11): moves a point to one contact tolerance from a solid
 HasConvexDistance  # private predicate of the stepping search named by plan decision P18 (Task 9b): true when a shape may take the second-order advance; module 1b adds its mesh case
+MoveToRestGapOfNearSurfaces  # private step named by the contact plan (Task 11b, plan decision P19): moves a point to the rest gap of every near surface at once

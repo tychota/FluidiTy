@@ -33,6 +33,10 @@ std::string_view ToMessage(ContactError error) {
     case ContactError::kOutOfMemory:
       return "There is not enough memory for the contact buffers. Use a smaller scene, free memory, or choose the "
              "other processor.";
+    case ContactError::kStartsInNarrowGap:
+      return "A particle starts where it cannot be kept one contact tolerance from every solid around it: the gap is "
+             "too narrow, or the particle is near solid surfaces facing more than four different ways, or near more "
+             "than 16 surfaces. Move the solids apart, or the liquid out of the gap.";
   }
   return "An unknown contact error happened.";
 }
@@ -84,6 +88,8 @@ std::string_view ToName(ContactError error) {
       return "run_on_call_failed";
     case ContactError::kOutOfMemory:
       return "out_of_memory";
+    case ContactError::kStartsInNarrowGap:
+      return "starts_in_narrow_gap";
   }
   return "unknown";
 }

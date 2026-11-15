@@ -5,11 +5,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
+#include <map>
 #include <numbers>
 #include <string>
 #include <string_view>
 
+#include "fluidity/base/mat3.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_error.h"
 #include "fluidity/contact/contact_test_cases.h"
@@ -681,6 +684,8 @@ TEST(MoveParticle, TurningBoxHoverOnSpinAxis_PassesOnCloseCall) {
 // m. Tells a start moved to the rest gap from one left where it was, tol / 4 or more away; far above the rounding
 // of the expected positions, which are below 1 m.
 constexpr double kRestGapTolerance = kTolerance / 64;
+// m. "At the rest gap" for a move off several surfaces: a distance within tol / 1024 of tol, the stop test of the move.
+constexpr double kAtRestGapTolerance = kTolerance / 1024;
 
 // Fails the calling test unless the call failed with the expected failure and left the result unchanged.
 void ExpectStartFailure(std::string_view case_name, ContactFailure expected) {
@@ -1051,26 +1056,32 @@ TEST(MoveParticle, DomainCornerSlightlyInside_MovedOutOfBothSides) {
   ExpectVec3Near(result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
 }
 
-TEST(MoveParticle, WedgeStartPushedTowardFloor_SettleLiftsItToRestGap) {
-  // The wedge's start rule moves the particle from z = tol to 0.6 tol and x = -0.3 tol; the touched floor rests it
-  // there and the slide along -x keeps that height. Only the settle brings the end back to z = tol; without it the
-  // end check would pass at 0.6 tol.
+TEST(MoveParticle, WedgeStartPushedTowardFloor_MovesOffBothAtOnce) {
+  // Shortfalls 0.5 tol (floor) and 0.1 tol (wedge), normals -0.8 apart: one move of {-5/6 tol, 0, 0.5 tol}. The fall
+  // approaches the floor, which responds; the rising wedge is left. The slide along -x keeps z = tol.
   const MoveParticleCall call = RunMove("WedgeStartPushedTowardFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
   EXPECT_EQ(result.kind, ContactKind::kHit);
   EXPECT_EQ(result.hit_count, 1);
+  EXPECT_EQ(result.solid_index, 0U);
   ExpectVec3Equal(result.velocity.for_this_step, {.x = -1, .y = 0, .z = 0});
-  ExpectVec3Near(result.position, {.x = -0.1 - 0.3 * kTolerance, .y = 0, .z = kTolerance}, kRestGapTolerance);
+  ExpectVec3Equal(result.velocity.for_next_step, {.x = -1, .y = 0, .z = 0});
+  ExpectVec3Near(result.position, {.x = -0.1 - 5.0 / 6 * kTolerance, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
 }
 
-TEST(MoveParticle, WedgeStartPushedIntoFloor_EndsInTooManyHitsOnFloor) {
-  // The wedge's move out of a start 0.0005 m inside it takes the particle 0.0004 m into the floor, an earlier solid:
-  // each sweep hits the floor at 0 and the particle never ends inside it.
-  ExpectStartFailure(
-      "WedgeStartPushedIntoFloor",
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 1}
-  );
+TEST(MoveParticle, WedgeStartPushedIntoFloor_MovesOffBothAtOnce) {
+  // 0.0005 m inside the wedge: one move off both faces at once. The floor is approached, the wedge was started inside:
+  // two hits, and the kind is kStartedInsideSolid.
+  const MoveParticleCall call = RunMove("WedgeStartPushedIntoFloor");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  EXPECT_EQ(result.kind, ContactKind::kStartedInsideSolid);
+  EXPECT_EQ(result.hit_count, 2);
+  ExpectVec3Equal(result.velocity.for_this_step, {.x = -1, .y = 0, .z = 0});
+  ExpectVec3Equal(result.velocity.for_next_step, {.x = -1, .y = 0, .z = 0});
+  const double end_x = -0.1 - 0.0005 * 5.0 / 3 - 5.0 / 6 * kTolerance;  // m
+  ExpectVec3Near(result.position, {.x = end_x, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, ParallelSolidAfterStartResponse_RoundingIsNotAnApproach) {
@@ -1119,12 +1130,13 @@ TEST(MoveParticle, SlidingFloorThenSlowUpright_ThresholdIsZeroBeforeAnyResponse)
 
 TEST(MoveParticle, SilentFloorThenLeaningUpright_FloorNotTouchedWithoutStartHit) {
   // Plan decision P12: with no hit at the start the silent move leaves no touched surface, so the upright's push is a
-  // drift on the floor's plain touching rule, not a hit on it.
+  // drift on the floor's plain touching rule, not a hit on it: one hit, the upright's. The settle reads every solid
+  // (plan decision P19, item 7), so it lifts the drift of 0.05 tol back to the rest gap.
   const MoveParticleCall call = RunMove("SilentFloorThenLeaningUpright");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.solid_index, 1U);
-  EXPECT_LT(call.result.position.z, kTolerance - kRestGapTolerance);
+  EXPECT_NEAR(call.result.position.z, kTolerance, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, AtRestGapSlowApproach_TouchingRuleLetsItRest) {
@@ -1134,7 +1146,9 @@ TEST(MoveParticle, AtRestGapSlowApproach_TouchingRuleLetsItRest) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
-  EXPECT_NEAR(call.result.position.z, 0.9 * kTolerance, kRestGapTolerance);
+  EXPECT_EQ(call.result.velocity.for_this_step.z, -kTolerance);
+  // The sweep lets it sink to 0.9 tol; the settle, which reads every solid, lifts it back.
+  EXPECT_NEAR(call.result.position.z, kTolerance, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerSlowApproachToSecondSide_IsHitOnThatSide) {
@@ -1206,27 +1220,541 @@ TEST(MoveParticle, DomainCornerNearestSideComesLater_RecordNamesTheSideHit) {
   ExpectVec3Equal(call.result.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
 }
 
-TEST(MoveParticle, SixtyDegreeWedgeRestingOnBoth_TodayEndsOffTheRestGap) {
-  // To change in plan Task 12, which must end this start at the rest gap of both surfaces. Today: the floor's move to
-  // z = tol takes the start 0.5 tol inside the second surface, which responds and moves it 1.5 tol along its normal,
-  // back to z = 0.25 tol; the settle lifts it off the floor, then off the second surface, and the particle ends
-  // 0.8125 tol from the floor and tol from the second surface.
-  const MoveParticleCall call = RunMove("SixtyDegreeWedgeRestingOnBoth");
-  ASSERT_EQ(call.error, ContactError::kNone);
-  EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
-  EXPECT_EQ(call.result.hit_count, 1);
-  EXPECT_EQ(call.result.solid_index, 1U);
-  EXPECT_NEAR(call.result.position.z, 0.8125 * kTolerance, kRestGapTolerance);
+// --- A start near several surfaces at once (plan decision P19) ---
+
+// Fails the calling test unless every solid of the inputs is at the rest gap of position at its end pose: a distance
+// within tol / 1024 of tol, by ComputeDistanceToSolid itself.
+void ExpectAtRestGapOfEverySolid(const SolidContactInputs& inputs, Vec3 position) {
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    const Solid& solid = inputs.solids[solid_index];
+    const double distance =
+        ComputeDistanceToSolid(solid, ComputeSolidPose(solid, inputs.step_duration), position).distance;
+    EXPECT_NEAR(distance, kTolerance, kAtRestGapTolerance) << "solid index " << solid_index;
+  }
 }
 
-TEST(MoveParticle, ThirtyDegreeWedgeRestingOnBoth_TodayIsTooManyHits) {
-  // To change in plan Task 12, which must end this start at the rest gap of both surfaces, with success. Today: the
-  // second surface's move takes the start inside the floor, which the sweeps then hit at 0 until the fifth hit, at
-  // every step length.
-  ExpectStartFailure(
-      "ThirtyDegreeWedgeRestingOnBoth",
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 1}
+// Runs MoveParticle on the scene of that name and fails the calling test unless it succeeded at the expected end, with
+// every solid at the rest gap.
+SolidContactResult ExpectEndAtRestGap(std::string_view case_name, Vec3 expected_end, double position_tolerance) {
+  const MoveParticleCase scene = FindMoveParticleCase(case_name);
+  const MoveParticleCall call = RunMove(scene);
+  EXPECT_EQ(call.error, ContactError::kNone) << case_name;
+  ExpectVec3Near(call.result.position, expected_end, position_tolerance);
+  ExpectAtRestGapOfEverySolid(ToSolidContactInputs(scene), call.result.position);
+  return call.result;
+}
+
+TEST(MoveParticle, SixtyDegreeWedgeRestingOnBoth_EndsAtRestGapOfBoth) {
+  // One move of tol / sin(30 degrees) = 2 tol along the bisector. Moving off the floor, then off the other face, ended
+  // 0.8125 tol from the floor.
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "SixtyDegreeWedgeRestingOnBoth",
+      {.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
+      kAtRestGapTolerance
   );
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+  EXPECT_EQ(result.hit_count, 0);
+}
+
+TEST(MoveParticle, ThirtyDegreeWedgeRestingOnBoth_EndsAtRestGapOfBoth) {
+  // A move of 3.8637 tol. Moving off one face at a time took the start inside the floor, and the sweeps hit it at 0
+  // until kTooManyHits, at every step length.
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "ThirtyDegreeWedgeRestingOnBoth",
+      {.x = (2 + std::numbers::sqrt3) * kTolerance, .y = 0, .z = kTolerance},
+      kAtRestGapTolerance
+  );
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+  EXPECT_EQ(result.hit_count, 0);
+}
+
+TEST(MoveParticle, TenDegreeWedgeFallingOnBoth_EndsAtRestGapOfBoth) {
+  // The fall approaches the floor, which stops it, and leaves the other face: one hit, at the rest point
+  // tol / tan(5 degrees) out along the floor.
+  const double rest_x = kTolerance / std::tan(5 * std::numbers::pi / 180);  // m, 11.430052 tol.
+  const SolidContactResult result =
+      ExpectEndAtRestGap("TenDegreeWedgeFallingOnBoth", {.x = rest_x, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
+  EXPECT_EQ(result.hit_count, 1);
+  EXPECT_EQ(result.solid_index, 0U);
+  ExpectVec3Equal(result.velocity.for_this_step, {});
+  ExpectVec3Equal(result.velocity.for_next_step, {});
+}
+
+TEST(MoveParticle, VerySharpFlatWedgeRestingOnBoth_EndsAtRestGapOfBoth) {
+  // A wedge of 0.01 degrees: the rest point is tol / tan(0.005 degrees) = 11459.156 tol out. The first version of plan
+  // decision P19 failed it, below its 0.4476 degree limit.
+  const double rest_x = kTolerance / std::tan(0.005 * std::numbers::pi / 180);  // m
+  const SolidContactResult result =
+      ExpectEndAtRestGap("VerySharpFlatWedgeRestingOnBoth", {.x = rest_x, .y = 0, .z = kTolerance}, kTolerance / 256);
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+}
+
+TEST(MoveParticle, FlatWedgeNeedingMoveBeyondCap_IsStartsInNarrowGap) {
+  // The move cap is 2^22 tol = 4.19e6 tol. A wedge of 6e-7 rad rests the particle 3333942 tol out, within 2e-4 of
+  // tol / tan(3e-7); one of 3e-7 rad would need 6.67e6 tol, beyond the cap.
+  const MoveParticleCase within_cap = FindMoveParticleCase("FlatWedgeNeedingMoveWithinCap");
+  const MoveParticleCall within_call = RunMove(within_cap);
+  ASSERT_EQ(within_call.error, ContactError::kNone);
+  const double rest_x = kTolerance / std::tan(3e-7);  // m
+  EXPECT_NEAR(within_call.result.position.x / rest_x, 1, 2e-4);
+  ExpectAtRestGapOfEverySolid(ToSolidContactInputs(within_cap), within_call.result.position);
+  ExpectStartFailure("FlatWedgeNeedingMoveBeyondCap", {.error = ContactError::kStartsInNarrowGap, .solid_id = 2});
+}
+
+TEST(MoveParticle, ThreeSolidAcuteCornerFallingOnAll_EndsAtRestGapOfAll) {
+  // Three faces at 60 degrees to each other: one move of Sqrt(7) tol to the point at tol from all three. The fall
+  // approaches the floor, which stops it.
+  const double root_three = std::numbers::sqrt3;
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "ThreeSolidAcuteCornerFallingOnAll",
+      {.x = root_three * kTolerance, .y = root_three * kTolerance, .z = kTolerance},
+      kAtRestGapTolerance
+  );
+  EXPECT_EQ(result.hit_count, 1);
+  ExpectVec3Equal(result.velocity.for_this_step, {});
+}
+
+TEST(MoveParticle, ThirdSolidNearOnlyAfterFirstMove_JoinsNextIteration) {
+  // The third face is 1.414 tol from the start, so it does not constrain the first iterate, which leaves it 0.19 tol
+  // away; it constrains the next one: a move of 2.3052 tol in all.
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "ThirdSolidNearOnlyAfterFirstMove",
+      {.x = std::numbers::sqrt3 * kTolerance, .y = -1.146264 * kTolerance, .z = kTolerance},
+      kAtRestGapTolerance
+  );
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+}
+
+TEST(MoveParticle, DomainCornerCutBySolid_HoldsParticleOrIsStartsInNarrowGap) {
+  // A cut 6 tol out leaves a pocket with an inscribed radius of 1.27 tol: the corner holds the particle at
+  // {tol, tol, tol} and side_bottom stops its fall. A cut 4 tol out leaves 0.845 tol, too small for a point at tol from
+  // all four faces; the cut, crossed by the move off the corner's sides, is named.
+  const MoveParticleCall far_call = RunMove("DomainCornerCutBySolidFarEnough");
+  ASSERT_EQ(far_call.error, ContactError::kNone);
+  ExpectVec3Near(far_call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
+  EXPECT_EQ(far_call.result.hit_count, 1);
+  ExpectStartFailure("DomainCornerCutBySolidTooNear", {.error = ContactError::kStartsInNarrowGap, .solid_id = 2});
+}
+
+TEST(MoveParticle, ParallelFacesLessThanTwoTolerancesApart_IsStartsInNarrowGap) {
+  // 1.5 tol apart, no point is at tol from both. 2.5 tol apart, the particle moves off the floor alone.
+  ExpectStartFailure(
+      "ParallelFacesLessThanTwoTolerancesApart",
+      {.error = ContactError::kStartsInNarrowGap, .solid_id = 2}
+  );
+  const MoveParticleCall wide_call = RunMove("ParallelFacesMoreThanTwoTolerancesApart");
+  ASSERT_EQ(wide_call.error, ContactError::kNone);
+  EXPECT_EQ(wide_call.result.kind, ContactKind::kNone);
+  ExpectVec3Equal(wide_call.result.position, {.x = 0, .y = 0, .z = kTolerance});
+}
+
+TEST(MoveParticle, BallRestingOnFloorStartInCusp_MovesToRestPoint) {
+  // The rest point of a ball of radius R resting on a floor is 2 Sqrt(R tol) from the contact, both distances exactly
+  // tol: {46340.95 tol, 0, tol} for R = 0.5. The first iterate overshoots out along the floor; the next come back.
+  const MoveParticleCase scene = FindMoveParticleCase("BallRestingOnFloorStartInCusp");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kNone);
+  EXPECT_NEAR(call.result.position.x, 2 * std::sqrt(0.5 * kTolerance), kTolerance / 256);
+  EXPECT_NEAR(call.result.position.y, 0, kTolerance / 256);
+  EXPECT_NEAR(call.result.position.z, kTolerance, kAtRestGapTolerance);
+  ExpectAtRestGapOfEverySolid(ToSolidContactInputs(scene), call.result.position);
+}
+
+TEST(MoveParticle, BallRestingOnFloorStartJustShortOfFloor_MovesToRestPoint) {
+  // The first iterate moves 0.014 tol, less than tol / 64, but leaves the ball 0.0124 tol short: the iterates stop only
+  // at a point at the rest gap of every solid, here the rest point.
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "BallRestingOnFloorStartJustShortOfFloor",
+      {.x = 2 * std::sqrt(0.5 * kTolerance), .y = 0, .z = kTolerance},
+      kTolerance / 256
+  );
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+}
+
+TEST(MoveParticle, BallRestingOnFloorDeepStart_MovesToRestPoint) {
+  // R / tol = 2^40, the largest radius a scene allows: the rest point is x* = 0.001953125 m out. From 0.1 x* and from
+  // 0.01 x*, 8 iterates end within 1e-4 of it. From 0.0005 x*, within 1.8e-8 R of the contact, the two normals are
+  // opposite to the last bit (1 + Dot rounds to 0): no move is found.
+  const double rest_x = 2 * std::sqrt(1024 * kTolerance);  // m
+  for (const std::string_view case_name :
+       {"BallRestingOnFloorDeepStartTenth", "BallRestingOnFloorDeepStartHundredth"}) {
+    const MoveParticleCase scene = FindMoveParticleCase(case_name);
+    const MoveParticleCall call = RunMove(scene);
+    ASSERT_EQ(call.error, ContactError::kNone) << case_name;
+    EXPECT_NEAR(call.result.position.x / rest_x, 1, 1e-4) << case_name;
+    ExpectAtRestGapOfEverySolid(ToSolidContactInputs(scene), call.result.position);
+  }
+  ExpectStartFailure(
+      "BallRestingOnFloorDeepStartNearContact",
+      {.error = ContactError::kStartsInNarrowGap, .solid_id = 2}
+  );
+}
+
+TEST(MoveParticle, TwoBallsTouchingStartInNeck_MovesToRestRing) {
+  // Two balls of radius R touching: the ring where both are at tol is Sqrt(tol (2 R + tol)) = 32768.0 tol from the
+  // contact for R = 0.5.
+  const double ring_radius = std::sqrt(kTolerance * (1 + kTolerance));  // m
+  const SolidContactResult result =
+      ExpectEndAtRestGap("TwoBallsTouchingStartInNeck", {.x = 0.5, .y = ring_radius, .z = 0}, kTolerance / 256);
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+}
+
+TEST(MoveParticle, PlateAndSphereRing_MovesOffBothAlongBisector) {
+  // The plate and the ball meet at 60 degrees on their ring: the move is 1.5 tol along the bisector, the plate is then
+  // at the rest gap and the curved ball slightly beyond it. The fall approaches the plate, which stops it.
+  const MoveParticleCase scene = FindMoveParticleCase("PlateAndSphereRing");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectVec3Equal(call.result.velocity.for_this_step, {});
+  const Vec3 ring_point = {.x = std::sqrt(0.1875), .y = 0, .z = 0.01};
+  const Vec3 bisector = {.x = std::numbers::sqrt3 / 2, .y = 0, .z = 0.5};
+  ExpectVec3Near(call.result.position, ring_point + 2 * kTolerance * bisector, kAtRestGapTolerance);
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const double plate_distance =
+      ComputeDistanceToSolid(inputs.solids[0], ComputeSolidPose(inputs.solids[0], 0), call.result.position).distance;
+  const double sphere_distance =
+      ComputeDistanceToSolid(inputs.solids[1], ComputeSolidPose(inputs.solids[1], 0), call.result.position).distance;
+  EXPECT_NEAR(plate_distance, kTolerance, kAtRestGapTolerance);
+  EXPECT_GE(sphere_distance, kTolerance - kAtRestGapTolerance);
+  EXPECT_LE(sphere_distance, kTolerance + kTolerance / 64);
+}
+
+TEST(MoveParticle, ParallelSolidAfterStartResponse_NextStepRoundingIsNotAnApproach) {
+  // The first solid's response to for_this_step at rest has an allowance of 0, but it leaves -2^-55 m/s in the moving
+  // for_next_step. Compared with for_next_step's own allowance that is rounding, so the reacting second solid is moved
+  // silently. One allowance for both velocities made it a second hit, with a reaction of 2.8e-17 m/s.
+  const MoveParticleCall call = RunMove("ParallelSolidAfterStartResponseNextStepMoving");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.reaction.solid_index, kNoSolid);
+}
+
+TEST(MoveParticle, SlidingFloorThenSlowUprightNextStepOnly_NextStepThresholdIsZeroBeforeAnyResponse) {
+  // A silent entry leaves no rounding of its own, so for_next_step's threshold stays 0 too: its approach of 1e-13 m/s
+  // to the upright is a hit at the start.
+  const MoveParticleCall call = RunMove("SlidingFloorThenSlowUprightNextStepOnly");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 1U);
+  EXPECT_EQ(call.result.velocity.for_next_step.x, 0);
+}
+
+TEST(MoveParticle, PlateAcrossSharpWedge_IsNotCrossedByTheMove) {
+  // The pair of faces would move the start 3819.7 tol out, through the plate, whose near face is 100 tol out. The
+  // crossing check makes the plate constrain the move, and no point between the apex and the plate is at tol from all
+  // three. Without it the particle ends 2520 tol beyond the plate's far face.
+  ExpectStartFailure("PlateAcrossSharpWedge", {.error = ContactError::kStartsInNarrowGap, .solid_id = 3});
+}
+
+TEST(MoveParticle, SecondFaceNearOnlyAfterFloorMove_MovesOffBoth) {
+  // Only the floor is near, but its own move brings the 60 degree face to 0.95 tol: that move is not kept, and the move
+  // off several surfaces ends at the rest gap of both.
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "SecondFaceNearOnlyAfterFloorMove",
+      {.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
+      kAtRestGapTolerance
+  );
+  EXPECT_EQ(result.kind, ContactKind::kNone);
+}
+
+TEST(MoveParticle, StartInsideFloorBelowPlate_IsNotCrossedByTheMove) {
+  // The floor's own move to its rest gap would pass through the plate inside it, so it is not kept; with the plate
+  // constraining the move no point is at the rest gap of both, and the plate is named.
+  ExpectStartFailure("StartInsideFloorBelowPlate", {.error = ContactError::kStartsInNarrowGap, .solid_id = 2});
+}
+
+TEST(MoveParticle, DeepCuspBesideWall_MovesToRestPoint) {
+  // The first iterate from 0.1 x* overshoots far out along the floor and crosses a wall 1.5 x* out. The rest point is
+  // 0.5 x*, about 10^6 tol, from the wall: the move must still reach it.
+  const MoveParticleCase scene = FindMoveParticleCase("BallRestingOnFloorDeepStartBesideWall");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_NEAR(call.result.position.x / (2 * std::sqrt(1024 * kTolerance)), 1, 1e-4);
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  for (std::uint32_t solid_index = 0; solid_index < 2; ++solid_index) {
+    const Solid& solid = inputs.solids[solid_index];
+    EXPECT_NEAR(
+        ComputeDistanceToSolid(solid, ComputeSolidPose(solid, 0), call.result.position).distance,
+        kTolerance,
+        kAtRestGapTolerance
+    );
+  }
+}
+
+TEST(MoveParticle, SmallBallInDomainCornerCuspStart_MovesToRestPoint) {
+  // A ball of radius 2^10 tol, the smallest feature, resting in a corner of the domain box, and a start in its cusp
+  // with the floor: the first iterate crosses the domain's left side, which is R from the rest point.
+  const MoveParticleCase scene = FindMoveParticleCase("SmallBallInDomainCornerCuspStart");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  ExpectAtRestGapOfEverySolid(ToSolidContactInputs(scene), call.result.position);
+}
+
+TEST(MoveParticle, DeepCuspWallWithinRoundingOfRestPoint_KnownLimitIsStartsInNarrowGap) {
+  // A known limit, beside the start near the contact point of BallRestingOnFloorDeepStart: the rest point is 1.01 tol
+  // from the wall, inside the window where the ball's rounded distance, ulp(R) / (2 Sqrt(tol / R)) = about 128 tol at R
+  // = 1024 m, moves the linearised cusp's vertex past the wall, and no subset of the three targets has an answer. A
+  // solver that tried targets relaxed by the slack would find it; this test then changes to a success.
+  ExpectStartFailure(
+      "BallRestingOnFloorDeepStartWallNearRestPoint",
+      {.error = ContactError::kStartsInNarrowGap, .solid_id = 3}
+  );
+}
+
+TEST(MoveParticle, CoincidentFloors_SixteenFitSeventeenIsStartsInNarrowGap) {
+  // Surfaces with the same normal share one target, but one move tracks at most kMaxTrackedSurfaces = 16 surfaces.
+  const MoveParticleCall sixteen_call = RunMove("SixteenCoincidentFloors");
+  ASSERT_EQ(sixteen_call.error, ContactError::kNone);
+  ExpectVec3Equal(sixteen_call.result.position, {.x = 0, .y = 0, .z = kTolerance});
+  ExpectStartFailure("SeventeenCoincidentFloors", {.error = ContactError::kStartsInNarrowGap, .solid_id = 17});
+}
+
+TEST(MoveParticle, DomainCornerWithCoincidentGroundAndWall_EndsAtCorner) {
+  // A ground lying on side_bottom and a wall lying on side_left make five near surfaces, but only three directions:
+  // coincident surfaces share one target, and {tol, tol, tol} is at the rest gap of all five.
+  const MoveParticleCall call = RunMove("DomainCornerWithCoincidentGroundAndWall");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
+}
+
+TEST(MoveParticle, DomainCornerWithNearlyCoincidentGroundAndWall_EndsAtCorner) {
+  // Normals that differ by rounding share one target too, so the five surfaces still leave {tol, tol, tol}.
+  const MoveParticleCall call = RunMove("DomainCornerWithNearlyCoincidentGroundAndWall");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
+}
+
+TEST(MoveParticle, CuspStartIntoBallOnly_ResponseUsesNormalBeforeMove) {
+  // In the cusp, halfway to the rest point, moving at 1 m/s straight into the ball and away from the floor. The
+  // response uses the ball's normal at the start, so it stops the particle; the normal after the move, turned by
+  // about 2 Sqrt(tol / R) (1 - f), would leave about 4.3e-5 m/s.
+  const MoveParticleCall call = RunMove("CuspStartIntoBallOnly");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_LT(math::Length(call.result.velocity.for_this_step), 1e-12);
+}
+
+// --- The move off near surfaces and its solver ---
+
+TEST(MoveToRestGapOfNearSurfaces, BallRestingOnFloorCusp_FiveIterates) {
+  // R / tol = 2^29: the first iterate overshoots out along the floor, and the iterates are still after the fifth.
+  const MoveParticleCase scene = FindMoveParticleCase("BallRestingOnFloorStartInCusp");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const RestGapMove move = MoveToRestGapOfNearSurfaces(inputs, 0, inputs.start_position);
+  ASSERT_TRUE(move.is_found);
+  EXPECT_EQ(move.iteration_count, 5);
+}
+
+TEST(MoveToRestGapOfNearSurfaces, DeepCuspAtLargestRadius_EightIteratesWithinOneTenThousandth) {
+  // R / tol = 2^40: from 0.1 x* the iterates use all of kMaxRestGapIterations and end within 1e-4 of the rest point.
+  const MoveParticleCase scene = FindMoveParticleCase("BallRestingOnFloorDeepStartTenth");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const RestGapMove move = MoveToRestGapOfNearSurfaces(inputs, 0, inputs.start_position);
+  ASSERT_TRUE(move.is_found);
+  EXPECT_EQ(move.iteration_count, kMaxRestGapIterations);
+  const double rest_x = 2 * std::sqrt(1024 * kTolerance);  // m
+  EXPECT_NEAR(move.moved_point.x / rest_x, 1, 1e-4);
+}
+
+TEST(MoveToRestGapOfNearSurfaces, OneNearSolid_MovesAlongItsNormalBitForBit) {
+  // One near solid moves the point as MoveToRestGap always did: the same bits, no iterate.
+  const MoveParticleCase scene = FindMoveParticleCase("StartsWithinToleranceMovingAway");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const RestGapMove move = MoveToRestGapOfNearSurfaces(inputs, 0, inputs.start_position);
+  ASSERT_TRUE(move.is_found);
+  EXPECT_EQ(move.iteration_count, 0);
+  ExpectVec3Equal(
+      move.moved_point,
+      MoveToRestGap(inputs, 0, ComputeSolidPose(inputs.solids[0], 0), inputs.start_position)
+  );
+}
+
+// A CorrectionTargets of the given normals and targets.
+CorrectionTargets BuildCorrectionTargets(std::initializer_list<Vec3> normals, std::initializer_list<double> targets) {
+  CorrectionTargets built;
+  int index = 0;
+  for (const Vec3 normal : normals) {
+    built.normals[index] = normal;
+    ++index;
+  }
+  built.count = index;
+  index = 0;
+  for (const double target : targets) {
+    built.targets[index] = target;
+    ++index;
+  }
+  return built;
+}
+
+// Fails the calling test unless the solver found a change within 1e-12 of the expected one on each axis, through
+// used_count surfaces.
+void ExpectCorrection(const SmallestCorrection& correction, Vec3 expected_change, int used_count) {
+  ASSERT_TRUE(correction.is_found);
+  ExpectVec3Near(correction.change, expected_change, 1e-12);
+  EXPECT_EQ(correction.used_count, used_count);
+}
+
+// Fails the calling test unless the two multipliers of a pair are the expected ones within 1e-12.
+void ExpectPairMultipliers(const SmallestCorrection& correction, double first_multiplier, double second_multiplier) {
+  EXPECT_NEAR(correction.multipliers[0], first_multiplier, 1e-12);
+  EXPECT_NEAR(correction.multipliers[1], second_multiplier, 1e-12);
+}
+
+// Solves for a position with the slack of the solver's closed-form tests, 2^-40.
+SmallestCorrection SolveTestCorrection(const CorrectionTargets& targets) {
+  return SolveSmallestCorrection(targets, 0x1p-40, CorrectedQuantity::kPosition);
+}
+
+// The targets of a shallow pit: three faces tilted 3 degrees from {0, 0, 1}, 120 degrees apart around z, each with
+// target 1.
+CorrectionTargets BuildShallowPitTargets() {
+  const double tilt = 3 * std::numbers::pi / 180;  // rad
+  CorrectionTargets pit;
+  for (int face_index = 0; face_index < 3; ++face_index) {
+    const double around = face_index * 2 * std::numbers::pi / 3;  // rad
+    pit.normals[face_index] = {
+        .x = std::sin(tilt) * std::cos(around),
+        .y = std::sin(tilt) * std::sin(around),
+        .z = std::cos(tilt),
+    };
+    pit.targets[face_index] = 1;
+  }
+  pit.count = 3;
+  return pit;
+}
+
+TEST(SolveSmallestCorrection, OneTwoAndThreeSurfaces_MatchClosedForms) {
+  const double root_three = std::numbers::sqrt3;
+  const Vec3 floor_normal = {.x = 0, .y = 0, .z = 1};
+  const Vec3 sixty_degree_normal = {.x = root_three / 2, .y = 0, .z = -0.5};
+  // The 60 degree wedge, both targets 1: the pair, multipliers {2, 2}.
+  const SmallestCorrection on_both =
+      SolveTestCorrection(BuildCorrectionTargets({floor_normal, sixty_degree_normal}, {1, 1}));
+  ExpectCorrection(on_both, {.x = root_three, .y = 0, .z = 1}, 2);
+  ExpectPairMultipliers(on_both, 2, 2);
+  // The same wedge, targets {1, 0}: still the pair, since the floor alone leaves the other face short.
+  const SmallestCorrection floor_short =
+      SolveTestCorrection(BuildCorrectionTargets({floor_normal, sixty_degree_normal}, {1, 0}));
+  ExpectCorrection(floor_short, {.x = 1 / root_three, .y = 0, .z = 1}, 2);
+  ExpectPairMultipliers(floor_short, 4.0 / 3, 2.0 / 3);
+  // A right angle with targets {1, -1}: the floor alone meets both.
+  ExpectCorrection(
+      SolveTestCorrection(BuildCorrectionTargets({floor_normal, {.x = 1, .y = 0, .z = 0}}, {1, -1})),
+      floor_normal,
+      1
+  );
+  // The three axes: the triple.
+  ExpectCorrection(
+      SolveTestCorrection(
+          BuildCorrectionTargets({{.x = 1, .y = 0, .z = 0}, {.x = 0, .y = 1, .z = 0}, floor_normal}, {1, 1, 1})
+      ),
+      {.x = 1, .y = 1, .z = 1},
+      3
+  );
+  // An obtuse wedge: the pair, multipliers {2/3, 2/3}.
+  const SmallestCorrection obtuse =
+      SolveTestCorrection(BuildCorrectionTargets({floor_normal, {.x = root_three / 2, .y = 0, .z = 0.5}}, {1, 1}));
+  ExpectCorrection(obtuse, {.x = 1 / root_three, .y = 0, .z = 1}, 2);
+  ExpectPairMultipliers(obtuse, 2.0 / 3, 2.0 / 3);
+  // A shallow pit: straight up, 1 / cos(3 degrees) = 1.0013723.
+  ExpectCorrection(
+      SolveTestCorrection(BuildShallowPitTargets()),
+      {.x = 0, .y = 0, .z = 1 / std::cos(3 * std::numbers::pi / 180)},
+      3
+  );
+}
+
+TEST(SolveSmallestCorrection, PairBelowVelocityLimit_IsUsedForPositionOnly) {
+  // 1 + c = 2^-41, below kVelocityPairLimitShare: only the pair meets both targets. A position uses it; a velocity,
+  // whose refinements could not bring the residual within its allowance, finds no change.
+  const double one_plus_dot = 0x1p-41;
+  const CorrectionTargets pair = BuildCorrectionTargets(
+      {
+          {.x = 0, .y = 0, .z = 1},
+          {.x = std::sqrt(one_plus_dot * (2 - one_plus_dot)), .y = 0, .z = -(1 - one_plus_dot)},
+      },
+      {1, 1}
+  );
+  const SmallestCorrection position_change = SolveSmallestCorrection(pair, 0x1p-21, CorrectedQuantity::kPosition);
+  ASSERT_TRUE(position_change.is_found);
+  EXPECT_EQ(position_change.used_count, 2);
+  EXPECT_FALSE(SolveSmallestCorrection(pair, 0x1p-21, CorrectedQuantity::kVelocity).is_found);
+}
+
+TEST(SolveSmallestCorrection, TripleBelowVelocityLimit_IsUsedForPositionOnly) {
+  // The normals {1, 0, 0}, {0, 1, 0} and Normalized({-1, -1, 2^-22}) have a triple product of about 2^-22.5, below
+  // kVelocityTripleLimit. With the targets {1, 1, 0} no single surface and no pair meets all three: only the triple,
+  // with a change far along z. A position uses it; a velocity finds no change.
+  const CorrectionTargets triple = BuildCorrectionTargets(
+      {{.x = 1, .y = 0, .z = 0}, {.x = 0, .y = 1, .z = 0}, math::Normalized({.x = -1, .y = -1, .z = 0x1p-22})},
+      {1, 1, 0}
+  );
+  const SmallestCorrection position_change = SolveSmallestCorrection(triple, 0x1p-21, CorrectedQuantity::kPosition);
+  ASSERT_TRUE(position_change.is_found);
+  EXPECT_EQ(position_change.used_count, 3);
+  EXPECT_FALSE(SolveSmallestCorrection(triple, 0x1p-21, CorrectedQuantity::kVelocity).is_found);
+}
+
+// Builds one pair of the residual test: n_a = {0, 0, 1} and n_b = {s cos p, s sin p, -(1 - one_plus_dot)} with
+// s = Sqrt(one_plus_dot (2 - one_plus_dot)), so 1 + Dot(n_a, n_b) is one_plus_dot exactly. Draws: p = 2 pi Next, then
+// the two targets, each Next.
+CorrectionTargets BuildResidualTestPair(CaseGenerator& generator, double one_plus_dot) {
+  const double around = 2 * std::numbers::pi * generator.Next();  // rad
+  const double across = std::sqrt(one_plus_dot * (2 - one_plus_dot));
+  const Vec3 second_normal = {
+      .x = across * std::cos(around),
+      .y = across * std::sin(around),
+      .z = -(1 - one_plus_dot),
+  };
+  const double first_target = generator.Next();
+  const double second_target = generator.Next();
+  return BuildCorrectionTargets({{.x = 0, .y = 0, .z = 1}, second_normal}, {first_target, second_target});
+}
+
+// Computes the larger of a pair's two residuals |Dot(n_i, change) - target_i|.
+double ComputeLargestPairResidual(const CorrectionTargets& pair, Vec3 change) {
+  const double first_residual = std::abs(math::Dot(pair.normals[0], change) - pair.targets[0]);
+  const double second_residual = std::abs(math::Dot(pair.normals[1], change) - pair.targets[1]);
+  return std::max(first_residual, second_residual);
+}
+
+// Computes the larger residual of one pair solved for a position, in rounding units over 1 + c, and fails the calling
+// test unless the pair was solved through both surfaces.
+double ComputePairResidualShare(const CorrectionTargets& pair, double one_plus_dot) {
+  const SmallestCorrection first_solve = SolveSmallestCorrection(pair, 0x1p-40, CorrectedQuantity::kPosition);
+  EXPECT_TRUE(first_solve.is_found && first_solve.used_count == 2);
+  return ComputeLargestPairResidual(pair, first_solve.change) * one_plus_dot / 0x1p-52;
+}
+
+// Fails the calling test unless the pair, solved for a velocity with a slack of 2^-21, needed at most one refinement to
+// come within a quarter of that slack, 2^-23.
+void ExpectOneRefinementWithinQuarterSlack(const CorrectionTargets& pair) {
+  const SmallestCorrection velocity_change = SolveSmallestCorrection(pair, 0x1p-21, CorrectedQuantity::kVelocity);
+  EXPECT_TRUE(velocity_change.is_found);
+  EXPECT_LE(velocity_change.refinement_count, 1);
+  EXPECT_LE(ComputeLargestPairResidual(pair, velocity_change.change), 0x1p-23);
+}
+
+TEST(SolveSmallestCorrection, PairResidualWithoutRefinement_IsAboutEpsOverOnePlusC) {
+  // 3000 pairs at each 1 + c = 2^-40, 2^-28, 2^-16, 2^-4 (BuildResidualTestPair). Each target is met to within
+  // 4 * 2^-52 / (1 + c) by the pair alone, a position's solve; with a velocity's slack of 2^-21, at most one refinement
+  // brings it within a quarter of that slack, 2^-23, at 2^-40 (ComputePairResidualShare).
+  CaseGenerator generator;
+  for (const double one_plus_dot : {0x1p-40, 0x1p-28, 0x1p-16, 0x1p-4}) {
+    double largest_residual_share = 0;  // In 2^-52 / (1 + c).
+    for (int pair_index = 0; pair_index < 3000; ++pair_index) {
+      const CorrectionTargets pair = BuildResidualTestPair(generator, one_plus_dot);
+      largest_residual_share = std::max(largest_residual_share, ComputePairResidualShare(pair, one_plus_dot));
+      if (one_plus_dot == 0x1p-40) {
+        ExpectOneRefinementWithinQuarterSlack(pair);
+      }
+    }
+    std::cout << "pair residual at 1 + c = " << one_plus_dot << ": at most " << largest_residual_share
+              << " rounding units over 1 + c\n";
+    EXPECT_LE(largest_residual_share, 4);
+  }
 }
 
 // --- Generated paths ---
@@ -1240,7 +1768,17 @@ struct GeneratedCounts {
   int too_many_hits = 0;
   int second_reacting_solid = 0;
   int slow_approach = 0;
+  std::map<std::string_view, int> too_many_hits_per_scene;
 };
+
+// Prints, for the report, the scenes with any kTooManyHits and how many.
+void PrintTooManyHitsPerScene(const std::map<std::string_view, int>& too_many_hits_per_scene) {
+  std::cout << "too many hits per scene:";
+  for (const auto& [scene_name, count] : too_many_hits_per_scene) {
+    std::cout << " " << scene_name << " " << count << ";";
+  }
+  std::cout << "\n";
+}
 
 // Fails the calling test unless every solid is at least tol / 2 from the end position at its end pose, by
 // ComputeDistanceToSolid itself (the generated paths commit to no plate).
@@ -1328,6 +1866,9 @@ void CheckGeneratedPath(const SolidContactInputs& inputs, std::string_view scene
   EXPECT_EQ(error, ContactError::kTooCloseToCall) << scene_name;
   EXPECT_NE(failure.close_call, ContactCloseCall::kEndsTooCloseToSolid) << scene_name;
   counts.too_many_hits += failure.close_call == ContactCloseCall::kTooManyHits ? 1 : 0;
+  if (failure.close_call == ContactCloseCall::kTooManyHits) {
+    ++counts.too_many_hits_per_scene[scene_name];
+  }
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
   counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
 }
@@ -1368,6 +1909,7 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
             << ", several hits " << counts.several_hit_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
             << "\n";
+  PrintTooManyHitsPerScene(counts.too_many_hits_per_scene);
   EXPECT_GT(counts.paths, 40000);
   EXPECT_GT(counts.hit_paths, counts.paths / 4);
   EXPECT_GT(counts.several_hit_paths, counts.paths / 60);
@@ -1389,6 +1931,7 @@ struct NearStartCounts {
   int too_many_hits = 0;
   int second_reacting_solid = 0;
   int slow_approach = 0;
+  std::map<std::string_view, int> too_many_hits_per_scene;
 };
 
 // Computes whether a point is at least 4 tol from every solid but one at the start of the step.
@@ -1513,6 +2056,9 @@ void CheckGeneratedNearStart(
   EXPECT_EQ(error, ContactError::kTooCloseToCall) << scene_name;
   EXPECT_NE(failure.close_call, ContactCloseCall::kEndsTooCloseToSolid) << scene_name;
   counts.too_many_hits += failure.close_call == ContactCloseCall::kTooManyHits ? 1 : 0;
+  if (failure.close_call == ContactCloseCall::kTooManyHits) {
+    ++counts.too_many_hits_per_scene[scene_name];
+  }
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
   counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
 }
@@ -1526,6 +2072,7 @@ void ExpectNearStartCounts(const NearStartCounts& counts) {
             << ", started inside " << counts.started_inside_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
             << "\n";
+  PrintTooManyHitsPerScene(counts.too_many_hits_per_scene);
   EXPECT_GT(starts.at(0), 15000);
   EXPECT_GT(starts.at(1), 15000);
   EXPECT_GT(starts.at(2), 15000);
@@ -1584,8 +2131,9 @@ struct ParallelPath {
 // parallel fixed flat solids, both reacting, the second delta = (0.05 + 0.9 * Next) tol beyond the first along a
 // shared random normal n (three draws, NextSigned, NextSigned and 0.2 + 0.8 * Next, drawn again while shorter than
 // 0.1); a base point 0 or (0.001, 0.3 or 1 m, by floor(3 * Next)) times (0.5 + Next) on each axis when Next < 0.5; a
-// velocity of three NextSigned times 3 m/s turned to approach n; a start Next * delta beyond the first; T of 0.01,
-// 0.1, 0.5 or 1 s by floor(4 * Next); friction 0. Draws in that order. inputs.solids is left for the caller.
+// velocity of three NextSigned times 3 m/s turned to approach n; a start Next * (tol - delta) beyond the second, so
+// within tol of both and inside neither; T of 0.01, 0.1, 0.5 or 1 s by floor(4 * Next); friction 0. Draws in that
+// order. inputs.solids is left for the caller.
 bool BuildParallelPath(CaseGenerator& generator, ParallelPath* path) {
   Vec3 direction{};
   while (math::Length(direction) < 0.1) {
@@ -1618,15 +2166,17 @@ bool BuildParallelPath(CaseGenerator& generator, ParallelPath* path) {
   path->inputs.contact_tolerance = kTolerance;
   path->inputs.step_duration = step_duration;
   path->inputs.start_overlap_tolerance = 2 * kTolerance;
-  path->inputs.start_position = base + start_share * delta * normal;
+  path->inputs.start_position = base + (delta + start_share * (kTolerance - delta)) * normal;
   path->inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
   return true;
 }
 
 TEST(MoveParticle, GeneratedParallelSolids_RoundingNeverHitsTheSecond) {
-  // The review's set, 20,000 draws (BuildParallelPath). The first solid responds; the second, 0.05 to 0.95 tol closer
-  // after that move, is moved silently, a few rounding units on either side of its rest gap. Any further hit, or a
-  // second reacting solid, is rounding.
+  // The review's set, 20,000 draws (BuildParallelPath). The start moves to the second solid's rest gap, a few rounding
+  // units on either side of it; the first solid responds, and the second is moved silently. Any further hit, or a
+  // second reacting solid, is rounding. Until plan decision P19 the start was drawn between the two faces, inside the
+  // second; each solid is now classified at the start as given, so such a start is a real start inside the second,
+  // with its own response.
   CaseGenerator generator;
   int paths = 0;
   int spurious_results = 0;
@@ -1656,11 +2206,14 @@ TEST(MoveParticle, GeneratedParallelSolids_RoundingNeverHitsTheSecond) {
 // What the generated two-surface starts gave, counted for the report.
 struct TwoSurfaceCounts {
   int wedge_starts = 0;
+  int acute_wedge_starts = 0;  // Normals more than a right angle apart: Dot(n_A, n_B) < 0.
   int corner_starts = 0;
   int free_paths = 0;  // Success with kind kNone.
   int hit_paths = 0;  // Success with kind kHit.
   int started_inside_paths = 0;  // Success with kind kStartedInsideSolid.
-  int failures = 0;
+  int acute_too_many_hits = 0;  // kTooManyHits in an acute wedge, from a velocity that approaches a face.
+  int acute_too_many_hits_approaching_both = 0;  // The part of those whose velocity approaches both faces.
+  int failures = 0;  // Every other failure.
 };
 
 // Draws a velocity for a two-surface start: slow, up to tol / T per axis, when Next < 0.5, else up to 2 m/s per axis
@@ -1670,11 +2223,11 @@ Vec3 DrawTwoSurfaceVelocity(CaseGenerator& generator, double step_duration) {
   return speed * Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
 }
 
-// Builds a right or obtuse wedge: two fixed flat solids through a point q within 1 m of the origin per axis, normals
-// nA (three NextSigned, drawn again while shorter than 0.1) and nB = cos(phi) nA + sin(phi) t, phi from 10 to 90
-// degrees and t a random direction made square to nA (three NextSigned, drawn again while that part is shorter than
-// 0.1). The start is at distances dA and dB, each (2 * Next - 1) tol, and c = NextSigned m along nA x t. Draw order:
-// nA, t, phi, q, dA, dB, c.
+// Builds a wedge: two fixed flat solids through a point q within 1 m of the origin per axis, normals nA (three
+// NextSigned, drawn again while shorter than 0.1) and nB = cos(phi) nA + sin(phi) t, phi from 5 to 175 degrees (a
+// wedge angle of 175 down to 5) and t a random direction made square to nA (three NextSigned, drawn again while that
+// part is shorter than 0.1). The start is at distances dA and dB, each (2 * Next - 1) tol, and c = NextSigned m along
+// nA x t. Draw order: nA, t, phi, q, dA, dB, c.
 std::array<Solid, 2> BuildTwoSurfaceWedge(CaseGenerator& generator, Vec3* start_position) {
   Vec3 first_direction{};
   while (math::Length(first_direction) < 0.1) {
@@ -1687,7 +2240,7 @@ std::array<Solid, 2> BuildTwoSurfaceWedge(CaseGenerator& generator, Vec3* start_
     square_direction = draw - math::Dot(first_normal, draw) * first_normal;
   }
   const Vec3 square_unit = math::Normalized(square_direction);
-  const double normal_angle = (10 + 80 * generator.Next()) * std::numbers::pi / 180;  // rad
+  const double normal_angle = (5 + 170 * generator.Next()) * std::numbers::pi / 180;  // rad
   const Vec3 second_normal = std::cos(normal_angle) * first_normal + std::sin(normal_angle) * square_unit;
   const Vec3 point = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
   const double first_distance = generator.NextSigned() * kTolerance;  // m
@@ -1726,15 +2279,35 @@ Vec3 BuildDomainCornerStart(CaseGenerator& generator) {
   return {.x = coordinates.at(0), .y = coordinates.at(1), .z = coordinates.at(2)};
 }
 
+// Counts the fixed flat solids of a wedge a velocity approaches: a negative dot with the normal.
+int ComputeApproachedFaceCount(const SolidContactInputs& inputs, Vec3 velocity) {
+  int approached_count = 0;
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    const Mat3 axes = inputs.solids[solid_index].pose_at_step_start.axes;
+    const Vec3 normal = {.x = axes.xz, .y = axes.yz, .z = axes.zz};
+    approached_count += math::Dot(normal, velocity) < 0 ? 1 : 0;
+  }
+  return approached_count;
+}
+
 // Runs MoveParticle on one two-surface start, checks it and counts it: a success ends at least tol / 2 from every
-// solid; nothing fails.
-void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& counts) {
+// solid; the only failure is kTooManyHits in an acute wedge from a velocity that approaches a face: the response on one
+// face turns it into the other, and it hits one and then the other until the slide over several surfaces (plan Task
+// 12) ends it.
+void CheckTwoSurfaceStart(const SolidContactInputs& inputs, bool is_acute_wedge, TwoSurfaceCounts& counts) {
   SolidContactResult result;
   ContactFailure failure;
   const ContactError error = MoveParticle(inputs, &result, &failure);
-  EXPECT_EQ(error, ContactError::kNone) << static_cast<int>(failure.close_call);
-  counts.failures += error == ContactError::kNone ? 0 : 1;
   if (error != ContactError::kNone) {
+    const bool is_too_many_hits =
+        error == ContactError::kTooCloseToCall && failure.close_call == ContactCloseCall::kTooManyHits;
+    const int approached_count = ComputeApproachedFaceCount(inputs, inputs.velocity.for_this_step);
+    const bool is_expected = is_acute_wedge && is_too_many_hits && approached_count >= 1;
+    counts.acute_too_many_hits_approaching_both += is_expected && approached_count == 2 ? 1 : 0;
+    EXPECT_TRUE(is_expected) << "error " << static_cast<int>(error) << ", close call "
+                             << static_cast<int>(failure.close_call) << ", acute " << is_acute_wedge;
+    counts.acute_too_many_hits += is_expected ? 1 : 0;
+    counts.failures += is_expected ? 0 : 1;
     return;
   }
   ExpectEndOutsideEverySolid(inputs, result.position);
@@ -1743,13 +2316,14 @@ void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& co
   counts.started_inside_paths += result.kind == ContactKind::kStartedInsideSolid ? 1 : 0;
 }
 
-TEST(MoveParticle, GeneratedRightAndObtuseWedgesAndDomainCorners_StartsSucceed) {
-  // 30,000 draws, by Next < 0.5 a wedge (BuildTwoSurfaceWedge) or a domain corner (BuildDomainCornerStart); then T =
-  // 0.01 + 0.09 * Next s, short enough that a fast particle stays near its corner, away from the far sides, both
-  // velocities from one DrawTwoSurfaceVelocity, friction Next. Start overlap tolerance 2 tol. Every start is within tol
-  // of, on, or slightly inside two or three surfaces whose normals are at most a right angle apart, where moving out of
-  // one never pushes into another: every move must succeed. Acute wedges are pinned by SixtyDegreeWedgeRestingOnBoth
-  // and ThirtyDegreeWedgeRestingOnBoth until plan Task 12.
+TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
+  // 30,000 draws, by Next < 0.5 a wedge (BuildTwoSurfaceWedge, wedge angles 5 to 175 degrees) or a domain corner
+  // (BuildDomainCornerStart); then T = 0.01 + 0.09 * Next s, short enough that a fast particle stays near its corner,
+  // away from the far sides, both velocities from one DrawTwoSurfaceVelocity, friction Next. Start overlap tolerance
+  // 2 tol. Every start is within tol of, on, or slightly inside two or three surfaces. Right and obtuse wedges and
+  // domain corners never fail; acute wedges never fail at the start (no kStartsInsideSolid, kStartsInNarrowGap or
+  // kEndsTooCloseToSolid), and fail only with kTooManyHits from a velocity that approaches a face
+  // (CheckTwoSurfaceStart): 2246 of 7497 acute draws, 30 % as the model of plan decision P19 gives.
   CaseGenerator generator;
   TwoSurfaceCounts counts;
   const std::array domain_solids = {move_particle_cases::BuildUnitDomainBox(1)};
@@ -1759,11 +2333,17 @@ TEST(MoveParticle, GeneratedRightAndObtuseWedgesAndDomainCorners_StartsSucceed) 
     inputs.contact_tolerance = kTolerance;
     inputs.start_overlap_tolerance = 2 * kTolerance;
     std::array<Solid, 2> wedge_solids{};
+    bool is_acute_wedge = false;
     if (is_wedge) {
       wedge_solids = BuildTwoSurfaceWedge(generator, &inputs.start_position);
       inputs.solids = wedge_solids.data();
       inputs.solid_count = 2;
       ++counts.wedge_starts;
+      const Mat3 first_axes = wedge_solids.at(0).pose_at_step_start.axes;
+      const Mat3 second_axes = wedge_solids.at(1).pose_at_step_start.axes;
+      is_acute_wedge =
+          first_axes.xz * second_axes.xz + first_axes.yz * second_axes.yz + first_axes.zz * second_axes.zz < 0;
+      counts.acute_wedge_starts += is_acute_wedge ? 1 : 0;
     } else {
       inputs.start_position = BuildDomainCornerStart(generator);
       inputs.solids = domain_solids.data();
@@ -1774,14 +2354,210 @@ TEST(MoveParticle, GeneratedRightAndObtuseWedgesAndDomainCorners_StartsSucceed) 
     const Vec3 velocity = DrawTwoSurfaceVelocity(generator, inputs.step_duration);
     inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
     inputs.friction = generator.Next();
-    CheckTwoSurfaceStart(inputs, counts);
+    CheckTwoSurfaceStart(inputs, is_acute_wedge, counts);
   }
-  std::cout << "two-surface starts: wedges " << counts.wedge_starts << ", domain corners " << counts.corner_starts
-            << "; free " << counts.free_paths << ", hit " << counts.hit_paths << ", started inside "
-            << counts.started_inside_paths << ", failures " << counts.failures << "\n";
+  std::cout << "two-surface starts: wedges " << counts.wedge_starts << " (acute " << counts.acute_wedge_starts
+            << "), domain corners " << counts.corner_starts << "; free " << counts.free_paths << ", hit "
+            << counts.hit_paths << ", started inside " << counts.started_inside_paths << ", acute too many hits "
+            << counts.acute_too_many_hits << " (approaching both faces " << counts.acute_too_many_hits_approaching_both
+            << "), other failures " << counts.failures << "\n";
+  EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.free_paths, 1000);
   EXPECT_GT(counts.hit_paths, 1000);
   EXPECT_GT(counts.started_inside_paths, 1000);
+}
+
+// --- Generated tangent contacts ---
+
+// The scenes of the generated tangent contacts, in the order of the set.
+enum class TangentScene : std::uint8_t {
+  kBallOnFloor,  // A ball resting on the fixed floor through the contact point.
+  kBallInDomainCorner,  // A ball touching the three low sides of the unit domain box.
+  kTwoBalls,  // Two balls touching along x.
+  kBallOnTiltedFlatSolid,  // A ball resting on a fixed flat solid tilted about y.
+};
+
+// One start of the tangent set: its solids, its inputs (which point at them) and what was drawn for the counts.
+struct TangentStart {
+  std::array<Solid, 2> solids{};
+  SolidContactInputs inputs{};
+  int velocity_class = 0;  // 0 at rest, 1 slow, 2 falling, 3 toward the contact, 4 random.
+  Vec3 first_normal{};  // No unit, world. The floor's, the side's or the first ball's normal at the start.
+  Vec3 second_normal{};  // No unit, world. The second ball's normal at the start.
+};
+
+// Builds one start of the tangent set in one scene (P11 generator). Draws, in this order and all of them for every
+// scene: R = 0.05 + 0.45 Next and the second ball's radius the same; the contact's offset {NextSigned, NextSigned} m;
+// the radial direction's angle 2 pi Next; x = x* (0.02 + 0.98 Next), with x* = 2 Sqrt(R_eff tol) the rest point's
+// distance and R_eff = R, or R R2 / (R + R2) for two balls; the height in the gap, (1.5 Next - 0.5) of the gap x^2 /
+// (2 R_eff), so some starts are up to half the gap inside the floor (inside the first ball for two balls); T from
+// {1e-3, 0.01, 0.1} s by floor(3 Next); the velocity class floor(5 Next), three NextSigned and one Next (at rest; slow,
+// the three times tol / T; falling, {0, 0, -9.81 T}; toward the contact along the radial direction, 2 Next m/s; random,
+// the three times 2 m/s); the scene's own Next (the corner ball's side by floor(3 Next), bottom, left or front; the
+// tilt 0.6 Next rad). Both velocities equal, friction 0, start overlap tolerance 2 tol.
+TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
+  const double radius = 0.05 + 0.45 * generator.Next();  // m
+  const double second_radius = 0.05 + 0.45 * generator.Next();  // m
+  const Vec3 offset = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = 0};
+  const double radial_angle = 2 * std::numbers::pi * generator.Next();  // rad
+  const double distance_share = 0.02 + 0.98 * generator.Next();
+  const double height_share = 1.5 * generator.Next() - 0.5;
+  const std::array<double, 3> step_durations = {1e-3, 0.01, 0.1};  // s
+  const double step_duration = step_durations.at(static_cast<std::size_t>(std::floor(3 * generator.Next())));
+  const int velocity_class = static_cast<int>(std::floor(5 * generator.Next()));
+  const Vec3 velocity_draw = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  const double speed_share = generator.Next();
+  const double scene_draw = generator.Next();
+  const double cos_radial = std::cos(radial_angle);
+  const double sin_radial = std::sin(radial_angle);
+
+  TangentStart start;
+  Vec3 contact{};  // m, world.
+  Vec3 floor_normal{};  // No unit, world: out of the floor, the side or the first ball at the contact.
+  Vec3 radial{};  // No unit, world: away from the contact, square to floor_normal.
+  double effective_radius = radius;  // m
+  switch (scene) {
+    case TangentScene::kBallOnFloor:
+    case TangentScene::kBallOnTiltedFlatSolid: {
+      const double tilt = scene == TangentScene::kBallOnTiltedFlatSolid ? 0.6 * scene_draw : 0;  // rad
+      floor_normal = {.x = std::sin(tilt), .y = 0, .z = std::cos(tilt)};
+      const Vec3 along_tilt = {.x = std::cos(tilt), .y = 0, .z = -std::sin(tilt)};
+      radial = cos_radial * along_tilt + sin_radial * Vec3{.x = 0, .y = 1, .z = 0};
+      contact = offset;
+      start.solids.at(0) =
+          move_particle_cases::BuildFlatSolid(contact, floor_normal, move_particle_cases::kNoMotion, 1);
+      start.solids.at(1) = move_particle_cases::BuildFixedSphere(contact + radius * floor_normal, radius, 2);
+      break;
+    }
+    case TangentScene::kBallInDomainCorner: {
+      const int side_index = static_cast<int>(std::floor(3 * scene_draw));
+      const std::array<Vec3, 3> axes = {
+          Vec3{.x = 0, .y = 0, .z = 1},
+          Vec3{.x = 1, .y = 0, .z = 0},
+          Vec3{.x = 0, .y = 1, .z = 0},
+      };
+      floor_normal = axes.at(static_cast<std::size_t>(side_index));
+      radial = cos_radial * axes.at(static_cast<std::size_t>((side_index + 1) % 3))
+          + sin_radial * axes.at(static_cast<std::size_t>((side_index + 2) % 3));
+      const Vec3 center = {.x = radius, .y = radius, .z = radius};
+      contact = center - radius * floor_normal;
+      start.solids.at(0) = move_particle_cases::BuildUnitDomainBox(1);
+      start.solids.at(1) = move_particle_cases::BuildFixedSphere(center, radius, 2);
+      break;
+    }
+    case TangentScene::kTwoBalls: {
+      effective_radius = radius * second_radius / (radius + second_radius);
+      floor_normal = {.x = 1, .y = 0, .z = 0};
+      radial = {.x = 0, .y = cos_radial, .z = sin_radial};
+      contact = offset + Vec3{.x = radius, .y = 0, .z = 0};
+      start.solids.at(0) = move_particle_cases::BuildFixedSphere(offset, radius, 1);
+      start.solids.at(1) = move_particle_cases::BuildFixedSphere(
+          offset + Vec3{.x = radius + second_radius, .y = 0, .z = 0},
+          second_radius,
+          2
+      );
+      break;
+    }
+  }
+  const double rest_distance = 2 * std::sqrt(effective_radius * kTolerance);  // m, x*.
+  const double contact_distance = distance_share * rest_distance;  // m
+  const double gap = contact_distance * contact_distance / (2 * effective_radius);  // m
+  // For two balls the gap is measured from the first ball's surface, which lies x^2 / (2 R) behind the contact plane.
+  const double first_surface_height =
+      scene == TangentScene::kTwoBalls ? -contact_distance * contact_distance / (2 * radius) : 0;  // m
+  const Vec3 start_position =
+      contact + contact_distance * radial + (first_surface_height + height_share * gap) * floor_normal;
+
+  Vec3 velocity{};  // m/s
+  if (velocity_class == 1) {
+    velocity = kTolerance / step_duration * velocity_draw;
+  } else if (velocity_class == 2) {
+    velocity = {.x = 0, .y = 0, .z = -9.81 * step_duration};
+  } else if (velocity_class == 3) {
+    velocity = -2 * speed_share * radial;
+  } else if (velocity_class == 4) {
+    velocity = 2 * velocity_draw;
+  }
+  start.velocity_class = velocity_class;
+  start.inputs.start_position = start_position;
+  start.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  start.inputs.solid_count = 2;
+  start.inputs.step_duration = step_duration;
+  start.inputs.contact_tolerance = kTolerance;
+  start.inputs.start_overlap_tolerance = 2 * kTolerance;
+  const Solid& first_solid = start.solids.at(0);
+  const Solid& second_solid = start.solids.at(1);
+  start.first_normal = scene == TangentScene::kTwoBalls
+      ? ComputeDistanceToSolid(first_solid, first_solid.pose_at_step_start, start_position).normal_out_of_solid
+      : floor_normal;
+  start.second_normal =
+      ComputeDistanceToSolid(second_solid, second_solid.pose_at_step_start, start_position).normal_out_of_solid;
+  return start;
+}
+
+// What the generated tangent starts of one scene gave, counted for the report.
+struct TangentCounts {
+  int successes = 0;
+  int too_many_hits = 0;  // From a velocity that approaches one of the two contact surfaces.
+  int too_many_hits_approaching_both = 0;  // The part of those whose velocity approaches both.
+  std::array<int, 5> too_many_hits_per_class{};  // In the velocity classes of TangentStart.
+  int other_failures = 0;
+};
+
+// Runs MoveParticle on one tangent start, checks it and counts it: a success ends at least tol / 2 from every solid;
+// the only failure is kTooManyHits from a velocity that approaches one of the two contact surfaces.
+void CheckTangentStart(TangentScene scene, const TangentStart& start, TangentCounts& counts) {
+  SolidContactResult result;
+  ContactFailure failure;
+  const ContactError error = MoveParticle(start.inputs, &result, &failure);
+  if (error == ContactError::kNone) {
+    ExpectEndOutsideEverySolid(start.inputs, result.position);
+    ++counts.successes;
+    return;
+  }
+  const Vec3 velocity = start.inputs.velocity.for_this_step;
+  const bool approaches_first = math::Dot(start.first_normal, velocity) < 0;
+  const bool approaches_second = math::Dot(start.second_normal, velocity) < 0;
+  const bool is_too_many_hits =
+      error == ContactError::kTooCloseToCall && failure.close_call == ContactCloseCall::kTooManyHits;
+  const bool is_expected = is_too_many_hits && (approaches_first || approaches_second);
+  EXPECT_TRUE(is_expected) << "scene " << static_cast<int>(scene) << ", error " << static_cast<int>(error)
+                           << ", close call " << static_cast<int>(failure.close_call);
+  if (!is_expected) {
+    ++counts.other_failures;
+    return;
+  }
+  ++counts.too_many_hits;
+  counts.too_many_hits_approaching_both += approaches_first && approaches_second ? 1 : 0;
+  ++counts.too_many_hits_per_class.at(static_cast<std::size_t>(start.velocity_class));
+}
+
+TEST(MoveParticle, GeneratedTangentContactStarts_Succeed) {
+  // 2000 starts per scene (BuildTangentStart), the scenes in TangentScene order, starts in the cusp of each tangent
+  // contact from 0.02 to 1 times the rest point's distance. Every success ends at least tol / 2 from every solid. The
+  // start never fails; the only failure is kTooManyHits from a velocity that approaches one of the two surfaces and
+  // then bounces between them into the cusp, which the slide over several surfaces (plan Task 12) ends.
+  CaseGenerator generator;
+  const std::array scenes = {
+      TangentScene::kBallOnFloor,
+      TangentScene::kBallInDomainCorner,
+      TangentScene::kTwoBalls,
+      TangentScene::kBallOnTiltedFlatSolid,
+  };
+  for (const TangentScene scene : scenes) {
+    TangentCounts counts;
+    for (int draw_index = 0; draw_index < 2000; ++draw_index) {
+      TangentStart start = BuildTangentStart(generator, scene);
+      start.inputs.solids = start.solids.data();
+      CheckTangentStart(scene, start, counts);
+    }
+    const std::array<int, 5>& per_class = counts.too_many_hits_per_class;
+    std::cout << "tangent scene " << static_cast<int>(scene) << ": success " << counts.successes << ", too many hits "
+              << counts.too_many_hits << " (approaching both " << counts.too_many_hits_approaching_both
+              << "; per velocity class " << per_class.at(0) << " " << per_class.at(1) << " " << per_class.at(2) << " "
+              << per_class.at(3) << " " << per_class.at(4) << "), other failures " << counts.other_failures << "\n";
+    EXPECT_EQ(counts.other_failures, 0);
+  }
 }
 
 // --- The touched surfaces in the sweep ---
@@ -2204,6 +2980,43 @@ TEST(ApplySettleAtEnd, RisingFloor_SettlesAtEndPose) {
   ParticleMove move = BuildMoveTouchingSolidZero({.x = 0, .y = 0, .z = 0.25 + 0.25 * kTolerance});
   ApplySettleAtEnd(inputs, &move);
   EXPECT_NEAR(move.result.position.z, 0.25 + kTolerance, 0x1p-52);
+}
+
+TEST(ApplySettleAtEnd, SixtyDegreeWedgeBothNearAtEnd_EndsAtRestGapOfBoth) {
+  // tol / 2 from the floor and from the 60 degree face, both touched: one move to {Sqrt(3) tol, 0, tol}. One move per
+  // surface in turn left the floor at 0.625 tol.
+  const MoveParticleCase scene = FindMoveParticleCase("SixtyDegreeWedgeRestingOnBoth");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  ParticleMove move =
+      BuildMoveTouchingSolidZero({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
+  move.touched_surfaces[1] = {
+      .solid_index = 1,
+      .normal_out_of_solid = {.x = std::numbers::sqrt3 / 2, .y = 0, .z = -0.5},
+  };
+  move.touched_surface_count = 2;
+  ApplySettleAtEnd(inputs, &move);
+  ExpectVec3Near(
+      move.result.position,
+      {.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
+      kAtRestGapTolerance
+  );
+  ExpectAtRestGapOfEverySolid(inputs, move.result.position);
+}
+
+TEST(ApplySettleAtEnd, UntouchedNearSolid_IsMovedOffToo) {
+  // The same end with only the floor touched: the settle reads every solid, so the 60 degree face counts too. Settling
+  // the touched floor alone, to z = tol, left the face at 0.25 tol.
+  const MoveParticleCase scene = FindMoveParticleCase("SixtyDegreeWedgeRestingOnBoth");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  ParticleMove move =
+      BuildMoveTouchingSolidZero({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
+  ApplySettleAtEnd(inputs, &move);
+  ExpectVec3Near(
+      move.result.position,
+      {.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
+      kAtRestGapTolerance
+  );
+  ExpectAtRestGapOfEverySolid(inputs, move.result.position);
 }
 
 }  // namespace

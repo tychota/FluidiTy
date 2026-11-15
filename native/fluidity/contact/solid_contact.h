@@ -169,25 +169,23 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //
 // Method (method paper <proc-move-particle>):
 //   1 Check inputs (CheckSolidContactInputs).
-//   2 Classify the start (ApplyStartRules, plan decisions P3, P4 and P12): every solid in array order, at the pose of
-//     time 0, from the start as the earlier solids' rules moved it; the first that fails decides. A particle beyond
-//     the other face of its committed plate by more than tol fails first, then a start deeper inside than
-//     start_overlap_tolerance. A start closer than tol, d < tol, moves along that solid's normal to the rest gap,
-//     whatever its velocity; a domain box's closed sides closer than tol each count as a surface of their own (a
-//     corner has two or three). A surface the start was inside, d < 0, or that either velocity approaches, below
-//     minus the largest approach allowance of the responses so far (0 before the first), is a hit at time 0 with its
-//     normal: the response, the record with hit_fraction 0 if it is the first hit, one hit counted, and a touched
-//     surface with the allowance of that response, so the sweeps rest on it; kind is kStartedInsideSolid when any such
-//     d was negative. Otherwise the move is silent: nothing else changes. A silently moved solid becomes a touched
-//     surface without a hit only when another solid responded at the start, so that the rounding that response left
-//     is not a hit on it; else a touching particle that leaves is free. A turning solid gets the same rules, then step
-//     5's departure below.
-//     Today's limit (plan Task 12 resolves it): each solid is classified once, so in a wedge sharper than a right
-//     angle a later solid's move can push the start back toward an earlier one. With the earlier solid touched and
-//     d >= 0 the particle rests on it and the settle lifts it; untouched, the end check may fail
-//     (kEndsTooCloseToSolid); pushed inside, the sweeps hit it at 0 until kTooManyHits, or the start is deeper than
-//     start_overlap_tolerance (kStartsInsideSolid). A start within tol of both surfaces of such a wedge therefore
-//     need not succeed, at any step length.
+//   2 Classify the start (ApplyStartRules, plan decisions P3, P4, P12 and P19), at the pose of time 0, in three parts.
+//     First the checks that fail, every solid in array order at the start as given; the first that fails decides: a
+//     particle beyond the other face of its committed plate by more than tol, then a start deeper inside than
+//     start_overlap_tolerance. Then one move of the start off every surface closer than tol, d < tol, of every solid
+//     at once, whatever its velocity (MoveToRestGapOfNearSurfaces): to the point at the rest gap of all of them that
+//     the solver finds nearest the start, within a move cap of 2^22 tol; with one near solid, along its normal to the
+//     rest gap; a domain box's closed sides closer than tol each count as a surface of their own (a corner has two or
+//     three). So a start in a wedge, a corner or the cusp under a ball resting on a floor rests at tol from every face,
+//     where moving off one face at a time would push it toward the other. No such point within the cap is
+//     kStartsInNarrowGap. Then, solid by solid in array order, each near surface with its distance and normal before
+//     the move: one the start was inside, d < 0, or that either velocity approaches, below minus that velocity's own
+//     approach allowance of the responses so far (0 before the first), is a hit at time 0 with its normal: the
+//     response, the record with hit_fraction 0 if it is the first hit, one hit counted, and a touched surface with the
+//     allowance of that response, so the sweeps rest on it; kind is kStartedInsideSolid when any such d was negative.
+//     Otherwise the move is silent: nothing else changes. A silently moved solid becomes a touched surface without a
+//     hit only when another solid responded at the start, so that the rounding that response left is not a hit on it;
+//     else a touching particle that leaves is free. A turning solid gets the same rules, then step 5's departure below.
 //   3 Find the first hit (FindFirstHitOfSweep, FindFirstHit with the touched surfaces) from the current position
 //     along velocity.for_this_step, with the solids posed at the time already used and duration = step_duration -
 //     elapsed, computed afresh before every sweep. With no hit the particle advances by velocity.for_this_step times
@@ -206,8 +204,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     step 5, for now: a turning solid has no touching rule, so a particle it hit, or one that starts within 1.25 tol
 //     of it, is hit again at time 0 by every later sweep and the move ends in kTooManyHits instead of sliding in the
 //     solid's axes. A shorter step does not help; only a hit exactly at the end of the step succeeds.
-//   6 Settle and check the end (ApplySettleAtEnd, CheckEndOutsideSolids): each touched surface closer than tol at the
-//     end pose moves the particle back to the rest gap, then every solid must be at least tol / 2 away.
+//   6 Settle and check the end (ApplySettleAtEnd, CheckEndOutsideSolids): one move off every surface closer than tol
+//     of every solid, touched or not, at the end pose, to the rest gap of all of them (MoveToRestGapOfNearSurfaces);
+//     when there is none the particle stays. Then every solid must be at least tol / 2 away: the end check stays the
+//     last word, so a particle never ends a step inside a solid.
 //   Without a hit the end position is start_position + velocity.for_this_step * step_duration, one multiply and one
 //   add per axis, and both velocities come back unchanged. Same bits on CPU and GPU when every solid's angular
 //   velocity is zero: only + - * /, Abs, Sqrt, Length and comparisons.
@@ -234,16 +234,28 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //                             failure names the plate, with that distance (CheckStartOnCommittedSide). A scene
 //                             error; the step stops.
 //        kStartsInsideSolid   the start is deeper inside a solid than start_overlap_tolerance; the failure names it,
-//                             with the depth (ApplyStartRulesOfSolid). A scene error; the step stops.
+//                             with the depth (CheckStartOfSolid). A scene error; the step stops.
+//        kStartsInNarrowGap   the start has no point at the rest gap of every surface it is near within the move cap
+//                             (MoveToRestGapOfNearSurfaces): two solids facing each other less than 2 tol apart, a
+//                             start within rounding of the contact point of a ball resting on a floor, a wall within
+//                             the rounding window of such a contact's rest point (a known limit, about 128 tol at
+//                             R = 1024 m), a pocket too small for a point at tol from each of its sides, near surfaces
+//                             facing more than four different ways (one move reads at most four directions) or more
+//                             than 16 surfaces (kMaxTrackedSurfaces), or a start deep at the apex of a flat wedge
+//                             sharper than about 2^-21 rad. The failure names the near solid latest in array order,
+//                             magnitude 0. A scene error that no sweep can lead to, since the grown solids overlap
+//                             there, except the cases where a point fits (the known limit, the directions and the
+//                             count); the step stops.
 //        kTooCloseToCall      no safe answer for this step; *failure's close_call says why: kTooManyHits (a fifth
 //                             hit, the start's hits counted, or a fifth solid moved silently at the start beside a
 //                             start hit), kSecondReactingSolid (a second solid with reports_reaction),
 //                             kEndsTooCloseToSolid (the end check), or kSlowApproachToTurningSolid (passed on from the
 //                             sweep, with that turning solid's id). The step shortens the step and tries again, which
-//                             helps when the failure comes from the sweeps. It does not help when the start alone
-//                             decides it: five hits or two reacting solids at the start, a start within 1.25 tol of a
-//                             turning solid (until its slide is built, plan Task 13), or a start in a wedge sharper
-//                             than a right angle (step 2's limit, until plan Task 12).
+//                             helps when the failure comes from the sweeps.
+//        Failures a shorter step cannot fix: the scene errors kOnWrongSideOfPlate, kStartsInsideSolid and
+//        kStartsInNarrowGap; and the close calls that the start alone decides: five hits or two reacting solids at the
+//        start, a fifth solid moved silently beside a start hit, and a start within 1.25 tol of a turning solid (until
+//        its slide is built, plan Task 13).
 //        On failure *result is unchanged. When failure is not null, *failure is always written: ContactFailure{} on
 //        success; on failure the error, the close call, the solid's solid_id (never its index) and the magnitude of
 //        plan decision P6. particle_id stays 0.
@@ -264,10 +276,10 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
   if (error != ContactError::kNone) {
     move_failure.error = error;
   }
-  // Step 2: a start too deep inside a solid, or on the wrong side of its plate, is a scene error, and the step stops.
-  // Too many hits or a second reacting solid at the start is a close call that the start alone decides. Otherwise the
-  // start has moved to the rest gap of each solid in turn, and the solids it starts inside or approaches are hits at
-  // time 0.
+  // Step 2: a start too deep inside a solid, on the wrong side of its plate, or in a gap with no point at the rest gap
+  // of every near surface, is a scene error, and the step stops. Too many hits or a second reacting solid at the start
+  // is a close call that the start alone decides. Otherwise the start has moved once to the rest gap of every near
+  // surface, and the surfaces it starts inside or approaches are hits at time 0.
   if (error == ContactError::kNone) {
     error = ApplyStartRules(inputs, &move, &move_failure);
   }
@@ -309,8 +321,8 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
     error = ApplyHit(inputs, first_hit, &move, &move_failure);
   }
 
-  // Step 6: the settle keeps the rest gap to the touched surfaces; the end check keeps the module's promise that a
-  // particle never ends a step inside a solid (CheckEndOutsideSolids).
+  // Step 6: the settle brings the particle back to the rest gap of every near surface; the end check keeps the module's
+  // promise that a particle never ends a step inside a solid (CheckEndOutsideSolids), whatever the settle found.
   if (error == ContactError::kNone) {
     ApplySettleAtEnd(inputs, &move);
     error = CheckEndOutsideSolids(inputs, move.result.position, &move_failure);

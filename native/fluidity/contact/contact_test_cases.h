@@ -760,7 +760,8 @@ inline std::vector<MoveParticleCase> BuildFloorStartCases() {
       }),
   });
   // Five floors rising at 1 m/s, ids 1 to 5, at heights 0, 0.0001, ..., 0.0004 m, and a start 0.0005 m below the
-  // first: the start is inside each in turn after the move out of the one before, and the fifth is the fifth hit.
+  // first: the start is inside all five, which share one direction of the move; each is a hit at time 0, and the
+  // fifth is the fifth hit.
   std::vector<Solid> stacked_floors;
   stacked_floors.reserve(5);
   for (int floor_index = 0; floor_index < 5; ++floor_index) {
@@ -997,10 +998,11 @@ inline std::vector<MoveParticleCase> BuildSeveralSolidStartCases() {
       .solids = {BuildUnitDomainBox(1)},
       .inputs = domain_inside_inputs,
   });
-  // A wedge sharper than a right angle: the fixed floor, and a flat solid rising at 0.25 m/s with normal
-  // {-0.6, 0, -0.8} whose surface passes through {0, 0, 1.625 tol}. The particle falls on the floor from tol / 2 and
-  // is moved to z = tol; the wedge's surface is then tol / 2 away, and its move to the rest gap takes the particle
-  // 0.4 tol back down toward the floor. The particle slides away along -x, and the settle lifts it back to z = tol.
+  // A wedge sharper than a right angle (36.87 degrees, normals -0.8 apart): the fixed floor, and a flat solid rising at
+  // 0.25 m/s with normal {-0.6, 0, -0.8} whose surface passes through {0, 0, 1.625 tol}. The particle falls on the
+  // floor from tol / 2, short of its rest gap by 0.5 tol and of the wedge's by 0.1 tol: one move of {-5/6 tol, 0,
+  // 0.5 tol} brings it to the rest gap of both. Moving off the floor alone, then off the wedge, took it 0.4 tol back
+  // down toward the floor.
   const Solid wedge = BuildFlatSolid(
       {.x = 0, .y = 0, .z = 1.625 * kTolerance},
       math::Normalized({.x = -0.6, .y = 0, .z = -0.8}),
@@ -1017,8 +1019,8 @@ inline std::vector<MoveParticleCase> BuildSeveralSolidStartCases() {
           .friction = 0,
       }),
   });
-  // The same wedge 0.0005 m deeper into the particle's start, within the overlap tolerance: its move out takes the
-  // particle 0.0004 m into the floor, which the sweeps then hit at 0 until the fifth hit.
+  // The same wedge 0.0005 m deeper into the particle's start, within the overlap tolerance: one move off both, where
+  // moving off the wedge alone took the particle 0.0004 m into the floor.
   const Solid deep_wedge = BuildFlatSolid(
       {.x = 0, .y = 0, .z = 1.625 * kTolerance - 0.000625},
       math::Normalized({.x = -0.6, .y = 0, .z = -0.8}),
@@ -1137,8 +1139,9 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
       .inputs = on_both_inputs,
   });
   // Four, then five, fixed floors stacked tol / 16 apart (ids 1 to 4 or 5) and the fixed upright at x = 1 (the next
-  // id): the particle leaves every floor and runs into the upright, tol / 2 away. Each floor is moved silently and,
-  // since the upright responds, becomes a touched surface without a hit; the list keeps at most four of them.
+  // id): the particle leaves every floor and runs into the upright, tol / 2 away. The floors share one direction of the
+  // move. Each floor is moved silently and, since the upright responds, becomes a touched surface without a hit; the
+  // list keeps at most four of them.
   for (const int floor_count : {4, 5}) {
     std::vector<Solid> floors_and_upright;
     floors_and_upright.reserve(static_cast<std::size_t>(floor_count) + 1);
@@ -1195,7 +1198,7 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
   // The fixed floor, which a particle tol / 2 above it and moving at {1, 0, 0} m/s leaves alone, and an upright flat
   // solid at x = 1 + 2 tol leaning 0.5 tol over the floor: it is hit after tol s and sends the particle down at
   // 0.5 tol m/s. No solid responded at the start, so the floor is not a touched surface: its touching rule lets the
-  // particle sink 0.05 tol, and no settle lifts it.
+  // particle sink 0.05 tol without a hit, and the settle, which reads every solid, lifts it back.
   cases.push_back({
       .name = "SilentFloorThenLeaningUpright",
       .solids =
@@ -1216,7 +1219,8 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
       }),
   });
   // The review's scene for mutant S11: exactly at the rest gap, approaching at tol m/s for 0.1 s. The start rules do
-  // not apply at d = tol, and the touching rule lets the particle rest: it ends 0.1 tol closer.
+  // not apply at d = tol, and the touching rule lets the particle rest: it sinks 0.1 tol without a hit, and the settle
+  // lifts it back to tol.
   cases.push_back({
       .name = "AtRestGapSlowApproach",
       .solids = {BuildFloor(1)},
@@ -1226,6 +1230,371 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
           .step_duration = 0.1,
           .friction = 0,
       }),
+  });
+  // SlidingFloorThenSlowUpright with only for_next_step approaching the upright, at 1e-13 m/s: the silent floor's entry
+  // must not raise for_next_step's own threshold above 0 either.
+  SolidContactInputs next_step_slow_inputs = BuildCaseInputs({
+      .start_position = {.x = 1 - kTolerance / 2, .y = 0, .z = kTolerance / 2},
+      .velocity = {.x = -1, .y = 0, .z = 1},
+      .step_duration = 0.1,
+      .friction = 0,
+  });
+  next_step_slow_inputs.velocity.for_next_step = {.x = 1e-13, .y = 0, .z = 1};
+  cases.push_back({
+      .name = "SlidingFloorThenSlowUprightNextStepOnly",
+      .solids = {BuildMovingFloor(0, {.x = 100, .y = 0, .z = 0}, 1), BuildUprightAtXOne(2)},
+      .inputs = next_step_slow_inputs,
+  });
+  return cases;
+}
+
+// A particle at rest at {0, 0, 0} for 0.1 s with an overlap tolerance of 2 tol, as on_both_inputs of
+// BuildWedgeStartCases.
+inline SolidContactInputs BuildApexAtRestInputs() {
+  return BuildRestingStartInputs({.height = 0, .start_overlap_tolerance = 2 * kTolerance});
+}
+
+// The inputs of a particle at start_position with both velocities, the test contact tolerance, an overlap tolerance of
+// 2 tol and friction 0.
+inline SolidContactInputs BuildSeveralSurfaceInputs(Vec3 start_position, Vec3 velocity, double step_duration) {
+  SolidContactInputs inputs = BuildCaseInputs({
+      .start_position = start_position,
+      .velocity = velocity,
+      .step_duration = step_duration,
+      .friction = 0,
+  });
+  inputs.start_overlap_tolerance = 2 * kTolerance;
+  return inputs;
+}
+
+// A fixed sphere with the given centre, radius and id.
+inline Solid BuildFixedSphere(Vec3 center, double radius, std::uint32_t solid_id) {
+  return ToSolid(Sphere{.center = center, .radius = radius}, kNoMotion, solid_id);
+}
+
+// The scenes of a start near several surfaces at once: acute and flat wedges, corners and pockets, faces facing each
+// other, and the tangent contacts of round solids (plan decision P19). Fixed solids through the origin and friction 0
+// unless stated.
+inline std::vector<MoveParticleCase> BuildSeveralSurfaceStartCases() {
+  std::vector<MoveParticleCase> cases;
+  // A wedge of 10 degrees falling on both faces at 0.981 m/s for 0.1 s.
+  cases.push_back({
+      .name = "TenDegreeWedgeFallingOnBoth",
+      .solids = {BuildFloor(1), BuildWedgeSide(17 * std::numbers::pi / 18, 2)},
+      .inputs = BuildSeveralSurfaceInputs({}, {.x = 0, .y = 0, .z = -0.981}, 0.1),
+  });
+  // Flat wedges at rest on both faces: 0.01 degrees, 6e-7 rad (rest point 3.33e6 tol out, within the move cap) and
+  // 3e-7 rad (6.67e6 tol out, beyond the cap of 2^22 tol = 4.19e6 tol).
+  cases.push_back({
+      .name = "VerySharpFlatWedgeRestingOnBoth",
+      .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - 0.01 * std::numbers::pi / 180, 2)},
+      .inputs = BuildApexAtRestInputs(),
+  });
+  cases.push_back({
+      .name = "FlatWedgeNeedingMoveWithinCap",
+      .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - 6e-7, 2)},
+      .inputs = BuildApexAtRestInputs(),
+  });
+  cases.push_back({
+      .name = "FlatWedgeNeedingMoveBeyondCap",
+      .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - 3e-7, 2)},
+      .inputs = BuildApexAtRestInputs(),
+  });
+  // Three faces meeting at the origin, each pair at 60 degrees, falling on all three at 0.0981 m/s for 0.01 s.
+  const double half_root_three = std::numbers::sqrt3 / 2;
+  cases.push_back({
+      .name = "ThreeSolidAcuteCornerFallingOnAll",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildFlatSolid({}, {.x = half_root_three, .y = 0, .z = -0.5}, kNoMotion, 2),
+              BuildFlatSolid({}, {.x = 0, .y = half_root_three, .z = -0.5}, kNoMotion, 3),
+          },
+      .inputs = BuildSeveralSurfaceInputs({}, {.x = 0, .y = 0, .z = -0.0981}, 0.01),
+  });
+  // The 60 degree wedge and a third face through {2 tol, 0, 0}, 1.414 tol from the start and 0.19 tol from the point
+  // the wedge's pair of faces moves it to.
+  cases.push_back({
+      .name = "ThirdSolidNearOnlyAfterFirstMove",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildWedgeSide(2 * std::numbers::pi / 3, 2),
+              BuildFlatSolid(
+                  {.x = 2 * kTolerance, .y = 0, .z = 0},
+                  math::Normalized({.x = -1, .y = -1, .z = 0}),
+                  kNoMotion,
+                  3
+              ),
+          },
+      .inputs = BuildSeveralSurfaceInputs({}, {}, 0.01),
+  });
+  // A corner of the unit domain box cut by a flat solid through {L tol, 0, 0} with normal -{1, 1, 1} / Sqrt(3), the
+  // particle at the corner falling at 1 m/s for 0.01 s. The pocket's inscribed radius is L / (3 + Sqrt(3)) tol: 1.27
+  // tol for L = 6, 0.845 tol for L = 4, too small for a point at tol from all four faces.
+  for (const double cut_distance : {6.0, 4.0}) {
+    cases.push_back({
+        .name = cut_distance == 6 ? "DomainCornerCutBySolidFarEnough" : "DomainCornerCutBySolidTooNear",
+        .solids =
+            {
+                BuildUnitDomainBox(1),
+                BuildFlatSolid(
+                    {.x = cut_distance * kTolerance, .y = 0, .z = 0},
+                    math::Normalized({.x = -1, .y = -1, .z = -1}),
+                    kNoMotion,
+                    2
+                ),
+            },
+        .inputs = BuildSeveralSurfaceInputs({}, {.x = 0, .y = 0, .z = -1}, 0.01),
+    });
+  }
+  // The fixed floor and a fixed ceiling facing it, 1.5 tol above with the particle at rest midway, and 2.5 tol above
+  // with the particle tol / 2 above the floor; no overlap allowed.
+  SolidContactInputs narrow_inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = 0.75 * kTolerance}, {}, 0.01);
+  narrow_inputs.start_overlap_tolerance = 0;
+  cases.push_back({
+      .name = "ParallelFacesLessThanTwoTolerancesApart",
+      .solids = {BuildFloor(1), BuildFlatSolid({.x = 0, .y = 0, .z = 1.5 * kTolerance}, -kUnitZ, kNoMotion, 2)},
+      .inputs = narrow_inputs,
+  });
+  SolidContactInputs wide_inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = 0.5 * kTolerance}, {}, 0.01);
+  wide_inputs.start_overlap_tolerance = 0;
+  cases.push_back({
+      .name = "ParallelFacesMoreThanTwoTolerancesApart",
+      .solids = {BuildFloor(1), BuildFlatSolid({.x = 0, .y = 0, .z = 2.5 * kTolerance}, -kUnitZ, kNoMotion, 2)},
+      .inputs = wide_inputs,
+  });
+  // A ball of radius 0.5 resting on the fixed floor at the origin, the particle at rest in the cusp, 0.25 tol from
+  // both, for 0.01 s. Its rest point is {2 Sqrt(0.5 tol), 0, tol}.
+  cases.push_back({
+      .name = "BallRestingOnFloorStartInCusp",
+      .solids = {BuildFloor(1), BuildFixedSphere({.x = 0, .y = 0, .z = 0.5}, 0.5, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = std::sqrt(0.5 * kTolerance), .y = 0, .z = kTolerance / 4}, {}, 0.01),
+  });
+  // The same ball, the particle at rest 0.014 tol short of the floor and 0.0016 tol beyond the ball's rest gap: the
+  // floor's move alone, 0.014 tol, is shorter than tol / 64 but leaves the ball 0.0124 tol short.
+  const double short_height = 0.986 * kTolerance;  // m
+  const double short_x = std::sqrt(
+      (0.5 + 1.0016 * kTolerance) * (0.5 + 1.0016 * kTolerance) - (0.5 - short_height) * (0.5 - short_height)
+  );  // m
+  cases.push_back({
+      .name = "BallRestingOnFloorStartJustShortOfFloor",
+      .solids = {BuildFloor(1), BuildFixedSphere({.x = 0, .y = 0, .z = 0.5}, 0.5, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = short_x, .y = 0, .z = short_height}, {}, 0.01),
+  });
+  // A ball of radius 1024 m resting on the floor (R / tol = 2^40), the largest a scene allows, and the particle at rest
+  // halfway up the gap, f times the rest point's distance x* = 2 Sqrt(1024 tol) = 0.001953125 m from the contact:
+  // f = 0.1, 0.01, and 0.0005, within 1.8e-8 R of the contact.
+  const double deep_rest_distance = 2 * std::sqrt(1024 * kTolerance);  // m
+  for (const double share : {0.1, 0.01, 0.0005}) {
+    const double start_x = share * deep_rest_distance;  // m
+    std::string_view name = "BallRestingOnFloorDeepStartNearContact";
+    if (share == 0.1) {
+      name = "BallRestingOnFloorDeepStartTenth";
+    } else if (share == 0.01) {
+      name = "BallRestingOnFloorDeepStartHundredth";
+    }
+    cases.push_back({
+        .name = name,
+        .solids = {BuildFloor(1), BuildFixedSphere({.x = 0, .y = 0, .z = 1024}, 1024, 2)},
+        .inputs = BuildSeveralSurfaceInputs({.x = start_x, .y = 0, .z = start_x * start_x / 4096}, {}, 0.01),
+    });
+  }
+  // The ball of radius 1024 m with the start at 0.1 x*, and an upright flat solid at x = 1.5 x* facing the cusp: the
+  // first iterate, shortened to the move cap, crosses it.
+  const double deep_start_x = 0.1 * deep_rest_distance;  // m
+  const double deep_gap = 1024 - std::sqrt(1024 * 1024 - deep_start_x * deep_start_x);  // m
+  cases.push_back({
+      .name = "BallRestingOnFloorDeepStartBesideWall",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildFixedSphere({.x = 0, .y = 0, .z = 1024}, 1024, 2),
+              BuildFlatSolid({.x = 1.5 * deep_rest_distance, .y = 0, .z = 0}, -kUnitX, kNoMotion, 3),
+          },
+      .inputs = BuildSeveralSurfaceInputs({.x = deep_start_x, .y = 0, .z = deep_gap / 2}, {}, 0.01),
+  });
+  // A ball of radius 2^10 tol resting in the corner of the unit domain box, touching its bottom, left and front
+  // sides, and the particle at rest halfway up the ball-floor cusp, 0.01 x* from the contact toward side_left.
+  const double small_radius = 1024 * kTolerance;  // m
+  const double small_start_x = 0.01 * 2 * std::sqrt(small_radius * kTolerance);  // m
+  const double small_gap = small_radius - std::sqrt(small_radius * small_radius - small_start_x * small_start_x);  // m
+  cases.push_back({
+      .name = "SmallBallInDomainCornerCuspStart",
+      .solids =
+          {
+              BuildUnitDomainBox(1),
+              BuildFixedSphere({.x = small_radius, .y = small_radius, .z = small_radius}, small_radius, 2),
+          },
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = small_radius - small_start_x, .y = small_radius, .z = small_gap / 2},
+          {},
+          0.01
+      ),
+  });
+  // The ball of radius 1024 m with the start at 0.01 x*, and an upright flat solid 1.01 tol beyond the rest point,
+  // facing the cusp: the rest point fits, but lies within the rounding window of the ball's distance (ulp(1024 m) over
+  // the cusp's angle, about 128 tol here), where no subset of the three linearised surfaces meets every target.
+  const double window_start_x = 0.01 * deep_rest_distance;  // m
+  const double window_gap = 1024 - std::sqrt(1024 * 1024 - window_start_x * window_start_x);  // m
+  cases.push_back({
+      .name = "BallRestingOnFloorDeepStartWallNearRestPoint",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildFixedSphere({.x = 0, .y = 0, .z = 1024}, 1024, 2),
+              BuildFlatSolid({.x = deep_rest_distance + 1.01 * kTolerance, .y = 0, .z = 0}, -kUnitX, kNoMotion, 3),
+          },
+      .inputs = BuildSeveralSurfaceInputs({.x = window_start_x, .y = 0, .z = window_gap / 2}, {}, 0.01),
+  });
+  // Sixteen, then seventeen, fixed floors lying on each other through the origin (ids 1 to 16 or 17), the particle at
+  // rest tol / 2 above them: one direction, but one move tracks at most kMaxTrackedSurfaces surfaces.
+  for (const int floor_count : {16, 17}) {
+    std::vector<Solid> coincident_floors;
+    coincident_floors.reserve(static_cast<std::size_t>(floor_count));
+    for (int floor_index = 0; floor_index < floor_count; ++floor_index) {
+      coincident_floors.push_back(BuildFloor(static_cast<std::uint32_t>(floor_index + 1)));
+    }
+    cases.push_back({
+        .name = floor_count == 16 ? "SixteenCoincidentFloors" : "SeventeenCoincidentFloors",
+        .solids = coincident_floors,
+        .inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = kTolerance / 2}, {}, 0.01),
+    });
+  }
+  // The unit domain box, a ground lying exactly on side_bottom and a wall lying exactly on side_left, the particle
+  // tol / 2 from all of them, falling at 0.1 m/s for 0.01 s.
+  cases.push_back({
+      .name = "DomainCornerWithCoincidentGroundAndWall",
+      .solids = {BuildUnitDomainBox(1), BuildFloor(2), BuildFlatSolid({}, kUnitX, kNoMotion, 3)},
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = kTolerance / 2, .y = kTolerance / 2, .z = kTolerance / 2},
+          {.x = 0, .y = 0, .z = -0.1},
+          0.01
+      ),
+  });
+  // The same corner with a ground and a wall whose normals are tilted by 2^-44 rad, rounding-sized: still three
+  // directions, since normals within kSameNormalAxisDifference on every axis share one target.
+  cases.push_back({
+      .name = "DomainCornerWithNearlyCoincidentGroundAndWall",
+      .solids =
+          {
+              BuildUnitDomainBox(1),
+              BuildFlatSolid({}, math::Normalized({.x = 0x1p-44, .y = 0, .z = 1}), kNoMotion, 2),
+              BuildFlatSolid({}, math::Normalized({.x = 1, .y = 0x1p-44, .z = 0}), kNoMotion, 3),
+          },
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = kTolerance / 2, .y = kTolerance / 2, .z = kTolerance / 2},
+          {.x = 0, .y = 0, .z = -0.1},
+          0.01
+      ),
+  });
+  // The ball of radius 0.5 m resting on the floor, the particle halfway to the rest point and halfway up the gap,
+  // moving at 1 m/s straight into the ball along minus its normal at the start, away from the floor.
+  const double half_rest_x = 0.5 * 2 * std::sqrt(0.5 * kTolerance);  // m
+  const double half_rest_gap = 0.5 - std::sqrt(0.25 - half_rest_x * half_rest_x);  // m
+  const Vec3 into_ball_start = {.x = half_rest_x, .y = 0, .z = half_rest_gap / 2};
+  const Solid half_meter_ball = BuildFixedSphere({.x = 0, .y = 0, .z = 0.5}, 0.5, 2);
+  const Vec3 ball_normal =
+      ComputeDistanceToSolid(half_meter_ball, half_meter_ball.pose_at_step_start, into_ball_start).normal_out_of_solid;
+  cases.push_back({
+      .name = "CuspStartIntoBallOnly",
+      .solids = {BuildFloor(1), half_meter_ball},
+      .inputs = BuildSeveralSurfaceInputs(into_ball_start, -ball_normal, 0.01),
+  });
+  // Two balls of radius 0.5 touching at {0.5, 0, 0}, the particle at rest in their neck, half way to the ring
+  // Sqrt(tol (1 + tol)) from the contact where both are at tol.
+  const double neck_ring_radius = std::sqrt(kTolerance * (1 + kTolerance));  // m
+  cases.push_back({
+      .name = "TwoBallsTouchingStartInNeck",
+      .solids = {BuildFixedSphere({}, 0.5, 1), BuildFixedSphere(kUnitX, 0.5, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.5, .y = neck_ring_radius / 2, .z = 0}, {}, 0.01),
+  });
+  // A plate through the origin with normal {0, 0, 1} and half thickness 0.01, and a ball of radius 0.5 centred at
+  // {0, 0, 0.26}: they cross on the ring of radius Sqrt(0.1875) at z = 0.01, their normals 120 degrees apart. The
+  // particle is 0.5 tol out of the ring along the bisector, falling at 0.0981 m/s for 0.01 s.
+  const Vec3 ring_point = {.x = std::sqrt(0.1875), .y = 0, .z = 0.01};
+  const Vec3 ring_bisector = {.x = half_root_three, .y = 0, .z = 0.5};
+  cases.push_back({
+      .name = "PlateAndSphereRing",
+      .solids =
+          {
+              ToSolid(Plate{.center = {}, .normal = kUnitZ, .half_thickness = 0.01}, kNoMotion, 1),
+              BuildFixedSphere({.x = 0, .y = 0, .z = 0.26}, 0.5, 2),
+          },
+      .inputs = BuildSeveralSurfaceInputs(
+          ring_point + 0.5 * kTolerance * ring_bisector,
+          {.x = 0, .y = 0, .z = -0.0981},
+          0.01
+      ),
+  });
+  // ParallelSolidAfterStartResponse with for_this_step at rest and for_next_step {-2, 0, -2} m/s: the response to a
+  // for_this_step at rest has an allowance of 0, while it leaves -2^-55 m/s in for_next_step.
+  const Vec3 oblique_normal = math::Normalized({.x = 0.6, .y = 0, .z = 0.8});
+  Solid reacting_parallel = BuildFlatSolid(0.25 * kTolerance * oblique_normal, oblique_normal, kNoMotion, 2);
+  reacting_parallel.reports_reaction = true;
+  SolidContactInputs next_step_inputs = BuildCaseInputs({
+      .start_position = 0.5 * kTolerance * oblique_normal,
+      .velocity = {},
+      .step_duration = 0.5,
+      .friction = 0,
+  });
+  next_step_inputs.velocity.for_next_step = {.x = -2, .y = 0, .z = -2};
+  cases.push_back({
+      .name = "ParallelSolidAfterStartResponseNextStepMoving",
+      .solids = {BuildFlatSolid({}, oblique_normal, kNoMotion, 1), reacting_parallel},
+      .inputs = next_step_inputs,
+  });
+  // The 60 degree wedge with the particle at rest tol / 2 from the floor and 1.2 tol from the other face: moving off
+  // the floor alone would leave that face 0.95 tol away, so the move goes on to the rest gap of both.
+  const double second_face_x = (1.2 + 0.25) * 2 / std::numbers::sqrt3 * kTolerance;  // m
+  cases.push_back({
+      .name = "SecondFaceNearOnlyAfterFloorMove",
+      .solids = {BuildFloor(1), BuildWedgeSide(2 * std::numbers::pi / 3, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = second_face_x, .y = 0, .z = kTolerance / 2}, {}, 0.01),
+  });
+  // The fixed floor and a plate 1200 tol thick inside it, its middle plane at z = -0.00025, with the particle at rest
+  // 0.0005 m inside the floor, below the plate: the floor's own move to its rest gap would pass through the plate.
+  SolidContactInputs below_plate_inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = -0.0005}, {}, 0.01);
+  below_plate_inputs.start_overlap_tolerance = 0.001;
+  cases.push_back({
+      .name = "StartInsideFloorBelowPlate",
+      .solids =
+          {
+              BuildFloor(1),
+              ToSolid(
+                  Plate{
+                      .center = {.x = 0, .y = 0, .z = -0.00025},
+                      .normal = kUnitZ,
+                      .half_thickness = 600 * kTolerance,
+                  },
+                  kNoMotion,
+                  2
+              ),
+          },
+      .inputs = below_plate_inputs,
+  });
+  // A wedge of 0.03 degrees, whose pair of faces would move a start at the apex 3819.7 tol out along the bisector b,
+  // and a plate across it with normal b, half thickness 600 tol, centred 700 tol along b: its faces 100 and 1300 tol
+  // out. The particle at rest at the apex for 0.1 s.
+  const double sharp_angle = 0.03 * std::numbers::pi / 180;  // rad
+  const Vec3 sharp_bisector = {.x = std::cos(sharp_angle / 2), .y = 0, .z = std::sin(sharp_angle / 2)};
+  cases.push_back({
+      .name = "PlateAcrossSharpWedge",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildWedgeSide(std::numbers::pi - sharp_angle, 2),
+              ToSolid(
+                  Plate{
+                      .center = 700 * kTolerance * sharp_bisector,
+                      .normal = sharp_bisector,
+                      .half_thickness = 600 * kTolerance,
+                  },
+                  kNoMotion,
+                  3
+              ),
+          },
+      .inputs = BuildApexAtRestInputs(),
   });
   return cases;
 }
@@ -1313,6 +1682,9 @@ inline std::vector<MoveParticleCase> BuildMoveParticleCases() {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildWedgeStartCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildSeveralSurfaceStartCases()) {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildBadInputCases()) {
