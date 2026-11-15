@@ -1,0 +1,24 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_f566031ae31b6a 69
+  s_4f0877e2acdcf0::t_67023874ef32c2 70,98-99,180,311,373-377,393-394,417-418
+README.md
+  s_4f0877e2acdcf0::t_424fc5f6a45eab 10
+docs/design/programme.md
+  s_4f0877e2acdcf0::t_b75a321d1d7cca 235,266
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3a85fd2875b8b3054bfa92daf790a62aa095e9d2",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
