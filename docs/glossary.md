@@ -91,6 +91,9 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `stick` | At a hit, friction takes all the sideways speed: the particle takes the solid's velocity. It happens when friction is at least the sideways speed divided by the speed into the solid. | |
 | `slip` | At a hit, friction takes only part of the sideways speed: the particle keeps moving along the surface, slower. | |
 | `reaction`, `SolidReaction`, `reports_reaction` | The change a solid makes to a particle's velocity for the next step, which the solid needs to compute the force on it. Only a solid with `reports_reaction` (driven or free) records it. | |
+| `touched surface`, `TouchedSurface` | A surface a particle met during the step: the solid's index and the normal recorded at the hit, one entry per hit. A solid may be touched more than once. `MoveParticle` settles the particle against its touched surfaces at the end of the step. | |
+| `settle` | At the end of a particle's move, each touched surface the particle is closer to than the contact tolerance moves it along its normal back to the rest gap (`MoveToRestGap`). | nudge |
+| `end check` | The last test of a particle's move: every solid at least half a contact tolerance from the end position, at its pose at the end of the step; otherwise the move is a close call (`kEndsTooCloseToSolid`). It keeps the promise that a particle never ends a step inside a solid. | certify (for this) |
 
 ## Particles and the particle-grid exchange
 

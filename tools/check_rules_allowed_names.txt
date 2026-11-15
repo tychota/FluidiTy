@@ -5,3 +5,5 @@ kNoGpuFound  # decided error value of RunOnError (Foundation plan)
 kGpuCallFailed  # decided error value of RunOnError (Foundation plan)
 kGpuMathDiffers  # decided error value of RunOnError (Foundation plan)
 ExpectVec3Near  # test-only check of contact/contact_test_cases.h, named by the contact plan (Task 3); follows GoogleTest's EXPECT_ wording
+MoveParticle  # the contact design's (3.4) one-particle move; Move is the verb of the MoveParticles stage
+MoveToRestGap  # private step named by the contact plan (Task 11): moves a point to one contact tolerance from a solid
