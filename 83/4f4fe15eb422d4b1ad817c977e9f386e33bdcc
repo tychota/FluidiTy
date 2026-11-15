@@ -1,0 +1,37 @@
+docs/method-paper/figures/contact_round_solids.typ
+  s_4f0877e2acdcf0::t_57fe36b844fadb 1-223,225-226
+  s_4f0877e2acdcf0::t_fb7753995c6e03 224,227-228
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_91c73dd7f26e18 1199-1200
+  s_4f0877e2acdcf0::t_ccf7e3ce53fad1 698-704
+  s_4f0877e2acdcf0::t_e0ee386be0b969 848-850
+  s_4f0877e2acdcf0::t_644c7f80e18e41 906-908
+  s_4f0877e2acdcf0::t_8e964d46682d82 928-934
+  s_4f0877e2acdcf0::t_3e937f6ed274f6 795-796
+  s_4f0877e2acdcf0::t_f89a122b57a73d 942-1132,1294
+  s_4f0877e2acdcf0::t_2c76b2acc11d7d 768-770
+  s_4f0877e2acdcf0::t_27c2e951cde736 714-717,720-721,732-739
+  s_4f0877e2acdcf0::t_3776886d5ba856 818-820
+  s_4f0877e2acdcf0::t_04804ea24511ae 775-780
+  s_4f0877e2acdcf0::t_dc254edebb4f78 874-875
+  s_4f0877e2acdcf0::t_d39c8cdf2e8ffc 884-886
+  s_4f0877e2acdcf0::t_a0d078622f2e2d 30,687-688,781,1133,1201-1202,1224-1225,1235-1236,1280-1282,1288-1289,1295-1296
+docs/method-paper/figures/contact_solid_shapes.typ
+  s_4f0877e2acdcf0::t_acf536cb0a9bce 1-4,119,121-122,124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "834f4fe15eb422d4b1ad817c977e9f386e33bdcc",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
