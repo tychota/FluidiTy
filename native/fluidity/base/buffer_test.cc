@@ -26,6 +26,7 @@ constexpr std::array kAllErrors = {
     BufferError::kOutOfMemory,
     BufferError::kRunOnCallFailed,
     BufferError::kSizeMismatch,
+    BufferError::kRunMemoryTooSmall,
 };
 
 TEST(BuildBuffer, OnCpu_HasTheAskedSize) {
@@ -312,6 +313,7 @@ TEST(ToName, EveryError_IsSnakeCaseWithoutK) {
   EXPECT_EQ(ToName(BufferError::kOutOfMemory), "out_of_memory");
   EXPECT_EQ(ToName(BufferError::kRunOnCallFailed), "run_on_call_failed");
   EXPECT_EQ(ToName(BufferError::kSizeMismatch), "size_mismatch");
+  EXPECT_EQ(ToName(BufferError::kRunMemoryTooSmall), "run_memory_too_small");
 }
 
 TEST(ToBufferError, EveryStatus_GivesItsError) {

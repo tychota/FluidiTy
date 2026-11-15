@@ -20,6 +20,7 @@
 #import "figures/buffer_crossings.typ": buffer-crossings-figure
 #import "figures/buffer_layers.typ": buffer-layers-figure
 #import "figures/one_operation_two_processors.typ": run-on-figure
+#import "figures/run_memory.typ": run-memory-figure
 #import "figures/tree_sum.typ": tree-sum-figure
 #import "figures/stable_order.typ": stable-order-figure
 
@@ -307,7 +308,8 @@ std::expected<Buffer<double>, BufferError> buffer =
 
 Building a GPU buffer first asks `CheckCanRunOn`, whose answer is remembered after the first call (@sec-run-on), so
 the math check does not run again for every buffer. A buffer never grows: a new size is a new buffer. Its memory
-starts as zero bytes, is aligned to 64 bytes, and is freed when the buffer is destroyed.
+starts as zero bytes, is aligned to 64 bytes, and is freed when the buffer is destroyed, except for a buffer built
+from the run's one block of memory, which frees nothing on its own (@sec-run-memory).
 
 Values cross between the processors only through `WriteBuffer` (CPU memory to a buffer) and `ReadBuffer` (a buffer
 to CPU memory) (@fig-buffer-crossings). Every copy to or from the GPU is therefore visible where it is called.
@@ -374,6 +376,66 @@ the try), give 1,000 × 24 × 2 = 48,000 bytes.
   caption: [A memory estimate of three entries for a run of 1,000 particles. Each entry gives items × bytes each ×
     copies; the sum is the peak with every array alive at once.],
 ) <tab-memory-estimate>
+
+=== One block of memory per run <sec-run-memory>
+
+A run does not ask the processor for each of its arrays one by one. It reserves one block of memory per processor
+at the start, a `RunMemory` (`base/run_memory.h`), sized by the memory estimate, and builds every buffer it keeps
+from that block. One reservation has three gains. Memory cannot fragment, because nothing is freed and asked for
+again while the run goes on. On the GPU, NVIDIA documents that `cudaMalloc` makes the whole device wait, so one
+allocation at the start replaces hundreds of waits. And the memory the run takes equals the plan: a report can
+compare the bytes handed out with the bytes planned, and any difference is a bug of the plan. Here `byte_count`
+comes from the memory estimate, as the end of this section shows:
+
+```cpp
+std::expected<RunMemory, BufferError> block =
+    BuildRunMemory(RunOn::kGpu, byte_count);
+std::expected<Buffer<double>, BufferError> buffer =
+    BuildBuffer<double>(RunOn::kGpu, size, *block);
+```
+
+A buffer built from a block takes a piece of it: the bytes right after the pieces handed out before
+(@fig-run-memory). Each piece starts at a multiple of 256 bytes from the start of the block, so a piece takes its
+byte count rounded up to a multiple of 256:
+
+$ "piece bytes" = 256 times ceil("byte count" / 256), $
+
+and a byte count of 0 takes nothing. 256 bytes is the alignment the CUDA manual promises for `cudaMalloc`, so a
+piece is aligned as a buffer of its own would be. The rule is the same on the CPU, so the bytes of a plan do not
+depend on the processor. The block itself starts where its processor puts it: at a multiple of 256 bytes on the
+GPU, and on the CPU at a multiple of 64 bytes, the promise of every CPU buffer. The block is filled with zero bytes
+once, when it is reserved, and a piece is never handed out twice, so every buffer still starts as zero bytes.
+
+Two rules keep this simple. A piece is never freed alone: destroying a buffer built from a block frees nothing,
+and its bytes stay taken until the block goes. The block outlives its pieces: it frees all its memory at once when
+it is destroyed, so a buffer must not be used after its block is gone. Each block counts its live pieces, and a
+debug build stops the program if a block is destroyed while one is still alive. A release build goes on: the
+values of those buffers are gone, but destroying them later is still safe, because the block leaves its small
+count behind for them. Moving a buffer or a block moves no memory and keeps the pieces where they are.
+
+A piece that does not fit in what is left of the block is refused with `kRunMemoryTooSmall`: nothing is taken and
+nothing is written, and the block is unchanged. It is an error, not a broken precondition, because the caller
+cannot guarantee it: what fits depends on a plan made elsewhere, and limits raised while the run goes on can
+cause it. The run reserves exactly what its estimate gives, so the error usually means the estimate missed an
+array.
+
+The bytes to reserve come from the same rounding, written once in `ComputeRunMemoryPieceBytes`. Over the entries
+kept in one memory (`MemoryWhere`), `ComputeRunMemoryBytes` adds the copies times the piece bytes of one copy, since
+every copy is its own buffer and its own piece. This is a contract for every module: each copy of an entry is
+exactly one buffer of items × bytes each. A module that keeps 24 bytes per particle as three buffers of 8 bytes
+writes three entries, since three pieces round three times: for 10 particles, 3 × 256 = 768 bytes, not 256. A GPU run reserves one block on the GPU for the `kRunOn` entries and one on the CPU for the `kCpu` entries;
+a CPU run reserves one block for both. Applied to @tab-memory-estimate, the positions take 2 × 24,064 = 48,128
+bytes (24,000 rounded up), the velocities 48,128 (48,000 rounded up), and the working buffers 1,024, already a
+multiple of 256: 97,280 bytes in all, 256 more than the sum without rounding. Building the four buffers from a
+block of 97,280 bytes hands out exactly 97,280 bytes.
+
+#figure(
+  run-memory-figure(),
+  placement: auto,
+  caption: [A block of 2,048 bytes after three buffers of 10, 100 and 3 doubles were built from it. Each piece
+    starts at a multiple of 256 bytes and takes its byte count rounded up to 256 (dashed: the rounding). The next
+    piece starts at the next free offset, which equals the bytes handed out so far.],
+) <fig-run-memory>
 
 = Sums in a fixed order <sec-fixed-order-sums>
 

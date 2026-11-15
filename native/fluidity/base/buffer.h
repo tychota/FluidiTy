@@ -4,10 +4,11 @@
 //   between CPU memory and those arrays.
 //
 // Idea: a buffer is built once for a processor (RunOn) and a size, and never grows. Its memory starts as zero
-//   bytes and is freed when the buffer is destroyed. Only WriteBuffer and ReadBuffer move values between CPU
-//   memory and a buffer, so every copy to or from the GPU is visible at the call. CopyBuffer copies between two
-//   buffers on the same processor. A slice is a run of `count` items starting at index `first`; each copy has a
-//   form that takes one. Every function checks sizes, slices and overlap before it touches memory. The span
+//   bytes and is freed when the buffer is destroyed, except for a piece: a buffer built from a RunMemory
+//   (base/run_memory.h) frees nothing, because its block frees all its pieces at once. Only WriteBuffer and ReadBuffer
+//   move values between CPU memory and a buffer, so every copy to or from the GPU is visible at the call. CopyBuffer
+//   copies between two buffers on the same processor. A slice is a run of `count` items starting at index `first`; each
+//   copy has a form that takes one. Every function checks sizes, slices and overlap before it touches memory. The span
 //   parameters take a std::vector or a std::array directly: the value type comes from the buffer.
 //   Example: a buffer of 5 doubles holds {1, 2, 3, 4, 5}, and `const std::array<double, 2> values = {20, 30};`.
 //   WriteBuffer(values, buffer, 1) makes the buffer {1, 20, 30, 4, 5}. WriteBuffer(values, buffer, 4) returns
@@ -70,6 +71,9 @@ enum class BufferError : std::uint8_t {
   // overlap; or a count or a total is above what the function can index (each function's Fails says which). The
   // last case can come from a scene that is too large, not only from a bug in the caller.
   kSizeMismatch,
+  // A buffer built from a RunMemory did not fit in the bytes the block has left. The run reserves exactly what its
+  // memory estimate gives, so this is a planning error: the estimate missed an array. Nothing was taken or written.
+  kRunMemoryTooSmall,
 };
 
 // Converts how a GPU half ended (base/run_on_call.h) to its BufferError: kDone gives kNone, kOutOfMemory gives
@@ -110,6 +114,9 @@ concept BufferValue = std::is_trivially_copyable_v<Value> && alignof(Value) <= k
 template <BufferValue Value>
 class Buffer;
 
+// One reserved block of memory that hands out buffers (base/run_memory.h).
+class RunMemory;
+
 // Builds a buffer of `size` values on `run_on`, every byte zero.
 //
 // Method: checks the byte count, then, for RunOn::kGpu, calls CheckCanRunOn(RunOn::kGpu), whose answer is computed
@@ -135,6 +142,9 @@ BuildBuffer(RunOn run_on, std::size_t size, CpuMemory cpu_memory = CpuMemory::kO
 // and keeps its run_on(). The size never changes: a new size is a new buffer. The destructor frees the memory.
 // When freeing GPU or locked memory fails there, the failure cannot be reported and is ignored: the GPU is then
 // already broken, and the next GPU call reports it.
+// A piece, a buffer built from a RunMemory, owns no memory: its destructor and a move assignment onto it free
+// nothing and only count the piece out of its block. Requires: the block outlives its pieces; if it does not, their
+// values are gone, but destroying them is still safe (base/run_memory.h).
 template <BufferValue Value>
 class Buffer {
  public:
@@ -145,21 +155,23 @@ class Buffer {
   Buffer(Buffer&& other) noexcept
       : values_(std::exchange(other.values_, nullptr)),
         size_(std::exchange(other.size_, 0)),
+        live_piece_count_(std::exchange(other.live_piece_count_, nullptr)),
         run_on_(other.run_on_),
         cpu_memory_used_(other.cpu_memory_used_) {
   }
   Buffer& operator=(Buffer&& other) noexcept {
     if (this != &other) {
-      FreeBufferBytes(run_on_, cpu_memory_used_, values_);
+      GiveUpValues();
       values_ = std::exchange(other.values_, nullptr);
       size_ = std::exchange(other.size_, 0);
+      live_piece_count_ = std::exchange(other.live_piece_count_, nullptr);
       run_on_ = other.run_on_;
       cpu_memory_used_ = other.cpu_memory_used_;
     }
     return *this;
   }
   ~Buffer() {
-    FreeBufferBytes(run_on_, cpu_memory_used_, values_);
+    GiveUpValues();
   }
 
   // The number of values. 0 for an empty or moved-from buffer.
@@ -185,17 +197,45 @@ class Buffer {
   template <BufferValue BuiltValue>
   friend std::expected<Buffer<BuiltValue>, BufferError>
   BuildBuffer(RunOn run_on, std::size_t size, CpuMemory cpu_memory);
+  template <BufferValue BuiltValue>
+  friend std::expected<Buffer<BuiltValue>, BufferError>
+  BuildBuffer(RunOn run_on, std::size_t size, RunMemory& run_memory);
 
-  // Takes ownership of `values`, built by BuildBufferBytes as `cpu_memory_used` says.
-  Buffer(Value* values, std::size_t size, RunOn run_on, CpuMemory cpu_memory_used)
-      : values_(values), size_(size), run_on_(run_on), cpu_memory_used_(cpu_memory_used) {
+  // Takes ownership of `values`, built by BuildBufferBytes as `cpu_memory_used` says. With a `live_piece_count`, the
+  // values are a piece of the RunMemory that counts its live pieces there, and the buffer owns nothing.
+  Buffer(
+      Value* values,
+      std::size_t size,
+      RunOn run_on,
+      CpuMemory cpu_memory_used,
+      std::size_t* live_piece_count = nullptr
+  )
+      : values_(values),
+        size_(size),
+        live_piece_count_(live_piece_count),
+        run_on_(run_on),
+        cpu_memory_used_(cpu_memory_used) {
+  }
+
+  // Frees the values a buffer owns, or counts a piece out of its block, which frees the piece's bytes later with the
+  // whole block.
+  void GiveUpValues() {
+    if (live_piece_count_ != nullptr) {
+      --*live_piece_count_;
+      return;
+    }
+    FreeBufferBytes(run_on_, cpu_memory_used_, values_);
   }
 
   Value* values_ = nullptr;
   std::size_t size_ = 0;
+  // For a piece, the live-piece count of its RunMemory, which lives on the heap; null when the buffer owns its values.
+  // Kept in every build, so release and debug builds lay Buffer out the same way, at 8 bytes per buffer object.
+  std::size_t* live_piece_count_ = nullptr;
   RunOn run_on_ = RunOn::kCpu;
   // Which CPU memory holds the values. kLockedForCopies only when locked memory was really obtained, so the
-  // destructor frees it the same way. Not read for a GPU buffer.
+  // destructor frees it the same way. For a piece it records the kind of its block, and nothing is ever freed
+  // through it. Not read for a GPU buffer.
   CpuMemory cpu_memory_used_ = CpuMemory::kOrdinary;
 };
 

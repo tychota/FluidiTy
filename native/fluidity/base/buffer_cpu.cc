@@ -211,6 +211,9 @@ std::string_view ToMessage(BufferError error) {
     case BufferError::kSizeMismatch:
       return "Sizes do not fit: two arrays differ in size, a range lies outside its array, or a count is above what "
              "the operation can handle. Check the sizes passed in; a scene too large for that limit gives this too.";
+    case BufferError::kRunMemoryTooSmall:
+      return "An array did not fit in the memory reserved for the run. This is a planning error in FluidiTy, not a "
+             "lack of memory on the machine: the memory estimate missed an array. Please report it.";
   }
   return "An unknown buffer error happened.";
 }
@@ -239,6 +242,8 @@ std::string_view ToName(BufferError error) {
       return "run_on_call_failed";
     case BufferError::kSizeMismatch:
       return "size_mismatch";
+    case BufferError::kRunMemoryTooSmall:
+      return "run_memory_too_small";
   }
   return "unknown";
 }
