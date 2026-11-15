@@ -777,14 +777,16 @@ that names no plate among the solids is a bad input.
 
 === Checks before the step
 
-`CheckSolid` checks one solid: finite values; axes that form a rotation, each column a unit vector up to a squared
-length within $2^(-40)$ of 1; positive sizes, with a sphere's three half sizes equal and a cylinder's first two
-equal (both are stored in `half_size`: the radius three times for a sphere, the radius twice and the half height
-for a cylinder); a nonzero id; a domain box that does not move and has at least one closed side; and a turn of at
-most a quarter turn during the step, $|bold(omega)| T <= pi\/2$. A larger turn asks for a shorter step. For the
-sphere and the cylinder only the turn that changes the shape counts (@sec-round-solids): a sphere never fails this
-check, and a cylinder may spin about its own axis at any rate. The step calls it once per step for every solid;
-`MoveParticle` trusts that call and does not repeat it.
+`CheckSolid` checks one solid: finite values and a step duration $T > 0$; axes that form a rotation, each column a
+unit vector up to a squared length within $2^(-40)$ of 1, each pair of columns at right angles up to a dot product
+of at most $2^(-40)$ in absolute value, and a positive determinant, so the axes are not a mirror image; positive
+sizes, with a sphere's three half sizes equal and a cylinder's first two equal (both are stored in `half_size`: the
+radius three times for a sphere, the radius twice and the half height for a cylinder); a nonzero id; a
+`friction_scale` of zero or more; a domain box that does not move, keeps exactly the world axes ($A = I$) and has at
+least one closed side; and a turn of at most a quarter turn during the step, $|bold(omega)| T <= pi\/2$. A larger
+turn asks for a shorter step. For the sphere and the cylinder only the turn that changes the shape counts
+(@sec-round-solids): a sphere never fails this check, and a cylinder may spin about its own axis at any rate. The
+step calls it once per step for every solid; `MoveParticle` trusts that call and does not repeat it.
 
 == The contact tolerance <sec-contact-tolerance>
 

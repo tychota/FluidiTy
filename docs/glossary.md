@@ -46,11 +46,21 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 
 | Say | Plain meaning | Never say |
 | --- | --- | --- |
-| `solid` | Anything the liquid cannot enter. | wall, obstacle, body (for a solid) |
-| `DomainBox`, `domain_side_...` | The box the liquid lives in, open at the top. Its faces are domain sides. | tank, wall |
-| `FlatSolid` | Fills one side of a plane. | halfspace |
-| `Plate` | Thin solid with two faces. | slab, blade |
-| `Box` | Solid with six faces. | |
+| `solid`, `Solid`, `SolidShape` | Anything the liquid cannot enter. `Solid` is what the contact code reads: a shape, its pose at the start of the step and its motion during the step. | wall (for a whole solid), obstacle, body (for a solid) |
+| `DomainBox`, `domain box`, `domain_side_...`, `DomainSide`, `ClosedSides` | The box the liquid lives in, open at the top by default. It is fixed and aligned with the world axes. Its faces are domain sides; a closed side stops particles. | tank, wall (for a domain side) |
+| `FlatSolid`, `flat solid` | Fills one side of a plane. | halfspace |
+| `Plate`, `plate` | Thin solid with two faces, unbounded sideways. | slab, blade |
+| `Box`, `box` | Solid with six flat faces. | |
+| `Sphere`, `sphere` | Round solid: every point within `radius` of its centre. | |
+| `Cylinder`, `cylinder` | Finite solid cylinder: a round `wall` around its axis and two flat `cap`s. | |
+| `wall` (of a cylinder) | The round surface of a cylinder, around its axis. Face `kCurved`. Only for a cylinder: a whole solid or a domain side is never a wall. | |
+| `cap` | One of the two flat ends of a cylinder. Faces `kLowZ` and `kHighZ`. | |
+| `rim` | The circle where a cylinder's wall meets a cap. Faces `kLowRim` and `kHighRim`. | |
+| `spin` | A turn about a sphere's centre or a cylinder's axis. It moves the surface but not the shape, so it does not count toward the turn limit of a step. | |
+| `plate side`, `PlateSide`, `SolidSide` | One of the two sides of one plate, as a stable identity: the plate's id and the side. Particles on different plate sides never exchange values. | side_tag |
+| `solid face`, `SolidFace` | One part of a solid's surface, named in the solid's own axes: `kLowX` to `kHighZ` for flat faces, `kCurved`, `kLowRim`, `kHighRim` for round ones. | |
+| `pose`, `SolidPose` | Where a solid is: the origin of its own axes, m, and the rotation whose columns are those axes in the world. | |
+| `motion`, `SolidMotion` | How a solid moves during one step: the linear velocity of its origin, m/s, and its angular velocity about the origin, rad/s. Constant during the step. | |
 | `fixed`, `driven`, `free` | Motion: never moves; follows a given path; pushed by the liquid. Combine with a shape: `DrivenFlatSolid`, `DrivenPlate`, `FreeBox`. | prescribed, rigid body, floating (for motion) |
 | `wave_paddle` (a variable, not a type) | The driven flat solid that makes waves. It is its own solid, not part of the domain box. | piston |
 | `solid_velocity`, `SolidVelocitySample` | m/s. Velocity of a solid's surface. | wall_velocity, LiquidPrescribedWallSample3D |

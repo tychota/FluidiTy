@@ -1,8 +1,10 @@
 fluidity_add_headers(
   contact_error.h
   contact_error_message.h
+  solid_shapes.h
 )
 
 target_sources(fluidity PRIVATE contact_error_message.cc)
 
 fluidity_add_test(contact_error_test SOURCES contact_error_test.cc LABEL cpu)
+fluidity_add_test(solid_shapes_test SOURCES solid_shapes_test.cc LABEL cpu)
