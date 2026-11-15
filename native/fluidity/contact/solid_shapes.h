@@ -35,14 +35,16 @@
 //   cap         one of the two flat ends of a cylinder (faces kLowZ and kHighZ)
 //   rim         the circle where a cylinder's wall meets a cap (faces kLowRim and kHighRim)
 //   spin        a turn about a sphere's centre or a cylinder's axis: it moves the surface but not the shape
+//   degenerate normal  the normal chosen where several directions are equally near: at a sphere's centre, and
+//                      on a cylinder's axis where the wall is nearer than the caps. Minus the solid's own x axis
 // Owns:    SolidShape, SolidFace, SolidSide, PlateSide, FlatSolid, Plate, Box, Sphere, Cylinder, ClosedSides,
 //          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, ToSolid,
 //          ComputeShapeTurningAngularVelocity, CheckSolid, DistanceToSolid, ComputeSolidPose, ComputeSolidVelocity,
-//          ComputeDistanceToSolid, DomainSide, ToSolidFace
+//          ComputeDistanceToSphere, ComputeDistanceToCylinder, ComputeDistanceToSolid, DomainSide, ToSolidFace
 // Uses:    Vec3, math::Cross, math::Dot, math::Length, math::Normalized, math::IsFinite (base/vec3.h),
 //          Mat3, kIdentity, math::Determinant, math::Transpose, math::Rotation (base/mat3.h), Axis,
 //          math::UnitVector (base/axis.h),
-//          math::Abs, math::Max (base/scalar_math.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
+//          math::Abs, math::Max, math::Sqrt (base/scalar_math.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
 //          ContactError, ContactCloseCall (contact/contact_error.h)
 // Used by: every contact function, the solids module, which builds the solids of a scene, and the step
 // Read:    docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>, <sec-round-solids>
@@ -501,6 +503,100 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeSolidVelocity(const Solid& solid, Sol
   return solid.motion.linear_velocity + math::Cross(solid.motion.angular_velocity, arm);
 }
 
+// Computes the distance from a point to a sphere, as ComputeDistanceToSolid does for a sphere: |p| - radius, face
+// kCurved, normal p / |p|, written in world axes with solid_axes.
+//
+// Method: same bits on CPU and GPU: only + - * /, Sqrt and a comparison. At the centre, Dot(p, p) = 0 as computed,
+//   every direction is nearest and the normal is the degenerate normal, minus the x column of solid_axes.
+// Units: m. own_point is in the sphere's own axes, from its centre.
+// Example: radius 0.5, solid_axes kIdentity, own point {0.375, 0, 0.5}: distance 0.125, normal {0.6, 0, 0.8}.
+// Requires: solid_axes is a rotation.
+// Read: docs/method-paper/fluidity-method.typ <eq:sphere-distance>
+FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSphere(Vec3 own_point, double radius, Mat3 solid_axes) {
+  // Method paper <eq:sphere-distance>:  d = |p| - radius,  n = p / |p|
+  const double center_distance_squared = math::Dot(own_point, own_point);
+  const double center_distance = math::Sqrt(center_distance_squared);
+  const double distance = center_distance - radius;
+  // At the centre every direction is nearest: the degenerate normal is the kLowX normal, as a box's tie gives.
+  // The test is on the computed square, so the CPU and the GPU take the same branch.
+  if (center_distance_squared == 0) {
+    const Vec3 own_x_axis = {.x = solid_axes.xx, .y = solid_axes.yx, .z = solid_axes.zx};
+    return {.distance = distance, .normal_out_of_solid = -own_x_axis, .face = SolidFace::kCurved};
+  }
+  const Vec3 own_normal = {
+      .x = own_point.x / center_distance,
+      .y = own_point.y / center_distance,
+      .z = own_point.z / center_distance,
+  };
+  return {.distance = distance, .normal_out_of_solid = solid_axes * own_normal, .face = SolidFace::kCurved};
+}
+
+// Computes the distance from a point to a cylinder, as ComputeDistanceToSolid does for a cylinder, with the normal
+// in world axes (written with solid_axes) and the face of the region: rim, wall or cap.
+//
+// Method: wall_distance = Sqrt(p.x^2 + p.y^2) - radius, cap_distance = |p.z| - half_height, and the distance
+//   Sqrt(max(wall_distance, 0)^2 + max(cap_distance, 0)^2) + min(max(wall_distance, cap_distance), 0) in every
+//   region. The regions are tried in the order rim, wall, cap; ComputeDistanceToSolid states them and their ties.
+//   Same bits on CPU and GPU: only + - * /, Abs, Sqrt and comparisons. A NaN gap gives a NaN distance.
+// Units: m. own_point is in the cylinder's own axes, from its centre; its own z axis is the cylinder's axis.
+//   half_size is {radius, radius, half_height}, as a Solid holds it.
+// Example: half_size {0.5, 0.5, 0.25}, solid_axes kIdentity, own point {0.8, 0, 0.65}: gaps 0.3 and 0.4,
+//   distance 0.5, face kHighRim, normal {0.6, 0, 0.8}.
+// Requires: solid_axes is a rotation.
+// Read: docs/method-paper/fluidity-method.typ <eq:cylinder-distance>
+FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToCylinder(Vec3 own_point, Vec3 half_size, Mat3 solid_axes) {
+  // Method paper <eq:cylinder-distance>:  d_wall = rho - radius,  d_cap = |p_z| - half_height,
+  //   d = Sqrt(max(d_wall, 0)^2 + max(d_cap, 0)^2) + min(max(d_wall, d_cap), 0)
+  const double axis_distance_squared = own_point.x * own_point.x + own_point.y * own_point.y;
+  const double axis_distance = math::Sqrt(axis_distance_squared);  // rho
+  const double wall_distance = axis_distance - half_size.x;
+  const double cap_distance = math::Abs(own_point.z) - half_size.z;
+  // One expression for every region, so both sides of a region boundary give the same distance. A NaN in either
+  // gap reaches the distance through these comparisons; math::Max would drop it, and a NaN point would get the
+  // distance 0.
+  const double wall_distance_outside = wall_distance < 0 ? 0 : wall_distance;
+  const double cap_distance_outside = cap_distance < 0 ? 0 : cap_distance;
+  const double larger_distance = wall_distance < cap_distance ? cap_distance : wall_distance;
+  const double larger_distance_inside = larger_distance > 0 ? 0 : larger_distance;
+  const double distance =
+      math::Sqrt(wall_distance_outside * wall_distance_outside + cap_distance_outside * cap_distance_outside)
+      + larger_distance_inside;
+  // sigma_z: the cap on the point's side. The middle plane p.z = 0 counts as the high side, as for a plate.
+  const bool is_high_side = own_point.z >= 0;
+  const double cap_sign = is_high_side ? 1 : -1;
+  const Vec3 own_x_axis = {.x = solid_axes.xx, .y = solid_axes.yx, .z = solid_axes.zx};
+  const Vec3 own_z_axis = {.x = solid_axes.xz, .y = solid_axes.yz, .z = solid_axes.zz};
+
+  // The branches choose only the normal and the face, in the order rim, wall, cap.
+  const bool is_beyond_wall = wall_distance > 0;
+  const bool is_beyond_cap = cap_distance > 0;
+  if (is_beyond_wall && is_beyond_cap) {
+    // Method paper <eq:cylinder-distance>:  n = (d_wall e_rho + d_cap sigma_z e_z) / d
+    // Beyond the wall, axis_distance > radius > 0, so e_rho has a direction.
+    const Vec3 own_normal = {
+        .x = wall_distance * (own_point.x / axis_distance) / distance,
+        .y = wall_distance * (own_point.y / axis_distance) / distance,
+        .z = cap_distance * cap_sign / distance,
+    };
+    const SolidFace rim_face = is_high_side ? SolidFace::kHighRim : SolidFace::kLowRim;
+    return {.distance = distance, .normal_out_of_solid = solid_axes * own_normal, .face = rim_face};
+  }
+  // When both gaps are zero or less, a tie between the wall and a cap goes to the wall.
+  if (wall_distance >= cap_distance) {
+    // On the axis e_rho has no direction: the degenerate normal, as at a sphere's centre. The wall wins there only
+    // when -radius >= cap_distance, so only inside a cylinder at least as long as it is wide.
+    if (axis_distance_squared == 0) {
+      return {.distance = distance, .normal_out_of_solid = -own_x_axis, .face = SolidFace::kCurved};
+    }
+    const Vec3 own_normal = {.x = own_point.x / axis_distance, .y = own_point.y / axis_distance, .z = 0};
+    return {.distance = distance, .normal_out_of_solid = solid_axes * own_normal, .face = SolidFace::kCurved};
+  }
+  if (is_high_side) {
+    return {.distance = distance, .normal_out_of_solid = own_z_axis, .face = SolidFace::kHighZ};
+  }
+  return {.distance = distance, .normal_out_of_solid = -own_z_axis, .face = SolidFace::kLowZ};
+}
+
 // Computes the distance from a world point to a solid at a given pose, positive outside and negative inside, with
 // the normal and the face that give it.
 //
@@ -513,19 +609,38 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeSolidVelocity(const Solid& solid, Sol
 //               face when p.axis <= 0, else the high face; the normal is that face's own axis, pointing out.
 //   domain box  distance min over the closed sides of the gap from the point to that side. The normal points
 //               into the box.
-//   The normal is a column of pose.axes or its negative, so writing it back in world axes adds no rounding.
-//   Same bits on CPU and GPU for a given pose: only + - *, Abs and comparisons. A NaN in the point or the pose
-//   gives a NaN distance.
+//   sphere      distance |p| - radius, the true distance to the surface. Face kCurved, normal p / |p|.
+//   cylinder    the true distance to the surface, from the two gaps wall_distance = Sqrt(p.x^2 + p.y^2) - radius
+//               and cap_distance = |p.z| - half_height, by one expression for every region:
+//               Sqrt(max(wall_distance, 0)^2 + max(cap_distance, 0)^2) + min(max(wall_distance, cap_distance), 0).
+//               The region gives the face and the normal. The regions are tried in the order rim, wall, cap.
+//               Rim: both gaps are positive. The face is kHighRim when p.z >= 0, else kLowRim. The normal points
+//               from the nearest point of the rim circle to the point.
+//               Wall: wall_distance >= cap_distance. The face is kCurved. The normal points straight away from the
+//               axis.
+//               Cap: every other point. The face is the cap on the point's side, kHighZ when p.z >= 0, else kLowZ.
+//               The normal is the own +z or -z axis.
+//   For the flat faces the normal is a column of pose.axes or its negative, so writing it back in world axes adds
+//   no rounding; a round normal is turned back with pose.axes, which rounds. Same bits on CPU and GPU for a given
+//   pose: only + - * /, Abs, Sqrt and comparisons. A NaN in the point or the pose gives a NaN distance.
 // Ties: when two faces of a box or a domain box give the same distance, the first in the order kLowX, kHighX,
 //   kLowY, kHighY, kLowZ, kHighZ is reported, so on the middle plane of a box's axis (p.axis = 0) the low face is
-//   reported. A plate's middle plane, p.z = 0, gives kHighZ by the plate's own rule.
+//   reported. A plate's middle plane, p.z = 0, gives kHighZ by the plate's own rule, and so do a cylinder's caps.
+//   Inside a cylinder, a tie between the wall and a cap goes to the wall. Where every direction is nearest, at a
+//   sphere's centre and on a cylinder's axis in the wall region, the degenerate normal is minus the x column of
+//   pose.axes, the normal of kLowX, as a box's tie gives.
 // Example: a box at the origin with world axes and half sizes {1, 1, 1}. The point {3, 0, 0}: distance 2, face
 //   kHighX, normal {1, 0, 0}. The point {0.9, 0, 0.5}: -0.1, kHighX. The point {-2, -2, 0}: 1, kLowX (a tie
 //   with kLowY). The domain box from {0, 0, 0} to {1, 1, 1} with an open top and the point {0.5, 0.5, 0.95}:
 //   0.5, kLowX (four sides tie), normal {1, 0, 0}.
+//   A sphere at {1, 2, 3} with radius 0.5 and the point {1.375, 2, 3.5}: 0.125, kCurved, normal {0.6, 0, 0.8}.
+//   A cylinder along z at the origin with radius 0.5 and half height 0.25. The point {0.8, 0, 0.65}: gaps 0.3 and
+//   0.4, distance 0.5, kHighRim, normal {0.6, 0, 0.8}. The point {0.1, 0, 0.2}: gaps -0.4 and -0.05, distance
+//   -0.05, kHighZ, normal {0, 0, 1}.
 // Requires: pose.axes is a rotation (the pose of a solid that passed CheckSolid, from ComputeSolidPose). The shape
-//   is a flat solid, a plate, a box or a domain box. A domain box has a closed side.
-// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>
+//   is one of SolidShape's values. A domain box has a closed side.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>, <eq:sphere-distance>,
+//       <eq:cylinder-distance>
 FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& solid, SolidPose pose, Vec3 point) {
   // Steps: 1 turn the point into the solid's own axes  2 distance of the shape
   // Step 1: the axes are a rotation (CheckSolid), so the transpose undoes the turn.
@@ -602,10 +717,11 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& 
       return nearest;
     }
     case SolidShape::kSphere:
+      return ComputeDistanceToSphere(own_point, half_size.x, pose.axes);
     case SolidShape::kCylinder:
-      break;
+      return ComputeDistanceToCylinder(own_point, half_size, pose.axes);
   }
-  // A sphere, a cylinder or an unknown shape has no formula here, so reaching this line is a caller bug.
+  // An unknown shape has no formula, so reaching this line is a caller bug: CheckSolid refuses it.
   assert(false && "ComputeDistanceToSolid has no formula for this shape");
   return DistanceToSolid{};
 }

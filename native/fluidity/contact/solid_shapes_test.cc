@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <numbers>
 #include <type_traits>
@@ -886,6 +887,470 @@ TEST(ComputeDistanceToSolid, DomainBoxEachClosedSide_ReportsItsSide) {
     SCOPED_TRACE(static_cast<int>(face_case.face));
     ExpectFaceCase(solid, face_case);
   }
+}
+
+// m for distances, no unit for normals. The brief's 1e-15: the round solids' worst case here is one rounding unit
+// of 2 (4.4e-16), from the square root, a division and the turn through the axes.
+constexpr double kRoundSolidTolerance = 1e-15;
+
+void ExpectFaceCaseNear(const Solid& solid, const FaceCase& face_case) {
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, face_case.point);
+  EXPECT_NEAR(distance.distance, face_case.distance, kRoundSolidTolerance);
+  EXPECT_EQ(distance.face, face_case.face);
+  ExpectVec3Near(distance.normal_out_of_solid, face_case.normal_out_of_solid, kRoundSolidTolerance);
+}
+
+// A sphere at {1, 2, 3} with radius 0.5 that does not move.
+Solid BuildOffsetSphere() {
+  const Sphere sphere = {.center = {.x = 1, .y = 2, .z = 3}, .radius = 0.5};
+  return ToSolid(sphere, kNoMotion, 6);
+}
+
+// A cylinder that does not move, centred at the origin, with the given axis, radius and half height.
+Solid BuildStillCylinder(Vec3 axis, double radius, double half_height) {
+  const Cylinder cylinder = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .axis = axis,
+      .radius = radius,
+      .half_height = half_height,
+  };
+  return ToSolid(cylinder, kNoMotion, 8);
+}
+
+// The cylinder of most round-solid tests: along world z, radius 1, half height 0.5. ToSolid gives it the axes
+// x {0, -1, 0}, y {1, 0, 0}, z {0, 0, 1}, so its own x axis is not world x.
+Solid BuildWideCylinder() {
+  return BuildStillCylinder({.x = 0, .y = 0, .z = 1}, 1, 0.5);
+}
+
+TEST(ComputeDistanceToSolid, SphereOutside_IsDistanceMinusRadius) {
+  const Solid solid = BuildOffsetSphere();
+
+  // {0.375, 0, 0.5} from the centre is 0.625 long, a 3-4-5 triangle scaled by 0.125.
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 1, .y = 2, .z = 4},
+          .distance = 0.5,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 1.375, .y = 2, .z = 3.5},
+          .distance = 0.125,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 0.6, .y = 0, .z = 0.8},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, SphereInside_IsNegative) {
+  ExpectFaceCaseNear(
+      BuildOffsetSphere(),
+      {
+          .point = {.x = 1, .y = 2, .z = 3.25},
+          .distance = -0.25,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, SphereCentre_NormalIsMinusSolidXAxis) {
+  // Every direction is nearest at the centre. A sphere's axes are kIdentity, so minus its x axis is {-1, 0, 0}.
+  ExpectFaceCaseNear(
+      BuildOffsetSphere(),
+      {
+          .point = {.x = 1, .y = 2, .z = 3},
+          .distance = -0.5,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = -1, .y = 0, .z = 0},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, TurnedSphereCentre_NormalIsMinusPoseXAxis) {
+  // A spinning sphere's pose turns. After a quarter turn about z its x axis is world y, so the degenerate normal
+  // is {0, -1, 0}: the rule follows the pose, not the world.
+  const Solid solid = BuildOffsetSphere();
+  const SolidPose turned_pose = {
+      .origin = solid.pose_at_step_start.origin,
+      .axes = BuildAxesFromColumns({.x = 0, .y = 1, .z = 0}, {.x = -1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = 1}),
+  };
+
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, turned_pose, {.x = 1, .y = 2, .z = 3});
+
+  EXPECT_EQ(distance.distance, -0.5);
+  EXPECT_EQ(distance.face, SolidFace::kCurved);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = -1, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, TurnedSphere_NormalIsInWorldAxes) {
+  // The same quarter turn: the world direction {0, 0.6, 0.8} from the centre is the own direction {0.6, 0, 0.8}.
+  // Leaving the normal in own axes would give {0.6, 0, 0.8}.
+  const Solid solid = BuildOffsetSphere();
+  const SolidPose turned_pose = {
+      .origin = solid.pose_at_step_start.origin,
+      .axes = BuildAxesFromColumns({.x = 0, .y = 1, .z = 0}, {.x = -1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = 1}),
+  };
+
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, turned_pose, {.x = 1, .y = 2.375, .z = 3.5});
+
+  EXPECT_NEAR(distance.distance, 0.125, kRoundSolidTolerance);
+  EXPECT_EQ(distance.face, SolidFace::kCurved);
+  ExpectVec3Near(distance.normal_out_of_solid, {.x = 0, .y = 0.6, .z = 0.8}, kRoundSolidTolerance);
+}
+
+TEST(ComputeDistanceToSolid, CylinderWall_IsRadialGap) {
+  // wall_distance 2, cap_distance -0.25.
+  ExpectFaceCaseNear(
+      BuildWideCylinder(),
+      {
+          .point = {.x = 3, .y = 0, .z = 0.25},
+          .distance = 2,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderCaps_AreHeightGaps) {
+  const Solid solid = BuildWideCylinder();
+
+  // wall_distance -0.5 for both; cap_distance 1.5 above, 1 below.
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0.5, .y = 0, .z = 2},
+          .distance = 1.5,
+          .face = SolidFace::kHighZ,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0, .y = 0.5, .z = -1.5},
+          .distance = 1,
+          .face = SolidFace::kLowZ,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = -1},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderRims_AreDistanceToTheCircle) {
+  const Solid solid = BuildWideCylinder();
+
+  // wall_distance 0.375 and cap_distance 0.5 for both: the distance to the rim circle is 0.625.
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 1.375, .y = 0, .z = 1},
+          .distance = 0.625,
+          .face = SolidFace::kHighRim,
+          .normal_out_of_solid = {.x = 0.6, .y = 0, .z = 0.8},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0, .y = -1.375, .z = -1},
+          .distance = 0.625,
+          .face = SolidFace::kLowRim,
+          .normal_out_of_solid = {.x = 0, .y = -0.6, .z = -0.8},
+      }
+  );
+  // wall_distance 0.5 is the larger gap here, so trying the wall before the rim would wrongly take the wall.
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 1.5, .y = 0, .z = 0.875},
+          .distance = 0.625,
+          .face = SolidFace::kHighRim,
+          .normal_out_of_solid = {.x = 0.8, .y = 0, .z = 0.6},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderInside_NearerOfWallAndCap) {
+  const Solid solid = BuildWideCylinder();
+
+  // {0.9, 0, 0}: wall_distance -0.1, cap_distance -0.5. {0, 0, 0.375}: wall_distance -1, cap_distance -0.125.
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0.9, .y = 0, .z = 0},
+          .distance = -0.1,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0, .y = 0, .z = 0.375},
+          .distance = -0.125,
+          .face = SolidFace::kHighZ,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderInsideTie_TakesWall) {
+  // wall_distance and cap_distance are both -0.25.
+  ExpectFaceCaseNear(
+      BuildWideCylinder(),
+      {
+          .point = {.x = 0.75, .y = 0, .z = 0.25},
+          .distance = -0.25,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderMiddlePlaneInCapRegion_TakesHighCap) {
+  // At the centre of the wide cylinder, wall_distance -1 and cap_distance -0.5: the caps are nearer and tie, and
+  // p.z = 0 takes the high cap.
+  ExpectFaceCaseNear(
+      BuildWideCylinder(),
+      {
+          .point = {.x = 0, .y = 0, .z = 0},
+          .distance = -0.5,
+          .face = SolidFace::kHighZ,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderOnAxis_NormalIsMinusSolidXAxis) {
+  // Radius 0.25, half height 2: at the centre, wall_distance -0.25 beats cap_distance -2, and the axis has no
+  // radial direction. ToSolid gives an upright cylinder the x axis {0, -1, 0}, so the normal is {0, 1, 0}.
+  const Solid solid = BuildStillCylinder({.x = 0, .y = 0, .z = 1}, 0.25, 2);
+  ASSERT_EQ(ToColumnX(solid.pose_at_step_start.axes).y, -1);
+
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0, .y = 0, .z = 0},
+          .distance = -0.25,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 0, .y = 1, .z = 0},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, CylinderRegionBoundaries_AreContinuous) {
+  const Solid solid = BuildWideCylinder();
+
+  // {1, 0, 0.75}: wall_distance 0, cap_distance 0.25, on the edge of the rim region: the cap.
+  // {1.25, 0, 0.5}: wall_distance 0.25, cap_distance 0, on the other edge: the wall. Both are 0.25 away.
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 1, .y = 0, .z = 0.75},
+          .distance = 0.25,
+          .face = SolidFace::kHighZ,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 1.25, .y = 0, .z = 0.5},
+          .distance = 0.25,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+      }
+  );
+  // One rounding unit to each side of each border: the region changes, the distance does not. A region whose
+  // distance were off by any amount above the tolerance would show here.
+  const auto expect_distance_and_face = [&solid](Vec3 point, SolidFace face) {
+    const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, point);
+    EXPECT_NEAR(distance.distance, 0.25, kRoundSolidTolerance);
+    EXPECT_EQ(distance.face, face);
+  };
+  expect_distance_and_face({.x = std::nextafter(1.0, 2.0), .y = 0, .z = 0.75}, SolidFace::kHighRim);
+  expect_distance_and_face({.x = std::nextafter(1.0, 0.0), .y = 0, .z = 0.75}, SolidFace::kHighZ);
+  expect_distance_and_face({.x = 1.25, .y = 0, .z = std::nextafter(0.5, 1.0)}, SolidFace::kHighRim);
+  expect_distance_and_face({.x = 1.25, .y = 0, .z = std::nextafter(0.5, 0.0)}, SolidFace::kCurved);
+}
+
+TEST(ComputeDistanceToSolid, CylinderExactlyOnRim_TakesWall) {
+  // wall_distance and cap_distance are both 0. The rim needs both gaps positive, and the wall wins the tie with
+  // the cap. A rim test written with >= would divide 0 by 0 here and give a NaN normal.
+  ExpectFaceCaseNear(
+      BuildWideCylinder(),
+      {
+          .point = {.x = 1, .y = 0, .z = 0.5},
+          .distance = 0,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, TurnedCylinder_UsesSolidAxes) {
+  // Axis {1, 0, 0}, with ToSolid's axes x {0, 0, -1}, y {0, 1, 0}, z {1, 0, 0}. Both points are 3 from the axis and
+  // 0.25 along it. The second one is the own point {3, 0, 0.25}: its world normal {0, 0, -1} differs from the own
+  // normal {1, 0, 0}, so a normal left in the solid's own axes fails. The first one cannot tell, because the own
+  // y axis is world y.
+  const Solid solid = BuildStillCylinder({.x = 1, .y = 0, .z = 0}, 1, 0.5);
+
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0.25, .y = 3, .z = 0},
+          .distance = 2,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 0, .y = 1, .z = 0},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0.25, .y = 0, .z = -3},
+          .distance = 2,
+          .face = SolidFace::kCurved,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = -1},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, TiltedCylinderEachFace_ReportsItsFaceAndNormal) {
+  // Axis {0, 0.6, 0.8}, centre {0.5, -0.25, 1}, radius 1, half height 0.5. ToSolid gives the own axes
+  // x {0, -0.8, 0.6}, y {1, 0, 0}, z {0, 0.6, 0.8}. Each point is the centre plus own coordinates along those
+  // axes, so the hand numbers of the upright cases hold, and every normal has parts on two or three world axes.
+  const Cylinder cylinder = {
+      .center = {.x = 0.5, .y = -0.25, .z = 1},
+      .axis = {.x = 0, .y = 0.6, .z = 0.8},
+      .radius = 1,
+      .half_height = 0.5,
+  };
+  const Solid solid = ToSolid(cylinder, kNoMotion, 8);
+  const Vec3 own_x_axis = {.x = 0, .y = -0.8, .z = 0.6};
+  const Vec3 own_y_axis = {.x = 1, .y = 0, .z = 0};
+  const Vec3 own_z_axis = {.x = 0, .y = 0.6, .z = 0.8};
+  ExpectVec3Near(ToColumnX(solid.pose_at_step_start.axes), own_x_axis, kRoundSolidTolerance);
+  ExpectVec3Near(ToColumnY(solid.pose_at_step_start.axes), own_y_axis, kRoundSolidTolerance);
+  const auto to_world = [&cylinder, own_x_axis, own_y_axis, own_z_axis](Vec3 own_point) {
+    return cylinder.center + own_point.x * own_x_axis + own_point.y * own_y_axis + own_point.z * own_z_axis;
+  };
+  const std::array<FaceCase, 7> face_cases = {
+      {
+          {
+              .point = to_world({.x = 3, .y = 0, .z = 0.25}),
+              .distance = 2,
+              .face = SolidFace::kCurved,
+              .normal_out_of_solid = own_x_axis,
+          },
+          {
+              .point = to_world({.x = 0, .y = -0.9, .z = 0}),
+              .distance = -0.1,
+              .face = SolidFace::kCurved,
+              .normal_out_of_solid = -own_y_axis,
+          },
+          {
+              .point = to_world({.x = 0.5, .y = 0, .z = 2}),
+              .distance = 1.5,
+              .face = SolidFace::kHighZ,
+              .normal_out_of_solid = own_z_axis,
+          },
+          {
+              .point = to_world({.x = 0, .y = 0.5, .z = -1.5}),
+              .distance = 1,
+              .face = SolidFace::kLowZ,
+              .normal_out_of_solid = -own_z_axis,
+          },
+          {
+              .point = to_world({.x = 1.375, .y = 0, .z = 1}),
+              .distance = 0.625,
+              .face = SolidFace::kHighRim,
+              .normal_out_of_solid = 0.6 * own_x_axis + 0.8 * own_z_axis,
+          },
+          {
+              .point = to_world({.x = 0, .y = -1.375, .z = -1}),
+              .distance = 0.625,
+              .face = SolidFace::kLowRim,
+              .normal_out_of_solid = -0.6 * own_y_axis - 0.8 * own_z_axis,
+          },
+          {
+              .point = to_world({.x = -1.5, .y = 0, .z = -0.875}),
+              .distance = 0.625,
+              .face = SolidFace::kLowRim,
+              .normal_out_of_solid = -0.8 * own_x_axis - 0.6 * own_z_axis,
+          },
+      },
+  };
+
+  for (const FaceCase& face_case : face_cases) {
+    SCOPED_TRACE(static_cast<int>(face_case.face));
+    ExpectFaceCaseNear(solid, face_case);
+  }
+}
+
+TEST(ComputeDistanceToSolid, PaperCylinderExamples_MatchThePaper) {
+  // The method paper's numbers: radius 0.5, half height 0.25. (0.8, 0, 0.65): wall_distance 0.3, cap_distance
+  // 0.4, rim at 0.5. (0.1, 0, 0.2): wall_distance -0.4, cap_distance -0.05, under the top cap.
+  const Solid solid = BuildStillCylinder({.x = 0, .y = 0, .z = 1}, 0.5, 0.25);
+
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0.8, .y = 0, .z = 0.65},
+          .distance = 0.5,
+          .face = SolidFace::kHighRim,
+          .normal_out_of_solid = {.x = 0.6, .y = 0, .z = 0.8},
+      }
+  );
+  ExpectFaceCaseNear(
+      solid,
+      {
+          .point = {.x = 0.1, .y = 0, .z = 0.2},
+          .distance = -0.05,
+          .face = SolidFace::kHighZ,
+          .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+      }
+  );
+}
+
+TEST(ComputeDistanceToSolid, SphereNaNPoint_IsNaNDistance) {
+  const Vec3 nan_point = {.x = kNaN, .y = 0, .z = 0};
+
+  EXPECT_TRUE(std::isnan(ComputeDistanceToSolid(BuildOffsetSphere(), {}, nan_point).distance));
+}
+
+TEST(ComputeDistanceToSolid, CylinderNaNPoint_IsNaNDistance) {
+  // A NaN must not be lost in the cylinder's max and min of the two gaps.
+  const Vec3 nan_point = {.x = kNaN, .y = 0, .z = 0};
+
+  EXPECT_TRUE(std::isnan(ComputeDistanceToSolid(BuildWideCylinder(), {}, nan_point).distance));
+}
+
+TEST(ComputeDistanceToCylinder, NaNHeight_IsNaNDistance) {
+  // Only cap_distance is NaN; wall_distance is 1. A max that drops a NaN would give the distance 1.
+  const Vec3 half_size = {.x = 1, .y = 1, .z = 0.5};
+
+  EXPECT_TRUE(std::isnan(ComputeDistanceToCylinder({.x = 2, .y = 0, .z = kNaN}, half_size, kIdentity).distance));
+}
+
+TEST(ComputeDistanceToCylinder, NaNRadialPart_IsNaNDistance) {
+  // Only wall_distance is NaN; cap_distance is 1.5.
+  const Vec3 half_size = {.x = 1, .y = 1, .z = 0.5};
+
+  EXPECT_TRUE(std::isnan(ComputeDistanceToCylinder({.x = kNaN, .y = 0, .z = 2}, half_size, kIdentity).distance));
+}
+
+TEST(ComputeSolidVelocity, TurningSphere_IsAngularCrossArm) {
+  // Cross({0, 0, 2}, {0.5, 0, 0}) = {0, 1, 0}: the full angular velocity counts, though a sphere's shape never turns.
+  const Solid solid = BuildSphere(0.5, BuildTurning({.x = 0, .y = 0, .z = 2}));
+
+  const Vec3 velocity = ComputeSolidVelocity(solid, solid.pose_at_step_start, {.x = 0.5, .y = 0, .z = 0});
+
+  ExpectSameVec3(velocity, {.x = 0, .y = 1, .z = 0});
 }
 
 }  // namespace

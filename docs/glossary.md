@@ -56,6 +56,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `wall` (of a cylinder) | The round surface of a cylinder, around its axis. Face `kCurved`. Only for a cylinder: a whole solid or a domain side is never a wall. | |
 | `cap` | One of the two flat ends of a cylinder. Faces `kLowZ` and `kHighZ`. | |
 | `rim` | The circle where a cylinder's wall meets a cap. Faces `kLowRim` and `kHighRim`. | |
+| `degenerate normal` | The normal chosen where several directions are equally near the surface: at a sphere's centre, and on a cylinder's axis where the wall is nearer than the caps. It is minus the solid's own x axis, the normal of `kLowX`, as a box's tie gives. | |
 | `spin` | A turn about a sphere's centre or a cylinder's axis. It moves the surface but not the shape, so it does not count toward the turn limit of a step. | |
 | `plate side`, `PlateSide`, `SolidSide` | One of the two sides of one plate, as a stable identity: the plate's id and the side. Particles on different plate sides never exchange values. | side_tag |
 | `solid face`, `SolidFace` | One part of a solid's surface, named in the solid's own axes: `kLowX` to `kHighZ` for flat faces, `kCurved`, `kLowRim`, `kHighRim` for round ones. | |
