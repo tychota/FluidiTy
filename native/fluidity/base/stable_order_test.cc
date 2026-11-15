@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/test_support.h"
 
@@ -104,6 +106,82 @@ TEST(OrderBuffers, MovedFrom_HoldsNoBytes) {
   // What moved-from buffers hold is part of the contract, so reading it after the move is the point of the test.
   // NOLINTNEXTLINE(bugprone-use-after-move)
   EXPECT_EQ(buffers->byte_count(), 0U);
+}
+
+TEST(BuildOrderBuffers, IntoRunMemory_TakesOnePieceOfTheSize) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 65536);
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  const std::expected<OrderBuffers, BufferError> buffers = BuildOrderBuffers(RunOn::kCpu, 1000, *run_memory);
+  ASSERT_TRUE(buffers.has_value()) << ToName(buffers.error());
+  const OrderBuffersSize size = ComputeOrderBuffersSize(RunOn::kCpu);
+  // 4 x 1000 + 8192 = 12,192 bytes, one piece of 12,288.
+  const std::size_t expected_bytes =
+      ComputeRunMemoryPieceBytes((std::size_t{size.bytes_per_item} * 1000) + size.fixed_bytes);
+  EXPECT_EQ(expected_bytes, 12288U);
+  EXPECT_EQ(run_memory->handed_out_bytes(), expected_bytes);
+  EXPECT_EQ(run_memory->live_piece_count(), 1U);
+  EXPECT_EQ(buffers->byte_count(), 12192U);
+}
+
+TEST(BuildOrderBuffers, IntoRunMemory_HandsOutExactlyTheEstimate) {
+  constexpr std::size_t kMaxCount = 1000;
+  const OrderBuffersSize size = ComputeOrderBuffersSize(RunOn::kCpu);
+  // The one entry the docstring of ComputeOrderBuffersSize asks for: the exact bytes at max_count.
+  const std::array estimate = {
+      MemoryEstimateEntry{
+          .name = "order buffers",
+          .counted_per = CountedPer::kGivenCount,
+          .given_count = (std::uint64_t{size.bytes_per_item} * kMaxCount) + size.fixed_bytes,
+          .bytes_each = 1,
+      },
+  };
+  // A given-count entry reads no scene count.
+  const MemoryCounts no_counts;
+  std::expected<RunMemory, BufferError> run_memory =
+      BuildRunMemory(RunOn::kCpu, ComputeRunMemoryBytes(estimate, no_counts, MemoryWhere::kRunOn));
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  const std::expected<OrderBuffers, BufferError> buffers = BuildOrderBuffers(RunOn::kCpu, kMaxCount, *run_memory);
+  ASSERT_TRUE(buffers.has_value()) << ToName(buffers.error());
+  EXPECT_EQ(run_memory->handed_out_bytes(), run_memory->reserved_bytes());
+}
+
+TEST(BuildOrderBuffers, IntoRunMemoryMaxCountAboveUint32Max_IsSizeMismatchAndTakesNothing) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 4096);
+  ASSERT_TRUE(run_memory.has_value());
+  const std::size_t too_many = std::size_t{1} << 32U;
+  const std::expected<OrderBuffers, BufferError> buffers = BuildOrderBuffers(RunOn::kCpu, too_many, *run_memory);
+  ASSERT_FALSE(buffers.has_value());
+  EXPECT_EQ(buffers.error(), BufferError::kSizeMismatch);
+  EXPECT_EQ(run_memory->handed_out_bytes(), 0U);
+}
+
+TEST(BuildOrderBuffers, IntoRunMemoryTooSmall_IsRunMemoryTooSmall) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 4096);
+  ASSERT_TRUE(run_memory.has_value());
+  const std::expected<OrderBuffers, BufferError> buffers = BuildOrderBuffers(RunOn::kCpu, 1000, *run_memory);
+  ASSERT_FALSE(buffers.has_value());
+  EXPECT_EQ(buffers.error(), BufferError::kRunMemoryTooSmall);
+  EXPECT_EQ(run_memory->handed_out_bytes(), 0U);
+}
+
+TEST(BuildOrderBuffers, IntoRunMemory_SameResultsAsPlainForm) {
+  const std::vector<std::uint64_t> keys = BuildKeysWithManyTies(1000000);
+  const Buffer<std::uint64_t> key_buffer = BuildBufferHolding(RunOn::kCpu, keys);
+  const OrderBuffersSize size = ComputeOrderBuffersSize(RunOn::kCpu);
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(
+      RunOn::kCpu,
+      ComputeRunMemoryPieceBytes((std::size_t{size.bytes_per_item} * keys.size()) + size.fixed_bytes)
+  );
+  ASSERT_TRUE(run_memory.has_value());
+  std::expected<OrderBuffers, BufferError> piece_buffers = BuildOrderBuffers(RunOn::kCpu, keys.size(), *run_memory);
+  std::expected<OrderBuffers, BufferError> own_buffers = BuildOrderBuffers(RunOn::kCpu, keys.size());
+  ASSERT_TRUE(piece_buffers.has_value() && own_buffers.has_value());
+  EXPECT_EQ(run_memory->unused_bytes(), 0U);
+  Buffer<std::uint32_t> order_from_piece = BuildCpuBufferFilledWith(keys.size(), 0);
+  Buffer<std::uint32_t> order_from_own = BuildCpuBufferFilledWith(keys.size(), 0);
+  ASSERT_TRUE(BuildStableOrder(key_buffer, keys.size(), nullptr, order_from_piece, *piece_buffers).has_value());
+  ASSERT_TRUE(BuildStableOrder(key_buffer, keys.size(), nullptr, order_from_own, *own_buffers).has_value());
+  EXPECT_EQ(ReadAll(order_from_piece), ReadAll(order_from_own));
 }
 
 TEST(BuildStableOrder, BuffersForMoreItems_GiveTheSameOrder) {

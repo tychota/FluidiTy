@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/test_support.h"
 #include "fluidity/base/tree_sum.h"
@@ -30,6 +32,35 @@ TEST(BuildSumBuffers, MaxCountZero_Succeeds) {
   ASSERT_TRUE(buffers.has_value()) << ToName(buffers.error());
   EXPECT_EQ(buffers->max_count(), 0U);
   EXPECT_EQ(buffers->run_on(), RunOn::kCpu);
+}
+
+TEST(BuildSumBuffers, IntoRunMemoryOnCpu_TakesNothing) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 4096);
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  const std::expected<SumBuffers, BufferError> buffers = BuildSumBuffers(RunOn::kCpu, 1000, *run_memory);
+  ASSERT_TRUE(buffers.has_value()) << ToName(buffers.error());
+  const SumBuffersSize size = ComputeSumBuffersSize(RunOn::kCpu);
+  // The CPU sums need no memory, so the piece is empty and takes nothing.
+  EXPECT_EQ(
+      run_memory->handed_out_bytes(),
+      ComputeRunMemoryPieceBytes((std::size_t{size.bytes_per_item} * 1000) + size.fixed_bytes)
+  );
+  EXPECT_EQ(buffers->max_count(), 1000U);
+  EXPECT_EQ(buffers->run_on(), RunOn::kCpu);
+}
+
+TEST(BuildSumBuffers, IntoRunMemory_SameSumAsPlainForm) {
+  const std::vector<double> values = BuildThousandValues();
+  const Buffer<double> value_buffer = BuildBufferHolding(RunOn::kCpu, values);
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 256);
+  ASSERT_TRUE(run_memory.has_value());
+  std::expected<SumBuffers, BufferError> piece_buffers = BuildSumBuffers(RunOn::kCpu, values.size(), *run_memory);
+  std::expected<SumBuffers, BufferError> own_buffers = BuildSumBuffers(RunOn::kCpu, values.size());
+  ASSERT_TRUE(piece_buffers.has_value() && own_buffers.has_value());
+  const std::expected<double, BufferError> from_piece = ComputeTreeSum(value_buffer, values.size(), *piece_buffers);
+  const std::expected<double, BufferError> from_own = ComputeTreeSum(value_buffer, values.size(), *own_buffers);
+  ASSERT_TRUE(from_piece.has_value() && from_own.has_value());
+  EXPECT_EQ(ToBits(*from_piece), ToBits(*from_own));
 }
 
 TEST(ComputeSumBuffersSize, EqualsBytesBuildSumBuffersAllocates) {

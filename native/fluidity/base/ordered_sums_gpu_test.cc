@@ -12,7 +12,9 @@
 #include <vector>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
 #include "fluidity/base/ordered_sums.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/test_support.h"
 #include "fluidity/base/tree_sum.h"
@@ -56,6 +58,38 @@ TEST(ComputeTreeSum, OnGpu_EqualsCpuBitForBit) {
     const std::string name = "ComputeTreeSum on the GPU, " + std::to_string(count) + " mixed values";
     WriteResultDigest(name, std::span<const double>(&gpu_sum, 1));
   }
+}
+
+TEST(BuildSumBuffers, OnGpuIntoRunMemory_TakesOnePieceOfTheSize) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kGpu, 65536);
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  const std::expected<SumBuffers, BufferError> buffers = BuildSumBuffers(RunOn::kGpu, 1000, *run_memory);
+  ASSERT_TRUE(buffers.has_value()) << ToName(buffers.error());
+  const SumBuffersSize size = ComputeSumBuffersSize(RunOn::kGpu);
+  // 14 x 1000 + 128 = 14,128 bytes, one piece of 14,336.
+  EXPECT_EQ(
+      run_memory->handed_out_bytes(),
+      ComputeRunMemoryPieceBytes((std::size_t{size.bytes_per_item} * 1000) + size.fixed_bytes)
+  );
+  EXPECT_EQ(run_memory->handed_out_bytes(), 14336U);
+}
+
+TEST(BuildSumBuffers, OnGpuIntoRunMemory_SameSumAsPlainForm) {
+  const std::vector<double> values = BuildMixedValues(100003);
+  const Buffer<double> value_buffer = BuildBufferHolding(RunOn::kGpu, values);
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kGpu, std::size_t{4} << 20U);
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  std::expected<SumBuffers, BufferError> piece_buffers = BuildSumBuffers(RunOn::kGpu, values.size(), *run_memory);
+  std::expected<SumBuffers, BufferError> own_buffers = BuildSumBuffers(RunOn::kGpu, values.size());
+  ASSERT_TRUE(piece_buffers.has_value() && own_buffers.has_value());
+  const std::expected<double, BufferError> from_piece = ComputeTreeSum(value_buffer, values.size(), *piece_buffers);
+  const std::expected<double, BufferError> from_own = ComputeTreeSum(value_buffer, values.size(), *own_buffers);
+  ASSERT_TRUE(from_piece.has_value() && from_own.has_value());
+  EXPECT_EQ(ToBits(*from_piece), ToBits(*from_own));
+  WriteResultDigest(
+      "ComputeTreeSum on the GPU with sum buffers from a RunMemory",
+      std::span<const double>(&*from_piece, 1)
+  );
 }
 
 TEST(ComputeSumBuffersSize, OnGpu_EqualsBytesBuildSumBuffersAllocates) {

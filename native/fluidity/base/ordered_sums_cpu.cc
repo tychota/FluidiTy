@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include "fluidity/base/buffer.h"
 #include "fluidity/base/ordered_sums.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/tree_sum.h"
 #include "fluidity/base/tree_sum_layers.h"
@@ -91,6 +93,18 @@ std::expected<void, BufferError> CheckSumSizes(
   return {};
 }
 
+// The bytes both forms of BuildSumBuffers take for `max_count` values, or nothing when the count would wrap around
+// std::size_t and the buffers would be smaller than asked for.
+std::optional<std::size_t> ComputeSumBuffersByteCount(RunOn run_on, std::size_t max_count) {
+  const SumBuffersSize size = ComputeSumBuffersSize(run_on);
+  const bool byte_count_fits = size.bytes_per_item == 0
+      || max_count <= (std::numeric_limits<std::size_t>::max() - size.fixed_bytes) / size.bytes_per_item;
+  if (!byte_count_fits) {
+    return std::nullopt;
+  }
+  return (size.bytes_per_item * max_count) + size.fixed_bytes;
+}
+
 }  // namespace
 
 SumBuffersSize ComputeSumBuffersSize(RunOn run_on) {
@@ -102,15 +116,27 @@ SumBuffersSize ComputeSumBuffersSize(RunOn run_on) {
 }
 
 std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count) {
-  const SumBuffersSize size = ComputeSumBuffersSize(run_on);
-  // The byte count must not wrap around, or the sum buffers would be smaller than asked for.
-  const bool byte_count_fits = size.bytes_per_item == 0
-      || max_count <= (std::numeric_limits<std::size_t>::max() - size.fixed_bytes) / size.bytes_per_item;
-  if (!byte_count_fits) {
+  const std::optional<std::size_t> byte_count = ComputeSumBuffersByteCount(run_on, max_count);
+  if (!byte_count.has_value()) {
+    // No processor can hold an object this large.
     return std::unexpected(BufferError::kOutOfMemory);
   }
-  const std::size_t byte_count = (size.bytes_per_item * max_count) + size.fixed_bytes;
-  std::expected<Buffer<std::uint8_t>, BufferError> bytes = BuildBuffer<std::uint8_t>(run_on, byte_count);
+  std::expected<Buffer<std::uint8_t>, BufferError> bytes = BuildBuffer<std::uint8_t>(run_on, *byte_count);
+  if (!bytes.has_value()) {
+    return std::unexpected(bytes.error());
+  }
+  return SumBuffers(std::move(*bytes), max_count);
+}
+
+std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory) {
+  // Requires: one processor (base/ordered_sums.h).
+  assert(run_on == run_memory.run_on());
+  const std::optional<std::size_t> byte_count = ComputeSumBuffersByteCount(run_on, max_count);
+  if (!byte_count.has_value()) {
+    // No block can hold a piece this large; this form reserves nothing, so it is not kOutOfMemory.
+    return std::unexpected(BufferError::kRunMemoryTooSmall);
+  }
+  std::expected<Buffer<std::uint8_t>, BufferError> bytes = BuildBuffer<std::uint8_t>(run_on, *byte_count, run_memory);
   if (!bytes.has_value()) {
     return std::unexpected(bytes.error());
   }

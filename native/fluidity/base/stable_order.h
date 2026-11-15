@@ -20,7 +20,8 @@
 //   destination           the group an item belongs to, in BuildGroupsByDestination
 // Owns:    OrderBuffers, BuildOrderBuffers, OrderBuffersSize, ComputeOrderBuffersSize, BuildStableOrder,
 //          ComputeExclusivePrefixSum, BuildGroupsByDestination
-// Uses:    Buffer and BufferError (base/buffer.h), RunOn (base/run_on.h), CPU-only guard (base/cpu_only.h)
+// Uses:    Buffer and BufferError (base/buffer.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h), CPU-only
+//          guard (base/cpu_only.h)
 // Implementation uses: the digit rule (base/stable_order_digit.h) and, in a build with GPU code, the private GPU
 //          half (base/stable_order_gpu.h)
 // Used by: the grid builder, the particle-to-grid transfer, the batches
@@ -37,6 +38,7 @@
 #include <utility>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 
 namespace fluidity {
@@ -56,6 +58,20 @@ class OrderBuffers;
 //        On failure nothing stays allocated and no buffers are returned.
 // Read: docs/method-paper/fluidity-method.typ <sec-stable-order>
 std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count);
+
+// Builds the same working buffers as one piece of `run_memory` instead of memory of their own, so that the run's one
+// reserved block holds them (base/run_memory.h). Tests and tools use the form above.
+//
+// Method: checks max_count, then one BuildBuffer from `run_memory` of exactly the bytes the form above allocates, so
+//   the block hands out ComputeRunMemoryPieceBytes(bytes_per_item * max_count + fixed_bytes) for it. Orders, prefix
+//   sums and groups are the same bytes with either form.
+// Example: BuildOrderBuffers(RunOn::kCpu, 1000, run_memory) holds 12,192 bytes and takes a piece of 12,288.
+// Requires: run_on == run_memory.run_on(), checked by assert in debug builds.
+// Fails: kSizeMismatch       max_count is above 2^32 - 1: orders hold 32-bit indexes
+//        kRunMemoryTooSmall  the piece does not fit in run_memory.unused_bytes()
+//        On failure nothing is taken and no buffers are returned.
+// Read: docs/method-paper/fluidity-method.typ <sec-run-memory>
+std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory);
 
 // order[i] becomes the index of the item at place i when items are sorted by ascending key. Allocates nothing.
 //
@@ -144,6 +160,9 @@ struct OrderBuffersSize {
 // Method: the same constants BuildOrderBuffers allocates from. The CPU holds a second sequence (4 bytes per item)
 //   and the digit counts of eight passes (8,192 bytes). The GPU holds a second sequence, a table of chunk counts and
 //   the chunk totals of its prefix sums: 6 bytes per item and 4,096 bytes, which cover the rounding of chunk counts.
+//   In a memory estimate the buffers are one entry, so the estimate equals the one piece they take: counted_per
+//   kGivenCount, bytes_each 1, given_count bytes_per_item * max_count + fixed_bytes at the plan's max_count. A
+//   per-item entry plus a fixed entry would round twice and reserve too much; a per-item entry alone too little.
 // Example: ComputeOrderBuffersSize(RunOn::kGpu) gives {6, 4096}; for 1,000,000 items that is 6,004,096 bytes.
 // Read: docs/method-paper/fluidity-method.typ <sec-stable-order>
 OrderBuffersSize ComputeOrderBuffersSize(RunOn run_on);
@@ -186,6 +205,8 @@ class OrderBuffers {
 
  private:
   friend std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count);
+  friend std::expected<OrderBuffers, BufferError>
+  BuildOrderBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory);
   friend std::expected<void, BufferError> BuildStableOrder(
       const Buffer<std::uint64_t>& keys,
       std::size_t count,

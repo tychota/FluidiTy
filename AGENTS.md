@@ -294,14 +294,18 @@ around shared per-item or per-thread functions marked `FLUIDITY_CPU_AND_GPU`, wh
 tests call them over every item, or every thread block and thread in launch order and in reverse, so the GPU
 arithmetic is tested without a GPU.
 
-**Working buffers.** An operation that needs temporary arrays takes them as working buffers: a move-only
-`<Name>Buffers` built once by `Build<Name>Buffers(run_on, max_count)`, whose exact bytes
-`Compute<Name>BuffersSize(run_on)` gives for memory plans (`SumBuffers` in `base/ordered_sums.h` is the first).
-Working buffers hold their memory in one `Buffer` of bytes, so their GPU memory is held through `Buffer`, not through
-`GpuArray`, and the GPU half receives plain pointers into it. Their contents mean nothing between calls. Each function
-has one form, which takes its working buffers and allocates nothing, so `kOutOfMemory` comes only from
-`Build<Name>Buffers` and `BuildBuffer`. A count above `max_count()` is `kSizeMismatch`, and a failed GPU call is
-`kRunOnCallFailed`. The working buffers live on the processor of the other buffers: a precondition ("Language").
+**Working buffers.** An operation that needs temporary arrays takes them as working buffers: a move-only `<Name>Buffers`
+built once, whose exact bytes `Compute<Name>BuffersSize(run_on)` gives for memory plans (`SumBuffers` in
+`base/ordered_sums.h` is the first). A run builds them with `Build<Name>Buffers(run_on, max_count, RunMemory&
+run_memory)`, as one piece of the run's reserved block (`base/run_memory.h`): the block is always the last parameter,
+and `run_on == run_memory.run_on()` is a `Requires:`. The plain form `Build<Name>Buffers(run_on, max_count)`, which
+allocates memory of its own, is for tests and tools. Working buffers hold their memory in one `Buffer` of bytes, so
+their GPU memory is held through `Buffer`, not through `GpuArray`, and the GPU half receives plain pointers into it.
+Their contents mean nothing between calls. Each function has one form, which takes its working buffers and allocates
+nothing, so `kOutOfMemory` comes only from `BuildRunMemory` and the plain forms of `Build<Name>Buffers` and
+`BuildBuffer`; a form that takes a `RunMemory` returns `kRunMemoryTooSmall` when its piece does not fit. A count above
+`max_count()` is `kSizeMismatch`, and a failed GPU call is `kRunOnCallFailed`. The working buffers live on the processor
+of the other buffers: a precondition ("Language").
 
 **`RunOn` is the caller's choice.** `enum class RunOn : std::uint8_t { kCpu, kGpu }` lives in the shared header
 `base/run_on.h`, so any shared type can carry it. The caller chooses it when the simulation is built.

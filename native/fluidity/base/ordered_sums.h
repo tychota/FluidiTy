@@ -17,7 +17,8 @@
 //
 // Owns:    SumBuffers, BuildSumBuffers, SumBuffersSize, ComputeSumBuffersSize, ComputeTreeSum, ComputeTreeDot,
 //          ComputeLargestMagnitude
-// Uses:    Buffer and BufferError (base/buffer.h), RunOn (base/run_on.h), CPU-only guard (base/cpu_only.h)
+// Uses:    Buffer and BufferError (base/buffer.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h), CPU-only
+//          guard (base/cpu_only.h)
 // Implementation uses: math::TreeSum and math::LargerMagnitude (base/tree_sum.h), the layer sizes
 //          (base/tree_sum_layers.h) and, in a build with GPU code, the private GPU half (base/ordered_sums_gpu.h)
 // Used by: every solver's convergence test and every conservation total
@@ -34,6 +35,7 @@
 #include <utility>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 
 namespace fluidity {
@@ -53,6 +55,18 @@ class SumBuffers;
 // Read: docs/method-paper/fluidity-method.typ <sec-fixed-order-sums>
 std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count);
 
+// Builds the same working buffers as one piece of `run_memory` instead of memory of their own, so that the run's one
+// reserved block holds them (base/run_memory.h). Tests and tools use the form above.
+//
+// Method: one BuildBuffer from `run_memory` of exactly the bytes the form above allocates, so the block hands out
+//   ComputeRunMemoryPieceBytes(bytes_per_item * max_count + fixed_bytes) for it. The sums behave the same with either.
+// Example: on the GPU, max_count 1000 holds 14,128 bytes and takes a piece of 14,336; on the CPU it takes nothing.
+// Requires: run_on == run_memory.run_on(), checked by assert in debug builds.
+// Fails: kRunMemoryTooSmall  the piece does not fit in run_memory.unused_bytes(), or max_count is too large to count
+//                            in bytes; nothing is taken and no buffers are returned
+// Read: docs/method-paper/fluidity-method.typ <sec-run-memory>
+std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory);
+
 // Exact bytes BuildSumBuffers allocates: bytes_per_item * max_count + fixed_bytes.
 struct SumBuffersSize {
   std::uint32_t bytes_per_item = 0;  // Bytes for each value of max_count.
@@ -64,6 +78,9 @@ struct SumBuffersSize {
 // Method: the same constants BuildSumBuffers allocates from. The GPU holds max_count products (8 bytes each) and
 //   the two layer arrays (at most 3/4 of a double per value, plus a few), the second array starting at a multiple
 //   of 64 bytes: 14 bytes per value and 128 bytes cover them. The CPU holds nothing.
+//   In a memory estimate the buffers are one entry, so the estimate equals the one piece they take: counted_per
+//   kGivenCount, bytes_each 1, given_count bytes_per_item * max_count + fixed_bytes at the plan's max_count. A
+//   per-item entry plus a fixed entry would round twice and reserve too much; a per-item entry alone too little.
 // Example: ComputeSumBuffersSize(RunOn::kGpu) gives {14, 128}; ComputeSumBuffersSize(RunOn::kCpu) gives {0, 0}.
 // Read: docs/method-paper/fluidity-method.typ <sec-fixed-order-sums>
 SumBuffersSize ComputeSumBuffersSize(RunOn run_on);
@@ -154,6 +171,8 @@ class SumBuffers {
 
  private:
   friend std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count);
+  friend std::expected<SumBuffers, BufferError>
+  BuildSumBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory);
   friend std::expected<double, BufferError>
   ComputeTreeSum(const Buffer<double>& values, std::size_t count, SumBuffers& buffers);
   friend std::expected<double, BufferError>

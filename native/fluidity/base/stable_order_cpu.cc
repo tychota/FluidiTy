@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/stable_order.h"
 #include "fluidity/base/stable_order_digit.h"
@@ -274,6 +275,13 @@ std::expected<void, BufferError> CheckGroupSizes(
   return {};
 }
 
+// The bytes both forms of BuildOrderBuffers take for `max_count` items. max_count is at most kMaxItemCount, below
+// 2^32, so the product stays far below 2^64.
+std::uint64_t ComputeOrderBuffersByteCount(RunOn run_on, std::size_t max_count) {
+  const OrderBuffersSize size = ComputeOrderBuffersSize(run_on);
+  return (std::uint64_t{size.bytes_per_item} * max_count) + size.fixed_bytes;
+}
+
 }  // namespace
 
 OrderBuffersSize ComputeOrderBuffersSize(RunOn run_on) {
@@ -288,10 +296,23 @@ std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::si
     // An index of the order would not fit in 32 bits.
     return std::unexpected(BufferError::kSizeMismatch);
   }
-  // max_count is below 2^32, so the product stays far below 2^64.
-  const OrderBuffersSize size = ComputeOrderBuffersSize(run_on);
-  const std::uint64_t byte_count = std::uint64_t{size.bytes_per_item} * max_count + size.fixed_bytes;
-  std::expected<Buffer<std::uint8_t>, BufferError> bytes = BuildBuffer<std::uint8_t>(run_on, byte_count);
+  std::expected<Buffer<std::uint8_t>, BufferError> bytes =
+      BuildBuffer<std::uint8_t>(run_on, ComputeOrderBuffersByteCount(run_on, max_count));
+  if (!bytes.has_value()) {
+    return std::unexpected(bytes.error());
+  }
+  return OrderBuffers(std::move(*bytes), max_count);
+}
+
+std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory) {
+  // Requires: one processor (base/stable_order.h).
+  assert(run_on == run_memory.run_on());
+  if (max_count > kMaxItemCount) {
+    // An index of the order would not fit in 32 bits; checked first, so nothing is taken.
+    return std::unexpected(BufferError::kSizeMismatch);
+  }
+  std::expected<Buffer<std::uint8_t>, BufferError> bytes =
+      BuildBuffer<std::uint8_t>(run_on, ComputeOrderBuffersByteCount(run_on, max_count), run_memory);
   if (!bytes.has_value()) {
     return std::unexpected(bytes.error());
   }

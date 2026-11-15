@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/stable_order.h"
 #include "fluidity/base/test_support.h"
@@ -114,6 +116,40 @@ std::vector<std::uint32_t> BuildPrefixSumValues(std::size_t count) {
     values[index] = static_cast<std::uint32_t>((index * 7919) % 4001);
   }
   return values;
+}
+
+TEST(BuildOrderBuffers, OnGpuIntoRunMemory_TakesOnePieceOfTheSize) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kGpu, 65536);
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  const std::expected<OrderBuffers, BufferError> buffers = BuildOrderBuffers(RunOn::kGpu, 1000, *run_memory);
+  ASSERT_TRUE(buffers.has_value()) << ToName(buffers.error());
+  const OrderBuffersSize size = ComputeOrderBuffersSize(RunOn::kGpu);
+  // 6 x 1000 + 4096 = 10,096 bytes, one piece of 10,240.
+  EXPECT_EQ(
+      run_memory->handed_out_bytes(),
+      ComputeRunMemoryPieceBytes((std::size_t{size.bytes_per_item} * 1000) + size.fixed_bytes)
+  );
+  EXPECT_EQ(run_memory->handed_out_bytes(), 10240U);
+}
+
+TEST(BuildOrderBuffers, OnGpuIntoRunMemory_SameResultsAsPlainForm) {
+  const std::vector<std::uint64_t> keys = BuildKeysWithManyTies(1000000);
+  const Buffer<std::uint64_t> key_buffer = BuildBufferHolding(RunOn::kGpu, keys);
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kGpu, std::size_t{8} << 20U);
+  ASSERT_TRUE(run_memory.has_value()) << ToName(run_memory.error());
+  std::expected<OrderBuffers, BufferError> piece_buffers = BuildOrderBuffers(RunOn::kGpu, keys.size(), *run_memory);
+  std::expected<OrderBuffers, BufferError> own_buffers = BuildOrderBuffers(RunOn::kGpu, keys.size());
+  ASSERT_TRUE(piece_buffers.has_value() && own_buffers.has_value());
+  Buffer<std::uint32_t> order_from_piece = BuildBufferFilledWith(RunOn::kGpu, keys.size(), 0);
+  Buffer<std::uint32_t> order_from_own = BuildBufferFilledWith(RunOn::kGpu, keys.size(), 0);
+  ASSERT_TRUE(BuildStableOrder(key_buffer, keys.size(), nullptr, order_from_piece, *piece_buffers).has_value());
+  ASSERT_TRUE(BuildStableOrder(key_buffer, keys.size(), nullptr, order_from_own, *own_buffers).has_value());
+  const std::vector<std::uint32_t> from_piece = ReadAll(order_from_piece);
+  EXPECT_EQ(from_piece, ReadAll(order_from_own));
+  WriteResultDigest(
+      "BuildStableOrder on the GPU with order buffers from a RunMemory",
+      std::span<const std::uint32_t>(from_piece)
+  );
 }
 
 TEST(ComputeOrderBuffersSize, OnGpu_EqualsBytesBuildOrderBuffersAllocates) {
