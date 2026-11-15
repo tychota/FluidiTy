@@ -1,0 +1,37 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_6b8a953a96c4a3 106
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_84b08dd3147677 1371-1375,1382-1384,1389-1393,1418
+native/fluidity/contact/contact_error.h
+  s_4f0877e2acdcf0::t_872263b0791cf9 40-41
+native/fluidity/contact/contact_error_message.cc
+  s_4f0877e2acdcf0::t_666524ad795162 37-40
+native/fluidity/contact/contact_error_test.cc
+  s_4f0877e2acdcf0::t_e103ccf1f79533 118-120
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_1245f6a4c36f8c 1401-1472
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_29e3d77e34e10f 838-843,1098-1102,1105-1110,1113-1117,1285,1468-1519,1715-1718
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_56eaf20d0d2999 241-245
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_6873f74baceada 96-101,114-116,1533-1534,2136,2238-2239,2283-2284,2320-2324,2484-2485,2488-2496,2498,2503-2504,2508,2513,2526,2528-2531,2534-2539,2546-2547,2550,2552-2554,2574,2586,2594,2596-2699,2701,2704,2713-2717,2724-2726,2729-2733,2736,2741,2752-2755,2758,2792-2796,2870,2893-2900,2905-2913,2917-2924,2965,2983-2989,2991-2992,3063-3069,3082-3084,3088-3089,3091-3097,3099-3105,3197,3201,3221,3243-3247,3260-3267,3298,3300,3308-3320
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_4ae3dfdd6c6d3d 35-36,105-110,112-114,117-119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "10012ef56ada5e066935d63e17289cd6c7a2d574",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
