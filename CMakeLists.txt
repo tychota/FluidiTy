@@ -74,6 +74,7 @@ if(BUILD_TESTING)
 endif()
 
 add_subdirectory(native/fluidity/base)
+add_subdirectory(native/fluidity/contact)
 
 # Last: every target now exists, so the check sees them all.
 fluidity_check_compile_flags()

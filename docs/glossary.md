@@ -56,6 +56,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `solid_velocity`, `SolidVelocitySample` | m/s. Velocity of a solid's surface. | wall_velocity, LiquidPrescribedWallSample3D |
 | `same_side` | Both are on the same side of a plate, so they may exchange data. | compatible (for two things on the same side of a plate) |
 | `elapsed` | Clock time: `work_elapsed_seconds`. | wall (for time) |
+| `close call`, `ContactCloseCall` | A step that contact cannot answer safely. The step is shortened and tried again. | near miss, edge case (for this) |
 
 ## Particles and the particle-grid exchange
 
