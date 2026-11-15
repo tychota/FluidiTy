@@ -1,0 +1,39 @@
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_aa17b8b4673ad7 66-69
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_2e9f11eefa0682 38-39
+  s_4f0877e2acdcf0::t_b6bdb7f245a2df 318-321,323-325,328-344
+  s_4f0877e2acdcf0::t_ca85b9405035b1 356-357,361-362
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_63da339767b591 497-499,509
+docs/glossary.md
+  s_4f0877e2acdcf0::t_8868f59789f258 61,84-90
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_52332350fda05c 789-791,859-864,919-971,981-988,1001-1003,1009-1016,1221-1222,1359-1361,1430
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_d81bac4ef5091b 6,19,893-895,903,907,1867-1897,1900-1906,1912-1913,1924-1957,1963,2021-2023,2027,2045-2211,2644-2661,2665,2668,2671-2681,2683,2687-2694,2703,2713-2715,2748,2755-2773,2775-2787,2789-2796,2844-2845,2902,2905,3038-3039,3074-3224,3244,3246-3247,3271,3273-3275,3303-3515
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_f81922ebea8042 33-35,58-59,72-91,105,114-116,147-148,152-154,158,162-176,178
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_0cbb57bc482a47 28-33,35-36,57-61,65-69,806-876,878,882-887,889-894,896-903,907-910,913-921,927-928,935-936,939-946,950-955,957,962-972,974-994,997,1006-1008,1011-1030,1038-1039,1043-1077,1127,1132,1141,1163,1194,1208-1273
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_56a442539e8d55 114-123,249-260,507-521,613-622
+tools/check_rules_allowed_names.txt
+  s_4f0877e2acdcf0::t_c10e7cd0ec5864 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0da149185e751ec376f37d2cce05f7545a73d6d3",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
