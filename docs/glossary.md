@@ -66,9 +66,14 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `fixed`, `driven`, `free` | Motion: never moves; follows a given path; pushed by the liquid. Combine with a shape: `DrivenFlatSolid`, `DrivenPlate`, `FreeBox`. | prescribed, rigid body, floating (for motion) |
 | `wave_paddle` (a variable, not a type) | The driven flat solid that makes waves. It is its own solid, not part of the domain box. | piston |
 | `solid_velocity`, `SolidVelocitySample` | m/s. Velocity of a solid's surface. | wall_velocity, LiquidPrescribedWallSample3D |
-| `nearest solid surface` | The surface, among all solids, with the smallest distance from a point; equal distances keep the solid that comes first. `ComputeSolidVelocitySample` gives it, with its velocity, when it lies within reach. | |
+| `nearest solid surface` | The surface, among all solids, with the smallest distance from a point; equal distances keep the solid that comes first. `ComputeSolidVelocitySample` gives it, with its velocity, when it lies within the search distance. | |
+| `search distance` | m. The largest distance at which `ComputeSolidVelocitySample` looks for the nearest solid surface; farther surfaces give no solid. Its parameter is `search_distance`. | reach (for this) |
 | `same_side` | Both are on the same side of a plate, so they may exchange data. | compatible (for two things on the same side of a plate) |
 | `elapsed` | Clock time: `work_elapsed_seconds`. In contact and solids, seconds since the start of the step: `ComputeSolidPose(solid, elapsed)`, `start_elapsed`. | wall (for time) |
+| `contact tolerance`, `contact_tolerance` | m. The distance from a solid's surface at which a particle rests, a kept distance, not an allowed error: `2^-30` of the smallest cell width plus `2^-40` of the largest coordinate a solid reaches during the step, far above the rounding of a computed distance. A solid or a cell narrower than 1024 contact tolerances fails `CheckContactTolerance` (`kSolidTooThin`); the tolerance is never made larger to let contact pass. | certified, nudge, penetration tolerance, resolution (for this) |
+| `ContactScale` | The lengths of a scene that set its contact tolerance: the largest coordinate a solid reaches during the step, the smallest cell width and the thinnest solid. `ComputeContactScale` gives it. | |
+| `reach` (of a solid) | m. How far a bounded solid's surface can be from its origin: `Length(half_size)` of a box, a domain box, a sphere or a cylinder. A flat solid and a plate have none. | |
+| `rest gap` | m. The one contact tolerance a particle in contact keeps between itself and a solid's surface: it rests at distance `contact_tolerance`, never at 0, so any later evaluation of the distance is positive. | nudge |
 | `close call`, `ContactCloseCall` | A step that contact cannot answer safely. The step is shortened and tried again. | near miss, edge case (for this) |
 
 ## Particles and the particle-grid exchange

@@ -22,8 +22,8 @@ std::string_view ToMessage(ContactError error) {
       return "A particle is on the other side of the plate it belongs to. Keep the liquid on one side of each thin "
              "plate, or move the plate.";
     case ContactError::kSolidTooThin:
-      return "A solid is thinner than 1024 contact tolerances. Make it thicker or move the scene closer to the "
-             "origin.";
+      return "A solid is thinner, or a grid cell narrower, than 1024 contact tolerances. Make the solid thicker or "
+             "the cells larger, or move the scene closer to the origin.";
     case ContactError::kBuffersTooSmall:
       return "The scene has more particles or solids than the contact buffers were built for. Use a smaller scene or "
              "raise the particle limit.";

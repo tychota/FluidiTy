@@ -29,7 +29,7 @@ enum class ContactError : std::uint8_t {
   kStartsInsideSolid,  // The start is deeper inside a solid than start_overlap_tolerance allows.
   kTooCloseToCall,  // No safe answer for this step length. The caller should shorten the step.
   kOnWrongSideOfPlate,  // The start is on the other side of the plate the particle is committed to.
-  kSolidTooThin,  // A solid or cell is thinner than 1024 contact tolerances: not enough resolution.
+  kSolidTooThin,  // A solid is thinner, or a cell narrower, than 1024 contact tolerances.
   kBuffersTooSmall,  // More particles or solids than the contact buffers were built for.
   kRunOnCallFailed,  // A call to the chosen processor failed.
   // The run's RunMemory or the processor could not hold a buffer. Only BuildContactBuffers returns it; the context

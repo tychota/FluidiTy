@@ -104,8 +104,8 @@ TEST(ToMessage, EveryContactCloseCall_HasADistinctNonEmptySentence) {
 TEST(ToMessage, SolidTooThin_SaysWhatTheUserCanDo) {
   EXPECT_EQ(
       ToMessage(ContactError::kSolidTooThin),
-      "A solid is thinner than 1024 contact tolerances. Make it thicker or move the scene closer to the "
-      "origin."
+      "A solid is thinner, or a grid cell narrower, than 1024 contact tolerances. Make the solid thicker or the "
+      "cells larger, or move the scene closer to the origin."
   );
 }
 

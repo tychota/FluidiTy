@@ -1506,8 +1506,8 @@ TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex) {
   ExpectSameVec3(sample_above_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
 }
 
-TEST(ComputeSolidVelocitySample, BeyondReach_HasNoSolid) {
-  // Distance 0.3 and reach 0.2: every field keeps its default, the solid's velocity included (P10).
+TEST(ComputeSolidVelocitySample, BeyondSearchDistance_HasNoSolid) {
+  // Distance 0.3 and search distance 0.2: every field keeps its default, the solid's velocity included (P10).
   const std::array<Solid, 1> solids = {
       BuildFlatSolid({.x = 0, .y = 0, .z = -0.3}, kUp, BuildMoving({.x = 1, .y = 0, .z = 0}), 2),
   };
@@ -1517,8 +1517,8 @@ TEST(ComputeSolidVelocitySample, BeyondReach_HasNoSolid) {
   ExpectNoSolidSample(sample);
 }
 
-TEST(ComputeSolidVelocitySample, AtReach_HasSolid) {
-  // Distance 0.25 and reach 0.25: only a distance larger than the reach is out of reach.
+TEST(ComputeSolidVelocitySample, AtSearchDistance_HasSolid) {
+  // Distance 0.25 and search distance 0.25: only a distance larger than the search distance finds no solid.
   const std::array<Solid, 1> solids = {BuildFlatSolid({.x = 0, .y = 0, .z = -0.25}, kUp, kNoMotion, 2)};
 
   const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, kOrigin, 0.25);
@@ -1623,8 +1623,8 @@ TEST(ComputeSolidVelocitySample, MovingSphereAtElapsed_UsesPoseAtThatTime) {
 }
 
 TEST(ComputeSolidVelocitySample, DeepInsideSolid_HasSolid) {
-  // Distance 0.2 - 1 = -0.8, far below minus the reach 0.5: a point inside a solid always has a solid, however deep.
-  // On x, own x 0.2 > 0 gives the largest gap on kHighX; y and z give -1.
+  // Distance 0.2 - 1 = -0.8, far below minus the search distance 0.5: a point inside a solid always has a solid,
+  // however deep. On x, own x 0.2 > 0 gives the largest gap on kHighX; y and z give -1.
   const std::array<Solid, 1> solids = {BuildUnitBox(kNoMotion)};
 
   const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0.2, .y = 0, .z = 0}, 0.5);

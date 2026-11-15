@@ -39,6 +39,7 @@
 //   degenerate normal  the normal chosen where several directions are equally near: at a sphere's centre, and
 //                      on a cylinder's axis where the wall is nearer than the caps. Minus the solid's own x axis
 //   nearest solid surface  the surface, among all solids, with the smallest distance from a point
+//   search distance  the largest distance at which ComputeSolidVelocitySample looks for that surface
 // Owns:    SolidShape, SolidFace, SolidSide, PlateSide, FlatSolid, Plate, Box, Sphere, Cylinder, ClosedSides,
 //          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, ToSolid,
 //          ComputeShapeTurningAngularVelocity, CheckSolid, DistanceToSolid, ComputeSolidPose, ComputeSolidVelocity,
@@ -762,7 +763,7 @@ FLUIDITY_CPU_AND_GPU constexpr SolidSide FindSolidSide(const Solid& solid, Solid
 
 // The nearest solid surface seen from one point, with the velocity of that surface.
 struct SolidVelocitySample {
-  bool has_solid = false;  // A solid surface lies within reach of the point.
+  bool has_solid = false;  // A solid surface lies within the search distance of the point.
   std::uint32_t solid_index = kNoSolid;  // Index into the solids array, not the solid_id.
   // The plate side the point is on: {solid_id, side} for a plate, {0, kNoPlate} inside a plate's thickness and for
   // every other shape.
@@ -778,18 +779,19 @@ struct SolidVelocitySample {
 // surface there.
 //
 // Method: poses each solid with ComputeSolidPose(solid, elapsed) and measures ComputeDistanceToSolid at the point.
-//   The smallest distance wins. When it is larger than reach, has_solid is false and every other field keeps its
-//   default. Otherwise the sample holds that solid's index, distance and normal, and solid_velocity is
-//   ComputeSolidVelocity at point - distance * normal: the nearest surface point for every shape except a box seen
-//   from outside an edge or a corner, where it is the point on the nearest face plane. A plate gives side
-//   {solid_id, FindSolidSide(...)}, or {0, kNoPlate} when the point is inside its thickness; every other shape gives
-//   {0, kNoPlate}. A NaN in the point or in reach gives has_solid false. Same bits on CPU and GPU when every
+//   The smallest distance wins. When it is larger than search_distance, has_solid is false and every other field
+//   keeps its default. Otherwise the sample holds that solid's index, distance and normal, and solid_velocity is
+//   ComputeSolidVelocity at point - distance * normal: the nearest surface point for every shape except a box seen from
+//   outside an edge or a corner, where it is the point on the nearest face plane. A plate gives side {solid_id,
+//   FindSolidSide(...)}, or {0, kNoPlate} when the point is inside its thickness; every other shape gives {0,
+//   kNoPlate}. A NaN in the point or in the search distance gives has_solid false. Same bits on CPU and GPU when every
 //   solid's angular velocity is zero; otherwise the Sin inside math::Rotation may differ in the last bits.
-// Units: seconds for elapsed; m, world, for point and reach.
+// Units: seconds for elapsed; m, world, for point and the search distance.
 // Ties: equal distances keep the solid that comes first in the array.
 // Example: a box at the origin with world axes and half sizes {1, 1, 1}, turning at {0, 0, 1} rad/s, and the point
-//   {3, 0, 0} at elapsed 0 with reach 5: distance 2, normal {1, 0, 0}, nearest surface point {1, 0, 0}, so
-//   solid_velocity Cross({0, 0, 1}, {1, 0, 0}) = {0, 1, 0}, side {0, kNoPlate}. With reach 1.5: has_solid false.
+//   {3, 0, 0} at elapsed 0 with search distance 5: distance 2, normal {1, 0, 0}, nearest surface point {1, 0, 0}, so
+//   solid_velocity Cross({0, 0, 1}, {1, 0, 0}) = {0, 1, 0}, side {0, kNoPlate}. With search distance 1.5: has_solid
+//   false.
 // Requires: solids points to solid_count solids (it may be null when solid_count is 0), each of which passed
 //   CheckSolid. elapsed is finite and zero or more; it is at most the step duration. point has no infinite
 //   coordinate; a NaN coordinate is allowed.
@@ -798,14 +800,19 @@ struct SolidVelocitySample {
 // clang-tidy: the count follows its array, as in every pointer-and-count pair, and elapsed follows them, as contact
 // design 3.2 orders the parameters; the swappable-parameters check flags the count and elapsed.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-FLUIDITY_CPU_AND_GPU inline SolidVelocitySample
-ComputeSolidVelocitySample(const Solid* solids, std::uint32_t solid_count, double elapsed, Vec3 point, double reach) {
+FLUIDITY_CPU_AND_GPU inline SolidVelocitySample ComputeSolidVelocitySample(
+    const Solid* solids,
+    std::uint32_t solid_count,
+    double elapsed,
+    Vec3 point,
+    double search_distance
+) {
   // NOLINTEND(bugprone-easily-swappable-parameters)
   assert(solids != nullptr || solid_count == 0);
   // An infinite coordinate makes 0 * inf a NaN in some own coordinates only, so the winner would depend on the order
   // of the array. An infinite value is larger than DBL_MAX; a NaN compares false and passes.
   assert(!(math::Abs(point.x) > DBL_MAX) && !(math::Abs(point.y) > DBL_MAX) && !(math::Abs(point.z) > DBL_MAX));
-  // Steps: 1 find the nearest solid  2 compare with the reach  3 fill the sample
+  // Steps: 1 find the nearest solid  2 compare with the search distance  3 fill the sample
   // Step 1: a later solid wins only when strictly nearer, so a tie keeps the earlier one. The array holds fewer than
   // kNoSolid solids, so kNoSolid is free to mean "none yet".
   std::uint32_t nearest_index = kNoSolid;
@@ -822,9 +829,10 @@ ComputeSolidVelocitySample(const Solid* solids, std::uint32_t solid_count, doubl
     }
   }
 
-  // Step 2: written as "within reach", so a NaN distance or reach is out of reach rather than a sample of NaN.
-  const bool is_within_reach = nearest_index != kNoSolid && nearest.distance <= reach;
-  if (!is_within_reach) {
+  // Step 2: written as "within the search distance", so a NaN distance or search distance finds no solid rather
+  // than a sample of NaN.
+  const bool is_within_search_distance = nearest_index != kNoSolid && nearest.distance <= search_distance;
+  if (!is_within_search_distance) {
     return SolidVelocitySample{};
   }
 
