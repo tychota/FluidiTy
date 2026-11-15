@@ -64,7 +64,7 @@ enum class ContactError : std::uint8_t {  // D (name and first four values)
   kStartsInsideSolid,    // The start is deeper inside a solid than start_overlap_tolerance allows.
   kTooCloseToCall,       // No safe answer for this step length. The caller should shorten the step.
   kOnWrongSideOfPlate,   // N. The start is on the other side of the plate the particle is committed to.
-  kSolidTooThin,         // N. A solid or cell is thinner than 1024 contact tolerances: not enough resolution.
+  kSolidTooThin,         // N. A solid or cell is thinner than 1024 contact tolerances.
   kBuffersTooSmall,      // N. More particles or solids than the contact buffers were built for.
   kRunOnCallFailed,      // N. A call to the chosen processor failed.
   kOutOfMemory,          // NEW (A58; reconcile item 31). Last value. Only BuildContactBuffers: the run's RunMemory
@@ -183,7 +183,14 @@ Vec3 ComputeShapeTurningAngularVelocity(const Solid& solid);
 //        and a cylinder only the shape-changing turn counts, see 5.7: never for a sphere, the turn across the
 //        axis for a cylinder, so a fast spin about the axis is allowed).
 //        The size limits come from CheckContactTolerance: 2 * radius and 2 * half_height enter thinnest_solid.
+ContactError CheckSolid(const Solid& solid, double step_duration, ContactCloseCall* close_call);
+// close_call may be null. When it is not null, *close_call is written kNone unless the failure is a close call
+// (kTooCloseToCall, then kSolidTurnsTooFar). The two-argument form below is this one with a null pointer.
 ContactError CheckSolid(const Solid& solid, double step_duration);
+// Two public helpers of ComputeDistanceToSolid, split out to keep each function under the complexity limit.
+// own_point is in the shape's own axes, from its centre; the normal comes back in world axes.
+DistanceToSolid ComputeDistanceToSphere(Vec3 own_point, double radius, Mat3 solid_axes);
+DistanceToSolid ComputeDistanceToCylinder(Vec3 own_point, Vec3 half_size, Mat3 solid_axes);  // half_size {r, r, h}
 // Pose `elapsed` seconds after the start of the step, 0 <= elapsed <= step_duration.
 SolidPose ComputeSolidPose(const Solid& solid, double elapsed);
 // Velocity of the solid's surface at a world point, m/s.            D word: solid_velocity
@@ -246,8 +253,8 @@ struct ContactScale {                   // N
 };
 ContactScale ComputeContactScale(const Solid* solids, std::uint32_t solid_count, double step_duration,
                                  double smallest_cell_width);
-double ComputeContactTolerance(const ContactScale& scale);                      // m
-ContactError CheckContactTolerance(const ContactScale& scale, double contact_tolerance);  // kSolidTooThin
+double ComputeContactTolerance(ContactScale scale);                              // m, by value as the other small structs
+ContactError CheckContactTolerance(ContactScale scale, double contact_tolerance);  // kSolidTooThin
 ```
 
 ### 3.4 `contact/solid_contact.h` (shared)

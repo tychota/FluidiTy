@@ -421,7 +421,7 @@ closed-form hits (P15). Its five subsections are, in order, `<sec-solid-shapes>`
 - [ ] **Step 2: Run.** Expected: compile error, headers missing.
 - [ ] **Step 3: Implement.** `contact_error.h` is shared (no `<string_view>`); `contact_error_message.h` is CPU
   only and includes `base/cpu_only.h` first. Messages say what the user can do
-  ("A solid is thinner than 1024 contact tolerances. Make it thicker or move the scene closer to the origin.").
+  ("A solid is thinner, or a grid cell narrower, than 1024 contact tolerances. Make the solid thicker or the cells larger, or move the scene closer to the origin.").
   Glossary rows: `close call` (a step contact cannot answer safely; the step is shortened).
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Add contact errors and their stable names`. New names: the 3.1 list.
@@ -580,7 +580,9 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
                                                                       // {0,0,0.375} -> -0.125, {0,0,1}, kHighZ
   TEST(ComputeDistanceToSolid, CylinderInsideTie_TakesWall)           // {0.75,0,0.25} -> -0.25, {1,0,0}, kCurved
   TEST(ComputeDistanceToSolid, CylinderOnAxis_NormalIsMinusSolidXAxis)  // r 0.25, h 2, {0,0,0} -> -0.25,
-                                                                      // {-1,0,0} (P13)
+                                                                      // {0,1,0} (P13: minus the pose's x column,
+                                                                      // {0,-1,0} for the cylinder ToSolid builds
+                                                                      // along z; the test checks the x column first)
   TEST(ComputeDistanceToSolid, CylinderRegionBoundaries_AreContinuous)  // {1,0,0.75} (wall_distance 0,
                                                                       // cap_distance 0.25): 0.25 kHighZ;
                                                                       // {1.25,0,0.5} (cap_distance 0): 0.25 kCurved
@@ -654,9 +656,11 @@ to Task 4a; no test builds those shapes before then, and the branch holds a debu
   ```cpp
   TEST(ComputeContactTolerance, SceneAtOrigin_IsTheCellWidthFloor)   // largest 0, cell 0.01: 0x1p-30 * 0.01 exactly
   TEST(ComputeContactTolerance, SceneMovedAMillionMeters_ScalesWithIt)  // box at {1,2,3} half 0.5, step 0.01, cell
-                                                                     // 0.01; then moved by {1e6,0,0}: difference
+                                                                     // 0.01; then moved by {0,0,1e6}: difference
                                                                      // of tolerances == 0x1p-40 * 1e6 within 1e-12
                                                                      // relative; largest_coordinate grew by 1e6
+                                                                     // (z is the largest coordinate of {1,2,3}, so
+                                                                     // only a move along z grows the scale by 1e6)
   TEST(ComputeContactScale, BoxAndPlate_TakesThinnestAndLargest)     // plate h 0.002, box half {1,2,3} at {10,0,0}:
                                                                      // thinnest 0.004, largest 10 + Length({1,2,3})
   TEST(ComputeContactScale, MovingSolid_UsesEndOfStepOrigin)         // origin {0,0,0}, v {0,0,-5}, step 2: largest 10

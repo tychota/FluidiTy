@@ -745,7 +745,7 @@ of the viscous solve): `ViscousWithFreeSolid_IsExcluded` becomes `ViscousWithFre
   `solids::ComputeSolidsSummary` and the materials (with `has_viscous_ingredient` by the A25 rule; no `has_snow`,
   A24; no `has_free_solid_touching_liquid`, A27), then `viscosity::CheckViscosityCanRun`; one `kFromSolids`
   finding per entry of `solids::CheckSolidsCanRun(solids, smallest_cell_width, largest_cell_width)`;
-  `contact::CheckSolid` and `CheckContactTolerance` per solid; with gas, `gas::CheckGasCanRun` and
+  `contact::CheckSolid` per solid and one `CheckContactTolerance` for the whole scene; with gas, `gas::CheckGasCanRun` and
   `gas::CheckGasSources`; the two known limits. `kThinSolidInsideOneCell` and `kMoreThanOnePlateNearAFace`
   are found here from the plate thickness against the smallest cell and the plate count near a face as
   solids' public limits state them (they also arrive per try through Task 3's mapping).

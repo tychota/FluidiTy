@@ -2131,7 +2131,7 @@ give no finding; A27: a free solid beside one gives no finding either, so no com
 because of viscosity; replaced: "a free solid beside one stays `kViscousLiquidWithFreeSolid`");
 `solids::CheckSolidsCanRun(solids,
 smallest_cell_width, largest_cell_width)`, one `kFromSolids` finding per entry with its `solid_id`;
-`contact::CheckSolid` and `CheckContactTolerance` per solid (`kSolidThinnerThanTolerance`); with gas,
+`contact::CheckSolid` per solid and one `CheckContactTolerance` for the whole scene (`kSolidThinnerThanTolerance`); with gas,
 `gas::CheckGasCanRun(GasSceneSummary{...}, *gas)` and `gas::CheckGasSources(gas_sources, wind)` (A47; was `gas_wind`)
 (`kFromGas`); grid frame and levels (`kDomainTooLargeForSmallestCell`); ingredient counts; known limits
 (`kInternalForceAcrossSizeChange`, `kWavePaddleReceivingVolume`) as `kExperimental`. (Two liquids that do not
