@@ -39,6 +39,10 @@ All paths below are relative to the worktree `/Users/tychota/Documents/Code/open
 Copied from Foundation:
 
 - Work is local. Never `git push`, never open a pull request, never touch `main` or remote branches.
+- **Amended 2026-11-15 (Task 8a review): closed-form first hits.** A closed-form first hit is an intersection of
+  entry/exit intervals or a single root checked only against the duration; never a candidate accepted or rejected
+  by a second, separately rounded test. Each closed form has a generated test aimed at its edges, compared with a
+  reference that cannot miss.
 - Old code is read with `git show main:<path>` from the worktree. Nothing is checked out wholesale.
 - Commit rule (spec section 6): one thing per commit; strict CPU build and all tests pass; CUDA target compiles
   in the container; clang-format 23.1 clean; clang-tidy 23.1 clean on host sources; every touched file passes the
@@ -209,22 +213,28 @@ Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7
   wall when `wall_distance >= cap_distance` (`d = wall_distance`, normal `radial`, `kCurved`); else cap
   (`d = cap_distance`, normal `cap_sign * e_z`, `kHighZ` or `kLowZ`). So an inside tie takes the wall, and a point
   exactly on a region boundary gets the same `d` from either branch.
-- **P15 Cylinder first hit.** Grown with sharp edges (`R = radius + tol`, `H = half_height + tol`). Candidates in
-  this order: wall (first root of the `x, y` quadratic, tried when the start is outside the grown radius
-  `rho0 > R`, `A > 0`, `B < 0` and the root exists `B * B >= A * C`; accepted when `Abs(p0.z + u.z * t) <= H`),
-  then the cap the start is beyond (`Abs(p0.z) > H`, tried when the path moves toward it; accepted when the squared
-  radius at `t` is `<= R * R`, no square root). The earliest accepted time wins; equal times keep the wall candidate
-  (both name the same point). The reported face, normal and distance are `ComputeDistanceToSolid` at the hit
-  position, so the face comes from P14, not from the candidate. A hit position that **this closed form** finds in
+- **P15 Cylinder first hit.** Grown with sharp edges (`R = radius + tol`, `H = half_height + tol`). **Amended
+  2026-11-15 (Task 8a as built):** the first hit is an intersection of two intervals, not two candidates. With
+  `wall_gap = (rho0 - radius) - tol` and `cap_gap = (Abs(p0.z) - half_height) - tol` (the distance's own
+  expressions minus `tol`; where this plan wrote `rho0 > R` or `Abs(p0.z) > H` it now means `wall_gap > 0` or
+  `cap_gap > 0`): the times the path spends inside the grown wall (unbounded along the axis) and between the grown
+  caps' planes are each one interval. Wall: with `A = u.x^2 + u.y^2`, `B = p0.x u.x + p0.y u.y`,
+  `C = wall_gap * (rho0 + radius + tol)`, when `wall_gap > 0` it is empty unless `A != 0`, `B < 0` and
+  `B^2 - A C >= 0`, otherwise from `C / (-B + Sqrt(B^2 - A C))` to `(-B + Sqrt(B^2 - A C)) / A`; when
+  `wall_gap <= 0` it runs from 0 to the larger root (`(-B + Sqrt(...)) / A` for `B <= 0`, `-C / (B + Sqrt(...))`
+  for `B > 0`, for ever when `A == 0`). Caps: with `s0 = sign(p0.z)`, when `cap_gap > 0` it is empty unless
+  `-s0 u.z > 0`, otherwise from `cap_gap / (-s0 u.z)` to `(Abs(p0.z) + half_height + tol) / (-s0 u.z)`; when
+  `cap_gap <= 0` it runs from 0 to `-(sign(u.z) p0.z - half_height - tol) / Abs(u.z)`, for ever when `u.z == 0`.
+  The hit is the later of the two entries when neither interval is empty and that entry is no later than either
+  exit and no later than `duration` (both limits count). The reported face, normal and distance are
+  `ComputeDistanceToSolid` at the hit position, so the face comes from P14, not from an interval. A start in the
+  rim corner (`wall_gap <= 0` and `cap_gap <= 0` with a positive distance gap) is a hit at 0 only when
+  `rate < 0`, free otherwise. Why intervals: a candidate validated by a second, separately rounded test let paths
+  through the grown rim edge pass unseen (found in Task 8a's review). A hit position that **this closed form** finds in
   the rim region is moved by `MoveParticle` along its normal to `d = tol` before the response (step 4; the move is
   at most `(Sqrt(2) - 1) * tol`). **Amended 2026-11-15 (paper review):** the rim move never applies to a hit found
   by the stepping search toward a turning cylinder (P17), even when the reported face is `kLowRim` or `kHighRim`:
-  that search stops at `d <= 1.25 tol` in any region and its hit is used as found (Task 12a test). A start inside
-  the grown sharp cylinder (`rho0 <= R` and `Abs(p0.z) <= H`) whose true gap `d - tol` is positive lies in a rim
-  corner (up to rounding: the inside test and the gap are computed separately); it is a hit at `t = 0` when
-  `rate < 0`, free otherwise. If the code shows the need, Task 8a may instead define the inside test from the same
-  computed gaps that set the start's sign (`wall_distance - tol <= 0` and `cap_distance - tol <= 0`); the tests of
-  Task 8a hold either way.
+  that search stops at `d <= 1.25 tol` in any region and its hit is used as found (Task 12a test).
 - **P16 Touching rule on a curved surface (counterpart of P2).** For a sphere or cylinder, `g0 = d - tol` with the
   true distance at the path start and `rate = Dot(normal at the start, u)`, `u` the velocity relative to the solid.
   `-tol <= g0 <= 0`: not hit in this sweep when `rate * duration >= -tol`, hit at `t = 0` otherwise; `g0 < -tol`:
@@ -238,7 +248,9 @@ Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7
 - **P17 Spin about a symmetry axis.** The shape-changing turn is zero for a sphere and `omega_across = omega -
   Dot(omega, e_z) * e_z` for a cylinder (`e_z` its own z axis, the pose's z column at the sweep's start). A sphere is always swept and
   slid as a solid that does not turn (closed form, Task 8a). A cylinder is too when `Length(omega_across) *
-  step_duration * Length(half_size) <= contact_tolerance / 8`; otherwise it is a turning solid (Task 9 stepping,
+  step_duration * Length(half_size) <= contact_tolerance / 8` (the step's duration, not the sweep's; it turns only
+  when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8`, and below that bound it uses the closed
+  form); otherwise it is a turning solid (Task 9 stepping,
   Task 13 slide, P7). `CheckSolid`'s `kSolidTurnsTooFar` uses `Length(omega_across) * step_duration` for a cylinder
   and never fires for a sphere. P7's "turns when `angular_velocity != 0`" stays for the other shapes.
   `ComputeSolidVelocity` always uses the full `omega`.
@@ -805,6 +817,8 @@ then lower solid index) covers every shape.
 
 ### Task 8a: First hit on a sphere and a cylinder (A74)
 
+**As built (2026-11-15), where this task's text below differs:** the cylinder's first hit is the interval form of P15 (not two candidates each checked at its hit point: that form let paths through the grown rim edge pass unseen, found in this task's review); `FindSphereHit(const SolidContactInputs&, std::uint32_t solid_index, OwnPath own_path, double duration)` and `FindCylinderHit` likewise read the tolerance from `inputs.contact_tolerance`; normals at a rim hit on a tilted cylinder are tested to 1e-5; the turning bound of P17 uses the step's duration (this also corrects the comment of Task 12a's `TurningCylinderRimHit_IsNotMoved`).
+
 **Kind:** numerics
 
 **Files:**
@@ -889,11 +903,15 @@ each branch.
   turning case behind `FindFirstHitOnSolid` and must keep the rule "writes `kNone` whenever the pointer is not null and
   the failure is not a close call". Preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side.
   Also `ComputeShapeTurningAngularVelocity` (Task 3) to decide whether a cylinder's
-  shape turns (P17): use it, write no second helper.
+  shape turns (P17): use it, write no second helper. **Amended 2026-11-15 (Task 8a as built):** a cylinder counts
+  as turning only when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8` (the step's duration, not
+  the sweep's); below that bound it uses the closed form.
 - Produces: `FindFirstHit` for turning solids (design 5.3 step 2). **Room for module 1b (mesh solids) (A80):** the
   stepping search reads `g(t)` only through `ComputeDistanceForParticle` and decides "turning" only through
   `ComputeShapeTurningAngularVelocity`; it must not assume that the distance belongs to one face (1b gives it a
-  distance that comes from a triangle).
+  distance that comes from a triangle). A second close-call reason would add a `ContactCloseCall*` parameter to
+  `FindFirstHitOnSolid`; today every close call from it is `kSlowApproachToTurningSolid`, including a tilting
+  cylinder above the P17 bound.
 - Port the idea only: `main:native/src/rigid_body_3d.cc:861-881` (`RigidBodySweepDistanceBound3D`, the bound
   `translation + radius * angle`) and `:883-1130` (`SweepRigidBoxPoint3D`); not its bisection, stack or rounding
   slack.
@@ -952,7 +970,7 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
 - Consumes: Tasks 6 to 9. Preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side.
 - Produces: `MoveParticle` (design 3.4) with steps 1, 3, 4, 5 (re-sweep with the time left, no earlier-surface
   rule yet) and 6; step 2 only returns `kStartsInsideSolid` for `d < 0` and treats `0 <= d <= tol` as free
-  (Task 11 replaces it). Docstring as the naming review
+  (Task 11 replaces it). **Amended 2026-11-15 (Task 8a as built):** `MoveParticle` passes `duration = step_duration - elapsed`, computed fresh before every re-sweep (never a running time-left reduced by each hit time: rounding would trip `FindFirstHit`'s assertion), and stops the hit loop when that is `<= 0`. Docstring as the naming review
   6.3 with the design's example and P1's numbers. Test-only: `struct MoveParticleCase { std::string_view name;
   std::vector<Solid> solids; SolidContactInputs inputs; }` and `std::vector<MoveParticleCase>
   BuildMoveParticleCases()` in `contact_test_cases.h`; every `MoveParticle` test from here on adds its inputs
@@ -1071,7 +1089,8 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
   `Dot(normal, result - solid_velocity)`.
 - Produces: design 5.5 step 5's earlier-surface rule (removal without friction, the sharp-corner stop,
   `kSqueezedBetweenSolids`), with P5's reaction for each change it makes (amended 2026-11-15: a removal is charged
-  to the earlier surface's solid, the corner case to the newest solid).
+  to the earlier surface's solid, the corner case to the newest solid). **Amended 2026-11-15 (Task 8a as built):**
+  every re-sweep keeps Task 10's rule: `MoveParticle` passes `duration = step_duration - elapsed`, computed fresh before every re-sweep (never a running time-left reduced by each hit time: rounding would trip `FindFirstHit`'s assertion), and stops the hit loop when that is `<= 0`.
 
 - [ ] **Step 1: Failing tests.**
 
@@ -1167,7 +1186,7 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
                                                                // {0.5 + tol/2,0,3}, v {0,0,-1}, T 4: kHit, kHighRim,
                                                                // hit_count 1, ComputeDistanceToSolid(reaction
                                                                // .hit_position) within 0x1p-40 of tol, velocity
-                                                               // {0.4,0,-0.2} within 1e-8
+                                                               // {0.4,0,-0.2} within 1e-5 (see the note below)
   TEST(MoveParticle, CylinderCap_SlidesOnThePlane)             // {0.1,0,3}, v {0.1,0,-1}, T 3: hit_fraction
                                                                // (2 - tol) / 3, kHighZ, velocity {0.1,0,0}, end
                                                                // {0.4,0,1 + tol} within 2 tol, hit_count 1
@@ -1188,6 +1207,9 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
       // ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, elapsed), reaction.hit_position).distance
       // within tol / 1024 of at_hit.distance (a rim move would give tol, 0.2 tol away)
   ```
+  **Amended 2026-11-15 (Task 8a as built):** an expected normal (and a velocity or position computed from it) at a
+  hit within about the tolerance of an edge or rim is tested to 1e-5, not 1e-8: 1e-15 m of rounding at a distance
+  of the tolerance turns the normal by about 1e-6 (measured worst 2.07e-6, tilted cylinder's rim hits).
 - [ ] **Step 2: Run.** Expected: the new tests fail.
 - [ ] **Step 3: Implement.** The rim move goes between "find the first hit" and "respond", applied only to a hit
   of the closed form (P15), with a comment on why the sharp grown corner leaves that hit up to `Sqrt(2) * tol` away
@@ -1205,7 +1227,7 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `contact_test_cases.h`
 
 **Interfaces:**
-- Consumes: Tasks 9, 12; preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper;
+- Consumes: Tasks 9, 12; preconditions to respect: `FindFirstHit` requires `duration <= step_duration - start_elapsed` (asserted); the start rule and the touching rule use the solid's pose at `start_elapsed`; a path that meets a grown edge exactly is a hit; the domain box's touching rule is applied per closed side. `ComputeShapeTurningAngularVelocity` (Task 3) for P17's choice of slide, no second helper (amended 2026-11-15: a cylinder counts as turning only when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8`, the step's duration, not the sweep's; below the bound it uses the closed form);
   `ComputeLargestApproachLeftAfterResponse` (Task 7, `solid_contact_types.h`), through Task 12's rule: "approaches again" is
   `approach >= -bound` means no longer approaching, never `approach >= 0`.
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
@@ -1263,7 +1285,9 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
 - Produces: test-only `std::vector<MoveParticleCase> BuildObliqueCases(int count)` (used again in Task 16).
   **Room for module 1b (mesh solids) (A80):** the check "every end distance is at least `tol / 2`, and the naive
   control enters" is one helper of `contact_test_cases.h` that takes any list of solids (the test below calls it
-  for the oblique set and for the round set); 1b runs it on meshes.
+  for the oblique set and for the round set); 1b runs it on meshes. **Amended 2026-11-15 (Task 8a as built):** an
+  expected normal at a hit within about the tolerance of an edge or rim is tested to 1e-5, not 1e-8 (1e-15 m of
+  rounding at a distance of the tolerance turns the normal by about 1e-6; measured worst 2.07e-6).
 
 Oblique set (generator P11; draw in this order). Per case: normal `{NextSigned(), NextSigned(), NextSigned()}` redrawn while `Length < 0.25`,
 then `Normalized`; `point_on_surface = 1e3 * {NextSigned(), NextSigned(), NextSigned()}`; `linear_velocity = 10 * {NextSigned(), NextSigned(), NextSigned()}`; `gap = 0.01 * Next() + 2 * tol`; tangent
@@ -1460,9 +1484,12 @@ inside that padding, and the size stays 200.
   `GpuArray`; `ContactBuffers` already holds the per-step arrays.
 - Same-bits promise (deliberate, plan decision): the headers of `solid_shapes.h`, `contact_tolerance.h` and
   `solid_contact_types.h` state that `ComputeDistanceToSolid`, `FindSolidSide`, `ComputeSolidVelocitySample`,
-  `ComputeContactResponse` and `ComputeContactTolerance` give the same bits on CPU and GPU, unless NaN, for solids
-  that do not turn, because they use only `+`, `-`, `*`, `/` and `math::Sqrt`, each correctly rounded on both with
-  `--fmad=false`; with turning they call `math::Rotation` (may differ in the last bits) and agree within design 6.
+  `ComputeContactResponse` and `ComputeContactTolerance` give the same bits on CPU and GPU, unless NaN, when every
+  angular velocity is zero, because they use only `+`, `-`, `*`, `/` and `math::Sqrt`, each correctly rounded on both with
+  `--fmad=false`; with a nonzero angular velocity they call `math::Rotation` (may differ in the last bits) and agree within design 6.
+  **Amended 2026-11-15 (Task 8a as built, controller ruling 15):** a spinning sphere or cylinder is posed with its
+  spin through `ComputeSolidPose`, which uses `Sin`, so spinning round solids are compared within the design 6
+  tolerance, not by bits; revisit only if the hardware run needs exact parity.
 - **Amended 2026-11-15 (A74):** the promise covers the sphere and cylinder branches too (design 6): distance and
   normal for any pose, `FindFirstHit`'s closed forms, the rim move and the touching rule use only `+ - * /`,
   `math::Abs` and `math::Sqrt`; no last-bits function. A spinning sphere or cylinder (`angular_velocity` not zero)
@@ -1495,8 +1522,9 @@ inside that padding, and the size stays 200.
   TEST(SharedFormulas, OnGpu_MatchCpu)                      // ComputeDistanceToSolid, FindSolidSide,
                                                             // ComputeSolidVelocitySample, ComputeContactResponse,
                                                             // ComputeContactTolerance on 32 fixed inputs:
-                                                            // CheckSameBitsOrBothNaN without turning (the promise
-                                                            // above), design 6 tolerance with turning
+                                                            // CheckSameBitsOrBothNaN when every angular velocity
+                                                            // is zero (the promise above), design 6 tolerance
+                                                            // otherwise (spinning round solids included)
   // move_particles_no_gpu_test.cc, label no_gpu
   TEST(BuildContactBuffers, GpuWithoutAGpu_IsRunOnCallFailed)
   ```

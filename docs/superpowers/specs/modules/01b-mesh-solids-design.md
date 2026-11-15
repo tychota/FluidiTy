@@ -1,12 +1,12 @@
 # Mesh solids module design
 
-Status: updated 2026-11-15 with the owner's answers A81 to A90 (section 11 "Decisions"; thin parts: 5.11, A85).
-How a thin wall holds liquid is **open again** (A90): section 5.12 compares the real options on the survey in
-`literature-thin-walls.md` and recommends one; section 11 holds three questions for the owner. Module 1b of the
-rebuild (owner answer A80). No implementation plan yet. The edits other designs need are listed in
-`changes-to-apply.md`, section "01b Mesh solids (A80)"; those that depend on 5.12 are marked pending there.
-Literature claims are marked
-(checked) when the citation was confirmed on the web on 2026-11-15 and (memory) when not.
+Status: rewritten 2026-11-15 for the owner's simple route (A94). Module 1b of the rebuild (A80). The first version
+is for meshes with real thickness: no thin-wall mechanism is built (section 5.9). Decisions A80 to A94 are in
+section 11; no owner question is open. The contact part has a plan,
+`plans/2026-11-14-rebuild-01b-mesh-solids.md`; what the other modules must change is in
+`01b-mesh-solids-cross-module.md` and, as an edit list, in `changes-to-apply.md` "01b Mesh solids (A80)".
+Literature claims are marked (checked) when the citation was confirmed on the web on 2026-11-15 and (memory) when
+not.
 
 ## 1. Purpose
 
@@ -17,116 +17,132 @@ how far is this point from the solid, which way is out, how fast is the surface 
 
 **Owns:** the mesh shape (`SolidShape::kMesh`): its triangles in the solid's own axes, the tree of boxes that finds
 the triangles near a point or a path, the distance and normal to it, the inside test, the first hit of a path on
-it, the slide along it (concave corners included), which side of a thin part a point is on (5.11), the checks that
-a mesh is usable, the builder that turns
-vertices and triangles into the arrays the solver reads, and the buffers that hold them on the run's processor.
+it, the slide along it (concave corners included), the checks that a mesh is usable, the measure of its thinnest
+wall, the builder that turns vertices and triangles into the arrays the solver reads, and the buffers that hold
+them on the run's processor.
 
 **Does not own:** reading a mesh file, the scene file fields, the files kept for resume, mass, centre of mass and
-inertia of a mesh (I/O); exporting the mesh from Blender, quads and subdivision surfaces (add-on); how a solid
-moves from step to step, the force on it, writing sides onto faces and particles (solids); blocked areas (pressure,
-filled by solids); everything module 1 owns. A mesh that changes shape over time (a character) is not in the first version (section 5.8).
+inertia of a mesh (I/O); exporting the mesh from Blender (add-on); how a solid moves from step to step and the
+force on it (solids); blocked areas (pressure, filled by solids); the finding about thin parts (the step's scene
+check, from this module's measure); everything module 1 owns. Not in the first version: a mesh that changes shape
+(5.8), any mechanism for walls thinner than the pressure solve can see (5.9).
 
-On record from the same conversation (A80): the grid does not follow surfaces. Cubes stay cubes; the grid knows a
-mesh only through numbers per cell, face and corner (blocked areas, the distance at corners), and the particles
-carry where the material is.
+On record (A80): the grid does not follow surfaces. Cubes stay cubes; the grid knows a mesh only through numbers
+per cell, face and corner (blocked areas, the distance at corners), and the particles carry where the material is.
 
 ## 2. What exists today
 
-- `main`: nothing. Solids are analytic shapes only. The solids design says so twice: section 1 "solid meshes (none:
-  analytic shapes only, as on `main`)" and section 10 "Solid meshes, contact between two solids" (not ported). The
-  add-on design section 10 leaves "evaluated mesh shapes" for later; a mesh object marked as a solid is exported
-  as its bounding box (add-on 5.1 item 2: "The shape is declared, not guessed from the mesh").
-- Rebuild, module 1 (built: Tasks 1 to 6, `native/fluidity/contact/solid_shapes.h`, `contact_tolerance.h`,
-  `contact_error.h`): six shapes behind one `Solid` (200 bytes by its field layout: 1 + 3 pad + 4, pose 96, motion
-  48, half size 24, six `bool` + 2 pad, 8, 1 + 7 pad). `CheckSolid`, `ComputeDistanceToSolid` and
-  `ComputeContactScale` each switch on `SolidShape` with every case written out. `ComputeSolidVelocitySample` loops
-  over all solids and takes a pointer and a count. Nothing in a `Solid` can refer to data outside it.
-- The only mesh input planned anywhere is the closed-mesh refinement zone (`plan-decisions.md` "Refinement volume",
-  I/O plan Tasks 29b and 29d, add-on `zone_mesh.py`): a binary PLY of triangles, a closed test (every edge shared
-  by exactly two triangles), and an inside test per lattice row by ray parity. It gives no distance, no normal, no
-  nearest point, no tree and nothing on the GPU. Reused here: the PLY layout and reader, the add-on's evaluated-mesh
-  export with the fan rule for quads and n-gons, `count_open_edges`, the mesh files in the scene digest, the
-  pattern of a listed `inputs/` array file that a resume reads instead of rebuilding.
-- Module 1's arguments that rest on convexity, which a mesh breaks: the touching rule (P2, P16: "the true distance
-  of a convex solid is convex along a line"); "each convex solid is hit at most once per sweep" (design 5.7); the
-  closed-form hit times; `kMaxHitsPerStep = 4` ("three sides of a corner plus one"); the straight slide in a
-  turning solid's axes (P7); one move along the normal reaches `d = tol` (5.5 steps 2 and 6).
+- `main`: nothing. Solids are analytic shapes only (solids design sections 1 and 10; add-on design section 10).
+- Rebuild, module 1, built through Task 8a (`native/fluidity/contact/`): `solid_shapes.h` (six shapes behind one
+  `Solid`; `sizeof(Solid)` is 200 with 7 trailing padding bytes after `reports_reaction` at offset 192; no
+  `static_assert` on it yet, module 1's Task 15 adds one), `contact_tolerance.h`, `contact_error.h`
+  (`ContactFailure`: two enum bytes, then 6 padding bytes before `particle_id`), `solid_contact_types.h`
+  (`SolidContactInputs`, `FirstHit`, `ComputeContactResponse`, `ComputeLargestApproachLeftAfterResponse`),
+  `solid_contact_steps.h` (private steps: `Sweep`, `OwnPath`, `HitTime`, `StartCase`, `ComputeStartCase`,
+  `ComputeOwnPath`, `ComputeDistanceForParticle(inputs, solid_index, pose, point, plate_side)`,
+  `FindFirstHitOnSolid(inputs, solid_index, start, velocity_for_this_step, start_elapsed, duration, FirstHit*)`
+  returning `ContactError`, whose `switch (solid.shape)` writes every case out and ends in an assertion and
+  `kBadInput`), `solid_contact.h` (`FindFirstHit`, six and seven arguments). A turning solid returns
+  `kTooCloseToCall` until Task 9. `MoveParticle`, `MoveParticles` and the GPU half are not built (Tasks 9 to 18).
+- The only mesh input planned elsewhere is the closed-mesh refinement zone (I/O plan Tasks 29b, 29d; add-on
+  `zone_mesh.py`): a binary PLY, a closed test, an inside test by ray parity. Reused: the PLY layout and reader,
+  the add-on's evaluated-mesh export with the fan rule, the listed `inputs/` array file a resume reads.
+- Module 1's arguments that rest on convexity, which a mesh breaks: the touching rule (P2, P16); "each convex
+  solid is hit at most once per sweep"; the closed-form hit times; `kMaxHitsPerStep = 4`; one move along the
+  normal reaches the rest gap.
+- A lesson of module 1's Task 8a review that shapes 5.4: the cylinder's first hit computed two candidates (wall,
+  cap) and checked each candidate's hit point against the other surface with a separately rounded test; a path
+  through the grown rim edge fell between the two and passed through the solid, in about 5 % of paths within a
+  few rounding units of the edge. The fix was the box's form: an interval `entry <= exit`, where rounding is
+  monotone.
 
 Z-up: nothing specific. A mesh is stored in the solid's own axes; the pose places it.
 
 ## 3. Public interface
 
-Folder `native/fluidity/contact/` (the shape is a contact shape; contact still includes only `base/`), namespace
-`fluidity::contact`. All names NEW. *shared* = compiles for CPU and GPU.
+Folder `native/fluidity/contact/`, namespace `fluidity::contact`; contact still includes only `base/`. All names
+NEW. Headers follow module 1's layout as built: a types header, a private steps header, a public header, no
+forward declarations. Include order: `solid_shapes.h` and `mesh_shape.h` (independent) <- `mesh_shape_steps.h` <-
+`mesh_contact.h` <- `solid_contact_steps.h`; `solid_contact_types.h` includes `mesh_shape.h` for one field.
 
-### 3.1 Changes to module 1's headers (all appended; no earlier value or offset moves)
+### 3.1 Appended to module 1's headers (no earlier value or offset moves)
 
 ```cpp
 // solid_shapes.h
-enum class SolidShape : std::uint8_t { kFlatSolid, kPlate, kBox, kDomainBox, kSphere, kCylinder,
-                                      kMesh };            // NEW, appended (value 6).
-enum class SolidFace : std::uint8_t { /* ...kHighRim, */ kMeshTriangle };   // NEW, appended (value 9).
-inline constexpr std::uint32_t kNoMesh = 0xFFFFFFFFu;     // "No mesh", as an index into the mesh shapes.
+enum class SolidShape : std::uint8_t { /* ..., kCylinder, */ kMesh };          // value 6
+enum class SolidFace : std::uint8_t { /* ..., kHighRim, */ kMeshTriangle };    // value 9
+inline constexpr std::uint32_t kNoMesh = 0xFFFFFFFFU;   // "No mesh", as an index into the run's mesh shapes.
 struct Solid {
   // ... the existing fields, unchanged, then:
-  std::uint32_t mesh_index = kNoMesh;   // kMesh only: index into the run's mesh shapes. Checked figure:
-                                        // sizeof(Solid) is 200 bytes with 7 trailing padding bytes
-                                        // (reports_reaction at offset 192); the index sits at offset 196, so
-                                        // sizeof(Solid) stays 200 (static_assert) and no memory estimate moves.
-};
-struct PlateSide {                      // Gains one field in its padding; sizeof stays 8 (static_assert).
-  std::uint32_t plate_id = 0;           // solid_id of the plate, or of the mesh the thin part belongs to.
-  SolidSide side = SolidSide::kNoPlate;
-  std::uint16_t part = 0;               // NEW (A85). 0 for a plate. Thin part of a mesh, counted from 1 (5.11).
-};
-// NEW (A85). False only when both name the same plate_id and part and their sides differ (both not kNoPlate).
-// For the one unbounded plate this equals today's equality wherever a face is outside the solid.
-constexpr bool IsOnOppositeSides(PlateSide first, PlateSide second);
-// kMesh: half_size holds, per own axis, the largest |coordinate| of any vertex (so reach = Length(half_size)
-// bounds the surface from the origin, as for a box). ToSolid sets it from the shape.
-Solid ToSolid(const MeshShape& shape, std::uint32_t mesh_index, SolidPose pose, SolidMotion motion,
-              std::uint32_t solid_id);
+  std::uint32_t mesh_index = kNoMesh;   // kMesh only. At offset 196, inside the trailing padding:
+};                                      // static_assert(sizeof(Solid) == 200).
+// kMesh: half_size holds, per own axis, the largest |coordinate| of any vertex, so the reach Length(half_size)
+// bounds the surface from the origin, as for a box.
+// CheckSolid(solid, step_duration[, close_call]) gains the kMesh case without the table: half_size finite and
+// positive, mesh_index != kNoMesh, the turn limit on the whole angular velocity. (FindFirstHit asserts it.)
+// The functions of solid_shapes.h and contact_tolerance.h that take no MeshShapes (ComputeDistanceToSolid,
+// ComputeSolidVelocitySample, ComputeContactScale) gain "Requires: no solid is a kMesh" with its assertion; in a
+// release build they read a mesh as the box of its half_size, which contains it, so a caller's mistake stops
+// particles early and never lets one through.
 
-// contact_error.h, appended after kOutOfMemory:
-//   kMeshNotUsable   A mesh failed CheckMeshShape; ContactFailure::magnitude holds the offending length or
-//                    count and the new field `mesh_problem` says why.
+// contact_error.h
+enum class ContactError : std::uint8_t { /* ..., kOutOfMemory, */ kMeshNotUsable };   // appended
 enum class MeshProblem : std::uint8_t {
-  kNone, kEmpty, kTooManyTriangles, kNotClosed, kFacesTurnedBothWays, kTriangleTooFlat, kEdgeTooSharp,
-  kPartTooThin, kCrossesItself,
+  kNone,
+  kEmpty,                // No triangle.
+  kTooManyTriangles,     // More than kMaxMeshTriangles.
+  kNotClosed,            // An edge is not shared by exactly two triangles. magnitude: the count of such edges.
+  kFacesTurnedBothWays,  // Two triangles run along a shared edge in the same direction.
+  kTriangleTooFlat,      // A triangle's smallest height is below 2^-20 of its longest edge, or below 1024 tol.
+  kEdgeTooSharp,         // Two faces meet at an inside angle below 2^-6 rad.
+  kCrossesItself,        // Two triangles that share no vertex intersect.
+  kPartTooThin,          // The thinnest wall is below 1024 contact tolerances.
 };
-// ContactFailure gains `MeshProblem mesh_problem = MeshProblem::kNone;` (in existing padding). ToMessage and
-// ToName cover MeshProblem. ContactCloseCall is unchanged.
+// ContactFailure gains `MeshProblem mesh_problem = MeshProblem::kNone;` at offset 2 (existing padding; sizeof
+// unchanged, static_assert). ToMessage and ToName cover MeshProblem. ContactCloseCall is unchanged.
+
+// solid_contact_types.h: SolidContactInputs gains, last, `MeshShapes meshes{};`.
+// move_particles.h (module 1 Task 15): MoveParticlesInputs gains `MeshShapes meshes{};` on the call's processor.
+// FindFirstHit, MoveParticle, MoveParticles keep their signatures. PlateSide, FindSolidSide: unchanged.
 ```
 
-### 3.2 `contact/mesh_shape.h` (shared)
+### 3.2 `contact/mesh_shape.h` (shared; types and constants only; includes `base/` only)
 
 ```cpp
-struct MeshTreeBox {                  // 32 bytes. One box of the tree; papers: a bounding volume hierarchy node.
-  float low[3], high[3];              // m, own axes. Rounded outward, so the box always contains its triangles.
-  std::uint32_t first = 0;            // count == 0: index of the first of two inner boxes (the second is +1).
+struct MeshTreeBox {                  // 32 bytes. One box of the tree. Papers: bounding volume hierarchy node.
+  float low[3], high[3];              // m, own axes. Rounded outward: the box contains its triangles.
+  std::uint32_t first = 0;            // count == 0: index of the first of its two inner boxes (the second is +1).
   std::uint32_t count = 0;            // count > 0: an end box holding triangles [first, first + count), <= 4.
 };
-struct MeshShape {                    // One mesh on one processor. Borrowed arrays; never allocates.
+struct MeshShape {                    // One mesh on one processor. Borrowed arrays; never allocates. 120 bytes.
   const Vec3* vertices = nullptr;             // m, own axes. vertex_count.
   const std::uint32_t* triangles = nullptr;   // 3 vertex indexes per triangle, counter-clockwise seen from
-                                              // outside. Ordered so each end box's triangles are contiguous.
+                                              // outside, in tree order (each end box's triangles contiguous).
   const std::uint32_t* neighbours = nullptr;  // 3 per triangle: the triangle across edge (0,1), (1,2), (2,0).
   const Vec3* vertex_normals = nullptr;       // Unit, own axes: the triangle normals around the vertex, each
                                               // weighted by its angle there (Baerentzen and Aanaes 2005).
-  const std::uint16_t* sheet_sides = nullptr; // NEW (A85). Per triangle: 0, or 2 * part - 1 (the part's
-                                              // kAlongNormal face) or 2 * part (its kAgainstNormal face). 5.11.
   const MeshTreeBox* tree = nullptr;          // tree_box_count. Box 0 is the root.
   std::uint32_t vertex_count = 0, triangle_count = 0, tree_box_count = 0;
   Vec3 half_size{};                   // m. Largest |coordinate| of a vertex per own axis.
-  double thinnest_part = 0;           // m. Smallest thickness the builder measured (5.2 check 7).
-  double thinnest_sheet = 0;          // m. NEW (A85). Smallest thickness between two faces back to back (5.11);
-                                      // +infinity when the mesh has no thin part.
+  double thinnest_wall = 0;           // m. Smallest measured thickness between two faces back to back (5.2);
+                                      // +infinity when the builder found none.
+  Vec3 thinnest_wall_point{};         // m, own axes. Where it was measured (on the surface). Zero when none.
   double smallest_triangle_height = 0;// m.
 };
 struct MeshShapes { const MeshShape* meshes = nullptr; std::uint32_t mesh_count = 0; };   // Passed by value.
-inline constexpr int kMaxMeshTreeDepth = 48;         // The builder guarantees it; the search keeps 48 indexes.
-inline constexpr int kMaxHitsPerMeshPerStep = 16;    // 5.6.
-inline constexpr int kMaxMoveOutCount = 4;           // 5.5.
+
+inline constexpr std::uint32_t kMaxMeshTriangles = 1U << 24;   // 16.8 million per mesh.
+inline constexpr int kMaxTrianglesPerEndBox = 4;
+inline constexpr int kMaxMeshTreeDepth = 24;       // ComputeMeshTreeDepth(kMaxMeshTriangles) is 22; two spare.
+inline constexpr int kMaxMeshHitsPerStep = 16;     // Hits on meshes one particle may have in one step (5.6).
+inline constexpr int kMaxMoveOutCount = 4;         // 5.5.
+inline constexpr double kMeshNearStartInTolerances = 1.5;   // 5.4: a sweep that starts this near is "near".
+inline constexpr double kMeshRestingSweepShare = 0.5;       // 5.4: a near sweep grows triangles by tol / 2.
+inline constexpr double kMeshPieceOverlapShare = 0.125;     // 5.4: pieces overlap by an eighth of the radius.
+// How many times a count of triangles is halved (the larger half kept) before it is at most
+// kMaxTrianglesPerEndBox: the depth of the builder's tree and the most box indexes a search keeps.
+constexpr int ComputeMeshTreeDepth(std::uint32_t triangle_count);
+static_assert(ComputeMeshTreeDepth(kMaxMeshTriangles) <= kMaxMeshTreeDepth);
 
 struct DistanceToMesh {
   double distance = 0;                // m. Positive outside, negative inside. Exact to rounding (5.3).
@@ -134,859 +150,542 @@ struct DistanceToMesh {
   Vec3 own_nearest_point{};           // m, own axes, on the surface.
   std::uint32_t triangle_index = 0;   // The nearest triangle; ties keep the lower index.
 };
-// `largest_distance`: the search gives up beyond it and returns distance == largest_distance (sign from the
-// tree's root box: positive), so far points cost one box test. Pass +infinity for the true value everywhere.
-DistanceToMesh ComputeDistanceToMesh(const MeshShape& mesh, Vec3 own_point, double largest_distance);
-struct MeshFirstHit { double elapsed = 0; bool is_hit = false; DistanceToMesh at_hit{}; };
-// First time own_start + own_velocity * t, 0 <= t <= duration, comes within contact_tolerance of the mesh (5.4).
-MeshFirstHit FindFirstHitOnMesh(const MeshShape& mesh, Vec3 own_start, Vec3 own_velocity, double duration,
-                                double contact_tolerance);
-// NEW (5.12, the recommended option; pending the owner's choice, section 11 Q10). Whether the straight segment
-// between two points crosses a thin part of the mesh: an exact test of the segment against the sheet triangles
-// (those with a nonzero sheet_sides entry) through the tree. A segment that touches a shared edge or vertex
-// counts once (the rule of Woop et al. 2013). The first crossing from own_start is reported.
-struct ThinPartCrossing { bool crosses = false; std::uint32_t triangle_index = 0; Vec3 own_point{}; };
-ThinPartCrossing FindThinPartCrossing(const MeshShape& mesh, Vec3 own_start, Vec3 own_end);
-// The same over every mesh solid of a list, at the poses `elapsed` seconds into the step; the lower solid index
-// wins a tie in distance from `start`. solid_index is kNoSolid when nothing is crossed.
-struct SolidThinPartCrossing { std::uint32_t solid_index = kNoSolid; Vec3 point{}; };
-SolidThinPartCrossing FindThinPartCrossing(const Solid* solids, std::uint32_t solid_count, double elapsed,
-                                           Vec3 start, Vec3 end, MeshShapes meshes);
+struct MeshSweep {                    // A straight path in a mesh's own axes, the mesh at rest.
+  Vec3 own_start{};                   // m.
+  Vec3 own_velocity{};                // m/s, relative to the solid.
+  double duration = 0;                // s, zero or more.
+  double contact_tolerance = 0;       // m, zero or more.
+};
+struct MeshFirstHit { bool has_hit = false; double elapsed = 0; DistanceToMesh at_hit{}; };
+```
 
-// The mesh-aware forms of module 1's point functions. The forms without `meshes` stay and are these with
-// MeshShapes{}; given a kMesh solid without its table they assert (debug) and treat it as absent.
+### 3.3 `contact/mesh_contact.h` (shared, public), `contact/mesh_shape_steps.h` (shared, private to `contact/`)
+
+```cpp
+// `largest_distance`: the search gives up beyond it and returns distance == largest_distance, positive, with a
+// zero normal, so a far point costs one box test. Pass +infinity for the true value everywhere.
+DistanceToMesh ComputeDistanceToMesh(const MeshShape& mesh, Vec3 own_point, double largest_distance);
+// First time sweep.own_start + sweep.own_velocity * t, 0 <= t <= duration, meets the mesh grown by the sweep's
+// radius, with the start cases of 5.4. at_hit is ComputeDistanceToMesh at the hit position.
+MeshFirstHit FindFirstHitOnMesh(const MeshShape& mesh, MeshSweep sweep);
+Solid ToSolid(const MeshShape& shape, std::uint32_t mesh_index, SolidPose pose, SolidMotion motion,
+              std::uint32_t solid_id);
+// The mesh-aware forms of module 1's point functions: the same results for the six shapes, and kMesh through
+// meshes.meshes[solid.mesh_index].
 DistanceToSolid ComputeDistanceToSolid(const Solid& solid, SolidPose pose, Vec3 point, MeshShapes meshes);
 SolidVelocitySample ComputeSolidVelocitySample(const Solid* solids, std::uint32_t solid_count, double elapsed,
                                                Vec3 point, double search_distance, MeshShapes meshes);
 ContactScale ComputeContactScale(const Solid* solids, std::uint32_t solid_count, double step_duration,
                                  double smallest_cell_width, MeshShapes meshes);
 ContactError CheckSolid(const Solid& solid, double step_duration, MeshShapes meshes, ContactCloseCall* close_call);
-// SolidContactInputs and MoveParticlesInputs each gain one field: `MeshShapes meshes{};` (on the processor of the
-// call). MoveParticle, FindFirstHit and MoveParticles keep their signatures.
+// The checks that need the run's tolerance (5.2 checks 4 and 8). On failure *failure names the problem.
+ContactError CheckMeshShape(const MeshShape& mesh, double contact_tolerance, ContactFailure* failure);
 ```
 
-```cpp
-// NEW (A85). The side of a thin part of a mesh the point is on (5.11): from the nearest triangle within
-// largest_distance. {0, kNoPlate, 0} when that triangle belongs to no thin part, when none is that near, or when
-// the point is inside the solid. For a plate: {solid_id, FindSolidSide(...), 0}.
-PlateSide FindPlateSide(const Solid& solid, SolidPose pose, Vec3 point, double largest_distance, MeshShapes meshes);
-```
+`ComputeContactScale(..., meshes)`: a mesh adds `Length(half_size)` to `largest_coordinate` and gives the
+`thinnest_solid` candidate `min(thinnest_wall, 2 * min(half_size))`. `CheckSolid(..., meshes, ...)` adds
+`mesh_index < mesh_count` and `half_size` equal to the shape's. Private steps (names for the plan): nearest point
+on a triangle, distance to a tree box, the search for the nearest triangle, the interval of one piece of a grown
+triangle, the search for the earliest entry, the mesh's start case.
 
-`FindSolidSide` is unchanged (plates only). `SolidVelocitySample::side` is filled from `FindPlateSide` for a mesh
-(same search, no second one). `ComputeSolidPose`, `ComputeSolidVelocity`, `ComputeContactResponse` are unchanged.
-
-### 3.3 `contact/mesh_shape_builder.h` (CPU only), `mesh_shape_builder.cc`
+### 3.4 `contact/mesh_shape_builder.h`, `.cc` and `contact/mesh_shape_buffers.h`, `.cc` (CPU only)
 
 ```cpp
 struct MeshShapeArrays {              // Owns one mesh's arrays in CPU memory. Movable.
   std::vector<Vec3> vertices; std::vector<std::uint32_t> triangles, neighbours;
-  std::vector<Vec3> vertex_normals; std::vector<std::uint16_t> sheet_sides; std::vector<MeshTreeBox> tree;
-  Vec3 half_size{}; double thinnest_part = 0; double thinnest_sheet = 0; double smallest_triangle_height = 0;
+  std::vector<Vec3> vertex_normals; std::vector<MeshTreeBox> tree;
+  Vec3 half_size{}; double thinnest_wall = 0; Vec3 thinnest_wall_point{}; double smallest_triangle_height = 0;
 };
 MeshShape ToMeshShape(const MeshShapeArrays& arrays);          // The borrowed form, CPU memory.
-inline constexpr std::uint32_t kMaxMeshTriangles = 1u << 24;   // 16.8 million per mesh.
-struct MeshCheckSettings { double contact_tolerance = 0; bool checks_self_crossing = true;
-                           double sheet_thickness_limit = 0; };  // m. 0: label no thin part (5.11).
-inline constexpr double kSheetThicknessLimitInCells = 2.75;      // Of the smallest cell width: the largest value
-                                                                 // of the plate's bound (5.11, 5.12).
-// Builds the arrays from vertices (m, own axes) and triangles, then runs the checks of 5.2. Same input, same
-// bytes. Fails kMeshNotUsable (mesh_problem, magnitude), kBadInput (not finite, an index out of range).
+enum class SelfCrossingCheck : std::uint8_t { kRun, kSkip };  // kSkip: tests and tools that know the mesh.
+// Builds the arrays from vertices (m, own axes) and triangles, then runs the checks of 5.2 that need no
+// tolerance. Same input, same bytes. Fails kMeshNotUsable (mesh_problem, magnitude), kBadInput (a value not
+// finite, an index out of range).
 std::expected<MeshShapeArrays, ContactFailure> BuildMeshShape(std::span<const Vec3> vertices,
-    std::span<const std::array<std::uint32_t, 3>> triangles, const MeshCheckSettings& settings);
-// The checks alone, for the step's capability check when the tolerance of the run is known.
-ContactError CheckMeshShape(const MeshShape& mesh, double contact_tolerance, ContactFailure* failure);
+    std::span<const std::array<std::uint32_t, 3>> triangles, SelfCrossingCheck self_crossing_check);
 
-class MeshShapeBuffers;   // The run's meshes on run_on(): one buffer per array kind, all meshes end to end, plus
-                          // the MeshShape table. Members: run_on(), MeshShapes meshes() const.
+class MeshShapeBuffers;   // The run's meshes on run_on(): one buffer per array kind, all meshes end to end, and
+                          // the MeshShape table. Move-only. Members: RunOn run_on() const; MeshShapes meshes() const.
 std::expected<MeshShapeBuffers, ContactFailure> BuildMeshShapeBuffers(RunOn run_on,
     std::span<const MeshShapeArrays> meshes, RunMemory& run_memory);        // kOutOfMemory, kRunOnCallFailed
 std::vector<MemoryEstimateEntry> BuildMeshShapeMemoryEstimate(std::uint64_t vertex_count,
     std::uint64_t triangle_count, std::uint64_t tree_box_count, std::uint32_t mesh_count);
 ```
 
-Memory rows (all `kRunOn`, `kWholeRun`, given counts): "contact: mesh vertices" 24 B, "contact: mesh triangles"
-12 B, "contact: mesh neighbours" 12 B, "contact: mesh vertex normals" 24 B, "contact: mesh sheet sides" 2 B,
-"contact: mesh tree" 32 B, "contact: mesh table" `sizeof(MeshShape)`. With a closed mesh (vertices about half the
-triangles) and at most 4 triangles per end box (tree boxes about half the triangles): **about 60 B per triangle**:
-6 MB for 100,000 triangles, 60 MB for one million. I/O keeps the same arrays in CPU memory for the CPU-only consumers ("io: mesh solids", `kCpu`).
+Memory rows (all `kRunOn`, `kWholeRun`, `kGivenCount`, one buffer each): "contact: mesh vertices" 24 B, "contact:
+mesh triangles" 12 B, "contact: mesh neighbours" 12 B, "contact: mesh vertex normals" 24 B, "contact: mesh tree"
+32 B, "contact: mesh table" 120 B. A closed mesh has about half as many vertices as triangles and between a half
+and 0.8 tree boxes per triangle, so **64 to 74 B per triangle**: 7 MB for 100,000 triangles, 65 to 74 MB for one
+million (checked with the tree's count formula for 12 to 2^24 triangles). I/O keeps the same arrays in CPU memory
+for the CPU-only consumers ("io: mesh solids", `kCpu`).
 
 ## 4. Consumes from other modules
 
-**Foundation (EXISTS):** as contact section 4; in addition `math::Min`, `math::Max`, `Buffer`, `BuildBuffer`,
-`WriteBuffer`, `RunMemory`, `MemoryEstimateEntry`.
+**Foundation (EXISTS):** as contact section 4; also `math::Min`, `math::Max` (a NaN loses: a comparison that must
+fail on NaN is written out), `Buffer`, `BuildBuffer`, `WriteBuffer`, `RunMemory`, `MemoryEstimateEntry`.
 
-**Contact (module 1; PROVIDED when its Tasks 8 to 16 are built as section 5.9 asks):** `Solid`, `SolidPose`,
-`SolidMotion`, `DistanceToSolid`, `SolidVelocitySample`, `ContactScale`, `SolidContactInputs`, `FirstHit`,
-`MoveParticle`, `FindFirstHit`, `MoveParticles`, `ContactBuffers`, the private dispatch points of
-`solid_contact_steps.h` (5.9), the stepping search toward a turning solid, the response, the surface list.
+**Contact, module 1.** EXISTS (Tasks 1 to 8a): everything in section 2. NEEDED from its unbuilt tasks, as its
+plan states them: Task 9 the stepping search behind `FindFirstHitOnSolid`, reading the gap only through
+`ComputeDistanceForParticle`; Task 10 `MoveParticle` with a surface list whose entries hold the solid index and
+the normal recorded at the hit; Task 11 `MoveToRestGap(inputs, solid_index, pose, point)`; Task 12 the
+earlier-surface rule; Task 13 the carry in a turning solid's axes as one private function; Task 14 the
+"ends outside, control enters" helper; Task 15 `MoveParticlesInputs`, `ContactBuffers`, the size assertion;
+Task 16 `MoveParticlesView`, `ApplyMoveParticleAt`.
 
-**Nothing else.** I/O, solids, the step and the add-on consume this module (section 5.10).
+**Nothing else.** I/O, solids, the step and the add-on consume this module (`01b-mesh-solids-cross-module.md`).
 
 ## 5. Method
 
-Notation: `tol` the contact tolerance, `d` the distance to the solid (negative inside), `p` a point in the solid's
-own axes, `u` the particle's velocity for this step minus the solid's, in own axes.
+Notation: `tol` the contact tolerance, `d` the distance to the solid (negative inside), `p` a point in the
+solid's own axes, `u` the particle's velocity for this step minus the solid's, in own axes, `r` the radius a
+sweep grows triangles by.
 
-### 5.1 Representation: the choice
+### 5.1 Representation (decided, A81)
 
-| | (a) distance volume | (b) triangles and a tree (recommended) | (c) both |
-|---|---|---|---|
-| What it is | `d` sampled on a lattice in own axes, read by interpolation. Papers: signed distance field, level set; sparse form: OpenVDB (Museth 2013, checked), NanoVDB (Museth 2021, checked) | The triangles, exact nearest-point and path queries through a tree of boxes (Ericson 2005 5.1.5, memory; Karras 2012, checked) | Volume for grid-side numbers, triangles for particles |
-| Error at the surface | `h^2 x curvature / 8` on smooth parts, of order `h` at edges (own derivation; no citable bound found). At `h = 2 mm`: micrometres to millimetres, 10^5 to 10^8 tolerances. The solid becomes "what the lattice says", not the mesh | Rounding only, about 100 `epsilon` x largest coordinate: the same order as module 1 and far below `tol` | Two answers to "where is the surface", differing by (a)'s error |
-| Thin parts | A part thinner than about two samples vanishes or leaks. Production practice thickens it: Houdini advises volume plus surface collision because thin colliders leak; Bifrost asks for a thickness of one voxel or more (both checked) | Kept down to 1024 `tol` (about a micrometre) | Particles stop; the volume side still loses it |
-| Memory, 2 m object | Dense: 32 MB at 1 cm, **4.0 GB** at 2 mm. Near the surface only (3 samples each side, 12 to 48 m2 of surface, real block filling): 6 to 30 MB at 1 cm, **150 to 700 MB** at 2 mm | **6 MB** per 100,000 triangles, **60 MB** per million, whatever the cell size | The sum |
-| Cost per particle per step | 8 reads; far particles one read | Far particles (the usual case): one box test. Near: 20 to 60 box tests and 4 to 20 triangle tests (memory; to measure) | As (b) for particles |
-| Same result on CPU and GPU | Same bits (reads, `+ - *`) | Same bits: only `+ - * /`, `Sqrt`, comparisons, a fixed visiting order | Same bits |
-| Mesh that changes shape | A volume per key, seconds each at 2 mm, uploaded per key | New vertex positions and the boxes resized per step; the tree's shape is kept | Both |
-| Build time | Distance at every kept sample: seconds to a minute | Sort and box build: well under 10 s for a million triangles on one CPU thread (to measure) | The sum |
-| What replaces convexity | Nothing exact: published practice pushes particles out along the gradient after the fact (Bridson 2015, memory); misses and leaks with fast or thin solids are documented (Houdini docs, checked) | A triangle is convex, so module 1's arguments hold per triangle (5.4) | As (b) |
-| "No particle ends a step inside" | Holds only for the lattice's solid, and only with a search that bounds the interpolant's slope (up to `Sqrt(3)`) | Holds for the mesh itself | Holds |
-
-**Decision (A81): (b), the triangles are the solid, for every module.** Reasons, in order: (1) it is the only
-choice that keeps module 1's tolerance and its safety property unchanged; the surveyed no-miss results in the
-literature are all exact or conservative tests on the geometry (Wang et al. 2021, checked: floating-point root
-finders miss; Brochu et al. 2012, checked), never push-out from a volume. (2) Three other modules need the true
-distance, not an interpolated one: viscosity reads it into `1 / d` coefficients and tests `|d| <= 1e-9 w`
-(viscosity plan Task 10); the grid's size rule and the start grid rely on `d` being 1-Lipschitz (grid 5.9, step
-5.15); the open-to-sky flood needs a distance that never overestimates (solids 5.4 step 5). An interpolated
-lattice guarantees none of these. (3) Memory is about a hundredth of a 2 mm volume and does not grow when the
-artist asks for smaller cells. (4) One representation: one set of tests, no rule for which answer wins.
-
-What is given up: the tree search is more code on the GPU than eight reads (a fixed 48-index list per thread, a
-loop of variable length), and grid-side stages (coverage at every corner near the solid) pay tree searches where a
-volume would pay reads. The owner's liking for inputs "passed as a volume, calculated elsewhere on CPU" (A78) is
-kept in spirit, the arrays are built once on the CPU outside the solver and passed as data, but not in form.
-(c) stays possible later behind `ComputeDistanceToMesh` without changing an interface, only for points farther
-than `2 w` from the surface where no consumer needs exactness; it is not designed here. Decided: A81.
+**The triangles are the solid, for every module**, searched through a tree of boxes. Reasons kept from the
+comparison with a distance volume: (1) it is the only choice that keeps module 1's tolerance and its safety
+property; the no-miss results in the literature are exact or conservative tests on the geometry (Wang et al.
+2021, Brochu et al. 2012, both checked), never push-out from a volume. (2) Viscosity, the grid's size rule and
+the open-to-sky flood need a true distance (1-Lipschitz, never an overestimate); an interpolated lattice
+guarantees neither. (3) Memory is about a hundredth of a 2 mm volume and does not grow with smaller cells.
+(4) One representation, one set of tests. Given up: a tree search is more GPU code than eight reads, and
+grid-side stages pay searches where a volume would pay reads. A volume for points farther than two cells from
+the surface stays the measured fallback behind `ComputeDistanceToMesh` (the size test of section 7 is its
+trigger); it is not designed here.
 
 ### 5.2 Building and checking a mesh (CPU, once per mesh)
 
-Steps: 1 copy vertices; drop none, merge none (the exporter's job). 2 Checks 1 to 4. 3 Order triangles by the
-Morton code of their centre and build the tree top-down by splitting the longest axis at the median, end boxes of
-at most 4 triangles, depth at most `kMaxMeshTreeDepth` (a balanced median tree of 2^24 triangles has depth 22).
-4 Neighbours across each edge. 5 Vertex normals. 6 Checks 5 to 8. 7 `half_size`.
+Steps: 1 copy the vertices; drop none, merge none (the exporter's job). 2 Checks 1 to 3. 3 Order the triangles
+by the Morton code of their centre (21 bits per axis within the mesh's bounds; ties by input index). 4 The tree:
+a box holds a contiguous range of that order; a range of more than 4 triangles is split by count into its first
+`ceil(n / 2)` and its last `floor(n / 2)`; boxes are stored parent before children, the two children adjacent.
+Its depth is `ComputeMeshTreeDepth(triangle_count)`, at most 22. 5 Neighbours across each edge. 6 Vertex
+normals. 7 Checks 4 to 7 and the measures. 8 `half_size`.
 
 Checks, in this order; the first failure is reported with the lowest triangle index:
 
-1. `kEmpty` (no triangle), `kTooManyTriangles` (above `kMaxMeshTriangles`).
-2. `kNotClosed`: every edge is shared by exactly two triangles (magnitude: open or over-shared edges).
-3. `kFacesTurnedBothWays`: the two triangles of every edge run along it in opposite directions; then the summed
-   volume (`Dot(a, Cross(b, c)) / 6` over triangles) is positive, else the builder turns every triangle over once.
-4. `kTriangleTooFlat`: every triangle's smallest height is at least `1024 tol` and at least `2^-20` of its longest
-   edge (below that the nearest-point arithmetic loses the digits the tolerance needs).
+1. `kEmpty`, `kTooManyTriangles`.
+2. `kNotClosed`: every edge is shared by exactly two triangles.
+3. `kFacesTurnedBothWays`: the two triangles of every edge run along it in opposite directions. Then the summed
+   volume (`Dot(a, Cross(b, c)) / 6` over triangles) is positive, else the builder turns every triangle over.
+4. `kTriangleTooFlat`: every triangle's smallest height is at least `2^-20` of its longest edge (builder), and
+   `smallest_triangle_height >= 1024 tol` (`CheckMeshShape`).
 5. `kEdgeTooSharp`: the angle between the two faces of every edge, measured inside the solid, is at least
    `2^-6` rad (0.9 degrees). Sharper, the inside test's dot product at a distance `tol` falls toward rounding.
-6. `kCrossesItself` (when `checks_self_crossing`): no two triangles that share no vertex intersect (tree against
-   tree, exact predicates on the CPU). A self-crossing mesh has no inside.
-7. `kPartTooThin`: `thinnest_part >= 1024 tol` (module 1's `kMinFeatureInTolerances`). `thinnest_part` is the
-   smallest, over triangles, of the distance from the triangle's centre along its inward normal to the first
-   triangle met (a ray through the tree). It is a measure, not a proof; the proof is the fin test of section 7.
-8. Reported, never failing (I/O turns them into NOTE findings): `thinnest_part` and the largest and median edge
-   length, for the comparisons with the cell width of 5.10.
+6. `kCrossesItself` (unless skipped): no two triangles that share no vertex intersect: each edge of one against
+   the other, both ways, pairs found tree against tree. Floating point: two parts that touch within rounding
+   may be reported either way. A mesh made of two closed parts pushed into each other is refused (the inside
+   test is wrong inside the overlap); the artist joins them or exports two solids.
+7. Measure `thinnest_wall`: from four points of each triangle (its centre and the three points halfway from the
+   centre to a vertex) a ray goes inward along the triangle's normal to the first triangle it meets. When that
+   triangle faces the other way (`Dot` of the two normals at most `-0.5`: two faces back to back, or a wedge of 60 degrees or sharper
+   near its edge; not the two sides of a wider wedge) the ray's length is a wall thickness. `thinnest_wall` is the smallest, and
+   `thinnest_wall_point` its starting point (ties: the lower triangle, then the first point). It is a measure:
+   a thin spot between the sample points can be missed.
+8. `kPartTooThin` (`CheckMeshShape`): `thinnest_wall >= 1024 tol` (module 1's `kMinFeatureInTolerances`).
 
 ### 5.3 Distance, normal and the inside test
 
-`ComputeDistanceToMesh`: depth-first search of the tree from the root, nearer inner box first (equal: the first),
-skipping a box whose distance to `p` is not below the best found (start: `largest_distance`). At an end box, the
-nearest point of each triangle by the region form (Ericson 5.1.5): vertex, edge or face. Keep the smallest
-squared distance; ties keep the lower triangle index. Then:
+`ComputeDistanceToMesh`: depth-first search of the tree from the root, nearer inner box first (equal: the
+first), skipping a box whose distance to `p` is not below the best found (start: `largest_distance`). The search
+keeps the indexes of the boxes still to visit in a fixed array of `kMaxMeshTreeDepth` entries: it pushes at most
+one box per level it descends. At an end box, the nearest point of each triangle by the region form (Ericson
+2005, 5.1.5): vertex, edge or face. Keep the smallest squared distance; ties keep the lower triangle index. Then:
 
 - Outward direction at the nearest point `c`: the triangle's normal when `c` is in its face; the sum of the two
   triangles' normals (through `neighbours`) on an edge; `vertex_normals` at a vertex. The point is inside exactly
   when `Dot(p - c, that direction) < 0` (Baerentzen and Aanaes 2005, checked: correct for a closed surface that
   does not cross itself, given the true nearest point).
-- `distance = +-Length(p - c)`; `own_normal_out_of_solid = +-(p - c) / Length(p - c)`; when `p == c` as computed
-  (degenerate normal), the direction above, normalised.
+- `distance = +-Length(p - c)`; `own_normal_out_of_solid = +-(p - c) / Length(p - c)`; when `p == c` as computed,
+  the direction above, normalised (tested with exact equality, as module 1's degenerate normals).
 
-This is the true distance, like the sphere's and the cylinder's and unlike the box's: 1-Lipschitz, exact to
-rounding. Only `+ - * /`, `Sqrt` and comparisons: same bits on both processors for a given pose.
-`ComputeDistanceToSolid(..., meshes)` turns the world point into own axes with the pose, calls it with
-`largest_distance = +infinity`, turns the normal back and reports face `kMeshTriangle`.
-`ComputeSolidVelocitySample(..., meshes)` passes `largest_distance = max(search_distance, 0)` grown by the best
-distance already found among earlier solids, so a mesh far from the point costs one box test.
+This is the true distance, like the sphere's and unlike the box's: 1-Lipschitz, exact to rounding. Only
+`+ - * /`, `Sqrt` and comparisons: same bits on both processors for a given pose. Near an edge or a vertex the
+normal is sensitive: a rounding of `1e-15` m in a point `tol` from the edge turns it by about `1e-6`, so a test
+can ask for a normal near an edge only to about `1e-5`.
+
+`ComputeDistanceToSolid(..., meshes)` turns the world point into own axes, searches with `+infinity`, turns the
+normal back and reports face `kMeshTriangle`. `ComputeSolidVelocitySample(..., meshes)` searches with
+`largest_distance = Max(search_distance, 0)` lowered to the best distance already found among earlier solids,
+so a mesh far from the point costs one box test. `ComputeDistanceForParticle` (module 1, private) passes
+`inputs.meshes` to the mesh-aware form: one line, and every start rule, settle and end check then sees meshes.
 
 ### 5.4 First hit on a mesh that does not turn
 
-In own axes the mesh is at rest and the path is the straight segment `p0 + u t`. A hit is `d == tol`, as for every
-shape. Seen from outside, `d` is the smallest of the distances to the triangles, so the first hit on the mesh is
-the earliest first hit on any triangle **grown by `tol`** (the triangle's points and everything within `tol` of
-them). That grown triangle is convex and its surface has three kinds of pieces, each with a closed form module 1
-already has:
+In own axes the mesh is at rest and the path is the straight segment `p0 + u t`.
 
-- the two flat faces at `+-tol`: the flat solid's hit time (5.3 step 1), accepted when the hit point projects
-  inside the triangle;
-- a cylinder of radius `tol` around each edge: the cylinder wall's quadratic (P15), accepted between the edge's
-  two ends;
-- a sphere of radius `tol` at each vertex: the sphere's quadratic with its approach condition (5.7).
+**The mesh grown by `r`** is every point within `r` of some triangle: the union of the triangles grown by `r`.
+A path that starts outside it first meets it at the earliest time it enters any grown triangle. That needs no
+convexity of the mesh and no argument about which triangle is nearest.
 
-This is the classic test of a moving sphere against a triangle (Ericson 2005, 5.5.6, memory), with the sphere's
-radius equal to the tolerance. Candidates come from the tree: every end box that the segment's own box, grown by
-`tol`, overlaps, visited in tree order. The earliest accepted time wins; equal times keep the lower triangle
-index. The reported distance, normal and nearest point are `ComputeDistanceToMesh` at the hit position (so they
-are the mesh's, not one triangle's).
+**One grown triangle is covered by seven convex pieces, each swept as an interval.** With `n` the triangle's
+unit normal, `o = kMeshPieceOverlapShare * r`:
 
-*Touching rule, per triangle (replaces P2 and P16).* A triangle is convex, so its distance is convex along a
-line: `d_triangle(t) >= d_triangle(t0) + rate * (t - t0)`, with `rate = Dot(normal toward p at t0, u)`. Hence:
-a triangle whose grown shape the path is in or enters at `t0` with `rate * (duration - t0) >= -tol` is **not hit**
-in this sweep (the path cannot come nearer than `d_triangle(t0) - tol`); otherwise it is hit at `t0`. At the
-start (`t0 = 0`, gap in `[-tol, 0]`) this is P2 word for word. Applied at any entry it also removes the false
-hits a tessellated flat face would give: a particle sliding at `d = tol` over two triangles in one plane crosses
-their shared edge with `rate` zero up to rounding. Since `d = min over triangles`, the mesh's distance along the
-sweep is at least `d(t0) - tol` too; `MoveParticle` starts every sweep at `d = tol`, so the path never comes
-nearer than 0 up to rounding, and the move-out of 5.5 restores `tol`. A start with a gap below `-tol` is a hit at
-0 (defensive, as P2).
+- the *face piece*: `|Dot(n, p - a)| <= r` and, for each edge, `Dot(m_k, p - a_k) <= o`, `m_k` the unit vector
+  in the triangle's plane pointing out of edge `k`: five half spaces;
+- three *edge pieces*: within `r` of the edge's line, and between the two planes across the edge's ends, each
+  moved outward by `o`;
+- three *vertex pieces*: within `r` of the vertex.
 
-### 5.5 Start rules, settling and the end check
+For each piece the path's times inside are one interval, the intersection of the intervals of its conditions (a
+half space gives a one-sided interval; a cylinder or a sphere gives the two roots of its quadratic, or nothing).
+The piece is met when `entry <= exit`, `exit >= 0` and `entry <= duration`, at `Max(entry, 0)`. The triangle's
+time is the earliest over its pieces, the mesh's the earliest over the triangles whose boxes the path's own
+box, grown by `r + o`, overlaps (tree order; equal times keep the lower triangle index). No piece's hit point is
+ever tested against another piece. This is the box's form in module 1, and the lesson of its cylinder.
 
-Module 1 moves a point with `d < tol` along the normal to `d = tol` once. In a concave corner of a mesh that
-move can bring the point within `tol` of the neighbouring face. For a mesh the move is repeated: move along the
-mesh normal by `tol - d`, recompute, at most `kMaxMoveOutCount = 4` times, stopping when `d >= tol`. For two
-faces meeting at an inside angle `theta` each move leaves a shortfall of at most `cos(theta)` times the last, so
-four moves reach `tol / 2` (the end check's bound) for every angle above about 33 degrees and reach it at once at
-a right angle or wider. A sharper groove is `kTooCloseToCall/kEndsTooCloseToSolid` from the end check, as two
-flat solids forming the same wedge are in module 1 today (its `AcuteWedge` test stops the particle instead; so
-does 5.6's corner rule here before the end check is reached). Start classification (`kStartsInsideSolid`,
-`kStartedInsideSolid`, the silent move) is otherwise module 1's, with the mesh's `d`.
+**Why no path passes between pieces or between triangles.** Every point within `r` of the triangle lies in a
+piece whose conditions it meets with room to spare except possibly the radial one: a point nearest the face is
+in the face piece at least `o` inside each edge plane; a point nearest an edge is in that edge's piece at least
+`o` inside each end plane; a point nearest a vertex is in its sphere. So a path that comes within `r - e` of the
+mesh is, at that moment, inside one piece by `e` in the radial condition and by `o = r / 8` in the others. The
+interval arithmetic of a piece is off by a few rounding units of the coordinates, far below `tol / 8` (the
+tolerance is 4096 rounding units of the largest coordinate), so that piece's interval is not empty and the hit
+is reported. Neighbouring triangles share their edge and vertex pieces exactly (same doubles, same result), and
+the face pieces overlap them. The pieces reach at most `Sqrt(1 + 1/64) r`, 0.8 % beyond the true grown triangle
+(the sharp corners of the overlaps), so a hit is never reported farther than that from the mesh. Stated as the
+guarantee the tests check against exact arithmetic: **a reported hit is no later than the first moment the path
+is within `r - tol / 8` of the mesh, and the mesh is within `r + tol / 8` of the reported hit position; a path
+reported free never comes within `r - tol / 8`.**
 
-### 5.6 Slide, concave corners, and what the hit limit means
+**Start cases** (the mesh's own; they replace P2 and P16, which need a convex solid). With
+`at_start = ComputeDistanceToMesh(mesh, p0, 2 tol)`:
 
-After a hit the response uses the mesh normal at the hit (5.4) and the particle joins the surface list with
-**that normal**; the re-sweep runs 5.4 again over the time left, against the same mesh among the others. A mesh
-may therefore be hit several times in one step, each time with a new normal: a particle in a groove hits one
-side, slides, hits the other. Module 1's rule for earlier surfaces applies between two normals of one mesh exactly
-as between two solids: approach to an earlier surface is removed without friction; when the newest is then
-approached again (a corner sharper than a right angle) the particle takes the solid's velocity and rests.
-`kSqueezedBetweenSolids` cannot arise between two entries of the same solid (they do not close on each other): for
-them the corner rule's stop is final. `kSecondReactingSolid` compares solids, so several hits on one reacting mesh
-are one reacting solid; every change counts in its reaction (P5).
+1. *Far start*, `d > 1.5 tol`: sweep with `r = tol`. The hit position has `d = tol`.
+2. *Near start*, `d <= 1.5 tol`:
+   a. `d < tol / 2`: a hit at 0 (defensive: `MoveParticle` never sweeps from there).
+   b. the path pushes in, `Dot(normal at start, u) * duration < -tol`: a hit at 0, as P2.
+   c. otherwise the *resting sweep*: `r = tol / 2`. The hit position has `d = tol / 2`, and `MoveParticle` moves
+      it to the rest gap before the response (5.5).
 
-`kMaxHitsPerStep = 4` keeps its meaning **between solids** (hits on different solids, and the first hit on each).
-Hits on one mesh are counted separately, up to `kMaxHitsPerMeshPerStep = 16`: a curved concave surface made of
-small triangles gives one hit per crease the particle crosses, about `travel / triangle size` per step, and the
-step's travel limit is half a cell. At the 17th hit on one mesh the particle **rests for the remainder of the
-step**: its velocity for this step becomes the solid's surface velocity at that point, its velocity for the next
-step is left as the last response made it. This is safe (it stays at `d = tol`), costs at most the travel left
-(under half a cell, once), and is not a close call: shortening the step for a particle crossing many small
-triangles would punish the whole scene for a dense mesh. `SolidContactResult::hit_count` saturates at 255.
+Why two radii. A particle in contact rests at `d = tol`, exactly on the surface of the mesh grown by `tol`: a
+sweep with `r = tol` from there would be decided by the last bits at every shared edge of a flat face (the
+draft's per-triangle touching rule had this defect: entering the neighbour's grown edge at a height one part in
+`1e7` under `tol` counted as a hit, again at every re-sweep). With `r = tol / 2` a resting start is `tol / 2`
+outside everything the sweep can meet, a sliding path over a flat or convex part meets nothing, and a path that
+truly closes on another part of the mesh is stopped while still `tol / 2` outside. Every threshold is at least
+`tol / 4` from where `MoveParticle` puts a particle (`tol`, and up to `1.25 tol` after the stepping search), so
+no case is decided by rounding. Along a free resting sweep `d >= tol / 2 - tol / 8`: stronger than module 1's
+`d >= 0`.
+
+The reported distance, normal and nearest point are `ComputeDistanceToMesh` at the hit position: the mesh's, not
+one triangle's. `FindFirstHitOnSolid` gains `case SolidShape::kMesh`: a turning mesh goes to 5.7; otherwise
+`ComputeOwnPath`, `FindFirstHitOnMesh`, and the hit turned back to world axes.
+
+### 5.5 Start rules, the rest gap and the end check
+
+Module 1 moves a point with `d < tol` along the normal to `d = tol` once (`MoveToRestGap`). In a concave corner
+of a mesh that move can bring the point within `tol` of the neighbouring face. For a mesh the move is repeated:
+along the mesh normal by `tol - d`, recompute, at most `kMaxMoveOutCount = 4` times, stopping when `d >= tol`.
+For two faces meeting at an inside angle `theta` each move leaves a shortfall of at most `cos(theta)` times the
+last, so from a start short of one face by `tol` four moves reach `tol / 2` (the end check's bound) for every angle
+above 32.8 degrees (`cos^4 = 1/2`), and two moves reach `tol` at a right angle or wider. A sharper groove can end in
+`kTooCloseToCall/kEndsTooCloseToSolid` from the end check, as two flat solids forming the same wedge can today.
+
+A hit on a mesh is passed through the same move before the response (a resting sweep's hit is at `tol / 2`; a
+far sweep's hit and a stepping search's hit are at `tol` or more and do not move). **The response uses the
+normal recorded at the hit as found**, not the normal at the moved position: at the hit the surface just
+entered is nearer than every other by `tol / 2`, while after the move two faces of a right-angled corner are
+equally near and the nearest triangle would be chosen by rounding. The reaction's `hit_position` is the moved
+position, as for the cylinder's rim. Start classification (`kStartsInsideSolid`, `kStartedInsideSolid`, the
+silent move) is otherwise module 1's, with the mesh's `d`.
+
+### 5.6 Slide, concave corners, and the hit limit
+
+After a hit the particle joins the surface list with the recorded normal; the re-sweep runs 5.4 again over the
+time left (`duration = step_duration - elapsed`, computed fresh before each re-sweep), against the same mesh
+among the others. A mesh may be hit several times in one step, each time with a new normal: a particle in a
+groove hits one side, slides, hits the other. Module 1's rule for earlier surfaces applies between two normals
+of one mesh exactly as between two solids: approach to an earlier surface is removed without friction; when the
+newest is then approached again (a corner sharper than a right angle) the particle takes the solid's velocity
+and rests. "Approaches again" is compared with `ComputeLargestApproachLeftAfterResponse`, never with 0.
+`kSqueezedBetweenSolids` compares two solids and cannot arise between two entries of one mesh.
+`kSecondReactingSolid` compares solids, so several hits on one reacting mesh are one reacting solid; every
+change counts in its reaction (P5).
+
+The surface list keeps module 1's `kMaxHitsPerStep = 4` entries. When it is full and the new hit is on a mesh
+that already has an entry, the oldest entry of that mesh is replaced (a normal of a part the particle has left);
+otherwise a full list is `kTooManyHits` as today. This cannot let a particle in: the sweep keeps it out whatever
+the list holds; the list only shapes the velocity.
+
+Hits on meshes are also counted, all meshes together. A curved concave surface made of small triangles gives
+one hit per crease the path turns into. At hit `kMaxMeshHitsPerStep + 1` (the 17th) the particle **rests for
+the remainder of the step**: its velocity for this step becomes the solid's surface velocity at that point, its
+velocity for the next step stays as the last response made it. It stays at the rest gap, loses at most the
+travel left, and this is not a close call: shortening the step for one particle crossing many small triangles
+would punish the whole scene for a dense mesh. `SolidContactResult::hit_count` counts every hit (its comment
+changes: at most `kMaxHitsPerStep + kMaxMeshHitsPerStep + 1`).
 
 ### 5.7 A mesh that turns
 
-- *First hit:* module 1's stepping search (5.3 step 2, Task 9) unchanged, with `g(t) = d(t) - tol` from
-  `ComputeDistanceToMesh` at the pose of time `t`: the mesh distance is a true 1-Lipschitz distance, which is all
-  the bound `|u| + |omega| * radius` needs (the idea is sphere tracing, Hart 1996, checked, on the path seen from
-  the solid; conservative advancement, Zhang et al. 2006, checked). `largest_distance` is the bound times the time
-  left, so a far mesh costs one box test per advance. No touching rule, as for every turning solid.
-- *Slide:* module 1 carries the rest of the step in the solid's axes along a straight line (P7). In those axes a
-  mesh is at rest and the line is straight, so the remainder is swept with 5.4, 5.5 and 5.6 in own axes (hits on
-  the same mesh allowed), then placed with the end pose. P7's `kTurningSolidNearOtherSolid` test is unchanged.
-- A mesh has no spin: every turn changes its shape. `kMaxTurnPerStep` applies to the whole turn.
+- *First hit:* module 1's stepping search (Task 9) unchanged, with the gap `d(t) - tol` from
+  `ComputeDistanceForParticle` at the pose of time `t`: the mesh distance is a true 1-Lipschitz distance, which
+  is all the bound `|u| + |omega| * radius` needs (sphere tracing, Hart 1996, checked; conservative advancement,
+  Zhang et al. 2006, checked). No start cases, as for every turning solid: a particle resting on it is hit at 0.
+- *Slide:* module 1 carries the rest of the step in the solid's axes along a straight line (P7, Task 13). For a
+  mesh that line is swept: in own axes the mesh is at rest, so the remainder runs 5.4 (a near start: the search
+  stops at `d <= 1.25 tol`), the move of 5.5 and, at each further hit, the removal of the approach to the new
+  normal and to the one before it (both gone: the particle rests on the mesh); at most `kMaxMeshHitsPerStep`
+  hits, then rest. The carry changes the position only; the velocities stay as the first response made them, as
+  for a box. The end is placed with the end pose. P7's `kTurningSolidNearOtherSolid` test is unchanged.
+- A mesh has no spin: `ComputeShapeTurningAngularVelocity` already returns the whole angular velocity for any
+  shape but a sphere and a cylinder, and `kMaxTurnPerStep` applies to it.
 
 ### 5.8 Motion
 
 First version: **solids that only move and turn**: one mesh, built once, a pose per key through the solids
 module's `DrivenPath` and `SolidMotion` unchanged; fixed, driven and free (A83).
 
-A mesh that changes shape (a character) later needs: vertex positions at the start and end of the step; the
-tree's boxes resized over both; the surface velocity taken at the nearest point from its triangle's three vertex
-velocities; a first hit of a point on a moving triangle, where published floating-point root finders miss hits
-(Provot 1997; Wang et al. 2021, checked) and a conservative search is required. The interface leaves room without
-redesign: `DistanceToMesh` already returns `triangle_index` and `own_nearest_point`; `MeshShape` gains
-`const Vec3* vertices_at_step_end` and `const Vec3* vertex_velocities` (null today); the stepping search is the
-conservative form with the vertices' largest speed added to its bound; the tree's shape (`first`, `count`) does
-not depend on positions. `ComputeSolidVelocity(solid, pose, point)` is the one signature that would then be too
-narrow for a mesh; consumers that want a surface velocity already go through `ComputeSolidVelocitySample`.
+A mesh that changes shape (A84, later) needs vertex positions at both ends of the step, the tree's boxes resized
+over both, the surface velocity from the nearest triangle's vertex velocities, and a conservative first hit on a
+moving triangle (Provot 1997; Wang et al. 2021, checked: floating-point root finders miss hits). Room is left:
+`DistanceToMesh` returns `triangle_index` and `own_nearest_point`; the tree's shape does not depend on
+positions; `MeshShape` can gain two arrays.
 
-### 5.9 Where module 1 must leave room now
+### 5.9 Thin parts: a limit of the first version (A94)
 
-Module 1's remaining tasks need **no new feature and no public signature change**. They need three habits, so
-that 1b adds a `case` and a field instead of rewriting them:
+**What works whatever the thickness.** A particle never crosses a mesh, however thin, down to walls of
+`1024 tol` (about a micrometre): contact is exact on the triangles (5.4). A wall at least as thick as the
+pressure solve needs holds liquid: the corner distances then see a whole layer of cells inside it.
 
-| Task | What to do differently |
-|---|---|
-| 7 response | Nothing. It works on a normal. |
-| 8 first hit, solids that do not turn | (1) Every private helper in `solid_contact_steps.h` that evaluates a solid takes `const SolidContactInputs& inputs` and a `solid_index`, not a bare `const Solid&`: in particular `ComputeDistanceForParticle(inputs, solid_index, pose, point, plate_side)` (the plan's signature, with its trailing `PlateSide`, P3). 1b's table arrives as a field of `inputs` with no call site touched. (2) `FindFirstHit` loops over solids and calls one private `FindFirstHitOnSolid(inputs, solid_index, start, velocity, start_elapsed, duration, FirstHit*)` whose `switch (solid.shape)` writes every case out, with no `default` that computes (an unknown shape asserts and is `kBadInput`). (3) The touching rule lives inside each shape's branch, never in the loop. |
-| 8a sphere and cylinder | Same three points; nothing else. |
-| 9 turning solids | The stepping search gets `g(t)` only through `ComputeDistanceForParticle` and decides "turning" only through `ComputeShapeTurningAngularVelocity`. It must not assume the distance belongs to one face. |
-| 10 `MoveParticle` | The surface list stores, per entry, the solid index **and the normal recorded at the hit**, and has `kMaxHitsPerStep` entries; nothing assumes a solid appears once. "A convex solid is hit once per sweep" stays a consequence of the touching rule, never a line of code that skips the solid just hit. |
-| 11 start rules, and step 6 of 10 | "Move the point to `d = tol`" is one private helper, `MoveToRestGap(inputs, solid_index, pose, point)`, used by step 2 and step 6. For the six shapes it is one move along the normal. |
-| 12 slide between surfaces | Nothing: it reads recorded normals (already so, amended A74). Keep `kSqueezedBetweenSolids` a comparison of two **solids**. |
-| 12a round solids | The rim move stays inside the cylinder's branch. |
-| 13 slide on a turning solid | The carry in the solid's axes is one private function taking `inputs` and `solid_index`, so 1b can sweep that remainder against a mesh. |
-| 14 generated safety tests | Put the check "every end distance is at least `tol / 2`, and the naive control enters" in a helper of `contact_test_cases.h` that takes any list of solids; 1b runs it on meshes. |
-| 15 `MoveParticles`, CPU | Nothing in signatures (`MoveParticlesInputs` gains a field later; mesh arrays are not in `ContactBuffers`). Add `static_assert(sizeof(Solid) == 200)` beside the estimate (the checked figure: 200 bytes, 7 trailing padding bytes, so a 4-byte index fits at offset 196). |
-| 16 `MoveParticles`, GPU | The per-particle GPU function receives its scalar inputs as **one struct** (the device copy of the inputs), not a positional list, so a `MeshShapes` field is one line. Leave about 400 B of thread stack unassumed (the tree search's 48 indexes and the surface list). |
-| 17, 18 | Nothing. Task 18's hand-over names the dispatch points above. |
+**The limit.** Below that thickness the grid does not see two sides. Liquid on the two sides of the part shares
+cells and faces: a thin-walled container does not hold its level (the solve lets the grid flow through a wall
+the particles cannot cross, and the liquid packs against it), a thin blade does not push the liquid as a thick
+one would, and when the corner samples happen to see liquid on both sides inside one cell the run stops with
+pressure's `kCellSplitBySolid`. Snow, sand and springy solids on the two sides exchange momentum through the
+shared faces. Nothing is built to prevent this: no sides on mesh parts, no closed faces, no growth for the
+grid. Module 1's plate keeps its approved rules (its two sides, and its thickness minimum with liquid or gas).
 
-Tasks 1 to 6 (built) need nothing now: 1b appends `kMesh`, `kMeshTriangle`, `mesh_index` and the mesh-aware
-overloads; the existing `static_assert`s on enum values already force appending.
+**The threshold.** `kMinWallThicknessInCells = 2.5` smallest cell widths (declared by the step, which owns the
+check). Reason: it is the plate's existing rule (solids 5.9, the rule that keeps `kCellSplitBySolid` away:
+thickness at least `(|n.x| + |n.y| + |n.z| + max(|n.x|, |n.y|, |n.z|))` cell widths, so that some layer of cells
+has all eight corners inside). That factor is 2 for a wall along the axes and at most `Sqrt(6) = 2.449` (at
+`n = (2, 1, 1) / Sqrt(6)`; the solids design quotes the looser 2.74). A mesh wall has every direction and may
+turn, so the largest value is used, rounded up to 2.5. The width is the scene's smallest cell width, the width
+of cells at a solid (grid 5.9); where the artist's refinement volume makes cells at the part larger, the real
+need grows with them, and the message says which width was used.
 
-### 5.10 Cross-check of every other module
+**The check and the finding.** The builder measures `thinnest_wall` and where (5.2 check 7). The step's
+`CheckSceneCanRun` compares it, per mesh solid, with `2.5 * smallest_cell_width` and adds one finding per mesh
+below it: reason `CapabilityReason::kMeshPartTooThinForTheGrid` (NEW; I/O code `mesh_part_too_thin_for_the_grid`),
+`solid_id`, `magnitude` = `thinnest_wall`, `limit` = the threshold, both in metres, suggested change
+`kMakeSolidThicker`. I/O's message, with the object's name and the point in the object's coordinates:
+"<object> is <magnitude> m thick near (<x>, <y>, <z>), less than the <limit> m (2.5 cells of <width> m) the grid
+needs to keep its two sides apart. Particles still cannot cross it. Where liquid meets both sides, or the part
+is the wall of a container, the liquid is wrong there or the run stops (thin_solid_inside_one_cell). Make the
+part thicker or use smaller cells."
 
-"Change": text or code of that module must change. "Verify": believed fine, to confirm when 1b's plan is written.
-The edits themselves are in `changes-to-apply.md` "01b Mesh solids (A80)".
+**The level: a known limit (`CapabilityLevel::kExperimental`, I/O severity `has_known_limit`), at every
+thickness below the threshold; never blocking.** Re-derived now that nothing compensates:
 
-**02 Grid**
+- The earlier two levels (a note below one cell, blocking below a quarter cell) described a mechanism that
+  weakened as the wall thinned. With no mechanism nothing changes at one cell or at a quarter: a wall of 2 cells
+  and one of a tenth of a cell fail in the same way. One level.
+- Not a note: a note is for something with no consequence. Here the result can be wrong, and a run can stop
+  part-way. "It runs; a stated limit applies" is what `has_known_limit` means.
+- Not blocking: the check knows the mesh, not what the liquid will do. A statue's fingers, a boat's bow, a fin
+  in air, a spoon beside the splash are thinner than 2.5 cells in most scenes and are harmless; refusing them
+  refuses most real meshes, and the owner twice declined refusal (A89, A94). Nothing unsafe follows from
+  running: particles never cross, and the two bad outcomes are named in the message beforehand.
+- The price, plainly: a scene whose thin part does separate liquid starts, and then gives a container that
+  loses its level or stops with `kCellSplitBySolid`. The plate differs and stays blocking: it is declared as a
+  separator, has one thickness, and its check is exact.
+- The floor below which a mesh is refused is contact's own: `kPartTooThin` under `1024 tol`.
 
-| Place | Status | What |
-|---|---|---|
-| 5.9 size rule, `CellSizeFacts::distance_to_solid` (3.8), plan Task 13a | No change | A formula on a number others fill. Relies on `d` being 1-Lipschitz: true for (b), not for a lattice. |
-| `CornerValues` (3.6, 3.7) | No change | Holds any corner distance. |
-| Tests | No change | |
-
-**03 Particles**
-
-| Place | Status | What |
-|---|---|---|
-| `PlateSide` fields (3.1, 3.5; 8 bytes, unchanged size) | No change | Carries the new `part`. |
-| `FindNeighbourhood` mask (3.5, plan Task 9: "outside_solid and face_side == side"); merge "only when `same_side`" | Change | The test becomes `!IsOnOppositeSides` (5.11): a particle or face with no side exchanges with either side, as beyond a thin part's rim. Same result for the plate. |
-| 5.6 "a child that lands inside a solid is handled by the next `MoveParticles`" | Verify | Holds: 5.5 keeps `kStartedInsideSolid`. A child deeper than `start_overlap_tolerance` inside a thin part is `kStartsInsideSolid` as today. |
-
-**04 Transfer**
-
-| Place | Status | What |
-|---|---|---|
-| Stages, `SolidsAtFaces`, 5.4 step 4 (unit normal) | No change | The mesh normal is unit by construction. |
-| 5.1 `same_side` ("outside_solid && face side == particle side"), plan Task 6 `FindSameSideFaces`; 5.4 fill sources "side `s`" | Change | `!IsOnOppositeSides(face side, particle side)` (5.11). With it, particles on the two faces of a thin mesh part no longer exchange through shared grid faces: CPIC's rule. Test: two particle clouds either side of a mesh sheet a quarter cell thick, one at rest, one moving along it: the resting cloud's momentum stays exactly 0. |
-| `CellsFromParticles` (decision 9) | Change, pending Q10 | A cell counts the particles not on the opposite side from its centre (5.12 item 4). |
-| Decision 5, `kMaxSidesAtFace = 2`, `kTooManySidesAtFace` | Verify | A face near a rim can meet particles with side A, side B and none. Whether "none" needs a third stored value or joins both is for the transfer plan; near two thin parts closer than `2 * kSolidReachInCells` cells, solids reports the limit (08). |
-| Plan Task 5 fixture `BuildSolidsAtFaces` | Change (small) | Calls the mesh-aware `ComputeSolidVelocitySample`; one test with a mesh cube equal to the box. |
-
-**05 Pressure**
-
-| Place | Status | What |
-|---|---|---|
-| `SolidCoverage`, open areas, volumes (5 steps 3, 4) | No change | Generic over corner distances ("any sampled field"). |
-| `kCellSplitBySolid` (5 step 8, decision 7), `plan-decisions.md` Pressure lines 88-89 "a solid thinner than a cell that passes between corners is not seen. Solids' plate-thickness rule is what keeps that case out." | Change, pending Q10 | With 5.12's recommended option: `SolidCoverage` gains per face piece `closed_by_thin_part` and the wall's normal velocity; a closed face has open area 0, an open face near a thin part its whole area; `kCellSplitBySolid` no longer comes from a mesh. One pressure per cell stays; equations, multigrid and ladder are untouched. Sides alone (5.11) do not reach the solve. |
-| Scene tests | Add | The glass and the two-level tank (section 7), in the step's plan once pressure exists. |
-| One distance per corner; sharp mesh edges inside a cell | Verify | Blocked area converges as for the box; add `ComputeSolidCoverage, MeshCube_EqualsBox` and an icosphere twin of `Sphere_BlockedAreaConverges` (solids' tests). |
-
-**06 Viscosity**
-
-| Place | Status | What |
-|---|---|---|
-| 3 `ViscosityInputs::solids`; 4; plan Task 10: `ComputeSolidVelocitySample(solids, count, elapsed, point, search_distance)` | Change | Takes `MeshShapes` (a field beside `solids`) and calls the mesh-aware form. |
-| Plan Task 10 rule (a), `(u_P - v_solid) / distance`, on-surface test `1e-9 w` | No change | Needs the true distance: a reason for 5.1's choice. |
-| Velocity differences across a face closed by a thin part | Change, pending Q10 | Use the wall's velocity (stick or the slip rule) instead of the far cell's (5.12 item 6). To write in the viscosity plan. |
-| "Inclined" test on the normal (plan 853-855); `has_inclined_solid` (solids 3.4) | Change | A mesh is inclined whatever its pose: solids' summary must say so. Until viscosity Task 21 lifts `kInclinedSolidNotSupported`, a viscous liquid with a mesh solid is excluded. |
-| Memory | No change | Nothing scales with the mesh. |
-| Tests | Add | Tilted plate (Task 21) as a mesh slab within the same 5 %. |
-
-**07 Materials**
-
-| Place | Status | What |
-|---|---|---|
-| All (reads `ParticleContact::kind`, interpolated coverage, friction) | No change | |
-| `PlatesInScene`, `has_plate_side` (3) | Change (small) | True also when a mesh has a thin part, so snow and springy solids carry a side. |
-
-**08 Solids** (the module most changed)
-
-| Place | Status | What |
-|---|---|---|
-| 1 and 10: "solid meshes (none)" | Change | Removed; points here. |
-| 3.2 `SolidSettings` (shape, `rest_pose`, `half_size`) | Change | Gains `std::uint32_t mesh_index = contact::kNoMesh`; `SolidsSettings` gains `contact::MeshShapes meshes` (on `run_on`). |
-| 5.1 `BuildTry`, `BuildContactSolids` (switch on shape) | Change | Copies `mesh_index`; the `kMesh` case. |
-| 5.4 `ComputeSolidsAtFaces`, `ComputeSolidCoverage` (distance at every corner place, capped at 2 cells), GPU halves (plan Task 18) | Change | Mesh-aware calls with `largest_distance` = the cap; kernels receive `MeshShapes`. Cost to measure (the hybrid is the fallback, A81). |
-| 5.4 step 5 open-to-sky flood; 5.2 travel radius `Length(half_size)` | No change | True distance; `half_size` bounds the mesh from the origin. |
-| `kSolidsTooClose` (plan Task 10: box corners and centre, sphere centre) | Change | A free mesh: sampled at the corners and centre of the mesh's bounding box (`half_size`), as for the cylinder; this reports too close earlier, never later. Sampling every vertex was considered and is too costly. |
-| Free solid: "origin is the centre of mass", `inertia_in_own_axes` principal | Change in I/O | I/O moves the mesh to its centre of mass and principal axes at build (12 below). |
-| 5.4 step 1 `ComputeSolidsAtFaces`: `side` from `FindSolidSide` for the scene's plate | Change | `side` from `FindPlateSide` of the nearest solid (plate or mesh), reach `kSolidReachInCells * w`. |
-| 5.9 `ApplyPlateSides` (written once, never changed), `ApplyPlateRemoval` | Change | For a mesh the side is rewritten every step from `FindPlateSide` at the particle (5.11: contact keeps a particle from crossing, so it can only change through "no side", around the rim). The plate's once-only rule is unchanged. |
-| 5.9 "Supported thickness", `ComputeMinPlateThickness`, `CheckSolidsCanRun` | Change, pending Q10 | With 5.12's recommended option a mesh has no thickness minimum (and, if the owner extends it, neither has the plate). NOTE findings `mesh_gap_narrower_than_a_cell`, `mesh_thin_part_in_use`; two thin parts closer than `2 * kSolidReachInCells` cells; triangles much smaller than a cell. |
-| 5.4 `FindSolidSurfaces`; 5.5 motion map | Change, pending Q10 | New per-face-piece array: `closed_by_thin_part`, owner solid, the wall's effective normal velocity, from `contact::FindThinPartCrossing` between the two cell centres at the start and end poses (5.12 items 2, 5). One motion-map entry per closed face piece. Test `FreeBoat` (section 7). |
-| `has_inclined_solid` | Change | True for any mesh. |
-| `kMaxPlateCount = 1`, cutting by a driven plate | No change | Still one plate. A thin mesh part separates material the same way but is not a cutting tool in the first version (no `ComputeCutWork` for it). |
-| Memory (plan Task 13 "solids: solids copy") | No change | `sizeof(Solid)` unchanged; mesh rows are contact's (3.3). |
-| Tests | Add | Mesh twins of `Box_BlockedAreaConverges`, `Hydrostatic_PushIsWeightOfDisplacedLiquid`, a driven mesh paddle. |
-
-**09 Gas**
-
-| Place | Status | What |
-|---|---|---|
-| All (sees solids through `SolidCoverage`, `solid_volume_rate`, open-to-sky marks; markers through `MoveParticles`) | No change, except pending Q10 | Reads the closed faces of 5.12 through `SolidCoverage` like pressure. Test fixtures use functions, not shapes. |
-
-**10 Step**
-
-| Place | Status | What |
-|---|---|---|
-| 3.2 `ReadyScene`; stage 16 `MoveParticlesInputs`; stage 11 `ViscosityInputs`; `FoamAndSprayInputs` | Change | The step owns one `contact::MeshShapeBuffers` for the run and fills the `meshes` fields. Every particle stops at the true surface (A90). |
-| 5.14 `CheckSceneCanRun`, stage 3 and 19 `CheckSolid` | Change | Mesh-aware `CheckSolid`, `ComputeContactScale`; `CheckMeshShape` once with the run's tolerance; new `CapabilityReason` for `kMeshNotUsable`. |
-| 5.15 `BuildStartCells` (distance per candidate cell per solid, CPU; "four corners inside one solid") | Change (call), verify (rule) | Mesh-aware call. The four-corner test can be wrong for a non-convex solid (a face spanning a groove): add the face centre as a fifth point. |
-| 5.9 `BuildRunPlan` | Change | Adds `BuildMeshShapeMemoryEstimate`. |
-| 5.8 `kSolidMotion`, `kSolidTurn` | No change | Use `half_size` and angular speed. |
-| Stages, order, commit and reject | No change | As A74: "no new stage or name". |
-
-**11 Cell resize and batches**
-
-| Place | Status | What |
-|---|---|---|
-| Size rule from `SolidCoverage` corners; refinement volume | No change | |
-| `ResizeCells` step 6: `ComputeSolidsAtFaces` on the new grid, all blocks | Verify | Cost with a mesh (tree searches at corners near the solid only). |
-| `BuildBatchPlan` whole-grid rows | Change | Mesh rows are whole-run, on the processor in every batch: counted like `kSolids` whole-grid rows; a mesh is never split per batch. |
-
-**12 I/O and CLI**
-
-| Place | Status | What |
-|---|---|---|
-| Scene file `solids[]` (plan Task 26; strict, unknown fields are errors) | Change | `shape` gains `mesh`; new field `mesh_file` (binary PLY, the zone format of Task 29d); scene schema version raised. |
-| New `io/mesh_solid.h` (CPU only) | Change | `ReadMeshSolid` (PLY into vertices and triangles, scale applied), calls `contact::BuildMeshShape`, maps `MeshProblem` to findings with the field path; volume, centre of mass and inertia by the closed-form sums over triangles (Mirtich 1996, checked; Eberly 2002, checked), mesh re-expressed about the centre of mass and principal axes for a free solid. |
-| Run folder, resume (5.3, 5.4; "resume never reads the scene file again") | Change | `inputs/mesh_solids` (FluidiTy array file with every built array), listed, read on resume, never rebuilt; mesh files in the fingerprint. Not in `ready_scene` (2 GB limit). |
-| `BuildStartParticles` ("at least w/4 from every solid") | Change (call) | Mesh-aware distance (the true surface). The builder call passes `sheet_thickness_limit = 2.75 w_min`. |
-| Memory: `BuildIoMemoryEstimate`; budget text 5.10 | Change | "io: mesh solids" (`kCpu`); the planned-cost lines show mesh bytes. |
-| Inertia closed forms (5.1) | Change | The mesh case above. |
-| Reuse | - | PLY reader and layout, closed count, the `inputs/` pattern. The ray-parity raster is **not** reused: it answers inside or outside on the refinement lattice only. |
-| Tests | Add | Read, build, write, resume without the PLY, a cube's inertia `m / 3 * (b^2 + c^2)`, an open mesh. |
-
-**13 Surface, foam and spray**
-
-| Place | Status | What |
-|---|---|---|
-| 5.3 surface field: `ComputeDistanceToSolid` at every lattice point, CPU, per frame; 5.5 foam; 5.6 foam volume | Change (call), verify (cost) | Mesh-aware calls with `largest_distance` = 4 spacings (the field's own cap), so only points near the mesh search the tree. CPU arrays from I/O. |
-| `FrameInputs::solids`, `MotionSample::solids` | Change | Carry `MeshShapes` (CPU). |
-| Solid motion writers | No change | Pose only. |
-
-**14 Blender add-on**
-
-| Place | Status | What |
-|---|---|---|
-| 3.2 `Shape`; 5.1 item 2 "declared, not guessed"; 10 "evaluated mesh shapes" not ported | Change | `Shape.MESH` for the `SOLID` role, the default for any object that is not exactly a box, sphere or cylinder (A88); the render-level evaluated mesh (A86). Export: the evaluated mesh (`evaluated_get(depsgraph).to_mesh()`, modifiers and subdivision applied; Blender API, checked), quads and n-gons by the fan rule, through `zone_mesh.py`'s writer, to `inputs/solids/solid_<id>.ply`; object scale applied to vertices. |
-| Findings (3.4) | Change | `solid_mesh_not_closed` (blocking, with the open edge count), `solid_mesh_deforms` (blocking in the first version: a vertex moves in object coordinates between frames), `mesh_gap_narrower_than_a_cell` and `mesh_thin_part_in_use` (NOTE, from the native check, pending Q10) and `solid_mesh_triangles_small` (NOTE: triangles under an eighth of a cell, A86), `solid_mesh_too_many_triangles`. |
-| Per-frame pose keys, `motion_not_keys` | No change | |
-| Digest | Change | Covers the solid mesh files, as it covers zone meshes. |
-| Tests | Add | `test_mesh_solid_exports_evaluated_triangles` (a subdivided cube: triangle count of the evaluated mesh), closed or not, deforms. |
-
-**15 Sand**
-
-| Place | Status | What |
-|---|---|---|
-| Hit split (reads `normal_out_of_solid`, pose, velocity), `solids_on_run_processor` | No change | |
-| Sand beside a thin mesh part | Verify | Sand has no pressure solve, so sides separate it fully (5.11); one test in the sand plan. |
-| 5.4 "hit point = start + velocity * duration" | Verify | With several hits on one mesh in a step, the record holds the first; as for several solids today. |
-
-**Shared files.** `shared-interface.md` (b) and (c) Contact: the new names of 3.1 to 3.3. `tradeoff-particles.md`
-1.3: no allowance for solid geometry exists; with (b) one million triangles are 60 MB of 13.05 GB (0.5 %), so
-no verdict of 1.6 changes.
-
-### 5.11 Thin parts of a mesh (A85)
-
-The owner's answer: "I think that is covered in cpuc of mls mpm", that is CPIC, compatible particle-in-cell, of
-Hu et al. 2018 (reference [3]). The paper has since been read in full (`literature-thin-walls.md` section 1); the
-description below is checked against it. The description of the rebuild is from its designs and code.
-
-**What CPIC is (checked).** An explicit particle-grid method with no pressure solve. Each grid point near a thin
-surface holds, per nearby solid, whether it is near (within the reach of the weights and with a nearest point on
-the surface) and on which side (the sign of its offset from the nearest surface element along that element's
-normal). Each particle gets the same from the grid points around it and keeps its side while it stays near.
-A particle and a grid point are *compatible* unless they are both near the same solid on different sides.
-Particle-to-grid and grid-to-particle exchange happens only between compatible pairs; for an incompatible grid
-point the particle sees the solid's velocity there instead (with friction), and what it would have given goes to
-the solid as an impulse. A particle found on the wrong side is pushed back by a penalty force, which is not a
-guarantee. Beyond the edge of a thin surface no point is "near", so material flows round it.
-
-**What the rebuild does for the plate, and how faithful it is.** Contact: `PlateSide {plate_id, side}` per
-particle and `FindSolidSide` (the side of the one unbounded plate, from its analytic distance). Solids:
-`ApplyPlateSides` writes each particle's side once; `ComputeSolidsAtFaces` gives each face centre its side from
-the plate's pose at the start and end of the step. Transfer: a particle and a face exchange only when
-`outside_solid && face side == particle side`, with weights renormalised over those faces (5.1); the fill reads
-sources of the same side (5.4). That is CPIC's compatibility, with four simplifications: the side comes from the
-analytic plate, not from a field on the grid; a dropped face is left out of the weights instead of being replaced
-by the solid's velocity; the particle's side never changes; and a swept first hit replaces the penalty, so a
-particle is never on the wrong side (`kOnWrongSideOfPlate` is an error, not a force). Pressure has no part in it:
-a plate beside liquid or gas must be thick enough that a whole layer of cells lies inside it
-(`ComputeMinPlateThickness`, 2 to 2.74 cell widths), so no cell holds liquid on both sides and
-`kCellSplitBySolid` never fires for a plate. So today sides separate snow and springy solids at a plate of any
-thickness, and liquid only at a thick one.
-
-**The same mechanism on a mesh.**
-
-1. *Which triangles form a thin part* (builder, once; needs `sheet_thickness_limit`, which I/O sets to
-   `kSheetThicknessLimitInCells` times the smallest cell width). From each triangle's centre a ray
-   goes inward along its normal (the ray of check 7). The triangle is a *sheet triangle* when the first triangle
-   met is nearer than the limit and faces the other way (`Dot` of the two normals at most `-0.5`): two faces back
-   to back. A wedge, a cone's tip or a box's edge is not a sheet (the normals are not opposed). Sheet triangles
-   joined across edges whose two normals have `Dot` above `0.5` form a patch; a patch and the patch its rays
-   meet are the two faces of one *thin part*, numbered from 1 in order of lowest triangle index; the face holding
-   that triangle is `kAlongNormal`. `sheet_sides` holds the result; `thinnest_sheet` the smallest such distance.
-   More than 32,767 parts is `kMeshNotUsable/kTooManyTriangles`.
-2. *The side of a point* (`FindPlateSide`): the nearest triangle within `largest_distance` (the consumer's reach,
-   `kSolidReachInCells * w`), read from the search `ComputeDistanceToMesh` already made; its `sheet_sides` entry
-   gives `{solid_id, side, part}`. No side: farther than the reach, inside the solid, or nearest to a triangle of
-   no thin part. This is CPIC's rule (the nearest surface element decides) without the grid field.
-3. *Near the rim*, where the two faces meet, the nearest triangle is a rim triangle (no part) or the last triangle
-   of either face. A point there has no side or either side, changing within about one thickness. This is why
-   the exchange test must be `!IsOnOppositeSides` and not equality: "no side" exchanges with both, which is CPIC's
-   "not near, so compatible", and lets material turn the corner.
-4. *Near two thin parts* (a slot between two sheets): a point has one side, of the nearer part. Two points with
-   sides of different parts count as not opposite, so exchange across the farther sheet is not stopped. CPIC
-   keeps a side per nearby solid and does not have this limit; the rebuild keeps one `PlateSide` per particle
-   (8 bytes, as for the plate). Reported by solids as a NOTE when two thin parts are closer than
-   `2 * kSolidReachInCells` cells.
-5. *Particles.* The side of a particle near a mesh is recomputed every step (stage `FindSolidSurfaces`), not
-   kept: contact never lets it cross the sheet, so its side can only change by passing through "no side" round
-   the rim. `kOnWrongSideOfPlate` stays the plate's.
-
-**What this gives, and what it does not.**
-
-- Materials with no pressure solve (snow, springy solids, sand): complete. Particles on the two faces of a mesh
-  sheet of any thickness down to `1024 tol` neither cross (contact) nor exchange momentum (sides). This is
-  CPIC's own scope.
-- Liquid and gas, particle-to-face and face-to-particle exchange: also separated by sides.
-- Liquid and gas, **the pressure solve: not helped at all.** CPIC has no pressure solve and gives nothing here.
-  The solve has one pressure per cell and one velocity per face; a face cut by a sheet has liquid of both sides
-  on it, and a cell cut by a sheet is one unknown. Two things then happen with a sheet thinner than the bound.
-  Seen by the corner samples with liquid on both sides in one cell: `kCellSplitBySolid`, the run stops. Passing
-  between corners: the blocked area is zero, the solve lets the grid flow through a surface the particles
-  cannot cross, and **a thin-walled container does not hold its liquid's pressure** even with liquid on one side
-  only. Sides cannot repair either: they would need two cell equations per split cell (pressure decision 7, not
-  built) and two velocities per cut face.
-
-**First version.** Built: 1 to 5 above (contact: 2 bytes per triangle, one ray per triangle at build, nothing
-per query beyond the search already made); the exchange test in transfer and particles; solids' face and
-particle sides. For liquid and gas the pressure solve's blindness is the subject of 5.12.
-
-### 5.12 A thin wall that holds liquid: the options (A89 reopened by A90)
-
-The owner (A90): liquid stops "at the true surface"; "I'm wondering if growing the wall is the correct way; CPIC
-used a coloured distance field for instance. Ideally we adapt cells close to the wall. Search what papers
-recommend for contained fluid"; later, "ideally search recent (post 2018) papers compatible with MLS-MPM". The
-survey is `literature-thin-walls.md`; R below means read in the source there. Fixed points: the triangles are
-the solid (A81); particles stop at the true surface (A90); two sides for the exchange (5.11).
-
-**What the survey found, in four lines.** (i) Recent work compatible with MLS-MPM has no answer for a pressure
-solve: it is explicit (CPIC, R) or sees only solids of grid size (IQ-MPM, Ando and Batty 2020, R). (ii) Face
-fractions cannot hold a wall thinner than a cell; their authors say so (Batty 2007, Zarifi and Batty 2017, R).
-(iii) Two forms can: one pressure per cell with whole faces closed where the line between two cell centres
-crosses the wall (Guendelman 2005, Robinson-Mosher 2008, R: the only form shown with free-surface water in a
-thin cup and with a floating shell), or one pressure per side of a cut cell (Azevedo 2016 and successors, R:
-smoke only, solids at rest). (iv) Small cells near solids are published for flow detail, never as the seal;
-tools thicken the collider and render the thin wall (R).
-
-**The options for this solver.**
-
-*(1) Small cells near thin walls until the wall is seen.* The wall needs `w <= t / 2.75` for fractions alone
-(two cells across it in the best direction). Today cells near any solid are already the smallest (`w_min`); going
-below `w_min` only near thin walls would put surface cells of two sizes side by side where the liquid's surface
-meets the wall, the case A61 set aside until "coarser cells on calm surfaces". Cost (literature file, section 4):
-a 2 mm glass needs 1 mm cells, 1.8e5 of them (fine) and 4,000 steps per second (ten times a 1 cm grid); a 5 cm
-hull is fine; a 1 cm hull needs 1.4e7 smallest cells and a 1 mm sheet 9.6e7, against about one million cells on
-16 GB. So it serves thick-walled things and stops at millimetre walls and large sheets. No paper uses it as
-the seal.
-
-*(2) Sides carried into the pressure solve: whole faces closed (Guendelman's form with CPIC's sides).* Every
-cell belongs to the side its centre is on. A face (or face piece, between cells of two sizes) is **closed** when
-the segment between the centres of its two cells crosses a thin part (`FindThinPartCrossing`, exact, on the
-triangles; no field on the grid is needed because the triangles are at hand). A closed face has open area 0 and
-the wall's velocity; every other face near a thin part is whole (area fractions are not used there: the corner
-distances of a thin part say nothing useful). One pressure per cell stays. What the unknown of a cut cell
-means: the pressure of the liquid on its centre's side. Whether the wall passes between two centres or through
-one makes no difference: the centre is on one side (or inside the wall, then all its faces toward liquid are
-closed), and the wall the solve sees is the nearest staircase of cell faces, at most half a cell from the true
-one. No growth. The liquid in the slice of a cell beyond the wall from its centre (at most half a cell thick,
-a quarter on average) has no pressure of its own: by 5.11 its particles exchange only with faces of their own
-side, and a cell counts only particles not opposite to its centre. Guendelman's warning applies to that slice:
-"thin films of water can quickly compress and lose mass against thin solid objects if one is not careful";
-their remedy, used here, is the wall's effective velocity over the step on closed faces. What is lost: a gap
-narrower than a cell between two walls has no centre in it and no pressure (Azevedo's criticism: "collapsed
-away"); CPIC states the same limit.
-
-*(3) One pressure per side of a cut cell (Azevedo's form).* Exact topology, narrow gaps included. Changes: the
-cell is no longer the unit of the solve (pressure equations, their multigrid, the transfers between sizes, the
-batches' border cells, viscosity, gas and every per-cell array need a sub-cell); cells are clipped by triangles
-every step for a moving wall. Published only on smoke with solids at rest; FLIP was unstable in small cut cells
-and they fell back to PIC there (R); the newest solver of the family still names liquid and moving walls as
-future work (R). The largest change in the rebuild for the least published evidence on liquid.
-
-*(4) Growth for the grid (the previous 5.12), with liquid stopping at the true surface as A90 asks.* Each thin
-part is treated by the grid as 2.75 cells thick. The solve then holds any wall, and the pieces are small. But
-liquid enters the layer between the true surface and the grown one (up to 1.375 cells a face), where every face
-is solid for the solve: it takes the wall's velocity, stops feeling gravity and pressure, stays as a film when
-the level falls, and can pack without limit, so the simulated liquid loses volume as particles wander in. The
-tools that grow colliders do not stop particles at the thin wall (R); the combination is not published. Honest
-only if liquid stops at the grown surface, which A90 excludes.
-
-*(5) Combinations.* (2) at whatever cell width the scene has, with (1) as the artist's accuracy knob (the
-scene's smallest width, and refinement zones): the staircase error is half a cell, so halving the cells halves
-it. Or (2) now and (3) later only for cells holding two walls.
-
-| | (1) small cells | (2) closed faces | (3) cut cells | (4) growth, true-surface stop |
-|---|---|---|---|---|
-| Thin glass holds its level | Yes, once `w <= t / 2.75` | Yes (shown: Guendelman's cup) | Yes | Level holds; film left on the wall |
-| Two heights kept apart | Yes | Yes | Yes | Yes |
-| Volume drift | None new | The slice of at most half a cell can pack; bounded by the effective-velocity rule; to measure | None expected; unpublished for liquid | Loss into the layer, unbounded |
-| Visible gap, liquid to wall | None | None systematic (pressure boundary within half a cell either way) | None | None, but a stuck film |
-| Free thin-walled boat | Right, at the cost above | Draught within about half a cell, either way (shown: floating shell, R) | Right | Rides about 1.25 cells high |
-| Narrow gap (under a cell) | Resolved by cells | Lost; finding | Kept | Closed; finding |
-| Work | Cell resize, grid (two surface sizes) | Contact (one query), solids (flags, owner), pressure (flag in, split error out), transfer (cell counts by side), viscosity, gas | Grid, pressure, viscosity, gas, transfer, batches | Contact, solids |
-| Risk | Cost; A61's open case | New assembly: not published with APIC transfers and mixed sizes | Highest | Known defect |
-
-**Recommendation: (5) as (2) with (1) as the knob.** Reasons: it is the only form with published evidence for
-exactly the owner's cases (water in a thin cup, a floating shell); it keeps one pressure per cell, so pressure,
-multigrid, the size transfers and the batches keep their shape; it needs no thickness and no growth, so liquid
-reaches the true wall as A90 asks; it uses the triangles (A81) and the sides (5.11) already designed; and its
-error is one the artist can shrink with cells. How it answers "adapt cells close to the wall": cells near every
-solid are already the smallest in the scene, and making them smaller makes the staircase finer, but the seal
-does not depend on it, which is what lets a 1 mm sheet work at all. Where evidence is thin, plainly: nobody has
-published this with MLS-MPM or APIC transfers, face fractions elsewhere and cells of several sizes; the volume
-behaviour of the half-cell slice is described only in words by its authors; the tests below are the evidence
-this design will have to produce.
-
-**The recommended option in detail** (pending Q10).
-
-1. *Geometry* (contact, with 1b's contact part): `FindThinPartCrossing`. Sheet triangles are those of 5.11 with
-   the limit `kSheetThicknessLimitInCells = 2.75` smallest cell widths: a wall at least that thick is seen by
-   the corner distances and needs none of this.
-2. *Faces* (solids, stage `FindSolidSurfaces`, at the start and end poses): for every face piece with a cell
-   centre within `kSolidReachInCells` cells of a thin part, one segment query between its two cell centres.
-   Result per face piece, a new array beside `SolidsAtFaces`: `closed_by_thin_part` (0 or 1), the owner solid,
-   and the wall's normal velocity there (its displacement over the step divided by the step, Guendelman's
-   effective velocity). A grid-edge face has one centre: never closed by this rule.
-3. *Pressure:* reads the array through `SolidCoverage`: a closed face has open area 0 and the given velocity;
-   an open face with a cell centre within reach of a thin part has its whole area. `kCellSplitBySolid` no longer
-   fires for a mesh (a split cell is the normal case here). Nothing else changes: equations, multigrid, ladder.
-4. *Which particles a cell counts* (transfer `CellsFromParticles`, pressure's liquid cells): those not on the
-   opposite side from the cell's centre (`IsOnOppositeSides` with the centre's `FindPlateSide`).
-5. *Force on the solid:* a closed face is a blocked part with an owner, so the motion map gains one entry per
-   closed face piece (full area, the face's axis); the sums and a free solid's balance are unchanged in form.
-   The staircase encloses the hull's volume to within half a cell of surface either way, so buoyancy is right on
-   average.
-6. *Viscosity and gas:* a velocity difference taken across a closed face uses the wall's velocity (stick or the
-   slip rule) instead of the far cell's; gas reads the same closed faces. To write in those plans.
-7. *The plate* (A90: "see previous answer"): the same rule serves module 1's plate and would replace its
-   thickness minimum; part of Q10.
-
-**What stays a finding** (NOTE; solids' check): `mesh_gap_narrower_than_a_cell`: two thin parts, or a thin part
-and another solid, closer than two smallest cells (the bore of a thin pipe): liquid there has no pressure of its
-own and is carried by its neighbours. `mesh_thin_part_in_use`: the scene has thin parts, with the half-cell
-figure in metres, so the artist knows the knob.
-
-**Cost.** Memory: nothing per triangle; per face piece 1 B flag, 4 B owner, 8 B velocity where a grid has thin
-parts (about 13 B times 3 faces a cell, under 4 % of a cell's arrays). Time: one segment query per face piece
-near a thin part, twice a step. Place: item 1 with 1b's contact part; 2 and 5 with solids; 3 with pressure; 4
-with transfer; 6 with viscosity and gas.
+**Later.** The owner's recorded preference for a later piece is closed faces by side (A91, with A85, A92, A93):
+a grid face is closed where the line between its two cell centres crosses the wall, one pressure per cell, two
+sides for the exchange. The evidence is the survey `literature-thin-walls.md` (Guendelman 2005 for the form;
+no paper shows it with these transfers). It binds nothing here, and nothing in this design is shaped for it
+beyond what the triangles already give.
 
 ## 6. CPU and GPU
 
-**Shared:** `mesh_shape.h` entirely. The same code on both processors; only `+ - * /`, `Sqrt`, `Abs`, `Min`,
-`Max` and comparisons, no function of the last-bits group, so distance and first hit on a mesh that does not turn
-give the same bits on CPU and GPU. A turning mesh reaches `math::Rotation` through the pose and agrees within
-module 1's tolerance (contact section 6).
+**Shared:** `mesh_shape.h`, `mesh_shape_steps.h`, `mesh_contact.h` entirely. Only `+ - * /`, `math::Sqrt`,
+`math::Abs`, `math::Min`, `math::Max` and comparisons, the operations `base/scalar_math.h` promises the same
+bits for, so distance and first hit on a mesh that does not turn give the same bits on CPU and GPU. A turning
+mesh reaches `math::Rotation` through the pose and agrees within module 1's tolerance (contact section 6).
 
-**Search order is fixed:** nearer box first, ties the first box; triangles in array order; ties the lower index.
-No sum is made, so there is no order of sums.
+**Order is fixed:** nearer box first, ties the first box; triangles in array order; ties the lower index; pieces
+in the order face, edges, vertices. No sum is made.
 
-**CPU:** the builder (single thread; same bytes on every run) and all queries. I/O's CPU arrays serve
+**CPU:** the builder (one thread; same bytes on every run) and all queries. I/O's CPU arrays serve
 `BuildStartCells`, `BuildStartParticles` and the render-output worker.
 
 **GPU:** `MeshShapeBuffers` holds five arrays for all meshes end to end and the table, written once with
-`WriteBuffer` at run start (one planned copy), never read back, never rewritten in the first version. The
-per-particle GPU function keeps a list of 48 tree indexes on its stack. Work is one thread per particle, as module
-1; a thread near a mesh runs longer than its neighbours, which is the only new cost shape.
+`WriteBuffer` at run start, never read back, never rewritten in the first version. The per-particle function
+is module 1's `ApplyMoveParticleAt`; `MoveParticlesView` gains the `MeshShapes` field; no new kernel. Each
+search keeps `kMaxMeshTreeDepth = 24` indexes (96 B) on the thread's stack. The device code is compiled, not
+run, until the owner's hardware run; the evidence until then is the `cpu` tests that run the per-particle
+function for every thread block and thread. A thread near a mesh runs longer than its neighbours: the only new
+cost shape.
 
 **Range of cell blocks, batches:** contact reads no cell. Meshes are whole-run data present for every batch.
 
-**CPU versus GPU tolerance:** module 1's (contact section 6), unchanged.
+**CPU versus GPU tolerance:** module 1's, unchanged.
 
 ## 7. Tests
 
-`tol = kTestContactTolerance = 0x1p-30` unless stated. Meshes are generated in the test from integer formulas.
+`tol = kTestContactTolerance = 0x1p-30` unless stated. Meshes are generated in the test from integer formulas
+(`mesh_test_cases.h`). Every expected number below was derived by hand and, where marked (script), recomputed
+with a short script on 2026-11-15.
 
-Analytic, distance (`cpu`, `no_gpu`):
+Builder and measures (`cpu`):
 
-- *Mesh cube equals the box.* 12 triangles, half size 0.5. At 10,000 generated points: inside, and outside in a
-  face region, `ComputeDistanceToSolid` equals the box's within `0x1p-48`, same normal; outside an edge or corner
-  it equals the Euclidean distance `Length(max(|p| - 0.5, 0))` within `0x1p-48` (the box reports its largest face
-  gap there; the difference is stated, not hidden). Inside test agrees with the box at every point.
-- *Icosphere converges to the sphere.* Radius 0.5, vertices on the sphere, 1280, 5120 and 20480 triangles. Largest
-  `|d_mesh - d_sphere|` over 10,000 points within 0.1 of the surface: at most `1.5e-3`, `3.7e-4`, `9.5e-5` m (the
-  triangle centre's sag, `edge^2 / (6 r)`), and each step at least 3.5 times smaller than the last (second order).
-- Degenerate normal on a vertex, an edge and a face point; nearest-triangle tie keeps the lower index.
-- Thin parts (A85): a slab 0.02 thick with limit 0.05: its two large faces are parts' sides `kAlongNormal` and
-  `kAgainstNormal` of part 1, its rim has none, `thinnest_sheet == 0.02` within `0x1p-48`; a cube of side 1 and a
-  cone: no thin part, `thinnest_sheet` infinite; `FindPlateSide` 0.01 off each face, beyond the rim (no side) and
-  beyond the reach (no side); `IsOnOppositeSides` truth table (same part and different sides only).
-- `BuildMeshShape`: one test per `MeshProblem` (a cube less one triangle: `kNotClosed`, magnitude 3; one triangle
-  turned over; a sliver of height `2^-21` of its edge; two cubes through each other; a fin `512 tol` thick); same
-  input twice gives the same bytes.
+- One test per `MeshProblem`: a cube less one triangle (`kNotClosed`, magnitude 3); one triangle turned over;
+  a sliver of height `2^-21` of its edge; a wedge of `2^-7` rad; two cubes through each other; a fin `512 tol`
+  thick (`CheckMeshShape`, `kPartTooThin`); a triangle height `512 tol` (`CheckMeshShape`).
+- Same input twice gives the same bytes; a cube given inside out is turned over.
+- Tree: for 1, 4, 5, 12, 1280 and 20480 triangles the deepest end box is at `ComputeMeshTreeDepth` (0, 0, 1, 2,
+  9, 13; script), every box contains its triangles, end boxes hold at most 4.
+- `thinnest_wall`: a slab 0.02 thick: 0.02 within `0x1p-48`, the point on a large face; a cube of side 1: 1.0; a
+  regular tetrahedron: +infinity; a 45 degree wedge: thin toward its edge; a fin `1e-4` thick: `1e-4` within `0x1p-60`.
 
-Analytic, first hit and move:
+Distance (`cpu`):
 
-- Mesh cube against Task 8's box cases: face hits at the same `elapsed` within `0x1p-44` relative; an edge hit
-  within `(Sqrt(2) - 1) tol / speed` (the box grows with sharp edges, the mesh with round ones).
-- Flat face of 2 x 2 x 2 triangles, particle sliding at `d = tol` across every shared edge at 5 m/s: free (no
-  hit), end distance in `[tol / 2, 2 tol]`.
-- *Concave shapes hold resting particles.* For each of: a bowl (inside of a half sphere, radius 0.5, 5120
-  triangles, 0.05 thick), a V groove of 90 and of 60 degrees, a torus (0.5, 0.15; particle in the hole's lowest
-  point): one particle at rest at the lowest point, gravity added by the test, 10,000 steps of `1e-3` s, each end
-  fed back with `start_overlap_tolerance = 0`: no error; `d` in `[tol / 2, 2 tol]` every step; position within
-  `1e-9` m of the start after the last.
-- Groove slide: frictionless 90 degree groove tilted 30 degrees; from rest the particle's speed along the groove
-  after 1 s is `g sin(30) = 4.905` m/s within 1 %; `hit_count` at most 2 per step.
-- Bowl slide: 2 m/s along the bowl's inside, 1,000 steps: no error, never rests by the 16-hit rule when the
-  travel per step is under 8 triangle edges; a control with travel of 40 edges per step rests and stays at
-  `d >= tol / 2`.
-- *Crossing a thin part (5.12; geometric, with the contact part).* A slab 0.02 thick, limit 0.11: a segment through
-  both large faces crosses (first crossing on the face nearer the start, point within `0x1p-40`); a segment
-  ending inside the slab crosses; one passing beyond the rim does not; one through a shared edge of two sheet
-  triangles crosses once; a cube 1 m wide (no thin part): never crosses; same bits on CPU and GPU.
-- *Thin fin.* A fin `1e-4` m thick (2 triangles per side and a rim), smallest cell 0.01: a particle crossing it
-  at 10 m in one step is stopped (hit reported, end on the start's side).
-- *A fast particle never passes through.* 10,000 generated cases (P11's generator) on the bowl, the torus and the
-  fin: speeds up to 1,000 m/s, any direction, friction 0 and 0.5. Every end has `d >= tol / 2`; in the same test
-  the naive end (no sweep) is inside in at least one case (the control, as module 1's Task 14).
+- *Mesh cube equals the box.* 12 triangles, half size 0.5, fixed, moved and turned poses. At 10,000 generated
+  points: inside, and outside in a face region, the distance equals the box's within `0x1p-48`, same normal;
+  outside an edge or corner it equals `Length(max(|p| - 0.5, 0))` within `0x1p-48` (the box reports its largest
+  face gap there; the difference is stated, not hidden). The inside test agrees with the box at every point.
+- *Icosphere converges to the sphere.* Radius 0.5, the icosahedron's edges halved 3, 4 and 5 times with the new
+  vertices put on the sphere: 1280, 5120, 20480 triangles. Largest `|d_mesh - d_sphere|` along the directions of
+  the triangle centres at radii 0.4, 0.5, 0.52, 0.6: at most `1.02 * longest_edge^2 / (6 r)`, measured
+  `2.264e-3`, `5.67e-4`, `1.42e-4` m (script), each step at least 3.9 times smaller than the last.
+- Degenerate normal on a vertex, an edge and a face point; a nearest-triangle tie keeps the lower index;
+  `largest_distance` cuts the search (distance returned equal to it; one box visited, counted by the test).
+- The search never keeps more than `ComputeMeshTreeDepth` indexes (a counter in the test's copy of the walk
+  order; meshes of the tree test and the size test).
+
+First hit (`cpu`):
+
+- *Mesh cube against the box* (far starts), fixed and moving, with `start_elapsed > 0`: a face hit at the box's
+  time within `0x1p-44` relative (`(0.5 - tol) / 2` for the box's Task 8 case); an edge hit from `{-1, -1, 0}`
+  at `{1, 1, 0}` at `0.5 - tol / Sqrt(2)`; a vertex hit from `{-1, -1, -1}` at `{1, 1, 1}` at
+  `0.5 - tol / Sqrt(3)` (script); normals near an edge or vertex within `1e-5`.
+- *Start cases.* On the cube's top face from `{-0.4, 0, 0.5 + tol}`: sliding at `{5, 0, 0}` for 0.1 s across
+  both diagonals is free; `{5, 0, -1}` is a hit at 0; `{0, 0, -0.75 tol}` for 1 s is a hit at `2/3` with
+  distance `tol / 2`; a start at `0.4 tol` is a hit at 0; a start at `1.2 tol` sliding is free.
+- *Shared edges and vertices never leak* (the Review Focus of the plan). Generated paths aimed at points of
+  shared edges and at vertices of the cube and of the 80-triangle icosphere, the aim moved by up to 4 rounding
+  units per coordinate, and paths tangent to a grown edge within 4 rounding units, for `r = tol` and
+  `r = tol / 2`: 40,000 cases, each compared with exact rational arithmetic on the same doubles (the smallest
+  distance between a segment and a triangle, in a test-side helper): the guarantee of 5.4, both directions.
+- Same bits for distance and first hit under the CUDA compile of the shared headers (`cpu` label in the
+  container) and, on hardware, `SharedFormulas, OnGpu_MatchCpu` gains mesh inputs.
+
+`MoveParticle` (`cpu`; they need module 1's Tasks 10 to 14):
+
+- Mesh cube face and friction cases equal to the box's within `2 tol` and `0x1p-44`; a slide over the top
+  face's diagonals has `hit_count` 1.
+- *Right-angle groove.* The prism with cross-section `(-1,-1), (1,-1), (1,1), (0,0), (-1,1)`: from
+  `{0.1, 0, 0.5}` at `{0, 0, -2}`, friction 0, 1 s: `hit_fraction (0.4 - Sqrt(2) tol) / 2`, `hit_count` 2,
+  velocities 0, end `{0, 0, Sqrt(2) tol}` within `2 tol`. The same in a moved and turned pose and with the
+  groove moving. A 60 degree groove: stops, no error, end distance at least `tol / 2`.
+- Start rules on a mesh, each with a moving mesh: shallow overlap moved out, deep overlap refused, a start
+  within the tolerance moved silently; a start in a right-angled inside corner at `d = 0.2 tol` from both faces
+  reaches `tol` from both.
+- *Hit limit.* Inside a 64-sided tube of inner radius 0.5, sliding at 2 m/s: 0.2 s crosses 8 creases: no rest,
+  speed between 0.955 and 0.969 of the start (`cos(360/64 degrees)` to the powers 9 and 7; script); 0.5 s
+  crosses more than 16: `hit_count` 17, the particle rests, end distance in `[tol / 2, 2 tol]`.
+- *Concave shapes hold resting particles.* A bowl (inside of a half sphere, radius 0.5, 5120 triangles, 0.05
+  thick), the right-angle and 60 degree grooves, a torus (0.5, 0.15): one particle at rest at the lowest point,
+  gravity added by the test, 10,000 steps of `1e-3` s, each end fed back with `start_overlap_tolerance = 0`: no
+  error; `d` in `[tol / 2, 2 tol]` every step; position within `1e-9` m of the start after the last.
+- *Groove slide.* The right-angle groove tilted 30 degrees, friction 0: speed along the groove after 1 s is
+  `9.81 * sin(30 degrees) = 4.905` m/s within 1 %; `hit_count` at most 2 per step.
+- *Thin fin.* A fin `1e-4` m thick: a particle crossing it at 1,000 m/s is stopped on the start's side. (That
+  the finding is raised is tested in the step's plan, from `thinnest_wall`.)
+- *A fast particle never passes through.* 10,000 generated cases on the bowl, the torus and the fin: speeds up
+  to 1,000 m/s, any direction, friction 0 and 0.5, the solid moving. Every end has `d >= tol / 2`; the naive end
+  (no sweep) is inside in at least one case (module 1's helper).
 - *Turning mesh.* The mesh cube in Task 9's turning-box case: `elapsed` equals `0.3 + acos((0.5 + tol) / 0.6)`
-  within `0x1p-30`. An L-shaped mesh turning at 1 rad/s carries a particle resting in its inside corner for 1,000
-  steps of `1e-3`: no error, `d` in `[tol / 2, 2 tol]`, the particle's own-axes position within `1e-9` m.
+  within `0x1p-30`. An L-shaped mesh turning at 1 rad/s carries a particle resting in its inside corner for
+  1,000 steps of `1e-3`: no error, `d` in `[tol / 2, 2 tol]`, the particle's own-axes position within `1e-9` m.
 - `SceneTurnedRigidly_ResultTurnsWithIt` for the mesh cases, relative `0x1p-40`.
 
-Size (`cpu`, and the same on the GPU run): an icosphere of 1,310,720 triangles: `BuildMeshShape` in at most 10 s
-on one thread and 79 MB handed out (`ComputeRunMemoryBytes` of the estimate, exact); 1,000,000 particles within
-half a cell of it moved in at most 4 times the time of the same particles against the analytic sphere. Both
-timings are to calibrate on the first run (known-open test form, A38) and are the trigger for the hybrid
-(A81) if missed.
+Size (`cpu`; timings are to calibrate on the first run, known-open form, A38): an icosphere of 1,310,720
+triangles: `BuildMeshShape` in at most 10 s on one thread; `BuildMeshShapeBuffers` hands out exactly
+96,469,760 bytes (script: 655,362 vertices, 1,048,575 tree boxes, each buffer rounded up to 256 B);
+1,000,000 particles within half a cell of it moved in at most 4 times the time of the same particles against
+the analytic sphere (the trigger for the fallback of 5.1).
 
-Scene tests for a thin wall that holds liquid (5.12's recommended option, pending Q10; they need pressure,
-solids and the step, and are written into those plans; `w` is the smallest cell width; every bound is to
-calibrate on the first run, known-open form, because no published number exists):
-
-- *A thin-walled glass holds its water.* Mesh glass, wall `0.2 w`, inner radius `8 w`, water at rest `12 w`
-  deep, 2,000 steps: the mean surface height drifts by at most `0.1 w`; particle count unchanged; the largest
-  number of particles in any cell at most 1.5 times the rest count (the slice does not pack); no particle
-  crosses the wall; nothing outside the glass; the run never returns `kCellSplitBySolid`. Repeated with the
-  glass shifted by a third of a cell on each axis and tilted 20 degrees (the staircase changes; the bounds hold).
-- *Two sides at independent heights.* A closed box split by a mesh sheet `0.25 w` thick, off the cell faces by
-  `0.3 w`, water `6 w` deep on one side and `12 w` on the other, 2,000 steps: each height changes by at most
-  `0.1 w`; no particle changes side.
-- *A free thin-walled boat floats at the right depth.* An open box hull `20 w` square, wall `0.25 w`, mass set
-  for a draught of `6 w`: after settling (4,000 steps) the draught is within `0.5 w` of `6 w`, and within
-  `0.25 w` of it in the mean over four starts shifted by a quarter cell (the staircase error has no sign); the
-  vertical force balance closes within 2 %.
-- *Small cells shrink the error.* The glass with `w` halved: the drift bound and the boat's draught error
-  halve (within a factor 1.5).
-- *A narrow gap is reported.* A pipe of bore `1.5 w` with a `0.2 w` wall: `mesh_gap_narrower_than_a_cell`; bore
-  `4 w`: no finding and water runs through.
-
-Reference and proofs: none. Every expected value is a closed form or the analytic twin.
+Reference and proofs: no Python piece and no Lean proof. The one reference is the test-side exact rational
+helper above; it removes the one uncertainty an analytic test cannot: whether rounding lets a path through
+between pieces.
 
 Comparison with `main`: none (nothing exists).
 
-GPU (label `gpu`): every move case through `MoveParticles` on `kGpu` against `kCpu`: exact for kinds, indexes and
-counts; same bytes for positions and velocities when no solid turns; module 1's tolerance otherwise;
-`SameInputTwice_SameBytes`. Without a GPU (`no_gpu`): all shared-header tests in the CUDA configuration.
+GPU (label `gpu`): every mesh move case through `MoveParticles` on `kGpu` against `kCpu`: exact for kinds,
+indexes and counts; same bytes for positions and velocities when no solid turns; module 1's tolerance otherwise;
+`SameInputTwice_SameBytes`. Without a GPU: all shared-header tests in the CUDA configuration, and
+`ApplyMoveParticleAt` over every thread block and thread with the mesh cases.
 
 Memory: `BuildMeshShapeBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`; one piece short is `kOutOfMemory`.
 
 ## 8. Method paper section
 
-`== Mesh solids <sec-mesh-solids>`, after `<sec-round-solids>`, before `<sec-contact-response>`. Outline: why the
-triangles are the solid (the tolerance); distance and the inside test `<eq:mesh-distance>`; the triangle grown by
-the tolerance and its three kinds of pieces `<eq:mesh-hit-time>`; the touching rule per triangle with its
-convexity argument; the repeated move out of a corner; several hits on one mesh and the rest rule; a turning
-mesh; thin parts and their sides (5.11); how a thin wall holds liquid, once the owner has chosen (5.12). Figures: `<fig-mesh-thin-part>`
-(a sheet in cut: its two faces, the rim with no side, a face centre and a particle on opposite sides, and a cell the
-sheet splits); `<fig-mesh-distance>` (a concave cut with the three regions of the nearest point and the outward
-direction at a face, an edge and a vertex); `<fig-mesh-grown-triangle>` (side cut of one triangle grown by `tol`,
-a path through the flat piece, one into an edge's cylinder, and a sliding path crossing a shared edge without a
-hit); `<fig-mesh-groove>` (a particle in a groove: hit, slide, second hit, rest). Pseudocode:
+`== Mesh solids <sec-mesh-solids>`, after `<sec-round-solids>`, before `<sec-contact-response>`. Outline: why
+the triangles are the solid; distance and the inside test `<eq:mesh-distance>`; the mesh grown by a radius, the
+seven pieces of a grown triangle and their intervals `<eq:mesh-piece-interval>`, why no path passes between
+them; far and near starts and the resting sweep; the repeated move to the rest gap; several hits on one mesh
+and the rest rule; a turning mesh; thin parts as a stated limit (5.9). Figures: `<fig-mesh-distance>` (a concave
+cut with the three regions of the nearest point and the outward direction at a face, an edge and a vertex);
+`<fig-mesh-grown-triangle>` (a triangle from above and in side cut with its face, edge and vertex pieces and
+their overlaps, one path through the face piece and one through a shared edge caught by the edge piece);
+`<fig-mesh-resting-sweep>` (side cut: the surface, the rest gap at `tol`, the resting sweep's radius `tol / 2`,
+a path sliding over a shared edge, and one stopped by the other side of a groove). Pseudocode:
 `<proc-mesh-distance>`, `<proc-mesh-first-hit>`. Sources: Baerentzen and Aanaes 2005 (the inside test); Ericson
-2005 (nearest point on a triangle, moving sphere against a triangle); Hart 1996 (the stepping search, which fills
-contact section 8's "citation needed"); Wang et al. 2021 (why hits are found by closed forms on convex pieces and
-a conservative search, not by a root finder on a moving triangle). None is in the old reference list.
+2005 (nearest point on a triangle); Hart 1996 (the stepping search, which fills contact section 8's "citation
+needed"); Wang et al. 2021 (why hits are found by intervals on convex pieces and a conservative search, not by
+a root finder). None is in the old reference list.
 
 ## 9. Vocabulary
 
 | Old name on `main` | New name | Source |
 |---|---|---|
-| (none) | `SolidShape::kMesh`, `mesh solid` | NEW |
-| (none) | `MeshShape`, `MeshShapes`, `MeshShapeArrays`, `MeshShapeBuffers` | NEW |
-| (none) | `mesh_index`, `kNoMesh` | NEW |
-| (none) | `MeshTreeBox`, "tree of boxes", "end box" (papers: bounding volume hierarchy, node, leaf; `leaf` is banned) | NEW |
+| (none) | `SolidShape::kMesh`, `mesh solid`, `SolidFace::kMeshTriangle` | NEW |
+| (none) | `MeshShape`, `MeshShapes`, `MeshShapeArrays`, `MeshShapeBuffers`, `mesh_index`, `kNoMesh` | NEW |
+| (none) | `MeshTreeBox`, "tree of boxes", "end box" (papers: bounding volume hierarchy, node, leaf; never say: BVH, node, leaf) | NEW |
 | (none) | `triangle`, `vertex`, `neighbours`, `vertex_normals` | NEW |
 | (none) | `closed` (every edge shared by exactly two triangles), as the refinement zone uses it | DECIDED (A78 section) |
-| (none) | `thinnest_part`, `MeshProblem`, `kMeshNotUsable` | NEW |
-| (none) | "grown triangle" (papers: offset, Minkowski sum with a ball) | NEW |
-| (none) | `kMaxHitsPerMeshPerStep`, `kMaxMoveOutCount`, `MoveToRestGap` (private, module 1) | NEW |
-| (none) | `thin part`, `sheet triangle`, `sheet_sides`, `thinnest_sheet`, `PlateSide::part`, `FindPlateSide`, `IsOnOppositeSides` (papers: CPIC's colour or tag, and compatibility) | NEW (A85) |
-| `same_side` (equality of two `PlateSide`s) | `same_side` now means "not on opposite sides of the same plate or thin part" (`!IsOnOppositeSides`); glossary row to amend | DECIDED word, meaning widened (A85) |
-| (none) | `FindThinPartCrossing`, `ThinPartCrossing`, `SolidThinPartCrossing`, `closed_by_thin_part`, `kSheetThicknessLimitInCells` (papers: visibility by ray casting, Neumann face) | NEW (5.12, pending Q10) |
-| (none) | `largest_distance` (not `search distance`, which is `ComputeSolidVelocitySample`'s; not `reach`, which is a solid's) | NEW |
+| (none) | `thinnest_wall`, `thinnest_wall_point`, "wall (of a mesh)": two faces back to back (never say: sheet, shell, thin part as a type) | NEW; `wall` is already the cylinder's word, the glossary row gains this second use |
+| (none) | `MeshProblem`, `kMeshNotUsable` | NEW |
+| (none) | "mesh grown by a radius", "piece" (face piece, edge piece, vertex piece) (papers: offset, Minkowski sum with a ball; never say: offset surface, capsule, slab) | NEW |
+| (none) | "far start", "near start", "resting sweep" (never say: touching rule, which stays the convex shapes') | NEW |
+| (none) | `MeshSweep`, `MeshFirstHit`, `DistanceToMesh`, `largest_distance` (not `search distance`, which is `ComputeSolidVelocitySample`'s; not `reach`, which is a solid's) | NEW |
+| (none) | `kMaxMeshHitsPerStep`, `kMaxMoveOutCount`, `kMeshNearStartInTolerances`, `kMeshRestingSweepShare`, `kMeshPieceOverlapShare`, `kMaxMeshTreeDepth`, `ComputeMeshTreeDepth` | NEW |
+| (none) | `kMeshPartTooThinForTheGrid`, `kMinWallThicknessInCells` (step) | NEW |
 
-Checked against `docs/glossary.md`: "distance to the solid, negative inside" is used, never the banned
-"signed distance" (given once as the papers' word); "solid" never "obstacle" or "body"; "solid that only moves and
-turns" never "rigid body"; "wall" is not used (a groove has sides); "near the surface only" never "band"; "check"
-never "validate"; "saved state" never "checkpoint".
+Kept from module 1 and used as defined there: reach, search distance, swept distance, gap, rest gap, sweep, hit
+fraction, approach left after the response. Checked against `docs/glossary.md`: "distance to the solid,
+negative inside", never "signed distance"; "solid" never "obstacle" or "body"; "solid that only moves and
+turns" never "rigid body"; "check" never "validate".
 
 ## 10. Not ported
 
 Nothing exists on `main`. Deliberately not built in the first version: a distance volume (5.1); meshes that
-change shape (5.8); open surfaces (a single sheet with no inside: blocking finding, A87); contact between two solids; a
-plate side for thin mesh parts (cutting stays the plate's); growing thin parts for the grid (A89, set aside by A90: 5.12 option 4); automatic repair of bad meshes (the checks report,
-the artist fixes).
+change shape (5.8); open surfaces (blocking finding, A87); contact between two solids; every thin-wall
+mechanism: sides on mesh parts, closed faces, growth for the grid, cells below the scene's smallest (5.9, A94);
+overlapping closed parts in one mesh; automatic repair of bad meshes.
 
 ## 11. Decisions
 
-**Q1. Where 1b sits.** Decision: (a) the contact part (sections 3 to 7) right after module 1's Task 18, before the
-grid; the I/O, solids, step and add-on parts land with those modules. Owner answer A82.
+| Answer | Decision |
+|---|---|
+| A80 | Mesh solids are module 1b; the grid does not deform. |
+| A81 | Triangles and a tree of boxes are the solid for every module; a volume is the measured fallback (5.1). |
+| A82 | The contact part (sections 3 to 7) is built right after module 1's Task 18; the I/O, solids, step and add-on parts land with those modules. |
+| A83 | A mesh solid may be free; I/O computes mass, centre of mass and inertia; the too-close test uses the bounding box. |
+| A84 | Meshes that change shape come later; room is left (5.8). |
+| A86 | Blender exports the render-level mesh, with a note when triangles are under an eighth of a cell. |
+| A87 | An open mesh is a blocking finding; a repair button comes later. |
+| A88 | "Mesh" is the default shape of a solid that is not exactly a box, sphere or cylinder. |
+| A94 | The simple route: meshes with real thickness only; a thinner part is a finding naming it (5.9); no thin-wall mechanism. |
+| A85, A89 to A93 | Recorded as the preference for a later piece (closed faces by side, A91), with `literature-thin-walls.md` as evidence. They bind nothing in the first version. |
 
-**Q2. Free mesh solids in the first version.** Decision: (b) yes; I/O computes mass, centre of mass and inertia
-and re-centres the mesh; the too-close test uses the bounding box. Owner answer A83.
+**Questions for the owner:** none. One choice made here that the owner may want to see: the thin-part finding
+is a known limit and never blocks (5.9), while the plate's thickness rule blocks.
 
-**Q3. The triangles are the solid.** Decision: (a) triangles and a tree of boxes for every module; the hybrid
-with a volume stays the measured fallback (5.1). Owner answer A81.
-
-**Q4. Meshes that change shape.** Decision: (a) later, as their own piece; the interface leaves room (5.8).
-Owner answer A84.
-
-**Q5. A mesh part thinner than one cell.** The owner pointed to CPIC (Hu 2018). Decision: sides on thin mesh
-parts, as designed in 5.11, in the first version; they separate snow, sand and springy solids fully and the
-particle-face exchange of liquid. The pressure solve is not helped by sides alone; that is 5.12 and Q10.
-Owner answer A85.
-
-**Q6. Which mesh Blender exports for a subdivision surface.** Decision: (a) the render-level evaluated mesh, with
-a NOTE when triangles are smaller than an eighth of a cell. Owner answer A86.
-
-**Q7. An open mesh.** Decision: blocking finding "not closed" first; a repair button in the add-on later. Owner
-answer A87.
-
-**Q8. Default shape of a mesh object marked Solid.** Decision: (b) "Mesh" for any object that is not exactly a
-box, sphere or cylinder. Owner answer A88.
-
-**Q9. Thin-walled containers of liquid.** First answer (A89): grow thin parts for the grid. Reopened by A90:
-liquid stops at the true surface, and the growth is not settled until the published methods are compared. The
-comparison is 5.12; the choice is Q10.
-
-**Still for the owner** (three questions)
-
-**Q10. How a thin wall holds liquid in the first version** (5.12; evidence in `literature-thin-walls.md`).
-(a) Whole faces closed where the line between two cell centres crosses the wall, one pressure per cell, with the
-sides of 5.11 and the scene's cell size as the accuracy knob: the only form published with water in a thin cup
-and a floating shell (Guendelman 2005); error up to half a cell in where the solve puts the wall; narrow gaps
-lost; not yet published with our transfers. (b) Small cells only: the wall must span 2.75 cells; honest and
-simple, affordable for a glass at ten times the steps and for thick hulls, impossible for millimetre walls on
-large objects; thinner walls are a blocking finding. (c) One pressure per side of a cut cell (Azevedo 2016):
-exact, the largest change, published on smoke only. (d) Growth for the grid with liquid stopping at the true
-surface: small, but leaves a film and loses volume in the layer. Recommendation: (a). Changes: section 3's
-`FindThinPartCrossing`, the pending entries of the edit list, the scene tests; with (b) nothing is built and the
-earlier blocking finding returns; with (c) pressure, grid, viscosity, gas and batches are redesigned. The same
-answer applies to module 1's plate ("see previous answer", A90): with (a) the plate's thickness minimum goes.
-
-**Q11. Cells smaller than the scene's smallest, only near thin walls** (your "ideally we adapt cells close to
-the wall"). Today cells near every solid are already the scene's smallest; going below that only at thin walls
-puts surface cells of two sizes side by side where the liquid's surface meets the wall, which A61 set aside
-until "coarser cells on calm surfaces". (a) Not in the first version: the artist's smallest width and refinement
-zones are the knob. (b) Design a wall floor now (a second smallest width within two cells of thin parts),
-together with the two-size surface condition it needs. Recommendation: (a); with Q10 (a) the seal does not
-depend on it. Changes: with (b), grid 5.9, cell resize and pressure's surface condition gain work before 1b
-can finish.
-
-**Q12. A gap narrower than a cell between two walls** (a thin pipe's bore, two blades). With Q10 (a) the
-liquid there has no pressure of its own. (a) NOTE finding, the run goes on. (b) Blocking finding.
-Recommendation: (a): a dry decorative pipe is harmless and the check cannot tell which gaps liquid is meant to
-use. Changes: the finding's level.
-
-**Not settled here (for the plan, not the owner):** the rounding bound of the nearest-point arithmetic and the
-two thresholds of checks 4 and 5 (to derive and prove with a generated test); the cost of coverage and of the
-surface field with a large mesh (to measure; trigger for the hybrid); whether sixteen hits per mesh per step is
-the right limit; the exact GPU stack need; CPIC as published, read from the paper itself (5.11 is from memory);
-how transfer stores a face's value when particles with side A, side B and no side all reach it (transfer
-decision 5); for 5.12's recommended option: how much the half-cell slice packs or drains in practice (only the
-tests can say), the rule for viscosity across a closed face, face pieces between cells of two sizes at a thin
-part, and whether 2.75 cells, the largest value of the plate bound, can be lowered per direction.
+**Left to the plans, not the owner:** the measured rounding of the piece intervals against the `tol / 8` of
+5.4 (the exact-arithmetic test decides; if it fails the overlap share or the bound changes, not the form); the
+cost of coverage and of the surface field with a large mesh (the trigger for the fallback); whether sixteen
+mesh hits per step is the right limit; the two timings of the size test.

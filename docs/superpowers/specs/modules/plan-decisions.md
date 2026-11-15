@@ -3302,11 +3302,15 @@ Solid ToSolid(const Cylinder& shape, const SolidMotion& motion, std::uint32_t so
 - Code that switches on `SolidFace` or `SolidShape` handles the new values (solids' render-output contact solids,
   sand's hit split reads only `normal_out_of_solid`, so it is unaffected).
 - Spin (P17): a turn about a sphere's centre or a cylinder's axis moves the surface but not the shape; it does not
-  count toward `kMaxTurnPerStep` and does not make the solid "turning" for contact. `ComputeSolidVelocity` uses the
+  count toward `kMaxTurnPerStep` and does not make the solid "turning" for contact. **As built (Task 8a, 2026-11-15):** a
+  cylinder counts as turning only when `|omega_across| * step_duration * Length(half_size) > tol / 8` (the step's
+  duration, not the sweep's); below that bound it uses the closed form. `ComputeSolidVelocity` uses the
   full angular velocity, so a spinning roller drags particles only through friction. Solids may drive a cylinder at
   any spin rate about its axis.
 - Same bits (contact design 6): the round branches use only `+ - * /`, `Abs`, `Sqrt`; same bits on CPU and GPU for
-  a given pose.
+  a given pose. **As built (Task 8a, controller ruling 15, 2026-11-15):** `FindFirstHit` has the same bits when every
+  angular velocity is zero; a spinning sphere or cylinder is posed through `ComputeSolidPose`, which uses `Sin`, so
+  spinning round solids are compared within the design 6 tolerance.
 - `ComputeContactScale` (P8): both add `Length(half_size)` to the largest coordinate; thinnest candidates `2 r`
   (sphere) and `min(2 r, 2 half_height)` (cylinder).
 
@@ -3324,8 +3328,15 @@ Tasks 9, 12, 12a, 13; contact design 5.3, 5.5, 5.7, 8):**
   near-other-solid test over the whole step, so a turning paddle near the domain floor may ask for shorter steps
   (intended).
 - The rim move (P15) applies only to hits of the cylinder's closed form, never to hits of the stepping search, even
-  when the reported face is a rim. The rim-corner start rule holds up to rounding; Task 8a may compute its inside
-  test from the same gaps that set the start's sign.
+  when the reported face is a rim. **Amended as built (Task 8a, 2026-11-15; P15):** the cylinder's first hit is the
+  intersection of two intervals (the times inside the grown wall, unbounded along the axis, and between the grown
+  caps' planes), each computed from the distance's own gaps minus the tolerance (`rho0 - radius - tol`,
+  `|p0.z| - half_height - tol`); the hit is the later entry when neither interval is empty and that entry is no later
+  than either exit and the duration; face, normal and distance come from the distance at the hit position; a start in
+  the rim corner (both gaps at most 0, distance gap positive) is a hit at 0 only when it approaches the rim. Why: a
+  candidate validated by a second, separately rounded test let paths through the grown rim edge pass unseen (found in
+  Task 8a's review). General rule: a closed-form first hit is an intersection of entry/exit intervals or a single root
+  checked only against the duration, each with a generated edge test against a reference that cannot miss.
 - The paper places `<sec-round-solids>` after `<sec-first-hit>`.
 
 **What later plans gain (amended in each plan and design, `(A74)`):**

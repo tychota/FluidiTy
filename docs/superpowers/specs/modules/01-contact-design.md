@@ -551,6 +551,11 @@ error. Unit vectors and rotations are accepted when their squared length is with
 
 Sphere and cylinder (NEW, A74): step 1 has a closed form for each (5.7); step 2 serves a cylinder whose axis turns.
 
+*Rule for every closed form (amended 2026-11-15, Task 8a review).* A closed-form first hit is an intersection of
+entry/exit intervals or a single root checked only against the duration; never a candidate accepted or rejected by a
+second, separately rounded test. Each closed form has a generated test aimed at its edges, compared with a reference
+that cannot miss.
+
 **5.4 `ComputeContactResponse` (ported unchanged from `ApplyOneWayResponse`, minus the nudge).** With
 `relative = velocity - solid_velocity` and `approach_speed = Dot(normal_out_of_solid, relative)`:
 
@@ -667,26 +672,32 @@ not moving toward the centre), or when `B^2 - A * C < 0` (a miss). Otherwise
 `t = C / (-B + Sqrt(B^2 - A * C))`, the smaller root written without cancellation, a hit when `t <= duration`.
 
 *First hit, cylinder (closed form).* The cylinder is grown by `tol` with sharp edges: radius `R = radius + tol`,
-half height `H = half_height + tol`. Candidates, each accepted only inside the other's range:
-(1) wall: the quadratic of the sphere in the `x, y` components (`A = u.x^2 + u.y^2`, `B = p0.x u.x + p0.y u.y`,
-`C = (rho0 - radius - tol) * (rho0 + R)`), tried when the start is outside the grown radius (`rho0 > R`), `A > 0`,
-`B < 0` and the root exists (`B^2 >= A * C`), its first root `t_w` accepted when `|p0.z + u.z t_w| <= H`;
-(2) the cap the particle is beyond (`|p0.z| > H`, `s0` its sign), when `s0 * u.z < 0`:
-`t_c = (|p0.z| - H) / (-s0 * u.z)`, accepted when `(p0.x + u.x t_c)^2 + (p0.y + u.y t_c)^2 <= R^2`.
-The earliest accepted candidate is the hit; this is the entry into the intersection of the grown slab and the grown
-infinite cylinder, so the rim is covered by the two ranges' edges. A path parallel to the axis (`A == 0`) has no
-wall candidate; a path parallel to the caps (`u.z == 0`) no cap candidate. The reported face is the region
-`ComputeDistanceToSolid` gives at the hit position. At a hit of this closed form in the rim region the true distance
-is between `tol` and `Sqrt(2) * tol` (the sharp corner of the grown shape); `MoveParticle` moves that hit position
-along the rim normal to `d = tol` before the response, a move of at most `(Sqrt(2) - 1) * tol`, never toward the
-inside. The move applies only to hits of this closed form (amended 2026-11-15, plan P15): a hit of the stepping
-search toward a turning cylinder stops at `d <= 1.25 tol` in any region and is never moved, even when its reported
-face is a rim.
+half height `H = half_height + tol`. Amended 2026-11-15 (Task 8a as built): the hit is an intersection of two
+intervals, computed from the distance's own gaps minus the tolerance, `wall_gap = (rho0 - radius) - tol` and
+`cap_gap = (|p0.z| - half_height) - tol` (where this design wrote `rho0 > R` or `|p0.z| > H` it now means
+`wall_gap > 0` or `cap_gap > 0`):
+(1) the times inside the grown wall, unbounded along the axis, one interval: with `A = u.x^2 + u.y^2`,
+`B = p0.x u.x + p0.y u.y`, `C = wall_gap * (rho0 + radius + tol)`, when `wall_gap > 0` it is empty unless `A != 0`,
+`B < 0` and `B^2 - A * C >= 0`, otherwise from `C / (-B + Sqrt(B^2 - A * C))` to `(-B + Sqrt(B^2 - A * C)) / A`; when
+`wall_gap <= 0` it runs from 0 to the larger root (`(-B + Sqrt(...)) / A` when `B <= 0`, `-C / (B + Sqrt(...))` when
+`B > 0`, for ever when `A == 0`);
+(2) the times between the grown caps' planes, one interval: with `s0 = sign(p0.z)`, when `cap_gap > 0` it is empty
+unless `-s0 * u.z > 0`, otherwise from `cap_gap / (-s0 * u.z)` to `(|p0.z| + half_height + tol) / (-s0 * u.z)`; when
+`cap_gap <= 0` it runs from 0 to `-(sign(u.z) * p0.z - half_height - tol) / |u.z|`, for ever when `u.z == 0`.
+The hit is the later of the two entries, when neither interval is empty and that entry is no later than either exit
+and no later than `duration` (both limits count). The reported face, normal and distance are what
+`ComputeDistanceToSolid` gives at the hit position. Why intervals: a candidate validated by a second, separately
+rounded test let paths through the grown rim edge pass unseen (found in Task 8a's review). At a hit of this closed
+form in the rim region the true distance is between `tol` and `Sqrt(2) * tol` (the sharp corner of the grown shape);
+`MoveParticle` moves that hit position along the rim normal to `d = tol` before the response, a move of at most
+`(Sqrt(2) - 1) * tol`, never toward the inside. The move applies only to hits of this closed form (amended
+2026-11-15, plan P15): a hit of the stepping search toward a turning cylinder stops at `d <= 1.25 tol` in any region
+and is never moved, even when its reported face is a rim.
 
 *Starts within the grown shape.* For both shapes the start gap `g0 = d - tol` uses the true distance:
 `g0 < -tol` is a hit at `t = 0` (defensive, as P2); `-tol <= g0 <= 0` is the touching rule below; for a cylinder,
-`g0 > 0` inside the grown sharp shape (`rho0 <= R` and `|p0.z| <= H`: a rim corner, up to rounding, since these
-tests and the gap are computed separately) is a hit at `t = 0` when `rate < 0` and free otherwise.
+`g0 > 0` inside the grown sharp shape (`wall_gap <= 0` and `cap_gap <= 0` with a positive distance gap: a rim corner)
+is a hit at `t = 0` only when it approaches the rim (`rate < 0`) and free otherwise.
 
 *Touching rule on a curved surface (counterpart of P2).* `rate = Dot(normal at the start, u)`. A sphere or cylinder
 with `-tol <= g0 <= 0` is not hit during this sweep when `rate * duration >= -tol`, and is hit at `t = 0`
@@ -708,8 +719,9 @@ later step under gravity or pressure; over many steps it follows the curve (test
 not the shape. The *shape-changing turn* is: none for a sphere; for a cylinder `omega_across = omega - Dot(omega,
 e_z) e_z`, `e_z` its own z axis (its `axis`) at the start of the sweep. Code computes it with the public
 `ComputeShapeTurningAngularVelocity` (3.2); no other helper does. A sphere is always swept and slid as a solid that does not turn
-(closed form); a cylinder is too when `Length(omega_across) * step_duration * Length(half_size) <= tol / 8` (the
-shape moves less than `tol / 8` during the step: a spin given along the axis, up to rounding), and otherwise as a turning solid (5.3 step 2, P7 slide in its axes; the `kMaxTurnPerStep`
+(closed form); a cylinder is too, and counts as turning only when `Abs(omega_across) * step_duration * Length(half_size) > tol / 8`
+(the step's duration, not the sweep's; below the bound the shape moves less than `tol / 8` during the step, as in a
+spin given along the axis up to rounding, and it uses the closed form); a turning cylinder is swept as a turning solid (5.3 step 2, P7 slide in its axes; the `kMaxTurnPerStep`
 limit applies to `Length(omega_across) * step_duration`). In every case `ComputeSolidVelocity` uses the full
 `omega`, so friction feels the spin and a frictionless particle is not dragged by it.
 
@@ -729,7 +741,9 @@ they give the same bits on CPU and GPU unless NaN, like the other shapes. None c
 group (`Sin`, `Cos`, `Exp`, `Log`, `Pow`, `Cbrt`, `Expm1`); there is no `acos` or `atan` anywhere in contact (tests
 may use `std::asin` and `std::acos` on the CPU for expected values). A spinning sphere or cylinder (angular velocity
 not zero, shape not turning) and a turning cylinder reach `math::Rotation` through `ComputeSolidPose` and agree
-within the tolerance below.
+within the tolerance below. A spinning sphere or cylinder is posed with its spin through `ComputeSolidPose`, which
+uses `Sin`, so spinning round solids are compared within the tolerance, not by bits (controller ruling 15,
+2026-11-15; revisit only if the hardware run needs exact parity).
 
 **CPU (`move_particles_cpu.cc`):** one loop over the index range calling `MoveParticle`. Particles are
 independent, so the range may be cut into fixed chunks for threads. Each thread keeps its own failure with the
@@ -755,8 +769,8 @@ does after its grid-to-particle read); the batch operation is the form this modu
 **CPU versus GPU tolerance (proposal, calibrated by the hardware run):** `kind`, `solid_index`, `face`,
 `side_at_hit`, `hit_count` and the error are compared exactly. A floating-point value `a` against `b` passes
 when `|a - b| <= floor + 0x1p-40 * max(|a|, |b|)` with `floor = contact_tolerance / 4` for positions,
-`0x1p-40 * largest input speed` for velocities and speeds, `0x1p-40` for `hit_fraction`. Without a turning
-solid the expected difference is zero, and the test prints the largest difference seen.
+`0x1p-40 * largest input speed` for velocities and speeds, `0x1p-40` for `hit_fraction`. When every angular
+velocity is zero the expected difference is zero, and the test prints the largest difference seen.
 
 ## 7. Tests
 
