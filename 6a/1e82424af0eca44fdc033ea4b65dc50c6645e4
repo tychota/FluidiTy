@@ -1,0 +1,84 @@
+native/fluidity/base/run_memory.h
+  s_4f0877e2acdcf0::t_21d89a8757fd38 1-123,129,138,147,156
+  s_4f0877e2acdcf0::t_8479726813db95 124-128,130-137,139-141
+  s_4f0877e2acdcf0::t_9014986605ad81 142-146,148-155,157-181
+docs/glossary.md
+  s_4f0877e2acdcf0::t_e5e961da412376 165-167
+native/fluidity/base/buffer.h
+  s_4f0877e2acdcf0::t_c96cf252c3b37c 7-11,74-76,117-119,145-147,158,164,167,174,200-218,220-227,232
+  s_4f0877e2acdcf0::t_71c31277942849 233-234
+native/fluidity/base/run_memory_gpu_test.cc
+  s_4f0877e2acdcf0::t_247473967487e2 1-116
+  s_4f0877e2acdcf0::t_a7252496799668 117-120
+native/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_ff673d86801a90 21,34,52,69,72
+native/fluidity/base/buffer_test.cc
+  s_4f0877e2acdcf0::t_2c71bb1431f115 29,316
+native/fluidity/base/memory_count.h
+  s_4f0877e2acdcf0::t_8067682bea6c6b 12-14,20-21,23,25,32,100-135
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_73ae77c1636bdc 311-312
+  s_4f0877e2acdcf0::t_7bf06295ef84ba 380-386,389-390,393,395-421,427-439
+  s_4f0877e2acdcf0::t_e00ab13b438058 23
+  s_4f0877e2acdcf0::t_d2bdb5b0de5d09 387-388,391-392,394
+  s_4f0877e2acdcf0::t_73b7a856175167 422-426
+docs/method-paper/figures/run_memory.typ
+  s_4f0877e2acdcf0::t_f03673b5400565 73
+  s_4f0877e2acdcf0::t_496e5f76427e7a 57
+  s_4f0877e2acdcf0::t_4a7b2adb893000 15-16
+  s_4f0877e2acdcf0::t_017852b7dad057 71
+  s_4f0877e2acdcf0::t_0238cc10d72800 40
+  s_4f0877e2acdcf0::t_dbf4389133fe9c 1-14,19-39,41-56,58-59,61,63-66,68,70,72,74-75
+  s_4f0877e2acdcf0::t_c1b61f3afc7323 17-18
+  s_4f0877e2acdcf0::t_d5cb308ddd3221 60
+  s_4f0877e2acdcf0::t_4fb8f0d9e94be1 62
+  s_4f0877e2acdcf0::t_9474779a7ae7ca 67
+  s_4f0877e2acdcf0::t_c9fa28fb4821c9 69
+native/fluidity/base/run_memory_test.cc
+  s_4f0877e2acdcf0::t_2e346e4cf491b7 336-370,373-375,377,379-380
+  s_4f0877e2acdcf0::t_6298515909daa5 304
+  s_4f0877e2acdcf0::t_d41c98a3c142cb 1-303,305-335,381
+  s_4f0877e2acdcf0::t_c03030e1b4effd 371-372,376,378,382-465
+native/fluidity/base/memory_count.cc
+  s_4f0877e2acdcf0::t_32d9b6f283ad28 3,13-16,62-88
+native/fluidity/base/buffer_cpu.cc
+  s_4f0877e2acdcf0::t_558fcd8d1409c2 214-216,245-246
+native/fluidity/base/run_memory_cpu.cc
+  s_4f0877e2acdcf0::t_2512760fc8d91a 1-85,87,92,94
+  s_4f0877e2acdcf0::t_6af8d43ccece1f 86
+  s_4f0877e2acdcf0::t_58d00075b39e42 88-91,93,95-100
+native/fluidity/base/run_memory_no_gpu_test.cc
+  s_4f0877e2acdcf0::t_25d95bb37a2f2b 1-30
+native/fluidity/base/ordered_sums.h
+  s_4f0877e2acdcf0::t_fe2a9815c646bd 20-21,38,58-69,174-175
+native/fluidity/base/ordered_sums_cpu.cc
+  s_4f0877e2acdcf0::t_23731f5d038682 6,11,96-98,103-109,118-121,124-139
+native/fluidity/base/ordered_sums_gpu_test.cc
+  s_4f0877e2acdcf0::t_f4c884efef7678 15,17,62-93
+native/fluidity/base/ordered_sums_test.cc
+  s_4f0877e2acdcf0::t_bc0c9d7fd201f1 14-15,38-65
+native/fluidity/base/stable_order.h
+  s_4f0877e2acdcf0::t_6cf31be959f399 23-24,41,62-75,208-209
+native/fluidity/base/stable_order_cpu.cc
+  s_4f0877e2acdcf0::t_490a6314ea35f1 11,278-286,299-315
+native/fluidity/base/stable_order_gpu_test.cc
+  s_4f0877e2acdcf0::t_690bca0cf39b3b 13-14,121-154
+native/fluidity/base/stable_order_test.cc
+  s_4f0877e2acdcf0::t_4eb319538d1873 14-15,111-125,146-184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6a1e82424af0eca44fdc033ea4b65dc50c6645e4",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,47 @@
+native/fluidity/base/processor_description.h
+  s_4f0877e2acdcf0::t_9bc20147fe1543 45-46,53
+  s_4f0877e2acdcf0::t_5965bff39028de 47-50
+native/fluidity/base/processor_description_gpu.cu
+  s_4f0877e2acdcf0::t_1e9158a3bf7bd3 21-23
+  s_4f0877e2acdcf0::t_f2d0c74a7fadea 18-20
+native/fluidity/base/processor_description_gpu.h
+  s_4f0877e2acdcf0::t_4702f30b7bd8c1 25
+  s_4f0877e2acdcf0::t_717365ba743325 26-27
+native/fluidity/base/processor_description_gpu_test.cc
+  s_4f0877e2acdcf0::t_b45bd24110a88f 5-8,22,26-34
+  s_4f0877e2acdcf0::t_02aaa8db29d950 23-25
+docs/glossary.md
+  s_4f0877e2acdcf0::t_90c8271351f912 168
+native/fluidity/base/buffer.h
+  s_4f0877e2acdcf0::t_4cef8f071b996b 237-238
+AGENTS.md
+  s_4f0877e2acdcf0::t_bba4873706cddb 297-308
+native/fluidity/base/ordered_sums.h
+  s_4f0877e2acdcf0::t_696ebcf29d342c 81-83
+native/fluidity/base/ordered_sums_cpu.cc
+  s_4f0877e2acdcf0::t_60ae6dd99ba539 110-117
+native/fluidity/base/ordered_sums_test.cc
+  s_4f0877e2acdcf0::t_0930edac9ec1be 37
+native/fluidity/base/stable_order.h
+  s_4f0877e2acdcf0::t_c658bfb1287eb0 163-165
+native/fluidity/base/stable_order_cpu.cc
+  s_4f0877e2acdcf0::t_27619d13798d94 287-293
+native/fluidity/base/stable_order_test.cc
+  s_4f0877e2acdcf0::t_5f5e8a3555d30c 126-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1b8896d1edad7e22d0edb62caab6dcef97ea626b",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
