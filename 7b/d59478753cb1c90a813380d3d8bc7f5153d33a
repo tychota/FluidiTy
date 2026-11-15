@@ -1,0 +1,45 @@
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_d97cc41965d18f 1-2,5-7
+  s_4f0877e2acdcf0::t_4d2495be3f10e9 102-103
+  s_4f0877e2acdcf0::t_cf7eb4e90c0340 19
+  s_4f0877e2acdcf0::t_4f8e788b54901f 184-295
+  s_4f0877e2acdcf0::t_eb9b32ede03e37 17-18,20-21
+  s_4f0877e2acdcf0::t_e7d69fbc5a0608 29,31-36,38
+  s_4f0877e2acdcf0::t_6623f3db50b18c 296
+docs/glossary.md
+  s_4f0877e2acdcf0::t_e3d56708f0a0ca 94-96
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_9ff36030a96504 1-2,4-6
+  s_4f0877e2acdcf0::t_a7aca1edc0e27d 33-37,40-45
+  s_4f0877e2acdcf0::t_b49ca372dd51ab 60-61,64-72,75
+  s_4f0877e2acdcf0::t_c04bd0eaf48f7f 1056-1409
+  s_4f0877e2acdcf0::t_a5585c5111ba8f 85
+  s_4f0877e2acdcf0::t_ecb4c66e9163a0 1410-1411
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_16aec376a59206 1-582,584-585,591-592,601
+  s_4f0877e2acdcf0::t_e366c571a454ce 583,586-590,593-600,602-731
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_1a1ea78ddab771 3-4,12-14,16-19,21,30-32,34-38,40,42-43,82-183,185-389
+  s_4f0877e2acdcf0::t_c6cb01d6bdd76d 184
+  s_4f0877e2acdcf0::t_9c4485668f9519 390-605
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_635054cc38afd8 17
+tools/check_rules_allowed_names.txt
+  s_4f0877e2acdcf0::t_993f94c67af549 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7bd59478753cb1c90a813380d3d8bc7f5153d33a",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
