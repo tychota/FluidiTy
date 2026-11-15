@@ -1614,6 +1614,10 @@ the stand-in of pressure Task 49 (a uniform slab moving as one has none).
 
 ### Task 15g: Scene tests of the force on solids
 
+**Amended 2026-11-15 (A74):** contact provides `kSphere` and `kCylinder`; the rotating-cylinder test (renamed
+`RotatingCylinder_TorquePerLength`, square outer wall) and the settling sphere (renamed back from `SettlingCube_...`)
+use round shapes; `docs/known-open-physics.md` gains no row for them (remove it if an earlier commit added one).
+
 **Amended 2026-11-15 (A60):** new task; the two remaining analytic force tests of `plan-decisions.md` item 6 that need
 the joint solve (the buoyancy test is solids Task 36a, the sheared plate Task 15e).
 
@@ -1625,23 +1629,27 @@ the joint solve (the buoyancy test is solids Task 36a, the sheared plate Task 15
 - [ ] **Step 1: Tests** (`LABEL cpu`; Task 15d's stepping loop):
 
   ```cpp
-  // Rotating cylinders (Taylor-Couette): inner R1 0.05 m driven at Omega 1 rad/s about z, outer R2 0.1 m fixed,
-  // mu 1 Pa s, rho 1000, height 0.1 m between end plates of slip length +infinity, w 0.005 (10 cells across the
-  // gap), no gravity, from the analytic profile u_theta = A r + B / r, dt 0.01, 10 steps.
-  TEST(LiquidForce, RotatingCylinders_TorquePerLength)  // the inner cylinder's viscous turning push / dt, z:
+  // Amended 2026-11-15 (A74): contact has a sphere and a cylinder; both tests use round shapes (plan-decisions
+  // "Sphere and cylinder in contact (A74)"). Neither is known-open.
+  // Rotating cylinder: driven cylinder axis z, R1 0.05 m, half height 0.06 (through both ends), Omega 1 rad/s
+  // (a spin about its axis: contact P17); outer wall the domain box [-0.1,0.1]^2 x [0,0.1] m (a square of side
+  // 2 R2, R2 0.1: contact's cylinder is solid, so no hollow outer cylinder), sides stick, bottom and top slip length
+  // +infinity; mu 1 Pa s, rho 1000, w 0.005 (10 cells across R2 - R1), no gravity; start from the Taylor-Couette
+  // profile u_theta = A r + B / r for R2 inside r <= R2 and at rest in the corners; dt 0.01, 10 steps.
+  TEST(LiquidForce, RotatingCylinder_TorquePerLength)  // the cylinder's viscous turning push / dt, z:
       // -4 pi mu Omega R1^2 R2^2 / (R2^2 - R1^2) * 0.1 = -4.18879e-3 N m within 10 % (a bound: Uhlmann reports 5 to
-      // 10 % at this resolution). Plan decision: contact has no cylinder shape (kFlatSolid, kPlate, kBox,
-      // kDomainBox), so this test is written known-open (Global Constraints' form) with the line "needs a cylinder
-      // solid shape" in docs/known-open-physics.md, and the owner is asked (design Open)
-  // Settling cube (plan-decisions names it a sphere; free solids are boxes, so a cube of the sphere's volume):
-  // side 0.016120 m (volume of a sphere of R 0.01 m, 4.18879e-6 m3), density 1100 in liquid 1000 kg/m3, mu 10 Pa s,
-  // closed box 0.2 m, w 0.004, from rest at the box centre, dt 0.002, 40 steps; means over steps 20 to 40.
-  TEST(LiquidForce, SettlingCube_BalancesNetWeight)  // pressure part (summed as in Task 15e) + viscous push, z, / dt
+      // 10 % at this resolution; in 0.1 s the profile changes only within Sqrt(nu t) = 0.01 m of the corners'
+      // disturbance, two cells, so the cylinder still sees the Taylor-Couette field; the steady square's torque lies
+      // between 3.590e-3 and 4.189e-3 N m)
+  // Settling sphere: free sphere r 0.01 m, density 1100 (mass 4.60767e-3 kg, inertia 0.4 m r^2 = 1.84307e-7 kg m2 on
+  // each axis), in liquid 1000 kg/m3, mu 10 Pa s, closed box 0.2 m, w 0.004 (5 cells across the sphere), from rest at
+  // the box centre, dt 0.002, 40 steps; means over steps 20 to 40.
+  TEST(LiquidForce, SettlingSphere_BalancesNetWeight)  // pressure part (summed as in Task 15e) + viscous push, z, / dt
       // == net weight (1100 - 1000) * 9.81 * 4.18879e-6 = 4.1092e-3 N within 2 % (a balance); settling speed within
-      // [U_Stokes / 1.4, U_Stokes], U_Stokes = 4.1092e-3 / (6 pi * 10 * 0.01) = 2.18e-3 m/s (a bound: the walls slow
-      // it; the cube's shape factor 1.08 keeps it inside)
+      // [U_Stokes / 1.4, U_Stokes], U_Stokes = 4.1092e-3 / (6 pi * 10 * 0.01) = 2.180e-3 m/s (a bound: the walls slow
+      // it; Faxen's factor at r / L = 0.1 is about 0.79)
   ```
-- [ ] **Step 2: Run.** A failure of the settling cube is reported to the owner with the measured value before
+- [ ] **Step 2: Run.** A failure of the settling sphere or the rotating cylinder is reported to the owner with the measured value before
   anything changes. **Step 3: Run** the gate. **Commit.** Subject: `Test the force of thick liquid on solids`.
 
 ### Task 16: Every error and cancel, on the CPU
@@ -2209,8 +2217,9 @@ diagonal, a second free solid in one sample folded at its velocity before pressu
 **Amended 2026-11-15 (A53, A57, A58, A59, A60, reconcile item 31):** its lists include Tasks 4a, 15e, 15f, 15g; the
 hand-over records the removed `kSmallestVisibleViscousEffectPerStep`, the two `RunMemory` parameters of
 `BuildViscosityBuffers`, the generalized-velocity block (and that reconcile-todo item 23's review now covers it),
-the stored solid coefficients of every motion kind, the slip divisor, `kOutOfMemory` last, the cube standing in for
-the sphere, and the rotating-cylinder test known-open for want of a cylinder shape (owner question).
+the stored solid coefficients of every motion kind, the slip divisor, `kOutOfMemory` last. **Amended 2026-11-15
+(A74):** the settling sphere and the rotating cylinder are round shapes (no cube stand-in, nothing known-open for
+want of a shape; the rotating cylinder's outer wall is the square domain box).
 
 **Kind:** mechanical
 

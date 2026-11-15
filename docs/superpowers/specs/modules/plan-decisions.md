@@ -2616,6 +2616,8 @@ file where they differ; the earlier text it replaces is named in each item.
   // size-step rule against the committed cell it grew from. Reads the tables on their own processor.
   FLUIDITY_CPU_AND_GPU SizeLevel ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position,
                                                          SizeLevel smallest_size_level);
+  // REPLACED 2026-11-15 (A78, A79): CellSizeRegion, ArtistCellSizes, ComputeArtistSizeLevel and artist_size_level
+  // are removed; see "Refinement volume (A78, A79)" (RefinementFactors, ComputeCellSizeFactorCode, cell_size_factor).
   struct CellSizeRegion {                       // An artist region: world axis-aligned box.
     Vec3 low_corner{}, high_corner{};           // m, world.
     SizeLevel size_level{};                     // The asked cell width rounded at load to the biggest level whose
@@ -2675,7 +2677,7 @@ file where they differ; the earlier text it replaces is named in each item.
   `cell_resize::GridCopies` and the step's batched CPU grid copy, because `FindCellsThatMustSplit`, the list edit,
   `BuildResizeMap`, grouping and the marker upkeep still read CPU tables in a GPU run; only `choose_cell_size` stops
   being a reader.
-- **Artist inputs (A63).** Scene file: `cell_size_regions: [{low_corner: [x,y,z], high_corner: [x,y,z],
+- **Artist inputs (A63). REPLACED 2026-11-15 by "Refinement volume (A78, A79)": no regions, no map; the text below is history.** Scene file: `cell_size_regions: [{low_corner: [x,y,z], high_corner: [x,y,z],
   cell_width: m}]` and `cell_size_map: {image: <path relative to the scene file, PNG, 8- or 16-bit grey>}` (absent:
   none). The map covers the domain box's x-y extent seen from above (Z-up) and applies at every height; pixel value
   `v` in [0, 1] (white 1): `v == 0` no request, else level `round(v x (size_level_count - 1))`, converted once at
@@ -2916,7 +2918,7 @@ file where they differ; the earlier text it replaces is named in each item.
   0.01 m/s, sides periodic or free-slip, 5 s (`exp(-π² ν t / H²)` = exp(-49)): viscous force 0.04 N, pressure part
   0 in x, within 1e-6 relative since the linear profile is exact); `LiquidForce, BuoyancyAtRest_IsRhoGV` (fixed box
   0.1 m cube in water at rest: pressure force z 9.81 N within 2 %, viscous 0 exactly at rest);
-  `LiquidForce, RotatingCylinders_TorquePerLength` (known-open until contact has a cylinder shape; owner; R1 = 0.05 m driven at 1 rad/s, R2 = 0.1 m fixed, μ = 1 Pa s,
+  `LiquidForce, RotatingCylinders_TorquePerLength` (**replaced 2026-11-15 by A74:** `RotatingCylinder_TorquePerLength` and `SettlingSphere_BalancesNetWeight` with round shapes, see "Sphere and cylinder in contact (A74)"; text kept as written: known-open until contact has a cylinder shape; owner; R1 = 0.05 m driven at 1 rad/s, R2 = 0.1 m fixed, μ = 1 Pa s,
   height 0.1 m with free-slip ends: torque 4π μ Ω R1² R2² / (R2² - R1²) x 0.1 = 4.18879e-3 N m within 10 % at 10
   cells across the gap: a bound, per Uhlmann's 5–10 %); `LiquidForce, SettlingCube_BalancesNetWeight` (reconcile: contact has no sphere; a cube of the volume of a
   sphere of R = 0.01 m,
@@ -3036,8 +3038,8 @@ rail_direction, hinge_point, hinge_axis}`, `AllowedMotions`, `ComputeAllowedMoti
 3. Starting values to calibrate: `shear_width_factor` 0.25, `kFoamWindDriftDuration` 0.1 s,
    `kMemoryTakenToleranceBytes` 2 MiB (needs the Windows run), the standing-wave loss 5 % of the later group.
 4. The CUDA runtime licence note's wording.
-5. The 2D refinement map (top view) instead of a 3D one.
-6. A cylinder shape in contact (for the Taylor–Couette torque test), or another torque test.
+5. The 2D refinement map (top view) instead of a 3D one. **Answered by A72, A73, A78, A79:** no map; a 3D volume of factors built by I/O.
+6. A cylinder shape in contact (for the Taylor–Couette torque test), or another torque test. **Answered by A74 (2026-11-15):** contact has a cylinder and a sphere; see "Sphere and cylinder in contact (A74)".
 7. A viscosity sample next to two solids reports its stress to the lower solid index only (viscosity design Open).
 8. `BuildPressureEquations` in module 5 consumes `solids/guide_math.h` (module 8, header-only): pressure Task 47a
    runs right after solids Task 5a.
@@ -3264,3 +3266,320 @@ incomplete_split_count, kinetic_energy_change}`.
    the gap test.
 3. The start uses a Euclidean depth bound, so it can be up to one level finer than the run's later grid in places
    (bounded by the 1.25 test tolerance).
+
+## Sphere and cylinder in contact (A74, 2026-11-15)
+
+Owner answer A74 adds the sphere and the finite cylinder to contact now. Contact design 3.2, 5.7, 6, 7, 8 and
+decision Q18; contact plan decisions P13 to P17 and Tasks 1 (paper), 3, 4a, 5, 6, 8a, 9, 12a, 13, 14, 15, 16, 17
+(each marked `**Amended 2026-11-15 (A74):**`). Every declaration below is final; other modules consume it.
+
+**Declarations (`contact/solid_shapes.h`, shared):**
+
+```cpp
+enum class SolidShape : std::uint8_t { kFlatSolid, kPlate, kBox, kDomainBox, kSphere, kCylinder };  // appended
+enum class SolidFace : std::uint8_t { kLowX, kHighX, kLowY, kHighY, kLowZ, kHighZ,
+                                      kCurved, kLowRim, kHighRim };                                  // appended
+struct Sphere { Vec3 center{}; double radius = 0; };                                // m, world; radius positive
+struct Cylinder { Vec3 center{}; Vec3 axis{0, 0, 1}; double radius = 0; double half_height = 0; };
+Solid ToSolid(const Sphere& shape, const SolidMotion& motion, std::uint32_t solid_id);
+Solid ToSolid(const Cylinder& shape, const SolidMotion& motion, std::uint32_t solid_id);
+```
+
+- `Solid::half_size` holds `{r, r, r}` for a sphere and `{r, r, half_height}` for a cylinder (as the plate's z holds
+  its half thickness); `sizeof(Solid)` and every memory estimate are unchanged. A sphere's axes are `kIdentity`; a
+  cylinder's z column is its axis (built like the plate's axes from its normal). `CheckSolid` refuses unequal
+  sphere half sizes and `half_size.x != half_size.y` for a cylinder (`kBadInput`).
+- `ComputeDistanceToSolid` returns the true signed distance for both (sphere `|p| - r`; cylinder the three-region
+  formula of P14: rim `Sqrt(a^2 + b^2)`, wall `a`, cap `b`, inside the nearer of wall and cap, a tie takes the wall),
+  evaluated for the cylinder as `Sqrt(max(a,0)^2 + max(b,0)^2) + min(max(a,b),0)`, with the normal and the face (`kCurved` for the sphere and the cylinder's wall, `kLowZ`/`kHighZ` for the caps,
+  `kLowRim`/`kHighRim` for the rims). Degenerate normals (P13): the sphere's centre and a point on the cylinder's
+  axis in the wall branch give minus the pose's x column (the `kLowX` normal, the box's tie rule). The box keeps its largest-face-gap
+  distance; code that needs a Euclidean distance to a box still does not get one.
+- Code that switches on `SolidFace` or `SolidShape` handles the new values (solids' render-output contact solids,
+  sand's hit split reads only `normal_out_of_solid`, so it is unaffected).
+- Spin (P17): a turn about a sphere's centre or a cylinder's axis moves the surface but not the shape; it does not
+  count toward `kMaxTurnPerStep` and does not make the solid "turning" for contact. `ComputeSolidVelocity` uses the
+  full angular velocity, so a spinning roller drags particles only through friction. Solids may drive a cylinder at
+  any spin rate about its axis.
+- Same bits (contact design 6): the round branches use only `+ - * /`, `Abs`, `Sqrt`; same bits on CPU and GPU for
+  a given pose.
+- `ComputeContactScale` (P8): both add `Length(half_size)` to the largest coordinate; thinnest candidates `2 r`
+  (sphere) and `min(2 r, 2 half_height)` (cylinder).
+
+**What later plans gain (amended in each plan and design, `(A74)`):**
+
+- **Solids.** `SolidSettings::shape` may be `kSphere` or `kCylinder` for fixed, driven and free solids;
+  `ComputeSolidsAtFaces`, `ComputeSolidCoverage`, `BuildContactSolids` work unchanged through contact's distance,
+  normal and velocity (the blocked area of a face cut by a sphere or cylinder converges like the box's; new test
+  `ComputeSolidCoverage, Sphere_BlockedAreaConverges`: sphere r 0.25 at {0.5,0.5,0.5}, w 0.1, 0.05, 0.025, the
+  blocked area summed over the faces of the plane x = 0.5 converges to the disc `pi r^2 = 0.19635` m2 with the error
+  falling at least by 1.8 per halving, and within 3 % at w 0.025). `BuildTry`'s too-close check for a free sphere uses
+  the distance of its centre minus `r`; for a free cylinder the box rule's 8 corners and centre of its bounding box
+  (`half_size`), which can only report too close earlier. The travel radius of `ComputeStepDurationLimit` is
+  `Length(half_size)` for every bounded shape. Free-solid inertia stays a user value (`inertia_in_own_axes`);
+  I/O derives it (below).
+- **Viscosity.** The two round-body tests come back as round shapes (no longer known-open, no stand-in):
+  `LiquidForce, RotatingCylinder_TorquePerLength` (renamed from `RotatingCylinders_...`: contact's cylinder is solid,
+  so the outer wall of Taylor-Couette cannot be a hollow cylinder; the outer wall is the domain box, a square of side
+  `2 R2`, and the start is the Taylor-Couette profile for `R2` inside `r <= R2`, at rest in the corners): driven
+  cylinder axis z, `R1 = 0.05` m, half height 0.06 (through both free-slip ends), `Omega = 1` rad/s, domain box
+  `[-0.1, 0.1]^2 x [0, 0.1]` m, sides stick, bottom and top `slip_length` +infinity, mu 1 Pa s, rho 1000, w 0.005,
+  no gravity, dt 0.01, 10 steps: the cylinder's viscous turning push / dt, z, within 10 % of
+  `-4 pi mu Omega R1^2 R2^2 / (R2^2 - R1^2) * 0.1 = -4.18879e-3` N m (in 0.1 s the change of the profile reaches
+  `Sqrt(nu t) = 0.01` m, two cells, so the corners have not reached the cylinder; the exact steady torque of the
+  square lies between the circumscribed and inscribed circles' values, 3.590e-3 and 4.189e-3 N m, so the bound is
+  honest either way). `LiquidForce, SettlingSphere_BalancesNetWeight` (renamed back from `SettlingCube_...`): free
+  sphere `r = 0.01` m, density 1100 (mass 4.60767e-3 kg, inertia `0.4 m r^2 = 1.84307e-7` kg m2 on each axis) in
+  liquid 1000 kg/m3, mu 10 Pa s, closed box 0.2 m, w 0.004 (5 cells across the sphere), from rest at the centre, dt
+  0.002, 40 steps, means over steps 20 to 40: pressure part + viscous push, z, / dt == net weight
+  `100 * 9.81 * 4.18879e-6 = 4.1092e-3` N within 2 %; speed within `[U_Stokes / 1.4, U_Stokes]`, `U_Stokes =
+  4.1092e-3 / (6 pi * 10 * 0.01) = 2.180e-3` m/s (the walls slow it: Faxen's factor for `r / L = 0.1` is about 0.79).
+  The cube scenes of Task 15d (`CubeSettlingInSyrup_*`, the neutral cube in shear) stay cubes: they test boxes.
+- **Step.** No new stage or name. The force scenes it cites (rotating cylinder, settling sphere) are the viscosity
+  plan's; scene inputs may carry spheres and cylinders through I/O.
+- **I/O.** Scene file `solids[].shape` gains `sphere` and `cylinder`; `half_size` is written as for contact
+  (`{r, r, r}`, `{r, r, half_height}`); I/O's check refuses a sphere whose three half sizes differ or a cylinder whose
+  first two differ (`kBadInput`, field path). I/O derives free-solid inertia from mass and shape: sphere
+  `0.4 m r^2` on each axis; cylinder `m (3 r^2 + 4 half_height^2) / 12` on x and y, `m r^2 / 2` on z.
+- **Blender add-on.** `Shape.SPHERE` and `Shape.CYLINDER` for the `SOLID` role (all motions); half sizes from the
+  object's dimensions in its own axes (cylinder axis = the object's local Z); finding
+  `round_solid_scaled_unevenly` (blocking) when a sphere's three dimensions or a cylinder's X and Y dimensions differ
+  by more than 1e-6 relative (an ellipsoid or elliptic cylinder is not a contact shape).
+- **Render output and sand.** Nothing new: both receive `contact::Solid` values and read normals.
+
+**Owner questions raised here:** none required. Noted: the rotating-cylinder test now has a square outer wall (a
+hollow cylinder is not a contact shape); a hollow cylinder (a pipe or a round tank) would be a later shape if wanted.
+
+## Refinement volume (A78, A79; reshapes A72, A73, A77; 2026-11-15)
+
+Owner statements of 2026-11-15, recorded in `owner-answers.md`: **A77** "or camera distance" (the camera may ask for
+coarser cells far away); **A78** "the refinement can be passed as a volume, animated, and calculated elsewhere on
+CPU. That leaves less complexity in this module" (zones and the camera stay for the artist, outside the solver's
+size rule); **A79** the builder lives in the I/O module, and the artist's wish combines with the physics as a
+**product**, not a minimum or a floor ("a product of physical requirement and artistic requirement. Or harmonic mean
+or something"). This section **replaces** the artist regions and the 2D map of A63 everywhere (item 2 "Artist
+inputs" of "Owner answers A40–A64 applied", `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`,
+`artist_size_level`, the scene fields `cell_size_regions[]` and `cell_size_map`, the add-on's
+`cell_size_region_collection`, `fluidity_cell_size_region.cell_width`, `cell_size_map_image`, the finding
+`cell_size_region_rotated`, the PNG writer task, the cell resize rows "cell size regions" and "cell size map"). Every
+task touched carries `**Amended 2026-11-15 (A78, A79):**` (and `(A77)` for the camera).
+
+### 1. In the solver: one input, a volume of factors
+
+- **What it holds.** A regular 3D lattice of samples over the domain box, anchored at `grid::GridFrame::origin`,
+  sample spacing `2^p x w_min` with `p = refinement_sample_spacing_log2` (scene setting, default 2: one sample per
+  4 smallest cells along each axis, the edge of a smallest cell block). Each sample holds a **cell size factor**
+  `f`, dimensionless: 1 "as the physics wants" (also "no wish" and every point outside the lattice), 0.5 cells half
+  as wide, 2 twice as wide. Stored as a signed code `c` in one byte, `f = 2^(c / 4)`, `c` in `[-24, 24]` (factors
+  1/64 to 64 in quarter doublings, about 19 % apart). Reason for quarter doublings: the factor multiplies a
+  continuous physical width, so finer than doublings is meaningful, and one byte keeps every key small; the table
+  `f(c)` is computed once on the CPU (`std::exp2`) and passed as data, so both processors read the same doubles.
+- **Rule (grid `cell_size_rule.h`).** `w_physical = min(w_band, w_solid, w_shear)` (and later curvature);
+  `wanted = clamp(w_physical x f, w_min, w_max)`, then the level by the existing comparison with `CellWidthsByLevel`.
+  `wanted = w_min` regardless of `f` where `touches_air_pocket`, `wants_smallest_cells`, or **inside the pinned
+  surface band** `depth_below_surface < surface_reach_in_cell_widths x w_min` (A61, first version). The product is
+  one multiply in double (no FMA): same bits on CPU and GPU. Why a product: the artist scales resolution relative to
+  what the flow needs instead of overriding it; a zone asking "twice finer" refines its whole interior consistently
+  and the physics still grades sizes inside it (a product of resolutions `1/w` is the same statement). The harmonic
+  mean the owner named was not taken: a harmonic mean of two widths cannot say "leave it to the physics" without a
+  special value, and it bounds the result between the two widths, so an artist could never ask for cells finer than
+  the physics term.
+- **Limits of the first version, stated plainly (in the designs, the paper and `check`'s output).** The surface band
+  is pinned to `w_min` (A61): a factor above 1 does not coarsen it and a factor below 1 cannot make any cell finer
+  than `w_min`. To get a finer hero region the artist lowers the scene's smallest cell width (the whole surface gets
+  finer) and puts factors above 1 elsewhere, which coarsens deep and solid-free cells only. A zone that locally
+  lowers `w_min` was considered and **not taken** for the first version: it would put surface cells of two sizes
+  side by side, the case that needs the T-junction surface pressure condition of the later group "Coarser cells on
+  calm surfaces" (A61, A68 item 2), where it becomes possible. The one-size-step rule and the merge hysteresis are
+  unchanged and apply after the factor.
+- **Lookup over the cell's box (smallest factor).** The lattice is stored as a **min-pyramid**: layer 0 the samples,
+  layer `L` the minimum code over `2 x 2 x 2` cells of layer `L - 1` (counts `ceil(count / 2)`, built on the CPU),
+  up to the layer whose sample is as wide as the biggest cell. A cell at level `l` has `s = smallest_size_level - l`;
+  when `s <= p` it lies in exactly one sample, index `(coord << s) >> p` per axis, layer 0; when `s > p` it covers
+  exactly one entry of layer `s - p`, index `coord`. One integer read per cell, no floating-point position: a thin
+  fine zone inside a big cell is never missed, and the result is the same bits on both processors and for any batch
+  cut. An index outside its layer gives code 0. Memory: about `8/7` of the samples, 1 B each.
+- **Declarations (grid `cell_size_rule.h`, shared, NEW A78/A79):**
+
+  ```cpp
+  inline constexpr int kCellSizeFactorStepsPerDoubling = 4;   // Code c means factor 2^(c / 4).
+  inline constexpr int kMaxCellSizeFactorCode = 24;           // Codes -24..24: factors 1/64..64. 0 is factor 1.
+  struct CellSizeFactorTable { double factor[2 * kMaxCellSizeFactorCode + 1]; };  // factor[c + 24] = 2^(c / 4).
+  CellSizeFactorTable ComputeCellSizeFactorTable();           // CPU only (std::exp2); the one place it is filled.
+  struct RefinementFactors {                    // View on one processor: the current key's codes as a min-pyramid.
+    const std::int8_t* codes = nullptr;         // Every layer, layer 0 first, each z, y, x with x fastest.
+    std::uint32_t layer_first_code[kMaxSizeLevels] = {};   // Index of each layer's first code.
+    std::uint32_t count_x = 0, count_y = 0, count_z = 0;   // Layer 0 sample counts. 0: no volume (factor 1).
+    std::uint8_t layer_count = 0;
+    std::uint8_t sample_spacing_log2 = 2;       // Spacing 2^this smallest cell widths.
+  };
+  // Code of the smallest factor over the samples the cell overlaps; 0 without a volume or outside it.
+  FLUIDITY_CPU_AND_GPU std::int8_t ComputeCellSizeFactorCode(const RefinementFactors& factors,
+                                                             SizeLevel smallest_size_level, CellId cell);
+  ```
+
+  `CellSizeFacts::artist_size_level` is **replaced** by `double cell_size_factor = 1;` (no unit; the caller fills
+  it from the table). `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel` are **removed**.
+- **Time.** The volume has keys `{time, codes}` with strictly increasing times. The solver uses the key **at or
+  before** the committed time (the first key before it, the last after the last); it never interpolates codes
+  (levels are discrete). So that a moving zone is fine wherever it passes between two keys, I/O stores for key `k`
+  the element-wise minimum of keys `k` and `k + 1` when it loads the sequence (the solver rule stays "at or before").
+- **Where it lives and how it reaches the processor.** I/O loads every key at scene load into CPU memory (CPU
+  entry `"io: refinement keys"`, `kCpu`, `kWholeRun`, `key_count x pyramid codes` B). Cell resize holds one
+  run-processor buffer (`"cell resize: refinement factors"`, `kRunOn`, `kWholeRun`, pyramid codes B, given count).
+  I/O's `resize_cells` callback (it already wraps `cell_resize::ResizeCells` with the run's `CellResize`), before
+  calling `ResizeCells`, compares the key at or before the committed time with the one last written and, when it
+  changed (and once before the first resize), calls `cell_resize::WriteRefinementFactors` (one planned, counted copy of the pyramid in a GPU run, none
+  in a CPU run; the planner counts one copy per key). A run is all CPU or all GPU: nothing is read back. A key
+  change splits cells at once at the next resize and merges them later through the existing hysteresis; the held
+  maximum of the shear term is unchanged.
+- **Validation** (cell resize `BuildCellResize` and I/O's check, `kBadInput` with the field): counts equal
+  `ceil(domain smallest cells along the axis / 2^p)`; `0 <= p <= size_level_count - 1`; codes in `[-24, 24]`; key
+  times finite and strictly increasing; pyramid layers as above. No volume (zero keys) means no artist term; factor
+  1 everywhere gives the same bytes as no volume (test).
+- **Step.** The step holds no key. `step::ReadyScene` gains `std::uint64_t refinement_code_count = 0;` (codes of one
+  key's pyramid) and `std::uint32_t refinement_key_count = 0;`, read by `BuildRunPlan` for the cell resize entry and
+  the planned copies (one copy of `refinement_code_count` B per key in a GPU run); I/O fills them.
+- **Start grid (A66).** `step::BuildStartCells` takes the first key's `RefinementFactors` (CPU view) and fills
+  `cell_size_factor` from `ComputeCellSizeFactorCode` over the cell's box (the box rule keeps the start's
+  monotonicity: a child's box lies in its parent's, so its smallest factor is not smaller).
+
+### 2. Outside the solver: I/O builds the volume (CPU only, testable without Blender)
+
+- **Where.** `native/fluidity/io/refinement_volume.h` (CPU only) and `refinement_volume.cc`, plus a CLI command
+  `fluidity build-refinement <scene file> --into <folder>` that writes the volume files without running (the add-on
+  calls it to show the volume in Blender). The add-on only authors zones and the camera option and writes them into
+  the scene file; the run's I/O load builds the volume (the same function).
+- **Inputs (scene file):** `refinement_zones[]` and `refinement_camera` (authored), and/or `refinement_volume_files`
+  (a volume made by any tool). Output: one OpenVDB file per key (A14: OpenVDB is the open format for a volume and
+  Blender displays it), float grid `cell_size_factor`, background 1, voxel size = the sample spacing, transform
+  anchored at the frame origin, written into the run folder's `inputs/refinement/cell_size_factor_<key>.vdb` with a
+  `refinement_keys.json` listing `{time, file}`; the scene file names such a list for a user volume. Reading a VDB
+  resamples it on the CPU onto the solver lattice (the smallest factor over the voxels each sample overlaps; outside
+  the source: 1), then rounds each factor to the nearest code (`round(4 log2 f)`, on the CPU once at load) and clamps
+  to `[-24, 24]` (a NOTE finding `cell_size_factor_clamped` with the count when any value was clamped).
+- **Combination.** At each sample: zones combine by the **smallest** factor among the zones that contain the sample
+  centre (A73: the finest wish wins; 1 when none); the camera factor and a user volume **multiply** in (the owner's
+  product); the result is clamped to `[1/64, 64]` and coded. Keys are the union of every zone's, the camera's and the
+  user volume's key times (one key at time 0 when nothing is animated); between keys the pose is the key's
+  (piecewise constant, exported per frame by the add-on when animated, like driven solids' path keys).
+- **Zones.**
+
+  ```cpp
+  enum class RefinementZoneShape : std::uint8_t { kBox, kEllipsoid, kClosedMesh };
+  struct RefinementZonePoseKey { double time = 0; Vec3 origin{}; Mat3 axes = kIdentity; Vec3 half_size{}; };  // m
+  struct RefinementZone {
+    std::uint32_t zone_id = 0;            // Stable, nonzero.
+    RefinementZoneShape shape = RefinementZoneShape::kBox;
+    double cell_size_factor = 1;          // No unit, (0, +inf); clamped with the others.
+    std::vector<RefinementZonePoseKey> keys;   // Ascending time; one key when not animated.
+    std::vector<Vec3> mesh_vertices;      // kClosedMesh: object coordinates (scaled by half_size as by Blender scale).
+    std::vector<std::array<std::uint32_t, 3>> mesh_triangles;
+  };
+  ```
+
+  Box: `|p_axis| <= half_size_axis` in the zone's axes. Sphere Empties: an **ellipsoid** `sum (p_i / half_i)^2 <= 1`
+  (a non-uniformly scaled sphere Empty is honoured, so no finding; contact's `Sphere` is not reused: it has no
+  non-uniform scale, and a zone needs no distance, only an inside test). Closed mesh: **ray parity** per lattice row:
+  for each `(y, z)` sample row, the crossings of the +x ray through the sample centres with the triangles (projected
+  on the y-z plane, with the half-open top-left rule of rasterisers so a ray through a shared edge or vertex counts
+  once), sorted, and samples between odd and even crossings are inside. Exact on the CPU, no GPU twin. Cost per key:
+  rows x triangles whose y-z box meets the row. Closed means every edge is shared by exactly two triangles; I/O
+  checks it (finding `refinement_mesh_not_closed`, blocking, with the zone id and the number of open edges) and so
+  does the add-on before export. A mesh is rigid: pose keys only; a mesh that deforms over time uses its first-frame
+  shape (add-on NOTE `refinement_mesh_deforms`). Mesh file: the add-on writes `inputs/refinement/zone_<id>.ply`
+  (binary PLY, vertices and triangles; an open format), the scene names it.
+- **Camera (A77), off by default.** `refinement_camera {enabled = false, pixels_per_cell = 2, keys[] {time,
+  position, axes, projection (perspective | orthographic), horizontal_field_of_view (rad), orthographic_width (m),
+  resolution_x, resolution_y}}`. Per sample: perspective `pixel_angle = 2 tan(fov / 2) / resolution_x`, `distance =
+  max(0, |centre - camera| - sqrt(3) spacing / 2)` (a lower bound over the sample's box, as the start grid does for
+  depth), `w_camera = pixels_per_cell x distance x pixel_angle`; orthographic `w_camera = pixels_per_cell x
+  orthographic_width / resolution_x` (no distance); `f_camera = max(1, w_camera / w_min)` (reference width: the
+  scene's smallest cell width, so the camera only ever coarsens beyond the distance where a smallest cell covers
+  `pixels_per_cell` pixels). The view frustum is ignored (distance only): liquid just outside the frame does not
+  coarsen, so a pan or liquid flowing into view does not show cells splitting as they enter. Ando et al. 2013 did
+  the opposite (their `V` gives the coarsest radius outside the view; `literature-cell-size.md` row Ando 2013);
+  that choice and `pixels_per_cell = 2` are this plan's, to calibrate. Consequence printed by `check` and the
+  add-on: "the simulation depends on the camera: changing the camera after the run changes the result, and another
+  camera angle of the same run sees coarse regions". In the first version the camera factor does not reach the
+  pinned surface band, so it saves less than hoped (deep and solid-free cells only) until "coarser cells on calm
+  surfaces".
+- **Findings (I/O check and add-on quick check).** `refinement_camera_missing` (blocking: camera term on, no camera
+  in the scene and none chosen); `refinement_mesh_not_closed` (blocking); `refinement_zone_unsupported_display` (an
+  Empty display type other than Cube or Sphere marked as a zone: blocking, names the type);
+  `cell_size_factor_out_of_range` (a zone factor outside `[1/64, 64]`: NOTE, clamped); `cell_size_factor_clamped`
+  (NOTE, user volume); `refinement_camera_on` (NOTE, the camera consequence above); `refinement_volume_mismatch`
+  (blocking: a user volume key list not ascending or a file missing).
+- **Declarations (`io/refinement_volume.h`, CPU only, NEW):**
+
+  ```cpp
+  struct RefinementCameraKey { double time = 0; Vec3 position{}; Mat3 axes = kIdentity; bool orthographic = false;
+                               double horizontal_field_of_view = 0; double orthographic_width = 0;
+                               std::uint32_t resolution_x = 0, resolution_y = 0; };
+  struct RefinementCamera { bool enabled = false; double pixels_per_cell = 2; std::vector<RefinementCameraKey> keys; };
+  struct RefinementKey { double time = 0; std::vector<std::int8_t> codes; };   // The pyramid, every layer.
+  struct RefinementKeyFile { double time = 0; std::filesystem::path file; };     // One user or written key.
+  struct RefinementVolume { grid::RefinementFactors layout;   // Counts, layers, spacing; codes point into keys.
+                            std::vector<RefinementKey> keys; };
+  // Builds every key from zones, the camera and a user volume (any may be empty), on the CPU, then applies the
+  // min-with-next-key rule. Fails kBadInput (with the field path) as the check above.
+  std::expected<RefinementVolume, IoFailure> BuildRefinementVolume(std::span<const RefinementZone> zones,
+      const RefinementCamera& camera, std::span<const RefinementKeyFile> user_volume, const grid::GridFrame& frame,
+      const grid::CellSizeSettings& cell_size, std::array<std::uint32_t, 3> domain_smallest_cells,
+      std::uint8_t sample_spacing_log2);
+  std::expected<void, IoFailure> WriteRefinementVolume(const RefinementVolume& volume, const grid::GridFrame& frame,
+                                                        const std::filesystem::path& folder);   // OpenVDB per key
+  std::expected<RefinementVolume, IoFailure> ReadRefinementVolume(std::span<const RefinementKeyFile> files,
+      const grid::GridFrame& frame, std::array<std::uint32_t, 3> domain_smallest_cells, std::uint8_t sample_spacing_log2);
+  ```
+
+### 3. Scene file, add-on
+
+- Scene file (replaces `cell_size_regions` and `cell_size_map`): `refinement_sample_spacing_log2` (default 2);
+  `refinement_zones[] {zone_id, name, shape (box | ellipsoid | closed_mesh), cell_size_factor, mesh_file,
+  keys[] {time, origin, orientation, half_size}}`; `refinement_camera {enabled, pixels_per_cell, keys[]}`;
+  `refinement_volume_files[] {time, file}` (a user volume). All in the fingerprint.
+- Add-on (replaces `cell_size_region_collection`, `fluidity_cell_size_region.cell_width`, `cell_size_map_image`):
+  per object `fluidity_refinement_zone.enabled` (bool, "Refinement zone") and `fluidity_refinement_zone.factor`
+  (float, label **"Cell size factor"**, default 0.5, soft range 1/8 to 8, tooltip "Cells inside are this many times
+  the width the flow asks for: below 1 finer, above 1 coarser; the surface stays finest in this version"); an Empty
+  with Cube display gives a box (half size = display size x scale), Sphere display an ellipsoid; a mesh gives a
+  closed mesh; domain properties `refinement_camera_enabled` (default off), `refinement_camera_object` (default: the
+  scene's active camera), `refinement_pixels_per_cell` (default 2), `refinement_sample_spacing_log2` (advanced).
+  Panel Physical Detail, box "Cell size": the zones list, the camera option and its consequence line, and an operator
+  "Show refinement volume" that runs `build-refinement` and loads the VDB sequence as a Blender Volume object.
+
+### 4. Tests
+
+Solver (grid Task 13a, cell resize, step): `ComputeCellSizeFactorCode, NoVolume_IsZero`;
+`..., SmallCell_ReadsItsSample`; `..., BigCell_IsSmallestCodeOverItsBox` (a one-sample-wide code -8 line inside a
+level-0 cell: -8); `..., OutsideLattice_IsZero`; `ComputeCellSizeFactorTable, QuarterDoublings` (`factor[24] == 1`,
+`factor[28] == 2`, `factor[20] == 0.5` exactly); `ComputeWantedCellWidth, FactorOne_SameBitsAsNoFactor`;
+`..., FactorHalf_HalvesDeepWidth` (depth 1.0: 0.125 -> 0.0625); `..., FactorTwo_DoublesDeepWidth` (0.125 -> 0.25);
+`..., FactorTwoInSurfaceBand_IsSmallest` (depth 0.25 = 4 w_min: 0.0625); `ComputeCellSizeChanges,
+FactorHalfZone_SplitsInsideOnly`; `ResizeCells, KeyChange_SplitsAtOnceMergesAfterWait`;
+`ResizeCells, FactorOneVolume_SameBytesAsNoVolume`; `ComputeCellSizeChanges, WithVolume_OnGpu_SameBytesAsCpu`;
+`ComputeCellSizeChanges, WithVolume_AnyBatchCut_SameBytes`; `BuildStartCells, FirstKeyFactorHalf_RefinesInside`.
+Builder (I/O, `cpu`): `BuildRefinementVolume, BoxZone_ExpectedSamples`, `..., EllipsoidZone_ExpectedSamples`,
+`..., MeshOfABox_EqualsBoxZone` (exact), `..., MeshOfASphere_EqualsEllipsoidWithinOneSample` (an icosphere of 1280
+faces), `..., OverlappingZones_SmallestFactorWins`, `..., MovingZone_KeyTakesMinWithNext`,
+`..., CameraFactor_DoublesWithDistance` (perspective, `pixel_angle x pixels_per_cell x distance / w_min` = 2 then 4:
+codes 4 then 8), `..., CameraOrthographic_Constant`, `..., CameraOff_SameAsNoCamera`,
+`..., OpenMesh_IsRefinementMeshNotClosed`; `WriteRefinementVolume, WrittenAndRead_SameCodes`;
+`ReadRefinementVolume, CoarserUserGrid_SmallestOverlapped`.
+
+### New public names (A77–A79)
+
+Grid: `kCellSizeFactorStepsPerDoubling`, `kMaxCellSizeFactorCode`, `CellSizeFactorTable`,
+`ComputeCellSizeFactorTable`, `RefinementFactors`, `ComputeCellSizeFactorCode`, `CellSizeFacts::cell_size_factor`.
+Cell resize: `WriteRefinementFactors`. I/O: `RefinementZoneShape`, `RefinementZonePoseKey`, `RefinementZone`,
+`RefinementCameraKey`, `RefinementCamera`, `RefinementKey`, `RefinementKeyFile`, `RefinementVolume`,
+`BuildRefinementVolume`, `WriteRefinementVolume`, `ReadRefinementVolume`, CLI `build-refinement`. Removed:
+`CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`, `CellSizeFacts::artist_size_level`.
+
+### Owner questions raised here
+
+1. Quarter-doubling codes (1/64 to 64) for the factor, and `pixels_per_cell = 2` (both this plan's choices).
+2. The camera ignores the view frustum (opposite of Ando 2013), so liquid entering the frame never pops.
+3. The first version cannot give a hero region finer cells than the scene's smallest width without making the whole
+   surface finer (the pinned band, A61); the local-`w_min` zone waits for the coarse-surface work.

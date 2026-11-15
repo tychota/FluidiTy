@@ -243,6 +243,11 @@ struct ReadyScene {                    // D word. Defaults filled in and checked
   double start_time = 0;               // s.
   double end_time = 0;                 // s. Used only to estimate how many particles sources will add.
   std::uint64_t random_seed = 0;
+  // NEW (A78, A79). The refinement volume's size, for BuildRunPlan: codes of one key's pyramid (the entry "cell
+  // resize: refinement factors") and the key count (one planned copy of refinement_code_count B per key in a GPU
+  // run). The keys stay in I/O's RunScene; I/O's resize_cells callback writes each into the CellResize. 0: none.
+  std::uint64_t refinement_code_count = 0;
+  std::uint32_t refinement_key_count = 0;
   materials::MaterialTableInputs materials;   // Materials, ingredients, export names, pairs. material_index is
                                               //   the position in materials.materials.
   materials::MaterialSettings material_settings;  // Support rule, sound step share, state tolerance.
@@ -1089,15 +1094,20 @@ struct StartCells {
 // start liquid or its 2.5-width cover (kCoveredReachInCellWidths x w_min), refined coarse to fine until no cell is
 // wider than grid::ComputeWantedCellWidth of its conservative facts, then split until the one-size-step rule holds.
 // `solids`: every contact::Solid of the scene at the start pose (pose_at_step_start), the domain box's
-// (ToSolid(DomainBox)) included: its closed sides count as solids. `artist`: CPU views (I/O's; without cell resize
-// I/O passes one region over the domain box at smallest_size_level). Requires cell_size.smallest_size_level <
+// (ToSolid(DomainBox)) included: its closed sides count as solids. CHANGED (A78, A79): `refinement`: CPU view of the
+// refinement volume's first key (count 0: no volume) and `factor_table` (grid::ComputeCellSizeFactorTable); a cell's
+// cell_size_factor is the smallest over its box (grid::ComputeCellSizeFactorCode). Without cell resize I/O passes
+// cell_size.smallest_size_level = new_cell_size_level, surface_reach_in_cell_widths = +infinity (every cell is in
+// the pinned band, so every start cell is at that level) and no volume (replaces "one artist region over the
+// domain"). Requires cell_size.smallest_size_level <
 // frame.size_level_count. Pure; touches no processor; allocates only the result. Fails: kBadInput (a shape not
 // finite, half_size or radius not above 0, no region, smallest_size_level out of range; context.module kStep),
 // StepError::kTooManyCellBlocks (more than max_cell_count active cells after a pass; magnitude = that count,
 // limit = max_cell_count). Nothing is returned on failure.
 std::expected<StartCells, StepFailure> BuildStartCells(std::span<const StartRegionShape> regions,
     std::span<const contact::Solid> solids, const grid::GridFrame& frame, const grid::CellSizeSettings& cell_size,
-    const grid::ArtistCellSizes& artist, std::uint64_t max_cell_count);
+    const grid::RefinementFactors& refinement, const grid::CellSizeFactorTable& factor_table,
+    std::uint64_t max_cell_count);
 ```
 
 ## 4. Consumes from other modules
@@ -1167,8 +1177,9 @@ A61 to A63 (`grid/cell_size_rule.h`, shared):** `CellSizeSettings`, `CellWidthsB
 `ComputeReferenceSpeed`, `ComputeWantedCellWidth`, `ComputeWantedSizeLevel` (the particle estimate of 5.9) and
 `ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position, SizeLevel smallest_size_level)` (stage 2, on
 the tables' own processor). **A66 (`BuildStartCells`, CPU):** `CellSizeSettings`, `CellWidthsByLevel`,
-`CellSizeFacts`, `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeCellWidth`, `CellSizeRegion`,
-`ArtistCellSizes` (read directly over the cell's box, 5.15), `CheckSizeStepRule(const GridFrame&,
+`CellSizeFacts`, `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeCellWidth`, (A78, A79)
+`RefinementFactors`, `CellSizeFactorTable`, `ComputeCellSizeFactorCode` (the smallest factor over the cell's box,
+5.15), `CheckSizeStepRule(const GridFrame&,
 std::span<const CellId>)` (span form, CPU); `BuildSimulation` builds the first grid with `BuildGrid` from
 `ReadyScene::start_cells`. **Contact (A66):** `ComputeDistanceToSolid` at `pose_at_step_start`, `SolidPose`,
 `ToSolid(DomainBox)`. **Particles (A66):** `CountRule` (`StartRegionShape::count_rule`).
@@ -1372,8 +1383,9 @@ step. **A40:** `resume` calls `BuildRunPlan` with `forced_mode` = the recorded m
 (`IoError::kRecordedModeDoesNotFit` when the plan's `fit` is `kDoesNotFit`). **A47:** fills `ReadyScene::wind`.
 **A66:** `BuildRun` builds `StartRegionShape`s (with each region's `count_rule`), calls `BuildStartCells` (solids
 at the start pose with the domain box; `max_cell_count` = `grid::kMaxCellBlocksLimit x 64`; without cell resize a
-`cell_size` whose `smallest_size_level` is `new_cell_size_level` and one artist region over the domain at that
-level), seeds with `io::BuildStartParticles`, and sets `ReadyScene::start_cells` (= `StartCells::cells`) and
+`cell_size` whose `smallest_size_level` is `new_cell_size_level` and, A78, `surface_reach_in_cell_widths`
++infinity and no refinement volume (every cell pinned at that level); with cell resize the first key of
+`RunScene::refinement_volume()`), seeds with `io::BuildStartParticles`, and sets `ReadyScene::start_cells` (= `StartCells::cells`) and
 `start_particles` before `BuildRunPlan` and `BuildSimulation`; a resume calls neither `BuildStartCells` nor
 `BuildStartParticles`. The budget reads `SceneCounts::start_cells_per_level`, `start_particle_count`,
 `start_cell_blocks`. **A67:** `frame_done` and `run_report.json` read `StepReport::size_change_kinetic_energy` and
@@ -1962,7 +1974,7 @@ grid::ComputeWantedCellWidth(scene.cell_size, widths, grid::ComputeReferenceSpee
 CellSizeFacts{.cell_width = w_min, .depth_below_surface = d, .distance_to_solid = +infinity}))`; the distinct
 ancestor cells at those levels, times 8 (the seeded count), give `particles_at_depth_levels[m]` (an ancestor also
 holding finer cells is counted at both levels: an upper bound); the start particles in `w_min` cells whose top lies
-`surface_reach_in_cell_widths x w_min` or more below the surface give `start_particles_in_deep_cells`. Solid distance, artist regions and shear are
+`surface_reach_in_cell_widths x w_min` or more below the surface give `start_particles_in_deep_cells`. Solid distance, the refinement factors (A78) and shear are
 left out (they only make cells finer, so more particles: the 1.25 headroom and `ApplyLimits` cover them; a starting
 simplification). The particle limit of a material is `ceil(start_limit_headroom x (max(start, at depth levels) +
 from sources))`. Without cell resize the estimate is the start count, as before. (End of the replaced text.)
@@ -2156,16 +2168,16 @@ so a value at `c` minus `h` bounds it from below over the whole cell.
 2. **Facts of a cell.** The cell **meets the cover** when `region_distance(c) <= h + kCoveredReachInCellWidths x
    w_min`, and **meets a region** `r` when `distance_to_r(c) <= h`. For a cell that meets the cover:
    `depth_below_surface = max(0, depth(c) - h)`; `distance_to_solid = max(0, min over solids of distance(c) - h)`;
-   `velocity_gradient_size = 0` (no shear at the start: a region's start velocity is uniform); `artist_size_level` =
-   the finest level of any `CellSizeRegion` whose box overlaps the cell's box and of any map pixel under the cell's
-   x-y extent (over the box, not at the centre: this keeps the next item's monotonicity; this design, 11.49);
+   `velocity_gradient_size = 0` (no shear at the start: a region's start velocity is uniform); CHANGED (A78, A79)
+   `cell_size_factor` = the first refinement key's smallest factor over the cell's box (`ComputeCellSizeFactorCode`,
+   over the box, not at the centre: this keeps the next item's monotonicity; this design, 11.49);
    `cell_width = w`. Wanted width: `cell_size.smallest_size_level`'s width when the cell meets a region whose
    `count_rule` is `kKeepsItsCount`, else `grid::ComputeWantedCellWidth(cell_size, widths, 0, facts)` (the reference
    speed is irrelevant when the gradient is 0: `w_shear` is +infinity). A cell that does not meet the cover is never
    split by item 4.
 3. **Monotone facts.** A child's centre is `√3 w / 4` from its parent's and its half diagonal is `h / 2`, so
-   `depth(c_child) - h/2 >= depth(c) - h`, the same for the solid distance, the box tests only shrink, and the artist
-   level over a smaller box is not finer: a child's wanted width is at least its parent's. (`depth` is continuous
+   `depth(c_child) - h/2 >= depth(c) - h`, the same for the solid distance, the box tests only shrink, and the smallest
+   factor over a smaller box is not smaller (A78): a child's wanted width is at least its parent's. (`depth` is continuous
    except across a face against a solid, where it drops to 0; a child whose centre lies past such a face has the
    solid within `√3 w / 4 < h` of the parent's centre, so both have `distance_to_solid` 0 and wanted width `w_min`.)
 4. **Refine.** Start from the level-0 cells that meet the domain box and the cover. Pass: split every active cell
@@ -2940,7 +2952,7 @@ replaced by A17 (11.12).
     `max_cell_blocks` = ceil(1.25 x `start_cell_blocks`) capped by the all-level blocks of a smallest-cell domain;
     `StepError::kTooManyCellBlocks` (before `kOutOfMemory`). A resume never calls `BuildStartCells`.
     `BuildDeepWaterScene`'s numbers recomputed (5.15). This design's choices: `StartRegionShape::count_rule` (the
-    declared signature carries no material table); the artist level read over the cell's box, not at its centre
+    declared signature carries no material table); the refinement factor (A78; was the artist level) read over the cell's box, not at its centre
     (keeps the fixed point); a box face against a solid by its four corners; start cells passed in `ReadyScene`;
     the deep count as particles coarser than the smallest level; the domain-room cap counting every level; empty
     `start_cells` allowed only without cell resize; the test `DeepTank_SameParticlesAsCoarsenedRun` handed to the
@@ -2951,6 +2963,15 @@ replaced by A17 (11.12).
     names (both 0 on a failure or when there is nothing to do) after a committed resize; 0 in `TryStep`'s own
     report. Test `TryStep, SizeChangeEnergyReported`. Decision: owner answer A67; `plan-decisions.md` "Owner
     answers A65-A68 applied", A67. (A68 changes nothing in the step.)
+
+51. **The refinement volume (A78, A79; reshapes A72, A73, A77).** `BuildStartCells` takes the first key of the
+    refinement volume (`grid::RefinementFactors`, CPU view) and the factor table instead of `ArtistCellSizes`; a
+    cell's `cell_size_factor` is the smallest over its box. `ReadyScene` gains `refinement_code_count` and
+    `refinement_key_count` for the plan (entry "cell resize: refinement factors" and one planned copy per key in a GPU
+    run); the keys stay in I/O, whose `resize_cells` callback writes each key with
+    `cell_resize::WriteRefinementFactors` before the resize. No stage is added. Test `BuildStartCells,
+    FirstKeyFactorHalf_RefinesInside` (step plan Task 8a). Source: A78, A79; `plan-decisions.md` "Refinement volume
+    (A78, A79; reshapes A72, A73, A77)".
 
 **Open** (left open by the plans):
 

@@ -622,6 +622,11 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
   limit in `ComputeStepDurationLimit` uses its committed velocities; `BuildTry` checks velocity before pressure;
   `kSolidsTooClose` when a free solid's distance to another solid (sampled at the box's 8 corners and centre
   against the other's `ComputeDistanceToSolid`, and the reverse) is below the largest cell width.
+- **Amended 2026-11-15 (A74):** a free sphere's too-close distance is its centre's `ComputeDistanceToSolid` to the
+  other solid minus `r` (and the reverse); a free cylinder uses the 8 corners and centre of its `half_size` box (can
+  only report too close earlier). Travel radius: `Length(half_size)` for every bounded shape (box, sphere, cylinder).
+  Test `BuildTry, FreeSphereHalfACellFromWall_IsSolidsTooClose` (sphere r 0.05, centre 0.05 + 0.5 w from a fixed
+  flat solid, largest w 0.1: `kSolidsTooClose`; at 0.05 + 1.5 w: passes).
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
 
@@ -933,6 +938,9 @@ tests through `LINKS`; `ReadAllBytes` reads through `ReadAll` of the test suppor
       // the plane (Sutherland-Hodgman in the test); 1e-12 w^2
   TEST(ComputeSolidCoverage, Box_BlockedAreaConverges)        // design 7: box corner inside cells, w 0.1, 0.05,
       // 0.025: error of the total blocked area falls by 4 within 20 %
+  TEST(ComputeSolidCoverage, Sphere_BlockedAreaConverges)     // Amended 2026-11-15 (A74): sphere r 0.25 at
+      // {0.5,0.5,0.5}, w 0.1, 0.05, 0.025: blocked area over the X faces of the plane x = 0.5 -> pi r^2 = 0.19635 m2;
+      // error falls by at least 1.8 per halving, within 3 % at w 0.025 (contact's sphere distance, unchanged code)
   TEST(ComputeSolidCoverage, EqualDistances_LowerSolidIndexOwns)
   TEST(ComputeSolidCoverage, ClosedSideCounts_OpenTopDoesNot)
   TEST(ComputeSolidCoverage, CoverageOfOtherTry_TimeAndTryIdStamped)

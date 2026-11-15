@@ -109,7 +109,7 @@ blender/fluidity/
     native_calls.py        one-shot calls of the CLI that print one JSON event
     force_fields.py        WIND_ACCELERATION_PER_STRENGTH, FORCE_FIELD_TYPE_TABLE, build_wind_keys,
                            check_force_fields (3.13)
-    grey_png.py            to_grey_levels, write_grey_png: the cell size map (3.14, NEW (A63))
+    zone_mesh.py           count_open_edges, write_ply: refinement zone meshes (3.14, NEW (A78); grey_png.py removed)
     events.py              read_events (the journal), Event
     run_state.py           RunState, RunStatus, apply_event, apply_request
     supervisor.py          RunSupervisor
@@ -173,6 +173,7 @@ class Role(enum.Enum):                  # What an object is in the scene. N.
     SOLID = "SOLID"                     # D word.
 class Shape(enum.Enum):                 # D words, from contact::SolidShape; BALL only for START_MATERIAL.
     BOX = "BOX"; FLAT_SOLID = "FLAT_SOLID"; PLATE = "PLATE"; BALL = "BALL"
+    SPHERE = "SPHERE"; CYLINDER = "CYLINDER"   # NEW (A74), appended; SOLID role only (round colliders).
 class Motion(enum.Enum):                # D words, solids::SolidMotionKind.
     FIXED = "FIXED"; DRIVEN = "DRIVEN"; FREE = "FREE"
 class DrivenBy(enum.Enum):
@@ -188,7 +189,10 @@ class RoleRow:
 ROLE_TABLE: tuple[RoleRow, ...]
 # START_MATERIAL: BOX, BALL; kinds liquid, snow, springy_solid (the sand module adds sand: sand design, section 4).
 # SOURCE: BOX; kind liquid.
-# GAS_SOURCE: BOX; no substance (the domain's one gas substance).  SOLID: BOX, FLAT_SOLID, PLATE; all motions.
+# GAS_SOURCE: BOX; no substance (the domain's one gas substance).  SOLID: BOX, FLAT_SOLID, PLATE, SPHERE, CYLINDER
+# (A74: half sizes from the object's dimensions in its own axes, cylinder axis = local Z; blocking finding
+# round_solid_scaled_unevenly when a sphere's three or a cylinder's X and Y dimensions differ by more than 1e-6
+# relative); all motions.
 def to_enum_items(table) -> tuple[tuple[str, str, str, str, int], ...]: ...   # For every EnumProperty.
 ```
 
@@ -219,9 +223,12 @@ NEW rows (2026-11-15; property path, scene file path, unit, label, layer, `chang
 | Property path | Scene file path | Unit, label, layer, changes | Tooltip |
 |---|---|---|---|
 | `force_field_collection` | `wind[].acceleration` (A47: was `gas_wind[]`) | m/s2, "Force Fields", PHYSICAL_DETAIL, SIMULATION | "m/s2. Wind from Blender Wind force fields in this collection (all force fields in the scene when empty): 1.0 m/s2 per unit of Strength, along the field's local Z axis. It moves gas, spray and foam, never the liquid. Falloff, noise, flow other than 1 and other field types are reported in the check." (the number built from `WIND_ACCELERATION_PER_STRENGTH`) |
-| `cell_size_region_collection` | `cell_size_regions[].low_corner`, `cell_size_regions[].high_corner` (A63) | m, "Cell Size Regions", PHYSICAL_DETAIL, SIMULATION | "m. Each object in this collection asks for cells no wider than its Cell Width inside its world axis-aligned bounding box. Used when cell resize is on." |
-| `cell_size_region_collection.objects[].fluidity_cell_size_region.cell_width` | `cell_size_regions[].cell_width` (A63) | m, "Cell Width", PHYSICAL_DETAIL, SIMULATION | "m. Widest cell asked inside this object's box, rounded down to a size level. 0: the domain's smallest cell width." |
-| `cell_size_map_image` | `cell_size_map.image` (A63) | image, "Cell Size Map", PHYSICAL_DETAIL, SIMULATION | "image. Top view of the domain (x to the right, y up): black asks nothing, brighter asks finer cells at every height (white: the smallest). Saved as an 8-bit grey PNG with the run. Used when cell resize is on." |
+| `Object.fluidity_refinement_zone.enabled` (NEW, A78, A79; replaces `cell_size_region_collection`) | `refinement_zones[]` (one per enabled object of the domain's participants or scene) | bool, "Refinement Zone", PHYSICAL_DETAIL, SIMULATION | "bool. This Empty (Cube or Sphere display) or closed mesh marks a zone where cells take the Cell Size Factor below. Used when cell resize is on." |
+| `Object.fluidity_refinement_zone.factor` (NEW, A79; replaces `fluidity_cell_size_region.cell_width`) | `refinement_zones[].cell_size_factor` | no unit, "Cell Size Factor", PHYSICAL_DETAIL, SIMULATION | "Cells inside are this many times the width the flow asks for: below 1 finer, above 1 coarser (1/64 to 64). Where zones overlap the smallest factor wins. In this version the liquid surface always keeps the smallest cells." Default 0.5, soft range 0.125 to 8. |
+| `refinement_camera_enabled` (NEW, A77) | `refinement_camera.enabled` | bool, "Coarser Far from Camera", PHYSICAL_DETAIL, SIMULATION | "bool. Off by default. Cells far from the camera may be coarser, so that one cell covers about Pixels per Cell pixels. The simulation then depends on the camera: changing the camera after the run changes the result, and another camera angle sees coarse regions." |
+| `refinement_camera_object` (NEW, A77) | `refinement_camera.keys[]` (position, orientation, lens, resolution per frame when animated) | pointer to a CAMERA object, "Camera", PHYSICAL_DETAIL, SIMULATION | "The camera whose distance decides. Empty: the scene's active camera." |
+| `refinement_pixels_per_cell` (NEW, A77) | `refinement_camera.pixels_per_cell` | no unit, "Pixels per Cell", PHYSICAL_DETAIL, SIMULATION | "About how many pixels one cell may cover on screen before a cell need be no finer (starting value 2)." |
+| `refinement_sample_spacing_log2` (NEW, A78; advanced) | `refinement_sample_spacing_log2` | int 0..4, "Zone Sampling", SOLVER_DETAIL, SIMULATION | "Zones are sampled every 2^n smallest cells (default 2: every 4)." |
 | `participants[].slip_length` | `solids[].slip_length` (A53) | m, "Slip Length", PHYSICAL_DETAIL, SIMULATION | "m. How far a viscous liquid slips along this fixed or driven solid: 0 sticks (default); larger slips more; Free Slip: no viscous drag along it. A free solid always sticks; a liquid with viscosity 0 slides with friction." |
 | `participants[].free_slip` | `solids[].free_slip` (A53) | no unit, "Free Slip", PHYSICAL_DETAIL, SIMULATION | "no unit. On: no viscous drag along this fixed or driven solid, whatever Slip Length says." |
 | `participants[].guide_kind` | `solids[].free_solid.guide.kind` (A59) | no unit, "Guide", PHYSICAL_DETAIL, SIMULATION | "no unit. Axes: the free solid moves and turns only along the ticked world axes. Rail: it slides along the local Z axis of the Guide Object and does not turn. Hinge: it turns about the Guide Object's local Z axis through its location at the first frame." |
@@ -295,8 +302,10 @@ class SceneDescription:
                                         #   Written as `wind` (A47; was `gas_wind`), with or without gas.
     cell_resize: CellResizeDescription | None      # None: no resize.
     solver: SolverDetail; run: RunDetail; outputs: OutputRequest
-    cell_size_regions: tuple[CellSizeRegionDescription, ...] = ()   # NEW (A63). Written only with cell_resize.
-    cell_size_map: CellSizeMapDescription | None = None             # NEW (A63). Written only with cell_resize.
+    # CHANGED (A78, A79): replaces cell_size_regions and cell_size_map (A63). Written only with cell_resize.
+    refinement_zones: tuple[RefinementZoneDescription, ...] = ()
+    refinement_camera: RefinementCameraDescription | None = None    # None: camera term off (A77, the default).
+    refinement_sample_spacing_log2: int = 2
 
 @dataclass(frozen=True)
 class FreeSolidGuide:                   # NEW (A59). solids::FreeMotionLimits in world axes; scene file free_solid.guide.
@@ -316,26 +325,35 @@ class CellResizeDescription:            # cell_resize::CellResizeSettings::cell_
     surface_reach_in_cell_widths: float; solid_reach_in_cell_widths: float
     # particle_region_depth_in_cell_widths, grid_only_depth_in_cell_widths: not in the first version (A64).
 @dataclass(frozen=True)
-class CellSizeRegionDescription:        # NEW (A63). grid::CellSizeRegion before rounding to a level.
-    object_name: str                    # For messages only.
-    low_corner: Vec3; high_corner: Vec3 # m, world: the object's world axis-aligned bounding box.
-    cell_width: float                   # m, > 0: the object's value, or the domain's smallest cell width for 0.
+class RefinementZoneKey:                # NEW (A78). One pose; one key when the object is not animated.
+    time: float; origin: Vec3; orientation: Quaternion; half_size: Vec3   # s; m world; w >= 0; m (display x scale)
 @dataclass(frozen=True)
-class CellSizeMapDescription:           # NEW (A63). The domain's cell_size_map_image as grey levels.
-    image_name: str                     # Blender's Image name, for messages.
-    width: int; height: int             # Pixels, both >= 1.
-    grey_levels: bytes                  # width * height bytes, top row first (PNG order): to_grey_levels (3.14).
+class RefinementZoneDescription:        # NEW (A78, A79). io::RefinementZone as the add-on writes it.
+    zone_id: int; object_name: str
+    shape: str                          # "box" (Empty, Cube display) | "ellipsoid" (Empty, Sphere display, any scale)
+                                        # | "closed_mesh" (a mesh object, evaluated at the first frame).
+    cell_size_factor: float             # The object's Cell Size Factor.
+    keys: tuple[RefinementZoneKey, ...]
+    mesh_vertices: tuple[Vec3, ...] = (); mesh_triangles: tuple[tuple[int, int, int], ...] = ()  # closed_mesh only,
+                                        # object coordinates divided by half_size; written as zone_<id>.ply.
+@dataclass(frozen=True)
+class RefinementCameraKey:              # NEW (A77). Per frame when the camera or its lens is animated, else one.
+    time: float; position: Vec3; orientation: Quaternion; orthographic: bool
+    horizontal_field_of_view: float; orthographic_width: float; resolution_x: int; resolution_y: int
+@dataclass(frozen=True)
+class RefinementCameraDescription:      # NEW (A77).
+    pixels_per_cell: float; keys: tuple[RefinementCameraKey, ...]
 @dataclass(frozen=True)
 class RunDetail:                        # Changed (A58): memory_share_of_total removed.
     run_on: str                         # "cpu" | "gpu".
     memory_share_of_free: float = 0.9   # No unit. step::kDefaultMemoryShareOfFree.
     memory_left_free_bytes: int = 536_870_912   # B. step::kDefaultMemoryLeftFreeBytes (512 MiB); the panel shows MiB.
 
-CELL_SIZE_MAP_FILE = "inputs/cell_size_map.png"   # NEW (A63). Relative to the scene file.
+REFINEMENT_FOLDER = "inputs/refinement"   # NEW (A78; replaces CELL_SIZE_MAP_FILE). Relative to the scene file.
 def write_scene_file(description: SceneDescription, path: Path) -> None | AddonFailure: ...
-    # Also writes description.cell_size_map as <path.parent>/CELL_SIZE_MAP_FILE (write_grey_png) when present.
+    # Also writes each closed-mesh zone as <path.parent>/REFINEMENT_FOLDER/zone_<id>.ply (write_ply, binary PLY).
 def compute_scene_digest(description: SceneDescription) -> str: ...
-    # Hash of the bytes write_scene_file writes: the scene file, then the map PNG when present (A63).
+    # Hash of the bytes write_scene_file writes: the scene file, then each zone mesh file in zone_id order (A78).
 ```
 
 `write_scene_file` writes UTF-8 JSON with Python's standard library (I/O decision 6), keys in the order of 4.1,
@@ -398,8 +416,13 @@ where the scene file schema cannot carry a turned source box), `size_not_positiv
 `"scene_reader"`, since only Blender knows the field objects (5.13): `wind_falloff_not_honoured`,
 `wind_noise_not_honoured`, `wind_shape_not_honoured`, `force_field_not_honoured` (each `HAS_KNOWN_LIMIT`),
 `wind_flow_not_honoured` (only when `flow != 1.0`, A50), `wind_without_gas` (A47 text, 5.13), `force_field_ignored`
-(each `NOTE`); NEW (A63) `cell_size_region_rotated` (`NOTE`, message "<object> is rotated; the axis-aligned box
-around it is used."). Ingredient names are normalised exactly as the materials module's `BuildMaterialTable` does.
+(each `NOTE`); ~~`cell_size_region_rotated`~~ (removed, A78); NEW (A77, A78, A79):
+`refinement_zone_unsupported_display` (`BLOCKS_RUN`: "<object> is an Empty with <display> display; a zone needs Cube
+or Sphere."), `refinement_mesh_not_closed` (`BLOCKS_RUN`: "<object> has <n> open edges; a zone mesh must be closed."),
+`refinement_mesh_deforms` (`NOTE`: "<object> changes shape over time; its first-frame shape is used."),
+`cell_size_factor_out_of_range` (`NOTE`: clamped to 1/64..64), `refinement_camera_missing` (`BLOCKS_RUN`: camera term
+on, no camera chosen and no active camera), `refinement_camera_on` (`NOTE`: the camera-dependence sentence),
+`refinement_zone_without_cell_resize` (`NOTE`: zones are ignored while cell resize is off). Ingredient names are normalised exactly as the materials module's `BuildMaterialTable` does.
 
 ### 3.5 `logic/native_executable.py`, `logic/native_facts.py`, `logic/native_calls.py`
 
@@ -704,8 +727,8 @@ Fields marked (k) may be keyed; the scene reader samples their F-curves (5.1 ste
 | `FluidityOutputSettings`, `domain.outputs` | `surface`, `foam_and_spray`, `foam_volume`, `gas_volume`, `solid_motion` bool (points: `substance.writes_points`); `surface_spacing`*, `surface_smoothing_width`* m (0: native default); `volume_spacing`* m (0: smallest cell width); `motion_samples_per_frame`* int 1..64; `foam_particles_per_volume_time`* 1/(m3 s); `foam_count_per_particle`*; `foam_lifetime`* s; `foam_display_radius`* m; `point_fields` enum flag (`MASS`, `SPRINGY_DEFORMATION`, `PERMANENT_VOLUME_CHANGE`, `FITTED_VELOCITY_CHANGE`); `keeps_frame_inputs` bool (default on: needed by Rebuild Outputs and Read Particle); `saved_state_every_frames` int; `saved_states_kept` int |
 | `FluidityRunRecord`, item of `domain.runs` | `run_id` str; `label` ("Run 003"); `kind` `PREVIEW`, `BAKE`; `folder` path; `run_fingerprint` str (D); `first_frame`, `last_frame`; `last_listed_frame`, `saved_state_frame` int (the last known, a hint until `report` answers); `end_event` str; `exit_code` int; `started_from_run_id` str |
 | `FluidityOutputRow`, item of `domain.output_estimate` | `output_id` str; `object_name` str (name inside the file); `product` str; `format` str; `material_id` int; `run_id`; `object` pointer; `file_pattern` path; `first_frame`, `last_listed_frame`; `run_fingerprint`, `output_fingerprint` str; `contract_version` int |
-| `FluidityDomain`, `Object.fluidity_domain` | `domain_id` str; `scene_preset` enum; `participants` collection of object pointers, `active_participant`; `substances`; `pairs`; `closed_left`, `closed_right`, `closed_front`, `closed_back`, `closed_bottom`, `closed_top`* bool (D side names); `smallest_cell_width`* m; `size_level_count`* int (D `size_level`); cell resize: `uses_cell_resize`* bool, `surface_reach_in_cell_widths`*, `solid_reach_in_cell_widths`* (`particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths`: not in the first version, A64); cell size (NEW, A63): `cell_size_region_collection`* (a Blender collection, empty by default: no regions), `cell_size_map_image`* (pointer to an `Image`, empty by default: no map); open sea: `uses_open_sea`* bool, `open_sea_substance_id`* int, `open_sea_side`, `outlet_side`* enums, `wave_height`*, `water_depth`*, `still_water_height`* m, `open_sea_wave_period`* s, `open_sea_zone_width`*, `outlet_zone_width`* m, `open_sea_pull_rate`*, `outlet_pull_rate`* 1/s; gas: `ambient_temperature`*, `ignition_temperature`* K, `burn_rate`* 1/s, `heat_per_fuel_mass`* J/kg, `smoke_per_fuel_mass`*; `force_field_collection`* (a Blender collection, empty by default: every force field object in the scene; the `wind[].acceleration` row of `SCENE_FIELDS` (A47), whose tooltip states 1.0 m/s2 per unit of Strength; D13 replaces the keyable `wind_acceleration`); solver: `max_step_duration`* s, `max_retries_per_step`*, `max_volume_error_rate`* 1/s, `random_seed`*; run: `run_on` enum `CPU`, `GPU` (D `RunOn`), `memory_share_of_free`* (default 0.9, 0..1; A58), `memory_left_free_mib`* int MiB (default 512, min 0; written as `memory_left_free_bytes` = MiB x 1,048,576; A58; `memory_share_of_total` removed); `cache_root` path; `outputs`; `runs`; `shown_run_id`; `output_estimate` |
-| `FluidityCellSizeRegion` (NEW, A63), `Object.fluidity_cell_size_region` | `cell_width`* m (default 0: the domain's smallest cell width; min 0). Read only for objects of a domain's `cell_size_region_collection`. |
+| `FluidityDomain`, `Object.fluidity_domain` | `domain_id` str; `scene_preset` enum; `participants` collection of object pointers, `active_participant`; `substances`; `pairs`; `closed_left`, `closed_right`, `closed_front`, `closed_back`, `closed_bottom`, `closed_top`* bool (D side names); `smallest_cell_width`* m; `size_level_count`* int (D `size_level`); cell resize: `uses_cell_resize`* bool, `surface_reach_in_cell_widths`*, `solid_reach_in_cell_widths`* (`particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths`: not in the first version, A64); cell size (CHANGED, A77, A78; replaces the A63 region collection and map image): `refinement_camera_enabled`* bool (default off), `refinement_camera_object`* (pointer to a CAMERA object; empty: the active camera), `refinement_pixels_per_cell`* (default 2), `refinement_sample_spacing_log2`* int 0..4 (default 2); zones are objects with `Object.fluidity_refinement_zone`; open sea: `uses_open_sea`* bool, `open_sea_substance_id`* int, `open_sea_side`, `outlet_side`* enums, `wave_height`*, `water_depth`*, `still_water_height`* m, `open_sea_wave_period`* s, `open_sea_zone_width`*, `outlet_zone_width`* m, `open_sea_pull_rate`*, `outlet_pull_rate`* 1/s; gas: `ambient_temperature`*, `ignition_temperature`* K, `burn_rate`* 1/s, `heat_per_fuel_mass`* J/kg, `smoke_per_fuel_mass`*; `force_field_collection`* (a Blender collection, empty by default: every force field object in the scene; the `wind[].acceleration` row of `SCENE_FIELDS` (A47), whose tooltip states 1.0 m/s2 per unit of Strength; D13 replaces the keyable `wind_acceleration`); solver: `max_step_duration`* s, `max_retries_per_step`*, `max_volume_error_rate`* 1/s, `random_seed`*; run: `run_on` enum `CPU`, `GPU` (D `RunOn`), `memory_share_of_free`* (default 0.9, 0..1; A58), `memory_left_free_mib`* int MiB (default 512, min 0; written as `memory_left_free_bytes` = MiB x 1,048,576; A58; `memory_share_of_total` removed); `cache_root` path; `outputs`; `runs`; `shown_run_id`; `output_estimate` |
+| `FluidityRefinementZone` (NEW, A78, A79; replaces `FluidityCellSizeRegion`), `Object.fluidity_refinement_zone` | `enabled` bool (default off); `factor`* float, label "Cell Size Factor" (default 0.5, min 1/64, max 64, soft 0.125..8). Read for Empties (Cube or Sphere display) and mesh objects. |
 | `FluidityPreferences` (`AddonPreferences`) | `native_executable_path` file path (empty: the packaged one); `default_run_on`; `preview_frame_count` int; `link_outputs_when_ready` bool; `stop_offer_seconds` float (default 10) |
 
 No live status is stored in a property group. Gravity is the scene's (`scene.gravity`, or zero when
@@ -856,23 +879,24 @@ The scene reader (`scene_reader.read_scene(domain) -> SceneReading` with `descri
 `ForceFieldReading` per force field object, then sets `description.wind_keys = build_wind_keys(...)` and adds
 `check_force_fields(...)` to its findings.
 
-### 3.14 `logic/grey_png.py` (NEW, A63)
+### 3.14 `logic/zone_mesh.py` (NEW, A78; replaces `logic/grey_png.py`, removed with the map)
 
 ```python
-LUMINANCE_WEIGHTS: tuple[float, float, float] = (0.2126, 0.7152, 0.0722)   # Rec. 709 luma weights (ITU-R BT.709).
-# Blender's Image.pixels (RGBA floats, row 0 at the image's bottom, as Blender stores them) to width * height grey
-# bytes, top row first: floor(255 * clamp(0.2126 R + 0.7152 G + 0.0722 B, 0, 1) + 0.5), alpha ignored. So the PNG looks
-# as the image does in Blender's Image Editor; its top row lies along the domain's high y (I/O's loader flips it).
-def to_grey_levels(rgba: Sequence[float], width: int, height: int) -> bytes | AddonFailure: ...
-# An 8-bit grey PNG (colour type 0, bit depth 8, no interlace, filter 0 on every row, zlib level 9) with the
-# standard library only (zlib, struct). Written to <path>.tmp then os.replace'd; RUN_FOLDER_NOT_USABLE on failure.
-def write_grey_png(path: Path, width: int, height: int, grey_levels: bytes) -> None | AddonFailure: ...
+# Open edges of a triangle mesh: undirected edges used by other than exactly two triangles (plain Python, so it is
+# tested without Blender; the reader also triangulates n-gons the way bmesh does, fan from the first vertex).
+def count_open_edges(triangles: Sequence[tuple[int, int, int]]) -> int: ...
+# Binary little-endian PLY: vertex (x, y, z float), face (uchar 3, uint indices). Written to <path>.tmp then
+# os.replace'd; RUN_FOLDER_NOT_USABLE on failure. I/O reads exactly this layout.
+def write_ply(path: Path, vertices: Sequence[Vec3], triangles: Sequence[tuple[int, int, int]]) -> None | AddonFailure: ...
 ```
 
-The scene reader reads `cell_size_map_image.pixels` once (`foreach_get` into a float array) and calls
-`to_grey_levels`; `write_scene_file` writes the PNG beside the scene file at `CELL_SIZE_MAP_FILE` and the
-field `cell_size_map: {image: "inputs/cell_size_map.png"}`. The native loader maps the value `v` of each pixel to
-a size level (`plan-decisions.md`, item 2; I/O owns it).
+The scene reader turns each enabled zone object into a `RefinementZoneDescription`: an Empty with `CUBE` display a
+box of half size `empty_display_size x scale`, `SPHERE` an ellipsoid (non-uniform scale honoured), another display
+type the blocking finding; a mesh object `closed_mesh` from its evaluated first-frame mesh (`count_open_edges > 0`:
+blocking finding). Animated objects give one key per frame, else one key. The camera term, when on, reads the chosen
+or active camera per frame (perspective: horizontal field of view from `angle_x` with the scene's sensor fit;
+orthographic: `ortho_scale`), and the render resolution with its percentage. The operator "Show Refinement Volume"
+runs `build-refinement` (I/O) into the cache and loads the OpenVDB sequence as a Volume object (display only).
 
 ## 4. Consumes from other modules
 
@@ -885,7 +909,7 @@ used, as I/O declares them:
 |---|---|
 | `capabilities [--run-on gpu]` | At registration and when the executable changes: `protocol`, schema versions, coordinate text `right_handed_z_up_metres`, `run_on_values`, every `CapabilityReason` with its level (`ToName(step::CapabilityLevel)`) and message, static limits (`kMaxPlateCount`, `kMaxFreeSolidCount`, `kMaxIngredientCount`, `kMaxSizeLevels`, motion samples 1..64), `ReadFormatTable()` with every `WitnessRecord`, `ReadOutputChannels()`, `ReadInterchangeLibraries()`. Within 200 ms, no GPU touched; `--run-on gpu` only from the Performance panel. |
 | `check <scene_file> [--cache <run_folder>]` | The full check: `scene_checked` with `can_run`, every finding, `filled_defaults`, `run_on_requested`, `run_on_usable`, the plan (`run_mode`, estimate by module, `allowed_bytes`, counts, batch plan), NEW (A17, planned cost) `budget` (table `RunBudget` of `schemas/simulate/v2/run_budget.fbs`, read as `RunBudgetFacts`), `run_fingerprint`, the output declarations; with `--cache`: `CacheComparison` (`simulation`, `differing_part`, `changed_fields`, `outputs[] {output_id, match, changed_fields, needs_simulation}`). Exit 0 (can run) or 3 (cannot; also when the budget's `verdict` is not `fits`, with the blocking finding `does_not_fit`), both with `scene_checked`. |
-| `run <scene_file> --into <run_folder> [--last-frame n]` | Preview and Bake. The folder holds only the add-on's copy of the scene file and, with a cell size map, `inputs/cell_size_map.png` (A63; both left alone, never listed). |
+| `run <scene_file> --into <run_folder> [--last-frame n]` | Preview and Bake. The folder holds only the add-on's copy of the scene file and the zone meshes `inputs/refinement/zone_<id>.ply` (A78; left alone, never listed). |
 | `run <scene_file> --into <run_folder> --start-from <other_run_folder> [--start-frame n]` | New Run from a saved state of an old run (`BuildRunFromSavedState`). |
 | `run <scene_file> --into <run_folder> --outputs <ids>` | Rebuild Outputs (`RebuildOutputs`): refused with `start_new_run` for an output that `needs_simulation`. |
 | `resume <run_folder> [--choose-mode-again] [--last-frame n]` | Resume. Never reads the scene file again. Reuses the recorded run mode; when it no longer fits, refuses with the `failed` finding `recorded_mode_does_not_fit` (`IoError::kRecordedModeDoesNotFit`, A40), and `--choose-mode-again` plans the mode afresh ("Resume in another mode"). |
@@ -948,7 +972,7 @@ start_regions[]: region_id, name, material_id, shape (box | ball), origin, orien
                  same_material_as
 sources[]:       source_id, name, material_id, origin, orientation, half_size, volume_rate, velocity,
                  start_time, end_time
-solids[]:        solid_id, name, shape (box | flat_solid | plate), origin, orientation, half_size, friction_scale,
+solids[]:        solid_id, name, shape (box | flat_solid | plate | sphere | cylinder (A74)), origin, orientation, half_size, friction_scale,
                  motion_kind (fixed | driven | free),
                  path {keys[] {time, origin, orientation}, after_path}
                  | wave_stroke {stroke, wave_period, ramp_duration, travel_direction}
@@ -970,8 +994,11 @@ wind[]:          time (s from the first frame), acceleration (m/s2, world, Z-up)
 cell_resize:     cell_size {surface_reach_in_cell_widths, solid_reach_in_cell_widths}
                  (regions {particle_region_depth_in_cell_widths, grid_only_depth_in_cell_widths}: not in the
                  first version, A64)
-cell_size_regions[]: low_corner, high_corner (m, world), cell_width (m)      NEW (A63); only with cell_resize
-cell_size_map:   image ("inputs/cell_size_map.png", relative to the scene file)  NEW (A63); only with cell_resize
+refinement_sample_spacing_log2                                             NEW (A78); only with cell_resize
+refinement_zones[]: zone_id, name, shape (box | ellipsoid | closed_mesh), cell_size_factor, mesh_file,
+                 keys[] {time, origin, orientation, half_size}              NEW (A78, A79); only with cell_resize
+refinement_camera: enabled, pixels_per_cell, keys[] {time, position, orientation, orthographic,
+                 horizontal_field_of_view, orthographic_width, resolution_x, resolution_y}   NEW (A77)
 batches:         {} (BatchSettings defaults)
 solver:          max_step_duration, max_retries_per_step, max_volume_error_rate, random_seed
 run_on:          top-level "cpu" | "gpu"
@@ -985,7 +1012,7 @@ outputs:         points {material_ids[], particle_fields[]}, solid_motion,
 ```
 
 The gas substance is one `materials[]` entry of kind `gas` with one ingredient (materials 5.1 gas rules; I/O
-sets its rest density from the law). `open_sea`, `gas`, `wind`, `cell_resize`, `cell_size_regions`, `cell_size_map`
+sets its rest density from the law). `open_sea`, `gas`, `wind`, `cell_resize`, `refinement_zones`, `refinement_camera` (A78; were `cell_size_regions`, `cell_size_map`)
 are omitted when not used (the last two also when `cell_resize` is); any other
 field the add-on leaves out takes the native default and is reported in `filled_defaults`. One surface group
 holds every liquid substance (all liquids are one material set, step decision); `points.material_ids` never
@@ -1059,7 +1086,7 @@ through `MemoryUse` and draws the cost lines verbatim.
 ### 4.4 Materials, solids, gas, pressure, contact, cell resize, batches: PROVIDED
 
 Field names and units only, mirrored by `SCENE_FIELDS` and the property groups, as each design's section 3 has
-them (2026-11-15: `grid::CellSizeSettings` and `grid::CellSizeRegion` replace the cell resize ones, A41/A63;
+them (2026-11-15: `grid::CellSizeSettings` replaces the cell resize one, A41; `grid::CellSizeRegion` was removed by A78;
 `solids::GuideKind`, `FreeMotionLimits::{guide_kind, rail_direction, hinge_point, hinge_axis}` and
 `SolidSettings::slip_length` are mirrored, A59/A53; `RegionSettings` is not in the first version, A64): `materials::Ingredient`, `MaterialResponse`, `MaterialKind` (`kLiquid`, `kGas`, `kSnow`, `kSpringySolid`),
 `OwnMotionSettings`, `MaterialPair`, `MaterialTableInputs::ingredient_export_names`; `solids::SolidSettings`,
@@ -1070,7 +1097,7 @@ them (2026-11-15: `grid::CellSizeSettings` and `grid::CellSizeRegion` replace th
 `gas::GasLaw`, `BurnSettings`, `GasSource` (world-aligned box, keyed), `GasSourceKey` (`time`, `fuel_rate`,
 `heat_rate`), `GasWind`, `GasWindKey` (`time`, `acceleration`; written by the add-on from Blender's Wind fields
 into the scene file's `wind`, read as written into `ReadyScene::wind` and `render_output::RenderSettings::wind`,
-A47); `cell_resize::CellResizeSettings`, `grid::CellSizeSettings` (A41), `grid::CellSizeRegion` (A63);
+A47); `cell_resize::CellResizeSettings`, `grid::CellSizeSettings` (A41); (A78) the I/O scene fields `refinement_zones`, `refinement_camera`;
 `RegionSettings`: not in the first version (A64); `batches::BatchSettings` (defaults only).
 
 ### 4.5 What earlier drafts asked of other designs (all applied)
@@ -1127,15 +1154,15 @@ A47); `cell_resize::CellResizeSettings`, `grid::CellSizeSettings` (A41), `grid::
 8. NEW (A53). A `FIXED` or `DRIVEN` solid writes `slip_length` (m) and `free_slip` (bool, true overrides the number) only when a
    liquid substance of the domain has an ingredient with viscosity above 0; a `FREE` solid never writes it (it
    always sticks, A27, so the native `slip_ignored_on_free_solid` note cannot come from the add-on).
-9. NEW (A63). **Cell size regions and map.** Each object of the domain's `cell_size_region_collection` is one
-   region: its box is the object's world axis-aligned bounding box (the eight corners of `bound_box` through
-   `matrix_world`, min and max per axis); `cell_width` is the object's `fluidity_cell_size_region.cell_width`,
-   or the domain's `smallest_cell_width` when 0. An object whose `matrix_world` turns its axes (any off-diagonal
-   term of the normalised 3x3 above `1e-9` in magnitude) gets `cell_size_region_rotated` (`NOTE`: "<object> is
-   rotated; the axis-aligned box around it is used."); the run goes ahead with that box. `cell_size_map_image` is
-   read with `to_grey_levels` (3.14) and written as `inputs/cell_size_map.png`. Both are written only when
-   `uses_cell_resize` is on (the size rule runs only inside cell resize); both are part of the physical scene, so
-   the native fingerprint covers them (the map by its pixels, I/O).
+9. CHANGED (A77, A78, A79; replaces the A63 regions and map). **Refinement zones and the camera.** Each object with
+   `fluidity_refinement_zone.enabled` becomes one `refinement_zones[]` entry (3.14): an Empty with Cube display a
+   box, Sphere display an ellipsoid (any scale), another display type `refinement_zone_unsupported_display`; a mesh a
+   closed mesh (open edges: `refinement_mesh_not_closed`; shape keys or modifiers that change it over the frames:
+   `refinement_mesh_deforms`). Its factor is `fluidity_refinement_zone.factor` (outside 1/64..64:
+   `cell_size_factor_out_of_range`, clamped). With `refinement_camera_enabled`, the chosen or active camera gives
+   `refinement_camera` (none: `refinement_camera_missing`; on: the NOTE `refinement_camera_on`). Written only when
+   `uses_cell_resize` is on (else `refinement_zone_without_cell_resize`); part of the physical scene and of the
+   fingerprint. I/O builds the volume (I/O 3.10); the add-on never computes factors.
 ### 5.2 Presets
 
 A preset is a row of concrete values. Applying one writes those fields and nothing else, then sets `preset`.
@@ -1261,8 +1288,8 @@ frame 38. Frames 0 to 37 are ready. Resume would restart from frame 30."
 
 ### 5.6 Run records and folders
 
-A run is one folder `<cache_root>/<domain name>/run_<nnn>/`: the add-on writes `scene.json` (and, with a cell
-size map, `inputs/cell_size_map.png`, A63) into the new, empty folder, then starts `run --into` it; everything else in the folder is I/O's. `cache_root` defaults to
+A run is one folder `<cache_root>/<domain name>/run_<nnn>/`: the add-on writes `scene.json` (and the zone meshes
+`inputs/refinement/zone_<id>.ply`, A78) into the new, empty folder, then starts `run --into` it; everything else in the folder is I/O's. `cache_root` defaults to
 `//fluidity_cache`. Preview and Bake differ only in `kind` and frame range (`preview_frame_count`). Starting
 never reuses a folder (I/O refuses a folder with a file list); Resume and Rebuild Outputs continue one; nothing
 but Delete Run Files removes one. Paths are stored relative to the project when Blender can express them so and
@@ -1524,9 +1551,9 @@ recorded by hand in `docs/blender-runs.md`. For (b) and (c) the commit names the
 | `test_newer_blender_shows_one_note` (NEW, A48, plan Task 19 and 30) | `build_blender_version_note` with (5, 3, 0), (5, 3, 2), (5, 4, 0), (6, 0, 0) | `None`, `None`, then exactly "FluidiTy was tested with Blender 5.3 only." twice; in Blender the domain panel draws it once |
 | `test_run_arguments_choose_mode_again` (NEW, A40, plan Task 14) | `RESUME` with `choose_mode_again` true and `last_frame` 40 | `[exe, "resume", <folder>, "--choose-mode-again", "--last-frame", "40"]`; false: no flag |
 | `test_resume_offers_other_mode_on_recorded_mode_does_not_fit` (NEW, A40, plan Task 31, background Blender) | A stopped run; Resume; the scripted process writes `failed` with the finding `recorded_mode_does_not_fit` and exits | State `failed` with the finding; the everyday panel draws "Resume in another mode"; pressing it starts `resume <folder> --choose-mode-again` |
-| `test_cell_size_regions_and_map_written` (NEW, A63, plan Task 8) | Cell resize on, two regions (0.02 m, 0.05 m), a 4 x 2 map | `cell_size_regions` in description order with corners and widths; `cell_size_map.image == "inputs/cell_size_map.png"`; the PNG beside the file; cell resize off: neither key and no PNG |
-| `test_grey_png_round_trip`, `test_grey_levels_luminance_and_row_order` (NEW, A63, plan Task 8a) | A 3 x 2 grey image; RGBA pixels in Blender order: row 0 (bottom) red, green, blue; row 1 (top) white, black, grey 0.5, alpha 0.3 everywhere | PNG signature, IHDR (3, 2, depth 8, colour type 0), inflated rows equal the bytes; levels 255, 0, 128, 54, 182, 18 (top row first); alpha ignored |
-| `test_digest_covers_the_map` (NEW, A63, plan Task 8) | One map pixel changed | The digest changes; the scene file bytes do not |
+| `test_refinement_zones_written` (NEW, A78, A79, plan Task 8) | Cell resize on: a box zone factor 0.5, an ellipsoid zone factor 2 scaled (1, 2, 1), a 12-triangle cube mesh zone; the camera term on with 2 keys | `refinement_zones` in zone_id order with shapes, factors, keys; `mesh_file == "inputs/refinement/zone_3.ply"` and the PLY beside the file; `refinement_camera` with 2 keys and `pixels_per_cell` 2; cell resize off: neither key, no PLY |
+| `test_open_edges_and_ply` (NEW, A78, plan Task 8a) | The cube mesh; the cube less one triangle; a quad split by the fan rule | 0 open edges; 3; PLY header and bytes as I/O's layout |
+| `test_digest_covers_zone_meshes` (NEW, A78, plan Task 8) | One mesh vertex moved | The digest changes; the scene file bytes do not |
 | `test_free_solid_guide_written` (NEW, A59, plan Task 8) | Axes with `moves_along_z` only; Rail along (0, -1, 0); Hinge at (1, 2, 3) about (0, -1, 0) | `free_solid.guide` with `kind` `axis_limits`, `rail`, `hinge` and the given values; every field written for every kind |
 | `test_slip_length_written` (NEW, A53, plan Task 8) | Syrup; a fixed box with slip 0, a driven plate with 0.01 m, a fixed box with Free Slip, a free box; water only with slip 0.01 m | (`slip_length`, `free_slip`) = (0.0, false), (0.01, false), (0.0, true); neither key on the free box; with water neither key |
 | `test_guide_without_object_is_a_finding` (NEW, A59, plan Task 13) | A free solid with Rail and no guide object | `guide_object_missing`, `BLOCKS_RUN`, the participant's id |
@@ -1576,12 +1603,14 @@ timers do not fire in background mode, so tests call `ui_timer.tick()`):
   property's description contains "1.0 m/s2 per unit of Strength".
 - `test_newer_blender_shows_one_note` (A48): with the version check given `(5, 3, 0)` and `(5, 3, 2)` the domain
   panel draws no note, with `(5, 4, 0)` it draws "FluidiTy was tested with Blender 5.3 only." once.
-- NEW (A63) `test_region_box_is_world_aabb`: a cube of half size 0.1 m at (1, 2, 3) scaled (2, 1, 1) in the region
-  collection gives low (0.8, 1.9, 2.9), high (1.2, 2.1, 3.1) within `1e-12` m and no finding; turned 45 degrees
-  about Z (scale 1) it gives half extents 0.1 x (cos 45 + sin 45) = 0.1414214 m in x and y and
-  `cell_size_region_rotated` (`NOTE`); `cell_width` 0 writes the domain's smallest cell width.
-  `test_cell_size_map_exported_as_grey_png`: a 4 x 2 generated image becomes `inputs/cell_size_map.png` of the run
-  folder with the bytes of `to_grey_levels`.
+- NEW (A78, A79; replaces the A63 region and map tests) `test_empty_zone_box_and_ellipsoid`: an Empty with Cube
+  display, size 1, at (1, 2, 3) scaled (0.2, 0.1, 0.1) turned 45 degrees about Z gives a box zone with half size (0.2,
+  0.1, 0.1), that orientation and no finding; Sphere display gives an ellipsoid with the same half sizes; Plain Axes
+  display gives `refinement_zone_unsupported_display`. `test_mesh_zone_closed_or_not`: a cube mesh gives a closed mesh
+  zone; the cube with one face deleted gives `refinement_mesh_not_closed`. `test_animated_zone_keys_per_frame`: a box
+  Empty keyed at frames 1 and 11 gives 11 keys. `test_camera_term_keys`: the active camera (lens 50 mm, sensor 36 mm,
+  1920 x 1080 at 100 %) gives `horizontal_field_of_view` 2 atan(18 / 50) = 0.6911112 rad within 1e-7 and resolution
+  1920 x 1080; camera term on with no camera: `refinement_camera_missing`.
 - NEW (A59) `test_guide_from_empty`: an empty at (1, 2, 3) turned 90 degrees about X: Rail gives `rail_direction`
   (0, -1, 0), Hinge gives `hinge_point` (1, 2, 3) and `hinge_axis` (0, -1, 0), within `1e-12`; the empty keyed to
   move after the first frame still gives the first-frame values; an empty with a parent: `motion_not_keys`.
@@ -1785,7 +1814,7 @@ bibliography; Blender manual pages are cited by URL copied at writing time.
 | (2026-11-14 design) `particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths` | not in the first version | A64 |
 | (2026-11-14 design) `RunBudgetFacts.liquids` 6-tuple with `effect_not_visible` | `ViscousEffectOfLiquidFacts` | A57; the I/O table's name plus the `Facts` suffix of 3.5 |
 | `moves_along_x` ... `turns` on `free_solid` | under `free_solid.guide`, with `kind`, `rail_direction`, `hinge_point`, `hinge_axis`; panel "Guide" Axes, Rail, Hinge, `guide_kind`, `guide_object` | A59 |
-| refinement region, refinement map (literature) | cell size region, cell size map (`cell_size_region_collection`, `cell_size_map_image`) | A63 (plan-decisions item 2) |
+| refinement region, refinement map (literature) | refinement zone, cell size factor, refinement volume (`fluidity_refinement_zone`, `refinement_camera_*`; replaced the cell size region and map) | A63, A78, A79 |
 | (first version of this design) `core/` | `logic/` | D1: says what the package holds |
 | (first version) `LinkStep.stored_path` | `path_in_blend` | D1: says where the path lives |
 | (first version) `(code, support, message)` | `(code, level, message)`, `ToName(step::CapabilityLevel)` | D1; the step's jargon rename of `support` stays (A22) |
@@ -1975,8 +2004,8 @@ A decision replaced by a later one keeps its text and is marked "Replaced".
     `CellResizeDescription` keeps the two reaches; the budget's deep particle line is drawn verbatim. The add-on plan
     holds them in the group "Deep liquid without particles (later; needs review)", owned by the cell resize plan's
     group of that name. Owner answer A64; `plan-decisions.md` "Owner answers A40-A64 applied", item 1.
-21. **Artist cell size regions and map.** A52 had left them unticked.
-    Decision: `cell_size_region_collection` (each object's world axis-aligned box and
+21. **Artist cell size regions and map.** A52 had left them unticked. **REPLACED by decision 33 (A77, A78, A79).**
+    Decision (history, replaced by decision 33): `cell_size_region_collection` (each object's world axis-aligned box and
     `fluidity_cell_size_region.cell_width`, 0 meaning the smallest cell width; `cell_size_region_rotated` for a
     turned object), `cell_size_map_image` written as the 8-bit grey PNG `inputs/cell_size_map.png` by luminance
     (Rec. 709 weights), both in the Physical Detail "Cell size" box, both written only with cell resize, the PNG in
@@ -2028,6 +2057,19 @@ A decision replaced by a later one keeps its text and is marked "Replaced".
     `frame_done`'s `size_change_kinetic_energy_j` and `mismatched_particle_count` are not read. No scene field changes
     (the add-on never wrote `sources[].size_level`, which I/O removes).
     Decision: as stated (owner answers A65 to A68; `plan-decisions.md` "Owner answers A65-A68 applied").
+
+33. **Refinement zones and the camera, built into a volume by I/O (A77, A78, A79; reshapes A72, A73).** No region
+    collection, no painted map, no PNG. An Empty with Cube display (box) or Sphere display (ellipsoid, any scale) or a
+    closed mesh object, each with `fluidity_refinement_zone.enabled` and a "Cell Size Factor" (default 0.5; below 1
+    finer, above 1 coarser than the flow asks; the smallest factor wins where zones overlap), exported as
+    `refinement_zones` (mesh as binary PLY); an optional camera term (off by default; chosen or active camera;
+    `refinement_pixels_per_cell` 2) exported as `refinement_camera`, with the camera-dependence note. I/O builds the
+    volume (I/O 3.10); "Show Refinement Volume" runs `build-refinement` and loads its OpenVDB sequence. Findings:
+    `refinement_zone_unsupported_display`, `refinement_mesh_not_closed`, `refinement_mesh_deforms`,
+    `cell_size_factor_out_of_range`, `refinement_camera_missing`, `refinement_camera_on`,
+    `refinement_zone_without_cell_resize`. The panel line says plainly that the surface keeps the smallest cells in
+    this version, so a factor changes deep and solid-free cells only. Source: A72, A73, A77, A78, A79;
+    `plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73, A77)".
 
 **Open** (for the owner; nothing here is built on an assumption):
 

@@ -810,8 +810,9 @@ struct CellSizeFacts {                        // NEW (A41, moved). What the rule
                                               //   diagonal) counts as the surface: max(1, ...) gives w_min.
   double distance_to_solid = 0;               // m. +infinity: none within reach. Negative: as for the depth (A66).
   double velocity_gradient_size = 0;          // 1/s. Held maximum (cell resize); 0 outside liquid.
-  SizeLevel artist_size_level{};              // Finest level an artist region or the map asks here; 0: none (asking
-                                              //   for the biggest level asks nothing: the width is clamped to w_max).
+  double cell_size_factor = 1;                // NEW (A78, A79; replaces artist_size_level). No unit, 1/64..64: the
+                                              //   refinement volume's smallest factor over the cell
+                                              //   (CellSizeFactorTable of ComputeCellSizeFactorCode); 1: no wish.
   bool holds_particles_that_keep_their_count = false;   // Read by cell resize's merge test, not here.
   bool touches_air_pocket = false;
   bool wants_smallest_cells = false;          // Gas in or beside the cell (A10).
@@ -819,9 +820,10 @@ struct CellSizeFacts {                        // NEW (A41, moved). What the rule
 };
 // m/s. U_ref = max(largest_liquid_speed, sqrt(gravity_size * biggest_cell_width)) (literature-cell-size.md 5(a)).
 double ComputeReferenceSpeed(double largest_liquid_speed, double gravity_size, double biggest_cell_width);
-// m. wanted = clamp(min(w_band, w_solid, w_shear, w_artist), w_min, w_max), w_min = widths.width[smallest_size_level],
-// w_max = widths.width[0]; w_shear = c_u U_ref / g for g > 0, else +infinity; w_artist = widths.width[artist_size_level]
-// when above 0, else +infinity. w_min where touches_air_pocket or wants_smallest_cells. An infinite fact gives an
+// m. CHANGED (A78, A79): wanted = clamp(min(w_band, w_solid, w_shear) * cell_size_factor, w_min, w_max), w_min =
+// widths.width[smallest_size_level], w_max = widths.width[0]; w_shear = c_u U_ref / g for g > 0, else +infinity.
+// w_min where touches_air_pocket, wants_smallest_cells, or depth_below_surface < surface_reach_in_cell_widths * w_min
+// (the pinned surface band, A61: the factor does not reach it in the first version). An infinite fact gives an
 // infinite term, never NaN. No FMA contraction (strict rounding of the shared headers).
 double ComputeWantedCellWidth(const CellSizeSettings& settings, const CellWidthsByLevel& widths,
                               double reference_speed, const CellSizeFacts& facts);
@@ -834,20 +836,23 @@ SizeLevel ComputeWantedSizeLevel(const CellWidthsByLevel& widths, double wanted_
 // it borders air, so its depth is 0 and its wanted width is w_min (A61); the cap keeps the size-step rule against
 // the committed cell it grew from. Reads the tables on their own processor.
 SizeLevel ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position, SizeLevel smallest_size_level);
-struct CellSizeRegion {                       // NEW (A63). An artist region: world axis-aligned box.
-  Vec3 low_corner{}, high_corner{};           // m, world. Inclusive on every side.
-  SizeLevel size_level{};                     // The asked cell width rounded at load to the biggest level whose
-                                              //   width <= the asked width.
+// REMOVED (A78, A79): CellSizeRegion, ArtistCellSizes, ComputeArtistSizeLevel. NEW: the refinement volume.
+inline constexpr int kCellSizeFactorStepsPerDoubling = 4;   // Code c means factor 2^(c / 4).
+inline constexpr int kMaxCellSizeFactorCode = 24;           // Codes -24..24: factors 1/64..64. 0 is factor 1.
+struct CellSizeFactorTable { double factor[2 * kMaxCellSizeFactorCode + 1]; };  // factor[c + 24] = 2^(c / 4).
+// CPU only (std::exp2), the one place the table is filled; both processors read the same doubles as data.
+CellSizeFactorTable ComputeCellSizeFactorTable();
+struct RefinementFactors {                    // View on one processor: the current key's codes as a min-pyramid.
+  const std::int8_t* codes = nullptr;         // Every layer, layer 0 first; each z, then y, then x fastest.
+  std::uint32_t layer_first_code[kMaxSizeLevels] = {};   // Index of each layer's first code.
+  std::uint32_t count_x = 0, count_y = 0, count_z = 0;   // Layer 0 sample counts. 0: no volume (factor 1).
+  std::uint8_t layer_count = 0;               // Layer L: min over 2x2x2 of layer L - 1, counts ceil(count / 2).
+  std::uint8_t sample_spacing_log2 = 2;       // Sample spacing 2^this smallest cell widths, anchored at frame.origin.
 };
-struct ArtistCellSizes {                      // NEW (A63). Views on the run's processor.
-  const CellSizeRegion* regions = nullptr;  std::uint32_t region_count = 0;
-  const std::uint8_t* map_levels = nullptr;   // [map_height * map_width], row 0 at the domain's low y. 0: none.
-  std::uint32_t map_width = 0, map_height = 0;
-  Vec3 domain_low_corner{};  double domain_width_x = 0, domain_width_y = 0;   // m.
-};
-// Finest level any region containing `center` or the map pixel under it asks for; 0: none. Pixel column =
-// min(floor((x - x0) / domain_width_x * map_width), map_width - 1), row likewise; outside the box: none.
-SizeLevel ComputeArtistSizeLevel(const ArtistCellSizes& artist, Vec3 center);
+// Code of the smallest factor over every sample the cell overlaps, one integer read: s = smallest_size_level -
+// level; s <= spacing_log2: layer 0, index (coord << s) >> spacing_log2; else layer s - spacing_log2, index coord.
+// 0 without a volume or for an index outside its layer.
+std::int8_t ComputeCellSizeFactorCode(const RefinementFactors& factors, SizeLevel smallest_size_level, CellId cell);
 ```
 
 ## 4. Consumes from other modules
@@ -1165,11 +1170,15 @@ back (4 B per loaded block).
 ### 5.9 The shared cell size rule (NEW, A41, A61–A63)
 
 One rule decides the wanted width of every cell, read by stage 2 for new cells and by cell resize for existing
-ones, so the two never disagree. Per active cell, `w = clamp(min(w_band, w_solid, w_shear, w_artist), w_min,
-w_max)`: the depth term keeps 8 smallest cells below the surface and then grows linearly with depth
+ones, so the two never disagree. Per active cell, `w = clamp(min(w_band, w_solid, w_shear) x f, w_min,
+w_max)` (A78, A79; was `w_artist` in the minimum): the depth term keeps 8 smallest cells below the surface and then grows linearly with depth
 (`w_min max(1, depth / (8 w_min))`), the solid term likewise within 2 smallest cells of a solid, the shear term is
 `c_u U_ref / |∇u|` (literature-cell-size.md 5(a); `c_u = 0.25` is a starting value to calibrate, A62; `U_ref =
-max(u_max, sqrt(g w_max))`), and an artist region or the top-view map caps the width (A63). Pockets and gas take
+max(u_max, sqrt(g w_max))`). CHANGED (A78, A79): the artist's wish is a refinement volume of cell size factors
+built outside the solver by I/O (zones, optional camera, or a user volume); the physical width is multiplied by the
+cell's smallest factor, `w = clamp(min(w_band, w_solid, w_shear) x f, w_min, w_max)`, except in the pinned surface
+band (`depth < 8 w_min`, A61), where it stays `w_min`; the lookup reads one byte of a min-pyramid per cell
+(`ComputeCellSizeFactorCode`), so a thin zone inside a big cell is never missed and both processors agree. Pockets and gas take
 `w_min`. A new cell borders air, so its depth is 0 and its wanted width `w_min` (A61); `ComputeNewCellSizeLevel`
 gives it the nearest committed cell's level plus one, capped at the smallest, which keeps the size-step rule
 against the cell it grew from, and the next resize refines it to `w_min`. Levels come from comparing the wanted
@@ -1180,7 +1189,8 @@ resize's (the last "later").
 NEW (A66): the same rule builds the start grid. `step::BuildStartCells` (CPU, before any step) computes facts from
 the start shapes alone, with the depth and solid distance at a cell's centre minus half its diagonal (`sqrt(3) w /
 2`; both distances are 1-Lipschitz, so the value bounds every point of the cell from below and may be negative),
-`velocity_gradient_size` 0 (a start region's velocity is uniform) and the artist level at the centre; it splits
+`velocity_gradient_size` 0 (a start region's velocity is uniform) and the first refinement key's factor over the
+cell's box (A78, A79); it splits
 every cell wider than `ComputeWantedCellWidth`, one level per pass, then closes the one-size-step rule
 (`CheckSizeStepRule` passes on the result). The grid's first version is built from `StartCells::cells` by
 `BuildGrid` like any version; `ComputeNewCellSizeLevel`'s "none found" case no longer decides a start grid (it
@@ -1283,18 +1293,20 @@ smallest level 4, far facts unless named):**
 | Test | Setup | Expected |
 |---|---|---|
 | `ComputeCellWidthsByLevel, EqualsComputeCellWidthPerLevel` | frame 1 m, 5 levels | bit for bit; 0 beyond |
-| `ComputeWantedCellWidth, SurfaceCell_IsSmallest` | depth 0, also with distance 10, artist level 2 | 0.0625 exactly |
+| `ComputeWantedCellWidth, SurfaceCell_IsSmallest` | depth 0, also with distance 10, factor 4 (A78) | 0.0625 exactly |
 | `ComputeWantedCellWidth, UniformTranslation_NoShearSplit` | gradient 0, `U_ref` 5 | 1.0, level 0 |
 | `ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth` | gradient 1e-300; depth `DBL_MAX` | 1.0, never NaN |
 | `ComputeWantedCellWidth, DepthAndSolidTerms_GrowLinearlyBeyondReach` | depth 1.0; 0.25; distance 0.5; both; depth 100 | 0.125; 0.0625; 0.25; 0.125; 1.0 |
 | `ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverGradient` | frame 0.5 m, 6 levels, gradient `sqrt(2) x 10`, `U_ref` 1 | 0.0176776695296637 within 1e-15 relative; level 5 |
-| `ComputeWantedCellWidth, PocketOrGas_IsSmallest`, `..., ArtistLevel_CapsWidth` | flags with depth 100; artist 2 alone, with depth 1.0 | 0.0625; 0.25, 0.125 |
+| `ComputeWantedCellWidth, PocketOrGas_IsSmallest` | flags with depth 100 | 0.0625 |
+| `ComputeWantedCellWidth, FactorOne_SameBitsAsNoFactor`, `..., FactorHalf_HalvesDeepWidth`, `..., FactorTwo_DoublesDeepWidth`, `..., FactorTwoInSurfaceBand_IsSmallest` (A78, A79) | factor 1 over 10,000 fact sets; depth 1.0 with factor 0.5; with 2; depth 0.25 with 2 | bit for bit; 0.0625; 0.25; 0.0625 |
 | `ComputeWantedSizeLevel, WidthEqualToALevel_GivesThatLevel`, `..., BelowSmallestWidth_GivesSmallestLevel` | 0.125, `nextafter(0.125, 0)`, 0.2, 5; 0.01 | 3, 4, 3, 0; 4 |
 | `ComputeReferenceSpeed, SlowLiquid_UsesGravityWaveSpeed` | (0.1, 9.81, 1); (5, 9.81, 1) | `sqrt(9.81)` bit for bit; 5 |
-| `ComputeArtistSizeLevel, RegionAndMap_FinestWins` | two regions (levels 2, 4), 4 x 2 map (levels 3, 1) | finest asked; map at every height; high edge maps to last column; outside: 0 |
+| `ComputeCellSizeFactorTable, QuarterDoublings` (A78) | | `factor[24] == 1`, `factor[28] == 2`, `factor[20] == 0.5`, `factor[0] == 0x1p-6` exactly |
+| `ComputeCellSizeFactorCode, NoVolume_IsZero`, `..., SmallCell_ReadsItsSample`, `..., BigCell_IsSmallestCodeOverItsBox`, `..., OutsideLattice_IsZero` (A78, A79) | frame 1 m, 5 levels, spacing 4 smallest cells (8 x 4 x 4 samples), a one-sample-wide line of code -8 at sample x 5 | 0; the sample's code; -8 for the level-0 cell holding x 5, 0 for the other; 0 |
 | `ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
-| `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest` (NEW, A66) | depth `-0.03` alone; distance `-0.03` alone; depth `-0.03` with artist level 2 | 0.0625; 0.0625; 0.0625, never NaN |
-| `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (`gpu`) | 10,000 fact sets from a fixed formula | identical bytes, levels and artist levels |
+| `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest` (NEW, A66) | depth `-0.03` alone; distance `-0.03` alone; depth `-0.03` with factor 4 | 0.0625; 0.0625; 0.0625, never NaN |
+| `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (`gpu`) | 10,000 fact sets from a fixed formula | identical bytes, levels and factor codes (`ComputeCellSizeFactorCode` on the fixture above) |
 | `ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu` (`gpu`) | random 3-level grid on both processors, 10,000 positions | identical levels |
 
 **Reservation (NEW, A58; label `cpu` unless named):** `BuildGridBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`
@@ -1408,7 +1420,7 @@ the old list: cited by author and year only (decision 11).
 | (none) | `GridBuilderBuffers` (`BuildGridBuilderBuffers`), `BuilderBuffersSharing`: the builder buffers lent to several `GridBuffers` | NEW (reconcile) |
 | replaced 2026-11-14 (A29, A31): `ReleaseBuffers`, `GridScratch`, `BuildGridScratch`, `GridScratchSize`, `ComputeGridScratchSize`, `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`, `scratch_sharing`, "build scratch", the allocating `BuildGrid(inputs, settings)` | `TakeBuffers`, `GridBuilderBuffers`, `BuildGridBuilderBuffers`, `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize`, `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`, `builder_buffers_sharing`, "builder buffers" (prose: "working buffers"), test-only `BuildTestGrid` | owner answers A29, A31 |
 | `cell_resize::CellSizeSettings`, `cell_resize::CellSizeFacts`, `cell_resize::ComputeWantedCellWidth`, `cell_resize::ChooseCellSize`, `step::StepCallbacks::choose_cell_size` | `grid::CellSizeSettings`, `grid::CellSizeFacts`, `grid::ComputeWantedCellWidth` (moved); the callback is removed: stage 2 calls `grid::ComputeNewCellSizeLevel` | owner answers A41, A61; `plan-decisions.md` item 2 |
-| (none) | `CellWidthsByLevel`, `ComputeCellWidthsByLevel`, `ComputeReferenceSpeed`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`; glossary rows `wanted cell width`, `reference speed`, `artist cell size` | NEW (A41, A61–A63) |
+| (none) | `CellWidthsByLevel`, `ComputeCellWidthsByLevel`, `ComputeReferenceSpeed`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, (A78, A79) `CellSizeFactorTable`, `ComputeCellSizeFactorTable`, `RefinementFactors`, `ComputeCellSizeFactorCode`; glossary rows `wanted cell width`, `reference speed`, `cell size factor`, `refinement volume` | NEW (A41, A61–A63; A78, A79 replaced `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`) |
 | memory rows `prefix sum ends`, `order buffers, fixed part`, `border marks end`, `border order buffers, fixed part` | folded into the one entry of their array (`order`, `second order`, `order buffers`, `border marks`, `border order buffers`) | A58, reconcile ruling |
 | `kGridMemoryEstimate` (first draft) | `BuildGridMemoryEstimate` | NEW (every module's `Build<Module>MemoryEstimate`) |
 | `BlockIndex3D` | `CellBlockId` | DECIDED (`cell_block`, `id`) |
@@ -1665,8 +1677,8 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
 
 36. **(A41, A61, A62, A63) The shared cell size rule is the grid's.** `cell_size_rule.h` (S) holds
     `CellSizeSettings` and `CellSizeFacts` (moved from cell resize), `CellWidthsByLevel`, `ComputeReferenceSpeed`,
-    `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, `CellSizeRegion`,
-    `ArtistCellSizes`, `ComputeArtistSizeLevel` (3.8, 5.9), built in grid plan Task 13a; the grid owns it because
+    `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, ~~`CellSizeRegion`,
+    `ArtistCellSizes`, `ComputeArtistSizeLevel`~~ (replaced by the refinement volume, decision below, A78, A79) (3.8, 5.9), built in grid plan Task 13a; the grid owns it because
     the step and cell resize both read it and both come after grid. The `ChooseCellSize` callback is removed
     (decision 7 amended). Plan decisions: `ComputeCellWidthsByLevel`; `artist_size_level` 0 means none; regions
     inclusive; ties of the new-cell probe by `ComesBefore`. Source: owner answers A41, A61, A62, A63;
@@ -1707,3 +1719,15 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
 **Open**
 
 None. (The former points 1, default room, and 2, order buffers size, are decided by decisions 28 and 30.)
+
+**Decision (A78, A79; reshapes A72, A73, A77; 2026-11-15): the artist's wish is a refinement volume of factors.**
+The artist regions and the top-view map (A63) are removed. The rule reads one keyed volume of cell size factors over
+the domain box, stored as a min-pyramid of one-byte codes (`f = 2^(c/4)`, 1/64 to 64; `RefinementFactors`,
+`ComputeCellSizeFactorCode`, `CellSizeFactorTable`), and multiplies the physical width by the cell's smallest factor:
+`w = clamp(min(w_band, w_solid, w_shear) x f, w_min, w_max)`, `w_min` in the pinned surface band, pockets and gas.
+Why a product: the artist scales what the flow needs instead of overriding it; a harmonic mean (the owner's other
+idea) cannot say "leave it to the physics" without a special value and keeps the result between the two widths.
+Limit of the first version: the factor does not reach the pinned surface band, so a hero region finer than `w_min`
+needs a smaller scene `w_min` (with factors above 1 elsewhere); a zone that lowers `w_min` locally waits for coarse
+surface cells (A61, A68). Zones, meshes and the camera are I/O's builder, outside the solver. Source: A72, A73, A77,
+A78, A79; `plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73, A77)".

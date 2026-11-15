@@ -916,8 +916,8 @@ Guides, force on solids, slip, memory (NEW, A53, A58, A59, A60; plan Tasks 7, 15
 | `SolveViscosityAndPressure, FreeBox_PressurePlusViscousPushIsMomentumChange` (A60) | settling cube, one step | `pressure_push + viscous_push = m (V_after - V_start) - dt (m g + steady_force)` and `I_start (Omega_after - Omega_before_pressure)` (pressure part summed in the test from the cube's `FreeSolidPush` entries and the accepted pressure) | `velocity_tolerance x` largest momentum entry |
 | `SolveViscosityAndPressure, ViscousPushOnSolids_OnePerSolidInOrder` (A60) | Task 15d's neutral cube in shear: floor and plate driven, cube free | three entries in `inputs.solids` order; plate and floor pushes opposite within the cube's share; entries 0 for a solid no sample reads | `1e-10` relative |
 | `LiquidForce, ShearedPlate_IsMuAUOverH` (A60) | liquid x, y in [0, 0.2], z in [0, 0.1] m, w 0.0125; inlet and outlet given X faces carrying `u = U z / H`; one air layer beyond each y side; floor the domain box bottom (stick); top a driven `FlatSolid` at z 0.1 moving +x at U 0.01 m/s; mu 10 Pa s, rho 1000, no gravity; started at the linear profile (what 5 s from rest reaches within `exp(-49)`), dt 0.01, 10 steps | plate viscous force x `-mu A U / H = -0.04 N` (A = 0.04 m2), floor `+0.04 N` | `1e-6` relative (the linear profile is exact on the grid) |
-| `LiquidForce, RotatingCylinders_TorquePerLength` (A60) | inner cylinder R1 0.05 m driven at 1 rad/s, outer R2 0.1 m fixed, mu 1 Pa s, height 0.1 m between free-slip ends (`slip_length` +infinity), 10 cells across the gap | inner torque `4 pi mu Omega R1^2 R2^2 / (R2^2 - R1^2) x 0.1 = 4.18879e-3 N m` | 10 % (a bound, per Uhlmann's 5 to 10 %). Needs a cylinder solid shape, which contact does not provide: known-open until it exists (Open) |
-| `LiquidForce, SettlingCube_BalancesNetWeight` (A60; plan-decisions names it `SettlingSphere_...`: free solids are boxes, so the sphere is a cube of equal volume) | cube side 0.016120 m (volume of a sphere R 0.01 m), 1100 kg/m3 in 1000 kg/m3, mu 10, closed box 0.2 m, w 0.004, from rest, dt 0.002, 40 steps; mean over steps 20 to 40 | pressure + viscous force z = net weight 4.1092e-3 N; speed in `[U_Stokes / 1.4, U_Stokes]`, `U_Stokes` = 2.18e-3 m/s of the equal-volume sphere (the cube's shape factor 1.08 keeps it inside) | 2 % (a balance); bound |
+| `LiquidForce, RotatingCylinder_TorquePerLength` (A60; round shape since A74, 2026-11-15) | driven cylinder (contact `kCylinder`) axis z, R1 0.05 m, half height 0.06, spinning at 1 rad/s; outer wall the domain box `[-0.1, 0.1]^2 x [0, 0.1]` m (side `2 R2`, R2 0.1: contact's cylinder is solid, no hollow outer cylinder), sides stick, ends `slip_length` +infinity; mu 1 Pa s, rho 1000, w 0.005, no gravity; start from the Taylor-Couette profile for R2 inside `r <= R2`, at rest in the corners; dt 0.01, 10 steps | turning push / dt, z, `-4 pi mu Omega R1^2 R2^2 / (R2^2 - R1^2) x 0.1 = -4.18879e-3 N m` (in 0.1 s the corners' disturbance spreads `Sqrt(nu t) = 0.01` m; the steady square lies between 3.590e-3 and 4.189e-3 N m) | 10 % (a bound, per Uhlmann's 5 to 10 %) |
+| `LiquidForce, SettlingSphere_BalancesNetWeight` (A60; round shape since A74, 2026-11-15) | free sphere (contact `kSphere`) r 0.01 m, 1100 kg/m3 (mass 4.60767e-3 kg, inertia 1.84307e-7 kg m2) in 1000 kg/m3, mu 10, closed box 0.2 m, w 0.004, from rest, dt 0.002, 40 steps; mean over steps 20 to 40 | pressure + viscous force z = net weight 4.1092e-3 N; speed in `[U_Stokes / 1.4, U_Stokes]`, `U_Stokes` = 2.180e-3 m/s (walls slow it, Faxen about 0.79) | 2 % (a balance); bound |
 | `SolveViscosityAndPressure, CouetteFullStick_LinearProfile` (A53) | `ShearChannelSettings(kSameSize, 16, ratio 1, top 1, dt 0.005, u_x = z)`, every slip length 0, 10 steps | `u = U z / H` at every X face | `1e-6` relative |
 | `SolveViscosityAndPressure, CouetteFreeSlip_PlugFlow` (A53) | the same channel, floor (domain box) and plate slip length +infinity, plate at rest, liquid and inlet profile 0.01 m/s, 10 steps | 0.01 m/s at every X face; plate's viscous force 0 | `1e-9` relative; `1e-12` N |
 | `SolveViscosityAndPressure, CouettePartialSlip_NavierProfile` (A53) | the channel, plate slip length `lambda = H = 1 m`, floor 0, profile `U z / (H + lambda)`, 10 steps | `u = U z / (H + lambda)`, `u(H) = U / 2` | `1e-6` relative |
@@ -1215,7 +1215,7 @@ Decisions taken after this design was first written (recorded in the viscosity a
     `math::TreeSum`); `ViscosityBufferSettings::max_solids`; solids turns it into `LiquidForceOnSolid`. Plan decisions:
     the result is a span into a CPU array of the buffers; the stored entry is parallel to the samples (no sample index
     stored); the "sphere" test is a cube of equal volume (free solids are boxes); the rotating-cylinder test waits
-    for a cylinder shape (Open). Source: owner answer A60; `plan-decisions.md` "Owner answers A40-A64 applied" item 6;
+    for a cylinder shape (Open). (Both replaced by decision 33, A74.) Source: owner answer A60; `plan-decisions.md` "Owner answers A40-A64 applied" item 6;
     `literature-practice.md` topic 4.
 27. **Slip length on fixed and driven solids (A53).** Decision: `ViscosityInputs::solid_slip_length` (m, from
     `solids::SolidSettings::slip_length`); rule (a) uses `d + lambda`, so `mu / d` becomes `mu / (d + lambda)` (0 at
@@ -1246,13 +1246,20 @@ Decisions taken after this design was first written (recorded in the viscosity a
     grid version like any other. A67: drifted particles change only particle arrays. A68: a column cut would make the
     joint solve's loaded pieces tiles (as pressure's `SolveBatches`, later); no task now. Source: `plan-decisions.md`
     A66, A67, A68.
+33. **Round solids (A74).** Contact now has `kSphere` and `kCylinder` (true signed distance, normal, surface velocity
+    with the full spin). Decision: the force tests use them: `LiquidForce, RotatingCylinder_TorquePerLength` (a driven
+    cylinder spinning about its axis; the outer wall is the square domain box of side `2 R2`, because contact's
+    cylinder is solid; started from the Taylor-Couette profile, 10 steps, 10 % of 4.18879e-3 N m) and
+    `LiquidForce, SettlingSphere_BalancesNetWeight` (free sphere r 0.01 m, inertia `0.4 m r^2`; net weight 4.1092e-3
+    N within 2 %, speed in `[U_Stokes / 1.4, U_Stokes]`). Neither is known-open. The solve reads round solids through
+    contact's functions, so nothing else in this design changes. Source: owner answer A74; `plan-decisions.md`
+    "Sphere and cylinder in contact (A74)".
 
 **Open** (for the owner; the two A18 open points, sealed gas and springy solids beside a viscous liquid, are
 decided by A24 and option C):
 
 - (Removed by A57: `kSmallestVisibleViscousEffectPerStep`.)
-- `LiquidForce, RotatingCylinders_TorquePerLength` needs a cylinder solid; contact has `kFlatSolid`, `kPlate`, `kBox`,
-  `kDomainBox` only. Until contact gains one (or the owner names another torque test) the test is known-open.
+- (Answered by A74, 2026-11-15: contact has a cylinder; the test is `RotatingCylinder_TorquePerLength` with a square outer wall, decision 33.)
 - A sample reading two different solids reports the force of the lower solid index only (decision 26); the
   per-solid force then misses the other's share of that sample (rare: an edge between two solids).
 - Reconcile-todo item 23 (independent review of the A24, A26, A27 derivations) stays open and now also covers the

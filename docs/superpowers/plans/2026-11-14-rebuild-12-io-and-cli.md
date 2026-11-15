@@ -165,7 +165,7 @@ The module's own:
   this process.
 - **Amended 2026-11-15 (A40-A64):** `plan-decisions.md` "Owner answers A40-A64 applied (2026-11-15)" wins over the
   design and over earlier text here. In this plan: particles everywhere, no grid-only region (A64; its I/O pieces
-  move to the later group after Task 42); artist cell sizes read from the scene (A63, Task 29b); the memory budget,
+  move to the later group after Task 42); the refinement volume built from zones, the camera and files (A77-A79, Tasks 29b and 29d; replaced the A63 artist cell sizes); the memory budget,
   one reserved block per run and warnings without margins (A58; Tasks 23a, 29, 29a); viscosity advice (A57, Task
   23a); guided free solids and slip length (A59, A53, Task 26); the liquid force on every solid in `frame_done` and
   `run_report.json` (A60, Task 29c); wind (A47, Task 27); resume in the recorded run mode (A40, Task 29d);
@@ -875,8 +875,8 @@ step::StartRegionShape> start_region_shapes() const;` (the same regions' shapes,
 `step::BuildStartCells`; with a `start_particles_file`, one `kBall` of radius `w_min / 2` per explicit particle) and
 `std::span<const ExplicitParticle> explicit_start_particles() const;`. Without `cell_resize`, `BuildRun` gives
 `step::BuildStartCells` a `cell_size` whose `smallest_size_level` equals `new_cell_size_level` (the default 0 would
-make every cell level 0) and an artist input of one region over the whole domain box at that level (built in
-`run.cc`, recorded nowhere: it follows from the scene having no `cell_resize`), so every start cell is smallest, as
+make every cell level 0) and (amended 2026-11-15, A78) `surface_reach_in_cell_widths` +infinity, so every cell is
+in the pinned band (built in `run.cc`, recorded nowhere: it follows from the scene having no `cell_resize`), so every start cell is smallest, as
 the run keeps them (plan decision: the step's rule would otherwise coarsen deep start cells of a scene that never
 resizes). The scene setting `particle_radius_in_cell_widths` (top-level scene field, default 0.5, above 0, in
 `physical`) fills `ReadyScene::particle_radius_in_cell_widths` (step plan). `FallingBlock_ReadySceneValues` checks one start region shape (a box) and 256 particles from
@@ -1195,9 +1195,10 @@ this task adds to it, and `output_queue_test` names it in `LINKS`.
 
 **Amended 2026-11-15 (A66):** `BuildRun` builds the start before it plans, in this order (`// Step N:` comments):
 `step::CheckSceneCanRun`; `step::BuildStartCells(scene.start_region_shapes(), solids (every `contact::Solid` at `pose_at_step_start`, the
-`DomainBox` solid included), ready.grid_frame, cell_size, artist, 64 x grid::kMaxCellBlocksLimit)` (with cell resize:
-`ready.cell_size` and `scene.artist_cell_sizes()`; without: a `cell_size` with `smallest_size_level =
-new_cell_size_level` and the one domain-wide region of Task 16; each shape's `count_rule` from its material); `io::BuildStartParticles(ready, scene.start_regions(),
+`DomainBox` solid included), ready.grid_frame, cell_size, refinement, factor_table (A78), 64 x grid::kMaxCellBlocksLimit)` (with cell resize:
+`ready.cell_size` and the first key of `scene.refinement_volume()` with `grid::ComputeCellSizeFactorTable()` (A78);
+without: a `cell_size` with `smallest_size_level = new_cell_size_level` and `surface_reach_in_cell_widths` +infinity
+(A78; was the one domain-wide region of Task 16); each shape's `count_rule` from its material); `io::BuildStartParticles(ready, scene.start_regions(),
 scene.explicit_start_particles(), start_cells)`; a copy of `scene.ready_scene()` whose `start_particles` views
 `start.by_material()` (a shallow copy of spans; the `RunScene` is not changed); `BuildSceneBudget` (which calls
 `step::BuildRunPlan`, Task 23a, on a ready scene with `start_cells = StartCells::cells`); fingerprint, folder,
@@ -1708,6 +1709,9 @@ the ready scene stores +infinity as a double).
   (`ComputeRotationVector(key, next) / (next.time - key.time)`, zero on the last key);
   `BuildRunScene, WavePaddleKeys` (equal to `solids::BuildWavePaddlePath` up to `end_time`);
   `BuildRunScene, FreeBoxInertiaFromHalfSizes` (`mass / 3 * (b^2 + c^2, a^2 + c^2, a^2 + b^2)`);
+  Amended 2026-11-15 (A74): `shape` gains `sphere` and `cylinder` (`half_size` `{r, r, r}`, `{r, r, h}`);
+  `BuildRunScene, FreeSphereAndCylinderInertia` (sphere m 2, r 0.5: `{0.2, 0.2, 0.2}`; cylinder m 3, r 0.5, h 1:
+  `{1.1875, 1.1875, 0.375}`, exact); `CheckSceneFile, SphereUnequalHalfSizes_IsBadInputWithPath`;
   `BuildRunScene, BlockingMaterialsAndRadius` (every material with `HasInternalForce`; `particle_radius =
   spacing / 2`); `BuildRunScene, HasLiquidOrGasAndGravityCopied`;
   `CheckSceneFile, SolidIdZeroOrDuplicate_IsDuplicateIdWithPath`; `CheckSceneFile, SolidIdAbove32Bits_IsOutOfRange`.
@@ -1825,12 +1829,12 @@ or `cells_to_particles` (`RunReport, ResizeTotalsAndBatchPlan` checks `resize_co
 `merge_wait_duration`, `min_merge_wait_steps`, `max_cell_splits_per_resize`); `smallest_size_level` is not a scene
 field: it is derived, `size_level_count - 1` (`FilledDefault` source `kDerived`, path `grid.size_level_count`).
 `choose_cell_size` and `ChooseCellSize` no longer exist: `Run` sets only `resize_cells` (and `run_stages` in either
-batched mode). The artist inputs come in Task 29b.
+batched mode). The refinement volume comes in Tasks 29b and 29d (A78).
 
 **Amended 2026-11-15 (A58):** `step::BuildSimulation` reserves the run's one `RunMemory` block, sized by
 `ComputeRunMemoryBytes` of the whole plan (the plan's estimate holds the cell resize, batches and render output
 entries `BuildSceneBudget` passed to `BuildRunPlan`), before anything else. `Run` therefore builds
-`cell_resize::BuildCellResize(settings, plan.limits, ingredient_count, scene.artist_cell_sizes(), run_memory,
+`cell_resize::BuildCellResize(settings, plan.limits, ingredient_count, scene.refinement_volume().layout (A78), run_memory,
   cpu_run_memory)` and
 `batches::BuildBatchedRun(batch_plan, scene, run_memory, cpu_run_memory)` right after `BuildSimulation`, with `run_memory =
 step::FindRunMemory(simulation)` and `cpu_run_memory = step::FindCpuRunMemory(simulation)` (the step's accessors;
@@ -1865,7 +1869,7 @@ raised limits by `ExpectSameInternalFiles`; a `limits_raised` forced to fail giv
 **Interfaces:**
 - `RunScene::cell_resize_settings()` and `batch_settings()` filled; `ReadyScene::has_cell_resize` set when the
   file has `cell_resize`. `Run` composes (design 5.6 step 5; amended 2026-11-15, A41, A64, A58):
-  `cell_resize::BuildCellResize(settings, plan.limits, ingredient_count, scene.artist_cell_sizes(), run_memory,
+  `cell_resize::BuildCellResize(settings, plan.limits, ingredient_count, scene.refinement_volume().layout (A78), run_memory,
   cpu_run_memory)`;
   `resize_cells = {ResizeCells wrapper, &run_state}`; ~~`choose_cell_size`, `apply_grid_only_region`,
   `move_grid_only_liquid`, `read_largest_grid_only_speed`~~ (removed: A41, A64); with `kBatched`:
@@ -2037,82 +2041,148 @@ WithinMargins_NoWarning` is replaced by `BuildCostLines, MeasuredEqualsPlanned_N
   durations as `plan-decisions.md` says. **Step 4:** gate. **Commit.** Subject:
   `Measure what a run costs against its budget`. New names: the list above.
 
-### Task 29b: Artist cell sizes: `cell_size_regions` and `cell_size_map`
+### Task 29b: The refinement volume builder: zones and camera to factor codes (A77, A78, A79)
 
-**Amended 2026-11-15 (A63, A41):** new task. The artist inputs of the shared cell size rule
-(`grid/cell_size_rule.h`, `plan-decisions.md` "Owner answers A40-A64 applied" item 2) are read once here, rounded to
-size levels, recorded in the ready scene and handed to cell resize.
+**Amended 2026-11-15 (A78, A79; reshapes A72, A73, A77):** this task **replaces** the former Task 29b ("Artist cell
+sizes: `cell_size_regions` and `cell_size_map`": no regions, no PNG map, no libspng, no `WriteGreyPng`,
+`kMaxCellSizeMapSidePixels` or `RunScene::artist_cell_sizes`). It builds the solver's refinement volume on the CPU
+from authored zones and the optional camera (`plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73,
+A77)" section 2; design 3.10, decision 45). Files, scene fields and the run come in Task 29d.
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/io/refinement_volume.h`, `refinement_volume.cc`, `refinement_zone_raster.cc` (private:
+  box, ellipsoid, closed-mesh parity), `refinement_volume_test.cc`
+- Modify: the `io/` CMake lines, `docs/glossary.md` (rows `refinement zone`, `cell size factor`, `refinement volume`)
+
+**Interfaces:**
+- Consumes: grid `GridFrame`, `CellSizeSettings`, `RefinementFactors`, `kMaxCellSizeFactorCode`,
+  `kCellSizeFactorStepsPerDoubling`, `ComputeCellWidth` (grid plan Task 13a); `Vec3`, `Mat3`.
+- Produces: `RefinementZoneShape`, `RefinementZonePoseKey`, `RefinementZone`, `RefinementCameraKey`,
+  `RefinementCamera`, `RefinementKey`, `RefinementKeyFile`, `RefinementVolume`, `BuildRefinementVolume` (with an
+  empty `user_volume` here; Task 29d adds files).
+- **Plan decisions.** Lattice: counts `ceil(domain smallest cells / 2^p)` per axis, sample centres at
+  `frame.origin + (index + 0.5) * 2^p * w_min`. Per key and sample, in this order: zone factor = smallest
+  `cell_size_factor` of the zones whose shape contains the centre at the key's pose (1 when none); times the camera
+  factor (1 when off); times the user factor (Task 29d); `code = clamp(round(4 * std::log2(f)), -24, 24)` (a factor
+  outside 1/64..64 gives the NOTE `cell_size_factor_out_of_range` once per zone). Then layers by the min of 2 x 2 x 2
+  (a missing child at an odd edge is skipped). Then for `k < key_count - 1`, `codes_k = min(codes_k, codes_{k+1})`
+  element by element (the last key unchanged). Key times: sorted union of every zone's and the camera's key times,
+  duplicates removed; time 0 alone when none is animated; a zone's or the camera's pose at a key time is its own key
+  at or before that time (its first key before it). Box: `|p_i| <= half_size_i` in the key's axes; ellipsoid:
+  `sum (p_i / half_size_i)^2 <= 1`; closed mesh: vertices `half_size * v` in the key's axes (Blender scale), parity
+  along +x per `(y, z)` lattice row with the half-open rule (a crossing counts when the row's `(y, z)` lies in the
+  projected triangle with edges on its top or left included, the others excluded), crossings sorted, inside between
+  odd and even. Closed check before rasterising: every undirected edge used by exactly two triangles, else
+  `IoError::kSceneValueOutOfRange` at `refinement_zones[i]` with detail "mesh not closed: <n> open edges" (the finding
+  `refinement_mesh_not_closed`). Camera (A77): perspective `pixel_angle = 2 tan(fov / 2) / resolution_x`, `distance =
+  max(0, |centre - position| - sqrt(3) / 2 * 2^p * w_min)`, `w_camera = pixels_per_cell * distance * pixel_angle`;
+  orthographic `w_camera = pixels_per_cell * orthographic_width / resolution_x`; `f_camera = max(1, w_camera /
+  w_min)`; frustum ignored; `enabled` with no key: `kSceneValueOutOfRange` at `refinement_camera` (finding
+  `refinement_camera_missing`).
+
+- [ ] **Step 1: Failing tests** (`LABEL cpu`; frame origin 0, `w_min` 0.01 m, 5 levels, spacing log2 2 (0.04 m
+  samples), domain 64 x 32 x 32 smallest cells: lattice 16 x 8 x 8):
+
+  ```cpp
+  TEST(BuildRefinementVolume, NothingAuthored_OneKeyOfZeros)        // 1 key at 0, every code 0, layers 16x8x8, 8x4x4,
+                                                                   // 4x2x2, 2x1x1, 1x1x1 (code count 1024+128+16+2+1)
+  TEST(BuildRefinementVolume, BoxZone_ExpectedSamples)              // box centre {0.32,0.16,0.16}, half {0.08,0.08,0.08},
+                                                                   // factor 0.5: code -4 exactly at the 4 x 4 x 4
+                                                                   // samples with centres in [0.24,0.40]^.. (x 6..9,
+                                                                   // y 2..5, z 2..5), 0 elsewhere
+  TEST(BuildRefinementVolume, EllipsoidZone_ExpectedSamples)        // centre {0.32,0.16,0.16}, half {0.12,0.06,0.06},
+                                                                   // factor 0.25: code -8 exactly where
+                                                                   // ((x-0.32)/0.12)^2 + ... <= 1 at sample centres
+  TEST(BuildRefinementVolume, MeshOfABox_EqualsBoxZone)             // 12-triangle cube mesh with the box zone's pose
+                                                                   // and size: codes equal bytes
+  TEST(BuildRefinementVolume, MeshOfASphere_EqualsEllipsoidWithinOneSample)  // icosphere of 1280 faces, radius 0.12:
+                                                                   // every differing sample is within one spacing of
+                                                                   // the sphere's surface
+  TEST(BuildRefinementVolume, OverlappingZones_SmallestFactorWins)  // factors 0.5 and 2 overlapping: -4 in the overlap
+  TEST(BuildRefinementVolume, MovingZone_KeyTakesMinWithNext)       // box at x 0.16 for t 0, at x 0.48 for t 1: key 0
+                                                                   // holds -4 at both places, key 1 at x 0.48 only
+  TEST(BuildRefinementVolume, CameraFactor_DoublesWithDistance)     // perspective, pixel_angle * pixels_per_cell / w_min
+                                                                   // = 1 per m (fov and resolution chosen for it),
+                                                                   // camera far along -x: samples whose distance is
+                                                                   // 2 m and 4 m: codes 4 and 8 exactly; 0.5 m: 0
+  TEST(BuildRefinementVolume, CameraOrthographic_Constant)          // orthographic_width / resolution_x * 2 / w_min = 4:
+                                                                   // every code 8
+  TEST(BuildRefinementVolume, CameraOff_SameAsNoCamera)             // enabled false with keys: bytes equal to none
+  TEST(BuildRefinementVolume, CameraTimesZone_Multiplies)           // zone 0.5 at a sample whose camera factor is 4:
+                                                                   // code 4 (0.5 x 4 = 2)
+  TEST(BuildRefinementVolume, OpenMesh_IsRefinementMeshNotClosed)   // the cube mesh less one triangle: 3 open edges
+  TEST(BuildRefinementVolume, CameraOnWithoutKeys_IsRefinementCameraMissing)
+  TEST(BuildRefinementVolume, PyramidLayers_AreMinOfChildren)       // random codes (P: seed 20261115): every layer
+                                                                   // entry == min of its children
+  ```
+- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Build the refinement
+  volume from zones and the camera`. New names: the Produces list.
+
+### Task 29d: Refinement volume files, scene fields, `build-refinement` and the run (A78, A79)
+
+**Amended 2026-11-15 (A78, A79):** new task.
 
 **Kind:** integration
 
 **Files:**
-- Create: `native/fluidity/io/cell_size_map.cc` (private: `ReadCellSizeMap`), `cell_size_map_test.cc`
-- Modify: `conanfile.py` and `conan.lock` (`libspng/0.7.4`, with its `zlib`; **to verify** that Conan Center has
-  this version, else the newest 0.7.x, recorded in the commit body; chosen over libpng because it reports errors by
-  return code, with no `setjmp`, which suits a library built without exceptions), the `io/` CMake lines
-  (`find_package(SPNG CONFIG REQUIRED)` with the target name the recipe gives, SYSTEM, private to `fluidity`),
-  `schemas/simulate/v2/scene_file.fbs`, `ready_scene.fbs`, `native/fluidity/io/run_scene.h`, `run_scene.cc`,
-  `run_scene_test.cc`, `run.cc`, `io_test_support.h`, `io_test_support.cc` (`WriteGreyPng`)
+- Create: `native/fluidity/io/refinement_volume_files.cc` (OpenVDB read and write), `refinement_volume_files_test.cc`
+- Modify: `schemas/simulate/v2/scene_file.fbs` (`refinement_sample_spacing_log2: ubyte = 2`, `refinement_zones:
+  [SceneRefinementZone { zone_id; name; shape: string (box | ellipsoid | closed_mesh); cell_size_factor: double = 1;
+  mesh_file: string; keys: [SceneZoneKey { time; origin; orientation; half_size; }] }]`, `refinement_camera:
+  SceneRefinementCamera { enabled: bool = false; pixels_per_cell: double = 2; keys: [SceneCameraKey { time; position;
+  orientation; orthographic: bool; horizontal_field_of_view; orthographic_width; resolution_x; resolution_y; }] }`,
+  `refinement_volume_files: [SceneRefinementFile { time; file; }]`), `ready_scene.fbs` (the layout and the key times;
+  the codes in `inputs/refinement_codes`), `run_scene.h/.cc` (`RunScene::refinement_volume()`), `run.cc` (the
+  `resize_cells` wrapper and `BuildCellResize`), `run_folder.cc` (the listed `inputs/refinement_codes`),
+  `cli/commands.cc` (`build-refinement`), `docs/glossary.md`
+- Remove: nothing of the former Task 29b exists (it is replaced before being built).
 
 **Interfaces:**
-- Scene file (top level, both optional): `cell_size_regions: [SceneCellSizeRegion { low_corner: Vec3; high_corner:
-  Vec3; cell_width: double; }]` (m, world; `cell_width` 0 means the smallest cell width, the add-on's default) and `cell_size_map: SceneCellSizeMap { image: string; }` (a path relative
-  to the scene file's folder; a PNG, 8- or 16-bit grey). Either one without a `cell_resize` table is
-  `kSceneValueOutOfRange` at `cell_size_regions` / `cell_size_map` (detail "needs cell_resize").
-- Checks (`CheckSceneFile`, each with its path): corners finite and `low < high` on each axis (at
-  `cell_size_regions[i].high_corner`); `cell_width` finite and either 0 or `>= smallest_cell_width` (a width
-  between them cannot be honoured; at `cell_size_regions[i].cell_width`); at most 65,536 regions (the header short-list
-  limit); the image: missing `kFileNotFound`, unreadable `kFileNotReadable`, not a PNG or damaged `kFileDamaged`,
-  a PNG that is not grey (colour type 0) with bit depth 8 or 16 `kWrongFileKind` (palette, alpha, colour and 1, 2
-  or 4 bits are refused, never converted), each with the scene path `cell_size_map.image` in `detail`; width and
-  height each 1 to `kMaxCellSizeMapSidePixels = 8192` (a starting value: 64 MiB of levels at most) else
-  `kSceneValueOutOfRange`.
-- Rounding (once, on the CPU, at `BuildRunScene`): `widths.width[l] = grid::ComputeCellWidth(frame, l)`; a region's
-  `size_level` = the smallest `l` with `widths.width[l] <= cell_width` (exact comparison; `grid::
-  ComputeWantedSizeLevel(widths, cell_width)`). A map pixel `p` of maximum `p_max` (255 or 65535), with `L =
-  size_level_count`: 0 when `p == 0`, else `(2 p (L - 1) + p_max) / (2 p_max)` in unsigned 64-bit integers
-  (`round(p / p_max x (L - 1))`, halves up, with no floating point). Gamma and colour profile chunks are ignored:
-  the stored sample values are used. Rows are flipped: `map_levels[r x width + c]` is PNG row `height - 1 - r`,
-  so row 0 is the domain's low y (PNG row 0 is the top of the image, the high y seen from above, Z-up).
-- `RunScene` gains `grid::ArtistCellSizes artist_cell_sizes() const;` (CPU views into its own vectors of
-  `grid::CellSizeRegion` and `std::uint8_t` map levels; `domain_low_corner`, `domain_width_x`, `domain_width_y` from
-  the domain box; all zero and null without artist inputs). `ready_scene.fbs` `physical` gains `cell_size_regions:
-  [CellSizeRegion { low_corner; high_corner; size_level: ubyte; asked_cell_width: double; }]` and
-  `cell_size_map_levels: [ubyte]`, `cell_size_map_width: uint`, `cell_size_map_height: uint` (scene paths
-  `cell_size_regions[]...` and `cell_size_map.image`), so `ReadRunScene` and a resume never read the image again and
-  a changed pixel changes the scene digest. `Run` passes `artist_cell_sizes()` to `cell_resize::BuildCellResize`
-  (Task 29, amended), which copies them into its own buffers on the run's processor (entries `"cell resize: cell
-  size regions"` and `"cell resize: cell size map"`, `kGivenCount`, are cell resize's).
-- Test helper (`fluidity_io_test_support`): `std::expected<void, IoFailure> WriteGreyPng(const Path& file,
-  std::uint32_t width, std::uint32_t height, std::uint8_t bit_depth, std::span<const std::uint16_t> samples)`
-  (rows top first, as in the file; libspng's encoder).
+- Produces: `WriteRefinementVolume`, `ReadRefinementVolume`, the `user_volume` path of `BuildRefinementVolume`,
+  `RunScene::refinement_volume()`, `CommandKind::kBuildRefinement`, the findings `refinement_zone_unsupported_display`
+  (from the add-on's scene: a zone `shape` string other than the three), `cell_size_factor_clamped`,
+  `refinement_camera_on` (NOTE with the camera consequence sentence), `refinement_volume_mismatch`.
+- **Plan decisions.** A mesh file is binary little-endian PLY with `vertex` (x, y, z float) and `face` (uchar count
+  3, uint indices); anything else is `kWrongFileKind`. OpenVDB: one `FloatGrid` named `cell_size_factor` per key,
+  background 1, voxel size `2^p w_min`, transform translating voxel `(0,0,0)`'s centre to `origin + 0.5 * spacing`,
+  values `2^(code / 4)` of layer 0 only; `refinement_keys.json` `{"keys": [{"time": t, "file": name}]}`. Reading a
+  user VDB: every active voxel's box is intersected with the lattice; a sample takes the smallest factor of the
+  voxels its box overlaps, 1 where none; then the product and code rule of Task 29b. `inputs/refinement_codes` holds
+  every key's full pyramid (FluidiTy array file, one array per key, key times in its header); a resume reads it and
+  never rebuilds. `Run`'s `resize_cells` wrapper keeps the index of the last key written; before calling
+  `cell_resize::ResizeCells` it finds the key at or before the committed time and calls `WriteRefinementFactors` when
+  the index differs (also before the first resize). `ReadyScene::refinement_code_count` and `refinement_key_count`
+  are filled. The CPU entry `"io: refinement keys"` (`kCpu`, `kWholeRun`, `key_count x code_count` B) is added to the
+  scene budget. Fields only with `cell_resize` (else `kSceneValueOutOfRange`, detail "needs cell_resize").
 
-- [ ] **Step 1: Failing tests** (`LABEL cpu`; base scene `cell_resize.json`: smallest cell 0.01 m, 5 levels, widths
-  0.16, 0.08, 0.04, 0.02, 0.01 m at levels 0 to 4):
+- [ ] **Step 1: Failing tests** (`LABEL cpu`; Task 29b's frame and lattice):
 
   ```cpp
-  TEST(BuildRunScene, CellSizeRegion_WidthRoundedToLevel)      // asked 0.03 -> level 3; 0.04 -> 2 (exact);
-      // 0.16 -> 0; 0.01 -> 4; 0 -> 4 (the smallest); asked_cell_width recorded as given
-  TEST(CheckSceneFile, RegionWidthBelowSmallest_IsValueOutOfRangeWithPath)  // 0.005: cell_size_regions[0].cell_width
-  TEST(CheckSceneFile, RegionCornersNotOrdered_IsValueOutOfRange)  // high z below low z: cell_size_regions[0].high_corner
-  TEST(BuildRunScene, CellSizeMapEightBit_PixelToLevel)        // samples 0, 31, 32, 128, 255 -> 0, 0, 1, 2, 4
-  TEST(BuildRunScene, CellSizeMapSixteenBit_PixelToLevel)      // samples 0, 8192, 32768, 65535 -> 0, 1, 2, 4
-  TEST(BuildRunScene, CellSizeMapTopRow_IsHighY)               // 2 x 2, top-left 255, others 0: map_levels {0, 0, 4, 0}
-  TEST(CheckSceneFile, CellSizeMapColour_IsWrongFileKind)      // an 8-bit RGB PNG; detail holds cell_size_map.image
-  TEST(CheckSceneFile, CellSizeMapMissing_IsFileNotFound)
-  TEST(CheckSceneFile, CellSizeMapTooWide_IsValueOutOfRange)   // 8193 x 1
-  TEST(CheckSceneFile, ArtistSizesWithoutCellResize_IsValueOutOfRange)
-  TEST(SceneDigest, CellSizeMapPixelChangesIt)                 // one sample 128 -> 255 changes scene_digest
-  TEST(ReadRunScene, ArtistCellSizesRestoredWithoutTheImage)   // the PNG deleted after BuildRun: regions and
-      // map_levels read back equal, width and height equal
-  TEST(BuildRun, ArtistCellSizesReachCellResize)               // a calm pool 0.4 m deep, one region over the whole
-      // domain asking 0.01 m: after 1 s every active liquid cell is at level 4; the same scene without the region
-      // has cells at level 3 or coarser below 0.08 m depth
+  TEST(WriteRefinementVolume, WrittenAndRead_SameCodes)            // Task 29b's moving-zone volume written then read
+                                                                   // back as a user volume: layer-0 codes equal bytes
+  TEST(ReadRefinementVolume, CoarserUserGrid_SmallestOverlapped)   // a VDB of voxel 0.08 m with one voxel at 0.5:
+                                                                   // the 2 x 2 x 2 samples under it get -4
+  TEST(ReadRefinementVolume, ValueAbove64_ClampedWithNote)         // a voxel at 100: code 24, cell_size_factor_clamped
+  TEST(ReadSceneText, CellSizeMap_IsUnknownSceneField)             // an old scene with cell_size_map
+  TEST(CheckSceneFile, ZoneWithoutCellResize_IsValueOutOfRange)
+  TEST(CheckSceneFile, UnknownZoneShape_IsRefinementZoneUnsupportedDisplay)   // shape "cone"
+  TEST(SceneDigest, ZoneFactorChangesIt)
+  TEST(BuildRun, RefinementKeyWrittenOnKeyChange)                  // 3 keys at 0, 0.5, 1.0 s, a 1.2 s run: the wrapper
+                                                                   // calls WriteRefinementFactors 3 times, at the first
+                                                                   // resize at or after each key time
+  TEST(BuildRun, FactorHalfZoneReachesCellResize)                  // a calm pool 0.4 m deep, a box zone 0.5 over the
+                                                                   // deep middle: after 1 s every deep cell in the box
+                                                                   // is one level finer than without the zone
+  TEST(Resume, RefinementCodesReadNotRebuilt)                      // the zone's mesh file deleted after BuildRun: the
+                                                                   // resume succeeds with equal codes
+  TEST(Cli, BuildRefinement_WritesVdbPerKey)                       // build-refinement on the moving-zone scene: 2 VDB
+                                                                   // files and refinement_keys.json; exit 0
+  TEST(Check, CameraOn_PrintsCameraNote)                           // refinement_camera_on in the findings
   ```
-- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate (the container fetches libspng and zlib).
-  **Commit.** Subject: `Read artist cell sizes from regions and a top-view map`. New names:
-  `RunScene::artist_cell_sizes`, `kMaxCellSizeMapSidePixels`, `WriteGreyPng` (test support); body: the libspng
-  version and why it was chosen.
+- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Read and write refinement
+  volumes and feed them to the run`. New names: the Produces list.
 
 ### Task 29c: The force of the liquid on every solid in `frame_done` and the run report
 
@@ -2814,12 +2884,11 @@ packing-memory choices.
   the owner); Foundation as built (amended 2026-11-14): `fluidity_apply_compile_flags` on `fluidity_cli_parts`,
   `fluidity_cli` and `fluidity_command_line`, the `noexcept` wrapper in place of a test built without exceptions,
   `fluidity_io_test_support` made in Task 15, `SnapshotPackingBuffers` as CPU packing memory and its largest size;
-  (amended 2026-11-15) the A40-A64 pass: no grid-only region (the later group stays open), artist cell sizes and
-  the libspng version, the slip length as two fields, `free_solid` naming, the budget rule and the warnings without
+  (amended 2026-11-15) the A40-A64 pass: no grid-only region (the later group stays open), the refinement volume (A78, A79; replaced artist cell sizes and libspng), the slip length as two fields, `free_solid` naming, the budget rule and the warnings without
   margins with `kMemoryTakenToleranceBytes` for the owner's Windows run, the viscosity advice lines, the liquid
   force rows, resume in the recorded mode and `kOutOfMemory` last; (amended 2026-11-15) the A65-A68 pass: the start
   seeded on `step::BuildStartCells`' cells (`BuildStartParticles`, the jitter of `w / 8`, explicit particles as balls of
-  radius `w_min / 2` for the start cells, the smallest-level artist region without cell resize, the resume planned on
+  radius `w_min / 2` for the start cells, the all-pinned start without cell resize (A78), the resume planned on
   its saved state), sources at the smallest size without a `size_level` field, the `start:` and `batches:` budget lines
   and the A65 particles line, `ParticleSizeChange` in `frame_done` and the run report.
 - [ ] **Step 4: `docs/gpu-runs.md`:** an `io and cli` row, `compiled, not run`, listing the `gpu` tests of Task 41.

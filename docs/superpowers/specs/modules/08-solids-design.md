@@ -2071,3 +2071,14 @@ pressure and measures. Alternative: the measurement moves to pressure and this m
 Decision: the step calls `solids::DriveWaves` in stage `DriveWaves`, which calls
 `pressure::ApplyOpenSeaRelaxation` and measures. Recommended option (owner's standing instruction,
 2026-11-14).
+
+**Decision (A74, 2026-11-15): round solids.** Contact now has `kSphere` and `kCylinder` (`contact::Sphere`,
+`contact::Cylinder`, `half_size` `{r, r, r}` / `{r, r, half_height}`). Decision: `SolidSettings::shape` may name
+either for fixed, driven and free solids; faces, coverage, the motion map, `BuildContactSolids` and the reaction sums
+use contact's distance, normal and velocity unchanged, so no formula here changes. `BuildTry`'s too-close check uses a
+free sphere's centre distance minus `r`, and a free cylinder's `half_size` box corners; travel radius is
+`Length(half_size)` for every bounded shape. A spin about a round solid's symmetry axis is not limited by
+`kMaxTurnPerStep` (contact P17), so a driven roller may spin fast. Free-solid inertia stays a setting (I/O derives it
+from mass and shape). New tests: `ComputeSolidCoverage, Sphere_BlockedAreaConverges`, `BuildTry,
+FreeSphereHalfACellFromWall_IsSolidsTooClose`; the viscosity design's settling sphere is a free `kSphere`. Source:
+owner answer A74; `plan-decisions.md` "Sphere and cylinder in contact (A74)".

@@ -219,10 +219,12 @@ class RunScene {
   Digest scene_digest() const;                          // 3.4. Of the physical part only.
   Digest scene_file_digest() const;                     // Of the scene file's bytes as written.
   std::span<const std::uint8_t> ready_scene_bytes() const;  // The listed ready_scene file's description table.
-  // NEW (A63). CPU views into this RunScene's cell size regions (asked widths rounded to levels at load) and top-view
-  // map levels (row 0 at the domain's low y), with the domain box's low corner and x, y widths. All zero and null
-  // without artist inputs. Handed to cell_resize::BuildCellResize, which copies them to the run's processor.
-  grid::ArtistCellSizes artist_cell_sizes() const;
+  // CHANGED (A78, A79; replaces the A63 artist_cell_sizes()). The refinement volume built at load (3.10) from the
+  // scene's refinement_zones, refinement_camera and refinement_volume_files, every key on the CPU (min-with-next
+  // applied). layout.count_x == 0 and no keys without any of them. cell_resize::BuildCellResize takes its layout; the
+  // run's resize_cells callback writes the key at or before the committed time with WriteRefinementFactors when it
+  // changes; step::BuildStartCells reads the first key.
+  const RefinementVolume& refinement_volume() const;
   // NEW (A66; StartRegion and ExplicitParticle from io/start_particles.h, below, which run_scene.h includes).
   // The start regions, ascending region_id, and their shapes in the same order, contiguous, for
   // step::BuildStartCells; with a start_particles_file, one kBall shape of radius w_min / 2 per explicit particle
@@ -759,7 +761,10 @@ enum class ExitCode : int {
 };
 ExitCode ToExitCode(const IoFailure& failure);
 enum class CommandKind : std::uint8_t { kCapabilities, kCheck, kRun, kResume, kReport, kReadParticle,
-                                         kVersion };   // NEW (A49). Prints one line on standard output, exit 0.
+                                         kVersion,      // NEW (A49). Prints one line on standard output, exit 0.
+                                         kBuildRefinement };  // NEW (A78, A79), appended. `build-refinement <scene
+                                         // file> --into <folder>`: BuildRefinementVolume then WriteRefinementVolume
+                                         // (OpenVDB per key + refinement_keys.json); no run; exit 0 or the check's code.
 struct Command {
   CommandKind kind{};
   Path scene_file;                                       // check, run. Empty when not given.
@@ -1019,6 +1024,17 @@ max_plan_area_m2: double;`). NEW (A67, `run_report.fbs`):
 add-on reads these names (its `RunPlanFacts.budget`, drawn verbatim in
 `FLUIDITY_PT_performance`).
 
+
+### 3.10 `io/refinement_volume.h`: the refinement volume from zones, camera and files (NEW, A78, A79, CPU only)
+
+Declared exactly as `plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73, A77)" section 2:
+`RefinementZoneShape`, `RefinementZonePoseKey`, `RefinementZone`, `RefinementCameraKey`, `RefinementCamera`,
+`RefinementKey`, `RefinementKeyFile`, `RefinementVolume`, `BuildRefinementVolume`, `WriteRefinementVolume`,
+`ReadRefinementVolume`. Failures are `IoFailure` (`kBadInput` / value-out-of-range with the scene field path,
+`kFileNotFound`, `kWrongFileKind`). Findings: `refinement_camera_missing`, `refinement_mesh_not_closed`,
+`refinement_zone_unsupported_display`, `cell_size_factor_out_of_range`, `cell_size_factor_clamped`,
+`refinement_camera_on`, `refinement_volume_mismatch`.
+
 ## 4. Consumes from other modules
 
 Every item is EXISTS (Foundation, including the `base/` additions of `changes-to-apply.md`) or PROVIDED (by a
@@ -1056,7 +1072,7 @@ spreading_in_cells, reynolds_number, advises_zero_viscosity}`, `viscous_effect_r
 `particles_at_depth_levels`, `ReadyScene::cell_size`, NEW (A40) `BuildRunPlan(..., cell_resize_estimate,
 std::optional<RunMode> forced_mode)`, NEW (A60)
 `StepReport::liquid_force_on_solids`, NEW (A66) `StartRegionShape`, `StartCells` (`cells`, `cells_per_level`,
-`refine_passes`, `closure_passes`), `BuildStartCells(regions, solids, frame, cell_size, artist, max_cell_count)`
+`refine_passes`, `closure_passes`), `BuildStartCells(regions, solids, frame, cell_size, refinement, factor_table, max_cell_count)` (A78)
 (`step/start_cells.h`, failing `StepError::kTooManyCellBlocks` with magnitude the cell count and limit the maximum,
 or `kBadInput`; `StartRegionShape::count_rule` (`particles::CountRule`)), `SceneCounts::{start_cells_per_level,
 start_particle_count, start_cell_blocks}`, `ReadyScene::start_cells` (read by `BuildRunPlan` and `BuildSimulation`,
@@ -1114,14 +1130,14 @@ saved state and restored by the step with `BuildGasAmountsFromSnapshot`), `ToNam
 **Contact, grid, pressure, viscosity, transfer (PROVIDED):** `contact::DomainBox`, `ClosedSides`,
 `SolidShape` (`kPlate` makes `materials::PlatesInScene::kSome`), `SolidPose`, `DomainSide`; `grid::GridFrame`,
 `CellId`, `FacePieceId`, `kMaxSizeLevels`, NEW (A41, A63) `CellSizeSettings`, `CellWidthsByLevel`,
-`CellSizeRegion`, `ArtistCellSizes`, `ComputeCellWidth`, `ComputeWantedSizeLevel` (`grid/cell_size_rule.h`); `pressure::OpenSeaSettings`, `OpenSeaWave`, `SolveSettings`,
+(A78) `RefinementFactors`, `CellSizeFactorTable`, `ComputeCellSizeFactorTable`, `ComputeCellWidth`, `ComputeWantedSizeLevel` (`grid/cell_size_rule.h`); `pressure::OpenSeaSettings`, `OpenSeaWave`, `SolveSettings`,
 `AirPocketSettings`, `VolumeCorrectionSettings`, `AirPocket`, `BlobHistory`, `PressureLaw`;
 `viscosity::ViscositySettings`; `transfer::TransferSettings`; each module's `ToMessage` and `ToName`. Each
 settings struct is read field by field when the ready scene is written; it holds plain values only.
 
 **Cell resize and batches (PROVIDED, 3.4, 3.7):** `cell_resize::CellResizeSettings` (its `cell_size` is
-`grid::CellSizeSettings`, A41), `BuildCellResize(settings, limits, ingredient_count, const grid::ArtistCellSizes&
-artist, RunMemory& run_memory, RunMemory& cpu_run_memory)` (A63, A58), `CellResize`, `ResizeCells`, `ReadLastReport` (resize count for the run
+`grid::CellSizeSettings`, A41), `BuildCellResize(settings, limits, ingredient_count, const grid::RefinementFactors&
+refinement_layout, RunMemory& run_memory, RunMemory& cpu_run_memory)` (A78, A58), `WriteRefinementFactors` (A78), `CellResize`, `ResizeCells`, `ReadLastReport` (resize count for the run
 report); ~~`CellSizeSettings` (moved to grid), `ChooseCellSize` (removed, A41)~~; `RegionSettings`,
 `ApplyGridOnlyRegionInStep`, `MoveGridOnlyLiquidInStep`, `ReadLargestGridOnlySpeed`: not in the first version (A64;
 the later group);
@@ -1224,8 +1240,8 @@ for every material, one internal file format, and open formats for everything a 
      exactly; elsewhere the boundary cells are cut at eighth resolution of their own width, so a coarse cell
      touching the region's boundary is never coarse (the boundary is surface, which the rule keeps at the smallest
      level unless the region's side lies on a closed domain side or in a solid). Without `cell_resize` the start
-     cells are all smallest (a `cell_size` with `smallest_size_level = new_cell_size_level` and an artist region over the
-     domain at that level, built in `BuildRun`).
+     cells are all smallest (a `cell_size` with `smallest_size_level = new_cell_size_level` and, A78,
+     `surface_reach_in_cell_widths` +infinity, so every cell is in the pinned band; built in `BuildRun`).
    - Sources: the file gives `volume_rate` (m3/s). `rest_volume = (w_min/2)^3` (**replaced**, A66: was
      `particle_spacing^3` at the source's size level; sources sit at the surface, where cells are smallest; the
      scene field `sources[].size_level` is removed), `size_level = smallest_size_level`, `mass = rest_density *
@@ -1235,7 +1251,10 @@ for every material, one internal file format, and open formats for everything a 
      y, z, own axes to world); `angular_velocity_until_next = ComputeRotationVector(key, next) / (next.time -
      key.time)`, zero on the last key. A wave paddle (`wave_stroke`) becomes `BuildWavePaddlePath` keys up to
      `end_time`. A free box with no inertia given gets `mass / 3 * (b^2 + c^2, a^2 + c^2, a^2 + b^2)` for half
-     sizes `a, b, c`. `blocking_materials`: every material with `HasInternalForce`, `particle_radius =
+     sizes `a, b, c`; NEW (A74) a free sphere `0.4 m r^2` on each axis, a free cylinder `m (3 r^2 + 4 h^2) / 12` on x
+     and y and `m r^2 / 2` on z (`h` the half height); `solids[].shape` `sphere` and `cylinder` carry `half_size` `{r, r,
+     r}` and `{r, r, h}` (contact's convention), and a sphere with unequal half sizes or a cylinder with `x != y` is
+     `kBadInput` at its field path. `blocking_materials`: every material with `HasInternalForce`, `particle_radius =
      w_min / 4` m (blocking materials are always at the smallest level; was `particle_spacing / 2`, the same value).
      NEW (A66): the surface distance radius of a particle is the scene setting `particle_radius_in_cell_widths`
      (top-level scene field into `ReadyScene`, default 0.5, above 0, physical part), scaled by each particle's cell width. `has_liquid_or_gas`: some material is `kLiquid` or `kGas`. Plates are the solids
@@ -1252,7 +1271,12 @@ for every material, one internal file format, and open formats for everything a 
    - NEW (A53) Slip length: per solid `slip_length` (m, >= 0, default 0) or `free_slip: true` (+infinity), not both;
      read for every motion kind (on a free solid `check` gives the NOTE finding `slip_ignored_on_free_solid`, not a capability reason). `plan-decisions.md` writes `"free"` or
      a number; the schema has one type per field, so two fields carry it.
-   - NEW (A63) Artist cell sizes: `cell_size_regions [{low_corner, high_corner, cell_width}]` and `cell_size_map
+   - REPLACED (A78, A79): no `cell_size_regions`, no `cell_size_map` (an old scene file that has them gets
+     `kUnknownSceneField`). NEW: `refinement_sample_spacing_log2` (default 2), `refinement_zones[]`,
+     `refinement_camera`, `refinement_volume_files[]` (3.10), only with `cell_resize`; `BuildRefinementVolume` runs
+     here (CPU) and its codes go into the run folder's `inputs/refinement_codes` (FluidiTy array file, listed, read
+     on a resume instead of rebuilding; the OpenVDB files are for display and are not read back by a resume).
+     The A63 text that follows is history: `cell_size_regions [{low_corner, high_corner, cell_width}]` and `cell_size_map
      {image}` (PNG, 8- or 16-bit grey, path relative to the scene file), only with `cell_resize`. A region's level is
      the biggest level whose width (`grid::ComputeCellWidth`) is at most `cell_width` (exact comparison; 0 means the
      smallest width, the add-on's default; above 0 and below the smallest width: refused); a pixel `p` of maximum `p_max` gives 0 when `p == 0`, else `(2 p (L - 1) + p_max) /
@@ -1359,7 +1383,9 @@ then zeros up to a multiple of 64, then the arrays, each starting at a multiple 
              frame_inputs/000042.inputs
              outputs/points_17/points.000042.abc     outputs/surface_3/surface.000042.abc    (render output 5.7)
              tmp/                never read
-             inputs/cell_size_map.png   NEW (A63). Written by the add-on; read once by BuildRunScene; not listed
+             inputs/refinement_codes    NEW (A78). Every key's codes, written once by a new run, listed; read by resume
+             inputs/refinement/cell_size_factor_<key>.vdb, refinement_keys.json   NEW (A78). OpenVDB per key, display
+             inputs/refinement/zone_<id>.ply   NEW (A78). A closed-mesh zone, written by the add-on
 ```
 
 **File list.** A 16-byte start ("FLUIDITY", version, kind), then entries. An entry is: byte count (32 bits),
@@ -1488,9 +1514,10 @@ markers and the seven arrays (gas beside liquid, A10: both in one file, the mark
 1. Build the `RunScene` (5.1).
 2. `step::CheckSceneCanRun`. A blocking finding ends here: nothing was allocated.
    2a. NEW (A66), new run and `check` only: `step::BuildStartCells(scene.start_region_shapes(), every solid
-   at `pose_at_step_start` (the `DomainBox` solid included), grid_frame, cell_size, artist, 64 x
-   grid::kMaxCellBlocksLimit)` (with cell resize: `ready.cell_size` and `artist_cell_sizes()`; without: a
-   `cell_size` whose `smallest_size_level` equals `new_cell_size_level` and one region over the domain at that level;
+   at `pose_at_step_start` (the `DomainBox` solid included), grid_frame, cell_size, refinement (A78), factor table, 64 x
+   grid::kMaxCellBlocksLimit)` (with cell resize: `ready.cell_size` and the first key of `refinement_volume()` with
+   `grid::ComputeCellSizeFactorTable()` (A78); without: a `cell_size` whose `smallest_size_level` equals
+   `new_cell_size_level`, `surface_reach_in_cell_widths` +infinity and no volume;
    each shape's `count_rule` from its region's material), then `BuildStartParticles` (3.2), then
    `ReadyScene::start_cells = StartCells::cells` in the plan's copy of the ready scene. CPU only; `kTooManyCellBlocks`
    (magnitude the cell count, limit the maximum) or `kBadInput` ends here. A resume never builds the start: it reads its saved state here and
@@ -1512,8 +1539,8 @@ markers and the seven arrays (gas beside liquid, A10: both in one file, the mark
    `RunState` (amended 2026-11-15: `choose_cell_size` removed, A41; `apply_grid_only_region`,
    `move_grid_only_liquid`, `read_largest_grid_only_speed`: not in the first version, A64). `step::BuildSimulation`
    reserves the run's one `RunMemory` block from the whole plan first (A58); right after it `Run` builds `CellResize`
-   with `BuildCellResize(settings, plan.limits, ingredient_count, scene.artist_cell_sizes(), run_memory,
-   cpu_run_memory)` and
+   with `BuildCellResize(settings, plan.limits, ingredient_count, scene.refinement_volume().layout, run_memory,
+   cpu_run_memory)` (A78; its `resize_cells` callback writes the current key before each resize when it changed) and
    `BatchedRun` with `BuildBatchedRun(batch_plan, scene, run_memory, cpu_run_memory)`, `run_memory = step::FindRunMemory(simulation)`,
    `cpu_run_memory = step::FindCpuRunMemory(simulation)` (the same object in a CPU run),
    and owns both (they were planned in step 3, so they fit the block); `limits_raised` (NEW, reconcile) has the
@@ -1731,7 +1758,7 @@ blocks inside the room `R`, so `max_plan_area = R x 16 w_min^2 / (n x b)`: about
 on a 16 GB GPU (`tradeoff-particles.md` 1.6).
 The deep-cell count is honest about cost: with the depth term the cells below the band number less than `4 A /
 w_min^2` against `8 A / w_min^2` in it, so particles everywhere cost at most about 1.5 times the band (toward 2 with
-discrete levels); scenes whose deep cells cannot coarsen (one level, strong shear, artist regions, a deep solid or
+discrete levels); scenes whose deep cells cannot coarsen (one level, strong shear, refinement factors below 1, a deep solid or
 gas pocket) grow with depth, which this line names.
 
 **Liquids lines** (NEW, A25; only when `liquids` is not empty, right before the last `fits:` line; `%g` for viscosity
@@ -2006,7 +2033,11 @@ Tests that need render output's writers (21) are in `cli/`'s test target, which 
     `NegativeSlipLength_IsValueOutOfRangeWithPath`. Wind: `BuildRunScene, WindWithoutGas_KeysKept`, `CheckSceneFile,
     WindTimesNotAscending_IsValueOutOfRangeWithPath`, `ReadSceneText, GasWindField_IsUnknownSceneField`. Cell resize:
     `ReadSceneText, RegionsTable_IsUnknownSceneField`, `BuildRun, CellResizeAndBatchesInTheOneBlock` (one block,
-    handed out = planned). Artist sizes (5 levels, 0.16 to 0.01 m): `BuildRunScene, CellSizeRegion_WidthRoundedToLevel`
+    handed out = planned). Refinement volume (A78, A79): the builder tests of 3.10 (`BuildRefinementVolume, ...`,
+    `WriteRefinementVolume, WrittenAndRead_SameCodes`, `ReadRefinementVolume, CoarserUserGrid_SmallestOverlapped`),
+    `ReadSceneText, CellSizeMap_IsUnknownSceneField`, `BuildRun, RefinementKeyWrittenOnKeyChange` (3 keys: the
+    callback writes 3 times, at the first resize at or after each key time), `Resume, RefinementCodesReadNotRebuilt`,
+    `SceneDigest, ZoneFactorChangesIt`. REPLACED (A78), history only: Artist sizes (5 levels, 0.16 to 0.01 m): `BuildRunScene, CellSizeRegion_WidthRoundedToLevel`
     (0.03 -> 3, 0.04 -> 2, 0.16 -> 0, 0 -> 4), `CellSizeMapEightBit_PixelToLevel` (0, 31, 32, 128, 255 -> 0, 0, 1, 2, 4),
     `CellSizeMapSixteenBit_PixelToLevel` (0, 8192, 32768, 65535 -> 0, 1, 2, 4), `CellSizeMapTopRow_IsHighY`;
     `CheckSceneFile, RegionWidthBelowSmallest_IsValueOutOfRangeWithPath`, `RegionCornersNotOrdered_IsValueOutOfRange`,
@@ -2123,7 +2154,7 @@ is the step's (its decision 9).
 | emission source rate in particles per second | `volume_rate` in the scene file | NEW |
 | (planned memory and copies shown before a run; what a run used) | `RunBudget`, `budget`, `BudgetVerdict`, `ModeReason`; `RunCost`, `cost`; `TimeProjection` | NEW; A22 allows `budget` for a planned cost shown to the user |
 | `gas_wind` (scene field) | `wind` | A47 |
-| refinement region, refinement map | `cell_size_regions`, `cell_size_map`, `grid::CellSizeRegion`, `ArtistCellSizes` | A63 |
+| refinement region, refinement map | `refinement_zones`, `refinement_camera`, `refinement_volume_files`, `io::RefinementVolume`, `grid::RefinementFactors`, "cell size factor" (A78, A79; replaced `cell_size_regions`, `cell_size_map`, `CellSizeRegion`, `ArtistCellSizes`) | A63, A78 |
 | (old percentage warning margins) | `kMemoryTakenToleranceBytes`; warnings by amount | A43, A58 |
 | (a resume in another mode) | `RunModeChange`, `run_mode_changes`, `--choose-mode-again`, `kRecordedModeDoesNotFit` | A40 |
 | start particles on a lattice of `w_min / 2` over every start region | `StartRegion`, `BuildStartParticles`, `StartParticleArrays`, `step::BuildStartCells`, `StartCellsAtLevel`; "about eight particles per liquid cell, sized to their cell" | A65, A66 |
@@ -2372,7 +2403,7 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     version (A64)" and their tasks form the later group (I/O plan Task 42a), owned by the cell resize group. The
     budget names the deep particles of a scene that does not fit.
     Decision: as stated (owner answer A64; `plan-decisions.md` "Owner answers A40-A64 applied", item 1).
-31. **Artist cell sizes and the shared rule (A41, A63).** `cell_size_regions` and `cell_size_map` read, checked,
+31. **Artist cell sizes and the shared rule (A41, A63). REPLACED by decision 45 (A78, A79).** `cell_size_regions` and `cell_size_map` read, checked,
     rounded to levels and recorded in `physical`; handed to `BuildCellResize` through `RunScene::artist_cell_sizes()`;
     `choose_cell_size` removed; PNG decoded by libspng; `kMaxCellSizeMapSidePixels = 8192` (starting value); a region
     `cell_width` of 0 means the smallest cell width (the add-on's default).
@@ -2431,7 +2462,7 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     explicit particles are balls of radius `w_min / 2` for the start cells; without cell resize the start cells are
     smallest. **Replaces** decision 12's "8 particles per smallest cell with a quarter-spacing jitter".
     Decision: as stated (owner answer A66; `plan-decisions.md` "Owner answers A65-A68 applied", A66); the jitter of
-    `w/8`, the explicit-particle balls, the smallest-level artist region without cell resize, the resume plan on the
+    `w/8`, the explicit-particle balls, the all-pinned start without cell resize (A78; was a smallest-level artist region), the resume plan on the
     saved state and the removed source field are this design's (see Open 8).
 43. **Particles whose size no longer matches their cell (A67).** The saved state holds `merge_wait_passes`;
     `frame_done` and `run_report.json` carry `size_change_kinetic_energy_j` (C++ `size_change_kinetic_energy`; J, summed over the frame's committed
@@ -2441,6 +2472,20 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     surface; the budget says so with the `batches:` line and the plan-area limit `R x 16 w_min² / (n x b)` from
     `batches::SlabLimit`. The grid-only group is the last later group.
     Decision: as stated (owner answer A68; `plan-decisions.md` "Owner answers A65-A68 applied", A68).
+
+45. **The refinement volume is built here (A77, A78, A79; reshapes A72, A73).** NEW `io/refinement_volume.h` (3.10,
+    CPU only) turns authored refinement zones (box, ellipsoid, closed mesh; each with a cell size factor and pose
+    keys), the optional camera term (off by default) and any user OpenVDB volume into the solver's keyed volume of
+    one-byte factor codes (a min-pyramid over the domain lattice, `grid::RefinementFactors`). Zones combine by the
+    smallest factor (A73), the camera and a user volume multiply in (A79), the result is clamped to 1/64..64 and
+    coded in quarter doublings. A closed mesh is rasterised by ray parity per lattice row (half-open rule), exact on
+    the CPU, no GPU twin; an open mesh is the blocking finding `refinement_mesh_not_closed`. Keys at the union of the
+    authored key times; key `k` stores the minimum with key `k + 1`. Output: OpenVDB `cell_size_factor` per key
+    (display, A14) and `inputs/refinement_codes` (the record; a resume reads it). CLI `build-refinement`. The camera
+    term (A77) gives `max(1, pixels_per_cell x distance x pixel_angle / w_min)`, distance only (no frustum),
+    `pixels_per_cell` 2 (this design's choice); `check` prints that the run then depends on the camera. Memory: CPU
+    entry `"io: refinement keys"` (`key_count x code count` B, `kCpu`, `kWholeRun`). Source: A72, A73, A77, A78, A79;
+    `plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73, A77)" (declarations and tests there).
 
 **Open**
 
@@ -2455,9 +2500,9 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
 5. ~~`kSmallestVisibleViscousEffectPerStep = 2.5e-4`~~ Decided (decision 33, A57): removed.
 6. The slip length as two scene fields (`slip_length`, `free_slip`) instead of plan-decisions' one field holding
    `"free"` or a number (decision 36); the add-on writes what this schema says. Owner to confirm.
-7. Starting values: `kMaxCellSizeMapSidePixels = 8192`, `kMemoryTakenToleranceBytes = 2 MiB`.
+7. Starting values: ~~`kMaxCellSizeMapSidePixels = 8192`~~ (removed with the map, A78), `kMemoryTakenToleranceBytes = 2 MiB`; (A77, A78) `pixels_per_cell = 2`, `refinement_sample_spacing_log2 = 2`.
 8. (A66) Details this design chose: start jitter `w/8` per axis (the old quarter-spacing rule at each cell's size);
-   explicit start particles as `kBall` shapes of radius `w_min / 2` for `BuildStartCells`; one smallest-level artist
-   region over the domain when the scene has no `cell_resize`; a resume plans on its saved state's cells and
+   explicit start particles as `kBall` shapes of radius `w_min / 2` for `BuildStartCells`; an all-pinned start (A78:
+   `surface_reach_in_cell_widths` +infinity) when the scene has no `cell_resize`; a resume plans on its saved state's cells and
    particles; `sources[].size_level` removed; `max_cell_count = 64 x grid::kMaxCellBlocksLimit` (the step's value). Owner to
    confirm.

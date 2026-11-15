@@ -1021,6 +1021,15 @@ holds about eight particles of its own size". This task follows Task 8a (it need
 **Amended 2026-11-15 (A66):** new task (`plan-decisions.md` "Owner answers A65-A68 applied", A66; design 3.12,
 5.15). Executed before Task 8 (whose `BuildDeepWaterScene` uses it); numbers are not changed.
 
+**Amended 2026-11-15 (A78, A79):** `BuildStartCells` and `ComputeStartCellFacts` take `const grid::RefinementFactors&
+refinement, const grid::CellSizeFactorTable& factor_table` (the first key of the refinement volume, CPU view; count 0
+for none) in place of `const grid::ArtistCellSizes& artist`; `cell_size_factor` is the smallest factor over the cell's
+box (`grid::ComputeCellSizeFactorCode`). "No artist input" below reads "no volume". `ApplyStartCellsForTest` passes no
+volume. Task 5's `ReadyScene` gains `refinement_code_count` and `refinement_key_count` (design 3), and Task 8's plan
+adds the entry "cell resize: refinement factors" (`refinement_code_count` B) and one planned copy per key in a GPU run
+(test `BuildRunPlan, RefinementVolume_CountsOneCopyPerKey`: 3 keys of 73 codes, GPU run: entry 73 B, copies 219 B over
+the run). New test below.
+
 **Kind:** numerics
 
 **Files:**
@@ -1032,7 +1041,7 @@ holds about eight particles of its own size". This task follows Task 8a (it need
 
 **Interfaces:**
 - Consumes: `grid::CellSizeSettings`, `CellWidthsByLevel`, `CellSizeFacts`, `ComputeWantedCellWidth(settings, widths,
-  reference_speed, facts)`, `ComputeCellWidth`, `CellSizeRegion`, `ArtistCellSizes`, `CheckSizeStepRule(const
+  reference_speed, facts)`, `ComputeCellWidth`, (A78) `RefinementFactors`, `CellSizeFactorTable`, `ComputeCellSizeFactorCode`, `CheckSizeStepRule(const
   GridFrame&, std::span<const CellId>)`, `ToCellId`, `kMaxSizeLevels` (grid plan); `contact::Solid`, `SolidPose`,
   `ComputeDistanceToSolid`, `ToSolid(DomainBox)`; `particles::CountRule`; `kCoveredReachInCellWidths` (Task 5);
   `StepError::kTooManyCellBlocks` (Task 3).
@@ -1041,14 +1050,15 @@ holds about eight particles of its own size". This task follows Task 8a (it need
 - **Plan decisions.** Private `start_cell_facts.h`: `struct StartCellFacts { grid::CellSizeFacts facts; bool
   meets_cover; bool meets_region_that_keeps_its_count; };` and `StartCellFacts ComputeStartCellFacts(std::span<const
   StartRegionShape> regions, std::span<const contact::Solid> solids, const grid::GridFrame& frame, const
-  grid::CellSizeSettings& cell_size, const grid::ArtistCellSizes& artist, grid::CellId cell);` (design 5.15 items
+  grid::CellSizeSettings& cell_size, const grid::RefinementFactors& refinement, const grid::CellSizeFactorTable&
+  factor_table, grid::CellId cell);` (A78) (design 5.15 items
   1, 2; used by `BuildStartCells` and its tests). The active set is kept as a sorted `std::vector<grid::CellId>`
   rebuilt per pass (fixed cell order: the result is the same bytes whatever the region order). Touching cells for
   the closure use grid 5.1 item 2 on that sorted list (26 neighbour positions per level, binary search). Test-only
   (`step_test_support.h`): `enum class TestStartCells : std::uint8_t { kFromBuildStartCells, kAllSmallest };` and
   `void ApplyStartCellsForTest(TestScene& test_scene, TestStartCells kind);`: builds the start cells from
   `test_scene.start_regions()` with `BuildStartCells` (solids of the scene at the start pose with the domain box,
-  no artist input, `max_cell_count` = `64 x grid::kMaxCellBlocksLimit`), or (`kAllSmallest`, for tests of
+  no refinement volume (A78), `max_cell_count` = `64 x grid::kMaxCellBlocksLimit`), or (`kAllSmallest`, for tests of
   coarsening, at the cell resize agent's request) the `kFromBuildStartCells` list with each cell replaced by all its
   descendants at `cell_size.smallest_size_level` (still a grid: every split cell keeps its 8 children); it then reseeds the start particles 8 per start cell at its level
   at the cell-eighth centres (inside a region and outside every solid, unjittered, ids x-fastest per cell in cell
@@ -1060,7 +1070,7 @@ holds about eight particles of its own size". This task follows Task 8a (it need
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`). The 2 m tank (plan decision, design 7 "Start cells"): closed domain
   1.6 x 1.6 x 2.4 m, water box `[0, 1.6]² x [0, 2.0]`, biggest cell 0.8 m, 6 levels (`w_min` 0.025 m),
-  `cell_size.smallest_size_level` 5, other settings default, no artist input.
+  `cell_size.smallest_size_level` 5, other settings default, no refinement volume (A78).
 
   ```cpp
   TEST(BuildStartCells, DeepWaterScene_CountsPerLevel)  // BuildDeepWaterScene's regions: cells_per_level
@@ -1080,6 +1090,10 @@ holds about eight particles of its own size". This task follows Task 8a (it need
   TEST(BuildStartCells, OneSizeStep_Holds)  // grid::CheckSizeStepRule(frame, cells) passes for the three lists above
   TEST(BuildStartCells, RegionOrder_SameCells)  // the tank's water box and the ball given in both orders: equal lists
   TEST(BuildStartCells, BadShape_IsBadInput)  // radius 0; half_size with a NaN; smallest_size_level 6 of 6 levels
+  TEST(BuildStartCells, FirstKeyFactorHalf_RefinesInside)  // A78: the 2 m tank with a volume (spacing log2 2: 0.1 m
+      // samples) of code -4 (factor 0.5) on the samples of x in [0.4, 0.8): every deep cell whose box meets that slab
+      // is one level finer than the same cell without the volume (where w_min allows), every other cell unchanged;
+      // CheckSizeStepRule passes; an all-zero volume gives the same list as no volume
   TEST(ApplyStartCellsForTest, AllSmallest_EveryCellAtSmallestLevel)  // BuildDeepWaterScene with kAllSmallest:
       // every cell level 2, 65,536 particles at level 2, the list passes grid::BuildGrid
   ```
@@ -1087,7 +1101,7 @@ holds about eight particles of its own size". This task follows Task 8a (it need
   run's and <= 1.25 x it) needs `cell_resize::ResizeCells`, which comes after this module: it is handed to the cell
   resize plan's scene tests with this setup (the 2 m tank, `ApplyStartCellsForTest` both ways).
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** design 5.15. Comments name the items and say why each bound is
-  conservative (the half diagonal, the box-based artist level).
+  conservative (the half diagonal, the box-based smallest refinement factor, A78).
 - [ ] **Step 4: Run** the gate. **Commit.** Subject: `Build the start grid from the scene's shapes`. New names:
   `StartRegionShape`, `StartCells`, `BuildStartCells` (A66; `count_rule` added because the declared signature has no
   material table), test-only `TestStartCells`, `ApplyStartCellsForTest`.
@@ -2070,7 +2084,9 @@ free-solid case of stage 10 (`ToFreeSolidsForViscousSolve`) and stage 11 (`free_
 just before `solids::CommitTry` (every solid, ascending `solid_id`; empty on a reject). Tests `TryStep,
 LiquidForceOnSolids_FromCommittedTry`, `TryStepWithStages, RejectAfterCheckStep_LiquidForcesEmpty`, `TryStep,
 LiquidForceOnSolidsInSyrup_HasViscousPart`. The force values themselves are tested by the solids and viscosity
-plans (sheared plate, buoyancy, rotating cylinders, settling sphere).
+plans (sheared plate, buoyancy, rotating cylinder, settling sphere). **Amended 2026-11-15 (A74):** the rotating
+cylinder and the settling sphere are now real contact shapes (`kCylinder`, `kSphere`) in the viscosity plan; the step
+adds no stage or name for them.
 
 **Kind:** integration
 

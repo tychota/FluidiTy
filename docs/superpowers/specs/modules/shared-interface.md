@@ -592,6 +592,10 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Memory estimate entries of the grid | `grid::BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count, std::uint32_t max_cell_blocks, BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid)` (a GPU grid: 1,996 B per block, all `kRunOn`, plus order buffers; g.1; the third parameter from the reconcile pass, g.7), `grid::BuildBorderSearchMemoryEstimate(RunOn, std::uint32_t max_cell_blocks)` | grid | `kGridMemoryEstimate`, the two-parameter form |
 | Grid builder buffers shared by several grids (reconcile) | `grid::GridBuilderBuffers` (move-only; `max_cell_blocks()`, `run_on()`), `BuildGridBuilderBuffers(RunOn, std::uint32_t max_cell_blocks, RunMemory& run_memory)`, `BuildGridBuffers(const GridSettings&, GridBuilderBuffers&, RunMemory& run_memory)` (lent builder buffers; the only form, A31; `RunMemory&` last, A58, 2026-11-15), `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`; `GridSettings::max_cell_blocks` defaults to 0 (g.7) | grid (used by step, cell resize, batches, pressure) | `GridSettings::max_cell_blocks = 1u << 22`; `GridScratch`, `BuildGridScratch`, `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`, `BuildGridBuffers(const GridSettings&)` |
 | The shared cell size rule (A41, A61, A62, A63, 2026-11-15) | `grid/cell_size_rule.h` (shared, `FLUIDITY_CPU_AND_GPU`, no allocation; g.10.1): `grid::CellSizeSettings` and `grid::CellSizeFacts` (moved from cell resize), `CellWidthsByLevel`, `CellSizeRegion`, `ArtistCellSizes`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth` (moved), `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel` (stage 2's marking pass), `ComputeArtistSizeLevel`; `cell_resize::CellResizeSettings::cell_size` is a `grid::CellSizeSettings`; cell resize's `ComputeVelocityGradientSize` (`velocity_gradient_math.h`), `ComputeCellSizeChanges`, `CellSizeChange { kKeep, kSplit, kMayMerge, kMergeReady }` | grid (read by step and cell resize) | `cell_resize/cell_size_rule.h`, `cell_resize::CellSizeSettings`, `cell_resize::ChooseCellSize`, `step::StepCallbacks::choose_cell_size`, "Open (owner): a shared size rule" |
+| Refinement volume in the size rule (A78, A79, 2026-11-15; replaces the A63 artist term) | `grid::kCellSizeFactorStepsPerDoubling` (4), `kMaxCellSizeFactorCode` (24), `CellSizeFactorTable`, `ComputeCellSizeFactorTable` (CPU), `RefinementFactors` (min-pyramid of one-byte codes, `f = 2^(c/4)`, 1/64..64), `ComputeCellSizeFactorCode(factors, smallest_size_level, cell)`; `CellSizeFacts::cell_size_factor` (replaces `artist_size_level`); `wanted = clamp(min(w_band, w_solid, w_shear) x f, w_min, w_max)`, `w_min` in the pinned surface band, pockets and gas. **Removed:** `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel` | grid; read by cell resize, step | `w_artist`, artist regions, top-view map |
+| Refinement volume in cell resize and step (A78, 2026-11-15) | `BuildCellResize(..., const grid::RefinementFactors& refinement_layout, ...)`, `cell_resize::WriteRefinementFactors(std::span<const std::int8_t>, CellResize&)`, row `"cell resize: refinement factors"`, `ResizeCellsReport::refinement_copy_bytes`, `BuildCellResizeMemoryEstimate(..., refinement_code_count)`; `step::BuildStartCells(..., const grid::RefinementFactors&, const grid::CellSizeFactorTable&, max_cell_count)`; `step::ReadyScene::refinement_code_count`, `refinement_key_count` | cell resize, step | `const grid::ArtistCellSizes& artist` parameters; rows "cell size regions", "cell size map" |
+| Refinement volume builder (A77, A78, A79, 2026-11-15) | `io/refinement_volume.h` (CPU): `RefinementZoneShape` (`kBox`, `kEllipsoid`, `kClosedMesh`), `RefinementZonePoseKey`, `RefinementZone`, `RefinementCameraKey`, `RefinementCamera`, `RefinementKey`, `RefinementKeyFile`, `RefinementVolume`, `BuildRefinementVolume`, `WriteRefinementVolume` (OpenVDB `cell_size_factor` per key), `ReadRefinementVolume`; `RunScene::refinement_volume()`; CLI `build-refinement`; CPU entry `"io: refinement keys"`; run-folder `inputs/refinement_codes`, `inputs/refinement/` | I/O | `RunScene::artist_cell_sizes()`, libspng, `kMaxCellSizeMapSidePixels` |
+| Refinement scene fields and add-on (A77, A78, A79, 2026-11-15) | scene `refinement_sample_spacing_log2`, `refinement_zones[]`, `refinement_camera`, `refinement_volume_files[]`; add-on `Object.fluidity_refinement_zone.{enabled, factor}` ("Cell Size Factor"), `refinement_camera_enabled`, `refinement_camera_object`, `refinement_pixels_per_cell`, `refinement_sample_spacing_log2`, `logic/zone_mesh.py`; findings `refinement_zone_unsupported_display`, `refinement_mesh_not_closed`, `refinement_mesh_deforms`, `cell_size_factor_out_of_range`, `cell_size_factor_clamped`, `refinement_camera_missing`, `refinement_camera_on`, `refinement_zone_without_cell_resize`, `refinement_volume_mismatch` | I/O, add-on | `cell_size_regions`, `cell_size_map`, `cell_size_region_collection`, `fluidity_cell_size_region.cell_width`, `cell_size_map_image`, `cell_size_region_rotated`, `grey_png.py` |
 | One value per particle | `Buffer<T>`, or a pointer inside `particles::ParticleFields` | base, particles | `particles::ParticleValues<T>` |
 | Particles in a try | `particles::ParticlesTry`, `ParticleFields`, `ParticleFieldsToChange` | particles | `ParticleGroups` |
 | Particle order | by (`CellPlaceIndex` of the containing active cell, id), `group_begin` per block, `cell_begin` per cell place | particles | (cell block, id) |
@@ -604,6 +608,11 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Plate side identity | `contact::PlateSide { plate_id; SolidSide side; }`; on particles `plate_side` | contact, particles | `SideId`, `SolidSideId`, `solid_side` |
 | Domain sides | `contact::DomainSide { kLeft, kRight, kFront, kBack, kBottom, kTop }` | contact | `grid::DomainSide` |
 | Nearest solid surface | `contact::SolidVelocitySample`, `ComputeSolidVelocitySample` | contact | |
+| Round solid shapes (A74, 2026-11-15) | `contact::Sphere { center; radius; }`, `contact::Cylinder { center; axis; radius; half_height; }`, `ToSolid(Sphere, ...)`, `ToSolid(Cylinder, ...)`, `SolidShape::kSphere`, `kCylinder` (appended); `Solid::half_size` = `{r, r, r}` / `{r, r, half_height}` | contact; consumed by solids, I/O, add-on | (the cube stand-in for a sphere; "known-open: needs a cylinder") |
+| Faces of round solids (A74, 2026-11-15) | `SolidFace::kCurved` (sphere surface, cylinder wall), `kLowRim`, `kHighRim` (appended after `kHighZ`); caps are `kLowZ`/`kHighZ` | contact | |
+| Spin of a round solid (A74, 2026-11-15) | a turn about a sphere's centre or a cylinder's axis: not a shape turn, not counted by `kMaxTurnPerStep`; surface velocity uses the full angular velocity (contact plan P17) | contact, solids | |
+| Round shapes in the scene file and add-on (A74, 2026-11-15) | `solids[].shape` `sphere` \| `cylinder`; `Shape.SPHERE`, `Shape.CYLINDER` (role `SOLID`); finding `round_solid_scaled_unevenly`; I/O derives free sphere and cylinder inertia | I/O, add-on | |
+| Round-body force tests (A74, 2026-11-15) | `LiquidForce, RotatingCylinder_TorquePerLength`, `LiquidForce, SettlingSphere_BalancesNetWeight`; `ComputeSolidCoverage, Sphere_BlockedAreaConverges` | viscosity, solids | `RotatingCylinders_TorquePerLength` (known-open), `SettlingCube_BalancesNetWeight` |
 | Per face: outside every solid, plate side, solid velocity | `transfer::SolidsAtFaces { outside_solid; side; solid_velocity; time; grid_version; }`, filled by solids | transfer | `can_hold_liquid`, `grid::SolidsAtFaces` |
 | A material set | `std::span<const std::uint8_t> material_is_counted` (one 0/1 entry per material, at least one 1; empty is `kBadInput`); `transfer::MaterialSetKey`, `ToMaterialSetKey`, `CheckMaterialSets`, `TransferError::kWrongMaterialSet` | transfer | "empty mask means all materials" |
 | Face sums and snapshots | `transfer::GridFromParticles`, `GridSnapshot`, `FaceValueKind` (with `kFromSolve`); `kFromGridOnlyRegion` and its uses are not in the first version (A64, 2026-11-15) | transfer | |
@@ -675,7 +684,7 @@ A module's own test helpers go into its own library made with `fluidity_add_test
 | Run folder words | a file a reader can see is `listed`; `WriterLock`; `WriteListedFile(RunFolder&, OutputFile&&, CheckAfterWrite)`; `last_listed_frame`; `lock_holder.is_held` | I/O | "publish", `published_through`, "lease" |
 | CLI | `capabilities`, `check [--cache <run_folder>]`, `run <scene_file> --into <run_folder>`, `resume [--choose-mode-again]` (`Command::choose_mode_again`, A40, 2026-11-15), `report`, `read-particle`; events `started`, ..., `frame_done` (gains `liquid_force_on_solids`, A60, 2026-11-15), `done` / `stopped` / `failed`; exit codes 0, 1, 3, 4, 5, 6 | I/O | `read-cache`, `run_started`, `frame_published`, ... |
 | Resume in the recorded mode (A40, 2026-11-15) | `resume` plans with the recorded `run_mode` forced; if it does not fit it fails `IoError::kRecordedModeDoesNotFit` (appended at the end of `IoError`; code `recorded_mode_does_not_fit`) naming `--choose-mode-again`; with the flag the mode is planned afresh and the run record gains `run_mode_changes: [{frame, from, to}]`; `kWrongRunFingerprint` with `kRunMode` is not raised for that change; the add-on's "Resume in another mode" | I/O, Blender add-on | a mode change refused by the fingerprint |
-| Scene file fields (2026-11-15) | `wind` (renamed from `gas_wind`, A47); `cell_size_regions: [{low_corner, high_corner, cell_width}]`, `cell_size_map: {image}` (A63; part of the scene fingerprint); `slip_length` per solid (A53); `free_solid.guide: {kind: "axis_limits" \| "rail" \| "hinge", moves_along_x, ..., turns, rail_direction, hinge_point, hinge_axis}` (A59); `particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths` are not in the first version (A64) | I/O, Blender add-on | `gas_wind` |
+| Scene file fields (2026-11-15) | `wind` (renamed from `gas_wind`, A47); ~~`cell_size_regions`, `cell_size_map`~~ (A63, replaced 2026-11-15 by the refinement fields, A78); `slip_length` per solid (A53); `free_solid.guide: {kind: "axis_limits" \| "rail" \| "hinge", moves_along_x, ..., turns, rail_direction, hinge_point, hinge_axis}` (A59); `particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths` are not in the first version (A64) | I/O, Blender add-on | `gas_wind` |
 | Blender versions and the CUDA runtime (A48, A49, 2026-11-15) | manifest `blender_version_min = "5.3.0"`, no maximum; one NOTE "FluidiTy was tested with Blender 5.3 only." on a newer Blender; the executable links the shared CUDA runtime and the package ships `cudart64_<major>.dll` / `libcudart.so.<major>` in `bin/<platform>/` (Linux `RUNPATH $ORIGIN`; macOS none) and `licenses/cuda-runtime.txt`; CPU runs need no GPU driver | Blender add-on, packaging | "Blender 5.3 only" as a maximum |
 
 ## (c) What each module provides
@@ -684,7 +693,7 @@ Each paragraph names the module's section 3 for the declarations.
 
 **Contact** (contact design, 3.1 to 3.5). One particle's motion against solids in one step. 3.1 errors
 (`ContactError`, `ContactCloseCall`, `ContactFailure`); 3.2 the solid shapes (`Solid`, `FlatSolid`, `Plate`,
-`Box`, `DomainBox`, `SolidMotion`, `SolidPose`, `PlateSide`, `SolidSide`, `DomainSide`); 3.3 the contact
+`Box`, `DomainBox`, `Sphere` and `Cylinder` (A74), `SolidMotion`, `SolidPose`, `PlateSide`, `SolidSide`, `DomainSide`); 3.3 the contact
 tolerance; 3.4 `MoveParticle`, `FindFirstHit`, `ComputeDistanceToSolid`, `FindSolidSide`,
 `ComputeSolidVelocitySample`, `CheckSolid`; 3.5 the batch `MoveParticles` on plain pointers, `ParticleContact`,
 `SolidReaction`, `BuildContactBuffers`, `BuildContactMemoryEstimate`. Used by the step (tolerance checks, stage
@@ -816,7 +825,7 @@ module, with `stable_names.h` for the step's enums (3.1). Since 2026-11-15: `res
 `IoError::kRecordedModeDoesNotFit`, `--choose-mode-again`, `run_mode_changes` (A40); the warnings without margins and
 `kMemoryTakenToleranceBytes` (A43, A58); the A57 `liquids:` lines; `liquid_force_on_solids` in `frame_done` and
 `run_report.json` (A60); `BuildStartParticles` and the start order of `BuildRun` (A66), the A67 report fields in
-`frame_done` and `run_report.json`, the A65 particles line and the A68 plan-area line (g.11); scene fields `wind`, `cell_size_regions`, `cell_size_map`, `slip_length`,
+`frame_done` and `run_report.json`, the A65 particles line and the A68 plan-area line (g.11); scene fields `wind`, `refinement_*` (A78; were `cell_size_regions`, `cell_size_map`), `slip_length`,
 `free_solid.guide`; `RenderSettings::wind` filled from the ready scene (A47). Used by the Blender add-on (CLI,
 events, `report`) and by render output (its writers write into `OutputFile` sinks I/O opens and lists).
 
@@ -1669,7 +1678,7 @@ struct CellSizeFacts {                        // What the rule reads about one a
   double depth_below_surface = 0;             // m. 0 at the surface; +infinity beyond reach.
   double distance_to_solid = 0;               // m. +infinity: none within reach.
   double velocity_gradient_size = 0;          // 1/s. Held maximum; 0 outside liquid.
-  SizeLevel artist_size_level{};              // Finest level an artist region or the map asks here; 0: none.
+  SizeLevel artist_size_level{};              // REPLACED (A78, A79) by double cell_size_factor = 1 (row above).
   bool holds_particles_that_keep_their_count = false;
   bool touches_air_pocket = false;
   bool wants_smallest_cells = false;          // Gas in or beside the cell (A10).
@@ -1691,6 +1700,7 @@ FLUIDITY_CPU_AND_GPU SizeLevel ComputeWantedSizeLevel(const CellWidthsByLevel& w
 // capped at smallest_size_level; smallest_size_level when none is found (A61). Reads the tables on their processor.
 FLUIDITY_CPU_AND_GPU SizeLevel ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position,
                                                        SizeLevel smallest_size_level);
+// REMOVED 2026-11-15 (A78, A79): CellSizeRegion, ArtistCellSizes, ComputeArtistSizeLevel (history below).
 struct CellSizeRegion {                       // An artist region: world axis-aligned box.
   Vec3 low_corner{}, high_corner{};           // m, world.
   SizeLevel size_level{};                     // Asked width rounded at load to the biggest level whose width <= it.
@@ -1724,7 +1734,7 @@ solid, or within `8 w_min` of the surface; one level per cell per resize. Held m
 resize): `"cell resize: size changes"` 1 B per cell place, `"cell resize: cell size regions"` 56 B per region
 (`kGivenCount`), `"cell resize: cell size map"` 1 B per pixel (`kGivenCount`), all `kRunOn`, `kWholeRun`. Same bytes on
 CPU and GPU and for any batch cut (exact min and max, widths compared with `CellWidthsByLevel`, no `log2`, `pow`,
-FMA). Artist inputs: scene `cell_size_regions`, `cell_size_map` (top-view PNG, 8- or 16-bit grey, `v == 0` none,
+FMA). Artist inputs (REPLACED 2026-11-15 by the refinement volume, A78, A79; history): scene `cell_size_regions`, `cell_size_map` (top-view PNG, 8- or 16-bit grey, `v == 0` none,
 else level `round(v x (size_level_count - 1))`); Blender `cell_size_region_collection`,
 `fluidity_cell_size_region.cell_width`, `cell_size_map_image`, finding `cell_size_region_rotated` (NOTE). Removed:
 `step::StepCallbacks::choose_cell_size`, `cell_resize::ChooseCellSize`, step 6.5 row O4 and Appendix B's O4 row,
@@ -1953,7 +1963,7 @@ struct StartCells {
 // passes each. Above max_cell_count: kTooManyCellBlocks.
 std::expected<StartCells, StepFailure> BuildStartCells(std::span<const StartRegionShape> regions,
     std::span<const contact::Solid> solids, const grid::GridFrame& frame, const grid::CellSizeSettings& cell_size,
-    const grid::ArtistCellSizes& artist, std::uint64_t max_cell_count);
+    const grid::ArtistCellSizes& artist, std::uint64_t max_cell_count);  // A78: artist -> refinement, factor_table
 // SceneCounts gains (exact, from the start state; limits are 1.25 x these plus sources):
 //   std::array<std::uint64_t, grid::kMaxSizeLevels> start_cells_per_level{};
 //   std::uint64_t start_particle_count = 0;   // From the seeded points.

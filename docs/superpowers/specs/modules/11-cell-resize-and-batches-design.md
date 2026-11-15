@@ -134,8 +134,8 @@ std::string_view ToName(CellResizeError error);
 (`fluidity::grid`, shared): `CellSizeSettings` and `CellSizeFacts` move there (this module's 2026-11-14 forms, with
 `ComputeWantedCellWidth(settings, frame, facts)` and `ComputeCellSizeChange(settings, frame, facts)`, are **replaced**),
 beside `CellWidthsByLevel`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth(settings, widths, reference_speed,
-facts)`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, `CellSizeRegion`, `ArtistCellSizes` and
-`ComputeArtistSizeLevel`, exactly as `plan-decisions.md` "Owner answers A40–A64 applied" item 2 declares them (grid
+facts)`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel` and (A78, A79, replacing `CellSizeRegion`, `ArtistCellSizes`
+and `ComputeArtistSizeLevel`) `RefinementFactors`, `CellSizeFactorTable`, `ComputeCellSizeFactorCode`, exactly as `plan-decisions.md` "Owner answers A40–A64 applied" item 2 declares them (grid
 design 3; the formulas are in 5.3 here). This module consumes them (section 4) and keeps the per-cell change, the
 velocity gradient and the pass.
 
@@ -188,7 +188,9 @@ struct CellSizeChangesInputs {
   const grid::CellValues<double>* held_velocity_gradient_size;  // 1/s. Committed GridFields.
   const grid::CellValues<double>* merge_ready_duration;         // s. Committed GridFields.
   const grid::CellValues<std::uint8_t>* merge_ready_step_count; // Committed GridFields.
-  grid::ArtistCellSizes artist;                                 // Views on the grid's processor (CellResize's rows).
+  grid::RefinementFactors refinement;                           // CHANGED (A78, A79): the current key's codes on the
+                                                                //   grid's processor (CellResize's buffer).
+  grid::CellSizeFactorTable factor_table{};                     // NEW (A78). From ComputeCellSizeFactorTable.
   const grid::CellSizeSettings* settings;
   grid::CellWidthsByLevel widths;                               // m. From the committed frame, on the CPU.
   double reference_speed = 0;                                   // m/s. grid::ComputeReferenceSpeed.
@@ -298,17 +300,23 @@ class CellResize;                      // Settings, buffers of this module on on
 // rows kept kWholeRun (CPU grid copies, mirrors) pieces of cpu_run_memory; in a CPU run both are the same object.
 // Requires: run_memory.run_on() == settings.run_on, cpu_run_memory.run_on() == kCpu (debug assertions, A30); both
 // outlive the CellResize. kOutOfMemory (magnitude = bytes asked) when a piece does not fit.
-// NEW (A63): `artist` are CPU views (I/O's RunScene::artist_cell_sizes(): each region's level rounded at load by exact
-// comparison to the biggest level whose width <= the asked width; map rows flipped so row 0 is the domain's low y;
-// map level round(v x (size_level_count - 1)) for a grey value v > 0, 0 for none). BuildCellResize copies regions and
-// map_levels once into two rows on run_on (not counted in ResizeCellsReport) and keeps ArtistCellSizes views on them
-// for the pass. kBadInput: a region with low_corner >= high_corner on an axis or size_level > smallest_size_level; a
-// map level > smallest_size_level; a map with domain_width_x or domain_width_y <= 0.
+// CHANGED (A78, A79; replaces the A63 regions and map): `refinement_layout` is the refinement volume's layout (I/O's
+// RunScene::refinement_volume().layout, codes null; count 0 when the scene has no volume). BuildCellResize builds
+// one buffer "cell resize: refinement factors" (the pyramid's code count, 1 B each, kRunOn) on run_on and keeps a
+// RefinementFactors view on it; WriteRefinementFactors fills it per key. kBadInput: counts other than
+// ceil(domain smallest cells / 2^sample_spacing_log2), sample_spacing_log2 > size_level_count - 1, a layer table
+// that does not follow the halving rule.
 std::expected<CellResize, CellResizeFailure> BuildCellResize(const CellResizeSettings& settings,
                                                              const step::SimulationLimits& limits,
                                                              std::uint32_t ingredient_count,
-                                                             const grid::ArtistCellSizes& artist,
+                                                             const grid::RefinementFactors& refinement_layout,
                                                              RunMemory& run_memory, RunMemory& cpu_run_memory);
+// NEW (A78, A79). Copies one key's codes (CPU span, the whole pyramid) into the refinement buffer on run_on: one
+// planned, counted copy in a GPU run (ResizeCellsReport::refinement_copy_bytes), a plain copy in a CPU run. The step
+// calls it before ResizeCells when the key at or before the committed time changed, and once before the first resize.
+// kBadInput: size other than the buffer's or a code outside [-24, 24]; kRunOnCallFailed.
+std::expected<void, CellResizeFailure> WriteRefinementFactors(std::span<const std::int8_t> key_codes,
+                                                              CellResize& cell_resize);
 const ResizeCellsReport& ReadLastReport(const CellResize& cell_resize);
 // Changed (A17): grid_run_on. With kGpu the rows add "cell resize: cell list upload" (8 B per cell place,
 // where = kRunOn). A CellResize with run_on = kCpu in a GPU run also counts its CPU mirrors (where = kCpu, 5.8).
@@ -317,14 +325,13 @@ const ResizeCellsReport& ReadLastReport(const CellResize& cell_resize);
 // grid::BuildGridMemoryEstimate(kCpu, 2, limits.max_cell_blocks, grid::BuilderBuffersSharing::kOneForAllGrids) at limits.max_cell_blocks with
 // where = kCpu; with kHeldByStep neither CPU grid is allocated or counted. Rows are named "cell resize: <row>",
 // sizeof of the stored type. CHANGED (A41, A63, A58): "cell resize: size changes" (1 B per cell place), the wait
-// counters' "after" rows, "cell resize: cell size regions" (56 B per region, kGivenCount) and "cell resize: cell size
-// map" (1 B per pixel, kGivenCount); every kRunOn row kWholeRun; one entry per buffer, so ComputeRunMemoryBytes of
+// counters' "after" rows, CHANGED (A78, A79) "cell resize: refinement factors" (1 B per pyramid code, kGivenCount;
+// replaces the regions and map rows); every kRunOn row kWholeRun; one entry per buffer, so ComputeRunMemoryBytes of
 // the entries per where equals what BuildCellResize hands out of each block.
 std::vector<MemoryEstimateEntry> BuildCellResizeMemoryEstimate(std::uint32_t ingredient_count,
                                                                RunOn grid_run_on = RunOn::kCpu,
                                                                GridCopies grid_copies = GridCopies::kNone,
-                                                               std::uint32_t cell_size_region_count = 0,
-                                                               std::uint64_t cell_size_map_pixel_count = 0);
+                                                               std::uint64_t refinement_code_count = 0);  // A78
 
 // NEW (2026-11-14). Each step::StepCallbacks member is a step::Callback<Function>{function, context} pair. The
 // I/O and CLI design sets resize_cells with `context` = the run's CellResize* (never null when the function is set;
@@ -797,8 +804,9 @@ built grid has 1 or more), `GridFailure`, `CellId`, `FacePieceId`, `CellBlockId`
 `ToSizeLevel`, `ToCellCoord`, `ComputeBigCell`, `ComputeSmallCell`, `ComputeCellEighth`, `ComesBefore`,
 `GridBuffers`, `BuildGrid(const GridInputs&, GridBuffers&)`, `TakeBuffers(StaggeredGrid&&)`,
 `ComputeGridCounts`, `CheckSizeStepRule`, NEW (A41, grid `cell_size_rule.h`, `plan-decisions.md` item 2):
-`CellSizeSettings`, `CellSizeFacts`, `CellWidthsByLevel`, `CellSizeRegion`, `ArtistCellSizes`, `ComputeReferenceSpeed`,
-`ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeArtistSizeLevel` (and `ComputeNewCellSizeLevel`, which
+`CellSizeSettings`, `CellSizeFacts`, `CellWidthsByLevel`, (A78, A79) `RefinementFactors`, `CellSizeFactorTable`,
+`ComputeCellSizeFactorTable`, `ComputeCellSizeFactorCode`, `ComputeReferenceSpeed`,
+`ComputeWantedCellWidth`, `ComputeWantedSizeLevel` (and `ComputeNewCellSizeLevel`, which
 the step calls in stage 2), `CellPlaceIndex`, `FindCellPlace`, `FindFacePlace`, `FindCellAt`, `FindTouchingCells`,
 `FindFacePieces`, `FindCellLow`, `FindCellHigh`, `ToAxis`, `ComputeFaceArea`, `ComputeCellWidth`,
 `ComputeCellCenter`, `ComputeCellCenterDistance`, `ComputeFacePosition`, `FindNearbyFaces`, `ToMaskOfAll`,
@@ -1073,8 +1081,9 @@ module:
 
 **I/O and CLI (PROVIDED, per `changes-to-apply.md` 12):** the scene file carries `CellResizeSettings` and
 `BatchSettings` with their defaults; the `run` and `resume` commands build `CellResize` and, for a batched
-plan, `BatchedRun` (CHANGED, A58: into the run's `run_memory` and `cpu_run_memory`; A63: `BuildCellResize` takes
-`RunScene::artist_cell_sizes()`, the scene's `cell_size_regions` and `cell_size_map` read at load), and set
+plan, `BatchedRun` (CHANGED, A58: into the run's `run_memory` and `cpu_run_memory`; CHANGED A78, A79: `BuildCellResize`
+takes `RunScene::refinement_volume().layout`; I/O builds the refinement volume at load from the scene's
+`refinement_zones`, `refinement_camera` and `refinement_volume_files` and keeps every key on the CPU), and set
 `ResizeCells` and `ApplyStagesInBatches` (A41, A64: `ChooseCellSize`, `ApplyGridOnlyRegionInStep` and
 `MoveGridOnlyLiquidInStep` are gone from the first version) in `step::StepCallbacks`, each as a
 `Callback<Function>{function, context}` pair with the context 3.4 and 3.7 name (`CellResize*`, `BatchedRun*`);
@@ -1100,9 +1109,9 @@ batched run's CPU copy of the piece map handed through `step::ApplyGridPiece`, n
 (plan decision, 2026-11-14, buffers in batched runs). `VolumeTransport.lean` is not ported.
 
 **Blender add-on:** nothing is consumed. It shows what I/O's events and run report carry (run mode, batch
-plan) and writes the `CellResizeSettings` fields of the scene file; NEW (A63): `cell_size_region_collection`
-(objects with `fluidity_cell_size_region.cell_width`) and `cell_size_map_image`, exported as the scene's
-`cell_size_regions` and `inputs/cell_size_map.png`.
+plan) and writes the `CellResizeSettings` fields of the scene file; CHANGED (A78, A79): refinement zones (Empties
+with Cube or Sphere display, closed meshes, each with a "Cell size factor") and the optional camera term, exported as
+the scene's `refinement_zones` and `refinement_camera` (no regions, no map).
 
 **Per material, this module carries:** liquids and mixtures: everything (first version: particles of every level
 with their fractions; later group: ingredient volumes in grid-only cells, fractions on refilled particles); two liquids that do not mix are two materials, each record holds one
@@ -1214,9 +1223,9 @@ is **replaced** by:
    w_band   = w_min * max(1, depth_below_surface / (surface_reach_in_cell_widths * w_min))     (8 by default)
    w_solid  = w_min * max(1, distance_to_solid / (solid_reach_in_cell_widths * w_min))         (2 by default)
    w_shear  = shear_width_factor * U_ref / g        for g > 0, else +infinity                  (c_u = 0.25, A62)
-   w_artist = widths.width[artist_size_level]       when artist_size_level > 0, else +infinity (A63)
-   wanted   = clamp(min(w_band, w_solid, w_shear, w_artist), w_min, w_max)
-   wanted   = w_min  where touches_air_pocket or wants_smallest_cells (gas, A10)
+   f        = factor_table.factor[ComputeCellSizeFactorCode(refinement, smallest, cell) + 24]   (A78, A79)
+   wanted   = clamp(min(w_band, w_solid, w_shear) * f, w_min, w_max)
+   wanted   = w_min  where touches_air_pocket, wants_smallest_cells (gas, A10), or depth < 8 w_min (pinned band)
    U_ref    = max(largest_liquid_speed, sqrt(|gravity| * w_max))                                (ComputeReferenceSpeed)
    g        = held_velocity_gradient_size = max(held over the current wait, ‖∇u‖_F now)        (rule 5)
    ```
@@ -1228,9 +1237,9 @@ is **replaced** by:
    scene's speed (Gerris' `|ω| Δ / max|u|` in width form); `U_ref` makes the term scale-free, with a floor from
    gravity and the biggest cell so a scene at rest still has a speed. `c_u = 0.25` is a starting value, to calibrate
    (A62). Worked numbers: rigid rotation at `Ω = 10 rad/s` gives `‖∇u‖_F = sqrt(2) Ω = 14.142 1/s`; with `U_ref = 1
-   m/s`, `w_shear = 0.25 / 14.142 = 0.017678 m`. The artist level comes from `ComputeArtistSizeLevel`: the finest
-   level any region containing the cell centre or the map pixel under it asks for (map column `min(floor((x - x0) /
-   domain_width_x * map_width), map_width - 1)`, row likewise, Z-up, every height). The wanted level is the biggest
+   m/s`, `w_shear = 0.25 / 14.142 = 0.017678 m`. CHANGED (A78, A79): the artist's wish is the cell's smallest
+   cell size factor over its box, one byte of the refinement volume's min-pyramid; the product scales what the flow
+   needs (a factor above 1 never coarsens the pinned surface band in the first version). The wanted level is the biggest
    level whose width `<= wanted` (`ComputeWantedSizeLevel`, by comparison with `CellWidthsByLevel`, never `log2`).
    Curvature (`w_curv`) is the later group "Coarser cells on calm surfaces (later)".
 2. A cell whose particles keep their count (snow, springy solid, cut solid) keeps its size: `kKeepsItsSize` always.
@@ -1288,7 +1297,7 @@ above happens only where the surface moves away or in tests that start all-small
 the number of cells below the band in a tank of surface area `A` is `∫ A dz / w(z)^3 = 512 A ∫_{8 w_min}^{D} z^-3 dz
 < 4 A / w_min^2`, against `8 A / w_min^2` in the band of 8 smallest cells: particles everywhere cost at most about
 1.5 times the band-only count for any depth when merges are allowed (discrete levels and the 0.8 share raise this
-toward 2). Scenes whose deep cells cannot coarsen (few levels, strong shear, artist regions, a solid or gas pocket
+toward 2). Scenes whose deep cells cannot coarsen (few levels, strong shear, refinement factors below 1, a solid or gas pocket
 deep down) pay `8 x (depth / w) x A / w^2`.
 
 **New cells** (stage `ChooseActiveCells`, grid `ComputeNewCellSizeLevel`, called by the step on the grid's
@@ -1806,7 +1815,7 @@ CHANGED (A58): every `kRunOn` array below is a piece of the run's `run_memory` a
 |---|---|---|---|
 | `merge_ready_duration`, `held_velocity_gradient_size`, `merge_ready_step_count` (`step::GridFields`, A63) | `double` x 2, `uint8` | cell place, 2 copies | whole run |
 | `depth_below_surface`, wanted width, merge durations after, held gradient after, merge weight; size changes, merge wait steps after (`CellResize`, A41) | `double` x 5, `uint8` x 2 | cell place | whole run |
-| cell size regions, cell size map (`CellResize`, A63) | `grid::CellSizeRegion` (56 B); `uint8` | region; pixel | whole run |
+| refinement factors (`CellResize`, A78, A79; replaces the A63 regions and map) | `int8` code | pyramid code | whole run |
 | `ResizeMap`: source kind and old index (`CellResize`) | `uint8` + `uint32` | cell place and face place of the new grid | one call |
 | not in the first version (A64): region byte, layers, three amounts, ingredient volumes (`step::GridFields`); region wish, amounts of removed particles per cell, refill list (`CellResize`) | `double` x (3 + ingredients); `particles::NewParticles` arrays | cell place; `max_added_per_try` | one call |
 | block partial sums (`BatchedRun`, `CellResize`) | `double` | cell block x sums in use | whole run (A58) |
@@ -1850,8 +1859,8 @@ terms), demanded within `1e-13` of the cell width.
 | Velocity gradient (NEW, A62) | uniform field; linear field `A` (same-size and smaller neighbours); rigid rotation Ω = 10 rad/s; beside a bigger neighbour | 0; `‖A‖_F = 2.5406692`; `sqrt(2) Ω = 14.142136`; within the off-axis bound (`ComputeVelocityGradientSize, ...`) | exact; 1e-13 relative; bound |
 | Shear term (NEW, A62; `literature-cell-size.md` 5(f)4) | rigid rotation Ω = 10 rad/s, `U_ref` = 1 m/s, deep cells 0.04 m; uniform translation | every cell `kSplit`, wanted 0.017678 m; no shear split (`ComputeCellSizeChanges, RigidRotation_Splits`, `..., UniformTranslation_NoShearSplit`) | 1e-15 relative; exact |
 | Wait of time and steps (NEW, A63) | 0.05 s and 1 step per call; 0.02 s per call; one break; zero elapsed; a shear burst that ends | `kMergeReady` at call 8 (steps decide); at call 13 (time decides); 8 more calls after a break; counters unchanged; held gradient kept for the wait (`ComputeCellSizeChanges, MergeAfterTimeAndSteps`, `..., BrokenOnce_WaitStartsAgain`, `..., ZeroElapsed_CountersUnchanged`, `..., ShearBurstEnds_HeldForTheWait`) | exact |
-| Surface and artist (NEW, A61, A63) | depth 0; a region asking a finer level over deep calm cells | wanted `w_min` whatever the other terms; split inside the box only (`ComputeCellSizeChanges, SurfaceCell_IsSmallest`, `..., ArtistRegion_AsksFiner`; grid: `ComputeWantedCellWidth, SurfaceCell_IsSmallest`, `ComputeArtistSizeLevel, RegionAndMap_FinestWins`, `ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner`) | exact |
-| Same bytes (NEW, A41) | the shear scene cut into one range, 1-block and 3-block ranges; CPU against GPU | equal `size_change` and after-row bytes (`ComputeCellSizeChanges, AnyBatchCut_SameBytes`, `..., OnGpu_SameBytesAsCpu`; grid: `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu`) | exact |
+| Surface and refinement volume (NEW, A61; CHANGED A78, A79) | depth 0; a factor-0.5 zone over deep calm cells; a factor-2 zone; a key change; factor 1 everywhere | wanted `w_min` whatever the other terms; split inside the zone only; deep cells one level coarser except in the surface band; the new key's splits at the next resize and merges only after the wait; same bytes as no volume (`ComputeCellSizeChanges, SurfaceCell_IsSmallest`, `..., FactorHalfZone_SplitsInsideOnly`, `..., FactorTwoZone_CoarsensOutsideSurfaceBand`; `ResizeCells, KeyChange_SplitsAtOnceMergesAfterWait`, `ResizeCells, FactorOneVolume_SameBytesAsNoVolume`; grid: `ComputeWantedCellWidth, FactorHalf_HalvesDeepWidth`, `ComputeCellSizeFactorCode, BigCell_IsSmallestCodeOverItsBox`, `ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner`) | exact |
+| Same bytes (NEW, A41; A78) | the shear scene, and the shear scene with a factor-0.5 zone, cut into one range, 1-block and 3-block ranges; CPU against GPU | equal `size_change` and after-row bytes (`ComputeCellSizeChanges, AnyBatchCut_SameBytes`, `..., OnGpu_SameBytesAsCpu`; grid: `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu`) | exact |
 | Deep tank coarsens with particles (NEW, A64; CHANGED A65 to A67) | calm tank 2 m deep, `w_min` 0.05 m, 5 levels, 3 s; **started all-smallest on purpose** (it tests the coarsening cascade; a run starts on `BuildStartCells`' grid, A66) | every cell deeper than `8 w_min` at the depth term's level; every liquid cell holds about eight particles of its own size: ~~1..16 per cell except counted drifted ones~~ 1..16 per cell, and after every resize every particle's `size_level` equals its cell's level except those counted in `waiting_particle_count` and `lone_particle_count` (A67); mass and momentum kept per resize (`ResizeCells, CalmDeepTank_CoarsensWithParticlesInEveryCell`); merged cells hold particles of their level (`ResizeCells, MergedCellHoldsParticlesOfItsLevel`) | `kAmountTolerance` |
 | Start on the start cells (NEW, A66) | the same tank seeded on `step::BuildStartCells`' grid, 8 per cell at each cell's level, at rest, 3 s | no resize splits a cell for depth (`wanted_split_count` 0 at every resize), `mismatched_particle_count` 0 at every pass, particle count never above the start count; every cell deeper than `8 w_min` at the depth term's level after 3 s (`ResizeCells, CalmDeepTankOnStartCells_NeverSplitsForDepth`); against the same tank started all-smallest (step's `ApplyStartCellsForTest(scene, TestStartCells::kAllSmallest)`) run until a resize changes nothing: coarsened count <= start count <= 1.25 x coarsened count (`BuildStartCells, DeepTank_SameParticlesAsCoarsenedRun`, handed over by the step, A66) | exact |
 | Flicker and conservation (NEW, A63; 5(f)1, 2) | calm pool 1 m deep, `w_min` 0.02 m, 5 levels, **started all-smallest on purpose** (the coarsening time is measured from it, A66); a layer split then merged | depth level reached within `0.25 s x 4 + 32` steps, then no split or merge for 10 s (`ResizeCells, CalmPool_ReachesBiggestCellsThenStays`); surface cells always at `w_min` (`..., CalmTank_InsideCoarsensSurfaceStaysFinest`); mass and momentum kept (`..., SplitThenMerge_ConservesMassAndMomentum`) | exact; `kAmountTolerance` |
@@ -1959,7 +1968,7 @@ Labels: `<sec-cell-resize>`, `<sec-cell-size-rule>`, `<sec-remap>` (the label th
 4 of 5.8). Pressure's `<sec-solve-in-batches>` holds the solve in pieces itself.
 
 Outline (amended 2026-11-15, A41 to A64): 1 why resizing is its own transaction and what a failed one leaves; 2 the
-shared wanted width (depth, solids, shear with the reference speed, artist regions and map; the surface smallest),
+shared wanted width (depth, solids, shear with the reference speed, times the refinement volume's factor (A78, A79); the surface smallest),
 the held gradient and the merge wait of time and steps, and particles that follow their cells' levels in deep
 liquid with the cost bound (`<proc-compute-cell-size-changes>`); items 6 to 8 below only with the later group (A64); 3 the cells that must also split; 4 remap of amounts, pressures, labels and face flows; 5
 splitting particles needs both grids, and (A65 to A67) particle size follows the cell: the start on
@@ -2342,7 +2351,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     surface_reach_in_cell_widths x w_max`. Source: owner answer A64; `plan-decisions.md` "Owner answers A40–A64
     applied" item 1.
 41. **(A41, A61, A62, A63; A52 refined) The shared cell size rule.** Grid owns `cell_size_rule.h` (wanted width with
-    depth, solid, shear and artist terms, reference speed, new-cell level, artist regions and map); this module owns
+    depth, solid, shear terms and the refinement factor (A78, A79), reference speed, new-cell level); this module owns
     `ComputeVelocityGradientSize`, `ComputeCellSizeChange` (with `kMergeReady` and, plan decision, `kKeepsItsSize`, so
     the GPU run reads back one byte per cell) and the two-part pass `ComputeCellSizeChanges` with the hysteresis:
     split at once; merge after `2 w <= 0.8 x wanted` held for 0.25 s and 8 committed steps; never within 8 `w_min` of
@@ -2362,7 +2371,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     what `BuildBatchedRun` builds (plan decision: the loaded rows it listed for reporting are the step's batched
     rows and are not repeated); `BatchPlan::bytes_on_processor` is `ComputeRunMemoryBytes(..., kRunOn)`. Source:
     owner answer A58; `plan-decisions.md` item 3 and its correction.
-44. **(A63) Artist inputs.** `BuildCellResize` takes `const grid::ArtistCellSizes& artist` (CPU views from I/O's
+44. **(A63) Artist inputs. REPLACED by decision 52 (A78, A79).** `BuildCellResize` took `const grid::ArtistCellSizes& artist` (CPU views from I/O's
     `RunScene::artist_cell_sizes()`) and copies regions and map once into two rows on its processor. Source: owner
     answer A63; `plan-decisions.md` item 2, "Artist inputs"; I/O plan (signature agreed with the I/O plan).
 45. **(Reconcile item 31) `kOutOfMemory` last.** `CellResizeError::kOutOfMemory` (value 9) and
@@ -2405,6 +2414,19 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     exposes `SlabLimit` (blocks per layer, loaded layers, bytes per full loaded block, room, needed bytes, plan area,
     largest plan area) on success and in the `kBatchDoesNotFit` failure, so I/O's budget line names the plan-area
     limit. Source: owner answer A68; `plan-decisions.md` A68; `tradeoff-particles.md` 1.6, 1.7, 5.
+
+52. **(A78, A79; reshapes A72, A73, A77) The refinement volume.** The artist regions and the map are removed. The
+    rule's artist term is a cell size factor read from a keyed volume (`grid::RefinementFactors`, a min-pyramid of
+    one-byte codes `f = 2^(c/4)`), multiplied into the physical width; `wanted = w_min` stays in the pinned surface
+    band. `BuildCellResize` takes the volume's layout and builds one buffer "cell resize: refinement factors" (1 B per
+    pyramid code, `kRunOn`, `kWholeRun`); `WriteRefinementFactors(std::span<const std::int8_t>, CellResize&)` (NEW)
+    copies a key into it, called by the step when the key at or before the committed time changes (one planned,
+    counted copy per key in a GPU run, `ResizeCellsReport::refinement_copy_bytes`, NEW). A key change splits at once
+    and merges through the unchanged hysteresis. Zones, meshes and the camera are built outside the solver by I/O.
+    Limit of the first version: the factor does not reach the pinned band, so it cannot make a hero surface finer
+    than `w_min` nor coarsen any surface. Product, not harmonic mean (the harmonic mean cannot say "as the physics
+    wants" and bounds the result between the two widths). Source: A72, A73, A77, A78, A79; `plan-decisions.md`
+    "Refinement volume (A78, A79; reshapes A72, A73, A77)".
 
 **Open**
 

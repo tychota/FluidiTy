@@ -4,13 +4,17 @@
 
 **Goal:** Add `native/fluidity/contact/`: the solid shapes, the contact tolerance, the swept first hit, the
 friction response, the slide, `MoveParticle` (shared by CPU and GPU) and the batch operation `MoveParticles`
-on both processors, with the method-paper section that explains them.
+on both processors, with the method-paper section that explains them. **Amended 2026-11-15 (A74):** the shapes
+include the sphere and the finite cylinder (distance, normal, surface velocity, first hit, slide), beside the flat
+solid, plate, box and domain box.
 
 **Architecture:** Four shared headers (`contact_error.h`, `solid_shapes.h`, `contact_tolerance.h`,
 `solid_contact.h`) hold every formula, inline and `FLUIDITY_CPU_AND_GPU`, so the CPU loop and the GPU thread run
 the same `MoveParticle`. One CPU-only header, `move_particles.h`, declares the batch operation on plain pointers;
 `move_particles_cpu.cc` holds the public function and the CPU loop, `move_particles_gpu.cu` one thread per particle
-and an integer reduction of the failures. Contact includes only `base/`.
+and an integer reduction of the failures. Contact includes only `base/`. **Amended 2026-11-15 (A74):** the sphere
+and cylinder are two more `SolidShape` values handled by the same shared functions (a branch per shape in
+`ComputeDistanceToSolid` and in the closed-form first hit); no new header, no new public operation.
 
 **Tech Stack:** as Foundation: C++23 host, CUDA C++20 device, CMake presets + Ninja, Conan 2 (GoogleTest), uv,
 clang-format and clang-tidy 23.1 (the versions `pyproject.toml` pins), Docker via colima, Typst with CeTZ for the method paper. Nothing is added.
@@ -97,7 +101,8 @@ Contact's own:
   1.5707963267948966`, `kNoSolid = 0xFFFFFFFFu`. A unit vector or rotation column is accepted when its squared
   length is within `0x1p-40` of 1.
 - Order: solids are visited in array order (ascending `solid_id`), faces in `kLowX, kHighX, kLowY, kHighY, kLowZ,
-  kHighZ`. Equal hit times keep the lower solid index, then the first face. Contact makes no floating-point sum
+  kHighZ` (**amended 2026-11-15, A74:** then `kCurved, kLowRim, kHighRim`; a round solid's face comes from its region,
+  P14). Equal hit times keep the lower solid index, then the first face. Contact makes no floating-point sum
   across particles; the GPU reduction is an integer minimum and integer counts.
 - On failure `MoveParticle` leaves `*result` unchanged; `MoveParticles` leaves the trial outputs unspecified.
 - Contact has no material-specific code. Every material (liquid, snow, springy solid, gas markers with friction
@@ -121,7 +126,10 @@ Plan decisions (the design left these open; every task respects them, the paper 
   `d = s * p.z - half_thickness`, face `kHighZ` for `kAlongNormal`, `kLowZ` for `kAgainstNormal`. This distance
   is used in classification, `FindFirstHit`, settling and the end check. "On the other side by more than `tol`"
   (`kOnWrongSideOfPlate`) means `s * p.z < -(half_thickness + tol)`; a start inside the thickness is pushed to the
-  committed side. A `plate_side` whose `plate_id` names no plate in `solids` is `kBadInput`.
+  committed side. A `plate_side` whose `plate_id` names no plate in `solids` is `kBadInput`. **Amended 2026-11-15
+  (paper review):** for a committed plate, `kOnWrongSideOfPlate` is tested before `kStartsInsideSolid` (a particle
+  on the other side is not "inside" its half space; the specific diagnosis wins); solids are still visited in index
+  order and the first failing solid decides.
 - **P4 Start hits.** Step 2 visits solids in index order; each qualifying solid gets the response, joins the
   surface list and counts as one hit. The first one fills the record. `kind` is `kStartedInsideSolid` when any
   start distance was negative.
@@ -140,6 +148,11 @@ Plan decisions (the design left these open; every task respects them, the paper 
   step start and at step end, plus `Length(half_size)` for a box or domain box; `thinnest_solid` is the smallest
   of `2 * half_thickness` (plate), `2 * min(half_size)` (box, domain box), or `smallest_cell_width` when there is
   none. The caller passes particles' extent through the domain box; a scene with no domain box relies on solids.
+  **Amended 2026-11-15 (A74):** a sphere and a cylinder also add `Length(half_size)` to `largest_coordinate`; they
+  give `thinnest_solid` candidates `2 * radius` (sphere) and `min(2 * radius, 2 * half_height)` (cylinder).
+  Confirmed for the paper: a domain box's origin is its centre and its `half_size` is half its extent (Task 3 test
+  `ToSolid, DomainBox_OriginIsCentreAndHalfSizeIsHalfExtent`), and its smallest width `2 * min(half_size)` counts
+  as a `thinnest_solid` candidate.
 - **P9 Unchecked by `MoveParticle`.** `MoveParticle` does not call `CheckSolid` (the step calls it once per step).
   `FindFirstHit` does not validate its inputs; it accepts `contact_tolerance >= 0` (tests use 0 for the naive
   control). A domain box with no closed side is `kBadInput` in `CheckSolid`.
@@ -158,6 +171,43 @@ Plan decisions (the design left these open; every task respects them, the paper 
   solid does not join the surface list. So a particle placed near a solid (a source, a resize) never fails the
   end check for that reason; `kEndsTooCloseToSolid` comes only from solids that close on the particle during the
   step faster than it can leave.
+
+Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7 and Q18; the paper states them):
+
+- **P13 Degenerate normals.** Sphere: when `Dot(p, p) == 0` as computed (the point is the centre), the normal is
+  minus the pose's x column (the normal of `kLowX`, the first face in face order: the box's tie rule, as the paper
+  says). Cylinder: in the wall branch, when `p.x * p.x + p.y * p.y == 0` as computed (the point is on the axis),
+  `radial` is minus the pose's x column. Both are tested with exact equality, never with a threshold, so CPU
+  and GPU take the same branch.
+- **P14 Cylinder regions (the rim formula).** In the solid's axes, `rho = Sqrt(p.x * p.x + p.y * p.y)`,
+  `a = rho - radius`, `b = Abs(p.z) - half_height`, `s = p.z >= 0 ? +1 : -1`. The distance is the one expression
+  `d = Sqrt(max(a, 0) * max(a, 0) + max(b, 0) * max(b, 0)) + min(max(a, b), 0)` (the paper's form, the same bits in
+  every region); the branches give the normal and face. Branch order: rim when `a > 0 && b > 0`
+  (`d = Sqrt(a * a + b * b)`, normal `(a * radial + b * s * z) / d`, face `kHighRim` or `kLowRim` by `s`); else wall
+  when `a >= b` (`d = a`, normal `radial`, `kCurved`); else cap (`d = b`, normal `s * z`, `kHighZ` or `kLowZ`). So
+  an inside tie takes the wall, and a point exactly on a region boundary gets the same `d` from either branch.
+- **P15 Cylinder first hit.** Grown with sharp edges (`R = radius + tol`, `H = half_height + tol`). Candidates in
+  this order: wall (first root of the `x, y` quadratic, accepted when `Abs(p0.z + u.z * t) <= H`), then the cap the
+  start is beyond (accepted when the squared radius at `t` is `<= R * R`). The earliest accepted time wins; equal
+  times keep the wall candidate (both name the same point). The reported face, normal and distance are
+  `ComputeDistanceToSolid` at the hit position, so the face comes from P14, not from the candidate. A hit position
+  in the rim region is moved by `MoveParticle` along its normal to `d = tol` before the response (step 4; the move
+  is at most `(Sqrt(2) - 1) * tol`). A start inside the grown sharp cylinder whose true gap `d - tol` is positive
+  (rim corner only) is a hit at `t = 0` when `rate < 0`, free otherwise.
+- **P16 Touching rule on a curved surface (counterpart of P2).** For a sphere or cylinder, `g0 = d - tol` with the
+  true distance at the path start and `rate = Dot(normal at the start, u)`, `u` the velocity relative to the solid.
+  `-tol <= g0 <= 0`: not hit in this sweep when `rate * duration >= -tol`, hit at `t = 0` otherwise; `g0 < -tol`:
+  hit at `t = 0` (defensive). Same tolerance as P2. Safe because the true signed distance of a convex solid is
+  convex along a line: `d(t) >= d(0) + rate * t`. In the sphere and wall quadratics `C` is computed as
+  `g0 * (L0 + R)` (and `(rho0 - radius - tol) * (rho0 + R)`), never as `Dot(p0, p0) - R * R`, so the sign of `C`
+  is exactly the sign of the gap this rule reads.
+- **P17 Spin about a symmetry axis.** The shape-changing turn is zero for a sphere and `omega_across = omega -
+  Dot(omega, a) * a` for a cylinder (`a` the pose's z column at the sweep's start). A sphere is always swept and
+  slid as a solid that does not turn (closed form, Task 8a). A cylinder is too when `Length(omega_across) *
+  step_duration * Length(half_size) <= contact_tolerance / 8`; otherwise it is a turning solid (Task 9 stepping,
+  Task 13 slide, P7). `CheckSolid`'s `kSolidTurnsTooFar` uses `Length(omega_across) * step_duration` for a cylinder
+  and never fires for a sphere. P7's "turns when `angular_velocity != 0`" stays for the other shapes.
+  `ComputeSolidVelocity` always uses the full `omega`.
 
 ## Before you start
 
@@ -193,6 +243,13 @@ Expected: seven `PASS` lines (format, rules, cpu debug, cpu release, tidy, paper
    Pinned in Task 7, `ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit`.
 5. **The lowest failing particle on the GPU.** Two failures in different thread blocks, the lower id at the higher
    index. Pinned in Task 16, `MoveParticles, TwoFailures_ReportsLowestParticleId`.
+6. **Amended 2026-11-15 (A74): a curved surface after a hit, and the cylinder's rim.** A particle that hit a sphere
+   re-sweeps along the tangent from `d = tol`; a quadratic whose `C` is rounded to the wrong sign, or a touching
+   rule missing for curved shapes, makes it hit the same sphere at `t = 0` again (a slide ends in `kTooManyHits`),
+   and a path tangent within rounding must give either answer without error. At the rim the sweep's sharp corner
+   leaves the hit up to `Sqrt(2) * tol` away and must be moved to `tol`. Pinned in Task 12a,
+   `MoveParticle, SphereOblique_SlidesOffAlongTheTangent` (`hit_count` 1), `MoveParticle,
+   SphereTangentWithinRounding_NeverEndsInside` and `MoveParticle, CylinderRim_HitPositionMovedToOneTolerance`.
 
 ---
 
@@ -213,6 +270,53 @@ procedures use `pseudocode.typ`.
   `<sec-contact-response>`; `<eq:solid-distance>`, `<eq:contact-tolerance>`, `<eq:hit-time>`,
   `<eq:contact-response>`; `<fig-solid-shapes>`, `<fig-sweep-hit-slide>`, `<fig-contact-response>`,
   `<fig-contact-tolerance>`; `<proc-move-particle>`, `<proc-find-first-hit>`.
+
+**Amended 2026-11-15 (A74):** the section also covers the sphere and the cylinder (design 5.7, 8). Added labels:
+`<sec-round-solids>` (subsection after `<sec-solid-shapes>`); `<eq:sphere-distance>` (`d = |x - c| - r`, normal
+`(x - c) / |x - c|`), `<eq:cylinder-distance>` (the three regions of P14: wall `d = rho - r`, cap `d = |z| - h`,
+rim `d = Sqrt(a^2 + b^2)`), `<eq:sphere-hit-time>` (`t = C / (-B + Sqrt(B^2 - A C))`, the approach condition
+`B < 0`), `<eq:cylinder-hit-time>` (wall root restricted to `|z| <= h + tol`, cap time restricted to the disc
+`rho <= r + tol`); `<fig-round-solids>`, `<fig-round-first-hit>`; `<proc-sphere-first-hit>`,
+`<proc-cylinder-first-hit>`. Added file: `docs/method-paper/figures/contact_round_solids.typ` (both figures may live
+in it). Content: sphere described by centre and radius; cylinder by centre, its own z axis (the `axis` field),
+radius and half height; the wall, cap and rim regions with the branch order and the inside tie of P14; the
+degenerate normals of P13; the two first-hit procedures (P15 for the cylinder: grown with sharp edges, the rim hit
+moved to `d = tol`); the curved touching rule P16 with its one-line convexity argument; the tangent slide (it leaves a
+convex surface and is not re-hit in the step, so `kMaxHitsPerStep` is not reached); the spin rule P17. One worked
+example each: sphere radius 0.5 at the origin, path from `(-2, 0, 0)` at `(1, 0, 0)`: hit at `1.5 - tol`; cylinder
+radius 0.5, half height 1, path from `(0.5 + tol/2, 0, 3)` at `(0, 0, -1)`: hit at `2 - tol` in the high rim corner,
+true distance `Sqrt(1.25) tol`, moved along the rim normal `(1, 0, 2) / Sqrt(5)` to `tol`. `<fig-round-solids>`: the
+sphere with centre, radius and an outward normal; a side cut of the cylinder with its z axis, radius, half height
+and the three regions shaded, the two degenerate-normal points marked. `<fig-round-first-hit>`: side cut of the
+grown shapes (sphere grown by `tol`; cylinder grown with sharp edges, exaggerated), a path through the wall, one
+through the cap, one entering the rim corner with the rim move drawn. State P13 to P17 in plain words where they
+belong. If the paper was already written without these items (Task 1 in progress on 2026-11-15), add them in the
+same commit before it lands.
+
+**Amended 2026-11-15 (A74, after reading commit `920b063a`):** the paper's sphere and cylinder text agrees with the
+design on: the names `radius`, `half_height`; the one cylinder expression `Sqrt(max(s,0)^2 + max(c,0)^2) +
+min(max(s,c),0)` with a side/cap tie going to the side; the degenerate normal = the own -x axis (adopted as P13);
+the stable sphere root; the cylinder sweep against a sharp-edged grown cylinder with no third (rim) equation; P2 on a
+curved surface justified by the tangent plane at the nearest point, and the domain box read side by side. Its own
+worked examples are kept (they replace the examples listed above where they differ). Fold these changes into that
+commit (`git commit --fixup 920b063a`):
+1. **Rim move (P15).** A hit in the rim corner of the sharp grown cylinder is at true distance `tol` to
+   `Sqrt(2) tol`; its gap `d - tol` is then in `[0, 0.414 tol]`, which neither the resting rule (`[-tol, 0]`) nor
+   the start-inside rule (`< -tol`) covers, so the re-sweep would start "inside the grown cylinder" with no rule.
+   `MoveParticle` therefore moves a rim hit along the rim normal to `d = tol` (at most `(Sqrt(2) - 1) tol`). The end
+   check (`d >= tol / 2`) never fires wrongly there: before the move `d >= tol`, after it `d = tol`. Add one sentence
+   after "never closer than tol", and the start rule: a start inside the sharp grown cylinder with a positive true
+   gap (rim corner only) is hit at `t = 0` when it approaches, free otherwise.
+2. **`gamma` from the gap (P16).** `gamma` is evaluated as `g0 * (|q| + R)` with `g0 = |q| - radius - tol` (equal to
+   `q.q - R^2`), so its sign is exactly the sign of the gap the resting rule reads; one clause.
+3. **Spin is not a turn (P17).** Replace "Every shape that turns, the sphere and the cylinder included, uses this
+   search" by: a turn about a sphere's centre or a cylinder's own axis moves the surface but not the shape, so those
+   are swept and slid as solids that do not turn (closed form), the spin entering only the surface velocity, and the
+   quarter-turn limit does not apply to it; a cylinder whose axis itself turns uses the search. Reason: the turning
+   slide carries the particle in the solid's axes, which would drag a frictionless particle round a spinning roller.
+4. **Faces.** Name the faces once: sphere surface and cylinder side `kCurved`, caps `kLowZ`/`kHighZ`, rims
+   `kLowRim`/`kHighRim`.
+5. **Start order (P3 amended):** for a committed plate, "on the wrong side" is checked before "too deep inside".
 
 - [ ] **Step 1: Text.** `= Contact with solids <sec-contact>` after the existing sections, with the four
   subsections of design 8. Content: design 5.1 (shapes, solid-frame conventions of 3.2, `<eq:solid-distance>`),
@@ -301,8 +405,27 @@ procedures use `pseudocode.typ`.
   `CheckSolid` returns `ContactError` only; the close call is written through an overload decided here:
   `ContactError CheckSolid(const Solid& solid, double step_duration, ContactCloseCall* close_call)` (may be null)
   beside the design's two-argument form, which calls it with null (plan decision: the step needs the reason).
+- **Amended 2026-11-15 (A74):** also produces `Sphere`, `Cylinder`, `ToSolid(const Sphere&, ...)`,
+  `ToSolid(const Cylinder&, ...)` (six `ToSolid` in all), `SolidShape::kSphere`, `kCylinder`, `SolidFace::kCurved`,
+  `kLowRim`, `kHighRim` (appended; `static_assert` that `kDomainBox == 3`, `kHighZ == 5`). `CheckSolid` adds design
+  3.2's rules for the two shapes and P17's turn limit.
 
-- [ ] **Step 1: Failing tests.**
+- [ ] **Step 1: Failing tests.** Amended 2026-11-15 (A74): the second block below joins the first.
+
+  ```cpp
+  // A74:
+  TEST(ToSolid, Sphere_HalfSizeIsRadiusAndAxesAreIdentity)   // centre {1,2,3}, r 0.5: origin {1,2,3}, half_size
+                                                             // {0.5,0.5,0.5}, axes kIdentity exactly, kSphere
+  TEST(ToSolid, Cylinder_ZAxisIsAxisAndHalfSizeIsRadiusRadiusHalfHeight)  // axis {1,0,0}, r 0.5, h 1: columns
+                                                             // x {0,0,-1}, y {0,1,0}, z {1,0,0} exactly;
+                                                             // half_size {0.5,0.5,1}, kCylinder
+  TEST(CheckSolid, ZeroRadiusSphere_IsBadInput)              // and r -1, r NaN
+  TEST(CheckSolid, SphereUnequalHalfSizes_IsBadInput)        // half_size {0.5,0.5,0.6} written by hand
+  TEST(CheckSolid, CylinderNegativeHalfHeight_IsBadInput)    // and half_size.x != half_size.y
+  TEST(CheckSolid, CylinderTumblingTwoRadiansInOneStep_IsSolidTurnsTooFar)  // axis z, angular {2,0,0}, step 1
+  TEST(CheckSolid, SpinningFastAboutOwnAxis_IsNone)          // sphere and cylinder (axis z), angular {0,0,100},
+                                                             // step 0.1 (10 rad, P17)
+  ```
 
   ```cpp
   TEST(ToSolid, FlatSolid_ZAxisIsNormalAndAxesAreARotation)  // normal Normalized({1,2,3}): column z == normal,
@@ -332,8 +455,14 @@ procedures use `pseudocode.typ`.
   within `0x1p-40` of 1, each pair's `|Dot| <= 0x1p-40`, determinant positive.
   Glossary rows: `solid`, `flat solid`, `plate`, `box`, `domain box`, `plate side`, `solid face`, `pose`,
   `motion`; never say: `obstacle`, `halfspace`, `slab`, `blade`, `tank`, `side_tag`.
+  Amended 2026-11-15 (A74): `ToSolid(Cylinder)` builds the axes from `axis` by the same rule as the plate (z column =
+  axis); `ToSolid(Sphere)` sets `kIdentity`. `CheckSolid`: sphere needs `half_size.x == half_size.y == half_size.z
+  > 0`; cylinder `half_size.x == half_size.y > 0` and `half_size.z > 0` (exact equality: `ToSolid` writes them so);
+  turn limit per P17. Glossary rows: `sphere`, `cylinder`, `wall` (of a cylinder), `cap`, `rim`, `spin` (a turn about
+  a symmetry axis, which moves the surface but not the shape).
 - [ ] **Step 4: Run** build, tests, gate.
-- [ ] **Step 5: Commit.** Subject: `Describe solids by shape, pose and motion`. New names: the 3.2 names above.
+- [ ] **Step 5: Commit.** Subject: `Describe solids by shape, pose and motion`. New names: the 3.2 names above
+  (with `Sphere`, `Cylinder`, `kSphere`, `kCylinder`, `kCurved`, `kLowRim`, `kHighRim`).
 
 ### Task 4: Pose, surface velocity and distance to a solid
 
@@ -377,6 +506,53 @@ procedures use `pseudocode.typ`.
 - [ ] **Step 5: Commit.** Subject: `Compute a solid's pose, surface velocity and distance`. New names:
   `ComputeSolidPose`, `ComputeSolidVelocity`, `DistanceToSolid`, `ComputeDistanceToSolid`.
 
+**Amended 2026-11-15 (A74):** Task 4 leaves the `kSphere` and `kCylinder` branches of `ComputeDistanceToSolid`
+to Task 4a; no test builds those shapes before then, and the branch holds a debug assertion until Task 4a fills it.
+
+### Task 4a: Distance and normal of a sphere and a cylinder (A74)
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_shapes.h`, `solid_shapes_test.cc`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: Tasks 3 and 4; `math::Sqrt`, `math::Abs`.
+- Produces: the `kSphere` and `kCylinder` branches of `ComputeDistanceToSolid` (design 5.7, P13, P14). No new name.
+  No port: `main` has no round solid.
+
+- [ ] **Step 1: Failing tests** (design 7 numbers; within `1e-15` absolute):
+
+  ```cpp
+  TEST(ComputeDistanceToSolid, SphereOutside_IsDistanceMinusRadius)  // centre {1,2,3}, r 0.5: {1,2,4} -> 0.5,
+                                                                      // {0,0,1}; {1.375,2,3.5} -> 0.125, {0.6,0,0.8};
+                                                                      // face kCurved
+  TEST(ComputeDistanceToSolid, SphereInside_IsNegative)               // {1,2,3.25} -> -0.25, {0,0,1}
+  TEST(ComputeDistanceToSolid, SphereCentre_NormalIsMinusSolidXAxis)  // {1,2,3} -> -0.5, {-1,0,0} (P13)
+  TEST(ComputeDistanceToSolid, CylinderWall_IsRadialGap)              // axis z, r 1, h 0.5: {3,0,0.25} -> 2,
+                                                                      // {1,0,0}, kCurved
+  TEST(ComputeDistanceToSolid, CylinderCaps_AreHeightGaps)            // {0.5,0,2} -> 1.5, {0,0,1}, kHighZ;
+                                                                      // {0,0.5,-1.5} -> 1, {0,0,-1}, kLowZ
+  TEST(ComputeDistanceToSolid, CylinderRims_AreDistanceToTheCircle)   // {1.375,0,1} -> 0.625, {0.6,0,0.8},
+                                                                      // kHighRim; {0,-1.375,-1} -> 0.625,
+                                                                      // {0,-0.6,-0.8}, kLowRim
+  TEST(ComputeDistanceToSolid, CylinderInside_NearerOfWallAndCap)     // {0.9,0,0} -> -0.1, {1,0,0}, kCurved;
+                                                                      // {0,0,0.375} -> -0.125, {0,0,1}, kHighZ
+  TEST(ComputeDistanceToSolid, CylinderInsideTie_TakesWall)           // {0.75,0,0.25} -> -0.25, {1,0,0}, kCurved
+  TEST(ComputeDistanceToSolid, CylinderOnAxis_NormalIsMinusSolidXAxis)  // r 0.25, h 2, {0,0,0} -> -0.25,
+                                                                      // {-1,0,0} (P13)
+  TEST(ComputeDistanceToSolid, CylinderRegionBoundaries_AreContinuous)  // {1,0,0.75} (a 0, b 0.25): 0.25 kHighZ;
+                                                                      // {1.25,0,0.5} (b 0): 0.25 kCurved
+  TEST(ComputeDistanceToSolid, TurnedCylinder_UsesSolidAxes)          // axis {1,0,0}: {0.25,3,0} -> 2, {0,1,0}
+  TEST(ComputeSolidVelocity, TurningSphere_IsAngularCrossArm)         // origin 0, angular {0,0,2}, {0.5,0,0}: {0,1,0}
+  ```
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement** design 5.7 "Distance and normal" with P13 and P14 exactly (branch order rim, wall,
+  cap). Only `+ - * /`, `math::Abs`, `math::Sqrt`. `Read:` lines name `<eq:sphere-distance>` and
+  `<eq:cylinder-distance>`. Glossary rows: `degenerate normal` (the normal chosen where every direction is nearest).
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Compute the distance to a sphere and a cylinder`.
+
 ### Task 5: Plate side and the nearest solid surface
 
 **Kind:** numerics
@@ -405,6 +581,11 @@ procedures use `pseudocode.typ`.
   TEST(ComputeSolidVelocitySample, TurningBox_VelocityAtNearestSurfacePoint)  // box half 1 at origin, angular
                                                                // {0,0,1}, point {3,0,0}: velocity at {1,0,0} ==
                                                                // {0,1,0}; elapsed 0
+  // Amended 2026-11-15 (A74):
+  TEST(FindSolidSide, SphereOrCylinder_IsNoPlate)              // P3: only a plate has sides
+  TEST(ComputeSolidVelocitySample, TurningSphere_VelocityAtNearestSurfacePoint)  // sphere r 1 at origin, angular
+                                                               // {0,0,1}, point {3,0,0}: distance 2, normal {1,0,0},
+                                                               // velocity at {1,0,0} == {0,1,0}; side {0, kNoPlate}
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
 - [ ] **Step 3: Implement.** Glossary rows: `side of a plate` (`kAlongNormal`, `kAgainstNormal`), `nearest solid
@@ -438,6 +619,10 @@ procedures use `pseudocode.typ`.
                                                                      // thinnest 0.004, largest 10 + Length({1,2,3})
   TEST(ComputeContactScale, MovingSolid_UsesEndOfStepOrigin)         // origin {0,0,0}, v {0,0,-5}, step 2: largest 10
   TEST(ComputeContactScale, NoThinSolid_ThinnestIsCellWidth)         // flat solids only
+  TEST(ComputeContactScale, SphereAndCylinder_GiveTheirThinnestSize)  // Amended 2026-11-15 (A74, P8): sphere r 0.3
+                                                                     // at {5,0,0}, cylinder r 1 h 0.2 at origin:
+                                                                     // thinnest 0.4 (2 h), largest 5 +
+                                                                     // Length({0.3,0.3,0.3})
   TEST(CheckContactTolerance, PlateThinnerThan1024Tolerances_IsSolidTooThin)  // thinnest 1023 * tol
   TEST(CheckContactTolerance, Exactly1024Tolerances_IsNone)
   TEST(CheckContactTolerance, CellNarrowerThan1024Tolerances_IsSolidTooThin)
@@ -483,8 +668,12 @@ procedures use `pseudocode.typ`.
                                                                   // while Length < 0.25, velocity 10 * {w,w,w},
                                                                   // friction 2 * next()): Length(after) <=
                                                                   // Length(before) * (1 + 0x1p-50)
-  TEST(ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit)  // v {1e-9,0,0}, solid {0,0,1e8}:
-                                                                  // x == 1e-9 exactly, z within relative 0x1p-44 of 1e8
+  TEST(ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit)  // amended 2026-11-15: the solid moves
+                                                                  // fast SIDEWAYS: v {1e-9,0,-1}, solid {1e8,0,0},
+                                                                  // normal {0,0,1}, friction 0: result bits ==
+                                                                  // {1e-9, 0, +0.0} exactly (ToBits). A response in the
+                                                                  // solid's frame gives x == 0 (1e-9 - 1e8 + 1e8), so
+                                                                  // this fails for the bug Review Focus 4 names
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
 - [ ] **Step 3: Implement** design 5.4 steps 1 to 3. Body comment kept: why the approach is removed in world
@@ -545,6 +734,72 @@ procedures use `pseudocode.typ`.
 - [ ] **Step 5: Commit.** Subject: `Find the first hit of a straight path on solids that do not turn`.
   New names: `FindFirstHit`.
 
+**Amended 2026-11-15 (A74):** `FindFirstHit` dispatches per shape; the `kSphere` and `kCylinder` branches arrive in
+Task 8a (until then they hold a debug assertion; no Task 8 test builds them). The order of step 3 (smallest time,
+then lower solid index) covers every shape.
+
+### Task 8a: First hit on a sphere and a cylinder (A74)
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact_steps.h`, `solid_contact.h`, `find_first_hit_test.cc`
+
+**Interfaces:**
+- Consumes: Tasks 4a, 8.
+- Produces: the closed-form `kSphere` and `kCylinder` branches of `FindFirstHit` (design 5.7) with P15, P16 and P17
+  (a sphere never turns; a cylinder whose `omega_across` is below P17's bound is swept here; a cylinder turning
+  across its axis goes to the Task 9 search). Private helpers in `solid_contact_steps.h`, names decided here:
+  `FindSphereHit(...)` and `FindCylinderHit(...)`, each taking the start and relative velocity in the solid's axes,
+  the solid, `contact_tolerance` and `duration`, returning the hit time or "free". No port: `main` has none.
+
+- [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance`; expected times within `0x1p-44` relative unless
+  stated; normals within `1e-8`):
+
+  ```cpp
+  // sphere at the origin, r 0.5, duration 2
+  TEST(FindFirstHit, SphereHeadOn_HitsAtGapOverSpeed)          // {-2,0,0}, v {1,0,0}: 1.5 - tol, {-1,0,0}, kCurved
+  TEST(FindFirstHit, SphereGrazing_HitsAtQuadraticRoot)        // {-2,0.3,0}: 2 - Sqrt((0.5 + tol)^2 - 0.09)
+                                                               // (1.5999999988358469), normal near {-0.8,0.6,0}
+  TEST(FindFirstHit, SphereTangentWithinRounding_FreeOrHitNearTwo)  // {-2, 0.5 + tol, 0}: no error; free, or hit
+                                                               // with elapsed within 0x1p-20 of 2 and normal x
+                                                               // within 0x1p-20 of 0
+  TEST(FindFirstHit, SphereMiss_IsFree)                        // {-2,0.6,0}
+  TEST(FindFirstHit, SphereMovingAway_IsFree)                  // {-2,0,0}, v {-1,0,0} (B >= 0)
+  TEST(FindFirstHit, SphereTouchingTangentPath_IsNotAHit)      // start {-(0.5 + tol),0,0}, v {0,1,0}: free (P16)
+  TEST(FindFirstHit, SphereTouchingPushingIn_HitsAtZero)       // same start, v {1,0,0}: elapsed 0
+  TEST(FindFirstHit, MovingSphere_UsesRelativeVelocity)        // centre {2,0,0} moving {-1,0,0}, particle at rest at
+                                                               // origin: 1.5 - tol
+  TEST(FindFirstHit, SpinningSphere_IsClosedForm)              // head-on case, sphere angular {0,0,5}: same time
+                                                               // within 0x1p-44 relative (no stepping, P17)
+  // cylinder at the origin, axis z, r 0.5, h 1
+  TEST(FindFirstHit, CylinderWall_HitsAtRadialGap)             // {-2,0,0.25}, v {1,0,0}, 2 s: 1.5 - tol, kCurved
+  TEST(FindFirstHit, CylinderCap_HitsAtHeightGap)              // {0.1,0.2,3}, v {0,0,-1}, 4 s: 2 - tol, kHighZ
+  TEST(FindFirstHit, CylinderObliqueWall_CapPlaneOutsideDiscRejected)  // {-2,0,1.5}, v {1,0,-0.5}, 4 s: 1.5 - tol,
+                                                               // kCurved
+  TEST(FindFirstHit, CylinderOverRimIntoWall_HitsWall)         // {-2,0,2}, v {1,0,-1}, 4 s: 1.5 - tol, kCurved
+  TEST(FindFirstHit, CylinderParallelToAxisOutside_IsFree)     // {0.6,0,3}, v {0,0,-1}, 4 s
+  TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim)  // {0.5 + tol/2,0,3}, v {0,0,-1}, 4 s: 2 - tol,
+                                                               // kHighRim, at_hit.distance == Sqrt(1.25) * tol within
+                                                               // 0x1p-40 (the sharp corner, P15)
+  TEST(FindFirstHit, CylinderParallelToCapsAbove_IsFree)       // {-2,0,1.5}, v {1,0,0}
+  TEST(FindFirstHit, CylinderTouchingWallTangentPath_IsNotAHit)  // start {-(0.5 + tol),0,0}, v {0,1,0}: free (P16)
+  TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree)  // start {0.5 + tol/2, 0, 1 + tol/2} (true gap
+                                                               // (Sqrt(0.5) - 1) tol < 0: touching) v {1,0,1}: free;
+                                                               // start {0.5 + 0.9 tol, 0, 1 + 0.9 tol} (true gap
+                                                               // > 0, inside the sharp corner), v {-1,0,0}: hit at 0;
+                                                               // v {1,0,0}: free (P15)
+  TEST(FindFirstHit, SpinningCylinderAboutAxis_IsClosedForm)   // wall case, angular {0,0,5}: same time, no stepping
+  ```
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement** design 5.7 "First hit": sphere `A = Dot(u,u)`, `B = Dot(p0,u)`, `C = g0 * (L0 + R)`,
+  free when `A == 0`, `B >= 0` or `B * B - A * C < 0`, else `t = C / (-B + Sqrt(B * B - A * C))`; cylinder with
+  P15's two candidates in order; starts per P15 and P16. Only `+ - * /`, `math::Abs`, `math::Sqrt`. `// Step 1:`
+  comments keep `<proc-find-first-hit>` numbering, and the branches cite `<proc-sphere-first-hit>` and
+  `<proc-cylinder-first-hit>` in `Read:`.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Find the first hit of a straight path on a sphere and a cylinder`.
+
 ### Task 9: First hit on turning solids
 
 **Kind:** numerics
@@ -569,7 +824,13 @@ procedures use `pseudocode.typ`.
                                                                     // (local angle 0.5 at the end, gap 0.027)
   TEST(FindFirstHit, GrazingTurningBox_IsSlowApproachToTurningSolid)
       // particle at rest at {0.5 + 2 * tol, 0, 0}, angular {0,0,1}, 0.1 s: kTooCloseToCall
+  // Amended 2026-11-15 (A74, P17): a cylinder turning across its axis uses the same search with its true distance
+  TEST(FindFirstHit, CylinderTurningAcrossAxis_ReachesRestingParticleAtTrigonometricAngle)
+      // cylinder at origin, axis {1,0,0}, r 0.5, h 1, angular {0,0,1}; particle at rest at 0.6 * {cos 1.2, sin 1.2,
+      // 0}, 1 s: elapsed == 1.2 - asin((0.5 + tol) / 0.6) (0.21488921385421111) within 0x1p-30, face kCurved
   ```
+  **Amended 2026-11-15 (A74):** a sphere never enters this search, and a cylinder only when P17 says its shape
+  turns; `ComputeDistanceToSolid` (Task 4a) gives `g(t)`, the bound is unchanged.
   The third test needs the close call: `FindFirstHit` writes it through a pointer decided here,
   `FindFirstHit(..., FirstHit* first_hit, ContactCloseCall* close_call)` (plan decision; may be null), the
   design's six-argument form forwarding null.
@@ -724,6 +985,60 @@ procedures use `pseudocode.typ`.
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Slide along several surfaces and refuse a squeeze`.
 
+**Amended 2026-11-15 (A74):** the earlier-surface rule of Task 12 applies to every shape unchanged (it reads the
+normal recorded at each hit). Round solids get their own move rules in Task 12a.
+
+### Task 12a: `MoveParticle` on a sphere and a cylinder (A74)
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact.h`, `solid_contact_steps.h`, `move_particle_test.cc`,
+  `contact_test_cases.h`
+
+**Interfaces:**
+- Consumes: Tasks 8a, 11, 12.
+- Produces: `MoveParticle` step 4's rim move (P15: a hit position in the rim region is moved along its normal to
+  `d = tol` before the response; the reaction's `hit_position` is the moved position) and the use of P17 in step 5
+  (a sphere, or a cylinder spinning about its axis, slides as a solid that does not turn; the response uses
+  `ComputeSolidVelocity` with the full `omega`). Every case is added to `BuildMoveParticleCases()`.
+
+- [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance`, friction 0 unless stated, both velocities equal):
+
+  ```cpp
+  TEST(MoveParticle, SphereHeadOn_StopsOneToleranceShort)      // sphere origin r 0.5, {-2,0,0}, v {1,0,0}, T 2:
+                                                               // kHit, x -(0.5 + tol) within 2 tol, velocities 0,
+                                                               // approach_speed {-1,-1}, kCurved
+  TEST(MoveParticle, SphereOblique_SlidesOffAlongTheTangent)   // {-2,0.3,0}, v {1,0,0}, T 2: hit_count 1 (the
+                                                               // tangent re-sweep is not a hit), velocity
+                                                               // {0.36,0.48,0} and end {-0.256,0.492,0} within 1e-8,
+                                                               // hit_fraction (2 - Sqrt((0.5 + tol)^2 - 0.09)) / 2
+  TEST(MoveParticle, SphereTangentWithinRounding_NeverEndsInside)  // {-2, 0.5 + tol, 0}, v {1,0,0}, T 4: no error,
+                                                               // end distance >= tol / 2, velocity x within 0x1p-40
+                                                               // relative of 1
+  TEST(MoveParticle, SphereStartWithinToleranceMovingAway_MovedOutSilently)  // P12: start {-(0.5 + tol/4),0,0},
+                                                               // v {0,1,0}, T 0.1: kNone, hit_count 0, velocities bit
+                                                               // for bit, end distance >= tol
+  TEST(MoveParticle, CylinderRim_HitPositionMovedToOneTolerance)  // cylinder origin axis z r 0.5 h 1, reacting;
+                                                               // {0.5 + tol/2,0,3}, v {0,0,-1}, T 4: kHit, kHighRim,
+                                                               // hit_count 1, ComputeDistanceToSolid(reaction
+                                                               // .hit_position) within 0x1p-40 of tol, velocity
+                                                               // {0.4,0,-0.2} within 1e-8
+  TEST(MoveParticle, CylinderCap_SlidesOnThePlane)             // {0.1,0,3}, v {0.1,0,-1}, T 3: hit_fraction
+                                                               // (2 - tol) / 3, kHighZ, velocity {0.1,0,0}, end
+                                                               // {0.4,0,1 + tol} within 2 tol, hit_count 1
+  TEST(MoveParticle, SpinningCylinderPressedOnCap_MovesOnlyThroughFriction)
+      // axis z, r 1, h 0.5, angular {0,0,2}; start {0.5,0,0.5 + tol}, v {0,0,-1}, T 0.1: friction 0 -> velocity
+      // {0,0,0}, end {0.5,0,0.5 + tol}; friction 0.25 -> {0,0.25,0}, end {0.5,0.025,0.5 + tol}; friction 1 ->
+      // {0,1,0} (stick), end {0.5,0.1,0.5 + tol}; positions within 2 tol; no close call (P17: spin, not a turn)
+  ```
+- [ ] **Step 2: Run.** Expected: the new tests fail.
+- [ ] **Step 3: Implement.** The rim move goes between "find the first hit" and "respond" with a comment on why the
+  sharp grown corner leaves the hit up to `Sqrt(2) * tol` away; the slide comment says why the straight tangent path
+  cannot re-enter a convex solid in this step (P16's convexity line) and so `kMaxHitsPerStep` is not reached.
+- [ ] **Step 4: Run** build, tests, gate.
+- [ ] **Step 5: Commit.** Subject: `Move a particle against a sphere and a cylinder`.
+
 ### Task 13: `MoveParticle` slide on a turning solid
 
 **Kind:** numerics
@@ -750,6 +1065,10 @@ procedures use `pseudocode.typ`.
       // particle at {0.5 + tol, 0, 0} moving {0,0,1} on the box turning {0,0,1}, T 0.1, friction 0: the face moves
       // {0,0.5,0} there, so the relative velocity in the box's axes is {0,-0.5,1}; end position ==
       // origin + axes * {0.5 + tol, -0.05, 0.1} at ComputeSolidPose(box, 0.1), within 2 tol; hit_fraction 0
+  // Amended 2026-11-15 (A74, P17): a cylinder turning across its axis slides as a turning solid
+  TEST(MoveParticle, CylinderTurningAcrossAxisHitsRestingParticle_EndsOnWallAtEndPose)
+      // Task 9's cylinder case, T 1: hit_fraction 0.21488921385421111 within 0x1p-30; ComputeDistanceToSolid at
+      // ComputeSolidPose(cylinder, 1) in [tol / 2, 2 tol], face kCurved
   ```
 - [ ] **Step 2: Run.** Expected: the new tests fail.
 - [ ] **Step 3: Implement.** Relative `for_this_step` at the hit into the solid's axes, the face component
@@ -801,8 +1120,22 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
       // math::Rotation({0.3,-0.5,0.7}) and under the Y-up to Z-up rows {1,0,0},{0,0,-1},{0,1,0}: positions,
       // velocities, solid origins, axes and motions turned; discrete fields equal; floating values within
       // 0x1p-40 * max(|a|, |b|, case scale), scale the largest coordinate (positions) or speed (velocities)
+  // Amended 2026-11-15 (A74): the round set below
+  TEST(MoveParticle, RoundSolidsFarFromOrigin_NeverEndInside)
+      // BuildRoundCases(10000): no error; ComputeDistanceToSolid at ComputeSolidPose(solid, T) >= tol / 2 for each;
+      // at least 4500 cases are hits (every cylinder case aims inside; print the count)
   ```
-- [ ] **Step 2: Run.** Expected: they pass if Tasks 10 to 13 are right. Then prove the control: temporarily set
+  **Amended 2026-11-15 (A74):** also produces test-only `std::vector<MoveParticleCase> BuildRoundCases(int count)`
+  (used again in Task 16). Draw order (P11): `is_sphere = next() < 0.5`; `centre = 1e3 * {w, w, w}`; `radius = 0.05 +
+  0.45 * next()`; `half_height = 0.05 + 0.45 * next()` (drawn for both, used by the cylinder); `axis = {w, w, w}`
+  redrawn while `Length < 0.25`, then `Normalized` (drawn for both); `linear_velocity = 10 * {w, w, w}`; `direction`
+  drawn as the axis was; `start = centre + (Length(half_size) + 0.01 + 0.05 * next()) * direction`; `target = centre +
+  axes * (0.9 * half_size` times `{w, w, w}` component by component`)`; `hit_share = 0.1 + 0.8 * next()`;
+  `for_this_step = linear_velocity + (target - start) / (T * hit_share)`; `for_next_step = for_this_step + 0.5 *
+  {w, w, w}`; `friction = next()`. One solid id 1 at rest in pose (only `linear_velocity`, no turn), `T = 0x1p-6`,
+  `tol = ComputeContactTolerance({1100, 0.01, 0.01})`, `start_overlap_tolerance = 0`. The control of the oblique
+  set is not repeated (the rest gap's proof is shape-free).
+- [ ] **Step 2: Run.** Expected: they pass if Tasks 10 to 13 (and 12a) are right. Then prove the control: temporarily set
   the settle of step 6 to no-op and the hit at `d == 0`; `NeverEndsInside` must fail; restore. Record the failing
   count in the commit message.
 - [ ] **Step 3: Run** the gate.
@@ -858,6 +1191,10 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
     `kRunOnCallFailed` the outputs are unspecified and the run stops.
   - `ParticleContact` is copied field by field from `SolidContactResult`; `static_assert(sizeof(ParticleContact) ==
     56)` (the design says 64; its fields total 56, see the hand-over).
+
+**Amended 2026-11-15 (A74):** `EveryCase_SameAsMoveParticle` covers the sphere and cylinder cases of Tasks 8a,
+12a and 13 through `BuildMoveParticleCases()` (no new test name); `BuildContactMemoryEstimate` is unchanged
+(`sizeof(Solid)` does not change: the round shapes reuse `half_size`).
 
 - [ ] **Step 1: Failing tests** (`move_particles_test.cc`, label `cpu`):
 
@@ -941,6 +1278,15 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   `ComputeContactResponse` and `ComputeContactTolerance` give the same bits on CPU and GPU, unless NaN, for solids
   that do not turn, because they use only `+`, `-`, `*`, `/` and `math::Sqrt`, each correctly rounded on both with
   `--fmad=false`; with turning they call `math::Rotation` (may differ in the last bits) and agree within design 6.
+- **Amended 2026-11-15 (A74):** the promise covers the sphere and cylinder branches too (design 6): distance and
+  normal for any pose, `FindFirstHit`'s closed forms, the rim move and the touching rule use only `+ - * /`,
+  `math::Abs` and `math::Sqrt`; no last-bits function. A spinning sphere or cylinder (`angular_velocity` not zero)
+  reaches `math::Rotation` through `ComputeSolidPose` and is compared within design 6. The 32 fixed inputs of
+  `SharedFormulas, OnGpu_MatchCpu` include the twelve distance points of Task 4a (sphere, cylinder regions, both
+  degenerate normals) and the sphere and cylinder hits of Task 8a; `ApplyMoveParticleAt,
+  EveryThreadBlockAndThread_SameAsCpuLoop` and `MoveParticles, ObliqueCasesOnGpu_MatchCpu` also run
+  `BuildRoundCases(10000)` (one call per case on the GPU; one packed call per shape kind is not possible since each
+  case has its own solid).
 
 - [ ] **Step 1: Failing tests.**
 
@@ -1009,6 +1355,27 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   TEST(MoveParticles, ReactionSum_EqualsSumOfVelocityChanges)  // particles of the first 100 oblique cases against
       // the solid of case 0 with reports_reaction: per particle, change == after - before within 0x1p-44 relative
   ```
+- [ ] **Step 1a: Round-solid scenes** (amended 2026-11-15, A74; label `cpu`; `tol = kTestContactTolerance`; the
+  test adds gravity itself, so contact alone shows these):
+
+  ```cpp
+  TEST(MoveParticles, FrictionlessHitsOnReactingSphere_ChangeHasNoMomentAboutCentre)
+      // reacting sphere r 0.5 at {1,2,3}; 100 particles (P11, in this order per particle: direction {w,w,w}
+      // redrawn while Length < 0.25 then Normalized; jitter 0.3 * {w,w,w}): start centre + 2 * direction, both
+      // velocities -direction + jitter, T 3, friction 0: per particle with a hit,
+      // |Cross(hit_position - centre, change)| <= 1e-12 * |change| (every normal passes through the centre)
+  TEST(MoveParticle, RestingOnTopOfSphere_Stays)
+      // sphere r 1 at origin; particle {0,0,1 + tol}, velocities 0; 1000 steps of T 1e-3, each adds {0,0,-9.81 T}
+      // to both velocities, calls MoveParticle and feeds the end back: no error, x and y exactly 0, both velocities
+      // exactly {0,0,0} after every step, z within 2 tol of 1 + tol
+  TEST(MoveParticle, SlidingOffFrictionlessSphere_LeavesAtAnalyticAngle)
+      // same sphere, start {0,0,1 + tol}, velocities {0.01,0,0}, friction 0, T 1e-3; each step v.z -= 9.81 T on
+      // both velocities, MoveParticle, end fed back; stop when the end distance exceeds 0.01 (about 2100 steps):
+      // no error in any step, hit_count <= 1 in every step; the polar angle acos(z / |x|) of the end of the last
+      // step with kind == kHit is within 0.01 rad of acos(2/3 + 0.01^2 / (3 * 9.81)) = 0.8410641118063884
+      // (the design's model of the scheme gives 0.8369; the gap comes from removing the inward speed at each hit
+      // and from intermittent last contacts, and shrinks with T). Print the measured angle.
+  ```
 - [ ] **Step 2: Produce the old numbers.** On `main` (read-only; build it in a detached temporary worktree:
   `git worktree add --detach <temp-dir>/fluidity-main main`, then its own presets as `main:AGENTS.md` and
   `main:docs/native/toolchains.md` say), write a throwaway program that calls `ResolveLiquidWallContact3D` for every
@@ -1044,13 +1411,16 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   a worked example with numbers on every non-trivial public function (`MoveParticle`, `FindFirstHit`,
   `ComputeContactResponse`, `ComputeContactTolerance`, `MoveParticles`); every word in the glossary; `Words`,
   `Uses`, `Used by` (the step, solids, transfer, particles, materials, render output through solids), `Read:` lines
-  resolve; `// Step N:` matches `<proc-move-particle>` and `<proc-find-first-hit>`.
+  resolve; `// Step N:` matches `<proc-move-particle>` and `<proc-find-first-hit>`. Amended 2026-11-15 (A74): the
+  worked examples include a sphere and a cylinder rim hit (the paper's two examples), and the round branches' `Read:`
+  lines resolve to `<proc-sphere-first-hit>`, `<proc-cylinder-first-hit>`, `<eq:sphere-distance>`,
+  `<eq:cylinder-distance>`.
 - [ ] **Step 2: Fold each change into the commit that owns the file** (`git commit --fixup <hash>`, then
   `git rebase --autosquash <first contact commit>~1`). Run
   `git rebase <first contact commit>~1 --exec "uv run python tools/check_commit.py --only format" --exec
   "uv run python tools/check_commit.py --only rules"` and the full gate on the tip. Expected: all pass.
 - [ ] **Step 3: Check the design section by section** (3.1 to 3.5, 5, 6, 7, 8, 10) against the branch; record in
-  the hand-over every plan decision P1 to P12, the two signature additions (`CheckSolid` and `FindFirstHit` with a
+  the hand-over every plan decision P1 to P17 (P13 to P17 added 2026-11-15 for A74), the two signature additions (`CheckSolid` and `FindFirstHit` with a
   `ContactCloseCall*`), the same-bits promise of Task 16, and `sizeof(ParticleContact) == 56` versus the design's 64.
 - [ ] **Step 4: `docs/gpu-runs.md`.** Add the row: module `contact`, the tip commit, result `compiled, not run`,
   notes listing the `gpu` tests: `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`,

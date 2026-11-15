@@ -230,10 +230,11 @@ of its normalised columns have a dot product above `1e-9` in magnitude. Key time
 `substance_wrong_kind`, `more_than_one_gas`, `shares_do_not_sum_to_one` (tolerance `1e-9`), `ingredient_name_empty`,
 `ingredient_names_collide`, `outside_domain`, `gas_source_turned`, `source_turned` (only if D4 applies),
 `size_not_positive`, `rate_not_positive`, `source_window_outside_frames`, `matrix_sheared_or_mirrored`,
-`motion_not_keys`, `too_many_plates`, `too_many_free_solids`, `too_many_ingredients`, `too_many_size_levels`,
+`motion_not_keys`, **(A74):** `round_solid_scaled_unevenly` (`BLOCKS_RUN`: a `SPHERE` solid whose three
+dimensions, or a `CYLINDER` solid whose X and Y dimensions, differ by more than 1e-6 relative), `too_many_plates`, `too_many_free_solids`, `too_many_ingredients`, `too_many_size_levels`,
 `motion_samples_out_of_range`, `surface_spacing_costly` (spacing under a quarter of the smallest cell width, severity
 `COSTS_MORE`), **amended 2026-11-15 (A59):** `guide_object_missing` (`BLOCKS_RUN`: a free solid's guide is Rail or
-Hinge and it has no guide object), **(A63):** `cell_size_region_rotated` (found by `"scene_reader"`, `NOTE`,
+Hinge and it has no guide object), **(A63, removed by A78):** ~~`cell_size_region_rotated`~~; **(A77, A78, A79):** `refinement_zone_unsupported_display`, `refinement_mesh_not_closed` (`BLOCKS_RUN`), `refinement_mesh_deforms`, `cell_size_factor_out_of_range`, `refinement_camera_on`, `refinement_zone_without_cell_resize` (`NOTE`), `refinement_camera_missing` (`BLOCKS_RUN`) (design D8 text; found by `"scene_reader"`); history: (found by `"scene_reader"`, `NOTE`,
 message "<object> is rotated; the axis-aligned box around it is used."), and the force field codes of D13 (`wind_falloff_not_honoured`, `wind_noise_not_honoured`,
 `wind_flow_not_honoured`, `wind_shape_not_honoured`, `wind_without_gas`, `force_field_not_honoured`,
 `force_field_ignored`; these are found by `"scene_reader"`, since only Blender knows the field objects). Ingredient
@@ -569,8 +570,8 @@ design does.
   Enum item numbers are the position in the enum (stable; never reordered: new values are appended).
 
 - [ ] **Step 1: Failing tests:** `test_role_table_rows_as_designed` (START_MATERIAL: BOX, BALL, kinds liquid,
-  snow, springy_solid; SOURCE: BOX, liquid; GAS_SOURCE: BOX, no substance; SOLID: BOX, FLAT_SOLID, PLATE, all
-  motions; NONE and DOMAIN: no shape list beyond BOX for DOMAIN); `test_ball_only_for_start_material`;
+  snow, springy_solid; SOURCE: BOX, liquid; GAS_SOURCE: BOX, no substance; SOLID: BOX, FLAT_SOLID, PLATE, SPHERE,
+  CYLINDER (amended 2026-11-15, A74: `SPHERE`, `CYLINDER` appended to `Shape`), all motions; NONE and DOMAIN: no shape list beyond BOX for DOMAIN); `test_ball_only_for_start_material`;
   `test_to_enum_items_shape` (5-tuples, identifier, label, tooltip, icon, number); `test_every_role_once`.
 - [ ] **Step 2:** run (fail). **Step 3:** implement. **Step 4:** gate. **Commit.** Subject: `Declare roles,
   shapes and motions in one table`.
@@ -602,9 +603,10 @@ description gains cell size regions and the map, `RunDetail` loses `memory_share
   open_sea_zone_width, outlet_zone_width, open_sea_pull_rate, outlet_pull_rate)`; `GasDescription(
   ambient_temperature, ignition_temperature, burn_rate, heat_per_fuel_mass, smoke_per_fuel_mass)`;
   `WindKey(time, acceleration)`; `CellResizeDescription(surface_reach_in_cell_widths,
-  solid_reach_in_cell_widths)` (A64: no grid-only depths); `CellSizeRegionDescription(object_name, low_corner,
-  high_corner, cell_width)`, `CellSizeMapDescription(image_name, width, height, grey_levels)` and
-  `SceneDescription.cell_size_regions`, `.cell_size_map` (A63, design 3.3);
+  solid_reach_in_cell_widths)` (A64: no grid-only depths); **amended 2026-11-15 (A77, A78, A79):**
+  `RefinementZoneKey`, `RefinementZoneDescription`, `RefinementCameraKey`, `RefinementCameraDescription` and
+  `SceneDescription.refinement_zones`, `.refinement_camera`, `.refinement_sample_spacing_log2` (design 3.3; replace
+  `CellSizeRegionDescription`, `CellSizeMapDescription`, `.cell_size_regions`, `.cell_size_map`);
   `SolverDetail(max_step_duration, max_retries_per_step, max_volume_error_rate, random_seed)`;
   `RunDetail(run_on, memory_share_of_free=0.9, memory_left_free_bytes=536_870_912)` (A58);
   `ParticipantDescription.slip_length: float | None = None` and `.free_slip: bool = False` (A53); `OutputRequest(surface, foam_and_spray,
@@ -618,7 +620,8 @@ description gains cell size regions and the map, `RunDetail` loses `memory_share
   (`after_path == "stays_at_last_key"`, `friction_scale == 1.0`, `motion == FIXED`; 2026-11-15: `RunDetail` has
   `memory_share_of_free == 0.9`, `memory_left_free_bytes == 536870912` and no `memory_share_of_total`;
   `FreeSolidGuide().kind == "axis_limits"` with all four flags true, `rail_direction == hinge_axis == (0, 0, 1)`;
-  `slip_length is None`; `cell_size_regions == ()`, `cell_size_map is None`; `CellResizeDescription` has exactly
+  `slip_length is None`; (A78) `refinement_zones == ()`, `refinement_camera is None`,
+  `refinement_sample_spacing_log2 == 2`; `CellResizeDescription` has exactly
   two fields).
 - [ ] **Step 2:** run (fail). **Step 3:** implement. **Step 4:** gate. **Commit.** Subject: `Describe one scene
   as immutable values`.
@@ -647,9 +650,10 @@ grid-only depth rows.
   `participants[].mass` for participant fields); `scene_file_path` as the branch schema names it (D4).
   `changes` is `OUTPUT` exactly for the fields outside the run fingerprint (outputs, render settings,
   `last_frame`, `memory_share_of_free`, `memory_left_free_mib`, saved-state cadence: I/O design 5.2). (2026-11-15)
-  The rows of design 3.2's "NEW rows" table exactly: `cell_size_region_collection` (scene paths
-  `cell_size_regions[].low_corner` and `.high_corner`), `...fluidity_cell_size_region.cell_width`,
-  `cell_size_map_image`, `participants[].slip_length`, `participants[].free_slip`, `participants[].guide_kind`, `participants[].guide_object`,
+  The rows of design 3.2's "NEW rows" table exactly: (amended 2026-11-15, A77, A78, A79, replacing the region
+  collection, cell width and map image rows) `fluidity_refinement_zone.enabled`, `fluidity_refinement_zone.factor`
+  (scene path `refinement_zones[].cell_size_factor`, label "Cell Size Factor"), `refinement_camera_enabled`,
+  `refinement_camera_object`, `refinement_pixels_per_cell`, `refinement_sample_spacing_log2`, `participants[].slip_length`, `participants[].free_slip`, `participants[].guide_kind`, `participants[].guide_object`,
   `memory_share_of_free` (scene path `step.memory_share_of_free`), `memory_left_free_mib` (scene path
   `step.memory_left_free_bytes`, unit MiB: the writer
   multiplies by 1,048,576); the axis flag rows move to `solids[].free_solid.guide.*`. No `memory_share_of_total`,
@@ -685,13 +689,19 @@ grid-only depth rows.
 **Amended 2026-11-15 (A47, A53, A58, A59, A63, A64):** writes `wind`, `cell_size_regions`, `free_solid.guide`,
 `slip_length` and `free_slip`, `step.memory_left_free_bytes`; no grid-only depths. The map and its PNG come in Task 8a.
 
+**Amended 2026-11-15 (A78, A79):** no `cell_size_regions` and no map: the refinement fields (`refinement_zones`,
+`refinement_camera`, `refinement_sample_spacing_log2`) and the zone mesh files are written in Task 8a; here
+`full_description()` leaves them empty and the coverage test skips their rows until Task 8a;
+`test_cell_size_regions_written` is withdrawn (Task 8a's `test_refinement_zones_written` replaces it); every
+"`cell_size_regions`" below reads as removed.
+
 **Kind:** logic. **Tests:** (a).
 
 **Files:**
 - Create: `blender/fluidity/logic/scene_file.py`, `tests/addon/logic/test_scene_file.py`,
   `tests/addon/logic/full_description.py` (test helper: a description with every field set to a distinct value;
-  2026-11-15: `cell_size_map` stays `None` until Task 8a, and `test_scene_fields_cover_the_scene_file` skips the
-  `cell_size_map.image` row until then)
+  2026-11-15, A78: the refinement fields stay empty until Task 8a, and `test_scene_fields_cover_the_scene_file` skips
+  their rows until then)
 
 **Interfaces:**
 - Consumes: `SceneDescription` (Task 6), `SCENE_FIELDS` (Task 7).
@@ -724,45 +734,41 @@ grid-only depth rows.
 - [ ] **Step 2:** run (fail). **Step 3:** implement. **Step 4:** gate. **Commit.** Subject: `Write the scene
   file the native program reads`. New names: `write_scene_file`, `compute_scene_digest`.
 
-### Task 8a: The cell size map as a grey PNG, in plain Python
+### Task 8a: Refinement zone meshes in plain Python (A78; replaces the grey PNG task)
 
-**Amended 2026-11-15 (A63):** added. The add-on writes the domain's cell size map image as an 8-bit grey PNG with
-the standard library only, so `logic/` stays free of `bpy` and of image libraries.
+**Amended 2026-11-15 (A77, A78, A79; reshapes A72, A73):** this task **replaces** "The cell size map as a grey PNG,
+in plain Python": no map, no PNG, no `LUMINANCE_WEIGHTS`, `to_grey_levels`, `write_grey_png`, `CELL_SIZE_MAP_FILE`
+(`plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73, A77)" section 3; design 3.14, decision 33).
 
 **Kind:** logic. **Tests:** (a).
 
 **Files:**
-- Create: `blender/fluidity/logic/grey_png.py`, `tests/addon/logic/test_grey_png.py`
-- Modify: `blender/fluidity/logic/scene_file.py` (the map), `tests/addon/logic/test_scene_file.py`,
-  `tests/addon/logic/full_description.py` (a 2 x 2 map in the full description; the coverage test stops skipping
-  `cell_size_map.image`)
+- Create: `blender/fluidity/logic/zone_mesh.py`, `tests/addon/logic/test_zone_mesh.py`
+- Modify: `blender/fluidity/logic/scene_file.py` (zones, camera, mesh files), `tests/addon/logic/test_scene_file.py`,
+  `tests/addon/logic/full_description.py` (a box, an ellipsoid and a cube-mesh zone, the camera term on with 2 keys;
+  the coverage test covers `refinement_zones[]` and `refinement_camera`)
 
 **Interfaces:**
-- Produces design 3.14 exactly: `LUMINANCE_WEIGHTS = (0.2126, 0.7152, 0.0722)` (Rec. 709; the docstring cites
-  ITU-R BT.709), `to_grey_levels(rgba, width, height) -> bytes | AddonFailure` (Blender's `Image.pixels` order, row 0
-  at the bottom, to grey bytes top row first, `floor(255 * clamp(Y, 0, 1) + 0.5)`, alpha ignored;
-  a length other than `4 * width * height` or a size below 1 is `RUN_FOLDER_NOT_USABLE` with the detail "cell size
-  map has <n> values, expected <m>"), `write_grey_png(path, width, height, grey_levels) -> None | AddonFailure` (signature, IHDR colour type 0 bit depth 8, one IDAT of `zlib.compress(
-  rows, 9)` with filter byte 0 per row, IEND; CRCs by `zlib.crc32`; `<path>.tmp` then `os.replace`; parent folders
-  created).
-- `scene_file.py` (design 3.3): `CELL_SIZE_MAP_FILE = "inputs/cell_size_map.png"`; `write_scene_file` writes
-  `cell_size_map: {image: CELL_SIZE_MAP_FILE}` only when `cell_resize` and `cell_size_map` are present, the PNG
-  first (`write_grey_png` to `<scene folder>/inputs/cell_size_map.png`), then the scene file; `compute_scene_digest`
-  is SHA-256 of the scene file bytes followed by the PNG bytes when there is a map.
+- Produces design 3.14 exactly: `count_open_edges(triangles) -> int`, `write_ply(path, vertices, triangles) -> None |
+  AddonFailure` (binary little-endian PLY: header `ply`, `format binary_little_endian 1.0`, `element vertex <n>`,
+  three `property float`, `element face <m>`, `property list uchar uint vertex_indices`, `end_header`; `<path>.tmp`
+  then `os.replace`; parent folders created; `RUN_FOLDER_NOT_USABLE` on failure). `scene_file.py`:
+  `REFINEMENT_FOLDER = "inputs/refinement"`; `write_scene_file` writes `refinement_sample_spacing_log2`,
+  `refinement_zones` (zone_id order; `mesh_file` = `inputs/refinement/zone_<id>.ply`, written first) and
+  `refinement_camera` only when `cell_resize` is present; `compute_scene_digest` is SHA-256 of the scene file bytes
+  followed by each mesh file's bytes in zone_id order.
 
-- [ ] **Step 1: Failing tests:** `test_grey_png_round_trip` (a 3 x 2 image of bytes 0, 1, 2, 253, 254, 255: the file
-  starts with the PNG signature, IHDR width 3, height 2, depth 8, colour type 0, interlace 0; the inflated IDAT is
-  `b"\x00\x00\x01\x02\x00\xfd\xfe\xff"`; every chunk CRC equals `zlib.crc32` of type and data);
-  `test_grey_levels_luminance_and_row_order` (design 7.1: RGBA rows in Blender order, row 0 red, green, blue, row 1
-  white, black, grey 0.5, alpha 0.3: bytes 255, 0, 128, 54, 182, 18 exactly); `test_grey_levels_clamped` (an HDR
-  pixel (2, 2, 2) gives 255, (-1, 0, 0) gives 0); `test_wrong_pixel_count_is_a_failure` (23 values for 3 x 2:
-  `RUN_FOLDER_NOT_USABLE` with "expected 24"); `test_unwritable_png_folder_is_run_folder_not_usable`;
-  `test_cell_size_map_written` (design 7.1 `test_cell_size_regions_and_map_written`, map part: cell resize on, a
-  4 x 2 map: `cell_size_map.image == "inputs/cell_size_map.png"`, the PNG beside the file with those levels; cell
-  resize off: no key, no PNG); `test_digest_covers_the_map` (one grey level changed: the digest changes, the scene
-  file bytes do not).
-- [ ] **Step 2:** run (fail). **Step 3:** implement. **Step 4:** gate. **Commit.** Subject: `Write the cell size map
-  as a grey PNG`. New names: `LUMINANCE_WEIGHTS`, `to_grey_levels`, `write_grey_png` (the design's 3.14).
+- [ ] **Step 1: Failing tests:** `test_open_edges_and_ply` (design 7.1: the 12-triangle cube: 0 open edges; less
+  one triangle: 3; the PLY of the cube: header lines as above and 8 * 12 + 12 * 13 bytes of body, little-endian);
+  `test_unwritable_ply_folder_is_run_folder_not_usable`; `test_refinement_zones_written` (design 7.1: cell resize on:
+  shapes, factors, keys, `mesh_file`, the PLY beside the file, `refinement_camera` with 2 keys and `pixels_per_cell`
+  2; cell resize off: no key and no PLY); `test_digest_covers_zone_meshes` (one vertex moved: the digest changes, the
+  scene file bytes do not); `test_scene_file_has_no_cell_size_map` (no `cell_size_map` or `cell_size_regions` key in
+  any written scene).
+- [ ] **Step 2:** run (fail). **Step 3:** implement. **Step 4:** gate. **Commit.** Subject: `Write refinement zones
+  and their meshes into the scene file`. New names: `count_open_edges`, `write_ply`, `REFINEMENT_FOLDER`,
+  `RefinementZoneKey`, `RefinementZoneDescription`, `RefinementCameraKey`, `RefinementCameraDescription` (design 3.3,
+  3.14).
 
 ### Task 9: Substance presets and reference scenes
 
@@ -1338,8 +1344,9 @@ so the panel can offer "Resume in another mode".
 `wind_acceleration`, the preference is `link_outputs_when_ready`, and the tests run in Blender 5.3.
 
 **Amended 2026-11-15 (A53, A58, A59, A63, A64):** the domain loses `memory_share_of_total` and the two grid-only
-depths and gains `memory_left_free_mib`, `cell_size_region_collection`, `cell_size_map_image`; the participant gains
-`guide_kind`, `guide_object`, `slip_length`, `free_slip`; a new group `FluidityCellSizeRegion` on objects.
+depths and gains `memory_left_free_mib`, (A78, replacing `cell_size_region_collection`, `cell_size_map_image`) the
+refinement camera properties; the participant gains `guide_kind`, `guide_object`, `slip_length`, `free_slip`; a new
+group `FluidityRefinementZone` on objects (A78, replacing `FluidityCellSizeRegion`).
 
 **Kind:** blender. **Tests:** (a) static checks, (b) background Blender.
 
@@ -1356,11 +1363,14 @@ depths and gains `memory_left_free_mib`, `cell_size_region_collection`, `cell_si
   tooltip states the factor). (2026-11-15, design 3.9) `FluidityDomain`: no `memory_share_of_total`,
   `particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths`; `memory_share_of_free` default 0.9;
   `memory_left_free_mib` (`IntProperty`, MiB, default 512, min 0; a Blender `IntProperty` is 32-bit, so bytes would
-  not fit above 2 GiB); `cell_size_region_collection` (`PointerProperty(type=bpy.types.Collection)`);
-  `cell_size_map_image` (`PointerProperty(type=bpy.types.Image)`). `FluidityParticipant`: `guide_kind` (enum `AXES`,
+  not fit above 2 GiB); (amended 2026-11-15, A77, A78: replacing `cell_size_region_collection` and
+  `cell_size_map_image`) `refinement_camera_enabled` (bool, default off), `refinement_camera_object`
+  (`PointerProperty(type=bpy.types.Object, poll=<type == 'CAMERA'>)`), `refinement_pixels_per_cell` (default 2, min
+  0.1), `refinement_sample_spacing_log2` (int 0..4, default 2). `FluidityParticipant`: `guide_kind` (enum `AXES`,
   `RAIL`, `HINGE`), `guide_object` (`PointerProperty(type=bpy.types.Object, poll=<type == 'EMPTY'>)`),
-  `slip_length` (m, default 0, min 0), `free_slip`* (bool, its own scene field `solids[].free_slip`). `FluidityCellSizeRegion` registered as `Object.fluidity_cell_size_region` with
-  `cell_width`* (m, default 0, min 0). `FluidityIngredient`, `FluiditySubstance`, `FluidityPair`, `FluidityParticipant`
+  `slip_length` (m, default 0, min 0), `free_slip`* (bool, its own scene field `solids[].free_slip`). (A78, A79) `FluidityRefinementZone` registered as `Object.fluidity_refinement_zone`
+  with `enabled` (bool, default off) and `factor`* (float, label "Cell Size Factor", default 0.5, min 1/64, max 64,
+  soft 0.125..8) (replaces `FluidityCellSizeRegion`). `FluidityIngredient`, `FluiditySubstance`, `FluidityPair`, `FluidityParticipant`
   (`Object.fluidity`), `FluidityOutputSettings`, `FluidityRunRecord`, `FluidityOutputRow`, `FluidityDomain`
   (`Object.fluidity_domain`), `CLASSES` (registration order), `mark_scene_changed` (sets a flag in `ui_model`, Task 30;
   until then a module-level flag). Fields marked `*` use `field_property(scene_file_path, ...)`, which takes `name` and
@@ -1376,9 +1386,10 @@ depths and gains `memory_left_free_mib`, `cell_size_region_collection`, `cell_si
   and `None`; `hasattr(domain.fluidity_domain, "wind_acceleration")` is false; the property's description
   contains "1.0 m/s2 per unit of Strength"); 2026-11-15: `test_memory_and_grid_only_properties` (no
   `memory_share_of_total`, `particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths` on the domain;
-  `memory_share_of_free == 0.9`, `memory_left_free_mib == 512` on a new domain); `test_cell_size_properties`
-  (`cell_size_region_collection` accepts a collection and `None`; `cell_size_map_image` accepts an image;
-  `Object.fluidity_cell_size_region.cell_width == 0.0` on a new object); `test_guide_and_slip_properties`
+  `memory_share_of_free == 0.9`, `memory_left_free_mib == 512` on a new domain); (A78) `test_refinement_properties`
+  (`refinement_camera_enabled` false and `refinement_pixels_per_cell == 2` on a new domain; `refinement_camera_object`
+  refuses a mesh and accepts a camera; `Object.fluidity_refinement_zone.factor == 0.5` and `enabled` false on a new
+  object; no `cell_size_region_collection` or `cell_size_map_image` on the domain); `test_guide_and_slip_properties`
   (`guide_kind == "AXES"`, `guide_object` refuses a mesh object and accepts an empty, `slip_length == 0.0`,
   `free_slip` false).
 - [ ] **Step 2: Run** (a) with `uv run pytest`, (b) with `uv run python tools/blender/run_blender_tests.py --blender
@@ -1387,6 +1398,12 @@ depths and gains `memory_left_free_mib`, `cell_size_region_collection`, `cell_si
   object`. Body: D2's Blender lines.
 
 ### Task 27: The scene reader
+
+**Amended 2026-11-15 (A74):** `SPHERE` and `CYLINDER` solids: `half_size` from the object's dimensions in its own
+axes (`{r, r, r}`; `{r, r, half_height}` with the cylinder's axis the local Z), `round_solid_scaled_unevenly` from
+D8; tests `test_sphere_solid_half_size_from_dimensions` (dimensions 0.4, 0.4, 0.4: half_size {0.2, 0.2, 0.2}),
+`test_cylinder_axis_is_local_z` (rotated 90 degrees about X: written orientation turns local Z to world -Y),
+`test_uneven_sphere_is_found` (0.4, 0.4, 0.5: one `round_solid_scaled_unevenly`).
 
 **Amended 2026-11-14 (A16, A20):** starts by creating the Blender 5.3 API probe and re-checking the facts it uses;
 reads Wind force field objects into wind keys and force field findings.
@@ -1410,12 +1427,19 @@ map's grey levels; the guide empty at the first frame; slip length only beside a
   `mathutils` (`Quaternion` of the keyed rotation times `Vector((0, 0, 1))`); then
   `description.wind_keys = build_wind_keys(readings)` and `check_force_fields(readings, has_gas=...,
   makes_foam_or_spray=...)` added to `findings` (Task 13a, A47).
-- (2026-11-15, design 5.1 items 7 to 9) Cell size (A63), only when `uses_cell_resize`: one
-  `CellSizeRegionDescription` per object of `cell_size_region_collection` in the collection's object order (box =
-  min and max per axis of `matrix_world @ Vector(corner)` over the eight `bound_box` corners; `cell_width` the
-  object's, or `smallest_cell_width` when 0; `cell_size_region_rotated` when an off-diagonal term of the normalised
-  3x3 of `matrix_world` exceeds `1e-9` in magnitude); `cell_size_map_image.pixels.foreach_get` into an `array('f')`
-  and `to_grey_levels` (Task 8a) into `CellSizeMapDescription`. Guide (A59): for `RAIL` and `HINGE` the
+- (2026-11-15, design 5.1 items 7 to 9; **amended 2026-11-15, A77, A78, A79**, replacing the A63 regions and map)
+  Refinement, only when `uses_cell_resize` (else `refinement_zone_without_cell_resize` for any enabled zone): one
+  `RefinementZoneDescription` per object with `fluidity_refinement_zone.enabled`, ascending `participant_id`-style
+  `zone_id` from `FluidityDomain.next_id`: Empty `CUBE` display a box, half size `empty_display_size * scale`;
+  `SPHERE` an ellipsoid (scale per axis honoured); another display `refinement_zone_unsupported_display`; a mesh its
+  evaluated first-frame triangles (fan rule) in object coordinates divided by `scale` with `half_size = scale`
+  (`count_open_edges > 0`: `refinement_mesh_not_closed`; a vertex that moves between the first and last frame:
+  `refinement_mesh_deforms`); keys per frame when the object's pose is animated (the driven-motion key reader), else
+  one; factor outside 1/64..64: `cell_size_factor_out_of_range`. With `refinement_camera_enabled`: the chosen camera
+  or `scene.camera` (none: `refinement_camera_missing`), keys per frame when its pose, lens or the render size is
+  animated: perspective `horizontal_field_of_view` = `camera.data.angle_x` adjusted for `sensor_fit` and the render
+  aspect, orthographic `orthographic_width = camera.data.ortho_scale`; `resolution_x/y` = render size times
+  percentage; the NOTE `refinement_camera_on`. Guide (A59): for `RAIL` and `HINGE` the
   `guide_object`'s pose at `first_frame` through the same key reader as driven motion (`motion_not_keys` for a
   parent, constraint, driver or modifier); Rail: `rail_direction` = its local +Z (normalised, `mathutils`); Hinge:
   `hinge_point` = its world location, `hinge_axis` = its local +Z; no guide object: the zero-axis marker of Task 13.
@@ -1444,11 +1468,8 @@ map's grey levels; the guide empty at the first frame; slip length only beside a
   `wind_noise_not_honoured` and `force_field_not_honoured` naming `VORTEX`, each with the object's name);
   `test_turned_wind_from_parent_is_motion_not_keys`; 2026-11-15: `test_wind_without_gas_still_gives_keys` (A47: a
   liquid-only domain with one Wind field: keys written, `wind_without_gas` with the text of D13 as amended);
-  `test_region_box_is_world_aabb` (design 7.1: half size 0.1 m cube at (1, 2, 3) scaled (2, 1, 1): low (0.8, 1.9,
-  2.9), high (1.2, 2.1, 3.1) within `1e-12` m, no finding; turned 45 degrees about Z: half extents 0.1414214 m in x
-  and y within `1e-12`, `cell_size_region_rotated` `NOTE`; `cell_width` 0 gives the domain's `smallest_cell_width`;
-  cell resize off: no regions read); `test_cell_size_map_read_as_grey_levels` (a 4 x 2 generated image with known
-  pixels: `grey_levels` equal to `to_grey_levels` of those pixels); `test_guide_from_empty` (design 7.1: an empty at
+  (A78, A79, replacing the region and map tests) `test_empty_zone_box_and_ellipsoid`, `test_mesh_zone_closed_or_not`,
+  `test_animated_zone_keys_per_frame`, `test_camera_term_keys` (design 7.1, with its numbers); `test_guide_from_empty` (design 7.1: an empty at
   (1, 2, 3) turned 90 degrees about X: Rail `rail_direction` (0, -1, 0), Hinge `hinge_point` (1, 2, 3) and
   `hinge_axis` (0, -1, 0) within `1e-12`; the empty keyed to move after the first frame gives the first-frame values;
   with a parent: `motion_not_keys`); `test_slip_length_only_beside_viscous_liquid` (water: `None` everywhere; syrup:
@@ -1647,9 +1668,12 @@ the panel draws "4,608 cells" and "36,864 particles").
   `FLUIDITY_PT_participants` draws one `build_liquid_force_line` per selected `SOLID` participant found in the shown
   run's `liquid_forces`; `FLUIDITY_PT_physical_detail` draws the free solid's Guide (Axes: the four ticks; Rail and
   Hinge: Guide Object), Slip Length with Free Slip (`slip_length` greyed when `free_slip`) for `FIXED` and `DRIVEN`
-  solids only when a liquid substance has an ingredient with viscosity above 0, and the box "Cell size" (Cell Size
-  Regions, one row per object with its Cell Width, Cell Size Map; inactive with the line "Used when cell resize is
-  on" while `uses_cell_resize` is off); `FLUIDITY_PT_solver_detail` draws no grid-only depth; `FLUIDITY_PT_performance`
+  solids only when a liquid substance has an ingredient with viscosity above 0, and the box "Cell size" (amended 2026-11-15, A77, A78, A79:
+  the zone objects, one row each with its Cell Size Factor; "Coarser Far from Camera" with Camera and Pixels per Cell
+  and, when on, the line "The simulation depends on the camera"; the line "The liquid surface keeps the smallest
+  cells in this version"; the operator "Show Refinement Volume" (runs `build-refinement` into the cache and loads the
+  OpenVDB sequence as a Volume object); inactive with the line "Used when cell resize is on" while
+  `uses_cell_resize` is off); `FLUIDITY_PT_solver_detail` draws no grid-only depth; `FLUIDITY_PT_performance`
   draws Share of Free Memory and Memory Left Free (MiB) beside Run on (no share of total) and, under "Measured cost",
   `RunStatus.cost.lines` then `cost.warnings` verbatim; the budget lines (with A57's advice and note lines, A64's deep
   particle line and, on Windows, A58's fallback note) stay verbatim. Nothing is computed from any number.
