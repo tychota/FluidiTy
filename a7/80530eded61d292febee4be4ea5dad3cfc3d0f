@@ -1,0 +1,31 @@
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_4955f439dde0e4 1-41
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_db71faadf907e4 1-343
+  s_4f0877e2acdcf0::t_e6765af80884ee 344-379
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_59355889e87529 1-462
+  s_4f0877e2acdcf0::t_029dac94fd0aa0 463-476
+docs/glossary.md
+  s_4f0877e2acdcf0::t_e4689a819aee7a 49-63
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_03164d8e2d1eb8 4,10
+tools/check_rules_allowed_names.txt
+  s_4f0877e2acdcf0::t_4edc66494ca80c 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a780530eded61d292febee4be4ea5dad3cfc3d0f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
