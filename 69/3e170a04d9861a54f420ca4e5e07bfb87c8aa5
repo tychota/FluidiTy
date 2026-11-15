@@ -1,0 +1,23 @@
+tools/add_session_note_test.py
+  s_4f0877e2acdcf0::t_a3dee0da89e1c7 1-88
+tools/add_session_note.py
+  s_4f0877e2acdcf0::t_219d4164e1a77f 1-92
+AGENTS.md
+  s_4f0877e2acdcf0::t_c3999f8acf0ffe 497-511
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "693e170a04d9861a54f420ca4e5e07bfb87c8aa5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
