@@ -786,8 +786,9 @@ sizes, with a sphere's three half sizes equal and a cylinder's first two equal (
 radius three times for a sphere, the radius twice and the half height for a cylinder); a nonzero id; a
 `friction_scale` of zero or more; a domain box that does not move, keeps exactly the world axes ($A = I$) and has at
 least one closed side; and a turn of at most a quarter turn during the step, $|bold(omega)| T <= pi\/2$. A larger
-turn asks for a shorter step. For the sphere and the cylinder only the turn that changes the shape counts
-(@sec-round-solids): a sphere never fails this check, and a cylinder may spin about its own axis at any rate. The
+turn asks for a shorter step. For the sphere, the cylinder, the flat solid and the plate only the turn that changes
+the shape counts (@sec-round-solids, @sec-first-hit): a sphere never fails this check, a cylinder may spin about its
+own axis at any rate, and a flat solid or a plate about its normal. The
 step calls it once per step for every solid; `MoveParticle` trusts that call and does not repeat it.
 
 == The contact tolerance <sec-contact-tolerance>
@@ -855,9 +856,12 @@ at the hit, or no solid when the path is free. @proc-find-first-hit lists the st
 
 === A solid that does not turn
 
-A flat solid, a plate or a box turns when its angular velocity is not exactly (0, 0, 0); a sphere never counts as
-turning, and a cylinder only when its axis tilts (@sec-round-solids). One that does not turn only translates, so
-each of its face planes moves at $bold(v)_"lin"$, and the gap to a face changes linearly with time:
+A box turns when its angular velocity is not exactly (0, 0, 0). A flat solid or a plate turns when the part of its
+angular velocity across its normal, $bold(omega) - (bold(omega) dot bold(e)_z) bold(e)_z$ with $bold(e)_z$ the normal,
+is not exactly (0, 0, 0): both are unbounded sideways, so a spin about the normal leaves the shape as it is. The spin
+still moves the surface, and friction feels it through the solid velocity. A sphere never counts as turning, and a
+cylinder only when its axis tilts (@sec-round-solids). One that does not turn only translates, so each of its face
+planes moves at $bold(v)_"lin"$, and the gap to a face changes linearly with time:
 
 $
   g_"face" (t) = g_"face" (0) + "rate" times t, quad "rate" = bold(n) dot (bold(v) - bold(v)_"lin"), \
@@ -912,13 +916,59 @@ where $r_"max"$ is the larger distance from the path to the solid's origin at th
 solid's own axes the particle moves at $bold(v) - bold(v)_"lin" - bold(omega) times (bold(x) - bold(o))$, whose
 length is at most the bound, and a distance changes no faster than the point it is measured from. The particle's
 distance to the moving origin is largest at one end of the sweep, because both move in straight lines. Starting at
-$t = 0$, the search repeats $t <- t + g(t)\/"bound"$. Each advance is safe: in that time the gap shrinks by at most
-$g(t)$, so the path never passes through the solid between two samples. The search stops with a hit when $g(t) <=
-"tol"\/4$, and with no hit when $t >= "duration"$. More than 128 advances (`kMaxAdvanceCount`) is "too close to
-call, slow approach to a turning solid", and the step is tried again shorter. The proof of concept bracketed the
-time by bisection over a stack of intervals; stepping forward needs neither. A flat solid, a plate or a box that
-turns uses this search, and so does a cylinder whose axis tilts; a sphere, and a cylinder that only spins about its
-own axis, keep their closed forms (@sec-round-solids).
+$t = 0$, the first-order search repeats $t <- t + g(t)\/"bound"$. Each advance is safe: in that time the gap shrinks
+by at most $g(t)$, so the path never passes through the solid between two samples. The proof of concept bracketed
+the time by bisection over a stack of intervals; stepping forward needs neither. This first-order advance is the
+floor of the search, and the whole of it for a shape whose distance is not convex.
+
+Alone, the first-order advance is slow: it closes the gap by the share rate / bound of it, rate the speed at which
+the gap really closes, so it needs about $ln(4 g\/"tol") times "bound"\/"rate"$ advances, and a face that turns onto
+a particle at a small share of the bound runs out of them. When the solid's distance is convex in its own axes, the
+search also uses how fast the gap is closing. That holds for every turning shape here: a flat solid's $p_z$, a
+plate's $|p_z| - "half_thickness"$ or a committed plate's $s p_z - "half_thickness"$, a box's $max_k (|p_k| -
+"half_size"_k)$ and a cylinder's true distance. At a sample $t$ with gap $g$, normal $bold(n)$ and the surface
+velocity $bold(u)(bold(x)) = bold(v)_"lin" + bold(omega) times (bold(x) - bold(o))$, the gap rate is $dot(g) =
+bold(n) dot (bold(v) - bold(u)(bold(x)))$, and the gap curvature bound
+
+$ K = |bold(omega)| (2 |bold(v) - bold(v)_"lin"| + |bold(omega)| r_"max") $
+
+bounds how fast that rate changes. Three facts make $g(t + s) >= g + dot(g) s - K s^2\/2$ for every $s$. First, the
+distance is convex in the own point $bold(p)$, and the normal it reports, written in own axes, is a subgradient of
+it, so $d(bold(p)(t + s)) >= d(bold(p)(t)) + bold(n)_"own" dot (bold(p)(t + s) - bold(p)(t))$: at a box's edge or
+corner the reported face is one of the largest, on a box's middle plane $p_k = 0$ or a plate's middle plane the
+reported side lies in $[-1, 1]$, the subgradients of $|dot|$ at 0, and at a cylinder's rim the normal is the gradient
+of the true distance. Second, with $bold(omega)$ constant in the step, the own point's acceleration is $bold(p)'' =
+A^T (-2 bold(omega) times (bold(v) - bold(v)_"lin") + bold(omega) times (bold(omega) times (bold(x) - bold(o))))$,
+the terms papers call Coriolis and centripetal, of length at most $K$ while $|bold(x) - bold(o)| <= r_"max"$, which
+holds over the whole sweep; no small-angle step is taken, so this holds up to a quarter turn and beyond. Third,
+$bold(n)_"own" dot bold(p)' = dot(g)$. The second-order advance is the positive root of that lower model, written
+so that nothing cancels:
+
+$
+  s = (2 g) / (sqrt(dot(g)^2 + 2 K g) - dot(g)) quad "when" dot(g) <= 0, quad
+  s = (dot(g) + sqrt(dot(g)^2 + 2 K g)) / K quad "when" dot(g) > 0,
+$ <eq:second-order-advance>
+
+and $K = 0$ with $dot(g) >= 0$ is a gap that cannot shrink: the path is free. The search takes the larger of the two
+advances; both are safe, so the larger is too. Both ends of $r_"max"$ count: a $K$ built from the start's distance
+alone let an advance carry a particle 3.8 cm into a quarter-turn arm along which it moved outward, and one built from
+the end's distance alone 1.8 mm into its end face. The domain box's distance, the smallest gap to its sides, is not
+convex, and neither is a mesh's: one wall's model says nothing about the next, and a turning room searched with the
+second-order advance passed a wall on 27.5 % of measured paths. Such a shape keeps the first-order advance alone
+(`HasConvexDistance`). The rounding margin is the first-order one: the distance is off by at most $"tol"\/128$, and
+$dot(g)$, $K$ and the root carry relative rounding only, so the path stays farther than $"tol" - "tol"\/64$ before
+the hit.
+
+The search stops with a hit when $g(t) <= "tol"\/4$, and with no hit when $t >= "duration"$. More than 128 advances
+(`kMaxAdvanceCount`) is "too close to call, slow approach to a turning solid", and the step is tried again shorter.
+With the second-order advance this is rare: it remains for a path that hovers near the solid with almost no motion
+along its normal, where each advance is only about $sqrt(2 g\/K)$. A particle at rest $2^(-17)$ m above the top face
+of a box of half size 0.5 m turning at (0, 0, 1) rad/s, on its turn axis, never gets closer, but needs 182 advances
+to reach the end of a 1 s sweep. On the generated paths of the tests, 30,000 sweeps toward turning boxes, plates, flat
+solids, cylinders, a quarter-turn arm and a paddle, there was no close call. A box that turns uses this search, and
+so do a flat solid or a plate that turns about an axis across its normal and a cylinder whose axis tilts; a sphere,
+a cylinder that only spins about its own axis, and a flat solid or a plate that only spins about its normal keep
+their closed forms (@sec-round-solids).
 
 The touching rule does not apply to a turning solid. A particle resting on one, at $d = "tol"$, starts with $g(0)
 = 0 <= "tol"\/4$ and is hit at $t = 0$ in every step; the response and the slide in the solid's axes
@@ -928,10 +978,14 @@ axes is what keeps it on the face.
 
 A worked example, from the plan of the tests: a box of half size 0.5 m at the origin turns at (0, 0, 1) rad/s, and a
 particle rests at $0.6 (cos 0.3, sin 0.3, 0)$ m, at $d = 0.073$ m from face `kHighX`. In the box's axes the particle
-goes round at radius 0.6 m, so the bound is 0.6 m/s, and the face reaches it when $0.6 cos(t - 0.3) = 0.5 +
-"tol"$, at $t = 0.3 + arccos((0.5 + "tol")\/0.6) approx 0.8857$ s. With $"tol" = 2^(-30)$ m, the search takes 30
-advances and stops $4 times 10^(-10)$ s before that time, within the test's $2^(-30)$ (this paper's count).
+goes round at radius 0.6 m, so the bound is 0.6 m/s and $K = 1 times (0 + 1 times 0.6) = 0.6 "m/s"^2$, and the face
+reaches it when $0.6 cos(t - 0.3) = 0.5 + "tol"$, at $t = 0.3 + arccos((0.5 + "tol")\/0.6) approx 0.8857$ s. With
+$"tol" = 2^(-30)$ m, the search takes 3 advances and stops at 0.88568554050660 s, $1.4 times 10^(-10)$ s before that
+time, within the test's $2^(-30)$ (this paper's count, from the code's run). The first-order advance alone takes 30.
 
+The solids that do not turn are searched first, then the turning solids, each only up to the earliest hit found so
+far: a later hit could not win, and a turning search that reaches that time is free, since the path stayed at $d >=
+"tol"$ up to it. So a close call beyond an earlier hit is never reached.
 When several solids are hit, the earliest time wins, and equal times keep the lower solid index.
 
 #procedure(
@@ -944,18 +998,22 @@ When several solids are hit, the earliest time wins, and equal times keep the lo
     distance, normal and face at the hit.],
   fails: [a search toward a turning solid needs more than 128 advances: "too close to call, slow approach to a
     turning solid".],
-  ([Solid that does not turn], [For each solid in array order that does not turn (a flat solid, plate or box with
-    angular velocity exactly zero, any sphere, a cylinder whose axis does not tilt), sampled at $t_0$: if the
+  ([Solid that does not turn], [First, for each solid in array order that does not turn (a box with angular
+    velocity exactly zero, a flat solid or plate whose angular velocity has no part across its normal, so one that
+    at most spins about its normal, any sphere, a cylinder whose axis does not tilt), sampled at $t_0$: if the
     start's gap is in $[-"tol", 0]$ for the surface that gives $d$, the solid is hit at 0 when $"rate" times
     "duration" < -"tol"$ and not hit otherwise; if the gap is below $-"tol"$, it is hit at 0. Otherwise use the
     closed form of its shape: one face plane for a flat solid, a committed plate or each closed domain side; entry
     and exit times over the faces for a plate or a box; @proc-sphere-first-hit for a sphere;
     @proc-cylinder-first-hit for a cylinder. Keep the time if it is at most `duration`, with the face at the hit.]),
-  ([Turning solid], [For each solid in array order that turns: from $t = 0$, repeat $t <- t + g(t)\/"bound"$ with
-    $g$ measured at the pose of $t_0 + t$. Stop with a hit at $t$ when $g(t) <= "tol"\/4$, with no hit when $t
-    >= "duration"$, and fail after 128 advances. There is no touching rule here: a particle resting on the solid
-    is hit at 0.]),
-  ([Keep the earliest], [Return the hit with the smallest time; equal times keep the lower solid index. With no hit,
+  ([Turning solid], [Then for each solid in array order that turns, with `duration` capped at the earliest hit so
+    far: from $t = 0$, repeat $t <- t + "advance"$ with $g$ measured at the pose of $t_0 + t$, the advance the larger
+    of $g(t)\/"bound"$ and the positive root of $g + dot(g) s - K s^2\/2$ (@eq:second-order-advance) when the
+    distance is convex (every turning shape here), $g(t)\/"bound"$ otherwise. Stop with a hit at $t$ when $g(t) <=
+    "tol"\/4$, with no hit when $t >= "duration"$, and fail after 128 advances. There is no touching rule here: a
+    particle resting on the solid is hit at 0.]),
+  ([Keep the earliest], [Return the hit with the smallest time; equal times keep the lower solid index, whatever the
+    order of the search. With no hit,
     return `kNoSolid`.]),
 )
 
@@ -1160,7 +1218,8 @@ once per sweep, and sliding round a sphere does not run into the limit of four h
 the particle back to the surface in later steps, and over many steps it follows the curve; a particle sliding from
 the top of a frictionless sphere leaves it where $cos theta = 2\/3$, $theta$ measured from the top.
 
-A turn about a sphere's centre, or about a cylinder's own axis, moves the surface but not the shape. Such a solid is
+A turn about a sphere's centre, or about a cylinder's own axis, moves the surface but not the shape; so does a turn
+of a flat solid or a plate about its normal, since both are unbounded sideways (@sec-first-hit). Such a solid is
 swept and slid as one that does not turn, with the closed forms above, and the spin enters only through the solid
 velocity $bold(u)$, which always uses the full angular velocity. The turn that changes the shape is none for a
 sphere, and for a cylinder the part of $bold(omega)$ across its axis, $bold(omega)_"across" = bold(omega) -
@@ -1297,8 +1356,9 @@ squeezed between solids". On a solid that does not turn, the sweep starts again 
 `for_this_step` for the time left. A fifth hit in one step (`kMaxHitsPerStep` is 4: the three sides of a corner,
 plus one) is "too close to call, too many hits".
 
-A slide on a turning solid is carried in the solid's own axes, as the proof of concept did. A sphere, and a
-cylinder that only spins about its own axis, are not turning solids here (@sec-round-solids). The relative
+A slide on a turning solid is carried in the solid's own axes, as the proof of concept did. A sphere, a cylinder
+that only spins about its own axis, and a flat solid or a plate that only spins about its normal, are not turning
+solids here (@sec-round-solids, @sec-first-hit). The relative
 `for_this_step` at the hit, $bold(v)_"local"$, is turned into those axes, its part into the face is set to zero, the
 particle advances in those axes for the time left $t_"left"$, and it is placed with the solid's pose at the end of
 the step. The hit loop ends there. Before that, every other solid $j$ is tested: the call is "too close to call,
@@ -1367,7 +1427,7 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     `for_next_step` to the reaction when the solid it is charged to (the earlier surface's for a removal, the
     newest for the corner case) reports its reaction; fail on a second reacting solid. A solid that does not turn:
     go to step 3 for the time left, failing on a fifth hit. A turning solid (never a sphere, nor a cylinder that
-    only spins about its axis): fail if another solid $j$ is within reach by the bound of the text, carry the rest
+    only spins about its axis, nor a flat solid or plate that only spins about its normal): fail if another solid $j$ is within reach by the bound of the text, carry the rest
     of the step in its axes, and go to step 6.]),
   ([Settle and check the end], [For each surface the particle is on with $d < "tol"$ at the end pose, move it along
     that normal to $d = "tol"$. Fail when any solid is at $d < "tol"\/2$; otherwise write the result.]),

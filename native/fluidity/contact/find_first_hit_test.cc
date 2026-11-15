@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <numbers>
 #include <span>
@@ -15,6 +16,7 @@
 #include "fluidity/contact/contact_error.h"
 #include "fluidity/contact/contact_test_cases.h"
 #include "fluidity/contact/solid_contact.h"
+#include "fluidity/contact/solid_contact_steps.h"
 #include "fluidity/contact/solid_contact_types.h"
 #include "fluidity/contact/solid_shapes.h"
 
@@ -888,9 +890,9 @@ TEST(FindFirstHit, Success_WritesNoCloseCall) {
 }
 
 TEST(FindFirstHit, CloseCall_LeavesFirstHitUnchanged) {
-  // A particle at rest two tolerances from a box turning at 1 rad/s: the face closes on it too slowly for the
-  // stepping search to reach it within kMaxAdvanceCount advances, so the step is too close to call, and the first hit
-  // keeps what it held.
+  // A particle at rest 2^-17 m above the top face of a box turning at 1 rad/s, on its turn axis: the gap never
+  // changes, but each advance of the stepping search is only about Sqrt(2 g / K), so the search runs out of advances
+  // before the end of the sweep, the step is too close to call, and the first hit keeps what it held.
   const std::array solids = {
       ToSolid(
           Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
@@ -898,11 +900,11 @@ TEST(FindFirstHit, CloseCall_LeavesFirstHitUnchanged) {
           1
       ),
   };
-  const SolidContactInputs inputs = BuildInputs(solids, 0.1);
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
   FirstHit first_hit = {.elapsed = 7, .solid_index = 3, .at_hit = {}};
   ContactCloseCall close_call = ContactCloseCall::kNone;
   const ContactError error =
-      FindFirstHit(inputs, {.x = 0.5 + 2 * kTolerance, .y = 0, .z = 0}, kAtRest, 0, 0.1, &first_hit, &close_call);
+      FindFirstHit(inputs, {.x = 0, .y = 0, .z = 0.5 + 0x1p-17}, kAtRest, 0, 1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kTooCloseToCall);
   EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
   EXPECT_EQ(first_hit.elapsed, 7);
@@ -1862,24 +1864,53 @@ TEST(FindFirstHit, TurningBoxNotReachedInStep_IsFree) {
   ExpectFree(FindHit(inputs, {.start = start, .velocity = kAtRest, .duration = 0.2}));
 }
 
-TEST(FindFirstHit, GrazingTurningBox_IsSlowApproachToTurningSolid) {
-  // Two tolerances from the middle of face kHighX, the particle's distance falls as 2 tol - 0.25 t^2: each advance,
-  // the gap over the bound of 0.5 m/s, covers about 2 tol s, so 128 advances leave the gap near tol.
+// Fails the calling test unless a hit of the stepping search sits at the surface of the grown solid: its distance is
+// in [tol - tol / 64, (1 + kTurningSolidHitGapShare) tol], the rounding allowance below and the stopping gap above.
+void ExpectAtGrownSurface(DistanceToSolid at_hit) {
+  EXPECT_GE(at_hit.distance, kTolerance - kTolerance / 64);
+  EXPECT_LE(at_hit.distance, (1 + kTurningSolidHitGapShare) * kTolerance);
+}
+
+// The answer of the stepping search toward solid 0, called directly, with the advances it made.
+struct TurningSearch {
+  ContactError error = ContactError::kNone;
+  FirstHit first_hit{};
+  int advance_count = 0;
+};
+
+// Runs FindHitOnTurningSolid toward solid 0 along one path.
+TurningSearch SearchTurningSolid(const SolidContactInputs& inputs, Path path) {
+  const Sweep sweep = {
+      .start = path.start,
+      .velocity_for_this_step = path.velocity,
+      .start_elapsed = path.start_elapsed,
+      .duration = path.duration,
+  };
+  TurningSearch search;
+  search.error = FindHitOnTurningSolid(inputs, 0, sweep, &search.first_hit, &search.advance_count);
+  return search;
+}
+
+TEST(FindFirstHit, GrazingTurningBox_HitWhereFaceTurnsOntoParticle) {
+  // Two tolerances from the middle of face kHighX, the particle's distance falls as (0.5 + 2 tol) cos(t) - 0.5, so
+  // the face reaches it at acos((0.5 + tol) / (0.5 + 2 tol)) s. The second-order advance follows the gap's curvature
+  // and gets there in one advance; the first-order advance alone, about 2 tol s each, needed 43,154.
   const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
   const SolidContactInputs inputs = BuildInputs(solids, 0.1);
-  FirstHit first_hit;
-  ContactCloseCall close_call = ContactCloseCall::kNone;
-  const ContactError error =
-      FindFirstHit(inputs, {.x = 0.5 + 2 * kTolerance, .y = 0, .z = 0}, kAtRest, 0, 0.1, &first_hit, &close_call);
-  EXPECT_EQ(error, ContactError::kTooCloseToCall);
-  EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
+  const double radius = 0.5 + 2 * kTolerance;  // m
+  const FirstHit first_hit =
+      FindHit(inputs, {.start = {.x = radius, .y = 0, .z = 0}, .velocity = kAtRest, .duration = 0.1});
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_NEAR(first_hit.elapsed, std::acos((0.5 + kTolerance) / radius), kTurningHitTimeTolerance);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+  ExpectAtGrownSurface(first_hit.at_hit);
 }
 
 TEST(FindFirstHit, TurningBoxSlowApproachWithinAdvanceLimit_IsHit) {
   // At rest at radius r = 0.5 + 3 * 2^-9 m on the own x axis: face kHighX closes on the particle as r cos(t) - 0.5,
   // starting at rate 0, and reaches it at acos((0.5 + tol) / r) = 0.152 s, at 0.077 m/s against a bound of 0.506 m/s.
-  // The search needs 113 advances, fewer than kMaxAdvanceCount. A gap of tol / 4 closing at 0.077 m/s takes 3.2 tol
-  // seconds, so the hit may come that much early.
+  // The first-order advance alone needed 113 advances; the search now takes 2. A gap of tol / 4 closing at 0.077 m/s
+  // takes 3.2 tol seconds, so the hit may come that much early.
   const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const double radius = 0.505859375;  // m
@@ -1890,15 +1921,46 @@ TEST(FindFirstHit, TurningBoxSlowApproachWithinAdvanceLimit_IsHit) {
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
 }
 
-TEST(FindFirstHit, TurningBoxSlowApproachBeyondAdvanceLimit_IsCloseCall) {
-  // The same at radius 0.5 + 3 * 2^-10 m: the face reaches the particle at 0.108 s, but slowly enough that the search
-  // would need 157 advances, more than kMaxAdvanceCount.
+TEST(FindFirstHit, TurningBoxSlowApproachBeyondFirstOrderLimit_IsHit) {
+  // The same at radius 0.5 + 3 * 2^-10 m: the face reaches the particle at 0.108 s, slowly enough that the first-order
+  // advance alone would need 157 advances, more than kMaxAdvanceCount. The second-order advance needs 2.
+  const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const double radius = 0.5029296875;  // m
+  const FirstHit first_hit =
+      FindHit(inputs, {.start = {.x = radius, .y = 0, .z = 0}, .velocity = kAtRest, .duration = 1});
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_NEAR(first_hit.elapsed, std::acos((0.5 + kTolerance) / radius), 4 * kTurningHitTimeTolerance);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+  ExpectAtGrownSurface(first_hit.at_hit);
+}
+
+// The remaining close call. On the turn axis, above the top face of a box of half size 0.5 m turning at {0, 0, 1}
+// rad/s, a particle at rest at {0, 0, z} keeps the own point {0, 0, z} exactly: the distance is z - 0.5, the gap
+// rate exactly 0 and K = z, so every advance is 2 g / Sqrt(2 K g) = Sqrt(2 g / z) with g = z - 0.5 - tol, whatever
+// Sin gives. The count of advances over a sweep of 1 s is the first integer above 1 / Sqrt(2 g / z).
+
+TEST(FindFirstHit, TurningBoxHoverOnSpinAxisWithinAdvanceLimit_IsFree) {
+  // z = 0.5 + 2^-15: 1 / Sqrt(2 g / z) = 90.5, so 91 advances reach the end of the sweep. The first-order advance
+  // alone, g / z each, would need about 16,400.
+  const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const Path path = {.start = {.x = 0, .y = 0, .z = 0.5 + 0x1p-15}, .velocity = kAtRest, .duration = 1};
+  ExpectFree(FindHit(inputs, path));
+  const TurningSearch search = SearchTurningSolid(inputs, path);
+  EXPECT_EQ(search.error, ContactError::kNone);
+  EXPECT_EQ(search.advance_count, 91);
+}
+
+TEST(FindFirstHit, TurningBoxHoverOnSpinAxisBeyondAdvanceLimit_IsCloseCall) {
+  // z = 0.5 + 2^-17: 1 / Sqrt(2 g / z) = 181.02, far from an integer, so 182 advances would be needed whatever the
+  // rounding, more than kMaxAdvanceCount.
   const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   FirstHit first_hit;
   ContactCloseCall close_call = ContactCloseCall::kNone;
   const ContactError error =
-      FindFirstHit(inputs, {.x = 0.5029296875, .y = 0, .z = 0}, kAtRest, 0, 1, &first_hit, &close_call);
+      FindFirstHit(inputs, {.x = 0, .y = 0, .z = 0.5 + 0x1p-17}, kAtRest, 0, 1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kTooCloseToCall);
   EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
 }
@@ -1917,38 +1979,6 @@ TEST(FindFirstHit, HeadOnSlowlyTurningBox_HitsJustBeforeGapOverSpeed) {
   EXPECT_GE(first_hit.elapsed, 2.5 - (1 + kTurningSolidHitGapShare) * kTolerance - 1e-15);
   EXPECT_LE(first_hit.elapsed, 2.5 - kTolerance + 1e-15);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
-}
-
-TEST(FindFirstHit, FirstOrderSearchStoppingTimes_PinAdvanceCounts) {
-  // The first-order search's cost, pinned so that a change of method shows here: each case stops at the sample of a
-  // given advance, and another number of advances would stop elsewhere in the last tol / 4 of gap before the hit,
-  // about 1e-10 s away. 1e-13 s allows for the last bits of Sin on another platform.
-  // The box of TurningBoxReachesRestingParticle: 30 advances. The cylinder of
-  // CylinderTurningAcrossAxis_ReachesRestingParticle: 25. The slow approach of
-  // TurningBoxSlowApproachWithinAdvanceLimit: 113. (TurningBoxSlowApproachBeyondAdvanceLimit needs 157.)
-  constexpr double kStoppingTimeTolerance = 1e-13;  // s
-  const Solid box = BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}});
-  const std::array boxes = {box};
-  const FirstHit after_30 = FindHit(
-      BuildInputs(boxes, 1),
-      {.start = {.x = 0.6 * std::cos(0.3), .y = 0.6 * std::sin(0.3), .z = 0}, .velocity = kAtRest, .duration = 1}
-  );
-  EXPECT_NEAR(after_30.elapsed, 0.88568554023775237, kStoppingTimeTolerance);
-  const FirstHit after_113 =
-      FindHit(BuildInputs(boxes, 1), {.start = {.x = 0.505859375, .y = 0, .z = 0}, .velocity = kAtRest, .duration = 1});
-  EXPECT_NEAR(after_113.elapsed, 0.15235117099457579, kStoppingTimeTolerance);
-  const std::array cylinders = {
-      BuildCylinder(
-          {},
-          {.x = 1, .y = 0, .z = 0},
-          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}}
-      ),
-  };
-  const FirstHit after_25 = FindHit(
-      BuildInputs(cylinders, 1),
-      {.start = {.x = 0.6 * std::cos(1.2), .y = 0.6 * std::sin(1.2), .z = 0}, .velocity = kAtRest, .duration = 1}
-  );
-  EXPECT_NEAR(after_25.elapsed, 0.21488921326983942, kStoppingTimeTolerance);
 }
 
 TEST(FindFirstHit, RestingOnTurningBox_IsHitAtZero) {
@@ -1988,13 +2018,13 @@ TEST(FindFirstHit, CylinderTurningAcrossAxis_ReachesRestingParticleAtTrigonometr
 }
 
 TEST(FindFirstHit, TurningPlateCommitted_SearchUsesCommittedHalfSpace) {
-  // The plate of CommittedPlate_UsesOnlyCommittedFace, turning about its normal: a turning solid, searched with the
-  // distance a committed particle sees (plan decision P3). From inside the thickness at z = -0.005 both forms hit at
-  // 0, an uncommitted particle on kLowZ at -0.005, a particle committed to kAlongNormal on kHighZ at -0.015.
+  // The plate of CommittedPlate_UsesOnlyCommittedFace, turning about an axis in its plane: a turning solid, searched
+  // with the distance a committed particle sees (plan decision P3). From inside the thickness at z = -0.005 both forms
+  // hit at 0, an uncommitted particle on kLowZ at -0.005, a particle committed to kAlongNormal on kHighZ at -0.015.
   const std::array solids = {
       ToSolid(
           Plate{.center = {}, .normal = {.x = 0, .y = 0, .z = 1}, .half_thickness = 0.01},
-          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}},
+          {.linear_velocity = {}, .angular_velocity = {.x = 1, .y = 0, .z = 0}},
           5
       ),
   };
@@ -2010,6 +2040,173 @@ TEST(FindFirstHit, TurningPlateCommitted_SearchUsesCommittedHalfSpace) {
   EXPECT_EQ(committed.elapsed, 0);
   EXPECT_EQ(committed.at_hit.face, SolidFace::kHighZ);
   EXPECT_EQ(committed.at_hit.distance, -0.005 - 0.01);
+}
+
+// The floor through the origin with normal {0, 0, 1}, spinning about its normal at angular_velocity_z rad/s.
+Solid BuildSpinningFloor(double angular_velocity_z) {
+  return ToSolid(
+      FlatSolid{.point_on_surface = {}, .normal_out_of_solid = {.x = 0, .y = 0, .z = 1}},
+      {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = angular_velocity_z}},
+      1
+  );
+}
+
+// A plate of half thickness 0.01 m through the origin with normal {0, 0, 1}, turning at angular_velocity.
+Solid BuildPlateWithNormalZ(Vec3 angular_velocity) {
+  return ToSolid(
+      Plate{.center = {}, .normal = {.x = 0, .y = 0, .z = 1}, .half_thickness = 0.01},
+      {.linear_velocity = {}, .angular_velocity = angular_velocity},
+      1
+  );
+}
+
+TEST(FindFirstHit, SpinningFlatSolid_IsClosedForm) {
+  // A flat solid is unbounded sideways, so a spin about its normal leaves its shape as it is (plan decision P17): it
+  // is not a turning solid, and the closed form gives the bits of the floor without the spin.
+  const Path path = {.start = {.x = 0.3, .y = 0, .z = 0.5}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1};
+  const std::array spinning = {BuildSpinningFloor(5)};
+  const FirstHit first_hit = FindHit(BuildInputs(spinning, 1), path);
+  const std::array still = {BuildSpinningFloor(0)};
+  const FirstHit still_hit = FindHit(BuildInputs(still, 1), path);
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.elapsed, 0.5 - kTolerance);
+  EXPECT_EQ(first_hit.elapsed, still_hit.elapsed);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+}
+
+TEST(FindFirstHit, RestingOnSpinningFlatSolid_TouchingRuleFrees) {
+  // At rest on the spinning floor (distance tol) and sliding along it: a solid that does not turn keeps its touching
+  // rule (plan decision P2). Counted as turning, it would be hit at 0.
+  const std::array solids = {BuildSpinningFloor(5)};
+  const Path path = {
+      .start = {.x = 0.3, .y = 0, .z = kTolerance},
+      .velocity = {.x = 1, .y = 0, .z = 0},
+      .duration = 0.1,
+  };
+  ExpectFree(FindHit(BuildInputs(solids, 0.1), path));
+}
+
+TEST(FindFirstHit, SpinningPlateAboutNormal_IsClosedForm) {
+  // A plate is unbounded sideways too, so its spin about the normal is not a turn either.
+  const Path path = {.start = {.x = 0.3, .y = 0, .z = 0.5}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1};
+  const std::array spinning = {BuildPlateWithNormalZ({.x = 0, .y = 0, .z = 5})};
+  const FirstHit first_hit = FindHit(BuildInputs(spinning, 1), path);
+  const std::array still = {BuildPlateWithNormalZ({})};
+  const FirstHit still_hit = FindHit(BuildInputs(still, 1), path);
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.elapsed, (0.5 - 0.01) - kTolerance);
+  EXPECT_EQ(first_hit.elapsed, still_hit.elapsed);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+}
+
+TEST(FindFirstHit, RestingOnSpinningPlate_TouchingRuleFrees) {
+  const std::array solids = {BuildPlateWithNormalZ({.x = 0, .y = 0, .z = 5})};
+  const Path path = {
+      .start = {.x = 0.3, .y = 0, .z = 0.01 + kTolerance},
+      .velocity = {.x = 1, .y = 0, .z = 0},
+      .duration = 0.1,
+  };
+  ExpectFree(FindHit(BuildInputs(solids, 0.1), path));
+}
+
+TEST(FindFirstHit, PlateTurningAboutAxisInItsPlane_IsTurning) {
+  // A turn about an axis in the plate's plane tilts its faces: a turning solid, which has no touching rule (plan
+  // decision P2), so the same resting particle is hit at 0.
+  const std::array solids = {BuildPlateWithNormalZ({.x = 1, .y = 0, .z = 0})};
+  const Path path = {
+      .start = {.x = 0.3, .y = 0, .z = 0.01 + kTolerance},
+      .velocity = {.x = 1, .y = 0, .z = 0},
+      .duration = 0.1,
+  };
+  const FirstHit first_hit = FindHit(BuildInputs(solids, 0.1), path);
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.elapsed, 0);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+}
+
+TEST(FindFirstHit, TurningSolidCloseCallAfterEarlierHit_IsHit) {
+  // Solid 0 is the box of TurningBoxHoverOnSpinAxisBeyondAdvanceLimit with its hovering particle; solid 1, a flat
+  // solid facing down from z = 0.6 and moving down at 1 m/s, reaches the particle first, at (0.6 - z) - tol s. The
+  // solids that do not turn are searched first, and the box only up to that time: free in 19 advances. Searched over
+  // the whole sweep, the box would end the call with a close call.
+  const double start_height = 0.5 + 0x1p-17;  // m
+  const std::array solids = {
+      BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}}),
+      ToSolid(
+          FlatSolid{.point_on_surface = {.x = 0, .y = 0, .z = 0.6}, .normal_out_of_solid = {.x = 0, .y = 0, .z = -1}},
+          {.linear_velocity = {.x = 0, .y = 0, .z = -1}, .angular_velocity = {}},
+          2
+      ),
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const FirstHit first_hit =
+      FindHit(inputs, {.start = {.x = 0, .y = 0, .z = start_height}, .velocity = kAtRest, .duration = 1});
+  EXPECT_EQ(first_hit.solid_index, 1U);
+  EXPECT_EQ(first_hit.elapsed, (0.6 - start_height) - kTolerance);
+  EXPECT_NEAR(first_hit.elapsed, 0.09999236967414615, 1e-17);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+  const TurningSearch capped_search = SearchTurningSolid(
+      inputs,
+      {.start = {.x = 0, .y = 0, .z = start_height}, .velocity = kAtRest, .duration = first_hit.elapsed}
+  );
+  EXPECT_EQ(capped_search.error, ContactError::kNone);
+  EXPECT_EQ(capped_search.first_hit.solid_index, kNoSolid);
+  EXPECT_EQ(capped_search.advance_count, 19);
+}
+
+TEST(FindFirstHit, TurningSolidHitBeforeClosedFormHit_Wins) {
+  // Solid 0, a flat solid facing down from z = 0.95 and moving down at 1 m/s, would reach the particle of
+  // TurningBoxReachesRestingParticle at 0.95 - tol s; solid 1, the turning box, reaches it first, at 0.8857 s. The
+  // box's search, capped at the flat solid's hit, still finds it, and the earlier hit wins.
+  const std::array solids = {
+      ToSolid(
+          FlatSolid{.point_on_surface = {.x = 0, .y = 0, .z = 0.95}, .normal_out_of_solid = {.x = 0, .y = 0, .z = -1}},
+          {.linear_velocity = {.x = 0, .y = 0, .z = -1}, .angular_velocity = {}},
+          1
+      ),
+      ToSolid(
+          Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
+          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}},
+          2
+      ),
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const Vec3 start = {.x = 0.6 * std::cos(0.3), .y = 0.6 * std::sin(0.3), .z = 0};
+  const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = kAtRest, .duration = 1});
+  EXPECT_EQ(first_hit.solid_index, 1U);
+  EXPECT_NEAR(first_hit.elapsed, 0.3 + std::acos((0.5 + kTolerance) / 0.6), kTurningHitTimeTolerance);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+}
+
+TEST(HasConvexDistance, TurningShapesYes_DomainBoxNo) {
+  EXPECT_TRUE(HasConvexDistance(SolidShape::kFlatSolid));
+  EXPECT_TRUE(HasConvexDistance(SolidShape::kPlate));
+  EXPECT_TRUE(HasConvexDistance(SolidShape::kBox));
+  EXPECT_TRUE(HasConvexDistance(SolidShape::kSphere));
+  EXPECT_TRUE(HasConvexDistance(SolidShape::kCylinder));
+  EXPECT_FALSE(HasConvexDistance(SolidShape::kDomainBox));
+}
+
+TEST(FindHitOnTurningSolid, TurningRoom_NotConvexSoFirstOrder) {
+  // A test-only room: the domain box's distance, the smallest gap to its six closed sides, turning at {0, 0, pi / 2}
+  // rad/s (CheckSolid would not accept it; the search is called directly). That distance is not convex, so the
+  // second-order model of one wall says nothing about the next: with it the search answered free after 2 advances,
+  // with the path ending 0.5 m beyond a wall. The first-order advance alone finds the wall at 0.6693805413275088 s.
+  Solid room;
+  room.shape = SolidShape::kDomainBox;
+  room.solid_id = 1;
+  room.half_size = {.x = 1, .y = 1, .z = 1};
+  room.closed = {.left = true, .right = true, .front = true, .back = true, .bottom = true, .top = true};
+  room.motion.angular_velocity = {.x = 0, .y = 0, .z = std::numbers::pi / 2};
+  const std::array solids = {room};
+  const TurningSearch search = SearchTurningSolid(
+      BuildInputs(solids, 1),
+      {.start = {.x = 0.5, .y = 0.7, .z = 0}, .velocity = {.x = 1, .y = -1, .z = 0}, .duration = 1}
+  );
+  EXPECT_EQ(search.error, ContactError::kNone);
+  EXPECT_EQ(search.first_hit.solid_index, 0U);
+  EXPECT_NEAR(search.first_hit.elapsed, 0.66938054133, kTurningHitTimeTolerance);
+  ExpectAtGrownSurface(search.first_hit.at_hit);
 }
 
 // A box of half size 0.5 m centred at the origin at the start of the step, moving at {1, 0, 0} m/s and turning at
@@ -2444,25 +2641,57 @@ bool IsOutsideGrownSolidThroughout(const Solid& solid, Path path, double end_ela
   return true;
 }
 
-// The outcomes of generated sweeps toward one turning solid, against the lower-bound reference.
+// How a generated set checks one path: whether the path surely stays at distance tol - allowance or more from solid 0
+// between 0 and end_elapsed seconds into the sweep, and that allowance.
+struct SweepReference {
+  bool (*is_outside_throughout)(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count);
+  double allowance = 0;  // m
+};
+
+// The lower-bound reference (IsOutsideGrownSolidThroughout) as a SweepReference, for the test contact tolerance.
+bool IsOutsideByLowerBound(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count) {
+  return IsOutsideGrownSolidThroughout(inputs.solids[0], path, end_elapsed, sample_count);
+}
+
+constexpr SweepReference kLowerBoundReference = {
+    .is_outside_throughout = IsOutsideByLowerBound,
+    .allowance = kReferenceAllowance,
+};
+
+// The outcomes of generated sweeps toward one turning solid, against a reference.
 struct TurningSweepCounts {
   int hit_count = 0;
   int free_count = 0;
-  int close_call_count = 0;  // kTooCloseToCall: the documented answer to an approach too slow to search.
+  int close_call_count = 0;  // kTooCloseToCall: the documented answer to a path the search cannot finish.
   int mistake_count = 0;  // Disagreements with the reference.
   int reference_sample_count = 0;  // Distances the reference computed.
+  std::vector<int> advance_counts;  // The advances of the stepping search, one per path, close calls included.
 };
 
-// Runs FindFirstHit on one path toward a turning solid and adds its outcome to *counts. A mistake is: a hit or a
-// free path that is not surely outside the grown solid before the hit or over the whole duration
-// (IsOutsideGrownSolidThroughout); a hit whose distance is above (1 + kTurningSolidHitGapShare) tol +
-// kReferenceAllowance, so not at the grown surface, or that reports another distance; a time outside the sweep; or
-// any other error.
-void CountTurningSweep(const SolidContactInputs& inputs, Path path, TurningSweepCounts* counts) {
+// Runs FindFirstHit on one path toward the turning solid 0 and adds its outcome to *counts, with the advances that
+// FindHitOnTurningSolid, called directly, makes for it. A mistake is: a hit or a free path that is not surely outside
+// the grown solid before the hit or over the whole duration (the reference); a hit whose distance is above
+// (1 + kTurningSolidHitGapShare) tol + allowance, so not at the grown surface, or that reports another distance; a
+// time outside the sweep; a direct search that answers otherwise; or any other error.
+void CountTurningSweep(
+    const SolidContactInputs& inputs,
+    Path path,
+    SweepReference reference,
+    TurningSweepCounts* counts
+) {
   const Solid& solid = inputs.solids[0];
+  const double contact_tolerance = inputs.contact_tolerance;
   FirstHit first_hit;
   const ContactError error =
       FindFirstHit(inputs, path.start, path.velocity, path.start_elapsed, path.duration, &first_hit);
+  const TurningSearch search = SearchTurningSolid(inputs, path);
+  counts->advance_counts.push_back(search.advance_count);
+  const bool search_agrees = search.error == error && search.first_hit.solid_index == first_hit.solid_index
+      && search.first_hit.elapsed == first_hit.elapsed;
+  if (!search_agrees) {
+    ++counts->mistake_count;
+    return;
+  }
   if (error == ContactError::kTooCloseToCall) {
     ++counts->close_call_count;
     return;
@@ -2471,7 +2700,7 @@ void CountTurningSweep(const SolidContactInputs& inputs, Path path, TurningSweep
   const double end_elapsed = is_hit ? first_hit.elapsed : path.duration;
   const bool is_within_sweep = end_elapsed >= 0 && end_elapsed <= path.duration;
   const bool stays_outside_grown_solid =
-      is_within_sweep && IsOutsideGrownSolidThroughout(solid, path, end_elapsed, &counts->reference_sample_count);
+      is_within_sweep && reference.is_outside_throughout(inputs, path, end_elapsed, &counts->reference_sample_count);
   if (error != ContactError::kNone || !stays_outside_grown_solid) {
     ++counts->mistake_count;
     return;
@@ -2481,8 +2710,9 @@ void CountTurningSweep(const SolidContactInputs& inputs, Path path, TurningSweep
     return;
   }
   const double distance_at_hit = ComputeDistanceAlongPath(solid, path, first_hit.elapsed);
-  const bool is_at_grown_surface = distance_at_hit <= (1 + kTurningSolidHitGapShare) * kTolerance + kReferenceAllowance;
-  const bool reports_that_distance = std::abs(first_hit.at_hit.distance - distance_at_hit) <= kReferenceAllowance;
+  const bool is_at_grown_surface =
+      distance_at_hit <= (1 + kTurningSolidHitGapShare) * contact_tolerance + reference.allowance;
+  const bool reports_that_distance = std::abs(first_hit.at_hit.distance - distance_at_hit) <= reference.allowance;
   if (is_at_grown_surface && reports_that_distance) {
     ++counts->hit_count;
   } else {
@@ -2515,28 +2745,55 @@ TurningSweepCounts CountGeneratedTurningSweeps(const Solid& solid) {
     CountTurningSweep(
         inputs,
         {.start = start, .velocity = velocity, .start_elapsed = start_elapsed, .duration = 1},
+        kLowerBoundReference,
         &counts
     );
   }
   return counts;
 }
 
-// Fails the calling test when a generated set has a mistake, hits on no more than a tenth of its paths, or has more
-// close calls than largest_close_call_count. A close call is safe but costs a shorter step. Each advance closes the gap
-// by the share of the bound that the approach uses, so going from a gap g to tol / 4 takes about ln(4 g / tol) / share
-// advances: with g near 1 m and tol 2^-30, an approach at less than about a sixth of the bound needs more than 128.
-// Paths that meet a turning solid obliquely, far from its origin, are that slow; so are paths that pass within a few
-// millimetres of it, and paths that graze it.
-void ExpectTurningSweepCounts(TurningSweepCounts counts, int largest_close_call_count, const char* solid_name) {
+// What a generated set must meet.
+struct SweepCriteria {
+  int largest_close_call_count = 0;
+  double largest_mean_advance_count = 10;
+  int largest_99th_percentile_advance_count = 30;
+  bool requires_hits = true;  // true: more than a tenth of the paths must be hits, so the hit answer is checked.
+};
+
+// The 99th percentile of the advance counts: the count that 99 % of the paths do not exceed.
+int ComputeAdvanceCountPercentile99(std::vector<int> advance_counts) {
+  std::ranges::sort(advance_counts);
+  return advance_counts.at((advance_counts.size() * 99) / 100);
+}
+
+// Fails the calling test when a generated set has a mistake, more close calls than the criteria allow, a mean or a 99th
+// percentile of advances above them, or, when the criteria require it, hits on no more than a tenth of its paths. A
+// close call is safe but costs a shorter step; it remains for paths that hover near the solid with almost no motion
+// along its normal, where each advance is only about Sqrt(2 g / K).
+void ExpectTurningSweepCounts(const TurningSweepCounts& counts, SweepCriteria criteria, const char* set_name) {
   const int path_count = counts.hit_count + counts.free_count + counts.close_call_count + counts.mistake_count;
-  EXPECT_EQ(counts.mistake_count, 0) << solid_name;
-  EXPECT_GT(counts.hit_count, path_count / 10) << solid_name;
-  EXPECT_LE(counts.close_call_count, largest_close_call_count) << solid_name;
+  int advance_sum = 0;
+  for (const int advance_count : counts.advance_counts) {
+    advance_sum += advance_count;
+  }
+  const double mean_advance_count = static_cast<double>(advance_sum) / static_cast<double>(path_count);
+  const int percentile_99_advance_count = ComputeAdvanceCountPercentile99(counts.advance_counts);
+  EXPECT_EQ(counts.mistake_count, 0) << set_name;
+  if (criteria.requires_hits) {
+    EXPECT_GT(counts.hit_count, path_count / 10) << set_name;
+  }
+  EXPECT_LE(counts.close_call_count, criteria.largest_close_call_count) << set_name;
+  EXPECT_LE(mean_advance_count, criteria.largest_mean_advance_count) << set_name;
+  EXPECT_LE(percentile_99_advance_count, criteria.largest_99th_percentile_advance_count) << set_name;
   // Recorded for the report on the test, not a check.
-  testing::Test::RecordProperty(std::string(solid_name) + "_hits", counts.hit_count);
-  testing::Test::RecordProperty(std::string(solid_name) + "_free", counts.free_count);
-  testing::Test::RecordProperty(std::string(solid_name) + "_close_calls", counts.close_call_count);
-  testing::Test::RecordProperty(std::string(solid_name) + "_reference_samples", counts.reference_sample_count);
+  const std::string name = set_name;
+  testing::Test::RecordProperty(name + "_hits", counts.hit_count);
+  testing::Test::RecordProperty(name + "_free", counts.free_count);
+  testing::Test::RecordProperty(name + "_close_calls", counts.close_call_count);
+  testing::Test::RecordProperty(name + "_reference_samples", counts.reference_sample_count);
+  testing::Test::RecordProperty(name + "_mean_advances", std::to_string(mean_advance_count));
+  testing::Test::RecordProperty(name + "_advances_99th_percentile", percentile_99_advance_count);
+  testing::Test::RecordProperty(name + "_most_advances", *std::ranges::max_element(counts.advance_counts));
 }
 
 TEST(FindFirstHit, GeneratedTurningSweeps_AgreeWithLowerBoundReference) {
@@ -2584,8 +2841,8 @@ TEST(FindFirstHit, GeneratedTurningSweeps_AgreeWithLowerBoundReference) {
   for (const auto& [solid_name, solid] : solids) {
     ASSERT_EQ(CheckSolid(solid, 1.5), ContactError::kNone) << solid_name;
     const TurningSweepCounts counts = CountGeneratedTurningSweeps(solid);
-    // Measured: 32 to 56 close calls per solid; the ceiling is about 1.5 times the largest.
-    ExpectTurningSweepCounts(counts, 85, solid_name);
+    // Measured: no close call (first order alone: 32 to 56 per solid).
+    ExpectTurningSweepCounts(counts, {.largest_close_call_count = 1}, solid_name);
     // Enough paths miss for the free answer to be checked too.
     EXPECT_GT(counts.free_count, 100) << solid_name;
   }
@@ -2642,10 +2899,10 @@ TEST(FindFirstHit, GeneratedNearlyTightBoundSweeps_AgreeWithLowerBoundReference)
         .start_elapsed = start_elapsed,
         .duration = 1,
     };
-    CountTurningSweep(BuildInputs(solids, 1.5), path, &counts);
+    CountTurningSweep(BuildInputs(solids, 1.5), path, kLowerBoundReference, &counts);
   }
   // Measured: no close call, since the approach uses nearly the whole bound.
-  ExpectTurningSweepCounts(counts, 10, "nearly_tight_bound");
+  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 2}, "nearly_tight_bound");
 }
 
 // How a generated path is aimed at a point of a turning solid: it crosses own_target, a point in the solid's own
@@ -2778,7 +3035,8 @@ TEST(FindFirstHit, TurningLongBoxOutwardPath_FarEndOfRadiusBoundsAdvance) {
   // From 1 m out at the angle phi0 = 1.6316666666666666, moving outward at 3 m/s: the path ends 4 m from the origin,
   // and the arm closes on it at nearly 1.57 * r(t) m/s. A bound built from the start's distance alone would let an
   // advance carry the particle 6.4 cm into the box; the true bound stops it 1.1 tol from face kHighX at
-  // 0.9562428207707441 s, after 32 advances (the review's mirror).
+  // 0.9562428207707441 s, after 32 first-order advances (the review's mirror). The search now takes 6 advances and
+  // stops at 0.9562428207946203 s (SecondOrderSearchStoppingTimes_PinAdvanceCounts); the bound is still its floor.
   const std::array solids = {BuildQuarterTurnLongBox({})};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Path path = {
@@ -2813,6 +3071,157 @@ TEST(FindFirstHit, StartElapsed_MovingTurningBox_FarEndOriginAtMatchingTime) {
   EXPECT_LE(first_hit.at_hit.distance, (1 + kTurningSolidHitGapShare) * kTolerance);
 }
 
+TEST(FindFirstHit, TurningLongBoxOutwardPathFromNearOrigin_FarEndOfRadiusBoundsCurvature) {
+  // From 0.6 m out at the angle 1.68125 rad, moving outward at 3 m/s: the path ends 3.6 m from the origin, six times
+  // farther than it starts, and the arm closes on it near the end. K, the bound on the gap's curvature, must use that
+  // far end: built from the start's distance alone, it let the second advance carry the particle 3.8 cm into the box.
+  const std::array solids = {BuildQuarterTurnLongBox({})};
+  const double start_angle = 1.68125;  // rad
+  const Vec3 direction = {.x = std::sin(start_angle), .y = -std::cos(start_angle), .z = 0};
+  const FirstHit first_hit =
+      FindHit(BuildInputs(solids, 1), {.start = 0.6 * direction, .velocity = 3 * direction, .duration = 1});
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_NEAR(first_hit.elapsed, 0.98010536766574, kTurningHitTimeTolerance);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+  ExpectAtGrownSurface(first_hit.at_hit);
+}
+
+TEST(FindFirstHit, TurningLongBoxSlidePastEndFace_CoriolisAndNearEndBoundCurvature) {
+  // Just beyond the end face kHighY of the quarter-turn arm, at own y = 4.05, the particle moves with the face plus
+  // 8 m/s along own x, so it slides past the face while the face's normal turns with it: both terms of K, the
+  // Coriolis term counted twice and the centripetal term with the near end of r_max, are needed. Measured on the
+  // mirror: K from the end's distance alone stops 1.8 mm inside, the Coriolis term once 8.7 mm, without it 2.5 cm.
+  const std::array solids = {BuildQuarterTurnLongBox({})};
+  const double turn_rate = std::numbers::pi / 2;  // rad/s
+  const Path path = {
+      .start = {.x = -0.4, .y = 4.05, .z = 0},
+      .velocity = {.x = 8 - 4.05 * turn_rate, .y = -0.4 * turn_rate, .z = 0},
+      .duration = 1,
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const FirstHit first_hit = FindHit(inputs, path);
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_NEAR(first_hit.elapsed, 0.0815739451161, kTurningHitTimeTolerance);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighY);
+  ExpectAtGrownSurface(first_hit.at_hit);
+  EXPECT_EQ(SearchTurningSolid(inputs, path).advance_count, 3);
+}
+
+TEST(FindFirstHit, TurningLongBoxFaceSweepsOntoParticle_FirstOrderAdvanceIsTheFloor) {
+  // At rest 0.4 m in front of face kLowX of the quarter-turn arm, 3 m along it: the face comes on nearly head on, so
+  // the gap closes at almost the bound while K, built for the whole sweep, is large. Then the first-order advance,
+  // g / bound, is the longer one, and the search keeps it: 3 advances. The second-order advance alone takes 4.
+  const std::array solids = {BuildQuarterTurnLongBox({})};
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const TurningSearch search = SearchTurningSolid(
+      inputs,
+      {.start = {.x = -0.5 - kTolerance - 0.4, .y = 3, .z = 0}, .velocity = kAtRest, .duration = 1}
+  );
+  EXPECT_EQ(search.error, ContactError::kNone);
+  EXPECT_EQ(search.first_hit.solid_index, 0U);
+  EXPECT_EQ(search.first_hit.at_hit.face, SolidFace::kLowX);
+  EXPECT_NEAR(search.first_hit.elapsed, 0.08348195268941995, 1e-13);
+  EXPECT_EQ(search.advance_count, 3);
+}
+
+TEST(FindFirstHit, SecondOrderSearchStoppingTimes_PinAdvanceCounts) {
+  // The search's cost, pinned so that a change of method shows here: each case stops at the sample of a given
+  // advance, and another number of advances, or another advance length, would stop elsewhere in the last tol / 4 of
+  // gap before the hit. 1e-13 s allows for the last bits of Sin on another platform. The first-order advance alone
+  // needed 30, 25, 113, 157 (a close call), 32 and more advances for these cases.
+  constexpr double kStoppingTimeTolerance = 1e-13;  // s
+  const std::array boxes = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
+  const std::array cylinders = {
+      BuildCylinder(
+          {},
+          {.x = 1, .y = 0, .z = 0},
+          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}}
+      ),
+  };
+  const std::array long_boxes = {BuildQuarterTurnLongBox({})};
+  const auto [moving_long_box, moving_long_box_path] = BuildOutwardPath({
+      .start_elapsed = 0.2,
+      .start_radius = 1,
+      .outward_speed = 2,
+      .start_angle = 1.4475,
+      .box_speed = -10,
+  });
+  const std::array moving_long_boxes = {moving_long_box};
+  struct PinnedCase {
+    const char* name = "";
+    SolidContactInputs inputs{};
+    Path path{};
+    int advance_count = 0;
+    double stopping_elapsed = 0;  // s
+  };
+  const std::array pinned_cases = {
+      PinnedCase{
+          .name = "TurningBoxReachesRestingParticle",
+          .inputs = BuildInputs(boxes, 1),
+          .path =
+              {
+                  .start = {.x = 0.6 * std::cos(0.3), .y = 0.6 * std::sin(0.3), .z = 0},
+                  .velocity = kAtRest,
+                  .duration = 1,
+              },
+          .advance_count = 3,
+          .stopping_elapsed = 0.8856855405066031,
+      },
+      PinnedCase{
+          .name = "CylinderTurningAcrossAxis",
+          .inputs = BuildInputs(cylinders, 1),
+          .path =
+              {
+                  .start = {.x = 0.6 * std::cos(1.2), .y = 0.6 * std::sin(1.2), .z = 0},
+                  .velocity = kAtRest,
+                  .duration = 1,
+              },
+          .advance_count = 3,
+          .stopping_elapsed = 0.21488921385342513,
+      },
+      PinnedCase{
+          .name = "TurningBoxSlowApproachWithinAdvanceLimit",
+          .inputs = BuildInputs(boxes, 1),
+          .path = {.start = {.x = 0.505859375, .y = 0, .z = 0}, .velocity = kAtRest, .duration = 1},
+          .advance_count = 2,
+          .stopping_elapsed = 0.15235117303165863,
+      },
+      PinnedCase{
+          .name = "TurningBoxSlowApproachBeyondFirstOrderLimit",
+          .inputs = BuildInputs(boxes, 1),
+          .path = {.start = {.x = 0.5029296875, .y = 0, .z = 0}, .velocity = kAtRest, .duration = 1},
+          .advance_count = 2,
+          .stopping_elapsed = 0.1079898627864529,
+      },
+      PinnedCase{
+          .name = "TurningLongBoxOutwardPath",
+          .inputs = BuildInputs(long_boxes, 1),
+          .path =
+              {
+                  .start = {.x = 0.9981479728118984, .y = 0.060832757388580135, .z = 0},
+                  .velocity = {.x = 2.994443918435695, .y = 0.1824982721657404, .z = 0},
+                  .duration = 1,
+              },
+          .advance_count = 6,
+          .stopping_elapsed = 0.9562428207946203,
+      },
+      PinnedCase{
+          .name = "StartElapsed_MovingTurningBox",
+          .inputs = BuildInputs(moving_long_boxes, 1),
+          .path = moving_long_box_path,
+          .advance_count = 5,
+          .stopping_elapsed = 0.7981334038631699,
+      },
+  };
+  for (const PinnedCase& pinned_case : pinned_cases) {
+    const FirstHit first_hit = FindHit(pinned_case.inputs, pinned_case.path);
+    EXPECT_NEAR(first_hit.elapsed, pinned_case.stopping_elapsed, kStoppingTimeTolerance) << pinned_case.name;
+    const TurningSearch search = SearchTurningSolid(pinned_case.inputs, pinned_case.path);
+    EXPECT_EQ(search.advance_count, pinned_case.advance_count) << pinned_case.name;
+    EXPECT_EQ(search.first_hit.elapsed, first_hit.elapsed) << pinned_case.name;
+  }
+}
+
 TEST(FindFirstHit, GeneratedOutwardSweeps_AgreeWithLowerBoundReference) {
   // 3000 OutwardPaths. Draw order per path: start_elapsed 0 when Next() < 0.5, else 0.25 Next(); start_radius
   // 0.5 + 0.5 Next(); outward_speed 1 + 5 Next(); start_angle 0.3 + 1.7 Next(); box_speed 10 NextSigned(). A path that
@@ -2832,10 +3241,10 @@ TEST(FindFirstHit, GeneratedOutwardSweeps_AgreeWithLowerBoundReference) {
       solid_and_path = BuildOutwardPath(outward);
     } while (!StartsAwayFromSolid(solid_and_path.first, solid_and_path.second));
     const std::array solids = {solid_and_path.first};
-    CountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, &counts);
+    CountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, kLowerBoundReference, &counts);
   }
-  // Measured: 118 close calls; the ceiling is about 1.5 times that.
-  ExpectTurningSweepCounts(counts, 180, "outward");
+  // Measured: no close call (first order alone: 118).
+  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 3}, "outward");
 }
 
 TEST(FindFirstHit, GeneratedTurningBoxEdgeAndCornerSweeps_AgreeWithLowerBoundReference) {
@@ -2859,11 +3268,11 @@ TEST(FindFirstHit, GeneratedTurningBoxEdgeAndCornerSweeps_AgreeWithLowerBoundRef
     do {
       path = AimAtOwnPoint(solid, DrawEdgeOrCornerAim(half_size, &generator));
     } while (!StartsAwayFromSolid(solid, path));
-    CountTurningSweep(inputs, path, &counts);
+    CountTurningSweep(inputs, path, kLowerBoundReference, &counts);
   }
-  // Measured: 805 close calls, mostly paths that pass the edge or the corner sideways within a few tolerances. The
-  // ceiling is about 1.5 times that.
-  ExpectTurningSweepCounts(counts, 1200, "box_edges_and_corners");
+  // Measured: no close call (first order alone: 805, mostly paths that pass the edge or the corner sideways within a
+  // few tolerances).
+  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 4}, "box_edges_and_corners");
 }
 
 TEST(FindFirstHit, GeneratedTiltingCylinderRimSweeps_AgreeWithLowerBoundReference) {
@@ -2891,10 +3300,220 @@ TEST(FindFirstHit, GeneratedTiltingCylinderRimSweeps_AgreeWithLowerBoundReferenc
     do {
       path = AimAtOwnPoint(solid, DrawRimAim(&generator));
     } while (!StartsAwayFromSolid(solid, path));
-    CountTurningSweep(inputs, path, &counts);
+    CountTurningSweep(inputs, path, kLowerBoundReference, &counts);
   }
-  // Measured: 291 close calls; the ceiling is about 1.5 times that.
-  ExpectTurningSweepCounts(counts, 440, "cylinder_rims");
+  // Measured: no close call (first order alone: 291).
+  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 4}, "cylinder_rims");
+}
+
+TEST(FindFirstHit, GeneratedEndFaceSlideSweeps_AgreeWithLowerBoundReference) {
+  // 3000 paths that slide past the end face kHighY of the quarter-turn arm (BuildQuarterTurnLongBox), whose normal
+  // turns with the arm, so that the Coriolis term and the near end of r_max both count in K. Sweeps of 1 s from the
+  // step's start. Draw order per path: a gap exp(log(1e-6) + Next() (log(0.5) - log(1e-6))) m; an own start
+  // {0.6 NextSigned(), 4 + tol + gap, 0.4 NextSigned()}, which is also the world start; a relative velocity
+  // {w, -share * scale, 0.3 NextSigned()}, with w = 8 Next(), negated when Next() < 1/3, then share = Next() and scale
+  // 0, 0.01, 0.1 or 1 by floor(4 Next()). The velocity is the surface velocity at the start plus that.
+  const Solid solid = BuildQuarterTurnLongBox({});
+  const std::array solids = {solid};
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  constexpr std::array<double, 4> kSlowdownScales = {0, 0.01, 0.1, 1};  // m/s
+  CaseGenerator generator;
+  TurningSweepCounts counts;
+  constexpr int kPathCount = 3000;
+  for (int path_index = 0; path_index < kPathCount; ++path_index) {
+    const double gap = std::exp(std::log(1e-6) + generator.Next() * (std::log(0.5) - std::log(1e-6)));  // m
+    const double start_x = 0.6 * generator.NextSigned();  // m
+    const double start_z = 0.4 * generator.NextSigned();  // m
+    const Vec3 start = {.x = start_x, .y = 4 + kTolerance + gap, .z = start_z};
+    const double slide_speed = 8 * generator.Next();  // m/s
+    const double slide_sign = generator.Next() < 1.0 / 3 ? -1.0 : 1.0;
+    const double slowdown_share = generator.Next();
+    const double slowdown_scale = kSlowdownScales.at(static_cast<std::size_t>(4 * generator.Next()));  // m/s
+    const Vec3 relative_velocity = {
+        .x = slide_sign * slide_speed,
+        .y = -slowdown_share * slowdown_scale,
+        .z = 0.3 * generator.NextSigned(),
+    };
+    const Vec3 velocity = ComputeSolidVelocity(solid, ComputeSolidPose(solid, 0), start) + relative_velocity;
+    CountTurningSweep(inputs, {.start = start, .velocity = velocity, .duration = 1}, kLowerBoundReference, &counts);
+  }
+  // Measured: no close call; 5.9 advances on average, 18 at the 99th percentile, 55 at most.
+  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 3}, "end_face_slide");
+}
+
+TEST(FindFirstHit, GeneratedInwardSweeps_AgreeWithLowerBoundReference) {
+  // 3000 OutwardPaths that move inward, toward the origin of the quarter-turn arm, so that the particle is farthest
+  // from the origin at the start: the start end of r_max bounds K. Draw order per path: start_elapsed 0 when
+  // Next() < 0.5, else 0.25 Next(); start_radius 1.5 + 2.4 Next(); speed 1 + 5 Next() inward; start_angle
+  // 0.2 + 1.8 Next(); box_speed 0. A path that starts within 2 tol of the box, or inside it, is drawn again.
+  CaseGenerator generator;
+  TurningSweepCounts counts;
+  constexpr int kPathCount = 3000;
+  for (int path_index = 0; path_index < kPathCount; ++path_index) {
+    std::pair<Solid, Path> solid_and_path;
+    do {
+      OutwardPath inward;
+      inward.start_elapsed = generator.Next() < 0.5 ? 0 : 0.25 * generator.Next();
+      inward.start_radius = 1.5 + 2.4 * generator.Next();
+      inward.outward_speed = -(1 + 5 * generator.Next());
+      inward.start_angle = 0.2 + 1.8 * generator.Next();
+      inward.box_speed = 0;
+      solid_and_path = BuildOutwardPath(inward);
+    } while (!StartsAwayFromSolid(solid_and_path.first, solid_and_path.second));
+    const std::array solids = {solid_and_path.first};
+    CountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, kLowerBoundReference, &counts);
+  }
+  // Measured: no close call; 5.5 advances on average, 7 at most.
+  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 3}, "inward");
+}
+
+// The six face-plane distances of a box at one time of a path, in face order: -p.x - half_size.x, p.x - half_size.x,
+// and so on, with p the point in the box's own axes. The box's distance is the largest of them.
+std::array<double, 6> ComputeFacePlaneDistances(const Solid& box, Path path, double elapsed) {
+  const SolidPose pose = ComputeSolidPose(box, path.start_elapsed + elapsed);
+  const Vec3 own_point = math::Transpose(pose.axes) * (path.start + path.velocity * elapsed - pose.origin);
+  const Vec3 half_size = box.half_size;
+  return {
+      -own_point.x - half_size.x,
+      own_point.x - half_size.x,
+      -own_point.y - half_size.y,
+      own_point.y - half_size.y,
+      -own_point.z - half_size.z,
+      own_point.z - half_size.z,
+  };
+}
+
+// One time of a sweep and the six face-plane distances of the box then.
+struct FacePlaneSample {
+  double elapsed = 0;  // s, since the start of the sweep.
+  std::array<double, 6> distances{};  // m, in face order.
+};
+
+// Returns whether the distance from the path to the box surely stays at least tol - tol / 64 between 0 and end_elapsed
+// seconds into the sweep, written without the stepping search's bounds: each face-plane distance f(t) is a smooth
+// function of time whose second derivative is the own point's acceleration along a fixed own axis, at most
+// M = |omega|^2 (r0 + |v_rel| end_elapsed) + 2 |omega| |v_rel| with r0 the start's distance to the origin. On [a, b]
+// such an f is at least the smaller of f(a) and f(b) minus M (b - a)^2 / 8, and the box's distance, the largest of
+// the six, is at least the largest of those. An interval where that is too small is cut in half until it passes, a
+// sample is too close, or it can no longer be cut. The lower-bound reference would need about gap / bound samples
+// along a particle that hovers a few tolerances off a face, and would not finish here.
+bool IsOutsideBoxThroughout(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count) {
+  const Solid& box = inputs.solids[0];
+  const double floor_distance = inputs.contact_tolerance - inputs.contact_tolerance / 64;  // m
+  const double relative_speed = math::Length(path.velocity - box.motion.linear_velocity);  // m/s
+  const double turn_rate = math::Length(box.motion.angular_velocity);  // rad/s
+  const double radius =
+      math::Length(path.start - ComputeSolidPose(box, path.start_elapsed).origin) + relative_speed * end_elapsed;  // m
+  const double curvature_bound = turn_rate * turn_rate * radius + 2 * turn_rate * relative_speed;  // m/s^2
+  const auto largest = [](const std::array<double, 6>& distances) {
+    return *std::ranges::max_element(distances);
+  };
+  std::vector<std::array<FacePlaneSample, 2>> pending_intervals;
+  pending_intervals.push_back({
+      FacePlaneSample{.elapsed = 0, .distances = ComputeFacePlaneDistances(box, path, 0)},
+      FacePlaneSample{.elapsed = end_elapsed, .distances = ComputeFacePlaneDistances(box, path, end_elapsed)},
+  });
+  *sample_count += 2;
+  while (!pending_intervals.empty()) {
+    const auto [low, high] = pending_intervals.back();
+    pending_intervals.pop_back();
+    if (largest(low.distances) < floor_distance || largest(high.distances) < floor_distance) {
+      return false;
+    }
+    const double width = high.elapsed - low.elapsed;  // s
+    double lowest_possible_distance = -1;  // m
+    for (std::size_t face_index = 0; face_index < 6; ++face_index) {
+      const double face_lowest =
+          std::min(low.distances.at(face_index), high.distances.at(face_index)) - curvature_bound * width * width / 8;
+      lowest_possible_distance = std::max(lowest_possible_distance, face_lowest);
+    }
+    if (lowest_possible_distance >= floor_distance) {
+      continue;
+    }
+    const double middle_elapsed = low.elapsed + width / 2;  // s
+    const bool can_cut = middle_elapsed > low.elapsed && middle_elapsed < high.elapsed;
+    if (!can_cut) {
+      return false;
+    }
+    const FacePlaneSample middle = {
+        .elapsed = middle_elapsed,
+        .distances = ComputeFacePlaneDistances(box, path, middle_elapsed),
+    };
+    ++*sample_count;
+    pending_intervals.push_back({low, middle});
+    pending_intervals.push_back({middle, high});
+  }
+  return true;
+}
+
+TEST(FindFirstHit, GeneratedPaddleSweeps_AgreeWithFacePlaneReference) {
+  // A paddle: a box of half sizes {0.25, 0.01, 0.1} m at the origin turning at {0, 0, 6} rad/s, with the contact
+  // tolerance of a 1 cm cell, 2^-30 * 0.01 m, and a step of 1/120 s swept whole from its start. 2000 paths of each
+  // kind, approaching, separating and moving with the face, in turn (path_index % 3), near a large face. Draw order per
+  // path: own x 0.24 NextSigned(); own z 0.09 NextSigned(); side +1 when Next() < 0.5, else -1; gap
+  // exp(log(0.3 tol) + Next() (log(0.01) - log(0.3 tol))) m; normal speed 0.15 * 10^(-8 Next()) m/s; slide
+  // 0.45 NextSigned() m/s along x. The start is {x, side (0.01 + tol + gap), z}; the velocity is the surface velocity
+  // there, plus the slide, plus the normal speed along {0, side, 0}: negated when approaching, zero when moving with
+  // the face. Reference: IsOutsideBoxThroughout, allowance tol / 64.
+  const Solid paddle = ToSolid(
+      Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.25, .y = 0.01, .z = 0.1}},
+      {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 6}},
+      1
+  );
+  constexpr double kStepDuration = 1.0 / 120;  // s
+  ASSERT_EQ(CheckSolid(paddle, kStepDuration), ContactError::kNone);
+  const std::array solids = {paddle};
+  SolidContactInputs inputs = BuildInputs(solids, kStepDuration);
+  inputs.contact_tolerance = 0x1p-30 * 0.01;
+  const double contact_tolerance = inputs.contact_tolerance;
+  const SweepReference reference = {
+      .is_outside_throughout = IsOutsideBoxThroughout,
+      .allowance = contact_tolerance / 64,
+  };
+  constexpr std::array<double, 3> kNormalSpeedSigns = {-1, 1, 0};  // approaching, separating, moving with the face
+  constexpr std::array<const char*, 3> kKindNames = {
+      "paddle_approaching",
+      "paddle_separating",
+      "paddle_moving_with_face",
+  };
+  std::array<TurningSweepCounts, 3> counts_per_kind;
+  CaseGenerator generator;
+  constexpr int kPathCount = 6000;
+  for (int path_index = 0; path_index < kPathCount; ++path_index) {
+    const auto kind = static_cast<std::size_t>(path_index % 3);
+    const double own_x = 0.24 * generator.NextSigned();  // m
+    const double own_z = 0.09 * generator.NextSigned();  // m
+    const double side = generator.Next() < 0.5 ? 1.0 : -1.0;
+    const double gap = std::exp(
+        std::log(0.3 * contact_tolerance) + generator.Next() * (std::log(0.01) - std::log(0.3 * contact_tolerance))
+    );  // m
+    const double normal_speed = 0.15 * std::pow(10.0, -8 * generator.Next());  // m/s
+    const double slide_speed = 0.45 * generator.NextSigned();  // m/s
+    const Vec3 start = {.x = own_x, .y = side * (0.01 + contact_tolerance + gap), .z = own_z};
+    const Vec3 velocity = ComputeSolidVelocity(paddle, ComputeSolidPose(paddle, 0), start)
+        + Vec3{.x = slide_speed, .y = 0, .z = 0}
+        + kNormalSpeedSigns.at(kind) * normal_speed * Vec3{.x = 0, .y = side, .z = 0};
+    CountTurningSweep(
+        inputs,
+        {.start = start, .velocity = velocity, .duration = kStepDuration},
+        reference,
+        &counts_per_kind.at(kind)
+    );
+  }
+  // Measured: no close call of any kind; 5.5, 6.3 and 7.9 advances on average, 36, 32 and 41 at the 99th percentile,
+  // 119 at most. The first-order advance alone gave close calls on most of these paths.
+  for (std::size_t kind = 0; kind < 3; ++kind) {
+    ExpectTurningSweepCounts(
+        counts_per_kind.at(kind),
+        {
+            .largest_close_call_count = 20,
+            .largest_mean_advance_count = 12,
+            .largest_99th_percentile_advance_count = 80,
+            .requires_hits = false,
+        },
+        kKindNames.at(kind)
+    );
+  }
 }
 
 }  // namespace

@@ -111,6 +111,16 @@ SolidMotion BuildTurning(Vec3 angular_velocity) {
   return {.linear_velocity = {.x = 0, .y = 0, .z = 0}, .angular_velocity = angular_velocity};
 }
 
+// A flat solid through the origin with normal {0, 0, 1}, and the given motion.
+Solid BuildFloorWithNormalZ(SolidMotion motion) {
+  return ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = {.x = 0, .y = 0, .z = 1}}, motion, 6);
+}
+
+// A plate through the origin with normal {0, 0, 1}, half thickness 0.01 m, and the given motion.
+Solid BuildPlateWithNormalZ(SolidMotion motion) {
+  return ToSolid(Plate{.center = {}, .normal = {.x = 0, .y = 0, .z = 1}, .half_thickness = 0.01}, motion, 8);
+}
+
 TEST(ToSolid, FlatSolid_ZAxisIsNormalAndAxesAreARotation) {
   const Vec3 normal = math::Normalized({.x = 1, .y = 2, .z = 3});
   const FlatSolid flat_solid = {.point_on_surface = {.x = 4, .y = 5, .z = 6}, .normal_out_of_solid = normal};
@@ -234,6 +244,18 @@ TEST(ComputeShapeTurningAngularVelocity, Box_IsFullAngularVelocity) {
   solid.motion.angular_velocity = {.x = 2, .y = 0, .z = 100};
 
   ExpectSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 2, .y = 0, .z = 100});
+}
+
+TEST(ComputeShapeTurningAngularVelocity, FlatSolidAndPlateSpinAboutNormal_IsNoTurn) {
+  // Both are unbounded along their own x and y, so a spin about the normal leaves the shape as it is (plan decision
+  // P17): only the part across the normal remains, as for a cylinder. A box keeps its whole angular velocity.
+  const SolidMotion turning = BuildTurning({.x = 2, .y = 0, .z = 100});
+
+  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildFloorWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
+  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildPlateWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
+  Solid box = BuildValidBox();
+  box.motion = turning;
+  ExpectSameVec3(ComputeShapeTurningAngularVelocity(box), {.x = 2, .y = 0, .z = 100});
 }
 
 TEST(ComputeShapeTurningAngularVelocity, CylinderAlongXSpinningAboutX_IsZero) {
@@ -482,6 +504,21 @@ TEST(CheckSolid, SpinningFastAboutOwnAxis_IsNone) {
   EXPECT_EQ(CheckSolid(BuildUprightCylinder(spinning), 0.1), ContactError::kNone);
 }
 
+TEST(CheckSolid, FlatSolidAndPlateSpinningFastAboutNormal_AreAccepted) {
+  // 100 rad/s about the normal for 0.1 s is 10 rad of spin, which leaves the shape as it is; the same rate about an
+  // axis in the plane is a turn, and turns too far.
+  const SolidMotion spinning = BuildTurning({.x = 0, .y = 0, .z = 100});
+  const SolidMotion turning = BuildTurning({.x = 100, .y = 0, .z = 0});
+  ContactCloseCall close_call = ContactCloseCall::kNone;
+
+  EXPECT_EQ(CheckSolid(BuildFloorWithNormalZ(spinning), 0.1), ContactError::kNone);
+  EXPECT_EQ(CheckSolid(BuildPlateWithNormalZ(spinning), 0.1), ContactError::kNone);
+  EXPECT_EQ(CheckSolid(BuildFloorWithNormalZ(turning), 0.1, &close_call), ContactError::kTooCloseToCall);
+  EXPECT_EQ(close_call, ContactCloseCall::kSolidTurnsTooFar);
+  EXPECT_EQ(CheckSolid(BuildPlateWithNormalZ(turning), 0.1, &close_call), ContactError::kTooCloseToCall);
+  EXPECT_EQ(close_call, ContactCloseCall::kSolidTurnsTooFar);
+}
+
 TEST(CheckSolid, SpinningFastAboutTiltedAxis_IsNone) {
   // A cylinder along world x spinning at 100 rad/s about x for 0.1 s: 10 rad of spin, no change of shape.
   EXPECT_EQ(CheckSolid(BuildCylinderAlongX(BuildTurning({.x = 100, .y = 0, .z = 0})), 0.1), ContactError::kNone);
@@ -571,6 +608,16 @@ TEST(ComputeSolidVelocity, Turning_IsLinearPlusAngularCrossArm) {
   const Vec3 velocity = ComputeSolidVelocity(solid, solid.pose_at_step_start, {.x = 0, .y = 3, .z = 0});
 
   ExpectSameVec3(velocity, {.x = -5, .y = 0, .z = 0});
+}
+
+TEST(ComputeSolidVelocity, SpinningPlate_SurfaceVelocityKeepsTheSpin) {
+  // A spin about the normal is not a turn of the shape, but the surface still moves with it, so friction feels it:
+  // Cross({0, 0, 5}, {0.3, 0, 0.01}) = {0, 1.5, 0}.
+  const Solid plate = BuildPlateWithNormalZ(BuildTurning({.x = 0, .y = 0, .z = 5}));
+
+  const Vec3 velocity = ComputeSolidVelocity(plate, ComputeSolidPose(plate, 0), {.x = 0.3, .y = 0, .z = 0.01});
+
+  ExpectSameVec3(velocity, {.x = 0, .y = 1.5, .z = 0});
 }
 
 TEST(ComputeSolidVelocity, MovedPose_ArmIsFromPoseOrigin) {

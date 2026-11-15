@@ -63,10 +63,10 @@ enum class ContactKind : std::uint8_t {
 // slide that leaves the corner.
 inline constexpr int kMaxHitsPerStep = 4;
 // The most advances of the stepping search toward a turning solid in one sweep, a cap on its cost. Each advance is
-// the gap divided by the fastest the gap can shrink, so reaching the hit takes about ln(4 gap / tol) * bound / rate
-// advances, rate the speed at which the gap really closes: 30 in the method paper's example. A slow or oblique
-// approach, a close pass or a graze needs more and ends in a close call, which is common near a turning solid
-// (FindHitOnTurningSolid states measured shares).
+// the larger of the gap over the fastest the gap can shrink and the second-order advance, which follows the true
+// rate at which the gap closes: 3 in the method paper's example; first order needed 30. A path that hovers near the
+// solid with almost no motion along the normal needs more and ends in a close call, which is rare
+// (FindHitOnTurningSolid states measured counts).
 inline constexpr int kMaxAdvanceCount = 128;
 // No unit. The stepping search toward a turning solid stops with a hit once the gap is at most this share of the
 // contact tolerance, so a hit after at least one advance sits between tol and 1.25 tol from the surface (a hit at 0

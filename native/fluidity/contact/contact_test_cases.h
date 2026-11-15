@@ -494,8 +494,9 @@ inline std::vector<MoveParticleCase> BuildStartAndEndCases() {
           .friction = 0,
       }),
   });
-  // A box turning at 1 rad/s about z whose face closes on a particle at rest so slowly that the stepping search would
-  // need 157 advances (FindFirstHit's tests).
+  // A box turning at 1 rad/s about z and a particle at rest 2^-17 m above its top face, on the turn axis: the gap never
+  // changes, but the stepping search would need 182 advances to reach the end of the step (FindFirstHit's tests,
+  // TurningBoxHoverOnSpinAxisBeyondAdvanceLimit_IsCloseCall).
   const Solid turning_box = ToSolid(
       Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
       {.linear_velocity = {}, .angular_velocity = kUnitZ},
@@ -505,7 +506,7 @@ inline std::vector<MoveParticleCase> BuildStartAndEndCases() {
       .name = "TurningBoxSlowApproach",
       .solids = {turning_box},
       .inputs = BuildCaseInputs({
-          .start_position = {.x = 0.5029296875, .y = 0, .z = 0},
+          .start_position = {.x = 0, .y = 0, .z = 0.5 + 0x1p-17},
           .velocity = {},
           .step_duration = 1,
           .friction = 0,

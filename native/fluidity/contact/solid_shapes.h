@@ -35,7 +35,8 @@
 //   wall        the round surface of a cylinder, around its axis (face kCurved)
 //   cap         one of the two flat ends of a cylinder (faces kLowZ and kHighZ)
 //   rim         the circle where a cylinder's wall meets a cap (faces kLowRim and kHighRim)
-//   spin        a turn about a sphere's centre or a cylinder's axis: it moves the surface but not the shape
+//   spin        a turn about a sphere's centre, a cylinder's axis, or the normal of a flat solid or a plate: it moves
+//               the surface but not the shape
 //   degenerate normal  the normal chosen where several directions are equally near: at a sphere's centre, and
 //                      on a cylinder's axis where the wall is nearer than the caps. Minus the solid's own x axis
 //   nearest solid surface  the surface, among all solids, with the smallest distance from a point
@@ -314,23 +315,33 @@ FLUIDITY_CPU_AND_GPU inline Solid ToSolid(Cylinder shape, SolidMotion motion, st
 // Computes the part of a solid's angular velocity that changes its shape, rad/s, world.
 //
 // Method: a spin moves the surface of a sphere or a cylinder but not its shape. A sphere gives {0, 0, 0}. A
-//   cylinder gives the part across its own z axis e_z, the z column of its axes at the start of the step. Every
-//   other shape gives its full angular velocity.
+//   cylinder gives the part across its own z axis e_z, the z column of its axes at the start of the step. A flat
+//   solid and a plate give the part across their normal, which is their own z axis, by the same formula: both are
+//   unbounded along their own x and y, so a turn about the normal leaves the shape unchanged (plan decision P17). A
+//   box and a domain box give their full angular velocity.
 // Units: rad/s, world.
-// Example: a cylinder along z turning at {2, 0, 100} rad/s gives {2, 0, 0}; a sphere turning at {2, 0, 100} rad/s
-//   gives {0, 0, 0}; a box gives {2, 0, 100}.
-// Read: docs/method-paper/fluidity-method.typ <sec-round-solids>
+// Example: a cylinder along z turning at {2, 0, 100} rad/s gives {2, 0, 0}, and so do a flat solid and a plate with
+//   normal {0, 0, 1}; a sphere turning at {2, 0, 100} rad/s gives {0, 0, 0}; a box gives {2, 0, 100}.
+// Read: docs/method-paper/fluidity-method.typ <sec-round-solids>, <sec-first-hit>
 FLUIDITY_CPU_AND_GPU inline Vec3 ComputeShapeTurningAngularVelocity(const Solid& solid) {
   const Vec3 angular_velocity = solid.motion.angular_velocity;
-  if (solid.shape == SolidShape::kSphere) {
-    return Vec3{};
-  }
-  if (solid.shape == SolidShape::kCylinder) {
-    // Method paper <sec-round-solids>:  omega_across = omega - Dot(omega, e_z) e_z
-    const Mat3 axes = solid.pose_at_step_start.axes;
-    const Vec3 own_z_axis = {.x = axes.xz, .y = axes.yz, .z = axes.zz};
-    const double along_axis_rate = math::Dot(angular_velocity, own_z_axis);
-    return angular_velocity - along_axis_rate * own_z_axis;
+  switch (solid.shape) {
+    case SolidShape::kSphere:
+      return Vec3{};
+    case SolidShape::kFlatSolid:
+    case SolidShape::kPlate:
+    case SolidShape::kCylinder: {
+      // The surface velocity keeps the full angular velocity (ComputeSolidVelocity), so friction still feels the
+      // spin; only the turn of the shape drops it.
+      // Method paper <sec-round-solids>:  omega_across = omega - Dot(omega, e_z) e_z
+      const Mat3 axes = solid.pose_at_step_start.axes;
+      const Vec3 own_z_axis = {.x = axes.xz, .y = axes.yz, .z = axes.zz};
+      const double along_axis_rate = math::Dot(angular_velocity, own_z_axis);
+      return angular_velocity - along_axis_rate * own_z_axis;
+    }
+    case SolidShape::kBox:
+    case SolidShape::kDomainBox:
+      break;
   }
   return angular_velocity;
 }
@@ -342,11 +353,13 @@ FLUIDITY_CPU_AND_GPU inline Vec3 ComputeShapeTurningAngularVelocity(const Solid&
 //   sizes fit the shape; the id is not 0 and friction_scale is zero or more; a domain box does not move, has
 //   exactly the world axes (kIdentity, as ToSolid writes them) and has a closed side; the turn of the shape during the
 //   step, |ComputeShapeTurningAngularVelocity| * step_duration, is at most kMaxTurnPerStep. So a sphere never turns too
-//   far, and a cylinder may spin about its own axis at any rate.
+//   far, a cylinder may spin about its own axis at any rate, and a flat solid or a plate may spin about its normal at
+//   any rate.
 // Units: seconds for step_duration.
 // Example: a box turning at {0, 0, 2} rad/s with step_duration 1 s turns 2 rad: kTooCloseToCall, and *close_call
 //   is kSolidTurnsTooFar. With step_duration 0.5 s it turns 1 rad: kNone. A cylinder along z spinning at
-//   {0, 0, 100} rad/s with step_duration 0.1 s: kNone.
+//   {0, 0, 100} rad/s with step_duration 0.1 s: kNone; so are a flat solid and a plate with normal {0, 0, 1}, which
+//   turning at {100, 0, 0} rad/s turn too far.
 // Fails: kBadInput        a value is not finite, step_duration is not positive, the axes are not a rotation, a size
 //                         is not positive, a sphere's three half sizes differ, a cylinder's half_size.x and
 //                         half_size.y differ, the id is 0, friction_scale is negative, the shape is unknown, or a
