@@ -6,7 +6,7 @@
 #include "fluidity/base/test_support.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_test_cases.h"
-#include "fluidity/contact/solid_contact.h"
+#include "fluidity/contact/solid_contact_types.h"
 
 namespace fluidity::contact {
 namespace {
