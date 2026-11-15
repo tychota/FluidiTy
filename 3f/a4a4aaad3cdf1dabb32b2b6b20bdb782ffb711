@@ -1,0 +1,23 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_5eb83adaff4163 510
+native/fluidity/contact/contact_error_message.cc
+  s_4f0877e2acdcf0::t_43a9ca60a00992 28-29
+native/fluidity/contact/contact_error_test.cc
+  s_4f0877e2acdcf0::t_ba7049f0934add 112-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3fa4a4aaad3cdf1dabb32b2b6b20bdb782ffb711",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
