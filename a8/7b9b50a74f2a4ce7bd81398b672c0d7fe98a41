@@ -1,0 +1,28 @@
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_8f05d37408d4ec 502-503
+  s_4f0877e2acdcf0::t_8b1a4d6c77c9f9 48,53
+  s_4f0877e2acdcf0::t_ca7be984c4a76a 515-517
+  s_4f0877e2acdcf0::t_116e468fc96507 25-26
+  s_4f0877e2acdcf0::t_b917cfc87dba47 40-41,43-44
+  s_4f0877e2acdcf0::t_75d3337a46970e 1-2,4-6
+  s_4f0877e2acdcf0::t_f2e06a17462df1 459-501,504-514,518-606
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_ba089ea143c4e7 486-662,680-744
+  s_4f0877e2acdcf0::t_ae9d9570588bd2 663-679
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a87b9b50a74f2a4ce7bd81398b672c0d7fe98a41",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
