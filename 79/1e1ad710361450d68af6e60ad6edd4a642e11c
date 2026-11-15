@@ -1,0 +1,37 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_4fa6ac155015b6 99
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_165493e42c4d61 923-930
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_a2741dd6273a21 467-474,1109-1111,1144-1187
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_afe9c819235c48 207-210
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_97d10854be9e8c 139-142,170-174,328,1650-1655,1663,1728
+native/fluidity/contact/contact_test_cases.h
+  s_b8d725597929d2::t_265d4ed49afb4b 455-470
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "791e1ad710361450d68af6e60ad6edd4a642e11c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_b8d725597929d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac48b65af62eee229",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
