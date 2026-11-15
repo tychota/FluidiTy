@@ -1,0 +1,41 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_f38138b8eb107f 84
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_c76e1511d38ec9 861-865,985-986,1023-1024
+native/fluidity/contact/contact_error.h
+  s_4f0877e2acdcf0::t_4777f993d3dace 45-47
+native/fluidity/contact/contact_error_message.cc
+  s_4f0877e2acdcf0::t_0b78a134c8c19f 51-52
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_c38b316e6dabc0 557
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_9508343606d6ce 2073-2074,2076,2099,2101,2136-2259,2314-2362
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_6e8fc6987f12c1 640-641
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_80e587204c6226 72-73,114-115
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_2c1963c939c25f 59-61,79-82,991-992,1007-1008,1080-1082,1095-1096,1133-1135,1163-1166,1433-1434
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_0ea90a73837232 68
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_dc9b31c85dd1aa 45,204-218,335-338,341-343,359-364
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_ad356d197d8b53 261-314,576-601,695-696
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9eabd36ada6e79f6d3673ad3402ab1e75fb4ef12",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
