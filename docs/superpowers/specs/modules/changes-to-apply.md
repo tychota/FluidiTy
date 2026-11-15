@@ -198,6 +198,14 @@ A design must no longer say "until the owner answers".
   generated from the memory estimate entries; `max_blocks_per_batch` from `BuildBatchPlan`.
 - Cancel: between stages always; inside a solve through the solve's cancel input.
 - Foundation's `CopyBuffer` and `ReadMemoryAvailable` exist.
+- From contact (plan P19, 2026-11-15; FOR THE OWNER): `kTooCloseToCall/kSqueezedBetweenSolids` is not always
+  cured by a shorter step. Two solids closing on a particle with nowhere to go, or closing at a grazing angle that
+  would throw it out faster than 64 times the largest speed involved (one face closing on a fixed one at under
+  0.895 degrees, two at under 1.79), give the same squeeze at every step length. The step design must say what a
+  persistent squeeze does instead of stopping the run after two retries: for example remove the particle and count
+  it, keep it in place with the solids' velocity, or report the solids by id as a scene problem. Measured in the
+  contact model: none in wedges of 5 degrees or more; frequent where a solid is driven into another (a ball pushed
+  into a tilted plane it penetrates: 30 % of such draws).
 
 ## 11 Cell resize and batches
 

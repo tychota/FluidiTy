@@ -166,6 +166,17 @@ Plan decisions (the design left these open; every task respects them, the paper 
 - **P4 Start hits.** Step 2 visits solids in index order; each qualifying solid gets the response, joins the
   surface list and counts as one hit. The first one fills the record. `kind` is `kStartedInsideSolid` when any
   start distance was negative. Each solid is classified from the start as moved by the earlier solids (P12).
+  **Amended 2026-11-15 (P19, Task 11 review I1; built in Task 11b):** step 2 no longer moves the start one solid at
+  a time, so no solid is classified from a start that a later solid's move pushed toward it (the sentence above is
+  withdrawn). Order: (1) the failing checks of every solid, in array order, at the start as given: the wrong side of
+  the committed plate, then the depth; the first that fails decides. (2) The near surfaces of every solid
+  (`FindSurfacesWithinTolerance`: the solid's one surface, or each closed side of a domain box, with `d < tol`), and
+  one move of the start to the rest gap of all of them (P19 item 1). (3) The responses, solid by solid in array
+  order, each near surface with its distance and normal before the move, as Task 11 built them: a hit at time 0, or
+  a silent-move entry. Each velocity is compared with its own allowance so far (P19 item 3), 0 before any response.
+  From Task 12 on, each start response is followed by the slide rule, as a hit is (P19 item 3). A start with no point
+  at the rest gap of its near surfaces within P19's move cap fails with the scene error `kStartsInNarrowGap` (P19
+  item 6: two solids facing each other less than 2 tol apart, or within rounding of a tangent contact point).
 - **P5 Reaction.** Every change of `velocity.for_next_step` made against a solid with `reports_reaction` is added to
   `reaction.velocity_for_next_step_change`: the response at a hit (step 2 or step 4) and **each removal during the
   slide** (step 5). A removal of the approach to an earlier surface is charged to that surface's solid. **Amended
@@ -173,6 +184,27 @@ Plan decisions (the design left these open; every task respects them, the paper 
   to the newest solid's velocity) is charged to the **newest** solid. `hit_position` is the position of the first
   such change. A second, different reacting solid is `kTooCloseToCall/kSecondReactingSolid`. Tests: Task 10
   (response), Task 12 (a slide removal, the corner case).
+  **Amended 2026-11-15 (P19 items 3 and 4, Task 11 review I1; coordinator ruling: accepted; TO CONFIRM WITH THE
+  OWNER, beside the zero-change rule above):** what counts in a solid's reaction is now, in full:
+  1. *A response* (a hit, or a start response): the change of `for_next_step` it makes, charged to the solid
+     responded to, as before.
+  2. *The slide's change* (P19 item 3): one frictionless change over the active surfaces,
+     `w = sum m_i n_i` with multipliers `m_i >= 0`. Each used surface's push `m_i n_i` of the change of
+     `for_next_step` is charged to that surface's solid, at the particle's position. Each solid so receives an
+     impulse along its own normal, which is what two-way coupling needs: a frictionless surface cannot push sideways.
+     A removal at one earlier surface is the one-surface case and is charged as before.
+  3. *A sliver's stop* (P19 item 3: a pair below the velocity conditioning limit): the whole change, the newest
+     solid's velocity minus `for_next_step`, is charged to the newest solid, which the particle sticks to.
+  4. *Second reacting solid:* unchanged. A push or a change that is not exactly `{0, 0, 0}` at a second reacting
+     solid is `kSecondReactingSolid`, whether it comes from a response or from a push of the slide's change; a push of
+     exactly zero (a surface the change did not use, or a multiplier of 0) neither claims nor conflicts, as the
+     zero-change rule above says.
+  5. *`hit_position`*: the position of the first non-zero change charged to the solid, response or push.
+  What changes against the paper review's amendment: the corner case is no longer charged whole to the newest solid,
+  which gave the newest solid the other surface's push. In Task 12's `AcuteWedgeOnReactingFloor` the floor would get
+  `{-0.5, 0, 1.5}`, a sideways push from a frictionless corner; per surface it gets `{0, 0, 2}`. Tests: Task 12
+  (`AcuteWedgeOnReactingFloor_EachSurfaceChargedItsOwnPush`, `SlideRemovalOnReactingFloor_CountsInReaction`,
+  `SliverStop_ChargedToNewestSolid`, `CornerPushOnSecondReactingSolid_IsSecondReactingSolid`).
   **Amended 2026-11-15 (Task 10 as built, review minor M3; TO CONFIRM WITH THE OWNER):** a change of exactly zero
   (compared exactly) at a solid neither claims that solid's reaction record nor conflicts with it, so a second
   reacting solid whose change is zero is not `kSecondReactingSolid`, and a solid's `hit_count` (module 8) counts only
@@ -218,6 +250,11 @@ Plan decisions (the design left these open; every task respects them, the paper 
   solid does not join the surface list. So a particle placed near a solid (a source, a resize) never fails the
   end check for that reason; `kEndsTooCloseToSolid` comes only from solids that close on the particle during the
   step faster than it can leave.
+  **Amended 2026-11-15 (P19, Task 11 review I1):** with several near surfaces the start moves once, by the smallest
+  move that leaves every one at `d >= tol` (P19 item 1); with one it is the move along that solid's normal, as
+  before. The promise above now holds in wedges, corners and the cusps of tangent contacts (a ball resting on a
+  floor); the only start without a rest point is `kStartsInNarrowGap` (P19 item 6). The settle also moves the end
+  off every near solid, touched or not (P19 item 7).
 
 Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7 and Q18; the paper states them):
 
@@ -345,6 +382,182 @@ Plan decision added 2026-11-15 for the second-order advance (controller ruling 1
   room, the second-order advance misses walls on 27.5 % of paths, ending up to 0.5 m outside. Also (review m4):
   `FindFirstHit` searches the turning solids after the others, each with `duration` capped at the earliest hit found
   so far, so a turning solid's close call after an earlier hit is not reached.
+
+Plan decision added 2026-11-15 for wedges, corners and tangent contacts (Task 11 review I1; built in Tasks 11b and
+12; the paper states it):
+
+- **P19 Several near surfaces at once: wedges, corners and tangent contacts.** Words: the *wedge angle* of two
+  surfaces is 180 degrees minus the angle between their normals (an acute wedge has `Dot(n_A, n_B) < 0`); a surface's
+  *shortfall* at a point is `tol - d`; a *tangent contact* is two convex solids touching at a point or along a line (a
+  ball or a cylinder resting on a floor, two balls touching), around which the free space is a *cusp* whose angle
+  shrinks to 0. Why: a start within tol of two surfaces of an acute wedge failed at every step length (Task 11 review
+  I1: at rest on both surfaces, 2000 of 2000 starts `kEndsTooCloseToSolid` at 60 degrees, `kTooManyHits` at 30),
+  because each solid's move to its rest gap pushed the particle toward the other. A particle that slides down a
+  V-groove, or into the cusp under a ball resting on a floor, rests at the rest gap of both surfaces, so the next
+  step starts there. Amended the same day (coordinator ruling): a first version refused wedges sharper than
+  0.4476 degrees, which made every ball resting on a floor fail; the limit below protects only what it must.
+  1. **Position: one move off every near surface** (private `MoveToRestGapOfNearSurfaces`, used by the start rules
+     and by the settle). Given a point `p0`, a pose time and the solids (every solid, at the start and at the end),
+     it moves `p0` to a point at `d >= tol` from every surface, as near to `p0` as it can find, by *sequential
+     linearisation*: iterate `x_1, x_2, ...` from `x_0 = p0`; `x_(k+1) = p0 + w` with `w` the smallest change such
+     that `d_i(x_k) + Dot(n_i(x_k), p0 + w - x_k) >= tol` for every near surface `i` (`SolveSmallestCorrection`), the
+     distances and normals read afresh at `x_k` (`FindSurfacesWithinTolerance` of each solid: its one surface, or each
+     closed side of a domain box). Why it works: every shape of module 1 has a convex distance per surface, so
+     `d_i(y) >= d_i(x) + Dot(n_i(x), y - x)` (P18's subgradient inequality) and each iterate after the first that
+     includes every near surface is at the rest gap of all of them up to rounding; and `x_k` satisfies the
+     linearisation made at itself, so `|x_(k+1) - p0| <= |x_k - p0|`: the iterates come nearer to `p0`, never
+     farther. Two flat faces: exact in one iteration (2 tol at 60 degrees from a start on both, `tol / sin(a / 2)`
+     in general). A cusp: the first linearisation from deep in the cusp overshoots out along the floor (its tangent
+     planes meet at about half the distance), and the next ones come back to the rest point: for a ball of radius
+     `R` on a floor, the point `{2 Sqrt(R tol), 0, tol}` from the contact (both distances exactly tol), reached in
+     about 5 iterations at `R / tol = 2^29` and to within `1e-4` of it in 8 at `R / tol = 2^40`. Stop: when an
+     iterate moves less than `tol / 64` and is at `d >= tol - tol / 1024` from every surface, or after
+     `kMaxRestGapIterations = 8`; the last iterate is returned when it is at the rest gap of every surface (it is,
+     for convex shapes, from the first iterate that includes them all), else no move is found. A surface the move
+     brings within tol joins the next iteration; at most `kMaxConstrainingSurfaces = 4` surfaces. Each iterate's
+     change is clipped to the move cap (item 5), which keeps the first, overshooting iterate of a deep cusp near; the
+     next iteration repairs it. A move longer than the thinnest solid could pass through one: so the segment from
+     `p0` to each iterate is swept against the solids that are not near (the closed forms of `FindFirstHitOfSweep` at
+     the fixed pose, no touched list), and a solid it would enter joins the next iteration.
+  2. **`SolveSmallestCorrection`** (private, shape-free): up to `kMaxConstrainingSurfaces` unit normals `n_i`,
+     targets `s_i` and a slack. It tries each single surface, each pair and each triple as equalities, in that order
+     with ascending indices: the Gram system `Dot(n_i, n_j) m_j = s_i` by Cramer's rule, multipliers `m >= 0`,
+     `w = sum m_i n_i`, and with `refine` up to `kMaxCorrectionRefinements = 4` more solves on the same subset for
+     the residual, until it is within a quarter of the slack. It keeps the candidate with
+     `Dot(n_i, w) >= s_i - slack` for every `i` and the smallest `Length(w)`, the first in order on a tie, or reports
+     none. Fixed loops (at most 14 subsets), no allocation, + - * / and Sqrt only, the same bits on CPU and GPU. The
+     exact minimum of a convex problem with at most three active surfaces, enumerated. A pair is skipped when
+     `1 - c^2 <= 0` as computed (`c = Dot(n_A, n_B)`), a triple when `Dot(n_1, Cross(n_2, n_3)) == 0`; for a velocity
+     also below the conditioning limit of item 5. Slack: for a position `tol / 1024` plus the rounding of composing
+     `w`, `2^-49 sum |m_i|` (a cusp's multipliers are large and the next iteration corrects); for a velocity the
+     allowance of item 3.
+  3. **Velocity** (Task 12's slide rule, also run after each start response). The *active* surfaces are the near
+     surfaces of the touched solids at the current position and pose, read afresh (`FindSurfacesWithinTolerance`,
+     `d - tol <= tol / 16`), with their normals there, not the normals recorded at the hits: on a ball the normal of
+     the first hit is stale once the particle has slid along it (in the model, the stale normal beside the fresh one
+     made a corner of three surfaces with no solution). A surface the particle has left is not active (a ceiling hit
+     0.1 m above a touched floor must not stop the particle). For each velocity `v` with its own allowance `b_v` (for
+     `for_this_step` the largest allowance of the touched list, as in P2; for `for_next_step` a running largest of its
+     own, from the `for_next_step` passed to each response, read only by approach tests), with `u_i` the velocity of
+     surface `i`'s solid at the particle: when some `-Dot(n_i, v - u_i)` exceeds `b_v`, `v` changes by
+     `SolveSmallestCorrection` with those targets, `refine` on. One surface approached: its approach is removed
+     (design 5.5's removal). Two fixed surfaces: the part along their common line stays, so a particle in a V-groove
+     slides on along it, and one pushed into a cusp stops while it can still leave along the floor. Three
+     independent fixed surfaces: it stops. Moving solids: the velocity that approaches none, which can be faster than
+     either solid (a floor rising at V under a fixed wall at 60 degrees gives `{V / tan 60, 0, V}`: carried along the
+     apex). Friction acts only in each surface's own response, never in this change. This replaces design 5.5's
+     sequence (remove each earlier approach, then the newest solid's velocity in a corner, then squeeze if an earlier
+     one is still approached): the newest solid's velocity stopped a particle that should slide along a groove. The
+     change's allowance is `kApproachLeftAfterResponseShare * (|v|_1 + |w|_1 + sum |u_i|_1)`; it raises the newest
+     entry's allowance (for `for_this_step`) or the running one (for `for_next_step`). *Newest*: the last entry of the
+     touched list; at the start, the last surface that responded, in array order and a domain box's face order.
+     *Sliver* (a pair active and approached whose `1 + c` is below the conditioning limit, a wedge under 1.35e-6 rad:
+     a plank lying on a floor with a rounding-level tilt): the frictionless change cannot be computed within the
+     allowance, so the velocity takes the newest solid's velocity (the particle sticks), charged to that solid; the
+     other surfaces are then checked against the allowance as a squeeze.
+  4. **Reaction** (P5 amended): the change of `for_next_step` is split into the used surfaces' pushes `m_i n_i`,
+     each charged to its own solid through `ApplyReactionChange`, at the particle's position.
+  5. **What the limits protect, and their values.** *The size of a move.* The particle is displaced without a matching
+     velocity, so the move must be small against the cell width `h` (what the grid and the step's travel limit resolve),
+     not against tol. `kMaxRestGapMoveInTolerances = 2^22`: with `tol = 2^-30 h + 2^-40 L` (`ComputeContactTolerance`),
+     `2^22 tol = h / 256 + L / 2^18`, a 256th of a cell plus 4 micrometres in a one-metre scene. It covers every cusp:
+     the rest point of a ball of radius `R <= L` (P8 counts `Length(half_size)` in `L`) is `2 Sqrt(R tol) <= 2
+     Sqrt(2^40) tol = 2^21 tol` from the contact (measured largest start move in the tangent sets: 45,241 tol at `R /
+     tol = 2^29`). A flat wedge needs more only below about `2^-21` rad (`2 shortfall / angle > 2^22 tol`).
+     *Conditioning*, for velocities only: the pair solve leaves `2.5 eps / (1 + c)` of the target as residual (measured,
+     `eps = 2^-52`; `1 + c` from `2^-40` to `2^-4`) and each refinement multiplies it by about `eps / (1 + c)`, so a
+     pair is used for a velocity when `1 + c >= kVelocityPairLimitShare = 2^-40`: a wedge angle of at least `2
+     asin(2^-20.5) = 1.35e-6` rad (7.7e-5 degrees), where at most 3 refinements leave at most `16 eps` of the summed
+     speeds (measured), a quarter of the share. Every cusp a particle can rest in is above it: at the rest point the
+     angle is about `2 Sqrt(tol / R) >= 2^-19` rad, so `1 + c >= 2^-39`. Positions need no such limit: an imprecise
+     iterate is corrected by the next one and the final check reads the true distances (at `1 + c = 2^-40` the residual
+     is `tol / 2000` anyway). A triple is used for a velocity when `Abs(Dot(n_1, Cross(n_2, n_3))) >= 2^-20`. *Speed of
+     an escape* (coordinator ruling: capped). A wedge closing on a particle at a small angle pushes it out at the
+     closing speed over the angle (measured without a cap: a ball sinking at 1e-3 m/s into a floor, 12.6 m/s; a ball
+     driven into a tilted plane at up to 0.6 m/s, 5,600 m/s; a 1e-5 rad wedge closing at 1 m/s, 1e5 m/s, a kilometre in
+     a step of 0.01 s). A particle thrown that far is worse than a reported squeeze, so the change is refused when the
+     velocity it gives is faster than `kMaxSqueezeOutSpeedFactor = 64` times the largest speed involved: the particle's
+     two velocities before the change and the velocities of the active surfaces' solids at the particle (`Length` each).
+     Which closing angles this is: one face closing at speed V on a fixed one gives `V / sin a`, refused below
+     `asin(1/64) = 0.895` degrees; two faces closing symmetrically, each at V along its own normal, give `V / sin(a /
+     2)`, refused below `2 asin(1/64) = 1.79` degrees. The geometry and the speeds decide, not the step length, so a
+     shorter step does not cure it (item 6). Separately, the change is also refused when its allowance times the time
+     left exceeds `tol / 64`, `MoveParticle`'s own Requires (the summed speeds times the time left at most `2^40 tol`)
+     checked instead of asserted; with the cap this needs speeds near `2^34 tol` per second of step and a shorter step
+     cures it.
+  6. **What still fails, and why that is acceptable.** `kTooCloseToCall/kSqueezedBetweenSolids`: no velocity change
+     exists because two active surfaces close on the particle, `(n_i - n_j) . (u_i - u_j) / 2 > b_v` (compared with the
+     allowance, not with 0: two solids moving together have 0), for example two parallel plates closing; or the escape
+     of item 5 is above the cap (one face closing on another at under 0.895 degrees, two at under 1.79). Both name the
+     newest surface's solid, and neither is cured by a shorter step: `MoveParticle`'s docstring lists this squeeze among
+     the failures a shorter step cannot fix, and the step module decides what a persistent squeeze does
+     (`changes-to-apply.md`, 10 Step, for the owner). Only the allowance check of item 5 is cured by a shorter step.
+     Measured with the cap, moving sets: flat wedges of 5 to 175 degrees, 0 of 35,000 squeezed; flat wedges of 0.0001 to
+     5 degrees with both faces moving at random up to 1 m/s per axis, 4,344 of 21,000 (from 0 at 2 to 5 degrees and 0.6
+     % at 1 to 2 degrees to 53 % under 0.01 degrees); tangent contacts, 1,211 of 20,000, all but one a ball driven into
+     a tilted plane it penetrates at up to 0.56 m/s (30 % of those draws), the other a ball sinking into a floor.
+     `kStartsInNarrowGap`, a new scene error (`ContactError`, appended after `kOutOfMemory`, name
+     `starts_in_narrow_gap`), replacing the `kWedgeTooSharp` of this decision's first version: the start has no point at
+     the rest gap of every near surface within the move cap. It happens only (a) between two solids whose facing
+     surfaces are parallel to the last bit (`1 + c` computes to 0) and less than 2 tol apart, which a sweep never
+     reaches, since the grown solids overlap there: two objects placed nearly touching face to face (a box 1e-12 m from
+     a wall), or a start within about `1.8e-8 R` of the exact contact point of a ball on a floor (about 1 % of the
+     cusp's radius at `R / tol = 2^40`, 0.02 % at `2^29`; a source would have to place a particle in a disc of that
+     radius and 2 tol high); (b) more than four near surfaces; (c) a start deep at the apex of a flat wedge sharper than
+     about `2^-21` rad; (d) a pocket too small to hold a point at tol from each of its sides (a domain corner cut off by
+     a solid 4 tol out; a sliver wedge closed by a plate nearer than its rest point). Each is a place no particle can
+     rest in, and a sweep stops a moving particle before it. It names the near solid latest in array order, magnitude 0.
+     Scene check: module 10 may name case (a) between flat faces before the run ("solids 4 and 7 face each other less
+     than two contact tolerances apart"); it is not needed for correctness and is left to module 10's design. Nothing
+     that a sweep can produce fails without a cure by a shorter step.
+  7. **Settle** (amended with this decision): one `MoveToRestGapOfNearSurfaces` over every solid at the end pose,
+     not only the touched ones. With one move off several surfaces, leaving out a near solid that was not touched
+     pushes the particle into it (in a cusp under a ball touching a wall, measured: the settle off the touched ball
+     ended 0.43 tol from the untouched wall). It also lifts a particle that P2's touching rule let drift toward an
+     untouched surface (up to tol in a step; the model's slow paths failed the end check that way 1 to 2 % of the
+     time) back to the rest gap, which P12 promises. The end check keeps its role: when no move exists (two
+     surfaces less than 2 tol apart, `CeilingClosingFasterThanParticleLeaves`), the settle leaves the particle and the
+     end check fails. The settle's `d >= -2 tol` assertion stays. *Cost per particle:* the settle reads one distance
+     per solid at the end pose, the reads the end check makes anyway: when no solid is nearer than tol (almost every
+     particle) nothing moves and the end check reuses those distances, so the cost is unchanged; a particle that is
+     moved pays at most `kMaxRestGapIterations` more reads per solid, plus one closed-form sweep of the move per solid
+     that is not near. *Proof for touched surfaces:* unchanged, since it bounds the sweeps (a touched solid approached
+     by at most `tol / 16` before the settle); the settle only moves the particle away from every near surface (each
+     iterate is at the rest gap of all of them, item 1), so it leaves a touched surface at `d >= tol - tol / 1024`.
+     *End check:* unchanged, every solid at `d >= tol / 2` at the end pose, read after the settle; it fails only when
+     the settle found no move, when a solid that is not near after the settle closed on the particle faster than the
+     sweeps could keep it out, or after a refused move.
+  8. **Touched list and its proof.** The position move adds no entry: each near solid keeps Task 11's response entry
+     or silent-move entry (`touched_surface_count`, `kMaxTouchedSurfaces = 8`). The velocity change adds no entry; its
+     allowance raises the newest entry's, made at the same time. So entries still come at most at `kMaxHitsPerStep`
+     times, each asserting `allowance * time left <= tol / 64`, and `ComputeTouchedSolid`'s proof (a touched solid
+     approached by at most `tol / 16` in the step) holds unchanged. `for_next_step`'s allowance is not in the proof:
+     that velocity does not move the particle. `kMaxHitsPerStep = 4` stays enough: a start in a three-sided corner
+     makes at most three hit entries, and the change then leaves the velocity at the solids' velocity. Two convex
+     solids that both curve away (two touching balls) can make a fast particle zig-zag into their neck, hit after
+     hit, and end in `kTooManyHits`; measured, only for steps that move the particle 1 to 29 cm, and always cured by a
+     shorter step (31 of 4000 two-ball draws; every one succeeds by 1/16 of the step).
+  9. **Rejected.** (a) Repeated passes of the one-solid move: each multiplies the deficit by `cos^2` of the wedge
+     angle; from a start on both surfaces reaching `tol - tol / 64` takes
+     `ceil(ln(64 (1 + cos a) / cos a) / (-2 ln cos a))` passes: 4 at 60 degrees, 18 at 30, 159 at 10, 15,928 at 1
+     (measured, as predicted); never exact, and in a cusp no faster than its local angle. (b) One linear solve from
+     the normals at the start: exact for flat faces, but in a cusp it overshoots far out along the floor (to about
+     `2 tol R / x` from a start at `x`). (c) An angle limit (this decision's first version, 0.4476 degrees): it
+     refused tangent contacts, which are among the most ordinary scenes. (d) A closed form for ball and plane: exact
+     but shape-specific, and 1b's meshes need the general rule anyway.
+  10. **Measured** with a double-precision Python model of `MoveParticle` with this rule (flat solids, plates,
+     spheres, a cylinder lying along x, domain boxes; the start, the slide rule of Task 12, the settle). Flat wedges,
+     5 to 175 degrees, 1000 draws per 5 degrees, fixed and moving solids (up to 1 m/s per axis), starts within, on
+     or up to 2 tol inside each surface, velocities at rest, slow, falling or up to 2 m/s: 70,000 of 70,000 succeed
+     (the code as built fails 8 % of the fixed draws at 85 degrees, 49 % at 60, 98 % at 5). Flat wedges of 0.0001
+     to 0.6 degrees: 18,000 fixed draws succeed; the moving ones are in item 6 (squeezed by the speed cap). Tangent contacts, two seeds of 2000
+     draws per scene and motion: ball on a floor, cylinder lying on a floor, ball in a domain corner (touching three
+     sides), two touching balls, ball on a tilted flat solid; fixed, and moving (solids sliding along each other at up
+     to 1 m/s, balls sinking or rising at 1e-3 m/s, a ball driven into the tilted plane); starts in the cusp from
+     0.02 to 1 times the rest point's distance, and slides into it from up to 5 cm at up to 2 m/s, with gravity:
+     39,969 of 40,000 succeed without the speed cap, the other 31 being the two-ball `kTooManyHits` above; with the
+     cap, 1,211 of the 20,000 moving draws are squeezed (item 6); no `kStartsInNarrowGap`. A ball
+     with `R / tol = 2^40`: starts from 0.01 to 1 times the rest point's distance succeed, within 1e-4 of it.
 
 ## Before you start
 
@@ -1452,6 +1665,229 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Classify a particle's start against every solid`.
 
+### Task 11b: `MoveParticle` start and settle near several solids (P19)
+
+**Order:** after Task 11 as built (with its fix round), before Task 12. The task order becomes 9, 9b, 10, 11, 11b,
+12, 13, 12a, 14 to 18. Task 12 is split (coordinator ruling): this task moves the particle (the start and the settle,
+P19 items 1, 2, 5, 6 for the start, 7 and 8) and fixes the start's approach test; Task 12 changes its velocity (P19
+items 3 and 4, and the squeeze of item 6).
+
+**Kind:** numerics
+
+**Why (Task 11 review I1):** a start within tol of two solids that meet at less than a right angle fails at every
+step length, because each solid's start rule moves the particle to its rest gap along its own normal, toward the
+other. On the generated two-surface set (P19 item 10) the code as built fails 8 % of the fixed draws at 85 degrees, 49 %
+at 60 and 98 % at 5, as `kEndsTooCloseToSolid`, `kTooManyHits` or `kStartsInsideSolid`; the step retries twice and
+stops the run. The same holds under a ball resting on a floor, where the angle shrinks to 0.
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact_types.h` (constants `kMaxRestGapMoveInTolerances = 0x1p22`,
+  `kMaxRestGapIterations = 8`, `kMaxConstrainingSurfaces = 4`, `kMaxCorrectionRefinements = 4`,
+  `kVelocityPairLimitShare = 0x1p-40`, `kVelocityTripleLimit = 0x1p-20`, the last three read by Task 12; the result
+  type of the solver, name decided here), `solid_contact_steps.h` (new `SolveSmallestCorrection`,
+  `MoveToRestGapOfNearSurfaces`; changed `ParticleMove`, `ComputeIsApproachingSolid`, `ApplyStartRulesOfSolid`,
+  `ApplyStartRules`, `ApplySettleAtEnd`), `solid_contact.h` (`MoveParticle` steps 2 and 6 and Fails),
+  `contact_error.h` (`kStartsInNarrowGap` appended after `kOutOfMemory`), `contact_error_message.cc` and
+  `contact_error_test.cc` (its name `starts_in_narrow_gap` and message), `move_particle_test.cc`,
+  `contact_test_cases.h`, `docs/method-paper/fluidity-method.typ` (<proc-move-particle> steps 2 and 6, and a
+  paragraph with a figure of the move off two faces and of the iterates in a cusp), `docs/glossary.md` (`wedge angle`,
+  `shortfall`, `tangent contact`, `cusp`).
+
+**Interfaces:**
+- Consumes: Task 11 as built after its fix round: `FindSurfacesWithinTolerance` and `NearSurfaces` (one surface, or
+  each closed side of a domain box), `ApplyStartResponses`, `ApplyTouchedSurfaceOfSilentMove` (a silent move is a
+  touched entry without a hit, kept only when some solid responded; `touched_surface_count`,
+  `kMaxTouchedSurfaces = 8`), `MoveToRestGap` (the one-surface move, kept), `CheckStartOnCommittedSide`,
+  `CheckEndOutsideSolids`, `FindFirstHitOfSweep`'s closed forms (for the crossing check of P19 item 1); P18's
+  subgradient argument for convex distances. Preconditions to respect: as Task 11.
+- Produces: P4 and P12 amended and P19 items 1, 2, 5, 6 (start), 7 and 8:
+  - `SolveSmallestCorrection` (P19 item 2), with a `refine` choice and the velocity limits for Task 12.
+  - `MoveToRestGapOfNearSurfaces` (P19 items 1 and 5): the solids, the pose time, the point; it returns the moved
+    point and whether a move within the cap was found.
+  - Step 2 in the order of P4 amended: every solid's failing checks at the start as given; one move off the near
+    surfaces of all solids; the responses solid by solid with `ApplyStartResponses` and the silent-move entries as
+    built. No solid is classified twice. No move found: `kStartsInNarrowGap` naming the near solid latest in array
+    order, magnitude 0; `*result` unchanged.
+  - Each velocity's own allowance (P19 item 3; folded in by the coordinator, the bug found in Task 11 as built):
+    `ParticleMove` keeps the running largest allowance of `for_next_step` (`ComputeLargestApproachLeftAfterResponse`
+    of the `for_next_step` passed to each response, and of the velocity of each silent-move entry);
+    `ComputeIsApproachingSolid` compares `for_next_step` with it and `for_this_step` with the touched list's, as now.
+    Why: as built, a `for_this_step` at rest gives an allowance of 0, and the `-2^-55` m/s the first response leaves
+    in a moving `for_next_step` is taken as an approach to a parallel second solid (a spurious second hit, and a
+    reaction of `2.8e-17` m/s on it).
+  - Step 6: `ApplySettleAtEnd` calls `MoveToRestGapOfNearSurfaces` over every solid at the end pose (P19 item 7); no
+    move found leaves the position (the end check decides). Its `d >= -2 tol` assertion stays; its comment loses the
+    wedge case.
+  - The comments that today describe the wedge limit (`ApplyStartRules`, `ApplySettleAtEnd`, `ComputeStartCase`'s
+    "deeper than one tolerance", `MoveParticle` step 2, the Idea of `solid_contact_steps.h`) say what now happens.
+- **Room for module 1b (mesh solids) (A80):** the shape switch stays in `FindSurfacesWithinTolerance` (which surfaces
+  of one solid are near) and in `ComputeDistanceForParticle`; `SolveSmallestCorrection` and
+  `MoveToRestGapOfNearSurfaces` read only distances and normals and have no shape code. 1b adds the mesh case to
+  `FindSurfacesWithinTolerance`: each triangle within tol is one surface, with the normal of its nearest feature.
+  What 1b inherits: (1) the distance to one triangle is convex, so the iterates are at the rest gap from the first
+  that includes every near triangle; (2) at most `kMaxConstrainingSurfaces` surfaces at once, so triangles that
+  share their nearest feature (an edge or a vertex, the same normal) must be merged before the solve, or a particle
+  near a vertex with six triangles fails; (3) a mesh resting on a surface makes cusps like a ball's, resolved the
+  same way. 1b re-measures its generated sets against this.
+
+- [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance`, fixed solids through the origin, friction 0, both
+  velocities equal, overlap 2 tol, unless stated; the wedge side is `BuildWedgeSide(normal angle, id 2)` beside the
+  floor id 1, so a wedge angle `a` is the normal angle `pi - a`; "at the rest gap" is a distance within `tol / 1024`
+  of tol):
+
+  ```cpp
+  // The two scenes pinned "to change in plan Task 12" by Task 11's fix round
+  TEST(MoveParticle, SixtyDegreeWedgeRestingOnBoth_EndsAtRestGapOfBoth)
+      // replaces SixtyDegreeWedgeRestingOnBoth_TodayEndsOffTheRestGap; scene as built (start {0,0,0} at rest,
+      // T 0.1): no error, kind kNone, hit_count 0, end {Sqrt(3) tol, 0, tol} within tol / 1024 (a move of
+      // tol / sin 30 deg = 2 tol along the bisector), both at the rest gap. Today: 0.8125 tol from the floor
+  TEST(MoveParticle, ThirtyDegreeWedgeRestingOnBoth_EndsAtRestGapOfBoth)
+      // replaces ..._TodayIsTooManyHits: kind kNone, hit_count 0, end {(2 + Sqrt(3)) tol, 0, tol} (move 3.8637 tol)
+  TEST(MoveParticle, TenDegreeWedgeFallingOnBoth_EndsAtRestGapOfBoth)
+      // normal angle 17 pi / 18, start {0,0,0}, both velocities {0,0,-0.981}, T 0.1: hit_count 1 (the floor; the
+      // fall leaves the side), velocities {0,0,0}, end {tol / tan(5 deg), 0, tol} = {11.430052 tol, 0, tol}
+  TEST(MoveParticle, VerySharpFlatWedgeRestingOnBoth_EndsAtRestGapOfBoth)
+      // wedge 0.01 deg, start {0,0,0} at rest: kind kNone, end {tol / tan(0.005 deg), 0, tol} = {11459.156 tol, 0,
+      // tol} within tol / 256, both at the rest gap. P19's first version refused it, below its 0.4476 deg limit
+  TEST(MoveParticle, FlatWedgeNeedingMoveBeyondCap_IsStartsInNarrowGap)
+      // wedge 6e-7 rad, start {0,0,0} at rest: end x 3333942 tol (within 2e-4 of tol / tan(3e-7)), both at the
+      // rest gap; wedge 3e-7 rad: the rest point is 6.67e6 tol away, beyond 2^22 tol = 4.19e6 tol:
+      // kStartsInNarrowGap, solid_id 2, magnitude 0, result unchanged
+  // The as-built wedge scenes of contact_test_cases.h, new outcomes (wedge angle 36.87 deg, normals -0.8 apart)
+  TEST(MoveParticle, WedgeStartPushedTowardFloor_MovesOffBothAtOnce)
+      // replaces ..._SettleLiftsItToRestGap. Shortfalls 0.5 tol (floor) and 0.1 tol (wedge): one move of
+      // {-5/6 tol, 0, 0.5 tol}; the floor responds (hit_count 1), velocities {-1,0,0}, end {-0.1 - 5/6 tol, 0, tol}
+      // within tol / 1024
+  TEST(MoveParticle, WedgeStartPushedIntoFloor_MovesOffBothAtOnce)
+      // replaces ..._EndsInTooManyHitsOnFloor: kind kStartedInsideSolid, hit_count 2 (the floor approached, the
+      // wedge started inside), velocities {-1,0,0}, end {-0.1 - 0.0005 * 5/3 - 5/6 tol, 0, tol} within tol / 1024
+  // Corners and pockets
+  TEST(MoveParticle, ThreeSolidAcuteCornerFallingOnAll_EndsAtRestGapOfAll)
+      // floor id 1, id 2 normal {Sqrt(3)/2, 0, -1/2}, id 3 normal {0, Sqrt(3)/2, -1/2}; start {0,0,0}, both
+      // velocities {0,0,-0.0981}, T 0.01: hit_count 1, velocities {0,0,0}, end {Sqrt(3) tol, Sqrt(3) tol, tol}
+      // (move Sqrt(7) tol), all three at the rest gap
+  TEST(MoveParticle, ThirdSolidNearOnlyAfterFirstMove_JoinsNextIteration)
+      // floor id 1, the 60 deg side id 2, and id 3 through {2 tol, 0, 0} with normal -{1,1,0} / Sqrt(2): 1.414 tol
+      // from the start {0,0,0} (at rest, T 0.01), 0.19 tol after the pair's move. End {Sqrt(3) tol, -1.146264 tol,
+      // tol} within tol / 1024 (move 2.3052 tol), all three at the rest gap, kind kNone
+  TEST(MoveParticle, DomainCornerCutBySolid_HoldsParticleOrIsStartsInNarrowGap)
+      // unit domain box id 1 and a flat solid id 2 through {L tol, 0, 0} with normal -{1,1,1} / Sqrt(3); start
+      // {0,0,0}, both velocities {0,0,-1}, T 0.01. L = 6: end {tol, tol, tol}, hit_count 1. L = 4: the pocket's
+      // inscribed radius L / (3 + Sqrt(3)) = 0.845 tol is below tol: kStartsInNarrowGap, solid_id 2
+  TEST(MoveParticle, ParallelFacesLessThanTwoTolerancesApart_IsStartsInNarrowGap)
+      // floor id 1 and a ceiling id 2 at z 1.5 tol with normal {0,0,-1}; start {0,0,0.75 tol} at rest, overlap 0:
+      // kStartsInNarrowGap, solid_id 2. With the ceiling at 2.5 tol and the start at tol / 2: end z tol, kind kNone
+  // Tangent contacts (P19 item 1): rest points from the closed form 2 Sqrt(R tol)
+  TEST(MoveParticle, BallRestingOnFloorStartInCusp_MovesToRestPoint)
+      // floor id 1; sphere id 2, centre {0,0,0.5}, radius 0.5. Start {Sqrt(0.5 tol), 0, tol / 4} (0.25 tol from
+      // both), at rest, T 0.01: no error, kind kNone, end {2 Sqrt(0.5 tol), 0, tol} = {46340.95 tol, 0, tol} with x
+      // within tol / 256 and z within tol / 1024, both at the rest gap
+  TEST(MoveParticle, BallRestingOnFloorDeepStart_MovesToRestPoint)
+      // the same at production scale: sphere centre {0,0,1024}, radius 1024 (R / tol = 2^40), x* = 2 Sqrt(1024 tol)
+      // = 0.001953125. Starts {f x*, 0, (f x*)^2 / 4096} (half the gap) for f = 0.1 and 0.01, at rest: end x within
+      // 1e-4 of x* (the model: 0.999994 and 1.0000002, 8 iterations), both at the rest gap; f = 0.0005 (within
+      // 1.8e-8 R of the contact, where 1 + Dot of the normals rounds to 0): kStartsInNarrowGap, solid_id 2
+  TEST(MoveParticle, TwoBallsTouchingStartInNeck_MovesToRestRing)
+      // spheres id 1 centre {0,0,0} and id 2 centre {1,0,0}, radius 0.5; start {0.5, rho / 2, 0}, rho =
+      // Sqrt(tol (1 + tol)), at rest, T 0.01: kind kNone, end {0.5, rho, 0} = {0.5, 32768.0 tol, 0} within tol / 256,
+      // both at the rest gap
+  TEST(MoveParticle, PlateAndSphereRing_MovesOffBothAlongBisector)
+      // plate id 1 at the origin, normal {0,0,1}, half thickness 0.01; sphere id 2, centre {0,0,0.26}, radius 0.5:
+      // they cross on the ring r = Sqrt(0.1875) at z = 0.01 at 60 deg. Start: ring point + 0.5 tol * {Sqrt(3)/2, 0,
+      // 1/2} (0.25 tol from both), both velocities {0,0,-0.0981}, T 0.01: hit_count 1, velocities {0,0,0}, end ring
+      // point + 2 tol * {Sqrt(3)/2, 0, 1/2} within tol / 1024, plate at the rest gap, sphere distance in
+      // [tol - tol / 1024, tol + tol / 64]
+  TEST(MoveParticle, ParallelSolidAfterStartResponse_NextStepRoundingIsNotAnApproach)
+      // the scene of ParallelSolidAfterStartResponse with for_this_step {0,0,0} and for_next_step {-2,0,-2}:
+      // hit_count 1, reaction.solid_index kNoSolid. As built: hit_count 2 and a 2.8e-17 m/s reaction
+  // The settle
+  TEST(ApplySettleAtEnd, SixtyDegreeWedgeBothNearAtEnd_EndsAtRestGapOfBoth)
+      // a ParticleMove with the floor and the 60 deg side touched, at {Sqrt(3)/2 tol, 0, tol / 2} (tol / 2 from
+      // both): end {Sqrt(3) tol, 0, tol}. One move per surface in turn (as built) leaves the floor at 0.625 tol
+  TEST(ApplySettleAtEnd, UntouchedNearSolid_IsMovedOffToo)
+      // the same position with only the floor touched: end {Sqrt(3) tol, 0, tol}. Settling the touched floor alone
+      // (to z tol) leaves the side at 0.25 tol
+  TEST(MoveParticle, CeilingClosingFasterThanParticleLeaves_IsEndsTooCloseToSolid)
+      // as built, unchanged: at the end the floor is 0.25 tol and the ceiling 1.25 tol away, 1.5 tol apart, so the
+      // settle finds no move and the end check fails, solid_id 1, magnitude 0.25 tol
+  // The private steps
+  TEST(SolveSmallestCorrection, OneTwoAndThreeSurfaces_MatchClosedForms)
+      // slack 0x1p-40. {0,0,1} and {Sqrt(3)/2,0,-1/2} (60 deg wedge), targets {1, 1}: change {Sqrt(3), 0, 1},
+      // multipliers {2, 2}; targets {1, 0}: change {1/Sqrt(3), 0, 1}, multipliers {4/3, 2/3}; {0,0,1} and {1,0,0},
+      // targets {1, -1}: change {0,0,1}, one surface; the three axes, targets {1,1,1}: change {1,1,1}; {0,0,1} and
+      // {Sqrt(3)/2,0,1/2} (an obtuse wedge), targets {1, 1}: change {1/Sqrt(3), 0, 1}, multipliers {2/3, 2/3};
+      // normals {sin 3deg cos p, sin 3deg sin p, cos 3deg}, p = 0, 120, 240 deg (a shallow pit), targets {1,1,1}:
+      // change {0, 0, 1 / cos 3deg} = {0, 0, 1.0013723} within 1e-12
+  TEST(SolveSmallestCorrection, PairResidualWithoutRefinement_IsAboutEpsOverOnePlusC)
+      // 3000 pairs at each 1 + c = 2^-40, 2^-28, 2^-16, 2^-4, targets in [0, 1]: |Dot(n_i, w) - s_i| at most
+      // 4 * 2^-52 / (1 + c) (the model: 2.0 to 2.5); with one refinement at most 2^-23 at 2^-40
+  TEST(MoveParticle, PlateAcrossSharpWedge_IsNotCrossedByTheMove)
+      // floor id 1, the 0.03 deg side id 2 (from a start on both the pair's rest point is 3819.7 tol out along the
+      // bisector b = {cos 0.015deg, 0, sin 0.015deg}), and a plate id 3 with normal b, half thickness 600 tol (at
+      // least the 1024 tol feature), centre 700 tol * b: its faces 100 and 1300 tol out. Start {0,0,0} at rest,
+      // T 0.1. The segment to the pair's point crosses the plate, which joins; no point between the apex and the
+      // plate is at tol from all three: kStartsInNarrowGap. Without the crossing check the particle ends past the
+      // plate, 2520 tol beyond its far face
+  // Generated
+  TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees)
+      // replaces GeneratedRightAndObtuseWedgesAndDomainCorners_StartsSucceed: BuildTwoSurfaceWedge draws phi (the
+      // angle between the normals) from 5 to 175 degrees instead of 10 to 90, at the same place in the draw order.
+      // Expected: no failure in right and obtuse wedges and domain corners; in acute wedges no kEndsTooCloseToSolid,
+      // kStartsInsideSolid or kStartsInNarrowGap, and kTooManyHits only for velocities that approach both surfaces
+      // (the ping-pong Task 12's change ends; the model gives 30 % of acute draws), printed; every success at least
+      // tol / 2 from both
+  TEST(MoveParticle, GeneratedTangentContactStarts_Succeed)
+      // generator P11, 2000 draws per scene, in this order per draw: scene (ball on floor, cylinder lying on floor
+      // from Task 12a on, ball in the unit domain box's corner touching three sides, two touching balls, ball on a
+      // flat solid tilted by 0.6 Next() rad), R = 0.05 + 0.45 Next() (and the second ball's), the contact's offset
+      // in [-1, 1]^2, the radial direction, x = x* (0.02 + 0.98 Next()) with x* = 2 Sqrt(R_eff tol), the height in the
+      // gap ((1.5 Next() - 0.5) of it, so some starts are up to half the gap inside the floor), T from {1e-3, 0.01,
+      // 0.1}, velocity at rest, slow, falling, inward at up to 2 m/s, or three NextSigned * 2 m/s: no failure but
+      // kTooManyHits from velocities that approach both surfaces (the ping-pong Task 12's change ends), counted;
+      // every success at least tol / 2 from every solid (the model with Task 12's change: every start succeeds)
+  ```
+  The expected values were computed with the Python model of P19 item 10 and checked against closed forms (the
+  apex point `tol / tan(a / 2)`; the cusp rest point `2 Sqrt(R tol)`, both distances exactly tol; the neck ring
+  `Sqrt(tol (2 R + tol))`; the pair solve by hand for the 36.87-degree scenes; the three-plane point; the inscribed
+  radius of the pocket).
+- [ ] **Step 2: Run.** Expected: the new tests fail; the replaced tests are removed with their scenes' names kept.
+- [ ] **Step 3: Implement** P19 items 1, 2, 5, 6 (start), 7 and 8 and P4 amended. Comments: why one move and not
+  one per solid (the push toward the other solid, with the measured failures); why the iterates are at the rest gap
+  and come nearer (P18's subgradient inequality; `x_k` satisfies its own linearisation); why the cap is `2^22 tol`
+  (a 256th of a cell, and every cusp's rest point); why positions need no conditioning limit and velocities do; why
+  the settle reads every solid; why `kStartsInNarrowGap` is a scene error that no sweep can reach; why each velocity
+  has its own allowance. The paper's step 2 and 6 text and a figure (two faces at 60 degrees with the start on both
+  and the move to the point at tol from both, the old one-surface moves drawn faint; the iterates in the cusp under a
+  ball) follow.
+- [ ] **Step 4: Run** build, tests, gate. Mutants, each killed by the named test:
+  - one move per surface in turn (the rule as built): `SixtyDegree...`, `ThirtyDegree...`, `ThreeSolidAcuteCorner...`;
+  - one linear solve, no further iteration: `BallRestingOnFloorStartInCusp` (the point overshoots far along the
+    floor), `ThirdSolidNearOnlyAfterFirstMove`;
+  - the stop on a small step without the rest-gap test: `BallRestingOnFloorDeepStart` (in the model a start
+    0.014 tol short of one surface stopped after one iterate and left the other 0.0124 tol short);
+  - each iterate measured from the previous one instead of from the start: `BallRestingOnFloorStartInCusp` (the
+    iterates drift away from the start; x beyond tol / 256 of the rest point);
+  - the iterates not clipped to the cap: `BallRestingOnFloorDeepStart` (from 0.01 x* the first iterate goes about
+    `2 tol R / x = 100 x*` out, and 8 iterations end 9 % beyond the rest point, measured);
+  - an angle limit for positions (the first version, 0.4476 degrees): `VerySharpFlatWedge...`,
+    `BallRestingOnFloorStartInCusp`;
+  - the composing slack left out for positions: `BallRestingOnFloorDeepStart` (at 0.1 x* the pair's rounding,
+    0.01 tol, refuses the candidate);
+  - the cap `2^21` or `2^23`: `FlatWedgeNeedingMoveBeyondCap` (6e-7 rad refused at `2^21`; 3e-7 rad accepted at
+    `2^23`);
+  - no crossing check: `PlateAcrossSharpWedge_IsNotCrossedByTheMove`;
+  - the depth tested after the move: `DeepOverlap_IsStartsInsideSolid` (as built);
+  - one allowance for both velocities: `ParallelSolidAfterStartResponse_NextStepRoundingIsNotAnApproach`;
+  - the settle moving off one surface at a time: `SixtyDegreeWedgeBothNearAtEnd`;
+  - the settle over the touched solids only: `UntouchedNearSolid_IsMovedOffToo`.
+  Expected survivors, with their reason in the report: the settle call removed (M47): with one move at the start no
+  path of the tests ends nearer than tol to a solid by more than rounding (`SixtyDegreeWedgeBothNearAtEnd` covers the
+  settle at the function level); the responses reading the normal after the move (the same for flat faces).
+- [ ] **Step 5: Commit.** Subject: `Move a start or an end off several near solids at once`. New names:
+  `SolveSmallestCorrection`, `MoveToRestGapOfNearSurfaces`, the solver's result type, `kMaxRestGapMoveInTolerances`,
+  `kMaxRestGapIterations`, `kMaxConstrainingSurfaces`, `kMaxCorrectionRefinements`, `kVelocityPairLimitShare`,
+  `kVelocityTripleLimit`, `ContactError::kStartsInNarrowGap`.
+
 ### Task 12: `MoveParticle` slide rules between surfaces
 
 **Kind:** numerics
@@ -1486,7 +1922,55 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
     found it: mutant M19, a wrong hit position, was invisible in the end position). The tests of this task therefore
     check the reaction's position (`hit_position`) and the hit time (`hit_fraction`), not only the end position. The
     one-pass settle can also push a particle back toward the first of two acute touched surfaces, and the end check
-    then fails, safely; `AcuteWedge` will meet it.
+    then fails, safely; `AcuteWedge` will meet it. (Task 11b replaced that settle with one move off every touched
+    surface.)
+- **Amended 2026-11-15 (P19 items 3, 4, 5 and 6, Task 11 review I1, coordinator rulings; consumes Task 11b):** the
+  earlier-surface rule is one frictionless change over the active surfaces, which replaces the three-part sequence
+  of design 5.5 step 5 (remove each earlier approach; the newest solid's velocity in a corner; squeeze when an
+  earlier one is still approached). The bullets above still hold, read this way:
+  - *Which surfaces.* The active surfaces: the near surfaces of the touched solids (hits and silent moves) at the
+    current position and pose, read afresh with `FindSurfacesWithinTolerance` (`d - tol <= tol / 16`), with their
+    normals there, not the normals recorded at the hits (on a ball the first hit's normal is stale after a slide
+    along it). A surface the particle has left is not in the change.
+  - *"Still approaching"* is tested per velocity against that velocity's own allowance (Task 11b): `for_this_step`
+    against the largest of the touched list (the rule above), `for_next_step` against its running largest.
+  - *The change.* `SolveSmallestCorrection` (Task 11b) with the targets `-Dot(n_i, v - u_i)`, `refine` on (up to
+    `kMaxCorrectionRefinements`), pairs used when `1 + c >= kVelocityPairLimitShare`, slack the allowance. One
+    surface: the removal of the bullets above. Two: the part along the common line stays (a groove), or the particle
+    stops while it can still leave (a cusp). Three: the solids' velocity. Moving solids: the velocity that approaches
+    none (carried along a closing wedge's apex).
+  - *A sliver* (an active pair below the limit, under 1.35e-6 rad): the newest solid's velocity, a stick, charged to
+    that solid (P5 amended, item 3); then the other surfaces are checked as below.
+  - *Its allowance* ("each frictionless removal passes the tol/64 assertion"): `kApproachLeftAfterResponseShare`
+    times `|v|_1 + |w|_1 + sum |u_i|_1`, raising the newest entry's allowance (for `for_this_step`) or the running
+    one (for `for_next_step`). The assertion becomes a check: above `tol / 64` times the time left, the escape is too
+    fast for the step, `kSqueezedBetweenSolids`, which a shorter step cures (P19 item 5).
+  - *The speed cap* (coordinator ruling, P19 item 5): a change whose velocity is faster than
+    `kMaxSqueezeOutSpeedFactor = 64` (new, `solid_contact_types.h`) times the largest of `Length` of the two
+    velocities before the change and of the active surfaces' solid velocities at the particle is refused:
+    `kSqueezedBetweenSolids` naming the newest surface's solid. A shorter step does not cure it: `MoveParticle`'s
+    Fails lists it with the start-only failures that a shorter step cannot fix, and the step module decides what a
+    persistent squeeze does (`changes-to-apply.md`, 10 Step, for the owner).
+  - *The reaction* (P5 amended, to confirm with the owner): each used surface's push `m_i n_i` of the change of
+    `for_next_step` is charged to its own solid; a non-zero push at a second reacting solid is `kSecondReactingSolid`.
+  - *No change found:* `kSqueezedBetweenSolids` when a pair of active surfaces closes, `(n_i - n_j) . (u_i - u_j) / 2`
+    above the allowance (parallel plates closing); otherwise the sliver stop. Squeezes name the newest surface's solid.
+    No failure here is a scene error: `kStartsInNarrowGap` belongs to the start (Task 11b).
+  - *The start* uses the same rule: each start response (Task 11b's step 2, part 3) is followed by it, with the
+    active surfaces read at the moved start; newest is the last surface that responded, in array order and a domain
+    box's face order. The start's ping-pong in acute wedges (Task 11b's `kTooManyHits` count) ends here.
+  - *Hand-over from Task 11's review (coordinator):* a flat solid or plate spinning fast about its normal (not
+    turning, P17) and moved silently at the start can be hit at time 0 by rounding in the sweep that follows, a
+    harmless extra hit: its silent entry's allowance uses `ComputeLargestApproachLeftAfterResponse` of
+    `for_this_step` and the solid velocity at the particle, while the touching rule's rate is measured against
+    `linear_velocity` alone (`ComputeStartCase`), so the two disagree by the rounding of the spin's `omega x r`. Make
+    them agree: measure the touching rule's rate against `ComputeSolidVelocity` at the sweep's start (the velocity the
+    start rule uses), or give the silent entry the allowance `2^-46 (|v|_1 + |linear_velocity|_1 + |omega x r|_1)`
+    (0 without spin). Prefer the first when it keeps P2's closed form unchanged (the spin's `omega x r` has no part
+    along the normal, so the rate differs only by rounding); state the choice in `ComputeStartCase`'s comment.
+  - The private step is one function of `solid_contact_steps.h` called after `ApplyResponseAtSurface` by `ApplyHit`
+    and by the start responses (name decided here, for example `ApplySlideRule`); no shape code in it (1b inherits it
+    unchanged, with Task 11b's merge of triangles that share a nearest feature).
 
 - [ ] **Step 1: Failing tests.**
 
@@ -1511,15 +1995,16 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
       // {0,0,0}, end {1 - tol, 0, tol} within 2 tol, reaction.solid_index 0, velocity_for_next_step_change
       // {0,0,2.5} exactly (every value is a binary fraction; without the slide's removal it is {0,0,2}),
       // hit_position {0.6 - tol/2, 0, tol} within 2 tol
-  TEST(MoveParticle, AcuteWedgeOnReactingFloor_CornerChargedToNewestSolid)
+  // Amended 2026-11-15 (P19 item 4, P5 amended; to confirm with the owner): each surface is charged its own push
+  TEST(MoveParticle, AcuteWedgeOnReactingFloor_EachSurfaceChargedItsOwnPush)
       // AcuteWedge's scene with the floor (id 1, index 0) reacting and the wedge (id 2) not. The particle touches
       // the floor (not hit) and hits the wedge first at x 1 - (1 + Sqrt(2)) tol: {1,0,-1} (not counted). The
-      // re-sweep hits the floor at 0: {1,0,0}, floor change {0,0,1}. The slide removes the wedge approach
-      // -Sqrt(0.5): {0.5,0,-0.5} (charged to the wedge, not counted); the floor, the newest, is approached again,
-      // so both velocities become its velocity {0,0,0}: a change of {-0.5,0,0.5} charged to the floor. Expected:
-      // hit_count 2, velocities {0,0,0}, reaction.solid_index 0, velocity_for_next_step_change {-0.5,0,1.5}
-      // within 1e-15 (it is {0,0,1} if the corner case is left out or charged to the wedge, {-1,0,1} if the whole
-      // slide is charged to the floor), hit_position {1 - (1 + Sqrt(2)) tol, 0, tol} within 2 tol
+      // re-sweep hits the floor at 0: {1,0,0}, floor change {0,0,1}. The wedge is approached at -Sqrt(0.5) and both
+      // surfaces are active, so the change is the pair's: {-1,0,0} = 1 * {0,0,1} + Sqrt(2) * Normalized({-1,0,-1}),
+      // the floor's push {0,0,1}, the wedge's {-1,0,-1} (not counted). Expected: hit_count 2, velocities {0,0,0}
+      // within 1e-15, reaction.solid_index 0, velocity_for_next_step_change {0,0,2} within 1e-15 (the newest-solid
+      // rule gives {-0.5,0,1.5}; the whole change to the floor {-1,0,1}; the corner left out {0,0,1}), hit_position
+      // {1 - (1 + Sqrt(2)) tol, 0, tol} within 2 tol
   // Rounding residue of the response (design 5.4): the test fails if the comparison is with 0
   TEST(MoveParticle, ObliqueCornerResidue_SlidesOnWithoutSqueezeOrStop)
       // two fixed flat solids, friction 0: plate A point {0,0,0} normal {0.6,0,0.8}; wall B point {-0.2,0,0}
@@ -1529,15 +2014,155 @@ the touching rule; no line of code skips "the solid just hit". Step 6's move to 
       // Expected: no error (not kSqueezedBetweenSolids), hit_count 2, velocities {0,0,0.24} within 1e-15 (not
       // {0,0,0}), end x -0.2 + tol within 2 tol, end z 0.24 within 1e-3 (a stop at the first hit would end near
       // z 0.043). Fails if "approaches again" tests `approach >= 0` instead of `approach >= -bound`
+  // Amended 2026-11-15 (P19 items 3 to 6): wedges, grooves, corners and tangent contacts. Scenes of Task 11b
+  // unless stated: floor id 1 and BuildWedgeSide(pi - a, 2) for a wedge angle a; tol = kTestContactTolerance;
+  // friction 0
+  TEST(MoveParticle, GrooveSlideAlongEdge_KeepsSpeedAlongEdge)
+      // a = 60 deg, start {0,0,0}, both velocities {-1,1,-1}, T 0.01: both surfaces respond at the start; the
+      // change keeps the part along the common line: hit_count 2, velocities {0,1,0} within 1e-15, end
+      // {Sqrt(3) tol, 0.01, tol} within tol / 1024. The newest solid's velocity (design 5.5 as it was) gives {0,0,0}
+  TEST(MoveParticle, VGrooveSlideIntoApex_ComesToRestThere)
+      // faces through the origin, normals {-cos 15deg, 0, sin 15deg} (id 1) and {cos 15deg, 0, sin 15deg} (id 2): a
+      // 30 deg groove opening upward. Start 0.05 {sin 15deg, 0, cos 15deg} + tol {-cos 15deg, 0, sin 15deg} (on face
+      // 1) at rest; 1000 steps of T 0.01, both velocities += {0,0,-9.81 T} before each, each end the next start;
+      // friction 0, then 0.5. Expected: no error in any step; from step 12 on (the model: step 9 with friction 0,
+      // 10 with 0.5) hit_count 2 per step and the end {0, 0, tol / sin 15deg} = {0, 0, 3.8637033 tol} within
+      // tol / 1024 in x and z, both at the rest gap; velocities after the last step 0 within 1e-15
+  TEST(MoveParticle, TenDegreeVGrooveSlideIntoApex_ComesToRestThere)
+      // the same with normals at 5 deg from the horizontal (a 10 deg groove): end z tol / sin 5deg = 11.473713 tol
+  TEST(MoveParticle, NarrowWedgeAtRestPoint_KeepsSpeedAlongEdge)
+      // a = 2e-6 rad (above the velocity limit); start at its rest point {tol / tan(1e-6), 0, tol} =
+      // {999999.99 tol, 0, tol}, both velocities {-2,1,0}, T 0.01: hit_count 2, velocities {0,1,0} within 1e-9,
+      // both at the rest gap
+  TEST(MoveParticle, SliverStop_ChargedToNewestSolid)
+      // a = 1e-7 rad (a sliver: 1 + c = 5e-15, below 2^-40); the floor reacting. Start at the rest point
+      // {tol / tan(5e-8), 0, tol} = {2e7 tol, 0, tol}, both velocities {-2,1,0}, T 0.01: the side responds at the
+      // start, the floor is hit at 0, and the pair is a sliver: the particle sticks to the floor, the newest solid.
+      // No error, hit_count 2, velocities {0,0,0}, end at the rest point within tol / 1024, reaction.solid_index 0,
+      // velocity_for_next_step_change {2, -1, 2e-7} within 1e-15 (the floor's response {0, 0, 2e-7} and the stop
+      // {2, -1, 0})
+  TEST(MoveParticle, FloorRisingUnderSixtyDegreeWall_CarriesParticleAlongApex)
+      // a = 60 deg, the floor moving {0,0,1}; start at the apex rest point {Sqrt(3) tol, 0, tol} at rest, T 0.1:
+      // no error, hit_count 2, velocities {1 / Sqrt(3), 0, 1} within 1e-15, end {Sqrt(3) tol + 0.1 / Sqrt(3), 0,
+      // 0.1 + tol} within tol / 1024, both at the rest gap at the end pose. Not a squeeze
+  TEST(MoveParticle, BothFacesClosingAtSixtyDegrees_CarriesParticleOut)
+      // a = 60 deg, each surface moving 0.5 m/s along its own normal; the same start: velocities
+      // {Sqrt(3) / 2, 0, 1/2} within 1e-15, no error
+  TEST(MoveParticle, OneFaceClosingAtOneDegree_CarriesParticleOut)
+      // a = 1 deg, the floor moving {0,0,1} (its normal), the side fixed; start at the rest point {tol / tan(0.5 deg),
+      // 0, tol} at rest, T 0.01: no error, hit_count 2, velocities {1 / tan(1 deg), 0, 1} = {57.28996, 0, 1} within
+      // 1e-9 relative, speed 1 / sin(1 deg) = 57.2987, below 64 times the largest speed involved (1 m/s)
+  TEST(MoveParticle, OneFaceClosingAtPointEightDegrees_IsSqueezedBetweenSolids)
+      // the same at a = 0.8 deg: the change would give 1 / sin(0.8 deg) = 71.622 m/s, above 64:
+      // kTooCloseToCall/kSqueezedBetweenSolids, solid_id 2 (the side, the newest surface: it responds after the
+      // floor at the start), result unchanged; the same at T 0.001 (a shorter step does not cure it)
+  TEST(MoveParticle, TwoFacesClosingSymmetrically_CapAtOnePointSevenNineDegrees)
+      // floor moving {0,0,1} and side moving 1 m/s along its own normal, start at the rest point at rest, T 0.01:
+      // a = 2 deg: no error, speed 1 / sin(1 deg) = 57.2987 m/s; a = 1.6 deg: kSqueezedBetweenSolids
+      // (1 / sin(0.8 deg) = 71.62)
+  TEST(MoveParticle, GrazingWedgeClosingFast_IsSqueezedAtEveryStepLength)
+      // a = 1e-5 rad, the side moving 1 m/s along its own normal; start {4 tol / tan(1e-5), 0, tol} at rest: the
+      // escape would be 1 / tan(1e-5) = 1e5 m/s: kSqueezedBetweenSolids at T 0.1, 0.01 and 0.001 (before the cap the
+      // model launched it 1 km in a step of 0.01 s)
+  TEST(MoveParticle, ClosingCeiling_IsSqueezedBetweenSolids)  // as listed above; solid_id 1, the newest surface
+  TEST(MoveParticle, BallRestingOnFloorSlidingIntoCusp_ComesToRestThere)
+      // floor id 1, sphere id 2 centre {0,0,0.5} radius 0.5; start {0.05, 0, tol}, both velocities {-1,0,0},
+      // T 0.1: hit_count 2 (the sphere, then the floor at 0), velocities 0 within 1e-15, end {2 Sqrt(0.5 tol), 0, tol}
+      // = {46340.95 tol, 0, tol} with x within tol / 256, both at the rest gap. The first version of P19 failed it
+  TEST(MoveParticle, BallRestingOnFloorRestsInCuspForThousandSteps)
+      // the same scene; start {0.05, 0, tol}, both velocities {-0.5,0,0}; 1000 steps of T 0.01, both velocities
+      // += {0,0,-9.81 T} before each, friction 0: no error in any step; the rest point reached in step 9 (the model),
+      // then hit_count 1 per step (the floor), the end within tol / 256 of {2 Sqrt(0.5 tol), 0, tol}
+  TEST(MoveParticle, TwoBallsTouchingSlidingIntoNeck_ComesToRest)
+      // spheres id 1 centre {0,0,0} and id 2 centre {1,0,0}, radius 0.5; start {0.5, 0.05, 0}, both velocities
+      // {0,-1,0}, T 0.1: hit_count 2, velocities 0 within 1e-15, end {0.5, Sqrt(tol (1 + tol)), 0} =
+      // {0.5, 32768.0 tol, 0} within tol / 256
+  TEST(MoveParticle, ThreeSolidAcuteCornerInto_StopsInCorner)
+      // Task 11b's three-solid corner; start {0,0,0}, both velocities {-1,-1,-1}, friction 0.5, T 0.01: hit_count
+      // 3, velocities {0,0,0} within 1e-15, end {Sqrt(3) tol, Sqrt(3) tol, tol} within tol / 1024
+  TEST(MoveParticle, PlateAndSphereSlidingIn_ComesToRestAtRing)
+      // Task 11b's plate and sphere; start {0.5, 0, 0.01 + tol}, both velocities {-1,0,0}, T 0.1: the record is the
+      // sphere (solid_index 1, face kCurved) at hit_fraction (0.5 - Sqrt(0.1875) - Sqrt(3) tol) / 0.1 =
+      // 0.669872965 within 1e-9; then the plate at 0; hit_count 2, velocities 0 within 1e-15, end ring point +
+      // 2 tol {Sqrt(3)/2, 0, 1/2} within tol / 1024
+  TEST(MoveParticle, CeilingHitFarAboveTouchedFloor_SlidesDownToApex)
+      // floor id 1; ceiling id 2 point {0,0,0.1}, normal {-0.6,0,-0.8}; start {0,0,-tol / 2} (overlap tol), both
+      // velocities {5,0,1}, T 0.2: the floor responds at the start (inside), the ceiling is hit at x 0.10526 and
+      // leaves {2.72,0,-2.04}, which approaches the floor 0.021 m below; the floor is not active there, so the
+      // particle slides down the ceiling to the apex and stops: kind kStartedInsideSolid, hit_count 3, velocities
+      // 0 within 1e-15, end {(0.08 - 1.8 tol) / 0.6, 0, tol} = {0.1333333305, 0, tol} within tol / 1024. With the
+      // floor in the change it stops at the ceiling hit, {0.10526, 0, 0.02105}
+  TEST(MoveParticle, CornerPushOnSecondReactingSolid_IsSecondReactingSolid)
+      // the 60 deg side id 1 (index 0) and the floor id 2 (index 1), both reacting; start 0.999 {Sqrt(3) tol, 0,
+      // tol} (0.999 tol from both), both velocities {-1,0,-2}, T 0.01: the side is left at the start (silent, an
+      // entry), the floor responds ({0,0,2}), and the change pushes the side by {1, 0, -1/Sqrt(3)}:
+      // kTooCloseToCall/kSecondReactingSolid, solid_id 1. With the side not reacting: hit_count 1, velocities 0
+      // within 1e-15, reaction.solid_index 1, velocity_for_next_step_change {0, 0, 2 + 1/Sqrt(3)} within 1e-15
+  TEST(MoveParticle, SpinningFloorMovedSilently_RoundingIsNotAHit)
+      // the hand-over above: the case of Task 11's review mirror (a flat solid spinning about its normal at a
+      // surface speed of 100 m/s at the particle, moved silently while a second solid responds at the start):
+      // hit_count 1 (the responding solid only); as built, rounding counts the spinning solid as a hit at 0
+  TEST(SolveSmallestCorrection, SharpPairsAndCornersNearLimit_ApproachLeftWithinShare)
+      // 20,000 cases, generator P11: a pair with 1 + c = 2^(-40 + 36 Next()), or a triple with triple product at
+      // least 2^-20, by Next() < 0.5; v and each u_i 2^(60 Next() - 30) times three NextSigned; refine on.
+      // Expected: for every surface, -Dot(n_i, v + w - u_i) <= 2^-46 (|v|_1 + |w|_1 + sum |u_i|_1), and at most 3
+      // refinements (the model: at most 16 * 2^-52 of that sum with the refinements; 177 for pairs near 0.45 deg and
+      // 2697 for triples without them)
+  TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees)
+      // Task 11b's test, now: no failure at all (the model: 0 of 10,001 acute draws)
+  TEST(MoveParticle, GeneratedMovingTwoSurfaceStarts_SucceedDownToFiveDegrees)
+      // the same draws, then each wedge solid's linear_velocity three NextSigned m/s (solid A, then B): no failure
+      // (two independent surfaces always leave a velocity; the model: 0 of 35,000)
+  TEST(MoveParticle, GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures)
+      // Task 11b's tangent set with slides added (by Next() < 1/3: start on the floor at x* + (0.05 - x*) Next() from
+      // the contact, inward at up to 2 m/s with gravity), fixed and moving (each solid sliding along the other at up
+      // to 1 m/s per axis; a ball sinking or rising at 1e-3 m/s). Expected: no failure but kTooManyHits and
+      // kSqueezedBetweenSolids, and each of those succeeds when the step is shortened by a factor of up to 1/16
+      // (rerun in the test); count them (the model: 31 two-ball kTooManyHits in 40,000 draws, all cured by 1/16;
+      // no squeeze; every success at least tol / 2 from every solid)
   ```
-- [ ] **Step 2: Run.** Expected: the first two fail (`ClosingCeiling` passes through the floor or loops), and the
-  two reaction tests fail until step 5 adds its changes to the reaction.
-- [ ] **Step 3: Implement.** Glossary row: `slide` (the rest of the step spent moving along a surface).
-- [ ] **Step 4: Run** build, tests, gate.
+  The expected values were computed with the Python model of P19 item 10 and checked by hand against closed forms
+  (the apex point; the cusp rest point `2 Sqrt(R tol)`; the neck ring `Sqrt(tol (2 R + tol))`; the escape velocity
+  `{V / tan a, 0, V}`; the pair's multipliers; the hit time on the sphere).
+- [ ] **Step 2: Run.** Expected: the first two fail (`ClosingCeiling` passes through the floor or loops), the
+  reaction tests fail until step 5 adds its changes to the reaction, and every P19 test fails (the groove ends in
+  `kTooManyHits`, the closing 60-degree wedges too).
+- [ ] **Step 3: Implement.** Glossary row: `slide` (the rest of the step spent moving along a surface). Comments:
+  why one change over the active surfaces and not the sequence of design 5.5 (the groove); why the active surfaces
+  are read afresh and only near ones (the ball's stale normal; the far floor); why the refinement solves and the
+  velocity limit (the measured rounding); why a sliver sticks; why each push is charged to its own solid; how the
+  squeeze test tells a closing wedge that carries the particle from one that crushes it, why the speed cap is 64 and
+  which angles it refuses (0.895 degrees for one closing face, 1.79 for two), and why too fast an escape is
+  a squeeze a shorter step cures. The paper's step 5 and <proc-move-particle> follow.
+- [ ] **Step 4: Run** build, tests, gate. Mutants, each killed by the named test:
+  - the newest solid's velocity in a corner (design 5.5 as it was): `GrooveSlideAlongEdge`,
+    `CeilingHitFarAboveTouchedFloor`, `AcuteWedgeOnReactingFloor`, `NarrowWedgeAtRestPoint`;
+  - every touched entry in the change, active or not: `CeilingHitFarAboveTouchedFloor`;
+  - the normals recorded at the hits instead of read afresh: `GeneratedTangentContactSlides` (the model: one draw
+    in 2000 of a ball in a domain corner, a slide along the ball between two contacts with it, ends in a corner of
+    three surfaces with no change);
+  - the whole change charged to the newest solid: `AcuteWedgeOnReactingFloor` (`{-1,0,1}`);
+  - pushes not charged (only responses): `CornerPushOnSecondReactingSolid` (no conflict; the floor `{0,0,2}`);
+  - no refinement solve: `SharpPairsAndCornersNearLimit_ApproachLeftWithinShare`;
+  - the velocity limit `2^-30` instead of `2^-40`: `NarrowWedgeAtRestPoint` (2e-6 rad, `1 + c = 2e-12`, would stick);
+  - the sliver failing instead of sticking: `SliverStop_ChargedToNewestSolid`;
+  - the speed cap removed: `OneFaceClosingAtPointEightDegrees` (launched at 71.6 m/s), `GrazingWedgeClosingFast`;
+    the factor 32: `OneFaceClosingAtOneDegree` (squeezed); 128: `OneFaceClosingAtPointEightDegrees` (carried);
+    the largest speed taken from the particle alone (0 here): every closing test squeezed;
+  - the escape check left out (an assertion only): with the cap also removed, a debug build stops on
+    `GrazingWedgeClosingFast` (a release build goes on with an allowance outside the proof);
+  - the squeeze test on the closing speed dropped: `ClosingCeiling`;
+  - the start responses without the change: `GrooveSlideAlongEdge` (ping-pong to `kTooManyHits`).
+  Expected survivor, with its reason in the report: the closing speed compared with 0 instead of the allowance (two
+  solids of module 1 whose velocities differ by less than the allowance differ by exactly 0 in every scene the tests
+  can build).
 - [ ] **Step 5: Commit.** Subject: `Slide along several surfaces and refuse a squeeze`.
 
 **Amended 2026-11-15 (A74):** the earlier-surface rule of Task 12 applies to every shape unchanged (it reads the
-normal recorded at each hit). Round solids get their own move rules in Task 12a.
+normal recorded at each hit). Round solids get their own move rules in Task 12a. **Amended 2026-11-15 (P19):** the
+same for Task 11b's position move and Task 12's change: they read distances and normals only, and a round surface's
+convex distance makes one solve enough (the plate-and-sphere tests of Tasks 11b and 12 run before Task 12a, since
+the sphere's distance and first hit exist since Tasks 4a and 8a).
 
 ### Task 12a: `MoveParticle` on a sphere and a cylinder (A74)
 
@@ -1552,7 +2177,19 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   approaching, never `approach >= 0`, with `bound` from `ComputeLargestApproachLeftAfterResponse`); `ComputeShapeTurningAngularVelocity` (Task 3) for P17 in step 5, no second helper; and (amended 2026-11-15) Task 13 for the test
   `TurningCylinderRimHit_IsNotMoved`: it needs the slide on a turning solid to finish the step, so **run Task 12a
   after Task 13**. **Amended 2026-11-15 (Task 9b):** and Task 9b (P18). The task order is 9, 9b, 10, 11, 12, 13,
-  12a, 14 to 18. What changes here: a stepping-search hit is still in Task 9's band and still never moved, but a
+  12a, 14 to 18 (amended 2026-11-15, P19: 11b after 11). **Amended 2026-11-15 (P19):** the rim move of step 4 is a
+  move off one surface; when the moved hit is also within tol of another surface (a cylinder's rim on a floor), the
+  slide's change (Task 12) reads the active surfaces at the moved position. A cylinder lying on a floor touches it
+  along a line: a cusp, resolved like a ball's (P19 items 1 and 3); the cylinder joins Task 11b's generated tangent
+  set here. Add `CylinderLyingOnFloorSlidingIntoCusp_ComesToRestThere` (axis along world x, radius 0.5, half height
+  1, centre {0,0,0.5}; start {0, 0.05, tol}, both velocities {0,-1,0}, T 0.1: no error, hit_count 2, velocities 0
+  within 1e-15, end {0, 2 Sqrt(0.5 tol), tol} with y within tol / 256, both at the rest gap) and
+  `CylinderSunkIntoFloorSlidingIn_ComesToRest` (centre {0,0,0.25}: the wall meets the floor at y = Sqrt(0.1875) at 60
+  degrees; start {0, 0.5, tol}, both velocities {0,-1,0}, T 0.1: no error, hit_count 2, velocities 0 within 1e-15,
+  end {0, Sqrt(0.1875) + Sqrt(3) tol, tol} within tol / 1024). Both are the cross-sections of the ball scenes of
+  Tasks 11b and 12 (`BallRestingOnFloorSlidingIntoCusp`, `PlateAndSphereSlidingIn`); the model's cylinder (infinite
+  along x) gave the same numbers.
+  What changes here (Task 9b): a stepping-search hit is still in Task 9's band and still never moved, but a
   second-order advance usually stops near `d = tol`, so the old path of `TurningCylinderRimHit_IsNotMoved` (start
   `{1,-1,1}`, velocity `{-1,2,-1}`) now stops at 1.0000001 tol after 5 advances, where a rim move could not be seen; the
   test gets the path below, which stops at 1.11 tol under P18 (1.20 tol under first order).
@@ -1649,6 +2286,16 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   - The close call left in the turning search is a particle hovering near or grazing a turning face
     (`TurningBoxHoverOnSpinAxis`). Just above `kNegligibleTurnShare` a fast-spinning flat floor makes slow sliders
     close calls: a known cost, deferred.
+- **Amended 2026-11-15 (P19, Tasks 11b and 12):** a turning solid takes part in the position move and the velocity
+  change like any other: its distance at one pose is convex in its own axes (P18), so one solve is enough, and its
+  velocity at the particle is `ComputeSolidVelocity` with the full `omega`. Order at a hit on a turning solid: the
+  response, then Task 12's change over the active surfaces, then P7's near-other-solid test and the carry. A start
+  within tol of a turning solid and another solid gets Task 11b's one move at pose 0 (Task 11's
+  `TurningBoxStartWithinTolerance` stays pinned and flips here, as Task 11's review asked). The settle's one move
+  (Task 11b) reads the turning solid at the end pose; its `d >= -2 tol` assertion is revisited with the carry, as
+  above. A particle in a wedge between a turning solid and another solid is within P7's reach of that solid, so P7's
+  `kTurningSolidNearOtherSolid` decides before the change matters for the carry
+  (`RestingOnTurningBoxNearFloor_StepLengthDecidesCloseCall` is that case); Task 13 adds no wedge test of its own.
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
   in the solid's axes is one private function of `solid_contact_steps.h` taking `inputs` and `solid_index`, so 1b
   can sweep that remainder against a mesh.
@@ -1708,6 +2355,17 @@ normal recorded at each hit). Round solids get their own move rules in Task 12a.
   `TurningBoxHoverOnSpinAxis`. Generated-set counts in this plan that were measured before Task 9b (close calls on
   turning solids, and the `kSlowApproachToTurningSolid` and `kTooManyHits` shares of the all-scenes generated test
   of `move_particle_test.cc`) are stale: to re-measure when this task runs, not to copy.
+- **Amended 2026-11-15 (P19, Tasks 11b and 12):** the wedge, groove, pocket and cusp scenes join
+  `BuildMoveParticleCases()`, so `SceneTurnedRigidly_ResultTurnsWithIt` turns them too. Its premise holds where
+  the result is well determined: a cusp's rest point is determined along the floor only to about `1e-4` of its
+  distance after 8 iterations (P19 item 1), so for the cusp scenes compare the distances to the solids (at the rest
+  gap) and the velocities, not the end position to `0x1p-40`; the scenes nearest a limit (the narrow wedge at 2e-6
+  rad against `2^-40`, the flat wedges at 6e-7 and 3e-7 rad against the cap) sit a factor 2 or more from it, beyond
+  what a rotation's rounding moves; a scene with `kStartsInNarrowGap` compares its discrete fields only. Count the
+  generated sets of Tasks 11b and 12 again with the production tolerance (`ComputeContactTolerance({1100, 0.01,
+  0.01})`, far from the origin, as the oblique set), the tangent set with radii up to 1000 m (`R / tol` near `2^40`):
+  no failure but the ones a shorter step cures; the end distances at least `tol / 2`. The control of the oblique set
+  is not repeated.
 - Produces: test-only `std::vector<MoveParticleCase> BuildObliqueCases(int count)` (used again in Task 16).
   **Room for module 1b (mesh solids) (A80):** the check "every end distance is at least `tol / 2`, and the naive
   control enters" is one helper of `contact_test_cases.h` that takes any list of solids (the test below calls it
