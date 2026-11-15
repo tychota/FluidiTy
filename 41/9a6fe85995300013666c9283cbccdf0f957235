@@ -1,0 +1,21 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_90c8271351f912 168
+native/fluidity/base/buffer.h
+  s_4f0877e2acdcf0::t_4cef8f071b996b 237-238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "419a6fe85995300013666c9283cbccdf0f957235",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
