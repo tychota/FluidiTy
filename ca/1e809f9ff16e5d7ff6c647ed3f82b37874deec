@@ -1,0 +1,51 @@
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_37d8633ee316ef 3,15-24,32-40,43,46,51,54-64,66-104,106-128,183-191,196-199,202-212,214-219,224-231,237-248,371
+  s_4f0877e2acdcf0::t_fc3704e55591be 29-31,41-42,105,131-132,136,159,167-170,179-182,192-195,200,213,220-223,232-236
+  s_4f0877e2acdcf0::t_4106c2f996414b 44-45,47-50,52-53
+  s_4f0877e2acdcf0::t_5651e948aa6916 25-28
+  s_4f0877e2acdcf0::t_dd802d4128c89a 65
+  s_4f0877e2acdcf0::t_860fcea494a3b8 249-370,372-374
+  s_4f0877e2acdcf0::t_d85285d3e3be91 1-2,4-14
+  s_4f0877e2acdcf0::t_b23ce0b21fda65 129-130,133-135,137-158,160-166,171-178,201
+native/fluidity/contact/contact_response_test.cc
+  s_4f0877e2acdcf0::t_6faee661c0d2e4 1-2,3-5,6-76,156-197,200-204,206-219
+  s_4f0877e2acdcf0::t_84cd8d573951c9 220-221,224-257
+  s_4f0877e2acdcf0::t_ed15dadbff55b5 77-82,84-93,111-114,118-128,131-155,198-199,205,222-223
+  s_4f0877e2acdcf0::t_bc46647308c60d 83,94-110,115-117,129-130
+docs/glossary.md
+  s_4f0877e2acdcf0::t_3455db2206ff12 86-90
+  s_4f0877e2acdcf0::t_6eb0cdba3dc36c 35,83,85
+  s_4f0877e2acdcf0::t_e1a0b403b987fc 78-82
+  s_4f0877e2acdcf0::t_a2e575fe0e2093 84
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_deb6fcc5d8acd3 5,13
+  s_4f0877e2acdcf0::t_2c5d3451b8434f 6,15
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_30e8b068e994fa 3-4,10-11,13,25-26,46-51,54,57-60,64-65
+  s_4f0877e2acdcf0::t_e30ee50f5136af 52-53,55-56,61-63
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_303e3cf5495525 1194,1225-1226,1230-1234
+  s_4f0877e2acdcf0::t_a9f8c31612d5d9 1195-1208
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_96d61b737f2db2 1-509
+  s_4f0877e2acdcf0::t_faa215c2d6ea1b 510-522
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_caf3f717207e7b 1-693,695
+  s_4f0877e2acdcf0::t_d2f70fec1ebf88 694,696-867
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca1e809f9ff16e5d7ff6c647ed3f82b37874deec",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
