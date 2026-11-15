@@ -1,7 +1,9 @@
 # Contact module design
 
 Status: updated 2026-11-14 with the owner's answers (`owner-answers.md`) and `changes-to-apply.md`; sphere and
-cylinder added 2026-11-15 (A74: 3.2, 5.7, 6, 7, 8, Q18). Module 1
+cylinder added 2026-11-15 (A74: 3.2, 5.7, 6, 7, 8, Q18); aligned 2026-11-15 with the method paper's contact section
+after its review (5.1, 5.3, 5.5, 5.7, 8: cylinder gaps `wall_distance`/`cap_distance`, reaction from the slide, no
+touching rule on a turning solid, rim move for closed-form hits only, section order). Module 1
 of the rebuild. Names shared between modules are fixed in `shared-interface.md`; where it still says
 `state`/`travel`, A1 replaced them by `for_next_step`/`for_this_step`.
 
@@ -226,7 +228,9 @@ inline constexpr double kContactToleranceRelative = 0x1p-40;          // N. Shar
 inline constexpr double kContactToleranceFloorInCellWidths = 0x1p-30; // N
 inline constexpr double kMinFeatureInTolerances = 1024;               // N
 struct ContactScale {                   // N
-  double largest_coordinate = 0;        // m. Largest |x|, |y| or |z| a particle or solid origin can take.
+  double largest_coordinate = 0;        // m. Largest |x|, |y| or |z| a solid origin takes during the step, plus
+                                        // each bounded solid's reach Length(half_size) (plan P8); the domain box
+                                        // brings the particles' extent.
   double smallest_cell_width = 0;       // m, positive.
   double thinnest_solid = 0;            // m, positive. Smallest plate thickness, box size or domain width;
                                         // NEW (A74): 2 * radius (sphere), min(2 * radius, 2 * half_height)
@@ -459,7 +463,8 @@ markers, friction 0 and nothing else.
 Notation for this section only: `T` step duration, `tol` contact tolerance, `d` distance to a solid.
 
 **5.1 Shapes (new, replaces three shape-specific paths).** `ComputeSolidPose`: `origin = origin0 +
-linear_velocity * t`, `axes = math::Rotation(angular_velocity * t) * axes0`. `ComputeSolidVelocity`:
+linear_velocity * t`, `axes = math::Rotation(angular_velocity * t) * axes0` (the paper's `A(t) = Rot(omega t) A`).
+`ComputeSolidVelocity`:
 `linear_velocity + Cross(angular_velocity, point - origin)`. `ComputeDistanceToSolid`, with `p` the point in
 the solid's axes: flat solid `d = p.z`; plate `d = |p.z| - half_thickness`; box `d = max over axes of
 (|p.axis| - half_size.axis)` (the gap to the nearest face plane, positive exactly when outside); domain box
@@ -494,8 +499,10 @@ error. Unit vectors and rotations are accepted when their squared length is with
 **5.3 `FindFirstHit`.** For each solid in array order (ascending `solid_id`), with gap `g = d - tol`:
 
 1. *Solid that does not turn (closed form, exact first hit).* Each face gap is linear in time:
-   `g_face(t) = g_face(0) + rate * t`, `rate = Dot(normal, velocity_for_this_step - linear_velocity)`. A face the
-   particle already slides on is skipped unless `rate * duration < -tol`. Flat solid and each closed domain
+   `g_face(t) = g_face(0) + rate * t`, `rate = Dot(normal, velocity_for_this_step - linear_velocity)`. *Touching
+   rule* (plan P2): when the start's gap is in `[-tol, 0]` for the surface that gives `d` (a plate's or box's face
+   with the largest gap, the one face of a flat solid or domain side), that surface is not hit when
+   `rate * duration >= -tol` and is hit at `t = 0` otherwise; a start gap below `-tol` is hit at `t = 0`. Flat solid and each closed domain
    side: hit at `t = g(0) / -rate` when `rate < 0` and `t <= duration`. Plate and box (convex): entry time is the
    largest `g_face(0) / -rate` over faces with `g_face(0) > 0, rate < 0`; exit time is the smallest
    `-g_face(0) / rate` over faces with `g_face(0) <= 0, rate > 0`; a face with `g_face(0) > 0, rate >= 0` means
@@ -506,6 +513,10 @@ error. Unit vectors and rotations are accepted when their squared length is with
    larger of the particle's distances to the solid's origin at both ends of the path. Start at `t = 0`; repeat
    `t += g(t) / bound`; stop with a hit when `g(t) <= tol / 4`, with no hit when `t >= duration`. More than
    `kMaxAdvanceCount` steps returns `kTooCloseToCall/kSlowApproachToTurningSolid`. No stack, no bisection.
+   There is no touching rule here (amended 2026-11-15, paper review): it belongs to the closed forms of step 1. A
+   particle resting on a turning solid at `d = tol` starts with `g(0) = 0 <= tol / 4` and is hit at `t = 0` in every
+   step; the response and the slide in the solid's axes (5.5 step 5) carry it with the solid for the rest of the
+   step. This is intended: the face it rests on turns, so the plane argument of the touching rule does not hold.
 3. Keep the smallest hit time. Equal times keep the lower solid index.
 
 Sphere and cylinder (NEW, A74): step 1 has a closed form for each (5.7); step 2 serves a cylinder whose axis turns.
@@ -531,24 +542,34 @@ speed.
 
 1. *Check.* Finite values, `step_duration > 0`, `friction >= 0`, tolerances in range, solids ordered: else
    `kBadInput`.
-2. *Classify the start* against every solid at `t = 0`. `d < -start_overlap_tolerance`: `kStartsInsideSolid`.
-   Committed to this plate and on its other side by more than `tol`: `kOnWrongSideOfPlate`. `d < 0`: the start
-   is moved along the normal to `d = tol`, both velocities get the response, `kind = kStartedInsideSolid`,
-   `hit_fraction = 0`. `0 <= d <= tol` and either velocity approaches: same, with `kind = kHit`. `0 <= d <= tol`
-   and neither approaches: nothing (a touching particle that leaves is free).
+2. *Classify the start* against every solid at `t = 0`, in array order, each from the start as moved by the earlier
+   solids; the first failing solid decides (amended 2026-11-15, plan P3, P4, P12, as the paper). Committed to this
+   plate and on its other side by more than `tol`: `kOnWrongSideOfPlate` (checked first). `d <
+   -start_overlap_tolerance`: `kStartsInsideSolid`. `d < tol`: the start is moved along the normal to `d = tol`;
+   then, by `d` before the move: `d < 0`: both velocities get the response, `kind = kStartedInsideSolid`,
+   `hit_fraction = 0`. `0 <= d < tol` and either velocity approaches: same, with `kind = kHit`. `0 <= d < tol` and
+   neither approaches: the move is silent (velocities, kind, hit count and record unchanged; the solid does not join
+   the surfaces, so a touching particle that leaves is free).
 3. *Find the first hit* of the straight path along `velocity.for_this_step` over the time left.
-4. *Respond* (5.4) to both velocities with `friction * solid.friction_scale`; record the first hit; add the
-   change of `velocity.for_next_step` to `reaction` when the solid has `reports_reaction`. A second reacting solid in
-   one step is `kSecondReactingSolid`.
+4. *Respond* (5.4) to both velocities with `friction * solid.friction_scale`, after moving a rim hit of the
+   cylinder's closed form to `d = tol` (5.7); record the first hit; add the change of `velocity.for_next_step` to
+   `reaction` when the solid has `reports_reaction`. A second reacting solid in one step is `kSecondReactingSolid`.
 5. *Slide.* The solid joins the list of surfaces the particle is on. For each earlier surface the new velocities
    still approach, that approach is removed without friction; if the newest surface is then approached again (a
    corner sharper than a right angle) the velocities are set to the newest solid's velocity; if an earlier one is
-   still approached the solids are closing on the particle: `kSqueezedBetweenSolids`. On a solid that does not
+   still approached the solids are closing on the particle: `kSqueezedBetweenSolids`. Every change these make to
+   `velocity.for_next_step` counts in `reaction` like the response's (amended 2026-11-15, plan P5): a removal is
+   charged to the earlier surface's solid, the corner case to the newest solid, each only when that solid has
+   `reports_reaction`. On a solid that does not
    turn, go to step 3 with the hit position, the new `velocity.for_this_step` and the time left; a fifth hit is
    `kTooManyHits`. On a turning solid the rest of the step is carried in the solid's axes, as on `main`: the
    relative `velocity.for_this_step` at the hit is turned into the solid's axes, its part into the face is clamped
    to zero, the particle advances in those axes and is placed with the end pose; if any other solid is within the
-   distance both could travel, `kTurningSolidNearOtherSolid`.
+   distance both could travel, `kTurningSolidNearOtherSolid` (plan P7's bound). Expected behaviour (amended
+   2026-11-15): since a particle resting on a turning solid is hit at `t = 0` in every step (5.3 step 2), it runs this
+   test over the whole step, so a turning solid close to another one (a paddle near the domain floor) can ask the step
+   for shorter steps more often than its own speed alone suggests; that is the price of carrying resting particles
+   safely (plan Task 13 test).
 6. *Settle and check.* For each surface the particle is on with `d < tol` at the end pose, move it along that
    normal to `d = tol`. Then apply the end check of 5.2 to all solids.
 
@@ -574,22 +595,29 @@ velocity_for_this_step - linear_velocity` turned into the solid's axes, `p0` the
 centre (`Dot(p, p) == 0` as computed) the normal is the solid's own -x axis, the normal of `kLowX`, the first face
 in face order (degenerate-normal rule, the box's tie rule; as the paper states).
 
-*Distance and normal, cylinder: one formula for the three regions.* `rho = Sqrt(p.x^2 + p.y^2)`, `a = rho -
-radius` (signed gap to the wall), `b = |p.z| - half_height` (signed gap to the nearer cap), `s = +1` when `p.z >= 0`
-else `-1`, `radial = (p.x / rho, p.y / rho, 0)`:
+*Distance and normal, cylinder: one formula for the three regions.* `rho = Sqrt(p.x^2 + p.y^2)`,
+`wall_distance = rho - radius` (the paper's `d_wall`: the signed distance to the wall's surface, taken as unbounded
+in height), `cap_distance = |p.z| - half_height` (`d_cap`: the signed distance to the plane of the nearer cap),
+`cap_sign = +1` when `p.z >= 0` else `-1` (`sigma_z`), `radial = (p.x / rho, p.y / rho, 0)` (`e_rho`), `e_z` the
+cylinder's own z axis:
 
 ```text
-if a > 0 and b > 0:   rim     d = Sqrt(a^2 + b^2)   normal = (a * radial + b * s * z) / d   face kHighRim (s=+1) / kLowRim
-else if a >= b:       wall    d = a                 normal = radial                        face kCurved
-else:                 cap     d = b                 normal = s * z                         face kHighZ (s=+1) / kLowZ
+if wall_distance > 0 and cap_distance > 0:
+    rim   d = Sqrt(wall_distance^2 + cap_distance^2)
+          normal = (wall_distance * radial + cap_distance * cap_sign * e_z) / d    face kHighRim (cap_sign +1) / kLowRim
+else if wall_distance >= cap_distance:
+    wall  d = wall_distance    normal = radial            face kCurved
+else:
+    cap   d = cap_distance     normal = cap_sign * e_z    face kHighZ (cap_sign +1) / kLowZ
 ```
 
 The distance is evaluated as one expression for every region (the paper's `<eq:cylinder-distance>`):
-`d = Sqrt(max(a, 0)^2 + max(b, 0)^2) + min(max(a, b), 0)`; the branches above choose only the normal and the face.
-They meet continuously (`a = 0` or `b = 0` gives the same `d` from both sides). Inside (`a, b <= 0`) the
-nearer of wall and cap wins, a tie takes the wall. On the axis (`p.x^2 + p.y^2 == 0` as computed) in the wall
-branch, `radial` is the solid's own -x axis (degenerate-normal rule, as for the sphere; reached only deep inside a
-cylinder longer than it is wide). Every operation is `+ - * /`, `Abs` or `Sqrt`.
+`d = Sqrt(max(wall_distance, 0)^2 + max(cap_distance, 0)^2) + min(max(wall_distance, cap_distance), 0)`; the
+branches above choose only the normal and the face. They meet continuously (`wall_distance = 0` or
+`cap_distance = 0` gives the same `d` from both sides). Inside (both `<= 0`) the nearer of wall and cap wins, a tie
+takes the wall. On the axis (`p.x^2 + p.y^2 == 0` as computed) in the wall branch, `radial` is the solid's own -x
+axis (degenerate-normal rule, as for the sphere; reached only when `|p.z| <= half_height - radius`, so only inside a
+cylinder at least as long as it is wide). Every operation is `+ - * /`, `Abs` or `Sqrt`.
 
 *Surface velocity.* Unchanged: `linear_velocity + Cross(angular_velocity, point - origin)`.
 
@@ -602,27 +630,32 @@ not moving toward the centre), or when `B^2 - A * C < 0` (a miss). Otherwise
 *First hit, cylinder (closed form).* The cylinder is grown by `tol` with sharp edges: radius `R = radius + tol`,
 half height `H = half_height + tol`. Candidates, each accepted only inside the other's range:
 (1) wall: the quadratic of the sphere in the `x, y` components (`A = u.x^2 + u.y^2`, `B = p0.x u.x + p0.y u.y`,
-`C = (rho0 - radius - tol) * (rho0 + R)`), its first root `t_w` accepted when `|p0.z + u.z t_w| <= H`;
+`C = (rho0 - radius - tol) * (rho0 + R)`), tried when the start is outside the grown radius (`rho0 > R`), `A > 0`,
+`B < 0` and the root exists (`B^2 >= A * C`), its first root `t_w` accepted when `|p0.z + u.z t_w| <= H`;
 (2) the cap the particle is beyond (`|p0.z| > H`, `s0` its sign), when `s0 * u.z < 0`:
 `t_c = (|p0.z| - H) / (-s0 * u.z)`, accepted when `(p0.x + u.x t_c)^2 + (p0.y + u.y t_c)^2 <= R^2`.
 The earliest accepted candidate is the hit; this is the entry into the intersection of the grown slab and the grown
 infinite cylinder, so the rim is covered by the two ranges' edges. A path parallel to the axis (`A == 0`) has no
 wall candidate; a path parallel to the caps (`u.z == 0`) no cap candidate. The reported face is the region
-`ComputeDistanceToSolid` gives at the hit position. At a hit in the rim region the true distance is between `tol`
-and `Sqrt(2) * tol` (the sharp corner of the grown shape); `MoveParticle` moves that hit position along the rim
-normal to `d = tol` before the response, a move of at most `(Sqrt(2) - 1) * tol`, never toward the inside.
+`ComputeDistanceToSolid` gives at the hit position. At a hit of this closed form in the rim region the true distance
+is between `tol` and `Sqrt(2) * tol` (the sharp corner of the grown shape); `MoveParticle` moves that hit position
+along the rim normal to `d = tol` before the response, a move of at most `(Sqrt(2) - 1) * tol`, never toward the
+inside. The move applies only to hits of this closed form (amended 2026-11-15, plan P15): a hit of the stepping
+search toward a turning cylinder stops at `d <= 1.25 tol` in any region and is never moved, even when its reported
+face is a rim.
 
 *Starts within the grown shape.* For both shapes the start gap `g0 = d - tol` uses the true distance:
 `g0 < -tol` is a hit at `t = 0` (defensive, as P2); `-tol <= g0 <= 0` is the touching rule below; for a cylinder,
-`g0 > 0` inside the grown sharp shape (only in the rim corner) is a hit at `t = 0` when `rate < 0` and free
-otherwise.
+`g0 > 0` inside the grown sharp shape (`rho0 <= R` and `|p0.z| <= H`: a rim corner, up to rounding, since these
+tests and the gap are computed separately) is a hit at `t = 0` when `rate < 0` and free otherwise.
 
 *Touching rule on a curved surface (counterpart of P2).* `rate = Dot(normal at the start, u)`. A sphere or cylinder
 with `-tol <= g0 <= 0` is not hit during this sweep when `rate * duration >= -tol`, and is hit at `t = 0`
 otherwise. Why it is safe: the true signed distance of a convex solid is a convex function of position, so along the
 straight path `d(t) >= d(0) + rate * t >= d(0) - tol`. After a hit the particle starts at `d = tol` (the hit rule,
 the rim move above, P12), so the path never comes closer than `0` up to rounding, and the settle of 5.5 step 6
-puts it back at `tol` (the solid is on the surface list). The same tolerance as P2; no curvature term.
+puts it back at `tol` (the solid is on the surface list). The same tolerance as P2; no curvature term. Like P2 it
+belongs to the closed forms only: a cylinder turning across its axis has no touching rule (5.3 step 2).
 
 *The slide on a curved surface.* After a hit the response leaves a velocity tangent to the surface. The re-sweep
 follows that tangent in a straight line: on a sphere or a cylinder wall it leaves the surface (the distance grows
@@ -634,7 +667,7 @@ later step under gravity or pressure; over many steps it follows the curve (test
 
 *Spin about a symmetry axis.* A turn about a sphere's centre or about a cylinder's own axis moves the surface but
 not the shape. The *shape-changing turn* is: none for a sphere; for a cylinder `omega_across = omega - Dot(omega,
-a) a`, `a` the axis at the start of the sweep. A sphere is always swept and slid as a solid that does not turn
+e_z) e_z`, `e_z` its own z axis (its `axis`) at the start of the sweep. A sphere is always swept and slid as a solid that does not turn
 (closed form); a cylinder is too when `Length(omega_across) * step_duration * Length(half_size) <= tol / 8` (the
 shape moves less than `tol / 8` during the step: a spin given along the axis, up to rounding), and otherwise as a turning solid (5.3 step 2, P7 slide in its axes; the `kMaxTurnPerStep`
 limit applies to `Length(omega_across) * step_duration`). In every case `ComputeSolidVelocity` uses the full
@@ -721,9 +754,9 @@ exact binary fractions, fractions and velocities as above unless stated):
   (degenerate normal). Face `kCurved` each time.
 - Cylinder at the origin, axis z, radius 1, half height 0.5. Wall `{3,0,0.25}`: 2, `{1,0,0}`, `kCurved`; high cap
   `{0.5,0,2}`: 1.5, `{0,0,1}`, `kHighZ`; low cap `{0,0.5,-1.5}`: 1, `{0,0,-1}`, `kLowZ`; high rim `{1.375,0,1}`
-  (`a` 0.375, `b` 0.5): 0.625, `{0.6,0,0.8}`, `kHighRim`; low rim `{0,-1.375,-1}`: 0.625, `{0,-0.6,-0.8}`,
+  (`wall_distance` 0.375, `cap_distance` 0.5): 0.625, `{0.6,0,0.8}`, `kHighRim`; low rim `{0,-1.375,-1}`: 0.625, `{0,-0.6,-0.8}`,
   `kLowRim`; inside near the wall `{0.9,0,0}`: -0.1, `{1,0,0}`, `kCurved`; inside near a cap `{0,0,0.375}`: -0.125,
-  `{0,0,1}`, `kHighZ`; inside tie `{0.75,0,0.25}` (`a = b = -0.25`): wall, -0.25, `{1,0,0}`; on the axis of a
+  `{0,0,1}`, `kHighZ`; inside tie `{0.75,0,0.25}` (`wall_distance = cap_distance = -0.25`): wall, -0.25, `{1,0,0}`; on the axis of a
   cylinder radius 0.25, half height 2, at the origin: -0.25 and the solid's -x axis `{-1,0,0}` (degenerate normal); a cylinder
   with axis `{1,0,0}` at `{0.25,3,0}`: 2, normal `{0,1,0}` (solid axes x `{0,0,-1}`, y `{0,1,0}`, z `{1,0,0}`).
 - First hit, sphere at the origin radius 0.5, `duration 2`: head-on from `{-2,0,0}` at `{1,0,0}`: `1.5 - tol`,
@@ -828,17 +861,23 @@ feature 1024 tolerances thick.
 
 Pseudocode: `<proc-move-particle>` (the six steps of 5.5) and `<proc-find-first-hit>` (the three of 5.3).
 
-NEW (A74), sphere and cylinder: subsection `== Round solids: sphere and cylinder <sec-round-solids>` (after
-`<sec-solid-shapes>`), equations `<eq:sphere-distance>` (`d = |x - c| - r`), `<eq:cylinder-distance>` (the
-three-region formula of 5.7), `<eq:sphere-hit-time>` (the quadratic and its cancellation-free root),
+NEW (A74), sphere and cylinder: subsection `== Round solids: sphere and cylinder <sec-round-solids>` (amended
+2026-11-15: after `<sec-first-hit>` and before `<sec-contact-response>`, since it uses the tolerance, the gap, the
+touching rule and the stepping search; the subsections are then solid shapes, tolerance, first hit, round solids,
+response and slide), equations `<eq:sphere-distance>` (`d = |x - c| - r`), `<eq:cylinder-distance>` (the
+three-region formula of 5.7, with `d_wall` and `d_cap`), `<eq:sphere-hit-time>` (the quadratic and its cancellation-free root),
 `<eq:cylinder-hit-time>` (wall root restricted in height, cap time restricted to the disc); figures
 `<fig-round-solids>` (sphere with centre, radius and outward normal; cylinder with its own z axis, radius, half
 height and the wall, cap and rim regions shaded in a side cut, with the degenerate-normal points marked) and
 `<fig-round-first-hit>` (side cut of the grown shapes: the sphere grown by `tol`, the cylinder grown with sharp
 edges, a path through the wall, one through the cap and one entering the rim corner, with the rim move to
-`d = tol`); pseudocode `<proc-sphere-first-hit>` and `<proc-cylinder-first-hit>`; one worked example each (the
-sphere head-on hit `1.5 - tol` and the cylinder rim hit `2 - tol` with the rim move); the curved-surface touching
-rule with its convexity argument, the tangent slide, and the spin rule, stated in plain words.
+`d = tol`); pseudocode `<proc-sphere-first-hit>` and `<proc-cylinder-first-hit>`; worked examples (amended
+2026-11-15, the paper's own: the sphere of radius 0.5 grazed from `(-2, 0.3, 0)` at `(2, 0, 0)`, hit at
+`0.8 - 0.625 tol` with normal `(-0.8, 0.6, 0)`; the cylinder rim hit `2 - tol` with the rim move (radius 0.5, half
+height 1, from `(0.5 + tol/2, 0, 3)`); for radius 0.5 and half height 0.25 the cap hit, the wall hit and the miss over
+the rim; the distances of `(0.8, 0, 0.65)` and `(0.1, 0, 0.2)`; the touching starts on a sphere and the spinning
+cylinder's response); the curved-surface touching rule with its convexity argument, the tangent slide, and the spin
+rule, stated in plain words. The paper writes the rotation `Rot(...)` and the cylinder's own axis `e_z`.
 
 Sources from the old reference list: [19] Stomakhin 2013 (the friction response on a collision surface), [3]
 Hu 2018 (moving solids coupled to particles and the two sides of a thin solid), [21] Batty 2007 (why the

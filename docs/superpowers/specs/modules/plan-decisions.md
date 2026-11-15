@@ -3290,8 +3290,12 @@ Solid ToSolid(const Cylinder& shape, const SolidMotion& motion, std::uint32_t so
   cylinder's z column is its axis (built like the plate's axes from its normal). `CheckSolid` refuses unequal
   sphere half sizes and `half_size.x != half_size.y` for a cylinder (`kBadInput`).
 - `ComputeDistanceToSolid` returns the true signed distance for both (sphere `|p| - r`; cylinder the three-region
-  formula of P14: rim `Sqrt(a^2 + b^2)`, wall `a`, cap `b`, inside the nearer of wall and cap, a tie takes the wall),
-  evaluated for the cylinder as `Sqrt(max(a,0)^2 + max(b,0)^2) + min(max(a,b),0)`, with the normal and the face (`kCurved` for the sphere and the cylinder's wall, `kLowZ`/`kHighZ` for the caps,
+  formula of P14 with `wall_distance = rho - r` (paper `d_wall`, the signed distance to the wall's surface taken as
+  unbounded in height) and `cap_distance = |p.z| - half_height` (paper `d_cap`, the signed distance to the plane of
+  the nearer cap): rim `Sqrt(wall_distance^2 + cap_distance^2)`, wall `wall_distance`, cap `cap_distance`, inside the
+  nearer of wall and cap, a tie takes the wall), evaluated for the cylinder as
+  `Sqrt(max(wall_distance,0)^2 + max(cap_distance,0)^2) + min(max(wall_distance,cap_distance),0)`, with the normal
+  and the face (`kCurved` for the sphere and the cylinder's wall, `kLowZ`/`kHighZ` for the caps,
   `kLowRim`/`kHighRim` for the rims). Degenerate normals (P13): the sphere's centre and a point on the cylinder's
   axis in the wall branch give minus the pose's x column (the `kLowX` normal, the box's tie rule). The box keeps its largest-face-gap
   distance; code that needs a Euclidean distance to a box still does not get one.
@@ -3305,6 +3309,24 @@ Solid ToSolid(const Cylinder& shape, const SolidMotion& motion, std::uint32_t so
   a given pose.
 - `ComputeContactScale` (P8): both add `Length(half_size)` to the largest coordinate; thinnest candidates `2 r`
   (sphere) and `min(2 r, 2 half_height)` (cylinder).
+
+**Rulings from the method paper's review (2026-11-15; paper commit `ad1d88ae`; contact plan P2, P5, P14 to P16,
+Tasks 9, 12, 12a, 13; contact design 5.3, 5.5, 5.7, 8):**
+
+- Notation: the paper writes the cylinder's gaps `d_wall`, `d_cap` (code `wall_distance`, `cap_distance`; they
+  replace P14's `a`, `b`, which clashed with the approach speed `a`), the rotation `Rot(...)` (`math::Rotation`) and
+  the cylinder's own axis `e_z`, so `omega_across = omega - Dot(omega, e_z) e_z`.
+- Reaction (P5): every change of `for_next_step` against a reacting solid counts, from the response and from each
+  removal during the slide (charged to the earlier surface's solid); the corner case (velocities set to the newest
+  solid's velocity) is charged to the newest solid.
+- The touching rule (P2, P16) belongs to the closed forms; a turning solid has none. A particle resting on a turning
+  solid is hit at time 0 in every step and carried by the slide in the solid's axes; it therefore runs P7's
+  near-other-solid test over the whole step, so a turning paddle near the domain floor may ask for shorter steps
+  (intended).
+- The rim move (P15) applies only to hits of the cylinder's closed form, never to hits of the stepping search, even
+  when the reported face is a rim. The rim-corner start rule holds up to rounding; Task 8a may compute its inside
+  test from the same gaps that set the start's sign.
+- The paper places `<sec-round-solids>` after `<sec-first-hit>`.
 
 **What later plans gain (amended in each plan and design, `(A74)`):**
 
