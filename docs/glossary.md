@@ -32,7 +32,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `axis` | The x, y or z part of a vector or grid. | component (for this) |
 | `cell_low`, `cell_high` | The two cells on the low and high side of a face, along that face's axis. | tail (for a cell on one side of a face), head (for a cell on one side of a face) |
 | `side_left` (-X), `side_right` (+X), `side_front` (-Y), `side_back` (+Y), `side_bottom` (-Z), `side_top` (+Z) | Blender viewport names. Z is up. | low_x wall, floor (for a side: math::Floor keeps the word), upper (for a side of the domain), lower (for a side of the domain) |
-| `into_...`, `out_of_...` | Direction of a flow or normal, always naming the thing: `flow_into_liquid`, `normal_out_of_solid`. | inward (without the thing), outward (without the thing) |
+| `into_...`, `out_of_...` | Direction of a flow or normal, always naming the thing: `flow_into_liquid`, `normal_out_of_solid`. | inward (without the thing), outward (without the thing), outward_normal |
 | `touching` | Shares a boundary with. | incident |
 | `partly_filled_cell` | A cell crossed by a solid or by the liquid surface. | cut cell |
 | `open_area` | m2. Area of a face not blocked by solid. | |
@@ -75,6 +75,15 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `reach` (of a solid) | m. How far a bounded solid's surface can be from its origin: `Length(half_size)` of a box, a domain box, a sphere or a cylinder. A flat solid and a plate have none. | |
 | `rest gap` | m. The one contact tolerance a particle in contact keeps between itself and a solid's surface: it rests at distance `contact_tolerance`, never at 0, so any later evaluation of the distance is positive. | nudge |
 | `close call`, `ContactCloseCall` | A step that contact cannot answer safely. The step is shortened and tried again. | near miss, edge case (for this) |
+| `hit`, `FirstHit` | A moment in a step when a particle meets a solid, along its path or at its start, and its velocity gets the response; at most `kMaxHitsPerStep` per step. `FirstHit` is the earliest hit along one straight path. | |
+| `response`, `ComputeContactResponse` | What a hit does to one velocity: the approach speed is removed, then friction reduces the sideways speed (stick or slip). | impulse (for a velocity change) |
+| `approach left after the response`, `ComputeLargestApproachLeftAfterResponse` | m/s. The approach speed that rounding leaves in a velocity the response returned: zero up to a few rounding units of the speeds involved, of either sign. `ComputeLargestApproachLeftAfterResponse` bounds its size by `2^-46` of the sum of the absolute axes of the velocity and the solid velocity; a test of whether such a velocity still approaches compares with that bound, not with 0. | |
+| `approach speed`, `approach_speed` | m/s. A particle's speed along a solid's normal, measured from the moving solid: `Dot(normal_out_of_solid, velocity - solid_velocity)`. Negative means approaching. A hit removes it from an approaching velocity, in world coordinates. | incoming relative normal speed |
+| `sideways speed`, `sideways_speed` | m/s. A particle's speed along a solid's surface, measured from the moving solid, after the approach is removed. | tangential speed (for this) |
+| `friction` | No unit, zero or more. How much sideways speed a solid takes off per unit of speed into it: the particle's `friction` times the solid's `friction_scale`. Papers: the Coulomb coefficient. | friction_coefficient |
+| `stick` | At a hit, friction takes all the sideways speed: the particle takes the solid's velocity. It happens when friction is at least the sideways speed divided by the speed into the solid. | |
+| `slip` | At a hit, friction takes only part of the sideways speed: the particle keeps moving along the surface, slower. | |
+| `reaction`, `SolidReaction`, `reports_reaction` | The change a solid makes to a particle's velocity for the next step, which the solid needs to compute the force on it. Only a solid with `reports_reaction` (driven or free) records it. | |
 
 ## Particles and the particle-grid exchange
 

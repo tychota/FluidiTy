@@ -1191,7 +1191,21 @@ solid is removed; then friction takes $mu$ times that speed off the sideways spe
 When that would take all of it or more, the particle sticks and takes the solid's velocity; otherwise it slips with less
 sideways speed. This is the friction response of the snow paper by Stomakhin et al. [19], with the sideways speed
 measured from the solid. The removal is done once, the approach recomputed from the new velocity, and the rest removed
-again, so rounding leaves no approach worth naming.
+again. The result is exact only up to rounding: its approach, computed again, is zero within a few rounding units of the
+speeds involved and can be slightly negative. With machine epsilon $epsilon = 2^(-52)$, each operation rounds by at
+most $epsilon\/2$ of its result, and a dot product with the unit normal by at most $2 epsilon$ times the length of
+its other vector. Let $S = |bold(v)| + |bold(u)|$. After the first removal, $bold(v)' - bold(u)$ is the sideways part
+of $bold(v) - bold(u)$, so $|bold(v)' - bold(u)| <= S$ and $|bold(v)'| <= 2 S$. The second removal recomputes the
+approach to within $2 epsilon S$ and its subtraction moves the approach by at most $epsilon\/2 dot 2 S = epsilon S$,
+so at most $3 epsilon S$ stays. A slip keeps $1 - mu (-a)\/s_"side" <= 1$ times that and rounds its blend by at most
+$2 epsilon S$ more; a stick returns $bold(u)$, whose approach computes to exactly 0. Computing the approach of the
+result adds at most $2 epsilon S$: in all at most $7 epsilon S$. The code bounds it by $2^(-46) A = 64 epsilon A$
+(`ComputeLargestApproachLeftAfterResponse`), with $A$ the sum of the absolute axes of $bold(v)$ and $bold(u)$. $A >=
+S$, and unlike a length it squares nothing, so the bound stays right for speeds whose squares underflow; it holds for
+$A$ between $2^(-1000)$ and $2^500$ m/s. A later test of whether such a velocity still approaches compares with that
+bound, not with 0. For a fixed flat solid with normal (0.6, 0, 0.8), a velocity (−2, 0, −2) m/s with friction 0 keeps
+an approach of $-2^(-55)$ m/s, within the bound of $2^(-44) = 5.7 times 10^(-14)$ m/s; the same velocity times
+$2^(-830)$ keeps $-2^(-885)$ m/s, within $2^(-874)$ m/s, where a bound built from lengths would be 0.
 
 For a fixed flat solid with normal (0, 0, 1) and an incoming velocity of (3, 0, −1) m/s (@fig-contact-response, the
 tests' numbers): $a = -1$ m/s, so $bold(v)' = (3, 0, 0)$ and the sideways speed is 3 m/s. With $mu = 0.5$,
@@ -1208,12 +1222,16 @@ m/s becomes (0, 0, 0.5) m/s.
 ) <fig-contact-response>
 
 Two choices in @eq:contact-response matter for the code. First, the approach is removed in world coordinates, as
-$bold(v) - a bold(n)$, not by moving to the solid's frame, removing it there and moving back. The round trip would erase
+$bold(v) - a bold(n)$, not from the velocity measured from the solid, $bold(v) - bold(u)$, with $bold(u)$ added back
+afterwards. That round trip would erase
 a small sideways velocity next to a fast solid. With friction 0 at a flat solid with normal (0, 0, 1) sliding sideways
 at $10^8$ m/s, a particle at $(10^(-9), 0, -1)$ m/s keeps its x part of $10^(-9)$ m/s in world coordinates, while the
 round trip computes $(10^(-9) - 10^8) + 10^8 = 0$, since doubles near $10^8$ are $1.5 times 10^(-8)$ apart (this paper's
-example). Second, the stick test is written as a division, $mu >= s_"side"\/(-a)$, not as $mu (-a) >= s_"side"$: a very
-large friction then never overflows.
+example). Second, the stick test compares $mu$ with the quotient, $mu >= s_"side"\/(-a)$, not the
+product with the sideways speed, $mu (-a) >= s_"side"$. The two forms round differently at the limit: with sideways speed 3 m/s and approach −0.7 m/s,
+the friction $3\/0.7$ rounded to a double sticks by the quotient, while the product rounds to $2.9999999999999996 < 3$
+and would slip at $4.4 times 10^(-16)$ m/s. Overflow is no reason for either form: an infinite product still compares
+correctly.
 
 Each of the particle's two velocities gets the response with its own approach speed. A particle whose
 `for_this_step` is (0, 0, −1) m/s and whose `for_next_step` is (1, 0, −3) m/s meets a fixed flat solid with
