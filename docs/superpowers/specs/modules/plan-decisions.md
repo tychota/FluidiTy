@@ -2499,3 +2499,545 @@ grid, gas, materials, transfer and particles designs' section 4.
   search's `OrderBuffers` gets the same fix.
 - 29: one suffix, `_test_support`, everywhere.
 - 30: the known-open form is kept as written (owner confirmation pending).
+
+## Owner answers A40–A64 applied (2026-11-15)
+
+Applies A40–A64 as refined: A43 and A45 by A58, A44 replaced by A57, A46 by A59 and A60, A52 by A61–A63, A39 and A51
+by A55 (already in the plans). Changed plan tasks carry `**Amended 2026-11-15 (A<n>):**`; inserted tasks use
+"12a"-style numbers; later-task groups are headed "(later)" and are not part of any module's done-criteria. Every
+design's section 11 has one decision per answer; replaced decisions keep their text marked **replaced**. Reconcile
+items 31–33 are applied here too (item 11). Everything below wins over a design and over earlier sections of this
+file where they differ; the earlier text it replaces is named in each item.
+
+### 1. Particles everywhere in the liquid (A64)
+
+- **First version.** Every liquid cell holds particles, at every depth and every cell size. There is no grid-only
+  region, no grid-only record, no particle/grid velocity blend, no carried (semi-Lagrangian) grid velocity and no
+  region transfer. Replaces: cell resize design 1 Part A ("deep liquid ... needs no particles"), 3.4 `RegionSettings`,
+  `kMaxFilledShare`, `ReadLargestGridOnlySpeed`, `ApplyGridOnlyRegionInStep`, `MoveGridOnlyLiquidInStep`; 3.5
+  (except `ComputeDepthBelowSurface` and `ComputeLiquidTotals`, which stay, the latter over particles only); 5.5,
+  5.6; the `ResizeCells` steps that call them; transfer's `FaceValueKind::kFromGridOnlyRegion` uses; the step's
+  `apply_grid_only_region`, `move_grid_only_liquid`, `read_largest_grid_only_speed` callbacks,
+  `CommittedStepLimits::grid_only_speed`, the grid-only `GridFields` arrays (`is_grid_only_region`,
+  `layers_from_grid_only_region`, `grid_only_mass`, `grid_only_rest_volume`, `grid_only_current_volume`,
+  `grid_only_ingredient_volume`), the batched-run mirror `"step: committed grid-only marks on the CPU"`, the
+  stage-2 mark "is a grid-only cell of the committed grid", pressure's "a grid-only cell counts as full", render
+  output's grid-only surface inputs, the I/O and add-on fields `particle_region_depth_in_cell_widths`,
+  `grid_only_depth_in_cell_widths`, and the capability findings and errors that exist only for them
+  (`kGridOnlyCellDrained`, `kGridOnlyCellTooFull`, `kAmountsDoNotBalance` keeps its meaning over particles only).
+- **Where it goes.** Design text is kept, each passage marked "not in the first version (A64)". The tasks move to
+  one group at the end of the cell resize and batches plan: **"Deep liquid without particles (later; needs
+  review)"**, excluded from the done-criteria, opened by the note "an independent review of this design comes
+  first", and gated by two tests named there: `GridOnlyRegion, StandingWave_KeepsAmplitude` (a standing wave of
+  wavelength 1 m in a 0.5 m deep tank with the bottom half grid-only keeps its amplitude within 5 % of the
+  all-particle run's after 10 periods; 5 % is a starting value) and `GridOnlyRegion, ParticleBandEdge_StaysStable`
+  (a tank sloshed for 20 s: no step rejected for travel at the band edge, kinetic energy never above its start value
+  plus the work of gravity, no particle stuck in a grid-only cell). Other plans' grid-only pieces (step, transfer,
+  pressure, render output, I/O, Blender) move to a group of the same name in their own plan, each pointing at the
+  cell resize group as its owner.
+- **Particles in big deep cells.** A cell of size level `l` holds particles of `size_level == l` (particles design
+  5.6): `AdjustParticleCount` merges eight particles of level `l + 1` into one of level `l` when a resize merges
+  their cells, and splits one into eight when a resize splits its cell. So a big cell holds about the same number of
+  particles as a small one (the seeded count, 8 per cell with `ComputeRefillParticle`'s pattern), each with 8^k
+  times the volume. No new particle code is needed; the cell resize plan gains the deep-tank test below, which
+  proves the cascade works over several levels (one level per resize). Particles that drifted across a size change
+  keep their level (C2) and are counted, so a deep cell may hold more than 8.
+- **Cost, stated honestly.** With the depth term `w = depth / 8` the number of cells below the band in a tank of
+  surface area `A` is `∫ A dz / w(z)^3 = 512 A ∫_{8 w_min}^{D} z^-3 dz < 4 A / w_min^2`, against `8 A / w_min^2` in
+  the band of 8 smallest cells: particles everywhere costs at most about 1.5 times the band-only count for any
+  depth, when the merges are allowed (discrete levels and the 0.8 merge share raise this toward 2). The scenes that
+  need many more particles are those where deep cells cannot coarsen: a small `size_level_count`, a strong shear
+  term, artist regions, or a solid or gas pocket deep down; there the count grows with depth, `8 x depth / w x A /
+  w^2`. `SceneCounts`' particle estimate counts every liquid cell of the start grid at the levels the depth term
+  gives, times the seeded count, plus the sources' estimate as before.
+- **Does-not-fit line.** When particles are the largest processor entry and the plan does not fit, `BuildBudgetLines`
+  adds, before `fits: no`: `particles: <n> needed, <m> of them in cells deeper than <8 w_min> m below the surface;
+  in this version every liquid cell holds particles (deep liquid without particles comes later)`. The suggestion
+  line is unchanged. I/O test `BuildBudgetLines, DeepTankDoesNotFit_NamesDeepParticles`.
+- **Tests that used a grid-only scene** are rewritten on the all-particle scene (same setup, every cell with
+  particles) or moved to the later group when they test the region itself; each plan lists which.
+- **New tests.** Cell resize `ResizeCells, CalmDeepTank_CoarsensWithParticlesInEveryCell` (2 m deep tank, `w_min`
+  = 0.05 m, 5 levels, at rest: after 3 s every cell deeper than `8 w_min` reaches the level the depth term allows,
+  every liquid cell holds particles of its own level, the count per cell lies in 1..16 except drifted ones counted
+  in `skipped_incomplete_count`, mass and momentum over particles equal before and after each resize within
+  `kAmountTolerance`).
+
+### 2. The shared cell size rule (A41, A61, A62, A63; A52 refined)
+
+- **Owner and file.** `native/fluidity/grid/cell_size_rule.h` (S, `FLUIDITY_CPU_AND_GPU`, C++20 subset, no
+  allocation), namespace `fluidity::grid`, built and tested in a new grid plan task (numerics). Grid owns it because
+  both the step (stage 2) and cell resize read it and both come after grid. `CellSizeSettings` and `CellSizeFacts`
+  move from `cell_resize/cell_size_rule.h` into it (cell resize design 3.2 becomes "moved to grid");
+  `cell_resize::CellResizeSettings::cell_size` is a `grid::CellSizeSettings`.
+- **Declarations** (exact; comments in the grid task):
+
+  ```cpp
+  struct CellSizeSettings {                     // Chosen once per scene. Replaces cell_resize::CellSizeSettings.
+    SizeLevel smallest_size_level{};            // Width w_min: the surface, pockets, gas and solids.
+    double surface_reach_in_cell_widths = 8;    // No unit. Depth term: w_band = w_min * max(1, depth / (8 w_min)).
+    double solid_reach_in_cell_widths = 2;      // No unit. Solid term: w_solid = w_min * max(1, d / (2 w_min)).
+    double shear_width_factor = 0.25;           // No unit. c_u of literature-cell-size.md 5(a); starting value,
+                                                //   to calibrate (A62).
+    double merge_width_share = 0.8;             // No unit. Merge only while 2 w <= 0.8 x wanted width.
+    double merge_wait_duration = 0.25;          // s of committed time the merge test holds without a break.
+    std::uint32_t min_merge_wait_steps = 8;     // Committed steps the merge test holds without a break.
+    std::uint32_t max_cell_splits_per_resize = 1u << 16;   // Limit. More wanted splits wait.
+  };
+  struct CellWidthsByLevel {                    // m. width[l] = ComputeCellWidth(frame, l), computed once on the CPU.
+    double width[kMaxSizeLevels];               // Compared, never recomputed with log2 or pow on either processor.
+    std::uint8_t size_level_count = 1;
+  };
+  struct CellSizeFacts {                        // What the rule reads about one active cell.
+    double cell_width = 0;                      // m.
+    double depth_below_surface = 0;             // m. 0 at the surface; +infinity beyond reach.
+    double distance_to_solid = 0;               // m. +infinity: none within reach.
+    double velocity_gradient_size = 0;          // 1/s. Held maximum (below); 0 outside liquid.
+    SizeLevel artist_size_level{};              // Finest level an artist region or the map asks here; 0: none.
+    bool holds_particles_that_keep_their_count = false;
+    bool touches_air_pocket = false;
+    bool wants_smallest_cells = false;          // Gas in or beside the cell (A10).
+    bool touches_air_gas_or_solid = false;      // Merge veto (5.3 rule 5).
+  };
+  // m/s. U_ref = max(largest_liquid_speed, sqrt(gravity_size * biggest_cell_width)) (literature-cell-size.md 5(a)).
+  FLUIDITY_CPU_AND_GPU double ComputeReferenceSpeed(double largest_liquid_speed, double gravity_size,
+                                                    double biggest_cell_width);
+  // m. wanted = clamp(min(w_band, w_solid, w_shear, w_artist), w_min, w_max); w_shear = c_u U_ref / g for g > 0, else
+  // +infinity; w_artist = widths.width[artist_size_level] when above 0, else +infinity. w_min where
+  // touches_air_pocket or wants_smallest_cells. No FMA contraction (strict rounding of the shared headers).
+  FLUIDITY_CPU_AND_GPU double ComputeWantedCellWidth(const CellSizeSettings& settings,
+                                                     const CellWidthsByLevel& widths, double reference_speed,
+                                                     const CellSizeFacts& facts);
+  // The biggest level (smallest index) whose width <= wanted_width, by comparison with widths.width.
+  FLUIDITY_CPU_AND_GPU SizeLevel ComputeWantedSizeLevel(const CellWidthsByLevel& widths, double wanted_width);
+  // A cell that is not in the committed grid (stage ChooseActiveCells): the level of the nearest committed active
+  // cell (grid::FindCellAt probes at position + {-1,0,1}^3 * biggest width, nearest centre, ties in fixed cell
+  // order) plus one, capped at smallest_size_level; smallest_size_level when none is found. This is the rule above
+  // for a new cell: it borders air, so its depth is 0 and its wanted width is w_min (A61); the cap keeps the
+  // size-step rule against the committed cell it grew from. Reads the tables on their own processor.
+  FLUIDITY_CPU_AND_GPU SizeLevel ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position,
+                                                         SizeLevel smallest_size_level);
+  struct CellSizeRegion {                       // An artist region: world axis-aligned box.
+    Vec3 low_corner{}, high_corner{};           // m, world.
+    SizeLevel size_level{};                     // The asked cell width rounded at load to the biggest level whose
+                                                //   width <= the asked width.
+  };
+  struct ArtistCellSizes {                      // Views on the run's processor.
+    const CellSizeRegion* regions = nullptr;  std::uint32_t region_count = 0;
+    const std::uint8_t* map_levels = nullptr;   // [map_height * map_width], row 0 at the domain's low y. 0: none.
+    std::uint32_t map_width = 0, map_height = 0;
+    Vec3 domain_low_corner{};  double domain_width_x = 0, domain_width_y = 0;   // m.
+  };
+  // Finest level any region containing `center` or the map pixel under it asks for; 0: none. Pixel column =
+  // min(floor((x - x0) / domain_width_x * map_width), map_width - 1), row likewise; outside the box: none.
+  FLUIDITY_CPU_AND_GPU SizeLevel ComputeArtistSizeLevel(const ArtistCellSizes& artist, Vec3 center);
+  ```
+
+- **Velocity gradient.** `cell_resize/velocity_gradient_math.h` (S): `FLUIDITY_CPU_AND_GPU double
+  ComputeVelocityGradientSize(const grid::GridTables& tables, const double* velocity, grid::CellPlaceIndex cell);`
+  the Frobenius norm of the full 3x3 gradient at the cell centre from the committed `velocity_after_pressure`:
+  diagonal terms from the two opposite faces of the cell (area-weighted mean of their pieces, difference over the
+  width), off-diagonal terms from the cell-centre velocities of the two face-touching cells along each other axis
+  (a bigger neighbour: its centre value; four smaller ones: their mean in ascending `CellId`), difference over the
+  distance between centres. Fixed order, no contraction. Liquid cells only (cells whose `CellContent` is liquid);
+  0 elsewhere. A uniform field gives 0; a linear field gives its exact gradient between same-size neighbours, and
+  first-order accuracy beside a bigger neighbour, whose centre is off the axis by w/2 (reconcile, cell resize plan
+  Task 7a, bound test) (literature-cell-size.md 5(c)).
+- **The pass.** `cell_resize::ComputeCellSizeChanges` runs on the grid's processor over all blocks after a committed
+  step, inside `ResizeCells` step 2: per active cell it fills `CellSizeFacts` (depth from
+  `ComputeDepthBelowSurface`, distance from `pressure::SolidCoverage`, the held gradient, the artist level), calls
+  `ComputeWantedCellWidth`, updates the try copies of the wait counters, applies the merge test of design 5.3 rule 5
+  plus "never within `surface_reach_in_cell_widths * w_min` of the surface", and writes one byte per cell place,
+  `grid::CellValues<std::uint8_t> size_change` (`CellSizeChange::kKeep`, `kSplit`, `kMayMerge`, `kMergeReady`).
+  On a GPU grid that byte array is read back in one counted copy (1 B per cell place) for the CPU list edit (split
+  and merge on the CPU cell list stay as designed); nothing else is read back for sizing.
+- **Hysteresis (literature-cell-size.md 5(d)).** Split at once when the cell is wider than wanted. Merge eight
+  siblings only after `2 w <= merge_width_share x wanted` has held for them and every touching cell without a break
+  for `merge_wait_duration` of committed time **and** `min_merge_wait_steps` committed steps; never a cell touching
+  air, a pocket, gas or a solid, or within `8 w_min` of the surface; at most one level per cell per resize.
+- **Held maximum and wait counters (per cell place, committed and try copies in `step::GridFields`, beside
+  `merge_ready_duration`):** `grid::CellValues<double> held_velocity_gradient_size` (1/s; 8 B) =
+  max(held, current) at each resize, reset to the current value when the merge test breaks or the cell is merged (a split
+  copies it, which only delays a later merge: reconcile); `grid::CellValues<std::uint8_t> merge_ready_step_count` (1 B, saturating at 255; reset with
+  `merge_ready_duration`). The held value equals "the maximum over the current wait" (A63); it is redundant while
+  `ResizeCells` runs after every committed step and is kept so a longer resize interval stays correct. Remap:
+  split copies, merge gives 0 (as `merge_ready_duration`). Memory estimate entries (step): `"step: held velocity
+  gradient size"` 8 B per cell place x 2, `"step: merge wait steps"` 1 B per cell place x 2, `kRunOn`; cell resize:
+  `"cell resize: size changes"` 1 B per cell place, `"cell resize: cell size regions"` 56 B per region (`kGivenCount`),
+  `"cell resize: cell size map"` 1 B per pixel (`kGivenCount`), all `kRunOn`, `kWholeRun`. Saved in the state.
+- **Reference speed.** `step::CommittedStepLimits` gains `double largest_liquid_speed = 0; // m/s. Largest particle
+  speed over liquid materials at the last commit; an exact max, so any order and any batch cut give the same bytes.`
+  The step fills it in `CommitStep` from the travel pass it already runs. `ResizeCells` reads it and calls
+  `ComputeReferenceSpeed` with `|gravity|` and the frame's biggest cell width.
+- **Removed.** `step::StepCallbacks::choose_cell_size`, `cell_resize::ChooseCellSize`, the one-piece copies of step
+  design 6.5 row O4 ("new cells back, levels sent") and step Appendix B's O4 row, `ResizeCellsReport`'s
+  "ChooseCellSize's first copy", the "Open (owner): a shared size rule" items, batches Task 29's null-tables text.
+  Stage 2 calls `grid::ComputeNewCellSizeLevel` in its marking pass on the grid's processor. **Kept:**
+  `cell_resize::GridCopies` and the step's batched CPU grid copy, because `FindCellsThatMustSplit`, the list edit,
+  `BuildResizeMap`, grouping and the marker upkeep still read CPU tables in a GPU run; only `choose_cell_size` stops
+  being a reader.
+- **Artist inputs (A63).** Scene file: `cell_size_regions: [{low_corner: [x,y,z], high_corner: [x,y,z],
+  cell_width: m}]` and `cell_size_map: {image: <path relative to the scene file, PNG, 8- or 16-bit grey>}` (absent:
+  none). The map covers the domain box's x-y extent seen from above (Z-up) and applies at every height; pixel value
+  `v` in [0, 1] (white 1): `v == 0` no request, else level `round(v x (size_level_count - 1))`, converted once at
+  load on the CPU into `map_levels` and uploaded once. The PNG is a top view with +y up: its top row is the
+  domain's high y, so the loader flips it (`map_levels` row 0 is the low y). A region `cell_width` of 0 means the
+  smallest cell width. The run folder's `inputs/cell_size_map.png` is left alone by `run --into`. The add-on's
+  property is `memory_left_free_mib` (a Blender int is 32-bit); the scene file and `RunDetail` keep bytes. Reason for a 2D map: Blender has a plain way to paint an
+  image, none to paint a 3D field; depth-specific requests use regions. Blender: a domain property
+  `cell_size_region_collection` (objects in it are regions; each object gets `fluidity_cell_size_region.cell_width`,
+  m, default the smallest cell width); the region box is the object's world axis-aligned bounding box (finding
+  `cell_size_region_rotated`, NOTE, when the object is rotated: "the axis-aligned box around it is used"); a domain
+  property `cell_size_map_image` (an Image); the exporter writes it as an 8-bit grey PNG `inputs/cell_size_map.png`
+  in the run folder (luminance). Panel: Physical Detail, "Cell size" box. The fields are part of the scene
+  fingerprint.
+- **Same bytes.** Every term is a local stencil read plus exact min and max; widths are compared with
+  `CellWidthsByLevel`; no `log2`, no `pow`, no FMA. So CPU and GPU give equal `size_change` bytes, and any batch cut
+  gives equal bytes. Tests: grid `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (10,000 fact sets from a fixed
+  formula), cell resize `ComputeCellSizeChanges, OnGpu_SameBytesAsCpu` (shear scene), `ComputeCellSizeChanges,
+  AnyBatchCut_SameBytes` (one range, 1-block and 3-block ranges).
+- **Tests** (cell resize unless named): from literature-cell-size.md 5(f): (1) `ResizeCells,
+  SplitThenMerge_ConservesMassAndMomentum` (bytes for the record-free totals, `kAmountTolerance` relative);
+  (2) `ResizeCells, CalmPool_ReachesBiggestCellsThenStays` (flat pool 1 m deep, `w_min` 0.02 m, 5 levels: every
+  cell deeper than `8 w_min` reaches the depth term's level within `0.25 s x 4` levels plus 32 steps, then no split
+  or merge for 10 s); (3) `ResizeCells, ThinSheetAndPinchOff_StaySmallest` (no merge within `8 w_min` of either
+  face); (4) grid `ComputeWantedCellWidth, UniformTranslation_NoShearSplit` and `ComputeCellSizeChanges,
+  RigidRotation_Splits` (gradient size `sqrt(2) Ω`; with Ω = 10 rad/s, U_ref = 1 m/s: w_shear = 0.25 / 14.142 =
+  0.017678 m); (5) the batch-cut test above; (6) the CPU-GPU test above; (7) `ResizeCells,
+  SplashIntoCoarseRegion_NoStuckParticles` (no particle whose speed stays below 1e-3 of the splash speed for 20 steps
+  while above the surface; liquid momentum continuous across the resize within 1e-12 relative). Owner's additions:
+  `ResizeCells, CalmTank_InsideCoarsensSurfaceStaysFinest`, `ResizeCells, Jet_KeepsSmallCellsAlongShearLayer` (a
+  0.1 m jet at 2 m/s into still liquid: cells within 2 jet radii of the jet edge stay at `w_min` for every resize
+  after 0.5 s), grid `ComputeArtistSizeLevel, RegionAndMap_FinestWins`, `ComputeNewCellSizeLevel,
+  NextToBigCell_OneLevelFiner`, and A61's `ComputeWantedCellWidth, SurfaceCell_IsSmallest` (depth 0 gives `w_min`
+  whatever the other terms).
+- **Later group "Coarser cells on calm surfaces (later)"** in the cell resize plan holds A61's curvature work:
+  `w_curv = c_k / max(|∇²φ|, tiny)` with `c_k = 0.25`, curvature from a smoothed distance (not
+  `distance_to_surface`), 7-point Laplacian within 2 cells of the surface clamped to `1 / w_min`, spread by a max
+  over 26 neighbours twice, surface cells up to 1 or 2 levels coarser, a T-junction-aware surface pressure condition
+  (Ando and Batty 2020 Eq. 25) and bump-free surface resampling (Ando 2013). Not in the done-criteria.
+
+### 3. GPU memory: one reserved block, a true budget, warnings (A58; A43, A45 refined)
+
+- **Budget** (both processors; replaces `memory_share_of_total` 0.7 / `memory_share_of_free` 0.8 of step design 3.3
+  and step 6.3 item 4): `allowed = min(memory_share_of_free x free, free - memory_left_free_bytes)` (0 when negative),
+  with `StepSettings::memory_share_of_free = kDefaultMemoryShareOfFree` (0.9; Redshift's documented default) and
+  `StepSettings::memory_left_free_bytes = kDefaultMemoryLeftFreeBytes` (536,870,912 B = 512 MiB; reasoning: about
+  twice Redshift's 256 MB minimum; starting value). `memory_share_of_total` is removed. One rule for the CPU too
+  (it was min(0.7 total, 0.8 free)); owner to note. Declared in step `run_plan.h`:
+  `std::uint64_t ComputeAllowedMemoryBytes(MemoryAvailable available, double memory_share_of_free, std::uint64_t
+  memory_left_free_bytes);`. On the GPU `free` is read by `ReadMemoryAvailable(RunOn::kGpu)` after the context
+  exists (Foundation Task 19). The suggestion `more_memory_bytes` becomes `max(ceil(needed /
+  memory_share_of_free), needed + memory_left_free_bytes) - free`. The grid's 25 % headroom stays (A37). The add-on's
+  `memory_share_of_total` property is removed, `memory_share_of_free` defaults to 0.9, `memory_left_free_bytes`
+  (MiB in the UI) is added.
+- **One reserved block** (Foundation Tasks 17–19, `base/run_memory.h`). Names: `RunMemory` (move-only; one block on
+  one processor), `BuildRunMemory(RunOn run_on, std::size_t byte_count, CpuMemory cpu_memory =
+  CpuMemory::kOrdinary)`, methods `run_on()`, `reserved_bytes()`, `handed_out_bytes()`; `BuildBuffer<Value>(RunOn
+  run_on, std::size_t size, RunMemory& run_memory)`; `kRunMemoryPieceAlignmentBytes = 256` (CUDA's documented
+  `cudaMalloc` alignment; the same on the CPU so a plan's bytes do not depend on the processor);
+  `std::size_t ComputeRunMemoryPieceBytes(std::size_t byte_count)` (rounded up to 256; 0 stays 0);
+  `std::uint64_t ComputeRunMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts)`
+  (in `memory_count.h`: over entries with `where == kRunOn`, `copies x ComputeRunMemoryPieceBytes(item count x
+  bytes_each)`, saturating); `BufferError::kRunMemoryTooSmall` appended at the end of `BufferError`; forms
+  `BuildSumBuffers(RunOn, std::size_t max_count, RunMemory&)` and `BuildOrderBuffers(RunOn, std::size_t max_count,
+  RunMemory&)`. Rules: a piece is never freed alone; a `Buffer` from a `RunMemory` frees nothing when destroyed;
+  the `RunMemory` frees the block as a whole and must outlive its pieces (debug assertion on a live-piece count held
+  in a heap cell the `RunMemory` owns, so moving it keeps the pieces' pointer valid). Swaps of try and committed
+  buffers, `grid::TakeBuffers` and rebuilding a grid into its storage move `Buffer` objects and free nothing, so they
+  fit unchanged. A piece that does not fit returns `kRunMemoryTooSmall`, takes nothing and writes nothing; it is a
+  planner bug (debug builds also assert). Plain `BuildBuffer` (no `RunMemory`) stays for tests, tools, `where =
+  kCpu` buffers and `KeptFor::kOneCall` / `kOneSnapshot` CPU arrays. No `kRunOn` entry may be `kOneCall`; a plan
+  that has one makes it `kWholeRun`.
+- **Every module builder** (`Build<Module>Buffers`, `BuildGridBuffers`, `BuildGridBuilderBuffers`,
+  `BuildBorderSearchBuffers`, `Build...Values`, `BuildCellResize`, `BuildRenderOutput`'s run-processor part, and
+  every other function that builds `kRunOn` buffers) takes **`RunMemory& run_memory` as its last parameter**; every
+  existing parameter stays; `run_on` must equal `run_memory.run_on()` (`Requires:`, debug assertion, A30).
+  **Correction (same day, reconcile):** a run has one `RunMemory` per processor it uses. `run_memory` lives on the
+  run's processor and holds the `where = kRunOn` entries; in a GPU run `cpu_run_memory` (CPU; `CpuMemory::
+  kLockedForCopies` in a batched GPU run, ordinary otherwise) holds the `where = kCpu` entries kept `kWholeRun` or
+  `kOneStepTry` (stage 17's CPU `SolidsBuffers`, the step's CPU grid copy and mirrors, cell resize's CPU grids, gas
+  marker lists). In a CPU run both kinds come from the one `run_memory`, and `cpu_run_memory` is that same object.
+  A builder takes the `RunMemory` of the processor its buffers live on (a builder called with `run_on = kCpu` in a GPU
+  run gets `cpu_run_memory` as its `run_memory`); a builder that builds on both processors takes `RunMemory&
+  run_memory, RunMemory& cpu_run_memory` as its last two parameters. `ComputeRunMemoryBytes` gains a `MemoryWhere
+  where` parameter (sums the entries with that `where`); in a CPU run the step sums both. Plain `BuildBuffer` is left
+  for tests, tools and `kOneCall` / `kOneSnapshot` CPU arrays. `MemoryReport::allocated_cpu_bytes` becomes
+  `handed_out_cpu_bytes` with `reserved_cpu_bytes` beside it; the CPU warning compares them with the plan the same
+  way. Each module's estimate test becomes: build a `RunMemory` of exactly
+  `ComputeRunMemoryBytes(Build<Module>MemoryEstimate(...), counts)`, build the module's buffers into it, assert
+  `handed_out_bytes() == reserved_bytes()` (test name `Build<Module>Buffers, IntoRunMemory_HandsOutExactlyTheEstimate`).
+  An entry's `copies` must equal the number of buffers it stands for, each `count x bytes_each` bytes. A buffer
+  whose size is a per-item part plus a fixed part (working buffers from `Compute<Name>BuffersSize`, orders with one
+  extra item) is **one** entry: `counted_per = kGivenCount`, `bytes_each = 1`, `given_count` = its exact byte count at
+  the plan's limits, so the reservation is exact for any `max_cell_blocks` (reconcile, grid agent). So the grid's
+  estimate builders take the room: `BuildGridMemoryEstimate(RunOn run_on, std::uint32_t storage_count, std::uint32_t
+  max_cell_blocks, BuilderBuffersSharing builder_buffers_sharing = kOnePerGrid)` and
+  `BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks)`; callers pass
+  `limits.max_cell_blocks` (for example `BuildGridMemoryEstimate(run_on, 2, limits.max_cell_blocks, kOneForAllGrids)`).
+  `kRunMemoryTooSmall` maps to the module's `kOutOfMemory` (item 11) with `magnitude` = bytes asked.
+- **Step.** `BuildSimulation` reads `ReadMemoryAvailable` (free before), builds `run_memory` from
+  `ComputeRunMemoryBytes(estimate)` **before anything else**, reads free again, then builds every buffer into it.
+  `ApplyLimits` builds a new `RunMemory` for the whole new plan, rebuilds every buffer into it, copies the committed
+  values, swaps, and frees the old block whole; its check becomes `new reserved + old reserved <= allowed_bytes`
+  (tighter than before, because the old try copies cannot be freed alone; stated in step design 5.7).
+  `MemoryReport` gains `std::uint64_t planned_bytes` (= `ComputeRunMemoryBytes` of the plan), `reserved_bytes`
+  (current block), `handed_out_bytes`, `std::uint32_t reserved_block_count` (blocks reserved since
+  `BuildSimulation`, 1 + raises), `std::uint64_t memory_taken_bytes` (free before minus free after the reservation;
+  GPU only, 0 on the CPU), `std::uint64_t requested_beyond_plan_bytes` (bytes reserved after a limit raise beyond the
+  plan shown at start, plus measured `kCpu` bytes beyond their plan). `allocated_bytes` becomes `handed_out_bytes`.
+  `estimate.on_processor` is `ComputeRunMemoryBytes` (rounded).
+- **Warnings** (I/O `run_cost.h`; `kMemoryWarningShare` and `kCopyWarningShare` removed; A43): `warning: <p>
+  memory: <b> requested beyond the planned <b>` for any `requested_beyond_plan_bytes > 0` or measured peak above its
+  planned budget on either processor; `warning: copies per step <b> (max) are above the planned <b>` when any
+  committed step's copy bytes exceed `planned_step_copies` (max, not mean: the plan is an upper bound); the same for
+  solve copies per iteration; `warning: gpu memory taken <b> is less than the <b> reserved; Windows may have placed
+  part of it in shared system memory, which is much slower. To make the run fail instead, set "CUDA - Sysmem
+  Fallback Policy" to "Prefer No Sysmem Fallback" for fluidity.exe and blender.exe in the NVIDIA Control Panel.`
+  when `memory_taken_bytes + kMemoryTakenToleranceBytes < reserved_bytes` (`kMemoryTakenToleranceBytes = 2,097,152`,
+  2 MiB, reasoning, to be confirmed by the Windows run; never warn when taken is above reserved: other programs
+  count there). Cost lines gain `gpu memory: planned <b>, reserved <b> in <n> block(s), handed out <b>, taken <b>`.
+  JSON `RunCost` gains `planned_bytes`, `reserved_bytes`, `reserved_block_count`, `handed_out_bytes`,
+  `memory_taken_bytes`, `requested_beyond_plan_bytes`; `RunBudget`'s `MemoryBudget` gains `memory_share_of_free`
+  and `memory_left_free_bytes`. On Windows `check` and the add-on print the fallback note once in the budget lines:
+  `note: on Windows a full GPU makes the run slow instead of failing; see "Prefer No Sysmem Fallback" in the NVIDIA
+  Control Panel`. Blender: the warnings arrive in the cost lines drawn in `FLUIDITY_PT_performance` (no new
+  widget). Tests: I/O `BuildCostLines, RequestedBeyondPlan_Warns`, `BuildCostLines, CopiesAboveBound_Warns`,
+  `BuildCostLines, MemoryTakenBelowReserved_WarnsSpill`, `BuildCostLines, MemoryTakenAboveReserved_NoWarning`;
+  step `ComputeAllowedMemoryBytes, SmallerOfShareAndHeadroom` (free 16e9: 14.4e9; free 4e9: 3.463e9 = 4e9 - 536,870,912;
+  free 0.4e9: 0), `BuildSimulation, ReservesOneBlockFirst`, `BuildSimulation, HandedOutEqualsPlanned`,
+  `AdvanceTo, LimitRaise_ReservesSecondBlockAndFreesFirst`.
+
+- **Buffers held outside the step after a raise (reconcile).** `step::StepCallbacks` gains
+  `Callback<bool(void* context, Simulation& simulation, const SimulationLimits& new_limits)> limits_raised;`, called
+  by `ApplyLimits` after the new blocks are reserved and the step's buffers rebuilt, before the old blocks are freed;
+  I/O rebuilds `CellResize`, the `BatchedRun` and the render `StepRecorder` into `step::FindRunMemory(Simulation&)` /
+  `step::FindCpuRunMemory(Simulation&)` (same object in a CPU run); false gives `kLimitsCannotBeRaised` with nothing
+  changed. `BuildSimulation` calls no callback. `BuildRunPlan` gains a last parameter `std::optional<RunMode>
+  forced_mode = std::nullopt` (resume, item 10).
+
+### 4. Viscosity advice (A57; replaces A44 and A25's threshold)
+
+- Removed: `kSmallestVisibleViscousEffectPerStep` and its tests (`kSmallestVisibleViscousEffectPerStep,
+  IsTenthOfAPercentPerStep`), the A25 "note" line. Kept: A25's definition (the setting decides the path) and
+  `ComputeViscousEffectPerStep` (`N = ν Δt / h²`, ν = viscosity / density).
+- New, viscosity `viscosity_advice.h` (CPU only): `inline constexpr double kNegligibleViscosityRatio = 0.1;`
+  `inline constexpr double kSmallestVisibleWavelengthInCells = 4;` `inline constexpr double kNegligibleViscousChange
+  = 0.01;` (all judgments, literature-practice.md topic 1); `std::optional<double>
+  ComputeViscosityToSmoothingRatio(double viscous_effect_per_step, double own_motion_kept);` = `4 N / (1 - α)`,
+  empty when α = 1 (no smoothing figure exists for pure FLIP); `double ComputeFourCellFeatureChange(double
+  viscosity, double density, double run_duration, double cell_width);` = `-expm1(-π² D / 4)` with `D = ν T / h²`
+  (a wavelength of 4 cells has angular wavenumber `π / (2h)`, so it decays as `exp(-ν π² T / (4 h²))`);
+  `double ComputeReynoldsNumber(double viscosity, double density, double smallest_domain_extent, double
+  gravity_size);` = `U L / ν`, `U = sqrt(2 g L)`. Advice when the ratio is below 0.1 or the change is below 0.01.
+- **The smoothing formula.** `ν_num = (1 - α) h² / (4 Δt)` is this project's derivation from the XPIC filter
+  analysis (Hammerquist and Nairn 2017: a quadratic B-spline round trip filters by `sinc^6(k h) ≈ 1 - (κh)²/4`,
+  matched to one diffusion step), not a published figure. The method paper says so in those words; the ratio uses
+  the largest step, so it is a lower bound (the cautious side).
+- **Planner.** `step::LiquidViscousEffect` (run_plan.h) becomes `{ ingredient_index; viscosity; density;
+  viscous_effect_per_step; std::optional<double> viscosity_to_smoothing_ratio; double four_cell_feature_change;
+  double spreading_in_cells (sqrt(ν T) / h); double reynolds_number; bool advises_zero_viscosity; }` at the smallest
+  cell h, `StepSettings::max_step_duration`, the liquid material's `own_motion_kept` and `T = ReadyScene::end_time`;
+  `RunPlan` gains `double viscous_effect_run_duration` (s) and `double reynolds_length` (m, the domain box's smallest
+  extent).
+- **Lines** (I/O, replacing the A25 per-liquid lines; `%.3g` numbers, percentages rounded to integers):
+  `liquids: viscous solve (a liquid has viscosity above 0); at the smallest cell <w> m, the largest step <t> s and
+  the run's <T> s` then per viscous liquid `  <name>: viscosity <v> Pa s, density <d> kg/m3, grid number <N>;
+  viscosity / transfer smoothing <r> (or "none: the liquid keeps all its own motion"); a feature 4 cells wide changes
+  by <c> % over the run (<s> cells of spreading); Reynolds number <Re>`, then when advised `  advice: <name>'s
+  viscosity will not be visible: set it to 0`, then for every viscous liquid `  note: at viscosity 0 <name> slips
+  along solids instead of sticking`. Exact test (I/O `BuildBudgetLines, WaterAndSyrup_ViscosityAdviceLines`): water
+  1e-3 Pa s 1000 kg/m3 and syrup 10 Pa s 1400 kg/m3, α = 0.95 for both, h = 0.01 m, Δt = 0.01 s, T = 10 s, L = 1 m,
+  g = 9.81: water N 1e-4, ratio 0.008, change 22 % (0.2186563), spreading 0.316 cells, Re 4.43e+06, advised;
+  syrup N 0.714, ratio 57.1, change 100 %, spreading 26.7 cells, Re 620, not advised. Viscosity tests
+  `ComputeViscosityToSmoothingRatio, WaterAtOneCentimetre_Is0p008`, `..., KeepsAllOwnMotion_IsEmpty`,
+  `ComputeFourCellFeatureChange, Water_Is0p2187` (1e-12 relative), `ComputeFourCellFeatureChange,
+  ThresholdAtDOf4p073e-3` (`D = 4 ln(1/0.99) / π² = 4.0732477e-3` gives 0.01), `ComputeReynoldsNumber,
+  WaterInOneMetreBox_Is4p43e6`. JSON `ViscousEffectOfLiquid` replaces `effect_not_visible` by
+  `viscosity_to_smoothing_ratio` (absent when none), `four_cell_feature_change`, `spreading_in_cells`,
+  `reynolds_number`, `advises_zero_viscosity`; `RunBudget` gains `viscous_effect_run_seconds`, `reynolds_length_m`.
+  Blender: lines verbatim in `FLUIDITY_PT_performance`; `RunBudgetFacts.liquids` fields follow.
+
+### 5. Guided rigid bodies in general form (A59; A46 first half refined)
+
+- **Settings** (solids `solid_settings.h`; `FreeMotionLimits` extended, its axis flags kept):
+  `enum class GuideKind : std::uint8_t { kAxisLimits, kRail, kHinge };` and in `FreeMotionLimits`: `GuideKind
+  guide_kind = GuideKind::kAxisLimits;` `Vec3 rail_direction{0, 0, 1};` (no unit, world, normalised at load; kRail:
+  slides along it, no turning) `Vec3 hinge_point{};` (m, world, at time 0) `Vec3 hinge_axis{0, 0, 1};` (no unit,
+  world). **World frame**, decided: for one hinge with a fixed pivot the axis is unchanged by rotation about itself,
+  so world and body frames agree for the axis, and the pivot is fixed in the world; a rail with no turning keeps its
+  direction. Body-fixed axes and moving rails are not exposed (the internal prescribed motion stays 0).
+- **Internal form** (solids, shared `guide_math.h`): `struct AllowedMotions { double columns[6][6]; std::uint8_t
+  column_count = 6; double prescribed_motion[6] = {}; };` rows `(V, Ω)` in world axes about `origin_at_start`; built
+  each try by `FLUIDITY_CPU_AND_GPU AllowedMotions ComputeAllowedMotions(const FreeMotionLimits& limits, Vec3
+  origin_at_start);`: axis limits give selection columns (0/1, exactly); a rail `J = [d; 0]`; a hinge `J = [a x (o -
+  p); a]` with `o = origin_at_start`. `FreeSolidForViscousSolve` and the pressure solve's free-solid data carry
+  `AllowedMotions` instead of the flags. Motion `ξ = J q + ξ_0`.
+- **Viscous solve** (A27 block): per solid the `m x m` block `Jᵀ (M + Δt Rᵀ E_sᵀ W E_s R) J` (Cholesky) and
+  per-sample coefficients `R J` (Batty 2007, Aanjaneya 2018; literature-practice.md topic 3). Replaces "a motion a
+  guide forbids keeps its value before pressure after the solve" (solids Task 23c): the solve itself never moves a
+  forbidden direction. **Pressure solve** free-solid term: the rank-6 term `K M⁻¹ Kᵀ` becomes `(K J) (Jᵀ M J)⁻¹ (K
+  J)ᵀ` (rank m), with `ξ_0` in the right-hand side; solid update `q = (Jᵀ M J)⁻¹ Jᵀ (M ξ_before + Δt F_pressure +
+  Δt F_external)`, `ξ = J q + ξ_0`.
+- **Hinge position correction.** At commit a hinged body's pose is rotated about `hinge_point` by `ω Δt` about
+  `hinge_axis` (not translated by `V Δt`), so the pivot distance is kept to rounding; `kRail` bodies are moved
+  along `d` only. Solids design 5 gains the step.
+- **Scene and add-on.** Scene file `free_solid.guide: {kind: "axis_limits" | "rail" | "hinge", moves_along_x, ...,
+  turns, rail_direction, hinge_point, hinge_axis}`. Blender: the free-solid panel gains a "Guide" enum (Axes, Rail,
+  Hinge); Rail reads the direction from the local Z axis of a chosen empty (`guide_object`), Hinge reads the point
+  and axis from the same empty's world location and local Z axis at frame start.
+- **Tests** (solids): `ComputeAllowedMotions, AxisLimits_GiveSelectionColumns` (exact);
+  `FreeSolid, TiltedRail_SlidesWithGSinTilt` (rail at 30° from horizontal, no liquid, Δt = 1e-3 s, 1000 steps:
+  speed along the rail `n Δt g sin 30°` = 4.905 m/s within 1e-12 relative; distance off the rail below 1e-12 m);
+  `FreeSolid, OffOriginHinge_PendulumPeriod` (box 0.1 m, 1 kg, hinge 0.5 m above its centre, 5° start, no liquid,
+  Δt = 1e-3 s: period `2π sqrt((I_cm + m l²) / (m g l))` = 1.42322 s (small angle; the 5° correction is 0.05 %)
+  within 0.5 %; pivot distance drift below 1e-9 m over 10 periods); `FreeSolid, AxisAlignedGuides_Unchanged` (the
+  existing guided-box tests keep their tolerances); viscosity `SolveViscosityAndPressure, HingedPlank_EqualsProjectedFullBlock`
+  (plank hinged at its centre in a mirror-symmetric scene, solve tolerance; reconcile: with an off-centre hinge the
+  added mass couples the turn to the forbidden motions at first order, so the literal small-step claim is false).
+
+### 6. Force of the liquid on every solid (A60; A46 second half refined)
+
+- `solids::LiquidForceOnSolid { std::uint32_t solid_id; Vec3 pressure_force; Vec3 pressure_torque; Vec3
+  viscous_force; Vec3 viscous_torque; }` (N, N m; mean over the step = impulse / step duration; world axes; torque
+  about the body's origin at the start of the step; `T_p = T_o + (o - p) x F` moves it). Every solid of the scene,
+  ascending `solid_id`, fixed and domain box included; viscous parts 0 for an inviscid liquid.
+  `SolidsTry::liquid_forces()` returns them; `step::StepReport` gains `std::vector<solids::LiquidForceOnSolid>
+  liquid_force_on_solids;` (filled from the committed try; StepReport is a CPU result, so the vector is allowed).
+- **From the solve's own terms.** Pressure part `Δt Σ_e (force_per_pressure, torque_per_pressure)_e p_e` over the
+  motion map entries of the solid (free solids already; driven and fixed solids by the same reduction over their
+  entries after the solve). Viscous part `-Δt Rᵀ E_sᵀ W (E x + g)` over the solid's samples: the viscosity samples
+  keep, for every solid sample of any motion kind, the solid index (4 B) and its six coefficients R (48 B), memory
+  entry `"viscosity: solid sample coefficients"` 52 B per solid sample, `kRunOn`; `ViscosityResult` returns the
+  per-solid viscous impulse. Both are one partial per cell block then `math::TreeSum` in block order (fixed order).
+  Guided bodies report all six components (the guide's reaction included). Invariant test: for a free unguided
+  solid `pressure + viscous impulse == M (ξ_after - ξ_before) - Δt (M g + steady force)` within the solve tolerance.
+- **Four tests** (solids/viscosity scene tests; values derived from literature-practice.md topic 4):
+  `LiquidForce, ShearedPlate_IsMuAUOverH` (μ = 10 Pa s, ρ = 1000, gap H = 0.1 m, driven plate 0.2 x 0.2 m at U =
+  0.01 m/s, sides periodic or free-slip, 5 s (`exp(-π² ν t / H²)` = exp(-49)): viscous force 0.04 N, pressure part
+  0 in x, within 1e-6 relative since the linear profile is exact); `LiquidForce, BuoyancyAtRest_IsRhoGV` (fixed box
+  0.1 m cube in water at rest: pressure force z 9.81 N within 2 %, viscous 0 exactly at rest);
+  `LiquidForce, RotatingCylinders_TorquePerLength` (known-open until contact has a cylinder shape; owner; R1 = 0.05 m driven at 1 rad/s, R2 = 0.1 m fixed, μ = 1 Pa s,
+  height 0.1 m with free-slip ends: torque 4π μ Ω R1² R2² / (R2² - R1²) x 0.1 = 4.18879e-3 N m within 10 % at 10
+  cells across the gap: a bound, per Uhlmann's 5–10 %); `LiquidForce, SettlingCube_BalancesNetWeight` (reconcile: contact has no sphere; a cube of the volume of a
+  sphere of R = 0.01 m,
+  1100 kg/m3 in 1000 kg/m3, μ = 10 Pa s, box 0.2 m: at steady speed pressure + viscous force = net weight 4.1092e-3
+  N within 2 % (a balance); speed between `U_Stokes / 1.4` and `U_Stokes` = 2.18e-3 m/s (a bound: walls slow it)).
+- I/O: `frame_done` and `run_report.json` gain `liquid_force_on_solids: [{solid_id, pressure_force_n,
+  pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}]` (the last committed step of the frame); the solid
+  motion output file is unchanged. Blender: one line per selected solid in the solid panel, "Liquid force: <|F|> N
+  (pressure <p>, viscous <v>)", from the last `frame_done` (cheap: no new data path).
+
+### 7. Stick and slip on prescribed-motion solids (A53)
+
+- `solids::SolidSettings` gains `double slip_length = 0;` (m; 0 full stick, the default; `+infinity` free slip;
+  read for fixed and driven solids and the domain box beside a viscous liquid; free solids always stick, A27, and a
+  value there gives the `check` NOTE `slip_ignored_on_free_solid`). Form chosen: a **Navier slip length**, entered as
+  a wall displaced by λ: in the viscous solve's stick-at-the-true-distance term the distance `d` becomes `d + λ`, so
+  the tangential coefficient `μ / d` becomes `μ / (d + λ)` (0 at λ = ∞). It is a positive boundary energy term, so
+  the system stays symmetric positive definite; it is the standard Navier condition `τ = (μ / λ) u_slip`, which the
+  variational viscosity formulations admit as a boundary term. An inviscid liquid keeps the contact rule (friction).
+  Scene file per solid: `slip_length` (number, m) and `free_slip` (bool; true means λ = +infinity and overrides the
+  number), two fields because a schema field has one type (reconcile, I/O); Blender: solid panel "Slip length" (m) with a "Free
+  slip" checkbox, shown when the domain has a viscous liquid.
+- Tests (viscosity): `SolveViscosityAndPressure, CouetteFullStick_LinearProfile` (bottom fixed, top driven at U,
+  `u = U y / H`, 1e-6 relative); `CouetteFreeSlip_PlugFlow` (both plates free slip, liquid starting at 0.01 m/s: stays
+  0.01 m/s everywhere, top plate's viscous force 0 within 1e-12 N); `CouettePartialSlip_NavierProfile` (top plate slip
+  length λ = H, bottom stick: `u = U y / (H + λ)`, `u(H) = U / 2`, 1e-6 relative).
+
+### 8. Wind (A47, A50)
+
+- Wind acts on gas in the solver (unchanged) and on spray and foam in render output; never on the liquid body.
+  The add-on writes wind keys whenever a Wind field exists (`build_wind_keys(readings)`, `has_gas` dropped); the
+  scene field `gas_wind` is renamed `wind` (same keys `{time, acceleration}`, m/s2); `ReadyScene` keeps
+  `gas::GasWind wind`; `render_output::RenderSettings` gains `gas::GasWind wind;` filled by I/O from the ready scene.
+- Laws (simplest honest; no drag model): spray particles get the same acceleration as gas, `v += Δt (g +
+  a_wind(t + Δt / 2))`, no new constant. Foam moves with the surface velocity plus a drift `kFoamWindDriftDuration x
+  (a_wind - (a_wind · z) z)` with `kFoamWindDriftDuration = 0.1 s` (render output; starting value, a judgment: with
+  Blender Strength 1 the foam drifts 0.1 m/s). Tests (render output): `MakeFoamAndSpray, SprayInWind_AcceleratesByWind`
+  (exact per step), `MakeFoamAndSpray, FoamInWind_DriftsHorizontally` (vertical wind gives no drift).
+- Findings: `wind_without_gas` (NOTE) text: "The Wind field moves spray and foam only; the liquid is not pushed by
+  wind." (only in a scene without gas; with neither spray nor foam: "The Wind field has no effect in this scene.");
+  `wind_flow_not_honoured` only when `field.flow != 1.0` (A50).
+
+### 9. Blender versions and the CUDA runtime (A48, A49)
+
+- Manifest `blender_version_min = "5.3.0"`, no maximum; when `bpy.app.version > (5, 3, x)` the add-on shows one NOTE
+  in the domain panel: "FluidiTy was tested with Blender 5.3 only." (test `test_newer_blender_shows_one_note`).
+- The executable is linked to the shared CUDA runtime (Foundation's `CMAKE_CUDA_RUNTIME_LIBRARY Shared`). The
+  package ships, in `bin/<platform>/` beside `fluidity[.exe]`, the runtime file of the toolkit it was built with:
+  Windows `cudart64_<major>.dll`, Linux `libcudart.so.<major>` (the real file under its SONAME, not a link), taken
+  from `CUDA::cudart`'s imported location by the packager; macOS ships none. Loader: Windows searches the
+  application's directory first; Linux executables are linked with `RUNPATH $ORIGIN`. The package also ships
+  `licenses/cuda-runtime.txt`: "Contains the NVIDIA CUDA Runtime <version>, redistributed under the NVIDIA CUDA
+  Toolkit End User License Agreement, Attachment A (redistributable software)" with the EULA link (owner to confirm
+  the wording). CPU runs never depend on a GPU library: the runtime ships with the executable, and the only GPU
+  library not shipped, the driver (`nvcuda.dll`, `libcuda.so.1`), is loaded by the runtime at the first CUDA call,
+  which `CheckCanRunOn(RunOn::kGpu)` makes; without a driver it returns an error and CPU runs go on. Tests:
+  `test_package_contains_cuda_runtime` (windows-x64, linux-x64: the file is present and its version equals
+  `ReadProcessorDescription(kGpu).runtime` of the build), `test_linux_executable_runpath_is_origin` (`readelf -d`),
+  `test_packaged_executable_runs_cpu_scene_without_driver` (in the container without a GPU driver).
+
+### 10. Resume (A40)
+
+- `resume` reuses the recorded `run_mode` (one piece, batched, batched with solves in pieces): it plans with the
+  mode forced. If the forced mode does not fit the memory of the day it refuses with `IoError::kRecordedModeDoesNotFit`
+  (appended at the end of `IoError`; code `recorded_mode_does_not_fit`), message: "This run was recorded in <mode>,
+  which no longer fits in memory (<needed> needed, <allowed> allowed). Resume with --choose-mode-again to continue in
+  another mode; the results then differ slightly from an uninterrupted run (within the solver's tolerance)." The flag
+  `--choose-mode-again` (`Command::choose_mode_again`) plans the mode afresh as `run` does. The run record gains
+  `run_mode_changes: [{frame, from, to}]`, written when a resume changes mode; `kWrongRunFingerprint` with `kRunMode`
+  is no longer raised for a mode change made with the flag. Blender: on that error the run panel offers "Resume in
+  another mode", which passes the flag. Tests (I/O): `Resume, RecordedModeStillFits_ReusesIt`, `Resume,
+  RecordedModeDoesNotFit_RefusesNamingTheFlag`, `Resume, ChooseModeAgain_RecordsTheChange`; Blender
+  `test_resume_offers_other_mode_on_recorded_mode_does_not_fit`.
+
+### 11. Reconcile items 31–33
+
+- **31.** Every module error enum has `kOutOfMemory`, **appended as the last value** (a module that gains it keeps
+  every earlier value's number), returned only by that module's building functions; it is also what
+  `BufferError::kRunMemoryTooSmall` maps to. Viscosity and solids move theirs to the end: the values after its old
+  place shift down by one, accepted because no code exists yet; their enum tests and `ToName` tables follow.
+  Pressure, gas and transfer gain it. Each design's value count
+  and each plan's enum test follow.
+- **32.** A span (CPU) form called with a GPU grid, or a CPU list with GPU buffers, is a `Requires:` precondition
+  with a debug assertion, not `kBadInput` (`FindBorderBlocks`, `BuildGridPiece`, the grid checks).
+- **33.** Accepted as written: test-only `BuildTestGrid` replaces the allocating `BuildGrid(inputs, settings)`; span
+  forms of `ComputeGridCounts` / `CheckSizeStepRule` kept; `ComputeAmounts`, `ComputeWorkRates`,
+  `CheckMaterialState` keep one allocating form each; `kBadStepInputs`, `step_inputs`; `max_field_parts = 1u << 26`
+  with one frame `OrderBuffers`. Sand Task 7's per-call GPU copy is settled in the sand module.
+
+### New public names (A40–A64 pass)
+
+Foundation: `RunMemory`, `BuildRunMemory`, `BuildBuffer(RunOn, size, RunMemory&)`, `ComputeRunMemoryBytes`,
+`ComputeRunMemoryPieceBytes`, `kRunMemoryPieceAlignmentBytes`, `BufferError::kRunMemoryTooSmall`, the `RunMemory&`
+forms of `BuildSumBuffers` and `BuildOrderBuffers`. Grid: `CellSizeSettings` (moved), `CellSizeFacts` (moved),
+`CellWidthsByLevel`, `CellSizeRegion`, `ArtistCellSizes`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth` (moved),
+`ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, `ComputeArtistSizeLevel`. Cell resize:
+`ComputeVelocityGradientSize`, `ComputeCellSizeChanges`, `CellSizeChange::kMergeReady`. Step:
+`kDefaultMemoryShareOfFree`, `kDefaultMemoryLeftFreeBytes`, `StepSettings::memory_left_free_bytes`,
+`ComputeAllowedMemoryBytes`, `CommittedStepLimits::largest_liquid_speed`, `GridFields::held_velocity_gradient_size`,
+`GridFields::merge_ready_step_count`, `MemoryReport::{planned_bytes, reserved_bytes, handed_out_bytes,
+reserved_block_count, memory_taken_bytes, requested_beyond_plan_bytes}`, `StepReport::liquid_force_on_solids`,
+`RunPlan::{viscous_effect_run_duration, reynolds_length}`. Viscosity: `kNegligibleViscosityRatio`,
+`kSmallestVisibleWavelengthInCells`, `kNegligibleViscousChange`, `ComputeViscosityToSmoothingRatio`,
+`ComputeFourCellFeatureChange`, `ComputeReynoldsNumber`. Solids: `GuideKind`, `FreeMotionLimits::{guide_kind,
+rail_direction, hinge_point, hinge_axis}`, `AllowedMotions`, `ComputeAllowedMotions`, `LiquidForceOnSolid`,
+`SolidsTry::liquid_forces`, `SolidSettings::slip_length`. Render output: `RenderSettings::wind`,
+`kFoamWindDriftDuration`. I/O: `kMemoryTakenToleranceBytes`, `IoError::kRecordedModeDoesNotFit`,
+`Command::choose_mode_again`, CLI `--choose-mode-again`, scene fields `wind`, `cell_size_regions`, `cell_size_map`,
+`slip_length`, `free_solid.guide`, report fields above. Blender: `cell_size_region_collection`,
+`fluidity_cell_size_region.cell_width`, `cell_size_map_image`, `memory_left_free_bytes`, `guide_kind`,
+`guide_object`, `slip_length`, `free_slip`.
+
+### Owner questions raised here
+
+1. The CPU budget now follows the GPU rule (0.9 of free, 512 MiB left free) instead of min(0.7 total, 0.8 free).
+2. `ApplyLimits` now needs room for the old and the new block at once (pieces cannot be freed alone).
+3. Starting values to calibrate: `shear_width_factor` 0.25, `kFoamWindDriftDuration` 0.1 s,
+   `kMemoryTakenToleranceBytes` 2 MiB (needs the Windows run), the standing-wave loss 5 % of the later group.
+4. The CUDA runtime licence note's wording.
+5. The 2D refinement map (top view) instead of a 3D one.
+6. A cylinder shape in contact (for the Taylor–Couette torque test), or another torque test.
+7. A viscosity sample next to two solids reports its stress to the lower solid index only (viscosity design Open).
+8. `BuildPressureEquations` in module 5 consumes `solids/guide_math.h` (module 8, header-only): pressure Task 47a
+   runs right after solids Task 5a.

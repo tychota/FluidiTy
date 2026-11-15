@@ -68,6 +68,27 @@ untracked) and `docs/superpowers/specs/2026-11-13-production-rebuild-design.md` 
   their main outputs. Labels: `cpu` everywhere, `no_gpu` only for behaviour on a machine without a GPU, `gpu` only
   on hardware. Every target is created through the helpers of `cmake/fluidity_targets.cmake` and every source file
   is listed in a CMake file.
+- **Amended 2026-11-15 (A58; reconcile items 31, 33; `plan-decisions.md` "Owner answers A40–A64 applied" items 3,
+  11 and the item-3 correction):** one reserved block per processor per run (Foundation Tasks 17 to 19).
+  `BuildParticles`, `BuildParticlesFromSnapshot` and `ApplyParticleLimits` take `RunMemory& run_memory` as their
+  last parameter (every other parameter stays): the block of `settings.run_on` (CPU particles in a GPU run get the
+  run's `cpu_run_memory`, which the step builds with `settings.cpu_memory`); `run_on == run_memory.run_on()` is a
+  `Requires:` checked by a debug assertion (A30). Every array, the working buffers and the failure buffers are
+  pieces built with `BuildBuffer(run_on, size, run_memory)`, `BuildOrderBuffers(..., run_memory)`,
+  `BuildSumBuffers(..., run_memory)`; a piece is never freed alone, so a failed build leaves its pieces in the block
+  and `ApplyParticleLimits`' old arrays free nothing (the step frees the old block whole). Plain `BuildBuffer`
+  stays for tests and tools. `ParticlesError::kOutOfMemory` is appended as the **last** value (moved from before
+  `kRunOnCallFailed`; 17 values kept), returned by the building functions for `BufferError::kOutOfMemory` and
+  `kRunMemoryTooSmall` with `magnitude` = bytes asked, and by `ComputeAmounts`' one allocating form (accepted,
+  reconcile item 33). Every test that builds `Particles` first builds a `RunMemory` of exactly
+  `ComputeRunMemoryBytes(BuildParticlesMemoryEstimate(settings), {}, kRunOn)` (plus the `kCpu` sum, none here). A
+  `no_gpu` test that asked for GPU particles gets `kRunOnCallFailed` from `BuildRunMemory(kGpu, ...)`.
+- **Amended 2026-11-15 (A64; item 1):** particles everywhere in the liquid. A cell of size level `l` holds
+  particles of `size_level == l`; `AdjustParticleCount` covers deep cells, one level per resize (design 5.6 "Deep
+  cells"; test `AdjustParticleCount, ThreeLevelCascade_KeepsAmounts`, Task 21). `NeighbourhoodInputs::
+  is_grid_only_region`, the grid-only clause of `FindNeighbourhood` and the caller of
+  `RemoveReason::kIntoGridOnlyRegion` are not in the first version: they move to the group "Deep liquid without
+  particles (later; needs review)" at the end of this plan. `AddReason::kRefillRegion` stays (gas markers).
 - **Amended 2026-11-14 (Foundation as built):** the gate runs at every commit: the CPU build in the debug and the
   release preset, and CUDA compiled in the container (its `cuda` step fails for a tracked `.cc` or `.cu` file that no
   build compiles), so a task that adds a source adds it to a CMake file in the same commit.
@@ -115,10 +136,11 @@ Particles-specific (every task respects these):
   // max_cell_blocks: at least settings' current value (so at least the committed grouping's block count).
   // Reallocates the particle arrays and the per-block tables (group_begin, cell_begin, written marks, loaded
   // block origin) at the new limits and copies the committed values. kBadInput, kOutOfMemory, kRunOnCallFailed;
-  // on failure the particles are unchanged and usable.
+  // on failure the particles are unchanged and usable. Amended 2026-11-15 (A58): the new arrays are pieces of
+  // run_memory (the new block of step::ApplyLimits).
   std::expected<void, ParticlesFailure> ApplyParticleLimits(Particles& particles,
                                                             std::span<const std::size_t> max_particle_counts,
-                                                            std::uint32_t max_cell_blocks);
+                                                            std::uint32_t max_cell_blocks, RunMemory& run_memory);
   ```
 - **Constants (exact, from the design):** `kMaxIngredientCount = 8`; flag bits `kCarriesFittedChange = 1`,
   `kHasOwnMotion = 2`; `kFractionSumTolerance = 1e-12`; `kMergeGapFloor = 1e-9`; split offset of a unit cell
@@ -188,7 +210,8 @@ Particles-specific (every task respects these):
     m = `rest_volume` = 0.001, on `BuildCentreSplitGrid`.
   - *Solid face:* `FindFacePlace(tables, ToFacePieceId(Axis::kX, SizeLevel{1}, CellCoord{9, 7, 7}))` of
     `BuildCentreSplitGrid` (x = 4.5, near split child 7 of a parent at `P`, far from child 0).
-  - `BuildNeighbourhoodBuffers(grid)`: every face outside solids, every side `{0, kNoPlate}`, no grid-only cell.
+  - `BuildNeighbourhoodBuffers(grid)`: every face outside solids, every side `{0, kNoPlate}` (amended 2026-11-15,
+    A64: no region array).
   - `RunTestStep(Particles&, grid, GroupingSettings, double step_duration)` (Task 13): `BuildTry`; `CheckGrouping`,
     on failure `GroupParticlesByBlock`; per material over `all_blocks()` `BuildFieldsToChange({kPosition,
     kVelocityForNextStep})`; `v += {0, 0, -9.81 dt}`, then `x += v dt`; `CommitTry(time + dt)`.
@@ -201,7 +224,8 @@ Particles-specific (every task respects these):
   1, `size_level` 1; when carried `ingredient_fractions` 8 N, `springy_deformation` 72, `permanent_volume_change`
   8, `plate_side` 8; `group_begin` 8 (`max_cell_blocks + 1`); `cell_begin` 4 (`max_cell_blocks * 64`). Try only
   (`kOneStepTry`, `copies = 1`): `velocity.for_this_step` 24 and removal marks 1 (`max_particle_count`); written
-  marks 2 and loaded block origin 4 (`max_cell_blocks`). Working buffers (`kOneCall`): grouping keys 8 and two orders
+  marks 2 and loaded block origin 4 (`max_cell_blocks`). Working buffers (`kOneCall`; amended 2026-11-15, A58:
+  `kWholeRun`, because no `kRunOn` entry may be `kOneCall`; `"grouping orders"` is one entry with `copies = 2`): grouping keys 8 and two orders
   4 + 4 (`max_particle_count + max_added_per_try`); lane copy 8 (`max_particle_count`); waiting list
   (`max_added_per_try`, bytes = the carried arrays without `position_when_grouped`). One liquid: 2 x 178 + 24 +
   1 + 24 = 405 B per particle (design 6.4 says 412). **Amended 2026-11-14 (Foundation as built):** once per
@@ -211,7 +235,10 @@ Particles-specific (every task respects these):
   `given_count = ComputeOrderBuffersSize(run_on).fixed_bytes`, `bytes_each = 1`), `"particles: sum buffers"`
   (the largest `max_particle_count`, `ComputeSumBuffersSize(run_on).bytes_per_item`), `"particles: sum buffers
   fixed bytes"`, `"particles: lowest failing id"` (1 x 8) and `"particles: GPU failure"` (1 x
-  `sizeof(ParticlesFailure)`). These hold the `OrderBuffers` of the two
+  `sizeof(ParticlesFailure)`). **Amended 2026-11-15 (A58):** each `OrderBuffers` and `SumBuffers` is one piece, so
+  its two entries become one: `"particles: order buffers"` (`given_count` 1, `bytes_each = bytes_per_item x
+  max_count + fixed_bytes`) and `"particles: sum buffers"` likewise; every other entry stands for whole buffers
+  (`copies` = their number), so `ComputeRunMemoryBytes` of the entries equals the bytes handed out. These hold the `OrderBuffers` of the two
   `BuildStableOrder` passes and of `ComputeExclusivePrefixSum`, and the `SumBuffers` of `ComputeLargestMagnitude`,
   members `order_buffers` and `sum_buffers` of `particles_storage.h`, built by `BuildParticles` and rebuilt by
   `ApplyParticleLimits` from `settings.run_on` and the limits it already has (no signature changes). Per particle
@@ -341,6 +368,8 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
 
 **Kind:** mechanical
 
+**Amended 2026-11-15 (reconcile item 31):** `ParticlesError::kOutOfMemory` is the last value; new test `ParticlesError, OutOfMemory_IsTheLastValue`.
+
 **Files:**
 - Create: `native/fluidity/particles/particle_fields.h`, `particle_fields_test.cc`, `particles.h` (declarations
   of design 3.2 up to and including `ParticlesSettings` only), `particles_errors.cc`, `particles_errors_test.cc`
@@ -366,6 +395,8 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz`. 
                                                                   // ParticleFieldsToChange
   TEST(ToName, EveryError_LowerSnakeCase)            // all 17 values; kMergeTooSpread -> "merge_too_spread";
                                                      // kNone -> "none"; all distinct
+  TEST(ParticlesError, OutOfMemory_IsTheLastValue)   // amended 2026-11-15 (reconcile 31): static_assert value 16;
+                                                     // ToName "out_of_memory"; kRunOnCallFailed is 15
   TEST(ToMessage, EveryError_HasADistinctNonEmptyMessage)
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
@@ -578,12 +609,11 @@ and exited 0 in this task.
       // on CentreSplit at level 1 with the "solid face" outside_solid 0: incomplete; child 0 stays complete
   TEST(FindNeighbourhood, FaceOnOtherPlateSide_IsIncomplete)    // same face, face_side {7, kAlongNormal},
       // particle side {7, kAgainstNormal}
-  TEST(FindNeighbourhood, TouchingGridOnlyCell_IsIncomplete)    // P level 0, BigCells; cell (4,3,3) grid-only
   TEST(FindNeighbourhood, LevelBeyondSmallest_IsIncomplete)     // size_level 3 on a 3-level frame
   ```
 - [ ] **Step 2: Implement** (shared, allocates nothing): 1 `cell = FindCellAt(tables, position)`; `kNoIndex`
-  or its level `!= size_level` → incomplete; 2 the cell and every `FindTouchingCells` cell must have
-  `is_grid_only_region == 0` (plan decision: the containing cell counts too); 3 for each axis
+  or its level `!= size_level` → incomplete; 2 (amended 2026-11-15, A64: the grid-only check is not in the first
+  version; it moves to the later group with its test `TouchingGridOnlyCell_IsIncomplete`); 3 for each axis
   `FindNearbyFaces(tables, position, axis, ToCellBlockIndex(cell), &error)`, error → incomplete; mask bit i kept
   iff (`outside_solid` null or nonzero at the face) and (`face_side` null or equal to `side`);
   `ComputeNearbyFaceWeights(...).is_complete` false → incomplete. Cite `<sec-split>`.
@@ -597,6 +627,8 @@ and exited 0 in this task.
 **Amended 2026-11-14 (Foundation as built):** `particles_storage.h` also holds `order_buffers`, `sum_buffers` and the lowest-failing-id buffer,
 built and rebuilt with the arrays and counted in the memory estimate (Global Constraints); the GPU test compares
 with the `kGpu` estimate.
+
+**Amended 2026-11-15 (A58):** `BuildParticles(settings, run_memory)` and `ApplyParticleLimits(..., max_cell_blocks, run_memory)`; the buffers entries become one entry per buffer; new tests `BuildParticles, IntoRunMemory_HandsOutExactlyTheEstimate`, `ApplyParticleLimits, IntoNewRunMemory_HandsOutExactlyTheNewEstimate`, `BuildParticles, RunMemoryOnePieceShort_IsOutOfMemory`.
 
 **Files:**
 - Modify: `native/fluidity/particles/particles.h` (rest of design 3.2 except `CheckParticles`,
@@ -633,6 +665,14 @@ with the `kGpu` estimate.
   TEST(ApplyParticleLimits, BelowCurrentCount_IsBadInput)   // particles unchanged
   TEST(ApplyParticleLimits, LowerBlockLimit_IsBadInput)     // 64 -> 32: kBadInput; particles unchanged
   TEST(ApplyParticleLimits, InsideATry_IsTryInProgress)
+  TEST(BuildParticles, IntoRunMemory_HandsOutExactlyTheEstimate)  // amended 2026-11-15 (A58): the six fixture
+      // materials, limits as above: BuildRunMemory(kCpu, ComputeRunMemoryBytes(BuildParticlesMemoryEstimate(
+      // settings), {}, kRunOn)), BuildParticles into it: handed_out_bytes() == reserved_bytes(), exact
+  TEST(ApplyParticleLimits, IntoNewRunMemory_HandsOutExactlyTheNewEstimate)  // (A58) 1000 -> 2000 particles,
+      // 64 -> 128 blocks, a second block of the new estimate: handed out == reserved; the first block's
+      // handed_out_bytes() unchanged (old arrays free nothing)
+  TEST(BuildParticles, RunMemoryOnePieceShort_IsOutOfMemory)  // (A58; GTEST_SKIP in debug builds, which assert)
+      // block 256 B short: kOutOfMemory, magnitude = the failing piece's bytes
   // particles_no_gpu_test.cc, label no_gpu
   TEST(BuildParticles, OnGpuWithoutAGpu_IsRunOnCallFailed)
   // particles_gpu_test.cc, label gpu
@@ -644,7 +684,8 @@ with the `kGpu` estimate.
   `ComputeAllocatedBytes` adds `order_buffers.byte_count()` and `sum_buffers.byte_count()`.
 - [ ] **Step 2: Implement.** `BuildParticles` calls `CheckCanRunOn(settings.run_on)` first, then allocates
   every buffer from `BuildParticlesMemoryEstimate`' table walk (one function walks the material's arrays for both,
-  so they cannot drift); on any failure frees everything and returns `kOutOfMemory` or `kRunOnCallFailed`.
+  so they cannot drift); on any failure frees everything and returns `kOutOfMemory` or `kRunOnCallFailed`
+  (amended 2026-11-15, A58: every buffer is a piece of `run_memory`; on failure the pieces stay in the block).
   `cpu_memory` is passed to every CPU buffer. `ApplyParticleLimits` builds every new buffer first (particle
   arrays at the new particle limits, `group_begin`, `cell_begin`, written marks and loaded block origin at the
   new `max_cell_blocks`), copies the committed part with slice `CopyBuffer` (`group_begin`: committed block
@@ -818,7 +859,8 @@ grouping allocates no temporary order arrays.
 **Interfaces:**
 - Consumes: `ReadBuffer` (slice), `grid::FindCellAt`.
 - Produces: `ParticlesSnapshot`, `SnapshotFields`, `kOutputSnapshotFields`, `ReadSnapshot`,
-  `BuildParticlesFromSnapshot` (design 3.7).
+  `BuildParticlesFromSnapshot` (design 3.7; amended 2026-11-15, A58: takes `RunMemory& run_memory` last, every
+  array a piece of it, as `BuildParticles`).
 
 - [ ] **Step 1: Failing tests.**
 
@@ -1119,6 +1161,8 @@ promises the same bits for these formulas); result digests.
 
 **Kind:** integration
 
+**Amended 2026-11-15 (A64):** deep cells hold particles of their own level; the cascade over several levels (one level per resize) is pinned by the new test `AdjustParticleCount, ThreeLevelCascade_KeepsAmounts`. No new code: steps 1 and 2 of design 5.6 already split and merge by one level.
+
 **Files:**
 - Create: `native/fluidity/particles/adjust_particle_count.h`, `adjust_particle_count_cpu.cc`,
   `adjust_particle_count_test.cc`
@@ -1138,6 +1182,7 @@ promises the same bits for these formulas); result digests.
   | `AdjustParticleCount, AnyRangeCut_SameBytes` | committed `CentreSplit(1)` with "eight close" and the "split parent" at `Q`; resized `FarSplit(2)` | ranges from `grid::BuildRanges(grid, n)`, n = all, 1, 3, one call per range: identical result numbers and, after grouping and commit, identical snapshot bytes |
   | `AdjustParticleCount, ChildrenBeyondWaitingLimit_ChangesNothing` | as the first row with `max_added_per_try` 7 | `kTooManyParticles`; try unchanged |
   | `AdjustParticleCount, SnowAndUnfittedParticles_AreNotCandidates` | snow at `P`; liquid at `Q` with flag off | all counts 0 |
+  | `AdjustParticleCount, ThreeLevelCascade_KeepsAmounts` (amended 2026-11-15, A64) | fixture frame (3 levels), `GridSettings{.max_cell_blocks = 128}`; grid A: big cells x, y, z in 1..6 split into level 1 and the level-1 cells of big cells 2..5 split into level 2; grid B: big cells 1..6 split into level 1; grid C: `BigCells`; 64 liquid particles of level 2 at the level-2 cell centres of big cell (3,3,3) (`3.125 + 0.25 i`), `m` = `rest_volume` = 0.015625, `volume_ratio` 1, v {1,2,3}, C = 0, `kCarriesFittedChange` on; four resize calls with regrouping between them: A to B, B to C, C to B, B to A | `merged_group_count` 8 (eight level-1 particles at the level-1 centres `3.25`, `3.75`), then 1 (one level-0 particle at {3.5,3.5,3.5}, mass 1, v {1,2,3}); then `split_count` 1, then 8 (64 level-2 particles); `skipped_*` 0 throughout; `ComputeAmounts` equal before and after each call within 1e-13 rel; `kinetic_energy_lost` 0 within 1e-15 J (uniform velocity) |
 
 - [ ] **Step 2: Implement** following `<proc-adjust-particle-count>` and design 5.6 with these plan decisions:
   particles with `kCarriesFittedChange` off are not candidates and are not counted; in a cell, merge candidates
@@ -1281,6 +1326,8 @@ write result digests.
 **Amended 2026-11-14 (Foundation as built):** Step 3 also records the storage's working buffers and failure buffers, the `ComputeAmounts` same-bits
 promise, and `fluidity_particles_test_support` with its `GPU_SOURCES`.
 
+**Amended 2026-11-15 (A58, A64, reconcile 31):** Step 3 also records the `RunMemory&` parameter of the three builders, the merged buffers entries, `kOutOfMemory` moved last, and that the grid-only pieces are in the later group.
+
 **Files:**
 - Modify: any file of `native/fluidity/particles/`, `docs/glossary.md`, `docs/method-paper/`, `docs/gpu-runs.md`
 
@@ -1305,3 +1352,47 @@ promise, and `fluidity_particles_test_support` with its `GPU_SOURCES`.
 - [ ] **Step 5: Hand over** in one message: `git log --oneline` of the module's commits, the gate output, all new
   public names with one-line reasons, the differences of Step 3, and the statement that no particles device
   code has run.
+
+## Deep liquid without particles (later; needs review)
+
+**Amended 2026-11-15 (A64):** this group is excluded from the module's done-criteria. Its owner is the group of the
+same name in the cell resize and batches plan (`2026-11-14-rebuild-11-cell-resize-and-batches.md`), which opens
+with "an independent review of this design comes first" and is gated by `GridOnlyRegion,
+StandingWave_KeepsAmplitude` and `GridOnlyRegion, ParticleBandEdge_StaysStable`. Do not start it before that review.
+
+### Task L1: The grid-only region in the neighbourhood check
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/particles/adjust_particle_count.h` (the `NeighbourhoodInputs` member),
+  `split_and_merge_math.h`, `split_and_merge_math_test.cc`, `particles_test_support.h` (`BuildNeighbourhoodBuffers`
+  gains an all-zero region array)
+
+**Interfaces:**
+- Produces: `NeighbourhoodInputs::is_grid_only_region` (`const std::uint8_t*`, null: every cell holds particles;
+  1 for a cell of the grid-only region), design 3.5 text marked "not in the first version (A64)".
+- Consumes: the cell resize design's region array for each grid of a resize (its later group).
+
+- [ ] **Step 1: Failing test.** `TEST(FindNeighbourhood, TouchingGridOnlyCell_IsIncomplete)`: `P`, level 0,
+  `BigCells`; cell (4,3,3) marked grid-only: `kIncomplete`; the same with the array null: `kComplete`. Exact.
+- [ ] **Step 2: Implement** the check removed from Task 9: the containing cell and every `FindTouchingCells` cell
+  must have `is_grid_only_region == 0` (the containing cell counts too).
+- [ ] **Step 3: Gate. Commit.** Subject: `Treat cells touching the grid-only region as incomplete`.
+
+### Task L2: Removing particles into the grid-only region
+
+**Kind:** mechanical
+
+**Files:**
+- Modify: `native/fluidity/particles/remove_particles_test.cc`
+
+**Interfaces:**
+- Consumes: `RemoveReason::kIntoGridOnlyRegion` (declared in Task 16; no caller in the first version),
+  `AddReason::kRefillRegion`, `ComputeRefillParticle`.
+
+- [ ] **Step 1: Test.** `TEST(RemoveParticles, IntoGridOnlyRegion_ReturnsAmountsForTheLedger)`: the cloud on
+  `CentreSplit`, every particle of big cell (3,3,3) removed with `kIntoGridOnlyRegion`: returned amounts equal
+  `ComputeAmounts` of those particles within 1e-13 rel; refilled with `ComputeRefillParticle` (n = 8) and
+  `AddParticles(..., kRefillRegion)`: total amounts equal the start within 1e-13 rel.
+- [ ] **Step 2: Gate. Commit.** Subject: `Check the hand-over between particles and the grid-only region`.

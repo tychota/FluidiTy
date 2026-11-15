@@ -11,7 +11,12 @@ liquids carry blocking materials and sealed gas; 11.26), A25 (what counts as vis
 step; 11.27) and the reconcile pass of `plan-decisions.md` (items 3, 11, 12, 13 and the coordinator's list; 11.28
 to 11.32), which the step plan already carried. Updated again 2026-11-14 with owner answers A26 (a viscous liquid
 sticks to snow and springy solids: their band faces are unknowns of the viscous solve) and A27 (free solids in the
-viscous solve; no combination of materials refused because of viscosity) (11.33).
+viscous solve; no combination of materials refused because of viscosity) (11.33). Updated again 2026-11-15 with
+owner answers A40 (resume keeps the run mode), A41 and A61 to A63 (the shared cell size rule replaces the
+`choose_cell_size` callback), A43, A45 and A58 (one reserved memory block per run, a budget of free memory,
+warnings without margins), A47 (wind), A57 (viscosity advice), A60 (the liquid's force on every solid), A64
+(particles everywhere in the liquid; the grid-only region moves to a later group) and reconcile items 31 to 33,
+from `plan-decisions.md` "Owner answers A40-A64 applied (2026-11-15)" (11.39 to 11.47).
 
 ## 1. Purpose
 
@@ -108,7 +113,8 @@ inline constexpr int kStageCount = 22;
 enum class RejectReason : std::uint8_t {  // D name. Why a try did not commit. Grouped by ToRejectKind.
   kNone,
   // A shorter step can help.
-  kParticleTravelledTooFar,       // A particle or a grid-only cell's liquid moved more than allowed in one step.
+  kParticleTravelledTooFar,       // A particle moved more than allowed in one step. (A grid-only cell's liquid:
+                                  //   not in the first version, A64.)
   kSolidTravelledTooFar,          // solids kPathJumpInsideStep, kSolidMovesTooFar; contact kSolidTurnsTooFar.
   kContactTooCloseToCall,         // contact kTooCloseToCall (kSecondReactingSolid included).
   kParticleOutsideGrid,           // A particle is in no active cell after grouping.
@@ -165,12 +171,18 @@ enum class StepError : std::uint8_t {  // The module's error enum, for everythin
   kBatchedRunNotBuilt,  // The plan chose a batched run and StepCallbacks::run_stages is null, or
                         //   RunPlan::max_loaded_blocks is 0, or (A15) the mode is kBatchedWithSolvesInPieces and
                         //   RunPlan::max_solve_loaded_blocks is 0.
-  kOutOfMemory,         // An allocation failed although the estimate fitted. Nothing changed.
   kLimitNotRaised,      // ApplyLimits: a new limit is below the current one, or all are equal.
   kTryInProgress,       // A step try or a resize try of this simulation is alive.
   kSnapshotDoesNotMatch,// BuildSimulationFromSnapshot: material ids, counts, grid or versions do not fit.
   kSimulationUnusable,  // An earlier kRunOnCallFailed or failed commit. Start again from the last saved state.
   kRunOnCallFailed,     // CheckCanRunOn failed for StepSettings::run_on, or a call to it failed.
+  // Moved to the end (reconcile item 31, 11.47; the values after kBatchedRunNotBuilt shift down by one, accepted:
+  // none is stored yet). Only from the building functions BuildSimulation,
+  // BuildSimulationFromSnapshot and ApplyLimits: the run's block could not be reserved (BufferError::kOutOfMemory
+  // of BuildRunMemory), or a builder's piece did not fit it (BufferError::kRunMemoryTooSmall, a planner bug that
+  // also asserts in debug builds; A58). context.module names the builder's module, context.magnitude the bytes
+  // asked. Nothing changed.
+  kOutOfMemory,
 };
 struct StepFailure { StepError error = StepError::kNone; RejectContext context{}; };  // A2
 // Plan decision (11.16): StageOutcome is declared here (it was in step_stages.h, 3.11). A private
@@ -216,7 +228,10 @@ struct ReadyScene {                    // D word. Defaults filled in and checked
   contact::DomainBox domain_box;
   Vec3 gravity{0, 0, -9.81};           // m/s2, world. solids.gravity must equal it (kBadInput).
   grid::GridFrame grid_frame;          // origin must equal domain_box.low_corner.
-  std::uint8_t new_cell_size_level = 0;  // Size of a new cell when no cell exists nearby and no callback says.
+  // The finest level a new cell takes: grid::ComputeNewCellSizeLevel's smallest_size_level (stage 2, 5.3; A41,
+  // A61). With has_cell_resize it must equal cell_size.smallest_size_level (else kBadInput). Replaced: "Size of a
+  // new cell when no cell exists nearby and no callback says."
+  std::uint8_t new_cell_size_level = 0;
   double start_time = 0;               // s.
   double end_time = 0;                 // s. Used only to estimate how many particles sources will add.
   std::uint64_t random_seed = 0;
@@ -238,7 +253,9 @@ struct ReadyScene {                    // D word. Defaults filled in and checked
   double open_sea_particle_spacing = 0;       // m. Refill lattice in the open-sea zone (5.4).
   std::optional<gas::GasSettings> gas;        // Present exactly when a material is kGas.
   std::span<const gas::GasSource> gas_sources;  // NEW. Keyed, ascending source_id. I/O owns the key storage.
-  gas::GasWind gas_wind;                      // NEW. Keyed. Empty: no wind.
+  gas::GasWind wind;                          // NEW. Keyed. Empty: no wind. A47: renamed from gas_wind (scene
+                                              //   field `wind`); the step passes it to gas only (stage 13);
+                                              //   render output gets its own copy from I/O. Never on the liquid.
   gas::MarkerSettings gas_markers;            // NEW.
   gas::ActiveGasSettings gas_active_cells;    // NEW.
   transfer::TransferSettings transfer;
@@ -247,8 +264,13 @@ struct ReadyScene {                    // D word. Defaults filled in and checked
   pressure::VolumeCorrectionSettings volume_correction;
   viscosity::ViscositySettings viscosity;
   double particle_radius_in_cell_widths = 0.5;  // For pressure::SurfaceDistanceInputs::particle_radius.
-  // NEW (cell resize). The scene has cell resize settings: the seven region arrays of GridFields are built.
+  // NEW (cell resize). The scene has cell resize settings: the three cell-size arrays of GridFields are built
+  // (A41, A63; replaced: "the seven region arrays", A64).
   bool has_cell_resize = false;
+  // NEW (A41, A64). The scene's cell size settings, the same value I/O gives cell_resize::CellResizeSettings::
+  // cell_size. Read only with has_cell_resize: by BuildRunPlan for the particle estimate at the depth term's levels
+  // (5.9). Ignored otherwise.
+  grid::CellSizeSettings cell_size{};
   std::uint32_t snapshots_kept_at_once = 1;     // For the sizing estimate (kOneSnapshot entries).
 };
 ```
@@ -258,6 +280,10 @@ struct ReadyScene {                    // D word. Defaults filled in and checked
 ```cpp
 inline constexpr double kMaxTravelInCellWidths = 0.5;  // Ported (main: half a cell). Why: 5.8.
 inline constexpr double kCoveredReachInCellWidths = 2.5;  // Cells this near a particle are active (5.3).
+// NEW (A58). Redshift's documented default share of free GPU memory.
+inline constexpr double kDefaultMemoryShareOfFree = 0.9;
+// NEW (A58). 536,870,912 B = 512 MiB, about twice Redshift's 256 MB minimum; starting value.
+inline constexpr std::uint64_t kDefaultMemoryLeftFreeBytes = 536870912;
 
 struct SimulationLimits {              // D pattern max_... . Raised by ApplyLimits, never lowered.
   std::vector<std::size_t> max_particle_counts;  // Per material_index.
@@ -274,8 +300,11 @@ struct StepSettings {                  // D suffix. Chosen once, kept for the ru
   int max_limit_raises_per_step = 4;   // main: one restart per frame.
   double limit_growth = 1.5;           // No unit, above 1. A raised limit is at least this times the old one.
   double start_limit_headroom = 1.25;  // No unit, 1 or more. Start limits over the counted scene.
-  double memory_share_of_total = 0.7;  // Ported policy (liquid_arena_3d_host.cc:794).
-  double memory_share_of_free = 0.8;   // Ported policy. Allowed bytes = the smaller of the two.
+  // NEW (A58; replaces memory_share_of_total 0.7 and memory_share_of_free 0.8, the ported policy of
+  // liquid_arena_3d_host.cc:794). Both processors: allowed = min(memory_share_of_free x free,
+  // free - memory_left_free_bytes), 0 when negative (ComputeAllowedMemoryBytes, 3.5).
+  double memory_share_of_free = kDefaultMemoryShareOfFree;          // No unit, in (0, 1].
+  std::uint64_t memory_left_free_bytes = kDefaultMemoryLeftFreeBytes;  // B.
   particles::GroupingSettings grouping{};  // max_move_since_grouped = 0: regroup every try.
 };
 ```
@@ -357,6 +386,14 @@ struct SceneCounts {                   // Step 1 of programme design 8a.
   std::uint32_t material_count = 0, ingredient_count = 0, solid_count = 0, free_solid_count = 0;
   std::uint32_t material_set_count = 0;      // NEW (A8).
   std::uint32_t sets_without_solve = 0;      // NEW. Sets no solve writes (snow, springy solids).
+  // NEW (A64). Every liquid cell holds particles. With has_cell_resize: per material_index, 8 particles (the
+  // seeded count) per cell of the start particles' liquid cells taken at the level the depth term gives (5.9 step
+  // 2); empty without cell resize. The particle limit counts max(start, this) per material.
+  std::vector<std::uint64_t> particles_at_depth_levels;
+  // NEW (A64). The start particles, summed over liquid materials, in liquid cells whose top lies
+  // surface_reach_in_cell_widths x w_min or more below the surface (5.9 step 2's depth); 0 without cell resize. For
+  // I/O's deep-particles line of the budget.
+  std::uint64_t start_particles_in_deep_cells = 0;
 };
 struct ModuleBytes {
   Module module; std::uint64_t whole_run, one_step_try, one_call, one_snapshot;
@@ -366,10 +403,21 @@ struct MemoryEstimate {                // Step 2. Sums of the modules' MemoryEst
   std::array<ModuleBytes, kModuleCount> by_module{};
   std::uint64_t whole_run = 0;         // Committed state and buffers reused every step.
   std::uint64_t one_step_try = 0;      // Try copies of what a step changes.
-  std::uint64_t one_call = 0;          // Largest working buffers alive at once (5.9).
+  std::uint64_t one_call = 0;          // Largest working buffers alive at once (5.9). kCpu entries only: no kRunOn
+                                       //   entry is kOneCall (A58; a plan that has one makes it kWholeRun).
   std::uint64_t snapshots = 0;         // one_snapshot entries times snapshots_kept_at_once. CPU memory.
-  std::uint64_t on_processor = 0;      // whole_run + one_step_try + one_call, entries with where = kRunOn only.
-  std::uint64_t on_cpu = 0;            // NEW (A17 planned cost). Entries with where = kCpu, plus snapshots.
+  // Amended (A58, with the same-day correction): ComputeRunMemoryBytes(entries, counts, MemoryWhere::kRunOn) over
+  // every module's entries (each kRunOn entry, whatever its KeptFor, each copy rounded up to
+  // kRunMemoryPieceAlignmentBytes): the bytes of run_memory. In a CPU run the one block also holds the kCpu
+  // entries, so the step reserves on_processor + cpu_run_memory_bytes there. Replaced: "whole_run + one_step_try +
+  // one_call, entries with where = kRunOn only".
+  std::uint64_t on_processor = 0;
+  // NEW (A58 correction). ComputeRunMemoryBytes(entries, counts, MemoryWhere::kCpu) over the kCpu entries kept
+  // kWholeRun or kOneStepTry: the bytes of cpu_run_memory in a GPU run (CpuMemory::kLockedForCopies in a batched GPU
+  // run). Part of on_cpu.
+  std::uint64_t cpu_run_memory_bytes = 0;
+  std::uint64_t on_cpu = 0;            // NEW (A17 planned cost). Entries with where = kCpu, plus snapshots. A58:
+                                       //   cpu_run_memory_bytes + kCpu kOneCall entries + snapshots.
 };
 // NEW (A17, batched-run buffers). Copies between CPU memory and the run's processor: one ReadBuffer or WriteBuffer
 // slice call is one copy (in a batched CPU run the same calls, CPU to CPU, counted the same); a batch load and a
@@ -381,22 +429,38 @@ struct CopyCounts {
 };
 // NEW (A17 planned cost). BuildRunPlan returns a plan that does not fit instead of failing.
 enum class PlanFit : std::uint8_t { kFits, kDoesNotFit };
-// MemoryAvailable { total_bytes; free_bytes; } is Foundation's (base/, from ReadMemoryAvailable(run_on)).
-// total_bytes 0 means "not known": the share of the total is then not applied.
+// MemoryAvailable { total_bytes; free_bytes; } is Foundation's (base/, from ReadMemoryAvailable(run_on); on the
+// GPU read after the context exists, Foundation Task 19). A58: only free_bytes is read; total_bytes is not used.
+// Replaced: "total_bytes 0 means "not known": the share of the total is then not applied."
+// NEW (A58). B. min(floor(memory_share_of_free x free_bytes), free_bytes - memory_left_free_bytes), 0 when the
+// second is negative. The same rule for the run's processor and for the CPU. Pure; allocates nothing.
+std::uint64_t ComputeAllowedMemoryBytes(MemoryAvailable available, double memory_share_of_free,
+                                        std::uint64_t memory_left_free_bytes);
 // A15. kBatched: particle stages in batches, every solve once on the whole grid on the run's processor.
 // kBatchedWithSolvesInPieces (NEW): as kBatched, and the solvers' working buffers live in CPU memory and goes through the
 // processor one loaded piece at a time (pressure/solve_batches.h). BuildRunPlan chooses only kOnePiece or
 // kBatched; the caller (I/O Run, tests) copies batches::BuildBatchPlan's choice (SolvePlace::kInPieces) in.
 enum class RunMode : std::uint8_t { kOnePiece, kBatched, kBatchedWithSolvesInPieces };
-// NEW (A25). One per liquid ingredient (scene ingredient order), filled by BuildRunPlan from the ingredient's
-// viscosity, its material's rest density, StepSettings::max_step_duration and the grid frame's smallest cell
-// width: viscous_effect_per_step = viscosity::ComputeViscousEffectPerStep(viscosity, step_duration, density,
-// cell_width). It advises (I/O prints it); it never chooses the stage.
+// NEW (A25; amended A57). One per liquid ingredient (scene ingredient order), filled by BuildRunPlan from the
+// ingredient's viscosity, its material's rest density and own_motion_kept (alpha), StepSettings::max_step_duration
+// (dt), the grid frame's smallest cell width (h), RunPlan::viscous_effect_run_duration (T) and reynolds_length (L),
+// with the viscosity_advice.h functions (viscosity design 3). It advises (I/O prints it); it never chooses the
+// stage (A25). A liquid of viscosity 0: every number 0, viscosity_to_smoothing_ratio as the function gives for N =
+// 0, reynolds_number +infinity, advises_zero_viscosity false.
 struct LiquidViscousEffect {                 // step run_plan.h, NEW (A25)
   std::uint32_t ingredient_index = 0;        // scene ingredient
   double viscosity = 0;                      // Pa s, the setting
   double density = 0;                        // kg/m3, rest density of its material
-  double viscous_effect_per_step = 0;        // no unit; 0 when viscosity is 0
+  double viscous_effect_per_step = 0;        // no unit; N = nu dt / h^2 (ComputeViscousEffectPerStep)
+  // NEW (A57). 4 N / (1 - alpha) (ComputeViscosityToSmoothingRatio); empty when alpha == 1 (pure FLIP: no
+  // smoothing figure). A lower bound: the largest step is used.
+  std::optional<double> viscosity_to_smoothing_ratio;
+  double four_cell_feature_change = 0;       // NEW (A57). No unit. -expm1(-pi^2 nu T / (4 h^2)).
+  double spreading_in_cells = 0;             // NEW (A57). No unit. sqrt(nu T) / h.
+  double reynolds_number = 0;                // NEW (A57). No unit. sqrt(2 g L) L / nu (ComputeReynoldsNumber).
+  // NEW (A57). viscosity > 0 and (ratio < viscosity::kNegligibleViscosityRatio or four_cell_feature_change <
+  // viscosity::kNegligibleViscousChange).
+  bool advises_zero_viscosity = false;
 };
 enum class ViscousPath : std::uint8_t { kPressureSolve, kViscousSolve };   // stage 12 or 11, fixed for the run
 struct RunPlan {
@@ -405,15 +469,17 @@ struct RunPlan {
                                        //   max_cell_blocks = the scene's cover blocks x start_limit_headroom,
                                        //   rounded up, capped by the domain's blocks at the smallest cell, >= 1.
   MemoryEstimate estimate;
-  std::uint64_t allowed_bytes = 0;     // Step 3: min of the two shares of StepSettings.
-  RunMode mode = RunMode::kOnePiece;   // Step 4.
+  // Step 4: ComputeAllowedMemoryBytes(on_processor, memory_share_of_free, memory_left_free_bytes) (A58; replaced:
+  // "min of the two shares of StepSettings").
+  std::uint64_t allowed_bytes = 0;
+  RunMode mode = RunMode::kOnePiece;   // Step 5. With forced_mode: that mode (A40).
   // Both batched modes. BuildRunPlan leaves them 0; the caller copies them from batches::BuildBatchPlan(scene,
   // plan, settings, batch_settings) before BuildSimulation.
   std::uint32_t max_blocks_per_batch = 0;
   std::uint32_t max_loaded_blocks = 0;       // NEW. BatchPlan::max_loaded_blocks.
   std::uint64_t max_loaded_particles = 0;    // NEW. BatchPlan::max_loaded_particles.
   std::uint32_t max_solve_loaded_blocks = 0; // NEW (A15). BatchPlan::max_solve_loaded_blocks.
-  std::uint64_t allowed_cpu_bytes = 0;       // NEW (A15). Step 3 of BuildRunPlan applied to on_cpu.
+  std::uint64_t allowed_cpu_bytes = 0;       // NEW (A15). Step 4's rule applied to on_cpu (A58).
   PlanFit fit = PlanFit::kFits;              // NEW (A17 planned cost). kDoesNotFit: mode kBatched, every estimate
                                              //   filled; BuildSimulation (and I/O BuildRun) fail kDoesNotFit on it.
                                              //   Also when limits.max_cell_blocks > grid::kMaxCellBlocksLimit
@@ -427,21 +493,48 @@ struct RunPlan {
   double viscous_effect_cell_width = 0;      // m
   double viscous_effect_step_duration = 0;   // s
   ViscousPath viscous_path = ViscousPath::kPressureSolve;
+  double viscous_effect_run_duration = 0;    // NEW (A57). s. T = ReadyScene::end_time - start_time.
+  double reynolds_length = 0;                // NEW (A57). m. The domain box's smallest extent.
 };
 // Allocates nothing on any processor. `on_processor` is what StepSettings::run_on offers; `on_cpu` is the CPU
 // memory a batched run would keep the state in. Both are inputs so the plan can be tested with no GPU. A scene that
 // fits nowhere is a plan with fit = kDoesNotFit, not a failure (A17 planned cost).
 // NEW: output_estimate are render_output::BuildRenderOutputMemoryEstimate, counted as Module::kRenderOutput;
 // cell_resize_estimate are cell_resize::BuildCellResizeMemoryEstimate, counted as Module::kCellResize. Empty: none.
+// NEW (A40). forced_mode empty: the plan chooses kOnePiece or kBatched (5.9 step 5). Set (a resumed run reuses its
+// recorded mode): mode = *forced_mode, and fit = kFits exactly when that mode fits by step 5's test (kOnePiece:
+// on_processor <= allowed_bytes; either batched mode: whole_run + one_step_try <= allowed_cpu_bytes), else
+// kDoesNotFit with the forced mode kept; the batched fields stay 0 for the caller to copy from
+// batches::BuildBatchPlan as before. Whether a batch plan whose SolvePlace differs from a forced batched mode
+// counts as "does not fit" is the caller's rule (I/O, kRecordedModeDoesNotFit).
 std::expected<RunPlan, StepFailure> BuildRunPlan(const ReadyScene& scene, const StepSettings& settings,
                                                  MemoryAvailable on_processor, MemoryAvailable on_cpu,
                                                  std::span<const MemoryEstimateEntry> output_estimate,
-                                                 std::span<const MemoryEstimateEntry> cell_resize_estimate = {});
+                                                 std::span<const MemoryEstimateEntry> cell_resize_estimate = {},
+                                                 std::optional<RunMode> forced_mode = std::nullopt);
 struct MemoryReport {                  // Estimate against use. Reported before the run and by AdvanceTo.
-  MemoryEstimate estimate;
-  std::uint64_t allocated_bytes = 0;   // Sum of every buffer built with where = kRunOn. Equals estimate.on_processor.
-  std::uint64_t allocated_cpu_bytes = 0;  // NEW (A17 planned cost). Rows walked with where = kCpu. Equals
-                                          //   estimate.on_cpu - estimate.snapshots.
+  MemoryEstimate estimate;             // At the current limits.
+  // NEW (A58). ComputeRunMemoryBytes of the plan given to BuildSimulation (the plan shown at the start); kept by
+  // ApplyLimits.
+  std::uint64_t planned_bytes = 0;
+  std::uint64_t reserved_bytes = 0;    // NEW (A58). RunMemory::reserved_bytes() of the current block.
+  // NEW (A58). RunMemory::handed_out_bytes() of the current block: the sum of the kRunOn pieces. Equals
+  // reserved_bytes and estimate.on_processor. Replaces allocated_bytes ("Sum of every buffer built with where =
+  // kRunOn. Equals estimate.on_processor.").
+  std::uint64_t handed_out_bytes = 0;
+  std::uint32_t reserved_block_count = 0;  // NEW (A58). Blocks reserved since BuildSimulation: 1 + limit raises.
+  // NEW (A58). GPU only (0 on the CPU): measured at the latest reservation (BuildSimulation's, or the last
+  // ApplyLimits raise's): ReadMemoryAvailable free bytes before that BuildRunMemory minus free bytes after it. Below reserved_bytes: the driver may have placed part of it in shared system memory.
+  std::uint64_t memory_taken_bytes = 0;
+  // NEW (A58). The largest total reserved at once on the run's processor (the old and the new block during a raise)
+  // minus planned_bytes, 0 when not above; plus the same for the CPU block (reserved_cpu_bytes against the start
+  // plan's cpu_run_memory_bytes). Any value above 0 is an I/O warning (A43).
+  std::uint64_t requested_beyond_plan_bytes = 0;
+  // NEW (A58 correction; replaces allocated_cpu_bytes, "Rows walked with where = kCpu. Equals estimate.on_cpu -
+  // estimate.snapshots"). cpu_run_memory's handed_out_bytes() and reserved_bytes() in a GPU run; both equal
+  // estimate.cpu_run_memory_bytes. In a CPU run the kCpu pieces of the one block (both equal the same number).
+  std::uint64_t handed_out_cpu_bytes = 0;
+  std::uint64_t reserved_cpu_bytes = 0;
   SimulationLimits limits;
   std::vector<std::size_t> largest_particle_counts;  // Per material, largest committed so far.
   std::uint32_t largest_cell_blocks = 0;
@@ -450,7 +543,8 @@ struct MemoryReport {                  // Estimate against use. Reported before 
 // 6.3. Amended (A17, batched-run buffers): null batched_plan gives the one-piece entries of 6.3; a batched plan
 // gives the entries of 6.5 (loaded-only entries at max_loaded_blocks / max_loaded_particles with where = kRunOn,
 // whole entries placed by the placement rule, the batched-run entries: mirrors, grid copy, cell list, stage-17
-// solids instance).
+// solids instance). Amended (A58): no kRunOn entry is kOneCall; each entry's copies equals the number of buffers it
+// stands for, each count x bytes_each bytes, so the build hands out exactly ComputeRunMemoryBytes of the entries.
 std::vector<MemoryEstimateEntry> BuildStepMemoryEstimate(const ReadyScene& scene, const SceneCounts& counts,
                                                          const RunPlan* batched_plan = nullptr);
 ```
@@ -479,23 +573,49 @@ class Simulation {                     // Move-only. Owns everything listed in s
 };
 // Runs CheckSceneCanRun again, allocates from the plan's memory estimate entries, adds the start particles, checks them with
 // materials::CheckMaterialState, chooses the first active cells and groups (5.9). Fails with
-// kSceneNotSupported, kBadInput, kDoesNotFit, kBatchedRunNotBuilt, kOutOfMemory, kRunOnCallFailed. On failure
+// kSceneNotSupported, kBadInput, kDoesNotFit, kBatchedRunNotBuilt, kRunOnCallFailed, kOutOfMemory. On failure
 // nothing stays allocated. Fixes the viscous path (stage 11 or 12) from the ready scene by the A25 rule; nothing
 // afterwards changes it. Reconcile (11.31): the simulation owns one grid::GridBuilderBuffers, built first and released
-// last, lent to the committed and free GridBuffers (and the loaded try's buffers in a batched run).
+// last, lent to the committed and free GridBuffers (and the loaded try's buffers in a batched run). A58 (with the
+// same-day correction): before anything else it reads ReadMemoryAvailable(run_on), reserves run_memory of exactly
+// plan.estimate.on_processor bytes on run_on and, in a GPU run, cpu_run_memory of exactly
+// estimate.cpu_run_memory_bytes on the CPU (CpuMemory::kLockedForCopies in a batched GPU run: the particle arrays
+// are its pieces); in a CPU run one block of both sums, and cpu_run_memory is that block. It reads free memory
+// again (memory_taken_bytes), then builds every buffer as a piece of the block of its processor: a builder gets
+// the RunMemory of the processor its buffers live on, a builder for both processors gets run_memory,
+// cpu_run_memory as its last two arguments; only kOneCall and kOneSnapshot CPU arrays use plain BuildBuffer. Both
+// blocks are the simulation state's first members, so they are freed last, after their pieces. Afterwards the step's
+// and the core modules' pieces are handed out. BuildSimulation calls no StepCallbacks function during construction
+// (callbacks run only inside TryStep and AdvanceTo). Once I/O built render output, cell resize and the batched run
+// into FindRunMemory and
+// FindCpuRunMemory, handed_out_bytes == reserved_bytes == planned_bytes and handed_out_cpu_bytes ==
+// reserved_cpu_bytes.
 std::expected<Simulation, StepFailure> BuildSimulation(const ReadyScene& scene, const StepSettings& settings,
                                                        const RunPlan& plan, const StepCallbacks& callbacks);
-// The explicit growth of 5.7. Not inside a try. On failure the simulation is unchanged and usable.
+// The explicit growth of 5.7. Not inside a try. On failure the simulation is unchanged and usable. A58: reserves a
+// second RunMemory for the whole new plan (and, in a GPU run, a second cpu_run_memory), rebuilds every buffer into
+// them, copies the committed values, swaps, then frees the old blocks whole; kDoesNotFit unless new reserved + old
+// reserved <= allowed_bytes (and, for the CPU blocks of a GPU run, <= allowed_cpu_bytes). Fails
+// with kTryInProgress, kLimitNotRaised, kDoesNotFit, kRunOnCallFailed, kOutOfMemory.
 std::expected<MemoryReport, StepFailure> ApplyLimits(Simulation& simulation, const SimulationLimits& limits);
 MemoryReport ReadMemoryReport(const Simulation& simulation);
+// NEW (A58). The simulation's blocks, for the builders of the modules reached through callbacks whose entries the
+// plan holds (output_estimate, cell_resize_estimate): I/O calls render_output::BuildRenderOutput,
+// cell_resize::BuildCellResize and the batched run's builder with them right after BuildSimulation, before any step. FindCpuRunMemory is
+// FindRunMemory's block in a CPU run. After those builds, handed_out_bytes == reserved_bytes. Only between steps.
+// They follow a raise through StepCallbacks::limits_raised (3.9; reconcile, 2026-11-15).
+RunMemory& FindRunMemory(Simulation& simulation);
+RunMemory& FindCpuRunMemory(Simulation& simulation);
 // NEW (A17, batched-run buffers). The step's own copies (6.5) since BuildSimulation: every try, committed or not.
 // (Reconcile, 11.29: a committed resize adds none; the refresh by grid::ReadGrid is withdrawn.)
 CopyCounts ReadCopyCounts(const Simulation& simulation);
 // NEW (A17, batched-run buffers). The CPU copy of the committed grid in a batched GPU run (built by the CPU builder
 // from the same cell list, swapped at commit; after a committed resize, the CPU resized grid handed over with
 // ApplyResizedCpuGridCopy, no copy; reconcile, 11.29), the committed grid itself in a CPU run, null in a one-piece
-// GPU run. Grouping, choose_cell_size, the marker upkeep and CellResize read it. The pair of CPU copy buffers
-// shares one CPU grid::GridBuilderBuffers (11.31).
+// GPU run. Grouping, the marker upkeep, the new cells' levels of a batched stage 2 (grid::ComputeNewCellSizeLevel
+// on the CPU tables, A41) and CellResize (FindCellsThatMustSplit, the list edit, BuildResizeMap, grouping) read it
+// (replaced: "Grouping, choose_cell_size, the marker upkeep and CellResize read it"; A41 removed the callback, not
+// the copy). The pair of CPU copy buffers shares one CPU grid::GridBuilderBuffers (11.31).
 const grid::StaggeredGrid* FindCpuGridCopy(const Simulation& simulation);
 
 struct SourceCounter { std::uint64_t source_id = 0; double owed_particles = 0; std::uint64_t next_child_number = 0; };
@@ -507,8 +627,13 @@ struct CommittedStepLimits {
   double air_pocket = 0;               // s. AirPockets::step_limit of the last commit.
   double material_wave_speed = 0;      // s. InternalForcesResult::step_limit, smallest over ranges.
   double gas = 0;                      // s. GasResult::step_limit. +infinity without gas.
-  double grid_only_speed = 0;          // 1/s. NEW (I/O). StepCallbacks::read_largest_grid_only_speed at commit
-                                       //   (cell_resize::ReadLargestGridOnlySpeed). 0 without cell resize.
+  // Removed (A64; not in the first version): "double grid_only_speed = 0; // 1/s. NEW (I/O).
+  // StepCallbacks::read_largest_grid_only_speed at commit (cell_resize::ReadLargestGridOnlySpeed). 0 without cell
+  // resize." It comes back with the later group "Deep liquid without particles".
+  // NEW (A62). m/s. Largest |velocity.for_next_step| over particles of liquid materials at the last commit (stage
+  // 19's travel pass, kept by stage 20); an exact max, so any order and any batch cut give the same bytes. 0 with
+  // no liquid particle. cell_resize::ResizeCells reads it for grid::ComputeReferenceSpeed.
+  double largest_liquid_speed = 0;
   double last_step_duration = 0;       // s. Of the last committed step; 0 before the first.
 };                                     // +infinity where a limit does not apply.
 struct SimulationSnapshot {            // D word. CPU-owned copy of the committed state at one state_version.
@@ -520,12 +645,12 @@ struct SimulationSnapshot {            // D word. CPU-owned copy of the committe
   std::vector<double> pressure;                    // Pa.
   std::vector<std::uint8_t> has_pressure;          // NEW (I/O).
   std::vector<std::uint32_t> pocket_of_cell;       // NEW (I/O). pressure::kNoAirPocket outside every pocket.
-  // NEW (cell resize and render output). The seven region arrays; empty without cell resize.
-  std::vector<std::uint8_t> is_grid_only_region, layers_from_grid_only_region;
+  // NEW (cell resize; A41, A63). The three cell-size arrays; empty without cell resize. Replaced (A64): "The seven
+  // region arrays" (is_grid_only_region, layers_from_grid_only_region, grid_only_mass, grid_only_rest_volume,
+  // grid_only_current_volume, grid_only_ingredient_volume: not in the first version).
   std::vector<double> merge_ready_duration;        // s.
-  std::vector<double> grid_only_mass;              // kg.
-  std::vector<double> grid_only_rest_volume, grid_only_current_volume;   // m3.
-  std::vector<double> grid_only_ingredient_volume; // m3, [active cell * ingredient_count + ingredient].
+  std::vector<double> held_velocity_gradient_size; // 1/s. NEW (A63).
+  std::vector<std::uint8_t> merge_ready_step_count;  // NEW (A63). Saturating at 255.
   // By grid::FacePieceId order. Empty when not kept (6.3).
   std::vector<double> velocity_after_pressure;     // m/s. The liquid set.
   std::vector<double> gas_velocity_after_pressure; // m/s. NEW. The gas set; empty without gas.
@@ -539,7 +664,8 @@ struct SimulationSnapshot {            // D word. CPU-owned copy of the committe
 // Blocking. Only between steps. On the GPU this is the one large copy to the CPU.
 std::expected<SimulationSnapshot, StepFailure> ReadSnapshot(const Simulation& simulation,
                                                             particles::SnapshotFields particle_fields);
-// Rebuilds the state of a full snapshot so that the next steps are the bytes of an uninterrupted run (5.13).
+// Rebuilds the state of a full snapshot so that the next steps are the bytes of an uninterrupted run (5.13). A58:
+// reserves its RunMemory blocks first, as BuildSimulation. Fails with BuildSimulation's errors, kSnapshotDoesNotMatch.
 std::expected<Simulation, StepFailure> BuildSimulationFromSnapshot(
     const ReadyScene& scene, const StepSettings& settings, const RunPlan& plan, const StepCallbacks& callbacks,
     const SimulationSnapshot& snapshot);
@@ -572,6 +698,12 @@ struct StepReport {                    // What one try measured. Valid for a rej
   StepTimings timings{};
   CopyCounts copies{};                 // NEW (A17). This try's step-own copies (6.5); for a reject up to the failed
                                        //   stage. Copies of batches, the solvers and cell resize are theirs.
+  // NEW (A60). The liquid's mean force and torque on every solid over the step (solids::LiquidForceOnSolid: pressure
+  // and viscous parts, N and N m, world axes, torque about the body's origin at the step start), every solid of the
+  // scene in ascending solid_id, fixed solids and the domain box included. Copied from solids_try.liquid_forces()
+  // in stage 20 just before solids::CommitTry, so it holds the committed try's values; empty for a reject. A CPU
+  // result, so the vector is allowed (it allocates once per committed try).
+  std::vector<solids::LiquidForceOnSolid> liquid_force_on_solids;
 };
 struct StepResult {                    // D name.
   bool committed = false;              // D.
@@ -628,7 +760,7 @@ struct FoamAndSprayInputs {            // Read-only views of the try, valid duri
   grid::CellBlockRange blocks;                          // Blocks of `grid` to record (a batch: the piece's range).
   std::span<const grid::CellBlockIndex> block_in_whole_grid;  // Of `grid`'s blocks. Empty in a one-piece run. In a
                                         //   batched run the CPU copy of the piece map kept by ApplyGridPiece (A17).
-  const GridFields* fields;                             // The try GridFields, region arrays included.
+  const GridFields* fields;                             // The try GridFields (A64: no region arrays).
 };
 struct ResizeResult { bool resized = false; std::uint8_t module_error = 0; };  // A failed resize keeps the step.
 // NEW (decision of 2026-11-14). A callback is a function and the context it receives, so cell resize, batches,
@@ -639,22 +771,13 @@ struct StepCallbacks {                 // D rule: named after the event or the q
   // Stage MakeFoamAndSpray (once per batch in a batched run). Records what it needs and keeps it only if
   // on_try_done says committed. false: kCallbackFailed.
   Callback<bool(void* context, const FoamAndSprayInputs& inputs)> make_foam_and_spray;
-  // Stage ChooseActiveCells: the size level of a new cell (grid Q40). Null: the nearest active cell's level.
-  // Called on the CPU. The step passes committed_grid.tables(RunOn::kCpu) as `committed` (reconcile, 11.30): the
-  // real tables in a CPU run; version 0 and null arrays in a one-piece GPU run (A17), where the step reads the new
-  // cells back (8 B each) and sends the levels (1 B each), both counted (6.5 row O4), and
-  // cell_resize::ChooseCellSize reads its own CPU copy of the committed grid; FindCpuGridCopy(...)->tables(kCpu)
-  // in a batched GPU run. The step never reads a GPU grid back for it. A shared size rule instead: Open (11).
-  Callback<grid::SizeLevel(void* context, const grid::GridTables& committed, Vec3 position)> choose_cell_size;
-  // NEW. End of stage ParticlesToGrid, after every set was transferred (cell_resize::ApplyGridOnlyRegionInStep).
-  Callback<StageOutcome(void* context, Simulation& simulation, StepTry& step_try, grid::CellBlockRange blocks)>
-      apply_grid_only_region;
-  // NEW. End of stage MoveParticles, whole grid (cell_resize::MoveGridOnlyLiquidInStep).
-  Callback<StageOutcome(void* context, Simulation& simulation, StepTry& step_try, grid::CellBlockRange blocks)>
-      move_grid_only_liquid;
-  // NEW. 1/s, largest grid-only face speed over its cell width (I/O wraps cell_resize::ReadLargestGridOnlySpeed).
-  // Read once in stage CommitStep and stored in CommittedStepLimits::grid_only_speed. Null: 0.
-  Callback<double(void* context)> read_largest_grid_only_speed;
+  // Removed (A41, 11.40): "choose_cell_size", the size level of a new cell from a CPU callback, with its two
+  // counted copies in a one-piece GPU run (6.5 row O4). Stage 2 calls grid::ComputeNewCellSizeLevel on the grid's
+  // processor instead (5.3).
+  // Removed (A64, 11.39; not in the first version, the later group "Deep liquid without particles"):
+  // "apply_grid_only_region" (end of stage ParticlesToGrid, cell_resize::ApplyGridOnlyRegionInStep),
+  // "move_grid_only_liquid" (end of stage MoveParticles, cell_resize::MoveGridOnlyLiquidInStep) and
+  // "read_largest_grid_only_speed" (stage CommitStep, into CommittedStepLimits::grid_only_speed).
   // NEW. A batched run: runs stages first..last instead of the step's own loop
   // (batches::ApplyStagesInBatches). Null with either batched RunMode: kBatchedRunNotBuilt.
   Callback<StageOutcome(void* context, Simulation& simulation, StepTry& step_try, const StageTable& stages,
@@ -666,6 +789,13 @@ struct StepCallbacks {                 // D rule: named after the event or the q
   // After a commit and its resize. D name OnStepDone. kStop ends AdvanceTo at this committed state.
   Callback<KeepGoing(void* context, const Simulation& simulation, const StepResult& result,
                      const ChosenStepDuration& chosen)> on_step_done;
+  // NEW (reconcile, 2026-11-15; A58). Called by ApplyLimits after the new blocks are reserved and the step's own
+  // buffers are rebuilt into them, before the old blocks are freed: I/O rebuilds cell resize, the batched run and the
+  // render recorder into FindRunMemory / FindCpuRunMemory (their estimates are in the plan through
+  // cell_resize_estimate and output_estimate, so the new blocks have room) and copies what they keep. false:
+  // ApplyLimits frees the new blocks, leaves the simulation as it was and fails kDoesNotFit (context.module =
+  // Module::kStep), and AdvanceTo stops with kLimitsCannotBeRaised. Null: nothing outside the step holds run buffers.
+  Callback<bool(void* context, Simulation& simulation, const SimulationLimits& new_limits)> limits_raised;
 };
 enum class StopReason : std::uint8_t { kReachedTarget, kCancelled, kStoppedByCallback, kRetriesUsedUp,
                                        kLimitsCannotBeRaised, kCannotContinue, kBadStepInputs };
@@ -690,14 +820,17 @@ struct GridFields {                    // The grid values that survive a commit.
   grid::FaceValues<double> velocity_after_pressure;      // m/s. The liquid set. Kept or not: 6.3.
   grid::FaceValues<double> gas_velocity_after_pressure;  // NEW. m/s. The gas set. No room without gas.
   grid::CellValues<std::uint32_t> pocket_of_cell;  // AirPocketArrays::pocket_of_cell; pressure::kNoAirPocket.
-  // NEW (cell resize). No room unless ReadyScene::has_cell_resize. Carried by CellId in ChooseActiveCells.
-  grid::CellValues<std::uint8_t> is_grid_only_region;
-  grid::CellValues<std::uint8_t> layers_from_grid_only_region;
-  grid::CellValues<double> merge_ready_duration;   // s.
-  grid::CellValues<double> grid_only_mass;         // kg.
-  grid::CellValues<double> grid_only_rest_volume;  // m3.
-  grid::CellValues<double> grid_only_current_volume;   // m3.
-  Buffer<double> grid_only_ingredient_volume;      // m3. [cell place * ingredient_count + scene ingredient].
+  // NEW (cell resize). No room unless ReadyScene::has_cell_resize. Carried by CellId in ChooseActiveCells (a new
+  // cell: 0). Written by cell_resize::ComputeCellSizeChanges in the resize try; remap: a split copies, a merge
+  // gives 0. Removed (A64; not in the first version): is_grid_only_region, layers_from_grid_only_region,
+  // grid_only_mass, grid_only_rest_volume, grid_only_current_volume, grid_only_ingredient_volume.
+  grid::CellValues<double> merge_ready_duration;   // s. Committed time the merge test has held without a break.
+  // NEW (A63). 1/s. max(held, current) velocity gradient size at each resize; reset to the current value when the
+  // merge test breaks or the cell is split or merged. Memory entry "step: held velocity gradient size".
+  grid::CellValues<double> held_velocity_gradient_size;
+  // NEW (A63). Committed steps the merge test has held without a break, saturating at 255; reset with
+  // merge_ready_duration. Memory entry "step: merge wait steps".
+  grid::CellValues<std::uint8_t> merge_ready_step_count;
 };
 class ResizeTry {                      // Exclusive access to the committed state between two steps. Move-only.
  public:
@@ -722,7 +855,9 @@ class ResizeTry {                      // Exclusive access to the committed stat
   // resize builds its CPU resized grid; null in every other run.
   grid::GridBuffers* free_cpu_grid_copy_buffers();
 };
-std::expected<ResizeTry, StepFailure> BuildResizeTry(Simulation& simulation);  // kTryInProgress, kOutOfMemory
+// kTryInProgress. A58: builds no buffer (its try copies are the ones BuildSimulation built in the run's block), so
+// it never returns kOutOfMemory (reconcile item 31). Replaced: "kTryInProgress, kOutOfMemory".
+std::expected<ResizeTry, StepFailure> BuildResizeTry(Simulation& simulation);
 // NEW. Binds fields_to_fill and solids_at_faces_to_fill to resized_grid with grid::ApplyGridVersion and, with
 // gas, builds the gas try with gas::BuildResizeTry(amounts, resized_grid). Fails kTooManyCellBlocks (as
 // RejectContext), kRunOnCallFailed. Kept (reconcile, 11.28) for a caller that built the grid into
@@ -790,9 +925,10 @@ struct StageTable {                    // Indexed by Stage. Null: not a stage he
   // once, called with blocks = every block. kFindSolidSurfaces (NEW, A17 batched-run buffers):
   // solids::FindGridEdgesOpenToSky, which floods over the whole grid; a batched run calls it at
   // kWholeGridOnProcessor right after pass 1, before stage 9's whole part. kFindLiquidSurface:
-  // FindMaterialBoundaries, FindAirPockets, CheckViscosityCanRun. kMoveParticles: the move_grid_only_liquid
-  // callback. kCheckStep: CheckSolidExchange, the gas changes, the next CommittedStepLimits. Null for every other
-  // stage. A one-piece run calls it right after `run`. Stage 10 runs on the whole grid.
+  // FindMaterialBoundaries, FindAirPockets, CheckViscosityCanRun. kCheckStep: CheckSolidExchange, the gas changes,
+  // the next CommittedStepLimits. Null for every other stage. A one-piece run calls it right after `run`. Stage 10
+  // runs on the whole grid. A64: kMoveParticles has no whole-grid part in the first version (replaced:
+  // "kMoveParticles: the move_grid_only_liquid callback").
   std::array<StageFunction, kStageCount> run_whole_grid{};
 };
 extern const StageTable kStages;       // The production stages 1 to 20 of 5.2 (kResizeCells is recorded only
@@ -876,7 +1012,13 @@ means unknown), `ReadProcessorDescription`,
 }`) and `ComputeMemoryBytes(rows, counts, where)`, which the estimate uses to sum the processor and CPU entries
 apart; `MemoryAvailable`, `ReadMemoryAvailable` and `ProcessorDescription` in `base/processor_description.h`;
 buffers of one call on one processor as a `Requires:` precondition (debug assertion; A30: `BufferError` has no
-processor-mismatch value to map); `kUp` as `inline constexpr Vec3 kUp{0, 0, 1}`.
+processor-mismatch value to map); `kUp` as `inline constexpr Vec3 kUp{0, 0, 1}`. **A58 (Foundation Tasks 17 to
+19, `base/run_memory.h`):** `RunMemory` (move-only; `run_on()`, `reserved_bytes()`, `handed_out_bytes()`),
+`BuildRunMemory(RunOn, std::size_t byte_count, CpuMemory = kOrdinary)`, `BuildBuffer<Value>(RunOn, std::size_t size,
+RunMemory&)`, `kRunMemoryPieceAlignmentBytes` (256), `ComputeRunMemoryPieceBytes`, `ComputeRunMemoryBytes(std::span<const
+MemoryEstimateEntry>, const MemoryCounts&, MemoryWhere where)` (the `where` parameter: same-day correction),
+`BufferError::kRunMemoryTooSmall`, the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`;
+`ReadMemoryAvailable(RunOn::kGpu)` read after the context exists.
 
 **Contact (PROVIDED, 3.1 to 3.5):** `DomainBox`, `ClosedSides`, `DomainSide`, `Solid`, `PlateSide`,
 `CheckSolid`, `ComputeContactScale`, `ComputeContactTolerance`, `CheckContactTolerance`, `kMaxTurnPerStep`,
@@ -894,7 +1036,7 @@ a built grid), `CellId`, `CellBlockId`, `FacePieceId`, `CellBlockIndex`, `SizeLe
 `ToSizeLevel`, `CellBlockRange`, `BuildRanges`, `CellValues`, `FaceValues`, `CornerValues`, `CellBlockValues`,
 `BuildCellValues(RunOn, std::uint32_t max_cell_blocks)` and the face, corner and block forms,
 `ApplyGridVersion(values, grid)` (all four forms), `ReadValues`, `WriteValues`, `ToMemoryCounts`,
-`BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count)` (the step passes 2), `GridError`
+`BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count, std::uint32_t max_cell_blocks)` (the step passes 2), `GridError`
 (`kSizeStepRuleBroken`, `kTooManyCellBlocks`), `GridFailure`, `ToName`. **A17 (plan decision "Grid built on the
 GPU"):** `GridInputs::active_cell_buffer` (`const Buffer<CellId>*`) and `active_cell_buffer_count`, the list on
 the buffers' processor; `BuildGrid` builds on the processor of its `GridBuffers` and reads back only its status
@@ -902,14 +1044,21 @@ record; the buffers forms `ComputeGridCounts(const GridInputs&, GridBuffers&)` a
 GridInputs&, GridBuffers&)`; `ReadGrid(const StaggeredGrid&, GridBuffers& cpu_buffers)` (the one explicit copy;
 `tables(RunOn::kCpu)` of a GPU grid is empty); `GridPiece`, `CellBlockRange` in `grid/grid_ids.h`. **A17,
 batched-run buffers:** the CPU builder (`BuildGrid` with CPU `GridBuffers`) for the CPU grid copy of a batched GPU
-run, from the same list; `BuildGridMemoryEstimate(RunOn::kCpu, 2, BuilderBuffersSharing::kOneForAllGrids)` for its
+run, from the same list; `BuildGridMemoryEstimate(RunOn::kCpu, 2, limits.max_cell_blocks, BuilderBuffersSharing::kOneForAllGrids)` for its
 entries (`where` set to `kCpu`). (Reconcile: `ReadGrid` no longer refreshes it after a committed resize, 11.29.)
 **Reconcile item 11 (11.31):** `GridBuilderBuffers` (move-only; `max_cell_blocks()`, `run_on()`), `BuildGridBuilderBuffers(RunOn,
 std::uint32_t max_cell_blocks)`, `BuildGridBuffers(const GridSettings&, GridBuilderBuffers&)` (its one form; the builder buffers
 lent, not moved while lent, outliving the buffers), `enum class BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`,
-`BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count, BuilderBuffersSharing = kOnePerGrid)` (with
+`BuildGridMemoryEstimate(RunOn, std::uint32_t storage_count, std::uint32_t max_cell_blocks, BuilderBuffersSharing = kOnePerGrid)` (with
 `kOneForAllGrids` the `grid: builder buffers:` entries have `copies = 1`), `kMaxCellBlocksLimit`;
 `GridSettings::max_cell_blocks` defaults to 0, and `BuildGridBuffers` or `BuildGridBuilderBuffers` with 0 is `kBadInput`.
+**A58:** every grid builder (`BuildGridBuilderBuffers`, `BuildGridBuffers`, `Build...Values`) takes `RunMemory&
+run_memory` last; the step passes the block of the buffers' processor (the CPU grid copies of a batched GPU run:
+`cpu_run_memory`). **A41,
+A61 to A63 (`grid/cell_size_rule.h`, shared):** `CellSizeSettings`, `CellWidthsByLevel`, `CellSizeFacts`,
+`ComputeReferenceSpeed`, `ComputeWantedCellWidth`, `ComputeWantedSizeLevel` (the particle estimate of 5.9) and
+`ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position, SizeLevel smallest_size_level)` (stage 2, on
+the tables' own processor).
 
 **Particles (PROVIDED, 3.1 to 3.7):** `Particles`, `ParticlesSettings`, `MaterialParticlesSettings`,
 `BuildParticles`, `BuildParticlesFromSnapshot(const ParticlesSettings&, const ParticlesSnapshot&, const
@@ -926,7 +1075,8 @@ memory), added to `StepReport::copies`.
 
 **Transfer (PROVIDED, 3):** material sets (A8): `MaterialSetKey`, `ToMaterialSetKey`, `CheckMaterialSets`
 (called in `CheckSceneCanRun`); `ParticlesToGrid`, `ParticlesToGridInputs`, `GridFromParticles`,
-`FaceValueKind` (`kFromParticles`, `kFromGridOnlyRegion`), `SaveGridBeforeForces`, `SaveGridAfterPressure` (with
+`FaceValueKind` (`kFromParticles`; `kFromGridOnlyRegion` is never written in the first version, A64),
+`SaveGridBeforeForces`, `SaveGridAfterPressure` (with
 `was_solved` a pointer, null for a set no solve writes), `SaveGridInputs`, `GridSnapshot`, `GridToParticles`,
 `GridToParticlesInputs` (with `cell_was_solved` a pointer), `GridAtParticle`, `kGridOnlyReasonCount`,
 `MixParticleVelocity`, `MixInputs`, `MixResult`, `SolidsAtFaces` (`outside_solid`, `side`, `solid_velocity`),
@@ -982,10 +1132,17 @@ and `std::span<solids::FreeSolidMotion> free_solid_motion` (one per free solid),
 `blocking_material_velocity_after_pressure` staying filled for the `BlockingMaterialFace` subset; `ViscosityBufferSettings` gains `max_material_faces`
 and `max_free_solids` (the step sets 2 x solids' `max_motion_map_entries`, 0 without a blocking set, and the free
 solid count); memory entries `"viscosity: material face vectors"`, `"viscosity: free solid vectors and blocks"`,
-`"viscosity: sample solid coefficients"`. **A25** (`deformation_rate.h`, shared):
-`kSmallestVisibleViscousEffectPerStep = 2.5e-4`, `ComputeViscousEffectPerStep(double viscosity, double
-step_duration, double density, double cell_width)`. **Reconcile item 3 (11.32):** `void
-viscosity::ResetSolveCopyReport(ViscosityBuffers& buffers)`.
+`"viscosity: sample solid coefficients"`. **A25** (`deformation_rate.h`, shared): `ComputeViscousEffectPerStep(double
+viscosity, double step_duration, double density, double cell_width)`. Removed (A57, 11.43):
+`kSmallestVisibleViscousEffectPerStep = 2.5e-4`. **A57** (`viscosity_advice.h`, CPU only):
+`kNegligibleViscosityRatio` (0.1), `kNegligibleViscousChange` (0.01), `ComputeViscosityToSmoothingRatio(double
+viscous_effect_per_step, double own_motion_kept)` (`std::optional<double>`), `ComputeFourCellFeatureChange(double
+viscosity, double density, double run_duration, double cell_width)`, `ComputeReynoldsNumber(double viscosity, double
+density, double smallest_domain_extent, double gravity_size)`. **A60:** `ViscosityResult` returns the per-solid
+viscous impulse (one per solid, ascending `solid_id`). **A58:** `BuildViscosityBuffers(..., RunMemory& run_memory, RunMemory& cpu_run_memory)` (it builds on both
+processors in `kBatchedWithSolvesInPieces`; the same two-block form for `BuildPressureBuffers` and `BuildGasBuffers`
+as their plans give it).
+**Reconcile item 3 (11.32):** `void viscosity::ResetSolveCopyReport(ViscosityBuffers& buffers)`.
 
 **Materials (PROVIDED, 3):** `MaterialTableInputs`, `MaterialTable` (`materials()`,
 `first_ingredient_of_material()`, `ingredient_viscosity()`, `ingredient_friction()`,
@@ -1034,7 +1191,12 @@ loaded counts (the loaded instance), with 0 particles (the whole instance) and w
 instance); `WriteBlockPartialsRange(const SolidsBuffers& piece_buffers, const grid::GridPiece& piece, SolidsBuffers&
 whole_buffers)` (called by batches, not by the step; the step's test calls it through a hand-written
 `run_stages`); every solids call copies its per-solid results into `SolidsTry` (CPU) before it returns;
-`FindGridEdgesOpenToSky` on a GPU grid (box marks, 1 B per box each way, not counted).
+`FindGridEdgesOpenToSky` on a GPU grid (box marks, 1 B per box each way, not counted). **A60:**
+`LiquidForceOnSolid { solid_id; pressure_force; pressure_torque; viscous_force; viscous_torque; }`,
+`SolidsTry::liquid_forces()` (every solid, ascending `solid_id`), and the solids call that stores stage 11's
+per-solid viscous impulse in the try (declared by the solids plan: `solids::ApplyViscousImpulses(viscous_impulse,
+solids_try)` here). **A58:** `BuildSolidsBuffers`, `BuildSolidCoverageValues` and every other solids builder take
+`RunMemory& run_memory` last (the stage-17 `kCpu` instance of a batched GPU run: `cpu_run_memory`).
 
 **Gas (PROVIDED, 3):** `GasLaw`, `GasSettings`, `MarkerSettings`, `ActiveGasSettings`, `GasSource`,
 `GasWind`, `CheckGasSources`, `GasAmounts`, `GasAmountsTry`, `BuildGasAmounts`, `BuildTry(amounts, grid)`,
@@ -1058,10 +1220,11 @@ particles::ParticleFields& gas_markers, const GasLaw& law, const MarkerSettings&
 amounts' processor.
 
 **Cell resize and batches (PROVIDED, 3):** reached only through `StepCallbacks`, which the I/O and CLI design
-sets: `cell_resize::ResizeCells` (`resize_cells`), `ChooseCellSize` (`choose_cell_size`),
+sets: `cell_resize::ResizeCells` (`resize_cells`), `batches::ApplyStagesInBatches` (`run_stages`). Removed:
+`ChooseCellSize` (`choose_cell_size`; A41, the shared rule in grid), and, not in the first version (A64),
 `ApplyGridOnlyRegionInStep` (`apply_grid_only_region`), `MoveGridOnlyLiquidInStep` (`move_grid_only_liquid`),
-`ReadLargestGridOnlySpeed` (wrapped as `read_largest_grid_only_speed`), `batches::ApplyStagesInBatches`
-(`run_stages`); `batches::BuildBatchPlan` fills `RunPlan::max_blocks_per_batch`, `max_loaded_blocks`,
+`ReadLargestGridOnlySpeed` (`read_largest_grid_only_speed`). `ResizeCells` reads
+`CommittedStepLimits::largest_liquid_speed` (A62) and the three cell-size arrays of `GridFields` (A63); `batches::BuildBatchPlan` fills `RunPlan::max_blocks_per_batch`, `max_loaded_blocks`,
 `max_loaded_particles` and (A15) `max_solve_loaded_blocks`, and its `SolvePlace::kInPieces` becomes
 `RunMode::kBatchedWithSolvesInPieces`; `BuildCellResizeMemoryEstimate` is passed to `BuildRunPlan`. **A17,
 batched-run buffers:** `batches::ReadBatch` calls `solids::WriteBlockPartialsRange` into
@@ -1071,8 +1234,8 @@ run instead of its own `ReadGrid`; batches' `kStagePlaces` gives the same `whole
 test). **Reconcile (11.28 to 11.30):** cell resize calls `BuildResizedGrid` on a GPU grid (batches Task 24); in a
 batched GPU run it builds its CPU resized grid into `ResizeTry::free_cpu_grid_copy_buffers()` and hands it over
 with `ApplyResizedCpuGridCopy` (`CellResizeSettings::grid_copies = GridCopies::kHeldByStep`: its own two CPU grids
-are neither allocated nor counted); `ChooseCellSize` reads its own CPU copy when `committed` has version 0 (a
-one-piece GPU run). The step includes no header of this design.
+are neither allocated nor counted; kept by A41 for its other readers). Replaced (A41): "`ChooseCellSize` reads its
+own CPU copy when `committed` has version 0 (a one-piece GPU run)". The step includes no header of this design.
 
 **Surface, foam and spray (PROVIDED, 3):** reached through `make_foam_and_spray` and `on_try_done`
 (`render_output::RecordStep`, `CommitRecordedStep`, `RejectRecordedStep`, composed by I/O);
@@ -1085,7 +1248,13 @@ borrows), sets each `StepCallbacks` pair (`RunParts`), names the step's enums in
 Foundation's `ReadMemoryAvailable` for the two `MemoryAvailable` inputs of `BuildRunPlan`, stores `SimulationSnapshot` in `saved_state`.
 **A17 planned cost:** I/O's `BuildRunBudget` reads `RunPlan::fit`, `estimate.on_processor`, `on_cpu`,
 `ModuleBytes::on_cpu` and `planned_step_copies`; its `ApplyTryToRunCost` reads `StepReport::copies` and timings;
-`BuildRun` fails `kDoesNotFit` on a plan that does not fit.
+`BuildRun` fails `kDoesNotFit` on a plan that does not fit. **A58, A43:** I/O reads the six new `MemoryReport` fields
+for its warnings and cost lines and `StepSettings::memory_share_of_free`, `memory_left_free_bytes` for the budget.
+**A64:** the does-not-fit line reads `SceneCounts::particles_at_depth_levels` and `start_particles_in_deep_cells`.
+**A57:** the viscosity lines read the `LiquidViscousEffect` fields and `RunPlan::viscous_effect_run_duration`,
+`reynolds_length`. **A60:** `frame_done` reads `StepReport::liquid_force_on_solids` of the frame's last committed
+step. **A40:** `resume` calls `BuildRunPlan` with `forced_mode` = the recorded mode unless `--choose-mode-again`
+(`IoError::kRecordedModeDoesNotFit` when the plan's `fit` is `kDoesNotFit`). **A47:** fills `ReadyScene::wind`.
 
 **Per material, the step carries:** liquids and mixtures: the liquid set, nothing beyond the calls; viscous
 liquid (viscosity above 0, A25): stage 11 in place of 12 for the whole run; snow and springy solids: one set each,
@@ -1103,7 +1272,7 @@ without liquid), stage 13.
 |---|---|---|---|
 | A. Cell sizes change before the step (3) | `AdaptiveFamily`, `AdaptiveRefinementClosure`, `AdaptiveWidth` | Which cells split or merge, with caller-supplied evidence | `ResizeCells` after a commit (cell resize); the rule is a persistent choice |
 | B. Named particles change (3) | `AdaptiveQuadraticTransfer`, `AdaptiveQuadraticSplit`, `AdaptiveQuadraticMerge` | Another transfer for one particle; a split; a merge | One transfer for all (transfer); `AdjustParticleCount` in the resize try |
-| C. Liquid moves between particle and grid-only regions (5) | `AdaptiveOwnerExchange`, `AdaptiveBandOverlap`, `AdaptiveBandPlacement`, `AdaptiveBandRetirement`, `AdaptiveCoreReseed` | Which region carries a cell | Region transfer (cell resize) |
+| C. Liquid moves between particle and grid-only regions (5) | `AdaptiveOwnerExchange`, `AdaptiveBandOverlap`, `AdaptiveBandPlacement`, `AdaptiveBandRetirement`, `AdaptiveCoreReseed` | Which region carries a cell | Region transfer (cell resize); not in the first version (A64): every liquid cell holds particles |
 | D. Geometry given per try (1) | `AdaptivePhysicalGeometry` | Corner distances, outside pressures and added volume per cell from the caller | Solids fill `SolidCoverage`; the scene gives added volume |
 | E. A solid that exchanges force (9) | `PlanarPistonPressureLoad`, `DynamicPlanarPiston`, `CoupledPlanarPiston`, `GuidedFloatingBox`, `TranslatingFloatingBox`, `CoupledGuidedFloatingBox`, `OrientedFloatingBoxPressure`, `OrientedFloatingBox`, `CoupledOrientedFloatingBox` | A solid's state passed by value and returned; which motions are free; coupled or not | `solids::SolidsSettings` in the scene; state in `SolidsTry`; one coupling |
 | F. A second material (1) | `Snow` | Snow particles kept by the caller | A material of the scene in its own material set, in the same try |
@@ -1161,10 +1330,12 @@ working buffers; no stage receives a writable pointer reachable from committed v
    &volume_mirror, &velocity_mirror}, all, markers, law, settings, gas_buffers)` on the committed-value mirrors
    (6.5). Every `AddParticles` and `FindMarkerChanges` copy count goes into `StepReport::copies`.
 2. **`ChooseActiveCells`** (whole state; 5.3). (a) Mark the needed blocks: particles, waiting particles, the
-   open-sea zone, committed grid-only cells, and `gas::FindCellsToKeepActive(gas_amounts, committed_grid, all,
+   open-sea zone, and `gas::FindCellsToKeepActive(gas_amounts, committed_grid, all,
    gas_sources, gas->law, gas_active_cells, keep_active)`; the step adds every cell touching a marked cell and
-   the cells of each active gas source box (plan decision "Gas"). (b) If the list differs:
-   `choose_cell_size` for each new cell, then `grid::BuildGrid(GridInputs{grid_frame, cells, committed version
+   the cells of each active gas source box (plan decision "Gas"). (Committed grid-only cells: not in the first
+   version, A64.) (b) If the list differs: each new cell's level from `grid::ComputeNewCellSizeLevel(committed
+   tables, cell centre, new_cell_size_level)` in the marking pass on the grid's processor (A41, A61; replaced:
+   "`choose_cell_size` for each new cell"), then `grid::BuildGrid(GridInputs{grid_frame, cells, committed version
    + 1}, free_storage)` on the run's processor (A17: in a GPU run the list is a `Buffer<CellId>` on the GPU,
    `GridInputs{grid_frame, {}, &cell_buffer, cell_count, version}`, with `cell_count` a CPU number from the
    stage's own status record; the new counts come from `grid.counts()`; in a batched GPU run the list is built on
@@ -1194,15 +1365,16 @@ working buffers; no stage receives a writable pointer reachable from committed v
    material_buffers.internal_force_per_area(), try_number}, transfer, X.grid_from_particles, transfer_buffers)`,
    then
    `transfer::ComputeCellsFromParticles(CellsFromParticlesInputs{grid, blocks, particles_try, mask(X),
-   table.first_ingredient_of_material(), try_number}, X.cells_from_particles, transfer_buffers)`; then
-   `apply_grid_only_region`. Every transfer stage takes the step's `transfer::TransferBuffers` last (its one form,
-   A31).
+   table.first_ingredient_of_material(), try_number}, X.cells_from_particles, transfer_buffers)`. (Then
+   `apply_grid_only_region`: not in the first version, A64.) Every transfer stage takes the step's
+   `transfer::TransferBuffers` last (its one form, A31).
 5. **`SaveGridBeforeForces`**. For X in sets: `transfer::SaveGridBeforeForces(SaveGridInputs{grid, blocks,
    mask(X), X.grid_from_particles, solids_at_start}, X.before_forces, transfer_buffers)`.
 6. **`ApplyForces`**. For X in `S`, `E` (sets with internal force): `materials::ApplyInternalForce(grid,
    blocks, step_duration, material_settings, X.grid_from_particles, X.totals_of_block, material_buffers)` (the
    sub-span of the range). Then for X in sets, gas included, step: `ComputeVelocityAfterGravity` on every face whose kind is
-   `kFromParticles` or `kFromGridOnlyRegion`: `velocity += (step_duration * gravity)[axis]`, the product
+   `kFromParticles` (and `kFromGridOnlyRegion`, never present in the first version, A64): `velocity +=
+   (step_duration * gravity)[axis]`, the product
    formed once per axis, so gas can take it back exactly.
 7. **`DriveWaves`** (scene with an open sea). `solids::DriveWaves(DriveWavesInputs{grid, blocks,
    &ready_open_sea, &L.grid_from_particles.mass, step_end_time, step_duration}, L.grid_from_particles.velocity,
@@ -1213,8 +1385,8 @@ working buffers; no stage receives a writable pointer reachable from committed v
    friction of X, at_solid_faces of X}`. `G` is never passed.
 9. **`FindLiquidSurface`** (in every scene with liquid or gas). `pressure::ComputeDistanceToSurface(
    SurfaceDistanceInputs{grid, blocks, particles_try, mask(L), kAllLiquidMaterials, particle_radius,
-   surface_tension_max, &fields.is_grid_only_region}, pressure_buffers)` (a gas-only scene passes an all-zero
-   mask); then, because water and syrup form a pair, the same call with `material_index` 0, then 1;
+   surface_tension_max}, pressure_buffers)` (a gas-only scene passes an all-zero mask; A64: no grid-only marks,
+   replaced: "`&fields.is_grid_only_region`"); then, because water and syrup form a pair, the same call with `material_index` 0, then 1;
    `pressure::FindLiquidSurface(LiquidSurfaceInputs{grid, blocks, distances, solids::ToSolidCoverage(coverage),
    step_start_time, step_duration, surface_tension_max, lightest_density, has_viscous_ingredient},
    pressure_buffers)`; `pressure::FindMaterialBoundaries(MaterialBoundaryInputs{grid, all, geometry, field 0,
@@ -1231,7 +1403,8 @@ working buffers; no stage receives a writable pointer reachable from committed v
     `ComputeSensedVolumeRatio`; `materials::ComputeCellSqueezeValues(CellSqueezeInputs{table, grid, blocks,
     L.cells_from_particles, &carried_pressure}, bulk_stiffness, target_volume_ratio, material_buffers)`;
     `pressure::ComputeVolumeCorrectionRate(geometry, sensed_volume_ratio, target_volume_ratio,
-    &fields.is_grid_only_region, volume_correction, added_volume_rate, pressure_buffers)`;
+    volume_correction, added_volume_rate, pressure_buffers)` (A64: no grid-only marks argument, as the pressure plan
+    gives the form);
     `solids::BuildMotionMap(MotionMapInputs{grid, all, geometry, coverage, solids_try}, solids_buffers)`,
     `solids::ToFreeSolidPushes(motion_map)`, `solids::ToFreeSolidInverseInertia(motion_map)`;
     (A18, scene with a blocking set; whether stage 11 or 12 follows, A24) `solids::BuildBlockingMaterialFaces(
@@ -1265,8 +1438,10 @@ working buffers; no stage receives a writable pointer reachable from committed v
     &L.grid_from_particles.velocity, step_duration, material_faces = solids::ToViscousMaterialFaces(viscous_faces),
     free_solids}, viscosity, cancel_requested, viscosity_buffers, fields.velocity_after_pressure, fields.pressure,
     viscosity::SolvedCouplingArrays{blocking_material_velocity_after_pressure, sealed_gas_pressure,
-    material_face_velocity_after_solve, free_solid_motion})` (the four step-owned spans, A24, A26, A27); then
-    `pressure::ComputeWasSolved(equations, L.was_solved, fields.has_pressure)`; then
+    material_face_velocity_after_solve, free_solid_motion})` (the four step-owned spans, A24, A26, A27); (A60) the
+    result's per-solid viscous impulse goes into the solids try with `solids::ApplyViscousImpulses(viscous_impulse, solids_try)` (the
+    solids plan's call; the pressure part of every solid's force is solids' own reduction over its motion map
+    entries); then `pressure::ComputeWasSolved(equations, L.was_solved, fields.has_pressure)`; then
     `solids::ApplySolvedMotionToSolids(motion_map, free_solid_motion, fields.pressure, solids_try, solids_buffers)`
     (A27, in place of `ApplyPressureToSolids`: each free solid touching liquid takes its solved velocity and turn
     rate, travel and turn limits checked again, `kSolidMovesTooFar`; push report `mass * (after - before)`, the
@@ -1297,7 +1472,7 @@ working buffers; no stage receives a writable pointer reachable from committed v
 13. **`SolveGas`** (scene with gas; after the liquid solve, 11 or 12). In a gas scene without stage 10 (no
     liquid), first `gas::ApplyGasStepStart` as in 10 (empty blob list). `gas::SolveGas(SolveGasInputs{&grid,
     all, geometry, &G.grid_from_particles, &fields.velocity_after_pressure, &L.was_solved, lightest_density,
-    &grid_edge_is_open_to_sky, domain_box, gas_sources, gas_wind, step_start_time, step_duration,
+    &grid_edge_is_open_to_sky, domain_box, gas_sources, wind (A47; was `gas_wind`), step_start_time, step_duration,
     sealed_gas_blobs = sealed.blobs, sealed_gas_pressure}, *gas,
     cancel_requested, SolvedGasArrays{&fields.gas_velocity_after_pressure, &G.was_solved,
     &G.cell_was_solved}, gas_amounts_try, gas_buffers, gas_pressure_buffers)`; a coupled blob's end background
@@ -1318,8 +1493,8 @@ working buffers; no stage receives a writable pointer reachable from committed v
 16. **`MoveParticles`** (5.5). `materials::ComputeOwnMotionShares(OwnMotionInputs{table, grid, blocks,
     particles_try, grid_at_particles, distances.at_corners, coverage.distance_to_solid}, material_buffers)`;
     then per material 0 to 4: mix with `transfer::MixParticleVelocity`, `contact::MoveParticles`, the travel
-    check, `materials::ApplyMaterialResponse`, `particles::RemoveParticles(..., RemoveReason::kLeftDomain)`;
-    then `move_grid_only_liquid` on the whole grid.
+    check, `materials::ApplyMaterialResponse`, `particles::RemoveParticles(..., RemoveReason::kLeftDomain)`.
+    (Then `move_grid_only_liquid` on the whole grid: not in the first version, A64.)
 17. **`MoveSolids`** (whole state). `solids::ApplyContactReactions(reaction_fields of materials 0 to 3,
     solids_try, solids_buffers)` (never gas); with a plate, the step fills `face_force_work_rate` and calls
     `solids::ComputeCutWork(cut_work_fields of 3, step_duration, solids_buffers)`. (A18: no longer
@@ -1333,13 +1508,14 @@ working buffers; no stage receives a writable pointer reachable from committed v
 19. **`CheckStep`** (5.6). `particles::CheckParticles(particles_try, blocks)`; finite checks of `fields`;
     `solids::CheckSolidExchange(ExchangeInputs{motion_map, fields.pressure, geometry, pressure_on_solids,
     contact_on_solids, moved, smallest_end_distance, contact_tolerance}, solids_try, tolerances)`; the gas
-    `GasAmountChanges`; the next `CommittedStepLimits`.
+    `GasAmountChanges`; the next `CommittedStepLimits` (with `largest_liquid_speed`, A62).
 20. **`CommitStep`** (5.6). `solids::ApplyPlateRemoval(plate_id, plate_side_fields)` when the plate's path ends
     with `kLeavesScene` inside this step; `particles::CommitTry(particles, particles_try, time +
-    step_duration)`; `gas::CommitTry(gas_amounts, gas_amounts_try, time + step_duration)`;
-    `solids::CommitTry(solids, solids_try)`; the swaps (in a batched GPU run the CPU grid copy pair with the grid
-    pair); then `read_largest_grid_only_speed` into the committed
-    `CommittedStepLimits::grid_only_speed` (the grid-only move of stage 16 is committed by now).
+    step_duration)`; `gas::CommitTry(gas_amounts, gas_amounts_try, time + step_duration)`; (A60)
+    `StepReport::liquid_force_on_solids = solids_try.liquid_forces()`; `solids::CommitTry(solids, solids_try)`;
+    the swaps (in a batched GPU run the CPU grid copy pair with the grid pair; the next `CommittedStepLimits`,
+    `largest_liquid_speed` included). Replaced (A64): "then `read_largest_grid_only_speed` into the committed
+    `CommittedStepLimits::grid_only_speed` (the grid-only move of stage 16 is committed by now)".
 21. **`ResizeCells`**. `resize_cells`, after `TryStep`'s own work is complete (5.11).
 
 | # | Stage | Writes (try or working buffers) | Border | Skipped when |
@@ -1359,7 +1535,7 @@ working buffers; no stage receives a writable pointer reachable from committed v
 | 13 | `SolveGas` | `fields.gas_velocity_after_pressure`, `G` was_solved arrays, `gas_amounts_try` | none | no gas |
 | 14 | `SaveGridAfterPressure` | `solids_at_end`; each set's `after_pressure` | four cell widths | never |
 | 15 | `GridToParticles` | `GridAtParticle` per material | touching | never |
-| 16 | `MoveParticles` | particle arrays, `ParticleContact`, `SolidReaction`, removal marks; grid-only amounts | none | never |
+| 16 | `MoveParticles` | particle arrays, `ParticleContact`, `SolidReaction`, removal marks (grid-only amounts: not in the first version, A64) | none | never |
 | 17 | `MoveSolids` | `solids_try` (A18: no blocking particle's velocity) | none | no driven or free solid and no blocking material |
 | 18 | `MakeFoamAndSpray` | nothing of the step | none | callback null |
 | 19 | `CheckStep` | `StepReport`, next `CommittedStepLimits` | none | never |
@@ -1395,18 +1571,25 @@ viscous liquid (stage 11, `kReadOneStepLate`) is read one step late" (11.26).
 1. Mark. A cell block is needed when one of its cells lies within `kCoveredReachInCellWidths` of a particle
    (waiting particles and gas markers included), measured in the width of the particle's `size_level`; or holds
    a cell marked by `gas::FindCellsToKeepActive` (committed amounts); or lies in an open-sea zone below the
-   highest wave; or is a grid-only cell of the committed grid. 2.5 widths cover the nearby faces (1.5), the
+   highest wave. (Or is a grid-only cell of the committed grid: not in the first version, A64; every liquid cell
+   holds particles, so the particle rule covers it.) 2.5 widths cover the nearby faces (1.5), the
    liquid surface samples one cell beyond a surface cell, and the first fill radius (2); farther fills walk into
    blocks that exist or stop.
 2. Compare the needed block ids with the committed grid's. Equal: the try grid is the committed grid, no new
-   version. Different: new cells take the level of `choose_cell_size`, else of the nearest committed active
-   cell, else `new_cell_size_level`; sibling cells come together (grid Q39); `grid::BuildGrid(inputs,
+   version. Different: each new cell (not in the committed grid) takes `grid::ComputeNewCellSizeLevel(committed
+   tables, its centre, new_cell_size_level)`: the level of the nearest committed active cell plus one, capped at
+   `new_cell_size_level`, or `new_cell_size_level` when none is within the probes (A41, A61: a new cell borders
+   air, so its wanted width is the smallest; the cap keeps the size-step rule). It runs in the marking pass on the
+   committed tables' processor (the GPU in a one-piece GPU run, the CPU copy in a batched GPU run): no copy.
+   Replaced: "new cells take the level of `choose_cell_size`, else of the nearest committed active cell, else
+   `new_cell_size_level`". Sibling cells come together (grid Q39); `grid::BuildGrid(inputs,
    free_storage)` with `version + 1`, on the run's processor, allocating nothing. `kSizeStepRuleBroken` is `kStageFailed`;
    `kTooManyCellBlocks` is `kTooManyCellBlocks`. A rejected try takes the storage back with
    `grid::TakeBuffers`.
 3. Bind every try array to the try grid with `grid::ApplyGridVersion` and carry `GridFields` by `CellId` and
    `FacePieceId` from the committed copy (a new cell: `has_pressure = 0`, pressure 0, `pocket_of_cell =
-   kNoAirPocket`, particle region). Cells never change size here, so no remap is needed.
+   kNoAirPocket`, the three cell-size arrays 0; replaced, A64: "particle region"). Cells never change size here,
+   so no remap is needed.
 4. `CheckGrouping`; on failure `GroupParticlesByBlock`. `kOutsideGrid` cannot occur for a covered particle;
    if it does it is `kParticleOutsideGrid`.
 5. Gas: `gas::BuildTry` copies the committed amounts by `CellId` (cells the try grid lost are counted in its
@@ -1418,25 +1601,26 @@ results do not depend on history. The grid is then fixed until the commit. `Grid
 and the needed cell list stays on the GPU in a `Buffer<CellId>`; only its entry count comes back, in the stage's
 status record, and `grid::BuildGrid` builds the tables on the GPU (A17; the CPU builder is the oracle, equal byte
 for byte). Replaced (A17): "unique ids come back to the CPU (8 bytes per block, grid Q41), which builds the
-grid". With `choose_cell_size` set in a one-piece GPU run, the needed cells not in the committed grid are compacted
-and read back (one copy, 8 B each), the callback runs per cell on the CPU, the levels go back (one copy, 1 B each)
-and a GPU pass applies them before the build (6.5 row O4).
+grid". The new cells' levels come from `grid::ComputeNewCellSizeLevel` in the same GPU marking pass (A41). Replaced:
+"With `choose_cell_size` set in a one-piece GPU run, the needed cells not in the committed grid are compacted and
+read back (one copy, 8 B each), the callback runs per cell on the CPU, the levels go back (one copy, 1 B each) and a
+GPU pass applies them before the build (6.5 row O4)."
 
 **Batched runs (A17, batched-run buffers).** The particles are in CPU memory, so stages 1 and 2 run on the CPU
 (launching GPU work on GPU buffers). Stage 2 marks and builds the needed cell list on the CPU, uploads it into
 `"step: active cell list"` (one counted copy, 8 B per active cell, B4), builds the try grid on the GPU from it and a
 CPU copy of the same grid with the CPU builder from the same list into the free half of `"step: grid copy on the
 CPU"`; a version or block count that differs is `kStageFailed` (`module = kGrid`). No table is copied: A17 makes
-the tables equal. Grouping, `choose_cell_size` (which receives `FindCpuGridCopy(simulation)->tables(RunOn::kCpu)` as
-`committed`, 11.30) and the marker upkeep read the copy. `CommitStep` swaps the copy pair with the grid pair; a
+the tables equal. Grouping, `grid::ComputeNewCellSizeLevel` (on `FindCpuGridCopy(simulation)->tables(RunOn::kCpu)`,
+A41; replaced: "`choose_cell_size` (which receives ... as `committed`, 11.30)") and the marker upkeep read the copy. `CommitStep` swaps the copy pair with the grid pair; a
 reject takes the free copy's buffers back with `grid::TakeBuffers`; a committed resize swaps in the CPU resized grid cell
 resize built into `ResizeTry::free_cpu_grid_copy_buffers()` and handed over with `ApplyResizedCpuGridCopy`, with no
 copy (reconcile, 11.29; replaces the `grid::ReadGrid` refresh, row B5 withdrawn). The two CPU copy buffers are built
 with `grid::BuildGridBuffers(settings, cpu_grid_builder_buffers)` from one CPU `grid::GridBuilderBuffers` (11.31).
 `gas::FindCellsToKeepActive` runs on the amounts' processor into `keep_active`, then one counted copy into `"step:
-keep active on the CPU"` (B2) feeds the CPU marking; with cell resize, `is_grid_only_region` of the committed fields
-is mirrored into `"step: committed grid-only marks on the CPU"` once per committed `state_version` (B3). A batched
-CPU run makes the same mirror copies (CPU to CPU, counted the same) but has no grid copy and no list upload.
+keep active on the CPU"` (B2) feeds the CPU marking. (With cell resize, the mirror of the committed
+`is_grid_only_region` into `"step: committed grid-only marks on the CPU"`, B3: not in the first version, A64.) A
+batched CPU run makes the same mirror copies (CPU to CPU, counted the same) but has no grid copy and no list upload.
 
 ### 5.4 `AddNewParticles` and the counters
 
@@ -1487,8 +1671,9 @@ step and the solids are not inputs: materials needs only the exact velocity chan
 removed with `RemoveReason::kLeftDomain`; its mass, volume and momentum go to
 `StepReport::removed_through_open_sides`. Steps 2, 4 and 6 are one fused pass on the GPU.
 `contact::ContactError::kTooCloseToCall` becomes `kContactTooCloseToCall`; `kStartsInsideSolid` and
-`kOnWrongSideOfPlate` become `kStageFailed`. After every material and range, `move_grid_only_liquid` moves the
-grid-only amounts on the whole grid; its failures arrive as `kParticleTravelledTooFar`.
+`kOnWrongSideOfPlate` become `kStageFailed`. (After every material and range, `move_grid_only_liquid` moves the
+grid-only amounts on the whole grid; its failures arrive as `kParticleTravelledTooFar`: not in the first version,
+A64.)
 
 Not ported: the whole-cell six-face travel field (`base/liquid_regular_cell_transport_3d.h`), valid only in a
 fixed axis-aligned domain; every particle uses the velocity for this step of step 2 (transfer left this to the
@@ -1526,8 +1711,10 @@ What may change: `StepReport`, timings, buffer contents.
 end poses passed `contact::CheckSolid`; `solids::CheckSolidExchange`; the next `CommittedStepLimits`: the
 smallest `ComputeTravelStepLimit(|velocity.for_next_step|, |gravity|, kMaxTravelInCellWidths * cell_width)` over
 particles with their own cell width, the largest `speed / cell_width` of particles, solids and gas markers
-(reduced with `ComputeLargestMagnitude`, exact in any order), and the try's surface-tension, air-pocket,
-material and gas limits.
+(reduced with `ComputeLargestMagnitude`, exact in any order), the largest `|velocity.for_next_step|` of liquid
+particles as `largest_liquid_speed` (A62; same reduction, in the same pass), and the try's surface-tension,
+air-pocket, material and gas limits. A module error of a building function never reaches a try: `kOutOfMemory`
+exists in no stage (reconcile item 31).
 
 **Which failure is reported.** A stage runs all its ranges, sets and materials even after one failed, then
 reports the failure with the highest `RejectKind` (`kCannotContinue`, then `kRaiseLimits`, then `kShortenStep`)
@@ -1562,15 +1749,23 @@ for one step, then stops with `kRetriesUsedUp` (ported: two).
 A limit reason means buffers are too small; a shorter step would not help and time must not be spent.
 `TryStep` returns `limits_needed`: each exceeded limit set to `max(needed, limit * limit_growth)`.
 `AdvanceTo` calls `ApplyLimits`, then repeats the same step inputs (same duration, same `state_version`).
-`ApplyLimits` is the explicit growth of the report (CUDA 3.2): 1 build the estimate for the new limits and
-check `estimate.on_processor + committed bytes of the old buffers <= allowed_bytes`, after dropping try copies
-and working buffers, which hold nothing; 2 allocate the new buffers (a new `grid::GridBuilderBuffers` and
+`ApplyLimits` is the explicit growth of the report (CUDA 3.2). Amended (A58): every buffer is a piece of the run's
+block and a piece is never freed alone, so the old try copies cannot be dropped first: 1 build the estimate for the
+new limits and check `ComputeRunMemoryBytes(new entries, kRunOn) + old reserved_bytes <= allowed_bytes` (in a GPU
+run also the CPU blocks against `allowed_cpu_bytes`); this is tighter than before; replaced: "check
+`estimate.on_processor + committed bytes of the old buffers <= allowed_bytes`, after dropping try copies and working
+buffers, which hold nothing"; 2 reserve the new block(s) with `BuildRunMemory` (free memory read before and after,
+`memory_taken_bytes` of the new block) and build every new buffer as a piece of them (a new `grid::GridBuilderBuffers` and
 `grid::BuildGridBuffers(settings, builder_buffers)` twice at the new `max_cell_blocks`, the old builder buffers freed
 with the old storages, reconcile 11.31; `grid::Build...Values(run_on, max_cell_blocks)`, the modules' buffers); 3 rebuild the
 committed grid into one new storage with the same `GridInputs` (same tables, same version), bind the new values
 with `ApplyGridVersion`, and copy the committed values on the processor (`particles::ApplyParticleLimits` for
-particles, slice `CopyBuffer` for the rest); 4 swap; 5 free the old ones. A failure at 1 or 2 leaves the
-simulation unchanged (`kDoesNotFit`, `kOutOfMemory`) and `AdvanceTo` stops with `kLimitsCannotBeRaised`; the
+particles, slice `CopyBuffer` for the rest); 3a `limits_raised` when set (reconcile, 2026-11-15): I/O rebuilds cell
+resize, the batched run and the render recorder into the new blocks and copies what they keep; `false` frees the
+new blocks and fails `kDoesNotFit` with the simulation as it was; 4 swap; 5 drop the old buffers (they free nothing), then free the old
+block(s) whole. `reserved_block_count` grows by one; `requested_beyond_plan_bytes` takes the old + new total if it
+is above the plan. A failure at 1 or 2 leaves the simulation unchanged (`kDoesNotFit`, `kOutOfMemory`; a new block
+reserved at 2 is freed) and `AdvanceTo` stops with `kLimitsCannotBeRaised`; the
 caller may save the state and build a batched run. FIXED: `main` restarts the whole frame from a third copy of
 the state, once per frame; here only the step is repeated and no frame-start copy exists. Invariant: no result
 depends on a limit (`math::TreeSum` pads by count, not by buffer size), so a run with raises gives the bytes of
@@ -1586,7 +1781,7 @@ limit that gave `smallest` is `active_limit`; when the rounding to `n` equal ste
 | `StepLimit` | Value, s | From |
 |---|---|---|
 | `kMaxStepDuration` | `StepSettings::max_step_duration` | ported |
-| `kParticleTravel` | the smaller of `CommittedStepLimits::particle_travel` and `kMaxTravelInCellWidths / CommittedStepLimits::grid_only_speed`; `t = 2 d / (v + sqrt(v^2 + 4 a d))` | ported (`cc:2836-2846`); FIXED: per particle with its own cell width; grid-only face speeds (cell resize) |
+| `kParticleTravel` | `CommittedStepLimits::particle_travel`; `t = 2 d / (v + sqrt(v^2 + 4 a d))`. (The smaller of it and `kMaxTravelInCellWidths / CommittedStepLimits::grid_only_speed`: not in the first version, A64.) | ported (`cc:2836-2846`); FIXED: per particle with its own cell width |
 | `kSolidMotion` | `solids::ComputeStepDurationLimit(solids, time, smallest_cell_width)`: no path key crossed, no surface beyond `max_travel_in_cells` | `cc:2738-2742` moved before the try |
 | `kSolidTurn` | `kMaxTurnPerStep` over the largest committed angular speed of a solid | contact 3.4 |
 | `kSurfaceTension` | `CommittedStepLimits::surface_tension` (pressure's `surface_tension_step_limit`) | one formula, pressure's |
@@ -1611,11 +1806,24 @@ capped by the blocks the domain box can hold (reconcile item 11, 11.31: `limits.
 the 2.5-width cover of the start particles x `start_limit_headroom` 1.25, rounded up, capped by the domain's blocks
 at the smallest cell, at least 1; the only source of the room: no `grid::GridBuffers` or `GridBuilderBuffers` is built
 from `GridSettings`' default, which is 0; a room above `grid::kMaxCellBlocksLimit` gives `fit = kDoesNotFit`, and
-outgrowing the room during the run is `kTooManyCellBlocks`, raised by `ApplyLimits`); also (A25) one
+outgrowing the room during the run is `kTooManyCellBlocks`, raised by `ApplyLimits`); also (A25, amended A57) one
 `LiquidViscousEffect` per liquid ingredient with `viscosity::ComputeViscousEffectPerStep` at
-`max_step_duration` and the smallest cell width, and `viscous_path` by the A25 rule; 3 the memory estimate entries
-of every module at those limits: `grid::BuildGridMemoryEstimate(run_on, 2, grid::BuilderBuffersSharing::kOneForAllGrids)`
-(committed and free buffers, one builder buffers; in a batched run plus `BuildGridMemoryEstimate(run_on, 1,
+`max_step_duration` and the smallest cell width and the four A57 numbers (3.5), `viscous_effect_run_duration` =
+`end_time - start_time`, `reynolds_length` = the domain box's smallest extent, and `viscous_path` by the A25 rule.
+**Particles everywhere (A64).** With `has_cell_resize`, the particle estimate counts every liquid cell at the level
+the depth term gives: on the CPU, the start particles of each liquid material are binned into cells of the smallest
+width `w_min`; a column's surface is the top of its highest such cell; a cell's depth `d` is that surface minus the
+cell's top (0 for the top cell); its level is `grid::ComputeWantedSizeLevel(widths,
+grid::ComputeWantedCellWidth(scene.cell_size, widths, grid::ComputeReferenceSpeed(0, |gravity|, w_max),
+CellSizeFacts{.cell_width = w_min, .depth_below_surface = d, .distance_to_solid = +infinity}))`; the distinct
+ancestor cells at those levels, times 8 (the seeded count), give `particles_at_depth_levels[m]` (an ancestor also
+holding finer cells is counted at both levels: an upper bound); the start particles in `w_min` cells whose top lies
+`surface_reach_in_cell_widths x w_min` or more below the surface give `start_particles_in_deep_cells`. Solid distance, artist regions and shear are
+left out (they only make cells finer, so more particles: the 1.25 headroom and `ApplyLimits` cover them; a starting
+simplification). The particle limit of a material is `ceil(start_limit_headroom x (max(start, at depth levels) +
+from sources))`. Without cell resize the estimate is the start count, as before. 3 the memory estimate entries
+of every module at those limits: `grid::BuildGridMemoryEstimate(run_on, 2, limits.max_cell_blocks, grid::BuilderBuffersSharing::kOneForAllGrids)`
+(committed and free buffers, one builder buffers; in a batched run plus `BuildGridMemoryEstimate(run_on, 1, limits.max_cell_blocks,
 kOneForAllGrids)` without its builder-buffers entries for the loaded try's buffers at `max_loaded_blocks`),
 `particles::BuildParticlesMemoryEstimate`, `BuildContactMemoryEstimate`,
 `BuildTransferMemoryEstimate(ingredient_count, material_count, material_set_count, sets_without_solve)`,
@@ -1624,10 +1832,13 @@ boundary),
 `BuildViscosityMemoryEstimate`, `BuildMaterialsMemoryEstimate`, `BuildSolidsMemoryEstimate(solids)`,
 `BuildGasMemoryEstimate(gas sizes, run_on)`, `BuildStepMemoryEstimate`, `output_estimate` (`kRenderOutput`) and `cell_resize_estimate`
 (`kCellResize`), summed by `ComputeMemoryBytes` per `KeptFor`; `one_call` is the largest per-module `kOneCall`
-sum, with viscosity and pressure added together because the joint solve holds both; 4 `allowed_bytes =
-min(memory_share_of_total * total, memory_share_of_free * free)` (the free share only when the total is not
-known), and the same rule applied to `on_cpu` gives `allowed_cpu_bytes` (A15); 5 `estimate.on_processor <=
-allowed_bytes`: `kOnePiece`. Otherwise `kBatched` if `whole_run + one_step_try` fits the CPU's allowed bytes;
+sum, with viscosity and pressure added together because the joint solve holds both (A58: `kCpu` entries only;
+`on_processor` is `ComputeRunMemoryBytes(entries, counts, kRunOn)`, each entry rounded per copy, nothing shared
+between calls because no piece is freed alone); 4 `allowed_bytes = ComputeAllowedMemoryBytes(on_processor,
+memory_share_of_free, memory_left_free_bytes)` and `allowed_cpu_bytes` the same on `on_cpu` (A58; replaced:
+"`allowed_bytes = min(memory_share_of_total * total, memory_share_of_free * free)` (the free share only when the
+total is not known), and the same rule applied to `on_cpu` gives `allowed_cpu_bytes` (A15)"); 5 with
+`forced_mode` set (A40), that mode and its fit (3.5); else `estimate.on_processor <= allowed_bytes`: `kOnePiece`. Otherwise `kBatched` if `whole_run + one_step_try` fits the CPU's allowed bytes;
 otherwise `kDoesNotFit`. For `kBatched` the caller calls `batches::BuildBatchPlan` and copies
 `max_blocks_per_batch`, `max_loaded_blocks` and `max_loaded_particles` into the plan; when the batch plan says
 `SolvePlace::kInPieces`, the caller sets `mode = kBatchedWithSolvesInPieces` and copies
@@ -1654,10 +1865,13 @@ the plan's mode at the limits (upper bounds per try). With a batched plan, `Buil
 lends it to the committed and free `GridBuffers` (`grid::BuildGridBuffers(settings, grid_builder_buffers)` twice) and, in a
 batched run, to the loaded try's buffers, never moves it while they exist and releases it last (11.31); a batched
 GPU run's CPU grid copy pair shares one CPU `GridBuilderBuffers`. It fixes the viscous path from the ready scene (A25).
-`BuildSimulation` allocates by walking the same entries, so `allocated_bytes == estimate.on_processor` and
-`allocated_cpu_bytes == estimate.on_cpu - estimate.snapshots` are equalities a test checks (in every batched
-layout, the `kCpu` and `kRunOn` sums each). With `kBatched` it builds the batched layout: the particle arrays
-(with `CpuMemory::kLockedForCopies`) in CPU memory, every whole try array where the placement rule of 6.5 puts it
+`BuildSimulation` first reserves `run_memory` (`estimate.on_processor` bytes) and, in a GPU run, `cpu_run_memory`
+(`estimate.cpu_run_memory_bytes`), then builds by walking the same entries, each buffer a piece of its processor's
+block, so `handed_out_bytes == reserved_bytes == planned_bytes == estimate.on_processor` and `handed_out_cpu_bytes ==
+reserved_cpu_bytes == estimate.cpu_run_memory_bytes` are equalities a test checks (in every batched layout, the
+`kCpu` and `kRunOn` sums each; A58, replaced: "`allocated_bytes == estimate.on_processor` and `allocated_cpu_bytes
+== estimate.on_cpu - estimate.snapshots`"). With `kBatched` it builds the batched layout: the particle arrays
+(pieces of `cpu_run_memory`, reserved with `CpuMemory::kLockedForCopies`) in CPU memory, every whole try array where the placement rule of 6.5 puts it
 (replaces "the per-try arrays in CPU memory"), and one loaded `StepTry` over a `GridBuffers` of
 `max_loaded_blocks` blocks on the GPU, whose stage functions are the ones of `kStages`, unchanged. The loaded
 `StepTry` owns, on the run's processor, a `transfer::TransferBuffers`, a `materials::MaterialBuffers`, a
@@ -1708,9 +1922,12 @@ builds the resized grid on the CPU for its map, uploads the same cell list (8 B 
 count checked against the CPU grid); in a CPU run it may pass the list (`ResizedCells::cells`) or build the grid
 itself and call `ApplyResizedGrid`. In a batched GPU run `CellResize` reads `FindCpuGridCopy` instead of making its
 own `ReadGrid` copy, builds its CPU resized grid into `free_cpu_grid_copy_buffers()` and hands it over with
-`ApplyResizedCpuGridCopy`; `CommitResize` swaps the CPU copy pair with no copy (5.3). Inside a step, the
-grid-only region acts through `apply_grid_only_region` (end of stage 4) and `move_grid_only_liquid` (end of stage
-16); a batched run through `run_stages`.
+`ApplyResizedCpuGridCopy`; `CommitResize` swaps the CPU copy pair with no copy (5.3). The resize reads
+`CommittedStepLimits::largest_liquid_speed` (A62) and fills the try copies of the three cell-size arrays (A63); it
+reserves nothing (A58: `cell_resize::BuildCellResize` builds its buffers into `FindRunMemory(simulation)` and
+`FindCpuRunMemory(simulation)` right after `BuildSimulation`; its entries are in the plan, so the block has room). A batched run acts through `run_stages`. (Inside a step, the grid-only region through
+`apply_grid_only_region`, end of stage 4, and `move_grid_only_liquid`, end of stage 16: not in the first version,
+A64.)
 
 ### 5.12 Fault injection without a hook
 
@@ -1748,11 +1965,15 @@ because of viscosity; replaced: "a free solid beside one stays `kViscousLiquidWi
 `solids::CheckSolidsCanRun(solids,
 smallest_cell_width, largest_cell_width)`, one `kFromSolids` finding per entry with its `solid_id`;
 `contact::CheckSolid` and `CheckContactTolerance` per solid (`kSolidThinnerThanTolerance`); with gas,
-`gas::CheckGasCanRun(GasSceneSummary{...}, *gas)` and `gas::CheckGasSources(gas_sources, gas_wind)`
+`gas::CheckGasCanRun(GasSceneSummary{...}, *gas)` and `gas::CheckGasSources(gas_sources, wind)` (A47; was `gas_wind`)
 (`kFromGas`); grid frame and levels (`kDomainTooLargeForSmallestCell`); ingredient counts; known limits
 (`kInternalForceAcrossSizeChange`, `kWavePaddleReceivingVolume`) as `kExperimental`. (Two liquids that do not
 mix give no finding: 11.16.) Liquid and gas in one scene, and a batched run, are not
 exclusions (A10).
+
+**Notes that are not findings (A53).** `slip_ignored_on_free_solid` (a `SolidSettings::slip_length` on a free
+solid) is an I/O `check` NOTE, not a `CapabilityReason`: the step adds no finding for it and `kCapabilityReasonCount`
+is unchanged.
 
 **The stage choice (A25).** The check fills `ViscositySceneSummary::has_viscous_ingredient`: a liquid ingredient
 is viscous exactly when its `viscosity` setting is above 0 (`> 0.0`, no threshold); the scene is viscous when any
@@ -1774,7 +1995,8 @@ step's own functions are one launch per material and range. Between stages no ar
 returns one status record (its module's failure, at most 64 bytes) that the CPU reads before starting the next
 stage. Other values returned to the CPU per try: the needed cell count and the grid build's status record (stage
 2; A17, no block ids and no tables cross), in a one-piece GPU run the open-sea site bits and removal list and the
-marker lists (stage 1) and, with `choose_cell_size`, the new cells (stage 2), all counted copies (6.5);
+marker lists (stage 1), all counted copies (6.5; A41 removed "and, with `choose_cell_size`, the new cells (stage
+2)");
 `AirPocket` records and `BlobHistory` (stage 9), the solves' progress records and `GasBlob` records (11 to 13),
 `StepReport` sums, `CommittedStepLimits` (stage 19), which are the one uncounted class (each bounded; "small
 records" in the I/O budget). A run is all CPU or all GPU (A17); in a batched GPU run only what does not fit (the
@@ -1791,7 +2013,7 @@ a swap (decision 8).
 | `GridFields::pressure`, `has_pressure`, `pocket_of_cell` | cell place | 8 + 1 + 4 | 2 | whole run |
 | `GridFields::velocity_after_pressure` (2 copies with a pressure law, gas or cell resize, which read it next step; else 1 try copy) | face place | 8 | 2 | whole run |
 | `GridFields::gas_velocity_after_pressure` (gas) | face place | 8 | 2 | whole run |
-| the seven region arrays (`has_cell_resize`) | cell place | 34 + 8 x ingredients | 2 | whole run |
+| the three cell-size arrays (`has_cell_resize`; A41, A63): `"step: merge ready duration"`, `"step: held velocity gradient size"`, `"step: merge wait steps"` (replaced, A64: "the seven region arrays", 34 + 8 x ingredients) | cell place | 8; 8; 1 | 2 | whole run |
 | `carried_pressure`, `mixture_density`, `sensed_volume_ratio`, `added_volume_rate`, `bulk_stiffness`, `target_volume_ratio` | cell place | 8 each | 1 | one step try |
 | `was_solved` of the liquid set; `was_solved`, `cell_was_solved` of the gas set | face, face, cell place | 1 | 1 | one step try |
 | `keep_active` (gas) | cell place | 1 | 1 | one step try |
@@ -1803,16 +2025,18 @@ a swap (decision 8).
 | `InternalForceTotals` per block, per set with internal force; `DriveWaves` block partials | cell block | 24; 32 | 1 | one step try |
 | `GridAtParticle` | particle | 200 | 1 | one step try |
 | `ParticleContact`; `SolidReaction` (only with a reacting solid) | particle | 56 (`sizeof`, plan decision "Contact"); 56 | 1 | one step try |
-| needed block id and its order | particle | 8 + 4 | 1 | one call |
+| needed block id and its order | particle | 8 + 4 | 1 | whole run (A58: a `kRunOn` entry is never one call; was one call) |
 | source counters, open-sea site bits, air pockets | given count | 24; 1/8; 80 | 2 | whole run |
 
-The two grid storages are the grid's entries (`BuildGridMemoryEstimate(run_on, 2, BuilderBuffersSharing::kOneForAllGrids)`:
+The two grid storages are the grid's entries (`BuildGridMemoryEstimate(run_on, 2, limits.max_cell_blocks, BuilderBuffersSharing::kOneForAllGrids)`:
 one builder buffers for both, its entries with `copies = 1`; reconcile 11.31; on a GPU run two grids with one set of builder
 buffers cost 2,840 B per block); each set's transfer arrays, both `PressureBuffers`, the solids arrays the step owns and the
 gas buffers are those modules' entries. Every entry's size is `sizeof` of its stored type with a `static_assert`, and
 every entry sets `where` (`kCpu` for source counters and open-sea site bits on a GPU run) (plan decisions).
-GPU run (A17): `"step: active cell list"` (8 B per cell place, one step try, `kRunOn`) and, with `has_cell_resize`, `"step: new cells for the size
-choice"` (9 B per cell place, one call, `kCpu`). Batched entries: 6.5.
+GPU run (A17): `"step: active cell list"` (8 B per cell place, one step try, `kRunOn`). Removed (A41): `"step: new
+cells for the size choice"` (9 B per cell place, one call, `kCpu`). Batched entries: 6.5. A58: every `kRunOn` entry
+is a piece of `run_memory`, every `kCpu` entry kept `kWholeRun` or `kOneStepTry` a piece of `cpu_run_memory` (the
+one block in a CPU run); each entry's `copies` equals the number of buffers it stands for.
 
 **6.5 Buffers in batched runs and planned copies (A17, batched-run buffers; plan Appendices A and B).**
 *Placement rule* for whole try arrays (both batched modes, either processor): a whole array lives on the run's
@@ -1839,8 +2063,8 @@ instance on the GPU; Mn = mismatch and its resolution; a CPU run has no mismatch
 | 1 (c), 2 | committed and try grid tables | G / G+C / G+C | M7 CPU copy built from the same list, swapped with the grid; after a resize, cell resize's CPU resized grid (`ApplyResizedCpuGridCopy`, no copy; B5 withdrawn, reconcile) |
 | 1 (c) | `MarkerChanges` lists | C / C / C | M3 one piece: read back (O3); batched: CPU form on mirrors |
 | 2 | needed cell list | G / C sent to G / same | M6 one piece: stays on the GPU, count only; M7 batched: uploaded (B4) |
-| 2 (a) | `keep_active`; committed `is_grid_only_region` | G / G+C / G+C | M4 computed on the GPU, read back (B2); M5 mirror (B3) |
-| 2 (b) | `choose_cell_size` inputs | C needed / C copy / same | M8 one piece: new cells back, levels sent (O4); batched: the CPU copy |
+| 2 (a) | `keep_active` | G / G+C / G+C | M4 computed on the GPU, read back (B2). (M5, the committed `is_grid_only_region` mirror, B3: not in the first version, A64) |
+| 2 (b) | new cells' levels (`grid::ComputeNewCellSizeLevel` on the committed tables) | G / C copy / same | no mismatch (A41): on the tables' processor in the marking pass. Replaced: "`choose_cell_size` inputs, C needed, M8 one piece: new cells back, levels sent (O4)" |
 | 2 (c), (e) | try `GridFields`, six cell arrays, gas try, `gas_seen` | G / G / G | — |
 | 2 (d) | grouping tables | G / C / C | M7 grouped against the CPU copy |
 | 3 to 9 | `TransferBuffers`, `MaterialBuffers`, `ContactBuffers`, `SolidsBuffers` of pass stages | G / L / L | M9 loaded instances; whole instances at 0 particles |
@@ -1863,10 +2087,10 @@ instance on the GPU; Mn = mismatch and its resolution; a CPU run has no mismatch
 | every stage | status records, progress, `AirPocket`, `BlobHistory`, `GasBlob`, per-solid results, box marks | G to C | the one uncounted class |
 
 *Batched-run entries* (all `where = kCpu` except the list): `"step: committed gas volume on the CPU"` (8 B per cell
-place), `"step: committed gas velocity on the CPU"` (8 B per face place), `"step: committed grid-only marks on the
-CPU"` (1 B per cell place, with cell resize), all `KeptFor::kWholeRun`, refreshed once per committed
+place), `"step: committed gas velocity on the CPU"` (8 B per face place) (`"step: committed grid-only marks on the
+CPU"`, 1 B per cell place: not in the first version, A64), all `KeptFor::kWholeRun`, refreshed once per committed
 `state_version`; `"step: keep active on the CPU"` (1 B per cell place, `kOneStepTry`); `"step: grid copy on the
-CPU"` = `grid::BuildGridMemoryEstimate(RunOn::kCpu, 2, grid::BuilderBuffersSharing::kOneForAllGrids)` with `where` set
+CPU"` = `grid::BuildGridMemoryEstimate(RunOn::kCpu, 2, limits.max_cell_blocks, grid::BuilderBuffersSharing::kOneForAllGrids)` with `where` set
 to `kCpu` (the pair shares one CPU `GridBuilderBuffers`, 11.31); `"step: active cell list"`
 (`kRunOn`); the stage-17 `"solids: "` entries. The grid copy and the list exist only in a batched GPU run; a batched
 CPU run has the mirrors. Loaded-only entries at `max_loaded_blocks` / `max_loaded_particles`, `kRunOn`; no
@@ -1881,14 +2105,14 @@ material m over its `k_m` carried `NewParticles` arrays):
 | O1 | one piece | each `AddParticles` call | to | `max_added_per_try_m * A_m` per material | `k_m` per material with additions |
 | O2 | one piece, open sea | stage 1 (b) | from | `ceil(sites / 8) + 8 * max_added_per_try` | 2 |
 | O3 | one piece, gas | stage 1 (c) | from | `max_added_per_try_gas * A_gas + 8 * max_particle_count_gas` | 2 |
-| O4 | one piece, `choose_cell_size` | stage 2, new grid version | from, to | `8 * cell places` from, `1 * cell places` to | 2 |
+| ~~O4~~ | withdrawn (A41): new cells' levels come from `grid::ComputeNewCellSizeLevel` on the grid's processor; was `8 * cell places` from, `1 * cell places` to, 2 copies | | | 0 | 0 |
 | B1 | batched, gas | stage 1 (c), new committed version | from | `8 * cell places + 8 * face places` | 2 |
 | B2 | batched, gas | stage 2 (a), each try | from | `1 * cell places` | 1 |
-| B3 | batched, cell resize | stage 2 (a), new committed version | from | `1 * cell places` | 1 |
+| ~~B3~~ | not in the first version (A64): the grid-only marks mirror; was batched, cell resize, `1 * cell places`, 1 copy | | | 0 | 0 |
 | B4 | batched GPU | stage 2 (b), new grid version | to | `8 * cell places` | 1 |
 | ~~B5~~ | withdrawn (reconcile, 11.29): the CPU copy after a resize is cell resize's CPU-built grid, no read-back | | | 0 | 0 |
 
-B1 to B3 also in a batched CPU run (CPU to CPU). A one-piece CPU run counts no copy. Copies of batches, of the
+B1 and B2 also in a batched CPU run (CPU to CPU; B3 withdrawn with the grid-only region, A64). A one-piece CPU run counts no copy. Copies of batches, of the
 solvers' `SolveBatches` and of cell resize are counted in those modules' reports.
 
 **6.4 Tolerance, CPU against GPU.** After one committed step from the same snapshot: ids, counts, active
@@ -1920,20 +2144,20 @@ one-step numbers.
 | All findings (NEW) | a scene breaking three rules, two of them solids rules on two solids | every finding, ordered as 3.4, each solids entry with its `solid_id` | exact |
 | Material sets (NEW) | the scene of 5.2 without snow; then the liquids given in two sets | every set's arrays carry its `MaterialSetKey`; the liquid set's sums equal a run without markers; two liquid sets: `kMaterialSetsNotValid` | exact |
 | Plan (amended, A17 planned cost: `FitsNowhere_PlanSaysDoesNotFit`) | counts chosen so the estimate is just below and just above `allowed_bytes` | `kOnePiece`, then `kBatched`, then a plan with `fit = kDoesNotFit`, `mode = kBatched`, `on_processor` and `on_cpu` filled (was the failure `kDoesNotFit`); `output_estimate` appear under `kRenderOutput` | exact |
-| Planned cost (A17, plan Tasks 8, 9, 29) | `BuildRunPlan, OnCpuIsTheCpuRowsPlusSnapshots` (falling block with one source, `kGpu` one piece); `BuildRunPlan, PlannedStepCopies_AppendixBAtTheLimits` (with cell resize, `kGpu`); `BuildRunPlan, PlannedStepCopies_GasRows` (small fire); `BuildSimulation, PlanThatDoesNotFit_IsDoesNotFitAndNothingAllocated`; `BuildSimulation, AllocatedCpuBytesEqualCpuRows` | `on_cpu` = `kCpu` entries + snapshots, `by_module[kStep].on_cpu` holds the source counters, no `kCpu` entry in `on_processor`; planned copies: one piece O1 + O4, batched B3 + B4 (B5 withdrawn, reconcile; gas: O1 + O3; B1 + B2 + B4), CPU one piece zero; `kDoesNotFit` with nothing allocated; `allocated_cpu_bytes == on_cpu - snapshots` | exact |
-| Copies counted (A17, plan Tasks 10, 12, 14, 27, 29) | `TryStep, OnePieceCpu_CountsNoCopy`; `AddNewParticles, CopiesOfAddParticlesCounted`; `AddNewParticles, MarkerListCopiesCounted`; gpu: `AddNewParticles, OnGpuSourceCopiesCounted`, `ChooseActiveCells, OnGpu_NoCellIdComesBack`, `ChooseActiveCells, OnGpuSizeChoiceCopiesCounted`, `AddNewParticles, OpenSeaOnGpu_CopiesCounted`, `AddNewParticles, OnGpuMarkerListsReadBackCounted`; cpu: `BuildStepMemoryEstimate, GpuRunHasActiveCellListOnGpu` | CPU one piece: `copies == {}` after 3 tries; try copies = sum of the module copy fields; size choice with 5 new cells: `{2, 5, 40}`; open sea: `ceil(sites / 8) + 8 * removed` in two copies plus the refill's; no cell id comes back without the callback; the list entry `kRunOn` in a GPU plan only | exact |
+| Planned cost (A17, plan Tasks 8, 9, 29) | `BuildRunPlan, OnCpuIsTheCpuRowsPlusSnapshots` (falling block with one source, `kGpu` one piece); `BuildRunPlan, PlannedStepCopies_AppendixBAtTheLimits` (with cell resize, `kGpu`); `BuildRunPlan, PlannedStepCopies_GasRows` (small fire); `BuildSimulation, PlanThatDoesNotFit_IsDoesNotFitAndNothingAllocated`; `BuildSimulation, CpuBlockEqualsCpuRows` (A58; was `AllocatedCpuBytesEqualCpuRows`) | `on_cpu` = `kCpu` entries + snapshots, `by_module[kStep].on_cpu` holds the source counters, no `kCpu` entry in `on_processor`; planned copies: one piece O1, batched B4 (A41 withdrew O4, A64 B3; replaced: "one piece O1 + O4, batched B3 + B4"; B5 withdrawn, reconcile; gas: O1 + O3; B1 + B2 + B4), CPU one piece zero; `kDoesNotFit` with nothing reserved; `handed_out_cpu_bytes == reserved_cpu_bytes == cpu_run_memory_bytes` | exact |
+| Copies counted (A17, plan Tasks 10, 12, 14, 27, 29) | `TryStep, OnePieceCpu_CountsNoCopy`; `AddNewParticles, CopiesOfAddParticlesCounted`; `AddNewParticles, MarkerListCopiesCounted`; gpu: `AddNewParticles, OnGpuSourceCopiesCounted`, `ChooseActiveCells, OnGpu_NoCellIdComesBack`, `ChooseActiveCells, OnGpuNewCellLevels_EqualCpuNoCopy` (A41; replaces `OnGpuSizeChoiceCopiesCounted`), `AddNewParticles, OpenSeaOnGpu_CopiesCounted`, `AddNewParticles, OnGpuMarkerListsReadBackCounted`; cpu: `BuildStepMemoryEstimate, GpuRunHasActiveCellListOnGpu` | CPU one piece: `copies == {}` after 3 tries; try copies = sum of the module copy fields; new cells' levels equal the CPU run's and stage 2 adds no copy (replaced: "size choice with 5 new cells: `{2, 5, 40}`"); open sea: `ceil(sites / 8) + 8 * removed` in two copies plus the refill's; no cell id comes back; the list entry `kRunOn` in a GPU plan only | exact |
 | GPU stages compared (amended, reconcile: `ChooseActiveCells, OnGpu_EqualsCpu`, `OnGpuTwice_IdenticalBytes`) | stage 2 on both processors | the try grid copied by a test-side `grid::ReadGrid` equals the CPU try grid table by table; the stage status record's entry count equals the CPU needed cell count; the test's `ReadGrid` is not in `StepReport::copies` | exact |
 | Placement (A17, plan Task 33a) | `ReadStepArrays, BatchedPlacementFollowsTheRule`; `BuildStepMemoryEstimate, BatchedGpu_PerParticleModuleRowsOnlyLoaded`; `BuildSimulation, BatchedLayout_LoadedTryOwnsModuleBuffers`; `BuildStepMemoryEstimate, BatchedGpu_ContactReactionBuffersOnCpu`; `MoveSolids, BatchedLayout_ContactPushesEqualOnePiece`; `BuildSimulation, BatchedLayout_AllocatedEqualsEstimateByPlace`; `FindSolidSurfaces, BatchedRangesBuildTheSolidsTryOnce` | every `whole_place` equals the rule recomputed from `read_by_stages`, `written_by_stages` and the stage places, pinned arrays as 6.5; per-particle `kRunOn` entries only at `max_loaded_particles`; the four loaded instances sized at the loaded counts, whole `MaterialBuffers` at 0 particles; stage-17 entries all `kCpu`; contact pushes, turning push and work equal one piece (bytes); `kRunOn` and `kCpu` sums each equal the plan; one solids try per step try | exact |
-| CPU stages of a batched run (A17, plan Task 33b) | `AddNewParticles, BatchedMarkerInputs_CopiedOncePerCommittedVersion`; `AddNewParticles, BatchedMarkerChanges_EqualOnePiece`; `ChooseActiveCells, BatchedKeepActiveReadOnceCounted`; `ChooseActiveCells, BatchedGridOnlyMarksReadOncePerVersion`; `BuildStepMemoryEstimate, BatchedGpu_MirrorsOnCpuAndListOnGpu`; `FindCpuGridCopy, CpuRunIsTheGridOnePieceGpuIsNull`; gpu: `ChooseActiveCells, BatchedOnGpu_ListUploadCountedAndCopyEqualsGrid`, `CommitResize, BatchedOnGpu_GridCopyTakenFromResizeNotCopied` (reconcile; was `..._GridCopyRefreshedAndCounted`) | 2 copies of `8 * cell places + 8 * face places` per committed version, none on a retry; marker lists equal one piece; one copy of `1 * cell places` per try; mirrors and grid copy `kCpu`, list `kRunOn`, a CPU batched plan has neither grid entry; one upload of `8 * active cells`, `ReadGrid` of the GPU grid equals the copy byte for byte; `ReadCopyCounts` does not grow at a resize commit, and `FindCpuGridCopy` equals `ReadGrid` of the resized GPU grid | exact |
+| CPU stages of a batched run (A17, plan Task 33b) | `AddNewParticles, BatchedMarkerInputs_CopiedOncePerCommittedVersion`; `AddNewParticles, BatchedMarkerChanges_EqualOnePiece`; `ChooseActiveCells, BatchedKeepActiveReadOnceCounted`; (`ChooseActiveCells, BatchedGridOnlyMarksReadOncePerVersion`: moved to the later group, A64); `BuildStepMemoryEstimate, BatchedGpu_MirrorsOnCpuAndListOnGpu`; `FindCpuGridCopy, CpuRunIsTheGridOnePieceGpuIsNull`; gpu: `ChooseActiveCells, BatchedOnGpu_ListUploadCountedAndCopyEqualsGrid`, `CommitResize, BatchedOnGpu_GridCopyTakenFromResizeNotCopied` (reconcile; was `..._GridCopyRefreshedAndCounted`) | 2 copies of `8 * cell places + 8 * face places` per committed version, none on a retry; marker lists equal one piece; one copy of `1 * cell places` per try; mirrors and grid copy `kCpu`, list `kRunOn`, a CPU batched plan has neither grid entry; one upload of `8 * active cells`, `ReadGrid` of the GPU grid equals the copy byte for byte; `ReadCopyCounts` does not grow at a resize commit, and `FindCpuGridCopy` equals `ReadGrid` of the resized GPU grid | exact |
 | Plan, A15 (plan Task 8: `AllowedCpuBytes_FromCpuShare`, `SolvesInPieces_SolverRowsCountedOnCpu`) | `on_cpu` given; a plan copied to `kBatchedWithSolvesInPieces` with `max_solve_loaded_blocks` 64 | `allowed_cpu_bytes` by step 3; the pressure entries counted per place move to `kCpu`, the loaded entries at 64 blocks stay `kRunOn` | exact |
-| Estimate against build (amended, A15; plan Tasks 33, 36) | `BuildSimulation` for the four reference scenes at small size: one-piece layout, batched layout (forced `kBatched`, hand-written `run_stages`), and batched with solves in pieces (forced, `max_solve_loaded_blocks` = 3 layers) | `allocated_bytes == estimate.on_processor` (the `kCpu` and `kRunOn` sums each in the third); `ReadStepArrays` matches the entries | exact |
+| Estimate against build (amended, A15; plan Tasks 33, 36) | `BuildSimulation` for the four reference scenes at small size: one-piece layout, batched layout (forced `kBatched`, hand-written `run_stages`), and batched with solves in pieces (forced, `max_solve_loaded_blocks` = 3 layers) | `handed_out_bytes == reserved_bytes == estimate.on_processor` and `handed_out_cpu_bytes == reserved_cpu_bytes` (A58; was `allocated_bytes == estimate.on_processor`; the `kCpu` and `kRunOn` sums each in the third); `ReadStepArrays` matches the entries | exact |
 | Solves in pieces (A15, plan Task 33) | `SolvesInPiecesWithoutSolvePiece_IsBatchedRunNotBuilt`; `SolveCopyReportsResetEachTry` | `kBatchedRunNotBuilt` with `max_solve_loaded_blocks` 0; each solver's `SolveCopyReport` is zero at the start of every try (reset through the buffers forms of `ResetSolveCopyReport`, reconcile item 3) | exact |
 | Blocking faces in the same step (A18, plan Task 28: `SolvePressure, SnowAndJellyFacesMoveInTheSameStep`) | snow and jelly beside water | after stage 12 each set's face velocity on every entry piece equals `blocking_material_velocity_after_pressure` (bytes); other faces unchanged; reject after 10 and 12 changes nothing | exact |
 | Sealed gas with the liquid (A18, A24, plan Task 30) | `BuildGasBesideLiquidScene`: `LiquidReadsOpenGasPressureOneStepLate` (top open); `SealedGasSolvedWithLiquid` (top closed); `SealedGasBesideViscousLiquid_SolvedInStageEleven` (closed, syrup; A24, was `..._ReadOneStepLate`); `RejectAfterBuildPressureEquationsWithGas_ChangesNothing` | open: air-end pressure at step n = gas pressure committed at n - 1; closed: committed background pressure = atmosphere + stage 12's `sealed_gas_pressure`, air-end pressure that value + the gas pressure of the last commit; syrup: stage 11 runs, the blob is listed, `sealed_gas_pressure` written by stage 11 and read by stage 13, each committed background pressure = atmosphere + `sealed_gas_pressure`; `ApplyGasStepStart` wrote only the try | exact |
 | Viscous liquid beside blocking materials (A24, plan Tasks 7, 31) | `CheckSceneCanRun, ViscousWithSnowAndSpringySolid_CanRun` (was `ViscousWithSnow_IsExcluded`); `TryStep, FiveMaterialsWithSnow_Commits` (was `..._IsViscousLiquidWithSnow`); the five-material tests once marked blocked (reject after every stage, stage trace, continued run, range cut, placement) | no finding; the scene of 5.2 with snow commits a step, stage 11 runs, `ApplyViscousSolveToMaterials` writes both blocking sets (A26; was `ApplyPressureToMaterials`); the others as written | exact |
 | Stick and free solids in the viscous solve (A26, A27, plan Tasks 7, 26, 31, 34) | `CheckSceneCanRun, ViscousWithFreeSolid_CanRun` (was `ViscousWithFreeSolid_IsExcluded`); `TryStep, FreeBoxInViscousLiquid_SolvedMotionWrittenBack`; `TryStep, FiveMaterialsWithSnowAndFreeBox_Commits` (the scene of 5.2 with snow and the free box beside the syrup; adds to `FiveMaterialsWithSnow_Commits`); `TryStep, FloatingBoxInSyrup_RestDepthAsInWater` (free box 500 kg/m3, side 0.04 m, in a liquid of 1000 kg/m3 at 10 Pa s, started at rest at its 0.02 m draft, 200 steps of 0.01 s, against the same scene with the water preset, viscosity 0, stage 12) | no finding; the box's motion after stage 11 equals `free_solid_motion`; stage 11 runs, each band face of S and E equals `material_face_velocity_after_solve`, other faces keep the `CollideSolids` velocity, the box equals `free_solid_motion`, the step commits; box centre within `1e-6 w` of the water run each step, speed within `2 * 2e-5 * w` | exact (bytes); `1e-6 w`, velocity bound |
-| What counts as viscous (A25, plan Tasks 8, 25) | `BuildRunPlan, ViscousEffectPerLiquid` (water 1e-3 Pa s 1000 kg/m3, syrup 10 Pa s 1400 kg/m3, smallest cell 0.01 m, `max_step_duration` 0.01 s); `CheckSceneCanRun, ViscosityZero_IsInviscid` (water preset, viscosity 0); `TryStep, ViscousPathFixedWhenStepShortens` (a liquid of 1e-6 Pa s, below `kSmallestVisibleViscousEffectPerStep`, with a forced reject and two half steps; and the water preset) | 1e-4 and 0.714285714..., `viscous_path` `kViscousSolve`; `kPressureSolve`, stage 12 and no stage 11; stage 11 in every try for 1e-6 Pa s, stage 12 in every try for the water preset | 1e-15 relative; exact |
-| Grid room and one set of builder buffers (reconcile item 11, plan Tasks 8, 9) | `BuildRunPlan, BlockRoomFromSceneNotFromDefault`; `BuildStepMemoryEstimate, TwoGridBuffersShareBuilderBuffers`; `BuildRunPlan, RoomAboveGridLimit_DoesNotFit`; `BuildSimulation, GridBuffersShareBuilderBuffers` | `limits.max_cell_blocks == ceil(1.25 * cover blocks)`, capped by the domain; `grid: builder buffers:` entries `copies` 1, other grid entries 2, grid bytes `2840 * max_cell_blocks` + fixed on a GPU plan; `kMaxCellBlocksLimit + 1` blocks: `fit = kDoesNotFit`; bytes walked for the grid equal `BuildGridMemoryEstimate(kCpu, 2, kOneForAllGrids)`, a new grid version leaves the committed tables unchanged | exact |
+| What counts as viscous, and the advice (A25, A57, plan Tasks 8, 25) | `BuildRunPlan, ViscousEffectPerLiquid` (water 1e-3 Pa s 1000 kg/m3, syrup 10 Pa s 1400 kg/m3, own_motion_kept 0.95 for both, smallest cell 0.01 m, `max_step_duration` 0.01 s, start 0 and end 10 s, domain smallest extent 1 m, gravity 9.81); `CheckSceneCanRun, ViscosityZero_IsInviscid` (water preset, viscosity 0); `TryStep, ViscousPathFixedWhenStepShortens` (a liquid of 1e-6 Pa s, with a forced reject and two half steps; and the water preset; A57: replaced "below `kSmallestVisibleViscousEffectPerStep`") | N 1e-4 and 0.714285714...; ratio 0.008 and 57.142857; change 0.21865627 and 1; spreading 0.31622777 and 26.726124 cells; Reynolds 4.4294469e6 and 620.12257; advised true and false; `viscous_effect_run_duration` 10, `reynolds_length` 1; `viscous_path` `kViscousSolve`; `kPressureSolve`, stage 12 and no stage 11; stage 11 in every try for 1e-6 Pa s, stage 12 in every try for the water preset | 1e-12 relative (N 1e-15); exact |
+| Grid room and one set of builder buffers (reconcile item 11, plan Tasks 8, 9) | `BuildRunPlan, BlockRoomFromSceneNotFromDefault`; `BuildStepMemoryEstimate, TwoGridBuffersShareBuilderBuffers`; `BuildRunPlan, RoomAboveGridLimit_DoesNotFit`; `BuildSimulation, GridBuffersShareBuilderBuffers` | `limits.max_cell_blocks == ceil(1.25 * cover blocks)`, capped by the domain; `grid: builder buffers:` entries `copies` 1, other grid entries 2, grid bytes `2840 * max_cell_blocks` + fixed on a GPU plan; `kMaxCellBlocksLimit + 1` blocks: `fit = kDoesNotFit`; bytes walked for the grid equal `BuildGridMemoryEstimate(kCpu, 2, limits.max_cell_blocks, kOneForAllGrids)`, a new grid version leaves the committed tables unchanged | exact |
 | Resize hand-over (reconcile items 12, coordinator 6, plan Task 32) | `BuildResizedGrid, CpuList_EqualsApplyResizedGridOfTheSameGrid`; `BuildResizedGrid, NoCpuGridOnGpu_IsBadInput` (A30: the list-on-the-other-processor case dropped); `ApplyResizedCpuGridCopy, NotABatchedGpuRun_IsBadInput`; gpu: `BuildResizedGrid, OnGpuFromUploadedList_EqualsCpuResizedGrid` | same tables and bound try; `kBadInput`; `kBadInput` (`free_cpu_grid_copy_buffers` null in a CPU run); `ReadGrid` of the result equals `cpu_resized_grid` byte for byte | exact |
 | Gas-only step start (A18, plan Task 29) | `BuildSmallFireScene` | `stages_run` 9, 13, no 10 to 12; `ApplyGasStepStart` at the start of 13 with an empty blob list | exact |
 | Cancel | flag set before stage `k`, each `k`; and set from another thread during each solve (11, 12, 13) | `kCancelRequested`; snapshot unchanged; the next `TryStep` commits | exact |
@@ -1942,6 +2166,15 @@ one-step numbers.
 | Stale version | `state_version` one behind | `kWrongStateVersion`, nothing ran | exact |
 | Continued run (NEW) | the scene of 5.2 without snow, with a pressure law and cell resize: full snapshot at step 20, `BuildSimulationFromSnapshot`, 20 more steps, against 40 steps uninterrupted | equal `SimulationSnapshot` bytes | exact |
 | Callbacks (NEW) | `resize_cells`, `make_foam_and_spray` and `on_step_done` with three different contexts | each function receives its own context | exact |
+| Budget (A58, plan Task 8) | `ComputeAllowedMemoryBytes, SmallerOfShareAndHeadroom` (share 0.9, left free 536,870,912 B; free 16e9, 4e9, 0.4e9 B) | 14,400,000,000; 3,463,129,088; 0 | exact |
+| One block per processor (A58, plan Tasks 9, 24) | `BuildSimulation, ReservesOneBlockFirst` (`BuildFallingBlockScene(1)`, CPU, a replaced global aligned operator new counting calls); `BuildSimulation, HandedOutEqualsPlanned`; `ApplyLimits, OldPlusNewAboveAllowed_IsDoesNotFit` (allowed bytes between the new block alone and old + new); `AdvanceTo, LimitRaise_ReservesSecondBlockAndFreesFirst` (source scene with half the particle limit) | the first counted allocation is one of `planned_bytes`, made before any other buffer, `reserved_block_count` 1; `handed_out_bytes == reserved_bytes == planned_bytes`; `kDoesNotFit`, simulation unchanged; after the raise `reserved_block_count` 2, `reserved_bytes` = the new plan's `on_processor`, `requested_beyond_plan_bytes` = new reserved (old + new - planned), the old block freed once, after the new one was built | exact |
+| Raise with outside buffers (reconcile 2026-11-15, plan Task 24) | `AdvanceTo, LimitRaise_CallsLimitsRaisedBeforeFreeingOldBlock` (the raise scene with a hand-written `limits_raised` (the plan holds one 1000 B `kRunOn` output_estimate row) that builds a 1000 B piece into `FindRunMemory` and logs; then the same returning false) | called once with the new limits, after the new block is reserved and before the old one is freed (operator new/delete log order), handed_out_bytes == reserved_bytes afterwards; false: stop `kLimitsCannotBeRaised`, `reserved_block_count` 1, snapshot unchanged | exact |
+| New cells' levels (A41, A61, plan Tasks 13, 14) | `ChooseActiveCells, NewCellBesideBigCell_OneLevelFiner` (`BuildFallingBlockScene(1)` with start particles at level 0, `new_cell_size_level` 1; a stage table moves one particle into a new block beside a level-0 cell); `ChooseActiveCells, NewCellFarFromCells_TakesNewCellSizeLevel` (the particle moved beyond every probe); gpu `ChooseActiveCells, OnGpuNewCellLevels_EqualCpuNoCopy` | level 1; level 1 (`new_cell_size_level`); GPU levels equal the CPU's, stage 2 adds no copy | exact |
+| Particles everywhere (A64, plan Task 8) | `BuildRunPlan, DeepWaterCountsEveryLiquidCellAtDepthLevels` (`BuildDeepWaterScene`: closed box 0.4 x 0.4 x 1.0 m, water to 0.8 m at rest, cells 0.1 / 0.05 / 0.025 m, start particles at level 2, 8 per cell, `has_cell_resize`, `cell_size.smallest_size_level` 2, surface reach 8); `BuildStepMemoryEstimate, CellResizeAddsThreeCellSizeArrays` | layers 0 to 15 below the surface at 0.025 m (4,096 cells), layers 16 to 31 at 0.05 m (512 cells): `particles_at_depth_levels[water]` 36,864, `start_particles_in_deep_cells` 49,152 (layers 8 to 31 of the start particles), start 65,536, particle limit `ceil(1.25 x 65,536)` = 81,920; 17 B per cell place, 2 copies, three named entries | exact |
+| Liquid force on solids (A60, plan Task 26) | `TryStep, LiquidForceOnSolids_FromCommittedTry` (`BuildFreeBoxScene(500)`, one step); `TryStepWithStages, RejectAfterCheckStep_LiquidForcesEmpty` | one entry per solid in ascending `solid_id` (domain box, free box), bytes equal to `solids_try.liquid_forces()` read by a stage table after stage 19; empty on the reject | exact |
+| Forced run mode (A40, plan Task 8) | `BuildRunPlan, ForcedOnePieceThatDoesNotFit_KeepsModeSaysDoesNotFit` (on_processor one byte too small for one piece); `BuildRunPlan, ForcedBatchedThatFitsOnePiece_StaysBatched` | `mode` kOnePiece, `fit` kDoesNotFit; `mode` kBatched, `fit` kFits, batched fields 0 | exact |
+| Reference speed (A62, plan Task 21) | `CheckStep, LargestLiquidSpeed_ExactMaxOverLiquidParticles` (`BuildTwoLiquidsScene`, one step of 0.01 s; a stage table sets one oil particle's `velocity.for_next_step` to {0, 0.7, 0} at the end of stage 16; one range against one range per block) | committed `largest_liquid_speed` 0.7 bit for bit, equal for both cuts | exact |
+| Error order (reconcile item 31, plan Task 3) | `StepError, OutOfMemoryIsTheLastValue`; `ToBuildFailure, RunMemoryTooSmall_IsOutOfMemoryWithBytes` | `kOutOfMemory` is the largest value; `BufferError::kRunMemoryTooSmall` asking 4096 B in grid's builder: `kOutOfMemory`, module `kGrid`, magnitude 4096 | exact |
 | Solid and liquid momentum | free box dropped into still liquid, 50 steps | change of liquid momentum plus change of solid momentum equals gravity's impulse | 1e-8 relative |
 | Four reference scenes, small | 0.2 s each | commits, liquid volume within pressure's reported volume change | pressure's limit |
 
@@ -2043,6 +2276,12 @@ The random words cite Salmon, Moraes, Dror and Shaw 2011 by author and year (dec
 | `ScheduledDuration` | `ComputeStepDuration`, `StepLimit` | NEW |
 | `ValidateScene`, the `Unimplemented` returns | `CheckSceneCanRun`, `CapabilityReason` | NEW |
 | `QueryLiquidWorkspaceBytes3D`, `ReservationBytes`, `reserved_bytes()` | `BuildRunPlan`, `MemoryEstimate`, `ReadMemoryReport` | NEW |
+| device memory allowed = min(70 % of total, 80 % of free); `memory_share_of_total` | `ComputeAllowedMemoryBytes`: min(0.9 x free, free - 512 MiB); `memory_share_of_total` removed | A58 |
+| `MemoryReport::allocated_bytes`, `allocated_cpu_bytes` (replaced names) | `handed_out_bytes`, `handed_out_cpu_bytes`, with `reserved_bytes`, `reserved_cpu_bytes`, `planned_bytes` | A58 |
+| `StepCallbacks::choose_cell_size`, `cell_resize::ChooseCellSize` (replaced names) | `grid::ComputeNewCellSizeLevel` in stage 2 | A41, A61 |
+| `CommittedStepLimits::grid_only_speed` (replaced name) | `largest_liquid_speed` (the reference speed of the size rule); `grid_only_speed` returns with the later group | A62, A64 |
+| `kSmallestVisibleViscousEffectPerStep` (replaced name) | the A57 advice numbers in `LiquidViscousEffect` | A57 |
+| `ReadyScene::gas_wind` (replaced name) | `ReadyScene::wind` | A47 |
 | `device_budget_bytes` | `allowed_bytes` | DECIDED (a hard limit; A22 allows `budget` only for a planned cost shown to the user, I/O's `RunBudget`) |
 | `ValidateLiquidState3D` | `CheckStep` | DECIDED |
 | `particle_energy_blend`, `0.99` | gone: `own_motion_kept` from materials | DECIDED |
@@ -2209,7 +2448,8 @@ replaced by A17 (11.12).
 17. **A plan that does not fit is returned, and says where its bytes live.** `PlanFit { kFits, kDoesNotFit }` and
     `RunPlan::fit`; `BuildRunPlan` returns a plan with `fit = kDoesNotFit`, `mode = kBatched` and every estimate
     filled instead of failing; `BuildSimulation` fails `kDoesNotFit` on it before allocating; `MemoryEstimate::on_cpu`,
-    `ModuleBytes::on_cpu`, `MemoryReport::allocated_cpu_bytes`; `on_processor` counts only `kRunOn` entries.
+    `ModuleBytes::on_cpu`, `MemoryReport::allocated_cpu_bytes` (renamed `handed_out_cpu_bytes` by A58, 11.41);
+    `on_processor` counts only `kRunOn` entries.
     Replaces the 5.9 text "otherwise `kDoesNotFit`" as a failure of `BuildRunPlan` and the test row "then
     `kDoesNotFit`". Decision: plan decision, 2026-11-14 (planned cost); owner principle A17 and A22 ("budget" is a
     planned cost shown to the user); step plan Tasks 8, 9 (amended).
@@ -2234,12 +2474,14 @@ replaced by A17 (11.12).
     released on reject, refreshed by `ReadGrid` after a committed resize; `FindCpuGridCopy`. Grouping,
     `choose_cell_size`, marker upkeep and `CellResize` read it. Decision: plan decision, 2026-11-14 (buffers in
     batched runs); owner principle A17; step plan Task 33b. **Replaced in part (reconcile, 11.29):** no `ReadGrid`
-    refresh after a resize; the CPU resized grid becomes the copy (`ApplyResizedCpuGridCopy`).
+    refresh after a resize; the CPU resized grid becomes the copy (`ApplyResizedCpuGridCopy`). **Replaced in part
+    (A41, 11.40):** `choose_cell_size` is no longer a reader; the copy stays for its other readers.
 22. **Mirrors of committed values and the CPU form of the marker upkeep.** Committed gas volume, gas velocity and
     grid-only marks mirrored once per committed `state_version`; `keep_active` read back per try after
     `gas::FindCellsToKeepActive` ran on the amounts' processor; `gas::FindMarkerChanges(MarkerGridInputs, ...)` in
     both batched modes; `MarkerChanges` lists in CPU memory in every GPU layout. Decision: plan decision, 2026-11-14
-    (buffers in batched runs); owner principle A17; step plan Tasks 29, 33b.
+    (buffers in batched runs); owner principle A17; step plan Tasks 29, 33b. **Replaced in part (A64, 11.39):** the
+    grid-only marks mirror is not in the first version.
 23. **Stage 3's whole part.** `FindGridEdgesOpenToSky` moves to `run_whole_grid[kFindSolidSurfaces]`, run at
     `kWholeGridOnProcessor` right after pass 1; stage 3's `run` builds the solids try once per try in a batched run.
     Replaces "`run_whole_grid` non-null only for `kFindLiquidSurface`, `kMoveParticles` and `kCheckStep`" (11.14).
@@ -2252,7 +2494,8 @@ replaced by A17 (11.12).
     `choose_cell_size` callback in a one-piece GPU run costs two counted copies (new cells back, levels sent).
     Replaces the Open item "Which buffers stage 1 (and stage 2's marking) needs on which processor in a batched
     run" and, for the batched case, the Open item on `choose_cell_size` (the step's CPU copy). Decision: plan
-    decision, 2026-11-14 (buffers in batched runs); step plan Tasks 14, 27 (amended).
+    decision, 2026-11-14 (buffers in batched runs); step plan Tasks 14, 27 (amended). **Replaced in part (A41,
+    11.40):** the size choice costs no copy; the callback is gone.
 26. **Stage 11 carries blocking materials and sealed gas (A24).** Stage 11 mirrors stage 12:
     `viscosity::SolveViscosityAndPressure(..., fields.velocity_after_pressure, fields.pressure,
     viscosity::SolvedCouplingArrays{blocking_material_velocity_after_pressure, sealed_gas_pressure})`, then
@@ -2306,18 +2549,20 @@ replaced by A17 (11.12).
     copy; `FindCpuGridCopy(...)->tables(kCpu)` in a batched GPU run. The step never reads a GPU grid back for it.
     Replaces the Open item's "what the step passes as `committed` in a one-piece GPU run is not stated". Decision:
     plan decision; `plan-decisions.md`, Reconcile pass item 13 (with coordinator item 2); step plan Tasks 14, 33b.
+    **Replaced (A41, 11.40):** there is no `choose_cell_size`; stage 2 calls `grid::ComputeNewCellSizeLevel` on the
+    committed tables' own processor.
 31. **Grid room from the planner and one set of grid builder buffers.** `limits.max_cell_blocks` = the blocks `BuildRunPlan` counts
     from the scene x `start_limit_headroom` (1.25), rounded up, capped by the domain's blocks at the smallest cell,
     at least 1; no default room (`GridSettings::max_cell_blocks` defaults to 0, `kBadInput`); above
     `grid::kMaxCellBlocksLimit` or not fitting, `fit = kDoesNotFit`. The simulation state owns one
     `grid::GridBuilderBuffers`, built first, freed last, rebuilt by `ApplyLimits`, lent to the committed and free
     `GridBuffers` and the loaded try's buffers; the batched GPU run's CPU grid copy pair shares one CPU
-    `GridBuilderBuffers`; memory counted with `BuildGridMemoryEstimate(run_on, 2, BuilderBuffersSharing::kOneForAllGrids)`
+    `GridBuilderBuffers`; memory counted with `BuildGridMemoryEstimate(run_on, 2, limits.max_cell_blocks, BuilderBuffersSharing::kOneForAllGrids)`
     (on a 16 GiB GPU two grids with one set of builder buffers cost 2,840 B per block, about 1.06 M blocks in a quarter of
     `allowed_bytes`; the old default `2^22` would take 11.9e9 B). Tests `BuildRunPlan,
     BlockRoomFromSceneNotFromDefault`, `BuildStepMemoryEstimate, TwoGridBuffersShareBuilderBuffers`, `BuildRunPlan,
     RoomAboveGridLimit_DoesNotFit`, `BuildSimulation, GridBuffersShareBuilderBuffers`. Replaces the 5.9 entry
-    `grid::BuildGridMemoryEstimate(run_on, 2)` and 6.3's "on a GPU grid they include the builder buffers". Decision:
+    `grid::BuildGridMemoryEstimate(run_on, 2, limits.max_cell_blocks)` and 6.3's "on a GPU grid they include the builder buffers". Decision:
     plan decision; `plan-decisions.md`, Reconcile pass item 11; step plan Tasks 8, 9, 24, 33, 33b.
 32. **Copy reports reset per try through the solvers' buffers.** `pressure::ResetSolveCopyReport(PressureBuffers&)`
     (liquid and gas), `viscosity::ResetSolveCopyReport(ViscosityBuffers&)`, `gas::ResetSolveCopyReport(GasBuffers&)`,
@@ -2377,19 +2622,95 @@ replaced by A17 (11.12).
     A31; `plan-decisions.md` "Owner's review of the Foundation rulings applied (A28-A33)".
 38. **Memory estimates take the processor (reconcile items 19, 24).** 5.9 calls `BuildPressureMemoryEstimate(sizes,
     run_on)` twice and `BuildGasMemoryEstimate(gas sizes, run_on)`; the CPU grid-copy pair is counted with
-    `grid::BuildGridMemoryEstimate(RunOn::kCpu, 2, BuilderBuffersSharing::kOneForAllGrids)`. Source:
+    `grid::BuildGridMemoryEstimate(RunOn::kCpu, 2, limits.max_cell_blocks, BuilderBuffersSharing::kOneForAllGrids)`. Source:
     `reconcile-todo.md` items 19 and 24.
+39. **Particles everywhere in the liquid (A64).** No grid-only region in the first version: the callbacks
+    `apply_grid_only_region`, `move_grid_only_liquid`, `read_largest_grid_only_speed`,
+    `CommittedStepLimits::grid_only_speed`, the six grid-only `GridFields` arrays and their snapshot vectors, the
+    batched mirror `"step: committed grid-only marks on the CPU"` (row B3, Appendix A M5) and stage 2's grid-only mark
+    are removed; their text is kept, marked "not in the first version (A64)", and the step plan holds them in the
+    group "Deep liquid without particles (later; needs review)", owned by the cell resize plan's group of that name.
+    `SceneCounts` gains `particles_at_depth_levels` and `start_particles_in_deep_cells` (5.9: every liquid cell at the
+    depth term's levels, 8 per cell); `ReadyScene` gains `cell_size`. Tests: `BuildRunPlan,
+    DeepWaterCountsEveryLiquidCellAtDepthLevels`, `BuildStepMemoryEstimate, CellResizeAddsThreeCellSizeArrays`
+    (replaces `CellResizeAddsSevenRegionArrays`); removed: `ParticlesToGrid,
+    ApplyGridOnlyRegionCallback_GetsItsContextAndRange`, `MoveParticles, MoveGridOnlyLiquidCallback_GetsItsContext`,
+    `ComputeStepDuration, GridOnlySpeed_IsActive`, `AdvanceTo, ReadLargestGridOnlySpeed_StoredAtCommit`,
+    `ChooseActiveCells, BatchedGridOnlyMarksReadOncePerVersion` (to the later group). Decision: owner answer A64;
+    `plan-decisions.md` "Owner answers A40-A64 applied", item 1. The depth estimate's details (columns of smallest
+    cells, solids, regions and shear left out, 8 per cell, max with the start count) are this design's.
+40. **The shared cell size rule replaces `choose_cell_size` (A41, A61 to A63; A52 refined).** Stage 2 gives each new
+    cell `grid::ComputeNewCellSizeLevel(committed tables, centre, new_cell_size_level)` in its marking pass on the
+    tables' processor; no copy (row O4 withdrawn, `"step: new cells for the size choice"` removed).
+    `CommittedStepLimits::largest_liquid_speed` (stage 19, kept at commit) feeds `grid::ComputeReferenceSpeed` in
+    `ResizeCells`; `GridFields` gains `held_velocity_gradient_size` and `merge_ready_step_count` with entries
+    `"step: held velocity gradient size"` (8 B) and `"step: merge wait steps"` (1 B), 2 copies, saved in the state.
+    `FindCpuGridCopy` stays for its other readers. Replaces 11.30 and parts of 11.21, 11.25 and the Open item on a
+    shared size rule. `new_cell_size_level` must equal `cell_size.smallest_size_level` with cell resize (this
+    design's choice: one number for the cap). Decision: owner answers A41, A61, A62, A63; `plan-decisions.md`
+    "Owner answers A40-A64 applied", item 2.
+41. **One reserved block per processor, a budget of free memory (A58; A43, A45 refined).** `StepSettings`:
+    `memory_share_of_free = kDefaultMemoryShareOfFree` (0.9), `memory_left_free_bytes = kDefaultMemoryLeftFreeBytes`
+    (536,870,912 B), `memory_share_of_total` removed; `ComputeAllowedMemoryBytes` for both processors.
+    `BuildSimulation` reserves `run_memory` (and, in a GPU run, `cpu_run_memory`) first and builds every buffer as
+    a piece; `ApplyLimits` reserves new blocks for the whole new plan and frees the old ones whole, checked as old +
+    new <= allowed (tighter: stated in 5.7). `MemoryReport` gains `planned_bytes`, `reserved_bytes`,
+    `handed_out_bytes` (was `allocated_bytes`), `reserved_block_count`, `memory_taken_bytes`,
+    `requested_beyond_plan_bytes`, `handed_out_cpu_bytes` (was `allocated_cpu_bytes`), `reserved_cpu_bytes`;
+    `MemoryEstimate::on_processor` is `ComputeRunMemoryBytes(.., kRunOn)` and `cpu_run_memory_bytes` is NEW; no
+    `kRunOn` entry is `kOneCall`. `FindRunMemory`, `FindCpuRunMemory` let I/O build render output and cell resize
+    into the blocks. Every step-owned private builder takes `RunMemory& run_memory` last (two blocks: `run_memory,
+    cpu_run_memory`). Replaces 3.3's shares, 5.9 step 4, 5.7 step 1 and the 6.3 "one call" of the needed block ids.
+    Decision: owner answer A58 (A43, A45); `plan-decisions.md` "Owner answers A40-A64 applied", item 3, with its
+    same-day correction (one block per processor). The definition of `requested_beyond_plan_bytes` (peak of both
+    blocks during a raise), the CPU-block check against `allowed_cpu_bytes` in a raise, and `FindRunMemory` /
+    `FindCpuRunMemory` are this design's. NEW (reconcile, 2026-11-15): `StepCallbacks::limits_raised`, through which
+    buffers I/O built into the blocks follow a raise (`false`: `kDoesNotFit`, then `kLimitsCannotBeRaised`).
+42. **Warnings without margins (A43).** The step reports true upper bounds (`planned_step_copies`, the blocks'
+    bytes); I/O warns on any excess. Replaces the Open item `kMemoryWarningShare = 1.10`, `kCopyWarningShare = 1.25`.
+    Decision: owner answer A43; `plan-decisions.md` "Owner answers A40-A64 applied", item 3.
+43. **Viscosity advice (A57; replaces A44 and A25's threshold).** `LiquidViscousEffect` gains
+    `viscosity_to_smoothing_ratio`, `four_cell_feature_change`, `spreading_in_cells`, `reynolds_number`,
+    `advises_zero_viscosity`; `RunPlan` gains `viscous_effect_run_duration` (`end_time - start_time`) and
+    `reynolds_length`. A25's rule (the setting decides the path) is kept; `kSmallestVisibleViscousEffectPerStep` is
+    gone (its wording dropped from `TryStep, ViscousPathFixedWhenStepShortens`). Decision: owner answer A57;
+    `plan-decisions.md` "Owner answers A40-A64 applied", item 4. (`plan-decisions.md` writes `T =
+    ReadyScene::end_time`; this design uses `end_time - start_time`, equal for a run starting at 0.)
+44. **The liquid's force on every solid (A60).** `StepReport::liquid_force_on_solids`, copied from
+    `solids_try.liquid_forces()` in stage 20 before `solids::CommitTry`; stage 11 hands the solve's per-solid viscous
+    impulse to the solids try. Decision: owner answer A60; `plan-decisions.md` "Owner answers A40-A64 applied",
+    item 6. The call is `solids::ApplyViscousImpulses(viscous_impulse, solids_try)`, declared by the solids plan (reconcile,
+    2026-11-15; replaced: the placeholder `solids::WriteViscousImpulses`: "Write" means a copy to disk or the GPU).
+45. **Resume keeps the run mode (A40).** `BuildRunPlan(..., std::optional<RunMode> forced_mode)`: the forced mode
+    and its fit, never another mode; I/O refuses with `kRecordedModeDoesNotFit` on `fit == kDoesNotFit`. Decision:
+    owner answer A40; `plan-decisions.md` "Owner answers A40-A64 applied", item 10. The parameter is this design's.
+46. **Wind (A47).** `ReadyScene::gas_wind` is renamed `wind`; the step passes it to gas only. Decision: owner answer
+    A47; `plan-decisions.md` "Owner answers A40-A64 applied", item 8.
+47. **Reconcile items 31 to 33.** `StepError::kOutOfMemory` moved to the last value (the later values shift, accepted;
+    none is stored), returned only by `BuildSimulation`, `BuildSimulationFromSnapshot`, `ApplyLimits`;
+    `BuildResizeTry` no longer returns it; `BufferError::kRunMemoryTooSmall` maps to it with `module` and `magnitude`
+    = bytes asked (private `ToBuildFailure`). Item 32 (span forms with GPU grids are preconditions) and item 33 need
+    no step change. Decision: `plan-decisions.md` "Owner answers A40-A64 applied", item 11.
 
 **Open** (left open by the plans):
 
 - Replaced (11.25): "Which buffers stage 1 (and stage 2's marking) needs on which processor in a batched run, with
   the particle arrays in CPU memory."
-- `choose_cell_size` in a one-piece GPU run costs two counted copies (new cells back, levels sent) and
-  `ChooseCellSize` keeps its own CPU copy of the committed grid (what the step passes is decided, 11.30). Owner
-  (plan-decisions open point 2): a shared CPU-and-GPU size rule instead of a callback would remove these copies.
-- Owner questions raised with A24 and A25 (`plan-decisions.md` "Owner questions raised here"; viscosity's, the
-  step follows the answer): the new constant `kSmallestVisibleViscousEffectPerStep = 2.5e-4`. (The slip at a
-  liquid-material face is answered by A26, stick; free solids beside a viscous liquid by A27, lifted; 11.33.)
+- Replaced (A41, 11.40): "`choose_cell_size` in a one-piece GPU run costs two counted copies (new cells back, levels
+  sent) and `ChooseCellSize` keeps its own CPU copy of the committed grid (what the step passes is decided, 11.30).
+  Owner (plan-decisions open point 2): a shared CPU-and-GPU size rule instead of a callback would remove these
+  copies."
+- Replaced (A57, 11.43): "Owner questions raised with A24 and A25 (`plan-decisions.md` "Owner questions raised
+  here"; viscosity's, the step follows the answer): the new constant `kSmallestVisibleViscousEffectPerStep =
+  2.5e-4`." (The slip at a liquid-material face is answered by A26, stick; free solids beside a viscous liquid by
+  A27, lifted; 11.33.)
+- Decided (reconcile, 2026-11-15): "How render output's and cell resize's buffers, built by I/O into
+  `FindRunMemory` / `FindCpuRunMemory`, move into the new blocks `ApplyLimits` reserves." Through
+  `StepCallbacks::limits_raised` (3.9), called by `ApplyLimits` after the new blocks are reserved and the step's
+  buffers rebuilt, before the old blocks are freed; `false` leaves the simulation as it was. Test `AdvanceTo,
+  LimitRaise_CallsLimitsRaisedBeforeFreeingOldBlock`.
+- Owner questions of A58 (`plan-decisions.md` "Owner questions raised here" 1, 2): the CPU budget now follows the
+  GPU rule; `ApplyLimits` needs room for the old and the new block at once.
 - Owner questions raised with A26 and A27 that touch the step (`plan-decisions.md`, last "Owner questions raised
   here"): the material band (faces within `kFitReach` widths of a liquid cell centre) and "the rest of the material
   keeps its velocity after `CollideSolids` this step" (what stage 11 writes back); where two blocking sets hold one
@@ -2403,8 +2724,8 @@ replaced by A17 (11.12).
   processor and an explicit `ReadGrid`.
 - Stage 3's range part calls `solids::BuildTry` and the contact checks once per try; if the owner prefers, those
   calls move to stage 2 (plan-decisions open point 3).
-- `kMemoryWarningShare = 1.10`, `kCopyWarningShare = 1.25` (I/O constants, owner to confirm); planned step copies
-  are upper bounds, so the warning compares means.
+- Replaced (A43, 11.42): "`kMemoryWarningShare = 1.10`, `kCopyWarningShare = 1.25` (I/O constants, owner to
+  confirm); planned step copies are upper bounds, so the warning compares means."
 - The material's own volumetric stiffness inside the solve (half of the volumetric response, Fang et al. 2020) is
   not built (owner question in `plan-decisions.md`).
 - The `StepReport` field for `PressureOnMaterials::push` per set (the plan says "into the report beside the
@@ -2412,4 +2733,5 @@ replaced by A17 (11.12).
 - The field name of `CapabilityFinding`'s `CapabilityLevel` (written `level` here).
 - `BatchSettings::solve_piece_share = 0.25` and the batched direct-solve room `4 * max_cells` (new constants,
   owner to confirm).
-- Wind on liquids: A20 brings Blender's Wind as `gas_wind`, read only by the gas; no plan gives liquids a wind.
+- Replaced (A47, 11.46): "Wind on liquids: A20 brings Blender's Wind as `gas_wind`, read only by the gas; no plan
+  gives liquids a wind." Wind never pushes the liquid; it moves gas and, in render output, spray and foam.

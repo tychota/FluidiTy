@@ -65,7 +65,8 @@ Foundation's list, unchanged:
   loop; the working-buffers pattern, with per-step memory owned by the module's buffers and one form per function
   that needs working memory (A31); buffers passed together on one processor as a `Requires:` precondition (A30); a failed check writes nothing,
   after `kRunOnCallFailed` the outputs are unspecified and the run stops, `kOutOfMemory` comes only from building or
-  allocating forms; discrete outputs equal on CPU and GPU, floating-point within the tolerances below unless a
+  allocating forms (amended 2026-11-15, reconcile items 31 and 33: only building functions and the accepted
+  one-call forms `ComputeWorkRates` and `CheckMaterialState`; the sand GPU path is not one of them, Task 7); discrete outputs equal on CPU and GPU, floating-point within the tolerances below unless a
   header promises the same bits unless NaN; tests link `fluidity_base_test_support` and the modules' helper
   libraries (made with `fluidity_add_test_library`, named in `LINKS`); `gpu` tests call `WriteResultDigest` on
   their main outputs; labels `cpu` everywhere (the contact plan's `fluidity_add_shared_test` is retired), `no_gpu`
@@ -452,6 +453,8 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
 
 **Amended 2026-11-14 (Foundation as built):** the split lives in the shared `apply_material_response_steps.h` (CPU loop and GPU function both call it), tested over every thread block and thread on the CPU; the per-call solids copy, if needed, is a `GpuArray` and makes the sand GPU path an allocating form; the shared-formula runner is materials' `shared_formulas_test_gpu.h/.cu`; result digests.
 
+**Amended 2026-11-15 (A58; reconcile item 33, settled here):** no per-call copy. The solids on the run's processor come from contact's own copy: `contact::ContactBuffers::solids_copy()` (NEW in contact Task 15: the copy `MoveParticles` wrote this step, on `run_on`), passed in the new input `MaterialResponseInputs::solids_on_run_processor`. `ApplyMaterialResponse` stays allocation-free and never returns `kOutOfMemory`; the `GpuArray` fallback is withdrawn.
+
 **Files:**
 - Modify: `native/fluidity/materials/apply_material_response_gpu.cu`, `apply_material_response_gpu.h`,
   `apply_material_response_steps.h` (the sand case of `ApplyParticleMaterialResponse` with the hit split, which
@@ -461,11 +464,12 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
 
 **Interfaces:**
 - Produces: the `kSand` instantiation of `ApplyMaterialResponseOneThreadPerParticle` with the split in registers in
-  the same pass (design 6); `hit_corrected_count` by integer `atomicAdd`. **Plan decision for the solids on the
-  processor:** read how `native/fluidity/contact/move_particles_gpu.cu` gets `MoveParticlesInputs::solids` to the
-  device and do the same; if contact's device copy is private, copy `solids` per call into a
-  `GpuArray<contact::Solid>` held by the GPU half (one small allocation per call, so the sand GPU path may return
-  `kOutOfMemory`; record it in the hand-over as a departure from "allocates nothing").
+  the same pass (design 6); `hit_corrected_count` by integer `atomicAdd`. **Solids on the processor (amended
+  2026-11-15, settles reconcile item 33):** the GPU half reads `inputs.solids_on_run_processor` (`solids.size()`
+  entries, the same solids in the same order as `inputs.solids`, written by `contact::MoveParticles` into its
+  `ContactBuffers` this step; the step passes `contact_buffers.solids_copy().data()`). `Requires:` it is on the
+  run's processor and holds `solids.size()` entries (debug assertion, A30). A null pointer with a sand `kHit` record
+  on the GPU is `kBadInput`, nothing written. No allocation per call.
 
 - [ ] **Step 1: Failing tests.** `cpu` (`apply_material_response_steps_test.cc`, the main evidence until the
   hardware run): the sand case of `ApplyParticleMaterialResponse` with `kHit` records for every thread block and
@@ -474,7 +478,11 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
   `ApplyMaterialResponse, OnGpuSandHit_MatchesCpuOnEveryTaskSixScene`
   (Global Constraints tolerances; `LimitCase` rule near the cone); `ApplyMaterialResponse, OnGpuSandRunTwice_SameBytes`;
   `SharedFormulas, OnGpu_MatchCpu` extended with every case of Tasks 3, 4 and 5. `no_gpu`:
-  `ApplyMaterialResponse, OnGpuSandWithoutAGpu_IsRunOnCallFailed`. Each `gpu` test passes the written states and
+  `ApplyMaterialResponse, OnGpuSandWithoutAGpu_IsRunOnCallFailed`; `cpu` (amended 2026-11-15):
+  `ApplyMaterialResponse, SandHitWithoutSolidsOnProcessor_IsBadInput` (a GPU view with a sand `kHit` record and a
+  null `solids_on_run_processor`, checked on the CPU half before any launch: `kBadInput`, nothing written; runs in
+  the CPU build by calling the check function directly); `gpu`: `ApplyMaterialResponse, OnGpuSandHit_AllocatesNothing`
+  (`ReadMemoryAvailable(kGpu)` free bytes equal before and after 100 calls). Each `gpu` test passes the written states and
   `hit_corrected_count` to `WriteResultDigest`.
 - [ ] **Step 2: Implement; run** the gate. Expected: `PASS cuda`; `no_gpu` tests pass in the container.
 - [ ] **Step 3: Commit.** Subject: `Split sand steps at a hit on the GPU`. Body: `CUDA: compiled, not run`.
@@ -1242,7 +1250,7 @@ Run only if the ladder run on the tip shows all eight rungs passing with no `kno
 **Kind:** mechanical
 
 **Amended 2026-11-14 (Foundation as built):** the hand-over records the owner's ruling on how rung and known-open tests are kept out of the
-`cpu` runs, and the per-call solids copy of Task 7 if it was needed.
+`cpu` runs (amended 2026-11-15: no per-call solids copy; Task 7 reads contact's copy).
 
 **Files:**
 - Modify: any file this plan touched, `docs/gpu-runs.md`
@@ -1259,7 +1267,7 @@ Run only if the ladder run on the tip shows all eight rungs passing with no `kno
   GPU, 7 tests, 9 vocabulary, 10 not ported) and record what was delivered differently: the pile material's
   `own_motion` `{0, 0}`; the driven-at-rest floor of rung 8; `StepReport::particle_count_by_case` and
   `StepTry::solid_reactions`; rung 3's allowance for `kPulledApart` with zero excess (design 5.2 step 1 against
-  design 7 rung 3); rung 4 measured from 0.5 s; the per-call solids copy on the GPU if Task 7 needed it;
+  design 7 rung 3); rung 4 measured from 0.5 s; the solids read from `ContactBuffers::solids_copy()` (Task 7);
   `ViscosityError::kSandNotSupported` appended at the end; every fix committed in Part 2 and every proposal waiting
   for the owner.
 - [ ] **Step 4: `docs/gpu-runs.md`.** Row for sand: `compiled, not run`, listing every `gpu` test of Tasks 7, 13

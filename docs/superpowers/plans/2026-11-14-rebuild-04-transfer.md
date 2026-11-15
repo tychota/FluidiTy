@@ -57,6 +57,25 @@ Foundation's list, unchanged:
   `WriteResultDigest`. Labels: `cpu` everywhere (the container's `cuda` step runs them too), `no_gpu` only for
   behaviour on a machine without a GPU, `gpu` only for tests that need hardware. Every target is created through
   the helpers of `cmake/fluidity_targets.cmake` and every source file is listed in a CMake file.
+- **Amended 2026-11-15 (A58; reconcile item 31; `plan-decisions.md` "Owner answers A40–A64 applied" items 3, 11
+  and the item-3 correction):** one reserved block per processor per run (Foundation Tasks 17 to 19). Every builder
+  (`BuildTransferBuffers`, `BuildSolidsAtFaces`, `BuildGridFromParticles`, `BuildGridSnapshot`,
+  `BuildCellsFromParticles`) takes `RunMemory& run_memory` as its last parameter (every other parameter stays),
+  the block of `run_on`; `run_on == run_memory.run_on()` is a `Requires:` checked by a debug assertion (A30); every
+  buffer is a piece (`BuildBuffer(run_on, size, run_memory)`, the grid's `Build...Values(..., run_memory)`); a
+  failed builder leaves its pieces in the block. `TransferError::kOutOfMemory` is appended as the **last** value
+  (twelve values), returned only by the builders, for `BufferError::kOutOfMemory` and `kRunMemoryTooSmall` and for
+  the grid's `kOutOfMemory`, with `magnitude` = bytes asked (replaces the plan decision that mapped them to
+  `kRunOnCallFailed`). Every estimate row stands for whole buffers (`copies` = their number, each `count x
+  bytes_each`), so the composite rows of Task 4 are split into one row per array; `ComputeRunMemoryBytes` of the
+  rows then equals the bytes the builders hand out for any room (each row rounds as its piece does). Tests build
+  a `RunMemory` of the estimate first.
+- **Amended 2026-11-15 (A64; item 1):** particles everywhere in the liquid. `FaceValueKind::kFromGridOnlyRegion`
+  and every use of it (the source rule of Tasks 11 and 12, the test
+  `SaveGridAfterPressure, GridOnlyRegionFace_IsASourceAndKeepsItsKind`) are not in the first version: they move to
+  the group "Deep liquid without particles (later; needs review)" at the end of this plan, owned by the cell
+  resize plan's group of that name. `FaceValueKind` has four values in the first version. `GridOnlyReason` is
+  unrelated (why a particle takes the grid velocity only) and stays.
 - **Amended 2026-11-14 (Foundation as built):** the gate runs at every commit: the CPU build in the debug and the
   release presets, and the CUDA build compiled in the container (its `cuda` step fails, naming the file, for a
   tracked `.cc` or `.cu` file that no build compiles). clang-format and clang-tidy are the pinned 23.1.
@@ -131,16 +150,21 @@ Transfer's own:
   // max_particle_count: all materials together; material_count: the scene's materials (one offset each; reconcile
   // item 27). Holds 3 x grid::NearbyFaceSums per particle, the per-material offsets, and the status record
   // (failure key, six reason counts, two face counts). Zero for either count is kBadInput.
+  // Amended 2026-11-15 (A58): every builder takes run_memory last; its buffers are pieces of it.
   std::expected<TransferBuffers, TransferFailure> BuildTransferBuffers(RunOn run_on, std::size_t max_particle_count,
-                                                                       std::size_t material_count);
-  // Builders (allocate; the step calls them once per set at max_cell_blocks):
-  std::expected<SolidsAtFaces, TransferFailure> BuildSolidsAtFaces(RunOn run_on, std::uint32_t max_cell_blocks);
-  std::expected<GridFromParticles, TransferFailure> BuildGridFromParticles(RunOn run_on, std::uint32_t max_cell_blocks);
+                                                                       std::size_t material_count,
+                                                                       RunMemory& run_memory);
+  // Builders (the step calls them once per set at max_cell_blocks):
+  std::expected<SolidsAtFaces, TransferFailure> BuildSolidsAtFaces(RunOn run_on, std::uint32_t max_cell_blocks,
+                                                                   RunMemory& run_memory);
+  std::expected<GridFromParticles, TransferFailure> BuildGridFromParticles(RunOn run_on, std::uint32_t max_cell_blocks,
+                                                                           RunMemory& run_memory);
   enum class FilledFromSolved : std::uint8_t { kNotKept, kKept };  // kNotKept: a set no solve writes.
   std::expected<GridSnapshot, TransferFailure> BuildGridSnapshot(RunOn run_on, std::uint32_t max_cell_blocks,
-                                                                GridTime time, FilledFromSolved filled_from_solved);
+                                                                GridTime time, FilledFromSolved filled_from_solved,
+                                                                RunMemory& run_memory);
   std::expected<CellsFromParticles, TransferFailure> BuildCellsFromParticles(RunOn run_on,
-      std::uint32_t max_cell_blocks, std::uint32_t ingredient_count);
+      std::uint32_t max_cell_blocks, std::uint32_t ingredient_count, RunMemory& run_memory);
   // Views for shared formulas (on_processor_views.h, formula) and their conversions (CPU only):
   SolidsAtFacesOnProcessor ToSolidsAtFacesOnProcessor(const SolidsAtFaces& solids);
   GridSnapshotOnProcessor ToGridSnapshotOnProcessor(const GridSnapshot& snapshot);
@@ -284,6 +308,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** mechanical
 
+**Amended 2026-11-15 (reconcile item 31):** `TransferError` gains `kOutOfMemory` as its twelfth and last value.
+
 **Files:**
 - Create in `native/fluidity/transfer/`: `transfer_error.h`, `transfer_message.h`, `transfer_message.cc`,
   `transfer_settings.h`, `material_set.h`, `material_set.cc`, `transfer_message_test.cc`, `material_set_test.cc`,
@@ -291,7 +317,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 - Modify: the CMake file that lists module folders
 
 **Interfaces:**
-- Produces design 3 exactly: `TransferError` (all eleven values), `TransferFailure`, `ToMessage`, `ToName`,
+- Produces design 3 exactly: `TransferError` (all twelve values, `kOutOfMemory` last), `TransferFailure`, `ToMessage`, `ToName`,
   `kMaxSidesAtFace`, `kFillRadiiInCells`, `kFillPivotTolerance`, `TransferSettings`, `MaterialSetKey`,
   `ToMaterialSetKey`, `CheckMaterialSets`.
 - Plan decision: `TransferFailure` members have defaults (`error = kNone`, `particle_id = 0`,
@@ -300,8 +326,9 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 - [ ] **Step 1: Failing tests.**
 
   ```cpp
-  TEST(TransferError, EveryValue_HasNameAndMessage)   // design 7: ToName lower snake case without k, all eleven
-                                                     // unique ("wrong_material_set"); ToMessage never empty
+  TEST(TransferError, EveryValue_HasNameAndMessage)   // design 7: ToName lower snake case without k, all twelve
+                                                     // unique ("wrong_material_set"); ToMessage never empty;
+                                                     // static_assert(kOutOfMemory == 11), "out_of_memory"
   TEST(ToMaterialSetKey, LiquidAndGas_KeyIsLowestCountedAndCount)  // {0,1,1,0}, 4 -> {1, 2}
   TEST(ToMaterialSetKey, LengthNotMaterialCount_IsBadInput)        // 3 entries, 4 materials; magnitude 3
   TEST(ToMaterialSetKey, EntryTwo_IsBadInputForThatMaterial)       // {1,2,0}; magnitude 1
@@ -322,6 +349,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 **Amended 2026-11-14 (reconcile):** test file named `transfer_memory_estimate_test.cc` (A23).
 
 **Amended 2026-11-14 (A31, reconcile):** `TransferBuffers` (was `TransferScratch`) is built with `material_count` (reconcile item 27); test names say "buffers".
+
+**Amended 2026-11-15 (A58; reconcile item 31):** builders take `RunMemory& run_memory` last; composite estimate rows are split into one row per array (byte totals per block unchanged); out of memory is `kOutOfMemory`; new tests `BuildTransferBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` and `BuildGridSnapshot, RunMemoryOnePieceShort_IsOutOfMemory`.
 
 **Kind:** mechanical
 
@@ -370,17 +399,28 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   TEST(BuildTransferMemoryEstimate, SetWithoutSolve_LeavesOutFilledFromSolved)  // 2 sets, 1 without solve:
       // face-place bytes per block == 2 * (61 + 67 + 67) * 240 + 48 * 240
   TEST(BuildTransferMemoryEstimate, NearbyFaceSumsBuffersEntry_Is168BytesPerParticle)
+  TEST(BuildTransferBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)  // amended 2026-11-15 (A58): 2 sets (one
+      // without solve), ingredient_count 3, material_count 2, 1,000 particles, 1,000 blocks: a CPU RunMemory of
+      // ComputeRunMemoryBytes(BuildTransferMemoryEstimate(...), counts, kRunOn); BuildTransferBuffers and, per set,
+      // BuildSolidsAtFaces once, BuildGridFromParticles, both BuildGridSnapshot, BuildCellsFromParticles into it:
+      // handed_out_bytes() == reserved_bytes(), exact
+  TEST(BuildGridSnapshot, RunMemoryOnePieceShort_IsOutOfMemory)  // (A58; GTEST_SKIP in debug builds) a 256 B
+      // block, 8 blocks asked: kOutOfMemory, magnitude = the first piece's bytes
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
-- [ ] **Step 3: Implement.** Rows (all names start `transfer: `; bytes from `sizeof`; `copies` as stated):
+- [ ] **Step 3: Implement.** Rows (all names start `transfer: `; bytes from `sizeof`; `copies` as stated;
+  amended 2026-11-15, A58: each row below that sums several arrays is written as one row per array, named
+  `transfer: <row>: <member>` in member order, e.g. `face sums from particles: mass` (face place, 8, sets); the
+  per-block totals and the tests above are unchanged):
   face sums from particles (face place, 61, sets, `kOneStepTry`); snapshot before forces (face place, 67, sets);
   snapshot after pressure (face place, 67, sets); filled from solved sources (face place, 48,
   `sets - sets_without_solve`); cell sums from particles (cell place, `24 + 8 * ingredient_count`, sets);
   nearby face sums buffers (particle, 168, 1, `kWholeRun`); material offsets (given count `material_count`, 8,
   1); status record (given count 1, `sizeof` of the record, 1). `GridAtParticle` has no row here: the step's
-  own rows count it (step design 6.3). `TransferError` has no `kOutOfMemory`, so a builder that gets
-  `kOutOfMemory` or `kRunOnCallFailed` from the grid or `base/` returns `kRunOnCallFailed` with `magnitude` = the
-  bytes asked (plan decision; listed in the hand-over). File headers cite `<sec-transfer>` and give the bytes
+  own rows count it (step design 6.3). Amended 2026-11-15 (reconcile item 31): a builder that gets
+  `kOutOfMemory` (or `kRunMemoryTooSmall`) from the grid or `base/` returns `kOutOfMemory` with `magnitude` = the
+  bytes asked; `kRunOnCallFailed` stays `kRunOnCallFailed` (the earlier plan decision mapping both to
+  `kRunOnCallFailed` is replaced). File headers cite `<sec-transfer>` and give the bytes
   table.
 - [ ] **Step 4: Run** build, tests, format, rules, gate.
 - [ ] **Step 5: Commit.** Subject: `Add the arrays transfer reads and writes`. New names: every name of the
@@ -662,6 +702,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 ### Task 11: Filled faces and `SaveGridBeforeForces` on the CPU
 
+**Amended 2026-11-15 (A64):** `kFromGridOnlyRegion` is not a source kind in the first version (Task L1 adds it).
+
 **Kind:** numerics
 
 **Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
@@ -697,7 +739,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
   And `TEST(ComputeFilledVelocity, MatchesTheSavedFill)`: for every saved `filled[s]` of the first row, equal bytes.
 - [ ] **Step 2: Run** (compile error), **implement** `<proc-fill-face>` steps 1 to 4 with `// Step N:`. Copy
-  `velocity`, `value_kind`; `is_source` 1 for `kFromParticles`, `kFromSolve`, `kFromGridOnlyRegion`; `side` and
+  `velocity`, `value_kind`; `is_source` 1 for `kFromParticles`, `kFromSolve` (amended 2026-11-15, A64:
+  `kFromGridOnlyRegion` is added by the later group L1); `side` and
   `outside_solid` from `inputs.solids`; for each face and each side in `sides_reaching`, `kNotNeeded` when the
   side reads the face directly (design 5.4 first paragraph), otherwise the fill. Port from `git show
   main:native/src/liquid_boundary_transfer_3d.cc` lines 186-307 (`ContinueComponent`, `FillVelocity`) and
@@ -709,6 +752,8 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 
 **Kind:** numerics
 
+**Amended 2026-11-15 (A64):** the `kFromGridOnlyRegion` rule and its test `GridOnlyRegionFace_IsASourceAndKeepsItsKind` move to the later group (Task L1).
+
 **Amended 2026-11-14 (A31):** the stage has one form, taking `TransferBuffers& transfer_buffers` last; tests pass `test::BuildTransferBuffersFor(particles_try)`.
 
 **Files:**
@@ -717,7 +762,7 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
 **Interfaces:**
 - Produces: design 3 `SaveGridAfterPressure` (one form, taking `TransferBuffers&`; amended 2026-11-14, A31).
 - Rules (design 5.5): `velocity` from `velocity_after_pressure`; a `kNoValue` face with `was_solved` becomes
-  `kFromSolve`; other kinds kept (`kFromGridOnlyRegion` stays); `is_source` as before forces. `filled` uses every
+  `kFromSolve`; other kinds kept; `is_source` as before forces. `filled` uses every
   source, for particles outside solved cells (spray). Plan decision, because this function receives no
   `cell_was_solved`: when `was_solved` is not null, `filled_from_solved[s]` is computed for every face and side in
   `sides_reaching`, as `kNotNeeded` where the face has `was_solved`, otherwise by `ComputeFill(..., was_solved)`,
@@ -731,7 +776,6 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   | Test | Setup | Expected | Tolerance |
   |---|---|---|---|
   | `SaveGridAfterPressure, ObliqueSolid_NoMotionThroughIt` (it needs both snapshots) | uniform grid, `ObliqueFloor()`, liquid faces of the constant field `w = {1, 0.5, -2}`; solid velocity `{0.1,0,0}` at time 0 and `{0,0,0.3}` at `step_duration = 0.01`; both snapshots | every filled X and Z face at a solid of its side: `w_a - ((w - s) . n) n_a` with each snapshot's own `s` | `1e-12 U` |
-  | `SaveGridAfterPressure, GridOnlyRegionFace_IsASourceAndKeepsItsKind` | `kFromGridOnlyRegion` faces beside an unfilled face; one of them `was_solved` | read directly (`kNotNeeded`), used as a source, kind unchanged after pressure | exact kinds |
   | `SaveGridAfterPressure, NoSolveForSet_EveryUsableFaceRead` | `was_solved` and `cell_was_solved` null; a `1e30` face that a solve would not have written | `filled_from_solved` empty, no `kFromSolve`, kinds and fills equal the before-forces snapshot of the same input | exact |
   | `SaveGridAfterPressure, SolvedNoValueFace_IsFromSolve` | one `kNoValue` face with `was_solved` | `kFromSolve`, `is_source 1` | exact |
   | `SaveGridAfterPressure, BeforeForcesSnapshotPassed_IsWrongStageOrder` | output built with `GridTime::kBeforeForces` | `kWrongStageOrder` | exact |
@@ -989,3 +1033,32 @@ Load `drawing-with-cetz` and use `figure_style.typ` (and the grid module's `cell
   named in Tasks 13 and 15. Run the gate; commit as `Record transfer as compiled, not run`.
 - [ ] **Step 5: Hand over** in one message: `git log --oneline` of the transfer commits; the gate's output; every
   new public name with its reason; the list from Step 3; the statement that no transfer device code has run.
+
+## Deep liquid without particles (later; needs review)
+
+**Amended 2026-11-15 (A64):** this group is excluded from the module's done-criteria. Its owner is the group of the
+same name in the cell resize and batches plan (`2026-11-14-rebuild-11-cell-resize-and-batches.md`), opened by "an
+independent review of this design comes first" and gated by `GridOnlyRegion, StandingWave_KeepsAmplitude` and
+`GridOnlyRegion, ParticleBandEdge_StaysStable`.
+
+### Task L1: Faces written by the grid-only region
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/transfer/grid_from_particles.h`, `grid_snapshot_cpu.cc`, `grid_snapshot_steps.h`,
+  `grid_snapshot_test.cc`
+
+**Interfaces:**
+- Produces: `FaceValueKind::kFromGridOnlyRegion`, appended as the fifth value (design 3, "not in the first version
+  (A64)"): the grid-only region's velocity, written by `cell_resize::ApplyGridOnlyRegionToGrid` in the set holding
+  the liquid; a source face read directly like `kFromParticles`.
+- Consumes: the cell resize later group's `ApplyGridOnlyRegionToGrid`.
+
+- [ ] **Step 1: Failing test** (label `cpu`; the GPU snapshot test of Task 13 gains the same faces, label `gpu`):
+  `TEST(SaveGridAfterPressure, GridOnlyRegionFace_IsASourceAndKeepsItsKind)`: `kFromGridOnlyRegion` faces beside
+  an unfilled face, one of them `was_solved`: read directly (`kNotNeeded`), used as a source, kind unchanged after
+  pressure; exact kinds.
+- [ ] **Step 2: Implement:** `is_source` 1 for `kFromGridOnlyRegion` before forces and after pressure; the kind is
+  kept after pressure even when solved.
+- [ ] **Step 3: Gate. Commit.** Subject: `Read faces written by the grid-only region as sources`.

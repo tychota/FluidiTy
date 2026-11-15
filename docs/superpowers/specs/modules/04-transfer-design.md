@@ -73,6 +73,8 @@ enum class TransferError : std::uint8_t {
   kWrongMaterialSet,     // NEW. An input array was written for another material set than material_is_counted.
   kNotFinite,            // A sum or a result overflowed.
   kRunOnCallFailed,      // CheckCanRunOn failed for the chosen processor, or a call to it failed.
+  kOutOfMemory,          // NEW (A58; reconcile item 31). Last value. Only the builders: the run's RunMemory or
+                         //   the processor could not hold a buffer; magnitude = bytes asked.
 };
 struct TransferFailure {
   TransferError error;
@@ -118,8 +120,9 @@ enum class FaceValueKind : std::uint8_t {                     // NEW
   kFromSolve,          // No particle weight, but a solve (pressure::SolvePressure,
                        //   viscosity::SolveViscosityAndPressure, or gas::SolveGas for the gas set) gave the
                        //   face a velocity.
-  kFromGridOnlyRegion, // NEW. The grid-only region's velocity (cell_resize::ApplyGridOnlyRegionToGrid, in
-                       //   the set holding the liquid). A source face, read directly like kFromParticles.
+  // Not in the first version (A64): kFromGridOnlyRegion, the grid-only region's velocity
+  //   (cell_resize::ApplyGridOnlyRegionToGrid, in the set holding the liquid), a source face read directly like
+  //   kFromParticles. The later group "Deep liquid without particles" appends it as the fifth value.
 };
 struct SidesAtFace {                                          // NEW
   std::array<contact::PlateSide, kMaxSidesAtFace> side;  // Sides of the particles that reach this face.
@@ -334,12 +337,29 @@ class TransferBuffers { public: RunOn run_on() const; std::size_t max_particle_c
                         std::size_t material_count() const; };                      // NEW
 // max_particle_count: all materials together; material_count: the scene's materials (the offsets hold one entry
 // per material, reconcile item 27). Zero for either is kBadInput.
+// Changed (A58): the buffers are pieces of run_memory (the run's block of run_on). Requires: run_on ==
+// run_memory.run_on() (debug assertion). Fails kBadInput, kOutOfMemory (magnitude = bytes asked), kRunOnCallFailed.
 std::expected<TransferBuffers, TransferFailure> BuildTransferBuffers(RunOn run_on, std::size_t max_particle_count,
-                                                                     std::size_t material_count);  // NEW
+                                                                     std::size_t material_count,
+                                                                     RunMemory& run_memory);  // NEW
+// NEW (A58; declared by the transfer plan, Global Constraints). The builders of the per-set arrays, each taking
+// run_memory last, every array a piece of it; same failures as BuildTransferBuffers.
+std::expected<SolidsAtFaces, TransferFailure> BuildSolidsAtFaces(RunOn run_on, std::uint32_t max_cell_blocks,
+                                                                 RunMemory& run_memory);
+std::expected<GridFromParticles, TransferFailure> BuildGridFromParticles(RunOn run_on, std::uint32_t max_cell_blocks,
+                                                                         RunMemory& run_memory);
+enum class FilledFromSolved : std::uint8_t { kNotKept, kKept };  // kNotKept: a set no solve writes.
+std::expected<GridSnapshot, TransferFailure> BuildGridSnapshot(RunOn run_on, std::uint32_t max_cell_blocks,
+                                                              GridTime time, FilledFromSolved filled_from_solved,
+                                                              RunMemory& run_memory);
+std::expected<CellsFromParticles, TransferFailure> BuildCellsFromParticles(RunOn run_on,
+    std::uint32_t max_cell_blocks, std::uint32_t ingredient_count, RunMemory& run_memory);
 
 // transfer_memory_estimate.h (CPU only). The rows this module's buffers allocate from (base/memory_count.h).
 // Rows of GridFromParticles, both GridSnapshots and CellsFromParticles carry copies = material_set_count;
 // sets_without_solve is how many sets no solve writes (their filled_from_solved row is not allocated).
+// Changed (A58): one row per array (a row that summed several arrays is split by member), so
+// ComputeRunMemoryBytes of the rows equals the bytes the builders hand out.
 std::vector<MemoryEstimateEntry> BuildTransferMemoryEstimate(std::uint32_t ingredient_count, std::size_t material_count,
                                                std::size_t material_set_count,      // NEW parameter.
                                                std::size_t sets_without_solve);     // NEW parameter.
@@ -362,6 +382,11 @@ with the name its section 3 has).
 
 **Foundation (EXISTS):** `Vec3`, `Mat3`, `math::Dot`, `math::Transpose`, `Axis`, `RunOn`, `CheckCanRunOn`,
 `FLUIDITY_CPU_AND_GPU`, `cpu_only.h`, `std::expected`.
+
+**Foundation, A58 (EXISTS; Foundation Tasks 17 to 19, `base/run_memory.h`):** `RunMemory`, `BuildRunMemory`,
+`BuildBuffer(RunOn, std::size_t, RunMemory&)`, the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`,
+`ComputeRunMemoryBytes(estimate, counts, MemoryWhere where)`, `BufferError::kRunMemoryTooSmall` (mapped to this
+module's `kOutOfMemory`).
 
 **Foundation additions (EXISTS, `shared-interface.md` section (a) and `changes-to-apply.md`):**
 `template <typename T> struct PerParticleVelocity { T for_next_step; T for_this_step; }` (owner A1);
@@ -451,10 +476,10 @@ particles' try.
 **Gas (PROVIDED by gas 3, A10):** nothing is consumed. The gas material is its own set; gas reads the gas set's
 `GridFromParticles::value_kind` and `velocity`, and nothing of the liquid set's `CellsFromParticles`.
 
-**Cell resize and batches (PROVIDED by cell resize and batches 3):** `cell_resize::ApplyGridOnlyRegionToGrid`
-writes face velocities (`kFromGridOnlyRegion`), mass, `weight_sum` and cell amounts of the grid-only region
-into the `GridFromParticles` and `CellsFromParticles` of the set holding the liquid, after `ParticlesToGrid`;
-the batch plan loads the borders of section 6.
+**Cell resize and batches (PROVIDED by cell resize and batches 3):** the batch plan loads the borders of section
+6. Not in the first version (A64): `cell_resize::ApplyGridOnlyRegionToGrid` writes face velocities
+(`kFromGridOnlyRegion`), mass, `weight_sum` and cell amounts of the grid-only region into the `GridFromParticles`
+and `CellsFromParticles` of the set holding the liquid, after `ParticlesToGrid`.
 
 **For the sand module:** sand is a material set of its own (`solids::MaterialSetFaces` needs one
 `AtSolidFaces` rule per set, and sand's differs from snow's); it uses `kFillRadiiInCells` like every material
@@ -529,7 +554,7 @@ gain `(1 - own_motion_kept) g step_duration` per step instead of `g step_duratio
 
 **5.4 Filled faces (ported from `FillVelocity`, computed once per face and side).** A particle on side `s`
 reads face `f` directly when `same_side` holds at the snapshot's time and `value_kind` is `kFromParticles`,
-`kFromSolve` or `kFromGridOnlyRegion` (after pressure, also subject to 5.5). Otherwise it reads `filled[s]`.
+`kFromSolve` (later also `kFromGridOnlyRegion`, not in the first version, A64) (after pressure, also subject to 5.5). Otherwise it reads `filled[s]`.
 For each face of the range and each side in `sides_reaching`:
 
 1. Source faces: same axis, `is_source`, `outside_solid`, side `s`, centre within the radius (in widths of
@@ -546,7 +571,7 @@ For each face of the range and each side in `sides_reaching`:
    `value -= ((vector - solid_velocity) . normal_out_of_solid) * normal_out_of_solid (axis a)`. The solid
    velocity is the one sampled at the snapshot's own time.
 
-`is_source` is 1 for `kFromParticles`, `kFromSolve` and `kFromGridOnlyRegion` faces; `kTooFewParticles` and
+`is_source` is 1 for `kFromParticles` and `kFromSolve` faces (and `kFromGridOnlyRegion`, not in the first version, A64); `kTooFewParticles` and
 `kNoValue` are never sources. Sources are faces of the snapshot's own set: a face another set filled is never
 a source here. Changed: radii 3 and 4 were for elastic particles only (decision 4); sources are found through
 the grid instead of scanning every face.
@@ -562,7 +587,8 @@ only for faces touching a solved cell. `was_solved` and `cell_was_solved` come f
 set's faces (A5: `SolvePressure` or `SolveViscosityAndPressure`, through `pressure::ComputeWasSolved`; for the
 gas set, `gas::SolveGas` through `SolvedGasArrays`). For a
 set no solve writes they are null: no face is solved, every usable face is read directly or filled once, and
-`filled_from_solved` stays empty. A face that was `kFromGridOnlyRegion` keeps that kind when solved.
+`filled_from_solved` stays empty. A face that was `kFromGridOnlyRegion` keeps that kind when solved (not in the
+first version, A64).
 
 **5.6 `GridToParticles`.** Per particle of a counted material, per axis `a`, over all nearby faces `f` of
 its set's two snapshots (each has a value, read directly or filled), with the normalisation of 5.1 taken over
@@ -634,7 +660,7 @@ holding only that set's materials in the same relative order. (5) Every output r
 (once, in the step's capability check) makes the sets disjoint and complete, so the lowest counted material
 identifies a set. (7) The set holding the liquid leaves the gas markers out of its face and cell sums (A10):
 markers change neither the liquid's face velocity nor its `mixture_density` and `sensed_volume_ratio`; the gas
-set's faces carry the markers' velocity only. (8) `kFromGridOnlyRegion` appears only in the set holding the
+set's faces carry the markers' velocity only. (8) (Not in the first version, A64.) `kFromGridOnlyRegion` appears only in the set holding the
 liquid set. A scene with one set passes all ones and behaves as before material sets existed.
 
 **Memory per extra set** (grid: 240 face places, 64 cell places per cell block; `I` scene ingredients):
@@ -731,7 +757,9 @@ test's own magnitude: `M = sum of |contribution|` for a sum, `U` = largest speed
 | `GridToParticles, ParticleInSolvedCell_ReadsSolvedFacesOnly` | unsolved face with 1e30 next to a solved cell | result unaffected | `1e-12 U` |
 | `MixParticleVelocity, Example_MatchesHandNumbers` | grid `{1,0,0}`, own `{0.2,0,0}`, kept 0.5, travel 0.25 | `for_next_step` `{1.1,0,0}`, `for_this_step` `{1.05,0,0}`; also `static_assert` | exact |
 | `MixParticleVelocity, Reason_GivesGridVelocityAndFlag` / `TravelShareIndependentOfKept` | reason set; kept 0, travel 1 | both grid, flag true; `for_this_step = grid + own` | exact |
-| `SaveGrid..., GridOnlyRegionFace_IsASourceAndKeepsItsKind` | `kFromGridOnlyRegion` faces beside an unfilled face; one of them solved | read directly, used as a source, kind unchanged after pressure | exact kinds |
+| `SaveGrid..., GridOnlyRegionFace_IsASourceAndKeepsItsKind` (not in the first version, A64: transfer plan later Task L1) | `kFromGridOnlyRegion` faces beside an unfilled face; one of them solved | read directly, used as a source, kind unchanged after pressure | exact kinds |
+| `BuildTransferBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` NEW (A58) | 2 sets (one without solve), 3 ingredients, 2 materials, 1,000 particles and blocks; CPU block of `ComputeRunMemoryBytes` of the estimate; every builder into it | `handed_out_bytes() == reserved_bytes()` | exact |
+| `BuildGridSnapshot, RunMemoryOnePieceShort_IsOutOfMemory` NEW (A58, release builds) | a 256 B block, 8 blocks | `kOutOfMemory`, magnitude = the first piece's bytes | exact |
 | `SaveGridAfterPressure, NoSolveForSet_EveryUsableFaceRead` | `was_solved` and `cell_was_solved` null, a 1e30 face that would be unsolved | `filled_from_solved` empty, no `kFromSolve`, particle reads every usable face as before forces | exact |
 | `MaterialSets, TwoSetsApart_SameBytesAsSeparateRuns` | set A liquid, set B a springy block with internal force and a plate side, more than four cell widths plus the touching border apart, one grid; the four stages and `ComputeCellsFromParticles` per set on the try with both, then on a try holding only A (B's materials removed, indexes renumbered in the same order) and only B; sets run in both orders | identical bytes of `GridFromParticles`, both snapshots, `CellsFromParticles`, `GridAtParticle` and results (keys compared by material, not index) | exact |
 | `MaterialSets, ParticleOfSetANeverAddsToSetB` | A and B interleaved in the same cells, on both sides of a plate; then A's mass, velocity, fitted change and internal force multiplied by 1e30, and a third side given to A | B's `GridFromParticles`, `sides_reaching`, snapshots and `CellsFromParticles` unchanged bytes; B's call reports no error | exact |
@@ -927,3 +955,17 @@ instruction" below means: recommended option (owner's standing instruction, 2026
     (the estimate's `transfer: material offsets` entry has `given_count = material_count`), so the builder takes
     `std::size_t material_count` and the buffers report it; a set with more materials is `kBadInput`. Source:
     reconcile-todo.md item 27 (2026-11-14).
+15. **Particles everywhere in the liquid (A64).** Decision: `FaceValueKind::kFromGridOnlyRegion` and its rules
+    (5.4, 5.5, 5.8 item 8, section 4 "Cell resize") are not in the first version; the first version has four
+    `FaceValueKind` values (item 10's "five values" is **replaced** for the first version). The later group "Deep
+    liquid without particles (later; needs review)" of the transfer plan (Task L1), owned by the cell resize plan's
+    group of that name, appends it as the fifth value. `GridOnlyReason` is unrelated (a particle taking the grid
+    velocity only) and stays. Source: owner answer A64; `plan-decisions.md` "Owner answers A40–A64 applied", item 1.
+16. **One reserved block per run (A58).** Decision: `BuildTransferBuffers`, `BuildSolidsAtFaces`,
+    `BuildGridFromParticles`, `BuildGridSnapshot` and `BuildCellsFromParticles` take `RunMemory& run_memory` last
+    (section 3); `BuildTransferMemoryEstimate` has one row per array. Source: owner answer A58; `plan-decisions.md`
+    item 3.
+17. **`kOutOfMemory` (reconcile item 31).** Decision: `TransferError::kOutOfMemory` appended as the twelfth and last
+    value, returned only by the builders (for `BufferError::kOutOfMemory`, `kRunMemoryTooSmall` and the grid's
+    `kOutOfMemory`), magnitude = bytes asked; the plan decision that mapped them to `kRunOnCallFailed` is
+    **replaced**. Source: `plan-decisions.md` item 11.

@@ -131,6 +131,19 @@ Materials' own:
   buffers` last, and `ComputeCellSqueezeValues` one, with `const MaterialBuffers& buffers` last; they allocate
   nothing; tests build a `MaterialBuffers` locally. `ComputeWorkRates` (test oracle) and `CheckMaterialState`
   (scene load) keep one form that holds one call's GPU memory (`GpuArray`): neither runs per step.
+- **One reserved block per run (amended 2026-11-15, A58; reconcile items 31, 33; `plan-decisions.md` "Owner answers
+  A40–A64 applied" items 3, 11 and the item-3 correction).** `BuildMaterialBuffers(run_on, table,
+  max_particle_counts, max_cell_blocks, RunMemory& run_memory)`: `run_memory` last (every other parameter stays),
+  the block of `run_on`; `run_on == run_memory.run_on()` is a `Requires:` checked by a debug assertion (A30); every
+  buffer is a piece (`BuildBuffer(run_on, size, run_memory)`); a failed build leaves its pieces in the block.
+  `MaterialsError::kOutOfMemory` moves to the **last** place (after `kRunOnCallFailed`; sixteen values kept),
+  returned by `BuildMaterialBuffers` (for `BufferError::kOutOfMemory` and `kRunMemoryTooSmall`, magnitude = bytes
+  asked) and, as accepted by reconcile item 33, by the one allocating forms of `ComputeWorkRates` and
+  `CheckMaterialState`. Every estimate row stands for whole buffers (`copies` = their number), so the rows below
+  are written one per material and array (`materials: friction: material <m>`, ...) and the table copy as two
+  rows (`materials: material copy`, `materials: ingredient copy`); totals unchanged. Tests build a `RunMemory` of
+  `ComputeRunMemoryBytes(BuildMaterialsMemoryEstimate(...), counts, kRunOn)` first; a `no_gpu` test asking for
+  GPU buffers gets `kRunOnCallFailed` from `BuildRunMemory(kGpu, ...)`.
 - **Memory estimate entries (plan decision, `plan-decisions.md`: `sizeof`).** All `where = kRunOn`, names start
   `materials: `. Per-particle rows are `kGivenCount` from `max_particle_counts` (the counts the buffers are
   built at): internal force `sizeof(Mat3)` (72) over materials with internal force; friction 8, own motion
@@ -282,13 +295,16 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
 
 **Kind:** mechanical
 
+**Amended 2026-11-15 (reconcile item 31):** `kOutOfMemory` moves after `kRunOnCallFailed`; new test `MaterialsError, OutOfMemory_IsTheLastValue`.
+
 **Files:**
 - Create in `native/fluidity/materials/`: `materials_error.h`, `materials_message.h`, `materials_message.cc`,
   `materials_message_test.cc`, `CMakeLists.txt` (or the per-module list the earlier modules use)
 - Modify: the CMake file that lists module folders
 
 **Interfaces:**
-- Produces design 3: `MaterialsError` (all sixteen values), `MaterialsFailure`, `ToMessage`, `ToName`.
+- Produces design 3: `MaterialsError` (all sixteen values, `kOutOfMemory` last; amended 2026-11-15, reconcile
+  item 31), `MaterialsFailure`, `ToMessage`, `ToName`.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
 
@@ -296,6 +312,8 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
   TEST(ToName, EveryValue)          // design 7: each of the 16 values -> lower snake case without k, all distinct:
                                     // kBadExportName -> "bad_export_name", kStepTooLong -> "step_too_long",
                                     // kRunOnCallFailed -> "run_on_call_failed"
+  TEST(MaterialsError, OutOfMemory_IsTheLastValue)  // amended 2026-11-15 (reconcile 31): static_assert value 15,
+                                    // kRunOnCallFailed 14; ToName "out_of_memory"
   TEST(ToMessage, EveryValue_IsNonEmptyAndDistinct)
   TEST(MaterialsFailure, Default_IsNoneWithZeros)
   ```
@@ -727,6 +745,8 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
 
 **Amended 2026-11-14 (Foundation as built):** private `compute_internal_forces_gpu.h` (not `_gpu_calls.h`); the CPU loop calls the per-particle function of the new shared `compute_internal_forces_steps.h`; the table copies are written from `material_buffers_cpu.cc`; builders also map `RunOnCallStatus` through `ToBufferError`.
 
+**Amended 2026-11-15 (A58; reconcile item 31):** `BuildMaterialBuffers` takes `RunMemory& run_memory` last; one estimate row per buffer; `kRunMemoryTooSmall` also gives `kOutOfMemory`; new tests `BuildMaterialBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` and `BuildMaterialBuffers, RunMemoryOnePieceShort_IsOutOfMemory`.
+
 **Files:**
 - Create: `material_buffers.h`, `material_buffers_cpu.cc`, `material_buffers_test.cc`,
   `compute_internal_forces.h`, `compute_internal_forces_cpu.cc`, `compute_internal_forces_gpu.h` (private),
@@ -741,7 +761,8 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
   files): per material a sound-bound `Buffer<double>` and an error-code `Buffer<std::uint8_t>`; a
   `Buffer<InternalForceTotals>` of `max_cell_blocks`; `Buffer<Material>` and `Buffer<Ingredient>` copies of the
   table; a result record (lowest failing id, largest bound per material, case counts) that the GPU halves write by
-  integer atomics. Builders map `BufferError::kOutOfMemory` to `kOutOfMemory` (magnitude = bytes asked)
+  integer atomics. Builders map `BufferError::kOutOfMemory` and `kRunMemoryTooSmall` (amended 2026-11-15, A58) to
+  `kOutOfMemory` (magnitude = bytes asked)
   and `kRunOnCallFailed` to `kRunOnCallFailed`; a GPU half's `RunOnCallStatus` goes through `ToBufferError` first.
   `BuildMaterialBuffers` writes the `Material` and `Ingredient` copies with `WriteBuffer` from
   `material_buffers_cpu.cc` (no `.cu` file: nothing of it runs on the GPU).
@@ -757,6 +778,11 @@ Load `drawing-with-cetz`; use `figure_style.typ`.
       // entries 0 and 1 null, 2 and 3 not null; friction and own_motion_shares not null for all four
   TEST(BuildMaterialsMemoryEstimate, AllKinds_BytesFromSizeof)   // counts {100,50,20,10}, MemoryCounts{cell_blocks 10}:
       // 72*30 + (8+16+8+1)*180 + 24*10 + 4*sizeof(Material) + 5*sizeof(Ingredient); static_assert sizes
+  TEST(BuildMaterialBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)  // amended 2026-11-15 (A58): AllKinds,
+      // counts {100,50,20,10}, 10 blocks: BuildRunMemory(kCpu, ComputeRunMemoryBytes(BuildMaterialsMemoryEstimate(
+      // ...), counts, kRunOn)), BuildMaterialBuffers into it: handed_out_bytes() == reserved_bytes(), exact
+  TEST(BuildMaterialBuffers, RunMemoryOnePieceShort_IsOutOfMemory)  // (A58; GTEST_SKIP in debug builds) block
+      // 256 B short: kOutOfMemory, magnitude = the failing piece's bytes
   TEST(ComputeInternalForces, SpringyStretched_ForceIsNotTimesVolumeRatio)   // Review Focus 1: F = diag(1.2,1,1),
       // volume_ratio 1.2: buffer entry == ComputeSpringySolidForcePerArea(F) bit for bit
   TEST(ComputeInternalForces, NothingWithInternalForce_LimitIsInfinity)      // liquid only
@@ -811,7 +837,7 @@ shared-formula GPU runner follows Foundation's `shared_math_test_gpu.h/.cu` spli
   // on the Task 15 scenes: forces, bounds and error codes equal the CPU loop's bit for bit (same functions, one
   // processor); the reduced lowest failing id and largest bound per material equal the CPU loop's
   // materials_no_gpu_test.cc, label no_gpu (every later GPU task adds its own line here)
-  TEST(BuildMaterialBuffers, GpuWithoutAGpu_IsRunOnCallFailed)
+  TEST(BuildMaterialBuffers, GpuWithoutAGpu_IsRunOnCallFailed)  // amended A58: stops at BuildRunMemory(kGpu, ...)
   TEST(ComputeInternalForces, GpuWithoutAGpu_IsRunOnCallFailed)
   // compute_internal_forces_gpu_test.cc, label gpu
   TEST(ComputeInternalForces, OnGpu_MatchesCpuOnEveryTaskFifteenScene)   // Global Constraints tolerances

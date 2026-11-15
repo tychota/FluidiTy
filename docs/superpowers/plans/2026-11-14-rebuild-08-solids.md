@@ -8,7 +8,10 @@ map and its transpose for pressure, the blocking-material faces the liquid press
 material band and free-solid inputs of the viscous solve and their write-back (A26, A27), contact
 reactions summed per solid, `CollideSolids` between material sets
 and at solids, `DriveWaves`, plate sides and cut work, and the exchange check, on the CPU and (compiled, not
-run) on the GPU.
+run) on the GPU. Owner answers of 2026-11-15 (`plan-decisions.md` "Owner answers A40-A64 applied"): A59 (Tasks 5a,
+6, 11a, 20, 23c) guides in general form, rails and hinges; A60 (Tasks 23d, 36a) the force of the liquid on every
+solid; A53 (Tasks 3, 9, 10) a slip length per solid; A58 (Task 13) every buffer a piece of the run's reserved memory;
+reconcile item 31 (Task 3) `kOutOfMemory` is the last error value.
 
 **Architecture:** Folder `native/fluidity/solids/`, namespace `fluidity::solids`. `Solids` and `SolidsTry` live
 in CPU memory on both processors; each per-place operation has one public CPU-only header and private
@@ -150,11 +153,18 @@ Solids' own constraints (values from the design; never change one without the ow
 - **Plan decisions used by several tasks** (each declared in the task named):
   1. `pressure::FreeSolidPush::solid_index` is the index of the free solid among the free solids of
      `SolidsTry::solids()`, in that order; `ToFreeSolidInverseInertia` gives two `Mat3` per free solid in the
-     same order (Task 20).
+     same order (Task 20). **Amended 2026-11-15 (A59; the pressure plan's declaration):** replaced by
+     `std::span<const pressure::FreeSolidInertia> ToFreeSolidInertia(const MotionMap&)`, one entry per free solid in
+     `FreeSolidPush::solid_index` order, `FreeSolidInertia { double mass; Mat3 inertia_at_start; solids::AllowedMotions
+     allowed_motions; }`, `allowed_motions = ComputeAllowedMotions(limits, origin_at_start)`; `ApplyPressureToSolids`
+     calls `pressure::ComputeGuidedSolidMotion(solid, xi_before, impulse, xi_after)` (`pressure/free_solid_guide_math.h`,
+     one factor for both modules).
   2. `BuildSolidsBuffers(const SolidsSettings& settings, std::size_t max_particle_count, std::uint32_t
-     max_cell_blocks)`: the design's two-argument form cannot size per-block arrays (Task 13).
+     max_cell_blocks)`: the design's two-argument form cannot size per-block arrays (Task 13). **Amended 2026-11-15
+     (A58):** a fourth parameter `RunMemory& run_memory` last (the stage-17 instance gets the run's `cpu_run_memory`).
   3. `std::expected<SolidCoverageValues, SolidsFailure> BuildSolidCoverageValues(RunOn run_on, std::uint32_t
-     max_cell_blocks)` builds the step-owned coverage arrays (Task 13).
+     max_cell_blocks)` builds the step-owned coverage arrays (Task 13). **Amended 2026-11-15 (A58):** a third
+     parameter `RunMemory& run_memory` last.
   4. `Solids` copies its settings, path keys and blocking materials; `settings()` points into its copies
      (Task 9). `try_id = (state_version << 32) | tries_since_commit`, the counter a `mutable` member of `Solids`
      that `BuildTry` raises and `CommitTry` resets; it is not part of the state or the snapshot (Task 10).
@@ -182,6 +192,17 @@ Solids' own constraints (values from the design; never change one without the ow
      `ApplyPressureToMaterials` in stage 11. Stage 12 (`SolvePressure`, an inviscid liquid) is unchanged: the
      liquid slides, material faces are eliminated (A18), free solids enter as the rank-one term. No combination of
      materials is refused because of viscosity.
+  11. **A59, guides in general form** (Tasks 5a, 6, 11, 11a, 20, 23c; design 3.2, 3.3 `guide_math.h`, decision 17).
+     `GuideKind { kAxisLimits, kRail, kHinge }` and `FreeMotionLimits::{guide_kind, rail_direction, hinge_point,
+     hinge_axis}` (world frame); `AllowedMotions`, `ComputeAllowedMotions`; the velocity before pressure projected onto
+     the allowed motions (axis limits by selection, bitwise as before); `InverseInertia` with four blocks; the hinge
+     pose rotated about its pivot at commit; `FreeSolidForViscousSolve::allowed_motions` replaces `limits`; the
+     viscous solve keeps the motion allowed, so nothing is dropped after it.
+  12. **A60, the force of the liquid on every solid** (Tasks 23d, 34, 36a; design 3.4 `liquid_force.h`, 5.5b, decision
+     18). `LiquidForceOnSolid`, `SolidsTry::liquid_forces()`, `ViscousPushOnSolid`, `ApplyViscousImpulses` (stage 11,
+     after `ApplySolvedMotionToSolids`) storing viscosity's `viscous_push_on_solids`.
+  13. **A53, slip length** (Tasks 3, 9, 10; decision 19). `SolidSettings::slip_length`, checked here, passed on by
+     `SolidsTry::slip_length()` (0 for free solids).
 
 ## Before you start
 
@@ -306,6 +327,9 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 - Modify: the CMake file that lists module folders; `docs/glossary.md`
 
 **Interfaces:**
+- **Amended 2026-11-15 (reconcile item 31, A59, A53):** `kOutOfMemory` is and stays the last value (18 values; the
+  `ToName` test said 17, now 18); `solid_settings.h` also declares `GuideKind`, the four new `FreeMotionLimits` fields
+  and `SolidSettings::slip_length` (design 3.2).
 - Produces design 3.1 and 3.2 exactly: `SolidsError` (18 values with `kOutOfMemory`, reconcile item 25), `SolidsFailure`, `ToMessage`, `ToName`,
   `SolidMotionKind`, `PathKey`, `AfterPath`, `DrivenPath`, `FreeMotionLimits`, `FreeSolidSettings`,
   `SolidSettings`, `MaterialTheLiquidCannotEnter`, `SolidsSettings`, `kSolidReachInCells`,
@@ -314,8 +338,12 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 - [ ] **Step 1: Failing tests** (`LABEL cpu`, the shared part and the messages):
 
   ```cpp
-  TEST(ToName, EveryError_IsLowerSnakeCaseWithoutK)  // all 17; kPlateTooThinForLiquid -> "plate_too_thin_for_liquid",
+  TEST(ToName, EveryError_IsLowerSnakeCaseWithoutK)  // all 18 (amended 2026-11-15; was "17");
+                                                     // kPlateTooThinForLiquid -> "plate_too_thin_for_liquid",
                                                      // kRunOnCallFailed -> "run_on_call_failed"; all distinct
+  TEST(SolidsError, OutOfMemory_IsTheLastValue)      // amended 2026-11-15 (reconcile item 31): == 17; exact
+  TEST(SolidSettings, GuideAndSlipDefaults_AsDeclared)  // amended 2026-11-15 (A59, A53): guide_kind kAxisLimits,
+      // rail_direction and hinge_axis {0, 0, 1}, hinge_point 0, slip_length 0; exact
   TEST(ToMessage, EveryError_IsDistinctAndNotEmpty)
   TEST(SolidsFailure, Default_HasNoIds)              // error kNone, solid_id 0, particle_id 0, face == grid::kNoIndex
   TEST(SolidsSettings, Defaults_AsDeclared)          // gravity {0,0,-9.81}, max_travel_in_cells 0.5, 1u << 20
@@ -325,7 +353,8 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 - [ ] **Step 4: Glossary rows** (`| Say | Plain meaning | Never say |`): `fixed`, `driven`, `free` (never
   "rigid body", "prescribed", "animated obstacle"), `own axes`, `push` (N s; never "impulse"), `turning_push`
   (never "angular impulse"), `motion map`, `corner owner`, `blocking material`, `wave paddle` (never "piston"),
-  `driven_work`, `flow_work`, `swept_volume`, `cut_work`, `plate`.
+  `driven_work`, `flow_work`, `swept_volume`, `cut_work`, `plate`; amended 2026-11-15: `guide`, `rail`, `hinge`,
+  `allowed motions` (A59), `slip length` (A53), `liquid force` (A60).
 - [ ] **Step 5: Run** the gate. **Commit.** Subject: `Add the solids module's errors and settings`.
 
 ### Task 4: Orientation and the rotation vector
@@ -390,6 +419,56 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** with `shared_mass` (design 9). **Step 4: Run** the gate.
 - [ ] **Step 5: Commit.** Subject: `Add the contact rule between two materials`.
 
+### Task 5a: Guides as allowed motions
+
+**Amended 2026-11-15 (A59):** new task (`plan-decisions.md` "Owner answers A40-A64 applied" item 5; design 3.3
+`guide_math.h`, decision 17). Before Task 6, which uses it.
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/solids/guide_math.h`, `guide_math_test.cc`
+- Modify: `native/fluidity/solids/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: Task 3 (`FreeMotionLimits`, `GuideKind`), Task 4 (`Orientation`, `ComputeTurnedOrientation`),
+  `contact::SolidMotion`, `math::Cross`, `math::Dot`, `math::Rotation`.
+- Produces design 3.3 `AllowedMotions`, `ComputeAllowedMotions` (decided, plan-decisions) and the plan decisions
+  `ComputeAllowedVelocity`, `ComputePoseAfterStep`, all `FLUIDITY_CPU_AND_GPU`, C++20 subset, no allocation, no FMA.
+- **Amended 2026-11-15 (pressure's declaration):** `guide_math.h` is header-only (shared): pressure includes it for
+  `AllowedMotions`, and pressure Task 47a (`pressure/free_solid_guide_math.h`, `FreeSolidInertia`,
+  `ComputeGuidedSolidMotion`, `ComputeGuidedInverseMass`) is scheduled right after this task, before Task 6.
+  `ComputeAllowedVelocity` (declared in `guide_math.h`) is defined in Task 6's `solid_dynamics.h`, which includes
+  pressure's header, so `guide_math.h` itself includes no pressure header.
+- **Plan decisions:** `ComputeAllowedVelocity` for kRail and kHinge is `pressure::ComputeGuidedSolidMotion` with a
+  zero impulse (one formula); for kAxisLimits it is the selection. `ComputePoseAfterStep` for kHinge turns `o - p` with
+  `math::Rotation(a * theta)` and the orientation with `ComputeTurnedOrientation(start, a * theta)`, `theta = dt (Omega
+  . a)`; for kRail `origin += dt (V . d) d`.
+
+- [ ] **Step 1: Failing tests** (`LABEL cpu`):
+
+  ```cpp
+  TEST(ComputeAllowedMotions, AxisLimits_GiveSelectionColumns)  // z only, no turning: column_count 1, column e_3;
+      // x, y and turning: 5 columns e_1, e_2, e_4, e_5, e_6; unguided: the identity, 6; every entry exactly 0 or 1
+  TEST(ComputeAllowedMotions, RailAndHinge_GiveOneColumn)  // rail d = (cos 30, 0, sin 30): [d; 0] exact; hinge a = e_y
+      // through p = o + (0, 0, 0.5): [a x (o - p); a] = [(-0.5, 0, 0); e_y] within 1e-16
+  TEST(ComputeAllowedVelocity, AxisLimits_SetsForbiddenToZeroBitwise)  // z only: V (1, 2, 3), Omega (4, 5, 6) ->
+      // V (0, 0, 3), Omega 0; the kept component's bits unchanged
+  TEST(ComputeAllowedVelocity, Hinge_KeepsOnlyTheTurnAboutTheAxis)  // box 0.1 m, 1 kg (I_cm = 1/600 kg m2 each
+      // axis), hinge 0.5 m above the centre about y, motion V (1, 2, 3), Omega (0.1, 0.2, 0.3): result q * [(-0.5, 0,
+      // 0); e_y] with q = (1 * (-0.5) * 1 + (1/600) * 0.2) / (0.25 + 1/600); 1e-15 relative
+  TEST(ComputeAllowedVelocity, Rail_KeepsSpeedAlongTheRail)  // d = (cos 30, 0, sin 30), V (1, 0, 0), Omega (1, 1, 1):
+      // V = (V . d) d, Omega 0; 1e-15 relative
+  TEST(ComputePoseAfterStep, Hinge_KeepsPivotDistance)  // the hinge above, turn rate 1 rad/s about y, dt 1e-3,
+      // 10,000 calls: |o - p| == 0.5 within 1e-12 m; the orientation equals ComputeTurnedOrientation of the summed
+      // angle within 1e-12
+  TEST(ComputePoseAfterStep, Rail_MovesAlongTheRailOnly)  // d as above, V (1, 2, 3): origin moves by dt (V . d) d;
+      // distance off the rail line 0 within 1e-15 m; orientation bytes unchanged
+  ```
+- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4: Run** the gate. **Commit.** Subject: `Add guides as
+  allowed motions: axis limits, rails and hinges`. New names: `GuideKind` fields, `AllowedMotions`,
+  `ComputeAllowedMotions` (reason "A59"), `ComputeAllowedVelocity`, `ComputePoseAfterStep` (plan decisions).
+
 ### Task 6: Free-solid formulas
 
 **Kind:** numerics
@@ -402,6 +481,13 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 **Interfaces:**
 - Consumes: Task 4. Produces design 3.3 `InverseInertia`, `ComputeInverseInertia`,
   `ComputeVelocityBeforePressure`, `ComputeMotionAfterPush` (shared). `ComputeDrivenMotion` comes in Task 7.
+- **Amended 2026-11-15 (A59):** consumes Task 5a and pressure's `free_solid_guide_math.h`
+  (`ComputeGuidedSolidMotion`, `ComputeGuidedInverseMass`; one formula for the guided inverse mass, owned by
+  pressure). `InverseInertia` has the four blocks of `J (J^T M J)^-1 J^T` (`linear_per_turning_push`, `turning_per_push`
+  new; used for the contact push at commit); `ComputeInverseInertia(settings, orientation, Vec3 origin)` (kAxisLimits
+  and unguided by the old formula, so their bytes do not change; kRail and kHinge by `ComputeGuidedInverseMass`);
+  `ComputeVelocityBeforePressure` ends with `ComputeAllowedVelocity` (replaces "forbidden motions set to zero", which
+  it equals bitwise for axis limits); `ComputeMotionAfterPush` adds all four blocks.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
 
@@ -409,6 +495,11 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
   TEST(ComputeInverseInertia, GuidedAlongZ_OnlyZMoves)     // design 7: limits z only: every row of per_mass
                                                            // but zz, and all of per_turning_inertia, zero; exact
   TEST(ComputeInverseInertia, TurnedSolid_IsRotatedDiagonal)  // R diag(1/I) R^T, R from a random orientation; 1e-15
+  TEST(ComputeInverseInertia, Hinge_IsOneColumnOverGeneralizedMass)  // amended 2026-11-15 (A59): Task 5a's hinge:
+      // the four blocks of J J^T / (m l^2 + I_cm), l 0.5; turning_per_push == transpose of linear_per_turning_push
+      // (bytes); 1e-15 relative
+  TEST(ComputeMotionAfterPush, HingedPush_StaysOnTheHinge)  // amended 2026-11-15 (A59): random push and turning push
+      // through the hinge's InverseInertia: the change equals q [a x (o - p); a]; 1e-15 relative
   TEST(ComputeMotionAfterPush, PushOfMassTimesSpeed_AddsSpeed)
   TEST(ComputeVelocityBeforePressure, SpinAboutPrincipalAxis_KeepsAngularVelocity)  // exact
   TEST(ComputeVelocityBeforePressure, NotFiniteVelocity_IsNotFinite)
@@ -501,6 +592,12 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
   TEST(BuildSolids, IdsNotAscending_IsBadInput)
   TEST(BuildSolids, CallerSpansFreed_SettingsStillReadable)        // the keys' vector destroyed after the call
   TEST(ComputeSolidsSummary, TurnedBoxAndPlate_FlagsSet)           // has_inclined_solid, has_plate, plate_id
+  // Amended 2026-11-15 (A59, A53): CheckSolidsCanRun also reports a free solid's guide direction or axis that is not
+  // finite or whose length differs from 1 by more than 1e-12 (kBadInput, that solid_id), and a slip_length that is
+  // negative or NaN (kBadInput); +infinity is accepted. A slip length on a free solid is not an error here (I/O's
+  // check gives the NOTE slip_ignored_on_free_solid).
+  TEST(CheckSolidsCanRun, BadGuideOrSlipLength_IsBadInput)  // rail_direction length 1.1; hinge_axis NaN; slip_length
+      // -1; slip_length NaN: four kBadInput entries in solid_id order; a fifth solid with slip_length +infinity: none
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4: Run** the gate. **Commit.** Subject:
   `Add the scene's solids and their scene checks`.
@@ -515,6 +612,12 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 **Interfaces:**
 - Consumes: Tasks 4, 6, 7, 9; `contact::Solid`, `ToSolid`, `ComputeSolidPose`, `ComputeDistanceToSolid`,
   `kMaxTurnPerStep`. Produces `SolidsTry`, `BuildTry`, `ComputeStepDurationLimit`; Plan decision 4 (`try_id`).
+- **Amended 2026-11-15 (A59, A53):** a free solid's velocity before pressure is projected onto its allowed motions
+  (inside `ComputeVelocityBeforePressure`, Task 6); `SolidsTry::inverse_inertia()` holds the four blocks at the start
+  pose (`ComputeInverseInertia(settings, orientation, origin)`); `SolidsTry::slip_length()` (design 3.4; one per
+  `solids()` entry, `SolidSettings::slip_length`, 0 for free solids) is filled here. Test
+  `BuildTry, SlipLengths_OnePerSolidFreeIsZero` (a fixed tank 0.001 m, a driven plate +infinity, a free box 0.5:
+  {0.001, +infinity, 0}; exact).
 - **Plan decisions:** travel radius is the half diagonal `|half_size|` of a box and 0 otherwise; a free solid's
   limit in `ComputeStepDurationLimit` uses its committed velocities; `BuildTry` checks velocity before pressure;
   `kSolidsTooClose` when a free solid's distance to another solid (sampled at the box's 8 corners and centre
@@ -550,6 +653,9 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
 **Interfaces:**
 - Produces `CommitTry`, `RejectTry`; Plan decision 5 (state version). Totals stay empty until Tasks 21 and 28
   fill the try.
+- **Amended 2026-11-15 (A59):** design 5.3 step 4 uses `ComputePoseAfterStep` (Task 5a): a hinged pose rotates about
+  its pivot (the hinge's position correction), a rail pose moves along `d` only, axis limits and unguided as before
+  (same bytes); the contact push goes through the four-block inverse inertia at the end pose.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
 
@@ -564,6 +670,35 @@ Load `typesetting-with-typst`, `typesetting-documents` and `drawing-with-cetz` f
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** design 5.3 step 4 with `// Step N:` comments.
 - [ ] **Step 4: Run** the gate. **Commit.** Subject: `Commit or reject a try of the solids`.
+
+### Task 11a: Guided free solids without liquid
+
+**Amended 2026-11-15 (A59):** new task; the guide tests of `plan-decisions.md` item 5 that need only `BuildTry` and
+`CommitTry`.
+
+**Kind:** integration
+
+**Files:**
+- Create: `native/fluidity/solids/guided_solid_test.cc`
+
+- [ ] **Step 1: Tests** (`LABEL cpu`; no liquid, `BuildTry` then `CommitTry` each step):
+
+  ```cpp
+  TEST(FreeSolid, TiltedRail_SlidesWithGSinTilt)  // free box 0.1 m, 1 kg, kRail with d = (cos 30, 0, sin 30)
+      // (30 degrees from horizontal), gravity {0, 0, -9.81}, from rest, dt 1e-3 s, 1000 steps: speed along the rail
+      // n dt g sin 30 = 4.905 m/s within 1e-12 relative; distance of the origin from the rail line through its
+      // start below 1e-12 m; turn rate 0 exactly
+  TEST(FreeSolid, OffOriginHinge_PendulumPeriod)  // box 0.1 m, 1 kg (I_cm 1/600 kg m2), kHinge about y through
+      // hinge_point 0.5 m above the start centre, released at 5 degrees from rest, dt 1e-3 s, 10 periods: mean
+      // period between zero crossings of the angle 2 pi sqrt((I_cm + m l^2) / (m g l)) = 1.42322 s (small angle; the
+      // 5 degree correction is 0.05 %) within 0.5 %; |o - p| - 0.5 below 1e-9 m at every step
+  TEST(FreeSolid, AxisAlignedGuides_Unchanged)  // free box guided along z (kAxisLimits), steady_force (1, 1, 0) N,
+      // gravity, dt 0.01, 100 steps: x, y velocity and every turn rate exactly 0.0; z as
+      // ComputeVelocityBeforePressure, FreeFall_GainsGTimesDt (1e-13 relative); the guided-box tests of Tasks 6, 22
+      // and 23c keep their tolerances
+  ```
+- [ ] **Step 2: Run.** A failure is fixed in Task 5a, 6 or 11. **Step 3: Gate; commit.** Subject: `Test a free solid
+  on a rail and on a hinge`.
 
 ### Task 12: Snapshot, rebuild and contact solids for render output
 
@@ -606,6 +741,17 @@ plan Appendix A rows M9, M10).
 
 **Amended 2026-11-14 (Foundation as built):** `SolidsBuffers` owns an `OrderBuffers` and a copy of the try's
 contact solids for the GPU halves, with their rows, and holds the one mapping `ToSolidsFailure`.
+
+**Amended 2026-11-15 (A58; plan-decisions item 3 and its same-day correction):** `BuildSolidsBuffers(settings,
+max_particle_count, max_cell_blocks, RunMemory& run_memory)` and `BuildSolidCoverageValues(run_on, max_cell_blocks,
+RunMemory& run_memory)`: every array a piece of the `RunMemory` of its processor (`BuildBuffer(run_on, size,
+run_memory)`, `BuildOrderBuffers(..., run_memory)`); the stage-17 instance (`run_on = kCpu` in a GPU run, every row
+`kCpu`) gets the run's `cpu_run_memory`; `Requires:` `run_on == run_memory.run_on()` (debug assertion, A30). One
+estimate entry per array: the combined rows below are split (solids at faces: three entries `copies 2`; coverage:
+`distance_to_solid` 8, `corner_owner` 16, `corner_velocity` 24 per corner place, `solid_normal_velocity` 8 per face
+place; blocking-material faces: the entries and the per-block counts; block partials: one entry per partial array),
+because each array is its own 256-byte-aligned piece. `ToSolidsFailure` maps `kRunMemoryTooSmall` to `kOutOfMemory`
+(magnitude the bytes asked).
 
 **Files:**
 - Create: `native/fluidity/solids/solids_buffers.h`, `solids_buffers.cc`, `solids_buffers_access.h` (private),
@@ -666,6 +812,12 @@ contact solids for the GPU halves, with their rows, and holds the one mapping `T
   TEST(BuildSolidsBuffers, ZeroBlocks_IsBadInput)
   TEST(BuildSolidsMemoryEstimate, CpuInstance_EveryRowOnCpu)   // A17: settings.run_on kCpu: every row where kCpu
   TEST(BuildSolidCoverageValues, OnCpu_HasRoomForBlocks)
+  TEST(BuildSolidsBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)  // amended 2026-11-15 (A58): 10 blocks, 1000
+      // particles, 2 blocking materials, run_on kCpu: BuildRunMemory(kCpu, ComputeRunMemoryBytes(
+      // BuildSolidsMemoryEstimate(settings) without the step-owned entries, counts, kCpu)); handed_out_bytes() ==
+      // reserved_bytes(); exact
+  TEST(BuildSolidCoverageValues, IntoRunMemory_HandsOutExactlyTheEstimate)  // amended 2026-11-15 (A58): the
+      // coverage entries alone, 10 blocks; exact
   // solids_buffers_no_gpu_test.cc, LABEL no_gpu
   TEST(BuildSolidsBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed)
   ```
@@ -928,9 +1080,13 @@ are shared per-item functions (`motion_map_steps.h`) that Task 24's GPU function
 **Interfaces:**
 - Consumes: `pressure::ComputeBlockedCornerAreas`, `pressure::ComputeEquationIndexes`, `grid::FindFacePieces`,
   `FindCornerPlaces`, `ComputeCornerPosition`. Produces `MotionMapEntry`, `MotionMap` (Plan decision 6),
-  `MotionMapInputs`, `BuildMotionMap`, `ToFreeSolidPushes` (Plan decision 1), `ToFreeSolidInverseInertia`.
+  `MotionMapInputs`, `BuildMotionMap`, `ToFreeSolidPushes` (Plan decision 1), `ToFreeSolidInverseInertia` (amended
+  2026-11-15, A59: `ToFreeSolidInertia`).
   Shared: `ComputeEntryPush(signed_corner_area, axis)` (m2) and `ComputeEntryTurning(signed_corner_area, arm,
-  axis)` (m3).
+  axis)` (m3). **Amended 2026-11-15 (A59):** `ToFreeSolidInverseInertia` is replaced by `ToFreeSolidInertia`
+  (Global Constraints decision 1, the pressure plan's `FreeSolidInertia`); pressure's term becomes `(K J)(J^T M J)^-1
+  (K J)^T` and its `solid_volume_rate` and `free_solid_motion_before_pressure` come from the guided motion before
+  pressure `J q + xi_0`.
 
 - [ ] **Step 1: Failing tests** (`LABEL cpu`):
 
@@ -940,7 +1096,9 @@ are shared per-item functions (`motion_map_steps.h`) that Task 24's GPU function
       // its pieces in the snapshot equals push_i . v + turning_i . w; 1e-13 relative
   TEST(BuildMotionMap, EntriesOrderedByCellFaceCorner)
   TEST(ToFreeSolidPushes, SortedBySolidThenEquation)
-  TEST(ToFreeSolidInverseInertia, TwoPerFreeSolid)
+  TEST(ToFreeSolidInverseInertia, TwoPerFreeSolid)   // amended 2026-11-15 (A59): replaced by
+      // TEST(ToFreeSolidInertia, OnePerFreeSolidWithAllowedMotions): two free boxes (one hinged): mass, inertia_at_start
+      // (R I R^T) and allowed_motions == ComputeAllowedMotions(limits, origin_at_start); exact
   TEST(BuildMotionMap, MoreEntriesThanBuffers_IsBuffersTooSmall)
   TEST(BuildMotionMap, CoverageOfOtherTry_IsWrongTime)
   TEST(BuildMotionMap, BlocksNotWholeGrid_IsBadInput)
@@ -956,6 +1114,12 @@ are shared per-item functions (`motion_map_steps.h`) that Task 24's GPU function
 ### Task 21: `ApplyPressureToSolids` on the CPU
 
 **Amended 2026-11-14 (A18):** it no longer stores pushes owed to blocking particles (plan decision 9).
+
+**Amended 2026-11-15 (A59, A60):** a free solid's motion after pressure is `pressure::ComputeGuidedSolidMotion(solid,
+xi_before, impulse, xi_after)` with its `FreeSolidInertia` (one factor shared with pressure); `liquid_forces()` is
+filled in Task 23d. Test `ApplyPressureToSolids, HingedBox_StaysOnTheHinge` (Task 20's scene, the box hinged about y
+through a point 0.05 m above its centre, random pressure, seed 17: the motion after pressure equals `q [a x (o - p);
+a]` for one `q`; 1e-15 relative).
 
 **Kind:** numerics
 
@@ -1268,6 +1432,11 @@ snow is only checked for not breaking, in the step's five-material scene (owner 
 **Amended 2026-11-14 (A27):** new task. Free solids beside a viscous liquid are no longer excluded: their linear
 and turning velocities are unknowns of the viscous solve. The CPU form is here; the GPU form is in Task 24.
 
+**Amended 2026-11-15 (A59):** `FreeSolidForViscousSolve` carries `AllowedMotions allowed_motions`
+(`ComputeAllowedMotions(settings.limits, origin_at_start)`) in place of `FreeMotionLimits limits` (`sizeof` 504, not
+160); decision 2's step 2 writes the solved motion as given (the viscous solve keeps it in the allowed motions), and
+decision 4 is replaced; the guided-box test is rewritten.
+
 **Kind:** numerics
 
 **Files:**
@@ -1289,12 +1458,14 @@ and turning velocities are unknowns of the viscous solve. The CPU form is here; 
      `inertia_in_own_axes`; `origin_at_start`; `velocity_before_pressure` and `turn_rate_before_pressure` equal to
      the try's motion from `BuildTry`. Row `"solids: free solids for the viscous solve"`: given
      `kMaxFreeSolidCount`, `sizeof(FreeSolidForViscousSolve)` (160, `static_assert`), on the run's processor.
+     **Amended 2026-11-15 (A59):** also `allowed_motions`; `sizeof` 504 (`static_assert`; `AllowedMotions` 344 B).
   2. `ApplySolvedMotionToSolids`, in order. Step 1: the pressure part, computed from the map and `pressure`
      exactly as `ApplyPressureToSolids` computes its push, turning push, `flow_work`, swept volume and
      `push_to_materials` (same code, block partials then tree sum), kept in the try as `ApplyPressureToSolids`
      keeps them (so `CommitTry`'s `ExchangeTotals` and `CheckSolidExchange` are unchanged). Step 2: each free
-     solid's motion becomes `motion_after_solve[k]`, except that a motion a guide forbids (`FreeMotionLimits`)
-     keeps its value before pressure. Step 3: the travel and turn limits of Task 10 are checked on the new motion
+     solid's motion becomes `motion_after_solve[k]`, ~~except that a motion a guide forbids (`FreeMotionLimits`)
+     keeps its value before pressure~~ (**replaced 2026-11-15, A59**: written as given; the solve's generalized
+     velocities never move a forbidden direction). Step 3: the travel and turn limits of Task 10 are checked on the new motion
      (`kSolidMovesTooFar`, `limit` the allowed step). Step 4: the solved push, `mass * (velocity after - before)`
      and `inertia_at_start * (turn rate after - before)`, kept in the try. Failures: a span whose size is not
      the entry count (`kBadInput`), a map of an earlier build or another try (`kWrongTime`), pressure of another
@@ -1316,9 +1487,11 @@ and turning velocities are unknowns of the viscous solve. The CPU form is here; 
      ```
      The viscous part (`push - pressure_push`) is not an `ExchangeTotals` sum; its balance is viscosity's momentum
      test.
-  4. **Guides are not carried by `FreeSolidForViscousSolve`** (the declaration has no `FreeMotionLimits`), so the
+  4. ~~**Guides are not carried by `FreeSolidForViscousSolve`** (the declaration has no `FreeMotionLimits`), so the
      solve treats a guided solid as free and step 2 drops the forbidden motions. Listed for the owner in the
-     hand-over (Task 38): viscosity should hold the forbidden motions at their value before pressure.
+     hand-over (Task 38): viscosity should hold the forbidden motions at their value before pressure.~~
+     **Replaced 2026-11-15 (A59):** the guide is carried as `allowed_motions`; viscosity solves the m generalized
+     velocities (viscosity Task 15c, amended).
 
 Test scene (built in `motion_map_test.cc`): `SceneSolids` with a fixed tank 0.4 x 0.4 x 0.4 m (id 1) and
 `AddFreeBox(2, {0.2, 0.2, 0.2}, {0.05, 0.05, 0.05}, 0.5, {1e-3, 2e-3, 3e-3})`; `BuildBoxGrid` 16 x 16 x 16 of
@@ -1346,9 +1519,12 @@ So the box's velocity before pressure is `{0, 0, -0.01962}` m/s, its turn rate 0
       // kLiquid cell centres: pressure_push, pressure_turning_push and pressure_on_solids() (push, turning_push,
       // flow_work, push_to_materials) equal ApplyPressureToSolids's on a second BuildTry of the same Solids with
       // the same pressure; bytes
-  TEST(ApplySolvedMotionToSolids, GuidedBox_ForbiddenMotionsKeepTheirValue)  // limits z only, no turning; motion
-      // {{0.01, 0.02, 0.03}, {0.1, 0, 0}}: written {{0, 0, 0.03}, {0, 0, 0}}; push {0, 0, 0.5 * (0.03 + 0.01962)}
-      // = {0, 0, 0.02481}; turning_push 0
+  // Replaced 2026-11-15 (A59): GuidedBox_ForbiddenMotionsKeepTheirValue.
+  TEST(ApplySolvedMotionToSolids, GuidedBox_MotionWrittenAsGiven)  // limits z only, no turning; motion
+      // {{0, 0, 0.03}, {0, 0, 0}} (what the viscous solve returns): written bytes; push {0, 0, 0.5 * (0.03 +
+      // 0.01962)} = {0, 0, 0.02481}; turning_push 0
+  TEST(ToFreeSolidsForViscousSolve, HingedBox_CarriesOneColumn)  // amended 2026-11-15 (A59): box 2 with kHinge
+      // about y through {0.2, 0.2, 0.25}: allowed_motions column_count 1, column [(-0.05, 0, 0); e_y]; 1e-16
   TEST(ApplySolvedMotionToSolids, FastAfterSolve_IsSolidMovesTooFar)  // velocity {0, 0, -7}: 7 * 0.002 = 0.014 >
       // 0.0125; limit 0.0125 / 7 s within 1e-15 relative; the try's motion unchanged
   TEST(ApplySolvedMotionToSolids, MotionOfOtherSize_IsBadInput)  // 0 and 2 entries for one free solid
@@ -1361,6 +1537,47 @@ So the box's velocity before pressure is `{0, 0, -0.01962}` m/s, its turn rate 0
   back`. New names: `FreeSolidForViscousSolve`, `ToFreeSolidsForViscousSolve`, `FreeSolidMotion`,
   `ApplySolvedMotionToSolids`, `SolvedMotionReport`, `SolidsTry::solved_motion`, `SolidsTry::pressure_on_solids`.
 
+### Task 23d: The force of the liquid on every solid
+
+**Amended 2026-11-15 (A60):** new task (`plan-decisions.md` "Owner answers A40-A64 applied" item 6; design 3.4
+`liquid_force.h`, 3.6 `ViscousPushOnSolid`, 5.5b, decision 18).
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/solids/liquid_force.h`, `liquid_force_test.cc`
+- Modify: `native/fluidity/solids/motion_map.h`, `motion_map_cpu.cc`, `solids_try.h`, `solids_try.cc`, `CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: Tasks 21, 23c (the pressure sums of every solid, already formed per solid of `SolidsTry::solids()`).
+- Produces design 3.4 `LiquidForceOnSolid` (in `liquid_force.h`), `SolidsTry::liquid_forces()`, design 3.6
+  `ViscousPushOnSolid` and `std::expected<void, SolidsFailure> ApplyViscousImpulses(std::span<const ViscousPushOnSolid>
+  viscous_impulse, SolidsTry& solids_try)` (CPU only), exactly.
+- **Plan decisions:** `ApplyPressureToSolids` and `ApplySolvedMotionToSolids` fill `liquid_forces()` (a copy inside
+  the try, one per `solids()` entry, ascending `solid_id`, fixed solids and the domain box included) with `pressure_force
+  = push / dt`, `pressure_torque = turning_push / dt` (about the solid's origin at the step start, as `PressureOnSolids`)
+  and viscous parts `0.0`; `ApplyViscousImpulses` (stage 11, after `ApplySolvedMotionToSolids`) sets `viscous_force =
+  viscous_impulse[i].push / dt`, `viscous_torque = turning_push / dt`. `BuildTry` and `RejectTry` leave it empty. A
+  span of another size than `solids()`: `kBadInput`; a value not finite: `kNotFinite`; try unchanged on failure. The viscous part is not an `ExchangeTotals`
+  sum (its balance is viscosity's invariant test).
+
+- [ ] **Step 1: Failing tests** (`LABEL cpu`; Task 23c's scene):
+
+  ```cpp
+  TEST(ApplyViscousImpulses, LiquidForces_PartsOverStepDuration)  // p = 1000 * 9.81 * (0.3 - z) at kLiquid
+      // centres through ApplySolvedMotionToSolids, then ApplyViscousImpulses with tank {(1e-3, 0, 0), 0}, box {(0, 2e-3, 0), (0, 0, 1e-4)}: liquid_forces() has
+      // two entries (ids 1, 2); pressure parts == pressure_on_solids() push and turning push / 0.002; viscous parts
+      // == the hand values / 0.002 (the test's own expressions, exact)
+  TEST(ApplyPressureToSolids, LiquidForces_ViscousPartsZero)  // the same pressure: viscous parts 0.0; pressure parts
+      // equal the first test's (bytes)
+  TEST(ApplyViscousImpulses, OtherSize_IsBadInput)   // one entry for two solids: kBadInput, liquid_forces() unchanged
+  TEST(ApplyViscousImpulses, NotFinite_IsNotFinite)  // push.x NaN: kNotFinite, liquid_forces() unchanged
+  TEST(BuildTry, LiquidForces_Empty)
+  ```
+- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4: Run** the gate. **Commit.** Subject: `Report the
+  force of the liquid on every solid`. New names: `LiquidForceOnSolid`, `SolidsTry::liquid_forces`,
+  `ViscousPushOnSolid`, `ApplyViscousImpulses` (reason "A60").
+
 ### Task 24: The motion map on the GPU
 
 **Amended 2026-11-14 (A31):** working memory is named buffers (`OrderBuffers order_buffers`, `TransferBuffers`); each base order, prefix sum and grouping has one form, which takes its buffers.
@@ -1369,6 +1586,11 @@ So the box's velocity before pressure is `{0, 0, -0.01962}` m/s, its turn rate 0
 
 **Amended 2026-11-14 (A26, A27):** adds the GPU forms of Tasks 23a, 23b and 23c: `BuildViscousMaterialFaces`,
 `ApplyViscousSolveToMaterials`, the free-solid list `BuildMotionMap` fills, and `ApplySolvedMotionToSolids`.
+
+**Amended 2026-11-15 (A59, A60):** the free-solid list sent is at most 16 x 504 B (with `allowed_motions`); the four
+inverse-inertia blocks are computed on the CPU from the try and sent with the list; `ApplySolvedMotionToSolids`'
+new steps (liquid forces from the pressure sums read back and the viscous span, which is already in CPU memory)
+run on the CPU; `ApplySolvedMotionToSolids, OnGpu_EqualsCpu` also compares `liquid_forces()` (design 6).
 
 **Kind:** device
 
@@ -1721,7 +1943,8 @@ that the GPU function wraps and a `cpu` test runs over every thread block and th
       // every stage call of this module in step order (shared-interface e), then RejectTry: ReadSnapshot bytes
       // equal those before. Amended 2026-11-14 (A26, A27): run twice, once with the stage 12 calls and once
       // with the stage 11 calls (BuildViscousMaterialFaces, ToFreeSolidsForViscousSolve, ApplySolvedMotionToSolids
-      // and ApplyViscousSolveToMaterials with hand-filled solved values)
+      // and ApplyViscousSolveToMaterials with hand-filled solved values). Amended 2026-11-15 (A59, A60): the free box
+      // hinged, hand-filled viscous pushes; liquid_forces() is a try copy, gone with the try
   TEST(CommitTry, Totals_AddedOnCommitOnly)
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** design 5.10. **Step 4: Run** the gate. **Commit.** Subject:
@@ -1751,6 +1974,9 @@ tests through `LINKS`.
   run), `std::expected<LiquidLoopStep, SolidsFailure> RunStep()`, and `LiquidLoopStep { SolidsSnapshot solids;
   PressureOnSolids pressure; ContactOnSolids contact; ExchangeReport exchange; Vec3 liquid_momentum;
   Vec3 liquid_turning_momentum; double filled_volume_above(double height) const; }` (copies of the values).
+  **Amended 2026-11-15 (A60, A58):** `LiquidLoopStep` gains `std::vector<LiquidForceOnSolid> liquid_forces` (the
+  committed try's); the loop builds one CPU `RunMemory` from the summed estimates of the arrays it builds and passes it
+  to every builder.
 - One step, in this order: `BuildTry`; `ComputeSolidsAtFaces` (0), `ComputeSolidCoverage`,
   `FindGridEdgesOpenToSky`; `ParticlesToGrid`, `SaveGridBeforeForces` (each taking one `TransferBuffers`
   built with the loop); gravity on `kFromParticles` Z faces;
@@ -1815,6 +2041,28 @@ The tank is `AddTank(id 1, ..., kDriven)` (never moves; its reactions are report
   its line to `docs/known-open-physics.md` (name, what it measures, decision 4 of the design).
 - [ ] **Step 3: Gate; commit.** Subject: `Test the swept volume and a plate that leaves`.
 
+### Task 36a: Scene test, buoyancy on a fixed box at rest
+
+**Amended 2026-11-15 (A60):** new task; the pressure-only test of `plan-decisions.md` item 6 (the other three are
+viscosity Tasks 15e and 15g).
+
+**Kind:** integration
+
+**Files:**
+- Modify: `native/fluidity/solids/solids_scene_test.cc`
+
+- [ ] **Step 1: Test** (`LABEL cpu`):
+
+  ```cpp
+  TEST(LiquidForce, BuoyancyAtRest_IsRhoGV)  // LiquidLoop: fixed tank 0.2 x 0.2 x 0.25 m (id 1), water 0.2 m deep at
+      // rest, a fixed box of side 0.1 m (id 2) centred at {0.1, 0.1, 0.1} (fully submerged), w 0.00625 (16 cells per
+      // box side), one step of 0.002 s: liquid_forces() of the box: pressure_force z == rho g V = 1000 * 9.81 * 1e-3
+      // = 9.81 N within 2 % (first order in w, as ApplyPressureToSolids, Hydrostatic_PushIsWeightOfDisplacedLiquid);
+      // x and y components below 2 % of 9.81 N (0 by symmetry up to the particle seeding); viscous parts exactly
+      // 0.0 (inviscid)
+  ```
+- [ ] **Step 2: Run.** **Step 3: Gate; commit.** Subject: `Test the buoyancy reported on a submerged box`.
+
 ### Task 37: Comparison with the proof of concept
 
 **Amended 2026-11-14 (A31):** the old numbers are produced in a temporary directory.
@@ -1843,6 +2091,12 @@ The tank is `AddTank(id 1, ..., kDriven)` (never moves; its reactions are report
 **Amended 2026-11-14 (A26, A27):** the design check also records plan decision 10, the decisions of Tasks 23a,
 23b and 23c (the band rule, every free solid listed, `SolvedMotionReport` and the two `SolidsTry` accessors, guides
 dropped after the solve), and lists the guide question for the owner (Task 23c decision 4).
+
+**Amended 2026-11-15 (A53, A58, A59, A60, reconcile item 31):** the design check also records plan decisions 11 to
+13 and Tasks 5a, 11a, 23d, 36a; the guide question of Task 23c decision 4 is answered by A59 (replaced); the four
+`Mat3` per free solid that pressure takes; `ComputeAllowedVelocity`, `ComputePoseAfterStep` and the two
+`InverseInertia` coupling blocks (plan decisions); `SolidsTry::slip_length()`; `RunMemory` in the two builders and one
+estimate entry per array; `kOutOfMemory` last (18 values). `docs/gpu-runs.md` is unchanged in its list.
 
 **Kind:** mechanical
 

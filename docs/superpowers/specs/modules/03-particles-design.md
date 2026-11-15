@@ -21,7 +21,7 @@ table.
 
 Does not own: particle-to-grid and grid-to-particle exchange (transfer); what a deformation means (materials);
 where sources are and how many particles they give per step (step, I/O); when liquid moves between the particle
-region and the grid-only region, when the cells are resized and how batches are cut (cell resize and batches);
+region and the grid-only region (not in the first version, A64: every liquid cell holds particles), when the cells are resized and how batches are cut (cell resize and batches);
 file formats and the playback writers (I/O, render output); which gas markers are needed (gas); blob ids
 (pressure, surface: see section 9).
 
@@ -163,8 +163,10 @@ enum class ParticlesError : std::uint8_t {
   kMergeTooSpread,          // Merge: the particles are too far apart; merging could add energy.
   kArrayPartlyWritten,      // CommitTry: an array was changed for some cell blocks only.
   kTryInProgress,           // BuildTry while another try of the same particles is alive.
-  kOutOfMemory,             // An allocation failed. Nothing changed.
   kRunOnCallFailed,         // CheckCanRunOn failed for the chosen processor, or a call to it failed.
+  kOutOfMemory,             // Changed (reconcile item 31): moved to the last place. A building function (or
+                            // ComputeAmounts' one-call GPU memory, the accepted exception) could not get its
+                            // memory; magnitude = bytes asked. Nothing changed.
 };
 std::string_view ToMessage(ParticlesError error);
 // NEW (2026-11-14). The enumerator's name without the k, in lower snake case ("merge_too_spread"). The stable
@@ -224,18 +226,22 @@ class Particles {
   std::size_t particle_count(std::size_t material_index) const;
 };
 
-// Allocates every array at its limit. kBadInput, kOutOfMemory, kRunOnCallFailed. On failure nothing stays
-// allocated.
-std::expected<Particles, ParticlesFailure> BuildParticles(const ParticlesSettings& settings);
+// Allocates every array at its limit. kBadInput, kOutOfMemory, kRunOnCallFailed. Changed (A58): every array is a
+// piece of run_memory, the RunMemory of settings.run_on (in a GPU run, CPU particles get the run's cpu_run_memory,
+// built with settings.cpu_memory). Requires: settings.run_on == run_memory.run_on() (debug assertion). On failure
+// no Particles is returned; the pieces already taken stay in the block (a piece is never freed alone).
+std::expected<Particles, ParticlesFailure> BuildParticles(const ParticlesSettings& settings, RunMemory& run_memory);
 // Not inside a try (kTryInProgress). max_particle_counts: one per material, each at least the current count;
 // max_cell_blocks: at least settings' current value (so at least the committed grouping's block count).
 // Reallocates the particle arrays and the per-block tables (group_begin, cell_begin, written marks, loaded
 // block origin) at the new limits and copies the committed values. kBadInput, kOutOfMemory, kRunOnCallFailed;
 // on failure the particles are unchanged and usable. (plan-decisions "Particles": takes max_cell_blocks, so
-// step::ApplyLimits raises the grid limit and the particles' block limit in one call.)
+// step::ApplyLimits raises the grid limit and the particles' block limit in one call.) Changed (A58): the new
+// arrays are pieces of run_memory, the new block step::ApplyLimits reserved for the whole new plan; the old arrays
+// free nothing (their block is freed whole by the step). Requires: particles.run_on() == run_memory.run_on().
 std::expected<void, ParticlesFailure> ApplyParticleLimits(Particles& particles,
                                                           std::span<const std::size_t> max_particle_counts,
-                                                          std::uint32_t max_cell_blocks);
+                                                          std::uint32_t max_cell_blocks, RunMemory& run_memory);
 ParticleFields BuildFieldsToRead(const Particles& particles, std::size_t material_index,
                                  grid::CellBlockRange cell_blocks);
 // Checks every committed value of the given cell blocks: finite, positive where required, fractions sum to 1
@@ -307,11 +313,14 @@ std::expected<void, ParticlesFailure> CheckGrouping(const ParticlesTry& particle
 `add_particles.h`, `remove_particles.h`, `split_particle.h`, `merge_particles.h`, `adjust_particle_count.h`.
 
 ```cpp
-enum class AddReason : std::uint8_t { kFromSource, kRefillRegion };  // DECIDED.
+// DECIDED. kRefillRegion (kept, A64): material already counted on the grid, not new: gas markers added by
+// gas::FindMarkerChanges (first version) and, later, liquid handed over by a grid-only region.
+enum class AddReason : std::uint8_t { kFromSource, kRefillRegion };
 enum class RemoveReason : std::uint8_t {
   kLeftDomain,
   kThroughOutlet,
-  kIntoGridOnlyRegion,
+  kIntoGridOnlyRegion,  // Not in the first version (A64): no caller until the later group; kept so the values
+                        // after it keep their numbers.
   kMarkerNotNeeded,  // NEW (2026-11-14, A10). A gas marker gas::FindMarkerChanges no longer wants.
 };
 
@@ -353,17 +362,18 @@ std::expected<RemoveParticlesResult, ParticlesFailure> RemoveParticles(
 
 // What "complete neighbourhood" (5.4) needs besides the grid, for one grid version. Raw arrays on the
 // simulation's processor, indexed by grid::FacePlaceIndex and grid::CellPlaceIndex of that grid. A null pointer
-// means "no solid in the scene" or "every cell is in the particle region". The caller passes the arrays of
-// transfer::SolidsAtFaces and the region array of the cell resize design for that grid; this module includes neither header.
+// means "no solid in the scene". The caller passes the arrays of transfer::SolidsAtFaces for that grid; this
+// module includes no transfer header.
 struct NeighbourhoodInputs {
   const std::uint8_t* outside_solid = nullptr;         // 0 when the face centre is inside a solid.
   const contact::PlateSide* face_side = nullptr;       // Plate side of the face centre.
-  const std::uint8_t* is_grid_only_region = nullptr;   // 1 for a cell of the grid-only region.
+  // Not in the first version (A64): const std::uint8_t* is_grid_only_region (1 for a cell of the grid-only
+  // region), added by the later group "Deep liquid without particles" with the cell resize design's region array.
 };
 enum class Neighbourhood : std::uint8_t { kComplete, kIncomplete };
-// Shared (split_and_merge_math.h). kComplete when the active cell containing `position` has `size_level`, no
-// cell touching it is grid-only, and on each axis grid::ComputeNearbyFaceWeights with the mask "outside_solid
-// and face_side == side" returns is_complete.
+// Shared (split_and_merge_math.h). kComplete when the active cell containing `position` has `size_level` and on
+// each axis grid::ComputeNearbyFaceWeights with the mask "outside_solid and face_side == side" returns is_complete.
+// (Not in the first version, A64: "and no cell touching it is grid-only".)
 FLUIDITY_CPU_AND_GPU Neighbourhood FindNeighbourhood(
     const grid::GridTables& tables, const NeighbourhoodInputs& inputs, Vec3 position, std::uint8_t size_level,
     contact::PlateSide side);
@@ -433,7 +443,8 @@ MergedParticle ComputeMergedParticle(const OneParticle* particles, int particle_
 struct RefillCell {
   Vec3 cell_center{};
   double cell_width = 0;           // m.
-  double current_volume = 0;       // m3: what the grid-only region hands over.
+  double current_volume = 0;       // m3: the volume the cell's particles hold (seeding a cell; the grid-only
+                                   //   region's hand-over is not in the first version, A64).
   double density = 0;              // kg/m3.
   double volume_ratio = 1;         // At the cell centre.
   Vec3 velocity{};                 // m/s, at the cell centre.
@@ -493,9 +504,11 @@ std::expected<ParticlesSnapshot, ParticlesFailure> ReadSnapshot(const Particles&
 // saved active cells). Accepts only a full snapshot whose materials match settings (kBadInput, kWrongFields) and
 // whose order is the grouping of position_when_grouped on grid (kGroupingStale). Rebuilds group_begin and
 // cell_begin; every value, id and next_particle_id is restored to the byte.
+// Changed (A58): arrays are pieces of run_memory, as BuildParticles.
 std::expected<Particles, ParticlesFailure> BuildParticlesFromSnapshot(const ParticlesSettings& settings,
                                                                     const ParticlesSnapshot& snapshot,
-                                                                    const grid::StaggeredGrid& grid);
+                                                                    const grid::StaggeredGrid& grid,
+                                                                    RunMemory& run_memory);
 // The memory estimate entries BuildParticles allocates from. The sizing estimate reads the same entries (6.4).
 // NEW (2026-11-14) name, was BuildMemoryEstimate ("every design": Build<Module>MemoryEstimate).
 std::vector<MemoryEstimateEntry> BuildParticlesMemoryEstimate(const ParticlesSettings& settings);
@@ -565,6 +578,14 @@ std::expected<void, BufferError> BuildStableOrder(const Buffer<std::uint64_t>& k
 std::expected<double, BufferError> ComputeTreeSum(const Buffer<double>& values, std::size_t count);  // ordered_sums.h
 FLUIDITY_CPU_AND_GPU double math::TreeSum(const double* values, std::size_t count);              // tree_sum.h
 struct MemoryEstimateEntry;                             // base/memory_count.h, with CountedPer and KeptFor.
+// EXISTS (A58; Foundation Tasks 17 to 19, base/run_memory.h). The run's one block per processor.
+class RunMemory;  // run_on(), reserved_bytes(), handed_out_bytes(). Move-only.
+template <typename Value> std::expected<Buffer<Value>, BufferError> BuildBuffer(RunOn run_on, std::size_t size,
+                                                                                RunMemory& run_memory);
+std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory);
+std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count, RunMemory& run_memory);
+std::uint64_t ComputeRunMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts,
+                                    MemoryWhere where);   // BufferError::kRunMemoryTooSmall maps to kOutOfMemory.
 namespace math { double Sqrt(double); double Abs(double); bool IsFinite(double); bool IsFinite(Vec3);
                  bool IsFinite(const Mat3&); double Dot(Vec3, Vec3); }  // A11.
 ```
@@ -621,10 +642,12 @@ Appendix A row M1, Appendix B row O1). `step::ResizeTry::particles_try()` is the
 
 **Cell resize and batches (PROVIDED, cell resize and batches 3.4 to 3.7):** `ResizeCells` calls `AdjustParticleCount` with
 the committed and the resized grid and their `NeighbourhoodInputs` inside the resize transaction, after
-`GroupParticlesByBlock` for the resized grid, and regroups after it (C2, 5.4); `ApplyRegionTransfer` builds
-`RefillCell` values, calls `ComputeRefillParticle`, `AddParticles(..., AddReason::kRefillRegion)` and
-`RemoveParticles(..., RemoveReason::kIntoGridOnlyRegion)`, keeps the ledger from the returned
-`ParticleAmounts`, and fills `is_grid_only_region`. `WriteBatch` and `ReadBatch` call `WriteParticleGroups` and
+`GroupParticlesByBlock` for the resized grid, and regroups after it (C2, 5.4); it uses `ComputeRefillParticle`'s
+pattern (8 per cell) for the seeded count. Not in the first version (A64; later group "Deep liquid without
+particles" of the cell resize plan): `ApplyRegionTransfer` builds `RefillCell` values, calls
+`ComputeRefillParticle`, `AddParticles(..., AddReason::kRefillRegion)` and `RemoveParticles(...,
+RemoveReason::kIntoGridOnlyRegion)`, keeps the ledger from the returned `ParticleAmounts`, and fills
+`is_grid_only_region`. `WriteBatch` and `ReadBatch` call `WriteParticleGroups` and
 `ReadParticleGroups` (3.8); the batched `BuildSimulation` builds the whole particles with
 `CpuMemory::kLockedForCopies` and the loaded particles on the GPU.
 
@@ -774,13 +797,24 @@ and `kinetic_energy_lost` are block partials summed by `math::TreeSum` over the 
 All particles of a merge are in one active cell, so a cell block never needs another block's particles. Split
 children may land in a neighbouring block; they wait in the try and are placed by the next grouping.
 
+**Deep cells (NEW, A64).** Every liquid cell holds particles, at every depth and size: a cell of size level `l`
+holds particles of `size_level == l`. When a resize merges eight cells of level `l + 1` into one of level `l`, step
+2 merges their particles into ones of level `l`; when it splits a cell, step 1 splits its particles. A resize
+changes a cell by one level at most, so a deep cell that coarsens by `k` levels gets its particles merged over `k`
+resizes, one level per resize, and holds about the seeded count (8 per cell) of particles each with `8^k` times the
+volume. Particles that drifted across a size change keep their level (C2) and are counted in
+`skipped_incomplete_count`, so a deep cell may hold more than 8. No code beyond 5.4 to 5.6 is needed; the test
+`AdjustParticleCount, ThreeLevelCascade_KeepsAmounts` (section 7) and cell resize's `ResizeCells,
+CalmDeepTank_CoarsensWithParticlesInEveryCell` prove the cascade.
+
 ### 5.7 Add, refill, remove
 
 - `AddParticles` checks values (finite, positive mass and volumes, fractions sum to 1), gives ids in input order,
   and appends to the try's waiting list. Both reasons start with `kHasOwnMotion` off, as on `main`: a new
   particle has no motion of its own to keep (numerics report 7.4). The reason only labels the returned amounts:
-  `kFromSource` is new material, `kRefillRegion` is material that was already counted in the grid-only region
-  (gas markers added by `gas::FindMarkerChanges` are added with this reason, as the gas design states).
+  `kFromSource` is new material, `kRefillRegion` is material that was already counted on the grid: gas markers
+  added by `gas::FindMarkerChanges` (the gas design), and later liquid handed over by a grid-only region (not in the
+  first version, A64).
 - `ComputeRefillParticle` (ported): for `n` particles in a cell of width `h`, particle 0 is at the centre when `n`
   is odd; the others go in pairs to opposite `cell_eighth` centres (`+-h/4` per axis), lowest eighth first, with
   x as bit 0. `mass = density * current_volume / n`, `rest_volume = current_volume / (n * volume_ratio)`,
@@ -980,6 +1014,9 @@ unless stated; "rel" means relative to the largest term of the sum.
 | `AdjustParticleCount, ParticleInSmallerCells_IsSplitOnce` / `EightInBiggerCell_AreMerged` | committed grid and a resized grid that splits / merges one region (5.6) | counts in the result; amounts unchanged | 1e-13 rel |
 | `AdjustParticleCount, DriftedAcrossSizeChange_KeepsSizeLevel` | a particle moved from big cells into an existing region of small cells; called with the committed grid as both grids, then with a resize elsewhere | not split in either call; counted in `skipped_incomplete_count`; its arrays unchanged | exact |
 | `AdjustParticleCount, AnyRangeCut_SameBytes` | the whole grid in one range, then in 1-block and 3-block ranges | identical arrays and result numbers | bytes |
+| `AdjustParticleCount, ThreeLevelCascade_KeepsAmounts` NEW (A64) | grids A (big cells 1..6 at level 1, big cells 2..5 at level 2), B (1..6 at level 1), C (all level 0), 128-block room; 64 level-2 liquid particles at the level-2 cell centres of big cell (3,3,3), `m` = `rest_volume` = 1/64, v {1,2,3}, C = 0; resizes A to B, B to C, then C to B, B to A | `merged_group_count` 8 then 1, one level-0 particle at {3.5,3.5,3.5} of mass 1; then `split_count` 1 then 8, 64 level-2 particles; amounts equal before and after each call; `kinetic_energy_lost` 0 | 1e-13 rel; energy 1e-15 J |
+| `BuildParticles, IntoRunMemory_HandsOutExactlyTheEstimate` NEW (A58) | the six fixture materials, CPU block of `ComputeRunMemoryBytes(BuildParticlesMemoryEstimate(settings), {}, kRunOn)` | `handed_out_bytes() == reserved_bytes()` | exact |
+| `ParticlesError, OutOfMemory_IsTheLastValue` NEW (reconcile 31) | enum | `kOutOfMemory` is the 17th and last value; `ToName` `"out_of_memory"` | exact |
 | `ComputeAmounts, AnyRangeCut_SameBytes` | `ComputeAmountsPerBlock` over 1-block ranges, tree-summed, against `ComputeAmounts` over all blocks | identical | bytes |
 | `CheckParticles, OnTry_SeesNewestValues` | NaN written into one try array | `kBadInput` on the try; the committed check passes | exact |
 | `BuildParticles, LiquidOnly_AllocatesNoExtraArrays` | one liquid | extra pointers null; bytes equal `BuildParticlesMemoryEstimate` | exact |
@@ -1074,7 +1111,7 @@ cutting). Klar 2016 moves to the sand module.
 | `covariance_gap_lower_bound` | `gap`, `kMergeGapFloor` | NEW |
 | D (support second moment) | `weighted_spread` via `ComputeCompleteWeightedSpread` | Verify, owned by grid |
 | capacity | `max_particle_count`, `max_added_per_try` | DECIDED pattern `max_...` |
-| inventory (of a particle set) | `ParticleAmounts` | NEW; cell resize uses `GridOnlyAmounts` on the cell side |
+| inventory (of a particle set) | `ParticleAmounts` | NEW; cell resize uses `GridOnlyAmounts` on the cell side (not in the first version, A64) |
 | `LiquidStateCapacities3D` growth | `ApplyParticleLimits` | NEW |
 | scratch (working memory of the grouping and the sums; the plans' `OrderScratch`, `SumScratch`, replaced) | working buffers: `order_buffers` (`OrderBuffers`), `sum_buffers` (`SumBuffers`) | DECIDED (A31) |
 | checkpoint read-back, `Readback` | `ReadSnapshot`, `ParticlesSnapshot` | DECIDED words |
@@ -1198,3 +1235,25 @@ longer exists. The particles' arrays and their working buffers live on `settings
 function given buffers and working buffers on different processors is a broken precondition (`Requires:` same
 processor, asserted in debug builds), never an error value. Source: owner answer A30 (`owner-answers.md`,
 2026-11-14).
+
+**11.13 Particles everywhere in the liquid (A64).** Decision: the first version has no grid-only region; a cell of
+size level `l` holds particles of level `l`, and `AdjustParticleCount` covers deep cells, one level per resize
+(5.6 "Deep cells"; test `ThreeLevelCascade_KeepsAmounts`). `NeighbourhoodInputs::is_grid_only_region`, the
+grid-only clause of `FindNeighbourhood`, `RemoveReason::kIntoGridOnlyRegion`'s caller, the region transfer
+calls of section 4 and `FindNeighbourhood, TouchingGridOnlyCell_IsIncomplete` are not in the first version; they
+move to the particles plan's later group "Deep liquid without particles (later; needs review)", owned by the cell
+resize plan's group of that name. `AddReason::kRefillRegion` stays: gas markers use it. Source: owner answer A64;
+`plan-decisions.md` "Owner answers A40–A64 applied", item 1.
+
+**11.14 One reserved block per run (A58).** Decision: `BuildParticles`, `BuildParticlesFromSnapshot` and
+`ApplyParticleLimits` take `RunMemory& run_memory` last; every array, the working buffers and the failure buffers
+are pieces of it. `BuildParticlesMemoryEstimate` changes to match: each entry stands for whole buffers (`copies`
+= their number); an `OrderBuffers` or `SumBuffers` is one entry of `given_count` 1 and `bytes_per_item x max_count
++ fixed_bytes` bytes (was a per-item and a fixed entry), and the working-buffer entries that were `kOneCall` are
+`kWholeRun` (no `kRunOn` entry is `kOneCall`). Test `BuildParticles, IntoRunMemory_HandsOutExactlyTheEstimate`.
+Source: owner answer A58; `plan-decisions.md` item 3 and its same-day correction.
+
+**11.15 `kOutOfMemory` last (reconcile item 31).** Decision: `ParticlesError::kOutOfMemory` moves after
+`kRunOnCallFailed` (17 values kept), returned by the building functions and, as accepted by reconcile item 33, by
+`ComputeAmounts`' one allocating form. `BufferError::kRunMemoryTooSmall` maps to it with `magnitude` = bytes asked.
+Source: `plan-decisions.md` item 11.

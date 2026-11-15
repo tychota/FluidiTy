@@ -64,6 +64,8 @@ enum class ContactError : std::uint8_t {  // D (name and first four values)
   kSolidTooThin,         // N. A solid or cell is thinner than 1024 contact tolerances: not enough resolution.
   kBuffersTooSmall,      // N. More particles or solids than the contact buffers were built for.
   kRunOnCallFailed,      // N. A call to the chosen processor failed.
+  kOutOfMemory,          // NEW (A58; reconcile item 31). Last value. Only BuildContactBuffers: the run's RunMemory
+                         // or the processor could not hold a buffer; magnitude = bytes asked.
 };
 enum class ContactCloseCall : std::uint8_t {  // N. Why kTooCloseToCall was returned.
   kNone, kTooManyHits, kSqueezedBetweenSolids, kSlowApproachToTurningSolid, kTurningSolidNearOtherSolid,
@@ -74,7 +76,8 @@ struct ContactFailure {  // N. Compact context; never allocates.
   ContactCloseCall close_call = ContactCloseCall::kNone;
   std::uint64_t particle_id = 0;  // 0 when the failure is not about one particle.
   std::uint32_t solid_id = 0;     // 0 when the failure is not about one solid.
-  double magnitude = 0;           // m. Overlap depth, or the offending length. 0 when not relevant.
+  double magnitude = 0;           // m. Overlap depth, or the offending length; bytes asked for kOutOfMemory (A58).
+                                  // 0 when not relevant.
 };
 // contact_error_message.h. ToMessage: one English sentence. ToName (N): the stable code, the enumerator's
 // name without the `k` in lower snake case (kSolidTooThin -> "solid_too_thin"); the CLI and the add-on use it.
@@ -276,9 +279,16 @@ struct ParticleContact {                   // N. One per particle, kept where th
   Vec3 normal_out_of_solid{};
   PerParticleVelocity<double> approach_speed{};  // m/s
 };
-class ContactBuffers;  // N. Preallocated: a copy of the solids and one failure code per particle.
+class ContactBuffers;  // N. Preallocated: a copy of the solids and one failure code per particle. Members:
+// run_on(), max_particle_count(), max_solid_count(), and NEW (2026-11-15, sand; reconcile item 33)
+// std::span<const Solid> solids_copy() const: the solids the last MoveParticles call wrote, on run_on() (empty
+// before the first call); sand's GPU hit split reads it instead of copying the solids per call.
+// Changed (A58): builds every buffer as a piece of `run_memory` (the run's one reserved block). Requires:
+// run_on == run_memory.run_on() (debug assertion, A30). Fails kOutOfMemory (magnitude = bytes asked; pieces
+// already taken stay in the block), kRunOnCallFailed.
 std::expected<ContactBuffers, ContactFailure> BuildContactBuffers(RunOn run_on, std::size_t max_particle_count,
-                                                                 std::size_t max_solid_count);
+                                                                 std::size_t max_solid_count,
+                                                                 RunMemory& run_memory);
 struct MoveParticlesInputs {             // N. Borrowed pointers on the processor `buffers` was built for.
   std::size_t particle_count = 0;        // Particles of one material in one range of cell blocks.
   const std::uint64_t* particle_id = nullptr;
@@ -305,7 +315,10 @@ struct MoveParticlesResult {             // N
 // must not be committed; the failure reported is the one with the lowest particle_id.
 std::expected<MoveParticlesResult, ContactFailure> MoveParticles(const MoveParticlesInputs& inputs,
                                                                  MovedParticles& moved, ContactBuffers& buffers);
-// N. The rows BuildContactBuffers allocates from, for the sizing estimate (base/memory_count.h).
+// N. The rows BuildContactBuffers allocates from, for the sizing estimate (base/memory_count.h). Changed (A58):
+// one row per buffer, all kRunOn, kWholeRun: "contact: solids copy", "contact: failure per particle", "contact:
+// call result" (1 MoveParticlesResult), "contact: first failure" (1 ContactFailure), so ComputeRunMemoryBytes of
+// the rows equals the bytes BuildContactBuffers hands out.
 std::vector<MemoryEstimateEntry> BuildContactMemoryEstimate(std::size_t max_particle_count, std::size_t max_solid_count);
 ```
 
@@ -314,7 +327,8 @@ particles header. The step fills `MoveParticlesInputs` from `particles::Particle
 `velocity`, `plate_side`) and `MovedParticles` from `particles::ParticleFieldsToChange` (`position.write`,
 `velocity.for_next_step.write`), one call per material and range of cell blocks. `record` and `reaction` point
 into `Buffer<ParticleContact>` and `Buffer<SolidReaction>` that the step owns as working buffers. `BuildContactBuffers`
-maps a `BufferError` to `kBuffersTooSmall` (`kOutOfMemory`, `kSizeMismatch`) or `kRunOnCallFailed`. Gas marker
+maps a `BufferError` to `kBuffersTooSmall` (`kSizeMismatch`), `kOutOfMemory` (`kOutOfMemory`, `kRunMemoryTooSmall`;
+changed 2026-11-15, reconcile item 31: it was `kBuffersTooSmall`) or `kRunOnCallFailed`. Gas marker
 particles are moved by the same call with `friction` 0; contact has no gas-specific case.
 
 Not declared here: `math::Length`, `math::Normalized`, `math::IsFinite`,
@@ -345,6 +359,13 @@ template <typename Value> std::expected<Buffer<Value>, BufferError> BuildBuffer(
 template <typename Value> std::expected<void, BufferError> WriteBuffer(std::span<const Value>, Buffer<Value>&);
 template <typename Value> std::expected<void, BufferError> ReadBuffer(const Buffer<Value>&, std::span<Value>);
 struct MemoryEstimateEntry;                                                               // base/memory_count.h
+// EXISTS (A58; Foundation Tasks 17 and 18, base/run_memory.h): the run's one reserved block.
+class RunMemory;  // run_on(), reserved_bytes(), handed_out_bytes(). Move-only.
+template <typename Value>
+std::expected<Buffer<Value>, BufferError> BuildBuffer(RunOn run_on, std::size_t size, RunMemory& run_memory);
+std::uint64_t ComputeRunMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts,
+                                    MemoryWhere where);  // Sums the entries kept `where` (item-3 correction).
+// BufferError::kRunMemoryTooSmall (last value): a piece does not fit; contact maps it to kOutOfMemory.
 ```
 
 The other `base/` additions of `changes-to-apply.md` (`CopyBuffer`, slice forms, `CpuMemory`,
@@ -603,7 +624,13 @@ GPU (label `gpu`, compiled here, run by the owner): the sweep-and-move cases and
 SameInputTwice_SameBytes` over positions, velocities, records and reactions; `MoveParticles,
 TwoFailures_ReportsLowestParticleId`. Container without a GPU: all shared-header tests run there too, built
 inside the CUDA configuration (label `no_gpu`), which proves the shared headers compile for the device and give
-the CPU results in that build; `BuildContactBuffers` with `kGpu` returns `kRunOnCallFailed` there.
+the CPU results in that build; `BuildContactBuffers` with `kGpu` returns `kRunOnCallFailed` there (amended A58:
+`BuildRunMemory(kGpu, ...)` already returns it, so the builder is not reached).
+
+Memory (NEW, A58; label `cpu`): `BuildContactBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (block of
+`ComputeRunMemoryBytes(BuildContactMemoryEstimate(1000, 4), {}, kRunOn)`: `handed_out_bytes() == reserved_bytes()`,
+exact); `BuildContactBuffers, RunMemoryOnePieceShort_IsOutOfMemory` (block 256 B short, release builds:
+`kOutOfMemory`, magnitude = bytes the failing piece asked).
 
 ## 8. Method paper section
 
@@ -773,3 +800,24 @@ answer A8 for the sets; owner-questions Q46, recommended option, owner's standin
 **Q9. Working memory (owner answer A31, 2026-11-14).** The word "scratch" is not used; reusable working memory is
 "buffers". Decision: the step's `Buffer<ParticleContact>` and `Buffer<SolidReaction>` are called working buffers;
 contact holds no `OrderBuffers` or `SumBuffers`, so no declaration changes. Source: `owner-answers.md` A31.
+
+**Q10. One reserved memory block per run (owner answer A58).** Decision: `BuildContactBuffers` takes `RunMemory&
+run_memory` last and builds its four buffers as pieces of it; `BuildContactMemoryEstimate` has one row per buffer
+(`"contact: call result"` split, `"contact: first failure"` added), so `ComputeRunMemoryBytes` of the rows is what
+the build hands out (test `BuildContactBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`). Source: owner answer
+A58; `plan-decisions.md` "Owner answers A40–A64 applied", item 3.
+
+**Q11. Out of memory has its own error (reconcile item 31).** Decision: `ContactError::kOutOfMemory` appended as the
+ninth and last value, returned only by `BuildContactBuffers` for `BufferError::kOutOfMemory` and
+`kRunMemoryTooSmall`, `magnitude` = bytes asked. The earlier mapping of `kOutOfMemory` to `kBuffersTooSmall`
+(3.5) is **replaced**; `kBuffersTooSmall` keeps `kSizeMismatch` and the count checks of `MoveParticles`. Source:
+`plan-decisions.md` "Owner answers A40–A64 applied", item 11 (reconcile item 31).
+
+**Q12. Other answers of the A40–A64 pass.** A64 (particles everywhere), the shared cell size rule and items 4 to 10
+change nothing in contact: it reads no cell size and moves gas markers and every particle alike. Source:
+`plan-decisions.md` "Owner answers A40–A64 applied".
+
+**Q13. The solids copy for sand (reconcile item 33).** Decision: `ContactBuffers::solids_copy()` (NEW) exposes the
+copy `MoveParticles` writes each call, so sand's GPU hit split needs no per-call allocation (sand design decision
+8). Test `ContactBuffers, SolidsCopy_IsTheLastCallsSolids`. Source: `plan-decisions.md` "Owner answers A40–A64
+applied", item 11.

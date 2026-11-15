@@ -51,6 +51,19 @@ Copied from Foundation:
   `LINKS`); every `gpu` test passes its main outputs to `WriteResultDigest`. Labels: `cpu` everywhere, `no_gpu` only
   for behaviour on a machine without a GPU, `gpu` only for tests that need hardware. Every target is created through
   the helpers of `cmake/fluidity_targets.cmake` and every source file is listed in a CMake file.
+- **Amended 2026-11-15 (A58; reconcile item 31):** one reserved block per run (Foundation Tasks 17 to 19,
+  `base/run_memory.h`; `plan-decisions.md` "Owner answers A40–A64 applied", items 3 and 11). `BuildContactBuffers`
+  takes `RunMemory& run_memory` as its last parameter (every other parameter stays); `run_on ==
+  run_memory.run_on()` is a `Requires:` checked by a debug assertion (A30). Its buffers (all `where = kRunOn`) are
+  pieces built with `BuildBuffer(run_on, size, run_memory)`; plain `BuildBuffer` stays for tests and tools. Each
+  estimate entry stands for whole buffers (`copies` = the number of buffers, each `count x bytes_each` bytes), so
+  `ComputeRunMemoryBytes(BuildContactMemoryEstimate(...))` equals the bytes the build hands out.
+  `ContactError::kOutOfMemory` is appended as the last value (earlier values keep their numbers) and is returned only
+  by `BuildContactBuffers`, for `BufferError::kOutOfMemory` and `kRunMemoryTooSmall`, with `magnitude` = the bytes
+  asked. Every test that builds `ContactBuffers` first builds a `RunMemory` of exactly
+  `ComputeRunMemoryBytes(BuildContactMemoryEstimate(...), {}, kRunOn)` on the same processor. A `no_gpu` test that asked
+  for GPU buffers without a GPU now gets `kRunOnCallFailed` from `BuildRunMemory(kGpu, ...)` and then checks that
+  `BuildContactBuffers` was not reached (plan decision: no GPU builder can be called without a GPU block).
 - **Amended 2026-11-14 (Foundation as built):** the gate runs at every commit: the CPU build in the debug and the
   release presets, and the CUDA build compiled in the container (its `cuda` step fails, naming the file, for a
   tracked `.cc` or `.cu` file that no build compiles). clang-format and clang-tidy are the pinned 23.1.
@@ -235,6 +248,8 @@ procedures use `pseudocode.typ`.
 
 **Amended 2026-11-14 (Foundation as built):** `fluidity_add_shared_test` retired; tests use `fluidity_add_test(... LABEL cpu)`, which the container's `cuda` step also runs.
 
+**Amended 2026-11-15 (reconcile item 31):** `ContactError` gains `kOutOfMemory` as its ninth and last value.
+
 **Files:**
 - Create: `native/fluidity/contact/contact_error.h`, `contact_error_message.h`, `contact_error_message.cc`,
   `contact_error_test.cc`
@@ -244,7 +259,7 @@ procedures use `pseudocode.typ`.
 
 **Interfaces:**
 - Consumes: `FLUIDITY_CPU_AND_GPU`, `base/cpu_only.h`.
-- Produces: design 3.1 exactly: `ContactError` (8 values), `ContactCloseCall` (8 values), `ContactFailure`,
+- Produces: design 3.1 exactly: `ContactError` (9 values, `kOutOfMemory` last), `ContactCloseCall` (8 values), `ContactFailure`,
   `ToMessage(ContactError)`, `ToMessage(ContactCloseCall)`, `ToName(ContactError)`, `ToName(ContactCloseCall)`.
   CMake: shared-header tests are `fluidity_add_test(<name> SOURCES <files> LABEL cpu)`; the container's `cuda` step
   runs every `cpu` test, so they run in the CUDA build too (design 7). No new CMake helper.
@@ -253,7 +268,8 @@ procedures use `pseudocode.typ`.
 
   ```cpp
   TEST(ToName, EveryContactError_IsSnakeCaseOfEnumerator)   // kSolidTooThin -> "solid_too_thin"; kNone -> "none";
-                                                            // all eight unique
+                                                            // kOutOfMemory -> "out_of_memory"; all nine unique;
+                                                            // static_assert(ContactError::kOutOfMemory == 8): last
   TEST(ToName, EveryContactCloseCall_IsSnakeCaseOfEnumerator)  // kSqueezedBetweenSolids -> "squeezed_between_solids"
   TEST(ToMessage, EveryContactError_HasADistinctNonEmptySentence)
   TEST(ToMessage, EveryContactCloseCall_HasADistinctNonEmptySentence)
@@ -798,6 +814,8 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
 
 **Amended 2026-11-14 (Foundation as built):** private GPU header is `move_particles_gpu.h` returning `RunOnCallStatus`; the GPU call's status goes through `ToBufferError` and one mapping into `ContactFailure`; failure wording and test support adopted.
 
+**Amended 2026-11-15 (A58; reconcile item 31):** `BuildContactBuffers(run_on, max_particle_count, max_solid_count, RunMemory& run_memory)` builds its buffers as pieces of the run's block; the `"contact: call result"` entry is split into one entry per buffer; out of memory is `kOutOfMemory` (was `kBuffersTooSmall`); new test `BuildContactBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`.
+
 **Files:**
 - Create: `native/fluidity/contact/move_particles.h`, `move_particles_cpu.cc`, `move_particles_gpu.h`
   (private), `move_particles_test.cc`
@@ -805,17 +823,27 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   `LINKS fluidity_base_test_support`), `docs/glossary.md`
 
 **Interfaces:**
-- Consumes: `MoveParticle`; `RunOn`, `CheckCanRunOn`; `Buffer`, `BuildBuffer`, `WriteBuffer`, `ReadBuffer`,
-  `BufferError`, `ToBufferError`, `RunOnCallStatus`; `MemoryEstimateEntry`, `CountedPer`, `KeptFor`,
+- Consumes: `MoveParticle`; `RunOn`, `CheckCanRunOn`; `Buffer`, `BuildBuffer` (both forms), `WriteBuffer`,
+  `ReadBuffer`, `BufferError`, `ToBufferError`, `RunOnCallStatus`; `RunMemory`, `BuildRunMemory`,
+  `ComputeRunMemoryBytes` (Foundation Task 17); `MemoryEstimateEntry`, `CountedPer`, `KeptFor`,
   `ComputeMemoryBytes`; `PerParticleVelocity`; test support `ToBits`, `BuildBufferHolding`, `ReadAll`.
 - Produces: design 3.5 exactly: `ParticleContact`, `ContactBuffers`, `BuildContactBuffers`, `MoveParticlesInputs`,
   `MovedParticles`, `MoveParticlesResult`, `MoveParticles`, `BuildContactMemoryEstimate`. Plan decisions:
   - `ContactBuffers` is move-only with `RunOn run_on() const`, `std::size_t max_particle_count() const`,
     `std::size_t max_solid_count() const`; it holds `Buffer<Solid>` (max solids), `Buffer<ContactFailure>`
     (max particles) and `Buffer<ContactFailure>` plus `Buffer<MoveParticlesResult>` of size 1 for the GPU reduction.
-  - `BuildContactMemoryEstimate` rows, all `kGivenCount`, `kWholeRun`: `"contact: solids copy"` (max solids x
-    `sizeof(Solid)`), `"contact: failure per particle"` (max particles x `sizeof(ContactFailure)`),
-    `"contact: call result"` (1 x `sizeof(MoveParticlesResult) + sizeof(ContactFailure)`).
+  - `BuildContactMemoryEstimate` rows, all `kGivenCount`, `kWholeRun`, `where = kRunOn`, `copies = 1`, one row per
+    buffer (amended 2026-11-15, A58): `"contact: solids copy"` (max solids x `sizeof(Solid)`), `"contact: failure
+    per particle"` (max particles x `sizeof(ContactFailure)`), `"contact: call result"` (1 x
+    `sizeof(MoveParticlesResult)`), `"contact: first failure"` (1 x `sizeof(ContactFailure)`; was part of `"call
+    result"`).
+  - **NEW (2026-11-15, for sand; reconcile item 33):** `ContactBuffers` has `std::span<const Solid> solids_copy()
+    const`: the solids the last `MoveParticles` call wrote into its `"contact: solids copy"` buffer, on `run_on()`
+    (`solids.size()` entries; empty before the first call). Sand's hit split on the GPU reads it, so materials
+    needs no per-call copy. Test `ContactBuffers, SolidsCopy_IsTheLastCallsSolids` (CPU: after a call with the
+    four solids of `ThousandParticlesFourSolids`, the span has 4 entries equal byte for byte to the input).
+  - `BuildContactBuffers` builds the four buffers in row order with `BuildBuffer(run_on, size, run_memory)`; on a
+    failure it returns, the pieces already taken stay in the block (a piece is never freed alone) and the step stops.
   - `MoveParticles` (defined in `move_particles_cpu.cc`) checks, in order: `particle_count` or `solids.size()`
     above the buffers' sizes is `kBuffersTooSmall`; a null required pointer with `particle_count > 0`, or
     `moved.reaction` null while a solid has `reports_reaction`, is `kBadInput`. A failed check writes nothing.
@@ -823,8 +851,10 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
     `kGpu` calls `RunOnCallStatus MoveParticlesOneThreadPerParticleOnGpu(inputs, moved, buffers)` declared in the
     private `move_particles_gpu.h` (defined in Task 16), under `#if defined(FLUIDITY_HAS_GPU)`; without it the call
     site returns `kRunOnCallFailed`. A status other than `kDone` goes through `ToBufferError` and the one private
-    mapping `ToContactFailure(BufferError)` of `move_particles_cpu.cc` (`kOutOfMemory`, `kSizeMismatch` give
-    `kBuffersTooSmall`; `kRunOnCallFailed` gives `kRunOnCallFailed`), which `BuildContactBuffers` also uses. After
+    mapping `ToContactFailure(BufferError)` of `move_particles_cpu.cc` (`kSizeMismatch` gives `kBuffersTooSmall`;
+    `kRunOnCallFailed` gives `kRunOnCallFailed`; amended 2026-11-15, reconcile item 31: `kOutOfMemory` and
+    `kRunMemoryTooSmall` give `kOutOfMemory`, which only `BuildContactBuffers` can meet), which `BuildContactBuffers`
+    also uses. After
     `kRunOnCallFailed` the outputs are unspecified and the run stops.
   - `ParticleContact` is copied field by field from `SolidContactResult`; `static_assert(sizeof(ParticleContact) ==
     56)` (the design says 64; its fields total 56, see the hand-over).
@@ -848,10 +878,17 @@ tangent`; `friction = next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
   TEST(BuildContactMemoryEstimate, ThousandParticlesFourSolids_MatchesBufferSizes)  // ComputeMemoryBytes ==
                                                            // 1000 * sizeof(ContactFailure) + 4 * sizeof(Solid) +
                                                            // sizeof(MoveParticlesResult) + sizeof(ContactFailure)
+  TEST(BuildContactBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)  // BuildRunMemory(kCpu,
+      // ComputeRunMemoryBytes(BuildContactMemoryEstimate(1000, 4), {}, kRunOn)), then BuildContactBuffers(kCpu, 1000, 4,
+      // run_memory): handed_out_bytes() == reserved_bytes(), exact (four pieces, each rounded up to 256 B)
+  TEST(ContactBuffers, SolidsCopy_IsTheLastCallsSolids)     // NEW (sand, 2026-11-15): 4 entries, same bytes
+  TEST(BuildContactBuffers, RunMemoryOnePieceShort_IsOutOfMemory)  // the same block less 256 B (GTEST_SKIP in
+      // debug builds, which assert, Foundation Task 17): kOutOfMemory, magnitude == bytes the failing piece asked
   ```
 - [ ] **Step 2: Run.** Expected: compile error.
-- [ ] **Step 3: Implement.** `BuildContactBuffers` maps `BufferError::kOutOfMemory` and `kSizeMismatch` to
-  `kBuffersTooSmall`, `kRunOnCallFailed` to `kRunOnCallFailed` (design 3.5) through `ToContactFailure`. The header explains how the step fills
+- [ ] **Step 3: Implement.** `BuildContactBuffers` maps `BufferError::kOutOfMemory` and `kRunMemoryTooSmall` to
+  `kOutOfMemory` (magnitude = bytes asked), `kSizeMismatch` to `kBuffersTooSmall`, `kRunOnCallFailed` to
+  `kRunOnCallFailed` (design 3.5) through `ToContactFailure`. The header explains how the step fills
   the pointers from `particles::ParticleFields` without contact including a particles header (design 3.5, last
   paragraph, in plain words). Glossary rows: `contact record`, `reaction` (for `SolidReaction`).
 - [ ] **Step 4: Run** build, tests, gate.

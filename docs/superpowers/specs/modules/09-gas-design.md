@@ -115,7 +115,10 @@ enum class GasError : std::uint8_t {
   kMoreThanOneGas,                // The scene has two gas materials.
   kGasLawDisagrees,               // NEW. The gas ingredient's rest density is not ComputeAmbientDensity(law), or
                                   // pressure::AirPocketSettings differs from GasLaw or GasSettings (5.6).
-};
+  kOutOfMemory,                   // NEW (A58, reconcile item 31), appended last. A building function (BuildGasAmounts,
+                                  // BuildGasAmountsFromSnapshot, BuildGasBuffers) could not take its buffers
+                                  // (BufferError::kRunMemoryTooSmall or a failed allocation); magnitude = bytes asked.
+};  // 13 values. kOutOfMemory comes from no other function; out of memory is no longer a kRunOnCallFailed.
 struct GasFailure {               // The error value of every std::expected here. Never allocates.
   GasError error = GasError::kNone;
   grid::CellPlaceIndex cell_index{grid::kNoIndex};  // First failing cell in index order, or kNoIndex.
@@ -220,8 +223,10 @@ struct GasSourceRates {            // One source's values for one step.
 std::expected<void, GasFailure> CheckGasSources(std::span<const GasSource> sources, const GasWind& wind);
 GasSourceRates SampleGasSource(const GasSource& source, double time);
 Vec3 SampleGasWind(const GasWind& wind, double time);  // Zero when wind.keys is empty.
-// Wind keys (A20): the add-on derives them from Blender's Wind force fields and I/O carries them as gas_wind;
-// gas reads them as written and converts nothing.
+// Wind keys (A20): the add-on derives them from Blender's Wind force fields and I/O carries them as the scene
+// field `wind` (CHANGED, A47: was gas_wind; the keys exist whenever a Wind field exists, also in a scene without
+// gas, where render output alone reads them for spray and foam); gas reads them as written and converts nothing.
+// GasWind and GasWindKey keep their names; ReadyScene::wind is a GasWind.
 
 // gas_source_math.h (shared). NEW (plan decision).
 // No unit, 0..1: share of the cell's eight cell-eighth centres inside [low_corner, high_corner) on every axis
@@ -251,8 +256,11 @@ class GasAmounts {
   const grid::CellValues<double>& pressure() const;
 };
 class GasAmountsTry;  // The values of one try, same accessors. Dropping it changes nothing.
+// Every cell: no gas yet. CHANGED (A58): the committed and try arrays, the block partials and the SumBuffers are
+// pieces of run_memory (all where = kRunOn, kWholeRun). Requires: run_on == run_memory.run_on() (debug assertion,
+// A30). kOutOfMemory when a piece does not fit (magnitude = bytes asked).
 std::expected<GasAmounts, GasFailure> BuildGasAmounts(const grid::StaggeredGrid& grid, const GasLaw& law,
-                                                      RunOn run_on);  // Every cell: no gas yet.
+                                                      RunOn run_on, RunMemory& run_memory);
 // Stage ChooseActiveCells, after grid::BuildGrid of the try grid. Copies the committed values to the cells of
 // `grid` by stable grid::CellId (the grid version may differ). A cell with no committed value starts with
 // gas_volume 0. Amounts of cells that the try grid no longer has are summed into
@@ -325,7 +333,16 @@ struct GasBufferSizes {
 class GasBuffers;  // Owns the working buffers of this module on one processor. No allocation after it is built.
                    // Holds carried_pressure (the committed gas pressure copied before the solve, so that
                    // SolvePressure's output never aliases its input) and, batched, a pressure::SolveBatches.
-std::expected<std::unique_ptr<GasBuffers>, GasFailure> BuildGasBuffers(const GasBufferSizes& sizes, RunOn run_on);
+// CHANGED (A58; plan-decisions item 3 and its same-day correction): builds on both processors, so it takes both
+// blocks. where = kRunOn rows (also the sum and order buffers, by their RunMemory& forms, and the held
+// pressure::PressureBuffers and SolveBatches) are pieces of run_memory; where = kCpu rows (the MarkerChanges lists,
+// and the batched layout's rows in CPU memory) are pieces of cpu_run_memory. In a CPU run the caller passes the same
+// object twice. Requires: run_on == run_memory.run_on(), cpu_run_memory.run_on() == RunOn::kCpu (debug
+// assertions, A30). Fails: kBadInput (sizes), kOutOfMemory (a piece does not fit, magnitude = bytes asked),
+// kRunOnCallFailed (CheckCanRunOn).
+std::expected<std::unique_ptr<GasBuffers>, GasFailure> BuildGasBuffers(const GasBufferSizes& sizes, RunOn run_on,
+                                                                       RunMemory& run_memory,
+                                                                       RunMemory& cpu_run_memory);
 // NEW (A15). Null in one piece.
 const pressure::SolveBatches* FindSolveBatches(const GasBuffers& buffers);
 const pressure::SolveCopyReport* ReadSolveCopyReport(const GasBuffers& buffers);
@@ -549,9 +566,11 @@ std::expected<GasAmountsSnapshot, GasFailure> ReadGasAmountsSnapshot(const GasAm
                                                                      const grid::StaggeredGrid& grid);
 // kBadInput: a cell of the snapshot is not active in grid, an active cell is missing, an array has the wrong
 // length or a value is not finite. Keeps time and state_version.
+// CHANGED (A58): its buffers are pieces of run_memory, as BuildGasAmounts; kOutOfMemory likewise.
 std::expected<GasAmounts, GasFailure> BuildGasAmountsFromSnapshot(const GasAmountsSnapshot& snapshot,
                                                                   const grid::StaggeredGrid& grid,
-                                                                  const GasLaw& law, RunOn run_on);
+                                                                  const GasLaw& law, RunOn run_on,
+                                                                  RunMemory& run_memory);
 // NEW (decision in changes-to-apply.md: gas and render output). The output snapshot from the full amounts, on
 // the CPU, with no grid (only its frame): render output calls it on the gas part of the step's SimulationSnapshot. Keeps time,
 // state_version and grid_version; keeps the cells with gas_volume > 0 in the snapshot's ascending CellId order;
@@ -577,6 +596,11 @@ std::expected<void, GasFailure> CheckGasCanRun(const GasSceneSummary& scene, con
 // where = kRunOn, kOneCall), the GPU array the lists are built in before their read-back. Changed (Foundation as
 // built, reconcile item 24): takes the processor, because the working-buffer rows (sum and order buffers of
 // GasBuffers and GasAmounts, from ComputeSumBuffersSize / ComputeOrderBuffersSize) and the row above depend on it.
+// CHANGED (A58): one row per buffer (copies = the number of identical buffers, each count x bytes_each bytes); each
+// sum or order buffers object is one row (given count 1, bytes_each its whole ComputeSumBuffersSize /
+// ComputeOrderBuffersSize: one piece); "gas: marker changes on the processor" is KeptFor::kWholeRun (no kRunOn row is
+// kOneCall) and the two MarkerChanges list rows are kCpu, kWholeRun. So ComputeRunMemoryBytes(rows, counts, where)
+// is exactly what BuildGasAmounts plus BuildGasBuffers take from the block of that `where`.
 std::vector<MemoryEstimateEntry> BuildGasMemoryEstimate(const GasBufferSizes& sizes, RunOn run_on);
 ```
 
@@ -592,7 +616,11 @@ the gas pressure committed at the end of the previous step. **(A18):** `ApplyGas
 ## 4. Consumes from other modules
 
 **Foundation (EXISTS):** `Vec3`, `Axis`, `kUp`, `RunOn`, `CheckCanRunOn`, `FLUIDITY_CPU_AND_GPU`, `cpu_only.h`,
-`std::expected`. **Foundation additions (EXISTS, `shared-interface.md` (a) and `changes-to-apply.md`):**
+`std::expected`. NEW (A58, Foundation Tasks 17 and 18): `RunMemory`, `BuildBuffer(RunOn, size, RunMemory&)`,
+`ComputeRunMemoryBytes` (with its `MemoryWhere` parameter), `BufferError::kRunMemoryTooSmall` (mapped to
+`kOutOfMemory`), the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`; pressure's
+`BuildPressureBuffers(sizes, run_on, run_memory, cpu_run_memory)` and `BuildSolveBatches(..., run_memory,
+cpu_run_memory)` for the held gas solver buffers. **Foundation additions (EXISTS, `shared-interface.md` (a) and `changes-to-apply.md`):**
 `Buffer<T>`, `BufferError`, `math::Pow`, `math::Min`, `math::Max`, `math::IsFinite`, `math::TreeSum`,
 `ComputeTreeSum`, `ComputeLargestMagnitude`, `BuildGroupsByDestination` (cells grouped by blob), `MemoryEstimateEntry`
 with `MemoryWhere { kRunOn, kCpu }` (plan-decisions), `math::Cbrt`, `math::Sqrt`,
@@ -689,20 +717,24 @@ markers pass in batches, and `ApplyGasStepStart` and `SolveGas` run on the whole
 working buffers streamed piece by piece (`kBatchedWithSolvesInPieces`, A15; `batches::BuildBatchPlan` sizes it).
 
 **I/O and CLI (PROVIDED by I/O 3, after its update):** `GasLaw`, `BurnSettings`, `GasSettings`,
-`MarkerSettings`, `ActiveGasSettings`, the keyed `GasSource` list and `GasWind` in the ready scene (I/O owns the
+`MarkerSettings`, `ActiveGasSettings`, the keyed `GasSource` list and `GasWind` (`ReadyScene::wind`, scene field
+`wind`; A47) in the ready scene (I/O owns the
 key storage and calls `CheckGasSources`); `saved_state` stores `GasAmountsSnapshot` and rebuilds with
 `BuildGasAmountsFromSnapshot`.
 
 **Surface, foam and spray (PROVIDED by its design, after its update):** turns the gas part of the step's
 snapshot (`GasAmountsSnapshot`) into a `GasSnapshot` with `ToGasSnapshot` and writes it as five OpenVDB volume
-channels and the known mask, one file per frame, beside the liquid surface in the same frame (A10, A14).
+channels and the known mask, one file per frame, beside the liquid surface in the same frame (A10, A14). NEW (A47):
+`render_output::RenderSettings::wind` is the same `GasWind` (I/O fills it from the ready scene); render output samples
+it with `SampleGasWind` for spray and foam, never the liquid body.
 
 **Blender (PROVIDED by its design, after its update; A20):** each Blender Wind force field gives
 `WIND_ACCELERATION_PER_STRENGTH * strength * direction` (1.0 m/s2 per unit of Strength, the branch's factor,
 `gas_authoring.py:63-67`; direction the field's local +Z in world axes; several fields add), written as the
-scene's `gas_wind: [{time, acceleration}]` keys (m/s2, world, Z-up; none in a domain without gas), which I/O
-hands over as `GasWind` unconverted; settings the gas cannot honour give add-on findings. One scene may hold
-liquid and gas.
+scene's ~~`gas_wind`~~ `wind: [{time, acceleration}]` keys (m/s2, world, Z-up; CHANGED, A47: written whenever a Wind
+field exists, `build_wind_keys(readings)`, also in a domain without gas), which I/O hands over as `GasWind`
+unconverted; settings the gas cannot honour give add-on findings (`wind_without_gas` NOTE in a scene without gas,
+`wind_flow_not_honoured` only when `field.flow != 1.0`, A50). One scene may hold liquid and gas.
 
 ## 5. Method
 
@@ -1045,7 +1077,7 @@ geometry. `ApplyGasStepStart` and `SolveGas` always take every block of the grid
 
 **Batched solve (NEW, A15; `plan-decisions.md` "Batched solves (A15)").** With `GasBufferSizes::max_loaded_blocks
 > 0` the buffers hold a `pressure::SolveBatches` (`BuildSolveBatches(run_on, max_cells / 64, max_loaded_blocks,
-{kTouchingCells})`). Rule: state and geometry stay whole on the run's processor, solver buffers go to CPU
+{kTouchingCells}, run_memory, cpu_run_memory)`, A58). Rule: state and geometry stay whole on the run's processor, solver buffers go to CPU
 memory. Kept `where = kRunOn`: the committed and try amounts, the gas `CellGeometry` and `FacePieceGeometry`,
 `blob_of_cell`, the blob lists and every block-counted or given-count row. Moved to `kCpu` at the limits (and
 `kRunOn` at `max_loaded_blocks` for the loaded piece): every other row counted per cell or face place
@@ -1110,7 +1142,8 @@ Analytic and conservation, CPU, each on uniform cells and on two size levels unl
 | Marker upkeep (branch: `FrameRuntimeReplenishesApicMarkersAfterOpenOutflow`) | Cells with 0, 3, 8, 20 markers; steady 0.5 m/s through an open box | 8 in each after the changes; removed ids are the highest; new markers carry 0.5 m/s | exact; `1e-12` |
 | Rising plume keeps its symmetry | Heat patch centred on the floor, open top, 100 steps | Fields mirror in X and in Y; plume top rises | `1e-9` relative |
 | Errors | Two cells out of temperature range | The lower cell index is reported; nothing is readable | exact |
-| `ToName, EveryError_LowerSnakeCase` (NEW) | every `GasError` | the enumerator's name without `k`, lower snake case; all distinct | exact |
+| `ToName, EveryError_LowerSnakeCase` (NEW; CHANGED A58) | every `GasError` | 13 values, `kOutOfMemory` last (`"out_of_memory"`); the enumerator's name without `k`, lower snake case; all distinct | exact |
+| `BuildGasBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (NEW, A58) | `GasBufferSizes` of 10 blocks, 2 sources, one piece and batched (loaded 4), `kCpu`; one CPU `RunMemory` of exactly the sum over both `where` of `ComputeRunMemoryBytes(BuildGasMemoryEstimate(sizes, kCpu), counts, where)`, passed as both blocks; `BuildGasAmounts` then `BuildGasBuffers` into it | `handed_out_bytes() == reserved_bytes()`; one byte fewer: `kOutOfMemory`, `magnitude` = bytes the last piece asked | exact |
 | Cancel (NEW) | `cancel_requested` set before `SolveGas` | `kCancelled` with the pressure failure; the committed amounts unchanged after `RejectTry` | exact |
 | `CheckGasCanRun` (NEW) | Two gas materials; a gas ingredient at another density; `AirPocketSettings::heat_ratio` 1.3; liquid and gas in a batched run | `kMoreThanOneGas`; `kGasLawDisagrees` twice; success | exact |
 | `ToGasSnapshot, EqualsReadGasSnapshot` (NEW) | Fire scene after 20 steps, some cells with `gas_volume = 0` | `ToGasSnapshot(ReadGasAmountsSnapshot(amounts, grid), law, grid.frame())` equals `ReadGasSnapshot(amounts, grid, law)` field by field; cells without gas left out | exact |
@@ -1172,8 +1205,11 @@ Supporting evidence only (programme design section 7): the analytic rows are the
 identical bytes for all seven arrays and the velocity; the fire scene for 10 steps; the smoke-over-water scene
 for 10 steps; the batched GPU rows above.
 **Without a GPU (labels `cpu`, `no_gpu`):** all shared formula headers, the per-blob grouping, and every
-operation with a `_gpu.cu` (`BuildGasAmounts`, `BuildGasBuffers` in both layouts, `SolveGas`,
-`ApplyGasStepStart`, `FindMarkerChanges`) returning `kRunOnCallFailed` on the GPU in the container.
+operation with a `_gpu.cu` (~~`BuildGasAmounts`, `BuildGasBuffers` in both layouts,~~ `SolveGas`,
+`ApplyGasStepStart`, `FindMarkerChanges`) returning `kRunOnCallFailed` on the GPU in the container. CHANGED (A58): a
+GPU `RunMemory` cannot be built without a GPU (Foundation's `BuildRunMemory, OnGpuWithoutAGpu_IsRunOnCallFailed`),
+so the building functions have no "without a GPU" test; `BuildGasMemoryEstimate` with `kGpu` is counted without a
+GPU (label `cpu`).
 
 **Tests the step plan adds** (they need `TryStep`; gas plan "Tests the step plan must add", amended A15 and
 A18 and A24): `TryStep, GasHeatPulse_RejectedAndCommittedFramesKept`; `TryStep, BatchedFireBesideWater_WithinStepTolerance`
@@ -1354,6 +1390,7 @@ method; c) no gas and liquid in one scene. Rec: a. It needs, in designs already 
 std::span<const std::uint8_t> material_is_counted;   // new field of CellsFromParticlesInputs; empty: all
 // particles: a reason for removing a marker that is not needed.
 enum class RemoveReason { kLeftDomain, kThroughOutlet, kIntoGridOnlyRegion, kMarkerNotNeeded };
+// (A64: kIntoGridOnlyRegion is not in the first version; there is no grid-only region. Gas markers never had it.)
 // pressure: the three additions of section 4.     base: math::Expm1.
 ComputeBlobOfCell(equations, blob_of_cell);  SealedBlobCheck::kWhenRatesApplied;  CellContent::kGas;
 ```
@@ -1453,7 +1490,8 @@ ascending index" (5.3 step 8, 5.4, 6) and the byte-identical batched fire test (
 `TryStep, BatchedFireBesideWater_WithinStepTolerance`).
 
 **12. Wind from Blender's force fields.** Decision: the add-on derives the wind keys from Blender's Wind force
-fields with 1.0 m/s2 per unit of Strength (the branch's factor); I/O carries them as `gas_wind`; the gas module
+fields with 1.0 m/s2 per unit of Strength (the branch's factor); I/O carries them as `gas_wind` (**replaced in part**
+by decision 21: the field is `wind`, written whenever a Wind field exists); the gas module
 reads them as written in `GasWind` and converts nothing. Source: owner answer A20, `plan-decisions.md`
 "Amendments of 2026-11-14 to the Blender and render-output plans" (Wind). No gas declaration changes.
 
@@ -1520,15 +1558,35 @@ depend on it; the step passes its run's processor. A library that needs exceptio
 neither. Source: `reconcile-todo.md` item 24; `plan-decisions.md` "Plans adopt Foundation as built (2026-11-14)";
 gas plan Task 10.
 
+**20. One reserved block per run (A58).** Decision: `BuildGasAmounts` and `BuildGasAmountsFromSnapshot` take
+`RunMemory& run_memory` last; `BuildGasBuffers` builds on both processors and takes `RunMemory& run_memory, RunMemory&
+cpu_run_memory` last (the `MarkerChanges` lists and the batched layout's CPU rows from the second; the same object
+twice in a CPU run). One estimate row per buffer, so `ComputeRunMemoryBytes` per `where` is exact; the GPU
+marker-list row becomes `kWholeRun`. Test `BuildGasBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`. I/O's
+`kMemoryWarningShare` and `kCopyWarningShare` are removed (A43: a warning for any byte or copy beyond the plan), so
+the open point that named them is gone. Source: owner answers A58, A43; `plan-decisions.md` "Owner answers A40-A64
+applied", item 3 and its same-day correction.
+**21. Wind on spray and foam, never on the liquid (A47, A50).** Decision: wind acts on gas in the solver (unchanged)
+and on spray and foam in render output; never on the liquid body. The scene field `gas_wind` is renamed `wind`
+(same keys); the add-on writes it whenever a Wind field exists, so the keys exist in liquid-only scenes too;
+`GasWind`, `GasWindKey`, `SampleGasWind` and `ReadyScene::wind` keep their names; `render_output::RenderSettings::wind`
+is the same `GasWind`. Findings: `wind_without_gas` (NOTE) and `wind_flow_not_honoured` only when Flow is not 1.0.
+No gas declaration changes. Source: owner answers A47, A50; `plan-decisions.md` "Owner answers A40-A64 applied",
+item 8. Replaces in part decision 12 and the open point on wind on liquids.
+**22. `kOutOfMemory` appended last (reconcile item 31).** Decision: `GasError::kOutOfMemory` is the 13th value,
+returned only by `BuildGasAmounts`, `BuildGasAmountsFromSnapshot` and `BuildGasBuffers` (also for
+`BufferError::kRunMemoryTooSmall`, `magnitude` = bytes asked). Source: reconcile item 31; `plan-decisions.md` "Owner
+answers A40-A64 applied", item 11.
+**23. No grid-only region (A64).** Decision: every liquid cell holds particles in the first version; the gas module
+had no grid-only input, and the `kIntoGridOnlyRegion` reason quoted in decision 3 is not in the first version.
+Source: owner answer A64; `plan-decisions.md` "Owner answers A40-A64 applied", item 1.
+
 **Open** (left undecided by the plans):
 
-- Wind on liquids: A20 and the plans apply wind only to gas (no keys in a domain without gas); whether wind
-  should act on a liquid surface is not decided.
+- ~~Wind on liquids: A20 and the plans apply wind only to gas (no keys in a domain without gas); whether wind
+  should act on a liquid surface is not decided.~~ Settled by decision 21 (A47: never on the liquid body).
 - Where the gas `MarkerChanges` arrays and the other `kCpu` rows are needed by stage `AddNewParticles` in a
   batched GPU run beyond what Task 29 states (which buffers stage 1 needs on which processor) is left to the step
   and batches plans. **Settled by decision 14** (plan decision, 2026-11-14, buffers in batched runs).
-- `kMemoryWarningShare = 1.10` and `kCopyWarningShare = 1.25` (I/O's measured-cost warnings, which compare the
-  gas solve's copies among the others) are new constants awaiting the owner (`plan-decisions.md` "Planned cost
-  shown to the user", open point 1).
 - `BatchSettings::solve_piece_share = 0.25` and the batched direct-solve room `4 * max_cells`, which size the
   gas solve's loaded piece, await the owner (`plan-decisions.md` A15 "Open points" 1).

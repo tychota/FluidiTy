@@ -103,8 +103,10 @@ enum class SolidsError : std::uint8_t {
   kNotFinite,              // A computed value is not finite.
   kBuffersTooSmall,        // More motion-map entries or reactions than the buffers were built for.
   kRunOnCallFailed,        // CheckCanRunOn failed for the chosen processor, or a call to it failed.
-  kOutOfMemory,            // NEW (reconcile item 25). BuildSolidsBuffers could not allocate; magnitude = bytes
-                           //   asked. Returned only by the building functions.
+  kOutOfMemory,            // NEW (reconcile item 25). BuildSolidsBuffers or BuildSolidCoverageValues could not take
+                           //   a piece of its RunMemory (BufferError::kRunMemoryTooSmall, A58); magnitude = bytes
+                           //   asked. Returned only by the building functions. The last value (reconcile item 31,
+                           //   plan-decisions "Owner answers A40-A64 applied" item 11): 18 values.
 };
 struct SolidsFailure {           // The error value of every std::expected here. Never allocates.
   SolidsError error = SolidsError::kNone;
@@ -135,9 +137,19 @@ struct DrivenPath {                      // Before the first key the solid rests
   std::span<const PathKey> keys;         // At least one. Every key time is a jump of the path.
   AfterPath after_path = AfterPath::kStaysAtLastKey;
 };
+// NEW (A59). How a guide is given. kAxisLimits: the four flags below (world axes; turning all or nothing about the
+// origin). kRail: slides along rail_direction, never turns. kHinge: turns about hinge_axis through hinge_point only.
+enum class GuideKind : std::uint8_t { kAxisLimits, kRail, kHinge };
 struct FreeMotionLimits {                // A guide. Default: all six motions are free.
-  bool moves_along_x = true, moves_along_y = true, moves_along_z = true;   // World axes.
-  bool turns = true;
+  bool moves_along_x = true, moves_along_y = true, moves_along_z = true;   // World axes. Read for kAxisLimits only.
+  bool turns = true;                     // Read for kAxisLimits only.
+  GuideKind guide_kind = GuideKind::kAxisLimits;   // NEW (A59).
+  Vec3 rail_direction{0, 0, 1};          // NEW (A59). No unit, world, unit length (normalised at load by I/O;
+                                         //   CheckSolidsCanRun: kBadInput when |length - 1| > 1e-12 or not finite).
+  Vec3 hinge_point{};                    // NEW (A59). m, world, at time 0; the pivot is fixed in the world.
+  Vec3 hinge_axis{0, 0, 1};              // NEW (A59). No unit, world, unit length (as rail_direction). World frame,
+                                         //   decided: a rotation about the axis leaves the axis unchanged, so world and
+                                         //   own axes agree for it; body-fixed axes and moving rails are not exposed.
 };
 struct FreeSolidSettings {
   double mass = 0;                       // kg, positive.
@@ -157,6 +169,12 @@ struct SolidSettings {
   SolidMotionKind motion_kind = SolidMotionKind::kFixed;
   DrivenPath path{};                     // kDriven only.
   FreeSolidSettings free_solid{};        // kFree only. The origin is the centre of mass.
+  // NEW (A53). m. How far beyond the surface a viscous liquid's velocity would reach the solid's (Navier slip
+  // length): 0 full stick (default), +infinity free slip. Read for fixed and driven solids and the domain box beside a
+  // viscous liquid (viscosity's rule (a) uses d + slip_length); free solids always stick (A27) and ignore it (I/O's
+  // check gives the NOTE slip_ignored_on_free_solid for a nonzero value); an inviscid liquid keeps the contact rule.
+  // CheckSolidsCanRun: kBadInput when negative or NaN.
+  double slip_length = 0;
 };
 struct MaterialTheLiquidCannotEnter {    // Snow or a springy solid that liquid must flow around.
   std::uint32_t material_index = 0;      // Of a kSnow or kSpringySolid material. Its own material set (A8).
@@ -205,20 +223,63 @@ struct SolidState {                      // One per solid. What a commit keeps.
   Vec3 angular_velocity{};               // rad/s, world.
   bool is_in_scene = true;               // false after a driven path with kLeavesScene has ended.
 };
-struct InverseInertia {                  // World frame, at one pose. Zero rows for motions a guide forbids.
-  Mat3 per_mass{};                       // 1/kg.
-  Mat3 per_turning_inertia{};            // 1/(kg m2).
+// World frame, at one pose, about the origin. CHANGED (A59; computed with pressure::ComputeGuidedInverseMass for
+// kRail and kHinge, so pressure and solids share one formula): the four blocks of P = J (J^T M J)^-1 J^T, the inverse
+// inertia seen through the guide's allowed motions (J from ComputeAllowedMotions, M = [mass I3, 0; 0, R I R^T]):
+// (linear velocity, turn rate) change = P (push, turning_push). Unguided: per_mass = I3 / mass, per_turning_inertia =
+// R diag(1/I) R^T, couplings 0. kAxisLimits: the same with zero rows and columns for forbidden motions (computed by
+// selection, so the bytes are those of the unguided formula). kRail: per_mass = d d^T / mass, the rest 0. kHinge: all
+// four blocks from the one column [a x (o - p); a] / (mass |a x (o - p)|^2 + a^T R I R^T a).
+struct InverseInertia {
+  Mat3 per_mass{};                       // 1/kg. Linear velocity per push.
+  Mat3 per_turning_inertia{};            // 1/(kg m2). Turn rate per turning push.
+  Mat3 linear_per_turning_push{};        // NEW (A59). 1/(kg m). Linear velocity per turning push.
+  Mat3 turning_per_push{};               // NEW (A59). 1/(kg m). Turn rate per push; the transpose of the block above.
 };
-InverseInertia ComputeInverseInertia(const FreeSolidSettings& settings, Orientation orientation);
-// Velocity after gravity, the steady force and the turning term (5.3 step 1). No pressure, no contact.
+// CHANGED (A59): `origin` (m, world) places a hinge's column. Requires a valid guide (CheckSolidsCanRun).
+InverseInertia ComputeInverseInertia(const FreeSolidSettings& settings, Orientation orientation, Vec3 origin);
+// Velocity after gravity, the steady force and the turning term (5.3 step 1). No pressure, no contact. CHANGED
+// (A59): then projected onto the guide's allowed motions with ComputeAllowedVelocity (state.origin places a hinge).
 SolidsError ComputeVelocityBeforePressure(const FreeSolidSettings& settings, Vec3 gravity, const SolidState& state,
                                           double step_duration, contact::SolidMotion* motion);
-// velocity += inverse inertia * push. push in N s, turning_push in N m s about the origin.
+// velocity += inverse inertia * push, all four blocks (A59). push in N s, turning_push in N m s about the origin.
 contact::SolidMotion ComputeMotionAfterPush(const contact::SolidMotion& motion, const InverseInertia& inverse,
                                             Vec3 push, Vec3 turning_push);
 // Pose and constant velocity of a driven solid for the step [time, time + step_duration] (5.2).
 SolidsError ComputeDrivenMotion(const SolidSettings& settings, double time, double step_duration,
                                 SolidState* state_at_time, contact::SolidMotion* motion);
+```
+
+`guide_math.h` (shared, `FLUIDITY_CPU_AND_GPU`), NEW (A59; `plan-decisions.md` "Owner answers A40-A64 applied" item 5):
+
+```cpp
+// A guide's allowed motions in general form: motion xi = J q + xi_0, xi = (V, Omega) in world axes about
+// origin_at_start, J the first column_count columns (each six numbers: V then Omega), q the generalized velocities
+// (Batty 2007, Aanjaneya 2018). prescribed_motion is xi_0; always 0 today (no setting exposes a moving rail).
+struct AllowedMotions {
+  double columns[6][6];                  // columns[k] is column k. Only the first column_count are read.
+  std::uint8_t column_count = 6;
+  double prescribed_motion[6] = {};
+};
+// Built each try. kAxisLimits: one selection column (exactly 0 or 1) per allowed motion, in the order V.x, V.y, V.z,
+// then Omega x, y, z when turns (6 columns, the identity, when unguided). kRail: J = [d; 0]. kHinge: J = [a x (o -
+// p); a], o = origin_at_start, p = hinge_point, a = hinge_axis (one column). Columns are independent, so J^T M J is
+// positive definite. No FMA contraction.
+FLUIDITY_CPU_AND_GPU AllowedMotions ComputeAllowedMotions(const FreeMotionLimits& limits, Vec3 origin_at_start);
+// NEW (A59, plan decision). The motion kept by the guide: the M-orthogonal projection J (J^T M J)^-1 J^T M xi + xi_0
+// (M = [mass I3, 0; 0, inertia_world]), computed by pressure::ComputeGuidedSolidMotion with a zero impulse (the
+// declaration sits here; the definition in a solids header that includes pressure's, since guide_math.h stays
+// header-only and pressure includes it); for kAxisLimits the selection itself (forbidden components set to 0, the
+// others kept bitwise), so axis guides keep the bytes of 5.3 step 1's "a motion the guide forbids is set to zero".
+FLUIDITY_CPU_AND_GPU contact::SolidMotion ComputeAllowedVelocity(const FreeMotionLimits& limits, Vec3 origin,
+                                                                double mass, const Mat3& inertia_world,
+                                                                const contact::SolidMotion& motion);
+// NEW (A59, plan decision). The pose after a step of constant motion (5.3 step 4): kAxisLimits and unguided origin +=
+// dt V, orientation turned by dt Omega; kRail origin += dt (V . d) d, orientation unchanged; kHinge the pose rotated
+// about hinge_point by angle dt (Omega . a) about hinge_axis (origin = p + Rot(o - p), orientation turned by the same
+// rotation), so the pivot distance |o - p| is kept to rounding (the hinge's position correction).
+FLUIDITY_CPU_AND_GPU void ComputePoseAfterStep(const FreeMotionLimits& limits, const contact::SolidMotion& motion,
+                                               double step_duration, Vec3* origin, Orientation* orientation);
 ```
 
 ### 3.4 `solids.h` and `solids_try.h` (CPU only)
@@ -268,6 +329,23 @@ class SolidsTry {                        // One try of one step. Dropping it cha
   // NEW (A27, plan decision). The pressure part of the last ApplyPressureToSolids or ApplySolvedMotionToSolids;
   // the step passes it as ExchangeInputs::pressure_on_solids after stage 11.
   PressureOnSolids pressure_on_solids() const;
+  // NEW (A60). One per solid of solids() (ascending solid_id, fixed, driven, free and the domain box): the force of
+  // the liquid from the last ApplyPressureToSolids (viscous parts 0) or ApplySolvedMotionToSolids. Empty after
+  // BuildTry. Copies inside the try. The step's StepReport::liquid_force_on_solids is filled from the committed try.
+  std::span<const LiquidForceOnSolid> liquid_forces() const;
+  // NEW (A53, plan decision). m, one per solid of solids(): SolidSettings::slip_length, 0 for free solids (they always
+  // stick). What viscosity::ViscosityInputs::solid_slip_length takes.
+  std::span<const double> slip_length() const;
+};
+// liquid_force.h (CPU only, the type shared), NEW (A60; plan-decisions "Owner answers A40-A64 applied" item 6).
+struct LiquidForceOnSolid {              // Mean over the step: impulse / step duration. World axes.
+  std::uint32_t solid_id = 0;
+  Vec3 pressure_force{};                 // N. From the solve's pressure (PressureOnSolids push / dt).
+  Vec3 pressure_torque{};                // N m about the solid's origin at the step start (T_p = T_o + (o - p) x F
+                                         //   moves it to a point p).
+  Vec3 viscous_force{};                  // N. From the viscous solve's terms (ViscousPushOnSolid push / dt); 0 for an
+                                         //   inviscid liquid. A guided solid reports all six numbers: the guide's
+  Vec3 viscous_torque{};                 //   reaction is in them. N m, same point.
 };
 struct SolvedMotionReport {              // NEW (A27, plan decision). One per free solid, FreeSolidPush order.
   Vec3 push{};                           // N s: mass * (velocity after - velocity before), the whole change.
@@ -325,8 +403,10 @@ struct SolidCoverageValues {             // Owns the arrays pressure::SolidCover
 };
 pressure::SolidCoverage ToSolidCoverage(const SolidCoverageValues& values);
 // NEW (plan-decisions "Solids"). The step builds its coverage arrays with it.
+// CHANGED (A58): every array is a piece of `run_memory`; Requires: run_on == run_memory.run_on() (debug assertion).
 std::expected<SolidCoverageValues, SolidsFailure> BuildSolidCoverageValues(RunOn run_on,
-                                                                           std::uint32_t max_cell_blocks);
+                                                                           std::uint32_t max_cell_blocks,
+                                                                           RunMemory& run_memory);
 
 struct SolidsOnGridInputs {
   const grid::StaggeredGrid& grid;
@@ -387,7 +467,12 @@ std::expected<MotionMap, SolidsFailure> BuildMotionMap(const MotionMapInputs& in
 // FreeSolidPush::solid_index is the index of the free solid among the free solids of SolidsTry::solids(), in
 // that order (plan-decisions "Solids").
 std::span<const pressure::FreeSolidPush> ToFreeSolidPushes(const MotionMap& motion_map);
-std::span<const Mat3> ToFreeSolidInverseInertia(const MotionMap& motion_map);   // Two per free solid, same order.
+// CHANGED (A59; replaces ToFreeSolidInverseInertia, two Mat3 per free solid): what pressure::EquationInputs takes
+// for the free solids, one entry per free solid in FreeSolidPush::solid_index order, filled by BuildMotionMap:
+// pressure::FreeSolidInertia { double mass; Mat3 inertia_at_start; solids::AllowedMotions allowed_motions; } with
+// allowed_motions = ComputeAllowedMotions(limits, origin_at_start) (declared by pressure; pressure's term becomes
+// (K J)(J^T M J)^-1 (K J)^T, rank m, and pressure::ComputeGuidedSolidMotion holds the one factor).
+std::span<const pressure::FreeSolidInertia> ToFreeSolidInertia(const MotionMap& motion_map);
 
 struct PressureOnSolids {                // Per solid of SolidsTry::solids(), from one accepted pressure.
   std::span<const Vec3> push;            // N s. Driven and fixed solids: reported, their motion is unchanged.
@@ -404,6 +489,10 @@ struct PressureOnSolids {                // Per solid of SolidsTry::solids(), fr
 // particles (A18: blocking materials are moved by ApplyPressureToMaterials, 3.6a). Per-solid sums: block
 // partials, then a tree sum. Fails kSolidMovesTooFar when a free solid's velocity after pressure breaks the
 // travel or turn limit (`limit` = allowed step, s); the step shortens the step and retries, as for BuildTry.
+// NEW (A60): also fills SolidsTry::liquid_forces() (pressure part / dt; viscous parts 0). CHANGED (A59): a free
+// solid's motion after pressure is pressure::ComputeGuidedSolidMotion(solid, xi_before, impulse, xi_after) with its
+// FreeSolidInertia (q = (J^T M J)^-1 J^T (M xi_before + impulse), xi = J q + xi_0), so it stays in the allowed motions
+// and shares pressure's factor.
 std::expected<PressureOnSolids, SolidsFailure> ApplyPressureToSolids(
     const MotionMap& motion_map, const grid::CellValues<double>& pressure, SolidsTry& solids_try,
     SolidsBuffers& buffers);
@@ -419,22 +508,34 @@ struct FreeSolidForViscousSolve {
   Vec3 origin_at_start{};                 // m
   Vec3 velocity_before_pressure{};        // m/s
   Vec3 turn_rate_before_pressure{};       // rad/s
-  FreeMotionLimits limits{};              // NEW (guides): forbidden motions are held at their value before pressure.
+  // CHANGED (A59; replaces `FreeMotionLimits limits`, "forbidden motions are held at their value before pressure"):
+  // ComputeAllowedMotions(settings.limits, origin_at_start). The solve's unknowns are its q; sizeof 504 B.
+  AllowedMotions allowed_motions{};
 };
 std::span<const FreeSolidForViscousSolve> ToFreeSolidsForViscousSolve(const MotionMap&);
 struct FreeSolidMotion { Vec3 velocity{}; Vec3 turn_rate{}; };   // m/s, rad/s
+// NEW (A60). The viscous push on one solid, as viscosity::ViscosityResult::viscous_push_on_solids gives it (one per
+// SolidsTry::solids() entry): N s, and N m s about the solid's origin at the step start, world axes.
+struct ViscousPushOnSolid { Vec3 push{}; Vec3 turning_push{}; };
 // Stage 11, in place of ApplyPressureToSolids. Like ApplyPressureToSolids, with the motion solved by the viscous
 // solve: (1) the pressure part from the map and `pressure`, computed and kept in the try exactly as
 // ApplyPressureToSolids does (ExchangeTotals and CheckSolidExchange unchanged); (2) each free solid's motion becomes
-// motion_after_solve[k], except that a motion its guide forbids keeps its value before pressure (plan decision);
-// (3) travel and turn limits checked again (kSolidMovesTooFar, `limit` = allowed step); (4) push report
-// mass * (after - before) and inertia_at_start * (turn rate change) in SolidsTry::solved_motion(), pressure part
-// kept separately. motion_after_solve has one entry per FreeSolidForViscousSolve (kBadInput otherwise); a map of
-// an earlier build kWrongTime; pressure of another grid kWrongGridVersion; kNotFinite. On failure the try is
-// unchanged.
+// motion_after_solve[k] as given (CHANGED, A59: the solve keeps it in the allowed motions, so nothing is dropped;
+// replaces "except that a motion its guide forbids keeps its value before pressure"); (3) travel and turn limits
+// checked again (kSolidMovesTooFar, `limit` = allowed step); (4) push report mass * (after - before) and
+// inertia_at_start * (turn rate change) in SolidsTry::solved_motion(), pressure part kept separately; (5) NEW (A60)
+// SolidsTry::liquid_forces(): per solid the pressure part / dt, viscous parts 0 until ApplyViscousImpulses.
+// motion_after_solve has one entry per FreeSolidForViscousSolve (kBadInput otherwise); a map of an earlier build
+// kWrongTime; pressure of another grid kWrongGridVersion; kNotFinite. On failure the try is unchanged.
 std::expected<void, SolidsFailure> ApplySolvedMotionToSolids(const MotionMap&,
     std::span<const FreeSolidMotion> motion_after_solve, const grid::CellValues<double>& pressure,
     SolidsTry&, SolidsBuffers&);
+// NEW (A60). Stage 11, right after ApplySolvedMotionToSolids: stores viscosity::ViscosityResult::
+// viscous_push_on_solids (one per SolidsTry::solids() entry) in the try, so liquid_forces() holds viscous_force =
+// push / dt and viscous_torque = turning_push / dt. Another size: kBadInput; a value not finite: kNotFinite; on
+// failure the try is unchanged. CPU only; nothing else changes (the motion already includes the viscous terms).
+std::expected<void, SolidsFailure> ApplyViscousImpulses(std::span<const ViscousPushOnSolid> viscous_impulse,
+                                                        SolidsTry& solids_try);
 // REMOVED (A18): MaterialPushFields and the particle form of ApplyPressureToMaterials (push returned to
 // blocking-material particles after MoveParticles, one step late). See 3.6a and decision 3.
 class SolidsBuffers;                     // D word. Preallocated: map entries, blocking-material faces, reactions,
@@ -445,9 +546,14 @@ class SolidsBuffers;                     // D word. Preallocated: map entries, b
 // A17, batched-run buffers: signature unchanged; with settings.run_on = kCpu every entry has where = kCpu. Instances
 // built from one Solids with different counts or processors may coexist (the step's whole instance at zero
 // particles, its loaded instance, its CPU stage-17 instance, section 6); no instance points into another.
+// CHANGED (A58; plan-decisions item 3 and its same-day correction): every entry is a piece of `run_memory`, the
+// RunMemory of the processor the buffers live on: the run's block for run_on = the run's processor; the run's
+// cpu_run_memory for the stage-17 instance (run_on = kCpu in a GPU run, every entry where = kCpu). Requires:
+// settings.run_on == run_memory.run_on() (debug assertion, A30).
 std::expected<SolidsBuffers, SolidsFailure> BuildSolidsBuffers(const SolidsSettings& settings,
                                                                std::size_t max_particle_count,
-                                                               std::uint32_t max_cell_blocks);
+                                                               std::uint32_t max_cell_blocks,
+                                                               RunMemory& run_memory);
 ```
 
 ### 3.6a `blocking_material_faces.h` (+ `_cpu.cc`, `_gpu.cu`), NEW (A18)
@@ -725,6 +831,9 @@ the name as that module's section 3 has it; for a module updated at the same tim
 open-to-sky box arrays are `kCpu` entries), `RunOn` in the shared `base/run_on.h`, `CheckCanRunOn` in the CPU-only
 `base/check_can_run_on.h`; buffers on one processor are a precondition, so no processor mismatch is mapped (A30).
 `OrderBuffers` taken by `BuildStableOrder`, `ComputeExclusivePrefixSum`, `BuildGroupsByDestination` (one form, A31).
+NEW (A58; Foundation Tasks 17 to 19): `RunMemory`, `BuildBuffer(RunOn, size, RunMemory&)`, the `RunMemory&` form of
+`BuildOrderBuffers`, `BufferError::kRunMemoryTooSmall` (mapped to `kOutOfMemory`), `ComputeRunMemoryBytes(estimate,
+counts, where)`.
 
 **Contact (PROVIDED, contact 3.1 to 3.5):** `Solid`, `SolidShape`, `SolidPose`, `SolidMotion`, `ClosedSides`,
 `DomainBox`, `PlateSide`, `SolidSide`, `kNoSolid`, `ToSolid`, `CheckSolid`, `ComputeSolidPose`,
@@ -765,13 +874,20 @@ in a viscous scene on the band faces after `ApplyViscousSolveToMaterials`, A26),
 the stage functions, each taking a `transfer::TransferBuffers` (one form, A31; plan-decisions "Transfer"), are what tests and the liquid loop use.
 
 **Pressure (PROVIDED, pressure 3):** `SolidCoverage` (filled here over every active cell), `FreeSolidPush`,
-`EquationInputs::free_solid_pushes` and `free_solid_inverse_inertia`, `GeometrySnapshot`, `CellGeometry::
+`EquationInputs::free_solid_pushes` and `free_solid_inverse_inertia` (A59: the free-solid inertia entries, `FreeSolidInertia`), `GeometrySnapshot`, `CellGeometry::
 content` with `CellContent::kLiquid`, `FacePieceGeometry::open_area` and `solid_volume_rate`,
 `SolvedArrays::pressure` (the step's try array), `ReadyOpenSea`, `ApplyOpenSeaRelaxation`,
 `AirPocketInputs::grid_edge_is_open_to_sky`, `kNoEquation`, and the two functions added for this module:
 `ComputeBlockedCornerAreas(distance_to_solid[4], area, corner_area[4])` (`geometry_clip_math.h`, shared) and
 `ComputeEquationIndexes(geometry, blocks, equation_of_cell)`. No face is clipped twice and the order of the
-equations is pressure's. A18 (`plan-decisions.md`, pressure plan Tasks 43 to 50): `BlockingMaterialFace`
+equations is pressure's. CHANGED (A59; pressure owns it, `plan-decisions.md` item 5): `pressure::FreeSolidInertia
+{ mass; inertia_at_start; allowed_motions }` replaces the two inverse-inertia `Mat3` per free solid (this module
+fills it with `ToFreeSolidInertia`), and `pressure::ComputeGuidedSolidMotion(solid, xi_before, impulse, xi_after)`
+(`pressure/free_solid_guide_math.h`, shared: `q = (J^T M J)^-1 J^T (M xi_before + impulse)`, `xi = J q + xi_0`) and
+`ComputeGuidedInverseMass` are the one formula for the guided inverse mass, which `ApplyPressureToSolids`,
+`ComputeAllowedVelocity` and `ComputeInverseInertia` call. Pressure's `solid_volume_rate` and
+`free_solid_motion_before_pressure` come from the guided motion before pressure. Pressure includes the header-only
+`solids/guide_math.h` for `AllowedMotions`; pressure Task 47a follows solids Task 5a. A18 (`plan-decisions.md`, pressure plan Tasks 43 to 50): `BlockingMaterialFace`
 (`face_piece_index`, `material_set`, `blocked_area`, `face_mass`, `velocity_before_pressure`,
 `coverage_volume_rate`), `EquationInputs::blocking_material_faces`,
 `SolvedArrays::blocking_material_velocity_after_pressure` (one per face, input order),
@@ -794,7 +910,10 @@ viscosity. Band faces and free-solid motions are velocity unknowns of the joint 
 and `has_free_solid_touching_liquid` removed; no combination of materials is refused because of viscosity). The
 A24 elimination of material faces (and the slide) holds only in `SolvePressure` (decisions 14, 15). `SolidsSummary`
 gives the step what `ViscositySceneSummary` needs (`has_driven_solid`, `has_free_solid`, `has_inclined_solid`,
-`has_blocking_material`).
+`has_blocking_material`). NEW (A59, A60, A53): `FreeSolidForViscousSolve::allowed_motions` (the solve's
+unknowns are the m generalized velocities, block `J^T (M + dt R^T E_s^T W E_s R) J`); `ViscosityResult::
+viscous_push_on_solids` (`std::span<const solids::ViscousPushOnSolid>`, one per `SolidsTry::solids()` entry, every
+motion kind), which `ApplyViscousImpulses` takes; `ViscosityInputs::solid_slip_length` (`SolidsTry::slip_length()`).
 
 **Materials (PROVIDED, materials 3):** `MaterialKind` (`kSnow`, `kSpringySolid`), `HasInternalForce`,
 `AtSolidFaces { kParticlesOnly, kNoMotionIntoSolid }` and `Material::at_solid_faces`, `Ingredient::friction`
@@ -834,7 +953,7 @@ piece; section 6). Per try it calls, in this order:
 `DriveWaves` (owner of the call, decision 8); stage `CollideSolids`: `CollideSolids` with every non-gas material
 set; stage 10 `BuildPressureEquations`: `BuildMotionMap`, then (scene with liquid and a blocking set)
 `BuildBlockingMaterialFaces` with the whole grid and every blocking set, then `ToFreeSolidPushes`,
-`ToFreeSolidInverseInertia` and `ToBlockingMaterialFaces` into `EquationInputs` (whatever stage follows, 11 or 12; A24),
+`ToFreeSolidInertia` (A59; was `ToFreeSolidInverseInertia`) and `ToBlockingMaterialFaces` into `EquationInputs` (whatever stage follows, 11 or 12; A24),
 and in a viscous scene (A26, A27) `BuildViscousMaterialFaces` after `BuildBlockingMaterialFaces` (scene with a
 blocking set) and `ToFreeSolidsForViscousSolve(motion_map)` into `ViscosityInputs`; stage 12 `SolvePressure`:
 `SolvedArrays::blocking_material_velocity_after_pressure` is the step-owned span; after the solve
@@ -858,7 +977,10 @@ inputs are in CPU memory); stage `CheckStep`: `CheckSolidExchange` (after stage 
 `ApplySolvedMotionToSolids`) and contact's
 `kSecondReactingSolid`, and sums the block partials of per-range calls in block order. When there is no solid
 but the domain box, stage 2 fills both `SolidsAtFaces` with `ComputeSolidsAtFaces` once per new grid version
-(plan-decisions "Step").
+(plan-decisions "Step"). NEW (A58, A60, A53): it builds the `SolidsBuffers` and the coverage arrays with the
+`RunMemory` of their processor (the stage-17 instance with `cpu_run_memory`), passes `SolidsTry::slip_length()` and
+`ViscosityResult::viscous_push_on_solids` to `ApplyViscousImpulses` (stage 11, after `ApplySolvedMotionToSolids`), and copies
+`SolidsTry::liquid_forces()` of the committed try into `StepReport::liquid_force_on_solids`.
 
 **Cell resize and batches (PROVIDED, cell resize and batches 3, 5):** remaps nothing of this module (every
 array is recomputed per try). After a resize it calls `ComputeSolidsAtFaces(grid, blocks, solids,
@@ -927,14 +1049,20 @@ cell), and the turn `|angular_velocity| * dt <= kMaxTurnPerStep`.
    `w_own = R^T w`: `linear_velocity += dt * (gravity + steady_force / mass)`,
    `angular_velocity += dt * R * ((- w_own x (I w_own)) / I)` (division entry by entry; no torque is stored
    between steps, because every push is already in the committed velocity). A motion the guide forbids is set
-   to zero.
+   to zero. CHANGED (A59): the motion is projected onto the guide's allowed motions, `xi <- J (J^T M J)^-1 J^T M xi +
+   xi_0` (`ComputeAllowedVelocity`; for axis limits the selection, so "set to zero" is unchanged bitwise; a rail
+   keeps the speed along `d`; a hinge keeps the turn about its axis with the matching `V = Omega x (o - p)`).
 2. *Velocity after pressure* (`ApplyPressureToSolids`, 5.5). This is the velocity the solid moves with for the
    whole step, as on `main` ("the coupled velocity sets both wall flux and drift").
 3. *Contact* (`ApplyContactReactions`, 5.6). The summed reaction changes the velocity the solid ends the step
    with, not its motion during the step (ported lag of `liquid_substep_3d.cc:2700-2722`).
 4. *Commit.* `origin += dt * linear_velocity_after_pressure`; `orientation = ComputeTurnedOrientation(start,
    dt * angular_velocity_after_pressure)`; committed velocity `= after pressure + inverse inertia * contact
-   push`, the inverse inertia taken at the end pose. `RejectTry` keeps the old state: pose, velocity, totals.
+   push`, the inverse inertia taken at the end pose. CHANGED (A59; `ComputePoseAfterStep`): a rail moves the origin
+   along `d` only; a hinge rotates the pose about `hinge_point` by `dt (Omega . a)` about `hinge_axis` instead of
+   translating it by `dt V`, so the pivot distance is kept to rounding (positions are frozen during the solve, so a
+   translation would drift at first order; `literature-practice.md` topic 3); the contact push goes through all four
+   blocks of the inverse inertia, so the committed velocity stays in the allowed motions. `RejectTry` keeps the old state: pose, velocity, totals.
 
 Not supported, as on `main`: a free solid within one cell width of another solid (`kSolidsTooClose`); no
 solid-against-solid contact exists. A free solid may leave the liquid and fall freely.
@@ -1005,7 +1133,8 @@ with an owner), with `signed_corner_area = s * corner_area[c]`, `s = +1` when `i
    any flat blocked part moving as one piece. The same entries serve a material whose corners have different
    owners. `main` used a patch centroid for boxes and corners for snow; this is the corner form for all.
 4. *In the solve* (pressure step 15). For free solids pressure adds `dt * push^T * inverse_inertia * push`;
-   the six extra solves of `main` are gone. *In a viscous scene (A27):* each free solid's six motions (`V`, `Omega`
+   the six extra solves of `main` are gone. CHANGED (A59): pressure reads `FreeSolidInertia` (`ToFreeSolidInertia`),
+   so a guided solid adds the rank-m term `(K J)(J^T M J)^-1 (K J)^T`. *In a viscous scene (A27):* each free solid's six motions (`V`, `Omega`
    about its origin at the step start) are unknowns of viscosity's joint solve, not eliminated: its row is
    `[m I3, 0; 0, I_start] xi_after = [m I3, 0; 0, I_start] xi_before + dt sum_e (force_per_pressure,
    torque_per_pressure)_e p_e - (viscous traction)`, the pressure part from the same `FreeSolidPush` entries as
@@ -1020,9 +1149,11 @@ with an owner), with `signed_corner_area = s * corner_area[c]`, `s = +1` when `i
    (cell, face, corner) order with `math::TreeSum`; the block partials are then summed with `math::TreeSum` in
    the grid's fixed block order. Free: `motion = ComputeMotionAfterPush(before pressure, inverse inertia at
    the start pose, push, turning_push)`, then the travel and turn limits of 5.2 are checked again on the
-   velocity after pressure (`kSolidMovesTooFar`). In a viscous scene (A27) `ApplySolvedMotionToSolids` does the
-   same pressure sums and keeps them as the pressure part, but sets the motion to the solved one (a motion a
-   guide forbids keeps its value before pressure), checks the limits again, and reports the whole change
+   velocity after pressure (`kSolidMovesTooFar`); CHANGED (A59): the motion after pressure is
+   `pressure::ComputeGuidedSolidMotion` (the guided form of `ComputeMotionAfterPush`). In a viscous scene (A27) `ApplySolvedMotionToSolids` does the
+   same pressure sums and keeps them as the pressure part, but sets the motion to the solved one (**replaced**
+   (A59): "a motion a guide forbids keeps its value before pressure"; the solve's generalized velocities keep it in
+   the allowed motions), checks the limits again, and reports the whole change
    `mass (after - before)` separately (`SolidsTry::solved_motion()`). Driven: the push is reported and the work it gives the
    material, `-(push . v + turning_push . w)` with `push` the push on the solid, is added to `driven_work`;
    `flow_work = dt * sum_i p_i * (solid volume rate into cell i)` is the same number (sign of work, section 3).
@@ -1031,6 +1162,18 @@ with an owner), with `signed_corner_area = s * corner_area[c]`, `s = +1` when `i
 6. *Blocking materials.* Replaced by 5.5a (A18). The earlier rule (`ApplyPressureToMaterials` after
    `MoveParticles` adding each entry's push to its owner particle's `velocity.for_next_step` and
    `fitted_velocity_change`, one step late; decision 3) is removed.
+
+**5.5b The force of the liquid on every solid (NEW, A60; `plan-decisions.md` item 6; Uhlmann 2005, Batty 2007).**
+Per solid of the try (fixed, driven, free, the domain box), from the solve's own terms, so the sum is exactly the
+momentum exchanged: the pressure part is 5.5 step 5's push and turning push (the motion map entries of every solid,
+already summed for driven and fixed solids); the viscous part is viscosity's `-dt R^T E_s^T W (E x + g)` over the
+samples that read the solid (`viscous_push_on_solids`), 0 in an inviscid scene. `LiquidForceOnSolid` divides both by
+`dt` (mean force and torque over the step), world axes, torque about the origin at the step start. A guided solid
+reports all six numbers, the guide's reaction included. For a free unguided solid pressure plus viscous push equals
+`M (xi_after - xi_before_pressure)` to the solve's tolerance (viscosity's invariant test).
+
+**Slip length (NEW, A53).** `SolidSettings::slip_length` reaches viscosity through `SolidsTry::slip_length()`; this
+module only checks it and passes it on (viscosity 5, "Slip length").
 
 **5.5a Blocking-material faces inside the liquid solve (A18; replaces decision 3's lag; plan Task 23).** A
 blocking material's inertia goes into the liquid pressure solve through its own set's face (decision 1 b gives
@@ -1243,7 +1386,7 @@ by one thread. Sums use `math::TreeSum` over the fixed orders of section 5.
 | material face velocity after pressure (A18) | 8 B | entry (`max_motion_map_entries`) | step |
 | viscous material faces (A26) | `sizeof(ViscousMaterialFace)` (32) + 4 B count per block | entry (`2 x max_motion_map_entries`) | `SolidsBuffers` |
 | material face velocity after solve (A26) | 8 B | entry (`2 x max_motion_map_entries`) | step |
-| free solids for the viscous solve (A27) | `sizeof(FreeSolidForViscousSolve)` (160) | free solid (`kMaxFreeSolidCount`) | `SolidsBuffers` |
+| free solids for the viscous solve (A27) | `sizeof(FreeSolidForViscousSolve)` (504 since A59: 160 + `sizeof(AllowedMotions)` 344) | free solid (`kMaxFreeSolidCount`) | `SolidsBuffers` |
 | free solid motion (A27) | 48 B | free solid | step |
 | per-set pushes on blocking sets | 24 B, `MemoryWhere::kCpu` | blocking material | `SolidsBuffers` |
 | open-to-sky box occupancy and reached boxes (A17) | 1 + 1 B, `kCpu`; the same on `kRunOn` for a GPU grid | box of the domain's lattice | `SolidsBuffers` |
@@ -1257,7 +1400,9 @@ declared (decision 7). The material sets add nothing here except the `CollideSol
 bytes per set per block, 48,336 + 512 x ingredients for a set with no solve; plan-decisions "Transfer").
 `BuildSolidsMemoryEstimate` returns these entries (the step-owned ones with `KeptFor::kOneStepTry`), each with its
 `MemoryWhere` and bytes from `sizeof` of the real types with a `static_assert`, and `BuildSolidsBuffers`
-allocates by walking its own entries. In `kBatchedWithSolvesInPieces` no entry of the whole or loaded instance moves to
+allocates by walking its own entries. CHANGED (A58): one entry per array (an entry's `copies` equal the number of
+arrays of one element size it stands for), every array a 256-byte-aligned piece of a `RunMemory`; the combined rows
+of the table above are split. In `kBatchedWithSolvesInPieces` no entry of the whole or loaded instance moves to
 the CPU (geometry and solve inputs stay whole on the run's processor, A15); in both batched modes the stage-17
 instance is in CPU memory (above), and its entries are part of the step's `MemoryEstimate::on_cpu`.
 
@@ -1341,7 +1486,22 @@ counts and the open-to-sky marks: exact. A floating-point value `a` against `b` 
 | `ToFreeSolidsForViscousSolve, BoxAboveLiquid_StillListed`, `..., NoFreeSolid_IsEmpty` (NEW, A27) | as named | as named | exact |
 | `ApplySolvedMotionToSolids, HandMotion_WrittenAndPushIsMassTimesChange` (NEW, A27) | pressure 0; motion `{0.01, 0, 0.03}` m/s, `{0, 0, 0.2}` rad/s | motion written; push `{0.005, 0, 0.02481}` N s, turning push `{0, 0, 6e-4}` N m s | exact |
 | `ApplySolvedMotionToSolids, PressurePart_EqualsApplyPressureToSolids` (NEW, A27) | hydrostatic pressure | pressure part and `pressure_on_solids()` equal `ApplyPressureToSolids`'s | bytes |
-| `ApplySolvedMotionToSolids, GuidedBox_ForbiddenMotionsKeepTheirValue`, `..., FastAfterSolve_IsSolidMovesTooFar` (`{0, 0, -7}` m/s: limit `0.0125 / 7` s), `..., MotionOfOtherSize_IsBadInput`, `..., NotFinite_IsNotFinite`, `..., MapOfEarlierBuild_IsWrongTime` (NEW, A27) | as named | as named | exact; `1e-15` relative |
+| ~~`ApplySolvedMotionToSolids, GuidedBox_ForbiddenMotionsKeepTheirValue`~~ | replaced (A59): the solve keeps the motion in the allowed set; `ApplySolvedMotionToSolids, GuidedBox_MotionWrittenAsGiven` (limits z only; motion `{0, 0, 0.03}`, 0: written bytes; push `{0, 0, 0.02481}`) | as named | exact |
+| `ComputeAllowedMotions, AxisLimits_GiveSelectionColumns` (NEW, A59) | z only and no turning; x, y and turning; unguided | columns `e_3`; `e_1, e_2, e_4, e_5, e_6`; the identity, `column_count` 1, 5, 6 | exact |
+| `ComputeAllowedMotions, RailAndHinge_GiveOneColumn` (NEW, A59) | rail `d = (cos 30, 0, sin 30)`; hinge `a = e_y`, `p = o + (0, 0, 0.5)` | `[d; 0]`; `[a x (o - p); a] = [(-0.5, 0, 0); e_y]` | exact; `1e-16` |
+| `ComputeAllowedVelocity, Hinge_KeepsOnlyTheTurnAboutTheAxis` (NEW, A59) | box 0.1 m, 1 kg, hinge 0.5 m above its centre about y, motion V (1, 2, 3), Omega (0.1, 0.2, 0.3) | the result is `q [a x (o - p); a]` with `q = (m (a x (o - p)) . V + a^T I Omega) / (m l^2 + I_cm)` | `1e-15` relative |
+| `ComputeInverseInertia, Hinge_IsOneColumnOverGeneralizedMass` (NEW, A59) | the same hinge | the four blocks of `J J^T / (m l^2 + I_cm)`; `turning_per_push` = transpose of `linear_per_turning_push` | `1e-15` relative; exact |
+| `ComputePoseAfterStep, Hinge_KeepsPivotDistance` (NEW, A59) | the same hinge, turn rate 1 rad/s, dt 1e-3, 10,000 steps | `|o - p|` = 0.5 m | `1e-12` m |
+| `FreeSolid, TiltedRail_SlidesWithGSinTilt` (NEW, A59) | rail at 30 degrees from horizontal, no liquid, dt 1e-3 s, 1000 `BuildTry` + `CommitTry` | speed along the rail `n dt g sin 30 = 4.905 m/s`; distance off the rail line | `1e-12` relative; below `1e-12` m |
+| `FreeSolid, OffOriginHinge_PendulumPeriod` (NEW, A59) | box 0.1 m, 1 kg, hinge 0.5 m above its centre about y, released at 5 degrees, no liquid, dt 1e-3 s | period `2 pi sqrt((I_cm + m l^2) / (m g l)) = 1.42322 s` (small angle; the 5 degree correction is 0.05 %); pivot distance drift over 10 periods | 0.5 %; below `1e-9` m |
+| `FreeSolid, AxisAlignedGuides_Unchanged` (NEW, A59) | free box guided along z with a sideways steady force (1, 1, 0) N, no liquid, 100 steps | x, y velocity and every turn rate exactly 0; z as `FreeFall_GainsGTimesDt` | bytes; `1e-13` relative |
+| `CheckSolidsCanRun, BadGuideOrSlipLength_IsBadInput` (NEW, A59, A53) | rail direction length 1.1; hinge axis NaN; slip length -1; slip length NaN; slip length +infinity | four `kBadInput` entries; +infinity accepted | exact |
+| `ApplyViscousImpulses, LiquidForces_PartsOverStepDuration` (NEW, A60) | the hydrostatic scene of `PressurePart_EqualsApplyPressureToSolids` through `ApplySolvedMotionToSolids`, then `ApplyViscousImpulses` with hand values (tank `{(1e-3, 0, 0), 0}`, box `{(0, 2e-3, 0), (0, 0, 1e-4)}`) | `liquid_forces()` one per solid, ascending `solid_id`, tank included; pressure parts = pressure push / dt, viscous = hand values / dt | exact (the test's own expressions) |
+| `ApplyPressureToSolids, LiquidForces_ViscousPartsZero` (NEW, A60) | the same scene through `ApplyPressureToSolids` | every viscous part `0.0`; pressure parts as above | bytes |
+| `ApplyViscousImpulses, OtherSize_IsBadInput` (NEW, A60) | span one short | `kBadInput`, try unchanged | exact |
+| `LiquidForce, BuoyancyAtRest_IsRhoGV` (NEW, A60; plan Task 36a) | liquid loop: tank 0.2 x 0.2 x 0.25 m, water 0.2 m deep at rest, fixed box 0.1 m cube centred at z 0.1, w 0.00625 (16 cells per side), one step of 0.002 s | pressure force z `rho g V = 9.81 N`; viscous parts exactly 0 (inviscid) | 2 %; exact |
+| `BuildSolidsBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (NEW, A58) | 10 blocks, 1000 particles, 2 blocking materials, `run_on = kCpu`; `RunMemory` of exactly `ComputeRunMemoryBytes(estimate, counts, kCpu)` (every entry `kCpu` on a CPU instance) | `handed_out_bytes() == reserved_bytes()` | exact |
+| `ApplySolvedMotionToSolids, FastAfterSolve_IsSolidMovesTooFar` (`{0, 0, -7}` m/s: limit `0.0125 / 7` s), `..., MotionOfOtherSize_IsBadInput`, `..., NotFinite_IsNotFinite`, `..., MapOfEarlierBuild_IsWrongTime` (NEW, A27) | as named | as named | exact; `1e-15` relative |
 | `ApplyContactReactions, TwoHits_PushAndTurningPush` | two particles hit a driven box off centre | closed forms; equal particles placed symmetrically give zero turning push | `1e-14` relative |
 | `BuildSolidsMemoryEstimate, CpuInstance_EveryRowOnCpu` (NEW, A17 batched-run buffers, plan Task 13) | `settings.run_on = kCpu` | every entry `where = kCpu` | exact |
 | `WriteBlockPartialsRange, ThreeRangesGiveTheWholePartials` (NEW, A17, plan Task 28) | `CollideSolids` on three pieces of a 9-block grid, each piece's partials written into one whole CPU instance | equal bytes to `CollideSolids` on the whole grid; `ApplyContactReactions` then gives the same `ContactOnSolids` bytes | bytes |
@@ -1457,7 +1617,11 @@ the pieces it blocks (`dt A^2 / m`, referring to pressure's `<sec-coupled-solve>
 written back to the set in the same step, and tangential motion stays the set's own (A8); it states the sign of
 work in one sentence. Amended (A26, A27, plan Task 1): in a viscous scene the material band and the free solids'
 six motions are unknowns of the viscous solve and the liquid sticks to them; the A8 sentence holds for an inviscid
-liquid only.
+liquid only. NEW (A59, A60, A53): `<sec-free-solids>` gains guides in general form (`xi = J q + xi_0`, rail and hinge
+columns, the projection before pressure, the inverse inertia `J (J^T M J)^-1 J^T`, the hinge's rotation about its
+pivot at commit; cite Batty 2007 [21] and Aanjaneya 2018); `<sec-motion-map>` gains the force of the liquid on every
+solid read from the solve's terms (momentum exchange, Uhlmann 2005; torque point and how to move it) and one sentence
+on the slip length a fixed or driven solid gives a viscous liquid.
 
 Figures: `<fig-motion-map>` one partly blocked face piece: its blocked part, the four corner areas, the
 corner velocities of a turning solid, and the same arrows reversed as pushes with their arms;
@@ -1490,6 +1654,9 @@ old paper names Nairn without an entry).
 | `force`, `torque` accumulators | removed; `steady_force` | NEW |
 | `AdvanceRigidBody3D`, `RigidBodyStep3D drift` | `ComputeVelocityBeforePressure`, `CommitTry`, `contact::SolidMotion` | NEW |
 | `FloatingBoxMotion::kVerticalGuide` ... | `FreeMotionLimits` | NEW |
+| (none) | `GuideKind` (`kAxisLimits`, `kRail`, `kHinge`), `rail_direction`, `hinge_point`, `hinge_axis`, `AllowedMotions` ("allowed motions"; papers: generalized coordinates, `J`), `ComputeAllowedMotions`, `ComputeAllowedVelocity`, `ComputePoseAfterStep`, `InverseInertia::linear_per_turning_push`, `turning_per_push` | NEW (A59; the last three functions and fields plan decisions) |
+| (none) | `LiquidForceOnSolid` (`pressure_force`, `pressure_torque`, `viscous_force`, `viscous_torque`), `SolidsTry::liquid_forces`, `ApplyViscousImpulses`, `ViscousPushOnSolid` ("viscous push"; never "impulse") | NEW (A60; `ViscousPushOnSolid` plan decision) |
+| (none) | `SolidSettings::slip_length` ("slip length"; papers: Navier slip length), `SolidsTry::slip_length` | NEW (A53; the accessor a plan decision) |
 | `RigidPressurePatch3D`, `wetted_area`, `world_centroid` | `MotionMapEntry`, `signed_corner_area` | NEW ("wetted" is banned) |
 | `ComputeRigidBodyInwardWallFlux3D` | step 1 of 5.5; `pressure::FreeSolidPush` | DECIDED by pressure |
 | `AccumulateRigidBodyPressure3D`, `oriented_loads` | `ApplyPressureToSolids`, `PressureOnSolids` | NEW |
@@ -1585,7 +1752,7 @@ Earlier questions this design depends on, each with the answer it now uses:
   2026-11-14).
 - Q28 a. Decision: a, viscous liquid always sticks to solids. Recommended option (owner's standing
   instruction, 2026-11-14). Extended by owner answers A26 and A27 (decision 15): also to blocking materials and
-  free solids.
+  free solids. Refined by A53 (decision 19): sticking is the default; fixed and driven solids may slip by a set length.
 - Q35 a. Decision: a. Recommended option (owner's standing instruction, 2026-11-14).
 - Q36 (rest gap). Decision: the rest gap. Recommended option (owner's standing instruction, 2026-11-14).
 - Q37 (unbounded plate: this design keeps it). Decision: unbounded plate, one per scene (`kMaxPlateCount`).
@@ -1777,7 +1944,7 @@ the band uses `grid::kWeightCurveReach` (solids does not include viscosity) and 
 cell; every free solid of the try is listed, also one away from liquid; `SolvedMotionReport`,
 `SolidsTry::solved_motion()` and `SolidsTry::pressure_on_solids()`; a motion a guide forbids keeps its value before
 pressure after the solve, because `FreeSolidForViscousSolve` carries no `FreeMotionLimits` (listed for the owner:
-viscosity should hold those motions fixed). Snow has no special case: melting of snow by liquid water is not
+viscosity should hold those motions fixed). **Replaced (A59, decision 17).** Snow has no special case: melting of snow by liquid water is not
 modelled, so liquid-on-snow runs mechanically and is not a validation target; analytic tests use springy solids and
 free boxes (owner note, 2026-11-14). Replaces the A24 text of 5.5a item 2 and of section 4 "Viscosity", and the
 exclusion in decision 14. Source: owner answers A26, A27; `plan-decisions.md` "A viscous liquid sticks, and free
@@ -1785,7 +1952,47 @@ solids in the viscous solve (A26, A27)" (which replaces the A24 "Material face",
 liquid-material face" and "Kept: `kFreeSolidNotSupported`" bullets); solids plan decision 10, Tasks 23, 23a, 23b,
 23c, 24, 33.
 
+**17. Guided free solids in general form (A59).** Decision: `GuideKind { kAxisLimits, kRail, kHinge }` and
+`FreeMotionLimits::{guide_kind, rail_direction, hinge_point, hinge_axis}` in the world frame; `AllowedMotions` and
+`ComputeAllowedMotions` in the shared `guide_math.h`; `FreeSolidForViscousSolve::allowed_motions` replaces `limits`
+(504 B); the velocity before pressure is projected onto the allowed motions; `InverseInertia` carries the four blocks
+of `J (J^T M J)^-1 J^T` (from pressure's `ComputeGuidedInverseMass`); `ToFreeSolidInertia` gives pressure one
+`pressure::FreeSolidInertia` per free solid (replacing `ToFreeSolidInverseInertia`; pressure's term becomes `(K J)(J^T M
+J)^-1 (K J)^T` and `ApplyPressureToSolids` uses `pressure::ComputeGuidedSolidMotion`); a hinged pose is rotated about its pivot at commit, a rail pose moved along `d` only.
+**Replaces** decision 15's "a motion a guide forbids keeps its value before pressure after the solve, because
+`FreeSolidForViscousSolve` carries no `FreeMotionLimits`" and solids plan Task 23c's step 2 and decision 4. Plan
+decisions: `ComputeAllowedVelocity` and `ComputePoseAfterStep` (names and the selection kept bitwise for axis
+limits); `ComputeInverseInertia` gains `origin`. The pressure carrier (`FreeSolidInertia`, `ComputeGuidedSolidMotion`) is
+pressure's declaration, applied here. Source: owner answer A59; `plan-decisions.md` "Owner answers A40-A64 applied" item 5; `literature-practice.md`
+topic 3.
+
+**18. The force of the liquid on every solid (A60).** Decision: `LiquidForceOnSolid` (header `liquid_force.h`),
+`SolidsTry::liquid_forces()` filled by `ApplyPressureToSolids` (viscous 0) and `ApplySolvedMotionToSolids` (which
+is followed by `ApplyViscousImpulses`, which stores viscosity's `viscous_push_on_solids`); pressure part from the motion map entries of every solid, viscous part
+from viscosity; mean over the step, world axes, torque about the step-start origin; the buoyancy test here (plan Task
+36a), the other three in viscosity. Plan decision: `ViscousPushOnSolid` is declared here (viscosity uses solids types,
+not the reverse). Source: owner answer A60; `plan-decisions.md` "Owner answers A40-A64 applied" item 6.
+
+**19. Slip length on fixed and driven solids (A53).** Decision: `SolidSettings::slip_length` (m, 0 default, +infinity
+free slip), checked here (negative or NaN: `kBadInput`), passed to viscosity through `SolidsTry::slip_length()` (0
+for free solids). Replaces in part Q28 a's "no setting". Source: owner answer A53; `plan-decisions.md` "Owner answers
+A40-A64 applied" item 7.
+
+**20. Buffers from the run's reserved memory (A58).** Decision: `BuildSolidsBuffers(settings, max_particle_count,
+max_cell_blocks, RunMemory& run_memory)` and `BuildSolidCoverageValues(run_on, max_cell_blocks, RunMemory&
+run_memory)`; the stage-17 CPU instance takes the run's `cpu_run_memory`; one estimate entry per array; estimate test
+`BuildSolidsBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`. Source: owner answer A58; `plan-decisions.md` "Owner
+answers A40-A64 applied" item 3 and its same-day correction.
+
+**21. `kOutOfMemory` last (reconcile item 31).** Decision: `SolidsError::kOutOfMemory` already stands last (18
+values); it is returned only by the building functions and also maps `kRunMemoryTooSmall`; the plan's `ToName` test
+counts 18. Source: `plan-decisions.md` "Owner answers A40-A64 applied" item 11.
+
 **Open** (left open by the plans; not decided here):
+
+- `ComputeAllowedVelocity` and `ComputeInverseInertia` (shared) call pressure's shared guide math; solids comes after
+  pressure, so this is an ordinary dependency, but `solids/guide_math.h` must stay header-only for pressure to include
+  it (pressure Task 47a after solids Task 5a).
 
 - Stage `FindSolidSurfaces`' range part calls `BuildTry` and the contact checks once per try in one piece but per
   batch in a batched run; the step builds the solids try only in the first call of a try (step plan Task 33a), and

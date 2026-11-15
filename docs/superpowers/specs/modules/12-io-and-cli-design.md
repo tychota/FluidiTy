@@ -100,8 +100,11 @@ enum class IoError : std::uint8_t {
   kParticleNotFound,      // NEW. No particle with that id in that frame.
   kOutputStopped,         // The output worker failed earlier; its failure is the one reported.
   kEventsNotWritable,     // Standard output is closed: whoever started the run is gone.
-  kOutOfMemory,
   kModuleFailed,          // Another module failed. module and module_error identify it.
+  // NEW (A40). A resume would reuse the recorded run mode, which no longer fits the memory of the day. detail: the
+  // mode in words; magnitude: needed bytes; limit: allowed bytes. --choose-mode-again continues in another mode.
+  kRecordedModeDoesNotFit,
+  kOutOfMemory,           // Amended (reconcile item 31, 2026-11-15): moved to the last place. 31 values.
 };
 // NEW. Who failed, for ToMessage and ToName at the boundary. Wider than step::Module: it also names modules the
 // step does not call (cell resize, batches) and this one.
@@ -194,6 +197,10 @@ struct RunOverrides {                            // From the command line. Empty
   // --assume-memory and --assume-cpu-memory; tests use them to force a batched plan. In no fingerprint.
   std::optional<std::uint64_t> assume_memory_bytes;
   std::optional<std::uint64_t> assume_cpu_memory_bytes;
+  // NEW (A40). Set by BuildRunToContinue from FileList::run_mode: BuildSceneBudget plans with this mode forced
+  // (5.2). Empty for run, check and a resume with --choose-mode-again. In no fingerprint.
+  std::optional<step::RunMode> recorded_run_mode;
+  bool choose_mode_again = false;                // NEW (A40). resume --choose-mode-again: plan the mode afresh.
 };
 // Owns every vector and key array that step::ReadyScene borrows. Move-only. The ready scene stays valid while
 // this lives.
@@ -211,7 +218,13 @@ class RunScene {
   Digest scene_digest() const;                          // 3.4. Of the physical part only.
   Digest scene_file_digest() const;                     // Of the scene file's bytes as written.
   std::span<const std::uint8_t> ready_scene_bytes() const;  // The listed ready_scene file's description table.
+  // NEW (A63). CPU views into this RunScene's cell size regions (asked widths rounded to levels at load) and top-view
+  // map levels (row 0 at the domain's low y), with the domain box's low corner and x, y widths. All zero and null
+  // without artist inputs. Handed to cell_resize::BuildCellResize, which copies them to the run's processor.
+  grid::ArtistCellSizes artist_cell_sizes() const;
 };
+// NEW (A63). Largest width or height of the cell size map, in pixels. A starting value: 64 MiB of levels at most.
+inline constexpr std::uint32_t kMaxCellSizeMapSidePixels = 8192;
 // NEW. Every value finding of a scene file at once (the add-on shows all problems together): kUnknownSceneField
 // (one, FlatBuffers stops at the first), kSceneValueOutOfRange, kUnknownPreset, kDuplicateId, and the failures
 // of materials::BuildMaterialTable, gas::CheckGasSources and render_output::CheckRenderSettings as
@@ -280,6 +293,10 @@ struct FrameDone {                               // NEW. One per complete frame,
   Digest snapshot_digest{};                      // Of the frame's snapshot arrays as packed in 5.5. The check of a
                                                  //   frame computed again after a resume (5.6 step 7.6).
 };
+struct RunModeChange {                           // NEW (A40). A resume with --choose-mode-again changed the mode.
+  std::int64_t frame = -1;                       // The saved state the resume continued from.
+  step::RunMode from{}, to{};
+};
 struct FileList {                                // D word. Which files belong to a run.
   RunFingerprint run_fingerprint{};
   std::vector<OutputDeclaration> outputs;        // NEW. Newest declaration per output_id.
@@ -288,6 +305,10 @@ struct FileList {                                // D word. Which files belong t
   std::vector<FrameDone> frames_done;            // first_frame..last_frame_done are complete.
   std::int64_t last_frame_done = -1;
   std::uint64_t ignored_end_bytes = 0;          // Bytes after the last entry that passes its check.
+  // NEW (A40). The mode in effect: the newest ModeChange's `to`, else the Start entry's run_mode. run_fingerprint
+  // above is likewise the newest ModeChange's, else Start's.
+  step::RunMode run_mode = step::RunMode::kOnePiece;
+  std::vector<RunModeChange> run_mode_changes;   // NEW (A40). In list order.
 };
 // Takes no lock and changes nothing. Returns the entries that pass their checks, in order (5.3).
 // Fails: kNoRunInFolder, kFileNotReadable, kWrongFileKind, kWrongSchemaVersion.
@@ -432,7 +453,11 @@ struct RunReport {                               // The one description of a run
   std::optional<batches::BatchPlan> batch_plan;  // NEW. With either batched RunMode (A15).
   std::optional<RunBudget> budget;               // NEW (planned cost, 3.9). The plan shown before the run.
   RunCost cost;                                  // NEW (planned cost, 3.9). Measured so far; rewritten per report.
-  std::uint64_t resize_count = 0, cells_to_grid_only = 0, cells_to_particles = 0;   // NEW. Cell resize totals.
+  std::uint64_t resize_count = 0;                // NEW. Cell resize total. cells_to_grid_only and cells_to_particles:
+                                                 //   not in the first version (A64; later group).
+  // NEW (A60). Of the last committed step of the last listed frame; every solid, ascending solid_id.
+  std::vector<solids::LiquidForceOnSolid> liquid_force_on_solids;
+  std::vector<RunModeChange> run_mode_changes;   // NEW (A40). Copied from the file list.
   double simulate_elapsed_seconds = 0, snapshot_elapsed_seconds = 0, write_elapsed_seconds = 0,
          output_wait_elapsed_seconds = 0, build_outputs_elapsed_seconds = 0;  // D word elapsed. Clock time.
   std::vector<step::CapabilityFinding> known_limits;   // Findings with kHasKnownLimit.
@@ -536,6 +561,9 @@ struct FrameOutput {                             // What one frame hands to the 
   bool with_saved_state = false;
   bool is_already_done = false;                  // After a resume: build, compare, list nothing (5.6 step 7.6).
   std::vector<std::string> only_output_ids;      // A rebuild: these outputs only. Empty: every output.
+  // NEW (A60). StepReport::liquid_force_on_solids of the last committed step at or before the frame time; empty
+  // for first_frame's start state. Not in any listed file.
+  std::vector<solids::LiquidForceOnSolid> liquid_force_on_solids;
 };
 struct ProductsOfFrame {                         // NEW. What the frame writer did for one frame.
   std::vector<ListedFile> listed;
@@ -586,7 +614,9 @@ struct RunCallbacks {                            // D rule: named after the even
   void* context = nullptr;
   void (*on_progress)(void* context, const RunProgress& progress) = nullptr;          // After every try.
   void (*on_try_done)(void* context, const step::StepResult& result) = nullptr;
-  void (*on_frame_done)(void* context, const FrameDone& frame, const ProductsOfFrame& products) = nullptr;
+  // Amended (A60): the last parameter is FrameOutput::liquid_force_on_solids of that frame.
+  void (*on_frame_done)(void* context, const FrameDone& frame, const ProductsOfFrame& products,
+                        std::span<const solids::LiquidForceOnSolid> liquid_force_on_solids) = nullptr;
   void (*on_frame_checked)(void* context, std::int64_t frame) = nullptr;
   void (*on_saved_state_listed)(void* context, const ListedFile& saved_state) = nullptr;
 };
@@ -649,9 +679,10 @@ fluidity check        <scene_file> [--run-on gpu] [--cache <run_folder>] [--assu
 fluidity run          <scene_file> --into <run_folder> [--run-on gpu] [--last-frame <n>]
                       [--start-from <other_run_folder> [--start-frame <n>]] [--report-every-try]
 fluidity run          <scene_file> --into <run_folder> --outputs <output_id>[,<output_id>...]
-fluidity resume       <run_folder> [--last-frame <n>] [--report-every-try]
+fluidity resume       <run_folder> [--last-frame <n>] [--report-every-try] [--choose-mode-again]
 fluidity report       <run_folder> [--check-files]
 fluidity read-particle <run_folder> --frame <n> --particle-id <id>
+fluidity --version                                   NEW (A49): "fluidity <version> cuda-runtime <runtime|none>"
 ```
 
 ```cpp
@@ -661,14 +692,16 @@ enum class ExitCode : int {
   kBadCommandLine = 2,   // Ported value.
   kSceneCannotRun = 3,   // The scene file is not valid, a finding blocks the run, or it does not fit (budget
                          //   verdict other than kFits). check still printed scene_checked with every finding
-                         //   and the budget; the budget lines are on standard error.
+                         //   and the budget; the budget lines are on standard error. Also (A40)
+                         //   kRecordedModeDoesNotFit of a resume.
   kStoppedOnRequest = 4, // cancel, stop_after_frame or end of standard input. Every listed file is whole.
   kRunFolderRefused = 5, // In use (the event names the holder), not empty, no run, another run's
                          //   fingerprint, no saved state.
   kProcessorFailed = 6,  // kRunOnCallFailed or kSimulationUnusable. Continue from the last saved state.
 };
 ExitCode ToExitCode(const IoFailure& failure);
-enum class CommandKind : std::uint8_t { kCapabilities, kCheck, kRun, kResume, kReport, kReadParticle };
+enum class CommandKind : std::uint8_t { kCapabilities, kCheck, kRun, kResume, kReport, kReadParticle,
+                                         kVersion };   // NEW (A49). Prints one line on standard output, exit 0.
 struct Command {
   CommandKind kind{};
   Path scene_file;                                       // check, run. Empty when not given.
@@ -685,6 +718,8 @@ struct Command {
   std::int64_t frame = -1;  std::uint64_t particle_id = 0;   // NEW. read-particle. The id as decimal text.
   bool check_files = false;                              // report: read every listed file and compare digests.
   bool reports_every_try = false;                        // run, resume: one try_done event per try.
+  bool choose_mode_again = false;                        // NEW (A40). resume only: plan the mode afresh; copied
+                                                         //   into overrides.choose_mode_again.
 };
 struct CommandLineFailure { bool is_help = false; std::string text; };  // Help text, or what was wrong.
 // The only function compiled with exceptions on. No exception leaves it.
@@ -722,7 +757,7 @@ since the process started). Every finding, in any event, is one `Finding` table:
 | `heartbeat` | the `RunProgress` fields, `last_advance_sent_at`, `simulated_seconds_per_second: double` (0 until known) and `projected_remaining_seconds: double = -1` (-1 until 3 frames of this process are listed) (NEW) | every `kHeartbeatSeconds` = 0.5 (ported); never more than 1 s apart |
 | `try_done` | `frame`, `step_count`, `try_number`, `committed`, `reject_reason`, `rejected_in`, `step_duration`, `time`, `active_limit` | only with `--report-every-try` |
 | `finding` | one `Finding`: a product not built in a frame, a known limit met during the run | when it happens |
-| `frame_done` | `frame`, `time`, files (`output_id` or kind, name, byte count, digest), `not_built[]`, step and try counts, the `MemoryReport` numbers (CPU and GPU in use and largest, `limit_raise_count`), elapsed seconds by category (simulate, snapshot, build outputs, write, wait), `simulated_seconds_per_second`, `projected_remaining_seconds` (NEW, as `heartbeat`) | a `FrameDone` entry was listed |
+| `frame_done` | `frame`, `time`, files (`output_id` or kind, name, byte count, digest), `not_built[]`, `liquid_force_on_solids[] {solid_id, pressure_force_n, pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}` (NEW, A60), step and try counts, the `MemoryReport` numbers (CPU and GPU in use and largest, `limit_raise_count`), elapsed seconds by category (simulate, snapshot, build outputs, write, wait), `simulated_seconds_per_second`, `projected_remaining_seconds` (NEW, as `heartbeat`) | a `FrameDone` entry was listed |
 | `frame_checked` | `frame` | a frame computed again after a resume equals the listed one |
 | `saved_state_listed` | `frame`, `byte_count` | a saved state was listed |
 | `stopping` | `request` (`cancel`, `stop_after_frame`, `end_of_input`) | the request was read |
@@ -776,7 +811,13 @@ planned cost shown to the user; a hard limit is still `max_...`).
 enum class ModeReason : std::uint8_t { kFitsProcessor, kParticlesDoNotFitProcessor, kSolverBuffersDoNotFitProcessor,
                                        kStateDoesNotFitCpu, kLayerDoesNotFitProcessor, kOnePieceDoesNotFitCpu };
 enum class BudgetVerdict : std::uint8_t { kFits, kDoesNotFitCpu, kDoesNotFitProcessor };
-struct MemoryBudget { std::uint64_t budget_bytes = 0, allowed_bytes = 0, total_bytes = 0, free_bytes = 0; };
+struct MemoryBudget {
+  std::uint64_t budget_bytes = 0, allowed_bytes = 0, total_bytes = 0, free_bytes = 0;
+  // NEW (A58). StepSettings' budget rule, the same on both processors: allowed = min(memory_share_of_free x free,
+  // free - memory_left_free_bytes), 0 when negative.
+  double memory_share_of_free = 0;               // No unit. Default 0.9.
+  std::uint64_t memory_left_free_bytes = 0;      // Default 536,870,912 (512 MiB).
+};
 struct ModuleBudget { step::Module module = step::Module::kStep; std::uint64_t processor_bytes = 0, cpu_bytes = 0; };
 struct CopyBudget {                          // Per committed step unless named. Upper bounds where Appendix B says so.
   std::uint64_t step_bytes = 0;  std::uint32_t step_copies = 0;            // RunPlan::planned_step_copies.
@@ -789,15 +830,24 @@ struct CopyBudget {                          // Per committed step unless named.
   std::uint64_t bytes_per_step = 0;  std::uint32_t copies_per_step = 0;    // step + pass + resize.
 };
 struct FitSuggestion { std::uint64_t particle_count = 0, max_particle_count = 0; double smallest_cell_width = 0,
-                       min_smallest_cell_width = 0; std::uint64_t more_memory_bytes = 0; RunOn more_memory_on{}; };
+                       min_smallest_cell_width = 0; std::uint64_t more_memory_bytes = 0; RunOn more_memory_on{};
+                       // NEW (A64). Start particles in liquid cells deeper than deep_cell_depth (m) below the surface
+                       // (RunPlan::counts.start_particles_in_deep_cells); deep_cell_depth = surface_reach_in_cell_widths
+                       // x smallest_cell_width (ReadyScene::cell_size). For the deep-particles line.
+                       std::uint64_t deep_particle_count = 0; double deep_cell_depth = 0; };
 struct ViscousEffectOfLiquid {               // NEW (A25; renamed A27, was LiquidViscousEffect, the name of the
                                              // step's different struct). One per liquid ingredient, scene order.
   std::string ingredient_name;               // The ingredient's export name.
   double viscosity_pa_s = 0;                 // The setting.
   double density_kg_per_m3 = 0;              // Rest density of its material.
-  double viscous_effect_per_step = 0;        // No unit; 0 when viscosity is 0.
+  double viscous_effect_per_step = 0;        // No unit; 0 when viscosity is 0. The grid number N = nu dt / h^2.
   bool is_viscous = false;                   // viscosity_pa_s > 0.
-  bool effect_not_visible = false;           // 0 < viscous_effect_per_step < kSmallestVisibleViscousEffectPerStep.
+  // effect_not_visible: removed (A57). NEW (A57), each copied from step::LiquidViscousEffect's field of that name:
+  std::optional<double> viscosity_to_smoothing_ratio;  // 4 N / (1 - own_motion_kept); empty when own_motion_kept = 1.
+  double four_cell_feature_change = 0;       // No unit, 0..1. -expm1(-pi^2 D / 4), D = nu T / h^2.
+  double spreading_in_cells = 0;             // No unit. sqrt(nu T) / h.
+  double reynolds_number = 0;                // No unit. U L / nu, U = sqrt(2 g L).
+  bool advises_zero_viscosity = false;       // ratio < kNegligibleViscosityRatio or change < kNegligibleViscousChange.
 };
 struct RunBudget {
   std::string scene_name; RunOn run_on{}; std::string processor_model;
@@ -810,7 +860,12 @@ struct RunBudget {
   step::ViscousPath viscous_path{};          // NEW (A25). Stage 12 or 11, fixed for the run (RunPlan::viscous_path).
   double viscous_effect_cell_width_m = 0;    // NEW (A25). The grid frame's smallest cell width.
   double viscous_effect_step_seconds = 0;    // NEW (A25). StepSettings::max_step_duration.
+  double viscous_effect_run_seconds = 0;     // NEW (A57). RunPlan::viscous_effect_run_duration (ReadyScene::end_time).
+  double reynolds_length_m = 0;              // NEW (A57). RunPlan::reynolds_length: the domain box's smallest extent.
   std::vector<ViscousEffectOfLiquid> liquids;  // NEW (A25). From RunPlan::liquid_viscous_effects; empty without liquid.
+  // NEW (A58). A Windows build planning a GPU run: BuildBudgetLines prints the fallback note once (5.10). A field,
+  // so the line tests run on every platform.
+  bool notes_windows_gpu_fallback = false;
   std::vector<std::string> lines;            // BuildBudgetLines, verbatim.
 };
 std::expected<RunBudget, IoFailure> BuildRunBudget(const step::ReadyScene&, const step::StepSettings&,
@@ -831,6 +886,14 @@ struct RunCost {
   double copies_per_step_mean = 0; std::uint32_t copies_per_step_max = 0;
   double snapshot_bytes_per_frame_mean = 0;
   double solve_iterations_per_step_mean = 0, solve_bytes_per_iteration_mean = 0;
+  std::uint64_t solve_bytes_per_iteration_max = 0;   // NEW (A43). The max rule of the solve warning.
+  // NEW (A58). From step::MemoryReport, the largest over the run unless named. memory_taken_bytes: free before minus
+  // free after the latest reservation, GPU only (0 on the CPU). reserved_cpu_bytes and handed_out_cpu_bytes: the
+  // CPU block (cpu_run_memory) every run has.
+  std::uint64_t planned_bytes = 0, reserved_bytes = 0;   // reserved_bytes: the current block.
+  std::uint32_t reserved_block_count = 0;                // 1 + limit raises.
+  std::uint64_t handed_out_bytes = 0, memory_taken_bytes = 0, requested_beyond_plan_bytes = 0;
+  std::uint64_t reserved_cpu_bytes = 0, handed_out_cpu_bytes = 0;
   std::vector<StageSeconds> stage_seconds;   // Every stage that ran, Stage order, all tries.
   std::vector<std::string> warnings, lines;
 };
@@ -843,8 +906,10 @@ void ApplyStepToRunCost(const step::MemoryReport& memory, const step::CopyCounts
 void ApplyFrameToRunCost(std::uint64_t snapshot_bytes, RunCost&);
 struct ActivitySeconds { double simulate = 0, snapshot = 0, build_outputs = 0, write = 0, wait = 0; };  // RunReport's.
 void BuildCostLines(const RunBudget&, const ActivitySeconds&, RunCost&);   // Fills warnings and lines.
-inline constexpr double kMemoryWarningShare = 1.10;   // Owner to confirm.
-inline constexpr double kCopyWarningShare = 1.25;     // Owner to confirm.
+// kMemoryWarningShare and kCopyWarningShare: removed (A43, A58); a measure above its plan warns, without margin.
+// NEW (A58). Below reserved_bytes by more than this, the GPU memory taken means Windows placed part of the block in
+// shared system memory (5.10). 2 MiB, a starting value, to confirm on the Windows run.
+inline constexpr std::uint64_t kMemoryTakenToleranceBytes = 2'097'152;
 struct FrameMark { double time = 0; double sent_at = 0; };   // s simulated; s UTC.
 struct TimeProjection { double simulated_seconds_per_second = 0; double projected_remaining_seconds = -1;
                         std::uint32_t frames_measured = 0; };
@@ -859,7 +924,16 @@ Schema `run_budget.fbs`: field names carry their unit (`_bytes`, `_seconds`, `_m
 this module's stable names. NEW (A25): `RunBudget` gains `viscous_path: string` (`ToName(step::ViscousPath)`:
 `pressure_solve`, `viscous_solve`), `viscous_effect_cell_width_m: double`, `viscous_effect_step_seconds: double`,
 `liquids: [ViscousEffectOfLiquid]`, with `table ViscousEffectOfLiquid { ingredient_name: string; viscosity_pa_s: double;
-density_kg_per_m3: double; viscous_effect_per_step: double; is_viscous: bool; effect_not_visible: bool; }`. The
+density_kg_per_m3: double; viscous_effect_per_step: double; is_viscous: bool; effect_not_visible: bool; }` (**replaced**
+in part, A57: `effect_not_visible` removed; the table gains `viscosity_to_smoothing_ratio: double = null` (absent when
+empty), `four_cell_feature_change: double`, `spreading_in_cells: double`, `reynolds_number: double`,
+`advises_zero_viscosity: bool`; `RunBudget` gains `viscous_effect_run_seconds`, `reynolds_length_m`,
+`notes_windows_gpu_fallback`). NEW (A58): `MemoryBudget` gains `memory_share_of_free`, `memory_left_free_bytes`;
+`RunCost` gains `planned_bytes`, `reserved_bytes`, `reserved_block_count`, `handed_out_bytes`, `memory_taken_bytes`,
+`requested_beyond_plan_bytes`, `reserved_cpu_bytes`, `handed_out_cpu_bytes`, `solve_bytes_per_iteration_max`. NEW
+(A64): `FitSuggestion` gains `deep_particle_count`, `deep_cell_depth_m`. NEW (A60, `run_report.fbs`): `table
+LiquidForceOnSolid { solid_id: uint; pressure_force_n: Vec3; pressure_torque_n_m: Vec3; viscous_force_n: Vec3;
+viscous_torque_n_m: Vec3; }`, included by `events.fbs` for `frame_done`. The
 add-on reads these names (its `RunPlanFacts.budget`, drawn verbatim in
 `FLUIDITY_PT_performance`).
 
@@ -878,8 +952,8 @@ module's table in `io_message.cc`. The build gains three packages (5.9); Foundat
 GoogleTest only.
 
 **Step (PROVIDED, step 3.1 to 3.9):** `ReadyScene` (declared in `step/`;
-`ReadyScene::solids` is `solids::SolidsSettings`; it carries the keyed `gas::GasSource` list and `gas::GasWind`,
-whose key storage `RunScene` owns), `ParticleSource`, `StartParticles`, `StepSettings`, `SimulationLimits`,
+`ReadyScene::solids` is `solids::SolidsSettings`; it carries the keyed `gas::GasSource` list and `gas::GasWind
+wind` (A47: filled whether or not the scene has gas), whose key storage `RunScene` owns), `ParticleSource`, `StartParticles`, `StepSettings`, `SimulationLimits`,
 `CheckSceneCanRun`, `CapabilityResult` (every finding, a growing list), `CapabilityFinding`, `CapabilityReason`,
 `kCapabilityReasonCount` (16 at most, 13 if the viscosity plan lifts its three exclusions; A24 removed
 `kViscousLiquidWithSnow`, A27 `kViscousLiquidWithFreeSolid`), `CapabilityLevel` (`kCanRun`, `kExperimental`,
@@ -890,20 +964,33 @@ on_processor, on_cpu, std::span<const MemoryEstimateEntry> output_estimate, std:
 copied here from `batches::BatchPlan`; `allowed_bytes`, `allowed_cpu_bytes` (A15); `fit` and `planned_step_copies`
 (planned cost); NEW (A25) `liquid_viscous_effects` (`step::LiquidViscousEffect`: `ingredient_index`, `viscosity`,
 `density`, `viscous_effect_per_step`), `viscous_effect_cell_width`, `viscous_effect_step_duration`,
-`viscous_path`), `ViscousPath` (`kPressureSolve`, `kViscousSolve`; A25), `Module` (14 values; reconcile),
+`viscous_path`; NEW (A57) `LiquidViscousEffect::{viscosity_to_smoothing_ratio, four_cell_feature_change,
+spreading_in_cells, reynolds_number, advises_zero_viscosity}`, `viscous_effect_run_duration`, `reynolds_length`),
+`ViscousPath` (`kPressureSolve`, `kViscousSolve`; A25), `Module` (14 values; reconcile), NEW (A58)
+`StepSettings::{memory_share_of_free, memory_left_free_bytes}`, `ComputeAllowedMemoryBytes`,
+`FindRunMemory(Simulation&)` and `FindCpuRunMemory(Simulation&)` (the run's processor block, which
+`BuildSimulation` reserves first, and its CPU block; the same object in a CPU run; both handed to
+`BuildCellResize` and `BuildBatchedRun`), NEW (A64) `SceneCounts::start_particles_in_deep_cells` and
+`particles_at_depth_levels`, `ReadyScene::cell_size`, NEW (A40) `BuildRunPlan(..., cell_resize_estimate,
+std::optional<RunMode> forced_mode)`, NEW (A60)
+`StepReport::liquid_force_on_solids`,
 `RunMode` (`kOnePiece`, `kBatched`, `kBatchedWithSolvesInPieces`; `BuildRunPlan` chooses only the
 first two, this module copies the batch plan's choice), `PlanFit` (`kFits`, `kDoesNotFit`: `BuildRunPlan` returns a
 plan that does not fit, mode `kBatched` with every estimate filled, and `BuildSimulation` fails `kDoesNotFit` on
 it), `MemoryEstimate` (with `on_cpu`), `ModuleBytes` (with `on_cpu`), `MemoryReport` (with `allocated_cpu_bytes`),
-`CopyCounts`, `StepReport::copies`, `ReadCopyCounts`,
+`CopyCounts`, `StepReport::copies`, `ReadCopyCounts`, `MemoryReport` (A58: `allocated_bytes` renamed
+`handed_out_bytes`, `allocated_cpu_bytes` renamed `handed_out_cpu_bytes`; gains `planned_bytes`, `reserved_bytes`,
+`reserved_cpu_bytes`, `reserved_block_count`, `memory_taken_bytes`, `requested_beyond_plan_bytes`),
 `BuildSimulation`, `BuildSimulationFromSnapshot`, `Simulation`, `SimulationSnapshot` (with what the next step
 reads: `has_pressure`, `pocket_of_cell`, the inputs of `ComputeStepDuration` kept at commit, the gas part as
-`gas::GasAmountsSnapshot`, the seven region arrays of cell resize including `is_grid_only_region`,
-`grid_only_current_volume`, `grid_only_ingredient_volume`), `SourceCounter`, `ReadSnapshot`, `AdvanceTo`,
+`gas::GasAmountsSnapshot`, ~~the seven region arrays of cell resize including `is_grid_only_region`,
+`grid_only_current_volume`, `grid_only_ingredient_volume`~~ the three merge-wait arrays `merge_ready_duration`,
+`held_velocity_gradient_size`, `merge_ready_step_count` (A64, A63; the grid-only arrays are not in the first
+version)), `SourceCounter`, `ReadSnapshot`, `AdvanceTo`,
 `AdvanceResult`, `StopReason`, `Callback<Function>`, `StepCallbacks` (every member a
-`Callback<Function>{function, context}` pair: `make_foam_and_spray`, `choose_cell_size`, `on_try_done`,
-`resize_cells`, `on_step_done`, `apply_grid_only_region`, `move_grid_only_liquid`, `run_stages`,
-`read_largest_grid_only_speed`), `FoamAndSprayInputs`, `StepResult`, `RejectReason`, `kRejectReasonCount`,
+`Callback<Function>{function, context}` pair: `make_foam_and_spray`, `on_try_done`, `resize_cells`,
+`on_step_done`, `run_stages`, NEW (reconcile) `limits_raised`; `choose_cell_size` removed (A41); `apply_grid_only_region`, `move_grid_only_liquid`,
+`read_largest_grid_only_speed` not in the first version (A64)), `FoamAndSprayInputs`, `StepResult`, `RejectReason`, `kRejectReasonCount`,
 `RejectContext`, `Stage` (stage 11 `kSolveViscosityAndPressure`), `kStageCount`, `StepLimit`, `kStepLimitCount`,
 `Module` (with `kRenderOutput`), `StepFailure`, `ComputeRandomWords`, and every `ToMessage` and `ToName` of
 `step_message.h`. `pressure::SolveSettings` holds no cancel pointer (the "every design" cancel rule), so the
@@ -922,7 +1009,9 @@ ready scene hashes plain values only.
 `BuildMaterialTable`, `MaterialSettings`, `HasInternalForce`, `ToMessage`, `ToName(MaterialsError)`.
 
 **Solids (PROVIDED, 3.2 to 3.4, 3.8):** `SolidSettings`, `SolidsSettings` (`has_liquid_or_gas`, filled here),
-`PathKey`, `DrivenPath`, `AfterPath`, `FreeSolidSettings`, `FreeMotionLimits`, `MaterialTheLiquidCannotEnter`,
+`PathKey`, `DrivenPath`, `AfterPath`, `FreeSolidSettings`, `FreeMotionLimits` (A59: `guide_kind`, `rail_direction`,
+`hinge_point`, `hinge_axis`), `GuideKind`, `SolidSettings::slip_length` (A53), `LiquidForceOnSolid` (A60),
+`MaterialTheLiquidCannotEnter`,
 `SolidState`, `Orientation`, `ToOrientation`, `ComputeRotationVector(Orientation from, Orientation to)`,
 `kMaxPlateCount`, `kMaxFreeSolidCount`, `CheckSolidsCanRun` (through the step's check), `SolidsSnapshot`,
 `ExchangeTotals`, `BuildContactSolids` (passed through to render output by the frame writer),
@@ -934,17 +1023,20 @@ saved state and restored by the step with `BuildGasAmountsFromSnapshot`), `ToNam
 
 **Contact, grid, pressure, viscosity, transfer (PROVIDED):** `contact::DomainBox`, `ClosedSides`,
 `SolidShape` (`kPlate` makes `materials::PlatesInScene::kSome`), `SolidPose`, `DomainSide`; `grid::GridFrame`,
-`CellId`, `FacePieceId`, `kMaxSizeLevels`; `pressure::OpenSeaSettings`, `OpenSeaWave`, `SolveSettings`,
+`CellId`, `FacePieceId`, `kMaxSizeLevels`, NEW (A41, A63) `CellSizeSettings`, `CellWidthsByLevel`,
+`CellSizeRegion`, `ArtistCellSizes`, `ComputeCellWidth`, `ComputeWantedSizeLevel` (`grid/cell_size_rule.h`); `pressure::OpenSeaSettings`, `OpenSeaWave`, `SolveSettings`,
 `AirPocketSettings`, `VolumeCorrectionSettings`, `AirPocket`, `BlobHistory`, `PressureLaw`;
 `viscosity::ViscositySettings`; `transfer::TransferSettings`; each module's `ToMessage` and `ToName`. Each
 settings struct is read field by field when the ready scene is written; it holds plain values only.
 
-**Cell resize and batches (PROVIDED, 3.4, 3.7):** `cell_resize::CellResizeSettings`, `CellSizeSettings`,
-`RegionSettings`, `BuildCellResize`, `CellResize`, `ResizeCells`, `ChooseCellSize`,
-`ApplyGridOnlyRegionInStep`, `MoveGridOnlyLiquidInStep`, `ReadLargestGridOnlySpeed` (wrapped as the step's
-`read_largest_grid_only_speed`), `ReadLastReport` (resize totals for the run report),
+**Cell resize and batches (PROVIDED, 3.4, 3.7):** `cell_resize::CellResizeSettings` (its `cell_size` is
+`grid::CellSizeSettings`, A41), `BuildCellResize(settings, limits, ingredient_count, const grid::ArtistCellSizes&
+artist, RunMemory& run_memory, RunMemory& cpu_run_memory)` (A63, A58), `CellResize`, `ResizeCells`, `ReadLastReport` (resize count for the run
+report); ~~`CellSizeSettings` (moved to grid), `ChooseCellSize` (removed, A41)~~; `RegionSettings`,
+`ApplyGridOnlyRegionInStep`, `MoveGridOnlyLiquidInStep`, `ReadLargestGridOnlySpeed`: not in the first version (A64;
+the later group);
 `BuildCellResizeMemoryEstimate`, `ToName(CellResizeError)`; `batches::BatchSettings`, `BuildBatchPlan`,
-`BatchPlan`, `BuildBatchedRun`, `BatchedRun`, `ApplyStagesInBatches`, `BuildBatchesMemoryEstimate`,
+`BatchPlan`, `BuildBatchedRun(batch_plan, scene, RunMemory& run_memory, RunMemory& cpu_run_memory)` (A58), `BatchedRun`, `ApplyStagesInBatches`, `BuildBatchesMemoryEstimate`,
 `ToName(BatchesError)`; A15 and planned cost: `BatchPlan::solve_place` (`SolvePlace::kWholeGridOnProcessor`,
 `kInPieces`), `max_solve_loaded_blocks`, `solve_batch_count`, `bytes_on_processor`, `bytes_on_cpu`,
 `bytes_copied_per_try`, `pass_loads_per_try`, `solve_loads_per_iteration`, `solve_bytes_per_iteration`;
@@ -955,7 +1047,8 @@ solve fields `solve_batch_loads`, `solve_bytes_to_processor`, `solve_bytes_from_
 A15: a batched run agrees with a one-piece run within the solver's tolerance, not byte for byte; each mode is
 repeatable on its own. `run_mode` therefore stays in the fingerprint (decision 15).
 
-**Surface, foam and spray (PROVIDED, render output 3, 4 and 5.7):** `RenderSettings`, `MotionSettings`,
+**Surface, foam and spray (PROVIDED, render output 3, 4 and 5.7):** `RenderSettings` (A47: `wind`, set by this
+module from `ReadyScene::wind`), `MotionSettings`,
 `SurfaceSettings`, `FoamSettings`, `VolumeSettings`, `RenderLimits`, `CheckRenderSettings(settings,
 smallest_cell_width, materials)`, `BuildRenderOutputMemoryEstimate` (passed to `step::BuildRunPlan`),
 `BuildStepRecorder`, `RecordStep`, `CommitRecordedStep`, `RejectRecordedStep`, `ReadRecordedInterval`,
@@ -1035,7 +1128,26 @@ for every material, one internal file format, and open formats for everything a 
      particle_spacing / 2`. `has_liquid_or_gas`: some material is `kLiquid` or `kGas`. Plates are the solids
      of shape `kPlate`. `SolidsSettings::gravity` is the scene's gravity.
    - Gas: `GasSource` keys `{time, fuel_rate, heat_rate}` and wind keys `{time, acceleration}` are copied into
-     arrays `RunScene` owns; `gas::CheckGasSources` runs in step 2.
+     arrays `RunScene` owns; `gas::CheckGasSources` runs in step 2. NEW (A47): the scene field is `wind` (was
+     `gas_wind`), read with or without gas into `ReadyScene::wind`; without gas this module checks its keys (finite,
+     times strictly ascending); it stays in `physical`; render output's `RenderSettings::wind` is the same keys.
+   - NEW (A59) Guided free solids: `free_solid.guide {kind: "axis_limits" | "rail" | "hinge", moves_along_x,
+     moves_along_y, moves_along_z, turns, rail_direction, hinge_point, hinge_axis}` into `FreeMotionLimits`, world
+     frame; flags only with `axis_limits`, rail and hinge fields only with their kind; `rail_direction` and
+     `hinge_axis` nonzero and normalised at load (`v / sqrt(x x + y y + z z)`, no contraction), the normalised value
+     recorded. (The free-solid table is named `free_solid`, as the C++ field.)
+   - NEW (A53) Slip length: per solid `slip_length` (m, >= 0, default 0) or `free_slip: true` (+infinity), not both;
+     read for every motion kind (on a free solid `check` gives the NOTE finding `slip_ignored_on_free_solid`, not a capability reason). `plan-decisions.md` writes `"free"` or
+     a number; the schema has one type per field, so two fields carry it.
+   - NEW (A63) Artist cell sizes: `cell_size_regions [{low_corner, high_corner, cell_width}]` and `cell_size_map
+     {image}` (PNG, 8- or 16-bit grey, path relative to the scene file), only with `cell_resize`. A region's level is
+     the biggest level whose width (`grid::ComputeCellWidth`) is at most `cell_width` (exact comparison; 0 means the
+     smallest width, the add-on's default; above 0 and below the smallest width: refused); a pixel `p` of maximum `p_max` gives 0 when `p == 0`, else `(2 p (L - 1) + p_max) /
+     (2 p_max)` in integers (`L = size_level_count`); rows are flipped so row 0 is the domain's low y. Regions, asked
+     widths, levels and map levels go into `physical`, so a resume never reads the image again. Decoded with libspng
+     (return codes, no `setjmp`).
+   - NEW (A64) No grid-only region: the `cell_resize` table has no `regions`; `cell_size.smallest_size_level` is
+     derived (`size_level_count - 1`).
    - `end_time = ComputeFrameTime(last_frame)`; `snapshots_kept_at_once = max_waiting_frames + 2`.
    - Render output: `RenderSettings` from `outputs`; zero spacings mean render output's own defaults and
      are left as given; `CheckRenderSettings(render, smallest_cell_width, material_table)` runs in step 2.
@@ -1069,6 +1181,15 @@ points: the material id and `particle_fields`; solid motion: none).
   names, requested outputs and render settings (render output commits nothing: its 1), `last_frame` (a run can
   be extended), limits and memory shares (step 5.7: no result depends on a limit), saved-state cadence, queue
   size, `keeps_frame_inputs`.
+- **Resume and the run mode** (NEW, A40). A resume reuses the recorded mode (`FileList::run_mode`): `BuildSceneBudget`
+  plans with it forced (`step::BuildRunPlan(..., forced_mode)`: a recorded batched mode is kept even when one piece would fit, the forced
+  `kBatched` plan then going to `BuildBatchPlan`; recorded solves in pieces are forced by `max_whole_grid_share = 0` for that plan only). If the
+  forced mode does not fit, the resume refuses with `kRecordedModeDoesNotFit` (needed, allowed, the mode in words),
+  writes nothing and exits 3. `--choose-mode-again` plans as `run` does; a different mode appends a file list
+  `ModeChange {frame, from, to, run_fingerprint}` and `RunReport::run_mode_changes` gets the row; frames already
+  listed after the saved state are handed over without comparison. The fingerprint in effect is the newest `Start`
+  or `ModeChange` entry's; a listed file is checked against the one in effect when it was listed. So `kRunMode` is
+  never a resume refusal.
 - **The one bridge.** `BuildRunFromSavedState` starts a new run, in a new folder, from a saved state of
   another run (another build, another processor, an edited scene). It needs only that the state fits the
   scene (`step::kSnapshotDoesNotMatch` otherwise). Its fingerprint contains `started_from`, so the two runs
@@ -1125,6 +1246,7 @@ then zeros up to a multiple of 64, then the arrays, each starting at a multiple 
              frame_inputs/000042.inputs
              outputs/points_17/points.000042.abc     outputs/surface_3/surface.000042.abc    (render output 5.7)
              tmp/                never read
+             inputs/cell_size_map.png   NEW (A63). Written by the add-on; read once by BuildRunScene; not listed
 ```
 
 **File list.** A 16-byte start ("FLUIDITY", version, kind), then entries. An entry is: byte count (32 bits),
@@ -1179,13 +1301,13 @@ snapshot digests the uninterrupted run lists. Every value is stored for a reason
 | time, `state_version`, `step_count`, frame | `SimulationSnapshot` | The step duration to the next frame time is computed from them |
 | every particle array of every material, in grouped order, `position_when_grouped`; `next_particle_id` | `particles::ParticlesSnapshot` (full) | Sums run in grouped order (owner Q22); ids are never reused; the grouping is restored to the byte |
 | active cell ids | `active_cells` | The only description of a mixed-size grid (`grid::GridInputs`) |
-| pressure, `has_pressure`; `velocity_after_pressure` when kept | `SimulationSnapshot` | The next step's carried pressure starts from it; grid-only cells and gas markers read the committed velocity |
+| pressure, `has_pressure`; `velocity_after_pressure` when kept | `SimulationSnapshot` | The next step's carried pressure starts from it; gas markers and the velocity gradient of the cell size rule read the committed velocity (grid-only cells: not in the first version, A64) |
 | air pockets, `pocket_of_cell`, `BlobHistory` with `next_blob_id` | pressure through the step | `FindAirPockets` matches against the committed pockets |
 | source counters (`owed_particles`, `next_child_number`) | step 5.4 | With `random_seed` they are the whole random state: the generator is keyed by seed, source and child number |
-| the values the next duration is chosen from (largest speed over cell width, the material sound limit, the air pocket limit, the gas step limit, the grid-only speed of the last commit) | `SimulationSnapshot` | `ComputeStepDuration` reads committed values only |
+| the values the next duration is chosen from (largest speed over cell width, the material sound limit, the air pocket limit, the gas step limit; NEW (A62) the largest liquid speed the cell size rule's reference speed reads; the grid-only speed: not in the first version, A64) | `SimulationSnapshot` | `ComputeStepDuration` and `ResizeCells` read committed values only |
 | solid states and exchange totals | `solids::SolidsSnapshot` | Poses and velocities of free solids; totals for the balance check |
 | the seven gas arrays by cell id | `gas::GasAmountsSnapshot` | Committed amounts; restored with `BuildGasAmountsFromSnapshot` |
-| the seven region arrays (`is_grid_only_region`, `layers_from_grid_only_region`, `merge_ready_duration`, `grid_only_mass`, `grid_only_rest_volume`, `grid_only_current_volume`, `grid_only_ingredient_volume`) by active cell | `SimulationSnapshot` (cell resize) | Liquid without particles, and the merge wait |
+| ~~the seven region arrays~~ the three merge-wait arrays (`merge_ready_duration`, `held_velocity_gradient_size`, `merge_ready_step_count`; A64, A63) by active cell | `SimulationSnapshot` (cell resize) | The merge wait and the held gradient of the cell size rule. The six grid-only arrays (`is_grid_only_region`, `layers_from_grid_only_region`, `grid_only_mass`, `grid_only_rest_volume`, `grid_only_current_volume`, `grid_only_ingredient_volume`): not in the first version (A64) |
 | limits | `SimulationLimits` | So a continued run does not start by raising them again; no result depends on them |
 | last mesh per surface group, foam particles with owed particles, the last motion sample | `render_output::RenderOutputSnapshot` | A continued run builds the same products: the mesh is moved, not rebuilt; foam goes on |
 
@@ -1232,7 +1354,7 @@ with the full 64-bit id and double values. Arrays (per material `m` = its `mater
 | `particles.m.size_level` | unsigned 8 | none | |
 | `particles.m.ingredient_fractions` | `ingredient_count` doubles | none | With two or more ingredients |
 | `particles.m.<field>` for `particle_fields` (`mass`, `fitted_velocity_change`, `springy_deformation`, `permanent_volume_change`, `plate_id`, `side`, `flags`) | as in particles 3.7 | as there | The same names and units in a saved state, where all are written |
-| `grid.active_cells`, `grid.is_grid_only_region`, `grid.grid_only_current_volume`, `grid.grid_only_ingredient_volume` | unsigned 64; unsigned 8; doubles | none; m3 | What the surface field reads (render output 5.3) |
+| `grid.active_cells` (`grid.is_grid_only_region`, `grid.grid_only_current_volume`, `grid.grid_only_ingredient_volume`: not in the first version, A64) | unsigned 64 | none | What the surface field reads (render output 5.3) |
 | `gas.cells` and the seven gas arrays | unsigned 64; doubles | as in `GasAmountsSnapshot` | With gas |
 | header: solids | table | m, rad, world | `solid_id`, state, totals of every solid |
 | `motion.s.*` for each sample `s` of `recorded` and `sample_at_frame` | lattice keys; floats; unsigned 8 | m/s, m | `MotionSample` arrays as render output 3.2 declares them |
@@ -1264,16 +1386,23 @@ markers and the seven arrays (gas beside liquid, A10: both in one file, the mark
    `log.txt`) and kept in `RunReport::budget`.
 4. Compute the fingerprint. New run: `BuildNewRunFolder`, list the ready scene, `WriteOutputDeclarations`.
    Resume: `BuildRunFolderToContinue` (lock, fingerprint, cleaning).
-5. Compose the step callbacks, each pair with its own context: `resize_cells` = `ResizeCells`,
-   `choose_cell_size` = `ChooseCellSize`, `apply_grid_only_region` = `ApplyGridOnlyRegionInStep`,
-   `move_grid_only_liquid` = `MoveGridOnlyLiquidInStep`, `read_largest_grid_only_speed` = a wrapper of
-   `ReadLargestGridOnlySpeed`, and in either batched mode `run_stages` = `ApplyStagesInBatches`, each with the
-   context its declaration in the cell resize and batches design names (`Run` builds `CellResize` with
-   `BuildCellResize(settings, plan.limits, ingredient_count)` and `BatchedRun` with `BuildBatchedRun(batch_plan,
-   scene)` after the plan, and owns both); `make_foam_and_spray` = `RecordStep` on the step recorder
+5. Compose the step callbacks, each pair with its own context: `resize_cells` = `ResizeCells` and in either
+   batched mode `run_stages` = `ApplyStagesInBatches`, each through a private wrapper whose context is the
+   `RunState` (amended 2026-11-15: `choose_cell_size` removed, A41; `apply_grid_only_region`,
+   `move_grid_only_liquid`, `read_largest_grid_only_speed`: not in the first version, A64). `step::BuildSimulation`
+   reserves the run's one `RunMemory` block from the whole plan first (A58); right after it `Run` builds `CellResize`
+   with `BuildCellResize(settings, plan.limits, ingredient_count, scene.artist_cell_sizes(), run_memory,
+   cpu_run_memory)` and
+   `BatchedRun` with `BuildBatchedRun(batch_plan, scene, run_memory, cpu_run_memory)`, `run_memory = step::FindRunMemory(simulation)`,
+   `cpu_run_memory = step::FindCpuRunMemory(simulation)` (the same object in a CPU run),
+   and owns both (they were planned in step 3, so they fit the block); `limits_raised` (NEW, reconcile) has the
+   `RunState` as context: when `ApplyLimits` has reserved the new blocks and before it frees the old ones, it rebuilds
+   `CellResize`, the `BatchedRun` and the render `StepRecorder` into the new blocks at the new limits, keeping
+   `CellResize`'s last report and the recorder's waiting records; false gives the step's `kLimitsCannotBeRaised`; `make_foam_and_spray` = `RecordStep` on the step recorder
    (returns false only on `kRunOnCallFailed`); `on_try_done` and `on_step_done` are this module's: they call
-   `CommitRecordedStep` or `RejectRecordedStep`, copy `RunProgress` and `LastTry`, stop at a frame time, and feed
-   the measured cost (`ApplyTryToRunCost`, `ApplyStepToRunCost`, 5.10).
+   `CommitRecordedStep` or `RejectRecordedStep`, copy `RunProgress` and `LastTry`, keep the committed try's
+   `liquid_force_on_solids` (A60, copied into the next `FrameOutput`), stop at a frame time, and feed the measured
+   cost (`ApplyTryToRunCost`, `ApplyStepToRunCost`, 5.10).
    Build the simulation: `step::BuildSimulation`, or `ReadSavedState` then `step::BuildSimulationFromSnapshot`;
    `FrameWriter::start` with the saved state's render output snapshot. If the newest saved state fails its
    checks, the next older one is tried and the `started` event says so.
@@ -1415,8 +1544,12 @@ limits.max_cell_blocks`, `resize_copies = 2` in one piece, and `8 * 64 * limits.
 counts.particles_from_sources`; `smallest_cell_width` from the grid frame. (A25) `viscous_path`,
 `viscous_effect_cell_width_m`, `viscous_effect_step_seconds` from `RunPlan::viscous_path`,
 `viscous_effect_cell_width`, `viscous_effect_step_duration`; `liquids` from `RunPlan::liquid_viscous_effects`
-(name from the ready scene's ingredient at `ingredient_index`, `is_viscous = viscosity > 0`, `effect_not_visible =
-0 < viscous_effect_per_step < viscosity::kSmallestVisibleViscousEffectPerStep`).
+(name from the ready scene's ingredient at `ingredient_index`, `is_viscous = viscosity > 0`, ~~`effect_not_visible =
+0 < viscous_effect_per_step < viscosity::kSmallestVisibleViscousEffectPerStep`~~; A57: the advice fields copied
+from the step's row, `viscous_effect_run_seconds` and `reynolds_length_m` from the plan). (A58) `allowed_bytes` and
+`allowed_cpu_bytes` are the step's `ComputeAllowedMemoryBytes` of each processor; `memory_share_of_free` and
+`memory_left_free_bytes` copied from `StepSettings` into both `MemoryBudget`s. (A64) `to_fit.deep_particle_count` from
+`counts.start_particles_in_deep_cells`, `deep_cell_depth` from `ReadyScene::cell_size.surface_reach_in_cell_widths` times the smallest cell width.
 
 **Mode and verdict.** `fit == kFits` and `kOnePiece`: `kFitsProcessor`, `kFits`; `kBatched`:
 `kParticlesDoNotFitProcessor`; `kBatchedWithSolvesInPieces`: `kSolverBuffersDoNotFitProcessor`; a GPU run with
@@ -1426,8 +1559,10 @@ counts.particles_from_sources`; `smallest_cell_width` from the grid frame. (A25)
 
 **Suggestions** (printed as "estimates"): `s = allowed / needed` of the failing memory; `max_particle_count =
 floor(s * particle_count)`; `min_smallest_cell_width = ceil_1e-4(w / cbrt(s))` for a memory verdict,
-`ceil_1e-4(w / sqrt(s))` for a layer verdict (no particle suggestion); `more_memory_bytes =
-ceil(needed / memory_share_of_total) - total` (total known) else `needed - allowed`.
+`ceil_1e-4(w / sqrt(s))` for a layer verdict (no particle suggestion); ~~`more_memory_bytes =
+ceil(needed / memory_share_of_total) - total` (total known) else `needed - allowed`~~ **replaced** (A58):
+`more_memory_bytes = max(ceil(needed / memory_share_of_free), needed + memory_left_free_bytes) - free` (0 when
+negative), `free` of the failing processor.
 
 **Budget lines** (exact templates; sizes in decimal units: below 1000 `"<n> B"`, else two decimals of the largest of
 kB, MB, GB, TB not above the value; integers grouped by commas; widths `%.4f m`; `<p>` is `cpu` or `gpu`):
@@ -1447,21 +1582,48 @@ yes` or `fits: no. To fit (estimates): at most <n> particles (now <n>), or a sma
 stages run in <n> batches, solves on the whole grid`; `the particles and the solver buffers do not fit the <p>;
 particle stages run in <n> batches, solves in <m> pieces`; `in one piece it does not fit the <p>, and in batches
 the state does not fit cpu memory`; `one layer of cell blocks with its border does not fit the <p>`; `the scene
-does not fit cpu memory`.
+does not fit cpu memory`. NEW (A58): with `notes_windows_gpu_fallback`, right after the `gpu memory:` line, once:
+`note: on Windows a full GPU makes the run slow instead of failing; see "Prefer No Sysmem Fallback" in the NVIDIA
+Control Panel`. NEW (A64): when the plan does not fit and the largest processor entry of `modules` is particles
+(ties in `Module` order), before the last line: `particles: <n> needed, <m> of them in cells deeper than <d> m below
+the surface; in this version every liquid cell holds particles (deep liquid without particles comes later)` (`<n>`
+`particle_count`, `<m>` `deep_particle_count`, `<d>` `deep_cell_depth` with `%.4f`); the suggestion line is unchanged.
+The deep-cell count is honest about cost: with the depth term the cells below the band number less than `4 A /
+w_min^2` against `8 A / w_min^2` in it, so particles everywhere cost at most about 1.5 times the band (toward 2 with
+discrete levels); scenes whose deep cells cannot coarsen (one level, strong shear, artist regions, a deep solid or
+gas pocket) grow with depth, which this line names.
 
 **Liquids lines** (NEW, A25; only when `liquids` is not empty, right before the last `fits:` line; `%g` for viscosity
 and density, `%.3g` for the number, `%.4f` for width and step; ingredient export names). A liquid is viscous exactly
 when its viscosity setting is above 0; the scene is viscous when any liquid is, then stage 11 runs for the whole run,
 else stage 12 (the step chooses once; this module only prints it). `kPressureSolve`: `liquids: pressure solve
 (every liquid has viscosity 0)`, then per liquid `  <name>: viscosity 0 Pa s, density <d> kg/m3, inviscid`.
-`kViscousSolve`: `liquids: viscous solve (a liquid has viscosity above 0); effect per step at the smallest cell <w> m
-and the largest step <t> s`, then per liquid `  <name>: viscosity <v> Pa s, density <d> kg/m3, viscous effect per
-step <n>` (viscosity 0: `  <name>: viscosity 0 Pa s, density <d> kg/m3, inviscid`), followed, when
-`effect_not_visible`, by `  note: <name>'s viscosity changes velocity differences between neighbouring cells by less
-than 0.1 % per step, which is not visible; set its viscosity to 0`. The number is the step's
-`viscosity * step_duration / (density * cell_width^2)` at the largest step and the smallest cell; below
-`kSmallestVisibleViscousEffectPerStep = 2.5e-4` one step changes the difference between neighbouring cells by under
-0.1 %. `check` and the run's start print these lines as part of the budget lines.
+`kViscousSolve` (**replaced**, A57; was: `liquids: viscous solve (a liquid has viscosity above 0); effect per step at
+the smallest cell <w> m and the largest step <t> s`, per liquid `... viscous effect per step <n>`, and when
+`effect_not_visible` the note `<name>'s viscosity changes velocity differences between neighbouring cells by less
+than 0.1 % per step, which is not visible; set its viscosity to 0`, judged against
+`kSmallestVisibleViscousEffectPerStep = 2.5e-4`, now removed): `liquids: viscous solve (a liquid has viscosity above
+0); at the smallest cell <w> m, the largest step <t> s and the run's <T> s` (`%.4f`, `%.4f`, `%g`); per liquid of
+viscosity 0 `  <name>: viscosity 0 Pa s, density <d> kg/m3, inviscid`; per viscous liquid in scene ingredient order
+`  <name>: viscosity <v> Pa s, density <d> kg/m3, grid number <N>; viscosity / transfer smoothing <r>; a feature 4
+cells wide changes by <c> % over the run (<s> cells of spreading); Reynolds number <Re>` (`%.3g` for N, r, s and
+Re; `<c>` = change x 100 rounded to an integer; an empty ratio prints `none: the liquid keeps all its own motion`),
+then when advised `  advice: <name>'s viscosity will not be visible: set it to 0`, then `  note: at viscosity 0 <name>
+slips along solids instead of sticking`. The numbers are the step's (viscosity `viscosity_advice.h`): `N = nu dt /
+h^2`, the ratio `4 N / (1 - alpha)` to the transfer's own smoothing `nu_num = (1 - alpha) h^2 / (4 dt)` (the
+project's derivation from the XPIC filter analysis, not a published figure; at the largest step, so a lower
+bound), the change `-expm1(-pi^2 D / 4)` with `D = nu T / h^2` (a wave 4 cells long decays as `exp(-nu pi^2 T / (4
+h^2))`), the spreading `sqrt(nu T) / h`, `Re = U L / nu` with `U = sqrt(2 g L)`; advice when the ratio is below 0.1 or
+the change below 0.01. Water 1e-3 Pa s and syrup 10 Pa s at h = 0.01 m, dt = 0.01 s, T = 10 s, L = 1 m, alpha 0.95:
+```text
+liquids: viscous solve (a liquid has viscosity above 0); at the smallest cell 0.0100 m, the largest step 0.0100 s and the run's 10 s
+  water: viscosity 0.001 Pa s, density 1000 kg/m3, grid number 0.0001; viscosity / transfer smoothing 0.008; a feature 4 cells wide changes by 22 % over the run (0.316 cells of spreading); Reynolds number 4.43e+06
+  advice: water's viscosity will not be visible: set it to 0
+  note: at viscosity 0 water slips along solids instead of sticking
+  syrup: viscosity 10 Pa s, density 1400 kg/m3, grid number 0.714; viscosity / transfer smoothing 57.1; a feature 4 cells wide changes by 100 % over the run (26.7 cells of spreading); Reynolds number 620
+  note: at viscosity 0 syrup slips along solids instead of sticking
+```
+`check` and the run's start print these lines as part of the budget lines.
 
 **Not counted** (each bounded, listed once as "small records"): a stage's status record (at most 64 B), solver
 progress records, `AirPocket` records and `BlobHistory`, `GasBlob` records, per-solid and per-set result rows,
@@ -1478,16 +1640,25 @@ copy); its bytes are `report.copies` both directions plus `bytes_to_processor`, 
 `solve_bytes_to_processor`, `solve_bytes_from_processor`; solve bytes per iteration = the try's solve bytes over
 `max(1, pressure_iteration_count)` (gas and viscosity sweeps add to the bytes, so a gas or syrup scene can read
 above plan; the warning then says so). `BuildCostLines` runs at the end of `AdvanceRunTo` (every `RunStop`) and at
-each `WriteRunReport`. Warnings: memory measured above `kMemoryWarningShare` times its budget (per processor);
-copies per step (mean) above `kCopyWarningShare` times the planned; solve bytes per iteration (mean) the same
-(percent rounded to the nearest integer). Lines: `cost of this run, planned / measured:`; `<p> memory: <a> / <b>`
+each `WriteRunReport`. Warnings (**replaced**, A43, A58; were: memory above `kMemoryWarningShare` = 1.10 times its
+budget, copies per step and solve bytes per iteration (mean) above `kCopyWarningShare` = 1.25 times the planned):
+`warning: <p> memory: <b> requested beyond the planned <b>` for gpu when `requested_beyond_plan_bytes > 0` or
+`handed_out_bytes > planned_bytes` (the larger amount), for cpu when `reserved_cpu_bytes` or `handed_out_cpu_bytes`
+exceeds the planned cpu budget (a CPU run: the summed measure against the summed budget); `warning: copies per step
+<b> (max) are above the planned <b>` when `copy_bytes_per_step_max > copies.bytes_per_step` (max: the plan is an
+upper bound); `warning: solve copies per iteration <b> (max) are above the planned <b>` likewise; in a GPU run
+`warning: gpu memory taken <b> is less than the <b> reserved; Windows may have placed part of it in shared system
+memory, which is much slower. To make the run fail instead, set "CUDA - Sysmem Fallback Policy" to "Prefer No
+Sysmem Fallback" for fluidity.exe and blender.exe in the NVIDIA Control Panel.` when `memory_taken_bytes +
+kMemoryTakenToleranceBytes < reserved_bytes` (never when taken is above reserved: other programs count there). A
+GPU run's cost lines gain, right after `gpu memory: <a> / <b>`: `gpu memory: planned <b>, reserved <b> in <n>
+block(s), handed out <b>, taken <b>` (`1 block`, `<n> blocks`). Lines: `cost of this run, planned / measured:`; `<p> memory: <a> / <b>`
 (gpu, then cpu; a CPU run prints one `cpu memory:` line with both summed); `copies per step: at most <b> / mean
 <b>, max <b> over <n> steps`; `copies per frame: up to <b> / mean <b> over <n> frames`; `solve copies per
 iteration: <b> / mean <b>, <x.x> iterations per step` (solves in pieces only); `time by stage over <n> tries:
 <stage name> <x.x> s, ...`; `time by activity: simulate <x.x> s, snapshot <x.x> s, build outputs <x.x> s, write
-<x.x> s, wait <x.x> s`; `warning: <p> memory <b> is <k> % above the planned <b>`; `warning: copies per step <b>
-(mean) are <k> % above the planned <b>`; `warning: solve copies per iteration <b> (mean) are <k> % above the
-planned <b>`. Stage names are `ToName(step::Stage)`.
+<x.x> s, wait <x.x> s`; then the warnings above (the old percentage warnings are **replaced**). Stage names are
+`ToName(step::Stage)`.
 
 **Time** (honest): nothing before the run. `simulated_seconds_per_second` over the last up to 6 frames listed in
 this process (at least 2; fewer: 0); `projected_remaining_seconds = (end_time - last frame time) / rate` from 3
@@ -1638,10 +1809,12 @@ Tests that need render output's writers (21) are in `cli/`'s test target, which 
     that does not exist: `kParticleNotFound`, exit 1; a frame without stored inputs and without a saved state:
     `kFrameInputsNotKept`.
 24. **Budget lines, exact** (NEW, planned cost; I/O plan Task 23a). Hand-built `RunBudget`s (RTX 5060 Ti, GPU 16.00
-    GB total, 15.10 GB free, 11.20 GB allowed; CPU 64.00 GB, 56.00 GB, 44.80 GB; `memory_share_of_total` 0.7):
+    GB total, 15.10 GB free, ~~11.20~~ 13.59 GB allowed; CPU 64.00 GB, 56.00 GB, ~~44.80~~ 50.40 GB; amended A58:
+    `memory_share_of_free` 0.9, `memory_left_free_bytes` 536,870,912, replacing `memory_share_of_total` 0.7):
     `BuildBudgetLines, OnePieceOnGpu_ExactLines`, `SolvesInPiecesOnGpu_ExactLines` (12 batches, 5 solve pieces),
-    `DoesNotFitCpu_ExactLinesWithWhatWouldFit` (52,000,000 particles: at most 38,190,163, cell 0.0111 m, 23.14 GB
-    more cpu memory), each compared with the plan's lines character for character. `BuildRunBudget,
+    `DoesNotFitCpu_ExactLinesWithWhatWouldFit` (52,000,000 particles: at most ~~38,190,163~~ 42,963,934, cell
+    ~~0.0111~~ 0.0107 m, ~~23.14~~ 11.78 GB more cpu memory; A64: the deep-particles line with 31,000,000 below
+    0.0800 m), each compared with the plan's lines character for character. `BuildRunBudget,
     DoesNotFitCpu_Suggestions`, `LayerDoesNotFit_CellAndGpuOnly` (no particle suggestion, width 0.02 m, `kGpu`),
     `FallingBlockOnCpu_FieldsEqualThePlan`, `ForcedBatched_FieldsEqualTheBatchPlan`; `WriteRunReport,
     BudgetFieldNamesInJson`. NEW (A25): `BuildBudgetLines, TwoLiquids_ViscousEffectLines` (water 1e-3 Pa s 1000 kg/m3
@@ -1653,13 +1826,21 @@ Tests that need render output's writers (21) are in `cli/`'s test target, which 
       note: water's viscosity changes velocity differences between neighbouring cells by less than 0.1 % per step, which is not visible; set its viscosity to 0
       syrup: viscosity 10 Pa s, density 1400 kg/m3, viscous effect per step 0.714
     ```
-    ), `BuildBudgetLines, InviscidScene_PressureSolveLine` (water preset, 1000 kg/m3: `liquids: pressure solve (every
+    ) **replaced** (A57) by `BuildBudgetLines, WaterAndSyrup_ViscosityAdviceLines` (the six lines of 5.10, exactly)
+    and `PureFlipLiquid_SmoothingNone`; NEW `BuildBudgetLines, WindowsGpu_FallbackNoteOnce` (A58),
+    `DeepTankDoesNotFit_NamesDeepParticles` (A64; absent when transfer is the largest entry or the plan fits),
+    `WriteRunReport, MemoryBudgetShareFieldsInJson` (A58); `BuildBudgetLines, InviscidScene_PressureSolveLine` (water preset, 1000 kg/m3: `liquids: pressure solve (every
     liquid has viscosity 0)` then `  water: viscosity 0 Pa s, density 1000 kg/m3, inviscid`), `RunBudget,
     LiquidsRoundTrip` (the A25 fields through `WriteRunReport` and `ReadRunReport`, `"viscous_path"` as a string).
     The three exact-line tests above have no liquid in their hand-built budgets, so their lines are unchanged.
 25. **Measured cost and time** (NEW, planned cost; Task 29a). `ComputeTimeProjection, ThreeFrames_RateAndRemaining`,
     `TwoFrames_RateButNoProjection`, `UsesTheLastSixOnly`; `BuildCostLines, OnePieceGpu_ExactLinesAndWarnings`
-    (warnings 15 % memory, 46 % copies), `WithinMargins_NoWarning`, `SolvesInPieces_SolveLine`; `AdvanceRunTo,
+    (warnings ~~15 % memory, 46 % copies~~ amended A43, A58: `gpu memory: 280.00 MB requested beyond the planned
+    1.82 GB` and `copies per step 41.00 kB (max) are above the planned 20.48 kB`, plus the line `gpu memory: planned
+    1.82 GB, reserved 2.10 GB in 2 blocks, handed out 2.10 GB, taken 2.10 GB`), ~~`WithinMargins_NoWarning`~~
+    `MeasuredEqualsPlanned_NoWarning` (one byte over the copy bound gives one warning), `RequestedBeyondPlan_Warns`,
+    `CopiesAboveBound_Warns`, `MemoryTakenBelowReserved_WarnsSpill`, `MemoryTakenAboveReserved_NoWarning` (taken =
+    reserved - 2,097,152: no warning; one byte less: the warning), `SolvesInPieces_SolveLine`; `AdvanceRunTo,
     TinyRun_PlannedAgainstMeasured` (CPU run, measured equals planned memory, no copies, stage seconds exactly the
     stages run), `ForcedBatched_MeasuredCopiesEqualTheReports` (sum over committed steps equals every try's
     `StepReport::copies` and `BatchReport` bytes and loads plus the resize copies); `WriteRunReport,
@@ -1674,6 +1855,33 @@ Tests that need render output's writers (21) are in `cli/`'s test target, which 
     process test `test_budget_and_cost_fields_by_schema_name` (every field by its `run_budget.fbs` name in
     `scene_checked`, `started`, `frame_done`, `done` and `run_report.json`; `check --assume-memory 1
     --assume-cpu-memory 1`: exit 3, `does_not_fit_cpu`, `to_fit` fields).
+
+27. **The A40-A64 pass** (NEW, 2026-11-15; I/O plan Tasks 4, 19, 26, 27, 29, 29b, 29c, 29d). `IoError,
+    OutOfMemory_IsLastValue` (30; `kRecordedModeDoesNotFit` 29). `WriteSavedState, MergeWaitArrays_RoundTrip`.
+    Guides and slip: `BuildRunScene, RailGuide_DirectionNormalised` ((1, 1, 0) gives `1 / std::sqrt(2.0)` by bits),
+    `HingeGuide_PointAndAxisCopied`, `NoGuide_AxisLimitsAllFree`, `SlipLength_ZeroByDefaultNumberOrFree`;
+    `CheckSceneFile, ZeroRailDirection_IsValueOutOfRangeWithPath`, `UnknownGuideKind_IsValueOutOfRange`,
+    `FlagWithRail_IsValueOutOfRange`, `SlipLengthAndFreeSlip_IsValueOutOfRange`,
+    `NegativeSlipLength_IsValueOutOfRangeWithPath`. Wind: `BuildRunScene, WindWithoutGas_KeysKept`, `CheckSceneFile,
+    WindTimesNotAscending_IsValueOutOfRangeWithPath`, `ReadSceneText, GasWindField_IsUnknownSceneField`. Cell resize:
+    `ReadSceneText, RegionsTable_IsUnknownSceneField`, `BuildRun, CellResizeAndBatchesInTheOneBlock` (one block,
+    handed out = planned). Artist sizes (5 levels, 0.16 to 0.01 m): `BuildRunScene, CellSizeRegion_WidthRoundedToLevel`
+    (0.03 -> 3, 0.04 -> 2, 0.16 -> 0, 0 -> 4), `CellSizeMapEightBit_PixelToLevel` (0, 31, 32, 128, 255 -> 0, 0, 1, 2, 4),
+    `CellSizeMapSixteenBit_PixelToLevel` (0, 8192, 32768, 65535 -> 0, 1, 2, 4), `CellSizeMapTopRow_IsHighY`;
+    `CheckSceneFile, RegionWidthBelowSmallest_IsValueOutOfRangeWithPath`, `RegionCornersNotOrdered_IsValueOutOfRange`,
+    `CellSizeMapColour_IsWrongFileKind`, `CellSizeMapMissing_IsFileNotFound`, `CellSizeMapTooWide_IsValueOutOfRange`,
+    `ArtistSizesWithoutCellResize_IsValueOutOfRange`; `SceneDigest, CellSizeMapPixelChangesIt`; `ReadRunScene,
+    ArtistCellSizesRestoredWithoutTheImage`; `BuildRun, ArtistCellSizesReachCellResize`. Liquid force: `AdvanceRunTo,
+    FrameDoneCarriesLiquidForceOfLastStep` (bits equal to the last committed `StepReport`), `WriteRunReport,
+    LiquidForceFieldNamesInJson`, `EventWriter, FrameDoneCarriesLiquidForce`. Resume: `Resume,
+    RecordedModeStillFits_ReusesIt`, `RecordedModeDoesNotFit_RefusesNamingTheFlag` (folder bytes unchanged),
+    `ChooseModeAgain_RecordsTheChange`, `SolvesInPiecesRecorded_ForcedAgain`; `ReadFileList,
+    ModeChange_FingerprintInEffectPerFrame`; `BuildRun, LimitRaise_RebuildsIoHeldBuffersIntoNewBlock`; `ReadCommandLine, ChooseModeAgainOnResumeOnly`, `ReadCommandLine,
+    Version_PrintsCudaRuntime`; `AdvanceRun, ResumeRecordedModeDoesNotFit_ExitThree`.
+28. **Deep liquid without particles** (later; not in the first version, A64): `WriteSavedState,
+    GridOnlyArrays_RoundTrip`, `ContinueRun, GridOnlyTank_FourWaysSameFiles`, `RunReport, GridOnlyTotals`,
+    `CheckSceneFile, GridOnlyDepthNotAboveParticleDepth_IsValueOutOfRange`; I/O plan Task 42a, after the cell resize
+    group's two gating tests pass.
 
 **Reference pieces.** One: `reference/io/read_array_file.py`, written from section 5.3 alone with `struct`
 and the FlatBuffers Python package, no code shared with the writer. It removes the uncertainty a round-trip
@@ -1751,6 +1959,10 @@ is the step's (its decision 9).
 | `simulate`, `validate`, `inspect`, `devices`, `schema`, `step`, `replay` | `capabilities`, `check`, `run`, `resume`, `report`, `read-particle` | Decided (decision 1, changes-to-apply 12) |
 | emission source rate in particles per second | `volume_rate` in the scene file | NEW |
 | (planned memory and copies shown before a run; what a run used) | `RunBudget`, `budget`, `BudgetVerdict`, `ModeReason`; `RunCost`, `cost`; `TimeProjection` | NEW; A22 allows `budget` for a planned cost shown to the user |
+| `gas_wind` (scene field) | `wind` | A47 |
+| refinement region, refinement map | `cell_size_regions`, `cell_size_map`, `grid::CellSizeRegion`, `ArtistCellSizes` | A63 |
+| (old percentage warning margins) | `kMemoryTakenToleranceBytes`; warnings by amount | A43, A58 |
+| (a resume in another mode) | `RunModeChange`, `run_mode_changes`, `--choose-mode-again`, `kRecordedModeDoesNotFit` | A40 |
 | `Diagnostic { domain, field, object, cause }`, `E-CLI-InvalidArgument` | `IoFailure`, `FailingModule`, `Finding` with `module` and `code` (`ToName`), `ToMessage` | A2; stable codes per changes-to-apply |
 
 ## 10. Not ported
@@ -1932,7 +2144,8 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     iteration); no time estimate before the run; `ComputeTimeProjection` over the last up to 6 frames listed in
     this process, a projection from the 3rd frame, a `time: about ...` line after the 3rd frame and every 10th
     after it.
-    Decision: as stated (plan decision, 2026-11-14 (planned cost); owner principle A17).
+    Decision: as stated (plan decision, 2026-11-14 (planned cost); owner principle A17). **Replaced** in part by
+    decision 32 (warnings without margins, A43, A58).
 21. **Where the budget and cost appear.** Human lines on standard error only (and `log.txt` for `run` and
     `resume`); `scene_checked.budget`, `started.budget`, `heartbeat` and `frame_done` with
     `simulated_seconds_per_second` and `projected_remaining_seconds`, `done` / `stopped` / `failed` with `budget`
@@ -1965,7 +2178,8 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     start print it as part of the budget lines; `ToName(step::ViscousPath)` gives `pressure_solve` and
     `viscous_solve`.
     Decision: as stated (owner answer A25; `plan-decisions.md`, "A25: what counts as viscous, and the viscous effect
-    per step"; I/O plan Tasks 5, 14, 23a, 36, 37).
+    per step"; I/O plan Tasks 5, 14, 23a, 36, 37). **Replaced** in part by decision 33 (the advice lines and the
+    removal of `kSmallestVisibleViscousEffectPerStep`, A57).
 27. **The snow exclusion is lifted.** `CapabilityReason::kViscousLiquidWithSnow` and its name
     `viscous_liquid_with_snow` no longer exist, so `kCapabilityReasonCount` is 17 at most (14 if the viscosity plan
     lifts its three exclusions); `viscous_liquid_with_free_solid` stays.
@@ -1985,16 +2199,67 @@ step questions 7 (`AdvanceTo`, hence `AdvanceRunTo`), 8 (answered in 5.7: no rin
     Decision: I/O's struct and its schema table are `ViscousEffectOfLiquid` (3.9); the step's keeps its name; the
     JSON field names are unchanged (A27 pass; I/O plan Task 23a; add-on decision 19).
 
+30. **Particles everywhere (A64).** No grid-only region in the first version: no `regions` scene table, no grid-only
+    callbacks, saved-state arrays, frame-input arrays or run report totals; their text is marked "not in the first
+    version (A64)" and their tasks form the later group (I/O plan Task 42a), owned by the cell resize group. The
+    budget names the deep particles of a scene that does not fit.
+    Decision: as stated (owner answer A64; `plan-decisions.md` "Owner answers A40-A64 applied", item 1).
+31. **Artist cell sizes and the shared rule (A41, A63).** `cell_size_regions` and `cell_size_map` read, checked,
+    rounded to levels and recorded in `physical`; handed to `BuildCellResize` through `RunScene::artist_cell_sizes()`;
+    `choose_cell_size` removed; PNG decoded by libspng; `kMaxCellSizeMapSidePixels = 8192` (starting value); a region
+    `cell_width` of 0 means the smallest cell width (the add-on's default).
+    Decision: as stated (owner answers A41, A63; `plan-decisions.md` "Owner answers A40-A64 applied", item 2).
+32. **Memory budget and warnings (A58; A43, A45 refined).** The budget is `min(0.9 x free, free - 512 MiB)` on both
+    processors; the suggestion `max(ceil(needed / share), needed + left free) - free`; `MemoryBudget` carries the two
+    settings; the Windows note in the budget lines; one reserved block per run, which `BuildCellResize` and
+    `BuildBatchedRun` receive through `step::FindRunMemory` and `FindCpuRunMemory`; warnings by amount (requested beyond the plan, copies
+    above the bound by the max, GPU memory taken below reserved by more than `kMemoryTakenToleranceBytes`); the
+    `RunCost` memory fields including `reserved_cpu_bytes` and `handed_out_cpu_bytes`. Replaces the margins of decision
+    20 and open point 1.
+    Decision: as stated (owner answers A43, A58; `plan-decisions.md` "Owner answers A40-A64 applied", item 3).
+33. **Viscosity advice (A57; replaces A44 and A25's threshold).** The `liquids:` lines of 5.10 with the smoothing
+    ratio, the four-cell change over the run, the spreading, the Reynolds number, the advice and the slipping note;
+    `ViscousEffectOfLiquid` replaces `effect_not_visible` by the five copied fields (reconcile item 21's naming kept:
+    `io::ViscousEffectOfLiquid` against `step::LiquidViscousEffect`).
+    Decision: as stated (owner answer A57; `plan-decisions.md` "Owner answers A40-A64 applied", item 4).
+34. **Guided free solids (A59).** `solids[].free_solid.guide` in world frame; the table named `free_solid` (was `free`
+    in the I/O plan) to mirror the C++ field.
+    Decision: as stated (owner answer A59; `plan-decisions.md` "Owner answers A40-A64 applied", item 5).
+35. **Liquid force on every solid (A60).** `frame_done` and `run_report.json` carry `liquid_force_on_solids` of the
+    frame's last committed step; no listed file changes.
+    Decision: as stated (owner answer A60; `plan-decisions.md` "Owner answers A40-A64 applied", item 6).
+36. **Slip length (A53).** Per solid `slip_length` (m) or free slip, read for every motion kind. Plan-decisions writes
+    `"free"` or a number in one field; a FlatBuffers field has one type, so the scene carries `slip_length` and
+    `free_slip: true` (the add-on's own two properties).
+    Decision: as stated (owner answer A53; `plan-decisions.md` "Owner answers A40-A64 applied", item 7); the
+    two-field form is this design's (see Open 6).
+37. **Wind (A47, A50).** The scene field is `wind`, read with or without gas, kept in `physical`, copied into
+    `RenderSettings::wind` (seam 12). The wind findings are the add-on's.
+    Decision: as stated (owner answers A47, A50; `plan-decisions.md` "Owner answers A40-A64 applied", item 8).
+38. **Resume in the recorded mode (A40).** `resume` forces the recorded run mode; if it does not fit,
+    `kRecordedModeDoesNotFit` (exit 3) names `--choose-mode-again`; with the flag a different mode is a file list
+    `ModeChange` and a `run_mode_changes` row. Closes open point 4.
+    Decision: as stated (owner answer A40; `plan-decisions.md` "Owner answers A40-A64 applied", item 10).
+39. **`kOutOfMemory` last (reconcile item 31).** `IoError` has 31 values; `kOutOfMemory` is the last,
+    `kRecordedModeDoesNotFit` before it; the base table names `BufferError::kRunMemoryTooSmall`. This module builds
+    no `kRunOn` buffer, so it takes no `RunMemory`.
+    Decision: as stated (`plan-decisions.md` "Owner answers A40-A64 applied", item 11).
+40. **`fluidity --version`.** Prints the executable version and the CUDA runtime version it was built with
+    (`ReadProcessorDescription(RunOn::kGpu).runtime`, `none` in a CPU build) on one line, exit 0, for the add-on's
+    packaging test (A49).
+    Decision: as stated (owner answer A49; `plan-decisions.md` "Owner answers A40-A64 applied", item 9).
+
 **Open**
 
-1. `kMemoryWarningShare = 1.10` and `kCopyWarningShare = 1.25` are new constants (owner to confirm).
+1. ~~`kMemoryWarningShare = 1.10` and `kCopyWarningShare = 1.25` are new constants (owner to confirm).~~ Decided
+   (decision 32): removed; `kMemoryTakenToleranceBytes = 2 MiB` is a starting value to confirm on the Windows run.
 2. `BatchSettings::solve_piece_share = 0.25` and the batched direct-solve room `4 * max_cells` decide when
    `kBatchedWithSolvesInPieces` is chosen (owner to confirm; batches and pressure own them).
 3. Planned step copies are upper bounds at the limits; the measured mean is expected well below them, so the copy
    warning fires only when a bound is wrong.
-4. `run_mode` is computed from the plan, which depends on the memory free when the run starts; a resume on a day
-   with less free memory may get another mode and then `kWrongRunFingerprint` with `kRunMode`. The plans do not
-   say whether a resume reuses the recorded mode (with `--assume-memory`-like forcing) or refuses; the user can
-   start a new run from the saved state (`--start-from`).
-5. `kSmallestVisibleViscousEffectPerStep = 2.5e-4` (0.1 % per step), printed in the budget's note, is a new
-   constant of the viscosity module (owner to confirm; `plan-decisions.md`, A25 owner question 1).
+4. ~~`run_mode` is computed from the plan ... the user can start a new run from the saved state (`--start-from`).~~
+   Decided (decision 38, A40).
+5. ~~`kSmallestVisibleViscousEffectPerStep = 2.5e-4`~~ Decided (decision 33, A57): removed.
+6. The slip length as two scene fields (`slip_length`, `free_slip`) instead of plan-decisions' one field holding
+   `"free"` or a number (decision 36); the add-on writes what this schema says. Owner to confirm.
+7. Starting values: `kMaxCellSizeMapSidePixels = 8192`, `kMemoryTakenToleranceBytes = 2 MiB`.

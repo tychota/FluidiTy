@@ -103,9 +103,22 @@ The module's own (values from the design; never change one without the owner):
   Byte counts in design comments ("64 bytes") are replaced by `sizeof` of the real type (plan-decisions).
 - **Errors:** only `kBadInput`, `kWrongStateVersion`, `kOutOfMemory`, `kRunOnCallFailed` leave `BuildRenderFrame`
   or `RecordStep` (`RecordStep` also `kWrongGridVersion`); only `kBadInput`, `kFormatNotInBuild`,
-  `kFileWriteFailed`, `kOutOfMemory` leave a writer. Every other value is a reason inside a `SurfaceReport` or
+  `kFileWriteFailed`, ~~`kOutOfMemory`~~ leave a writer. **Amended 2026-11-15 (A58, reconcile item 31):**
+  `kOutOfMemory` is the last value (16 values) and comes only from the building functions `BuildStepRecorder`,
+  `BuildRenderOutput`, `BuildRenderOutputFromSnapshot` and `BuildRenderFrame` (also for
+  `BufferError::kRunMemoryTooSmall`, `magnitude` = bytes asked); `RecordStep` never returns it; a writer's library
+  `std::bad_alloc` is `kFileWriteFailed`. Every other value is a reason inside a `SurfaceReport` or
   `FoamReport`. A `CellResizeFailure`, `GridFailure` or `BufferError` from below is `kRunOnCallFailed` with the
   bytes asked in `magnitude` when it was an allocation, except a grid-version mismatch (`kWrongGridVersion`).
+- **Memory (A58, amended 2026-11-15; Foundation Tasks 17 to 19).** `BuildStepRecorder` takes `RunMemory&
+  run_memory` last (the recorder's run-processor buffers); `BuildRenderOutput` and `BuildRenderOutputFromSnapshot`
+  take `RunMemory& run_memory`, the CPU block (the step's `cpu_run_memory`; the one block in a CPU run), for
+  `frame_order_buffers` (`kCpu`, `kWholeRun`; `plan-decisions.md` item 3 and its same-day correction). `Requires:`
+  the block's `run_on()` matches (debug assertion, A30). Per-frame worker arrays (`kOneSnapshot`, `kOneCall`) keep
+  plain allocation. One estimate row per buffer.
+- **Wind (A47, A50; amended 2026-11-15).** `RenderSettings::wind` (a `gas::GasWind` from `ReadyScene::wind`) moves
+  spray (`v += dt (g + a_wind(t + dt / 2))`) and foam (drift `kFoamWindDriftDuration = 0.1 s` times the horizontal
+  wind acceleration); never the liquid.
 - **Constants:** `kLatticeBlockWidth = 8` (512 points a block, x fastest); block key 21 bits per axis, z highest,
   offset `2^20`; `kMaxMovesPerPoint = 4096`, each move at most half a spacing; `MotionSettings` defaults
   (`spacing` 0 = smallest cell width, at most twice it; `reach_in_spacings` 4; `samples_per_frame` 1..64);
@@ -147,7 +160,8 @@ The module's own (values from the design; never change one without the owner):
   include their headers; no file outside `interchange/` and `cli/` includes an `interchange/` header.
   **Plan decision:** the interchange sources (and only they, besides `cli/read_command_line.cc`) compile with
   exceptions and RTTI on, because the three libraries throw and use `typeid`; every public writer catches every
-  exception at its own boundary (`std::bad_alloc` gives `kOutOfMemory`, anything else `kFileWriteFailed`), so no
+  exception at its own boundary (~~`std::bad_alloc` gives `kOutOfMemory`, anything else~~ every exception gives
+  `kFileWriteFailed`, amended 2026-11-15, reconcile item 31: a writer is not a building function), so no
   exception crosses an `interchange/` header. Library headers are included as system headers through the imported
   Conan targets; our warning flags are never lowered.
 - **Files** (design 5.7): one file per frame and product, one time sample at time code `identity.frame`. Alembic
@@ -178,9 +192,10 @@ On branch `rebuild` in `/Users/tychota/Documents/Code/openSource/FluidiTy-rebuil
 with every `base/` addition (`math::Expm1`, `Cbrt`, `TreeSum`, `Buffer` with `CopyBuffer`, `BuildStableOrder`,
 `BuildGroupsByDestination`, `MemoryEstimateEntry` with `where`), contact, grid, particles, transfer, pressure, viscosity,
 materials, solids, gas (`ToGasSnapshot` with three arguments), step (`FoamAndSprayInputs` with the additions of
-design section 4, `SimulationSnapshot` with the region arrays, `Module::kRenderOutput`, `BuildRunPlan` with
+design section 4, ~~`SimulationSnapshot` with the region arrays,~~ `Module::kRenderOutput`, `BuildRunPlan` with
 `output_estimate`, `step/random_words.h`), cell resize and batches (`cell_resize/regions.h` with `LiquidTotals`,
-`ComputeLiquidTotals`, `GridOnlyAmounts`), I/O and CLI (`io/run_folder.h` with `OutputFile`,
+`ComputeLiquidTotals` over particles only, ~~`GridOnlyAmounts`~~; amended 2026-11-15, A64: no grid-only arrays in
+the first version), I/O and CLI (`io/run_folder.h` with `OutputFile`,
 `path_while_writing`, `BuildOutputFile`, `WriteListedFile`, `CheckAfterWrite::kSizeOnly`).
 
 **Amended 2026-11-14 (Foundation as built):** Foundation as built also provides `base/run_on_call.h`
@@ -189,6 +204,10 @@ order, prefix sum and grouping with their `OrderBuffers` (one form each, A31), `
 `fluidity_base_test_support`) and `fluidity_add_test_library`; cell resize provides
 `ComputeLiquidTotals`, whose one form takes a `SumBuffers&`. Read `AGENTS.md` "Structure" before the first task. The gate prints seven `PASS` lines:
 `format`, `rules`, `cpu` debug, `cpu` release, `tidy`, `paper`, `cuda`.
+
+**Amended 2026-11-15 (A58, A47):** Foundation's Tasks 17 to 19 (`RunMemory`, `BuildBuffer(RunOn, size,
+RunMemory&)`, `ComputeRunMemoryBytes` with `MemoryWhere`, `BufferError::kRunMemoryTooSmall`, the `RunMemory&` forms of
+`BuildSumBuffers` / `BuildOrderBuffers`) and gas's `GasWind`, `SampleGasWind`, `CheckGasSources`.
 
 Prove it: `uv run python tools/check_commit.py` prints `PASS` on every line, and
 `git grep -l "ComputeLiquidTotals\|path_while_writing\|ComputeRandomWords\|ToGasSnapshot\|BuildContactSolids" -- native`
@@ -529,6 +548,9 @@ cannot register its schema types still stops the task.
 
 **Amended 2026-11-14 (A31, reconcile item 26):** `RenderLimits::max_field_parts` (default `1u << 26`) and `RenderOutputError::kTooManyFieldParts` (value 15, appended) added.
 
+**Amended 2026-11-15 (A58, reconcile item 31):** `kOutOfMemory` moves to the end (value 15); `kRunOnCallFailed`,
+`kFormatNotInBuild`, `kFileWriteFailed`, `kTooManyFieldParts` become 11 to 14. Still 16 values.
+
 **Kind:** mechanical
 
 **Files:**
@@ -548,8 +570,10 @@ cannot register its schema types still stops the task.
   TEST(ToName, EveryError_LowerSnakeCase)        // all 16; kFormatNotInBuild -> "format_not_in_build",
                                                  // kTooManyLatticeBlocks -> "too_many_lattice_blocks"; distinct
   TEST(ToMessage, EveryError_IsDistinctAndNotEmpty)
-  TEST(RenderOutputError, NumbersNeverChange)    // static_assert kNone == 0 ... kFileWriteFailed == 14,
-                                                 // kTooManyFieldParts == 15
+  TEST(RenderOutputError, NumbersNeverChange)    // static_assert kNone == 0 ... kEdgeTooLong == 10,
+                                                 // kRunOnCallFailed == 11, kFormatNotInBuild == 12,
+                                                 // kFileWriteFailed == 13, kTooManyFieldParts == 14,
+                                                 // kOutOfMemory == 15 (last; A58, reconcile item 31)
   TEST(RenderLimits, Defaults)                   // 1 << 20, 1 << 26, 1 << 24, max_field_parts 1 << 26
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** Messages say what the user can do ("The surface needs more
@@ -783,6 +807,10 @@ cannot register its schema types still stops the task.
 
 **Kind:** numerics
 
+**Amended 2026-11-15 (A64):** no grid-only cells in the first version: `BuildFieldPoints` reads particles only; the
+grid-only point and its test `BuildFieldPoints, GridOnlyCell_IsOnePointAtItsCentre` move to Task 50 of the later
+group; the commit subject drops "and grid-only liquid".
+
 **Amended 2026-11-14 (Foundation as built):** `fluidity_render_output_test_support` is made with `fluidity_add_test_library`; the stable order of
 the field parts built its own working memory per call (CPU, once per frame); replaced by the A31 amendment below.
 
@@ -802,12 +830,12 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
   tests `LABEL cpu LINKS fluidity_render_output_test_support`)
 
 **Interfaces:**
-- Consumes: `step::SimulationSnapshot` (`particles`, `active_cells`, `is_grid_only_region`,
-  `grid_only_current_volume`, `grid_only_ingredient_volume`), grid 3 cell centre and width from `CellId`.
+- Consumes: `step::SimulationSnapshot` (`particles`, `active_cells`; ~~`is_grid_only_region`,
+  `grid_only_current_volume`, `grid_only_ingredient_volume`~~, A64: Task 50), grid 3 cell centre and width from `CellId`.
 - Produces: `SurfaceGroup`, `SurfaceSettings`, `FieldPoint`, `SurfaceField`, `SurfaceFieldInputs` of design 3.4.
   Private (**Plan decision**): `BuildFieldPoints(const SurfaceFieldInputs&) -> std::vector<FieldPoint>` (5.3 steps
-  1 and 2: particles with `volume = rest_volume * volume_ratio`, `width = cbrt(volume)`; grid-only cells as one
-  point at the centre; points wider than `spacing` split into `k^3` parts, `k = ceil(width / spacing)` at most 8);
+  1 and 2: particles with `volume = rest_volume * volume_ratio`, `width = cbrt(volume)`; ~~grid-only cells as one
+  point at the centre;~~ (A64: Task 50) points wider than `spacing` split into `k^3` parts, `k = ceil(width / spacing)` at most 8);
   `ComputeAddedVolume(points, frame, limits, OrderBuffers& order_buffers) -> std::expected<AddedVolume,
   RenderOutputFailure>` (step 3: blocks and trilinear sums in the order of Global Constraints; amended: the parts
   ordered by `BuildStableOrder` with `order_buffers`, allocating nothing; more parts than `limits.max_field_parts`
@@ -821,15 +849,15 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
 - [ ] **Step 1: Failing tests:**
 
   ```cpp
-  TEST(BuildFieldPoints, GridOnlyCell_IsOnePointAtItsCentre)   // volume == grid_only_current_volume, its shares
+  ~~TEST(BuildFieldPoints, GridOnlyCell_IsOnePointAtItsCentre)~~   // A64: moved to Task 50 (later)
   TEST(BuildFieldPoints, WidePoint_SplitsIntoKCubedParts)      // width 2.5 spacings: 27 parts, volumes sum exactly
   TEST(BuildFieldPoints, VeryWidePoint_SplitsIntoAtMost512)    // width 20 spacings: k == 8
   TEST(ComputeAddedVolume, SumEqualsPointVolume)               // 10,000 random points: 1e-12 relative
   TEST(ComputeAddedVolume, SameInputTwice_SameBytes)
   TEST(ComputeAddedVolume, TooManyParts_IsTooManyFieldParts)   // max_field_parts 26, a point split into 27 parts
   ```
-- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Spread particles and
-  grid-only liquid onto the surface lattice`. New names: the design 3.4 settings and field types.
+- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Spread particles
+  onto the surface lattice` (A64; was `... and grid-only liquid ...`). New names: the design 3.4 settings and field types.
 
 ### Task 18: The surface field
 
@@ -956,7 +984,11 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Label triangles by
   material and build the sheet between two liquids`.
 
-### Task 22: Field and mesh beside solids, grid-only liquid and size changes
+### Task 22: Field and mesh beside solids, big cells and size changes
+
+**Amended 2026-11-15 (A64):** `GridOnlyInside_NoInnerSurface` moves to Task 50 (later); in its place
+`BigCellsInside_NoInnerSurface` (big cells holding particles of their own level); the subject drops "grid-only
+liquid".
 
 **Kind:** numerics
 
@@ -964,7 +996,7 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
 - Create: `native/fluidity/surface/surface_field_scene_test.cc`
 
 **Interfaces:**
-- Consumes: `contact::FlatSolid`, `contact::Box`, `step::SimulationSnapshot` region arrays.
+- Consumes: `contact::FlatSolid`, `contact::Box`, ~~`step::SimulationSnapshot` region arrays~~ (A64: none).
 
 - [ ] **Step 1: Tests** (they should pass on the code of Tasks 18 to 21; any failure is fixed in the commit that
   owns the code):
@@ -972,12 +1004,15 @@ built (`kTooManyFieldParts`); test `ComputeAddedVolume, TooManyParts_IsTooManyFi
   ```cpp
   TEST(BuildSurfaceField, BesideASolid_SameHeight)  // design 7: slab against a FlatSolid, and a tilted Box moving at
       // 1 m/s: height at the solid == height far away, kLiquidToSolid triangles within 0.05 spacing of the solid
-  TEST(BuildSurfaceField, GridOnlyInside_NoInnerSurface)  // sphere radius 16 cells, particles in the outer 3 cells,
-      // grid-only inside: 1 piece, Euler number 2, exact
+  ~~TEST(BuildSurfaceField, GridOnlyInside_NoInnerSurface)~~  // A64: moved to Task 50 (later)
+  TEST(BuildSurfaceField, BigCellsInside_NoInnerSurface)  // A64, design 7: sphere radius 16 smallest cells; inside
+      // the outer 3 cells, particles of 2 levels coarser (rest_volume 64 times, 8 per big cell on
+      // ComputeRefillParticle's pattern via BuildSpherePositions at 4 times the spacing): 1 piece, Euler number 2,
+      // exact
   TEST(BuildSurfaceField, BigAndSmallParticles_NoGap)     // slab across a size change: 1 piece, height step under
                                                           // 0.1 spacing
   ```
-- [ ] **Step 2: Run**; **Step 3:** gate. **Commit.** Subject: `Show the surface beside solids and grid-only liquid`.
+- [ ] **Step 2: Run**; **Step 3:** gate. **Commit.** Subject: `Show the surface beside solids and size changes`.
 
 ### Task 23: The motion sample
 
@@ -1185,6 +1220,10 @@ recorder's `order_buffers` to `BuildStableOrder`.
 **Amended 2026-11-14 (A31):** `BuildStableOrder` has one form; test `ScratchesSizedFromLimits` renamed
 `BuffersSizedFromLimits`.
 
+**Amended 2026-11-15 (A58):** `BuildStepRecorder(..., first_frame_time, RunMemory& run_memory)` (design 3.3): every
+run-processor buffer of the recorder is a piece of `run_memory`; test `BuildStepRecorder,
+IntoRunMemory_HandsOutExactlyTheEstimate`. **(A64)** `RecordStep` reads no region arrays of `fields`.
+
 **Files:**
 - Create: `native/fluidity/render_output/step_recorder.h`, `step_recorder.cc`, `step_recorder_cpu.cc`,
   `step_recorder_steps.h` (shared, `FLUIDITY_CPU_AND_GPU`: the per-cell-place functions of the count, fill and values
@@ -1205,8 +1244,8 @@ recorder's `order_buffers` to `BuildStableOrder`.
   commit at a frame time; `RecordStep` reads `particles_try` and `fields` only on a try that ends at a frame time
   (both may be null otherwise); `after_pressure` must hold exactly one entry, else `kBadInput`.
 - **Plan decision (amended 2026-11-14, Foundation as built):** `StepRecorder` owns `OrderBuffers order_buffers`
-  (`BuildOrderBuffers(run_on, limits.max_lattice_blocks)`: the stable order of recorded blocks by block key and the
-  prefix sums of per-block counts) and `SumBuffers sum_buffers` (`BuildSumBuffers(run_on, 1)`: `ComputeLiquidTotals`
+  (`BuildOrderBuffers(run_on, limits.max_lattice_blocks, run_memory)`: the stable order of recorded blocks by block key and the
+  prefix sums of per-block counts) and `SumBuffers sum_buffers` (`BuildSumBuffers(run_on, 1, run_memory)`: `ComputeLiquidTotals`
   is called once per cell block, Task 31), built by `BuildStepRecorder` (`kOutOfMemory` when they cannot be built);
   `RecordStep` allocates nothing for them. A recorded range with more blocks than `max_lattice_blocks` is the
   existing `kTooManyLatticeBlocks` count, never a working-buffers overflow.
@@ -1227,6 +1266,10 @@ recorder's `order_buffers` to `BuildStableOrder`.
   TEST(RecordStep, WrongGridVersion_IsWrongGridVersion)
   TEST(BuildStepRecorder, BuffersSizedFromLimits)        // amended: order_buffers.max_count() == max_lattice_blocks,
                                                          // sum_buffers.max_count() == 1, both on run_on
+  TEST(BuildStepRecorder, IntoRunMemory_HandsOutExactlyTheEstimate)  // A58, design 7: foam on, kCpu: a RunMemory of
+      // exactly ComputeRunMemoryBytes(BuildRenderOutputMemoryEstimate(settings, kCpu), counts, kRunOn) (Task 44's
+      // rows; until Task 44 the recorder's own rows, the same function): handed_out_bytes() == reserved_bytes();
+      // one byte fewer: kOutOfMemory, magnitude == bytes the last piece asked; exact
   ```
   Tests `LABEL cpu`, `LINKS fluidity_render_output_test_support fluidity_base_test_support`.
 - [ ] **Step 2: Run** (fail). **Step 3: Implement** the CPU loop as design 6 describes (five passes over cell
@@ -1234,6 +1277,8 @@ recorder's `order_buffers` to `BuildStableOrder`.
   liquid's motion near its surface under try and commit`. New names: the design 3.3 recorder names.
 
 ### Task 31: The step recorder on the CPU, events, liquid totals and batches
+
+**Amended 2026-11-15 (A64):** `ComputeLiquidTotals` over particles only (no `GridOnlyAmounts`).
 
 **Amended 2026-11-14 (A31):** `cell_resize::ComputeLiquidTotals` in its one form with the recorder's `sum_buffers`.
 
@@ -1247,7 +1292,8 @@ recorder's `sum_buffers`; the normals, strength and event passes join the shared
 
 **Interfaces:**
 - Consumes: Task 29's formulas; `cell_resize::ComputeLiquidTotals` (one form, with `recorder.sum_buffers`;
-  cell resize plan Task 23), `GridOnlyAmounts` (view of the try `GridFields`), `math::TreeSum`.
+  cell resize plan Task 23; amended 2026-11-15, A64: over particles only, no `GridOnlyAmounts`), ~~`GridOnlyAmounts`
+  (view of the try `GridFields`),~~ `math::TreeSum`.
 - Produces: the normals and strength passes and events of 5.4; `CommitRecordedStep` ordering events by (step,
   block key, point), keeping the `max_events_per_step` largest `volume_time` (ties: lower block key, then point),
   counting `dropped_event_count` and `curvature_not_known_count`; liquid totals of 5.2 step 7, one partial per cell
@@ -1269,6 +1315,9 @@ recorder's `sum_buffers`; the normals, strength and event passes join the shared
   events and the liquid totals at frame times`.
 
 ### Task 32: The step recorder on the GPU
+
+**Amended 2026-11-15 (A58):** the recorder's device buffers are pieces of the `run_memory` given to
+`BuildStepRecorder`; the "without a GPU" test is removed.
 
 **Amended 2026-11-14 (A31):** test `OnGpuRejectedTry_BuffersLeftUnused` (was `..._ScratchLeftUnused`).
 
@@ -1322,8 +1371,9 @@ with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recor
   TEST(RecordStep, OnGpuRejectedTry_BuffersLeftUnused)            // the next commit's record equals a fresh run
   TEST(ReadRecorderCopyCounts, OnGpuFrameTry_CountsEveryReadBack)   // A17: event count, events, counters, kept
       // points and liquid totals: copy_count and bytes equal the sizes read
-  // label no_gpu
-  TEST(BuildStepRecorder, OnGpuWithoutAGpu_IsRunOnCallFailed)
+  // ~~label no_gpu~~
+  ~~TEST(BuildStepRecorder, OnGpuWithoutAGpu_IsRunOnCallFailed)~~  // amended 2026-11-15 (A58): removed; a GPU
+      // RunMemory cannot be built without a GPU (Foundation's BuildRunMemory, OnGpuWithoutAGpu_IsRunOnCallFailed)
   // label cpu (step_recorder_test.cc)
   TEST(ReadRecorderCopyCounts, CpuRecorder_IsEmpty)                 // A17
   ```
@@ -1335,6 +1385,10 @@ with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recor
 **Kind:** numerics
 
 **Amended 2026-11-14 (Foundation as built):** the shared-header test is `LABEL cpu` (`fluidity_add_shared_test` retired).
+
+**Amended 2026-11-15 (A47):** `foam_settings.h` also declares `inline constexpr double kFoamWindDriftDuration =
+0.1;` (s, a starting value: Blender Strength 1 gives 0.1 m/s of foam drift), design 3.5; test
+`kFoamWindDriftDuration, IsATenthOfASecond`.
 
 **Files:**
 - Create: `native/fluidity/foam_and_spray/foam_settings.h` (shared, **Plan decision**), `foam_motion.h` (shared),
@@ -1355,10 +1409,11 @@ with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recor
                                                 // spray, spray, foam, foam, bubble
   TEST(ComputeDragMotion, SameAsMain)           // IntegrateWhitewaterDrag3D, turned to Z-up: 1e-13
   TEST(ToFoamKind, SameAsMain)                  // ClassifyWhitewater3D on 100 fixed distances: exact
+  TEST(kFoamWindDriftDuration, IsATenthOfASecond)  // A47: static_assert == 0.1
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Add foam drag and
   the kind rule for both processors`. New names: `FoamKind`, `FoamSettings`, `DragMotion`, `ComputeDragMotion`,
-  `ToFoamKind`.
+  `ToFoamKind`, `kFoamWindDriftDuration` (A47).
 
 ### Task 34: Adding foam particles
 
@@ -1393,11 +1448,17 @@ with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recor
 
 ### Task 35: Moving foam particles
 
+**Amended 2026-11-15 (A47):** `MoveFoamParticles` takes `const gas::GasWind& wind` after `gravity` (design 3.5):
+spray accelerates by gravity plus the wind sampled at the middle of each piece, foam drifts at
+`kFoamWindDriftDuration` times the horizontal wind; two tests added.
+
 **Kind:** numerics
 
 **Files:**
 - Create: `native/fluidity/foam_and_spray/move_foam_particles.h`, `move_foam_particles.cc`,
   `move_foam_particles_test.cc`
+- Modify (A47): `native/fluidity/foam_and_spray/CMakeLists.txt` (link `fluidity_gas` for `SampleGasWind`; gas is an
+  earlier module)
 
 **Interfaces:**
 - Produces: `MoveFoamParticles` of design 3.5, `<proc-move-foam-particles>` steps 1 to 6 (5.5 steps 2 and 3,
@@ -1405,6 +1466,12 @@ with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recor
   set at the end of `MoveFoamParticles`, from `ComputeLiquidMotion` at the frame time; where the distance is not
   known the kind stays. Solids: a particle inside a solid (`ComputeDistanceToSolid < 0` at the sample's pose) at
   the end of a piece is put on its surface and loses its speed into it relative to `ComputeSolidVelocity`.
+  **Plan decisions (A47):** for a piece `[t, t + dt]`, `a_w = gas::SampleGasWind(wind, t + dt / 2)`; spray:
+  `ComputeDragMotion(start, air_velocity + (gravity + a_w) / spray_drag_rate, spray_drag_rate, dt)` for
+  `spray_drag_rate > 0`, and for `spray_drag_rate == 0` the `k = 0` form with acceleration `gravity + a_w` (`v +=
+  dt * (gravity + a_w)`, `x += dt * v_start + dt * dt / 2 * (gravity + a_w)`); foam: the midpoint velocity is the
+  liquid velocity plus `kFoamWindDriftDuration * (a_w - math::Dot(a_w, kUp) * kUp)`, and that sum is stored as its
+  velocity; bubbles feel no wind (under the surface). Empty `wind.keys`: `a_w = 0`, the bytes of the windless code.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -1415,6 +1482,14 @@ with the recorder's `order_buffers` (one form each, A31); digests; the CPU-recor
   TEST(MoveFoamParticles, BubbleWithoutLiquidVelocity_RisesAndCounts)
   TEST(MoveFoamParticles, FoamWithoutLiquidVelocity_KeepsVelocityAndCounts)
   TEST(MoveFoamParticles, ParticleOrderDoesNotMatter)  // reversed input order: same values per id
+  // A47 (design 7; suite named as plan-decisions item 8 names it)
+  TEST(MakeFoamAndSpray, SprayInWind_AcceleratesByWind)   // one spray particle far from liquid and solids,
+      // spray_drag_rate 0, gravity (0, 0, -9.81), wind keys (1, 0, 0) m/s2 at 0 s and (3, 0, 0) at 1 s, two samples
+      // 0.04 s apart, 4 pieces of 0.01 s: after each piece v == v_before + dt * (g + SampleGasWind(wind, t + dt / 2))
+      // in the same order of operations, exact; empty keys: the gravity-only bytes
+  TEST(MakeFoamAndSpray, FoamInWind_DriftsHorizontally)   // one foam particle on a still flat surface (liquid
+      // velocity 0, known), wind (1, 0, 2) m/s2: velocity == (0.1, 0, 0) and x grows by 0.1 * dt per piece, exact;
+      // wind (0, 0, 3): velocity exactly 0, position unchanged
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Move foam, spray and
   bubbles with the liquid and the air`. New names: `MoveFoamParticles`.
@@ -1658,6 +1733,11 @@ volume's per-frame order buffers (`kOneCall`, `kCpu`).
 buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the whole run by `RenderOutput`; test
 `RecorderScratchEntriesMatchTheRecorder` renamed, `FrameOrderEntriesMatchTheRenderOutput` added.
 
+**Amended 2026-11-15 (A58, A47):** one row per buffer (the recorder's order and sum buffers and the frame order
+buffers one row each, given count 1, `bytes_each` the whole `ComputeOrderBuffersSize` / `ComputeSumBuffersSize`);
+no `kRunOn` row is `kOneCall`; `RenderSettings` gains `gas::GasWind wind` (design 3.6), which `CheckRenderSettings`
+checks with `gas::CheckGasSources({}, wind)`.
+
 **Files:**
 - Create: `native/fluidity/render_output/render_frame.h` (settings in this task), `check_render_settings.cc`,
   `render_output_memory.cc`, `render_settings_test.cc`
@@ -1669,14 +1749,19 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
   Rows as design 6 "Memory estimate entries", with `sizeof` of the real types (`static_assert` on each): the recorder's device
   working buffers (`kGivenCount`, `kWholeRun`, `kRunOn`); per queued frame the samples and events (`kOneSnapshot`, `kCpu`); the
   worker's field blocks, vertices, triangles, foam particles (`kOneCall`, `kCpu`); the `PointObjectBuffers` copies of the
-  largest material (`kOneCall`, `kCpu`). Amended (Foundation as built): `"render output: recorder order buffers"`
+  largest material (`kOneCall`, `kCpu`). Amended (Foundation as built): ~~`"render output: recorder order buffers"`
   (`kGivenCount` = `limits.max_lattice_blocks`, `bytes_each = ComputeOrderBuffersSize(run_on).bytes_per_item`) and
   `"render output: recorder order buffers fixed bytes"` (`kGivenCount` = `fixed_bytes`, 1 byte each),
   `"render output: recorder sum buffers"` (`kGivenCount` 1, `ComputeSumBuffersSize(run_on).bytes_per_item`) and its
   fixed bytes, all `kWholeRun`, `kRunOn`; `"render output: frame order buffers"` (`kGivenCount` =
   `max(limits.max_field_parts, limits.max_foam_particles)`, `ComputeOrderBuffersSize(RunOn::kCpu).bytes_per_item`;
   the field parts of `ComputeAddedVolume` and the foam grouping of `BuildFoamVolume`, reconcile item 26) and its
-  fixed bytes, `kWholeRun`, `kCpu`.
+  fixed bytes, `kWholeRun`, `kCpu`.~~ **(A58)** `"render output: recorder order buffers"` (given count 1,
+  `bytes_each` = `ComputeOrderBuffersSize(run_on)` at `limits.max_lattice_blocks`, whole), `"render output: recorder
+  sum buffers"` (given count 1, `ComputeSumBuffersSize(run_on)` at 1, whole), both `kWholeRun`, `kRunOn`; `"render
+  output: frame order buffers"` (given count 1, `ComputeOrderBuffersSize(RunOn::kCpu)` at `max(limits.max_field_parts,
+  limits.max_foam_particles)`, whole; reconcile item 26), `kWholeRun`, `kCpu`; each other recorder device buffer one
+  row.
 
 - [ ] **Step 1: Failing tests:**
 
@@ -1689,10 +1774,12 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
   TEST(CheckRenderSettings, SamplesPerFrame65_IsBadInput)
   TEST(BuildRenderOutputMemoryEstimate, OnCpu_NoRunOnRowsBesideCpu)  // every row's where is kCpu with RunOn::kCpu
   TEST(BuildRenderOutputMemoryEstimate, NoSurfaceNoFoam_OnlyMotionRows)
-  TEST(BuildRenderOutputMemoryEstimate, RecorderBufferEntriesMatchTheRecorder)  // amended: the four recorder
+  TEST(BuildRenderOutputMemoryEstimate, RecorderBufferEntriesMatchTheRecorder)  // amended (A58: two rows): the recorder
       // buffers entries equal order_buffers.byte_count() + sum_buffers.byte_count() of a CPU BuildStepRecorder
-  TEST(BuildRenderOutputMemoryEstimate, FrameOrderEntriesMatchTheRenderOutput)  // A31, reconcile item 26: the two
-      // frame order entries equal frame_order_buffers.byte_count() of BuildRenderOutput at the limits
+  TEST(BuildRenderOutputMemoryEstimate, FrameOrderEntriesMatchTheRenderOutput)  // A31, reconcile item 26: the
+      // frame order entry (A58: one row) equals frame_order_buffers.byte_count() of BuildRenderOutput at the limits
+  TEST(BuildRenderOutputMemoryEstimate, NoRunOnRowIsOneCall)    // A58: kCpu and kGpu, every setting combination
+  TEST(CheckRenderSettings, WindKeysUnordered_IsBadInput)       // A47: wind keys at 1 s then 0.5 s: kBadInput
   ```
 - [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4:** gate. **Commit.** Subject: `Check render settings
   and count render output's memory`. New names: `VolumeSettings`, `RenderSettings`, `CheckRenderSettings`,
@@ -1701,6 +1788,11 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
 ### Task 45: One output frame
 
 **Amended 2026-11-14 (A31, reconcile item 26):** `RenderOutput` owns the frame's CPU `frame_order_buffers`; `BuildRenderOutput` can fail with `kOutOfMemory`.
+
+**Amended 2026-11-15 (A58, A47, A64):** `BuildRenderOutput(settings, domain_box, grid_frame, gravity, RunMemory&
+run_memory)` with the CPU block (the step's `cpu_run_memory`, the one block in a CPU run) for `frame_order_buffers`;
+`BuildRenderFrame` passes `settings.wind` to `MoveFoamParticles`; `VolumeTargetFromLiquidTotals` runs on an
+all-particle deep tank.
 
 **Kind:** integration
 
@@ -1717,7 +1809,8 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
   recorded.liquid_totals_at_frame.current_volume` minus every group's blob `material_volume` and `droplet_volume`;
   on failure `output` unchanged. Threads as design 6 "The worker". Amended 2026-11-14 (A31, reconcile item 26):
   `BuildRenderOutput` builds `RenderOutput::frame_order_buffers` (`BuildOrderBuffers(RunOn::kCpu,
-  max(limits.max_field_parts, limits.max_foam_particles))`, so it returns `std::expected<RenderOutput,
+  max(limits.max_field_parts, limits.max_foam_particles), run_memory)` (A58; `Requires: run_memory.run_on() ==
+  RunOn::kCpu`), so it returns `std::expected<RenderOutput,
   RenderOutputFailure>` with `kOutOfMemory`), and `BuildRenderFrame` passes it to `BuildSurfaceFrame` and
   `BuildFoamVolume` in turn; no frame allocates working buffers.
 
@@ -1727,8 +1820,13 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
   ```cpp
   TEST(BuildRenderFrame, SameInputTwice_SameBytes)      // design 7: BuildWaveScene, 10 frames: identical bytes
   TEST(BuildRenderFrame, OneOrEightThreads_SameBytes)
-  TEST(BuildRenderFrame, VolumeTargetFromLiquidTotals)  // design 7: deep tank with a grid-only region, one group of
-      // every liquid: liquid_volume_outside_surfaces equals total minus the parts, 1e-12 relative
+  TEST(BuildRenderFrame, VolumeTargetFromLiquidTotals)  // design 7 (A64): deep tank, cells two levels coarser
+      // below 8 w_min, particles of their own level in every liquid cell, one group of every liquid:
+      // liquid_volume_outside_surfaces equals total minus the parts, 1e-12 relative
+  TEST(BuildRenderOutput, CpuBlockOneByteShort_IsOutOfMemory)   // A58: a CPU RunMemory one byte short of the
+      // frame order buffers row: kOutOfMemory, magnitude == bytes asked; exact
+  TEST(BuildRenderFrame, WindReachesFoam)                       // A47: one foam particle on a still surface, settings
+      // wind (1, 0, 0): after one frame its velocity == (0.1, 0, 0), exact
   TEST(BuildRenderFrame, NoGas_NoGasVolume)             // third state of design test BuildGasVolume, ThreeStates
   TEST(BuildRenderFrame, OutOfOrder_IsWrongStateVersionAndKeepsOutput)  // the same call then succeeds
   TEST(BuildRenderFrame, TooManyVertices_OtherProductsBuilt)
@@ -1746,7 +1844,8 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
 - Create: `render_output_snapshot_test.cc`
 
 **Interfaces:**
-- Produces: `RenderOutputSnapshot`, `ReadSnapshot`, `BuildRenderOutputFromSnapshot` of design 3.6; a snapshot
+- Produces: `RenderOutputSnapshot`, `ReadSnapshot`, `BuildRenderOutputFromSnapshot` of design 3.6 (amended
+  2026-11-15, A58: last parameter `RunMemory& run_memory`, the CPU block, as `BuildRenderOutput`); a snapshot
   whose `group_first_material_id` disagrees with the settings' groups is `kBadInput`.
 
 - [ ] **Step 1: Failing tests:** `TEST(BuildRenderFrame, FromSnapshot_GoesOnEqual)` (design 7: 10 frames; or 5,
@@ -1775,7 +1874,11 @@ buffers"`, sized at `max(max_field_parts, max_foam_particles)` and kept for the 
   `fluidity_interchange`, and nothing else does), and their tests.
 
 **Interfaces:**
-- Consumes: I/O design section 4 items 1 to 8 and 3.3 to 3.7 exactly.
+- Consumes: I/O design section 4 items 1 to 8 and 3.3 to 3.7 exactly. **Amended 2026-11-15 (A47, A58):** I/O sets
+  `RenderSettings::wind = ReadyScene::wind` (scene field `wind`, present whenever a Wind field exists, also without
+  gas); the step builds the recorder with `BuildStepRecorder(..., run_memory)` and I/O builds `RenderOutput` with
+  the step's CPU block (`cpu_run_memory`, the one block in a CPU run); test `Run, WindWithoutGas_MovesFoamOnly`
+  (a liquid-only scene with wind keys: foam drifts, the liquid's committed state equals the windless run's, exact).
 - Produces: the I/O seams of render output design section 4 "I/O and CLI" items 1 to 8: the worker builds the frame
   and calls, per frame, `WritePointsFile` for every particle material that is not gas, `WriteSurfaceFile` and
   droplets per group, foam particles, both volumes, `WriteSolidMotionFile`, each into an `OutputFile` opened with
@@ -1840,6 +1943,10 @@ Blender 5.3 only.
 **Amended 2026-11-14 (Foundation as built):** the hand-over records the recorder's working buffers, the shared `step_recorder_steps.h` and its `cpu`
 test as the GPU evidence until the hardware run, the use of the `RTTI` argument (from I/O Task 34) and the retired `fluidity_add_interchange_test`.
 
+**Amended 2026-11-15 (A58, A47, A64, reconcile item 31):** the hand-over also lists the `RunMemory` builders,
+`kOutOfMemory` moved last, the writers' `std::bad_alloc` as `kFileWriteFailed`, `RenderSettings::wind` with
+`kFoamWindDriftDuration`, and the grid-only inputs moved to the later group (Task 50, not in the done-criteria).
+
 **Files:**
 - Modify: any file of `render_output/`, `surface/`, `foam_and_spray/`, the paper section, `docs/gpu-runs.md`
 
@@ -1857,9 +1964,57 @@ test as the GPU evidence until the hardware run, the use of the `RTTI` argument 
   build times and sizes, the `SurfaceSequence` numbers; Foundation as built: `StepRecorder::order_buffers` and
   `sum_buffers`, `RenderOutput::frame_order_buffers` and `RenderLimits::max_field_parts` (A31, reconcile item 26),
   the one form of `ComputeLiquidTotals` used, `fluidity_apply_compile_flags(... RTTI ON)` for
-  `fluidity_interchange`, interchange tests through `fluidity_add_test` with `LABEL cpu`.
+  `fluidity_interchange`, interchange tests through `fluidity_add_test` with `LABEL cpu`; (2026-11-15)
+  `BuildStepRecorder(..., run_memory)`, `BuildRenderOutput` / `BuildRenderOutputFromSnapshot` with the CPU block,
+  one estimate row per buffer, `RenderOutputError::kOutOfMemory` last (value 15), a writer's `std::bad_alloc` as
+  `kFileWriteFailed`, `RenderSettings::wind`, `MoveFoamParticles(..., wind, ...)`, `kFoamWindDriftDuration` (A47),
+  no grid-only surface input (A64; Task 50 later).
 - [ ] **Step 4: `docs/gpu-runs.md`:** a row for render output, "compiled, not run", listing the `gpu` tests of Task
   32 (and naming `StepRecorderSteps, EveryThreadOrder_EqualsCpu` as the CPU evidence until the run). Run the gate; commit (subject: `Record render output as compiled, not run`).
 - [ ] **Step 5: Hand over:** `git log --oneline` of the module, the gate output, every new public name with its
   reason, the list of Step 3, and the statement that no device code has run and that no witness test has run (every
   `WitnessRecord` is `kNotRun` or `kDocumented`; the Blender add-on runs them in Blender 5.3).
+
+---
+
+## Deep liquid without particles (later; needs review)
+
+**Amended 2026-11-15 (A64):** new group. These tasks are excluded from the module's done-criteria: render output is
+done at Task 49 without them. Owner: the cell resize and batches plan's group of the same name
+(`2026-11-14-rebuild-11-cell-resize-and-batches.md`, "Deep liquid without particles (later; needs review)"); an
+independent review of that design comes first, and this group runs only after that group's gate tests
+(`GridOnlyRegion, StandingWave_KeepsAmplitude`, `GridOnlyRegion, ParticleBandEdge_StaysStable`) are written. In the
+first version every liquid cell holds particles, so the surface reads no grid-only array.
+
+### Task 50: Grid-only liquid in the surface field and the liquid totals (later)
+
+**Amended 2026-11-15 (A64):** moved here from Tasks 17, 22, 31 and 45; design 5.2 step 7 and 5.3 step 1 text marked
+"not in the first version (A64)".
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `native/fluidity/surface/surface_field.h`, `surface_field_points.cc`, `surface_field_points_test.cc`,
+  `surface_field_scene_test.cc`, `native/fluidity/render_output/step_recorder_cpu.cc`, `step_recorder_gpu.cu`,
+  `step_recorder_test.cc`, `build_render_frame_test.cc`, `render_output_test_support.h/.cc`
+
+**Interfaces:**
+- Consumes: the cell resize group's `step::SimulationSnapshot` region arrays (`is_grid_only_region`,
+  `grid_only_current_volume`, `grid_only_ingredient_volume`), `cell_resize::GridOnlyAmounts` and the
+  `ComputeLiquidTotals` form that takes it.
+- Produces: 5.3 step 1's grid-only field point (one point at the cell centre, `volume = grid_only_current_volume`,
+  the cell's width, shares from `grid_only_ingredient_volume`) and 5.2 step 7's `GridOnlyAmounts` view in
+  `RecordStep`, as the design's "not in the first version" text states.
+
+- [ ] **Step 1: Failing tests** (`LABEL cpu`):
+
+  ```cpp
+  TEST(BuildFieldPoints, GridOnlyCell_IsOnePointAtItsCentre)   // volume == grid_only_current_volume, its shares;
+                                                               // exact
+  TEST(BuildSurfaceField, GridOnlyInside_NoInnerSurface)       // sphere radius 16 cells, particles in the outer 3
+      // cells, grid-only inside: 1 piece, Euler number 2, exact
+  TEST(BuildRenderFrame, VolumeTargetWithGridOnlyRegion)       // deep tank with a grid-only region, one group of
+      // every liquid: liquid_volume_outside_surfaces equals total minus the parts, 1e-12 relative
+  ```
+- [ ] **Step 2: Run** (fail). **Step 3: Implement.** **Step 4: Run** the gate. **Commit.** Subject: `Show the
+  surface of liquid without particles`.

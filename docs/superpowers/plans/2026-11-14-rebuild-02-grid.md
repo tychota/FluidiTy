@@ -4,7 +4,8 @@
 
 **Goal:** Add `native/fluidity/grid/`, the mixed-size staggered grid every later module computes on: cell and
 face identity, cell blocks and their tables built into storage that is allocated once, the weight curve and the
-nearby-face weights, ranges with their border, grid pieces for the batched run, and the per-place value buffers.
+nearby-face weights, ranges with their border, grid pieces for the batched run, the per-place value buffers, and
+(amended 2026-11-15, A41) the shared cell size rule the step and cell resize read.
 
 **Architecture:** Space is cut into cubic cells of up to 16 size levels (each half the previous), stored in
 blocks of 4 x 4 x 4 cell places with 240 face places and 125 corner places each. `BuildGrid` fills a
@@ -82,7 +83,8 @@ Grid's own:
 
 - Namespace `fluidity::grid`, folder `native/fluidity/grid/`. Shared (S) headers: `grid_ids.h`, `grid_error.h`
   (plan decision, Task 2), `grid_tables.h`, `weight_curve.h`, `nearby_face_weights.h`, and the private shared
-  `grid_build_status.h` (Task 6), `grid_build_steps.h` (Task 7), `border_block_steps.h` (Task 22). Every
+  `grid_build_status.h` (Task 6), `grid_build_steps.h` (Task 7), `border_block_steps.h` (Task 22), and the public
+  `cell_size_rule.h` (Task 13a; amended 2026-11-15, A41, A61–A63). Every
   function in them is `constexpr` or `inline`, `FLUIDITY_CPU_AND_GPU`, `noexcept`, allocates nothing, uses
   `math::` from `base/scalar_math.h` (never `<cmath>`), and sums in list order with plain doubles.
 - Constants, exactly: `kMaxSizeLevels = 16`, `kBlockWidthInCells = 4`, `kCellPlacesPerBlock = 64`,
@@ -113,7 +115,36 @@ Grid's own:
   and `CheckSizeStepRule`, both `BuildGridPiece` forms, `TakeBuffers`, `ApplyGridVersion`, the span form of
   `FindBorderBlocks` and its buffer form. The only allocations are `BuildGridBuilderBuffers`, `BuildGridBuffers`,
   `BuildBorderSearchBuffers`, the `Build...Values` forms, and the CPU copy of the ids in the span forms of
-  `ComputeGridCounts` and `CheckSizeStepRule` (8 B per cell; kept, see "One form" below).
+  `ComputeGridCounts` and `CheckSizeStepRule` (8 B per cell; kept, see "One form" below). **Amended 2026-11-15
+  (A58):** the four builders take pieces of the run's `RunMemory` for their `kRunOn` arrays instead of allocating
+  (next bullet); only the span forms' CPU copy still allocates.
+- **One reserved block per run (amended 2026-11-15, A58; `plan-decisions.md` "Owner answers A40–A64 applied" item
+  3; Foundation Tasks 17 to 19).** `BuildGridBuilderBuffers`, `BuildGridBuffers`, `BuildBorderSearchBuffers` and
+  every `Build...Values` form (both the room form and the grid-bound form) take `RunMemory& run_memory` as their
+  **last** parameter; every existing parameter stays; `run_on == run_memory.run_on()` is a `Requires:` checked by a
+  debug assertion (A30). Every row is built with `BuildBuffer(run_on, size, run_memory)` (the GPU `OrderBuffers`
+  with `BuildOrderBuffers(kGpu, max_count, run_memory)`): a GPU grid has no `where = kCpu` row, and a CPU grid's
+  `kCpu` rows (cell ids, piece map) live on the same processor as its tables. Per the item-3 correction (same day,
+  reconcile) the caller passes the `RunMemory` of the processor the buffers live on: a CPU grid in a GPU run (the
+  step's CPU grid copy, cell resize's CPU grids) gets the run's `cpu_run_memory`; signatures are unchanged. The
+  estimate tests reserve `ComputeRunMemoryBytes(estimate, counts, kRunOn) + ComputeRunMemoryBytes(estimate, counts,
+  kCpu)` for a CPU grid (one block holds both, as in a CPU run) and the `kRunOn` sum for a GPU grid. A piece is never freed alone: a failed builder leaves the pieces it took in the block. Exactness
+  of the reservation (reconcile ruling on `plan-decisions.md` item 3): each array is one piece and one estimate
+  entry. An array whose size is a per-item part plus a fixed part (the GPU orders of `64 * max_cell_blocks + 1`
+  entries, the GPU `OrderBuffers`, the border marks of `max_cell_blocks + 1` entries and the border
+  `OrderBuffers`) is ONE entry with `counted_per = kGivenCount`, `bytes_each = 1` and `given_count` = its exact byte
+  count at the plan's `max_cell_blocks`, so `ComputeRunMemoryBytes` rounds it once, as the piece is rounded, and the
+  reservation equals the bytes handed out for any `max_cell_blocks`. So the two estimate builders take the room
+  (plan decision): `BuildGridMemoryEstimate(run_on, storage_count, max_cell_blocks, builder_buffers_sharing =
+  kOnePerGrid)` and `BuildBorderSearchMemoryEstimate(run_on, max_cell_blocks)` (new third / second parameter;
+  `MemoryCounts::cell_blocks` must equal it for the per-block rows). The estimate tests use 1,000 blocks. Tests and the test-only
+  `BuildTestGrid` build their own `RunMemory` of exactly `ComputeRunMemoryBytes` of the estimate. A `no_gpu` test
+  that asked for GPU arrays without a GPU now gets `kRunOnCallFailed` from `BuildRunMemory(kGpu, ...)`; the
+  builder is not reached. GPU no-allocation tests still read `ReadMemoryAvailable(kGpu)` free bytes before and after
+  (Foundation Task 19 makes the context exist before the first read).
+- **Shared cell size rule (amended 2026-11-15, A41, A61–A63; `plan-decisions.md` item 2).** The grid owns
+  `cell_size_rule.h` (S), the per-cell formulas of the cell size rule that the step (stage 2) and cell resize both
+  read; the passes that apply them belong to those modules. No `ChooseCellSize` callback exists.
 - **One form (A31, amended 2026-11-14).** A function that needs working memory has one form, taking its buffers:
   `BuildGridBuffers(settings, builder_buffers)` only, and no allocating `BuildGrid(inputs, settings)` (tests use
   `BuildTestGrid` of `grid_test_support.h`, Task 9; a tool builds a `GridBuilderBuffers` and a `GridBuffers`
@@ -137,7 +168,12 @@ Grid's own:
   `(step, position)` failure key of Task 7, on both processors.
 - Every `std::expected` of this module has `GridFailure` as its error. `BufferError::kOutOfMemory` becomes
   `GridError::kOutOfMemory`, `kRunOnCallFailed` becomes `kRunOnCallFailed`, and `kSizeMismatch` (a span of the
-  wrong size) becomes `kBadInput`.
+  wrong size) becomes `kBadInput`. **Amended 2026-11-15 (reconcile items 31, 32):** `BufferError::kRunMemoryTooSmall`
+  also becomes `kOutOfMemory`; `kOutOfMemory` is the **last** `GridError` value (moved from ninth place; the count
+  stays 12) and only the four builders return it, with `GridFailure::magnitude` (NEW, plan decision: the grid's
+  failure had no number field) = the bytes asked. A span (CPU) form called with a GPU grid, or a CPU list with GPU
+  buffers (`FindBorderBlocks`, `BuildGridPiece`, `ComputeGridCounts`, `CheckSizeStepRule`, `ReadGrid`), is a
+  `Requires:` precondition with a debug assertion, never `kBadInput`.
 - Random tests use `std::mt19937_64` with the seed written in the test and map its raw 64-bit output to numbers
   with the test-support helpers of Task 5 (never `std::uniform_*_distribution`, whose output differs between
   standard libraries).
@@ -186,6 +222,11 @@ Expected: seven `PASS` lines (format, rules, cpu debug, cpu release, tidy, paper
 6. **(A17) The GPU reporting a different first failure than the CPU** when a list breaks several rules at once
    (a repeated cell after a missing sibling in fixed order, say). The rule is "earliest step, then smallest
    position" on both. Pinned: `CheckSizeStepRule, OnGpuSeveralFailures_SameFirstFailureAsCpu` (Task 10).
+7. **(A41, A61) A wanted width exactly equal to a level's width, or a depth term computed as infinity times a
+   width.** The level must come from comparison with `CellWidthsByLevel` (never `log2`), equal widths giving that
+   level, and infinite facts must give `w_max`, never NaN, on both processors. Pinned:
+   `ComputeWantedSizeLevel, WidthEqualToALevel_GivesThatLevel` and `ComputeWantedCellWidth,
+   NothingWithinReach_IsBiggestWidth` (Task 13a), `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (Task 13a).
 
 ---
 
@@ -253,6 +294,10 @@ Load the `typesetting-with-typst`, `drawing-with-cetz` and `typesetting-document
 
 **Kind:** mechanical
 
+**Amended 2026-11-15 (reconcile item 31):** `kOutOfMemory` is the last of the twelve values (after
+`kTooManyNearbyFaces`); `GridFailure` gains `std::uint64_t magnitude = 0;` (bytes asked for `kOutOfMemory`, zero
+otherwise; plan decision, design 3.3).
+
 **Files:**
 - Create: `native/fluidity/grid/grid_error.h` (S), `native/fluidity/grid/staggered_grid.h`,
   `native/fluidity/grid/staggered_grid_cpu.cc`, `native/fluidity/grid/grid_error_test.cc`
@@ -269,6 +314,9 @@ Load the `typesetting-with-typst`, `drawing-with-cetz` and `typesetting-document
     enumerator without `k`; all 12 distinct; `ToName(GridError::kTooManyCellBlocks) == "too_many_cell_blocks"`,
     `ToName(GridError::kNone) == "none"`.
   - `TEST(ToMessage, EveryError_HasADistinctNonEmptyMessage)`.
+  - `TEST(GridError, OutOfMemory_IsTheLastValue)` (amended 2026-11-15): `static_assert(static_cast<int>(
+    GridError::kOutOfMemory) == 11)` and `ToName(GridError::kOutOfMemory) == "out_of_memory"`; `GridFailure{}` has
+    `magnitude == 0`.
 - [ ] **Step 2: Run** and see the compile fail. **Step 3: Implement.** Messages say what the user can do
   (`kTooManyCellBlocks`: "The grid needs more cell blocks than the limit. Raise max_cell_blocks or use fewer
   small cells."). **Step 4: Run** tests and the gate.
@@ -405,6 +453,8 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
 
 **Amended 2026-11-14 (A30, A31, reconcile):** `GridScratch` -> `GridBuilderBuffers` (and its builder, size and sharing names); `BuildGridBuffers(settings)` removed, so every `GridBuffers` borrows a `GridBuilderBuffers`; lent builder buffers on another processor are a `Requires:` precondition, so `LentScratchTooSmallOrOtherProcessor_IsBadInput` keeps only its too-small half; the grid's GPU `OrderBuffers` is the named `builder buffers: order buffers` entry (reconcile item 28); `BuilderBuffersSharing` is declared in `staggered_grid.h` (reconcile item 20).
 
+**Amended 2026-11-15 (A58):** `BuildGridBuilderBuffers` and `BuildGridBuffers` take `RunMemory& run_memory` last and build every row as a piece of it; each GPU array of a per-item plus fixed size (the two orders, the `OrderBuffers`) is one `kGivenCount` entry of its exact bytes, so `BuildGridMemoryEstimate` takes `max_cell_blocks` (the rows `order buffers, fixed part` and `prefix sum ends` are folded in); new test `BuildGridBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`.
+
 **Files:**
 - Create: `native/fluidity/grid/grid_memory_estimate.h`, `grid_memory_estimate.cc`, `grid_memory_estimate_test.cc`,
   `grid_storage_internal.h` (private), `grid_build_status.h` (S, private), `grid_storage_no_gpu_test.cc`
@@ -413,7 +463,9 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
 **Interfaces:**
 - Consumes: `Buffer`, `BuildBuffer`, `MemoryEstimateEntry` (with its `where` field), `MemoryWhere`, `MemoryCounts`,
   `CountedPer`, `KeptFor`, both `ComputeMemoryBytes` forms, `CheckCanRunOn`; `OrderBuffers`,
-  `BuildOrderBuffers`, `ComputeOrderBuffersSize` (Foundation, see "Before you start"); `GridError`, `CellId`.
+  `BuildOrderBuffers`, `ComputeOrderBuffersSize` (Foundation, see "Before you start"); `GridError`, `CellId`;
+  `RunMemory`, `BuildRunMemory`, `BuildBuffer(RunOn, size, RunMemory&)`, `BuildOrderBuffers(RunOn, max_count,
+  RunMemory&)`, `ComputeRunMemoryBytes`, `BufferError::kRunMemoryTooSmall` (Foundation Tasks 17 and 18).
 - Produces: `GridSettings`, `GridBuffers`, `BuildGridBuffers` (design 3.3); `ToMemoryCounts`,
   `BuildGridMemoryEstimate` (3.6); private `GridBuildStatus`. **Plan decisions:**
   - Rows come in this fixed order, names prefixed `grid: `: `block ids`, `same-level neighbour blocks`,
@@ -421,14 +473,15 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
     Then, for `run_on == kCpu`: `builder buffers: cell ids` (kCellPlace, 8 B) and `piece map` (kCellBlock, 4 B),
     both `kCpu` (unchanged). For `run_on == kGpu`, all `kRunOn`: `builder buffers: cell ids` (kCellPlace, 8 B; the
     sorted active cells, then active and split cells), `builder buffers: sort keys` (kCellPlace, 8 B),
-    `builder buffers: order` (kCellPlace, 4 B), `builder buffers: second order` (kCellPlace, 4 B; also the marks and
-    their prefix sums), `builder buffers: order buffers` (kCellPlace,
-    `ComputeOrderBuffersSize(kGpu).bytes_per_item`, 6 B: the `OrderBuffers` the GPU build passes to every
-    `BuildStableOrder` and `ComputeExclusivePrefixSum`; reconcile item 28: this entry counts it),
-    `builder buffers: order buffers, fixed part` (kGivenCount 1, `fixed_bytes + bytes_per_item`: the fixed bytes and
-    the one item beyond `64 * max_cell_blocks`, reconcile item 28), `builder buffers: prefix sum ends`
-    (kGivenCount 2, 4 B: the order buffers have `64 * max_cell_blocks + 1` entries, because a prefix sum writes
-    its total after the last entry), `piece map` (kCellBlock, 4 B) and `build status` (kGivenCount 1,
+    `builder buffers: order` and `builder buffers: second order` (the latter also the marks and their prefix sums;
+    each `64 * max_cell_blocks + 1` entries of 4 B, because a prefix sum writes its total after the last entry),
+    `builder buffers: order buffers` (the `OrderBuffers` the GPU build passes to every `BuildStableOrder` and
+    `ComputeExclusivePrefixSum`, built for `64 * max_cell_blocks + 1` items: `bytes_per_item x (64 *
+    max_cell_blocks + 1) + fixed_bytes` of `ComputeOrderBuffersSize(kGpu)`; reconcile item 28). **Amended
+    2026-11-15 (A58, reconcile ruling):** each of these three is ONE entry, `kGivenCount`, `bytes_each = 1`,
+    `given_count` = its exact bytes at `max_cell_blocks` (they were per-place rows plus `order buffers, fixed part`
+    and `prefix sum ends`); then `piece map` (kCellBlock, 4 B)
+    and `build status` (kGivenCount 1,
     `sizeof(GridBuildStatus)`). No row of a GPU grid is `kCpu`. All
     `KeptFor::kWholeRun`, `copies = storage_count`. `BuildGridBuffers` walks the rows that are not
     `builder buffers:` and `BuildGridBuilderBuffers` walks the `builder buffers:` rows, each allocating every row on
@@ -447,23 +500,29 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
       std::uint32_t max_cell_blocks() const;
       RunOn run_on() const;
     };
-    // kBadInput: max_cell_blocks 0 or above kMaxCellBlocksLimit; kOutOfMemory; kRunOnCallFailed.
-    std::expected<GridBuilderBuffers, GridFailure> BuildGridBuilderBuffers(RunOn run_on, std::uint32_t max_cell_blocks);
+    // kBadInput: max_cell_blocks 0 or above kMaxCellBlocksLimit; kOutOfMemory (magnitude = bytes asked);
+    // kRunOnCallFailed. Amended 2026-11-15 (A58): every row is a piece of run_memory (a CPU grid in a GPU run
+    // passes the run's cpu_run_memory). Requires: run_on == run_memory.run_on() (debug assertion, A30).
+    std::expected<GridBuilderBuffers, GridFailure> BuildGridBuilderBuffers(RunOn run_on, std::uint32_t max_cell_blocks,
+                                                                           RunMemory& run_memory);
     // The one allocation of a grid's own arrays (tables, piece map and, on the GPU, the status record) for
     // settings.max_cell_blocks blocks on settings.run_on; the buffers allocate no builder buffers and use
     // `builder_buffers` for every BuildGrid, BuildGridPiece and buffers form of ComputeGridCounts and
-    // CheckSizeStepRule. Requires: builder_buffers.run_on() == settings.run_on (debug assertion, A30).
-    // kBadInput: max_cell_blocks 0 or above kMaxCellBlocksLimit, or builder_buffers.max_cell_blocks() <
-    // settings.max_cell_blocks (nothing allocated); kOutOfMemory; kRunOnCallFailed. The one form (A31).
+    // CheckSizeStepRule. Requires: builder_buffers.run_on() == settings.run_on == run_memory.run_on() (debug
+    // assertion, A30). kBadInput: max_cell_blocks 0 or above kMaxCellBlocksLimit, or builder_buffers.max_cell_blocks() <
+    // settings.max_cell_blocks (nothing taken); kOutOfMemory (magnitude = bytes asked); kRunOnCallFailed. The one
+    // form (A31). Amended 2026-11-15 (A58): every row is a piece of run_memory.
     std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings,
-                                                             GridBuilderBuffers& builder_buffers);
+                                                             GridBuilderBuffers& builder_buffers,
+                                                             RunMemory& run_memory);
     // How many GridBuilderBuffers the builder buffers entries of BuildGridMemoryEstimate count.
     enum class BuilderBuffersSharing : std::uint8_t {
       kOnePerGrid,      // One GridBuilderBuffers for each of the storage_count buffers.
       kOneForAllGrids,  // One GridBuilderBuffers lent to all of them.
     };
+    // Amended 2026-11-15 (A58, reconcile ruling): takes max_cell_blocks, the room the given-count rows are sized at.
     std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
-        RunOn run_on, std::uint32_t storage_count,
+        RunOn run_on, std::uint32_t storage_count, std::uint32_t max_cell_blocks,
         BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid);
     ```
     **Amended 2026-11-14 (Foundation as built):** `GridBuilderBuffers` follows Foundation's buffers pattern, so it also has
@@ -519,10 +578,10 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
 - [ ] **Step 1: Failing tests.** Label `cpu`:
   - `TEST(ComputeMemoryBytes, MatchesAllocatedBytes)`: `BuildGridBuilderBuffers(kCpu, 1000)` and
     `BuildGridBuffers({.max_cell_blocks = 1000}, builder_buffers)`; `byte_count()` of the builder buffers plus the sum
-    of `size() * sizeof(element)` over `ReadStorageArrays` equals `ComputeMemoryBytes(BuildGridMemoryEstimate(kCpu, 1),
+    of `size() * sizeof(element)` over `ReadStorageArrays` equals `ComputeMemoryBytes(BuildGridMemoryEstimate(kCpu, 1, 1000),
     counts at 1000 blocks)`, which equals `1000 * 972` (8 + 108 + 36 + 64 + 240 + 512 + 4); with `where`,
     `kRunOn` gives `1000 * 456` and `kCpu` gives `1000 * 516`. Its GPU half is in Task 11.
-  - `TEST(BuildGridMemoryEstimate, GpuRun_KeepsNothingOnTheCpu)`: at 1000 blocks, `BuildGridMemoryEstimate(kGpu, 1)` gives
+  - `TEST(BuildGridMemoryEstimate, GpuRun_KeepsNothingOnTheCpu)`: at 1000 blocks, `BuildGridMemoryEstimate(kGpu, 1, 1000)` gives
     `kCpu` 0 and `kRunOn` `1000 * (456 + 1536 + 4 + 64 * bytes_per_item) + fixed_bytes + bytes_per_item + 8 +
     sizeof(GridBuildStatus)` (1536 = 64 x (8 + 8 + 4 + 4)), with `ComputeOrderBuffersSize(kGpu)` read in the test.
   - `TEST(BuildGridMemoryEstimate, NoRowIsACpuCopy)`: no row name of either processor ends in `(CPU copy)`.
@@ -533,7 +592,7 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
     (fixed rows as listed above), read with `ComputeOrderBuffersSize(kGpu)`.
   - `TEST(BuildGridBuffers, TwoGridBuffersShareBuilderBuffers_AllocatedEqualsEstimate)` (reconcile): `BuildGridBuilderBuffers(kCpu,
     1000)` and two `BuildGridBuffers({.max_cell_blocks = 1000}, builder_buffers)`: bytes summed over the builder
-    buffers and both `ReadStorageArrays` equal `ComputeMemoryBytes(BuildGridMemoryEstimate(kCpu, 2, kOneForAllGrids),
+    buffers and both `ReadStorageArrays` equal `ComputeMemoryBytes(BuildGridMemoryEstimate(kCpu, 2, 1000, kOneForAllGrids),
     counts at 1000)`; neither buffers holds a builder array of its own.
   - `TEST(BuildGridBuffers, LentBuilderBuffersTooSmall_IsBadInput)` (reconcile; A30 dropped its other-processor
     half, now a `Requires:` precondition): builder buffers for 500, buffers for 1000: `kBadInput`, nothing allocated.
@@ -541,19 +600,32 @@ status record on the GPU and nothing on the CPU; the CPU copy of the tables is g
     (reconcile).
   - `TEST(ComputeGridBuilderBuffersSize, CpuBuilderBuffers_EqualsByteCountAndBuilderBuffersRows)` (Foundation as built): for 1,000
     blocks, `BuildGridBuilderBuffers(kCpu, 1000)->byte_count()` equals `1000 * bytes_per_cell_block + fixed_bytes` and the
-    sum of the `builder buffers:` rows of `BuildGridMemoryEstimate(kCpu, 1)`; the same equality of the formula and the
+    sum of the `builder buffers:` rows of `BuildGridMemoryEstimate(kCpu, 1, 1000)`; the same equality of the formula and the
     rows for `kGpu` (no GPU memory needed for that half).
   - `TEST(BuildGridBuffers, ZeroBlocks_IsBadInput)` and `TEST(BuildGridBuffers, AboveLimit_IsBadInput)`
     (`kMaxCellBlocksLimit + 1`).
   - `TEST(GridBuffers, MovedFrom_HasNoRoom)`: `max_cell_blocks() == 0` after a move.
   - `TEST(GridBuildStatus, IsTriviallyCopyable)`.
+  - `TEST(BuildGridBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)` (amended 2026-11-15, A58): at 1,000 blocks,
+    for `kOnePerGrid` with storage count 1 and for `kOneForAllGrids` with storage count 2: `BuildRunMemory(kCpu,
+    the kRunOn plus the kCpu ComputeRunMemoryBytes of BuildGridMemoryEstimate(kCpu, n, 1000, sharing))`,
+    the builder buffers and the `n` buffers built into it: `handed_out_bytes() == reserved_bytes()` exactly (CPU:
+    five table pieces and a piece map per buffers, one cell-ids piece per builder buffers). The `kGpu`
+    rows are checked without a GPU by summing `ComputeRunMemoryPieceBytes` over the arrays `BuildGridBuilderBuffers`
+    and `BuildGridBuffers` would build (one list in `grid_storage_internal.h` that both builders walk) against
+    `ComputeRunMemoryBytes` of the GPU estimate: equal.
+  - `TEST(BuildGridBuffers, RunMemoryOnePieceShort_IsOutOfMemory)` (A58; `GTEST_SKIP` in debug builds, which
+    assert): the 1,000-block block less 256 B: `kOutOfMemory`, `magnitude` = the failing piece's bytes.
+  Every other test of this task builds its `RunMemory` from the estimate first (Global Constraints).
   Label `no_gpu`: `TEST(BuildGridBuilderBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed)`: nothing returned (renamed from
-  `BuildGridBuffers, ...`, A31: GPU grid buffers need GPU builder buffers first).
+  `BuildGridBuffers, ...`, A31: GPU grid buffers need GPU builder buffers first; amended 2026-11-15, A58:
+  `BuildRunMemory(kGpu, ...)` returns `kRunOnCallFailed` and the builder is not reached).
 - [ ] **Step 2: Run**, fail. **Step 3: Implement.** **Step 4:** gate.
 - [ ] **Step 5: Commit.** Subject: `Add the grid storage that is allocated once`. New names: `GridSettings`,
   `GridBuffers`, `BuildGridBuffers`, `ToMemoryCounts`, `BuildGridMemoryEstimate`, `kMaxCellBlocksLimit`,
   `GridBuilderBuffers`, `BuildGridBuilderBuffers`, `BuilderBuffersSharing` (reason: reconcile item 11, one builder buffers per run),
-  `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize` (Foundation's buffers pattern).
+  `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize` (Foundation's buffers pattern); the `RunMemory&` parameter
+  of both builders (A58).
 
 ### Task 7: Shared build formulas
 
@@ -737,6 +809,8 @@ tests; `DefaultSettings_SizedToTheList` tests `BuildTestGrid`.
 
 **Amended 2026-11-14 (Foundation as built):** the allocation counter is a test source listed in each counting test program; tests link the helper libraries.
 
+**Amended 2026-11-15 (A58):** `TestGrid` holds the `RunMemory` its buffers are pieces of; `IntoStorage_AllocatesNothing` counts from after the `RunMemory` and both builders.
+
 **Kind:** numerics
 
 **Files:**
@@ -757,11 +831,14 @@ tests; `DefaultSettings_SizedToTheList` tests `BuildTestGrid`.
   ```cpp
   // A grid with its own buffers, for tests. The builder buffers are held by pointer so that moving a TestGrid
   // never moves the lent GridBuilderBuffers; `grid` is declared after them and so is destroyed first.
+  // Amended 2026-11-15 (A58): run_memory, declared first and so destroyed last, holds every kRunOn piece.
   struct TestGrid {
+    RunMemory run_memory;
     std::unique_ptr<GridBuilderBuffers> builder_buffers;
     StaggeredGrid grid;
   };
-  // BuildGridBuilderBuffers, BuildGridBuffers and BuildGrid(inputs, buffers) on settings.run_on. With
+  // BuildRunMemory of exactly ComputeRunMemoryBytes(BuildGridMemoryEstimate(settings.run_on, 1, room), counts at the
+  // room), then BuildGridBuilderBuffers, BuildGridBuffers and BuildGrid(inputs, buffers) on settings.run_on. With
   // settings.max_cell_blocks 0 (the default) the room is ComputeGridCounts(inputs).cell_blocks, at least 1.
   // Fails as those functions do.
   std::expected<TestGrid, GridFailure> BuildTestGrid(const GridInputs& inputs, const GridSettings& settings = {});
@@ -922,6 +999,8 @@ kinds built on the GPU, compared with the CPU oracle bit for bit; replaces the u
 
 **Amended 2026-11-14 (Foundation as built):** P7 to P12 run from the CPU half (`staggered_grid_cpu.cc`) as GPU-half functions of `staggered_grid_gpu.h` returning `RunOnCallStatus`, with Foundation's order and prefix sum (taking the lent `OrderBuffers`) between them; P11 loops thread blocks over cell blocks; per-thread bodies in `grid_build_steps.h` with a `cpu` launch-order test; digests.
 
+**Amended 2026-11-15 (A58):** GPU buffers are pieces of a GPU `RunMemory`; the GPU memory tests measure free bytes across `BuildRunMemory`; new `gpu` test `BuildGridBuffers, OnGpuIntoRunMemory_HandsOutExactlyTheEstimate`.
+
 **Files:**
 - Modify: `staggered_grid_gpu.cu`, `staggered_grid_gpu.h`, `grid_build_steps.h`, `grid_build_launch_test.cc`,
   `staggered_grid.h`, `staggered_grid_cpu.cc` (the GPU sequence under `#if defined(FLUIDITY_HAS_GPU)`), build
@@ -1000,21 +1079,25 @@ kinds built on the GPU, compared with the CPU oracle bit for bit; replaces the u
   - `TEST(BuildGrid, IntoGpuStorage_AllocatesNothing)`: 100 grids built and their buffers taken back in turn; `ReadMemoryAvailable(kGpu)`
     free bytes unchanged after the first; the global `operator new` counter (Task 9) stays 0.
   - `TEST(ComputeMemoryBytes, MatchesAllocatedGpuBytes)`: GPU half of Task 6's test at 1,000 blocks: the drop in
-    `ReadMemoryAvailable(kGpu)` free bytes equals `ComputeMemoryBytes(BuildGridMemoryEstimate(kGpu, 1), counts,
+    `ReadMemoryAvailable(kGpu)` free bytes equals `ComputeMemoryBytes(BuildGridMemoryEstimate(kGpu, 1, 1000), counts,
     MemoryWhere::kRunOn)` (up to the driver's allocation granularity, which the test reads and states) for one
-    `GridBuilderBuffers` and one `GridBuffers` built with it, and no CPU array is allocated.
+    `GridBuilderBuffers` and one `GridBuffers` built with it, and no CPU array is allocated. **Amended 2026-11-15
+    (A58):** the drop is measured across `BuildRunMemory(kGpu, ComputeRunMemoryBytes(...))` and is at least
+    `reserved_bytes()`; building both buffers into the block then leaves free bytes unchanged.
+  - `TEST(BuildGridBuffers, OnGpuIntoRunMemory_HandsOutExactlyTheEstimate)` (amended 2026-11-15, A58): GPU half of
+    Task 6's test at 1,000 blocks, both sharings: `handed_out_bytes() == reserved_bytes()`.
   - `TEST(ComputeGridCounts, OnGpu_EqualsCpu)`: the 200 grids.
   - `TEST(BuildGrid, OnGpuTwice_GivesIdenticalBytes)`.
   - `TEST(BuildGrid, OnGpuSharedBuilderBuffers_OtherLiveGridUnchanged)` (reconcile): Task 9's shared builder buffers test
     on GPU buffers, compared through `ReadGrid`; and the drop in free GPU bytes for one `GridBuilderBuffers` and two
     buffers equals
-    `ComputeMemoryBytes(BuildGridMemoryEstimate(kGpu, 2, kOneForAllGrids), counts, kRunOn)` (granularity as
-    above).
+    `ComputeMemoryBytes(BuildGridMemoryEstimate(kGpu, 2, 1000, kOneForAllGrids), counts, kRunOn)` (granularity as
+    above; amended 2026-11-15, A58: measured across `BuildRunMemory`, as above).
   Label `cpu`: `TEST(ReadGrid, CpuGrid_CopiesIntoOtherCpuBuffers)` (same tables, version, counts),
   `TEST(ReadGrid, BuffersTooSmall_IsTooManyCellBlocks)`, `TEST(StaggeredGrid, CpuGrid_HasNoGpuTables)`.
 - [ ] **Step 2: Run** the gate. Expected: `PASS cuda`.
 - [ ] **Step 3: Commit.** Subject: `Build the grid tables on the GPU and compare them with the CPU's`. Body: `GPU:
-  compiled, not run`; new public name `ReadGrid`; the eight `gpu` tests.
+  compiled, not run`; new public name `ReadGrid`; the nine `gpu` tests.
 
 ### Task 12: Addressing and geometry in `grid_tables.h`
 
@@ -1071,6 +1154,114 @@ build and every stage search blocks with one function.
     (near = the found cell's block and a block two hops away) agree, and equal `GeometricGrid::ContainingCell`.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement**; the comment says why there is no exact-edge recovery (design
   5.2). **Step 4:** gate. **Step 5: Commit.** Subject: `Find the active cell that contains a position`.
+
+### Task 13a: The shared cell size rule
+
+**Amended 2026-11-15 (A41, A61, A62, A63):** new task. The grid owns `cell_size_rule.h`, the per-cell formulas of
+the cell size rule read by the step's stage 2 and by cell resize (`plan-decisions.md` "Owner answers A40–A64
+applied", item 2); `CellSizeSettings` and `CellSizeFacts` move here from `cell_resize/`; there is no
+`ChooseCellSize` callback.
+
+**Kind:** numerics
+
+**Files:**
+- Create: `native/fluidity/grid/cell_size_rule.h` (S), `cell_size_rule_test.cc`, `cell_size_rule_gpu_test.cc`,
+  `cell_size_rule_test_gpu.h`, `cell_size_rule_test_gpu.cu` (test-only runner, the form of Foundation's
+  `shared_math_gpu_test`, launched through `base/gpu_launch.cuh`)
+- Modify: build registration, `docs/method-paper/fluidity-method.typ`, `docs/glossary.md`
+
+**Interfaces:**
+- Consumes: `SizeLevel`, `kMaxSizeLevels` (Task 3); `GridFrame`, `GridTables`, `ComputeCellWidth`,
+  `ComputeCellCenter`, `ToCellId`, `ComesBefore` (Tasks 3, 12); `FindCellAt(tables, position)` (Task 13); `Vec3`,
+  `math::Sqrt`, `math::Floor` (`base/scalar_math.h`; min, max and clamp written as plain comparisons, so infinities pass through exactly); test support Tasks 5, 9, 11.
+- Produces: every declaration of design 3.8 exactly (`plan-decisions.md` item 2): `CellSizeSettings`,
+  `CellWidthsByLevel`, `CellSizeFacts`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`,
+  `ComputeNewCellSizeLevel`, `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`, and **(plan decision)**
+  `FLUIDITY_CPU_AND_GPU CellWidthsByLevel ComputeCellWidthsByLevel(const GridFrame& frame);` (`width[l] =
+  ComputeCellWidth(frame, SizeLevel(l))` for `l < size_level_count`, 0 beyond; the one place the table is filled, so
+  the step, cell resize and the tests cannot fill it differently).
+- **Plan decisions** (details item 2 leaves open):
+  - In `ComputeWantedCellWidth`, `w_min = widths.width[settings.smallest_size_level]`, `w_max = widths.width[0]`;
+    `w_band = w_min * max(1, depth / (surface_reach_in_cell_widths * w_min))`, `w_solid = w_min * max(1, d /
+    (solid_reach_in_cell_widths * w_min))`; an infinite fact gives an infinite term, never NaN (no `inf * 0`
+    arises: every factor is positive). The order of operations is the one written, so both processors round alike.
+    `holds_particles_that_keep_their_count` and `touches_air_gas_or_solid` are read by cell resize's merge test, not
+    here (their comments say so).
+  - `artist_size_level == 0` means "no request": asking for the biggest level would ask nothing, since the wanted
+    width is clamped to `w_max` anyway.
+  - `ComputeWantedSizeLevel` walks `l` from 0 to `size_level_count - 1` and returns the first `l` with
+    `width[l] <= wanted_width`; when none is (a wanted width below the smallest width) it returns
+    `size_level_count - 1`.
+  - `ComputeNewCellSizeLevel` probes the 27 positions `position + (i, j, k) * frame.biggest_cell_width`, `i, j, k`
+    in `{-1, 0, 1}`, in that loop order (`k` outermost), with the binary-search `FindCellAt`; among the cells found,
+    the nearest centre by squared distance wins, ties to the cell that `ComesBefore` (of their blocks), then lower
+    place index; result `min(level + 1, smallest_size_level)`.
+  - `ComputeArtistSizeLevel`: a region contains `center` when `low_corner <= center <= high_corner` on every axis
+    (inclusive, so a centre on a region side counts); the map applies when `x0 <= x <= x0 + domain_width_x` and
+    likewise in y (the high edge maps to the last pixel by the `min`); the result is the largest level asked.
+
+- [ ] **Step 1: Paper.** Subsection `== The cell size rule <sec-cell-size-rule>` in `<sec-grid>`, with
+  `<eq:wanted-cell-width>`: the four terms (depth, solid, shear, artist), the clamp, `w_min` at pockets and gas;
+  the shear term's `c_u = 0.25` called a starting value to calibrate (A62) and sourced to literature-cell-size.md
+  5(a); the reference speed `U_ref = max(u_max, sqrt(g w_max))`; why a new cell starts one level finer than its
+  nearest committed neighbour (it borders air, so depth 0 and wanted `w_min`, A61, while the cap keeps the
+  size-step rule); the artist regions and the top-view map (A63); why levels come from comparing a table of widths
+  (no `log2`, no `pow`, no fused multiply-add: same bytes on both processors and in any batch cut). Glossary rows:
+  `wanted cell width`, `reference speed`, `artist cell size`.
+- [ ] **Step 2: Failing tests** (`cell_size_rule_test.cc`, label `cpu`). Unless stated, frame `biggest_cell_width`
+  1 m, `size_level_count` 5 (widths 1, 0.5, 0.25, 0.125, 0.0625, all exact), `smallest_size_level` 4, default
+  settings, facts at their "far" values (`depth_below_surface` and `distance_to_solid` `+infinity`,
+  `velocity_gradient_size` 0, `artist_size_level` 0, flags false), `reference_speed` 1 m/s; comparisons exact:
+  - `TEST(ComputeCellWidthsByLevel, EqualsComputeCellWidthPerLevel)`: bit for bit per level; 0 beyond level 4.
+  - `TEST(ComputeWantedCellWidth, SurfaceCell_IsSmallest)` (A61): depth 0 gives 0.0625, also with
+    `distance_to_solid` 10, `artist_size_level` 2 and `velocity_gradient_size` 0.
+  - `TEST(ComputeWantedCellWidth, UniformTranslation_NoShearSplit)`: `velocity_gradient_size` 0 (a uniform
+    velocity has no gradient) and `reference_speed` 5: 1.0 (`w_max`) and level 0.
+  - `TEST(ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth)`: far facts with `velocity_gradient_size`
+    1e-300, then with depth `DBL_MAX`: 1.0, never NaN.
+  - `TEST(ComputeWantedCellWidth, DepthAndSolidTerms_GrowLinearlyBeyondReach)`: depth 1.0 alone gives 0.125
+    (`0.0625 * 1.0 / 0.5`); depth 0.25 gives 0.0625; distance 0.5 alone gives 0.25 (`0.0625 * 0.5 / 0.125`); both
+    give 0.125; depth 100 gives 1.0 (clamped).
+  - `TEST(ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverGradient)`: frame 0.5 m, 6 levels,
+    `smallest_size_level` 5 (`w_min` 0.015625), gradient `sqrt(2) * 10` (a rigid rotation at 10 rad/s): wanted
+    `0.25 * 1.0 / 14.142135623730951` = 0.0176776695296637 within 1e-15 relative; `ComputeWantedSizeLevel` gives 5.
+  - `TEST(ComputeWantedCellWidth, PocketOrGas_IsSmallest)`: `touches_air_pocket`, then `wants_smallest_cells`,
+    each with depth 100: 0.0625.
+  - `TEST(ComputeWantedCellWidth, ArtistLevel_CapsWidth)`: `artist_size_level` 2 alone gives 0.25; with depth 1.0
+    gives 0.125.
+  - `TEST(ComputeWantedSizeLevel, WidthEqualToALevel_GivesThatLevel)`: 0.125 gives 3; `std::nextafter(0.125, 0)`
+    gives 4; 0.2 gives 3; 5 gives 0.
+  - `TEST(ComputeWantedSizeLevel, BelowSmallestWidth_GivesSmallestLevel)`: 0.01 gives 4.
+  - `TEST(ComputeReferenceSpeed, SlowLiquid_UsesGravityWaveSpeed)`: `(0.1, 9.81, 1.0)` gives `math::Sqrt(9.81)`
+    bit for bit (3.13209195267317); `(5, 9.81, 1.0)` gives 5.
+  - `TEST(ComputeArtistSizeLevel, RegionAndMap_FinestWins)`: domain low corner `{0, 0, 0}`, widths x 2 m, y 1 m,
+    map 4 x 2 pixels with level 3 at column 1 row 0, level 1 at column 3 row 1, 0 elsewhere; region A
+    `[{0,0,0}, {1,1,1}]` level 2, region B `[{0.6,0,0}, {0.9,1,1}]` level 4. Centre `{0.25, 0.25, 0.5}`: 2;
+    `{0.55, 0.25, 0.5}`: 3; `{0.75, 0.25, 0.5}`: 4; `{1.5, 0.75, 5.0}`: 1 (the map applies at every height);
+    `{2.0, 0.75, 0}`: 1 (high edge, last column); `{-0.1, 0.5, 0}`: 0; no regions and no map: 0.
+  - `TEST(ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner)`: committed grid (`BuildTestGrid`) of 3 levels,
+    width 1 m, level 0 `{0,0,0}` and the 8 level-1 cells of `{1,0,0}`; `smallest_size_level` 2. Position
+    `{-0.5, 0.5, 0.5}` (beside the level-0 cell): 1; `{2.25, 0.25, 0.25}` (beside the level-1 cells): 2; the same
+    with `smallest_size_level` 1: 1 (capped); `{10, 10, 10}` (nothing within one biggest width): 2; an empty
+    committed grid: 2.
+- [ ] **Step 3: GPU tests** (`cell_size_rule_gpu_test.cc`, label `gpu`; outputs to `WriteResultDigest`):
+  - `TEST(ComputeWantedCellWidth, OnGpu_SameBytesAsCpu)`: 10,000 fact sets from a fixed formula over `i`:
+    depth `(i % 97) * 0.013` m (`+infinity` when `i % 11 == 0`), distance `(i % 89) * 0.011` m (`+infinity` when
+    `i % 7 == 0`), gradient `(i % 83) * 0.37` 1/s, `artist_size_level` `i % 5`, `touches_air_pocket` `i % 31 ==
+    0`, `wants_smallest_cells` `i % 37 == 0`, `reference_speed` `0.5 + (i % 13) * 0.25`; the default settings and
+    the 5-level widths: the wanted widths (compared with `memcmp`), their `ComputeWantedSizeLevel` and
+    `ComputeArtistSizeLevel` of the fixture above at the centres `{(i % 41) * 0.05, (i % 23) * 0.05, 0}` are
+    identical to the CPU's.
+  - `TEST(ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu)`: `BuildRandomGridCells(7, 3, 4)` built on the GPU
+    (Task 11) and on the CPU; 10,000 positions from seed `20261115` in the grid's box widened by one biggest width
+    on each side: identical levels.
+- [ ] **Step 4: Run**, fail; **Step 5: Implement** (header comments carry the formulas of design 3.8 and the
+  worked example of `DepthAndSolidTerms_GrowLinearlyBeyondReach`; `Read:` `<sec-cell-size-rule>`). **Step 6:** gate.
+- [ ] **Step 7: Commit.** Subject: `Add the shared cell size rule`. Body: `GPU: compiled, not run`; new public names
+  `CellSizeSettings`, `CellSizeFacts` (moved from cell resize, A41), `CellWidthsByLevel`, `CellSizeRegion`,
+  `ArtistCellSizes`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth` (moved), `ComputeWantedSizeLevel`,
+  `ComputeNewCellSizeLevel`, `ComputeArtistSizeLevel`, `ComputeCellWidthsByLevel` (one shared rule for the step
+  and cell resize, A41, A61–A63).
 
 ### Task 14: Touching cells and a cell's face pieces
 
@@ -1270,6 +1461,8 @@ memory, and tests it on a grid built on the GPU.
 
 **Amended 2026-11-14 (A30):** values on another processor than the grid's are a `Requires:` precondition checked by a debug assertion; `ApplyGridVersion, ValuesOnOtherProcessor_IsBadInput` is removed.
 
+**Amended 2026-11-15 (A58):** every `Build...Values` form takes `RunMemory& run_memory` last (room form `(run_on, max_cell_blocks, run_memory)`, grid-bound form `(grid, run_memory)`) and builds its one buffer as one piece; kOutOfMemory carries the bytes asked; new test `BuildFaceValues, IntoRunMemory_TakesOnePieceOfPlacesTimesSize`.
+
 **Kind:** device
 
 **Files:**
@@ -1299,7 +1492,14 @@ memory, and tests it on a grid built on the GPU.
     span one entry short give `kBadInput`.
   - `TEST(WriteValues, ThenReadValues_ReturnsTheSameValues)` (CPU) for each type.
   - `TEST(CheckGridVersion, OtherVersion_IsWrongGridVersion)`; `TEST(BuildCellValues, ZeroBlocks_IsBadInput)`.
-  Label `no_gpu`: `TEST(BuildFaceValues, OnGpuWithoutAGpu_IsRunOnCallFailed)`.
+  - `TEST(BuildFaceValues, IntoRunMemory_TakesOnePieceOfPlacesTimesSize)` (amended 2026-11-15, A58): for each of the
+    four types with `Value = double` at 1,000 blocks, a fresh `RunMemory` of 2 MiB: `handed_out_bytes() ==
+    ComputeRunMemoryPieceBytes(1000 * places * 8)` (places 64, 240, 125, 1), e.g. 1,920,000 B for faces; the
+    grid-bound form at a 9-block grid takes `ComputeRunMemoryPieceBytes(9 * places * 8)`.
+  - `TEST(BuildCellValues, RunMemoryTooSmall_IsOutOfMemory)` (A58; `GTEST_SKIP` in debug builds): a 256 B block,
+    1,000 blocks asked: `kOutOfMemory`, `magnitude == 512000`.
+  Label `no_gpu`: `TEST(BuildFaceValues, OnGpuWithoutAGpu_IsRunOnCallFailed)` (amended A58: `BuildRunMemory(kGpu,
+  ...)` returns `kRunOnCallFailed`; the builder is not reached).
   Label `gpu`: `TEST(WriteValues, OnGpuThenReadValues_ReturnsTheSameValues)` for each type, bound to a grid built
   on the GPU; `TEST(ApplyGridVersion, OnGpuGrid_LaunchesNothing)` (100 GPU grids bound in turn: free bytes
   unchanged, values' contents read back unchanged, since a bind does not touch them).
@@ -1316,6 +1516,8 @@ memory, and tests it on a grid built on the GPU.
 **Amended 2026-11-14 (Foundation as built):** shared tests `LABEL cpu`; `BorderSearchBuffers` owns the `OrderBuffers` the prefix sum takes (its one form); allocation counter in the test's sources.
 
 **Amended 2026-11-14 (A30, A31, reconcile):** a buffer on another processor than the grid's is a `Requires:` precondition (it was `kBadInput`); the `OrderBuffers` of `BorderSearchBuffers` is counted by the `border order buffers` entries of `BuildBorderSearchMemoryEstimate` (reconcile item 28).
+
+**Amended 2026-11-15 (A58; reconcile item 32):** `BuildBorderSearchBuffers(run_on, max_cell_blocks, RunMemory& run_memory)`; its marks (`max_cell_blocks + 1` entries) and `OrderBuffers` are one `kGivenCount` entry each of their exact bytes, so `BuildBorderSearchMemoryEstimate(run_on, max_cell_blocks)`; new test `BuildBorderSearchBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`. The span forms on a GPU grid stay a `Requires:` precondition (reconcile item 32 confirms A30), never `kBadInput`.
 
 **Kind:** numerics
 
@@ -1348,11 +1550,13 @@ memory, and tests it on a grid built on the GPU.
     std::uint32_t max_cell_blocks() const;
     RunOn run_on() const;
   };
-  // The one allocation of border search. Fails kBadInput (0 or above kMaxCellBlocksLimit), kRunOnCallFailed,
-  // kOutOfMemory.
+  // The one allocation of border search, as pieces of run_memory (amended 2026-11-15, A58). Requires: run_on ==
+  // run_memory.run_on() (debug assertion, A30). Fails kBadInput (0 or above kMaxCellBlocksLimit),
+  // kRunOnCallFailed, kOutOfMemory (magnitude = bytes asked).
   std::expected<BorderSearchBuffers, GridFailure> BuildBorderSearchBuffers(RunOn run_on,
-                                                                           std::uint32_t max_cell_blocks);
-  std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on);
+                                                                           std::uint32_t max_cell_blocks,
+                                                                           RunMemory& run_memory);
+  std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks);
   // Every block outside `range` that is in border_so_far or in the border, at `width`, of range plus
   // border_so_far: one more layer of a stacked border, merged with the layers before. Ascending, each once.
   // Writes the first border_blocks.size() entries and returns how many there are in all. Allocates nothing.
@@ -1366,10 +1570,10 @@ memory, and tests it on a grid built on the GPU.
                                                              Buffer<CellBlockIndex>& border_blocks);
   ```
   A stacked border is this call once per layer with two output buffers used in turn; no merge is needed between
-  layers. Rows (`grid: ` prefix, `KeptFor::kWholeRun`, `copies = 1`): `border marks` (kCellBlock, 4 B) and
-  `border marks end` (kGivenCount 1, 4 B), `where = kRunOn`; for `kGpu` also `border order buffers`
-  (kCellBlock, `ComputeOrderBuffersSize(kGpu).bytes_per_item`), `border order buffers, fixed part` (kGivenCount 1,
-  `fixed_bytes + bytes_per_item`: the item beyond `max_cell_blocks`; reconcile item 28) and `border status`
+  layers. Rows (`grid: ` prefix, `KeptFor::kWholeRun`, `copies = 1`; amended 2026-11-15, A58: one entry per array,
+  `kGivenCount`, `bytes_each = 1`, `given_count` = exact bytes at `max_cell_blocks`): `border marks` (`4 *
+  (max_cell_blocks + 1)` B), `where = kRunOn`; for `kGpu` also `border order buffers` (`bytes_per_item *
+  (max_cell_blocks + 1) + fixed_bytes` of `ComputeOrderBuffersSize(kGpu)`; reconcile item 28) and `border status`
   (kGivenCount 1, `sizeof(GridBuildStatus)`). On the GPU the `border order buffers` rows are the bytes of an
   `OrderBuffers` built once in `BuildBorderSearchBuffers` (`BuildOrderBuffers(kGpu, max_cell_blocks + 1)`) and
   passed to every `ComputeExclusivePrefixSum` of the search (nothing allocated per call).
@@ -1405,9 +1609,14 @@ memory, and tests it on a grid built on the GPU.
     `TEST(FindBorderBlocks, BorderSoFarInsideRange_IsBadInput)`;
     `TEST(FindBorderBlocks, StackedBufferForm_AllocatesNothing)` (allocation counter of Task 9).
   - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedBytes)` (CPU rows: `4 * max_cell_blocks + 4`).
+  - `TEST(BuildBorderSearchBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)` (amended 2026-11-15, A58): at 1,000
+    blocks a CPU block of `ComputeRunMemoryBytes(BuildBorderSearchMemoryEstimate(kCpu, 1000), counts, kRunOn)`
+    (4,096 B: one piece of 4,004 B rounded): `handed_out_bytes() == reserved_bytes()`; the `kGpu` piece list (one list in the private header that
+    the builder walks) against the GPU estimate: equal.
   - `TEST(IsBorderBlock, PlaneFourFixture_MarksBlockC)` (label `cpu`; the fixture of
     `PlaneFourPieceBeyondTouchingCell_IsInBorder` built by hand).
-  Label `no_gpu`: `TEST(BuildBorderSearchBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed)`.
+  Label `no_gpu`: `TEST(BuildBorderSearchBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed)` (amended A58: stops at
+  `BuildRunMemory(kGpu, ...)`).
 - [ ] **Step 2: Run**, fail. **Step 3: Implement**. **Step 4:** gate.
 - [ ] **Step 5: Commit.** Subject: `Cut the grid into ranges and find their border blocks`. New names include
   `BorderSearchBuffers`, `BuildBorderSearchBuffers`, `BuildBorderSearchMemoryEstimate` and the stacked form.
@@ -1461,10 +1670,14 @@ neighbour tables (mark, prefix-sum, scatter) and is compared with the CPU walk o
   - `TEST(FindBorderBlocks, OnGpuFailures_EqualCpuFailures)`: unsorted, inside-range, out-of-range and aliased
     inputs.
   - `TEST(FindBorderBlocks, OnGpu_AllocatesNothing)` and `TEST(FindBorderBlocks, OnGpuTwice_GivesIdenticalBytes)`.
-  - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedGpuBytes)`.
+  - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedGpuBytes)` (amended 2026-11-15, A58: the drop in free
+    bytes is measured across `BuildRunMemory(kGpu, ...)`; building the search buffers into it leaves free bytes
+    unchanged).
+  - `TEST(BuildBorderSearchBuffers, OnGpuIntoRunMemory_HandsOutExactlyTheEstimate)` (A58): 1,000 blocks, as Task
+    22's CPU test.
 - [ ] **Step 2: Run** the gate. Expected: `PASS cuda`.
 - [ ] **Step 3: Commit.** Subject: `Find border blocks on the GPU through the neighbour tables`. Body: `GPU:
-  compiled, not run`; the six `gpu` tests.
+  compiled, not run`; the seven `gpu` tests.
 
 ### Task 24: Grid pieces for the batched run
 
@@ -1630,6 +1843,8 @@ GPU from the whole grid's, compared with the CPU piece bit for bit.
 
 **Amended 2026-11-14 (A29, A30, A31):** the deviation list names `TakeBuffers`, the processor preconditions, the one form of `BuildGridBuffers` and `BuildTestGrid`.
 
+**Amended 2026-11-15 (A41, A58, A61–A63, reconcile 31–32):** the deviation list adds the `RunMemory&` parameter of every builder, the one-entry rows of exact bytes and the `max_cell_blocks` parameter of both estimate builders, `GridFailure::magnitude`, `kOutOfMemory` moved last, `ComputeCellWidthsByLevel`; the GPU list adds the gpu tests of Tasks 13a, 11 and 23 named below.
+
 **Kind:** mechanical
 
 **Files:**
@@ -1660,7 +1875,10 @@ GPU from the whole grid's, compared with the CPU piece bit for bit.
   (values cross only through `base/` `Buffer` calls). `GridBuilderBuffers` has `ComputeGridBuilderBuffersSize` and
   `byte_count()` (Foundation's buffers pattern).
 - [ ] **Step 4: `docs/gpu-runs.md`:** add the grid row, result `compiled, not run`, notes listing the `gpu` tests
-  of Tasks 10, 11, 20, 21, 23, 25 and 26 by full name (`Suite.Name`), among them
+  of Tasks 10, 11, 13a, 20, 21, 23, 25 and 26 by full name (`Suite.Name`), among them
+  `ComputeWantedCellWidth.OnGpu_SameBytesAsCpu`, `ComputeNewCellSizeLevel.OnGpu_SameBytesAsCpu`,
+  `BuildGridBuffers.OnGpuIntoRunMemory_HandsOutExactlyTheEstimate`,
+  `BuildBorderSearchBuffers.OnGpuIntoRunMemory_HandsOutExactlyTheEstimate`,
   `BuildGrid.OnGpu_EqualsCpuTablesBitForBit`, `CheckSizeStepRule.OnGpuSeveralFailures_SameFirstFailureAsCpu`,
   `BuildGrid.OnGpuFailedBuildThenRebuild_EqualsFreshBuffers`, `ComputeMemoryBytes.MatchesAllocatedGpuBytes`,
   `ComputeNearbyFaceWeights.OnGpu_MatchesCpu`, `WriteValues.OnGpuThenReadValues_ReturnsTheSameValues`,

@@ -145,13 +145,17 @@ enum class PressureError {
   kNotConverged,             // max_iterations reached above the limit. The caller may shorten the step.
   kNotFinite,                // A computed value is not finite.
   kCancelled,                // NEW. cancel_requested was set; the outputs of the call are not valid.
-  kRunOnCallFailed,          // CheckCanRunOn failed for the chosen processor, or a call to it failed. Also out of
-                             // memory (magnitude = bytes asked) and a solve batch that cannot hold one range
-                             // with its border (A15).
-};  // 15 values. kMaterialBoundaryNotSupported is removed (plan decision: the sharp boundary is delivered).
+  kRunOnCallFailed,          // CheckCanRunOn failed for the chosen processor, or a call to it failed. Also a solve
+                             // batch that cannot hold one range with its border (A15). CHANGED (A58): out of
+                             // memory is kOutOfMemory.
+  kOutOfMemory,              // NEW (A58, reconcile item 31), appended last. A building function could not take its
+                             // buffers (BufferError::kRunMemoryTooSmall, or a plain allocation failed);
+                             // magnitude = bytes asked.
+};  // 16 values. kMaterialBoundaryNotSupported is removed (plan decision: the sharp boundary is delivered).
 // Which function returns which (plan decision): kStepTooLongForSurfaceTension by FindLiquidSurface;
 // kStepTooLongForAirPocket by FindAirPockets; kPressureLawOutOfRange by BuildPressureEquations when a kLiquid
-// cell's bulk_stiffness is not > 0 (and by ComputePressureLawState).
+// cell's bulk_stiffness is not > 0 (and by ComputePressureLawState). kOutOfMemory only by the building functions
+// BuildPressureBuffers and BuildSolveBatches (A58).
 struct PressureFailure {    // The error value of every std::expected here. Never allocates.
   PressureError error = PressureError::kNone;
   grid::CellPlaceIndex cell_index{grid::kNoIndex};            // First failing cell, or kNoIndex.
@@ -247,8 +251,17 @@ struct BufferSizes {
 class PressureBuffers;
 // The same table BuildPressureBuffers allocates from on run_on (the sum and order buffers' bytes depend on it).
 std::uint64_t ComputeBufferBytes(const BufferSizes& sizes, RunOn run_on);
+// CHANGED (A58): every where = kRunOn row is a piece of run_memory (BuildBuffer(run_on, size, run_memory), the sum
+// and order buffers by their RunMemory& forms); where = kCpu rows (the batched layout's rows in CPU memory, and
+// SolveBatches' border lists and staging buffer, all kWholeRun or kOneStepTry) are pieces of cpu_run_memory
+// (plan-decisions item 3, correction of the same day: a builder that builds on both processors takes both blocks;
+// in a CPU run the caller passes the same object twice). Each estimate row stands for `copies` buffers of count x
+// bytes_each bytes each, so ComputeRunMemoryBytes(estimate, counts, where) for each `where` is exactly what this
+// takes from that block. Requires: run_on == run_memory.run_on(); cpu_run_memory.run_on() == kCpu (debug
+// assertions, A30). Fails: kBadInput (sizes), kOutOfMemory (a piece does not fit, magnitude = bytes asked),
+// kRunOnCallFailed (CheckCanRunOn). On failure the blocks may have handed out pieces; the caller discards them.
 std::expected<std::unique_ptr<PressureBuffers>, PressureFailure> BuildPressureBuffers(
-    const BufferSizes& sizes, RunOn run_on);
+    const BufferSizes& sizes, RunOn run_on, RunMemory& run_memory, RunMemory& cpu_run_memory);
 // NEW (A15). The buffers' SolveBatches and its copy report; null in one piece.
 const SolveBatches* FindSolveBatches(const PressureBuffers& buffers);
 const SolveCopyReport* ReadSolveCopyReport(const PressureBuffers& buffers);
@@ -287,8 +300,9 @@ struct SurfaceDistanceInputs {
   std::uint32_t material_index = kAllLiquidMaterials;
   double particle_radius = 0;      // m. A particle counts as a ball of this radius.
   double surface_tension_max = 0;  // N/m, largest over ingredients. 0 skips around_surface_cells.
-  // 1 for a cell of the grid-only region (from cell resize). Null: every cell is in the particle region.
-  const grid::CellValues<std::uint8_t>* is_grid_only_region = nullptr;
+  // Not in the first version (A64): `const grid::CellValues<std::uint8_t>* is_grid_only_region` (1 for a cell of
+  // the grid-only region, whose corners get -2 cell widths). Every liquid cell holds particles; the field returns
+  // with the cell resize plan's later group "Deep liquid without particles (later; needs review)".
 };
 // Fails: kBadInput (a material index that is not counted, a one-material field with an all-zero
 // material_is_counted, a mask whose size is not the material count, or more one-material fields than
@@ -462,6 +476,16 @@ struct FreeSolidPush {             // Motion map of one free solid, from the sol
   std::uint32_t solid_index, equation_index;  // equation_index as ComputeEquationIndexes gives it.
   Vec3 force_per_pressure, torque_per_pressure;  // N/Pa and N m/Pa on the solid from this cell's pressure.
 };
+// NEW (A59). One free solid as the pressure solve sees it, in FreeSolidPush::solid_index order (from
+// solids::ToFreeSolidInertia). Replaces the two Mat3 per solid of the former free_solid_inverse_inertia.
+// M = diag(mass x identity, inertia_at_start); torque_per_pressure and the rows of allowed_motions are about
+// origin_at_start. pressure_equations.h includes the shared, header-only solids/guide_math.h for AllowedMotions.
+struct FreeSolidInertia {
+  double mass = 0;                           // kg, > 0.
+  Mat3 inertia_at_start{};                   // kg m2, world axes, about origin_at_start; symmetric positive.
+  solids::AllowedMotions allowed_motions{};  // J = columns[0..column_count) (rows V then Omega, world axes) and
+                                             // xi_0 = prescribed_motion, from solids::ComputeAllowedMotions.
+};
 // The boundary between two liquids that do not mix. In the particles design these are two materials (the
 // ingredients of one material always mix), so this design's first name, IngredientBoundary, was changed.
 // Built by FindMaterialBoundaries (section 5 step 1b).
@@ -511,7 +535,9 @@ struct EquationInputs {
   double surface_tension_with_air = 0;                    // N/m
   std::span<const MaterialBoundary> material_boundaries;  // Sorted by face_piece_index.
   std::span<const FreeSolidPush> free_solid_pushes;       // Sorted by solid_index, then equation_index.
-  std::span<const Mat3> free_solid_inverse_inertia;       // Two per solid: 1/kg, then 1/(kg m2), world frame.
+  // CHANGED (A59; was std::span<const Mat3> free_solid_inverse_inertia, two per solid). One per free solid; a
+  // solid_index past it, mass not > 0 or a J^T M J that is not positive: kBadInput.
+  std::span<const FreeSolidInertia> free_solids;
   SealedBlobCheck sealed_blob_check = SealedBlobCheck::kWhenBuilt;  // NEW (gas).
   double lightest_density = 0;        // NEW (plan decision). kg/m3, step 13's fallback density.
   double max_volume_error_rate = 2e-5;  // NEW (plan decision). 1/s, step 16's limit (the build has no SolveSettings).
@@ -524,7 +550,8 @@ struct EquationInputs {
   const grid::CellValues<double>* gas_pressure_above_background = nullptr;
   // NEW (A27, plan decision). 6 per free solid (V m/s, then Omega rad/s, world axes, entries [6 s, 6 s + 6) for
   // solid_index s): the motion before pressure, for the kIncluded free-solid flow of the CoupledVelocities forms.
-  // Size 0 or 6 x the free solid count (half of free_solid_inverse_inertia), else kBadInput. SolvePressure ignores it.
+  // Size 0 or 6 x free_solids.size() (A59; was half of free_solid_inverse_inertia), else kBadInput. Each solid's
+  // entry is its guided motion before pressure, J q + xi_0 (A59). SolvePressure ignores it.
   std::span<const double> free_solid_motion_before_pressure;
 };
 struct EquationArrays;             // NEW (plan decision). Opaque; its content is private to the module.
@@ -562,6 +589,21 @@ std::expected<std::uint32_t, PressureFailure> ComputeEquationIndexes(
 std::expected<void, PressureFailure> ComputeBlobOfCell(const PressureEquations& equations,
                                                        grid::CellValues<std::uint32_t>& blob_of_cell);
 
+// free_solid_guide_math.h (shared)                                                     NEW (A59)
+// A guided free solid (Batty 2007, Aanjaneya 2018; literature-practice.md topic 3). J^T M J (m x m, m =
+// column_count <= 6) is factored by Cholesky in a fixed loop order, no contraction. kBadInput: mass not > 0, a value
+// not finite, or a pivot not > 0 (dependent columns). PressureError::kNone on success.
+struct GuidedInverseMass {         // G = J (J^T M J)^-1 J^T: 6 x 6, symmetric, rank m; rows and columns (V, Omega).
+  double values[6][6];             // 1/kg (V-V block), 1/(kg m) (mixed), 1/(kg m2) (Omega-Omega). m = 0 gives 0.
+};
+FLUIDITY_CPU_AND_GPU PressureError ComputeGuidedInverseMass(const FreeSolidInertia& solid, GuidedInverseMass& result);
+// The solid update: q = (J^T M J)^-1 J^T (M xi_before + impulse), xi_after = J q + xi_0. xi_before, xi_after: V m/s
+// then Omega rad/s, world axes; impulse: N s then N m s, dt (F_pressure + F_external) about origin_at_start. With
+// the six axis columns and xi_0 = 0 it equals xi_before + M^-1 impulse within rounding. Solids'
+// ApplyPressureToSolids calls it for the free-solid update, so the operator and the update share one factor.
+FLUIDITY_CPU_AND_GPU PressureError ComputeGuidedSolidMotion(const FreeSolidInertia& solid, const double xi_before[6],
+                                                            const double impulse[6], double xi_after[6]);
+
 // material_boundary.h (CPU only)                                                     NEW (conflict C4, A)
 struct MaterialBoundaryInputs {
   const grid::StaggeredGrid* grid; grid::CellBlockRange blocks; GeometrySnapshot geometry;
@@ -577,10 +619,11 @@ std::expected<std::span<const MaterialBoundary>, PressureFailure> FindMaterialBo
 
 // volume_correction.h (CPU only)
 struct VolumeCorrectionSettings { double correction_duration = 0; double max_rate = 0; };  // s; 1/s.
+// CHANGED (A64): the parameter `const grid::CellValues<std::uint8_t>* is_grid_only_region` (zero rate in grid-only
+// cells) is not in the first version; it returns with the later group named at SurfaceDistanceInputs.
 std::expected<void, PressureFailure> ComputeVolumeCorrectionRate(   // Adds to added_volume_rate, m3/s.
     const GeometrySnapshot& geometry, const grid::CellValues<double>& sensed_volume_ratio,
-    const grid::CellValues<double>& target_volume_ratio,
-    const grid::CellValues<std::uint8_t>* is_grid_only_region, const VolumeCorrectionSettings& settings,
+    const grid::CellValues<double>& target_volume_ratio, const VolumeCorrectionSettings& settings,
     grid::CellValues<double>& added_volume_rate, PressureBuffers& buffers);
 ```
 
@@ -736,7 +779,7 @@ std::expected<void, PressureFailure> ComputeBlockingMaterialVelocities(const Pre
     const grid::CellValues<double>& pressure, std::span<double> velocity_after_pressure);
 // NEW (A26, A27), for the joint solve only (the A24 forms above stay for SolvePressure's arithmetic and are not
 // called by viscosity). Material faces and free solids are velocity unknowns of the joint solve: their velocities
-// are given, never recovered from `pressure`. F = free solid count (half of free_solid_inverse_inertia); a solid's
+// are given, never recovered from `pressure`. F = free solid count (free_solids.size(), A59); a solid's
 // xi = (V, Omega), entries [6 s, 6 s + 6). kBadInput, no output written: a CoupledVelocities pointer null while its
 // count (blocking_material_face_count, F) is > 0; a given or output buffer shorter than its count (one per
 // BlockingMaterialFace, or 6 F); kIncluded with F > 0 and an empty
@@ -807,6 +850,12 @@ std::expected<void, PressureFailure> ComputeCarriedPressure(
 // counted per cell block or given count stay kRunOn; plus BuildSolveBatchesMemoryEstimate. One allocation table.
 // NEW (A18). Rows for material faces and sealed gas blobs from max_blocking_material_faces, max_sealed_gas_blobs.
 // The sum and order buffers rows are counted for run_on (reconcile item 24).
+// CHANGED (A58): one row per buffer (copies = the number of identical buffers it stands for, each count x
+// bytes_each bytes), so ComputeRunMemoryBytes(rows, counts, where) is exactly what BuildPressureBuffers hands out from
+// the block of that `where` (kRunOn: run_memory, kCpu: cpu_run_memory); the
+// sum buffers and the order buffers are one row each (given count 1, bytes_each = the whole ComputeSumBuffersSize /
+// ComputeOrderBuffersSize at their counts: one piece each). NEW (A59): row "pressure: free solids: guided inverse
+// mass", given count max_free_solids, 288 B (GuidedInverseMass), kRunOn.
 std::vector<MemoryEstimateEntry> BuildPressureMemoryEstimate(const BufferSizes& sizes, RunOn run_on);
 ```
 
@@ -847,9 +896,15 @@ class SolveBatches {
 // One allocation: loaded GridBuffers with the GridBuilderBuffers lent to them, an OrderBuffers, BorderSearchBuffers, two border buffers and the map copy at
 // max_loaded_blocks, the per-batch border lists (CPU), a locked staging buffer of max_loaded_blocks * 240 * 64
 // bytes. kBadInput: max_loaded_blocks 0 or above max_cell_blocks, no width; kRunOnCallFailed: as plan-decisions.
+// CHANGED (A58): its kRunOn rows are pieces of run_memory (the grid, border search and order buffers by their
+// RunMemory& forms), its kCpu rows (border lists, the locked staging buffer) pieces of cpu_run_memory (built
+// CpuMemory::kLockedForCopies by the step in a batched GPU run); kOutOfMemory when a piece does not fit (magnitude =
+// bytes asked). Requires: run_on == run_memory.run_on(), cpu_run_memory.run_on() == kCpu (debug assertions, A30);
+// in a CPU run the same object twice. The A15 mechanism is otherwise unchanged.
 std::expected<SolveBatches, PressureFailure> BuildSolveBatches(RunOn run_on, std::uint32_t max_cell_blocks,
                                                                std::uint32_t max_loaded_blocks,
-                                                               std::span<const grid::BorderWidth> stacked_widths);
+                                                               std::span<const grid::BorderWidth> stacked_widths,
+                                                               RunMemory& run_memory, RunMemory& cpu_run_memory);
 std::vector<MemoryEstimateEntry> BuildSolveBatchesMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks,
                                                    std::uint32_t max_loaded_blocks);
 // Cuts `grid` (on run_on) with the largest n such that every range of grid::BuildRanges(grid, n) plus its stacked
@@ -956,7 +1011,10 @@ Each item is marked EXISTS (Foundation, including the `base/` additions) or PROV
 the name as that module's section 3 has it, after the updates of `changes-to-apply.md`).
 
 **Foundation (EXISTS):** `Vec3`, `Mat3`, `math::Dot`, `Axis`, `kUp`, `RunOn`, `CheckCanRunOn`,
-`FLUIDITY_CPU_AND_GPU`, `cpu_only.h`.
+`FLUIDITY_CPU_AND_GPU`, `cpu_only.h`. NEW (A58, Foundation Tasks 17 and 18): `RunMemory`, `BuildBuffer(RunOn, size,
+RunMemory&)`, `ComputeRunMemoryBytes`, `ComputeRunMemoryPieceBytes`, `BufferError::kRunMemoryTooSmall` (mapped to
+`kOutOfMemory`), the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`; grid's `BuildGridBuffers`,
+`BuildGridBuilderBuffers` and `BuildBorderSearchBuffers` take `RunMemory& run_memory` last (grid plan).
 
 **Foundation additions (EXISTS: `shared-interface.md` section (a) and the `base/` additions of
 `changes-to-apply.md`):**
@@ -1050,8 +1108,14 @@ springy solid only (A9).
 **Solids (PROVIDED by solids 3.5, 3.6):** `solids::ToSolidCoverage(const SolidCoverageValues&)` giving
 `SolidCoverage` over every active cell, for every fixed, driven and free solid and every blocking material
 (snow and springy solids, A9) seen by the liquid as a solid; `solids::FindGridEdgesOpenToSky` giving
-`grid_edge_is_open_to_sky`; `solids::ToFreeSolidPushes(motion_map)` and `ToFreeSolidInverseInertia(motion_map)`
-for `EquationInputs`. NEW (A18): `solids::ToBlockingMaterialFaces(const BlockingMaterialFaces&)` from
+`grid_edge_is_open_to_sky`; `solids::ToFreeSolidPushes(motion_map)` and (CHANGED, A59; was
+`ToFreeSolidInverseInertia`) `solids::ToFreeSolidInertia(motion_map)` giving `std::span<const FreeSolidInertia>`
+(mass, `inertia_at_start` and the `AllowedMotions` of `solids::ComputeAllowedMotions(limits, origin_at_start)`, one
+per free solid in `FreeSolidPush::solid_index` order) for `EquationInputs::free_solids`; the type
+`solids::AllowedMotions` from the shared header-only `solids/guide_math.h`. Solids calls this module's
+`ComputeGuidedSolidMotion` in `ApplyPressureToSolids` (A59). The pressure part of the force on driven and fixed solids
+(A60) is solids' reduction over their `MotionMapEntry`s after the solve (`ApplyPressureToSolids` /
+`ApplySolvedMotionToSolids`), not a pressure function: pressure owns no motion-map entry of a driven or fixed solid. NEW (A18): `solids::ToBlockingMaterialFaces(const BlockingMaterialFaces&)` from
 `solids::BuildBlockingMaterialFaces` gives `EquationInputs::blocking_material_faces`; after the solve
 `solids::ApplyPressureToMaterials` reads `SolvedArrays::blocking_material_velocity_after_pressure` and writes each
 velocity into its set's `GridFromParticles::velocity`. Solids calls this module's `ComputeBlockedCornerAreas` and
@@ -1089,9 +1153,10 @@ is the step's swap and needs no copy out of `PressureBuffers`; takes the smaller
 `PressureBuffers` for gas with `BuildPressureMemoryEstimate`; passes `cancel_requested` to `SolvePressure`.
 
 **Cell resize and batches (PROVIDED by the cell resize and batches design, 3 and 5.8 to 5.9):** remaps `GridFields::pressure`,
-`has_pressure` and `pocket_of_cell` when cells are split or merged; fills `is_grid_only_region` (a grid-only
-cell is at least two cell widths from the liquid surface) and the density and velocity of grid-only cells;
-runs `ComputeDistanceToSurface` and `FindLiquidSurface` per particle batch into one-piece piece buffers and
+`has_pressure` and `pocket_of_cell` when cells are split or merged; ~~fills `is_grid_only_region` (a grid-only
+cell is at least two cell widths from the liquid surface) and the density and velocity of grid-only cells;~~ (not
+in the first version, A64: every liquid cell holds particles; cell resize plan, later group "Deep liquid without
+particles (later; needs review)") runs `ComputeDistanceToSurface` and `FindLiquidSurface` per particle batch into one-piece piece buffers and
 copies the range into the whole buffers with `WriteSnapshotRange` (`batches::ReadBatch`); every other function
 of this module runs on the whole grid (`blocks` = all) on the run's processor, in one piece (`RunMode::kBatched`,
 `SolvePlace::kWholeGridOnProcessor`) or batch by batch through `SolveBatches` (`kBatchedWithSolvesInPieces`,
@@ -1105,8 +1170,9 @@ Symbols are used in formulas only. Ported means the maths is the one on `main`.
 **A. Liquid surface (`ComputeDistanceToSurface`, `FindLiquidSurface`)**
 
 1. *Distance (ported idea, new search).* At a point, `distance_to_surface = min over nearby particles of
-   (|point - particle position|) - particle_radius`, capped at `+2 cell widths`. A point inside a
-   cell marked `is_grid_only_region` gets `-2 cell widths`. The minimum is exact in any order, so no ordering rule is
+   (|point - particle position|) - particle_radius`, capped at `+2 cell widths`. ~~A point inside a
+   cell marked `is_grid_only_region` gets `-2 cell widths`.~~ (Not in the first version, A64: every liquid cell
+   holds particles, so the distance comes from particles everywhere.) The minimum is exact in any order, so no ordering rule is
    needed. Particles are found through the 27 blocks around the point's block, not by scanning all particles
    (report CUDA 10.1). The analytic sphere and flat plane of `main` become test inputs, not solver paths.
    Only particles of materials with `material_is_counted` are read: liquids, never gas markers (A10) or
@@ -1212,11 +1278,20 @@ Symbols are used in formulas only. Ported means the maths is the one on `main`.
     cell. Free solids add
     `dt * push^T * inverse_inertia * push` over their `FreeSolidPush` entries (one motion map and its
     transpose; replaces the piston and box paths), applied as `dt * (f_i . invM F + t_i . invI T)` with `F`, `T`
-    summed over the solid's pushes in their sorted order (plan decision). Order of one cell row (A18): own term,
+    summed over the solid's pushes in their sorted order (plan decision). **Replaced (A59):** the free-solid term
+    is `dt (K J) (Jᵀ M J)⁻¹ (K J)ᵀ` (rank `m` = `column_count`; `K` the solid's push rows, `J` its allowed
+    motions), applied as `dt * push_iᵀ G P` with `G = J (Jᵀ M J)⁻¹ Jᵀ` from `ComputeGuidedInverseMass` (built
+    once per build) and `P` = the solid's 6 push sums in their sorted order; unguided (`J` the six axis columns)
+    `G = M⁻¹`, the term above. The prescribed motion `xi_0` is in the right-hand side only: the solid's motion
+    before pressure is `J q_before + xi_0`, and solids' `solid_volume_rate` (and, for the joint solve,
+    `free_solid_motion_before_pressure`) carry it. After the solve the solid update is `ComputeGuidedSolidMotion`:
+    `q = (Jᵀ M J)⁻¹ Jᵀ (M xi_before + dt F_pressure + dt F_external)`, `xi = J q + xi_0`, so a direction the
+    guide forbids never moves. Order of one cell row (A18): own term,
     connections by ascending `face_piece_index`, material faces by ascending (`face_piece_index`,
     `material_set`), then blob terms by ascending `face_piece_index`.
 16. *Blobs and the free constant (fixed).* Blobs are connected sets of equations (label = smallest
-    `cell_index`), joined through connections, through cells pushing the same free solid (plan decision),
+    `cell_index`), joined through connections, through cells pushing the same free solid (plan decision; A59:
+    only a solid with `column_count > 0`, since `G = 0` couples nothing),
     through material faces with two solved ends and through cells joined to one sealed gas blob (A18).
     `kHasReferencePressure` if any connection has a reference end (a material face with one solved end counts
     as one, A18); else `kCanBeSqueezed` if any `squeeze_allowance > 0` or the blob is joined to a sealed gas blob
@@ -1231,7 +1306,8 @@ Symbols are used in formulas only. Ported means the maths is the one on `main`.
     equals the volume-weighted mean of `carried_pressure` (decision 1). `ComputeEquationIndexes` gives the
     equation order of this step from the snapshot alone; `ComputeBlobOfCell` maps cells to blobs.
 17. *Volume correction (ported).* `rate = clamp((ln target_volume_ratio - ln sensed_volume_ratio) /
-    correction_duration, +-max_rate)`, zero in cells marked `is_grid_only_region`. In a sealed blob a shift `lambda` is found by
+    correction_duration, +-max_rate)`, ~~zero in cells marked `is_grid_only_region`~~ (not in the first version,
+    A64). In a sealed blob a shift `lambda` is found by
     64 bisections so that `sum of filled_volume * clamp(raw - lambda, +-max_rate) = 0`.
 
 **C2. Coupling inside the solve (NEW, A18; method decisions (a) to (f) of the pressure plan's Task 44).** A
@@ -1290,7 +1366,7 @@ outflow.
   given velocities (`CoupledVelocities`): a solved end `e` of face `k` gets `-s_e (A_k w_k - coverage_volume_rate)`
   in its volume error (`kLeftOut`: `-s_e A_k w_k`); a cell with `FreeSolidPush` entries gets `-push_e . (xi -
   xi_before)` per entry (`kLeftOut`: `-push_e . xi`), the sign that gives step 15's free-solid term `+dt push^T
-  M^-1 push` in `SolvePressure`'s operator; `ComputeCoupledPush` gives viscosity the pressure impulses `dt A_k (p_low - p_high)`
+  M^-1 push` (A59: `+dt push^T G push`) in `SolvePressure`'s operator; `ComputeCoupledPush` gives viscosity the pressure impulses `dt A_k (p_low - p_high)`
   and `dt sum_e push_e p_e` for the momentum rows; the outer-loop diagonal adds `g_k * face_mass_k /
   velocity_diagonal_k` per solved end and leaves free solids out. `xi_before` comes from
   `EquationInputs::free_solid_motion_before_pressure` (plan decision). The method is viscosity's (viscosity design
@@ -1348,7 +1424,7 @@ A26, A27, C2 last item): the forms with a blob buffer and `CoupledVelocities`, `
     check, and restarts from the true error if the check fails (plan decision).
     *Arithmetic of one iteration, both modes (A15).* With `A_local` = own term, connections and material faces:
     `q_local = A_local d`; per free solid `P_s = push_s . d` and per sealed gas blob `G_j = sum_c g_c d_c`
-    (per-group rule); `k_s = dt * inverse_inertia_s * P_s`, `h_j = G_j / D_j`; `dq = d . q_local + sum_s P_s . k_s
+    (per-group rule); `k_s = dt * G_s P_s` (A59; was `dt * inverse_inertia_s * P_s`, the case `G_s = M_s⁻¹`), `h_j = G_j / D_j`; `dq = d . q_local + sum_s P_s . k_s
     - sum_j G_j h_j`; wherever `q` is used, `q_c = q_local_c + sum over c's push entries of push . k_s - sum over
     c's blob terms of g_c h_j`. In the ladder's sealed-blob steps `E_b` is the blob's error total and `m_b` its
     volume-weighted mean of the ladder's raw output `z_raw`: `z = z_raw - m_b`, `rz = error . z_raw - sum_b m_b
@@ -1445,7 +1521,7 @@ of the programme, a known-open test).
 **Shared formula headers:** `geometry_clip_math.h` (tetrahedron and triangle clipping), `surface_tension.h`,
 `pressure_law.h`, `air_pocket_math.h`, `cell_equation_math.h` (connection coefficients, one cell's equation
 sum, velocity correction, volume error; A18: material-face coefficients, gas squeeze allowance, material velocity
-after pressure), `open_sea_math.h`, `math::TreeSum`.
+after pressure), `open_sea_math.h`, `free_solid_guide_math.h` (A59), `math::TreeSum`.
 
 **CPU.** Plain loops over cells, then face pieces, of the block range; each destination value is written by
 one loop iteration, so the loops over destinations may be split across threads without changing a result.
@@ -1556,8 +1632,16 @@ Analytic and conservation, CPU (label `cpu`), each on uniform cells and on two s
 | Gas pressure at the liquid surface (NEW, A10) | Water pool under a sealed gas box whose committed gas pressure is `+P` | `p = P + rho g (H - z)`; blob is `kHasReferencePressure`; the gas cells belong to no air pocket | solve limit |
 | `PressureScene, RisingGasPressureFollowedEachSolve` (A18: the path read one step late) | Hydrostatic column, no `SealedGasBlob` given; three solves with gas pressure 100, 150, 225 Pa passed as the committed array | the surface cell's pressure in solve k follows the k-th array (the one-step lag is the caller's) | solve limit |
 | Two liquids at rest (NEW, C4) | Oil (800) over water (1000) in a closed box, two size levels; sigma between them; public path `ComputeDistanceToSurface` -> `FindLiquidSurface` -> `FindMaterialBoundaries` -> `BuildPressureEquations` -> `SolvePressure` | pressure jumps by `rho_oil g h` across layers, `low_share` exact for a flat boundary, velocity after stays 0 (the sharp boundary is delivered; no exclusion test) | solve limit; `1e-12` |
-| `ComputeDistanceToSurface, AllZeroMask_IsNoLiquid` (NEW) | Particles of a gas material only, `material_is_counted` all zero, `kAllLiquidMaterials`; then the same mask with a material index | every distance positive (`+2 cell widths` away from grid-only cells), `FindLiquidSurface` gives every open cell `kAir` and no equation; with a material index `kBadInput` | exact |
-| `ToName, EveryError` (NEW) | Every `PressureError` value | 15 values; lower snake case of the name without `k`, all distinct | exact |
+| `ComputeDistanceToSurface, AllZeroMask_IsNoLiquid` (NEW) | Particles of a gas material only, `material_is_counted` all zero, `kAllLiquidMaterials`; then the same mask with a material index | every distance positive (`+2 cell widths`; A64: no grid-only cell exists), `FindLiquidSurface` gives every open cell `kAir` and no equation; with a material index `kBadInput` | exact |
+| `ToName, EveryError` (NEW; CHANGED A58) | Every `PressureError` value | 16 values, `kOutOfMemory` last (`"out_of_memory"`); lower snake case of the name without `k`, all distinct | exact |
+| `BuildPressureBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (NEW, A58) | `BufferSizes` of 10 blocks with every flag on, one piece and batched (loaded 4), `kCpu`; one CPU `RunMemory` of exactly the sum of `ComputeRunMemoryBytes(BuildPressureMemoryEstimate(sizes, kCpu), counts, where)` over both `where`, passed as both blocks (a CPU run) | build succeeds; `handed_out_bytes() == reserved_bytes()` | exact |
+| `BuildPressureBuffers, RunMemoryOneByteShort_IsOutOfMemory` (NEW, A58) | The same with one fewer byte reserved | `kOutOfMemory`, `magnitude` = bytes the last piece asked | exact |
+| `ComputeGuidedInverseMass, SixAxisColumns_IsInverseMass` (NEW, A59) | Box 0.1 m, 0.5 kg, a full (non-diagonal) inertia tensor; six axis columns | `G` equals `diag(1/m I, I⁻¹)` | `1e-15` relative |
+| `ComputeGuidedInverseMass, HingeColumn_IsOneOverMomentAboutPivot` (NEW, A59) | Same box, hinge axis `a = (0, 1, 0)` through `p = o + (0, 0, 0.5)` | `aᵀ G_ΩΩ a = 1 / (I_yy + m 0.25)`; `G` symmetric, rank 1 | `1e-14` relative |
+| `SolvePressure, GuidedFreeSolid_DqEqualsDirectProduct` (NEW, A59) | The symmetric-equations scene's free solid with a hinge, then a rail; 10 random `d` | `dq` equals `d . (A d)` with the free block `dt (K J)(Jᵀ M J)⁻¹(K J)ᵀ` formed directly | `1e-12` relative |
+| `SolvePressure, TiltedRailInLiquid_MovesOnlyAlongRail` (NEW, A59) | Tank 0.4 m, water to 0.3 m, w 0.025 m; box 0.1 m of 500 kg/m3 centred at z 0.15 on a rail `d = (cos 30°, 0, sin 30°)`; gravity, one step `dt = 1e-3` s; update by `ComputeGuidedSolidMotion` | `|V - (V . d) d| <= 1e-12 |V|`; `Omega` exactly 0; `V . d > 0` (buoyancy wins); solve passes its check | as stated |
+| `SolvePressure, HingedBodyInLiquid_KeepsThePivot` (NEW, A59) | Same tank; box 0.1 m of 2000 kg/m3, hinge axis `(0, 1, 0)` through a point 0.1 m above its centre, start velocity 0, gravity plus an off-centre push (box tilted 10°) | pivot velocity `V + Omega x (p - o)` `<= 1e-12 (|V| + |Omega| 0.1)`; `Omega_x = Omega_z = 0` exactly | as stated |
+| `SolvePressure, AxisAlignedGuides_Unchanged` (NEW, A59) | The symmetric-equations scene's free solid and the coupled free-solid scene, six axis columns | pressure and velocity after equal the reference built with `M⁻¹` directly | `1e-12` relative |
 | Ladder as preconditioner (NEW, A5) | `BuildPressureLadder` with a random `connection_scale` in `[0.1, 1]` | `ApplyPressureLadder` is symmetric (`x.L y = y.L x`) and positive on each blob; with scale 1 it equals the ladder `SolvePressure` builds | `1e-12` relative |
 | `BuildPressureLadder, FirstRungMembersShareOneBlock` (NEW, A15) | 100 random three-level grids, two blobs each | every rung-1 coarse cell's members lie in one block; rung-1 order is (block, blob, merged id) | exact |
 | `BuildPressureLadder, BlobOfTwentyEquations_PassesOneToOneIntoRungOne` (NEW, A15) | A 20-cell drop beside a big pool | 20 rung-1 cells with one member each; the drop is terminal at rung 1 | exact |
@@ -1689,8 +1773,12 @@ batched equation build identical to one piece on the GPU, solves within toleranc
 and two cuts identical bytes, and the 128^3 box with `max_loaded_blocks` a quarter of its blocks converging in
 the one-piece iteration count (prints seconds and bytes copied per iteration). **Without a GPU (labels `cpu`,
 `no_gpu`):** all shared formula headers, `TreeSum`, the label propagation and ladder building through their CPU
-implementations, and `BuildPressureBuffers(sizes, RunOn::kGpu)` (also in the batched layout),
-`BuildSolveBatches(kGpu, ...)` and the coupled solve on the GPU returning `kRunOnCallFailed` in the container.
+implementations, and ~~`BuildPressureBuffers(sizes, RunOn::kGpu)` (also in the batched layout),
+`BuildSolveBatches(kGpu, ...)` and~~ the coupled solve on the GPU returning `kRunOnCallFailed` in the container.
+CHANGED (A58): a GPU `RunMemory` cannot be built without a GPU (Foundation's `BuildRunMemory,
+OnGpuWithoutAGpu_IsRunOnCallFailed`), so the two building functions' "without a GPU" tests are replaced by
+`BuildPressureMemoryEstimate, OnGpuRows_CountedWithoutAGpu` (the `kGpu` rows and `ComputeRunMemoryBytes` of them are
+computed in the container; label `cpu`).
 
 ## 8. Method paper section
 
@@ -1772,6 +1860,8 @@ McAdams 2010 and [6] Wang 2026 (multilevel solve), [9] Larionov 2017 (coupling w
 | snow pressure trial, plastic solid pressure mobility (`mixed_contact_3d.cc`, `plastic_solid_boundary_3d.cc`) | `BlockingMaterialFace`, face mass, blocking-material face | NEW (A18) |
 | bubble or cavity solved with the liquid | `SealedGasBlob`, sealed gas blob, `sealed_gas_pressure` | NEW (A18) |
 | out-of-core solve, streamed tiles | `SolveBatches`, solve batch, sweep, batched layout, per-group total | NEW (A15) |
+| constrained rigid body, joint, Jacobian `J`, reduced coordinates `q` | guided free solid, allowed motions (`AllowedMotions`, solids), `FreeSolidInertia`, `GuidedInverseMass` (`G = J (Jᵀ M J)⁻¹ Jᵀ`), `ComputeGuidedSolidMotion` | NEW (A59) |
+| memory pool, arena allocation | `RunMemory`, piece, reserved bytes, handed out (Foundation) | DECIDED (A58) |
 | `structurally_eligible`, ghost, donor | not used in this module | Verify items left to transfer |
 
 ## 10. Not ported
@@ -1953,8 +2043,45 @@ Decisions taken after this design was first written (recorded in the pressure pl
     default flags; a target that needs exceptions or RTTI calls
     `fluidity_apply_compile_flags(<target> EXCEPTIONS <ON|OFF> [RTTI <ON|OFF>])` right after `add_library`.
     Source: reconcile-todo item 24; `plan-decisions.md` "Plans adopt Foundation as built (2026-11-14)".
+21. **Particles everywhere in the liquid (A64).** Should pressure keep "a grid-only cell counts as full" (corners at
+    `-2` cell widths, no volume correction there)? Decision: not in the first version: every liquid cell holds
+    particles, so `SurfaceDistanceInputs::is_grid_only_region`, the `is_grid_only_region` parameter of
+    `ComputeVolumeCorrectionRate` and the two grid-only tests leave the first version; their text stays, marked "not
+    in the first version (A64)", and returns with the pressure plan's later group "Deep liquid without particles
+    (later; needs review)", whose owner is the cell resize plan's group of the same name. Source: owner answer A64;
+    `plan-decisions.md` "Owner answers A40-A64 applied", item 1. Replaces the grid-only parts of section 4 (cell
+    resize) and of steps 1 and 17.
+22. **Guided free solids in the inviscid solve (A59).** Decision: the free-solid term `dt K M⁻¹ Kᵀ` (rank 6) becomes
+    `dt (K J)(Jᵀ M J)⁻¹(K J)ᵀ` (rank `m`) with `xi_0` in the right-hand side; the solid update is
+    `ComputeGuidedSolidMotion` (`q = (Jᵀ M J)⁻¹ Jᵀ (M xi_before + dt F_pressure + dt F_external)`, `xi = J q +
+    xi_0`), owned here and called by solids. New in section 3: `FreeSolidInertia`, `EquationInputs::free_solids`
+    (replaces `free_solid_inverse_inertia`), `free_solid_guide_math.h` (`GuidedInverseMass`,
+    `ComputeGuidedInverseMass`, `ComputeGuidedSolidMotion`), a memory row of 288 B per free solid. `AllowedMotions`
+    is consumed from solids' shared header. Cells pushing a solid with no allowed motion are not joined into one
+    blob. Source: owner answer A59; `plan-decisions.md` "Owner answers A40-A64 applied", item 5. Replaces "a motion
+    a guide forbids keeps its value before pressure after the solve" for the inviscid path.
+23. **Force of the liquid on driven and fixed solids (A60).** Decision: the pressure part for driven and fixed
+    solids is the same per-group reduction (`dt Σ_e (force, torque)_per_pressure p_e`, block partials then a tree
+    sum) over their motion map entries, done by solids after the solve; pressure owns no such entries and declares
+    nothing new. The free-solid sums of `ComputeCoupledPush` follow the same rule. Source: owner answer A60;
+    `plan-decisions.md` "Owner answers A40-A64 applied", item 6.
+24. **One reserved block per run (A58).** Decision: `BuildPressureBuffers` and `BuildSolveBatches` take `RunMemory&
+    run_memory, RunMemory& cpu_run_memory` last (they build on both processors in the batched layout; the same
+    object twice in a CPU run; plan-decisions item 3 and its same-day correction) and take every `kRunOn` buffer from
+    the first, every `kCpu` buffer from the second; one estimate row per buffer (sum and order buffers one
+    row each) so `ComputeRunMemoryBytes` of the estimate is exact; test `BuildPressureBuffers,
+    IntoRunMemory_HandsOutExactlyTheEstimate`. The batched solves (A15) are otherwise unchanged. Source: owner answer
+    A58; `plan-decisions.md` "Owner answers A40-A64 applied", item 3.
+25. **`kOutOfMemory` appended last (reconcile item 31).** Decision: `PressureError::kOutOfMemory` is the 16th value,
+    returned only by `BuildPressureBuffers` and `BuildSolveBatches` (also for `BufferError::kRunMemoryTooSmall`,
+    `magnitude` = bytes asked); out of memory is no longer a `kRunOnCallFailed`. Source: reconcile item 31;
+    `plan-decisions.md` "Owner answers A40-A64 applied", item 11.
 
 **Open** (left undecided by the plans; for the owner):
+
+- Execution order (A59): pressure's guided-solid task consumes `solids::AllowedMotions` from solids' shared
+  `guide_math.h`, so it runs after the solids task that creates that header (as viscosity's A27 tasks already run
+  after solids' free-solid tasks).
 
 - The material's own volumetric stiffness inside the solve (half of the volumetric response in Fang et al.
   2020): needs materials to drop the volumetric part of `ApplyInternalForce` and material cells to get rows.

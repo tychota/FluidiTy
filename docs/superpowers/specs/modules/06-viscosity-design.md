@@ -70,6 +70,7 @@ Folder `native/fluidity/viscosity/`, namespace `fluidity::viscosity`. Every name
 | `viscosity_error.h` | shared | `ViscosityError`, `ViscosityFailure` |
 | `deformation_rate.h` | shared, formulas | sample types, weight and fit formulas (`FLUIDITY_CPU_AND_GPU`) |
 | `solve_viscosity_and_pressure.h` | CPU only | buffers, the capability check, build, the joint solve, read, `ToMessage`, `ToName`, memory estimate entries |
+| `viscosity_advice.h` | CPU only | NEW (A57). The three advice constants and the three advice numbers the step's planner prints |
 | `solve_viscosity_and_pressure_cpu.cc`, `solve_viscosity_and_pressure_gpu.cu` | private | the two implementations |
 | `viscosity_samples_cpu.cc`, `viscosity_samples_gpu.cu`, `velocity_solve.h` | private | sample building; the inner solve, declared for tests |
 
@@ -92,14 +93,16 @@ enum class ViscosityError : std::uint8_t {
   kPressureSolveDidNotConverge,   // The outer loop used all its iterations or found no usable direction.
   kBuffersTooSmall,            // More samples or coefficients than the buffers were built for.
   kRunOnCallFailed,            // CheckCanRunOn failed for the chosen processor, or a call to it failed.
-  kOutOfMemory,                // NEW (reconcile item 25). BuildViscosityBuffers could not allocate; magnitude =
-                               // bytes asked. Returned only by the building functions.
   kCancelled,                  // NEW. *cancel_requested was set; neither output was written.
   // Capability exclusions (5.7). Each stays until its surface-force test passes. (A24 removed kSnowNotSupported and
   // A27 kFreeSolidNotSupported, which stood first: snow, springy solids and free solids are unknowns of the solve.)
   kMovingSolidNotSupported,    // A driven solid cuts partly through cells of viscous liquid.
   kInclinedSolidNotSupported,  // A solid surface that is not axis-aligned touches viscous liquid.
   kSizeChangeNotSupported,     // The liquid surface, a solid or a viscosity change touches a size change.
+  kOutOfMemory,                // NEW (reconcile item 25; moved to the last place by reconcile item 31, plan-decisions
+                               // "Owner answers A40-A64 applied" item 11). BuildViscosityBuffers could not take a
+                               // piece of its RunMemory (BufferError::kRunMemoryTooSmall) or allocate a kCpu row;
+                               // magnitude = bytes asked. Returned only by the building function. 15 values.
 };
 
 struct ViscosityFailure {
@@ -156,13 +159,36 @@ struct FittedChange {
 // Picks the four nearest independent positions (ties: lower face place index) and fits the exact linear change.
 FLUIDITY_CPU_AND_GPU ViscosityError ComputeFittedChange(const NearbyFacePosition* positions, int position_count,
                                                         double cell_width, FittedChange* fitted_change);
-// NEW (A25). Below this viscous effect per step, one step changes the velocity difference between two neighbouring
-// cells by less than 0.1 % (factor 1 / (1 + 4 N) for the mode k h = pi): viscosity then changes nothing visible.
-inline constexpr double kSmallestVisibleViscousEffectPerStep = 2.5e-4;
+// (REMOVED, A57: kSmallestVisibleViscousEffectPerStep = 2.5e-4 and its 0.1 %-per-step reading. The advice now
+// compares with the transfer's own smoothing and the change over the run, viscosity_advice.h.)
 // NEW (A25). No unit: viscosity (Pa s) * step_duration (s) / (density (kg/m3) * cell_width^2 (m2)); papers: the
 // diffusion number. Example: 1e-3 Pa s, 0.01 s, 1000 kg/m3, 0.01 m gives 1e-4. Read by the step's planner only.
 FLUIDITY_CPU_AND_GPU double ComputeViscousEffectPerStep(double viscosity, double step_duration, double density,
                                                         double cell_width);
+```
+
+```cpp
+// viscosity_advice.h (CPU only), NEW (A57). Read by the step's planner; nothing in the solve depends on it.
+// Judgments (literature-practice.md topic 1), not measured values:
+inline constexpr double kNegligibleViscosityRatio = 0.1;          // Advise 0 below: total damping changes < 10 %.
+inline constexpr double kSmallestVisibleWavelengthInCells = 4;    // The transfer removes the 2-cell mode (XPIC).
+inline constexpr double kNegligibleViscousChange = 0.01;          // Advise 0 below: a 4-cell feature changes < 1 %.
+// No unit. Physical viscosity over the transfer's own smoothing, r = 4 N / (1 - alpha), N = viscous_effect_per_step
+// (ComputeViscousEffectPerStep at the smallest cell and the largest step), alpha = own_motion_kept of the liquid
+// (share of its own velocity a particle keeps; 0 pure PIC). The smoothing nu_num = (1 - alpha) h^2 / (4 dt) is this
+// project's derivation from the XPIC filter analysis (section 5.8), not a published figure; with the largest step
+// nu_num is smallest, so r is a lower bound (the cautious side). Empty when alpha == 1: pure FLIP has no smoothing
+// figure. Example: N 1e-4, alpha 0.95 gives 0.008. Requires: N >= 0, 0 <= alpha <= 1 (debug assertion).
+std::optional<double> ComputeViscosityToSmoothingRatio(double viscous_effect_per_step, double own_motion_kept);
+// No unit, 0..1. Share by which a sine feature kSmallestVisibleWavelengthInCells cells long decays over the run:
+// -expm1(-kappa^2 nu T), kappa = 2 pi / (4 h), so -expm1(-pi^2 D / 4) with D = nu T / h^2, nu = viscosity / density.
+// Example: 1e-3 Pa s, 1000 kg/m3, T 10 s, h 0.01 m: D 0.1, 0.2186563. The advice threshold 0.01 is D = 4.0732477e-3.
+// Requires: viscosity >= 0, density > 0, run_duration >= 0, cell_width > 0 (debug assertion).
+double ComputeFourCellFeatureChange(double viscosity, double density, double run_duration, double cell_width);
+// No unit. Re = U L / nu, U = sqrt(2 g L) (the speed of a fall over the box's smallest extent L), nu = viscosity /
+// density. Printed for information only. Example: water (1e-3 Pa s, 1000 kg/m3), L 1 m, g 9.81: 4.43e6.
+// Requires: viscosity > 0, density > 0, smallest_domain_extent > 0, gravity_size >= 0 (debug assertion).
+double ComputeReynoldsNumber(double viscosity, double density, double smallest_domain_extent, double gravity_size);
 ```
 
 ```cpp
@@ -181,15 +207,24 @@ struct ViscosityBufferSettings {
   // NEW (A26, A27). At least inputs.material_faces.size() and inputs.free_solids.size().
   std::uint32_t max_material_faces = 0;
   std::uint32_t max_free_solids = 0;
+  // NEW (A60). At least inputs.solids.size() (kBadInput otherwise): sizes the per-solid viscous push partials and
+  // results. The step sets it to the scene's solid count (domain box included).
+  std::uint32_t max_solids = 0;
 };
 std::int64_t ComputeViscosityBufferBytes(const ViscosityBufferSettings& settings);  // Same table as the build.
 
 class ViscosityBuffers;  // Preallocated, reused every step; lives on the CPU or the GPU. Move-only. Holds the
                          // SumBuffers and OrderBuffers every sum, order, prefix sum and grouping takes (A31).
-// kBadInput for inconsistent counts; kRunOnCallFailed when the processor cannot run; kOutOfMemory when an
-// allocation fails (the only function of the module that returns it). Every other function requires the arrays
-// it is given on the buffers' processor (debug assertion, A30).
-std::expected<ViscosityBuffers, ViscosityFailure> BuildViscosityBuffers(const ViscosityBufferSettings& settings);
+// kBadInput for inconsistent counts; kRunOnCallFailed when the processor cannot run; kOutOfMemory when a piece does
+// not fit its RunMemory (the only function of the module that returns it; magnitude = bytes asked). CHANGED (A58,
+// plan-decisions item 3 and its same-day correction): every where = kRunOn row is a piece of `run_memory` and every
+// where = kCpu row (the batched layout's rows, CpuMemory::kLockedForCopies) a piece of `cpu_run_memory`; in a CPU run
+// the step passes the same object twice. Requires: settings.run_on == run_memory.run_on() and cpu_run_memory.run_on()
+// == RunOn::kCpu (debug assertion, A30). Every other function requires the arrays it is given on the buffers'
+// processor (debug assertion, A30).
+std::expected<ViscosityBuffers, ViscosityFailure> BuildViscosityBuffers(const ViscosityBufferSettings& settings,
+                                                                        RunMemory& run_memory,
+                                                                        RunMemory& cpu_run_memory);
 // NEW (A15). The buffers' SolveBatches and its copy report; null in one piece.
 const pressure::SolveBatches* FindSolveBatches(const ViscosityBuffers& buffers);
 const pressure::SolveCopyReport* ReadSolveCopyReport(const ViscosityBuffers& buffers);
@@ -235,10 +270,16 @@ struct ViscosityInputs {
   std::span<const transfer::CellsFromParticles* const> cells_from_particles;
   std::span<const double> ingredient_viscosity;             // Pa s, by scene ingredient index. Zero for snow.
   std::span<const contact::Solid> solids;                   // Ascending solid_id. For solid velocities at points.
+  // NEW (A53). m, one per `solids` entry (solids::SolidsTry::slip_length()), or empty (every solid sticks). 0 full
+  // stick; +infinity free slip; a free solid's entry is 0 (free solids always stick, A27). Read in rule (a) of step 3
+  // as a wall displaced by the slip length (5, "Slip length"). Another size, a negative or NaN value: kBadInput.
+  std::span<const double> solid_slip_length;
   // NEW (A26). The band faces of every blocking set (solids::BuildViscousMaterialFaces): velocity unknowns of this
   // solve; the liquid sticks to them. Empty without a blocking set.
   std::span<const solids::ViscousMaterialFace> material_faces;
-  // NEW (A27). One per free solid touching liquid, in FreeSolidPush::solid_index order: six velocity unknowns each.
+  // NEW (A27). One per free solid of the try, in FreeSolidPush::solid_index order. CHANGED (A59): each carries its
+  // solids::AllowedMotions (columns J, column_count m, prescribed_motion xi_0); the solid has m velocity unknowns q
+  // (0 <= m <= 6), its motion is xi = J q + xi_0 (5, "Velocity unknowns").
   std::span<const solids::FreeSolidForViscousSolve> free_solids;
   // m/s. The array pressure::EquationInputs::velocity_before_pressure pointed to for these equations.
   const grid::FaceValues<double>* velocity_before_pressure = nullptr;
@@ -254,6 +295,12 @@ struct ViscosityResult {
   // W. Sum of sample_weight x rate^2 at the accepted velocity: one partial per cell block in the grid's fixed
   // block order, then math::TreeSum over the partials.
   double power_lost_to_viscosity = 0;
+  // NEW (A60). The viscous push on each solid, -dt R^T E_s^T W (E x + g) at the accepted velocity (N s, and N m s about
+  // the solid's pose_at_step_start origin, world axes), one per inputs.solids entry in that order, every motion kind
+  // (fixed, driven, free, the domain box); 0 for a solid no sample reads. Per solid: one partial per cell block, then
+  // math::TreeSum over the partials in block order. A view into a CPU array the buffers own; valid until the next
+  // SolveViscosityAndPressure on these buffers; written only on success. solids::ApplyViscousImpulses takes it.
+  std::span<const solids::ViscousPushOnSolid> viscous_push_on_solids;
 };
 
 // NEW (A24). The coupling outputs, as pressure::SolvedArrays has them. Sizes equal the equations'
@@ -307,8 +354,15 @@ std::string_view ToName(ViscosityError error);
 // stay kRunOn; plus pressure::BuildSolveBatchesMemoryEstimate. NEW (A24): "viscosity: sealed gas blob vectors",
 // given max_sealed_gas_blobs, 70 x 8 bytes, always kRunOn. NEW (A26, A27): "viscosity: material face vectors" (given
 // max_material_faces, 12 x 8 + 16 bytes, streamed like face rows), "viscosity: free solid vectors and blocks" (given
-// max_free_solids, (12 x 6 + 2 x 36) x 8 bytes, kRunOn), "viscosity: sample solid coefficients" (given
-// max_sample_count, 4 + 6 x 8 bytes).
+// max_free_solids, (12 x 6 + 2 x 36) x 8 bytes, kRunOn; six slots per solid, the first m used, A59).
+// CHANGED (A60; was "viscosity: sample solid coefficients", free solids only): "viscosity: solid sample
+// coefficients", 52 B per solid sample (solid index 4 B + the six coefficients R 48 B), one entry beside every sample
+// (given max_sample_count; kNoSolid where a sample reads no solid), for a solid of any motion kind, streamed with the
+// samples in the batched layout. NEW (A60): "viscosity: solid viscous push partials" (per cell block, 48 x
+// max_solids bytes, kRunOn) and "viscosity: viscous push on solids" (given max_solids, 48 B, once kRunOn for the tree
+// sums and once kCpu for the result view). CHANGED (A58): one entry per array (an entry's copies equal the number of
+// arrays of that element size it stands for, each count x bytes_each bytes), because every array is its own
+// 256-byte-aligned piece of a RunMemory; the earlier combined rows are split.
 std::vector<MemoryEstimateEntry> BuildViscosityMemoryEstimate(const ViscosityBufferSettings& settings);
 ```
 
@@ -327,7 +381,10 @@ A15: every dot product and `power_lost_to_viscosity` is block partials then `mat
 `ComputeTreeDot` over a whole buffer is no longer used for the solve's dots. `ComputeLargestMagnitude` stays
 (exact in any order). Foundation as built also gives `MemoryEstimateEntry::where` (`MemoryWhere { kRunOn, kCpu }`),
 `BuildBuffer(..., CpuMemory::kLockedForCopies)`, `ComputeExclusivePrefixSum` taking `OrderBuffers` (one form, A31); buffers on one processor are a precondition, so
-no processor mismatch is mapped (A30) (EXISTS, `plan-decisions.md`).
+no processor mismatch is mapped (A30) (EXISTS, `plan-decisions.md`). NEW (A58; Foundation Tasks 17 to 19,
+`base/run_memory.h`): `RunMemory`, `BuildBuffer(RunOn, size, RunMemory&)`, `BufferError::kRunMemoryTooSmall`
+(mapped to `kOutOfMemory`), the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`,
+`ComputeRunMemoryBytes(estimate, counts, where)` (EXISTS).
 
 ```cpp
 namespace fluidity {
@@ -412,7 +469,11 @@ Materials (PROVIDED by materials 3): `materials::MaterialTable::ingredient_visco
 ingredient index (zero for snow and springy solids; zero for gas).
 Solids (PROVIDED by solids 3, NEW A26, A27): `solids::ViscousMaterialFace` (`BuildViscousMaterialFaces`,
 `ToViscousMaterialFaces`), `solids::FreeSolidForViscousSolve` (`ToFreeSolidsForViscousSolve`), `solids::FreeSolidMotion`;
-the step writes the outputs back with `ApplyViscousSolveToMaterials` and `ApplySolvedMotionToSolids`. Pressure (A26,
+the step writes the outputs back with `ApplyViscousSolveToMaterials` and `ApplySolvedMotionToSolids`. NEW (A59, A60,
+A53; solids 3): `solids::AllowedMotions` (in `FreeSolidForViscousSolve::allowed_motions`, replacing `limits`),
+`solids::ViscousPushOnSolid { Vec3 push; Vec3 turning_push; }` (the element of `viscous_push_on_solids`, which
+`ApplyViscousImpulses` takes and turns into `SolidsTry::liquid_forces()`), `SolidsTry::slip_length()` (the
+`solid_slip_length` span; `SolidSettings::slip_length`, 0 for free solids). Pressure (A26,
 A27): `CoupledVelocities`, the `ComputeVolumeError` and `CheckFlowImbalance` forms with it, `ComputeCoupledPush`,
 the `ComputeOwnWeight` form with `material_face_scale`, and the existing `FreeSolidPush` entries.
 Solids (PROVIDED by solids 3): `solids::SolidsSummary` from `ComputeSolidsSummary` (`has_driven_solid`,
@@ -426,10 +487,16 @@ stage 12 `SolvePressure` (owner A6; A25: "has viscosity" means a viscosity setti
 `max_sealed_gas_blobs` = gas's `max_gas_blobs`; passes the step-owned `SolvedCouplingArrays` and then calls
 `solids::ApplyPressureToMaterials`, as in stage 12 (A24; no `SealedGasCoupling` exists); decides stage 11 once per run
 when a liquid ingredient's viscosity is above 0 (A25) and prints `ComputeViscousEffectPerStep` per liquid from its
-planner.
+planner. CHANGED (A57): the planner's `step::LiquidViscousEffect` also calls `ComputeViscosityToSmoothingRatio`,
+`ComputeFourCellFeatureChange` and `ComputeReynoldsNumber` and advises viscosity 0 when the ratio is below
+`kNegligibleViscosityRatio` or the change below `kNegligibleViscousChange` (`viscosity_advice.h`); I/O prints the
+lines. NEW (A58, A60, A53): builds the buffers with `run_memory` and `cpu_run_memory`, sets `max_solids`, passes
+`SolidsTry::slip_length()` as `solid_slip_length` and `ViscosityResult::viscous_push_on_solids` to
+`solids::ApplyViscousImpulses`.
 Cell resize and batches (PROVIDED by the cell resize and batches design, 3.5 and 5.9, as amended by
-`plan-decisions.md` "Batched solves (A15)"): `cell_resize::ApplyGridOnlyRegionToGrid` adds the ingredient
-volumes of grid-only cells to `CellsFromParticles` before this module reads them; `batches::BuildBatchPlan`
+`plan-decisions.md` "Batched solves (A15)"): (not in the first version (A64): `cell_resize::ApplyGridOnlyRegionToGrid`
+adding the ingredient volumes of grid-only cells to `CellsFromParticles`; every liquid cell holds particles, so
+`CellsFromParticles` alone carries the ingredient volumes); `batches::BuildBatchPlan`
 chooses `SolvePlace::kWholeGridOnProcessor` (the joint solve once on the whole grid, `block_range` = all blocks)
 or `kInPieces` (the same solve in sweeps) and sizes `max_solve_loaded_blocks` from the loaded rows of every solver
 buffer of the scene.
@@ -562,6 +629,23 @@ materials and sealed gas (A24)"). Signs as pressure: `s = +1` for the low end, `
   `BlockingMaterialFace` subset, the `FreeSolidPush` entries). A material's `w_before` already holds its internal
   force (`ApplyForces` ran first), so nothing is counted twice; the material has no sample weight of its own.
   Nothing is eliminated (`w` and `xi` have viscous terms); cost one unknown per band face and six per solid.
+  CHANGED (A59; `plan-decisions.md` "Owner answers A40-A64 applied" item 5; Batty 2007, Aanjaneya 2018,
+  `literature-practice.md` topic 3): a free solid's unknowns are its generalized velocities `q` (m of them, the
+  `column_count` of its `AllowedMotions`), `xi = J q + xi_0` with `J` the 6 x m columns in `(V, Omega)` rows about
+  `origin_at_start` and `xi_0 = prescribed_motion` (always 0 today: no setting exposes it). Its row is the `xi` row
+  multiplied by `J^T`: `J^T (M + dt R^T E_s^T W E_s R) J q = J^T M xi_before - J^T (M + dt R^T E_s^T W E_s R) xi_0 + dt
+  J^T F_pressure - dt J^T R^T E_s^T W (E_rest x_rest + g)`, so a sample reading the solid has the m coefficients `R J`
+  on `q` (computed on use from the stored six `R` and the solid's `J`; m dot products of length 6) and `E_s R xi_0` in
+  `rate_from_solids`. The per-solid block is `J^T (M + dt R^T E_s^T W E_s R) J` (m x m, Cholesky); it is symmetric
+  positive definite whenever `M` is and `J` has full column rank (the columns `ComputeAllowedMotions` builds are
+  independent). `xi_before` is already in the allowed set (solids projects it in `BuildTry`), so `J^T M xi_before`
+  loses nothing. Replaces "a component a guide forbids is held at its value before pressure (identity row and column,
+  coefficients folded into `rate_from_solids`)" and solids' "a motion a guide forbids keeps its value after the
+  solve": the solve itself never moves a forbidden direction. For axis-limit guides `J` is a selection (0/1 columns),
+  so the forbidden components of `xi = J q` are exactly 0. Layout: six slots per solid, the first m used, the rest
+  held at 0 (the slot count and the buffer rows do not change). This touches the A27 free-solid block derivation that
+  reconcile-todo item 23 asks to have reviewed independently: the m x m block is that 6 x 6 block reduced by `J`, so
+  the review now covers it too (item 23 stays open).
 - *Stick (NEW, A26, A27).* Rule (a) generalised: when the surface between a partner face `P` and a missing face
   `F` belongs to a blocking material (coverage `distance_to_solid` and corner owner), the derivative is `(u_P -
   w_F) / d` at the true distance `d` (the material's velocity at its surface is its band face unknown at `F`; the
@@ -569,7 +653,30 @@ materials and sealed gas (A24)"). Signs as pressure: `s = +1` for the low end, `
   material face one width away with `1 / cell_width` would undercount the interface shear by a factor 4 (the edge
   sample weighs only the liquid half). Fitted samples: a liquid-covered solid centre of a material takes the nearest
   band face of that axis (first order); of a free solid, `R xi` at the point. Driven and fixed solids stay in
-  `rate_from_solids`. An inviscid liquid (`SolvePressure`) keeps sliding and the A18 elimination.
+  `rate_from_solids`. An inviscid liquid (`SolvePressure`) keeps sliding and the A18 elimination. CHANGED (A60): for a
+  driven or fixed solid (and the domain box) the six coefficients `R` of the stick term are also stored beside the
+  sample (solid index and `R`, the "solid sample coefficients" row), while the known velocity stays in
+  `rate_from_solids`; they are read only for the force report below. A sample reading two different solids stores
+  the lower solid index; the other's term stays in `rate_from_solids` (a free one at its velocity before pressure, as
+  before) and its share of the force is not reported (Open).
+- *Slip length (NEW, A53).* Rule (a) at a fixed or driven solid or the domain box with slip length `lambda`
+  (`solid_slip_length[solid_index]`): the solid surface is taken `lambda` farther away, so the derivative is `(u_P -
+  v_solid) / (d + lambda)` and the coefficient `-/+0.5 / (d + lambda)`; `lambda = +infinity` gives exactly 0 (IEEE
+  division, no special case) and the sample reads nothing from that solid (free slip); `lambda = 0` is the stick rule
+  unchanged. This is the Navier slip condition `tau = (mu / lambda) u_slip`, a positive boundary term of the
+  energy `sum W (E x + g)^2`, so `K` stays symmetric positive definite. The stored `R` row (A60) carries the same
+  `0.5 / (d + lambda)`. Free solids and blocking materials always stick (`d`, A26, A27). Fitted samples: the
+  liquid-covered solid centre's known velocity enters at the true distance plus `lambda` the same way (the fit's
+  position moves `lambda` along the solid's normal out of the liquid).
+- *Force on every solid (NEW, A60; Uhlmann 2005 momentum exchange, Batty 2007's `J p`; `literature-practice.md`
+  topic 4).* After acceptance (step 12), per solid `s` of `inputs.solids`: `viscous_push_s = -dt R^T E_s^T W (E x + g)`
+  over the samples whose stored solid index is `s`, from the stored solid coefficients and the sample rates at the
+  accepted `x` (the same `(E x + g)` as `power_lost_to_viscosity`); with the stored scaling `sqrt(dt W)` both factors
+  carry it, so the sum is `-sum (stored R row)^T (stored rate)`. Six numbers (push about the solid's step-start origin).
+  One partial per cell block per solid (the block's samples in sample order), then `math::TreeSum` over the partials
+  in block order. A guided solid reports all six components: the guide's reaction is in them (A60). The pressure
+  part is solids' (`PressureOnSolids`, the same `FreeSolidPush` and motion map entries). For a free unguided solid
+  `pressure_push + viscous_push = M (xi_after - xi_before_pressure)` holds to the inner solve's tolerance (its row).
 - *Sealed gas blob `j`*: one more unknown `q_j` (Pa above atmosphere) of the outer loop, kept, not eliminated. In
   `SolvePressure` the elimination uses the two-point weights `g_c` of its connections; here a connection's velocity
   answers its end pressures through the viscous velocity solve, so no such weight exists, and the blob is carried
@@ -592,7 +699,11 @@ materials and sealed gas (A24)"). Signs as pressure: `s = +1` for the low end, `
   material's `face_mass + sum of squared coefficients` and each solid's 6 x 6 block, factored once; the outer diagonal
   uses `material_face_scale = face_mass / velocity_diagonal` and leaves solids out; step 9 adds `ComputeCoupledPush`;
   steps 10 and 11 use `CoupledVelocities`; dots add the solids' part by `math::TreeSum` over solids; each solid's six
-  sums by the per-group rule; step 12 writes `material_face_velocity_after_solve` and `free_solid_motion`.) 12: material velocities by
+  sums by the per-group rule; step 12 writes `material_face_velocity_after_solve` and `free_solid_motion`.) (A59:
+  step 6 factors each solid's m x m block `J^T (M + dt R^T E_s^T W E_s R) J`; step 7's solid base momentum is `J^T M
+  xi_before` minus the `xi_0` terms; step 9 projects `ComputeCoupledPush`'s six numbers with `J^T`; steps 10, 11 and 12
+  turn `q` into `xi = J q + xi_0` for `CoupledVelocities` and `free_solid_motion`. A60: step 12 also forms
+  `viscous_push_on_solids`.) 12: material velocities by
   `ComputeBlockingMaterialVelocities` from the accepted pressure, `q` copied to `sealed_gas_pressure`, both only on
   success. No path of this module reads sealed gas one step late; open gas, slivers, held blobs and cells touching
   gas still reach the liquid through `gas_pressure_above_atmosphere` and `holds_tracked_gas`, as for `SolvePressure`.
@@ -643,6 +754,23 @@ from the first commit. The samples for all four cases are built by the rules abo
 out of a run (A27: three cases). Snow (`main`'s `liquid_substep_3d.cc:1770`) is not excluded (A24): its test, syrup on a snow bed at
 rest, is a passing scene test.
 
+**5.8 When viscosity is not visible (NEW, A57; replaces A25's threshold).** The planner's advice (`viscosity_advice.h`)
+compares a liquid's viscosity with the smoothing the particle-grid transfer already applies. Derivation (this
+project's, from the XPIC filter analysis of Hammerquist and Nairn 2017; not a published figure): a quadratic B-spline
+has Fourier transform `sinc^3`, so one grid-to-particle-to-grid round trip filters a mode of angular wavenumber
+`kappa` by `sinc^6(k h) ~ 1 - (kappa h)^2 / 4` (`sinc(x) = sin(pi x) / (pi x)`, `k` in cycles per cell, `kappa = 2 pi
+k / h`, `sinc(x)^6 ~ 1 - (pi x)^2`); one implicit diffusion step damps it by `1 - nu kappa^2 dt` to first order;
+equating the two gives `nu_PIC = h^2 / (4 dt)`, and a liquid that keeps share `alpha` of its own velocity
+(`own_motion_kept`) is filtered on the remaining `1 - alpha`, so `nu_num = (1 - alpha) h^2 / (4 dt)` and `r = nu /
+nu_num = 4 N / (1 - alpha)`. In 3D the filter is a product per axis and the leading term the same Laplacian, so `r`
+does not depend on scale for resolved features. It assumes uniform particles of equal mass (as XPIC does). The
+largest step gives the smallest `nu_num`, so `r` is a lower bound. The second number is the decay of the smallest
+faithfully kept feature, a sine `kSmallestVisibleWavelengthInCells = 4` cells long, over the run's duration `T`:
+`1 - exp(-nu (2 pi / (4 h))^2 T) = -expm1(-pi^2 D / 4)`, `D = nu T / h^2`. Advice to set viscosity to 0 when `r <
+0.1` or that change `< 0.01`; the threshold `D` is `4 ln(1 / 0.99) / pi^2 = 4.0732477e-3`. The Reynolds number
+`U L / nu`, `U = sqrt(2 g L)`, L the domain box's smallest extent, is printed for information. Viscosity 0 also
+moves the liquid to `SolvePressure`, where it slides along solids instead of sticking; the printed lines say so.
+
 ## 6. CPU and GPU
 
 Shared (`deformation_rate.h`): the two weight formulas, mixture viscosity, the fit, the per-sample builder
@@ -661,8 +789,10 @@ Data in `ViscosityBuffers`, same arrays on both processors, all owned by the buf
 | pressure trial, imbalance, pressure diagonal, kept directions and responses | `double` | cells x (3 + 2 x 32) |
 | the same per sealed gas blob (NEW, A24) | `double` | `max_sealed_gas_blobs` x 70 |
 | material face vectors (NEW, A26) | `double` | `max_material_faces` x 12, plus a 16-byte entry |
-| free solid vectors, 6 x 6 block and factor (NEW, A27) | `double` | `max_free_solids` x (12 x 6 + 2 x 36) |
-| sample solid coefficients (NEW, A27) | solid index + 6 `double` | samples |
+| free solid vectors, 6 x 6 block and factor (NEW, A27; A59: six slots, the m x m block in its upper corner) | `double` | `max_free_solids` x (12 x 6 + 2 x 36) |
+| solid sample coefficients (NEW, A27; A60: any motion kind, renamed) | solid index + 6 `double` (52 B) | samples |
+| solid viscous push partials (NEW, A60) | 6 `double` | cell blocks x `max_solids` |
+| viscous push on solids (NEW, A60) | 6 `double`, on the processor and a CPU copy | `max_solids` |
 
 Sizing for the syrup scene (decision 6): 0.5 million cells, 1.5 million faces, about 3 million samples and 13
 million coefficients give roughly 0.9 GB. `ComputeViscosityBufferBytes` returns the exact figure.
@@ -679,7 +809,9 @@ one thread per element. Dot products are block partials then `math::TreeSum` (A1
 on the GPU; per outer iteration the CPU receives one small record (two imbalance norms, inner iteration
 count, error code) to decide whether to continue, and reads `*cancel_requested` before launching the next inner
 solve. On failure the reported cell is the lowest `CellId` whose
-flag is set. Nothing is allocated after `BuildViscosityBuffers`.
+flag is set. Nothing is allocated after `BuildViscosityBuffers`, and every buffer is a piece of the run's
+`RunMemory` (A58). The per-solid viscous push comes back in one counted read of `48 x max_solids` bytes after
+acceptance, like the free-solid motion.
 
 Block ranges: build and both operator passes work on `block_range`. Border cells are one layer of cells at
 the biggest cell size present in the range; that covers the cells around every edge and the `kFitReach`
@@ -720,7 +852,13 @@ shear cases use velocity along X varying with Z):
 | Syrup at rest | column under gravity, free surface | speeds stay below `1e-9 m/s` | absolute |
 | Nearly inviscid | viscosity `1e-12 Pa s` | same velocity and pressure as `SolvePressure` | the pressure stop rule |
 | `ComputeViscousEffectPerStep, MatchesDefinition` (A25) | (1e-3, 0.01, 1000, 0.01); (10, 0.01, 1400, 0.01) | 1e-4; 0.714285714... | `1e-15` relative |
-| `kSmallestVisibleViscousEffectPerStep, IsTenthOfAPercentPerStep` (A25) | `N` and `1.001 N` | `4 N / (1 + 4 N)` below and at least `1e-3` | exact |
+| ~~`kSmallestVisibleViscousEffectPerStep, IsTenthOfAPercentPerStep`~~ (A25) | removed with the constant (A57) | - | - |
+| `ViscosityAdvice, Constants_AsDecided` (A57) | the three constants | 0.1, 4, 0.01 | exact |
+| `ComputeViscosityToSmoothingRatio, WaterAtOneCentimetre_Is0p008` (A57) | `N` 1e-4, `alpha` 0.95 | 0.008 | `1e-12` relative |
+| `ComputeViscosityToSmoothingRatio, KeepsAllOwnMotion_IsEmpty` (A57) | `N` 1e-4, `alpha` 1 | empty | exact |
+| `ComputeFourCellFeatureChange, Water_Is0p2187` (A57) | 1e-3 Pa s, 1000 kg/m3, 10 s, 0.01 m | `-expm1(-pi^2 0.1 / 4)` = 0.2186563 | `1e-12` relative |
+| `ComputeFourCellFeatureChange, ThresholdAtDOf4p073e-3` (A57) | viscosity `1000 x 0.01^2 x D / 1 s` with `D = 4 log(1 / 0.99) / pi^2` (4.0732477e-3), 1000 kg/m3, 1 s, 0.01 m | 0.01 | `1e-12` relative |
+| `ComputeReynoldsNumber, WaterInOneMetreBox_Is4p43e6` (A57) | 1e-3 Pa s, 1000 kg/m3, 1 m, 9.81 | `sqrt(19.62) / 1e-6` = 4.4294469e6 | `1e-12` relative |
 | Each error | one case per `ViscosityError` value, including null `cell_eighths` and a `block_range` short of the whole grid (`kBadInput`) | that error, first failing id, outputs untouched | exact |
 | Each exclusion | one scene summary per line of 5.7 (three) | rejected with its error | exact |
 | Cancel | flag set before the first inner solve; flag set during the third outer iteration | `kCancelled`; both outputs byte-identical to before the call | exact |
@@ -763,6 +901,26 @@ Sticking and free solids (NEW, A26, A27; plan Tasks 15c, 15d). Snow appears only
 | `ViscosityScene, FloatingBoxInSyrup_SameRestAsInviscid` | box 500 kg/m3, 0.04 m, liquid 1000 kg/m3 at 10 Pa s, at its 0.02 m draft | as the inviscid run | `1e-6 w`; velocity bound |
 | `ViscosityScene, BoxInLiquidBlock_MomentumChangedOnlyAtAirEnds` | no gravity; box (then springy cube) moving in a liquid block | momentum change of liquid + body = air-end impulse; angular likewise | `1e-10` relative |
 | `SolveViscosityAndPressureInBatches, SpringySlabDragged_WithinToleranceOfOnePiece`; `CubeAcrossBatches_WithinToleranceOfOnePiece` | 8 layers; cube across three batches | within the section 6 bounds | as stated |
+
+Guides, force on solids, slip, memory (NEW, A53, A58, A59, A60; plan Tasks 7, 15c, 15e, 15f, 15g), on the CPU:
+
+| Test | Setup | Expected | Tolerance |
+|---|---|---|---|
+| ~~`SolveViscosityAndPressure, GuidedBoxKeepsForbiddenMotion`~~ | replaced (A59) | - | - |
+| `SolveViscosityAndPressure, AxisGuidedBox_ForbiddenComponentsExactlyZero` (A59) | Task 15c's free box, limits z only, no turning (`J` = one selection column), random `xi_before` projected | solved `V.x`, `V.y`, `Omega` exactly 0; `V.z` as the unguided solve's row reduced by `J` | bytes; solve tolerance |
+| `ComputeSolidBlockFactor, HingedBlock_IsJTransposeFullBlockJ` (A59) | the slab-and-box scene's free box samples, `J` of a hinge at `p = origin + (0, 0, 0.05)` about y | the m x m block equals `J^T K6 J` of the 6 x 6 block | `1e-13` relative |
+| `SolveViscosityAndPressure, HingedPlank_EqualsProjectedFullBlock` (A59) | closed box 0.2 m of liquid (1 Pa s, 1000 kg/m3), w 0.0125, no gravity; plank half size (0.05, 0.0125, 0.025) m, density 2000, centred at (0.1, 0.1, 0.1) (faces on cell faces), hinged at its centre about y; `xi_before` V (0.01, 0.02, 0.03) m/s, Omega (0.1, 0.2, 0.3) rad/s; dt 0.005, one step; the same with no guide, then projected `J (J^T M J)^-1 J^T M xi` | hinged turn rate about y equals the projected one; hinged V, Omega x, z exactly 0 (the three mirror symmetries of the scene decouple the hinge's turn from the other five motions, so the projection is exact up to the solve tolerance; an off-centre hinge differs at first order in the added mass and is not compared) | `1e-6` relative; bytes |
+| `SolveViscosityAndPressure, FreeBox_PressurePlusViscousPushIsMomentumChange` (A60) | settling cube, one step | `pressure_push + viscous_push = m (V_after - V_start) - dt (m g + steady_force)` and `I_start (Omega_after - Omega_before_pressure)` (pressure part summed in the test from the cube's `FreeSolidPush` entries and the accepted pressure) | `velocity_tolerance x` largest momentum entry |
+| `SolveViscosityAndPressure, ViscousPushOnSolids_OnePerSolidInOrder` (A60) | Task 15d's neutral cube in shear: floor and plate driven, cube free | three entries in `inputs.solids` order; plate and floor pushes opposite within the cube's share; entries 0 for a solid no sample reads | `1e-10` relative |
+| `LiquidForce, ShearedPlate_IsMuAUOverH` (A60) | liquid x, y in [0, 0.2], z in [0, 0.1] m, w 0.0125; inlet and outlet given X faces carrying `u = U z / H`; one air layer beyond each y side; floor the domain box bottom (stick); top a driven `FlatSolid` at z 0.1 moving +x at U 0.01 m/s; mu 10 Pa s, rho 1000, no gravity; started at the linear profile (what 5 s from rest reaches within `exp(-49)`), dt 0.01, 10 steps | plate viscous force x `-mu A U / H = -0.04 N` (A = 0.04 m2), floor `+0.04 N` | `1e-6` relative (the linear profile is exact on the grid) |
+| `LiquidForce, RotatingCylinders_TorquePerLength` (A60) | inner cylinder R1 0.05 m driven at 1 rad/s, outer R2 0.1 m fixed, mu 1 Pa s, height 0.1 m between free-slip ends (`slip_length` +infinity), 10 cells across the gap | inner torque `4 pi mu Omega R1^2 R2^2 / (R2^2 - R1^2) x 0.1 = 4.18879e-3 N m` | 10 % (a bound, per Uhlmann's 5 to 10 %). Needs a cylinder solid shape, which contact does not provide: known-open until it exists (Open) |
+| `LiquidForce, SettlingCube_BalancesNetWeight` (A60; plan-decisions names it `SettlingSphere_...`: free solids are boxes, so the sphere is a cube of equal volume) | cube side 0.016120 m (volume of a sphere R 0.01 m), 1100 kg/m3 in 1000 kg/m3, mu 10, closed box 0.2 m, w 0.004, from rest, dt 0.002, 40 steps; mean over steps 20 to 40 | pressure + viscous force z = net weight 4.1092e-3 N; speed in `[U_Stokes / 1.4, U_Stokes]`, `U_Stokes` = 2.18e-3 m/s of the equal-volume sphere (the cube's shape factor 1.08 keeps it inside) | 2 % (a balance); bound |
+| `SolveViscosityAndPressure, CouetteFullStick_LinearProfile` (A53) | `ShearChannelSettings(kSameSize, 16, ratio 1, top 1, dt 0.005, u_x = z)`, every slip length 0, 10 steps | `u = U z / H` at every X face | `1e-6` relative |
+| `SolveViscosityAndPressure, CouetteFreeSlip_PlugFlow` (A53) | the same channel, floor (domain box) and plate slip length +infinity, plate at rest, liquid and inlet profile 0.01 m/s, 10 steps | 0.01 m/s at every X face; plate's viscous force 0 | `1e-9` relative; `1e-12` N |
+| `SolveViscosityAndPressure, CouettePartialSlip_NavierProfile` (A53) | the channel, plate slip length `lambda = H = 1 m`, floor 0, profile `U z / (H + lambda)`, 10 steps | `u = U z / (H + lambda)`, `u(H) = U / 2` | `1e-6` relative |
+| `SolveViscosityAndPressure, SlipLengthSpanWrongSizeOrNegative_IsBadInput` (A53) | one short; -1; NaN | `kBadInput`, outputs untouched | exact |
+| `BuildViscosityBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (A58) | one piece and batched settings on the CPU; `RunMemory` of exactly `ComputeRunMemoryBytes(BuildViscosityMemoryEstimate(settings), counts, where)` for each `where` | `handed_out_bytes() == reserved_bytes()` for both | exact |
+| `BuildViscosityBuffers, RunMemoryOneByteShort_IsOutOfMemory` (A58) | the same, 256 bytes less (release preset; the debug preset's planner-bug assertion fires) | `kOutOfMemory`, magnitude the bytes of the piece that did not fit | exact |
 
 Batched layout (NEW, A15), on the CPU with the loaded piece 3 and 5 (solve: 3, 5 and 7) times
 `CountBlocksInLargestLayer`:
@@ -812,7 +970,15 @@ Labels (A24 adds `<sec-viscosity-coupled>`): `<sec-viscosity>`, `<eq:deformation
 Outline: 1 why drag needs the whole deformation rate and not three separate smoothings (rotation must lose
 nothing); 2 the equations and their units; 3 where the samples sit and what they weigh; 4 solids; 5 the
 liquid surface and changes of viscosity; 6 the two loops; 6a (A24) blocking materials and sealed gas in the joint
-solve; 7 what is excluded and the test that lifts each.
+solve; 7 what is excluded and the test that lifts each. NEW (A53, A57, A59, A60): 6b guided free solids in
+generalized velocities (`xi = J q + xi_0`, the m x m block, Batty 2007, Aanjaneya 2018), the slip length as a wall
+displaced by `lambda` (Navier), and the force on every solid read from the solve's own terms (momentum exchange,
+Uhlmann 2005); 8 (label `<sec-viscosity-advice>`) when viscosity is not visible: the derivation of 5.8, stated in
+the paper in these words: "The smoothing figure `nu_num = (1 - alpha) h^2 / (4 dt)` is this project's derivation from
+the filter analysis of Hammerquist and Nairn (2017), not a published value", with the step from `sinc^6` to the
+diffusion step written out, its assumptions (uniform particles of equal mass, quadratic weights) and why the ratio
+is a lower bound; then the four-cell decay over the run and the Reynolds number, and the note that viscosity 0 also
+switches the liquid from sticking to slipping.
 
 Figures: `<fig-viscosity-samples>` one cell in the XZ plane with its stretch samples at the centre, edge
 samples at the corners, the four faces each reads, and the liquid quarter each weighs.
@@ -860,7 +1026,11 @@ surface); [9] Larionov, Batty, Bridson 2017 (pressure and viscosity together); [
 | traction | surface force per area (in test names and comments) | decision 2 |
 | status codes with empty messages | `ViscosityError`, `ViscosityFailure`, `ToMessage`, `ToName` | owner A2, A13; `ToName` stable code |
 | snow or sand exclusion (`kSnowOrSandNotSupported` in this design's draft) | `kSnowNotSupported`, then removed (A24) | owner A9, A24 |
-| (none) | `SolvedCouplingArrays`, `max_sealed_gas_blobs`, `ComputeViscousEffectPerStep`, `kSmallestVisibleViscousEffectPerStep` ("viscous effect per step"; papers: diffusion number) | NEW (A24, A25) |
+| (none) | `SolvedCouplingArrays`, `max_sealed_gas_blobs`, `ComputeViscousEffectPerStep`, `kSmallestVisibleViscousEffectPerStep` ("viscous effect per step"; papers: diffusion number) | NEW (A24, A25); the constant removed (A57) |
+| (none) | `kNegligibleViscosityRatio`, `kSmallestVisibleWavelengthInCells`, `kNegligibleViscousChange`, `ComputeViscosityToSmoothingRatio` ("viscosity to transfer smoothing ratio"), `ComputeFourCellFeatureChange`, `ComputeReynoldsNumber` | NEW (A57) |
+| (none) | `max_solids`, `viscous_push_on_solids` ("viscous push": N s on a solid; never "impulse"), "solid sample coefficients" | NEW (A60) |
+| (none) | `solid_slip_length` ("slip length", m; papers: Navier slip length) | NEW (A53) |
+| (none) | "generalized velocities" `q` of a guided free solid, "allowed motions" (solids' `AllowedMotions`) | NEW (A59) |
 
 ## 10. Not ported
 
@@ -913,7 +1083,8 @@ surface); [9] Larionov, Batty, Bridson 2017 (pressure and viscosity together); [
    - B: per solid, `enum class LiquidGrip { kSticks, kSlides }` in the solid's settings.
 
    Decision: A, always sticks, no setting (recommended option (owner's standing instruction, 2026-11-14);
-   `owner-questions.md` Q28).
+   `owner-questions.md` Q28). **Replaced in part (A53, decision 27):** "no setting" no longer holds for fixed and
+   driven solids and the domain box; sticking stays the default.
 4. **Shear samples near a size change.** Proposed: edge samples wherever the cells around an edge share one
    size, fitted cell-centre samples only for the quarters at a size change or an inclined solid. The
    alternative is `main`'s behaviour of fitted samples for every cell of any mixed-size grid, which is simpler
@@ -986,7 +1157,8 @@ Decisions taken after this design was first written (recorded in the viscosity a
     answer A24 and the owner's choice of option C.
 15. **What counts as viscous.** Decision: a liquid ingredient is viscous exactly when its viscosity is above 0; the
     step chooses stage 11 or 12 once per run; the water preset has viscosity 0. Source: owner answer A25.
-16. **The viscous effect per step.** Decision: `ComputeViscousEffectPerStep` and
+16. **The viscous effect per step.** **Replaced in part (A57, decision 24):** the constant and its note are removed;
+    `ComputeViscousEffectPerStep` stays. Decision: `ComputeViscousEffectPerStep` and
     `kSmallestVisibleViscousEffectPerStep = 2.5e-4` here; the step's planner computes it per liquid at the smallest
     cell and the largest step, and I/O prints it with a note below the constant. Source: owner answer A25;
     `plan-decisions.md` A25 section (the constant awaits the owner's confirmation).
@@ -1002,7 +1174,8 @@ Decisions taken after this design was first written (recorded in the viscosity a
 19. **Free solids in the joint solve (A27).** Decision: six unknowns per free solid, its mass and inertia at the
     start pose, the `FreeSolidPush` pressure part, stick through `R xi`, per-group sums, an exact 6 x 6 block in the
     inner preconditioner; no exclusion by material remains (`kFreeSolidNotSupported` removed). Source: owner answer
-    A27; `plan-decisions.md` A26/A27 section.
+    A27; `plan-decisions.md` A26/A27 section. **Replaced in part (A59, decision 25):** "six unknowns per free solid"
+    and "an exact 6 x 6 block" become m generalized velocities and the m x m block.
 20. **Snow not a validation target.** Decision: snow has no special case; liquid-on-snow is tested only at rest and
     in the step's five-material scene. Source: owner note, 2026-11-14.
 21. **Working buffers, one form (A31).** `ViscosityBuffers` holds `SumBuffers sum_buffers` and `OrderBuffers
@@ -1013,12 +1186,62 @@ Decisions taken after this design was first written (recorded in the viscosity a
     answer A30 (2026-11-14).
 23. **Out of memory (reconcile item 25).** `ViscosityError::kOutOfMemory` (magnitude = bytes asked) is returned
     only by `BuildViscosityBuffers`; it replaces "a failed allocation is `kRunOnCallFailed`". `ToViscosityFailure`
-    maps `BufferError::kOutOfMemory` to it. Source: reconcile-todo item 25 (2026-11-14).
+    maps `BufferError::kOutOfMemory` to it. Source: reconcile-todo item 25 (2026-11-14). **Amended (decisions 28,
+    29):** the value now stands last, and `BufferError::kRunMemoryTooSmall` maps to it as well.
+24. **Viscosity advice (A57).** Decision: `kSmallestVisibleViscousEffectPerStep` and its test are removed;
+    `viscosity_advice.h` (CPU only) holds `kNegligibleViscosityRatio = 0.1`, `kSmallestVisibleWavelengthInCells = 4`,
+    `kNegligibleViscousChange = 0.01`, `ComputeViscosityToSmoothingRatio` (`4 N / (1 - alpha)`, empty at `alpha =
+    1`), `ComputeFourCellFeatureChange` (`-expm1(-pi^2 D / 4)`) and `ComputeReynoldsNumber` (`U L / nu`, `U = sqrt(2 g
+    L)`); the step's planner advises 0 when the ratio is below 0.1 or the change below 0.01; the method paper states
+    that the smoothing formula is this project's derivation from the XPIC filter analysis, with the derivation
+    (5.8). Plan decisions: the preconditions by assertion; the test of the threshold computes `D` in the test.
+    Source: owner answer A57; `plan-decisions.md` "Owner answers A40-A64 applied" item 4.
+25. **Guided free solids in generalized velocities (A59).** Decision: each free solid's unknowns are the m
+    generalized velocities of its `solids::AllowedMotions`; block `J^T (M + dt R^T E_s^T W E_s R) J` (m x m, Cholesky),
+    per-sample coefficients `R J`; six slots per solid kept. **Replaces** decision 19's "six unknowns per free solid"
+    and the plan's "a component forbidden by the guide is held at its value before pressure (identity row and
+    column)" (viscosity Task 15c) and solids' "a motion a guide forbids keeps its value after the solve" (solids Task
+    23c). Plan decisions: the hinged-plank test is posed where the projection is exact (a hinge at the plank's centre
+    in a mirror-symmetric scene), because at an off-centre hinge the added mass couples the hinge's turn to the
+    forbidden motions at first order, which no step size removes. Source: owner answer A59; `plan-decisions.md`
+    "Owner answers A40-A64 applied" item 5; `literature-practice.md` topic 3.
+26. **Force of the liquid on every solid (A60).** Decision: the solid coefficients `R` are stored beside every sample
+    that reads a solid of any motion kind (row "viscosity: solid sample coefficients", 52 B per solid sample);
+    `ViscosityResult::viscous_push_on_solids` gives `-dt R^T E_s^T W (E x + g)` per solid (block partials, then
+    `math::TreeSum`); `ViscosityBufferSettings::max_solids`; solids turns it into `LiquidForceOnSolid`. Plan decisions:
+    the result is a span into a CPU array of the buffers; the stored entry is parallel to the samples (no sample index
+    stored); the "sphere" test is a cube of equal volume (free solids are boxes); the rotating-cylinder test waits
+    for a cylinder shape (Open). Source: owner answer A60; `plan-decisions.md` "Owner answers A40-A64 applied" item 6;
+    `literature-practice.md` topic 4.
+27. **Slip length on fixed and driven solids (A53).** Decision: `ViscosityInputs::solid_slip_length` (m, from
+    `solids::SolidSettings::slip_length`); rule (a) uses `d + lambda`, so `mu / d` becomes `mu / (d + lambda)` (0 at
+    +infinity); free solids and blocking materials always stick. Source: owner answer A53; `plan-decisions.md` "Owner
+    answers A40-A64 applied" item 7.
+28. **Buffers from the run's reserved memory (A58).** Decision: `BuildViscosityBuffers(settings, RunMemory&
+    run_memory, RunMemory& cpu_run_memory)`: `kRunOn` rows are pieces of `run_memory`, `kCpu` rows (batched layout) of
+    `cpu_run_memory` (the same object in a CPU run); one estimate entry per array; estimate test
+    `BuildViscosityBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`. Plan decision: two `RunMemory` parameters,
+    because the batched layout builds on both processors (the same-day correction of item 3: "a builder that builds
+    on both processors takes `RunMemory& run_memory, RunMemory& cpu_run_memory` as its last two parameters"). Source:
+    owner answer A58; `plan-decisions.md` "Owner answers A40-A64 applied" item 3.
+29. **`kOutOfMemory` last (reconcile item 31).** Decision: `ViscosityError::kOutOfMemory` moves to the end (15
+    values; the values after its old place shift by one, accepted), returned only by `BuildViscosityBuffers`; the enum
+    and `ToName` tests follow; each lifting task (21 to 23) keeps it last. Source: `plan-decisions.md` "Owner answers
+    A40-A64 applied" item 11.
+30. **No grid-only region (A64).** Decision: section 4's `ApplyGridOnlyRegionToGrid` input is not in the first
+    version; every liquid cell holds particles, so `CellsFromParticles` carries every ingredient volume. Source: owner
+    answer A64; `plan-decisions.md` "Owner answers A40-A64 applied" item 1.
 
 **Open** (for the owner; the two A18 open points, sealed gas and springy solids beside a viscous liquid, are
 decided by A24 and option C):
 
-- `kSmallestVisibleViscousEffectPerStep = 2.5e-4` (0.1 % per step) is a new constant.
+- (Removed by A57: `kSmallestVisibleViscousEffectPerStep`.)
+- `LiquidForce, RotatingCylinders_TorquePerLength` needs a cylinder solid; contact has `kFlatSolid`, `kPlate`, `kBox`,
+  `kDomainBox` only. Until contact gains one (or the owner names another torque test) the test is known-open.
+- A sample reading two different solids reports the force of the lower solid index only (decision 26); the
+  per-solid force then misses the other's share of that sample (rare: an edge between two solids).
+- Reconcile-todo item 23 (independent review of the A24, A26, A27 derivations) stays open and now also covers the
+  m x m block of decision 25.
 - (Answered by A26 and A27: the slide at a material face and the free-solid exclusion.)
 - The material band and "the rest of the material keeps its velocity this step"; the set with the larger face mass
   at a shared face; free solids left out of the outer diagonal; a second free solid in one sample folded at its

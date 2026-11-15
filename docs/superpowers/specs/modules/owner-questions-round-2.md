@@ -83,3 +83,32 @@ Not committed to the `rebuild` branch. Each has the option taken meanwhile, so w
     failures under the label `known_open`.
 39. Names from Foundation's last rounds: `RunOnCallStatus`, `ApplyGpuFunction`, `CheckGpuWork`, `SumScratch`,
     `OrderScratch`, `MemoryEstimateEntry`, "thread block", verbs `Copy` and `Release`.
+
+## From the particle trade-off note (tradeoff-particles.md, 2026-11-15) — for the owner's morning
+40. Read A64 as "particle size follows the cell" (eight particles per cell at every cell size; what the particles
+    and cell-resize designs already do when a cell splits or merges), not "one particle size everywhere"?
+    Recommended: yes.
+41. Start a run on the adaptive grid (each start cell seeded at its own size, memory plan sized on that start)?
+    Today the start is all-smallest cells, which needs far more memory than the run itself (bathtub at 0.5 cm:
+    64 GB instead of 22 GB). Recommended: yes.
+42. Split or merge a particle whose size no longer matches its cell at the next resize (momentum exact, energy
+    difference reported)? Today a particle that drifts across a size change keeps its size for good.
+    Recommended: yes.
+43. BIG FINDING: on a 16 GB card at 1 cm cells, a pool (10 x 5 x 1.5 m) and a stretch of sea do not fit under ANY
+    particle option, not even in batches. The limits are (a) the surface pinned to the smallest cells (A61) and
+    (b) the batch rule that cuts the scene in horizontal slabs and needs 9 layers of smallest blocks on the GPU
+    (plan area under about 3 m2 at 1 cm). The pool fits at about 3.5 cm cells, the sea at about 25 cm.
+    What comes first after the first version: (c) tune the surface band from 8 cells down to 4 by test, then
+    (a) coarse cells on calm surface + batches cut by columns/tiles, then (b) the narrow band of particles?
+    Recommended: c, a, b. The narrow band alone saves only 18 to 34 % of memory.
+
+## From the A40–A64 planning pass (2026-11-15)
+44. The CPU memory budget now follows the GPU rule (90 % of free, 512 MiB kept free). OK?
+45. Raising limits mid-run needs room for the old and the new memory blocks at once. OK, or stop-and-restart?
+46. Starting values to calibrate: shear width factor 0.25, foam wind drift 0.1 s, 2 MiB spill tolerance (needs the
+    Windows run), 5 % standing-wave loss.
+47. The artist's cell size map is a 2D top-view image, not a 3D volume. OK?
+48. Contact has no cylinder or sphere shape: the rotating-cylinders torque test is known-open and the settling test
+    uses a cube. Add a cylinder shape?
+49. A viscosity sample beside two solids credits only one of them (the lower index).
+50. Wording of the CUDA runtime licence note shipped with the add-on.

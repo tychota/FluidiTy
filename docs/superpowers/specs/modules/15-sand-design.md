@@ -96,6 +96,11 @@ struct MaterialResponseInputs {
   const Vec3* velocity_for_this_step = nullptr;  // NEW. m/s, before the contact response:
                                                  //   contact::MoveParticlesInputs::velocity.for_this_step.
   std::span<const contact::Solid> solids;        // NEW. Ascending solid_id, as given to contact.
+  // NEW (2026-11-15, reconcile item 33, settled here). The same solids on the run's processor:
+  // contact::ContactBuffers::solids_copy().data(), written by MoveParticles this step. Requires: on the run's
+  // processor with solids.size() entries (debug assertion). Read by the GPU path only; null on the GPU with a sand
+  // kHit record is kBadInput.
+  const contact::Solid* solids_on_run_processor = nullptr;
 };
 // For a kSand material with a non-null contact_record, the three new inputs are required (else kBadInput);
 // for every other kind they are not read. The friction is read from MaterialBuffers::friction, which
@@ -319,7 +324,8 @@ Until then `kSandSettlingCreep` is reported as a known limit (decision 1).
   branches on the kind). Stretch directions and the new state stay in registers. The hit split reads
   `start_position`, `velocity_for_this_step`, the material buffers' `friction` and the contact record by
   particle index, and the
-  solids from the copy contact already keeps on the processor.
+  solids from the copy contact already keeps on the processor (`ContactBuffers::solids_copy()`, passed as
+  `solids_on_run_processor`; no per-call copy, so the path allocates nothing and never returns `kOutOfMemory`).
 - Arrays: none new. A sand material uses the per-particle buffers of materials 6 (72 B internal force, 8 B
   friction, 16 B shares, 9 B working buffers) and the particles' two state arrays (72 B and 8 B, committed and try).
 - Fixed order: as materials 6; `hit_corrected_count` is an integer sum.
@@ -494,3 +500,16 @@ Decision: the sand module adds `SuggestedChange::kSetViscosityToZero` itself, ap
 (`kSuggestedChangeCount` + 1), with the stable name `set_viscosity_to_zero` and the add-on's repair (viscosity set
 to 0 on the finding's field) restored (section 4). Source: owner answer A27; `plan-decisions.md`, "A viscous
 liquid sticks, and free solids in the viscous solve (A26, A27)", "Exclusions" (flagged there for the owner).
+
+**8. The solids on the GPU for the hit split (reconcile item 33; A58).** The plan allowed a per-call `GpuArray`
+copy of the solids, which would make `ApplyMaterialResponse` an allocating form returning `kOutOfMemory`, against
+"only building functions return it". Decision: no per-call copy; the GPU path reads contact's own copy through the
+new input `MaterialResponseInputs::solids_on_run_processor` (= `contact::ContactBuffers::solids_copy().data()`,
+NEW in contact 3.5), which `MoveParticles` wrote in the same step. Tests `ApplyMaterialResponse,
+SandHitWithoutSolidsOnProcessor_IsBadInput` and `ApplyMaterialResponse, OnGpuSandHit_AllocatesNothing`. Source:
+`plan-decisions.md` "Owner answers A40–A64 applied", item 11 (33: "settled in the sand module").
+
+**9. Other answers of the A40–A64 pass.** Sand has no builder of its own (it uses `MaterialBuffers` and the
+particles' arrays, which take `RunMemory&` in their modules); its error values are `MaterialsError`'s
+(`kOutOfMemory` last there). A64: sand particles keep their count (`kKeepsItsCount`) and a sand cell is never split
+(Task 10); no grid-only region touches sand. Source: `plan-decisions.md` items 1, 3, 11.

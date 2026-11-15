@@ -808,3 +808,117 @@ later module section reuses.
   has run yet.
 Foundation is done at this point with its GPU status recorded as `compiled, not run`. The hardware run is
 part of the end of the programme, not of this plan.
+
+## Additions after Foundation closed
+
+**Amended 2026-11-15 (A58):** three tasks added after Foundation's hand-over, from owner answer A58 (one reserved
+memory block per run). Run them in the order 17, 18, 19, before module 1 (contact) starts: every module's building
+function takes the run's `RunMemory`. The exact declarations and rules are in
+`docs/superpowers/specs/modules/plan-decisions.md`, section "Owner answers A40–A64 applied (2026-11-15)", item 3;
+`shared-interface.md` section (a) is re-copied from the headers after Task 19. Global Constraints above apply.
+
+### Task 17: `RunMemory`, one reserved block that hands out buffers
+
+**Files:**
+- Create: `native/fluidity/base/run_memory.h`, `run_memory_cpu.cc`, `run_memory_test.cc`, `run_memory_gpu_test.cc`,
+  `run_memory_no_gpu_test.cc`
+- Modify: `native/fluidity/base/buffer.h` (a `BuildBuffer` form taking a `RunMemory&`; `Buffer` frees nothing when
+  its bytes are a piece; `BufferError::kRunMemoryTooSmall` appended last; `ToMessage` and `ToName` for it),
+  `buffer_bytes.h` (no new function: the block is built with `BuildBufferBytes` and freed with `FreeBufferBytes`),
+  `memory_count.h` / `memory_count.cc` (`ComputeRunMemoryPieceBytes`, `ComputeRunMemoryBytes`),
+  `docs/method-paper/fluidity-method.typ` (section `<sec-run-memory>`, figure `<fig-run-memory>`), `docs/glossary.md`
+  (rows `RunMemory`, `piece`, `reserved bytes`, `handed out`), `native/fluidity/base/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: `Buffer`, `BuildBufferBytes`, `FreeBufferBytes`, `CpuMemory`, `MemoryEstimateEntry`, `MemoryCounts`.
+- Produces: `class RunMemory` (move-only; `run_on()`, `reserved_bytes()`, `handed_out_bytes()`),
+  `std::expected<RunMemory, BufferError> BuildRunMemory(RunOn run_on, std::size_t byte_count, CpuMemory cpu_memory =
+  CpuMemory::kOrdinary)`, `template <BufferValue Value> std::expected<Buffer<Value>, BufferError> BuildBuffer(RunOn
+  run_on, std::size_t size, RunMemory& run_memory)`, `inline constexpr std::size_t kRunMemoryPieceAlignmentBytes =
+  256`, `std::size_t ComputeRunMemoryPieceBytes(std::size_t byte_count)`, `std::uint64_t
+  ComputeRunMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts,
+  MemoryWhere where)` (the entries with that `where`; a GPU run reserves one block per processor),
+  `BufferError::kRunMemoryTooSmall`.
+
+**Kind:** mechanical
+
+- [ ] **Step 1: Paper first.** Section "One block of memory per run": why one reservation (no fragmentation, one
+  synchronizing GPU call, a footprint equal to the plan); the two rules (a piece is never freed alone; the block
+  outlives its pieces); the figure: one block, pieces at multiples of 256 bytes, the next free offset; the worked
+  example below.
+- [ ] **Step 2: Failing tests.**
+
+  ```cpp
+  // run_memory_test.cc, label cpu
+  TEST(ComputeRunMemoryPieceBytes, RoundsUpTo256)            // 0 -> 0, 1 -> 256, 256 -> 256, 257 -> 512
+  TEST(ComputeRunMemoryBytes, CountsOnlyEntriesOfTheWhereRoundedPerCopy)  // 1000 particles x 24 B x 2 copies
+                                                               // (kRunOn) -> 2 x 24064 = 48128; a kCpu entry adds 0
+  TEST(ComputeRunMemoryBytes, HugeCounts_Saturate)
+  TEST(BuildRunMemory, OnCpu_ReservesTheAskedBytes)          // reserved_bytes() == 4096, handed_out_bytes() == 0
+  TEST(BuildBuffer, FromRunMemory_HandsOutAlignedZeroedPieces)  // three pieces of 10, 100, 3 doubles: data() a
+                                                               // multiple of 256 apart from the block start, zeros,
+                                                               // handed_out_bytes() == 256 + 1024 + 256
+  TEST(BuildBuffer, FromRunMemoryPieceDoesNotFit_IsRunMemoryTooSmall)  // takes nothing: handed_out_bytes() unchanged
+  TEST(BuildBuffer, FromRunMemorySizeZero_TakesNothing)
+  TEST(Buffer, PieceDestroyed_FreesNothingAndBlockStaysUsable)
+  TEST(RunMemory, Moved_PiecesStayValid)                     // move the RunMemory, write and read a piece
+  TEST(ToName, RunMemoryTooSmall_IsRunMemoryTooSmall)        // "run_memory_too_small"
+  // death test, debug builds only (label cpu): destroying a RunMemory while a piece lives asserts
+  TEST(RunMemoryDeathTest, DestroyedBeforeItsPieces_Asserts)
+  // run_memory_no_gpu_test.cc, label no_gpu
+  TEST(BuildRunMemory, OnGpuWithoutAGpu_IsRunOnCallFailed)
+  // run_memory_gpu_test.cc, label gpu
+  TEST(BuildBuffer, FromGpuRunMemory_WriteThenReadReturnsTheSameValues)
+  TEST(BuildRunMemory, OnGpu_FreeMemoryDropsByAtLeastTheReservedBytes)
+  ```
+- [ ] **Step 3: Implement.** `RunMemory` owns one `BufferBytes` block and a small heap cell holding the next free
+  offset and, in every build, the count of live pieces (so a move keeps the pieces' pointer valid). A piece takes
+  `ComputeRunMemoryPieceBytes(size * sizeof(Value))` bytes at the next free offset; the block's own start is a
+  multiple of 256 on the GPU (CUDA) and is asked aligned to 256 on the CPU. `Buffer` gains one private pointer to
+  that cell (null when the buffer owns its bytes); its destructor and move assignment free bytes only when it owns
+  them and otherwise decrement the count. `~RunMemory` asserts the count is zero (`Requires:` in its comment, A30),
+  then frees the block. Pieces are zero bytes: the block is zero-filled when built, and a piece is never reused.
+  A piece that does not fit returns `kRunMemoryTooSmall`, writes nothing and also asserts in debug builds (it is
+  a bug of the plan: the step reserves exactly `ComputeRunMemoryBytes` of the estimate).
+- [ ] **Step 4: Run** the gate. **Commit.** Subject: `Add RunMemory, one reserved block that hands out buffers`.
+  New public names in the message; GPU tests compiled, not run.
+
+### Task 18: Working buffers built from a `RunMemory`
+
+**Files:**
+- Modify: `native/fluidity/base/ordered_sums.h`, `ordered_sums_cpu.cc`, `ordered_sums_test.cc`, `stable_order.h`,
+  `stable_order_cpu.cc`, `stable_order_test.cc`
+
+**Interfaces:**
+- Consumes: Task 17.
+- Produces: `std::expected<SumBuffers, BufferError> BuildSumBuffers(RunOn run_on, std::size_t max_count, RunMemory&
+  run_memory)` and `std::expected<OrderBuffers, BufferError> BuildOrderBuffers(RunOn run_on, std::size_t max_count,
+  RunMemory& run_memory)`; the plain forms stay (tests and tools). Rule every module copies: the last parameter is
+  `RunMemory& run_memory`, `run_on == run_memory.run_on()` is a `Requires:` checked by assert.
+
+**Kind:** mechanical
+
+- [ ] **Step 1: Failing tests.** `BuildSumBuffers, IntoRunMemory_TakesOnePieceOfTheSize` (handed-out bytes ==
+  `ComputeRunMemoryPieceBytes(ComputeSumBuffersSize(...))` on the CPU, label cpu; GPU, label gpu);
+  `BuildOrderBuffers, IntoRunMemory_TakesOnePieceOfTheSize` (same); `BuildOrderBuffers, IntoRunMemory_SameResultsAsPlainForm`
+  (a million keys ordered with either buffers give identical bytes).
+- [ ] **Step 2: Implement** (each working-buffer object holds its memory in one `Buffer<std::byte>`, so one piece);
+  run the gate; **commit.** Subject: `Build working buffers from a RunMemory`.
+
+### Task 19: Free GPU memory read after the context exists
+
+**Files:**
+- Modify: `native/fluidity/base/processor_description_gpu.cu`, `processor_description.h` (comment),
+  `processor_description_gpu_test.cc`
+
+**Interfaces:**
+- Produces: `ReadMemoryAvailable(RunOn::kGpu)` first makes sure the GPU context exists (`cudaFree(0)`, status through
+  `ToRunOnCallStatus`), then calls `cudaMemGetInfo`, so the context and the loaded kernels are already outside
+  "free" (literature-practice.md topic 2). Its comment says so and that the step computes the allowed bytes from it.
+
+**Kind:** device
+
+- [ ] **Step 1: Failing test** (label gpu): `ReadMemoryAvailable, OnGpuTwice_SecondFreeNotAboveFirst` (the context
+  exists before the first read, so a second read does not show the context's bytes leaving "free").
+- [ ] **Step 2: Implement; run the gate; commit.** Subject: `Read free GPU memory after the context exists`.
+  Compiled, not run.

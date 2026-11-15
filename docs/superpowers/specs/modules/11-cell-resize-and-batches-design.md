@@ -8,15 +8,24 @@ or all GPU; the grid is built on the GPU in a GPU run) and the entries of `plan-
 module, as carried by `plans/2026-11-14-rebuild-11-cell-resize-and-batches.md` (decisions 13 to 25), and with
 `plan-decisions.md` "Planned cost shown to the user, and buffers in batched runs" (decisions 26 to 32), and with
 `plan-decisions.md` "Reconcile pass (2026-11-14)" items 11, 12, 13 and the coordinator's items (1), (2), (5), (6), as
-carried by the plan's tasks marked reconcile (decisions 33 to 36). Not committed to the `rebuild` branch.
+carried by the plan's tasks marked reconcile (decisions 33 to 36). Updated on 2026-11-15 with owner answers A40 to
+A64 as `plan-decisions.md` "Owner answers A40–A64 applied" gives them (decisions 40 to 47): particles in every liquid
+cell (A64; the grid-only region is kept below, each passage marked "not in the first version (A64)"), the shared
+cell size rule owned by grid (A41, A61 to A63), one reserved memory block per processor (A58), `kOutOfMemory` last
+(reconcile item 31) and span forms as preconditions (item 32). Not committed to the `rebuild` branch.
 
 ## 1. Purpose
 
-**Part A, cell resize.** Small cells are wanted near the liquid surface and near solids; deep liquid can use
-big cells and needs no particles at all. After each committed step this module decides which cells to split or
-merge, rebuilds the grid, moves every value the grid carries onto the new cells without losing any, and moves
-liquid between the two ways of holding it: particles near the surface (`particle_region`) and one record of
-amounts per cell deeper down (`grid_only_region`).
+**Part A, cell resize.** Small cells are wanted near the liquid surface, near solids, in shear layers and where an
+artist asks; deep calm liquid can use big cells. After each committed step this module decides which cells to split
+or merge (grid's shared size rule, A41), rebuilds the grid, moves every value the grid carries onto the new cells
+without losing any, and splits or merges the particles with their cells, so every liquid cell holds particles of its
+own size level at every depth (A64, first version).
+
+*Not in the first version (A64):* deep liquid needs no particles at all; this module moves liquid between the two
+ways of holding it: particles near the surface (`particle_region`) and one record of amounts per cell deeper down
+(`grid_only_region`). Kept as the later group "Deep liquid without particles (later; needs review)" of the plan,
+after an independent review and two gating tests.
 
 **Part B, batches.** When a scene does not fit the GPU, the particles live in CPU memory and pass through the
 GPU in batches of cell blocks, twice per step try. The solves run on the whole grid on the GPU when their arrays
@@ -24,10 +33,12 @@ fit; otherwise (A15) their working buffers live in CPU memory and goes through t
 the state and the geometry stay whole on the GPU. This module owns that schedule, chooses among the three ways to
 run, and says what each costs in memory and copies.
 
-**Owns:** the cell size rule and `ChooseCellSize`; `SplitCell`, `MergeCells`, the "which cells must also
+**Owns:** the per-cell size decision and its hysteresis (`ComputeCellSizeChanges`; the wanted width itself is grid's
+`cell_size_rule.h`, A41; `ChooseCellSize` is removed, A41); `SplitCell`, `MergeCells`, the "which cells must also
 split" search; `ResizeCells` as a transaction after a committed step (D12); the remap of grid-carried values
-between two grid versions (the gas arrays included); the two regions, `is_grid_only_region`, the amounts of
-grid-only cells, their transport inside a step, `region_transfer` and its ledger; the call of
+between two grid versions (the gas arrays included); not in the first version (A64): the two regions,
+`is_grid_only_region`, the amounts of grid-only cells, their transport inside a step, `region_transfer` and its
+ledger; the call of
 `particles::AdjustParticleCount`; the batch plan (including the choice between whole-grid solves and solves in
 pieces, and the planned budgets and copies), the batch copies, the placement of every stage in a batched run, the
 rule for sums that cross batches.
@@ -65,7 +76,9 @@ Part A: folder `native/fluidity/cell_resize/`, namespace `fluidity::cell_resize`
 `native/fluidity/batches/`, namespace `fluidity::batches` (decision 8). Headers marked (S) are shared
 (`FLUIDITY_CPU_AND_GPU`, C++20 subset); operation headers have `_cpu.cc` and `_gpu.cu` beside them. Names are
 NEW unless marked D (DECIDED). Changes of the 2026-11-14 update are marked NEW (2026-11-14); those of the A15
-and A17 update are marked NEW (A15) or NEW (A17); those of the reconcile pass NEW (reconcile). This module has no
+and A17 update are marked NEW (A15) or NEW (A17); those of the reconcile pass NEW (reconcile); those of the
+2026-11-15 update NEW (A<n>). Declarations marked "not in the first version (A64)" belong to the plan's later group
+and are not built in the first version. This module has no
 long-running solve, so no function takes
 `cancel_requested`; `ApplyStagesInBatches` checks the try's cancel flag between stages and between batches
 (5.8), and in solves in pieces the solvers read it before every solve batch.
@@ -73,21 +86,23 @@ long-running solve, so no function takes
 ### 3.1 `cell_resize_error.h` (S), `cell_resize_message.h`
 
 ```cpp
+// CHANGED (A64; reconcile item 31): 10 values. kWrongMaterialSet, kGridOnlyCellDrained and kGridOnlyCellTooFull
+// exist only for the grid-only region: not in the first version (A64); the later group appends them after
+// kOutOfMemory (values 10, 11, 12) with their 2026-11-14 comments ("A transfer array was written for another set
+// than material_is_counted"; "In a step: more liquid would leave a grid-only cell than it holds. Shorten the step";
+// "In a step: a grid-only cell would hold more than kMaxFilledShare of its volume").
 enum class CellResizeError : std::uint8_t {
   kNone,
   kBadInput,              // A setting is not finite or out of range, or an array has the wrong size.
   kWrongGridVersion,      // An array is bound to another grid version or block count than the grid named.
-  kWrongMaterialSet,      // NEW (2026-11-14). A transfer array was written for another set than
-                          //   material_is_counted.
   kTooManyCellBlocks,     // The resized grid would pass SimulationLimits::max_cell_blocks. Nothing changed.
-  kTooManyParticles,      // Refill or split would pass a particle limit. Nothing changed.
-  kAmountsDoNotBalance,   // Particles plus grid-only cells hold another total after the resize than before.
-  kGridOnlyCellDrained,   // In a step: more liquid would leave a grid-only cell than it holds. Shorten the step.
-  kGridOnlyCellTooFull,   // In a step: a grid-only cell would hold more than kMaxFilledShare of its volume.
-  kNotFinite,             // A remapped or moved value is not finite.
+  kTooManyParticles,      // A particle split would pass a particle limit. Nothing changed.
+  kAmountsDoNotBalance,   // Liquid particles hold another total after the resize than before.
+  kNotFinite,             // A remapped value or a velocity the size rule reads is not finite.
   kModuleFailed,          // grid, particles, solids, gas or step returned a failure. See module, module_error.
-  kOutOfMemory,           // A buffer could not be built. Nothing changed.
   kRunOnCallFailed,       // CheckCanRunOn failed for the chosen processor, or a call to it failed.
+  kOutOfMemory,           // CHANGED (item 31): last. Only from BuildCellResize: a piece of a RunMemory block (or a
+                          //   buffer) could not be built; magnitude = the bytes asked. Nothing changed.
 };
 struct CellResizeFailure {             // The error value of every std::expected here (A2). Never allocates.
   CellResizeError error = CellResizeError::kNone;
@@ -100,41 +115,97 @@ struct CellResizeFailure {             // The error value of every std::expected
 };
 std::string_view ToMessage(CellResizeError error);
 // NEW (2026-11-14). Stable code: the enumerator's name without the k, in lower snake case
-// ("grid_only_cell_drained"). The CLI and the add-on use it.
+// ("too_many_cell_blocks"). The CLI and the add-on use it.
 std::string_view ToName(CellResizeError error);
 ```
 
-### 3.2 `cell_size_rule.h` (S): where small cells are wanted
+### 3.2 Cell size: grid's shared rule, `cell_size_change_math.h` (S), `velocity_gradient_math.h` (S), `cell_size_changes.h`
+
+**Moved to grid (A41).** `cell_resize/cell_size_rule.h` is replaced by grid's `native/fluidity/grid/cell_size_rule.h`
+(`fluidity::grid`, shared): `CellSizeSettings` and `CellSizeFacts` move there (this module's 2026-11-14 forms, with
+`ComputeWantedCellWidth(settings, frame, facts)` and `ComputeCellSizeChange(settings, frame, facts)`, are **replaced**),
+beside `CellWidthsByLevel`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth(settings, widths, reference_speed,
+facts)`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, `CellSizeRegion`, `ArtistCellSizes` and
+`ComputeArtistSizeLevel`, exactly as `plan-decisions.md` "Owner answers A40–A64 applied" item 2 declares them (grid
+design 3; the formulas are in 5.3 here). This module consumes them (section 4) and keeps the per-cell change, the
+velocity gradient and the pass.
 
 ```cpp
-struct CellSizeSettings {              // D suffix. Chosen once per scene.
-  grid::SizeLevel smallest_size_level{};      // The size wanted at the liquid surface and at solids.
-  double surface_reach_in_cell_widths = 8;    // No unit. Smallest cells within this many smallest widths of
-                                              //   the surface; beyond, the wanted width grows with depth.
-  double solid_reach_in_cell_widths = 2;      // The same for the distance to a solid surface in liquid.
-  double merge_width_share = 0.8;             // No unit. Ported: merge only if 2 w <= 0.8 x wanted width.
-  double merge_wait_duration = 0.25;          // s of committed time the merge test must hold without a break.
-  std::uint32_t max_cell_splits_per_resize = 1u << 16;  // Limit. More wanted splits wait for the next resize.
+// cell_size_change_math.h (S). CHANGED (A41, A63): kMergeReady and kKeepsItsSize added.
+enum class CellSizeChange : std::uint8_t {
+  kKeep,
+  kSplit,          // cell_width > wanted width (at once, ported).
+  kMayMerge,       // 2 x cell_width <= merge_width_share x wanted width, no veto (5.3 rule 5). The wait has not ended.
+  kMergeReady,     // NEW (A63). kMayMerge, the sibling test held for merge_wait_duration and min_merge_wait_steps.
+  kKeepsItsSize,   // NEW (A41, plan decision). Rule 2 (snow, springy solid, cut solid): never split or merged, and a
+                   //   closure that reaches it refuses the split. In the byte so the GPU run reads back one array.
 };
-struct CellSizeFacts {                 // What the rule reads about one active cell. Filled by ResizeCells.
-  double cell_width = 0;               // m.
-  double depth_below_surface = 0;      // m, zero or more (5.2). +infinity when no surface is within reach.
-  double distance_to_solid = 0;        // m. Smallest corner value of pressure::SolidCoverage; +infinity: none.
-  // Snow or a springy solid (particles::CountRule::kKeepsItsCount), or a solid being cut: the cell keeps its
-  // size.
-  bool holds_particles_that_keep_their_count = false;
-  bool touches_air_pocket = false;     // A cell of an enclosed air pocket, or touching one.
-  // NEW (2026-11-14, A10). A cell that holds gas (gas_volume > 0 in the gas try) or touches one.
-  bool wants_smallest_cells = false;
+// CHANGED (A41, A63). The per-cell part of 5.3 rules 2, 3 and 5: kKeepsItsSize when
+// holds_particles_that_keep_their_count; else kSplit when cell_width > wanted_width; else kMayMerge when
+// 2 * cell_width <= merge_width_share * wanted_width and none of touches_air_gas_or_solid, touches_air_pocket,
+// wants_smallest_cells, depth_below_surface < surface_reach_in_cell_widths * widths.width[smallest_size_level];
+// else kKeep. Never kMergeReady. No FMA contraction.
+FLUIDITY_CPU_AND_GPU CellSizeChange ComputeCellSizeChange(const grid::CellSizeSettings& settings,
+                                                          const grid::CellWidthsByLevel& widths,
+                                                          const grid::CellSizeFacts& facts, double wanted_width);
+
+// velocity_gradient_math.h (S). NEW (A62). 1/s: the Frobenius norm of the full 3x3 gradient G[i][j] = du_i/dx_j at
+// the cell centre from `velocity` (the committed velocity_after_pressure of the liquid set, one value per face
+// place). Diagonal: (area-weighted mean of the +a face's pieces - that of the -a face) / cell width. Off-diagonal:
+// the cell-centre u_i of the face-touching cell on the +j side minus that on the -j side, over the distance between
+// the centres along j (a bigger neighbour: its centre value; four smaller ones: their mean in ascending CellId; a
+// missing side: the cell itself at half the distance). Rows i = x, y, z summed in order; fixed order, no
+// contraction. 0 unless the cell's CellContent is liquid. A uniform field gives 0 and a linear field its exact
+// gradient where the neighbours are of the same size or smaller; beside a bigger neighbour the off-diagonal term is
+// first order (its centre is w/2 off the axis).
+FLUIDITY_CPU_AND_GPU double ComputeVelocityGradientSize(const grid::GridTables& tables, const double* velocity,
+                                                        grid::CellPlaceIndex cell);
+
+// cell_size_changes.h. NEW (A41, A62, A63). The pass of 5.3, on the grid's processor, after a committed step.
+enum class CellSizeChangesPart : std::uint8_t {
+  kWantedWidthsAndChanges,  // Part 1: facts, wanted width, ComputeCellSizeChange, held gradient.
+  kMergeTest,               // Part 2: reads part 1's outputs of touching cells; wait counters; kMergeReady.
 };
-// m. Largest width this cell may have. The smallest width within the two reaches, then proportional to the
-// distance: depth / surface_reach_in_cell_widths, capped by the biggest width.
-double ComputeWantedCellWidth(const CellSizeSettings& settings, const grid::GridFrame& frame,
-                              const CellSizeFacts& facts);
-enum class CellSizeChange : std::uint8_t { kKeep, kSplit, kMayMerge };
-// kSplit when cell_width > wanted width. kMayMerge when 2 x cell_width <= merge_width_share x wanted width.
-CellSizeChange ComputeCellSizeChange(const CellSizeSettings& settings, const grid::GridFrame& frame,
-                                     const CellSizeFacts& facts);
+struct CellSizeChangesInputs {
+  const grid::StaggeredGrid* grid;                              // Committed grid.
+  const grid::CellValues<double>* depth_below_surface;          // m. ComputeDepthBelowSurface.
+  pressure::SolidCoverage solids;                               // Last try's coverage (ResizeTry).
+  const pressure::GeometrySnapshot* geometry;                   // Last try's geometry (content, air volume).
+  const grid::CellValues<std::uint32_t>* pocket_of_cell;        // Committed GridFields.
+  const grid::CellValues<double>* gas_volume;                   // Committed gas amounts; null without gas.
+  const grid::FaceValues<double>* velocity_after_pressure;      // m/s. Committed, liquid set.
+  const particles::ParticlesTry* particles_try;                 // Grouped for the committed grid.
+  std::span<const std::uint8_t> material_keeps_its_count;       // One per material (CountRule::kKeepsItsCount).
+  const grid::CellValues<double>* held_velocity_gradient_size;  // 1/s. Committed GridFields.
+  const grid::CellValues<double>* merge_ready_duration;         // s. Committed GridFields.
+  const grid::CellValues<std::uint8_t>* merge_ready_step_count; // Committed GridFields.
+  grid::ArtistCellSizes artist;                                 // Views on the grid's processor (CellResize's rows).
+  const grid::CellSizeSettings* settings;
+  grid::CellWidthsByLevel widths;                               // m. From the committed frame, on the CPU.
+  double reference_speed = 0;                                   // m/s. grid::ComputeReferenceSpeed.
+  double elapsed_since_last_merge_test = 0;                     // s of committed time since the last committed resize.
+  std::uint32_t steps_since_last_merge_test = 0;                // Committed steps since then (saturates at 255).
+};
+struct CellSizeChangesOutputs {                                 // Bound to the committed grid.
+  grid::CellValues<std::uint8_t>* size_change;                  // CellSizeChange per cell place.
+  grid::CellValues<double>* wanted_width;                       // m. Part 1, read by part 2.
+  grid::CellValues<double>* held_velocity_gradient_size_after;  // 1/s.
+  grid::CellValues<double>* merge_ready_duration_after;         // s.
+  grid::CellValues<std::uint8_t>* merge_ready_step_count_after;
+};
+// Part 1 per active cell of `blocks`: fills grid::CellSizeFacts (5.3), held = max(committed held, current gradient),
+// wanted_width = grid::ComputeWantedCellWidth, size_change = ComputeCellSizeChange. Part 2: the merge test of 5.3
+// rule 5 for the cell's 8 siblings and every cell touching their big cell; holds: duration + elapsed, step count +
+// steps (saturating at 255), held kept; breaks: 0, 0, held = current gradient; kMayMerge becomes kMergeReady when
+// the 8 siblings' smallest duration >= merge_wait_duration and smallest step count >= min_merge_wait_steps. A caller
+// cutting the grid into ranges runs part 1 over every range before part 2 over any; any cut gives the same bytes,
+// and CPU and GPU give the same bytes (local stencils, exact min and max, widths compared through `widths`). Fails
+// kBadInput (a span of the wrong length), kWrongGridVersion, kNotFinite (a non-finite velocity in a liquid cell;
+// first failing cell in fixed order), kRunOnCallFailed. Requires: every array and cell_resize's buffers on the
+// grid's processor (A30).
+std::expected<void, CellResizeFailure> ComputeCellSizeChanges(const CellSizeChangesInputs& inputs,
+                                                              grid::CellBlockRange blocks, CellSizeChangesPart part,
+                                                              CellSizeChangesOutputs outputs, CellResize& cell_resize);
 ```
 
 ### 3.3 `split_and_merge_cells.h` (CPU only): the cell list
@@ -152,6 +223,8 @@ std::expected<void, CellResizeFailure> MergeCells(const grid::GridFrame& frame, 
 // cells included, in the grid's fixed order. Fails kTooManyCellBlocks above max_cell_count.
 std::expected<std::vector<grid::CellId>, CellResizeFailure> FindCellsThatMustSplit(
     const grid::GridTables& committed, std::span<const grid::CellId> cells_to_split, std::uint64_t max_cell_count);
+// NEW (A30, reconcile item 32). Requires (all three functions): CPU tables and a CPU list; tables of a GPU grid are a
+// debug assertion, not kBadInput.
 struct ResizePlan {
   std::vector<grid::CellId> cells_to_split;      // Closed under the size-step rule. Fixed order.
   std::vector<grid::CellId> big_cells_to_merge;  // Each names 8 active sibling cells. Fixed order.
@@ -164,16 +237,13 @@ struct ResizePlan {
 ### 3.4 `resize_cells.h`: the transaction and the step callbacks
 
 ```cpp
-struct RegionSettings {                // D suffix.
-  double particle_region_depth_in_cell_widths = 6;  // Ported. Shallower cells are carried by particles.
-  double grid_only_depth_in_cell_widths = 7;        // Deeper full cells become grid-only. Between: no change.
-  int overlap_layer_count = 2;                      // Ported (2 cell widths). Layers where face velocities blend.
-  int particles_per_refilled_cell = 8;              // 1..9 (particles::ComputeRefillParticle).
-};
-inline constexpr double kMaxFilledShare = 2.0;     // No unit. current_volume / open volume of a grid-only cell.
+// Not in the first version (A64): RegionSettings, kMaxFilledShare, RegionTransferLedger, CellResizeSettings::regions,
+// ResizeCellsReport::ledger, ReadLargestGridOnlySpeed (declarations below the first-version block, kept for the
+// later group).
 inline constexpr double kAmountTolerance = 1e-12;  // No unit, relative to the total. About 4,000 rounding steps.
 
 // NEW (reconcile, decision 33). Who holds the two CPU grids (committed grid, resized grid) of a resize on a GPU grid.
+// Kept (A41): the resize plan, the list edit and BuildResizeMap still read CPU tables in a GPU run.
 enum class GridCopies : std::uint8_t {
   kNone,              // A CPU grid: no copy.
   kHeldByCellResize,  // One-piece GPU run: two CPU GridBuffers of this CellResize sharing one CPU grid::GridBuilderBuffers;
@@ -182,8 +252,7 @@ enum class GridCopies : std::uint8_t {
                       //   grid is built into ResizeTry::free_cpu_grid_copy_buffers(). This module allocates none.
 };
 struct CellResizeSettings {
-  CellSizeSettings cell_size{};
-  RegionSettings regions{};
+  grid::CellSizeSettings cell_size{};  // CHANGED (A41): grid's type.
   RunOn run_on = RunOn::kCpu;          // The caller's choice (A12). Never changed silently.
   // NEW (A17). The processor of the simulation's grid (the caller's choice, A12). With kGpu, ResizeCells reads a CPU
   // copy of the committed grid (as grid_copies says) and uploads the resized cell list (5.1, 6).
@@ -192,6 +261,80 @@ struct CellResizeSettings {
   // kHeldByStep with grid_run_on == kCpu, kNone with kGpu.
   GridCopies grid_copies = GridCopies::kNone;
 };
+struct ResizeCellsReport {
+  bool resized = false;                // The grid, the wait arrays or the particle count changed and was committed.
+  ResizePlan plan{};
+  particles::AdjustParticleCountResult particle_count{};
+  LiquidTotals totals_before{};        // NEW (A64, plan decision; replaces the ledger's totals). Liquid particles.
+  LiquidTotals totals_after{};
+  grid::GridVersion grid_version{};    // After the call.
+  CellResizeFailure failure{};         // kNone when nothing failed. A failure leaves the committed step as it was.
+  std::uint64_t bytes_copied = 0;      // NEW (A17). Both directions, this call: the grid copy (456 B per committed
+                                       //   block), the size_change read back (1 B per committed cell place, A41), the
+                                       //   cell list upload (8 B per new cell), the CPU mirrors. In a batched GPU run
+                                       //   without the 456 B per block: the resize reads step::FindCpuGridCopy (5.1).
+  // NEW (plan decision, 2026-11-14, buffers in batched runs). One per ReadGrid, ReadBuffer or WriteBuffer call
+  // between CPU memory and the grid's processor, this call. CHANGED (A41): no ChooseCellSize copy.
+  std::uint32_t copy_count = 0;
+};
+class CellResize;                      // Settings, buffers of this module on one processor, the last report, the
+                                       //   committed time and step count of the last committed merge test.
+// CHANGED (A58; correction, reconcile): the run's two blocks last. kRunOn rows are pieces of run_memory, the kCpu
+// rows kept kWholeRun (CPU grid copies, mirrors) pieces of cpu_run_memory; in a CPU run both are the same object.
+// Requires: run_memory.run_on() == settings.run_on, cpu_run_memory.run_on() == kCpu (debug assertions, A30); both
+// outlive the CellResize. kOutOfMemory (magnitude = bytes asked) when a piece does not fit.
+// NEW (A63): `artist` are CPU views (I/O's RunScene::artist_cell_sizes(): each region's level rounded at load by exact
+// comparison to the biggest level whose width <= the asked width; map rows flipped so row 0 is the domain's low y;
+// map level round(v x (size_level_count - 1)) for a grey value v > 0, 0 for none). BuildCellResize copies regions and
+// map_levels once into two rows on run_on (not counted in ResizeCellsReport) and keeps ArtistCellSizes views on them
+// for the pass. kBadInput: a region with low_corner >= high_corner on an axis or size_level > smallest_size_level; a
+// map level > smallest_size_level; a map with domain_width_x or domain_width_y <= 0.
+std::expected<CellResize, CellResizeFailure> BuildCellResize(const CellResizeSettings& settings,
+                                                             const step::SimulationLimits& limits,
+                                                             std::uint32_t ingredient_count,
+                                                             const grid::ArtistCellSizes& artist,
+                                                             RunMemory& run_memory, RunMemory& cpu_run_memory);
+const ResizeCellsReport& ReadLastReport(const CellResize& cell_resize);
+// Changed (A17): grid_run_on. With kGpu the rows add "cell resize: cell list upload" (8 B per cell place,
+// where = kRunOn). A CellResize with run_on = kCpu in a GPU run also counts its CPU mirrors (where = kCpu, 5.8).
+// Changed (reconcile, decision 33): grid_copies. With kHeldByCellResize the rows add "cell resize: committed grid
+// copy" and "cell resize: resized grid on the CPU": two GridBuffers sharing one CPU GridBuilderBuffers, entries
+// grid::BuildGridMemoryEstimate(kCpu, 2, limits.max_cell_blocks, grid::BuilderBuffersSharing::kOneForAllGrids) at limits.max_cell_blocks with
+// where = kCpu; with kHeldByStep neither CPU grid is allocated or counted. Rows are named "cell resize: <row>",
+// sizeof of the stored type. CHANGED (A41, A63, A58): "cell resize: size changes" (1 B per cell place), the wait
+// counters' "after" rows, "cell resize: cell size regions" (56 B per region, kGivenCount) and "cell resize: cell size
+// map" (1 B per pixel, kGivenCount); every kRunOn row kWholeRun; one entry per buffer, so ComputeRunMemoryBytes of
+// the entries per where equals what BuildCellResize hands out of each block.
+std::vector<MemoryEstimateEntry> BuildCellResizeMemoryEstimate(std::uint32_t ingredient_count,
+                                                               RunOn grid_run_on = RunOn::kCpu,
+                                                               GridCopies grid_copies = GridCopies::kNone,
+                                                               std::uint32_t cell_size_region_count = 0,
+                                                               std::uint64_t cell_size_map_pixel_count = 0);
+
+// NEW (2026-11-14). Each step::StepCallbacks member is a step::Callback<Function>{function, context} pair. The
+// I/O and CLI design sets resize_cells with `context` = the run's CellResize* (never null when the function is set;
+// with no cell resize the pair stays empty), and run_stages with batches::ApplyStagesInBatches and `context` = the
+// run's batches::BatchedRun* (3.7). No other design names a context type of this module.
+
+// D name. Signature of step::StepCallbacks::resize_cells. Runs the transaction of 5.1. On any failure the
+// committed step, the previous grid and the particles are exactly as before the call, time stays advanced,
+// and the result has resized = false with the error number.
+step::ResizeResult ResizeCells(void* context, step::Simulation& simulation);
+// REMOVED (A41): ChooseCellSize and step::StepCallbacks::choose_cell_size. Stage 2 calls grid::ComputeNewCellSizeLevel
+// on the grid's processor; no copies (the one-piece copies of decision 35 are gone).
+```
+
+**Not in the first version (A64)** (the plan's later group; text as of 2026-11-14):
+
+```cpp
+struct RegionSettings {                // D suffix.
+  double particle_region_depth_in_cell_widths = 6;  // Ported. Shallower cells are carried by particles.
+  double grid_only_depth_in_cell_widths = 7;        // Deeper full cells become grid-only. Between: no change.
+  int overlap_layer_count = 2;                      // Ported (2 cell widths). Layers where face velocities blend.
+  int particles_per_refilled_cell = 8;              // 1..9 (particles::ComputeRefillParticle).
+};
+inline constexpr double kMaxFilledShare = 2.0;     // No unit. current_volume / open volume of a grid-only cell.
+// CellResizeSettings gains: RegionSettings regions{};  ResizeCellsReport gains: RegionTransferLedger ledger{};
 struct RegionTransferLedger {          // One resize. Everything that changed holder, by direction.
   particles::ParticleAmounts into_grid_only_region{};   // Removed particles (RemoveReason::kIntoGridOnlyRegion).
   particles::ParticleAmounts into_particle_region{};    // Added particles (AddReason::kRefillRegion).
@@ -208,57 +351,9 @@ struct RegionTransferLedger {          // One resize. Everything that changed ho
   double total_current_volume_before = 0;    // m3.
   double total_current_volume_after = 0;
 };
-struct ResizeCellsReport {
-  bool resized = false;                // The grid, the regions or the particle count changed and was committed.
-  ResizePlan plan{};
-  RegionTransferLedger ledger{};
-  particles::AdjustParticleCountResult particle_count{};
-  grid::GridVersion grid_version{};    // After the call.
-  CellResizeFailure failure{};         // kNone when nothing failed. A failure leaves the committed step as it was.
-  std::uint64_t bytes_copied = 0;      // NEW (A17). Both directions, this call: the grid copy (456 B per committed
-                                       //   block), the cell list upload (8 B per new cell), the CPU mirrors.
-                                       //   In a batched GPU run without the 456 B per block: the resize reads
-                                       //   step::FindCpuGridCopy instead (5.1).
-  // NEW (plan decision, 2026-11-14, buffers in batched runs). One per ReadGrid, ReadBuffer or WriteBuffer call
-  // between CPU memory and the grid's processor, this call; with ChooseCellSize's first copy (3.4, 5.3).
-  std::uint32_t copy_count = 0;
-};
-class CellResize;                      // Settings, buffers of this module on one processor, the last report.
-std::expected<CellResize, CellResizeFailure> BuildCellResize(const CellResizeSettings& settings,
-                                                             const step::SimulationLimits& limits,
-                                                             std::uint32_t ingredient_count);
-const ResizeCellsReport& ReadLastReport(const CellResize& cell_resize);
 // m/s per cell width (1/s). Largest grid-only face speed of the latest try's MoveGridOnlyLiquid; the step reads it
 // only in CommitStep, so it takes the committed try's value into kParticleTravel. 0 before the first step.
 double ReadLargestGridOnlySpeed(const CellResize& cell_resize);    // NEW (2026-11-14).
-// Changed (A17): grid_run_on. With kGpu the rows add "cell resize: cell list upload" (8 B per cell place,
-// where = kRunOn). A CellResize with run_on = kCpu in a GPU run also counts its CPU mirrors (where = kCpu, 5.8).
-// Changed (reconcile, decision 33): grid_copies. With kHeldByCellResize the rows add "cell resize: committed grid
-// copy" and "cell resize: resized grid on the CPU": two GridBuffers sharing one CPU GridBuilderBuffers, entries
-// grid::BuildGridMemoryEstimate(kCpu, 2, grid::BuilderBuffersSharing::kOneForAllGrids) at limits.max_cell_blocks with
-// where = kCpu; with kHeldByStep neither CPU grid is allocated or counted. Rows are named "cell resize: <row>",
-// sizeof of the stored type.
-std::vector<MemoryEstimateEntry> BuildCellResizeMemoryEstimate(std::uint32_t ingredient_count,
-                                                               RunOn grid_run_on = RunOn::kCpu,
-                                                               GridCopies grid_copies = GridCopies::kNone);
-
-// NEW (2026-11-14). Each step::StepCallbacks member is a step::Callback<Function>{function, context} pair. The
-// I/O and CLI design sets the four callbacks below with `context` = the run's CellResize* (never null when the
-// function is set; with no cell resize the pairs stay empty), and run_stages with batches::ApplyStagesInBatches
-// and `context` = the run's batches::BatchedRun* (3.7). No other design names a context type of this module.
-
-// D name. Signature of step::StepCallbacks::resize_cells. Runs the transaction of 5.1. On any failure the
-// committed step, the previous grid and the particles are exactly as before the call, time stays advanced,
-// and the result has resized = false with the error number.
-step::ResizeResult ResizeCells(void* context, step::Simulation& simulation);
-// D name. Signature of step::StepCallbacks::choose_cell_size: the size level of a cell that does not exist
-// yet at `position` (5.3). Changed (reconcile, decision 35): the step passes committed_grid.tables(RunOn::kCpu):
-// real tables in a CPU run; in a batched GPU run FindCpuGridCopy(...)->tables(kCpu), real tables of the step's CPU
-// copy; in a one-piece GPU run version 0 and null arrays (A17). With null tables ChooseCellSize probes the CPU copy
-// of the committed grid this CellResize holds (its ReadGrid copy, or its CPU resized grid after a committed
-// resize), checking its version against the step's committed version; with no current copy it makes one with
-// grid::ReadGrid and counts it in the next ResizeCellsReport (bytes_copied, copy_count).
-grid::SizeLevel ChooseCellSize(void* context, const grid::GridTables& committed, Vec3 position);
 // NEW (2026-11-14). Signature of step::StepCallbacks::apply_grid_only_region, called at the end of stage
 // ParticlesToGrid, after every material set was transferred. Calls ApplyGridOnlyRegionToGrid once, for the
 // liquid material set (a scene has exactly one; the other sets hold no grid-only record). A failure becomes kStageFailed (kValueNotFinite
@@ -272,7 +367,46 @@ step::StageOutcome MoveGridOnlyLiquidInStep(void* context, step::Simulation& sim
                                             step::StepTry& step_try, grid::CellBlockRange blocks);
 ```
 
-### 3.5 `regions.h`: the two regions inside a step, and the pieces of the transaction
+**Replaced (A41)** (the 2026-11-14 and reconcile text): "`grid::SizeLevel ChooseCellSize(void* context, const
+grid::GridTables& committed, Vec3 position);` D name. Signature of `step::StepCallbacks::choose_cell_size`: the size
+level of a cell that does not exist yet at `position` (5.3). Changed (reconcile, decision 35): the step passes
+`committed_grid.tables(RunOn::kCpu)` ... with no current copy it makes one with `grid::ReadGrid` and counts it in the
+next `ResizeCellsReport`."
+
+### 3.5 `depth_below_surface.h`, `liquid_totals.h`; not in the first version: `grid_only_regions.h`
+
+CHANGED (A64, plan decision): `regions.h` is split. The first version has the depth and the totals over particles;
+the region types and operations are the later group's, in `grid_only_regions.h`.
+
+```cpp
+// depth_below_surface.h
+// m, per cell centre, 0 in a liquid cell that touches air or tracked gas, growing through touching liquid
+// cells by the distance between their centres, capped at max_depth. +infinity outside liquid.
+std::expected<void, CellResizeFailure> ComputeDepthBelowSurface(
+    const grid::StaggeredGrid& grid, grid::CellBlockRange blocks, const pressure::GeometrySnapshot& geometry,
+    double max_depth, grid::CellValues<double>& depth_below_surface);
+// ResizeCells passes max_depth = surface_reach_in_cell_widths * widths.width[0] (NEW, A64; 5.2).
+
+// liquid_totals.h. kg, m3 over the particles of counted materials in the given blocks. For the resize's check, for
+// render output's volume targets and for tests. One partial per block (its particles in grouped order), then
+// math::TreeSum over blocks (5.10). material_is_counted: one entry per material, each 0 or 1, so gas markers, whose
+// mass is a weight, are left out.
+struct LiquidTotals {
+  double mass = 0;                     // kg.
+  double rest_volume = 0;              // m3.
+  double current_volume = 0;           // m3.
+};
+// CHANGED (A64): particles only, no GridOnlyAmounts. CHANGED (A31): one form, taking the caller's SumBuffers
+// (ResizeCells passes CellResize's, render output its recorder's); allocates nothing. kBadInput when blocks.count is
+// above sum_buffers.max_count() or the mask has the wrong length. Requires: sum_buffers.run_on() is the grid's
+// processor (debug assertion, A30).
+std::expected<LiquidTotals, CellResizeFailure> ComputeLiquidTotals(
+    const particles::ParticlesTry& particles_try, std::span<const std::uint8_t> material_is_counted,
+    const grid::StaggeredGrid& grid, grid::CellBlockRange blocks, SumBuffers& sum_buffers);
+```
+
+**Not in the first version (A64)** (`grid_only_regions.h`, the plan's later group; text as of 2026-11-14; there
+`ComputeLiquidTotals` takes `const GridOnlyAmounts& amounts` after `particles_try` and adds the records):
 
 ```cpp
 enum class RegionKind : std::uint8_t { kParticleRegion, kGridOnlyRegion };  // D words (Q5).
@@ -289,11 +423,6 @@ struct GridOnlyAmounts {
   std::uint32_t ingredient_count = 1;              // Ingredients of the whole scene.
 };
 struct GridOnlyAmountsToChange;        // The same arrays, writable: the try copy.
-// m, per cell centre, 0 in a liquid cell that touches air or tracked gas, growing through touching liquid
-// cells by the distance between their centres, capped at max_depth. +infinity outside liquid.
-std::expected<void, CellResizeFailure> ComputeDepthBelowSurface(
-    const grid::StaggeredGrid& grid, grid::CellBlockRange blocks, const pressure::GeometrySnapshot& geometry,
-    double max_depth, grid::CellValues<double>& depth_below_surface);
 
 struct GridOnlyToGridInputs {
   const grid::StaggeredGrid* grid;
@@ -346,22 +475,6 @@ std::expected<MoveGridOnlyLiquidResult, CellResizeFailure> MoveGridOnlyLiquid(
 std::expected<RegionTransferLedger, CellResizeFailure> ApplyRegionTransfer(
     step::ResizeTry& resize_try, const grid::StaggeredGrid& resized_grid, const RegionSettings& settings,
     CellResize& cell_resize);
-// kg, m3 over the particles of counted materials and the grid-only records of counted materials, in the
-// given blocks. For the ledger, for render output's volume targets and for tests. One partial per block, then
-// math::TreeSum over blocks (5.10). NEW (2026-11-14): material_is_counted (one entry per material, each 0 or 1),
-// so gas markers, whose mass is a weight, are left out.
-struct LiquidTotals {
-  double mass = 0;                     // kg.
-  double rest_volume = 0;              // m3.
-  double current_volume = 0;           // m3.
-};
-std::expected<LiquidTotals, CellResizeFailure> ComputeLiquidTotals(
-    const particles::ParticlesTry& particles_try, const GridOnlyAmounts& amounts,
-    std::span<const std::uint8_t> material_is_counted, const grid::StaggeredGrid& grid,
-    grid::CellBlockRange blocks, SumBuffers& sum_buffers);
-// CHANGED (A31): one form, taking the caller's SumBuffers (ResizeCells and the step callbacks pass
-// CellResize's, render output its recorder's); allocates nothing. kBadInput when blocks.count is above
-// sum_buffers.max_count(). Requires: sum_buffers.run_on() is the grid's processor (debug assertion, A30).
 ```
 
 ### 3.6 `remap_grid_values.h` and `remap_math.h` (S)
@@ -375,7 +488,7 @@ enum class CellSource : std::uint8_t {
 };
 class ResizeMap;                       // For each cell and face place of the new grid: its source kind and
                                        //   the place index(es) in the old grid. Lives on one processor.
-// Built on the CPU from the two grids' tables and copied up for a GPU remap. Changed (A17): on a GPU grid the two
+// Built on the CPU from the two grids' tables and copied up for a GPU remap. Requires: two CPU grids (A30, item 32). Changed (A17): on a GPU grid the two
 // grids are CPU grids: the committed grid's grid::ReadGrid copy (in a batched GPU run the step's CPU copy,
 // reconcile) and the resized grid built on the CPU from the new list; the map checks that the resized grid matches the version and block count of the one the step built
 // on the GPU (kWrongGridVersion otherwise).
@@ -392,12 +505,14 @@ enum class CellValueKind : std::uint8_t {
 template <typename Value> std::expected<void, CellResizeFailure> ApplyResizeToCellValues(
     const ResizeMap& map, CellValueKind kind, const grid::CellValues<Value>& old_values,
     const grid::CellValues<double>* old_weight, grid::CellValues<Value>& new_values);
-// NEW (plan decision, decision 23). The three grid-only amounts (mass, rest volume, current volume) remapped
-// together with one limiter per split cell, so a split keeps their ratios (density); merge sums.
+// NEW (plan decision, decision 23). Not in the first version (A64). The three grid-only amounts (mass, rest volume,
+// current volume) remapped together with one limiter per split cell, so a split keeps their ratios (density); merge
+// sums.
 std::expected<void, CellResizeFailure> ApplyResizeToCellAmounts(
     const ResizeMap& map, std::span<const grid::CellValues<double>* const> old_amounts,
     const grid::CellValues<double>* old_weight, std::span<grid::CellValues<double>* const> new_amounts);
-// NEW (2026-11-14). m3 per cell place and scene ingredient (the grid-only record): split gives each small cell
+// NEW (2026-11-14). Not in the first version (A64).
+// m3 per cell place and scene ingredient (the grid-only record): split gives each small cell
 // the big cell's fractions times its own new current_volume; merge sums in index order.
 std::expected<void, CellResizeFailure> ApplyResizeToIngredientVolumes(
     const ResizeMap& map, std::uint32_t ingredient_count, const Buffer<double>& old_ingredient_volume,
@@ -432,8 +547,8 @@ enum class BatchesError : std::uint8_t {
   kStateDoesNotFitCpu,    // The state does not fit the CPU memory offered.
   kWrongGridVersion,
   kModuleFailed,          // A stage or a copy failed. See module, module_error.
-  kOutOfMemory,
   kRunOnCallFailed,
+  kOutOfMemory,           // CHANGED (reconcile item 31): last. Only from BuildBatchedRun; needed_bytes = bytes asked.
 };
 struct BatchesFailure {                // The error value of every std::expected here (A2).
   BatchesError error = BatchesError::kNone;
@@ -513,14 +628,18 @@ struct BatchReport {                   // One try.
 // where = kCpu), the current grid::GridPiece (built into step::FindLoadedGridBuffers), the per-block partial sums
 // and the report. The loaded StepTry and its GridBuffers are built by step::BuildSimulation, not here.
 class BatchedRun;
-std::expected<BatchedRun, BatchesFailure> BuildBatchedRun(const BatchPlan& plan, const step::ReadyScene& scene);
+// CHANGED (A58; correction, reconcile): the run's two blocks last; the kRunOn entries of BuildBatchesMemoryEstimate
+// are pieces of run_memory, the piece map copy a piece of cpu_run_memory (the same object in a CPU run). Requires:
+// run_memory.run_on() is the plan's processor, cpu_run_memory.run_on() == kCpu (A30).
+std::expected<BatchedRun, BatchesFailure> BuildBatchedRun(const BatchPlan& plan, const step::ReadyScene& scene,
+                                                          RunMemory& run_memory, RunMemory& cpu_run_memory);
 const BatchReport& ReadLastReport(const BatchedRun& batched_run);
-// The loaded rows at max_loaded_blocks: grid::BuildGridMemoryEstimate(run_on, 1,
-// grid::BuilderBuffersSharing::kOneForAllGrids) without its "builder buffers:" entries (changed, reconcile: the loaded
-// try's grid buffers borrow the step's grid::GridBuilderBuffers), the loaded StepTry rows of
-// every material set, the loaded particles (particles::BuildParticlesMemoryEstimate at max_loaded_particles), the
-// block partial sums; rows where = kRunOn. For reporting only: the step's batched layout is built from the step's
-// own rows, so nothing is counted twice.
+// CHANGED (A58): exactly what BuildBatchedRun builds, all kWholeRun: "batches: border search"
+// (grid::BuildBorderSearchMemoryEstimate(run_on, limits.max_cell_blocks) at max_loaded_blocks), "batches: border layer a", "batches: border
+// layer b" (4 B per loaded block each), "batches: sum buffers", "batches: sum buffers fixed bytes" (where = kRunOn),
+// "batches: piece map copy" (4 B per loaded block, where = kCpu). The step adds them to its estimate (kBatches), so
+// its blocks hold them. **Replaced:** "the loaded rows at max_loaded_blocks ... For reporting only" (those rows are
+// the step's batched rows, 5.9 item 7, and are not repeated).
 std::vector<MemoryEstimateEntry> BuildBatchesMemoryEstimate(const BatchPlan& plan);
 
 // D signature of step::StepCallbacks::run_stages, the loop the step calls instead of its own when the run is
@@ -617,6 +736,13 @@ std::expected<MemoryAvailable, BufferError> ReadMemoryAvailable(RunOn run_on);  
 std::uint64_t ComputeMemoryBytes(std::span<const MemoryEstimateEntry> rows, const MemoryCounts& counts, MemoryWhere where);
 ```
 
+NEW (A58; Foundation Tasks 17 to 19, `base/run_memory.h`; `plan-decisions.md` "Owner answers A40–A64 applied" item 3
+with its correction): `RunMemory` (move-only, one block on one processor; `run_on()`, `reserved_bytes()`,
+`handed_out_bytes()`), `BuildRunMemory`, `BuildBuffer(RunOn, std::size_t, RunMemory&)`, `kRunMemoryPieceAlignmentBytes =
+256`, `ComputeRunMemoryPieceBytes`, `ComputeRunMemoryBytes(estimate, counts, MemoryWhere where)`,
+`BufferError::kRunMemoryTooSmall`, the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`. A piece is
+never freed alone; the block must outlive its pieces.
+
 Buffers (and working buffers) passed together live on the same processor: a documented precondition, checked by
 an assertion in debug builds (A30; `BufferError::kRunOnMismatch` is removed, so this module maps nothing for it).
 Every function below that takes buffers states it as `Requires:`.
@@ -626,7 +752,10 @@ Every function below that takes buffers states it as `Requires:`.
 built grid has 1 or more), `GridFailure`, `CellId`, `FacePieceId`, `CellBlockId`, `SizeLevel`, `ToCellId`,
 `ToSizeLevel`, `ToCellCoord`, `ComputeBigCell`, `ComputeSmallCell`, `ComputeCellEighth`, `ComesBefore`,
 `GridBuffers`, `BuildGrid(const GridInputs&, GridBuffers&)`, `TakeBuffers(StaggeredGrid&&)`,
-`ComputeGridCounts`, `CheckSizeStepRule`, `FindCellPlace`, `FindFacePlace`, `FindCellAt`, `FindTouchingCells`,
+`ComputeGridCounts`, `CheckSizeStepRule`, NEW (A41, grid `cell_size_rule.h`, `plan-decisions.md` item 2):
+`CellSizeSettings`, `CellSizeFacts`, `CellWidthsByLevel`, `CellSizeRegion`, `ArtistCellSizes`, `ComputeReferenceSpeed`,
+`ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeArtistSizeLevel` (and `ComputeNewCellSizeLevel`, which
+the step calls in stage 2), `CellPlaceIndex`, `FindCellPlace`, `FindFacePlace`, `FindCellAt`, `FindTouchingCells`,
 `FindFacePieces`, `FindCellLow`, `FindCellHigh`, `ToAxis`, `ComputeFaceArea`, `ComputeCellWidth`,
 `ComputeCellCenter`, `ComputeCellCenterDistance`, `ComputeFacePosition`, `FindNearbyFaces`, `ToMaskOfAll`,
 `ComputeNearbyFaceWeights`, `ComputeFaceWeight`, `CellValues`, `FaceValues`, `CellBlockValues` (with
@@ -655,7 +784,7 @@ std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, Gr
 class BorderSearchBuffers { public: std::uint32_t max_cell_blocks() const; RunOn run_on() const; };  // Move-only.
 std::expected<BorderSearchBuffers, GridFailure> BuildBorderSearchBuffers(RunOn run_on,
                                                                          std::uint32_t max_cell_blocks);
-std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on);
+std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks);
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(const StaggeredGrid& grid, CellBlockRange range,
                                                            const Buffer<CellBlockIndex>& border_so_far,
                                                            std::uint32_t border_so_far_count, BorderWidth width,
@@ -678,8 +807,8 @@ enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids }
 `ComputeAmounts`, `ComputeAmountsPerBlock`, `AddParticles` with `AddReason::kRefillRegion`, `RemoveParticles`
 with `RemoveReason::kIntoGridOnlyRegion`, `NewParticles`, `RefillCell`, `ComputeRefillParticle`,
 `GroupParticlesByBlock`, `CheckGrouping`, `CheckParticles(const ParticlesTry&, grid::CellBlockRange)`,
-`CountRule`, `NeighbourhoodInputs` (`outside_solid`, `face_side`, `is_grid_only_region`; the step and this
-module pass `transfer::SolidsAtFaces::outside_solid` and `side`), `ParticlesSettings::cpu_memory`,
+`CountRule`, `NeighbourhoodInputs` (`outside_solid`, `face_side`, `is_grid_only_region`, null in the first version
+(A64); the step and this module pass `transfer::SolidsAtFaces::outside_solid` and `side`), `ParticlesSettings::cpu_memory`,
 `BuildParticlesMemoryEstimate`, and the two-grid count changes called only inside the resize transaction:
 
 ```cpp
@@ -773,12 +902,17 @@ whole on the GPU). Gas beside liquid (A10): the gas module provides `holds_track
 `RunMode`, `SimulationLimits`, `ReadyScene`, `StepSettings`, `Module`, `TryStepWithStages`. What the step adds
 for this module:
 
-1. `GridFields` gains, each with a committed and a try copy, bound to the try grid with `ApplyGridVersion` and
-   carried by `CellId` in `ChooseActiveCells`: `is_grid_only_region`, `layers_from_grid_only_region`
-   (`CellValues<std::uint8_t>`), `merge_ready_duration` (`CellValues<double>`, s), `grid_only_mass`,
-   `grid_only_rest_volume`, `grid_only_current_volume` (`CellValues<double>`), `grid_only_ingredient_volume`
-   (`Buffer<double>`). 34 + 8 x ingredients bytes per cell place, two copies.
-2. Callbacks `apply_grid_only_region` (end of stage `ParticlesToGrid`) and `move_grid_only_liquid` (end of
+1. CHANGED (A41, A63, A64): `GridFields` gains, each with a committed and a try copy, bound to the try grid with
+   `ApplyGridVersion` and carried by `CellId` in `ChooseActiveCells`: `merge_ready_duration` (`CellValues<double>`,
+   s), `held_velocity_gradient_size` (`CellValues<double>`, 1/s; NEW, A63), `merge_ready_step_count`
+   (`CellValues<std::uint8_t>`, saturating at 255; NEW, A63); 17 bytes per cell place, two copies (memory entries
+   `"step: held velocity gradient size"`, `"step: merge wait steps"`, `kRunOn`); saved in the state. Not in the first
+   version (A64): `is_grid_only_region`, `layers_from_grid_only_region` (`CellValues<std::uint8_t>`),
+   `grid_only_mass`, `grid_only_rest_volume`, `grid_only_current_volume` (`CellValues<double>`),
+   `grid_only_ingredient_volume` (`Buffer<double>`).
+   NEW (A62): `CommittedStepLimits::largest_liquid_speed` (m/s; largest particle speed over liquid materials at the
+   last commit, an exact max), read by `ResizeCells` for `grid::ComputeReferenceSpeed`.
+2. Not in the first version (A64): callbacks `apply_grid_only_region` (end of stage `ParticlesToGrid`) and `move_grid_only_liquid` (end of
    stage `MoveParticles`), both `StageOutcome (*)(void* context, Simulation&, StepTry&, grid::CellBlockRange)`,
    with read access on `StepTry` to the try grid, each set's `GridFromParticles` and `CellsFromParticles`, the
    geometry snapshot, `velocity_after_pressure`, both `GridFields`, `step_duration` and the cancel flag.
@@ -787,7 +921,7 @@ for this module:
    material sets, writable air pockets (`AirPocketArrays` of the try, their `first_cell_index` belongs to a
    grid version), `SolidsAtFaces` storage for the resized grid, and the free `grid::GridBuffers` that
    `BuildGrid` writes the resized grid into.
-4. `ComputeStepDuration` includes grid-only face speeds (`ReadLargestGridOnlySpeed`) in `kParticleTravel`.
+4. Not in the first version (A64): `ComputeStepDuration` includes grid-only face speeds (`ReadLargestGridOnlySpeed`) in `kParticleTravel`.
 5. Batches: (a) ranges are built from the try grid after stage 2 (`TryStepWithStages(simulation, request,
    stages)`) and a `run_stages` callback with the signature of `ApplyStagesInBatches`; null with
    `RunMode::kBatched` is `kBatchedRunNotBuilt`. (b) With `kBatched`, `BuildSimulation` puts the particle
@@ -808,7 +942,7 @@ for this module:
    `std::array<StageFunction, kStageCount> run_whole_grid{}`, non-null only for `kFindSolidSurfaces`
    (`FindGridEdgesOpenToSky`, whose flood crosses every block; plan decision, 2026-11-14, buffers in batched runs),
    `kFindLiquidSurface` (`FindMaterialBoundaries`, `FindAirPockets`, `CheckViscosityCanRun`), `kMoveParticles` (the
-   grid-only move) and `kCheckStep` (`CheckSolidExchange`, the gas changes, the next limits); a one-piece run calls
+   grid-only move; not in the first version, A64) and `kCheckStep` (`CheckSolidExchange`, the gas changes, the next limits); a one-piece run calls
    it right after `run`. The loaded try, built by `step::BuildSimulation` (not by `BatchedRun`):
 
    ```cpp
@@ -847,7 +981,7 @@ for this module:
    material_count)`; every transfer stage has one form, taking it last, A31), `materials::MaterialBuffers`, `contact::ContactBuffers` and
    `solids::SolidsBuffers` (at `max_loaded_particles` per material and `max_loaded_blocks`). The step keeps CPU
    mirrors of committed values (`"step: committed gas volume on the CPU"`, `"... gas velocity ..."`, `"...
-   grid-only marks ..."`, `"step: keep active on the CPU"`) ~~and refreshes its CPU grid copy after a committed
+   grid-only marks ..."` (later group only, A64), `"step: keep active on the CPU"`) ~~and refreshes its CPU grid copy after a committed
    resize with `grid::ReadGrid` (456 B per block, counted)~~ **replaced** (reconcile, coordinator item 6): after a
    committed resize the CPU copy is the CPU resized grid this module built into `free_cpu_grid_copy_buffers()`,
    handed over with `ApplyResizedCpuGridCopy` (item 10); no `ReadGrid`, the step's Appendix B row B5 is withdrawn.
@@ -878,15 +1012,19 @@ for this module:
                                                              grid::StaggeredGrid&& cpu_resized_grid);
     ```
     `CommitResize` in a batched GPU run requires `ApplyResizedCpuGridCopy` first (else `kBadInput`, nothing
-    committed) and swaps the CPU copy pair with no copy. `choose_cell_size` receives
-    `committed_grid.tables(RunOn::kCpu)` (`plan-decisions.md` "Reconcile pass" item 13; 3.4).
+    committed) and swaps the CPU copy pair with no copy. ~~`choose_cell_size` receives
+    `committed_grid.tables(RunOn::kCpu)`~~ **replaced** (A41): `choose_cell_size` is removed; stage 2 calls
+    `grid::ComputeNewCellSizeLevel`.
 
 **I/O and CLI (PROVIDED, per `changes-to-apply.md` 12):** the scene file carries `CellResizeSettings` and
 `BatchSettings` with their defaults; the `run` and `resume` commands build `CellResize` and, for a batched
-plan, `BatchedRun`, and set `ResizeCells`, `ChooseCellSize`, `ApplyGridOnlyRegionInStep`,
-`MoveGridOnlyLiquidInStep` and `ApplyStagesInBatches` in `step::StepCallbacks`, each as a
+plan, `BatchedRun` (CHANGED, A58: into the run's `run_memory` and `cpu_run_memory`; A63: `BuildCellResize` takes
+`RunScene::artist_cell_sizes()`, the scene's `cell_size_regions` and `cell_size_map` read at load), and set
+`ResizeCells` and `ApplyStagesInBatches` (A41, A64: `ChooseCellSize`, `ApplyGridOnlyRegionInStep` and
+`MoveGridOnlyLiquidInStep` are gone from the first version) in `step::StepCallbacks`, each as a
 `Callback<Function>{function, context}` pair with the context 3.4 and 3.7 name (`CellResize*`, `BatchedRun*`);
-`saved_state` stores the seven region arrays with the committed pressure; `run_mode` stays in the fingerprint
+`saved_state` stores the three wait arrays (A63; the seven region arrays only in the later group) with the committed
+pressure; `run_mode` stays in the fingerprint
 (5.10 item 5); the run report and events carry the `BatchPlan` (solve place, batch count, bytes copied per
 try; A15: the memory budgets and planned copies) before the run and `ResizeCellsReport` and `BatchReport` totals
 (A15: with the measured solve copies) after it; `CellResizeFailure` and `BatchesFailure` become text with
@@ -899,18 +1037,20 @@ tests. Printing (planned cost, 2026-11-14; I/O plan Tasks 23a, 29a): `io::BuildR
 last `BatchReport` (pass and solve copies) for the measured cost; `ResizeCellsReport::bytes_copied` and
 `copy_count` enter the measured copies per step after the commit.
 
-**Surface, foam and spray (PROVIDED, per `changes-to-apply.md` 13):** counts a grid-only cell as liquid
-(`is_grid_only_region`, also through `SimulationSnapshot::is_grid_only_region`; the old paper's "no false inner
-surface") and takes volume targets from `ComputeLiquidTotals`; its `make_foam_and_spray` works once per batch
+**Surface, foam and spray (PROVIDED, per `changes-to-apply.md` 13):** (not in the first version, A64: counts a
+grid-only cell as liquid, `is_grid_only_region`, also through `SimulationSnapshot::is_grid_only_region`; the old
+paper's "no false inner surface") takes volume targets from `ComputeLiquidTotals`; its `make_foam_and_spray` works once per batch
 in pass 2 on a loaded piece with no whole-grid sum inside; its `FoamAndSprayInputs::block_in_whole_grid` is the
 batched run's CPU copy of the piece map handed through `step::ApplyGridPiece`, never the empty span of a GPU piece
 (plan decision, 2026-11-14, buffers in batched runs). `VolumeTransport.lean` is not ported.
 
 **Blender add-on:** nothing is consumed. It shows what I/O's events and run report carry (run mode, batch
-plan) and writes the `CellResizeSettings` fields of the scene file.
+plan) and writes the `CellResizeSettings` fields of the scene file; NEW (A63): `cell_size_region_collection`
+(objects with `fluidity_cell_size_region.cell_width`) and `cell_size_map_image`, exported as the scene's
+`cell_size_regions` and `inputs/cell_size_map.png`.
 
-**Per material, this module carries:** liquids and mixtures: everything (ingredient volumes in grid-only
-cells, fractions on refilled particles); two liquids that do not mix are two materials, each record holds one
+**Per material, this module carries:** liquids and mixtures: everything (first version: particles of every level
+with their fractions; later group: ingredient volumes in grid-only cells, fractions on refilled particles); two liquids that do not mix are two materials, each record holds one
 of them and a cell touching another material's particles stays in the particle region (5.6). Snow, springy
 solids, cut solids: their cells keep one size and never become grid-only; their particles are never split,
 merged, removed or refilled; a split forced under them is refused. Moving solids: small cells within
@@ -936,10 +1076,13 @@ measured in the sand module.
    `copy_count` leave that copy out. ~~The row `"cell resize: committed grid copy"` is still built (one row list for
    every GPU layout) and stays idle (plan decision, 2026-11-14, buffers in batched runs).~~ **Replaced** (reconcile,
    decision 33): with `kHeldByStep` neither CPU grid of `CellResize` is built or counted.
-2. `ComputeDepthBelowSurface` (5.2) and the `CellSizeFacts` of every active cell; the plan (5.3).
-3. Region wishes per cell (5.6). If the plan is empty, no region changes, no particle sits in a grid-only
-   cell, no cell eighth needs a refill and no particle wants a split or merge: `RejectResize`, `resized =
-   false`, no error. The check costs one pass over cells and particles and returns four counts.
+2. CHANGED (A41, A62, A63): `ComputeDepthBelowSurface` (5.2); `grid::ComputeReferenceSpeed` from the committed
+   `CommittedStepLimits::largest_liquid_speed`, `|gravity|` and the biggest width; `ComputeCellSizeChanges` part 1
+   then part 2 over every block (5.3, "The pass"); on a GPU grid one counted read back of `size_change`; the plan
+   (5.3 rules 3 to 5).
+3. If the plan is empty, no particle wants a split or merge and no wait array changes: `RejectResize`, `resized =
+   false`, no error. (Not in the first version, A64: region wishes per cell (5.6); also no region change, no
+   particle in a grid-only cell and no cell eighth needing a refill.)
 4. Apply `SplitCell` and `MergeCells` to the cell list; `grid::CheckSizeStepRule`; `grid::ComputeGridCounts`
    against `max_cell_blocks` (`kTooManyCellBlocks`); `grid::BuildGrid(inputs, storage)` with `version + 1`
    into the free storage the `ResizeTry` gives (a CPU grid). Allocates nothing. A17,
@@ -952,19 +1095,21 @@ measured in the sand module.
    the GPU"); A17 makes their tables equal, and `BuildResizeMap` checks version and block count of both. With
    `kHeldByStep`, after the map is built and before `CommitResize`, `step::ApplyResizedCpuGridCopy` hands the CPU
    resized grid to the step, which keeps it as its CPU copy (no `ReadGrid`).
-   Step 3 "nothing to do" also requires that no `merge_ready_duration` changes: a change of durations alone
-   commits a same-cell resize with `version + 1` (plan decision, decision 23).
+   Step 3 "nothing to do" also requires that no wait array (`merge_ready_duration`, `merge_ready_step_count`,
+   `held_velocity_gradient_size`, A63) changes: a change of those alone commits a same-cell resize with `version + 1`
+   (plan decision, decision 23).
 5. `step::ApplyResizedGrid(resize_try, resized_grid)` (on a GPU grid `step::BuildResizedGrid` of step 4, which binds
    the same way) binds the try's `GridFields` and `SolidsAtFaces` storage to the resized grid and builds the gas try (`gas::BuildResizeTry`, reached through `gas_try()` afterwards);
    the try's air pockets come from `air_pockets_to_fill()`. `BuildResizeMap`; remap every `GridFields` array and the gas arrays (5.4); translate each
    air pocket's `first_cell_index` to the smallest cell place of the new grid that carries its label.
 6. `solids::ComputeSolidsAtFaces` on the new grid at the committed pose; `GroupParticlesByBlock` for the new
-   grid; `ApplyRegionTransfer` (5.6); `GroupParticlesByBlock`.
+   grid. (Not in the first version, A64: `ApplyRegionTransfer` (5.6); `GroupParticlesByBlock`.)
 7. `particles::AdjustParticleCount` with the committed grid and its `NeighbourhoodInputs` (from the end-pose
-   `SolidsAtFaces` and the committed `is_grid_only_region`) and the new grid with its inputs (5.4);
+   `SolidsAtFaces`; `is_grid_only_region` null, A64) and the new grid with its inputs (5.4, 5.3 "Particles in deep
+   cells");
    `GroupParticlesByBlock` if anything was split or merged.
-8. Check: totals of mass, rest volume, current volume and each ingredient volume over liquid particles and
-   grid-only cells before and after agree within `kAmountTolerance` times the total
+8. Check: totals of mass, rest volume, current volume and each ingredient volume over liquid particles (A64; the
+   later group adds the grid-only cells) before and after agree within `kAmountTolerance` times the total
    (`kAmountsDoNotBalance`); the gas amount (`gas_volume` times `gas_density`, summed) likewise; every
    remapped value is finite.
 9. `step::CommitResize(simulation, resize_try, resized_grid)`. `state_version` grows by one; time and
@@ -973,7 +1118,7 @@ measured in the sand module.
 Any failure from step 2 on calls `RejectResize` (and `grid::TakeBuffers` on a resized grid already built):
 the committed step, the previous grid, the regions and every particle are untouched to the byte, time stays
 advanced, and the step is not replayed (report, architecture "The physical step keeps a fixed topology").
-`merge_ready_duration` is part of the try, so a failed resize also earns no wait time. The run continues on
+The wait arrays are part of the try, so a failed resize also earns no wait time. The run continues on
 the previous grid; if a cell is then wider than its wanted width the next resize tries again.
 
 ### 5.2 Depth below the surface (new)
@@ -982,33 +1127,69 @@ the previous grid; if a cell is then wider than its wanted width the next resize
 than one particle radius. Depth is therefore measured on the cells: `depth = 0` in a liquid cell with
 `air_volume > 0`, a liquid-to-air face piece, or a touching cell that holds tracked gas (A10); every other
 liquid cell takes `min over touching liquid cells of (their depth + distance between the two centres)`,
-repeated until no value changes, capped at `max_depth` (`grid_only_depth_in_cell_widths` biggest widths in
-use, at least `surface_reach_in_cell_widths` smallest widths times 4). A minimum is exact in any order, so the
-result does not depend on the schedule. The geometry is that of the committed step's start positions; a
-particle moved at most half a cell width since, which the one cell width between the two region depths covers.
+repeated until no value changes, capped at `max_depth`. CHANGED (A64): `max_depth = surface_reach_in_cell_widths x
+w_max`, because `w_band = depth / surface_reach_in_cell_widths` reaches the biggest width `w_max` there and the clamp
+holds it beyond (was: `grid_only_depth_in_cell_widths` biggest widths, at least `surface_reach_in_cell_widths`
+smallest widths times 4). A minimum is exact in any order, so the result does not depend on the schedule. The
+geometry is that of the committed step's start positions; a particle moved at most half a cell width since, which
+the 8 `w_min` no-merge band covers.
 
 ### 5.3 The cell size rule and its closure
 
-Ported: the decision rule of `DecideAdaptiveWidth3D` and of the old paper's `<sec-blocks>`. New: the facts
-are computed here instead of supplied by the caller, and the camera wish is not ported.
+CHANGED (A41, A61, A62, A63; `plan-decisions.md` "Owner answers A40–A64 applied" item 2; `literature-cell-size.md`
+5). Ported: the decision rule of `DecideAdaptiveWidth3D` and of the old paper's `<sec-blocks>`, and the closure
+search. New: one shared rule, written once in grid's `cell_size_rule.h` and run on either processor, with fixed
+inputs; the facts are computed here; the camera wish is not ported. The 2026-11-14 rule (depth and solid terms only)
+is **replaced** by:
 
-1. `wanted = smallest_width * max(1, depth / (surface_reach_in_cell_widths * smallest_width))`, the same
-   with the solid distance and its reach, the smaller of the two, capped by the biggest width. The smallest
-   width where `touches_air_pocket` or `wants_smallest_cells` (gas). So the allowed width grows in proportion
-   to the distance, which already satisfies the size-step rule away from corners.
-2. A cell whose particles keep their count (snow, springy solid, cut solid) keeps its size: `kKeep` always.
+1. **Wanted width** (grid `ComputeWantedCellWidth`, per active cell, from committed fields; `w_min` = the smallest
+   width, `w_max` = the biggest, both from `CellWidthsByLevel`):
+
+   ```
+   w_band   = w_min * max(1, depth_below_surface / (surface_reach_in_cell_widths * w_min))     (8 by default)
+   w_solid  = w_min * max(1, distance_to_solid / (solid_reach_in_cell_widths * w_min))         (2 by default)
+   w_shear  = shear_width_factor * U_ref / g        for g > 0, else +infinity                  (c_u = 0.25, A62)
+   w_artist = widths.width[artist_size_level]       when artist_size_level > 0, else +infinity (A63)
+   wanted   = clamp(min(w_band, w_solid, w_shear, w_artist), w_min, w_max)
+   wanted   = w_min  where touches_air_pocket or wants_smallest_cells (gas, A10)
+   U_ref    = max(largest_liquid_speed, sqrt(|gravity| * w_max))                                (ComputeReferenceSpeed)
+   g        = held_velocity_gradient_size = max(held over the current wait, ‖∇u‖_F now)        (rule 5)
+   ```
+
+   The surface always has the smallest cells (A61): `depth = 0` gives `w_band = w_min` and the clamp gives `wanted =
+   w_min`, whatever the other terms. `‖∇u‖_F` is `ComputeVelocityGradientSize` (3.2): the full 3 x 3 gradient, not
+   speed alone (a uniform translation is exact on any cell size) and not Ando and Batty 2020's diagonal-only sum
+   (which misses shear and rotation). `w_shear` says the velocity change across one cell stays below `c_u` times the
+   scene's speed (Gerris' `|ω| Δ / max|u|` in width form); `U_ref` makes the term scale-free, with a floor from
+   gravity and the biggest cell so a scene at rest still has a speed. `c_u = 0.25` is a starting value, to calibrate
+   (A62). Worked numbers: rigid rotation at `Ω = 10 rad/s` gives `‖∇u‖_F = sqrt(2) Ω = 14.142 1/s`; with `U_ref = 1
+   m/s`, `w_shear = 0.25 / 14.142 = 0.017678 m`. The artist level comes from `ComputeArtistSizeLevel`: the finest
+   level any region containing the cell centre or the map pixel under it asks for (map column `min(floor((x - x0) /
+   domain_width_x * map_width), map_width - 1)`, row likewise, Z-up, every height). The wanted level is the biggest
+   level whose width `<= wanted` (`ComputeWantedSizeLevel`, by comparison with `CellWidthsByLevel`, never `log2`).
+   Curvature (`w_curv`) is the later group "Coarser cells on calm surfaces (later)".
+2. A cell whose particles keep their count (snow, springy solid, cut solid) keeps its size: `kKeepsItsSize` always.
 3. `kSplit` when `cell_width > wanted` (at once, ported). The first `max_cell_splits_per_resize` in fixed
-   order; the rest wait.
+   order; the rest wait. At most one level per cell per resize.
 4. `FindCellsThatMustSplit` (ported search): a split cell of level `l` forces every touching active cell of
    level `l - 1` to split, repeated until nothing is added; 26 touching directions per cell. If a forced
    cell is a rule-2 cell, the split that caused it is taken out of the plan and counted
    (`refused_split_count`); the rule is then re-run without it.
-5. Merge test for 8 sibling cells (ported): all 8 active, all `kMayMerge`, all in the same region, none a
-   rule-2 cell, none touching air, an air pocket, gas or a solid surface, and every cell touching the big cell
-   also satisfies `2 w <= merge_width_share * wanted` at the big cell's width. While the test holds,
-   `merge_ready_duration` of the 8 cells grows by the committed step's duration; any break sets it to zero.
-   The 8 are merged when the smallest of their durations reaches `merge_wait_duration` and the merge does
-   not break the size-step rule against the cells of step 4. A refused merge is never an error.
+5. **Merge test and hysteresis** (A63; `literature-cell-size.md` 5(d)). A cell asks `kMayMerge` when `2 w <=
+   merge_width_share * wanted` (0.8) and it touches no air, air pocket, gas or solid and lies at least
+   `surface_reach_in_cell_widths * w_min` (8 `w_min`) below the surface. Eight siblings pass the test when all 8 are
+   active and `kMayMerge`, and every cell touching the big cell also satisfies `2 w <= merge_width_share * wanted`
+   at the big cell's width. While the test holds, per cell `merge_ready_duration += elapsed committed time` and
+   `merge_ready_step_count += committed steps` (saturating at 255) since the last committed resize, and the held
+   gradient is `max(held, current)`; any break sets both counters to 0 and the held gradient to the current value.
+   The 8 become `kMergeReady` when their smallest duration reaches `merge_wait_duration` (0.25 s) **and** their
+   smallest step count reaches `min_merge_wait_steps` (8), and they merge unless the merge breaks the size-step rule
+   against the cells of step 4 (a refused merge is never an error). Split at once, merge late, one level per resize:
+   the gap between the split and merge thresholds (factor `2 / 0.8 = 2.5`), the time memory (wait plus held
+   maximum, which is "the maximum over the current wait") and the grading of one level are the three things every
+   solver read uses against flicker. The held value is redundant while `ResizeCells` runs after every committed step;
+   it keeps a longer resize interval correct. Remap at a resize: a split copies the held value to its 8 cells and
+   sets both counters to 0; a merge sets all three to 0.
 6. Vetoes of `main` and where they went: unresolved surface and cavities: the surface and pocket cells are
    smallest by rule 1; thin sheets and gaps: both faces of a sheet are within the surface reach; plates and
    contact: the solid reach; singular spread: `AdjustParticleCount` refuses the particle, not the cell.
@@ -1016,17 +1197,34 @@ are computed here instead of supplied by the caller, and the camera wish is not 
    `kViscousLiquidAtSizeChange` and `kInternalForceAcrossSizeChange` hold by construction: a size change
    only occurs in bulk liquid.
 
-`ChooseCellSize` (a cell that does not exist yet, stage `ChooseActiveCells`): the level of the nearest
-committed active cell plus one, capped at `smallest_size_level` (plan: probes `grid::FindCellAt` at `position +
-{-1, 0, 1}^3 * biggest width`, nearest centre, ties in fixed cell order; `smallest_size_level` when nothing is
-found). The step passes `committed_grid.tables(RunOn::kCpu)` (reconcile item 13, decision 35): real tables in a CPU
-run, the tables of `step::FindCpuGridCopy` in a batched GPU run (no copy), version 0 and null arrays in a one-piece
-GPU run (A17). With null tables it probes the CPU copy of the committed grid this `CellResize` holds; in a one-piece
-GPU run the step reads the new cells back (8 B each, counted) and sends the levels (1 B each, counted), and a
-missing or stale copy costs one counted `ReadGrid` in the next `ResizeCellsReport` (plan decision, 2026-11-14,
-buffers in batched runs). Whether a shared CPU-and-GPU size rule replaces these one-piece copies is open (owner). A new cell appears because a particle or a
-source reached it, so it is near the surface; one level per step keeps the size-step rule against the cell
-it grew from, and the next `ResizeCells` finishes the job.
+**The pass** (`ComputeCellSizeChanges`, 3.2), on the grid's processor over all blocks inside 5.1 step 2. Part 1, per
+active cell: the facts (depth from 5.2; distance to a solid = the smallest corner value of `pressure::SolidCoverage`;
+held gradient; artist level; `holds_particles_that_keep_their_count` from its particles in grouped order;
+`touches_air_pocket`, `wants_smallest_cells`, `touches_air_gas_or_solid` from the cell and its 26 touching cells),
+the wanted width, `ComputeCellSizeChange`. Part 2, per active cell: the sibling and neighbour test, the counters,
+`kMergeReady`. One byte per cell place, `size_change`; on a GPU grid that array is read back in one counted copy (1 B
+per cell place) for the CPU list edit (rules 3 to 5's list work stays on the CPU); nothing else is read back for
+sizing. Every term is a local stencil plus exact minimums and maximums, widths are compared with
+`CellWidthsByLevel`, no `log2`, `pow` or FMA: CPU and GPU, and any cut into block ranges, give the same bytes.
+
+**Particles in deep cells (A64).** A cell of level `l` holds particles of `size_level == l` (particles 5.6):
+`AdjustParticleCount` merges eight particles of level `l + 1` into one of level `l` when a resize merges their cells
+and splits one into eight when a resize splits its cell, so a big cell holds about the seeded count (8 per cell)
+with `8^k` times the volume; a cell `k` levels too fine coarsens over `k` resizes at least one wait apart and its
+particles follow level by level. Drifted particles keep their level (C2) and are counted. Cost: with `w = depth / 8`
+the number of cells below the band in a tank of surface area `A` is `∫ A dz / w(z)^3 = 512 A ∫_{8 w_min}^{D} z^-3 dz
+< 4 A / w_min^2`, against `8 A / w_min^2` in the band of 8 smallest cells: particles everywhere cost at most about
+1.5 times the band-only count for any depth when merges are allowed (discrete levels and the 0.8 share raise this
+toward 2). Scenes whose deep cells cannot coarsen (few levels, strong shear, artist regions, a solid or gas pocket
+deep down) pay `8 x (depth / w) x A / w^2`.
+
+**New cells** (stage `ChooseActiveCells`, grid `ComputeNewCellSizeLevel`, called by the step on the grid's
+processor): the level of the nearest committed active cell plus one, capped at `smallest_size_level`
+(`grid::FindCellAt` probes at `position + {-1, 0, 1}^3 * biggest width`, nearest centre, ties in fixed cell order;
+`smallest_size_level` when none is found). This is rule 1 for a new cell: it borders air, so its depth is 0 and
+its wanted width `w_min` (A61); the cap keeps the size-step rule against the cell it grew from, and the next
+`ResizeCells` finishes the job. **Replaced** (A41): `ChooseCellSize` (a CPU callback with its one-piece GPU copies:
+new cells read back, levels sent, a `ReadGrid` when no current copy was held) and the open question of a shared rule.
 
 ### 5.4 Remap between two grid versions, and conflict C2
 
@@ -1035,14 +1233,15 @@ for a split (one big cell `B`, small cells `k = 0..7`, `cell_eighth` order) and 
 
 | Value | Split | Merge |
 |---|---|---|
-| Grid-only `mass`, `rest_volume`, `current_volume`; gas `gas_volume` | `ComputeSplitAmounts` | sum of 8 in index order |
-| `ingredient_volume` | `B`'s fractions times the small cell's `current_volume` (`ApplyResizeToIngredientVolumes`) | sum |
+| Gas `gas_volume`; grid-only `mass`, `rest_volume`, `current_volume` (not in the first version, A64) | `ComputeSplitAmounts` | sum of 8 in index order |
+| `ingredient_volume` (not in the first version, A64) | `B`'s fractions times the small cell's `current_volume` (`ApplyResizeToIngredientVolumes`) | sum |
 | `pressure` (carried), gas `background_pressure`, gas `pressure` | copy | mean of the small cells with `has_pressure` (gas: weighted by `gas_volume`) |
 | Gas `gas_density`, `fuel_density`, `smoke_density`, `flame` | copy | mean weighted by `gas_volume` |
 | `has_pressure` | copy | 1 if any is 1 |
 | `pocket_of_cell` | copy | smallest label that is not `kNoAirPocket` (does not occur: rule 5) |
-| `is_grid_only_region`, `layers_from_grid_only_region` | copy | copy (all 8 agree by rule 5) |
-| `merge_ready_duration` | 0 | 0 |
+| `is_grid_only_region`, `layers_from_grid_only_region` (not in the first version, A64) | copy | copy (all 8 agree by rule 5) |
+| `merge_ready_duration`, `merge_ready_step_count` (A63) | 0 | 0 |
+| `held_velocity_gradient_size` (A63) | copy | 0 |
 | `velocity_after_pressure` | below | below |
 
 **Amounts on a split (ported, fixed).** Per axis the slope is `minmod(B - low, high - B)` over the same-size,
@@ -1077,7 +1276,13 @@ surface is split where it stands instead of crossing a size change. Option A of 
 from the last `GridToParticles`) would never be set for a drifting particle either, because a fit within 1.5
 widths of a size change is not complete.
 
-### 5.5 The grid-only region inside a step
+### 5.5 The grid-only region inside a step (not in the first version, A64)
+
+This section and 5.6 are the plan's later group "Deep liquid without particles (later; needs review)": an
+independent review of this design comes first, and two tests gate it (`GridOnlyRegion, StandingWave_KeepsAmplitude`,
+`GridOnlyRegion, ParticleBandEdge_StaysStable`, section 7). Ferstl 2016 reports a particle/grid velocity blend as
+"inherently unstable" and Ando and Batty 2020 report energy loss on coarse semi-Lagrangian cells, the two risks
+those tests measure (`literature-cell-size.md` 3, 5(e)).
 
 Invariant: **every amount of liquid is held once**, by a particle or by the record of a grid-only cell. A
 cell's total is the sum of both. Momentum is held by particles and, in the grid-only region, by the face
@@ -1121,7 +1326,7 @@ record ever mixes two materials. `moved_volume` is one partial per block, then `
 
 Pressure already treats a grid-only cell as full of liquid (distance `-2` widths, no volume correction).
 
-### 5.6 Region transfer (inside `ResizeCells`), and its ledger
+### 5.6 Region transfer (inside `ResizeCells`), and its ledger (not in the first version, A64)
 
 A cell *wants* the grid-only region when it is a liquid cell with `filled_volume == open_volume ==` the
 whole cell volume, `depth >= grid_only_depth_in_cell_widths * width`, every particle in it of one material of
@@ -1218,11 +1423,11 @@ Besides:
 - *CPU copy of the grid (batched GPU run):* stage 2 builds the needed cell list on the CPU, uploads it (`"step:
   active cell list"`, `kRunOn`) for `grid::BuildGrid` on the GPU, and builds a CPU copy of the same grid with the
   CPU builder (`"step: grid copy on the CPU"`, `kCpu`; the pair shares one CPU `grid::GridBuilderBuffers`, reconcile).
-  Grouping, `choose_cell_size`, marker upkeep and `ResizeCells` read it through `step::FindCpuGridCopy`. After a
+  Grouping, marker upkeep and `ResizeCells` (`choose_cell_size` removed, A41) read it through `step::FindCpuGridCopy`. After a
   committed resize it is the CPU resized grid `ResizeCells` built into `free_cpu_grid_copy_buffers()` and handed over
   with `step::ApplyResizedCpuGridCopy`: no `ReadGrid` refresh (reconcile, decision 33).
 - *Mirrors of committed values* (both batched modes, CPU to CPU in a batched CPU run): committed gas volume, gas
-  velocity, grid-only marks (with cell resize), keep active; all `where = kCpu`, counted.
+  velocity, grid-only marks (later group only, A64), keep active; all `where = kCpu`, counted.
 - *Stage 3's whole part:* `solids::FindGridEdgesOpenToSky` runs at `kWholeGridOnProcessor` right after pass 1,
   before stage 9's whole part.
 - *Foam and spray in pass 2:* `FoamAndSprayInputs::block_in_whole_grid` is the piece map copy `WriteBatch` already
@@ -1238,15 +1443,15 @@ whole-grid arrays are a ninth of the total, which is why they can stay.
 | Stages | Place | Why |
 |---|---|---|
 | 1 `AddNewParticles`, 2 `ChooseActiveCells`, 17 `MoveSolids`, 20 `CommitStep`, 21 `ResizeCells` | whole state on the CPU | Counters and the cell list are CPU work where the particles are (A17: the grid itself is built on the run's processor from the uploaded list, with a CPU copy built from the same list; 5.7). `MoveSolids` adds per-block partials of the contact reactions; `ApplyContactReactions` and `ComputeCutWork` run on the stage-17 `SolidsBuffers` in CPU memory (5.7). `ResizeCells` reads `GridFields` back once into CPU mirrors (about 11 kB per block both ways) and the grid through `step::FindCpuGridCopy` (one piece: its own `ReadGrid`) |
-| 3 `FindSolidSurfaces`, 4 `ParticlesToGrid` with `ComputeCellsFromParticles` and `ApplyGridOnlyRegionInStep`, 5 `SaveGridBeforeForces`, 6 `ApplyForces`, 7 `DriveWaves`, 8 `CollideSolids`, 9 `ComputeDistanceToSurface` and `FindLiquidSurface` (stage 9's `run`) | pass 1, in batches; transfer stages once per material set | Local work: a value depends on particles and faces a bounded distance away |
-| stage 3's `run_whole_grid` (`FindGridEdgesOpenToSky`, plan decision 2026-11-14) right after pass 1, then stage 9's `run_whole_grid` (`FindMaterialBoundaries`, `FindAirPockets`, `CheckViscosityCanRun`) right after pass 1; 10 `BuildPressureEquations` with `solids::BuildMotionMap`, whole (plan decision: every call of stage 10 takes all blocks or reads arrays pass 1 wrote back); 11 `SolveViscosityAndPressure`, 12 `SolvePressure`, 13 `SolveGas`; stage 16's `run_whole_grid` (`MoveGridOnlyLiquidInStep`) right after pass 2; stage 19's `run_whole_grid` after stage 17 | whole grid on the run's processor, `blocks` = all (`kWholeGridOnProcessor`; with `kInPieces` the solvers sweep their solve batches) | Global: labels, blobs, sums over the grid, solves. Same code as a one-piece run; with `kInPieces` within the solver's tolerance of it (5.10) |
+| 3 `FindSolidSurfaces`, 4 `ParticlesToGrid` with `ComputeCellsFromParticles` (and `ApplyGridOnlyRegionInStep`, not in the first version, A64), 5 `SaveGridBeforeForces`, 6 `ApplyForces`, 7 `DriveWaves`, 8 `CollideSolids`, 9 `ComputeDistanceToSurface` and `FindLiquidSurface` (stage 9's `run`) | pass 1, in batches; transfer stages once per material set | Local work: a value depends on particles and faces a bounded distance away |
+| stage 3's `run_whole_grid` (`FindGridEdgesOpenToSky`, plan decision 2026-11-14) right after pass 1, then stage 9's `run_whole_grid` (`FindMaterialBoundaries`, `FindAirPockets`, `CheckViscosityCanRun`) right after pass 1; 10 `BuildPressureEquations` with `solids::BuildMotionMap`, whole (plan decision: every call of stage 10 takes all blocks or reads arrays pass 1 wrote back); 11 `SolveViscosityAndPressure`, 12 `SolvePressure`, 13 `SolveGas`; stage 16's `run_whole_grid` (`MoveGridOnlyLiquidInStep`, not in the first version, A64) right after pass 2; stage 19's `run_whole_grid` after stage 17 | whole grid on the run's processor, `blocks` = all (`kWholeGridOnProcessor`; with `kInPieces` the solvers sweep their solve batches) | Global: labels, blobs, sums over the grid, solves. Same code as a one-piece run; with `kInPieces` within the solver's tolerance of it (5.10) |
 | 14 `SaveGridAfterPressure` (per set), 15 `GridToParticles` (per set), 16 `MoveParticles` with the per-block partials of the contact reactions, 18 `MakeFoamAndSpray`, the per-block parts of 19 `CheckStep` | pass 2, in batches | Local |
 | the sums and decisions of 19 | whole state on the CPU | From block partial sums |
 
 `kStagePlaces` (plan decision): `kNone` `kNotRun`; 1, 2, 17, 20, 21 `kWholeStateOnCpu`; 3 to 9
 `kInBatchesBeforeSolve`; 10 to 13 `kWholeGridOnProcessor`; 14, 15, 16, 18, 19 `kInBatchesAfterSolve`. Every
-non-null `run_whole_grid` part runs at `kWholeGridOnProcessor`: 3's right after pass 1, then 9's, 16's right after
-pass 2, 19's after stage 17.
+non-null `run_whole_grid` part runs at `kWholeGridOnProcessor`: 3's right after pass 1, then 9's, 19's after stage 17
+(16's right after pass 2 only in the later group, A64).
 
 A pass loads a batch once and runs all its stages on it, every material set's transfer stages included. At
 each load, `WriteBatch` builds the piece into the run's storage (`grid::BuildGridPiece`, allocating nothing)
@@ -1270,8 +1475,8 @@ with `particles::ReadParticleGroups` for the range only.
 which every range of `grid::BuildRanges(try grid, n)` with its pass-1 stacked border has at most
 `max_loaded_blocks` blocks (bisection with `FindStackedBorder`); none: `kStageFailed`, `module = kBatches`,
 `module_error = kBatchDoesNotFit`; 2 pass 1 per range: `WriteBatch`, the `run` of stages 3 to 9, `ReadBatch`; 3
-stage 3's `run_whole_grid`, stage 9's `run_whole_grid`, then 10 to 13 on the whole try; 4 pass 2 (14, 15, 16, 18, 19 `run`), then 16's
-`run_whole_grid`, stage 17, 19's `run_whole_grid`. A stage outcome other than `kNone` ends the call. After stage 13
+stage 3's `run_whole_grid`, stage 9's `run_whole_grid`, then 10 to 13 on the whole try; 4 pass 2 (14, 15, 16, 18, 19 `run`), then (later group
+only, A64) 16's `run_whole_grid`, stage 17, 19's `run_whole_grid`. A stage outcome other than `kNone` ends the call. After stage 13
 the solvers' `SolveCopyReport`s are summed into `BatchReport`. If the guard test on stage order (batched pass order
 against the one-piece order of stages 16 to 18) fails, or a stage rejects on incomplete inputs in the outer border
 blocks of a piece, the implementer stops and reports: the fix belongs in the module that owns the stage.
@@ -1318,7 +1523,7 @@ RunPlan::allowed_bytes`.
    `3 * layer`: `kBatchDoesNotFit` with the bytes; the loaded batch then gets `(1 - solve_piece_share) * room`
    instead of `room` below.
 2. `bytes_per_loaded_block` = the loaded rows (transfer for every set, the step's per-try cell and face rows,
-   `grid::BuildGridMemoryEstimate(run_on, 1, grid::BuilderBuffersSharing::kOneForAllGrids)` without its `builder buffers:`
+   `grid::BuildGridMemoryEstimate(run_on, 1, limits.max_cell_blocks, grid::BuilderBuffersSharing::kOneForAllGrids)` without its `builder buffers:`
    entries, since the loaded try's buffers borrow the step's `grid::GridBuilderBuffers`; changed, reconcile item 11) at one cell
    block and no particle; `bytes_per_loaded_particle` the same at
    one particle and no block; `particles_per_block = ceil(512 * start_limit_headroom)` per material (8 per cell).
@@ -1365,8 +1570,9 @@ correction and check (2 sweeps); `BatchReport` measures them.
 - A try copies about 0.3 GB per thousand full blocks. At a few GB per second that is seconds per try for a
   100,000-block scene, on top of the CPU-side grouping of all particles. Expect a batched step to take
   several times as long as the same step would on a GPU that held it.
-- **Breaking wave:** the intended use, and it should first be made to fit by the grid-only region, which
-  removes the particles of deep water. Batches help when the surface itself is too large.
+- **Breaking wave:** the intended use. In the first version deep water keeps particles in coarse cells (A64; at most
+  about 1.5 to 2 times the band-only count, 5.3), so batches help when the surface or the deep particles are too
+  large; the later grid-only region would remove the deep particles.
 - **Fire, also over water (A10):** workable; the gas solve stays whole when it fits (about 67 kB per block) and
   runs in pieces otherwise (about 22 kB per block stays), the markers pass in batches as their own material set,
   and the liquid beside it is batched as above.
@@ -1412,9 +1618,10 @@ is smaller.
 
 ## 6. CPU and GPU
 
-**Shared formula headers:** `cell_size_rule.h`, `remap_math.h`, `carried_velocity_math.h`,
-`grid_only_move_math.h` (one receiving cell's new amounts from its face pieces), `region_wish_math.h` (one
-cell's region wish; one face's `particle_share`), `cell_resize_error.h`, `batches_error.h`.
+**Shared formula headers:** `remap_math.h`, `cell_size_change_math.h`, `velocity_gradient_math.h` (A62),
+`cell_resize_error.h`, `batches_error.h`, and grid's `cell_size_rule.h` (A41). Not in the first version (A64):
+`carried_velocity_math.h`, `grid_only_move_math.h` (one receiving cell's new amounts from its face pieces),
+`region_wish_math.h` (one cell's region wish; one face's `particle_share`).
 
 **CPU.** The plan (lists of `CellId`, sorting, `SplitCell`, `MergeCells`, the closure search) and
 `BuildResizeMap` are CPU code for both processors. Changed (A17; replaces "as grid Q41 accepts: the changed cell
@@ -1424,7 +1631,8 @@ on the CPU for the map (in a batched GPU run into the step's free CPU copy buffe
 `step::ApplyResizedCpuGridCopy`), and the new cell list goes up (8 B per cell) for the step to build the try's grid on
 the GPU with `step::BuildResizedGrid` (reconcile); all counted in `ResizeCellsReport::bytes_copied`.
 In a GPU run a `CellResize` with `run_on = kCpu` keeps CPU mirrors of the arrays it reads (`GridFields` both
-velocities, pressure, `has_pressure`, `pocket_of_cell`, the seven region arrays; `CellGeometry` and
+velocities, pressure, `has_pressure`, `pocket_of_cell`, the three wait arrays (A63; the seven region arrays only in
+the later group, A64); `CellGeometry` and
 `FacePieceGeometry` of the last geometry; the seven gas arrays), reads the committed arrays into them, works on the
 CPU and writes the try arrays back with slice `WriteBuffer`; the mirrors are the same in both batched modes (state
 and geometry stay on the GPU). Value loops run over blocks of the range, then cell or face places; one iteration
@@ -1436,21 +1644,25 @@ solves in pieces, the solver buffers stay in CPU memory, moved in planned copies
 reports measure). This module adds no buffer or copy the step plan's Appendix A does not list. Its own copies:
 the piece map read back per load and `WriteBlockPartialsRange` (both in `BatchReport`, part of a load), the
 resize's `ReadGrid` copy (one piece), cell list upload and mirrors (`ResizeCellsReport::bytes_copied`,
-`copy_count`), `ChooseCellSize`'s copy when it holds none.
+`copy_count`), the `size_change` read back (1 B per cell place, A41). (`ChooseCellSize`'s copy is gone, A41.)
+CHANGED (A58): every `kRunOn` array below is a piece of the run's `run_memory` and kept for the whole run (no
+`kRunOn` entry is "one call" or "one step try"); the `kCpu` rows kept for the whole run are pieces of
+`cpu_run_memory`.
 
 **GPU.** Arrays (owner in brackets; all stay on the run's processor unless a row says `where = kCpu`):
 
 | Array | Element | Per | Kept for |
 |---|---|---|---|
-| region byte, layers, `merge_ready_duration`, three amounts, ingredient volumes (`step::GridFields`) | `uint8` x 2, `double` x (4 + ingredients) | cell place, 2 copies | whole run |
-| `depth_below_surface`, wanted change, region wish (`CellResize`) | `double`, `uint8` x 2 | cell place | one call |
+| `merge_ready_duration`, `held_velocity_gradient_size`, `merge_ready_step_count` (`step::GridFields`, A63) | `double` x 2, `uint8` | cell place, 2 copies | whole run |
+| `depth_below_surface`, wanted width, merge durations after, held gradient after, merge weight; size changes, merge wait steps after (`CellResize`, A41) | `double` x 5, `uint8` x 2 | cell place | whole run |
+| cell size regions, cell size map (`CellResize`, A63) | `grid::CellSizeRegion` (56 B); `uint8` | region; pixel | whole run |
 | `ResizeMap`: source kind and old index (`CellResize`) | `uint8` + `uint32` | cell place and face place of the new grid | one call |
-| amounts of removed particles per cell; refill list (`CellResize`) | `double` x (3 + ingredients); `particles::NewParticles` arrays | cell place; `max_added_per_try` | one call |
-| block partial sums (`BatchedRun`, `CellResize`) | `double` | cell block x sums in use | one step try |
-| loaded piece storage (built by the step, counted by `BuildBatchesMemoryEstimate` for reporting; borrows the step's `grid::GridBuilderBuffers`, reconcile) | `grid::BuildGridMemoryEstimate(kGpu, 1, kOneForAllGrids)` without the `builder buffers:` entries | cell block at `max_loaded_blocks` | whole run |
-| border search (`BatchedRun`, A17) | `grid::BuildBorderSearchMemoryEstimate(run_on)` + two `CellBlockIndex` buffers | cell block at `max_loaded_blocks` | whole run |
+| not in the first version (A64): region byte, layers, three amounts, ingredient volumes (`step::GridFields`); region wish, amounts of removed particles per cell, refill list (`CellResize`) | `double` x (3 + ingredients); `particles::NewParticles` arrays | cell place; `max_added_per_try` | one call |
+| block partial sums (`BatchedRun`, `CellResize`) | `double` | cell block x sums in use | whole run (A58) |
+| loaded piece storage (built and counted by the step (A58: not by `BuildBatchesMemoryEstimate`); borrows the step's `grid::GridBuilderBuffers`, reconcile) | `grid::BuildGridMemoryEstimate(kGpu, 1, limits.max_cell_blocks, kOneForAllGrids)` without the `builder buffers:` entries | cell block at `max_loaded_blocks` | whole run |
+| border search (`BatchedRun`, A17) | `grid::BuildBorderSearchMemoryEstimate(run_on, limits.max_cell_blocks)` + two `CellBlockIndex` buffers | cell block at `max_loaded_blocks` | whole run |
 | piece map copy (`BatchedRun`, A17; `where = kCpu`) | `uint32` | loaded cell block | whole run |
-| committed grid copy, resized grid on the CPU (`CellResize`, A17, grid on the GPU, `GridCopies::kHeldByCellResize` only; `where = kCpu`; changed, reconcile: not built or counted with `kHeldByStep`, where the step's CPU copy pair serves) | `grid::BuildGridMemoryEstimate(kCpu, 2, kOneForAllGrids)`: two buffers, one CPU `GridBuilderBuffers` | cell block at the limit | whole run |
+| committed grid copy, resized grid on the CPU (`CellResize`, A17, grid on the GPU, `GridCopies::kHeldByCellResize` only; `where = kCpu`; changed, reconcile: not built or counted with `kHeldByStep`, where the step's CPU copy pair serves) | `grid::BuildGridMemoryEstimate(kCpu, 2, limits.max_cell_blocks, kOneForAllGrids)`: two buffers, one CPU `GridBuilderBuffers` | cell block at the limit | whole run |
 | cell list upload (`CellResize`, A17; `where = kRunOn`) | `grid::CellId` | cell place | whole run |
 | CPU mirrors (`CellResize` with `run_on = kCpu` in a GPU run; `where = kCpu`) | as the mirrored arrays | cell and face place | whole run |
 
@@ -1458,17 +1670,20 @@ Work: one thread per new cell place gathers from the old grid (a merge reads 8 f
 6 neighbours); one thread per new face place; the 12 inner faces of a split by the thread of the big cell.
 Region transfer: one thread per cell sums its particles in id order (at most the particles of one cell);
 places in the refill list come from an integer prefix sum of per-cell counts, so ids do not depend on
-timing. `MoveGridOnlyLiquid` and `ApplyGridOnlyRegionToGrid` are gathers per cell and per face. The repeated
-minimum of 5.2 runs until a pass changes nothing. Returned to the CPU: the counts of 5.1 step 3, the cell
-ids to split and merge, the ledger's block partials, one failure record with the first failing cell in fixed
+timing (later group). `MoveGridOnlyLiquid` and `ApplyGridOnlyRegionToGrid` are gathers per cell and per face (later
+group). `ComputeCellSizeChanges`: one thread per cell place per part, gathers only (A41). The repeated
+minimum of 5.2 runs until a pass changes nothing. Returned to the CPU: the `size_change` bytes (A41), the counts of
+5.1 step 3, the ledger's block partials (later group), one failure record with the first failing cell in fixed
 order.
 
-**Ranges.** `ComputeDepthBelowSurface`, `ApplyGridOnlyRegionToGrid`, `MoveGridOnlyLiquid`,
-`ComputeLiquidTotals` and the value remap take a `CellBlockRange`. Border: touching cells
+**Ranges.** `ComputeDepthBelowSurface`, `ComputeCellSizeChanges` (part 1 over every range before part 2),
+`ComputeLiquidTotals`, the value remap (and in the later group `ApplyGridOnlyRegionToGrid`, `MoveGridOnlyLiquid`)
+take a `CellBlockRange`. Border: touching cells
 (`ApplyGridOnlyRegionToGrid` also the 1.5 widths `ComputeCarriedVelocity` reads, which touching cells
 cover). The plan and the closure search are whole-grid CPU work in every run.
 
-**Tolerance, CPU against GPU.** Plans, regions, layers, ids, counts, the ledger's counts: equal. Remapped
+**Tolerance, CPU against GPU.** Plans, `size_change`, wait arrays (A41, A63), regions, layers, ids, counts, the
+ledger's counts: equal. Remapped
 values, moved amounts, carried velocity: `|a - b| <= 1e-13 * max(|a|, |b|) + floor`, floor `1e-13` times the
 largest value of that array in the case. `depth_below_surface`: equal bytes expected (sums of the same two
 terms), demanded within `1e-13` of the cell width.
@@ -1479,7 +1694,20 @@ terms), demanded within `1e-13` of the cell width.
 
 | Test | Setup | Expected | Tolerance |
 |---|---|---|---|
-| Wanted width | depths 0, 4, 8, 16, 64 smallest widths; solid at 1 and 5 widths | smallest, smallest, smallest, 2x, 8x; solid: smallest, 2.5x capped to 2x | exact |
+| Wanted width (moved to grid, A41) | depths 0, 4, 8, 16, 64 smallest widths; solid at 1 and 5 widths | smallest, smallest, smallest, 2x, 8x; solid: smallest, 2.5x capped to 2x (grid's tests) | exact |
+| Change per cell (CHANGED, A41, A63) | width 2 w wanted 1.5 w; width w wanted 2.5 w and 2.49 w at depth 20 w; keep-count cell; depth 7.99 w and 8 w; each veto flag | `kSplit`; `kMayMerge`, `kKeep`; `kKeepsItsSize`; `kKeep`, `kMayMerge`; `kKeep` (`ComputeCellSizeChange, ...`, plan Task 7) | exact |
+| Velocity gradient (NEW, A62) | uniform field; linear field `A` (same-size and smaller neighbours); rigid rotation Ω = 10 rad/s; beside a bigger neighbour | 0; `‖A‖_F = 2.5406692`; `sqrt(2) Ω = 14.142136`; within the off-axis bound (`ComputeVelocityGradientSize, ...`) | exact; 1e-13 relative; bound |
+| Shear term (NEW, A62; `literature-cell-size.md` 5(f)4) | rigid rotation Ω = 10 rad/s, `U_ref` = 1 m/s, deep cells 0.04 m; uniform translation | every cell `kSplit`, wanted 0.017678 m; no shear split (`ComputeCellSizeChanges, RigidRotation_Splits`, `..., UniformTranslation_NoShearSplit`) | 1e-15 relative; exact |
+| Wait of time and steps (NEW, A63) | 0.05 s and 1 step per call; 0.02 s per call; one break; zero elapsed; a shear burst that ends | `kMergeReady` at call 8 (steps decide); at call 13 (time decides); 8 more calls after a break; counters unchanged; held gradient kept for the wait (`ComputeCellSizeChanges, MergeAfterTimeAndSteps`, `..., BrokenOnce_WaitStartsAgain`, `..., ZeroElapsed_CountersUnchanged`, `..., ShearBurstEnds_HeldForTheWait`) | exact |
+| Surface and artist (NEW, A61, A63) | depth 0; a region asking a finer level over deep calm cells | wanted `w_min` whatever the other terms; split inside the box only (`ComputeCellSizeChanges, SurfaceCell_IsSmallest`, `..., ArtistRegion_AsksFiner`; grid: `ComputeWantedCellWidth, SurfaceCell_IsSmallest`, `ComputeArtistSizeLevel, RegionAndMap_FinestWins`, `ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner`) | exact |
+| Same bytes (NEW, A41) | the shear scene cut into one range, 1-block and 3-block ranges; CPU against GPU | equal `size_change` and after-row bytes (`ComputeCellSizeChanges, AnyBatchCut_SameBytes`, `..., OnGpu_SameBytesAsCpu`; grid: `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu`) | exact |
+| Deep tank coarsens with particles (NEW, A64) | calm tank 2 m deep, `w_min` 0.05 m, 5 levels, 3 s | every cell deeper than `8 w_min` at the depth term's level; every liquid cell holds particles of its own level, 1..16 per cell except counted drifted ones; mass and momentum kept per resize (`ResizeCells, CalmDeepTank_CoarsensWithParticlesInEveryCell`); merged cells hold particles of their level (`ResizeCells, MergedCellHoldsParticlesOfItsLevel`) | `kAmountTolerance` |
+| Flicker and conservation (NEW, A63; 5(f)1, 2) | calm pool 1 m deep, `w_min` 0.02 m, 5 levels; a layer split then merged | depth level reached within `0.25 s x 4 + 32` steps, then no split or merge for 10 s (`ResizeCells, CalmPool_ReachesBiggestCellsThenStays`); surface cells always at `w_min` (`..., CalmTank_InsideCoarsensSurfaceStaysFinest`); mass and momentum kept (`..., SplitThenMerge_ConservesMassAndMomentum`) | exact; `kAmountTolerance` |
+| Sheets, splashes, jets (NEW, A62, A63; 5(f)3, 7) | falling sheet 0.04 m thick and a stretched bridge; a ball splashing into a coarsened tank; a 0.1 m jet at 2 m/s | no merge within `8 w_min` of either face; no particle slower than 1e-3 of the splash speed for 20 steps above the surface, momentum continuous; cells within 2 jet radii of the jet edge at `w_min` after 0.5 s (`ResizeCells, ThinSheetAndPinchOff_StaySmallest`, `..., SplashIntoCoarseRegion_NoStuckParticles`, `..., Jet_KeepsSmallCellsAlongShearLayer`) | exact; 1e-12 relative |
+| Reference speed (NEW, A62) | `largest_liquid_speed` 0.5 m/s, biggest width 0.1 m; 2 m/s | `max(0.5, sqrt(9.81 x 0.1)) = 0.990454` m/s; 2 m/s (`ResizeCells, ReferenceSpeedFromCommittedLimits`) | exact |
+| One reserved block (NEW, A58) | each builder into a block of exactly its estimate per `where`; the same less 256 B | `handed_out_bytes() == reserved_bytes()`; `kOutOfMemory` with the bytes asked (`BuildCellResize, IntoRunMemory_HandsOutExactlyTheEstimate`, `..., RunMemoryOnePieceShort_IsOutOfMemory`, `BuildBatchedRun, ...` the same two) | exact |
+| Error enums (CHANGED, item 31) | value counts | `CellResizeError` 10 values, `kOutOfMemory` 9; `BatchesError` 8, `kOutOfMemory` 7 (`CellResizeError, OutOfMemoryIsLast`, `BatchesError, OutOfMemoryIsLast`) | exact |
+| Gating, grid-only region (NEW, A64; later group) | standing wave, wavelength 1 m, tank 0.5 m deep with the bottom half grid-only, 10 periods (`T` = 0.80180 s); a tank sloshed for 20 s | amplitude within 5 % (a starting value) of the all-particle run's; no step rejected for travel at the band edge, kinetic energy never above its start plus the work of gravity, no particle stuck in a grid-only cell (`GridOnlyRegion, StandingWave_KeepsAmplitude`, `GridOnlyRegion, ParticleBandEdge_StaysStable`) | as stated |
 | Split, merge on the list | split a cell, merge it back | the starting list; `CheckSizeStepRule` passes at each step | exact |
 | Closure | 3 nested sizes, split a cell touching a corner of a cell two levels bigger | exactly the cells of the hand-made list; the old paper's corner case | exact |
 | Refused split | closure reaches a cell holding snow; the same with a springy solid | request dropped, counted, grid unchanged | exact |
@@ -1491,15 +1719,15 @@ terms), demanded within `1e-13` of the cell width.
 | Face flow, merge | 4 pieces with different velocities | big face flow = their sum | 1 rounding step |
 | Pressure at rest across a resize | column at rest, mixed sizes, split and merge one layer, then one step | largest speed stays below the solve's limit | pressure's limit |
 | Depth | flat surface over 3 sizes; a closed bubble; a tracked gas region above liquid | depth = distance from the surface cell centres; cells under the bubble and under the gas measure from it | 1e-13 of a cell width |
-| Carried velocity | rigid translation; rest | the same field; exactly the committed value | 1e-13; exact |
-| Grid-only move | uniform flow through a row of grid-only cells; a flow that would empty a cell | totals kept, each cell's volume unchanged; `kGridOnlyCellDrained`, then the step's `kShortenStep` | `kAmountTolerance`; exact |
-| Region cycle | deep tank; the surface is lowered and raised 100 times through the two depths | mass, rest volume, current volume, each ingredient volume of particles plus cells unchanged; no particle left in a grid-only cell after a resize | `kAmountTolerance` per resize |
-| Border refill | steady upward flow through the region face, 200 steps | every border cell eighth holds a particle after each resize; grid-only excess stays below one particle volume per face quarter; totals kept | exact counts; `kAmountTolerance` |
-| Absorb | particle of the record's material sent into a grid-only cell | removed at the next resize; the cell's record grew by its amounts | 1 rounding step |
-| Foreign particle (NEW) | a snow particle, then a particle of a second liquid that does not mix, sent into a grid-only cell | the cell returns to the particle region in the next resize; no record holds two materials; totals of each material kept | `kAmountTolerance` |
-| Two liquids, material sets (NEW) | two non-mixing liquids, deep, side by side, both in the one liquid set, with a snow set beside them; 50 steps | `ApplyGridOnlyRegionToGrid` adds every record to the liquid set's arrays and nothing to the snow set's; no record holds two materials; cells along the contact stay in the particle region; each set's `MaterialSetKey` checked (`kWrongMaterialSet` on a swapped array) | exact |
-| Gas beside liquid (NEW, A10) | smoke over a moving water surface in a deep tank, cells resized every step | the seven gas arrays remapped: gas amount kept; no grid-only cell touches a gas cell; gas markers never removed `kIntoGridOnlyRegion`; `ComputeLiquidTotals` with the liquid set leaves the markers out | `kAmountTolerance`; exact |
-| Full-particle comparison | standing wave in a deep tank, with and without the grid-only region, same cells | surface height within one smallest cell; kinetic energy within 5 % over 2 s | as stated |
+| Carried velocity (not in the first version, A64) | rigid translation; rest | the same field; exactly the committed value | 1e-13; exact |
+| Grid-only move (not in the first version, A64) | uniform flow through a row of grid-only cells; a flow that would empty a cell | totals kept, each cell's volume unchanged; `kGridOnlyCellDrained`, then the step's `kShortenStep` | `kAmountTolerance`; exact |
+| Region cycle (not in the first version, A64) | deep tank; the surface is lowered and raised 100 times through the two depths | mass, rest volume, current volume, each ingredient volume of particles plus cells unchanged; no particle left in a grid-only cell after a resize | `kAmountTolerance` per resize |
+| Border refill (not in the first version, A64) | steady upward flow through the region face, 200 steps | every border cell eighth holds a particle after each resize; grid-only excess stays below one particle volume per face quarter; totals kept | exact counts; `kAmountTolerance` |
+| Absorb (not in the first version, A64) | particle of the record's material sent into a grid-only cell | removed at the next resize; the cell's record grew by its amounts | 1 rounding step |
+| Foreign particle (NEW) (not in the first version, A64) | a snow particle, then a particle of a second liquid that does not mix, sent into a grid-only cell | the cell returns to the particle region in the next resize; no record holds two materials; totals of each material kept | `kAmountTolerance` |
+| Two liquids, material sets (NEW; A64 form) | two non-mixing liquids, deep, side by side, both in the one liquid set, with a snow set beside them; 50 steps | first version: snow cells keep their size, every liquid cell holds particles of its level, each material's particle totals kept per resize, `MaterialSetKey` checked; later group: `ApplyGridOnlyRegionToGrid` adds every record to the liquid set's arrays and nothing to the snow set's; no record holds two materials; cells along the contact stay in the particle region; each set's `MaterialSetKey` checked (`kWrongMaterialSet` on a swapped array) | exact |
+| Gas beside liquid (NEW, A10; A64 form) | smoke over a moving water surface in a deep tank, cells resized every step | the seven gas arrays remapped: gas amount kept; every cell holding or touching gas at the smallest size; (later group: no grid-only cell touches a gas cell); gas markers never removed `kIntoGridOnlyRegion`; `ComputeLiquidTotals` with the liquid set leaves the markers out | `kAmountTolerance`; exact |
+| Full-particle comparison (not in the first version, A64) | standing wave in a deep tank, with and without the grid-only region, same cells | surface height within one smallest cell; kinetic energy within 5 % over 2 s | as stated |
 | C2 | region of 5 x 5 x 5 cells split in one resize, particles everywhere | particles at least 1.5 widths inside are split with the conservation of particles 5.4; the others keep their size and are counted | particles' tolerances |
 | Drift across a size change | a particle carried across an existing size change, then several resizes | never split or merged; counted in `skipped_incomplete_count` | exact |
 | Failed resize | make each of steps 4 to 8 of 5.1 fail (limit of blocks, limit of particles, a NaN) | snapshot bytes equal to those taken after the step's commit; `state_version` unchanged; the storage is given back and the next step commits | exact |
@@ -1518,12 +1746,12 @@ terms), demanded within `1e-13` of the cell width.
 | Load binding (NEW) | load two ranges of different block counts in turn; then pass a loaded array bound at the earlier load to a stage | each load rebinds; the stale array is `kWrongGridVersion` from the stage's own module | exact |
 | Sum over blocks | 10,000 random partials, cut into 1, 7 and 64 batches | equal bytes | exact |
 | Per-solid sums (NEW) | a free box floating in a batched run, cut into 1, 3 and 9 batches (and solve pieces of 3 and 5 layers) | equal pushes and contact reactions, byte for byte (cuts of one mode; `Batches, FreeBoxCuts_SamePushesAndReactions`) | exact |
-| Grid copy path (NEW, A17) | deep tank with `grid_run_on = kGpu` forced onto CPU buffers (the copy path runs CPU to CPU) | same report and snapshot bytes as `grid_run_on = kCpu`; `bytes_copied == 456 * committed blocks + 8 * new cells`, `copy_count == 2` (`ResizeCells, GridCopyPath_SameAsCpuGrid`); memory estimate entries add the grid copies (`BuildCellResizeMemoryEstimate, GridOnGpu_AddsTheGridCopies`, `..., CpuMirrorsCountedOnCpu`) | exact |
+| Grid copy path (NEW, A17) | deep tank with `grid_run_on = kGpu` forced onto CPU buffers (the copy path runs CPU to CPU) | same report and snapshot bytes as `grid_run_on = kCpu`; `bytes_copied == 456 * committed blocks + 64 * committed blocks (size_change, A41) + 8 * new cells`, `copy_count == 3` (`ResizeCells, GridCopyPath_SameAsCpuGrid`); memory estimate entries add the grid copies (`BuildCellResizeMemoryEstimate, GridOnGpu_AddsTheGridCopies`, `..., CpuMirrorsCountedOnCpu`) | exact |
 | Grid copies by layout (NEW, reconcile) | `GridCopies` with each `grid_run_on`; a `kHeldByStep` `CellResize` | no `"cell resize: committed grid copy"` or `"... resized grid on the CPU"` entry with `kHeldByStep`, and `BuildCellResize` allocates exactly its estimate (`BuildCellResizeMemoryEstimate, HeldByStep_NoGridCopyRows`, `..., BatchedGpuLayout_NoGridCopyAllocated`); `kHeldByCellResize` or `kHeldByStep` with a CPU grid, `kNone` with a GPU grid: `kBadInput` (`BuildCellResize, GridCopiesNotMatchingGridRunOn_IsBadInput`) | exact |
-| Held grid copy (NEW, buffers in batched runs) | `ChooseCellSize` with null committed tables | same level as with CPU tables; a stale copy is replaced once, counted: `copy_count` 1, `bytes_copied` 456 x blocks (`ChooseCellSize, NullCommittedTables_UsesTheHeldCopy`) | exact |
+| Held grid copy (NEW, buffers in batched runs; **withdrawn**, A41: `ChooseCellSize` removed) | `ChooseCellSize` with null committed tables | same level as with CPU tables; a stale copy is replaced once, counted: `copy_count` 1, `bytes_copied` 456 x blocks (`ChooseCellSize, NullCommittedTables_UsesTheHeldCopy`) | exact |
 | Planned equals allocated (NEW, buffers in batched runs) | the plan copied into the step plan, `step::BuildSimulation` on the CPU with a forced batched layout | `ReadMemoryReport` `allocated_bytes` and `allocated_cpu_bytes` equal `bytes_on_processor` and `bytes_on_cpu - estimate.snapshots` (`BuildBatchPlan, BudgetsEqualTheBatchedAllocation`); `bytes_per_loaded_particle` exceeds the particle rows by the per-particle rows of the four loaded module instances, exactly (`BuildBatchPlan, LoadedRowsIncludeModuleInstances`) | exact |
 | Array places (NEW, buffers in batched runs) | `BuildFiveMaterialScene` in the batched layout | for every array of `ReadStepArrays` the placement rule from `kStagePlaces` equals `StepArray::whole_place`; no range part of pass 1 reads `grid_edge_is_open_to_sky` (else stop and ask the owner) (`kStagePlaces, GiveTheStepsArrayPlaces`) | exact |
-| Stage 3's whole part (NEW, buffers in batched runs) | step: a lid over two ranges cut through the pocket under it | the whole part's marks equal the one-piece stage's bytes, a range-only call would differ (`FindSolidSurfaces, OpenToSkyOnWholeGridEqualsOnePiece`); `StageTable, WholeGridPartsOnlyForStages3_9_16_19` (was `..._9_16_19`) | exact |
+| Stage 3's whole part (NEW, buffers in batched runs) | step: a lid over two ranges cut through the pocket under it | the whole part's marks equal the one-piece stage's bytes, a range-only call would differ (`FindSolidSurfaces, OpenToSkyOnWholeGridEqualsOnePiece`); `StageTable, WholeGridPartsOnlyForStages3_9_19` (was `..._9_16_19`; A64: no stage-16 part) | exact |
 | Contact partials to stage 17 (NEW, buffers in batched runs) | `BuildFreeBoxScene(500)`, 3 batches | the CPU instance's block partials equal a one-piece `CollideSolids`' bytes; the report counts their bytes once (`ReadBatch, CollideSolidsPartialsReachTheStage17Buffers`) | exact |
 | Piece map to foam (NEW, buffers in batched runs) | hand-written `make_foam_and_spray` | sees `block_in_whole_grid` equal to the map copy, never empty, in every batch (`WriteBatch, FoamInputsGetThePieceMap`); step: `ApplyGridPiece, MapOfWrongLength_IsBadInput`, `MakeFoamAndSpray, LoadedTryPassesThePieceMap` | exact |
 
@@ -1572,8 +1800,10 @@ Labels: `<sec-cell-resize>`, `<sec-cell-size-rule>`, `<sec-remap>` (the label th
 `<fig-split-remap>`, `<fig-regions>`, `<fig-batch-passes>`; pseudocode `<proc-apply-stages-in-batches>` (steps 1 to
 4 of 5.8). Pressure's `<sec-solve-in-batches>` holds the solve in pieces itself.
 
-Outline: 1 why resizing is its own transaction and what a failed one leaves; 2 the wanted width and the
-merge wait; 3 the cells that must also split; 4 remap of amounts, pressures, labels and face flows; 5
+Outline (amended 2026-11-15, A41 to A64): 1 why resizing is its own transaction and what a failed one leaves; 2 the
+shared wanted width (depth, solids, shear with the reference speed, artist regions and map; the surface smallest),
+the held gradient and the merge wait of time and steps, and particles that follow their cells' levels in deep
+liquid with the cost bound (`<proc-compute-cell-size-changes>`); items 6 to 8 below only with the later group (A64); 3 the cells that must also split; 4 remap of amounts, pressures, labels and face flows; 5
 splitting particles needs both grids; 6 two regions and one ledger, one material per record; 7 the grid-only
 region inside a step; 8 region transfer by particles; 9 batches: what stays on the GPU in each mode, two
 passes, the stacked border, the three ways to run and how the planner chooses and reports the memory budgets and
@@ -1610,8 +1840,10 @@ below), [1] Jiang 2015 (what a split must keep), [6] Wang, Sun, Zhu 2026 (cells 
 | `AdaptiveLiquidMaterialOwner3D { kParticles, kEulerian }` | `RegionKind { kParticleRegion, kGridOnlyRegion }`, `is_grid_only_region` | DECIDED (Q5) |
 | band, core, `kParticleDepthInLeafWidths`, `kOverlapInLeafWidths` | `particle_region`, `grid_only_region`, `particle_region_depth_in_cell_widths`, `overlap_layer_count` | DECIDED |
 | `PlanLiquidBandPlacement3D`, `kRetire`, `kReseed`, `RetireLiquidBandCell3D`, `ReseedLiquidCoreCell3D` | `ApplyRegionTransfer`; particles removed `kIntoGridOnlyRegion`, added `kRefillRegion` | DECIDED |
-| `PrepareAdaptiveLiquidCoreTransport3D` | `MoveGridOnlyLiquid`, callback `MoveGridOnlyLiquidInStep` | NEW (decision 12) |
-| (none) | `ApplyGridOnlyRegionToGrid`, callback `ApplyGridOnlyRegionInStep` | NEW (decision 12; 2026-11-14) |
+| `PrepareAdaptiveLiquidCoreTransport3D` | `MoveGridOnlyLiquid`, callback `MoveGridOnlyLiquidInStep` | NEW (decision 12); not in the first version (A64) |
+| (none) | `ApplyGridOnlyRegionToGrid`, callback `ApplyGridOnlyRegionInStep` | NEW (decision 12; 2026-11-14); not in the first version (A64) |
+| (none) | `ComputeCellSizeChanges`, `CellSizeChangesPart`, `CellSizeChange::kMergeReady`, `kKeepsItsSize`, `ComputeVelocityGradientSize`, `velocity gradient size`, `reference speed`, `held_velocity_gradient_size`, `merge_ready_step_count`, `cell size region`, `cell size map`, `ResizeCellsReport::totals_before` / `totals_after` | NEW (A41, A62, A63, A64; decision 41) |
+| (none) | `ChooseCellSize` | removed (A41); grid `ComputeNewCellSizeLevel` |
 | `BlendLiquidBandCarrier3D`, `particle_weight` | step 3 of 5.5, `particle_share` | NEW |
 | `LiquidRemapInventory3D`, `inventory` | `GridOnlyAmounts` with `mass`, `rest_volume`, `current_volume`, `ingredient_volume` | VERIFIED, below (decision 3) |
 | `carrier_velocity`, `eulerian_carrier` | `velocity_after_pressure` (committed), `carried_velocity` | VERIFIED, below (decision 3) |
@@ -1669,7 +1901,8 @@ the overload pairs of `ComputeLiquidTotals` and `ComputeSumOverBlocks` -> one fo
 - The flat-tank assumptions: `surface_height_`, "the core may not reach the open tank surface" as a tank
   rule, `solid_upper`, exterior face records with apertures (`adaptive_liquid_remap_3d.cc:205-400`): open
   areas are found each step by pressure.
-- `camera_width` and `physical_width` as inputs of the size rule; `support_certified`.
+- `camera_width` and `physical_width` as inputs of the size rule; `support_certified`. The size rule's curvature
+  term (`w_curv`) and coarse surface cells: the plan's later group "Coarser cells on calm surfaces (later)" (A61).
 - The 4,096-cell and 24,576-face limits; `AdaptiveLiquidCoreTransportWorkspace3D`; the permutation
   `[0,4,2,6,1,5,3,7]`.
 - `graded_liquid_wet_transition_3d.cc` (one particle crossing a size change in a fixture),
@@ -1737,6 +1970,8 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
    Decision: as proposed, defaults set on the wave scene; snow, springy solids and cut solids keep one size
    (sand by the same rule in the sand module, A9); `wants_smallest_cells` marks gas cells (A10), no camera
    wish. Source: recommended option (owner's standing instruction, 2026-11-14); A9, A10.
+   **Amended by decision 41** (A41, A61 to A63): the rule gains the shear and artist terms, is owned by grid and
+   shared by both processors; the hysteresis gains the step count and the held gradient.
 6. **The solves are not batched.** Whole grid on the GPU (55 kB per block; 190 kB with viscosity), CPU as
    fallback, no domain split. `pressure::EquationInputs::border_cell_pressure` and `kLiquidToBorderCell`
    are then never used: delete them from the pressure design, or keep them for a later domain split?
@@ -1770,6 +2005,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
    Decision: confirmed as listed; also, a grid-only record holds one liquid material and a cell touching gas
    or another material stays in the particle region (A8, A10). Source: recommended option (owner's standing
    instruction, 2026-11-14).
+   **Not in the first version (A64; decision 40):** the region numbers belong to the later group.
 10. **Inner faces of a split.** Ported: flows on 7 faces of a tree, 0 on the other 5 (not symmetric). The
     alternative, the smallest flows that give the same imbalances, is new. Recommendation: port; the next
     pressure solve evens it out.
@@ -1789,6 +2025,8 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     option (owner's standing instruction, 2026-11-14). The shared `CallbackContext` of the first update is
     gone: each step callback is a `Callback<Function>{function, context}` pair (step decision in
     `changes-to-apply.md`), with `CellResize*` or `BatchedRun*` as context (3.4, 3.7).
+   **Amended by decision 40** (A64): `MoveGridOnlyLiquid`, `ApplyGridOnlyRegionToGrid`, their callbacks,
+   `ReadLargestGridOnlySpeed`, `kWrongMaterialSet` and `layers_from_grid_only_region` are the later group's.
 13. **(A15) The solves are batched too.** Three ways to run, decided per run: `RunMode { kOnePiece, kBatched,
     kBatchedWithSolvesInPieces }` (step); `SolvePlace { kWholeGridOnProcessor, kInPieces }`; a scene far larger than
     GPU memory runs, limited by CPU memory. The solve in pieces is pressure's `SolveBatches`, used by pressure,
@@ -1824,6 +2062,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     answer A17; `plan-decisions.md` "A17 follow-ups"; plan decision, 2026-11-14 (cell resize plan Tasks 10, 24).
     **Amended by decisions 33 and 34** (reconcile): the CPU grids follow `GridCopies`; the step builds the GPU grid
     with `step::BuildResizedGrid`.
+    **Amended by decision 41** (A41): the resize also reads back the `size_change` bytes (1 B per cell place, counted).
 19. **CPU mirrors.** In a batched (or any) GPU run a `CellResize` with `run_on = kCpu` keeps CPU mirrors of the
     arrays it reads, `where = kCpu`, the same in both batched modes. Source: `plan-decisions.md` "Cell resize and
     batches" and "A17 follow-ups".
@@ -1878,6 +2117,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     **Replaced in part by decisions 33 and 35** (reconcile): "its row stays, idle" is withdrawn (with `kHeldByStep`
     no CPU grid of `CellResize` is built or counted); in a batched GPU run the step passes the CPU copy's real tables,
     so `ChooseCellSize` gets null tables only in a one-piece GPU run.
+    **Replaced in part by decision 41** (A41): the `ChooseCellSize` half is withdrawn (no callback).
 32. **Copies shown to the user.** I/O's budget reads the `BatchPlan` fields and the `BatchesFailure`; its measured
     cost reads `BatchReport` and the resize's copies (section 4, I/O). Source: plan decision, 2026-11-14 (planned
     cost).
@@ -1900,10 +2140,12 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     real tables in a CPU run; version 0 and null arrays in a one-piece GPU run (then `ChooseCellSize` reads its own
     CPU copy); `FindCpuGridCopy(...)->tables(kCpu)` in a batched GPU run. The one-piece copies stay an owner question
     (Open 2). Decision: as listed. Source: `plan-decisions.md`, Reconcile pass item 13 and coordinator item (2).
+    **Replaced** by decision 41 (A41): `choose_cell_size` is removed; stage 2 calls `grid::ComputeNewCellSizeLevel` on
+    the grid's processor, with no copy.
 36. **(Reconcile) Grid buffers sized by the planner, one builder buffers.** The grid has no default room
     (`GridSettings::max_cell_blocks` 0 is `kBadInput`); the loaded try's grid buffers borrow the step's
     `grid::GridBuilderBuffers`, so `bytes_per_loaded_block` and `BuildBatchesMemoryEstimate` count
-    `grid::BuildGridMemoryEstimate(run_on, 1, kOneForAllGrids)` without its `builder buffers:` entries. Decision: as
+    `grid::BuildGridMemoryEstimate(run_on, 1, limits.max_cell_blocks, kOneForAllGrids)` without its `builder buffers:` entries. Decision: as
     listed. Source: `plan-decisions.md`, Reconcile pass item 11; cell resize plan Task 38.
 37. **(A29) `Take`, not `Release`.** `grid::ReleaseBuffers` is renamed `grid::TakeBuffers` (for a grid and a
     piece): it gets the preallocated buffers back out of a grid no longer needed. Decision: as listed. Source:
@@ -1916,6 +2158,52 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     form, which takes a `SumBuffers&` (the forms that built their own are removed; tests build their buffers).
     Decision: as listed. Source: `owner-answers.md` A31; cell resize plan Tasks 23, 37.
 
+40. **(A64) Particles everywhere in the liquid.** First version: every liquid cell holds particles at every depth
+    and cell size; no grid-only region, record, velocity blend, carried velocity or region transfer. A cell of level
+    `l` holds particles of level `l`; `AdjustParticleCount` merges and splits them with their cells, one level per
+    resize (5.3 "Particles in deep cells", with the cost bound). The grid-only design is kept, marked "not in the
+    first version (A64)", as the plan's later group "Deep liquid without particles (later; needs review)": an
+    independent review first, then the gating tests `GridOnlyRegion, StandingWave_KeepsAmplitude` and
+    `GridOnlyRegion, ParticleBandEdge_StaysStable`. `regions.h` is split into `depth_below_surface.h` and
+    `liquid_totals.h` (plan decision); `ComputeLiquidTotals` sums particles only; `ResizeCellsReport::totals_before`
+    and `totals_after` replace the ledger's totals (plan decision); `CellResizeError` drops `kWrongMaterialSet`,
+    `kGridOnlyCellDrained`, `kGridOnlyCellTooFull` (the later group appends them); `max_depth =
+    surface_reach_in_cell_widths x w_max`. Source: owner answer A64; `plan-decisions.md` "Owner answers A40–A64
+    applied" item 1.
+41. **(A41, A61, A62, A63; A52 refined) The shared cell size rule.** Grid owns `cell_size_rule.h` (wanted width with
+    depth, solid, shear and artist terms, reference speed, new-cell level, artist regions and map); this module owns
+    `ComputeVelocityGradientSize`, `ComputeCellSizeChange` (with `kMergeReady` and, plan decision, `kKeepsItsSize`, so
+    the GPU run reads back one byte per cell) and the two-part pass `ComputeCellSizeChanges` with the hysteresis:
+    split at once; merge after `2 w <= 0.8 x wanted` held for 0.25 s and 8 committed steps; never within 8 `w_min` of
+    the surface or touching air, a pocket, gas or a solid; one level per resize; a held gradient. The surface always
+    has the smallest cells (A61). `ChooseCellSize` and its copies are removed; `GridCopies` stays for the resize map.
+    Remap of the held gradient: a split copies it (plan-decisions' explicit remap rule; the safe side, it only
+    delays a merge), a merge gives 0. The off-diagonal gradient beside a bigger neighbour is first order (plan
+    decision; the exactness claim of `plan-decisions.md` holds for same-size and smaller neighbours). Source: owner
+    answers A41, A61, A62, A63; `plan-decisions.md` "Owner answers A40–A64 applied" item 2.
+42. **(A61) Coarser cells on calm surfaces.** The curvature term and coarse surface cells are the plan's later
+    group "Coarser cells on calm surfaces (later)", with the T-junction-aware surface pressure condition (Ando and
+    Batty 2020, Eq. 25) and bump-free resampling (Ando 2013) first. Source: owner answer A61; `plan-decisions.md`
+    item 2, "Later group".
+43. **(A58) One reserved block per processor.** `BuildCellResize` and `BuildBatchedRun` take `RunMemory&
+    run_memory, RunMemory& cpu_run_memory` last; every `kRunOn` row is `kWholeRun`; one entry per buffer; the
+    estimate tests become `..., IntoRunMemory_HandsOutExactlyTheEstimate`. `BuildBatchesMemoryEstimate` lists only
+    what `BuildBatchedRun` builds (plan decision: the loaded rows it listed for reporting are the step's batched
+    rows and are not repeated); `BatchPlan::bytes_on_processor` is `ComputeRunMemoryBytes(..., kRunOn)`. Source:
+    owner answer A58; `plan-decisions.md` item 3 and its correction.
+44. **(A63) Artist inputs.** `BuildCellResize` takes `const grid::ArtistCellSizes& artist` (CPU views from I/O's
+    `RunScene::artist_cell_sizes()`) and copies regions and map once into two rows on its processor. Source: owner
+    answer A63; `plan-decisions.md` item 2, "Artist inputs"; I/O plan (signature agreed with the I/O plan).
+45. **(Reconcile item 31) `kOutOfMemory` last.** `CellResizeError::kOutOfMemory` (value 9) and
+    `BatchesError::kOutOfMemory` (value 7) are the last values, returned only by the builders, and what
+    `BufferError::kRunMemoryTooSmall` maps to. Source: `plan-decisions.md` item 11.
+46. **(Reconcile item 32) Span forms on a GPU grid.** `FindCellsThatMustSplit`, `SplitCell`, `MergeCells`, the
+    resize plan and `BuildResizeMap` called with tables of a GPU grid break a `Requires:` (debug assertion), not
+    `kBadInput`. Source: `plan-decisions.md` item 11 (A30).
+47. **(A64, A41) Batches.** `StageTable::run_whole_grid[kMoveParticles]` is null in the first version (stage
+    places 3, 9, 19 only); the batched mirrors hold the three wait arrays; the deep-tank batched test runs with
+    particles everywhere. Source: owner answers A41, A64; `plan-decisions.md` items 1 and 2.
+
 **Open**
 
 1. `BatchSettings::solve_piece_share = 0.25` and the batched direct-solve room `4 * max_cells` (pressure's) are new
@@ -1923,7 +2211,7 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
 2. One-piece GPU `choose_cell_size`: the argument is decided (decision 35), and the one-piece GPU run pays counted
    copies (new cells read back, levels sent, a `ReadGrid` when `CellResize` holds no current copy). Open for the
    owner: a shared CPU-and-GPU size rule instead of the callback would remove these copies (`plan-decisions.md`
-   "Planned cost shown to the user", open point 2).
+   "Planned cost shown to the user", open point 2). **Settled** (A41, decision 41): the shared rule replaces the callback; no copies.
 3. In a batched GPU run, stage 2 (`ChooseActiveCells`) runs at `kWholeStateOnCpu` while A17 has the step build
    the grid on the GPU from a `Buffer<CellId>` there; how the CPU-made list reaches the GPU builder (an upload like
    the resize's, counted) is not stated in the plans. **Settled** (plan decision, 2026-11-14, buffers in batched
@@ -1937,3 +2225,15 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
    batch. The step builds the solids try only in the first call of a try (step plan Task 33a checks it); the guard
    test on stage order covers it. If the owner prefers, those calls move to stage 2 (`plan-decisions.md` "Planned
    cost shown to the user", open point 3).
+7. (A58) After `step::ApplyLimits` builds new blocks, the `CellResize` and `BatchedRun` built into the old ones must
+   be built again into the new ones before the next call, and `CellResize` must carry the time and step count of its
+   last committed merge test across that rebuild. The carrying function (or a `BuildCellResize` argument) is for
+   the step and I/O plans to name; owner to note. **Decided (reconcile, 2026-11-15):** the step's new callback
+   `StepCallbacks::limits_raised` (step design 3.9, 5.7 step 3a) is called by `ApplyLimits` after the new blocks are
+   reserved and before the old ones are freed; I/O's handler builds a new `CellResize` and `BatchedRun` into
+   `step::FindRunMemory` / `FindCpuRunMemory` at the new limits and moves the old `CellResize`'s last report into it.
+   The merge wait state needs no carrying here: `merge_ready_duration`, `merge_ready_step_count` and
+   `held_velocity_gradient_size` live in the step's committed `GridFields`, which `ApplyLimits` copies.
+8. (A62) `shear_width_factor = 0.25` and the jet test's expectation are starting values; the jet and flicker tests
+   report calibration findings to the owner instead of changing defaults.
+9. (A64) The gating tolerance 5 % of `GridOnlyRegion, StandingWave_KeepsAmplitude` is a starting value.

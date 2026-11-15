@@ -3,7 +3,9 @@
 Status: updated on 2026-11-14 with the owner's answers (A1 to A22), `changes-to-apply.md`, and the Blender
 plan's decisions recorded in `plan-decisions.md` (D1 names under A22, D2 test levels, D3 Blender 5.3 API facts,
 D8 finding codes, D12 one-version witness records, D13 wind from Blender force fields). Updated again on 2026-11-14 with A24, A25 and
-the reconcile pass's coordinator item (7) (section 11, decisions 17 and 18), and with A27 (decision 19). Module 12 of the
+the reconcile pass's coordinator item (7) (section 11, decisions 17 and 18), and with A27 (decision 19). Updated on
+2026-11-15 with owner answers A40, A47 to A50, A53, A57 to A60, A63 and A64 (`plan-decisions.md`, "Owner answers
+A40-A64 applied"; section 11, decisions 20 to 31). Module 12 of the
 build order ("Blender add-on", file 14 of this folder), the last consumer before sand: it adapts to the final
 designs of I/O and CLI (commands, events, exit codes, scene file, `file_list`, `report`, `check --cache`,
 `run --outputs`), of surface with foam and spray (products, channel table, format table and its witness
@@ -106,6 +108,7 @@ blender/fluidity/
     native_calls.py        one-shot calls of the CLI that print one JSON event
     force_fields.py        WIND_ACCELERATION_PER_STRENGTH, FORCE_FIELD_TYPE_TABLE, build_wind_keys,
                            check_force_fields (3.13)
+    grey_png.py            to_grey_levels, write_grey_png: the cell size map (3.14, NEW (A63))
     events.py              read_events (the journal), Event
     run_state.py           RunState, RunStatus, apply_event, apply_request
     supervisor.py          RunSupervisor
@@ -120,6 +123,9 @@ blender/fluidity/
   ui_timer.py              tick()
   panels.py                handlers.py  preferences.py
   bin/<platform>/fluidity[.exe]   one native executable per packaged platform
+  bin/<platform>/cudart64_<major>.dll | libcudart.so.<major>   NEW (A49): the CUDA runtime it was built with
+                                  (windows-x64, linux-x64; none on macos-arm64)
+  licenses/cuda-runtime.txt       NEW (A49): the redistribution notice of that runtime (5.10)
 tools/blender/witness/     3.12; not packaged
 tools/blender/probe_blender_api.py   the Blender 5.3 API probe (5.14); not packaged
 native/fluidity/cli/write_witness_files.cc   3.12; program fluidity_write_witness_files, never packaged
@@ -207,6 +213,25 @@ sentences come only from the native capability findings (5.3). NEW (A25): the vi
 "Pa s. 0: the liquid has no viscosity and the scene uses the faster pressure solve; above 0: the viscous
 solve, for the whole run" (a liquid is viscous exactly when its viscosity is above 0, fixed for the run).
 
+NEW rows (2026-11-15; property path, scene file path, unit, label, layer, `changes`; tooltips exact):
+
+| Property path | Scene file path | Unit, label, layer, changes | Tooltip |
+|---|---|---|---|
+| `force_field_collection` | `wind[].acceleration` (A47: was `gas_wind[]`) | m/s2, "Force Fields", PHYSICAL_DETAIL, SIMULATION | "m/s2. Wind from Blender Wind force fields in this collection (all force fields in the scene when empty): 1.0 m/s2 per unit of Strength, along the field's local Z axis. It moves gas, spray and foam, never the liquid. Falloff, noise, flow other than 1 and other field types are reported in the check." (the number built from `WIND_ACCELERATION_PER_STRENGTH`) |
+| `cell_size_region_collection` | `cell_size_regions[].low_corner`, `cell_size_regions[].high_corner` (A63) | m, "Cell Size Regions", PHYSICAL_DETAIL, SIMULATION | "m. Each object in this collection asks for cells no wider than its Cell Width inside its world axis-aligned bounding box. Used when cell resize is on." |
+| `cell_size_region_collection.objects[].fluidity_cell_size_region.cell_width` | `cell_size_regions[].cell_width` (A63) | m, "Cell Width", PHYSICAL_DETAIL, SIMULATION | "m. Widest cell asked inside this object's box, rounded down to a size level. 0: the domain's smallest cell width." |
+| `cell_size_map_image` | `cell_size_map.image` (A63) | image, "Cell Size Map", PHYSICAL_DETAIL, SIMULATION | "image. Top view of the domain (x to the right, y up): black asks nothing, brighter asks finer cells at every height (white: the smallest). Saved as an 8-bit grey PNG with the run. Used when cell resize is on." |
+| `participants[].slip_length` | `solids[].slip_length` (A53) | m, "Slip Length", PHYSICAL_DETAIL, SIMULATION | "m. How far a viscous liquid slips along this fixed or driven solid: 0 sticks (default); larger slips more; Free Slip: no viscous drag along it. A free solid always sticks; a liquid with viscosity 0 slides with friction." |
+| `participants[].free_slip` | `solids[].free_slip` (A53) | no unit, "Free Slip", PHYSICAL_DETAIL, SIMULATION | "no unit. On: no viscous drag along this fixed or driven solid, whatever Slip Length says." |
+| `participants[].guide_kind` | `solids[].free_solid.guide.kind` (A59) | no unit, "Guide", PHYSICAL_DETAIL, SIMULATION | "no unit. Axes: the free solid moves and turns only along the ticked world axes. Rail: it slides along the local Z axis of the Guide Object and does not turn. Hinge: it turns about the Guide Object's local Z axis through its location at the first frame." |
+| `participants[].guide_object` | `solids[].free_solid.guide.rail_direction`, `.hinge_point`, `.hinge_axis` (A59) | m, "Guide Object", PHYSICAL_DETAIL, SIMULATION | "m. An empty whose local Z axis (and, for a hinge, location) at the first frame gives the rail or hinge." |
+| `memory_share_of_free` | `step.memory_share_of_free` (A58) | no unit, "Share of Free Memory", PERFORMANCE, OUTPUT | "no unit. The run may plan up to this share of the memory free when it starts (0.9 by default)." |
+| `memory_left_free_mib` | `step.memory_left_free_bytes` (A58; MiB in the panel, bytes in the file; `run_on` stays top-level) | MiB, "Memory Left Free", PERFORMANCE, OUTPUT | "MiB. Memory the run always leaves free for other programs (512 MiB by default)." |
+
+The moved axis flags `moves_along_x`, `_y`, `_z`, `turns` keep their rows with scene file paths
+`solids[].free_solid.guide.moves_along_x` and so on (A59). `particle_region_depth_in_cell_widths` and
+`grid_only_depth_in_cell_widths` have no row: not in the first version (A64).
+
 ```python
 @dataclass(frozen=True)
 class SubstancePreset:
@@ -245,9 +270,12 @@ class ParticipantDescription:
     path: tuple[PoseKey, ...] = ()      # DRIVEN with KEYS.
     after_path: str = "stays_at_last_key"   # or "leaves_scene" (solids::AfterPath).
     wave_stroke: WaveStroke | None = None   # stroke m, wave_period s, ramp_duration s, travel_direction.
-    free_solid: FreeSolid | None = None # mass kg, moves_along_x/_y/_z, turns, start_linear_velocity m/s,
-                                        #   start_angular_velocity rad/s, steady_force N.
+    free_solid: FreeSolid | None = None # mass kg, start_linear_velocity m/s, start_angular_velocity rad/s,
+                                        #   steady_force N, guide: FreeSolidGuide (below, NEW (A59)).
     friction_scale: float = 1.0
+    slip_length: float | None = None    # NEW (A53). m. FIXED and DRIVEN solids only, beside a viscous liquid; None:
+                                        #   neither slip field written (the native defaults: 0, full stick).
+    free_slip: bool = False             # NEW (A53). Written with slip_length; true overrides the number.
     start_velocity: Vec3 = (0, 0, 0)    # m/s. START_MATERIAL.
     same_material_as: int = 0           # START_MATERIAL of snow or a springy solid: region_id it shares a body with.
     source: SourceDescription | None = None        # volume_rate m3/s, velocity m/s, start_time, end_time s.
@@ -262,16 +290,56 @@ class SceneDescription:
     open_sea: OpenSea | None
     gas: GasDescription | None          # law, burn; the gas substance is in `substances` with kind "gas".
     wind_keys: tuple[WindKey, ...]      # time s; acceleration m/s2, world. From build_wind_keys (3.13): the
-                                        #   Wind force fields read by the scene reader. Empty: no wind or no gas.
+                                        #   Wind force fields read by the scene reader. Empty: no Wind field.
+                                        #   Written as `wind` (A47; was `gas_wind`), with or without gas.
     cell_resize: CellResizeDescription | None      # None: no resize.
     solver: SolverDetail; run: RunDetail; outputs: OutputRequest
+    cell_size_regions: tuple[CellSizeRegionDescription, ...] = ()   # NEW (A63). Written only with cell_resize.
+    cell_size_map: CellSizeMapDescription | None = None             # NEW (A63). Written only with cell_resize.
 
+@dataclass(frozen=True)
+class FreeSolidGuide:                   # NEW (A59). solids::FreeMotionLimits in world axes; scene file free_solid.guide.
+    kind: str = "axis_limits"           # "axis_limits" | "rail" | "hinge" (solids::GuideKind).
+    moves_along_x: bool = True; moves_along_y: bool = True; moves_along_z: bool = True; turns: bool = True
+    rail_direction: Vec3 = (0.0, 0.0, 1.0)  # Unit, world: the guide empty's local +Z at the first frame (rail).
+    hinge_point: Vec3 = (0.0, 0.0, 0.0)     # m, world: the guide empty's location at the first frame (hinge).
+    hinge_axis: Vec3 = (0.0, 0.0, 1.0)      # Unit, world: the guide empty's local +Z at the first frame (hinge).
+@dataclass(frozen=True)
+class FreeSolid:
+    mass: float                         # kg.
+    start_linear_velocity: Vec3; start_angular_velocity: Vec3     # m/s; rad/s.
+    steady_force: Vec3                  # N.
+    guide: FreeSolidGuide = FreeSolidGuide()   # NEW (A59): the axis flags moved here.
+@dataclass(frozen=True)
+class CellResizeDescription:            # cell_resize::CellResizeSettings::cell_size (a grid::CellSizeSettings, A41).
+    surface_reach_in_cell_widths: float; solid_reach_in_cell_widths: float
+    # particle_region_depth_in_cell_widths, grid_only_depth_in_cell_widths: not in the first version (A64).
+@dataclass(frozen=True)
+class CellSizeRegionDescription:        # NEW (A63). grid::CellSizeRegion before rounding to a level.
+    object_name: str                    # For messages only.
+    low_corner: Vec3; high_corner: Vec3 # m, world: the object's world axis-aligned bounding box.
+    cell_width: float                   # m, > 0: the object's value, or the domain's smallest cell width for 0.
+@dataclass(frozen=True)
+class CellSizeMapDescription:           # NEW (A63). The domain's cell_size_map_image as grey levels.
+    image_name: str                     # Blender's Image name, for messages.
+    width: int; height: int             # Pixels, both >= 1.
+    grey_levels: bytes                  # width * height bytes, top row first (PNG order): to_grey_levels (3.14).
+@dataclass(frozen=True)
+class RunDetail:                        # Changed (A58): memory_share_of_total removed.
+    run_on: str                         # "cpu" | "gpu".
+    memory_share_of_free: float = 0.9   # No unit. step::kDefaultMemoryShareOfFree.
+    memory_left_free_bytes: int = 536_870_912   # B. step::kDefaultMemoryLeftFreeBytes (512 MiB); the panel shows MiB.
+
+CELL_SIZE_MAP_FILE = "inputs/cell_size_map.png"   # NEW (A63). Relative to the scene file.
 def write_scene_file(description: SceneDescription, path: Path) -> None | AddonFailure: ...
-def compute_scene_digest(description: SceneDescription) -> str: ...   # Hash of the bytes write_scene_file writes.
+    # Also writes description.cell_size_map as <path.parent>/CELL_SIZE_MAP_FILE (write_grey_png) when present.
+def compute_scene_digest(description: SceneDescription) -> str: ...
+    # Hash of the bytes write_scene_file writes: the scene file, then the map PNG when present (A63).
 ```
 
 `write_scene_file` writes UTF-8 JSON with Python's standard library (I/O decision 6), keys in the order of 4.1,
-every float with `repr` (round trip), ids as JSON integers below 2^53. `compute_scene_digest` is only the
+every float with `repr` (round trip), ids as JSON integers below 2^53.
+`compute_scene_digest` is only the
 add-on's "did anything I write change" test. Whether a run may continue is decided by the native
 `run_fingerprint` (D) through `check --cache`, never by this digest.
 
@@ -324,11 +392,13 @@ The add-on's own finding codes (module `"addon"`; stable, never translated; D8).
 where the scene file schema cannot carry a turned source box), `size_not_positive`, `rate_not_positive`,
 `source_window_outside_frames`, `matrix_sheared_or_mirrored`, `motion_not_keys`, `too_many_plates`,
 `too_many_free_solids`, `too_many_ingredients`, `too_many_size_levels`, `motion_samples_out_of_range`,
-`surface_spacing_costly` (`COSTS_MORE`: spacing under a quarter of the smallest cell width). Found by
+`surface_spacing_costly` (`COSTS_MORE`: spacing under a quarter of the smallest cell width), NEW (A59)
+`guide_object_missing` (`BLOCKS_RUN`: a free solid with guide Rail or Hinge and no guide object). Found by
 `"scene_reader"`, since only Blender knows the field objects (5.13): `wind_falloff_not_honoured`,
 `wind_noise_not_honoured`, `wind_shape_not_honoured`, `force_field_not_honoured` (each `HAS_KNOWN_LIMIT`),
-`wind_flow_not_honoured`, `wind_without_gas`, `force_field_ignored` (each `NOTE`). Ingredient names are normalised
-exactly as the materials module's `BuildMaterialTable` does.
+`wind_flow_not_honoured` (only when `flow != 1.0`, A50), `wind_without_gas` (A47 text, 5.13), `force_field_ignored`
+(each `NOTE`); NEW (A63) `cell_size_region_rotated` (`NOTE`, message "<object> is rotated; the axis-aligned box
+around it is used."). Ingredient names are normalised exactly as the materials module's `BuildMaterialTable` does.
 
 ### 3.5 `logic/native_executable.py`, `logic/native_facts.py`, `logic/native_calls.py`
 
@@ -407,12 +477,31 @@ class RunBudgetFacts:                   # NEW (A17, planned cost). scene_checked
     cpu_budget_bytes: int; cpu_allowed_bytes: int                  # From cpu_memory.
     bytes_per_step: int; copies_per_step: int                      # From copies.
     viscous_path: str                   # NEW (A25). "pressure_solve" | "viscous_solve", fixed for the run.
-    liquids: tuple[tuple[str, float, float, float, bool, bool], ...]   # NEW (A25). Per liquid (I/O table
-                                        #   ViscousEffectOfLiquid, renamed A27), the schema's order:
-                                        #   (ingredient_name, viscosity_pa_s, density_kg_per_m3,
-                                        #   viscous_effect_per_step, is_viscous, effect_not_visible).
-    lines: tuple[str, ...]              # BuildBudgetLines, verbatim (with the liquids: lines, A25). The add-on
-                                        #   computes nothing from the numbers.
+    liquids: tuple[ViscousEffectOfLiquidFacts, ...]   # Changed (A57): one per entry of the budget's `liquids`
+                                        #   (I/O table ViscousEffectOfLiquid), in the event's order. Was a
+                                        #   6-tuple ending in effect_not_visible (A25), which A57 removed.
+    viscous_effect_run_seconds: float   # NEW (A57). s: the run duration T of the four-cell figure.
+    reynolds_length_m: float            # NEW (A57). m: the domain box's smallest extent L.
+    lines: tuple[str, ...]              # BuildBudgetLines, verbatim (with the liquids: lines, A57, the deep particle
+                                        #   line, A64, and on Windows the fallback note, A58). The add-on computes
+                                        #   nothing from the numbers.
+@dataclass(frozen=True)
+class ViscousEffectOfLiquidFacts:       # NEW (A57). I/O's ViscousEffectOfLiquid, field for field.
+    ingredient_name: str; viscosity_pa_s: float; density_kg_per_m3: float
+    viscous_effect_per_step: float; is_viscous: bool
+    viscosity_to_smoothing_ratio: float | None   # None when the key is absent (the liquid keeps all its own motion).
+    four_cell_feature_change: float; spreading_in_cells: float; reynolds_number: float
+    advises_zero_viscosity: bool
+@dataclass(frozen=True)
+class RunCostFacts:                     # NEW (A58). io::RunCost of a done, stopped or failed event.
+    lines: tuple[str, ...]              # BuildCostLines, verbatim (with "gpu memory: planned ..." and the counts).
+    warnings: tuple[str, ...]           # Verbatim: "warning: ..." lines (beyond plan, copies above bound, spill).
+                                        #   The numbers of RunCost stay in `other`; the add-on reads none.
+@dataclass(frozen=True)
+class LiquidForceFacts:                 # NEW (A60). One entry of frame_done.liquid_force_on_solids.
+    solid_id: int
+    pressure_force: Vec3; viscous_force: Vec3        # N, world, mean over the last committed step of the frame.
+    pressure_torque: Vec3; viscous_torque: Vec3      # N m, about the body's origin at the start of that step.
 @dataclass(frozen=True)
 class RunPlanFacts:
     run_mode: str                       # "one_piece" | "batched" | "batched_with_solves_in_pieces" (A15)
@@ -460,8 +549,10 @@ def build_run_arguments(executable: NativeExecutable, request: StartRequest) -> 
 
 `build_run_arguments` gives exactly one of: `run <scene_file> --into <run_folder> [--last-frame n]`;
 `run <scene_file> --into <run_folder> --start-from <other_run_folder> [--start-frame n] [--last-frame n]`;
-`run <scene_file> --into <run_folder> --outputs <id>,<id>...`; `resume <run_folder> [--last-frame n]`. It never
-passes `--run-on`: `run_on` is in the scene file (A12), so what was checked is what runs.
+`run <scene_file> --into <run_folder> --outputs <id>,<id>...`; `resume <run_folder> [--choose-mode-again]
+[--last-frame n]` (NEW (A40): `--choose-mode-again` exactly when `StartRequest.choose_mode_again`, which only
+"Resume in another mode" sets, 5.4). It never passes `--run-on`: `run_on` is in the scene file (A12), so what was
+checked is what runs.
 
 ### 3.6 `logic/run_state.py`, `logic/events.py`
 
@@ -491,6 +582,8 @@ class RunStatus:
     last_advance_sent_at: float         # s, UTC, of the last commit or listed frame.
     elapsed_by_category: Mapping[str, float]       # s: simulate, snapshot, build_outputs, write, wait.
     memory: MemoryUse | None            # From frame_done: CPU and GPU in use and largest, limit_raise_count.
+    liquid_forces: Mapping[int, LiquidForceFacts]  # NEW (A60). By solid_id, from the last frame_done; empty before.
+    cost: RunCostFacts | None           # NEW (A58). From the `cost` of done, stopped or failed; None before.
     outputs: tuple[OutputDeclaration, ...]         # From `started`.
     not_built: tuple[tuple[str, int, str], ...]    # (output_id, frame, reason) from frame_done.
     findings: tuple[Finding, ...]
@@ -510,6 +603,16 @@ def read_events(journal: BinaryIO, max_bytes: int) -> tuple[tuple[Event, ...], A
 `read_events` reads complete lines only (at most 16 KiB each, I/O 5.8), keeps a partial last line for the next
 call, and checks `protocol == PROTOCOL` and that `sequence` grows by one.
 
+```python
+# logic/status_text.py (the plan's status line module; these two are NEW, 2026-11-15). Pure, for panels.
+# "Liquid force: <|F|> N (pressure <|p|>, viscous <|v|>)", F = pressure_force + viscous_force, each number "%.3g"
+# (A60). Display arithmetic only: the forces come from the native frame_done.
+def build_liquid_force_line(force: LiquidForceFacts) -> str: ...
+# "FluidiTy was tested with Blender 5.3 only." when version >= (5, 4, 0); None otherwise (A48). The manifest's
+# minimum keeps older versions out, so no text exists for them.
+def build_blender_version_note(version: tuple[int, int, int]) -> str | None: ...
+```
+
 ### 3.7 `logic/supervisor.py`
 
 ```python
@@ -520,6 +623,7 @@ class StartRequest:
     last_frame: int | None = None
     output_ids: tuple[str, ...] = ()    # REBUILD.
     start_from_run_folder: Path | None = None; start_frame: int | None = None   # START_FROM.
+    choose_mode_again: bool = False     # NEW (A40). RESUME only: plan the run mode afresh (--choose-mode-again).
 class RunSupervisor:                    # One per registration. Owns one worker thread and every native process.
     def __init__(self, executable: NativeExecutable, clock, start_process): ...
     # Requests: called on the main thread, return at once, never block.
@@ -591,11 +695,12 @@ Fields marked (k) may be keyed; the scene reader samples their F-curves (5.1 ste
 | `FluidityIngredient` (D word), item of `substance.ingredients` | `ingredient_id` int; `name` str (the export name: `share_<name>`; lower case, `[a-z0-9_]`, unique in the domain); `share`* float 0..1 (rows sum to 1, owner Q31 a); `rest_density`* kg/m3; `viscosity`* Pa s; `surface_tension`* N/m; `friction`* no unit; `pressure_law`* enum `CANNOT_BE_SQUEEZED`, `STEADY_STIFFNESS`, `STIFFENS_UNDER_PRESSURE`; `rest_sound_speed`* m/s |
 | `FluiditySubstance` (N; the native `Material`), item of `domain.substances` | `substance_id` int; `name`; `kind`* enum `LIQUID`, `GAS`, `SNOW`, `SPRINGY_SOLID` (A9: no sand); `preset` enum; `ingredients`; `stiffness_against_shear`* Pa (D); `stiffness_against_squeeze`* Pa (D); `max_springy_shortening`*; `max_springy_lengthening`*; `hardening`*; `own_motion_kept`* 0..1 (D); `own_motion_in_travel`* 0..1 (D); `regions_form_one_body`* bool (snow, springy solid: every start region of it writes `same_material_as` the lowest one); `writes_points` bool |
 | `FluidityPair`, item of `domain.pairs` | `substance_a`, `substance_b` int; `surface_tension`* N/m |
-| `FluidityParticipant`, `Object.fluidity` | `participant_id` int; `domain` pointer; `role`, `shape`, `motion`, `driven_by` enums from `ROLE_TABLE`; `substance_id` int; `friction_scale`*; `after_path`* enum `STAYS_AT_LAST_KEY`, `LEAVES_SCENE`; `wave_stroke`* m; `wave_period`* s; `wave_ramp_duration`* s; `mass`* kg; `moves_along_x`, `_y`, `_z`, `turns`* bool; `start_linear_velocity`*, `start_angular_velocity`* m/s, rad/s; `steady_force`* N; `start_velocity`* m/s; `volume_rate`* m3/s; `source_velocity`* m/s; `source_first_frame`, `source_last_frame`* int; `fuel_rate`* (k) kg/(m3 s); `heat_rate`* (k) W/m3 |
+| `FluidityParticipant`, `Object.fluidity` | `participant_id` int; `domain` pointer; `role`, `shape`, `motion`, `driven_by` enums from `ROLE_TABLE`; `substance_id` int; `friction_scale`*; `after_path`* enum `STAYS_AT_LAST_KEY`, `LEAVES_SCENE`; `wave_stroke`* m; `wave_period`* s; `wave_ramp_duration`* s; `mass`* kg; `moves_along_x`, `_y`, `_z`, `turns`* bool (read when `guide_kind` is `AXES`); NEW (A59) `guide_kind`* enum `AXES`, `RAIL`, `HINGE` (labels "Axes", "Rail", "Hinge"; default `AXES`), `guide_object`* pointer to an `EMPTY` object (poll); NEW (A53) `slip_length`* m (default 0, min 0), `free_slip`* bool (A53; its own scene field `solids[].free_slip`; on: `slip_length` greyed); `start_linear_velocity`*, `start_angular_velocity`* m/s, rad/s; `steady_force`* N; `start_velocity`* m/s; `volume_rate`* m3/s; `source_velocity`* m/s; `source_first_frame`, `source_last_frame`* int; `fuel_rate`* (k) kg/(m3 s); `heat_rate`* (k) W/m3 |
 | `FluidityOutputSettings`, `domain.outputs` | `surface`, `foam_and_spray`, `foam_volume`, `gas_volume`, `solid_motion` bool (points: `substance.writes_points`); `surface_spacing`*, `surface_smoothing_width`* m (0: native default); `volume_spacing`* m (0: smallest cell width); `motion_samples_per_frame`* int 1..64; `foam_particles_per_volume_time`* 1/(m3 s); `foam_count_per_particle`*; `foam_lifetime`* s; `foam_display_radius`* m; `point_fields` enum flag (`MASS`, `SPRINGY_DEFORMATION`, `PERMANENT_VOLUME_CHANGE`, `FITTED_VELOCITY_CHANGE`); `keeps_frame_inputs` bool (default on: needed by Rebuild Outputs and Read Particle); `saved_state_every_frames` int; `saved_states_kept` int |
 | `FluidityRunRecord`, item of `domain.runs` | `run_id` str; `label` ("Run 003"); `kind` `PREVIEW`, `BAKE`; `folder` path; `run_fingerprint` str (D); `first_frame`, `last_frame`; `last_listed_frame`, `saved_state_frame` int (the last known, a hint until `report` answers); `end_event` str; `exit_code` int; `started_from_run_id` str |
 | `FluidityOutputRow`, item of `domain.output_estimate` | `output_id` str; `object_name` str (name inside the file); `product` str; `format` str; `material_id` int; `run_id`; `object` pointer; `file_pattern` path; `first_frame`, `last_listed_frame`; `run_fingerprint`, `output_fingerprint` str; `contract_version` int |
-| `FluidityDomain`, `Object.fluidity_domain` | `domain_id` str; `scene_preset` enum; `participants` collection of object pointers, `active_participant`; `substances`; `pairs`; `closed_left`, `closed_right`, `closed_front`, `closed_back`, `closed_bottom`, `closed_top`* bool (D side names); `smallest_cell_width`* m; `size_level_count`* int (D `size_level`); cell resize: `uses_cell_resize`* bool, `surface_reach_in_cell_widths`*, `solid_reach_in_cell_widths`*, `particle_region_depth_in_cell_widths`*, `grid_only_depth_in_cell_widths`*; open sea: `uses_open_sea`* bool, `open_sea_substance_id`* int, `open_sea_side`, `outlet_side`* enums, `wave_height`*, `water_depth`*, `still_water_height`* m, `open_sea_wave_period`* s, `open_sea_zone_width`*, `outlet_zone_width`* m, `open_sea_pull_rate`*, `outlet_pull_rate`* 1/s; gas: `ambient_temperature`*, `ignition_temperature`* K, `burn_rate`* 1/s, `heat_per_fuel_mass`* J/kg, `smoke_per_fuel_mass`*; `force_field_collection`* (a Blender collection, empty by default: every force field object in the scene; the `gas_wind[].acceleration` row of `SCENE_FIELDS`, whose tooltip states 1.0 m/s2 per unit of Strength; D13 replaces the keyable `wind_acceleration`); solver: `max_step_duration`* s, `max_retries_per_step`*, `max_volume_error_rate`* 1/s, `random_seed`*; run: `run_on` enum `CPU`, `GPU` (D `RunOn`), `memory_share_of_total`, `memory_share_of_free`; `cache_root` path; `outputs`; `runs`; `shown_run_id`; `output_estimate` |
+| `FluidityDomain`, `Object.fluidity_domain` | `domain_id` str; `scene_preset` enum; `participants` collection of object pointers, `active_participant`; `substances`; `pairs`; `closed_left`, `closed_right`, `closed_front`, `closed_back`, `closed_bottom`, `closed_top`* bool (D side names); `smallest_cell_width`* m; `size_level_count`* int (D `size_level`); cell resize: `uses_cell_resize`* bool, `surface_reach_in_cell_widths`*, `solid_reach_in_cell_widths`* (`particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths`: not in the first version, A64); cell size (NEW, A63): `cell_size_region_collection`* (a Blender collection, empty by default: no regions), `cell_size_map_image`* (pointer to an `Image`, empty by default: no map); open sea: `uses_open_sea`* bool, `open_sea_substance_id`* int, `open_sea_side`, `outlet_side`* enums, `wave_height`*, `water_depth`*, `still_water_height`* m, `open_sea_wave_period`* s, `open_sea_zone_width`*, `outlet_zone_width`* m, `open_sea_pull_rate`*, `outlet_pull_rate`* 1/s; gas: `ambient_temperature`*, `ignition_temperature`* K, `burn_rate`* 1/s, `heat_per_fuel_mass`* J/kg, `smoke_per_fuel_mass`*; `force_field_collection`* (a Blender collection, empty by default: every force field object in the scene; the `wind[].acceleration` row of `SCENE_FIELDS` (A47), whose tooltip states 1.0 m/s2 per unit of Strength; D13 replaces the keyable `wind_acceleration`); solver: `max_step_duration`* s, `max_retries_per_step`*, `max_volume_error_rate`* 1/s, `random_seed`*; run: `run_on` enum `CPU`, `GPU` (D `RunOn`), `memory_share_of_free`* (default 0.9, 0..1; A58), `memory_left_free_mib`* int MiB (default 512, min 0; written as `memory_left_free_bytes` = MiB x 1,048,576; A58; `memory_share_of_total` removed); `cache_root` path; `outputs`; `runs`; `shown_run_id`; `output_estimate` |
+| `FluidityCellSizeRegion` (NEW, A63), `Object.fluidity_cell_size_region` | `cell_width`* m (default 0: the domain's smallest cell width; min 0). Read only for objects of a domain's `cell_size_region_collection`. |
 | `FluidityPreferences` (`AddonPreferences`) | `native_executable_path` file path (empty: the packaged one); `default_run_on`; `preview_frame_count` int; `link_outputs_when_ready` bool; `stop_offer_seconds` float (default 10) |
 
 No live status is stored in a property group. Gravity is the scene's (`scene.gravity`, or zero when
@@ -619,7 +724,7 @@ substances together (A10); at most one substance is `GAS`.
 | `fluidity.start_run` | Preview, Bake | `kind` `PREVIEW` or `BAKE`. Creates a run record and a new folder; never writes into an existing run. |
 | `fluidity.pause_run` | Pause | Writes `stop_after_frame`: the frame in progress is finished and listed with a saved state. |
 | `fluidity.stop_run_now` | Stop Now | Writes `cancel`: the frame in progress is dropped. Offered from `stopping` after `stop_offer_seconds`; a second press ends the process group. Listed frames stay. |
-| `fluidity.resume_run` | Resume | From `stopped` or `failed` when `check --cache` says the simulation is `same` and `report` names a saved state. |
+| `fluidity.resume_run` | Resume | From `stopped` or `failed` when `check --cache` says the simulation is `same` and `report` names a saved state. NEW (A40): option `choose_mode_again` (bool, default off); the run panel offers it as "Resume in another mode" only when the run's findings hold `recorded_mode_does_not_fit` (module `io`); it passes `--choose-mode-again`. |
 | `fluidity.rebuild_outputs` | Rebuild Outputs | NEW. From `done` or `stopped` when `check --cache` says the simulation is `same` and some outputs are `changed` without `needs_simulation`: `run --outputs` with those ids. |
 | `fluidity.new_run` | New Run | From `needs_new_run`, `done`, `stopped` or `failed`: keeps the old run, starts at `not_checked`. Option `start_from_frame`: the new run starts from a saved state of the old one (`--start-from`, `--start-frame`). |
 | `fluidity.link_outputs` | Show Result | Builds and applies the link plan of one run. |
@@ -638,12 +743,12 @@ button that selects its domain).
 
 | Class | Label | Layer | Content |
 |---|---|---|---|
-| `FLUIDITY_PT_everyday` | FluidiTy | everyday | Status line; one primary action chosen from the state; findings; domain size; smallest cell width with the cell and particle counts and the run mode once checked; frames and seconds; output switches; preset. |
-| `FLUIDITY_PT_participants` | Participants | everyday | `FLUIDITY_UL_participants`: name, role, shape, motion, finding mark. Below: role, shape, motion and substance of the active row. |
+| `FLUIDITY_PT_everyday` | FluidiTy | everyday | Status line; NEW (A48) the one note of `build_blender_version_note` when it is not None; one primary action chosen from the state (NEW, A40: "Resume in another mode" beside Resume when the findings hold `recorded_mode_does_not_fit`); findings; domain size; smallest cell width with the cell and particle counts and the run mode once checked; frames and seconds; output switches; preset. |
+| `FLUIDITY_PT_participants` | Participants | everyday | `FLUIDITY_UL_participants`: name, role, shape, motion, finding mark. Below: role, shape, motion and substance of the active row. NEW (A60): one `build_liquid_force_line` per selected `SOLID` participant whose `participant_id` is in the shown run's `RunStatus.liquid_forces` (every solid, any motion); nothing before the first `frame_done`. |
 | `FLUIDITY_PT_outputs` | Outputs | everyday | `FLUIDITY_UL_outputs`: product, format, state (ready, stale and rebuildable, stale and needs a new run, missing files, not built in n frames, not requested), frames, Select. Per row: channels, those not witnessed marked "written, not witnessed". Run menu. Rebuild Outputs. Find Moved Cache. |
-| `FLUIDITY_PT_physical_detail` | Physical Detail | physical | Substances and ingredients, pairs, friction, source rates, free solid mass, open sea, gas law and burn, wind. Closed by default. |
-| `FLUIDITY_PT_solver_detail` | Solver Detail | solver | Size levels, cell resize, step duration, retries, pressure limit, own motion shares, pressure law. Closed. |
-| `FLUIDITY_PT_performance` | Performance | performance | Run on; memory estimate against allowed bytes by module; one piece or batched with the batch plan; NEW (A17): under the heading "Planned cost (estimate)" the last full check's `plan.budget.lines` verbatim, one label per line (nothing when `budget` is None), among them the `liquids:` lines (NEW, A25); saved state interval and expected work on resume; time by category; memory used. Closed. |
+| `FLUIDITY_PT_physical_detail` | Physical Detail | physical | Substances and ingredients, pairs, friction, source rates, free solid mass, NEW (A59) the free solid's Guide (Axes: the four axis ticks; Rail and Hinge: Guide Object), NEW (A53) Slip Length with Free Slip for a `FIXED` or `DRIVEN` solid, drawn only when a liquid substance of the domain has an ingredient with viscosity above 0, open sea, gas law and burn, wind; NEW (A63) a box "Cell size": Cell Size Regions (the collection, then one row per object with its Cell Width), Cell Size Map (the image), the box inactive (`layout.active = False`) with the line "Used when cell resize is on" while `uses_cell_resize` is off. Closed by default. |
+| `FLUIDITY_PT_solver_detail` | Solver Detail | solver | Size levels, cell resize (surface and solid reach; no grid-only depth, A64), step duration, retries, pressure limit, own motion shares, pressure law. Closed. |
+| `FLUIDITY_PT_performance` | Performance | performance | Run on; memory estimate against allowed bytes by module; one piece or batched with the batch plan; NEW (A17): under the heading "Planned cost (estimate)" the last full check's `plan.budget.lines` verbatim, one label per line (nothing when `budget` is None), among them the `liquids:` lines (A25; A57's advice and note lines), the deep particle line (A64) and on Windows the fallback note (A58); NEW (A58): `memory_share_of_free` and Memory Left Free (MiB) beside Run on (no share of total); under "Measured cost" the shown run's `RunStatus.cost.lines` then `cost.warnings` verbatim, one label per line (nothing when `cost` is None); saved state interval and expected work on resume; time by category; memory used. Closed. |
 | `FLUIDITY_PT_inspect` | Inspect | inspect | The three facts with frames; last try and its reject reason and stage; activity; ages of last event and last advance; lock holder; Read Particle; Check Outputs; Open Log; Copy Support Report. Closed. |
 
 ### 3.12 Witness tools (`tools/blender/witness/`, `native/fluidity/cli/write_witness_files.cc`)
@@ -730,17 +835,38 @@ class ForceFieldReading:                # Blender's identifiers and values, unch
     object_name: str; field_type: str; keys: tuple[FieldKey, ...]
     shape: str; z_direction: str; falloff_power: float; use_min_distance: bool; use_max_distance: bool
     noise: float; flow: float
-# Empty without gas or without a Wind field. Otherwise one key per time in any Wind field's keys (sorted, times
-# within 1e-12 s merged), each the sum over Wind fields of WIND_ACCELERATION_PER_STRENGTH * strength * direction;
-# a field with no key at that time is interpolated linearly between its keys, held before the first and after the last.
-def build_wind_keys(readings: Sequence[ForceFieldReading], has_gas: bool) -> tuple[WindKey, ...]: ...
+# Empty without a Wind field (changed, A47: `has_gas` removed; wind moves gas, spray and foam). Otherwise one key
+# per time in any Wind field's keys (sorted, times within 1e-12 s merged), each the sum over Wind fields of
+# WIND_ACCELERATION_PER_STRENGTH * strength * direction; a field with no key at that time is interpolated linearly
+# between its keys, held before the first and after the last.
+def build_wind_keys(readings: Sequence[ForceFieldReading]) -> tuple[WindKey, ...]: ...
 # The findings of 5.13, in the readings' order: module "addon", found by "scene_reader", object_name set, no repair.
-def check_force_fields(readings: Sequence[ForceFieldReading], has_gas: bool) -> tuple[Finding, ...]: ...
+# Changed (A47): makes_foam_or_spray = outputs.foam_and_spray or outputs.foam_volume chooses the wind_without_gas text.
+def check_force_fields(readings: Sequence[ForceFieldReading], *, has_gas: bool,
+                       makes_foam_or_spray: bool) -> tuple[Finding, ...]: ...
 ```
 
 The scene reader (`scene_reader.read_scene(domain) -> SceneReading` with `description` and `findings`) builds one
 `ForceFieldReading` per force field object, then sets `description.wind_keys = build_wind_keys(...)` and adds
 `check_force_fields(...)` to its findings.
+
+### 3.14 `logic/grey_png.py` (NEW, A63)
+
+```python
+LUMINANCE_WEIGHTS: tuple[float, float, float] = (0.2126, 0.7152, 0.0722)   # Rec. 709 luma weights (ITU-R BT.709).
+# Blender's Image.pixels (RGBA floats, row 0 at the image's bottom, as Blender stores them) to width * height grey
+# bytes, top row first: floor(255 * clamp(0.2126 R + 0.7152 G + 0.0722 B, 0, 1) + 0.5), alpha ignored. So the PNG looks
+# as the image does in Blender's Image Editor; its top row lies along the domain's high y (I/O's loader flips it).
+def to_grey_levels(rgba: Sequence[float], width: int, height: int) -> bytes | AddonFailure: ...
+# An 8-bit grey PNG (colour type 0, bit depth 8, no interlace, filter 0 on every row, zlib level 9) with the
+# standard library only (zlib, struct). Written to <path>.tmp then os.replace'd; RUN_FOLDER_NOT_USABLE on failure.
+def write_grey_png(path: Path, width: int, height: int, grey_levels: bytes) -> None | AddonFailure: ...
+```
+
+The scene reader reads `cell_size_map_image.pixels` once (`foreach_get` into a float array) and calls
+`to_grey_levels`; `write_scene_file` writes the PNG beside the scene file at `CELL_SIZE_MAP_FILE` and the
+field `cell_size_map: {image: "inputs/cell_size_map.png"}`. The native loader maps the value `v` of each pixel to
+a size level (`plan-decisions.md`, item 2; I/O owns it).
 
 ## 4. Consumes from other modules
 
@@ -753,10 +879,10 @@ used, as I/O declares them:
 |---|---|
 | `capabilities [--run-on gpu]` | At registration and when the executable changes: `protocol`, schema versions, coordinate text `right_handed_z_up_metres`, `run_on_values`, every `CapabilityReason` with its level (`ToName(step::CapabilityLevel)`) and message, static limits (`kMaxPlateCount`, `kMaxFreeSolidCount`, `kMaxIngredientCount`, `kMaxSizeLevels`, motion samples 1..64), `ReadFormatTable()` with every `WitnessRecord`, `ReadOutputChannels()`, `ReadInterchangeLibraries()`. Within 200 ms, no GPU touched; `--run-on gpu` only from the Performance panel. |
 | `check <scene_file> [--cache <run_folder>]` | The full check: `scene_checked` with `can_run`, every finding, `filled_defaults`, `run_on_requested`, `run_on_usable`, the plan (`run_mode`, estimate by module, `allowed_bytes`, counts, batch plan), NEW (A17, planned cost) `budget` (table `RunBudget` of `schemas/simulate/v2/run_budget.fbs`, read as `RunBudgetFacts`), `run_fingerprint`, the output declarations; with `--cache`: `CacheComparison` (`simulation`, `differing_part`, `changed_fields`, `outputs[] {output_id, match, changed_fields, needs_simulation}`). Exit 0 (can run) or 3 (cannot; also when the budget's `verdict` is not `fits`, with the blocking finding `does_not_fit`), both with `scene_checked`. |
-| `run <scene_file> --into <run_folder> [--last-frame n]` | Preview and Bake. The folder holds only the add-on's copy of the scene file (left alone, never listed). |
+| `run <scene_file> --into <run_folder> [--last-frame n]` | Preview and Bake. The folder holds only the add-on's copy of the scene file and, with a cell size map, `inputs/cell_size_map.png` (A63; both left alone, never listed). |
 | `run <scene_file> --into <run_folder> --start-from <other_run_folder> [--start-frame n]` | New Run from a saved state of an old run (`BuildRunFromSavedState`). |
 | `run <scene_file> --into <run_folder> --outputs <ids>` | Rebuild Outputs (`RebuildOutputs`): refused with `start_new_run` for an output that `needs_simulation`. |
-| `resume <run_folder> [--last-frame n]` | Resume. Never reads the scene file again. |
+| `resume <run_folder> [--choose-mode-again] [--last-frame n]` | Resume. Never reads the scene file again. Reuses the recorded run mode; when it no longer fits, refuses with the `failed` finding `recorded_mode_does_not_fit` (`IoError::kRecordedModeDoesNotFit`, A40), and `--choose-mode-again` plans the mode afresh ("Resume in another mode"). |
 | `report <run_folder> [--check-files]` | `RunFolderFacts`: `run_fingerprint`, `last_listed_frame`, `saved_state_frame`, `last_try`, `lock_holder` with `is_held`, the output declarations, frames done, not built entries, `ignored_end_bytes`, the `RunReport`, `is_crashed`. Read-only, takes no lock. |
 | `read-particle <run_folder> --frame n --particle-id id` | `ParticleFacts`, ids as decimal text. |
 
@@ -770,11 +896,11 @@ used, as I/O declares them:
 | `heartbeat` | `RunProgress` fields (`activity`, `frame_in_progress`, `last_frame_done`, `last_saved_state_frame`, `last_try`, `waiting_frames`, `preparing_done`, `preparing_total`), `last_advance_sent_at` | ages, activity |
 | `try_done` | as I/O lists; only with `--report-every-try`, which the add-on passes only from Inspect | `last_try` |
 | `finding` | one `Finding` | appended |
-| `frame_done` | `frame`, `time`, files, `not_built[]`, counts, `MemoryReport` numbers, elapsed by category | `last_listed_frame` |
+| `frame_done` | `frame`, `time`, files, `not_built[]`, counts, `MemoryReport` numbers, elapsed by category, NEW (A60) `liquid_force_on_solids[] {solid_id, pressure_force_n, pressure_torque_n_m, viscous_force_n, viscous_torque_n_m}` | `last_listed_frame`; `liquid_forces` replaced |
 | `frame_checked` | `frame` | `checking_frame` |
 | `saved_state_listed` | `frame`, `byte_count` | `saved_state_frame` |
 | `stopping` | `request` (`cancel`, `stop_after_frame`, `end_of_input`) | `stopping` |
-| `done`, `stopped`, `failed` | `exit_code`, `last_frame_done`, `last_saved_state_frame`, totals, `MemoryReport`; `failed` one `Finding` with `stage`, `frame`, `time` | terminal |
+| `done`, `stopped`, `failed` | `exit_code`, `last_frame_done`, `last_saved_state_frame`, totals, `MemoryReport`, NEW (A58) `cost.lines` and `cost.warnings` (read as `RunCostFacts`); `failed` one `Finding` with `stage`, `frame`, `time` | terminal; `cost` set |
 
 `frame_done`, `finding`, `saved_state_listed`, `failed`, `done` and `stopped` are never skipped (I/O 4).
 
@@ -799,7 +925,7 @@ the `file_list` only through `report`. It never creates, reads or deletes `write
 times in seconds from the first frame; orientations (w, x, y, z), own axes to world). Every id is chosen by the
 add-on, nonzero, unique per kind, stable across edits, and comes back unchanged in findings. The outline below
 is the shape; the field names are those of the branch's `scene_file.fbs` (plan decision: for example the wind is
-the top-level `gas_wind`), and a test fails on any field path the schema does not define.
+the top-level `wind`, A47; was `gas_wind`), and a test fails on any field path the schema does not define.
 
 ```text
 frames:          frames_per_second, first_frame, last_frame
@@ -820,22 +946,31 @@ solids[]:        solid_id, name, shape (box | flat_solid | plate), origin, orien
                  motion_kind (fixed | driven | free),
                  path {keys[] {time, origin, orientation}, after_path}
                  | wave_stroke {stroke, wave_period, ramp_duration, travel_direction}
-                 | free_solid {mass, moves_along_x, moves_along_y, moves_along_z, turns, start_linear_velocity,
-                               start_angular_velocity, steady_force}
+                 | free_solid {mass, start_linear_velocity, start_angular_velocity, steady_force,
+                               guide {kind (axis_limits | rail | hinge), moves_along_x, moves_along_y,
+                                      moves_along_z, turns, rail_direction, hinge_point, hinge_axis}}  (A59)
+                 slip_length (m), free_slip (bool, true overrides the number); both only for fixed and driven
+                 solids beside a viscous liquid (A53)
 open_sea:        material_id, wave {still_water_height, water_depth, wave_height, wave_period, travel_direction},
                  open_sea_side, outlet_side, open_sea_zone_width, outlet_zone_width, open_sea_pull_rate,
                  outlet_pull_rate
 gas:             law {ambient_temperature}, burn {ignition_temperature, burn_rate, heat_per_fuel_mass,
                  smoke_per_fuel_mass},
                  sources[] {source_id, name, low_corner, high_corner, keys[] {time, fuel_rate, heat_rate}}
-gas_wind[]:      time (s from the first frame), acceleration (m/s2, world, Z-up): from the Wind force fields
+wind[]:          time (s from the first frame), acceleration (m/s2, world, Z-up): from the Wind force fields
                  (5.13); one key per frame when a strength or a turn is keyed, one key at time 0 otherwise, none
-                 in a domain without gas. Neither I/O nor the gas module converts anything.
-cell_resize:     cell_size {surface_reach_in_cell_widths, solid_reach_in_cell_widths},
-                 regions {particle_region_depth_in_cell_widths, grid_only_depth_in_cell_widths}
+                 without a Wind field (A47: renamed from gas_wind; written with or without gas: it moves gas,
+                 spray and foam). Neither I/O, the gas module nor render output converts anything.
+cell_resize:     cell_size {surface_reach_in_cell_widths, solid_reach_in_cell_widths}
+                 (regions {particle_region_depth_in_cell_widths, grid_only_depth_in_cell_widths}: not in the
+                 first version, A64)
+cell_size_regions[]: low_corner, high_corner (m, world), cell_width (m)      NEW (A63); only with cell_resize
+cell_size_map:   image ("inputs/cell_size_map.png", relative to the scene file)  NEW (A63); only with cell_resize
 batches:         {} (BatchSettings defaults)
 solver:          max_step_duration, max_retries_per_step, max_volume_error_rate, random_seed
-run:             run_on, memory_share_of_total, memory_share_of_free
+run_on:          top-level "cpu" | "gpu"
+step:            memory_share_of_free, memory_left_free_bytes (A58; no memory_share_of_total), with the other
+                 step settings the schema puts there
 outputs:         points {material_ids[], particle_fields[]}, solid_motion,
                  surface {groups[] {material_ids[]}, spacing, smoothing_width},
                  foam {particles_per_volume_time, count_per_particle, foam_lifetime, display_radius},
@@ -844,7 +979,8 @@ outputs:         points {material_ids[], particle_fields[]}, solid_motion,
 ```
 
 The gas substance is one `materials[]` entry of kind `gas` with one ingredient (materials 5.1 gas rules; I/O
-sets its rest density from the law). `open_sea`, `gas`, `cell_resize` are omitted when not used; any other
+sets its rest density from the law). `open_sea`, `gas`, `wind`, `cell_resize`, `cell_size_regions`, `cell_size_map`
+are omitted when not used (the last two also when `cell_resize` is); any other
 field the add-on leaves out takes the native default and is reported in `filled_defaults`. One surface group
 holds every liquid substance (all liquids are one material set, step decision); `points.material_ids` never
 names the gas. What I/O derives and the add-on therefore never writes (I/O 5.1 step 4): particle rate, mass and
@@ -908,12 +1044,17 @@ back with `kViscousLiquidWithSand`), `CapabilityResult` with every finding
 and no cap, `RunPlan` (`mode`, `estimate`, `allowed_bytes`, `counts`, batch fields), `MemoryEstimate::by_module`
 (14 modules including `render_output`, `cell_resize`, `batches`), `MemoryReport`, `Stage` (22 values, stage 11
 `solve_viscosity_and_pressure`), `RejectReason`, `StepLimit`, `RunMode`; `StepSettings` fields `run_on`,
-`max_step_duration`, `max_retries_per_step`, `memory_share_of_total`, `memory_share_of_free`.
+`max_step_duration`, `max_retries_per_step`, `memory_share_of_free` (default `kDefaultMemoryShareOfFree` 0.9),
+`memory_left_free_bytes` (default `kDefaultMemoryLeftFreeBytes` 536,870,912 B); `memory_share_of_total` is removed
+(A58). `MemoryReport::handed_out_bytes` replaces `allocated_bytes` (A58); the add-on reads `MemoryReport` only
+through `MemoryUse` and draws the cost lines verbatim.
 
 ### 4.4 Materials, solids, gas, pressure, contact, cell resize, batches: PROVIDED
 
 Field names and units only, mirrored by `SCENE_FIELDS` and the property groups, as each design's section 3 has
-them: `materials::Ingredient`, `MaterialResponse`, `MaterialKind` (`kLiquid`, `kGas`, `kSnow`, `kSpringySolid`),
+them (2026-11-15: `grid::CellSizeSettings` and `grid::CellSizeRegion` replace the cell resize ones, A41/A63;
+`solids::GuideKind`, `FreeMotionLimits::{guide_kind, rail_direction, hinge_point, hinge_axis}` and
+`SolidSettings::slip_length` are mirrored, A59/A53; `RegionSettings` is not in the first version, A64): `materials::Ingredient`, `MaterialResponse`, `MaterialKind` (`kLiquid`, `kGas`, `kSnow`, `kSpringySolid`),
 `OwnMotionSettings`, `MaterialPair`, `MaterialTableInputs::ingredient_export_names`; `solids::SolidSettings`,
 `SolidMotionKind`, `PathKey`, `AfterPath`, `FreeSolidSettings`, `FreeMotionLimits`, `WavePaddleSettings`,
 `Orientation`, `kMaxPlateCount`, `kMaxFreeSolidCount`, `CheckSolidsCanRun` entries (each with `solid_id` and a
@@ -921,8 +1062,9 @@ them: `materials::Ingredient`, `MaterialResponse`, `MaterialKind` (`kLiquid`, `k
 `pressure::PressureLaw`, `PressureLawKind`, `OpenSeaSettings`, `OpenSeaWave`, `SolveSettings::max_volume_error_rate`;
 `gas::GasLaw`, `BurnSettings`, `GasSource` (world-aligned box, keyed), `GasSourceKey` (`time`, `fuel_rate`,
 `heat_rate`), `GasWind`, `GasWindKey` (`time`, `acceleration`; written by the add-on from Blender's Wind fields
-and read as written); `cell_resize::CellResizeSettings`,
-`CellSizeSettings`, `RegionSettings`; `batches::BatchSettings` (defaults only).
+into the scene file's `wind`, read as written into `ReadyScene::wind` and `render_output::RenderSettings::wind`,
+A47); `cell_resize::CellResizeSettings`, `grid::CellSizeSettings` (A41), `grid::CellSizeRegion` (A63);
+`RegionSettings`: not in the first version (A64); `batches::BatchSettings` (defaults only).
 
 ### 4.5 What earlier drafts asked of other designs (all applied)
 
@@ -956,8 +1098,9 @@ and read as written); `cell_resize::CellResizeSettings`,
    gas may share one domain (A10): smoke over water is an ordinary scene.
 5. A **source** is given as volume per second and a velocity. A **gas source** is given as fuel and heat
    rates per cubic metre of its box, each keyable. Wind comes from Blender's own Wind force field objects in
-   the domain's `force_field_collection` (or the whole scene when it is empty), turned into `gas_wind` keys as
-   5.13 states (A20, D13). The domain has no wind property of its own.
+   the domain's `force_field_collection` (or the whole scene when it is empty), turned into `wind` keys as
+   5.13 states (A20, D13; A47: the key list is `wind` and it moves gas, spray and foam, never the liquid). The
+   domain has no wind property of its own.
 6. Driven motion with `KEYS` reads the object's own location and rotation curves with `FCurve.evaluate` at
    every frame of the range, without changing the current frame (Blender 5.3 actions are layered: the curves
    are those of the action's channel bag for the object's slot, 5.14), and writes one key per frame with its
@@ -966,7 +1109,26 @@ and read as written); `cell_resize::CellResizeSettings`,
    modifier is a finding (`motion_not_keys`) with the repair "Bake to Keys" (`bpy.ops.nla.bake`, 5.14). Keyed
    rates of gas sources, and a Wind field's strength (`field.strength`) and rotation, are read the same way: one
    key per frame where a curve has keys, and the constant value as one key otherwise.
-
+7. NEW (A59). A **guided free solid** has `guide_kind` Axes (the four axis ticks, as before), Rail or Hinge. Rail
+   and Hinge read the `guide_object` empty at the first frame through the same key reader as driven motion (an
+   empty moved by a parent, a constraint, a driver or a modifier gets `motion_not_keys`): Rail writes
+   `rail_direction` = the empty's local +Z in world axes (from `mathutils`, normalised); Hinge writes
+   `hinge_point` = its world location and `hinge_axis` = its local +Z. The guide is in world axes and fixed
+   (solids decision, A59). A Rail or Hinge without a guide object reaches the description with a zero
+   `rail_direction` or `hinge_axis`, which the quick check reports as `guide_object_missing`. The flags are
+   written for every kind (the native side reads them only for `axis_limits`).
+8. NEW (A53). A `FIXED` or `DRIVEN` solid writes `slip_length` (m) and `free_slip` (bool, true overrides the number) only when a
+   liquid substance of the domain has an ingredient with viscosity above 0; a `FREE` solid never writes it (it
+   always sticks, A27, so the native `slip_ignored_on_free_solid` note cannot come from the add-on).
+9. NEW (A63). **Cell size regions and map.** Each object of the domain's `cell_size_region_collection` is one
+   region: its box is the object's world axis-aligned bounding box (the eight corners of `bound_box` through
+   `matrix_world`, min and max per axis); `cell_width` is the object's `fluidity_cell_size_region.cell_width`,
+   or the domain's `smallest_cell_width` when 0. An object whose `matrix_world` turns its axes (any off-diagonal
+   term of the normalised 3x3 above `1e-9` in magnitude) gets `cell_size_region_rotated` (`NOTE`: "<object> is
+   rotated; the axis-aligned box around it is used."); the run goes ahead with that box. `cell_size_map_image` is
+   read with `to_grey_levels` (3.14) and written as `inputs/cell_size_map.png`. Both are written only when
+   `uses_cell_resize` is on (the size rule runs only inside cell resize); both are part of the physical scene, so
+   the native fingerprint covers them (the map by its pixels, I/O).
 ### 5.2 Presets
 
 A preset is a row of concrete values. Applying one writes those fields and nothing else, then sets `preset`.
@@ -980,7 +1142,7 @@ wave (programme design 8a: paddle, open-sea side, mixed-size cells, surface and 
 decision 6: 0.4 x 0.4 x 0.3 m, a 2 cm stream at 0.3 m/s from 0.25 m, 1 litre, 10 s, floor only), fire (gas
 decision 8: 1.6 x 1.6 x 3.2 m, about 5 kW, wind from 5 s made as one Wind force field object "Fire Wind" in
 a collection set as the domain's `force_field_collection`, strength keyed with constant interpolation and flow
-0, so the read keys equal the builder's; ignition 400 K, 10 s), and a snow example (a snow
+left at Blender's default 1.0 (A50: no note; was 0), so the read keys equal the builder's; ignition 400 K, 10 s), and a snow example (a snow
 start region dropped on the floor, as `main`'s snow mound). No sand preset and no sand scene (A9: the sand
 module adds both). Each scene's cell width is its design's coarsest listed width, so it runs on the CPU in the
 tests.
@@ -1007,9 +1169,16 @@ tests.
    "batched" with the estimate against the allowed bytes. The Performance panel also draws the native budget's
    lines (`RunBudgetFacts.lines`) verbatim under "Planned cost (estimate)" (A17, planned cost); the add-on
    computes nothing from the budget's numbers. Those lines include, in a scene with liquid, the `liquids:` block
-   (NEW, A25): whether the run uses the pressure solve (every liquid has viscosity 0) or the viscous solve, each
-   liquid's viscosity, density and viscous effect per step, and a note advising viscosity 0 when a viscous
-   liquid's effect is too small to see.
+   (A25, changed by A57): whether the run uses the pressure solve (every liquid has viscosity 0) or the viscous
+   solve, and per viscous liquid its viscosity, density, grid number, viscosity against the transfer's own
+   smoothing, the change of a feature four cells wide over the run, the cells of spreading and the Reynolds
+   number; then `advice: <name>'s viscosity will not be visible: set it to 0` when advised, and for every viscous
+   liquid `note: at viscosity 0 <name> slips along solids instead of sticking`. When particles do not fit, the
+   line `particles: <n> needed, ... (deep liquid without particles comes later)` (A64); on Windows the note
+   `note: on Windows a full GPU makes the run slow instead of failing; ...` (A58). After a run the panel draws the
+   end event's `cost.lines` and `cost.warnings` the same way (A58: `gpu memory: planned ...`, `warning: ...
+   requested beyond the planned ...`, `warning: copies per step ... are above the planned ...`, `warning: gpu memory
+   taken ... is less than the ... reserved; Windows may have placed part of it in shared system memory ...`).
 4. The state becomes `ready` when no finding has `BLOCKS_RUN`. A later edit (a property update callback, or a
    `depsgraph_update_post` that names a participant object) sets it back to `not_checked`.
 5. With a run folder, the `CacheComparison` decides what an edit made stale: `simulation` `changed` gives
@@ -1028,7 +1197,8 @@ and is logged.
 | `not_checked` | check finished with `can_run` and no blocking quick finding | `ready` |
 | `ready` | an edit that changes the scene file | `not_checked` |
 | `ready` | start (new run) accepted | `preparing` |
-| `stopped`, `failed` | resume accepted (simulation `same`, a saved state listed) | `preparing` |
+| `stopped`, `failed` | resume accepted (simulation `same`, a saved state listed), with or without `choose_mode_again` | `preparing` |
+| `preparing` (a resume) | the process ended with the `failed` finding `recorded_mode_does_not_fit` (NEW, A40) | `failed`, the finding kept; "Resume in another mode" offered |
 | `done`, `stopped` | rebuild accepted (5.3 step 5) | `preparing` |
 | `needs_new_run`, `done`, `stopped`, `failed` | new run request, optionally from a saved state | `not_checked` (a new run record) |
 | `preparing` | `started` | `running` |
@@ -1080,8 +1250,8 @@ frame 38. Frames 0 to 37 are ready. Resume would restart from frame 30."
 
 ### 5.6 Run records and folders
 
-A run is one folder `<cache_root>/<domain name>/run_<nnn>/`: the add-on writes `scene.json` into the new,
-empty folder, then starts `run --into` it; everything else in the folder is I/O's. `cache_root` defaults to
+A run is one folder `<cache_root>/<domain name>/run_<nnn>/`: the add-on writes `scene.json` (and, with a cell
+size map, `inputs/cell_size_map.png`, A63) into the new, empty folder, then starts `run --into` it; everything else in the folder is I/O's. `cache_root` defaults to
 `//fluidity_cache`. Preview and Bake differ only in `kind` and frame range (`preview_frame_count`). Starting
 never reuses a folder (I/O refuses a folder with a file list); Resume and Rebuild Outputs continue one; nothing
 but Delete Run Files removes one. Paths are stored relative to the project when Blender can express them so and
@@ -1153,15 +1323,34 @@ the native `time:` line and the planned cost come only through the budget lines 
   `blender_version_min = "5.3.0"`, no maximum, one platform per built package, `[permissions] files` with
   one short reason. No network permission. (Exact wording rules of the permission text: to verify against the
   Blender 5.3 documentation.)
-- Supported Blender: 5.3 only (A16). The packager never rewrites the minimum version. A `bpy.app.version`
-  below `(5, 3, 0)` or at or above `(5, 4, 0)` gives one note at registration, "FluidiTy is tested on Blender 5.3
-  only"; the add-on still loads. Every commit whose tests ran in Blender names the one build that ran them
+- Supported Blender: 5.3 and later (A16, A48). The packager never rewrites the minimum version and writes no
+  maximum. A `bpy.app.version` at or above `(5, 4, 0)` gives one note in the domain panel (`FLUIDITY_PT_everyday`),
+  "FluidiTy was tested with Blender 5.3 only." (`build_blender_version_note`); the add-on loads and works as on
+  5.3. Blender below 5.3.0 refuses the extension from its manifest, so no text exists for it. Every commit whose tests ran in Blender names the one build that ran them
   (for example `Blender 5.3.0 (02f0899d78e3): 7 passed.`), or says `Blender 5.3: written, not run in Blender
   (<reason>)`; nothing is called passed that did not run, and each run is a row of `docs/blender-runs.md` (D2).
 - Platforms: `windows-x64` and `linux-x64` (CPU and GPU), `macos-arm64` (CPU only). One package per platform,
   each holding `bin/<platform>/fluidity[.exe]`, the OpenUSD resource folder render output 5.7 says the CLI ships
   beside itself (while a USD candidate is in the build), and `bin/<platform>/build.json` (`executable_version`,
-  SHA-256).
+  SHA-256; NEW (A49) `cuda_runtime_file` and `cuda_runtime_version`, empty on macOS).
+- NEW (A49). **The CUDA runtime.** The executable is linked to the shared CUDA runtime (Foundation's
+  `CMAKE_CUDA_RUNTIME_LIBRARY Shared`). The windows-x64 and linux-x64 packages ship, in `bin/<platform>/` beside
+  `fluidity[.exe]`, the runtime file of the toolkit the executable was built with: Windows `cudart64_<major>.dll`,
+  Linux `libcudart.so.<major>` (the real file copied under its SONAME, not a symbolic link, because a zip does not
+  keep links). The packager takes it from the path the build records (`--cuda-runtime <file>`: `CUDA::cudart`'s
+  imported location on Linux, the toolkit's `bin/cudart64_<major>.dll` on Windows), and its version from the
+  toolkit's `version.json` (`cuda_cudart.version`). macOS ships none. The loader finds it: Windows searches the
+  application's directory first; Linux executables are linked with `RUNPATH $ORIGIN` (no `RPATH`). The package
+  also ships `licenses/cuda-runtime.txt`: "Contains the NVIDIA CUDA Runtime <version>, redistributed under the
+  NVIDIA CUDA Toolkit End User License Agreement, Attachment A (redistributable software)" and the EULA link
+  (`https://docs.nvidia.com/cuda/eula/`; the owner confirms the wording).
+- **CPU runs never depend on a GPU library.** The one GPU library the executable links, the runtime, ships beside
+  it, so the executable always starts. The only GPU library not shipped, the driver (`nvcuda.dll`,
+  `libcuda.so.1`), is loaded by the runtime at the first CUDA call, and the first CUDA call is the one
+  `CheckCanRunOn(RunOn::kGpu)` makes: a CPU run never makes it, and without a driver it returns an error (the
+  check's finding then offers Run on CPU) while CPU runs go on.
+- `find_native_executable` copies the whole `bin/<platform>/` folder (executable, runtime, `build.json`, USD
+  resources), so the runtime stays beside the executable in the user folder (A49).
 - `find_native_executable`: (1) `native_executable_path` if set; (2) `bin/<platform>/` of the package, where
   `<platform>` is `to_platform_name(platform.system(), platform.machine())`. Never `PATH`, never a name with a fixed
   extension. The packaged folder is copied once to the extension's user folder under its version and made
@@ -1212,9 +1401,9 @@ that file's `_solver_vector` axis swap belonged to the Y-up solver and is not po
    with `WIND_ACCELERATION_PER_STRENGTH = 1.0` m/s2 per unit of Strength (the gas branch used Strength directly as
    m/s2) and `direction` the field object's local +Z axis in world axes at that key, from `mathutils` (the keyed
    rotation as a `Quaternion` times `Vector((0, 0, 1))`); `logic/` receives a unit vector. Several Wind fields
-   add. The factor appears in the tooltip of `force_field_collection` and of the `gas_wind[].acceleration` scene
+   add. The factor appears in the tooltip of `force_field_collection` and of the `wind[].acceleration` scene
    field, in the method paper (8) and in `test_wind_strength_to_acceleration`.
-3. **Honoured** (written as `gas_wind` keys, `{time, acceleration}` in m/s2, world axes): strength, direction
+3. **Honoured** (written as `wind` keys (A47), `{time, acceleration}` in m/s2, world axes): strength, direction
    from the object's orientation, and the animation of both. The rotation curves and the `field.strength` curve
    are evaluated at every frame of the range when any of them has keys (5.1 item 6), one key at time 0
    otherwise; key time `(frame - first_frame) / frames_per_second`. A Wind object turned by an object above it,
@@ -1223,10 +1412,13 @@ that file's `_solver_vector` axis swap belonged to the Y-up solver and is not po
    goes ahead with the uniform part; `object_name` the field object): `wind_falloff_not_honoured` when
    `falloff_power != 0`, `use_min_distance` or `use_max_distance` is set; `wind_noise_not_honoured` when
    `noise != 0`; `wind_shape_not_honoured` when `shape` is not `PLANE` or `POINT`, or `z_direction` is not
-   `BOTH`. `wind_flow_not_honoured` when `flow != 0` is a `NOTE`, because a new Wind field in Blender 5.3 has flow
-   1.0 and the note would otherwise read as a fault on every default field.
-5. **Wind without gas.** `gas_wind` acts on the gas only; a Wind field in a domain without a gas substance gives
-   `wind_without_gas` (`NOTE`: "Wind moves only gas in FluidiTy; this domain has no gas") and no keys.
+   `BOTH`. `wind_flow_not_honoured` (`NOTE`) only when `flow != 1.0` (A50; was `flow != 0`), so a default Wind
+   field (flow 1.0 in Blender 5.3) gives no finding.
+5. **Wind without gas** (changed, A47). Wind acts on gas in the solver and on spray and foam in render output,
+   never on the liquid body, so keys are written whenever a Wind field exists. A Wind field in a domain without a
+   gas substance gives `wind_without_gas` (`NOTE`): "The Wind field moves spray and foam only; the liquid is not
+   pushed by wind." when the outputs make foam or spray (`foam_and_spray` or `foam_volume`), otherwise "The Wind
+   field has no effect in this scene." With gas there is no such note.
 6. **Every other field type** has one row in `FORCE_FIELD_TYPE_TABLE` (3.13): `NOT_HONOURED` gives
    `force_field_not_honoured` (`HAS_KNOWN_LIMIT`, the message names the type), `IGNORED` gives
    `force_field_ignored` (`NOTE`). A type the table lacks (a later Blender may add one) is `NOT_HONOURED`.
@@ -1310,9 +1502,23 @@ recorded by hand in `docs/blender-runs.md`. For (b) and (c) the commit names the
 | `test_second_start_is_refused` | Two `request_start` | `RUN_ALREADY_ACTIVE` |
 | `test_run_arguments` | Each `RunKind` | The exact argument lists of 3.5; never `--run-on` |
 | `test_native_facts_parse_io_examples` | The I/O design's event examples and a recorded `capabilities`, `scene_checked`, `report`, `particle` | Every field of 3.5 filled; unknown keys kept in `other` |
-| `test_budget_read_from_scene_checked` (NEW, A17, plan Task 12) | The recorded `scene_checked` of I/O plan Task 39's `check falling_block.json`; an event without `budget` | `budget.lines` equal to the event's list and `verdict == "fits"`; A25: `viscous_path == "pressure_solve"`, one liquid with viscosity 0; `None` |
+| `test_budget_read_from_scene_checked` (NEW, A17, plan Task 12) | The recorded `scene_checked` of I/O plan Task 39's `check falling_block.json`; an event without `budget` | `budget.lines` equal to the event's list and `verdict == "fits"`; A25: `viscous_path == "pressure_solve"`, one liquid with viscosity 0; A57: that liquid is a `ViscousEffectOfLiquidFacts` with `is_viscous` false, and `viscous_effect_run_seconds`, `reynolds_length_m` read; `None` |
 | `test_water_preset_viscosity_zero` (NEW, A25, plan Task 9) | The `water` row of `SUBSTANCE_PRESETS` | `substances[].ingredients[].viscosity` is exactly 0.0, equal to I/O's `kWater` (`test_preset_values_as_designed` also asserts 0, not 0.001) |
-| `test_performance_panel_draws_liquids_lines` (NEW, A25, plan Task 32, background Blender) | `FLUIDITY_PT_performance` with a recording layout; budget lines holding the `liquids:` block of I/O's `BuildBudgetLines, TwoLiquids_ViscousEffectLines` | Each `liquids:`, per-liquid and `note:` line drawn verbatim, once, in order, before `fits:` |
+| `test_performance_panel_draws_liquids_lines` (A25, changed A57, plan Task 32, background Blender) | `FLUIDITY_PT_performance` with a recording layout; budget lines holding the `liquids:` block of I/O's `BuildBudgetLines, WaterAndSyrup_ViscosityAdviceLines` | Each `liquids:`, per-liquid, `advice:` (water) and `note:` (water, syrup) line drawn verbatim, once, in order, before `fits:` |
+| `test_viscous_effect_of_liquid_read_from_budget` (NEW, A57, plan Task 12) | A `scene_checked` whose budget holds the water and syrup entries of I/O's `BuildBudgetLines, WaterAndSyrup_ViscosityAdviceLines` (ratios 0.008 and 57.1) and a third entry without `viscosity_to_smoothing_ratio` | Ten fields each, values equal to the event's; the absent key gives `None` |
+| `test_performance_panel_draws_cost_warnings_and_fallback_note` (NEW, A58, plan Task 32, background Blender) | A run status whose `cost` holds the lines and warnings of I/O's `BuildCostLines, RequestedBeyondPlan_Warns` and `MemoryTakenBelowReserved_WarnsSpill`; budget lines ending with the Windows fallback note | Under "Measured cost" each cost line then each warning drawn verbatim, once, in order; the fallback note drawn once with the budget lines; no `memory_share_of_total` widget; Memory Left Free drawn in MiB |
+| `test_cost_read_from_end_events` (NEW, A58, plan Task 17) | `done`, `stopped`, `failed` events with `cost.lines` and `cost.warnings`; one without `cost` | `RunStatus.cost.lines` and `.warnings` equal the event's; `None` |
+| `test_liquid_force_line` (NEW, A60, plan Task 19) | pressure (0, 0, 9.81) N, viscous (0.04, 0, 0) N | `"Liquid force: 9.81 N (pressure 9.81, viscous 0.04)"` exactly |
+| `test_liquid_forces_from_frame_done` (NEW, A60, plan Task 17) | Two `frame_done` with `liquid_force_on_solids` for solids 3 and 7, then for 3 only | `liquid_forces` keyed 3 and 7, then 3 only, each vector as sent |
+| `test_newer_blender_shows_one_note` (NEW, A48, plan Task 19 and 30) | `build_blender_version_note` with (5, 3, 0), (5, 3, 2), (5, 4, 0), (6, 0, 0) | `None`, `None`, then exactly "FluidiTy was tested with Blender 5.3 only." twice; in Blender the domain panel draws it once |
+| `test_run_arguments_choose_mode_again` (NEW, A40, plan Task 14) | `RESUME` with `choose_mode_again` true and `last_frame` 40 | `[exe, "resume", <folder>, "--choose-mode-again", "--last-frame", "40"]`; false: no flag |
+| `test_resume_offers_other_mode_on_recorded_mode_does_not_fit` (NEW, A40, plan Task 31, background Blender) | A stopped run; Resume; the scripted process writes `failed` with the finding `recorded_mode_does_not_fit` and exits | State `failed` with the finding; the everyday panel draws "Resume in another mode"; pressing it starts `resume <folder> --choose-mode-again` |
+| `test_cell_size_regions_and_map_written` (NEW, A63, plan Task 8) | Cell resize on, two regions (0.02 m, 0.05 m), a 4 x 2 map | `cell_size_regions` in description order with corners and widths; `cell_size_map.image == "inputs/cell_size_map.png"`; the PNG beside the file; cell resize off: neither key and no PNG |
+| `test_grey_png_round_trip`, `test_grey_levels_luminance_and_row_order` (NEW, A63, plan Task 8a) | A 3 x 2 grey image; RGBA pixels in Blender order: row 0 (bottom) red, green, blue; row 1 (top) white, black, grey 0.5, alpha 0.3 everywhere | PNG signature, IHDR (3, 2, depth 8, colour type 0), inflated rows equal the bytes; levels 255, 0, 128, 54, 182, 18 (top row first); alpha ignored |
+| `test_digest_covers_the_map` (NEW, A63, plan Task 8) | One map pixel changed | The digest changes; the scene file bytes do not |
+| `test_free_solid_guide_written` (NEW, A59, plan Task 8) | Axes with `moves_along_z` only; Rail along (0, -1, 0); Hinge at (1, 2, 3) about (0, -1, 0) | `free_solid.guide` with `kind` `axis_limits`, `rail`, `hinge` and the given values; every field written for every kind |
+| `test_slip_length_written` (NEW, A53, plan Task 8) | Syrup; a fixed box with slip 0, a driven plate with 0.01 m, a fixed box with Free Slip, a free box; water only with slip 0.01 m | (`slip_length`, `free_slip`) = (0.0, false), (0.01, false), (0.0, true); neither key on the free box; with water neither key |
+| `test_guide_without_object_is_a_finding` (NEW, A59, plan Task 13) | A free solid with Rail and no guide object | `guide_object_missing`, `BLOCKS_RUN`, the participant's id |
 | `test_performance_panel_draws_budget_lines` (NEW, A17, plan Task 32, background Blender) | `FLUIDITY_PT_performance` with a recording layout after a full check with a budget | Each line drawn once, in order, under "Planned cost (estimate)"; nothing when `budget` is None |
 | `test_role_table_is_the_only_source` | Import every operator and property | Each `role`, `shape`, `motion` enum equals `to_enum_items(ROLE_TABLE)` |
 | `test_scene_fields_cover_the_scene_file` | Write a description with every field set | Every leaf path of the file has one `SceneField`; every `SceneField` appears; each has a unit and a tooltip |
@@ -1329,8 +1535,9 @@ recorded by hand in `docs/blender-runs.md`. For (b) and (c) the commit names the
 | `test_records_refuse_other_blender_version` | A results file recorded by 5.2.3 or 5.4.0; one with another `files_digest` | Refused, naming the version; refused, naming the digest |
 | `test_wind_strength_to_acceleration` | One Wind field, strength 2.5, axis turned 90 degrees about X (`direction == (0, -1, 0)`) | One key `(0, -2.5, 0)` m/s2 exactly |
 | `test_two_wind_fields_add`, `test_animated_strength_and_turn_give_keys`, `test_negative_strength_reverses` | `(1, 0, 0)` and `(0, 2, 0)`; keys at 0, 1/24, 2/24 s with strengths 0, 1, 2 along +X, +Y, +Z | `(1, 2, 0)`; three keys equal to the products; the sign follows the strength |
-| `test_wind_without_gas_writes_no_keys_and_a_note` | A Wind field, no gas substance | No keys; `wind_without_gas`, `NOTE` |
-| `test_each_unhonoured_wind_setting_is_reported`, `test_default_wind_gives_only_the_flow_note` | Falloff power 1; `use_max_distance`; noise 0.5; shape `LINE`; `z_direction` `POSITIVE`; flow 1.0; Blender 5.3's new-field defaults | One finding each with the codes and severities of 5.13, keys still written; defaults: only `wind_flow_not_honoured` |
+| `test_wind_without_gas_writes_keys_and_a_note` (changed, A47) | A Wind field of strength 2 along +X, no gas substance, foam and spray on | One key `(2, 0, 0)`; `wind_without_gas`, `NOTE`, message "The Wind field moves spray and foam only; the liquid is not pushed by wind." |
+| `test_wind_without_gas_or_foam_has_no_effect_note` (NEW, A47) | The same with foam and spray and foam volume off | Keys written; message "The Wind field has no effect in this scene."; with a gas substance: no `wind_without_gas` |
+| `test_each_unhonoured_wind_setting_is_reported`, `test_default_wind_gives_no_finding` (changed, A50; was `test_default_wind_gives_only_the_flow_note`) | Falloff power 1; `use_max_distance`; noise 0.5; shape `LINE`; `z_direction` `POSITIVE`; flow 0.5 and flow 0; Blender 5.3's new-field defaults (flow 1.0) | One finding each with the codes and severities of 5.13, keys still written; defaults: no finding |
 | `test_every_field_type_has_one_handling`, `test_unknown_field_type_is_not_honoured` | Each type of 5.14 but `NONE`; a type not in the table | The table's finding, message naming the type; `force_field_not_honoured` |
 | `test_every_blender_field_type_has_a_row` | The probe's recorded type list | Every identifier but `NONE` is a key of `FORCE_FIELD_TYPE_TABLE`, and every key is in the list |
 
@@ -1353,7 +1560,20 @@ timers do not fire in background mode, so tests call `ui_timer.tick()`):
   gives keys, every other type exactly its table's finding.
 - `force_field_collection` accepts a collection and `None`; the domain has no `wind_acceleration`; the
   property's description contains "1.0 m/s2 per unit of Strength".
-- A `bpy.app.version` outside 5.3 gives one note: `(5, 3, 0)` and `(5, 3, 2)` none, `(5, 4, 0)` one.
+- `test_newer_blender_shows_one_note` (A48): with the version check given `(5, 3, 0)` and `(5, 3, 2)` the domain
+  panel draws no note, with `(5, 4, 0)` it draws "FluidiTy was tested with Blender 5.3 only." once.
+- NEW (A63) `test_region_box_is_world_aabb`: a cube of half size 0.1 m at (1, 2, 3) scaled (2, 1, 1) in the region
+  collection gives low (0.8, 1.9, 2.9), high (1.2, 2.1, 3.1) within `1e-12` m and no finding; turned 45 degrees
+  about Z (scale 1) it gives half extents 0.1 x (cos 45 + sin 45) = 0.1414214 m in x and y and
+  `cell_size_region_rotated` (`NOTE`); `cell_width` 0 writes the domain's smallest cell width.
+  `test_cell_size_map_exported_as_grey_png`: a 4 x 2 generated image becomes `inputs/cell_size_map.png` of the run
+  folder with the bytes of `to_grey_levels`.
+- NEW (A59) `test_guide_from_empty`: an empty at (1, 2, 3) turned 90 degrees about X: Rail gives `rail_direction`
+  (0, -1, 0), Hinge gives `hinge_point` (1, 2, 3) and `hinge_axis` (0, -1, 0), within `1e-12`; the empty keyed to
+  move after the first frame still gives the first-frame values; an empty with a parent: `motion_not_keys`.
+- NEW (A53, A60) `test_solid_panel_slip_and_force`: with water only no Slip Length is drawn; with syrup it is
+  drawn for a fixed and a driven solid and not for a free one; after a `frame_done` with forces for the selected
+  solid the participants panel draws its `build_liquid_force_line` once.
 - `apply_link_plan` with the witness files of the chosen formats (3.12): objects evaluate at three frames
   forward and backward, including an empty foam object; point count, positions, velocities, radius and one
   surface attribute match `expected.json` within float32 round-off; volume grid names and the transform
@@ -1365,6 +1585,17 @@ timers do not fire in background mode, so tests call `ui_timer.tick()`):
   spacing, Rebuild Outputs, only the surface files change; smoke over water (liquid and gas in one domain,
   A10) for 4 frames: surface and gas volume linked in one plan.
 - File load and scene deletion during a scripted run: no exception, no process killed, the run ends `stopped`.
+
+**Packaging** (NEW, A49, plan Task 48; plain pytest on the built packages, run where each package is built;
+"written, not run" elsewhere): `test_package_contains_cuda_runtime` (windows-x64 and linux-x64 packages:
+`bin/<platform>/cudart64_<major>.dll` or `libcudart.so.<major>` is a regular file in the zip, not a link; its
+version in `build.json` equals the `runtime` of `ReadProcessorDescription(RunOn::kGpu)` printed by the packaged
+executable on the build machine; `licenses/cuda-runtime.txt` names that version; the macos-arm64 package has
+neither); `test_linux_executable_runpath_is_origin` (`readelf -d bin/linux-x64/fluidity`: one `RUNPATH` entry
+`[$ORIGIN]`, no `RPATH`); `test_packaged_executable_runs_cpu_scene_without_driver` (in the container, which has
+no GPU driver: the unpacked linux-x64 package runs `fluidity check` and `run --last-frame 1` of I/O's
+`small_syrup.json` with `run_on` cpu, both exit 0; `ldd` resolves `libcudart.so.<major>` inside the package folder
+and lists no `libcuda.so.1`).
 
 **Needs a real Blender session** (a window): every panel draws in every state, with each role assigned and
 unassigned, at 424 px, with no error in the console; the timer keeps the viewport responsive during a run
@@ -1496,8 +1727,10 @@ earlier value (`kNotRun` with empty evidence, or `kDocumented` with its quote), 
 
 `== From a Blender scene to playback <sec-blender>`, a short closing section: the scene model (role, shape,
 motion; substance and ingredient), the wind from Blender's force fields (one paragraph and the equation
-`a = 1.0 m/s^2 * strength * axis` summed over Wind fields, why the factor is 1, what is reported instead of
-honoured, and the table of every field type with its finding code), the two checks, one run with three separate
+`a = 1.0 m/s^2 * strength * axis` summed over Wind fields, why the factor is 1, that it moves gas, spray and
+foam and never the liquid (A47), what is reported instead of honoured (flow only when not 1, A50), and the table
+of every field type with its finding code), the artist's cell size regions and top-view map (one paragraph,
+A63: box and luminance rules, why the map is 2D), the two checks, one run with three separate
 facts, outputs as open-format files linked with Blender's own readers, and how a format is chosen by witness
 tests in Blender 5.3. Figures: (1) the run state machine (with `needs_new_run`) and the three facts drawn as
 three marks on one frame axis; (2) what depends on what: scene file, simulation, each output, Blender objects,
@@ -1532,7 +1765,13 @@ bibliography; Blender manual pages are cited by URL copied at writing time.
 | `energy_blend` | `own_motion_kept` | DECIDED |
 | `mesh_cache`, `mesh_spacing`, `mesh_sigma` | `surface_spacing`, `surface_smoothing_width` (`outputs.surface.spacing`, `.smoothing_width`) | render output's `SurfaceSettings` |
 | `snow_shear`, `snow_lambda`, `snow_compression`, `snow_stretch` | `stiffness_against_shear`, `stiffness_against_squeeze`, `max_springy_shortening`, `max_springy_lengthening` | DECIDED / materials (A4) |
-| `Fuel Rate`, `Heat Rate` custom properties; Wind force field | `fuel_rate` kg/(m3 s), `heat_rate` W/m3; the Wind field kept, read through `force_field_collection` into `gas_wind` keys (`WIND_ACCELERATION_PER_STRENGTH`) | gas; A20, D13 (replaces `wind_acceleration` of the first version) |
+| `Fuel Rate`, `Heat Rate` custom properties; Wind force field | `fuel_rate` kg/(m3 s), `heat_rate` W/m3; the Wind field kept, read through `force_field_collection` into `wind` keys (`WIND_ACCELERATION_PER_STRENGTH`) | gas; A20, D13 (replaces `wind_acceleration` of the first version) |
+| (2026-11-14 design) `gas_wind` scene field, `build_wind_keys(readings, has_gas)` | `wind`, `build_wind_keys(readings)` | A47: wind also moves spray and foam, so the name no longer says gas |
+| (2026-11-14 design) `memory_share_of_total` | removed; `memory_share_of_free` 0.9 and `memory_left_free_bytes` (panel `memory_left_free_mib`) | A58 |
+| (2026-11-14 design) `particle_region_depth_in_cell_widths`, `grid_only_depth_in_cell_widths` | not in the first version | A64 |
+| (2026-11-14 design) `RunBudgetFacts.liquids` 6-tuple with `effect_not_visible` | `ViscousEffectOfLiquidFacts` | A57; the I/O table's name plus the `Facts` suffix of 3.5 |
+| `moves_along_x` ... `turns` on `free_solid` | under `free_solid.guide`, with `kind`, `rail_direction`, `hinge_point`, `hinge_axis`; panel "Guide" Axes, Rail, Hinge, `guide_kind`, `guide_object` | A59 |
+| refinement region, refinement map (literature) | cell size region, cell size map (`cell_size_region_collection`, `cell_size_map_image`) | A63 (plan-decisions item 2) |
 | (first version of this design) `core/` | `logic/` | D1: says what the package holds |
 | (first version) `LinkStep.stored_path` | `path_in_blend` | D1: says where the path lives |
 | (first version) `(code, support, message)` | `(code, level, message)`, `ToName(step::CapabilityLevel)` | D1; the step's jargon rename of `support` stays (A22) |
@@ -1568,6 +1807,8 @@ their fluid-jargon sense: the add-on keeps Blender's own words (`fluidity.link_o
 - `volume_playback.py` and `gas_volume.py` writing OpenVDB from Python; `gas_authoring.py` custom
   properties `Fuel Rate`, `Heat Rate`, `scene.frame_set` sampling, the domain pointer to one Wind object and its
   `_solver_vector` Y-up swap (the Wind force field itself is read, 5.13).
+- The grid-only deep region's two domain properties, their rows and their Solver Detail widgets: not in the first
+  version (A64); plan group "Deep liquid without particles (later; needs review)".
 - `fluidity.help` popups with hand-written support text; the `show_debug` preference (Inspect is a panel).
 - `translations.py`, `locale/`, `tools/blender/compile_translations.py` (decision 8).
 - Example `.blend` files in the package: the reference scene presets create them.
@@ -1627,6 +1868,8 @@ A decision replaced by a later one keeps its text and is marked "Replaced".
    Replaced (A16, 2026-11-14) for the Blender part: Blender 5.3 is the one supported version; manifest
    `blender_version_min = "5.3.0"`, no maximum; a version outside 5.3 gets one note; the witness tests run in
    Blender 5.3 only (5.10, 7.2). The platforms stay as proposed.
+   Replaced in part (A48, 2026-11-15): "a version outside 5.3 gets one note" reads "a version at or above 5.4.0
+   gets one note in the domain panel" (decision 26).
 7. **Output files.** One file per frame for every kind, so a running bake is viewable and nothing is
    written twice; surface as USD with `velocities`. If Blender 5.3 does not use those velocities for motion
    blur through the Mesh Sequence Cache, motion blur of the surface is left out of the product promise
@@ -1709,18 +1952,70 @@ A decision replaced by a later one keeps its text and is marked "Replaced".
     name back with `kViscousLiquidWithSand`, and the property edit to viscosity 0 with it; `RunBudgetFacts.liquids`
     reads the renamed table's unchanged fields (3.5). Owner answer A27; `plan-decisions.md`, "A viscous liquid
     sticks, and free solids in the viscous solve (A26, A27)", "Exclusions"; add-on plan Tasks 11, 12.
+    Replaced in part (A57, 2026-11-15): the table's fields changed; `liquids` holds `ViscousEffectOfLiquidFacts`
+    (decision 23).
+
+20. **Particles everywhere in the liquid.** The domain had `particle_region_depth_in_cell_widths` and
+    `grid_only_depth_in_cell_widths` (3.9) written as `cell_resize.regions` (4.1).
+    Decision: removed from the first version; their design text stays marked "not in the first version (A64)";
+    `CellResizeDescription` keeps the two reaches; the budget's deep particle line is drawn verbatim. The add-on plan
+    holds them in the group "Deep liquid without particles (later; needs review)", owned by the cell resize plan's
+    group of that name. Owner answer A64; `plan-decisions.md` "Owner answers A40-A64 applied", item 1.
+21. **Artist cell size regions and map.** A52 had left them unticked.
+    Decision: `cell_size_region_collection` (each object's world axis-aligned box and
+    `fluidity_cell_size_region.cell_width`, 0 meaning the smallest cell width; `cell_size_region_rotated` for a
+    turned object), `cell_size_map_image` written as the 8-bit grey PNG `inputs/cell_size_map.png` by luminance
+    (Rec. 709 weights), both in the Physical Detail "Cell size" box, both written only with cell resize, the PNG in
+    the scene digest (3.3, 3.9, 3.11, 3.14, 4.1, 5.1 item 9). The default of 0 and the "only with cell resize" rule
+    are this design's (a per-object property cannot default to a domain value; the size rule runs only inside cell
+    resize). Owner answer A63; `plan-decisions.md` "Owner answers A40-A64 applied", item 2.
+22. **GPU memory budget in the add-on.** `memory_share_of_total` and `memory_share_of_free` (0.7, 0.8).
+    Decision: `memory_share_of_total` removed; `memory_share_of_free` defaults to 0.9; Memory Left Free is shown in
+    MiB (`memory_left_free_mib`, default 512) and written as `memory_left_free_bytes`; the add-on reads `cost.lines`
+    and `cost.warnings` of the end events (`RunCostFacts`, `RunStatus.cost`) and draws them verbatim under "Measured
+    cost"; the Windows fallback note arrives in the budget lines (3.5, 3.6, 3.9, 3.11, 5.3). The Blender property is
+    `memory_left_free_mib`, not plan-decisions' `memory_left_free_bytes`, because a Blender `IntProperty` is 32-bit
+    (a byte count above 2 GiB does not fit) and the panel shows MiB, so the name says its unit; `RunDetail` and the
+    scene file keep `memory_left_free_bytes`. Owner answers A58 (A43, A45 refined); `plan-decisions.md` "Owner answers A40-A64 applied", item 3.
+23. **Viscosity advice lines.** Decision: `RunBudgetFacts.liquids` holds `ViscousEffectOfLiquidFacts` with I/O's ten
+    fields (`viscosity_to_smoothing_ratio` `None` when absent), plus `viscous_effect_run_seconds` and
+    `reynolds_length_m`; the lines are drawn verbatim; the test uses I/O's `WaterAndSyrup_ViscosityAdviceLines`
+    (3.5, 5.3, 7.1). Owner answer A57 (replaces A44 and A25's threshold); `plan-decisions.md` "Owner answers A40-A64 applied", item 4.
+24. **Guided free solids.** Decision: a "Guide" enum Axes, Rail, Hinge (`guide_kind`) and a `guide_object` empty
+    read at the first frame through the key reader; scene file `free_solid.guide`; `guide_object_missing` blocks a
+    Rail or Hinge without an empty (3.3, 3.4, 3.9, 3.11, 4.1, 5.1 item 7). Owner answer A59 (A46 first half
+    refined); `plan-decisions.md` "Owner answers A40-A64 applied", item 5.
+25. **Liquid force on solids.** Decision: `LiquidForceFacts` from `frame_done.liquid_force_on_solids`,
+    `RunStatus.liquid_forces`, one `build_liquid_force_line` per selected solid in the participants panel (3.5,
+    3.6, 3.11, 4.1). Owner answer A60 (A46 second half refined); `plan-decisions.md` "Owner answers A40-A64 applied", item 6.
+26. **Blender versions.** Decision: `blender_version_min = "5.3.0"`, no maximum; one note in the domain panel at
+    5.4.0 and above, "FluidiTy was tested with Blender 5.3 only." (5.10). Owner answer A48; `plan-decisions.md` "Owner answers A40-A64 applied", item 9.
+27. **The CUDA runtime in the package.** Decision: `bin/<platform>/` ships the runtime file the executable was
+    built with, `licenses/cuda-runtime.txt` the notice, Linux `RUNPATH $ORIGIN`, Windows the application directory;
+    `find_native_executable` copies the whole platform folder; CPU runs never depend on a GPU library (5.10, 7.1
+    Packaging). The spelling `licenses/` follows plan-decisions (the task brief wrote `licences/`). Owner answer
+    A49; `plan-decisions.md` "Owner answers A40-A64 applied", item 9.
+28. **Wind on spray and foam.** Decision: `build_wind_keys(readings)` (no `has_gas`), keys written whenever a Wind
+    field exists, the scene field `wind`, the `wind_without_gas` texts of 5.13 item 5 (3.13, 4.1, 5.13). Owner answer
+    A47; `plan-decisions.md` "Owner answers A40-A64 applied", item 8. Replaces the Open item "wind on liquids" (the liquid body is never pushed).
+29. **The Wind Flow note.** Decision: `wind_flow_not_honoured` only when `flow != 1.0`; the fire scene's Wind field
+    keeps flow 1.0 (5.2, 5.13). Owner answer A50; `plan-decisions.md` "Owner answers A40-A64 applied", item 8.
+30. **Slip length on fixed and driven solids.** Decision: `slip_length` (m) and `free_slip` on the participant,
+    written for fixed and driven solids beside a viscous liquid only, drawn only then (3.3, 3.9, 3.11, 5.1 item 8).
+    Owner answer A53; `plan-decisions.md` "Owner answers A40-A64 applied", item 7.
+31. **Resume in another mode.** Decision: `StartRequest.choose_mode_again`, `resume ... --choose-mode-again`, the
+    5.4 row for `recorded_mode_does_not_fit`, the button "Resume in another mode" (3.5, 3.7, 3.10, 3.11, 5.4).
+    Owner answer A40; `plan-decisions.md` "Owner answers A40-A64 applied", item 10.
 
 **Open** (for the owner; nothing here is built on an assumption):
 
-- The add-on does not
-  yet read `started.budget` or the `cost` of `done` / `stopped` / `failed` (I/O carries both); whether it shows the
-  measured cost and its warnings is not decided.
-- Default Wind fields carry flow 1.0 in Blender 5.3, so every default field gives the `wind_flow_not_honoured`
-  note; whether that note should be dropped for the default value, or flow given a meaning, is not decided.
-- A maximum Blender version: the manifest has none, so a later Blender loads the add-on with one note; whether
-  to set `blender_version_max` once a later version is known to break it is not decided.
-- Wind on liquids: `gas_wind` moves gas only, so a Wind field in a domain without gas gives `wind_without_gas`
-  and liquids feel no wind; wind acting on liquids is not decided.
+- Decided 2026-11-15 and kept for the record: the measured cost (decision 22, A58), the default Wind Flow note
+  (decision 29, A50), a maximum Blender version (decision 26, A48: none), wind on liquids (decision 28, A47: never).
+- The domain box's own slip length (A53 reads it for the box beside a viscous liquid) has no Blender property:
+  the box writes nothing and sticks (native default 0). Whether to expose it is not decided.
+- The wording of `licenses/cuda-runtime.txt` (owner to confirm, plan-decisions owner question 4).
+- (Settled with I/O, 2026-11-15) the PNG's top row is the domain's high y and I/O's loader flips it into
+  `map_levels` row 0; a region `cell_width` of 0 means the smallest width on both sides.
 - OpenVDB 12.1.1, the newest on Conan Center on 2026-11-14, is older than the 13.0 Blender 5.3 bundles; the
   witness tests (W1, W8, W10) are what shows Blender 5.3 reads its files.
 - The Conan remote: render output's library pins (and so the OpenUSD resources this package ships) depend on

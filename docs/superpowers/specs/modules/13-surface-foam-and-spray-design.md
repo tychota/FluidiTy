@@ -89,12 +89,16 @@ enum class RenderOutputError : std::uint8_t {
   kMotionNotKnown,      // A vertex or a foam particle left the lattice points where motion was recorded.
   kTopologyChanged,     // The moved mesh and the field disagree on closed pieces or on their Euler number.
   kEdgeTooLong,         // The moved mesh has an edge above SurfaceSettings::max_edge_in_spacings.
-  kOutOfMemory,
+  // (CHANGED, reconcile item 31: kOutOfMemory, formerly here, is appended last; the values below move up by one.)
   kRunOnCallFailed,     // RecordStep only: the simulation's processor failed.
   kFormatNotInBuild,    // NEW. A writer was asked for a format that is not a candidate of that kind in this build.
-  kFileWriteFailed,     // NEW. The library or io::OutputFile failed. The file is not listed.
+  kFileWriteFailed,     // NEW. The library or io::OutputFile failed (a library's std::bad_alloc included, A58).
+                        // The file is not listed.
   kTooManyFieldParts,   // NEW (reconcile item 26). RenderLimits::max_field_parts reached. The surface is left out.
-};
+  kOutOfMemory,         // MOVED LAST (A58, reconcile item 31). A building function could not take its buffers
+                        // (BufferError::kRunMemoryTooSmall, or a failed allocation); magnitude = bytes asked.
+};  // 16 values. kOutOfMemory comes only from BuildStepRecorder, BuildRenderOutput, BuildRenderOutputFromSnapshot
+    // and BuildRenderFrame (the building functions).
 struct RenderOutputFailure {
   RenderOutputError error = RenderOutputError::kNone;
   std::uint64_t frame = 0;       // Output frame. 0 inside RecordStep.
@@ -107,8 +111,10 @@ std::string_view ToName(RenderOutputError error);
 ```
 
 Only `kBadInput`, `kWrongStateVersion`, `kOutOfMemory` and `kRunOnCallFailed` ever leave `BuildRenderFrame` or
-`RecordStep` as a failure; only `kBadInput`, `kFormatNotInBuild`, `kFileWriteFailed` and `kOutOfMemory` leave a
-writer. The others are reasons inside a `SurfaceReport` or `FoamReport` (5.3, 5.5).
+`RecordStep` as a failure (`kOutOfMemory` only `BuildRenderFrame`, a building function; reconcile item 31); only
+`kBadInput`, `kFormatNotInBuild` and `kFileWriteFailed` leave a writer (CHANGED, reconcile item 31: a library's
+`std::bad_alloc` inside a writer is `kFileWriteFailed`, whose message names memory as a cause; it was
+`kOutOfMemory`). The others are reasons inside a `SurfaceReport` or `FoamReport` (5.3, 5.5).
 
 ### 3.2 `render_output/lattice.h` (shared), `motion_sample.h`
 
@@ -189,14 +195,21 @@ struct RecordedInterval {              // What one output interval offered. Move
   std::uint64_t dropped_event_count = 0;      // Events above max_events_per_step, smallest volume_time first.
   std::uint64_t curvature_not_known_count = 0;  // Points whose distance changes too slowly to give a normal.
   // NEW. The liquid of the commit at this frame's time, as cell_resize::ComputeLiquidTotals sums it (particles
-  // plus grid-only cells): one total per cell block, then math::TreeSum over blocks in the whole grid's
+  // only, A64: every liquid cell holds particles; "plus grid-only cells" is not in the first version): one total per cell block, then math::TreeSum over blocks in the whole grid's
   // order, so one try recorded in batches gives the bytes of one call. The volume target of 5.3 step 5.
   cell_resize::LiquidTotals liquid_totals_at_frame{};
 };
 class StepRecorder;                    // Move-only. Holds device working buffers sized by BuildRenderOutputMemoryEstimate.
+// CHANGED (A58): the run-processor part of render output. Its where = kRunOn rows (the working buffers on the
+// simulation's processor, its SumBuffers and OrderBuffers by their RunMemory& forms) are pieces of run_memory, one
+// row per buffer, so ComputeRunMemoryBytes(BuildRenderOutputMemoryEstimate(settings, run_on), counts, kRunOn) is
+// exactly what it takes. Requires: run_on == run_memory.run_on() (debug assertion, A30). kOutOfMemory when a piece
+// does not fit (magnitude = bytes asked). RenderOutput's frame_order_buffers (kCpu, kWholeRun) come from the CPU
+// block given to BuildRenderOutput; the queued samples and the worker's arrays (kOneSnapshot / kOneCall) keep plain
+// allocation (plan-decisions item 3 and its same-day correction).
 std::expected<StepRecorder, RenderOutputFailure> BuildStepRecorder(
     RunOn run_on, const MotionSettings& motion, const FoamSourceSettings* sources /* null: no foam */,
-    const RenderLimits& limits, double frame_duration, double first_frame_time);
+    const RenderLimits& limits, double frame_duration, double first_frame_time, RunMemory& run_memory);
 // Body of step stage MakeFoamAndSpray (D). Reads the try over inputs.blocks only; changes only the recorder.
 // A batched run calls it once per loaded piece of the same try; the calls add to one pending record and no
 // call sums over the whole grid. What it finds is kept apart until CommitRecordedStep. Fails only with
@@ -248,7 +261,8 @@ struct SurfaceField {                  // 0.5 - liquid share of the open space, 
   LatticeValues<float> distance_to_solid;       // m, capped at +-4 spacings.
   std::vector<LatticeValues<float>> ingredient_share;  // 0..1, one per ingredient when there are several.
 };
-struct SurfaceFieldInputs {            // snapshot: particles (kOutputSnapshotFields) and the grid-only arrays.
+struct SurfaceFieldInputs {            // snapshot: particles (kOutputSnapshotFields). (A64: "and the grid-only
+                                       // arrays" is not in the first version.)
   const step::SimulationSnapshot* snapshot;  std::span<const std::uint64_t> material_ids;
   std::span<const contact::Solid> solids;    const contact::DomainBox* domain_box;
   const grid::GridFrame* grid_frame;         double spacing = 0, smoothing_width = 0;
@@ -340,6 +354,9 @@ struct FoamSettings {
   double bubble_radius = 0.001;        // m. Of one real bubble; for bubble_volume_fraction only.
   double display_radius = 0.005;       // m. Display only: the point size written to the file.
 };
+// NEW (A47). s. Foam drifts at this duration times the horizontal part of the wind acceleration (m/s2), on top
+// of the surface velocity: Blender Strength 1 (1 m/s2) gives 0.1 m/s. A starting value, a judgment to calibrate.
+inline constexpr double kFoamWindDriftDuration = 0.1;
 // foam_particles.h
 struct FoamParticles {                 // Ascending id. One entry per array.
   std::vector<std::uint64_t> id;  std::vector<Vec3> position, velocity;   // m, m/s
@@ -360,8 +377,9 @@ FLUIDITY_CPU_AND_GPU FoamKind ToFoamKind(FoamKind last_kind, double distance_to_
 // add_foam_particles.h, move_foam_particles.h, remove_foam_particles.h   (particle verbs, D)
 void AddFoamParticles(FoamParticles& particles, std::span<const FoamSourceEvent> events, const LatticeFrame& frame,
                       const FoamSettings& settings, const RenderLimits& limits, FoamReport& report);
+// CHANGED (A47): `wind` (RenderSettings::wind; keys owned by the ready scene) acts on spray and foam (5.5 step 2).
 void MoveFoamParticles(FoamParticles& particles, const OutputInterval& interval, Vec3 gravity,
-                       const FoamSettings& settings, FoamReport& report);
+                       const gas::GasWind& wind, const FoamSettings& settings, FoamReport& report);
 void RemoveFoamParticles(FoamParticles& particles, const contact::DomainBox& domain_box, double frame_time,
                          const FoamSettings& settings, FoamReport& report);
 ```
@@ -470,7 +488,11 @@ struct RenderLimits { std::uint32_t max_lattice_blocks = 1u << 20; std::uint64_t
 struct VolumeSettings { double spacing = 0; };   // m. 0: the smallest cell width of the scene.
 struct RenderSettings { MotionSettings motion; std::optional<SurfaceSettings> surface;
                         std::optional<FoamSettings> foam; std::optional<VolumeSettings> foam_volume, gas_volume;
-                        RenderLimits limits; };
+                        RenderLimits limits;
+                        // NEW (A47). Filled by I/O from ReadyScene::wind (scene field `wind`, keys present whenever
+                        // a Wind field exists). Moves spray and foam only, never the liquid. Empty: no wind. The
+                        // key storage belongs to the ready scene, which outlives RenderOutput.
+                        gas::GasWind wind; };
 // Fails kBadInput: a setting out of range, a group that is empty, repeats a material or names a material that
 // is not MaterialKind::kLiquid (A9: snow is written as points only; gas is a volume). `id` is the material_id.
 std::expected<void, RenderOutputFailure> CheckRenderSettings(const RenderSettings& settings,
@@ -481,9 +503,12 @@ class RenderOutput;                    // Move-only. What is kept from frame to 
                                        // and (A31) the CPU frame_order_buffers for max(max_field_parts,
                                        // max_foam_particles) items that every frame lends to the field and
                                        // the foam volume. CHANGED: fails kOutOfMemory when they cannot be built.
+// CHANGED (A58): frame_order_buffers (kCpu, kWholeRun) are a piece of run_memory, the CPU block (the step's
+// cpu_run_memory; in a CPU run its one block), by BuildOrderBuffers(RunOn::kCpu, n, run_memory). Requires:
+// run_memory.run_on() == RunOn::kCpu (debug assertion, A30). kOutOfMemory when the piece does not fit.
 std::expected<RenderOutput, RenderOutputFailure> BuildRenderOutput(
     const RenderSettings& settings, const contact::DomainBox& domain_box, const grid::GridFrame& grid_frame,
-    Vec3 gravity);
+    Vec3 gravity, RunMemory& run_memory);
 struct FrameIdentity { std::uint64_t frame = 0, state_version = 0; double time = 0;   // Same in every product.
                        double frames_per_second = 0; };   // NEW. 1/s. Time code rate of USD and Alembic files.
 struct FrameInputs { FrameIdentity identity; const step::SimulationSnapshot* snapshot;
@@ -509,9 +534,13 @@ struct RenderOutputSnapshot {          // D word. What a saved state needs to go
   MotionSample last_sample;            // The sample at last_frame, the first sample of the next interval.
 };
 RenderOutputSnapshot ReadSnapshot(const RenderOutput& output);
+// CHANGED (A58): run_memory as BuildRenderOutput.
 std::expected<RenderOutput, RenderOutputFailure> BuildRenderOutputFromSnapshot(
     const RenderSettings& settings, const contact::DomainBox& domain_box, const grid::GridFrame& grid_frame,
-    Vec3 gravity, const RenderOutputSnapshot& snapshot);
+    Vec3 gravity, const RenderOutputSnapshot& snapshot, RunMemory& run_memory);
+// CHANGED (A58): one row per buffer (copies = the number of identical buffers, each count x bytes_each); each sum or
+// order buffers object one row (given count 1, its whole ComputeSumBuffersSize / ComputeOrderBuffersSize: one
+// piece); no kRunOn row is kOneCall.
 std::vector<MemoryEstimateEntry> BuildRenderOutputMemoryEstimate(const RenderSettings& settings, RunOn run_on);
 
 // interchange/point_objects.h. NEW. Points as every points writer takes them. CPU only.
@@ -587,7 +616,10 @@ the name its section 3 has; for the designs updated at the same time or after th
 **Foundation (EXISTS, shared-interface (a) and the `base/` additions of `changes-to-apply.md`):** `Vec3`,
 `Mat3`, `math::Floor`, `Sqrt`, `Cbrt`, `Exp`, `Expm1` (drag formula at small rates; `main` uses
 `std::expm1`), `Min`, `Max`, `Length`, `Normalized`, `IsFinite`, `math::TreeSum`, `RunOn`, `CheckCanRunOn`,
-`FLUIDITY_CPU_AND_GPU`, `cpu_only.h`, `std::expected`, `Buffer`, `BuildBuffer`, `ReadBuffer`, `CopyBuffer`,
+`FLUIDITY_CPU_AND_GPU`, `cpu_only.h`, `std::expected`, `Buffer`, `BuildBuffer`, `ReadBuffer`, `CopyBuffer`, NEW (A58)
+`RunMemory`, `BuildBuffer(RunOn, size, RunMemory&)`, `ComputeRunMemoryBytes` (with `MemoryWhere`),
+`BufferError::kRunMemoryTooSmall`, the `RunMemory&` forms of `BuildSumBuffers` / `BuildOrderBuffers`, gas's
+`GasWind` and `SampleGasWind` (A47),
 `BuildStableOrder`, `BuildGroupsByDestination`, `MemoryEstimateEntry`, `CountedPer::kGivenCount`, `KeptFor::kWholeRun`,
 `kOneCall`, `kOneSnapshot`.
 
@@ -609,7 +641,8 @@ other array asked for), `SnapshotFields`, `kOutputSnapshotFields`, `FieldList`, 
 
 **Transfer (PROVIDED, transfer 3):** `GridSnapshot` (`velocity`, `value_kind`, `outside_solid`, `material_set`,
 `grid_version`), `FaceValueKind` (`kNoValue` is the only kind without a value; `kFromParticles`,
-`kTooFewParticles`, `kFromSolve`, `kFromGridOnlyRegion` all carry one), `MaterialSetKey`.
+`kTooFewParticles`, `kFromSolve` carry one; `kFromGridOnlyRegion` is not used in the first version, A64),
+`MaterialSetKey`.
 
 **Pressure (PROVIDED, pressure 3):** `GeometrySnapshot`, `CellGeometry::distance_to_surface`,
 `SurfaceDistances::at_corners` of the `kAllLiquidMaterials` field.
@@ -634,12 +667,13 @@ calls on `snapshot->gas` with `FrameInputs::gas_law` before `BuildGasVolume`.
 
 **Cell resize and batches (PROVIDED, cell resize and batches design 3.5):**
 `cell_resize::LiquidTotals { mass; rest_volume; current_volume; }`,
-`ComputeLiquidTotals(const particles::ParticlesTry&, const GridOnlyAmounts&, std::span<const std::uint8_t>
-material_is_counted, const grid::StaggeredGrid&, grid::CellBlockRange, SumBuffers&)` (one form since A31, given
-the recorder's `sum_buffers`; called with the liquid set's mask, so
-gas markers are left out), `GridOnlyAmounts` (built in `RecordStep` from the try `GridFields`). Its design
-asks this module to count grid-only cells as liquid, to take volume targets from `ComputeLiquidTotals`, and
-to do no whole-grid sum inside one `make_foam_and_spray` call: 5.2, 5.3 step 1 and 5.
+`ComputeLiquidTotals(const particles::ParticlesTry&, std::span<const std::uint8_t> material_is_counted, const
+grid::StaggeredGrid&, grid::CellBlockRange, SumBuffers&)` (CHANGED, A64: over particles only, the `const
+GridOnlyAmounts&` parameter is not in the first version; one form since A31, given the recorder's `sum_buffers`;
+called with the liquid set's mask, so gas markers are left out). ~~`GridOnlyAmounts` (built in `RecordStep` from the
+try `GridFields`).~~ Its design asks this module ~~to count grid-only cells as liquid,~~ (A64: not in the first
+version) to take volume targets from `ComputeLiquidTotals`, and to do no whole-grid sum inside one
+`make_foam_and_spray` call: 5.2, 5.3 step 1 and 5.
 
 **Step (PROVIDED by the step design after its update; the first four additions are in `changes-to-apply.md`
 10, the rest are asked here and listed in the hand-over report):**
@@ -659,12 +693,13 @@ struct FoamAndSprayInputs {            // step 3.9. Lines marked + are the addit
 + std::span<const grid::CellBlockIndex> block_in_whole_grid;  // Of `grid`'s blocks. Empty in a one-piece run;
 +   // in a batched run the batched run's CPU copy of the piece map (read back per load), never the empty span of
 +   // a GPU piece (plan decision, 2026-11-14, buffers in batched runs).
-+ const GridFields* fields;                            // The try GridFields with cell resize's region arrays.
++ const GridFields* fields;                            // The try GridFields (A64: the region arrays are not in the
++                                                      //   first version; RecordStep reads none of them).
 };
 struct SimulationSnapshot { ...
-+ std::vector<std::uint8_t> is_grid_only_region;       // By active cell, in active_cells order.
-+ std::vector<double> grid_only_current_volume;        // m3, by active cell. Saved with the region arrays.
-+ std::vector<double> grid_only_ingredient_volume;     // m3, [active cell * ingredient_count + ingredient].
+  // Not in the first version (A64): is_grid_only_region, grid_only_current_volume, grid_only_ingredient_volume
+  // (the former + lines here); they return with the later group "Deep liquid without particles (later; needs
+  // review)" of the cell resize plan and of this module's plan.
 };
 enum class Module { ..., kRenderOutput };              // + and MemoryEstimate::by_module grows by one entry.
 std::expected<RunPlan, StepFailure> BuildRunPlan(const ReadyScene&, const StepSettings&, MemoryAvailable,
@@ -704,7 +739,8 @@ Also `BuildOutputFile`, `DiscardOutputFile`, `WriteListedFile(RunFolder&, Output
 `kSizeOnly` (the one transaction that lists a file), `WriteNotBuilt`, the bounded output queue and its worker, the
 `file_list`, the word `listed`, `RequestedOutputs::particle_fields`, `IoFailure`.
 
-1. The scene file gives a `render_output::RenderSettings` and the frame times; I/O calls `CheckRenderSettings`
+1. The scene file gives a `render_output::RenderSettings` and the frame times (NEW, A47: I/O sets
+   `RenderSettings::wind` to `ReadyScene::wind`, the scene field `wind`); I/O calls `CheckRenderSettings`
    in its ready-scene check and passes `BuildRenderOutputMemoryEstimate` to `step::BuildRunPlan`.
 2. I/O owns the `StepCallbacks` and composes them as said above.
 3. At each output frame, after the commit and its resize: I/O calls `step::ReadSnapshot`,
@@ -785,23 +821,23 @@ a batched run), with a border of two lattice spacings (covered by `BorderWidth::
    `CommitRecordedStep` orders the points of every call of the try by (lattice block key, point in block)
    with `BuildStableOrder`; keys are unique, so the order does not depend on where batches were cut.
 7. Liquid totals (new, for 5.3 step 5). On the try whose end is a frame time, `RecordStep` calls
-   `cell_resize::ComputeLiquidTotals` once per cell block of its range (the try's `particles_try` and a
-   `GridOnlyAmounts` view of the try `GridFields`) and keeps the block partials with their whole-grid block
+   `cell_resize::ComputeLiquidTotals` once per cell block of its range (the try's `particles_try`; ~~and a
+   `GridOnlyAmounts` view of the try `GridFields`~~, not in the first version, A64) and keeps the block partials with their whole-grid block
    index. `CommitRecordedStep` sums each total with `math::TreeSum` over the partials in ascending whole-grid
-   block index: the order of a one-piece run, whatever the batches. `ResizeCells` after the commit moves
-   liquid between regions without changing these totals (its own ledger check), so they hold for the
-   snapshot the worker receives.
+   block index: the order of a one-piece run, whatever the batches. `ResizeCells` after the commit ~~moves
+   liquid between regions~~ merges and splits particles (A64) without changing these totals (its own ledger
+   check), so they hold for the snapshot the worker receives.
 
 ### 5.3 The surface: one strategy
 
 **Field (ported idea, three fixes).** Per group, on a lattice of `spacing`:
 
 1. Field points: every particle of the group, with `volume = rest_volume * volume_ratio` and
-   `width = cbrt(volume)`; every active cell marked `is_grid_only_region` in the snapshot counts as liquid,
+   `width = cbrt(volume)`. Not in the first version (A64): every active cell marked `is_grid_only_region` in the snapshot counts as liquid,
    as one point at the cell centre with `volume = grid_only_current_volume` and the cell's width, its shares
    from `grid_only_ingredient_volume` (fix 1: the liquid without particles is put in the same sum, so the
-   smoothed share is continuous where the two regions meet and no inner surface appears). These are the two
-   amounts `cell_resize::ComputeLiquidTotals` sums as `current_volume`.
+   smoothed share is continuous where the two regions meet and no inner surface appears). In the first version
+   the particles are the one amount `cell_resize::ComputeLiquidTotals` sums as `current_volume`.
 2. A field point wider than the spacing is split into `k^3` equal parts on a regular pattern in its box,
    `k = ceil(width / spacing)`, at most 8 (fix 2: particles of big cells do not leave gaps).
 3. Each part adds its volume to the 8 lattice points around it with trilinear weights. Order of the sum at
@@ -908,11 +944,16 @@ Per output frame, in this order:
    `max_foam_particles` nothing more is added and the rest is counted.
 2. `MoveFoamParticles`: each particle from `max(start_time, last frame time)` to the frame time, in pieces
    that end at sample times and move at most half a spacing:
-   - spray: `ComputeDragMotion` toward `air_velocity + gravity / spray_drag_rate`;
+   - spray: `ComputeDragMotion` toward `air_velocity + a / spray_drag_rate` with `a = gravity +
+     SampleGasWind(wind, t + dt / 2)` for a piece `[t, t + dt]` (CHANGED, A47: was `gravity`); with
+     `spray_drag_rate = 0` (the default) the exact `k = 0` form gives `v += dt (gravity + a_wind(t + dt / 2))`,
+     the acceleration gas gets, no new constant;
    - bubble: toward `liquid_velocity - bubble_rise_scale * gravity / bubble_drag_rate`; where the liquid
      velocity is not known, toward that formula with zero liquid velocity (ported), counted;
-   - foam: midpoint rule with the liquid velocity. Fix: where it is not known the particle keeps its
-     velocity for that piece and is counted, instead of failing the frame;
+   - foam: midpoint rule with the liquid velocity plus the wind drift `kFoamWindDriftDuration * (a_w - (a_w .
+     z) z)`, `a_w = SampleGasWind(wind, t + dt / 2)`, `z = kUp` (NEW, A47: the horizontal part only; vertical wind
+     gives no drift; the stored velocity is that sum). Fix: where the liquid velocity is not known the particle
+     keeps its velocity for that piece and is counted, instead of failing the frame;
    - any solid: a particle inside a solid at the end of a piece is put on its surface and loses the speed
      into it, relative to `ComputeSolidVelocity` (fix: any solid; `main` had one fixed plane).
    `<eq:foam-drag>`: `v+ = v_t + (v - v_t) e^(-k dt)`, `x+ = x + v_t dt + (v - v_t) (1 - e^(-k dt)) / k`,
@@ -1234,7 +1275,8 @@ Analytic and conservation tests (CPU, no GPU needed):
 | `BuildSurfaceField, VolumeIsKept` | 10,000 random particles, no solid | `sum liquid * spacing^3 == sum volume` before and after `G` | `1e-12` relative |
 | `BuildSurfaceField, FlatLiquid_ZeroSetAtTheTop` | slab, particles 2 per cell width, top at 0.3 spacing above a lattice plane | zero set height | `0.05 * spacing` |
 | `BuildSurfaceField, BesideASolid_SameHeight` | the slab against a `FlatSolid`, and a tilted `Box` moving at 1 m/s | height at the solid equals the height far away; `kLiquidToSolid` triangles within `0.05 * spacing` of the solid | `0.05 * spacing` |
-| `BuildSurfaceField, GridOnlyInside_NoInnerSurface` | sphere of radius 16 cells, particles in the outer 3 cells, grid-only inside | 1 piece, Euler number 2 | exact |
+| ~~`BuildSurfaceField, GridOnlyInside_NoInnerSurface`~~ (A64: moved to this plan's later group "Deep liquid without particles (later; needs review)") | sphere of radius 16 cells, particles in the outer 3 cells, grid-only inside | 1 piece, Euler number 2 | exact |
+| `BuildSurfaceField, BigCellsInside_NoInnerSurface` (NEW, A64) | sphere of radius 16 smallest cells, cells of 2 levels coarser inside the outer 3 cells, particles of each cell's own level everywhere (8 per cell) | 1 piece, Euler number 2 | exact |
 | `BuildSurfaceField, BigAndSmallParticles_NoGap` | slab across a size change | 1 piece; height step under `0.1 * spacing` | as stated |
 | `BuildSurfaceMesh, RandomFields_AlwaysSafe` | 1,000 smooth fields plus 1,000 noise fields, values at exactly 0 included | `CheckSurfaceMesh(...).is_safe`; no flat triangle | exact |
 | `BuildSurfaceMesh, Sphere` / `Torus` / `TwoSpheres` | radius 8 spacings | volume within 1 %; Euler 2 / 0 / 4; pieces 1 / 1 / 2; normals within 3 degrees | as stated |
@@ -1252,6 +1294,10 @@ Analytic and conservation tests (CPU, no GPU needed):
 | `ComputeDragMotion, Limits` | `k = 0`; `k dt = 1e-9`; `k dt = 1e6`; fall from rest | parabola `z0 + v t - g t^2 / 2`; series equals closed form; `v = target` | `1e-13` relative |
 | `ToFoamKind, KindIsHeldNearTheLimit` | distances `1.4 r, 0.9 r, 0.4 r, -0.4 r, -1.6 r` from spray | spray, spray, foam, foam, bubble | exact |
 | `MoveFoamParticles, StopsAtAnySolid` | spray thrown at a turning `Box` | never inside; no speed into the solid | contact tolerance |
+| `MakeFoamAndSpray, SprayInWind_AcceleratesByWind` (NEW, A47) | one spray particle far from liquid and solids, `spray_drag_rate` 0, gravity `(0, 0, -9.81)`, wind keys `(1, 0, 0)` m/s2 at 0 s and `(3, 0, 0)` at 1 s, 4 pieces of 0.01 s from t = 0 | after each piece `v == v_before + dt (g + SampleGasWind(wind, t + dt / 2))`, computed in the same order; with no wind keys the gravity-only bytes | exact |
+| `MakeFoamAndSpray, FoamInWind_DriftsHorizontally` (NEW, A47) | one foam particle on a still flat surface (liquid velocity 0, known), wind `(1, 0, 2)` m/s2; then `(0, 0, 3)` | velocity `(0.1, 0, 0)` m/s and position moved `0.1 dt` along x per piece; vertical wind: velocity exactly 0, position unchanged | exact |
+| `BuildStepRecorder, IntoRunMemory_HandsOutExactlyTheEstimate` (NEW, A58) | foam on, CPU recorder; a `RunMemory` of exactly `ComputeRunMemoryBytes(BuildRenderOutputMemoryEstimate(settings, kCpu), counts, kRunOn)`, then `BuildRenderOutput` into a CPU block of the `kCpu`, `kWholeRun` rows (`frame_order_buffers`) | `handed_out_bytes() == reserved_bytes()` for both; one byte fewer: `kOutOfMemory` | exact |
+| `ToName, EveryError` (NEW; A58) | every `RenderOutputError` | 16 values, `kOutOfMemory` last (`"out_of_memory"`); distinct | exact |
 | `RemoveFoamParticles, AgeAndDomain` | foam at age `lifetime`; spray one step outside the box | both removed, counted in the right counter | exact |
 | `BuildFoamVolume, CountsAreKept` | 10,000 particles, some beside a solid | `sum density * spacing^3 == count * count_per_particle`; nothing at points not known | `1e-12` |
 | `BuildGasVolume, ThreeStates` | gas cells holding zero smoke; space with no gas cell; a scene with no gas | `known 1, value 0`; `known 0`; no `gas_volume` in the frame | exact |
@@ -1263,7 +1309,7 @@ Analytic and conservation tests (CPU, no GPU needed):
 | `RecordStep, BatchedEqualsOnePiece` (NEW) | breaking-wave piece; one call per try, then 2 and 5 batches per try | identical events, samples, counters and `liquid_totals_at_frame` bytes | exact |
 | `Run, RecorderCopiesInRunCost` (NEW, A17, I/O's test target, plan Task 47) | a run with a CPU recorder, with and without foam | the run cost's copies are equal (`ReadRecorderCopyCounts` is `{}`); the GPU sum is the owner's `gpu` run of I/O plan Task 41 | exact |
 | `RecordStep, TwoLiquidsOneSet_ReadsTheLiquidSet` (NEW, A8) | two liquids that do not mix in the one liquid set, beside a snow set and a gas marker set | each point's velocity equals the interpolation of the liquid set's `after_pressure` snapshot; the snow and gas marker sets are never read | exact |
-| `BuildRenderFrame, VolumeTargetFromLiquidTotals` (NEW) | deep tank with a grid-only region; one group holding every liquid | `liquid_volume_outside_surfaces` against `liquid_totals_at_frame.current_volume` | `1e-12` relative |
+| `BuildRenderFrame, VolumeTargetFromLiquidTotals` (NEW; CHANGED A64: all-particle scene) | deep tank, cells two levels coarser below `8 w_min`, particles in every liquid cell; one group holding every liquid | `liquid_volume_outside_surfaces` against `liquid_totals_at_frame.current_volume` | `1e-12` relative |
 | `CheckRenderSettings, SnowGroup_IsBadInput` (NEW, A9) | a `SurfaceGroup` with a snow material; with a gas material | `kBadInput` each | exact |
 | `FormatTable, ChosenFollowsWitnesses` (NEW) | `ReadFormatTable()`; and hand-made tables (USD all `kPassed`; one USD property `kFailed`; one USD property `kNotRun` or `kDocumented`, the rest `kPassed`; all `kDocumented`) | every `chosen == ChooseFormat`; USD; the next candidate; the next candidate; the last candidate | exact |
 | `FormatTable, EveryChannelIsWitnessed` (NEW) | `ReadOutputChannels()` against `ReadFormatTable()` | each channel's `witnessed_by` is a property its kind requires; every candidate has one record per required property; a name exists for the chosen format | exact |
@@ -1326,7 +1372,7 @@ table and its witnesses (what the manual says, what was proven, which libraries)
 
 Figures: `<fig-render-output-flow>`: step, recorder, queue, worker, the products and their open formats, with the single
 direction of the arrows and the reject path; `<fig-surface-field>`: a 2D cut with particles near the
-surface, grid-only cells inside, a tilted solid, lattice points and the zero set before and after dividing
+surface, (A64: big cells with particles inside; grid-only cells not in the first version) a tilted solid, lattice points and the zero set before and after dividing
 by `open`; `<fig-surface-strategy>`: last mesh moved, pulled back, checked per blob, one blob replaced;
 `<fig-six-tetrahedra>`: one cube, its diagonal, one patch; `<fig-foam-kinds>`: spray, foam and bubble
 against distance to the surface, with the range where a kind is held; `<fig-known>`: one slice shown three times as value, known
@@ -1358,7 +1404,8 @@ author (or project) and year until entries exist (decision 9).
 | `SurfaceLattice3D`, source grid, voxel grid | `LatticeFrame`, `LatticeBlocks`, `LatticeValues`, lattice point | NEW (decision 1) |
 | density field, `BuildSurfaceDensity3D` | `SurfaceField`, `BuildSurfaceField` | NEW |
 | `sigma_m` | `smoothing_width` | NEW |
-| `ApplySurfaceOccupancy3D`, certified liquid / air, occupancy class | step 1 of 5.3 (grid-only cells in the sum) | not ported as a concept |
+| `ApplySurfaceOccupancy3D`, certified liquid / air, occupancy class | step 1 of 5.3 (grid-only cells in the sum: not in the first version, A64) | not ported as a concept |
+| drag-free wind on particles, wind drift | `RenderSettings::wind`, `kFoamWindDriftDuration` | NEW (A47) |
 | `ExtractSurfaceMesh3D` | `BuildSurfaceMesh` | NEW |
 | `MeasureSurfaceMesh3D`, `SurfaceMetrics3D`, "safe" | `CheckSurfaceMesh`, `SurfaceMeshDefects`, `SurfaceMeshMeasure`, `is_safe` | NEW |
 | boundary / nonmanifold edges, nonmanifold vertices, orientation defects, degenerate triangles, self intersections | `open_edge_count`, `overused_edge_count`, `pinched_vertex_count`, `wrongly_turned_edge_count`, `flat_triangle_count`, `crossing_pair_count` | NEW (decision 1) |
@@ -1411,7 +1458,8 @@ table's "last candidate" is the default of its kind, never called a fallback in 
   repair" exit of `surface_reconstruction_3d.cc`: replaced by "take the built pieces of that blob".
 - `surface_component_lineage_3d.*`, `surface_material_components_3d.*` (blob history by particle ids, 1,024
   particles, the 2 and 3 cell-width droplet switch): labels are per frame; a droplet is decided by the field.
-- `surface_occupancy_3d.*` with its five classes and "unknown fails": grid-only cells enter the sum.
+- `surface_occupancy_3d.*` with its five classes and "unknown fails": grid-only cells enter the sum (A64: in the
+  later group; the first version has none).
 - `surface_closest_point_3d.*` (a triangle tree for nearest points): no caller is left.
 - Mirroring particles in one plane, the box-shaped liquid volume check and the 16-piece first frame
   (`surface_reconstruction_3d.cc:263-320, 596-703, 796-806`).
@@ -1470,7 +1518,7 @@ instruction, 2026-11-14) except where an owner answer is named.
 
    ```cpp
    if (report.origin == SurfaceOrigin::kBuiltFromField) { ... }      // proposed
-   foam_and_spray::MoveFoamParticles(particles, interval, gravity, settings, report);
+   foam_and_spray::MoveFoamParticles(particles, interval, gravity, wind, settings, report);   // wind: A47
    ```
 
    Decision: the proposed column for every row, and the format-table words of 5.7 (`InterchangeFormat`,
@@ -1583,9 +1631,34 @@ instruction, 2026-11-14) except where an owner answer is named.
     Decision: as listed. Source: `owner-answers.md` A30.
 18. **(Reconcile item 26) A bound for the field parts.** The stable order of 5.3 step 3 had no bound, so no memory
     estimate entry. `RenderLimits::max_field_parts = 1u << 26` (as `max_vertices`) bounds it; reaching it leaves the
-    surface of that group out of the frame (`kTooManyFieldParts`, appended as value 15); the estimate counts
+    surface of that group out of the frame (`kTooManyFieldParts`, appended as value 15; value 14 since
+    `kOutOfMemory` moved last, decision 21); the estimate counts
     `frame_order_buffers` at `max(max_field_parts, max_foam_particles)`, `kWholeRun`, `kCpu`. Decision: as listed
     (the default is new, for the owner to confirm). Source: `reconcile-todo.md` item 26; plan Tasks 10, 17, 44.
+19. **Particles everywhere in the liquid (A64).** Decision: the first version has no grid-only cells: the
+    surface field sums particles only, `RecordStep` calls `ComputeLiquidTotals` without `GridOnlyAmounts`, and the
+    snapshot has no grid-only arrays; the grid-only text is kept, marked "not in the first version (A64)", and the
+    grid-only surface inputs move to this plan's later group "Deep liquid without particles (later; needs
+    review)", owned by the cell resize plan's group of that name. `BuildSurfaceField, GridOnlyInside_NoInnerSurface`
+    moves there; `BuildSurfaceField, BigCellsInside_NoInnerSurface` and the all-particle
+    `VolumeTargetFromLiquidTotals` replace it. Source: owner answer A64; `plan-decisions.md` "Owner answers A40-A64
+    applied", item 1.
+20. **Wind on spray and foam (A47, A50).** Decision: `RenderSettings::wind` (a `gas::GasWind`, filled by I/O from
+    the ready scene's `wind`) moves spray and foam only, never the liquid: spray gets `v += dt (g + a_wind(t + dt /
+    2))` (with drag, `a = g + a_wind` replaces `g` in the drag target), foam drifts at `kFoamWindDriftDuration = 0.1 s`
+    times the horizontal wind acceleration on top of the surface velocity (a starting value). `MoveFoamParticles`
+    gains `const gas::GasWind& wind`. Tests `MakeFoamAndSpray, SprayInWind_AcceleratesByWind`, `MakeFoamAndSpray,
+    FoamInWind_DriftsHorizontally`. Source: owner answers A47, A50; `plan-decisions.md` "Owner answers A40-A64
+    applied", item 8.
+21. **One reserved block per run, and `kOutOfMemory` last (A58, reconcile item 31).** Decision: `BuildStepRecorder`
+    takes `RunMemory& run_memory` last (its `kRunOn` buffers); `BuildRenderOutput` and
+    `BuildRenderOutputFromSnapshot` take `RunMemory& run_memory`, the CPU block, for `frame_order_buffers`; one
+    estimate row per buffer; test `BuildStepRecorder, IntoRunMemory_HandsOutExactlyTheEstimate`.
+    `RenderOutputError::kOutOfMemory` moves to the end (16 values; the four values after it move up by one) and is
+    returned only by the building functions (`BuildStepRecorder`, `BuildRenderOutput`,
+    `BuildRenderOutputFromSnapshot`, `BuildRenderFrame`); a writer's library `std::bad_alloc` becomes
+    `kFileWriteFailed`. Source: owner answer A58, reconcile item 31; `plan-decisions.md` "Owner answers A40-A64
+    applied", items 3 (with its same-day correction) and 11. Replaces "`kOutOfMemory` leaves a writer".
 
 **Open** (for the owner):
 

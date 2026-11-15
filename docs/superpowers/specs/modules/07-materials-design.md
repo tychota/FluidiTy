@@ -77,8 +77,10 @@ enum class MaterialsError : std::uint8_t {
   kNotFinite,              // A result overflowed.
   kWrongGridVersion,       // An array belongs to another grid version or another step try.
   kBuffersTooSmall,        // More particles than the material buffers were built for.
-  kOutOfMemory,
   kRunOnCallFailed,        // D (Q11). CheckCanRunOn failed for the chosen processor, or a call to it failed.
+  kOutOfMemory,            // Changed (reconcile item 31): moved to the last place. BuildMaterialBuffers (the run's
+                           //   RunMemory or the processor could not hold a buffer), and the one allocating forms of
+                           //   ComputeWorkRates and CheckMaterialState (reconcile item 33); magnitude = bytes asked.
 };
 struct MaterialsFailure {  // D shape (A2). On the GPU: the failing particle with the lowest id.
   MaterialsError error = MaterialsError::kNone;
@@ -279,9 +281,13 @@ class MaterialBuffers {
   const OwnMotionShares* own_motion_shares(std::size_t material_index) const;
 };
 // max_cell_blocks: room of the per-block budget buffer and the table copy (plan decision, transfer's precedent).
+// Changed (A58): every buffer is a piece of run_memory (the run's block of run_on); Requires: run_on ==
+// run_memory.run_on() (debug assertion). Fails kBadInput, kOutOfMemory (magnitude = bytes asked), kRunOnCallFailed.
 std::expected<MaterialBuffers, MaterialsFailure> BuildMaterialBuffers(
     RunOn run_on, const MaterialTable& table, std::span<const std::size_t> max_particle_counts,
-    std::uint32_t max_cell_blocks);
+    std::uint32_t max_cell_blocks, RunMemory& run_memory);
+// Changed (A58): one row per buffer (per material and array; the table copy as a material row and an ingredient
+// row), so ComputeRunMemoryBytes of the rows equals the bytes BuildMaterialBuffers hands out.
 std::vector<MemoryEstimateEntry> BuildMaterialsMemoryEstimate(const MaterialTable& table,
                                                 std::span<const std::size_t> max_particle_counts);
 
@@ -385,6 +391,11 @@ std::expected<WorkRates, MaterialsFailure> ComputeWorkRates(
 ```
 
 ## 4. Consumes from other modules
+
+**Foundation, A58 (EXISTS; Foundation Tasks 17 to 19, `base/run_memory.h`):** `RunMemory`, `BuildRunMemory`,
+`BuildBuffer(RunOn, std::size_t, RunMemory&)`, the `RunMemory&` forms of `BuildSumBuffers` and `BuildOrderBuffers`,
+`ComputeRunMemoryBytes(estimate, counts, MemoryWhere where)`, `BufferError::kRunMemoryTooSmall` (mapped to this
+module's `kOutOfMemory`).
 
 **Foundation (EXISTS):** `Vec3`, `Mat3`, `kIdentity`, `operator*(Mat3, Mat3)`, `operator*(Mat3, Vec3)`,
 `math::Dot`, `math::Cross`, `math::Transpose`, `math::Determinant`, `RunOn`, `CheckCanRunOn`,
@@ -705,6 +716,9 @@ is the same formula in a loop.
 | `BuildMaterialTable, GasRules` (NEW) | gas with viscosity, friction, tension, a second ingredient, `kept > 0`, a squeezable law, each in turn; a correct gas | `kBadMaterial` with `ingredient_index` or `material_index`; then `gas_ingredient_index()` is its ingredient, empty without gas | exact |
 | `BuildMaterialTable, ExportNames` (NEW) | `"Red Syrup"`, `"water-2"`; then `"A b"` with `"a_b"`; then `""` | `red_syrup`, `water_2`; `kBadExportName` at index 1; `kBadExportName` at index 0 | exact |
 | `ToName, EveryValue` (NEW) | each `MaterialsError` | lower snake case of the enumerator without `k`, all distinct | exact |
+| `MaterialsError, OutOfMemory_IsTheLastValue` NEW (reconcile 31) | the enum | `kOutOfMemory` is value 15, the last | exact |
+| `BuildMaterialBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` NEW (A58) | AllKinds, counts {100,50,20,10}, 10 blocks, CPU block of `ComputeRunMemoryBytes` of the estimate | `handed_out_bytes() == reserved_bytes()` | exact |
+| `BuildMaterialBuffers, RunMemoryOnePieceShort_IsOutOfMemory` NEW (A58, release builds) | block 256 B short | `kOutOfMemory`, magnitude = the failing piece's bytes | exact |
 | `ComputeCellSqueezeValues, TwoIngredients_ClosedForm` | volumes 1:3, stiffness 2 and 6 GPa, `p = 1e6` | harmonic mix; ratio from the two laws; all `kCannotBeSqueezed` gives +infinity and 1 | `1e-13` |
 | `ComputeOwnMotionInTravel, Rule_TruthTable` | each of the three conditions off in turn; each kind | `in_travel` only for a liquid with all three | exact |
 | Repeat run | every batch operation twice | identical bytes | exact |
@@ -949,3 +963,17 @@ answer A30 (`owner-answers.md`, 2026-11-14).
   liquids, or carry material faces in the joint solve. Open owner question; nothing decided here.~~ **Answered**
   (A24, A26): the viscous joint solve carries the material faces, which are velocity unknowns there and stick; no
   pair is refused.
+
+**12. One reserved block per run (A58).** Decision: `BuildMaterialBuffers` takes `RunMemory& run_memory` last and
+builds every buffer as a piece of it; `BuildMaterialsMemoryEstimate` has one row per buffer; test
+`BuildMaterialBuffers, IntoRunMemory_HandsOutExactlyTheEstimate` (section 7). Source: owner answer A58;
+`plan-decisions.md` "Owner answers A40–A64 applied", item 3.
+
+**13. `kOutOfMemory` last (reconcile items 31, 33).** Decision: `MaterialsError::kOutOfMemory` moves after
+`kRunOnCallFailed` (sixteen values kept); `BufferError::kRunMemoryTooSmall` maps to it; `ComputeWorkRates` and
+`CheckMaterialState` keep their one allocating form (accepted as written, item 33). Source: `plan-decisions.md`
+item 11.
+
+**14. Other answers of the A40–A64 pass.** A64 (particles everywhere), the cell size rule, viscosity advice and
+the solid items change nothing in materials: every particle keeps its material response whatever its cell size.
+Source: `plan-decisions.md` "Owner answers A40–A64 applied".
