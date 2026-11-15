@@ -1,0 +1,31 @@
+docs/method-paper/figure_style.typ
+  s_4f0877e2acdcf0::t_81f6183204c588 151-172
+docs/method-paper/figures/contact_tolerance.typ
+  s_4f0877e2acdcf0::t_ed11ba7e321641 1-83
+docs/method-paper/figures/contact_solid_shapes.typ
+  s_4f0877e2acdcf0::t_a5f6604266dc75 1-209
+  s_4f0877e2acdcf0::t_a37a96dabc19f5 210-218
+docs/method-paper/figures/contact_sweep_hit_slide.typ
+  s_4f0877e2acdcf0::t_600ceccdd1f448 1-115
+  s_4f0877e2acdcf0::t_50a94f114b5db3 116-117
+docs/method-paper/figures/contact_response.typ
+  s_4f0877e2acdcf0::t_a9cd427d1362f3 1-60
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_5e64014e6de890 26-29,71-82,98-99,206-215,636-1143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "920b063a49edb36723d66ac9050d8494c6361ee2",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
