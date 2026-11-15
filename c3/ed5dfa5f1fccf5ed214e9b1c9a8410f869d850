@@ -1,0 +1,25 @@
+docs/method-paper/figures/contact_response.typ
+  s_4f0877e2acdcf0::t_fd29eeaadd1624 48-53
+docs/method-paper/figures/contact_round_solids.typ
+  s_4f0877e2acdcf0::t_a4d734ca226159 66,91-108,139-140
+docs/method-paper/figures/contact_sweep_hit_slide.typ
+  s_4f0877e2acdcf0::t_e925c593955181 73-75
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_eccd94cf434027 192-194,218-221,677,679,770-771,846-850,887-895,919-924,952-953,975-976,979-980,987-1000,1036-1039,1042-1052,1056-1064,1069-1072,1079-1080,1090-1098,1126-1128,1130-1131,1150-1151,1184-1187,1189-1190,1207-1212,1229-1231,1243-1255,1267-1278,1281-1284,1291-1295,1316-1322,1326-1327,1331-1336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c3ed5dfa5f1fccf5ed214e9b1c9a8410f869d850",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
