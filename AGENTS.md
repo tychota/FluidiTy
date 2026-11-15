@@ -507,7 +507,7 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 
   ```sh
   git config notes.rewriteRef refs/notes/claude-session
-  git config notes.rewriteMode cat_sort_uniq
+  git config notes.rewriteMode overwrite
   git config --add notes.displayRef refs/notes/claude-session
   ```
 
