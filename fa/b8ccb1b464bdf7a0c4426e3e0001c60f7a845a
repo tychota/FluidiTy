@@ -1,0 +1,33 @@
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_a390a73db2c162 67-70,98-99
+native/fluidity/contact/find_first_hit_test.cc
+  s_078d1bd3e9d58c::t_7061602ec9b6ae 1922-1953,2587-2588,2647-2648,2737-2840,2864-2866,2896-2897
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_10ef40c69fc377 792-801,816-817,857-861,874-875,949-958
+native/fluidity/contact/solid_contact_types.h
+  s_078d1bd3e9d58c::t_d9a57893d2f454 65-69,72-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fab8ccb1b464bdf7a0c4426e3e0001c60f7a845a",
+  "prompts": {},
+  "sessions": {
+    "s_078d1bd3e9d58c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ad6e673554d296874",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
