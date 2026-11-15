@@ -46,10 +46,10 @@ Foundation's list, unchanged:
   the `AGENTS.md` checklist; new public names listed in the commit message with a one-line reason; tests arrive
   with the code. A commit must pass every part of the gate that exists at that commit.
 - History on `rebuild` may be rewritten. A defect found later is fixed in the commit that introduced it.
-- Commit messages end with one `Assisted-by: Claude Code:<model id>` line per model that worked on the commit
-  (the implementer's model, for example `claude-opus-5-5`, plus `claude-fable-5-2` for the session that directs and
-  reviews), then `Claude-Session: <session link>`. No `Co-Authored-By`
-  line; the owner is the sole author (owner answer A39, 2026-11-15).
+- Commit messages carry no AI trailer (no `Co-Authored-By`, no `Assisted-by`, no session link); the owner is the
+  author. After committing, write the commit's note with `uv run python tools/add_session_note.py --session
+  <session link> --models <implementer's model id>,claude-fable-5-2`
+  (a git note in `refs/notes/claude-session`; owner answer A55, 2026-11-15).
 - Device code is "compiled, not run" until `docs/gpu-runs.md` records the owner's run. The owner runs on
   hardware once, after all modules are written. Never claim otherwise.
 - Host C++23, exceptions and RTTI off in the library; device and shared headers C++20 subset; a shared header

@@ -96,10 +96,9 @@ this file wins (the designs are not edited again).
 
 ## Commits
 
-- Every commit message ends with one `Assisted-by: Claude Code:<model id>` line per model that worked on it (the
-  implementer's model, plus `claude-fable-5-2` for the session that directs and reviews), then
-  `Claude-Session: <session link>`. No `Co-Authored-By`; the owner is the
-  sole author (owner answer A39, 2026-11-15; replaces the earlier `Co-Authored-By: Claude Fable 5.2` line).
+- Commit messages carry no AI trailer (no `Co-Authored-By`, no `Assisted-by`, no session link); the owner is the
+  author. Each commit gets a git note in `refs/notes/claude-session` (`session:` and `models:` lines), written with
+  `tools/add_session_note.py` (owner answer A55, 2026-11-15; replaces A39).
 
 ## Grid (continued)
 
