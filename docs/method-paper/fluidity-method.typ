@@ -1349,14 +1349,28 @@ The start is classified against every solid in array order, at the start of the 
 fails decides. For a committed plate, being more than $"tol"$ beyond its other face is checked first. Then a start
 deeper than `start_overlap_tolerance` inside a solid is an error. A start closer than $"tol"$, down to that depth,
 is moved along that solid's normal to $d = "tol"$ before the sweep, whatever its velocity, so a particle placed
-next to a solid, by a source or by a change of cell size, never fails the end check for that reason. A later solid
-in the array is classified from the moved start. What else happens depends on $d$ before the move:
+next to a solid, by a source or by a change of cell size, never fails the end check for that reason. In a corner of
+the domain box each closed side closer than $"tol"$ is a surface of its own, as in the sweep: it moves the start
+along its own normal, since one move would leave the start closer than $"tol"$ to the other sides, and it is
+classified below on its own. A later solid in the array is classified from the moved start. What else happens to each
+surface depends on its $d$ before the move:
 
-- $d < 0$: both velocities get the response, the solid joins the surfaces the particle is on, the move counts as
-  one hit, and the kind is "started inside solid".
-- $0 <= d < "tol"$ and either velocity approaches the solid: the same, with the kind "hit".
-- $0 <= d < "tol"$ and neither approaches: the move is silent. Velocities, kind, hit count and record are unchanged,
-  and the solid does not join the surfaces: a touching particle that leaves is free.
+- $d < 0$: both velocities get the response with that surface's normal, the solid joins the surfaces the particle is
+  on, the move counts as one hit, and the kind is "started inside solid".
+- $0 <= d < "tol"$ and either velocity approaches the surface: the same, with the kind "hit". In code "approaches"
+  means an approach speed below minus the largest bound of the approach the responses so far may have left: 0
+  before the first response, since the velocities are then the inputs, and after one, the rounding it left along
+  every normal is not an approach.
+- $0 <= d < "tol"$ and neither approaches: the move is silent. Velocities, kind, hit count and record are unchanged.
+  A touching particle that leaves is free. When another solid responded at the start, the silently moved solid
+  still joins the surfaces the particle is on, without a hit, so that the rounding that response left is not taken
+  for a hit on it; at most four solids join this way, and a fifth is "too close to call, too many hits".
+
+Each solid is classified once. In a wedge sharper than a right angle the move away from a later solid can bring the
+start back closer than $"tol"$ to an earlier one, or inside it: today the particle then rests on the earlier solid if
+it is on the list and the end settles it, or the end check fails, or the sweeps hit it at once until the hit limit,
+or the start counts as too deep. Each comes from the start alone, at any step length. A later revision of this step
+moves such a start to the rest gap of both solids.
 
 The first solid that responds fills the record, with hit fraction 0. The kind is "started inside solid" when any
 start distance was negative. A flat solid with surface at $z = 0$ rising at 2 m/s, under a particle at rest at $z =
@@ -1403,11 +1417,11 @@ solid's origin. The right side is an upper bound on how fast the particle and so
 one motion, the speed of a turning solid's points by $|bold(v)_"lin"| + |bold(omega)| r$.
 
 At the end, every surface of the list that the particle is closer to than $"tol"$, at the end pose, moves it along
-its normal to $d = "tol"$. Then the end check of @sec-contact-tolerance runs against every solid. On any failure
-the result is left unchanged, and the failure context names the solid by its stable `solid_id`, never by its index
-in the array, with a length: the depth $-d$ for a start too deep inside, the distance $-(s_"plate" p_z +
-"half_thickness")$ beyond a committed plate, the end distance $d$ for an end too close, and 0 otherwise.
-`MoveParticles` adds the particle's id.
+its normal to $d = "tol"$, as at the start, every near closed side of a domain box included. Then the end check of
+@sec-contact-tolerance runs against every solid. On any failure the result is left unchanged, and the failure
+context names the solid by its stable `solid_id`, never by its index in the array, with a length: the depth $-d$ for
+a start too deep inside, the distance $-(s_"plate" p_z + "half_thickness")$ beyond a committed plate, the end
+distance $d$ for an end too close, and 0 otherwise. `MoveParticles` adds the particle's id.
 
 @fig-sweep-hit-slide draws one step (this paper's numbers). A flat solid with normal (0, 0, 1) rises at 0.5 m/s,
 friction 0.25, $T = 1$ s. The particle starts 1.2 m above the surface with `for_this_step` (2.5, 0, −1.5) m/s and
@@ -1442,9 +1456,11 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     `plate_side` that names a plate among the solids. Otherwise fail with "bad input".]),
   ([Classify the start], [For each solid in array order, at the start of the step and from the start as moved by
     the earlier solids: fail when the particle is more than $"tol"$ beyond the other face of its committed plate,
-    then when $d < -$`start_overlap_tolerance`. When $d < "tol"$, move the start along the normal to $d = "tol"$;
-    then, if $d$ before the move was negative or either velocity approaches, respond to both velocities, add the
-    solid to the surfaces, count one hit and fill the record if it is empty.]),
+    then when $d < -$`start_overlap_tolerance`. When $d < "tol"$, move the start along the normal to $d = "tol"$
+    (in a domain box's corner, from each closed side closer than $"tol"$); then, for each such surface whose $d$
+    before the move was negative or that either velocity approaches (below minus the largest approach bound so far),
+    respond to both velocities, add the solid to the surfaces, count one hit and fill the record if it is empty. A
+    solid moved silently joins the surfaces without a hit when another solid responded at the start.]),
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
     with the solids sampled at the time already used and the touched surfaces' stricter touching rule. With no hit,
     advance by `for_this_step` times the time left and go to step 6.]),

@@ -30,7 +30,7 @@
 // Uses:    Vec3 (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError, ContactCloseCall,
 //          ContactFailure (contact/contact_error.h), Solid, kNoSolid (contact/solid_shapes.h), SolidContactInputs,
 //          SolidContactResult, FirstHit (contact/solid_contact_types.h), Sweep, TouchedSurfaces, FindFirstHitOfSweep,
-//          ParticleMove, CheckSolidContactInputs, CheckStartOutsideSolids, ApplyHit, ApplySettleAtEnd,
+//          ParticleMove, CheckSolidContactInputs, ApplyStartRules, ApplyHit, ApplySettleAtEnd,
 //          CheckEndOutsideSolids (contact/solid_contact_steps.h)
 // Used by: the MoveParticles stage
 // Read:    docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
@@ -169,8 +169,25 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //
 // Method (method paper <proc-move-particle>):
 //   1 Check inputs (CheckSolidContactInputs).
-//   2 Classify the start: a start inside a solid at time 0, d < 0, fails; a start within one tolerance, 0 <= d < tol,
-//     sweeps from where it is, and the touching rule decides whether its path pushes into that solid.
+//   2 Classify the start (ApplyStartRules, plan decisions P3, P4 and P12): every solid in array order, at the pose of
+//     time 0, from the start as the earlier solids' rules moved it; the first that fails decides. A particle beyond
+//     the other face of its committed plate by more than tol fails first, then a start deeper inside than
+//     start_overlap_tolerance. A start closer than tol, d < tol, moves along that solid's normal to the rest gap,
+//     whatever its velocity; a domain box's closed sides closer than tol each count as a surface of their own (a
+//     corner has two or three). A surface the start was inside, d < 0, or that either velocity approaches, below
+//     minus the largest approach allowance of the responses so far (0 before the first), is a hit at time 0 with its
+//     normal: the response, the record with hit_fraction 0 if it is the first hit, one hit counted, and a touched
+//     surface with the allowance of that response, so the sweeps rest on it; kind is kStartedInsideSolid when any such
+//     d was negative. Otherwise the move is silent: nothing else changes. A silently moved solid becomes a touched
+//     surface without a hit only when another solid responded at the start, so that the rounding that response left
+//     is not a hit on it; else a touching particle that leaves is free. A turning solid gets the same rules, then step
+//     5's departure below.
+//     Today's limit (plan Task 12 resolves it): each solid is classified once, so in a wedge sharper than a right
+//     angle a later solid's move can push the start back toward an earlier one. With the earlier solid touched and
+//     d >= 0 the particle rests on it and the settle lifts it; untouched, the end check may fail
+//     (kEndsTooCloseToSolid); pushed inside, the sweeps hit it at 0 until kTooManyHits, or the start is deeper than
+//     start_overlap_tolerance (kStartsInsideSolid). A start within tol of both surfaces of such a wedge therefore
+//     need not succeed, at any step length.
 //   3 Find the first hit (FindFirstHitOfSweep, FindFirstHit with the touched surfaces) from the current position
 //     along velocity.for_this_step, with the solids posed at the time already used and duration = step_duration -
 //     elapsed, computed afresh before every sweep. With no hit the particle advances by velocity.for_this_step times
@@ -186,9 +203,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     since the latest response, at any solid, leaves rounding along every normal. So rounding does not make a solid
 //     hit again, while a solid that is really approached again, by a push from another solid or because it moves, is
 //     hit. Departure from the method paper's
-//     step 5, for now: a turning solid has no touching rule, so a particle it hit is hit again at time 0 by every later
-//     sweep and the move ends in kTooManyHits instead of sliding in the solid's axes. A shorter step does not help;
-//     only a hit exactly at the end of the step succeeds.
+//     step 5, for now: a turning solid has no touching rule, so a particle it hit, or one that starts within 1.25 tol
+//     of it, is hit again at time 0 by every later sweep and the move ends in kTooManyHits instead of sliding in the
+//     solid's axes. A shorter step does not help; only a hit exactly at the end of the step succeeds.
 //   6 Settle and check the end (ApplySettleAtEnd, CheckEndOutsideSolids): each touched surface closer than tol at the
 //     end pose moves the particle back to the rest gap, then every solid must be at least tol / 2 away.
 //   Without a hit the end position is start_position + velocity.for_this_step * step_duration, one multiply and one
@@ -201,21 +218,32 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //   (0.1 - 2^-30) / 0.2 = 0.4999999953433871, face kHighZ, normal {-1, 0, 0}, approach speeds -1 m/s, end
 //   {1 - 2^-30, 0, 0} = {0.9999999990686774, 0, 0} m, both velocities {0, 0, 0}, hit_count 1. A fixed floor
 //   with normal {0, 0, 1} and friction 0.5: a particle at {0.2, 0.5, 0.1} moving at {3, 0, -1} m/s for 0.2 s hits it
-//   at 0.1 - 2^-30 s, slips on at {2.5, 0, 0} m/s and ends at x = 0.75 - 2^-31, z = 2^-30.
+//   at 0.1 - 2^-30 s, slips on at {2.5, 0, 0} m/s and ends at x = 0.75 - 2^-31, z = 2^-30. The fixed floor with
+//   friction 0 and a particle at {0, 0, 2^-32} moving away at {1, 0, 2} m/s for 0.1 s: moved silently to z = 2^-30,
+//   it ends at {0.1, 0, 0.2 + 2^-30} with kind kNone and both velocities unchanged; at {0, 0, -0.0005} and at rest,
+//   with start_overlap_tolerance 0.001, it moves to z = 2^-30 with kind kStartedInsideSolid and stays there.
 // Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9). At every
-//   hit, the sum of the absolute axes of velocity.for_this_step and of the solid velocity, times the time left, is at
-//   most 2^40 tol (asserted), so that each allowance, 2^-46 times that sum, times the time left is at most tol / 64,
-//   and the particle approaches a touched solid by at most tol / 16 over the step. With the contact tolerance of
-//   ComputeContactTolerance, at least 2^-40 of the largest coordinate, it holds whenever those speeds times the step
-//   stay within the largest coordinate.
-// Fails: kBadInput           a value is not finite or out of range, the solid_ids are not strictly ascending, or the
-//                            plate side names no plate (CheckSolidContactInputs).
-//        kStartsInsideSolid  the start is inside a solid; the failure names it, with the depth
-//                            (CheckStartOutsideSolids).
-//        kTooCloseToCall     the step is too long for a safe answer; the step shortens it and tries again.
-//                            *failure's close_call says why: kTooManyHits (a fifth hit), kSecondReactingSolid (a
-//                            second solid with reports_reaction), kEndsTooCloseToSolid (the end check), or
-//                            kSlowApproachToTurningSolid (passed on from the sweep, with that turning solid's id).
+//   hit, the sum of the absolute axes of velocity.for_this_step and of
+//   the solid velocity, times the time left, is at most 2^40 tol (asserted), so that each allowance, 2^-46 times that
+//   sum, times the time left is at most tol / 64, and the particle approaches a touched solid by at most tol / 16 over
+//   the step. With the contact tolerance of ComputeContactTolerance, at least 2^-40 of the largest coordinate, it holds
+//   whenever those speeds times the step stay within the largest coordinate.
+// Fails: kBadInput            a value is not finite or out of range, the solid_ids are not strictly ascending, or the
+//                             plate side names no plate (CheckSolidContactInputs).
+//        kOnWrongSideOfPlate  the start is beyond the other face of its committed plate by more than tol; the
+//                             failure names the plate, with that distance (CheckStartOnCommittedSide). A scene
+//                             error; the step stops.
+//        kStartsInsideSolid   the start is deeper inside a solid than start_overlap_tolerance; the failure names it,
+//                             with the depth (ApplyStartRulesOfSolid). A scene error; the step stops.
+//        kTooCloseToCall      no safe answer for this step; *failure's close_call says why: kTooManyHits (a fifth
+//                             hit, the start's hits counted, or a fifth solid moved silently at the start beside a
+//                             start hit), kSecondReactingSolid (a second solid with reports_reaction),
+//                             kEndsTooCloseToSolid (the end check), or kSlowApproachToTurningSolid (passed on from the
+//                             sweep, with that turning solid's id). The step shortens the step and tries again, which
+//                             helps when the failure comes from the sweeps. It does not help when the start alone
+//                             decides it: five hits or two reacting solids at the start, a start within 1.25 tol of a
+//                             turning solid (until its slide is built, plan Task 13), or a start in a wedge sharper
+//                             than a right angle (step 2's limit, until plan Task 12).
 //        On failure *result is unchanged. When failure is not null, *failure is always written: ContactFailure{} on
 //        success; on failure the error, the close call, the solid's solid_id (never its index) and the magnitude of
 //        plan decision P6. particle_id stays 0.
@@ -228,21 +256,24 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
   //   4 respond  5 slide  6 settle and check the end
   // Every step writes its failure here; *failure gets it at the end, and stays ContactFailure{} on success.
   ContactFailure move_failure;
+  ParticleMove move;
+  move.result.position = inputs.start_position;
+  move.result.velocity = inputs.velocity;
   // Step 1: a bad value comes from upstream code, and the step stops.
   ContactError error = CheckSolidContactInputs(inputs);
   if (error != ContactError::kNone) {
     move_failure.error = error;
   }
-  // Step 2: inside a solid at the start of the step is a scene error, and the step stops.
+  // Step 2: a start too deep inside a solid, or on the wrong side of its plate, is a scene error, and the step stops.
+  // Too many hits or a second reacting solid at the start is a close call that the start alone decides. Otherwise the
+  // start has moved to the rest gap of each solid in turn, and the solids it starts inside or approaches are hits at
+  // time 0.
   if (error == ContactError::kNone) {
-    error = CheckStartOutsideSolids(inputs, &move_failure);
+    error = ApplyStartRules(inputs, &move, &move_failure);
   }
 
   // Steps 3 to 5, one sweep per pass. The duration is computed afresh from the elapsed time: a time left reduced by
   // each hit time would round above step_duration - elapsed and break FindFirstHit's precondition.
-  ParticleMove move;
-  move.result.position = inputs.start_position;
-  move.result.velocity = inputs.velocity;
   while (error == ContactError::kNone) {
     const double duration = inputs.step_duration - move.elapsed;  // s
     // A hit at the very end of the step leaves no time; elapsed may exceed step_duration by one rounding unit.
@@ -260,7 +291,7 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
         .start_elapsed = move.elapsed,
         .duration = duration,
     };
-    const TouchedSurfaces touched_surfaces = {.surfaces = move.touched_surfaces, .count = move.result.hit_count};
+    const TouchedSurfaces touched_surfaces = {.surfaces = move.touched_surfaces, .count = move.touched_surface_count};
     error = FindFirstHitOfSweep(inputs, sweep, touched_surfaces, &first_hit, &close_call);
     if (error != ContactError::kNone) {
       move_failure.error = error;

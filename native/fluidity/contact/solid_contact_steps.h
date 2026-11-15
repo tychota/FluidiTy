@@ -3,7 +3,7 @@
 //
 // Purpose: give FindFirstHit and MoveParticle the functions that evaluate one solid for one particle, so one switch
 //   chooses each shape's formula and each shape keeps its own rules; and give MoveParticle its steps: the input
-//   check, the start check, one hit with its response, the settle and the end check.
+//   check, the start rules, one hit with its response, the settle and the end check.
 //
 // Idea: a solid that does not turn only translates. Measured from the solid, the particle then moves in a straight
 //   line at its velocity minus the solid's, and its distance to each flat face plane changes linearly with time. The
@@ -34,6 +34,12 @@
 //   Example: a box of half size 0.5 m at the origin turning at {0, 0, 1} rad/s and a particle at rest at
 //   0.6 * {cos 0.3, sin 0.3, 0} m: the bound is 0.6 m/s, K is 0.6 m/s^2, and after 3 advances face kHighX is hit at
 //   0.8857 s.
+//   Before the first sweep, the start rules classify the start against every solid: too deep inside, or on the wrong
+//   side of a committed plate, fails; closer than tol, the particle moves to the rest gap; inside, or approaching, it
+//   is also a hit at time 0. Each solid is classified once, so in a wedge sharper than a right angle a later solid's
+//   move can leave the start closer than tol to an earlier one (ApplyStartRules says what follows).
+//   Example: a particle 0.0005 m inside a fixed floor, with a start overlap tolerance of 0.001 m, starts the step at
+//   z = tol, with the response and kind kStartedInsideSolid.
 //   Around the sweeps, MoveParticle keeps the touched surfaces: one entry per hit, the solid and the normal at the hit.
 //   At the end of the step each touched surface the particle is closer to than tol moves it back to the rest gap, and
 //   the end check then asks every solid to be at least tol / 2 away.
@@ -62,19 +68,21 @@
 //   second-order advance  the advance of the stepping search toward a solid whose distance is convex: the positive
 //                  root of g + gdot s - K s^2 / 2, gdot the gap rate and K the gap curvature bound
 // Owns:    Sweep, FacePlane, StartCase, OwnPath, HitTime, ComputeCoordinate, ComputeColumn, ToFacePlane,
-//          ComputeFaceDistance, ComputeDistanceForParticle, ComputeStartCase, ComputeOwnPath, ToFirstHit,
-//          FindEntryThroughFacePlanes, FindHitOnConvexSolid, FindHitOnDomainBox, FindSphereHit, TimeInterval,
-//          ComputeTimeInsideGrownWall, ComputeTimeBetweenGrownCaps, FindCylinderHit, HasConvexDistance, GapLowerModel,
-//          ComputeSecondOrderAdvance, FindHitOnTurningSolid, ComputeIsTurningSolid, FindFirstHitOnSolid,
+//          ComputeIsClosedSide, ComputeFaceDistance, ComputeDistanceForParticle, ComputeStartCase, ComputeOwnPath,
+//          ToFirstHit, FindEntryThroughFacePlanes, FindHitOnConvexSolid, FindHitOnDomainBox, FindSphereHit,
+//          TimeInterval, ComputeTimeInsideGrownWall, ComputeTimeBetweenGrownCaps, FindCylinderHit, HasConvexDistance,
+//          GapLowerModel, ComputeSecondOrderAdvance, FindHitOnTurningSolid, ComputeIsTurningSolid, FindFirstHitOnSolid,
 //          ComputeEarlierHit, FindEarliestHitWithTurningSolids, TouchedSurface, TouchedSurfaces, TouchedSolid,
-//          ComputeTouchedSolid, FindFirstHitOfSweep, ParticleMove, CheckSolidContactInputs, CheckStartOutsideSolids,
-//          ToSideAtHit, ApplyReactionChange, ApplyResponseAtSurface, ApplyHit, MoveToRestGap, ApplySettleAtEnd,
-//          CheckEndOutsideSolids
+//          ComputeTouchedSolid, FindFirstHitOfSweep, kMaxTouchedSurfaces, ParticleMove, CheckSolidContactInputs,
+//          ToSideAtHit, ApplyReactionChange, ApplyResponseAtSurface, CheckHitCountBelowLimit, ApplyHit, MoveToRestGap,
+//          CheckStartOnCommittedSide, ComputeIsApproachingSolid, NearSurfaces, FindSurfacesWithinTolerance,
+//          ApplyStartResponses, SilentMoves, ApplyTouchedSurfaceOfSilentMove, ApplyStartRulesOfSolid, ApplyStartRules,
+//          ApplySettleAtEnd, CheckEndOutsideSolids
 // Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), Mat3, kIdentity, math::Transpose
 //          (base/mat3.h), Axis (base/axis.h), math::Abs, math::Sqrt, math::Max (base/scalar_math.h),
 //          PerParticleVelocity (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
 //          ContactError, ContactCloseCall, ContactFailure (contact/contact_error.h), Solid, SolidShape, SolidFace,
-//          SolidSide, PlateSide, SolidPose, ClosedSides, DistanceToSolid, kNoSolid, ComputeSolidPose,
+//          SolidSide, PlateSide, SolidPose, ClosedSides, DomainSide, DistanceToSolid, kNoSolid, ComputeSolidPose,
 //          ComputeSolidVelocity, ComputeDistanceToSolid, ComputeDistanceToSphere, ComputeDistanceToCylinder,
 //          ComputeShapeTurningAngularVelocity, kNegligibleTurnShare (contact/solid_shapes.h), SolidContactInputs,
 //          SolidContactResult, SolidReaction, ContactKind, FirstHit, kMaxHitsPerStep, kMaxAdvanceCount,
@@ -170,8 +178,10 @@ struct TouchedSolid {
 //   That approach adds up over the rest of the step while the largest allowance grows with later entries. Each entry j
 //   asserted b_j * t_left_j <= tol / 64 = tol / (16 kMaxHitsPerStep) at its own hit. Between one entry k and the next
 //   the largest allowance is some b_j with j <= k and t_left_j >= t_left_k, so at most tol / (64 t_left_k), over at
-//   most t_left_k: that piece adds at most tol / 64. At most kMaxHitsPerStep entries make at most four pieces, so the
-//   particle comes closer to a touched solid by at most tol / 16 in the step.
+//   most t_left_k: that piece adds at most tol / 64. Entries come at most at kMaxHitsPerStep different times, one per
+//   hit: the start rules' entries, hits and silent moves alike, all come at time 0 with t_left = step_duration, and a
+//   silent move becomes an entry only when a start hit does too (ApplyStartRules). So there are at most four pieces,
+//   and the particle comes closer to a touched solid by at most tol / 16 in the step.
 // Example: entries {solid 0, allowance 2^-46} and {solid 2, allowance 2^-40}: solid 0 is touched with 2^-40, solid 1
 //   is not touched.
 // Requires: touched_surfaces.surfaces points to touched_surfaces.count entries (it may be null when the count is 0).
@@ -252,6 +262,52 @@ FLUIDITY_CPU_AND_GPU constexpr FacePlane ToFacePlane(SolidSide side, double half
       .sign_out_of_solid = is_along_normal ? 1.0 : -1.0,
       .offset = half_thickness,
   };
+}
+
+// Converts one side of the domain box into its face plane, whose distance is measured into the box: own p.axis +
+// half_size from a low side, half_size - p.axis from a high side, as ComputeDistanceToSolid gives for that side.
+//
+// Units: m for half_size.
+// Example: kBottom with half_size {0.5, 0.5, 0.5}: face kLowZ, axis kZ, sign_out_of_solid +1, offset -0.5, so the
+//   centre of the box is 0.5 from it and its normal is {0, 0, 1}, into the box.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>
+FLUIDITY_CPU_AND_GPU constexpr FacePlane ToFacePlane(DomainSide side, Vec3 half_size) {
+  switch (side) {
+    case DomainSide::kLeft:
+      return {.face = SolidFace::kLowX, .axis = Axis::kX, .sign_out_of_solid = 1, .offset = -half_size.x};
+    case DomainSide::kRight:
+      return {.face = SolidFace::kHighX, .axis = Axis::kX, .sign_out_of_solid = -1, .offset = -half_size.x};
+    case DomainSide::kFront:
+      return {.face = SolidFace::kLowY, .axis = Axis::kY, .sign_out_of_solid = 1, .offset = -half_size.y};
+    case DomainSide::kBack:
+      return {.face = SolidFace::kHighY, .axis = Axis::kY, .sign_out_of_solid = -1, .offset = -half_size.y};
+    case DomainSide::kBottom:
+      return {.face = SolidFace::kLowZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = -half_size.z};
+    case DomainSide::kTop:
+      break;
+  }
+  return {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = -1, .offset = -half_size.z};
+}
+
+// Computes whether one side of the domain box is closed, so it stops particles.
+//
+// Example: the default ClosedSides: kBottom is closed, kTop is open.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsClosedSide(ClosedSides closed, DomainSide side) {
+  switch (side) {
+    case DomainSide::kLeft:
+      return closed.left;
+    case DomainSide::kRight:
+      return closed.right;
+    case DomainSide::kFront:
+      return closed.front;
+    case DomainSide::kBack:
+      return closed.back;
+    case DomainSide::kBottom:
+      return closed.bottom;
+    case DomainSide::kTop:
+      break;
+  }
+  return closed.top;
 }
 
 // Computes the distance from a world point to one face plane at a given pose of its solid, with the face's normal.
@@ -348,7 +404,9 @@ FLUIDITY_CPU_AND_GPU inline StartCase ComputeStartCase(
   if (start_gap > resting_gap_limit) {
     return StartCase::kOutside;
   }
-  // MoveParticle never sweeps from deeper than one tolerance inside; this answer only keeps a caller's error safe.
+  // Deeper than one tolerance inside. MoveParticle sweeps from here only when the start rule of a later solid pushed
+  // the start into an earlier one (a wedge sharper than a right angle): the hit at 0 then repeats until the hit limit,
+  // a close call, and the particle never ends inside.
   if (start_gap < -contact_tolerance) {
     return StartCase::kHitAtStart;
   }
@@ -565,12 +623,11 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindHitOnConvexSolid(
 // Finds the first hit of a straight path on the domain box: each closed side is a flat face of its own, with its own
 // touching rule, and the earliest hit over the sides wins.
 //
-// Method: for each closed side in face order, at_start = ComputeFaceDistance of that side at the start, at the pose
-//   of sweep.start_elapsed (the distance into the box, as ComputeDistanceToSolid gives for that side), then
-//   ComputeStartCase with what the touched surfaces say of the domain box: kHitAtStart is a hit at 0 on that side,
-//   kRestingAndFree no hit on it, kOutside
-//   FindEntryThroughFacePlanes of that one plane. A particle in a corner rests on two or three sides at once, so
-//   every side needs its own touching rule, not only the nearest one.
+// Method: for each closed side in face order, at_start = ComputeFaceDistance of that side's plane (ToFacePlane) at the
+//   start, at the pose of sweep.start_elapsed (the distance into the box, as ComputeDistanceToSolid gives for that
+//   side), then ComputeStartCase with what the touched surfaces say of the domain box: kHitAtStart is a hit at 0 on
+//   that side, kRestingAndFree no hit on it, kOutside FindEntryThroughFacePlanes of that one plane. A particle in a
+//   corner rests on two or three sides at once, so every side needs its own touching rule, not only the nearest one.
 // Units: m, m/s and s, world.
 // Ties: equal times keep the side that comes first in face order.
 // Example: the domain box [0, 1]^3 with an open top and a start {tol, tol, 0.5} moving at {-tol / 4, -tol / 4, 0.25}
@@ -583,14 +640,22 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
   const Solid& solid = inputs.solids[solid_index];
   assert(solid.shape == SolidShape::kDomainBox);
   const SolidPose pose = ComputeSolidPose(solid, sweep.start_elapsed);
-  const Vec3 half_size = solid.half_size;
-  const ClosedSides closed = solid.closed;
   FirstHit earliest;
-  // A later side wins only when strictly earlier, so a tie keeps the side that comes first.
-  const auto keep_if_earlier = [&](bool is_closed, FacePlane side_plane) {
-    if (!is_closed) {
-      return;
+  // A C array: GPU code cannot call std::array's member functions (nvcc without --expt-relaxed-constexpr).
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): see the comment above.
+  const DomainSide sides_in_face_order[] = {
+      DomainSide::kLeft,
+      DomainSide::kRight,
+      DomainSide::kFront,
+      DomainSide::kBack,
+      DomainSide::kBottom,
+      DomainSide::kTop,
+  };
+  for (const DomainSide side : sides_in_face_order) {
+    if (!ComputeIsClosedSide(solid.closed, side)) {
+      continue;
     }
+    const FacePlane side_plane = ToFacePlane(side, solid.half_size);
     const DistanceToSolid at_start = ComputeFaceDistance(pose, sweep.start, side_plane);
     FirstHit side_hit;
     switch (ComputeStartCase(inputs, solid_index, sweep, at_start, touched)) {
@@ -603,37 +668,13 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
         side_hit = {.elapsed = 0, .solid_index = solid_index, .at_hit = at_start};
         break;
     }
+    // A later side wins only when strictly earlier, so a tie keeps the side that comes first.
     const bool is_hit = side_hit.solid_index != kNoSolid;
     const bool is_earlier = earliest.solid_index == kNoSolid || side_hit.elapsed < earliest.elapsed;
     if (is_hit && is_earlier) {
       earliest = side_hit;
     }
-  };
-  // Each side's distance is into the box: p.axis + half_size from a low side, half_size - p.axis from a high side.
-  keep_if_earlier(
-      closed.left,
-      {.face = SolidFace::kLowX, .axis = Axis::kX, .sign_out_of_solid = 1, .offset = -half_size.x}
-  );
-  keep_if_earlier(
-      closed.right,
-      {.face = SolidFace::kHighX, .axis = Axis::kX, .sign_out_of_solid = -1, .offset = -half_size.x}
-  );
-  keep_if_earlier(
-      closed.front,
-      {.face = SolidFace::kLowY, .axis = Axis::kY, .sign_out_of_solid = 1, .offset = -half_size.y}
-  );
-  keep_if_earlier(
-      closed.back,
-      {.face = SolidFace::kHighY, .axis = Axis::kY, .sign_out_of_solid = -1, .offset = -half_size.y}
-  );
-  keep_if_earlier(
-      closed.bottom,
-      {.face = SolidFace::kLowZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = -half_size.z}
-  );
-  keep_if_earlier(
-      closed.top,
-      {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = -1, .offset = -half_size.z}
-  );
+  }
   return earliest;
 }
 
@@ -1461,15 +1502,22 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOfSweep(
   return ContactError::kNone;
 }
 
+// The most touched surfaces one particle's move keeps: one per hit, at most kMaxHitsPerStep, and one per solid its
+// start was moved away from silently while another solid responded at the start, at most kMaxHitsPerStep too
+// (ApplyStartRules).
+inline constexpr int kMaxTouchedSurfaces = 2 * kMaxHitsPerStep;
+
 // One particle's move through the solids while MoveParticle works on it: the result so far, the part of the step
 // used and the list of touched surfaces.
 struct ParticleMove {
   SolidContactResult result{};  // The position and velocities so far; the record of the first hit; the reaction.
   double elapsed = 0;  // s since the start of the step: the part of the step already used.
-  // One entry per hit, in hit order: result.hit_count entries are in use.
+  // In the order they were touched: touched_surface_count entries are in use, one per hit and one per solid moved
+  // silently at the start after a start response.
   // A C array: GPU code cannot call std::array's member functions (nvcc without --expt-relaxed-constexpr).
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): see the comment above.
-  TouchedSurface touched_surfaces[kMaxHitsPerStep]{};
+  TouchedSurface touched_surfaces[kMaxTouchedSurfaces]{};
+  int touched_surface_count = 0;
 };
 
 // Checks the values one particle's move reads, and says kBadInput when one is out of range.
@@ -1523,43 +1571,6 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckSolidContactInputs(const SolidCont
     }
   }
   return ContactError::kBadInput;
-}
-
-// Checks that the start of a particle's move is outside every solid, at the start of the step, and names the first
-// solid it is inside.
-//
-// Method: for each solid in array order, the distance ComputeDistanceForParticle gives at the start position, at
-//   the pose of time 0 and with the particle's plate side. The first negative distance fails. A start within one
-//   tolerance of a solid, 0 <= d < tol, passes: the sweep starts from it as it is, and the touching rule decides
-//   whether the path pushes into that solid.
-// Example: a fixed flat solid with normal {0, 0, 1} through the origin: a start at z = -0.01 fails with magnitude
-//   0.01; a start at z = 0 or z = tol / 4 passes.
-// Requires: inputs passed CheckSolidContactInputs; failure is not null.
-// Fails: kStartsInsideSolid  the start is inside a solid. *failure names its solid_id, with the depth -d as the
-//                            magnitude (plan decision P6). A particle placed inside a solid, or left there by an
-//                            earlier step; the step stops.
-//        *failure is written only on failure.
-// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
-FLUIDITY_CPU_AND_GPU inline ContactError
-CheckStartOutsideSolids(const SolidContactInputs& inputs, ContactFailure* failure) {
-  assert(failure != nullptr);
-  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
-    const Solid& solid = inputs.solids[solid_index];
-    const SolidPose pose = ComputeSolidPose(solid, 0);
-    const double start_distance =
-        ComputeDistanceForParticle(inputs, solid_index, pose, inputs.start_position, inputs.plate_side).distance;
-    if (start_distance < 0) {
-      *failure = {
-          .error = ContactError::kStartsInsideSolid,
-          .close_call = ContactCloseCall::kNone,
-          .particle_id = 0,
-          .solid_id = solid.solid_id,
-          .magnitude = -start_distance,
-      };
-      return ContactError::kStartsInsideSolid;
-    }
-  }
-  return ContactError::kNone;
 }
 
 // Converts the face of a hit into the side of the plate that was hit: kAlongNormal for kHighZ, kAgainstNormal for
@@ -1659,8 +1670,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyReactionChange(
 //   normal {-1, 0, 0}, 0.1 - tol s into a step of 0.2 s: both velocities {0, 0, 0}, approach speeds -1 m/s,
 //   hit_fraction (0.1 - tol) / 0.2, allowance 2^-46 m/s, hit_count 1.
 // Requires: solid_index < inputs.solid_count, hit_count < kMaxHitsPerStep; at_surface is the distance to that solid at
-//   the particle's position and the pose of move->elapsed; move and failure are not null. The speeds involved, summed
-//   over their axes, times the time left are at most 2^40 tol (the allowance bound above).
+//   the particle's position and the pose of move->elapsed, or, for a start rule (ApplyStartRulesOfSolid), at the start
+//   before its move to the rest gap, which keeps the normal; move and failure are not null. The speeds involved,
+//   summed over their axes, times the time left are at most 2^40 tol (the allowance bound above).
 // Fails: kTooCloseToCall  a second reacting solid (kSecondReactingSolid, ApplyReactionChange). A shorter step
 //                         separates the two hits.
 //        *failure is written only on failure; *move is then unspecified.
@@ -1727,20 +1739,57 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyResponseAtSurface(
       approach_allowance * (inputs.step_duration - move->elapsed)
       <= kTouchedSolidRestingGapShare / kMaxHitsPerStep * inputs.contact_tolerance
   );
-  move->touched_surfaces[result.hit_count] = {
+  assert(move->touched_surface_count < kMaxTouchedSurfaces);
+  move->touched_surfaces[move->touched_surface_count] = {
       .solid_index = solid_index,
       .normal_out_of_solid = normal,
       .approach_allowance = approach_allowance,
   };
+  ++move->touched_surface_count;
   ++result.hit_count;
   return ContactError::kNone;
+}
+
+// Checks that one more hit, on one solid, stays within kMaxHitsPerStep after the hits of result, and says
+// kTooCloseToCall when it would be the fifth.
+//
+// Method: result.hit_count == kMaxHitsPerStep fails: kMaxHitsPerStep hits are the three sides of a corner and the
+//   slide that leaves it, so a particle that keeps meeting solids in one step is in a gap too narrow for this step
+//   length. The hits of the start rules count too (plan decision P4); five of them come from the start's geometry
+//   alone, which a shorter step does not change.
+// Example: hit_count 3 passes; hit_count 4 fails, naming the solid of the fifth hit.
+// Requires: solid_index < inputs.solid_count; result.hit_count <= kMaxHitsPerStep; failure is not null.
+// Fails: kTooCloseToCall  a fifth hit: *failure is kTooManyHits with that solid's solid_id. A shorter step has fewer
+//                         hits along its sweeps, but not at its start.
+//        *failure is written only on failure.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+FLUIDITY_CPU_AND_GPU inline ContactError CheckHitCountBelowLimit(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    const SolidContactResult& result,
+    ContactFailure* failure
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(result.hit_count <= kMaxHitsPerStep);
+  assert(failure != nullptr);
+  if (result.hit_count < kMaxHitsPerStep) {
+    return ContactError::kNone;
+  }
+  *failure = {
+      .error = ContactError::kTooCloseToCall,
+      .close_call = ContactCloseCall::kTooManyHits,
+      .particle_id = 0,
+      .solid_id = inputs.solids[solid_index].solid_id,
+      .magnitude = 0,
+  };
+  return ContactError::kTooCloseToCall;
 }
 
 // Applies one hit of a sweep to a particle's move: moves the particle to the hit, then the response at that surface
 // (ApplyResponseAtSurface).
 //
 // Method (method paper <proc-move-particle>, steps 4 and 5):
-//   1 A fifth hit fails: kMaxHitsPerStep hits are the three sides of a corner and the slide that leaves it.
+//   1 A fifth hit fails (CheckHitCountBelowLimit).
 //   2 The position becomes position + velocity_for_this_step * first_hit.elapsed and the elapsed time grows by
 //     first_hit.elapsed: the expressions FindFirstHit evaluates the hit with, so the solid is posed at the same time.
 //   3 ApplyResponseAtSurface with first_hit.at_hit.
@@ -1759,15 +1808,9 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
   assert(move != nullptr && failure != nullptr);
   SolidContactResult& result = move->result;
   // Step 1: a particle that keeps hitting solids in one step is in a gap too narrow for this step length.
-  if (result.hit_count == kMaxHitsPerStep) {
-    *failure = {
-        .error = ContactError::kTooCloseToCall,
-        .close_call = ContactCloseCall::kTooManyHits,
-        .particle_id = 0,
-        .solid_id = inputs.solids[first_hit.solid_index].solid_id,
-        .magnitude = 0,
-    };
-    return ContactError::kTooCloseToCall;
+  const ContactError hit_limit_error = CheckHitCountBelowLimit(inputs, first_hit.solid_index, result, failure);
+  if (hit_limit_error != ContactError::kNone) {
+    return hit_limit_error;
   }
   // Step 2: these are FindFirstHit's own expressions, so the position and the pose are those of the hit.
   result.position = result.position + result.velocity.for_this_step * first_hit.elapsed;
@@ -1778,21 +1821,468 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
 
 // Computes the point moved along the normal of one solid to distance contact_tolerance from it: the rest gap.
 //
-// Method: with the distance d and the normal n that ComputeDistanceForParticle gives at the point and the pose, with
-//   the particle's plate side, the result is point + (tol - d) * n. For a flat face this moves the point straight to
-//   the face plane at tol; for a sphere, a cylinder's wall or its rim, along the line to the nearest surface point,
-//   which keeps that point; for a box or a domain box, to tol from the face that gives the distance. The result is at
-//   distance tol up to rounding. It moves a point that is farther than tol back toward the solid too, so the caller
-//   calls it only for d < tol. Same bits on CPU and GPU as ComputeDistanceForParticle.
+// Method: one switch over the shape.
+//   flat solid, plate, box, sphere, cylinder  with the distance d and the normal n that ComputeDistanceForParticle
+//     gives at the point and the pose, with the particle's plate side, the result is point + (tol - d) * n. For a flat
+//     face this moves the point straight to the face plane at tol; for a sphere, a cylinder's wall or its rim, along
+//     the line to the nearest surface point, which keeps that point; for a box, to tol from the face that gives the
+//     distance, whose plane is then the farthest of the box's, so the box's distance is tol. It moves a point that is
+//     farther than tol back toward the solid too.
+//   domain box  each closed side in face order whose distance into the box is below tol moves the point along that
+//     side's normal to tol from it. A particle in a corner is closer than tol to two or three sides, and the distance
+//     to the domain box is the smallest of theirs, so one move along the nearest side would leave it closer than tol.
+//     The sides keep the world axes, so a move along one changes no other side's distance. A side at tol or farther
+//     does not move the point.
+//   The result is at distance tol up to rounding. The caller calls it only for d < tol. Same bits on CPU and GPU as
+//   ComputeDistanceForParticle.
 // Units: m, world, at the time of the pose.
 // Example: a fixed flat solid with normal {0, 0, 1} through the origin and the point {0.5, 0, tol / 4}: {0.5, 0, tol}.
+//   The domain box [0, 1]^3 and the point {tol / 4, 0.5, 0.3 tol}: {tol, 0.5, tol}.
 // Requires: solid_index < inputs.solid_count; pose is that solid's pose (ComputeSolidPose).
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-tolerance>
 FLUIDITY_CPU_AND_GPU inline Vec3
 MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, SolidPose pose, Vec3 point) {
   assert(solid_index < inputs.solid_count);
+  const Solid& solid = inputs.solids[solid_index];
+  const double contact_tolerance = inputs.contact_tolerance;
+  switch (solid.shape) {
+    case SolidShape::kFlatSolid:
+    case SolidShape::kPlate:
+    case SolidShape::kBox:
+    case SolidShape::kSphere:
+    case SolidShape::kCylinder:
+      break;
+    case SolidShape::kDomainBox: {
+      Vec3 moved_point = point;
+      // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in FindHitOnDomainBox.
+      const DomainSide sides_in_face_order[] = {
+          DomainSide::kLeft,
+          DomainSide::kRight,
+          DomainSide::kFront,
+          DomainSide::kBack,
+          DomainSide::kBottom,
+          DomainSide::kTop,
+      };
+      for (const DomainSide side : sides_in_face_order) {
+        if (!ComputeIsClosedSide(solid.closed, side)) {
+          continue;
+        }
+        const DistanceToSolid at_side = ComputeFaceDistance(pose, moved_point, ToFacePlane(side, solid.half_size));
+        if (at_side.distance < contact_tolerance) {
+          moved_point = moved_point + (contact_tolerance - at_side.distance) * at_side.normal_out_of_solid;
+        }
+      }
+      return moved_point;
+    }
+  }
+  // An unknown shape stops at ComputeDistanceToSolid's assertion: CheckSolid refuses it.
   const DistanceToSolid at_point = ComputeDistanceForParticle(inputs, solid_index, pose, point, inputs.plate_side);
-  return point + (inputs.contact_tolerance - at_point.distance) * at_point.normal_out_of_solid;
+  return point + (contact_tolerance - at_point.distance) * at_point.normal_out_of_solid;
+}
+
+// Checks that a particle committed to a plate does not start more than one contact tolerance beyond that plate's
+// other face, and says kOnWrongSideOfPlate when it does (plan decision P3).
+//
+// Method: only for the plate inputs.plate_side names. With s = +1 for kAlongNormal and -1 for kAgainstNormal and p the
+//   start in the plate's own axes at the pose, the distance beyond the other face is -s * p.z - half_thickness:
+//   ComputeFaceDistance of the other face's plane (ToFacePlane of the other side), positive on the side the particle
+//   must not be on. The start fails when that distance is above tol, s * p.z < -(half_thickness + tol). Within tol of
+//   the other face, or inside the thickness, the start is only inside the committed half space, and the start rules
+//   push it to the committed side. Every other solid passes. Same bits on CPU and GPU: only + - * and comparisons.
+// Units: m, world, at the time of the pose.
+// Example: a fixed plate of id 5 through the origin with normal {0, 0, 1} and half thickness 0.01, committed to
+//   {5, kAlongNormal}: a start at z = -0.02 fails with magnitude 0.01; z = -0.001 passes.
+// Requires: solid_index < inputs.solid_count; pose is that solid's pose; inputs passed CheckSolidContactInputs;
+//   failure is not null.
+// Fails: kOnWrongSideOfPlate  the start is beyond the other face of its committed plate by more than tol. *failure
+//                             names the plate's solid_id, with the distance beyond that face as the magnitude (plan
+//                             decision P6). A particle that crossed its plate in an earlier step, or a plate side that
+//                             went wrong upstream; the step stops.
+//        *failure is written only on failure.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <proc-move-particle>
+FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOnCommittedSide(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    SolidPose pose,
+    Vec3 start,
+    ContactFailure* failure
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(failure != nullptr);
+  const Solid& solid = inputs.solids[solid_index];
+  const PlateSide plate_side = inputs.plate_side;
+  const bool is_committed_to_this_plate = plate_side.plate_id == solid.solid_id;
+  if (!is_committed_to_this_plate) {
+    return ContactError::kNone;
+  }
+  assert(solid.shape == SolidShape::kPlate);
+  const SolidSide other_side =
+      plate_side.side == SolidSide::kAlongNormal ? SolidSide::kAgainstNormal : SolidSide::kAlongNormal;
+  // Method paper <sec-solid-shapes>:  beyond the other face by -(s p_z + half_thickness)
+  const double distance_beyond_other_face =
+      ComputeFaceDistance(pose, start, ToFacePlane(other_side, solid.half_size.z)).distance;  // m
+  if (distance_beyond_other_face <= inputs.contact_tolerance) {
+    return ContactError::kNone;
+  }
+  *failure = {
+      .error = ContactError::kOnWrongSideOfPlate,
+      .close_call = ContactCloseCall::kNone,
+      .particle_id = 0,
+      .solid_id = solid.solid_id,
+      .magnitude = distance_beyond_other_face,
+  };
+  return ContactError::kOnWrongSideOfPlate;
+}
+
+// Computes whether either velocity of a particle's move approaches one solid along a normal, at the particle's
+// position and the pose of move.elapsed, by more than the responses so far may have left by rounding.
+//
+// Method: with u = ComputeSolidVelocity at the position and pose, each velocity's approach speed is
+//   Dot(normal_out_of_solid, velocity - u), as ApplyResponseAtSurface measures it. A velocity approaches when its
+//   approach speed is below minus the largest approach allowance of the touched surfaces so far
+//   (ComputeTouchedSolid): 0 before any response, since the velocities are then the inputs, and after one the
+//   rounding it may have left along any normal is not an approach. Same bits on CPU and GPU when the solid's angular
+//   velocity is zero: only + - * and comparisons.
+// Units: m/s, world.
+// Example: a fixed floor with normal {0, 0, 1}, no touched surface: velocities {1, 0, -1} and {0, 0, 0} approach (the
+//   first does); {1, 0, 2} and {0, 0, 0} do not. After a response with allowance 2^-44 m/s, {0, 0, -2^-50} does not.
+// Requires: solid_index < inputs.solid_count; move.touched_surfaces holds move.touched_surface_count entries.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
+FLUIDITY_CPU_AND_GPU inline bool ComputeIsApproachingSolid(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    Vec3 normal_out_of_solid,
+    const ParticleMove& move
+) {
+  assert(solid_index < inputs.solid_count);
+  const Solid& solid = inputs.solids[solid_index];
+  const SolidContactResult& result = move.result;
+  const Vec3 solid_velocity = ComputeSolidVelocity(solid, ComputeSolidPose(solid, move.elapsed), result.position);
+  const TouchedSurfaces touched_surfaces = {.surfaces = move.touched_surfaces, .count = move.touched_surface_count};
+  const double approach_allowance = ComputeTouchedSolid(touched_surfaces, solid_index).approach_allowance;  // m/s
+  // Method paper <eq:contact-response>:  a = n . (v - u)
+  const double next_step_approach = math::Dot(normal_out_of_solid, result.velocity.for_next_step - solid_velocity);
+  const double this_step_approach = math::Dot(normal_out_of_solid, result.velocity.for_this_step - solid_velocity);
+  return next_step_approach < -approach_allowance || this_step_approach < -approach_allowance;
+}
+
+// The surfaces of one solid a start is closer to than the contact tolerance, each with its distance, normal and face.
+struct NearSurfaces {
+  // In face order. Six is every side of a domain box; another shape has one.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in ParticleMove.
+  DistanceToSolid surfaces[6]{};
+  int count = 0;
+};
+
+// Finds the surfaces of one solid a point is closer to than the contact tolerance: the start rules classify each on
+// its own.
+//
+// Method: one switch over the shape.
+//   flat solid, plate, box, sphere, cylinder  the one surface that gives the distance, at_point, when its distance is
+//     below tol.
+//   domain box  every closed side in face order whose distance into the box (ComputeFaceDistance of ToFacePlane) is
+//     below tol: a particle in a corner is near two or three sides, each a flat face of its own, as the sweep treats
+//     them (FindHitOnDomainBox). at_point is the nearest of them.
+//   Same bits on CPU and GPU: only + - * and comparisons.
+// Units: m, world, at the time of the pose.
+// Example: the domain box [0, 1]^3 with an open top and the point {tol / 4, 0.5, 0.3 tol}: kLowX at tol / 4 and kLowZ
+//   at 0.3 tol. A fixed floor and the point {0, 0, tol / 2}: kHighZ at tol / 2.
+// Requires: solid_index < inputs.solid_count; pose is that solid's pose; at_point is ComputeDistanceForParticle at the
+//   point and the pose, with the particle's plate side.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-solid-shapes>
+FLUIDITY_CPU_AND_GPU inline NearSurfaces FindSurfacesWithinTolerance(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    SolidPose pose,
+    Vec3 point,
+    DistanceToSolid at_point
+) {
+  assert(solid_index < inputs.solid_count);
+  const Solid& solid = inputs.solids[solid_index];
+  const double contact_tolerance = inputs.contact_tolerance;
+  NearSurfaces near;
+  switch (solid.shape) {
+    case SolidShape::kFlatSolid:
+    case SolidShape::kPlate:
+    case SolidShape::kBox:
+    case SolidShape::kSphere:
+    case SolidShape::kCylinder:
+      break;
+    case SolidShape::kDomainBox: {
+      // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in FindHitOnDomainBox.
+      const DomainSide sides_in_face_order[] = {
+          DomainSide::kLeft,
+          DomainSide::kRight,
+          DomainSide::kFront,
+          DomainSide::kBack,
+          DomainSide::kBottom,
+          DomainSide::kTop,
+      };
+      for (const DomainSide side : sides_in_face_order) {
+        if (!ComputeIsClosedSide(solid.closed, side)) {
+          continue;
+        }
+        const DistanceToSolid at_side = ComputeFaceDistance(pose, point, ToFacePlane(side, solid.half_size));
+        if (at_side.distance < contact_tolerance) {
+          near.surfaces[near.count] = at_side;
+          ++near.count;
+        }
+      }
+      return near;
+    }
+  }
+  if (at_point.distance < contact_tolerance) {
+    near.surfaces[0] = at_point;
+    near.count = 1;
+  }
+  return near;
+}
+
+// Applies the responses of the start rules for the near surfaces of one solid: each surface the start is inside, or
+// that either velocity approaches, is a hit at time 0 with that surface's normal.
+//
+// Method: for each surface in order, with d its distance before the move to the rest gap: with d < 0, or when
+//   ComputeIsApproachingSolid holds along its normal at the moved position, CheckHitCountBelowLimit, then
+//   ApplyResponseAtSurface with that surface (the move along its normal keeps the normal): the record when it is the
+//   first hit, one hit counted, the reaction, and one touched-surface entry with the allowance of that response. With
+//   d < 0 the kind becomes kStartedInsideSolid, which no later hit changes, since the record is written at the first
+//   hit only. Each surface is tested with the velocities the responses before it left, so a corner falling into its
+//   three sides gets three hits.
+// Units: m, m/s and s, world.
+// Example: the domain box [0, 1]^3 and a start at {tol, 0.5, tol} moved from inside both side_left and side_bottom,
+//   moving at {-1, 0, -1} m/s, friction 0: kLowX, then kLowZ, two hits, both velocities {0, 0, 0}.
+// Requires: solid_index < inputs.solid_count; near holds the surfaces of that solid at the start, before its move;
+//   move and failure are not null; move->elapsed is 0. As ApplyResponseAtSurface for the speeds.
+// Fails: kTooCloseToCall  a fifth hit (kTooManyHits) or a second reacting solid (kSecondReactingSolid), each naming
+//                         this solid. *failure is written only on failure; *move is then unspecified.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+FLUIDITY_CPU_AND_GPU inline ContactError ApplyStartResponses(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    const NearSurfaces& near,
+    ParticleMove* move,
+    ContactFailure* failure
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(move != nullptr && failure != nullptr);
+  assert(move->elapsed == 0);
+  for (int surface_index = 0; surface_index < near.count; ++surface_index) {
+    const DistanceToSolid at_start = near.surfaces[surface_index];
+    const bool is_inside = at_start.distance < 0;
+    const bool is_approaching = ComputeIsApproachingSolid(inputs, solid_index, at_start.normal_out_of_solid, *move);
+    const bool gets_response = is_inside || is_approaching;
+    if (!gets_response) {
+      continue;
+    }
+    const ContactError hit_limit_error = CheckHitCountBelowLimit(inputs, solid_index, move->result, failure);
+    if (hit_limit_error != ContactError::kNone) {
+      return hit_limit_error;
+    }
+    const ContactError response_error = ApplyResponseAtSurface(inputs, solid_index, at_start, move, failure);
+    if (response_error != ContactError::kNone) {
+      return response_error;
+    }
+    if (is_inside) {
+      move->result.kind = ContactKind::kStartedInsideSolid;
+    }
+  }
+  return ContactError::kNone;
+}
+
+// The solids the start rules moved silently, counted so the fifth can be named once it is known whether any solid
+// responded at the start (ApplyStartRules).
+struct SilentMoves {
+  int count = 0;  // Every silent move so far, kept or not.
+  std::uint32_t fifth_solid_index = kNoSolid;  // Index into solids of the fifth, or kNoSolid.
+};
+
+// Applies the touched-surface entry of a solid the start was moved away from silently: no hit, no response, but the
+// sweeps that follow give it the touching rule of a touched solid.
+//
+// Method: the entry is the solid's index, the normal at the start before the move, and an approach allowance of 0. Why
+//   the entry: after a response at another solid at the start, the velocity keeps a rounding-sized approach along every
+//   normal, and the move leaves the start a few rounding units on either side of the rest gap. Without the entry a
+//   start a hair outside the rest gap would be outside for the plain touching rule, and the closed form would hit this
+//   solid from the two rounding-sized numbers, a spurious hit or a spurious second reacting solid. With it, a start gap
+//   up to tol / 16 rests, and only an approach beyond the largest allowance of all entries, the response's included, is
+//   a hit. Why 0: a silent move changes no velocity, so it leaves no rounding of its own to bound; its entry neither
+//   raises the threshold of the start rules' approach test, which stays 0 before the first response, nor that of the
+//   sweeps. It comes at time 0 beside a start hit (ApplyStartRules drops it otherwise), so the proof of
+//   ComputeTouchedSolid holds. The list keeps at most kMaxHitsPerStep such entries: a later one is only counted in
+//   *silent_moves, and the index of the fifth kept for ApplyStartRules.
+// Example: two fixed parallel flat solids tol / 4 apart and a start tol / 2 above the lower one moving into both: the
+//   lower one responds; the upper one, now 0.75 tol away and left at -2^-55 m/s, is moved silently and gets this
+//   entry, so the sweep rests on it instead of hitting it a few femtoseconds later.
+// Requires: solid_index indexes the solids of the move's inputs; move and silent_moves are not null; move->elapsed
+//   is 0.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
+FLUIDITY_CPU_AND_GPU inline void ApplyTouchedSurfaceOfSilentMove(
+    std::uint32_t solid_index,
+    Vec3 normal_out_of_solid,
+    ParticleMove* move,
+    SilentMoves* silent_moves
+) {
+  assert(move != nullptr && silent_moves != nullptr);
+  assert(move->elapsed == 0);
+  ++silent_moves->count;
+  if (silent_moves->count > kMaxHitsPerStep) {
+    if (silent_moves->fifth_solid_index == kNoSolid) {
+      silent_moves->fifth_solid_index = solid_index;
+    }
+    return;
+  }
+  assert(move->touched_surface_count < kMaxTouchedSurfaces);
+  move->touched_surfaces[move->touched_surface_count] = {
+      .solid_index = solid_index,
+      .normal_out_of_solid = normal_out_of_solid,
+      .approach_allowance = 0,
+  };
+  ++move->touched_surface_count;
+}
+
+// Applies the start rules of one solid to a particle's move, at the start of the step: the checks that fail, the move
+// to the rest gap and the responses (method paper <proc-move-particle>, step 2; plan decisions P3, P4 and P12).
+//
+// Method, with d and n the distance and normal ComputeDistanceForParticle gives at the particle's position, which the
+//   start rules of the earlier solids may have moved, at the pose of time 0 and with the particle's plate side:
+//   1 A particle committed to this plate and beyond its other face by more than tol fails
+//     (CheckStartOnCommittedSide), before the depth: it is not inside its half space but on the wrong side.
+//   2 d < -start_overlap_tolerance fails: too deep inside.
+//   3 d >= tol changes nothing. Otherwise the near surfaces are found (FindSurfacesWithinTolerance: the one surface,
+//     or each closed side of a domain box closer than tol), and the position moves to the rest gap (MoveToRestGap),
+//     whatever the velocity.
+//   4 Each near surface the start was inside, or that either velocity approaches by more than the largest allowance
+//     of the touched surfaces so far (ComputeIsApproachingSolid), is a hit at time 0 with its own normal
+//     (ApplyStartResponses): the record with hit_fraction 0 if it is the first hit, one hit counted, and a touched
+//     surface with the allowance of that response, so the sweeps that follow rest on it; with d < 0 the kind becomes
+//     kStartedInsideSolid. When no surface responds the move is silent: velocities, kind, record and hit count stay
+//     as they are. The solid then becomes a touched surface without a hit (ApplyTouchedSurfaceOfSilentMove), which
+//     ApplyStartRules keeps only when some solid responded at the start.
+//   A turning solid gets the same rules; it has no touching rule, so the sweep that follows hits it at 0 again (step 5
+//   of MoveParticle). Same bits on CPU and GPU when the solid's angular velocity is zero.
+// Units: m, m/s and s, world.
+// Example: a fixed floor with normal {0, 0, 1}: a particle at {0, 0, tol / 4} moving at {1, 0, 2} m/s moves silently
+//   to {0, 0, tol}; at {0, 0, -0.0005} with start_overlap_tolerance 0.001 it moves to {0, 0, tol} and gets the
+//   response, hit_count 1, kind kStartedInsideSolid; at {0, 0, -0.01} it fails with magnitude 0.01.
+// Requires: solid_index < inputs.solid_count; inputs passed CheckSolidContactInputs; move, silent_moves and failure
+//   are not null; move->elapsed is 0. As ApplyResponseAtSurface for the speeds.
+// Fails: kOnWrongSideOfPlate  as CheckStartOnCommittedSide.
+//        kStartsInsideSolid   d < -start_overlap_tolerance: *failure names the solid_id, with the depth -d as the
+//                             magnitude (plan decision P6). A particle placed inside a solid, or left there by an
+//                             earlier step; the step stops.
+//        kTooCloseToCall      a fifth hit (kTooManyHits) or a second reacting solid (kSecondReactingSolid), each
+//                             naming that solid. These come from the start alone: the same start fails at every step
+//                             length, so a shorter step does not help.
+//        *failure is written only on failure; *move is then unspecified.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-solid-shapes>, <sec-contact-tolerance>
+FLUIDITY_CPU_AND_GPU inline ContactError ApplyStartRulesOfSolid(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    ParticleMove* move,
+    SilentMoves* silent_moves,
+    ContactFailure* failure
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(move != nullptr && silent_moves != nullptr && failure != nullptr);
+  assert(move->elapsed == 0);
+  // Steps: 1 wrong side of the plate  2 too deep inside  3 move to the rest gap  4 respond
+  const Solid& solid = inputs.solids[solid_index];
+  const SolidPose start_pose = ComputeSolidPose(solid, 0);
+  const Vec3 start = move->result.position;
+  // Step 1: the specific diagnosis comes before the depth (plan decision P3).
+  const ContactError side_error = CheckStartOnCommittedSide(inputs, solid_index, start_pose, start, failure);
+  if (side_error != ContactError::kNone) {
+    return side_error;
+  }
+  // Step 2: deeper than the user allows is a scene error, and the step stops.
+  const DistanceToSolid at_start =
+      ComputeDistanceForParticle(inputs, solid_index, start_pose, start, inputs.plate_side);
+  const double start_distance = at_start.distance;  // m
+  if (start_distance < -inputs.start_overlap_tolerance) {
+    *failure = {
+        .error = ContactError::kStartsInsideSolid,
+        .close_call = ContactCloseCall::kNone,
+        .particle_id = 0,
+        .solid_id = solid.solid_id,
+        .magnitude = -start_distance,
+    };
+    return ContactError::kStartsInsideSolid;
+  }
+  // Step 3: plan decision P12. A particle placed near a solid, by a source or a change of cell size, starts at the
+  // rest gap, so the end check never fails for that reason.
+  if (start_distance >= inputs.contact_tolerance) {
+    return ContactError::kNone;
+  }
+  const NearSurfaces near = FindSurfacesWithinTolerance(inputs, solid_index, start_pose, start, at_start);
+  move->result.position = MoveToRestGap(inputs, solid_index, start_pose, start);
+  // Step 4: plan decision P4. A start inside, or an approach, is a hit at time 0; a particle that leaves is moved
+  // silently, and its solid becomes a touched surface without a hit.
+  const std::uint8_t hit_count_before = move->result.hit_count;
+  const ContactError response_error = ApplyStartResponses(inputs, solid_index, near, move, failure);
+  if (response_error != ContactError::kNone) {
+    return response_error;
+  }
+  const bool is_silent_move = move->result.hit_count == hit_count_before;
+  if (is_silent_move) {
+    ApplyTouchedSurfaceOfSilentMove(solid_index, at_start.normal_out_of_solid, move, silent_moves);
+  }
+  return ContactError::kNone;
+}
+
+// Applies the start rules of every solid to a particle's move, in array order (ApplyStartRulesOfSolid): step 2 of
+// MoveParticle.
+//
+// Method: each solid is classified once, from the position the earlier solids' start rules left (plan decision P4),
+//   at the pose of time 0; the first solid that fails decides. Afterwards, when no solid responded, the touched
+//   surfaces of the silent moves are dropped: the velocities are then the inputs, which leave every such solid, and
+//   the plain touching rule frees them (plan decision P12: a touching particle that leaves is free). When one did,
+//   they stay, so the rounding its response left is not a hit on them (ApplyTouchedSurfaceOfSilentMove), and a fifth
+//   silent move fails: the list keeps four. The check waits until the end, so a start near five solids that it only
+//   leaves never fails for it.
+//   Today's limit, in a wedge sharper than a right angle: a later solid's move can push the start back toward an
+//   earlier one, which is not classified again. When that solid's distance stays at least 0 and it is a touched
+//   surface, the touching rule rests the particle and the settle lifts it to the rest gap; when it is not, the end
+//   check can fail (kEndsTooCloseToSolid); when the push takes the start inside it, the sweeps hit it at 0 until
+//   kTooManyHits, or its depth is beyond start_overlap_tolerance (kStartsInsideSolid). Each depends on the start alone,
+//   so a shorter step does not help. Plan Task 12 resolves the wedge.
+// Units: m, m/s and s, world.
+// Example: a fixed floor and an upright flat solid at x = 1, a particle at {1 - tol / 2, 0, tol / 2} moving at
+//   {1, 0, -1} m/s, friction 0: the floor moves it to z = tol and stops its fall, the upright moves it to x = 1 - tol
+//   and stops it: kind kHit, hit_count 2, both velocities {0, 0, 0}.
+// Requires: as ApplyStartRulesOfSolid for every solid; move has no touched surface yet.
+// Fails: as ApplyStartRulesOfSolid, for the first solid that fails.
+//        kTooCloseToCall  some solid responded at the start and a fifth solid was moved silently (kTooManyHits, naming
+//                         the fifth). The start's geometry alone decides it, so a shorter step does not help.
+//        *failure is written only on failure; *move is then unspecified.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+FLUIDITY_CPU_AND_GPU inline ContactError
+ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFailure* failure) {
+  assert(move != nullptr && failure != nullptr);
+  assert(move->touched_surface_count == 0);
+  SilentMoves silent_moves;
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    const ContactError error = ApplyStartRulesOfSolid(inputs, solid_index, move, &silent_moves, failure);
+    if (error != ContactError::kNone) {
+      return error;
+    }
+  }
+  if (move->result.hit_count == 0) {
+    move->touched_surface_count = 0;
+    return ContactError::kNone;
+  }
+  // The list keeps four silent moves beside the start hits; a fifth cannot be kept, and the start alone decides it.
+  if (silent_moves.count > kMaxHitsPerStep) {
+    assert(silent_moves.fifth_solid_index < inputs.solid_count);
+    *failure = {
+        .error = ContactError::kTooCloseToCall,
+        .close_call = ContactCloseCall::kTooManyHits,
+        .particle_id = 0,
+        .solid_id = inputs.solids[silent_moves.fifth_solid_index].solid_id,
+        .magnitude = 0,
+    };
+    return ContactError::kTooCloseToCall;
+  }
+  return ContactError::kNone;
 }
 
 // Applies the settle at the end of a particle's move: each touched surface the particle is closer to than the
@@ -1801,11 +2291,10 @@ MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, Solid
 // Method: the touched surfaces in hit order; for each, d = ComputeDistanceForParticle at the end position and pose,
 //   and MoveToRestGap when d < tol. The distance and normal are read afresh at the end pose, not the normal recorded
 //   at the hit, because a moving solid's surface has moved and a turning one's normal has turned since. So the move
-//   follows the solid's nearest surface there, which for a box or a domain box may be another face than the one hit:
-//   two entries of one domain box can settle two different sides, each by up to tol, and a side never hit can be the
-//   one settled. A solid that was not hit does not move the particle: the end check decides for it. One pass: with two
-//   touched surfaces at an acute angle the second move can take the particle back toward the first; the end check then
-//   fails, safely.
+//   follows the solid's nearest surface there, which for a box may be another face than the one hit; for a domain box
+//   it moves every closed side closer than tol, hit or not. A solid that is not a touched surface does not move the
+//   particle: the end check decides for it. One pass: with two touched surfaces at an acute angle the second move can
+//   take the particle back toward the first; the end check then fails, safely.
 // Units: m, world.
 // Example: a particle that ends a slide along a fixed floor with normal {0, 0, 1} at z = tol / 4 ends at z = tol.
 // Requires: move is not null and its touched surfaces index inputs.solids.
@@ -1813,7 +2302,7 @@ MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, Solid
 FLUIDITY_CPU_AND_GPU inline void ApplySettleAtEnd(const SolidContactInputs& inputs, ParticleMove* move) {
   assert(move != nullptr);
   Vec3 position = move->result.position;
-  const int touched_surface_count = move->result.hit_count;
+  const int touched_surface_count = move->touched_surface_count;
   for (int surface_index = 0; surface_index < touched_surface_count; ++surface_index) {
     const std::uint32_t solid_index = move->touched_surfaces[surface_index].solid_index;
     assert(solid_index < inputs.solid_count);
@@ -1821,8 +2310,10 @@ FLUIDITY_CPU_AND_GPU inline void ApplySettleAtEnd(const SolidContactInputs& inpu
     const double end_distance =
         ComputeDistanceForParticle(inputs, solid_index, end_pose, position, inputs.plate_side).distance;
     // A touched solid that does not turn ends at d >= tol - tol / 16 up to rounding: its touching rule lets the
-    // particle approach it by at most tol / 16 in the step. Deeper than -2 tol means a hit at a wrong pose or
-    // position, which the move below would silently repair, so a debug build stops.
+    // particle approach it by at most tol / 16 in the step. In a wedge sharper than a right angle a start rule of a
+    // later solid may have pushed the start toward it: to d >= 0, from where the same rule holds, or inside, where the
+    // sweeps hit it at 0 until the hit limit and this line is not reached. So d >= -tol / 16 here. Deeper than -2 tol
+    // means a hit at a wrong pose or position, which the move below would silently repair, so a debug build stops.
     assert(end_distance >= -2 * inputs.contact_tolerance);
     if (end_distance < inputs.contact_tolerance) {
       position = MoveToRestGap(inputs, solid_index, end_pose, position);
