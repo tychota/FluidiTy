@@ -1,7 +1,9 @@
-// The shapes of solids, their pose and motion during one step, and the check that a solid is usable.
+// The shapes of solids, their pose and motion during one step, the check that a solid is usable, and the distance
+// from a point to a solid.
 //
-// Purpose: describe every solid that particles cannot enter in one form, Solid, that the contact code reads, and
-//   check it once per step before any particle is moved.
+// Purpose: describe every solid that particles cannot enter in one form, Solid, that the contact code reads,
+//   check it once per step before any particle is moved, and give its pose, its surface velocity and the distance
+//   to it at any time within the step.
 //
 // Idea: each shape is described in its own axes, so one formula per shape serves any position and turn. A solid's
 //   pose places those axes in the world: an origin and a rotation whose columns are the solid's own x, y and z axes.
@@ -20,6 +22,8 @@
 //   column is d, the x column is Cross(e, d) normalised, with e the world axis on which d has its smallest part
 //   (the first in x, y, z order on ties), and the y column is Cross(z column, x column).
 //   Example: a cylinder along {1, 0, 0} gets x column {0, 0, -1}, y column {0, 1, 0} and z column {1, 0, 0}.
+//   The distance from a point to a solid is positive outside and negative inside. It comes with the normal and the
+//   name of the face that gives it.
 //
 // Words:
 //   pose        where a solid is: the origin of its own axes and the rotation that gives those axes in the world
@@ -33,17 +37,20 @@
 //   spin        a turn about a sphere's centre or a cylinder's axis: it moves the surface but not the shape
 // Owns:    SolidShape, SolidFace, SolidSide, PlateSide, FlatSolid, Plate, Box, Sphere, Cylinder, ClosedSides,
 //          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, ToSolid,
-//          ComputeShapeTurningAngularVelocity, CheckSolid, DomainSide, ToSolidFace
+//          ComputeShapeTurningAngularVelocity, CheckSolid, DistanceToSolid, ComputeSolidPose, ComputeSolidVelocity,
+//          ComputeDistanceToSolid, DomainSide, ToSolidFace
 // Uses:    Vec3, math::Cross, math::Dot, math::Length, math::Normalized, math::IsFinite (base/vec3.h),
-//          Mat3, kIdentity, math::Determinant (base/mat3.h), Axis, math::UnitVector (base/axis.h),
+//          Mat3, kIdentity, math::Determinant, math::Transpose, math::Rotation (base/mat3.h), Axis,
+//          math::UnitVector (base/axis.h),
 //          math::Abs, math::Max (base/scalar_math.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
 //          ContactError, ContactCloseCall (contact/contact_error.h)
 // Used by: every contact function, the solids module, which builds the solids of a scene, and the step
-// Read:    docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <sec-round-solids>
+// Read:    docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>, <sec-round-solids>
 //          Hu 2018, doi:10.1145/3197517.3201293
 
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 
 #include "fluidity/base/axis.h"
@@ -447,6 +454,160 @@ CheckSolid(const Solid& solid, double step_duration, ContactCloseCall* close_cal
 // Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckSolid(const Solid& solid, double step_duration) {
   return CheckSolid(solid, step_duration, nullptr);
+}
+
+// The distance from a point to a solid, and the face that gives it.
+struct DistanceToSolid {
+  double distance = 0;  // m. Positive outside the solid, negative inside.
+  Vec3 normal_out_of_solid{};  // No unit, unit vector, world. The normal of the face that gives the distance.
+  SolidFace face = SolidFace::kHighZ;
+};
+
+// Computes a solid's pose elapsed seconds after the start of the step.
+//
+// Method: the origin moves at the linear velocity. The axes turn by angular_velocity * elapsed about the world
+//   direction of the angular velocity: axes = math::Rotation(angular_velocity * elapsed) * axes at the step start.
+//   The full angular velocity counts, so the axes of a spinning sphere or cylinder turn although its shape does not.
+//   Same bits on CPU and GPU when the angular velocity is zero; otherwise the Sin inside math::Rotation may differ
+//   in the last bits. At elapsed 0 the pose is the start pose exactly.
+// Units: seconds for elapsed.
+// Example: a box with world axes turning at {0, 0, pi / 2} rad/s gives, after 1 s, the x column {0, 1, 0} within
+//   rounding. Origin {1, 2, 3} moving at {0.5, 0, 0} m/s gives origin {2, 2, 3} after 2 s, axes unchanged.
+// Requires: elapsed is finite and zero or more; it is at most the step duration.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
+FLUIDITY_CPU_AND_GPU inline SolidPose ComputeSolidPose(const Solid& solid, double elapsed) {
+  assert(math::IsFinite(elapsed) && elapsed >= 0);
+  const SolidPose start = solid.pose_at_step_start;
+  const SolidMotion motion = solid.motion;
+  // Method paper <sec-solid-shapes>:  o(t) = o + v_lin t,  A(t) = Rot(omega t) A
+  // The turn multiplies from the left, because the angular velocity is a world direction, not an own axis.
+  return {
+      .origin = start.origin + motion.linear_velocity * elapsed,
+      .axes = math::Rotation(motion.angular_velocity * elapsed) * start.axes,
+  };
+}
+
+// Computes the velocity of the solid's surface at a world point: the velocity of a point fixed to the solid.
+//
+// Method: linear_velocity + Cross(angular_velocity, point - pose.origin). The full angular velocity counts, spin
+//   included. Same bits on CPU and GPU: only + - * in a fixed order.
+// Units: m/s, world. The point is in m, world, at the time of the pose.
+// Example: linear velocity {1, 0, 0} m/s, angular velocity {0, 0, 2} rad/s, pose origin {0, 0, 0}, point
+//   {0, 3, 0}: {1, 0, 0} + {-6, 0, 0} = {-5, 0, 0} m/s.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
+FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeSolidVelocity(const Solid& solid, SolidPose pose, Vec3 point) {
+  // Method paper <sec-solid-shapes>:  u = v_lin + omega x (x - o(t))
+  const Vec3 arm = point - pose.origin;
+  return solid.motion.linear_velocity + math::Cross(solid.motion.angular_velocity, arm);
+}
+
+// Computes the distance from a world point to a solid at a given pose, positive outside and negative inside, with
+// the normal and the face that give it.
+//
+// Method: turns the point into the solid's own axes, p = Transpose(pose.axes) * (point - pose.origin), then
+//   flat solid  distance p.z, face kHighZ, normal the own +z axis.
+//   plate       distance |p.z| - half_thickness. Face kHighZ with the own +z axis when p.z >= 0, else kLowZ
+//               with the own -z axis.
+//   box         distance max over the own axes of |p.axis| - half_size.axis: the gap to the nearest face plane,
+//               not the straight-line distance outside an edge or a corner. On the axis that gives it, the low
+//               face when p.axis <= 0, else the high face; the normal is that face's own axis, pointing out.
+//   domain box  distance min over the closed sides of the gap from the point to that side. The normal points
+//               into the box.
+//   The normal is a column of pose.axes or its negative, so writing it back in world axes adds no rounding.
+//   Same bits on CPU and GPU for a given pose: only + - *, Abs and comparisons. A NaN in the point or the pose
+//   gives a NaN distance.
+// Ties: when two faces of a box or a domain box give the same distance, the first in the order kLowX, kHighX,
+//   kLowY, kHighY, kLowZ, kHighZ is reported, so on the middle plane of a box's axis (p.axis = 0) the low face is
+//   reported. A plate's middle plane, p.z = 0, gives kHighZ by the plate's own rule.
+// Example: a box at the origin with world axes and half sizes {1, 1, 1}. The point {3, 0, 0}: distance 2, face
+//   kHighX, normal {1, 0, 0}. The point {0.9, 0, 0.5}: -0.1, kHighX. The point {-2, -2, 0}: 1, kLowX (a tie
+//   with kLowY). The domain box from {0, 0, 0} to {1, 1, 1} with an open top and the point {0.5, 0.5, 0.95}:
+//   0.5, kLowX (four sides tie), normal {1, 0, 0}.
+// Requires: pose.axes is a rotation (the pose of a solid that passed CheckSolid, from ComputeSolidPose). The shape
+//   is a flat solid, a plate, a box or a domain box. A domain box has a closed side.
+// Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>
+FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& solid, SolidPose pose, Vec3 point) {
+  // Steps: 1 turn the point into the solid's own axes  2 distance of the shape
+  // Step 1: the axes are a rotation (CheckSolid), so the transpose undoes the turn.
+  // Method paper <sec-solid-shapes>:  p = A^T (x - o)
+  const Vec3 own_point = math::Transpose(pose.axes) * (point - pose.origin);
+  const Vec3 own_x_axis = {.x = pose.axes.xx, .y = pose.axes.yx, .z = pose.axes.zx};
+  const Vec3 own_y_axis = {.x = pose.axes.xy, .y = pose.axes.yy, .z = pose.axes.zy};
+  const Vec3 own_z_axis = {.x = pose.axes.xz, .y = pose.axes.yz, .z = pose.axes.zz};
+  const Vec3 half_size = solid.half_size;
+
+  // Step 2: one formula per shape.
+  switch (solid.shape) {
+    case SolidShape::kFlatSolid:
+      // Method paper <eq:solid-distance>:  d = p_z
+      return {.distance = own_point.z, .normal_out_of_solid = own_z_axis, .face = SolidFace::kHighZ};
+    case SolidShape::kPlate: {
+      // Method paper <eq:solid-distance>:  d = |p_z| - half_thickness
+      // The middle plane itself, p.z = 0, counts as the kHighZ side.
+      const double distance = math::Abs(own_point.z) - half_size.z;
+      if (own_point.z >= 0) {
+        return {.distance = distance, .normal_out_of_solid = own_z_axis, .face = SolidFace::kHighZ};
+      }
+      return {.distance = distance, .normal_out_of_solid = -own_z_axis, .face = SolidFace::kLowZ};
+    }
+    case SolidShape::kBox: {
+      // Method paper <eq:solid-distance>:  d = max over k of (|p_k| - half_size_k)
+      // The gap to the face plane of one own axis, on the point's side of the box.
+      const auto compute_axis_gap =
+          [](double own_coordinate, double axis_half_size, Vec3 own_axis, SolidFace low_face) -> DistanceToSolid {
+        const double gap = math::Abs(own_coordinate) - axis_half_size;
+        // At own_coordinate = 0 both faces of the axis give the same gap; the tie keeps the low face, the first.
+        if (own_coordinate <= 0) {
+          return {.distance = gap, .normal_out_of_solid = -own_axis, .face = low_face};
+        }
+        // Each high face follows its low face in SolidFace.
+        const auto high_face = static_cast<SolidFace>(static_cast<std::uint8_t>(low_face) + 1);
+        return {.distance = gap, .normal_out_of_solid = own_axis, .face = high_face};
+      };
+      // A later axis wins only with a strictly larger gap, so a tie keeps the earlier face.
+      DistanceToSolid largest = compute_axis_gap(own_point.x, half_size.x, own_x_axis, SolidFace::kLowX);
+      const DistanceToSolid along_y = compute_axis_gap(own_point.y, half_size.y, own_y_axis, SolidFace::kLowY);
+      if (along_y.distance > largest.distance) {
+        largest = along_y;
+      }
+      const DistanceToSolid along_z = compute_axis_gap(own_point.z, half_size.z, own_z_axis, SolidFace::kLowZ);
+      if (along_z.distance > largest.distance) {
+        largest = along_z;
+      }
+      return largest;
+    }
+    case SolidShape::kDomainBox: {
+      // Method paper <eq:solid-distance>:  d = min over closed sides of (half_size_k - sigma p_k)
+      // sigma is -1 for a low side and +1 for a high side. Each side's normal points into the box.
+      // A later side wins only with a strictly smaller gap, so a tie keeps the earlier side.
+      DistanceToSolid nearest;
+      bool has_nearest = false;
+      const auto keep_if_nearer = [&nearest,
+                                   &has_nearest](bool is_closed, double gap, Vec3 normal_into_box, SolidFace face) {
+        const bool is_nearer = !has_nearest || gap < nearest.distance;
+        if (is_closed && is_nearer) {
+          nearest = {.distance = gap, .normal_out_of_solid = normal_into_box, .face = face};
+          has_nearest = true;
+        }
+      };
+      const ClosedSides closed = solid.closed;
+      keep_if_nearer(closed.left, half_size.x + own_point.x, own_x_axis, SolidFace::kLowX);
+      keep_if_nearer(closed.right, half_size.x - own_point.x, -own_x_axis, SolidFace::kHighX);
+      keep_if_nearer(closed.front, half_size.y + own_point.y, own_y_axis, SolidFace::kLowY);
+      keep_if_nearer(closed.back, half_size.y - own_point.y, -own_y_axis, SolidFace::kHighY);
+      keep_if_nearer(closed.bottom, half_size.z + own_point.z, own_z_axis, SolidFace::kLowZ);
+      keep_if_nearer(closed.top, half_size.z - own_point.z, -own_z_axis, SolidFace::kHighZ);
+      // CheckSolid refuses a domain box with every side open.
+      assert(has_nearest);
+      return nearest;
+    }
+    case SolidShape::kSphere:
+    case SolidShape::kCylinder:
+      break;
+  }
+  // A sphere, a cylinder or an unknown shape has no formula here, so reaching this line is a caller bug.
+  assert(false && "ComputeDistanceToSolid has no formula for this shape");
+  return DistanceToSolid{};
 }
 
 // The Blender names of the six sides of the domain box, in SolidFace order.

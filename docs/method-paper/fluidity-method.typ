@@ -738,10 +738,12 @@ where a domain box's origin is its centre and its half size is half its extent. 
 their true distance to the surface (@eq:sphere-distance, @eq:cylinder-distance). The normal,
 `normal_out_of_solid`, belongs to the face that gives $d$, written back in world axes with $A$. A flat solid's
 normal is its own +z. A plate's is +z with face `kHighZ` when $p_z >= 0$, else −z with `kLowZ`. A box's face is
-the one on the axis that gives the maximum: the low face when $p_k < 0$, else the high one. A domain box's face is
-the closed side that gives the minimum, with its normal pointing into the box. When two faces give the same value,
-the first in the face order `kLowX`, `kHighX`, `kLowY`, `kHighY`, `kLowZ`, `kHighZ`, `kCurved`, `kLowRim`,
-`kHighRim` is taken.
+the one on the axis that gives the maximum: the low face when $p_k <= 0$, else the high one. A domain box's face is
+the closed side that gives the minimum, with its normal pointing into the box. The face order is `kLowX`, `kHighX`,
+`kLowY`, `kHighY`, `kLowZ`, `kHighZ`, `kCurved`, `kLowRim`, `kHighRim`. When two faces of a box or a domain box
+give the same value, the first in that order is taken; so a box's middle plane $p_k = 0$ gives its low face. Two
+other shapes settle their ties by their own rules instead: a plate and a cylinder's caps take `kHighZ` on their
+middle plane $p_z = 0$ (the rule above and @sec-round-solids), and a tie inside a cylinder goes to its wall.
 
 A box's $d$ is the gap to its nearest face plane, not the straight-line distance to its surface. The two agree
 everywhere except outside an edge or a corner, where $d$ is smaller. For a box with half sizes (1, 1, 1) at the

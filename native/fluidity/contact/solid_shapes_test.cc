@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <limits>
 #include <numbers>
 #include <type_traits>
@@ -481,6 +482,410 @@ TEST(CheckSolid, SpinningFastAboutOwnAxis_IsNone) {
 TEST(CheckSolid, SpinningFastAboutTiltedAxis_IsNone) {
   // A cylinder along world x spinning at 100 rad/s about x for 0.1 s: 10 rad of spin, no change of shape.
   EXPECT_EQ(CheckSolid(BuildCylinderAlongX(BuildTurning({.x = 100, .y = 0, .z = 0})), 0.1), ContactError::kNone);
+}
+
+// A box at the origin with world axes, half sizes 1 and the given motion.
+Solid BuildUnitBox(SolidMotion motion) {
+  const Box box = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .axes = kIdentity,
+      .half_size = {.x = 1, .y = 1, .z = 1},
+  };
+  return ToSolid(box, motion, 11);
+}
+
+TEST(ComputeSolidPose, QuarterTurnAboutZ_SendsSolidXToWorldY) {
+  const Solid solid = BuildUnitBox(BuildTurning({.x = 0, .y = 0, .z = std::numbers::pi / 2}));
+
+  const SolidPose pose = ComputeSolidPose(solid, 1);
+
+  ExpectVec3Near(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
+  ExpectVec3Near(ToColumnY(pose.axes), {.x = -1, .y = 0, .z = 0}, 1e-15);
+  ExpectSameVec3(pose.origin, {.x = 0, .y = 0, .z = 0});
+}
+
+TEST(ComputeSolidPose, TiltedSolidTurning_TurnsAboutWorldAxisNotOwnAxis) {
+  // Start axes: a quarter turn about world x, so the own y axis is world z and the own z axis is world -y. A
+  // quarter turn about world z then sends the own x axis to world y. Turning about the own z axis instead (axes0
+  // times the turn) would send it to world z.
+  const Box box = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .axes = BuildAxesFromColumns({.x = 1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = 1}, {.x = 0, .y = -1, .z = 0}),
+      .half_size = {.x = 1, .y = 1, .z = 1},
+  };
+  const Solid solid = ToSolid(box, BuildTurning({.x = 0, .y = 0, .z = std::numbers::pi}), 12);
+
+  const SolidPose pose = ComputeSolidPose(solid, 0.5);
+
+  ExpectVec3Near(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
+  ExpectVec3Near(ToColumnZ(pose.axes), {.x = 1, .y = 0, .z = 0}, 1e-15);
+}
+
+TEST(ComputeSolidPose, ZeroElapsed_IsStartPose) {
+  const Box box = {
+      .center = {.x = 1, .y = 2, .z = 3},
+      .axes = BuildAxesFromColumns({.x = 1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = 1}, {.x = 0, .y = -1, .z = 0}),
+      .half_size = {.x = 1, .y = 1, .z = 1},
+  };
+  const SolidMotion motion = {
+      .linear_velocity = {.x = 0.5, .y = -1, .z = 2},
+      .angular_velocity = {.x = 1, .y = 2, .z = 3},
+  };
+  const Solid solid = ToSolid(box, motion, 12);
+
+  const SolidPose pose = ComputeSolidPose(solid, 0);
+
+  ExpectSameVec3(pose.origin, solid.pose_at_step_start.origin);
+  ExpectSameMat3(pose.axes, solid.pose_at_step_start.axes);
+}
+
+TEST(ComputeSolidPose, Translating_MovesOriginOnly) {
+  const Plate plate = {
+      .center = {.x = 1, .y = 2, .z = 3},
+      .normal = math::Normalized({.x = 1, .y = 2, .z = 3}),
+      .half_thickness = 0.25,
+  };
+  const SolidMotion translating = {
+      .linear_velocity = {.x = 0.5, .y = 0, .z = 0},
+      .angular_velocity = {.x = 0, .y = 0, .z = 0},
+  };
+  const Solid solid = ToSolid(plate, translating, 5);
+
+  const SolidPose pose = ComputeSolidPose(solid, 2);
+
+  ExpectSameVec3(pose.origin, {.x = 2, .y = 2, .z = 3});
+  ExpectSameMat3(pose.axes, solid.pose_at_step_start.axes);
+}
+
+TEST(ComputeSolidVelocity, Turning_IsLinearPlusAngularCrossArm) {
+  const SolidMotion motion = {
+      .linear_velocity = {.x = 1, .y = 0, .z = 0},
+      .angular_velocity = {.x = 0, .y = 0, .z = 2},
+  };
+  const Solid solid = BuildUnitBox(motion);
+
+  // {1, 0, 0} + Cross({0, 0, 2}, {0, 3, 0}) = {1, 0, 0} + {-6, 0, 0}.
+  const Vec3 velocity = ComputeSolidVelocity(solid, solid.pose_at_step_start, {.x = 0, .y = 3, .z = 0});
+
+  ExpectSameVec3(velocity, {.x = -5, .y = 0, .z = 0});
+}
+
+TEST(ComputeSolidVelocity, MovedPose_ArmIsFromPoseOrigin) {
+  const SolidMotion motion = {
+      .linear_velocity = {.x = 1, .y = 0, .z = 0},
+      .angular_velocity = {.x = 0, .y = 0, .z = 2},
+  };
+  const Solid solid = BuildUnitBox(motion);
+  const SolidPose moved_pose = {.origin = {.x = 0, .y = 1, .z = 0}, .axes = kIdentity};
+
+  // The arm is {0, 3, 0} - {0, 1, 0} = {0, 2, 0}: {1, 0, 0} + {-4, 0, 0}.
+  const Vec3 velocity = ComputeSolidVelocity(solid, moved_pose, {.x = 0, .y = 3, .z = 0});
+
+  ExpectSameVec3(velocity, {.x = -3, .y = 0, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, FlatSolidAboveAndBelow_IsSignedHeight) {
+  const Vec3 normal = math::Normalized({.x = 0, .y = 3, .z = 4});
+  const Vec3 point_on_surface = {.x = 1, .y = 2, .z = 3};
+  const FlatSolid flat_solid = {.point_on_surface = point_on_surface, .normal_out_of_solid = normal};
+  const Solid solid = ToSolid(flat_solid, kNoMotion, 2);
+
+  const DistanceToSolid above =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, point_on_surface + 0.5 * normal);
+  const DistanceToSolid below =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, point_on_surface - 0.25 * normal);
+
+  // A tilted normal rounds the point and its turn into the own axes: a few rounding units of 3.
+  EXPECT_NEAR(above.distance, 0.5, 1e-15);
+  EXPECT_EQ(above.face, SolidFace::kHighZ);
+  ExpectSameVec3(above.normal_out_of_solid, normal);
+  EXPECT_NEAR(below.distance, -0.25, 1e-15);
+  EXPECT_EQ(below.face, SolidFace::kHighZ);
+  ExpectSameVec3(below.normal_out_of_solid, normal);
+}
+
+TEST(ComputeDistanceToSolid, MovedPose_UsesGivenPose) {
+  const FlatSolid flat_solid = {.point_on_surface = {.x = 0, .y = 0, .z = 0}};
+  const Solid solid = ToSolid(flat_solid, kNoMotion, 2);
+  const SolidPose raised_pose = {.origin = {.x = 0, .y = 0, .z = 1}, .axes = solid.pose_at_step_start.axes};
+
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, raised_pose, {.x = 0, .y = 0, .z = 1.5});
+
+  EXPECT_EQ(distance.distance, 0.5);
+}
+
+// A plate in the plane z = 0 with normal {0, 0, 1} and half thickness 0.1.
+Solid BuildFlatLyingPlate() {
+  const Plate plate = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .normal = {.x = 0, .y = 0, .z = 1},
+      .half_thickness = 0.1,
+  };
+  return ToSolid(plate, kNoMotion, 5);
+}
+
+TEST(ComputeDistanceToSolid, PlateEitherSide_IsGapToNearerFace) {
+  const Solid solid = BuildFlatLyingPlate();
+  const SolidPose pose = solid.pose_at_step_start;
+
+  const DistanceToSolid above = ComputeDistanceToSolid(solid, pose, {.x = 0, .y = 0, .z = 0.3});
+  const DistanceToSolid below = ComputeDistanceToSolid(solid, pose, {.x = 0, .y = 0, .z = -0.3});
+  const DistanceToSolid middle = ComputeDistanceToSolid(solid, pose, {.x = 0, .y = 0, .z = 0});
+
+  // 0.3 - 0.1 in double is one rounding unit below 0.2.
+  EXPECT_NEAR(above.distance, 0.2, 1e-16);
+  EXPECT_EQ(above.face, SolidFace::kHighZ);
+  ExpectSameVec3(above.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
+  EXPECT_NEAR(below.distance, 0.2, 1e-16);
+  EXPECT_EQ(below.face, SolidFace::kLowZ);
+  ExpectSameVec3(below.normal_out_of_solid, {.x = 0, .y = 0, .z = -1});
+  // On the middle plane p.z = 0 counts as the kHighZ side.
+  EXPECT_EQ(middle.distance, -0.1);
+  EXPECT_EQ(middle.face, SolidFace::kHighZ);
+  ExpectSameVec3(middle.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
+}
+
+TEST(ComputeDistanceToSolid, BoxOutsideOneFace_IsGapToThatFace) {
+  const Solid solid = BuildUnitBox(kNoMotion);
+
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 3, .y = 0, .z = 0});
+
+  EXPECT_EQ(distance.distance, 2);
+  EXPECT_EQ(distance.face, SolidFace::kHighX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, BoxInside_IsMinusDepthOfNearestFace) {
+  const Solid solid = BuildUnitBox(kNoMotion);
+
+  const DistanceToSolid distance =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0.9, .y = 0, .z = 0.5});
+
+  // 0.9 - 1 in double is a rounding unit of 0.9 away from -0.1.
+  EXPECT_NEAR(distance.distance, -0.1, 1e-16);
+  EXPECT_EQ(distance.face, SolidFace::kHighX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, BoxCornerTie_TakesFirstFaceInOrder) {
+  const Solid solid = BuildUnitBox(kNoMotion);
+
+  // The kLowX and kLowY gaps are both 1.
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = -2, .y = -2, .z = 0});
+
+  EXPECT_EQ(distance.distance, 1);
+  EXPECT_EQ(distance.face, SolidFace::kLowX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = -1, .y = 0, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, BoxOnMiddlePlaneOfNearestAxis_TakesLowFace) {
+  // Half size 0.5 on x and 1 elsewhere: at the centre the x faces are nearest, both 0.5 away. The tie takes the
+  // first face in face order, kLowX, whose normal is the own -x axis.
+  const Box box = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .axes = kIdentity,
+      .half_size = {.x = 0.5, .y = 1, .z = 1},
+  };
+  const Solid solid = ToSolid(box, kNoMotion, 11);
+
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0, .y = 0, .z = 0});
+
+  EXPECT_EQ(distance.distance, -0.5);
+  EXPECT_EQ(distance.face, SolidFace::kLowX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = -1, .y = 0, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, TurnedBox_UsesSolidAxes) {
+  // A quarter turn about z: the own x axis is world y and the own y axis is world -x. The world point {0, 3, 0}
+  // is the own point {3, 0, 0}.
+  const Box box = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .axes = BuildAxesFromColumns({.x = 0, .y = 1, .z = 0}, {.x = -1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = 1}),
+      .half_size = {.x = 1, .y = 1, .z = 1},
+  };
+  const Solid solid = ToSolid(box, kNoMotion, 11);
+
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0, .y = 3, .z = 0});
+
+  EXPECT_EQ(distance.distance, 2);
+  EXPECT_EQ(distance.face, SolidFace::kHighX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 1, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, DomainBoxInside_IsGapToNearestClosedSide) {
+  const Solid solid = BuildValidDomainBox();
+
+  const DistanceToSolid distance =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0.5, .y = 0.5, .z = 0.1});
+
+  // 0.5 + (0.1 - 0.5) rounds by a unit of 0.4.
+  EXPECT_NEAR(distance.distance, 0.1, 1e-16);
+  EXPECT_EQ(distance.face, SolidFace::kLowZ);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
+}
+
+TEST(ComputeDistanceToSolid, DomainBoxOpenTop_IgnoresTop) {
+  const Solid solid = BuildValidDomainBox();
+
+  // Left, right, front and back tie at 0.5; the open top, 0.05 away, does not count.
+  const DistanceToSolid distance =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0.5, .y = 0.5, .z = 0.95});
+
+  EXPECT_EQ(distance.distance, 0.5);
+  EXPECT_EQ(distance.face, SolidFace::kLowX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+}
+
+TEST(ComputeDistanceToSolid, DomainBoxClosedTop_IsGapToTop) {
+  Solid solid = BuildValidDomainBox();
+  solid.closed.top = true;
+
+  const DistanceToSolid distance =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0.5, .y = 0.5, .z = 0.95});
+
+  // 0.5 - (0.95 - 0.5): 0.95 itself is rounded, a unit of 0.95 away.
+  EXPECT_NEAR(distance.distance, 0.05, 1e-16);
+  EXPECT_EQ(distance.face, SolidFace::kHighZ);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 0, .z = -1});
+}
+
+TEST(ComputeDistanceToSolid, DomainBoxTie_TakesLeftBeforeFront) {
+  const Solid solid = BuildValidDomainBox();
+
+  // Left and front are both 0.2 away; bottom is 0.5 away.
+  const DistanceToSolid distance =
+      ComputeDistanceToSolid(solid, solid.pose_at_step_start, {.x = 0.2, .y = 0.2, .z = 0.5});
+
+  EXPECT_NEAR(distance.distance, 0.2, 1e-16);
+  EXPECT_EQ(distance.face, SolidFace::kLowX);
+  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+}
+
+// One point and the face, distance and normal ComputeDistanceToSolid should give for it.
+struct FaceCase {
+  Vec3 point{};  // m, world.
+  double distance = 0;  // m.
+  SolidFace face = SolidFace::kHighZ;
+  Vec3 normal_out_of_solid{};  // No unit, world.
+};
+
+void ExpectFaceCase(const Solid& solid, const FaceCase& face_case) {
+  const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, face_case.point);
+  EXPECT_EQ(distance.distance, face_case.distance);
+  EXPECT_EQ(distance.face, face_case.face);
+  ExpectSameVec3(distance.normal_out_of_solid, face_case.normal_out_of_solid);
+}
+
+TEST(ComputeDistanceToSolid, BoxEachFace_ReportsItsFaceAndNormal) {
+  // Half sizes {1, 2, 3}: each point is 3 beyond the middle of one face, so every gap is exactly 3 and a mixed-up
+  // axis, half size, sign or normal changes the answer.
+  const Box box = {
+      .center = {.x = 0, .y = 0, .z = 0},
+      .axes = kIdentity,
+      .half_size = {.x = 1, .y = 2, .z = 3},
+  };
+  const Solid solid = ToSolid(box, kNoMotion, 11);
+  const std::array<FaceCase, 6> face_cases = {
+      {
+          {
+              .point = {.x = -4, .y = 0, .z = 0},
+              .distance = 3,
+              .face = SolidFace::kLowX,
+              .normal_out_of_solid = {.x = -1, .y = 0, .z = 0},
+          },
+          {
+              .point = {.x = 4, .y = 0, .z = 0},
+              .distance = 3,
+              .face = SolidFace::kHighX,
+              .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+          },
+          {
+              .point = {.x = 0, .y = -5, .z = 0},
+              .distance = 3,
+              .face = SolidFace::kLowY,
+              .normal_out_of_solid = {.x = 0, .y = -1, .z = 0},
+          },
+          {
+              .point = {.x = 0, .y = 5, .z = 0},
+              .distance = 3,
+              .face = SolidFace::kHighY,
+              .normal_out_of_solid = {.x = 0, .y = 1, .z = 0},
+          },
+          {
+              .point = {.x = 0, .y = 0, .z = -6},
+              .distance = 3,
+              .face = SolidFace::kLowZ,
+              .normal_out_of_solid = {.x = 0, .y = 0, .z = -1},
+          },
+          {
+              .point = {.x = 0, .y = 0, .z = 6},
+              .distance = 3,
+              .face = SolidFace::kHighZ,
+              .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+          },
+      },
+  };
+
+  for (const FaceCase& face_case : face_cases) {
+    SCOPED_TRACE(static_cast<int>(face_case.face));
+    ExpectFaceCase(solid, face_case);
+  }
+}
+
+TEST(ComputeDistanceToSolid, DomainBoxEachClosedSide_ReportsItsSide) {
+  // From {0, 0, 0} to {2, 4, 6}, every side closed: centre {1, 2, 3}, half sizes {1, 2, 3}. Each point is 0.25
+  // from one side and at least 1.75 from the others; 0.25 and the coordinates are exact in binary.
+  const DomainBox domain_box = {
+      .low_corner = {.x = 0, .y = 0, .z = 0},
+      .high_corner = {.x = 2, .y = 4, .z = 6},
+      .closed = {.left = true, .right = true, .front = true, .back = true, .bottom = true, .top = true},
+  };
+  const Solid solid = ToSolid(domain_box, 1);
+  const std::array<FaceCase, 6> face_cases = {
+      {
+          {
+              .point = {.x = 0.25, .y = 2, .z = 3},
+              .distance = 0.25,
+              .face = SolidFace::kLowX,
+              .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
+          },
+          {
+              .point = {.x = 1.75, .y = 2, .z = 3},
+              .distance = 0.25,
+              .face = SolidFace::kHighX,
+              .normal_out_of_solid = {.x = -1, .y = 0, .z = 0},
+          },
+          {
+              .point = {.x = 1, .y = 0.25, .z = 3},
+              .distance = 0.25,
+              .face = SolidFace::kLowY,
+              .normal_out_of_solid = {.x = 0, .y = 1, .z = 0},
+          },
+          {
+              .point = {.x = 1, .y = 3.75, .z = 3},
+              .distance = 0.25,
+              .face = SolidFace::kHighY,
+              .normal_out_of_solid = {.x = 0, .y = -1, .z = 0},
+          },
+          {
+              .point = {.x = 1, .y = 2, .z = 0.25},
+              .distance = 0.25,
+              .face = SolidFace::kLowZ,
+              .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
+          },
+          {
+              .point = {.x = 1, .y = 2, .z = 5.75},
+              .distance = 0.25,
+              .face = SolidFace::kHighZ,
+              .normal_out_of_solid = {.x = 0, .y = 0, .z = -1},
+          },
+      },
+  };
+
+  for (const FaceCase& face_case : face_cases) {
+    SCOPED_TRACE(static_cast<int>(face_case.face));
+    ExpectFaceCase(solid, face_case);
+  }
 }
 
 }  // namespace

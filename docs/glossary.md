@@ -65,7 +65,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `wave_paddle` (a variable, not a type) | The driven flat solid that makes waves. It is its own solid, not part of the domain box. | piston |
 | `solid_velocity`, `SolidVelocitySample` | m/s. Velocity of a solid's surface. | wall_velocity, LiquidPrescribedWallSample3D |
 | `same_side` | Both are on the same side of a plate, so they may exchange data. | compatible (for two things on the same side of a plate) |
-| `elapsed` | Clock time: `work_elapsed_seconds`. | wall (for time) |
+| `elapsed` | Clock time: `work_elapsed_seconds`. In contact and solids, seconds since the start of the step: `ComputeSolidPose(solid, elapsed)`, `start_elapsed`. | wall (for time) |
 | `close call`, `ContactCloseCall` | A step that contact cannot answer safely. The step is shortened and tried again. | near miss, edge case (for this) |
 
 ## Particles and the particle-grid exchange
