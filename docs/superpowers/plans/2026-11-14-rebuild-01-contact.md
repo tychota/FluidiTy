@@ -609,6 +609,12 @@ built in Task 12's third fix round; the paper states it):
      decide, so the velocities are the same bits for every order of the solids array (measured: 0 differences over
      every permutation of 119,999 corners, and of 40,000 whole moves; unsorted, 554 of 39,999 differ, by at most
      1.7e-13 of the speed).
+     **Amended 2026-11-17 (P21 item 16, Task 12b review I1):** a solid that does not turn and that the particle passes
+     at a bounding surface's level (level with a box's face plane other than the one that gives its distance, or
+     beside a cylinder's rim and level with its wall or its cap's plane: a gap in `[-tol / 8, tol / 16]`, the gap
+     alone) contributes no active surface, unless it is the surface the sweep hit. Its distance there is a face plane
+     continued past the edge, or a rim whose normal leans across a seam, and the sweep is free of it while the
+     particle rests at that level. The test reads the position only, so the order-free and copy-free properties stand.
   2. **One active surface.** Each velocity gets `ComputeContactResponse` with that surface, and nothing else: the
      single-surface response of Task 7, the same bits as before this decision (measured: 120,000 of 120,000).
   3. **Several: the frictionless change.** For each velocity `v`, each direction's target is the largest
@@ -812,6 +818,8 @@ built in Task 12b; the paper states it):
      rounding, or by up to `tol / (64 * path length)` (1.5e-10 rad over 0.1 m at `tol = 2^-30` m). The surface that
      gives the distance keeps its own rule so that nothing changes for a flat solid, a plate, a domain side, a sphere,
      or a start on a box's or a cylinder's face (their tests keep their bits).
+     **Amended 2026-11-17 (item 16 b):** this test now comes before the touching rule on the distance, whatever the
+     sign of the distance's gap.
   2. **Why it is safe.** The solid lies behind `b`, so `d >= gap_b + tol` at every point: a box's distance is its
      largest face gap, and a cylinder's is at least `Max(wall_distance, cap_distance)`. Along the path `gap_b(t) >=
      gap_b(0) + gap_rate * t`: a face plane's gap is linear in time; `rho` is the length of a point moving on a
@@ -833,6 +841,7 @@ built in Task 12b; the paper states it):
      one, and the hit time keeps the bits it has today. (e) Beside a rim, the rim search from the entry (item 4). The
      reported distance, normal and face are still `ComputeDistanceToSolid` at the hit position and the pose of the
      hit's time (`ToFirstHit`).
+     **Amended 2026-11-17 (item 16 b):** (b) comes before (a).
   4. **The rim search.** Samples at `elapsed`, the first at the entry, each `ComputeDistanceToCylinder` at `p0 + u *
      elapsed` in own axes: `gap = d - tol`, `gap_rate = Dot(n, u)` with `n` the normal of that read. In this order:
      `gap <= 0` is a hit at `elapsed`; `gap_rate >= 0` is free (the gap is convex along the path and never closes
@@ -895,16 +904,16 @@ built in Task 12b; the paper states it):
   8. **Boxes.** A box's distance is its largest face gap, so the box grown by tol has sharp edges by definition, its
      first hit and its distance agree, and an edge hit reports the face whose plane the path crosses last, at `d =
      tol`: there is no rim move and nothing to reconcile. What it has, measured: (a) *The seam.* At a flush seam (two
-     boxes stacked into one side, tiles of one floor, a box set flush in a floor) the particle's gap to the next box's
+     boxes stacked into one side, boxes side by side in one floor, a box set flush in a floor) the particle's gap to the next box's
      coplanar face is rounding of either sign. When it is 0 or less the path counts as behind that plane, the entry is
      the crossing of the next box's side plane, and the hit has the side's normal: the particle stops dead (`{0, 0,
-     -1}` to `{0, 0, 0}` down two stacked boxes; 2,281 of 4,000 generated tile seams, 57 %). Item 1 on every face
-     plane other than the one that gives the distance removes it: 0 of 4,000, each velocity kept. (b) *Tiles
+     -1}` to `{0, 0, 0}` down two stacked boxes; 2,281 of 4,000 generated seams of boxes side by side, 57 %). Item 1 on every face
+     plane other than the one that gives the distance removes it: 0 of 4,000, each velocity kept. (b) *Boxes side by side,
      misaligned* by 1e-15 to 1e-9 rad about the seam: 1,610 of 4,000 lose speed as built, 163 with item 1, those that
      climb more than `tol / 64` during the sweep: a real, if tiny, ramp met on its side face. (c) *The edge itself.* A
      path that clips a grown edge is hit with a face normal although it never comes within tol of the box in a
      straight line: 2,719 of 71,286 paths aimed within 2.5 tol of an edge (3.8 %), which lose 0.53 of their speed on
-     average; and a step up of `tol / 4` between two tiles stops a particle. (b) and (c) are what a round edge would
+     average; and a step up of `tol / 4` between two such boxes stops a particle. (b) and (c) are what a round edge would
      cure. For that the box's distance must become the straight-line distance beyond its edges and corners, in
      `ComputeDistanceToSolid`, which other modules read; the rim search then applies as it is (that distance is
      convex). It is not decided here: an owner question.
@@ -929,6 +938,7 @@ built in Task 12b; the paper states it):
      particle and does not hit it: the hit as built was the sharp corner's. *End check.* Nothing new ends below `tol /
      2`: a rim hit is at tol or more up to rounding, a resting sweep at `55 / 64 tol` or more, and the settle is
      unchanged.
+     **Amended 2026-11-17 (item 16 a):** a solid passed at a bounding surface's level is not an active surface.
   10. **Turning solids.** A turning cylinder (above P17's bound) keeps the stepping search with P18's advance on the
      true distance, and its hit, on a rim or not, is used where the search stopped, between tol and 1.25 tol:
      unchanged, only there is no rim move left for it to be exempt from. The two searches now differ in three numbers:
@@ -996,13 +1006,73 @@ built in Task 12b; the paper states it):
      within tol. (b) The test `GeneratedRimEdgeSweeps`' own 50,000 draws for each of its two cylinders along z: 50,000
      hits, 1 to 3 advances (7,189, 32,918, 9,893), the true gap at the hit at most `0.00098 tol`; as built all 50,000
      are at `Sqrt(2) tol`. (c) Whole moves, 4,000 per set, fixed and moving, world axes and tilted: 0 failures as
-     built and by this decision in every set. Speed lost at a seam, as built against this decision: box tiles 2,281 to
-     0; tiles misaligned 1,610 to 163; stacked drums 1,731 to 0; a puck in a floor 1,173 to 0. A lone cylinder with
+     built and by this decision in every set. Speed lost at a seam, as built against this decision: boxes side by side 2,281 to
+     0; the same misaligned 1,610 to 163; stacked drums 1,731 to 0; a puck in a floor 1,173 to 0. A lone cylinder with
      half the paths aimed within 2 tol of a rim: 3,224 hits to 3,156, rim hits 258 to 190, no hit farther than `tol +
      tol / 512`, no second hit. A rim touching, over or sunk into a floor, at rest and sweeping: same failures (none),
      31 rim hits to 17. Six steps in a row across each seam, 500 runs per set: 0 failures, 0 runs lose speed (as built
      282, 217 and 149 of 500). (d) Not modelled: spin, tilt within P17's bound, turning solids, friction between
      differently moving solids at a rim.
+  16. **Amended 2026-11-17 (Task 12b review I1): a solid the particle is level with is read by the response as the
+      sweep reads it.** Words: a point is *level with* a bounding surface when its gap to it is in the window of item
+      1, `-tol / 8 <= gap <= tol / 16`, the gap alone, whatever the velocity; a solid that does not turn *is passed at
+      a bounding surface's level* when the point is level with one of its bounding surfaces other than the one that
+      gives the distance (a box: any other face plane; a cylinder: its distance reports a rim and the point is level
+      with the wall or with the cap's plane). The gap in this decision as built: items 1 to 3 free a sweep, but the
+      start's response and the joint response (P20 item 1) still listed such a solid by its distance, and the touched
+      rule read that distance before item 1. Beside a box the distance is a side face's plane continued above the top,
+      1.03 tol away while the edge is 1.43 tol away; beside a cylinder it is the rim, whose normal leans across the
+      seam. So a step that starts within `tol + tol / 16` of the next solid loses its speed: a dead stop for boxes, a
+      deflection for drums and pucks (stacked drums from 0.2 tol above the seam: `{0.19, 0, -0.96}`), in a share of
+      crossings equal to the window over the step length (measured in the model, as in the review: 205 of 400 at steps
+      of 0.7 tol for drums and pucks, 35 of 400 for boxes). Item 15's six steps in a row could not see it: each step
+      was 0.05 to 0.1 m long, about 10^8 tol, and each run started 0.01 to 0.15 m before the seam, so a step began
+      inside a window of 0.06 to 0.36 tol about once in 10^9 crossings. Two changes. (a) **Active surfaces (amends P20
+      item 1 and item 9 above).** A solid that is passed at a bounding surface's level contributes no active surface,
+      at the start and at a hit on another solid; the surface a sweep hit is active as before, wherever the particle
+      is. Not the bounding surface in its place, as the review suggested: beside a lone box, level with its top, that
+      plane has nothing under it, and a particle falling there would be held up at every step for as long as it stays
+      in the sixteenth of a tolerance beyond the grown edge (with the solid left out it falls, `{0, 0, -1}` kept:
+      measured). The test reads gaps only, so the active surfaces still depend on the position alone, sorted by value
+      and free of the array's order, and nothing new is charged (P5 unchanged: a solid left out is charged nothing;
+      coincident surfaces of other solids are listed and dropped as before). (b) **The sweep (amends items 1 and 3).**
+      Item 1's test of the other bounding surfaces comes before the touching rule on the distance, not after that rule
+      has found the start outside, and whatever the sign of the distance's gap: a start that rests on such a surface
+      is free of the solid; otherwise P2 or P16 rules as before, the touched rule included. Why before: after the
+      start's response on a floor, the touched rule read a box's side plane 1.03 tol away as rested on and approached,
+      a hit at 0 and a dead stop; with (a) alone the pressed rows of the multi-step runs stay at 205 and 35 of 400.
+      Why whatever the sign: a particle riding `tol / 32` under the rest gap met the same continued plane as the
+      distance's face inside its own window (a dead stop as built). Safety is item 2's, which never used the
+      distance's gap: a sweep that rests stays `55 / 64 tol` or more from the solid. Step 2 of `FindFirstHitOfSweep`'s
+      proof becomes: a solid within the touched window at a sweep's start was an active surface of the latest
+      response, or is passed at a bounding surface's level; the second is free when the sweep rests on that surface,
+      and otherwise may be hit at 0 on its distance's face, one more hit, never a missed one (the response then lists
+      it as the hit surface). The bit-for-bit step is unchanged for every surface that is listed; a bounding surface
+      is never listed, and its sink test has the room of `tol / 64`, which no response is asked to keep. The start
+      move and the settle (P19) read the distance alone and move only from `d < tol`: a particle 1.03 tol from a
+      continued plane is not moved, as built; ruling 37 is not touched (the start rules reject on `d < tol` alone).
+      What changes besides the seams: a start on a box's grown edge pushing along the other face's level is free
+      (`BoxRestingOnEdge`: it was a hit at 0 on `kHighX`); a particle pressed slowly onto a rim near the wall's or the
+      cap's level gets no response while it sinks less than tol in the step (carried around the rim in steps of `tol /
+      8`: 62 hits in 64 steps, least distance before the settle 0.946 tol; in steps of `tol / 2`, unchanged); a
+      particle falling beside a rim, level with the cap's plane, is hit at the rim's true distance and no longer
+      answered at the start 1.048 tol away (`{0.2969, 0, -0.0976}`, the exact value, where the start's response gave
+      `{0.2847, 0, -0.0890}`). Measured in the model, the decision as built at `9792eae3` against this amendment: the
+      review's six starts and their pressed and rough variants: velocity kept bit for bit, or `{1 - 0.3 * 0.16, 0, 0}`
+      with friction 0.3; five kinds of seam, steps of 0.3, 0.7 and 3 tol, pushes 0 and 0.16 m/s, friction 0 and 0.3,
+      400 offsets in each of 45 rows: runs that lose speed as built 400, 205 to 224 and 48 of 400 for drums and pucks
+      and 83, 35 and 8 for boxes, amended 0 of 400 in every row, with exactly one hit per pressed step and none
+      otherwise; 1,000 generated multi-step runs per set with starts 1.5 to 6 tol before the seam, steps from `tol /
+      4` to `2^10 tol`, fixed or moving together, tilted axes: 36, 165 and 69 runs lose speed as built (boxes, drums,
+      pucks), 0 amended, 0 failures; the single-step sets of item 15 (c) and 100,000 first-hit paths of item 15 (a)
+      with the new order: the same counts, 0 missed hits, smallest true gap of a resting path `-0.125 tol`. **Not
+      fixed by this amendment.** A rim that is active while the particle is level with neither the wall nor the cap
+      (both distances below `7 / 8 tol`, the rim within `tol + tol / 16`) is still answered up to `tol / 16` early,
+      with a normal that turns over one tolerance: of 600 tangent passes at 1.0005 to 1.0625 tol in steps of 0.3 to 3
+      tol, 188 lose speed, at most 8.3 %. Narrowing a rim's window to the rim search's `tol / 1024` leaves 3 of 600
+      and at most 0.05 %, but it meets the touched rule and P17's slack, which the model cannot measure: an owner
+      question. A box beside a box that rises or sinks relative to it is still met on its side face (a real step). A
+      turning solid has no bounding surface (item 10). Items 8 b, 8 c and 14 stand.
 
 ## Before you start
 
