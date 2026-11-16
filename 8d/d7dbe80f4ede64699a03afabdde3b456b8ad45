@@ -1,0 +1,46 @@
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_08f0d0bb4a7780 2884-2918,2920,2922-2948,3009,3011-3012
+  s_4f0877e2acdcf0::t_7e20331ea63583 2919,2921,2949-3008
+  s_4f0877e2acdcf0::t_2d2c1f8e27ed9a 3014-3015,3052,3083-3084,3138
+  s_4f0877e2acdcf0::t_b3372e6bcdb281 2848-2866
+  s_4f0877e2acdcf0::t_3cb38dfc3e3e35 2867,2869-2874,2878-2883,3010,3013,3039,3044-3045,3047,3058-3061,3063-3065,3067-3072,3076-3082
+  s_4f0877e2acdcf0::t_701082b835014f 6720
+  s_4f0877e2acdcf0::t_48bd291a5bb81e 2868,2875-2877,3016-3038,3040-3043,3046,3048-3051,3053-3057,3062,3066,3073-3075,3085,3129-3137,3139-3145
+  s_b8d725597929d2::t_758c19988017f4 6704,6718-6719,6721-6725
+  s_4f0877e2acdcf0::t_c819b49ee8e18c 6788-6790
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_07c3881574df50 3533,3592-3593,3601-3602
+  s_4f0877e2acdcf0::t_20a108269d783e 33-48,113-115,155-156,615,619-624,628,631,639,700-746,749-762,781-791,794,843,1782-1790,3480-3521,3528-3530,3572-3574
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_b9641ec91abc1c 935
+  s_4f0877e2acdcf0::t_0d884bfe0b8c30 985
+  s_4f0877e2acdcf0::t_8e9c6bf2878eea 936-937
+docs/glossary.md
+  s_4f0877e2acdcf0::t_39483ab3bdfbb7 61
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_7c8840d0316200 731-735,742-744,750-768
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8dd7dbe80f4ede64699a03afabdde3b456b8ad45",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    },
+    "s_b8d725597929d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac48b65af62eee229",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
