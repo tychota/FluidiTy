@@ -1,0 +1,47 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_e3bc0882a1fbc4 85-86,104
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_48bd291a5bb81e 2687-2709,2711,6526
+  s_4f0877e2acdcf0::t_3cb38dfc3e3e35 2681,2684,2710
+  s_4f0877e2acdcf0::t_08f0d0bb4a7780 2185-2222,2334,2408-2465,2555-2589,2591,2593-2619,2680,2682-2683,6518,6534
+  s_4f0877e2acdcf0::t_7e20331ea63583 2337-2338,2343-2349,2590,2592,2620-2679
+  s_4f0877e2acdcf0::t_b3372e6bcdb281 2466-2554
+  s_4f0877e2acdcf0::t_2d2c1f8e27ed9a 2685-2686
+  s_4f0877e2acdcf0::t_6704e7df256815 6448-6517,6519-6525,6527-6533,6535-6539
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_c4086b2c1398ac 1521
+  s_4f0877e2acdcf0::t_bd3bff47301590 1514,1516,1519-1520,1691
+  s_4f0877e2acdcf0::t_0d884bfe0b8c30 972-991,1295-1299,1517-1518,1689-1690
+  s_4f0877e2acdcf0::t_1548b3bea813b3 1515,1525-1528
+  s_4f0877e2acdcf0::t_a1faca84c1a4c9 1522-1524
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_52f3d9473819f2 189-193,197-201,205-206
+  s_4f0877e2acdcf0::t_589ba0ff9f0adf 204
+  s_4f0877e2acdcf0::t_6da50dd8fee0e3 207-208
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_74af310d3941c4 1688-1690
+  s_4f0877e2acdcf0::t_8d335339f72649 1691,1694-1698,1701-1706
+  s_4f0877e2acdcf0::t_f58ecf2dc71b55 4601-4602
+  s_4f0877e2acdcf0::t_4268ecff3e703f 4603-4605,4613
+  s_4f0877e2acdcf0::t_07c3881574df50 114-116,126-129,152-153,447-465,470-471,489,1082-1092,1120-1121,1130-1140,1159-1166,1676-1684,1729-1739,3429-3478,3480-3481,3490-3497,3501-3502,3516-3521
+  s_4f0877e2acdcf0::t_caf84cc9b14273 4606-4612
+  s_4f0877e2acdcf0::t_5183287655529a 1685-1687,1707-1709
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_345bbbf87042d9 1833-1858,3206-3207,3211,3368-3369,3375-3391,3393-3411,3443-3447,3470,3473,3475-3486,3508-3510
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fdbf9a837505840354aaa38f68526170def22d70",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
