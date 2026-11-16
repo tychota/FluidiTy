@@ -1,0 +1,42 @@
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_4263298fc0b429 542-543,1219-1220,1240-1241,1938-2095,2193-2195
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_1e4b140902a539 196-198,1585-1588,1817,1819,2390-2391,2402-2406,3078-3079,3081,3107,3115-3121,3127,3139,3141-3142,3146-3174,3176-3177,3188,3205,3209,3215-3216
+  s_4f0877e2acdcf0::t_72d310f225bef6 3602,3607-3609,3612-3619,3623,3630,3634-3636,3638-3640,3646-3647,3655-3657
+  s_4f0877e2acdcf0::t_d24a7fbceb50c6 2394-2400,3080,3082-3106,3108-3114,3187,3189-3190,3204,3207-3208,3210-3214,3218,3244,3252-3319,3325,3332-3338,3342,3346,3352-3354,3359,3362-3363,3366-3370,3372,3374
+  s_4f0877e2acdcf0::t_8afa100e6bf145 3648-3654,3665,4032
+  s_4f0877e2acdcf0::t_71a658e511912a 3764-3765,3782,3833
+  s_4f0877e2acdcf0::t_5afb627ed22236 2392-2393,2401,2407-2414
+  s_4f0877e2acdcf0::t_6f7e67c32cf509 2415-2420,2427-2428,2444-2445,2449-2450,2464-2468
+  s_4f0877e2acdcf0::t_dc9f115d10c787 4033-4037,4066-4067
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_0ab77a1bd492fa 35-36,103-105,107-112,141-142,206,208-211
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_a7b8a03c1583ac 1448-1459,1461,1464-1466,1468-1470,1489-1491,1495-1498,1518,1562-1563,1571-1574
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_773b873dce131d 1146-1150
+  s_4f0877e2acdcf0::t_48bd291a5bb81e 161-168,665-670,1930-1932,1967-2086
+  s_4f0877e2acdcf0::t_3cb38dfc3e3e35 1799-1801,1805
+  s_4f0877e2acdcf0::t_a3b8d9fc4abeb5 1153,1158-1162,1165-1167,2087-2174,2325-2343
+  s_4f0877e2acdcf0::t_2c876981e1bc15 3446-3449
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_738448d9846ddc 186-190,202-222,267-268,279-283
+docs/glossary.md
+  s_4f0877e2acdcf0::t_8c1890acf11c13 102,104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5df2e4f4890ff2f5de9b434f8a1a9c54845dcce5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
