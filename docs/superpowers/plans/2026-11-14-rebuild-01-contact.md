@@ -636,7 +636,10 @@ built in Task 12's third fix round; the paper states it):
      - *several, moving differently:* the mean, over every order of the used directions (2 or 6), of the surfaces'
        own frictions applied one after the other from `v0`: each takes `min(L_k, sideways speed)` off the sideways
        velocity relative to its own solid at that moment. Every order is a sequence of single-surface frictions, so
-       none reverses a sliding, and the mean of all orders does not depend on any order. When the solid velocities
+       within one order no step reverses the sliding relative to its own solid, and the mean of all orders does
+       not depend on any order. The mean itself can end past sticking to one of the solids (as built, measured in
+       the task's review: 1,331 of 24,401 such responses, 5.5 %, by up to 0.22 of the speeds); this is a known
+       limit of the approximation, pinned by a test, and part of the owner's question on an exact rule. When the solid velocities
        differ by rounding only, it agrees with the case above to 1.7e-14 of the speed (20,000 wedges), so nothing
        jumps between the two cases. It is an approximation: against the exact answer of the same model, median
        0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed, over 2,418 draws with friction up to 2 and
@@ -713,7 +716,7 @@ built in Task 12's third fix round; the paper states it):
      solid fixed the allowed velocities form a cone through 0, the smallest change is the projection on it, which
      does not lengthen a velocity, and friction shortens the result toward 0 (measured: 0 gains above 1e-12 in
      51,069 corners and in 253,237 moves of re-review 2's draws). (c) *Friction opposes sliding and never reverses
-     it:* with one solid velocity the result is `u + c (v0 - u)`, `0 <= c <= 1`; in re-review 2's 98,316 two-face
+     it when the solids share one velocity (for solids moving differently see item 6's known limit):* with one solid velocity the result is `u + c (v0 - u)`, `0 <= c <= 1`; in re-review 2's 98,316 two-face
      draws the part along the edge is never reversed or grown. (d) *One surface:* the same function. (e) *Order
      and copies:* item 1's sort and drop, and formulas that are sums or largest values over the surfaces.
      (f) *Continuity:* the projection, the stick-or-slip formula and the mean over orders are continuous in the
