@@ -500,7 +500,7 @@ inline std::vector<MoveParticleCase> BuildSeveralHitCases() {
       }),
   });
   // A box turning at 1 rad/s about z and a particle at rest on the path of its face kHighX: the face reaches it at
-  // 0.8857 s; with no touching rule on a turning solid the particle is hit again at 0 by each later sweep.
+  // 0.8857 s, and the rest of the step is carried in the box's axes.
   const Solid turning_box_beside_particle = ToSolid(
       Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
       {.linear_velocity = {}, .angular_velocity = kUnitZ},
@@ -803,7 +803,8 @@ inline std::vector<MoveParticleCase> BuildFloorStartCases() {
       }),
   });
   // The turning box of TurningBoxHoverOnSpinAxis and a particle at rest tol / 2 above its top face, on the turn axis:
-  // moved silently to the rest gap, then hit at 0 by every sweep, since a turning solid has no touching rule.
+  // moved silently to the rest gap, then hit at 0, since a turning solid has no touching rule, and carried in the box's
+  // axes, where it stays put.
   const Solid turning_box = ToSolid(
       Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
       {.linear_velocity = {}, .angular_velocity = kUnitZ},
@@ -2846,6 +2847,114 @@ inline std::vector<MoveParticleCase> BuildBadInputCases() {
   return cases;
 }
 
+// The scenes of a slide on a turning solid: the rest of the step carried in its axes (plan decision P7), and the test
+// of the other solids that comes before it.
+inline std::vector<MoveParticleCase> BuildTurningSlideCases() {
+  std::vector<MoveParticleCase> cases;
+  // A box of half size 0.5 m at the origin turning at 1 rad/s about z: the turning box of the scenes below.
+  const Solid turning_box = ToSolid(
+      Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
+      {.linear_velocity = {}, .angular_velocity = kUnitZ},
+      1
+  );
+  // The particle of TurningBoxHitsRestingParticle, with a fixed floor 0.05 m below it: the box reaches the particle at
+  // 0.8857 s, and the floor is within the carry's closing bound for the 0.1143 s left.
+  cases.push_back({
+      .name = "TurningBoxNearFloor",
+      .solids = {turning_box, BuildFlatSolid({.x = 0, .y = 0, .z = -0.05}, kUnitZ, kNoMotion, 2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.6 * std::cos(0.3), .y = 0.6 * std::sin(0.3), .z = 0},
+          .velocity = {},
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // A particle resting on the face kHighX, at the rest gap, moving at 1 m/s along z: the face moves at
+  // {0, 0.5 + tol, 0} m/s there, so in the box's axes the particle slides at {0, -(0.5 + tol), 1} m/s.
+  cases.push_back({
+      .name = "TurningBoxSlide",
+      .solids = {turning_box},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance, .y = 0, .z = 0},
+          .velocity = kUnitZ,
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  // The turning box on a fixed floor at z = -0.5, touching its bottom, and a particle at rest on the face kHighX,
+  // 0.05 m above the floor: the carry's closing bound against the floor grows with the step.
+  cases.push_back({
+      .name = "RestingOnTurningBoxNearFloor",
+      .solids = {turning_box, BuildFlatSolid({.x = 0, .y = 0, .z = -0.5}, kUnitZ, kNoMotion, 2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance, .y = 0, .z = -0.45},
+          .velocity = {},
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  // A cylinder of radius 0.5 m and half height 1 m along x, turning at 1 rad/s about z, across its axis, and a particle
+  // at rest 0.6 m from the origin at 1.2 rad from the axis: the wall reaches it when 0.6 sin(1.2 - t) = 0.5 + tol.
+  cases.push_back({
+      .name = "CylinderTurningAcrossAxisHitsRestingParticle",
+      .solids =
+          {
+              ToSolid(
+                  Cylinder{.center = {}, .axis = kUnitX, .radius = 0.5, .half_height = 1},
+                  {.linear_velocity = {}, .angular_velocity = kUnitZ},
+                  1
+              ),
+          },
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.6 * std::cos(1.2), .y = 0.6 * std::sin(1.2), .z = 0},
+          .velocity = {},
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // A particle 0.25 tol inside the face kHighX of the turning box, moving into it at 1 m/s, with a start overlap
+  // tolerance of tol: moved to the rest gap, it starts inside and approaches, so the start has a response.
+  SolidContactInputs inside_start_inputs = BuildCaseInputs({
+      .start_position = {.x = 0.5 - kTolerance / 4, .y = 0, .z = 0},
+      .velocity = -kUnitX,
+      .step_duration = 0.1,
+      .friction = 0,
+  });
+  inside_start_inputs.start_overlap_tolerance = kTolerance;
+  cases.push_back({
+      .name = "TurningBoxStartInsideApproaching",
+      .solids = {turning_box},
+      .inputs = inside_start_inputs,
+  });
+  // Two boxes of half size 0.5 m stacked along z, the upper from z = 1 to 2 and the lower from 0 to 1, both turning at
+  // 1 rad/s about z, so their faces stay flush, and a particle sliding down their kHighX faces at the rest gap.
+  const Vec3 unit_half_size = {.x = 0.5, .y = 0.5, .z = 0.5};
+  const SolidMotion turn_about_z = {.linear_velocity = {}, .angular_velocity = kUnitZ};
+  cases.push_back({
+      .name = "TurningStackedBoxes",
+      .solids =
+          {
+              ToSolid(
+                  Box{.center = {.x = 0, .y = 0, .z = 1.5}, .axes = kIdentity, .half_size = unit_half_size},
+                  turn_about_z,
+                  1
+              ),
+              ToSolid(
+                  Box{.center = {.x = 0, .y = 0, .z = 0.5}, .axes = kIdentity, .half_size = unit_half_size},
+                  turn_about_z,
+                  2
+              ),
+          },
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance, .y = 0, .z = 1.8},
+          .velocity = -kUnitZ,
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  return cases;
+}
+
 }  // namespace move_particle_cases
 
 // Builds every scene MoveParticle is tested on. Each MoveParticle test finds its scene here by name, so the tests of
@@ -2908,6 +3017,9 @@ inline std::vector<MoveParticleCase> BuildMoveParticleCases() {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildRimAndSeamCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildTurningSlideCases()) {
     cases.push_back(std::move(test_case));
   }
   return cases;

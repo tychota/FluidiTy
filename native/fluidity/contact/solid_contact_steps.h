@@ -1643,6 +1643,29 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
   return ContactError::kBadInput;
 }
 
+// Computes whether two vectors are the same bit for bit, axis by axis, up to the sign of zero.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsSameVector(Vec3 first, Vec3 second) {
+  return first.x == second.x && first.y == second.y && first.z == second.z;
+}
+
+// Computes whether two solids have the same shape, size, pose at the step's start and motion, bit for bit: one fills
+// the same space as the other at every time of the step. Their solid_id, friction_scale and reports_reaction may
+// differ. The particle's plate side is not read: a plate the particle is committed to is seen as the half space behind
+// its committed face, which holds its uncommitted copy, and the two distances agree on the committed side, where the
+// particle is; so searching or leaving out either one of the two keeps the particle out of both.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsSameSpaceThroughStep(const Solid& first, const Solid& second) {
+  const SolidPose first_pose = first.pose_at_step_start;
+  const SolidPose second_pose = second.pose_at_step_start;
+  const bool is_same_axes =
+      ComputeIsSameVector(ComputeColumn(first_pose.axes, Axis::kX), ComputeColumn(second_pose.axes, Axis::kX))
+      && ComputeIsSameVector(ComputeColumn(first_pose.axes, Axis::kY), ComputeColumn(second_pose.axes, Axis::kY))
+      && ComputeIsSameVector(ComputeColumn(first_pose.axes, Axis::kZ), ComputeColumn(second_pose.axes, Axis::kZ));
+  const bool is_same_motion = ComputeIsSameVector(first.motion.linear_velocity, second.motion.linear_velocity)
+      && ComputeIsSameVector(first.motion.angular_velocity, second.motion.angular_velocity);
+  return first.shape == second.shape && ComputeIsSameVector(first.half_size, second.half_size)
+      && ComputeIsSameVector(first_pose.origin, second_pose.origin) && is_same_axes && is_same_motion;
+}
+
 // Computes which of two first hits FindFirstHit keeps: the earlier one, and of two equally early hits the one on the
 // lower solid index, whatever order the solids were searched in.
 //
@@ -1669,7 +1692,11 @@ FLUIDITY_CPU_AND_GPU constexpr FirstHit ComputeEarlierHit(FirstHit kept, FirstHi
 //   the search stops there; a search that reaches the cap is free and the kept hit stands, since the path stayed at
 //   distance tol or more up to it, and a close call beyond the cap is never reached. ComputeEarlierHit keeps the
 //   earlier hit, and of two equally early hits the one on the lower index, although the turning solids are searched
-//   after solids of any index. The solids that do not turn are skipped here.
+//   after solids of any index. The solids that do not turn are skipped here, and so is a turning solid that fills the
+//   same space through the step as one earlier in the array (ComputeIsSameSpaceThroughStep): its search, capped at the
+//   earlier one's hit, would sample other times and stop elsewhere within the hit gap, so an exact copy would change
+//   the hit (GeneratedMovesNearTurningSolids_EndOutsideEverySolid finds it). The earlier one's search is the same
+//   function of the same inputs, so the hit is the one without the copy, bit for bit.
 // Units: m, m/s and s, world.
 // Ties: equal times keep the lower solid index.
 // Example: solid 0 a box turning at {0, 0, 1} rad/s with a particle at rest 2^-17 m above its top face on the turn
@@ -1686,6 +1713,17 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
   assert(earliest != nullptr);
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     if (!ComputeIsTurningSolid(inputs, solid_index)) {
+      continue;
+    }
+    // A turning solid that fills the same space as one earlier in the array would be searched with a cap that the
+    // earlier one's hit set, so its samples, and the time it stops at within the hit gap, would differ from the earlier
+    // one's: the copy would change the hit. Its hit could not be earlier than the earlier one's at the same samples.
+    bool is_copy_of_earlier = false;
+    for (std::uint32_t earlier_index = 0; earlier_index < solid_index; ++earlier_index) {
+      is_copy_of_earlier =
+          is_copy_of_earlier || ComputeIsSameSpaceThroughStep(inputs.solids[earlier_index], inputs.solids[solid_index]);
+    }
+    if (is_copy_of_earlier) {
       continue;
     }
     const bool has_earlier_hit = earliest->solid_index != kNoSolid;
@@ -1799,6 +1837,29 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
 //     through, after which the settle lifts the particle to the far side. Neither has been constructed (the review's
 //     300,000 crowded scenes with plates down to tol / 4 thick kept every sweep at 0.99945 tol or more) nor proved
 //     impossible: a limit under plan decision P3.
+//   A turning solid has none of the four steps. Its surface velocity at the particle, v_lin + omega x r, changes as the
+//   particle slides, and its normal turns, so a rate read where a sweep starts says nothing about the gap later, and
+//   the stepping search hits it at 0 from any gap up to tol / 4, whatever the velocity: before the carry, every sweep
+//   after a hit on a turning solid hit it again at 0, three times, and the fifth hit ended in kTooManyHits. What
+//   replaces each step (ApplyHitOnTurningSolid):
+//   1 Before any response: no plain rule; a particle within 1.25 tol is hit at 0 and gets a response.
+//   2 After a response: no sweep meets the turning solid again. A hit on it ends the sweeps of the step with the carry
+//     in its axes, and a hit at 0 just after a response, within tol + tol / 16, is the moment of that response, which
+//     read the solid with the same ComputeDistanceForParticle at the same position and pose: no second response. In
+//     the solid's own axes the solid stands still and its distance is convex (HasConvexDistance), and the carry's
+//     straight line there does not approach along the normal n_own the response read (its part into the surface is
+//     removed), so d(p + w s) >= d(p) + Dot(n_own, w) s >= d(p) for the whole time left, exactly: no rate, no
+//     curvature bound. What is not exact is rounding: the turns into and out of those axes, below tol / 64 as a
+//     distance (contact/contact_tolerance.h); the normal turned into them, a few rounding units on a face; beside a
+//     cylinder's rim the normal is read from a vector about tol long, so it turns by the own point's rounding over
+//     tol, about 2^-22 rad at tol = 2^-30 m and coordinates near 1 m, and over a carry of length L the first-order
+//     sink is at most that angle times L (measured: 12,000 generated moves ended no nearer than 0.999998 tol before
+//     the settle).
+//   3 The allowance: the carry removes the response's leftover approach to the turning solid, and every other solid
+//     stays farther than tol during the carry (CheckOtherSolidsBeyondClosingBound, plan decision P7), so the tol / 16
+//     of the touched rule is not spent.
+//   4 The window: the carry ends at least at the hit's own distance, in [tol - tol / 64, 1.25 tol] after a stepping
+//     search, about tol after the start's move, less the rounding of step 2.
 // Units: m, m/s and s, world.
 // Ties: equal hit times keep the lower solid index, then the face that comes first in face order.
 // Example: a fixed flat solid with normal {0.6, 0, 0.8} through the origin, a particle at the rest gap after a hit
@@ -3232,7 +3293,12 @@ ComputeMoveOffOneNearSolid(const SolidContactInputs& inputs, double pose_elapsed
 //   copy, can change the moved point by a unit in the last place: the targets reach the solver in another order, or a
 //   copy turns step 2's one-solid move into the iterates of step 3. Measured (the review's probe, two seeds, 26,216
 //   moves near spinning, moving and tilting round solids, a floor and a ball): 9 change with a copy, 2 with the array
-//   reversed, by at most 4.4e-16 m at 5 m from the origin; the velocities, the hits and the record never do. Not
+//   reversed, by at most 4.4e-16 m at 5 m from the origin; the hits and the record never do. The velocities of a
+//   response at a moved start read that point, so they follow it: a spinning or turning solid's surface velocity by a
+//   rounding unit, and the normal beside a cylinder's rim, read from a vector about tol long, turns by about
+//   ulp(coordinate) / tol, which changes a velocity by that share of the speed: 2^-22 at tol = 2^-30 m and
+//   coordinates near 1 m (7.3e-8 measured beside a turning cylinder's rim), up to about 2^-12 at the smallest
+//   tolerance ComputeContactTolerance gives, 2^-40 of the largest coordinate. Not
 //   sorted, because sorting the targets changes the rounding of every move whose array order is not the sorted one, a
 //   known limit pinned by SettleWithExactCopy_LastPlaceKnownLimit and SettleInReversedOrder_LastPlaceKnownLimit.
 // Example: the floor and the 60 degree side through the origin, p0 = {0, 0, 0}: {Sqrt(3) tol, 0, tol}, 1 iterate and a
@@ -4450,6 +4516,255 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
   return ApplyJointResponse(inputs, active, record_surface, move, failure);
 }
 
+// The rest of a step carried in a turning solid's own axes (plan decision P7): where the particle is in them when the
+// carry starts, and the velocity it keeps in them.
+struct SolidAxesCarry {
+  Vec3 own_position{};  // m, own axes: Transpose(A) (x - o), at the particle's position and the pose of move.elapsed.
+  // m/s, own axes: Transpose(A_mid) (for_this_step - u(x)), u the solid's surface velocity at the particle at the
+  // carry's start and A_mid the solid's axes at the middle of the time left, with its part into the surface set to
+  // zero. Constant during the carry.
+  Vec3 own_velocity{};
+  double time_left = 0;  // s, zero or more: the step's duration minus the time already used.
+};
+
+// Computes the carry of the rest of a step in a turning solid's own axes (plan decision P7), from the particle's
+// position and velocity.for_this_step at the moment of a response at that solid.
+//
+// Method: with t the time left, A, o the solid's axes and origin at the pose of move.elapsed (the carry's start), A_mid
+//   its axes at the pose of move.elapsed + t / 2, x the particle's position and n the normal of the solid's distance
+//   at x and the pose of move.elapsed (ComputeDistanceForParticle, the surface the response read):
+//   own_position = Transpose(A) (x - o);
+//   own_velocity = Transpose(A_mid) (for_this_step - u), u = ComputeSolidVelocity at x and the pose of move.elapsed,
+//     the surface velocity v_lin + omega x (x - o) the response read;
+//   then, when Dot(n_own, own_velocity) < 0 with n_own = Transpose(A) n, the normal in own axes at the carry's start,
+//     that part is removed along n_own. The carry is the straight line own_position + own_velocity s in own axes.
+//   time_left = Max(0, step_duration - move.elapsed): the last hit may round one unit past the step's end.
+//   Why the axes of the middle of the time left: the carry splits the velocity into the surface's motion at the
+//   particle, which the solid carries exactly (the own point stays), and the motion relative to it, v - u, which
+//   moves the particle along a line in world axes while the solid turns under it. Turned into own axes with the axes
+//   of the start, as built at first, that line ran along the start's tangent and a particle at rest on a turntable
+//   drifted out by r a^2 / 2 a step, a = |omega| t the turn (+6.4 % of r over 50 steps of 0.1 s at 0.5 rad/s); with
+//   the axes of the end, in by as much; with world axes for the whole velocity, a stuck particle drifted out instead.
+//   The axes of the middle are the midpoint rule of the turn: a stuck particle (v = u) keeps its own point exactly,
+//   and a frictionless one at rest on a face turning about its normal ends at radius r (1 + a^2 - 2 a sin(a / 2))^(1/2)
+//   = r (1 + a^4 / 48 + ...), r a^3 / 24 behind its start along the circle: third order a step, so its velocity 0
+//   and its path agree. In general the path's mean velocity is v_lin + R(a / 2) (v - v_lin) up to a^2 (|omega| r +
+//   |v - v_lin|), R(a / 2) the turn by half the step's turn, minus what the clamp removes, so it agrees with the
+//   velocity the response returned to first order in a: within (a / 2) (2 |v - v_lin| + |omega| r) + a^2 (|omega| r +
+//   |v - v_lin|). What the clamp removes is no longer rounding alone: turned with A_mid, a relative velocity tangent at
+//   the start has a part along n_own of up to sin(a / 2) |v - u|, inward when the face turns toward the line the
+//   particle follows; the clamp keeps that part out, as the solid would. When the face turns away from that line the
+//   part points out and is kept, a known choice: the particle ends up to sin(a / 2) |v - u| t_left off the face, as a
+//   free flight in own axes, while the velocity the response returned has no part along the normal (a top face tilting
+//   at 0.5 rad/s under a sliding particle: up to 41,617 tol at T = 1 / 120 s, 5.3e-3 m at 0.1 s; with the axes of the
+//   hit it stayed at tol). The lift does not build up from step to step, since the next sweep and gravity bring the
+//   particle back, and the path converges at first order in the step. The frictionless residue is not always
+//   negligible either: at a = 1 rad, near the largest turn a step allows, a^4 / 48 is +2 % of r per step. Cost: one
+//   more pose, ComputeSolidPose at the middle of the time left.
+// Units: m, m/s and s; own axes of the solid.
+// Example: a box of half size 0.5 m at the origin turning at {0, 0, 1} rad/s, the particle at {0.5 + tol, 0, 0} at
+//   time 0 moving at {0, 0, 1} m/s in a step of 0.1 s: the face moves at {0, 0.5 + tol, 0} m/s there, so the relative
+//   velocity {0, -(0.5 + tol), 1} m/s turned back by 0.05 rad gives own_velocity {-(0.5 + tol) sin 0.05, -(0.5 + tol)
+//   cos 0.05, 1} m/s, whose part into kHighX is removed: {0, -(0.5 + tol) cos 0.05, 1} m/s; own_position
+//   {0.5 + tol, 0, 0} m, time_left 0.1 s.
+// Requires: solid_index < inputs.solid_count; move's position and elapsed time are those of a response that read this
+//   solid.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
+FLUIDITY_CPU_AND_GPU inline SolidAxesCarry
+ComputeSolidAxesCarry(const SolidContactInputs& inputs, std::uint32_t solid_index, const ParticleMove& move) {
+  assert(solid_index < inputs.solid_count);
+  const Solid& solid = inputs.solids[solid_index];
+  const Vec3 position = move.result.position;
+  const double time_left = math::Max(0.0, inputs.step_duration - move.elapsed);  // s
+  const SolidPose pose = ComputeSolidPose(solid, move.elapsed);
+  const Mat3 middle_axes = ComputeSolidPose(solid, move.elapsed + time_left / 2).axes;
+  const DistanceToSolid at_position =
+      ComputeDistanceForParticle(inputs, solid_index, pose, position, inputs.plate_side);
+  // Method paper <sec-contact-response>:  p = A^T (x - o),  w = A_mid^T (v - u(x))
+  const Mat3 to_own_axes = math::Transpose(pose.axes);
+  const Vec3 own_normal = to_own_axes * at_position.normal_out_of_solid;
+  const Vec3 surface_velocity = ComputeSolidVelocity(solid, pose, position);  // m/s, world
+  Vec3 own_velocity = math::Transpose(middle_axes) * (move.result.velocity.for_this_step - surface_velocity);  // m/s
+  const double normal_speed = math::Dot(own_normal, own_velocity);  // m/s
+  if (normal_speed < 0) {
+    own_velocity = own_velocity - normal_speed * own_normal;
+  }
+  return {
+      .own_position = to_own_axes * (position - pose.origin),
+      .own_velocity = own_velocity,
+      .time_left = time_left,
+  };
+}
+
+// Checks that no other solid can come within the contact tolerance of the particle while the rest of the step is
+// carried in a turning solid's axes (plan decision P7), and says kTurningSolidNearOtherSolid when one can.
+//
+// Method: for every solid j but the turning solid, d_j its distance at the carry's start, the call fails when
+//     d_j - tol <= t (|w| + |v_lin| + |omega| r + |v_lin_j| + |omega_j| r_j),
+//   t the time left, w the carry's own velocity (|w| <= |v - u|: turned, then clamped), v_lin and omega the turning
+//   solid's motion, v_lin_j and omega_j solid
+//   j's, and r and r_j the distances from the particle to each solid's origin at the carry's start. Why it is a bound:
+//   the carry puts the particle at x(s) = o + v_lin s + R(s) A (p + w s), R(s) the turn by omega s, p = Transpose(A)
+//   (x - o), so x(s) - x(0) = v_lin s + (R(s) - I) A p + R(s) A w s. A turn by an angle a moves a vector by at most
+//   2 sin(a / 2) <= a times its length, so |x(s) - x(0)| <= s (|v_lin| + |omega| r + |w|). In j's own axes the
+//   particle is at q(s) = Transpose(R_j(s) A_j) (x(s) - o_j - v_lin_j s), which moves from q(0) by at most |omega_j| s
+//   r_j + |x(s) - x(0)| + |v_lin_j| s, the same argument. Every distance ComputeDistanceForParticle gives changes by at
+//   most the length of a move of the own point, so d_j stays above tol over the whole carry when the call does not
+//   fail. The bound is on the displacement, not on the length of the curved path, so it needs no term in t^2. A solid
+//   that fills the same space as the turning solid through the step (ComputeIsSameSpaceThroughStep) is left out: the
+//   carry keeps the particle out of the turning solid, so out of its copy. With nothing left to carry (time left 0)
+//   nothing moves, and the check passes.
+// Units: m, m/s and s, world.
+// Example: a box of half size 0.5 m at the origin turning at {0, 0, 1} rad/s, a fixed floor at z = -0.5 and a particle
+//   at rest at {0.5 + tol, 0, -0.45}, carried from time 0: |w| = (0.5 + tol) cos(t / 2), the relative velocity turned
+//   by half the turn with its part into the face removed (ComputeSolidAxesCarry), and r = 0.6726812 m, so the closing
+//   bound is about 1.1726 m/s times the time left, against 0.05 - tol m. For 0.1 s, 0.1172 m:
+//   kTurningSolidNearOtherSolid; for 0.04 s, 0.0469 m: no failure. The test fails from 0.0426415 s.
+// Requires: solid_index < inputs.solid_count; carry is ComputeSolidAxesCarry at move's position and elapsed time;
+//   failure is not null.
+// Fails: kTooCloseToCall  kTurningSolidNearOtherSolid: another solid's gap is within the closing bound. *failure
+//                         names the turning solid, magnitude 0: which other solid fails first depends on the array's
+//                         order, the turning solid does not. A shorter step shortens the closing bound.
+//        *failure is written only on failure.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
+FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    const ParticleMove& move,
+    const SolidAxesCarry& carry,
+    ContactFailure* failure
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(failure != nullptr);
+  const double time_left = carry.time_left;  // s
+  if (time_left <= 0) {
+    return ContactError::kNone;
+  }
+  const Solid& turning_solid = inputs.solids[solid_index];
+  const Vec3 position = move.result.position;
+  const double arm_length = math::Length(position - ComputeSolidPose(turning_solid, move.elapsed).origin);  // m
+  // Method paper <proc-move-particle>:  |w| + |v_lin| + |omega| r
+  const double carry_speed_bound = math::Length(carry.own_velocity) + math::Length(turning_solid.motion.linear_velocity)
+      + math::Length(turning_solid.motion.angular_velocity) * arm_length;  // m/s
+  for (std::uint32_t other_index = 0; other_index < inputs.solid_count; ++other_index) {
+    const Solid& other = inputs.solids[other_index];
+    if (other_index == solid_index || ComputeIsSameSpaceThroughStep(other, turning_solid)) {
+      continue;
+    }
+    const SolidPose other_pose = ComputeSolidPose(other, move.elapsed);
+    const double other_distance =
+        ComputeDistanceForParticle(inputs, other_index, other_pose, position, inputs.plate_side).distance;  // m
+    const double other_arm_length = math::Length(position - other_pose.origin);  // m
+    // Method paper <proc-move-particle>:  d_j - tol <= t (... + |v_lin_j| + |omega_j| r_j)
+    const double closing_speed_bound = carry_speed_bound + math::Length(other.motion.linear_velocity)
+        + math::Length(other.motion.angular_velocity) * other_arm_length;  // m/s
+    const double closing_bound = time_left * closing_speed_bound;  // m
+    // A NaN bound compares false, so it fails too: no bound means no safe carry.
+    const bool is_beyond_closing_bound = other_distance - inputs.contact_tolerance > closing_bound;
+    if (!is_beyond_closing_bound) {
+      return ApplyCloseCall(inputs, ContactCloseCall::kTurningSolidNearOtherSolid, solid_index, failure);
+    }
+  }
+  return ContactError::kNone;
+}
+
+// Applies the carry of the rest of the step in a turning solid's own axes (plan decision P7): the particle moves in a
+// straight line in those axes, where the solid stands still, and is placed with the solid's pose at the end of the
+// step.
+//
+// Method: own_end = own_position + own_velocity * time_left; the position becomes o_end + A_end own_end, with A_end,
+//   o_end the axes and origin of ComputeSolidPose(solid, step_duration), and the elapsed time becomes step_duration.
+//   The velocities are left as the response made them: the carry moves the particle, it is no response.
+//   Why the particle stays out of the solid: in its own axes the solid's distance d is convex (plan decision P18,
+//   HasConvexDistance), and n_own = Transpose(A) n, the normal at own_position read with the pose of the carry's start,
+//   is a subgradient of it there. own_velocity is one constant vector in own axes, whatever axes turned it there (the
+//   middle ones), so the carry is a straight line in own axes, and along it
+//   d(own_position + own_velocity s) >= d(own_position) + Dot(n_own, own_velocity) s >= d(own_position), since the
+//   carry removed the part of own_velocity into the surface. Unlike a sweep in world axes, the shape does not move in
+//   these axes, so no gap curvature bound enters: the bound holds for the whole time left, exactly. Rounding: the two
+//   turns and the moves are off by a few rounding units of the largest coordinate, below tol / 64 (as a distance,
+//   contact/contact_tolerance.h); n_own is off a true subgradient by the own point's rounding over the distance from
+//   the nearest point of the solid, a few rounding units on a face, more beside a cylinder's rim, where that distance
+//   is about tol (FindFirstHitOfSweep, step 2, gives the bound). The end is at least the start's distance less tol /
+//   32 from the solid on a face.
+// Units: m, m/s and s.
+// Example: the carry of ComputeSolidAxesCarry's example ends at own {0.5 + tol, -0.1 (0.5 + tol) cos 0.05, 0.1} m,
+//   which the box's pose at 0.1 s turns by 0.1 rad about z.
+// Requires: solid_index < inputs.solid_count; carry is ComputeSolidAxesCarry of that solid at move's position and
+//   elapsed time; move is not null.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
+FLUIDITY_CPU_AND_GPU inline void ApplyCarryInSolidAxes(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    const SolidAxesCarry& carry,
+    ParticleMove* move
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(move != nullptr);
+  const SolidPose end_pose = ComputeSolidPose(inputs.solids[solid_index], inputs.step_duration);
+  // Method paper <proc-move-particle>:  x_end = o(T) + A(T) (p + w t_left)
+  const Vec3 own_end = carry.own_position + carry.own_velocity * carry.time_left;  // m, own axes
+  move->result.position = end_pose.origin + end_pose.axes * own_end;
+  move->elapsed = inputs.step_duration;
+}
+
+// Applies one hit of a sweep on a turning solid to a particle's move: the joint response, unless the hit is the moment
+// of the latest response, then plan decision P7's test of the other solids, then the carry of the rest of the step in
+// the solid's own axes, which ends the hits of the step.
+//
+// Method (method paper <proc-move-particle>, step 4):
+//   1 The moment of the latest response: a hit at 0 after a response, by a turning solid within tol + tol / 16. Every
+//     sweep starts where and when the latest response was made (FindFirstHitOfSweep, step 2), and the stepping search
+//     reads the distance at elapsed 0 with ComputeDistanceForParticle at that very position and pose, as
+//     FindActiveSurfaces read it for that response; within the window, the solid was one of its active surfaces, with
+//     that normal, so a second response would read the same surfaces from the velocity the first returned: one moment
+//     is one hit. Otherwise ApplyHit: the move to the hit and one joint response.
+//   2 CheckOtherSolidsBeyondClosingBound on ComputeSolidAxesCarry.
+//   3 ApplyCarryInSolidAxes.
+//   A turning solid has no touching rule (FindFirstHit, step 2): every sweep from the rest gap would hit it again at 0
+//   (gap 0 <= tol / 4), and before this carry a hit on a turning solid ended in kTooManyHits after three such hits.
+//   The carry ends the sweeps instead, so the solid is never swept again from the moment it was hit.
+// Units: m, m/s and s, world.
+// Example: a box of half size 0.5 m at the origin turning at {0, 0, 1} rad/s and a particle at rest at
+//   0.6 {cos 0.3, sin 0.3, 0} m for 1 s: the face kHighX reaches it at 0.8857 s; one response, hit_count 1, then a
+//   carry of 0.1143 s along the face.
+// Requires: first_hit is a hit of FindFirstHitOfSweep on a turning solid, from move's position, velocity and elapsed
+//   time; move and failure are not null. As ApplyJointResponse for the speeds.
+// Fails: kTooCloseToCall  as ApplyHit, or kTurningSolidNearOtherSolid (CheckOtherSolidsBeyondClosingBound).
+//        *failure is written only on failure; *move is then unspecified.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
+FLUIDITY_CPU_AND_GPU inline ContactError ApplyHitOnTurningSolid(
+    const SolidContactInputs& inputs,
+    FirstHit first_hit,
+    ParticleMove* move,
+    ContactFailure* failure
+) {
+  assert(first_hit.solid_index < inputs.solid_count);
+  assert(move != nullptr && failure != nullptr);
+  // Steps: 1 response  2 the other solids  3 carry
+  // Step 1: the window of FindActiveSurfaces, the same comparison on the same distance.
+  const double active_distance =
+      inputs.contact_tolerance + kTouchedSolidRestingGapShare * inputs.contact_tolerance;  // m
+  const bool is_moment_of_latest_response =
+      move->has_response && first_hit.elapsed == 0 && first_hit.at_hit.distance <= active_distance;
+  if (!is_moment_of_latest_response) {
+    const ContactError hit_error = ApplyHit(inputs, first_hit, move, failure);
+    if (hit_error != ContactError::kNone) {
+      return hit_error;
+    }
+  }
+  // Step 2: plan decision P7. A solid within the closing bound could be met during the carry, which sweeps nothing.
+  const SolidAxesCarry carry = ComputeSolidAxesCarry(inputs, first_hit.solid_index, *move);
+  const ContactError closing_error =
+      CheckOtherSolidsBeyondClosingBound(inputs, first_hit.solid_index, *move, carry, failure);
+  if (closing_error != ContactError::kNone) {
+    return closing_error;
+  }
+  // Step 3: the rest of the step in the solid's axes.
+  ApplyCarryInSolidAxes(inputs, first_hit.solid_index, carry, move);
+  return ContactError::kNone;
+}
+
 // Checks the start of a particle's move against one solid, at the start as given and the pose of time 0: the checks
 // of the start rules that fail (method paper <proc-move-particle>, step 2; plan decisions P3, P4 and P12).
 //
@@ -4712,21 +5027,24 @@ FLUIDITY_CPU_AND_GPU inline void ApplySettleAtEnd(const SolidContactInputs& inpu
   // end check decides, failing with kEndsTooCloseToSolid when a solid is nearer than tol / 2. A cylinder tilting within
   // plan decision P17's bound is the exception: it ends at d >= tol - tol / 16 - tol / 4 after a hit on its wall, a cap
   // or a rim alike (step 3 of that proof; measured 0.759 tol), and at d >= 39 / 64 tol beside a bounding surface, still
-  // above the end check's tol / 2. Deeper than -2 tol means a hit at a wrong pose or position, which the move below
-  // would silently repair, so a debug build stops. The loop holds only assertions, so a release build drops it. A
-  // turning solid is left out: its stepping search stops between tol and 1.25 tol, but no bound is proved for it.
+  // above the end check's tol / 2. A turning solid the particle was carried on ends at least as far as where the carry
+  // started, less the carry's rounding (ApplyCarryInSolidAxes): tol - tol / 64 or more after a stepping search, about
+  // tol after the start's move; every other solid stays farther than tol during a carry
+  // (CheckOtherSolidsBeyondClosingBound); and a turning solid that was not hit stayed at tol - tol / 64 or more along
+  // every sweep, by the stepping search. So the assertion holds for every solid, a turning one included. Deeper than
+  // -2 tol means a hit at a wrong pose or position, which the move below would silently repair, so a debug build stops.
+  // The loop holds only assertions, so a release build drops it.
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     assert(
-        ComputeIsTurningSolid(inputs, solid_index)
-        || ComputeDistanceForParticle(
-               inputs,
-               solid_index,
-               ComputeSolidPose(inputs.solids[solid_index], inputs.step_duration),
-               end_position,
-               inputs.plate_side
-           )
-                .distance
-            >= -2 * inputs.contact_tolerance
+        ComputeDistanceForParticle(
+            inputs,
+            solid_index,
+            ComputeSolidPose(inputs.solids[solid_index], inputs.step_duration),
+            end_position,
+            inputs.plate_side
+        )
+            .distance
+        >= -2 * inputs.contact_tolerance
     );
   }
   const RestGapMove settle = MoveToRestGapOfNearSurfaces(inputs, inputs.step_duration, end_position);

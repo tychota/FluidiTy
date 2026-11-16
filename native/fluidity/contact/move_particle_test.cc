@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numbers>
 #include <string>
@@ -14,7 +15,9 @@
 #include <utility>
 #include <vector>
 
+#include "fluidity/base/axis.h"
 #include "fluidity/base/mat3.h"
+#include "fluidity/base/per_particle_velocity.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_error.h"
 #include "fluidity/contact/contact_test_cases.h"
@@ -79,6 +82,36 @@ MoveParticleCall RunMove(const MoveParticleCase& test_case) {
 // Runs MoveParticle on the scene of that name.
 MoveParticleCall RunMove(std::string_view case_name) {
   return RunMove(FindMoveParticleCase(case_name));
+}
+
+// Runs a scene from another start, with both velocities as the scene has them.
+MoveParticleCall RunMoveFrom(std::string_view case_name, Vec3 start_position) {
+  MoveParticleCase scene = FindMoveParticleCase(case_name);
+  scene.inputs.start_position = start_position;
+  return RunMove(scene);
+}
+
+// Another start of a scene: the position, both velocities and the step.
+struct SceneStart {
+  Vec3 position{};  // m, world.
+  Vec3 velocity{};  // m/s, world, both velocities.
+  double step_duration = 0;  // s.
+  double friction = 0;  // No unit.
+};
+
+// A scene from another start.
+MoveParticleCase BuildSceneFrom(std::string_view case_name, SceneStart start) {
+  MoveParticleCase scene = FindMoveParticleCase(case_name);
+  scene.inputs.start_position = start.position;
+  scene.inputs.velocity = {.for_next_step = start.velocity, .for_this_step = start.velocity};
+  scene.inputs.step_duration = start.step_duration;
+  scene.inputs.friction = start.friction;
+  return scene;
+}
+
+// Runs a scene from another start.
+MoveParticleCall RunMoveWith(std::string_view case_name, SceneStart start) {
+  return RunMove(BuildSceneFrom(case_name, start));
 }
 
 // Fails the calling test unless |actual - expected| <= 2^-44 * max(|actual|, |expected|, reference): the relative
@@ -505,15 +538,549 @@ TEST(MoveParticle, ObliqueFlatSolidRoundingAtHit_HitsOnce) {
   ExpectVec3NearRelative(call.result.velocity.for_this_step, {.x = -0.32, .y = 0, .z = 0.24}, 2);
 }
 
-TEST(MoveParticle, TurningBoxHitsRestingParticle_EndsInTooManyHits) {
-  // A turning solid has no touching rule: after its hit at 0.8857 s the particle is hit again at 0 by every sweep,
-  // until the fifth hit. The slide in the solid's axes is not part of MoveParticle yet.
-  const MoveParticleCall call = RunMove("TurningBoxHitsRestingParticle");
-  EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
-  ExpectFailure(
-      call.failure,
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 1}
+// --- A slide on a turning solid: the rest of the step carried in its axes ---
+
+// m. The distance from a point to the first solid of a scene at the solid's pose at the end of the step.
+double ComputeDistanceAtEndPose(const MoveParticleCase& scene, Vec3 point) {
+  const Solid& solid = scene.solids.at(0);
+  return ComputeDistanceToSolid(solid, ComputeSolidPose(solid, scene.inputs.step_duration), point).distance;
+}
+
+TEST(MoveParticle, TurningBoxHitsRestingParticle_EndsOnFaceAtEndPose) {
+  // The face kHighX reaches the particle at rest when 0.6 cos(t - 0.3) = 0.5 + tol, about 0.8857 s; the response leaves
+  // it moving with the face, and the carry along the face for the 0.1143 s left keeps it near the rest gap of the box
+  // at its end pose. One hit: before the carry, every later sweep hit the box again at 0 until kTooManyHits.
+  const MoveParticleCase scene = FindMoveParticleCase("TurningBoxHitsRestingParticle");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  EXPECT_EQ(result.kind, ContactKind::kHit);
+  EXPECT_EQ(result.hit_count, 1);
+  EXPECT_EQ(result.face, SolidFace::kHighX);
+  EXPECT_NEAR(result.hit_fraction, 0.3 + std::acos((0.5 + kTolerance) / 0.6), 0x1p-30);
+  const double end_distance = ComputeDistanceAtEndPose(scene, result.position);  // m
+  EXPECT_GE(end_distance, kTolerance / 2);
+  EXPECT_LE(end_distance, 2 * kTolerance);
+}
+
+TEST(MoveParticle, TurningBoxNearFloor_IsTurningSolidNearOtherSolid) {
+  // The same hit with a fixed floor 0.05 m below the particle: in the 0.1143 s left the floor is within the carry's
+  // closing bound (plan decision P7), so the step is too close to call, naming the turning box.
+  ExpectCloseCall(RunMove("TurningBoxNearFloor"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+}
+
+TEST(MoveParticle, TurningBoxSlide_KeepsSidewaysPartInSolidAxes) {
+  // At rest on the face kHighX at d == tol, the particle is hit at 0 (no touching rule on a turning solid, plan
+  // decision P2) and carried. Its velocity relative to the face, {0, -(0.5 + tol), 1} m/s, turned into the box's axes
+  // of the middle of the step, 0.05 rad on, is {-(0.5 + tol) sin 0.05, -(0.5 + tol) cos 0.05, 1}: the face turns
+  // toward the line the particle follows, so the part into it is removed, and it ends at own {0.5 + tol, -0.1 (0.5 +
+  // tol) cos 0.05, 0.1} of the box's pose at 0.1 s, its velocities unchanged. (The brief's own {0.5 + tol, -0.05,
+  // 0.1} is the carry with the axes of the hit, 6.2e-5 m away.)
+  const MoveParticleCase scene = FindMoveParticleCase("TurningBoxSlide");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  EXPECT_EQ(result.hit_count, 1);
+  EXPECT_EQ(result.hit_fraction, 0);
+  EXPECT_EQ(result.face, SolidFace::kHighX);
+  ExpectVec3Equal(result.velocity.for_this_step, kUnitZ);
+  ExpectVec3Equal(result.velocity.for_next_step, kUnitZ);
+  const SolidPose end_pose = ComputeSolidPose(scene.solids.at(0), 0.1);
+  const Vec3 own_end = {.x = 0.5 + kTolerance, .y = -0.1 * (0.5 + kTolerance) * std::cos(0.05), .z = 0.1};
+  ExpectVec3Near(result.position, end_pose.origin + end_pose.axes * own_end, kPositionTolerance);
+}
+
+// The state after a run of steps on solids that keep moving: the position, the velocities, and how the steps went.
+struct TurningStepsRun {
+  Vec3 position{};  // m, world, at the end of the last step.
+  PerParticleVelocity<Vec3> velocity{};  // m/s, world.
+  int failed_steps = 0;
+  int steps_with_one_hit = 0;
+  double least_end_share = std::numeric_limits<double>::infinity();  // Of tol, to the first solid at each end pose.
+  double largest_end_share = 0;  // Of tol.
+};
+
+// How a run of steps goes: the step's duration, the friction and the number of steps.
+struct TurningSteps {
+  double step_duration = 0;  // s.
+  double friction = 0;  // No unit.
+  int step_count = 50;
+};
+
+// Runs steps.step_count steps from start at rest: each step adds gravity times the step to the velocity the last one
+// kept, poses the solids at the step's start, and moves the particle with that friction.
+TurningStepsRun RunTurningSteps(const std::vector<Solid>& solids, Vec3 start, TurningSteps steps) {
+  const double step_duration = steps.step_duration;  // s
+  const double friction = steps.friction;
+  const int step_count = steps.step_count;
+  const Vec3 gravity = {.x = 0, .y = 0, .z = -9.81};  // m/s^2
+  TurningStepsRun run;
+  run.position = start;
+  for (int step = 0; step < step_count; ++step) {
+    std::vector<Solid> posed = solids;
+    for (Solid& solid : posed) {
+      solid.pose_at_step_start = ComputeSolidPose(solid, step * step_duration);
+    }
+    SolidContactInputs inputs = move_particle_cases::BuildCaseInputs({
+        .start_position = run.position,
+        .velocity = run.velocity.for_next_step + step_duration * gravity,
+        .step_duration = step_duration,
+        .friction = friction,
+    });
+    inputs.solids = posed.data();
+    inputs.solid_count = static_cast<std::uint32_t>(posed.size());
+    SolidContactResult result;
+    ContactFailure failure;
+    if (MoveParticle(inputs, &result, &failure) != ContactError::kNone) {
+      ++run.failed_steps;
+      continue;
+    }
+    run.steps_with_one_hit += result.hit_count == 1 ? 1 : 0;
+    const Solid& first = posed.at(0);
+    const double end_share =
+        ComputeDistanceToSolid(first, ComputeSolidPose(first, step_duration), result.position).distance / kTolerance;
+    run.least_end_share = std::min(run.least_end_share, end_share);
+    run.largest_end_share = std::max(run.largest_end_share, end_share);
+    run.position = result.position;
+    run.velocity = result.velocity;
+  }
+  return run;
+}
+
+// A box of half size 0.5 m with its top at z = 0, spinning at 0.5 rad/s about z: a turntable.
+Solid BuildTurntable() {
+  return ToSolid(
+      Box{.center = {.x = 0, .y = 0, .z = -0.5}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}},
+      {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 0.5}},
+      1
   );
+}
+
+// Fails the calling test unless 50 frictionless steps of step_duration on the turntable, from rest at radius 0.3 m,
+// each take one hit, end at the rest gap with velocity 0, and leave the particle where the midpoint rule's residue puts
+// it: per step of turn a = omega T, radius r (1 + a^2 - 2 a sin(a / 2))^(1/2) = r (1 + a^4 / 48 + ...), and r a^3 / 24
+// behind its start along the circle (ComputeSolidAxesCarry), each within 5 %.
+void ExpectTurntableFrictionlessResidue(double step_duration) {
+  const Vec3 start = {.x = 0.3, .y = 0, .z = kTolerance};
+  const TurningStepsRun run = RunTurningSteps({BuildTurntable()}, start, {.step_duration = step_duration});
+  ASSERT_EQ(run.failed_steps, 0);
+  EXPECT_EQ(run.steps_with_one_hit, 50);
+  EXPECT_GE(run.least_end_share, 0.99);
+  EXPECT_LE(run.largest_end_share, 1.01);
+  ExpectVec3Near(run.velocity.for_next_step, {.x = 0, .y = 0, .z = 0}, 1e-15);
+  const double turn = 0.5 * step_duration;  // rad, a
+  const double radius = std::hypot(run.position.x, run.position.y);  // m
+  const double expected_growth = 50 * std::pow(turn, 4) / 48;  // share of r
+  EXPECT_NEAR(radius / 0.3 - 1, expected_growth, 0.05 * expected_growth + 1e-14);
+  const double moved = std::hypot(run.position.x - start.x, run.position.y - start.y);  // m
+  const double expected_moved = 50 * 0.3 * std::pow(turn, 3) / 24;  // m
+  EXPECT_NEAR(moved, expected_moved, 0.05 * expected_moved + 4 * kTolerance);
+}
+
+TEST(MoveParticle, TurntableFrictionless_StaysPutWithinMidpointResidue) {
+  // A frictionless particle resting on the turntable keeps velocity 0 along the top, so it should not move. Over 50
+  // steps: T = 0.1 s, a = 0.05, radius +6.51e-6 of r, moved by 7.8e-5 m; T = 1 / 120 s, radius +3.14e-10 of r, moved
+  // by 4.5e-8 m. With the axes of the hit the radius grew by r a^2 / 2 per step (+6.4 % over 50 steps of 0.1 s).
+  ExpectTurntableFrictionlessResidue(0.1);
+  ExpectTurntableFrictionlessResidue(1.0 / 120);
+}
+
+// Fails the calling test unless 50 steps of step_duration on the turntable with friction 2, from rest at radius 0.3 m,
+// each take one hit and carry the particle round at radius 0.3 m and 0.15 m/s through the angle 50 omega T, each to
+// rounding.
+void ExpectTurntableStickingCarriedRound(double step_duration) {
+  const Vec3 start = {.x = 0.3, .y = 0, .z = kTolerance};
+  const TurningStepsRun run =
+      RunTurningSteps({BuildTurntable()}, start, {.step_duration = step_duration, .friction = 2});
+  ASSERT_EQ(run.failed_steps, 0);
+  EXPECT_EQ(run.steps_with_one_hit, 50);
+  EXPECT_NEAR(std::hypot(run.position.x, run.position.y), 0.3, 1e-13);
+  const double speed = math::Length(run.velocity.for_next_step);  // m/s
+  EXPECT_NEAR(0.5 * speed * speed, 0.5 * 0.15 * 0.15, 1e-13);
+  EXPECT_NEAR(std::atan2(run.position.y, run.position.x), 50 * 0.5 * step_duration, 1e-12);
+}
+
+TEST(MoveParticle, TurntableSticking_CarriedRoundAtConstantRadiusAndEnergy) {
+  // Friction 2: each step sticks the particle to the top, from the first (friction times gravity's approach, 2 * 9.81
+  // T, is above the sideways speed omega r = 0.15 m/s even at T = 1 / 120 s; with friction 1 that first step slips),
+  // so its relative velocity is 0 and the carry keeps its own point: radius, energy and angle to rounding, a few units
+  // per step over 50 steps.
+  ExpectTurntableStickingCarriedRound(0.1);
+  ExpectTurntableStickingCarriedRound(1.0 / 120);
+}
+
+TEST(MoveParticle, FaceTurningAwayFromSlide_CarryLeavesFaceKnownChoice) {
+  // Known choice of the midpoint carry (ComputeSolidAxesCarry). A box whose top face is at z = 0 turns at 0.5 rad/s
+  // about x through its centre, 0.5 m below, so the top tilts away from a frictionless particle sliding along +y at
+  // 0.5 m/s from the rest gap at y = 0.3 m with a gravity-like 0.981 m/s down. Hit at 0; the surface there moves at
+  // {0, 0.25, -0.15} m/s, so the response leaves the relative velocity {0, 0.25, 0} m/s along the top. Turned by half
+  // the step's turn, a / 2 = 0.025 rad, it points out of the face by 0.25 sin 0.025 m/s, which the carry keeps: the
+  // particle ends 0.1 * 0.25 sin 0.025 = 6.249e-4 m, about 6.7e5 tol, off the face, while the velocity it returns has
+  // no part along the normal. The bound is sin(a / 2) |v - u| t_left; the lift does not build up over steps (the next
+  // sweep and gravity bring the particle back) and the path still converges at first order in the step.
+  MoveParticleCase scene;
+  scene.name = "FaceTurningAwayFromSlide";
+  scene.solids = {
+      ToSolid(
+          Box{.center = {.x = 0, .y = 0, .z = -0.5}, .axes = kIdentity, .half_size = {.x = 1, .y = 1, .z = 0.5}},
+          {.linear_velocity = {}, .angular_velocity = {.x = -0.5, .y = 0, .z = 0}},
+          1
+      ),
+  };
+  scene.inputs = move_particle_cases::BuildCaseInputs({
+      .start_position = {.x = 0, .y = 0.3, .z = kTolerance},
+      .velocity = {.x = 0, .y = 0.5, .z = -0.981},
+      .step_duration = 0.1,
+      .friction = 0,
+  });
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  const Solid& box = scene.solids.at(0);
+  const Vec3 relative_velocity = call.result.velocity.for_next_step
+      - ComputeSolidVelocity(box, ComputeSolidPose(box, 0), scene.inputs.start_position);
+  EXPECT_NEAR(relative_velocity.z, 0, 1e-15);
+  const double half_turn = 0.5 * 0.1 / 2;  // rad
+  const double bound = std::sin(half_turn) * math::Length(relative_velocity) * 0.1 + kTolerance;  // m
+  const double end_distance = ComputeDistanceAtEndPose(scene, call.result.position);  // m
+  EXPECT_NEAR(end_distance, 0.1 * 0.25 * std::sin(0.025) + kTolerance, 1e-9);
+  EXPECT_LE(end_distance, bound + 2 * kTolerance);
+}
+
+TEST(MoveParticle, TiltingPaddle_SlidesFrictionlessRidesSticking) {
+  // A paddle of half size {0.5, 0.25, 0.01} m tilting at 0.05 rad/s about x, a particle on its top under gravity, 50
+  // steps of 0.01 s. Every step is one hit at 0 and a carry. Friction 0: it slides down the tilting face, faster each
+  // step (0.005 m/s, then 0.060 m/s at the end), and a carry may leave the face by up to sin(a / 2) |v - u| T, a =
+  // 5e-4 rad (FaceTurningAwayFromSlide_CarryLeavesFaceKnownChoice): up to 160.6 tol measured, under the bound of 176
+  // tol at 0.065 m/s. Friction 1: it rides along at omega r = 0.05 * 0.1 m/s, its own point kept, each carry ending
+  // at the rest gap.
+  const Solid paddle = ToSolid(
+      Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.25, .z = 0.01}},
+      {.linear_velocity = {}, .angular_velocity = {.x = 0.05, .y = 0, .z = 0}},
+      1
+  );
+  const Vec3 start = {.x = 0.1, .y = 0.1, .z = 0.01 + kTolerance};
+  const TurningStepsRun sliding = RunTurningSteps({paddle}, start, {.step_duration = 0.01});
+  ASSERT_EQ(sliding.failed_steps, 0);
+  EXPECT_EQ(sliding.steps_with_one_hit, 50);
+  EXPECT_GE(sliding.least_end_share, 0.99);
+  EXPECT_LE(sliding.largest_end_share, 1.01 + std::sin(0.05 * 0.01 / 2) * 0.065 * 0.01 / kTolerance);
+  EXPECT_GT(sliding.largest_end_share, 100);
+  EXPECT_NEAR(math::Length(sliding.velocity.for_next_step), 0.060, 0.005);
+  const TurningStepsRun riding = RunTurningSteps({paddle}, start, {.step_duration = 0.01, .friction = 1});
+  ASSERT_EQ(riding.failed_steps, 0);
+  EXPECT_EQ(riding.steps_with_one_hit, 50);
+  EXPECT_GE(riding.least_end_share, 0.99);
+  EXPECT_LE(riding.largest_end_share, 1.01);
+  const SolidPose end_pose = ComputeSolidPose(paddle, 0.5);
+  const Vec3 own_end = math::Transpose(end_pose.axes) * (riding.position - end_pose.origin);
+  ExpectVec3Near(own_end, start, 2 * kTolerance);
+}
+
+// A box that moves at {0.2, -0.1, 0.05} m/s and turns at {0.3, 0.4, 0.5} rad/s, about no axis of its own, with a
+// particle on its top face at the rest gap moving across it.
+MoveParticleCase BuildMovingTurningBoxSlide() {
+  MoveParticleCase scene;
+  scene.name = "MovingTurningBoxSlide";
+  scene.solids = {
+      ToSolid(
+          Box{.center = {.x = 0.1, .y = 0.2, .z = -0.5}, .axes = kIdentity, .half_size = {.x = 1, .y = 1, .z = 0.5}},
+          {.linear_velocity = {.x = 0.2, .y = -0.1, .z = 0.05}, .angular_velocity = {.x = 0.3, .y = 0.4, .z = 0.5}},
+          1
+      ),
+  };
+  scene.inputs = move_particle_cases::BuildCaseInputs({
+      .start_position = {.x = 0.3, .y = 0.1, .z = kTolerance},
+      .velocity = {},
+      .step_duration = 0.2,
+      .friction = 0,
+  });
+  return scene;
+}
+
+TEST(MoveParticle, MovingTurningBoxSlide_CarriedWithMidStepAxes) {
+  // Hit at 0 on the top face; the particle's velocity relative to the surface there, v - u(x), is turned into the
+  // box's own axes with its axes at 0.1 s, the middle of the step, its part into the top removed, and the particle
+  // moves on that straight line in own axes for 0.2 s, placed with the pose at 0.2 s. The test computes that end
+  // itself. Carried with the axes of the hit or of the end instead, it would be off by about (a / 2) |v - u| T,
+  // a = 0.141 rad the turn and |v - u| = 0.655 m/s: 9.3e-3 m here.
+  MoveParticleCase scene = BuildMovingTurningBoxSlide();
+  const Vec3 velocity = {.x = 1, .y = -0.5, .z = 0};
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  const Solid& box = scene.solids.at(0);
+  const Vec3 start = scene.inputs.start_position;
+  const SolidPose start_pose = ComputeSolidPose(box, 0);
+  const Mat3 to_middle_axes = math::Transpose(ComputeSolidPose(box, 0.1).axes);
+  Vec3 own_velocity = to_middle_axes * (velocity - ComputeSolidVelocity(box, start_pose, start));  // m/s
+  own_velocity.z = std::max(own_velocity.z, 0.0);
+  const Vec3 own_start = math::Transpose(start_pose.axes) * (start - start_pose.origin);
+  const SolidPose end_pose = ComputeSolidPose(box, 0.2);
+  const Vec3 expected_end = end_pose.origin + end_pose.axes * (own_start + 0.2 * own_velocity);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kHighZ);
+  ExpectVec3Near(call.result.position, expected_end, kPositionTolerance);
+}
+
+TEST(MoveParticle, MovingTurningBoxSlide_VelocityAgreesWithPathToFirstOrder) {
+  // The velocities stay as the response made them; the carried path's mean velocity, (x_end - x) / T, differs from
+  // for_next_step by at most (a / 2) (2 |v - v_lin| + |omega| r) + a^2 (|omega| r + |v - v_lin|), a = |omega| T
+  // (ApplyCarryInSolidAxes): first order in the turn. On the turntable, where nothing is removed, a frictionless rest
+  // moves by r a^3 / 24 a step (TurntableFrictionless_StaysPutWithinMidpointResidue).
+  for (const Vec3 velocity : {Vec3{.x = 1, .y = -0.5, .z = 0}, Vec3{.x = 0.2, .y = -0.1, .z = 0}}) {
+    MoveParticleCase scene = BuildMovingTurningBoxSlide();
+    scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+    const Solid& box = scene.solids.at(0);
+    const MoveParticleCall call = RunMove(scene);
+    ASSERT_EQ(call.error, ContactError::kNone);
+    const double step_duration = scene.inputs.step_duration;  // s
+    const Vec3 mean_velocity = (1 / step_duration) * (call.result.position - scene.inputs.start_position);  // m/s
+    const double turn = math::Length(box.motion.angular_velocity) * step_duration;  // rad
+    const double relative_speed = math::Length(velocity - box.motion.linear_velocity);  // m/s
+    const double arm_speed = math::Length(box.motion.angular_velocity)
+        * math::Length(scene.inputs.start_position - box.pose_at_step_start.origin);  // m/s
+    const double bound = turn / 2 * (2 * relative_speed + arm_speed) + turn * turn * (arm_speed + relative_speed)
+        + 4 * kTolerance / step_duration;  // m/s
+    EXPECT_LE(math::Length(mean_velocity - call.result.velocity.for_next_step), bound);
+  }
+}
+
+TEST(MoveParticle, TurningBoxLeavingParticle_CarriedAwayFromFace) {
+  // At the rest gap of the face kHighX and moving away from it at 1 m/s: hit at 0 all the same, with no change, and
+  // carried with the part along the normal kept: its relative velocity {1, -(0.5 + tol), 0} m/s turned into the axes
+  // of the middle of the step has the part cos 0.05 - (0.5 + tol) sin 0.05 along the normal, so it ends that times
+  // 0.1 s, plus tol, from the box at its end pose (0.0974 m; a particle on that world line is 0.0970 m away). Only a
+  // part into the face is removed.
+  const MoveParticleCase scene = BuildSceneFrom(
+      "TurningBoxSlide",
+      {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 0}, .velocity = kUnitX, .step_duration = 0.1}
+  );
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectVec3Equal(call.result.velocity.for_next_step, kUnitX);
+  const double expected_distance = 0.1 * (std::cos(0.05) - (0.5 + kTolerance) * std::sin(0.05)) + kTolerance;  // m
+  EXPECT_NEAR(ComputeDistanceAtEndPose(scene, call.result.position), expected_distance, kPositionTolerance);
+}
+
+TEST(MoveParticle, RestingOnTurningBoxNearFloor_StepLengthDecidesCloseCall) {
+  // Hit at 0 with the whole step left; the carry moves at {0, -(0.5 + tol) cos(T / 2), 0} m/s in the box's axes (its
+  // relative velocity turned by half the turn, the part into the face removed), 0.6726812 m from its origin, so its
+  // closing bound against the floor 0.05 m below is T ((0.5 + tol) cos(T / 2) + 0.6726812) (plan decision P7), which
+  // passes 0.05 - tol from T = 0.0426415 s (the brief's 0.0426373 s was the carry with the axes of the hit). T 0.1:
+  // 0.1172 m, too close to call. T 0.04: 0.0469 m, a carry that ends at the rest gap of the box at its end pose, at the
+  // same height above the floor.
+  ExpectCloseCall(RunMove("RestingOnTurningBoxNearFloor"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  const MoveParticleCase scene = BuildSceneFrom(
+      "RestingOnTurningBoxNearFloor",
+      {.position = {.x = 0.5 + kTolerance, .y = 0, .z = -0.45}, .velocity = {}, .step_duration = 0.04}
+  );
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.hit_fraction, 0);
+  EXPECT_EQ(call.result.face, SolidFace::kHighX);
+  const double end_distance = ComputeDistanceAtEndPose(scene, call.result.position);  // m
+  EXPECT_GE(end_distance, kTolerance / 2);
+  EXPECT_LE(end_distance, 2 * kTolerance);
+  EXPECT_NEAR(call.result.position.z, -0.45, kPositionTolerance);
+}
+
+TEST(MoveParticle, RestingOnTurningBoxNearMovingFloor_FloorMotionAddsToClosingBound) {
+  // The step of 0.04 s that passes with a fixed floor, with the floor moving along itself at 1 m/s, or spinning about
+  // its normal at 1 rad/s about its origin 0.5025 m from the particle: neither brings the floor nearer, but the closing
+  // bound bounds every motion of the other solid by its speed, |v_lin_j| + |omega_j| r_j (plan decision P7), 0.0869 m
+  // and 0.0670 m against 0.05 m, so both are too close to call.
+  const MoveParticleCase scene = BuildSceneFrom(
+      "RestingOnTurningBoxNearFloor",
+      {.position = {.x = 0.5 + kTolerance, .y = 0, .z = -0.45}, .velocity = {}, .step_duration = 0.04}
+  );
+  const std::array<SolidMotion, 2> floor_motions = {
+      SolidMotion{.linear_velocity = kUnitX, .angular_velocity = {}},
+      SolidMotion{.linear_velocity = {}, .angular_velocity = kUnitZ},
+  };
+  for (const SolidMotion& floor_motion : floor_motions) {
+    MoveParticleCase moving_floor_scene = scene;
+    moving_floor_scene.solids.at(1).motion = floor_motion;
+    ExpectCloseCall(RunMove(moving_floor_scene), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  }
+}
+
+TEST(MoveParticle, CylinderTurningAcrossAxisHitsRestingParticle_EndsOnWallAtEndPose) {
+  // A cylinder turning across its axis is a turning solid (plan decision P17): its wall reaches the particle at
+  // 1.2 - asin((0.5 + tol) / 0.6) s, and the carry keeps the particle near its rest gap at the end pose.
+  const MoveParticleCase scene = FindMoveParticleCase("CylinderTurningAcrossAxisHitsRestingParticle");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kCurved);
+  EXPECT_NEAR(call.result.hit_fraction, 0.21488921385421111, 0x1p-30);
+  const double end_distance = ComputeDistanceAtEndPose(scene, call.result.position);  // m
+  EXPECT_GE(end_distance, kTolerance / 2);
+  EXPECT_LE(end_distance, 2 * kTolerance);
+}
+
+TEST(MoveParticle, TurningBoxStartInsideApproaching_OneHitAtTheStart) {
+  // The start is inside the box and moves into it: the start's response removes the approach (velocities {0, 0, 0}),
+  // then the first sweep finds the box at 0, at the rest gap where that response read it. That is the same moment, not
+  // a second hit: hit_count 1, and the carry.
+  const MoveParticleCall call = RunMove("TurningBoxStartInsideApproaching");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kHighX);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 0, .z = 0}, 1e-15);
+}
+
+TEST(MoveParticle, TurningBoxWithCopy_SameVelocitiesHitsAndRecord) {
+  // An exact copy of the turning box, with another id, fills the same space at every time: the carry keeps the particle
+  // out of the box, so out of the copy, and the test of the other solids leaves it out. The move is the same, bit for
+  // bit, as with the box alone.
+  const MoveParticleCase scene = FindMoveParticleCase("TurningBoxHitsRestingParticle");
+  MoveParticleCase with_copy = scene;
+  Solid copy = scene.solids.at(0);
+  copy.solid_id = 2;
+  with_copy.solids.push_back(copy);
+  const MoveParticleCall call = RunMove(scene);
+  const MoveParticleCall other = RunMove(with_copy);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  ASSERT_EQ(other.error, ContactError::kNone);
+  EXPECT_EQ(other.result.hit_count, call.result.hit_count);
+  EXPECT_EQ(other.result.hit_fraction, call.result.hit_fraction);
+  EXPECT_EQ(other.result.solid_index, call.result.solid_index);
+  EXPECT_EQ(other.result.face, call.result.face);
+  ExpectVec3Equal(other.result.velocity.for_this_step, call.result.velocity.for_this_step);
+  ExpectVec3Equal(other.result.velocity.for_next_step, call.result.velocity.for_next_step);
+  ExpectVec3Equal(other.result.position, call.result.position);
+}
+
+TEST(MoveParticle, TurningBoxWithFixedBoxInItsPlace_IsTurningSolidNearOtherSolid) {
+  // A box of the same shape and pose that does not turn does not fill the same space through the step: 0.073 m from
+  // the particle at the start, it is within the carry's closing bound after the hit, so the step is too close to call.
+  MoveParticleCase scene = FindMoveParticleCase("TurningBoxHitsRestingParticle");
+  Solid fixed_box = scene.solids.at(0);
+  fixed_box.solid_id = 2;
+  fixed_box.motion = kNoMotion;
+  scene.solids.push_back(fixed_box);
+  ExpectCloseCall(RunMove(scene), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+}
+
+TEST(MoveParticle, StartInsideFloorThenTurningBox_SecondHitHasItsResponse) {
+  // The start is tol / 4 inside a fixed floor and leaves it at {1, 0, 1} m/s: a response at time 0 (kind
+  // kStartedInsideSolid). The path then meets the face kLowX of a box turning slowly about z, 1 m away, at about 1 s:
+  // a hit after a response, but not at 0, so it has its own response, which removes the approach along the face's
+  // normal. The floor is 1 m below, beyond the carry's closing bound for the 0.5 s left.
+  MoveParticleCase scene;
+  scene.name = "StartInsideFloorThenTurningBox";
+  scene.solids = {
+      move_particle_cases::BuildFloor(1),
+      ToSolid(
+          Box{.center = {.x = 1.25, .y = 0, .z = 1}, .axes = kIdentity, .half_size = {.x = 0.25, .y = 0.5, .z = 0.5}},
+          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 0.01}},
+          2
+      ),
+  };
+  scene.inputs = move_particle_cases::BuildCaseInputs({
+      .start_position = {.x = 0, .y = 0, .z = -kTolerance / 4},
+      .velocity = {.x = 1, .y = 0, .z = 1},
+      .step_duration = 1.5,
+      .friction = 0,
+  });
+  scene.inputs.start_overlap_tolerance = kTolerance;
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  ASSERT_TRUE(ComputeIsTurningSolid(inputs, 1));
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
+  EXPECT_EQ(call.result.hit_count, 2);
+  // At the hit the face's normal is near {-1, 0, 0}: the particle keeps at most the face's own speed along it.
+  EXPECT_LT(std::abs(call.result.velocity.for_next_step.x), 0.02);
+  EXPECT_NEAR(call.result.velocity.for_next_step.z, 1, 1e-12);
+}
+
+TEST(MoveParticle, FloorStartThenTurningBoxBeyondWindow_SecondResponseAtTheSameTime) {
+  // tol 0.01 m. The start is 1.05 tol above a fixed floor and approaches it and a box spinning slowly about z whose
+  // face kLowX is 1.2 tol away: the start's response reads the floor alone (the box is beyond tol + tol / 16). The
+  // first sweep then finds the box at 0 (gap 0.2 tol <= tol / 4): the same time, but a surface that response did not
+  // read, so it has its own response, which removes the approach to the box. The floor's gap, 0.05 tol, is beyond
+  // the closing bound of 1e-3 s. Without the window test the moment rule took it for the same moment, and the
+  // particle kept {0.1, 0, 0} m/s into the box.
+  constexpr double kCoarseTolerance = 0.01;  // m
+  const double particle_x = 0.3;  // m
+  MoveParticleCase scene;
+  scene.name = "FloorStartThenTurningBoxBeyondWindow";
+  scene.solids = {
+      move_particle_cases::BuildFloor(1),
+      ToSolid(
+          Box{
+              .center = {.x = particle_x + 1.2 * kCoarseTolerance + 0.1, .y = 0, .z = 0.25},
+              .axes = kIdentity,
+              .half_size = {.x = 0.1, .y = 0.1, .z = 0.25},
+          },
+          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 0.01}},
+          2
+      ),
+  };
+  scene.inputs = move_particle_cases::BuildCaseInputs({
+      .start_position = {.x = particle_x, .y = 0, .z = 1.05 * kCoarseTolerance},
+      .velocity = {.x = 0.1, .y = 0, .z = -0.05},
+      .step_duration = 1e-3,
+      .friction = 0,
+  });
+  scene.inputs.contact_tolerance = kCoarseTolerance;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 2);
+  EXPECT_EQ(call.result.face, SolidFace::kHighZ);
+  ExpectVec3Near(call.result.velocity.for_next_step, {.x = 0, .y = 0, .z = 0}, 1e-3);
+}
+
+TEST(MoveParticle, TurningBoxBesideFarFloorInEitherOrder_SameMove) {
+  // A fixed floor 0.5 m below the particle, beyond the carry's closing bound, before or after the turning box in the
+  // array: the same velocities, hit count and position, bit for bit; the record names the box's own index.
+  MoveParticleCase box_first = FindMoveParticleCase("TurningBoxHitsRestingParticle");
+  box_first.solids.push_back(move_particle_cases::BuildFlatSolid({.x = 0, .y = 0, .z = -0.5}, kUnitZ, kNoMotion, 2));
+  MoveParticleCase floor_first = box_first;
+  floor_first.solids = {box_first.solids.at(1), box_first.solids.at(0)};
+  floor_first.solids.at(0).solid_id = 1;
+  floor_first.solids.at(1).solid_id = 2;
+  const MoveParticleCall call = RunMove(box_first);
+  const MoveParticleCall other = RunMove(floor_first);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  ASSERT_EQ(other.error, ContactError::kNone);
+  EXPECT_EQ(call.result.solid_index, 0U);
+  EXPECT_EQ(other.result.solid_index, 1U);
+  EXPECT_EQ(other.result.hit_count, call.result.hit_count);
+  ExpectVec3Equal(other.result.velocity.for_this_step, call.result.velocity.for_this_step);
+  ExpectVec3Equal(other.result.velocity.for_next_step, call.result.velocity.for_next_step);
+  ExpectVec3Equal(other.result.position, call.result.position);
+}
+
+TEST(MoveParticle, TurningStackedBoxes_SeamIsNearOtherSolid) {
+  // Known limit: a turning solid has no bounding surface (plan decision P21, item 10), and the carry sweeps nothing,
+  // so a particle sliding down two flush boxes that turn together cannot cross their seam. Hit at 0 on the upper box,
+  // its carry for 1 s could reach the lower one: too close to call. A step of 0.1 s keeps the lower box beyond the
+  // closing bound, and the carry stays on the upper box. At the seam, within tol of both, every step length is too
+  // close to call.
+  ExpectCloseCall(RunMove("TurningStackedBoxes"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  const MoveParticleCall short_step = RunMoveWith(
+      "TurningStackedBoxes",
+      {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 1.8}, .velocity = -kUnitZ, .step_duration = 0.1}
+  );
+  ASSERT_EQ(short_step.error, ContactError::kNone);
+  EXPECT_EQ(short_step.result.hit_count, 1);
+  EXPECT_NEAR(short_step.result.position.z, 1.7, kPositionTolerance);
+  for (const double step_duration : {0.1, 1e-6}) {
+    ExpectCloseCall(
+        RunMoveWith(
+            "TurningStackedBoxes",
+            {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 1}, .velocity = -kUnitZ, .step_duration = step_duration}
+        ),
+        ContactCloseCall::kTurningSolidNearOtherSolid,
+        1
+    );
+  }
 }
 
 TEST(MoveParticle, SpinningSphereStick_TakesSurfaceVelocity) {
@@ -888,13 +1455,17 @@ TEST(MoveParticle, SpinningMovingSphereStartWithinTolerance_ApproachReadAtTimeZe
   ExpectVec3Near(call.result.position, {.x = 0.1, .y = 0, .z = 0.51 + kTolerance}, kRestGapTolerance);
 }
 
-TEST(MoveParticle, TurningBoxStartWithinTolerance_EndsInTooManyHits) {
-  // The departure of MoveParticle's step 5 until the slide on a turning solid: no touching rule, so every sweep from
-  // the rest gap hits the box at 0.
-  ExpectStartFailure(
-      "TurningBoxStartWithinTolerance",
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 1}
-  );
+TEST(MoveParticle, TurningBoxStartWithinTolerance_CarriedOnTheTurnAxis) {
+  // Moved silently to the rest gap above the top face, on the turn axis, where the face does not move: hit at 0, since
+  // a turning solid has no touching rule, then carried in the box's axes, where it stays put. One hit; before the
+  // carry, every later sweep hit the box at 0 again, until kTooManyHits.
+  const MoveParticleCall call = RunMove("TurningBoxStartWithinTolerance");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.hit_fraction, 0);
+  EXPECT_EQ(call.result.face, SolidFace::kHighZ);
+  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = 0.5 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, CommittedSideInsideThickness_PushedToCommittedSide) {
@@ -2086,46 +2657,59 @@ struct MoveBeforeSettle {
   std::vector<SolidFace> hit_faces;  // The start's response, when it has one, then each hit's face, in order.
 };
 
+// Applies the steps of MoveParticle to one move up to the end of the last sweep, without the settle and the end check,
+// adds the face of each hit to *hit_faces, and returns the error that stopped it, kNone when it reached the settle.
+ContactError
+ApplyStepsBeforeSettle(const SolidContactInputs& inputs, ParticleMove* move, std::vector<SolidFace>* hit_faces) {
+  move->result.position = inputs.start_position;
+  move->result.velocity = inputs.velocity;
+  ContactFailure failure;
+  ContactError error = ApplyStartRules(inputs, move, &failure);
+  if (move->result.hit_count > 0) {
+    hit_faces->push_back(move->result.face);
+  }
+  for (int sweep_index = 0; sweep_index <= kMaxHitsPerStep && error == ContactError::kNone; ++sweep_index) {
+    const double duration = inputs.step_duration - move->elapsed;  // s
+    if (duration <= 0) {
+      break;
+    }
+    const Sweep sweep = {
+        .start = move->result.position,
+        .velocity_for_this_step = move->result.velocity.for_this_step,
+        .start_elapsed = move->elapsed,
+        .duration = duration,
+    };
+    const TouchedSolid touched = {
+        .is_touched = move->has_response,
+        .approach_allowance = move->this_step_approach_allowance,
+    };
+    FirstHit first_hit;
+    error = FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, nullptr);
+    if (error != ContactError::kNone) {
+      break;
+    }
+    if (first_hit.solid_index == kNoSolid) {
+      move->result.position = move->result.position + move->result.velocity.for_this_step * duration;
+      break;
+    }
+    hit_faces->push_back(first_hit.at_hit.face);
+    // As MoveParticle: a hit on a turning solid ends the sweeps with the carry in its axes.
+    if (ComputeIsTurningSolid(inputs, first_hit.solid_index)) {
+      error = ApplyHitOnTurningSolid(inputs, first_hit, move, &failure);
+      break;
+    }
+    error = ApplyHit(inputs, first_hit, move, &failure);
+  }
+  return error;
+}
+
 // Runs the steps of MoveParticle on one scene up to the end of the last sweep, without the settle and the end check,
 // and returns the position there with the faces of the hits; a failure fails the calling test.
 MoveBeforeSettle RunMoveBeforeSettle(const MoveParticleCase& scene) {
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   MoveBeforeSettle before_settle;
   ParticleMove move;
-  move.result.position = inputs.start_position;
-  move.result.velocity = inputs.velocity;
-  ContactFailure failure;
-  ContactError error = ApplyStartRules(inputs, &move, &failure);
-  if (move.result.hit_count > 0) {
-    before_settle.hit_faces.push_back(move.result.face);
-  }
-  for (int sweep_index = 0; sweep_index <= kMaxHitsPerStep && error == ContactError::kNone; ++sweep_index) {
-    const double duration = inputs.step_duration - move.elapsed;  // s
-    if (duration <= 0) {
-      break;
-    }
-    const Sweep sweep = {
-        .start = move.result.position,
-        .velocity_for_this_step = move.result.velocity.for_this_step,
-        .start_elapsed = move.elapsed,
-        .duration = duration,
-    };
-    const TouchedSolid touched = {
-        .is_touched = move.has_response,
-        .approach_allowance = move.this_step_approach_allowance,
-    };
-    FirstHit first_hit;
-    error = FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, nullptr);
-    if (error == ContactError::kNone && first_hit.solid_index == kNoSolid) {
-      move.result.position = move.result.position + move.result.velocity.for_this_step * duration;
-      break;
-    }
-    if (error == ContactError::kNone) {
-      before_settle.hit_faces.push_back(first_hit.at_hit.face);
-      error = ApplyHit(inputs, first_hit, &move, &failure);
-    }
-  }
-  EXPECT_EQ(error, ContactError::kNone);
+  EXPECT_EQ(ApplyStepsBeforeSettle(inputs, &move, &before_settle.hit_faces), ContactError::kNone);
   before_settle.position = move.result.position;
   return before_settle;
 }
@@ -2318,36 +2902,6 @@ TEST(MoveParticle, SlowlyTiltingCylinderRim_HitAtItsTrueDistance) {
 }
 
 // --- Flush seams and a rim's neighbourhood (plan decision P21) ---
-
-// Runs a scene from another start, with both velocities as the scene has them.
-MoveParticleCall RunMoveFrom(std::string_view case_name, Vec3 start_position) {
-  MoveParticleCase scene = FindMoveParticleCase(case_name);
-  scene.inputs.start_position = start_position;
-  return RunMove(scene);
-}
-
-// Another start of a scene: the position, both velocities and the step.
-struct SceneStart {
-  Vec3 position{};  // m, world.
-  Vec3 velocity{};  // m/s, world, both velocities.
-  double step_duration = 0;  // s.
-  double friction = 0;  // No unit.
-};
-
-// A scene from another start.
-MoveParticleCase BuildSceneFrom(std::string_view case_name, SceneStart start) {
-  MoveParticleCase scene = FindMoveParticleCase(case_name);
-  scene.inputs.start_position = start.position;
-  scene.inputs.velocity = {.for_next_step = start.velocity, .for_this_step = start.velocity};
-  scene.inputs.step_duration = start.step_duration;
-  scene.inputs.friction = start.friction;
-  return scene;
-}
-
-// Runs a scene from another start.
-MoveParticleCall RunMoveWith(std::string_view case_name, SceneStart start) {
-  return RunMove(BuildSceneFrom(case_name, start));
-}
 
 TEST(MoveParticle, StackedDrumsOfOneRadius_SlideDownTheSeamKeepsItsVelocity) {
   // Down the upper drum's wall at its rest gap and past the seam: the start beside the lower drum's high rim rests on
@@ -3308,8 +3862,8 @@ TEST(MoveParticle, SettleInReversedOrder_LastPlaceKnownLimit) {
 
 TEST(ApplyHit, TurningCylinderRimHit_StaysWhereTheSearchStopped) {
   // The stepping search stops near the rim, 1.11 tol from it, in the rim region (plan decision P18): its hit is used
-  // where the search stopped, as every hit is (plan decision P21). MoveParticle itself ends in kTooManyHits here until
-  // the slide on a turning solid is built (plan Task 13), so the hit is applied alone.
+  // where the search stopped, as every hit is (plan decision P21). The hit applied alone; MoveParticle's own check is
+  // TurningCylinderRimHit_UsedWhereTheSearchStopped.
   const MoveParticleCase scene = FindMoveParticleCase("TurningCylinderRimHit");
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   const Vec3 velocity = inputs.velocity.for_this_step;
@@ -3334,6 +3888,52 @@ TEST(ApplyHit, TurningCylinderRimHit_StaysWhereTheSearchStopped) {
   const double hit_distance =
       ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), hit_position).distance;  // m
   EXPECT_NEAR(hit_distance, first_hit.at_hit.distance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, TurningCylinderRimHit_UsedWhereTheSearchStopped) {
+  // The whole move: no error, one hit on the rim, recorded where the stepping search stopped, at the distance it
+  // reported (about 1.11 tol), then the carry in the cylinder's axes.
+  const MoveParticleCase scene = FindMoveParticleCase("TurningCylinderRimHit");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const Vec3 velocity = inputs.velocity.for_this_step;
+  FirstHit first_hit;
+  ASSERT_EQ(
+      FindFirstHit(inputs, inputs.start_position, velocity, 0, inputs.step_duration, &first_hit),
+      ContactError::kNone
+  );
+  ASSERT_EQ(first_hit.solid_index, 0U);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kHighRim);
+  const Vec3 hit_position = call.result.reaction.hit_position;
+  ExpectVec3Near(hit_position, inputs.start_position + velocity * first_hit.elapsed, kTolerance / 1024);
+  const Solid& cylinder = scene.solids.at(0);
+  const double hit_distance =
+      ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), hit_position).distance;  // m
+  EXPECT_NEAR(hit_distance, first_hit.at_hit.distance, kTolerance / 1024);
+  EXPECT_NEAR(first_hit.at_hit.distance, 1.11 * kTolerance, 0.01 * kTolerance);
+  EXPECT_GE(ComputeDistanceAtEndPose(scene, call.result.position), kTolerance / 2);
+}
+
+TEST(FindActiveSurfaces, TurningBoxLevelWithOtherFacePlane_IsActive) {
+  // Beside the face kHighX, 33 / 32 tol away and level with the plane of kHighZ: a box that does not turn is passed
+  // at a bounding surface's level and gives no active surface (plan decision P21, item 16); a turning box has no
+  // bounding surface (item 10), so it is active.
+  const Vec3 position = {.x = 0.5 + 33.0 / 32 * kTolerance, .y = 0, .z = 0.5 + kTolerance};
+  for (const bool is_turning : {false, true}) {
+    const SolidMotion motion = is_turning ? SolidMotion{.linear_velocity = {}, .angular_velocity = kUnitZ} : kNoMotion;
+    const std::array solids = {
+        ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, motion, 1),
+    };
+    SolidContactInputs inputs = move_particle_cases::BuildCaseInputs({.step_duration = 0.1});
+    inputs.solids = solids.data();
+    inputs.solid_count = 1;
+    ASSERT_EQ(ComputeIsTurningSolid(inputs, 0), is_turning);
+    ParticleMove move;
+    move.result.position = position;
+    EXPECT_EQ(FindActiveSurfaces(inputs, move, nullptr).count, is_turning ? 1 : 0) << "turning " << is_turning;
+  }
 }
 
 // --- Closing solids: carried out along the apex, or squeezed ---
@@ -5148,18 +5748,20 @@ struct GeneratedCounts {
   int too_many_hits = 0;
   int second_reacting_solid = 0;
   int slow_approach = 0;
+  int near_other_solid = 0;  // kTurningSolidNearOtherSolid.
   int squeezed = 0;
   std::map<std::string_view, std::array<int, 8>> failures_per_scene;  // Per close call, in ContactCloseCall order.
 };
 
-// Prints, for the report, each scene with a failure: its counts of kTooManyHits, kSqueezedBetweenSolids and
-// kSecondReactingSolid.
+// Prints, for the report, each scene with a failure: its counts of kTooManyHits, kSqueezedBetweenSolids,
+// kSecondReactingSolid and kTurningSolidNearOtherSolid.
 void PrintFailuresPerScene(const std::map<std::string_view, std::array<int, 8>>& failures_per_scene) {
-  std::cout << "failures per scene (too many hits, squeezed, second reacting solid):";
+  std::cout << "failures per scene (too many hits, squeezed, second reacting solid, turning solid near other solid):";
   for (const auto& [scene_name, counts] : failures_per_scene) {
     std::cout << " " << scene_name << " " << counts.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits)) << " "
               << counts.at(static_cast<std::size_t>(ContactCloseCall::kSqueezedBetweenSolids)) << " "
-              << counts.at(static_cast<std::size_t>(ContactCloseCall::kSecondReactingSolid)) << ";";
+              << counts.at(static_cast<std::size_t>(ContactCloseCall::kSecondReactingSolid)) << " "
+              << counts.at(static_cast<std::size_t>(ContactCloseCall::kTurningSolidNearOtherSolid)) << ";";
   }
   std::cout << "\n";
 }
@@ -5253,6 +5855,7 @@ void CheckGeneratedPath(const SolidContactInputs& inputs, std::string_view scene
   ++counts.failures_per_scene[scene_name].at(static_cast<std::size_t>(failure.close_call));
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
   counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
+  counts.near_other_solid += failure.close_call == ContactCloseCall::kTurningSolidNearOtherSolid ? 1 : 0;
   counts.squeezed += failure.close_call == ContactCloseCall::kSqueezedBetweenSolids ? 1 : 0;
 }
 
@@ -5282,13 +5885,16 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
       }
     }
   }
-  // The counts keep the set honest: most paths succeed, many hit, and several hits are common. Measured: 292,046 paths,
-  // 68,480 hits, 7,079 with several. The scenes of one sphere or one cylinder, last in the list, are mostly missed by
+  // The counts keep the set honest: most paths succeed, many hit, and several hits are common. Measured: 314,546 paths,
+  // 72,610 hits, 7,172 with several. kTooManyHits comes from the octagon room alone (476); the turning scenes, 818
+  // before the carry, have none: their kTurningSolidNearOtherSolid (517) come from the scenes with a turning box near
+  // another solid. The scenes of one sphere or one cylinder, last in the list, are mostly missed by
   // paths drawn within 1 m of their start, so a fifth of the paths hit, not a quarter.
   std::cout << "paths " << counts.paths << ", free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", several hits " << counts.several_hit_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
-            << ", squeezed " << counts.squeezed << "\n";
+            << ", turning solid near other solid " << counts.near_other_solid << ", squeezed " << counts.squeezed
+            << "\n";
   PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(counts.paths, 40000);
   EXPECT_GT(counts.hit_paths, counts.paths / 5);
@@ -5311,6 +5917,7 @@ struct NearStartCounts {
   int too_many_hits = 0;
   int second_reacting_solid = 0;
   int slow_approach = 0;
+  int near_other_solid = 0;  // kTurningSolidNearOtherSolid.
   int squeezed = 0;
   std::map<std::string_view, std::array<int, 8>> failures_per_scene;  // Per close call, in ContactCloseCall order.
 };
@@ -5440,6 +6047,7 @@ void CheckGeneratedNearStart(
   ++counts.failures_per_scene[scene_name].at(static_cast<std::size_t>(failure.close_call));
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
   counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
+  counts.near_other_solid += failure.close_call == ContactCloseCall::kTurningSolidNearOtherSolid ? 1 : 0;
   counts.squeezed += failure.close_call == ContactCloseCall::kSqueezedBetweenSolids ? 1 : 0;
 }
 
@@ -5451,7 +6059,8 @@ void ExpectNearStartCounts(const NearStartCounts& counts) {
             << ", slightly inside " << starts.at(2) << "; free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", started inside " << counts.started_inside_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
-            << ", squeezed " << counts.squeezed << "\n";
+            << ", turning solid near other solid " << counts.near_other_solid << ", squeezed " << counts.squeezed
+            << "\n";
   PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(starts.at(0), 15000);
   EXPECT_GT(starts.at(1), 15000);
@@ -5480,9 +6089,10 @@ TEST(MoveParticle, GeneratedStartsNearSolidsInEveryScene_EndOutsideEverySolid) {
   // For every scene of BuildMoveParticleCases with a solid, in id order: 1000 starts (BuildGeneratedNearStart) within
   // the tolerance of, on, or slightly inside one solid and far from the others, no committed plate, the test contact
   // tolerance. A scene with a step or a start out of range uses 0.2 s and {0.5, 0.5, 0.5}. Its kTooManyHits come from
-  // the three turning-box scenes (every start: no touching rule until plan Task 13) and the octagon room (100 m/s);
-  // its kSecondReactingSolid from the scenes with two reacting solids; its kSqueezedBetweenSolids from the scenes whose
-  // solids close on the particle.
+  // the octagon room (100 m/s) and two settle scenes (one each); the four turning scenes ended every start in
+  // kTooManyHits before the carry (4,000). Its kSecondReactingSolid come from the scenes with two reacting solids; its
+  // kSqueezedBetweenSolids from the scenes whose solids close on the particle; its kTurningSolidNearOtherSolid (1,677)
+  // from the scenes with a turning box near another solid.
   CaseGenerator generator;
   NearStartCounts counts;
   constexpr int kStartsPerScene = 1000;
@@ -7077,6 +7687,382 @@ TEST(ApplySettleAtEnd, UntouchedNearSolid_IsMovedOffToo) {
       kAtRestGapTolerance
   );
   ExpectAtRestGapOfEverySolid(inputs, move.result.position);
+}
+
+// --- Generated moves near turning solids ---
+
+// One generated set of moves near a turning solid: its solids (the turning solid first), the step, the contact
+// tolerance and the length every draw is scaled by.
+struct TurningMoveSet {
+  const char* name = "";
+  std::vector<Solid> solids;
+  double step_duration = 0;  // s.
+  double contact_tolerance = 0;  // m.
+  double length_scale = 0;  // m. The size of the turning solid: starts and speeds are drawn in proportion to it.
+  double largest_coordinate = 0;  // m. A bound on the coordinates of every start and solid origin of the set.
+};
+
+// Where a generated start near a turning solid lies, by its distance d to it at time 0.
+enum class TurningStartKind : std::uint8_t {
+  kWithinWindow,  // 0 <= d <= 1.25 tol: the stepping search hits it at 0.
+  kAtRestGap,  // d = tol, up to the placement's rounding.
+  kSlightlyInside,  // -tol <= d < -tol / 4.
+  kAway,  // d between 0.01 and 0.51 length scales, moving toward the solid.
+};
+
+// What a generated set of moves near a turning solid gave, counted for the report.
+struct TurningMoveCounts {
+  int moves = 0;
+  std::array<int, kMaxHitsPerStep + 1> successes_per_hit_count{};  // Successes, by hit_count.
+  std::array<int, 8> failures_per_close_call{};  // In ContactCloseCall order.
+  int other_errors = 0;  // Any error but kTooCloseToCall: none expected.
+  // Moves whose error, hit count or velocities differ, bit for bit, with an exact copy of the turning solid; for a
+  // start closer than tol, whose move off the near surfaces reads the solids in array order, the error and hit count
+  // only.
+  int copy_differences = 0;
+  // No unit. For a start closer than tol, the largest velocity difference with the copy over Max(speed, 1 m/s).
+  double largest_moved_start_copy_difference = 0;
+  int order_differences = 0;  // Moves whose error, hit count or velocities differ with the solids in reverse order.
+  int carried_moves = 0;  // Successes whose last hit was on the turning solid, so ended in a carry.
+  double least_carried_end_share = std::numeric_limits<double>::infinity();  // Of tol, before the settle.
+  std::vector<int> advance_counts;  // The stepping search's advances on the path from the start as given.
+};
+
+// Builds the inputs of one generated move near the turning solid of a set, or none when 50 points in a row cannot be
+// placed. Draw order: one Next for the kind (floor(4 * Next) in TurningStartKind order), one for the target distance;
+// then, for each try, three NextSigned for a point up to one length scale per axis from the solid's origin, moved along
+// its normal at time 0 to the target distance and kept when its distance is within tol / 8 of the target and every
+// other solid is at least 4 tol away; then three NextSigned for a velocity of up to 2 length scales per second per axis
+// relative to the surface there (an away start also gets (0.5 + Next) length scales per step into the solid), and one
+// Next for the friction.
+bool BuildTurningMove(const TurningMoveSet& set, CaseGenerator& generator, SolidContactInputs* inputs) {
+  const double contact_tolerance = set.contact_tolerance;
+  const double length_scale = set.length_scale;
+  const auto start_kind = static_cast<TurningStartKind>(static_cast<int>(std::floor(4 * generator.Next())));
+  const double target_draw = generator.Next();
+  double target_distance = contact_tolerance;  // m, kAtRestGap.
+  if (start_kind == TurningStartKind::kWithinWindow) {
+    target_distance = 1.25 * contact_tolerance * target_draw;
+  } else if (start_kind == TurningStartKind::kSlightlyInside) {
+    target_distance = -(0.25 + 0.75 * target_draw) * contact_tolerance;
+  } else if (start_kind == TurningStartKind::kAway) {
+    target_distance = (0.01 + 0.5 * target_draw) * length_scale;
+  }
+  const Solid& turning_solid = set.solids.at(0);
+  const SolidPose start_pose = ComputeSolidPose(turning_solid, 0);
+  bool is_placed = false;
+  for (int draw_index = 0; draw_index < 50 && !is_placed; ++draw_index) {
+    const Vec3 offset = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+    const Vec3 point = start_pose.origin + length_scale * offset;
+    const DistanceToSolid at_point = ComputeDistanceToSolid(turning_solid, start_pose, point);
+    inputs->start_position = point + (target_distance - at_point.distance) * at_point.normal_out_of_solid;
+    const double start_distance = ComputeDistanceToSolid(turning_solid, start_pose, inputs->start_position).distance;
+    bool is_far_from_others = true;
+    for (std::size_t solid_index = 1; solid_index < set.solids.size(); ++solid_index) {
+      const Solid& other = set.solids.at(solid_index);
+      const double other_distance =
+          ComputeDistanceToSolid(other, ComputeSolidPose(other, 0), inputs->start_position).distance;
+      is_far_from_others = is_far_from_others && other_distance >= 4 * contact_tolerance;
+    }
+    is_placed = std::abs(start_distance - target_distance) <= contact_tolerance / 8 && is_far_from_others;
+  }
+  if (!is_placed) {
+    return false;
+  }
+  const DistanceToSolid at_start = ComputeDistanceToSolid(turning_solid, start_pose, inputs->start_position);
+  const Vec3 relative_draw = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  Vec3 velocity = ComputeSolidVelocity(turning_solid, start_pose, inputs->start_position)
+      + 2 * length_scale * relative_draw;  // m/s
+  if (start_kind == TurningStartKind::kAway) {
+    velocity = velocity - (0.5 + generator.Next()) * length_scale / set.step_duration * at_start.normal_out_of_solid;
+  }
+  inputs->velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  inputs->friction = generator.Next();
+  return true;
+}
+
+// Fails the calling test unless the end position is at least tol / 2 from every solid at its end pose, by
+// ComputeDistanceToSolid itself, with the inputs' own contact tolerance.
+void ExpectEndOutsideEverySolidByItsTolerance(const SolidContactInputs& inputs, Vec3 end_position) {
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    const Solid& solid = inputs.solids[solid_index];
+    const double end_distance =
+        ComputeDistanceToSolid(solid, ComputeSolidPose(solid, inputs.step_duration), end_position).distance;
+    EXPECT_GE(end_distance, inputs.contact_tolerance / 2) << "solid index " << solid_index;
+  }
+}
+
+// Runs MoveParticle on the inputs with the solids given in their place, ids renumbered from 1 in that order.
+MoveParticleCall RunMoveWithSolids(const SolidContactInputs& inputs, std::vector<Solid> solids) {
+  for (std::size_t solid_index = 0; solid_index < solids.size(); ++solid_index) {
+    solids.at(solid_index).solid_id = static_cast<std::uint32_t>(solid_index + 1);
+  }
+  SolidContactInputs inputs_with_solids = inputs;
+  inputs_with_solids.solids = solids.data();
+  inputs_with_solids.solid_count = static_cast<std::uint32_t>(solids.size());
+  MoveParticleCall call;
+  call.error = MoveParticle(inputs_with_solids, &call.result, &call.failure);
+  return call;
+}
+
+// Computes whether two moves are the same: the same error and, on success, the same hit count and velocities, bit for
+// bit, and the same position too when is_position_compared.
+bool ComputeIsSameMove(const MoveParticleCall& first, const MoveParticleCall& second, bool is_position_compared) {
+  if (first.error != second.error) {
+    return false;
+  }
+  if (first.error != ContactError::kNone) {
+    return true;
+  }
+  const bool is_same_position =
+      !is_position_compared || ComputeIsSameVector(first.result.position, second.result.position);
+  return first.result.hit_count == second.result.hit_count && is_same_position
+      && ComputeIsSameVector(first.result.velocity.for_this_step, second.result.velocity.for_this_step)
+      && ComputeIsSameVector(first.result.velocity.for_next_step, second.result.velocity.for_next_step);
+}
+
+// Runs one generated move near a turning solid, checks it and counts it: a success ends at least tol / 2 from every
+// solid on the side of every plate the start rules leave it on; an exact copy of the turning solid and the reverse
+// order of the solids change neither the hit count nor the velocities (the settle may move the end by a unit in the
+// last place, and so may the start's move, MoveToRestGapOfNearSurfaces' known limit); a failure is a close call.
+void CheckTurningMove(const TurningMoveSet& set, const SolidContactInputs& inputs, TurningMoveCounts& counts) {
+  ++counts.moves;
+  const Sweep sweep = {
+      .start = inputs.start_position,
+      .velocity_for_this_step = inputs.velocity.for_this_step,
+      .start_elapsed = 0,
+      .duration = inputs.step_duration,
+  };
+  FirstHit search_hit;
+  int advance_count = 0;
+  static_cast<void>(FindHitOnTurningSolid(inputs, 0, sweep, &search_hit, &advance_count));
+  counts.advance_counts.push_back(advance_count);
+  const MoveParticleCall call = RunMoveWithSolids(inputs, set.solids);
+  std::vector<Solid> solids_with_copy = set.solids;
+  solids_with_copy.push_back(set.solids.at(0));
+  const MoveParticleCall copy_call = RunMoveWithSolids(inputs, solids_with_copy);
+  // A start closer than tol is moved off the solid and its copy at once (MoveToRestGapOfNearSurfaces), which reads the
+  // solids in array order: the moved start may differ by a unit in the last place, and so may the surface velocity a
+  // turning solid has there. That known limit is measured, not required to be zero.
+  const Solid& turning_solid = set.solids.at(0);
+  const double start_distance =
+      ComputeDistanceToSolid(turning_solid, ComputeSolidPose(turning_solid, 0), inputs.start_position).distance;  // m
+  if (start_distance < inputs.contact_tolerance) {
+    const bool is_same_outcome = call.error == copy_call.error && call.result.hit_count == copy_call.result.hit_count;
+    counts.copy_differences += is_same_outcome ? 0 : 1;
+    if (call.error == ContactError::kNone && copy_call.error == ContactError::kNone) {
+      const Vec3 velocity_difference = call.result.velocity.for_next_step - copy_call.result.velocity.for_next_step;
+      const double speed = std::max(math::Length(call.result.velocity.for_next_step), 1.0);  // m/s
+      counts.largest_moved_start_copy_difference =
+          std::max(counts.largest_moved_start_copy_difference, math::Length(velocity_difference) / speed);
+    }
+  } else {
+    counts.copy_differences += ComputeIsSameMove(call, copy_call, false) ? 0 : 1;
+  }
+  const std::vector<Solid> reversed_solids(set.solids.rbegin(), set.solids.rend());
+  counts.order_differences += ComputeIsSameMove(call, RunMoveWithSolids(inputs, reversed_solids), false) ? 0 : 1;
+  const ContactError error = call.error;
+  const SolidContactResult& result = call.result;
+  const ContactFailure& failure = call.failure;
+  if (error == ContactError::kTooCloseToCall) {
+    ++counts.failures_per_close_call.at(static_cast<std::size_t>(failure.close_call));
+    return;
+  }
+  if (error != ContactError::kNone) {
+    ++counts.other_errors;
+    return;
+  }
+  ExpectEndOutsideEverySolidByItsTolerance(inputs, result.position);
+  ExpectEndOnNearerSideOfEveryPlate(inputs, result.position);
+  ++counts.successes_per_hit_count.at(result.hit_count);
+  ParticleMove move;
+  std::vector<SolidFace> hit_faces;
+  const ContactError steps_error = ApplyStepsBeforeSettle(inputs, &move, &hit_faces);
+  EXPECT_EQ(steps_error, ContactError::kNone);
+  const bool is_carried = move.elapsed == inputs.step_duration && ComputeIsTurningSolid(inputs, 0)
+      && result.hit_count > 0 && !hit_faces.empty();
+  if (is_carried) {
+    const Solid& turning_solid = set.solids.at(0);
+    const double end_distance = ComputeDistanceToSolid(
+                                    turning_solid,
+                                    ComputeSolidPose(turning_solid, inputs.step_duration),
+                                    move.result.position
+    )
+                                    .distance;  // m
+    ++counts.carried_moves;
+    counts.least_carried_end_share = std::min(counts.least_carried_end_share, end_distance / set.contact_tolerance);
+  }
+}
+
+// Builds the generated sets of moves near turning solids: a tilted box, a flat solid, a plate and a cylinder that turn
+// across their normal or axis while they move, a paddle of the generated paddle sweeps (FindFirstHit's tests), and
+// the box with a fixed floor beside it.
+std::vector<TurningMoveSet> BuildTurningMoveSets() {
+  const Mat3 tilted_axes = math::Rotation({.x = 0.3, .y = -0.4, .z = 0.5});
+  const Vec3 tilted_normal = ComputeColumn(tilted_axes, Axis::kZ);
+  const Vec3 center = {.x = 0.25, .y = 0.5, .z = -0.125};
+  const Vec3 linear_velocity = {.x = 0.25, .y = -0.5, .z = 0.125};
+  // Each angular velocity has a part across the normal or the axis, and turns at most 1.05 rad in the step of 1 s.
+  const Solid box = ToSolid(
+      Box{.center = center, .axes = tilted_axes, .half_size = {.x = 0.5, .y = 0.25, .z = 1}},
+      {.linear_velocity = linear_velocity, .angular_velocity = {.x = 0.3, .y = -0.6, .z = 0.8}},
+      1
+  );
+  const Solid flat_solid = ToSolid(
+      FlatSolid{.point_on_surface = center, .normal_out_of_solid = tilted_normal},
+      {.linear_velocity = linear_velocity, .angular_velocity = {.x = 0.6, .y = 0.3, .z = -0.2}},
+      1
+  );
+  const Solid plate = ToSolid(
+      Plate{.center = center, .normal = tilted_normal, .half_thickness = 0.05},
+      {.linear_velocity = linear_velocity, .angular_velocity = {.x = 0.5, .y = -0.5, .z = 0.2}},
+      1
+  );
+  const Solid cylinder = ToSolid(
+      Cylinder{.center = center, .axis = tilted_normal, .radius = 0.5, .half_height = 1},
+      {.linear_velocity = linear_velocity, .angular_velocity = {.x = 0.7, .y = 0.2, .z = 0.1}},
+      1
+  );
+  const Solid paddle = ToSolid(
+      Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.25, .y = 0.01, .z = 0.1}},
+      {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 6}},
+      1
+  );
+  // The floor cuts the lowest part of the box, so starts near the box are often near the floor too.
+  const Solid floor_below_box = move_particle_cases::BuildFlatSolid({.x = 0, .y = 0, .z = -0.9}, kUnitZ, kNoMotion, 2);
+  return {
+      {
+          .name = "box",
+          .solids = {box},
+          .step_duration = 1,
+          .contact_tolerance = kTolerance,
+          .length_scale = 1,
+          .largest_coordinate = 3,
+      },
+      {
+          .name = "flat solid",
+          .solids = {flat_solid},
+          .step_duration = 1,
+          .contact_tolerance = kTolerance,
+          .length_scale = 1,
+          .largest_coordinate = 3,
+      },
+      {
+          .name = "plate",
+          .solids = {plate},
+          .step_duration = 1,
+          .contact_tolerance = kTolerance,
+          .length_scale = 1,
+          .largest_coordinate = 3,
+      },
+      {
+          .name = "cylinder",
+          .solids = {cylinder},
+          .step_duration = 1,
+          .contact_tolerance = kTolerance,
+          .length_scale = 1,
+          .largest_coordinate = 3,
+      },
+      {
+          .name = "paddle",
+          .solids = {paddle},
+          .step_duration = 1.0 / 120,
+          .contact_tolerance = 0x1p-30 * 0.01,
+          .length_scale = 0.25,
+          .largest_coordinate = 0.5,
+      },
+      {
+          .name = "box above floor",
+          .solids = {box, floor_below_box},
+          .step_duration = 0.1,
+          .contact_tolerance = kTolerance,
+          .length_scale = 1,
+          .largest_coordinate = 3,
+      },
+  };
+}
+
+// Prints the counts of one generated set of moves near a turning solid, for the report.
+void PrintTurningMoveCounts(const char* set_name, const TurningMoveCounts& counts) {
+  std::vector<int> advance_counts = counts.advance_counts;
+  std::ranges::sort(advance_counts);
+  int advance_sum = 0;
+  for (const int advance_count : advance_counts) {
+    advance_sum += advance_count;
+  }
+  const std::array<int, kMaxHitsPerStep + 1>& hits = counts.successes_per_hit_count;
+  const std::array<int, 8>& failures = counts.failures_per_close_call;
+  std::cout << set_name << ": moves " << counts.moves << "; successes by hit count 0 " << hits.at(0) << ", 1 "
+            << hits.at(1) << ", 2 " << hits.at(2) << ", 3 " << hits.at(3) << ", 4 " << hits.at(4) << "; carried "
+            << counts.carried_moves << ", least end before the settle " << counts.least_carried_end_share
+            << " tol; too many hits " << failures.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits))
+            << ", squeezed " << failures.at(static_cast<std::size_t>(ContactCloseCall::kSqueezedBetweenSolids))
+            << ", slow approach "
+            << failures.at(static_cast<std::size_t>(ContactCloseCall::kSlowApproachToTurningSolid))
+            << ", near other solid "
+            << failures.at(static_cast<std::size_t>(ContactCloseCall::kTurningSolidNearOtherSolid))
+            << ", second reacting solid "
+            << failures.at(static_cast<std::size_t>(ContactCloseCall::kSecondReactingSolid)) << ", ends too close "
+            << failures.at(static_cast<std::size_t>(ContactCloseCall::kEndsTooCloseToSolid)) << "; copy differences "
+            << counts.copy_differences << " (moved starts: largest velocity difference "
+            << counts.largest_moved_start_copy_difference << "), order differences " << counts.order_differences
+            << "; advances mean " << static_cast<double>(advance_sum) / static_cast<double>(advance_counts.size())
+            << ", 99th percentile " << advance_counts.at((advance_counts.size() * 99) / 100) << ", most "
+            << advance_counts.back() << "\n";
+}
+
+// Fails the calling test unless a generated set of moves near a turning solid had no difference with an exact copy of
+// the turning solid or with the solids in reverse order.
+void ExpectSameTurningMovesWithCopyAndOrder(const TurningMoveSet& set, const TurningMoveCounts& counts) {
+  EXPECT_EQ(counts.copy_differences, 0) << set.name;
+  EXPECT_EQ(counts.order_differences, 0) << set.name;
+  // Beside a cylinder's rim the normal is read from a vector about tol long, so a last-place change of the moved
+  // start, ulp(coordinate), turns it by about ulp(coordinate) / tol (MoveToRestGapOfNearSurfaces, Order): 2^-22 at
+  // tol = 2^-30 m and coordinates near 1 m, up to about 2^-12 at the smallest tolerance. Four units of the set's
+  // largest coordinate over its tolerance.
+  const double largest_difference = 4 * 0x1p-52 * set.largest_coordinate / set.contact_tolerance;  // No unit
+  EXPECT_LE(counts.largest_moved_start_copy_difference, largest_difference) << set.name;
+}
+
+// Fails the calling test unless a generated set of moves near a turning solid had no error but close calls, none of
+// them kTooManyHits or kEndsTooCloseToSolid, more than half its moves carried, and every carry ending at 0.99 tol or
+// more before the settle.
+void ExpectTurningMoveOutcomes(const char* set_name, const TurningMoveCounts& counts) {
+  const std::array<int, 8>& failures = counts.failures_per_close_call;
+  EXPECT_EQ(counts.other_errors, 0) << set_name;
+  EXPECT_EQ(failures.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits)), 0) << set_name;
+  EXPECT_EQ(failures.at(static_cast<std::size_t>(ContactCloseCall::kEndsTooCloseToSolid)), 0) << set_name;
+  EXPECT_GT(counts.carried_moves, counts.moves / 2) << set_name;
+  EXPECT_GE(counts.least_carried_end_share, 0.99) << set_name;
+}
+
+TEST(MoveParticle, GeneratedMovesNearTurningSolids_EndOutsideEverySolid) {
+  // 2000 moves per set (BuildTurningMoveSets, BuildTurningMove), friction 0 to 1, a start overlap tolerance of 2 tol.
+  // Every success ends at least tol / 2 from every solid (the end check's promise, checked here by the distance
+  // itself); an exact copy of the turning solid, or the solids in reverse order, change no hit count and no velocity,
+  // bit for bit; no move ends in kTooManyHits, which every hit on a turning solid did before the carry; a carry ends no
+  // nearer than 0.99 tol before the settle.
+  constexpr int kMovesPerSet = 2000;
+  for (const TurningMoveSet& set : BuildTurningMoveSets()) {
+    CaseGenerator generator;
+    TurningMoveCounts counts;
+    SolidContactInputs inputs = move_particle_cases::BuildCaseInputs({.step_duration = set.step_duration});
+    inputs.solids = set.solids.data();
+    inputs.solid_count = static_cast<std::uint32_t>(set.solids.size());
+    inputs.contact_tolerance = set.contact_tolerance;
+    inputs.start_overlap_tolerance = 2 * set.contact_tolerance;
+    ASSERT_EQ(CheckSolidContactInputs(inputs), ContactError::kNone) << set.name;
+    ASSERT_TRUE(ComputeIsTurningSolid(inputs, 0)) << set.name;
+    for (int move_index = 0; move_index < kMovesPerSet; ++move_index) {
+      if (BuildTurningMove(set, generator, &inputs)) {
+        CheckTurningMove(set, inputs, counts);
+      }
+    }
+    PrintTurningMoveCounts(set.name, counts);
+    EXPECT_GT(counts.moves, kMovesPerSet * 9 / 10) << set.name;
+    ExpectTurningMoveOutcomes(set.name, counts);
+    ExpectSameTurningMovesWithCopyAndOrder(set, counts);
+  }
 }
 
 }  // namespace
