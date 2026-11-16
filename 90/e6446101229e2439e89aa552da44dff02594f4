@@ -1,0 +1,60 @@
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_7f759ee8dd3b29 4558-4559,4566-4569,4578,4580,4583,4587,4595,4604-4605,4619-4622,4625-4627,4630,4661-4664,4679-4680,4691-4692,4722,4733,4756
+  s_4f0877e2acdcf0::t_f81a9efe3972fb 4681
+  s_4f0877e2acdcf0::t_71a658e511912a 4758-4759,4761
+  s_4f0877e2acdcf0::t_7a4282af9779a6 4760
+  s_fdcede49161624::t_233b647ec65012 1653-1655,1859-1860,3296-3301,4523-4525,4533-4540,4542-4557,4560-4563
+  s_4f0877e2acdcf0::t_24cfa0d3c11fc6 5033
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_bac84138af6107 20
+  s_4f0877e2acdcf0::t_1e1e2c72e4f617 656-657,659-665,667-679,681-691,694-695,717-719,960,973,1002-1005,1007-1023,1025-1034,1036-1038,1040-1041,1063-1065
+  s_4f0877e2acdcf0::t_16aec376a59206 740-822,840-848,851-854,863-864,868-873,890,892-894
+  s_fdcede49161624::t_1c4786744e1161 567-568
+  s_4f0877e2acdcf0::t_2c17b3bf92733d 654-655,696-698,700-707,709,711-715,720,722-723,727,729-733,735-737,7702
+  s_4f0877e2acdcf0::t_94302e068aaa8f 574-578,589,593-653,693,699,708,710,716,721,725-726,728,734
+  s_4f0877e2acdcf0::t_16a125adcb2b42 658,666,680,692,1006,1024,1035
+  s_b8d725597929d2::t_758c19988017f4 724,738-739,823-839
+  s_4f0877e2acdcf0::t_39a0a967eede81 7940,7948,7956,7964,7972,7980,8016-8018,8020-8024,8064
+docs/glossary.md
+  s_4f0877e2acdcf0::t_0b3c279a9974a6 89
+  s_4f0877e2acdcf0::t_bfe56023503c7f 90-91
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_89a77bd8f07d22 1764
+  s_4f0877e2acdcf0::t_e09ea32ce7f13f 1651-1673,1692-1694
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_eefb4025cd35cc 2861,2885
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_fcc78c81da6266 242-244,293-294
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "90e6446101229e2439e89aa552da44dff02594f4",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    },
+    "s_b8d725597929d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac48b65af62eee229",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_fdcede49161624": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a158b248d47566bc5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
