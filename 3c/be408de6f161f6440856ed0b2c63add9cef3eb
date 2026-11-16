@@ -1,0 +1,59 @@
+native/fluidity/contact/contact_response_test.cc
+  s_4f0877e2acdcf0::t_b39a4a1d81d284 113-121
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_bebfe45c688447 197-203,349-353,364-369
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_8afa100e6bf145 4928
+  s_4f0877e2acdcf0::t_00a6f7e7cf8cfd 1835-1839,4359-4362,4370-4373,4450-4454,4486
+  s_4f0877e2acdcf0::t_7f759ee8dd3b29 4733
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_a7708ce0df8fdf 665-671
+native/fluidity/contact/move_particles_test.cc
+  s_4f0877e2acdcf0::t_a39f6a777f6e61 12,230-247,276,336-338,350-352,359,364,368,390-406,535,541-542,544-583,585,889
+  s_4f0877e2acdcf0::t_f15a29e0209b3a 632,646-647,652-653,655-656,663,667-680,682-688,779,825,835,850,855,871,885,897,905
+  s_4f0877e2acdcf0::t_945ac52dd7fa1b 543,589-593,596,598,600,648-651,654,658-662,681,900
+  s_4f0877e2acdcf0::t_8ae91d7900d661 633-645,826-834,836-847,851-854,857-862,864,868-870,873-876,880-884,886-888,890-891,894-896,898-899,901-904,906-918,923-927,946,959-972
+docs/glossary.md
+  s_4f0877e2acdcf0::t_54a961cd605597 123-126
+native/fluidity/contact/move_particles_gpu.h
+  s_4f0877e2acdcf0::t_afe75cce6c1fd2 6-8,25-31
+native/fluidity/contact/contact_error.h
+  s_4f0877e2acdcf0::t_40c2540aff9f7f 60-61,69-72,78-79,81,83
+native/fluidity/contact/contact_error_test.cc
+  s_4f0877e2acdcf0::t_a438903d6b7a2f 151
+native/fluidity/contact/move_particles_cpu.cc
+  s_4f0877e2acdcf0::t_57e3ca14b128cd 80-81,98,175-179,182,186,189-190,193,198,256,307,334-335
+  s_4f0877e2acdcf0::t_453f62c6c1bfb8 144-146
+  s_4f0877e2acdcf0::t_50a5631f0613c2 18,156-158,160-165
+native/fluidity/contact/move_particles_steps.h
+  s_4f0877e2acdcf0::t_991fc8c4ee5aca 17-19,49,61,77-78,81-84,86-90,92-94,105,107-110,112-118,131,159,165-166,171-172,183-184
+  s_4f0877e2acdcf0::t_4f5fd1bee4b8b7 4-5,7-15,20-21,55-60,73-76,80,91,103-104,167,173-174,185-188,190,192-203
+  s_4f0877e2acdcf0::t_e7139f61999631 191,213
+  s_4f0877e2acdcf0::t_ff713900cad092 79,101-102
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_a3b8d9fc4abeb5 1256
+  s_4f0877e2acdcf0::t_16a125adcb2b42 1261,1275,1280
+  s_4f0877e2acdcf0::t_1e1e2c72e4f617 1253-1255,1257-1260,1262-1274,1276-1279,1281-1283
+native/fluidity/contact/move_particles.h
+  s_4f0877e2acdcf0::t_17f03cb13d34fb 5,10-15,26,28,153-154,166,184-186,188-191,195,200-204,207-211,213-221
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_fea0d78d2279ba 119
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_b77eff2ac4b7ea 259-268,293-294
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3cbe408de6f161f6440856ed0b2c63add9cef3eb",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
