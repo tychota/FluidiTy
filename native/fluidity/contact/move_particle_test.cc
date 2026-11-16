@@ -11,6 +11,8 @@
 #include <numbers>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "fluidity/base/mat3.h"
 #include "fluidity/base/vec3.h"
@@ -156,6 +158,20 @@ void ExpectNoReaction(const SolidReaction& reaction) {
   EXPECT_EQ(reaction.solid_index, kNoSolid);
   ExpectVec3Equal(reaction.hit_position, {});
   ExpectVec3Equal(reaction.velocity_for_next_step_change, {});
+}
+
+// Fails the calling test unless the call failed with kTooCloseToCall and the close call, naming solid_id, magnitude 0,
+// and left the result unchanged.
+void ExpectCloseCall(const MoveParticleCall& call, ContactCloseCall close_call, std::uint32_t solid_id) {
+  EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
+  ExpectFailure(call.failure, {.error = ContactError::kTooCloseToCall, .close_call = close_call, .solid_id = solid_id});
+  ExpectUntouched(call.result);
+}
+
+// Fails the calling test unless both velocities are within tolerance of expected on each axis.
+void ExpectBothVelocitiesNear(const SolidContactResult& result, Vec3 expected, double tolerance) {
+  ExpectVec3Near(result.velocity.for_next_step, expected, tolerance);
+  ExpectVec3Near(result.velocity.for_this_step, expected, tolerance);
 }
 
 // --- The examples of the method paper and the docstring ---
@@ -438,24 +454,25 @@ TEST(MoveParticle, FloorThenMovingUpright_SecondSweepPosesItAtSweepStart) {
   );
 }
 
-TEST(MoveParticle, TiltedUprightPushesBackToFloor_TouchedFloorIsHitAgain) {
+TEST(MoveParticle, TiltedUprightPushesBackToFloor_SlideRemovesFloorApproach) {
   // The floor is hit at 0.1 - tol s, the tilted upright at about 0.5 s; its response leaves the particle approaching
-  // the floor at 1.5 tol m/s, a real approach far above the floor's allowance of about 2^-46 m/s, so the touched floor
-  // is hit again at once. That response leaves the upright approached by only about 2e-18 m/s, within its allowance,
-  // so the third sweep is free and the particle rests at z = tol.
+  // the floor at 1.5 tol m/s, a real approach far above the floor's allowance of about 2^-46 m/s. The floor is active
+  // there, so the joint response over both removes that approach at once, and the particle rests at z = tol with two
+  // hits. Before the change over several surfaces (plan Task 12) the touched floor was hit again: three hits.
   const MoveParticleCall call = RunMove("TiltedUprightPushesBackToFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
-  EXPECT_EQ(call.result.hit_count, 3);
+  EXPECT_EQ(call.result.hit_count, 2);
   EXPECT_NEAR(call.result.position.z, kTolerance, kTolerance / 16);
   EXPECT_NEAR(call.result.position.x, 1 - kTolerance, kPositionTolerance);
 }
 
-TEST(MoveParticle, TiltedUprightOverRisingFloor_MovingTouchedFloorIsHitAgain) {
+TEST(MoveParticle, TiltedUprightOverRisingFloor_SlideCarriesParticleWithFloor) {
   // As TiltedUprightPushesBackToFloor with the floor rising at 0.25 m/s: hit at (0.1 - tol) / 1.25 s, the upright at
-  // about 0.5 s, then the moving touched floor again at once; the particle rides up with it to z = 0.25 + tol.
+  // about 0.5 s, and the joint response over both gives the velocity that approaches neither, {-3.5e-10, 0, 0.25}: the
+  // particle rides up with the floor to z = 0.25 + tol. Before it the moving touched floor was hit again: three hits.
   const MoveParticleCall call = RunMove("TiltedUprightOverRisingFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
-  EXPECT_EQ(call.result.hit_count, 3);
+  EXPECT_EQ(call.result.hit_count, 2);
   EXPECT_NEAR(call.result.position.z, 0.25 + kTolerance, kTolerance / 16);
   EXPECT_NEAR(call.result.position.x, 1 - kTolerance, kPositionTolerance);
 }
@@ -653,16 +670,13 @@ TEST(MoveParticle, StartsInsideSecondSolid_FailureNamesItsId) {
   ExpectUntouched(call.result);
 }
 
-TEST(MoveParticle, CeilingClosingFasterThanParticleLeaves_IsEndsTooCloseToSolid) {
-  // The ceiling hits at 4/7 s and carries the particle down at 1.75 tol m/s; over the 3/7 s left the floor's
-  // rate * time is -0.75 tol, above -tol, so the floor is not hit, and the particle ends at z = 0.25 tol.
-  const MoveParticleCall call = RunMove("CeilingClosingFasterThanParticleLeaves");
-  EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
-  EXPECT_EQ(call.failure.error, ContactError::kTooCloseToCall);
-  EXPECT_EQ(call.failure.close_call, ContactCloseCall::kEndsTooCloseToSolid);
-  EXPECT_EQ(call.failure.solid_id, 1U);
-  EXPECT_NEAR(call.failure.magnitude, 0.25 * kTolerance, 0x1p-40 * kTolerance);
-  ExpectUntouched(call.result);
+TEST(MoveParticle, CeilingClosingFasterThanParticleLeaves_IsSqueezedBetweenSolids) {
+  // The ceiling hits at 4/7 s and carries the particle down at 1.75 tol m/s toward the floor, at its rest gap: the
+  // floor is an active surface of that hit, and the two close on the particle. No change leaves both; the particle
+  // sticks to the ceiling, the surface it approaches fastest, which still approaches the floor: a squeeze naming the
+  // floor, the solid the stuck velocity approaches fastest (the record is the ceiling's). Before the floor was read at
+  // the hit, its touching rule let the particle sink to z = 0.25 tol, and the end check failed (kEndsTooCloseToSolid).
+  ExpectCloseCall(RunMove("CeilingClosingFasterThanParticleLeaves"), ContactCloseCall::kSqueezedBetweenSolids, 1);
 }
 
 TEST(MoveParticle, TurningBoxHoverOnSpinAxis_PassesOnCloseCall) {
@@ -835,12 +849,16 @@ TEST(MoveParticle, StartsWithinToleranceOfSinkingFloorFollowing_ApproachMeasured
   ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = kTolerance - 0.1}, kRestGapTolerance);
 }
 
-TEST(MoveParticle, FiveFloorsWithinStartOverlap_FifthStartHitIsTooManyHits) {
-  // The start hits count toward kMaxHitsPerStep (plan decision P4): the fifth floor, id 5, is the fifth hit.
-  ExpectStartFailure(
-      "FiveFloorsWithinStartOverlap",
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 5}
-  );
+TEST(MoveParticle, FiveFloorsWithinStartOverlap_FastestFloorCarries) {
+  // Five parallel floors rising at 1, 1.1, 1.2, 1.3 and 1.4 m/s, the start inside all of them: one joint response over
+  // the five, one hit, which no start can exceed any more (plan decision P20). The fastest floor, id 5, pushes: the
+  // particle takes its 1.4 m/s, and the record is its own.
+  const MoveParticleCall call = RunMove("FiveFloorsWithinStartOverlap");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 4U);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 0, .z = 1.4}, 1e-15);
 }
 
 TEST(MoveParticle, SphereApproachingWithinTolerance_IsHitAtStartOnCurvedFace) {
@@ -974,14 +992,15 @@ TEST(MoveParticle, CommittedWithinToleranceOfOtherFace_PushedToCommittedSide) {
   ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = 0.01 + kTolerance}, kRestGapTolerance);
 }
 
-TEST(MoveParticle, CornerWithinTolerance_BothSolidsHitAtStart) {
-  // The floor moves the start to z = tol and stops the fall: {1, 0, 0}. The upright, posed at time 0 at x = 1, moves
-  // it to x = 1 - tol, and its approach of -1.5 m/s gives its velocity {-0.5, 0, 0}, which carries the particle.
+TEST(MoveParticle, CornerWithinTolerance_OneHitOverBothSolids) {
+  // The floor moves the start to z = tol and stops the fall; the upright, posed at time 0 at x = 1, moves it to
+  // x = 1 - tol, and its approach of -1.5 m/s gives its velocity {-0.5, 0, 0}, which carries the particle. One joint
+  // response over both: one hit, the record the floor's, the first in array order.
   const MoveParticleCall call = RunMove("CornerWithinTolerance");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
   EXPECT_EQ(result.kind, ContactKind::kHit);
-  EXPECT_EQ(result.hit_count, 2);
+  EXPECT_EQ(result.hit_count, 1);
   EXPECT_EQ(result.solid_index, 0U);
   EXPECT_EQ(result.approach_speed.for_this_step, -1);
   ExpectVec3Equal(result.velocity.for_this_step, {.x = -0.5, .y = 0, .z = 0});
@@ -996,7 +1015,8 @@ TEST(MoveParticle, TwoReactingSolidsWithinTolerance_IsSecondReactingSolid) {
 }
 
 TEST(MoveParticle, InsideUprightAfterApproachingFloor_KindIsStartedInsideSolid) {
-  // The record is the floor's, the first hit; the start inside the upright, a later solid, sets the kind.
+  // The record is the floor's, the first in array order; the start inside the upright, a later solid, sets the kind.
+  // One joint response over both: one hit.
   const MoveParticleCall call = RunMove("InsideUprightAfterApproachingFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
@@ -1004,7 +1024,7 @@ TEST(MoveParticle, InsideUprightAfterApproachingFloor_KindIsStartedInsideSolid) 
   EXPECT_EQ(result.solid_index, 0U);
   EXPECT_EQ(result.face, SolidFace::kHighZ);
   EXPECT_EQ(result.approach_speed.for_this_step, -2);
-  EXPECT_EQ(result.hit_count, 2);
+  EXPECT_EQ(result.hit_count, 1);
   ExpectVec3Equal(result.velocity.for_this_step, {.x = 0, .y = 0, .z = 1});
   ExpectVec3Near(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0.1 + kTolerance}, kRestGapTolerance);
 }
@@ -1044,21 +1064,21 @@ TEST(MoveParticle, DomainCornerAtOpenTop_MovedFromClosedSideOnly) {
 }
 
 TEST(MoveParticle, DomainCornerSlightlyInside_MovedOutOfBothSides) {
-  // The start is inside past side_left, the nearest, and side_bottom: both move it out; side_left responds at the
-  // start, and the first sweep stops the fall on side_bottom at 0.
+  // The start is inside past side_left, the nearest, and side_bottom: both move it out, and one joint response over
+  // both sides stops it: one hit, the record on side_left, the first in face order.
   const MoveParticleCall call = RunMove("DomainCornerSlightlyInside");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
   EXPECT_EQ(result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(result.face, SolidFace::kLowX);
-  EXPECT_EQ(result.hit_count, 2);
+  EXPECT_EQ(result.hit_count, 1);
   ExpectVec3Equal(result.velocity.for_this_step, {});
   ExpectVec3Near(result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, WedgeStartPushedTowardFloor_MovesOffBothAtOnce) {
   // Shortfalls 0.5 tol (floor) and 0.1 tol (wedge), normals -0.8 apart: one move of {-5/6 tol, 0, 0.5 tol}. The fall
-  // approaches the floor, which responds; the rising wedge is left. The slide along -x keeps z = tol.
+  // approaches the floor, which responds; the rising wedge is left. The particle slides along -x at z = tol.
   const MoveParticleCall call = RunMove("WedgeStartPushedTowardFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
@@ -1072,12 +1092,12 @@ TEST(MoveParticle, WedgeStartPushedTowardFloor_MovesOffBothAtOnce) {
 
 TEST(MoveParticle, WedgeStartPushedIntoFloor_MovesOffBothAtOnce) {
   // 0.0005 m inside the wedge: one move off both faces at once. The floor is approached, the wedge was started inside:
-  // two hits, and the kind is kStartedInsideSolid.
+  // one joint response, one hit, and the kind is kStartedInsideSolid.
   const MoveParticleCall call = RunMove("WedgeStartPushedIntoFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
   EXPECT_EQ(result.kind, ContactKind::kStartedInsideSolid);
-  EXPECT_EQ(result.hit_count, 2);
+  EXPECT_EQ(result.hit_count, 1);
   ExpectVec3Equal(result.velocity.for_this_step, {.x = -1, .y = 0, .z = 0});
   ExpectVec3Equal(result.velocity.for_next_step, {.x = -1, .y = 0, .z = 0});
   const double end_x = -0.1 - 0.0005 * 5.0 / 3 - 5.0 / 6 * kTolerance;  // m
@@ -1085,32 +1105,47 @@ TEST(MoveParticle, WedgeStartPushedIntoFloor_MovesOffBothAtOnce) {
 }
 
 TEST(MoveParticle, ParallelSolidAfterStartResponse_RoundingIsNotAnApproach) {
-  // The approach of -2^-55 m/s that the first solid's response leaves is within its allowance, so the reacting second
-  // solid, 0.75 tol away after the first move, moves the particle silently: one hit, no reaction. The silently moved
-  // solid is a touched surface, so the sweep rests on it whichever side of the rest gap rounding leaves the start;
-  // GeneratedParallelSolids_RoundingNeverHitsTheSecond draws both signs.
+  // Two parallel solids tol / 4 apart: the move takes the start to the rest gap of the upper, reacting one, and the
+  // lower one, 1.25 tol behind it, is not an active surface. So one hit, and the reaction is the real one, the upper
+  // solid's push, not rounding: the response leaves an approach of -2^-55 m/s, within its allowance, which the sweep
+  // reads as rest on every solid; GeneratedParallelSolids_RoundingNeverHitsTheSecond draws both signs.
   const MoveParticleCall call = RunMove("ParallelSolidAfterStartResponse");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
-  ExpectNoReaction(call.result.reaction);
+  EXPECT_EQ(call.result.solid_index, 1U);
+  EXPECT_EQ(call.result.reaction.solid_index, 1U);
+  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 1.68, .y = 0, .z = 2.24}, 1e-15);
 }
 
-TEST(MoveParticle, FourSilentFloorsAndUpright_AllKeptAsTouchedSurfaces) {
+TEST(MoveParticle, FourCoincidentFloorsBesideUpright_OneHit) {
   const MoveParticleCall call = RunMove("FourSilentFloorsAndUpright");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.solid_index, 4U);
 }
 
-TEST(MoveParticle, FiveSilentFloorsAndUpright_FifthSilentMoveIsTooManyHits) {
-  // The start alone decides this limit; a shorter step does not help.
-  ExpectStartFailure(
-      "FiveSilentFloorsAndUpright",
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 5}
-  );
+TEST(MoveParticle, FourCoincidentFloorsAndUpright_SlideReadsThemAsOneDirection) {
+  // The upright's hit reads the four floors and the upright: the floors are exact copies, so two active surfaces facing
+  // two ways. Read one direction per surface, it would be kTooManyHits.
+  const MoveParticleCall call = RunMove("FourCoincidentFloorsAndUpright");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 4U);
+  ExpectVec3Equal(call.result.velocity.for_this_step, {.x = 0, .y = 0, .z = 1});
 }
 
-TEST(MoveParticle, FiveSilentFloors_NoStartResponseNeverFailsForSilentMoves) {
+TEST(MoveParticle, FiveCoincidentFloorsBesideUpright_OneHit) {
+  // Nothing is listed per solid any more, so a fifth floor beside the upright's start response costs nothing: one hit,
+  // the record the upright's, the velocity {0, 0, 1}.
+  const MoveParticleCall call = RunMove("FiveSilentFloorsAndUpright");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 5U);
+  ExpectVec3Equal(call.result.velocity.for_this_step, {.x = 0, .y = 0, .z = 1});
+}
+
+TEST(MoveParticle, FiveStackedFloorsLeft_OneSilentMoveNoHit) {
+  // Five floors moved off at once are one silent move: no response, no hit, nothing to fail.
   const MoveParticleCall call = RunMove("FiveSilentFloors");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
@@ -1118,8 +1153,9 @@ TEST(MoveParticle, FiveSilentFloors_NoStartResponseNeverFailsForSilentMoves) {
 }
 
 TEST(MoveParticle, SlidingFloorThenSlowUpright_ThresholdIsZeroBeforeAnyResponse) {
-  // A silent entry has allowance 0: before any response the approach test compares with 0, so the upright's real
-  // approach of 1e-13 m/s is a hit at the start.
+  // Before any response the approach test compares with 0, so the upright's real approach of 1e-13 m/s beside a floor
+  // sliding at 100 m/s is a hit at the start, and the joint response removes it: the solver's no change reads the
+  // slack passed, 0, not its own allowance of the 100 m/s (plan decision P20, item 3).
   const MoveParticleCall call = RunMove("SlidingFloorThenSlowUpright");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kHit);
@@ -1128,10 +1164,11 @@ TEST(MoveParticle, SlidingFloorThenSlowUpright_ThresholdIsZeroBeforeAnyResponse)
   EXPECT_EQ(call.result.velocity.for_next_step.x, 0);
 }
 
-TEST(MoveParticle, SilentFloorThenLeaningUpright_FloorNotTouchedWithoutStartHit) {
-  // Plan decision P12: with no hit at the start the silent move leaves no touched surface, so the upright's push is a
-  // drift on the floor's plain touching rule, not a hit on it: one hit, the upright's. The settle reads every solid
-  // (plan decision P19, item 7), so it lifts the drift of 0.05 tol back to the rest gap.
+TEST(MoveParticle, SilentFloorThenLeaningUpright_FloorRespondsToThePush) {
+  // Plan decision P12: with no hit at the start the move is silent. The upright's hit then pushes the particle into
+  // the floor, at its rest gap: the floor is an active surface of that hit, so one joint response over both, one hit,
+  // the record the upright's. Before the floor was read at the hit, the push was a drift of 0.05 tol on the floor's
+  // plain touching rule, which the settle lifted back.
   const MoveParticleCall call = RunMove("SilentFloorThenLeaningUpright");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
@@ -1139,15 +1176,16 @@ TEST(MoveParticle, SilentFloorThenLeaningUpright_FloorNotTouchedWithoutStartHit)
   EXPECT_NEAR(call.result.position.z, kTolerance, kAtRestGapTolerance);
 }
 
-TEST(MoveParticle, AtRestGapSlowApproach_TouchingRuleLetsItRest) {
-  // d = tol exactly is outside the start rules' range, d < tol: the sweep's touching rule decides, and the approach of
-  // tol m/s for 0.1 s, -0.1 tol, is not a hit. A start rule there would stop the particle at z = tol.
+TEST(MoveParticle, AtRestGapSlowApproach_FaceAtRestGapApproachedResponds) {
+  // d = tol exactly is outside the start rules' move, d < tol, but a face at the rest gap that a velocity approaches is
+  // an active surface: the approach of tol m/s is a hit at 0 and the particle
+  // stops at z = tol. Before, the touching rule let it sink by 0.1 tol in the step, which the settle lifted back; in a
+  // wedge sharper than 2^-21 rad that sinking left a gap no move could leave.
   const MoveParticleCall call = RunMove("AtRestGapSlowApproach");
   ASSERT_EQ(call.error, ContactError::kNone);
-  EXPECT_EQ(call.result.kind, ContactKind::kNone);
-  EXPECT_EQ(call.result.hit_count, 0);
-  EXPECT_EQ(call.result.velocity.for_this_step.z, -kTolerance);
-  // The sweep lets it sink to 0.9 tol; the settle, which reads every solid, lifts it back.
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.velocity.for_this_step.z, 0);
   EXPECT_NEAR(call.result.position.z, kTolerance, kAtRestGapTolerance);
 }
 
@@ -1181,22 +1219,23 @@ TEST(MoveParticle, DomainThreeSideCornerAtRest_MovedFromAllThreeSilently) {
   ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
 
-TEST(MoveParticle, DomainThreeSideCornerThisStepApproaches_HitOnEachSide) {
-  // for_this_step {-1, -1, -1} approaches the three sides in turn: three hits, in face order, the record on kLowX.
+TEST(MoveParticle, DomainThreeSideCornerThisStepApproaches_OneHitOverAllThree) {
+  // for_this_step {-1, -1, -1} approaches the three sides: one joint response over them, one hit, the record on kLowX,
+  // the first in face order.
   const MoveParticleCall call = RunMove("DomainThreeSideCornerThisStepApproaches");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kHit);
-  EXPECT_EQ(call.result.hit_count, 3);
+  EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kLowX);
   ExpectVec3Equal(call.result.velocity.for_this_step, {});
   ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
 
-TEST(MoveParticle, DomainThreeSideCornerNextStepApproaches_HitOnEachSide) {
+TEST(MoveParticle, DomainThreeSideCornerNextStepApproaches_OneHitOverAllThree) {
   const MoveParticleCall call = RunMove("DomainThreeSideCornerNextStepApproaches");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kHit);
-  EXPECT_EQ(call.result.hit_count, 3);
+  EXPECT_EQ(call.result.hit_count, 1);
   ExpectVec3Equal(call.result.velocity.for_next_step, {});
   ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
@@ -1205,7 +1244,7 @@ TEST(MoveParticle, DomainThreeSideCornerSlightlyInside_MovedOutOfAllThree) {
   const MoveParticleCall call = RunMove("DomainThreeSideCornerSlightlyInside");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
-  EXPECT_EQ(call.result.hit_count, 3);
+  EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kLowX);
   ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
@@ -1422,18 +1461,20 @@ TEST(MoveParticle, PlateAndSphereRing_MovesOffBothAlongBisector) {
 }
 
 TEST(MoveParticle, ParallelSolidAfterStartResponse_NextStepRoundingIsNotAnApproach) {
-  // The first solid's response to for_this_step at rest has an allowance of 0, but it leaves -2^-55 m/s in the moving
-  // for_next_step. Compared with for_next_step's own allowance that is rounding, so the reacting second solid is moved
-  // silently. One allowance for both velocities made it a second hit, with a reaction of 2.8e-17 m/s.
+  // The response to for_this_step at rest has an allowance of 0, but it leaves -2^-55 m/s in the moving
+  // for_next_step. Compared with for_next_step's own allowance that is rounding: one hit, and the reaction is the upper
+  // solid's real push, not rounding. One allowance for both velocities once made the rounding a second hit.
   const MoveParticleCall call = RunMove("ParallelSolidAfterStartResponseNextStepMoving");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
-  EXPECT_EQ(call.result.reaction.solid_index, kNoSolid);
+  EXPECT_EQ(call.result.solid_index, 1U);
+  EXPECT_EQ(call.result.reaction.solid_index, 1U);
+  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 1.68, .y = 0, .z = 2.24}, 1e-15);
 }
 
 TEST(MoveParticle, SlidingFloorThenSlowUprightNextStepOnly_NextStepThresholdIsZeroBeforeAnyResponse) {
-  // A silent entry leaves no rounding of its own, so for_next_step's threshold stays 0 too: its approach of 1e-13 m/s
-  // to the upright is a hit at the start.
+  // Before any response for_next_step's threshold is 0 too: its approach of 1e-13 m/s to the upright is a hit at the
+  // start.
   const MoveParticleCall call = RunMove("SlidingFloorThenSlowUprightNextStepOnly");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
@@ -1526,14 +1567,1727 @@ TEST(MoveParticle, DomainCornerWithNearlyCoincidentGroundAndWall_EndsAtCorner) {
   ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
 }
 
-TEST(MoveParticle, CuspStartIntoBallOnly_ResponseUsesNormalBeforeMove) {
+TEST(MoveParticle, CuspStartIntoBallOnly_ResponseUsesNormalAtMovedStart) {
   // In the cusp, halfway to the rest point, moving at 1 m/s straight into the ball and away from the floor. The
-  // response uses the ball's normal at the start, so it stops the particle; the normal after the move, turned by
-  // about 2 Sqrt(tol / R) (1 - f), would leave about 4.3e-5 m/s.
+  // response reads the ball's normal at the moved start (plan decision P20, item 1), the normal the sweep that follows
+  // reads, turned from the one at the start as given by about 2 Sqrt(tol / R) (1 - f): it leaves 4.3e-5 m/s along the
+  // ball, and the particle slides on to 46804 tol from the contact.
   const MoveParticleCall call = RunMove("CuspStartIntoBallOnly");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
-  EXPECT_LT(math::Length(call.result.velocity.for_this_step), 1e-12);
+  ExpectBothVelocitiesNear(call.result, {.x = 4.31583759e-05, .y = 0, .z = 3.72529e-09}, 1e-9);
+  ExpectVec3Near(call.result.position, {.x = 46804.36 * kTolerance, .y = 0, .z = 1.04 * kTolerance}, 0.01 * kTolerance);
+}
+
+// --- The slide along several surfaces (plan decision P19, items 3 to 6) ---
+
+// Runs MoveParticle on the scene of that name, and fails the calling test unless it succeeded with that many hits, at
+// rest, at the expected end within position_tolerance, with every solid at the rest gap.
+SolidContactResult
+ExpectStopAtRestGap(std::string_view case_name, int hit_count, Vec3 expected_end, double position_tolerance) {
+  const SolidContactResult result = ExpectEndAtRestGap(case_name, expected_end, position_tolerance);
+  EXPECT_EQ(result.hit_count, hit_count) << case_name;
+  ExpectBothVelocitiesNear(result, {}, 1e-15);
+  return result;
+}
+
+TEST(MoveParticle, AcuteWedge_StopsWithoutError) {
+  // The 45 degree wedge's face is hit at x = 1 - (1 + Sqrt(2)) tol, where the particle also rests on the floor: one
+  // joint response over both stops it at the apex, one hit.
+  const MoveParticleCase scene = FindMoveParticleCase("AcuteWedge");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    const Solid& solid = inputs.solids[solid_index];
+    EXPECT_GE(
+        ComputeDistanceToSolid(solid, ComputeSolidPose(solid, inputs.step_duration), call.result.position).distance,
+        kTolerance / 2
+    );
+  }
+}
+
+TEST(MoveParticle, RightAngleCorner_SlidesAlongSecondSurface) {
+  // The floor at 0.05 - tol / 4 s leaves {2, 1, 0}; the upright at x = 1 - tol leaves {0, 1, 0}, along the corner.
+  const MoveParticleCall call = RunMove("RightAngleCorner");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 2);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 1, .z = 0}, 1e-15);
+  EXPECT_NEAR(call.result.position.x, 1 - kTolerance, kPositionTolerance);
+  EXPECT_NEAR(call.result.position.z, kTolerance, kPositionTolerance);
+}
+
+TEST(MoveParticle, SlideRemovalOnReactingFloor_CountsInReaction) {
+  // The floor at 0.1 - tol / 2 s, at {0.6 - tol / 2, 0, tol}: {1, 0, 0}, a change of {0, 0, 2}. The upright sliding
+  // down along itself at 1 m/s is hit at 0.5 - tol s: approach -1, sideways speed 1 against it, and friction 0.5 leaves
+  // {0, 0, -0.5}, into the floor. The change removes that approach, {0, 0, 0.5}, charged to the floor; the upright is
+  // not approached again. Every value is a binary fraction: without the change the reaction is {0, 0, 2}.
+  const MoveParticleCall call = RunMove("SlideRemovalOnReactingFloor");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 2);
+  ExpectBothVelocitiesNear(call.result, {}, 0);
+  ExpectVec3Near(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
+  EXPECT_EQ(call.result.reaction.solid_index, 0U);
+  ExpectVec3Equal(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2.5});
+  ExpectVec3Near(
+      call.result.reaction.hit_position,
+      {.x = 0.6 - kTolerance / 2, .y = 0, .z = kTolerance},
+      kPositionTolerance
+  );
+}
+
+TEST(MoveParticle, AcuteWedgeOnReactingFloor_EachSurfaceChargedItsOwnPush) {
+  // The wedge face is hit at x = 1 - (1 + Sqrt(2)) tol, where the particle rests on the reacting floor too: one joint
+  // response over both, one hit. The frictionless change from {1, 0, -1} to {0, 0, 0} is the pair's,
+  // {-1, 0, 1} = 2 * {0, 0, 1} + Sqrt(2) * Normalized({-1, 0, -1}): the floor is charged its own push {0, 0, 2}, the
+  // face's {-1, 0, -1} is not counted. The whole change would give the floor {-1, 0, 1}. The solver's rounding leaves
+  // the floor's push within 4e-15 of 2.
+  const MoveParticleCall call = RunMove("AcuteWedgeOnReactingFloor");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+  EXPECT_EQ(call.result.reaction.solid_index, 0U);
+  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2}, 4e-15);
+  const double face_hit_x = 1 - (1 + std::numbers::sqrt2) * kTolerance;  // m
+  ExpectVec3Near(call.result.reaction.hit_position, {.x = face_hit_x, .y = 0, .z = kTolerance}, kPositionTolerance);
+  // The first hit fills the record: the face, at (face_hit_x - 0.5) / 2 s of the 0.5 s step.
+  EXPECT_EQ(call.result.solid_index, 1U);
+  EXPECT_NEAR(call.result.hit_fraction, (face_hit_x - 0.5) / 2 / 0.5, 1e-12);
+}
+
+TEST(MoveParticle, ObliqueCornerResidue_SlidesOnWithoutSqueezeOrStop) {
+  // The first solid's response to {-2, 0, -2} leaves {-0.32, 0, 0.24} with an approach of -2^-55 m/s
+  // (contact_response_test.cc), rounding within its allowance of 5.7e-14 m/s; the particle slides along it to the
+  // upright, reached at 0.625 s at z = 0.15, and the upright's response leaves {0, 0, 0.24}, which leaves the first
+  // solid. It rises along the upright to z = 0.24. A stop at the first hit would end near z = 0.043.
+  const MoveParticleCall call = RunMove("ObliqueCornerResidue");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 2);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 0, .z = 0.24}, 1e-15);
+  EXPECT_NEAR(call.result.position.x, -0.2 + kTolerance, kPositionTolerance);
+  EXPECT_NEAR(call.result.position.z, 0.24, 1e-3);
+}
+
+TEST(MoveParticle, GrooveSlideAlongEdge_KeepsSpeedAlongEdge) {
+  // Both faces of the 60 degree wedge are active at the start: one joint response keeps the part along the common line.
+  // The velocity of the solid hit last (design 5.5 as it was) gives {0, 0, 0}.
+  const SolidContactResult result = ExpectEndAtRestGap(
+      "GrooveSlideAlongEdge",
+      {.x = std::numbers::sqrt3 * kTolerance, .y = 0.01, .z = kTolerance},
+      kTolerance / 1024
+  );
+  EXPECT_EQ(result.hit_count, 1);
+  ExpectBothVelocitiesNear(result, {.x = 0, .y = 1, .z = 0}, 1e-15);
+}
+
+// Where and how a particle should rest, step after step: from step rest_step on (counting from 1) each step has
+// hit_count hits and ends at rest_point within tolerance in x and z.
+struct RestExpectation {
+  int rest_step = 0;
+  std::uint8_t hit_count = 0;
+  Vec3 rest_point{};  // m, world.
+  double tolerance = 0;  // m
+};
+
+// Runs one step of a particle under gravity: adds {0, 0, -9.81 T} to for_this_step, makes both velocities that, moves
+// the particle, and makes the end and for_this_step the next step's start and velocity. Returns false on failure.
+bool RunGravityStep(SolidContactInputs* inputs, SolidContactResult* result) {
+  const Vec3 gravity_change = {.x = 0, .y = 0, .z = -9.81 * inputs->step_duration};  // m/s
+  inputs->velocity.for_this_step = inputs->velocity.for_this_step + gravity_change;
+  inputs->velocity.for_next_step = inputs->velocity.for_this_step;
+  if (MoveParticle(*inputs, result, nullptr) != ContactError::kNone) {
+    return false;
+  }
+  inputs->start_position = result->position;
+  inputs->velocity.for_this_step = result->velocity.for_this_step;
+  return true;
+}
+
+// Computes whether one step's result is at rest as expected: the hit count, and the end within tolerance in x and z.
+bool ComputeIsRestingAsExpected(const SolidContactResult& result, const RestExpectation& expected) {
+  const bool is_near_x = std::abs(result.position.x - expected.rest_point.x) <= expected.tolerance;
+  const bool is_near_z = std::abs(result.position.z - expected.rest_point.z) <= expected.tolerance;
+  return result.hit_count == expected.hit_count && is_near_x && is_near_z;
+}
+
+// Runs 1000 gravity steps (RunGravityStep) from the inputs and fails the calling test unless every step succeeds and
+// every step from expected.rest_step on rests as expected (ComputeIsRestingAsExpected). Returns the last result.
+SolidContactResult ExpectRestsForThousandSteps(SolidContactInputs inputs, const RestExpectation& expected) {
+  SolidContactResult result;
+  int failed_steps = 0;
+  int steps_not_at_rest = 0;
+  for (int step = 1; step <= 1000; ++step) {
+    failed_steps += RunGravityStep(&inputs, &result) ? 0 : 1;
+    const bool is_resting = ComputeIsRestingAsExpected(result, expected);
+    steps_not_at_rest += step >= expected.rest_step && !is_resting ? 1 : 0;
+  }
+  EXPECT_EQ(failed_steps, 0);
+  EXPECT_EQ(steps_not_at_rest, 0);
+  return result;
+}
+
+// Runs the V-groove scene of that name for 1000 steps of 0.01 s with gravity and the given friction, and fails the
+// calling test unless, from step 12 on, each step has one hit, the joint response over both faces, and ends at the
+// apex point within tol / 1024 in x and z (the model reaches it in step 10 or 11), at the rest gap of both faces; the
+// velocities after the last step are 0 within 1e-15.
+void ExpectGrooveRestsAtApex(std::string_view case_name, double friction, Vec3 apex_point) {
+  const MoveParticleCase scene = FindMoveParticleCase(case_name);
+  SolidContactInputs inputs = ToSolidContactInputs(scene);
+  inputs.friction = friction;
+  const RestExpectation at_apex = {
+      .rest_step = 12,
+      .hit_count = 1,
+      .rest_point = apex_point,
+      .tolerance = kTolerance / 1024,
+  };
+  const SolidContactResult result = ExpectRestsForThousandSteps(inputs, at_apex);
+  ExpectAtRestGapOfEverySolid(inputs, result.position);
+  ExpectBothVelocitiesNear(result, {}, 1e-15);
+}
+
+TEST(MoveParticle, VGrooveSlideIntoApex_ComesToRestThere) {
+  // The 30 degree groove: the apex point is tol / sin(15 degrees) = 3.8637033 tol above the line where the faces meet.
+  // The model reaches it in step 10 with friction 0 and in step 11 with 0.5.
+  const Vec3 apex_point = {.x = 0, .y = 0, .z = kTolerance / std::sin(15 * std::numbers::pi / 180)};  // m
+  ExpectGrooveRestsAtApex("VGroove", 0, apex_point);
+  ExpectGrooveRestsAtApex("VGroove", 0.5, apex_point);
+}
+
+TEST(MoveParticle, TenDegreeVGrooveSlideIntoApex_ComesToRestThere) {
+  // The 10 degree groove: tol / sin(5 degrees) = 11.473713 tol.
+  const Vec3 apex_point = {.x = 0, .y = 0, .z = kTolerance / std::sin(5 * std::numbers::pi / 180)};  // m
+  ExpectGrooveRestsAtApex("TenDegreeVGroove", 0, apex_point);
+  ExpectGrooveRestsAtApex("TenDegreeVGroove", 0.5, apex_point);
+}
+
+TEST(MoveParticle, NarrowWedgeAtRestPoint_KeepsSpeedAlongEdge) {
+  // A wedge of 2e-6 rad, 1 + c = 2e-12, above the velocity pair limit of 2^-40: one joint response over the side and
+  // the floor keeps the part along the common line.
+  const MoveParticleCase scene = FindMoveParticleCase("NarrowWedgeAtRestPoint");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 1, .z = 0}, 1e-9);
+  ExpectAtRestGapOfEverySolid(ToSolidContactInputs(scene), call.result.position);
+}
+
+// Runs the sliver scene with both velocities set to velocity and the reacting solid chosen, and fails the calling test
+// unless it succeeds with one hit, both velocities {0, 0, 0} exactly, at the rest point. Returns the result.
+SolidContactResult ExpectSliverStop(Vec3 velocity, bool is_side_reacting) {
+  const double angle = 1e-7;  // rad
+  MoveParticleCase scene = FindMoveParticleCase("SliverStop");
+  scene.solids[0].reports_reaction = !is_side_reacting;
+  scene.solids[1].reports_reaction = is_side_reacting;
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  const MoveParticleCall call = RunMove(scene);
+  EXPECT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {}, 0);
+  const double rest_x = kTolerance / std::tan(angle / 2);  // m
+  ExpectVec3Near(call.result.position, {.x = rest_x, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  return call.result;
+}
+
+TEST(MoveParticle, SliverStop_ChargedToSolidApproachedFastest) {
+  // A wedge of 1e-7 rad, 1 + c = 5e-15, below the pair limit: a sliver, so no change is found and the particle sticks
+  // to the surface it approaches fastest (plan decision P20, item 7). Moving at {-2, 1, 0} that is the side, which
+  // does not react: no reaction, the record the side's. Moving at {-2, 1, -0.001} it is the reacting floor, charged
+  // the whole stop {2, -1, 0.001}. With the side reacting instead, {-2, 1, 0} charges the side {2, -1, 0}.
+  const SolidContactResult into_side = ExpectSliverStop({.x = -2, .y = 1, .z = 0}, false);
+  EXPECT_EQ(into_side.solid_index, 1U);
+  ExpectNoReaction(into_side.reaction);
+  const SolidContactResult into_floor = ExpectSliverStop({.x = -2, .y = 1, .z = -0.001}, false);
+  EXPECT_EQ(into_floor.solid_index, 0U);
+  EXPECT_EQ(into_floor.reaction.solid_index, 0U);
+  ExpectVec3Equal(into_floor.reaction.velocity_for_next_step_change, {.x = 2, .y = -1, .z = 0.001});
+  const SolidContactResult reacting_side = ExpectSliverStop({.x = -2, .y = 1, .z = 0}, true);
+  EXPECT_EQ(reacting_side.reaction.solid_index, 1U);
+  ExpectVec3Equal(reacting_side.reaction.velocity_for_next_step_change, {.x = 2, .y = -1, .z = 0});
+}
+
+TEST(MoveParticle, ThreeSolidAcuteCornerInto_StopsInCorner) {
+  // The three faces are hit at one moment: one joint response, one hit.
+  ExpectStopAtRestGap(
+      "ThreeSolidAcuteCornerInto",
+      1,
+      {.x = std::numbers::sqrt3 * kTolerance, .y = std::numbers::sqrt3 * kTolerance, .z = kTolerance},
+      kTolerance / 1024
+  );
+}
+
+TEST(MoveParticle, CeilingHitFarAboveTouchedFloor_SlidesDownToApex) {
+  // The floor responds at the start (inside), the ceiling is hit at x = 0.10526 and leaves {2.72, 0, -2.04}, which
+  // approaches the floor 0.021 m below; the floor is not active there, so the particle slides down the ceiling to the
+  // apex and stops. With the floor in the change it stops at the ceiling hit, {0.10526, 0, 0.02105}.
+  const SolidContactResult result = ExpectStopAtRestGap(
+      "CeilingHitFarAboveTouchedFloor",
+      3,
+      {.x = (0.08 - 1.8 * kTolerance) / 0.6, .y = 0, .z = kTolerance},
+      kTolerance / 1024
+  );
+  EXPECT_EQ(result.kind, ContactKind::kStartedInsideSolid);
+}
+
+TEST(MoveParticle, CornerPushOnSecondReactingSolid_IsSecondReactingSolid) {
+  // The floor and the side are both active at the start: one joint response pushes both, two reacting solids, and the
+  // charges, in ascending solid index, fail at the side, the higher index, id 2. Without the side reacting: one hit,
+  // and the floor is charged its push {0, 0, 2 + 1 / Sqrt(3)}.
+  ExpectCloseCall(RunMove("CornerPushOnSecondReactingSolid"), ContactCloseCall::kSecondReactingSolid, 2);
+  const MoveParticleCall call = RunMove("CornerPushOnNonReactingSide");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+  EXPECT_EQ(call.result.reaction.solid_index, 1U);
+  ExpectVec3Near(
+      call.result.reaction.velocity_for_next_step_change,
+      {.x = 0, .y = 0, .z = 2 + 1 / std::numbers::sqrt3},
+      1e-15
+  );
+}
+
+// --- Round solids: the slide into a cusp, a neck and a ring ---
+
+TEST(MoveParticle, BallRestingOnFloorSlidingIntoCusp_ComesToRestThere) {
+  // The sphere is hit at the rest point itself, 2 Sqrt(0.5 tol) = 46340.95 tol from the contact, where the particle
+  // rests on the floor too: one joint response over both stops it, one hit. The first version of P19 failed it.
+  const double rest_x = 2 * std::sqrt(0.5 * kTolerance);  // m
+  ExpectStopAtRestGap("BallRestingOnFloorSlidingIntoCusp", 1, {.x = rest_x, .y = 0, .z = kTolerance}, kTolerance / 256);
+}
+
+TEST(MoveParticle, BallRestingOnFloorRestsInCuspForThousandSteps) {
+  // 1000 steps of 0.01 s with gravity, from 0.05 m out at -0.5 m/s: the rest point is reached in step 9 (the model),
+  // and from then on each step has one hit, the floor's, and ends at the rest point.
+  const MoveParticleCase scene = FindMoveParticleCase("BallRestingOnFloorRollingIntoCusp");
+  const RestExpectation at_rest_point = {
+      .rest_step = 12,
+      .hit_count = 1,
+      .rest_point = {.x = 2 * std::sqrt(0.5 * kTolerance), .y = 0, .z = kTolerance},
+      .tolerance = kTolerance / 256,
+  };
+  ExpectRestsForThousandSteps(ToSolidContactInputs(scene), at_rest_point);
+}
+
+TEST(MoveParticle, TwoBallsTouchingSlidingIntoNeck_ComesToRest) {
+  // The neck ring Sqrt(tol (2 R + tol)) = 32768.0 tol from the contact, where both balls are at tol: one hit there.
+  const double ring_radius = std::sqrt(kTolerance * (1 + kTolerance));  // m
+  ExpectStopAtRestGap("TwoBallsTouchingSlidingIntoNeck", 1, {.x = 0.5, .y = ring_radius, .z = 0}, kTolerance / 256);
+}
+
+TEST(MoveParticle, PlateAndSphereSlidingIn_ComesToRestAtRing) {
+  // The sphere is hit at (0.5 - Sqrt(0.1875) - Sqrt(3) tol) / 0.1 of the step, where the particle is tol from it and
+  // from the plate: one joint response over both, one hit. Both normals at the ring are 120 degrees apart, so the rest
+  // point is 2 tol out along their bisector {Sqrt(3) / 2, 0, 1 / 2}.
+  const Vec3 ring_point = {.x = std::sqrt(0.1875), .y = 0, .z = 0.01};
+  const Vec3 bisector = {.x = std::numbers::sqrt3 / 2, .y = 0, .z = 0.5};
+  const SolidContactResult result =
+      ExpectStopAtRestGap("PlateAndSphereSlidingIn", 1, ring_point + 2 * kTolerance * bisector, kTolerance / 1024);
+  EXPECT_EQ(result.solid_index, 1U);
+  EXPECT_EQ(result.face, SolidFace::kCurved);
+  EXPECT_NEAR(result.hit_fraction, (0.5 - std::sqrt(0.1875) - std::numbers::sqrt3 * kTolerance) / 0.1, 1e-9);
+}
+
+// --- Closing solids: carried out along the apex, or squeezed ---
+
+// Runs the closing wedge scene of that name and fails the calling test unless it succeeded with one hit, the joint
+// response over both faces, and the expected velocities within relative_tolerance of their largest axis.
+SolidContactResult ExpectCarriedOut(std::string_view case_name, Vec3 expected_velocity, double relative_tolerance) {
+  const MoveParticleCall call = RunMove(case_name);
+  EXPECT_EQ(call.error, ContactError::kNone) << case_name;
+  EXPECT_EQ(call.result.hit_count, 1) << case_name;
+  const double scale =
+      std::max({std::abs(expected_velocity.x), std::abs(expected_velocity.y), std::abs(expected_velocity.z)});
+  ExpectBothVelocitiesNear(call.result, expected_velocity, relative_tolerance * scale);
+  return call.result;
+}
+
+TEST(MoveParticle, FloorRisingUnderSixtyDegreeWall_CarriesParticleAlongApex) {
+  // The velocity that approaches neither: {V / tan 60, 0, V}, not a squeeze. After 0.1 s the floor is 0.1 m higher and
+  // the particle is at the rest gap of both at the end pose.
+  const MoveParticleCase scene = FindMoveParticleCase("FloorRisingUnderSixtyDegreeWall");
+  const SolidContactResult result =
+      ExpectCarriedOut("FloorRisingUnderSixtyDegreeWall", {.x = 1 / std::numbers::sqrt3, .y = 0, .z = 1}, 1e-15);
+  const Vec3 expected_end = {
+      .x = std::numbers::sqrt3 * kTolerance + 0.1 / std::numbers::sqrt3,
+      .y = 0,
+      .z = 0.1 + kTolerance,
+  };
+  ExpectVec3Near(result.position, expected_end, kTolerance / 1024);
+  ExpectAtRestGapOfEverySolid(ToSolidContactInputs(scene), result.position);
+}
+
+TEST(MoveParticle, BothFacesClosingAtSixtyDegrees_CarriesParticleOut) {
+  ExpectCarriedOut("BothFacesClosingAtSixtyDegrees", {.x = std::numbers::sqrt3 / 2, .y = 0, .z = 0.5}, 1e-15);
+}
+
+TEST(MoveParticle, FloorRisingFastUnderSixtyDegreeWall_EscapeTooFastForStepIsCuredByShorterStep) {
+  // The escape {500 / tan 60, 0, 500} m/s is within the speed cap, but its allowance, 2^-46 times the 1290 m/s of
+  // speeds it involves, times the 1 s left is above tol / 64: kSqueezedBetweenSolids naming the rising floor, the
+  // solid the particle approaches fastest. In a step of 0.25 s it is carried out, one hit; the solver's rounding at
+  // 577 m/s leaves the velocity within 1e-15 of that speed of the closed form.
+  ExpectCloseCall(RunMove("FloorRisingFastUnderSixtyDegreeWall"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  MoveParticleCase shorter = FindMoveParticleCase("FloorRisingFastUnderSixtyDegreeWall");
+  shorter.inputs.step_duration = 0.25;
+  const MoveParticleCall call = RunMove(shorter);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  const double speed = 1000 / std::numbers::sqrt3;  // m/s
+  ExpectBothVelocitiesNear(call.result, {.x = 500 / std::numbers::sqrt3, .y = 0, .z = 500}, 1e-15 * speed);
+}
+
+TEST(MoveParticle, FloorRisingThroughFixedFloor_PushChargedToTheFloorThatPushes) {
+  // The start moves to the apex rest point; one joint response over the fixed floor, the rising floor and the side
+  // carries the particle along the apex at {0.25 / tan 60, 0, 0.25}, one hit. The push along {0, 0, 1} is the rising
+  // floor's, whose target is the larger: charged to it, it counts in no reaction. Charged to the first floor of the
+  // direction, the fixed reacting one, it would fill a reaction although that floor never pushed the particle.
+  const MoveParticleCall call = RunMove("FloorRisingThroughFixedFloorUnderSixtyDegreeWall");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {.x = 0.25 / std::numbers::sqrt3, .y = 0, .z = 0.25}, 1e-15);
+  ExpectNoReaction(call.result.reaction);
+}
+
+TEST(MoveParticle, OneFaceClosingAtOneDegree_CarriesParticleOut) {
+  // {1 / tan(1 degree), 0, 1} = {57.28996, 0, 1}: a speed of 1 / sin(1 degree) = 57.2987 m/s, below 64 times the
+  // largest speed involved, the floor's 1 m/s.
+  const double angle = std::numbers::pi / 180;  // rad
+  ExpectCarriedOut("OneFaceClosingAtOneDegree", {.x = 1 / std::tan(angle), .y = 0, .z = 1}, 1e-9);
+}
+
+TEST(MoveParticle, OneFaceClosingAtPointEightDegrees_IsSqueezedBetweenSolids) {
+  // The change would give 1 / sin(0.8 degrees) = 71.622 m/s, above 64 m/s. It names the rising floor, the solid the
+  // particle approaches fastest. A step ten times shorter does not cure it. The limit is the closed form
+  // asin(1 / 64) = 0.8953 degrees: 0.89 is squeezed (64.38 m/s), 0.90 carried out (63.6646 m/s), since the cap reads
+  // the speeds before the response.
+  ExpectCloseCall(RunMove("OneFaceClosingAtPointEightDegrees"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  MoveParticleCase shorter = FindMoveParticleCase("OneFaceClosingAtPointEightDegrees");
+  shorter.inputs.step_duration = 0.001;
+  ExpectCloseCall(RunMove(shorter), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  const double degree = std::numbers::pi / 180;  // rad
+  const MoveParticleCase below_limit =
+      move_particle_cases::BuildClosingWedgeCase("OneFaceClosingAtPointEightNineDegrees", 0.89 * degree, 1, 0);
+  ExpectCloseCall(RunMove(below_limit), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  const MoveParticleCase above_limit =
+      move_particle_cases::BuildClosingWedgeCase("OneFaceClosingAtPointNineDegrees", 0.9 * degree, 1, 0);
+  const MoveParticleCall call = RunMove(above_limit);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_NEAR(math::Length(call.result.velocity.for_this_step), 1 / std::sin(0.9 * degree), 1e-9);
+}
+
+TEST(MoveParticle, TwoFacesClosingSymmetrically_CapAtOnePointSevenNineDegrees) {
+  // Each face at 1 m/s along its own normal: the escape is 1 / sin(a / 2), within the cap down to the closed form
+  // 2 asin(1 / 64) = 1.7906 degrees, since the cap reads the speeds before the response. At 2 degrees, 57.2987 m/s, one
+  // hit; at 1.6 degrees it would be 71.62 m/s, squeezed, naming the floor; at 1.79 degrees 64.02 m/s, squeezed; at
+  // 1.80, 63.6646 m/s, carried out.
+  const MoveParticleCall call = RunMove("TwoFacesClosingAtTwoDegrees");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_NEAR(math::Length(call.result.velocity.for_this_step), 1 / std::sin(std::numbers::pi / 180), 1e-9);
+  ExpectCloseCall(RunMove("TwoFacesClosingAtOnePointSixDegrees"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  const double degree = std::numbers::pi / 180;  // rad
+  const MoveParticleCase below_limit =
+      move_particle_cases::BuildClosingWedgeCase("TwoFacesClosingAtOnePointSevenNineDegrees", 1.79 * degree, 1, 1);
+  ExpectCloseCall(RunMove(below_limit), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  const MoveParticleCase above_limit =
+      move_particle_cases::BuildClosingWedgeCase("TwoFacesClosingAtOnePointEightDegrees", 1.8 * degree, 1, 1);
+  const MoveParticleCall above_call = RunMove(above_limit);
+  ASSERT_EQ(above_call.error, ContactError::kNone);
+  EXPECT_NEAR(math::Length(above_call.result.velocity.for_this_step), 1 / std::sin(0.9 * degree), 1e-9);
+}
+
+TEST(MoveParticle, GrazingWedgeClosingFast_IsSqueezedAtEveryStepLength) {
+  // The escape would be 1 / tan(1e-5) = 1e5 m/s: before the cap the model launched the particle 1 km in a step of
+  // 0.01 s. Squeezed at 0.1, 0.01 and 0.001 s, naming the side, the solid the particle approaches fastest.
+  for (const double step_duration : {0.1, 0.01, 0.001}) {
+    MoveParticleCase scene = FindMoveParticleCase("GrazingWedgeClosingFast");
+    scene.inputs.step_duration = step_duration;
+    ExpectCloseCall(RunMove(scene), ContactCloseCall::kSqueezedBetweenSolids, 2);
+  }
+}
+
+TEST(MoveParticle, SpinningFloorMovedSilently_RoundingIsNotAHit) {
+  // The spinning floor is moved silently at the start: the particle's approach to it, 7.7e-15 m/s, is within the
+  // rounding of the spin's omega x r, 2^-46 * |omega x r|_1. The upright responds, and the sweep that follows measures
+  // its rate from the floor's full surface velocity, as the start rules and the joint response do. One hit, the
+  // upright's. As built before, the start rules compared the floor's approach with 0 and the sweep measured from
+  // linear_velocity alone: the floor was hit at 0 by rounding, two hits; either fix alone leaves two.
+  const MoveParticleCall call = RunMove("SpinningFloorMovedSilently");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 1U);
+}
+
+TEST(MoveParticle, ClosingCeiling_IsSqueezedBetweenSolids) {
+  // The ceiling reaches the particle at 0.05 - tol s and carries it down onto the floor, hit at 0.1 - 2 tol s, the
+  // record of that hit; there the two close at 1 m/s and no velocity approaches neither. The particle sticks to the
+  // ceiling, the solid it approaches fastest, which still approaches the floor: squeezed, naming the ceiling, id 2.
+  ExpectCloseCall(RunMove("ClosingCeiling"), ContactCloseCall::kSqueezedBetweenSolids, 2);
+}
+
+// --- The slide: the first review's scenes ---
+
+// Runs MoveParticle twice from the inputs: the step, then the next step from its end with both velocities its
+// for_next_step. Fails the calling test unless both succeed and end at the rest gap of every solid.
+void ExpectTwoStepsAtRestGap(SolidContactInputs inputs) {
+  SolidContactResult result;
+  ContactFailure failure;
+  for (int step = 1; step <= 2; ++step) {
+    const ContactError error = MoveParticle(inputs, &result, &failure);
+    ASSERT_EQ(error, ContactError::kNone)
+        << "step " << step << ", T " << inputs.step_duration << ", close call " << static_cast<int>(failure.close_call);
+    ExpectAtRestGapOfEverySolid(inputs, result.position);
+    inputs.start_position = result.position;
+    inputs.velocity = {.for_next_step = result.velocity.for_next_step, .for_this_step = result.velocity.for_next_step};
+  }
+}
+
+TEST(MoveParticle, SliverStopAtShorterSteps_EndsAndStartsAgainAtRestPoint) {
+  // At the sliver's rest point the floor is at exactly tol: never near, and once neither touched nor active. The
+  // side's response turned the particle into the floor at 2 sin(1e-7) * 2 m/s, which its touching rule let pass when
+  // that times the step was under tol: at 0.004 and 0.003 s the end check failed, and at 0.002 s the particle ended
+  // 0.57 tol from the floor and the next step was kStartsInNarrowGap. Now both are active surfaces of one joint
+  // response, and the pair, a sliver, sticks: every step length gives two steps that end at the rest point.
+  for (const double step_duration : {0.01, 0.006, 0.004, 0.003, 0.002, 0.001}) {
+    const MoveParticleCase scene = FindMoveParticleCase("SliverStop");
+    SolidContactInputs inputs = ToSolidContactInputs(scene);
+    inputs.step_duration = step_duration;
+    ExpectTwoStepsAtRestGap(inputs);
+  }
+}
+
+TEST(MoveParticle, SlowSlideIntoSliverWedge_FiftyStepsNeverInNarrowGap) {
+  // A particle sliding along the floor at 0.1 m/s into a wedge of 1e-8 rad, 50 steps of 0.01 s, each from the end of
+  // the one before with its for_next_step: it reaches the side and stops, at least tol / 2 from both solids, and never
+  // starts in a narrow gap, at rest at {205368709 tol, 0, tol} (the model). Before the floor was an active surface of
+  // the side's hit, step 6 was kStartsInNarrowGap.
+  const MoveParticleCase scene = FindMoveParticleCase("SlowSlideIntoSliverWedge");
+  SolidContactInputs inputs = ToSolidContactInputs(scene);
+  SolidContactResult result;
+  ContactFailure failure;
+  int failed_steps = 0;
+  for (int step = 1; step <= 50; ++step) {
+    const ContactError error = MoveParticle(inputs, &result, &failure);
+    failed_steps += error == ContactError::kNone ? 0 : 1;
+    inputs.start_position = result.position;
+    inputs.velocity = {.for_next_step = result.velocity.for_next_step, .for_this_step = result.velocity.for_next_step};
+  }
+  EXPECT_EQ(failed_steps, 0);
+  ExpectBothVelocitiesNear(result, {}, 1e-15);
+  ExpectVec3Near(result.position, {.x = 205368709 * kTolerance, .y = 0, .z = kTolerance}, kTolerance);
+}
+
+// Runs the edge scene of that name with a friction and a velocity, and returns its result; fails the calling test
+// unless it succeeded.
+SolidContactResult RunEdgeScene(std::string_view case_name, double friction, Vec3 velocity) {
+  MoveParticleCase scene = FindMoveParticleCase(case_name);
+  scene.inputs.friction = friction;
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  const MoveParticleCall call = RunMove(scene);
+  EXPECT_EQ(call.error, ContactError::kNone) << case_name;
+  return call.result;
+}
+
+TEST(MoveParticle, DomainBoxEdgeWithFriction_SameAsFlatSolids) {
+  // The particle meets the box's x and z sides at the same time: one joint response over both, as over the two flat
+  // solids in the same place, one hit. Both fixed, so the friction limits add: with friction 0.5 and {-1, 0.5, -1},
+  // pushes 1 and 1, a limit of 1 >= 0.5, {0, 0, 0}; friction 2 and {-1, 2, -1}, a stick too; friction 0.5 and
+  // {-1, 2, -1}, 2 - 0.5 (1 + 1) = 1, {0, 1, 0} (the responses one side after the other gave 1.1645898). Before the
+  // first review, the box's second side was removed without friction: v_y 0.276 and 0.211.
+  struct EdgeDraw {
+    double friction = 0;
+    Vec3 velocity{};  // m/s
+  };
+  const std::array<EdgeDraw, 3> draws = {
+      EdgeDraw{.friction = 0.5, .velocity = {.x = -1, .y = 0.5, .z = -1}},
+      EdgeDraw{.friction = 2, .velocity = {.x = -1, .y = 2, .z = -1}},
+      EdgeDraw{.friction = 0.5, .velocity = {.x = -1, .y = 2, .z = -1}},
+  };
+  for (const EdgeDraw draw : draws) {
+    const SolidContactResult box = RunEdgeScene("DomainBoxEdgeWithFriction", draw.friction, draw.velocity);
+    const SolidContactResult flats = RunEdgeScene("FlatSolidsEdgeWithFriction", draw.friction, draw.velocity);
+    EXPECT_EQ(box.hit_count, 1);
+    EXPECT_EQ(flats.hit_count, 1);
+    ExpectVec3Near(box.velocity.for_next_step, flats.velocity.for_next_step, 1e-15);
+    ExpectVec3Near(box.position, flats.position, kTolerance / 1024);
+  }
+  ExpectVec3Near(
+      RunEdgeScene("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 0.5, .z = -1}).velocity.for_next_step,
+      {},
+      1e-15
+  );
+  ExpectVec3Near(
+      RunEdgeScene("DomainBoxEdgeWithFriction", 2, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
+      {},
+      1e-15
+  );
+  ExpectVec3Near(
+      RunEdgeScene("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
+      {.x = 0, .y = 1, .z = 0},
+      1e-15
+  );
+}
+
+// Runs the chamfered domain corner at one step length and velocity, the start 0.2 T {1, 1, 1}, and fails the calling
+// test unless it succeeds at the rest gap of all five surfaces or farther. Returns the result.
+SolidContactResult ExpectChamferedCornerSuccess(double step_duration, Vec3 velocity) {
+  MoveParticleCase scene = FindMoveParticleCase("DomainCornerWithTwoChamfers");
+  scene.inputs.step_duration = step_duration;
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  scene.inputs.start_position = 0.2 * step_duration * Vec3{.x = 1, .y = 1, .z = 1};
+  const MoveParticleCall call = RunMove(scene);
+  EXPECT_EQ(call.error, ContactError::kNone)
+      << "T " << step_duration << ", close call " << static_cast<int>(call.failure.close_call);
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    const Solid& solid = inputs.solids[solid_index];
+    EXPECT_GE(
+        ComputeDistanceToSolid(solid, ComputeSolidPose(solid, step_duration), call.result.position).distance,
+        kTolerance - kTolerance / 128
+    );
+  }
+  return call.result;
+}
+
+TEST(MoveParticle, DomainCornerWithTwoChamfers_FiveDirectionsAtEveryStepLength) {
+  // The chamfers, then the box's sides: five directions at once, which one joint response reads (at most three of them
+  // meet the smallest change as equalities). Before, more than four was kTooManyHits at every step length. The
+  // particle stops in the corner at the rest gap of all five surfaces, at steps of 1, 0.01 and 1e-4 s (the start
+  // 0.2 T out), for the review's three velocities. The chamfer through the corner line is inside the corner's own cone:
+  // the responses one surface after the other gave the particle speed along y from it ({0, 0.5, 0} or
+  // {0, 0.15, 0} after four hits), the joint response does not.
+  for (const double step_duration : {1.0, 0.01, 1e-4}) {
+    for (const Vec3 velocity :
+         {Vec3{.x = -1, .y = -1, .z = -1}, Vec3{.x = -1, .y = -2, .z = -0.5}, Vec3{.x = -0.3, .y = -1, .z = -0.2}}) {
+      const SolidContactResult result = ExpectChamferedCornerSuccess(step_duration, velocity);
+      ExpectBothVelocitiesNear(result, {}, 1e-15);
+      // Straight into the corner every surface is met at once; the other two meet a chamfer first.
+      const bool is_straight_in = velocity.x == velocity.y && velocity.y == velocity.z;
+      EXPECT_EQ(result.hit_count, is_straight_in ? 1 : 3) << "T " << step_duration;
+    }
+  }
+}
+
+TEST(MoveParticle, DomainCornerWithTwoChamfersSearchDraw_ThreeHitsAndStops) {
+  // Draw 44 of a search over paths into the chamfered corner (T 0.01 s, friction 0). The responses one surface after
+  // the other made four hits here and left a fifth surface approached; 868 of 20,000 such paths were kTooManyHits at
+  // every step length. One joint response per hit reads every surface the particle is on: three hits, and it stops.
+  MoveParticleCase scene = FindMoveParticleCase("DomainCornerWithTwoChamfers");
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const Vec3 velocity = {.x = -1.0473316932328587, .y = -0.98622076700109773, .z = -0.93008650554402639};
+  scene.inputs.start_position = {.x = 0.0047600466537494742, .y = 0.0067707440232294162, .z = 0.0079880132798848865};
+  // NOLINTEND(modernize-use-std-numbers)
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  scene.inputs.step_duration = 0.01;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone) << static_cast<int>(call.failure.close_call);
+  EXPECT_EQ(call.result.hit_count, 3);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+}
+
+TEST(MoveParticle, FallingOnSeventeenCoincidentFloors_SlidesOnOneDirection) {
+  // Seventeen fixed floors through the origin, the particle falling on them at {1, 0, -1} m/s from z = 0.05 for 0.1 s:
+  // the first is hit, and the joint response reads seventeen surfaces of one normal, one velocity and one friction:
+  // exact copies, which take one place in the active surfaces (ComputeIsExactCopy). Listed one by one they were more
+  // than sixteen: kTooManyHits.
+  MoveParticleCase scene = FindMoveParticleCase("SeventeenCoincidentFloors");
+  scene.inputs.start_position = {.x = 0, .y = 0, .z = 0.05};
+  scene.inputs.velocity = {.for_next_step = {.x = 1, .y = 0, .z = -1}, .for_this_step = {.x = 1, .y = 0, .z = -1}};
+  scene.inputs.step_duration = 0.1;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone) << static_cast<int>(call.failure.close_call);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {.x = 1, .y = 0, .z = 0}, 1e-15);
+}
+
+TEST(MoveParticle, MovingCornerWithCoincidentFaceFastEscape_AllowanceRaisedForThisStep) {
+  // The review's draw 3053: the escape is much faster than the velocity the response received, so the rounding it may
+  // leave is larger than that velocity's own allowance; the response's allowance counts the change too, which keeps
+  // the sweeps from hitting a face again by rounding. Three hits, and the velocity within 8.6e-14 of the speed of the
+  // sequence of responses as built before (plan decision P20 changes it by rounding only here).
+  const MoveParticleCall call = RunMove("MovingCornerWithCoincidentFaceFastEscape");
+  ASSERT_EQ(call.error, ContactError::kNone) << static_cast<int>(call.failure.close_call);
+  EXPECT_EQ(call.result.hit_count, 3);
+}
+
+TEST(MoveParticle, MovingCornerWithCoincidentFaceNextStepEscape_Succeeds) {
+  // The review's draw 115326, which separated for_next_step's allowance from for_this_step's: the coincident fourth
+  // face took the rounding a change left in for_next_step for an approach. The start's faces are active at once: one
+  // joint response, one hit.
+  const MoveParticleCall call = RunMove("MovingCornerWithCoincidentFaceNextStepEscape");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+}
+
+TEST(MoveParticle, ObtuseWedgeStartInBothOrders_Same) {
+  // In a wedge of 120 degrees, friction 0, {-1, 1, -1}: the responses one solid after the other gave {-0.25, 1, 0.433}
+  // with the floor first and {0.183, 1, 0} with the side first. One joint response gives the smallest frictionless
+  // change over both, {0, 1, 0}, one hit, the same bits in both orders.
+  const MoveParticleCall floor_first = RunMove("ObtuseWedgeFloorFirst");
+  const MoveParticleCall side_first = RunMove("ObtuseWedgeSideFirst");
+  ASSERT_EQ(floor_first.error, ContactError::kNone);
+  ASSERT_EQ(side_first.error, ContactError::kNone);
+  EXPECT_EQ(floor_first.result.hit_count, 1);
+  EXPECT_EQ(side_first.result.hit_count, 1);
+  ExpectBothVelocitiesNear(floor_first.result, {.x = 0, .y = 1, .z = 0}, 1e-15);
+  ExpectVec3Equal(side_first.result.velocity.for_next_step, floor_first.result.velocity.for_next_step);
+  ExpectVec3Equal(side_first.result.velocity.for_this_step, floor_first.result.velocity.for_this_step);
+}
+
+TEST(MoveParticle, CoincidentReactingFloorsNormalsApartByRounding_NoSecondReactingSolid) {
+  // Two reacting floors whose normals are 2e-13 apart share one direction, so one response pushes once: no false
+  // kSecondReactingSolid at any step length. The push is charged to the direction's pushing surface: equal friction,
+  // both reacting, so the first in the sorted order, the floor whose normal's x is the smaller, solid_index 1.
+  for (const double step_duration : {0.2, 0.001}) {
+    MoveParticleCase scene = FindMoveParticleCase("CoincidentReactingFloorsNormalsApartByRounding");
+    scene.inputs.step_duration = step_duration;
+    const MoveParticleCall call = RunMove(scene);
+    ASSERT_EQ(call.error, ContactError::kNone) << static_cast<int>(call.failure.close_call);
+    EXPECT_EQ(call.result.hit_count, 1);
+    ExpectBothVelocitiesNear(call.result, {.x = 1, .y = 0, .z = 0}, 1e-15);
+    EXPECT_EQ(call.result.reaction.solid_index, 1U);
+    ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 1}, 1e-15);
+  }
+}
+
+// Runs the rest-point wedge of that angle name listed floor first and side first, and fails the calling test unless
+// both succeed with one hit and the same velocities, bit for bit. Returns the floor-first result.
+SolidContactResult ExpectSameInBothOrders(std::string_view angle_name) {
+  const std::string floor_first = std::string(angle_name) + "DegreeRestPointFloorFirst";
+  const std::string side_first = std::string(angle_name) + "DegreeRestPointSideFirst";
+  const MoveParticleCall floor_call = RunMove(floor_first);
+  const MoveParticleCall side_call = RunMove(side_first);
+  EXPECT_EQ(floor_call.error, ContactError::kNone) << floor_first;
+  EXPECT_EQ(side_call.error, ContactError::kNone) << side_first;
+  EXPECT_EQ(floor_call.result.hit_count, 1) << floor_first;
+  EXPECT_EQ(side_call.result.hit_count, 1) << side_first;
+  ExpectVec3Equal(side_call.result.velocity.for_next_step, floor_call.result.velocity.for_next_step);
+  ExpectVec3Equal(side_call.result.velocity.for_this_step, floor_call.result.velocity.for_this_step);
+  return floor_call.result;
+}
+
+TEST(MoveParticle, RestPointWedgesWithFriction_SameInBothOrders) {
+  // At the rest point both faces are active: one joint response, friction 0.5. Both surfaces are fixed, so their
+  // friction limits add (plan decision P20, item 5): the velocity along the apex is 1 - 0.5 (push_floor + push_side),
+  // or 0, a stick. 30 degrees, {-1, 1, -1}: pushes 2.732 and 2, a limit of 2.366 >= 1, {0, 0, 0} exactly. 45, 60 and
+  // 75 degrees, {-0.2, 1, -1}: y 0.258578643763, 0.326794919243 and 0.369677462716. The same bits in both orders.
+  const SolidContactResult thirty = ExpectSameInBothOrders("Thirty");
+  ExpectBothVelocitiesNear(thirty, {}, 0);
+  const std::array<std::pair<std::string_view, double>, 3> slips = {
+      std::pair<std::string_view, double>{"FortyFive", 0.258578643763},
+      std::pair<std::string_view, double>{"Sixty", 0.326794919243},
+      std::pair<std::string_view, double>{"SeventyFive", 0.369677462716},
+  };
+  for (const auto& [angle_name, along_apex] : slips) {
+    const SolidContactResult result = ExpectSameInBothOrders(angle_name);
+    EXPECT_NEAR(result.velocity.for_next_step.y, along_apex, 1e-12) << angle_name;
+    EXPECT_NEAR(result.velocity.for_next_step.x, 0, 1e-15) << angle_name;
+    EXPECT_NEAR(result.velocity.for_next_step.z, 0, 1e-15) << angle_name;
+  }
+}
+
+TEST(MoveParticle, MicroradianWedgeOnReactingFloor_FloorApproachedFastestIsCharged) {
+  // A wedge of 1e-6 rad, a sliver (1 + c = 5e-13 < 2^-40), at its rest point: no change is found, and the particle
+  // sticks to the surface it approaches fastest. Moving at {-2, 1, 0} that is the side: {0, 0, 0}, no reaction. Moving
+  // at {-2, 1, -0.001} it is the reacting floor, charged the whole stop {2, -1, 0.001}.
+  const MoveParticleCall into_side = RunMove("MicroradianWedgeOnReactingFloor");
+  ASSERT_EQ(into_side.error, ContactError::kNone);
+  EXPECT_EQ(into_side.result.hit_count, 1);
+  ExpectBothVelocitiesNear(into_side.result, {}, 0);
+  ExpectNoReaction(into_side.result.reaction);
+  MoveParticleCase scene = FindMoveParticleCase("MicroradianWedgeOnReactingFloor");
+  const Vec3 into_floor_velocity = {.x = -2, .y = 1, .z = -0.001};
+  scene.inputs.velocity = {.for_next_step = into_floor_velocity, .for_this_step = into_floor_velocity};
+  const MoveParticleCall into_floor = RunMove(scene);
+  ASSERT_EQ(into_floor.error, ContactError::kNone);
+  EXPECT_EQ(into_floor.result.hit_count, 1);
+  ExpectBothVelocitiesNear(into_floor.result, {}, 0);
+  EXPECT_EQ(into_floor.result.reaction.solid_index, 0U);
+  ExpectVec3Equal(into_floor.result.reaction.velocity_for_next_step_change, {.x = 2, .y = -1, .z = 0.001});
+}
+
+TEST(MoveParticle, CopyFuzzScenes_ExactCopyChangesNothing) {
+  // Two draws of the copy fuzz where an exact copy of a face comes after it in the array. The copy is dropped from the
+  // active surfaces (ComputeIsExactCopy), so each scene with its copy gives the hit count and the velocities of the
+  // scene without it, bit for bit. Three faces (draw 131): one hit, {0, 0, 0}, a stick in the corner. Two faces (draw
+  // 51): as before.
+  for (const std::string_view case_name : {"CopyFuzzThreeFaces", "CopyFuzzTwoFaces"}) {
+    const MoveParticleCall without_copy = RunMove(case_name);
+    const MoveParticleCall with_copy = RunMove(std::string(case_name) + "WithCopy");
+    ASSERT_EQ(without_copy.error, ContactError::kNone) << case_name;
+    ASSERT_EQ(with_copy.error, ContactError::kNone) << case_name;
+    EXPECT_EQ(with_copy.result.hit_count, without_copy.result.hit_count) << case_name;
+    ExpectVec3Equal(with_copy.result.velocity.for_next_step, without_copy.result.velocity.for_next_step);
+    ExpectVec3Equal(with_copy.result.velocity.for_this_step, without_copy.result.velocity.for_this_step);
+  }
+  const MoveParticleCall three_faces = RunMove("CopyFuzzThreeFaces");
+  EXPECT_EQ(three_faces.result.hit_count, 1);
+  ExpectBothVelocitiesNear(three_faces.result, {}, 0);
+}
+
+TEST(MoveParticle, DomainBoxAndSideWithGround_SameAsWithoutGround) {
+  // A ground lying on the domain box's bottom, fixed, with the bottom's normal bit for bit: an exact copy when its
+  // friction is the same, dropped; with twice the friction it is the bottom's direction's pushing surface, and its
+  // friction acts. At the rest point of the box's bottom and a side at 60 degrees, {-1, 1, -1}, friction 0.5: the
+  // pushes give a friction limit above the speed along the apex, so all three scenes stick, {0, 0, 0}, one hit. The
+  // result reads the active surfaces, not which face rounds below tol, so the libm of std::tan no longer changes it.
+  for (const std::string_view case_name :
+       {"DomainBoxAndSide", "DomainBoxAndSideWithGround", "DomainBoxAndSideWithRoughGround"}) {
+    const MoveParticleCall call = RunMove(case_name);
+    ASSERT_EQ(call.error, ContactError::kNone) << case_name;
+    EXPECT_EQ(call.result.hit_count, 1) << case_name;
+    ExpectBothVelocitiesNear(call.result, {}, 0);
+  }
+}
+
+// --- The joint response (plan decision P20) ---
+
+constexpr SolidMotion kNoMotion = move_particle_cases::kNoMotion;  // A solid that neither moves nor turns.
+constexpr Vec3 kUnitX = move_particle_cases::kUnitX;
+constexpr Vec3 kUnitY = move_particle_cases::kUnitY;
+constexpr Vec3 kUnitZ = move_particle_cases::kUnitZ;
+
+// Builds a scene from its solids, in that array order, with the solid_ids renumbered 1, 2, ... so they ascend.
+MoveParticleCase BuildOrderedScene(std::vector<Solid> solids, const SolidContactInputs& inputs) {
+  for (std::size_t solid_index = 0; solid_index < solids.size(); ++solid_index) {
+    solids[solid_index].solid_id = static_cast<std::uint32_t>(solid_index + 1);
+  }
+  return {.name = "", .solids = std::move(solids), .inputs = inputs};
+}
+
+// The normal of BuildWedgeSide for a wedge of that angle with the floor, the same bits.
+Vec3 ToWedgeSideNormal(double wedge_angle) {
+  const double normal_angle = std::numbers::pi - wedge_angle;  // rad
+  return {.x = std::sin(normal_angle), .y = 0, .z = std::cos(normal_angle)};
+}
+
+// The inputs of a particle at the rest point {tol / tan(a / 2), 0, tol} of a wedge of angle a with the floor, both
+// velocities velocity, T 0.01 s, overlap 2 tol, with that friction.
+SolidContactInputs BuildRestPointInputs(double wedge_angle, Vec3 velocity, double friction) {
+  SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+      {.x = kTolerance / std::tan(wedge_angle / 2), .y = 0, .z = kTolerance},
+      velocity,
+      0.01
+  );
+  inputs.friction = friction;
+  return inputs;
+}
+
+// A flat solid through the origin with that normal, moving at that velocity, friction scale and id.
+//
+// clang-tidy: the normal and the velocity are both Vec3; the swappable-parameters check flags the two.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+Solid BuildMovingFlatSolid(Vec3 normal_out_of_solid, Vec3 linear_velocity, double friction_scale, std::uint32_t id) {
+  Solid solid = move_particle_cases::BuildFlatSolid({}, normal_out_of_solid, {.linear_velocity = linear_velocity}, id);
+  solid.friction_scale = friction_scale;
+  return solid;
+}
+
+// Fails the calling test unless both calls have the same error, kind, hit count and both velocities, bit for bit.
+void ExpectSameBits(const MoveParticleCall& actual, const MoveParticleCall& expected, std::string_view label) {
+  EXPECT_EQ(actual.error, expected.error) << label;
+  EXPECT_EQ(actual.result.kind, expected.result.kind) << label;
+  EXPECT_EQ(actual.result.hit_count, expected.result.hit_count) << label;
+  ExpectVec3Equal(actual.result.velocity.for_next_step, expected.result.velocity.for_next_step);
+  ExpectVec3Equal(actual.result.velocity.for_this_step, expected.result.velocity.for_this_step);
+}
+
+// The solids in the given order of their indexes.
+std::vector<Solid> ToPermutedSolids(const std::vector<Solid>& solids, const std::vector<std::size_t>& order) {
+  std::vector<Solid> permuted;
+  permuted.reserve(order.size());
+  for (const std::size_t index : order) {
+    permuted.push_back(solids[index]);
+  }
+  return permuted;
+}
+
+// Runs the solids in every order of the array and fails the calling test unless every order gives the bits of the
+// first. Returns the call of the order given.
+MoveParticleCall ExpectSameBitsInEveryOrder(const std::vector<Solid>& solids, const SolidContactInputs& inputs) {
+  const MoveParticleCall first = RunMove(BuildOrderedScene(solids, inputs));
+  std::vector<std::size_t> order(solids.size());
+  for (std::size_t index = 0; index < order.size(); ++index) {
+    order[index] = index;
+  }
+  while (std::ranges::next_permutation(order).found) {
+    ExpectSameBits(RunMove(BuildOrderedScene(ToPermutedSolids(solids, order), inputs)), first, "permuted");
+  }
+  return first;
+}
+
+// The scene of C1 (re-review 2, q1): floor_count coincident fixed floors and a wall at x = 0.5, the particle falling
+// from {0.3, 0, 0.01} at {10, 0, -2} m/s for 0.1 s, friction 0.
+MoveParticleCase BuildFloorsAndWallScene(int floor_count) {
+  std::vector<Solid> solids(static_cast<std::size_t>(floor_count), move_particle_cases::BuildFloor(1));
+  solids.push_back(move_particle_cases::BuildFlatSolid({.x = 0.5, .y = 0, .z = 0}, -kUnitX, kNoMotion, 1));
+  return BuildOrderedScene(
+      solids,
+      move_particle_cases::BuildSeveralSurfaceInputs({.x = 0.3, .y = 0, .z = 0.01}, {.x = 10, .y = 0, .z = -2}, 0.1)
+  );
+}
+
+TEST(MoveParticle, EightCoincidentFloorsAndWall_TwoHits) {
+  // Re-review 2's C1: eight coincident floors, then a wall. The floors are exact copies, one active surface; nothing
+  // is listed per solid, so nothing overflows. The fall is one hit at 0.05 - tol / 0.2 of the step, the wall a second:
+  // {0, 0, 0} at {0.5 - tol, 0, tol}. The same with 17 and 40 floors (built once under AddressSanitizer for round 3).
+  for (const int floor_count : {8, 17, 40}) {
+    const MoveParticleCall call = RunMove(BuildFloorsAndWallScene(floor_count));
+    ASSERT_EQ(call.error, ContactError::kNone) << floor_count;
+    EXPECT_EQ(call.result.hit_count, 2) << floor_count;
+    ExpectBothVelocitiesNear(call.result, {}, 0);
+    ExpectVec3Near(call.result.position, {.x = 0.5 - kTolerance, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
+    EXPECT_NEAR(call.result.hit_fraction, 0.05 - kTolerance / 0.2, 1e-15) << floor_count;
+  }
+}
+
+// The solids of I-1 (re-review 2, q3): a floor moving at {0, 0.3, 0} and a fixed side at that wedge angle, and a third
+// solid when given.
+std::vector<Solid> BuildMovingFloorWedge(double wedge_angle, const Solid* third) {
+  std::vector<Solid> solids = {
+      BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.3, .z = 0}, 1, 1),
+      move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 2),
+  };
+  if (third != nullptr) {
+    solids.push_back(*third);
+  }
+  return solids;
+}
+
+TEST(MoveParticle, CoincidentFloorOneRoundingUnitFaster_SameBitsAsWithoutIt) {
+  // Re-review 2's I-1: beside a floor moving at {0, 0.3, 0}, a coincident floor at {0, 0.1 + 0.2, 0}, one rounding
+  // unit faster, pushes as much; equal friction, so the first in the sorted order acts, the slower floor: the same bits
+  // as without it, and as with an exact copy. Friction 0.5: y 0.15 at 30 and 60 degrees. Friction 0.1: y
+  // 1 - 0.1 (2.7320508 + 2) = 0.526794919243 at 30 degrees and 0.726794919243 at 60.
+  const double degree = std::numbers::pi / 180;  // rad
+  const Solid faster_floor = BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.1 + 0.2, .z = 0}, 1, 3);
+  const Solid copy_floor = BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.3, .z = 0}, 1, 3);
+  struct Expected {
+    double wedge_angle = 0;  // rad
+    double friction = 0;
+    double along_apex = 0;  // m/s
+  };
+  const std::array<Expected, 4> rows = {
+      Expected{.wedge_angle = 30 * degree, .friction = 0.5, .along_apex = 0.15},
+      Expected{.wedge_angle = 60 * degree, .friction = 0.5, .along_apex = 0.15},
+      Expected{.wedge_angle = 30 * degree, .friction = 0.1, .along_apex = 0.526794919243},
+      Expected{.wedge_angle = 60 * degree, .friction = 0.1, .along_apex = 0.726794919243},
+  };
+  for (const Expected& row : rows) {
+    const SolidContactInputs inputs = BuildRestPointInputs(row.wedge_angle, {.x = -1, .y = 1, .z = -1}, row.friction);
+    const MoveParticleCall alone = RunMove(BuildOrderedScene(BuildMovingFloorWedge(row.wedge_angle, nullptr), inputs));
+    ASSERT_EQ(alone.error, ContactError::kNone);
+    EXPECT_EQ(alone.result.hit_count, 1);
+    EXPECT_NEAR(alone.result.velocity.for_next_step.y, row.along_apex, 1e-12);
+    for (const Solid* third : {&faster_floor, &copy_floor}) {
+      ExpectSameBits(RunMove(BuildOrderedScene(BuildMovingFloorWedge(row.wedge_angle, third), inputs)), alone, "third");
+    }
+  }
+}
+
+// Runs a floor moving at {0, 0.3, 0} and a 60 degree side moving at {0, side_speed, 0} from their rest point at
+// {-1, 1, -1} with that friction, and fails the calling test unless one hit leaves {0, along_apex, 0} within
+// tolerance on y and 1e-15 on x and z.
+//
+// clang-tidy: the friction, the speed and the expected speed are doubles; the swappable-parameters check flags them.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void ExpectTwoMovingFacesAlongApex(double friction, double side_speed, double along_apex, double tolerance) {
+  const double wedge_angle = std::numbers::pi / 3;  // rad
+  const SolidContactInputs inputs = BuildRestPointInputs(wedge_angle, {.x = -1, .y = 1, .z = -1}, friction);
+  const std::vector<Solid> solids = {
+      BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.3, .z = 0}, 1, 1),
+      BuildMovingFlatSolid(ToWedgeSideNormal(wedge_angle), {.x = 0, .y = side_speed, .z = 0}, 1, 2),
+  };
+  const MoveParticleCall call = RunMove(BuildOrderedScene(solids, inputs));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_NEAR(call.result.velocity.for_next_step.y, along_apex, tolerance);
+  EXPECT_NEAR(call.result.velocity.for_next_step.x, 0, 1e-15);
+  EXPECT_NEAR(call.result.velocity.for_next_step.z, 0, 1e-15);
+}
+
+TEST(MoveParticle, TwoMovingFacesOneRoundingUnitApart_SameAsOneVelocity) {
+  // A floor and a 60 degree side both moving at {0, 0.3, 0}: one solid velocity, the friction limits add. With the
+  // side at {0, 0.1 + 0.2, 0} they move differently by one rounding unit, and the mean over the orders agrees to
+  // rounding. Friction 0.5: {0, 0.3, 0}, a stick; friction 0.1: y 0.726794919243. Adding each surface's friction from
+  // the same velocity instead gives y -0.4 in the second scene: friction reversing the sliding.
+  for (const double side_speed : {0.3, 0.1 + 0.2}) {
+    ExpectTwoMovingFacesAlongApex(0.5, side_speed, 0.3, 1e-15);
+    ExpectTwoMovingFacesAlongApex(0.1, side_speed, 0.726794919243, 1e-12);
+  }
+}
+
+// Runs the floors at z = 0 and z = tol / 2 from z = tol / 4 at that velocity, the lower one reacting or not and listed
+// first or second, and fails the calling test unless the start inside the upper one is one hit, kind
+// kStartedInsideSolid, both velocities {0, 0, 0}, and no reaction.
+void ExpectUpperFloorResponds(Vec3 velocity, bool is_lower_reacting, bool is_lower_first) {
+  Solid lower_floor = move_particle_cases::BuildFloor(1);
+  lower_floor.reports_reaction = is_lower_reacting;
+  const Solid upper_floor =
+      move_particle_cases::BuildFlatSolid({.x = 0, .y = 0, .z = kTolerance / 2}, kUnitZ, kNoMotion, 1);
+  const std::vector<Solid> solids =
+      is_lower_first ? std::vector<Solid>{lower_floor, upper_floor} : std::vector<Solid>{upper_floor, lower_floor};
+  const SolidContactInputs inputs =
+      move_particle_cases::BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = kTolerance / 4}, velocity, 0.01);
+  const MoveParticleCall call = RunMove(BuildOrderedScene(solids, inputs));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {}, 0);
+  ExpectNoReaction(call.result.reaction);
+}
+
+TEST(MoveParticle, ParallelFloorsStartInsideUpper_SameInBothOrders) {
+  // Re-review 2's m-f: floors at z = 0 and z = tol / 2, the start at tol / 4, inside the upper one. The move takes it
+  // to 1.5 tol, where the lower floor is not active: the upper one responds, in either order, one hit, kind
+  // kStartedInsideSolid. With the lower floor reacting, listed first or second, no reaction: it never pushed.
+  for (const bool is_lower_reacting : {false, true}) {
+    for (const bool is_lower_first : {true, false}) {
+      ExpectUpperFloorResponds({.x = 0, .y = 0, .z = -1}, is_lower_reacting, is_lower_first);
+      ExpectUpperFloorResponds({}, is_lower_reacting, is_lower_first);
+    }
+  }
+}
+
+TEST(MoveParticle, MovingFourFaceCorner_SucceedsAtEveryStepLength) {
+  // Re-review 2's m-g, draw 102164 of q4b: four flat solids through the origin, two of them moving, friction 2.92.
+  // The responses one surface after the other gave kTooManyHits at every step length; one joint response per hit
+  // gives two hits and the same velocity at 0.01, 1e-4 and 1e-6 s.
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const std::vector<Solid> solids = {
+      BuildMovingFlatSolid(
+          {.x = -0.67950032971940066, .y = 0.15463576612760666, .z = 0.71719389410769119},
+          {.x = -0.035902373724512791, .y = 0.16310544388377485, .z = 0.26346007690904943},
+          1,
+          1
+      ),
+      BuildMovingFlatSolid({.x = -0.71548192049742465, .y = 0.068979324215572471, .z = 0.69521757333375855}, {}, 1, 2),
+      BuildMovingFlatSolid(
+          {.x = -0.0055145910467134171, .y = 0.58262279289502583, .z = -0.81272398173352034},
+          {},
+          1,
+          3
+      ),
+      BuildMovingFlatSolid(
+          {.x = 0.6295852542262288, .y = 0.63222080802298863, .z = 0.45157419939989274},
+          {.x = 0.25357877268218021, .y = -0.17551066158987808, .z = -0.013789205914272273},
+          1,
+          4
+      ),
+  };
+  SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+      {.x = -5.9984278331639708e-10, .y = 2.0052907849860375e-09, .z = 1.2189571010398511e-10},
+      {.x = 0.37392763599320999, .y = 0.13654011589841342, .z = -0.24647174345867018},
+      0.01
+  );
+  inputs.friction = 2.923388931079602;
+  // NOLINTEND(modernize-use-std-numbers)
+  for (const double step_duration : {0.01, 1e-4, 1e-6}) {
+    inputs.step_duration = step_duration;
+    const MoveParticleCall call = RunMove(BuildOrderedScene(solids, inputs));
+    ASSERT_EQ(call.error, ContactError::kNone) << step_duration;
+    EXPECT_EQ(call.result.hit_count, 2) << step_duration;
+    ExpectBothVelocitiesNear(call.result, {.x = -0.152699427, .y = 0.200466685, .z = 0.144745987}, 1e-8);
+  }
+}
+
+// Runs the scene with a copy of solids[copied_index] inserted at every place of the array, and fails the calling test
+// unless each gives the hit count and the velocities of the scene without it, bit for bit.
+void ExpectCopyInEveryPlaceChangesNothing(const MoveParticleCase& scene, std::size_t copied_index) {
+  const MoveParticleCall without_copy = RunMove(BuildOrderedScene(scene.solids, scene.inputs));
+  ASSERT_EQ(without_copy.error, ContactError::kNone);
+  for (std::size_t place = 0; place <= scene.solids.size(); ++place) {
+    std::vector<Solid> solids = scene.solids;
+    solids.insert(solids.begin() + static_cast<std::ptrdiff_t>(place), scene.solids[copied_index]);
+    ExpectSameBits(RunMove(BuildOrderedScene(solids, scene.inputs)), without_copy, "copy");
+  }
+}
+
+TEST(MoveParticle, CopiesInEveryPlaceOfTheArray_SameBits) {
+  // Re-review 2's m-h: an exact copy listed before the surface it copies took a response of its own. Now a copy is
+  // dropped wherever it stands: the two copy fuzz scenes, the moving floor of CoincidentFloorOneRoundingUnitFaster and
+  // draw 15798 of the review's r2x, the copy at every index, give the bits of the scene without it.
+  ExpectCopyInEveryPlaceChangesNothing(FindMoveParticleCase("CopyFuzzThreeFaces"), 0);
+  ExpectCopyInEveryPlaceChangesNothing(FindMoveParticleCase("CopyFuzzTwoFaces"), 1);
+  const double wedge_angle = std::numbers::pi / 3;  // rad
+  const MoveParticleCase moving_floor = BuildOrderedScene(
+      BuildMovingFloorWedge(wedge_angle, nullptr),
+      BuildRestPointInputs(wedge_angle, {.x = -1, .y = 1, .z = -1}, 0.5)
+  );
+  ExpectCopyInEveryPlaceChangesNothing(moving_floor, 0);
+  // Draw 15798 of r2x: three fixed faces at their rest point, friction 0; with a copy of the third listed first, the
+  // responses one surface after the other gave a velocity 0.45 of the speed away from the scene without it.
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const MoveParticleCase three_faces = BuildOrderedScene(
+      {
+          BuildMovingFlatSolid(
+              {.x = 0.60795077209177761, .y = -0.3057230405462848, .z = 0.73275458455894105},
+              {},
+              1,
+              1
+          ),
+          BuildMovingFlatSolid(
+              {.x = 0.68403749630042443, .y = -0.71878160902002475, .z = 0.12428073941536956},
+              {},
+              1,
+              2
+          ),
+          BuildMovingFlatSolid(
+              {.x = 0.010885836871239393, .y = -0.72153534111472639, .z = 0.69229202658854017},
+              {},
+              1,
+              3
+          ),
+      },
+      move_particle_cases::BuildSeveralSurfaceInputs(
+          {.x = 7.4131727375170571e-10, .y = -5.33687953892031e-10, .z = 7.7738580710700797e-10},
+          {.x = -0.18896864807755898, .y = 0.46035055733376096, .z = -0.6954726815656882},
+          0.01
+      )
+  );
+  // NOLINTEND(modernize-use-std-numbers)
+  ExpectCopyInEveryPlaceChangesNothing(three_faces, 2);
+}
+
+TEST(MoveParticle, RoughGroundOnWedgeFloor_RougherOneActs) {
+  // At the rest point of a 60 degree wedge, {-0.2, 1, -1}, friction 0.2: floor and side give y
+  // 1 - 0.2 (1.1154700538 + 0.2309401077) = 0.730717967697. A floor of friction scale 2 in the floor's place:
+  // 0.507623956930. The floor, the side and that rough floor, in each of the six orders, and with two more plain
+  // floors: the rough one pushes for the floor's direction, 0.507623956930, the same bits. With the plain floor
+  // reacting and no rough one, it is charged its push and its friction share: {0, -0.223094010768, 1.115470053838}.
+  const double wedge_angle = std::numbers::pi / 3;  // rad
+  const SolidContactInputs inputs = BuildRestPointInputs(wedge_angle, {.x = -0.2, .y = 1, .z = -1}, 0.2);
+  const Solid floor = move_particle_cases::BuildFloor(1);
+  const Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 2);
+  Solid rough_floor = floor;
+  rough_floor.friction_scale = 2;
+  const MoveParticleCall plain = RunMove(BuildOrderedScene({floor, side}, inputs));
+  ASSERT_EQ(plain.error, ContactError::kNone);
+  EXPECT_NEAR(plain.result.velocity.for_next_step.y, 0.730717967697, 1e-12);
+  const MoveParticleCall rough = RunMove(BuildOrderedScene({rough_floor, side}, inputs));
+  ASSERT_EQ(rough.error, ContactError::kNone);
+  EXPECT_NEAR(rough.result.velocity.for_next_step.y, 0.507623956930, 1e-12);
+  const MoveParticleCall all_three = ExpectSameBitsInEveryOrder({floor, side, rough_floor}, inputs);
+  ExpectSameBits(all_three, rough, "three");
+  ExpectSameBits(RunMove(BuildOrderedScene({floor, side, rough_floor, floor, floor}, inputs)), rough, "five");
+  Solid reacting_floor = floor;
+  reacting_floor.reports_reaction = true;
+  const MoveParticleCall reacting = RunMove(BuildOrderedScene({reacting_floor, side}, inputs));
+  ASSERT_EQ(reacting.error, ContactError::kNone);
+  EXPECT_EQ(reacting.result.reaction.solid_index, 0U);
+  ExpectVec3Near(
+      reacting.result.reaction.velocity_for_next_step_change,
+      {.x = 0, .y = -0.223094010768, .z = 1.115470053838},
+      1e-12
+  );
+}
+
+TEST(MoveParticle, ConveyorOnFloor_FirstInSortedOrderActs) {
+  // A pinned choice (plan decision P20, item 4): a floor and a coincident conveyor moving at {1, 0, 0}, the particle
+  // falling at 1 m/s onto both, friction 0.5. Both push as much; with equal friction the first in the sorted order
+  // acts, the fixed floor, whose x velocity is the smaller: {0, 0, 0} in both orders. The conveyor with friction
+  // scale 2 acts: {1, 0, 0}; the fixed floor with scale 2: {0, 0, 0}.
+  SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+      {.x = 0, .y = 0, .z = kTolerance},
+      {.x = 0, .y = 0, .z = -1},
+      0.01
+  );
+  inputs.friction = 0.5;
+  const Solid floor = move_particle_cases::BuildFloor(1);
+  const Solid conveyor = BuildMovingFlatSolid(kUnitZ, kUnitX, 1, 2);
+  ExpectBothVelocitiesNear(ExpectSameBitsInEveryOrder({floor, conveyor}, inputs).result, {}, 0);
+  const Solid rough_conveyor = BuildMovingFlatSolid(kUnitZ, kUnitX, 2, 2);
+  ExpectBothVelocitiesNear(ExpectSameBitsInEveryOrder({floor, rough_conveyor}, inputs).result, kUnitX, 0);
+  Solid rough_floor = floor;
+  rough_floor.friction_scale = 2;
+  ExpectBothVelocitiesNear(ExpectSameBitsInEveryOrder({rough_floor, conveyor}, inputs).result, {}, 0);
+}
+
+TEST(MoveParticle, ConveyorAndFixedSide_MeanOverTheOrders) {
+  // A floor moving at {0, 1, 0} and a fixed side with normal {1, 0, 0}, {-1, 1, -1} at their corner: pushes 1 and 1,
+  // v0 {0, 1, 0}. The floor's friction takes nothing (v0 moves with it), the side's takes min(friction, 1): the floor
+  // first, {0, 1 - friction, 0}; the side first, the floor then brings the particle back toward its own velocity. The
+  // mean over the two orders: friction 0 {0, 1, 0}, 0.2 {0, 0.9, 0}, 0.5 {0, 0.75, 0}, 2 {0, 0.5, 0}, both orders the
+  // same bits.
+  const Solid conveyor = BuildMovingFlatSolid(kUnitZ, kUnitY, 1, 1);
+  const Solid side = move_particle_cases::BuildFlatSolid({}, kUnitX, kNoMotion, 2);
+  const std::array<std::pair<double, double>, 4> rows = {
+      std::pair<double, double>{0, 1},
+      std::pair<double, double>{0.2, 0.9},
+      std::pair<double, double>{0.5, 0.75},
+      std::pair<double, double>{2, 0.5},
+  };
+  for (const auto& [friction, along_y] : rows) {
+    SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+        {.x = kTolerance, .y = 0, .z = kTolerance},
+        {.x = -1, .y = 1, .z = -1},
+        0.01
+    );
+    inputs.friction = friction;
+    const MoveParticleCall call = ExpectSameBitsInEveryOrder({conveyor, side}, inputs);
+    ASSERT_EQ(call.error, ContactError::kNone);
+    EXPECT_EQ(call.result.hit_count, 1);
+    ExpectBothVelocitiesNear(call.result, {.x = 0, .y = along_y, .z = 0}, 1e-15);
+  }
+}
+
+TEST(MoveParticle, RisingWallBesideFloor_FrictionLiftsOnlyAboveThePush) {
+  // A floor and a wall with normal {-1, 0, 0} rising at 2 m/s, the particle at their corner moving at {1, 0, -1}:
+  // pushes 1 and 1. Friction lifts the particle along the wall only when it overcomes the push that pressed it on the
+  // floor: the second solve starts from v + F. Friction 0 and 0.5: {0, 0, 0}; 1.5: {0, 0, 0.5}. From v0 + F, friction
+  // 0.5 would lift it at 0.5 m/s.
+  const Solid floor = move_particle_cases::BuildFloor(1);
+  const Solid rising_wall = BuildMovingFlatSolid(-kUnitX, {.x = 0, .y = 0, .z = 2}, 1, 2);
+  const std::array<std::pair<double, double>, 3> rows = {
+      std::pair<double, double>{0, 0},
+      std::pair<double, double>{0.5, 0},
+      std::pair<double, double>{1.5, 0.5},
+  };
+  for (const auto& [friction, along_z] : rows) {
+    SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+        {.x = -kTolerance, .y = 0, .z = kTolerance},
+        {.x = 1, .y = 0, .z = -1},
+        0.01
+    );
+    inputs.friction = friction;
+    const MoveParticleCall call = RunMove(BuildOrderedScene({floor, rising_wall}, inputs));
+    ASSERT_EQ(call.error, ContactError::kNone) << friction;
+    ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 0, .z = along_z}, 1e-15);
+  }
+}
+
+TEST(MoveParticle, ThreeFacesSharingOneLine_FrictionDoesNotJumpWithTheVelocity) {
+  // A floor at z = (Sqrt(2) - 1) tol (friction scale 1) and two faces through the origin at 45 degrees, {s, 0, s}
+  // (scale 0.5) and {-s, 0, s} (scale 2), s = Sqrt(0.5): their normals share the y axis, so the smallest change has
+  // several sets of pushes. The solver keeps the largest sum of friction limits: the two faces, y
+  // 1 - 0.3 (0.5 + 2) / Sqrt(2) = 0.469669914110 for the velocities {e, 1, -1}, e = -1e-13, 0 and 1e-13, in every
+  // order. The first subset in order gave 0.7 for e >= 0: a jump of 0.23 for a change of 1e-13.
+  const double half_root_two = std::sqrt(0.5);
+  const Solid floor = move_particle_cases::BuildFlatSolid(
+      {.x = 0, .y = 0, .z = (std::numbers::sqrt2 - 1) * kTolerance},
+      kUnitZ,
+      kNoMotion,
+      1
+  );
+  const Solid smooth_face = BuildMovingFlatSolid({.x = half_root_two, .y = 0, .z = half_root_two}, {}, 0.5, 2);
+  const Solid rough_face = BuildMovingFlatSolid({.x = -half_root_two, .y = 0, .z = half_root_two}, {}, 2, 3);
+  for (const double sideways : {-1e-13, 0.0, 1e-13}) {
+    SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+        {.x = 0, .y = 0, .z = std::numbers::sqrt2 * kTolerance},
+        {.x = sideways, .y = 1, .z = -1},
+        0.01
+    );
+    inputs.friction = 0.3;
+    const MoveParticleCall call = ExpectSameBitsInEveryOrder({floor, smooth_face, rough_face}, inputs);
+    ASSERT_EQ(call.error, ContactError::kNone);
+    EXPECT_EQ(call.result.hit_count, 1);
+    EXPECT_NEAR(call.result.velocity.for_next_step.y, 0.469669914110, 1e-12) << sideways;
+  }
+}
+
+TEST(MoveParticle, TwoReactingSolidsInCrease_IsSecondReactingSolid) {
+  // Plan decision P5, stated: at the rest point of a 60 degree wedge, both faces reacting, a velocity {-1, 0, -2}
+  // pushes into both. One response charges both: kSecondReactingSolid naming the higher index, solid_id 2, in both
+  // orders. With only the floor reacting: one hit, its push {0, 0, 2.5773502691896262}.
+  const double wedge_angle = std::numbers::pi / 3;  // rad
+  const SolidContactInputs inputs = BuildRestPointInputs(wedge_angle, {.x = -1, .y = 0, .z = -2}, 0);
+  Solid floor = move_particle_cases::BuildFloor(1);
+  Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 2);
+  floor.reports_reaction = true;
+  side.reports_reaction = true;
+  ExpectCloseCall(RunMove(BuildOrderedScene({floor, side}, inputs)), ContactCloseCall::kSecondReactingSolid, 2);
+  ExpectCloseCall(RunMove(BuildOrderedScene({side, floor}, inputs)), ContactCloseCall::kSecondReactingSolid, 2);
+  side.reports_reaction = false;
+  const MoveParticleCall call = RunMove(BuildOrderedScene({floor, side}, inputs));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.reaction.solid_index, 0U);
+  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2.5773502691896262}, 1e-15);
+}
+
+TEST(MoveParticle, StartInsideAndLeaving_IsOneHitWithoutChange) {
+  // A start tol / 2 inside a floor, leaving it at {1, 0, 2}: the start was inside, so it is one hit, kind
+  // kStartedInsideSolid, and the response to a velocity that leaves changes nothing, bit for bit. A start tol / 2
+  // outside, leaving: the move is silent, no hit.
+  const Vec3 velocity = {.x = 1, .y = 0, .z = 2};
+  const std::vector<Solid> solids = {move_particle_cases::BuildFloor(1)};
+  const MoveParticleCall inside = RunMove(BuildOrderedScene(
+      solids,
+      move_particle_cases::BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = -kTolerance / 2}, velocity, 0.01)
+  ));
+  ASSERT_EQ(inside.error, ContactError::kNone);
+  EXPECT_EQ(inside.result.kind, ContactKind::kStartedInsideSolid);
+  EXPECT_EQ(inside.result.hit_count, 1);
+  ExpectBothVelocitiesNear(inside.result, velocity, 0);
+  const MoveParticleCall outside = RunMove(BuildOrderedScene(
+      solids,
+      move_particle_cases::BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = kTolerance / 2}, velocity, 0.01)
+  ));
+  ASSERT_EQ(outside.error, ContactError::kNone);
+  EXPECT_EQ(outside.result.kind, ContactKind::kNone);
+  EXPECT_EQ(outside.result.hit_count, 0);
+}
+
+// Computes whether two calls have the same error, close call, kind, hit count and for_next_step, bit for bit.
+bool ComputeIsSameBits(const MoveParticleCall& actual, const MoveParticleCall& expected) {
+  const Vec3 actual_velocity = actual.result.velocity.for_next_step;
+  const Vec3 expected_velocity = expected.result.velocity.for_next_step;
+  const bool is_same_velocity = actual_velocity.x == expected_velocity.x && actual_velocity.y == expected_velocity.y
+      && actual_velocity.z == expected_velocity.z;
+  const bool is_same_outcome = actual.error == expected.error
+      && actual.failure.close_call == expected.failure.close_call && actual.result.kind == expected.result.kind
+      && actual.result.hit_count == expected.result.hit_count;
+  return is_same_outcome && is_same_velocity;
+}
+
+// The active surfaces of the solids at a position, at the pose of time 0, as a joint response reads them; the inputs
+// point at solids, which must outlive them.
+struct JointScene {
+  std::vector<Solid> solids;
+  SolidContactInputs inputs{};
+  ActiveSurfaces active{};
+};
+
+// Builds the joint scene of those solids, with the particle at position and both velocities velocity, friction.
+JointScene BuildJointScene(std::vector<Solid> solids, Vec3 position, Vec3 velocity, double friction) {
+  JointScene scene;
+  scene.solids = std::move(solids);
+  for (std::size_t solid_index = 0; solid_index < scene.solids.size(); ++solid_index) {
+    scene.solids[solid_index].solid_id = static_cast<std::uint32_t>(solid_index + 1);
+  }
+  scene.inputs = move_particle_cases::BuildSeveralSurfaceInputs(position, velocity, 0.01);
+  scene.inputs.friction = friction;
+  scene.inputs.solids = scene.solids.data();
+  scene.inputs.solid_count = static_cast<std::uint32_t>(scene.solids.size());
+  ParticleMove move;
+  move.result.position = position;
+  move.result.velocity = scene.inputs.velocity;
+  scene.active = FindActiveSurfaces(scene.inputs, move, nullptr);
+  return scene;
+}
+
+// Finds the friction share of the floor (normal {0, 0, 1}) in the joint response of a velocity over two active
+// surfaces that move differently, from the pieces ComputeJointChange uses: the targets, the frictionless solve and the
+// mean over orders. Fails the calling test unless both directions are used and the mean is taken.
+Vec3 FindFloorFrictionShare(const ActiveSurfaces& active, Vec3 velocity) {
+  const JointTargets built = BuildJointTargets(active, velocity);
+  const SmallestCorrection correction = SolveSmallestCorrection(built.targets, 0, CorrectedQuantity::kVelocity);
+  EXPECT_EQ(correction.used_count, 2);
+  const JointFriction joint_friction = ComputeJointFriction(active, built, correction, velocity);
+  EXPECT_TRUE(joint_friction.moves_differently);
+  Vec3 floor_share{};
+  for (int used_index = 0; used_index < correction.used_count; ++used_index) {
+    const int direction_index = correction.used_surfaces[used_index];
+    const ActiveSurface& pushing = active.surfaces[built.pushing_surfaces[direction_index]];
+    floor_share = pushing.normal_out_of_solid.z == 1 ? joint_friction.shares[used_index] : floor_share;
+  }
+  return floor_share;
+}
+
+TEST(MoveParticle, MeanOverOrdersBetweenMovingSolids_FrictionCanPassStick_KnownLimit) {
+  // A known limit of the mean over orders (plan decision P20, item 5), pinned so that an exact rule for solids that
+  // move differently shows up as a change here. The review's scene: a 26.73 degree wedge whose floor moves at
+  // {-0.1206, -0.0055, 0} and whose side moves along itself, friction 0.716, at the rest point. Each order's floor step
+  // stops at sticking to the floor, but the side's step then moves the velocity on: in the mean, the floor's own
+  // friction share {-0.0086, -0.2203, 0} points along the particle's final slip relative to the floor (-0.444 m/s
+  // along y): the floor's friction pushed the particle past sticking to it, by 0.2 of the summed speeds.
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const double wedge_angle = 26.729187711001572 * std::numbers::pi / 180;  // rad
+  const Vec3 floor_velocity = {.x = -0.12057519706619924, .y = -0.0054700361225109573, .z = 0};
+  const Vec3 side_velocity = {.x = -0.3412340199331419, .y = -0.89345098324273942, .z = -0.17184069222524945};
+  const Vec3 velocity = {.x = -0.67764259646844816, .y = 0.76482039646153233, .z = 0.32567414729292232};
+  const double friction = 0.71581604590110215;
+  // NOLINTEND(modernize-use-std-numbers)
+  const JointScene scene = BuildJointScene(
+      {
+          BuildMovingFlatSolid(kUnitZ, floor_velocity, 1, 1),
+          BuildMovingFlatSolid(ToWedgeSideNormal(wedge_angle), side_velocity, 1, 2),
+      },
+      {.x = kTolerance / std::tan(wedge_angle / 2), .y = 0, .z = kTolerance},
+      velocity,
+      friction
+  );
+  ASSERT_EQ(scene.active.count, 2);
+  JointChange change;
+  std::uint32_t squeezing_solid_index = kNoSolid;
+  ASSERT_EQ(ComputeJointChange(scene.active, velocity, 0, 1, &change, &squeezing_solid_index), ContactError::kNone);
+  const double speeds = math::Length(velocity) + math::Length(floor_velocity) + math::Length(side_velocity);  // m/s
+  const Vec3 floor_share = FindFloorFrictionShare(scene.active, velocity);
+  const Vec3 slip_on_floor = change.velocity - floor_velocity;
+  const Vec3 sideways_slip = {.x = slip_on_floor.x, .y = slip_on_floor.y, .z = 0};
+  EXPECT_GT(math::Dot(floor_share, sideways_slip) / math::Length(floor_share), 0.15 * speeds);
+  EXPECT_NEAR(slip_on_floor.y, -0.444, 0.001);
+}
+
+TEST(MoveParticle, CoincidentReactingFloorCopyInAnyOrder_StickChargesTheReactingOne) {
+  // A stick on two coincident fixed floors that differ only in reports_reaction: equal in every value, the reacting
+  // one sorts first, so the stick is charged to it in every order of the array (the sliver of SliverStop, moving at
+  // {-2, 1, -0.001} into the floor). As built in round 3, the array order decided and the reaction came and went.
+  const double angle = 1e-7;  // rad
+  Solid reacting_floor = move_particle_cases::BuildFloor(1);
+  reacting_floor.reports_reaction = true;
+  const Solid floor = move_particle_cases::BuildFloor(1);
+  const Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - angle, 1);
+  const SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(
+      {.x = kTolerance / std::tan(angle / 2), .y = 0, .z = kTolerance},
+      {.x = -2, .y = 1, .z = -0.001},
+      0.01
+  );
+  const std::array<std::vector<Solid>, 3> orders = {
+      std::vector<Solid>{floor, side, reacting_floor},
+      std::vector<Solid>{reacting_floor, side, floor},
+      std::vector<Solid>{side, floor, reacting_floor},
+  };
+  const std::array<std::uint32_t, 3> reacting_indexes = {2, 0, 2};
+  for (std::size_t order_index = 0; order_index < orders.size(); ++order_index) {
+    const MoveParticleCall call = RunMove(BuildOrderedScene(orders.at(order_index), inputs));
+    ASSERT_EQ(call.error, ContactError::kNone) << order_index;
+    ExpectBothVelocitiesNear(call.result, {}, 0);
+    EXPECT_EQ(call.result.reaction.solid_index, reacting_indexes.at(order_index)) << order_index;
+    ExpectVec3Equal(call.result.reaction.velocity_for_next_step_change, {.x = 2, .y = -1, .z = 0.001});
+  }
+}
+
+TEST(MoveParticle, ReactingFloorTiltedByRounding_PushesForItsDirection) {
+  // At the rest point of a 60 degree wedge, a plain floor and a reacting floor whose normal is tilted by 2^-45, which
+  // sorts it after the plain one: one direction, both push, equal friction, so the one that reports a reaction pushes
+  // (plan decision P20, item 4) and is charged: in both orders the reaction is the reacting floor's.
+  const double wedge_angle = std::numbers::pi / 3;  // rad
+  Solid reacting_floor = move_particle_cases::BuildFlatSolid({}, {.x = 0x1p-45, .y = 0, .z = 1}, kNoMotion, 1);
+  reacting_floor.reports_reaction = true;
+  const Solid floor = move_particle_cases::BuildFloor(1);
+  const Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 1);
+  const SolidContactInputs inputs = BuildRestPointInputs(wedge_angle, {.x = -0.2, .y = 1, .z = -1}, 0);
+  const MoveParticleCall plain_first = RunMove(BuildOrderedScene({floor, reacting_floor, side}, inputs));
+  ASSERT_EQ(plain_first.error, ContactError::kNone);
+  EXPECT_EQ(plain_first.result.reaction.solid_index, 1U);
+  const MoveParticleCall reacting_first = RunMove(BuildOrderedScene({reacting_floor, floor, side}, inputs));
+  ASSERT_EQ(reacting_first.error, ContactError::kNone);
+  EXPECT_EQ(reacting_first.result.reaction.solid_index, 0U);
+}
+
+TEST(MoveParticle, RoughFloorTiltedByRounding_StillActsForItsDirection) {
+  // RoughGroundOnWedgeFloor with the rough floor's normal tilted by -2^-45: its own target is 5.7e-15 m/s below the
+  // plain floor's. It still pushes, within the rounding window 2^-40 (|v|_1 + |u|_1) of the direction's target, and
+  // being the rougher it acts: y 0.507623956930, not the plain floor's 0.730717967697.
+  const double wedge_angle = std::numbers::pi / 3;  // rad
+  Solid rough_floor = move_particle_cases::BuildFlatSolid({}, {.x = -0x1p-45, .y = 0, .z = 1}, kNoMotion, 1);
+  rough_floor.friction_scale = 2;
+  const SolidContactInputs inputs = BuildRestPointInputs(wedge_angle, {.x = -0.2, .y = 1, .z = -1}, 0.2);
+  const MoveParticleCall call = RunMove(BuildOrderedScene(
+      {
+          move_particle_cases::BuildFloor(1),
+          rough_floor,
+          move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 1),
+      },
+      inputs
+  ));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_NEAR(call.result.velocity.for_next_step.y, 0.507623956930, 1e-12);
+}
+
+TEST(ApplySecondSolve, SlowApproachBesideFastSolid_IsRemoved) {
+  // Plan decision P20, item 3 (a), for the second solve: "no change" reads the allowance passed, not the solve's own
+  // 2^-46 (speeds). Beside a floor sliding at 100 m/s, a velocity with friction {1e-13, 0, 0} approaches the fixed
+  // upright at x = 1 by 1e-13 m/s, within 2^-46 * 100 m/s but above the allowance 0: the change removes it, x 0.
+  const JointScene scene = BuildJointScene(
+      {
+          BuildMovingFlatSolid(kUnitZ, {.x = 100, .y = 0, .z = 0}, 1, 1),
+          move_particle_cases::BuildFlatSolid(kUnitX, -kUnitX, kNoMotion, 1),
+      },
+      {.x = 1 - kTolerance, .y = 0, .z = kTolerance},
+      {},
+      0
+  );
+  ASSERT_EQ(scene.active.count, 2);
+  JointChange change;
+  std::uint32_t squeezing_solid_index = kNoSolid;
+  const ContactError error =
+      ApplySecondSolve(scene.active, {.x = 1e-13, .y = 0, .z = 0}, 0, 100, &change, &squeezing_solid_index);
+  ASSERT_EQ(error, ContactError::kNone);
+  EXPECT_EQ(change.velocity.x, 0);
+}
+
+TEST(ComputeJointChange, SecondSolve_AllowanceKeepsTheFirstSolves) {
+  // RisingWallBesideFloor at friction 1.5: speeds 4 m/s; the first solve's change {-1, 0, 1} gives the allowance
+  // 2^-46 (4 + 2) = 6 * 2^-46; the friction {0, 0, 1.5} leaves z = {1, 0, 0.5}, and the second solve's {-1, 0, 0}
+  // gives 2^-46 (3.5 + 1) = 4.5 * 2^-46. The response keeps the larger, the first solve's: its rounding is in the
+  // velocity too.
+  const JointScene scene = BuildJointScene(
+      {
+          move_particle_cases::BuildFloor(1),
+          BuildMovingFlatSolid(-kUnitX, {.x = 0, .y = 0, .z = 2}, 1, 1),
+      },
+      {.x = -kTolerance, .y = 0, .z = kTolerance},
+      {.x = 1, .y = 0, .z = -1},
+      1.5
+  );
+  ASSERT_EQ(scene.active.count, 2);
+  JointChange change;
+  std::uint32_t squeezing_solid_index = kNoSolid;
+  const Vec3 velocity = {.x = 1, .y = 0, .z = -1};
+  ASSERT_EQ(ComputeJointChange(scene.active, velocity, 0, 2, &change, &squeezing_solid_index), ContactError::kNone);
+  ExpectVec3Equal(change.velocity, {.x = 0, .y = 0, .z = 0.5});
+  EXPECT_EQ(change.approach_allowance, 6 * kApproachLeftAfterResponseShare);
+}
+
+TEST(ApplyJointResponse, OneFloor_RaisesBothAllowances) {
+  // One response on a fixed floor: each velocity's allowance is ComputeLargestApproachLeftAfterResponse of the
+  // velocity it passed, {3, 0, -1} for this step and {1, 0, -1} for the next: 4 and 2 times 2^-46.
+  const JointScene scene =
+      BuildJointScene({move_particle_cases::BuildFloor(1)}, {.x = 0, .y = 0, .z = kTolerance}, {}, 0);
+  ASSERT_EQ(scene.active.count, 1);
+  ParticleMove move;
+  move.result.position = {.x = 0, .y = 0, .z = kTolerance};
+  move.result.velocity = {.for_next_step = {.x = 1, .y = 0, .z = -1}, .for_this_step = {.x = 3, .y = 0, .z = -1}};
+  ContactFailure failure;
+  ASSERT_EQ(
+      ApplyJointResponse(scene.inputs, scene.active, scene.active.surfaces[0], &move, &failure),
+      ContactError::kNone
+  );
+  EXPECT_EQ(move.this_step_approach_allowance, 4 * kApproachLeftAfterResponseShare);
+  EXPECT_EQ(move.next_step_approach_allowance, 2 * kApproachLeftAfterResponseShare);
+  EXPECT_TRUE(move.has_response);
+  EXPECT_EQ(move.result.hit_count, 1);
+}
+
+// One generated corner: two to four flat faces through the origin whose normals all lean toward a common free
+// direction, the solids, and the particle's inputs.
+struct GeneratedCorner {
+  std::vector<Solid> solids;
+  SolidContactInputs inputs{};
+};
+
+// Draws a unit vector from the generator: three signed coordinates, again until the length is in [0.1, 1].
+Vec3 DrawUnitVector(CaseGenerator* generator) {
+  Vec3 drawn{};
+  do {
+    drawn = {.x = generator->NextSigned(), .y = generator->NextSigned(), .z = generator->NextSigned()};
+  } while (math::Length(drawn) < 0.1 || math::Length(drawn) > 1);
+  return math::Normalized(drawn);
+}
+
+// Builds one corner: in this order, the face count, the free direction d, for each face its sideways lean, whether
+// it moves and its velocity and friction scale, then the friction, the start kind and the velocity. Each normal is
+// Normalized(d + 0.9 lean) with lean a unit vector, so every normal is within 65 degrees of d. Half of the draws move
+// their solids, up to 1 m/s per axis; friction scales are 1 or 2 Next(); friction 0 or 2 Next(). The start is the
+// rest point found by the move off near surfaces (from the origin), a point 0.3 tol inside the rest gap along d, or
+// 0.002 m out along d on a path into the corner.
+GeneratedCorner BuildGeneratedCorner(CaseGenerator* generator) {
+  GeneratedCorner corner;
+  const int face_count = 2 + static_cast<int>(3 * generator->Next());
+  const Vec3 free_direction = DrawUnitVector(generator);
+  const bool is_moving = generator->Next() < 0.5;
+  for (int face_index = 0; face_index < face_count; ++face_index) {
+    const Vec3 normal = math::Normalized(free_direction + 0.9 * DrawUnitVector(generator));
+    const Vec3 velocity = {.x = generator->NextSigned(), .y = generator->NextSigned(), .z = generator->NextSigned()};
+    const double friction_scale = generator->Next() < 0.5 ? 1 : 2 * generator->Next();
+    corner.solids.push_back(BuildMovingFlatSolid(normal, is_moving ? velocity : Vec3{}, friction_scale, 1));
+  }
+  const double friction = generator->Next() < 0.2 ? 0 : 2 * generator->Next();
+  const double start_kind = generator->Next();
+  const Vec3 velocity = {.x = generator->NextSigned(), .y = generator->NextSigned(), .z = generator->NextSigned()};
+  const MoveParticleCase scene =
+      BuildOrderedScene(corner.solids, move_particle_cases::BuildSeveralSurfaceInputs({}, velocity, 0.01));
+  const SolidContactInputs at_origin = ToSolidContactInputs(scene);
+  const RestGapMove rest = MoveToRestGapOfNearSurfaces(at_origin, 0, 0.5 * kTolerance * free_direction);
+  Vec3 start = rest.is_found ? rest.moved_point : 4 * kTolerance * free_direction;
+  if (start_kind < 0.3) {
+    start = start - 0.3 * kTolerance * free_direction;
+  } else if (start_kind < 0.6) {
+    start = start + 0.002 * free_direction;
+  }
+  corner.inputs = move_particle_cases::BuildSeveralSurfaceInputs(start, velocity, 0.01);
+  corner.inputs.friction = friction;
+  return corner;
+}
+
+TEST(MoveParticle, GeneratedOneSurfaceHits_SameBitsAsContactResponse) {
+  // Plan decision P20, item 2: with one active surface each velocity gets ComputeContactResponse with that surface and
+  // nothing else, the single-surface response of Task 7 bit for bit. 2000 flat solids through the origin, in this
+  // order of draws: the normal (DrawUnitVector), a solid velocity of three NextSigned / 2 m/s or none, the velocity
+  // (three NextSigned m/s), friction 2 Next; the start 0.05 m out along the normal, T 0.1 s. Every call whose path hits
+  // the solid has both velocities equal to the response of the velocity given, at the hit's normal.
+  CaseGenerator generator;
+  int hit_calls = 0;
+  int differing_calls = 0;
+  for (int draw = 0; draw < 2000; ++draw) {
+    const Vec3 normal = DrawUnitVector(&generator);
+    const bool is_moving = generator.Next() < 0.5;
+    const Vec3 drawn_velocity = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+    const Vec3 solid_velocity = is_moving ? 0.5 * drawn_velocity : Vec3{};
+    const Vec3 velocity = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+    SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(0.05 * normal, velocity, 0.1);
+    inputs.friction = 2 * generator.Next();
+    const MoveParticleCall call =
+        RunMove(BuildOrderedScene({BuildMovingFlatSolid(normal, solid_velocity, 1, 1)}, inputs));
+    if (call.error != ContactError::kNone || call.result.hit_count != 1) {
+      continue;
+    }
+    ++hit_calls;
+    const Vec3 expected =
+        ComputeContactResponse(velocity, solid_velocity, call.result.normal_out_of_solid, inputs.friction);
+    const Vec3 actual = call.result.velocity.for_next_step;
+    const bool is_same = actual.x == expected.x && actual.y == expected.y && actual.z == expected.z;
+    differing_calls += is_same ? 0 : 1;
+  }
+  std::cout << "one-surface hits " << hit_calls << ", differing from ComputeContactResponse " << differing_calls
+            << "\n";
+  EXPECT_GT(hit_calls, 400);  // 456 of the draws hit.
+  EXPECT_EQ(differing_calls, 0);
+}
+
+TEST(MoveParticle, GeneratedCornersInEveryOrder_SameBits) {
+  // Plan decision P20, item 1: the active surfaces are sorted by value, so every order of the solids array gives the
+  // same outcome, kind, hit count and velocity bits; only the named solid and the end position (by rounding of the
+  // move off near surfaces, at most 3.4e-9 tol in the model) may follow the array. 2000 corners of two to four faces.
+  CaseGenerator generator;
+  int differing_draws = 0;
+  int failed_draws = 0;
+  for (int draw = 0; draw < 2000; ++draw) {
+    const GeneratedCorner corner = BuildGeneratedCorner(&generator);
+    const MoveParticleCall first = RunMove(BuildOrderedScene(corner.solids, corner.inputs));
+    failed_draws += first.error == ContactError::kNone ? 0 : 1;
+    std::vector<std::size_t> order(corner.solids.size());
+    for (std::size_t index = 0; index < order.size(); ++index) {
+      order[index] = index;
+    }
+    bool is_same = true;
+    while (std::ranges::next_permutation(order).found) {
+      const MoveParticleCall call = RunMove(BuildOrderedScene(ToPermutedSolids(corner.solids, order), corner.inputs));
+      is_same = is_same && ComputeIsSameBits(call, first);
+    }
+    differing_draws += is_same ? 0 : 1;
+  }
+  std::cout << "generated corners 2000, failed " << failed_draws << ", differing between orders " << differing_draws
+            << "\n";
+  EXPECT_EQ(differing_draws, 0);
+  EXPECT_LE(failed_draws, 100);  // 0: the comparison is not between failures.
+}
+
+// The coordinate moved by one rounding unit down (direction -1), not at all (0) or up (+1).
+double ToNeighbourDouble(double coordinate, int direction) {
+  if (direction == 0) {
+    return coordinate;
+  }
+  return std::nextafter(coordinate, direction > 0 ? INFINITY : -INFINITY);
+}
+
+// Computes whether the wedge of that angle, with its rest-point inputs (BuildRestPointInputs), gives the same bits from
+// the 27 starts one rounding unit around the rest point, in both array orders. A failing rest-point start counts as
+// differing, so the comparison is never between failures.
+bool ComputeIsSameForEveryRounding(double wedge_angle, const SolidContactInputs& center) {
+  const Solid floor = move_particle_cases::BuildFloor(1);
+  const Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 2);
+  const MoveParticleCall reference = RunMove(BuildOrderedScene({floor, side}, center));
+  bool is_same = reference.error == ContactError::kNone;
+  for (int start_index = 0; start_index < 27; ++start_index) {
+    SolidContactInputs inputs = center;
+    inputs.start_position = {
+        .x = ToNeighbourDouble(center.start_position.x, start_index % 3 - 1),
+        .y = ToNeighbourDouble(center.start_position.y, start_index / 3 % 3 - 1),
+        .z = ToNeighbourDouble(center.start_position.z, start_index / 9 - 1),
+    };
+    is_same = is_same && ComputeIsSameBits(RunMove(BuildOrderedScene({floor, side}, inputs)), reference)
+        && ComputeIsSameBits(RunMove(BuildOrderedScene({side, floor}, inputs)), reference);
+  }
+  return is_same;
+}
+
+TEST(MoveParticle, GeneratedRestPointStarts_SameBitsForEveryRounding) {
+  // Re-review 2's d1: at the rest point of a wedge of 10 to 170 degrees, friction 0 or 0.1 to 2, a velocity in the
+  // unit ball (at least 0.05) approaching a face. The responses one surface after the other jumped in 16 % of the
+  // draws when the start moved by one rounding unit. One joint response reads the same active surfaces from every one
+  // of the 27 starts: the 54 results, both array orders, are the same bits.
+  CaseGenerator generator;
+  int differing_draws = 0;
+  for (int draw = 0; draw < 2000; ++draw) {
+    const double wedge_angle = (10 + 160 * generator.Next()) * std::numbers::pi / 180;  // rad
+    const double friction = generator.Next() < 0.5 ? 0 : 0.1 + 1.9 * generator.Next();
+    Vec3 velocity{};
+    do {
+      velocity = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+    } while (math::Length(velocity) > 1 || math::Length(velocity) < 0.05
+             || (velocity.z >= 0 && math::Dot(ToWedgeSideNormal(wedge_angle), velocity) >= 0));
+    const SolidContactInputs center = BuildRestPointInputs(wedge_angle, velocity, friction);
+    differing_draws += ComputeIsSameForEveryRounding(wedge_angle, center) ? 0 : 1;
+  }
+  std::cout << "rest-point starts 2000 x 54, draws with differing results " << differing_draws << "\n";
+  EXPECT_EQ(differing_draws, 0);
+}
+
+// What the fixed corners of GeneratedFixedCorners count.
+struct FixedCornerCounts {
+  int successes = 0;
+  int energy_gains = 0;  // |v'|^2 > |v|^2 (1 + 1e-12).
+  int reversed_edges = 0;  // Two faces: the part along their common line changed sign.
+  int grown_edges = 0;  // Two faces: the part along their common line grew.
+};
+
+// Draws one fixed corner and adds what it shows to *counts. In this order: the face count (2 to 4), each unit normal
+// (DrawUnitVector), the start kind, the velocity (each axis in [-1, 1)) and the friction (0 with probability 0.2, else
+// up to 3). The start is the rest point found by the move off near surfaces from tol / 2 along the bisector of the
+// first two normals, 0.002 m out along it (kind below 0.2) or 0.3 tol inside the rest gap (below 0.4). A draw whose
+// rest point is not found, or whose move fails, counts no success.
+void ApplyFixedCornerDraw(CaseGenerator* generator, FixedCornerCounts* counts) {
+  const int face_count = 2 + static_cast<int>(3 * generator->Next());
+  std::vector<Solid> solids;
+  std::vector<Vec3> normals;
+  for (int face_index = 0; face_index < face_count; ++face_index) {
+    normals.push_back(DrawUnitVector(generator));
+    solids.push_back(move_particle_cases::BuildFlatSolid({}, normals.back(), kNoMotion, 1));
+  }
+  const double start_kind = generator->Next();
+  const Vec3 velocity = {.x = generator->NextSigned(), .y = generator->NextSigned(), .z = generator->NextSigned()};
+  const double friction = generator->Next() < 0.2 ? 0 : 3 * generator->Next();
+  const Vec3 lean = math::Normalized(normals[0] + normals[1]);
+  MoveParticleCase scene =
+      BuildOrderedScene(solids, move_particle_cases::BuildSeveralSurfaceInputs({}, velocity, 0.01));
+  const RestGapMove rest = MoveToRestGapOfNearSurfaces(ToSolidContactInputs(scene), 0, kTolerance / 2 * lean);
+  if (!rest.is_found) {
+    return;
+  }
+  double start_offset = 0;  // m
+  if (start_kind < 0.2) {
+    start_offset = 0.002;
+  } else if (start_kind < 0.4) {
+    start_offset = -0.3 * kTolerance;
+  }
+  scene.inputs.start_position = rest.moved_point + start_offset * lean;
+  scene.inputs.friction = friction;
+  const MoveParticleCall call = RunMove(scene);
+  if (call.error != ContactError::kNone) {
+    return;
+  }
+  ++counts->successes;
+  const Vec3 result = call.result.velocity.for_next_step;
+  counts->energy_gains += math::Dot(result, result) > math::Dot(velocity, velocity) * (1 + 1e-12) ? 1 : 0;
+  if (face_count != 2) {
+    return;
+  }
+  const Vec3 edge = math::Normalized(math::Cross(normals[0], normals[1]));
+  const double along_before = math::Dot(velocity, edge);  // m/s
+  const double along_after = math::Dot(result, edge);  // m/s
+  counts->reversed_edges += along_before * along_after < -1e-12 ? 1 : 0;
+  counts->grown_edges += std::abs(along_after) > std::abs(along_before) + 1e-12 ? 1 : 0;
+}
+
+TEST(MoveParticle, GeneratedFixedCorners_FrictionNeverAddsEnergy) {
+  // Re-review 2's q4b, fixed draws: two to four fixed flat faces through the origin, the start at the rest point, 0.3
+  // tol inside it or 0.002 m out, friction 0 or up to 3. Against fixed solids the joint response never lengthens the
+  // velocity, |v'|^2 <= |v|^2 (1 + 1e-12); with two faces the part along their common line is neither reversed nor
+  // grown (plan decision P20, item 13).
+  CaseGenerator generator;
+  FixedCornerCounts counts;
+  for (int draw = 0; draw < 2000; ++draw) {
+    ApplyFixedCornerDraw(&generator, &counts);
+  }
+  std::cout << "fixed corners 2000, succeeded " << counts.successes << ", energy gains " << counts.energy_gains
+            << ", edge reversed " << counts.reversed_edges << ", grown " << counts.grown_edges << "\n";
+  EXPECT_GE(counts.successes, 1700);  // 1763: the invariants are not vacuous.
+  EXPECT_EQ(counts.energy_gains, 0);
+  EXPECT_EQ(counts.reversed_edges, 0);
+  EXPECT_EQ(counts.grown_edges, 0);
 }
 
 // --- The move off near surfaces and its solver ---
@@ -1666,6 +3420,86 @@ TEST(SolveSmallestCorrection, OneTwoAndThreeSurfaces_MatchClosedForms) {
   );
 }
 
+TEST(SolveSmallestCorrection, VelocityWithinSlack_IsNoChange) {
+  // A velocity already within its slack of every target needs no change: used_count 0 and a zero change, so rounding
+  // never changes it. A position has no empty subset: the same target moves it along the normal.
+  const CorrectionTargets far_target = BuildCorrectionTargets({{.x = 0, .y = 0, .z = 1}}, {1});
+  ExpectCorrection(
+      SolveSmallestCorrection(far_target, 0x1p-46, CorrectedQuantity::kVelocity),
+      {.x = 0, .y = 0, .z = 1},
+      1
+  );
+  const CorrectionTargets rounding_target = BuildCorrectionTargets({{.x = 0, .y = 0, .z = 1}}, {0x1p-50});
+  const SmallestCorrection velocity_change =
+      SolveSmallestCorrection(rounding_target, 0x1p-46, CorrectedQuantity::kVelocity);
+  ASSERT_TRUE(velocity_change.is_found);
+  EXPECT_EQ(velocity_change.used_count, 0);
+  ExpectVec3Equal(velocity_change.change, {});
+  const SmallestCorrection position_change =
+      SolveSmallestCorrection(rounding_target, 0x1p-46, CorrectedQuantity::kPosition);
+  ExpectCorrection(position_change, {.x = 0, .y = 0, .z = 0x1p-50}, 1);
+}
+
+TEST(SolveSmallestCorrection, VelocityNoChangeReadsTheSlackPassed) {
+  // Plan decision P20, item 3 (a): no change only when every target is within the slack passed. A target of 2^-50 m/s
+  // with speeds of 1 m/s before the change is within the candidate's own allowance 2^-46 (speeds), but above a slack of
+  // 0: a real approach beside a fast solid, which the change removes.
+  CorrectionTargets slow_target = BuildCorrectionTargets({{.x = 0, .y = 0, .z = 1}}, {0x1p-50});
+  slow_target.speeds_before_change = 1;
+  ExpectCorrection(
+      SolveSmallestCorrection(slow_target, 0, CorrectedQuantity::kVelocity),
+      {.x = 0, .y = 0, .z = 0x1p-50},
+      1
+  );
+  EXPECT_EQ(SolveSmallestCorrection(slow_target, 0x1p-46, CorrectedQuantity::kVelocity).used_count, 0);
+}
+
+TEST(SolveSmallestCorrection, VelocityTie_KeepsLargestFrictionSum) {
+  // Plan decision P20, item 3 (b): a floor and two faces at 45 degrees whose normals share the y axis, targets 1,
+  // Sqrt(0.5) and Sqrt(0.5): the floor alone and the pair of faces give the same change {0, 0, 1}. With frictions 0.3,
+  // 0.15 and 0.6 the pair's sum, Sqrt(0.5) (0.15 + 0.6) = 0.53, beats the floor's 0.3: the pair is kept. With no
+  // friction the sums tie at 0, and the first in subset order, the floor alone, is kept. A position keeps the first.
+  const double half_root_two = std::sqrt(0.5);
+  CorrectionTargets shared_line = BuildCorrectionTargets(
+      {
+          {.x = 0, .y = 0, .z = 1},
+          {.x = half_root_two, .y = 0, .z = half_root_two},
+          {.x = -half_root_two, .y = 0, .z = half_root_two},
+      },
+      {1, half_root_two, half_root_two}
+  );
+  const SmallestCorrection frictionless = SolveSmallestCorrection(shared_line, 0, CorrectedQuantity::kVelocity);
+  ExpectCorrection(frictionless, {.x = 0, .y = 0, .z = 1}, 1);
+  shared_line.frictions[0] = 0.3;
+  shared_line.frictions[1] = 0.15;
+  shared_line.frictions[2] = 0.6;
+  const SmallestCorrection rough = SolveSmallestCorrection(shared_line, 0, CorrectedQuantity::kVelocity);
+  ExpectCorrection(rough, {.x = 0, .y = 0, .z = 1}, 2);
+  EXPECT_EQ(rough.used_surfaces[0], 1);
+  EXPECT_EQ(rough.used_surfaces[1], 2);
+  ExpectPairMultipliers(rough, half_root_two, half_root_two);
+  EXPECT_EQ(SolveSmallestCorrection(shared_line, 0, CorrectedQuantity::kPosition).used_count, 1);
+}
+
+TEST(SolveSmallestCorrection, FiveDirectionsTheFifthBinding_IsSolvedOverAllOfThem) {
+  // A velocity's change reads up to kMaxSlideDirections directions; the smallest change meets at most three as
+  // equalities, so every subset of at most three is tried. Here the fifth alone binds: its target 1 along
+  // Normalized({0, 1, 1}) meets the other four (dots 0, 0.707, 0.707, 0.5) at no cost.
+  const CorrectionTargets five = BuildCorrectionTargets(
+      {
+          {.x = 1, .y = 0, .z = 0},
+          {.x = 0, .y = 1, .z = 0},
+          {.x = 0, .y = 0, .z = 1},
+          math::Normalized({.x = 1, .y = 1, .z = 0}),
+          math::Normalized({.x = 0, .y = 1, .z = 1}),
+      },
+      {0, 0, 0, 0, 1}
+  );
+  const SmallestCorrection change = SolveSmallestCorrection(five, 0x1p-46, CorrectedQuantity::kVelocity);
+  ExpectCorrection(change, math::Normalized({.x = 0, .y = 1, .z = 1}), 1);
+  EXPECT_EQ(change.used_surfaces[0], 4);
+}
+
 TEST(SolveSmallestCorrection, PairBelowVelocityLimit_IsUsedForPositionOnly) {
   // 1 + c = 2^-41, below kVelocityPairLimitShare: only the pair meets both targets. A position uses it; a velocity,
   // whose refinements could not bring the residual within its allowance, finds no change.
@@ -1757,6 +3591,109 @@ TEST(SolveSmallestCorrection, PairResidualWithoutRefinement_IsAboutEpsOverOnePlu
   }
 }
 
+// Draws a unit vector: three NextSigned, drawn again while shorter than 0.1.
+Vec3 DrawUnitVector(CaseGenerator& generator) {
+  Vec3 direction{};
+  while (math::Length(direction) < 0.1) {
+    direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  }
+  return math::Normalized(direction);
+}
+
+// Draws a velocity of the sharp-surface set: 2^(60 Next - 30) m/s times three NextSigned.
+Vec3 DrawWideRangeVelocity(CaseGenerator& generator) {
+  const double scale = std::exp2(60 * generator.Next() - 30);  // m/s
+  return scale * Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+}
+
+// Builds the normals of one case of the sharp-surface set: by Next < 0.5 a pair with 1 + c = 2^(-40 + 36 Next) (n_a a
+// DrawUnitVector, a second one made square to it, and n_b = -(1 - s) n_a + Sqrt(s (2 - s)) t), else a triple of
+// DrawUnitVector drawn again until |Dot(n_1, Cross(n_2, n_3))| >= 2^-20.
+CorrectionTargets BuildSharpSurfaceNormals(CaseGenerator& generator) {
+  CorrectionTargets built;
+  if (generator.Next() < 0.5) {
+    const double one_plus_dot = std::exp2(-40 + 36 * generator.Next());
+    const Vec3 first_normal = DrawUnitVector(generator);
+    Vec3 square = DrawUnitVector(generator);
+    square = math::Normalized(square - math::Dot(first_normal, square) * first_normal);
+    built.normals[0] = first_normal;
+    built.normals[1] = -(1 - one_plus_dot) * first_normal + std::sqrt(one_plus_dot * (2 - one_plus_dot)) * square;
+    built.count = 2;
+    return built;
+  }
+  double triple_product = 0;
+  while (std::abs(triple_product) < kVelocityTripleLimit) {
+    for (int surface_index = 0; surface_index < 3; ++surface_index) {
+      built.normals[surface_index] = DrawUnitVector(generator);
+    }
+    triple_product = math::Dot(built.normals[0], math::Cross(built.normals[1], built.normals[2]));
+  }
+  built.count = 3;
+  return built;
+}
+
+// What one case of the sharp-surface set gave: its refinements and the largest approach it left, in rounding units of
+// the summed speeds (0 when no change was needed).
+struct SharpSurfaceResult {
+  int refinement_count = 0;
+  double largest_share_left = 0;
+};
+
+// Draws one case of the sharp-surface set (BuildSharpSurfaceNormals, then v and each u_i by DrawWideRangeVelocity),
+// solves it for a velocity with slack 0, and fails the calling test unless a change is found that leaves at every
+// surface an approach -Dot(n_i, v + w - u_i) within 2^-46 (|v|_1 + |w|_1 + sum |u_i|_1).
+SharpSurfaceResult CheckSharpSurfaceCase(CaseGenerator& generator) {
+  CorrectionTargets targets = BuildSharpSurfaceNormals(generator);
+  const Vec3 velocity = DrawWideRangeVelocity(generator);
+  std::array<Vec3, 3> solid_velocities{};
+  double speeds = std::abs(velocity.x) + std::abs(velocity.y) + std::abs(velocity.z);  // m/s
+  for (int surface_index = 0; surface_index < targets.count; ++surface_index) {
+    const Vec3 solid_velocity = DrawWideRangeVelocity(generator);
+    solid_velocities.at(static_cast<std::size_t>(surface_index)) = solid_velocity;
+    speeds += std::abs(solid_velocity.x) + std::abs(solid_velocity.y) + std::abs(solid_velocity.z);
+    targets.targets[surface_index] = -math::Dot(targets.normals[surface_index], velocity - solid_velocity);
+  }
+  targets.speeds_before_change = speeds;
+  const SmallestCorrection correction = SolveSmallestCorrection(targets, 0, CorrectedQuantity::kVelocity);
+  SharpSurfaceResult checked;
+  if (!correction.is_found) {
+    ADD_FAILURE() << "no change found";
+    return checked;
+  }
+  checked.refinement_count = correction.refinement_count;
+  const Vec3 changed = velocity + correction.change;
+  const Vec3 change = correction.change;
+  const double summed_speeds = speeds + std::abs(change.x) + std::abs(change.y) + std::abs(change.z);  // m/s
+  for (int surface_index = 0; surface_index < targets.count; ++surface_index) {
+    const Vec3 solid_velocity = solid_velocities.at(static_cast<std::size_t>(surface_index));
+    const double approach_left = -math::Dot(targets.normals[surface_index], changed - solid_velocity);  // m/s
+    EXPECT_LE(approach_left, 0x1p-46 * summed_speeds);
+    // A velocity already within the slack keeps its approach, up to 64 rounding units: count only the changes.
+    const double share_left = correction.used_count > 0 ? approach_left / (0x1p-52 * summed_speeds) : 0;
+    checked.largest_share_left = std::max(checked.largest_share_left, share_left);
+  }
+  return checked;
+}
+
+TEST(SolveSmallestCorrection, SharpPairsAndCornersNearLimit_ApproachLeftWithinShare) {
+  // 20,000 cases (BuildSharpSurfaceNormals, then v and each u_i by DrawWideRangeVelocity, in that order), the targets
+  // -Dot(n_i, v - u_i), solved for a velocity with slack 0, so the slack is the change's own allowance. The approach
+  // left at every surface, -Dot(n_i, v + w - u_i), is within 2^-46 (|v|_1 + |w|_1 + sum |u_i|_1), and at most 3
+  // refinements are used (the model: at most 16 * 2^-52 of that sum with the refinements; 177 for pairs near 0.45
+  // degrees and 2697 for triples without them).
+  CaseGenerator generator;
+  int largest_refinement_count = 0;
+  double largest_share_left = 0;  // In 2^-52 of the summed speeds.
+  for (int case_index = 0; case_index < 20000; ++case_index) {
+    const SharpSurfaceResult checked = CheckSharpSurfaceCase(generator);
+    largest_refinement_count = std::max(largest_refinement_count, checked.refinement_count);
+    largest_share_left = std::max(largest_share_left, checked.largest_share_left);
+  }
+  std::cout << "sharp pairs and corners: at most " << largest_share_left << " rounding units of the speeds left by a "
+            << "change, " << largest_refinement_count << " refinements\n";
+  EXPECT_LE(largest_refinement_count, 3);
+}
+
 // --- Generated paths ---
 
 // What the generated paths gave, counted for the report.
@@ -1768,14 +3705,18 @@ struct GeneratedCounts {
   int too_many_hits = 0;
   int second_reacting_solid = 0;
   int slow_approach = 0;
-  std::map<std::string_view, int> too_many_hits_per_scene;
+  int squeezed = 0;
+  std::map<std::string_view, std::array<int, 8>> failures_per_scene;  // Per close call, in ContactCloseCall order.
 };
 
-// Prints, for the report, the scenes with any kTooManyHits and how many.
-void PrintTooManyHitsPerScene(const std::map<std::string_view, int>& too_many_hits_per_scene) {
-  std::cout << "too many hits per scene:";
-  for (const auto& [scene_name, count] : too_many_hits_per_scene) {
-    std::cout << " " << scene_name << " " << count << ";";
+// Prints, for the report, each scene with a failure: its counts of kTooManyHits, kSqueezedBetweenSolids and
+// kSecondReactingSolid.
+void PrintFailuresPerScene(const std::map<std::string_view, std::array<int, 8>>& failures_per_scene) {
+  std::cout << "failures per scene (too many hits, squeezed, second reacting solid):";
+  for (const auto& [scene_name, counts] : failures_per_scene) {
+    std::cout << " " << scene_name << " " << counts.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits)) << " "
+              << counts.at(static_cast<std::size_t>(ContactCloseCall::kSqueezedBetweenSolids)) << " "
+              << counts.at(static_cast<std::size_t>(ContactCloseCall::kSecondReactingSolid)) << ";";
   }
   std::cout << "\n";
 }
@@ -1866,11 +3807,10 @@ void CheckGeneratedPath(const SolidContactInputs& inputs, std::string_view scene
   EXPECT_EQ(error, ContactError::kTooCloseToCall) << scene_name;
   EXPECT_NE(failure.close_call, ContactCloseCall::kEndsTooCloseToSolid) << scene_name;
   counts.too_many_hits += failure.close_call == ContactCloseCall::kTooManyHits ? 1 : 0;
-  if (failure.close_call == ContactCloseCall::kTooManyHits) {
-    ++counts.too_many_hits_per_scene[scene_name];
-  }
+  ++counts.failures_per_scene[scene_name].at(static_cast<std::size_t>(failure.close_call));
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
   counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
+  counts.squeezed += failure.close_call == ContactCloseCall::kSqueezedBetweenSolids ? 1 : 0;
 }
 
 TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
@@ -1892,11 +3832,6 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
     if (CheckSolidContactInputs(scene_inputs) != ContactError::kNone) {
       continue;  // The scene about solids out of id order.
     }
-    // The rising floor under the overhanging upright squeezes many random paths for real: they end in kTooManyHits
-    // until the slide rules name the squeeze kSqueezedBetweenSolids, so the scene stays out of this set.
-    if (scene.name == "TiltedUprightOverRisingFloor") {
-      continue;
-    }
     for (int path_index = 0; path_index < kPathsPerScene; ++path_index) {
       SolidContactInputs inputs;
       if (BuildGeneratedPath(scene_inputs, generator, &inputs)) {
@@ -1908,8 +3843,8 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
   std::cout << "paths " << counts.paths << ", free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", several hits " << counts.several_hit_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
-            << "\n";
-  PrintTooManyHitsPerScene(counts.too_many_hits_per_scene);
+            << ", squeezed " << counts.squeezed << "\n";
+  PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(counts.paths, 40000);
   EXPECT_GT(counts.hit_paths, counts.paths / 4);
   EXPECT_GT(counts.several_hit_paths, counts.paths / 60);
@@ -1931,7 +3866,8 @@ struct NearStartCounts {
   int too_many_hits = 0;
   int second_reacting_solid = 0;
   int slow_approach = 0;
-  std::map<std::string_view, int> too_many_hits_per_scene;
+  int squeezed = 0;
+  std::map<std::string_view, std::array<int, 8>> failures_per_scene;  // Per close call, in ContactCloseCall order.
 };
 
 // Computes whether a point is at least 4 tol from every solid but one at the start of the step.
@@ -2056,11 +3992,10 @@ void CheckGeneratedNearStart(
   EXPECT_EQ(error, ContactError::kTooCloseToCall) << scene_name;
   EXPECT_NE(failure.close_call, ContactCloseCall::kEndsTooCloseToSolid) << scene_name;
   counts.too_many_hits += failure.close_call == ContactCloseCall::kTooManyHits ? 1 : 0;
-  if (failure.close_call == ContactCloseCall::kTooManyHits) {
-    ++counts.too_many_hits_per_scene[scene_name];
-  }
+  ++counts.failures_per_scene[scene_name].at(static_cast<std::size_t>(failure.close_call));
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
   counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
+  counts.squeezed += failure.close_call == ContactCloseCall::kSqueezedBetweenSolids ? 1 : 0;
 }
 
 // Prints the counts of the generated starts near a solid for the report, and fails the calling test unless each kind
@@ -2071,8 +4006,8 @@ void ExpectNearStartCounts(const NearStartCounts& counts) {
             << ", slightly inside " << starts.at(2) << "; free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", started inside " << counts.started_inside_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
-            << "\n";
-  PrintTooManyHitsPerScene(counts.too_many_hits_per_scene);
+            << ", squeezed " << counts.squeezed << "\n";
+  PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(starts.at(0), 15000);
   EXPECT_GT(starts.at(1), 15000);
   EXPECT_GT(starts.at(2), 15000);
@@ -2082,9 +4017,8 @@ void ExpectNearStartCounts(const NearStartCounts& counts) {
 }
 
 // Builds the inputs a generated set draws around in one scene: no committed plate, the test contact tolerance, and 0.2
-// s and {0.5, 0.5, 0.5} for a scene whose step or start is out of range. Says false for a scene the generated sets
-// leave out: the one about solids out of id order, and the squeezing scene of
-// GeneratedPathsInEveryScene_EndOutsideEverySolid.
+// s and {0.5, 0.5, 0.5} for a scene whose step or start is out of range. Says false for the scene the generated sets
+// leave out: the one about solids out of id order.
 bool BuildGeneratedSceneInputs(const MoveParticleCase& scene, SolidContactInputs* scene_inputs) {
   *scene_inputs = ToSolidContactInputs(scene);
   scene_inputs->plate_side = {};
@@ -2094,16 +4028,16 @@ bool BuildGeneratedSceneInputs(const MoveParticleCase& scene, SolidContactInputs
     scene_inputs->step_duration = 0.2;
     scene_inputs->start_position = {.x = 0.5, .y = 0.5, .z = 0.5};
   }
-  return CheckSolidContactInputs(*scene_inputs) == ContactError::kNone && scene.name != "TiltedUprightOverRisingFloor";
+  return CheckSolidContactInputs(*scene_inputs) == ContactError::kNone;
 }
 
 TEST(MoveParticle, GeneratedStartsNearSolidsInEveryScene_EndOutsideEverySolid) {
   // For every scene of BuildMoveParticleCases with a solid, in id order: 1000 starts (BuildGeneratedNearStart) within
   // the tolerance of, on, or slightly inside one solid and far from the others, no committed plate, the test contact
-  // tolerance. A scene with a step or a start out of range uses 0.2 s and {0.5, 0.5, 0.5}; the squeezing scene is out,
-  // as in GeneratedPathsInEveryScene_EndOutsideEverySolid. Its kTooManyHits come from the three turning-box scenes
-  // (every start: no touching rule until plan Task 13), the octagon room (100 m/s), and paths that run into the vertex
-  // of the acute wedge scenes (plan Task 12); its kSecondReactingSolid from the three scenes with two reacting solids.
+  // tolerance. A scene with a step or a start out of range uses 0.2 s and {0.5, 0.5, 0.5}. Its kTooManyHits come from
+  // the three turning-box scenes (every start: no touching rule until plan Task 13) and the octagon room (100 m/s);
+  // its kSecondReactingSolid from the scenes with two reacting solids; its kSqueezedBetweenSolids from the scenes whose
+  // solids close on the particle.
   CaseGenerator generator;
   NearStartCounts counts;
   constexpr int kStartsPerScene = 1000;
@@ -2211,9 +4145,9 @@ struct TwoSurfaceCounts {
   int free_paths = 0;  // Success with kind kNone.
   int hit_paths = 0;  // Success with kind kHit.
   int started_inside_paths = 0;  // Success with kind kStartedInsideSolid.
-  int acute_too_many_hits = 0;  // kTooManyHits in an acute wedge, from a velocity that approaches a face.
-  int acute_too_many_hits_approaching_both = 0;  // The part of those whose velocity approaches both faces.
-  int failures = 0;  // Every other failure.
+  int one_hit_paths = 0;  // Success with one hit: the start's joint response, or one hit along the path.
+  int two_hit_paths = 0;  // Success with two hits.
+  int failures = 0;
 };
 
 // Draws a velocity for a two-surface start: slow, up to tol / T per axis, when Next < 0.5, else up to 2 m/s per axis
@@ -2279,51 +4213,35 @@ Vec3 BuildDomainCornerStart(CaseGenerator& generator) {
   return {.x = coordinates.at(0), .y = coordinates.at(1), .z = coordinates.at(2)};
 }
 
-// Counts the fixed flat solids of a wedge a velocity approaches: a negative dot with the normal.
-int ComputeApproachedFaceCount(const SolidContactInputs& inputs, Vec3 velocity) {
-  int approached_count = 0;
-  for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
-    const Mat3 axes = inputs.solids[solid_index].pose_at_step_start.axes;
-    const Vec3 normal = {.x = axes.xz, .y = axes.yz, .z = axes.zz};
-    approached_count += math::Dot(normal, velocity) < 0 ? 1 : 0;
-  }
-  return approached_count;
-}
-
-// Runs MoveParticle on one two-surface start, checks it and counts it: a success ends at least tol / 2 from every
-// solid; the only failure is kTooManyHits in an acute wedge from a velocity that approaches a face: the response on one
-// face turns it into the other, and it hits one and then the other until the slide over several surfaces (plan Task
-// 12) ends it.
-void CheckTwoSurfaceStart(const SolidContactInputs& inputs, bool is_acute_wedge, TwoSurfaceCounts& counts) {
+// Runs MoveParticle on one two-surface start, checks it and counts it: it succeeds, and ends at least tol / 2 from
+// every solid. Before the slide over several surfaces (plan Task 12) an acute wedge failed with kTooManyHits in 30 % of
+// the draws: the response on one face turned the velocity into the other, and the particle hit one and then the other.
+// It counts the hits too: since plan decision P20 a start on two surfaces is one hit, and a second comes only along
+// the path.
+void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& counts) {
   SolidContactResult result;
   ContactFailure failure;
   const ContactError error = MoveParticle(inputs, &result, &failure);
   if (error != ContactError::kNone) {
-    const bool is_too_many_hits =
-        error == ContactError::kTooCloseToCall && failure.close_call == ContactCloseCall::kTooManyHits;
-    const int approached_count = ComputeApproachedFaceCount(inputs, inputs.velocity.for_this_step);
-    const bool is_expected = is_acute_wedge && is_too_many_hits && approached_count >= 1;
-    counts.acute_too_many_hits_approaching_both += is_expected && approached_count == 2 ? 1 : 0;
-    EXPECT_TRUE(is_expected) << "error " << static_cast<int>(error) << ", close call "
-                             << static_cast<int>(failure.close_call) << ", acute " << is_acute_wedge;
-    counts.acute_too_many_hits += is_expected ? 1 : 0;
-    counts.failures += is_expected ? 0 : 1;
+    ADD_FAILURE() << "error " << static_cast<int>(error) << ", close call " << static_cast<int>(failure.close_call);
+    ++counts.failures;
     return;
   }
   ExpectEndOutsideEverySolid(inputs, result.position);
   counts.free_paths += result.kind == ContactKind::kNone ? 1 : 0;
   counts.hit_paths += result.kind == ContactKind::kHit ? 1 : 0;
   counts.started_inside_paths += result.kind == ContactKind::kStartedInsideSolid ? 1 : 0;
+  counts.one_hit_paths += result.hit_count == 1 ? 1 : 0;
+  counts.two_hit_paths += result.hit_count == 2 ? 1 : 0;
 }
 
-TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
-  // 30,000 draws, by Next < 0.5 a wedge (BuildTwoSurfaceWedge, wedge angles 5 to 175 degrees) or a domain corner
-  // (BuildDomainCornerStart); then T = 0.01 + 0.09 * Next s, short enough that a fast particle stays near its corner,
-  // away from the far sides, both velocities from one DrawTwoSurfaceVelocity, friction Next. Start overlap tolerance
-  // 2 tol. Every start is within tol of, on, or slightly inside two or three surfaces. Right and obtuse wedges and
-  // domain corners never fail; acute wedges never fail at the start (no kStartsInsideSolid, kStartsInNarrowGap or
-  // kEndsTooCloseToSolid), and fail only with kTooManyHits from a velocity that approaches a face
-  // (CheckTwoSurfaceStart): 2246 of 7497 acute draws, 30 % as the model of plan decision P19 gives.
+// Runs the 30,000 draws of the two-surface set: by Next < 0.5 a wedge (BuildTwoSurfaceWedge, wedge angles 5 to 175
+// degrees) or a domain corner (BuildDomainCornerStart); then T = 0.01 + 0.09 * Next s, short enough that a fast
+// particle stays near its corner, away from the far sides, both velocities from one DrawTwoSurfaceVelocity, friction
+// Next. With moving_wedges, each wedge solid then gets a linear_velocity of three NextSigned m/s, solid A then B; the
+// domain box stays fixed. Start overlap tolerance 2 tol. Every start is within tol of, on, or slightly inside two or
+// three surfaces.
+TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges) {
   CaseGenerator generator;
   TwoSurfaceCounts counts;
   const std::array domain_solids = {move_particle_cases::BuildUnitDomainBox(1)};
@@ -2333,7 +4251,6 @@ TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
     inputs.contact_tolerance = kTolerance;
     inputs.start_overlap_tolerance = 2 * kTolerance;
     std::array<Solid, 2> wedge_solids{};
-    bool is_acute_wedge = false;
     if (is_wedge) {
       wedge_solids = BuildTwoSurfaceWedge(generator, &inputs.start_position);
       inputs.solids = wedge_solids.data();
@@ -2341,7 +4258,7 @@ TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
       ++counts.wedge_starts;
       const Mat3 first_axes = wedge_solids.at(0).pose_at_step_start.axes;
       const Mat3 second_axes = wedge_solids.at(1).pose_at_step_start.axes;
-      is_acute_wedge =
+      const bool is_acute_wedge =
           first_axes.xz * second_axes.xz + first_axes.yz * second_axes.yz + first_axes.zz * second_axes.zz < 0;
       counts.acute_wedge_starts += is_acute_wedge ? 1 : 0;
     } else {
@@ -2354,17 +4271,42 @@ TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
     const Vec3 velocity = DrawTwoSurfaceVelocity(generator, inputs.step_duration);
     inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
     inputs.friction = generator.Next();
-    CheckTwoSurfaceStart(inputs, is_acute_wedge, counts);
+    for (Solid& wedge_solid : wedge_solids) {
+      if (moving_wedges && is_wedge) {
+        wedge_solid.motion.linear_velocity = {
+            .x = generator.NextSigned(),
+            .y = generator.NextSigned(),
+            .z = generator.NextSigned(),
+        };
+      }
+    }
+    CheckTwoSurfaceStart(inputs, counts);
   }
-  std::cout << "two-surface starts: wedges " << counts.wedge_starts << " (acute " << counts.acute_wedge_starts
-            << "), domain corners " << counts.corner_starts << "; free " << counts.free_paths << ", hit "
-            << counts.hit_paths << ", started inside " << counts.started_inside_paths << ", acute too many hits "
-            << counts.acute_too_many_hits << " (approaching both faces " << counts.acute_too_many_hits_approaching_both
-            << "), other failures " << counts.failures << "\n";
+  std::cout << "two-surface starts" << (moving_wedges ? " with moving wedges" : "") << ": wedges "
+            << counts.wedge_starts << " (acute " << counts.acute_wedge_starts << "), domain corners "
+            << counts.corner_starts << "; free " << counts.free_paths << ", hit " << counts.hit_paths
+            << ", started inside " << counts.started_inside_paths << "; one hit " << counts.one_hit_paths
+            << ", two hits " << counts.two_hit_paths << ", failures " << counts.failures << "\n";
+  return counts;
+}
+
+TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
+  // Fixed wedges and corners (RunTwoSurfaceStarts): no failure at all (the model: 0 of 10,001 acute draws). Before the
+  // slide over several surfaces, 2246 of 7497 acute draws ended in kTooManyHits.
+  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(false);
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.free_paths, 1000);
   EXPECT_GT(counts.hit_paths, 1000);
   EXPECT_GT(counts.started_inside_paths, 1000);
+}
+
+TEST(MoveParticle, GeneratedMovingTwoSurfaceStarts_SucceedDownToFiveDegrees) {
+  // The same draws with each wedge solid moving at up to 1 m/s per axis: no failure. Two surfaces that are not
+  // parallel always leave a velocity that approaches neither, and from 5 degrees up the escape is at most
+  // 1 / sin(2.5 degrees) = 23 times the solids' speeds, below the speed cap (the model: 0 of 35,000).
+  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(true);
+  EXPECT_EQ(counts.failures, 0);
+  EXPECT_GT(counts.hit_paths, 1000);
 }
 
 // --- Generated tangent contacts ---
@@ -2384,6 +4326,11 @@ struct TangentStart {
   int velocity_class = 0;  // 0 at rest, 1 slow, 2 falling, 3 toward the contact, 4 random.
   Vec3 first_normal{};  // No unit, world. The floor's, the side's or the first ball's normal at the start.
   Vec3 second_normal{};  // No unit, world. The second ball's normal at the start.
+  Vec3 contact{};  // m, world: the contact point.
+  Vec3 contact_normal{};  // No unit, world: out of the floor, the side or the first ball at the contact.
+  Vec3 radial{};  // No unit, world: away from the contact, square to contact_normal.
+  double rest_distance = 0;  // m: x*, the rest point's distance from the contact.
+  double first_radius = 0;  // m: the first ball's radius for two balls, else 0.
 };
 
 // Builds one start of the tangent set in one scene (P11 generator). Draws, in this order and all of them for every
@@ -2492,51 +4439,34 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
       : floor_normal;
   start.second_normal =
       ComputeDistanceToSolid(second_solid, second_solid.pose_at_step_start, start_position).normal_out_of_solid;
+  start.contact = contact;
+  start.contact_normal = floor_normal;
+  start.radial = radial;
+  start.rest_distance = rest_distance;
+  start.first_radius = scene == TangentScene::kTwoBalls ? radius : 0;
   return start;
 }
 
-// What the generated tangent starts of one scene gave, counted for the report.
-struct TangentCounts {
-  int successes = 0;
-  int too_many_hits = 0;  // From a velocity that approaches one of the two contact surfaces.
-  int too_many_hits_approaching_both = 0;  // The part of those whose velocity approaches both.
-  std::array<int, 5> too_many_hits_per_class{};  // In the velocity classes of TangentStart.
-  int other_failures = 0;
-};
-
-// Runs MoveParticle on one tangent start, checks it and counts it: a success ends at least tol / 2 from every solid;
-// the only failure is kTooManyHits from a velocity that approaches one of the two contact surfaces.
-void CheckTangentStart(TangentScene scene, const TangentStart& start, TangentCounts& counts) {
+// Runs MoveParticle on one tangent start and fails the calling test unless it succeeded at least tol / 2 from every
+// solid. Before the slide over several surfaces (plan Task 12) 37 to 49 % per scene ended in kTooManyHits, bouncing
+// between the two surfaces into the cusp.
+bool ExpectTangentStartSucceeds(TangentScene scene, const SolidContactInputs& inputs) {
   SolidContactResult result;
   ContactFailure failure;
-  const ContactError error = MoveParticle(start.inputs, &result, &failure);
-  if (error == ContactError::kNone) {
-    ExpectEndOutsideEverySolid(start.inputs, result.position);
-    ++counts.successes;
-    return;
+  const ContactError error = MoveParticle(inputs, &result, &failure);
+  if (error != ContactError::kNone) {
+    ADD_FAILURE() << "scene " << static_cast<int>(scene) << ", error " << static_cast<int>(error) << ", close call "
+                  << static_cast<int>(failure.close_call);
+    return false;
   }
-  const Vec3 velocity = start.inputs.velocity.for_this_step;
-  const bool approaches_first = math::Dot(start.first_normal, velocity) < 0;
-  const bool approaches_second = math::Dot(start.second_normal, velocity) < 0;
-  const bool is_too_many_hits =
-      error == ContactError::kTooCloseToCall && failure.close_call == ContactCloseCall::kTooManyHits;
-  const bool is_expected = is_too_many_hits && (approaches_first || approaches_second);
-  EXPECT_TRUE(is_expected) << "scene " << static_cast<int>(scene) << ", error " << static_cast<int>(error)
-                           << ", close call " << static_cast<int>(failure.close_call);
-  if (!is_expected) {
-    ++counts.other_failures;
-    return;
-  }
-  ++counts.too_many_hits;
-  counts.too_many_hits_approaching_both += approaches_first && approaches_second ? 1 : 0;
-  ++counts.too_many_hits_per_class.at(static_cast<std::size_t>(start.velocity_class));
+  ExpectEndOutsideEverySolid(inputs, result.position);
+  return true;
 }
 
 TEST(MoveParticle, GeneratedTangentContactStarts_Succeed) {
   // 2000 starts per scene (BuildTangentStart), the scenes in TangentScene order, starts in the cusp of each tangent
-  // contact from 0.02 to 1 times the rest point's distance. Every success ends at least tol / 2 from every solid. The
-  // start never fails; the only failure is kTooManyHits from a velocity that approaches one of the two surfaces and
-  // then bounces between them into the cusp, which the slide over several surfaces (plan Task 12) ends.
+  // contact from 0.02 to 1 times the rest point's distance. Every start succeeds and ends at least tol / 2 from every
+  // solid.
   CaseGenerator generator;
   const std::array scenes = {
       TangentScene::kBallOnFloor,
@@ -2545,29 +4475,178 @@ TEST(MoveParticle, GeneratedTangentContactStarts_Succeed) {
       TangentScene::kBallOnTiltedFlatSolid,
   };
   for (const TangentScene scene : scenes) {
-    TangentCounts counts;
+    int successes = 0;
     for (int draw_index = 0; draw_index < 2000; ++draw_index) {
       TangentStart start = BuildTangentStart(generator, scene);
       start.inputs.solids = start.solids.data();
-      CheckTangentStart(scene, start, counts);
+      successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
     }
-    const std::array<int, 5>& per_class = counts.too_many_hits_per_class;
-    std::cout << "tangent scene " << static_cast<int>(scene) << ": success " << counts.successes << ", too many hits "
-              << counts.too_many_hits << " (approaching both " << counts.too_many_hits_approaching_both
-              << "; per velocity class " << per_class.at(0) << " " << per_class.at(1) << " " << per_class.at(2) << " "
-              << per_class.at(3) << " " << per_class.at(4) << "), other failures " << counts.other_failures << "\n";
-    EXPECT_EQ(counts.other_failures, 0);
+    std::cout << "tangent scene " << static_cast<int>(scene) << ": success " << successes << " of 2000\n";
   }
 }
 
-// --- The touched surfaces in the sweep ---
+// Turns one tangent start into a slide by Next < 1/3: the particle starts tol from the floor (for two balls, from the
+// first ball), at x* + (0.05 - x*) Next from the contact along the radial direction, moving toward the contact at
+// 2 Next m/s with gravity, {0, 0, -9.81 T} m/s. Otherwise it keeps the start; the two Next are drawn either way.
+void ApplyTangentSlide(CaseGenerator& generator, TangentStart* start) {
+  const bool is_slide = generator.Next() < 1.0 / 3;
+  const double distance_share = generator.Next();
+  const double speed_share = generator.Next();
+  if (!is_slide) {
+    return;
+  }
+  const double contact_distance = start->rest_distance + (0.05 - start->rest_distance) * distance_share;  // m
+  const double first_surface_height =
+      start->first_radius > 0 ? -contact_distance * contact_distance / (2 * start->first_radius) : 0;  // m
+  start->inputs.start_position =
+      start->contact + contact_distance * start->radial + (first_surface_height + kTolerance) * start->contact_normal;
+  const Vec3 velocity =
+      -2 * speed_share * start->radial + Vec3{.x = 0, .y = 0, .z = -9.81 * start->inputs.step_duration};
+  start->inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+}
+
+// Sets the motion of one tangent start's solids, each sliding along the other: the first solid (the floor, the tilted
+// side or the first ball) at a velocity square to the contact normal, and the ball at that velocity plus another square
+// to it and a part along the contact normal of 0, 0, -1e-3 or 1e-3 m/s (sinking or rising) by floor(4 Next). The
+// tangent parts are NextSigned m/s along two directions square to the contact normal (radial and its cross with the
+// normal), four draws, then the one for the normal part. The ball in the domain corner keeps still: a moving ball would
+// leave or enter the other sides. The draws are made in every scene.
+void ApplyTangentMotion(CaseGenerator& generator, TangentScene scene, TangentStart* start) {
+  const Vec3 normal = start->contact_normal;
+  const Vec3 along = start->radial;
+  const Vec3 across = math::Cross(normal, along);
+  const Vec3 first_velocity = generator.NextSigned() * along + generator.NextSigned() * across;  // m/s
+  const Vec3 slide_velocity = generator.NextSigned() * along + generator.NextSigned() * across;  // m/s
+  const std::array<double, 4> normal_speeds = {0, 0, -1e-3, 1e-3};  // m/s
+  const double normal_speed = normal_speeds.at(static_cast<std::size_t>(std::floor(4 * generator.Next())));
+  if (scene == TangentScene::kBallInDomainCorner) {
+    return;
+  }
+  start->solids.at(0).motion.linear_velocity = first_velocity;
+  start->solids.at(1).motion.linear_velocity = first_velocity + slide_velocity + normal_speed * normal;
+}
+
+// What the tangent slides of one scene and motion gave, counted for the report.
+struct TangentSlideCounts {
+  int successes = 0;
+  int too_many_hits = 0;
+  // kTooManyHits by the number of halvings of the step after which it first succeeded, 1 to 8; the last, none.
+  std::array<int, 9> cured_after_halvings{};
+  int squeezed = 0;  // kSqueezedBetweenSolids, only where the ball closes on the other solid.
+  int other_failures = 0;
+};
+
+// Runs MoveParticle on one tangent slide and counts it: a success ends at least tol / 2 from every solid. A failure may
+// only be kTooManyHits, run again with the step halved up to eight times (1/256) until one succeeds, or
+// kSqueezedBetweenSolids where the ball closes on the other solid (a ball sinking into a floor): the speed cap's
+// squeeze, which the geometry decides and a shorter step does not cure (plan decision P19, item 6).
+void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSlideCounts& counts) {
+  SolidContactInputs inputs = start.inputs;
+  SolidContactResult result;
+  ContactFailure failure;
+  const ContactError error = MoveParticle(inputs, &result, &failure);
+  if (error == ContactError::kNone) {
+    ExpectEndOutsideEverySolid(inputs, result.position);
+    ++counts.successes;
+    return;
+  }
+  const bool is_close_call = error == ContactError::kTooCloseToCall;
+  const Vec3 closing_velocity = start.solids.at(1).motion.linear_velocity - start.solids.at(0).motion.linear_velocity;
+  const bool is_ball_closing = math::Dot(closing_velocity, start.contact_normal) < 0;
+  if (is_close_call && failure.close_call == ContactCloseCall::kSqueezedBetweenSolids && is_ball_closing) {
+    ++counts.squeezed;
+    return;
+  }
+  if (!is_close_call || failure.close_call != ContactCloseCall::kTooManyHits) {
+    ADD_FAILURE() << "scene " << static_cast<int>(scene) << ", error " << static_cast<int>(error) << ", close call "
+                  << static_cast<int>(failure.close_call);
+    ++counts.other_failures;
+    return;
+  }
+  ++counts.too_many_hits;
+  int halving_count = 1;
+  for (; halving_count <= 8; ++halving_count) {
+    inputs.step_duration = inputs.step_duration / 2;
+    if (MoveParticle(inputs, &result, &failure) == ContactError::kNone) {
+      break;
+    }
+  }
+  ++counts.cured_after_halvings.at(static_cast<std::size_t>(halving_count - 1));
+}
+
+// Prints, for the report, what the tangent slides of one scene and motion gave.
+void PrintTangentSlideCounts(TangentScene scene, bool is_moving, const TangentSlideCounts& counts) {
+  const std::array<int, 9>& cured = counts.cured_after_halvings;
+  std::cout << "tangent slides scene " << static_cast<int>(scene) << (is_moving ? " moving" : " fixed") << ": success "
+            << counts.successes << ", too many hits " << counts.too_many_hits << " (cured after 1 to 8 halvings:";
+  for (std::size_t halving_index = 0; halving_index < 8; ++halving_index) {
+    std::cout << " " << cured.at(halving_index);
+  }
+  std::cout << "; not cured " << cured.at(8) << "), squeezed " << counts.squeezed << ", other failures "
+            << counts.other_failures << "\n";
+}
+
+// Runs 2000 draws of the tangent slides of one scene: BuildTangentStart, then ApplyTangentSlide, then
+// ApplyTangentMotion, applied only when is_moving, and CheckTangentSlide.
+TangentSlideCounts RunTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving) {
+  TangentSlideCounts counts;
+  for (int draw_index = 0; draw_index < 2000; ++draw_index) {
+    TangentStart start = BuildTangentStart(generator, scene);
+    ApplyTangentSlide(generator, &start);
+    TangentStart moving_start = start;
+    ApplyTangentMotion(generator, scene, &moving_start);
+    TangentStart& used = is_moving ? moving_start : start;
+    used.inputs.solids = used.solids.data();
+    CheckTangentSlide(scene, used, counts);
+  }
+  return counts;
+}
+
+// Fails the calling test unless the slides of one scene had no other failure, every kTooManyHits was cured within
+// eight halvings, and at least 1950 of the 2000 draws succeeded (1958 in the worst scene), so the checks are not
+// vacuous.
+void ExpectTangentSlideCounts(const TangentSlideCounts& counts) {
+  EXPECT_EQ(counts.other_failures, 0);
+  EXPECT_EQ(counts.cured_after_halvings.at(8), 0);
+  EXPECT_GE(counts.successes, 1950);
+}
+
+TEST(MoveParticle, GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures) {
+  // 2000 draws per scene, in TangentScene order, fixed and then moving: BuildTangentStart, then ApplyTangentSlide, then
+  // ApplyTangentMotion (drawn for the fixed ones too, not applied). A third of the draws slide into the cusp from up to
+  // 5 cm at up to 2 m/s with gravity; the others start in it. Every success ends at least tol / 2 from every solid; the
+  // only failures are kTooManyHits, each cured by a step at most 256 times shorter, and the speed cap's squeeze of a
+  // ball sinking into a floor (CheckTangentSlide). Measured: two balls are the only kTooManyHits, a fast particle
+  // zig-zagging into their neck, 42 of 2000 fixed draws (steps of 0.1 s moving it up to 28 cm), 38 cured by 1/16 and
+  // the others by 1/32 to 1/256; the model's set, with other draws, cured all 31 of 40,000 by 1/16. The 256 holds for
+  // these draws only: a rule that responds hit by hit, four hits a step, reaches the neck's pair only once both balls
+  // are within tol at once, so the halvings needed grow with the speed over Sqrt(R tol), and faster drops or other
+  // draws can need more.
+  CaseGenerator generator;
+  const std::array scenes = {
+      TangentScene::kBallOnFloor,
+      TangentScene::kBallInDomainCorner,
+      TangentScene::kTwoBalls,
+      TangentScene::kBallOnTiltedFlatSolid,
+  };
+  for (const bool is_moving : {false, true}) {
+    for (const TangentScene scene : scenes) {
+      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving);
+      PrintTangentSlideCounts(scene, is_moving, counts);
+      ExpectTangentSlideCounts(counts);
+    }
+  }
+}
+
+// --- The touched rule in the sweep ---
 
 // The sweep that follows the first hit of the scene ObliqueFlatSolidRoundingAtHit: the hit position and the response's
-// velocity, as MoveParticle computes them, with the allowance of that response.
+// velocity, as MoveParticle computes them, with the allowance of that response and the hit's normal.
 struct SweepAfterObliqueHit {
   MoveParticleCase scene;
   Sweep sweep;
-  TouchedSurface touched_surface;
+  TouchedSolid touched;
+  Vec3 normal_out_of_solid{};
 };
 
 // Builds the sweep after the first hit of ObliqueFlatSolidRoundingAtHit.
@@ -2588,27 +4667,22 @@ SweepAfterObliqueHit BuildSweepAfterObliqueHit() {
       .start_elapsed = first_hit.elapsed,
       .duration = inputs.step_duration - first_hit.elapsed,
   };
-  after_hit.touched_surface = {
-      .solid_index = 0,
-      .normal_out_of_solid = normal,
+  after_hit.touched = {
+      .is_touched = true,
       .approach_allowance = ComputeLargestApproachLeftAfterResponse(velocity, {}),
   };
+  after_hit.normal_out_of_solid = normal;
   return after_hit;
 }
 
-TEST(FindFirstHitOfSweep, NoTouchedSurfaceAfterRoundedHit_HitsSameSolidAgain) {
-  // The reason for the touched surfaces: without them the start, 2.8e-18 m outside the rest gap, is outside, and the
+TEST(FindFirstHitOfSweep, NotTouchedAfterRoundedHit_HitsSameSolidAgain) {
+  // The reason for the touched rule: without it the start, 2.8e-18 m outside the rest gap, is outside, and the
   // rounding-sized approach of the response makes the closed form hit the same solid again.
   const SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();
   FirstHit first_hit;
-  const TouchedSurfaces no_touched_surfaces;
-  const ContactError error = FindFirstHitOfSweep(
-      ToSolidContactInputs(after_hit.scene),
-      after_hit.sweep,
-      no_touched_surfaces,
-      &first_hit,
-      nullptr
-  );
+  const TouchedSolid not_touched;
+  const ContactError error =
+      FindFirstHitOfSweep(ToSolidContactInputs(after_hit.scene), after_hit.sweep, not_touched, &first_hit, nullptr);
   EXPECT_EQ(error, ContactError::kNone);
   EXPECT_EQ(first_hit.solid_index, 0U);
 }
@@ -2619,7 +4693,7 @@ TEST(FindFirstHitOfSweep, TouchedSolidAfterRoundedHit_IsFree) {
   const ContactError error = FindFirstHitOfSweep(
       ToSolidContactInputs(after_hit.scene),
       after_hit.sweep,
-      {.surfaces = &after_hit.touched_surface, .count = 1},
+      after_hit.touched,
       &first_hit,
       nullptr
   );
@@ -2631,12 +4705,12 @@ TEST(FindFirstHitOfSweep, TouchedSolidReallyApproached_IsHitAtStart) {
   // The same start, now moving into the surface at 1e-9 m/s, far beyond the allowance: hit at 0.
   SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();
   after_hit.sweep.velocity_for_this_step =
-      after_hit.sweep.velocity_for_this_step - 1e-9 * after_hit.touched_surface.normal_out_of_solid;
+      after_hit.sweep.velocity_for_this_step - 1e-9 * after_hit.normal_out_of_solid;
   FirstHit first_hit;
   const ContactError error = FindFirstHitOfSweep(
       ToSolidContactInputs(after_hit.scene),
       after_hit.sweep,
-      {.surfaces = &after_hit.touched_surface, .count = 1},
+      after_hit.touched,
       &first_hit,
       nullptr
   );
@@ -2646,17 +4720,17 @@ TEST(FindFirstHitOfSweep, TouchedSolidReallyApproached_IsHitAtStart) {
 }
 
 TEST(FindFirstHitOfSweep, TouchedSolidFartherThanSixteenthOfTolerance_TakesClosedForm) {
-  // A start tol / 2 above the rest gap of the touched surface, approaching at 1 m/s: outside the touched window of
-  // tol / 16, so the closed form finds the hit tol / 2 later, not at 0.
+  // A start tol / 2 above the rest gap of the solid hit, approaching at 1 m/s: outside the touched window of tol / 16,
+  // so the closed form finds the hit tol / 2 later, not at 0.
   SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();
-  const Vec3 normal = after_hit.touched_surface.normal_out_of_solid;
+  const Vec3 normal = after_hit.normal_out_of_solid;
   after_hit.sweep.start = after_hit.sweep.start + 0.5 * kTolerance * normal;
   after_hit.sweep.velocity_for_this_step = -1.0 * normal;
   FirstHit first_hit;
   const ContactError error = FindFirstHitOfSweep(
       ToSolidContactInputs(after_hit.scene),
       after_hit.sweep,
-      {.surfaces = &after_hit.touched_surface, .count = 1},
+      after_hit.touched,
       &first_hit,
       nullptr
   );
@@ -2927,13 +5001,12 @@ TEST(MoveParticle, GeneratedNearStickSlips_NeverHitAgain) {
 
 // --- The settle ---
 
-// A move that ended at the given position after one hit on solid 0, with the scene's inputs.
-ParticleMove BuildMoveTouchingSolidZero(Vec3 end_position) {
+// A move that ended at the given position after one hit, with the scene's inputs.
+ParticleMove BuildMoveAfterOneHit(Vec3 end_position) {
   ParticleMove move;
   move.result.position = end_position;
   move.result.hit_count = 1;
-  move.touched_surfaces[0] = {.solid_index = 0, .normal_out_of_solid = {.x = 0, .y = 0, .z = 1}};
-  move.touched_surface_count = 1;
+  move.has_response = true;
   return move;
 }
 
@@ -2944,7 +5017,7 @@ TEST(ApplySettleAtEnd, TouchedFloorCloserThanTolerance_MovesToRestGap) {
   inputs.solid_count = 1;
   inputs.step_duration = 1;
   inputs.contact_tolerance = kTolerance;
-  ParticleMove move = BuildMoveTouchingSolidZero({.x = 0.5, .y = 0, .z = 0.25 * kTolerance});
+  ParticleMove move = BuildMoveAfterOneHit({.x = 0.5, .y = 0, .z = 0.25 * kTolerance});
   ApplySettleAtEnd(inputs, &move);
   ExpectVec3Equal(move.result.position, {.x = 0.5, .y = 0, .z = kTolerance});
 }
@@ -2956,7 +5029,7 @@ TEST(ApplySettleAtEnd, TouchedFloorFartherThanTolerance_StaysPut) {
   inputs.solid_count = 1;
   inputs.step_duration = 1;
   inputs.contact_tolerance = kTolerance;
-  ParticleMove move = BuildMoveTouchingSolidZero({.x = 0.5, .y = 0, .z = 2 * kTolerance});
+  ParticleMove move = BuildMoveAfterOneHit({.x = 0.5, .y = 0, .z = 2 * kTolerance});
   ApplySettleAtEnd(inputs, &move);
   ExpectVec3Equal(move.result.position, {.x = 0.5, .y = 0, .z = 2 * kTolerance});
 }
@@ -2977,7 +5050,7 @@ TEST(ApplySettleAtEnd, RisingFloor_SettlesAtEndPose) {
   inputs.solid_count = 1;
   inputs.step_duration = 1;
   inputs.contact_tolerance = kTolerance;
-  ParticleMove move = BuildMoveTouchingSolidZero({.x = 0, .y = 0, .z = 0.25 + 0.25 * kTolerance});
+  ParticleMove move = BuildMoveAfterOneHit({.x = 0, .y = 0, .z = 0.25 + 0.25 * kTolerance});
   ApplySettleAtEnd(inputs, &move);
   EXPECT_NEAR(move.result.position.z, 0.25 + kTolerance, 0x1p-52);
 }
@@ -2987,13 +5060,7 @@ TEST(ApplySettleAtEnd, SixtyDegreeWedgeBothNearAtEnd_EndsAtRestGapOfBoth) {
   // surface in turn left the floor at 0.625 tol.
   const MoveParticleCase scene = FindMoveParticleCase("SixtyDegreeWedgeRestingOnBoth");
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
-  ParticleMove move =
-      BuildMoveTouchingSolidZero({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
-  move.touched_surfaces[1] = {
-      .solid_index = 1,
-      .normal_out_of_solid = {.x = std::numbers::sqrt3 / 2, .y = 0, .z = -0.5},
-  };
-  move.touched_surface_count = 2;
+  ParticleMove move = BuildMoveAfterOneHit({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
   ApplySettleAtEnd(inputs, &move);
   ExpectVec3Near(
       move.result.position,
@@ -3008,8 +5075,7 @@ TEST(ApplySettleAtEnd, UntouchedNearSolid_IsMovedOffToo) {
   // the touched floor alone, to z = tol, left the face at 0.25 tol.
   const MoveParticleCase scene = FindMoveParticleCase("SixtyDegreeWedgeRestingOnBoth");
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
-  ParticleMove move =
-      BuildMoveTouchingSolidZero({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
+  ParticleMove move = BuildMoveAfterOneHit({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
   ApplySettleAtEnd(inputs, &move);
   ExpectVec3Near(
       move.result.position,

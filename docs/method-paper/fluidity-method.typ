@@ -910,29 +910,35 @@ A start deeper than $"tol"$ inside the grown solid, $g(0) < -"tol"$, is hit at $
 from there. For a flat solid with surface at $z = 0$, a particle at $z = "tol"$ moving at $(5, 0, -"tol"\/4)$ m/s for
 1 s slides freely; at (5, 0, −1) m/s it hits at 0.
 
-A solid the particle already touched earlier in the same step gets a stricter form of the rule. After a hit the
-particle stands at $d = "tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an
-approach of a few rounding units (@sec-contact-response). With the rule above such a start would count as outside, and
-the closed form would hit the same solid again from two rounding-sized numbers. So `MoveParticle` passes the sweep
-its touched surfaces: for each hit, the solid, the normal at the hit and the bound $b$ of the approach that response
-may leave, computed from the velocity it received. For a touched solid that does not turn, on every surface of it (a
-domain box touched on one side, on every side), a start gap up to $"tol"\/16$ counts as resting, and the solid is hit
-at $t = 0$ only when $"rate" < -b$, a real approach, with $b$ the largest bound of all touched surfaces so far;
-otherwise the path is free of it. The largest, not the solid's own: the velocity comes from the latest response,
-wherever it was, and its rounding lies along every normal, so a fast solid hit second leaves along the first solid's
-normal more rounding than the first response did. The bound is carried, not recomputed: its derivation
-(@sec-contact-response) proves it from the velocity the response received, and a bound from the returned velocity
-can be far smaller than what is left, for example after a slip just below the stick limit, where the friction blend
-rounds by a share of the incoming speed while the returned velocity is tiny. What it costs: a free path may still
-approach at up to $b$, and the largest bound grows with later hits. `MoveParticle` requires $b t_"left" <= "tol"\/64$
-for every bound at its own hit. Between two hits the largest bound is one of an earlier hit, whose time left was
-longer, so each stretch adds at most $"tol"\/64$, and the at most four hits of a step add at most $"tol"\/16$. With
+After the first response of a step every solid gets a stricter form of the rule. After a hit the particle stands at
+$d = "tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an approach of a few
+rounding units along every normal (@sec-contact-response). With the rule above such a start would count as outside,
+and the closed form would hit the same solid again from two rounding-sized numbers. So `MoveParticle` passes the
+sweep whether a response was made in the step and the largest bound $b$ of the approach the responses so far may
+have left, one number per velocity, each computed from the velocity its response received. For every solid that does
+not turn, on every surface of it, a start gap up to $"tol"\/16$ then counts as resting, and the solid is hit at
+$t = 0$ only when $"rate" < -b$, a real approach; otherwise the path is free of it. Why every solid, with no list of
+the solids met: a sweep after a response starts where that response was made, and a solid whose start gap is within
+the window was within $"tol" + "tol"\/16$ there, so it was an active surface of that response (@sec-contact-response),
+which left its approach within the response's bound, at most $b$. A solid outside the window takes the closed form.
+One exception, a hit and not a miss: a surface whose normal agrees with another's within $2^(-40)$ but not bit for
+bit, in a change that uses a third direction, is missed by up to $2^(-40)$ of the change, which the sweep reads as an
+approach and hits at 0. The bound is carried, not recomputed: its derivation (@sec-contact-response) proves it from
+the velocity the response received, and a bound from the returned velocity can be far smaller than what is left, for
+example after a slip just below the stick limit. What it costs: a free path may still approach at up to $b$, and $b$
+grows with later responses. Each response $j$ requires or checks $b_j t_"left, j" <= "tol"\/64$ at its own time.
+Between two responses the largest bound is one of an earlier response, whose time left was longer, so each stretch
+adds at most $"tol"\/64$, and the at most four responses of a step add at most $"tol"\/16$. That bound, not $d >= 0$, is
+what is proved: before the first response the plain rule lets a path end on a surface, so the particle may then be up
+to $"tol"\/16$ past it, which the settle lifts back. At the extreme of the requirement below, a non-committed plate
+thinner than $"tol"\/8$ could have its middle passed, and one thinner than $"tol"\/16$ be passed through; neither has
+been constructed nor proved impossible. With
 $b = 2^(-46) A$, $A$ the sum of the absolute axes of the speeds involved, that is $A t_"left" <= 2^40 "tol"$, true
-whenever those speeds over one step stay within the largest coordinate. Nothing skips a touched solid: a start farther
-than $"tol"\/16$ takes the closed form, a real approach is a hit, and a turning solid keeps no touching rule. For the
+whenever those speeds over one step stay within the largest coordinate. Nothing skips a solid: a start farther than
+$"tol"\/16$ takes the closed form, a real approach is a hit, and a turning solid keeps no touching rule. For the
 fixed flat solid with normal (0.6, 0, 0.8) through the origin and a particle from (0.125, 0, 0.125) at (−2, 0, −2) m/s
 for 0.5 s (this paper's numbers), the hit position is $2.8 times 10^(-18)$ m outside the rest gap and the response's
-approach is $-2^(-55)$ m/s: the touched solid is not hit again.
+approach is $-2^(-55)$ m/s: the solid is not hit again.
 
 === A turning solid
 
@@ -1342,8 +1348,8 @@ approach speeds, −3 and −1 m/s.
 
 === Moving one particle
 
-`MoveParticle` moves one particle for one step in six steps (@proc-move-particle): check the inputs, classify the
-start, find the first hit, respond, slide, and settle and check the end. Without any hit the end position is
+`MoveParticle` moves one particle for one step in five steps (@proc-move-particle): check the inputs, classify the
+start, find the first hit, apply the joint response, and settle and check the end. Without any hit the end position is
 $bold(x)_0 + bold(v) T$, one multiplication and one addition per axis, and both velocities come back unchanged.
 
 The start is classified against every solid at the start of the step, in three parts. First the checks that fail,
@@ -1406,51 +1412,131 @@ failure names the near solid latest in array order.
     and the next come back to the rest point.],
 ) <fig-move-off-near-surfaces>
 
-Then each solid in array order, each near surface with its distance and normal before the move. What happens to it
-depends on that $d$:
+Then the start has a response when it was inside a solid as given, $d < 0$, or when either velocity approaches an
+active surface at the moved start (@sec-contact-response); "approaches" there means an approach speed below 0, or
+below $2^(-46) |bold(omega) times bold(r)|_1$, the rounding of a spinning solid's surface velocity: a floor spinning
+about its normal at 100 m/s at the particle has no velocity along its normal, but computed it has about $10^(-14)$
+m/s, which would be a hit. The response is one joint response over the active surfaces read at the moved start, not
+at the start as given: the sweep that follows reads the normals there, and the response must leave no approach along
+those. It is one hit, however many surfaces; the kind is "started inside solid" when the start was inside a solid,
+else "hit". Otherwise the move is silent: velocities, kind, hit count and record are unchanged, and a touching
+particle that leaves is free. A surface near the start as given but farther than $"tol" + "tol"\/16$ after the move
+takes no part: of two parallel floors $"tol"\/4$ apart, only the upper one, which the particle rests on, responds and
+is charged.
 
-- $d < 0$: both velocities get the response with that surface's normal, the solid joins the surfaces the particle is
-  on, the move counts as one hit, and the kind is "started inside solid".
-- $0 <= d < "tol"$ and either velocity approaches the surface: the same, with the kind "hit". In code "approaches"
-  means an approach speed below minus the largest bound of the approach the responses so far may have left: 0
-  before the first response, since the velocities are then the inputs, and after one, the rounding it left along
-  every normal is not an approach.
-- $0 <= d < "tol"$ and neither approaches: the move is silent. Velocities, kind, hit count and record are unchanged.
-  A touching particle that leaves is free. When another solid responded at the start, the silently moved solid
-  still joins the surfaces the particle is on, without a hit, so that the rounding that response left is not taken
-  for a hit on it; at most four solids join this way, and a fifth is "too close to call, too many hits".
-
-No solid is classified twice, nor from a start that another solid's move pushed toward it. In code "approaches"
-compares each velocity with its own bound: a response to a `for_this_step` at rest leaves no rounding in it, but it
-leaves some in a moving `for_next_step`, which compared with 0 would count as an approach to a second solid.
-
-The first solid that responds fills the record, with hit fraction 0. The kind is "started inside solid" when any
-start distance was negative. A flat solid with surface at $z = 0$ rising at 2 m/s, under a particle at rest at $z =
-"tol"$ for 0.1 s: the particle approaches the solid at −2 m/s, so it is a hit at fraction 0, both velocities become
-(0, 0, 2) m/s, and the particle ends carried at $z = 0.2 + "tol"$. The same particle moving away at (1, 0, 2) m/s
-from $(0, 0, "tol"\/4)$ is moved to $z = "tol"$ silently and ends at $(0.1, 0, 0.2 + "tol")$.
+The record is that of the first surface, in array order of the solids and then face order, among the active surfaces
+the start was inside or a velocity approaches, with hit fraction 0. A flat solid with surface at $z = 0$ rising at
+2 m/s, under a particle at rest at $z = "tol"$ for 0.1 s: the particle approaches the solid at −2 m/s, so it is a hit
+at fraction 0, both velocities become (0, 0, 2) m/s, and the particle ends carried at $z = 0.2 + "tol"$. The same
+particle moving away at (1, 0, 2) m/s from $(0, 0, "tol"\/4)$ is moved to $z = "tol"$ silently and ends at
+$(0.1, 0, 0.2 + "tol")$.
 
 A hit that the closed form finds in a rim region of a cylinder is first moved along the rim normal to $d = "tol"$
-(@sec-round-solids); the response then works from there. Every change of `velocity.for_next_step` made against a
-solid with `reports_reaction`, by the response at a hit or by a removal during the slide below, is added to the
-particle's reaction, with the position of the first such change. A removal of the approach to an earlier surface is
-charged to that surface's solid; the corner case below, which sets the velocities to the newest solid's velocity,
-is charged to the newest solid. Only `for_next_step` counts, because it is the velocity the particle keeps;
-`for_this_step` only moves it during this step. The solids module turns these changes, times each particle's mass,
-into the force on the solid. That force then comes from the very velocity changes that stopped the particles, so
-the same geometry decides both, as Batty, Bertails and Bridson argue for coupling liquids and solids [21]. A
-particle pushes at most one reacting solid per step; a second, different one is "too close to call, second reacting
-solid". A change of exactly zero adds nothing, so it neither fills the record nor conflicts: a solid's count of hits
-counts only the particles whose `for_next_step` changed at it.
+(@sec-round-solids); the response then works from there.
 
-The slide follows each hit. The solid joins the list of surfaces the particle is on, its touched surfaces, with the
-normal at the hit and the bound of the approach the response may have left. For each earlier surface that
-the new velocities still approach, that approach is removed, without friction. If the newest surface is then
-approached again, as in a corner sharper than a right angle, both velocities become the newest solid's velocity.
-If an earlier surface is still approached after that, the solids are closing on the particle: "too close to call,
-squeezed between solids". On a solid that does not turn, the sweep starts again from the hit position with the new
-`for_this_step` for the time left. A fifth hit in one step (`kMaxHitsPerStep` is 4: the three sides of a corner,
-plus one) is "too close to call, too many hits".
+At each hit, at the start or along the path, both velocities get one *joint response* over the *active surfaces*:
+every surface of every solid that the particle is within $"tol" + "tol"\/16$ of, read at its position then (not the
+normal recorded at a hit, stale once the particle has slid along a ball; not a surface farther away, such as a ceiling
+hit 0.1 m above a floor touched earlier), and the surface hit, with the hit's own normal. A surface the same bit for
+bit as one listed, in normal, solid velocity, friction and `reports_reaction`, is dropped: an exact copy adds nothing,
+so 17 or 40 coincident floors take one place. The rest are sorted by value (normal, then solid velocity, then
+friction, then a reacting solid first, then solid index), so every sum and every tie below reads them in an order
+their values decide, and the result and the reaction are the same bits for every order of the solids array. A
+coincident surface that is not an exact copy (rougher, smoother, or reacting) stays; with a moving solid a smoother one
+changes the result by rounding only, at most $2.2 times 10^(-14)$ of the speed. Surfaces whose normals agree within $2^(-40)$ on every
+axis share one *direction*, with the normal of the first.
+
+One active surface: each velocity gets the response above, nothing else. Several: for a velocity $bold(v)$, each
+direction's target is the largest $-bold(n)_i dot (bold(v) - bold(u)_i)$ of its surfaces, $bold(u)_i$ the solid's
+velocity at the particle. When no target is above the velocity's bound so far, $bold(v)$ keeps its bits. Otherwise the
+solver of the start's move gives the smallest change $bold(w) = sum_k lambda_k bold(n)_k$ that meets every target,
+over all directions (up to eight): the smallest change meets at most three as equalities, so the subsets of at most
+three are tried, 92 at most. $lambda_k >= 0$ is the *push* of direction $k$, and $bold(v)_0 = bold(v) + bold(w)$ the
+frictionless velocity. Two fixed surfaces keep the part along their common line, so a particle in a V-groove slides
+on along it, and one pushed into a cusp or an acute wedge stops; three stop it; moving solids give the velocity that
+approaches none, which can be faster than either: a floor rising at $V$ under a fixed face at 60 degrees carries the
+particle out along the apex at $(V \/ tan 60 degree, 0, V)$. In a wedge of 120 degrees, friction 0, $(-1, 1, -1)$
+gives $(0, 1, 0)$; the responses one surface after the other gave $(-0.25, 1, 0.433)$ or $(0.183, 1, 0)$ by which
+was listed first.
+
+Each direction acts through its *pushing surface*: among its surfaces whose target is within $2^(-40)$ of the
+speeds of the direction's (they push), the one with the largest friction $mu$, then one that reports its reaction,
+then the first in sorted order. So a coincident copy as rough or smoother changes nothing, and a rougher one acts:
+a ground with twice the friction lying on a floor acts for it. Its *friction limit* is $L_k = mu_k lambda_k$, the
+most sideways speed its friction can take in this response. Friction then gives a change $bold(F)$:
+
+- one used direction with friction: the response above with its own normal, solid velocity and friction, so a hit on
+  one surface beside others that are not approached is the single-surface response, bit for bit (without friction it
+  is $bold(v)_0$, the same up to rounding);
+- several, with one solid velocity $bold(u)$ (fixed solids, or the faces of one moving solid): the surfaces act as
+  one. With $bold(s) = bold(v)_0 - bold(u)$ and $L = sum_k L_k$, the velocity is $bold(u)$ when $L >= |bold(s)|$
+  (stick), else $bold(v)_0 + (L \/ |bold(s)|) (bold(u) - bold(v)_0)$ (slip). This is the exact answer of friction
+  with these pushes, and a wedge amplifies friction, as it should: at the rest point of a 30 degree wedge, $(-1, 1,
+  -1)$ makes pushes 2.732 and 2, so friction 0.5 stops the particle;
+- several, moving differently: the mean, over every order of the used directions (two or six), of their own
+  frictions applied one after the other from $bold(v)_0$, each taking $min(L_k, "sideways speed")$ off the sideways
+  velocity relative to its own solid at that moment. The mean does not depend on any order; when the solid velocities
+  differ only by rounding it agrees with the case above to $1.7 times 10^(-14)$ of the speed. It approximates the exact answer of the same
+  friction model: median 0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed over 2,418 draws with
+  friction up to 2 and solids up to 1 m/s apart. Adding each surface's own friction from the same $bold(v)_0$ instead
+  reverses the sliding when two solid velocities are one rounding unit apart. A known limit of the approximation: each step
+  stops at sticking to its own solid at that moment, but a later step of the other surface moves the velocity on and
+  the mean keeps both, so a surface's own friction can push the particle past sticking to its solid, reversing the
+  sliding relative to it: in 1,331 of 24,401 responses that used the mean in a review probe (5.5 %), by up to 0.22 and
+  at p99 0.072 of the summed speeds. The exact answer for solids that move differently is left to the owner.
+
+The result is $bold(v)_0 + bold(F)$ when it approaches no active direction beyond its bound. Otherwise, and always
+when the solids move differently, a second frictionless change is made from $bold(v) + bold(F)$, not from
+$bold(v)_0 + bold(F)$: the pushes are found afresh, so friction lifts a particle off a surface only when it overcomes
+what pressed it there. Beside a floor, a wall rising at 2 m/s and a particle pushed into both at 1 m/s each: friction
+0.5 leaves (0, 0, 0), friction 1.5 leaves (0, 0, 0.5); from $bold(v)_0 + bold(F)$ friction 0.5 would lift it at
+0.5 m/s. Where normals depend on each other (three faces sharing one line, coincident faces) the smallest change has
+several sets of pushes, and the friction, which reads them, would jump with the rounding that picked one (up to 0.70
+of the speed for a $10^(-13)$ change of the velocity). So among the changes no longer than the shortest plus its bound
+the solver keeps the one with the largest $sum_k mu_k lambda_k$, the largest value of a linear function over the
+admissible pushes, which varies continuously with the velocity. And the solver's "no change" reads the bound so far,
+not its own: a real approach of $10^(-13)$ m/s beside a floor sliding at 100 m/s is removed.
+
+The solve rounds: one pair leaves about $2^(-52) \/ (1 + c)$ of its targets, with $c$ the dot of the two normals, and
+up to four more solves on the residual bring it within the bound, so a pair is used for a velocity only when $1 + c
+>= 2^(-40)$, a wedge of at least $1.35 times 10^(-6)$ rad. Every cusp a particle rests in is wider: at the rest point
+its angle is about $2 sqrt("tol" \/ R) >= 2^(-19)$. Below the limit, a *sliver* (a plank lying on a floor with a
+rounding-level tilt), or solids closing on the particle, give no change, and the particle sticks to the active
+surface it approaches fastest: it takes that solid's velocity, and a surface the new velocity still approaches beyond
+the bound is "too close to call, squeezed between solids": a ceiling coming down on a floor. A frictionless velocity
+faster than 64 times the largest speed involved (both velocities before the response and the active solids'
+velocities) is a squeeze too: a wedge closing at speed $V$ pushes the particle out at $V \/ sin a$, unbounded as it
+flattens, so one face closing on a fixed one squeezes below $"asin"(1\/64) = 0.8953$ degrees and two faces closing
+symmetrically below $2 "asin"(1\/64) = 1.7906$ degrees, both closed forms, since the cap reads the speeds before any
+friction; the geometry and the speeds decide, so a shorter step does not help, and the step module decides what a
+lasting squeeze does. A squeeze names the solid the failing velocity approaches fastest. The response's bound,
+$2^(-46) (|bold(v)|_1 + |bold(w)|_1 + sum_i |bold(u)_i|_1)$ for each change made, raises the move's bound of that
+velocity; with several active surfaces, a bound whose product with the time left exceeds $"tol" \/ 64$ is a squeeze
+too, too fast for the step, which a shorter step cures.
+
+Every change of `velocity.for_next_step` made against a solid with `reports_reaction` is added to the particle's
+reaction, with the position of the first such change: with one active surface the whole change; with several, each
+used direction's push $lambda_k bold(n)_k$ and its share of $bold(F)$ to its pushing surface's solid (after a second
+change, its pushes and the first's friction shares), and a stick's whole change to the solid stuck to. A
+frictionless surface pushes only along its normal, so each solid receives its own push. Only `for_next_step` counts,
+because it is the velocity the particle keeps; `for_this_step` only moves it during this step. The solids module
+turns these changes, times each particle's mass, into the force on the solid. That force then comes from the very
+velocity changes that stopped the particles, so the same geometry decides both, as Batty, Bertails and Bridson argue
+for coupling liquids and solids [21]. A particle pushes at most one reacting solid per step; a second, different one
+is "too close to call, second reacting solid", and within one response the charges go in ascending solid index, so it
+names the higher. A particle in the crease of two reacting solids that pushes into both fails at every step length.
+A change of exactly zero adds nothing, so it neither fills the record nor conflicts: a solid's count of hits counts
+only the particles whose `for_next_step` changed at it.
+
+On a solid that does not turn, the sweep starts again from the hit position with the new `for_this_step` for the time
+left. A fifth hit in one step (`kMaxHitsPerStep` is 4) is "too close to call, too many hits", and so is a hit with
+more than eight directions or 16 surfaces active; the start alone, one hit, never is. Where the rule is not
+continuous: at the edge of the window, a surface $"tol" + "tol"\/16$ away is met together with the others or an
+instant later, which no rule removes but which rounding cannot cross, since a particle at rest sits $"tol"\/16$ inside
+it. Known limits: a fast particle falling into the neck of two touching balls meets one ball, then the other, as
+separate hits, and zig-zags; the step needed shrinks in proportion to $sqrt(R "tol") \/ "speed"$ (a 0.1 s step at
+2 m/s needed up to 1/256 of it in the tests); four moving faces within a few $"tol"$ of each other but not at one
+rest point are met one after the other, and 13 of 283,929 such corners fail at every step length.
 
 A slide on a turning solid is carried in the solid's own axes, as the proof of concept did. A sphere, a cylinder
 that only spins about its own axis, and a flat solid or a plate that only spins about its normal, are not turning
@@ -1470,7 +1556,7 @@ one motion, the speed of a turning solid's points by $|bold(v)_"lin"| + |bold(om
 
 At the end the particle moves once more off every surface it is closer to than $"tol"$, at the end pose, as at the
 start: every solid, touched or not, since a move off the touched ones alone could push it into another (a wall beside
-a ball), and since the touching rule may have let it drift up to $"tol"$ toward a solid it never touched. When there
+a ball), and since a sweep may have brought it within $"tol"$ of a solid it never touched. When there
 is no such point the particle stays. Then the end check of @sec-contact-tolerance runs against every solid. On any failure the result is left unchanged, and the failure
 context names the solid by its stable `solid_id`, never by its index in the array, with a length: the depth $-d$ for
 a start too deep inside, the distance $-(s_"plate" p_z + "half_thickness")$ beyond a committed plate, the end
@@ -1511,24 +1597,30 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     $"tol"$ beyond the other face of its committed plate, then when $d < -$`start_overlap_tolerance`. Move the start
     once to the rest gap of every surface closer than $"tol"$, of every solid (each closed side of a domain box on its
     own): the smallest change meeting every shortfall, solved again from each iterate, at most $2^22 "tol"$; fail
-    with "starts in narrow gap" when there is none. Then, for each solid in array order and each surface whose $d$
-    before the move was negative or that either velocity approaches (below minus that velocity's approach bound so
-    far), respond to both velocities, add the solid to the surfaces, count one hit and fill the record if it is
-    empty. A solid moved silently joins the surfaces without a hit when another solid responded at the start.]),
+    with "starts in narrow gap" when there is none. When the start as given was inside a solid, or either velocity
+    approaches an active surface at the moved start (below 0, or the rounding of a spinning surface), apply one joint
+    response at time 0 as in step 4, with the record of the first such surface in array order; the kind is "started
+    inside solid" when the start was inside.]),
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
-    with the solids sampled at the time already used and the touched surfaces' stricter touching rule. With no hit,
-    advance by `for_this_step` times the time left and go to step 6.]),
-  ([Respond], [A hit that @proc-cylinder-first-hit found in a rim region is first moved along the rim normal to
-    $d = "tol"$. Apply the response to both velocities with the solid velocity at the hit and `friction` times
-    `friction_scale`. Fill the record if it is empty and count the hit. If the solid reports its reaction, add the
-    change of `for_next_step`; fail on a second reacting solid.]),
-  ([Slide], [Add the solid to the touched surfaces, with its normal and approach bound. Remove, without friction, any approach to an earlier surface; if the
-    newest is then approached again, take its solid velocity; if an earlier one still is, fail. Add each change of
-    `for_next_step` to the reaction when the solid it is charged to (the earlier surface's for a removal, the
-    newest for the corner case) reports its reaction; fail on a second reacting solid. A solid that does not turn:
-    go to step 3 for the time left, failing on a fifth hit. A turning solid (never a sphere, nor a cylinder that
-    only spins about its axis, nor a flat solid or plate that only spins about its normal): fail if another solid $j$ is within reach by the bound of the text, carry the rest
-    of the step in its axes, and go to step 6.]),
+    with the solids sampled at the time already used and, after the first response of the step, the stricter
+    touching rule for every solid. With no hit, advance by `for_this_step` times the time left and go to step 5.]),
+  ([Joint response], [Fail on a fifth hit. A hit that @proc-cylinder-first-hit found in a rim region is first moved
+    along the rim normal to $d = "tol"$. Read the active surfaces: those of every solid within $"tol" + "tol"\/16$ of
+    the particle, normals read afresh, and the surface hit with its own normal; drop exact copies, sort by value,
+    group into directions; fail with "too many hits" past eight directions or 16 surfaces. Fill the record if it is
+    empty and count one hit. For each velocity: with one active surface, the response with that solid's velocity and
+    `friction` times `friction_scale`; with several, when it approaches one beyond its bound, the smallest
+    frictionless change, then the friction from each used direction's push (the single-surface response for one, the
+    stick or slip toward one solid velocity, or the mean over the orders), then, when the result approaches an active
+    surface or the solids move differently, a second frictionless change from the velocity plus the friction. With no
+    change, stick to the surface approached fastest. Fail with "squeezed" when a stick still approaches a surface, a
+    frictionless velocity is faster than 64 times the largest speed involved, or, with several surfaces, the bound
+    times the time left exceeds $"tol"\/64$. Charge each push and friction share of `for_next_step` to its solid, in
+    ascending solid index, when it reports its reaction; fail on a second reacting solid. Raise each velocity's
+    approach bound. A solid that does not turn: go to step 3 for the time left. A turning solid (never a sphere, nor
+    a cylinder that only spins about its axis, nor a flat solid or plate that only spins about its normal): fail if
+    another solid $j$ is within reach by the bound of the text, carry the rest of the step in its axes, and go to
+    step 5.]),
   ([Settle and check the end], [At the end pose, move the particle once to the rest gap of every surface of every
     solid closer than $"tol"$, as at the start; when there is no such point, leave it. Fail when any solid is at
     $d < "tol"\/2$; otherwise write the result.]),

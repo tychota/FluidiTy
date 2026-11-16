@@ -14,9 +14,9 @@
 //   the sideways speed is 3 m/s. Friction 0.5 leaves {2.5, 0, 0} m/s; friction 3 or more leaves {0, 0, 0} m/s.
 //
 // Words:
-//   hit             a moment in a step when a particle meets a solid, along its path or at its start, and its
-//                   velocity gets the response; at most kMaxHitsPerStep per step. FirstHit is the earliest hit along
-//                   one straight path
+//   hit             a moment in a step, along the particle's path or at its start, at which both its velocities get
+//                   the joint response over every surface it is on, whatever their number; at most kMaxHitsPerStep
+//                   per step. FirstHit is the earliest hit along one straight path
 //   approach speed  m/s. The particle's speed along the normal out of the solid, measured from the moving solid:
 //                   Dot(normal_out_of_solid, velocity - solid_velocity). Negative means approaching
 //   sideways speed  m/s. The particle's speed along the surface, measured from the moving solid
@@ -32,8 +32,9 @@
 //                   balls; the free space around the contact is a cusp, whose angle shrinks to 0
 //   wedge angle     of two surfaces, 180 degrees minus the angle between their normals
 // Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare, kTouchedSolidRestingGapShare,
-//          kMaxRestGapMoveInTolerances, kMaxRestGapIterations, kMaxConstrainingSurfaces, kSameNormalAxisDifference,
-//          kMaxCorrectionRefinements, kVelocityPairLimitShare, kVelocityTripleLimit, SolidContactInputs, SolidReaction,
+//          kMaxRestGapMoveInTolerances, kMaxRestGapIterations, kMaxConstrainingSurfaces, kMaxSlideDirections,
+//          kMaxUsedDirections, kMaxFrictionOrders, kSameNormalAxisDifference, kMaxCorrectionRefinements,
+//          kVelocityPairLimitShare, kVelocityTripleLimit, kMaxSqueezeOutSpeedFactor, SolidContactInputs, SolidReaction,
 //          SolidContactResult, FirstHit, CorrectedQuantity, CorrectionTargets, SmallestCorrection,
 //          kApproachLeftAfterResponseShare, ComputeLargestApproachLeftAfterResponse, ComputeContactResponse
 // Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), math::Abs (base/scalar_math.h),
@@ -64,8 +65,9 @@ enum class ContactKind : std::uint8_t {
   kStartedInsideSolid,  // The start was slightly inside a solid and was moved out to the contact tolerance.
 };
 
-// The most hits one step allows. A particle in a corner rests on three faces, one per axis; one more hit is the
-// slide that leaves the corner.
+// The most hits one step allows: a hit is one moment at which both velocities get the joint response, whatever the
+// number of surfaces the particle is on, so a wedge or a corner of three faces is one hit. Four bound the responses and
+// the sweeps of a step; a particle that keeps meeting solids at separate moments is in a gap too narrow for the step.
 inline constexpr int kMaxHitsPerStep = 4;
 // The most advances of the stepping search toward a turning solid in one sweep, a cap on its cost. Each advance is
 // the larger of the gap over the fastest the gap can shrink and the second-order advance, which follows the true
@@ -79,10 +81,11 @@ inline constexpr int kMaxAdvanceCount = 128;
 // the hit stays far from the touching rule's window [-tol, 0] and from the end check at tol / 2. A power of two
 // keeps the test exact.
 inline constexpr double kTurningSolidHitGapShare = 0.25;
-// No unit. The share of the contact tolerance above zero up to which the start gap to a solid already touched in this
-// step still counts as resting on it. Rounding leaves a hit position a few rounding units off the rest gap (at most
-// tol / 128, contact/contact_tolerance.h), so a sixteenth is far above it, and far below the tol that the touching
-// rule allows below zero. A power of two keeps the test exact.
+// No unit. The share of the contact tolerance above zero up to which the start gap to a solid still counts as resting
+// on it once the particle had a response in this step, and the window of the active surfaces, tol + tol / 16.
+// Rounding leaves a hit position a few rounding units off the rest gap (at most tol / 128,
+// contact/contact_tolerance.h), so a sixteenth is far above it, and far below the tol that the touching rule allows
+// below zero. A power of two keeps the test exact.
 inline constexpr double kTouchedSolidRestingGapShare = 0x1p-4;
 
 // No unit, in contact tolerances. The longest move off several near surfaces at once, at the start or in the settle
@@ -98,10 +101,24 @@ inline constexpr double kMaxRestGapMoveInTolerances = 0x1p22;
 // moves no more. The cusp under a ball resting on a floor needs 5 at R / tol = 2^29, and after 8 it is within 1e-4 of
 // its rest point at R / tol = 2^40, the largest radius a scene allows (both measured, move_particle_test.cc).
 inline constexpr int kMaxRestGapIterations = 8;
-// The most directions one move off near surfaces, or one velocity change, reads at once: the three faces of a corner
-// and one more. Surfaces with the same normal share one (kSameNormalAxisDifference); a start near surfaces facing a
-// fifth way is kStartsInNarrowGap.
+// The most directions one move off near surfaces reads at once: the three faces of a corner and one more. Surfaces with
+// the same normal share one (kSameNormalAxisDifference); a start near surfaces facing a fifth way is
+// kStartsInNarrowGap.
 inline constexpr int kMaxConstrainingSurfaces = 4;
+// The most directions one joint response reads at once. In three dimensions the smallest change meets
+// at most three of them as equalities (three independent normals fix a vector; a cone spanned by more is spanned by
+// three of them), so SolveSmallestCorrection searches the subsets of at most three among all of them: 8 + 28 + 56 = 92
+// at this limit. Eight is twice the directions one move reads: a domain corner's three sides, two chamfers across it
+// and more stay within it.
+inline constexpr int kMaxSlideDirections = 2 * kMaxConstrainingSurfaces;
+// The most directions one smallest change of a velocity uses: three independent normals fix a vector.
+inline constexpr int kMaxUsedDirections = 3;
+// The orders in which kMaxUsedDirections surfaces can apply their friction one after the other: 3 * 2 * 1.
+inline constexpr int kMaxFrictionOrders = 6;
+static_assert(
+    kMaxFrictionOrders == kMaxUsedDirections * (kMaxUsedDirections - 1) * (kMaxUsedDirections - 2),
+    "the joint response walks every order of kMaxUsedDirections surfaces"
+);
 // No unit. Two near surfaces whose unit normals differ by at most this on every axis share one target of the move off
 // near surfaces, the larger: for one normal n, Dot(n, w) >= max(t_1, t_2) meets both. Normals that differ by 2^-40 on
 // each axis let the shared target miss the other by at most Sqrt(3) 2^-40 |w| <= 2^-17 tol within the move cap of
@@ -124,6 +141,16 @@ inline constexpr double kVelocityPairLimitShare = 0x1p-40;
 // product of their unit normals: three faces whose normals are nearly in one plane leave the velocity's change
 // ill-conditioned, as a pair below kVelocityPairLimitShare does.
 inline constexpr double kVelocityTripleLimit = 0x1p-20;
+// No unit. The fastest velocity a joint response may give, as a multiple of the largest speed involved: the particle's
+// two velocities before the response and the velocities of the active surfaces' solids at the particle. A wedge closing
+// on a particle pushes it out at the closing speed over the wedge's sine, unbounded as the wedge flattens (measured
+// without a cap: a 1e-5 rad wedge closing at 1 m/s, 1e5 m/s, a kilometre in a step of 0.01 s), and a particle thrown
+// that far is worse than a squeeze reported to the step. 64 lets one face closing at speed V on a fixed one carry the
+// particle out at V / sin(a) down to a = asin(1 / 64) = 0.8953 degrees, and two faces closing symmetrically, each at V
+// along its own normal, at V / sin(a / 2) down to 2 asin(1 / 64) = 1.7906 degrees. Both limits are closed forms, and
+// the code meets them: the cap reads the speeds before any friction. A power of two keeps the test exact. The geometry
+// and the speeds decide, not the step length, so a shorter step does not cure a squeeze it finds.
+inline constexpr double kMaxSqueezeOutSpeedFactor = 64;
 
 // What one particle's move through the solids reads for one step.
 struct SolidContactInputs {
@@ -158,7 +185,8 @@ struct SolidContactResult {
   std::uint32_t solid_index = kNoSolid;  // Index into solids of the first hit's solid, not its solid_id.
   SolidFace face = SolidFace::kHighZ;  // The face of the first hit.
   SolidSide side_at_hit = SolidSide::kNoPlate;  // The side of the plate that was hit, when it is a plate.
-  std::uint8_t hit_count = 0;  // Hits during the step, 0 to kMaxHitsPerStep.
+  // Hits during the step, 0 to kMaxHitsPerStep: moments with a joint response, not surfaces. A corner is one hit.
+  std::uint8_t hit_count = 0;
   SolidReaction reaction{};
 };
 
@@ -184,18 +212,30 @@ enum class CorrectedQuantity : std::uint8_t {
 struct CorrectionTargets {
   // A C array: GPU code cannot call std::array's member functions (nvcc without --expt-relaxed-constexpr).
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): see the comment above.
-  Vec3 normals[kMaxConstrainingSurfaces]{};  // No unit, unit vectors, world.
+  Vec3 normals[kMaxSlideDirections]{};  // No unit, unit vectors, world.
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as above.
-  double targets[kMaxConstrainingSurfaces]{};  // m for a position, m/s for a velocity: the least change along each.
-  int count = 0;  // 1 to kMaxConstrainingSurfaces.
+  double targets[kMaxSlideDirections]{};  // m for a position, m/s for a velocity: the least change along each.
+  // 1 to kMaxConstrainingSurfaces for a position (the move off near surfaces reads no more), 1 to kMaxSlideDirections
+  // for a velocity.
+  int count = 0;
+  // m/s, for a velocity only: |v|_1 + sum over the surfaces' solids of |u_i|_1, the speeds before the change. With the
+  // change's own |w|_1 it gives the change's allowance, kApproachLeftAfterResponseShare times their sum, the least
+  // slack a velocity's candidate gets (ComputeCorrectionSlack). 0 for a position.
+  double speeds_before_change = 0;
+  // No unit, for a velocity only: the friction (friction * friction_scale) of each direction's pushing surface. Among
+  // the changes no longer than the shortest plus its slack, the solver keeps the one with the largest sum of
+  // frictions[k] * multipliers[k] (plan decision P20, item 3). All 0 for a position.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as above.
+  double frictions[kMaxSlideDirections]{};
 };
 
 // The smallest change SolveSmallestCorrection found, or none: change = sum over k < used_count of multipliers[k] *
 // normals[used_surfaces[k]], the surfaces it met as equalities.
 struct SmallestCorrection {
   bool is_found = false;  // false: no subset of one, two or three surfaces meets every target.
-  Vec3 change{};  // m or m/s, world. Zero when none was found.
-  int used_count = 0;  // 1 to 3 when found.
+  Vec3 change{};  // m or m/s, world. Zero when none was found, or when a velocity needs none.
+  // 1 to 3 when found; 0 for a velocity that already meets every target within its slack, with a zero change.
+  int used_count = 0;
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in CorrectionTargets.
   int used_surfaces[3]{};  // Indexes into the targets, ascending.
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in CorrectionTargets.

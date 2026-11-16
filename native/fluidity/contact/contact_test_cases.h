@@ -539,8 +539,8 @@ inline std::vector<MoveParticleCase> BuildSeveralHitCases() {
 // The scenes whose move fails, or whose start or end is decided by the rules at the start and the end of the step.
 inline std::vector<MoveParticleCase> BuildStartAndEndCases() {
   std::vector<MoveParticleCase> cases;
-  // A ceiling 3 tol above the fixed floor closes at 1.75 tol m/s on a particle at rest at z = tol: it hits at 4/7 s,
-  // and the particle, carried down, ends at z = 0.25 tol, too close to the floor.
+  // A ceiling 3 tol above the fixed floor closes at 1.75 tol m/s on a particle at rest at z = tol: it hits at 4/7 s and
+  // carries the particle down onto the floor, a squeeze.
   const Solid ceiling = BuildFlatSolid(
       {.x = 0, .y = 0, .z = 3 * kTolerance},
       -kUnitZ,
@@ -759,14 +759,15 @@ inline std::vector<MoveParticleCase> BuildFloorStartCases() {
           .friction = 0,
       }),
   });
-  // Five floors rising at 1 m/s, ids 1 to 5, at heights 0, 0.0001, ..., 0.0004 m, and a start 0.0005 m below the
-  // first: the start is inside all five, which share one direction of the move; each is a hit at time 0, and the
-  // fifth is the fifth hit.
+  // Five floors rising at 1, 1.1, ..., 1.4 m/s, ids 1 to 5, at heights 0, 0.0001, ..., 0.0004 m, and a start 0.0005 m
+  // below the first: the start is inside all five, which share one direction of the move and of the joint response;
+  // the fastest pushes, one hit. (At one speed they would be exact copies, one active surface.)
   std::vector<Solid> stacked_floors;
   stacked_floors.reserve(5);
   for (int floor_index = 0; floor_index < 5; ++floor_index) {
+    const Vec3 rising = {.x = 0, .y = 0, .z = 1 + 0.1 * floor_index};  // m/s
     stacked_floors.push_back(
-        BuildMovingFloor(0.0001 * floor_index, kUnitZ, static_cast<std::uint32_t>(floor_index + 1))
+        BuildMovingFloor(0.0001 * floor_index, rising, static_cast<std::uint32_t>(floor_index + 1))
     );
   }
   cases.push_back({
@@ -1140,8 +1141,7 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
   });
   // Four, then five, fixed floors stacked tol / 16 apart (ids 1 to 4 or 5) and the fixed upright at x = 1 (the next
   // id): the particle leaves every floor and runs into the upright, tol / 2 away. The floors share one direction of the
-  // move. Each floor is moved silently and, since the upright responds, becomes a touched surface without a hit; the
-  // list keeps at most four of them.
+  // move and are exact copies, one active surface of the upright's start response.
   for (const int floor_count : {4, 5}) {
     std::vector<Solid> floors_and_upright;
     floors_and_upright.reserve(static_cast<std::size_t>(floor_count) + 1);
@@ -1163,8 +1163,27 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
         }),
     });
   }
-  // Five fixed floors stacked tol / 16 apart, which a particle tol / 2 above the top one leaves: five silent moves and
-  // no start response, so no entry is kept and nothing fails.
+  // Four fixed floors through the origin, their surfaces coincident (ids 1 to 4), and the fixed upright at x = 1 (id
+  // 5): the particle leaves the floors and runs into the upright, tol / 2 away. The upright's hit reads the four
+  // floors as one active surface, an exact copy each, beside the upright.
+  std::vector<Solid> coincident_floors_and_upright;
+  coincident_floors_and_upright.reserve(5);
+  for (int floor_index = 0; floor_index < 4; ++floor_index) {
+    coincident_floors_and_upright.push_back(BuildFloor(static_cast<std::uint32_t>(floor_index + 1)));
+  }
+  coincident_floors_and_upright.push_back(BuildUprightAtXOne(5));
+  cases.push_back({
+      .name = "FourCoincidentFloorsAndUpright",
+      .solids = coincident_floors_and_upright,
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 1 - kTolerance / 2, .y = 0, .z = kTolerance / 2},
+          .velocity = {.x = 1, .y = 0, .z = 1},
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  // Five fixed floors stacked tol / 16 apart, which a particle tol / 2 above the top one leaves: one silent move off
+  // all five, no start response, no hit.
   std::vector<Solid> five_floors;
   five_floors.reserve(5);
   for (int floor_index = 0; floor_index < 5; ++floor_index) {
@@ -1183,8 +1202,8 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
       }),
   });
   // The review's scene: a floor sliding along itself at 100 m/s, which the particle leaves, and the fixed upright at
-  // x = 1, which it approaches at 1e-13 m/s. The silent floor's entry must not raise the threshold of the upright's
-  // approach test above 0, so the upright is a hit at the start.
+  // x = 1, which it approaches at 1e-13 m/s. Before any response the threshold of the approach test is 0, so the
+  // upright is a hit at the start; the floor's 100 m/s must not raise it.
   cases.push_back({
       .name = "SlidingFloorThenSlowUpright",
       .solids = {BuildMovingFloor(0, {.x = 100, .y = 0, .z = 0}, 1), BuildUprightAtXOne(2)},
@@ -1197,8 +1216,8 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
   });
   // The fixed floor, which a particle tol / 2 above it and moving at {1, 0, 0} m/s leaves alone, and an upright flat
   // solid at x = 1 + 2 tol leaning 0.5 tol over the floor: it is hit after tol s and sends the particle down at
-  // 0.5 tol m/s. No solid responded at the start, so the floor is not a touched surface: its touching rule lets the
-  // particle sink 0.05 tol without a hit, and the settle, which reads every solid, lifts it back.
+  // 0.5 tol m/s. No solid responded at the start, so the move was silent; the floor, at its rest gap, is an active
+  // surface of the upright's hit, and one joint response stops the push into it.
   cases.push_back({
       .name = "SilentFloorThenLeaningUpright",
       .solids =
@@ -1218,9 +1237,8 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
           .friction = 0,
       }),
   });
-  // The review's scene for mutant S11: exactly at the rest gap, approaching at tol m/s for 0.1 s. The start rules do
-  // not apply at d = tol, and the touching rule lets the particle rest: it sinks 0.1 tol without a hit, and the settle
-  // lifts it back to tol.
+  // The review's scene for mutant S11: exactly at the rest gap, approaching at tol m/s for 0.1 s. The start's move does
+  // not apply at d = tol, but the approached face at the rest gap responds after the start rules.
   cases.push_back({
       .name = "AtRestGapSlowApproach",
       .solids = {BuildFloor(1)},
@@ -1231,8 +1249,8 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
           .friction = 0,
       }),
   });
-  // SlidingFloorThenSlowUpright with only for_next_step approaching the upright, at 1e-13 m/s: the silent floor's entry
-  // must not raise for_next_step's own threshold above 0 either.
+  // SlidingFloorThenSlowUpright with only for_next_step approaching the upright, at 1e-13 m/s: before any response
+  // for_next_step's own threshold is 0 too.
   SolidContactInputs next_step_slow_inputs = BuildCaseInputs({
       .start_position = {.x = 1 - kTolerance / 2, .y = 0, .z = kTolerance / 2},
       .velocity = {.x = -1, .y = 0, .z = 1},
@@ -1599,6 +1617,645 @@ inline std::vector<MoveParticleCase> BuildSeveralSurfaceStartCases() {
   return cases;
 }
 
+// The side of a wedge of the given angle with the fixed floor, as BuildWedgeSide(pi - wedge_angle), moving at
+// normal_speed along its own normal (into the wedge when positive).
+//
+// clang-tidy: an angle in rad and a speed in m/s; the swappable-parameters check flags the two doubles.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): see the comment above.
+inline Solid BuildMovingWedgeSide(double wedge_angle, double normal_speed, std::uint32_t solid_id) {
+  const double normal_angle = std::numbers::pi - wedge_angle;  // rad
+  const Vec3 normal = {.x = std::sin(normal_angle), .y = 0, .z = std::cos(normal_angle)};
+  return BuildFlatSolid({}, normal, {.linear_velocity = normal_speed * normal}, solid_id);
+}
+
+// The scene of a closing wedge with a particle at rest at its rest point {tol / tan(a / 2), 0, tol}: the floor moving
+// at floor_speed along {0, 0, 1} and the side at side_speed along its own normal, both into the wedge, for 0.01 s,
+// friction 0, an overlap tolerance of 2 tol.
+inline MoveParticleCase
+BuildClosingWedgeCase(std::string_view name, double wedge_angle, double floor_speed, double side_speed) {
+  const Vec3 rest_point = {.x = kTolerance / std::tan(wedge_angle / 2), .y = 0, .z = kTolerance};
+  return {
+      .name = name,
+      .solids =
+          {
+              BuildMovingFloor(0, {.x = 0, .y = 0, .z = floor_speed}, 1),
+              BuildMovingWedgeSide(wedge_angle, side_speed, 2),
+          },
+      .inputs = BuildSeveralSurfaceInputs(rest_point, {}, 0.01),
+  };
+}
+
+// The scenes of a particle moving into an acute wedge or a corner, then sliding on along it or stopped at its apex.
+inline std::vector<MoveParticleCase> BuildSlideIntoWedgeCases() {
+  std::vector<MoveParticleCase> cases;
+  // The floor and a face through {1, 0, 0} with normal Normalized({-1, 0, -1}): a 45 degree wedge whose apex is at
+  // x = 1. The particle rests on the floor and moves into the apex at 2 m/s for 0.5 s.
+  const Solid wedge_face = BuildFlatSolid(kUnitX, math::Normalized({.x = -1, .y = 0, .z = -1}), kNoMotion, 2);
+  const SolidContactInputs into_apex_inputs = BuildCaseInputs({
+      .start_position = {.x = 0.5, .y = 0, .z = kTolerance},
+      .velocity = {.x = 2, .y = 0, .z = 0},
+      .step_duration = 0.5,
+      .friction = 0,
+  });
+  cases.push_back({.name = "AcuteWedge", .solids = {BuildFloor(1), wedge_face}, .inputs = into_apex_inputs});
+  Solid reacting_floor = BuildFloor(1);
+  reacting_floor.reports_reaction = true;
+  cases.push_back({
+      .name = "AcuteWedgeOnReactingFloor",
+      .solids = {reacting_floor, wedge_face},
+      .inputs = into_apex_inputs,
+  });
+  // The floor and the upright at x = 1: a right-angle corner, entered at {2, 1, -4} m/s from {0.5, 0, 0.2}.
+  cases.push_back({
+      .name = "RightAngleCorner",
+      .solids = {BuildFloor(1), BuildUprightAtXOne(2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5, .y = 0, .z = 0.2},
+          .velocity = {.x = 2, .y = 1, .z = -4},
+          .step_duration = 0.5,
+          .friction = 0,
+      }),
+  });
+  // A reacting floor without friction (friction_scale 0) and an upright at x = 1 sliding down along itself at 1 m/s,
+  // not reacting; friction 0.5. The upright's slip leaves the particle falling at 0.5 m/s toward the floor.
+  Solid frictionless_reacting_floor = BuildFloor(1);
+  frictionless_reacting_floor.reports_reaction = true;
+  frictionless_reacting_floor.friction_scale = 0;
+  cases.push_back({
+      .name = "SlideRemovalOnReactingFloor",
+      .solids =
+          {
+              frictionless_reacting_floor,
+              BuildFlatSolid(kUnitX, -kUnitX, {.linear_velocity = {.x = 0, .y = 0, .z = -1}}, 2),
+          },
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5, .y = 0, .z = 0.2},
+          .velocity = {.x = 1, .y = 0, .z = -2},
+          .step_duration = 1,
+          .friction = 0.5,
+      }),
+  });
+  // A flat solid through the origin with normal {0.6, 0, 0.8} and an upright x <= -0.2 facing +x: an obtuse corner of
+  // 126.87 degrees. The particle hits the first, slides down along it at {-0.32, 0, 0.24} m/s, hits the upright and
+  // rises along it.
+  cases.push_back({
+      .name = "ObliqueCornerResidue",
+      .solids =
+          {
+              BuildFlatSolid({}, math::Normalized({.x = 0.6, .y = 0, .z = 0.8}), kNoMotion, 1),
+              BuildFlatSolid({.x = -0.2, .y = 0, .z = 0}, kUnitX, kNoMotion, 2),
+          },
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.3, .y = 0, .z = 0.4},
+          .velocity = {.x = -2, .y = 0, .z = -2},
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // The 60 degree wedge, the particle at its apex moving at {-1, 1, -1} m/s for 0.01 s: into both faces and along the
+  // common line.
+  cases.push_back({
+      .name = "GrooveSlideAlongEdge",
+      .solids = {BuildFloor(1), BuildWedgeSide(2 * std::numbers::pi / 3, 2)},
+      .inputs = BuildSeveralSurfaceInputs({}, {.x = -1, .y = 1, .z = -1}, 0.01),
+  });
+  // V-grooves through the origin opening upward, each face at half_angle from the vertical: 30 and 10 degrees wide.
+  // The particle starts at rest 0.05 m up face 1, at its rest gap, for steps of 0.01 s.
+  const std::array<std::pair<std::string_view, double>, 2> grooves = {
+      std::pair<std::string_view, double>{"VGroove", 15 * std::numbers::pi / 180},
+      std::pair<std::string_view, double>{"TenDegreeVGroove", 5 * std::numbers::pi / 180},
+  };
+  for (const auto& [name, half_angle] : grooves) {
+    const Vec3 first_normal = {.x = -std::cos(half_angle), .y = 0, .z = std::sin(half_angle)};
+    const Vec3 second_normal = {.x = std::cos(half_angle), .y = 0, .z = std::sin(half_angle)};
+    const Vec3 up_first_face = {.x = std::sin(half_angle), .y = 0, .z = std::cos(half_angle)};
+    cases.push_back({
+        .name = name,
+        .solids = {BuildFlatSolid({}, first_normal, kNoMotion, 1), BuildFlatSolid({}, second_normal, kNoMotion, 2)},
+        .inputs = BuildSeveralSurfaceInputs(0.05 * up_first_face + kTolerance * first_normal, {}, 0.01),
+    });
+  }
+  // Wedges of 2e-6 rad (above the velocity pair limit) and 1e-7 rad (a sliver, below it), the particle at the rest
+  // point moving at {-2, 1, 0} m/s for 0.01 s: into the apex and along the common line. The sliver's floor reacts.
+  cases.push_back({
+      .name = "NarrowWedgeAtRestPoint",
+      .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - 2e-6, 2)},
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = kTolerance / std::tan(1e-6), .y = 0, .z = kTolerance},
+          {.x = -2, .y = 1, .z = 0},
+          0.01
+      ),
+  });
+  cases.push_back({
+      .name = "SliverStop",
+      .solids = {reacting_floor, BuildWedgeSide(std::numbers::pi - 1e-7, 2)},
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = kTolerance / std::tan(5e-8), .y = 0, .z = kTolerance},
+          {.x = -2, .y = 1, .z = 0},
+          0.01
+      ),
+  });
+  // Three faces meeting at the origin, each pair at 60 degrees, entered at {-1, -1, -1} m/s with friction 0.5.
+  const double half_root_three = std::numbers::sqrt3 / 2;
+  SolidContactInputs into_corner_inputs = BuildSeveralSurfaceInputs({}, {.x = -1, .y = -1, .z = -1}, 0.01);
+  into_corner_inputs.friction = 0.5;
+  cases.push_back({
+      .name = "ThreeSolidAcuteCornerInto",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildFlatSolid({}, {.x = half_root_three, .y = 0, .z = -0.5}, kNoMotion, 2),
+              BuildFlatSolid({}, {.x = 0, .y = half_root_three, .z = -0.5}, kNoMotion, 3),
+          },
+      .inputs = into_corner_inputs,
+  });
+  // The floor and a ceiling through {0, 0, 0.1} with normal {-0.6, 0, -0.8}: a wedge of 36.87 degrees whose apex is
+  // at x = 0.1333. The particle starts tol / 2 inside the floor moving at {5, 0, 1} m/s for 0.2 s: it leaves the floor,
+  // hits the ceiling 0.021 m above it and slides down the ceiling into the apex.
+  SolidContactInputs far_above_inputs =
+      BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = -kTolerance / 2}, {.x = 5, .y = 0, .z = 1}, 0.2);
+  far_above_inputs.start_overlap_tolerance = kTolerance;
+  cases.push_back({
+      .name = "CeilingHitFarAboveTouchedFloor",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildFlatSolid({.x = 0, .y = 0, .z = 0.1}, {.x = -0.6, .y = 0, .z = -0.8}, kNoMotion, 2),
+          },
+      .inputs = far_above_inputs,
+  });
+  // The 60 degree side (id 1, index 0) and the floor (id 2, index 1), the floor reacting, a start 0.999 tol from both
+  // moving at {-1, 0, -2} m/s for 0.01 s: it leaves the side and falls on the floor, whose response turns it into the
+  // side. The side reacts too, or not.
+  Solid reacting_side = BuildWedgeSide(2 * std::numbers::pi / 3, 1);
+  reacting_side.reports_reaction = true;
+  Solid reacting_second_floor = BuildFloor(2);
+  reacting_second_floor.reports_reaction = true;
+  const SolidContactInputs corner_push_inputs = BuildSeveralSurfaceInputs(
+      0.999 * Vec3{.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
+      {.x = -1, .y = 0, .z = -2},
+      0.01
+  );
+  cases.push_back({
+      .name = "CornerPushOnSecondReactingSolid",
+      .solids = {reacting_side, reacting_second_floor},
+      .inputs = corner_push_inputs,
+  });
+  cases.push_back({
+      .name = "CornerPushOnNonReactingSide",
+      .solids = {BuildWedgeSide(2 * std::numbers::pi / 3, 1), reacting_second_floor},
+      .inputs = corner_push_inputs,
+  });
+  // A flat solid through the origin spinning about its oblique normal n at 100 m/s at the particle (id 1), and a fixed
+  // upright square to it (id 2), the particle tol / 2 from both, moving along the floor into the upright at 0.05 m/s
+  // with an approach to the floor of 7.7e-15 m/s, below the rounding of the spin's omega x r: the floor is moved
+  // silently, only the upright responds. The values are draw 20 of a search over such scenes, written to 17 digits.
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const Vec3 spin_normal = {.x = 0.54771969589076452, .y = 0.36362434797457288, .z = 0.75351208901609223};
+  const Vec3 spin = {.x = 62.737753218534053, .y = 41.650820261955403, .z = 86.309942553721427};  // rad/s
+  const Solid spinning_floor = ToSolid(
+      FlatSolid{.point_on_surface = {}, .normal_out_of_solid = spin_normal},
+      {.linear_velocity = {}, .angular_velocity = spin},
+      1
+  );
+  const Solid square_upright = BuildFlatSolid(
+      {.x = 0.54798547944392606, .y = -0.67578075230676038, .z = -0.072211322220003038},
+      {.x = -0.51702170497473798, .y = 0.85517793520497221, .z = -0.036868085434085374},
+      kNoMotion,
+      2
+  );
+  cases.push_back({
+      .name = "SpinningFloorMovedSilently",
+      .solids = {spinning_floor, square_upright},
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = 0.54798547920316909, .y = -0.67578075190853715, .z = -0.072211322237171083},
+          {.x = 0.038494232238438127, .y = -0.034491592187039413, .z = -0.011336336311113944},
+          0.01
+      ),
+  });
+  // NOLINTEND(modernize-use-std-numbers)
+  return cases;
+}
+
+// The scenes of round solids touching others: a particle sliding into the cusp under a ball resting on a floor, into
+// the neck of two touching balls, and into the ring where a plate and a ball cross. Friction 0.
+inline std::vector<MoveParticleCase> BuildSlideIntoCuspCases() {
+  std::vector<MoveParticleCase> cases;
+  const Solid half_meter_ball = BuildFixedSphere({.x = 0, .y = 0, .z = 0.5}, 0.5, 2);
+  cases.push_back({
+      .name = "BallRestingOnFloorSlidingIntoCusp",
+      .solids = {BuildFloor(1), half_meter_ball},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.05, .y = 0, .z = kTolerance}, {.x = -1, .y = 0, .z = 0}, 0.1),
+  });
+  cases.push_back({
+      .name = "BallRestingOnFloorRollingIntoCusp",
+      .solids = {BuildFloor(1), half_meter_ball},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.05, .y = 0, .z = kTolerance}, {.x = -0.5, .y = 0, .z = 0}, 0.01),
+  });
+  cases.push_back({
+      .name = "TwoBallsTouchingSlidingIntoNeck",
+      .solids = {BuildFixedSphere({}, 0.5, 1), BuildFixedSphere(kUnitX, 0.5, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.5, .y = 0.05, .z = 0}, {.x = 0, .y = -1, .z = 0}, 0.1),
+  });
+  cases.push_back({
+      .name = "PlateAndSphereSlidingIn",
+      .solids =
+          {
+              ToSolid(Plate{.center = {}, .normal = kUnitZ, .half_thickness = 0.01}, kNoMotion, 1),
+              BuildFixedSphere({.x = 0, .y = 0, .z = 0.26}, 0.5, 2),
+          },
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.5, .y = 0, .z = 0.01 + kTolerance}, {.x = -1, .y = 0, .z = 0}, 0.1),
+  });
+  return cases;
+}
+
+// The scenes of moving solids closing a wedge on a particle at rest at its rest point: carried out along the apex, or
+// squeezed when the escape would be faster than kMaxSqueezeOutSpeedFactor times the speeds involved; and a ceiling
+// closing on a floor.
+inline std::vector<MoveParticleCase> BuildClosingWedgeCases() {
+  std::vector<MoveParticleCase> cases;
+  const double degree = std::numbers::pi / 180;  // rad
+  // The floor rising at 1 m/s under the fixed 60 degree side, and both faces of that wedge moving into it at 0.5 m/s
+  // along their own normals, for 0.1 s.
+  MoveParticleCase rising_floor = BuildClosingWedgeCase("FloorRisingUnderSixtyDegreeWall", 60 * degree, 1, 0);
+  rising_floor.inputs.step_duration = 0.1;
+  cases.push_back(rising_floor);
+  MoveParticleCase both_closing = BuildClosingWedgeCase("BothFacesClosingAtSixtyDegrees", 60 * degree, 0.5, 0.5);
+  both_closing.inputs.step_duration = 0.1;
+  cases.push_back(both_closing);
+  // The floor rising at 1 m/s under a fixed side at 1 and 0.8 degrees.
+  cases.push_back(BuildClosingWedgeCase("OneFaceClosingAtOneDegree", 1 * degree, 1, 0));
+  cases.push_back(BuildClosingWedgeCase("OneFaceClosingAtPointEightDegrees", 0.8 * degree, 1, 0));
+  // Both faces closing at 1 m/s along their own normals at 2 and 1.6 degrees.
+  cases.push_back(BuildClosingWedgeCase("TwoFacesClosingAtTwoDegrees", 2 * degree, 1, 1));
+  cases.push_back(BuildClosingWedgeCase("TwoFacesClosingAtOnePointSixDegrees", 1.6 * degree, 1, 1));
+  // A wedge of 1e-5 rad whose side closes at 1 m/s, the particle at rest 4 tol / tan(1e-5) out along the floor, where
+  // the side is 3 tol away, for 0.1 s.
+  const double grazing_angle = 1e-5;  // rad
+  cases.push_back({
+      .name = "GrazingWedgeClosingFast",
+      .solids = {BuildFloor(1), BuildMovingWedgeSide(grazing_angle, 1, 2)},
+      .inputs =
+          BuildSeveralSurfaceInputs({.x = 4 * kTolerance / std::tan(grazing_angle), .y = 0, .z = kTolerance}, {}, 0.1),
+  });
+  // The floor rising at 500 m/s under the fixed 60 degree side, for 1 s: the escape {500 / tan 60, 0, 500} is within
+  // the speed cap, but the change's allowance, 2^-46 times the 1290 m/s it involves, times the time left is above
+  // tol / 64.
+  MoveParticleCase fast_rising_floor =
+      BuildClosingWedgeCase("FloorRisingFastUnderSixtyDegreeWall", 60 * degree, 500, 0);
+  fast_rising_floor.inputs.step_duration = 1;
+  cases.push_back(fast_rising_floor);
+  // A fixed reacting floor (id 1) and a floor rising at 0.25 m/s through it (id 2), not reacting, their surfaces
+  // coincident at the start, under the fixed 60 degree side (id 3); the particle at rest half way to the apex rest
+  // point, tol / 2 from all three, for 0.01 s. The two floors share one direction of the joint response, whose push the
+  // rising floor makes.
+  Solid fixed_reacting_floor = BuildFloor(1);
+  fixed_reacting_floor.reports_reaction = true;
+  cases.push_back({
+      .name = "FloorRisingThroughFixedFloorUnderSixtyDegreeWall",
+      .solids =
+          {
+              fixed_reacting_floor,
+              BuildMovingFloor(0, {.x = 0, .y = 0, .z = 0.25}, 2),
+              BuildMovingWedgeSide(60 * degree, 0, 3),
+          },
+      .inputs =
+          BuildSeveralSurfaceInputs({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2}, {}, 0.01),
+  });
+  // The fixed floor and a ceiling 0.1 m above it coming down at 1 m/s on a particle at rest half way, for 0.1 s.
+  cases.push_back({
+      .name = "ClosingCeiling",
+      .solids =
+          {
+              BuildFloor(1),
+              BuildFlatSolid({.x = 0, .y = 0, .z = 0.1}, -kUnitZ, {.linear_velocity = {.x = 0, .y = 0, .z = -1}}, 2),
+          },
+      .inputs = BuildRestingStartInputs({.height = 0.05, .start_overlap_tolerance = 0}),
+  });
+  return cases;
+}
+
+// The scenes of the first review of the slide: an edge of the domain box against the same edge of two flat solids,
+// with friction; a domain corner with two chamfers across it (five directions); moving three-face corners with a
+// coincident fourth face; an obtuse wedge listed in both orders; two coincident reacting solids whose normals differ
+// by rounding; a slow slide into a sliver wedge.
+inline std::vector<MoveParticleCase> BuildSlideReviewCases() {
+  std::vector<MoveParticleCase> cases;
+  // The unit domain box, and the flat solids x = 0, y = 0 and z = 0 in the same place: the particle at
+  // {0.005, 0.5, 0.005} moving at {-1, 0.5, -1} m/s for 0.02 s meets the x and z sides at the same time. Friction 0.5.
+  const SolidContactInputs edge_inputs = BuildCaseInputs({
+      .start_position = {.x = 0.005, .y = 0.5, .z = 0.005},
+      .velocity = {.x = -1, .y = 0.5, .z = -1},
+      .step_duration = 0.02,
+      .friction = 0.5,
+  });
+  cases.push_back({.name = "DomainBoxEdgeWithFriction", .solids = {BuildUnitDomainBox(1)}, .inputs = edge_inputs});
+  cases.push_back({
+      .name = "FlatSolidsEdgeWithFriction",
+      .solids =
+          {
+              BuildFlatSolid({}, kUnitX, kNoMotion, 1),
+              BuildFlatSolid({}, kUnitY, kNoMotion, 2),
+              BuildFlatSolid({}, kUnitZ, kNoMotion, 3),
+          },
+      .inputs = edge_inputs,
+  });
+  // The unit domain box and two flat chamfers with normals Normalized({1, 1, 0}) and Normalized({0, 1, 1}), each
+  // 0.999 tol from the corner's rest point {tol, tol, tol}; the particle at {0.2, 0.2, 0.2} moving at {-1, -1, -1} m/s
+  // for 1 s: the two chamfers, then the box's sides, five directions at once.
+  const Vec3 corner_rest_point = {.x = kTolerance, .y = kTolerance, .z = kTolerance};
+  const Vec3 first_chamfer_normal = math::Normalized({.x = 1, .y = 1, .z = 0});
+  const Vec3 second_chamfer_normal = math::Normalized({.x = 0, .y = 1, .z = 1});
+  cases.push_back({
+      .name = "DomainCornerWithTwoChamfers",
+      .solids =
+          {
+              BuildUnitDomainBox(1),
+              BuildFlatSolid(
+                  corner_rest_point - 0.999 * kTolerance * first_chamfer_normal,
+                  first_chamfer_normal,
+                  kNoMotion,
+                  2
+              ),
+              BuildFlatSolid(
+                  corner_rest_point - 0.999 * kTolerance * second_chamfer_normal,
+                  second_chamfer_normal,
+                  kNoMotion,
+                  3
+              ),
+          },
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.2, .y = 0.2, .z = 0.2}, {.x = -1, .y = -1, .z = -1}, 1),
+  });
+  // Moving three-face corners through the origin with a fourth solid coincident with the first, last in array order:
+  // draws 3053 and 115326 of the review's search, written to 17 digits, each normal normalized again as the search
+  // built it. In the first the escape is much faster than the velocity the response received, so its allowance must
+  // count the change; in the second the same for for_next_step's allowance.
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const Vec3 fast_normal =
+      math::Normalized({.x = -0.53355339409363756, .y = 0.78721619356863037, .z = 0.30921099630264787});
+  const Vec3 fast_velocity = {.x = -0.77483383356200208, .y = 0.30335032059547618, .z = -0.54292335287386662};
+  const Vec3 third_normal =
+      math::Normalized({.x = 0.40280233806491872, .y = -0.13285702927717774, .z = 0.90559333379893991});
+  const Vec3 third_velocity = {.x = -0.62439235349061195, .y = -0.60919352813720618, .z = 0.42189108101411299};
+  const SolidContactInputs this_step_inputs = BuildSeveralSurfaceInputs(
+      {.x = 0.01406050152026247, .y = 0.011234967740510875, .z = -0.0035773627666760765},
+      {.x = -0.46348774667975889, .y = 0.12961149058146249, .z = 0.41462575661629564},
+      0.00390625
+  );
+  cases.push_back({
+      .name = "MovingCornerWithCoincidentFaceFastEscape",
+      .solids =
+          {
+              BuildFlatSolid({}, fast_normal, {.linear_velocity = fast_velocity}, 1),
+              BuildFlatSolid(
+                  {},
+                  {.x = 0.0076395093178087256, .y = -0.30456177716485122, .z = -0.95246194768482528},
+                  kNoMotion,
+                  2
+              ),
+              BuildFlatSolid({}, third_normal, {.linear_velocity = third_velocity}, 3),
+              BuildFlatSolid({}, fast_normal, {.linear_velocity = fast_velocity}, 4),
+          },
+      .inputs = this_step_inputs,
+  });
+  const Vec3 sliding_normal =
+      math::Normalized({.x = 0.65778296211934739, .y = -0.011871601561922683, .z = -0.75311396204150416});
+  const Vec3 sliding_velocity = {.x = 0.46599492144065291, .y = -0.78654928644800204, .z = -0.012813640966278239};
+  cases.push_back({
+      .name = "MovingCornerWithCoincidentFaceNextStepEscape",
+      .solids =
+          {
+              BuildFlatSolid({}, sliding_normal, {.linear_velocity = sliding_velocity}, 1),
+              BuildFlatSolid(
+                  {},
+                  {.x = 0.26194660831403604, .y = 0.96177550773756182, .z = 0.079823850501765575},
+                  kNoMotion,
+                  2
+              ),
+              BuildFlatSolid(
+                  {},
+                  {.x = -0.60349893121568587, .y = -0.027131697348259116, .z = 0.79690207116089695},
+                  kNoMotion,
+                  3
+              ),
+              BuildFlatSolid({}, sliding_normal, {.linear_velocity = sliding_velocity}, 4),
+          },
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = 1.2732426756317884e-08, .y = -3.4591972253611191e-09, .z = 1.0692083265214589e-08},
+          {.x = 0.36260184477733048, .y = 0.043237413449602746, .z = -0.84629524815196766},
+          0.00390625
+      ),
+  });
+  // NOLINTEND(modernize-use-std-numbers)
+  // A wedge of 120 degrees with the particle at its rest point moving at {-1, 1, -1} m/s for 0.01 s, friction 0, with
+  // the floor listed first (ids 1, 2) or the side first.
+  const double obtuse_angle = 2 * std::numbers::pi / 3;  // rad
+  const SolidContactInputs obtuse_inputs = BuildSeveralSurfaceInputs(
+      {.x = kTolerance / std::tan(obtuse_angle / 2), .y = 0, .z = kTolerance},
+      {.x = -1, .y = 1, .z = -1},
+      0.01
+  );
+  cases.push_back({
+      .name = "ObtuseWedgeFloorFirst",
+      .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - obtuse_angle, 2)},
+      .inputs = obtuse_inputs,
+  });
+  cases.push_back({
+      .name = "ObtuseWedgeSideFirst",
+      .solids = {BuildWedgeSide(std::numbers::pi - obtuse_angle, 1), BuildFloor(2)},
+      .inputs = obtuse_inputs,
+  });
+  // Two reacting flat solids through the origin, the first with normal Normalized({2e-13, 0, 1}), the second the
+  // floor: their normals share one direction (kSameNormalAxisDifference). The particle 0.999 tol above both moving at
+  // {1, 0, -1} m/s for 0.2 s.
+  Solid tilted_reacting_floor = BuildFlatSolid({}, math::Normalized({.x = 2e-13, .y = 0, .z = 1}), kNoMotion, 1);
+  tilted_reacting_floor.reports_reaction = true;
+  Solid second_reacting_floor = BuildFloor(2);
+  second_reacting_floor.reports_reaction = true;
+  cases.push_back({
+      .name = "CoincidentReactingFloorsNormalsApartByRounding",
+      .solids = {tilted_reacting_floor, second_reacting_floor},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0.95, .y = 0, .z = 0.999 * kTolerance}, {.x = 1, .y = 0, .z = -1}, 0.2),
+  });
+  // A wedge of 1e-8 rad (a sliver), the particle on the floor 0.005 m outside the rest point sliding into it at
+  // 0.1 m/s, in steps of 0.01 s.
+  const double sliver_angle = 1e-8;  // rad
+  cases.push_back({
+      .name = "SlowSlideIntoSliverWedge",
+      .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - sliver_angle, 2)},
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = kTolerance / std::tan(sliver_angle / 2) + 0.005, .y = 0, .z = kTolerance},
+          {.x = -0.1, .y = 0, .z = 0},
+          0.01
+      ),
+  });
+  return cases;
+}
+
+// One wedge at its rest point, listed both ways: the two scene names, the wedge angle and the velocity.
+struct RestPointWedge {
+  std::string_view floor_first_name;
+  std::string_view side_first_name;
+  double angle = 0;  // rad
+  Vec3 velocity{};  // m/s
+};
+
+// The scenes of the second review of the slide: wedges at their rest point listed in both orders, with friction; a
+// narrow wedge on a reacting floor near the velocity pair limit; a domain box and a side with and without a ground
+// lying on the box's bottom, or a ground with twice the friction; the copy fuzz scenes.
+inline std::vector<MoveParticleCase> BuildSecondReviewCases() {
+  std::vector<MoveParticleCase> cases;
+  const double degree = std::numbers::pi / 180;  // rad
+  // Wedges of 30, 45, 60 and 75 degrees with the floor, the particle at the rest point {tol / tan(a / 2), 0, tol} for
+  // 0.01 s, friction 0.5, the floor listed first (ids 1, 2) or the side first (ids 1, 2).
+  const std::array<RestPointWedge, 4> wedges = {
+      RestPointWedge{
+          .floor_first_name = "ThirtyDegreeRestPointFloorFirst",
+          .side_first_name = "ThirtyDegreeRestPointSideFirst",
+          .angle = 30 * degree,
+          .velocity = {.x = -1, .y = 1, .z = -1},
+      },
+      RestPointWedge{
+          .floor_first_name = "FortyFiveDegreeRestPointFloorFirst",
+          .side_first_name = "FortyFiveDegreeRestPointSideFirst",
+          .angle = 45 * degree,
+          .velocity = {.x = -0.2, .y = 1, .z = -1},
+      },
+      RestPointWedge{
+          .floor_first_name = "SixtyDegreeRestPointFloorFirst",
+          .side_first_name = "SixtyDegreeRestPointSideFirst",
+          .angle = 60 * degree,
+          .velocity = {.x = -0.2, .y = 1, .z = -1},
+      },
+      RestPointWedge{
+          .floor_first_name = "SeventyFiveDegreeRestPointFloorFirst",
+          .side_first_name = "SeventyFiveDegreeRestPointSideFirst",
+          .angle = 75 * degree,
+          .velocity = {.x = -0.2, .y = 1, .z = -1},
+      },
+  };
+  for (const RestPointWedge& wedge : wedges) {
+    SolidContactInputs inputs = BuildSeveralSurfaceInputs(
+        {.x = kTolerance / std::tan(wedge.angle / 2), .y = 0, .z = kTolerance},
+        wedge.velocity,
+        0.01
+    );
+    inputs.friction = 0.5;
+    cases.push_back({
+        .name = wedge.floor_first_name,
+        .solids = {BuildFloor(1), BuildWedgeSide(std::numbers::pi - wedge.angle, 2)},
+        .inputs = inputs,
+    });
+    cases.push_back({
+        .name = wedge.side_first_name,
+        .solids = {BuildWedgeSide(std::numbers::pi - wedge.angle, 1), BuildFloor(2)},
+        .inputs = inputs,
+    });
+  }
+  // A wedge of 1e-6 rad on a reacting floor, the particle at the rest point moving at {-2, 1, 0} m/s for 0.01 s.
+  Solid reacting_floor = BuildFloor(1);
+  reacting_floor.reports_reaction = true;
+  cases.push_back({
+      .name = "MicroradianWedgeOnReactingFloor",
+      .solids = {reacting_floor, BuildWedgeSide(std::numbers::pi - 1e-6, 2)},
+      .inputs = BuildSeveralSurfaceInputs(
+          {.x = kTolerance / std::tan(5e-7), .y = 0, .z = kTolerance},
+          {.x = -2, .y = 1, .z = 0},
+          0.01
+      ),
+  });
+  // The domain box [-1, 1]^2 x [0, 1] (id 1) and a side through {0, 0.5, 0} at 60 degrees to its bottom (id 2), the
+  // particle at their rest point moving at {-1, 1, -1} m/s for 0.01 s, friction 0.5; then the same with a ground, a
+  // flat solid at z = 0 (id 3), lying on the box's bottom, and with that ground at friction_scale 2.
+  const Solid wide_box = ToSolid(
+      DomainBox{.low_corner = {.x = -1, .y = -1, .z = 0}, .high_corner = {.x = 1, .y = 1, .z = 1}, .closed = {}},
+      1
+  );
+  const double sixty = 60 * degree;  // rad
+  const Vec3 side_normal = {.x = std::sin(std::numbers::pi - sixty), .y = 0, .z = std::cos(std::numbers::pi - sixty)};
+  const Solid box_side = BuildFlatSolid({.x = 0, .y = 0.5, .z = 0}, side_normal, kNoMotion, 2);
+  SolidContactInputs box_inputs = BuildSeveralSurfaceInputs(
+      {.x = kTolerance / std::tan(sixty / 2), .y = 0.5, .z = kTolerance},
+      {.x = -1, .y = 1, .z = -1},
+      0.01
+  );
+  box_inputs.friction = 0.5;
+  cases.push_back({.name = "DomainBoxAndSide", .solids = {wide_box, box_side}, .inputs = box_inputs});
+  cases.push_back(
+      {.name = "DomainBoxAndSideWithGround", .solids = {wide_box, box_side, BuildFloor(3)}, .inputs = box_inputs}
+  );
+  Solid rough_ground = BuildFloor(3);
+  rough_ground.friction_scale = 2;
+  cases.push_back(
+      {.name = "DomainBoxAndSideWithRoughGround", .solids = {wide_box, box_side, rough_ground}, .inputs = box_inputs}
+  );
+  // Two draws of the review's copy fuzz: fixed flat solids through the origin at a rest point, T 0.01 s, and the same
+  // scene with an exact copy of one solid inserted later in the array, written to 17 digits, each normal normalized
+  // again as the fuzz built it. Draw 131: three faces, friction 1.2666, a copy of the first after the second. Draw 51:
+  // two faces, friction 0.6248, a copy of the second just before it.
+  // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
+  const Vec3 corner_first =
+      math::Normalized({.x = 0.93951377197048747, .y = -0.11228124952476785, .z = 0.32358429084698065});
+  const Vec3 corner_second =
+      math::Normalized({.x = -0.87700018288461101, .y = 0.46952715008584572, .z = -0.10205358667201614});
+  const Vec3 corner_third =
+      math::Normalized({.x = -0.18075399089670258, .y = 0.51700952359533392, .z = 0.83667744518819231});
+  SolidContactInputs corner_inputs = BuildSeveralSurfaceInputs(
+      {.x = 5.8700994994953113e-10, .y = 3.6071506808514274e-09, .z = 2.4254392139062201e-09},
+      {.x = -0.14281725048184113, .y = -0.43233682913915139, .z = -0.69458475428245836},
+      0.01
+  );
+  corner_inputs.friction = 1.2666050571487417;
+  cases.push_back({
+      .name = "CopyFuzzThreeFaces",
+      .solids =
+          {
+              BuildFlatSolid({}, corner_first, kNoMotion, 1),
+              BuildFlatSolid({}, corner_second, kNoMotion, 2),
+              BuildFlatSolid({}, corner_third, kNoMotion, 3),
+          },
+      .inputs = corner_inputs,
+  });
+  cases.push_back({
+      .name = "CopyFuzzThreeFacesWithCopy",
+      .solids =
+          {
+              BuildFlatSolid({}, corner_first, kNoMotion, 1),
+              BuildFlatSolid({}, corner_second, kNoMotion, 2),
+              BuildFlatSolid({}, corner_first, kNoMotion, 3),
+              BuildFlatSolid({}, corner_third, kNoMotion, 4),
+          },
+      .inputs = corner_inputs,
+  });
+  const Vec3 wedge_first =
+      math::Normalized({.x = -0.882055171725313, .y = 0.43661791686511747, .z = 0.17704086733009927});
+  const Vec3 wedge_second =
+      math::Normalized({.x = 0.75957377463132725, .y = 0.15963882663198797, .z = 0.63052607077255707});
+  SolidContactInputs wedge_inputs = BuildSeveralSurfaceInputs(
+      {.x = -2.2307814826944045e-10, .y = 1.0859759391088158e-09, .z = 1.4708399922751076e-09},
+      {.x = -0.75257177526028574, .y = 0.61407627377774832, .z = -0.29496983861154258},
+      0.01
+  );
+  wedge_inputs.friction = 0.62475835316586448;
+  cases.push_back({
+      .name = "CopyFuzzTwoFaces",
+      .solids = {BuildFlatSolid({}, wedge_first, kNoMotion, 1), BuildFlatSolid({}, wedge_second, kNoMotion, 2)},
+      .inputs = wedge_inputs,
+  });
+  cases.push_back({
+      .name = "CopyFuzzTwoFacesWithCopy",
+      .solids =
+          {
+              BuildFlatSolid({}, wedge_first, kNoMotion, 1),
+              BuildFlatSolid({}, wedge_second, kNoMotion, 2),
+              BuildFlatSolid({}, wedge_second, kNoMotion, 3),
+          },
+      .inputs = wedge_inputs,
+  });
+  // NOLINTEND(modernize-use-std-numbers)
+  return cases;
+}
+
 // The scenes with one value out of range: each is the docstring example with one change.
 inline std::vector<MoveParticleCase> BuildBadInputCases() {
   std::vector<MoveParticleCase> cases;
@@ -1685,6 +2342,21 @@ inline std::vector<MoveParticleCase> BuildMoveParticleCases() {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildSeveralSurfaceStartCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildSlideIntoWedgeCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildSlideIntoCuspCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildClosingWedgeCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildSlideReviewCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildSecondReviewCases()) {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildBadInputCases()) {
