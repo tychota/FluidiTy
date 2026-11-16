@@ -3150,6 +3150,23 @@ else.
 
 ### Task 13: `MoveParticle` slide on a turning solid
 
+**As built (2026-11-17), where this task's text and P7/P18 differ or are silent.** Cause of the old `kTooManyHits`:
+the stepping search reports a hit when the gap at its first sample is at most `tol / 4`, without reading a velocity, so
+every sweep after the response hit again at 0. A hit on a turning solid now ends the sweeps of the step: the joint
+response (P20), then P7's test of the other solids, then the carry in the solid's own axes. Five additions, each
+reviewed as needed and sound, amend P7 and P18: (1) *the moment rule*: a hit at 0 just after a response, on a turning
+solid within `tol + tol / 16`, is the moment that response already read and gets no second response; (2) P7's test
+leaves out a solid that fills the same space as the turning solid through the step (exact bits of shape, size, pose
+and motion); (3) P7's test passes when no time is left; (4) P7's failure names the turning solid; (5) the stepping
+search skips a turning solid that fills the same space as an earlier one, so an exact copy cannot stop elsewhere in
+the hit gap. The carry ends at the own-axes image of the particle's own world end point (`x + v t_left`) with the
+part into the surface removed (review I1: a plain straight line in own axes dragged a frictionless particle outward
+on a spinning face). Measured in review: least distance along 20,000 carried paths 0.9999985 tol; 87,200 moves
+without a turning solid bit-identical to before; a paddle 5 cm above a tank floor fails 0 of 1,150 hits, and P7's
+failure is cured by a shorter step except within a few tol of the other solid. Known limits: flush turning boxes
+(a particle cannot cross their seam); order and copies for starts closer than tol differ by rounding that grows as
+coordinate / tol; Task 9b's thin margins of the search stand.
+
 **Kind:** numerics
 
 **Files:**
