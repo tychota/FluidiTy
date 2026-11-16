@@ -5766,14 +5766,14 @@ void PrintFailuresPerScene(const std::map<std::string_view, std::array<int, 8>>&
   std::cout << "\n";
 }
 
-// Fails the calling test unless every solid is at least tol / 2 from the end position at its end pose, by
-// ComputeDistanceToSolid itself (the generated paths commit to no plate).
+// Fails the calling test unless every solid is at least tol / 2 (of inputs.contact_tolerance) from the end position at
+// its end pose, by ComputeDistanceToSolid itself (the generated paths commit to no plate).
 void ExpectEndOutsideEverySolid(const SolidContactInputs& inputs, Vec3 end_position) {
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     const Solid& solid = inputs.solids[solid_index];
     const double end_distance =
         ComputeDistanceToSolid(solid, ComputeSolidPose(solid, inputs.step_duration), end_position).distance;
-    EXPECT_GE(end_distance, kTolerance / 2) << "solid index " << solid_index;
+    EXPECT_GE(end_distance, inputs.contact_tolerance / 2) << "solid index " << solid_index;
   }
 }
 
@@ -6192,6 +6192,38 @@ TEST(MoveParticle, GeneratedParallelSolids_RoundingNeverHitsTheSecond) {
   EXPECT_GT(paths, 15000);
 }
 
+// Where a generated set of starts lies and which tolerance it uses: near the origin with the test tolerance, as the
+// analytic tests, or far from the origin with the tolerance ComputeContactTolerance gives there (plan Task 14).
+struct GeneratedSetPlace {
+  double contact_tolerance = kTolerance;  // m
+  Vec3 origin{};  // m, world: added to every point the set builds, so {0, 0, 0} keeps the set's bits.
+  double size_factor = 1;  // Multiplies every radius, half height and the domain box's width.
+};
+
+// Far from the origin: about 830 m from it, with the production tolerance of a scene 1100 m across, and the same sizes.
+constexpr GeneratedSetPlace kFarFromOrigin = {
+    .contact_tolerance = kFarFromOriginContactTolerance,
+    .origin = {.x = -640, .y = 410, .z = 300},
+    .size_factor = 1,
+};
+
+// Far from the origin with every radius 2000 times larger, from 100 to 1000 m, so R / tol reaches about 2^40. Its
+// solids reach up to 3720 m from the origin (a lying cylinder 2000 m long), where ComputeContactTolerance would give
+// up to 3.4e-9 m: the tolerance of a scene 1100 m across is 3.4 times smaller, so a coordinate's rounding unit is a
+// larger share of it (tol / 2200 instead of tol / 9000), a harder test than the scene's own tolerance would make.
+constexpr GeneratedSetPlace kFarFromOriginLargeSolids = {
+    .contact_tolerance = kFarFromOriginContactTolerance,
+    .origin = {.x = -640, .y = 410, .z = 300},
+    .size_factor = 2000,
+};
+
+// The domain box of a generated set: from place.origin to place.origin + place.size_factor {1, 1, 1}, open top. Near
+// the origin it is BuildUnitDomainBox.
+Solid BuildPlacedDomainBox(const GeneratedSetPlace& place) {
+  const Vec3 high_corner = place.origin + place.size_factor * Vec3{.x = 1, .y = 1, .z = 1};
+  return ToSolid(DomainBox{.low_corner = place.origin, .high_corner = high_corner, .closed = {}}, 1);
+}
+
 // What the generated two-surface starts gave, counted for the report.
 struct TwoSurfaceCounts {
   int wedge_starts = 0;
@@ -6207,8 +6239,8 @@ struct TwoSurfaceCounts {
 
 // Draws a velocity for a two-surface start: slow, up to tol / T per axis, when Next < 0.5, else up to 2 m/s per axis
 // (four draws).
-Vec3 DrawTwoSurfaceVelocity(CaseGenerator& generator, double step_duration) {
-  const double speed = generator.Next() < 0.5 ? kTolerance / step_duration : 2.0;  // m/s
+Vec3 DrawTwoSurfaceVelocity(CaseGenerator& generator, double step_duration, double contact_tolerance) {
+  const double speed = generator.Next() < 0.5 ? contact_tolerance / step_duration : 2.0;  // m/s
   return speed * Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
 }
 
@@ -6216,8 +6248,9 @@ Vec3 DrawTwoSurfaceVelocity(CaseGenerator& generator, double step_duration) {
 // NextSigned, drawn again while shorter than 0.1) and nB = cos(phi) nA + sin(phi) t, phi from 5 to 175 degrees (a
 // wedge angle of 175 down to 5) and t a random direction made square to nA (three NextSigned, drawn again while that
 // part is shorter than 0.1). The start is at distances dA and dB, each (2 * Next - 1) tol, and c = NextSigned m along
-// nA x t. Draw order: nA, t, phi, q, dA, dB, c.
-std::array<Solid, 2> BuildTwoSurfaceWedge(CaseGenerator& generator, Vec3* start_position) {
+// nA x t. Draw order: nA, t, phi, q, dA, dB, c. The point q is moved by place.origin and tol is place's.
+std::array<Solid, 2>
+BuildTwoSurfaceWedge(CaseGenerator& generator, const GeneratedSetPlace& place, Vec3* start_position) {
   Vec3 first_direction{};
   while (math::Length(first_direction) < 0.1) {
     first_direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
@@ -6231,9 +6264,10 @@ std::array<Solid, 2> BuildTwoSurfaceWedge(CaseGenerator& generator, Vec3* start_
   const Vec3 square_unit = math::Normalized(square_direction);
   const double normal_angle = (5 + 170 * generator.Next()) * std::numbers::pi / 180;  // rad
   const Vec3 second_normal = std::cos(normal_angle) * first_normal + std::sin(normal_angle) * square_unit;
-  const Vec3 point = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
-  const double first_distance = generator.NextSigned() * kTolerance;  // m
-  const double second_distance = generator.NextSigned() * kTolerance;  // m
+  const Vec3 point =
+      place.origin + Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  const double first_distance = generator.NextSigned() * place.contact_tolerance;  // m
+  const double second_distance = generator.NextSigned() * place.contact_tolerance;  // m
   const double along_line = generator.NextSigned();  // m
   const double square_share =
       (second_distance - std::cos(normal_angle) * first_distance) / std::sin(normal_angle);  // m
@@ -6253,19 +6287,20 @@ std::array<Solid, 2> BuildTwoSurfaceWedge(CaseGenerator& generator, Vec3* start_
 // Builds a start in a corner of the unit domain box with an open top: two or three near sides (floor(2 * Next) + 2),
 // the axes x, y, z in turn when three, else the two from floor(3 * Next) left out; per near axis the low or high side
 // by Next < 0.5 (side_bottom for z, the top being open) and a distance (2 * Next - 1) tol; every other axis at
-// 0.2 + 0.6 * Next m.
-Vec3 BuildDomainCornerStart(CaseGenerator& generator) {
+// 0.2 + 0.6 * Next m. In place's domain box (BuildPlacedDomainBox), with every length but the distance scaled by its
+// size factor and tol place's.
+Vec3 BuildDomainCornerStart(CaseGenerator& generator, const GeneratedSetPlace& place) {
   const bool has_three_sides = generator.Next() < 0.5;
   const int axis_left_out = has_three_sides ? -1 : static_cast<int>(std::floor(3 * generator.Next()));
   std::array<double, 3> coordinates{};
   for (int axis_index = 0; axis_index < 3; ++axis_index) {
     const bool is_low_side = generator.Next() < 0.5 || axis_index == 2;
-    const double distance = generator.NextSigned() * kTolerance;  // m, into the box.
-    const double inner = 0.2 + 0.6 * generator.Next();  // m
-    const double near_side = is_low_side ? distance : 1 - distance;  // m
+    const double distance = generator.NextSigned() * place.contact_tolerance;  // m, into the box.
+    const double inner = place.size_factor * (0.2 + 0.6 * generator.Next());  // m
+    const double near_side = is_low_side ? distance : place.size_factor - distance;  // m
     coordinates.at(static_cast<std::size_t>(axis_index)) = axis_index == axis_left_out ? inner : near_side;
   }
-  return {.x = coordinates.at(0), .y = coordinates.at(1), .z = coordinates.at(2)};
+  return place.origin + Vec3{.x = coordinates.at(0), .y = coordinates.at(1), .z = coordinates.at(2)};
 }
 
 // Runs MoveParticle on one two-surface start, checks it and counts it: it succeeds, and ends at least tol / 2 from
@@ -6295,19 +6330,19 @@ void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& co
 // particle stays near its corner, away from the far sides, both velocities from one DrawTwoSurfaceVelocity, friction
 // Next. With moving_wedges, each wedge solid then gets a linear_velocity of three NextSigned m/s, solid A then B; the
 // domain box stays fixed. Start overlap tolerance 2 tol. Every start is within tol of, on, or slightly inside two or
-// three surfaces.
-TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges) {
+// three surfaces. The set lies at place (GeneratedSetPlace).
+TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges, const GeneratedSetPlace& place) {
   CaseGenerator generator;
   TwoSurfaceCounts counts;
-  const std::array domain_solids = {move_particle_cases::BuildUnitDomainBox(1)};
+  const std::array domain_solids = {BuildPlacedDomainBox(place)};
   for (int draw_index = 0; draw_index < 30000; ++draw_index) {
     const bool is_wedge = generator.Next() < 0.5;
     SolidContactInputs inputs;
-    inputs.contact_tolerance = kTolerance;
-    inputs.start_overlap_tolerance = 2 * kTolerance;
+    inputs.contact_tolerance = place.contact_tolerance;
+    inputs.start_overlap_tolerance = 2 * place.contact_tolerance;
     std::array<Solid, 2> wedge_solids{};
     if (is_wedge) {
-      wedge_solids = BuildTwoSurfaceWedge(generator, &inputs.start_position);
+      wedge_solids = BuildTwoSurfaceWedge(generator, place, &inputs.start_position);
       inputs.solids = wedge_solids.data();
       inputs.solid_count = 2;
       ++counts.wedge_starts;
@@ -6317,13 +6352,13 @@ TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges) {
           first_axes.xz * second_axes.xz + first_axes.yz * second_axes.yz + first_axes.zz * second_axes.zz < 0;
       counts.acute_wedge_starts += is_acute_wedge ? 1 : 0;
     } else {
-      inputs.start_position = BuildDomainCornerStart(generator);
+      inputs.start_position = BuildDomainCornerStart(generator, place);
       inputs.solids = domain_solids.data();
       inputs.solid_count = 1;
       ++counts.corner_starts;
     }
     inputs.step_duration = 0.01 + 0.09 * generator.Next();
-    const Vec3 velocity = DrawTwoSurfaceVelocity(generator, inputs.step_duration);
+    const Vec3 velocity = DrawTwoSurfaceVelocity(generator, inputs.step_duration, place.contact_tolerance);
     inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
     inputs.friction = generator.Next();
     for (Solid& wedge_solid : wedge_solids) {
@@ -6337,18 +6372,20 @@ TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges) {
     }
     CheckTwoSurfaceStart(inputs, counts);
   }
-  std::cout << "two-surface starts" << (moving_wedges ? " with moving wedges" : "") << ": wedges "
-            << counts.wedge_starts << " (acute " << counts.acute_wedge_starts << "), domain corners "
-            << counts.corner_starts << "; free " << counts.free_paths << ", hit " << counts.hit_paths
-            << ", started inside " << counts.started_inside_paths << "; one hit " << counts.one_hit_paths
-            << ", two hits " << counts.two_hit_paths << ", failures " << counts.failures << "\n";
+  const bool is_far = place.origin.x != 0 || place.origin.y != 0 || place.origin.z != 0;
+  std::cout << "two-surface starts" << (moving_wedges ? " with moving wedges" : "")
+            << (is_far ? " far from origin" : "") << ": wedges " << counts.wedge_starts << " (acute "
+            << counts.acute_wedge_starts << "), domain corners " << counts.corner_starts << "; free "
+            << counts.free_paths << ", hit " << counts.hit_paths << ", started inside " << counts.started_inside_paths
+            << "; one hit " << counts.one_hit_paths << ", two hits " << counts.two_hit_paths << ", failures "
+            << counts.failures << "\n";
   return counts;
 }
 
 TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
   // Fixed wedges and corners (RunTwoSurfaceStarts): no failure at all (the model: 0 of 10,001 acute draws). Before the
   // slide over several surfaces, 2246 of 7497 acute draws ended in kTooManyHits.
-  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(false);
+  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(false, {});
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.free_paths, 1000);
   EXPECT_GT(counts.hit_paths, 1000);
@@ -6359,7 +6396,7 @@ TEST(MoveParticle, GeneratedMovingTwoSurfaceStarts_SucceedDownToFiveDegrees) {
   // The same draws with each wedge solid moving at up to 1 m/s per axis: no failure. Two surfaces that are not
   // parallel always leave a velocity that approaches neither, and from 5 degrees up the escape is at most
   // 1 / sin(2.5 degrees) = 23 times the solids' speeds, below the speed cap (the model: 0 of 35,000).
-  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(true);
+  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(true, {});
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.hit_paths, 1000);
 }
@@ -6394,8 +6431,8 @@ struct TangentStart {
 // Computes the gap from a point of a contact plane to a solid, along the plane's normal: the height above the point at
 // which the solid begins, at most 2 tol, found by 64 halvings of [0, 2 tol]. The solid is convex and the point outside
 // it, so along the normal its distance is first positive, then not.
-double ComputeGapToSolid(const Solid& solid, Vec3 point_on_plane, Vec3 normal) {
-  const double largest_gap = 2 * kTolerance;  // m
+double ComputeGapToSolid(const Solid& solid, Vec3 point_on_plane, Vec3 normal, double contact_tolerance) {
+  const double largest_gap = 2 * contact_tolerance;  // m
   const auto distance_at_height = [&](double height) {
     return ComputeDistanceToSolid(solid, solid.pose_at_step_start, point_on_plane + height * normal).distance;
   };
@@ -6434,10 +6471,12 @@ double ComputeGapToSolid(const Solid& solid, Vec3 point_on_plane, Vec3 normal) {
 //   rim on the floor    its axis tilted about y by 0.1 + 0.5 Next rad of the scene's Next, its lowest rim point on the
 //                       floor at the offset; the radial direction is the radial angle's in the floor. x* is the
 //                       nominal 2 Sqrt(R tol): the space under the cap is a wedge of the tilt, not a cusp.
-TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
-  const double radius = 0.05 + 0.45 * generator.Next();  // m
-  const double second_radius = 0.05 + 0.45 * generator.Next();  // m
-  const Vec3 offset = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = 0};
+// The set lies at place (GeneratedSetPlace): every point moved by its origin, the radii, the half heights and the
+// domain box scaled by its size factor (not the offset), and tol its own.
+TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene, const GeneratedSetPlace& place) {
+  const double radius = place.size_factor * (0.05 + 0.45 * generator.Next());  // m
+  const double second_radius = place.size_factor * (0.05 + 0.45 * generator.Next());  // m
+  const Vec3 offset = place.origin + Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = 0};
   const double radial_angle = 2 * std::numbers::pi * generator.Next();  // rad
   const double distance_share = 0.02 + 0.98 * generator.Next();
   const double height_share = 1.5 * generator.Next() - 0.5;
@@ -6478,9 +6517,9 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
       floor_normal = axes.at(static_cast<std::size_t>(side_index));
       radial = cos_radial * axes.at(static_cast<std::size_t>((side_index + 1) % 3))
           + sin_radial * axes.at(static_cast<std::size_t>((side_index + 2) % 3));
-      const Vec3 center = {.x = radius, .y = radius, .z = radius};
+      const Vec3 center = place.origin + Vec3{.x = radius, .y = radius, .z = radius};
       contact = center - radius * floor_normal;
-      start.solids.at(0) = move_particle_cases::BuildUnitDomainBox(1);
+      start.solids.at(0) = BuildPlacedDomainBox(place);
       start.solids.at(1) = move_particle_cases::BuildFixedSphere(center, radius, 2);
       break;
     }
@@ -6518,11 +6557,11 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
       const bool touches_left = std::floor(2 * scene_draw) == 0;
       floor_normal = touches_left ? Vec3{.x = 1, .y = 0, .z = 0} : Vec3{.x = 0, .y = 1, .z = 0};
       radial = touches_left ? Vec3{.x = 0, .y = 1, .z = 0} : Vec3{.x = 1, .y = 0, .z = 0};
-      const Vec3 center = {.x = radius, .y = radius, .z = second_radius};
+      const Vec3 center = place.origin + Vec3{.x = radius, .y = radius, .z = second_radius};
       contact = center - radius * floor_normal;
       const Cylinder standing =
           {.center = center, .axis = {.x = 0, .y = 0, .z = 1}, .radius = radius, .half_height = second_radius};
-      start.solids.at(0) = move_particle_cases::BuildUnitDomainBox(1);
+      start.solids.at(0) = BuildPlacedDomainBox(place);
       start.solids.at(1) = ToSolid(standing, move_particle_cases::kNoMotion, 2);
       break;
     }
@@ -6546,12 +6585,13 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
       break;
     }
   }
-  const double rest_distance = 2 * std::sqrt(effective_radius * kTolerance);  // m, x*.
+  const double contact_tolerance = place.contact_tolerance;  // m
+  const double rest_distance = 2 * std::sqrt(effective_radius * contact_tolerance);  // m, x*.
   const double contact_distance = distance_share * rest_distance;  // m
   const bool is_cylinder_scene = scene == TangentScene::kCylinderLyingOnFloor
       || scene == TangentScene::kCylinderStandingInDomainCorner || scene == TangentScene::kRimOnFloor;
   const double gap = is_cylinder_scene
-      ? ComputeGapToSolid(start.solids.at(1), contact + contact_distance * radial, floor_normal)
+      ? ComputeGapToSolid(start.solids.at(1), contact + contact_distance * radial, floor_normal, contact_tolerance)
       : contact_distance * contact_distance / (2 * effective_radius);  // m
   // For two balls the gap is measured from the first ball's surface, which lies x^2 / (2 R) behind the contact plane.
   const double first_surface_height =
@@ -6561,7 +6601,7 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
 
   Vec3 velocity{};  // m/s
   if (velocity_class == 1) {
-    velocity = kTolerance / step_duration * velocity_draw;
+    velocity = contact_tolerance / step_duration * velocity_draw;
   } else if (velocity_class == 2) {
     velocity = {.x = 0, .y = 0, .z = -9.81 * step_duration};
   } else if (velocity_class == 3) {
@@ -6574,8 +6614,8 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
   start.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
   start.inputs.solid_count = 2;
   start.inputs.step_duration = step_duration;
-  start.inputs.contact_tolerance = kTolerance;
-  start.inputs.start_overlap_tolerance = 2 * kTolerance;
+  start.inputs.contact_tolerance = contact_tolerance;
+  start.inputs.start_overlap_tolerance = 2 * contact_tolerance;
   const Solid& first_solid = start.solids.at(0);
   const Solid& second_solid = start.solids.at(1);
   start.first_normal = scene == TangentScene::kTwoBalls
@@ -6621,7 +6661,7 @@ TEST(MoveParticle, GeneratedTangentContactStarts_Succeed) {
   for (const TangentScene scene : scenes) {
     int successes = 0;
     for (int draw_index = 0; draw_index < 2000; ++draw_index) {
-      TangentStart start = BuildTangentStart(generator, scene);
+      TangentStart start = BuildTangentStart(generator, scene, {});
       start.inputs.solids = start.solids.data();
       successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
     }
@@ -6642,8 +6682,8 @@ void ApplyTangentSlide(CaseGenerator& generator, TangentStart* start) {
   const double contact_distance = start->rest_distance + (0.05 - start->rest_distance) * distance_share;  // m
   const double first_surface_height =
       start->first_radius > 0 ? -contact_distance * contact_distance / (2 * start->first_radius) : 0;  // m
-  start->inputs.start_position =
-      start->contact + contact_distance * start->radial + (first_surface_height + kTolerance) * start->contact_normal;
+  start->inputs.start_position = start->contact + contact_distance * start->radial
+      + (first_surface_height + start->inputs.contact_tolerance) * start->contact_normal;
   const Vec3 velocity =
       -2 * speed_share * start->radial + Vec3{.x = 0, .y = 0, .z = -9.81 * start->inputs.step_duration};
   start->inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
@@ -6730,12 +6770,13 @@ void PrintTangentSlideCounts(TangentScene scene, bool is_moving, const TangentSl
             << counts.other_failures << "\n";
 }
 
-// Runs 2000 draws of the tangent slides of one scene: BuildTangentStart, then ApplyTangentSlide, then
+// Runs 2000 draws of the tangent slides of one scene: BuildTangentStart at place, then ApplyTangentSlide, then
 // ApplyTangentMotion, applied only when is_moving, and CheckTangentSlide.
-TangentSlideCounts RunTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving) {
+TangentSlideCounts
+RunTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving, const GeneratedSetPlace& place) {
   TangentSlideCounts counts;
   for (int draw_index = 0; draw_index < 2000; ++draw_index) {
-    TangentStart start = BuildTangentStart(generator, scene);
+    TangentStart start = BuildTangentStart(generator, scene, place);
     ApplyTangentSlide(generator, &start);
     TangentStart moving_start = start;
     ApplyTangentMotion(generator, scene, &moving_start);
@@ -6775,7 +6816,7 @@ TEST(MoveParticle, GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures)
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
-      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving);
+      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving, {});
       PrintTangentSlideCounts(scene, is_moving, counts);
       ExpectTangentSlideCounts(counts);
     }
@@ -6795,7 +6836,7 @@ TEST(MoveParticle, GeneratedCylinderTangentContactStarts_Succeed) {
   for (const TangentScene scene : scenes) {
     int successes = 0;
     for (int draw_index = 0; draw_index < 2000; ++draw_index) {
-      TangentStart start = BuildTangentStart(generator, scene);
+      TangentStart start = BuildTangentStart(generator, scene, {});
       start.inputs.solids = start.solids.data();
       successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
     }
@@ -6815,9 +6856,98 @@ TEST(MoveParticle, GeneratedCylinderTangentContactSlides_FailOnlyWhereAShorterSt
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
-      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving);
+      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving, {});
       PrintTangentSlideCounts(scene, is_moving, counts);
       ExpectTangentSlideCounts(counts);
+    }
+  }
+}
+
+// --- The generated wedges, corners and tangent contacts far from the origin (plan Task 14) ---
+
+TEST(MoveParticle, GeneratedTwoSurfaceStartsFarFromOrigin_SucceedDownToFiveDegrees) {
+  // The draws of GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees and of its moving wedges, moved about 830 m from
+  // the origin with the production tolerance there (kFarFromOrigin: tol about 1.0e-9 m, a coordinate's rounding unit
+  // about tol / 9000), where the start distances, the slow speeds and the rest gaps are that tolerance's. No failure.
+  const TwoSurfaceCounts fixed_counts = RunTwoSurfaceStarts(false, kFarFromOrigin);
+  EXPECT_EQ(fixed_counts.failures, 0);
+  EXPECT_GT(fixed_counts.free_paths, 1000);
+  EXPECT_GT(fixed_counts.hit_paths, 1000);
+  EXPECT_GT(fixed_counts.started_inside_paths, 1000);
+  const TwoSurfaceCounts moving_counts = RunTwoSurfaceStarts(true, kFarFromOrigin);
+  EXPECT_EQ(moving_counts.failures, 0);
+  EXPECT_GT(moving_counts.hit_paths, 1000);
+}
+
+// The tangent scenes in TangentScene order: the balls, then the cylinders.
+constexpr std::array kEveryTangentScene = {
+    TangentScene::kBallOnFloor,
+    TangentScene::kBallInDomainCorner,
+    TangentScene::kTwoBalls,
+    TangentScene::kBallOnTiltedFlatSolid,
+    TangentScene::kCylinderLyingOnFloor,
+    TangentScene::kCylinderStandingInDomainCorner,
+    TangentScene::kRimOnFloor,
+};
+
+TEST(MoveParticle, GeneratedTangentContactStartsFarFromOrigin_Succeed) {
+  // The starts of the tangent set in every scene, 2000 per scene from one generator, about 830 m from the origin with
+  // the production tolerance there and every radius and half height 2000 times larger (kFarFromOriginLargeSolids):
+  // radii from 100 to 1000 m, so R / tol reaches about 2^40 and the cusp's rest point is up to 2 Sqrt(R tol) = 2 mm
+  // from the contact. Every start succeeds and ends at least tol / 2 from every solid.
+  CaseGenerator generator;
+  for (const TangentScene scene : kEveryTangentScene) {
+    int successes = 0;
+    for (int draw_index = 0; draw_index < 2000; ++draw_index) {
+      TangentStart start = BuildTangentStart(generator, scene, kFarFromOriginLargeSolids);
+      start.inputs.solids = start.solids.data();
+      successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
+    }
+    std::cout << "tangent scene " << static_cast<int>(scene) << " far from origin: success " << successes
+              << " of 2000\n";
+    EXPECT_EQ(successes, 2000);
+  }
+}
+
+// Computes whether a moving tangent scene has a curved solid closing on the other one at a cusp, where the speed cap
+// squeezes a particle far from the origin: a ball on a floor, two balls, a ball on a tilted floor, a cylinder lying on
+// a floor. The domain-corner scenes keep still, and the rim on a floor meets the floor at its tilt, at least 0.1 rad,
+// where sinking at 1e-3 m/s pushes the particle out at most 1e-3 / sin(0.1) = 0.01 m/s.
+bool ComputeHasClosingCusp(TangentScene scene) {
+  return scene == TangentScene::kBallOnFloor || scene == TangentScene::kTwoBalls
+      || scene == TangentScene::kBallOnTiltedFlatSolid || scene == TangentScene::kCylinderLyingOnFloor;
+}
+
+// Fails the calling test unless the far slides of one scene had no other failure, every kTooManyHits was cured within
+// eight halvings, and only a moving scene with a closing cusp (ComputeHasClosingCusp) was squeezed. At least 1950 of
+// the 2000 draws succeed, as near the origin, or 1550 in a moving scene with a closing cusp: measured 1626 to 1683 here
+// and at least 1622 over 12 generator seeds in review, about 1650 on average with a standard deviation of about 17
+// draws (a squeeze share near 0.18 of 2000), so 1550 is 4 such deviations below the least seen.
+void ExpectFarTangentSlideCounts(TangentScene scene, const TangentSlideCounts& counts, bool is_moving) {
+  const bool can_squeeze = is_moving && ComputeHasClosingCusp(scene);
+  EXPECT_EQ(counts.other_failures, 0);
+  EXPECT_EQ(counts.cured_after_halvings.at(8), 0);
+  EXPECT_TRUE(can_squeeze || counts.squeezed == 0);
+  EXPECT_GE(counts.successes, can_squeeze ? 1550 : 1950);
+}
+
+TEST(MoveParticle, GeneratedTangentContactSlidesFarFromOrigin_FailOnlyWhereAShorterStepCures) {
+  // The slides of the tangent set in every scene, fixed and then moving, 2000 draws each from one generator, placed as
+  // in GeneratedTangentContactStartsFarFromOrigin_Succeed. As near the origin: every success ends at least tol / 2 from
+  // every solid, and the only failures are kTooManyHits cured by a shorter step and the speed cap's squeeze of a ball
+  // or a lying cylinder sinking into the other solid (CheckTangentSlide). That squeeze is far more common here, and
+  // the geometry decides it: at the rest point the two surfaces meet at a slope of 2 Sqrt(tol / R), 6e-6 for R = 100 m,
+  // so sinking at 1e-3 m/s pushes the particle out at about 1e-3 / 6e-6 = 160 m/s, above 64 times the speeds of the
+  // draw (plan decision P20, item 7); near the origin the slope is about 1e-4 and the escape below the cap. Measured:
+  // 317 to 374 of the 2000 moving draws of the ball on a floor, the two balls, the ball on a tilted floor and the
+  // lying cylinder, about three quarters of the quarter that sink (ExpectFarTangentSlideCounts gives their floor).
+  CaseGenerator generator;
+  for (const bool is_moving : {false, true}) {
+    for (const TangentScene scene : kEveryTangentScene) {
+      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving, kFarFromOriginLargeSolids);
+      std::cout << "far from origin, ";
+      PrintTangentSlideCounts(scene, is_moving, counts);
+      ExpectFarTangentSlideCounts(scene, counts, is_moving);
     }
   }
 }

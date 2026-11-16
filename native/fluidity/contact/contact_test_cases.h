@@ -13,10 +13,18 @@
 //   both processors can run the same scenes.
 //   Example: FindMoveParticleCase("DocstringExample") is the flat solid at x = 1 and the particle at x = 0.9.
 //
+//   The sets far from the origin (BuildObliqueCases, BuildRoundCases) use the contact tolerance of a real scene
+//   instead, the one ComputeContactTolerance gives 1100 m from the origin, and ComputeEndDistanceCounts checks any of
+//   them: every end at least tol / 2 outside every solid, beside a naive control that hits at the surface and has no
+//   settle.
+//
 // Owns:    kTestContactTolerance, ExpectVec3Near, CaseGenerator, MoveParticleCase, ToSolidContactInputs,
-//          BuildMoveParticleCases, FindMoveParticleCase
+//          BuildMoveParticleCases, FindMoveParticleCase, kFarFromOriginContactTolerance, BuildObliqueCases,
+//          BuildRoundCases, EndDistanceCounts, ComputeEndDistanceCounts
 // Uses:    Vec3 (base/vec3.h), Mat3, kIdentity (base/mat3.h), CPU-only guard (base/cpu_only.h), Solid, ToSolid and
-//          the shape structs (contact/solid_shapes.h), SolidContactInputs (contact/solid_contact_types.h), GoogleTest
+//          the shape structs (contact/solid_shapes.h), SolidContactInputs (contact/solid_contact_types.h),
+//          ComputeContactTolerance (contact/contact_tolerance.h), MoveParticle and FindFirstHit
+//          (contact/solid_contact.h), GoogleTest
 // Used by: the tests of contact/
 // Read:    docs/method-paper/fluidity-method.typ <sec-contact-tolerance>, <proc-move-particle>
 
@@ -27,6 +35,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -38,7 +47,11 @@
 #include <vector>
 
 #include "fluidity/base/mat3.h"
+#include "fluidity/base/per_particle_velocity.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/contact/contact_error.h"
+#include "fluidity/contact/contact_tolerance.h"
+#include "fluidity/contact/solid_contact.h"
 #include "fluidity/contact/solid_contact_types.h"
 #include "fluidity/contact/solid_shapes.h"
 
@@ -3036,6 +3049,235 @@ inline MoveParticleCase FindMoveParticleCase(std::string_view name) {
   }
   ADD_FAILURE() << "no MoveParticle case named " << name;
   return {};
+}
+
+// m. The contact tolerance of the generated sets far from the origin: ComputeContactTolerance for a scene that reaches
+// 1100 m from the origin, with its smallest cell and its thinnest solid 0.01 m wide. About 1.0e-9 m, so 2^40 times
+// smaller than the largest coordinate, where the test tolerance is 2^30 times smaller than a coordinate of 1 m.
+inline constexpr double kFarFromOriginContactTolerance = ComputeContactTolerance({
+    .largest_coordinate = 1100,
+    .smallest_cell_width = 0.01,
+    .thinnest_solid = 0.01,
+});
+
+namespace far_from_origin_cases {
+
+constexpr double kStepDuration = 0x1p-6;  // s, the step of every case far from the origin.
+
+// Draws three NextSigned, in x, y, z order.
+inline Vec3 BuildSignedVector(CaseGenerator& generator) {
+  return {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+}
+
+// Draws a unit vector: three NextSigned, drawn again while shorter than 0.25, then normalized.
+inline Vec3 BuildDirection(CaseGenerator& generator) {
+  Vec3 draw{};
+  while (math::Length(draw) < 0.25) {
+    draw = BuildSignedVector(generator);
+  }
+  return math::Normalized(draw);
+}
+
+// Inputs far from the origin for one particle: both velocities, the step kStepDuration, kFarFromOriginContactTolerance,
+// no start overlap and no committed plate.
+inline SolidContactInputs BuildFarInputs(Vec3 start_position, PerParticleVelocity<Vec3> velocity, double friction) {
+  SolidContactInputs inputs;
+  inputs.start_position = start_position;
+  inputs.velocity = velocity;
+  inputs.step_duration = kStepDuration;
+  inputs.friction = friction;
+  inputs.contact_tolerance = kFarFromOriginContactTolerance;
+  return inputs;
+}
+
+}  // namespace far_from_origin_cases
+
+// Builds count paths onto one flat solid far from the origin, each a scene of its own named "ObliqueFarFromOrigin":
+// the oblique set of plan Task 14. The solid moves, the particle meets it at a share of the step, slides on with
+// friction, and must end the step outside it.
+//
+// Method: per case, in this order of draws (P11 generator, one for the whole set): the normal (three NextSigned,
+//   drawn again while shorter than 0.25, then normalized); the point on the surface, 1000 times three NextSigned m;
+//   the solid's linear velocity, 10 times three NextSigned m/s; gap = 0.01 Next + 2 tol m; the tangent, the normalized
+//   cross product of the normal with three NextSigned, drawn again while that product is shorter than 0.25;
+//   sideways = 5 NextSigned m/s; hit_share = 0.1 + 0.8 Next; for_this_step = linear velocity + sideways tangent -
+//   gap / (T hit_share) normal; for_next_step = for_this_step + 0.5 times three NextSigned; start = point + gap normal
+//   + 50 NextSigned tangent; friction Next. T = 2^-6 s, the solid's id 1, tol kFarFromOriginContactTolerance.
+// Example: every case starts gap from the solid and comes nearer by gap / hit_share per step relative to it, so the
+//   path reaches the solid's rest gap at a share of the step a little below hit_share.
+inline std::vector<MoveParticleCase> BuildObliqueCases(int count) {
+  using far_from_origin_cases::BuildDirection;
+  using far_from_origin_cases::BuildSignedVector;
+  constexpr double kStepDuration = far_from_origin_cases::kStepDuration;  // s
+  CaseGenerator generator;
+  std::vector<MoveParticleCase> cases;
+  cases.reserve(static_cast<std::size_t>(count));
+  for (int case_index = 0; case_index < count; ++case_index) {
+    const Vec3 normal = BuildDirection(generator);
+    const Vec3 point_on_surface = 1e3 * BuildSignedVector(generator);  // m
+    const Vec3 linear_velocity = 10 * BuildSignedVector(generator);  // m/s
+    const double gap = 0.01 * generator.Next() + 2 * kFarFromOriginContactTolerance;  // m
+    Vec3 tangent_draw{};
+    while (math::Length(tangent_draw) < 0.25) {
+      tangent_draw = math::Cross(normal, BuildSignedVector(generator));
+    }
+    const Vec3 tangent = math::Normalized(tangent_draw);
+    const double sideways_speed = 5 * generator.NextSigned();  // m/s
+    const double hit_share = 0.1 + 0.8 * generator.Next();
+    const double approach_speed = gap / (kStepDuration * hit_share);  // m/s, relative to the solid.
+    const Vec3 velocity_for_this_step = linear_velocity + sideways_speed * tangent - approach_speed * normal;
+    const Vec3 velocity_for_next_step = velocity_for_this_step + 0.5 * BuildSignedVector(generator);
+    const Vec3 start_position = point_on_surface + gap * normal + 50 * generator.NextSigned() * tangent;
+    const double friction = generator.Next();
+    const SolidMotion motion = {.linear_velocity = linear_velocity, .angular_velocity = {}};
+    cases.push_back({
+        .name = "ObliqueFarFromOrigin",
+        .solids = {move_particle_cases::BuildFlatSolid(point_on_surface, normal, motion, 1)},
+        .inputs = far_from_origin_cases::BuildFarInputs(
+            start_position,
+            {.for_next_step = velocity_for_next_step, .for_this_step = velocity_for_this_step},
+            friction
+        ),
+    });
+  }
+  return cases;
+}
+
+// Builds count paths onto one sphere or cylinder far from the origin, each a scene of its own named
+// "RoundFarFromOrigin": the round set of plan Task 14. The solid moves without turning; the particle starts outside
+// its bounding ball and aims, relative to it, at a point of the box around it, reached at a share of the step.
+//
+// Method: per case, in this order of draws (P11 generator, one for the whole set): is_sphere = Next < 0.5; the centre,
+//   1000 times three NextSigned m; radius = 0.05 + 0.45 Next m; half_height = 0.05 + 0.45 Next m (drawn for both
+//   shapes, used by the cylinder); the axis (three NextSigned, drawn again while shorter than 0.25, then normalized;
+//   drawn for both shapes); the linear velocity, 10 times three NextSigned m/s; the direction, drawn as the axis was;
+//   start = centre + (Length(half_size) + 0.01 + 0.05 Next) direction; target = centre + axes (0.9 half_size times
+//   three NextSigned, axis by axis); hit_share = 0.1 + 0.8 Next; for_this_step = linear velocity + (target - start) /
+//   (T hit_share); for_next_step = for_this_step + 0.5 times three NextSigned; friction Next. T = 2^-6 s, the solid's
+//   id 1, tol kFarFromOriginContactTolerance.
+// Example: a cylinder's target is within 0.9 of its half height of its middle, and within 0.9 radius along each own
+//   axis across it, so up to 1.27 radius from its axis: most cylinder paths, and fewer sphere paths, hit.
+inline std::vector<MoveParticleCase> BuildRoundCases(int count) {
+  using far_from_origin_cases::BuildDirection;
+  using far_from_origin_cases::BuildSignedVector;
+  constexpr double kStepDuration = far_from_origin_cases::kStepDuration;  // s
+  CaseGenerator generator;
+  std::vector<MoveParticleCase> cases;
+  cases.reserve(static_cast<std::size_t>(count));
+  for (int case_index = 0; case_index < count; ++case_index) {
+    const bool is_sphere = generator.Next() < 0.5;
+    const Vec3 center = 1e3 * BuildSignedVector(generator);  // m
+    const double radius = 0.05 + 0.45 * generator.Next();  // m
+    const double half_height = 0.05 + 0.45 * generator.Next();  // m
+    const Vec3 axis = BuildDirection(generator);
+    const SolidMotion motion = {.linear_velocity = 10 * BuildSignedVector(generator), .angular_velocity = {}};
+    const Vec3 direction = BuildDirection(generator);
+    const Solid solid = is_sphere
+        ? ToSolid(Sphere{.center = center, .radius = radius}, motion, 1)
+        : ToSolid(Cylinder{.center = center, .axis = axis, .radius = radius, .half_height = half_height}, motion, 1);
+    const Vec3 half_size = solid.half_size;  // m
+    const Vec3 start_position = center + (math::Length(half_size) + 0.01 + 0.05 * generator.Next()) * direction;
+    const Vec3 target_draw = BuildSignedVector(generator);
+    const Vec3 own_target = {
+        .x = 0.9 * half_size.x * target_draw.x,
+        .y = 0.9 * half_size.y * target_draw.y,
+        .z = 0.9 * half_size.z * target_draw.z,
+    };  // m, along the solid's own axes from its centre.
+    const Vec3 target = center + solid.pose_at_step_start.axes * own_target;  // m, world.
+    const double hit_share = 0.1 + 0.8 * generator.Next();
+    const Vec3 velocity_for_this_step =
+        motion.linear_velocity + (1 / (kStepDuration * hit_share)) * (target - start_position);
+    const Vec3 velocity_for_next_step = velocity_for_this_step + 0.5 * BuildSignedVector(generator);
+    const double friction = generator.Next();
+    cases.push_back({
+        .name = "RoundFarFromOrigin",
+        .solids = {solid},
+        .inputs = far_from_origin_cases::BuildFarInputs(
+            start_position,
+            {.for_next_step = velocity_for_next_step, .for_this_step = velocity_for_this_step},
+            friction
+        ),
+    });
+  }
+  return cases;
+}
+
+// What ComputeEndDistanceCounts found over a list of scenes.
+struct EndDistanceCounts {
+  int cases = 0;
+  int failures = 0;  // MoveParticle returned an error.
+  int hits = 0;  // Successes with at least one hit.
+  int ends_closer_than_half_tolerance = 0;  // Successes that end closer than tol / 2 to a solid.
+  double least_end_distance_share = std::numeric_limits<double>::infinity();  // Of tol, over every success and solid.
+  int naive_ends_inside = 0;  // Naive controls that end inside a solid (distance below 0).
+};
+
+// Runs MoveParticle on every scene and measures how far each successful end is from every solid at its end pose,
+// beside a naive control of the same path: what the rest gap and the settle are for.
+//
+// Method: a success ends closer than tol / 2 to a solid when ComputeDistanceToSolid at ComputeSolidPose(solid, T)
+//   is below tol / 2 for one of them. The naive control runs FindFirstHit with contact tolerance 0, so it hits at the
+//   surface itself; at a hit it applies ComputeContactResponse to for_this_step with the solid's velocity at the hit
+//   point, the hit's normal and the friction times the solid's friction scale, and moves on for the time left
+//   without another sweep; without a hit it moves for the whole step. It ends inside when its least distance to a
+//   solid at the end pose is below 0. Every scene is world-aligned or not, any shape; turning solids are allowed, but
+//   the control then reads the solid velocity at the hit's pose only.
+// Example: a path onto a moving flat solid far from the origin ends tol from it; its naive control ends a few rounding
+//   units on either side of the surface.
+inline EndDistanceCounts ComputeEndDistanceCounts(const std::vector<MoveParticleCase>& cases) {
+  EndDistanceCounts counts;
+  for (const MoveParticleCase& test_case : cases) {
+    const SolidContactInputs inputs = ToSolidContactInputs(test_case);
+    const double step_duration = inputs.step_duration;  // s
+    ++counts.cases;
+    SolidContactResult result;
+    ContactFailure failure;
+    if (MoveParticle(inputs, &result, &failure) != ContactError::kNone) {
+      ++counts.failures;
+    } else {
+      counts.hits += result.hit_count > 0 ? 1 : 0;
+      bool is_closer_than_half_tolerance = false;
+      for (const Solid& solid : test_case.solids) {
+        const double end_distance =
+            ComputeDistanceToSolid(solid, ComputeSolidPose(solid, step_duration), result.position).distance;  // m
+        counts.least_end_distance_share =
+            std::min(counts.least_end_distance_share, end_distance / inputs.contact_tolerance);
+        is_closer_than_half_tolerance = is_closer_than_half_tolerance || end_distance < inputs.contact_tolerance / 2;
+      }
+      counts.ends_closer_than_half_tolerance += is_closer_than_half_tolerance ? 1 : 0;
+    }
+
+    SolidContactInputs naive_inputs = inputs;
+    naive_inputs.contact_tolerance = 0;
+    const Vec3 velocity = inputs.velocity.for_this_step;
+    FirstHit naive_hit;
+    if (FindFirstHit(naive_inputs, inputs.start_position, velocity, 0, step_duration, &naive_hit)
+        != ContactError::kNone) {
+      continue;
+    }
+    Vec3 naive_end = inputs.start_position + velocity * step_duration;  // m
+    if (naive_hit.solid_index != kNoSolid) {
+      const Solid& hit_solid = test_case.solids.at(naive_hit.solid_index);
+      const Vec3 hit_position = inputs.start_position + velocity * naive_hit.elapsed;  // m
+      const Vec3 solid_velocity =
+          ComputeSolidVelocity(hit_solid, ComputeSolidPose(hit_solid, naive_hit.elapsed), hit_position);  // m/s
+      const Vec3 response = ComputeContactResponse(
+          velocity,
+          solid_velocity,
+          naive_hit.at_hit.normal_out_of_solid,
+          inputs.friction * hit_solid.friction_scale
+      );
+      naive_end = hit_position + response * (step_duration - naive_hit.elapsed);
+    }
+    double naive_end_distance = std::numeric_limits<double>::infinity();  // m
+    for (const Solid& solid : test_case.solids) {
+      const double distance =
+          ComputeDistanceToSolid(solid, ComputeSolidPose(solid, step_duration), naive_end).distance;  // m
+      naive_end_distance = std::min(naive_end_distance, distance);
+    }
+    counts.naive_ends_inside += naive_end_distance < 0 ? 1 : 0;
+  }
+  return counts;
 }
 
 }  // namespace fluidity::contact

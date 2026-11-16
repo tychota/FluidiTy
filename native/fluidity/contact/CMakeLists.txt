@@ -15,4 +15,5 @@ fluidity_add_test(contact_response_test SOURCES contact_response_test.cc LABEL c
 fluidity_add_test(contact_tolerance_test SOURCES contact_tolerance_test.cc LABEL cpu)
 fluidity_add_test(find_first_hit_test SOURCES find_first_hit_test.cc LABEL cpu)
 fluidity_add_test(move_particle_test SOURCES move_particle_test.cc LABEL cpu)
+fluidity_add_test(move_particle_tolerance_test SOURCES move_particle_tolerance_test.cc LABEL cpu)
 fluidity_add_test(solid_shapes_test SOURCES solid_shapes_test.cc LABEL cpu)
