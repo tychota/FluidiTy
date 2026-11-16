@@ -155,6 +155,10 @@ Plan decisions (the design left these open; every task respects them, the paper 
   left <= tol / 16` at its hit and the time left only shrinks, so a free path from a touched solid comes closer to it
   by at most `tol / 16`. The allowance is the one proved for the velocity the response received (carried, not
   recomputed from the velocity after it).
+  **Amended 2026-11-16 (P21, Task 12b):** the face that gives the distance keeps this rule. Every other face plane of
+  a box, and a cylinder's wall and cap for a start beside a rim, has the touching rule of a bounding surface: a start
+  gap in `[-tol / 8, tol / 16]` that sinks at most `tol / 64` during the sweep rests on it, and the sweep is free of
+  the solid (P21 items 1 and 2). It is what lets a particle cross the seam of two flush solids.
 - **P3 Committed plate.** For a particle committed to `{plate_id, s}`, that plate is the half space on side `s`:
   `d = s * p.z - half_thickness`, face `kHighZ` for `kAlongNormal`, `kLowZ` for `kAgainstNormal`. This distance
   is used in classification, `FindFirstHit`, settling and the end check. "On the other side by more than `tol`"
@@ -297,6 +301,13 @@ Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7
   at most `(Sqrt(2) - 1) * tol`). **Amended 2026-11-15 (paper review):** the rim move never applies to a hit found
   by the stepping search toward a turning cylinder (P17), even when the reported face is `kLowRim` or `kHighRim`:
   that search stops at `d <= 1.25 tol` in any region and its hit is used as found (Task 12a test).
+  **Amended 2026-11-16 (P21, Task 12b; coordinator ruling 44):** the entry into the cylinder grown with sharp edges is
+  the hit only where it lies on the wall or on a cap proper. Beside a rim (both distances positive at the entry) the
+  hit is found on the true distance by the rim search from that entry (P21 items 3 and 4), so a rim is hit at `d <=
+  tol + tol / 1024`. The rim move is withdrawn, and with it the sentence above on the stepping search, which had
+  nothing left to be exempt from; the rule for a start in the rim corner ("a hit at 0 only when `rate < 0`") is
+  withdrawn too: such a start has the entry 0 and the rim search decides, after the touching rule of the wall and the
+  cap as bounding surfaces (P21 item 1). The two intervals are unchanged.
 - **P16 Touching rule on a curved surface (counterpart of P2).** For a sphere or cylinder, `g0 = d - tol` with the
   true distance at the path start and `rate = Dot(normal at the start, u)`, `u` the velocity relative to the solid.
   `-tol <= g0 <= 0`: not hit in this sweep when `rate * duration >= -tol`, hit at `t = 0` otherwise; `g0 < -tol`:
@@ -307,6 +318,9 @@ Plan decisions added 2026-11-15 for the sphere and the cylinder (A74; design 5.7
   is hit at `t = 0` in every step and carried by the slide in its axes. In the sphere and wall quadratics `C` is
   computed as `g0 * (L0 + R)` (and `(rho0 - radius - tol) * (rho0 + R)`), never as `Dot(p0, p0) - R * R`, so the
   sign of `C` is exactly the sign of the gap this rule reads.
+  **Amended 2026-11-16 (P21):** a sweep after a rim hit starts within `tol / 1024` of `d = tol`, inside the touched
+  window, not at `d = tol` by a rim move; "(a hit, the rim move or the start move put it there)" reads "(a hit or the
+  start move put it there)".
 - **P17 Spin about a symmetry axis.** The shape-changing turn is zero for a sphere and `omega_across = omega -
   Dot(omega, e_z) * e_z` for a cylinder (`e_z` its own z axis, the pose's z column at the sweep's start). A sphere is always swept and
   slid as a solid that does not turn (closed form, Task 8a). A cylinder is too when `Length(omega_across) *
@@ -371,7 +385,8 @@ Plan decision added 2026-11-15 for the second-order advance (controller ruling 1
   farther than `tol - tol / 64` before the hit (the tests' allowance). The hit band and the reported hit are Task 9's:
   a hit when `g <= kTurningSolidHitGapShare * tol`, `at_hit` as found, so after an advance `d` is in `[tol - tol / 64,
   1.25 tol + tol / 128]` (a second-order advance usually lands near `d = tol`); P15's "no rim move for a
-  stepping-search hit" and Task 12a are unchanged. `kMaxAdvanceCount` stays 128 and a close call stays possible (a
+  stepping-search hit" and Task 12a are unchanged. (Amended 2026-11-16, P21: no hit is moved any more; a turning
+  cylinder's hit is used where the search stopped, as before.) `kMaxAdvanceCount` stays 128 and a close call stays possible (a
   particle hovering with no normal motion where `K` is far above the path's true curvature), but must be rare: at most
   1 per 1000 paths on every generated set of Tasks 9 and 9b and at most 1 % per kind on the paddle set (measured: 0
   in 30,000 mirror paths of seven generated sets, 1 in 8,000 broad paths, 0 to 0.1 % in the paddle set with gaps down to the hit band),
@@ -759,6 +774,235 @@ built in Task 12's third fix round; the paper states it):
      Of 166 analytic tests the model gives the built result in 112 and a different one in 42 (29 in the hit count
      or the named solid only, 3 in the record or the reaction only, 10 in a velocity or the outcome); 7 are not
      modelled (boxes, spin), and the 5 of many steps hold with one hit per step.
+
+Plan decision added 2026-11-16 for a cylinder's rim and for flush solids (Task 12a review I2, coordinator ruling 44;
+built in Task 12b; the paper states it):
+
+- **P21 A cylinder's rim at its true distance, and the touching rule of every bounding surface.** Words: a *bounding
+  surface* of a convex solid is a surface the whole solid lies behind: a face plane of a box, a cylinder's wall taken
+  as unbounded along its axis, the plane of a cap; a particle *rests on* a bounding surface when its gap to it is in a
+  window around 0 and its path does not sink into it; the *rim search* is how a sweep finds its first hit beside a rim
+  of a cylinder that does not turn. Why: P15 finds a cylinder's first hit on the cylinder grown with sharp edges,
+  whose corner beside a rim lies up to `Sqrt(2) tol` from the rim, while the distance (P14) is the true one. Task
+  12a's review (I2) measured what follows from the two shapes: a particle that slides down a drum at the rest gap and
+  reaches the seam with a second drum of the same radius is hit on the lower drum's rim 1.41 tol from it, with a
+  normal at 45 degrees, and leaves at `{0.5, 0, -0.5}` with half its kinetic energy; so is a particle that slides
+  along a floor onto a puck lying flush in it; and the rim move that brings such a hit to the rest gap (P15, Task 12a)
+  drags the particle to 0.586 tol of a floor beside the rim. On 220,000 generated paths past a cylinder (item 15) the
+  rule as built reports 48.9 % of its hits farther than `tol + tol / 1024` from the cylinder and 13.9 % on paths that
+  never come within tol of it, where the response removes 0.24 of the speed on average and up to 0.71. A box has the
+  seam's half of this (item 8). This decision amends P2, P15 and P16. The rim move, its exception for the stepping
+  search and the wider window of the active surfaces after it (Task 12a as built, in no decision) are withdrawn.
+  1. **The touching rule of a bounding surface.** When the touching rule on the distance (P2 for a box, P16 for a
+     cylinder, both unchanged) finds the start outside, every bounding surface other than the one that gives the
+     distance is read, in the solid's own axes at the pose of the sweep's start (`p0`, `u` of `ComputeOwnPath`). Box:
+     each face plane other than the face of the start's distance, `gap = sign * p0.axis - offset - tol` and `gap_rate
+     = sign * u.axis` (the expressions of `FindEntryThroughFacePlanes`). Cylinder: only when the start's distance
+     reports a rim (`kLowRim` or `kHighRim`, so `wall_distance > 0` and `cap_distance > 0`; elsewhere the wall or a
+     cap gives the distance and P16 has ruled on it): the wall, `gap = rho0 - radius - tol` and `gap_rate = (p0.x *
+     u.x + p0.y * u.y) / rho0`, and the cap on the start's side, `gap = Abs(p0.z) - half_height - tol` and `gap_rate =
+     cap_sign * u.z`. The start rests on that bounding surface, and the whole sweep is free of the solid, when `-tol /
+     8 <= gap <= tol / 16` and `gap_rate * duration >= -tol / 64` (`kBoundingSurfaceRestingDepthShare = 0x1p-3`,
+     `kTouchedSolidRestingGapShare`, `kBoundingSurfaceSinkShare = 0x1p-6`), the same before and after a response. In
+     P15's words: the time a path spends behind a bounding surface it rests on is empty, so the intersection is. Why
+     these numbers. Below, `tol / 8`: a particle at rest is within `tol / 128` of the rest gap after the settle and
+     comes at most `tol / 16` nearer after a response (P20 item 9); an eighth holds both. Above, `tol / 16`: the
+     touched window. The sink, `tol / 64`: what each response may leave (`allowance * time left <= tol / 64`, P20 item
+     7), so a velocity that a response left never fails it, and neither do coplanar faces whose normals differ by
+     rounding, or by up to `tol / (64 * path length)` (1.5e-10 rad over 0.1 m at `tol = 2^-30` m). The surface that
+     gives the distance keeps its own rule so that nothing changes for a flat solid, a plate, a domain side, a sphere,
+     or a start on a box's or a cylinder's face (their tests keep their bits).
+  2. **Why it is safe.** The solid lies behind `b`, so `d >= gap_b + tol` at every point: a box's distance is its
+     largest face gap, and a cylinder's is at least `Max(wall_distance, cap_distance)`. Along the path `gap_b(t) >=
+     gap_b(0) + gap_rate * t`: a face plane's gap is linear in time; `rho` is the length of a point moving on a
+     straight line, convex in time; `Abs(z) >= cap_sign * z`, linear. So through a sweep that rests, `gap_b >= -tol /
+     8 - tol / 64` and the path stays `55 / 64 tol` or more from the solid. Every sweep reads its start afresh, so
+     this holds for the step whatever the number of sweeps; the settle then lifts the particle to the rest gap, and
+     the end check (`tol / 2`) is not at stake. What it gives up: a path that the true distance would stop up to `9 /
+     64 tol` inside the rest gap is not hit, and a ledge lower than `tol / 8` between two solids is not seen.
+     Measured: 67,288 of 202,997 swept paths rest on a bounding surface; the smallest true gap along them is `-0.126
+     tol`.
+  3. **A cylinder's first hit** (a cylinder that does not turn; own axes at the pose of the sweep's start; P15's two
+     intervals unchanged). (a) The touching rule on the true distance (P16): a hit at 0, free, or outside. (b) Outside
+     and beside a rim: item 1 on the wall and on the cap; free when the start rests on either. (c) The entry into the
+     cylinder grown with sharp edges: the later of the two intervals' entries, when it is no later than either exit
+     and no later than `duration`; otherwise free, as built. A start inside both intervals (P15's rim corner) has the
+     entry 0: the branch that read its rate is withdrawn, (e) does its work. (d) The entry is the hit when its
+     position `p0 + u * entry` is not beside a rim (`wall_distance <= 0` or `cap_distance <= 0`, as
+     `ComputeDistanceToCylinder` computes them there): on the wall and on a cap the sharp grown surface is the true
+     one, and the hit time keeps the bits it has today. (e) Beside a rim, the rim search from the entry (item 4). The
+     reported distance, normal and face are still `ComputeDistanceToSolid` at the hit position and the pose of the
+     hit's time (`ToFirstHit`).
+  4. **The rim search.** Samples at `elapsed`, the first at the entry, each `ComputeDistanceToCylinder` at `p0 + u *
+     elapsed` in own axes: `gap = d - tol`, `gap_rate = Dot(n, u)` with `n` the normal of that read. In this order:
+     `gap <= 0` is a hit at `elapsed`; `gap_rate >= 0` is free (the gap is convex along the path and never closes
+     again); `advance = gap / -gap_rate`, and `elapsed + advance > duration` is free (closing at its present rate,
+     which only slows, the gap does not reach 0 in the sweep); `gap <= kRimHitGapShare * tol` (`0x1p-10`) is a hit at
+     `elapsed`; after `kMaxRimAdvanceCount = 16` advances, a hit at `elapsed`; otherwise `elapsed += advance`. The
+     advance is P18's second-order advance with a gap curvature bound of 0, which is what a solid that does not turn
+     has; it is written as the quotient, not through `ComputeSecondOrderAdvance`, whose square of a gap rate below
+     1e-154 m/s underflows to an advance of 0. No pose is computed in the search and no `Sin`. Why `2^-10`: a hit is
+     reported while the true distance is at most `tol + tol / 1024`; a path whose line stays outside is hit only when
+     it passes within `tol / 1024`, and then loses at most `Sqrt(2 * 2^-10) = 0.044` of its speed (measured 0.0443); a
+     finer share is below the rounding of a distance where the tolerance is at its floor of `2^-40` of the scene (one
+     rounding unit of a coordinate is `2^-12 tol` there). Measured on 60,000 paths per share: `2^-6` gives 1.15
+     advances on average and at most 3, a hit up to 0.016 tol out and up to 0.17 of the speed removed on a graze;
+     `2^-10` gives 2.0, at most 5, 0.0011 and 0.044; `2^-14` gives 2.8, at most 8, 0.0011 (rounding) and 0.011. At a
+     graze: a path tangent to the round rim closes the gap by about 4 per advance (the gap rate halves), so from the
+     corner's `0.414 tol` it is within the hit share after 5 advances, or the gap has stopped closing and the path is
+     free; the limit of 16 is three times that and is never reached (item 15). At the limit the search reports the hit
+     where it stands, the safe side: no path is let through.
+  5. **Why no hit is missed and none is reported far from the surface.** `g(t) = d(p0 + u t) - tol`, with `d` the true
+     signed distance to a convex solid, is convex in `t`. (i) The cylinder grown with sharp edges contains the true
+     grown shape `{g <= 0}`, so before the entry of item 3 (c) `g > 0`, and a path that never enters is free: this is
+     P15's interval form, the only place where a path is declared free of the sharp shape, as built. (ii) At the
+     entry, on the wall or a cap proper, `g = 0`: the hit, as built. (iii) Beside a rim `0 <= g <= (Sqrt(2) - 1) tol`
+     at the entry, and from a sample with `g > 0` and `g' < 0` convexity gives `g(s) >= g + g' (s - t) > 0` for every
+     `s` before `t + g / -g'`: no advance passes a hit. With `g' >= 0`, `g(s) >= g > 0` for every later `s`: free,
+     exactly. (iv) A hit is reported at a sample only when `g <= 0` there, or `0 < g <= tol / 1024` with the gap
+     closing fast enough to reach 0 within the sweep. Rounding: a computed distance is off by at most `tol / 128`
+     (`contact/contact_tolerance.h`), so the path stays farther than `tol - tol / 64` before the hit, P18's wording
+     and the tests' allowance; measured at the tolerance's floor the true gap at a hit is between `-0.0023 tol` and
+     `0.0020 tol`. A gap rate that rounding turns from just below 0 to 0 frees a path whose gap could close by at most
+     `2^-50 * |u| * duration <= 2^-10 tol` (within `MoveParticle`'s Requires): still outside. The module's rule "never
+     find a candidate and then validate it; compute intervals and intersect" holds in this form: no hit is ever
+     rejected by a second, separately rounded test. The intervals alone decide that a path misses the sharp grown
+     shape; after the entry the path is either hit there or searched onward from there, each advance proved free by
+     convexity, and the search ends free only by the sign of the gap rate or the end of the sweep. The test of item 3
+     (d) chooses between two ways of going on, both of which keep the path: on the edge between them (`cap_distance` a
+     rounding unit either side of 0) the first gives the entry and the second a gap of rounding at its first sample,
+     the same hit.
+  6. **What a rim hit reports.** `at_hit` is P14's rim branch at the hit position: face `kHighRim` or `kLowRim`,
+     normal `(wall_distance * radial + cap_distance * cap_sign * e_z) / d`, distance in `[tol, tol + tol / 1024]` up
+     to rounding. `ApplyHit` moves the particle and the clock by `ToFirstHit`'s own expressions and nothing moves it
+     afterwards, so the hit surface that `FindActiveSurfaces` lists and the surface the next sweep's touching rule
+     reads are `ComputeDistanceToSolid` at one point and one pose, for a rim as for a wall: step 2 of
+     `FindFirstHitOfSweep`'s proof (Task 12a: the sweep's rate equals minus the response's own target, bit for bit)
+     holds without its two clauses on the rim move. The hit lies inside the touched window (`tol / 1024 < tol / 16`),
+     so the next sweep rests on it by the touched rule; as built the rim move put it there. The normal: the sample of
+     the hit is at most `tol / 1024` short of the contact along the normal, which turns the normal by at most 0.044
+     rad on a graze and by 1e-6 to 2e-4 rad on the tests' paths (velocities within 1e-5 of the exact ones).
+  7. **What goes, entirely.** The rim move (`ApplyHit`'s step 3: the move, the second read of `at_hit`, its pose);
+     `ComputeIsRimHitToMove`; the `window_extension` parameter of `FindActiveSurfaces` and the sum behind it; the rim
+     corner's branch of `FindCylinderHit` with its read of the surface's velocity; P15's sentence that a
+     stepping-search hit is not moved, and with it the question of how `ApplyHit` knows which search found a hit
+     (review M6) and the missing test of a rim move between tol and `tol + tol / 16` (M3); the order dependence the
+     review could not rule out (a rim hit tied in time with another solid's hit moved the particle in one array order
+     and not in the other): no hit moves the particle. Nothing of the three stays. What else gets simpler: `ApplyHit`
+     has three steps (limit, move to the hit, respond); a rim hit beside a floor needs no rule of its own (item 9);
+     the tests' reference bound for a cylinder hit falls from `Sqrt(2) tol` to `tol + tol / 1024`; the glossary loses
+     `rim move`, and `rim corner` becomes a word of the rim search only.
+  8. **Boxes.** A box's distance is its largest face gap, so the box grown by tol has sharp edges by definition, its
+     first hit and its distance agree, and an edge hit reports the face whose plane the path crosses last, at `d =
+     tol`: there is no rim move and nothing to reconcile. What it has, measured: (a) *The seam.* At a flush seam (two
+     boxes stacked into one side, tiles of one floor, a box set flush in a floor) the particle's gap to the next box's
+     coplanar face is rounding of either sign. When it is 0 or less the path counts as behind that plane, the entry is
+     the crossing of the next box's side plane, and the hit has the side's normal: the particle stops dead (`{0, 0,
+     -1}` to `{0, 0, 0}` down two stacked boxes; 2,281 of 4,000 generated tile seams, 57 %). Item 1 on every face
+     plane other than the one that gives the distance removes it: 0 of 4,000, each velocity kept. (b) *Tiles
+     misaligned* by 1e-15 to 1e-9 rad about the seam: 1,610 of 4,000 lose speed as built, 163 with item 1, those that
+     climb more than `tol / 64` during the sweep: a real, if tiny, ramp met on its side face. (c) *The edge itself.* A
+     path that clips a grown edge is hit with a face normal although it never comes within tol of the box in a
+     straight line: 2,719 of 71,286 paths aimed within 2.5 tol of an edge (3.8 %), which lose 0.53 of their speed on
+     average; and a step up of `tol / 4` between two tiles stops a particle. (b) and (c) are what a round edge would
+     cure. For that the box's distance must become the straight-line distance beyond its edges and corners, in
+     `ComputeDistanceToSolid`, which other modules read; the rim search then applies as it is (that distance is
+     convex). It is not decided here: an owner question.
+  9. **P17, P20 and the end check.** *P17.* The intervals, item 1 and the rim search read the cylinder at the pose of
+     the sweep's start, as P17's bound allows; the true shape differs by less than `tol / 4` over the step (Task 12a
+     review I1, ruling 45). A rim hit then reports a distance within `tol / 1024` of tol plus that slack, as a wall or
+     cap hit of a tilting cylinder already does (as built the rim move hid the slack for rim hits alone, by moving to
+     tol at the true pose). The gap rates of item 1 and of the search are measured from `linear_velocity`, in own
+     axes: the tilt's surface speed, at most `tol / (8 T)`, is part of the same slack. A start in the touched window
+     still reads the surface's true velocity (`ComputeStartCase`, unchanged), which is what Task 12a's fix of the
+     sinking cap needs. One test changes for this reason: `SlowlyTiltingCylinderRimCornerStart`, a particle at rest
+     1.27 tol from a rim that rises 0.019 tol during the step, is no longer hit at 0; its true distance stays above
+     1.25 tol. A sweep that rests on a bounding surface of a tilting cylinder stays `55 / 64 - 1 / 4 = 39 / 64 tol` or
+     more from the true shape. The model has no tilt: Task 12b's generated set with tilts up to 0.99 of the bound must
+     still show 0 repeat hits and 0 failures (a rim hit lands like a wall hit, whose argument is unchanged: a start
+     gap above `tol / 16` from the slack needs more than half the step to build, and less than half is left to close
+     it). *P20.* The window of the active surfaces is `tol + tol / 16` at every hit again. A rim hit is at most `tol +
+     tol / 1024` away, inside it, and a surface the particle rests on beside the rim stays in the response because the
+     particle is not moved: in Task 12a's `RimOnFloorSweepingParticle` with the cylinder rising at 9e-4 m/s the rim is
+     hit 1.0002 tol away with the floor at exactly tol, one joint response over both, and the particle stays on the
+     floor (as built: lifted to 1.11 tol). With the scene's own 1e-3 m/s the round rim passes 1.069 tol from the
+     particle and does not hit it: the hit as built was the sharp corner's. *End check.* Nothing new ends below `tol /
+     2`: a rim hit is at tol or more up to rounding, a resting sweep at `55 / 64 tol` or more, and the settle is
+     unchanged.
+  10. **Turning solids.** A turning cylinder (above P17's bound) keeps the stepping search with P18's advance on the
+     true distance, and its hit, on a rim or not, is used where the search stopped, between tol and 1.25 tol:
+     unchanged, only there is no rim move left for it to be exempt from. The two searches now differ in three numbers:
+     the hit gap share (a quarter against `2^-10`: Task 13's carry, not the touched window, keeps a turning solid from
+     being hit again, so its hit may land anywhere up to 1.25 tol), the gap curvature bound (`K` against 0) and the
+     limit (128 advances and a close call against 16 and a hit). A turning solid has no touching rule, so none for its
+     bounding surfaces either.
+  11. **Module 1b (mesh solids).** Its plan already meets a triangle at its true distance, by closed forms: a face
+     piece, three edge pieces (cylinders of radius tol) and three vertex pieces (spheres), each an interval; that is
+     two quadratics where a cylinder's rim is a quartic, so 1b needs no search, and nothing here changes its pieces.
+     Three things do change for it. (a) Its row H6 ("step 4 has one place where a hit position may be moved before the
+     response: the rim move") no longer holds: module 1 moves no hit. Its resting sweep (half the radius, then
+     `RestingSweepHit_IsMovedToTheRestGapBeforeTheResponse`) is the pattern this decision withdraws, with its measured
+     cost: a move before the response leans away from a surface the particle rests on, which then falls out of the
+     window and is hit again (Task 12a: `kTooManyHits` under a rim sliding over a floor, cured only by widening the
+     window by the move). 1b should instead give each triangle's plane the touching rule of a bounding surface, which
+     is what its Review Focus 2 asks for (coplanar triangles of one flat face are flush seams by construction) and
+     needs no second radius and no move; `ComputeIsRestingOnBoundingSurface` takes a gap, a gap rate and a duration,
+     no shape, for that reason. A mesh is not convex, but each triangle lies in its plane, so the rule holds per
+     triangle. (b) If 1b ever wants a search (a shape with no closed form), the rim search is safe for any convex
+     piece from any point outside it; what it must measure is the limit: the entry into a triangle's sharp grown prism
+     lies up to `tol / sin(a / 2)` from a vertex of angle `a`. (c) Until the owner question of item 8 is answered, a
+     primitive box has sharp grown edges and the same box as a mesh has round ones.
+  12. **Cost per sweep.** A cylinder the path does not reach (nearly every sweep): as built, plus item 1's two tests
+     (three comparisons and one product each, one division for the wall's rate) for a start beside a rim only, minus
+     the rim corner's branch (a pose and a solid velocity). A hit on the wall or a cap: one read of the two distances
+     at the entry (one square root) more. Beside a rim: one distance read in own axes per sample (two square roots,
+     four divisions, no pose), 1 + the advances: 2.0 advances on average, at most 5 measured, at most
+     `kMaxRimAdvanceCount = 16`. A rim hit no longer pays the rim move's pose and distance read. A box: one test of
+     item 1 per face plane, at most five.
+  13. **The flush scenes, as tests** (`tol = 2^-30` m, friction 0, both velocities equal; Task 12b gives the starts).
+     Two stacked drums of one radius, down the seam at the rest gap: no hit, velocity `{0, 0, -1}` bit for bit, end at
+     tol from the lower drum (as built: one rim hit, `{0.5, 0, -0.5}`); the same from one rounding unit and from `tol
+     / 32` inside the rest gap. A puck flush in a floor, onto it and off it: no hit, `{-1, 0, 0}` and `{1, 0, 0}` bit
+     for bit, end at tol from both (as built: `{-0.5, 0, 0.5}`). A drum standing on a floor: along the floor into the
+     groove, one hit on the wall at `0.5 - tol` s, velocity 0, end at tol from both; down the wall into the groove,
+     one hit on the floor at `0.7 - tol` s, velocity 0; around the groove, no hit: all three as built, guards. Over a
+     rim: falling `tol / 2` beyond the wall, one hit `Sqrt(0.75) tol` above the cap's plane, velocity `{Sqrt(3) / 4,
+     0, -1 / 4}` within 1e-6 (as built `{0.4, 0, -0.2}`, from the corner at 1.118 tol); from the side `tol / 2` beyond
+     the cap, `{-1 / 4, 0, Sqrt(3) / 4}`; sliding off the cap past the rim and up the wall past the rim, one hit at 0
+     on the face, then free, end `Sqrt(65) tol` from the rim; carried around the rim in 64 steps of `tol / 2`, cap to
+     wall and wall to cap: one hit per step, faces in the order cap, rim (3 steps), wall, end distances between tol
+     and 1.13 tol. A rim crest 0.41 tol below a floor's surface: no hit (as built: a rim hit at 1.41 tol and a rim
+     move of 0.41 tol toward the floor).
+  14. **What it does not fix.** A box's edges, its steps between `tol / 8` and tol and its misaligned seams (item 8 b
+     and c). Seams between solids that turn together: a turning solid has no touching rule. Flush faces of two solids
+     whose normals differ by more than `tol / (64 * path length)`: a cylinder is then hit at its true distance, with a
+     small lean; a box on its side face. A graze within `tol / 1024` of a rim is a hit that removes up to 0.044 of the
+     speed, where an exact rule would remove nothing at exactly tol. P17's slack of `tol / 4` for a cylinder that
+     tilts within its bound, now the same on a rim as on a wall. The settle's dependence on array order (review M2)
+     and the neck of two balls (P20 item 16) are as before.
+  15. **Measured** with a Python model in double precision, the operation order above: the cylinder's distance (P14),
+     the first hit as built and by this decision, the box's first hit, and for whole moves the model of P20 with both.
+     Reference: the gap along the path in 60-digit arithmetic, exact for the doubles of the path, its smallest value
+     by golden section on the convex gap. (a) 220,000 paths past one cylinder in its own axes, where a moving cylinder
+     is the same sweep at the relative velocity: `radius / tol` and `half_height / tol` each from `2^4` to `2^40`, the
+     larger about 1 m; 35 % through the rim's neighbourhood at every angle, 15 % down the wall at the rest gap and 15
+     % in along the cap's plane (offsets 0, a few rounding units, up to `tol / 8`, tilts to 1e-3), 15 % tangent to the
+     round rim or the wall, 10 % starting in the rim corner, 10 % anywhere; 30 % with the touched rule. 17,003 start
+     deeper than tol inside and are not swept. This decision: 102,403 hits and 100,594 free; missed hits 0; hits
+     reported farther than `tol / 1024` plus rounding 0, later than the surface 0; 57,850 rim searches with 0 to 5
+     advances (7,827, 14,796, 15,990, 9,315, 8,287, 1,635; mean 2.0), none at the limit; of the 56,840 hits as built
+     that enter on the wall or a cap, 56,726 have the same time bit for bit and 114 now rest on a bounding surface. As
+     built: 140,412 hits, 68,603 farther than `tol + tol / 1024` (up to 1.4143 tol), 19,534 on paths that never come
+     within tol. (b) The test `GeneratedRimEdgeSweeps`' own 50,000 draws for each of its two cylinders along z: 50,000
+     hits, 1 to 3 advances (7,189, 32,918, 9,893), the true gap at the hit at most `0.00098 tol`; as built all 50,000
+     are at `Sqrt(2) tol`. (c) Whole moves, 4,000 per set, fixed and moving, world axes and tilted: 0 failures as
+     built and by this decision in every set. Speed lost at a seam, as built against this decision: box tiles 2,281 to
+     0; tiles misaligned 1,610 to 163; stacked drums 1,731 to 0; a puck in a floor 1,173 to 0. A lone cylinder with
+     half the paths aimed within 2 tol of a rim: 3,224 hits to 3,156, rim hits 258 to 190, no hit farther than `tol +
+     tol / 512`, no second hit. A rim touching, over or sunk into a floor, at rest and sweeping: same failures (none),
+     31 rim hits to 17. Six steps in a row across each seam, 500 runs per set: 0 failures, 0 runs lose speed (as built
+     282, 217 and 149 of 500). (d) Not modelled: spin, tilt within P17's bound, turning solids, friction between
+     differently moving solids at a rim.
 
 ## Before you start
 
@@ -2404,6 +2648,13 @@ the sphere's distance and first hit exist since Tasks 4a and 8a).
 
 ### Task 12a: `MoveParticle` on a sphere and a cylinder (A74)
 
+**As built (2026-11-16, commit `60b9901b`), and superseded in part by P21 (Task 12b), where this task's text below
+differs:** the task was built before Task 13, so `TurningCylinderRimHit_IsNotMoved` is a test of `ApplyHit`; the rim
+move applies only above `d = tol`, and the window of the active surfaces grows by its length (neither in a decision).
+Task 12b removes the rim move, `ComputeIsRimHitToMove` and that wider window: every sentence below on the rim move,
+and the expected values `{0.4, 0, -0.2}` and "within 0x1p-40 of tol" of `CylinderRim_HitPositionMovedToOneTolerance`,
+are replaced by Task 12b's.
+
 **Kind:** numerics
 
 **Files:**
@@ -2501,6 +2752,322 @@ the sphere's distance and first hit exist since Tasks 4a and 8a).
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Move a particle against a sphere and a cylinder`.
 
+### Task 12b: A cylinder's rim at its true distance
+
+**Kind:** numerics
+
+Added 2026-11-16 (Task 12a review I2, coordinator ruling 44, plan decision P21). Run it after Task 12a and before Task
+13. A cylinder that does not turn is hit beside a rim where its true distance reaches tol, by the rim search; a start
+that rests on a bounding surface of a box or a cylinder is free of that solid, so flush drums, pucks and boxes no
+longer stop or deflect a sliding particle; the rim move, `ComputeIsRimHitToMove` and the window extension of Task 12a
+are removed. P21 is the specification: read its items 1 to 7 before the code. The step on boxes (item 8 a) can be
+built as a commit of its own if the coordinator prefers; it shares `ComputeIsRestingOnBoundingSurface` and nothing
+else.
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact_types.h` (four constants), `solid_contact_steps.h` (private steps),
+  `solid_contact.h` (docstrings of `FindFirstHit` and `MoveParticle` only: no public signature changes),
+  `find_first_hit_test.cc`, `move_particle_test.cc`, `contact_test_cases.h`, `docs/glossary.md`,
+  `docs/method-paper/fluidity-method.typ` (and its figure of the round solids), `tools/check_rules_allowed_names.txt`
+  only if the rules check asks.
+
+**Interfaces:**
+- Consumes: Tasks 8, 8a (P15's intervals: `ComputeTimeInsideGrownWall`, `ComputeTimeBetweenGrownCaps`, `OwnPath`,
+  `HitTime`, `ToFirstHit`, `FindEntryThroughFacePlanes`), 4a (`ComputeDistanceToCylinder(own_point, half_size,
+  solid_axes)`; with the identity as `solid_axes` its normal is in own axes), 12 and 12a (`ApplyHit`,
+  `FindActiveSurfaces`, the touched rule of `ComputeStartCase`, the proof comment of `FindFirstHitOfSweep`).
+  Preconditions to respect: `FindFirstHit` accepts `contact_tolerance == 0` (P9, the naive control): the windows of
+  item 1 then shrink to the single value 0 and the hit gap of the rim search is 0; nothing divides by the tolerance.
+  The domain box, the flat solid, the plate and the sphere keep their results bit for bit.
+- Produces, in `solid_contact_types.h`:
+
+  ```cpp
+  // No unit. How far below its rest gap, as a share of the contact tolerance, a start may be and still rest on a
+  // bounding surface that does not give its distance (plan decision P21, item 1).
+  inline constexpr double kBoundingSurfaceRestingDepthShare = 0x1p-3;
+  // No unit. The most a path may sink toward a bounding surface it rests on during one sweep, as a share of the
+  // contact tolerance: what a response may leave, allowance * time left <= tol / 64.
+  inline constexpr double kBoundingSurfaceSinkShare = 0x1p-6;
+  // No unit. The rim search stops with a hit once the gap is at most this share of the contact tolerance.
+  inline constexpr double kRimHitGapShare = 0x1p-10;
+  // The most advances of the rim search in one sweep; at the limit it reports the hit where it stands.
+  inline constexpr int kMaxRimAdvanceCount = 16;
+  ```
+
+  and in `solid_contact_steps.h` (private; names decided here, comments in the house style with Method, Units,
+  Example, Requires, Read):
+
+  ```cpp
+  // True when a sweep's start rests on one bounding surface: -depth share * tol <= start_gap <=
+  // kTouchedSolidRestingGapShare * tol and gap_rate * duration >= -sink share * tol. Only + - * and comparisons.
+  FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsRestingOnBoundingSurface(
+      double contact_tolerance, double start_gap, double gap_rate, double duration);
+
+  // The rim search (P21 items 3 d, 3 e and 4): from the entry into the cylinder grown with sharp edges. The first
+  // sample's face decides: not a rim, the entry is the hit. *advance_count, when not null, holds the advances made.
+  FLUIDITY_CPU_AND_GPU inline HitTime FindCylinderRimHit(
+      OwnPath own_path, Vec3 half_size, double contact_tolerance, double entry_elapsed, double duration,
+      int* advance_count);
+
+  // One more parameter: the face that gives the start's distance, whose touching rule the caller has applied; every
+  // other face plane gets ComputeIsRestingOnBoundingSurface before its gap is read as in front or behind.
+  FLUIDITY_CPU_AND_GPU inline FirstHit FindEntryThroughFacePlanes(
+      const SolidContactInputs& inputs, std::uint32_t solid_index, Sweep sweep, const FacePlane* face_planes,
+      int face_plane_count, SolidFace face_of_start_distance);
+
+  // Back to three parameters: the window is tol + tol / 16 at every hit.
+  FLUIDITY_CPU_AND_GPU inline ActiveSurfaces FindActiveSurfaces(
+      const SolidContactInputs& inputs, const ParticleMove& move, const FirstHit* hit);
+  ```
+
+  `FindCylinderHit(inputs, solid_index, sweep, touched)` and `ApplyHit(inputs, first_hit, move, failure)` keep their
+  signatures. `FindHitOnConvexSolid` passes `at_start.face`; `FindHitOnDomainBox` passes the side's own face, so its
+  one plane is never tested (a domain side keeps P2 alone).
+- **Room for module 1b (mesh solids) (A80):** `ComputeIsRestingOnBoundingSurface` reads no shape, so 1b can give each
+  triangle's plane the same rule; `ApplyHit` has no place left where a hit position is moved before the response (1b's
+  row H6 must be rewritten, P21 item 11); the rim search's one shape-specific line is its distance read.
+
+- [ ] **Step 1: Failing tests** (`tol = kTestContactTolerance`; friction 0; both velocities equal; "the cylinder" is
+  `BuildCylinder({}, kAxisZ, kNoMotion)`: origin, axis z, radius 0.5, half height 1; "the box" is half sizes 0.5 at
+  the origin with identity axes). First hits, in `find_first_hit_test.cc`:
+
+  ```cpp
+  // --- the rim search
+  TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim)   // existing, new values: {0.5 + tol/2, 0, 3},
+      // v {0,0,-1}, T 4: elapsed within tol / 1024 s of 2 - Sqrt(0.75) tol (1.999999999193451); kHighRim; normal
+      // {0.5, 0, Sqrt(0.75)} within 1e-5; at_hit.distance in [tol - 0x1p-40, tol + tol / 1024 + 0x1p-40]
+      // (was 2 - tol s at Sqrt(1.25) tol)
+  TEST(FindFirstHit, CylinderThroughGrownRimEdge_IsHit)             // existing, new values: elapsed within
+      // tol / 1024 s of 0.45 + (8 - Sqrt(24)) / 20 tol (0.4500000001444026); kHighRim; distance as above
+  TEST(FindFirstHit, CylinderRimHeadOnAtFortyFiveDegrees_HitsAtOneTolerance)   // {1.5, 0, 2}, v {-1,0,-1}, T 2:
+      // elapsed within tol / 1024 s of 1 - Sqrt(0.5) tol (0.9999999993414554); kHighRim; normal {Sqrt(0.5), 0,
+      // Sqrt(0.5)} within 1e-5; distance within 0x1p-40 of tol (was 1 - tol s at Sqrt(2) tol)
+  TEST(FindFirstHit, CylinderRimPassedBeyondOneTolerance_IsFree)    // {0.75 + a, 0, 0.75 + a}, v {-1,0,1}, T 0.5,
+      // a = 25/32 tol: the path passes the rim at 1.105 tol, through the sharp corner: free (was a hit at
+      // 0.2499999997962732). a = 23/32 tol (1.016 tol): free. a = 22/32 tol (0.972 tol): a hit, kHighRim, distance
+      // in [tol - 0x1p-40, tol + tol / 1024 + 0x1p-40]
+  TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree)       // existing; its approaching case changes:
+      // start {0.5 + 0.9 tol, 0, 1 + 0.9 tol}, v {-1,0,-1}, T 1: elapsed within tol / 1024 s of
+      // (0.9 - Sqrt(0.5)) tol (1.796458e-10); kHighRim; normal {Sqrt(0.5), 0, Sqrt(0.5)} within 1e-5.
+      // v {-1,0,0}: free now (it rests on the cap's plane, 0.1 tol inside its rest gap: P21 item 1)
+  TEST(FindFirstHit, StartElapsed_CylinderRimCornerUsesLaterPose)   // existing; start {1 + 0.9 tol, 0, 1 + 0.5 tol}
+      // at rest, start_elapsed 0.5, T 0.5, cylinder moving {1,0,0}: elapsed within tol / 1024 s of
+      // (0.9 - Sqrt(0.75)) tol (3.1637e-11); kHighRim. ..._MovingWithCylinderIsFree takes the same start: free
+  TEST(FindCylinderRimHit, AdvanceCounts)   // own paths of the tests above, entry from the two intervals:
+      // tol/2 beyond the wall: 2; through the grown rim edge: 2; head on at 45 degrees: 1; the 0.9, 0.9 start
+      // along {-1,0,-1} (entry 0): 1; {0.5 + 13/16 tol, 0, 3}, v {0,0,-1}: 2, elapsed within tol / 1024 s of
+      // 2 - Sqrt(1 - (13/16)^2) tol; {0.5 + tol, 0, 3}, v {-tol/128, 0, -1}, T 4: 4, kHighRim at
+      // cap_distance 0.1763 tol within tol / 512; an entry on the wall proper ({-2, 0, 0}, v {1,0,0}): 0, and
+      // the same elapsed as the entry, bit for bit
+  TEST(FindCylinderRimHit, GapRateTooSmallToSquare_IsFreeNotStalled)  // own start {0.5 + 0.9 tol, 0,
+      // 1 + 0.9 tol}, own velocity {-1e-160, 0, -1e-160}, entry 0, duration 1: free with 0 advances (the
+      // advance is the quotient, 1.6e150 s; through ComputeSecondOrderAdvance it would be 0 and the search
+      // would report a hit 0.27 tol out at the limit)
+  // --- the touching rule of a bounding surface, cylinder
+  TEST(FindFirstHit, CylinderDownItsGrownWallPastTheRim_IsFree)     // replaces CylinderGrownDiscEdgeMetExactly_
+      // IsHit: {0.5 + tol, 0, 3}, v {0,0,-1}, T 4: free (was a hit at 2 - tol s, kHighRim, Sqrt(2) tol away)
+  TEST(FindFirstHit, CylinderAlongItsGrownCapPlanePastTheRim_IsFree)  // replaces CylinderGrownWallTopMetExactly_
+      // IsHit: {-2, 0, 1 + tol}, v {1,0,0}, T 2: free
+  TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink)   // v {0,0,-1}, T 4, start {x, 0, 3}:
+      // x = 0.5 + tol - tol/8: free; x = 0.5 + tol - 3 tol/16: a hit (elapsed as in AdvanceCounts);
+      // x = 0.5 + tol, v {-tol/512, 0, -1} (sinks tol/128): free; v {-tol/128, 0, -1} (sinks tol/32): a hit;
+      // x = 0.5 + tol + tol/128, v {-tol/128, 0, -2}, T 2 (above the rest gap, sinks tol/64): free (was a hit
+      // on the wall at 1 s); x = 0.5 + tol + tol/8, same velocity: free by the intervals, as built
+  TEST(FindFirstHit, CylinderWallThatGivesTheDistance_KeepsItsOwnTouchingRule)  // {0.5 + tol + tol/128, 0, 0},
+      // v {-tol/128, 0, 1}, T 2: a hit at 1 s within 1e-9, kCurved (the wall gives the distance: P16 alone)
+  // --- the touching rule of a bounding surface, box
+  TEST(FindFirstHit, BoxDownItsGrownSidePlanePastTheEdge_IsFree)    // {0.5 + tol, 0, 3}, v {0,0,-1}, T 4: free
+      // (was a hit on kHighZ at 2.5 - tol)
+  TEST(FindFirstHit, BoxBoundingSurfaceWindowAndSink)   // v {0,0,-1}, T 4, start {x, 0, 3}:
+      // x = 0.5 + tol - tol/8: free; x = 0.5 + tol - 3 tol/16: kHighZ at 2.5 - tol exactly;
+      // x = 0.5 + tol, v {-tol/512, 0, -1}: free; v {-tol/128, 0, -1}: kHighZ at 2.5 - tol;
+      // x = 0.5 + tol + tol/128, v {-tol/128, 0, -2}, T 2: free (was kHighZ at 1.25 - tol/2)
+  TEST(FindFirstHit, BoxFaceThatGivesTheDistance_KeepsItsOwnTouchingRule)   // {0, 0, 0.5 + tol + tol/128},
+      // v {0.25, 0, -tol/128}, T 1: kHighZ at elapsed 1 exactly (the top gives the distance: P2 alone)
+  ```
+
+  Unchanged, and run as guards: `BoxRestingOnEdge_UsesTheFaceThatGivesTheDistance`,
+  `BoxRestingOnTop_SlidingOffTheEdgeIsFree`, `BoxEdgeMetExactly_IsHit`, `BoxEdgeMissedByOneUnit_IsFree`,
+  `BoxEdgeGraze_StaysFree`, `CylinderRimCornerStartAlongTangent_IsFree`, `CylinderHitExactlyAtEnd_IsHit`,
+  `CylinderTangentToWall_FreeOrHitNearTwo`, every domain box, plate, flat solid and sphere test.
+  `MovingCylinderEachFace_HitsThatFace` and `TiltedMovingCylinderEachFace_HitsThatFace`: the two rim rows take
+  `distance_at_hit = tol` (it was `Sqrt(2) tol`), compared within `tol / 1024`; the other rows keep their bits. Moves,
+  in `move_particle_test.cc` with their scenes in `contact_test_cases.h` (registered last, so earlier scenes keep
+  their generated draws):
+
+  ```cpp
+  // --- flush scenes (P21 item 13)
+  TEST(MoveParticle, StackedDrumsOfOneRadius_SlideDownTheSeamKeepsItsVelocity)
+      // cylinders axis z, r 0.5, h 0.5, centres {0,0,1.5} (id 1) and {0,0,0.5} (id 2); start {0.5 + tol, 0, 1.8},
+      // v {0,0,-1}, T 1: no error, kNone, hit_count 0, both velocities {0,0,-1} bit for bit, end {0.5 + tol, 0,
+      // 0.8} within 0x1p-50, distance to the lower drum within 0x1p-50 of tol. Again from x = 0.5 + tol -
+      // 0x1p-53 and from x = 0.5 + tol - tol/32: the same. (As built: one hit on kHighRim, {0.5, 0, -0.5}.)
+  TEST(MoveParticle, PuckFlushInFloor_SlideOntoItAndOffKeepsItsVelocity)
+      // BuildFloor(1); cylinder id 2 centre {0,0,-0.1}, axis z, r 0.5, h 0.1. Start {0.5 + 3 tol, 0, tol},
+      // v {-1,0,0}, T 0.1: kNone, hit_count 0, velocities bit for bit, end {0.4 + 3 tol, 0, tol}, both
+      // distances within tol / 1024 of tol. Start {0.45, 0, tol}, v {1,0,0}: the same, end {0.55, 0, tol}.
+      // (As built, onto it: kHighRim, {-0.5, 0, 0.5}.)
+  TEST(MoveParticle, DrumStandingOnFloor_GrooveStopsAndLetsSlideAround)   // guards: as built
+      // BuildFloor(1); cylinder id 2 centre {0,0,0.5}, axis z, r 0.5, h 0.5. {1, 0, tol}, v {-1,0,0}, T 1:
+      // hit_count 1, solid_index 1, kCurved, hit_fraction 0.5 - tol, velocities {0,0,0}, end {0.5 + tol, 0, tol}.
+      // {0.5 + tol, 0, 0.7}, v {0,0,-1}, T 1: hit_count 1, solid_index 0, kHighZ, hit_fraction 0.7 - tol,
+      // velocities {0,0,0}, the same end. {0.5 + tol, 0, tol}, v {0,1,0}, T 0.25: hit_count 0, end y 0.25
+  TEST(MoveParticle, RimCrestUnderFloor_IsNotHit)
+      // BuildFloor(1); cylinder id 2, axis {Sqrt(0.5), 0, Sqrt(0.5)}, r 0.5, h 0.25, centre {0, 0, -(0.25 + 0.5)
+      // Sqrt(0.5) - 0.41 tol} (its high rim's crest 0.41 tol under the floor's surface, at x = -0.25 Sqrt(0.5));
+      // start {-0.25 Sqrt(0.5) - 0.25, 0, tol}, v {1,0,0}, T 0.5: hit_count 0, velocities bit for bit, end z tol.
+      // (As built: kHighRim 1.41 tol away, moved 0.41 tol toward the floor.)
+  // --- a rim at its true distance
+  TEST(MoveParticle, CylinderRim_HitAtItsTrueDistance)   // replaces CylinderRim_HitPositionMovedToOneTolerance,
+      // scene CylinderRim: kHit, kHighRim, hit_count 1, hit_fraction (2 - Sqrt(0.75) tol) / 4, velocities
+      // {Sqrt(3)/4, 0, -1/4} = {0.4330127, 0, -0.25} within 1e-6; reaction.hit_position x == 0.5 + tol/2 bit for
+      // bit (on the path: not moved) and z within tol / 512 of 1 + Sqrt(0.75) tol; ComputeDistanceToSolid there
+      // in [tol - 0x1p-40, tol + tol / 1024 + 0x1p-40]. (Was {0.4, 0, -0.2}.)
+  TEST(MoveParticle, CylinderRimFromTheSide_HitAtItsTrueDistance)   // {2, 0, 1 + tol/2}, v {-1,0,0}, T 4:
+      // hit_count 1, kHighRim, velocities {-1/4, 0, Sqrt(3)/4} within 1e-6, hit x within tol / 512 of
+      // 0.5 + Sqrt(0.75) tol
+  TEST(MoveParticle, CylinderRimNearRestGap_HitAtItsTrueDistance)   // scene CylinderRimNearRestGap: velocities
+      // {Sqrt(15)/16, 0, -1/16} = {0.2420615, 0, -0.0625} within 2e-5 (the search stops 3e-5 tol out; was
+      // {4/17, 0, -1/17})
+  TEST(MoveParticle, RisingCylinderRim_HitReadAtThePoseOfTheHit)    // existing: {Sqrt(3)/4, 0, 3/4} within 1e-6
+  TEST(MoveParticle, SlowlyTiltingCylinderRim_HitAtItsTrueDistance) // replaces ..._IsMoved: {Sqrt(3)/4, 0, -1/4}
+      // within 1e-5; distance at the pose of the hit within tol / 16 of tol (P17's slack: 0.024 tol here)
+  // ExpectRimHitMovedToRestGap becomes ExpectRimHitAtTrueDistance: after ApplyHit the position is
+  // start + velocity * first_hit.elapsed bit for bit, and its distance is first_hit.at_hit.distance bit for bit.
+  TEST(MoveParticle, SlideOffCapPastRim_AndUpWallPastRim_OneHitThenFree)
+      // {0.5 - 8 tol, 0, 1 + tol}, v {1, 0, -0.5}, T 16 tol: hit_count 1, hit_fraction 0, kHighZ, velocities
+      // {1,0,0}, end distance Sqrt(65) tol within tol / 1024. {0.5 + tol, 0, 1 - 8 tol}, v {-0.5, 0, 1}, T 16 tol:
+      // hit_count 1, kCurved, velocities {0,0,1}, the same end distance. (As built: the same; guards.)
+  TEST(MoveParticle, ParticleCarriedAroundRim_OneHitPerStep)
+      // 64 steps of T 1 from {0.5 - 2 tol, 0, 1 + tol}; before each step read n = the normal of
+      // ComputeDistanceToSolid at the position, t = {n.z, 0, -n.x}, both velocities tol/2 * t - tol/4 * n. Each
+      // step: no error, hit_count 1, end distance in [tol - tol / 1024, 1.13 tol]; the faces at the ends are
+      // kHighZ 4 times, kHighRim 3 times, kCurved 57 times, in that order; the last end is within tol / 512 of
+      // tol beyond the wall and 28.39 tol below the cap's plane within 0.01 tol. Then the other way, t negated,
+      // from {0.5 + tol, 0, 1 - 2 tol}: kCurved 4, kHighRim 3, kHighZ 57, mirrored end.
+  // --- beside another surface
+  TEST(MoveParticle, RimOnFloorSweepingParticle_RimPassesOutsideItsTrueDistance)   // replaces ..._FloorStaysIn
+      // TheResponse, same scene: hit_count 1 (the start's), velocities {0,0,0} within 1e-15, end distance to the
+      // floor within tol / 1024 of tol: the round rim passes 1.069 tol from the particle. (Was 2 hits.)
+  TEST(MoveParticle, RimOnFloorSweepingParticleLower_RimAndFloorRespondTogether)
+      // new scene: the same with the cylinder's linear_velocity.z 0.0009 (was 0.001): hit_count 2, second face
+      // kLowRim; for_this_step {0.875932, 5.139e-5, 0} within 1e-5; the position before the settle
+      // (ComputePositionBeforeSettle) is within tol / 1024 of tol from the floor (as built: 1.106 tol, lifted by
+      // the rim move) and at least tol / 2 from the cylinder at the end pose
+  TEST(MoveParticle, SlowlyTiltingCylinderRimCornerStart_RisingRimIsNotHit)   // replaces ..._IsHitAtStart:
+      // kNone, hit_count 0, velocities {0,0,0} bit for bit, end distance at the end pose above 1.2 tol
+  TEST(ApplyHit, TurningCylinderRimHit_StaysWhereTheSearchStopped)   // rename of ..._IsNotMoved; same checks
+  // --- boxes (P21 item 8)
+  TEST(MoveParticle, StackedBoxes_SlideDownTheSeamKeepsItsVelocity)
+      // boxes half 0.5, centres {0,0,1.5} (id 1) and {0,0,0.5} (id 2); start {0.5 + tol, 0, 1.8}, v {0,0,-1},
+      // T 1: hit_count 0, velocities bit for bit, end {0.5 + tol, 0, 0.8}. (As built: kHighZ of the lower box,
+      // velocities {0,0,0}.)
+  TEST(MoveParticle, BoxTiles_SlideAcrossTheSeamKeepsItsVelocity)
+      // boxes half 0.5, centres {0,0,-0.5} (id 1) and {1,0,-0.5} (id 2); start {0.2, 0, tol}, T 0.6. v {1,0,0}:
+      // hit_count 0, velocities bit for bit, end {0.8, 0, tol}. v {1, 0, -0.16}: hit_count 1 (the start's, kHighZ,
+      // solid_index 0), velocities {1,0,0}, the same end. (As built: stopped on kLowX of the second box at
+      // 0.3 - tol s, velocities {0,0,0}, 1 and 2 hits.)
+  TEST(MoveParticle, BoxFlushInFloor_SlideOntoItKeepsItsVelocity)
+      // BuildFloor(1); box id 2 half 0.5 centre {0,0,-0.5}; start {0.5 + 3 tol, 0, tol}, v {-1,0,0}, T 0.1:
+      // hit_count 0, velocities bit for bit. (As built: kHighX, velocities {0,0,0}.)
+  TEST(MoveParticle, BoxTilesStepUp_ASixteenthIsNotSeenAQuarterStops)   // the limit of P21 item 14, pinned
+      // the tiles above with the second centre at z -0.5 + tol/32: hit_count 0, the position before the settle
+      // 31/32 tol from the second box within tol / 1024, the end at tol. At z -0.5 + tol/4: hit_count 1, kLowX,
+      // solid_index 1, velocities {0,0,0}, end x 0.5 - tol
+  ```
+- [ ] **Step 2: Run.** Expected: every new or changed test above fails except those marked guards and
+  `GapRateTooSmallToSquare` (which fails only for an implementation through `ComputeSecondOrderAdvance`); the two
+  `KeepsItsOwnTouchingRule` tests pass before and must pass after.
+- [ ] **Step 3: Implement**, in this order, each with its tests green before the next. (1) The four constants. (2)
+  `ComputeIsRestingOnBoundingSurface`. (3) `FindEntryThroughFacePlanes`: per plane, when its face is not
+  `face_of_start_distance` and the start rests on it, return free, before the gap's sign is read; the two callers. (4)
+  `FindCylinderRimHit`, a loop of at most `kMaxRimAdvanceCount + 1` samples in the order of P21 item 4, the first
+  sample's face test of item 3 (d) before it; samples are `own_path.start + own_path.velocity * elapsed` and
+  `ComputeDistanceToCylinder` with the identity. (5) `FindCylinderHit`: after the start case, for a start whose
+  `at_start.face` is a rim, the two tests of item 1 with `wall_gap` and `cap_gap` as they are computed today; the rim
+  corner's branch is deleted; the entry of the two intervals goes to `FindCylinderRimHit`. (6) `ApplyHit` and
+  `FindActiveSurfaces` as in Step 4. Comments: the file header's Idea (the cylinder is swept grown with sharp edges
+  and, beside a rim, searched on to its true distance; a start resting on a bounding surface), Words (`bounding
+  surface`, `rim search`; `rim corner` reworded; `rim move` removed; `active surface` and `touching rule` updated) and
+  Owns; `FindCylinderHit`'s Method and example (the fall `tol / 2` beyond the wall now ends at `{0.5 + tol / 2, 0, 1 +
+  Sqrt(0.75) tol}`); `FindFirstHitOfSweep`'s proof: step 2 loses "(after a rim move, at the moved position, ApplyHit)"
+  and "and a rim move reads them again where it ends", step 3 gains one sentence (a sweep that rests on a bounding
+  surface stays `55 / 64 tol` or more from that solid, P21 item 2); `ApplySettleAtEnd`'s comment (`tol - tol / 16`
+  becomes `55 / 64 tol` for a solid the path rested beside); `FindFirstHit`'s and `MoveParticle`'s docstrings in
+  `solid_contact.h` (step 1 and step 4: no rim move; the convexity line stays). State in `FindCylinderRimHit`'s
+  comment why the advance is the quotient and not `ComputeSecondOrderAdvance`, and why the limit reports a hit.
+- [ ] **Step 4: Remove.** `ComputeIsRimHitToMove`; `ApplyHit`'s step 3 (the move, `rim_move_length`, the second read
+  of `at_hit`) and its docstring's step 3 and second example; the fourth parameter of `FindActiveSurfaces` with
+  `active_distance`'s sum, its assertion and the paragraph on the rim move in its comment; in `FindCylinderHit` the
+  `is_in_rim_corner` branch with its `ComputeVelocityFromSurface` read; the tests' helper
+  `ExpectRimHitMovedToRestGap`; `std::numbers::sqrt2 * kTolerance` as a bound of a cylinder hit in
+  `find_first_hit_test.cc` (lines near 1280, 1354, 1539, 1781, 1790, 2644, 2695: each becomes `kTolerance + kTolerance
+  / 1024`, with `kReferenceAllowance` where it has one). `grep -n "rim move\|RimHitToMove\|window_extension\|rim_move"
+  native docs/glossary.md docs/method-paper` must print nothing afterwards.
+- [ ] **Step 5: Glossary and method paper.** Glossary: remove the row `rim move`; `rim corner`: "The part of a
+  cylinder grown by the contact tolerance with sharp edges that lies farther than one tolerance from the rim. A sweep
+  that enters the grown cylinder there goes on by the rim search"; new row `bounding surface`: "A surface that a whole
+  convex solid lies behind: a face plane of a box, a cylinder's wall taken as unbounded along its axis, the plane of a
+  cap. A sweep whose start rests on one that does not give its distance (a gap between minus an eighth and plus a
+  sixteenth of the contact tolerance, sinking at most a sixty-fourth of it during the sweep) is free of the solid:
+  `ComputeIsRestingOnBoundingSurface`, `kBoundingSurfaceRestingDepthShare`, `kBoundingSurfaceSinkShare`. It is what
+  lets a particle slide across the seam of two flush solids"; new row `rim search`, `kRimHitGapShare`,
+  `kMaxRimAdvanceCount`: "How a sweep finds its first hit beside a rim of a cylinder that does not turn: from where
+  the path enters the cylinder grown with sharp edges, advances of the gap divided by the speed at which it closes
+  (the second-order advance of a solid that does not turn), on the true distance. A hit once the gap is at most
+  `kRimHitGapShare` (2^-10) of the tolerance; free when the gap stops closing or would not close within the sweep;
+  after `kMaxRimAdvanceCount` (16) advances a hit where it stands"; `active surface`: drop "(plus the length of a rim
+  move, so a surface it was on before that move stays)"; `touching rule`: add "A bounding surface that does not give
+  the distance has a rule of its own (`bounding surface`)"; `stepping search`: unchanged. Paper: `<sec-round-solids>`
+  (the cylinder's paragraph: grown with sharp edges for the entry, then the rim search, with `g(t)` convex and the
+  advance; the paragraph and the figure panel of the rim move are replaced by the rim search, drawn as the sharp
+  corner, the round rim and two advances), `<eq:cylinder-hit-time>` unchanged, `<proc-cylinder-first-hit>` (steps:
+  start case; resting on the wall or a cap's plane; the two intervals; the entry not beside a rim is the hit; the rim
+  search), `<sec-first-hit>` (one paragraph on bounding surfaces after the touching rule, with the two flush examples;
+  the sentence "`MoveParticle` starts every sweep at `d = tol` (a hit, the rim move or the start move put it there)"
+  loses the rim move, twice, lines near 905 and 1213), `<proc-move-particle>` step 4 and the active-surface paragraph
+  (lines near 1462 and 1635: no rim move, no added length). The notation table gains no symbol.
+- [ ] **Step 6: Generated sets**, each re-measured and its numbers written in the test's comment and the report. First
+  hits: `GeneratedCylinderSweeps_AgreeWithSlowReference` with the bound `tol + tol / 1024` (hit count still between
+  100 and 900); `GeneratedRimEdgeSweeps_AgreeWithSlowReference` with `is_at_grown_surface` up to `tol + tol / 1024`:
+  predicted for the two cylinders along z, from the model on the test's own draws, 50,000 hits each, 0 mistakes,
+  advances 1, 2 or 3 in 7,189, 32,918 and 9,893 paths (a different `cos` may move a few between neighbours; assert at
+  most 5); `GeneratedGrazingRoundSweeps_NeverHitBehindStart` unchanged (the wall proper); the turning sets unchanged.
+  New: `GeneratedPathsPastACylinderRim_AgreeWithSlowReference`, 20,000 paths by P11's generator in the six kinds of
+  P21 item 15 (a), for the four cylinders of the rim-edge test: a free path that rests on a bounding surface keeps the
+  reference's smallest distance at `tol - 9 tol / 64 - kReferenceAllowance` or more, any other free path at `tol -
+  kReferenceAllowance` or more; a hit after time 0 is between `tol - kReferenceAllowance` and `tol + tol / 1024 +
+  kReferenceAllowance` at the hit, with the path before it at `tol - kReferenceAllowance` or more; advances at most 8
+  (model: at most 5, mean 2.0). Moves: `GeneratedRoundSolidPaths_NeverHitAgain` (as built: hits 10,490, rim hits 548,
+  repeat hits 0, failures 0): predicted repeat hits 0 and failures 0, tilted cylinders included; rim hits and hits
+  lower by the same number, about a quarter of the rim hits (the model's own set: 258 to 190);
+  `GeneratedCylinderRimPaths_NeverHitItAgain` 0 repeats; the cylinder tangent starts 6,000 of 6,000 and slides 12,000
+  of 12,000 predicted unchanged; the every-scene paths and near starts: per scene identical except `CylinderRim`,
+  `CylinderRimNearRestGap`, `RisingCylinderRim`, `SlowlyTiltingCylinderRim`, `SlowlyTiltingCylinderRimCornerStart`,
+  `RimOnFloorSweepingParticle` and the new scenes; the `hit_paths` threshold is not lowered. New:
+  `GeneratedFlushSeams_KeepTheSpeedAlongTheSeam`, 2,000 each of box tiles, stacked drums and a puck in a floor, fixed
+  or moving together, identity or `kTiltedAxes`, a start 0.01 to 0.15 m before the seam at the rest gap, a push into
+  the surface of 0, 0.16 or 1 m/s: no error, at most one hit, and the speed along the path, measured from the solids,
+  at least `1 - 1e-6` of its start (model, its own draws: 0 of 4,000 per set lose speed; as built 57 %, 43 % and 29
+  %).
+- [ ] **Step 7: Mutants** (scratch copies, both contact test binaries, asserts on). Each must be killed by a named
+  test, or argued in the report: no bounding-surface rule on cylinders (`StackedDrums`, `PuckFlushInFloor`); none on
+  boxes (`StackedBoxes`, `BoxTiles`); the rule also on the surface that gives the distance (the two
+  `KeepsItsOwnTouchingRule` tests); depth `tol / 4` and depth 0 (`WindowAndSink`, `StackedDrums` from `tol / 32`
+  inside); the window's top 0 instead of `tol / 16` (`WindowAndSink`'s quick case); sink `tol / 16` and sink "gap rate
+  >= 0" (`WindowAndSink`); the wall's rate without the division by `rho0` (add a case at radius 4 to `WindowAndSink`
+  if it survives); the entry beside a rim taken as the hit (every rim test); hit gap share `2^-4`
+  (`CylinderRimNearRestGap`: `{4/17, 0, -1/17}`); half the advance (`AdvanceCounts`); twice the advance
+  (`GeneratedPathsPastACylinderRim`, late hits); no "gap rate >= 0 is free" (`CylinderRimPassedBeyondOneTolerance`);
+  no "would not close within the sweep" (add a start `tol / 2048` outside the round rim closing at 1e-3 tol/s for 1 s:
+  free); the advance through `ComputeSecondOrderAdvance` (`GapRateTooSmallToSquare`); `kMaxRimAdvanceCount = 1`
+  (distance bounds of the rim tests); the rim move left in `ApplyHit` (`ExpectRimHitAtTrueDistance`'s position on the
+  path). Expected survivors, to argue: the search run for an entry on the wall or a cap proper too (the same hit up to
+  a few rounding units; `AdvanceCounts`' last case kills it if the bits differ); free instead of a hit at the limit
+  (the limit is not reached).
+- [ ] **Step 8: Run** build, tests, gate (`uv run python tools/check_commit.py`).
+- [ ] **Step 9: Commit.** Subject: `Hit a cylinder's rim at its true distance`.
+
 ### Task 13: `MoveParticle` slide on a turning solid
 
 **Kind:** numerics
@@ -2541,6 +3108,14 @@ the sphere's distance and first hit exist since Tasks 4a and 8a).
   above. A particle in a wedge between a turning solid and another solid is within P7's reach of that solid, so P7's
   `kTurningSolidNearOtherSolid` decides before the change matters for the carry
   (`RestingOnTurningBoxNearFloor_StepLengthDecidesCloseCall` is that case); Task 13 adds no wedge test of its own.
+- **Amended 2026-11-16 (P21, Task 12b; Task 12a review, deviation 1 and M6):** this task owes the `MoveParticle` check
+  of the scene `TurningCylinderRimHit` that Task 12a could only make on `ApplyHit`: no error, face `kHighRim`,
+  `reaction.hit_position` within `tol / 1024` of `start + velocity * elapsed` and its distance at the pose of the hit
+  within `tol / 1024` of `FindFirstHit`'s `at_hit.distance` (about 1.11 tol). There is no rim move left, so no flag or
+  assertion about which search found a hit is needed (M6 is closed by P21), and the scene's 218 path and 1,000 start
+  `kTooManyHits` in the every-scene sets go when the carry is built. A turning solid gets no touching rule of a
+  bounding surface (P21 item 10): two flush boxes turning together are hit at their seam, a known limit to pin here
+  with one test (`TurningStackedBoxes_SeamIsHit`).
 - Produces: design 5.5 step 5 for a turning solid, with P7. **Room for module 1b (mesh solids) (A80):** the carry
   in the solid's axes is one private function of `solid_contact_steps.h` taking `inputs` and `solid_index`, so 1b
   can sweep that remainder against a mesh.
@@ -2826,7 +3401,8 @@ inside that padding, and the size stays 200.
   spin through `ComputeSolidPose`, which uses `Sin`, so spinning round solids are compared within the design 6
   tolerance, not by bits; revisit only if the hardware run needs exact parity.
 - **Amended 2026-11-15 (A74):** the promise covers the sphere and cylinder branches too (design 6): distance and
-  normal for any pose, `FindFirstHit`'s closed forms, the rim move and the touching rule use only `+ - * /`,
+  normal for any pose, `FindFirstHit`'s closed forms, the rim search (amended 2026-11-16, P21: it replaces the rim
+  move; a loop of at most `kMaxRimAdvanceCount` samples) and the touching rule use only `+ - * /`,
   `math::Abs` and `math::Sqrt`; no last-bits function. A spinning sphere or cylinder (`angular_velocity` not zero)
   reaches `math::Rotation` through `ComputeSolidPose` and is compared within design 6. The 32 fixed inputs of
   `SharedFormulas, OnGpu_MatchCpu` include the twelve distance points of Task 4a (sphere, cylinder regions, both
