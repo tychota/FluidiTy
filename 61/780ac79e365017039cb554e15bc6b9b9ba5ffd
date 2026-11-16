@@ -1,0 +1,41 @@
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_7c8840d0316200 731-735,742-744,750-768
+docs/glossary.md
+  s_4f0877e2acdcf0::t_39483ab3bdfbb7 61
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_b9641ec91abc1c 935
+  s_4f0877e2acdcf0::t_8e9c6bf2878eea 936-937
+  s_4f0877e2acdcf0::t_0d884bfe0b8c30 985
+  s_4f0877e2acdcf0::t_b804422202110a 986-995
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_a3b8d9fc4abeb5 3076-3080,3093-3094,3140-3145,3147-3156
+  s_4f0877e2acdcf0::t_7e20331ea63583 2872-2931
+  s_4f0877e2acdcf0::t_2d2c1f8e27ed9a 2937-2938,2975,3006-3007,3061,3146
+  s_4f0877e2acdcf0::t_3cb38dfc3e3e35 2933,2936,2962,2967-2968,2970,2981-2984,2986-2988,2990-2995,2999-3005
+  s_4f0877e2acdcf0::t_08f0d0bb4a7780 2848-2871,2932,2934-2935
+  s_4f0877e2acdcf0::t_48bd291a5bb81e 2939-2961,2963-2966,2969,2971-2974,2976-2980,2985,2989,2996-2998,3008-3060,3062-3075,3081-3092,3095-3096
+  s_4f0877e2acdcf0::t_f778f02f2cc8f0 6715,6729-6736,6799-6801
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_20a108269d783e 33-48,113-115,155-156,615,619-624,628,631,639,700-746,749-764,783-793,796,845,1784-1792,3482-3523,3530-3532,3574-3576
+  s_4f0877e2acdcf0::t_07c3881574df50 3533-3535,3591-3598,3602-3603
+  s_4f0877e2acdcf0::t_f58ecf2dc71b55 3588
+  s_4f0877e2acdcf0::t_8d335339f72649 3587
+  s_4f0877e2acdcf0::t_caf84cc9b14273 3589
+  s_4f0877e2acdcf0::t_8f947a8932a271 3536-3540,3590
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "61780ac79e365017039cb554e15bc6b9b9ba5ffd",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
