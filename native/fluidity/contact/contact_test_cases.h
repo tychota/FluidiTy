@@ -2256,6 +2256,387 @@ inline std::vector<MoveParticleCase> BuildSecondReviewCases() {
   return cases;
 }
 
+// The scenes of a particle against a sphere or a cylinder: a hit head on and at a slant, a path that grazes the grown
+// sphere, a start within tol leaving, a hit on a rim and on a cap, spinning solids felt through friction alone, a rim
+// hit of the stepping search, a cylinder whose axis tilts too little to count as turning, and a cylinder lying on or
+// sunk into a floor. They come last in BuildMoveParticleCases, so the generated sets keep the draws of the scenes
+// before them.
+inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
+  std::vector<MoveParticleCase> cases;
+  const Solid half_meter_ball = BuildFixedSphere({}, 0.5, 1);
+  // A fixed sphere of radius 0.5 m at the origin, hit head on, at a slant (the hit normal {-0.8, 0.6, 0}), and grazed
+  // by a path tol beyond the grown sphere's equator; and a start tol / 4 inside the rest gap, leaving along the
+  // surface.
+  cases.push_back({
+      .name = "SphereHeadOn",
+      .solids = {half_meter_ball},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = -2, .y = 0, .z = 0},
+          .velocity = kUnitX,
+          .step_duration = 2,
+          .friction = 0,
+      }),
+  });
+  cases.push_back({
+      .name = "SphereOblique",
+      .solids = {half_meter_ball},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = -2, .y = 0.3, .z = 0},
+          .velocity = kUnitX,
+          .step_duration = 2,
+          .friction = 0,
+      }),
+  });
+  cases.push_back({
+      .name = "SphereTangentWithinRounding",
+      .solids = {half_meter_ball},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = -2, .y = 0.5 + kTolerance, .z = 0},
+          .velocity = kUnitX,
+          .step_duration = 4,
+          .friction = 0,
+      }),
+  });
+  cases.push_back({
+      .name = "SphereStartWithinToleranceMovingAway",
+      .solids = {half_meter_ball},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = -(0.5 + kTolerance / 4), .y = 0, .z = 0},
+          .velocity = kUnitY,
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  // A fixed cylinder along z at the origin, radius 0.5 m and half height 1 m. A particle falling tol / 2 outside the
+  // wall meets the grown cylinder at its sharp rim edge, Sqrt(1.25) tol from the rim; there the cylinder reports a
+  // reaction. A particle falling on the cap at a slant slides on along it.
+  const Cylinder upright_cylinder = {.center = {}, .axis = kUnitZ, .radius = 0.5, .half_height = 1};
+  Solid reacting_cylinder = ToSolid(upright_cylinder, kNoMotion, 1);
+  reacting_cylinder.reports_reaction = true;
+  cases.push_back({
+      .name = "CylinderRim",
+      .solids = {reacting_cylinder},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 3},
+          .velocity = -kUnitZ,
+          .step_duration = 4,
+          .friction = 0,
+      }),
+  });
+  cases.push_back({
+      .name = "CylinderCap",
+      .solids = {ToSolid(upright_cylinder, kNoMotion, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.1, .y = 0, .z = 3},
+          .velocity = {.x = 0.1, .y = 0, .z = -1},
+          .step_duration = 3,
+          .friction = 0,
+      }),
+  });
+  // A cylinder along z, radius 1 m and half height 0.5 m, and a plate with normal z and half thickness 0.5 m, both
+  // spinning at {0, 0, 2} rad/s about their own z axis, and a particle tol above the top pressed on it at 1 m/s, with
+  // friction 0, 0.25 and 1. The surface under it moves at {0, 1, 0} m/s: a spin, not a turn, so only friction carries
+  // the particle sideways.
+  const SolidMotion spin_about_z = {.linear_velocity = {}, .angular_velocity = 2 * kUnitZ};
+  const Solid spinning_cylinder =
+      ToSolid(Cylinder{.center = {}, .axis = kUnitZ, .radius = 1, .half_height = 0.5}, spin_about_z, 1);
+  const Solid spinning_plate = ToSolid(Plate{.center = {}, .normal = kUnitZ, .half_thickness = 0.5}, spin_about_z, 1);
+  const std::array<std::string_view, 3> cylinder_names = {
+      "SpinningCylinderPressedOnCapNoFriction",
+      "SpinningCylinderPressedOnCapSlipping",
+      "SpinningCylinderPressedOnCapSticking",
+  };
+  const std::array<std::string_view, 3> plate_names = {
+      "SpinningPlatePressedOnNoFriction",
+      "SpinningPlatePressedOnSlipping",
+      "SpinningPlatePressedOnSticking",
+  };
+  const std::array<double, 3> frictions = {0, 0.25, 1};
+  for (std::size_t friction_index = 0; friction_index < frictions.size(); ++friction_index) {
+    const CaseParticle pressed = {
+        .start_position = {.x = 0.5, .y = 0, .z = 0.5 + kTolerance},
+        .velocity = -kUnitZ,
+        .step_duration = 0.1,
+        .friction = frictions.at(friction_index),
+    };
+    cases.push_back({
+        .name = cylinder_names.at(friction_index),
+        .solids = {spinning_cylinder},
+        .inputs = BuildCaseInputs(pressed),
+    });
+    cases.push_back({
+        .name = plate_names.at(friction_index),
+        .solids = {spinning_plate},
+        .inputs = BuildCaseInputs(pressed),
+    });
+  }
+  // A cylinder along z at the origin, radius 0.5 m and half height 0.5 m, turning at {1e-6, 0, 0} rad/s across its
+  // axis: 1e-6 rad/s * 1 s * Length(half_size) = 7.1e-7 m > tol / 8, so it is a turning solid, which the stepping
+  // search finds, while the slow turn keeps its rim within 1e-13 m of where it started. The particle moves at 1.5 m/s
+  // along {-cos 0.05, 1, -sin 0.05} and would pass {0.5 + tol / 2, 0, 0.5 + tol / 2}, just beyond the high rim, at
+  // 0.5 s; the cylinder reports a reaction.
+  Solid turning_cylinder = ToSolid(
+      Cylinder{.center = {}, .axis = kUnitZ, .radius = 0.5, .half_height = 0.5},
+      {.linear_velocity = {}, .angular_velocity = {.x = 1e-6, .y = 0, .z = 0}},
+      1
+  );
+  turning_cylinder.reports_reaction = true;
+  const Vec3 oblique_velocity =
+      1.5 * math::Normalized(Vec3{.x = -std::cos(0.05), .y = 1, .z = -std::sin(0.05)});  // m/s
+  const Vec3 beyond_rim = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 0.5 + kTolerance / 2};  // m
+  cases.push_back({
+      .name = "TurningCylinderRimHit",
+      .solids = {turning_cylinder},
+      .inputs = BuildCaseInputs({
+          .start_position = beyond_rim - 0.5 * oblique_velocity,
+          .velocity = oblique_velocity,
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // The same cylinder with its axis tilting at {1e-9, 0, 0} rad/s: 1e-9 rad/s * 0.1 s * Length(half_size) = 7.1e-11 m
+  // is below tol / 8, so it is not a turning solid and keeps its closed form. Its cap sinks at 3e-10 m/s at
+  // {0, -0.3, 0.5}, where a particle falling at 1 m/s hits it.
+  const Solid tilting_cylinder = ToSolid(
+      Cylinder{.center = {}, .axis = kUnitZ, .radius = 0.5, .half_height = 0.5},
+      {.linear_velocity = {}, .angular_velocity = {.x = 1e-9, .y = 0, .z = 0}},
+      1
+  );
+  cases.push_back({
+      .name = "SlowlyTiltingCylinderCapSinkingAway",
+      .solids = {tilting_cylinder},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0, .y = -0.3, .z = 0.55},
+          .velocity = -kUnitZ,
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  // A cylinder along z at the origin, radius 0.5 m and half height 0.25 m, tilting at {1e-9, 0, 0} rad/s, below plan
+  // decision P17's bound for 0.1 s; a particle at rest in the rim corner over its high rim on the +y side, 0.9 tol
+  // beyond the wall and the cap, 1.27 tol from the rim, where the rim rises toward it at 1.77e-10 m/s.
+  const Solid tilting_flat_cylinder = ToSolid(
+      Cylinder{.center = {}, .axis = kUnitZ, .radius = 0.5, .half_height = 0.25},
+      {.linear_velocity = {}, .angular_velocity = {.x = 1e-9, .y = 0, .z = 0}},
+      1
+  );
+  const Vec3 rim_corner = {.x = 0, .y = 0.5 + 0.9 * kTolerance, .z = 0.25 + 0.9 * kTolerance};  // m
+  cases.push_back({
+      .name = "SlowlyTiltingCylinderRimCornerStart",
+      .solids = {tilting_flat_cylinder},
+      .inputs = BuildCaseInputs({.start_position = rim_corner, .velocity = {}, .step_duration = 0.1, .friction = 0}),
+  });
+  // A rim corner of the same cylinder, fixed, 41/64 tol beyond the wall and 61/64 tol beyond the cap (both exact in
+  // binary), 1.15 tol from the rim, beside an upright flat solid at x = tol that the particle rests on and pushes into
+  // at {1, 61/64, -41/64} or {1, -61/64, 41/64} m/s: the start's response leaves {0, 61/64, -41/64} or its opposite,
+  // square to the rim's normal {0, 41, 61} / Sqrt(5402) up to the rounding of that normal, -1.1e-16 m/s along it for
+  // the first, and the sweep after it starts in the rim corner.
+  const Solid fixed_flat_cylinder =
+      ToSolid(Cylinder{.center = {}, .axis = kUnitZ, .radius = 0.5, .half_height = 0.25}, kNoMotion, 1);
+  const Solid upright_beside_rim = BuildFlatSolid({.x = kTolerance, .y = 0, .z = 0}, -kUnitX, kNoMotion, 2);
+  const Vec3 exact_rim_corner = {.x = 0, .y = 0.5 + 41.0 / 64 * kTolerance, .z = 0.25 + 61.0 / 64 * kTolerance};  // m
+  cases.push_back({
+      .name = "RimCornerBesideRestingFaceDown",
+      .solids = {fixed_flat_cylinder, upright_beside_rim},
+      .inputs = BuildCaseInputs({
+          .start_position = exact_rim_corner,
+          .velocity = {.x = 1, .y = 61.0 / 64, .z = -41.0 / 64},
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  cases.push_back({
+      .name = "RimCornerBesideRestingFaceUp",
+      .solids = {fixed_flat_cylinder, upright_beside_rim},
+      .inputs = BuildCaseInputs({
+          .start_position = exact_rim_corner,
+          .velocity = {.x = 1, .y = -61.0 / 64, .z = 41.0 / 64},
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  });
+  // A draw of the moving rim-on-floor slides (GeneratedCylinderTangentContactSlides): a cylinder of radius 0.26 m
+  // tilted by 0.368 rad rests on its low rim on a floor, both sliding, the cylinder 1.07 m/s faster and rising at
+  // 1e-3 m/s; a particle falling at 0.981 m/s starts at the floor's rest gap 8.7e-6 m from the contact point, which the
+  // rim reaches at 1.86e-6 s. The digits are those of the draw.
+  // NOLINTBEGIN(modernize-use-std-numbers)
+  const Solid sliding_floor = BuildFlatSolid(
+      {.x = 0.85898938044651341, .y = 0.13829372338769108, .z = 0},
+      kUnitZ,
+      {.linear_velocity = {.x = 0.098132328722849951, .y = 0.052614906110469414, .z = 0}, .angular_velocity = {}},
+      1
+  );
+  const Cylinder rim_on_floor = {
+      .center = {.x = 0.670218562072598, .y = 0.13829372338769108, .z = 0.23249606641035031},
+      .axis = {.x = 0.36011994161504451, .y = 0, .z = 0.93290601222801484},
+      .radius = 0.2598319012556512,
+      .half_height = 0.14891684208214101,
+  };
+  const SolidMotion rim_motion = {
+      .linear_velocity = {.x = 0.87754499374485984, .y = -0.61674061158165361, .z = 0.001},
+      .angular_velocity = {},
+  };
+  SolidContactInputs rim_sweep_inputs = BuildCaseInputs({
+      .start_position = {.x = 0.85899101328368643, .y = 0.13830232324675262, .z = -8.5167620574356801e-10},
+      .velocity = {.x = 0, .y = 0, .z = -0.98100000000000009},
+      .step_duration = 0.1,
+      .friction = 0,
+  });
+  // NOLINTEND(modernize-use-std-numbers)
+  rim_sweep_inputs.start_overlap_tolerance = 2 * kTolerance;
+  cases.push_back({
+      .name = "RimOnFloorSweepingParticle",
+      .solids = {sliding_floor, ToSolid(rim_on_floor, rim_motion, 2)},
+      .inputs = rim_sweep_inputs,
+  });
+  // The cross-sections of the ball scenes of BuildSlideIntoCuspCases: a cylinder along x, radius 0.5 m and half height
+  // 1 m, lying on the floor along a line, or sunk into it so that its wall meets the floor at 60 degrees, at y =
+  // Sqrt(0.1875).
+  const Cylinder lying_cylinder =
+      {.center = {.x = 0, .y = 0, .z = 0.5}, .axis = kUnitX, .radius = 0.5, .half_height = 1};
+  cases.push_back({
+      .name = "CylinderLyingOnFloorSlidingIntoCusp",
+      .solids = {BuildFloor(1), ToSolid(lying_cylinder, kNoMotion, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0.05, .z = kTolerance}, {.x = 0, .y = -1, .z = 0}, 0.1),
+  });
+  Cylinder sunk_cylinder = lying_cylinder;
+  sunk_cylinder.center = {.x = 0, .y = 0, .z = 0.25};
+  cases.push_back({
+      .name = "CylinderSunkIntoFloorSlidingIn",
+      .solids = {BuildFloor(1), ToSolid(sunk_cylinder, kNoMotion, 2)},
+      .inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0.5, .z = kTolerance}, {.x = 0, .y = -1, .z = 0}, 0.1),
+  });
+  // The rim of the fixed cylinder of CylinderRim, reached tol / 4 outside the wall: the closed form stops Sqrt(17 / 16)
+  // tol = 1.0308 tol from the rim, inside the touched window, and the rim move still brings it to tol.
+  cases.push_back({
+      .name = "CylinderRimNearRestGap",
+      .solids = {ToSolid(upright_cylinder, kNoMotion, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance / 4, .y = 0, .z = 3},
+          .velocity = -kUnitZ,
+          .step_duration = 4,
+          .friction = 0,
+      }),
+  });
+  // The cylinder of CylinderRim rising at 1 m/s under a particle at rest tol / 2 outside its wall: its rim reaches the
+  // particle at 2 - tol s, 2 m above where it started, where the hit is read and moved.
+  cases.push_back({
+      .name = "RisingCylinderRim",
+      .solids = {ToSolid(upright_cylinder, {.linear_velocity = kUnitZ, .angular_velocity = {}}, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 3},
+          .velocity = {},
+          .step_duration = 4,
+          .friction = 0,
+      }),
+  });
+  // The cylinder of CylinderRim tilting at {1e-11, 0, 0} rad/s, below plan decision P17's bound for 4 s
+  // (1e-11 * 4 * Length(half_size) = 4.5e-11 m < tol / 8): its closed form finds the rim hit, which is moved.
+  cases.push_back({
+      .name = "SlowlyTiltingCylinderRim",
+      .solids =
+          {ToSolid(upright_cylinder, {.linear_velocity = {}, .angular_velocity = {.x = 1e-11, .y = 0, .z = 0}}, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 3},
+          .velocity = -kUnitZ,
+          .step_duration = 4,
+          .friction = 0,
+      }),
+  });
+  // A long thin cylinder along x, radius 0.1 m and half height 2 m, tilting about y at 0.99 of plan decision P17's
+  // bound for 1 s, measured with the largest arm, Sqrt(0.1^2 + 2^2): a particle tol above its top at x = 1.95 slides
+  // along it to x = -1.95 while falling onto it, so the surface under it moves the other way from where the sweep
+  // started.
+  const double long_cylinder_tilt_rate = 0.99 * (kTolerance / 8) / std::sqrt(0.1 * 0.1 + 2.0 * 2.0);  // rad/s
+  const SolidMotion long_cylinder_tilt = {
+      .linear_velocity = {},
+      .angular_velocity = {.x = 0, .y = long_cylinder_tilt_rate, .z = 0},
+  };
+  cases.push_back({
+      .name = "LongCylinderTiltingUnderSlide",
+      .solids =
+          {ToSolid(Cylinder{.center = {}, .axis = kUnitX, .radius = 0.1, .half_height = 2}, long_cylinder_tilt, 1)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 1.95, .y = 0, .z = 0.1 + kTolerance},
+          .velocity = {.x = -3.9, .y = 0, .z = -1},
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // Two scenes of the review's probe whose settle depends on the array (MoveToRestGapOfNearSurfaces, Order); the
+  // digits are the probe's. A small cylinder spinning about its axis and tilting within plan decision P17's bound,
+  // alone and with an exact copy appended; a floor, a moving cylinder and a ball, in array order and reversed.
+  // NOLINTBEGIN(modernize-use-std-numbers)
+  const Vec3 spinning_axis = {.x = 0.54424759236949605, .y = 0.82685055739460867, .z = -0.14181930029524106};
+  const Vec3 tilt_axis = {.x = 0.25166100768697314, .y = 0.0003495224909581074, .z = 0.96781538272751455};
+  const SolidMotion spin_and_tilt = {
+      .linear_velocity = {},
+      .angular_velocity = 0.62777707137839833 * spinning_axis + 7.5918087161475426e-08 * tilt_axis,
+  };
+  const Solid small_spinning_cylinder = ToSolid(
+      Cylinder{.center = {}, .axis = spinning_axis, .radius = 0x1p-10, .half_height = 0.0005472749110384536},
+      spin_and_tilt,
+      2
+  );
+  SolidContactInputs spinning_settle_inputs = BuildSeveralSurfaceInputs(
+      {.x = -0.0014995795403805331, .y = -0.001060870078780135, .z = -0.00069999076679189522},
+      {.x = 0.0010976265701581423, .y = 0.00153252610932527, .z = 0.00015802081368675625},
+      0.97019310186369823
+  );
+  spinning_settle_inputs.friction = 0.18828305070590459;
+  cases.push_back({
+      .name = "SettleNearSpinningCylinder",
+      .solids = {small_spinning_cylinder},
+      .inputs = spinning_settle_inputs,
+  });
+  Solid spinning_copy = small_spinning_cylinder;
+  spinning_copy.solid_id = 9;
+  cases.push_back({
+      .name = "SettleNearSpinningCylinderWithCopy",
+      .solids = {small_spinning_cylinder, spinning_copy},
+      .inputs = spinning_settle_inputs,
+  });
+  Solid settle_floor = BuildFlatSolid({.x = 0, .y = 0, .z = -1.2093127196222974e-07}, kUnitZ, kNoMotion, 1);
+  Solid moving_cylinder = ToSolid(
+      Cylinder{
+          .center = {},
+          .axis = {.x = 0.58232782619082502, .y = -0.71084212380994805, .z = -0.39445884178356433},
+          .radius = 1.1920928955078125e-07,
+          .half_height = 6.7554625712041718e-08,
+      },
+      {
+          .linear_velocity = {.x = -1.0803464904894532e-07, .y = -3.2175558651067555e-08, .z = 9.9445779674895571e-09},
+          .angular_velocity = {},
+      },
+      2
+  );
+  moving_cylinder.reports_reaction = true;
+  Solid settle_ball = BuildFixedSphere(
+      {.x = 1.9592410165257721e-07, .y = 7.4709606268181416e-08, .z = 4.0107509563519118e-08},
+      1.1835357514480232e-07,
+      3
+  );
+  const SolidContactInputs beside_cylinder_inputs = BuildSeveralSurfaceInputs(
+      {.x = 2.1554142195350923e-07, .y = -1.9235249551791681e-07, .z = 3.5112707995058077e-08},
+      {.x = -1.4195860903363816e-06, .y = 1.1753898597513622e-06, .z = -5.1846746680689854e-07},
+      0.33351149169167332
+  );
+  cases.push_back({
+      .name = "SettleBesideMovingCylinder",
+      .solids = {settle_floor, moving_cylinder, settle_ball},
+      .inputs = beside_cylinder_inputs,
+  });
+  settle_ball.solid_id = 1;
+  settle_floor.solid_id = 3;
+  cases.push_back({
+      .name = "SettleBesideMovingCylinderReversed",
+      .solids = {settle_ball, moving_cylinder, settle_floor},
+      .inputs = beside_cylinder_inputs,
+  });
+  // NOLINTEND(modernize-use-std-numbers)
+  return cases;
+}
+
 // The scenes with one value out of range: each is the docstring example with one change.
 inline std::vector<MoveParticleCase> BuildBadInputCases() {
   std::vector<MoveParticleCase> cases;
@@ -2360,6 +2741,9 @@ inline std::vector<MoveParticleCase> BuildMoveParticleCases() {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildBadInputCases()) {
+    cases.push_back(std::move(test_case));
+  }
+  for (MoveParticleCase& test_case : move_particle_cases::BuildRoundSolidCases()) {
     cases.push_back(std::move(test_case));
   }
   return cases;

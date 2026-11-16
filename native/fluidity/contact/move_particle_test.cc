@@ -1888,6 +1888,396 @@ TEST(MoveParticle, PlateAndSphereSlidingIn_ComesToRestAtRing) {
   EXPECT_NEAR(result.hit_fraction, (0.5 - std::sqrt(0.1875) - std::numbers::sqrt3 * kTolerance) / 0.1, 1e-9);
 }
 
+TEST(MoveParticle, CylinderLyingOnFloorSlidingIntoCusp_ComesToRestThere) {
+  // The cross-section of BallRestingOnFloorSlidingIntoCusp: the wall is hit at the rest point 2 Sqrt(0.5 tol) from the
+  // contact line, where the particle rests on the floor too: one joint response over both stops it, one hit.
+  const double rest_y = 2 * std::sqrt(0.5 * kTolerance);  // m
+  ExpectStopAtRestGap(
+      "CylinderLyingOnFloorSlidingIntoCusp",
+      1,
+      {.x = 0, .y = rest_y, .z = kTolerance},
+      kTolerance / 256
+  );
+}
+
+TEST(MoveParticle, CylinderSunkIntoFloorSlidingIn_ComesToRest) {
+  // The cross-section of PlateAndSphereSlidingIn: the wall meets the floor at 60 degrees at y = Sqrt(0.1875), and the
+  // point at tol from both is Sqrt(3) tol out along the floor.
+  const Vec3 rest_point = {.x = 0, .y = std::sqrt(0.1875) + std::numbers::sqrt3 * kTolerance, .z = kTolerance};
+  ExpectStopAtRestGap("CylinderSunkIntoFloorSlidingIn", 1, rest_point, kTolerance / 1024);
+}
+
+// --- Spheres and cylinders alone ---
+
+// The distance from a point to the first solid of a scene at its pose at the end of the step.
+double ComputeEndDistance(const MoveParticleCase& scene, Vec3 point) {
+  const Solid& solid = scene.solids.at(0);
+  return ComputeDistanceToSolid(solid, ComputeSolidPose(solid, scene.inputs.step_duration), point).distance;
+}
+
+TEST(MoveParticle, SphereHeadOn_StopsOneToleranceShort) {
+  // The grown sphere is reached at x = -(0.5 + tol), where the normal is {-1, 0, 0} and the whole speed is removed.
+  const MoveParticleCall call = RunMove("SphereHeadOn");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  EXPECT_EQ(result.kind, ContactKind::kHit);
+  EXPECT_EQ(result.face, SolidFace::kCurved);
+  EXPECT_EQ(result.hit_count, 1);
+  ExpectVec3Near(result.position, {.x = -(0.5 + kTolerance), .y = 0, .z = 0}, kPositionTolerance);
+  ExpectBothVelocitiesNear(result, {}, 1e-15);
+  EXPECT_EQ(result.approach_speed.for_next_step, -1);
+  EXPECT_EQ(result.approach_speed.for_this_step, -1);
+}
+
+TEST(MoveParticle, SphereOblique_SlidesOffAlongTheTangent) {
+  // The hit is at {-0.4, 0.3, 0} times 1 + 2 tol, with the normal {-0.8, 0.6, 0}: the response leaves
+  // {0.36, 0.48, 0}, which the 0.4 s left carry to {-0.256, 0.492, 0}. The sphere is convex, so the tangent path does
+  // not meet it again: one hit.
+  const MoveParticleCall call = RunMove("SphereOblique");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  EXPECT_EQ(result.hit_count, 1);
+  ExpectBothVelocitiesNear(result, {.x = 0.36, .y = 0.48, .z = 0}, 1e-8);
+  ExpectVec3Near(result.position, {.x = -0.256, .y = 0.492, .z = 0}, 1e-8);
+  const double grown_radius = 0.5 + kTolerance;  // m
+  ExpectNearRelative(result.hit_fraction, (2 - std::sqrt(grown_radius * grown_radius - 0.09)) / 2, 1);
+}
+
+TEST(MoveParticle, SphereTangentWithinRounding_NeverEndsInside) {
+  // The path runs tol beyond the sphere's surface, along the grown sphere's equator up to rounding: a hit or not, the
+  // particle keeps its speed along x and ends outside.
+  const MoveParticleCase scene = FindMoveParticleCase("SphereTangentWithinRounding");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_GE(ComputeEndDistance(scene, call.result.position), kTolerance / 2);
+  EXPECT_LE(std::abs(call.result.velocity.for_this_step.x - 1), 0x1p-40);
+}
+
+TEST(MoveParticle, SphereStartWithinToleranceMovingAway_MovedOutSilently) {
+  // Plan decision P12: moved along the normal {-1, 0, 0} to the rest gap; the velocity along the surface does not
+  // approach, so the move is silent.
+  const MoveParticleCase scene = FindMoveParticleCase("SphereStartWithinToleranceMovingAway");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  ExpectVec3Equal(call.result.velocity.for_next_step, {.x = 0, .y = 1, .z = 0});
+  ExpectVec3Equal(call.result.velocity.for_this_step, {.x = 0, .y = 1, .z = 0});
+  EXPECT_GE(ComputeEndDistance(scene, call.result.position), kTolerance);
+}
+
+TEST(MoveParticle, CylinderRim_HitPositionMovedToOneTolerance) {
+  // The grown cylinder's sharp rim edge is reached at {0.5 + tol / 2, 0, 1 + tol}, Sqrt(1.25) tol from the rim. That
+  // closed-form hit is moved along the rim's normal {1, 0, 2} / Sqrt(5) to tol, where the response removes the
+  // approach: {0, 0, -1} + (2 / Sqrt(5)) {1, 0, 2} / Sqrt(5) = {0.4, 0, -0.2}. The reaction is recorded at the moved
+  // position.
+  const MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  EXPECT_EQ(result.kind, ContactKind::kHit);
+  EXPECT_EQ(result.face, SolidFace::kHighRim);
+  EXPECT_EQ(result.hit_count, 1);
+  ExpectBothVelocitiesNear(result, {.x = 0.4, .y = 0, .z = -0.2}, 1e-5);
+  EXPECT_EQ(result.reaction.solid_index, 0U);
+  const Solid& cylinder = scene.solids.at(0);
+  const double hit_pose_distance =
+      ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, result.reaction.hit_position).distance;  // m
+  EXPECT_NEAR(hit_pose_distance, kTolerance, 0x1p-40);
+}
+
+TEST(MoveParticle, CylinderCap_SlidesOnThePlane) {
+  // The cap's grown plane z = 1 + tol is reached at 2 - tol s, at x = 0.3; the response keeps {0.1, 0, 0}, which the
+  // 1 + tol s left carry to x = 0.4.
+  const MoveParticleCall call = RunMove("CylinderCap");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const SolidContactResult& result = call.result;
+  ExpectNearRelative(result.hit_fraction, (2 - kTolerance) / 3, 1);
+  EXPECT_EQ(result.face, SolidFace::kHighZ);
+  EXPECT_EQ(result.hit_count, 1);
+  ExpectBothVelocitiesNear(result, {.x = 0.1, .y = 0, .z = 0}, 1e-15);
+  ExpectVec3Near(result.position, {.x = 0.4, .y = 0, .z = 1 + kTolerance}, kPositionTolerance);
+}
+
+// What a particle pressed on a spinning top ends with: both velocities and the end position.
+struct PressedOnTop {
+  Vec3 velocity{};  // m/s, world.
+  Vec3 end{};  // m, world.
+};
+
+// Runs one scene of a particle pressed on a spinning top and fails the calling test unless it succeeded with one hit,
+// both velocities expected.velocity and the end expected.end, within 2 tol.
+void ExpectPressedOnSpinningTop(std::string_view case_name, PressedOnTop expected) {
+  const MoveParticleCall call = RunMove(case_name);
+  ASSERT_EQ(call.error, ContactError::kNone) << case_name;
+  EXPECT_EQ(call.result.hit_count, 1) << case_name;
+  ExpectBothVelocitiesNear(call.result, expected.velocity, 1e-15);
+  ExpectVec3Near(call.result.position, expected.end, kPositionTolerance);
+}
+
+TEST(MoveParticle, SpinningCylinderPressedOnCap_MovesOnlyThroughFriction) {
+  // Plan decision P17: a spin about the axis is not a turn, so the cap keeps its closed form, and the response feels
+  // the surface's {0, 1, 0} m/s through friction alone: none, a slip of friction times the push of 1 m/s, a stick.
+  const double top = 0.5 + kTolerance;  // m
+  ExpectPressedOnSpinningTop(
+      "SpinningCylinderPressedOnCapNoFriction",
+      {.velocity = {}, .end = {.x = 0.5, .y = 0, .z = top}}
+  );
+  ExpectPressedOnSpinningTop(
+      "SpinningCylinderPressedOnCapSlipping",
+      {.velocity = {.x = 0, .y = 0.25, .z = 0}, .end = {.x = 0.5, .y = 0.025, .z = top}}
+  );
+  ExpectPressedOnSpinningTop(
+      "SpinningCylinderPressedOnCapSticking",
+      {.velocity = {.x = 0, .y = 1, .z = 0}, .end = {.x = 0.5, .y = 0.1, .z = top}}
+  );
+}
+
+TEST(MoveParticle, SpinningPlatePressedOn_MovesOnlyThroughFriction) {
+  // A plate spinning about its normal does not turn either (plan decision P17 as amended): the same answers.
+  const double top = 0.5 + kTolerance;  // m
+  ExpectPressedOnSpinningTop("SpinningPlatePressedOnNoFriction", {.velocity = {}, .end = {.x = 0.5, .y = 0, .z = top}});
+  ExpectPressedOnSpinningTop(
+      "SpinningPlatePressedOnSlipping",
+      {.velocity = {.x = 0, .y = 0.25, .z = 0}, .end = {.x = 0.5, .y = 0.025, .z = top}}
+  );
+  ExpectPressedOnSpinningTop(
+      "SpinningPlatePressedOnSticking",
+      {.velocity = {.x = 0, .y = 1, .z = 0}, .end = {.x = 0.5, .y = 0.1, .z = top}}
+  );
+}
+
+TEST(MoveParticle, SlowlyTiltingCylinderCapSinkingAway_HitOnce) {
+  // The tilt is below plan decision P17's bound, so the cap keeps its closed form, but its surface sinks at 3e-10 m/s
+  // under the particle. The response leaves the particle sinking with it, and the next sweep reads that approach from
+  // the same solid velocity as the response, so the cap is not hit again. Measured from the cap's linear velocity
+  // alone it saw an approach of 3e-10 m/s, far beyond the response's allowance, and hit the cap at 0 in every sweep
+  // until kTooManyHits, at every step length.
+  const MoveParticleCall call = RunMove("SlowlyTiltingCylinderCapSinkingAway");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kHighZ);
+  EXPECT_NEAR(call.result.velocity.for_this_step.z, -3e-10, 1e-15);
+}
+
+TEST(MoveParticle, RimOnFloorSweepingParticle_FloorStaysInTheResponse) {
+  // The rim, sliding over the floor, meets the particle resting on it in the rim corner, 1.26 tol from the rim. The rim
+  // move leans 0.26 tol toward the rim and lifts the particle to 1.22 tol from the floor; the floor stays in the joint
+  // response (the window grows by the move's length), so the velocity leaves both and the path is free: two hits, the
+  // start's and the rim's. Read only at the moved position, the floor was left out, approached and hit, and the
+  // zig-zag between it and the rim's edge ended in kTooManyHits. Without the rim move, the hit a hair outside the grown
+  // edge by rounding was hit again and again, kTooManyHits at every step long enough to reach the rim.
+  const MoveParticleCase scene = FindMoveParticleCase("RimOnFloorSweepingParticle");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 2);
+  EXPECT_GE(ComputeEndDistance(scene, call.result.position), kTolerance / 2);
+  const Solid& cylinder = scene.solids.at(1);
+  const double cylinder_end_distance =
+      ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, scene.inputs.step_duration), call.result.position)
+          .distance;  // m
+  EXPECT_GE(cylinder_end_distance, kTolerance / 2);
+}
+
+TEST(MoveParticle, SlowlyTiltingCylinderRimCornerStart_RisingRimIsHitAtStart) {
+  // The start is 1.27 tol from the rim, in its rim corner, outside the window of the start's response, so the first
+  // sweep reads it: the rate from the surface's velocity, -1.77e-10 m/s, approaches, a hit at 0, moved to the rest gap,
+  // and the response leaves the rim's speed along its normal, {0, 1.25e-10, 1.25e-10} m/s. Measured from the linear
+  // velocity alone the rate was 0 and the rim rose into the particle unseen.
+  const MoveParticleCase scene = FindMoveParticleCase("SlowlyTiltingCylinderRimCornerStart");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kHighRim);
+  EXPECT_EQ(call.result.hit_fraction, 0);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 1.25e-10, .z = 1.25e-10}, 1e-14);
+}
+
+TEST(MoveParticle, RimCornerBesideRestingFace_RoundingIsNoApproach) {
+  // After the start's response on the upright, the sweep starts 1.15 tol from the rim, in its rim corner, beyond the
+  // touched window, and moves square to the rim's normal: the rate is rounding, of either sign, within the response's
+  // allowance, so the rim is not hit. Compared with 0, one of the two directions hit it at 0.
+  for (const std::string_view case_name : {"RimCornerBesideRestingFaceDown", "RimCornerBesideRestingFaceUp"}) {
+    const MoveParticleCall call = RunMove(case_name);
+    ASSERT_EQ(call.error, ContactError::kNone) << case_name;
+    EXPECT_EQ(call.result.hit_count, 1) << case_name;
+    EXPECT_EQ(call.result.solid_index, 1U) << case_name;
+  }
+}
+
+// Fails the calling test unless the scene's first hit is on kHighRim and ApplyHit leaves the particle at tol from the
+// cylinder, its first solid, at the pose of the hit's time, and unless MoveParticle succeeds with one hit and both
+// velocities expected_velocity within 1e-5.
+void ExpectRimHitMovedToRestGap(std::string_view case_name, Vec3 expected_velocity) {
+  const MoveParticleCase scene = FindMoveParticleCase(case_name);
+  ParticleMove move;
+  move.result.position = scene.inputs.start_position;
+  move.result.velocity = scene.inputs.velocity;
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  FirstHit first_hit;
+  ASSERT_EQ(
+      FindFirstHit(inputs, inputs.start_position, inputs.velocity.for_this_step, 0, inputs.step_duration, &first_hit),
+      ContactError::kNone
+  );
+  ASSERT_EQ(first_hit.at_hit.face, SolidFace::kHighRim) << case_name;
+  ContactFailure failure;
+  ASSERT_EQ(ApplyHit(inputs, first_hit, &move, &failure), ContactError::kNone) << case_name;
+  const Solid& cylinder = scene.solids.at(0);
+  const double moved_distance =
+      ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), move.result.position)
+          .distance;  // m
+  EXPECT_NEAR(moved_distance, kTolerance, 0x1p-40) << case_name;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone) << case_name;
+  EXPECT_EQ(call.result.hit_count, 1) << case_name;
+  ExpectBothVelocitiesNear(call.result, expected_velocity, 1e-5);
+}
+
+TEST(MoveParticle, CylinderRimNearRestGap_StillMovedToOneTolerance) {
+  // The closed form stops Sqrt(17 / 16) tol = 1.0308 tol from the rim, within the touched window: moved all the same.
+  // The response along the rim normal {1, 0, 4} / Sqrt(17) leaves {0, 0, -1} + (4 / Sqrt(17)) {1, 0, 4} / Sqrt(17).
+  ExpectRimHitMovedToRestGap("CylinderRimNearRestGap", {.x = 4.0 / 17, .y = 0, .z = -1.0 / 17});
+}
+
+TEST(MoveParticle, RisingCylinderRim_HitReadAtThePoseOfTheHit) {
+  // The rim hit is read, and moved, at the pose of 2 - tol s, 2 m above the start pose. The particle at rest takes the
+  // rim's 1 m/s along its normal {1, 0, 2} / Sqrt(5): {0.4, 0, 0.8}.
+  ExpectRimHitMovedToRestGap("RisingCylinderRim", {.x = 0.4, .y = 0, .z = 0.8});
+}
+
+TEST(MoveParticle, SlowlyTiltingCylinderRim_IsMoved) {
+  // A tilt within plan decision P17's bound keeps the closed form, so its rim hit is moved like a fixed cylinder's.
+  ExpectRimHitMovedToRestGap("SlowlyTiltingCylinderRim", {.x = 0.4, .y = 0, .z = -0.2});
+}
+
+// Runs the steps of MoveParticle on one scene up to the end of the last sweep, without the settle and the end check,
+// and returns the position there; a failure fails the calling test.
+Vec3 ComputePositionBeforeSettle(const MoveParticleCase& scene) {
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  ParticleMove move;
+  move.result.position = inputs.start_position;
+  move.result.velocity = inputs.velocity;
+  ContactFailure failure;
+  ContactError error = ApplyStartRules(inputs, &move, &failure);
+  for (int sweep_index = 0; sweep_index <= kMaxHitsPerStep && error == ContactError::kNone; ++sweep_index) {
+    const double duration = inputs.step_duration - move.elapsed;  // s
+    if (duration <= 0) {
+      break;
+    }
+    const Sweep sweep = {
+        .start = move.result.position,
+        .velocity_for_this_step = move.result.velocity.for_this_step,
+        .start_elapsed = move.elapsed,
+        .duration = duration,
+    };
+    const TouchedSolid touched = {
+        .is_touched = move.has_response,
+        .approach_allowance = move.this_step_approach_allowance,
+    };
+    FirstHit first_hit;
+    error = FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, nullptr);
+    if (error == ContactError::kNone && first_hit.solid_index == kNoSolid) {
+      move.result.position = move.result.position + move.result.velocity.for_this_step * duration;
+      break;
+    }
+    if (error == ContactError::kNone) {
+      error = ApplyHit(inputs, first_hit, &move, &failure);
+    }
+  }
+  EXPECT_EQ(error, ContactError::kNone);
+  return move.result.position;
+}
+
+TEST(MoveParticle, LongCylinderTiltingUnderSlide_EndsWithinAQuarterToleranceBeforeTheSettle) {
+  // The touching rule reads the surface's normal speed where the sweep starts; the particle slides 3.9 m along a
+  // surface tilting within plan decision P17's bound, which sinks at one end and rises at the other, so before the
+  // settle it ends 0.241 tol closer than the rest gap: within 2 |omega_across| max|arm| T < tol / 4, and above
+  // tol - tol / 16 - tol / 4 (FindFirstHitOfSweep, step 3), so the end check's tol / 2 is never at stake. The settle
+  // brings it back to tol.
+  const MoveParticleCase scene = FindMoveParticleCase("LongCylinderTiltingUnderSlide");
+  ASSERT_FALSE(ComputeIsTurningSolid(ToSolidContactInputs(scene), 0));
+  const double before_settle = ComputeEndDistance(scene, ComputePositionBeforeSettle(scene));  // m
+  EXPECT_NEAR(before_settle, 0.759 * kTolerance, 0.005 * kTolerance);
+  EXPECT_GT(before_settle, kTolerance - kTolerance / 16 - kTolerance / 4);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_NEAR(ComputeEndDistance(scene, call.result.position), kTolerance, kTolerance / 1024);
+}
+
+// The names of two scenes that differ only in the order of their solids or in an exact copy.
+struct SettleScenes {
+  std::string_view first;
+  std::string_view second;
+};
+
+// Fails the calling test unless two scenes that differ only in the order of their solids, or in an exact copy, both
+// succeed with the same hits and velocities, bit for bit, and end within four units in the last place of each other,
+// apart on at least one axis: the known limit of the move off near surfaces (MoveToRestGapOfNearSurfaces, Order).
+void ExpectSettleDiffersInLastPlace(SettleScenes scenes) {
+  const MoveParticleCall call = RunMove(scenes.first);
+  const MoveParticleCall other = RunMove(scenes.second);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  ASSERT_EQ(other.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, other.result.hit_count);
+  ExpectVec3Equal(other.result.velocity.for_this_step, call.result.velocity.for_this_step);
+  ExpectVec3Equal(other.result.velocity.for_next_step, call.result.velocity.for_next_step);
+  const Vec3 end = call.result.position;
+  const Vec3 difference = other.result.position - end;  // m
+  const double largest_coordinate = std::max({std::abs(end.x), std::abs(end.y), std::abs(end.z)});  // m
+  const double largest_difference =
+      std::max({std::abs(difference.x), std::abs(difference.y), std::abs(difference.z)});  // m
+  EXPECT_GT(largest_difference, 0) << "the limit is gone: update MoveToRestGapOfNearSurfaces' Order";
+  EXPECT_LE(largest_difference, 4 * 0x1p-52 * largest_coordinate);
+}
+
+TEST(MoveParticle, SettleWithExactCopy_LastPlaceKnownLimit) {
+  // With the copy two solids are near at the end, so the settle iterates where one solid moved the particle along its
+  // normal: the end differs by one unit in the last place in y.
+  ExpectSettleDiffersInLastPlace(
+      {.first = "SettleNearSpinningCylinder", .second = "SettleNearSpinningCylinderWithCopy"}
+  );
+}
+
+TEST(MoveParticle, SettleInReversedOrder_LastPlaceKnownLimit) {
+  // Reversed, the near surfaces reach the solver in another order, and the end differs in the last place.
+  ExpectSettleDiffersInLastPlace(
+      {.first = "SettleBesideMovingCylinder", .second = "SettleBesideMovingCylinderReversed"}
+  );
+}
+
+TEST(ApplyHit, TurningCylinderRimHit_IsNotMoved) {
+  // The stepping search stops near the rim, 1.11 tol from it, in the rim region (plan decision P18): its hit is used
+  // where the search stopped, since it is not the closed form's sharp edge. A rim move would leave it at tol, 0.11 tol
+  // away. MoveParticle itself ends in kTooManyHits here until the slide on a turning solid is built (plan Task 13), so
+  // the hit is applied alone.
+  const MoveParticleCase scene = FindMoveParticleCase("TurningCylinderRimHit");
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const Vec3 velocity = inputs.velocity.for_this_step;
+  FirstHit first_hit;
+  ASSERT_EQ(
+      FindFirstHit(inputs, inputs.start_position, velocity, 0, inputs.step_duration, &first_hit),
+      ContactError::kNone
+  );
+  ASSERT_EQ(first_hit.solid_index, 0U);
+  EXPECT_NEAR(first_hit.elapsed, 0.49999999958, 1e-10);
+  ASSERT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
+  ASSERT_GT(first_hit.at_hit.distance, kTolerance + kTolerance / 16);
+  ParticleMove move;
+  move.result.position = inputs.start_position;
+  move.result.velocity = inputs.velocity;
+  ContactFailure failure;
+  ASSERT_EQ(ApplyHit(inputs, first_hit, &move, &failure), ContactError::kNone);
+  EXPECT_EQ(move.result.face, SolidFace::kHighRim);
+  const Vec3 hit_position = move.result.reaction.hit_position;
+  ExpectVec3Near(hit_position, inputs.start_position + velocity * first_hit.elapsed, kTolerance / 1024);
+  const Solid& cylinder = scene.solids.at(0);
+  const double hit_distance =
+      ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), hit_position).distance;  // m
+  EXPECT_NEAR(hit_distance, first_hit.at_hit.distance, kTolerance / 1024);
+}
+
 // --- Closing solids: carried out along the apex, or squeezed ---
 
 // Runs the closing wedge scene of that name and fails the calling test unless it succeeded with one hit, the joint
@@ -2862,7 +3252,7 @@ JointScene BuildJointScene(std::vector<Solid> solids, Vec3 position, Vec3 veloci
   ParticleMove move;
   move.result.position = position;
   move.result.velocity = scene.inputs.velocity;
-  scene.active = FindActiveSurfaces(scene.inputs, move, nullptr);
+  scene.active = FindActiveSurfaces(scene.inputs, move, nullptr, 0);
   return scene;
 }
 
@@ -3839,14 +4229,16 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
       }
     }
   }
-  // The counts keep the set honest: most paths succeed, many hit, and several hits are common.
+  // The counts keep the set honest: most paths succeed, many hit, and several hits are common. Measured: 292,046 paths,
+  // 68,480 hits, 7,079 with several. The scenes of one sphere or one cylinder, last in the list, are mostly missed by
+  // paths drawn within 1 m of their start, so a fifth of the paths hit, not a quarter.
   std::cout << "paths " << counts.paths << ", free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", several hits " << counts.several_hit_paths << ", too many hits " << counts.too_many_hits
             << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
             << ", squeezed " << counts.squeezed << "\n";
   PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(counts.paths, 40000);
-  EXPECT_GT(counts.hit_paths, counts.paths / 4);
+  EXPECT_GT(counts.hit_paths, counts.paths / 5);
   EXPECT_GT(counts.several_hit_paths, counts.paths / 60);
 }
 
@@ -4317,6 +4709,9 @@ enum class TangentScene : std::uint8_t {
   kBallInDomainCorner,  // A ball touching the three low sides of the unit domain box.
   kTwoBalls,  // Two balls touching along x.
   kBallOnTiltedFlatSolid,  // A ball resting on a fixed flat solid tilted about y.
+  kCylinderLyingOnFloor,  // A cylinder lying on the fixed floor along a line through the contact point.
+  kCylinderStandingInDomainCorner,  // A cylinder standing on the unit domain box's bottom, touching its left and front.
+  kRimOnFloor,  // A tilted cylinder resting on the fixed floor at one point of its low rim.
 };
 
 // One start of the tangent set: its solids, its inputs (which point at them) and what was drawn for the counts.
@@ -4333,6 +4728,30 @@ struct TangentStart {
   double first_radius = 0;  // m: the first ball's radius for two balls, else 0.
 };
 
+// Computes the gap from a point of a contact plane to a solid, along the plane's normal: the height above the point at
+// which the solid begins, at most 2 tol, found by 64 halvings of [0, 2 tol]. The solid is convex and the point outside
+// it, so along the normal its distance is first positive, then not.
+double ComputeGapToSolid(const Solid& solid, Vec3 point_on_plane, Vec3 normal) {
+  const double largest_gap = 2 * kTolerance;  // m
+  const auto distance_at_height = [&](double height) {
+    return ComputeDistanceToSolid(solid, solid.pose_at_step_start, point_on_plane + height * normal).distance;
+  };
+  if (distance_at_height(largest_gap) > 0) {
+    return largest_gap;
+  }
+  double outside_height = 0;  // m
+  double inside_height = largest_gap;  // m
+  for (int halving_index = 0; halving_index < 64; ++halving_index) {
+    const double middle_height = (outside_height + inside_height) / 2;  // m
+    if (distance_at_height(middle_height) > 0) {
+      outside_height = middle_height;
+    } else {
+      inside_height = middle_height;
+    }
+  }
+  return outside_height;
+}
+
 // Builds one start of the tangent set in one scene (P11 generator). Draws, in this order and all of them for every
 // scene: R = 0.05 + 0.45 Next and the second ball's radius the same; the contact's offset {NextSigned, NextSigned} m;
 // the radial direction's angle 2 pi Next; x = x* (0.02 + 0.98 Next), with x* = 2 Sqrt(R_eff tol) the rest point's
@@ -4342,6 +4761,16 @@ struct TangentStart {
 // the three times tol / T; falling, {0, 0, -9.81 T}; toward the contact along the radial direction, 2 Next m/s; random,
 // the three times 2 m/s); the scene's own Next (the corner ball's side by floor(3 Next), bottom, left or front; the
 // tilt 0.6 Next rad). Both velocities equal, friction 0, start overlap tolerance 2 tol.
+// The cylinder scenes read the same draws, with the cylinder's radius R and half height H = R2 (2 R2 lying), and the
+// gap measured along the contact normal to the cylinder (ComputeGapToSolid), at most 2 tol, which is the ball's gap at
+// x*:
+//   lying on the floor  its axis along {cos, sin, 0} of the radial angle; the radial direction square to it in the
+//                       floor, on the side the scene's Next gives (below 0.5, the left of the axis).
+//   standing in corner  centre {R, R, H}, its low cap on the bottom; the contact is with the left side at {0, R, H}
+//                       (radial +y) or the front side at {R, 0, H} (radial +x), by floor(2 Next) of the scene's Next.
+//   rim on the floor    its axis tilted about y by 0.1 + 0.5 Next rad of the scene's Next, its lowest rim point on the
+//                       floor at the offset; the radial direction is the radial angle's in the floor. x* is the
+//                       nominal 2 Sqrt(R tol): the space under the cap is a wedge of the tilt, not a cusp.
 TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
   const double radius = 0.05 + 0.45 * generator.Next();  // m
   const double second_radius = 0.05 + 0.45 * generator.Next();  // m
@@ -4405,10 +4834,62 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene) {
       );
       break;
     }
+    case TangentScene::kCylinderLyingOnFloor: {
+      floor_normal = {.x = 0, .y = 0, .z = 1};
+      const Vec3 along_axis = {.x = cos_radial, .y = sin_radial, .z = 0};
+      const double side_sign = scene_draw < 0.5 ? 1.0 : -1.0;
+      radial = side_sign * Vec3{.x = -sin_radial, .y = cos_radial, .z = 0};
+      contact = offset;
+      const Cylinder lying = {
+          .center = contact + radius * floor_normal,
+          .axis = along_axis,
+          .radius = radius,
+          .half_height = 2 * second_radius,
+      };
+      start.solids.at(0) =
+          move_particle_cases::BuildFlatSolid(contact, floor_normal, move_particle_cases::kNoMotion, 1);
+      start.solids.at(1) = ToSolid(lying, move_particle_cases::kNoMotion, 2);
+      break;
+    }
+    case TangentScene::kCylinderStandingInDomainCorner: {
+      const bool touches_left = std::floor(2 * scene_draw) == 0;
+      floor_normal = touches_left ? Vec3{.x = 1, .y = 0, .z = 0} : Vec3{.x = 0, .y = 1, .z = 0};
+      radial = touches_left ? Vec3{.x = 0, .y = 1, .z = 0} : Vec3{.x = 1, .y = 0, .z = 0};
+      const Vec3 center = {.x = radius, .y = radius, .z = second_radius};
+      contact = center - radius * floor_normal;
+      const Cylinder standing =
+          {.center = center, .axis = {.x = 0, .y = 0, .z = 1}, .radius = radius, .half_height = second_radius};
+      start.solids.at(0) = move_particle_cases::BuildUnitDomainBox(1);
+      start.solids.at(1) = ToSolid(standing, move_particle_cases::kNoMotion, 2);
+      break;
+    }
+    case TangentScene::kRimOnFloor: {
+      const double tilt = 0.1 + 0.5 * scene_draw;  // rad
+      floor_normal = {.x = 0, .y = 0, .z = 1};
+      radial = {.x = cos_radial, .y = sin_radial, .z = 0};
+      contact = offset;
+      const Vec3 axis = {.x = std::sin(tilt), .y = 0, .z = std::cos(tilt)};
+      // The direction in the cap's plane that goes down most steeply: the lowest rim point is R along it.
+      const Vec3 down_in_cap = {.x = std::cos(tilt), .y = 0, .z = -std::sin(tilt)};
+      const Cylinder tilted = {
+          .center = contact + second_radius * axis - radius * down_in_cap,
+          .axis = axis,
+          .radius = radius,
+          .half_height = second_radius,
+      };
+      start.solids.at(0) =
+          move_particle_cases::BuildFlatSolid(contact, floor_normal, move_particle_cases::kNoMotion, 1);
+      start.solids.at(1) = ToSolid(tilted, move_particle_cases::kNoMotion, 2);
+      break;
+    }
   }
   const double rest_distance = 2 * std::sqrt(effective_radius * kTolerance);  // m, x*.
   const double contact_distance = distance_share * rest_distance;  // m
-  const double gap = contact_distance * contact_distance / (2 * effective_radius);  // m
+  const bool is_cylinder_scene = scene == TangentScene::kCylinderLyingOnFloor
+      || scene == TangentScene::kCylinderStandingInDomainCorner || scene == TangentScene::kRimOnFloor;
+  const double gap = is_cylinder_scene
+      ? ComputeGapToSolid(start.solids.at(1), contact + contact_distance * radial, floor_normal)
+      : contact_distance * contact_distance / (2 * effective_radius);  // m
   // For two balls the gap is measured from the first ball's surface, which lies x^2 / (2 R) behind the contact plane.
   const double first_surface_height =
       scene == TangentScene::kTwoBalls ? -contact_distance * contact_distance / (2 * radius) : 0;  // m
@@ -4506,11 +4987,11 @@ void ApplyTangentSlide(CaseGenerator& generator, TangentStart* start) {
 }
 
 // Sets the motion of one tangent start's solids, each sliding along the other: the first solid (the floor, the tilted
-// side or the first ball) at a velocity square to the contact normal, and the ball at that velocity plus another square
-// to it and a part along the contact normal of 0, 0, -1e-3 or 1e-3 m/s (sinking or rising) by floor(4 Next). The
-// tangent parts are NextSigned m/s along two directions square to the contact normal (radial and its cross with the
-// normal), four draws, then the one for the normal part. The ball in the domain corner keeps still: a moving ball would
-// leave or enter the other sides. The draws are made in every scene.
+// side or the first ball) at a velocity square to the contact normal, and the ball or the cylinder at that velocity
+// plus another square to it and a part along the contact normal of 0, 0, -1e-3 or 1e-3 m/s (sinking or rising) by
+// floor(4 Next). The tangent parts are NextSigned m/s along two directions square to the contact normal (radial and its
+// cross with the normal), four draws, then the one for the normal part. The ball and the cylinder in the domain corner
+// keep still: moving, they would leave or enter the other sides. The draws are made in every scene.
 void ApplyTangentMotion(CaseGenerator& generator, TangentScene scene, TangentStart* start) {
   const Vec3 normal = start->contact_normal;
   const Vec3 along = start->radial;
@@ -4519,7 +5000,7 @@ void ApplyTangentMotion(CaseGenerator& generator, TangentScene scene, TangentSta
   const Vec3 slide_velocity = generator.NextSigned() * along + generator.NextSigned() * across;  // m/s
   const std::array<double, 4> normal_speeds = {0, 0, -1e-3, 1e-3};  // m/s
   const double normal_speed = normal_speeds.at(static_cast<std::size_t>(std::floor(4 * generator.Next())));
-  if (scene == TangentScene::kBallInDomainCorner) {
+  if (scene == TangentScene::kBallInDomainCorner || scene == TangentScene::kCylinderStandingInDomainCorner) {
     return;
   }
   start->solids.at(0).motion.linear_velocity = first_velocity;
@@ -4628,6 +5109,46 @@ TEST(MoveParticle, GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures)
       TangentScene::kBallInDomainCorner,
       TangentScene::kTwoBalls,
       TangentScene::kBallOnTiltedFlatSolid,
+  };
+  for (const bool is_moving : {false, true}) {
+    for (const TangentScene scene : scenes) {
+      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving);
+      PrintTangentSlideCounts(scene, is_moving, counts);
+      ExpectTangentSlideCounts(counts);
+    }
+  }
+}
+
+TEST(MoveParticle, GeneratedCylinderTangentContactStarts_Succeed) {
+  // The starts of GeneratedTangentContactStarts_Succeed in the cylinder scenes, 2000 per scene in TangentScene order,
+  // from a generator of their own, so the ball scenes keep their draws: a cylinder lying on a floor, standing in a
+  // domain corner, and resting on its rim on a floor. Every start succeeds and ends at least tol / 2 from every solid.
+  CaseGenerator generator;
+  const std::array scenes = {
+      TangentScene::kCylinderLyingOnFloor,
+      TangentScene::kCylinderStandingInDomainCorner,
+      TangentScene::kRimOnFloor,
+  };
+  for (const TangentScene scene : scenes) {
+    int successes = 0;
+    for (int draw_index = 0; draw_index < 2000; ++draw_index) {
+      TangentStart start = BuildTangentStart(generator, scene);
+      start.inputs.solids = start.solids.data();
+      successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
+    }
+    std::cout << "cylinder tangent scene " << static_cast<int>(scene) << ": success " << successes << " of 2000\n";
+    EXPECT_EQ(successes, 2000);
+  }
+}
+
+TEST(MoveParticle, GeneratedCylinderTangentContactSlides_FailOnlyWhereAShorterStepCures) {
+  // The slides of GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures in the cylinder scenes, 2000 draws per
+  // scene, fixed and then moving, from a generator of their own. The cylinder in the domain corner keeps still.
+  CaseGenerator generator;
+  const std::array scenes = {
+      TangentScene::kCylinderLyingOnFloor,
+      TangentScene::kCylinderStandingInDomainCorner,
+      TangentScene::kRimOnFloor,
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
@@ -4843,6 +5364,138 @@ TEST(MoveParticle, GeneratedCylinderRimPaths_NeverHitItAgain) {
   std::cout << "rim paths 5000, hit " << hit_paths << ", repeat hits " << repeat_hits << "\n";
   EXPECT_EQ(repeat_hits, 0);
   EXPECT_GT(hit_paths, 2000);
+}
+
+// One path of the round set: its one sphere or cylinder and its inputs. inputs.solids is left for the caller.
+struct RoundSolidPath {
+  std::array<Solid, 1> solids{};
+  SolidContactInputs inputs{};
+};
+
+// Builds one path of the round set: a sphere or a cylinder (Next < 0.5 a sphere) at the origin, radius 0.1 + 0.4 Next
+// m, half height 0.1 + 0.9 Next m, its axis three NextSigned (drawn again while shorter than 0.1); T = 0.01 + 0.99 Next
+// s; moving when Next < 0.5 at three NextSigned m/s; spinning about its axis at 20 NextSigned rad/s, plus a turn across
+// the axis of Next times 0.99 of plan decision P17's bound, tol / (8 T Length(half_size)) rad/s, about the cross of the
+// axis with three NextSigned (drawn again while shorter than 0.1); a start on the direction of three NextSigned (drawn
+// again while shorter than 0.1), Length(half_size) + 0.5 m from the centre; three NextSigned for the target and one
+// Next for its kind; a velocity relative to the solid that reaches the target after (0.3 + 0.6 Next) T, both velocities
+// equal; friction Next. Draws in that order, all of them for both shapes. The target is 0.8 Length(half_size) times the
+// three NextSigned from the centre, or, for a cylinder when the kind's Next is below 0.3, a point within tol of the
+// grown cylinder's rim edge, in its own axes {(R + tol + tol a) cos(pi b), (R + tol + tol a) sin(pi b), sign(c) (H +
+// tol + tol c)} with a, b, c the three NextSigned, so the path may enter through the rim corner. The cylinder never
+// counts as turning; for a sphere the whole angular velocity is a spin.
+RoundSolidPath BuildRoundSolidPath(CaseGenerator& generator) {
+  const bool is_sphere = generator.Next() < 0.5;
+  const double radius = 0.1 + 0.4 * generator.Next();  // m
+  const double half_height = 0.1 + 0.9 * generator.Next();  // m
+  const auto draw_direction = [&generator] {
+    Vec3 direction{};
+    while (math::Length(direction) < 0.1) {
+      direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+    }
+    return math::Normalized(direction);
+  };
+  const Vec3 axis = draw_direction();
+  const double step_duration = 0.01 + 0.99 * generator.Next();  // s
+  const bool is_moving = generator.Next() < 0.5;
+  const Vec3 linear_draw = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  const double spin_rate = 20 * generator.NextSigned();  // rad/s
+  const double tilt_share = generator.Next();
+  Vec3 across_axis{};
+  while (math::Length(across_axis) < 0.1) {
+    across_axis = math::Cross(axis, draw_direction());
+  }
+  const Vec3 start_direction = draw_direction();
+  const Vec3 target_draw = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  const bool is_rim_aim = !is_sphere && generator.Next() < 0.3;
+  const double reach_share = 0.3 + 0.6 * generator.Next();
+  const double friction = generator.Next();
+
+  const Vec3 half_size =
+      is_sphere ? Vec3{.x = radius, .y = radius, .z = radius} : Vec3{.x = radius, .y = radius, .z = half_height};
+  const double reach = math::Length(half_size);  // m
+  const double largest_tilt_rate = kTolerance / (8 * step_duration * reach);  // rad/s
+  const Vec3 linear_velocity = is_moving ? linear_draw : Vec3{};  // m/s
+  const SolidMotion motion = {
+      .linear_velocity = linear_velocity,
+      .angular_velocity = spin_rate * axis + 0.99 * tilt_share * largest_tilt_rate * math::Normalized(across_axis),
+  };
+  RoundSolidPath path;
+  path.solids.at(0) = is_sphere
+      ? ToSolid(Sphere{.center = {}, .radius = radius}, motion, 1)
+      : ToSolid(Cylinder{.center = {}, .axis = axis, .radius = radius, .half_height = half_height}, motion, 1);
+  path.inputs.solid_count = 1;
+  path.inputs.contact_tolerance = kTolerance;
+  path.inputs.step_duration = step_duration;
+  path.inputs.start_position = (reach + 0.5) * start_direction;
+  // m, from the solid's centre at the time it is reached.
+  Vec3 target = 0.8 * reach * target_draw;
+  if (is_rim_aim) {
+    const double rim_radius = radius + kTolerance + kTolerance * target_draw.x;  // m
+    const double angle = std::numbers::pi * target_draw.y;  // rad
+    const double cap_sign = target_draw.z < 0 ? -1.0 : 1.0;
+    const Vec3 own_target = {
+        .x = rim_radius * std::cos(angle),
+        .y = rim_radius * std::sin(angle),
+        .z = cap_sign * (half_height + kTolerance + kTolerance * target_draw.z),
+    };
+    target = path.solids.at(0).pose_at_step_start.axes * own_target;
+  }
+  const Vec3 velocity =
+      linear_velocity + (1 / (reach_share * step_duration)) * (target - path.inputs.start_position);  // m/s
+  path.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  path.inputs.friction = friction;
+  return path;
+}
+
+// What the round set gave, counted for the checks and the report.
+struct RoundSolidCounts {
+  int hit_paths = 0;
+  int rim_hit_paths = 0;  // The first hit on a rim.
+  int repeat_hits = 0;  // More than one hit.
+  int failures = 0;
+};
+
+// Runs MoveParticle on one path of the round set and counts it; a failure fails the calling test.
+void CheckRoundSolidPath(const RoundSolidPath& path, RoundSolidCounts& counts) {
+  EXPECT_FALSE(ComputeIsTurningSolid(path.inputs, 0));
+  SolidContactResult result;
+  ContactFailure failure;
+  const ContactError error = MoveParticle(path.inputs, &result, &failure);
+  if (error != ContactError::kNone) {
+    ADD_FAILURE() << "error " << static_cast<int>(error) << ", close call " << static_cast<int>(failure.close_call);
+    ++counts.failures;
+    return;
+  }
+  ExpectEndOutsideEverySolid(path.inputs, result.position);
+  const bool is_hit = result.hit_count > 0;
+  const bool is_rim = result.face == SolidFace::kLowRim || result.face == SolidFace::kHighRim;
+  counts.hit_paths += is_hit ? 1 : 0;
+  counts.rim_hit_paths += is_hit && is_rim ? 1 : 0;
+  counts.repeat_hits += result.hit_count > 1 ? 1 : 0;
+}
+
+TEST(MoveParticle, GeneratedRoundSolidPaths_NeverHitAgain) {
+  // 20,000 paths (BuildRoundSolidPath) onto one sphere or cylinder, spinning, moving, and for a cylinder tilting within
+  // plan decision P17's bound, with friction. After the response at the hit, the path is tangent to the solid or
+  // leaves it, measured from the surface's velocity there, and the solid is convex, so a second hit can only come from
+  // reading that approach differently: none is allowed. The touching rule now reads the distance, normal and solid
+  // velocity a joint response reads, by the same expressions, and a rim hit is moved to the rest gap. Before, with the
+  // rate measured from the linear velocity alone, 2757 paths onto cylinders ended in kTooManyHits (2755 of them only
+  // with the tilt), and 144 rim hits, left in the rim corner a hair outside the grown edge, were hit again.
+  CaseGenerator generator;
+  RoundSolidCounts counts;
+  for (int path_index = 0; path_index < 20000; ++path_index) {
+    RoundSolidPath path = BuildRoundSolidPath(generator);
+    path.inputs.solids = path.solids.data();
+    CheckRoundSolidPath(path, counts);
+  }
+  std::cout << "round paths 20000, hit " << counts.hit_paths << ", rim hits " << counts.rim_hit_paths
+            << ", repeat hits " << counts.repeat_hits << ", failures " << counts.failures << "\n";
+  EXPECT_EQ(counts.repeat_hits, 0);
+  EXPECT_EQ(counts.failures, 0);
+  EXPECT_GT(counts.hit_paths, 9000);  // Measured: 10,490.
+  EXPECT_GT(counts.rim_hit_paths, 400);  // Measured: 548.
 }
 
 // One path of the chasing set: a fixed flat solid A and a flat solid B chasing the particle along a normal at right

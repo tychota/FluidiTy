@@ -58,16 +58,17 @@ namespace fluidity::contact {
 //   searched only up to the earliest hit found so far; then the earliest hit (method paper <proc-find-first-hit>):
 //   1 Solid that does not turn: the gap to each face plane changes linearly, gap(t) = gap(0) + rate * t with
 //     rate = Dot(normal, velocity_for_this_step - linear_velocity). The touching rule comes first, on the surface
-//     that gives the distance at the start: a gap in [-tol, 0] is a hit at 0 when rate * duration < -tol and no hit
-//     otherwise; a gap below -tol is a hit at 0. Otherwise a flat solid, a plate or a box is hit where the path
-//     enters the grown solid through its face planes, the latest crossing into a plane if no plane is left before
-//     it, with the entering face; each closed side of the domain box is a flat face of its own. A plate seen by a
-//     particle committed to one of its sides (inputs.plate_side) is the half space behind its committed face, so it
-//     has that one face (plan decision P3). A sphere and a cylinder use their true distance for the touching rule
-//     (plan decision P16), then a closed form: the first root of the path on the sphere grown by tol, or the entry
-//     into the cylinder grown by tol with sharp edges, the later of its entries into the grown wall and between the
-//     grown caps' planes when it comes before both exits (plan decision P15). A hit counts when its time is at most
-//     duration.
+//     that gives the distance at the start, with the rate measured from the surface's velocity there
+//     (ComputeSolidVelocity, which a spin adds to linear_velocity): a gap in [-tol, 0] is a hit at 0 when
+//     rate * duration < -tol and no hit otherwise; a gap below -tol is a hit at 0. Otherwise a flat solid, a plate or a
+//     box is hit where the path enters the grown solid through its face planes, the latest crossing into a plane if no
+//     plane is left before it, with the entering face; each closed side of the domain box is a flat face of its own. A
+//     plate seen by a particle committed to one of its sides (inputs.plate_side) is the half space behind its committed
+//     face, so it has that one face (plan decision P3). A sphere and a cylinder use their true distance and normal in
+//     world axes for the touching rule (plan decision P16), as a flat face does, then a closed form in their own axes:
+//     the first root of the path on the sphere grown by tol, or the entry into the cylinder grown by tol with sharp
+//     edges, the later of its entries into the grown wall and between the grown caps' planes when it comes before both
+//     exits (plan decision P15). A hit counts when its time is at most duration.
 //   2 Turning solid: a box whose angular velocity is not exactly {0, 0, 0} (plan decision P7), a flat solid or a plate
 //     whose angular velocity has a part across its normal longer than kNegligibleTurnShare of it, or a cylinder whose
 //     axis tilts by more than plan decision P17's bound. Its gap is not linear in time, so the stepping search advances
@@ -191,10 +192,13 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     the largest allowance of the responses so far. So rounding does not make a solid hit again, while a solid that is
 //     really approached again, by a push from another solid or because it moves, is hit. With no hit the particle
 //     advances by velocity.for_this_step times that duration, and the hits end.
-//   4 The joint response (ApplyHit, ApplyJointResponse, plan decision P20): the particle moves to the hit, and both
-//     velocities get one response over every active surface: the surfaces of every solid within tol + tol / 16 of the
-//     particle, read afresh, and the surface hit, with the hit's normal. Exact copies are dropped, and the rest sorted
-//     by value, so the result is the same bits in every order of the solids array. One active surface: the
+//   4 The joint response (ApplyHit, ApplyJointResponse, plan decision P20): the particle moves to the hit, and a
+//     closed-form hit on a cylinder's rim, which the sharp grown edge leaves up to Sqrt(2) tol from the rim, moves on
+//     along its normal to the rest gap (the rim move, plan decision P15; a hit of the stepping search is used where it
+//     stopped). Both velocities get one response over every active surface: the surfaces of every solid within
+//     tol + tol / 16 of the particle (plus the rim move's length), read afresh, and the surface hit, with the hit's
+//     normal. Exact copies are dropped, and the rest sorted by value, so the response is the same bits in every order
+//     of the solids array. One active surface: the
 //     single-surface response, ComputeContactResponse with the solid velocity and friction times its friction_scale.
 //     Several: the smallest frictionless change that leaves the velocity approaching none of them
 //     (SolveSmallestCorrection), then friction from each used surface's push, the friction limit friction * push: with
@@ -207,14 +211,20 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     closing): the particle sticks to the surface it approaches fastest. The first hit fills the record, each push and
 //     friction share of velocity.for_next_step counts in its own solid's reaction (plan decision P5), and the
 //     response's allowance raises the move's, one number per velocity. The sweep starts again at step 3 with the new
-//     velocity.for_this_step. Departure from the method paper's step 4, for now: a turning solid has no touching rule,
+//     velocity.for_this_step. On one convex solid that does not turn (a sphere, a cylinder, a box) that sweep is free
+//     of it: the response leaves the path tangent to the surface or leaving it, measured from the surface's velocity,
+//     the touching rule reads that same approach (plan decision P16), and a convex solid lies behind its tangent plane,
+//     so the straight path cannot enter it again in the step; a lone round solid takes one hit, far from
+//     kMaxHitsPerStep. Departure from the method paper's step 4, for now: a turning solid has no touching rule,
 //     so a particle it hit, or one that starts within 1.25 tol of it, is hit again at time 0 by every later sweep and
 //     the move ends in kTooManyHits instead of sliding in the solid's axes. A shorter step does not help; only a hit
 //     exactly at the end of the step succeeds.
 //   5 Settle and check the end (ApplySettleAtEnd, CheckEndOutsideSolids): one move off every surface closer than tol
 //     of every solid at the end pose, to the rest gap of all of them (MoveToRestGapOfNearSurfaces); when there is none
 //     the particle stays. Then every solid must be at least tol / 2 away: the end check stays the last word, so a
-//     particle never ends a step inside a solid.
+//     particle never ends a step inside a solid. Unlike the response, the move off near surfaces at the start and the
+//     settle read the solids in array order, so a reordered array or an exact copy can change the position by a unit
+//     in the last place (MoveToRestGapOfNearSurfaces, Order), a known limit.
 //   Without a hit the end position is start_position + velocity.for_this_step * step_duration, one multiply and one
 //   add per axis, and both velocities come back unchanged. Same bits on CPU and GPU when every solid's angular
 //   velocity is zero: only + - * /, Abs, Sqrt, Length and comparisons.

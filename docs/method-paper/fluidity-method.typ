@@ -920,7 +920,12 @@ not turn, on every surface of it, a start gap up to $"tol"\/16$ then counts as r
 $t = 0$ only when $"rate" < -b$, a real approach; otherwise the path is free of it. Why every solid, with no list of
 the solids met: a sweep after a response starts where that response was made, and a solid whose start gap is within
 the window was within $"tol" + "tol"\/16$ there, so it was an active surface of that response (@sec-contact-response),
-which left its approach within the response's bound, at most $b$. A solid outside the window takes the closed form.
+which left its approach within the response's bound, at most $b$. The touching rule reads that approach by the same
+expressions as the response, for every shape: the normal of the solid's distance in world axes at the same point and
+pose (a sphere's and a cylinder's too), the solid velocity $bold(u)$ at the particle, and the surface the sweep hit
+listed with the hit's own distance, which is that same function there. So its rate is minus the response's own
+target, bit for bit, and no curvature enters: the normal is read where the response read it, not where the particle
+slid to. A solid outside the window takes the closed form.
 One exception, a hit and not a miss: a surface whose normal agrees with another's within $2^(-40)$ but not bit for
 bit, in a change that uses a third direction, is missed by up to $2^(-40)$ of the change, which the sweep reads as an
 approach and hits at 0. The bound is carried, not recomputed: its derivation (@sec-contact-response) proves it from
@@ -1162,8 +1167,16 @@ rejected by rounding and pass through the solid.) The face, normal and distance 
 That hit sits between $"tol"$ and $sqrt(2) "tol"$ from the true rim, never closer than $"tol"$. Its gap $d -
 "tol"$ is then between 0 and $0.414 "tol"$, a value that neither the touching rule ($[-"tol", 0]$) nor a start
 deeper inside covers. `MoveParticle` therefore moves a hit that this closed form finds in a rim region along the
-rim normal to $d = "tol"$ before the response, a move of at most $(sqrt(2) - 1) "tol"$ toward the rim. A hit found
-by the stepping search toward a turning cylinder is not moved: it stops at $d <= 1.25 "tol"$ in any region. The end
+rim normal to $d = "tol"$ before the response, a move of at most $(sqrt(2) - 1) "tol"$ toward the rim, and reads
+the hit's distance, normal and face again where the move ends. Along the normal the nearest point of the rim stays
+the same, so the distance falls by the move and the normal is unchanged up to rounding. A hit found by the stepping
+search toward a turning cylinder is not moved: that search reads the true distance, not a sharp grown corner, and
+stops at $d <= 1.25 "tol"$ in any region. The move can lean away from another surface the particle rests on: a
+cylinder's rim sliding over a floor meets a particle on it 1.26 tol from the rim, and the move lifts it to 1.22 tol
+from the floor. So the response's window grows by the move's length, and every surface the particle was on at the
+hit stays active (@sec-contact-response); read only at the moved point, the floor was left out, the response's
+velocity approached it, and the zig-zag between the floor and the rim's edge, whose normal turns over a distance of
+$"tol"$, ended in "too many hits". The end
 check ($d >= "tol"\/2$) never fires wrongly there: before the move $d >= "tol"$, after it $d = "tol"$. For a fixed
 cylinder of radius 0.5 m and half height 1 m and a particle from $(0.5 + "tol"\/2, 0, 3)$ at (0, 0, −1) m/s (the
 tests' numbers), the path is inside the grown wall all along ($alpha_rho = 0$) and enters between the grown caps at
@@ -1191,30 +1204,32 @@ passes over the rim.
 === Starts on or near a round solid
 
 The start's gap $g_0 = d - "tol"$ uses the true distance. A start deeper than $"tol"$ inside the grown solid, $g_0
-< -"tol"$, is hit at $t = 0$, as for a flat face. With $g_0$ in $[-"tol", 0]$ the touching rule applies, with
-$"rate" = bold(n) dot bold(w)$ and $bold(n)$ the normal at the start (a spin about the centre or the axis adds
-nothing along $bold(n)$): the solid is not hit during this sweep when $"rate" times "duration" >= -"tol"$, and it
-is hit at $t = 0$ otherwise. It is safe because the true signed distance to a convex solid is a convex function of
-position, so along the straight path $d(t) >= d(0) + "rate" times t >= d(0) - "tol"$. `MoveParticle` starts every
-sweep at $d = "tol"$ (a hit, the rim move or the start move put it there), so $d(t) >= "tol" - "tol" = 0$; the
-part of the window below 0 only absorbs rounding, and the settle at the end of `MoveParticle` puts the particle
-back at $"tol"$. It is the same tolerance as for a flat face, with no term for the curvature. A cylinder start
-inside the grown sharp cylinder ($d_"wall" - "tol" <= 0$ and $d_"cap" - "tol" <= 0$, the gaps computed as
-@eq:cylinder-distance computes the distances) with a positive gap $g_0$ lies in a rim corner: both distances are then
-in $(0, "tol"]$. It is hit at $t = 0$ when it approaches ($"rate" < 0$) and free otherwise. For a sphere of radius 0.5 m at the origin, a particle at $(-(0.5 + "tol"), 0,
-0)$ moving at (0, 1, 0) m/s, along the tangent, is free; moving at (1, 0, 0) m/s it is hit at 0 (the tests'
-numbers).
+< -"tol"$, is hit at $t = 0$, as for a flat face. With $g_0$ in $[-"tol", 0]$ the touching rule applies, with $"rate" =
+bold(n) dot (bold(v) - bold(u))$, $bold(n)$ the normal at the start in world axes and $bold(u)$ the surface's velocity
+there, the very numbers a response reads (a spin about the centre or the axis adds nothing along $bold(n)$ but rounding;
+a cylinder's tilt within the bound below adds its true surface speed): the solid is not hit during this sweep when
+$"rate" times "duration" >= -"tol"$, and it is hit at $t = 0$ otherwise. It is safe because the true signed distance to
+a convex solid is a convex function of position, so along the straight path $d(t) >= d(0) + "rate" times t >= d(0) -
+"tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit, the rim move or the start move put it there), so
+$d(t) >= "tol" - "tol" = 0$; the part of the window below 0 only absorbs rounding, and the settle at the end of
+`MoveParticle` puts the particle back at $"tol"$. It is the same tolerance as for a flat face, with no term for the
+curvature. A cylinder start inside the grown sharp cylinder ($d_"wall" - "tol" <= 0$ and $d_"cap" - "tol" <= 0$, the
+gaps computed as @eq:cylinder-distance computes the distances) with a positive gap $g_0$ lies in a rim corner: both
+distances are then in $(0, "tol"]$. It is hit at $t = 0$ when it approaches (the same rate below $-b$, 0 before any
+response of the step) and free otherwise. For a sphere of radius 0.5 m at the origin, a particle at $(-(0.5 + "tol"), 0,
+0)$ moving at (0, 1, 0) m/s, along the tangent, is free; moving at (1, 0, 0) m/s it is hit at 0 (the tests' numbers).
 
 #procedure(
   [The first hit of a straight path on a sphere],
   <proc-sphere-first-hit>,
-  inputs: [The start relative to the centre and the velocity relative to the sphere, in its own axes; `radius`,
-    the contact tolerance and `duration`.],
+  inputs: [The start and the velocity, in world axes for the touching rule, and relative to the sphere in its own
+    axes for the root; `radius`, the contact tolerance and `duration`.],
   outputs: [The hit time since the start of the sweep, or no hit. The normal and face come from
     @eq:sphere-distance at the hit position.],
   fails: [never.],
-  ([Read the start], [Compute the distance to the centre and the gap $g_0$. Below $-"tol"$: hit at 0. In $[-"tol",
-    0]$: the touching rule, hit at 0 when $"rate" times "duration" < -"tol"$, no hit otherwise.]),
+  ([Read the start], [Compute the distance and the normal in world axes and the gap $g_0$. Below $-"tol"$: hit at 0.
+    In $[-"tol", 0]$: the touching rule with the rate from the surface's velocity, hit at 0 when $"rate" times
+    "duration" < -"tol"$, no hit otherwise.]),
   ([Find the root], [Compute the three coefficients of @eq:sphere-hit-time, the constant from the gap. No hit when
     the velocity is zero, the path does not approach the centre or the root does not exist.]),
   ([Keep the hit], [Compute the root without cancellation; it is the hit when it is at most `duration`.]),
@@ -1253,23 +1268,32 @@ once per sweep, and sliding round a sphere does not run into the limit of four h
 the particle back to the surface in later steps, and over many steps it follows the curve; a particle sliding from
 the top of a frictionless sphere leaves it where $cos theta = 2\/3$, $theta$ measured from the top.
 
-A turn about a sphere's centre, or about a cylinder's own axis, moves the surface but not the shape; so does a turn
-of a flat solid or a plate about its normal, since both are unbounded sideways (@sec-first-hit). Such a solid is
-swept and slid as one that does not turn, with the closed forms above, and the spin enters only through the solid
-velocity $bold(u)$, which always uses the full angular velocity. The turn that changes the shape is none for a
-sphere, and for a cylinder the part of $bold(omega)$ across its axis, $bold(omega)_"across" = bold(omega) -
-(bold(omega) dot bold(e)_z) bold(e)_z$, with $bold(e)_z$ the cylinder's own z axis (its `axis`) at the start of the
-sweep. A cylinder is a turning solid
-only when $|bold(omega)_"across"| T |"half_size"| > "tol"\/8$, when its shape moves by more than $"tol"\/8$ during
-the step; it then uses the stepping search of @sec-first-hit and the slide in its own axes of
-@sec-contact-response, and the quarter-turn limit applies to $|bold(omega)_"across"| T$. A spin given along the
-axis stays below that bound up to rounding. Why not treat a spinning roller as turning: the slide on a turning
-solid carries the particle in the solid's axes, so it would drag a particle round the roller even with friction 0.
-Through the solid velocity, the spin acts by friction only. For a cylinder of radius 0.5 m at the origin spinning at
-(0, 0, 10) rad/s, a particle hitting the wall at (−0.5, 0, 0) with velocity (1, 0, 0) m/s meets a surface moving
-at (0, −5, 0) m/s: the approach speed is −1 m/s, and the particle keeps (0, 0, 0) m/s with friction 0 and takes
-(0, −0.5, 0) m/s with friction 0.5 (this paper's numbers, by @eq:contact-response).
-
+A turn about a sphere's centre, or about a cylinder's own axis, moves the surface but not the shape; so does a turn of a
+flat solid or a plate about its normal, since both are unbounded sideways (@sec-first-hit). Such a solid is swept and
+slid as one that does not turn, with the closed forms above, and the spin enters only through the solid velocity
+$bold(u)$, which always uses the full angular velocity: in the response, and in the rate the touching rule reads, so the
+two agree bit for bit (@sec-first-hit). The turn that changes the shape is none for a sphere, and for a cylinder the
+part of $bold(omega)$ across its axis, $bold(omega)_"across" = bold(omega) - (bold(omega) dot bold(e)_z) bold(e)_z$,
+with $bold(e)_z$ the cylinder's own z axis (its `axis`) at the start of the sweep. A cylinder is a turning solid only
+when $|bold(omega)_"across"| T |"half_size"| > "tol"\/8$, when its shape moves by more than $"tol"\/8$ during the step;
+it then uses the stepping search of @sec-first-hit and the slide in its own axes of @sec-contact-response, and the
+quarter-turn limit applies to $|bold(omega)_"across"| T$. A spin given along the axis stays below that bound up to
+rounding. Below the bound the closed form keeps the axis of the sweep's start, while $bold(u)$ keeps the tilt, and the
+touching rule reads the surface's normal speed where the sweep starts. A particle that slides across the tilting surface
+keeps that speed while the surface under its new position moves the other way, so the gap falls by up to $2
+|bold(omega)_"across"| max|bold(r)| T < "tol"\/4$, since $max|bold(r)| <= |"half_size"|$; a sweep the closed form
+decides keeps the $"tol"\/8$. So the true grown shape is entered by up to $"tol"\/4$ without a hit, outside the
+$"tol"\/16$ of @sec-first-hit; no hit into the solid is missed, the particle ends at least
+$"tol" - "tol"\/16 - "tol"\/4 = 0.6875 "tol"$ from it, above the end check's $"tol"\/2$, and the settle lifts it
+back (measured: 0.759 tol before the settle, for a cylinder of radius 0.1 m and half height 2 m at 0.99 of the
+bound, the tests' numbers). Measured from $bold(v)_"lin"$ alone, a cap sinking at $3 times 10^(-10)$ m/s under a
+particle it had just stopped looked approached, beyond any rounding bound, and was hit again at 0 until "too many hits",
+at every step length. Why not treat a spinning roller as turning: the slide on a turning solid carries the particle in
+the solid's axes, so it would drag a particle round the roller even with friction 0. Through the solid velocity, the
+spin acts by friction only. For a cylinder of radius 0.5 m at the origin spinning at (0, 0, 10) rad/s, a particle
+hitting the wall at (−0.5, 0, 0) with velocity (1, 0, 0) m/s meets a surface moving at (0, −5, 0) m/s: the approach
+speed is −1 m/s, and the particle keeps (0, 0, 0) m/s with friction 0 and takes (0, −0.5, 0) m/s with friction 0.5 (this
+paper's numbers, by @eq:contact-response).
 == Response and slide <sec-contact-response>
 
 === The response at one surface
@@ -1435,14 +1459,18 @@ A hit that the closed form finds in a rim region of a cylinder is first moved al
 (@sec-round-solids); the response then works from there.
 
 At each hit, at the start or along the path, both velocities get one *joint response* over the *active surfaces*:
-every surface of every solid that the particle is within $"tol" + "tol"\/16$ of, read at its position then (not the
+every surface of every solid that the particle is within $"tol" + "tol"\/16$ of (plus the length of a rim move,
+@sec-round-solids), read at its position then (not the
 normal recorded at a hit, stale once the particle has slid along a ball; not a surface farther away, such as a ceiling
 hit 0.1 m above a floor touched earlier), and the surface hit, with the hit's own normal. A surface the same bit for
 bit as one listed, in normal, solid velocity, friction and `reports_reaction`, is dropped: an exact copy adds nothing,
 so 17 or 40 coincident floors take one place. The rest are sorted by value (normal, then solid velocity, then
 friction, then a reacting solid first, then solid index), so every sum and every tie below reads them in an order
-their values decide, and the result and the reaction are the same bits for every order of the solids array. A
-coincident surface that is not an exact copy (rougher, smoother, or reacting) stays; with a moving solid a smoother one
+their values decide, and the velocities and the reaction are the same bits for every order of the solids array. The
+move off near surfaces at the start and the settle are not sorted: they read the solids in array order and count an
+exact copy as a solid of its own, so a reordered array or a copy can change the position by a unit in the last place
+(9 and 2 of 26,216 moves near round solids, at most $4.4 times 10^(-16)$ m), a known limit; sorting their targets would
+change the rounding of every move whose array order is not the sorted one. A coincident surface that is not an exact copy (rougher, smoother, or reacting) stays; with a moving solid a smoother one
 changes the result by rounding only, at most $2.2 times 10^(-14)$ of the speed. Surfaces whose normals agree within $2^(-40)$ on every
 axis share one *direction*, with the normal of the first.
 
@@ -1604,9 +1632,10 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
     with the solids sampled at the time already used and, after the first response of the step, the stricter
     touching rule for every solid. With no hit, advance by `for_this_step` times the time left and go to step 5.]),
-  ([Joint response], [Fail on a fifth hit. A hit that @proc-cylinder-first-hit found in a rim region is first moved
-    along the rim normal to $d = "tol"$. Read the active surfaces: those of every solid within $"tol" + "tol"\/16$ of
-    the particle, normals read afresh, and the surface hit with its own normal; drop exact copies, sort by value,
+  ([Joint response], [Fail on a fifth hit. A hit that @proc-cylinder-first-hit found in a rim region farther than
+    $"tol"$ is first moved along the rim normal to $d = "tol"$, and read again there. Read the active surfaces: those
+    of every solid within $"tol" + "tol"\/16$ of the particle, plus the rim move's length, normals read afresh, and
+    the surface hit with its own normal; drop exact copies, sort by value,
     group into directions; fail with "too many hits" past eight directions or 16 surfaces. Fill the record if it is
     empty and count one hit. For each velocity: with one active surface, the response with that solid's velocity and
     `friction` times `friction_scale`; with several, when it approaches one beyond its bound, the smallest
