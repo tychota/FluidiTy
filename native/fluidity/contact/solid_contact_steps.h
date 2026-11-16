@@ -135,7 +135,11 @@
 //          FindHitOnConvexSolid, FindHitOnDomainBox, FindSphereHit, TimeInterval, ComputeTimeInsideGrownWall,
 //          ComputeTimeBetweenGrownCaps, FindCylinderRimHit, FindCylinderHit, HasConvexDistance, GapLowerModel,
 //          ComputeSecondOrderAdvance, FindHitOnTurningSolid, ComputeIsTurningSolid, FindFirstHitOnSolid,
-//          ComputeEarlierHit, FindEarliestHitWithTurningSolids, TouchedSolid, FindFirstHitOfSweep, ParticleMove,
+//          ComputeEarlierHit, kMaxLeftOutSolids, ComputeIsLeftOut, FindEarliestHitWithTurningSolids, TouchedSolid,
+//          FindFirstHitOfSweep, ParticleMove, kLeftOutWindowInTolerances, kLeftOutLargestCoordinateInTolerances,
+//          kLeftOutRestGapMoveInTolerances, kBoxDistanceShare,
+//          ComputeLeftOutRestGapMove, ComputeParticleReach, ComputeOutOfRangeDistance, ComputeIsSolidOutOfRange,
+//          ComputeIsWithinParticleReach,
 //          CheckSolidContactInputs, ToSideAtHit, ApplyReactionChange, CheckHitCountBelowLimit, MoveToRestGap,
 //          CheckStartOnCommittedSide, ComputeIsApproachingSolid, NearSurfaces, FindSurfacesOfSolid, SubsetEquations,
 //          SubsetMultipliers, SolveSubsetMultipliers, ComputeSubsetChange, CorrectionSubset, ComputeCorrectionSlack,
@@ -179,6 +183,7 @@
 #pragma once
 
 #include <cassert>
+#include <cfloat>
 #include <cstdint>
 
 #include "fluidity/base/axis.h"
@@ -1684,6 +1689,21 @@ FLUIDITY_CPU_AND_GPU constexpr FirstHit ComputeEarlierHit(FirstHit kept, FirstHi
   return is_hit && (is_earlier || is_tie_with_lower_index) ? candidate : kept;
 }
 
+// The most solids one move can leave out of its reads: the bits of SolidContactInputs::left_out_solids. A solid at an
+// index of 64 or more is always read.
+inline constexpr std::uint32_t kMaxLeftOutSolids = 64;
+
+// Computes whether the reads of the move leave solid `solid_index` out: its bit in left_out_solids, the mask
+// MoveParticle keeps in ParticleMove for the solids the particle cannot come near during the step
+// (ComputeIsSolidOutOfRange) and passes to the steps that read the solids. Every loop over the solids that skips such
+// a solid says in a comment why the skipped read could not change its answer. A step called with no mask, 0, reads
+// every solid, as every caller outside MoveParticle does.
+//
+// Example: left_out_solids 0b101: solids 0 and 2 are left out, solid 1 and solids 64 and above are read.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsLeftOut(std::uint64_t left_out_solids, std::uint32_t solid_index) {
+  return solid_index < kMaxLeftOutSolids && ((left_out_solids >> solid_index) & 1U) != 0;
+}
+
 // Finds the earliest hit of a sweep over the solids that do not turn and the turning solids: the step "turning solid"
 // of FindFirstHit, after its step "solid that does not turn" has filled *earliest.
 //
@@ -1708,11 +1728,17 @@ FLUIDITY_CPU_AND_GPU constexpr FirstHit ComputeEarlierHit(FirstHit kept, FirstHi
 //                         (FindHitOnTurningSolid: Cost).
 //        *earliest is then FirstHit{} with solid_index the failing solid's index, so the caller can name it.
 // Read: docs/method-paper/fluidity-method.typ <proc-find-first-hit>, <sec-first-hit>
-FLUIDITY_CPU_AND_GPU inline ContactError
-FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, FirstHit* earliest) {
+FLUIDITY_CPU_AND_GPU inline ContactError FindEarliestHitWithTurningSolids(
+    const SolidContactInputs& inputs,
+    Sweep sweep,
+    FirstHit* earliest,
+    std::uint64_t left_out_solids = 0
+) {
   assert(earliest != nullptr);
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
-    if (!ComputeIsTurningSolid(inputs, solid_index)) {
+    // A turning solid left out would be searched free within its advances (ComputeOutOfRangeDistance, step 4); a copy
+    // of it that fills the same space is left out too, its start distance having the same bits.
+    if (ComputeIsLeftOut(left_out_solids, solid_index) || !ComputeIsTurningSolid(inputs, solid_index)) {
       continue;
     }
     // A turning solid that fills the same space as one earlier in the array would be searched with a cap that the
@@ -1875,7 +1901,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOfSweep(
     Sweep sweep,
     TouchedSolid touched,
     FirstHit* first_hit,
-    ContactCloseCall* close_call
+    ContactCloseCall* close_call,
+    std::uint64_t left_out_solids = 0
 ) {
   assert(first_hit != nullptr);
   assert(inputs.solids != nullptr || inputs.solid_count == 0);
@@ -1893,7 +1920,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOfSweep(
   FirstHit earliest;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     assert(CheckSolid(inputs.solids[solid_index], inputs.step_duration) == ContactError::kNone);
-    if (ComputeIsTurningSolid(inputs, solid_index)) {
+    // A solid left out is farther than the window from the whole path (ComputeIsSolidOutOfRange): no hit.
+    if (ComputeIsLeftOut(left_out_solids, solid_index) || ComputeIsTurningSolid(inputs, solid_index)) {
       continue;
     }
     FirstHit hit_on_solid;
@@ -1917,7 +1945,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOfSweep(
   // The turning solids: a close call is passed on with its reason, always the stepping search running out of
   // advances (a hover or a graze), and its solid. The step
   // is shortened and tried again.
-  const ContactError turning_error = FindEarliestHitWithTurningSolids(inputs, sweep, &earliest);
+  const ContactError turning_error = FindEarliestHitWithTurningSolids(inputs, sweep, &earliest, left_out_solids);
   if (turning_error == ContactError::kTooCloseToCall) {
     if (close_call != nullptr) {
       *close_call = ContactCloseCall::kSlowApproachToTurningSolid;
@@ -1949,7 +1977,219 @@ struct ParticleMove {
   // at normal {0.6, 0, 0.8}), which compared with 0 would be an approach. The sweeps never read it: for_next_step does
   // not move the particle.
   double next_step_approach_allowance = 0;
+  // m. The particle's reach: how far from the start it may go in the step while the solids in left_out_solids stay
+  // left out (ComputeParticleReach). Every phase that reads with them left out first checks that it stays within it.
+  double particle_reach = 0;
+  // The solids the reads of the move leave out (ComputeIsLeftOut): those the start found out of range
+  // (ComputeIsSolidOutOfRange), bit i for solid i, until a check of the reach fails and the move clears it.
+  std::uint64_t left_out_solids = 0;
 };
+
+// No unit, in contact tolerances. A distance, as ComputeDistanceForParticle computes it, above which no phase of a move
+// finds a solid near: the largest such distance any phase reads is Sqrt(2) tol, a point of a cylinder grown by tol
+// with sharp rims, where a sweep may enter; the others are a turning solid's hit at 1.25 tol, a rim hit at tol +
+// tol / 1024, the active window tol + tol / 16, a hit through a box's or a plane's face planes grown by tol, a near
+// surface closer than tol, a crossing of a surface grown by at most tol, the touching rule's tol and the end check's
+// tol / 2. 4 leaves 4 - Sqrt(2) = 2.59 tol above the largest of them for rounding: of a distance, at most tol / 128
+// (contact/contact_tolerance.h); of the sums of the rule, a few units of numbers below 2^42 tol; and of the closed
+// forms' hit times, which a sweep of several metres aimed at the centre of a small sphere was measured to move by
+// about one tol at the scale's edge, coordinates 2^40 tol (36 tol at 2^45, outside the scale, where the rule leaves
+// nothing out: ComputeOutOfRangeDistance, step 1).
+inline constexpr double kLeftOutWindowInTolerances = 4;
+// No unit, in contact tolerances. The largest coordinate, of the particle's start and of a solid's origin, at which
+// the rule leaves the solid out: the scale ComputeContactTolerance gives, tol at least 2^-40 of the largest coordinate,
+// within which the rounding the window holds was bounded.
+inline constexpr double kLeftOutLargestCoordinateInTolerances = 0x1p40;
+// No unit, in contact tolerances. The threshold a move off one near solid is checked against while solids are left
+// out, beyond twice start_overlap_tolerance: the reach counts one such move at the start and one in the settle, and a
+// longer move, or any move off several surfaces, reads every solid (ComputeMoveOffOneNearSolid, ApplyStartRules,
+// MoveToRestGapOfNearSurfaces). It holds the moves that happen: at the start a solid the particle is less than
+// start_overlap_tolerance inside moves it at most start_overlap_tolerance + tol along its normal, and a domain box off
+// up to three sides in turn, at most Sqrt(3) times that; in the settle the particle is at least -2 tol from every
+// solid (ApplySettleAtEnd), so at most 3 tol, Sqrt(3) times that for a domain box, 5.2 tol.
+inline constexpr double kLeftOutRestGapMoveInTolerances = 6;
+// No unit. The share by which a turning box's distance is bounded below by its true distance: a box's distance is its
+// largest face-plane gap, the largest axis of the point's excess over the half sizes, at least the excess's length
+// over Sqrt(3); 2 is above Sqrt(3) and exact.
+inline constexpr double kBoxDistanceShare = 2;
+
+// Computes the threshold a move off one near solid is checked against while solids are left out:
+// kLeftOutRestGapMoveInTolerances * tol + 2 * start_overlap_tolerance. Units: m.
+FLUIDITY_CPU_AND_GPU inline double ComputeLeftOutRestGapMove(const SolidContactInputs& inputs) {
+  return (kLeftOutRestGapMoveInTolerances * inputs.contact_tolerance) + (2 * inputs.start_overlap_tolerance);
+}
+
+// Computes the particle's reach for the rule that leaves out a solid it cannot come near: Length(for_this_step) *
+// step_duration, its travel at the start's velocity, plus one move off one near solid at the start and one in the
+// settle (ComputeLeftOutRestGapMove). A response that leaves the particle faster than that, or a carry along a
+// turning solid, takes it farther: MoveParticle then reads every solid again (ComputeIsWithinParticleReach).
+// Example: at rest, tol 2^-30 m and no start overlap: 12 tol. At 1 m/s for 0.01 s: 0.01 m + 12 tol.
+// Units: m.
+FLUIDITY_CPU_AND_GPU inline double ComputeParticleReach(const SolidContactInputs& inputs) {
+  const double travel = math::Length(inputs.velocity.for_this_step) * inputs.step_duration;  // m
+  return travel + (2 * ComputeLeftOutRestGapMove(inputs));
+}
+
+// Computes the distance from the start beyond which a solid is out of range of the particle for the whole step: no
+// phase of the move can find it near (ComputeIsSolidOutOfRange). DBL_MAX for a solid that is never left out.
+//
+// Method, with T the step, R the particle's reach, tol the contact tolerance, d the distance f the start's depth check
+//   read (ComputeDistanceForParticle at the start and the pose of time 0), v_lin and w the solid's linear and angular
+//   velocity, o its origin at the start, a = min(Length(w) T, 2) the largest turn's chord per unit of arm (a chord of
+//   a turn by an angle b is 2 sin(b / 2) <= min(b, 2) times the arm), and x a point the move reads at a time t of the
+//   step, within R of the start (ComputeIsWithinParticleReach and the checks of the moves off near surfaces):
+//   1 Never left out: a solid at an index of kMaxLeftOutSolids or more, a domain box, and a solid whose origin, or the
+//     particle's start, has a coordinate above kLeftOutLargestCoordinateInTolerances * tol: outside the scale of
+//     ComputeContactTolerance the closed forms round by more than the window.
+//   2 A lower bound of f(x, t), shape by shape. ComputeSolidPose turns the axes A about the origin and moves the
+//   origin:
+//     o(t) = o + v_lin t, the point's own coordinates p = Transpose(A(t)) (x - o(t)).
+//     flat solid, plate, box that does not turn  f is a plane's or a plate's distance, or the largest of a box's
+//       face-plane gaps, each 1-Lipschitz in p, and p moves from the start's by at most |x - start| + Length(v_lin) t +
+//       a |x - o(t)|, with |x - o(t)| <= r_far = Length(start - o) + R + Length(v_lin) T. So f(x, t) >= d - travel,
+//       travel = R + (Length(v_lin) + a r_far / T) T, the last term only for a solid with angular velocity.
+//     sphere  f = |x - o(t)| - radius, which a spin does not change: travel = R + Length(v_lin) T.
+//     cylinder  f is the true distance to the solid, which moves no point of itself farther than Length(v_lin) t +
+//       a Length(half_size) (its points lie within Sqrt(radius^2 + half_height^2) <= Length(half_size) of the
+//       origin): travel = R + (Length(v_lin) + a Length(half_size) / T) T.
+//     box that turns  f is not the true distance e: the turn moves p by a |x - o(t)|, which may be metres. But e moves
+//       no farther than the solid's points, Length(v_lin) t + a Length(half_size), f <= e, so e at the start is at
+//       least d, and outside the box f >= e / Sqrt(3) >= e / kBoxDistanceShare. So f(x, t) >= (d - travel) /
+//       kBoxDistanceShare with travel as for a cylinder.
+//   3 out_distance = travel + share * kLeftOutWindowInTolerances * tol, share kBoxDistanceShare for a turning box and 1
+//     otherwise: every distance the move reads to this solid is then above the window.
+//   4 A turning solid also needs its stepping search to end free within its advances (FindHitOnTurningSolid). Every
+//     gap it samples is at least G = (d - travel) / share - tol - tol / 64 (tol / 64 the rounding of two distances), so
+//     each advance is at least G / bound, bound = Length(v - v_lin) + Length(w) r_max; over a sweep of duration t,
+//     bound * t <= R + Length(v_lin) T + Length(w) T r_far, since Length(v) t <= R within the reach and r_max <= r_far.
+//     kMaxAdvanceCount - 1 advances then cover the sweep when d >= travel + share (tol + tol / 64 + (R + Length(v_lin)
+//     T
+//     + Length(w) T r_far) / (kMaxAdvanceCount - 1)); out_distance is the larger of the two.
+//   A result that is not finite gives DBL_MAX.
+// Units: m, world; s for the step.
+// Example: tol 2^-30 m, a particle at rest (R = 12 tol), a fixed sphere: 14 tol. The sphere moving at 1 m/s for
+//   0.01 s: 0.01 m + 14 tol. A box turning at 1 rad/s for 0.01 s, half size {0.3, 0.4, 0}: 0.005 m + 12 tol, times 1,
+//   plus 4 tol, then the larger with step 4.
+// Requires: solid_index < inputs.solid_count; the solid passed CheckSolid.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+// clang-tidy: the solid's index and the particle's reach, in the order the rule reads them.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU inline double
+ComputeOutOfRangeDistance(const SolidContactInputs& inputs, std::uint32_t solid_index, double particle_reach) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
+  assert(solid_index < inputs.solid_count);
+  // Steps: 1 never left out  2 the travel of the distance  3 the window  4 the stepping search of a turning solid
+  constexpr double kNeverOutOfRange = DBL_MAX;  // m: no finite distance is above it.
+  const Solid& solid = inputs.solids[solid_index];
+  // Step 1: a domain box's walls are near every particle of the scene sooner or later, and a cheap test would not pay.
+  if (solid_index >= kMaxLeftOutSolids || solid.shape == SolidShape::kDomainBox) {
+    return kNeverOutOfRange;
+  }
+  const auto compute_largest_coordinate = [](Vec3 point) -> double {
+    return math::Max(math::Max(math::Abs(point.x), math::Abs(point.y)), math::Abs(point.z));
+  };
+  const double largest_coordinate = kLeftOutLargestCoordinateInTolerances * inputs.contact_tolerance;  // m
+  const bool is_within_scale = compute_largest_coordinate(inputs.start_position) <= largest_coordinate
+      && compute_largest_coordinate(solid.pose_at_step_start.origin) <= largest_coordinate;
+  if (!is_within_scale) {
+    return kNeverOutOfRange;
+  }
+  // Step 2: how far the distance can fall from the start's, shape by shape. The terms of a turn are computed only for a
+  // solid with angular velocity: most solids have none, and without it no shape turns.
+  const double step_duration = inputs.step_duration;
+  const double tolerance = inputs.contact_tolerance;
+  const double linear_speed = math::Length(solid.motion.linear_velocity);  // m/s
+  const double turn_rate = math::Length(solid.motion.angular_velocity);  // rad/s
+  const bool has_turn = turn_rate > 0;
+  const bool is_turning = has_turn && ComputeIsTurningSolid(inputs, solid_index);
+  const double far_distance = has_turn ? math::Length(inputs.start_position - solid.pose_at_step_start.origin)
+          + particle_reach + (linear_speed * step_duration)
+                                       : 0;  // m, r_far
+  const double chord_share = math::Min(turn_rate * step_duration, 2);  // a
+  double turn_arm = 0;  // m: the arm whose turn moves the distance.
+  if (has_turn) {
+    const bool has_no_end = solid.shape == SolidShape::kFlatSolid || solid.shape == SolidShape::kPlate;
+    const bool is_unmoved_by_spin = solid.shape == SolidShape::kSphere;
+    if (has_no_end) {
+      turn_arm = far_distance;
+    } else if (!is_unmoved_by_spin) {
+      turn_arm = math::Length(solid.half_size);
+    }
+  }
+  const double travel = particle_reach + (linear_speed * step_duration) + (chord_share * turn_arm);  // m
+  const double share = is_turning && solid.shape == SolidShape::kBox ? kBoxDistanceShare : 1;
+  // Step 3: beyond the travel and the window.
+  double out_distance = travel + (share * kLeftOutWindowInTolerances * tolerance);  // m
+  // Step 4: enough gap for the stepping search to cover every sweep within its advances.
+  if (is_turning) {
+    const double search_travel =
+        particle_reach + (linear_speed * step_duration) + (turn_rate * step_duration * far_distance);  // m
+    const double search_gap =
+        tolerance + (tolerance / 64) + (search_travel / static_cast<double>(kMaxAdvanceCount - 1));  // m
+    out_distance = math::Max(out_distance, travel + (share * search_gap));
+  }
+  return math::IsFinite(out_distance) ? out_distance : kNeverOutOfRange;
+}
+
+// Computes whether a solid is out of range of the particle for the whole step, from the one read of the start's depth
+// check: its distance at the start, at the pose of time 0, with the particle's plate side, is above
+// ComputeOutOfRangeDistance. The move then leaves it out of its reads (ComputeIsLeftOut), and each phase leaves it out
+// only while the particle stays within its reach; why no phase can then find it near:
+//   start rules     at time 0 and points within one move off one near solid of the start (a move off several surfaces
+//                   reads every solid): its distance there is above the window, so it is not near, not active, not
+//                   started inside, and no crossing or iterate meets it.
+//   each sweep      the path stays within the reach of the start, checked before every sweep with the velocity of that
+//                   sweep (ComputeIsWithinParticleReach), so a response that redirects or speeds the particle leaves it
+//                   in or makes the move read every solid; the distance there stays above the window
+//                   (ComputeOutOfRangeDistance, steps 2 and 3), beyond every hit of the closed forms, the touching rule
+//                   and the rim search; a turning solid's search ends free within its advances (step 4).
+//   carry on a turning solid and P7's closing bound  P7 reads every solid, as without the rule; the carry may take
+//                   the particle beyond its reach, which the check before the settle then sees.
+//   settle          read with the solid left out only when the end is within the reach less one move off one near
+//                   solid; a longer move reads every solid.
+//   end check       at the settled point. After a settle that did not move the particle, or moved it off one near solid
+//   by
+//                   at most the threshold, the point is within the reach: the distance is above the window, beyond tol
+//                   /
+//                   2. After a longer move off one solid, or a move off several surfaces, the settle has read every
+//                   solid at that very point and pose (ComputeIsAtLeastFromEverySolid: at least tol - tol / 128), so
+//                   the end check, reading the same distances, passes for the solids it leaves out.
+// With FLUIDITY_CONTACT_READ_EVERY_SOLID defined (a test build that compares the answers) no solid is out of range.
+// Example: tol 2^-30 m, a particle at rest 1 m above a fixed sphere: out of range (14 tol). The same particle 10 tol
+//   above it: in range.
+// Requires: as ComputeOutOfRangeDistance.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+// clang-tidy: the solid's index, its start distance and the particle's reach, in the order the rule reads them.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU inline bool ComputeIsSolidOutOfRange(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    double start_distance,
+    double particle_reach
+) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
+#if defined(FLUIDITY_CONTACT_READ_EVERY_SOLID)
+  static_cast<void>(inputs);
+  static_cast<void>(solid_index);
+  static_cast<void>(start_distance);
+  static_cast<void>(particle_reach);
+  return false;
+#else
+  // The index test first: no bit exists for a solid beyond the mask, whatever its distance.
+  return solid_index < kMaxLeftOutSolids
+      && start_distance > ComputeOutOfRangeDistance(inputs, solid_index, particle_reach);
+#endif
+}
+
+// Computes whether the particle stays within its reach for the rest of the move: its distance from the start, plus
+// the travel still to come, plus one move off one near solid in the settle, at most move.particle_reach.
+// Example: a particle 0.004 m from its start, sweeping 0.005 m more, with a reach of 0.01 m + 12 tol: within.
+// Units: m.
+FLUIDITY_CPU_AND_GPU inline bool
+ComputeIsWithinParticleReach(const SolidContactInputs& inputs, const ParticleMove& move, double travel_to_come) {
+  const double from_start = math::Length(move.result.position - inputs.start_position);  // m
+  return from_start + travel_to_come + ComputeLeftOutRestGapMove(inputs) <= move.particle_reach;
+}
 
 // Checks the values one particle's move reads, and says kBadInput when one is out of range.
 //
@@ -2786,15 +3026,23 @@ SolveSmallestCorrection(const CorrectionTargets& targets, double slack, Correcte
 // Example: a fixed floor through the origin and the point {0, 0, tol}: true for least_distance tol, false for 2 tol.
 // Requires: inputs.solids points to inputs.solid_count solids; pose_elapsed is within the step.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
+// clang-tidy: the pose's time and the least distance, as the callers read them.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 FLUIDITY_CPU_AND_GPU inline bool ComputeIsAtLeastFromEverySolid(
     const SolidContactInputs& inputs,
     double pose_elapsed,
     Vec3 point,
-    double least_distance
+    double least_distance,
+    std::uint64_t left_out_solids = 0
 ) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
   assert(inputs.solids != nullptr || inputs.solid_count == 0);
   assert(pose_elapsed >= 0 && pose_elapsed <= inputs.step_duration);
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window, more than tol, from every point a move with it left out reads.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], pose_elapsed);
     const double distance = ComputeDistanceForParticle(inputs, solid_index, pose, point, inputs.plate_side).distance;
     if (!(distance >= least_distance)) {
@@ -3031,10 +3279,15 @@ FLUIDITY_CPU_AND_GPU inline HitTime FindEarliestCrossing(
     const SolidContactInputs& inputs,
     double pose_elapsed,
     Sweep move,
-    const ConstrainingSurfaces& constraining
+    const ConstrainingSurfaces& constraining,
+    std::uint64_t left_out_solids = 0
 ) {
   HitTime earliest;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window from the whole move, so no grown surface of it is crossed.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], pose_elapsed);
     const DistanceToSolid at_start =
         ComputeDistanceForParticle(inputs, solid_index, pose, move.start, inputs.plate_side);
@@ -3071,16 +3324,21 @@ FLUIDITY_CPU_AND_GPU inline HitTime ApplyCrossedSurfaces(
     double pose_elapsed,
     Vec3 start_point,
     Vec3 change,
-    ConstrainingSurfaces* constraining
+    ConstrainingSurfaces* constraining,
+    std::uint64_t left_out_solids = 0
 ) {
   assert(constraining != nullptr);
   const Sweep move = {.start = start_point, .velocity_for_this_step = change, .start_elapsed = 0, .duration = 1};
-  const HitTime earliest = FindEarliestCrossing(inputs, pose_elapsed, move, *constraining);
+  const HitTime earliest = FindEarliestCrossing(inputs, pose_elapsed, move, *constraining, left_out_solids);
   if (!earliest.has_hit) {
     return earliest;
   }
   const ConstrainingSurfaces before = *constraining;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // As in FindEarliestCrossing: a solid left out is never crossed.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], pose_elapsed);
     const DistanceToSolid at_start =
         ComputeDistanceForParticle(inputs, solid_index, pose, start_point, inputs.plate_side);
@@ -3189,10 +3447,14 @@ struct NearSolids {
 // Requires: pose_elapsed is within the step.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline NearSolids
-FindNearSolids(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point) {
+FindNearSolids(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point, std::uint64_t left_out_solids = 0) {
   assert(pose_elapsed >= 0 && pose_elapsed <= inputs.step_duration);
   NearSolids near;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window, more than tol: not near, and clear.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], pose_elapsed);
     const double distance = ComputeDistanceForParticle(inputs, solid_index, pose, point, inputs.plate_side).distance;
     if (distance < inputs.contact_tolerance) {
@@ -3217,16 +3479,25 @@ FindNearSolids(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point
 // Example: a fixed floor and the point {0.5, 0, tol / 4}: {0.5, 0, tol}, the same bits as MoveToRestGap.
 // Requires: near.count is 1 and near.last_solid_index names the near solid; pose_elapsed is within the step.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-tolerance>
-FLUIDITY_CPU_AND_GPU inline RestGapMove
-ComputeMoveOffOneNearSolid(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point, NearSolids near) {
+FLUIDITY_CPU_AND_GPU inline RestGapMove ComputeMoveOffOneNearSolid(
+    const SolidContactInputs& inputs,
+    double pose_elapsed,
+    Vec3 point,
+    NearSolids near,
+    std::uint64_t left_out_solids = 0
+) {
   assert(near.count == 1 && near.last_solid_index < inputs.solid_count);
   const std::uint32_t solid_index = near.last_solid_index;
   const double contact_tolerance = inputs.contact_tolerance;
   const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], pose_elapsed);
   const Vec3 moved_point = MoveToRestGap(inputs, solid_index, pose, point);
+  // The solids left out are farther than the window only within a move of ComputeLeftOutRestGapMove; a longer move
+  // reads every solid, as without them left out.
+  const bool is_within_left_out_move = math::Length(moved_point - point) <= ComputeLeftOutRestGapMove(inputs);
+  const std::uint64_t move_left_out_solids = is_within_left_out_move ? left_out_solids : 0;
   RestGapMove one_solid_move;
   const double least_distance = contact_tolerance - contact_tolerance / 1024;  // m
-  if (!ComputeIsAtLeastFromEverySolid(inputs, pose_elapsed, moved_point, least_distance)) {
+  if (!ComputeIsAtLeastFromEverySolid(inputs, pose_elapsed, moved_point, least_distance, move_left_out_solids)) {
     return one_solid_move;
   }
   // The near surfaces of that solid do not count as crossed: the move leaves them.
@@ -3238,7 +3509,8 @@ ComputeMoveOffOneNearSolid(const SolidContactInputs& inputs, double pose_elapsed
       ApplyConstrainingSurface(&moved_off, {.solid_index = solid_index, .surface_index = surface_index});
     }
   }
-  if (ApplyCrossedSurfaces(inputs, pose_elapsed, point, moved_point - point, &moved_off).has_hit) {
+  const Vec3 move = moved_point - point;  // m
+  if (ApplyCrossedSurfaces(inputs, pose_elapsed, point, move, &moved_off, move_left_out_solids).has_hit) {
     return one_solid_move;
   }
   one_solid_move.is_found = true;
@@ -3313,8 +3585,12 @@ ComputeMoveOffOneNearSolid(const SolidContactInputs& inputs, double pose_elapsed
 // Requires: inputs.solids points to inputs.solid_count solids that passed CheckSolid; point is finite; pose_elapsed is
 //   within the step.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <fig-move-off-near-surfaces>
-FLUIDITY_CPU_AND_GPU inline RestGapMove
-MoveToRestGapOfNearSurfaces(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point) {
+FLUIDITY_CPU_AND_GPU inline RestGapMove MoveToRestGapOfNearSurfaces(
+    const SolidContactInputs& inputs,
+    double pose_elapsed,
+    Vec3 point,
+    std::uint64_t left_out_solids = 0
+) {
   assert(inputs.solids != nullptr || inputs.solid_count == 0);
   assert(math::IsFinite(point));
   assert(pose_elapsed >= 0 && pose_elapsed <= inputs.step_duration);
@@ -3326,7 +3602,7 @@ MoveToRestGapOfNearSurfaces(const SolidContactInputs& inputs, double pose_elapse
   const double rest_gap_distance = contact_tolerance - contact_tolerance / 128;
   RestGapMove move;
   // Step 1: almost every particle is near no solid, and pays one distance per solid.
-  const NearSolids near = FindNearSolids(inputs, pose_elapsed, point);
+  const NearSolids near = FindNearSolids(inputs, pose_elapsed, point, left_out_solids);
   if (near.count == 0) {
     move.is_found = true;
     move.moved_point = point;
@@ -3335,12 +3611,14 @@ MoveToRestGapOfNearSurfaces(const SolidContactInputs& inputs, double pose_elapse
   }
   // Step 2: one solid moves the point as it always did, the same bits, with no cap.
   if (near.count == 1) {
-    const RestGapMove one_solid_move = ComputeMoveOffOneNearSolid(inputs, pose_elapsed, point, near);
+    const RestGapMove one_solid_move = ComputeMoveOffOneNearSolid(inputs, pose_elapsed, point, near, left_out_solids);
     if (one_solid_move.is_found) {
       return one_solid_move;
     }
   }
-  // Step 3: each iterate meets the linearisation at the one before, measured from the point.
+  // Step 3: each iterate meets the linearisation at the one before, measured from the point. An iterate may go up to
+  // the move cap from the point, beyond the reach the solids left out were judged with, so every solid is read: no
+  // mask is passed on.
   ConstrainingSurfaces constraining;
   Vec3 iterate = point;
   for (int iteration = 1; iteration <= kMaxRestGapIterations; ++iteration) {
@@ -3679,10 +3957,16 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsPassedAtBoundingSurfaceLevel(
 FLUIDITY_CPU_AND_GPU inline ActiveSurfaces
 FindActiveSurfaces(const SolidContactInputs& inputs, const ParticleMove& move, const FirstHit* hit) {
   const Vec3 position = move.result.position;
+  const std::uint64_t left_out_solids = move.left_out_solids;
   const double active_distance =
       inputs.contact_tolerance + kTouchedSolidRestingGapShare * inputs.contact_tolerance;  // m
   ActiveSurfaces active;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window from the particle, so outside the active window, and never the
+    // solid hit.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     const Solid& solid = inputs.solids[solid_index];
     const SolidPose pose = ComputeSolidPose(solid, move.elapsed);
     const DistanceToSolid at_position =
@@ -4788,23 +5072,26 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyHitOnTurningSolid(
 // Also says, in *is_clear_of_solid, whether the start is clear of this solid: its distance d at least tol, and every
 //   surface of it (FindSurfacesOfSolid at the same pose and point) farther than the active window tol + tol / 16, none
 //   NaN. The start rules read nothing more of a solid the start is clear of (ApplyStartRules).
-// Requires: solid_index < inputs.solid_count; inputs passed CheckSolidContactInputs; failure and is_clear_of_solid are
-//   not null.
+//   And it gives, in *start_distance_read, the distance d it read: the one read of a solid the move may leave out
+//   (ComputeIsSolidOutOfRange).
+// Requires: solid_index < inputs.solid_count; inputs passed CheckSolidContactInputs; failure, is_clear_of_solid and
+//   start_distance_read are not null.
 // Fails: kOnWrongSideOfPlate  as CheckStartOnCommittedSide.
 //        kStartsInsideSolid   d < -start_overlap_tolerance: *failure names the solid_id, with the depth -d as the
 //                             magnitude (plan decision P6). A particle placed inside a solid, or left there by an
 //                             earlier step; the step stops.
-//        *failure is written only on failure; *is_clear_of_solid only on success.
+//        *failure is written only on failure; *is_clear_of_solid and *start_distance_read only on success.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-solid-shapes>, <sec-contact-tolerance>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOfSolid(
     const SolidContactInputs& inputs,
     std::uint32_t solid_index,
     Vec3 start,
     ContactFailure* failure,
-    bool* is_clear_of_solid
+    bool* is_clear_of_solid,
+    double* start_distance_read
 ) {
   assert(solid_index < inputs.solid_count);
-  assert(failure != nullptr && is_clear_of_solid != nullptr);
+  assert(failure != nullptr && is_clear_of_solid != nullptr && start_distance_read != nullptr);
   // Steps: 1 wrong side of the plate  2 too deep inside
   const Solid& solid = inputs.solids[solid_index];
   const SolidPose start_pose = ComputeSolidPose(solid, 0);
@@ -4832,11 +5119,18 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOfSolid(
   const double active_distance =
       inputs.contact_tolerance + kTouchedSolidRestingGapShare * inputs.contact_tolerance;  // m
   bool is_clear = start_distance >= inputs.contact_tolerance;
-  const NearSurfaces surfaces = FindSurfacesOfSolid(inputs, solid_index, start_pose, start, at_start);
-  for (int surface_index = 0; surface_index < surfaces.count; ++surface_index) {
-    is_clear = is_clear && surfaces.surfaces[surface_index].distance > active_distance;
+  // Every shape but a domain box has one surface, at_start itself (FindSurfacesOfSolid): its distance decides without
+  // building the list of six.
+  if (solid.shape != SolidShape::kDomainBox) {
+    is_clear = is_clear && start_distance > active_distance;
+  } else {
+    const NearSurfaces surfaces = FindSurfacesOfSolid(inputs, solid_index, start_pose, start, at_start);
+    for (int surface_index = 0; surface_index < surfaces.count; ++surface_index) {
+      is_clear = is_clear && surfaces.surfaces[surface_index].distance > active_distance;
+    }
   }
   *is_clear_of_solid = is_clear;
+  *start_distance_read = start_distance;
   return ContactError::kNone;
 }
 
@@ -4886,7 +5180,12 @@ FLUIDITY_CPU_AND_GPU inline StartResponse FindStartResponse(
     const ParticleMove& move
 ) {
   StartResponse start_response;
+  const std::uint64_t left_out_solids = move.left_out_solids;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window from the start: the start was not inside it.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     start_response.is_inside = start_response.is_inside || ComputeIsStartInsideSolid(inputs, solid_index, start);
   }
   for (int surface_index = 0; surface_index < active.count; ++surface_index) {
@@ -4979,15 +5278,23 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
   assert(!move->has_response && move->elapsed == 0);
   // Steps: 1 the checks that fail  2 one move off the near surfaces  3 the active surfaces  4 the response
   const Vec3 start = move->result.position;
-  // Step 1: at the start as given, so the move cannot hide a start that is too deep.
+  // Step 1: at the start as given, so the move cannot hide a start that is too deep. The same read says which solids
+  // the particle cannot come near during the step: the rest of the move leaves them out (ComputeIsSolidOutOfRange).
   bool is_clear_of_every_solid = true;
+  move->particle_reach = ComputeParticleReach(inputs);
+  move->left_out_solids = 0;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     bool is_clear_of_solid = false;
-    const ContactError error = CheckStartOfSolid(inputs, solid_index, start, failure, &is_clear_of_solid);
+    double start_distance = 0;  // m
+    const ContactError error =
+        CheckStartOfSolid(inputs, solid_index, start, failure, &is_clear_of_solid, &start_distance);
     if (error != ContactError::kNone) {
       return error;
     }
     is_clear_of_every_solid = is_clear_of_every_solid && is_clear_of_solid;
+    if (ComputeIsSolidOutOfRange(inputs, solid_index, start_distance, move->particle_reach)) {
+      move->left_out_solids |= std::uint64_t{1} << solid_index;
+    }
   }
   // Steps 2 to 4 read again, at the pose of time 0, the distances and surfaces step 1 read at the start. When the start
   // is clear of every solid they find no near solid, so the start does not move and they read the same point; no
@@ -4996,8 +5303,10 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
   if (is_clear_of_every_solid) {
     return ContactError::kNone;
   }
+  // Steps 2 to 4 read at time 0 within one move off near surfaces of the start, with the solids out of range left out
+  // (a move off several surfaces reads every solid, MoveToRestGapOfNearSurfaces).
   // Step 2: a scene error when no point of the gap is at the rest gap of every near surface.
-  const RestGapMove start_move = MoveToRestGapOfNearSurfaces(inputs, 0, start);
+  const RestGapMove start_move = MoveToRestGapOfNearSurfaces(inputs, 0, start, move->left_out_solids);
   if (!start_move.is_found) {
     assert(start_move.latest_solid_index < inputs.solid_count);
     *failure = {
@@ -5010,6 +5319,11 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
     return ContactError::kStartsInNarrowGap;
   }
   move->result.position = start_move.moved_point;
+  // A start moved farther than one move off one near solid (off several surfaces, up to the move cap) is read with
+  // every solid from here on: the solids were judged out of range for that one move.
+  if (math::Length(start_move.moved_point - start) > ComputeLeftOutRestGapMove(inputs)) {
+    move->left_out_solids = 0;
+  }
   // Step 3: plan decision P20, item 10: at the moved start.
   const ActiveSurfaces active = FindActiveSurfaces(inputs, *move, nullptr);
   // Step 4: a start inside, or an approach, is one hit at time 0; a particle that leaves was moved silently.
@@ -5053,6 +5367,7 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
 FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inputs, ParticleMove* move) {
   assert(move != nullptr);
   const Vec3 end_position = move->result.position;
+  const std::uint64_t left_out_solids = move->left_out_solids;
   // Before the settle, every solid that does not turn is at d >= -tol / 16 up to rounding: the start rules leave the
   // particle at the rest gap or outside it, a sweep stops at the grown surface, the plain touching rule before any
   // response lets a path from the rest gap sink by less than tol into a surface it starts on, so it ends at d >= 0, on
@@ -5074,6 +5389,10 @@ FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inpu
   // -2 tol means a hit at a wrong pose or position, which the move below would silently repair, so a debug build stops.
   // The loop holds only assertions, so a release build drops it.
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window from the end: the assertion holds for it.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     assert(
         ComputeDistanceForParticle(
             inputs,
@@ -5086,7 +5405,7 @@ FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inpu
         >= -2 * inputs.contact_tolerance
     );
   }
-  const RestGapMove settle = MoveToRestGapOfNearSurfaces(inputs, inputs.step_duration, end_position);
+  const RestGapMove settle = MoveToRestGapOfNearSurfaces(inputs, inputs.step_duration, end_position, left_out_solids);
   if (settle.is_found) {
     move->result.position = settle.moved_point;
   }
@@ -5112,11 +5431,19 @@ FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inpu
 //                         gives the hits a chance to keep the particle out.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-tolerance>, <proc-move-particle>
-FLUIDITY_CPU_AND_GPU inline ContactError
-CheckEndOutsideSolids(const SolidContactInputs& inputs, Vec3 end_position, ContactFailure* failure) {
+FLUIDITY_CPU_AND_GPU inline ContactError CheckEndOutsideSolids(
+    const SolidContactInputs& inputs,
+    Vec3 end_position,
+    ContactFailure* failure,
+    std::uint64_t left_out_solids = 0
+) {
   assert(failure != nullptr);
   const double least_end_distance = inputs.contact_tolerance / 2;  // m
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
+    // A solid left out is farther than the window from the end, more than tol / 2.
+    if (ComputeIsLeftOut(left_out_solids, solid_index)) {
+      continue;
+    }
     const Solid& solid = inputs.solids[solid_index];
     const SolidPose end_pose = ComputeSolidPose(solid, inputs.step_duration);
     const double end_distance =

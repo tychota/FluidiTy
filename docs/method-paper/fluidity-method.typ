@@ -672,6 +672,18 @@ failing particle with the lowest id, then the lowest index, found by integer min
 and the GPU give equal discrete results (kinds, solids, faces, counts, errors) and floating-point results within a
 tolerance; with no turning solid the expected difference is zero (@sec-conventions).
 
+Most particles are far from most solids, so the cost of a move is mostly its reads of the solids. The start's depth
+check reads each solid once. A solid whose distance there is above the particle's reach $R$ (its travel at the start's
+velocity plus one move off one near solid at the start and one in the settle), plus how far the solid's distance can
+fall in the step, plus $4 "tol"$, cannot come within any window a phase reads, and the move leaves it out of its other
+reads. The distance falls by at most $|bold(v)_"lin"| T$ plus the chord of the solid's turn, $min(|bold(omega)| T, 2)$,
+times an arm: the half diagonal for a box or a cylinder, none for a sphere, the particle's distance to the origin for
+a flat solid or a plate. A turning box's distance is its largest face-plane gap, which a turn moves by the particle's
+arm, not the box's; it is at least the true distance over $sqrt(3)$, so the box's window counts twice. The particle's
+distance from the start plus the travel still to come is checked against $R$ before every sweep and before the
+settle; past it, every solid is read again. The answers are the same bits either way; a particle far from 32 solids
+costs one read of each instead of three.
+
 == Solid shapes <sec-solid-shapes>
 
 A solid is a shape with its own axes. Its pose is an origin $bold(o)$, in metres, and a rotation $A$ whose columns

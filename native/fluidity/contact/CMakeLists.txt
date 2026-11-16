@@ -20,5 +20,12 @@ fluidity_add_test(contact_tolerance_test SOURCES contact_tolerance_test.cc LABEL
 fluidity_add_test(find_first_hit_test SOURCES find_first_hit_test.cc LABEL cpu)
 fluidity_add_test(move_particle_test SOURCES move_particle_test.cc LABEL cpu)
 fluidity_add_test(move_particles_test SOURCES move_particles_test.cc LABEL cpu LINKS fluidity_base_test_support)
+# The test of the rule that leaves out a solid a particle cannot come near counts the reads of each solid
+# (FLUIDITY_COUNT_SOLID_READS, contact/solid_shapes.h) and compares with a copy built to read every solid.
+fluidity_add_test(move_particle_left_out_test SOURCES move_particle_left_out_test.cc
+                  move_particle_left_out_reference_test.cc LABEL cpu)
+if(TARGET move_particle_left_out_test)
+  target_compile_definitions(move_particle_left_out_test PRIVATE FLUIDITY_COUNT_SOLID_READS)
+endif()
 fluidity_add_test(move_particle_tolerance_test SOURCES move_particle_tolerance_test.cc LABEL cpu)
 fluidity_add_test(solid_shapes_test SOURCES solid_shapes_test.cc LABEL cpu)

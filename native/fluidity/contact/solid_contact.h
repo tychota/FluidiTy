@@ -31,7 +31,8 @@
 //          ContactFailure (contact/contact_error.h), Solid, kNoSolid (contact/solid_shapes.h), SolidContactInputs,
 //          SolidContactResult, FirstHit (contact/solid_contact_types.h), Sweep, TouchedSolid, FindFirstHitOfSweep,
 //          ParticleMove, CheckSolidContactInputs, ApplyStartRules, ComputeIsTurningSolid, ApplyHit,
-//          ApplyHitOnTurningSolid, ApplySettleAtEnd, CheckEndOutsideSolids (contact/solid_contact_steps.h)
+//          ApplyHitOnTurningSolid, ApplySettleAtEnd, CheckEndOutsideSolids, ComputeIsWithinParticleReach
+//          (contact/solid_contact_steps.h)
 // Used by: the MoveParticles stage
 // Read:    docs/method-paper/fluidity-method.typ <sec-first-hit>, <eq:hit-time>, <proc-find-first-hit>,
 //          <fig-sweep-hit-slide>, <proc-move-particle>, <sec-contact-response>
@@ -362,7 +363,13 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
         .is_touched = move.has_response,
         .approach_allowance = move.this_step_approach_allowance,
     };
-    error = FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, &close_call);
+    // A sweep that could take the particle beyond its reach, after a response that sped it up or a long start move,
+    // reads every solid from here on.
+    const double travel_to_come = math::Length(velocity_for_this_step) * duration;  // m
+    if (!ComputeIsWithinParticleReach(inputs, move, travel_to_come)) {
+      move.left_out_solids = 0;
+    }
+    error = FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, &close_call, move.left_out_solids);
     if (error != ContactError::kNone) {
       move_failure.error = error;
       move_failure.close_call = close_call;
@@ -391,9 +398,13 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
   if (error == ContactError::kNone) {
     // A settle that read every solid at least tol away left the particle where it read them: the end check would read
     // the same distances and pass, so it is not read again.
+    // A carry on a turning solid may have taken the particle beyond its reach: the settle then reads every solid.
+    if (!ComputeIsWithinParticleReach(inputs, move, 0)) {
+      move.left_out_solids = 0;
+    }
     const bool is_clear_at_end = ApplySettleAtEnd(inputs, &move);
     if (!is_clear_at_end) {
-      error = CheckEndOutsideSolids(inputs, move.result.position, &move_failure);
+      error = CheckEndOutsideSolids(inputs, move.result.position, &move_failure, move.left_out_solids);
     }
   }
   if (failure != nullptr) {

@@ -42,7 +42,8 @@
 //   nearest solid surface  the surface, among all solids, with the smallest distance from a point
 //   search distance  the largest distance at which ComputeSolidVelocitySample looks for that surface
 // Owns:    SolidShape, SolidFace, SolidSide, PlateSide, FlatSolid, Plate, Box, Sphere, Cylinder, ClosedSides,
-//          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, kMaxTurnPerStep, kNegligibleTurnShare, ToSolid,
+//          DomainBox, SolidMotion, SolidPose, Solid, kNoSolid, the test build's SolidReadCounts, kMaxTurnPerStep,
+//          kNegligibleTurnShare, ToSolid,
 //          ComputeShapeTurningAngularVelocity, CheckSolid, DistanceToSolid, ComputeSolidPose, ComputeSolidVelocity,
 //          ComputeDistanceToSphere, ComputeDistanceToCylinder, ComputeDistanceToSolid, FindSolidSide,
 //          SolidVelocitySample, ComputeSolidVelocitySample, DomainSide, ToSolidFace
@@ -209,6 +210,31 @@ static_assert(offsetof(Solid, reports_reaction) == 192, "the CPU and the GPU rea
 
 // "No solid", as an index into the solids array.
 inline constexpr std::uint32_t kNoSolid = 0xFFFFFFFFU;
+
+// The read counts of a test build: how many times the contact code posed each solid (ComputeSolidPose) and read its
+// distance (ComputeDistanceToSolid), by solid_id below kCountedSolidIdLimit. Only a CPU test program that defines
+// FLUIDITY_COUNT_SOLID_READS has them; elsewhere FLUIDITY_COUNT_SOLID_READ expands to nothing, so a normal build and
+// GPU code pay nothing and hold no counter. The program must use no other object compiled without the definition that
+// holds these functions (contact code is header-only, so a test of MoveParticle alone links none).
+#if defined(FLUIDITY_COUNT_SOLID_READS) && !defined(__CUDACC__)
+inline constexpr std::uint32_t kCountedSolidIdLimit = 64;
+struct SolidReadCounts {
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain test counter.
+  long pose_reads[kCountedSolidIdLimit]{};
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain test counter.
+  long distance_reads[kCountedSolidIdLimit]{};
+};
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables): a counter of a test program.
+inline SolidReadCounts solid_read_counts;
+#define FLUIDITY_COUNT_SOLID_READ(counts, solid) \
+  do { \
+    if ((solid).solid_id < kCountedSolidIdLimit) { \
+      ++solid_read_counts.counts[(solid).solid_id]; \
+    } \
+  } while (false)
+#else
+#define FLUIDITY_COUNT_SOLID_READ(counts, solid) static_cast<void>(0)
+#endif
 
 // rad. The largest turn of a solid's shape during one step: a quarter turn, pi / 2. A solid that turns further
 // asks for a shorter step.
@@ -535,6 +561,7 @@ struct DistanceToSolid {
 // Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
 FLUIDITY_CPU_AND_GPU inline SolidPose ComputeSolidPose(const Solid& solid, double elapsed) {
   assert(math::IsFinite(elapsed) && elapsed >= 0);
+  FLUIDITY_COUNT_SOLID_READ(pose_reads, solid);
   const SolidPose start = solid.pose_at_step_start;
   const SolidMotion motion = solid.motion;
   // Method paper <sec-solid-shapes>:  o(t) = o + v_lin t,  A(t) = Rot(omega t) A
@@ -698,6 +725,7 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToCylinder(Vec3 own_p
 // Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <eq:solid-distance>, <eq:sphere-distance>,
 //       <eq:cylinder-distance>
 FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& solid, SolidPose pose, Vec3 point) {
+  FLUIDITY_COUNT_SOLID_READ(distance_reads, solid);
   // Steps: 1 turn the point into the solid's own axes  2 distance of the shape
   // Step 1: the axes are a rotation (CheckSolid), so the transpose undoes the turn.
   // Method paper <sec-solid-shapes>:  p = A^T (x - o)
