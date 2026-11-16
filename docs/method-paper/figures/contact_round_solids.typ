@@ -193,7 +193,7 @@
     content(offset(centre, scaled(low-direction, grown + 0.1)), anchor: "north-west", label[tol])
   }
 
-  // Right: the cylinder grown with sharp edges, three paths, and the rim move.
+  // Right: the cylinder grown with sharp edges, three paths, and the rim search.
   {
     let origin = (8.4, 1.9)
     let radius = 1.0
@@ -226,19 +226,26 @@
     particle-dot(cap-start)
     particle-dot(cap-hit)
     content(offset(cap-start, (-0.15, 0)), anchor: "east", label[cap])
-    // Path 3, parallel to the axis into the sharp rim corner, then moved to d = tol along the rim normal.
-    let rim-start = (origin.at(0) + grown-radius - 0.03, 4.05)
-    let rim-hit = (rim-start.at(0), origin.at(1) + grown-half-height)
-    coloured-arrow(rim-start, offset(rim-hit, (0, particle-radius + 0.02)), colour: palette.liquid)
+    // Path 3, parallel to the axis into the sharp rim corner, 0.8 tol beyond the wall: the entry is farther than tol
+    // from the rim, and the rim search advances the gap over its rate, twice, to the red arc where d = tol.
+    let wall-share = 0.8
+    let rim-start = (rim-point.at(0) + wall-share * tol, 4.05)
+    let rim-entry = (rim-start.at(0), origin.at(1) + grown-half-height)
+    let rim-hit = (rim-start.at(0), rim-point.at(1) + calc.sqrt(tol * tol - (wall-share * tol) * (wall-share * tol)))
+    coloured-arrow(rim-start, offset(rim-entry, (0, particle-radius + 0.02)), colour: palette.liquid)
     particle-dot(rim-start)
     content(offset(rim-start, (0.15, 0)), anchor: "west", label[rim corner])
-    let from-rim = (rim-hit.at(0) - rim-point.at(0), rim-hit.at(1) - rim-point.at(1))
-    let from-rim-length = calc.sqrt(from-rim.at(0) * from-rim.at(0) + from-rim.at(1) * from-rim.at(1))
-    let moved = offset(rim-point, scaled(from-rim, tol / from-rim-length))
-    line(rim-point, rim-hit, stroke: guide-stroke + palette.muted.darken(30%))
-    particle-dot(rim-hit, colour: white)
-    particle-dot(moved)
-    content(offset(rim-hit, (0.32, 0.05)), anchor: "west", align(left, red-label[rim move \ to _d_ = tol]))
+    // The first advance from the entry: gap g over its rate, read at the entry.
+    let entry-height = tol
+    let entry-distance = calc.sqrt((wall-share * tol) * (wall-share * tol) + entry-height * entry-height)
+    let first-advance = (entry-distance - tol) / (entry-height / entry-distance)
+    let after-first = offset(rim-entry, (0, -first-advance))
+    line(rim-entry, rim-hit, stroke: (paint: palette.highlight, thickness: guide-stroke, dash: "dashed"))
+    line(rim-point, rim-entry, stroke: guide-stroke + palette.muted.darken(30%))
+    particle-dot(rim-entry, colour: white)
+    circle(after-first, radius: 0.035, fill: palette.highlight, stroke: none)
+    particle-dot(rim-hit)
+    content(offset(rim-entry, (0.32, 0.05)), anchor: "west", align(left, red-label[rim search \ to _d_ = tol]))
     // Dimensions: tol on the low wall side.
     dimension-line(offset(origin, (-radius, -half-height - 0.15)), offset(origin, (-grown-radius, -half-height - 0.15)))
     content(offset(origin, (-grown-radius - 0.05, -half-height - 0.15)), anchor: "east", label[tol])

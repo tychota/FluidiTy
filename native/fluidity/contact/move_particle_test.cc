@@ -28,6 +28,10 @@ namespace {
 
 constexpr double kTolerance = kTestContactTolerance;  // m, 2^-30.
 constexpr double kPositionTolerance = 2 * kTolerance;  // m, contact design 7.
+constexpr SolidMotion kNoMotion = move_particle_cases::kNoMotion;  // A solid that neither moves nor turns.
+constexpr Vec3 kUnitX = move_particle_cases::kUnitX;
+constexpr Vec3 kUnitY = move_particle_cases::kUnitY;
+constexpr Vec3 kUnitZ = move_particle_cases::kUnitZ;
 
 // What one MoveParticle call returned: the error, the result and the failure.
 struct MoveParticleCall {
@@ -1966,11 +1970,12 @@ TEST(MoveParticle, SphereStartWithinToleranceMovingAway_MovedOutSilently) {
   EXPECT_GE(ComputeEndDistance(scene, call.result.position), kTolerance);
 }
 
-TEST(MoveParticle, CylinderRim_HitPositionMovedToOneTolerance) {
-  // The grown cylinder's sharp rim edge is reached at {0.5 + tol / 2, 0, 1 + tol}, Sqrt(1.25) tol from the rim. That
-  // closed-form hit is moved along the rim's normal {1, 0, 2} / Sqrt(5) to tol, where the response removes the
-  // approach: {0, 0, -1} + (2 / Sqrt(5)) {1, 0, 2} / Sqrt(5) = {0.4, 0, -0.2}. The reaction is recorded at the moved
-  // position.
+TEST(MoveParticle, CylinderRim_HitAtItsTrueDistance) {
+  // The cylinder grown with sharp edges is entered at {0.5 + tol / 2, 0, 1 + tol}, Sqrt(1.25) tol from the rim; the rim
+  // search goes on down the path to tol from the rim, Sqrt(0.75) tol above the cap's plane, where the normal is
+  // {1 / 2, 0, Sqrt(3) / 2} and the response leaves {0, 0, -1} + (Sqrt(3) / 2) {1 / 2, 0, Sqrt(3) / 2} =
+  // {Sqrt(3) / 4, 0, -1 / 4} (as built, the corner's {0.4, 0, -0.2}). Nothing moves the hit: the reaction is recorded
+  // on the path.
   const MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -1978,12 +1983,27 @@ TEST(MoveParticle, CylinderRim_HitPositionMovedToOneTolerance) {
   EXPECT_EQ(result.kind, ContactKind::kHit);
   EXPECT_EQ(result.face, SolidFace::kHighRim);
   EXPECT_EQ(result.hit_count, 1);
-  ExpectBothVelocitiesNear(result, {.x = 0.4, .y = 0, .z = -0.2}, 1e-5);
+  EXPECT_NEAR(result.hit_fraction, (2 - std::sqrt(0.75) * kTolerance) / 4, kTolerance / 4096);
+  ExpectBothVelocitiesNear(result, {.x = std::numbers::sqrt3 / 4, .y = 0, .z = -0.25}, 1e-6);
   EXPECT_EQ(result.reaction.solid_index, 0U);
+  const Vec3 hit_position = result.reaction.hit_position;
+  EXPECT_EQ(hit_position.x, 0.5 + kTolerance / 2);
+  EXPECT_NEAR(hit_position.z, 1 + std::sqrt(0.75) * kTolerance, kTolerance / 512);
   const Solid& cylinder = scene.solids.at(0);
-  const double hit_pose_distance =
-      ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, result.reaction.hit_position).distance;  // m
-  EXPECT_NEAR(hit_pose_distance, kTolerance, 0x1p-40);
+  const double hit_distance = ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, hit_position).distance;
+  EXPECT_GE(hit_distance, kTolerance - 0x1p-40);
+  EXPECT_LE(hit_distance, kTolerance + kTolerance / 1024 + 0x1p-40);
+}
+
+TEST(MoveParticle, CylinderRimFromTheSide_HitAtItsTrueDistance) {
+  // Across the axis tol / 2 above the cap's plane: the rim search hits the rim Sqrt(0.75) tol beyond the wall, where
+  // the normal is {Sqrt(3) / 2, 0, 1 / 2}, and the response leaves {-1 / 4, 0, Sqrt(3) / 4}.
+  const MoveParticleCall call = RunMove("CylinderRimFromTheSide");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kHighRim);
+  ExpectBothVelocitiesNear(call.result, {.x = -0.25, .y = 0, .z = std::numbers::sqrt3 / 4}, 1e-6);
+  EXPECT_NEAR(call.result.reaction.hit_position.x, 0.5 + std::sqrt(0.75) * kTolerance, kTolerance / 512);
 }
 
 TEST(MoveParticle, CylinderCap_SlidesOnThePlane) {
@@ -2060,106 +2080,25 @@ TEST(MoveParticle, SlowlyTiltingCylinderCapSinkingAway_HitOnce) {
   EXPECT_NEAR(call.result.velocity.for_this_step.z, -3e-10, 1e-15);
 }
 
-TEST(MoveParticle, RimOnFloorSweepingParticle_FloorStaysInTheResponse) {
-  // The rim, sliding over the floor, meets the particle resting on it in the rim corner, 1.26 tol from the rim. The rim
-  // move leans 0.26 tol toward the rim and lifts the particle to 1.22 tol from the floor; the floor stays in the joint
-  // response (the window grows by the move's length), so the velocity leaves both and the path is free: two hits, the
-  // start's and the rim's. Read only at the moved position, the floor was left out, approached and hit, and the
-  // zig-zag between it and the rim's edge ended in kTooManyHits. Without the rim move, the hit a hair outside the grown
-  // edge by rounding was hit again and again, kTooManyHits at every step long enough to reach the rim.
-  const MoveParticleCase scene = FindMoveParticleCase("RimOnFloorSweepingParticle");
-  const MoveParticleCall call = RunMove(scene);
-  ASSERT_EQ(call.error, ContactError::kNone);
-  EXPECT_EQ(call.result.hit_count, 2);
-  EXPECT_GE(ComputeEndDistance(scene, call.result.position), kTolerance / 2);
-  const Solid& cylinder = scene.solids.at(1);
-  const double cylinder_end_distance =
-      ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, scene.inputs.step_duration), call.result.position)
-          .distance;  // m
-  EXPECT_GE(cylinder_end_distance, kTolerance / 2);
-}
-
-TEST(MoveParticle, SlowlyTiltingCylinderRimCornerStart_RisingRimIsHitAtStart) {
-  // The start is 1.27 tol from the rim, in its rim corner, outside the window of the start's response, so the first
-  // sweep reads it: the rate from the surface's velocity, -1.77e-10 m/s, approaches, a hit at 0, moved to the rest gap,
-  // and the response leaves the rim's speed along its normal, {0, 1.25e-10, 1.25e-10} m/s. Measured from the linear
-  // velocity alone the rate was 0 and the rim rose into the particle unseen.
-  const MoveParticleCase scene = FindMoveParticleCase("SlowlyTiltingCylinderRimCornerStart");
-  const MoveParticleCall call = RunMove(scene);
-  ASSERT_EQ(call.error, ContactError::kNone);
-  EXPECT_EQ(call.result.kind, ContactKind::kHit);
-  EXPECT_EQ(call.result.hit_count, 1);
-  EXPECT_EQ(call.result.face, SolidFace::kHighRim);
-  EXPECT_EQ(call.result.hit_fraction, 0);
-  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 1.25e-10, .z = 1.25e-10}, 1e-14);
-}
-
-TEST(MoveParticle, RimCornerBesideRestingFace_RoundingIsNoApproach) {
-  // After the start's response on the upright, the sweep starts 1.15 tol from the rim, in its rim corner, beyond the
-  // touched window, and moves square to the rim's normal: the rate is rounding, of either sign, within the response's
-  // allowance, so the rim is not hit. Compared with 0, one of the two directions hit it at 0.
-  for (const std::string_view case_name : {"RimCornerBesideRestingFaceDown", "RimCornerBesideRestingFaceUp"}) {
-    const MoveParticleCall call = RunMove(case_name);
-    ASSERT_EQ(call.error, ContactError::kNone) << case_name;
-    EXPECT_EQ(call.result.hit_count, 1) << case_name;
-    EXPECT_EQ(call.result.solid_index, 1U) << case_name;
-  }
-}
-
-// Fails the calling test unless the scene's first hit is on kHighRim and ApplyHit leaves the particle at tol from the
-// cylinder, its first solid, at the pose of the hit's time, and unless MoveParticle succeeds with one hit and both
-// velocities expected_velocity within 1e-5.
-void ExpectRimHitMovedToRestGap(std::string_view case_name, Vec3 expected_velocity) {
-  const MoveParticleCase scene = FindMoveParticleCase(case_name);
-  ParticleMove move;
-  move.result.position = scene.inputs.start_position;
-  move.result.velocity = scene.inputs.velocity;
-  const SolidContactInputs inputs = ToSolidContactInputs(scene);
-  FirstHit first_hit;
-  ASSERT_EQ(
-      FindFirstHit(inputs, inputs.start_position, inputs.velocity.for_this_step, 0, inputs.step_duration, &first_hit),
-      ContactError::kNone
-  );
-  ASSERT_EQ(first_hit.at_hit.face, SolidFace::kHighRim) << case_name;
-  ContactFailure failure;
-  ASSERT_EQ(ApplyHit(inputs, first_hit, &move, &failure), ContactError::kNone) << case_name;
-  const Solid& cylinder = scene.solids.at(0);
-  const double moved_distance =
-      ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), move.result.position)
-          .distance;  // m
-  EXPECT_NEAR(moved_distance, kTolerance, 0x1p-40) << case_name;
-  const MoveParticleCall call = RunMove(scene);
-  ASSERT_EQ(call.error, ContactError::kNone) << case_name;
-  EXPECT_EQ(call.result.hit_count, 1) << case_name;
-  ExpectBothVelocitiesNear(call.result, expected_velocity, 1e-5);
-}
-
-TEST(MoveParticle, CylinderRimNearRestGap_StillMovedToOneTolerance) {
-  // The closed form stops Sqrt(17 / 16) tol = 1.0308 tol from the rim, within the touched window: moved all the same.
-  // The response along the rim normal {1, 0, 4} / Sqrt(17) leaves {0, 0, -1} + (4 / Sqrt(17)) {1, 0, 4} / Sqrt(17).
-  ExpectRimHitMovedToRestGap("CylinderRimNearRestGap", {.x = 4.0 / 17, .y = 0, .z = -1.0 / 17});
-}
-
-TEST(MoveParticle, RisingCylinderRim_HitReadAtThePoseOfTheHit) {
-  // The rim hit is read, and moved, at the pose of 2 - tol s, 2 m above the start pose. The particle at rest takes the
-  // rim's 1 m/s along its normal {1, 0, 2} / Sqrt(5): {0.4, 0, 0.8}.
-  ExpectRimHitMovedToRestGap("RisingCylinderRim", {.x = 0.4, .y = 0, .z = 0.8});
-}
-
-TEST(MoveParticle, SlowlyTiltingCylinderRim_IsMoved) {
-  // A tilt within plan decision P17's bound keeps the closed form, so its rim hit is moved like a fixed cylinder's.
-  ExpectRimHitMovedToRestGap("SlowlyTiltingCylinderRim", {.x = 0.4, .y = 0, .z = -0.2});
-}
+// Where the steps of MoveParticle leave a particle before the settle, and the faces of the hits along the path.
+struct MoveBeforeSettle {
+  Vec3 position{};  // m, world.
+  std::vector<SolidFace> hit_faces;  // The start's response, when it has one, then each hit's face, in order.
+};
 
 // Runs the steps of MoveParticle on one scene up to the end of the last sweep, without the settle and the end check,
-// and returns the position there; a failure fails the calling test.
-Vec3 ComputePositionBeforeSettle(const MoveParticleCase& scene) {
+// and returns the position there with the faces of the hits; a failure fails the calling test.
+MoveBeforeSettle RunMoveBeforeSettle(const MoveParticleCase& scene) {
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  MoveBeforeSettle before_settle;
   ParticleMove move;
   move.result.position = inputs.start_position;
   move.result.velocity = inputs.velocity;
   ContactFailure failure;
   ContactError error = ApplyStartRules(inputs, &move, &failure);
+  if (move.result.hit_count > 0) {
+    before_settle.hit_faces.push_back(move.result.face);
+  }
   for (int sweep_index = 0; sweep_index <= kMaxHitsPerStep && error == ContactError::kNone; ++sweep_index) {
     const double duration = inputs.step_duration - move.elapsed;  // s
     if (duration <= 0) {
@@ -2182,11 +2121,773 @@ Vec3 ComputePositionBeforeSettle(const MoveParticleCase& scene) {
       break;
     }
     if (error == ContactError::kNone) {
+      before_settle.hit_faces.push_back(first_hit.at_hit.face);
       error = ApplyHit(inputs, first_hit, &move, &failure);
     }
   }
   EXPECT_EQ(error, ContactError::kNone);
-  return move.result.position;
+  before_settle.position = move.result.position;
+  return before_settle;
+}
+
+// The position RunMoveBeforeSettle returns.
+Vec3 ComputePositionBeforeSettle(const MoveParticleCase& scene) {
+  return RunMoveBeforeSettle(scene).position;
+}
+
+TEST(MoveParticle, RimOnFloorSweepingParticle_RimPassesOutsideItsTrueDistance) {
+  // The rim, sliding over the floor and rising at 1e-3 m/s, passes 1.069 tol from the particle resting on the floor, so
+  // its true distance never reaches tol: one hit, the start's on the floor, which takes the fall. As built, the sharp
+  // corner of the grown cylinder was hit, and moving that hit to the rest gap lifted the particle off the floor: two
+  // hits.
+  const MoveParticleCase scene = FindMoveParticleCase("RimOnFloorSweepingParticle");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+  EXPECT_NEAR(ComputeEndDistance(scene, call.result.position), kTolerance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, RimOnFloorSweepingParticleLower_RimAndFloorRespondTogether) {
+  // Rising at 9e-4 m/s the rim comes within tol: hit on kLowRim 1.0002 tol away, with the floor at exactly tol, which
+  // the joint response keeps, since the particle is not moved. The particle stays on the floor, carried along by the
+  // rim's push: two hits, the start's and the rim's (as built, the hit moved to the rest gap lifted it to 1.106 tol of
+  // the floor).
+  const MoveParticleCase scene = FindMoveParticleCase("RimOnFloorSweepingParticleLower");
+  const MoveBeforeSettle before_settle = RunMoveBeforeSettle(scene);
+  ASSERT_EQ(before_settle.hit_faces.size(), 2U);
+  EXPECT_EQ(before_settle.hit_faces.at(1), SolidFace::kLowRim);
+  EXPECT_NEAR(ComputeEndDistance(scene, before_settle.position), kTolerance, kTolerance / 1024);
+  const Solid& cylinder = scene.solids.at(1);
+  const SolidPose end_pose = ComputeSolidPose(cylinder, scene.inputs.step_duration);
+  EXPECT_GE(ComputeDistanceToSolid(cylinder, end_pose, before_settle.position).distance, kTolerance / 2);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 2);
+  ExpectVec3Near(call.result.velocity.for_this_step, {.x = 0.875932, .y = 5.139e-5, .z = 0}, 1e-5);
+}
+
+TEST(MoveParticle, SlowlyTiltingCylinderRimCornerStart_RisingRimIsNotHit) {
+  // The start is 1.27 tol from the rim, in its rim corner. The rim search reads the cylinder at the pose of the sweep's
+  // start, and the rate from linear_velocity, 0: free. The rim rises 0.019 tol toward the particle during the step,
+  // within plan decision P17's slack, and the true distance stays above 1.2 tol (as built a hit at 0, from the rate of
+  // the surface's velocity, moved to the rest gap).
+  const MoveParticleCase scene = FindMoveParticleCase("SlowlyTiltingCylinderRimCornerStart");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  ExpectVec3Equal(call.result.velocity.for_this_step, {});
+  ExpectVec3Equal(call.result.velocity.for_next_step, {});
+  EXPECT_GT(ComputeEndDistance(scene, call.result.position), 1.2 * kTolerance);
+}
+
+TEST(MoveParticle, SlowlyTiltingCylinderBesideRimLevelWithCap_EndsAboveTheBoundBeforeTheSettle) {
+  // The hard case of a resting sweep on a cylinder tilting within plan decision P17's bound: a wide cylinder, radius
+  // 1 m and half height 0.1 m (Length(half_size) = Sqrt(2.01) = 1.418 m), tilting about x at 0.99 of the bound for a
+  // step of 1 s; a start beside the rim on the -y side, 0.9 tol beyond the wall and tol / 8 inside the cap plane's rest
+  // gap, crossing the cap to y = 0.95 m while sinking toward its plane by 0.99 tol / 64. The sweep rests on the cap's
+  // plane, read at the pose of the sweep's start, while the cap rises under the far end by the tilt angle times the
+  // arm, 0.99 tol / (8 * 1.418) * 0.95 = 0.0829 tol. Before the settle: 7 / 8 - 0.99 / 64 - 0.0829 = 0.7766 tol,
+  // measured 0.77661; above 39 / 64 tol (FindFirstHitOfSweep, step 3) and the floor 47 / 64 tol that P17's tol / 8
+  // allows. The settle brings it back to tol.
+  const Vec3 half_size = {.x = 1, .y = 1, .z = 0.1};
+  const double tilt_rate = 0.99 * (kTolerance / 8) / math::Length(half_size);  // rad/s
+  MoveParticleCase scene;
+  scene.name = "WideCylinderTiltingAtTheBound";
+  scene.solids = {
+      ToSolid(
+          Cylinder{.center = {}, .axis = kUnitZ, .radius = 1, .half_height = 0.1},
+          {.linear_velocity = {}, .angular_velocity = {.x = tilt_rate, .y = 0, .z = 0}},
+          1
+      ),
+  };
+  scene.inputs = FindMoveParticleCase("CylinderRim").inputs;
+  scene.inputs.start_position = {.x = 0, .y = -(1 + 0.9 * kTolerance), .z = 0.1 + 7.0 / 8 * kTolerance};
+  const Vec3 velocity = {.x = 0, .y = 1.95, .z = -0.99 * kTolerance / 64};  // m/s
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  scene.inputs.step_duration = 1;
+  ASSERT_FALSE(ComputeIsTurningSolid(ToSolidContactInputs(scene), 0));
+  const double before_settle = ComputeEndDistance(scene, ComputePositionBeforeSettle(scene));  // m
+  EXPECT_NEAR(before_settle, 0.7766 * kTolerance, 0.001 * kTolerance);
+  EXPECT_GT(before_settle, 47.0 / 64 * kTolerance);
+  EXPECT_GT(before_settle, 39.0 / 64 * kTolerance);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  EXPECT_NEAR(ComputeEndDistance(scene, call.result.position), kTolerance, kTolerance / 1024);
+  std::cout << "wide cylinder tilting at the bound, beside its rim level with its cap: before the settle "
+            << before_settle / kTolerance << " tol\n";
+}
+
+TEST(MoveParticle, RimCornerBesideRestingFace_RoundingIsNoApproach) {
+  // After the start's response on the upright, the sweep starts 1.15 tol from the rim, in its rim corner, beyond the
+  // touched window, and moves square to the rim's normal: the rate is rounding, of either sign, within the response's
+  // allowance, so the rim is not hit. Compared with 0, one of the two directions hit it at 0.
+  for (const std::string_view case_name : {"RimCornerBesideRestingFaceDown", "RimCornerBesideRestingFaceUp"}) {
+    const MoveParticleCall call = RunMove(case_name);
+    ASSERT_EQ(call.error, ContactError::kNone) << case_name;
+    EXPECT_EQ(call.result.hit_count, 1) << case_name;
+    EXPECT_EQ(call.result.solid_index, 1U) << case_name;
+  }
+}
+
+// What a rim hit must give: both velocities after MoveParticle within velocity_tolerance of velocity, and the distance
+// at the hit position, at the pose of the hit's time, within distance_tolerance of tol.
+struct RimHitExpectation {
+  Vec3 velocity{};  // m/s, world.
+  double velocity_tolerance = 0;  // m/s.
+  double distance_tolerance = 0;  // m.
+};
+
+// Fails the calling test unless the scene's first hit is on kHighRim, within distance_tolerance of tol from the
+// cylinder, its first solid, at the pose of the hit's time, and ApplyHit leaves the particle on the path, at start +
+// velocity * first_hit.elapsed bit for bit, where the cylinder's distance is first_hit.at_hit.distance bit for bit (no
+// hit is moved, plan decision P21).
+void ExpectRimHitOnThePath(const MoveParticleCase& scene, double distance_tolerance) {
+  ParticleMove move;
+  move.result.position = scene.inputs.start_position;
+  move.result.velocity = scene.inputs.velocity;
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  const Vec3 velocity = inputs.velocity.for_this_step;
+  FirstHit first_hit;
+  ASSERT_EQ(
+      FindFirstHit(inputs, inputs.start_position, velocity, 0, inputs.step_duration, &first_hit),
+      ContactError::kNone
+  );
+  ASSERT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
+  EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, distance_tolerance);
+  ContactFailure failure;
+  ASSERT_EQ(ApplyHit(inputs, first_hit, &move, &failure), ContactError::kNone);
+  ExpectVec3Equal(move.result.position, inputs.start_position + velocity * first_hit.elapsed);
+  const Solid& cylinder = scene.solids.at(0);
+  const SolidPose hit_pose = ComputeSolidPose(cylinder, first_hit.elapsed);
+  EXPECT_EQ(ComputeDistanceToSolid(cylinder, hit_pose, move.result.position).distance, first_hit.at_hit.distance);
+}
+
+// Fails the calling test unless the scene's rim hit is on the path (ExpectRimHitOnThePath) and MoveParticle succeeds
+// with one hit and both velocities expected.velocity.
+void ExpectRimHitAtTrueDistance(std::string_view case_name, RimHitExpectation expected) {
+  const MoveParticleCase scene = FindMoveParticleCase(case_name);
+  SCOPED_TRACE(case_name);
+  ExpectRimHitOnThePath(scene, expected.distance_tolerance);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, expected.velocity, expected.velocity_tolerance);
+}
+
+TEST(MoveParticle, CylinderRimNearRestGap_HitAtItsTrueDistance) {
+  // The entry is Sqrt(17 / 16) tol = 1.0308 tol from the rim; the rim search stops 3e-5 tol outside tol, where the wall
+  // distance is tol / 4 and the normal {1 / 4, 0, Sqrt(15) / 4}: the response leaves {Sqrt(15) / 16, 0, -1 / 16} (as
+  // built, moved along the corner's normal, {4 / 17, 0, -1 / 17}).
+  ExpectRimHitAtTrueDistance(
+      "CylinderRimNearRestGap",
+      {
+          .velocity = {.x = std::sqrt(15.0) / 16, .y = 0, .z = -1.0 / 16},
+          .velocity_tolerance = 2e-5,
+          .distance_tolerance = kTolerance / 1024,
+      }
+  );
+}
+
+TEST(MoveParticle, RisingCylinderRim_HitReadAtThePoseOfTheHit) {
+  // The rim hit is read at the pose of 2 - Sqrt(0.75) tol s, 2 m above the start pose. The particle at rest takes the
+  // rim's 1 m/s along its normal {1 / 2, 0, Sqrt(3) / 2}: {Sqrt(3) / 4, 0, 3 / 4}.
+  ExpectRimHitAtTrueDistance(
+      "RisingCylinderRim",
+      {
+          .velocity = {.x = std::numbers::sqrt3 / 4, .y = 0, .z = 0.75},
+          .velocity_tolerance = 1e-6,
+          .distance_tolerance = kTolerance / 1024,
+      }
+  );
+}
+
+TEST(MoveParticle, SlowlyTiltingCylinderRim_HitAtItsTrueDistance) {
+  // A tilt within plan decision P17's bound keeps the closed form and the rim search, which read the cylinder at the
+  // pose of the sweep's start; at the pose of the hit the distance differs by the tilt's slack, 0.024 tol here.
+  ExpectRimHitAtTrueDistance(
+      "SlowlyTiltingCylinderRim",
+      {
+          .velocity = {.x = std::numbers::sqrt3 / 4, .y = 0, .z = -0.25},
+          .velocity_tolerance = 1e-5,
+          .distance_tolerance = kTolerance / 16,
+      }
+  );
+}
+
+// --- Flush seams and a rim's neighbourhood (plan decision P21) ---
+
+// Runs a scene from another start, with both velocities as the scene has them.
+MoveParticleCall RunMoveFrom(std::string_view case_name, Vec3 start_position) {
+  MoveParticleCase scene = FindMoveParticleCase(case_name);
+  scene.inputs.start_position = start_position;
+  return RunMove(scene);
+}
+
+// Another start of a scene: the position, both velocities and the step.
+struct SceneStart {
+  Vec3 position{};  // m, world.
+  Vec3 velocity{};  // m/s, world, both velocities.
+  double step_duration = 0;  // s.
+  double friction = 0;  // No unit.
+};
+
+// A scene from another start.
+MoveParticleCase BuildSceneFrom(std::string_view case_name, SceneStart start) {
+  MoveParticleCase scene = FindMoveParticleCase(case_name);
+  scene.inputs.start_position = start.position;
+  scene.inputs.velocity = {.for_next_step = start.velocity, .for_this_step = start.velocity};
+  scene.inputs.step_duration = start.step_duration;
+  scene.inputs.friction = start.friction;
+  return scene;
+}
+
+// Runs a scene from another start.
+MoveParticleCall RunMoveWith(std::string_view case_name, SceneStart start) {
+  return RunMove(BuildSceneFrom(case_name, start));
+}
+
+TEST(MoveParticle, StackedDrumsOfOneRadius_SlideDownTheSeamKeepsItsVelocity) {
+  // Down the upper drum's wall at its rest gap and past the seam: the start beside the lower drum's high rim rests on
+  // that drum's wall, taken as unbounded along the axis, so the lower drum is not hit, and the velocity stays {0, 0,
+  // -1} bit for bit. The same from one rounding unit and from tol / 32 inside the rest gap, which the start rules move
+  // out. As built, the sharp grown rim edge was hit 1.41 tol from the rim and the particle left at {0.5, 0, -0.5}.
+  const MoveParticleCase scene = FindMoveParticleCase("StackedDrums");
+  const Solid& lower_drum = scene.solids.at(1);
+  const double rest_x = 0.5 + kTolerance;  // m
+  for (const double start_x : {rest_x, rest_x - 0x1p-53, rest_x - kTolerance / 32}) {
+    const MoveParticleCall call = RunMoveFrom("StackedDrums", {.x = start_x, .y = 0, .z = 1.8});
+    ASSERT_EQ(call.error, ContactError::kNone) << start_x;
+    EXPECT_EQ(call.result.kind, ContactKind::kNone);
+    EXPECT_EQ(call.result.hit_count, 0);
+    ExpectVec3Equal(call.result.velocity.for_this_step, {.x = 0, .y = 0, .z = -1});
+    ExpectVec3Equal(call.result.velocity.for_next_step, {.x = 0, .y = 0, .z = -1});
+    ExpectVec3Near(call.result.position, {.x = rest_x, .y = 0, .z = 0.8}, 0x1p-50);
+    const double end_distance =
+        ComputeDistanceToSolid(lower_drum, lower_drum.pose_at_step_start, call.result.position).distance;  // m
+    EXPECT_NEAR(end_distance, kTolerance, 0x1p-50);
+  }
+}
+
+TEST(MoveParticle, PuckFlushInFloor_SlideOntoItAndOffKeepsItsVelocity) {
+  // Along the floor at its rest gap onto the puck lying flush in it, and off it: the start beside the puck's rim rests
+  // on the plane of its top, so the puck is not hit, and the velocity is kept bit for bit. As built, the sharp grown
+  // rim edge stopped the particle onto it, which left at {-0.5, 0, 0.5}.
+  const MoveParticleCase scene = FindMoveParticleCase("PuckFlushInFloor");
+  const Solid& floor = scene.solids.at(0);
+  const Solid& puck = scene.solids.at(1);
+  const MoveParticleCall onto = RunMove(scene);
+  ASSERT_EQ(onto.error, ContactError::kNone);
+  EXPECT_EQ(onto.result.kind, ContactKind::kNone);
+  EXPECT_EQ(onto.result.hit_count, 0);
+  ExpectVec3Equal(onto.result.velocity.for_this_step, -kUnitX);
+  ExpectVec3Equal(onto.result.velocity.for_next_step, -kUnitX);
+  ExpectVec3Near(onto.result.position, {.x = 0.4 + 3 * kTolerance, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  const Vec3 onto_end = onto.result.position;
+  EXPECT_NEAR(
+      ComputeDistanceToSolid(floor, floor.pose_at_step_start, onto_end).distance,
+      kTolerance,
+      kTolerance / 1024
+  );
+  EXPECT_NEAR(ComputeDistanceToSolid(puck, puck.pose_at_step_start, onto_end).distance, kTolerance, kTolerance / 1024);
+  const MoveParticleCall off = RunMoveWith(
+      "PuckFlushInFloor",
+      {.position = {.x = 0.45, .y = 0, .z = kTolerance}, .velocity = kUnitX, .step_duration = 0.1}
+  );
+  ASSERT_EQ(off.error, ContactError::kNone);
+  EXPECT_EQ(off.result.hit_count, 0);
+  ExpectVec3Equal(off.result.velocity.for_this_step, kUnitX);
+  ExpectVec3Equal(off.result.velocity.for_next_step, kUnitX);
+  ExpectVec3Near(off.result.position, {.x = 0.55, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  const Vec3 off_end = off.result.position;
+  EXPECT_NEAR(ComputeDistanceToSolid(floor, floor.pose_at_step_start, off_end).distance, kTolerance, kTolerance / 1024);
+}
+
+// Fails the calling test unless a move succeeded with no hit and both velocities velocity, bit for bit.
+void ExpectFreeWithVelocity(const MoveParticleCall& call, Vec3 velocity) {
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  ExpectVec3Equal(call.result.velocity.for_this_step, velocity);
+  ExpectVec3Equal(call.result.velocity.for_next_step, velocity);
+}
+
+// Fails the calling test unless a move succeeded with one hit and both velocities within 1e-15 of velocity.
+void ExpectOneHitWithVelocity(const MoveParticleCall& call, Vec3 velocity) {
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  ExpectBothVelocitiesNear(call.result, velocity, 1e-15);
+}
+
+TEST(MoveParticle, StackedDrums_StepStartingJustAboveTheSeamKeepsItsVelocity) {
+  // A step that starts 3 / 16 or 5 / 16 tol above the seam, beside the lower drum's rim 1.0174 or 1.0477 tol away, at
+  // the level of its wall: the lower drum is no active surface there (plan decision P21, item 16), so nothing answers
+  // the rim, and the step is free with {0, 0, -1} bit for bit (as built the start's response on the rim turned it to
+  // {0.1811321, 0, -0.9660377} and {0.2846975, 0, -0.9110320}). Pushed into the upper wall at 0.16 m/s, the start's
+  // response is on that wall alone: {0, 0, -1}, or {0, 0, -0.952} with friction 0.3. From tol / 32 inside the wall's
+  // rest gap and tol / 8 above the seam, inside the rim's own touching window, the sweep tries the wall first: free
+  // ({0.1230769, 0, -0.9846154} as built).
+  const double rest_x = 0.5 + kTolerance;  // m
+  const Vec3 down = -kUnitZ;
+  const Vec3 pressed = {.x = -0.16, .y = 0, .z = -1};
+  for (const double height_share : {3.0 / 16, 5.0 / 16}) {
+    const Vec3 start = {.x = rest_x, .y = 0, .z = 1 + height_share * kTolerance};
+    ExpectFreeWithVelocity(
+        RunMoveWith("StackedDrums", {.position = start, .velocity = down, .step_duration = 0.1}),
+        down
+    );
+    const MoveParticleCall pushed =
+        RunMoveWith("StackedDrums", {.position = start, .velocity = pressed, .step_duration = 0.1});
+    ExpectOneHitWithVelocity(pushed, down);
+    EXPECT_EQ(pushed.result.face, SolidFace::kCurved);
+    EXPECT_EQ(pushed.result.solid_index, 0U);
+    ExpectOneHitWithVelocity(
+        RunMoveWith("StackedDrums", {.position = start, .velocity = pressed, .step_duration = 0.1, .friction = 0.3}),
+        {.x = 0, .y = 0, .z = -0.952}
+    );
+  }
+  const Vec3 inside = {.x = rest_x - kTolerance / 32, .y = 0, .z = 1 + kTolerance / 8};
+  ExpectFreeWithVelocity(
+      RunMoveWith("StackedDrums", {.position = inside, .velocity = down, .step_duration = 0.1}),
+      down
+  );
+}
+
+TEST(MoveParticle, StackedDrumsLowerOneWider_ALedgeDeeperThanAnEighthIsSeen) {
+  // The stacked drums with the lower one wider by 3 / 16 tol, a ledge: from the upper wall's rest gap, 0.6 tol above
+  // the seam, the lower wall's gap is -3 / 16 tol, deeper than the level window's tol / 8, so the lower drum is an
+  // active surface, 1.010 tol away, and the falling start is answered on its rim at once: hit_fraction 0. A window
+  // twice as deep would leave the drum out, and the sweep would meet the rim a little later instead.
+  MoveParticleCase scene = FindMoveParticleCase("StackedDrums");
+  const Cylinder wider_lower = {
+      .center = {.x = 0, .y = 0, .z = 0.5},
+      .axis = kUnitZ,
+      .radius = 0.5 + 3.0 / 16 * kTolerance,
+      .half_height = 0.5,
+  };
+  scene.solids.at(1) = ToSolid(wider_lower, kNoMotion, 2);
+  scene.inputs.start_position = {.x = 0.5 + kTolerance, .y = 0, .z = 1 + 0.6 * kTolerance};
+  scene.inputs.step_duration = 0.1;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 1U);
+  EXPECT_EQ(call.result.face, SolidFace::kHighRim);
+  EXPECT_EQ(call.result.hit_fraction, 0);
+}
+
+TEST(MoveParticle, StackedDrums_HitOnTheUpperWallJustAboveTheSeamLeavesTheLowerOut) {
+  // Thrown at the upper drum's wall from 0.01 m out and above, the particle meets it 3 / 16 tol above the seam, level
+  // with the lower drum's wall: at that hit the lower drum is no active surface either (plan decision P21, item 16 a,
+  // at a hit as at the start), so the response removes the approach to the upper wall alone: {0, 0, -1}. Listed, the
+  // lower rim would turn it to {0.147, 0, -0.785}.
+  const MoveParticleCall call = RunMoveWith(
+      "StackedDrums",
+      {
+          .position = {.x = 0.5 + kTolerance + 0.01, .y = 0, .z = 1 + 3.0 / 16 * kTolerance + 0.01},
+          .velocity = {.x = -1, .y = 0, .z = -1},
+          .step_duration = 0.1,
+      }
+  );
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 0U);
+  ExpectBothVelocitiesNear(call.result, -kUnitZ, 1e-15);
+}
+
+TEST(MoveParticle, RisingPuckFlushInFloor_LevelReadAtThePoseOfTheHit) {
+  // The puck and the floor rising together at 0.1 m/s, a particle landing on the floor 3 / 16 tol beyond the rim: at
+  // the hit, read at the pose of the hit's time, the particle is level with the puck's top, so the floor alone
+  // responds and the particle keeps {-1, 0, 0.1}. Read at the pose of the step's start, the puck would be 1 mm lower,
+  // not level, and its rim would turn the particle.
+  MoveParticleCase scene = FindMoveParticleCase("PuckFlushInFloor");
+  const SolidMotion rising = {.linear_velocity = {.x = 0, .y = 0, .z = 0.1}, .angular_velocity = {}};
+  scene.solids.at(0) = move_particle_cases::BuildFlatSolid({}, kUnitZ, rising, 1);
+  const Cylinder puck = {.center = {.x = 0, .y = 0, .z = -0.1}, .axis = kUnitZ, .radius = 0.5, .half_height = 0.1};
+  scene.solids.at(1) = ToSolid(puck, rising, 2);
+  scene.inputs.start_position = {.x = 0.5 + 3.0 / 16 * kTolerance + 0.01, .y = 0, .z = kTolerance + 0.011};
+  scene.inputs.velocity = {.for_next_step = {.x = -1, .y = 0, .z = -1}, .for_this_step = {.x = -1, .y = 0, .z = -1}};
+  scene.inputs.step_duration = 0.1;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 0U);
+  ExpectBothVelocitiesNear(call.result, {.x = -1, .y = 0, .z = 0.1}, 1e-15);
+}
+
+// The rim scene of the known choice of an approach with no response: the fixed cylinder of CylinderRim, a start at the
+// rim's rest gap 0.3 tol beyond the wall and level with the cap's plane (cap gap Sqrt(0.91) - 1 = -0.046 tol), and a
+// velocity along the rim's normal that sinks approach.sink_share tol in a step of 0.1 s; approach.x_units moves the
+// start's x by that many units in the last place.
+struct RimSlowApproach {
+  double sink_share = 0;  // No unit: the sink along the rim's normal over the step, in tolerances.
+  int x_units = 0;  // Units in the last place added to the start's x.
+};
+
+// Builds the rim scene of one slow approach (RimSlowApproach).
+MoveParticleCase BuildRimSlowApproachScene(RimSlowApproach approach) {
+  const double sink_share = approach.sink_share;
+  const int x_units = approach.x_units;
+  MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
+  const Vec3 rim_normal = math::Normalized(Vec3{.x = 0.3, .y = 0, .z = std::sqrt(1 - 0.3 * 0.3)});
+  Vec3 start = Vec3{.x = 0.5, .y = 0, .z = 1} + kTolerance * rim_normal;
+  for (int unit = 0; unit < x_units; ++unit) {
+    start.x = std::nextafter(start.x, 1.0);
+  }
+  scene.inputs.start_position = start;
+  const Vec3 velocity = (-sink_share * kTolerance / 0.1) * rim_normal;  // m/s
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  scene.inputs.step_duration = 0.1;
+  return scene;
+}
+
+// Fails the calling test unless the rim's slow approach of sink_share tol, from the start as built, gets no hit and no
+// reaction, is (1 - sink_share) tol from the rim before the settle and at tol after it.
+void ExpectRimSlowApproachUnanswered(double sink_share) {
+  SCOPED_TRACE(sink_share);
+  const MoveParticleCase scene = BuildRimSlowApproachScene({.sink_share = sink_share, .x_units = 0});
+  const double before_settle = ComputeEndDistance(scene, ComputePositionBeforeSettle(scene));  // m
+  EXPECT_NEAR(before_settle, (1 - sink_share) * kTolerance, kTolerance / 1024);
+  EXPECT_GT(before_settle, 0);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  EXPECT_EQ(call.result.reaction.solid_index, kNoSolid);
+  ExpectVec3Equal(call.result.velocity.for_this_step, scene.inputs.velocity.for_this_step);
+  ExpectVec3Equal(call.result.velocity.for_next_step, scene.inputs.velocity.for_next_step);
+  EXPECT_NEAR(ComputeEndDistance(scene, call.result.position), kTolerance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, RimLevelWithCapSlowApproach_NoResponse_KnownChoice) {
+  // A known choice (plan decision P21, item 16): at the rim's rest gap, level with the cap's plane, a particle
+  // approaching the rim along its normal by 0.9 tol in the step gets no response. The cylinder is no active surface at
+  // the start; the sweep does not rest on the cap's plane (it sinks 0.86 tol toward it), so the plain touching rule on
+  // the rim rules, free while the path sinks less than tol. No hit, no reaction, both velocities kept as given (-9
+  // tol/s along the rim's normal, or -9.99 tol/s for the sink of 0.999 tol); before the settle the particle is 0.1 tol
+  // from the rim, never inside, and the settle lifts it back to tol. From the rest gap a sink below tol keeps d >= 0
+  // (the distance is convex along the path): a sink of 0.999 tol ends 0.001 tol away. This side holds because the
+  // start, as built here, has a computed distance at or below tol (see the rounding test below).
+  ExpectRimSlowApproachUnanswered(0.9);
+  ExpectRimSlowApproachUnanswered(0.999);
+}
+
+TEST(MoveParticle, RimLevelWithCapSlowApproach_RoundingOfTheStartDecides_KnownChoice) {
+  // Which side of the known choice a start at the rim's rest gap falls on is decided by the rounding of its distance.
+  // The start of the test above: computed at or below tol, the plain touching rule frees the path, no hit, both
+  // velocities kept (-9 tol/s along the rim's normal). The same start moved by one unit in the last place on x:
+  // computed a hair above tol, it is outside, entry 0, and the rim search finds the gap within tol / 1024 and closing,
+  // a hit at 0 whose response removes the whole approach along the rim's normal: both velocities {0, 0, 0}. Both keep
+  // the path outside the cylinder and end at tol after the settle.
+  const MoveParticleCase on_rest_gap = BuildRimSlowApproachScene({.sink_share = 0.9, .x_units = 0});
+  const MoveParticleCall free_call = RunMove(on_rest_gap);
+  ASSERT_EQ(free_call.error, ContactError::kNone);
+  EXPECT_EQ(free_call.result.hit_count, 0);
+  EXPECT_NEAR(ComputeEndDistance(on_rest_gap, free_call.result.position), kTolerance, kTolerance / 1024);
+  const MoveParticleCase a_unit_above = BuildRimSlowApproachScene({.sink_share = 0.9, .x_units = 1});
+  const MoveParticleCall hit_call = RunMove(a_unit_above);
+  ASSERT_EQ(hit_call.error, ContactError::kNone);
+  EXPECT_EQ(hit_call.result.hit_count, 1);
+  EXPECT_EQ(hit_call.result.face, SolidFace::kHighRim);
+  EXPECT_EQ(hit_call.result.hit_fraction, 0);
+  ExpectBothVelocitiesNear(hit_call.result, {}, 1e-15);
+  EXPECT_NEAR(ComputeEndDistance(a_unit_above, hit_call.result.position), kTolerance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, PuckFlushInFloor_StepStartingJustBeforeTheSeamKeepsItsVelocity) {
+  // The puck's counterpart: a step that starts 3 / 16 or 5 / 16 tol beyond its rim, level with its top's plane, is
+  // free with {-1, 0, 0} bit for bit (as built {-0.9660377, 0, 0.1811321} and {-0.9110320, 0, 0.2846975}); pushed into
+  // the floor, the start's response is the floor's alone.
+  for (const double offset_share : {3.0 / 16, 5.0 / 16}) {
+    const Vec3 start = {.x = 0.5 + offset_share * kTolerance, .y = 0, .z = kTolerance};
+    ExpectFreeWithVelocity(
+        RunMoveWith("PuckFlushInFloor", {.position = start, .velocity = -kUnitX, .step_duration = 0.1}),
+        -kUnitX
+    );
+    const MoveParticleCall pushed = RunMoveWith(
+        "PuckFlushInFloor",
+        {.position = start, .velocity = {.x = -1, .y = 0, .z = -0.16}, .step_duration = 0.1}
+    );
+    ExpectOneHitWithVelocity(pushed, -kUnitX);
+    EXPECT_EQ(pushed.result.face, SolidFace::kHighZ);
+    EXPECT_EQ(pushed.result.solid_index, 0U);
+  }
+}
+
+TEST(MoveParticle, LoneCylinderBesideRimLevelWithCap_FallingIsHitAtTheTrueDistance) {
+  // A lone cylinder and a start 5 / 16 tol beyond its wall, level with its cap's plane, 1.048 tol from the rim: the
+  // cylinder is no active surface at the start, so falling is answered by the rim search where the true distance is
+  // tol, with the normal {0.3125, 0, 0.95}: 0.95 * {0.3125, 0, 0.95} - {0, 0, 1} = {0.2969, 0, -0.0976} (as built the
+  // start's response 1.048 tol away gave {0.2847, 0, -0.0890}). Moving inward along the cap's plane is free.
+  MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
+  scene.solids.at(0).reports_reaction = false;
+  scene.inputs.start_position = {.x = 0.5 + 5.0 / 16 * kTolerance, .y = 0, .z = 1 + kTolerance};
+  scene.inputs.step_duration = 0.1;
+  scene.inputs.velocity = {.for_next_step = -kUnitZ, .for_this_step = -kUnitZ};
+  const MoveParticleCall falling = RunMove(scene);
+  ASSERT_EQ(falling.error, ContactError::kNone);
+  EXPECT_EQ(falling.result.hit_count, 1);
+  EXPECT_EQ(falling.result.face, SolidFace::kHighRim);
+  EXPECT_GT(falling.result.hit_fraction, 0);
+  ExpectBothVelocitiesNear(falling.result, Vec3{.x = 0.95 * 0.3125, .y = 0, .z = 0.95 * 0.95 - 1}, 2e-4);
+  scene.inputs.velocity = {.for_next_step = -kUnitX, .for_this_step = -kUnitX};
+  ExpectFreeWithVelocity(RunMove(scene), -kUnitX);
+}
+
+// A row of the runs across a seam in many steps: a scene, the point where the path crosses the seam, the direction
+// back from there to the starts, the path's direction, the push's direction, the step as a share of tol, the push and
+// the friction.
+struct SeamRow {
+  std::string_view case_name;
+  Vec3 seam_point{};  // m, world.
+  Vec3 back_from_seam{};  // No unit, unit vector.
+  Vec3 along_path{};  // No unit, unit vector; the path moves along it at 1 m/s.
+  Vec3 push_direction{};  // No unit, unit vector, into the surface slid on.
+  double step_share = 0;  // No unit: the step is step_share tol long, in step_share tol s.
+  double push = 0;  // m/s.
+  double friction = 0;  // No unit.
+};
+
+// Runs one particle across the seam of row_scene, row's scene built once, in Floor(12 / step_share) + 2 steps from
+// offset tol before it, the same input
+// velocity every step from the last end, and says whether every step succeeded with no hit without a push and one
+// with, kept the speed along the path that friction on the surface slid on leaves (1 - friction * push, within 1e-12),
+// and stayed at tol - tol / 1024 or more from every solid before the settle.
+bool ComputeIsSeamRunRight(const MoveParticleCase& row_scene, const SeamRow& row, double offset) {
+  const double step_duration = row.step_share * kTolerance;  // s
+  const Vec3 velocity = row.along_path + row.push * row.push_direction;  // m/s
+  const double kept_speed = 1 - row.friction * row.push;  // m/s
+  const int step_count = static_cast<int>(std::floor(12 / row.step_share)) + 2;
+  const bool is_pushed = row.push > 0;
+  Vec3 position = row.seam_point + offset * row.back_from_seam;
+  for (int step_index = 0; step_index < step_count; ++step_index) {
+    MoveParticleCase scene = row_scene;
+    scene.inputs.start_position = position;
+    scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+    scene.inputs.step_duration = step_duration;
+    scene.inputs.friction = row.friction;
+    const MoveParticleCall call = RunMove(scene);
+    if (call.error != ContactError::kNone) {
+      return false;
+    }
+    const bool is_right_hit_count = call.result.hit_count == (is_pushed ? 1 : 0);
+    const double speed = math::Dot(call.result.velocity.for_this_step, row.along_path);  // m/s
+    const Vec3 before_settle = ComputePositionBeforeSettle(scene);
+    bool stays_out = true;
+    for (const Solid& solid : scene.solids) {
+      const SolidPose end_pose = ComputeSolidPose(solid, step_duration);
+      stays_out = stays_out
+          && ComputeDistanceToSolid(solid, end_pose, before_settle).distance >= kTolerance - kTolerance / 1024;
+    }
+    if (!is_right_hit_count || std::abs(speed - kept_speed) > 1e-12 || !stays_out) {
+      return false;
+    }
+    position = call.result.position;
+  }
+  return true;
+}
+
+// Runs the 18 rows of runs (three steps, three pushes and frictions) for one kind of seam, 400 offsets 4 + s (k + 0.5)
+// / 400 tol before the seam each, and fails the calling test unless every run is right.
+void ExpectSeamRowsKeepTheSpeed(SeamRow row) {
+  // The scene is built once: FindMoveParticleCase builds every scene, about 40 times the cost of a move.
+  const MoveParticleCase row_scene = FindMoveParticleCase(row.case_name);
+  constexpr std::array<double, 3> kStepShares = {0.3, 0.7, 3};
+  constexpr std::array<std::array<double, 2>, 3> kPushesAndFrictions = {{{0, 0}, {0.16, 0}, {0.16, 0.3}}};
+  for (const double step_share : kStepShares) {
+    for (const auto& push_and_friction : kPushesAndFrictions) {
+      row.step_share = step_share;
+      row.push = push_and_friction.at(0);
+      row.friction = push_and_friction.at(1);
+      int wrong_runs = 0;
+      for (int offset_index = 0; offset_index < 400; ++offset_index) {
+        const double offset = (4 + step_share * (offset_index + 0.5) / 400) * kTolerance;  // m
+        wrong_runs += ComputeIsSeamRunRight(row_scene, row, offset) ? 0 : 1;
+      }
+      std::cout << "seam runs " << row.case_name << ", step " << step_share << " tol, push " << row.push
+                << ", friction " << row.friction << ": " << wrong_runs << " of 400 wrong\n";
+      EXPECT_EQ(wrong_runs, 0) << row.case_name << " " << step_share;
+    }
+  }
+}
+
+TEST(MoveParticle, SeamsOverManySteps_Cylinders) {
+  // Down the stacked drums and along the floor onto the puck, from 4 to 4 + s tol before the seam, in steps of s = 0.3,
+  // 0.7 and 3 tol, unpressed or pressed at 0.16 m/s into the surface slid on, with friction 0 or 0.3: every step keeps
+  // the speed (plan decision P21, item 16). As built 400, 205 or 224 and 48 runs of 400 lost speed at s = 0.3, 0.7 and
+  // 3: some step started within tol + tol / 16 of the next drum's rim and was answered on it.
+  ExpectSeamRowsKeepTheSpeed({
+      .case_name = "StackedDrums",
+      .seam_point = {.x = 0.5 + kTolerance, .y = 0, .z = 1},
+      .back_from_seam = kUnitZ,
+      .along_path = -kUnitZ,
+      .push_direction = -kUnitX,
+  });
+  ExpectSeamRowsKeepTheSpeed({
+      .case_name = "PuckFlushInFloor",
+      .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
+      .back_from_seam = kUnitX,
+      .along_path = -kUnitX,
+      .push_direction = -kUnitZ,
+  });
+}
+
+TEST(MoveParticle, DrumStandingOnFloor_GrooveStopsAndLetsSlideAround) {
+  // A guard: the groove between a drum and the floor it stands on is a true corner. Along the floor into it, the wall
+  // is hit at 0.5 - tol s; down the wall into it, the floor at 0.7 - tol s; each stops the particle at tol from both.
+  // Along the groove, the particle rests on both and is free.
+  const MoveParticleCall along_floor = RunMove("DrumStandingOnFloor");
+  ASSERT_EQ(along_floor.error, ContactError::kNone);
+  EXPECT_EQ(along_floor.result.hit_count, 1);
+  EXPECT_EQ(along_floor.result.solid_index, 1U);
+  EXPECT_EQ(along_floor.result.face, SolidFace::kCurved);
+  ExpectNearRelative(along_floor.result.hit_fraction, 0.5 - kTolerance, 1);
+  ExpectBothVelocitiesNear(along_floor.result, {}, 1e-15);
+  const Vec3 groove = {.x = 0.5 + kTolerance, .y = 0, .z = kTolerance};
+  ExpectVec3Near(along_floor.result.position, groove, kTolerance / 1024);
+  const MoveParticleCall down_wall = RunMoveWith(
+      "DrumStandingOnFloor",
+      {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 0.7}, .velocity = -kUnitZ, .step_duration = 1}
+  );
+  ASSERT_EQ(down_wall.error, ContactError::kNone);
+  EXPECT_EQ(down_wall.result.hit_count, 1);
+  EXPECT_EQ(down_wall.result.solid_index, 0U);
+  EXPECT_EQ(down_wall.result.face, SolidFace::kHighZ);
+  ExpectNearRelative(down_wall.result.hit_fraction, 0.7 - kTolerance, 1);
+  ExpectBothVelocitiesNear(down_wall.result, {}, 1e-15);
+  ExpectVec3Near(down_wall.result.position, groove, kTolerance / 1024);
+  const MoveParticleCall around =
+      RunMoveWith("DrumStandingOnFloor", {.position = groove, .velocity = kUnitY, .step_duration = 0.25});
+  ASSERT_EQ(around.error, ContactError::kNone);
+  EXPECT_EQ(around.result.hit_count, 0);
+  EXPECT_NEAR(around.result.position.y, 0.25, kTolerance / 1024);
+}
+
+TEST(MoveParticle, RimCrestUnderFloor_IsNotHit) {
+  // The crest of a slanted cylinder's high rim lies 0.41 tol under the floor's surface; the particle sliding at the
+  // floor's rest gap passes it 1.41 tol away, beyond the true distance's reach, though through the sharp grown corner:
+  // no hit, and the end at tol from the floor. As built, the corner was hit and moved to the rest gap, which pulled
+  // the particle 0.41 tol toward the floor.
+  const MoveParticleCase scene = FindMoveParticleCase("RimCrestUnderFloor");
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  ExpectVec3Equal(call.result.velocity.for_this_step, kUnitX);
+  ExpectVec3Equal(call.result.velocity.for_next_step, kUnitX);
+  EXPECT_NEAR(call.result.position.z, kTolerance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, SlideOffCapPastRim_AndUpWallPastRim_OneHitThenFree) {
+  // A guard. On the cap's rest gap, 8 tol inside the rim, pressed in and sliding out: the start's response keeps
+  // {1, 0, 0}, and the slide past the rim is free, ending 8 tol beyond the wall and tol above the cap's plane, Sqrt(65)
+  // tol from the rim. The same up the wall past the rim.
+  const MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
+  const Solid& cylinder = scene.solids.at(0);
+  const double slide_duration = 16 * kTolerance;  // s
+  const MoveParticleCall off_cap = RunMoveWith(
+      "CylinderRim",
+      {
+          .position = {.x = 0.5 - 8 * kTolerance, .y = 0, .z = 1 + kTolerance},
+          .velocity = {.x = 1, .y = 0, .z = -0.5},
+          .step_duration = slide_duration,
+      }
+  );
+  ASSERT_EQ(off_cap.error, ContactError::kNone);
+  EXPECT_EQ(off_cap.result.hit_count, 1);
+  EXPECT_EQ(off_cap.result.hit_fraction, 0);
+  EXPECT_EQ(off_cap.result.face, SolidFace::kHighZ);
+  ExpectBothVelocitiesNear(off_cap.result, kUnitX, 1e-15);
+  const double rim_distance = std::sqrt(65.0) * kTolerance;  // m
+  EXPECT_NEAR(
+      ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, off_cap.result.position).distance,
+      rim_distance,
+      kTolerance / 1024
+  );
+  const MoveParticleCall up_wall = RunMoveWith(
+      "CylinderRim",
+      {
+          .position = {.x = 0.5 + kTolerance, .y = 0, .z = 1 - 8 * kTolerance},
+          .velocity = {.x = -0.5, .y = 0, .z = 1},
+          .step_duration = slide_duration,
+      }
+  );
+  ASSERT_EQ(up_wall.error, ContactError::kNone);
+  EXPECT_EQ(up_wall.result.hit_count, 1);
+  EXPECT_EQ(up_wall.result.face, SolidFace::kCurved);
+  ExpectBothVelocitiesNear(up_wall.result, kUnitZ, 1e-15);
+  EXPECT_NEAR(
+      ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, up_wall.result.position).distance,
+      rim_distance,
+      kTolerance / 1024
+  );
+}
+
+// The faces a particle carried around a rim in steps of T 1 s ends on, each counted once per run of equal faces, in
+// order; and the end of the last step. Each step reads the normal n at the position, t = {n.z, 0, -n.x}, and moves with
+// both velocities tol / 2 * t * tangent_sign - tol / 4 * n: along the surface, pressed into it.
+struct CarriedAroundRim {
+  std::vector<std::pair<SolidFace, int>> face_runs;
+  Vec3 end{};  // m, world.
+};
+
+// Runs one step of a particle carried around the high rim of the fixed cylinder of CylinderRim from position, which
+// must succeed with one hit, and returns the distance at the end of the step.
+DistanceToSolid RunCarriedAroundRimStep(const Solid& cylinder, double tangent_sign, Vec3* position) {
+  const Vec3 normal = ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, *position).normal_out_of_solid;
+  const Vec3 tangent = tangent_sign * Vec3{.x = normal.z, .y = 0, .z = -normal.x};
+  const Vec3 velocity = (kTolerance / 2) * tangent - (kTolerance / 4) * normal;  // m/s
+  const MoveParticleCall call =
+      RunMoveWith("CylinderRim", {.position = *position, .velocity = velocity, .step_duration = 1});
+  EXPECT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  *position = call.result.position;
+  return ComputeDistanceToSolid(cylinder, cylinder.pose_at_step_start, *position);
+}
+
+// Runs 64 steps of a particle carried around the high rim of the fixed cylinder of CylinderRim; each must succeed with
+// one hit and end between tol - tol / 1024 and 1.13 tol from the cylinder.
+CarriedAroundRim RunCarriedAroundRim(Vec3 start, double tangent_sign) {
+  const MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
+  const Solid& cylinder = scene.solids.at(0);
+  CarriedAroundRim carried;
+  Vec3 position = start;
+  for (int step_index = 0; step_index < 64; ++step_index) {
+    const DistanceToSolid at_end = RunCarriedAroundRimStep(cylinder, tangent_sign, &position);
+    EXPECT_GE(at_end.distance, kTolerance - kTolerance / 1024) << step_index;
+    EXPECT_LE(at_end.distance, 1.13 * kTolerance) << step_index;
+    if (carried.face_runs.empty() || carried.face_runs.back().first != at_end.face) {
+      carried.face_runs.emplace_back(at_end.face, 0);
+    }
+    ++carried.face_runs.back().second;
+  }
+  carried.end = position;
+  return carried;
+}
+
+TEST(MoveParticle, ParticleCarriedAroundRim_OneHitPerStep) {
+  // Pressed into the surface and moved along it in 64 steps, from the cap 2 tol inside the rim to the wall: the start's
+  // response is the one hit of each step, the rim does not stop the particle, and it ends within 1.13 tol of the
+  // cylinder; ends on the cap 4 times, beside the rim 3 times, on the wall 57 times, tol beyond the wall and 28.39 tol
+  // below the cap's plane. Then from the wall to the cap, mirrored.
+  const std::vector<std::pair<SolidFace, int>> cap_to_wall = {
+      {SolidFace::kHighZ, 4},
+      {SolidFace::kHighRim, 3},
+      {SolidFace::kCurved, 57},
+  };
+  const CarriedAroundRim outward = RunCarriedAroundRim({.x = 0.5 - 2 * kTolerance, .y = 0, .z = 1 + kTolerance}, 1);
+  EXPECT_EQ(outward.face_runs, cap_to_wall);
+  EXPECT_NEAR(outward.end.x, 0.5 + kTolerance, kTolerance / 512);
+  EXPECT_NEAR(outward.end.z, 1 - 28.39 * kTolerance, 0.01 * kTolerance);
+  const std::vector<std::pair<SolidFace, int>> wall_to_cap = {
+      {SolidFace::kCurved, 4},
+      {SolidFace::kHighRim, 3},
+      {SolidFace::kHighZ, 57},
+  };
+  const CarriedAroundRim inward = RunCarriedAroundRim({.x = 0.5 + kTolerance, .y = 0, .z = 1 - 2 * kTolerance}, -1);
+  EXPECT_EQ(inward.face_runs, wall_to_cap);
+  EXPECT_NEAR(inward.end.x, 0.5 - 28.39 * kTolerance, 0.01 * kTolerance);
+  EXPECT_NEAR(inward.end.z, 1 + kTolerance, kTolerance / 512);
 }
 
 TEST(MoveParticle, LongCylinderTiltingUnderSlide_EndsWithinAQuarterToleranceBeforeTheSettle) {
@@ -2247,11 +2948,10 @@ TEST(MoveParticle, SettleInReversedOrder_LastPlaceKnownLimit) {
   );
 }
 
-TEST(ApplyHit, TurningCylinderRimHit_IsNotMoved) {
+TEST(ApplyHit, TurningCylinderRimHit_StaysWhereTheSearchStopped) {
   // The stepping search stops near the rim, 1.11 tol from it, in the rim region (plan decision P18): its hit is used
-  // where the search stopped, since it is not the closed form's sharp edge. A rim move would leave it at tol, 0.11 tol
-  // away. MoveParticle itself ends in kTooManyHits here until the slide on a turning solid is built (plan Task 13), so
-  // the hit is applied alone.
+  // where the search stopped, as every hit is (plan decision P21). MoveParticle itself ends in kTooManyHits here until
+  // the slide on a turning solid is built (plan Task 13), so the hit is applied alone.
   const MoveParticleCase scene = FindMoveParticleCase("TurningCylinderRimHit");
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   const Vec3 velocity = inputs.velocity.for_this_step;
@@ -2731,11 +3431,6 @@ TEST(MoveParticle, DomainBoxAndSideWithGround_SameAsWithoutGround) {
 }
 
 // --- The joint response (plan decision P20) ---
-
-constexpr SolidMotion kNoMotion = move_particle_cases::kNoMotion;  // A solid that neither moves nor turns.
-constexpr Vec3 kUnitX = move_particle_cases::kUnitX;
-constexpr Vec3 kUnitY = move_particle_cases::kUnitY;
-constexpr Vec3 kUnitZ = move_particle_cases::kUnitZ;
 
 // Builds a scene from its solids, in that array order, with the solid_ids renumbered 1, 2, ... so they ascend.
 MoveParticleCase BuildOrderedScene(std::vector<Solid> solids, const SolidContactInputs& inputs) {
@@ -3252,7 +3947,7 @@ JointScene BuildJointScene(std::vector<Solid> solids, Vec3 position, Vec3 veloci
   ParticleMove move;
   move.result.position = position;
   move.result.velocity = scene.inputs.velocity;
-  scene.active = FindActiveSurfaces(scene.inputs, move, nullptr, 0);
+  scene.active = FindActiveSurfaces(scene.inputs, move, nullptr);
   return scene;
 }
 
@@ -5330,9 +6025,9 @@ TEST(MoveParticle, GeneratedObliqueFlatSolid_NeverHitsItAgain) {
 TEST(MoveParticle, GeneratedCylinderRimPaths_NeverHitItAgain) {
   // A fixed cylinder at the origin along z, radius 0.5 m and half height 1 m, and 5000 paths falling onto its high rim:
   // a start at radius 0.5 + 0.02 * NextSigned m, angle 2 pi * Next, height 1.5 + Next m, a velocity
-  // {0.2 * NextSigned, 0.2 * NextSigned, -1 - Next} m/s, T 2 s, friction 0 (draws in that order). A closed-form rim hit
-  // leaves the particle up to Sqrt(2) tol from the rim, in the rim corner, where the re-sweep's start rule tests the
-  // approach; the cylinder is convex, so the tangent path cannot meet it again.
+  // {0.2 * NextSigned, 0.2 * NextSigned, -1 - Next} m/s, T 2 s, friction 0 (draws in that order). A rim hit leaves
+  // the particle within tol / 1024 of the rest gap, inside the touched window, where the re-sweep's touching rule reads
+  // the approach the response left; the cylinder is convex, so the tangent path cannot meet it again.
   const SolidMotion no_motion;
   const std::array solids = {
       ToSolid(Cylinder{.center = {}, .axis = {.x = 0, .y = 0, .z = 1}, .radius = 0.5, .half_height = 1}, no_motion, 1),
@@ -5480,9 +6175,12 @@ TEST(MoveParticle, GeneratedRoundSolidPaths_NeverHitAgain) {
   // plan decision P17's bound, with friction. After the response at the hit, the path is tangent to the solid or
   // leaves it, measured from the surface's velocity there, and the solid is convex, so a second hit can only come from
   // reading that approach differently: none is allowed. The touching rule now reads the distance, normal and solid
-  // velocity a joint response reads, by the same expressions, and a rim hit is moved to the rest gap. Before, with the
-  // rate measured from the linear velocity alone, 2757 paths onto cylinders ended in kTooManyHits (2755 of them only
-  // with the tilt), and 144 rim hits, left in the rim corner a hair outside the grown edge, were hit again.
+  // velocity a joint response reads, by the same expressions, and a rim hit is where the rim search found the true
+  // distance within tol / 1024 of tol. Before, with the rate measured from the linear velocity alone, 2757 paths onto
+  // cylinders ended in kTooManyHits (2755 of them only with the tilt), and 144 rim hits, left in the rim corner a hair
+  // outside the grown edge, were hit again. With rim hits moved to the rest gap (plan Task 12a) 10,490 paths hit, 548
+  // on a rim; the rim search lets 207 of those pass, which the true distance never brings within tol (plan decision
+  // P21).
   CaseGenerator generator;
   RoundSolidCounts counts;
   for (int path_index = 0; path_index < 20000; ++path_index) {
@@ -5494,8 +6192,264 @@ TEST(MoveParticle, GeneratedRoundSolidPaths_NeverHitAgain) {
             << ", repeat hits " << counts.repeat_hits << ", failures " << counts.failures << "\n";
   EXPECT_EQ(counts.repeat_hits, 0);
   EXPECT_EQ(counts.failures, 0);
-  EXPECT_GT(counts.hit_paths, 9000);  // Measured: 10,490.
-  EXPECT_GT(counts.rim_hit_paths, 400);  // Measured: 548.
+  EXPECT_GT(counts.hit_paths, 9000);  // Measured: 10,283.
+  EXPECT_GT(counts.rim_hit_paths, 250);  // Measured: 341.
+}
+
+// One path across a flush seam: two solids, the particle's inputs, and the direction along the path.
+struct FlushSeamPath {
+  std::array<Solid, 2> solids{};
+  SolidContactInputs inputs{};
+  Vec3 along_path{};  // No unit, unit vector, world: the direction of the velocity relative to the solids.
+  Vec3 solid_velocity{};  // m/s, world: both solids move with it.
+};
+
+// The kinds of flush seam the generated set crosses.
+enum class FlushSeamKind : std::uint8_t {
+  kStackedDrums,  // Two drums of one radius on one axis, down the seam along the wall.
+  kPuckInFloor,  // A puck flush in a floor, onto it or off it along the floor.
+};
+
+// A turn whose three columns have no zero entry: {0.36, 0.48, -0.8}, {-0.8, 0.6, 0}, {0.48, 0.64, 0.6}.
+constexpr Mat3 kSeamTiltedAxes = {
+    .xx = 0.36,
+    .xy = -0.8,
+    .xz = 0.48,
+    .yx = 0.48,
+    .yy = 0.6,
+    .yz = 0.64,
+    .zx = -0.8,
+    .zy = 0,
+    .zz = 0.6,
+};
+
+// Draws a unit vector from three NextSigned, drawn again while shorter than 0.1.
+Vec3 DrawSeamDirection(CaseGenerator& generator) {
+  Vec3 direction{};
+  while (math::Length(direction) < 0.1) {
+    direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  }
+  return math::Normalized(direction);
+}
+
+// Builds one path across a flush seam. Draws, in this order, for every kind: the axes, kSeamTiltedAxes when Next < 0.5,
+// else the world axes; a centre 2 Next times a direction (DrawSeamDirection); the solids' velocity, a direction when
+// Next < 1 / 3, else zero; a first size 0.1 + 0.9 Next m; a second 0.1 + 0.9 Next m; a third 0.05 + 0.45 Next m; an
+// azimuth 2 pi Next; the speed 0.5 + 1.5 Next m/s; the push into the surface, 0, 0, 0.16 or 1 m/s by floor(4 Next); the
+// distance before the seam 0.01 + 0.14 Next m; a sideways share -0.3 + 0.6 Next; onto or off the puck, Next < 0.5; the
+// travel 0.16 + 0.14 Next m, which sets T. Stacked drums: radius the first size, half heights the second and the
+// third, the upper drum's low cap on the lower drum's high cap; the start at the upper drum's wall rest gap at the
+// azimuth, the distance before the seam; the path down the axis, pushed into the wall. Puck: radius the first size,
+// half height the third, its top flush with the floor; the start at the floor's rest gap, the distance before the rim,
+// outside it going on or inside it going off, with the sideways share across the radius; pushed into the floor.
+FlushSeamPath BuildFlushSeamPath(CaseGenerator& generator, FlushSeamKind kind) {
+  const bool is_tilted = generator.Next() < 0.5;
+  const Vec3 center = 2 * generator.Next() * DrawSeamDirection(generator);
+  const bool is_moving = generator.Next() < 1.0 / 3;
+  const Vec3 moving_direction = DrawSeamDirection(generator);
+  const double first_size = 0.1 + 0.9 * generator.Next();  // m
+  const double second_size = 0.1 + 0.9 * generator.Next();  // m
+  const double third_size = 0.05 + 0.45 * generator.Next();  // m
+  const double azimuth = 2 * std::numbers::pi * generator.Next();  // rad
+  const double speed = 0.5 + 1.5 * generator.Next();  // m/s
+  constexpr std::array<double, 4> kPushes = {0, 0, 0.16, 1};  // m/s
+  const double push = kPushes.at(static_cast<std::size_t>(std::floor(4 * generator.Next())));  // m/s
+  const double before_seam = 0.01 + 0.14 * generator.Next();  // m
+  const double sideways_share = -0.3 + 0.6 * generator.Next();
+  const bool is_onto_puck = generator.Next() < 0.5;
+  const double travel = 0.16 + 0.14 * generator.Next();  // m
+
+  const Mat3 axes = is_tilted ? kSeamTiltedAxes : kIdentity;
+  const Vec3 axis = {.x = axes.xz, .y = axes.yz, .z = axes.zz};
+  const Vec3 solid_velocity = is_moving ? moving_direction : Vec3{};  // m/s
+  const SolidMotion motion = {.linear_velocity = solid_velocity, .angular_velocity = {}};
+  FlushSeamPath path;
+  path.solid_velocity = solid_velocity;
+  Vec3 relative_velocity{};  // m/s, along the surface, before the push.
+  Vec3 push_direction{};  // No unit: into the surface the particle rests on.
+  if (kind == FlushSeamKind::kStackedDrums) {
+    const double radius = first_size;  // m
+    const Cylinder upper = {.center = center, .axis = axis, .radius = radius, .half_height = second_size};
+    const Vec3 lower_center = center - (second_size + third_size) * axis;
+    const Cylinder lower = {.center = lower_center, .axis = axis, .radius = radius, .half_height = third_size};
+    path.solids = {ToSolid(upper, motion, 1), ToSolid(lower, motion, 2)};
+    const Mat3 own_axes = path.solids.at(0).pose_at_step_start.axes;
+    const Vec3 radial = std::cos(azimuth) * Vec3{.x = own_axes.xx, .y = own_axes.yx, .z = own_axes.zx}
+        + std::sin(azimuth) * Vec3{.x = own_axes.xy, .y = own_axes.yy, .z = own_axes.zy};
+    path.inputs.start_position = center + (radius + kTolerance) * radial + (-second_size + before_seam) * axis;
+    relative_velocity = -speed * axis;
+    push_direction = -radial;
+  } else {
+    const double radius = first_size;  // m
+    const Cylinder puck =
+        {.center = center - third_size * axis, .axis = axis, .radius = radius, .half_height = third_size};
+    const FlatSolid floor = {.point_on_surface = center, .normal_out_of_solid = axis};
+    path.solids = {ToSolid(floor, motion, 1), ToSolid(puck, motion, 2)};
+    const Mat3 own_axes = path.solids.at(1).pose_at_step_start.axes;
+    const Vec3 radial = std::cos(azimuth) * Vec3{.x = own_axes.xx, .y = own_axes.yx, .z = own_axes.zx}
+        + std::sin(azimuth) * Vec3{.x = own_axes.xy, .y = own_axes.yy, .z = own_axes.zy};
+    const Vec3 across = math::Cross(axis, radial);
+    const double start_radius = is_onto_puck ? radius + before_seam : radius - before_seam;  // m
+    const double radial_sign = is_onto_puck ? -1.0 : 1.0;
+    path.inputs.start_position = center + start_radius * radial + kTolerance * axis;
+    relative_velocity = speed * (radial_sign * radial + sideways_share * across);
+    push_direction = -axis;
+  }
+  const Vec3 velocity = solid_velocity + relative_velocity + push * push_direction;  // m/s
+  path.along_path = math::Normalized(relative_velocity);
+  path.inputs.solid_count = 2;
+  path.inputs.contact_tolerance = kTolerance;
+  path.inputs.step_duration = travel / speed;
+  path.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  return path;
+}
+
+// What one kind of flush seam gave over its paths.
+struct FlushSeamCounts {
+  int paths = 0;
+  int failures = 0;
+  int several_hits = 0;
+  int lost_speed = 0;  // Paths whose speed along the path, measured from the solids, fell below 1 - 1e-6 of its start.
+};
+
+// Runs MoveParticle on one path across a flush seam and counts it.
+void CheckFlushSeamPath(const FlushSeamPath& path, FlushSeamCounts& counts) {
+  ++counts.paths;
+  SolidContactResult result;
+  ContactFailure failure;
+  if (MoveParticle(path.inputs, &result, &failure) != ContactError::kNone) {
+    ++counts.failures;
+    return;
+  }
+  counts.several_hits += result.hit_count > 1 ? 1 : 0;
+  const Vec3 start_relative = path.inputs.velocity.for_this_step - path.solid_velocity;  // m/s
+  const double start_speed = math::Dot(start_relative, path.along_path);  // m/s
+  const double this_step_speed = math::Dot(result.velocity.for_this_step - path.solid_velocity, path.along_path);
+  const double next_step_speed = math::Dot(result.velocity.for_next_step - path.solid_velocity, path.along_path);
+  const double least_kept_speed = (1 - 1e-6) * start_speed;  // m/s
+  const bool keeps_speed = this_step_speed >= least_kept_speed && next_step_speed >= least_kept_speed;
+  counts.lost_speed += keeps_speed ? 0 : 1;
+}
+
+// Prints one kind's counts for the report and fails the calling test unless all 2,000 paths succeeded with at most one
+// hit and kept their speed.
+void ExpectFlushSeamCounts(FlushSeamKind kind, const FlushSeamCounts& counts) {
+  std::cout << "flush seams kind " << static_cast<int>(kind) << ": paths " << counts.paths << ", failures "
+            << counts.failures << ", several hits " << counts.several_hits << ", lost speed " << counts.lost_speed
+            << "\n";
+  EXPECT_EQ(counts.paths, 2000);
+  EXPECT_EQ(counts.failures, 0);
+  EXPECT_EQ(counts.several_hits, 0);
+  EXPECT_EQ(counts.lost_speed, 0);
+}
+
+TEST(MoveParticle, GeneratedFlushSeams_KeepTheSpeedAlongTheSeam) {
+  // 2,000 paths across each kind of flush seam (BuildFlushSeamPath), friction 0: a seam is no step, so the particle
+  // crosses it without a hit, or with the start's one when it is pushed into the surface, and keeps its speed along the
+  // path. Measured with the sharp grown rim edge of plan Task 12a: 1,044 of the stacked drums and 629 of the pucks lost
+  // speed, 578 and 360 with a second hit; plan decision P21's model, on its own draws, loses none.
+  for (const FlushSeamKind kind : {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor}) {
+    CaseGenerator generator;
+    FlushSeamCounts counts;
+    for (int path_index = 0; path_index < 2000; ++path_index) {
+      FlushSeamPath path = BuildFlushSeamPath(generator, kind);
+      path.inputs.solids = path.solids.data();
+      CheckFlushSeamPath(path, counts);
+    }
+    ExpectFlushSeamCounts(kind, counts);
+  }
+}
+
+// Moves a flush-seam path's start to offset before its seam, along the line BuildFlushSeamPath measured its distance
+// before the seam on: the drums' axis, the puck's radius.
+void ApplySeamOffset(FlushSeamKind kind, double offset, FlushSeamPath* path) {
+  const Vec3 start = path->inputs.start_position;
+  if (kind == FlushSeamKind::kStackedDrums) {
+    const Solid& upper = path->solids.at(0);
+    const Vec3 axis = {
+        .x = upper.pose_at_step_start.axes.xz,
+        .y = upper.pose_at_step_start.axes.yz,
+        .z = upper.pose_at_step_start.axes.zz,
+    };
+    const double height = math::Dot(start - upper.pose_at_step_start.origin, axis);  // m
+    path->inputs.start_position = start + ((-upper.half_size.z + offset) - height) * axis;
+    return;
+  }
+  const Solid& puck = path->solids.at(1);
+  const Vec3 axis = {
+      .x = puck.pose_at_step_start.axes.xz,
+      .y = puck.pose_at_step_start.axes.yz,
+      .z = puck.pose_at_step_start.axes.zz,
+  };
+  const Vec3 from_center = start - puck.pose_at_step_start.origin;  // m
+  const Vec3 across = from_center - math::Dot(from_center, axis) * axis;  // m
+  const double axis_distance = math::Length(across);  // m
+  const double radius = puck.half_size.x;  // m
+  const double new_distance = axis_distance > radius ? radius + offset : radius - offset;  // m
+  path->inputs.start_position = start + ((new_distance - axis_distance) / axis_distance) * across;
+}
+
+// What the runs across a seam in many steps gave for one kind.
+struct SeamRunCounts {
+  int runs = 0;
+  int failures = 0;  // Runs with a step that did not succeed.
+  int lost_speed = 0;  // Runs with a step that lost speed along the path.
+};
+
+// Runs one particle across a flush seam in many steps (GeneratedFlushSeamsOverManySteps_KeepTheSpeed) and counts it.
+// Draws, after BuildFlushSeamPath's: the start 1.5 + 4.5 Next tol before the seam; the step's length 2^(-2 + 12 Next)
+// tol along the path; friction 0 when Next < 2 / 3, else 0.3.
+void CheckSeamRun(CaseGenerator& generator, FlushSeamKind kind, SeamRunCounts& counts) {
+  FlushSeamPath path = BuildFlushSeamPath(generator, kind);
+  const double offset = (1.5 + 4.5 * generator.Next()) * kTolerance;  // m
+  const double step_length = std::exp2(-2 + 12 * generator.Next()) * kTolerance;  // m
+  const double friction = generator.Next() < 2.0 / 3 ? 0.0 : 0.3;
+  ApplySeamOffset(kind, offset, &path);
+  const Vec3 relative_velocity = path.inputs.velocity.for_this_step - path.solid_velocity;  // m/s
+  const double start_speed = math::Dot(relative_velocity, path.along_path);  // m/s
+  const double push = math::Length(relative_velocity - start_speed * path.along_path);  // m/s
+  const double least_kept_speed = (1 - 1e-6) * (start_speed - friction * push);  // m/s
+  const double step_duration = step_length / start_speed;  // s
+  const int step_count = std::min(60, static_cast<int>(std::floor(14 * kTolerance / step_length)) + 2);
+  path.inputs.step_duration = step_duration;
+  path.inputs.friction = friction;
+  ++counts.runs;
+  bool is_failure = false;
+  bool is_slower = false;
+  for (int step_index = 0; step_index < step_count && !is_failure; ++step_index) {
+    path.inputs.solids = path.solids.data();
+    SolidContactResult result;
+    ContactFailure failure;
+    is_failure = MoveParticle(path.inputs, &result, &failure) != ContactError::kNone;
+    const double speed = math::Dot(result.velocity.for_this_step - path.solid_velocity, path.along_path);  // m/s
+    is_slower = is_slower || (!is_failure && speed < least_kept_speed);
+    path.inputs.start_position = result.position;
+    for (Solid& solid : path.solids) {
+      solid.pose_at_step_start.origin = solid.pose_at_step_start.origin + step_duration * path.solid_velocity;
+    }
+  }
+  counts.failures += is_failure ? 1 : 0;
+  counts.lost_speed += is_slower ? 1 : 0;
+}
+
+TEST(MoveParticle, GeneratedFlushSeamsOverManySteps_KeepTheSpeed) {
+  // 1,000 runs per kind of flush seam (CheckSeamRun): the solids of BuildFlushSeamPath, fixed or moving together, world
+  // or tilted axes, a start 1.5 to 6 tol before the seam, steps of tol / 4 to 1,024 tol, Min(60, Floor(14 tol / step) +
+  // 2) of them, the same input velocity every step: every step succeeds and keeps the speed along the path that
+  // friction on the surface slid on leaves (plan decision P21, item 16). Plan decision P21's model, on its own draws:
+  // 0 of 1,000 lose speed; as built, 165 (drums) and 69 (pucks).
+  for (const FlushSeamKind kind : {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor}) {
+    CaseGenerator generator;
+    SeamRunCounts counts;
+    for (int run_index = 0; run_index < 1000; ++run_index) {
+      CheckSeamRun(generator, kind, counts);
+    }
+    std::cout << "flush seams over many steps, kind " << static_cast<int>(kind) << ": runs " << counts.runs
+              << ", failures " << counts.failures << ", lost speed " << counts.lost_speed << "\n";
+    EXPECT_EQ(counts.runs, 1000);
+    EXPECT_EQ(counts.failures, 0);
+    EXPECT_EQ(counts.lost_speed, 0);
+  }
 }
 
 // One path of the chasing set: a fixed flat solid A and a flat solid B chasing the particle along a normal at right

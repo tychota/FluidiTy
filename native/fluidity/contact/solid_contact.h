@@ -68,7 +68,11 @@ namespace fluidity::contact {
 //     world axes for the touching rule (plan decision P16), as a flat face does, then a closed form in their own axes:
 //     the first root of the path on the sphere grown by tol, or the entry into the cylinder grown by tol with sharp
 //     edges, the later of its entries into the grown wall and between the grown caps' planes when it comes before both
-//     exits (plan decision P15). A hit counts when its time is at most duration.
+//     exits (plan decision P15). On the wall or a cap proper that entry is the hit; beside a rim the rim search goes on
+//     from it on the true distance, the gap over the speed at which it closes, until the gap is at most tol / 1024
+//     (plan decision P21). Before the closed form, a start beside a cylinder's rim that rests on the wall or the cap's
+//     plane, gap in [-tol / 8, tol / 16] and sinking at most tol / 64 during the sweep, is free: the whole cylinder
+//     lies behind that bounding surface. A hit counts when its time is at most duration.
 //   2 Turning solid: a box whose angular velocity is not exactly {0, 0, 0} (plan decision P7), a flat solid or a plate
 //     whose angular velocity has a part across its normal longer than kNegligibleTurnShare of it, or a cylinder whose
 //     axis tilts by more than plan decision P17's bound. Its gap is not linear in time, so the stepping search advances
@@ -86,8 +90,9 @@ namespace fluidity::contact {
 //     later hit could not win, and a search that reaches the cap is free.
 //   3 The smallest hit time wins, and equal times keep the lower solid index whatever the order of the search.
 //     *first_hit holds its time, the solid's index and at_hit: the distance, normal and face at the hit position (one
-//     tolerance from the entering face up to rounding; between tol and Sqrt(2) tol from a cylinder's rim, whose face
-//     it then reports; between tol and 1.25 tol from a turning solid), or, for a hit at 0, the distance at the start.
+//     tolerance from the entering face up to rounding; between tol and tol + tol / 1024 from a cylinder's rim, whose
+//     face it then reports; between tol and 1.25 tol from a turning solid), or, for a hit at 0, the distance at the
+//     start.
 //     A free path gives solid_index kNoSolid, elapsed 0 and at_hit at its defaults.
 //   The inputs are not checked here (plan decision P9). Same bits on CPU and GPU when every solid's angular velocity
 //   is zero: only + - * /, Abs, Sqrt and comparisons. A turning or spinning solid is posed with Sin, which may differ
@@ -181,26 +186,28 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     face, where moving off one face at a time would push it toward the other. No such point within the cap is
 //     kStartsInNarrowGap. Then the start has a response when it was inside a solid as given, d < 0, or when either
 //     velocity approaches an active surface at the moved start (below 0, or below the rounding of a spinning solid's
-//     surface velocity): one joint response at time 0, as in step 4, with the active surfaces read at the moved start,
-//     one hit however many surfaces, the record with hit_fraction 0, and kind kStartedInsideSolid when the start was
-//     inside a solid. Otherwise the move is silent: nothing else changes, and a touching particle that leaves is free.
-//     A turning solid gets the same rules, then step 4's departure below.
+//     surface velocity; a solid passed at a bounding surface's level has none): one joint response at time 0, as in
+//     step 4, with the active surfaces read at the moved start, one hit however many surfaces, the record with
+//     hit_fraction 0, and kind kStartedInsideSolid when the start was inside a solid. Otherwise the move is silent:
+//     nothing else changes, and a touching particle that leaves is free. A turning solid gets the same rules, then step
+//     4's departure below.
 //   3 Find the first hit (FindFirstHitOfSweep) from the current position along velocity.for_this_step, with the solids
 //     posed at the time already used and duration = step_duration - elapsed, computed afresh before every sweep. After
 //     the first response of the step every solid that does not turn has the touching rule of a touched solid, on every
-//     surface: a start gap up to tol / 16 rests on it, and it is hit at 0 only when the path approaches it faster than
-//     the largest allowance of the responses so far. So rounding does not make a solid hit again, while a solid that is
-//     really approached again, by a push from another solid or because it moves, is hit. With no hit the particle
-//     advances by velocity.for_this_step times that duration, and the hits end.
-//   4 The joint response (ApplyHit, ApplyJointResponse, plan decision P20): the particle moves to the hit, and a
-//     closed-form hit on a cylinder's rim, which the sharp grown edge leaves up to Sqrt(2) tol from the rim, moves on
-//     along its normal to the rest gap (the rim move, plan decision P15; a hit of the stepping search is used where it
-//     stopped). Both velocities get one response over every active surface: the surfaces of every solid within
-//     tol + tol / 16 of the particle (plus the rim move's length), read afresh, and the surface hit, with the hit's
+//     surface, after the bounding surfaces a start may rest on: a start gap up to tol / 16 rests on it, and it is hit
+//     at 0 only when the path approaches it faster than the largest allowance of the responses so far. So rounding does
+//     not make a solid hit again, while a solid that is really approached again, by a push from another solid or
+//     because it moves, is hit. With no hit the particle advances by velocity.for_this_step times that duration, and
+//     the hits end.
+//   4 The joint response (ApplyHit, ApplyJointResponse, plan decision P20): the particle moves to the hit and nothing
+//     moves it further, a rim hit included, which the rim search leaves within tol / 1024 of the rest gap (plan
+//     decision P21). Both velocities get one response over every active surface: the surfaces of every solid within
+//     tol + tol / 16 of the particle, read afresh, except a solid it passes at a bounding surface's level (level with
+//     one that does not give the solid's distance, plan decision P21, item 16), and the surface hit, with the hit's
 //     normal. Exact copies are dropped, and the rest sorted by value, so the response is the same bits in every order
-//     of the solids array. One active surface: the
-//     single-surface response, ComputeContactResponse with the solid velocity and friction times its friction_scale.
-//     Several: the smallest frictionless change that leaves the velocity approaching none of them
+//     of the solids array. One active
+//     surface: the single-surface response, ComputeContactResponse with the solid velocity and friction times its
+//     friction_scale. Several: the smallest frictionless change that leaves the velocity approaching none of them
 //     (SolveSmallestCorrection), then friction from each used surface's push, the friction limit friction * push: with
 //     one used direction and friction the single-surface response itself; with one solid velocity the limits add, and
 //     the particle sticks or slips toward that velocity; with solids moving differently, the mean over the orders of

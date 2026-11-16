@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <numbers>
 #include <span>
 #include <string>
@@ -93,6 +94,13 @@ void ExpectFree(FirstHit first_hit) {
   EXPECT_EQ(first_hit.at_hit.distance, defaults.distance);
   EXPECT_EQ(first_hit.at_hit.face, defaults.face);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, defaults.normal_out_of_solid, 0);
+}
+
+// Fails the calling test unless a distance reported at a rim hit is where the rim search stops: at least tol and at
+// most tol + tol / 1024 (kRimHitGapShare), up to rounding.
+void ExpectRimHitDistance(double distance) {
+  EXPECT_GE(distance, kTolerance - 0x1p-40);
+  EXPECT_LE(distance, kTolerance + kTolerance / 1024 + 0x1p-40);
 }
 
 // --- The examples of the method paper ---
@@ -1264,7 +1272,9 @@ TEST(FindFirstHit, CylinderThroughGrownRimEdge_IsHit) {
   // the wall time rounds two units early, so the height at that time lands just above the grown cap, and the cap
   // time puts the path just outside the grown disc: a form that checks each candidate against the other surface
   // rejects both and lets the path through. The intervals inside the grown wall and between the grown caps overlap
-  // from 0.45 s on, whatever the rounding.
+  // from 0.45 s on, whatever the rounding. That entry is beside the rim, Sqrt(2) tol from it, so the rim search goes on
+  // to the true distance: the path {1 - 3 s, 0, 1 - s} tol from the corner meets the circle of radius tol about the rim
+  // at s = (8 - Sqrt(24)) / 20, 2 advances.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Path path = {
@@ -1274,10 +1284,9 @@ TEST(FindFirstHit, CylinderThroughGrownRimEdge_IsHit) {
   };
   const FirstHit first_hit = FindHit(inputs, path);
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 0.45, 1);
+  EXPECT_NEAR(first_hit.elapsed, 0.45 + (8 - std::sqrt(24.0)) / 20 * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  EXPECT_GE(first_hit.at_hit.distance, kTolerance - 0x1p-40);
-  EXPECT_LE(first_hit.at_hit.distance, std::numbers::sqrt2 * kTolerance + 0x1p-40);
+  ExpectRimHitDistance(first_hit.at_hit.distance);
 }
 
 TEST(FindFirstHit, CylinderParallelToAxisOutside_IsFree) {
@@ -1290,8 +1299,8 @@ TEST(FindFirstHit, CylinderParallelToAxisOutside_IsFree) {
 
 TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim) {
   // The path never meets the wall (no motion across the axis) and enters the grown disc at {0.5 + tol / 2, 0, 1 + tol}
-  // at 2 - tol s. There the wall and cap distances are tol / 2 and tol: the point faces the high rim, at the true
-  // distance Sqrt(1.25) tol, the sharp corner of the grown shape (plan P15). The rim move is MoveParticle's.
+  // at 2 - tol s, beside the high rim, Sqrt(1.25) tol from it: the sharp corner of the grown shape. The rim search goes
+  // on to where the true distance is tol, Sqrt(0.75) tol above the cap's plane, in 2 advances (plan decision P21).
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
   const FirstHit first_hit = FindHit(
@@ -1299,10 +1308,45 @@ TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim) {
       {.start = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4}
   );
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
+  EXPECT_NEAR(first_hit.elapsed, 2 - std::sqrt(0.75) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, Vec3{.x = 1, .y = 0, .z = 2} * (1 / std::sqrt(5.0)), 1e-8);
-  EXPECT_NEAR(first_hit.at_hit.distance, std::sqrt(1.25) * kTolerance, 0x1p-40);
+  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0.5, .y = 0, .z = std::sqrt(0.75)}, 1e-5);
+  ExpectRimHitDistance(first_hit.at_hit.distance);
+}
+
+TEST(FindFirstHit, CylinderRimHeadOnAtFortyFiveDegrees_HitsAtOneTolerance) {
+  // Along the rim's own normal {1, 0, 1} / Sqrt(2): the entry is the corner {0.5 + tol, 0, 1 + tol}, Sqrt(2) tol from
+  // the rim, and one advance of the gap over its rate lands at tol, at 1 - Sqrt(0.5) tol s (as built, the corner at
+  // 1 - tol s).
+  const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
+  const SolidContactInputs inputs = BuildInputs(solids, 2);
+  const FirstHit first_hit =
+      FindHit(inputs, {.start = {.x = 1.5, .y = 0, .z = 2}, .velocity = {.x = -1, .y = 0, .z = -1}, .duration = 2});
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_NEAR(first_hit.elapsed, 1 - std::sqrt(0.5) * kTolerance, kTolerance / 1024);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
+  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
+  EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
+}
+
+TEST(FindFirstHit, CylinderRimPassedBeyondOneTolerance_IsFree) {
+  // Paths {0.75 + a, 0, 0.75 + a} + {-1, 0, 1} t pass the rim at their closest at t = 0.25, a Sqrt(2) from it, through
+  // the sharp corner of the grown shape. At a = 25/32 tol (1.105 tol) and 23/32 tol (1.016 tol) the true distance stays
+  // above tol: free, where the entry into the sharp shape was a hit. At 22/32 tol (0.972 tol) it goes below: a hit.
+  const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
+  const SolidContactInputs inputs = BuildInputs(solids, 0.5);
+  const Vec3 velocity = {.x = -1, .y = 0, .z = 1};
+  for (const double passing_share : {25.0 / 32, 23.0 / 32}) {
+    const double offset = passing_share * kTolerance;  // m
+    const Vec3 start = {.x = 0.75 + offset, .y = 0, .z = 0.75 + offset};
+    ExpectFree(FindHit(inputs, {.start = start, .velocity = velocity, .duration = 0.5}));
+  }
+  const double offset = 22.0 / 32 * kTolerance;  // m
+  const Vec3 start = {.x = 0.75 + offset, .y = 0, .z = 0.75 + offset};
+  const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = velocity, .duration = 0.5});
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
+  ExpectRimHitDistance(first_hit.at_hit.distance);
 }
 
 TEST(FindFirstHit, CylinderParallelToCapsAbove_IsFree) {
@@ -1344,14 +1388,18 @@ TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree) {
   const Vec3 touching_start = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 1 + kTolerance / 2};
   ExpectFree(FindHit(inputs, {.start = touching_start, .velocity = {.x = 1, .y = 0, .z = 1}, .duration = 1}));
   // Wall and cap distances 0.9 tol: inside the grown sharp cylinder, but at the true distance 0.9 Sqrt(2) tol > tol,
-  // in its rim corner (plan P15). Approaching the rim is a hit at 0; moving away is free.
+  // in its rim corner. The entry is 0 and the rim search decides: along the rim's normal the true distance reaches tol
+  // after (0.9 - Sqrt(0.5)) tol s, one advance. Along {-1, 0, 0} the start rests on the cap's plane, 0.1 tol inside
+  // its rest gap, and does not sink: free (plan decision P21, item 1). Moving away is free.
   const Vec3 corner_start = {.x = 0.5 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.9 * kTolerance};
   const FirstHit approaching =
-      FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1});
+      FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = -1}, .duration = 1});
   EXPECT_EQ(approaching.solid_index, 0U);
-  EXPECT_EQ(approaching.elapsed, 0);
+  EXPECT_NEAR(approaching.elapsed, (0.9 - std::sqrt(0.5)) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(approaching.at_hit.face, SolidFace::kHighRim);
-  EXPECT_NEAR(approaching.at_hit.distance, 0.9 * std::numbers::sqrt2 * kTolerance, 0x1p-40);
+  ExpectVec3Near(approaching.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
+  ExpectRimHitDistance(approaching.at_hit.distance);
+  ExpectFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
   ExpectFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 1}));
 }
 
@@ -1524,32 +1572,97 @@ TEST(FindFirstHit, CylinderMovingAwayFromCapOrWall_IsFree) {
   );
 }
 
-TEST(FindFirstHit, CylinderGrownDiscEdgeMetExactly_IsHit) {
-  // Down the axis direction at exactly the grown radius 0.5 + tol: the squared radius at the cap equals R * R, bit
-  // for bit, and the edge counts. The hit faces the high rim at Sqrt(2) tol.
+TEST(FindFirstHit, CylinderDownItsGrownWallPastTheRim_IsFree) {
+  // Down the axis direction at exactly the grown radius 0.5 + tol, beside the high rim: the start rests on the wall
+  // taken as unbounded along the axis, which the whole cylinder lies behind, and does not sink toward it, so the sweep
+  // is free (plan decision P21, item 1). As built, the sharp grown edge stopped it Sqrt(2) tol from the rim.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  const FirstHit first_hit = FindHit(
+  ExpectFree(FindHit(
       inputs,
       {.start = {.x = 0.5 + kTolerance, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4}
-  );
-  EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
-  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  EXPECT_NEAR(first_hit.at_hit.distance, std::numbers::sqrt2 * kTolerance, 0x1p-40);
+  ));
 }
 
-TEST(FindFirstHit, CylinderGrownWallTopMetExactly_IsHit) {
-  // Across the axis at exactly the grown half height 1 + tol: the height at the wall equals H, and the edge counts.
+TEST(FindFirstHit, CylinderAlongItsGrownCapPlanePastTheRim_IsFree) {
+  // Across the axis at exactly the grown half height 1 + tol: the start rests on the plane of the high cap, beside the
+  // rim, and the path stays in that plane: free.
+  const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
+  const SolidContactInputs inputs = BuildInputs(solids, 2);
+  ExpectFree(FindHit(
+      inputs,
+      {.start = {.x = -2, .y = 0, .z = 1 + kTolerance}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2}
+  ));
+}
+
+TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink) {
+  // Down the wall from {x, 0, 3}, beside the high rim. A start tol / 8 inside the wall's rest gap rests on it; 3 tol /
+  // 16 inside does not, and the rim search hits it where the true distance is tol, Sqrt(1 - (13 / 16)^2) tol above the
+  // cap's plane. A path that sinks toward the wall by tol / 128 during the sweep still rests; one that sinks by tol /
+  // 32 does not. Just above the rest gap (tol / 128) and sinking by tol / 64, the start rests too, where the sharp
+  // grown wall stopped it at 1 s; tol / 8 above, the path never reaches the grown wall.
+  const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
+  const SolidContactInputs inputs = BuildInputs(solids, 4);
+  const Vec3 down = {.x = 0, .y = 0, .z = -1};
+  const double rest_x = 0.5 + kTolerance;  // m
+  ExpectFree(
+      FindHit(inputs, {.start = {.x = rest_x - kTolerance / 8, .y = 0, .z = 3}, .velocity = down, .duration = 4})
+  );
+  const FirstHit deeper =
+      FindHit(inputs, {.start = {.x = rest_x - 3 * kTolerance / 16, .y = 0, .z = 3}, .velocity = down, .duration = 4});
+  EXPECT_EQ(deeper.solid_index, 0U);
+  EXPECT_EQ(deeper.at_hit.face, SolidFace::kHighRim);
+  // The search stops within tol / 1024 of the rest gap, where the gap closes at 0.584 m/s: within tol / 512 s.
+  EXPECT_NEAR(deeper.elapsed, 2 - std::sqrt(1 - (13.0 / 16) * (13.0 / 16)) * kTolerance, kTolerance / 512);
+  const Vec3 rest_start = {.x = rest_x, .y = 0, .z = 3};
+  ExpectFree(
+      FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 512, .y = 0, .z = -1}, .duration = 4})
+  );
+  const FirstHit sinking =
+      FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 128, .y = 0, .z = -1}, .duration = 4});
+  EXPECT_EQ(sinking.solid_index, 0U);
+  EXPECT_EQ(sinking.at_hit.face, SolidFace::kHighRim);
+  const Vec3 quick_sink = {.x = -kTolerance / 128, .y = 0, .z = -2};
+  ExpectFree(FindHit(
+      inputs,
+      {.start = {.x = rest_x + kTolerance / 128, .y = 0, .z = 3}, .velocity = quick_sink, .duration = 2}
+  ));
+  ExpectFree(
+      FindHit(inputs, {.start = {.x = rest_x + kTolerance / 8, .y = 0, .z = 3}, .velocity = quick_sink, .duration = 2})
+  );
+  // A wall of radius 4 m: the wall's rate is divided by the distance from the axis, so sinking by tol / 128 still
+  // rests there; the product alone would read four times that, a sink of tol / 32.
+  const std::array wide_solids = {
+      ToSolid(Cylinder{.center = {}, .axis = kAxisZ, .radius = 4, .half_height = 1}, kNoMotion, 1),
+  };
+  const SolidContactInputs wide_inputs = BuildInputs(wide_solids, 4);
+  ExpectFree(FindHit(
+      wide_inputs,
+      {
+          .start = {.x = 4 + kTolerance, .y = 0, .z = 3},
+          .velocity = {.x = -kTolerance / 512, .y = 0, .z = -1},
+          .duration = 4,
+      }
+  ));
+}
+
+TEST(FindFirstHit, CylinderWallThatGivesTheDistance_KeepsItsOwnTouchingRule) {
+  // Beside the wall, tol / 128 above its rest gap, sinking by tol / 64 over 2 s while rising along it: the wall gives
+  // the distance, so the plain closed form decides (plan decision P16 alone) and the grown wall is reached at 1 s, at
+  // the height of the cap's plane, still on the wall proper.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
   const FirstHit first_hit = FindHit(
       inputs,
-      {.start = {.x = -2, .y = 0, .z = 1 + kTolerance}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2}
+      {
+          .start = {.x = 0.5 + kTolerance + kTolerance / 128, .y = 0, .z = 0},
+          .velocity = {.x = -kTolerance / 128, .y = 0, .z = 1},
+          .duration = 2,
+      }
   );
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
-  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
+  EXPECT_NEAR(first_hit.elapsed, 1, 1e-9);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
 }
 
 TEST(FindFirstHit, CylinderTangentToWall_FreeOrHitNearTwo) {
@@ -1642,6 +1755,32 @@ TEST(FindFirstHit, CylinderStartAtCentre_HitsAtZeroWithDegenerateNormal) {
   EXPECT_EQ(first_hit.at_hit.distance, -0.5);
 }
 
+TEST(FindFirstHitOfSweep, CylinderBesideRimRestingOnWall_FreeAlsoAfterAResponse) {
+  // 3 / 16 tol above the cap's plane at the wall's rest gap, beside the rim 1.0174 tol away, falling along the wall:
+  // the sweep tries the wall first and rests on it, so it is free, touched or not (plan decision P21, item 16 b); as
+  // built the touched rule read the rim inside its window first and hit it at 0. tol / 32 inside the wall's rest gap
+  // and tol / 8 above the cap's plane, the rim inside its own touching window: free too (was a hit at 0).
+  const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const Vec3 down = {.x = 0, .y = 0, .z = -1};
+  const TouchedSolid touched = {.is_touched = true, .approach_allowance = 0x1p-46};
+  const Sweep above_seam = {
+      .start = {.x = 0.5 + kTolerance, .y = 0, .z = 1 + 3.0 / 16 * kTolerance},
+      .velocity_for_this_step = down,
+      .duration = 1,
+  };
+  FirstHit first_hit;
+  ASSERT_EQ(FindFirstHitOfSweep(inputs, above_seam, touched, &first_hit, nullptr), ContactError::kNone);
+  ExpectFree(first_hit);
+  const Sweep inside_rest_gap = {
+      .start = {.x = 0.5 + kTolerance - kTolerance / 32, .y = 0, .z = 1 + kTolerance / 8},
+      .velocity_for_this_step = down,
+      .duration = 1,
+  };
+  ASSERT_EQ(FindFirstHitOfSweep(inputs, inside_rest_gap, TouchedSolid{}, &first_hit, nullptr), ContactError::kNone);
+  ExpectFree(first_hit);
+}
+
 TEST(FindFirstHit, StartElapsed_CylinderTouchingRuleUsesLaterPose) {
   // A cylinder rising at 1 m/s: half a second into the step its high cap is at z = 1.5, so a particle at rest at
   // z = 1.5 + tol rests on it and the cap pushes into it: hit at 0 on kHighZ. Posed at the start of the step, the
@@ -1662,21 +1801,23 @@ TEST(FindFirstHit, StartElapsed_CylinderTouchingRuleUsesLaterPose) {
 
 TEST(FindFirstHit, StartElapsed_CylinderRimCornerUsesLaterPose) {
   // A cylinder moving at {1, 0, 0} m/s: half a second into the step its axis is at x = 0.5, so a particle at rest at
-  // {1 + 0.9 tol, 0, 1 + 0.9 tol} is in its rim corner and the rim moves into it: hit at 0. Posed at the start of the
-  // step, the start would be half a metre outside the wall and the hit about half a second later.
+  // {1 + 0.9 tol, 0, 1 + 0.5 tol} is in its rim corner, 0.9 tol beyond the wall and 0.5 tol beyond the cap, and the rim
+  // moves into it: the rim search hits it once the wall distance is Sqrt(0.75) tol, (0.9 - Sqrt(0.75)) tol s later.
+  // Posed at the start of the step, the start would be half a metre outside the wall and the hit about half a second
+  // later.
   const std::array solids = {
       BuildCylinder({}, kAxisZ, {.linear_velocity = {.x = 1, .y = 0, .z = 0}, .angular_velocity = {}}),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Path path = {
-      .start = {.x = 1 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.9 * kTolerance},
+      .start = {.x = 1 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.5 * kTolerance},
       .velocity = kAtRest,
       .start_elapsed = 0.5,
       .duration = 0.5,
   };
   const FirstHit first_hit = FindHit(inputs, path);
   EXPECT_EQ(first_hit.solid_index, 0U);
-  EXPECT_EQ(first_hit.elapsed, 0);
+  EXPECT_NEAR(first_hit.elapsed, (0.9 - std::sqrt(0.75)) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
 }
 
@@ -1687,7 +1828,7 @@ TEST(FindFirstHit, StartElapsed_CylinderRimCornerMovingWithCylinderIsFree) {
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Path path = {
-      .start = {.x = 1 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.9 * kTolerance},
+      .start = {.x = 1 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.5 * kTolerance},
       .velocity = {.x = 1, .y = 0, .z = 0.5},
       .start_elapsed = 0.5,
       .duration = 0.5,
@@ -1722,11 +1863,12 @@ struct CylinderFaceCase {
   Vec3 own_normal_out_of_solid{};  // No unit, unit vector, own axes, at the hit.
   double normal_tolerance = 0;  // No unit. How far each axis of the normal may be from the expected one.
   double distance_at_hit = 0;  // m.
+  double distance_tolerance = 0x1p-40;  // m. How far the distance at the hit may be from distance_at_hit.
 };
 
 // The six faces: the wall from two sides, both caps, and both rims entered through the sharp corner of the grown
-// cylinder, where the entries into the grown wall and between the grown caps tie at 1 s and the true distance is
-// Sqrt(2) tol.
+// cylinder, where the entries into the grown wall and between the grown caps tie at 1 s, Sqrt(2) tol from the rim; the
+// rim search goes on along the rim's normal to tol, (1 - Sqrt(0.5)) tol s later.
 std::array<CylinderFaceCase, 6> BuildCylinderFaceCases() {
   const double rim_component = std::numbers::sqrt2 / 2;
   // A rim normal points from the rim to a hit about tol away, so a rounding of the turned coordinates of about
@@ -1775,19 +1917,23 @@ std::array<CylinderFaceCase, 6> BuildCylinderFaceCases() {
               .face = SolidFace::kHighRim,
               .own_start = {.x = 1.5 + kTolerance, .y = 0, .z = 2 + kTolerance},
               .own_velocity = {.x = -1, .y = 0, .z = -1},
-              .hit_elapsed = 1,
+              .hit_elapsed = 1 + (1 - rim_component) * kTolerance,
               .own_normal_out_of_solid = {.x = rim_component, .y = 0, .z = rim_component},
               .normal_tolerance = kRimNormalTolerance,
-              .distance_at_hit = std::numbers::sqrt2 * kTolerance,
+              .distance_at_hit = kTolerance,
+              // Where the rim search stopped, up to tol / 1024 beyond tol.
+              .distance_tolerance = kTolerance / 1024,
           },
           {
               .face = SolidFace::kLowRim,
               .own_start = {.x = 0, .y = -(1.5 + kTolerance), .z = -(2 + kTolerance)},
               .own_velocity = {.x = 0, .y = 1, .z = 1},
-              .hit_elapsed = 1,
+              .hit_elapsed = 1 + (1 - rim_component) * kTolerance,
               .own_normal_out_of_solid = {.x = 0, .y = -rim_component, .z = -rim_component},
               .normal_tolerance = kRimNormalTolerance,
-              .distance_at_hit = std::numbers::sqrt2 * kTolerance,
+              .distance_at_hit = kTolerance,
+              // Where the rim search stopped, up to tol / 1024 beyond tol.
+              .distance_tolerance = kTolerance / 1024,
           },
       },
   };
@@ -1820,7 +1966,8 @@ void ExpectEachCylinderFaceHit(Vec3 axis) {
         axes * face_case.own_normal_out_of_solid,
         face_case.normal_tolerance
     );
-    EXPECT_NEAR(first_hit.at_hit.distance, face_case.distance_at_hit, 0x1p-40) << static_cast<int>(face_case.face);
+    EXPECT_NEAR(first_hit.at_hit.distance, face_case.distance_at_hit, face_case.distance_tolerance)
+        << static_cast<int>(face_case.face);
   }
 }
 
@@ -1830,6 +1977,162 @@ TEST(FindFirstHit, MovingCylinderEachFace_HitsThatFace) {
 
 TEST(FindFirstHit, TiltedMovingCylinderEachFace_HitsThatFace) {
   ExpectEachCylinderFaceHit(ToColumn(kTiltedAxes, 2));
+}
+
+// --- The rim search ---
+
+// The half sizes of the test cylinder, radius 0.5 m and half height 1 m.
+constexpr Vec3 kCylinderHalfSize = {.x = 0.5, .y = 0.5, .z = 1};
+
+// What the rim search returned for one own path, and how many advances it made.
+struct RimSearch {
+  HitTime hit_time{};
+  int advance_count = -1;
+};
+
+// Runs the rim search on a path in a cylinder's own axes from the entry the two intervals give, as FindCylinderHit
+// does; a path that does not enter the grown cylinder within the duration is free with no advance.
+RimSearch SearchRimFromEntry(OwnPath own_path, Vec3 half_size, double duration) {
+  const TimeInterval inside_wall = ComputeTimeInsideGrownWall(own_path, half_size, kTolerance);
+  const TimeInterval between_caps = ComputeTimeBetweenGrownCaps(own_path, half_size, kTolerance);
+  RimSearch search;
+  search.advance_count = 0;
+  if (inside_wall.is_empty || between_caps.is_empty) {
+    return search;
+  }
+  const double entry_elapsed = std::max(inside_wall.entry_elapsed, between_caps.entry_elapsed);  // s
+  const bool leaves_wall_first = inside_wall.has_exit && inside_wall.exit_elapsed < entry_elapsed;
+  const bool leaves_caps_first = between_caps.has_exit && between_caps.exit_elapsed < entry_elapsed;
+  if (leaves_wall_first || leaves_caps_first || !(entry_elapsed <= duration)) {
+    return search;
+  }
+  search.hit_time = FindCylinderRimHit(own_path, half_size, kTolerance, entry_elapsed, duration, &search.advance_count);
+  return search;
+}
+
+// The cap distance at a rim search's hit, in the test cylinder's own axes.
+double ComputeCapDistanceAtHit(OwnPath own_path, HitTime hit_time) {
+  const Vec3 hit_point = own_path.start + own_path.velocity * hit_time.elapsed;
+  return std::abs(hit_point.z) - kCylinderHalfSize.z;
+}
+
+// One path of the rim search's tests: the own path, the sweep's duration and the advances expected.
+struct RimSearchCase {
+  OwnPath own_path{};
+  double duration = 0;  // s.
+  int advance_count = 0;
+};
+
+TEST(FindCylinderRimHit, AdvanceCounts) {
+  // The own paths of the first-hit tests, from the entry of the two intervals: each advance is the gap over the speed
+  // at which it closes, so a path along the rim's normal needs one and a path down the wall two (plan decision P21).
+  const auto expect_advances = [](RimSearchCase search_case) {
+    const RimSearch search = SearchRimFromEntry(search_case.own_path, kCylinderHalfSize, search_case.duration);
+    EXPECT_TRUE(search.hit_time.has_hit);
+    EXPECT_EQ(search.advance_count, search_case.advance_count) << search_case.own_path.start.x;
+    return search;
+  };
+  const Vec3 down = {.x = 0, .y = 0, .z = -1};
+  expect_advances({
+      .own_path = {.start = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 3}, .velocity = down},
+      .duration = 4,
+      .advance_count = 2,
+  });
+  expect_advances({
+      .own_path =
+          {
+              .start = {.x = 1.8500000009313227, .y = 0, .z = 1.4500000009313225},
+              .velocity = {.x = -3, .y = 0, .z = -1},
+          },
+      .duration = 1,
+      .advance_count = 2,
+  });
+  expect_advances({
+      .own_path = {.start = {.x = 1.5, .y = 0, .z = 2}, .velocity = {.x = -1, .y = 0, .z = -1}},
+      .duration = 2,
+      .advance_count = 1,
+  });
+  expect_advances({
+      .own_path =
+          {
+              .start = {.x = 0.5 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.9 * kTolerance},
+              .velocity = {.x = -1, .y = 0, .z = -1},
+          },
+      .duration = 1,
+      .advance_count = 1,
+  });
+  const RimSearch deeper = expect_advances({
+      .own_path = {.start = {.x = 0.5 + 13.0 / 16 * kTolerance, .y = 0, .z = 3}, .velocity = down},
+      .duration = 4,
+      .advance_count = 2,
+  });
+  // Within tol / 1024 of the rest gap, closing at 0.584 m/s: within tol / 512 s of the exact time.
+  EXPECT_NEAR(deeper.hit_time.elapsed, 2 - std::sqrt(1 - (13.0 / 16) * (13.0 / 16)) * kTolerance, kTolerance / 512);
+  // Sinking toward the wall at tol / 128 m/s from its rest gap: the path crosses the wall's grown plane 0.016 tol
+  // inside, so the gap closes slowly at the end, and 4 advances reach the rim where the cap distance is 0.1763 tol.
+  const OwnPath sinking = {
+      .start = {.x = 0.5 + kTolerance, .y = 0, .z = 3},
+      .velocity = {.x = -kTolerance / 128, .y = 0, .z = -1},
+  };
+  const RimSearch sinking_search = expect_advances({.own_path = sinking, .duration = 4, .advance_count = 4});
+  EXPECT_NEAR(ComputeCapDistanceAtHit(sinking, sinking_search.hit_time), 0.1763 * kTolerance, kTolerance / 512);
+  // An entry on the wall proper is the hit itself: no advance, the entry's time bit for bit.
+  const OwnPath onto_wall = {.start = {.x = -2, .y = 0, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}};
+  const RimSearch wall_search = expect_advances({.own_path = onto_wall, .duration = 2, .advance_count = 0});
+  EXPECT_EQ(
+      wall_search.hit_time.elapsed,
+      ComputeTimeInsideGrownWall(onto_wall, kCylinderHalfSize, kTolerance).entry_elapsed
+  );
+}
+
+TEST(FindCylinderRimHit, GapRateTooSmallToSquare_IsFreeNotStalled) {
+  // From the rim corner 0.9 tol beyond the wall and the cap, closing at 1.4e-170 m/s: the advance is the
+  // quotient, 1.8e160 s, far beyond the sweep, so the path is free with no advance. Through ComputeSecondOrderAdvance
+  // the square of the gap rate underflows to 0, the advance is 0, and the search would report a hit 0.27 tol outside
+  // at its limit. (At 1.4e-160 m/s the square is a subnormal number, and that form still advances.)
+  const OwnPath own_path = {
+      .start = {.x = 0.5 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.9 * kTolerance},
+      .velocity = {.x = -1e-170, .y = 0, .z = -1e-170},
+  };
+  int advance_count = -1;
+  const HitTime hit_time = FindCylinderRimHit(own_path, kCylinderHalfSize, kTolerance, 0, 1, &advance_count);
+  EXPECT_FALSE(hit_time.has_hit);
+  EXPECT_EQ(hit_time.elapsed, 0);
+  EXPECT_EQ(advance_count, 0);
+}
+
+TEST(FindCylinderRimHit, GapThatWouldNotCloseWithinTheSweep_IsFree) {
+  // tol / 2048 outside the round rim's rest gap, below the hit gap tol / 1024, closing along the rim's normal at
+  // 1e-3 tol/s: at that rate, which only slows, the gap would close after 0.49 s. Within a sweep of 0.25 s it does not:
+  // free. Within 1 s it does: a hit where it stands.
+  const Vec3 rim_normal = {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)};
+  const OwnPath own_path = {
+      .start = Vec3{.x = 0.5, .y = 0, .z = 1} + (kTolerance + kTolerance / 2048) * rim_normal,
+      .velocity = -1e-3 * kTolerance * rim_normal,
+  };
+  int advance_count = -1;
+  const HitTime short_sweep = FindCylinderRimHit(own_path, kCylinderHalfSize, kTolerance, 0, 0.25, &advance_count);
+  EXPECT_FALSE(short_sweep.has_hit);
+  EXPECT_EQ(advance_count, 0);
+  const HitTime long_sweep = FindCylinderRimHit(own_path, kCylinderHalfSize, kTolerance, 0, 1, &advance_count);
+  EXPECT_TRUE(long_sweep.has_hit);
+  EXPECT_EQ(long_sweep.elapsed, 0);
+  EXPECT_EQ(advance_count, 0);
+}
+
+TEST(ComputeIsRestingOnBoundingSurface, WindowAndSink) {
+  // A gap from -tol / 8 to tol / 16, both limits included, that sinks by at most tol / 64 during the sweep. With the
+  // tolerance 0, the window is the gap 0 alone and the path must not sink at all.
+  EXPECT_TRUE(ComputeIsRestingOnBoundingSurface(kTolerance, -kTolerance / 8, 0, 1));
+  EXPECT_FALSE(ComputeIsRestingOnBoundingSurface(kTolerance, -kTolerance / 8 - 0x1p-60, 0, 1));
+  EXPECT_TRUE(ComputeIsRestingOnBoundingSurface(kTolerance, kTolerance / 16, 0, 1));
+  EXPECT_FALSE(ComputeIsRestingOnBoundingSurface(kTolerance, kTolerance / 16 + 0x1p-60, 0, 1));
+  EXPECT_TRUE(ComputeIsRestingOnBoundingSurface(kTolerance, 0, -kTolerance / 64, 1));
+  EXPECT_FALSE(ComputeIsRestingOnBoundingSurface(kTolerance, 0, -kTolerance / 64, 1 + 0x1p-52));
+  EXPECT_TRUE(ComputeIsRestingOnBoundingSurface(kTolerance, 0, 5, 1));
+  EXPECT_TRUE(ComputeIsRestingOnBoundingSurface(0, 0, 0, 1));
+  EXPECT_FALSE(ComputeIsRestingOnBoundingSurface(0, 0, -0x1p-60, 1));
+  EXPECT_FALSE(ComputeIsRestingOnBoundingSurface(0, 0x1p-60, 0, 1));
 }
 
 // --- A turning solid ---
@@ -2560,8 +2863,8 @@ double ComputeSmallestDistanceAlongPath(const Solid& solid, Path path, double en
 
 // Fails the calling test unless the first hit agrees with the slow reference: before a hit, and over the whole
 // duration of a free path, the true distance never comes below tol; at a hit it is between tol and
-// largest_distance_at_hit (tol for a sphere, Sqrt(2) tol for a cylinder, whose grown shape has sharp rims). A hit
-// is never behind the start nor after the duration.
+// largest_distance_at_hit (tol for a sphere, tol + tol / 1024 for a cylinder, whose rim search stops within
+// kRimHitGapShare of tol). A hit is never behind the start nor after the duration.
 void ExpectFirstHitAgreesWithReference(
     const Solid& solid,
     double largest_distance_at_hit,
@@ -2630,8 +2933,8 @@ TEST(FindFirstHit, GeneratedSphereSweeps_AgreeWithSlowReference) {
 
 TEST(FindFirstHit, GeneratedCylinderSweeps_AgreeWithSlowReference) {
   // A cylinder of radius 0.5 m and half height 0.75 m along the tilted axis, moving at {0.25, -0.5, 0.125} m/s and
-  // spinning about its own axis, which leaves the shape. Its first hits are on the grown cylinder with sharp rims, so
-  // a hit is up to Sqrt(2) tol from the true rim.
+  // spinning about its own axis, which leaves the shape. A hit beside a rim is where the rim search stops, up to
+  // tol / 1024 beyond tol (plan decision P21).
   const Vec3 axis = ToColumn(kTiltedAxes, 2);
   const std::array solids = {
       ToSolid(
@@ -2641,19 +2944,30 @@ TEST(FindFirstHit, GeneratedCylinderSweeps_AgreeWithSlowReference) {
       ),
   };
   ASSERT_EQ(CheckSolid(solids[0], 1.5), ContactError::kNone);
-  const int hit_count = CheckGeneratedRoundSweeps(solids[0], std::numbers::sqrt2 * kTolerance);
+  const int hit_count = CheckGeneratedRoundSweeps(solids[0], kTolerance + kTolerance / 1024);
+  std::cout << "generated cylinder sweeps 1000, hit " << hit_count << "\n";
   EXPECT_GT(hit_count, 100);
   EXPECT_LT(hit_count, 900);
 }
+
+// What the paths through the grown rim edge of one cylinder gave: the mistakes against the slow reference, the paths
+// the reference says must be hit, and the hits per number of advances of the rim search (the last entry counts the hits
+// that entered on the wall or a cap proper and made no search).
+struct RimEdgeCounts {
+  int mistakes = 0;
+  int must_hit = 0;
+  std::array<int, kMaxRimAdvanceCount + 2> hits_per_advance_count{};
+};
 
 // Counts the paths through the grown rim edge of one cylinder that FindFirstHit gets wrong, against the slow
 // reference. Draw order per path: azimuth 2 pi Next(); angle in the plane of the axis 0.05 + (pi / 2 - 0.1) Next();
 // distance before the edge 0.5 + 1.5 Next(); the cap, high when Next() < 0.5; an offset of the line from the edge of
 // -8 to 8 units of 2^-53, as floor(17 Next()) - 8; speed 0.5 + 1.5 Next(). In the cylinder's own axes the path passes
 // within that offset of the grown rim circle {R cos(azimuth), R sin(azimuth), +-H}, going toward the axis and the
-// middle plane, for three times the time it takes to reach the edge. Returns the number of mistakes; *must_hit_count
-// counts the paths the reference says must be hit (their true distance goes below tol - kReferenceAllowance).
-int CountRimEdgeMistakes(const Solid& solid, int path_count, int* must_hit_count) {
+// middle plane, for three times the time it takes to reach the edge. A hit is right when the true distance there is
+// between tol and tol + tol / 1024 up to kReferenceAllowance, and the path before it stays at tol or more. A path the
+// reference says must be hit has a true distance below tol - kReferenceAllowance.
+RimEdgeCounts CountRimEdgeMistakes(const Solid& solid, int path_count) {
   const std::array solids = {solid};
   // The longest sweep is 3 * 2 / 0.5 = 12 s.
   const SolidContactInputs inputs = BuildInputs(solids, 12);
@@ -2661,7 +2975,7 @@ int CountRimEdgeMistakes(const Solid& solid, int path_count, int* must_hit_count
   const double grown_radius = solid.half_size.x + kTolerance;
   const double grown_half_height = solid.half_size.z + kTolerance;
   CaseGenerator generator;
-  int mistake_count = 0;
+  RimEdgeCounts counts;
   for (int path_index = 0; path_index < path_count; ++path_index) {
     const double azimuth = 2 * std::numbers::pi * generator.Next();
     const double angle = 0.05 + (std::numbers::pi / 2 - 0.1) * generator.Next();
@@ -2683,21 +2997,37 @@ int CountRimEdgeMistakes(const Solid& solid, int path_count, int* must_hit_count
     const FirstHit first_hit = FindHit(inputs, path);
     const double smallest_distance = ComputeSmallestDistanceAlongPath(solid, path, path.duration);
     const bool must_hit = smallest_distance < kTolerance - kReferenceAllowance;
-    if (must_hit) {
-      ++*must_hit_count;
-    }
+    counts.must_hit += must_hit ? 1 : 0;
     if (first_hit.solid_index == kNoSolid) {
-      mistake_count += must_hit ? 1 : 0;
+      counts.mistakes += must_hit ? 1 : 0;
       continue;
     }
     const double distance_at_hit = ComputeDistanceAlongPath(solid, path, first_hit.elapsed);
     const bool is_at_grown_surface = distance_at_hit >= kTolerance - kReferenceAllowance
-        && distance_at_hit <= std::numbers::sqrt2 * kTolerance + kReferenceAllowance;
+        && distance_at_hit <= kTolerance + kTolerance / 1024 + kReferenceAllowance;
     const bool is_first = first_hit.elapsed == 0
         || ComputeSmallestDistanceAlongPath(solid, path, first_hit.elapsed) >= kTolerance - kReferenceAllowance;
-    mistake_count += is_at_grown_surface && is_first ? 0 : 1;
+    counts.mistakes += is_at_grown_surface && is_first ? 0 : 1;
+    // The search again, alone, from the entry of the two intervals, for its count of advances.
+    const Sweep sweep = {.start = path.start, .velocity_for_this_step = path.velocity, .duration = path.duration};
+    const OwnPath own_path = ComputeOwnPath(inputs, 0, solid.pose_at_step_start, sweep);
+    const RimSearch search = SearchRimFromEntry(own_path, solid.half_size, path.duration);
+    const bool is_rim_entry = search.hit_time.has_hit && first_hit.at_hit.face != SolidFace::kCurved
+        && first_hit.at_hit.face != SolidFace::kLowZ && first_hit.at_hit.face != SolidFace::kHighZ;
+    const int count_index = is_rim_entry ? search.advance_count : kMaxRimAdvanceCount + 1;
+    ++counts.hits_per_advance_count.at(static_cast<std::size_t>(count_index));
   }
-  return mistake_count;
+  return counts;
+}
+
+// Prints one cylinder's counts of the rim edge sweeps, for the report.
+void PrintRimEdgeCounts(const Solid& cylinder, const RimEdgeCounts& counts) {
+  std::cout << "rim edge sweeps, radius " << cylinder.half_size.x << ": mistakes " << counts.mistakes << ", must hit "
+            << counts.must_hit << ", hits per advance count";
+  for (const int hit_count : counts.hits_per_advance_count) {
+    std::cout << " " << hit_count;
+  }
+  std::cout << "\n";
 }
 
 TEST(FindFirstHit, GeneratedRimEdgeSweeps_AgreeWithSlowReference) {
@@ -2724,12 +3054,435 @@ TEST(FindFirstHit, GeneratedRimEdgeSweeps_AgreeWithSlowReference) {
           1
       ),
   };
-  for (const Solid& cylinder : cylinders) {
-    int must_hit_count = 0;
-    EXPECT_EQ(CountRimEdgeMistakes(cylinder, 50000, &must_hit_count), 0) << "radius " << cylinder.half_size.x;
+  // The model of plan decision P21 on the same draws, for the two cylinders along z: 1, 2 or 3 advances in 7,189,
+  // 32,918 and 9,893 paths; the cylinder's own axes turn the start, which may move a few between neighbours.
+  constexpr std::array<int, 3> kModelHitsPerAdvanceCount = {7189, 32918, 9893};
+  for (std::size_t cylinder_index = 0; cylinder_index < cylinders.size(); ++cylinder_index) {
+    const Solid& cylinder = cylinders.at(cylinder_index);
+    const RimEdgeCounts counts = CountRimEdgeMistakes(cylinder, 50000);
+    EXPECT_EQ(counts.mistakes, 0) << "radius " << cylinder.half_size.x;
     // Nearly every path goes deep into the cylinder, so the check is about hits that must not be missed.
-    EXPECT_GT(must_hit_count, 45000) << "radius " << cylinder.half_size.x;
+    EXPECT_GT(counts.must_hit, 45000) << "radius " << cylinder.half_size.x;
+    PrintRimEdgeCounts(cylinder, counts);
+    const bool is_along_z = cylinder_index < 2;
+    for (std::size_t advance_count = 1; is_along_z && advance_count <= 3; ++advance_count) {
+      const int model_count = kModelHitsPerAdvanceCount.at(advance_count - 1);
+      EXPECT_NEAR(counts.hits_per_advance_count.at(advance_count), model_count, 5) << advance_count;
+    }
   }
+}
+
+// The kinds of path past a cylinder's rim of plan decision P21, item 15 (a).
+enum class RimPathKind : std::uint8_t {
+  kThroughRim,  // Through the rim's neighbourhood at every angle.
+  kDownWall,  // Down the wall at its rest gap toward the rim, from beyond the cap.
+  kAlongCap,  // Inward along the cap's plane at its rest gap, from beyond the wall.
+  kGraze,  // Tangent to the round rim or the wall, within a few rounding units or tol / 8.
+  kCornerStart,  // From the rim corner of the sharp grown shape, outside the true one.
+  kAnywhere,  // From anywhere around the cylinder toward anywhere near it.
+};
+
+// One path past a cylinder's rim, in the cylinder's own axes, with the touched rule's state.
+struct RimPath {
+  RimPathKind kind = RimPathKind::kThroughRim;
+  OwnPath own_path{};
+  double duration = 0;  // s.
+  TouchedSolid touched{};
+};
+
+// A uniform draw between low and high.
+double DrawBetween(CaseGenerator& generator, double low, double high) {
+  return low + (high - low) * generator.Next();
+}
+
+// A unit vector from three NextSigned, drawn again while shorter than 0.1.
+Vec3 DrawUnitDirection(CaseGenerator& generator) {
+  Vec3 direction{};
+  while (math::Length(direction) < 0.1) {
+    direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
+  }
+  return math::Normalized(direction);
+}
+
+// Where a point lies beside a rim: its wall and cap distances, in tolerances.
+struct RimPointShares {
+  double wall_share = 0;
+  double cap_share = 0;
+};
+
+// A point beside the rim, in own axes: wall distance shares.wall_share tol and cap distance shares.cap_share tol, at an
+// azimuth of 2 pi Next and on the high cap when Next < 0.5 (two draws). *radial is the unit vector across the axis
+// toward the point and *cap_sign the cap's side.
+Vec3 DrawPointBesideRim(
+    CaseGenerator& generator,
+    Vec3 half_size,
+    RimPointShares shares,
+    Vec3* radial,
+    double* cap_sign
+) {
+  const double azimuth = 2 * std::numbers::pi * generator.Next();  // rad
+  *cap_sign = generator.Next() < 0.5 ? 1.0 : -1.0;
+  *radial = {.x = std::cos(azimuth), .y = std::sin(azimuth), .z = 0};
+  const double axis_distance = half_size.x + shares.wall_share * kTolerance;  // m
+  const double height = half_size.z + shares.cap_share * kTolerance;  // m
+  return axis_distance * *radial + Vec3{.x = 0, .y = 0, .z = *cap_sign * height};
+}
+
+// An offset from a rest gap, in tolerances: 0, a share up to 2^-2 to 2^-30, or up to 8 units of 2^-44, by floor(3
+// Next). Shares out to a quarter put starts beyond the bounding surface's window on both sides.
+double DrawRestGapOffset(CaseGenerator& generator) {
+  const int choice = static_cast<int>(std::floor(3 * generator.Next()));
+  const double share = generator.NextSigned();
+  const double exponent = std::floor(DrawBetween(generator, 2, 31));
+  const double units = std::floor(DrawBetween(generator, -8, 9));
+  if (choice == 0) {
+    return 0;
+  }
+  return choice == 1 ? share * std::exp2(-exponent) : units * 0x1p-44;
+}
+
+// A slant of a path off a plane: 0, 0, 1e-12, 1e-6 or 1e-3, by floor(5 Next), times NextSigned.
+double DrawSlant(CaseGenerator& generator) {
+  constexpr std::array<double, 5> kSlants = {0, 0, 1e-12, 1e-6, 1e-3};
+  const double slant = kSlants.at(static_cast<std::size_t>(std::floor(5 * generator.Next())));
+  return slant * generator.NextSigned();
+}
+
+// Builds one path past the rim of a cylinder of the given half size, in its own axes. Draws, in this order: the kind
+// (0.35 through the rim, 0.15 down the wall, 0.15 along the cap, 0.15 a graze, 0.1 from the corner, 0.1 anywhere, by
+// one Next); the kind's own draws, as in plan decision P21's model (the speed 2^(6 Next - 3) m/s, path lengths tol
+// 2^(1 + 11 Next)); and whether the touched rule applies, Next < 0.3, with an allowance of 2^-46 times the sum of the
+// velocity's absolute coordinates.
+RimPath BuildRimPath(CaseGenerator& generator, Vec3 half_size) {
+  const double radius = half_size.x;  // m
+  const double half_height = half_size.z;  // m
+  const double kind_draw = generator.Next();
+  RimPath path;
+  Vec3 radial{};
+  double cap_sign = 1;
+  const auto draw_speed = [&generator] {
+    return std::exp2(DrawBetween(generator, -3, 3));
+  };  // m/s
+  if (kind_draw < 0.35) {
+    path.kind = RimPathKind::kThroughRim;
+    const double wall_share = DrawBetween(generator, -2.5, 2.5);
+    const double cap_share = DrawBetween(generator, -2.5, 2.5);
+    const Vec3 target = DrawPointBesideRim(
+        generator,
+        half_size,
+        {.wall_share = wall_share, .cap_share = cap_share},
+        &radial,
+        &cap_sign
+    );
+    const Vec3 direction = DrawUnitDirection(generator);
+    const double length = kTolerance * std::exp2(DrawBetween(generator, 1, 12));  // m
+    const double speed = draw_speed();
+    path.own_path = {.start = target - length * direction, .velocity = speed * direction};
+    path.duration = 2 * length / speed;
+  } else if (kind_draw < 0.5) {
+    path.kind = RimPathKind::kDownWall;
+    const double offset = DrawRestGapOffset(generator);
+    const Vec3 start = DrawPointBesideRim(
+        generator,
+        half_size,
+        {.wall_share = 1 + offset, .cap_share = DrawBetween(generator, 2, 2000)},
+        &radial,
+        &cap_sign
+    );
+    const double speed = draw_speed();
+    const double slant = DrawSlant(generator);
+    path.own_path = {.start = start, .velocity = speed * (slant * radial - Vec3{.x = 0, .y = 0, .z = cap_sign})};
+    const double length = std::abs(start.z) - half_height + std::min(half_height, 100 * kTolerance);  // m
+    path.duration = 1.5 * length / speed;
+  } else if (kind_draw < 0.65) {
+    path.kind = RimPathKind::kAlongCap;
+    const double offset = DrawRestGapOffset(generator);
+    const Vec3 start = DrawPointBesideRim(
+        generator,
+        half_size,
+        {.wall_share = DrawBetween(generator, 2, 2000), .cap_share = 1 + offset},
+        &radial,
+        &cap_sign
+    );
+    const double speed = draw_speed();
+    const double slant = DrawSlant(generator);
+    const double sideways = DrawBetween(generator, -0.5, 0.5);
+    const Vec3 across = {.x = -radial.y, .y = radial.x, .z = 0};
+    path.own_path = {
+        .start = start,
+        .velocity = speed * (sideways * across - radial + Vec3{.x = 0, .y = 0, .z = cap_sign * slant}),
+    };
+    const double length = (std::hypot(start.x, start.y) - radius) + std::min(radius, 100 * kTolerance);  // m
+    path.duration = 1.5 * length / speed;
+  } else if (kind_draw < 0.8) {
+    path.kind = RimPathKind::kGraze;
+    const double angle = DrawBetween(generator, 0, std::numbers::pi / 2);  // rad
+    const bool is_rounding_offset = generator.Next() < 0.5;
+    const double rounding_offset = std::floor(DrawBetween(generator, -64, 65)) * 0x1p-46;
+    const double share_offset = DrawBetween(generator, -0.125, 0.125);
+    const double offset = is_rounding_offset ? rounding_offset : share_offset;
+    const RimPointShares shares = {
+        .wall_share = (1 + offset) * std::cos(angle),
+        .cap_share = (1 + offset) * std::sin(angle),
+    };
+    const Vec3 target = DrawPointBesideRim(generator, half_size, shares, &radial, &cap_sign);
+    const Vec3 rim_normal = std::cos(angle) * radial + Vec3{.x = 0, .y = 0, .z = cap_sign * std::sin(angle)};
+    Vec3 direction{};
+    while (math::Length(direction) < 0.1) {
+      const Vec3 drawn = DrawUnitDirection(generator);
+      direction = drawn - math::Dot(drawn, rim_normal) * rim_normal;
+    }
+    direction = math::Normalized(direction);
+    const double length = kTolerance * std::exp2(DrawBetween(generator, 1, 12));  // m
+    const double speed = draw_speed();
+    path.own_path = {.start = target - length * direction, .velocity = speed * direction};
+    path.duration = 2 * length / speed;
+  } else if (kind_draw < 0.9) {
+    path.kind = RimPathKind::kCornerStart;
+    double wall_share = 0;
+    double cap_share = 0;
+    while (wall_share * wall_share + cap_share * cap_share <= 1.0001) {
+      wall_share = generator.Next();
+      cap_share = generator.Next();
+    }
+    const Vec3 start = DrawPointBesideRim(
+        generator,
+        half_size,
+        {.wall_share = wall_share, .cap_share = cap_share},
+        &radial,
+        &cap_sign
+    );
+    const Vec3 direction = DrawUnitDirection(generator);
+    const double speed = draw_speed();
+    path.own_path = {.start = start, .velocity = speed * direction};
+    path.duration = kTolerance * std::exp2(DrawBetween(generator, 0, 8)) / speed;
+  } else {
+    path.kind = RimPathKind::kAnywhere;
+    Vec3 start{};
+    do {
+      start = {
+          .x = DrawBetween(generator, -3, 3) * radius,
+          .y = DrawBetween(generator, -3, 3) * radius,
+          .z = DrawBetween(generator, -3, 3) * half_height,
+      };
+    } while (ComputeDistanceToCylinder(start, half_size, kIdentity).distance <= 2 * kTolerance);
+    const Vec3 target = {
+        .x = DrawBetween(generator, -1.2, 1.2) * radius,
+        .y = DrawBetween(generator, -1.2, 1.2) * radius,
+        .z = DrawBetween(generator, -1.2, 1.2) * half_height,
+    };
+    const double speed_factor = 1 + generator.Next();  // 1/s
+    path.own_path = {.start = start, .velocity = speed_factor * (target - start)};
+    path.duration = 1;
+  }
+  const Vec3 velocity = path.own_path.velocity;
+  const double allowance = 0x1p-46 * (std::abs(velocity.x) + std::abs(velocity.y) + std::abs(velocity.z));  // m/s
+  path.touched =
+      generator.Next() < 0.3 ? TouchedSolid{.is_touched = true, .approach_allowance = allowance} : TouchedSolid{};
+  return path;
+}
+
+// What the paths past a cylinder's rim gave.
+struct RimPathCounts {
+  int paths = 0;
+  int deep_starts = 0;  // Starts deeper than tol inside, not swept.
+  int hits = 0;
+  int free_by_touching_rule = 0;  // Free by the touching rule on the distance (plan decisions P2 and P16).
+  int free_resting = 0;  // Free because the start rests on a bounding surface (plan decision P21, item 1).
+  int free_other = 0;
+  int near_limit =
+      0;  // Starts within rounding of a limit of the bounding surfaces' rule, where either answer is right.
+  int mistakes = 0;
+  std::array<int, kMaxRimAdvanceCount + 1> searches_per_advance_count{};
+  double least_resting_distance = 1;  // m, the smallest true distance along a resting path.
+};
+
+// Whether a start beside a cylinder's rim rests on its wall or its cap's plane by plan decision P21's numbers, written
+// here (-tol / 8, tol / 16, tol / 64), on gaps and rates computed apart from the code: in world axes, with std::hypot.
+// Near a limit, within 2^-20 tol, rounding may decide either way, and is_near_limit says so.
+struct RestingStart {
+  bool is_beside_rim = false;
+  bool is_resting = false;
+  bool is_near_limit = false;
+};
+
+// Classifies one start by the decision's numbers (RestingStart).
+RestingStart ClassifyRestingStart(const Solid& cylinder, Path path) {
+  const Vec3 axis = ToColumn(cylinder.pose_at_step_start.axes, 2);
+  const Vec3 from_center = path.start - cylinder.pose_at_step_start.origin;  // m
+  const double height = math::Dot(from_center, axis);  // m
+  const Vec3 across = from_center - height * axis;  // m
+  const double axis_distance = std::hypot(across.x, across.y, across.z);  // m
+  const Vec3 radial = (1 / axis_distance) * across;
+  const double wall_gap = axis_distance - cylinder.half_size.x - kTolerance;  // m
+  const double cap_gap = std::abs(height) - cylinder.half_size.z - kTolerance;  // m
+  const double wall_sink = math::Dot(radial, path.velocity) * path.duration;  // m
+  const double cap_sink = (height >= 0 ? 1.0 : -1.0) * math::Dot(axis, path.velocity) * path.duration;  // m
+  const double near = 0x1p-20 * kTolerance;  // m
+  const auto distance_to_limit = [](double value, double limit) {
+    return std::abs(value - limit);
+  };
+  const auto is_resting_on = [&](double gap, double sink) {
+    return gap >= -kTolerance / 8 && gap <= kTolerance / 16 && sink >= -kTolerance / 64;
+  };
+  const auto is_near = [&](double gap, double sink) {
+    return distance_to_limit(gap, -kTolerance / 8) <= near || distance_to_limit(gap, kTolerance / 16) <= near
+        || distance_to_limit(sink, -kTolerance / 64) <= near;
+  };
+  RestingStart start;
+  start.is_beside_rim = wall_gap + kTolerance > near && cap_gap + kTolerance > near;
+  start.is_resting = start.is_beside_rim && (is_resting_on(wall_gap, wall_sink) || is_resting_on(cap_gap, cap_sink));
+  start.is_near_limit = start.is_beside_rim && (is_near(wall_gap, wall_sink) || is_near(cap_gap, cap_sink));
+  return start;
+}
+
+// Checks a path that the closed form and the rim search decide: the search run alone from the entry gives the same
+// answer bit for bit within 8 advances; the path stays at tol or more before a hit or over the sweep; a hit is between
+// tol and tol + tol / 1024, up to kReferenceAllowance.
+bool CheckSearchedRimPath(
+    const Solid& cylinder,
+    Path path,
+    OwnPath own_path,
+    FirstHit first_hit,
+    RimPathCounts& counts
+) {
+  const bool is_hit = first_hit.solid_index != kNoSolid;
+  const double end_elapsed = is_hit ? first_hit.elapsed : path.duration;  // s
+  const RimSearch search = SearchRimFromEntry(own_path, cylinder.half_size, path.duration);
+  const bool is_same = search.hit_time.has_hit == is_hit && search.hit_time.elapsed == first_hit.elapsed;
+  const SolidFace face = first_hit.at_hit.face;
+  const bool is_rim_hit = is_hit && (face == SolidFace::kLowRim || face == SolidFace::kHighRim);
+  if (search.advance_count > 0 || is_rim_hit) {
+    ++counts.searches_per_advance_count.at(static_cast<std::size_t>(search.advance_count));
+  }
+  counts.hits += is_hit ? 1 : 0;
+  counts.free_other += is_hit ? 0 : 1;
+  const bool stays_outside =
+      ComputeSmallestDistanceAlongPath(cylinder, path, end_elapsed) >= kTolerance - kReferenceAllowance;
+  const double distance_at_hit = is_hit ? ComputeDistanceAlongPath(cylinder, path, first_hit.elapsed) : kTolerance;
+  const bool is_at_rest_gap = distance_at_hit >= kTolerance - kReferenceAllowance
+      && distance_at_hit <= kTolerance + kTolerance / 1024 + kReferenceAllowance;
+  return is_same && search.advance_count <= 8 && stays_outside && is_at_rest_gap;
+}
+
+// Sweeps one path past a cylinder's rim and checks it against the slow reference, the start classified apart from the
+// code (ClassifyRestingStart), before the touching rule as the sweep tries it: a start that rests on a bounding
+// surface is free and keeps the smallest true distance at 55 / 64 tol - kReferenceAllowance or more; near a limit of
+// the decision's numbers, that or CheckSearchedRimPath's answer; a path freed by the touching rule keeps its own linear
+// bound; any other path as CheckSearchedRimPath checks it.
+void CheckRimPath(const Solid& cylinder, const RimPath& rim_path, RimPathCounts& counts) {
+  const std::array solids = {cylinder};
+  const SolidContactInputs inputs = BuildInputs(solids, rim_path.duration);
+  const SolidPose pose = cylinder.pose_at_step_start;
+  const Path path = {
+      .start = pose.origin + pose.axes * rim_path.own_path.start,
+      .velocity = pose.axes * rim_path.own_path.velocity,
+      .duration = rim_path.duration,
+  };
+  ++counts.paths;
+  const DistanceToSolid at_start = ComputeDistanceToSolid(cylinder, pose, path.start);
+  const double start_gap = at_start.distance - kTolerance;  // m
+  if (start_gap < -kTolerance) {
+    ++counts.deep_starts;
+    return;
+  }
+  const Sweep sweep = {.start = path.start, .velocity_for_this_step = path.velocity, .duration = path.duration};
+  FirstHit first_hit;
+  ASSERT_EQ(FindFirstHitOfSweep(inputs, sweep, rim_path.touched, &first_hit, nullptr), ContactError::kNone);
+  const bool is_hit = first_hit.solid_index != kNoSolid;
+  const double end_elapsed = is_hit ? first_hit.elapsed : path.duration;  // s
+  const OwnPath own_path = ComputeOwnPath(inputs, 0, pose, sweep);
+  const RestingStart resting = ClassifyRestingStart(cylinder, path);
+  const double resting_gap_limit = rim_path.touched.is_touched ? kTolerance / 16 : 0;  // m
+  const bool is_touching_rule = start_gap <= resting_gap_limit;
+  const double least_resting_distance = 55 * kTolerance / 64 - kReferenceAllowance;  // m
+  bool is_right = true;
+  if (resting.is_near_limit) {
+    // Either rule may decide here; the safe bound of a resting sweep holds whichever does.
+    const double smallest_distance = ComputeSmallestDistanceAlongPath(cylinder, path, end_elapsed);  // m
+    const bool is_rested = !is_hit && smallest_distance >= least_resting_distance;
+    is_right = is_rested || is_touching_rule || CheckSearchedRimPath(cylinder, path, own_path, first_hit, counts);
+    ++counts.near_limit;
+  } else if (resting.is_resting) {
+    const double smallest_distance = ComputeSmallestDistanceAlongPath(cylinder, path, end_elapsed);  // m
+    is_right = !is_hit && smallest_distance >= least_resting_distance;
+    counts.least_resting_distance = std::min(counts.least_resting_distance, smallest_distance);
+    ++counts.free_resting;
+  } else if (is_touching_rule) {
+    // The touching rule's own bound: the true distance, convex along the path, stays above its tangent at the start.
+    const double start_rate = math::Dot(at_start.normal_out_of_solid, path.velocity);  // m/s
+    const double linear_bound = at_start.distance + std::min(start_rate * end_elapsed, 0.0);  // m
+    is_right = ComputeSmallestDistanceAlongPath(cylinder, path, end_elapsed) >= linear_bound - kReferenceAllowance;
+    counts.free_by_touching_rule += is_hit ? 0 : 1;
+    counts.hits += is_hit ? 1 : 0;
+  } else {
+    is_right = CheckSearchedRimPath(cylinder, path, own_path, first_hit, counts);
+  }
+  if (!is_right) {
+    ++counts.mistakes;
+    ADD_FAILURE() << "kind " << static_cast<int>(rim_path.kind) << ", hit " << is_hit;
+  }
+}
+
+// Prints the counts of the paths past a cylinder's rim, for the report, and returns the searches and their advances.
+std::pair<int, int> PrintRimPathCounts(const RimPathCounts& counts) {
+  int searches = 0;
+  int advances = 0;
+  std::cout << "paths past a rim " << counts.paths << ", deep starts " << counts.deep_starts << ", hits " << counts.hits
+            << ", free by the touching rule " << counts.free_by_touching_rule << ", resting " << counts.free_resting
+            << ", other free " << counts.free_other << ", near a limit " << counts.near_limit << ", mistakes "
+            << counts.mistakes << ", least resting distance " << counts.least_resting_distance / kTolerance
+            << " tol, searches per advance count";
+  for (std::size_t advance_count = 0; advance_count < counts.searches_per_advance_count.size(); ++advance_count) {
+    const int search_count = counts.searches_per_advance_count.at(advance_count);
+    std::cout << " " << search_count;
+    searches += search_count;
+    advances += search_count * static_cast<int>(advance_count);
+  }
+  std::cout << "\n";
+  return {searches, advances};
+}
+
+TEST(FindFirstHit, GeneratedPathsPastACylinderRim_AgreeWithSlowReference) {
+  // 20,000 paths (BuildRimPath) past the rims of the four cylinders of GeneratedRimEdgeSweeps, the cylinder by one
+  // Next before each path, in the six kinds of plan decision P21's model: through the rim's neighbourhood, down the
+  // wall and along the cap at their rest gaps, grazing the round rim, from the rim corner, and from anywhere, a third
+  // with the touched rule. The model on its own draws: no missed hit, no hit farther than tol / 1024 plus rounding, at
+  // most 5 advances, 2.0 on average, and the smallest true gap along a resting path -0.126 tol.
+  const Vec3 tilted_axis = ToColumn(kTiltedAxes, 2);
+  const std::array cylinders = {
+      ToSolid(Cylinder{.center = {}, .axis = kAxisZ, .radius = 0.5, .half_height = 1}, kNoMotion, 1),
+      ToSolid(Cylinder{.center = {}, .axis = kAxisZ, .radius = 1.75, .half_height = 0.375}, kNoMotion, 1),
+      ToSolid(
+          Cylinder{
+              .center = {.x = 0.25, .y = -0.5, .z = 0.125},
+              .axis = tilted_axis,
+              .radius = 0.3,
+              .half_height = 0.7,
+          },
+          kNoMotion,
+          1
+      ),
+      ToSolid(
+          Cylinder{.center = {.x = -1, .y = 2, .z = 3}, .axis = tilted_axis, .radius = 0.125, .half_height = 2.875},
+          kNoMotion,
+          1
+      ),
+  };
+  CaseGenerator generator;
+  RimPathCounts counts;
+  for (int path_index = 0; path_index < 20000; ++path_index) {
+    const Solid& cylinder = cylinders.at(static_cast<std::size_t>(std::floor(4 * generator.Next())));
+    const RimPath rim_path = BuildRimPath(generator, cylinder.half_size);
+    CheckRimPath(cylinder, rim_path, counts);
+  }
+  const auto [searches, advances] = PrintRimPathCounts(counts);
+  EXPECT_EQ(counts.paths, 20000);
+  EXPECT_EQ(counts.mistakes, 0);
+  EXPECT_GT(searches, 3000);
+  EXPECT_GT(counts.free_resting, 3000);
+  EXPECT_GT(counts.hits, 5000);
+  EXPECT_LE(advances, 3 * searches);
 }
 
 TEST(FindFirstHit, GeneratedGrazingRoundSweeps_NeverHitBehindStart) {

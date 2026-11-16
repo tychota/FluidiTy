@@ -32,6 +32,7 @@
 //                   balls; the free space around the contact is a cusp, whose angle shrinks to 0
 //   wedge angle     of two surfaces, 180 degrees minus the angle between their normals
 // Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare, kTouchedSolidRestingGapShare,
+//          kBoundingSurfaceRestingDepthShare, kBoundingSurfaceSinkShare, kRimHitGapShare, kMaxRimAdvanceCount,
 //          kMaxRestGapMoveInTolerances, kMaxRestGapIterations, kMaxConstrainingSurfaces, kMaxSlideDirections,
 //          kMaxUsedDirections, kMaxFrictionOrders, kSameNormalAxisDifference, kMaxCorrectionRefinements,
 //          kVelocityPairLimitShare, kVelocityTripleLimit, kMaxSqueezeOutSpeedFactor, SolidContactInputs, SolidReaction,
@@ -87,6 +88,24 @@ inline constexpr double kTurningSolidHitGapShare = 0.25;
 // contact/contact_tolerance.h), so a sixteenth is far above it, and far below the tol that the touching rule allows
 // below zero. A power of two keeps the test exact.
 inline constexpr double kTouchedSolidRestingGapShare = 0x1p-4;
+// No unit. How far below its rest gap, as a share of the contact tolerance, a start may be and still rest on a
+// bounding surface that does not give its distance (plan decision P21, item 1). A particle at rest is within tol / 128
+// of the rest gap after the settle and comes at most tol / 16 nearer after a response; an eighth holds both. A power
+// of two keeps the test exact.
+inline constexpr double kBoundingSurfaceRestingDepthShare = 0x1p-3;
+// No unit. The most a path may sink toward a bounding surface it rests on during one sweep, as a share of the contact
+// tolerance: what a response may leave, allowance * time left <= tol / 64, so a velocity a response left never sinks
+// more, and neither do coplanar faces whose normals differ by rounding.
+inline constexpr double kBoundingSurfaceSinkShare = 0x1p-6;
+// No unit. The rim search stops with a hit once the gap is at most this share of the contact tolerance, so a rim hit
+// is at most tol + tol / 1024 from the rim. A path that passes the rim within tol / 1024 is hit, and loses at most
+// Sqrt(2 * 2^-10) = 0.044 of its speed; a finer share is below the rounding of a distance where the tolerance is at its
+// floor of 2^-40 of the scene.
+inline constexpr double kRimHitGapShare = 0x1p-10;
+// The most advances of the rim search in one sweep; at the limit it reports the hit where it stands, the safe side. A
+// path tangent to the round rim is within the hit share after about 5 advances (the gap falls about fourfold per
+// advance), so 16 is never reached on the measured paths.
+inline constexpr int kMaxRimAdvanceCount = 16;
 
 // No unit, in contact tolerances. The longest move off several near surfaces at once, at the start or in the settle
 // (MoveToRestGapOfNearSurfaces). The particle is displaced without a matching velocity, so the move must stay small

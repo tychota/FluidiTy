@@ -902,48 +902,85 @@ surface that gives $d$, that surface is not hit when $"rate" times "duration" >=
 otherwise. The surface that gives $d$ is: for a plate or a box, the face with the largest gap; for a flat solid or a
 closed side of a domain box, its one face. The reason: the solid lies entirely behind that face plane (true for a
 plane, a convex solid and a domain side alike), so the gap along the path is at least $g(0) + "rate" times t >=
-g(0) - "tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit, the rim move or the start move put it
-there), so $g(0) = 0$ and the path never goes below $d = 0$; the part of the window below 0 only absorbs rounding.
+g(0) - "tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit or the start move put it there, a rim hit
+within $"tol"\/1024$ of it), so $g(0) = 0$ and the path never goes below $d = 0$; the part of the window below 0 only
+absorbs rounding.
 A sphere and a cylinder follow the same rule at the nearest point of their surface (@sec-round-solids). The
 touching rule belongs to the closed forms of a solid that does not turn; a turning solid has none (next part).
 A start deeper than $"tol"$ inside the grown solid, $g(0) < -"tol"$, is hit at $t = 0$; `MoveParticle` never sweeps
 from there. For a flat solid with surface at $z = 0$, a particle at $z = "tol"$ moving at $(5, 0, -"tol"\/4)$ m/s for
 1 s slides freely; at (5, 0, −1) m/s it hits at 0.
 
-After the first response of a step every solid gets a stricter form of the rule. After a hit the particle stands at
-$d = "tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an approach of a few
-rounding units along every normal (@sec-contact-response). With the rule above such a start would count as outside,
-and the closed form would hit the same solid again from two rounding-sized numbers. So `MoveParticle` passes the
-sweep whether a response was made in the step and the largest bound $b$ of the approach the responses so far may
-have left, one number per velocity, each computed from the velocity its response received. For every solid that does
-not turn, on every surface of it, a start gap up to $"tol"\/16$ then counts as resting, and the solid is hit at
-$t = 0$ only when $"rate" < -b$, a real approach; otherwise the path is free of it. Why every solid, with no list of
-the solids met: a sweep after a response starts where that response was made, and a solid whose start gap is within
-the window was within $"tol" + "tol"\/16$ there, so it was an active surface of that response (@sec-contact-response),
-which left its approach within the response's bound, at most $b$. The touching rule reads that approach by the same
-expressions as the response, for every shape: the normal of the solid's distance in world axes at the same point and
-pose (a sphere's and a cylinder's too), the solid velocity $bold(u)$ at the particle, and the surface the sweep hit
-listed with the hit's own distance, which is that same function there. So its rate is minus the response's own
-target, bit for bit, and no curvature enters: the normal is read where the response read it, not where the particle
-slid to. A solid outside the window takes the closed form.
-One exception, a hit and not a miss: a surface whose normal agrees with another's within $2^(-40)$ but not bit for
-bit, in a change that uses a third direction, is missed by up to $2^(-40)$ of the change, which the sweep reads as an
-approach and hits at 0. The bound is carried, not recomputed: its derivation (@sec-contact-response) proves it from
-the velocity the response received, and a bound from the returned velocity can be far smaller than what is left, for
-example after a slip just below the stick limit. What it costs: a free path may still approach at up to $b$, and $b$
-grows with later responses. Each response $j$ requires or checks $b_j t_"left, j" <= "tol"\/64$ at its own time.
-Between two responses the largest bound is one of an earlier response, whose time left was longer, so each stretch
-adds at most $"tol"\/64$, and the at most four responses of a step add at most $"tol"\/16$. That bound, not $d >= 0$, is
-what is proved: before the first response the plain rule lets a path end on a surface, so the particle may then be up
-to $"tol"\/16$ past it, which the settle lifts back. At the extreme of the requirement below, a non-committed plate
-thinner than $"tol"\/8$ could have its middle passed, and one thinner than $"tol"\/16$ be passed through; neither has
-been constructed nor proved impossible. With
-$b = 2^(-46) A$, $A$ the sum of the absolute axes of the speeds involved, that is $A t_"left" <= 2^40 "tol"$, true
-whenever those speeds over one step stay within the largest coordinate. Nothing skips a solid: a start farther than
-$"tol"\/16$ takes the closed form, a real approach is a hit, and a turning solid keeps no touching rule. For the
-fixed flat solid with normal (0.6, 0, 0.8) through the origin and a particle from (0.125, 0, 0.125) at (−2, 0, −2) m/s
-for 0.5 s (this paper's numbers), the hit position is $2.8 times 10^(-18)$ m outside the rest gap and the response's
-approach is $-2^(-55)$ m/s: the solid is not hit again.
+A convex solid also lies behind surfaces that do not give the distance, its *bounding surfaces*: a cylinder's wall
+taken as unbounded along its axis, and the plane of each cap. A start beside a cylinder's rim, where neither gives
+the distance, *rests* on one of them when its gap $g_b$ to it is in $[-"tol"\/8, "tol"\/16]$ and the path sinks toward
+it by at most $"tol"\/64$ during the sweep, $dot(g)_b times "duration" >= -"tol"\/64$; the sweep is then free of the
+whole solid. It is safe for the reason the touching rule is: the solid's distance is at least $g_b + "tol"$ at every
+point, and along the path $g_b$ is at least $g_b (0) + dot(g)_b t$ (a plane's gap is linear in time, the distance
+from an axis convex), so a resting sweep stays at least $"tol" - "tol"\/8 - "tol"\/64 = 55\/64 "tol"$ from the solid;
+the settle lifts it back to the rest gap. Below, $"tol"\/8$ holds a particle that the settle left within
+$"tol"\/128$ of the rest gap and a response brought up to $"tol"\/16$ nearer; above, $"tol"\/16$ is the touched window;
+the sink, $"tol"\/64$, is what a response may leave. What it gives up: a path the true distance would stop up to
+$9\/64 "tol"$ inside the rest gap is not hit, and a ledge lower than $"tol"\/8$ between two solids is not seen. It
+lets a particle cross the seam of two flush solids. Two drums of one radius stacked on one axis: a particle sliding
+down the upper drum's wall at the rest gap reaches the lower drum beside its rim, rests on the lower wall's
+unbounded surface, and keeps $(0, 0, -1)$ m/s bit for bit; read by the true distance alone it would be hit there, at
+$d = "tol"$, by the rim it cannot reach. A puck set flush in a floor: a particle sliding along the floor at the rest
+gap onto it rests on the plane of its top and keeps its velocity (the tests' numbers).
+
+After the first response of a step every solid gets a stricter form of the rule. After a hit the particle stands at $d =
+"tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an approach of a few rounding
+units along every normal (@sec-contact-response). With the rule above such a start would count as outside, and the
+closed form would hit the same solid again from two rounding-sized numbers. So `MoveParticle` passes the sweep whether a
+response was made in the step and the largest bound $b$ of the approach the responses so far may have left, one number
+per velocity, each computed from the velocity its response received. For every solid that does not turn, on every
+surface of it, a start gap up to $"tol"\/16$ then counts as resting, and the solid is hit at $t = 0$ only when $"rate" <
+-b$, a real approach; otherwise the path is free of it. Why every solid, with no list of the solids met: a sweep after a
+response starts where that response was made, and a solid whose start gap is within the window was within $"tol" +
+"tol"\/16$ there, so it was an active surface of that response (@sec-contact-response), which left its approach within
+the response's bound, at most $b$. The touching rule reads that approach by the same expressions as the response, for
+every shape: the normal of the solid's distance in world axes at the same point and pose (a sphere's and a cylinder's
+too), the solid velocity $bold(u)$ at the particle, and the surface the sweep hit listed with the hit's own distance,
+which is that same function there. So its rate is minus the response's own target, bit for bit, and no curvature enters:
+the normal is read where the response read it, not where the particle slid to. A solid outside the window takes the
+closed form. One exception, a hit and not a miss: a surface whose normal agrees with another's within $2^(-40)$ but not
+bit for bit, in a change that uses a third direction, is missed by up to $2^(-40)$ of the change, which the sweep reads
+as an approach and hits at 0. The bound is carried, not recomputed: its derivation (@sec-contact-response) proves it
+from the velocity the response received, and a bound from the returned velocity can be far smaller than what is left,
+for example after a slip just below the stick limit. What it costs: a free path may still approach at up to $b$, and $b$
+grows with later responses. Each response $j$ requires or checks $b_j t_"left, j" <= "tol"\/64$ at its own time. Between
+two responses the largest bound is one of an earlier response, whose time left was longer, so each stretch adds at most
+$"tol"\/64$, and the at most four responses of a step add at most $"tol"\/16$. That bound, not $d >= 0$, is what is
+proved: before the first response the plain rule lets a path from the rest gap sink by less than $"tol"$, so it ends at
+$d >= 0$, on the surface at worst, and the touched stretches after a later response may then take it up to $"tol"\/16$
+past that surface, which the settle lifts back. At the extreme of the requirement below, a non-committed plate thinner
+than $"tol"\/8$ could have its middle passed, and one thinner than $"tol"\/16$ be passed through; neither has been
+constructed nor proved impossible. With $b = 2^(-46) A$, $A$ the sum of the absolute axes of the speeds involved, that
+is $A t_"left" <= 2^40 "tol"$, true whenever those speeds over one step stay within the largest coordinate. Nothing
+skips a solid: a start farther than $"tol"\/16$ takes the closed form, a real approach is a hit, and a turning solid
+keeps no touching rule. For the fixed flat solid with normal (0.6, 0, 0.8) through the origin and a particle from
+(0.125, 0, 0.125) at (−2, 0, −2) m/s for 0.5 s (this paper's numbers), the hit position is $2.8 times 10^(-18)$ m
+outside the rest gap and the response's approach is $-2^(-55)$ m/s: the solid is not hit again.
+
+A sweep and a response must read a solid alike also where its bounding surfaces free the sweep. A point is *level with*
+a bounding surface when its gap to it is in the window above, $[-"tol"\/8, "tol"\/16]$, the gap alone, whatever the
+velocity; the particle passes a solid *at a bounding surface's level* when it is level with one that does not give the
+solid's distance. Such a solid is no active surface of a response, at the start or at a hit on another solid, unless the
+sweep hit it: its distance there is a rim whose normal leans across a seam, and the sweep is free of the solid while the
+particle rests at that level. Not the bounding surface in its place: beside a lone solid it has nothing under it, and
+would hold up a particle that should fall. And the sweep tries the bounding surfaces before the touching rule on the
+distance, whatever the sign of the distance's gap, since after a response the touched rule would read an approach to
+that rim at a start the bounding surface frees. A solid left out whose sweep does not rest meets the touching rule on
+its distance: after a response it is hit at 0 for any approach beyond the bound $b$, one more hit, listed as the surface
+hit; before any response the plain rule frees a path that sinks less than $"tol"$ into the distance's face, so such an
+approach, at a rim's rest gap, gets no response and records no reaction in the step, a known choice. At a start within
+rounding of the rest gap the sign of the computed gap decides: a distance a hair above $"tol"$ counts as outside, and
+the closed form hits it at once (the rim search within $"tol"\/1024$, at 0); at or below $"tol"$ the plain rule frees
+it. What is guaranteed either way is the position: from the rest gap a sink below $"tol"$ keeps $d >= 0$ along the path
+(a sink of $0.999 "tol"$ ends $0.001 "tol"$ away), the path never enters the solid, and the settle lifts the particle to
+$"tol"$, so the end check holds. Two drums of one radius stacked on one axis and a step that starts $3\/16 "tol"$ above
+the seam at the wall's rest gap, $1.017 "tol"$ from the lower rim: the step keeps $(0, 0, -1)$ m/s bit for bit, where a
+response on the rim turned it to $(0.181, 0, -0.966)$ m/s (the tests' numbers).
 
 === A turning solid
 
@@ -1061,7 +1098,7 @@ When several solids are hit, the earliest time wins, and equal times keep the lo
 
 A sphere and a finite cylinder are round, so the gap to them is not a face gap and does not change linearly along
 a path. Contact gives them their true distance to the surface, a closed form for the first hit of a path, and
-three rules of their own: a rim move, a touching rule on a curved surface and a spin rule (@fig-round-solids).
+three rules of their own: a rim search, a touching rule on a curved surface and a spin rule (@fig-round-solids).
 
 === Distance and normal
 
@@ -1162,27 +1199,31 @@ the two entry times can change which one is later but cannot make the path miss;
 sits on the limit, where a hit and a miss are both safe. (Accepting each entry only where the path is inside the
 other region at that time is the same in exact arithmetic, but there a path through the edge can have both entries
 rejected by rounding and pass through the solid.) The face, normal and distance reported are those of
-@eq:cylinder-distance at the hit position, so a hit in the sharp corner reports a rim.
+@eq:cylinder-distance at the hit position.
 
-That hit sits between $"tol"$ and $sqrt(2) "tol"$ from the true rim, never closer than $"tol"$. Its gap $d -
-"tol"$ is then between 0 and $0.414 "tol"$, a value that neither the touching rule ($[-"tol", 0]$) nor a start
-deeper inside covers. `MoveParticle` therefore moves a hit that this closed form finds in a rim region along the
-rim normal to $d = "tol"$ before the response, a move of at most $(sqrt(2) - 1) "tol"$ toward the rim, and reads
-the hit's distance, normal and face again where the move ends. Along the normal the nearest point of the rim stays
-the same, so the distance falls by the move and the normal is unchanged up to rounding. A hit found by the stepping
-search toward a turning cylinder is not moved: that search reads the true distance, not a sharp grown corner, and
-stops at $d <= 1.25 "tol"$ in any region. The move can lean away from another surface the particle rests on: a
-cylinder's rim sliding over a floor meets a particle on it 1.26 tol from the rim, and the move lifts it to 1.22 tol
-from the floor. So the response's window grows by the move's length, and every surface the particle was on at the
-hit stays active (@sec-contact-response); read only at the moved point, the floor was left out, the response's
-velocity approached it, and the zig-zag between the floor and the rim's edge, whose normal turns over a distance of
-$"tol"$, ended in "too many hits". The end
-check ($d >= "tol"\/2$) never fires wrongly there: before the move $d >= "tol"$, after it $d = "tol"$. For a fixed
-cylinder of radius 0.5 m and half height 1 m and a particle from $(0.5 + "tol"\/2, 0, 3)$ at (0, 0, −1) m/s (the
-tests' numbers), the path is inside the grown wall all along ($alpha_rho = 0$) and enters between the grown caps at
-$2 - "tol"$ s, at $(0.5 + "tol"\/2, 0, 1 + "tol")$. There $d_"wall" = "tol"\/2$ and $d_"cap" = "tol"$: the point faces
-the high rim at the true distance $sqrt(1.25) "tol"$, and it is moved along the rim normal $(1, 0, 2)\/sqrt(5)$ to
-$(0.5 + "tol"\/sqrt(5), 0, 1 + 2 "tol"\/sqrt(5))$, at $d = "tol"$, face `kHighRim`.
+On the wall or a cap proper that entry is the hit: there the sharp grown surface is the true one. Beside a rim, where
+both $d_"wall"$ and $d_"cap"$ are positive at the entry, the sharp corner lies up to $sqrt(2) "tol"$ from the rim, so
+the entry is where the *rim search* starts. Along the path the gap $g(t) = d(bold(q) + bold(w) t) - "tol"$, with $d$ the
+true distance of @eq:cylinder-distance, is a convex function of time, since the distance to a convex solid is convex
+along a line. At a sample $t$ the search reads $g$ and $dot(g) = bold(n) dot bold(w)$, $bold(n)$ the normal there, and
+in this order: $g <= 0$ is a hit at $t$; $dot(g) >= 0$ is free, the gap never closes again; when $t + g\/(-dot(g))$ is
+later than `duration` it is free, since the gap closing at its present rate, which only slows, does not reach 0 in the
+sweep; $g <= "tol"\/1024$ is a hit at $t$; after 16 advances it is a hit where it stands, the safe side; otherwise $t$
+advances by $g\/(-dot(g))$. Convexity gives $g(s) >= g + dot(g) (s - t) > 0$ for every $s$ before $t + g\/(-dot(g))$, so
+no advance passes a hit, and a path that the sharp shape never contains is free, since the sharp shape contains the true
+grown one. The advance is the second-order advance of a solid that does not turn, with a gap curvature bound of 0
+(@sec-first-hit), written as the quotient: the square of a gap rate below $1.6 times 10^(-162)$ m/s would underflow to
+an advance of 0. A rim hit is at $"tol" <= d <= "tol" + "tol"\/1024$ up to rounding; a path that passes the rim within
+$"tol"\/1024$ of the rest gap is hit and loses at most $sqrt(2 times 2^(-10)) = 0.044$ of its speed. On a graze the gap
+falls about fourfold per advance, so a path is decided within about 5 advances (2.0 on average over the model's paths).
+No hit is ever rejected by a second test: the intervals decide that a path misses the sharp shape, and after the entry
+the path is hit there or searched on, each advance proved free. `MoveParticle` uses the hit where the search stopped, as
+every hit: nothing moves it. For a fixed cylinder of radius 0.5 m and half height 1 m and a particle from $(0.5 +
+"tol"\/2, 0, 3)$ at (0, 0, −1) m/s (the tests' numbers), the path is inside the grown wall all along ($alpha_rho = 0$)
+and enters between the grown caps at $2 - "tol"$ s, at $(0.5 + "tol"\/2, 0, 1 + "tol")$, where $d_"wall" = "tol"\/2$ and
+$d_"cap" = "tol"$: beside the high rim, $sqrt(1.25) "tol"$ from it. Two advances bring the path to $(0.5 + "tol"\/2, 0,
+1 + sqrt(0.75) "tol")$ at $2 - sqrt(0.75) "tol"$ s, $d = "tol"$ within $4.5 times 10^(-7) "tol"$, face `kHighRim`,
+normal $(1\/2, 0, sqrt(3)\/2)$; the response leaves $(sqrt(3)\/4, 0, -1\/4)$ m/s.
 
 The other examples of a cylinder of radius 0.5 m and half height 0.25 m at the origin (this paper's numbers): from
 (0.2, 0, 1) at (0, 0, −2) m/s the top cap is hit at $(1 - 0.25 - "tol")\/2 = 0.375 - "tol"\/2$ s, at $(0.2, 0,
@@ -1196,9 +1237,9 @@ passes over the rim.
   round-first-hit-figure(),
   placement: auto,
   caption: [Paths against the grown shapes, the tolerance exaggerated. The sphere grows into a larger sphere; the
-    cylinder grows with sharp edges, so a path entering the corner stops farther than $"tol"$ from the rim and
-    is moved along the rim normal to the red arc, where $d = "tol"$. The red arrow at the sphere's hit is the
-    normal there.],
+    cylinder grows with sharp edges. A path entering the sharp corner beside the rim is farther than $"tol"$ from
+    it there; the rim search advances along the path, two advances here, to the red arc, where $d = "tol"$. The red
+    arrow at the sphere's hit is the normal there.],
 ) <fig-round-first-hit>
 
 === Starts on or near a round solid
@@ -1210,14 +1251,15 @@ there, the very numbers a response reads (a spin about the centre or the axis ad
 a cylinder's tilt within the bound below adds its true surface speed): the solid is not hit during this sweep when
 $"rate" times "duration" >= -"tol"$, and it is hit at $t = 0$ otherwise. It is safe because the true signed distance to
 a convex solid is a convex function of position, so along the straight path $d(t) >= d(0) + "rate" times t >= d(0) -
-"tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit, the rim move or the start move put it there), so
-$d(t) >= "tol" - "tol" = 0$; the part of the window below 0 only absorbs rounding, and the settle at the end of
-`MoveParticle` puts the particle back at $"tol"$. It is the same tolerance as for a flat face, with no term for the
-curvature. A cylinder start inside the grown sharp cylinder ($d_"wall" - "tol" <= 0$ and $d_"cap" - "tol" <= 0$, the
-gaps computed as @eq:cylinder-distance computes the distances) with a positive gap $g_0$ lies in a rim corner: both
-distances are then in $(0, "tol"]$. It is hit at $t = 0$ when it approaches (the same rate below $-b$, 0 before any
-response of the step) and free otherwise. For a sphere of radius 0.5 m at the origin, a particle at $(-(0.5 + "tol"), 0,
-0)$ moving at (0, 1, 0) m/s, along the tangent, is free; moving at (1, 0, 0) m/s it is hit at 0 (the tests' numbers).
+"tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit or the start move put it there, a rim hit within
+$"tol"\/1024$ of it), so $d(t) >= "tol" - "tol" = 0$; the part of the window below 0 only absorbs rounding, and the
+settle at the end of `MoveParticle` puts the particle back at $"tol"$. It is the same tolerance as for a flat face,
+with no term for the curvature. A cylinder start outside the touching window and beside a rim is read against its
+bounding surfaces first (@sec-first-hit): resting on the wall's unbounded surface or on the cap's plane, it is free.
+Otherwise a start inside the grown sharp cylinder with a positive gap $g_0$ lies in a rim corner, both distances in
+$(0, "tol"]$; its entry is 0, and the rim search decides. For a sphere of radius 0.5 m at the origin, a particle at
+$(-(0.5 + "tol"), 0, 0)$ moving at (0, 1, 0) m/s, along the tangent, is free; moving at (1, 0, 0) m/s it is hit at 0
+(the tests' numbers).
 
 #procedure(
   [The first hit of a straight path on a sphere],
@@ -1243,9 +1285,11 @@ response of the step) and free otherwise. For a sphere of radius 0.5 m at the or
   outputs: [The hit time since the start of the sweep, or no hit. The normal and face come from
     @eq:cylinder-distance at the hit position, a rim included.],
   fails: [never.],
-  ([Read the start], [Compute the true distance and the gap $g_0$. Below $-"tol"$: hit at 0. In $[-"tol", 0]$: the
-    touching rule. Above 0 but inside the sharp grown cylinder (a rim corner): hit at 0 when the path approaches,
-    no hit otherwise.]),
+  ([Bounding surfaces], [Compute the true distance at the start. For a start beside a rim, read the wall,
+    unbounded along the axis, and the cap's plane on the start's side: no hit when the start rests on either, a gap
+    in $[-"tol"\/8, "tol"\/16]$ sinking at most $"tol"\/64$ during the sweep, whatever the distance's gap.]),
+  ([Read the start], [The gap $g_0$ of the true distance. Below $-"tol"$: hit at 0. In $[-"tol", 0]$: the touching
+    rule.]),
   ([Inside the wall], [Compute the times the path is inside the grown wall, unbounded along the axis, with
     @eq:cylinder-hit-time, the constant from the gap: from the first root to the second when the start is beyond
     the grown wall ($d_"wall" - "tol" > 0$), empty when it does not approach the axis or the root does not exist;
@@ -1253,9 +1297,11 @@ response of the step) and free otherwise. For a sphere of radius 0.5 m at the or
   ([Between the caps], [Compute the times the path is between the grown caps' planes: from $(d_"cap" - "tol") \/
     (-sigma_0 w_z)$ to the far grown cap when the start is beyond a grown cap, empty when it does not move toward
     that cap; from 0 to the grown cap it moves toward, or for ever, otherwise.]),
-  ([Keep the entry], [The later of the two entries is the hit when neither interval is empty and it comes no later
-    than either exit and no later than `duration`. A hit in a rim region is moved to $d = "tol"$ by `MoveParticle`,
-    not here.]),
+  ([Find the entry], [The later of the two entries, when neither interval is empty and it comes no later than
+    either exit and no later than `duration`; no hit otherwise. A start in a rim corner has the entry 0.]),
+  ([Keep the hit], [An entry on the wall or a cap proper, as @eq:cylinder-distance reads the point there, is the
+    hit. Beside a rim, the rim search from the entry: advances of $g\/(-dot(g))$ on the true distance until $g <=
+    "tol"\/1024$ (a hit), $dot(g) >= 0$ or the end of the sweep (no hit), at most 16.]),
 )
 
 === Slide and spin
@@ -1455,24 +1501,24 @@ at fraction 0, both velocities become (0, 0, 2) m/s, and the particle ends carri
 particle moving away at (1, 0, 2) m/s from $(0, 0, "tol"\/4)$ is moved to $z = "tol"$ silently and ends at
 $(0.1, 0, 0.2 + "tol")$.
 
-A hit that the closed form finds in a rim region of a cylinder is first moved along the rim normal to $d = "tol"$
-(@sec-round-solids); the response then works from there.
+No hit is moved before its response: a rim hit is where the rim search found the true distance within
+$"tol"\/1024$ of $"tol"$ (@sec-round-solids).
 
-At each hit, at the start or along the path, both velocities get one *joint response* over the *active surfaces*:
-every surface of every solid that the particle is within $"tol" + "tol"\/16$ of (plus the length of a rim move,
-@sec-round-solids), read at its position then (not the
-normal recorded at a hit, stale once the particle has slid along a ball; not a surface farther away, such as a ceiling
-hit 0.1 m above a floor touched earlier), and the surface hit, with the hit's own normal. A surface the same bit for
-bit as one listed, in normal, solid velocity, friction and `reports_reaction`, is dropped: an exact copy adds nothing,
-so 17 or 40 coincident floors take one place. The rest are sorted by value (normal, then solid velocity, then
-friction, then a reacting solid first, then solid index), so every sum and every tie below reads them in an order
-their values decide, and the velocities and the reaction are the same bits for every order of the solids array. The
-move off near surfaces at the start and the settle are not sorted: they read the solids in array order and count an
-exact copy as a solid of its own, so a reordered array or a copy can change the position by a unit in the last place
-(9 and 2 of 26,216 moves near round solids, at most $4.4 times 10^(-16)$ m), a known limit; sorting their targets would
-change the rounding of every move whose array order is not the sorted one. A coincident surface that is not an exact copy (rougher, smoother, or reacting) stays; with a moving solid a smoother one
-changes the result by rounding only, at most $2.2 times 10^(-14)$ of the speed. Surfaces whose normals agree within $2^(-40)$ on every
-axis share one *direction*, with the normal of the first.
+At each hit, at the start or along the path, both velocities get one *joint response* over the *active surfaces*: every
+surface of every solid that the particle is within $"tol" + "tol"\/16$ of, read at its position then (not the normal
+recorded at a hit, stale once the particle has slid along a ball; not a surface farther away, such as a ceiling hit 0.1
+m above a floor touched earlier; not a solid passed at a bounding surface's level, @sec-first-hit), and the surface hit,
+with the hit's own normal. A surface the same bit for bit as one listed, in normal, solid velocity, friction and
+`reports_reaction`, is dropped: an exact copy adds nothing, so 17 or 40 coincident floors take one place. The rest are
+sorted by value (normal, then solid velocity, then friction, then a reacting solid first, then solid index), so every
+sum and every tie below reads them in an order their values decide, and the velocities and the reaction are the same
+bits for every order of the solids array. The move off near surfaces at the start and the settle are not sorted: they
+read the solids in array order and count an exact copy as a solid of its own, so a reordered array or a copy can change
+the position by a unit in the last place (9 and 2 of 26,216 moves near round solids, at most $4.4 times 10^(-16)$ m), a
+known limit; sorting their targets would change the rounding of every move whose array order is not the sorted one. A
+coincident surface that is not an exact copy (rougher, smoother, or reacting) stays; with a moving solid a smoother one
+changes the result by rounding only, at most $2.2 times 10^(-14)$ of the speed. Surfaces whose normals agree within
+$2^(-40)$ on every axis share one *direction*, with the normal of the first.
 
 One active surface: each velocity gets the response above, nothing else. Several: for a velocity $bold(v)$, each
 direction's target is the largest $-bold(n)_i dot (bold(v) - bold(u)_i)$ of its surfaces, $bold(u)_i$ the solid's
@@ -1632,11 +1678,10 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
     with the solids sampled at the time already used and, after the first response of the step, the stricter
     touching rule for every solid. With no hit, advance by `for_this_step` times the time left and go to step 5.]),
-  ([Joint response], [Fail on a fifth hit. A hit that @proc-cylinder-first-hit found in a rim region farther than
-    $"tol"$ is first moved along the rim normal to $d = "tol"$, and read again there. Read the active surfaces: those
-    of every solid within $"tol" + "tol"\/16$ of the particle, plus the rim move's length, normals read afresh, and
-    the surface hit with its own normal; drop exact copies, sort by value,
-    group into directions; fail with "too many hits" past eight directions or 16 surfaces. Fill the record if it is
+  ([Joint response], [Fail on a fifth hit. Move to the hit, nothing more. Read the active surfaces: those of every
+    solid within $"tol" + "tol"\/16$ of the particle, except a solid passed at a bounding surface's level, normals
+    read afresh, and the surface hit with its own normal; drop exact copies, sort by value, group into
+    directions; fail with "too many hits" past eight directions or 16 surfaces. Fill the record if it is
     empty and count one hit. For each velocity: with one active surface, the response with that solid's velocity and
     `friction` times `friction_scale`; with several, when it approaches one beyond its bound, the smallest
     frictionless change, then the friction from each used direction's push (the single-surface response for one, the
