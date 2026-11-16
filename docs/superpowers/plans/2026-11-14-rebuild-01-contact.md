@@ -3159,9 +3159,12 @@ solid within `tol + tol / 16`, is the moment that response already read and gets
 leaves out a solid that fills the same space as the turning solid through the step (exact bits of shape, size, pose
 and motion); (3) P7's test passes when no time is left; (4) P7's failure names the turning solid; (5) the stepping
 search skips a turning solid that fills the same space as an earlier one, so an exact copy cannot stop elsewhere in
-the hit gap. The carry ends at the own-axes image of the particle's own world end point (`x + v t_left`) with the
-part into the surface removed (review I1: a plain straight line in own axes dragged a frictionless particle outward
-on a spinning face). Measured in review: least distance along 20,000 carried paths 0.9999985 tol; 87,200 moves
+the hit gap. The carry is the straight segment `p + A_mid^T (v - u) t_left` in the solid's own axes, with the part
+into the surface removed, where `A_mid` is the solid's axes at the middle of the time left (review I1: with the axes
+at the hit, a frictionless particle resting on a spinning face drifted outward, +6.4 % of the radius in 50 steps of
+0.1 s at 0.5 rad/s; ending at the world end point instead moved the same drift to a particle that sticks and added
+13 % energy; the middle is exact for a particle that sticks and leaves an error of order `(omega T)^3` per step
+for a frictionless one). Measured in review: least distance along 20,000 carried paths 0.9999985 tol; 87,200 moves
 without a turning solid bit-identical to before; a paddle 5 cm above a tank floor fails 0 of 1,150 hits, and P7's
 failure is cured by a shorter step except within a few tol of the other solid. Known limits: flush turning boxes
 (a particle cannot cross their seam); order and copies for starts closer than tol differ by rounding that grows as
