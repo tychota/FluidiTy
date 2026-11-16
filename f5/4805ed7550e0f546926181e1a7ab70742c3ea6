@@ -1,0 +1,54 @@
+native/fluidity/contact/move_particles_test.cc
+  s_4f0877e2acdcf0::t_a39f6a777f6e61 1-794,797
+  s_4f0877e2acdcf0::t_f15a29e0209b3a 795-796,798-936
+native/fluidity/contact/contact_error.h
+  s_4f0877e2acdcf0::t_107156b926ba2c 21
+  s_4f0877e2acdcf0::t_bc4046566f12c5 74-78
+  s_4f0877e2acdcf0::t_fd878038923c3a 60-62
+native/fluidity/contact/move_particles_steps.h
+  s_4f0877e2acdcf0::t_991fc8c4ee5aca 1-279
+  s_4f0877e2acdcf0::t_e7139f61999631 280-306
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_361ee4ba5843e1 39
+  s_4f0877e2acdcf0::t_8f030531955c0d 214-249
+  s_4f0877e2acdcf0::t_50653748ab2aa5 40-41,53,250-253
+native/fluidity/contact/move_particles_cpu.cc
+  s_4f0877e2acdcf0::t_453f62c6c1bfb8 1-359
+  s_4f0877e2acdcf0::t_45d84388f72c35 360-366
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_1a7d2bfca9f1f3 63
+  s_4f0877e2acdcf0::t_fd89607e4a7275 197-207
+native/fluidity/contact/move_particles_gpu.cu
+  s_4f0877e2acdcf0::t_c9f4d242bb8a89 1-27
+native/fluidity/contact/move_particles.h
+  s_4f0877e2acdcf0::t_d926f921d47e31 1-226
+  s_4f0877e2acdcf0::t_7927a5bf5ee31c 227-235
+native/fluidity/contact/move_particles_gpu.h
+  s_4f0877e2acdcf0::t_0bd13bcb9af126 1-36
+docs/glossary.md
+  s_4f0877e2acdcf0::t_edad63bbaa6578 122-126
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_a35e4fd7511dcc 664-672
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_36b83a06af1d25 5-7,14-15,22
+native/fluidity/contact/contact_error_message.cc
+  s_4f0877e2acdcf0::t_49cd4e76653885 67-69,118-119
+native/fluidity/contact/contact_error_test.cc
+  s_4f0877e2acdcf0::t_23236b66d41da5 55,64-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f54805ed7550e0f546926181e1a7ab70742c3ea6",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
