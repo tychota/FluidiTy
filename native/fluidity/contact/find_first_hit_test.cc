@@ -728,19 +728,117 @@ TEST(FindFirstHit, BoxRestingOnTop_SlidingOffTheEdgeIsFree) {
   ));
 }
 
-TEST(FindFirstHit, BoxRestingOnEdge_UsesTheFaceThatGivesTheDistance) {
-  // One tolerance from both kHighX and kHighZ: their gaps tie at 0 and the tie keeps kHighX. Sinking along the x
-  // face is free; pushing into it is a hit at 0 on kHighX.
+TEST(FindFirstHit, BoxRestingOnEdge_RestsOnTheOtherFacePlane) {
+  // One tolerance from both kHighX and kHighZ: their gaps tie at 0 and the tie keeps kHighX, which gives the distance.
+  // Sinking along the x face is free. Pushing into kHighX is free too: the start rests on the plane of kHighZ, which
+  // the sweep tries first (plan decision P21, item 16 b; as built a hit at 0 on kHighX). Pushing in while sinking into
+  // the top's plane by tol / 32 does not rest on it, so the distance's face rules: a hit at 0 on kHighX.
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 start = {.x = 0.5 + kTolerance, .y = 0, .z = 0.5 + kTolerance};
   ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1}));
-  const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1});
+  ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
+  const FirstHit first_hit =
+      FindHit(inputs, {.start = start, .velocity = {.x = -1, .y = 0, .z = -kTolerance / 32}, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
+}
+
+TEST(FindFirstHitOfSweep, BoxBesideItLevelWithItsTop_FreeAlsoAfterAResponse) {
+  // 33 / 32 tol beyond kHighX, level with the top's plane, moving inward after a response: the sweep tries the top's
+  // plane first and rests on it, so it is free (as built the touched rule read kHighX, 1.03 tol away, as approached:
+  // a hit at 0 and a dead stop).
+  const std::array solids = {
+      ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const Sweep sweep = {
+      .start = {.x = 0.5 + 33.0 / 32 * kTolerance, .y = 0, .z = 0.5 + kTolerance},
+      .velocity_for_this_step = {.x = -1, .y = 0, .z = 0},
+      .duration = 1,
+  };
+  const TouchedSolid touched = {.is_touched = true, .approach_allowance = 0x1p-46};
+  FirstHit first_hit;
+  ASSERT_EQ(FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, nullptr), ContactError::kNone);
+  ExpectFree(first_hit);
+}
+
+TEST(FindFirstHit, BoxDownItsGrownSidePlanePastTheEdge_IsFree) {
+  // Down the plane of kHighX at its rest gap, past the top edge: kHighZ gives the distance, and the start rests on the
+  // plane of kHighX, which the whole box lies behind, so the sweep is free (plan decision P21, item 8). As built, the
+  // path entered the grown box through the plane of kHighZ at 2.5 - tol s, stopped dead at the box's side.
+  const std::array solids = {
+      ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 4);
+  ExpectFree(FindHit(
+      inputs,
+      {.start = {.x = 0.5 + kTolerance, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4}
+  ));
+}
+
+TEST(FindFirstHit, BoxBoundingSurfaceWindowAndSink) {
+  // Down the plane of kHighX from {x, 0, 3}. A start tol / 8 inside that plane's rest gap rests on it; 3 tol / 16
+  // inside does not, and kHighZ is entered at 2.5 - tol s exactly. Sinking toward the plane by tol / 128 during the
+  // sweep still rests; by tol / 32 it does not. Just above the rest gap (tol / 128) and sinking by tol / 64, the start
+  // rests too, where the plane of kHighZ was entered at 1.25 - tol / 2 s.
+  const std::array solids = {
+      ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 4);
+  const Vec3 down = {.x = 0, .y = 0, .z = -1};
+  const double rest_x = 0.5 + kTolerance;  // m
+  const auto expect_top_hit = [](FirstHit first_hit, double elapsed) {
+    EXPECT_EQ(first_hit.solid_index, 0U);
+    EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+    EXPECT_EQ(first_hit.elapsed, elapsed);
+  };
+  ExpectFree(
+      FindHit(inputs, {.start = {.x = rest_x - kTolerance / 8, .y = 0, .z = 3}, .velocity = down, .duration = 4})
+  );
+  expect_top_hit(
+      FindHit(inputs, {.start = {.x = rest_x - 3 * kTolerance / 16, .y = 0, .z = 3}, .velocity = down, .duration = 4}),
+      2.5 - kTolerance
+  );
+  const Vec3 rest_start = {.x = rest_x, .y = 0, .z = 3};
+  ExpectFree(
+      FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 512, .y = 0, .z = -1}, .duration = 4})
+  );
+  expect_top_hit(
+      FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 128, .y = 0, .z = -1}, .duration = 4}),
+      2.5 - kTolerance
+  );
+  ExpectFree(FindHit(
+      inputs,
+      {
+          .start = {.x = rest_x + kTolerance / 128, .y = 0, .z = 3},
+          .velocity = {.x = -kTolerance / 128, .y = 0, .z = -2},
+          .duration = 2,
+      }
+  ));
+}
+
+TEST(FindFirstHit, BoxFaceThatGivesTheDistance_KeepsItsOwnTouchingRule) {
+  // tol / 128 above the top's rest gap, sinking by tol / 128 over 1 s while moving along it: kHighZ gives the distance,
+  // so the plain closed form decides (plan decision P2 alone) and its plane is entered at 1 s exactly.
+  const std::array solids = {
+      ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
+  };
+  const SolidContactInputs inputs = BuildInputs(solids, 1);
+  const FirstHit first_hit = FindHit(
+      inputs,
+      {
+          .start = {.x = 0, .y = 0, .z = 0.5 + kTolerance + kTolerance / 128},
+          .velocity = {.x = 0.25, .y = 0, .z = -kTolerance / 128},
+          .duration = 1,
+      }
+  );
+  EXPECT_EQ(first_hit.solid_index, 0U);
+  EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
+  EXPECT_EQ(first_hit.elapsed, 1);
 }
 
 // --- The end of the sweep, paths along a face, and edges ---

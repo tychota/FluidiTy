@@ -2823,6 +2823,364 @@ TEST(MoveParticle, SlideOffCapPastRim_AndUpWallPastRim_OneHitThenFree) {
   );
 }
 
+TEST(MoveParticle, StackedBoxes_SlideDownTheSeamKeepsItsVelocity) {
+  // Down the upper box's side at its rest gap and past the seam: beside the lower box's top edge, its kHighZ gives the
+  // distance and the start rests on the plane of its kHighX, so the lower box is not hit and the velocity stays
+  // {0, 0, -1} bit for bit (plan decision P21, item 8). As built, the path entered through the plane of the lower box's
+  // top and stopped dead.
+  const MoveParticleCall call = RunMove("StackedBoxes");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  ExpectVec3Equal(call.result.velocity.for_this_step, -kUnitZ);
+  ExpectVec3Equal(call.result.velocity.for_next_step, -kUnitZ);
+  ExpectVec3Near(call.result.position, {.x = 0.5 + kTolerance, .y = 0, .z = 0.8}, kTolerance / 1024);
+}
+
+TEST(MoveParticle, BoxesSideBySide_SlideAcrossTheSeamKeepsItsVelocity) {
+  // Along two boxes side by side in one floor at the rest gap of their tops: beside the second box its kLowX gives the
+  // distance and the start rests on the plane of its top, so it is not hit and the velocity stays {1, 0, 0} bit for
+  // bit. Pressed into the boxes at 0.16 m/s, the start's response on the first box is the one hit and leaves {1, 0, 0}.
+  // As built, the particle stopped on the second box's kLowX at 0.3 - tol s.
+  const MoveParticleCall sliding = RunMove("BoxesSideBySide");
+  ASSERT_EQ(sliding.error, ContactError::kNone);
+  EXPECT_EQ(sliding.result.hit_count, 0);
+  ExpectVec3Equal(sliding.result.velocity.for_this_step, kUnitX);
+  ExpectVec3Equal(sliding.result.velocity.for_next_step, kUnitX);
+  ExpectVec3Near(sliding.result.position, {.x = 0.8, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  const MoveParticleCall pressed = RunMoveWith(
+      "BoxesSideBySide",
+      {.position = {.x = 0.2, .y = 0, .z = kTolerance}, .velocity = {.x = 1, .y = 0, .z = -0.16}, .step_duration = 0.6}
+  );
+  ASSERT_EQ(pressed.error, ContactError::kNone);
+  EXPECT_EQ(pressed.result.hit_count, 1);
+  EXPECT_EQ(pressed.result.face, SolidFace::kHighZ);
+  EXPECT_EQ(pressed.result.solid_index, 0U);
+  ExpectBothVelocitiesNear(pressed.result, kUnitX, 1e-15);
+  ExpectVec3Near(pressed.result.position, {.x = 0.8, .y = 0, .z = kTolerance}, kTolerance / 1024);
+}
+
+TEST(MoveParticle, BoxFlushInFloor_SlideOntoItKeepsItsVelocity) {
+  // Along the floor at its rest gap onto a box set flush in it: the start rests on the plane of the box's top, so the
+  // box is not hit and the velocity is kept bit for bit. As built, kHighX stopped the particle.
+  const MoveParticleCall call = RunMove("BoxFlushInFloor");
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  ExpectVec3Equal(call.result.velocity.for_this_step, -kUnitX);
+  ExpectVec3Equal(call.result.velocity.for_next_step, -kUnitX);
+}
+
+TEST(MoveParticle, BoxSeams_StepStartingJustBeforeTheSeamKeepsItsVelocity) {
+  // A step that starts 33 / 32 tol beyond the seam, level with the next box's top, where its side face's plane,
+  // continued above the top, is 1.03 tol away and its edge 1.43 tol: the box is no active surface (plan decision P21,
+  // item 16), so the step keeps its velocity bit for bit; pressed into the surface slid on, the start's response is on
+  // that surface alone, with friction 0.3 {0.952, 0, 0}. As built every one of these stopped dead.
+  const double offset = 33.0 / 32 * kTolerance;  // m
+  const Vec3 floor_start = {.x = 0.5 + offset, .y = 0, .z = kTolerance};
+  ExpectFreeWithVelocity(
+      RunMoveWith("BoxFlushInFloor", {.position = floor_start, .velocity = -kUnitX, .step_duration = 0.1}),
+      -kUnitX
+  );
+  ExpectOneHitWithVelocity(
+      RunMoveWith(
+          "BoxFlushInFloor",
+          {.position = floor_start, .velocity = {.x = -1, .y = 0, .z = -0.16}, .step_duration = 0.1}
+      ),
+      -kUnitX
+  );
+  // tol / 32 under the floor's rest gap and tol / 64 inside the box's side plane's window: still level, still free.
+  const Vec3 under_rest_gap = {.x = 0.5 + kTolerance - kTolerance / 64, .y = 0, .z = kTolerance - kTolerance / 32};
+  ExpectFreeWithVelocity(
+      RunMoveWith("BoxFlushInFloor", {.position = under_rest_gap, .velocity = -kUnitX, .step_duration = 0.1}),
+      -kUnitX
+  );
+  const Vec3 side_by_side_start = {.x = 0.5 - offset, .y = 0, .z = kTolerance};
+  ExpectFreeWithVelocity(
+      RunMoveWith("BoxesSideBySide", {.position = side_by_side_start, .velocity = kUnitX, .step_duration = 0.1}),
+      kUnitX
+  );
+  const Vec3 pressed = {.x = 1, .y = 0, .z = -0.16};
+  const MoveParticleCall pushed =
+      RunMoveWith("BoxesSideBySide", {.position = side_by_side_start, .velocity = pressed, .step_duration = 0.1});
+  ExpectOneHitWithVelocity(pushed, kUnitX);
+  EXPECT_EQ(pushed.result.face, SolidFace::kHighZ);
+  EXPECT_EQ(pushed.result.solid_index, 0U);
+  ExpectOneHitWithVelocity(
+      RunMoveWith(
+          "BoxesSideBySide",
+          {.position = side_by_side_start, .velocity = pressed, .step_duration = 0.1, .friction = 0.3}
+      ),
+      {.x = 0.952, .y = 0, .z = 0}
+  );
+  const Vec3 stacked_start = {.x = 0.5 + kTolerance, .y = 0, .z = 1 + offset};
+  ExpectFreeWithVelocity(
+      RunMoveWith("StackedBoxes", {.position = stacked_start, .velocity = -kUnitZ, .step_duration = 0.1}),
+      -kUnitZ
+  );
+  ExpectOneHitWithVelocity(
+      RunMoveWith(
+          "StackedBoxes",
+          {.position = stacked_start, .velocity = {.x = -0.16, .y = 0, .z = -1}, .step_duration = 0.1}
+      ),
+      -kUnitZ
+  );
+}
+
+// The scene BoxFlushInFloor without its floor: a lone box of half size 0.5 m, its top at z = 0.
+MoveParticleCase BuildLoneBoxScene() {
+  MoveParticleCase scene = FindMoveParticleCase("BoxFlushInFloor");
+  scene.solids.erase(scene.solids.begin());
+  scene.solids.at(0).solid_id = 1;
+  return scene;
+}
+
+TEST(MoveParticle, LoneBoxBesideItLevelWithItsTop_NoSurfaceThatIsNotThere) {
+  // A lone box, its top at z = 0, and a start 33 / 32 tol beyond kHighX at the top's level: the box is no active
+  // surface there. Falling, nothing holds the particle up (a bounding surface listed in the box's place would). Moving
+  // inward it keeps {-1, 0, 0} (as built {0, 0, 0}). Moving inward and down, the sharp grown edge is entered after
+  // tol / 32 and hit on kHighX (plan decision P21, item 8 c), which leaves {0, 0, -0.5}.
+  MoveParticleCase scene = BuildLoneBoxScene();
+  scene.inputs.start_position = {.x = 0.5 + 33.0 / 32 * kTolerance, .y = 0, .z = kTolerance};
+  const auto run_with = [&scene](Vec3 velocity) {
+    scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+    return RunMove(scene);
+  };
+  ExpectFreeWithVelocity(run_with(-kUnitZ), -kUnitZ);
+  ExpectFreeWithVelocity(run_with(-kUnitX), -kUnitX);
+  const MoveParticleCall into_edge = run_with({.x = -1, .y = 0, .z = -0.5});
+  ASSERT_EQ(into_edge.error, ContactError::kNone);
+  EXPECT_EQ(into_edge.result.hit_count, 1);
+  EXPECT_EQ(into_edge.result.face, SolidFace::kHighX);
+  EXPECT_NEAR(into_edge.result.hit_fraction, (kTolerance / 32) / 0.1, 1e-15);
+  ExpectBothVelocitiesNear(into_edge.result, {.x = 0, .y = 0, .z = -0.5}, 1e-15);
+}
+
+TEST(MoveParticle, MovingBoxBesideFixedBox_NeighbourActsOnlyFromTheSeam) {
+  // Two boxes side by side, the second sliding along x at 0.3 m/s, friction 0.5, and a particle pressed into the first
+  // at 0.16 m/s, 33 / 32 tol before the seam: the second box is no active surface, so the first's friction alone acts,
+  // {1 - 0.5 * 0.16, 0, 0} = {0.92, 0, 0} (as built {0.3, 0, 0}: stuck to the moving box's side plane). With the second
+  // box rising at 0.1 m/s instead it is a real step: hit on its kLowX, which stops the particle.
+  MoveParticleCase conveyor = FindMoveParticleCase("BoxesSideBySide");
+  const Box second_box = {
+      .center = {.x = 1, .y = 0, .z = -0.5},
+      .axes = kIdentity,
+      .half_size = {.x = 0.5, .y = 0.5, .z = 0.5},
+  };
+  conveyor.solids.at(1) =
+      ToSolid(second_box, {.linear_velocity = {.x = 0.3, .y = 0, .z = 0}, .angular_velocity = {}}, 2);
+  const Vec3 start = {.x = 0.5 - 33.0 / 32 * kTolerance, .y = 0, .z = kTolerance};
+  conveyor.inputs.start_position = start;
+  conveyor.inputs.velocity = {
+      .for_next_step = {.x = 1, .y = 0, .z = -0.16},
+      .for_this_step = {.x = 1, .y = 0, .z = -0.16},
+  };
+  conveyor.inputs.step_duration = 0.1;
+  conveyor.inputs.friction = 0.5;
+  ExpectOneHitWithVelocity(RunMove(conveyor), {.x = 0.92, .y = 0, .z = 0});
+  MoveParticleCase rising = FindMoveParticleCase("BoxesSideBySide");
+  rising.solids.at(1) = ToSolid(second_box, {.linear_velocity = {.x = 0, .y = 0, .z = 0.1}, .angular_velocity = {}}, 2);
+  rising.inputs.start_position = start;
+  rising.inputs.step_duration = 0.1;
+  const MoveParticleCall call = RunMove(rising);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.face, SolidFace::kLowX);
+  EXPECT_EQ(call.result.solid_index, 1U);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+}
+
+TEST(MoveParticle, BoxFlushInFloor_LandingBesideTheSeamLeavesTheBoxOut) {
+  // Thrown at the floor from 0.01 m above, landing 33 / 32 tol beyond the box set flush in it: at that hit the
+  // particle is level with the box's top, so the box is no active surface there either (plan decision P21, item 16
+  // a, at a hit as at the start), and the floor alone responds: {-1, 0, 0}. Listed, the box's side plane, continued
+  // above the top, would stop the particle dead.
+  const MoveParticleCall call = RunMoveWith(
+      "BoxFlushInFloor",
+      {
+          .position = {.x = 0.5 + 33.0 / 32 * kTolerance + 0.01, .y = 0, .z = kTolerance + 0.01},
+          .velocity = {.x = -1, .y = 0, .z = -1},
+          .step_duration = 0.1,
+      }
+  );
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 0U);
+  ExpectBothVelocitiesNear(call.result, -kUnitX, 1e-15);
+}
+
+TEST(MoveParticle, RisingBoxFlushInFloor_LevelReadAtThePoseOfTheHit) {
+  // The same landing with the floor and the box rising together at 0.1 m/s: at the hit, read at the pose of the hit's
+  // time, the particle is level with the box's top, and keeps {-1, 0, 0.1}. Read at the pose of the step's start, the
+  // box would be 1 mm lower, not level, and its side plane would stop the particle.
+  MoveParticleCase scene = FindMoveParticleCase("BoxFlushInFloor");
+  const SolidMotion rising = {.linear_velocity = {.x = 0, .y = 0, .z = 0.1}, .angular_velocity = {}};
+  scene.solids.at(0) = move_particle_cases::BuildFlatSolid({}, kUnitZ, rising, 1);
+  const Box box = {
+      .center = {.x = 0, .y = 0, .z = -0.5},
+      .axes = kIdentity,
+      .half_size = {.x = 0.5, .y = 0.5, .z = 0.5},
+  };
+  scene.solids.at(1) = ToSolid(box, rising, 2);
+  scene.inputs.start_position = {.x = 0.5 + 33.0 / 32 * kTolerance + 0.01, .y = 0, .z = kTolerance + 0.011};
+  scene.inputs.velocity = {.for_next_step = {.x = -1, .y = 0, .z = -1}, .for_this_step = {.x = -1, .y = 0, .z = -1}};
+  scene.inputs.step_duration = 0.1;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 0U);
+  ExpectBothVelocitiesNear(call.result, {.x = -1, .y = 0, .z = 0.1}, 1e-15);
+}
+
+TEST(MoveParticle, BoxesUpsideDown_LevelWithALowFacePlane) {
+  // The low face planes are bounding surfaces too. A ceiling of two boxes side by side, bottoms at z = 0, and a
+  // particle 33 / 32 tol before the seam at the ceiling's rest gap, moving along it: free with {1, 0, 0}. A lone box
+  // above, a particle level with its bottom 33 / 32 tol beyond its side, moving inward: free with {-1, 0, 0}. Testing
+  // only the high planes, kLowX of the second box and kHighX of the lone box would stop the particle.
+  const Vec3 half_size = {.x = 0.5, .y = 0.5, .z = 0.5};
+  MoveParticleCase ceiling = FindMoveParticleCase("BoxesSideBySide");
+  ceiling.solids.at(0) =
+      ToSolid(Box{.center = {.x = 0, .y = 0, .z = 0.5}, .axes = kIdentity, .half_size = half_size}, kNoMotion, 1);
+  ceiling.solids.at(1) =
+      ToSolid(Box{.center = {.x = 1, .y = 0, .z = 0.5}, .axes = kIdentity, .half_size = half_size}, kNoMotion, 2);
+  ceiling.inputs.start_position = {.x = 0.5 - 33.0 / 32 * kTolerance, .y = 0, .z = -kTolerance};
+  ceiling.inputs.step_duration = 0.1;
+  ExpectFreeWithVelocity(RunMove(ceiling), kUnitX);
+  MoveParticleCase lone_above = ceiling;
+  lone_above.solids.pop_back();
+  lone_above.inputs.start_position = {.x = 0.5 + 33.0 / 32 * kTolerance, .y = 0, .z = -kTolerance};
+  lone_above.inputs.velocity = {.for_next_step = -kUnitX, .for_this_step = -kUnitX};
+  ExpectFreeWithVelocity(RunMove(lone_above), -kUnitX);
+}
+
+TEST(MoveParticle, LoneBoxLastEighthOfGrownTop_FallsOff_KnownChoice) {
+  // A known choice (plan decision P21, item 16 b): a particle at the top's rest gap, 15 / 16 tol beyond the real edge,
+  // on the last tol / 8 of the grown top, is level with the plane of kHighX, so the sweep rests on that plane and the
+  // particle falls past the box with both velocities {0, 0, -1} bit for bit, no hit. The top held it before the
+  // bounding surfaces came first: a start response on the top left {0, 0, 0}.
+  MoveParticleCase scene = BuildLoneBoxScene();
+  scene.inputs.start_position = {.x = 0.5 + 15.0 / 16 * kTolerance, .y = 0, .z = kTolerance};
+  scene.inputs.velocity = {.for_next_step = -kUnitZ, .for_this_step = -kUnitZ};
+  ExpectFreeWithVelocity(RunMove(scene), -kUnitZ);
+}
+
+TEST(MoveParticle, LoneBoxEdgeStripSlowApproach_NoResponse_KnownChoice) {
+  // A known choice (plan decision P21, item 16): on the edge strip, 0.95 tol beyond the side at the top's rest gap,
+  // level with the plane of kHighX, a particle moving inward and sinking into the top by 0.9 tol in the step gets no
+  // response: the box is no active surface at the start, the sweep does not rest on the side plane while the top, which
+  // gives the distance, has the plain touching rule, free while the path sinks less than tol. No hit, no reaction,
+  // both velocities kept as given, {-1, 0, -9 tol/s}; before the settle the particle is 0.1 tol from the box, never
+  // inside, and the settle lifts it back to tol. The start's distance is exactly tol here; one unit in the last place
+  // of the box's own coordinate higher it is outside by rounding, and the entry through the top's plane hits it at
+  // once instead, which leaves both velocities {-1, 0, 0}, also keeps the path outside and ends at tol.
+  MoveParticleCase scene = BuildLoneBoxScene();
+  scene.solids.at(0).reports_reaction = true;
+  scene.inputs.start_position = {.x = 0.5 + 0.95 * kTolerance, .y = 0, .z = kTolerance};
+  const Vec3 velocity = {.x = -1, .y = 0, .z = -0.9 * kTolerance / 0.1};  // m/s
+  scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
+  const double before_settle = ComputeEndDistance(scene, ComputePositionBeforeSettle(scene));  // m
+  EXPECT_NEAR(before_settle, 0.1 * kTolerance, kTolerance / 1024);
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 0);
+  EXPECT_EQ(call.result.reaction.solid_index, kNoSolid);
+  ExpectVec3Equal(call.result.velocity.for_this_step, velocity);
+  ExpectVec3Equal(call.result.velocity.for_next_step, velocity);
+  EXPECT_NEAR(ComputeEndDistance(scene, call.result.position), kTolerance, kTolerance / 1024);
+  // One unit in the last place of the box's own coordinate 0.5 + tol, so the box reads the start that much higher.
+  scene.inputs.start_position.z = kTolerance + 0x1p-53;
+  const MoveParticleCall a_unit_above = RunMove(scene);
+  ASSERT_EQ(a_unit_above.error, ContactError::kNone);
+  EXPECT_EQ(a_unit_above.result.hit_count, 1);
+  EXPECT_EQ(a_unit_above.result.face, SolidFace::kHighZ);
+  ExpectBothVelocitiesNear(a_unit_above.result, -kUnitX, 1e-15);
+  EXPECT_NEAR(ComputeEndDistance(scene, a_unit_above.result.position), kTolerance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, SeamsOverManySteps_Boxes) {
+  // As SeamsOverManySteps_Cylinders, across two boxes side by side, onto a box flush in a floor and down two stacked
+  // boxes: every run keeps the speed. As built 83, 35 and 8 runs of 400 lost speed at steps of 0.3, 0.7 and 3 tol.
+  ExpectSeamRowsKeepTheSpeed({
+      .case_name = "BoxesSideBySide",
+      .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
+      .back_from_seam = -kUnitX,
+      .along_path = kUnitX,
+      .push_direction = -kUnitZ,
+  });
+  ExpectSeamRowsKeepTheSpeed({
+      .case_name = "BoxFlushInFloor",
+      .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
+      .back_from_seam = kUnitX,
+      .along_path = -kUnitX,
+      .push_direction = -kUnitZ,
+  });
+  ExpectSeamRowsKeepTheSpeed({
+      .case_name = "StackedBoxes",
+      .seam_point = {.x = 0.5 + kTolerance, .y = 0, .z = 1},
+      .back_from_seam = kUnitZ,
+      .along_path = -kUnitZ,
+      .push_direction = -kUnitX,
+  });
+}
+
+// The scene BoxesSideBySide with its second box raised by step_height.
+MoveParticleCase BuildRaisedSecondBox(double step_height) {
+  MoveParticleCase scene = FindMoveParticleCase("BoxesSideBySide");
+  const Box raised = {
+      .center = {.x = 1, .y = 0, .z = -0.5 + step_height},
+      .axes = kIdentity,
+      .half_size = {.x = 0.5, .y = 0.5, .z = 0.5},
+  };
+  scene.solids.at(1) = ToSolid(raised, kNoMotion, 2);
+  return scene;
+}
+
+TEST(MoveParticle, BoxesSideBySideStepUp_AThirtySecondIsNotSeenAQuarterStops) {
+  // The limit of plan decision P21, a ledge lower than tol / 8 is not seen. The second box raised by tol / 32: the
+  // start rests on the plane of its top, 31 / 32 tol away, crosses onto it without a hit, and the settle lifts it to
+  // tol. Raised by tol / 4: the plane of its top is a quarter inside the rest gap, so kLowX stops the particle at 0.3 -
+  // tol s.
+  const MoveParticleCase low_step = BuildRaisedSecondBox(kTolerance / 32);
+  const Solid& raised_box = low_step.solids.at(1);
+  const SolidPose low_end_pose = ComputeSolidPose(raised_box, low_step.inputs.step_duration);
+  const Vec3 before_settle = ComputePositionBeforeSettle(low_step);
+  EXPECT_NEAR(
+      ComputeDistanceToSolid(raised_box, low_end_pose, before_settle).distance,
+      31.0 / 32 * kTolerance,
+      kTolerance / 1024
+  );
+  const MoveParticleCall over_low_step = RunMove(low_step);
+  ASSERT_EQ(over_low_step.error, ContactError::kNone);
+  EXPECT_EQ(over_low_step.result.hit_count, 0);
+  EXPECT_NEAR(
+      ComputeDistanceToSolid(raised_box, low_end_pose, over_low_step.result.position).distance,
+      kTolerance,
+      kTolerance / 1024
+  );
+  const MoveParticleCall at_quarter_step = RunMove(BuildRaisedSecondBox(kTolerance / 4));
+  ASSERT_EQ(at_quarter_step.error, ContactError::kNone);
+  EXPECT_EQ(at_quarter_step.result.hit_count, 1);
+  EXPECT_EQ(at_quarter_step.result.face, SolidFace::kLowX);
+  EXPECT_EQ(at_quarter_step.result.solid_index, 1U);
+  ExpectBothVelocitiesNear(at_quarter_step.result, {}, 1e-15);
+  EXPECT_NEAR(at_quarter_step.result.position.x, 0.5 - kTolerance, kTolerance / 1024);
+}
+
+TEST(MoveParticle, BoxesSideBySideStepUp_ALedgeDeeperThanAnEighthIsSeen) {
+  // The second box raised by 3 / 16 tol, a step: 33 / 32 tol before it, its top's gap is -3 / 16 tol, deeper than the
+  // level window's tol / 8, so the box is an active surface by its side face, 1.03 tol away, and the start's response
+  // stops the particle at once: hit_fraction 0. A window twice as deep would leave the box out, and the sweep would
+  // stop it tol / 32 later instead.
+  MoveParticleCase scene = BuildRaisedSecondBox(3.0 / 16 * kTolerance);
+  scene.inputs.start_position = {.x = 0.5 - 33.0 / 32 * kTolerance, .y = 0, .z = kTolerance};
+  scene.inputs.step_duration = 0.1;
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.solid_index, 1U);
+  EXPECT_EQ(call.result.face, SolidFace::kLowX);
+  EXPECT_EQ(call.result.hit_fraction, 0);
+  ExpectBothVelocitiesNear(call.result, {}, 1e-15);
+}
+
 // The faces a particle carried around a rim in steps of T 1 s ends on, each counted once per run of equal faces, in
 // order; and the end of the last step. Each step reads the normal n at the position, t = {n.z, 0, -n.x}, and moves with
 // both velocities tol / 2 * t * tangent_sign - tol / 4 * n: along the surface, pressed into it.
@@ -6208,6 +6566,7 @@ struct FlushSeamPath {
 enum class FlushSeamKind : std::uint8_t {
   kStackedDrums,  // Two drums of one radius on one axis, down the seam along the wall.
   kPuckInFloor,  // A puck flush in a floor, onto it or off it along the floor.
+  kBoxesSideBySide,  // Two boxes side by side in one floor, across the seam along their tops.
 };
 
 // A turn whose three columns have no zero entry: {0.36, 0.48, -0.8}, {-0.8, 0.6, 0}, {0.48, 0.64, 0.6}.
@@ -6241,7 +6600,11 @@ Vec3 DrawSeamDirection(CaseGenerator& generator) {
 // third, the upper drum's low cap on the lower drum's high cap; the start at the upper drum's wall rest gap at the
 // azimuth, the distance before the seam; the path down the axis, pushed into the wall. Puck: radius the first size,
 // half height the third, its top flush with the floor; the start at the floor's rest gap, the distance before the rim,
-// outside it going on or inside it going off, with the sideways share across the radius; pushed into the floor.
+// outside it going on or inside it going off, with the sideways share across the radius; pushed into the floor. Box
+// boxes side by side: half sizes the first, second and third sizes along own x, y, z, the second box of half length the
+// second size along own x beside the first, both tops at the centre's height; the start at the first top's rest gap,
+// the distance before the seam, 0.1 m off the middle times the sideways share; the path along own x with the sideways
+// share along own y, pushed into the tops.
 FlushSeamPath BuildFlushSeamPath(CaseGenerator& generator, FlushSeamKind kind) {
   const bool is_tilted = generator.Next() < 0.5;
   const Vec3 center = 2 * generator.Next() * DrawSeamDirection(generator);
@@ -6279,6 +6642,20 @@ FlushSeamPath BuildFlushSeamPath(CaseGenerator& generator, FlushSeamKind kind) {
     path.inputs.start_position = center + (radius + kTolerance) * radial + (-second_size + before_seam) * axis;
     relative_velocity = -speed * axis;
     push_direction = -radial;
+  } else if (kind == FlushSeamKind::kBoxesSideBySide) {
+    const Vec3 first_half_size = {.x = first_size, .y = second_size, .z = third_size};  // m
+    const Vec3 second_half_size = {.x = second_size, .y = second_size, .z = third_size};  // m
+    const Vec3 own_x = {.x = axes.xx, .y = axes.yx, .z = axes.zx};
+    const Vec3 own_y = {.x = axes.xy, .y = axes.yy, .z = axes.zy};
+    const Vec3 first_center = center - third_size * axis;
+    const Vec3 second_center = first_center + (first_size + second_size) * own_x;
+    const Box first_floor_box = {.center = first_center, .axes = axes, .half_size = first_half_size};
+    const Box second_floor_box = {.center = second_center, .axes = axes, .half_size = second_half_size};
+    path.solids = {ToSolid(first_floor_box, motion, 1), ToSolid(second_floor_box, motion, 2)};
+    path.inputs.start_position =
+        center + (first_size - before_seam) * own_x + 0.1 * sideways_share * own_y + kTolerance * axis;
+    relative_velocity = speed * (own_x + sideways_share * own_y);
+    push_direction = -axis;
   } else {
     const double radius = first_size;  // m
     const Cylinder puck =
@@ -6348,7 +6725,8 @@ TEST(MoveParticle, GeneratedFlushSeams_KeepTheSpeedAlongTheSeam) {
   // crosses it without a hit, or with the start's one when it is pushed into the surface, and keeps its speed along the
   // path. Measured with the sharp grown rim edge of plan Task 12a: 1,044 of the stacked drums and 629 of the pucks lost
   // speed, 578 and 360 with a second hit; plan decision P21's model, on its own draws, loses none.
-  for (const FlushSeamKind kind : {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor}) {
+  for (const FlushSeamKind kind :
+       {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor, FlushSeamKind::kBoxesSideBySide}) {
     CaseGenerator generator;
     FlushSeamCounts counts;
     for (int path_index = 0; path_index < 2000; ++path_index) {
@@ -6361,7 +6739,7 @@ TEST(MoveParticle, GeneratedFlushSeams_KeepTheSpeedAlongTheSeam) {
 }
 
 // Moves a flush-seam path's start to offset before its seam, along the line BuildFlushSeamPath measured its distance
-// before the seam on: the drums' axis, the puck's radius.
+// before the seam on: the drums' axis, the puck's radius, the boxes' own x axis.
 void ApplySeamOffset(FlushSeamKind kind, double offset, FlushSeamPath* path) {
   const Vec3 start = path->inputs.start_position;
   if (kind == FlushSeamKind::kStackedDrums) {
@@ -6373,6 +6751,14 @@ void ApplySeamOffset(FlushSeamKind kind, double offset, FlushSeamPath* path) {
     };
     const double height = math::Dot(start - upper.pose_at_step_start.origin, axis);  // m
     path->inputs.start_position = start + ((-upper.half_size.z + offset) - height) * axis;
+    return;
+  }
+  if (kind == FlushSeamKind::kBoxesSideBySide) {
+    const Solid& first_box = path->solids.at(0);
+    const Mat3 axes = first_box.pose_at_step_start.axes;
+    const Vec3 own_x = {.x = axes.xx, .y = axes.yx, .z = axes.zx};
+    const double along_x = math::Dot(start - first_box.pose_at_step_start.origin, own_x);  // m
+    path->inputs.start_position = start + ((first_box.half_size.x - offset) - along_x) * own_x;
     return;
   }
   const Solid& puck = path->solids.at(1);
@@ -6437,8 +6823,9 @@ TEST(MoveParticle, GeneratedFlushSeamsOverManySteps_KeepTheSpeed) {
   // or tilted axes, a start 1.5 to 6 tol before the seam, steps of tol / 4 to 1,024 tol, Min(60, Floor(14 tol / step) +
   // 2) of them, the same input velocity every step: every step succeeds and keeps the speed along the path that
   // friction on the surface slid on leaves (plan decision P21, item 16). Plan decision P21's model, on its own draws:
-  // 0 of 1,000 lose speed; as built, 165 (drums) and 69 (pucks).
-  for (const FlushSeamKind kind : {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor}) {
+  // 0 of 1,000 lose speed; as built, 165 (drums), 69 (pucks) and 36 (boxes).
+  for (const FlushSeamKind kind :
+       {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor, FlushSeamKind::kBoxesSideBySide}) {
     CaseGenerator generator;
     SeamRunCounts counts;
     for (int run_index = 0; run_index < 1000; ++run_index) {

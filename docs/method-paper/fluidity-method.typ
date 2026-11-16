@@ -911,22 +911,30 @@ A start deeper than $"tol"$ inside the grown solid, $g(0) < -"tol"$, is hit at $
 from there. For a flat solid with surface at $z = 0$, a particle at $z = "tol"$ moving at $(5, 0, -"tol"\/4)$ m/s for
 1 s slides freely; at (5, 0, −1) m/s it hits at 0.
 
-A convex solid also lies behind surfaces that do not give the distance, its *bounding surfaces*: a cylinder's wall
-taken as unbounded along its axis, and the plane of each cap. A start beside a cylinder's rim, where neither gives
-the distance, *rests* on one of them when its gap $g_b$ to it is in $[-"tol"\/8, "tol"\/16]$ and the path sinks toward
-it by at most $"tol"\/64$ during the sweep, $dot(g)_b times "duration" >= -"tol"\/64$; the sweep is then free of the
-whole solid. It is safe for the reason the touching rule is: the solid's distance is at least $g_b + "tol"$ at every
-point, and along the path $g_b$ is at least $g_b (0) + dot(g)_b t$ (a plane's gap is linear in time, the distance
-from an axis convex), so a resting sweep stays at least $"tol" - "tol"\/8 - "tol"\/64 = 55\/64 "tol"$ from the solid;
-the settle lifts it back to the rest gap. Below, $"tol"\/8$ holds a particle that the settle left within
-$"tol"\/128$ of the rest gap and a response brought up to $"tol"\/16$ nearer; above, $"tol"\/16$ is the touched window;
-the sink, $"tol"\/64$, is what a response may leave. What it gives up: a path the true distance would stop up to
-$9\/64 "tol"$ inside the rest gap is not hit, and a ledge lower than $"tol"\/8$ between two solids is not seen. It
-lets a particle cross the seam of two flush solids. Two drums of one radius stacked on one axis: a particle sliding
-down the upper drum's wall at the rest gap reaches the lower drum beside its rim, rests on the lower wall's
-unbounded surface, and keeps $(0, 0, -1)$ m/s bit for bit; read by the true distance alone it would be hit there, at
-$d = "tol"$, by the rim it cannot reach. A puck set flush in a floor: a particle sliding along the floor at the rest
-gap onto it rests on the plane of its top and keeps its velocity (the tests' numbers).
+A convex solid also lies behind surfaces that do not give the distance, its *bounding surfaces*: each face plane of a
+box but the one that gives the distance, a cylinder's wall taken as unbounded along its axis, and the plane of each cap.
+A start *rests* on one of them (for a cylinder, beside its rim, where neither wall nor cap gives the distance) when its
+gap $g_b$ to it is in $[-"tol"\/8, "tol"\/16]$ and the path sinks toward it by at most $"tol"\/64$ during the sweep,
+$dot(g)_b times "duration" >= -"tol"\/64$; the sweep is then free of the whole solid. It is safe for the reason the
+touching rule is: the solid's distance is at least $g_b + "tol"$ at every point, and along the path $g_b$ is at least
+$g_b (0) + dot(g)_b t$ (a plane's gap is linear in time, the distance from an axis convex), so a resting sweep stays at
+least $"tol" - "tol"\/8 - "tol"\/64 = 55\/64 "tol"$ from the solid; the settle lifts it back to the rest gap. Below,
+$"tol"\/8$ holds a particle that the settle left within $"tol"\/128$ of the rest gap and a response brought up to
+$"tol"\/16$ nearer; above, $"tol"\/16$ is the touched window; the sink, $"tol"\/64$, is what a response may leave. What
+it gives up: a path the true distance would stop up to $9\/64 "tol"$ inside the rest gap is not hit, and a ledge lower
+than $"tol"\/8$ between two solids is not seen. It lets a particle cross the seam of two flush solids. Two drums of one
+radius stacked on one axis: a particle sliding down the upper drum's wall at the rest gap reaches the lower drum beside
+its rim, rests on the lower wall's unbounded surface, and keeps $(0, 0, -1)$ m/s bit for bit; read by the true distance
+alone it would graze the lower rim at exactly $d = "tol"$ and be turned by the rim's normal there. A puck set flush in a
+floor: a particle sliding along the floor at the rest gap onto it rests on the plane of its top and keeps its velocity.
+Two boxes stacked into one side, two boxes side by side in one floor and a box set flush in a floor are the same seam
+with flat faces: as the face gap of the next box's coplanar face is rounding of either sign, without the rule the path
+counted as behind that plane, crossed the next box's side plane and stopped dead; resting on it, it keeps its velocity
+(the tests' numbers). A box's grown edges stay sharp: a path that clips an edge without coming within $"tol"$ of the box
+in a straight line is still hit, with a face normal, and a step up between two such boxes of $"tol"\/8$ to $"tol"$ still
+stops a particle; rounding them is a change of the box's distance, not of this rule. A known choice of the order below:
+a particle on the last $"tol"\/8$ of a box's grown top, its centre at least $7\/8 "tol"$ beyond the real edge, rests on
+the side plane and falls past the box, where the top held it before.
 
 After the first response of a step every solid gets a stricter form of the rule. After a hit the particle stands at $d =
 "tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an approach of a few rounding
@@ -973,14 +981,17 @@ distance, whatever the sign of the distance's gap, since after a response the to
 that rim at a start the bounding surface frees. A solid left out whose sweep does not rest meets the touching rule on
 its distance: after a response it is hit at 0 for any approach beyond the bound $b$, one more hit, listed as the surface
 hit; before any response the plain rule frees a path that sinks less than $"tol"$ into the distance's face, so such an
-approach, at a rim's rest gap, gets no response and records no reaction in the step, a known choice. At a start within
-rounding of the rest gap the sign of the computed gap decides: a distance a hair above $"tol"$ counts as outside, and
-the closed form hits it at once (the rim search within $"tol"\/1024$, at 0); at or below $"tol"$ the plain rule frees
-it. What is guaranteed either way is the position: from the rest gap a sink below $"tol"$ keeps $d >= 0$ along the path
-(a sink of $0.999 "tol"$ ends $0.001 "tol"$ away), the path never enters the solid, and the settle lifts the particle to
-$"tol"$, so the end check holds. Two drums of one radius stacked on one axis and a step that starts $3\/16 "tol"$ above
-the seam at the wall's rest gap, $1.017 "tol"$ from the lower rim: the step keeps $(0, 0, -1)$ m/s bit for bit, where a
-response on the rim turned it to $(0.181, 0, -0.966)$ m/s (the tests' numbers).
+approach, at a rim's rest gap or a box's edge strip, gets no response and records no reaction in the step, a known
+choice. At a start within rounding of the rest gap the sign of the computed gap decides: a distance a hair above $"tol"$
+counts as outside, and the closed form hits it at once (the rim search within $"tol"\/1024$, at 0); at or below $"tol"$
+the plain rule frees it. What is guaranteed either way is the position: from the rest gap a sink below $"tol"$ keeps $d
+>= 0$ along the path (a sink of $0.999 "tol"$ ends $0.001 "tol"$ away), the path never enters the solid, and the settle
+lifts the particle to $"tol"$, so the end check holds. Two drums of one radius stacked on one axis and a step that
+starts $3\/16 "tol"$ above the seam at the wall's rest gap, $1.017 "tol"$ from the lower rim: the step keeps $(0, 0,
+-1)$ m/s bit for bit, where a response on the rim turned it to $(0.181, 0, -0.966)$ m/s. A box set flush in a floor and
+a step that starts $33\/32 "tol"$ beyond the seam at the floor's rest gap: the box's distance there is its side face's
+plane continued above the top, $1.03 "tol"$ away while its edge is $1.43 "tol"$ away; the active surfaces are the
+floor's alone, and the step keeps its velocity, where a response on that plane stopped it dead (the tests' numbers).
 
 === A turning solid
 

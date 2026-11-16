@@ -29,10 +29,12 @@
 //   1.5 - tol s, normal {-1, 0, 0}. A cylinder of radius 0.5 m and half height 1 m along z and a path falling at 1 m/s
 //   tol / 2 beyond its wall: the sharp corner is entered Sqrt(1.25) tol from the rim, and the rim search hits the path
 //   Sqrt(0.75) tol above the cap's plane, tol from the rim.
-//   A solid lies behind each of its bounding surfaces: a cylinder behind its wall, taken as unbounded along the axis,
-//   and behind each cap's plane. A start beside a rim, where neither gives the distance, that rests on one of them is
-//   free of the whole cylinder: so a particle sliding along a floor onto a puck set flush in it, or down two stacked
-//   drums of one radius, crosses the seam without a hit.
+//   A solid lies behind each of its bounding surfaces: a box behind each face plane, a cylinder behind its wall, taken
+//   as unbounded along the axis, and behind each cap's plane. A start that rests on one that does not give its
+//   distance (on a cylinder, beside a rim) is free of the whole solid, and the sweep tries that before the touching
+//   rule on the distance; a solid the particle is level with in that way is no active surface of a response. So a
+//   particle sliding along a floor onto a puck or a box set flush in it, down two stacked drums of one radius, or
+//   across two boxes side by side in one floor crosses the seam without a hit, at every step.
 //   A turning solid's gap is not linear in time and its faces do not keep their direction, so no closed form holds.
 //   The gap cannot shrink faster than the particle's speed relative to the solid, which a bound caps, and its rate
 //   cannot change faster than a second bound, K; the stepping search advances along the path by the longer of two
@@ -107,10 +109,10 @@
 //                  the plane cannot enter it. On a sphere or a cylinder the solid is convex and its true distance is
 //                  a convex function along the path, which gives the same rule. A bounding surface that does not give
 //                  the distance has a rule of its own (bounding surface)
-//   bounding surface  a surface the whole solid lies behind: a cylinder's wall taken as unbounded along its axis, the
-//                  plane of a cap. A start that rests on one that does not give its distance, a gap in [-tol / 8,
-//                  tol / 16] sinking at most tol / 64 during the sweep, is free of the solid
-//                  (ComputeIsRestingOnBoundingSurface)
+//   bounding surface  a surface the whole solid lies behind: a face plane of a box, a cylinder's wall taken as
+//                  unbounded along its axis, the plane of a cap. A start that rests on one that does not give its
+//                  distance, a gap in [-tol / 8, tol / 16] sinking at most tol / 64 during the sweep, is free of the
+//                  solid (ComputeIsRestingOnBoundingSurface)
 //   rim corner     the part of a cylinder grown with sharp edges that lies farther than tol from the rim: a
 //                  point beyond the wall and beyond a cap, by at most tol from each. A sweep that enters the grown
 //                  cylinder there goes on by the rim search
@@ -150,7 +152,8 @@
 //          ComputeJointFriction, ApplyStick, ApplySecondSolve, ComputeJointChange, ApplyJointCharges,
 //          ApplyJointResponse, ApplyHit, CheckStartOfSolid, ComputeIsStartInsideSolid, ComputeIsInArrayOrderBefore,
 //          StartResponse, FindStartResponse, ApplyStartRules, ApplySettleAtEnd, CheckEndOutsideSolids,
-//          ComputeIsLevelWithBoundingSurface, ComputeIsPassedAtBoundingSurfaceLevel
+//          ComputeIsLevelWithBoundingSurface, ComputeIsPassedAtBoundingSurfaceLevel, ComputeIsRestingOnOtherFacePlane,
+//          ComputeIsLevelWithOtherBoxFacePlane
 // Uses:    Vec3, math::Dot, math::Cross, math::Length, math::IsFinite (base/vec3.h), Mat3, kIdentity, math::Transpose,
 //          math::Determinant (base/mat3.h), Axis (base/axis.h), math::Abs, math::Sqrt, math::Max (base/scalar_math.h),
 //          PerParticleVelocity (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h),
@@ -694,14 +697,71 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindEntryThroughFacePlanes(
   };
 }
 
-// Finds the first hit of a straight path on a flat solid, a plate or a box that does not turn: the touching rule on
-// the surface that gives the distance, then the entry through the solid's face planes.
+// Computes whether a sweep's start rests on a face plane other than the one that gives its distance: the touching
+// rule of a bounding surface for a flat solid, a plate or a box (plan decision P21, items 1 and 16).
+//
+// Method: in the solid's own axes at the pose of sweep.start_elapsed (ComputeOwnPath), for each face plane whose face
+//   is not face_of_start_distance, gap = sign_out_of_solid * p.axis - offset - tol and rate = sign_out_of_solid *
+//   u.axis, the expressions FindEntryThroughFacePlanes reads, go to ComputeIsRestingOnBoundingSurface; true when one
+//   rests. The face that gives the distance keeps its own touching rule, so a flat solid and a committed plate, with
+//   one plane, are never tested, and an uncommitted plate's other plane is far beyond the window. Same bits on CPU and
+//   GPU: only + - * and comparisons.
+// Units: m, m/s and s, world.
+// Example: a box of half size 0.5 m at the origin and a start {0.5 + tol, 0, 3} falling at 1 m/s: kHighZ gives the
+//   distance and the start rests on the plane of kHighX: true. Moving at {-1, 0, -1} m/s: false.
+// Requires: solid_index < inputs.solid_count, and the solid does not turn. face_planes points to face_plane_count
+//   planes; pose_at_start is ComputeSolidPose of that solid at sweep.start_elapsed.
+// Read: docs/method-paper/fluidity-method.typ <sec-first-hit>
+FLUIDITY_CPU_AND_GPU inline bool ComputeIsRestingOnOtherFacePlane(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    SolidPose pose_at_start,
+    Sweep sweep,
+    const FacePlane* face_planes,
+    int face_plane_count,
+    SolidFace face_of_start_distance
+) {
+  assert(solid_index < inputs.solid_count);
+  assert(face_planes != nullptr);
+  const double contact_tolerance = inputs.contact_tolerance;
+  const OwnPath own_path = ComputeOwnPath(inputs, solid_index, pose_at_start, sweep);
+  for (int plane_index = 0; plane_index < face_plane_count; ++plane_index) {
+    const FacePlane face_plane = face_planes[plane_index];
+    if (face_plane.face == face_of_start_distance) {
+      continue;
+    }
+    const double sign_out_of_solid = face_plane.sign_out_of_solid;
+    const double start_gap = sign_out_of_solid * ComputeCoordinate(own_path.start, face_plane.axis) - face_plane.offset
+        - contact_tolerance;  // m
+    const double gap_rate = sign_out_of_solid * ComputeCoordinate(own_path.velocity, face_plane.axis);  // m/s
+    if (ComputeIsRestingOnBoundingSurface(contact_tolerance, start_gap, gap_rate, sweep.duration)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Finds the first hit of a straight path on a flat solid, a plate or a box that does not turn: the touching rule of
+// its bounding surfaces, the touching rule on the surface that gives the distance, then the entry through the solid's
+// face planes.
 //
 // Method: at_start = ComputeDistanceForParticle at the start, at the pose of sweep.start_elapsed, with the particle's
-//   plate side. ComputeStartCase of at_start, with touched: kHitAtStart gives a hit
-//   at 0 with at_start; kRestingAndFree gives no hit, for the whole solid, which lies behind the surface the particle
-//   rests on; kOutside gives FindEntryThroughFacePlanes. The planes' largest distance is the distance at_start holds,
-//   bit for bit, so a start outside by one test is outside by the other.
+//   plate side. First ComputeIsRestingOnOtherFacePlane: a start that rests on a face plane other than at_start's,
+//   a seam of two flush solids where the gap to the next solid's coplanar face is rounding of either sign, is free of
+//   the whole solid, which lies behind that plane. It comes before the touching rule on the distance, whatever the
+//   sign of the distance's gap (plan decision P21, item 16 b): after a response the touched rule would read the
+//   distance's face, a side plane continued past the edge, as approached, a hit at 0 and a dead stop. Then
+//   ComputeStartCase of at_start, with touched: kHitAtStart gives a hit at 0 with at_start; kRestingAndFree gives no
+//   hit, for the whole solid, which lies behind the surface the particle rests on; kOutside gives
+//   FindEntryThroughFacePlanes. The planes' largest distance is the distance at_start holds, bit for bit, so a start
+//   outside by one test is outside by the other. Two known choices follow from the order. A particle on the last
+//   tol / 8 of a box's grown top, its centre at least 7 / 8 tol beyond the real edge, is level with the side plane and
+//   rests on it, so it falls past the box where the top held it before. And a start level with a face plane it does
+//   not rest on meets the touching rule on the distance: before any response the plain rule frees an approach that
+//   sinks less than tol into the edge strip, which then gets no response and records no reaction in the step; at a
+//   start within rounding of the top's rest gap the sign of the computed gap decides, a hair above tol giving
+//   kOutside and a hit at once by the entry through the planes instead. Either way the path stays outside the box,
+//   at d >= 0 from the rest gap, and the settle lifts the particle back to tol.
 // Units: m, m/s and s, world.
 // Example: a fixed flat solid with normal {0, 0, 1} and a start at z = tol moving at {5, 0, -1} for 1 s: a hit at 0,
 //   distance tol, face kHighZ.
@@ -720,6 +780,17 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindHitOnConvexSolid(
   const SolidPose pose = ComputeSolidPose(inputs.solids[solid_index], sweep.start_elapsed);
   const DistanceToSolid at_start =
       ComputeDistanceForParticle(inputs, solid_index, pose, sweep.start, inputs.plate_side);
+  if (ComputeIsRestingOnOtherFacePlane(
+          inputs,
+          solid_index,
+          pose,
+          sweep,
+          face_planes,
+          face_plane_count,
+          at_start.face
+      )) {
+    return FirstHit{};
+  }
   switch (ComputeStartCase(inputs, solid_index, pose, sweep, at_start, touched)) {
     case StartCase::kOutside:
       return FindEntryThroughFacePlanes(inputs, solid_index, pose, sweep, face_planes, face_plane_count);
@@ -1710,15 +1781,15 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
 //     A sweep that rests on a bounding surface (ComputeIsRestingOnBoundingSurface, plan decision P21) is a third
 //     bound, read afresh at every sweep's start, not a sum over sweeps, and tried before the touching rule on the
 //     distance, whatever the sign of that distance's gap. The solid lies behind the surface, so its distance at any
-//     point is at least the surface's gap plus tol: a cylinder's distance is at least the larger of its wall and cap
-//     distances. Along a straight path the surface's gap is at least its start value plus gap_rate * t: the distance
-//     from the axis is convex in t, and |z| >= cap_sign * z. The rule asks start_gap >= -tol / 8 and gap_rate *
-//     duration >= -tol / 64, and t <= duration, so the gap stays at least -tol / 8 - tol / 64 = -9 / 64 tol and the
-//     path at least 55 / 64 tol from the solid. What this gives up: a path the true distance would stop up to 9 / 64
-//     tol inside the rest gap is not hit, the room between the rule's floor and tol. 55 / 64 tol is above the end
-//     check's tol / 2 by 23 / 64 tol, before the settle lifts the particle back; on a cylinder tilting within P17's
-//     bound, read at the pose of the sweep's start, the true shape may be up to tol / 4 nearer, 39 / 64 tol, still
-//     above tol / 2 by 7 / 64 tol.
+//     point is at least the surface's gap plus tol: a box's distance is its largest face gap, a cylinder's at least the
+//     larger of its wall and cap distances. Along a straight path the surface's gap is at least its start value plus
+//     gap_rate * t: a plane's gap is linear in t, the distance from the axis convex in t, and |z| >= cap_sign * z. The
+//     rule asks start_gap >= -tol / 8 and gap_rate * duration >= -tol / 64, and t <= duration, so the gap stays at
+//     least -tol / 8 - tol / 64 = -9 / 64 tol and the path at least 55 / 64 tol from the solid. What this gives up: a
+//     path the true distance would stop up to 9 / 64 tol inside the rest gap is not hit, the room between the rule's
+//     floor and tol. 55 / 64 tol is above the end check's tol / 2 by 23 / 64 tol, before the settle lifts the particle
+//     back; on a cylinder tilting within P17's bound, read at the pose of the sweep's start, the true shape may be up
+//     to tol / 4 nearer, 39 / 64 tol, still above tol / 2 by 7 / 64 tol.
 //   4 The resting window: a particle the touched rule lets rest starts at a gap of at most tol / 16, the window of the
 //     active surfaces, and ends the step no deeper than tol / 16 below where it rested. What is proved is that bound,
 //     not d >= 0: before the first response the plain rule lets a path end on a surface, d near 0, and the touched
@@ -3408,20 +3479,65 @@ FLUIDITY_CPU_AND_GPU inline void ApplyDirections(ActiveSurfaces* active) {
   }
 }
 
+// Computes whether a point, in a box's own axes, is level with one of the box's face planes other than
+// face_of_distance: the box case of ComputeIsPassedAtBoundingSurfaceLevel.
+//
+// Method: the six face planes as FindFirstHitOnSolid lists them, gap = sign_out_of_solid * p.axis - half_size.axis -
+//   tol, and ComputeIsLevelWithBoundingSurface for every plane but the one of face_of_distance. Same bits on CPU and
+//   GPU: only + - * and comparisons.
+// Units: m, own axes.
+// Example: half sizes 0.5 m, tol 2^-30, the point {0.5 + 33 / 32 tol, 0, 0.5 + tol} with face_of_distance kHighX: the
+//   plane of kHighZ has the gap 0: true.
+// Read: docs/method-paper/fluidity-method.typ <sec-first-hit>
+//
+// clang-tidy: the point, then the box's half sizes, as ComputeDistanceToCylinder orders them; the swappable-parameters
+// check flags the two vectors.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU inline bool ComputeIsLevelWithOtherBoxFacePlane(
+    Vec3 own_point,
+    Vec3 half_size,
+    double contact_tolerance,
+    SolidFace face_of_distance
+) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
+  // A C array: GPU code cannot call std::array's member functions (nvcc without --expt-relaxed-constexpr).
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): see the comment above.
+  const FacePlane box_faces[] = {
+      {.face = SolidFace::kLowX, .axis = Axis::kX, .sign_out_of_solid = -1, .offset = half_size.x},
+      {.face = SolidFace::kHighX, .axis = Axis::kX, .sign_out_of_solid = 1, .offset = half_size.x},
+      {.face = SolidFace::kLowY, .axis = Axis::kY, .sign_out_of_solid = -1, .offset = half_size.y},
+      {.face = SolidFace::kHighY, .axis = Axis::kY, .sign_out_of_solid = 1, .offset = half_size.y},
+      {.face = SolidFace::kLowZ, .axis = Axis::kZ, .sign_out_of_solid = -1, .offset = half_size.z},
+      {.face = SolidFace::kHighZ, .axis = Axis::kZ, .sign_out_of_solid = 1, .offset = half_size.z},
+  };
+  // One flag over all six planes: the planes are few, and the loop keeps a fixed order on CPU and GPU.
+  bool is_level = false;
+  for (const FacePlane& face_plane : box_faces) {
+    const double gap = face_plane.sign_out_of_solid * ComputeCoordinate(own_point, face_plane.axis) - face_plane.offset
+        - contact_tolerance;  // m
+    const bool is_other_face = face_plane.face != face_of_distance;
+    is_level = is_level || (is_other_face && ComputeIsLevelWithBoundingSurface(contact_tolerance, gap));
+  }
+  return is_level;
+}
+
 // Computes whether a point passes a solid at a bounding surface's level: the solid does not turn, and the point is
 // level with one of its bounding surfaces other than the one that gives at_point (plan decision P21, item 16).
 //
 // Method: in the solid's own axes at pose, p = Transpose(pose.axes) * (point - pose.origin), the point
 //   ComputeDistanceToSolid reads. A cylinder: at_point.face is kLowRim or kHighRim, and the wall's gap rho - radius -
 //   tol or the cap's plane's gap |p.z| - half_height - tol is level (ComputeIsLevelWithBoundingSurface), the gaps
-//   FindCylinderHit reads at a sweep's start. False for every other shape, and for a turning solid, which has no
-//   bounding surface. It reads the position alone, so whatever reads it stays free of the velocities and of the order
-//   of the solids. Why: a cylinder's distance there is its rim, whose normal leans across a seam, while a sweep that
-//   rests on the bounding surface is free of the solid. What it costs, a known choice: before any response, an
-//   approach to such a solid that sinks less than tol in the step, at a rim's rest gap, gets no response and records
-//   no reaction; the plain touching rule lets it pass, at d >= 0 from the rest gap, never inside the solid, and the
-//   settle lifts the particle back to tol. At a start within rounding of the rest gap the sign of the computed gap
-//   decides: a hair above tol, the closed form hits it at 0 instead; both outcomes end at tol after the settle.
+//   FindCylinderHit reads at a sweep's start. A box: the gap sign * p.axis - half_size.axis - tol of any face plane but
+//   the one of at_point's face is level, the gaps FindHitOnConvexSolid reads. False for every other shape (a committed
+//   plate included), and for a turning solid, which has no bounding surface. It reads the position alone, so whatever
+//   reads it stays free of the velocities and of the order of the solids. Why: a cylinder's distance there is its rim,
+//   whose normal leans across a seam, while a sweep that rests on the bounding surface is free of the solid; a box's
+//   distance there is a face plane continued past the edge. What it costs, a known choice: before any response, an
+//   approach to such a solid that sinks less than tol in the step, at a rim's rest gap or a box's edge strip, gets no
+//   response and records no reaction; the plain touching rule lets it pass, at d >= 0 from the rest gap, never inside
+//   the solid, and the settle lifts the particle back to tol. At a start within rounding of the rest gap the sign of
+//   the computed gap decides: a hair above tol, the closed form hits it at once instead; both outcomes end at tol after
+//   the settle.
 // Units: m, world, at the time of the pose.
 // Example: the drum of radius 0.5 m along z with its high cap at z = 1, tol 2^-30, the point
 //   {0.5 + tol, 0, 1 + 0.2 tol}: at_point is the high rim, 1.02 tol away, and the point is level with the wall: true.
@@ -3455,6 +3571,9 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsPassedAtBoundingSurfaceLevel(
     return ComputeIsLevelWithBoundingSurface(contact_tolerance, wall_gap)
         || ComputeIsLevelWithBoundingSurface(contact_tolerance, cap_gap);
   }
+  if (solid.shape == SolidShape::kBox) {
+    return ComputeIsLevelWithOtherBoxFacePlane(own_point, solid.half_size, contact_tolerance, at_point.face);
+  }
   return false;
 }
 
@@ -3465,23 +3584,23 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsPassedAtBoundingSurfaceLevel(
 // Method: every solid in array order, every surface in its list (FindSurfacesOfSolid), with its distance and normal at
 //   the position now. A surface within the window counts whether or not a velocity approaches it, touched or not: at
 //   the rest point of a wedge sharper than 2^-21 rad the floor is at exactly tol. A surface farther than the window is
-//   one the particle is not on: a ceiling 0.1 m above a floor touched earlier must not stop it. The surface the
-//   sweep hit (same solid; for a domain box the same face) counts whatever its distance, since a turning solid is hit
-//   up to 1.25 tol away, and with the hit's normal, along which the hit measured the approach. No hit is moved before
-//   its response, so the surfaces read here are those the particle is on at the hit itself: a floor beside a rim hit
-//   at tol + tol / 1024 is read at its own rest gap. A solid the particle passes at a bounding surface's level
-//   (ComputeIsPassedAtBoundingSurfaceLevel) contributes nothing unless the sweep hit it (plan decision P21, item 16
-//   a), at the start as at a hit on another solid, with the pose of move.elapsed: its distance there is a rim whose
-//   normal leans across a seam, and the sweep is free of it while the particle rests at that level; not that bounding
-//   surface in its place, which would hold up a particle beside a lone solid with nothing under it. Each surface
-//   carries its solid's velocity at the particle, friction times its friction_scale, and reports_reaction. Exact
-//   copies are dropped and the rest sorted (ApplyActiveSurface), then the directions are assigned (ApplyDirections).
-//   Cost: one distance per solid.
+//   one the particle is not on: a ceiling 0.1 m above a floor touched earlier must not stop it. The surface the sweep
+//   hit (same solid; for a domain box the same face) counts whatever its distance, since a turning solid is hit up to
+//   1.25 tol away, and with the hit's normal, along which the hit measured the approach. No hit is moved before its
+//   response, so the surfaces read here are those the particle is on at the hit itself: a floor beside a rim hit within
+//   tol / 1024 of tol is read at its own rest gap. A solid the particle passes at a bounding surface's level
+//   (ComputeIsPassedAtBoundingSurfaceLevel) contributes nothing unless the sweep hit it (plan decision P21, item 16 a),
+//   at the start as at a hit on another solid, with the pose of move.elapsed: its distance there is a rim whose normal
+//   leans across a seam, or a box's face plane continued past the edge, and the sweep is free of it while the particle
+//   rests at that level; not that bounding surface in its place, which would hold up a particle beside a lone solid
+//   with nothing under it. Each surface carries its solid's velocity at the particle, friction times its
+//   friction_scale, and reports_reaction. Exact copies are dropped and the rest sorted (ApplyActiveSurface), then the
+//   directions are assigned (ApplyDirections). Cost: one distance per solid.
 // Units: m, m/s, world.
 // Example: a fixed floor and a particle at {0.5, 0, tol}: one surface, normal {0, 0, 1}. At {0.5, 0, 0.02}: none.
 //   Eight coincident fixed floors and an upright flat solid, the particle at their corner: two surfaces, the upright
-//   and one floor. A puck of radius 0.5 m flush in the floor and the particle at {0.5 + tol / 4, 0, tol}: the floor
-//   alone, though the puck's rim is 1.03 tol away.
+//   and one floor. A box of half size 0.5 m set flush in the floor and the particle at {0.5 + 33 / 32 tol, 0, tol}:
+//   the floor alone, though the plane of the box's kHighX, continued above its top, is 1.03 tol away.
 // Requires: move.elapsed is within the step; hit is null at the start, else the hit that moved the particle here.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline ActiveSurfaces

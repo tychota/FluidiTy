@@ -2641,8 +2641,9 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
 
 // The scenes of a cylinder's rim at its true distance and of flush seams between solids (plan decision P21): two drums
 // of one radius stacked, a puck flush in a floor, a drum standing on a floor, a rim crest just under a floor, a rim met
-// from the side, and the rim sliding over a floor a little lower. They come after every other scene in
-// BuildMoveParticleCases, so the generated sets keep the draws of the scenes before them.
+// from the side, the rim sliding over a floor a little lower, two boxes stacked, two boxes side by side and a box flush
+// in a floor. They come after every other scene in BuildMoveParticleCases, so the generated sets keep the draws of the
+// scenes before them.
 inline std::vector<MoveParticleCase> BuildRimAndSeamCases() {
   std::vector<MoveParticleCase> cases;
   // Two drums along z, radius 0.5 m and half height 0.5 m, the upper from z = 1 to 2 and the lower from 0 to 1, and a
@@ -2752,6 +2753,47 @@ inline std::vector<MoveParticleCase> BuildRimAndSeamCases() {
       .name = "RimOnFloorSweepingParticleLower",
       .solids = {sliding_floor, ToSolid(rim_on_floor, lower_rim_motion, 2)},
       .inputs = rim_sweep_inputs,
+  });
+  // Two boxes of half size 0.5 m stacked into one side, the upper from z = 1 to 2 and the lower from 0 to 1, and a
+  // particle sliding down the seam at the rest gap of their kHighX faces.
+  const Vec3 unit_half_size = {.x = 0.5, .y = 0.5, .z = 0.5};
+  const Box upper_box = {.center = {.x = 0, .y = 0, .z = 1.5}, .axes = kIdentity, .half_size = unit_half_size};
+  const Box lower_box = {.center = {.x = 0, .y = 0, .z = 0.5}, .axes = kIdentity, .half_size = unit_half_size};
+  cases.push_back({
+      .name = "StackedBoxes",
+      .solids = {ToSolid(upper_box, kNoMotion, 1), ToSolid(lower_box, kNoMotion, 2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + kTolerance, .y = 0, .z = 1.8},
+          .velocity = -kUnitZ,
+          .step_duration = 1,
+          .friction = 0,
+      }),
+  });
+  // Two boxes side by side in one floor, of half size 0.5 m with their tops at z = 0, side by side along x, and a
+  // particle sliding along them at the rest gap across the seam at x = 0.5.
+  const Box first_floor_box = {.center = {.x = 0, .y = 0, .z = -0.5}, .axes = kIdentity, .half_size = unit_half_size};
+  const Box second_floor_box = {.center = {.x = 1, .y = 0, .z = -0.5}, .axes = kIdentity, .half_size = unit_half_size};
+  cases.push_back({
+      .name = "BoxesSideBySide",
+      .solids = {ToSolid(first_floor_box, kNoMotion, 1), ToSolid(second_floor_box, kNoMotion, 2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.2, .y = 0, .z = kTolerance},
+          .velocity = kUnitX,
+          .step_duration = 0.6,
+          .friction = 0,
+      }),
+  });
+  // A box of half size 0.5 m set flush into the fixed floor, its top at z = 0, and a particle sliding along the floor
+  // at the rest gap onto it.
+  cases.push_back({
+      .name = "BoxFlushInFloor",
+      .solids = {BuildFloor(1), ToSolid(first_floor_box, kNoMotion, 2)},
+      .inputs = BuildCaseInputs({
+          .start_position = {.x = 0.5 + 3 * kTolerance, .y = 0, .z = kTolerance},
+          .velocity = -kUnitX,
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
   });
   return cases;
 }
