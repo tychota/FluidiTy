@@ -3447,6 +3447,51 @@ inside that padding, and the size stays 200.
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Move a range of particles on the CPU`. New names: the 3.5 list.
 
+### Task 15b: Leave out a solid a particle cannot come near
+
+**Why.** Measured after Task 15 (one M3 Pro core, a million particles, most far from every solid): 111, 745 and 2,889
+ns per particle with 1, 8 and 32 solids, almost all of it three pose-and-distance reads per far solid per particle.
+A particle that cannot come within reach of a solid during the step should cost one cheap test for that solid.
+
+**Files:**
+- Modify: `native/fluidity/contact/solid_contact_steps.h`, `solid_contact.h` (and `solid_contact_types.h` if a small
+  per-call value is needed), `move_particles_steps.h` only if the loop must pass something new.
+- Test: `native/fluidity/contact/move_particle_test.cc`, `move_particles_test.cc`.
+- Docs: `docs/glossary.md`, `docs/method-paper/fluidity-method.typ` (one paragraph where the cost is discussed).
+
+**Interfaces:**
+- Consumes: `MoveParticle` as built after Task 15 (the start's depth check that reports whether the start is clear of
+  each solid; the sweep; the settle; the end check), `ComputeDistanceToSolid`, `ComputeSolidPose`, a solid's reach
+  (`Length(half_size)`), `SolidContactInputs`.
+- Produces: no change to any public signature or result. A private step, named in the glossary's style (for
+  example `ComputeIsSolidOutOfRange`), and a named constant for any margin it uses.
+
+**The rule to build and prove.** A solid is left out of every phase of one `MoveParticle` call when, from one read
+at the start, it is certain that neither the particle nor any surface of the solid can come within the largest
+window any phase reads (the active window `tol + tol / 16`, the settle and the end check included) at any time of
+the step: the start distance exceeds the particle's largest travel in the step (its speeds, including the largest a
+response can leave it with, which the exact speed check of Task 15 bounds) plus the solid's largest travel (its
+velocity and, for a solid that spins or turns, its angular speed times its reach from the centre of turning) plus
+the windows. Write the proof per phase in the comment: start rules, each sweep (including sweeps after a response
+on another solid, where the velocity has changed), the carry on a turning solid and P7's closing bound (which
+reads the other solids), the settle, the end check. A phase for which the proof does not hold reads the solid as
+today. The domain box and any solid for which the bound is not finite are never left out.
+
+- [ ] **Step 1: Write the failing cost test and the identity harness.** A test that counts pose and distance reads
+  (through a counter the test build can switch on, with no cost in a normal build) asserts at most one read per
+  out-of-range solid per particle; it fails on the tip (three). A harness test compares, bit for bit, every field of
+  the result with the rule on and off over the whole scene catalogue, `BuildObliqueCases(10000)`,
+  `BuildRoundCases(10000)` and a crowded set of 20,000 particles among 16 solids.
+- [ ] **Step 2: Build the rule** with its named margin and the per-phase proof.
+- [ ] **Step 3: Boundary tests.** For each shape, a solid just inside and just outside the bound (one unit in the
+  last place either side), with a particle fast enough to reach it only in the first case; a turning paddle whose
+  tip sweeps into range; a moving solid that arrives during the step; a response that redirects the particle toward
+  a solid that was out of range for the first velocity (it must still be read).
+- [ ] **Step 4: Measure** the three timings again and report them with the read counts; state the saving.
+- [ ] **Step 5: Mutants.** The bound without the solid's travel; without the turning term; without the windows;
+  with the particle's first velocity only. Each must be killed by a boundary test, not only by the harness.
+- [ ] **Step 6: Gate and commit.**
+
 ### Task 16: `MoveParticles` on the GPU
 
 **Kind:** device
