@@ -1,0 +1,27 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_a1faca84c1a4c9 1207-1220,1271-1296,1469-1473
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_18308dea4253c8 2509-2636
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_7e20331ea63583 2109-2249,4232-4233
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_413998f7319fc9 200-201,225-227
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_a82f774d04d386 426-427,436,438-443,445,462-465,472-473,478,483,489-493,497,500,503,557,562,573,652,654,701,703,754-757,768,945-948,959,966,1510-1518,2956-2963,4376-4378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2a6d4885b315e4165a144aef2c39d0772606f34d",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
