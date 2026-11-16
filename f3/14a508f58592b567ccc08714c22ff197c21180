@@ -1,0 +1,41 @@
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_a3b8d9fc4abeb5 3070-3074,3087-3088,3102-3104,3167,3171-3181
+  s_4f0877e2acdcf0::t_7e20331ea63583 2872-2925
+  s_4f0877e2acdcf0::t_3cb38dfc3e3e35 2927,2930,2956,2961-2962,2964,2975-2978,2980-2982,2984-2989,2993-2999
+  s_4f0877e2acdcf0::t_08f0d0bb4a7780 2926,2928-2929
+  s_4f0877e2acdcf0::t_2d2c1f8e27ed9a 2931-2932,2969,3000-3001,3055,3105-3106,3168-3170,3182-3183
+  s_4f0877e2acdcf0::t_48bd291a5bb81e 2933-2955,2957-2960,2963,2965-2968,2970-2974,2979,2983,2990-2992,3002-3054,3056-3069,3075-3086,3089-3101,3107-3123,6826
+  s_4f0877e2acdcf0::t_4c8e25331a2931 6742,6756-6763,6827-6828
+docs/glossary.md
+  s_4f0877e2acdcf0::t_39483ab3bdfbb7 61
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_7c8840d0316200 731-735,742-744,750-768
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_caf84cc9b14273 3589
+  s_4f0877e2acdcf0::t_8d335339f72649 3587
+  s_4f0877e2acdcf0::t_07c3881574df50 3533-3535,3591-3598,3602-3603
+  s_4f0877e2acdcf0::t_f58ecf2dc71b55 3588
+  s_4f0877e2acdcf0::t_8f947a8932a271 3536-3540,3590
+  s_4f0877e2acdcf0::t_20a108269d783e 33-48,113-115,155-156,615,619-624,628,631,639,700-746,749-764,783-793,796,845,1784-1792,3482-3523,3530-3532,3574-3576
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_b9641ec91abc1c 935
+  s_4f0877e2acdcf0::t_8e9c6bf2878eea 936-937
+  s_4f0877e2acdcf0::t_0d884bfe0b8c30 984
+  s_4f0877e2acdcf0::t_b804422202110a 985-994
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f314a508f58592b567ccc08714c22ff197c21180",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
