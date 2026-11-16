@@ -1,0 +1,21 @@
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_79cc01959c34cb 392-397
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_9ff03363fcd190 3170-3172,3183,3202-3203,3333,4788-4792,4797,4799-4805,4807,4817-4819,4830-4839,4983,4985-4986,4990-4997,5032-5033,5045-5046,5053,5093
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b3a5dc32cc84c70a0090f6435718d5d0fc60f81f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
