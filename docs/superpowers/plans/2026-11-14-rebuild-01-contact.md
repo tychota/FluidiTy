@@ -559,6 +559,204 @@ Plan decision added 2026-11-15 for wedges, corners and tangent contacts (Task 11
      cap, 1,211 of the 20,000 moving draws are squeezed (item 6); no `kStartsInNarrowGap`. A ball
      with `R / tol = 2^40`: starts from 0.01 to 1 times the rest point's distance succeed, within 1e-4 of it.
 
+Plan decision added 2026-11-16 for the response at several surfaces (Task 12 re-review 2, coordinator ruling 40;
+built in Task 12's third fix round; the paper states it):
+
+- **P20 One joint response at several surfaces.** Words: a *hit* is one moment, at the start or along the path, when
+  the particle is on one or more surfaces and both velocities get the response; the *joint response* is the response
+  of a hit over every surface the particle is on; a surface's *push* is how far the frictionless change goes along
+  its normal (the multiplier of `SolveSmallestCorrection`, m/s); its *friction limit* is friction times its
+  `friction_scale` times its push, the most sideways speed its friction can take in this response (m/s). Why:
+  Task 12 as built applied friction by one response per surface, in turn, then one frictionless change. The result
+  depended on the order of those responses, and the rounding of the start point decided the order: at the rest point
+  of two faces moved by one unit in the last place, 16.0 % of 100,000 draws jumped (48 % when the velocity pushes
+  into both faces), by a median of 0.049 and up to 0.42 of the speed; without friction 17.5 %, up to 0.50, above 90
+  degrees. Two rounds of repairs on the sequence (repeated neighbour passes, a rule for coincident twins) each added
+  findings (re-review 2: twin entries overflow the touched-surface list; a copy whose velocity differs by one
+  rounding unit takes a second response; more `kTooManyHits` at moving corners). This decision replaces the sequence.
+  It amends P2 (the touched-surface list), P4 (the start's responses), P5 (what is charged), P12 (the normal a start
+  response reads) and P19 items 3, 4, 6 and 8.
+  1. **The surfaces of a hit.** The *active surfaces*: every surface of every solid (its one surface, or each closed
+     side of a domain box) within `tol + tol / 16` of the particle (`kTouchedSolidRestingGapShare`), read afresh at
+     the particle's position and the pose of the hit, with the normal there and the solid's velocity at the particle
+     (`ComputeSolidVelocity`); and the surface the sweep hit, whatever its distance (a turning solid is hit up to
+     1.25 tol away), with the hit's own normal. Touched or not: a face at the rest gap that a velocity approaches
+     counts (ruling 37, kept). At the start they are read at the moved start, not at the start as given (P12's
+     "normal before the move" is withdrawn for the response: the sweep that follows reads the normal at the moved
+     start, and the response must leave no approach along that one; `CuspStartIntoBallOnly` now keeps 4.3e-5 m/s
+     along the ball where it stopped). A surface that is the same as one already listed, bit for bit, in normal,
+     solid velocity, friction scale and `reports_reaction` is dropped (an exact copy adds nothing, so 17 or 40
+     coincident floors take one place). The rest are sorted by value: normal x, y, z, then solid velocity x, y, z,
+     then friction scale, then solid index. Surfaces whose normals agree within `kSameNormalAxisDifference` on every
+     axis share one *direction*, whose normal is that of its first surface in the sorted order. Limits, unchanged:
+     `kMaxTrackedSurfaces = 16` surfaces and `kMaxSlideDirections = 8` directions, beyond which the hit is
+     `kTooManyHits`. Why sorted: every sum and every tie then reads the surfaces in an order that their values
+     decide, so the velocities are the same bits for every order of the solids array (measured: 0 differences over
+     every permutation of 119,999 corners, and of 40,000 whole moves; unsorted, 554 of 39,999 differ, by at most
+     1.7e-13 of the speed).
+  2. **One active surface.** Each velocity gets `ComputeContactResponse` with that surface, and nothing else: the
+     single-surface response of Task 7, the same bits as before this decision (measured: 120,000 of 120,000).
+  3. **Several: the frictionless change.** For each velocity `v`, each direction's target is the largest
+     `-Dot(n_i, v - u_i)` of its surfaces, each measured along its own normal from its own solid. When no target is
+     above the velocity's allowance so far (0 before the first response of the step), `v` is unchanged, bit for bit.
+     Otherwise `SolveSmallestCorrection` (velocity; refinements and conditioning limits as in P19 item 5) gives the
+     change `w = sum push_k n_k` over at most three directions and `v0 = v + w`. Two changes to the solver, for a
+     velocity only. (a) "No change" is the answer only when every target is within the slack passed, the allowance
+     so far, not within the candidate's own allowance `2^-46 (speeds)`: a slow real approach beside a fast solid is
+     removed, as one surface's response removes it (`SlidingFloorThenSlowUpright`: 1e-13 m/s beside a floor sliding
+     at 100 m/s). (b) Ties. Where normals depend on each other (three faces sharing one line, four at a point) the
+     same smallest change has several sets of pushes, and friction, which reads the pushes, differed by which set
+     rounding picked: with the first subset in order, 15,059 of 20,000 coplanar triples jumped, by up to 0.70 of the
+     speed, for a 1e-13 change of the velocity. So among the candidates no longer than the shortest plus its slack,
+     the solver keeps the one with the largest sum of friction limits (`sum friction_k push_k`, the friction of each
+     direction's pushing surface, item 4), then the first in subset order. That sum is the largest value of a
+     linear function over the admissible pushes, which varies continuously with the velocity (measured: 0 of 20,000,
+     largest difference 2.6e-13). Coincident surfaces are the same case and get the same answer: the rougher acts.
+  4. **The pushing surface of a direction** carries the direction's friction and reaction. Among its surfaces whose
+     target is within `2^-40 (|v|_1 + |u_i|_1)` of the direction's (they push; the bound is what normals
+     `kSameNormalAxisDifference` apart can differ by), it is the one with the largest friction scale, then one whose
+     solid reports a reaction, then the first in the sorted order. So a copy that is as rough or smoother, with the
+     same solid velocity, changes nothing (measured: 0 of 30,000 scenes for an exact copy and for a smoother one, in
+     every place of the array); a rougher one acts in its twin's place (60 degree wedge, `{-0.2, 1, -1}`, friction
+     0.2: 0.7307 along the edge; with a ground of friction scale 2 on the floor, in any order, 0.5076); a copy whose
+     solid velocity differs by one rounding unit changes the result by at most 3.8e-15 of the speed (re-review 2's
+     I-1 scene: the same bits as without the copy). A coincident surface that moves differently along the surface (a
+     conveyor on a floor) is not a copy: with equal friction scales the first in the sorted order acts, the fixed
+     floor; this is a choice, pinned by a test.
+  5. **Friction**, from `v0`, the pushes and each used direction's pushing surface (normal `n_k`, solid velocity
+     `u_k`, friction limit `L_k`):
+     - *one used direction:* the velocity is `ComputeContactResponse(v, u_k, n_k, friction_k)` itself, so a hit on
+       one surface beside others that are not approached is still the single-surface response, bit for bit.
+     - *several, all with one solid velocity `u`, bit for bit* (fixed solids, or one moving solid's faces): the
+       surfaces act as one. With `s = v0 - u` and `L = sum L_k`: when `L >= Length(s)` the velocity is `u` exactly
+       (stick), else `v0 + (L / Length(s)) (u - v0)` (slip). This is the exact answer of friction with these pushes
+       (checked against a numerical minimisation: at most 1.3e-8 of the speed, its own tolerance, over 2,028 draws).
+       A wedge amplifies friction, as it should: in a 30 degree groove a push of 1 m/s into the apex makes pushes of
+       2 and 2.73 m/s.
+     - *several, moving differently:* the mean, over every order of the used directions (2 or 6), of the surfaces'
+       own frictions applied one after the other from `v0`: each takes `min(L_k, sideways speed)` off the sideways
+       velocity relative to its own solid at that moment. Every order is a sequence of single-surface frictions, so
+       none reverses a sliding, and the mean of all orders does not depend on any order. When the solid velocities
+       differ by rounding only, it agrees with the case above to 1.7e-14 of the speed (20,000 wedges), so nothing
+       jumps between the two cases. It is an approximation: against the exact answer of the same model, median
+       0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed, over 2,418 draws with friction up to 2 and
+       solids up to 1 m/s apart. More passes per order do not help (median 0.034 with 8). The re-review's sketch,
+       every surface's own friction from the same `v0`, added, is rejected: with two velocities one rounding unit
+       apart it reverses the sliding in 13,218 of 20,000 draws, by up to 9.9 times the speed, and it is twice as far
+       from the exact answer (0.097, 0.51, 1.02, 1.52).
+     The friction change is `F`, with a share for each used direction (`(L_k / L) F`, or the mean of its own steps).
+  6. **No approach afterwards.** With one used direction or one solid velocity, `F` has no part along a used normal,
+     and `v0 + F` is the result when it approaches no active direction beyond the response's allowance (the first
+     two cases of item 5 keep their bits); when it does (a surface of another solid that friction turns the velocity
+     into, or rounding: 53 of 19,625 fixed or shared cases), one more frictionless solve is made. When the used
+     solids move differently, that second solve is always made. It starts from `v + F`, not from `v0 + F`: the
+     result is `v + F + w2`. From `v + F` the pushes are found afresh, so friction lifts a particle off a surface
+     only when it overcomes what pressed it there: beside a particle falling at 1 m/s onto a floor and pushed at
+     1 m/s into a wall whose surface rises at 2 m/s, friction 0.5 leaves `{0, 0, 0}` and friction 1.5 leaves
+     `{0, 0, 0.5}`; from `v0 + F` friction 0.5 would lift it at 0.5 m/s. The second solve's pushes add no friction.
+  7. **Squeezes, the sliver and the cap** (P19 items 3, 5 and 6, without "newest"). The cap reads each solve's
+     result: faster than `kMaxSqueezeOutSpeedFactor = 64` times the largest `Length` among the two velocities before
+     the response and the active solids' velocities is `kSqueezedBetweenSolids`. The speeds are now those before any
+     friction, so the limits are the closed forms: one face closing on a fixed one below `asin(1 / 64) = 0.8953`
+     degrees, two closing faces below `2 asin(1 / 64) = 1.7906` degrees (measured: 0.8953 and 1.7906; Task 12 as
+     built measured 1.7889, after the side's own response). No change found (a pair below the conditioning limit,
+     or solids closing): the particle sticks to the active surface it approaches fastest (the largest target; a
+     tie: the first in the sorted order), the whole change is charged to that solid, and any active surface that
+     velocity still approaches beyond the allowance is `kSqueezedBetweenSolids`; the separate test of the closing
+     speed is dropped (it never decided an outcome). For `for_this_step`, an allowance times the time left above
+     `tol / 64` is `kSqueezedBetweenSolids` as before, cured by a shorter step. A squeeze names the solid of the
+     surface that the failing velocity approaches fastest (the lowest solid index on a tie), no longer "the newest".
+  8. **Allowance.** One active surface: `ComputeLargestApproachLeftAfterResponse` of the velocity passed, as before.
+     Several: `2^-46 (|v|_1 + |change|_1 + sum |u_i|_1)` over the sorted active surfaces, for the solve that gave
+     the result (and the first when there were two). Measured: what a joint response leaves along any active normal
+     is at most 41 rounding units (`2^-52`) of those speeds, against the 64 allowed; p99 1.0.
+  9. **Bookkeeping.** `hit_count` counts hits, so joint responses, not surfaces: a wedge, a corner of three sides
+     or a corner with two chamfers is one hit. `kMaxHitsPerStep = 4` is unchanged and bounds the responses and the
+     sweeps of a step; a fifth is `kTooManyHits`. The record is that of the first hit: along the path, the surface
+     the sweep hit; at the start, the first in array order (solid, then face) among the active surfaces that the
+     start was inside or that a velocity approaches. The touched-surface list is removed. After the first response
+     of a step every solid has the touched rule of P2 (a start gap in `[-tol, tol / 16]` rests; hit at 0 only when
+     the path approaches faster than the allowance), with the largest allowance of the responses so far, one number
+     per velocity. Why this is the same rule: a sweep starts where a response was made, and a solid within that
+     window at the sweep's start was an active surface of that response, so the response left its approach within
+     the allowance; a solid outside the window takes its closed form, listed or not. So nothing is listed, nothing
+     can overflow (re-review 2's C1: eight, 17 or 40 coincident floors and a wall give 2 hits), and the silent
+     entries, the twin entries and "a fifth solid moved silently is `kTooManyHits`" are gone. P2's proof is
+     unchanged: responses come at most at `kMaxHitsPerStep` times, each with `allowance * time left <= tol / 64`,
+     so a free path comes closer to a solid by at most `tol / 16` in the step. Before any response the plain
+     touching rule holds, as P12 asks. Nothing replaces "a frictionless change once a step has four hits": one
+     response reads every surface, uses at most three, and is one hit.
+  10. **The start** (P4 amended). After the failing checks and the one move off near surfaces (P19 item 1), the
+     start has a response, at time 0, when it was inside a solid (`d < 0` as given) or when either velocity
+     approaches an active surface (below 0, or below the rounding of a spinning solid's surface velocity, as
+     before). It is one joint response over the active surfaces at the moved start, which replaces the per-solid
+     start responses and the slide after them. `kind` is `kStartedInsideSolid` when the start was inside a solid,
+     else `kHit`. Otherwise the move is silent: no hit, no record, and the plain touching rule. A surface that was
+     near at the start but is farther than `tol + tol / 16` after the move is not in the response (of two parallel
+     floors tol / 4 apart, only the upper one, which the particle rests on, responds and is charged; as built the
+     lower one, behind it, took the response and the upper one's reaction was lost).
+  11. **Along the path.** A fifth hit fails; the particle moves to the hit; one joint response. The neighbour
+     passes, the rule for twins and the response-then-change sequence are removed entirely.
+  12. **Reaction** (P5, decision unchanged). What one response charges, for `velocity.for_next_step`: with one
+     active or one used direction, the whole change to the pushing surface's solid; otherwise each used direction's
+     push `push_k n_k` and its share of `F` to its pushing surface's solid (after a second solve, the second
+     solve's pushes and the first's friction shares). The charges of one response are applied in ascending solid
+     index, so two reacting solids pushed by one response fail with `kSecondReactingSolid` naming the higher index.
+     What P5 implies here, stated, not changed: a particle in the crease of two reacting solids that pushes into
+     both fails at every step length (the owner's open question); a direction has one pushing surface, so two
+     coincident reacting solids never conflict in one response, and of the two the rougher, then the first in the
+     sorted order, is charged; a reacting solid lying exactly on a rougher solid that does not report gets no
+     reaction. In a narrow wedge the pushes grow as 1 over the angle (P19), and so does what a reacting face is
+     charged.
+  13. **What holds, and why.** (a) *No approach:* the result passed the test of item 6 or is a solve's answer, so
+     every direction's target is within the allowance. (b) *No kinetic energy from fixed solids:* with every active
+     solid fixed the allowed velocities form a cone through 0, the smallest change is the projection on it, which
+     does not lengthen a velocity, and friction shortens the result toward 0 (measured: 0 gains above 1e-12 in
+     51,069 corners and in 253,237 moves of re-review 2's draws). (c) *Friction opposes sliding and never reverses
+     it:* with one solid velocity the result is `u + c (v0 - u)`, `0 <= c <= 1`; in re-review 2's 98,316 two-face
+     draws the part along the edge is never reversed or grown. (d) *One surface:* the same function. (e) *Order
+     and copies:* item 1's sort and drop, and formulas that are sums or largest values over the surfaces.
+     (f) *Continuity:* the projection, the stick-or-slip formula and the mean over orders are continuous in the
+     velocity, and the start point enters only through the set of active surfaces, the normals and the solid
+     velocities read there. Measured: the 27 starts and both array orders of re-review 2's test give the same bits
+     in 100,000 of 100,000 draws, with friction and without; over 120,000 corners a 1e-9 change of the velocity
+     changes the result by at most 25 times as much (in a 2.4 degree wedge; median 0.84 to 1.0).
+  14. **Where it is not continuous.** (a) *The edge of the window:* a surface `tol + tol / 16` away is active or
+     not. Inside, the two faces respond together; outside, the second is hit an instant later, a sequence, as two
+     separate hits are. Measured across the edge: 35.9 % of draws differ without friction (median 0.12, at most
+     0.49 of the speed) and 30.0 % with it (0.058, 0.44). It is the difference between meeting two faces at once
+     and one after the other, which no rule removes; what matters is that rounding cannot cross it: a particle at
+     rest sits at `tol`, `tol / 16` inside the window, and rounding moves it by about 1e-7 tol. (b) The
+     conditioning limits of P19 (a pair below `1 + c = 2^-40`, a triple below `2^-20`), which the geometry decides.
+     (c) Normals that agree within `2^-40` but not bit for bit, in a change that uses another direction too: the
+     shared normal misses the other surface by up to `2^-40` of the change, which the next sweep reads as an
+     approach: one more hit at 0 (93 of 30,000 scenes with such a copy; velocities within 9.5e-12 of the speed),
+     as in Task 12 as built.
+  15. **Cost per particle.** No solid near: one distance per solid for the active surfaces replaces the start
+     rules' read and the first neighbour pass: 5 distance reads and one sweep per solid in a step, where the code
+     as built makes 6. Per hit: one distance per solid (as built: 1 to `kMaxHitsPerStep + 1` neighbour passes and
+     one read for the active surfaces), and per velocity at most 2 solves of at most `kMaxCorrectionSubsets = 92`
+     subsets (1, 3 or 7 for one, two or three directions; a velocity's solve walks them twice, for the tie rule),
+     and at most `kMaxFrictionOrders = 6` orders of 3 frictions. At most `kMaxHitsPerStep` hits. The move's state
+     loses the list of 8 touched surfaces.
+  16. **What it does not fix.** The neck of two touching balls still needs shorter steps (the same 108 calls of
+     the tangent set end in `kTooManyHits`, cured by the same halvings): each zig-zag is a separate hit. Four
+     moving faces within a few tol of each other but not at one rest point are hit one after the other within
+     nanoseconds: 13 of re-review 2's 283,929 moving corners still fail at every step length (as built: 348). The
+     record's solid and the solid a failure names are indexes, so they follow the array. End positions differ
+     between array orders by rounding (208 of 40,000 scenes, at most 3.4e-9 tol): the position move of P19 reads
+     the solids in array order. P5's crease, and turning solids (Task 13), are as before.
+  17. **Measured** with the Python model of P19 item 10, extended with this rule and with the start move as built,
+     double precision, the operation order above. Against the code as built on the tests' own inputs: every-scene
+     paths (241,046 modelled) `kTooManyHits` 478 to 476, `kSecondReactingSolid` 109 to 109, squeezed 2,991 to
+     2,916; every-scene near starts (163,395) 462 to 458, 338 to 338, 3,809 to 3,290; free paths and kinds
+     identical, which checks the model; the other generated sets (188,709 calls) keep every outcome. Re-review 2's
+     corners: fixed, `kTooManyHits` 16 to 5, all cured by two halvings; moving, 376 to 18. Step then step: 60,000
+     wedges, slivers, corners, cusps and moving corners, up to four steps each, 0 failures after the first step.
+     Of 166 analytic tests the model gives the built result in 112 and a different one in 42 (29 in the hit count
+     or the named solid only, 3 in the record or the reaction only, 10 in a velocity or the outcome); 7 are not
+     modelled (boxes, spin), and the 5 of many steps hold with one hit per step.
+
 ## Before you start
 
 Foundation (`docs/superpowers/plans/2026-11-13-rebuild-foundation.md` in the `main` checkout) is complete on
@@ -1892,6 +2090,41 @@ stops the run. The same holds under a ball resting on a floor, where the angle s
 
 ### Task 12: `MoveParticle` slide rules between surfaces
 
+**As built, and superseded by P20 (2026-11-16), where this task's text below differs:** the task was built as the
+text says (one response per surface, then one frictionless change over the active surfaces), and two fix rounds
+added the neighbours' own responses in repeated passes, a rule for coincident twins with touched entries of their
+own, and a frictionless change once a step has four hits. Plan decision P20 replaces all of that by one joint
+response per hit; the third fix round builds it (brief: `task-12-round3-brief.md` in the task's working folder).
+What no longer holds below:
+- *"Each start response is followed by it"*, and the private step "called after `ApplyResponseAtSurface` by
+  `ApplyHit` and by the start responses": the start has one joint response over the active surfaces at the moved
+  start, and a hit along the path has one (P20 items 9 to 11). There is no response per surface followed by a change.
+- *The touched-surface list* (the bullets "Amended 2026-11-15 (Task 10 as built ...)": the largest allowance of all
+  entries, the entry a removal raises, `entry.solid_index`): the list is removed; after the first response of a step
+  every solid has the touched rule with the largest allowance of the responses so far (P20 item 9).
+- *"Newest"*: a sliver sticks to the active surface approached fastest, a squeeze names the solid approached
+  fastest, and an allowance belongs to the response, not to a newest entry (P20 items 7 and 8).
+- *"Friction acts only in each surface's own response"* (P19 item 3): friction is part of the joint response
+  (P20 item 5).
+- *"No change found: `kSqueezedBetweenSolids` when a pair of active surfaces closes"*: the test of the closing speed
+  is dropped; the stick's own check decides (P20 item 7).
+- *The hit counts of step 1's tests*: a hit is one joint response, so the tests that expect 2 or 3 hits for one
+  wedge or corner expect 1 (`AcuteWedge`, `AcuteWedgeOnReactingFloor`, `GrooveSlideAlongEdge`,
+  `NarrowWedgeAtRestPoint`, `SliverStop`, `ThreeSolidAcuteCornerInto`, the cusp, neck and ring tests, the closing
+  wedges, and "from step 12 on hit_count 2 per step" of the V-groove tests, now 1). `RightAngleCorner`,
+  `SlideRemovalOnReactingFloor`, `ObliqueCornerResidue` and `CeilingHitFarAboveTouchedFloor` keep theirs: their hits
+  are at different moments. `CornerPushOnSecondReactingSolid` names solid_id 2 (the higher index of the two that one
+  response pushes), and its second part has 1 hit. `SliverStop_ChargedToNewestSolid` becomes
+  `SliverStop_ChargedToSolidApproachedFastest`: with `{-2, 1, 0}` the side is approached fastest and the floor is
+  not charged; with `{-2, 1, -0.001}` the reacting floor is, `{2, -1, 0.001}`. The closing tests name the solid
+  approached fastest: `OneFaceClosingAtPointEightDegrees` 1, `TwoFacesClosing...` at 1.6 degrees 1,
+  `GrazingWedgeClosingFast` 2, `ClosingCeiling` 2. "1.79 degrees (1.7889 measured)" is 1.7906, the closed form.
+- *Step 4's mutants* that name the newest solid, the touched entries or the start responses: the brief lists the
+  mutants of the joint response.
+What still holds: the active surfaces read afresh and near only, the smallest frictionless change and its
+conditioning limits, each push charged to its own solid, the speed cap of 64 and the escape check, and every
+velocity of the analytic tests of step 1 without friction.
+
 **Kind:** numerics
 
 **Files:**
@@ -2181,13 +2414,16 @@ the sphere's distance and first hit exist since Tasks 4a and 8a).
   after Task 13**. **Amended 2026-11-15 (Task 9b):** and Task 9b (P18). The task order is 9, 9b, 10, 11, 12, 13,
   12a, 14 to 18 (amended 2026-11-15, P19: 11b after 11). **Amended 2026-11-15 (P19):** the rim move of step 4 is a
   move off one surface; when the moved hit is also within tol of another surface (a cylinder's rim on a floor), the
-  slide's change (Task 12) reads the active surfaces at the moved position. A cylinder lying on a floor touches it
+  joint response (P20; it was the slide's change of Task 12) reads the active surfaces at the moved position. A
+  cylinder lying on a floor touches it
   along a line: a cusp, resolved like a ball's (P19 items 1 and 3); the cylinder joins Task 11b's generated tangent
   set here. Add `CylinderLyingOnFloorSlidingIntoCusp_ComesToRestThere` (axis along world x, radius 0.5, half height
-  1, centre {0,0,0.5}; start {0, 0.05, tol}, both velocities {0,-1,0}, T 0.1: no error, hit_count 2, velocities 0
+  1, centre {0,0,0.5}; start {0, 0.05, tol}, both velocities {0,-1,0}, T 0.1: no error, hit_count 1 (amended
+  2026-11-16, P20: one joint response over the wall and the floor; it was 2), velocities 0
   within 1e-15, end {0, 2 Sqrt(0.5 tol), tol} with y within tol / 256, both at the rest gap) and
   `CylinderSunkIntoFloorSlidingIn_ComesToRest` (centre {0,0,0.25}: the wall meets the floor at y = Sqrt(0.1875) at 60
-  degrees; start {0, 0.5, tol}, both velocities {0,-1,0}, T 0.1: no error, hit_count 2, velocities 0 within 1e-15,
+  degrees; start {0, 0.5, tol}, both velocities {0,-1,0}, T 0.1: no error, hit_count 1 (P20, as above), velocities 0
+  within 1e-15,
   end {0, Sqrt(0.1875) + Sqrt(3) tol, tol} within tol / 1024). Both are the cross-sections of the ball scenes of
   Tasks 11b and 12 (`BallRestingOnFloorSlidingIntoCusp`, `PlateAndSphereSlidingIn`); the model's cylinder (infinite
   along x) gave the same numbers.
@@ -2291,7 +2527,11 @@ the sphere's distance and first hit exist since Tasks 4a and 8a).
 - **Amended 2026-11-15 (P19, Tasks 11b and 12):** a turning solid takes part in the position move and the velocity
   change like any other: its distance at one pose is convex in its own axes (P18), so one solve is enough, and its
   velocity at the particle is `ComputeSolidVelocity` with the full `omega`. Order at a hit on a turning solid: the
-  response, then Task 12's change over the active surfaces, then P7's near-other-solid test and the carry. A start
+  joint response over the active surfaces (amended 2026-11-16, P20: one response that includes the turning solid's
+  surface with the hit's normal, where this said the response, then Task 12's change), then P7's near-other-solid
+  test and the carry. A turning solid still has no touching rule: after the first response of a step every other
+  solid has the touched rule (P20 item 9), the turning solid none, so this task's carry is what keeps it from being
+  hit again at 0. A start
   within tol of a turning solid and another solid gets Task 11b's one move at pose 0 (Task 11's
   `TurningBoxStartWithinTolerance` stays pinned and flips here, as Task 11's review asked). The settle's one move
   (Task 11b) reads the turning solid at the end pose; its `d >= -2 tol` assertion is revisited with the carry, as
