@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace fluidity::contact {
@@ -56,16 +57,30 @@ enum class ContactCloseCall : std::uint8_t {
   kSecondReactingSolid,  // A second solid that reports a reaction was hit; one record cannot hold both.
   kSolidTurnsTooFar,  // A solid turns more than one step allows.
   kEndsTooCloseToSolid,  // The end position is closer to a solid than the contact tolerance allows.
+  // The particle, or the solid it meets, moves too far in one step for the rounding of a response to stay below a
+  // sixty-fourth of the contact tolerance over the time left (MoveParticle, at a hit on one surface). Last value.
+  kMovesTooFastForStep,
 };
 
 // A failure with its context. Fields that do not apply keep their default.
 struct ContactFailure {
   ContactError error = ContactError::kNone;
   ContactCloseCall close_call = ContactCloseCall::kNone;  // Set only when error is kTooCloseToCall.
-  std::uint64_t particle_id = 0;  // 0 when the failure is not about one particle.
+  // The failure is about one particle, named by particle_id. false for a failure of a whole call or of one move of
+  // MoveParticle, which knows no id; particle_id is then 0, which is also a valid id, so this flag tells them apart.
+  bool has_particle_id = false;
+  std::uint64_t particle_id = 0;  // The particle's stable id when has_particle_id; 0 otherwise.
   std::uint32_t solid_id = 0;  // 0 when the failure is not about one solid.
   // m. The overlap depth or the offending length; the bytes asked for kOutOfMemory. 0 when not relevant.
   double magnitude = 0;
 };
+// The GPU writes one failure per particle and the CPU reads the reported one back byte for byte, so both compilers must
+// lay it out alike: error at 0, close_call at 1, has_particle_id at 2, particle_id at 8, solid_id at 16, magnitude at
+// 24.
+static_assert(sizeof(ContactFailure) == 32, "the contact buffers charge 32 bytes per failure");
+static_assert(offsetof(ContactFailure, has_particle_id) == 2, "the CPU and the GPU read one layout of ContactFailure");
+static_assert(offsetof(ContactFailure, particle_id) == 8, "the CPU and the GPU read one layout of ContactFailure");
+static_assert(offsetof(ContactFailure, solid_id) == 16, "the CPU and the GPU read one layout of ContactFailure");
+static_assert(offsetof(ContactFailure, magnitude) == 24, "the CPU and the GPU read one layout of ContactFailure");
 
 }  // namespace fluidity::contact

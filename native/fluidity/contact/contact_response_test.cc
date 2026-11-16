@@ -110,6 +110,15 @@ TEST(ComputeLargestApproachLeftAfterResponse, Example_IsShareOfAbsoluteAxes) {
   EXPECT_EQ(bound, 24 * 0x1p-46);
 }
 
+TEST(ComputeLargestApproachLeftAfterResponse, TinySpeeds_BoundedAtSmallestRelativeSpeeds) {
+  // Below 2^-1000 m/s the rounding of an operation is absolute, at most 2^-1075: a nonzero sum counts as 2^-1000, so
+  // the bound is 2^-1046, above the at most 2^-1069 the response leaves. No speed at all keeps a bound of 0.
+  EXPECT_EQ(ComputeLargestApproachLeftAfterResponse({.x = 0x1p-1010, .y = 0, .z = 0}, {}), 0x1p-1046);
+  EXPECT_EQ(ComputeLargestApproachLeftAfterResponse({}, {.x = 0, .y = -0x1p-1074, .z = 0}), 0x1p-1046);
+  EXPECT_EQ(ComputeLargestApproachLeftAfterResponse({}, {}), 0.0);
+  EXPECT_EQ(ComputeLargestApproachLeftAfterResponse({.x = 0x1p-1000, .y = 0, .z = 0}, {}), 0x1p-1046);
+}
+
 TEST(ComputeContactResponse, GeneratedCases_ApproachLeftWithinBound) {
   // Draw order per case: a normal of three NextSigned() values, drawn again while its length is below 0.25, then
   // normalised; a velocity of 10 times three NextSigned() values; a solid speed scale of 2^k m/s with

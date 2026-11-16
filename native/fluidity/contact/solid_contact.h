@@ -256,13 +256,16 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //   friction 0 and a particle at {0, 0, 2^-32} moving away at {1, 0, 2} m/s for 0.1 s: moved silently to z = 2^-30,
 //   it ends at {0.1, 0, 0.2 + 2^-30} with kind kNone and both velocities unchanged; at {0, 0, -0.0005} and at rest,
 //   with start_overlap_tolerance 0.001, it moves to z = 2^-30 with kind kStartedInsideSolid and stays there.
-// Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9). At every
-//   hit on one active surface, the sum of the absolute axes of velocity.for_this_step and of the solid velocity, times
-//   the time left, is at most 2^40 tol (asserted), so that its allowance, 2^-46 times that sum, times the time left is
-//   at most tol / 64, and the particle approaches any solid by at most tol / 16 over the step (with several active
-//   surfaces the same bound is checked: kSqueezedBetweenSolids). With the contact tolerance of ComputeContactTolerance,
-//   at least 2^-40 of the largest coordinate, it holds whenever those speeds times the step stay within the largest
-//   coordinate.
+// Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9).
+//   The speeds are checked, not required: at every hit, the response's allowance times the time left must be at most
+//   tol / 64, so that the particle approaches any solid by at most tol / 16 over the step. With one active surface the
+//   allowance is 2^-46 times the sum of the absolute axes of velocity.for_this_step and of the solid velocity, so the
+//   bound is that sum times the time left at most 2^40 tol; above it the move fails with kMovesTooFastForStep. With the
+//   contact tolerance of ComputeContactTolerance, at least 2^-40 of the largest coordinate, it holds whenever those
+//   speeds times the step stay within the largest coordinate. Required and not checked: the speeds involved at a hit,
+//   both summed over their axes, are at most 2^500 m/s (asserted in ComputeLargestApproachLeftAfterResponse; above it
+//   a release build drops friction). MoveParticles checks both velocities and each solid's linear and angular
+//   velocity against 2^480 (kLargestInputSpeedSum), which leaves 2^20 for the growth by responses and a lever arm.
 // Fails: kBadInput            a value is not finite or out of range, the solid_ids are not strictly ascending, or the
 //                             plate side names no plate (CheckSolidContactInputs).
 //        kOnWrongSideOfPlate  the start is beyond the other face of its committed plate by more than tol; the
@@ -287,6 +290,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //                             every active surface and the stick still approaches one, the escape is faster than
 //                             kMaxSqueezeOutSpeedFactor times the speeds involved, or its rounding over the time left
 //                             is above tol / 64; each names the solid the failing velocity approaches fastest),
+//                             kMovesTooFastForStep (on one active surface, the speeds involved times the time left
+//                             above 2^40 tol, naming that surface's solid),
 //                             kSecondReactingSolid (one step charges two solids with reports_reaction, naming the
 //                             higher index when one response pushes both), kEndsTooCloseToSolid (the end check),
 //                             kSlowApproachToTurningSolid (passed on from the sweep, with that turning solid's id), or
@@ -384,8 +389,12 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
   // Step 5: the settle brings the particle back to the rest gap of every near surface; the end check keeps the module's
   // promise that a particle never ends a step inside a solid (CheckEndOutsideSolids), whatever the settle found.
   if (error == ContactError::kNone) {
-    ApplySettleAtEnd(inputs, &move);
-    error = CheckEndOutsideSolids(inputs, move.result.position, &move_failure);
+    // A settle that read every solid at least tol away left the particle where it read them: the end check would read
+    // the same distances and pass, so it is not read again.
+    const bool is_clear_at_end = ApplySettleAtEnd(inputs, &move);
+    if (!is_clear_at_end) {
+      error = CheckEndOutsideSolids(inputs, move.result.position, &move_failure);
+    }
   }
   if (failure != nullptr) {
     *failure = move_failure;

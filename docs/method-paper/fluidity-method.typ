@@ -661,9 +661,14 @@ t$), $"tol"$ the contact tolerance, $d$ the distance from a point to a solid and
 Two functions do the work. `MoveParticle` moves one particle; it lives in a shared header, so the CPU loop and the
 GPU thread run the same code (@sec-run-on). `MoveParticles` runs it for every particle of one material in one
 range of cell blocks: a CPU loop, or one GPU thread per particle. Particles are independent, so contact adds no
-floating-point values across particles, and nothing in it depends on the order in which threads finish. When
-several particles fail, the one reported is the failure with the lowest particle id, found by an integer minimum.
-On failure the trial outputs of `MoveParticles` hold unspecified values and the step does not commit them. The CPU
+floating-point values across particles, and nothing in it depends on the order in which threads finish. A call first
+checks itself once: sizes, pointers, overlapping arrays, the scalars and every solid. Then it visits each particle
+once, moves it and writes its outputs. At every hit on one surface, the speeds involved times the time left must stay
+within $2^40 "tol"$, the bound that keeps a response's rounding below $"tol"\/64$; otherwise the move is too close to
+call (`kMovesTooFastForStep`), and a shorter step cures it. Speeds beyond any scene, a sum of absolute axes above
+$2^480$ m/s for a velocity or a solid's motion, are bad input. The outputs belong to the step's try: after a failure their
+contents are unspecified, and the step discards the whole try. When several particles fail, the one reported is the
+failing particle with the lowest id, then the lowest index, found by integer minima. The CPU
 and the GPU give equal discrete results (kinds, solids, faces, counts, errors) and floating-point results within a
 tolerance; with no turning solid the expected difference is zero (@sec-conventions).
 

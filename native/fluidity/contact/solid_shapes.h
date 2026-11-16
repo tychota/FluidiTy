@@ -60,6 +60,7 @@
 
 #include <cassert>
 #include <cfloat>
+#include <cstddef>
 #include <cstdint>
 
 #include "fluidity/base/axis.h"
@@ -115,6 +116,7 @@ struct PlateSide {
   friend constexpr bool operator==(PlateSide, PlateSide) = default;  // same_side is this equality.
 };
 static_assert(sizeof(PlateSide) == 8, "a plate side is 8 bytes in every particle array");
+static_assert(offsetof(PlateSide, side) == 4, "the CPU and the GPU read one layout of PlateSide");
 
 // A solid that fills one side of a plane.
 struct FlatSolid {
@@ -193,6 +195,17 @@ struct Solid {
   double friction_scale = 1;  // No unit, zero or more. Multiplies the particle's friction at this solid.
   bool reports_reaction = false;  // true for driven and free solids: their hits fill the solid's reaction.
 };
+// MoveParticles copies the solids to the GPU byte for byte, and BuildContactMemoryEstimate charges sizeof(Solid) per
+// solid. 193 bytes of fields: shape at 0, solid_id at 4, pose_at_step_start at 8, motion at 104, half_size at 152,
+// closed at 176, friction_scale at 184, reports_reaction at 192, then 7 bytes of padding, where a 4-byte field fits at
+// offset 196 without changing the size.
+static_assert(sizeof(Solid) == 200, "the solids copy and the contact memory estimate charge 200 bytes per solid");
+static_assert(offsetof(Solid, pose_at_step_start) == 8, "the CPU and the GPU read one layout of Solid");
+static_assert(offsetof(Solid, motion) == 104, "the CPU and the GPU read one layout of Solid");
+static_assert(offsetof(Solid, half_size) == 152, "the CPU and the GPU read one layout of Solid");
+static_assert(offsetof(Solid, closed) == 176, "the CPU and the GPU read one layout of Solid");
+static_assert(offsetof(Solid, friction_scale) == 184, "the CPU and the GPU read one layout of Solid");
+static_assert(offsetof(Solid, reports_reaction) == 192, "the CPU and the GPU read one layout of Solid");
 
 // "No solid", as an index into the solids array.
 inline constexpr std::uint32_t kNoSolid = 0xFFFFFFFFU;

@@ -1832,11 +1832,11 @@ FindEarliestHitWithTurningSolids(const SolidContactInputs& inputs, Sweep sweep, 
 //     active surfaces, and ends the step no deeper than tol / 16 below where it rested. What is proved is that bound,
 //     not d >= 0: before the first response the plain rule lets a path end on a surface, d near 0, and the touched
 //     stretches after it may take the particle up to tol / 16 past the surface, which the settle lifts back to tol
-//     (ApplySettleAtEnd). So, at the extreme of MoveParticle's Requires (speeds times the time left near 2^40 tol), a
-//     non-committed plate thinner than tol / 8 could have its middle passed, and one thinner than tol / 16 be passed
-//     through, after which the settle lifts the particle to the far side. Neither has been constructed (the review's
-//     300,000 crowded scenes with plates down to tol / 4 thick kept every sweep at 0.99945 tol or more) nor proved
-//     impossible: a limit under plan decision P3.
+//     (ApplySettleAtEnd). So, at the extreme of the bound ApplyJointResponse checks (speeds times the time left near
+//     2^40 tol), a non-committed plate thinner than tol / 8 could have its middle passed, and one thinner than tol / 16
+//     be passed through, after which the settle lifts the particle to the far side. Neither has been constructed (the
+//     review's 300,000 crowded scenes with plates down to tol / 4 thick kept every sweep at 0.99945 tol or more) nor
+//     proved impossible: a limit under plan decision P3.
 //   A turning solid has none of the four steps. Its surface velocity at the particle, v_lin + omega x r, changes as the
 //   particle slides, and its normal turns, so a rate read where a sweep starts says nothing about the gap later, and
 //   the stepping search hits it at 0 from any gap up to tol / 4, whatever the velocity: before the carry, every sweep
@@ -3167,6 +3167,9 @@ FLUIDITY_CPU_AND_GPU inline RestGapTargets BuildRestGapTargets(
 // Where a move off near surfaces put a point, or that it found none within the move cap.
 struct RestGapMove {
   bool is_found = false;  // false: no point at the rest gap of every near surface within the cap was found.
+  // Every solid's distance at the point, with the particle's plate side, was read at least tol, none NaN, so the point
+  // was not moved. The end check reads the same distances at the same pose and point, so it passes.
+  bool is_clear_of_every_solid = false;
   Vec3 moved_point{};  // m, world. The point itself when no surface was near; unspecified when none was found.
   int iteration_count = 0;  // Iterates of the move off several surfaces, 0 when none was needed.
   // When none was found, the solid latest in array order of every surface that constrained the move.
@@ -3177,6 +3180,7 @@ struct RestGapMove {
 struct NearSolids {
   int count = 0;
   std::uint32_t last_solid_index = kNoSolid;  // Index into solids, kNoSolid when count is 0.
+  bool is_clear_of_every_solid = true;  // Every distance read was at least tol: none near and none NaN.
 };
 
 // Finds the solids a point is closer to than the contact tolerance, at their pose pose_elapsed seconds into the step.
@@ -3195,6 +3199,8 @@ FindNearSolids(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point
       ++near.count;
       near.last_solid_index = solid_index;
     }
+    // A NaN distance is neither near nor clear: the end check fails on it.
+    near.is_clear_of_every_solid = near.is_clear_of_every_solid && distance >= inputs.contact_tolerance;
   }
   return near;
 }
@@ -3324,6 +3330,7 @@ MoveToRestGapOfNearSurfaces(const SolidContactInputs& inputs, double pose_elapse
   if (near.count == 0) {
     move.is_found = true;
     move.moved_point = point;
+    move.is_clear_of_every_solid = near.is_clear_of_every_solid;
     return move;
   }
   // Step 2: one solid moves the point as it always did, the same bits, with no cap.
@@ -4356,10 +4363,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointCharges(
 //   4 velocity.for_next_step: ComputeJointChange with move->next_step_approach_allowance; its charges to the reaction
 //     (ApplyJointCharges).
 //   5 velocity.for_this_step: ComputeJointChange with move->this_step_approach_allowance. Its allowance b times the
-//     time left must be at most tol / 64: with one active surface that is the bound of
-//     ComputeLargestApproachLeftAfterResponse and an assertion (MoveParticle: Requires); with several it is checked,
-//     and above it is kSqueezedBetweenSolids naming the solid for_this_step approached fastest: the escape is too fast
-//     for the time left, which a shorter step cures.
+//     time left must be at most tol / 64, checked in every build. Above it, with one active surface, the speeds
+//     involved were too large for the time left: kMovesTooFastForStep naming that surface's solid; with several,
+//     kSqueezedBetweenSolids naming the solid for_this_step approached fastest: the escape is too fast for the time
+//     left. A shorter step cures both.
 //   6 Both allowances are raised to the response's, has_response becomes true, hit_count grows by one.
 //   Why the touched rule holds after it for every solid, with the largest allowance so far: FindFirstHitOfSweep.
 // Units: s for times; m and m/s, world.
@@ -4367,10 +4374,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointCharges(
 //   normal {-1, 0, 0}, 0.1 - tol s into a step of 0.2 s: both velocities {0, 0, 0}, approach speeds -1 m/s,
 //   hit_fraction (0.1 - tol) / 0.2, allowance 2^-46 m/s, hit_count 1.
 // Requires: record_surface.solid_index < inputs.solid_count; active was read at move's position and elapsed time;
-//   move and failure are not null. The speeds involved, summed over their axes, times the time left are at most
-//   2^40 tol.
-// Fails: kTooCloseToCall  kTooManyHits (step 1), kSecondReactingSolid (a second reacting solid charged), or
-//                         kSqueezedBetweenSolids (ComputeJointChange, or step 5).
+//   move and failure are not null.
+// Fails: kTooCloseToCall  kTooManyHits (step 1), kSecondReactingSolid (a second reacting solid charged),
+//                         kSqueezedBetweenSolids (ComputeJointChange, or step 5 with several surfaces), or
+//                         kMovesTooFastForStep (step 5 with one surface).
 //        *failure is written only on failure; *move is then unspecified.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>, <eq:contact-response>
 FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
@@ -4447,11 +4454,12 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
   const double time_left = inputs.step_duration - move->elapsed;  // s
   const double largest_approach_gain = kTouchedSolidRestingGapShare / kMaxHitsPerStep * inputs.contact_tolerance;  // m
   const bool is_within_gain = this_step_change.approach_allowance * time_left <= largest_approach_gain;
-  if (active.count > 1 && !is_within_gain) {
-    const std::uint32_t approached_solid_index = this_step_change.approached_solid_index;
-    return ApplyCloseCall(inputs, ContactCloseCall::kSqueezedBetweenSolids, approached_solid_index, failure);
+  if (!is_within_gain) {
+    // One surface: the speeds were too large for the time left. Several: the escape was. A shorter step cures both.
+    const ContactCloseCall close_call =
+        active.count > 1 ? ContactCloseCall::kSqueezedBetweenSolids : ContactCloseCall::kMovesTooFastForStep;
+    return ApplyCloseCall(inputs, close_call, this_step_change.approached_solid_index, failure);
   }
-  assert(is_within_gain);
   // Step 6: one number per velocity covers every response so far.
   result.velocity = {
       .for_next_step = next_step_change.velocity,
@@ -4482,7 +4490,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
 // Example: the particle at {0.9, 0, 0} moving at {1, 0, 0} m/s, with the flat solid of surface x = 1 and normal
 //   {-1, 0, 0} hit at 0.1 - tol s: position {1 - tol, 0, 0}, then the response of ApplyJointResponse's example.
 // Requires: first_hit is a hit of FindFirstHitOfSweep on move's position and velocity_for_this_step, from
-//   move->elapsed; move and failure are not null. As ApplyJointResponse for the speeds.
+//   move->elapsed; move and failure are not null.
 // Fails: kTooCloseToCall  a fifth hit (kTooManyHits, with the hit solid's solid_id), or as ApplyJointResponse.
 //                         A shorter step has fewer hits.
 //        *failure is written only on failure; *move is then unspecified.
@@ -4729,7 +4737,7 @@ FLUIDITY_CPU_AND_GPU inline void ApplyCarryInSolidAxes(
 //   0.6 {cos 0.3, sin 0.3, 0} m for 1 s: the face kHighX reaches it at 0.8857 s; one response, hit_count 1, then a
 //   carry of 0.1143 s along the face.
 // Requires: first_hit is a hit of FindFirstHitOfSweep on a turning solid, from move's position, velocity and elapsed
-//   time; move and failure are not null. As ApplyJointResponse for the speeds.
+//   time; move and failure are not null.
 // Fails: kTooCloseToCall  as ApplyHit, or kTurningSolidNearOtherSolid (CheckOtherSolidsBeyondClosingBound).
 //        *failure is written only on failure; *move is then unspecified.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
@@ -4777,17 +4785,26 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyHitOnTurningSolid(
 // Units: m, world.
 // Example: a fixed floor with normal {0, 0, 1} and start_overlap_tolerance 0.001: a start at {0, 0, -0.0005} passes; at
 //   {0, 0, -0.01} it fails with magnitude 0.01.
-// Requires: solid_index < inputs.solid_count; inputs passed CheckSolidContactInputs; failure is not null.
+// Also says, in *is_clear_of_solid, whether the start is clear of this solid: its distance d at least tol, and every
+//   surface of it (FindSurfacesOfSolid at the same pose and point) farther than the active window tol + tol / 16, none
+//   NaN. The start rules read nothing more of a solid the start is clear of (ApplyStartRules).
+// Requires: solid_index < inputs.solid_count; inputs passed CheckSolidContactInputs; failure and is_clear_of_solid are
+//   not null.
 // Fails: kOnWrongSideOfPlate  as CheckStartOnCommittedSide.
 //        kStartsInsideSolid   d < -start_overlap_tolerance: *failure names the solid_id, with the depth -d as the
 //                             magnitude (plan decision P6). A particle placed inside a solid, or left there by an
 //                             earlier step; the step stops.
-//        *failure is written only on failure.
+//        *failure is written only on failure; *is_clear_of_solid only on success.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-solid-shapes>, <sec-contact-tolerance>
-FLUIDITY_CPU_AND_GPU inline ContactError
-CheckStartOfSolid(const SolidContactInputs& inputs, std::uint32_t solid_index, Vec3 start, ContactFailure* failure) {
+FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOfSolid(
+    const SolidContactInputs& inputs,
+    std::uint32_t solid_index,
+    Vec3 start,
+    ContactFailure* failure,
+    bool* is_clear_of_solid
+) {
   assert(solid_index < inputs.solid_count);
-  assert(failure != nullptr);
+  assert(failure != nullptr && is_clear_of_solid != nullptr);
   // Steps: 1 wrong side of the plate  2 too deep inside
   const Solid& solid = inputs.solids[solid_index];
   const SolidPose start_pose = ComputeSolidPose(solid, 0);
@@ -4797,8 +4814,9 @@ CheckStartOfSolid(const SolidContactInputs& inputs, std::uint32_t solid_index, V
     return side_error;
   }
   // Step 2: deeper than the user allows is a scene error, and the step stops.
-  const double start_distance =
-      ComputeDistanceForParticle(inputs, solid_index, start_pose, start, inputs.plate_side).distance;  // m
+  const DistanceToSolid at_start =
+      ComputeDistanceForParticle(inputs, solid_index, start_pose, start, inputs.plate_side);
+  const double start_distance = at_start.distance;  // m
   if (start_distance < -inputs.start_overlap_tolerance) {
     *failure = {
         .error = ContactError::kStartsInsideSolid,
@@ -4809,6 +4827,16 @@ CheckStartOfSolid(const SolidContactInputs& inputs, std::uint32_t solid_index, V
     };
     return ContactError::kStartsInsideSolid;
   }
+  // The clearance: the near test of MoveToRestGapOfNearSurfaces and the window of FindActiveSurfaces, on the same
+  // reads.
+  const double active_distance =
+      inputs.contact_tolerance + kTouchedSolidRestingGapShare * inputs.contact_tolerance;  // m
+  bool is_clear = start_distance >= inputs.contact_tolerance;
+  const NearSurfaces surfaces = FindSurfacesOfSolid(inputs, solid_index, start_pose, start, at_start);
+  for (int surface_index = 0; surface_index < surfaces.count; ++surface_index) {
+    is_clear = is_clear && surfaces.surfaces[surface_index].distance > active_distance;
+  }
+  *is_clear_of_solid = is_clear;
   return ContactError::kNone;
 }
 
@@ -4924,7 +4952,7 @@ FLUIDITY_CPU_AND_GPU inline StartResponse FindStartResponse(
 //   both velocities {0, 0, 0}. A particle at rest at the apex of the fixed floor and a fixed face at 60 degrees moves
 //   to {Sqrt(3) tol, 0, tol}, silently.
 // Requires: inputs passed CheckSolidContactInputs; move and failure are not null; move's position is the start, its
-//   elapsed time 0 and it has no response yet. As ApplyJointResponse for the speeds.
+//   elapsed time 0 and it has no response yet.
 // Fails: kOnWrongSideOfPlate, kStartsInsideSolid  as CheckStartOfSolid, for the first solid that fails.
 //        kStartsInNarrowGap  the start has no point at the rest gap of its near surfaces within the move cap
 //                            (MoveToRestGapOfNearSurfaces). *failure names the solid latest in array order of every
@@ -4952,11 +4980,21 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
   // Steps: 1 the checks that fail  2 one move off the near surfaces  3 the active surfaces  4 the response
   const Vec3 start = move->result.position;
   // Step 1: at the start as given, so the move cannot hide a start that is too deep.
+  bool is_clear_of_every_solid = true;
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
-    const ContactError error = CheckStartOfSolid(inputs, solid_index, start, failure);
+    bool is_clear_of_solid = false;
+    const ContactError error = CheckStartOfSolid(inputs, solid_index, start, failure, &is_clear_of_solid);
     if (error != ContactError::kNone) {
       return error;
     }
+    is_clear_of_every_solid = is_clear_of_every_solid && is_clear_of_solid;
+  }
+  // Steps 2 to 4 read again, at the pose of time 0, the distances and surfaces step 1 read at the start. When the start
+  // is clear of every solid they find no near solid, so the start does not move and they read the same point; no
+  // surface within the active window, so no active surface; and no solid with d < 0, so no response. The move is then
+  // the start, silent, bit for bit, and those reads are skipped: almost every particle is far from every solid.
+  if (is_clear_of_every_solid) {
+    return ContactError::kNone;
   }
   // Step 2: a scene error when no point of the gap is at the rest gap of every near surface.
   const RestGapMove start_move = MoveToRestGapOfNearSurfaces(inputs, 0, start);
@@ -4991,7 +5029,8 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
 
 // Applies the settle at the end of a particle's move: one move off every near surface of every solid, touched or not,
 // at the solids' pose at the end of the step (MoveToRestGapOfNearSurfaces), to the rest gap of all of them (plan
-// decision P19, item 7).
+// decision P19, item 7). Returns whether every solid was read at least tol away and the particle did not move, so
+// that the end check, which would read the same distances at the same pose and point, passes without reading them.
 //
 // Method: the distances and normals are read afresh at the end pose, not the normals recorded at the hits, because a
 //   moving solid's surface has moved and a turning one's normal has turned since. Every solid, not only the touched
@@ -5003,15 +5042,15 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
 //   (CheckEndOutsideSolids). The settle only moves the particle away from every near surface: a point it returns is at
 //   least tol - tol / 128 from every solid, so the sweeps' bound (any solid approached by at most tol / 16 in the step
 //   after a response, FindFirstHitOfSweep) is untouched.
-//   Cost: a particle near no solid at the end pays one distance per solid here, as many as the end check reads after
-//   it; a particle that moves pays the iterates of MoveToRestGapOfNearSurfaces.
+//   Cost: a particle near no solid at the end pays one distance per solid here, and the end check then reads none;
+//   a particle that moves pays the iterates of MoveToRestGapOfNearSurfaces.
 // Units: m, world.
 // Example: a particle that ends a slide along a fixed floor with normal {0, 0, 1} at z = tol / 4 ends at z = tol. At
 //   {Sqrt(3) / 2 tol, 0, tol / 2}, tol / 2 from the fixed floor and from a fixed face at 60 degrees, it ends at
 //   {Sqrt(3) tol, 0, tol}, touched or not.
 // Requires: move is not null.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
-FLUIDITY_CPU_AND_GPU inline void ApplySettleAtEnd(const SolidContactInputs& inputs, ParticleMove* move) {
+FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inputs, ParticleMove* move) {
   assert(move != nullptr);
   const Vec3 end_position = move->result.position;
   // Before the settle, every solid that does not turn is at d >= -tol / 16 up to rounding: the start rules leave the
@@ -5051,6 +5090,7 @@ FLUIDITY_CPU_AND_GPU inline void ApplySettleAtEnd(const SolidContactInputs& inpu
   if (settle.is_found) {
     move->result.position = settle.moved_point;
   }
+  return settle.is_clear_of_every_solid;
 }
 
 // Checks that the end position of a particle's move is at least half a contact tolerance from every solid, at each

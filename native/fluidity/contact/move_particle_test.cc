@@ -1250,6 +1250,37 @@ TEST(MoveParticle, CeilingClosingFasterThanParticleLeaves_IsSqueezedBetweenSolid
   ExpectCloseCall(RunMove("CeilingClosingFasterThanParticleLeaves"), ContactCloseCall::kSqueezedBetweenSolids, 1);
 }
 
+// A particle 2 tol above the fixed floor (id 1), falling at `speed_share` times the speed whose response bound reaches
+// tol / 64 over the step: 2^40 tol / T, with tol 2^-30 m and T 0.1 s, 10240 m/s. The hit comes after tol / speed, so
+// the time left is T up to about 1e-13 s.
+MoveParticleCase BuildFallingAtShareOfSpeedBound(double speed_share) {
+  const double bound_speed = 0x1p40 * kTolerance / 0.1;  // m/s
+  return {
+      .name = "FallingAtShareOfSpeedBound",
+      .solids = {move_particle_cases::BuildFloor(1)},
+      .inputs = move_particle_cases::BuildCaseInputs({
+          .start_position = {.x = 0, .y = 0, .z = 2 * kTolerance},
+          .velocity = {.x = 0, .y = 0, .z = -speed_share * bound_speed},
+          .step_duration = 0.1,
+          .friction = 0,
+      }),
+  };
+}
+
+TEST(MoveParticle, FallingAboveSpeedBound_IsMovesTooFastForStepNamingFloor) {
+  // One active surface: the response's allowance times the time left above tol / 64 is a close call, checked in every
+  // build, naming that surface's solid. A shorter step cures it.
+  ExpectCloseCall(RunMove(BuildFallingAtShareOfSpeedBound(1.01)), ContactCloseCall::kMovesTooFastForStep, 1);
+}
+
+TEST(MoveParticle, FallingBelowSpeedBound_HitsAndStops) {
+  const MoveParticleCall call = RunMove(BuildFallingAtShareOfSpeedBound(0.99));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.velocity.for_this_step.z, 0.0);
+}
+
 TEST(MoveParticle, TurningBoxHoverOnSpinAxis_PassesOnCloseCall) {
   const MoveParticleCall call = RunMove("TurningBoxHoverOnSpinAxis");
   EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
@@ -8193,6 +8224,53 @@ TEST(MoveParticle, GeneratedMovesNearTurningSolids_EndOutsideEverySolid) {
     ExpectTurningMoveOutcomes(set.name, counts);
     ExpectSameTurningMovesWithCopyAndOrder(set, counts);
   }
+}
+
+// A particle above the fixed floor z <= 0.5 at a height of `height` m, moving at {0.2, 0, -1} m/s with friction 0.4
+// for 1 ms, tol 2^-30 m: the boundary between a start clear of the floor and one on it.
+MoveParticleCase BuildStartNearActiveWindow(double height) {
+  return {
+      .name = "StartNearActiveWindow",
+      .solids = {move_particle_cases::BuildFlatSolid({.x = 0, .y = 0, .z = 0.5}, kUnitZ, kNoMotion, 1)},
+      .inputs = move_particle_cases::BuildCaseInputs({
+          .start_position = {.x = 0x1.3333333333333p-2, .y = 0x1.6666666666666p-1, .z = height},
+          .velocity = {.x = 0.2, .y = 0, .z = -1},
+          .step_duration = 1e-3,
+          .friction = 0.4,
+      }),
+  };
+}
+
+// Checks that a start at `height` responds at once and stays there: kind kHit at hit fraction 0, the position unmoved.
+void ExpectRespondsAtStart(double height) {
+  const MoveParticleCall call = RunMove(BuildStartNearActiveWindow(height));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_EQ(call.result.hit_fraction, 0.0);
+  EXPECT_EQ(call.result.position.x, 0x1.3333333333333p-2);
+  EXPECT_EQ(call.result.position.z, height);
+}
+
+TEST(MoveParticle, StartExactlyAtActiveWindow_RespondsAtStart) {
+  // 0x1.000000088p-1 is exactly 0.5 + 17/16 tol: the floor is within the active window tol + tol / 16 (the window
+  // includes its edge), so the start is not clear of it. The start's response sticks the particle (friction 0.4 takes
+  // the 0.2 m/s sideways speed of a 1 m/s approach) and it stays at the start.
+  ExpectRespondsAtStart(0x1.000000088p-1);
+}
+
+TEST(MoveParticle, StartOneUnitBelowActiveWindow_RespondsAtStart) {
+  ExpectRespondsAtStart(std::nextafter(0x1.000000088p-1, 0.0));
+}
+
+TEST(MoveParticle, StartOneUnitAboveActiveWindow_IsClearAndHitLater) {
+  // One unit above the window the start is clear of the floor: no response at the start; the sweep meets the floor
+  // after about tol / 16 s and the particle slides on, so it ends past the start in x, at the rest gap.
+  const double height = std::nextafter(0x1.000000088p-1, 1.0);
+  const MoveParticleCall call = RunMove(BuildStartNearActiveWindow(height));
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_GT(call.result.hit_fraction, 0.0);
+  EXPECT_GT(call.result.position.x, 0x1.3333333333333p-2);
 }
 
 }  // namespace

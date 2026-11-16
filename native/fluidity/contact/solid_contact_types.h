@@ -36,8 +36,9 @@
 //          kMaxRestGapMoveInTolerances, kMaxRestGapIterations, kMaxConstrainingSurfaces, kMaxSlideDirections,
 //          kMaxUsedDirections, kMaxFrictionOrders, kSameNormalAxisDifference, kMaxCorrectionRefinements,
 //          kVelocityPairLimitShare, kVelocityTripleLimit, kMaxSqueezeOutSpeedFactor, SolidContactInputs, SolidReaction,
-//          SolidContactResult, FirstHit, CorrectedQuantity, CorrectionTargets, SmallestCorrection,
-//          kApproachLeftAfterResponseShare, ComputeLargestApproachLeftAfterResponse, ComputeContactResponse
+//          SolidContactResult, ParticleContact, ToParticleContact, FirstHit, CorrectedQuantity, CorrectionTargets,
+//          SmallestCorrection, kApproachLeftAfterResponseShare, ComputeLargestApproachLeftAfterResponse,
+//          ComputeContactResponse
 // Uses:    Vec3, math::Dot, math::Length, math::IsFinite (base/vec3.h), math::Abs (base/scalar_math.h),
 //          PerParticleVelocity (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Solid,
 //          PlateSide, SolidFace, SolidSide, DistanceToSolid, kNoSolid (contact/solid_shapes.h)
@@ -49,6 +50,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 
 #include "fluidity/base/cpu_and_gpu.h"
@@ -192,6 +194,13 @@ struct SolidReaction {
   Vec3 velocity_for_next_step_change{};
 };
 static_assert(sizeof(SolidReaction) == 56, "the step's memory estimate charges 56 bytes per particle for a reaction");
+// The GPU writes one reaction per particle and the solids read it there: solid_index at 0, then 4 bytes of padding,
+// hit_position at 8 and the change at 32.
+static_assert(offsetof(SolidReaction, hit_position) == 8, "the CPU and the GPU read one layout of SolidReaction");
+static_assert(
+    offsetof(SolidReaction, velocity_for_next_step_change) == 32,
+    "the CPU and the GPU read one layout of SolidReaction"
+);
 
 // What one particle's move through the solids returns for one step.
 struct SolidContactResult {
@@ -208,6 +217,46 @@ struct SolidContactResult {
   std::uint8_t hit_count = 0;
   SolidReaction reaction{};
 };
+
+// The contact record of one particle for one step: what its move met, kept per particle where the simulation runs,
+// for the materials and the solids to read. The fields of SolidContactResult other than the position, the velocities
+// and the reaction, with the same meaning, ordered so the record has no padding.
+struct ParticleContact {
+  ContactKind kind = ContactKind::kNone;
+  std::uint8_t hit_count = 0;  // Hits during the step, 0 to kMaxHitsPerStep: moments, not surfaces.
+  SolidFace face = SolidFace::kHighZ;  // The face of the first hit.
+  SolidSide side_at_hit = SolidSide::kNoPlate;  // The side of the plate that was hit, when it is a plate.
+  std::uint32_t solid_index = kNoSolid;  // Index into solids of the first hit's solid, not its solid_id.
+  double hit_fraction = 0;  // No unit, 0 to 1. When the first hit happens, as a share of the step. 0 without a hit.
+  Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the first hit. Zero without a hit.
+  PerParticleVelocity<double> approach_speed{};  // m/s, at the first hit. Negative means approaching.
+};
+// The GPU writes one record per particle and the materials and the solids read it there, so both compilers must lay it
+// out alike: 8 bytes of discrete fields, then hit_fraction at 8, the normal at 16 and the two approach speeds at 40.
+static_assert(sizeof(ParticleContact) == 56, "the step's memory estimate charges 56 bytes per particle for a record");
+static_assert(offsetof(ParticleContact, solid_index) == 4, "the CPU and the GPU read one layout of ParticleContact");
+static_assert(offsetof(ParticleContact, hit_fraction) == 8, "the CPU and the GPU read one layout of ParticleContact");
+static_assert(
+    offsetof(ParticleContact, approach_speed) == 40,
+    "the CPU and the GPU read one layout of ParticleContact"
+);
+
+// Converts the result of one particle's move into its contact record, field by field, bit for bit.
+//
+// Example: a result with kind kHit, hit_fraction 0.5, face kHighZ and hit_count 1 gives a record with the same four
+//   values, and the same normal, approach speeds, solid_index and side_at_hit.
+FLUIDITY_CPU_AND_GPU constexpr ParticleContact ToParticleContact(const SolidContactResult& result) {
+  return {
+      .kind = result.kind,
+      .hit_count = result.hit_count,
+      .face = result.face,
+      .side_at_hit = result.side_at_hit,
+      .solid_index = result.solid_index,
+      .hit_fraction = result.hit_fraction,
+      .normal_out_of_solid = result.normal_out_of_solid,
+      .approach_speed = result.approach_speed,
+  };
+}
 
 // The first hit along one straight path, or none.
 struct FirstHit {
@@ -297,9 +346,11 @@ inline constexpr double kApproachLeftAfterResponseShare = 0x1p-46;
 //   {0.6, 0, 0.8} and friction 0, the response leaves an approach of -2^-55 = -2.8e-17 m/s. The same velocity times
 //   2^-830 (about 1.4e-250 m/s) leaves -2^-885 against a bound of 2^-874, where a bound built from Length would be 0,
 //   because the squares underflow.
-// Requires: velocity and solid_velocity are finite, and A is 0 or between 2^-1000 (about 1e-301) and 2^500 (about
-//   3e150) m/s: above the speeds where rounding becomes absolute, and below those where the response's Length
-//   overflows its squares.
+//   A nonzero A below 2^-1000 m/s (about 1e-301) counts as 2^-1000: there the rounding of an operation is absolute, at
+//   most 2^-1075, and the about 40 operations of the response and the Dot add at most 2^-1069, below the bound's
+//   2^-1046. So a tiny speed, which repeated damping can leave, gets a bound and no failure.
+// Requires: velocity and solid_velocity are finite, and A is at most 2^500 (about 3e150) m/s: below the speeds where
+//   the response's Length overflows its squares.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-response>
 FLUIDITY_CPU_AND_GPU inline double ComputeLargestApproachLeftAfterResponse(Vec3 velocity, Vec3 solid_velocity) {
   assert(math::IsFinite(velocity));
@@ -309,9 +360,13 @@ FLUIDITY_CPU_AND_GPU inline double ComputeLargestApproachLeftAfterResponse(Vec3 
   const double solid_velocity_axes_sum =
       math::Abs(solid_velocity.x) + math::Abs(solid_velocity.y) + math::Abs(solid_velocity.z);
   const double speeds_involved = velocity_axes_sum + solid_velocity_axes_sum;  // m/s
-  assert(speeds_involved == 0 || speeds_involved >= 0x1p-1000);
   assert(speeds_involved <= 0x1p500);
-  return kApproachLeftAfterResponseShare * speeds_involved;
+  // Below 2^-1000 m/s the rounding is absolute, not relative: the bound of 2^-1000 m/s covers it. 0 stays 0, so a
+  // particle at rest on a fixed solid keeps an allowance of 0.
+  constexpr double kSmallestBoundedSpeeds = 0x1p-1000;  // m/s
+  const bool is_below_relative_rounding = speeds_involved > 0 && speeds_involved < kSmallestBoundedSpeeds;
+  const double bounded_speeds = is_below_relative_rounding ? kSmallestBoundedSpeeds : speeds_involved;  // m/s
+  return kApproachLeftAfterResponseShare * bounded_speeds;
 }
 
 // Computes one velocity after it meets a solid's surface: no speed into the solid up to rounding, and the sideways

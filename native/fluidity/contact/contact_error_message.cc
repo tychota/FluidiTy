@@ -64,6 +64,9 @@ std::string_view ToMessage(ContactCloseCall close_call) {
       return "A solid turns too far in one step. Use a shorter step or turn the solid more slowly.";
     case ContactCloseCall::kEndsTooCloseToSolid:
       return "A particle would end the step too close to a solid. Use a shorter step or slow the solid down.";
+    case ContactCloseCall::kMovesTooFastForStep:
+      return "A particle, or a solid near it, moves too far in one step for contact to keep the particle outside the "
+             "solids safely. Use a shorter step or slow the particle or the solid down.";
   }
   return "An unknown close call happened.";
 }
@@ -112,6 +115,8 @@ std::string_view ToName(ContactCloseCall close_call) {
       return "solid_turns_too_far";
     case ContactCloseCall::kEndsTooCloseToSolid:
       return "ends_too_close_to_solid";
+    case ContactCloseCall::kMovesTooFastForStep:
+      return "moves_too_fast_for_step";
   }
   return "unknown";
 }

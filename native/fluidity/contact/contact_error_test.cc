@@ -52,6 +52,7 @@ constexpr std::array kCloseCallNames = {
     CloseCallNameEntry{.close_call = ContactCloseCall::kSecondReactingSolid, .name = "second_reacting_solid"},
     CloseCallNameEntry{.close_call = ContactCloseCall::kSolidTurnsTooFar, .name = "solid_turns_too_far"},
     CloseCallNameEntry{.close_call = ContactCloseCall::kEndsTooCloseToSolid, .name = "ends_too_close_to_solid"},
+    CloseCallNameEntry{.close_call = ContactCloseCall::kMovesTooFastForStep, .name = "moves_too_fast_for_step"},
 };
 
 // kStartsInNarrowGap is the last value, so it is the count minus one: a value added after it fails here. kOutOfMemory
@@ -60,7 +61,8 @@ static_assert(static_cast<std::uint8_t>(ContactError::kOutOfMemory) == 8);
 static_assert(static_cast<std::uint8_t>(ContactError::kStartsInNarrowGap) == 9);
 static_assert(kErrorNames.size() == 10);
 static_assert(static_cast<std::uint8_t>(ContactCloseCall::kEndsTooCloseToSolid) == 7);
-static_assert(kCloseCallNames.size() == 8);
+static_assert(static_cast<std::uint8_t>(ContactCloseCall::kMovesTooFastForStep) == 8);
+static_assert(kCloseCallNames.size() == 9);
 
 TEST(ToName, EveryContactError_IsSnakeCaseOfEnumerator) {
   std::set<std::string_view> names;
@@ -146,6 +148,7 @@ TEST(ContactFailure, Default_IsNoneWithZeroContext) {
   const ContactFailure failure;
   EXPECT_EQ(failure.error, ContactError::kNone);
   EXPECT_EQ(failure.close_call, ContactCloseCall::kNone);
+  EXPECT_FALSE(failure.has_particle_id);
   EXPECT_EQ(failure.particle_id, 0U);
   EXPECT_EQ(failure.solid_id, 0U);
   EXPECT_EQ(failure.magnitude, 0.0);
