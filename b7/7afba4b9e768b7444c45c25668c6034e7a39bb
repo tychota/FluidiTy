@@ -1,0 +1,35 @@
+native/fluidity/contact/move_particle_tolerance_test.cc
+  s_4f0877e2acdcf0::t_7d499115192162 1-348
+  s_4f0877e2acdcf0::t_d21337d21b0322 349-351
+  s_26d4fa06456419::t_00137a408da371 352-575
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_e64ade2cf4abb8 18
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_d6bd310f6b2998 16-20,22-23,25-27,38,50,52-54,3054-3282
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_2db618b4c1b8d7 5769-5770,5776,6195-6223,6239-6240,6248-6250,6264-6267,6287-6289,6295-6297,6300,6330-6331,6334,6338-6339,6342,6352,6358,6372-6378,6385,6396,6431-6432,6471-6476,6517,6519,6557,6561,6585-6586,6591,6601,6614-6615,6661,6682-6683,6770,6772-6773,6776,6816,6836,6856,6863-6939
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b77afba4b9e768b7444c45c25668c6034e7a39bb",
+  "prompts": {},
+  "sessions": {
+    "s_26d4fa06456419": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a3c1fe6a5b20d2f19",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
