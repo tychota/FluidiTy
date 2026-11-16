@@ -1,0 +1,41 @@
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_20a108269d783e 33-48,113-115,155-156,615,619-624,628,631,639,700-746,749-757,776-786,789,838,1772-1780,3470-3511,3518-3520,3559-3561
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_ef263f9c8890a4 6575
+  s_4f0877e2acdcf0::t_a2741dd6273a21 6589-6596
+  s_4f0877e2acdcf0::t_7e20331ea63583 2854,2856,2884-2943
+  s_4f0877e2acdcf0::t_48bd291a5bb81e 2951-2956,3001,3008-3010
+  s_b8d725597929d2::t_758c19988017f4 6659-6661
+  s_4f0877e2acdcf0::t_2d2c1f8e27ed9a 2949-2950
+  s_4f0877e2acdcf0::t_3cb38dfc3e3e35 2945,2948,3000,3002-3007,3011-3016
+  s_4f0877e2acdcf0::t_08f0d0bb4a7780 2819-2853,2855,2857-2883,2944,2946-2947
+  s_4f0877e2acdcf0::t_b3372e6bcdb281 2818
+docs/glossary.md
+  s_4f0877e2acdcf0::t_39483ab3bdfbb7 61
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_7c8840d0316200 731-735,742-744,750-768
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fdeda2874567ea224dfd77d109be16c4dbdc9fac",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_b8d725597929d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac48b65af62eee229",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
