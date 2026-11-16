@@ -1073,6 +1073,16 @@ built in Task 12b; the paper states it):
       and at most 0.05 %, but it meets the touched rule and P17's slack, which the model cannot measure: an owner
       question. A box beside a box that rises or sinks relative to it is still met on its side face (a real step). A
       turning solid has no bounding surface (item 10). Items 8 b, 8 c and 14 stand.
+      **As built (review of the amendment, 2026-11-17), two consequences this item did not list, accepted and
+      pinned by tests named as known choices.** (a) A particle resting on the last `tol / 8` of a box's grown top
+      (its centre at least `7 / 8 tol` beyond the real edge) falls off: it is level with the side plane, so the box
+      is left out. (b) An approach that sinks less than tol in the step, at a box's edge strip or at a rim's rest
+      gap, gets no response and no reaction; before the settle the particle can be as close as 0.001 tol, never
+      inside the solid, and the settle lifts it back. Measured in compiled code: 420,000 pressed seam steps with
+      one hit each and a least distance of 1.0 tol; around a rim at most one hit per step and 0.930 tol before the
+      settle; 650 near starts beside lone cylinders changed (602 from a hit to free, 48 lose one hit), none hiding
+      a real approach. Owner question: whether a solid left out whose sweep does not rest should get the touched
+      rule in the first sweep.
 
 ## Before you start
 
