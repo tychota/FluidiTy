@@ -1,0 +1,29 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_e3bc0882a1fbc4 85-86,104
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_0d884bfe0b8c30 972-985,1289-1293,1511-1512,1684-1685
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_345bbbf87042d9 1833-1858,3206-3207,3211,3368-3369,3375-3391,3393-3411,3443-3447,3470,3473,3475-3486,3508-3510
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_ce715b9512b459 2185-2204,2316,2319-2320,2325-2331,2390-2573,6310-6401
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_52f3d9473819f2 189-193,197-201,205-207
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_07c3881574df50 114-116,126-129,152-153,447-461,466-467,485,1078-1088,1116-1117,1126-1131,1150-1157,1667-1675,1714-1724,3414-3460,3462-3463,3472-3476,3482-3483,3497-3502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ed2d53e362769d44a3b10c7ae70121d170dd4927",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
