@@ -1,0 +1,75 @@
+native/fluidity/contact/move_particles_gpu.cu
+  s_4f0877e2acdcf0::t_51b4395393c67e 1,3-13,16-19,26-101,108-133
+  s_4f0877e2acdcf0::t_5e10093878b480 134-143
+native/fluidity/contact/move_particles_steps_test.cc
+  s_4f0877e2acdcf0::t_62105d0199c401 1-490
+  s_4f0877e2acdcf0::t_06e4085baf82b8 491-529
+native/fluidity/contact/move_particles_gpu_test.cc
+  s_4f0877e2acdcf0::t_915b6cc47a22e3 1-378
+  s_4f0877e2acdcf0::t_63eb7f215954a7 379-416
+native/fluidity/contact/move_particles_gpu.h
+  s_4f0877e2acdcf0::t_eca00eb08f7826 1,11-15,32-33,41-62
+  s_4f0877e2acdcf0::t_c3caf3dce20fe2 63-66
+native/fluidity/contact/shared_formulas_gpu_test.cc
+  s_4f0877e2acdcf0::t_98134b3256e985 1-127
+  s_4f0877e2acdcf0::t_ebbbff3d2d3b86 128-145
+native/fluidity/contact/shared_formulas_test_gpu.h
+  s_4f0877e2acdcf0::t_55c68816528907 1-116
+native/fluidity/contact/move_particles_test_runs.h
+  s_4f0877e2acdcf0::t_3377206735b8de 101-192
+  s_4f0877e2acdcf0::t_a28d4500c7cb9e 1-16,20-100,193-331,338,340-341,343-362,367,370,375,378-408,412-482,484-527
+  s_4f0877e2acdcf0::t_e211f9c6814efa 17-19,332-337,339,342,363-366,368-369,371-374,376-377,409-411,483,528-570
+native/fluidity/contact/move_particles_steps.h
+  s_4f0877e2acdcf0::t_ba5010e55b8792 39
+  s_4f0877e2acdcf0::t_f03e395257465f 293-363
+  s_4f0877e2acdcf0::t_a2e40bd2828b18 18-23,26-28
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_aa454776dcefb1 126-143,145-149
+  s_4f0877e2acdcf0::t_1b49ac21df4df0 13,16
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_2b6a0c55e15047 142-159
+  s_4f0877e2acdcf0::t_4adc39cf258c46 24-25
+  s_4f0877e2acdcf0::t_58635c41d7f3e7 16-17
+native/fluidity/contact/shared_formulas_test_gpu.cu
+  s_4f0877e2acdcf0::t_69a9ed163779b4 1-62
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_cceb480f8268d9 132-146
+native/fluidity/contact/move_particles_no_gpu_test.cc
+  s_4f0877e2acdcf0::t_36ffd061fd8ad2 1-27
+docs/glossary.md
+  s_4f0877e2acdcf0::t_ad151d21cabbe0 127-128
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_5b05e1e60f0146 673-685
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_bb467c7ce33c5a 23-28
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_eb440713e2e47c 155,4276-4293,4332
+tools/run_gpu_tests.ps1
+  s_4f0877e2acdcf0::t_b582ac7c9a3663 46-47,577-585,589,594
+docs/gpu-runs.md
+  s_1b5de2beeb9ead::t_e02db1aaa47783 60-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d5946fe5e833ce21de093f39447bfc9524233910",
+  "prompts": {},
+  "sessions": {
+    "s_1b5de2beeb9ead": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aa4a6faf611bcf28f",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
