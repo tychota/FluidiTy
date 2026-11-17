@@ -1,0 +1,29 @@
+native/fluidity/contact/contact_main_comparison_test_cases.h
+  s_4f0877e2acdcf0::t_3847efe55afd8b 1-7,23-45,47-79,82-96,98-127,130-144,147-190,193-208,211-226,229-278,281-359,362-380,383-389
+  s_4f0877e2acdcf0::t_943b6eff0cc9bd 390
+  s_4f0877e2acdcf0::t_a8abfd3140c5f4 8-22,46,80-81,97,128-129,145-146,191-192,209-210,227-228,279-280,360-361,381-382
+native/fluidity/contact/move_particles_scene_test.cc
+  s_4f0877e2acdcf0::t_fc372741ac7e66 1-10,15,17-24,26-135,158-160,162-163,165-172,174-180,183-193,206-208,220,224-366,371-387,390-405,409-410,413-421,427,441-442,445,447,449-451,481-492,954-989,991,997-998,1002
+  s_4f0877e2acdcf0::t_042aa8046e5fc1 990,992-996,999-1001,1003-1025,1049-1051,1056-1137
+  s_4f0877e2acdcf0::t_ce556b25e47033 11-14,16,25,136-157,161,164,173,181-182,194-205,209-219,221-223,367-370,388-389,406-408,411-412,422-426,428-440,443-444,446,448,452-480,493-953,1026-1048,1052-1055
+native/fluidity/contact/move_particles_test_runs.h
+  s_4f0877e2acdcf0::t_6e8e68fe60e691 36-37
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_395e88e1f63c6a 39-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1181e5d4e86f14a4adeb684183789badb887bceb",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
