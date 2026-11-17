@@ -1,0 +1,50 @@
+native/fluidity/contact/move_particle_left_out_test.cc
+  s_4f0877e2acdcf0::t_f2adbff4160ab5 1-82,98-99,100-137,138-140,141-146,148-152,153-177,193-199,200-217
+  s_4f0877e2acdcf0::t_d8de9da16602c3 83-97,147,178-192
+native/fluidity/contact/left_out_solids_test_sets.h
+  s_4f0877e2acdcf0::t_25835f675c1076 1-11,13-203,212-219,222-224,244-245,255,259-265,267-280,282-285
+  s_4f0877e2acdcf0::t_4d4ba13393bf21 204-211,220-221,225-243,246-251,286,292-295,301-305,307,310-316,318-319,321-367,403-516
+  s_4f0877e2acdcf0::t_6eeee496f932dc 12
+  s_4f0877e2acdcf0::t_660676f3504835 252-254,256-258,266,281,287-291,296-300,306,308-309,317,320,368-402
+native/fluidity/contact/move_particle_left_out_reference_test.cc
+  s_4f0877e2acdcf0::t_b9a9d0dbe635c9 1-31
+  s_4f0877e2acdcf0::t_bf1e2e6a4a64b9 32
+docs/glossary.md
+  s_4f0877e2acdcf0::t_d1d7038ce2b624 123
+  s_4f0877e2acdcf0::t_5a197c23f04cab 122
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_4650ccd03e54df 675,686
+  s_4f0877e2acdcf0::t_1600066efe2d19 676-685
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_6fcbdca351f4d8 23-29
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_a4557338ef9487 366-368,371,401,404
+  s_4f0877e2acdcf0::t_a33e1d4f7d311b 34-35,155,340,369-370,372,390,393,402-403,405,407
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_e4413e4e9b9644 45-46,214-238,564,728
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_71a658e511912a 5124,5128,5309
+  s_4f0877e2acdcf0::t_6f7e67c32cf509 5122-5123,5129-5130
+  s_4f0877e2acdcf0::t_72d310f225bef6 5328
+  s_4f0877e2acdcf0::t_c95f8a32d98300 139-140,1696-1700,1703-1704,1731-1736,1741,1904-1905,1924,1948,1983-1984,1988-2009,2011-2014,2016-2017,2036-2067,2071-2072,2081,2088-2098,2105-2122,2127-2129,2143-2145,2150-2156,2178-2180,3029-3030,3035-3036,3038,3043,3282-3283,3288,3327-3328,3332,3339,3450,3455,3482-3488,3494,3496-3497,3500,3512-3513,3588-3593,3605,3614,3620-3621,3626,3649,3659,3666,3960,3967,5370
+  s_4f0877e2acdcf0::t_7a4282af9779a6 5125
+  s_4f0877e2acdcf0::t_4268ecff3e703f 5334
+  s_4f0877e2acdcf0::t_24cfa0d3c11fc6 5393
+  s_4f0877e2acdcf0::t_c04bd0eaf48f7f 5126-5127,5183,5186,5330,5408,5434-5439,5444
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2e9ecb165754a513075d7f0ff39829160dc4d22b",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
