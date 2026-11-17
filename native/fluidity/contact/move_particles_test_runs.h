@@ -33,7 +33,8 @@
 //          kIdentity (base/mat3.h), Solid, PlateSide, ToSolid
 //          (contact/solid_shapes.h), ParticleContact, SolidReaction, SolidContactInputs
 //          (contact/solid_contact_types.h), GoogleTest
-// Used by: contact/move_particles_steps_test.cc, contact/move_particles_gpu_test.cc
+// Used by: contact/move_particles_steps_test.cc, contact/move_particles_gpu_test.cc,
+//          contact/move_particles_scene_test.cc
 // Read:    docs/method-paper/fluidity-method.typ <sec-contact>
 
 #pragma once

@@ -36,3 +36,5 @@ endif()
 fluidity_add_test(move_particle_tolerance_test SOURCES move_particle_tolerance_test.cc LABEL cpu)
 fluidity_add_test(round_solid_hit_rounding_test SOURCES round_solid_hit_rounding_test.cc LABEL cpu)
 fluidity_add_test(solid_shapes_test SOURCES solid_shapes_test.cc LABEL cpu)
+fluidity_add_test(move_particles_scene_test SOURCES move_particles_scene_test.cc LABEL cpu
+                  LINKS fluidity_base_test_support)
