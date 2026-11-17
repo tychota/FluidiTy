@@ -656,36 +656,35 @@ differ between them: the friction number and the plate side a particle may carry
 material. Contact does not decide how a solid moves from step to step, nor the force on it; it reports, for each
 particle, what the solid did to it, and the solids module adds those reports up.
 
-Contact works on both velocities of a particle (@sec-particle-velocities). The sweep follows
-`velocity.for_this_step`, since that is the velocity that moves the particle. At a hit both velocities get the
-response, each with its own approach speed. In this section, $T$ is the step duration (the same value as $Delta
-t$), $"tol"$ the contact tolerance, $d$ the distance from a point to a solid and $g = d - "tol"$ the gap
-(@tab-notation).
+Contact works on both velocities of a particle (@sec-particle-velocities). The sweep follows `velocity.for_this_step`,
+since that is the velocity that moves the particle. At a hit both velocities get the response, each with its own
+approach speed. In this section, $T$ is the step duration (the same value as $Delta t$), $"tol"$ the contact tolerance,
+$d$ the distance from a point to a solid and $g = d - "tol"$ the gap (@tab-notation).
 
-Two functions do the work. `MoveParticle` moves one particle; it lives in a shared header, so the CPU loop and the
-GPU thread run the same code (@sec-run-on). `MoveParticles` runs it for every particle of one material in one
-range of cell blocks: a CPU loop, or one GPU thread per particle. Particles are independent, so contact adds no
-floating-point values across particles, and nothing in it depends on the order in which threads finish. A call first
-checks itself once: sizes, pointers, overlapping arrays, the scalars and every solid. Then it visits each particle
-once, moves it and writes its outputs. At every hit on one surface, the speeds involved times the time left must stay
-within $2^40 "tol"$, the bound that keeps a response's rounding below $"tol"\/64$; otherwise the move is too close to
-call (`kMovesTooFastForStep`), and a shorter step cures it. Speeds beyond any scene, a sum of absolute axes above
-$2^480$ m/s for a velocity or a solid's motion, are bad input. So are coordinates beyond the scale the tolerance was
-computed for: on some axis, a particle's start plus its travel at `for_this_step` over the step, or a solid's origin
-over the step plus its reach, above $2^40 "tol"$, the premise `MoveParticle`'s rounding bounds rest on. The outputs belong to the step's try: after a failure their
-contents are unspecified, and the step discards the whole try. When several particles fail, the one reported is the
-failing particle with the lowest id, then the lowest index. The CPU loop keeps it as it goes. The GPU cannot: each
-thread writes its particle's failure beside the particle, and three short GPU functions follow the visits: the smallest
-failing id, then the smallest index among the failing particles with that id, both atomic integer minima, then that
-particle's failure. A flag, set by an atomic or, says whether any particle failed, so no id stands for "none"; the
-counts are atomic integer sums. Integer minima, an or and integer sums end with the same values in every order of the
-threads, so the report is the same on every run and in every launch size; no floating-point value is summed. The CPU
-and the GPU give equal discrete results (kinds, solids, faces, counts, errors). With no turning or spinning solid the
-floating-point results have the same bits: every formula uses only $+$, $-$, $times$, $\/$, absolute values and
-square roots, each correctly rounded on both processors, and neither may fuse a product into an addition
-(`-ffp-contract=off`, `/fp:precise`, `--fmad=false`, @sec-conventions). A turning or spinning solid is posed through
-a rotation built from sines, whose last bits differ between the processors' libraries, so its results agree within
-$f + 2^(-40) |a|$ of the CPU's value $a$, with the floor $f$ a quarter of the contact tolerance for positions,
+Two functions do the work. `MoveParticle` moves one particle; it lives in a shared header, so the CPU loop and the GPU
+thread run the same code (@sec-run-on). `MoveParticles` runs it for every particle of one material in one range of cell
+blocks: a CPU loop, or one GPU thread per particle. Particles are independent, so contact adds no floating-point values
+across particles, and nothing in it depends on the order in which threads finish. A call first checks itself once:
+sizes, pointers, overlapping arrays, the scalars and every solid. Then it visits each particle once, moves it and writes
+its outputs. At every hit on one surface, the speeds involved times the time left must stay within $2^40 "tol"$, the
+bound that keeps a response's rounding below $"tol"\/64$; otherwise the move is too close to call
+(`kMovesTooFastForStep`), and a shorter step cures it. Speeds beyond any scene, a sum of absolute axes above $2^480$ m/s
+for a velocity or a solid's motion, are bad input. So are coordinates beyond the scale the tolerance was computed for:
+on some axis, a particle's start plus its travel at `for_this_step` over the step, or a solid's origin over the step
+plus its reach, above $2^40 "tol"$, the premise `MoveParticle`'s rounding bounds rest on. The outputs belong to the
+step's try: after a failure their contents are unspecified, and the step discards the whole try. When several particles
+fail, the one reported is the failing particle with the lowest id, then the lowest index. The CPU loop keeps it as it
+goes. The GPU cannot: each thread writes its particle's failure beside the particle, and three short GPU functions
+follow the visits: the smallest failing id, then the smallest index among the failing particles with that id, both
+atomic integer minima, then that particle's failure. A flag, set by an atomic or, says whether any particle failed, so
+no id stands for "none"; the counts are atomic integer sums. Integer minima, an or and integer sums end with the same
+values in every order of the threads, so the report is the same on every run and in every launch size; no floating-point
+value is summed. The CPU and the GPU give equal discrete results (kinds, solids, faces, counts, errors). With no turning
+or spinning solid the floating-point results have the same bits: every formula uses only $+$, $-$, $times$, $\/$,
+absolute values and square roots, each correctly rounded on both processors, and neither may fuse a product into an
+addition (`-ffp-contract=off`, `/fp:precise`, `--fmad=false`, @sec-conventions). A turning or spinning solid is posed
+through a rotation built from sines, whose last bits differ between the processors' libraries, so its results agree
+within $f + 2^(-40) |a|$ of the CPU's value $a$, with the floor $f$ a quarter of the contact tolerance for positions,
 $2^(-40)$ times the largest input speed for velocities, and $2^(-40)$ for hit fractions and normals.
 
 Most particles are far from most solids, so the cost of a move is mostly its reads of the solids. The start's depth
@@ -693,18 +692,18 @@ check reads each solid once. A solid whose distance there is above the particle'
 velocity plus one move off one near solid at the start and one in the settle), plus how far the solid's distance can
 fall in the step, plus $4 "tol"$, cannot come within any window a phase reads, and the move leaves it out of its other
 reads. The distance falls by at most $|bold(v)_"lin"| T$ plus the chord of the solid's turn, $min(|bold(omega)| T, 2)$,
-times an arm: the half diagonal for a box or a cylinder, none for a sphere, the particle's distance to the origin for
-a flat solid or a plate. A turning box's distance is its largest face-plane gap, which a turn moves by the particle's
-arm, not the box's; it is at least the true distance over $sqrt(3)$, so the box's window counts twice. The particle's
-distance from the start plus the travel still to come is checked against $R$ before every sweep and before the
-settle, and a move off the start longer than one move off one near solid reads them all as well; past either, every
+times an arm: the half diagonal for a box or a cylinder, none for a sphere, the particle's distance to the origin for a
+flat solid or a plate. A turning box's distance is its largest distance to a face plane, which a turn moves by the
+particle's arm, not the box's; it is at least the true distance over $sqrt(3)$, so the box's window counts twice. The
+particle's distance from the start plus the travel still to come is checked against $R$ before every sweep and before
+the settle, and a move off the start longer than one move off one near solid reads them all as well; past either, every
 solid is read again. In the sweeps the move allowance alone keeps the distance above the largest window; the $4 "tol"$
-carries the bound at the settle and the end check, and the box's double count is needed only by the stepping search of
-a turning box. Phase by phase, a solid left out is above every window a phase reads, with room for the rounding of a
+carries the bound at the settle and the end check, and the box's double count is needed only by the stepping search of a
+turning box. Phase by phase, a solid left out is above every window a phase reads, with room for the rounding of a
 distance ($"tol"\/128$) and of a closed form's hit (about $0.013 "tol"$, a first-order estimate under `MoveParticle`'s
 premise that every coordinate is within $2^40 "tol"$). That the answers are the same bits as with every solid read is
-measured, not proved: on 40,240 test scenes and 71.7 million generated ones, none differs. A particle far from 32
-solids costs one read of each instead of three.
+measured, not proved: on 40,240 test scenes and 71.7 million generated ones, none differs. A particle far from 32 solids
+costs one read of each instead of three.
 
 == Solid shapes <sec-solid-shapes>
 
@@ -732,9 +731,10 @@ and contact visits them in that order.
 Six shapes exist (@fig-solid-shapes, @fig-round-solids). Each is described in its own axes, with $bold(p) = A^T
 (bold(x) - bold(o))$ the point in those axes:
 
-/ Flat solid: fills $p_z <= 0$. It is given by a point on its surface and its `normal_out_of_solid`. Its own z axis
-  is the normal, and its own x axis is the cross product of the world axis on which the normal has its smallest
-  part with the normal, normalised; a plate builds its axes the same way. Its one face is `kHighZ`.
+/ Flat solid: fills $p_z <= 0$. It is given by a point on its surface and its `normal_out_of_solid`. Its own z axis is
+  the normal, and its own x axis is the cross product of the world axis on which the normal has its smallest part (the
+  first in x, y, z order on a tie) with the normal, normalised; a plate builds its axes the same way. Its one face is
+  `kHighZ`.
 / Plate: fills $|p_z| <= "half_thickness"$, unbounded sideways. Its `normal` points to its `kAlongNormal` side, and its
   `kHighZ` face is on that side; the `kLowZ` face looks to the `kAgainstNormal` side. A thin solid of finite size is a
   box, which has no sides in this sense.
@@ -774,23 +774,23 @@ $
   )
 $ <eq:solid-distance>
 
-where a domain box's origin is its centre and its half size is half its extent. The sphere and the cylinder use
-their true distance to the surface (@eq:sphere-distance, @eq:cylinder-distance). The normal,
-`normal_out_of_solid`, belongs to the face that gives $d$, written back in world axes with $A$. A flat solid's
-normal is its own +z. A plate's is +z with face `kHighZ` when $p_z >= 0$, else −z with `kLowZ`. A box's face is
-the one on the axis that gives the maximum: the low face when $p_k <= 0$, else the high one. A domain box's face is
-the closed side that gives the minimum, with its normal pointing into the box. The face order is `kLowX`, `kHighX`,
-`kLowY`, `kHighY`, `kLowZ`, `kHighZ`, `kCurved`, `kLowRim`, `kHighRim`. When two faces of a box or a domain box
-give the same value, the first in that order is taken; so a box's middle plane $p_k = 0$ gives its low face. Two
-other shapes settle their ties by their own rules instead: a plate and a cylinder's caps take `kHighZ` on their
-middle plane $p_z = 0$ (the rule above and @sec-round-solids), and a tie inside a cylinder goes to its wall.
+where a domain box's origin is its centre and its half size is half its extent. The sphere and the cylinder use their
+true distance to the surface (@eq:sphere-distance, @eq:cylinder-distance). The normal, `normal_out_of_solid`, belongs to
+the face that gives $d$, written back in world axes with $A$. A flat solid's normal is its own +z. A plate's is +z with
+face `kHighZ` when $p_z >= 0$, else −z with `kLowZ`. A box's face is the one on the axis that gives the maximum: the low
+face when $p_k <= 0$, else the high one. A domain box's face is the closed side that gives the minimum, with its normal
+pointing into the box. The face order is `kLowX`, `kHighX`, `kLowY`, `kHighY`, `kLowZ`, `kHighZ`, `kCurved`, `kLowRim`,
+`kHighRim`. When two faces of a box or a domain box give the same value, the first in that order is taken; so a box's
+middle plane $p_k = 0$ gives its low face. Two other shapes settle their ties by their own rules instead: a plate and a
+cylinder's caps take `kHighZ` on their middle plane $p_z = 0$ (the rule above and @sec-round-solids), and a tie inside a
+cylinder goes to its wall.
 
-A box's $d$ is the gap to its nearest face plane, not the straight-line distance to its surface. The two agree
-everywhere except outside an edge or a corner, where $d$ is smaller. For a box with half sizes (1, 1, 1) at the
-origin, the point (3, 0, 0) is at $d = 2$ from face `kHighX` with normal (1, 0, 0); the point (0.9, 0, 0.5) is
-inside at $d = -0.1$, again from `kHighX`; the point (−2, −2, 0) is at $d = 1$ from two faces at once, and the
-tie gives `kLowX`. For a domain box from (0, 0, 0) to (1, 1, 1) with an open top, the point (0.5, 0.5, 0.95) is at
-$d = 0.5$: four sides tie and left wins. With the top closed it would be at 0.05 from the top.
+A box's $d$ is its largest distance to a face plane, negative behind the plane, not the straight-line distance to its
+surface. The two agree everywhere except outside an edge or a corner, where $d$ is smaller. For a box with half sizes
+(1, 1, 1) at the origin, the point (3, 0, 0) is at $d = 2$ from face `kHighX` with normal (1, 0, 0); the point (0.9, 0,
+0.5) is inside at $d = -0.1$, again from `kHighX`; the point (−2, −2, 0) is at $d = 1$ from two faces at once, and the
+tie gives `kLowX`. For a domain box from (0, 0, 0) to (1, 1, 1) with an open top, the point (0.5, 0.5, 0.95) is at $d =
+0.5$: four sides tie and left wins. With the top closed it would be at 0.05 from the top.
 
 === The two sides of a plate
 
@@ -807,29 +807,41 @@ the half space on its side:
 $ d = s_"plate" p_z - "half_thickness", $
 
 with face `kHighZ` for `kAlongNormal` and `kLowZ` for `kAgainstNormal`. This one distance is used when the start is
-classified, in the sweep, when the particle settles and in the end check. A committed particle that starts inside
-the thickness is therefore pushed out to its own side, never through to the other one. For a plate of half
-thickness 0.01 m and a `start_overlap_tolerance` of 0.05 m (the tests' values), a particle committed to
-`kAlongNormal` at $p_z = -0.001$ m is at $d = -0.011$ m and goes to $p_z
-= 0.01 + "tol"$; an uncommitted particle at the same place is nearer to `kLowZ` and goes to $p_z = -(0.01 +
-"tol")$. A committed particle more than $"tol"$ beyond the other face, $s_"plate" p_z < -("half_thickness" +
-"tol")$, is on the wrong side of its plate, an error. This is checked before the depth inside the half space: a
-particle on the other side is not inside its half space but on the wrong side, and the error says so. A `plate_id`
-that names no plate among the solids is a bad input.
+classified, in the sweep, when the particle settles and in the end check. A committed particle that starts inside the
+thickness is therefore pushed out to its own side, never through to the other one. For a plate of half thickness 0.01 m
+and a `start_overlap_tolerance` of 0.05 m (the tests' values), a particle committed to `kAlongNormal` at $p_z = -0.001$
+m is at $d = -0.011$ m and goes to $p_z = 0.01 + "tol"$; an uncommitted particle at the same place is nearer to `kLowZ`
+and goes to $p_z = -(0.01 + "tol")$. A committed particle more than $"tol"$ beyond the other face, $s_"plate" p_z <
+-("half_thickness" + "tol")$, is on the wrong side of its plate, an error. This is checked before the depth inside the
+half space: a particle on the other side is not inside its half space but on the wrong side, and the error says so. A
+`plate_id` that names no plate among the solids is a bad input.
 
 === Checks before the step
 
-`CheckSolid` checks one solid: finite values and a step duration $T > 0$; axes that form a rotation, each column a
-unit vector up to a squared length within $2^(-40)$ of 1, each pair of columns at right angles up to a dot product
-of at most $2^(-40)$ in absolute value, and a positive determinant, so the axes are not a mirror image; positive
-sizes, with a sphere's three half sizes equal and a cylinder's first two equal (both are stored in `half_size`: the
-radius three times for a sphere, the radius twice and the half height for a cylinder); a nonzero id; a
-`friction_scale` of zero or more; a domain box that does not move, keeps exactly the world axes ($A = I$) and has at
-least one closed side; and a turn of at most a quarter turn during the step, $|bold(omega)| T <= pi\/2$. A larger
-turn asks for a shorter step. For the sphere, the cylinder, the flat solid and the plate only the turn that changes
-the shape counts (@sec-round-solids, @sec-first-hit): a sphere never fails this check, a cylinder may spin about its
-own axis at any rate, and a flat solid or a plate about its normal. The
-step calls it once per step for every solid; `MoveParticle` trusts that call and does not repeat it.
+`CheckSolid` checks one solid: finite values and a step duration $T > 0$; axes that form a rotation, each column a unit
+vector up to a squared length within $2^(-40)$ of 1, each pair of columns at right angles up to a dot product of at most
+$2^(-40)$ in absolute value, and a positive determinant, so the axes are not a mirror image; positive sizes, with a
+sphere's three half sizes equal and a cylinder's first two equal (both are stored in `half_size`: the radius three times
+for a sphere, the radius twice and the half height for a cylinder); a nonzero id; a `friction_scale` of zero or more; a
+domain box that does not move, keeps exactly the world axes ($A = I$) and has at least one closed side; and a turn of at
+most a quarter turn during the step, $|bold(omega)| T <= pi\/2$. A larger turn asks for a shorter step. For the sphere,
+the cylinder, the flat solid and the plate only the turn that changes the shape counts (@sec-round-solids,
+@sec-first-hit): a sphere never fails this check, a cylinder may spin about its own axis at any rate, and a flat solid
+or a plate about its normal. The step calls it once per step for every solid; `MoveParticle` trusts that call and does
+not repeat it.
+
+=== The nearest solid surface <sec-nearest-solid-surface>
+
+Other modules need the velocity of the solid surface nearest a point, for example where the grid meets a solid.
+`ComputeSolidVelocitySample` gives it: it poses every solid `elapsed` seconds into the step, reads the distance $d$ and
+the normal $bold(n)$ of @eq:solid-distance at the point, and keeps the smallest distance; equal distances keep the
+solid that comes first in the array. A surface farther than the caller's search distance gives no solid. Otherwise the
+sample holds the solid's index, $d$, $bold(n)$, the side of a plate the point is on, and the solid velocity $bold(u)$
+at $bold(x) - d bold(n)$: the nearest point of the surface, except outside a box's edge or corner, where it is the
+point on the face plane that gives $d$. For a box with half sizes (1, 1, 1) at the origin turning at (0, 0, 1) rad/s
+and the point (3, 0, 0) with a search distance of 5 m: $d = 2$, $bold(n) = (1, 0, 0)$, the surface point (1, 0, 0) and
+$bold(u) = (0, 1, 0)$ m/s; with a search distance of 1.5 m, no solid (the code's own example). Contact itself does
+not use it: a moving particle reads every solid near it.
 
 == The contact tolerance <sec-contact-tolerance>
 
@@ -841,9 +853,8 @@ representable step. This code uses one length instead, the contact tolerance:
 $ "tol" = 2^(-30) w_"min" + 2^(-40) L $ <eq:contact-tolerance>
 
 where $L$, the `largest_coordinate`, is the largest $|x|$, $|y|$ or $|z|$ a solid origin takes during the step, plus
-each solid's reach from its origin, and $w_"min"$, the `smallest_cell_width`, is the width of the smallest cell of
-the grid
-(`ComputeContactScale`, `ComputeContactTolerance`). The reach is the length of the half size of a box, a sphere, a
+each solid's reach from its origin, and $w_"min"$, the `smallest_cell_width`, is the width of the smallest cell of the
+grid (`ComputeContactScale`, `ComputeContactTolerance`). The reach is the length of the half size of a box, a sphere, a
 cylinder or the domain box; the domain box lets the particles' extent count, since every particle is inside it.
 
 Why $2^(-40)$: write $epsilon = 2^(-52)$ for the machine epsilon, the gap between 1 and the next double. Computing $d$
@@ -902,13 +913,12 @@ at the hit, or no solid when the path is free. @proc-find-first-hit lists the st
 A box turns when its angular velocity is not exactly (0, 0, 0). A flat solid or a plate turns when the part of its
 angular velocity across its normal, $bold(omega) - (bold(omega) dot bold(e)_z) bold(e)_z$ with $bold(e)_z$ the normal,
 is longer than $2^(-46) |bold(omega)|$: both are unbounded sideways, so a spin about the normal leaves the shape as it
-is, and a part across that short is the rounding a spin about a tilted normal leaves, not a turn. Such a part keeps
-the normal within $2 times 2^(-46)$ of its start however far the solid spins, so the face moves by less than
-$"tol"\/8$ at any point within $2 sqrt(3) L$ of its origin, $L$ the largest coordinate of the contact scale
-(`kNegligibleTurnShare`; the proof is in the code). The spin
-still moves the surface, and friction feels it through the solid velocity. A sphere never counts as turning, and a
-cylinder only when its axis tilts (@sec-round-solids). One that does not turn only translates, so each of its face
-planes moves at $bold(v)_"lin"$, and the gap to a face changes linearly with time:
+is, and a part across that short is the rounding a spin about a tilted normal leaves, not a turn. Such a part keeps the
+normal within $2 times 2^(-46)$ of its start however far the solid spins, so the face moves by less than $"tol"\/8$ at
+any point within $2 sqrt(3) L$ of its origin, $L$ the largest coordinate of the contact scale (`kNegligibleTurnShare`;
+the proof is in the code). The spin still moves the surface, and friction feels it through the solid velocity. A sphere
+never counts as turning, and a cylinder only when its axis tilts (@sec-round-solids). One that does not turn only
+translates, so each of its face planes moves at $bold(v)_"lin"$, and the gap to a face changes linearly with time:
 
 $
   g_"face" (t) = g_"face" (0) + "rate" times t, quad "rate" = bold(n) dot (bold(v) - bold(v)_"lin"), \
@@ -941,17 +951,16 @@ After every hit the particle sits on the surface at $d = "tol"$ and is swept aga
 surface counted as hit again at once, every slide would end after a few steps in "too many hits". So the surface a
 particle rests on is treated apart, by the touching rule: when the start's gap $g(0)$ is in $[-"tol", 0]$ for the
 surface that gives $d$, that surface is not hit when $"rate" times "duration" >= -"tol"$, and it is hit at $t = 0$
-otherwise. The surface that gives $d$ is: for a plate or a box, the face with the largest gap; for a flat solid or a
-closed side of a domain box, its one face. The reason: the solid lies entirely behind that face plane (true for a
-plane, a convex solid and a domain side alike), so the gap along the path is at least $g(0) + "rate" times t >=
-g(0) - "tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit or the start move put it there, a rim hit
+otherwise. The surface that gives $d$ is: for a plate or a box, the face whose plane gives the largest distance; for a
+flat solid or a closed side of a domain box, its one face. The reason: the solid lies entirely behind that face plane
+(true for a plane, a convex solid and a domain side alike), so the gap along the path is at least $g(0) + "rate" times t
+>= g(0) - "tol"$. `MoveParticle` starts every sweep at $d = "tol"$ (a hit or the start move put it there, a rim hit
 within $"tol"\/1024$ of it), so $g(0) = 0$ and the path never goes below $d = 0$; the part of the window below 0 only
-absorbs rounding.
-A sphere and a cylinder follow the same rule at the nearest point of their surface (@sec-round-solids). The
-touching rule belongs to the closed forms of a solid that does not turn; a turning solid has none (next part).
-A start deeper than $"tol"$ inside the grown solid, $g(0) < -"tol"$, is hit at $t = 0$; `MoveParticle` never sweeps
-from there. For a flat solid with surface at $z = 0$, a particle at $z = "tol"$ moving at $(5, 0, -"tol"\/4)$ m/s for
-1 s slides freely; at (5, 0, −1) m/s it hits at 0.
+absorbs rounding. A sphere and a cylinder follow the same rule at the nearest point of their surface
+(@sec-round-solids). The touching rule belongs to the closed forms of a solid that does not turn; a turning solid has
+none (next part). A start deeper than $"tol"$ inside the grown solid, $g(0) < -"tol"$, is hit at $t = 0$; `MoveParticle`
+never sweeps from there. For a flat solid with surface at $z = 0$, a particle at $z = "tol"$ moving at $(5, 0,
+-"tol"\/4)$ m/s for 1 s slides freely; at (5, 0, −1) m/s it hits at 0.
 
 A convex solid also lies behind surfaces that do not give the distance, its *bounding surfaces*: each face plane of a
 box but the one that gives the distance, a cylinder's wall taken as unbounded along its axis, and the plane of each cap.
@@ -1084,59 +1093,58 @@ advances; both are safe, so the larger is too. Both ends of $r_"max"$ count: a $
 alone let an advance carry a particle 3.8 cm into a quarter-turn arm along which it moved outward, and one built from
 the end's distance alone 1.8 mm into its end face. The domain box's distance, the smallest gap to its sides, is not
 convex, and neither is a mesh's: one wall's model says nothing about the next, and a turning room searched with the
-second-order advance passed a wall on 27.5 % of measured paths. Such a shape keeps the first-order advance alone
+second-order advance passed a side on 27.5 % of measured paths. Such a shape keeps the first-order advance alone
 (`HasConvexDistance`). The rounding margin is the first-order one: the distance is off by at most $"tol"\/128$, and
 $dot(g)$, $K$ and the root carry relative rounding only, so the path stays farther than $"tol" - "tol"\/64$ before
 the hit.
 
 The search stops with a hit when $g(t) <= "tol"\/4$, and with no hit when $t >= "duration"$. More than 128 advances
-(`kMaxAdvanceCount`) is "too close to call, slow approach to a turning solid", and the step is tried again shorter.
-With the second-order advance this is rare: it remains for a path that hovers near the solid or grazes it, with almost no
-motion along its normal (a graze is the same thing near the tangent point), where each advance is only about $sqrt(2 g\/K)$. A particle at rest $2^(-17)$ m above the top face
-of a box of half size 0.5 m turning at (0, 0, 1) rad/s, on its turn axis, never gets closer, but needs 182 advances
-to reach the end of a 1 s sweep. On the generated paths of the tests, 30,000 sweeps toward turning boxes, plates, flat
-solids, cylinders, a quarter-turn arm and a paddle, there was no close call. A box that turns uses this search, and
-so do a flat solid or a plate that turns about an axis across its normal and a cylinder whose axis tilts; a sphere,
-a cylinder that only spins about its own axis, and a flat solid or a plate that only spins about its normal keep
-their closed forms (@sec-round-solids).
+(`kMaxAdvanceCount`) is "too close to call, slow approach to a turning solid", and the step is tried again shorter. With
+the second-order advance this is rare: it remains for a path that hovers near the solid or grazes it, with almost no
+motion along its normal (a graze is the same thing near the tangent point), where each advance is only about $sqrt(2
+g\/K)$. A particle at rest $2^(-17)$ m above the top face of a box of half size 0.5 m turning at (0, 0, 1) rad/s, on its
+turn axis, never gets closer, but needs 182 advances to reach the end of a 1 s sweep. On the generated paths of the
+tests, 30,000 sweeps toward turning boxes, plates, flat solids, cylinders, a quarter-turn arm and a paddle, there was no
+close call. A box that turns uses this search, and so do a flat solid or a plate that turns about an axis across its
+normal and a cylinder whose axis tilts; a sphere, a cylinder that only spins about its own axis, and a flat solid or a
+plate that only spins about its normal keep their closed forms (@sec-round-solids).
 
 The touching rule does not apply to a turning solid. A particle resting on one, at $d = "tol"$, starts with $g(0)
-= 0 <= "tol"\/4$ and is hit at $t = 0$ in every step; the response and the slide in the solid's axes
-(@sec-contact-response) then carry it with the solid for the rest of the step. This is intended: the face it rests
+= 0 <= "tol"\/4$ and is hit at $t = 0$ in every step; the response and the carry in the solid's axes
+(@sec-contact-response) then take it with the solid for the rest of the step. This is intended: the face it rests
 on is turning, so the plane argument of the touching rule does not hold, and carrying the particle in the solid's
 axes is what keeps it on the face.
 
-Nor does the argument that keeps a touched solid from being hit again. For a solid that does not turn, the sweep
-after a response reads the rate the response targeted, bit for bit, at the same point and pose. Toward a turning
-solid the surface velocity at the particle, $bold(v)_"lin" + bold(omega) times bold(r)$, changes as the particle
-slides, and the normal turns, so a rate read where a sweep starts says nothing about the gap later; and the search
-hits the solid at 0 from any gap up to $"tol"\/4$, whatever the velocity. Before the slide was built, every sweep
-after a hit on a turning solid hit it again at 0, three times, and the fifth hit of the step ended in "too many
-hits". The slide in the solid's axes replaces that argument: a hit on a turning solid ends the sweeps of the step,
-so the solid is never swept again from the moment it was hit, and a hit at 0 just after a response, on a turning
-solid within $"tol" + "tol"\/16$, is the moment of that response, which read the solid with the same distance at the
-same point and pose: no second response, one hit. In the solid's own axes the solid stands still and its distance
-is convex, and the slide moves the particle on a straight line there that does not approach along the normal the
-response read, so the distance stays at least its value at the hit for the whole time left, exactly: no rate, no
-allowance and no curvature bound enter. What is not exact is rounding: the turns into and out of those axes, below
-$"tol"\/64$, and the normal written in them, a few rounding units on a face; beside a cylinder's rim the normal is
-read from a vector about $"tol"$ long, so it turns by the own point's rounding over $"tol"$, about $10^(-7)$ rad at
-$"tol" = 2^(-30)$ m and coordinates near 1 m. Measured on 12,000 generated moves next to turning boxes, flat solids,
-plates, cylinders and a paddle, the slide ended no nearer than $0.999998 "tol"$ before the settle.
+Nor does the argument that keeps a touched solid from being hit again. For a solid that does not turn, the sweep after a
+response reads the rate the response targeted, bit for bit, at the same point and pose. Toward a turning solid the
+surface velocity at the particle, $bold(v)_"lin" + bold(omega) times bold(r)$, changes as the particle slides, and the
+normal turns, so a rate read where a sweep starts says nothing about the gap later; and the search hits the solid at 0
+from any gap up to $"tol"\/4$, whatever the velocity. Swept again after a hit, a turning solid would be hit at 0 in
+every sweep, and the fifth hit of the step would end in "too many hits". The carry in the solid's axes replaces that
+argument: a hit on a turning solid ends the sweeps of the step, so the solid is never swept again from the moment it was
+hit, and a hit at 0 just after a response, on a turning solid within $"tol" + "tol"\/16$, is the moment of that
+response, which read the solid with the same distance at the same point and pose: no second response, one hit. In the
+solid's own axes the solid stands still and its distance is convex, and the carry moves the particle on a straight line
+there that does not approach along the normal the response read, so the distance stays at least its value at the hit for
+the whole time left, exactly: no rate, no allowance and no curvature bound enter. What is not exact is rounding: the
+turns into and out of those axes, below $"tol"\/64$, and the normal written in them, a few rounding units on a face;
+beside a cylinder's rim the normal is read from a vector about $"tol"$ long, so it turns by the own point's rounding
+over $"tol"$, about $10^(-7)$ rad at $"tol" = 2^(-30)$ m and coordinates near 1 m. Measured on 12,000 generated moves
+next to turning boxes, flat solids, plates, cylinders and a paddle, the carry ended no nearer than $0.999998 "tol"$
+before the settle (measured, not proved).
 
-A worked example, from the plan of the tests: a box of half size 0.5 m at the origin turns at (0, 0, 1) rad/s, and a
+A worked example, from the tests: a box of half size 0.5 m at the origin turns at (0, 0, 1) rad/s, and a
 particle rests at $0.6 (cos 0.3, sin 0.3, 0)$ m, at $d = 0.073$ m from face `kHighX`. In the box's axes the particle
 goes round at radius 0.6 m, so the bound is 0.6 m/s and $K = 1 times (0 + 1 times 0.6) = 0.6 "m/s"^2$, and the face
 reaches it when $0.6 cos(t - 0.3) = 0.5 + "tol"$, at $t = 0.3 + arccos((0.5 + "tol")\/0.6) approx 0.8857$ s. With
 $"tol" = 2^(-30)$ m, the search takes 3 advances and stops at 0.88568554050660 s, $1.4 times 10^(-10)$ s before that
 time, within the test's $2^(-30)$ (this paper's count, from the code's run). The first-order advance alone takes 30.
 
-The solids that do not turn are searched first, then the turning solids, each only up to the earliest hit found so
-far: a later hit could not win, and a turning search that reaches that time is free, since the path stayed at $d >=
-"tol"$ up to it. So a close call beyond an earlier hit is never reached. Of two turning solids that fill the same
-space through the step (same shape, size, pose and motion, bit for bit), only the first in array order is searched:
-the second, capped at the first one's hit, would sample other times and stop elsewhere within the hit gap, so a copy
-would change the hit.
+The solids that do not turn are searched first, then the turning solids, each only up to the earliest hit found so far:
+a later hit could not win, and a turning search that reaches that time is free, since the path stayed at $d >= "tol"$ up
+to it. So a close call beyond an earlier hit is never reached. Of two turning solids that fill the same space through
+the step (same shape, size, pose and motion, bit for bit), only the first in array order is searched: the second, capped
+at the first one's hit, would sample other times and stop elsewhere within the hit gap, so a copy would change the hit.
 When several solids are hit, the earliest time wins, and equal times keep the lower solid index.
 
 #procedure(
@@ -1149,30 +1157,28 @@ When several solids are hit, the earliest time wins, and equal times keep the lo
     distance, normal and face at the hit.],
   fails: [a search toward a turning solid needs more than 128 advances: "too close to call, slow approach to a
     turning solid".],
-  ([Solid that does not turn], [First, for each solid in array order that does not turn (a box with angular
-    velocity exactly zero, a flat solid or plate whose angular velocity has no part across its normal longer than
-    $2^(-46) |bold(omega)|$, so one that at most spins about its normal, any sphere, a cylinder whose axis does not tilt), sampled at $t_0$: if the
-    start's gap is in $[-"tol", 0]$ for the surface that gives $d$, the solid is hit at 0 when $"rate" times
-    "duration" < -"tol"$ and not hit otherwise; if the gap is below $-"tol"$, it is hit at 0. Otherwise use the
-    closed form of its shape: one face plane for a flat solid, a committed plate or each closed domain side; entry
-    and exit times over the faces for a plate or a box; @proc-sphere-first-hit for a sphere;
+  ([Solid that does not turn], [First, for each solid in array order that does not turn (a box with angular velocity
+    exactly zero, a flat solid or plate whose angular velocity has no part across its normal longer than $2^(-46)
+    |bold(omega)|$, so one that at most spins about its normal, any sphere, a cylinder whose axis does not tilt),
+    sampled at $t_0$: if the start's gap is in $[-"tol", 0]$ for the surface that gives $d$, the solid is hit at 0 when
+    $"rate" times "duration" < -"tol"$ and not hit otherwise; if the gap is below $-"tol"$, it is hit at 0. Otherwise
+    use the closed form of its shape: one face plane for a flat solid, a committed plate or each closed domain side;
+    entry and exit times over the faces for a plate or a box; @proc-sphere-first-hit for a sphere;
     @proc-cylinder-first-hit for a cylinder. Keep the time if it is at most `duration`, with the face at the hit.]),
-  ([Turning solid], [Then for each solid in array order that turns, but one that fills the same space as an
-    earlier one, with `duration` capped at the earliest hit so far: from $t = 0$, repeat $t <- t + "advance"$ with
-    $g$ measured at the pose of $t_0 + t$, the advance the larger
-    of $g(t)\/"bound"$ and the positive root of $g + dot(g) s - K s^2\/2$ (@eq:second-order-advance) when the
-    distance is convex (every turning shape here), $g(t)\/"bound"$ otherwise. Stop with a hit at $t$ when $g(t) <=
-    "tol"\/4$, with no hit when $t >= "duration"$, and fail after 128 advances. There is no touching rule here: a
-    particle resting on the solid is hit at 0.]),
+  ([Turning solid], [Then for each solid in array order that turns, but one that fills the same space as an earlier one,
+    with `duration` capped at the earliest hit so far: from $t = 0$, repeat $t <- t + "advance"$ with $g$ measured at
+    the pose of $t_0 + t$, the advance the larger of $g(t)\/"bound"$ and the positive root of $g + dot(g) s - K s^2\/2$
+    (@eq:second-order-advance) when the distance is convex (every turning shape here), $g(t)\/"bound"$ otherwise. Stop
+    with a hit at $t$ when $g(t) <= "tol"\/4$, with no hit when $t >= "duration"$, and fail after 128 advances. There is
+    no touching rule here: a particle resting on the solid is hit at 0.]),
   ([Keep the earliest], [Return the hit with the smallest time; equal times keep the lower solid index, whatever the
-    order of the search. With no hit,
-    return `kNoSolid`.]),
+    order of the search. With no hit, return `kNoSolid`.]),
 )
 
 == Round solids: sphere and cylinder <sec-round-solids>
 
-A sphere and a finite cylinder are round, so the gap to them is not a face gap and does not change linearly along
-a path. Contact gives them their true distance to the surface, a closed form for the first hit of a path, and
+A sphere and a finite cylinder are round, so the distance to them is not a face plane's and does not change linearly
+along a path. Contact gives them their true distance to the surface, a closed form for the first hit of a path, and
 three rules of their own: a rim search, a touching rule on a curved surface and a spin rule (@fig-round-solids).
 
 === Distance and normal
@@ -1256,22 +1262,23 @@ The discriminant needs the second form. Far from a small sphere, $beta^2$ and $a
 |bold(w)|^2$ and each rounds by about $epsilon |bold(q)|^2 |bold(w)|^2$, while their difference, $|bold(w)|^2 (R^2 -
 h^2)$ with $h$ the distance of the line from the centre, is at most $R^2 |bold(w)|^2$: the hit moved by about $epsilon
 |bold(q)|^2 \/ R$. At the edge of the scale the tolerance protects, $|bold(q)| = 2^41.5 "tol"$ and a radius of 1000 tol,
-a path through the centre stopped 32,150 tol short of the sphere, a path 1300 tol deep passed through it with no hit,
-and a path 250 tol beside it was hit. In $alpha R^2 - |bold(q) times bold(w)|^2$ no term is of size $|bold(q)|^2$: the
-cross product has length $h |bold(w)|$ and rounds by about $epsilon |bold(q)| |bold(w)|$ per axis, so $Delta$ rounds by
-about $5 epsilon alpha R |bold(q)|$. Near the sphere, $gamma <= R^2$, both forms have terms of size $alpha R^2$, and
-$beta^2 - alpha gamma$ keeps the gap's digits for a start just outside the surface moving nearly along it, where both
-its terms are small. For the computed coefficients, $alpha t^2 + 2 beta t + gamma$ at the computed root is exactly
-$gamma (Delta' - Delta) \/ (-beta + sqrt(Delta'))^2$, at most $|Delta' - Delta| \/ alpha$, so the discriminant's
-rounding moves the hit by at most about $3 epsilon |bold(q)|$ along the distance. Counted to first order, with the
-rounding of the gap, of the other coefficients, of the own path and of the solid's pose at $t_0$ (about $epsilon L$),
-the hit's true distance is within $14 epsilon |bold(q)| + 3 epsilon L$ of $"tol"$, and a path called free comes no
-nearer than $"tol" - 7 epsilon |bold(q)| - epsilon L$. For a cylinder, whose turn into own axes rounds the start and the
-velocity by about $2.6 epsilon$ each, read $|bold(q)|$ as the largest own coordinate along the path, not $rho_0$. These
-are estimates summed term by term, not a proof. When every coordinate is within $2^40 "tol"$ of the origin, as
-`MoveParticle` requires, $|bold(q)| <= 2 sqrt(3) times 2^40 "tol"$ and the total is about 0.013 tol, under $"tol"\/64$.
-Measured against an independent double-double reference with radii up to the largest that premise admits, about $2^39$
-tol: at most 0.0024 tol over 8.7 million sphere and cylinder paths, and $3.1 epsilon |bold(q)|$ on fixed spheres.
+the first form alone would stop a path through the centre 32,150 tol short of the sphere, let a path 1300 tol deep pass
+through it with no hit, and hit a path 250 tol beside it (measured). In $alpha R^2 - |bold(q) times bold(w)|^2$ no term
+is of size $|bold(q)|^2$: the cross product has length $h |bold(w)|$ and rounds by about $epsilon |bold(q)| |bold(w)|$
+per axis, so $Delta$ rounds by about $5 epsilon alpha R |bold(q)|$. Near the sphere, $gamma <= R^2$, both forms have
+terms of size $alpha R^2$, and $beta^2 - alpha gamma$ keeps the gap's digits for a start just outside the surface moving
+nearly along it, where both its terms are small. For the computed coefficients, $alpha t^2 + 2 beta t + gamma$ at the
+computed root is exactly $gamma (Delta' - Delta) \/ (-beta + sqrt(Delta'))^2$, at most $|Delta' - Delta| \/ alpha$, so
+the discriminant's rounding moves the hit by at most about $3 epsilon |bold(q)|$ along the distance. Counted to first
+order, with the rounding of the gap, of the other coefficients, of the own path and of the solid's pose at $t_0$ (about
+$epsilon L$), the hit's true distance is within $14 epsilon |bold(q)| + 3 epsilon L$ of $"tol"$, and a path called free
+comes no nearer than $"tol" - 7 epsilon |bold(q)| - epsilon L$. For a cylinder, whose turn into own axes rounds the
+start and the velocity by about $2.6 epsilon$ each, read $|bold(q)|$ as the largest own coordinate along the path, not
+$rho_0$. These are estimates summed term by term, not a proof. When every coordinate is within $2^40 "tol"$ of the
+origin, as `MoveParticle` requires, $|bold(q)| <= 2 sqrt(3) times 2^40 "tol"$ and the total is about 0.013 tol, under
+$"tol"\/64$. Measured against an independent double-double reference with radii up to the largest that premise admits,
+about $2^39$ tol: at most 0.0024 tol over 8.7 million sphere and cylinder paths, and $3.1 epsilon |bold(q)|$ on fixed
+spheres.
 
 *Cylinder.* The cylinder is grown with sharp edges: radius $R = "radius" + "tol"$, half height $H =
 "half_height" + "tol"$. The grown cylinder is the part shared by the grown wall, taken as unbounded along the axis,
@@ -1391,20 +1398,19 @@ $(-(0.5 + "tol"), 0, 0)$ moving at (0, 1, 0) m/s, along the tangent, is free; mo
   outputs: [The hit time since the start of the sweep, or no hit. The normal and face come from
     @eq:cylinder-distance at the hit position, a rim included.],
   fails: [never.],
-  ([Bounding surfaces], [Compute the true distance at the start. For a start beside a rim, read the wall,
-    unbounded along the axis, and the cap's plane on the start's side: no hit when the start rests on either, a gap
-    in $[-"tol"\/8, "tol"\/16]$ sinking at most $"tol"\/64$ during the sweep, whatever the distance's gap.]),
-  ([Read the start], [The gap $g_0$ of the true distance. Below $-"tol"$: hit at 0. In $[-"tol", 0]$: the touching
-    rule.]),
-  ([Inside the wall], [Compute the times the path is inside the grown wall, unbounded along the axis, with
-    @eq:cylinder-hit-time, the constant from the gap: from the first root to the second when the start is beyond
-    the grown wall ($d_"wall" - "tol" > 0$), empty when it does not approach the axis or the root does not exist;
-    from 0 to the larger root, or for ever, otherwise.]),
-  ([Between the caps], [Compute the times the path is between the grown caps' planes: from $(d_"cap" - "tol") \/
-    (-sigma_0 w_z)$ to the far grown cap when the start is beyond a grown cap, empty when it does not move toward
-    that cap; from 0 to the grown cap it moves toward, or for ever, otherwise.]),
-  ([Find the entry], [The later of the two entries, when neither interval is empty and it comes no later than
-    either exit and no later than `duration`; no hit otherwise. A start in a rim corner has the entry 0.]),
+  ([Read the start], [Compute the true distance at the start, in world axes, and its gap $g_0$.]),
+  ([Bounding surfaces, then the touching rule], [For a start beside a rim, read the wall, unbounded along the axis,
+    and the cap's plane on the start's side: no hit when the start rests on either, a gap in $[-"tol"\/8,
+    "tol"\/16]$ sinking at most $"tol"\/64$ during the sweep, whatever the distance's gap. Then $g_0$ below $-"tol"$:
+    hit at 0; in $[-"tol", 0]$: the touching rule.]),
+  ([Find the entry], [Compute the times the path is inside the grown wall, unbounded along the axis, with
+    @eq:cylinder-hit-time, the constant from the gap: from the first root to the second when the start is beyond the
+    grown wall ($d_"wall" - "tol" > 0$), empty when it does not approach the axis or the root does not exist; from 0
+    to the larger root, or for ever, otherwise. Compute the times it is between the grown caps' planes: from
+    $(d_"cap" - "tol") \/ (-sigma_0 w_z)$ to the far grown cap when the start is beyond a grown cap, empty when it
+    does not move toward that cap; from 0 to the grown cap it moves toward, or for ever, otherwise. The entry is the
+    later of the two entries, when neither interval is empty and it comes no later than either exit and no later than
+    `duration`; no hit otherwise. A start in a rim corner has the entry 0.]),
   ([Keep the hit], [An entry on the wall or a cap proper, as @eq:cylinder-distance reads the point there, is the
     hit. Beside a rim, the rim search from the entry: advances of $g\/(-dot(g))$ on the true distance until $g <=
     "tol"\/1024$ (a hit), $dot(g) >= 0$ or the end of the sweep (no hit), at most 16.]),
@@ -1428,24 +1434,25 @@ two agree bit for bit (@sec-first-hit). The turn that changes the shape is none 
 part of $bold(omega)$ across its axis, $bold(omega)_"across" = bold(omega) - (bold(omega) dot bold(e)_z) bold(e)_z$,
 with $bold(e)_z$ the cylinder's own z axis (its `axis`) at the start of the sweep. A cylinder is a turning solid only
 when $|bold(omega)_"across"| T |"half_size"| > "tol"\/8$, when its shape moves by more than $"tol"\/8$ during the step;
-it then uses the stepping search of @sec-first-hit and the slide in its own axes of @sec-contact-response, and the
+it then uses the stepping search of @sec-first-hit and the carry in its own axes of @sec-contact-response, and the
 quarter-turn limit applies to $|bold(omega)_"across"| T$. A spin given along the axis stays below that bound up to
 rounding. Below the bound the closed form keeps the axis of the sweep's start, while $bold(u)$ keeps the tilt, and the
 touching rule reads the surface's normal speed where the sweep starts. A particle that slides across the tilting surface
 keeps that speed while the surface under its new position moves the other way, so the gap falls by up to $2
 |bold(omega)_"across"| max|bold(r)| T < "tol"\/4$, since $max|bold(r)| <= |"half_size"|$; a sweep the closed form
 decides keeps the $"tol"\/8$. So the true grown shape is entered by up to $"tol"\/4$ without a hit, outside the
-$"tol"\/16$ of @sec-first-hit; no hit into the solid is missed, the particle ends at least
-$"tol" - "tol"\/16 - "tol"\/4 = 0.6875 "tol"$ from it, above the end check's $"tol"\/2$, and the settle lifts it
-back (measured: 0.759 tol before the settle, for a cylinder of radius 0.1 m and half height 2 m at 0.99 of the
-bound, the tests' numbers). Measured from $bold(v)_"lin"$ alone, a cap sinking at $3 times 10^(-10)$ m/s under a
-particle it had just stopped looked approached, beyond any rounding bound, and was hit again at 0 until "too many hits",
-at every step length. Why not treat a spinning roller as turning: the slide on a turning solid carries the particle in
-the solid's axes, so it would drag a particle round the roller even with friction 0. Through the solid velocity, the
-spin acts by friction only. For a cylinder of radius 0.5 m at the origin spinning at (0, 0, 10) rad/s, a particle
-hitting the wall at (−0.5, 0, 0) with velocity (1, 0, 0) m/s meets a surface moving at (0, −5, 0) m/s: the approach
-speed is −1 m/s, and the particle keeps (0, 0, 0) m/s with friction 0 and takes (0, −0.5, 0) m/s with friction 0.5 (this
-paper's numbers, by @eq:contact-response).
+$"tol"\/16$ of @sec-first-hit; no hit into the solid is missed, the particle ends at least $"tol" - "tol"\/16 -
+"tol"\/4 = 0.6875 "tol"$ from it, above the end check's $"tol"\/2$, and the settle lifts it back (measured: 0.759 tol
+before the settle, for a cylinder of radius 0.1 m and half height 2 m at 0.99 of the bound, the tests' numbers).
+Measured from $bold(v)_"lin"$ alone, a cap sinking at $3 times 10^(-10)$ m/s under a particle it had just stopped looked
+approached, beyond any rounding bound, and was hit again at 0 until "too many hits", at every step length. Why not treat
+a spinning roller as turning: the carry on a turning solid moves the particle in the solid's axes, so it would drag a
+particle round the roller even with friction 0. Through the solid velocity, the spin acts by friction only. For a
+cylinder of radius 0.5 m at the origin spinning at (0, 0, 10) rad/s, a particle hitting the wall at (−0.5, 0, 0) with
+velocity (1, 0, 0) m/s meets a surface moving at (0, −5, 0) m/s: the approach speed is −1 m/s, and the particle keeps
+(0, 0, 0) m/s with friction 0 and takes (0, −0.5, 0) m/s with friction 0.5 (this paper's numbers, by
+@eq:contact-response).
+
 == Response and slide <sec-contact-response>
 
 === The response at one surface
@@ -1506,15 +1513,14 @@ m/s becomes (0, 0, 0.5) m/s.
 
 Two choices in @eq:contact-response matter for the code. First, the approach is removed in world coordinates, as
 $bold(v) - a bold(n)$, not from the velocity measured from the solid, $bold(v) - bold(u)$, with $bold(u)$ added back
-afterwards. That round trip would erase
-a small sideways velocity next to a fast solid. With friction 0 at a flat solid with normal (0, 0, 1) sliding sideways
-at $10^8$ m/s, a particle at $(10^(-9), 0, -1)$ m/s keeps its x part of $10^(-9)$ m/s in world coordinates, while the
-round trip computes $(10^(-9) - 10^8) + 10^8 = 0$, since doubles near $10^8$ are $1.5 times 10^(-8)$ apart (this paper's
-example). Second, the stick test compares $mu$ with the quotient, $mu >= s_"side"\/(-a)$, not the
-product with the sideways speed, $mu (-a) >= s_"side"$. The two forms round differently at the limit: with sideways speed 3 m/s and approach −0.7 m/s,
-the friction $3\/0.7$ rounded to a double sticks by the quotient, while the product rounds to $2.9999999999999996 < 3$
-and would slip at $4.4 times 10^(-16)$ m/s. Overflow is no reason for either form: an infinite product still compares
-correctly.
+afterwards. That round trip would erase a small sideways velocity next to a fast solid. With friction 0 at a flat solid
+with normal (0, 0, 1) sliding sideways at $10^8$ m/s, a particle at $(10^(-9), 0, -1)$ m/s keeps its x part of $10^(-9)$
+m/s in world coordinates, while the round trip computes $(10^(-9) - 10^8) + 10^8 = 0$, since doubles near $10^8$ are
+$1.5 times 10^(-8)$ apart (this paper's example). Second, the stick test compares $mu$ with the quotient, $mu >=
+s_"side"\/(-a)$, not the product with the sideways speed, $mu (-a) >= s_"side"$. The two forms round differently at the
+limit: with sideways speed 3 m/s and approach −0.7 m/s, the friction $3\/0.7$ rounded to a double sticks by the
+quotient, while the product rounds to $2.9999999999999996 < 3$ and would slip at $4.4 times 10^(-16)$ m/s. Overflow is
+no reason for either form: an infinite product still compares correctly.
 
 Each of the particle's two velocities gets the response with its own approach speed. A particle whose
 `for_this_step` is (0, 0, −1) m/s and whose `for_next_step` is (1, 0, −3) m/s meets a fixed flat solid with
@@ -1553,30 +1559,30 @@ bold(x)_0 + bold(w)$ with the distances and normals read at $bold(x)_k$: $d_i (b
 (bold(x)) + bold(n)_i (bold(x)) dot (bold(y) - bold(x))$: each iterate the solver finds is at the rest gap of every
 surface it read, up to the solver's slack, and since it then meets its own equations, the next one is no farther from
 $bold(x)_0$. This holds from the first iterate that was not shortened (below): a deep start can end beyond the rest
-point, still at the rest gap of both surfaces. The slack includes the rounding of composing $bold(w)$, which grows
-with the multipliers, so no iterate is trusted: the last one is kept only after its true distances are read. Under a ball of
-radius $R$ resting on a floor, a *tangent contact*, the free space is a *cusp* whose angle shrinks to 0 at the
-contact. The first iterate from deep in the cusp overshoots out along the floor, where the two tangent planes meet;
-the next ones come back to the rest point $2 sqrt(R "tol")$ from the contact, both distances exactly $"tol"$
-(@fig-move-off-near-surfaces, right): 5 iterates at $R \/ "tol" = 2^29$, within $10^(-4)$ of it after the
-largest number, 8, at $R \/ "tol" = 2^40$. The iterates stop when one moves less than $"tol" \/ 64$ and is within
-$"tol" \/ 1024$ of the rest gap of every solid; a surface that an iterate comes within $"tol"$ of joins the next
-one. The segment from $bold(x)_0$ to each iterate is swept against every other surface, so a long move cannot pass
-through a thin solid: a move that would cross one stops where it first comes within $"tol"$ of it, and that surface
-joins the next iterate, linearised there. Surfaces with the same normal share one equation, the most demanding. The
-particle is displaced without a matching velocity, so each change is shortened to at most $2^22 "tol" = h \/ 256 + L \/ 2^18$ (a 256th of a cell plus 4 micrometres in a one-metre scene), which covers
-the rest point of every tangent contact, $2 sqrt(R "tol") <= 2^21 "tol"$. The last iterate is kept when every solid
-is at least $"tol" - "tol" \/ 128$ from it by its true distances. A start with no such point within that length is
-the scene error "starts in narrow gap": two solids facing each other less than $2 "tol"$ apart, a start within
-rounding of the contact point of a ball on a floor, a pocket too small for a point at $"tol"$ from each side, or a
-start deep at the apex of a flat wedge sharper than about $2^(-21)$ rad. The grown solids overlap there, so a sweep
-stops a moving particle before it, and a shorter step does not help. The same error names a start near surfaces
-facing more than four different ways, which one move cannot read at once; surfaces with the same normal, such as a
-ground lying on the domain's bottom or floors stacked closer than $"tol"$, share one target, the most demanding, up to
-16 surfaces in all. A known limit stands beside the start near the contact point: a wall within $"ulp"(R) \/ (2 sqrt("tol" \/ R))$
-of a cusp's rest point (0.0014 tol for a ball of 0.5 m, 128 tol for 1 km), where the ball's rounded distance moves
-the linearised vertex past the wall, so no subset of the targets has an answer although the rest point fits. The
-failure names the near solid latest in array order.
+point, still at the rest gap of both surfaces. The slack includes the rounding of composing $bold(w)$, which grows with
+the multipliers, so no iterate is trusted: the last one is kept only after its true distances are read. Under a ball of
+radius $R$ resting on a floor, a *tangent contact*, the free space is a *cusp* whose angle shrinks to 0 at the contact.
+The first iterate from deep in the cusp overshoots out along the floor, where the two tangent planes meet; the next ones
+come back to the rest point $2 sqrt(R "tol")$ from the contact, both distances exactly $"tol"$
+(@fig-move-off-near-surfaces, right): 5 iterates at $R \/ "tol" = 2^29$, within $10^(-4)$ of it after the largest
+number, 8, at $R \/ "tol" = 2^40$. The iterates stop when one moves less than $"tol" \/ 64$ and is within $"tol" \/
+1024$ of the rest gap of every solid; a surface that an iterate comes within $"tol"$ of joins the next one. The segment
+from $bold(x)_0$ to each iterate is swept against every other surface, so a long move cannot pass through a thin solid:
+a move that would cross one stops where it first comes within $"tol"$ of it, and that surface joins the next iterate,
+linearised there. Surfaces with the same normal share one equation, the most demanding. The particle is displaced
+without a matching velocity, so each change is shortened to at most $2^22 "tol" = h \/ 256 + L \/ 2^18$ (a 256th of a
+cell plus 4 micrometres in a one-metre scene), which covers the rest point of every tangent contact, $2 sqrt(R "tol") <=
+2^21 "tol"$. The last iterate is kept when every solid is at least $"tol" - "tol" \/ 128$ from it by its true distances.
+A start with no such point within that length is the scene error "starts in narrow gap": two solids facing each other
+less than $2 "tol"$ apart, a start within rounding of the contact point of a ball on a floor, a pocket too small for a
+point at $"tol"$ from each side, or a start deep at the apex of a flat wedge sharper than about $2^(-21)$ rad. The grown
+solids overlap there, so a sweep stops a moving particle before it, and a shorter step does not help. The same error
+names a start near surfaces facing more than four different ways, which one move cannot read at once; surfaces with the
+same normal, such as a ground lying on the domain's bottom or floors stacked closer than $"tol"$, share one target, the
+most demanding, up to 16 surfaces in all. A known limit stands beside the start near the contact point: a solid within
+$"ulp"(R) \/ (2 sqrt("tol" \/ R))$ of a cusp's rest point (0.0014 tol for a ball of 0.5 m, 128 tol for 1 km), where the
+ball's rounded distance moves the linearised vertex past the wall, so no subset of the targets has an answer although
+the rest point fits. The failure names the near solid latest in array order.
 
 #figure(
   move-off-near-surfaces-figure(),
@@ -1604,8 +1610,8 @@ The record is that of the first surface, in array order of the solids and then f
 the start was inside or a velocity approaches, with hit fraction 0. A flat solid with surface at $z = 0$ rising at
 2 m/s, under a particle at rest at $z = "tol"$ for 0.1 s: the particle approaches the solid at −2 m/s, so it is a hit
 at fraction 0, both velocities become (0, 0, 2) m/s, and the particle ends carried at $z = 0.2 + "tol"$. The same
-particle moving away at (1, 0, 2) m/s from $(0, 0, "tol"\/4)$ is moved to $z = "tol"$ silently and ends at
-$(0.1, 0, 0.2 + "tol")$.
+particle at $(0, 0, "tol"\/4)$ moving at (1, 0, 2) m/s, as fast as the floor along its normal (an approach speed of
+exactly 0, which is no approach), is moved to $z = "tol"$ silently and ends at $(0.1, 0, 0.2 + "tol")$.
 
 No hit is moved before its response: a rim hit is where the rim search found the true distance within
 $"tol"\/1024$ of $"tol"$ (@sec-round-solids).
@@ -1623,8 +1629,8 @@ read the solids in array order and count an exact copy as a solid of its own, so
 the position by a unit in the last place (9 and 2 of 26,216 moves near round solids, at most $4.4 times 10^(-16)$ m), a
 known limit; sorting their targets would change the rounding of every move whose array order is not the sorted one. A
 coincident surface that is not an exact copy (rougher, smoother, or reacting) stays; with a moving solid a smoother one
-changes the result by rounding only, at most $2.2 times 10^(-14)$ of the speed. Surfaces whose normals agree within
-$2^(-40)$ on every axis share one *direction*, with the normal of the first.
+changes the result by rounding only, at most $2.2 times 10^(-14)$ of the speed (measured). Surfaces whose normals agree
+within $2^(-40)$ on every axis share one *direction*, with the normal of the first.
 
 One active surface: each velocity gets the response above, nothing else. Several: for a velocity $bold(v)$, each
 direction's target is the largest $-bold(n)_i dot (bold(v) - bold(u)_i)$ of its surfaces, $bold(u)_i$ the solid's
@@ -1636,7 +1642,7 @@ frictionless velocity. Two fixed surfaces keep the part along their common line,
 on along it, and one pushed into a cusp or an acute wedge stops; three stop it; moving solids give the velocity that
 approaches none, which can be faster than either: a floor rising at $V$ under a fixed face at 60 degrees carries the
 particle out along the apex at $(V \/ tan 60 degree, 0, V)$. In a wedge of 120 degrees, friction 0, $(-1, 1, -1)$
-gives $(0, 1, 0)$; the responses one surface after the other gave $(-0.25, 1, 0.433)$ or $(0.183, 1, 0)$ by which
+gives $(0, 1, 0)$; responses one surface after the other would give $(-0.25, 1, 0.433)$ or $(0.183, 1, 0)$ by which
 was listed first.
 
 Each direction acts through its *pushing surface*: among its surfaces whose target is within $2^(-40)$ of the
@@ -1653,29 +1659,29 @@ most sideways speed its friction can take in this response. Friction then gives 
   (stick), else $bold(v)_0 + (L \/ |bold(s)|) (bold(u) - bold(v)_0)$ (slip). This is the exact answer of friction
   with these pushes, and a wedge amplifies friction, as it should: at the rest point of a 30 degree wedge, $(-1, 1,
   -1)$ makes pushes 2.732 and 2, so friction 0.5 stops the particle;
-- several, moving differently: the mean, over every order of the used directions (two or six), of their own
-  frictions applied one after the other from $bold(v)_0$, each taking $min(L_k, "sideways speed")$ off the sideways
-  velocity relative to its own solid at that moment. The mean does not depend on any order; when the solid velocities
-  differ only by rounding it agrees with the case above to $1.7 times 10^(-14)$ of the speed. It approximates the exact answer of the same
-  friction model: median 0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed over 2,418 draws with
+- several, moving differently: the mean, over every order of the used directions (two or six), of their own frictions
+  applied one after the other from $bold(v)_0$, each taking $min(L_k, "sideways speed")$ off the sideways velocity
+  relative to its own solid at that moment. The mean does not depend on any order; when the solid velocities differ only
+  by rounding it agrees with the case above to $1.7 times 10^(-14)$ of the speed. It approximates the exact answer of
+  the same friction model: median 0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed over 2,418 draws with
   friction up to 2 and solids up to 1 m/s apart. Adding each surface's own friction from the same $bold(v)_0$ instead
-  reverses the sliding when two solid velocities are one rounding unit apart. A known limit of the approximation: each step
-  stops at sticking to its own solid at that moment, but a later step of the other surface moves the velocity on and
-  the mean keeps both, so a surface's own friction can push the particle past sticking to its solid, reversing the
-  sliding relative to it: in 1,331 of 24,401 responses that used the mean in a review probe (5.5 %), by up to 0.22 and
+  reverses the sliding when two solid velocities are one rounding unit apart. A known limit of the approximation: each
+  step stops at sticking to its own solid at that moment, but a later step of the other surface moves the velocity on
+  and the mean keeps both, so a surface's own friction can push the particle past sticking to its solid, reversing the
+  sliding relative to it: measured in 1,331 of 24,401 generated responses that used the mean (5.5 %), by up to 0.22 and
   at p99 0.072 of the summed speeds. The exact answer for solids that move differently is left to the owner.
 
-The result is $bold(v)_0 + bold(F)$ when it approaches no active direction beyond its bound. Otherwise, and always
-when the solids move differently, a second frictionless change is made from $bold(v) + bold(F)$, not from
-$bold(v)_0 + bold(F)$: the pushes are found afresh, so friction lifts a particle off a surface only when it overcomes
-what pressed it there. Beside a floor, a wall rising at 2 m/s and a particle pushed into both at 1 m/s each: friction
-0.5 leaves (0, 0, 0), friction 1.5 leaves (0, 0, 0.5); from $bold(v)_0 + bold(F)$ friction 0.5 would lift it at
-0.5 m/s. Where normals depend on each other (three faces sharing one line, coincident faces) the smallest change has
-several sets of pushes, and the friction, which reads them, would jump with the rounding that picked one (up to 0.70
-of the speed for a $10^(-13)$ change of the velocity). So among the changes no longer than the shortest plus its bound
-the solver keeps the one with the largest $sum_k mu_k lambda_k$, the largest value of a linear function over the
-admissible pushes, which varies continuously with the velocity. And the solver's "no change" reads the bound so far,
-not its own: a real approach of $10^(-13)$ m/s beside a floor sliding at 100 m/s is removed.
+The result is $bold(v)_0 + bold(F)$ when it approaches no active direction beyond its bound. Otherwise, and always when
+the solids move differently, a second frictionless change is made from $bold(v) + bold(F)$, not from $bold(v)_0 +
+bold(F)$: the pushes are found afresh, so friction lifts a particle off a surface only when it overcomes what pressed it
+there. Beside a floor, an upright rising at 2 m/s and a particle pushed into both at 1 m/s each: friction 0.5 leaves (0,
+0, 0), friction 1.5 leaves (0, 0, 0.5); from $bold(v)_0 + bold(F)$ friction 0.5 would lift it at 0.5 m/s. Where normals
+depend on each other (three faces sharing one line, coincident faces) the smallest change has several sets of pushes,
+and the friction, which reads them, would jump with the rounding that picked one (up to 0.70 of the speed for a
+$10^(-13)$ change of the velocity). So among the changes no longer than the shortest plus its bound the solver keeps the
+one with the largest $sum_k mu_k lambda_k$, the largest value of a linear function over the admissible pushes, which
+varies continuously with the velocity. And the solver's "no change" reads the bound so far, not its own: a real approach
+of $10^(-13)$ m/s beside a floor sliding at 100 m/s is removed.
 
 The solve rounds: one pair leaves about $2^(-52) \/ (1 + c)$ of its targets, with $c$ the dot of the two normals, and
 up to four more solves on the residual bring it within the bound, so a pair is used for a velocity only when $1 + c
@@ -1718,63 +1724,61 @@ separate hits, and zig-zags; the step needed shrinks in proportion to $sqrt(R "t
 2 m/s needed up to 1/256 of it in the tests); four moving faces within a few $"tol"$ of each other but not at one
 rest point are met one after the other, and 13 of 283,929 such corners fail at every step length.
 
-A slide on a turning solid is carried in the solid's own axes, as the proof of concept did. A sphere, a cylinder
-that only spins about its own axis, and a flat solid or a plate that only spins about its normal, are not turning
-solids here (@sec-round-solids, @sec-first-hit). After the response, the relative
-`for_this_step` at the hit, $bold(v) - bold(u)(bold(x))$ with $bold(u)$ the surface velocity at the hit position and
-pose, is turned into those axes with the solid's axes at the middle of the time left, $bold(v)_"local" =
-A_"mid"^T (bold(v) - bold(u)(bold(x)))$; its part into the face, along the normal of the hit written in own axes, is
-set to zero; the particle advances in those axes for the time left $t_"left"$, $bold(p) + bold(v)_"local" t_"left"$,
-a straight line there; and it is placed with the solid's pose at the end of the step. Both velocities stay as the
-response made them. Why the middle axes: the solid carries the surface's motion at the particle exactly (the own
-point stays), and the relative motion runs along a line in world axes while the solid turns under it. Turned with the
-axes of the hit, a frictionless particle at rest on a turntable drifted out by $r a^2\/2$ a step, $a = |bold(omega)|
-t_"left"$ the turn (6.4 % of $r$ over 50 steps of 0.1 s at 0.5 rad/s); taking the world line for the whole
-velocity moved that drift to a stuck particle, and added energy. With the middle axes, the midpoint rule of the
-turn, a stuck particle keeps its own point exactly, and a frictionless one at rest on a face turning about its normal
-ends at radius $r (1 + a^4\/48 + dots)$, $r a^3\/24$ behind its start: third order a step, though not always
-negligible, +2 % of $r$ a step at $a = 1$ rad, near the largest turn a step allows. The path's mean velocity agrees
-with the velocity the
-response returned to first order in $a$. Turned with the middle axes, a relative velocity tangent at the hit may
-point into the face by up to $sin(a\/2)$ of itself when the face turns toward that line; the clamp keeps that part
-out. When the face turns away from the line, that part points out and is kept, a known choice: the particle ends up
-to $sin(a\/2) |bold(v) - bold(u)| t_"left"$ off the face, as a free flight in the solid's axes, while the velocity
-the response returned has no part along the normal (a top face tilting at 0.5 rad/s under a sliding particle: up to
-41,617 $"tol"$ at $T = 1\/120$ s, $5.3 times 10^(-3)$ m at 0.1 s). It does not build up from step to step, since the
-next sweep and gravity bring the particle back, and the path converges at first order in the step. The proof of
-@sec-first-hit is unchanged: the carry is still a straight line in own axes with no part along
-the hit's normal into the solid. The cost is one more pose. The hit loop ends there; why no later sweep may meet
-the solid again is in @sec-first-hit. Before that, every other solid $j$ is tested: the call is "too close to call,
-turning solid near another solid", naming the turning solid, when
+After a hit on a turning solid the particle is carried in the solid's own axes for the rest of the step (the carry), as
+the proof of concept did. A sphere, a cylinder that only spins about its own axis, and a flat solid or a plate that only
+spins about its normal, are not turning solids here (@sec-round-solids, @sec-first-hit). After the response, the
+relative `for_this_step` at the hit, $bold(v) - bold(u)(bold(x))$ with $bold(u)$ the surface velocity at the hit
+position and pose, is turned into those axes with the solid's axes at the middle of the time left, $bold(v)_"local" =
+A_"mid"^T (bold(v) - bold(u)(bold(x)))$; its part into the face, along the normal of the hit written in own axes, is set
+to zero; the particle advances in those axes for the time left $t_"left"$, $bold(p) + bold(v)_"local" t_"left"$, a
+straight line there; and it is placed with the solid's pose at the end of the step. Both velocities stay as the response
+made them. Why the middle axes: the solid carries the surface's motion at the particle exactly (the own point stays),
+and the relative motion runs along a line in world axes while the solid turns under it. Turned with the axes of the hit,
+a frictionless particle at rest on a turntable drifted out by $r a^2\/2$ a step, $a = |bold(omega)| t_"left"$ the turn
+(6.4 % of $r$ over 50 steps of 0.1 s at 0.5 rad/s); taking the world line for the whole velocity moved that drift to a
+stuck particle, and added energy. With the middle axes, the midpoint rule of the turn, a stuck particle keeps its own
+point exactly, and a frictionless one at rest on a face turning about its normal ends at radius $r (1 + a^4\/48 +
+dots)$, $r a^3\/24$ behind its start: third order a step, though not always negligible, +2 % of $r$ a step at $a = 1$
+rad, near the largest turn a step allows. The path's mean velocity agrees with the velocity the response returned to
+first order in $a$. Turned with the middle axes, a relative velocity tangent at the hit may point into the face by up to
+$sin(a\/2)$ of itself when the face turns toward that line; the clamp keeps that part out. When the face turns away from
+the line, that part points out and is kept, a known choice: the particle ends up to $sin(a\/2) |bold(v) - bold(u)|
+t_"left"$ off the face, as a free flight in the solid's axes, while the velocity the response returned has no part along
+the normal (a top face tilting at 0.5 rad/s under a sliding particle: up to 41,617 $"tol"$ at $T = 1\/120$ s, $5.3 times
+10^(-3)$ m at 0.1 s). It does not build up from step to step, since the next sweep and gravity bring the particle back,
+and the path converges at first order in the step. The proof of @sec-first-hit is unchanged: the carry is still a
+straight line in own axes with no part along the hit's normal into the solid. The cost is one more pose. The hit loop
+ends there; why no later sweep may meet the solid again is in @sec-first-hit. Before that, every other solid $j$ is
+tested: the call is "too close to call, turning solid near another solid", naming the turning solid, when
 
 $ d_j - "tol" <= t_"left" (|bold(v)_"local"| + |bold(v)_"lin"| + |bold(omega)| r + |bold(v)_("lin", j)| +
 |bold(omega)_j| r_j), $
 
 with $d_j$ the distance to solid $j$ at the hit, $bold(v)_"lin"$, $bold(omega)$ the turning solid's motion,
-$bold(v)_("lin", j)$, $bold(omega)_j$ solid $j$'s, and $r$, $r_j$ the distances from the hit position to each
-solid's origin. The right side bounds how far the particle and solid $j$ can close in $t_"left"$. The slide puts the
-particle at $bold(x)(s) = bold(o) + bold(v)_"lin" s + R(s) A (bold(p) + bold(v)_"local" s)$, $R(s)$ the turn by
-$bold(omega) s$, so $bold(x)(s) - bold(x)(0) = bold(v)_"lin" s + (R(s) - I) A bold(p) + R(s) A bold(v)_"local" s$; a
-turn by an angle $a$ moves a vector by at most $2 sin(a\/2) <= a$ times its length, so the particle moves by at most
-$s (|bold(v)_"lin"| + |bold(omega)| r + |bold(v)_"local"|)$. In solid $j$'s axes the same argument adds $s
-(|bold(v)_("lin", j)| + |bold(omega)_j| r_j)$, and a distance changes no faster than the point it is read at. The
-bound is on the displacement, not on the length of the curved path, so no term in $t_"left"^2$ is needed. A solid
-that fills the same space as the turning solid through the step is left out (the slide keeps the particle out of the
-one, so out of the other), and with no time left nothing moves and nothing is tested. A box of half size 0.5 m
-turning at (0, 0, 1) rad/s on a fixed floor that touches its bottom, and a particle at rest on its side 0.05 m above
-the floor: hit at 0, $|bold(v)_"local"| = (0.5 + "tol") cos(t_"left"\/2)$ and $r = 0.6727$ m, so the test fails for
-$t_"left" >= 0.0426$ s: a step of 0.1 s is too close to call, one of 0.04 s slides. Known limit: two flush boxes
-turning together cannot
-be crossed at their seam, since a turning solid has no bounding surface and the slide sweeps nothing; within
-$"tol"$ of both, every step length is too close to call.
+$bold(v)_("lin", j)$, $bold(omega)_j$ solid $j$'s, and $r$, $r_j$ the distances from the hit position to each solid's
+origin. The right side bounds how far the particle and solid $j$ can close in $t_"left"$. The carry puts the particle at
+$bold(x)(s) = bold(o) + bold(v)_"lin" s + R(s) A (bold(p) + bold(v)_"local" s)$, $R(s)$ the turn by $bold(omega) s$, so
+$bold(x)(s) - bold(x)(0) = bold(v)_"lin" s + (R(s) - I) A bold(p) + R(s) A bold(v)_"local" s$; a turn by an angle $a$
+moves a vector by at most $2 sin(a\/2) <= a$ times its length, so the particle moves by at most $s (|bold(v)_"lin"| +
+|bold(omega)| r + |bold(v)_"local"|)$. In solid $j$'s axes the same argument adds $s (|bold(v)_("lin", j)| +
+|bold(omega)_j| r_j)$, and a distance changes no faster than the point it is read at. The bound is on the displacement,
+not on the length of the curved path, so no term in $t_"left"^2$ is needed. A solid that fills the same space as the
+turning solid through the step is left out (the carry keeps the particle out of the one, so out of the other), and with
+no time left nothing moves and nothing is tested. A box of half size 0.5 m turning at (0, 0, 1) rad/s on a fixed floor
+that touches its bottom, and a particle at rest on its side 0.05 m above the floor: hit at 0, $|bold(v)_"local"| =
+(0.5 + "tol") cos(t_"left"\/2)$ and $r = 0.6727$ m, so the test fails for $t_"left" >= 0.0426$ s: a step of 0.1 s is too
+close to call, one of 0.04 s carries. Known limit: two flush boxes turning together cannot be crossed at their seam,
+since a turning solid has no bounding surface and the carry sweeps nothing; within $"tol"$ of both, every step length is
+too close to call.
 
 At the end the particle moves once more off every surface it is closer to than $"tol"$, at the end pose, as at the
-start: every solid, touched or not, since a move off the touched ones alone could push it into another (a wall beside
-a ball), and since a sweep may have brought it within $"tol"$ of a solid it never touched. When there
-is no such point the particle stays. Then the end check of @sec-contact-tolerance runs against every solid. On any failure the result is left unchanged, and the failure
-context names the solid by its stable `solid_id`, never by its index in the array, with a length: the depth $-d$ for
-a start too deep inside, the distance $-(s_"plate" p_z + "half_thickness")$ beyond a committed plate, the end
-distance $d$ for an end too close, and 0 otherwise. `MoveParticles` adds the particle's id.
+start: every solid, touched or not, since a move off the touched ones alone could push it into another (an upright
+beside a ball), and since a sweep may have brought it within $"tol"$ of a solid it never touched. When there is no such
+point the particle stays. Then the end check of @sec-contact-tolerance runs against every solid. On any failure the
+result is left unchanged, and the failure context names the solid by its stable `solid_id`, never by its index in the
+array, with a length: the depth $-d$ for a start too deep inside, the distance $-(s_"plate" p_z + "half_thickness")$
+beyond a committed plate, the end distance $d$ for an end too close, and 0 otherwise. `MoveParticles` adds the
+particle's id.
 
 @fig-sweep-hit-slide draws one step (this paper's numbers). A flat solid with normal (0, 0, 1) rises at 0.5 m/s,
 friction 0.25, $T = 1$ s. The particle starts 1.2 m above the surface with `for_this_step` (2.5, 0, −1.5) m/s and
@@ -1802,8 +1806,8 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
   outputs: [The end position, both velocities after the response, the kind, the record of the first hit, the hit
     count and the reaction.],
   fails: [a bad input; a start too deep inside a solid, on the wrong side of its plate, or in a narrow gap; too close
-    to call, for one of the six reasons named in the text. The result is then unchanged, and the failure names the solid by its
-    `solid_id` (never its index) with a length.],
+    to call, for one of the seven reasons named in the text. The result is then unchanged, and the failure names the
+    solid by its `solid_id` (never its index) with a length.],
   ([Check inputs], [Every value finite, `step_duration` $> 0$, `friction` $>= 0$, `contact_tolerance` $> 0$,
     `start_overlap_tolerance` $>= 0$, solids in strictly ascending `solid_id`, and, for a committed particle, a
     `plate_side` that names a plate among the solids. Otherwise fail with "bad input".]),
@@ -1818,24 +1822,23 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
   ([Find the first hit], [@proc-find-first-hit from the current position along `for_this_step` for the time left,
     with the solids sampled at the time already used and, after the first response of the step, the stricter
     touching rule for every solid. With no hit, advance by `for_this_step` times the time left and go to step 5.]),
-  ([Joint response], [Fail on a fifth hit. Move to the hit, nothing more. Read the active surfaces: those of every
-    solid within $"tol" + "tol"\/16$ of the particle, except a solid passed at a bounding surface's level, normals
-    read afresh, and the surface hit with its own normal; drop exact copies, sort by value, group into
-    directions; fail with "too many hits" past eight directions or 16 surfaces. Fill the record if it is
-    empty and count one hit. For each velocity: with one active surface, the response with that solid's velocity and
-    `friction` times `friction_scale`; with several, when it approaches one beyond its bound, the smallest
-    frictionless change, then the friction from each used direction's push (the single-surface response for one, the
-    stick or slip toward one solid velocity, or the mean over the orders), then, when the result approaches an active
-    surface or the solids move differently, a second frictionless change from the velocity plus the friction. With no
-    change, stick to the surface approached fastest. Fail with "squeezed" when a stick still approaches a surface, a
-    frictionless velocity is faster than 64 times the largest speed involved, or, with several surfaces, the bound
-    times the time left exceeds $"tol"\/64$. Charge each push and friction share of `for_next_step` to its solid, in
-    ascending solid index, when it reports its reaction; fail on a second reacting solid. Raise each velocity's
-    approach bound. A solid that does not turn: go to step 3 for the time left. A turning solid (never a sphere, nor
-    a cylinder that only spins about its axis, nor a flat solid or plate that only spins about its normal): skip the
-    response when the hit is at 0 just after a response and within $"tol" + "tol"\/16$ (the same moment, read
-    already); fail if another solid $j$ is within the closing bound of the text, carry the rest of the step in its
-    axes, and go to step 5.]),
+  ([Joint response], [Fail on a fifth hit. Move to the hit, nothing more. Read the active surfaces: those of every solid
+    within $"tol" + "tol"\/16$ of the particle, except a solid passed at a bounding surface's level, normals read
+    afresh, and the surface hit with its own normal; drop exact copies, sort by value, group into directions; fail with
+    "too many hits" past eight directions or 16 surfaces. Fill the record if it is empty and count one hit. For each
+    velocity: with one active surface, the response with that solid's velocity and `friction` times `friction_scale`;
+    with several, when it approaches one beyond its bound, the smallest frictionless change, then the friction from each
+    used direction's push (the single-surface response for one, the stick or slip toward one solid velocity, or the mean
+    over the orders), then, when the result approaches an active surface or the solids move differently, a second
+    frictionless change from the velocity plus the friction. With no change, stick to the surface approached fastest.
+    Fail with "squeezed" when a stick still approaches a surface, a frictionless velocity is faster than 64 times the
+    largest speed involved, or, with several surfaces, the bound times the time left exceeds $"tol"\/64$. Charge each
+    push and friction share of `for_next_step` to its solid, in ascending solid index, when it reports its reaction;
+    fail on a second reacting solid. Raise each velocity's approach bound. A solid that does not turn: go to step 3 for
+    the time left. A turning solid (never a sphere, nor a cylinder that only spins about its axis, nor a flat solid or
+    plate that only spins about its normal): skip the response when the hit is at 0 just after a response and within
+    $"tol" + "tol"\/16$ (the same moment, read already); fail if another solid $j$ is within the closing bound of the
+    text, carry the rest of the step in its axes, and go to step 5.]),
   ([Settle and check the end], [At the end pose, move the particle once to the rest gap of every surface of every
     solid closer than $"tol"$, as at the start; when there is no such point, leave it. Fail when any solid is at
     $d < "tol"\/2$; otherwise write the result.]),

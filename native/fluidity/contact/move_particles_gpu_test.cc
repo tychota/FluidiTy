@@ -1,12 +1,12 @@
 // Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
 //
 // Runs MoveParticles on the GPU and compares every result with the CPU's on the same range
-// (contact/move_particles_test_runs.h): bit for bit when no solid turns or spins; within contact design 6's bounds
-// otherwise, where a discrete difference is a counted mismatch, written to the notes file, not a failure, up to one
-// scene in ten (SetComparison). Each failure names the set, the case, the field and both values. Each set prints its
-// largest differences, so the hardware run can calibrate the bounds. Every GPU result goes to WriteResultDigest under a
-// unique name, so the repeat run shows the GPU wrote the same bits twice; the time per particle of the large ranges
-// goes to WriteResultTiming.
+// (contact/move_particles_test_runs.h): bit for bit when no solid turns or spins; within the GPU bounds of method paper
+// <sec-contact> otherwise, where a discrete difference is a counted mismatch, written to the notes file, not a failure,
+// up to one scene in ten (SetComparison). Each failure names the set, the case, the field and both values. Each set
+// prints its largest differences, so the hardware run can calibrate the bounds. Every GPU result goes to
+// WriteResultDigest under a unique name, so the repeat run shows the GPU wrote the same bits twice; the time per
+// particle of the large ranges goes to WriteResultTiming.
 
 #include "fluidity/contact/move_particles_gpu.h"
 

@@ -136,7 +136,7 @@ inline std::vector<Solid> BuildFarSolids() {
   return solids;
 }
 
-// The solids of the mixed set: a floor moving up, a wall, a box turning about z (a paddle), a sphere moving toward
+// The solids of the mixed set: a floor moving up, an upright, a box turning about z (a paddle), a sphere moving toward
 // the particles, a spinning sphere, a cylinder spinning about its axis, a plate moving sideways and a domain box.
 inline std::vector<Solid> BuildMixedSolids() {
   std::vector<Solid> solids;
@@ -349,7 +349,7 @@ inline std::vector<MoveParticleCase> BuildLeftOutBoundaryCases() {
       .inputs =
           BuildSetInputs({.x = 0.28 * 0.9689124217106447, .y = 0.28 * 0.24740395925452294, .z = 0}, kAtRest, 0.02, 0.3),
   });
-  // A redirect: a particle at rest 0.5 tol above the rest gap of a wall at x = 0 that moves at 20 m/s along +x for
+  // A redirect: a particle at rest 0.5 tol above the rest gap of an upright at x = 0 that moves at 20 m/s along +x for
   // 0.01 s, and a sphere of radius 0.05 m 0.1 m away along +x: out of range for the particle at rest, reached once
   // the wall pushes it.
   cases.push_back({

@@ -29,7 +29,8 @@
 //   contact tolerance  the distance from a solid's surface at which a particle rests; far above rounding. A kept
 //                      distance, not an allowed error
 //   rest gap           the one contact tolerance a particle in contact keeps between itself and the surface
-//   reach              how far a bounded solid's surface can be from its origin: Length(half_size)
+//   reach              m. Length(half_size) of a bounded solid: no point of the solid is farther from its origin.
+//                      Exact for a box (its corners); an upper bound for a sphere (Sqrt(3) radius) and a cylinder
 // Owns:    kContactToleranceRelative, kContactToleranceFloorInCellWidths, kMinFeatureInTolerances, ContactScale,
 //          ComputeContactScale, ComputeContactTolerance, CheckContactTolerance
 // Uses:    Vec3, math::Length (base/vec3.h), math::Abs, math::IsFinite, math::Max, math::Min (base/scalar_math.h),
@@ -67,8 +68,9 @@ static_assert(kMinFeatureInTolerances * kContactToleranceRelative == kContactTol
 // The lengths of a scene that set its contact tolerance and its check.
 struct ContactScale {
   // m. The largest |x|, |y| or |z| a solid origin takes during the step, plus that solid's reach, its
-  // Length(half_size), for a box, a domain box, a sphere or a cylinder; the largest over all solids. The domain box
-  // brings the particles' extent, since every particle is inside it.
+  // Length(half_size), for a box, a domain box, a sphere or a cylinder (an upper bound on how far its points are from
+  // the origin); the largest over all solids. The domain box brings the particles' extent, since every particle is
+  // inside it.
   double largest_coordinate = 0;
   double smallest_cell_width = 0;  // m, positive.
   // m, positive. The smallest plate thickness (2 * half_thickness), box or domain box width (2 * smallest half
@@ -94,9 +96,9 @@ struct ContactScale {
 //   CheckSolid for step_duration, so no value is NaN: math::Max and math::Min would drop a NaN and give too small a
 //   scale. step_duration and smallest_cell_width are finite and positive.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-tolerance>
-
-// clang-tidy: the count follows its array, as in every pointer-and-count pair, and the two lengths follow it, as
-// contact design 3.3 orders the parameters; the swappable-parameters check flags the count and the two doubles.
+//
+// clang-tidy: the count follows its array, as in every pointer-and-count pair, and the step's duration and the cell
+// width follow it; the swappable-parameters check flags the count and the two doubles.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 FLUIDITY_CPU_AND_GPU inline ContactScale
 ComputeContactScale(const Solid* solids, std::uint32_t solid_count, double step_duration, double smallest_cell_width) {

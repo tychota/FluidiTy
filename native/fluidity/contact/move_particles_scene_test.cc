@@ -425,15 +425,15 @@ SlideOffSphere ComputeSlideOffSphere(double step_duration) {
 constexpr double kAnalyticLeavingAngle = 0.8410641118063884;
 
 TEST(MoveParticle, SlidingOffFrictionlessSphere_LastHitWithinFifteenThousandthsOfAnalyticAngle) {
-  // Steps of 1 ms take 2105 steps, each with at most one hit (one convex solid).
-  // Measured (a finding): the last hit is at 0.8267744 rad, 0.0143 rad before the analytic angle, outside the 0.01 rad
-  // the plan expected. A response leaves the velocity along the tangent at the hit, and the rest of the step follows
-  // that straight tangent, which rises off a convex surface; so from about 0.75 rad the particle hops, up to 3,520 tol
-  // (3.3 micrometres) above the rest gap (..._HopsAsHighAsOneStepsTangentRise), with a hit every few steps, and the
-  // last of those hops comes before the angle. Over 4, 2, 1, 0.5, 0.25, 0.125 and 0.0625 ms the last hit is at 0.8369,
-  // 0.8420, 0.8268, 0.8356, 0.8287, 0.8369 and 0.8372 rad: a scatter of about 0.01 rad at the coarser steps, of which
-  // 1 ms is the worst, settling near 0.837, about 0.004 rad before the analytic angle, at the finer ones
-  // (..._SmallStepsLastHitNearAnalyticAngle). The plan's model of the scheme gave 0.8369.
+  // Steps of 1 ms take 2105 steps, each with at most one hit (one convex solid). Measured (a finding): the last hit is
+  // at 0.8267744 rad, 0.0143 rad before the analytic angle, more than the 0.01 rad first expected. A response leaves
+  // the velocity along the tangent at the hit, and the rest of the step follows that straight tangent, which rises off
+  // a convex surface; so from about 0.75 rad the particle hops, up to 3,520 tol (3.3 micrometres) above the rest gap
+  // (..._HopsAsHighAsOneStepsTangentRise), with a hit every few steps, and the last of those hops comes before the
+  // angle. Over 4, 2, 1, 0.5, 0.25, 0.125 and 0.0625 ms the last hit is at 0.8369, 0.8420, 0.8268, 0.8356, 0.8287,
+  // 0.8369 and 0.8372 rad: a scatter of about 0.01 rad at the coarser steps, of which 1 ms is the worst, settling near
+  // 0.837, about 0.004 rad before the analytic angle, at the finer ones (..._SmallStepsLastHitNearAnalyticAngle). A
+  // Python model of the scheme gave 0.8369.
   // The exact pin: the path uses only + - * /, Sqrt and comparisons (a fixed sphere does not turn, so no Sin), under
   // -ffp-contract=off or /fp:precise, so the 2105 steps give the same bits on every supported platform; acos is only in
   // the test's reading. One step moves the angle by about 1.6e-3 rad, so 1e-6 pins the exact step of the last hit, and

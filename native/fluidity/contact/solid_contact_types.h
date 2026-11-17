@@ -86,9 +86,9 @@ inline constexpr int kMaxAdvanceCount = 128;
 inline constexpr double kTurningSolidHitGapShare = 0.25;
 // No unit. The share of the contact tolerance above zero up to which the start gap to a solid still counts as resting
 // on it once the particle had a response in this step, and the window of the active surfaces, tol + tol / 16.
-// Rounding leaves a hit position a few rounding units off the rest gap (at most tol / 128,
-// contact/contact_tolerance.h), so a sixteenth is far above it, and far below the tol that the touching rule allows
-// below zero. A power of two keeps the test exact.
+// Rounding leaves a hit position a few rounding units off the rest gap (a computed distance is off by at most
+// tol / 128, contact/contact_tolerance.h), so a sixteenth is far above it, and far below the tol that the touching
+// rule allows below zero. A power of two keeps the test exact.
 inline constexpr double kTouchedSolidRestingGapShare = 0x1p-4;
 // No unit. How far below its rest gap, as a share of the contact tolerance, a start may be and still rest on a
 // bounding surface that does not give its distance (plan decision P21, item 1). A particle at rest is within tol / 128
@@ -126,11 +126,11 @@ inline constexpr int kMaxRestGapIterations = 8;
 // the same normal share one (kSameNormalAxisDifference); a start near surfaces facing a fifth way is
 // kStartsInNarrowGap.
 inline constexpr int kMaxConstrainingSurfaces = 4;
-// The most directions one joint response reads at once. In three dimensions the smallest change meets
-// at most three of them as equalities (three independent normals fix a vector; a cone spanned by more is spanned by
-// three of them), so SolveSmallestCorrection searches the subsets of at most three among all of them: 8 + 28 + 56 = 92
-// at this limit. Eight is twice the directions one move reads: a domain corner's three sides, two chamfers across it
-// and more stay within it.
+// The most directions one joint response reads at once. In three dimensions the smallest change meets at most three of
+// them as equalities (three independent normals fix a vector; a cone spanned by more is spanned by three of them), so
+// SolveSmallestCorrection searches the subsets of at most three among all of them: 8 + 28 + 56 = 92 at this limit.
+// Eight is twice the directions one move reads: a domain corner's three sides, two chamfers across it and more stay
+// within it.
 inline constexpr int kMaxSlideDirections = 2 * kMaxConstrainingSurfaces;
 // The most directions one smallest change of a velocity uses: three independent normals fix a vector.
 inline constexpr int kMaxUsedDirections = 3;
@@ -154,9 +154,9 @@ inline constexpr int kMaxCorrectionRefinements = 4;
 // No unit. A pair of surfaces is used for a velocity only when 1 + Dot(n_A, n_B) >= 2^-40: a wedge angle of at least
 // 2 asin(2^-20.5) = 1.35e-6 rad. One solve leaves at most 0.75 to 1.25 rounding units of 2^-52 over (1 + c) of the
 // target (measured over 3000 pairs at each 1 + c = 2^-40, 2^-28, 2^-16, 2^-4; the test bounds it by 4), so at the
-// limit the extra solves still converge. Every cusp a particle can rest in is above it: at the
-// rest point the angle is about 2 Sqrt(tol / R) >= 2^-19 rad, so 1 + c >= 2^-39. Positions need no such limit: an
-// imprecise iterate is corrected by the next one, and the move's last test reads the true distances.
+// limit the extra solves still converge. Every cusp a particle can rest in is above it: at the rest point the angle is
+// about 2 Sqrt(tol / R) >= 2^-19 rad, so 1 + c >= 2^-39. Positions need no such limit: an imprecise iterate is
+// corrected by the next one, and the move's last test reads the true distances.
 inline constexpr double kVelocityPairLimitShare = 0x1p-40;
 // No unit. A triple of surfaces is used for a velocity only when |Dot(n_1, Cross(n_2, n_3))| >= 2^-20, the triple
 // product of their unit normals: three faces whose normals are nearly in one plane leave the velocity's change
@@ -321,9 +321,9 @@ inline constexpr double kApproachLeftAfterResponseShare = 0x1p-46;
 //
 // Method: kApproachLeftAfterResponseShare * A, with A = |velocity.x| + |velocity.y| + |velocity.z| +
 //   |solid_velocity.x| + |solid_velocity.y| + |solid_velocity.z|: each vector's three in x, y, z order, then the two
-//   sums. A sum of absolute axes, not a
-//   Length: it squares nothing, so it neither underflows for tiny speeds nor overflows for large ones, and it is at
-//   least S = Length(velocity) + Length(solid_velocity), so a bound in S holds in A.
+//   sums. A sum of absolute axes, not a Length: it squares nothing, so it neither underflows for tiny speeds nor
+//   overflows for large ones, and it is at least S = Length(velocity) + Length(solid_velocity), so a bound in S holds
+//   in A.
 //   Derivation, with e = 2^-52: one operation rounds by at most e / 2 of its result, and a dot product with a unit
 //   normal by at most 2 e of the length of its other vector (its subtraction and its three products and two sums).
 //   1 The first removal leaves w with w - solid_velocity the sideways part of velocity - solid_velocity, so
@@ -390,6 +390,10 @@ FLUIDITY_CPU_AND_GPU inline double ComputeLargestApproachLeftAfterResponse(Vec3 
 //   gives {2.5, 0, 0}; friction 3 or 4 gives {0, 0, 0}. Velocity {0, 0, -2} at a solid moving at {0, 0, 0.5}
 //   gives {0, 0, 0.5}. Velocity {1, 0, 2} comes back unchanged. Normal {0.6, 0, 0.8}, a fixed solid, velocity
 //   {-2, 0, -2}, friction 0: the result's approach is -2^-55 m/s, within the bound of 5.7e-14 m/s.
+//   At a sphere: normal {-0.8, 0.6, 0}, a fixed solid, velocity {1, 0, 0}, friction 0: approach speed -0.8, result
+//   {0.36, 0.48, 0} up to rounding. At a cylinder's rim: normal {0.5, 0, Sqrt(3) / 2}, velocity {0, 0, -1}: approach
+//   speed -Sqrt(3) / 2, result {Sqrt(3) / 4, 0, -1 / 4} = {0.4330, 0, -0.25} up to rounding, and friction 0.2 takes
+//   0.2 * Sqrt(3) / 2 = 0.1732 m/s of its sideways speed of 0.5 m/s: a slip at {0.2830, 0, -0.1634}.
 // Requires: velocity and solid_velocity are finite. normal_out_of_solid is a unit vector: its squared length is
 //   within 2^-40 of 1. friction is zero or more; +infinity is allowed and always sticks.
 // Read: docs/method-paper/fluidity-method.typ <eq:contact-response>, <fig-contact-response>

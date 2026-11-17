@@ -197,12 +197,12 @@ TEST(FindFirstHit, TwoSolidsSameTime_LowerIndexWins) {
 }
 
 TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace) {
-  // Plate through the origin, normal +z, half thickness 0.01; the start is inside it at z = -0.005, moving at
-  // +1 m/s. Seen by an uncommitted particle the plate has two faces and the nearer is kLowZ: distance -0.005, a start
-  // deeper than tol inside, so a hit at 0 on kLowZ. Committed to kAlongNormal, the plate is the half space below its
-  // kHighZ face (plan decision P3): distance -0.005 - 0.01 = -0.015, also a hit at 0, but on kHighZ with normal +z.
-  // The brief asked for "free" in the committed case; P3's half space contains the whole thickness, so a committed
-  // particle can never be freer than an uncommitted one, and only the face tells the two apart.
+  // Plate through the origin, normal +z, half thickness 0.01; the start is inside it at z = -0.005, moving at +1 m/s.
+  // Seen by an uncommitted particle the plate has two faces and the nearer is kLowZ: distance -0.005, a start deeper
+  // than tol inside, so a hit at 0 on kLowZ. Committed to kAlongNormal, the plate is the half space below its kHighZ
+  // face (plan decision P3): distance -0.005 - 0.01 = -0.015, also a hit at 0, but on kHighZ with normal +z. Not free
+  // in the committed case: P3's half space contains the whole thickness, so a committed particle can never be freer
+  // than an uncommitted one, and only the face tells the two apart.
   const std::array solids = {
       ToSolid(Plate{.center = {}, .normal = {.x = 0, .y = 0, .z = 1}, .half_thickness = 0.01}, kNoMotion, 5),
   };
@@ -731,8 +731,9 @@ TEST(FindFirstHit, BoxRestingOnTop_SlidingOffTheEdgeIsFree) {
 TEST(FindFirstHit, BoxRestingOnEdge_RestsOnTheOtherFacePlane) {
   // One tolerance from both kHighX and kHighZ: their gaps tie at 0 and the tie keeps kHighX, which gives the distance.
   // Sinking along the x face is free. Pushing into kHighX is free too: the start rests on the plane of kHighZ, which
-  // the sweep tries first (plan decision P21, item 16 b; as built a hit at 0 on kHighX). Pushing in while sinking into
-  // the top's plane by tol / 32 does not rest on it, so the distance's face rules: a hit at 0 on kHighX.
+  // the sweep tries first (plan decision P21, item 16 b; with the touching rule on the distance first, a hit at 0 on
+  // kHighX). Pushing in while sinking into the top's plane by tol / 32 does not rest on it, so the distance's face
+  // rules: a hit at 0 on kHighX.
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
@@ -749,8 +750,8 @@ TEST(FindFirstHit, BoxRestingOnEdge_RestsOnTheOtherFacePlane) {
 
 TEST(FindFirstHitOfSweep, BoxBesideItLevelWithItsTop_FreeAlsoAfterAResponse) {
   // 33 / 32 tol beyond kHighX, level with the top's plane, moving inward after a response: the sweep tries the top's
-  // plane first and rests on it, so it is free (as built the touched rule read kHighX, 1.03 tol away, as approached:
-  // a hit at 0 and a dead stop).
+  // plane first and rests on it, so it is free (read first, the touched rule would take kHighX, 1.03 tol away, as
+  // approached: a hit at 0 and a dead stop).
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
@@ -768,8 +769,8 @@ TEST(FindFirstHitOfSweep, BoxBesideItLevelWithItsTop_FreeAlsoAfterAResponse) {
 
 TEST(FindFirstHit, BoxDownItsGrownSidePlanePastTheEdge_IsFree) {
   // Down the plane of kHighX at its rest gap, past the top edge: kHighZ gives the distance, and the start rests on the
-  // plane of kHighX, which the whole box lies behind, so the sweep is free (plan decision P21, item 8). As built, the
-  // path entered the grown box through the plane of kHighZ at 2.5 - tol s, stopped dead at the box's side.
+  // plane of kHighX, which the whole box lies behind, so the sweep is free (plan decision P21, item 8). Without that
+  // rule the path enters the grown box through the plane of kHighZ at 2.5 - tol s and stops dead at the box's side.
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
@@ -1414,8 +1415,8 @@ TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim) {
 
 TEST(FindFirstHit, CylinderRimHeadOnAtFortyFiveDegrees_HitsAtOneTolerance) {
   // Along the rim's own normal {1, 0, 1} / Sqrt(2): the entry is the corner {0.5 + tol, 0, 1 + tol}, Sqrt(2) tol from
-  // the rim, and one advance of the gap over its rate lands at tol, at 1 - Sqrt(0.5) tol s (as built, the corner at
-  // 1 - tol s).
+  // the rim, and one advance of the gap over its rate lands at tol, at 1 - Sqrt(0.5) tol s (the sharp corner alone
+  // would give 1 - tol s).
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
   const FirstHit first_hit =
@@ -1673,7 +1674,7 @@ TEST(FindFirstHit, CylinderMovingAwayFromCapOrWall_IsFree) {
 TEST(FindFirstHit, CylinderDownItsGrownWallPastTheRim_IsFree) {
   // Down the axis direction at exactly the grown radius 0.5 + tol, beside the high rim: the start rests on the wall
   // taken as unbounded along the axis, which the whole cylinder lies behind, and does not sink toward it, so the sweep
-  // is free (plan decision P21, item 1). As built, the sharp grown edge stopped it Sqrt(2) tol from the rim.
+  // is free (plan decision P21, item 1). The sharp grown edge alone would stop it Sqrt(2) tol from the rim.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
   ExpectFree(FindHit(
@@ -1970,8 +1971,8 @@ struct CylinderFaceCase {
 std::array<CylinderFaceCase, 6> BuildCylinderFaceCases() {
   const double rim_component = std::numbers::sqrt2 / 2;
   // A rim normal points from the rim to a hit about tol away, so a rounding of the turned coordinates of about
-  // 1e-15 m turns it by about 1e-15 / tol, near 1e-6: the direction itself is that uncertain, not the code. The
-  // review measured a worst error of 2.07e-6 over 2,000 random turns of these cases; 1e-5 is about 5 times that.
+  // 1e-15 m turns it by about 1e-15 / tol, near 1e-6: the direction itself is that uncertain, not the code. Measured:
+  // a worst error of 2.07e-6 over 2,000 random turns of these cases; 1e-5 is about 5 times that.
   constexpr double kRimNormalTolerance = 1e-5;
   return {
       {
@@ -2773,8 +2774,8 @@ TEST(HasConvexDistance, TurningShapesYes_DomainBoxNo) {
 TEST(FindHitOnTurningSolid, TurningRoom_NotConvexSoFirstOrder) {
   // A test-only room: the domain box's distance, the smallest gap to its six closed sides, turning at {0, 0, pi / 2}
   // rad/s (CheckSolid would not accept it; the search is called directly). That distance is not convex, so the
-  // second-order model of one wall says nothing about the next: with it the search answered free after 2 advances,
-  // with the path ending 0.5 m beyond a wall. The first-order advance alone finds the wall at 0.6693805413275088 s.
+  // second-order model of one side says nothing about the next: with it the search answered free after 2 advances,
+  // with the path ending 0.5 m beyond a side. The first-order advance alone finds the side at 0.6693805413275088 s.
   Solid room;
   room.shape = SolidShape::kDomainBox;
   room.solid_id = 1;
@@ -4068,7 +4069,7 @@ TEST(FindFirstHit, TurningLongBoxOutwardPath_FarEndOfRadiusBoundsAdvance) {
   // From 1 m out at the angle phi0 = 1.6316666666666666, moving outward at 3 m/s: the path ends 4 m from the origin,
   // and the arm closes on it at nearly 1.57 * r(t) m/s. A bound built from the start's distance alone would let an
   // advance carry the particle 6.4 cm into the box; the true bound stops it 1.1 tol from face kHighX at
-  // 0.9562428207707441 s, after 32 first-order advances (the review's mirror). The search now takes 6 advances and
+  // 0.9562428207707441 s, after 32 first-order advances (a mirror scene, measured). The search now takes 6 advances and
   // stops at 0.9562428207946203 s (SecondOrderSearchStoppingTimes_PinAdvanceCounts); the bound is still its floor.
   const std::array solids = {BuildQuarterTurnLongBox({})};
   const SolidContactInputs inputs = BuildInputs(solids, 1);

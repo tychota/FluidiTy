@@ -217,7 +217,8 @@ std::expected<MoveParticleCounts, ContactFailure> ApplyLoopOnCpu(const MoveParti
 
 }  // namespace
 
-// clang-tidy: the two maxima follow the processor, as contact design 3.5 orders the parameters.
+// clang-tidy: the two maxima follow the processor and come before the run's memory, as every Build<Name>Buffers orders
+// its parameters (AGENTS.md, working buffers).
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 std::expected<ContactBuffers, ContactFailure>
 BuildContactBuffers(RunOn run_on, std::size_t max_particle_count, std::size_t max_solid_count, RunMemory& run_memory) {

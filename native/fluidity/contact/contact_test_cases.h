@@ -481,7 +481,7 @@ inline std::vector<MoveParticleCase> BuildSeveralHitCases() {
           .friction = 2.374646385678357,
       }),
   });
-  // The reviewer's chasing solid: a fixed flat solid A through the origin, and a flat solid B 10 m away along a normal
+  // A chasing solid: a fixed flat solid A through the origin, and a flat solid B 10 m away along a normal
   // at right angles to A's up to rounding, chasing the particle at 100 m/s. A is hit at 0.05 s, B 0.37 ms later; B's
   // response leaves along A's normal rounding of B's speeds, larger than A's own allowance.
   const Vec3 first_normal = {.x = 0.5752141167476622, .y = 0.014005927519369528, .z = 0.8178829707779282};
@@ -500,8 +500,8 @@ inline std::vector<MoveParticleCase> BuildSeveralHitCases() {
           .friction = 0,
       }),
   });
-  // The reviewer's input: one fixed flat solid with normal {0.6, 0, 0.8} through the origin. Rounding leaves the hit
-  // position 2.8e-18 m outside the rest gap, and the response leaves an approach of -2^-55 m/s.
+  // One fixed flat solid with normal {0.6, 0, 0.8} through the origin. Rounding leaves the hit position 2.8e-18 m
+  // outside the rest gap, and the response leaves an approach of -2^-55 m/s.
   cases.push_back({
       .name = "ObliqueFlatSolidRoundingAtHit",
       .solids = {BuildFlatSolid({}, {.x = 0.6, .y = 0, .z = 0.8}, kNoMotion, 1)},
@@ -1088,14 +1088,13 @@ inline std::vector<MoveParticleCase> BuildDomainCornerStartCases() {
   const Solid domain_box = BuildUnitDomainBox(1);
   const Vec3 two_side_start = {.x = kTolerance / 4, .y = 0.5, .z = 0.3 * kTolerance};
   const Vec3 three_side_start = {.x = kTolerance / 4, .y = kTolerance / 2, .z = 0.3 * kTolerance};
-  // The review's scene: side_bottom, not the nearest side, is approached at 0.9 tol per step, slower than the
-  // touching rule would see.
+  // side_bottom, not the nearest side, is approached at 0.9 tol per step, slower than the touching rule would see.
   cases.push_back({
       .name = "DomainCornerSlowApproachToSecondSide",
       .solids = {domain_box},
       .inputs = BuildDomainStartInputs(two_side_start, {.x = 0, .y = 0, .z = -0.9 * kTolerance / 0.1}),
   });
-  // The review's scene: only for_next_step approaches side_bottom.
+  // Only for_next_step approaches side_bottom.
   SolidContactInputs next_step_inputs = BuildDomainStartInputs(two_side_start, {});
   next_step_inputs.velocity.for_next_step = -kUnitZ;
   cases.push_back({.name = "DomainCornerNextStepIntoSecondSide", .solids = {domain_box}, .inputs = next_step_inputs});
@@ -1121,8 +1120,8 @@ inline std::vector<MoveParticleCase> BuildDomainCornerStartCases() {
   SolidContactInputs inside_inputs = BuildDomainStartInputs({.x = -0.0001, .y = -0.0002, .z = -0.0003}, {});
   inside_inputs.start_overlap_tolerance = 0.001;
   cases.push_back({.name = "DomainThreeSideCornerSlightlyInside", .solids = {domain_box}, .inputs = inside_inputs});
-  // The review's scene for mutant S26: side_bottom is the nearest side before the move, side_left comes first in face
-  // order, and the two tie at tol after the move.
+  // side_bottom is the nearest side before the move, side_left comes first in face order, and the two tie at tol after
+  // the move.
   cases.push_back({
       .name = "DomainCornerNearestSideComesLater",
       .solids = {domain_box},
@@ -1215,9 +1214,9 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
           .friction = 0,
       }),
   });
-  // The review's scene: a floor sliding along itself at 100 m/s, which the particle leaves, and the fixed upright at
-  // x = 1, which it approaches at 1e-13 m/s. Before any response the threshold of the approach test is 0, so the
-  // upright is a hit at the start; the floor's 100 m/s must not raise it.
+  // A floor sliding along itself at 100 m/s, which the particle leaves, and the fixed upright at x = 1, which it
+  // approaches at 1e-13 m/s. Before any response the threshold of the approach test is 0, so the upright is a hit at
+  // the start; the floor's 100 m/s must not raise it.
   cases.push_back({
       .name = "SlidingFloorThenSlowUpright",
       .solids = {BuildMovingFloor(0, {.x = 100, .y = 0, .z = 0}, 1), BuildUprightAtXOne(2)},
@@ -1251,8 +1250,8 @@ inline std::vector<MoveParticleCase> BuildWedgeStartCases() {
           .friction = 0,
       }),
   });
-  // The review's scene for mutant S11: exactly at the rest gap, approaching at tol m/s for 0.1 s. The start's move does
-  // not apply at d = tol, but the approached face at the rest gap responds after the start rules.
+  // Exactly at the rest gap, approaching at tol m/s for 0.1 s. The start's move does not apply at d = tol, but the
+  // approached face at the rest gap responds after the start rules.
   cases.push_back({
       .name = "AtRestGapSlowApproach",
       .solids = {BuildFloor(1)},
@@ -1494,7 +1493,7 @@ inline std::vector<MoveParticleCase> BuildSeveralSurfaceStartCases() {
         .inputs = BuildSeveralSurfaceInputs({.x = 0, .y = 0, .z = kTolerance / 2}, {}, 0.01),
     });
   }
-  // The unit domain box, a ground lying exactly on side_bottom and a wall lying exactly on side_left, the particle
+  // The unit domain box, a ground lying exactly on side_bottom and an upright lying exactly on side_left, the particle
   // tol / 2 from all of them, falling at 0.1 m/s for 0.01 s.
   cases.push_back({
       .name = "DomainCornerWithCoincidentGroundAndWall",
@@ -1505,7 +1504,7 @@ inline std::vector<MoveParticleCase> BuildSeveralSurfaceStartCases() {
           0.01
       ),
   });
-  // The same corner with a ground and a wall whose normals are tilted by 2^-44 rad, rounding-sized: still three
+  // The same corner with a ground and an upright whose normals are tilted by 2^-44 rad, rounding-sized: still three
   // directions, since normals within kSameNormalAxisDifference on every axis share one target.
   cases.push_back({
       .name = "DomainCornerWithNearlyCoincidentGroundAndWall",
@@ -1950,7 +1949,7 @@ inline std::vector<MoveParticleCase> BuildClosingWedgeCases() {
   return cases;
 }
 
-// The scenes of the first review of the slide: an edge of the domain box against the same edge of two flat solids,
+// The scenes of a first outside check of the slide: an edge of the domain box against the same edge of two flat solids,
 // with friction; a domain corner with two chamfers across it (five directions); moving three-face corners with a
 // coincident fourth face; an obtuse wedge listed in both orders; two coincident reacting solids whose normals differ
 // by rounding; a slow slide into a sliver wedge.
@@ -2002,7 +2001,7 @@ inline std::vector<MoveParticleCase> BuildSlideReviewCases() {
       .inputs = BuildSeveralSurfaceInputs({.x = 0.2, .y = 0.2, .z = 0.2}, {.x = -1, .y = -1, .z = -1}, 1),
   });
   // Moving three-face corners through the origin with a fourth solid coincident with the first, last in array order:
-  // draws 3053 and 115326 of the review's search, written to 17 digits, each normal normalized again as the search
+  // draws 3053 and 115326 of a generated search, written to 17 digits, each normal normalized again as the search
   // built it. In the first the escape is much faster than the velocity the response received, so its allowance must
   // count the change; in the second the same for for_next_step's allowance.
   // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
@@ -2115,7 +2114,7 @@ struct RestPointWedge {
   Vec3 velocity{};  // m/s
 };
 
-// The scenes of the second review of the slide: wedges at their rest point listed in both orders, with friction; a
+// The scenes of a second outside check of the slide: wedges at their rest point listed in both orders, with friction; a
 // narrow wedge on a reacting floor near the velocity pair limit; a domain box and a side with and without a ground
 // lying on the box's bottom, or a ground with twice the friction; the copy fuzz scenes.
 inline std::vector<MoveParticleCase> BuildSecondReviewCases() {
@@ -2204,7 +2203,7 @@ inline std::vector<MoveParticleCase> BuildSecondReviewCases() {
   cases.push_back(
       {.name = "DomainBoxAndSideWithRoughGround", .solids = {wide_box, box_side, rough_ground}, .inputs = box_inputs}
   );
-  // Two draws of the review's copy fuzz: fixed flat solids through the origin at a rest point, T 0.01 s, and the same
+  // Two draws of a generated copy search: fixed flat solids through the origin at a rest point, T 0.01 s, and the same
   // scene with an exact copy of one solid inserted later in the array, written to 17 digits, each normal normalized
   // again as the fuzz built it. Draw 131: three faces, friction 1.2666, a copy of the first after the second. Draw 51:
   // two faces, friction 0.6248, a copy of the second just before it.
@@ -2580,7 +2579,7 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
           .friction = 0,
       }),
   });
-  // Two scenes of the review's probe whose settle depends on the array (MoveToRestGapOfNearSurfaces, Order); the
+  // Two generated scenes whose settle depends on the array (MoveToRestGapOfNearSurfaces, Order); the
   // digits are the probe's. A small cylinder spinning about its axis and tilting within plan decision P17's bound,
   // alone and with an exact copy appended; a floor, a moving cylinder and a ball, in array order and reversed.
   // NOLINTBEGIN(modernize-use-std-numbers)
@@ -3094,7 +3093,7 @@ inline SolidContactInputs BuildFarInputs(Vec3 start_position, PerParticleVelocit
 }  // namespace far_from_origin_cases
 
 // Builds count paths onto one flat solid far from the origin, each a scene of its own named "ObliqueFarFromOrigin":
-// the oblique set of plan Task 14. The solid moves, the particle meets it at a share of the step, slides on with
+// the oblique set far from the origin. The solid moves, the particle meets it at a share of the step, slides on with
 // friction, and must end the step outside it.
 //
 // Method: per case, in this order of draws (P11 generator, one for the whole set): the normal (three NextSigned,
@@ -3145,7 +3144,7 @@ inline std::vector<MoveParticleCase> BuildObliqueCases(int count) {
 }
 
 // Builds count paths onto one sphere or cylinder far from the origin, each a scene of its own named
-// "RoundFarFromOrigin": the round set of plan Task 14. The solid moves without turning; the particle starts outside
+// "RoundFarFromOrigin": the round set far from the origin. The solid moves without turning; the particle starts outside
 // its bounding ball and aims, relative to it, at a point of the box around it, reached at a share of the step.
 //
 // Method: per case, in this order of draws (P11 generator, one for the whole set): is_sphere = Next < 0.5; the centre,

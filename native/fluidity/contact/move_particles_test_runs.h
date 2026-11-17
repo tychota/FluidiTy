@@ -10,11 +10,11 @@
 //   first the reference: the result or the failure, then, on success, every output of every particle, and names each
 //   difference by its field with both values. The discrete fields (kinds, indexes, faces, sides, counts, errors) are
 //   compared exactly. The floating-point fields must have the same bits when every solid's angular velocity is zero
-//   (kSameBits: MoveParticle's promise), and otherwise lie within contact design 6's bounds (kWithinBounds):
-//   floor + 2^-40 times the reference, the floor tol / 4 for positions, 2^-40 times the largest input speed for
-//   velocities and speeds, 2^-40 for hit fractions and normals. CheckSameMove fails on any difference; SetComparison
-//   applies the GPU tests' policy over a set of scenes, where a discrete difference on a turning scene is counted, not
-//   failed, up to one scene in ten.
+//   (kSameBits: MoveParticle's promise), and otherwise lie within the GPU bounds of method paper <sec-contact>
+//   (kWithinBounds): floor + 2^-40 times the reference, the floor tol / 4 for positions, 2^-40 times the largest input
+//   speed for velocities and speeds, 2^-40 for hit fractions and normals. CheckSameMove fails on any difference;
+//   SetComparison applies the GPU tests' policy over a set of scenes, where a discrete difference on a turning scene is
+//   counted, not failed, up to one scene in ten.
 //   Example: a range of one particle falling onto a fixed floor gives the same bits on both processors, so
 //   CheckSameMove(cpu_run, gpu_run, kSameBits, bounds) passes.
 //
@@ -329,8 +329,8 @@ inline Agreement ComputeAgreement(std::span<const Solid> solids) {
   return has_turn ? Agreement::kWithinBounds : Agreement::kSameBits;
 }
 
-// The bounds of kWithinBounds (contact design 6): a compared value passes when it is within floor + 2^-40 |reference|
-// of the reference.
+// The bounds of kWithinBounds (method paper <sec-contact>): a compared value passes when it is within floor + 2^-40
+// |reference| of the reference.
 struct ComparisonBounds {
   double position_floor = 0;  // m: contact_tolerance / 4.
   double speed_floor = 0;  // m/s: 2^-40 times the largest input speed.
@@ -791,8 +791,9 @@ inline ::testing::AssertionResult CheckWroteNothing(const MovedRange& moved) {
 // The share of a set's scenes with a turning or spinning solid that may show a discrete mismatch without failing the
 // set: one in ten, rounded down. Sin and Cos differ in their last bits between processors, and a scene built on a
 // threshold (a hit at the edge of a window, a settle that depends on the order of near surfaces) can then end with
-// another face or kind. The review of the catalogue expects 0 to 2 of its 25 such scenes to be that fragile; a
-// mistake in the GPU's turning code would change most of them, far above one in ten.
+// another face or kind. A reading of the catalogue expects 0 to 2 of its 25 such scenes to be that fragile (an
+// estimate, not measured: no GPU has run it); a mistake in the GPU's turning code would change most of them, far above
+// one in ten.
 inline constexpr int kAllowedDiscreteMismatchShareDivisor = 10;
 
 // The most failing cases one SetComparison lists in its failure message; the rest are counted.

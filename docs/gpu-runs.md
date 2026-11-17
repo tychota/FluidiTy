@@ -75,10 +75,10 @@ for the first time here. A pass looks like this:
 - `gpu tests:` counts the tests of both programs among the passed ones: 12 in `move_particles_gpu_test` and 1 in
   `shared_formulas_gpu_test`. A failure of `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`,
   `ObliqueCasesOnGpu_MatchCpu`, `RoundCasesOnGpu_MatchCpu` or `MillionParticlesOnGpu_MatchCpuAndTimed` means a GPU
-  result differs from the CPU's: by bits for a scene with no turning or spinning solid, beyond contact design 6's
-  bounds otherwise. The log (`ctest-gpu`) lists up to 20 failing scenes, each with its set, case index, scene name
-  where it has one, field, CPU value, GPU value (17 digits and hexadecimal, so they read back exactly), the difference
-  and the bound, and says how many more were cut.
+  result differs from the CPU's: by bits for a scene with no turning or spinning solid, beyond the GPU bounds of the
+  method paper's contact section otherwise. The log (`ctest-gpu`) lists up to 20 failing scenes, each with its set, case
+  index, scene name where it has one, field, CPU value, GPU value (17 digits and hexadecimal, so they read back
+  exactly), the difference and the bound, and says how many more were cut.
 - `repeat run: PASS`: the digests of the contact tests (`MoveParticles on the GPU, ...`,
   `MoveParticlesOnGpuInLaunchSize, ...`, `Shared contact formulas on the GPU, 32 inputs`) are the same in both runs.
 - `notes:` with 0 discrete mismatches, and in `notes-first.txt`:
@@ -100,18 +100,19 @@ for the first time here. A pass looks like this:
 ### Discrete mismatches on turning and spinning scenes
 
 The catalogue has 25 scenes with a turning or spinning solid. Their poses go through a sine, whose last bits differ
-between the CPU's library and the GPU's, so their positions and velocities are compared within contact design 6's
-bounds. A scene built on a threshold can then end with another discrete result on the GPU: another face, kind, solid
-index, hit count or error. Such a scene is a discrete mismatch: the test does not fail on it, but writes one line per
-differing field to `notes-first.txt`, `discrete mismatch, catalogue, case <i> <scene>: <field>: cpu <value>, gpu
-<value>`, and counts it. The test fails when more of these scenes have a mismatch than one in ten, rounded down (more than 2 of 25): a mistake
-in the GPU's turning code would change most of them. The review expects 0 to 2, most likely in
-`SettleNearSpinningCylinder`, `TurningStackedBoxes`, `TurningBoxNearFloor` or `TurningCylinderRimHit`.
+between the CPU's library and the GPU's, so their positions and velocities are compared within the GPU bounds of the
+method paper's contact section. A scene built on a threshold can then end with another discrete result on the GPU:
+another face, kind, solid index, hit count or error. Such a scene is a discrete mismatch: the test does not fail on it,
+but writes one line per differing field to `notes-first.txt`, `discrete mismatch, catalogue, case <i> <scene>: <field>:
+cpu <value>, gpu <value>`, and counts it. The test fails when more of these scenes have a mismatch than one in ten,
+rounded down (more than 2 of 25): a mistake in the GPU's turning code would change most of them. A reading of the scenes
+expects 0 to 2 (an estimate: no GPU has run them), most likely in `SettleNearSpinningCylinder`, `TurningStackedBoxes`,
+`TurningBoxNearFloor` or `TurningCylinderRimHit`.
 
-A nonzero count is not a failure. It means the rule "discrete fields equal on both processors" of contact design 6
-does not hold for that scene on this card, which is a decision for the owner. Send `notes-first.txt`: its lines name
-each scene and field with both values, enough to rebuild the case on the CPU. Scenes without angular velocity stay
-exact: any difference there fails the test.
+A nonzero count is not a failure. It means the rule "discrete fields equal on both processors" of the method paper's
+contact section does not hold for that scene on this card, which is a decision for the owner. Send `notes-first.txt`:
+its lines name each scene and field with both values, enough to rebuild the case on the CPU. Scenes without angular
+velocity stay exact: any difference there fails the test.
 
 ### First exercised on the owner's GPU
 
@@ -146,8 +147,8 @@ What a first run may show instead, and what it means:
 
 - `MoveParticles` tests fail with `kRunOnCallFailed` and the shared formulas pass: the visit function did not launch
   or failed while it ran (above). Keep the logs.
-- Only the turning or spinning scenes fail, by a few rounding units: the bound of contact design 6 is too tight for this
-  card's sine; the printed difference and bound say by how much.
+- Only the turning or spinning scenes fail, by a few rounding units: the GPU bound of the method paper's contact section
+  is too tight for this card's sine; the printed difference and bound say by how much.
 
 ## What the single run cannot show
 
@@ -167,3 +168,4 @@ reads `FAIL not run` (or `NOT RUN`) means an earlier step failed or a tool is mi
 | module | commit | date | GPU and driver | result | notes |
 | --- | --- | --- | --- | --- | --- |
 | Foundation | not run | not run | none | compiled, not run | GPU test programs that exist now: `check_can_run_on_gpu_test`, `shared_math_gpu_test`, `buffer_gpu_test`, `ordered_sums_gpu_test`, `stable_order_gpu_test`, `processor_description_gpu_test`. `tools/run_gpu_tests.ps1` was parsed with PowerShell 7.4 in a Linux container and exercised there with stand-in tools; never run on Windows, never run against a GPU. |
+| contact | not run | not run | none | compiled, not run | GPU test programs: `move_particles_gpu_test` (12 tests: `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`, `MoveParticles.ObliqueCasesOnGpu_MatchCpu`, `MoveParticles.RoundCasesOnGpu_MatchCpu`, `MoveParticles.SameInputTwiceOnGpu_SameBytes`, `MoveParticles.TwoFailuresOnGpu_ReportsLowestParticleId`, `MoveParticlesOnGpuInLaunchSize.FailingParticlesAnywhere_ReportLowestIdInEveryLaunchSize`, `MoveParticlesOnGpuInLaunchSize.EqualIdsFailing_ReportsLowerIndexInEveryLaunchSize`, `MoveParticlesOnGpuInLaunchSize.NoFailure_CountsInEveryLaunchSize`, `MoveParticles.FailedCallCheckOnGpu_WritesNothing`, `BuildContactStackEstimate.OnGpu_IsTheVisitStackForEveryResidentThread`, `MoveParticles.EmptyRangeOnGpu_CountsNothing`, `MoveParticles.MillionParticlesOnGpu_MatchCpuAndTimed`) and `shared_formulas_gpu_test` (1 test: `SharedFormulas.OnGpu_MatchCpu`). `move_particles_gpu.cu` and `shared_formulas_test_gpu.cu` compile and link in the CUDA container; `move_particles_no_gpu_test` (label `no_gpu`, 2 tests) runs there. No contact device code has run on a GPU. What to look for in the first run: the contact part above. |

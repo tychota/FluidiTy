@@ -432,7 +432,7 @@ TEST(CheckSameMove, PositionOneUnitInTheLastPlaceAway_FailsSameBitsPassesBounds)
 
 TEST(CheckSameMove, ValuesBeyondTheirFloors_FailBounds) {
   // A position tol / 2 away, a velocity 2^-30 of the largest speed away, a hit fraction 2^-30 away: each beyond its
-  // floor of contact design 6.
+  // floor of the GPU bounds (method paper <sec-contact>).
   const ParticleRange range = BuildPackedObliqueRange(300);
   const ComparisonBounds bounds = ComputeComparisonBounds(range);
   const MovedRange reference = RunPackedObliqueOnCpu();

@@ -495,7 +495,7 @@ TEST(MoveParticle, TiltedUprightPushesBackToFloor_SlideRemovesFloorApproach) {
   // The floor is hit at 0.1 - tol s, the tilted upright at about 0.5 s; its response leaves the particle approaching
   // the floor at 1.5 tol m/s, a real approach far above the floor's allowance of about 2^-46 m/s. The floor is active
   // there, so the joint response over both removes that approach at once, and the particle rests at z = tol with two
-  // hits. Before the change over several surfaces (plan Task 12) the touched floor was hit again: three hits.
+  // hits. With one response per surface in turn, the touched floor would be hit again: three hits.
   const MoveParticleCall call = RunMove("TiltedUprightPushesBackToFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 2);
@@ -573,9 +573,9 @@ TEST(MoveParticle, TurningBoxSlide_KeepsSidewaysPartInSolidAxes) {
   // At rest on the face kHighX at d == tol, the particle is hit at 0 (no touching rule on a turning solid, plan
   // decision P2) and carried. Its velocity relative to the face, {0, -(0.5 + tol), 1} m/s, turned into the box's axes
   // of the middle of the step, 0.05 rad on, is {-(0.5 + tol) sin 0.05, -(0.5 + tol) cos 0.05, 1}: the face turns
-  // toward the line the particle follows, so the part into it is removed, and it ends at own {0.5 + tol, -0.1 (0.5 +
-  // tol) cos 0.05, 0.1} of the box's pose at 0.1 s, its velocities unchanged. (The brief's own {0.5 + tol, -0.05,
-  // 0.1} is the carry with the axes of the hit, 6.2e-5 m away.)
+  // toward the line the particle follows, so the part into it is removed, and it ends at own
+  // {0.5 + tol, -0.1 (0.5 + tol) cos 0.05, 0.1} of the box's pose at 0.1 s, its velocities unchanged. (The carry with
+  // the axes of the hit would end at {0.5 + tol, -0.05, 0.1}, 6.2e-5 m away.)
   const MoveParticleCase scene = FindMoveParticleCase("TurningBoxSlide");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -868,7 +868,7 @@ TEST(MoveParticle, RestingOnTurningBoxNearFloor_StepLengthDecidesCloseCall) {
   // Hit at 0 with the whole step left; the carry moves at {0, -(0.5 + tol) cos(T / 2), 0} m/s in the box's axes (its
   // relative velocity turned by half the turn, the part into the face removed), 0.6726812 m from its origin, so its
   // closing bound against the floor 0.05 m below is T ((0.5 + tol) cos(T / 2) + 0.6726812) (plan decision P7), which
-  // passes 0.05 - tol from T = 0.0426415 s (the brief's 0.0426373 s was the carry with the axes of the hit). T 0.1:
+  // passes 0.05 - tol from T = 0.0426415 s (with the axes of the hit the carry would give 0.0426373 s). T 0.1:
   // 0.1172 m, too close to call. T 0.04: 0.0469 m, a carry that ends at the rest gap of the box at its end pose, at the
   // same height above the floor.
   ExpectCloseCall(RunMove("RestingOnTurningBoxNearFloor"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
@@ -1402,7 +1402,7 @@ TEST(MoveParticle, StartsWithinToleranceMovingAway_IsMovedOutToOneTolerance) {
   EXPECT_EQ(result.position.x, 0.1);
   EXPECT_EQ(result.position.y, 0);
   EXPECT_NEAR(result.position.z, kTolerance + 0.2, kPositionTolerance);
-  // Tighter than the brief's 2 tol: the start moved to the rest gap, not left at tol / 4.
+  // Tighter than kPositionTolerance: the start moved to the rest gap, not left at tol / 4.
   EXPECT_NEAR(result.position.z, kTolerance + 0.2, kRestGapTolerance);
 }
 
@@ -1784,9 +1784,9 @@ TEST(MoveParticle, SilentFloorThenLeaningUpright_FloorRespondsToThePush) {
 
 TEST(MoveParticle, AtRestGapSlowApproach_FaceAtRestGapApproachedResponds) {
   // d = tol exactly is outside the start rules' move, d < tol, but a face at the rest gap that a velocity approaches is
-  // an active surface: the approach of tol m/s is a hit at 0 and the particle
-  // stops at z = tol. Before, the touching rule let it sink by 0.1 tol in the step, which the settle lifted back; in a
-  // wedge sharper than 2^-21 rad that sinking left a gap no move could leave.
+  // an active surface: the approach of tol m/s is a hit at 0 and the particle stops at z = tol. Before, the touching
+  // rule let it sink by 0.1 tol in the step, which the settle lifted back; in a wedge sharper than 2^-21 rad that
+  // sinking left a gap no move could leave.
   const MoveParticleCall call = RunMove("AtRestGapSlowApproach");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kHit);
@@ -2113,8 +2113,8 @@ TEST(MoveParticle, StartInsideFloorBelowPlate_IsNotCrossedByTheMove) {
 }
 
 TEST(MoveParticle, DeepCuspBesideWall_MovesToRestPoint) {
-  // The first iterate from 0.1 x* overshoots far out along the floor and crosses a wall 1.5 x* out. The rest point is
-  // 0.5 x*, about 10^6 tol, from the wall: the move must still reach it.
+  // The first iterate from 0.1 x* overshoots far out along the floor and crosses an upright 1.5 x* out. The rest point
+  // is 0.5 x*, about 10^6 tol, from the wall: the move must still reach it.
   const MoveParticleCase scene = FindMoveParticleCase("BallRestingOnFloorDeepStartBesideWall");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -2159,7 +2159,7 @@ TEST(MoveParticle, CoincidentFloors_SixteenFitSeventeenIsStartsInNarrowGap) {
 }
 
 TEST(MoveParticle, DomainCornerWithCoincidentGroundAndWall_EndsAtCorner) {
-  // A ground lying on side_bottom and a wall lying on side_left make five near surfaces, but only three directions:
+  // A ground lying on side_bottom and an upright lying on side_left make five near surfaces, but only three directions:
   // coincident surfaces share one target, and {tol, tol, tol} is at the rest gap of all five.
   const MoveParticleCall call = RunMove("DomainCornerWithCoincidentGroundAndWall");
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -2576,8 +2576,8 @@ TEST(MoveParticle, CylinderRim_HitAtItsTrueDistance) {
   // The cylinder grown with sharp edges is entered at {0.5 + tol / 2, 0, 1 + tol}, Sqrt(1.25) tol from the rim; the rim
   // search goes on down the path to tol from the rim, Sqrt(0.75) tol above the cap's plane, where the normal is
   // {1 / 2, 0, Sqrt(3) / 2} and the response leaves {0, 0, -1} + (Sqrt(3) / 2) {1 / 2, 0, Sqrt(3) / 2} =
-  // {Sqrt(3) / 4, 0, -1 / 4} (as built, the corner's {0.4, 0, -0.2}). Nothing moves the hit: the reaction is recorded
-  // on the path.
+  // {Sqrt(3) / 4, 0, -1 / 4} (the sharp corner's hit would give {0.4, 0, -0.2}). Nothing moves the hit: the reaction is
+  // recorded on the path.
   const MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -2752,9 +2752,9 @@ Vec3 ComputePositionBeforeSettle(const MoveParticleCase& scene) {
 
 TEST(MoveParticle, RimOnFloorSweepingParticle_RimPassesOutsideItsTrueDistance) {
   // The rim, sliding over the floor and rising at 1e-3 m/s, passes 1.069 tol from the particle resting on the floor, so
-  // its true distance never reaches tol: one hit, the start's on the floor, which takes the fall. As built, the sharp
-  // corner of the grown cylinder was hit, and moving that hit to the rest gap lifted the particle off the floor: two
-  // hits.
+  // its true distance never reaches tol: one hit, the start's on the floor, which takes the fall. Before plan decision
+  // P21 the sharp corner of the grown cylinder was hit, and moving that hit to the rest gap lifted the particle off the
+  // floor: two hits.
   const MoveParticleCase scene = FindMoveParticleCase("RimOnFloorSweepingParticle");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -2766,8 +2766,8 @@ TEST(MoveParticle, RimOnFloorSweepingParticle_RimPassesOutsideItsTrueDistance) {
 TEST(MoveParticle, RimOnFloorSweepingParticleLower_RimAndFloorRespondTogether) {
   // Rising at 9e-4 m/s the rim comes within tol: hit on kLowRim 1.0002 tol away, with the floor at exactly tol, which
   // the joint response keeps, since the particle is not moved. The particle stays on the floor, carried along by the
-  // rim's push: two hits, the start's and the rim's (as built, the hit moved to the rest gap lifted it to 1.106 tol of
-  // the floor).
+  // rim's push: two hits, the start's and the rim's (before plan decision P21, the hit moved to the rest gap lifted it
+  // to 1.106 tol of the floor).
   const MoveParticleCase scene = FindMoveParticleCase("RimOnFloorSweepingParticleLower");
   const MoveBeforeSettle before_settle = RunMoveBeforeSettle(scene);
   ASSERT_EQ(before_settle.hit_faces.size(), 2U);
@@ -2785,8 +2785,8 @@ TEST(MoveParticle, RimOnFloorSweepingParticleLower_RimAndFloorRespondTogether) {
 TEST(MoveParticle, SlowlyTiltingCylinderRimCornerStart_RisingRimIsNotHit) {
   // The start is 1.27 tol from the rim, in its rim corner. The rim search reads the cylinder at the pose of the sweep's
   // start, and the rate from linear_velocity, 0: free. The rim rises 0.019 tol toward the particle during the step,
-  // within plan decision P17's slack, and the true distance stays above 1.2 tol (as built a hit at 0, from the rate of
-  // the surface's velocity, moved to the rest gap).
+  // within plan decision P17's slack, and the true distance stays above 1.2 tol (before plan decision P21, a hit at 0,
+  // from the rate of the surface's velocity, moved to the rest gap).
   const MoveParticleCase scene = FindMoveParticleCase("SlowlyTiltingCylinderRimCornerStart");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -2936,9 +2936,9 @@ TEST(MoveParticle, SlowlyTiltingCylinderRim_HitAtItsTrueDistance) {
 
 TEST(MoveParticle, StackedDrumsOfOneRadius_SlideDownTheSeamKeepsItsVelocity) {
   // Down the upper drum's wall at its rest gap and past the seam: the start beside the lower drum's high rim rests on
-  // that drum's wall, taken as unbounded along the axis, so the lower drum is not hit, and the velocity stays {0, 0,
-  // -1} bit for bit. The same from one rounding unit and from tol / 32 inside the rest gap, which the start rules move
-  // out. As built, the sharp grown rim edge was hit 1.41 tol from the rim and the particle left at {0.5, 0, -0.5}.
+  // that drum's wall, taken as unbounded along the axis, so the lower drum is not hit, and the velocity stays
+  // {0, 0, -1} bit for bit. The same from one rounding unit and from tol / 32 inside the rest gap, which the start
+  // rules move out. The sharp grown rim edge alone would be hit 1.41 tol from the rim and leave {0.5, 0, -0.5}.
   const MoveParticleCase scene = FindMoveParticleCase("StackedDrums");
   const Solid& lower_drum = scene.solids.at(1);
   const double rest_x = 0.5 + kTolerance;  // m
@@ -2958,8 +2958,8 @@ TEST(MoveParticle, StackedDrumsOfOneRadius_SlideDownTheSeamKeepsItsVelocity) {
 
 TEST(MoveParticle, PuckFlushInFloor_SlideOntoItAndOffKeepsItsVelocity) {
   // Along the floor at its rest gap onto the puck lying flush in it, and off it: the start beside the puck's rim rests
-  // on the plane of its top, so the puck is not hit, and the velocity is kept bit for bit. As built, the sharp grown
-  // rim edge stopped the particle onto it, which left at {-0.5, 0, 0.5}.
+  // on the plane of its top, so the puck is not hit, and the velocity is kept bit for bit. The sharp grown
+  // rim edge alone would stop the particle onto it, which would leave at {-0.5, 0, 0.5}.
   const MoveParticleCase scene = FindMoveParticleCase("PuckFlushInFloor");
   const Solid& floor = scene.solids.at(0);
   const Solid& puck = scene.solids.at(1);
@@ -3009,11 +3009,11 @@ void ExpectOneHitWithVelocity(const MoveParticleCall& call, Vec3 velocity) {
 TEST(MoveParticle, StackedDrums_StepStartingJustAboveTheSeamKeepsItsVelocity) {
   // A step that starts 3 / 16 or 5 / 16 tol above the seam, beside the lower drum's rim 1.0174 or 1.0477 tol away, at
   // the level of its wall: the lower drum is no active surface there (plan decision P21, item 16), so nothing answers
-  // the rim, and the step is free with {0, 0, -1} bit for bit (as built the start's response on the rim turned it to
-  // {0.1811321, 0, -0.9660377} and {0.2846975, 0, -0.9110320}). Pushed into the upper wall at 0.16 m/s, the start's
-  // response is on that wall alone: {0, 0, -1}, or {0, 0, -0.952} with friction 0.3. From tol / 32 inside the wall's
-  // rest gap and tol / 8 above the seam, inside the rim's own touching window, the sweep tries the wall first: free
-  // ({0.1230769, 0, -0.9846154} as built).
+  // the rim, and the step is free with {0, 0, -1} bit for bit (with the rim as an active surface, the start's response
+  // would turn it to {0.1811321, 0, -0.9660377} and {0.2846975, 0, -0.9110320}). Pushed into the upper wall at 0.16
+  // m/s, the start's response is on that wall alone: {0, 0, -1}, or {0, 0, -0.952} with friction 0.3. From tol / 32
+  // inside the wall's rest gap and tol / 8 above the seam, inside the rim's own touching window, the sweep tries the
+  // wall first: free (the touching rule on the rim first would give {0.1230769, 0, -0.9846154}).
   const double rest_x = 0.5 + kTolerance;  // m
   const Vec3 down = -kUnitZ;
   const Vec3 pressed = {.x = -0.16, .y = 0, .z = -1};
@@ -3128,8 +3128,8 @@ MoveParticleCase BuildRimSlowApproachScene(RimSlowApproach approach) {
   return scene;
 }
 
-// Fails the calling test unless the rim's slow approach of sink_share tol, from the start as built, gets no hit and no
-// reaction, is (1 - sink_share) tol from the rim before the settle and at tol after it.
+// Fails the calling test unless the rim's slow approach of sink_share tol, from the start built here, gets no hit and
+// no reaction, is (1 - sink_share) tol from the rim before the settle and at tol after it.
 void ExpectRimSlowApproachUnanswered(double sink_share) {
   SCOPED_TRACE(sink_share);
   const MoveParticleCase scene = BuildRimSlowApproachScene({.sink_share = sink_share, .x_units = 0});
@@ -3153,7 +3153,7 @@ TEST(MoveParticle, RimLevelWithCapSlowApproach_NoResponse_KnownChoice) {
   // tol/s along the rim's normal, or -9.99 tol/s for the sink of 0.999 tol); before the settle the particle is 0.1 tol
   // from the rim, never inside, and the settle lifts it back to tol. From the rest gap a sink below tol keeps d >= 0
   // (the distance is convex along the path): a sink of 0.999 tol ends 0.001 tol away. This side holds because the
-  // start, as built here, has a computed distance at or below tol (see the rounding test below).
+  // start, as this test builds it, has a computed distance at or below tol (see the rounding test below).
   ExpectRimSlowApproachUnanswered(0.9);
   ExpectRimSlowApproachUnanswered(0.999);
 }
@@ -3181,9 +3181,9 @@ TEST(MoveParticle, RimLevelWithCapSlowApproach_RoundingOfTheStartDecides_KnownCh
 }
 
 TEST(MoveParticle, PuckFlushInFloor_StepStartingJustBeforeTheSeamKeepsItsVelocity) {
-  // The puck's counterpart: a step that starts 3 / 16 or 5 / 16 tol beyond its rim, level with its top's plane, is
-  // free with {-1, 0, 0} bit for bit (as built {-0.9660377, 0, 0.1811321} and {-0.9110320, 0, 0.2846975}); pushed into
-  // the floor, the start's response is the floor's alone.
+  // The puck's counterpart: a step that starts 3 / 16 or 5 / 16 tol beyond its rim, level with its top's plane, is free
+  // with {-1, 0, 0} bit for bit (a response on the rim would give {-0.9660377, 0, 0.1811321} and
+  // {-0.9110320, 0, 0.2846975}); pushed into the floor, the start's response is the floor's alone.
   for (const double offset_share : {3.0 / 16, 5.0 / 16}) {
     const Vec3 start = {.x = 0.5 + offset_share * kTolerance, .y = 0, .z = kTolerance};
     ExpectFreeWithVelocity(
@@ -3203,8 +3203,8 @@ TEST(MoveParticle, PuckFlushInFloor_StepStartingJustBeforeTheSeamKeepsItsVelocit
 TEST(MoveParticle, LoneCylinderBesideRimLevelWithCap_FallingIsHitAtTheTrueDistance) {
   // A lone cylinder and a start 5 / 16 tol beyond its wall, level with its cap's plane, 1.048 tol from the rim: the
   // cylinder is no active surface at the start, so falling is answered by the rim search where the true distance is
-  // tol, with the normal {0.3125, 0, 0.95}: 0.95 * {0.3125, 0, 0.95} - {0, 0, 1} = {0.2969, 0, -0.0976} (as built the
-  // start's response 1.048 tol away gave {0.2847, 0, -0.0890}). Moving inward along the cap's plane is free.
+  // tol, with the normal {0.3125, 0, 0.95}: 0.95 * {0.3125, 0, 0.95} - {0, 0, 1} = {0.2969, 0, -0.0976} (a start's
+  // response 1.048 tol away would give {0.2847, 0, -0.0890}). Moving inward along the cap's plane is free.
   MoveParticleCase scene = FindMoveParticleCase("CylinderRim");
   scene.solids.at(0).reports_reaction = false;
   scene.inputs.start_position = {.x = 0.5 + 5.0 / 16 * kTolerance, .y = 0, .z = 1 + kTolerance};
@@ -3235,10 +3235,9 @@ struct SeamRow {
 };
 
 // Runs one particle across the seam of row_scene, row's scene built once, in Floor(12 / step_share) + 2 steps from
-// offset tol before it, the same input
-// velocity every step from the last end, and says whether every step succeeded with no hit without a push and one
-// with, kept the speed along the path that friction on the surface slid on leaves (1 - friction * push, within 1e-12),
-// and stayed at tol - tol / 1024 or more from every solid before the settle.
+// offset tol before it, the same input velocity every step from the last end, and says whether every step succeeded
+// with no hit without a push and one with, kept the speed along the path that friction on the surface slid on leaves (1
+// - friction * push, within 1e-12), and stayed at tol - tol / 1024 or more from every solid before the settle.
 bool ComputeIsSeamRunRight(const MoveParticleCase& row_scene, const SeamRow& row, double offset) {
   const double step_duration = row.step_share * kTolerance;  // s
   const Vec3 velocity = row.along_path + row.push * row.push_direction;  // m/s
@@ -3300,8 +3299,8 @@ void ExpectSeamRowsKeepTheSpeed(SeamRow row) {
 TEST(MoveParticle, SeamsOverManySteps_Cylinders) {
   // Down the stacked drums and along the floor onto the puck, from 4 to 4 + s tol before the seam, in steps of s = 0.3,
   // 0.7 and 3 tol, unpressed or pressed at 0.16 m/s into the surface slid on, with friction 0 or 0.3: every step keeps
-  // the speed (plan decision P21, item 16). As built 400, 205 or 224 and 48 runs of 400 lost speed at s = 0.3, 0.7 and
-  // 3: some step started within tol + tol / 16 of the next drum's rim and was answered on it.
+  // the speed (plan decision P21, item 16). Before item 16, 400, 205 or 224 and 48 runs of 400 lost speed at s = 0.3,
+  // 0.7 and 3: some step started within tol + tol / 16 of the next drum's rim and was answered on it.
   ExpectSeamRowsKeepTheSpeed({
       .case_name = "StackedDrums",
       .seam_point = {.x = 0.5 + kTolerance, .y = 0, .z = 1},
@@ -3352,8 +3351,8 @@ TEST(MoveParticle, DrumStandingOnFloor_GrooveStopsAndLetsSlideAround) {
 TEST(MoveParticle, RimCrestUnderFloor_IsNotHit) {
   // The crest of a slanted cylinder's high rim lies 0.41 tol under the floor's surface; the particle sliding at the
   // floor's rest gap passes it 1.41 tol away, beyond the true distance's reach, though through the sharp grown corner:
-  // no hit, and the end at tol from the floor. As built, the corner was hit and moved to the rest gap, which pulled
-  // the particle 0.41 tol toward the floor.
+  // no hit, and the end at tol from the floor. Before plan decision P21 the corner was hit and moved to the rest gap,
+  // which pulled the particle 0.41 tol toward the floor.
   const MoveParticleCase scene = FindMoveParticleCase("RimCrestUnderFloor");
   const MoveParticleCall call = RunMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -3411,8 +3410,8 @@ TEST(MoveParticle, SlideOffCapPastRim_AndUpWallPastRim_OneHitThenFree) {
 TEST(MoveParticle, StackedBoxes_SlideDownTheSeamKeepsItsVelocity) {
   // Down the upper box's side at its rest gap and past the seam: beside the lower box's top edge, its kHighZ gives the
   // distance and the start rests on the plane of its kHighX, so the lower box is not hit and the velocity stays
-  // {0, 0, -1} bit for bit (plan decision P21, item 8). As built, the path entered through the plane of the lower box's
-  // top and stopped dead.
+  // {0, 0, -1} bit for bit (plan decision P21, item 8). Without that rule the path enters through the plane of the
+  // lower box's top and stops dead.
   const MoveParticleCall call = RunMove("StackedBoxes");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
@@ -3425,7 +3424,7 @@ TEST(MoveParticle, BoxesSideBySide_SlideAcrossTheSeamKeepsItsVelocity) {
   // Along two boxes side by side in one floor at the rest gap of their tops: beside the second box its kLowX gives the
   // distance and the start rests on the plane of its top, so it is not hit and the velocity stays {1, 0, 0} bit for
   // bit. Pressed into the boxes at 0.16 m/s, the start's response on the first box is the one hit and leaves {1, 0, 0}.
-  // As built, the particle stopped on the second box's kLowX at 0.3 - tol s.
+  // Without that rule the particle would stop on the second box's kLowX at 0.3 - tol s.
   const MoveParticleCall sliding = RunMove("BoxesSideBySide");
   ASSERT_EQ(sliding.error, ContactError::kNone);
   EXPECT_EQ(sliding.result.hit_count, 0);
@@ -3446,7 +3445,7 @@ TEST(MoveParticle, BoxesSideBySide_SlideAcrossTheSeamKeepsItsVelocity) {
 
 TEST(MoveParticle, BoxFlushInFloor_SlideOntoItKeepsItsVelocity) {
   // Along the floor at its rest gap onto a box set flush in it: the start rests on the plane of the box's top, so the
-  // box is not hit and the velocity is kept bit for bit. As built, kHighX stopped the particle.
+  // box is not hit and the velocity is kept bit for bit. Without that rule kHighX would stop the particle.
   const MoveParticleCall call = RunMove("BoxFlushInFloor");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
@@ -3458,7 +3457,8 @@ TEST(MoveParticle, BoxSeams_StepStartingJustBeforeTheSeamKeepsItsVelocity) {
   // A step that starts 33 / 32 tol beyond the seam, level with the next box's top, where its side face's plane,
   // continued above the top, is 1.03 tol away and its edge 1.43 tol: the box is no active surface (plan decision P21,
   // item 16), so the step keeps its velocity bit for bit; pressed into the surface slid on, the start's response is on
-  // that surface alone, with friction 0.3 {0.952, 0, 0}. As built every one of these stopped dead.
+  // that surface alone, with friction 0.3 {0.952, 0, 0}. Before plan decision P21, item 16, every one of these stopped
+  // dead.
   const double offset = 33.0 / 32 * kTolerance;  // m
   const Vec3 floor_start = {.x = 0.5 + offset, .y = 0, .z = kTolerance};
   ExpectFreeWithVelocity(
@@ -3521,8 +3521,8 @@ MoveParticleCase BuildLoneBoxScene() {
 TEST(MoveParticle, LoneBoxBesideItLevelWithItsTop_NoSurfaceThatIsNotThere) {
   // A lone box, its top at z = 0, and a start 33 / 32 tol beyond kHighX at the top's level: the box is no active
   // surface there. Falling, nothing holds the particle up (a bounding surface listed in the box's place would). Moving
-  // inward it keeps {-1, 0, 0} (as built {0, 0, 0}). Moving inward and down, the sharp grown edge is entered after
-  // tol / 32 and hit on kHighX (plan decision P21, item 8 c), which leaves {0, 0, -0.5}.
+  // inward it keeps {-1, 0, 0} (before plan decision P21, item 16, {0, 0, 0}). Moving inward and down, the sharp grown
+  // edge is entered after tol / 32 and hit on kHighX (plan decision P21, item 8 c), which leaves {0, 0, -0.5}.
   MoveParticleCase scene = BuildLoneBoxScene();
   scene.inputs.start_position = {.x = 0.5 + 33.0 / 32 * kTolerance, .y = 0, .z = kTolerance};
   const auto run_with = [&scene](Vec3 velocity) {
@@ -3542,8 +3542,8 @@ TEST(MoveParticle, LoneBoxBesideItLevelWithItsTop_NoSurfaceThatIsNotThere) {
 TEST(MoveParticle, MovingBoxBesideFixedBox_NeighbourActsOnlyFromTheSeam) {
   // Two boxes side by side, the second sliding along x at 0.3 m/s, friction 0.5, and a particle pressed into the first
   // at 0.16 m/s, 33 / 32 tol before the seam: the second box is no active surface, so the first's friction alone acts,
-  // {1 - 0.5 * 0.16, 0, 0} = {0.92, 0, 0} (as built {0.3, 0, 0}: stuck to the moving box's side plane). With the second
-  // box rising at 0.1 m/s instead it is a real step: hit on its kLowX, which stops the particle.
+  // {1 - 0.5 * 0.16, 0, 0} = {0.92, 0, 0} (before item 16, {0.3, 0, 0}: stuck to the moving box's side plane). With the
+  // second box rising at 0.1 m/s instead it is a real step: hit on its kLowX, which stops the particle.
   MoveParticleCase conveyor = FindMoveParticleCase("BoxesSideBySide");
   const Box second_box = {
       .center = {.x = 1, .y = 0, .z = -0.5},
@@ -3682,7 +3682,8 @@ TEST(MoveParticle, LoneBoxEdgeStripSlowApproach_NoResponse_KnownChoice) {
 
 TEST(MoveParticle, SeamsOverManySteps_Boxes) {
   // As SeamsOverManySteps_Cylinders, across two boxes side by side, onto a box flush in a floor and down two stacked
-  // boxes: every run keeps the speed. As built 83, 35 and 8 runs of 400 lost speed at steps of 0.3, 0.7 and 3 tol.
+  // boxes: every run keeps the speed. Before item 16, 83, 35 and 8 runs of 400 lost speed at steps of 0.3, 0.7 and 3
+  // tol.
   ExpectSeamRowsKeepTheSpeed({
       .case_name = "BoxesSideBySide",
       .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
@@ -4089,8 +4090,8 @@ TEST(MoveParticle, SpinningFloorMovedSilently_RoundingIsNotAHit) {
   // The spinning floor is moved silently at the start: the particle's approach to it, 7.7e-15 m/s, is within the
   // rounding of the spin's omega x r, 2^-46 * |omega x r|_1. The upright responds, and the sweep that follows measures
   // its rate from the floor's full surface velocity, as the start rules and the joint response do. One hit, the
-  // upright's. As built before, the start rules compared the floor's approach with 0 and the sweep measured from
-  // linear_velocity alone: the floor was hit at 0 by rounding, two hits; either fix alone leaves two.
+  // upright's. With the floor's approach compared with 0 at the start and the sweep's rate measured from
+  // linear_velocity alone, the floor would be hit at 0 by rounding, two hits; either change alone leaves two.
   const MoveParticleCall call = RunMove("SpinningFloorMovedSilently");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
@@ -4104,7 +4105,7 @@ TEST(MoveParticle, ClosingCeiling_IsSqueezedBetweenSolids) {
   ExpectCloseCall(RunMove("ClosingCeiling"), ContactCloseCall::kSqueezedBetweenSolids, 2);
 }
 
-// --- The slide: the first review's scenes ---
+// --- The slide: scenes of a first outside check ---
 
 // Runs MoveParticle twice from the inputs: the step, then the next step from its end with both velocities its
 // for_next_step. Fails the calling test unless both succeed and end at the rest gap of every solid.
@@ -4172,7 +4173,7 @@ TEST(MoveParticle, DomainBoxEdgeWithFriction_SameAsFlatSolids) {
   // solids in the same place, one hit. Both fixed, so the friction limits add: with friction 0.5 and {-1, 0.5, -1},
   // pushes 1 and 1, a limit of 1 >= 0.5, {0, 0, 0}; friction 2 and {-1, 2, -1}, a stick too; friction 0.5 and
   // {-1, 2, -1}, 2 - 0.5 (1 + 1) = 1, {0, 1, 0} (the responses one side after the other gave 1.1645898). Before the
-  // first review, the box's second side was removed without friction: v_y 0.276 and 0.211.
+  // first outside check, the box's second side was removed without friction: v_y 0.276 and 0.211.
   struct EdgeDraw {
     double friction = 0;
     Vec3 velocity{};  // m/s
@@ -4230,11 +4231,11 @@ SolidContactResult ExpectChamferedCornerSuccess(double step_duration, Vec3 veloc
 
 TEST(MoveParticle, DomainCornerWithTwoChamfers_FiveDirectionsAtEveryStepLength) {
   // The chamfers, then the box's sides: five directions at once, which one joint response reads (at most three of them
-  // meet the smallest change as equalities). Before, more than four was kTooManyHits at every step length. The
-  // particle stops in the corner at the rest gap of all five surfaces, at steps of 1, 0.01 and 1e-4 s (the start
-  // 0.2 T out), for the review's three velocities. The chamfer through the corner line is inside the corner's own cone:
-  // the responses one surface after the other gave the particle speed along y from it ({0, 0.5, 0} or
-  // {0, 0.15, 0} after four hits), the joint response does not.
+  // meet the smallest change as equalities). Before, more than four was kTooManyHits at every step length. The particle
+  // stops in the corner at the rest gap of all five surfaces, at steps of 1, 0.01 and 1e-4 s (the start 0.2 T out), for
+  // the outside check's three velocities. The chamfer through the corner line is inside the corner's own cone: the
+  // responses one surface after the other gave the particle speed along y from it ({0, 0.5, 0} or {0, 0.15, 0} after
+  // four hits), the joint response does not.
   for (const double step_duration : {1.0, 0.01, 1e-4}) {
     for (const Vec3 velocity :
          {Vec3{.x = -1, .y = -1, .z = -1}, Vec3{.x = -1, .y = -2, .z = -0.5}, Vec3{.x = -0.3, .y = -1, .z = -0.2}}) {
@@ -4280,19 +4281,19 @@ TEST(MoveParticle, FallingOnSeventeenCoincidentFloors_SlidesOnOneDirection) {
 }
 
 TEST(MoveParticle, MovingCornerWithCoincidentFaceFastEscape_AllowanceRaisedForThisStep) {
-  // The review's draw 3053: the escape is much faster than the velocity the response received, so the rounding it may
-  // leave is larger than that velocity's own allowance; the response's allowance counts the change too, which keeps
-  // the sweeps from hitting a face again by rounding. Three hits, and the velocity within 8.6e-14 of the speed of the
-  // sequence of responses as built before (plan decision P20 changes it by rounding only here).
+  // Draw 3053 of a generated search: the escape is much faster than the velocity the response received, so the rounding
+  // it may leave is larger than that velocity's own allowance; the response's allowance counts the change too, which
+  // keeps the sweeps from hitting a face again by rounding. Three hits, and the velocity within 8.6e-14 of the speed of
+  // a sequence of one response per surface (plan decision P20 changes it by rounding only here).
   const MoveParticleCall call = RunMove("MovingCornerWithCoincidentFaceFastEscape");
   ASSERT_EQ(call.error, ContactError::kNone) << static_cast<int>(call.failure.close_call);
   EXPECT_EQ(call.result.hit_count, 3);
 }
 
 TEST(MoveParticle, MovingCornerWithCoincidentFaceNextStepEscape_Succeeds) {
-  // The review's draw 115326, which separated for_next_step's allowance from for_this_step's: the coincident fourth
-  // face took the rounding a change left in for_next_step for an approach. The start's faces are active at once: one
-  // joint response, one hit.
+  // Draw 115326 of the same search, which separated for_next_step's allowance from for_this_step's: the coincident
+  // fourth face took the rounding a change left in for_next_step for an approach. The start's faces are active at once:
+  // one joint response, one hit.
   const MoveParticleCall call = RunMove("MovingCornerWithCoincidentFaceNextStepEscape");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
@@ -4490,7 +4491,7 @@ MoveParticleCall ExpectSameBitsInEveryOrder(const std::vector<Solid>& solids, co
   return first;
 }
 
-// The scene of C1 (re-review 2, q1): floor_count coincident fixed floors and a wall at x = 0.5, the particle falling
+// Coincident floors and an upright: floor_count coincident fixed floors and an upright at x = 0.5, the particle falling
 // from {0.3, 0, 0.01} at {10, 0, -2} m/s for 0.1 s, friction 0.
 MoveParticleCase BuildFloorsAndWallScene(int floor_count) {
   std::vector<Solid> solids(static_cast<std::size_t>(floor_count), move_particle_cases::BuildFloor(1));
@@ -4502,9 +4503,9 @@ MoveParticleCase BuildFloorsAndWallScene(int floor_count) {
 }
 
 TEST(MoveParticle, EightCoincidentFloorsAndWall_TwoHits) {
-  // Re-review 2's C1: eight coincident floors, then a wall. The floors are exact copies, one active surface; nothing
-  // is listed per solid, so nothing overflows. The fall is one hit at 0.05 - tol / 0.2 of the step, the wall a second:
-  // {0, 0, 0} at {0.5 - tol, 0, tol}. The same with 17 and 40 floors (built once under AddressSanitizer for round 3).
+  // Eight coincident floors, then an upright. The floors are exact copies, one active surface; nothing is listed per
+  // solid, so nothing overflows. The fall is one hit at 0.05 - tol / 0.2 of the step, the upright a second: {0, 0, 0}
+  // at {0.5 - tol, 0, tol}. The same with 17 and 40 floors (built once under AddressSanitizer).
   for (const int floor_count : {8, 17, 40}) {
     const MoveParticleCall call = RunMove(BuildFloorsAndWallScene(floor_count));
     ASSERT_EQ(call.error, ContactError::kNone) << floor_count;
@@ -4515,8 +4516,8 @@ TEST(MoveParticle, EightCoincidentFloorsAndWall_TwoHits) {
   }
 }
 
-// The solids of I-1 (re-review 2, q3): a floor moving at {0, 0.3, 0} and a fixed side at that wedge angle, and a third
-// solid when given.
+// A coincident floor one rounding unit faster: a floor moving at {0, 0.3, 0} and a fixed side at that wedge angle, and
+// a third solid when given.
 std::vector<Solid> BuildMovingFloorWedge(double wedge_angle, const Solid* third) {
   std::vector<Solid> solids = {
       BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.3, .z = 0}, 1, 1),
@@ -4529,10 +4530,10 @@ std::vector<Solid> BuildMovingFloorWedge(double wedge_angle, const Solid* third)
 }
 
 TEST(MoveParticle, CoincidentFloorOneRoundingUnitFaster_SameBitsAsWithoutIt) {
-  // Re-review 2's I-1: beside a floor moving at {0, 0.3, 0}, a coincident floor at {0, 0.1 + 0.2, 0}, one rounding
-  // unit faster, pushes as much; equal friction, so the first in the sorted order acts, the slower floor: the same bits
-  // as without it, and as with an exact copy. Friction 0.5: y 0.15 at 30 and 60 degrees. Friction 0.1: y
-  // 1 - 0.1 (2.7320508 + 2) = 0.526794919243 at 30 degrees and 0.726794919243 at 60.
+  // Beside a floor moving at {0, 0.3, 0}, a coincident floor at {0, 0.1 + 0.2, 0}, one rounding unit faster, pushes as
+  // much; equal friction, so the first in the sorted order acts, the slower floor: the same bits as without it, and as
+  // with an exact copy. Friction 0.5: y 0.15 at 30 and 60 degrees. Friction 0.1: y 1 - 0.1 (2.7320508 + 2) =
+  // 0.526794919243 at 30 degrees and 0.726794919243 at 60.
   const double degree = std::numbers::pi / 180;  // rad
   const Solid faster_floor = BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.1 + 0.2, .z = 0}, 1, 3);
   const Solid copy_floor = BuildMovingFlatSolid(kUnitZ, {.x = 0, .y = 0.3, .z = 0}, 1, 3);
@@ -4612,9 +4613,9 @@ void ExpectUpperFloorResponds(Vec3 velocity, bool is_lower_reacting, bool is_low
 }
 
 TEST(MoveParticle, ParallelFloorsStartInsideUpper_SameInBothOrders) {
-  // Re-review 2's m-f: floors at z = 0 and z = tol / 2, the start at tol / 4, inside the upper one. The move takes it
-  // to 1.5 tol, where the lower floor is not active: the upper one responds, in either order, one hit, kind
-  // kStartedInsideSolid. With the lower floor reacting, listed first or second, no reaction: it never pushed.
+  // Floors at z = 0 and z = tol / 2, the start at tol / 4, inside the upper one. The move takes it to 1.5 tol, where
+  // the lower floor is not active: the upper one responds, in either order, one hit, kind kStartedInsideSolid. With the
+  // lower floor reacting, listed first or second, no reaction: it never pushed.
   for (const bool is_lower_reacting : {false, true}) {
     for (const bool is_lower_first : {true, false}) {
       ExpectUpperFloorResponds({.x = 0, .y = 0, .z = -1}, is_lower_reacting, is_lower_first);
@@ -4624,7 +4625,7 @@ TEST(MoveParticle, ParallelFloorsStartInsideUpper_SameInBothOrders) {
 }
 
 TEST(MoveParticle, MovingFourFaceCorner_SucceedsAtEveryStepLength) {
-  // Re-review 2's m-g, draw 102164 of q4b: four flat solids through the origin, two of them moving, friction 2.92.
+  // Draw 102164 of the generated fixed corners: four flat solids through the origin, two of them moving, friction 2.92.
   // The responses one surface after the other gave kTooManyHits at every step length; one joint response per hit
   // gives two hits and the same velocity at 0.01, 1e-4 and 1e-6 s.
   // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
@@ -4678,9 +4679,9 @@ void ExpectCopyInEveryPlaceChangesNothing(const MoveParticleCase& scene, std::si
 }
 
 TEST(MoveParticle, CopiesInEveryPlaceOfTheArray_SameBits) {
-  // Re-review 2's m-h: an exact copy listed before the surface it copies took a response of its own. Now a copy is
-  // dropped wherever it stands: the two copy fuzz scenes, the moving floor of CoincidentFloorOneRoundingUnitFaster and
-  // draw 15798 of the review's r2x, the copy at every index, give the bits of the scene without it.
+  // An exact copy listed before the surface it copies would take a response of its own. Now a copy is dropped wherever
+  // it stands: the two copy fuzz scenes, the moving floor of CoincidentFloorOneRoundingUnitFaster and draw 15798 of a
+  // generated copy search, the copy at every index, give the bits of the scene without it.
   ExpectCopyInEveryPlaceChangesNothing(FindMoveParticleCase("CopyFuzzThreeFaces"), 0);
   ExpectCopyInEveryPlaceChangesNothing(FindMoveParticleCase("CopyFuzzTwoFaces"), 1);
   const double wedge_angle = std::numbers::pi / 3;  // rad
@@ -4689,8 +4690,8 @@ TEST(MoveParticle, CopiesInEveryPlaceOfTheArray_SameBits) {
       BuildRestPointInputs(wedge_angle, {.x = -1, .y = 1, .z = -1}, 0.5)
   );
   ExpectCopyInEveryPlaceChangesNothing(moving_floor, 0);
-  // Draw 15798 of r2x: three fixed faces at their rest point, friction 0; with a copy of the third listed first, the
-  // responses one surface after the other gave a velocity 0.45 of the speed away from the scene without it.
+  // Draw 15798 of that search: three fixed faces at their rest point, friction 0; with a copy of the third listed
+  // first, the responses one surface after the other gave a velocity 0.45 of the speed away from the scene without it.
   // NOLINTBEGIN(modernize-use-std-numbers): measured values, not constants.
   const MoveParticleCase three_faces = BuildOrderedScene(
       {
@@ -4806,7 +4807,7 @@ TEST(MoveParticle, ConveyorAndFixedSide_MeanOverTheOrders) {
 }
 
 TEST(MoveParticle, RisingWallBesideFloor_FrictionLiftsOnlyAboveThePush) {
-  // A floor and a wall with normal {-1, 0, 0} rising at 2 m/s, the particle at their corner moving at {1, 0, -1}:
+  // A floor and an upright with normal {-1, 0, 0} rising at 2 m/s, the particle at their corner moving at {1, 0, -1}:
   // pushes 1 and 1. Friction lifts the particle along the wall only when it overcomes the push that pressed it on the
   // floor: the second solve starts from v + F. Friction 0 and 0.5: {0, 0, 0}; 1.5: {0, 0, 0.5}. From v0 + F, friction
   // 0.5 would lift it at 0.5 m/s.
@@ -4960,7 +4961,7 @@ Vec3 FindFloorFrictionShare(const ActiveSurfaces& active, Vec3 velocity) {
 
 TEST(MoveParticle, MeanOverOrdersBetweenMovingSolids_FrictionCanPassStick_KnownLimit) {
   // A known limit of the mean over orders (plan decision P20, item 5), pinned so that an exact rule for solids that
-  // move differently shows up as a change here. The review's scene: a 26.73 degree wedge whose floor moves at
+  // move differently shows up as a change here. A scene of an outside check: a 26.73 degree wedge whose floor moves at
   // {-0.1206, -0.0055, 0} and whose side moves along itself, friction 0.716, at the rest point. Each order's floor step
   // stops at sticking to the floor, but the side's step then moves the velocity on: in the mean, the floor's own
   // friction share {-0.0086, -0.2203, 0} points along the particle's final slip relative to the floor (-0.444 m/s
@@ -4996,7 +4997,7 @@ TEST(MoveParticle, MeanOverOrdersBetweenMovingSolids_FrictionCanPassStick_KnownL
 TEST(MoveParticle, CoincidentReactingFloorCopyInAnyOrder_StickChargesTheReactingOne) {
   // A stick on two coincident fixed floors that differ only in reports_reaction: equal in every value, the reacting
   // one sorts first, so the stick is charged to it in every order of the array (the sliver of SliverStop, moving at
-  // {-2, 1, -0.001} into the floor). As built in round 3, the array order decided and the reaction came and went.
+  // {-2, 1, -0.001} into the floor). Without that key the array order would decide, and the reaction would come and go.
   const double angle = 1e-7;  // rad
   Solid reacting_floor = move_particle_cases::BuildFloor(1);
   reacting_floor.reports_reaction = true;
@@ -5178,7 +5179,7 @@ GeneratedCorner BuildGeneratedCorner(CaseGenerator* generator) {
 
 TEST(MoveParticle, GeneratedOneSurfaceHits_SameBitsAsContactResponse) {
   // Plan decision P20, item 2: with one active surface each velocity gets ComputeContactResponse with that surface and
-  // nothing else, the single-surface response of Task 7 bit for bit. 2000 flat solids through the origin, in this
+  // nothing else, the single-surface response bit for bit. 2000 flat solids through the origin, in this
   // order of draws: the normal (DrawUnitVector), a solid velocity of three NextSigned / 2 m/s or none, the velocity
   // (three NextSigned m/s), friction 2 Next; the start 0.05 m out along the normal, T 0.1 s. Every call whose path hits
   // the solid has both velocities equal to the response of the velocity given, at the hit's normal.
@@ -5269,10 +5270,10 @@ bool ComputeIsSameForEveryRounding(double wedge_angle, const SolidContactInputs&
 }
 
 TEST(MoveParticle, GeneratedRestPointStarts_SameBitsForEveryRounding) {
-  // Re-review 2's d1: at the rest point of a wedge of 10 to 170 degrees, friction 0 or 0.1 to 2, a velocity in the
-  // unit ball (at least 0.05) approaching a face. The responses one surface after the other jumped in 16 % of the
-  // draws when the start moved by one rounding unit. One joint response reads the same active surfaces from every one
-  // of the 27 starts: the 54 results, both array orders, are the same bits.
+  // At the rest point of a wedge of 10 to 170 degrees, friction 0 or 0.1 to 2, a velocity in the unit ball (at least
+  // 0.05) approaching a face. The responses one surface after the other jumped in 16 % of the draws when the start
+  // moved by one rounding unit. One joint response reads the same active surfaces from every one of the 27 starts: the
+  // 54 results, both array orders, are the same bits.
   CaseGenerator generator;
   int differing_draws = 0;
   for (int draw = 0; draw < 2000; ++draw) {
@@ -5347,10 +5348,10 @@ void ApplyFixedCornerDraw(CaseGenerator* generator, FixedCornerCounts* counts) {
 }
 
 TEST(MoveParticle, GeneratedFixedCorners_FrictionNeverAddsEnergy) {
-  // Re-review 2's q4b, fixed draws: two to four fixed flat faces through the origin, the start at the rest point, 0.3
-  // tol inside it or 0.002 m out, friction 0 or up to 3. Against fixed solids the joint response never lengthens the
-  // velocity, |v'|^2 <= |v|^2 (1 + 1e-12); with two faces the part along their common line is neither reversed nor
-  // grown (plan decision P20, item 13).
+  // The generated fixed corners, fixed draws: two to four fixed flat faces through the origin, the start at the rest
+  // point, 0.3 tol inside it or 0.002 m out, friction 0 or up to 3. Against fixed solids the joint response never
+  // lengthens the velocity, |v'|^2 <= |v|^2 (1 + 1e-12); with two faces the part along their common line is neither
+  // reversed nor grown (plan decision P20, item 13).
   CaseGenerator generator;
   FixedCornerCounts counts;
   for (int draw = 0; draw < 2000; ++draw) {
@@ -6192,7 +6193,7 @@ bool BuildParallelPath(CaseGenerator& generator, ParallelPath* path) {
 }
 
 TEST(MoveParticle, GeneratedParallelSolids_RoundingNeverHitsTheSecond) {
-  // The review's set, 20,000 draws (BuildParallelPath). The start moves to the second solid's rest gap, a few rounding
+  // A set of 20,000 draws (BuildParallelPath). The start moves to the second solid's rest gap, a few rounding
   // units on either side of it; the first solid responds, and the second is moved silently. Any further hit, or a
   // second reacting solid, is rounding. Until plan decision P19 the start was drawn between the two faces, inside the
   // second; each solid is now classified at the start as given, so such a start is a real start inside the second,
@@ -6224,7 +6225,7 @@ TEST(MoveParticle, GeneratedParallelSolids_RoundingNeverHitsTheSecond) {
 }
 
 // Where a generated set of starts lies and which tolerance it uses: near the origin with the test tolerance, as the
-// analytic tests, or far from the origin with the tolerance ComputeContactTolerance gives there (plan Task 14).
+// analytic tests, or far from the origin with the tolerance ComputeContactTolerance gives there.
 struct GeneratedSetPlace {
   double contact_tolerance = kTolerance;  // m
   Vec3 origin{};  // m, world: added to every point the set builds, so {0, 0, 0} keeps the set's bits.
@@ -6335,10 +6336,9 @@ Vec3 BuildDomainCornerStart(CaseGenerator& generator, const GeneratedSetPlace& p
 }
 
 // Runs MoveParticle on one two-surface start, checks it and counts it: it succeeds, and ends at least tol / 2 from
-// every solid. Before the slide over several surfaces (plan Task 12) an acute wedge failed with kTooManyHits in 30 % of
-// the draws: the response on one face turned the velocity into the other, and the particle hit one and then the other.
-// It counts the hits too: since plan decision P20 a start on two surfaces is one hit, and a second comes only along
-// the path.
+// every solid. With one response per surface in turn, an acute wedge failed with kTooManyHits in 30 % of the draws: the
+// response on one face turned the velocity into the other, and the particle hit one and then the other. It counts the
+// hits too: since plan decision P20 a start on two surfaces is one hit, and a second comes only along the path.
 void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& counts) {
   SolidContactResult result;
   ContactFailure failure;
@@ -6663,8 +6663,8 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene, con
 }
 
 // Runs MoveParticle on one tangent start and fails the calling test unless it succeeded at least tol / 2 from every
-// solid. Before the slide over several surfaces (plan Task 12) 37 to 49 % per scene ended in kTooManyHits, bouncing
-// between the two surfaces into the cusp.
+// solid. With one response per surface in turn, 37 to 49 % per scene ended in kTooManyHits, bouncing between the two
+// surfaces into the cusp.
 bool ExpectTangentStartSucceeds(TangentScene scene, const SolidContactInputs& inputs) {
   SolidContactResult result;
   ContactFailure failure;
@@ -6894,7 +6894,7 @@ TEST(MoveParticle, GeneratedCylinderTangentContactSlides_FailOnlyWhereAShorterSt
   }
 }
 
-// --- The generated wedges, corners and tangent contacts far from the origin (plan Task 14) ---
+// --- The generated wedges, corners and tangent contacts far from the origin ---
 
 TEST(MoveParticle, GeneratedTwoSurfaceStartsFarFromOrigin_SucceedDownToFiveDegrees) {
   // The draws of GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees and of its moving wedges, moved about 830 m from
@@ -6952,7 +6952,7 @@ bool ComputeHasClosingCusp(TangentScene scene) {
 // Fails the calling test unless the far slides of one scene had no other failure, every kTooManyHits was cured within
 // eight halvings, and only a moving scene with a closing cusp (ComputeHasClosingCusp) was squeezed. At least 1950 of
 // the 2000 draws succeed, as near the origin, or 1550 in a moving scene with a closing cusp: measured 1626 to 1683 here
-// and at least 1622 over 12 generator seeds in review, about 1650 on average with a standard deviation of about 17
+// and at least 1622 over 12 generator seeds, about 1650 on average with a standard deviation of about 17
 // draws (a squeeze share near 0.18 of 2000), so 1550 is 4 such deviations below the least seen.
 void ExpectFarTangentSlideCounts(TangentScene scene, const TangentSlideCounts& counts, bool is_moving) {
   const bool can_squeeze = is_moving && ComputeHasClosingCusp(scene);
@@ -7126,8 +7126,8 @@ ObliquePath BuildObliquePath(CaseGenerator& generator) {
 }
 
 TEST(MoveParticle, GeneratedObliqueFlatSolid_NeverHitsItAgain) {
-  // The reviewer's set of 20,000 paths (BuildObliquePath). One solid that is hit once is never approached again, so
-  // a second hit can only be rounding: none is allowed, and no kTooManyHits.
+  // A set of 20,000 paths (BuildObliquePath). One solid that is hit once is never approached again, so a second hit can
+  // only be rounding: none is allowed, and no kTooManyHits.
   CaseGenerator generator;
   int hit_paths = 0;
   int repeat_hits = 0;
@@ -7301,15 +7301,14 @@ void CheckRoundSolidPath(const RoundSolidPath& path, RoundSolidCounts& counts) {
 
 TEST(MoveParticle, GeneratedRoundSolidPaths_NeverHitAgain) {
   // 20,000 paths (BuildRoundSolidPath) onto one sphere or cylinder, spinning, moving, and for a cylinder tilting within
-  // plan decision P17's bound, with friction. After the response at the hit, the path is tangent to the solid or
-  // leaves it, measured from the surface's velocity there, and the solid is convex, so a second hit can only come from
-  // reading that approach differently: none is allowed. The touching rule now reads the distance, normal and solid
-  // velocity a joint response reads, by the same expressions, and a rim hit is where the rim search found the true
-  // distance within tol / 1024 of tol. Before, with the rate measured from the linear velocity alone, 2757 paths onto
-  // cylinders ended in kTooManyHits (2755 of them only with the tilt), and 144 rim hits, left in the rim corner a hair
-  // outside the grown edge, were hit again. With rim hits moved to the rest gap (plan Task 12a) 10,490 paths hit, 548
-  // on a rim; the rim search lets 207 of those pass, which the true distance never brings within tol (plan decision
-  // P21).
+  // plan decision P17's bound, with friction. After the response at the hit, the path is tangent to the solid or leaves
+  // it, measured from the surface's velocity there, and the solid is convex, so a second hit can only come from reading
+  // that approach differently: none is allowed. The touching rule now reads the distance, normal and solid velocity a
+  // joint response reads, by the same expressions, and a rim hit is where the rim search found the true distance within
+  // tol / 1024 of tol. Before, with the rate measured from the linear velocity alone, 2757 paths onto cylinders ended
+  // in kTooManyHits (2755 of them only with the tilt), and 144 rim hits, left in the rim corner a hair outside the
+  // grown edge, were hit again. With rim hits moved to the rest gap (before plan decision P21) 10,490 paths hit, 548 on
+  // a rim; the rim search lets 207 of those pass, which the true distance never brings within tol (plan decision P21).
   CaseGenerator generator;
   RoundSolidCounts counts;
   for (int path_index = 0; path_index < 20000; ++path_index) {
@@ -7494,8 +7493,9 @@ void ExpectFlushSeamCounts(FlushSeamKind kind, const FlushSeamCounts& counts) {
 TEST(MoveParticle, GeneratedFlushSeams_KeepTheSpeedAlongTheSeam) {
   // 2,000 paths across each kind of flush seam (BuildFlushSeamPath), friction 0: a seam is no step, so the particle
   // crosses it without a hit, or with the start's one when it is pushed into the surface, and keeps its speed along the
-  // path. Measured with the sharp grown rim edge of plan Task 12a: 1,044 of the stacked drums and 629 of the pucks lost
-  // speed, 578 and 360 with a second hit; plan decision P21's model, on its own draws, loses none.
+  // path. Measured with the sharp grown rim edge as the hit (before plan decision P21): 1,044 of the stacked drums and
+  // 629 of the pucks lost speed, 578 and 360 with a second hit; plan decision P21's model, on its own draws, loses
+  // none.
   for (const FlushSeamKind kind :
        {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor, FlushSeamKind::kBoxesSideBySide}) {
     CaseGenerator generator;
@@ -7594,7 +7594,7 @@ TEST(MoveParticle, GeneratedFlushSeamsOverManySteps_KeepTheSpeed) {
   // or tilted axes, a start 1.5 to 6 tol before the seam, steps of tol / 4 to 1,024 tol, Min(60, Floor(14 tol / step) +
   // 2) of them, the same input velocity every step: every step succeeds and keeps the speed along the path that
   // friction on the surface slid on leaves (plan decision P21, item 16). Plan decision P21's model, on its own draws:
-  // 0 of 1,000 lose speed; as built, 165 (drums), 69 (pucks) and 36 (boxes).
+  // 0 of 1,000 lose speed; before item 16, 165 (drums), 69 (pucks) and 36 (boxes).
   for (const FlushSeamKind kind :
        {FlushSeamKind::kStackedDrums, FlushSeamKind::kPuckInFloor, FlushSeamKind::kBoxesSideBySide}) {
     CaseGenerator generator;
@@ -7659,7 +7659,7 @@ ChasingPath BuildChasingPath(CaseGenerator& generator) {
 }
 
 TEST(MoveParticle, GeneratedChasingSolid_FirstSolidRarelyHitAgain) {
-  // The reviewer's set, 20,000 paths (BuildChasingPath): A is hit, then B, which carries the particle away along a
+  // A set of 20,000 paths (BuildChasingPath): A is hit, then B, which carries the particle away along a
   // direction square to A's normal. Neither is approached again, so a third hit is a re-hit of A by rounding.
   CaseGenerator generator;
   int two_hit_paths = 0;

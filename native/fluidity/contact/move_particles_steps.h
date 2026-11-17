@@ -86,7 +86,9 @@ static_assert(offsetof(MoveParticlesCall, solid_count) == 128, "one layout of Mo
 // involved at a hit, the particle's and the solid's surface velocity summed over their axes, to be at most 2^500 m/s,
 // below the speeds whose squares overflow; MoveParticle asserts it and does not check it. 2^480 leaves a factor 2^20
 // for what the responses of a step and a spin's lever arm add: each response on one surface adds at most twice the
-// solid's speed, and four hits at most eight times it. No physical scene comes within 2^400 of it.
+// solid's speed, and four hits at most eight times it. Not proved for joint responses: one may return up to
+// kMaxSqueezeOutSpeedFactor = 64 times the speeds involved, so four in a row could in principle grow a speed by 2^24,
+// past the factor; no scene that does so is known. No physical scene comes within 2^400 of the bound.
 inline constexpr double kLargestInputSpeedSum = 0x1p480;
 
 // Checks that both velocities of particle `index` are at most kLargestInputSpeedSum, summed over their axes: the part
@@ -141,7 +143,7 @@ inline constexpr double kLargestCoordinateInTolerances = 0x1p40;
 // most kLargestCoordinateInTolerances * contact_tolerance. The straight path at that velocity stays within it; a path
 // that a response sends farther is required and not checked. A path aimed out of the domain box fails here only when
 // it would end beyond the bound, past the room the box's reach leaves (its half diagonal against its half size on
-// that axis), though its wall would stop it first. Changes nothing but *failure.
+// that axis), though its side would stop it first. Changes nothing but *failure.
 //
 // Method: one comparison per axis. A value that is not finite passes, for MoveParticle to report with its own
 //   failure. Same bits on CPU and GPU: + * and comparisons only.

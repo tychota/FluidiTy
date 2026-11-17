@@ -285,7 +285,7 @@ TEST(ComputeShapeTurningAngularVelocity, SpinAboutTiltedNormal_IsNoTurn) {
       rounded_across_count += math::Length(ComputeRoundedPartAcross(spin.angular_velocity, own_z_axis)) > 0 ? 1 : 0;
     }
   }
-  // The review's cases: {0, sin 0.3, cos 0.3} at 5 rad/s and Normalized({1, 2, 3}) at 100 rad/s round to a part
+  // Two measured cases: {0, sin 0.3, cos 0.3} at 5 rad/s and Normalized({1, 2, 3}) at 100 rad/s round to a part
   // across of 9e-16 and 1.6e-14 rad/s.
   EXPECT_GT(math::Length(ComputeRoundedPartAcross(5 * normals[1], normals[1])), 0);
   EXPECT_GT(math::Length(ComputeRoundedPartAcross(100 * normals[0], normals[0])), 0);
@@ -1019,8 +1019,8 @@ TEST(ComputeDistanceToSolid, DomainBoxEachClosedSide_ReportsItsSide) {
   }
 }
 
-// m for distances, no unit for normals. The brief's 1e-15: the round solids' worst case here is one rounding unit
-// of 2 (4.4e-16), from the square root, a division and the turn through the axes.
+// m for distances, no unit for normals. 1e-15 holds the round solids' worst case here, one rounding unit of 2
+// (4.4e-16), from the square root, a division and the turn through the axes.
 constexpr double kRoundSolidTolerance = 1e-15;
 
 void ExpectFaceCaseNear(const Solid& solid, const FaceCase& face_case) {
@@ -1803,7 +1803,7 @@ TEST(ComputeSolidVelocitySample, DomainBoxSideNearest_NormalPointsIntoDomain) {
   EXPECT_TRUE(sample.has_solid);
   EXPECT_EQ(sample.solid_index, 0U);
   EXPECT_EQ(sample.side, PlateSide());
-  // 0.5 + (0.1 - 0.5) rounds to one unit below 0.1.
+  // 0.5 + (0.1 - 0.5) rounds to two units below 0.1, 0.09999999999999998.
   EXPECT_NEAR(sample.distance, 0.1, 1e-16);
   ExpectSameVec3(sample.normal_out_of_solid, kUp);
   ExpectSameVec3(sample.solid_velocity, kOrigin);

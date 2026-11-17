@@ -38,25 +38,31 @@ enum class ContactError : std::uint8_t {
   kOutOfMemory,
   // A start has no point at the contact tolerance from every surface it is near within the move cap: two solids facing
   // each other less than 2 contact tolerances apart, a start within rounding of the contact point of a ball resting on
-  // a floor, or a wall within the rounding window of such a contact's rest point, a pocket too small; or the start is
-  // near surfaces facing more than four different ways, or near more than 16 surfaces, which one move cannot read at
-  // once. A scene error that a shorter step does not cure; only MoveParticle returns it, at the
-  // start. The context names the near solid latest in array order, magnitude 0. Last value.
+  // a floor, a third solid within the rounding window of such a contact's rest point, or a pocket too small; or the
+  // start is near surfaces facing more than four different ways, or near more than 16 surfaces, which one move cannot
+  // read at once. A scene error that a shorter step does not cure; only MoveParticle returns it, at the start. The
+  // context names the near solid latest in array order, magnitude 0. Last value.
   kStartsInNarrowGap,
 };
 
 // Why a call returned kTooCloseToCall. The first value means the failure is not a close call.
 enum class ContactCloseCall : std::uint8_t {
   kNone,  // The failure is not a close call.
-  kTooManyHits,  // The path hit more solids than one step allows.
-  kSqueezedBetweenSolids,  // Two solids close on the particle and no position is safe between them.
+  // A fifth hit in one step (kMaxHitsPerStep), or more surfaces or directions at one hit than one response reads.
+  kTooManyHits,
+  // No velocity leaves every surface the particle is on (solids closing on it), the velocity that leaves them is
+  // faster than kMaxSqueezeOutSpeedFactor times the speeds involved, or, with several surfaces, the rounding of the
+  // response over the time left could bring the particle more than a sixty-fourth of the tolerance nearer a solid.
+  kSqueezedBetweenSolids,
   // The stepping search toward a turning solid ran out of advances: the particle hovers near the solid or grazes it,
   // with almost no motion along its normal.
   kSlowApproachToTurningSolid,
-  kTurningSolidNearOtherSolid,  // A turning solid is near another solid, so the slide along it is not safe.
-  kSecondReactingSolid,  // A second solid that reports a reaction was hit; one record cannot hold both.
+  // After a hit on a turning solid, another solid is within the closing bound of the carry in the turning solid's axes,
+  // which sweeps nothing, so the carry is not safe.
+  kTurningSolidNearOtherSolid,
+  kSecondReactingSolid,  // A second solid that reports a reaction is pushed in one step; one record cannot hold both.
   kSolidTurnsTooFar,  // A solid turns more than one step allows.
-  kEndsTooCloseToSolid,  // The end position is closer to a solid than the contact tolerance allows.
+  kEndsTooCloseToSolid,  // The end position is closer to a solid than half the contact tolerance (the end check).
   // The particle, or the solid it meets, moves too far in one step for the rounding of a response to stay below a
   // sixty-fourth of the contact tolerance over the time left (MoveParticle, at a hit on one surface). Last value.
   kMovesTooFastForStep,

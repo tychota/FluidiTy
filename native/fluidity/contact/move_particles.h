@@ -196,7 +196,8 @@ struct MovedParticles {
 //     nothing and the visits go on. The first failure in the order (particle_id, index) is kept, and the kinds are
 //     counted. On the CPU one loop in index order; on the GPU one thread per particle.
 //   Same bits on CPU and GPU when every solid's angular velocity is zero (MoveParticle); with a turning or spinning
-//   solid the floating-point outputs agree within design 6's tolerance and the discrete ones exactly.
+//   solid the floating-point outputs are promised to agree within the bounds of method paper <sec-contact> (a quarter
+//   of tol for positions) and the discrete ones exactly; neither is measured on a GPU yet (docs/gpu-runs.md).
 // Units: m, m/s and s, world.
 // Ties: two failing particles with the same particle_id, against the Requires: the lower index, on both processors.
 // Example: one particle at {0.9, 0, 0} moving at {1, 0, 0} m/s for 0.2 s toward the fixed flat solid of surface x = 1,

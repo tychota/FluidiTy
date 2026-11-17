@@ -2,8 +2,8 @@
 //
 // Launches the shared contact formulas in GPU code on 32 fixed inputs and compares each result with the CPU's. For a
 // solid that neither turns nor spins the results must have the same bits (or be NaN on both), as the headers promise;
-// for a turning or spinning solid they are compared within contact design 6's bounds. The test prints the largest
-// difference it saw, so the hardware run can calibrate the bounds.
+// for a turning or spinning solid they are compared within the GPU bounds of method paper <sec-contact>. The test
+// prints the largest difference it saw, so the hardware run can calibrate the bounds.
 
 #include <gtest/gtest.h>
 
@@ -101,8 +101,8 @@ SharedFormulaInputs BuildInput(int input_index) {
   };
 }
 
-// Contact design 6's bound with the CPU value as reference, for turning or spinning solids: every value here is of
-// order 1, so a floor of 2^-40 stands for each kind's floor; the relative term is 2^-40.
+// The GPU bound of method paper <sec-contact>, with the CPU value as reference, for turning or spinning solids: every
+// value here is of order 1, so a floor of 2^-40 stands for each kind's floor; the relative term is 2^-40.
 constexpr Tolerance kTurningTolerance = {.absolute_floor = 0x1p-40, .relative_term = 0x1p-40};
 
 // Checks the GPU's values of one input against the CPU's: the same bits (or NaN on both) for a solid that neither

@@ -35,6 +35,15 @@ if(TARGET move_particle_left_out_test)
 endif()
 fluidity_add_test(move_particle_tolerance_test SOURCES move_particle_tolerance_test.cc LABEL cpu)
 fluidity_add_test(round_solid_hit_rounding_test SOURCES round_solid_hit_rounding_test.cc LABEL cpu)
+# Its two generated sets compare 20,000 paths with a double-double reference that searches 160 times per path: about
+# 11 s unoptimised. -O1 in a debug build keeps every assert and every IEEE result (no fast math, no contraction) and
+# runs it in under a second, with the same printed counts and worst cases. MSVC is left unoptimised: its debug builds
+# use /RTC1, which no /O option may be combined with.
+if(TARGET round_solid_hit_rounding_test)
+  target_compile_options(round_solid_hit_rounding_test PRIVATE
+    "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>>:-O1>"
+  )
+endif()
 fluidity_add_test(solid_shapes_test SOURCES solid_shapes_test.cc LABEL cpu)
 fluidity_add_test(move_particles_scene_test SOURCES move_particles_scene_test.cc LABEL cpu
                   LINKS fluidity_base_test_support)
