@@ -1,0 +1,58 @@
+native/fluidity/contact/move_particles_test_runs.h
+  s_4f0877e2acdcf0::t_a28d4500c7cb9e 389
+  s_4f0877e2acdcf0::t_10875a949f8174 9-17,24-26,52-53,55-57,368-379,393-399,431-455,460,482-484,486-495,497-645,663,672-685,687-693,695-702,705-712,715-726,730-736,740-823,825-838,840-852,855-918,929-930
+AGENTS.md
+  s_4f0877e2acdcf0::t_21d60a31a38c5d 495
+docs/glossary.md
+  s_4f0877e2acdcf0::t_1b0934f6ac2a35 256
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_81a533a8c56e32 38,64-68,75,78-81,84-143,147-148,150
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_04ddfe192b1514 390-394
+native/fluidity/base/memory_count.h
+  s_4f0877e2acdcf0::t_f2ef5a1ae1f7f2 53-56,99-101
+native/fluidity/base/memory_count_test.cc
+  s_4f0877e2acdcf0::t_efcbb34c83c1e9 177-193
+native/fluidity/base/test_support.cc
+  s_4f0877e2acdcf0::t_35b31ceea50d88 126,128,130,132-146,150
+native/fluidity/base/test_support.h
+  s_4f0877e2acdcf0::t_533a06d6f4e5f1 16-18,25-26,144-153,161
+native/fluidity/base/test_support_test.cc
+  s_4f0877e2acdcf0::t_0c425e450cb3c1 124,132-146,154
+native/fluidity/contact/move_particles.h
+  s_4f0877e2acdcf0::t_2f7801335023d9 28,135-138,146-147,234-245
+native/fluidity/contact/move_particles_cpu.cc
+  s_4f0877e2acdcf0::t_ca229b30a184a5 225,260-278,282-311
+native/fluidity/contact/move_particles_gpu.cu
+  s_4f0877e2acdcf0::t_6485d098963cb3 16-17,148-201
+native/fluidity/contact/move_particles_gpu.h
+  s_4f0877e2acdcf0::t_611befcbe3c2f8 11-12,21-22,70-90
+native/fluidity/contact/move_particles_gpu_test.cc
+  s_4f0877e2acdcf0::t_a67c4f49f72fec 3-9,24,45,51-59,62-68,71-84,88-90,92,94-101,103,108-110,112,114-115,117-118,124,126,128-129,131,301,309,316-317,319-322,333-355
+native/fluidity/contact/move_particles_no_gpu_test.cc
+  s_4f0877e2acdcf0::t_9458b365bbbc09 8,27-32
+native/fluidity/contact/move_particles_steps.h
+  s_4f0877e2acdcf0::t_09326a4d169159 316-317,319-320,323,355-358,366-370
+native/fluidity/contact/move_particles_steps_test.cc
+  s_4f0877e2acdcf0::t_3d284fa8cb1e7a 20,24,324-348,550-585,587-682
+native/fluidity/contact/shared_formulas_gpu_test.cc
+  s_4f0877e2acdcf0::t_bcefa0fa65d0a7 88-90,93
+tools/run_gpu_tests.ps1
+  s_4f0877e2acdcf0::t_1375b1f634f015 46-51,101-102,583-585,587-603,607,611,616,784
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "067ad0cde10665db2db567a91490248fb67ce2bf",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
