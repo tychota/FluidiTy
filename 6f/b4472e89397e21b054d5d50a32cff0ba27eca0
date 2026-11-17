@@ -1,0 +1,45 @@
+native/fluidity/contact/round_solid_hit_rounding_test.cc
+  s_4f0877e2acdcf0::t_14578f646690d7 1-6,9-13,15-23,29-45,49-63,65-151,155-160,162-165,169-218,235-286,290,293-305,307-308,311-446,558-566,568-580,584-594,597-635,674,699-704,708-718,721-729,734,736-737,776-781,782-789,791-800,807
+  s_4f0877e2acdcf0::t_f4cced046a6ccc 801-806
+  s_4f0877e2acdcf0::t_917bd2f9e0bb2e 808-810,812-813
+  s_4f0877e2acdcf0::t_54079adb8cdd2f 842-844
+  s_eacd903cd3ca11::t_f5a6a9e21673d8 845-858,862-868,874-879,885-888
+  s_4f0877e2acdcf0::t_e0749a7c306093 7-8,14,24-28,46-48,64,152-154,161,166-168,219-234,287-289,291-292,306,309-310,447-557,567,581-583,595-596,636-673,675-698,705-707,719-720,730-733,735,738-775,790,811,814-841,859-861,869-873,880-884
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_6f0b3a79c41acf 960,1216-1243,1270-1285,1358-1360
+  s_4f0877e2acdcf0::t_caa81b8d07645a 827-834,1244-1252
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_eb24c0174b18a3 31
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_5ac71744153107 210-213
+  s_4f0877e2acdcf0::t_b8aa610752ae73 96-99,208-209,263-268
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_417d5f24018d96 411-413,881-889,904-917,966-969,978-979,993-1001,1035-1042,1048,1064-1065,2069-2070
+  s_4f0877e2acdcf0::t_7bf40a5e861dbd 891-903,918-923,970-973,1003-1014,1043-1047
+native/fluidity/contact/contact_tolerance.h
+  s_4f0877e2acdcf0::t_da5ff4ed1f7abe 15-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6fb4472e89397e21b054d5d50a32cff0ba27eca0",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_eacd903cd3ca11": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac12cd3afe582fe84",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
