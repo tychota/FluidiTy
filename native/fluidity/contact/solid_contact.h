@@ -93,9 +93,10 @@ namespace fluidity::contact {
 //     the hit gap, and a copy would change the hit.
 //   3 The smallest hit time wins, and equal times keep the lower solid index whatever the order of the search.
 //     *first_hit holds its time, the solid's index and at_hit: the distance, normal and face at the hit position (one
-//     tolerance from the entering face up to rounding; between tol and tol + tol / 1024 from a cylinder's rim, whose
-//     face it then reports; between tol and 1.25 tol from a turning solid), or, for a hit at 0, the distance at the
-//     start.
+//     tolerance from the entering face up to rounding, within tol / 64 when every coordinate is within 2^40 tol of
+//     the origin, a round solid far from the start included (FindSphereHit, Rounding); between tol and tol + tol / 1024
+//     from a cylinder's rim, whose face it then reports; between tol and 1.25 tol from a turning solid), or, for a hit
+//     at 0, the distance at the start.
 //     A free path gives solid_index kNoSolid, elapsed 0 and at_hit at its defaults.
 //   The inputs are not checked here (plan decision P9). Same bits on CPU and GPU when every solid's angular velocity
 //   is zero: only + - * /, Abs, Sqrt and comparisons. A turning or spinning solid is posed with Sin, which may differ
@@ -204,11 +205,12 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     the hits end.
 //   4 The joint response (ApplyHit, ApplyJointResponse, plan decision P20): the particle moves to the hit and nothing
 //     moves it further, a rim hit included, which the rim search leaves within tol / 1024 of the rest gap (plan
-//     decision P21). Both velocities get one response over every active surface: the surfaces of every solid within
-//     tol + tol / 16 of the particle, read afresh, except a solid it passes at a bounding surface's level (level with
-//     one that does not give the solid's distance, plan decision P21, item 16), and the surface hit, with the hit's
-//     normal. Exact copies are dropped, and the rest sorted by value, so the response is the same bits in every order
-//     of the solids array. One active
+//     decision P21); rounding leaves a hit on a solid that does not turn within tol / 64 of the rest gap under the
+//     coordinate premise of Requires (FindFirstHit, step 3). Both velocities get one response over every active
+//     surface: the surfaces of every solid within tol + tol / 16 of the particle, read afresh, except a solid it passes
+//     at a bounding surface's level (level with one that does not give the solid's distance, plan decision P21, item
+//     16), and the surface hit, with the hit's normal. Exact copies are dropped, and the rest sorted by value, so the
+//     response is the same bits in every order of the solids array. One active
 //     surface: the single-surface response, ComputeContactResponse with the solid velocity and friction times its
 //     friction_scale. Several: the smallest frictionless change that leaves the velocity approaching none of them
 //     (SolveSmallestCorrection), then friction from each used surface's push, the friction limit friction * push: with
@@ -258,6 +260,12 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //   it ends at {0.1, 0, 0.2 + 2^-30} with kind kNone and both velocities unchanged; at {0, 0, -0.0005} and at rest,
 //   with start_overlap_tolerance 0.001, it moves to z = 2^-30 with kind kStartedInsideSolid and stays there.
 // Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9).
+//   Coordinates relative to the tolerance, required and not checked: every solid's origin with its reach
+//   (Length(half_size)) over the step, the particle's start and its path within 2^40 * inputs.contact_tolerance of the
+//   origin. The tolerance of ComputeContactTolerance, at least 2^-40 of the largest coordinate, gives it when the
+//   particles lie within that coordinate, as a domain box ensures; CheckContactTolerance checks only the thickness.
+//   The rounding bounds rest on it: a hit within tol / 64 of the rest gap, a distance within tol / 128. Beyond it
+//   the move still runs, but those bounds, and the settle's and the end check's room that rests on them, do not hold.
 //   The speeds are checked, not required: at every hit, the response's allowance times the time left must be at most
 //   tol / 64, so that the particle approaches any solid by at most tol / 16 over the step. With one active surface the
 //   allowance is 2^-46 times the sum of the absolute axes of velocity.for_this_step and of the solid velocity, so the

@@ -12,7 +12,11 @@
 //   Why 2^-40: the machine epsilon is 2^-52, about 2.2e-16, the gap between 1 and the next double. Computing a
 //   distance subtracts the origin, turns the point with three-term dot products and applies the shape's formula.
 //   Together they misplace it by at most about 32 epsilons of the largest coordinate. 2^-40 is 4096 epsilons,
-//   128 times that error.
+//   128 times that error. A hit is placed about as finely: to first order the closed forms put it within 14 epsilons
+//   of the largest own coordinate along the path plus 3 epsilons of the largest coordinate, at most tol / 64 when
+//   every coordinate is within 2^40 tol (FindSphereHit in contact/solid_contact_steps.h). That premise is
+//   MoveParticle's to require: the check below tests thickness only, and only this tolerance's 2^-40 share, with the
+//   particles inside the largest coordinate, gives it.
 //   Example: largest coordinate 10 m, smallest cell 0.01 m: 9.31e-12 + 9.09e-12 = 1.84e-11 m. The rounding of a
 //   distance is at most 32 * 2.2e-16 * 10 = 7.1e-14 m, 259 times smaller.
 //   Every sweep runs against the solid grown by the tolerance, so a particle in contact rests one tolerance

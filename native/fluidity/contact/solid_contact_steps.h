@@ -408,8 +408,9 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceForParticle(
 //                     inside it. After one: kHitAtStart when rate < -touched.approach_allowance, the path really
 //                     approaching; kRestingAndFree otherwise, since an approach within the allowance is what the
 //                     responses so far left by rounding (FindFirstHitOfSweep gives the proof).
-//   Why a touched solid differs: after a hit the particle stands at the rest gap only up to rounding, possibly a few
-//   rounding units outside, and its velocity keeps a rounding-sized approach (method paper <sec-contact-response>).
+//   Why a touched solid differs: after a hit the particle stands at the rest gap only up to rounding, within tol / 64
+//   either side (FindSphereHit), and its velocity keeps a rounding-sized approach (method paper
+//   <sec-contact-response>).
 //   With the limit 0 such a start would be kOutside, and the closed form would hit the same solid again from the two
 //   rounding-sized numbers. What the allowance costs: a free path may approach at up to the allowance, so its gap falls
 //   by at most approach_allowance * duration, and over the whole step by at most tol / 16 (FindFirstHitOfSweep).
@@ -877,12 +878,49 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
 //     no part along the normal, so the rate is that of the translating sphere up to rounding.
 //   2 kOutside, so the gap g0 = |p0| - radius - tol is positive (|p0| - radius is at_start.distance, bit for bit). A =
 //     Dot(u, u), B = Dot(p0, u), C = g0 * (|p0| + R), which equals Dot(p0, p0) - R^2 but takes its sign from the gap,
-//     so it is positive. Free when A == 0, when B >= 0 (the path does not approach the centre) or when B^2 - A * C < 0
-//     (it misses the grown sphere).
-//   3 t = C / (-B + Sqrt(B^2 - A * C)), the smaller root written without cancellation: -B > 0 and the square root
-//     add, so a path that grazes the grown sphere, where B^2 - A * C is a rounding of zero, still gets a time, and
-//     C > 0 makes it positive, never behind the start. A hit when t <= duration.
+//     so it is positive. Free when A == 0 or B >= 0 (the path does not approach the centre). The discriminant B^2 - A C
+//     is computed in one of two forms, which are equal in exact arithmetic, and the path is free when it is below 0
+//     (it misses the grown sphere):
+//       near   C <= R^2 (|p0| <= Sqrt(2) R): B^2 - A C, as written.
+//       far    otherwise: A R^2 - |p0 x u|^2, by Lagrange's identity |p0|^2 |u|^2 - (p0 . u)^2 = |p0 x u|^2.
+//   3 t = C / (-B + Sqrt(D)), D the discriminant, the smaller root written without cancellation: -B > 0 and the square
+//     root add, so a path that grazes the grown sphere, where D is a rounding of zero, still gets a time, and C > 0
+//     makes it positive, never behind the start. The textbook (-B - Sqrt(D)) / A subtracts two nearly equal numbers
+//     when the start is near the grown sphere, C small. A hit when t <= duration.
 //   Same bits on CPU and GPU when the sphere does not spin: only + - * /, Sqrt and comparisons.
+// Rounding, counted to first order (each figure sums first-order terms; it is an estimate, not a proof), eps = 2^-52,
+//   P = |p0| and L the largest coordinate: the reported time puts the exact path at a true distance within
+//   14 eps P + 3 eps L of tol, and a path called free comes no nearer than tol - 7 eps P - eps L. The L terms are the
+//   solid's pose at start_elapsed, origin + linear_velocity * start_elapsed, whose rounding of about eps L moves the
+//   solid against the path, and the hit position start + velocity * t that the caller computes, 2 eps L for a hit.
+//   Premise: every coordinate the move reads, the solid's origin with its reach over the step and the particle's path,
+//   within 2^40 tol of the origin, so L <= 2^40 tol and P <= 2 Sqrt(3) L (MoveParticle, Requires). The tol of
+//   ComputeContactTolerance, at least 2^-40 of the largest coordinate, gives it when the particle lies within that
+//   coordinate, as the domain box ensures; CheckContactTolerance checks only the thickness. Under the premise:
+//   14 * 3.47 * 2^-12 + 3 * 2^-12 = 0.0126 tol, about 0.013 tol, under tol / 64 = 0.0156 tol. Measured with radii up to
+//   the largest the premise admits, about 2^39 tol (a sphere's reach is Sqrt(3) radius), against an independent
+//   double-double reference: worst 3.1 eps P on fixed spheres, at most 0.0024 tol over 8.7 million sphere and cylinder
+//   paths, with any duration and start_elapsed; no hit beside the sphere and no path through it.
+//   Why the far form. Far from a small sphere B^2 and A C are both about P^2 |u|^2 and nearly equal, each rounds by
+//   about eps P^2 |u|^2, and their difference D = |u|^2 (R^2 - h^2), h the distance of the line from the centre, is at
+//   most R^2 |u|^2. So B^2 - A C moved the hit by about eps P^2 / R: at P = 2^41.5 tol and radius 1000 tol a path
+//   through the centre stopped 32,150 tol short of the sphere, one 1300 tol deep went through with no hit, and one
+//   250 tol beside it was hit. A R^2 - |p0 x u|^2 has no term of size P^2. A R^2 rounds by at most 2.5 eps A R^2. Each
+//   axis of p0 x u is a difference of two products, each exact to eps / 2, so p0 x u, of length h |u|, is off by at
+//   most 0.71 eps P |u|, and its square by 1.42 eps h P |u|^2 + 2.5 eps h^2 |u|^2. With h <= R <= P / Sqrt(2) the
+//   error of D is at most 5.3 eps A R P. Near the sphere both forms have terms of size A R^2, and B^2 - A C keeps the
+//   gap's digits for a start just outside the surface moving nearly along it, where B^2 and A C are both small; it
+//   rounds by at most about 3 eps A R^2 <= 3 eps A R P.
+//   From D to the hit. For the coefficients as computed, F(t) = A t^2 + 2 B t + C at t = C / (-B + Sqrt(D')) is
+//   exactly C (D' - D) / (-B + Sqrt(D'))^2, D' the computed discriminant and D = B^2 - A C. The denominator is at least
+//   B^2 >= A C, so |F| <= |D' - D| / A, and the true distance minus tol is F / (|p| + R), about F / (2 R): the
+//   discriminant moves the hit by at most 2.7 eps P along the distance. The rest: C carries the rounding of the gap
+//   g0, at most 2.25 eps P, which moves the hit by at most twice that; B, Sqrt, the sum and the quotient 3 eps P; the
+//   own path 4 eps P: start - origin and velocity - linear_velocity round by about eps P over the path to the hit, and
+//   a spinning sphere's turned axes add about 2.6 eps |p0| to the start and 2.6 eps |u| to the velocity, times the
+//   path's length, at most 2 P to the hit. A path called free has a true D of at most |D' - D|, so
+//   R^2 - h^2 <= 5.3 eps R P: the line comes no nearer the centre than R - 2.7 eps P, before the own path's rounding
+//   and the pose's eps L.
 // Units: m and m/s, world for the sweep, own axes for p0 and u; s for the duration and the result.
 // Example: radius 0.5 at the origin, tol 2^-30, the sweep from {-2, 0.3, 0} at {1, 0, 0} m/s for 2 s: A = 1, B = -2,
 //   and the hit is at 2 - Sqrt((0.5 + tol)^2 - 0.09) = 1.5999999988358469 s.
@@ -925,13 +963,20 @@ FindSphereHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Sweep
   if (!approaches_center) {
     return HitTime{};
   }
-  const double discriminant = start_dot_velocity * start_dot_velocity - speed_squared * squared_distance_excess;
+  // Method paper <eq:sphere-discriminant>:  D = B^2 - A C near the sphere,  D = A R^2 - |q x w|^2 farther out
+  const double grown_radius_squared = grown_radius * grown_radius;  // m^2
+  const bool is_near_sphere = squared_distance_excess <= grown_radius_squared;
+  const Vec3 start_cross_velocity = math::Cross(start, velocity);  // m^2/s, length h |w|.
+  const double near_discriminant = start_dot_velocity * start_dot_velocity - speed_squared * squared_distance_excess;
+  const double far_discriminant =
+      speed_squared * grown_radius_squared - math::Dot(start_cross_velocity, start_cross_velocity);
+  const double discriminant = is_near_sphere ? near_discriminant : far_discriminant;  // m^4/s^2
   if (discriminant < 0) {
     return HitTime{};
   }
 
-  // Step 3: the textbook (-B - Sqrt(B^2 - A C)) / A would subtract two near-equal numbers on a head-on path.
-  // Method paper <eq:sphere-hit-time>:  t_hit = C / (-B + Sqrt(B^2 - A C))
+  // Step 3: the textbook (-B - Sqrt(D)) / A would subtract two nearly equal numbers on a start near the grown sphere.
+  // Method paper <eq:sphere-hit-time>:  t_hit = C / (-B + Sqrt(D))
   const double hit_elapsed = squared_distance_excess / (-start_dot_velocity + math::Sqrt(discriminant));  // s
   if (hit_elapsed > duration) {
     return HitTime{};
@@ -945,12 +990,28 @@ FindSphereHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Sweep
 // Method: with p0 = own_path.start, u = own_path.velocity, rho0 = Sqrt(p0.x^2 + p0.y^2) and wall_gap = rho0 - radius
 //   - tol, which is ComputeDistanceToCylinder's wall distance minus tol, bit for bit. The squared distance from the
 //   axis minus R^2 is A t^2 + 2 B t + C with A = u.x^2 + u.y^2, B = p0.x u.x + p0.y u.y and C = wall_gap * (rho0 + R),
-//   which equals rho0^2 - R^2 but takes its sign from the gap. Each root is written so that nothing cancels:
-//   wall_gap > 0  outside: empty when A == 0, B >= 0 (no approach to the axis) or B^2 - A C < 0 (a miss); otherwise
-//                 entry C / (-B + Sqrt(B^2 - A C)), positive, and exit (-B + Sqrt(B^2 - A C)) / A.
-//   otherwise     inside from the start: entry 0; no exit when A == 0; otherwise the larger root, (-B + Sqrt(B^2 -
-//                 A C)) / A when B <= 0 and -C / (B + Sqrt(B^2 - A C)) when B > 0, zero or more since C <= 0.
+//   which equals rho0^2 - R^2 but takes its sign from the gap. D = B^2 - A C is the discriminant. Each root is written
+//   so that nothing cancels:
+//   wall_gap > 0  outside: empty when A == 0, B >= 0 (no approach to the axis) or D < 0 (a miss); otherwise entry
+//                 C / (-B + Sqrt(D)), positive, and exit (-B + Sqrt(D)) / A. D is computed as FindSphereHit computes
+//                 it, in the plane across the axis: B^2 - A C when C <= R^2, otherwise A R^2 - (p0.x u.y - p0.y u.x)^2,
+//                 the identity's cross product reduced to its part along the axis.
+//   otherwise     inside from the start: entry 0; no exit when A == 0; otherwise the larger root, (-B + Sqrt(D)) / A
+//                 when B <= 0 and -C / (B + Sqrt(D)) when B > 0, zero or more since C <= 0. Here D = B^2 + A |C|
+//                 adds two terms of the same sign, so it is computed as written.
 //   Same bits on CPU and GPU: only + - * /, Sqrt and comparisons.
+// Rounding, counted to first order as FindSphereHit's: for the own path as given, the plane's algebra puts the entry
+//   and the exit within 14 eps rho0 of the grown wall along the distance from the axis (for the exit
+//   (-B + Sqrt(D')) / A, F is exactly (D' - D) / A), and a path called outside the wall comes no nearer the axis than
+//   R - 7 eps rho0. Against the exact world path rho0 is not the scale: turning into the cylinder's own axes rounds the
+//   start by about 2.6 eps |p0|, all three axes, and the velocity by about 2.6 eps |u|, which the path multiplies by
+//   its length. So, with M the largest own distance from the origin along the path, the larger of |p0| and |p0 + u t|
+//   up to the entry (or over the sweep for a free path), the entry is within 14 eps M + 3 eps L of the grown wall and a
+//   free path no nearer than tol - 7 eps M - eps L. A start far along the axis, or a path nearly along it, has M far
+//   above rho0 (an entry 1e-4 tol off was 2.1e6 eps rho0 but 0.36 eps |p0|). Under FindSphereHit's premise
+//   M <= 2 Sqrt(3) L, so about 0.013 tol, under tol / 64. Measured, radii up to about 2^39 tol, axes of any tilt: at
+//   most 0.0015 tol for the wall, 0.002 tol for the whole cylinder; before, B^2 - A C moved the entry by up to
+//   9.2e4 tol at radius 2^9 tol, and a path 700 tol deep went through a cylinder of radius 1000 tol with no hit.
 // Units: m and m/s, own axes; m for half_size and contact_tolerance; s for the times.
 // Example: radius 0.5, tol 2^-30, p0 {-2, 0, 1.5}, u {1, 0, -0.5}: inside from 1.5 - tol s to 2.5 + tol s.
 // Read: docs/method-paper/fluidity-method.typ <eq:cylinder-hit-time>, <proc-cylinder-first-hit>
@@ -968,12 +1029,23 @@ ComputeTimeInsideGrownWall(OwnPath own_path, Vec3 half_size, double contact_tole
   const double speed_across_axis_squared = velocity.x * velocity.x + velocity.y * velocity.y;  // m^2/s^2
   const double start_dot_velocity_across_axis = start.x * velocity.x + start.y * velocity.y;  // m^2/s
   const double squared_distance_excess = wall_gap * (axis_distance + grown_radius);  // m^2
-  const double discriminant = start_dot_velocity_across_axis * start_dot_velocity_across_axis
-      - speed_across_axis_squared * squared_distance_excess;
   const bool is_beyond_grown_wall = wall_gap > 0;
   if (is_beyond_grown_wall) {
     const bool approaches_axis = speed_across_axis_squared != 0 && start_dot_velocity_across_axis < 0;
-    if (!approaches_axis || discriminant < 0) {
+    if (!approaches_axis) {
+      return TimeInterval{};
+    }
+    // Method paper <eq:sphere-discriminant>, in the plane across the axis: the far form keeps the digits that
+    // B^2 - A C, two terms of about rho0^2 |w|^2, would lose far from a thin cylinder.
+    const double grown_radius_squared = grown_radius * grown_radius;  // m^2
+    const bool is_near_wall = squared_distance_excess <= grown_radius_squared;
+    const double start_cross_velocity_along_axis = start.x * velocity.y - start.y * velocity.x;  // m^2/s
+    const double near_discriminant = start_dot_velocity_across_axis * start_dot_velocity_across_axis
+        - speed_across_axis_squared * squared_distance_excess;
+    const double far_discriminant = speed_across_axis_squared * grown_radius_squared
+        - start_cross_velocity_along_axis * start_cross_velocity_along_axis;
+    const double discriminant = is_near_wall ? near_discriminant : far_discriminant;  // m^4/s^2
+    if (discriminant < 0) {
       return TimeInterval{};
     }
     // Method paper <eq:cylinder-hit-time>:  t_wall = C / (-B + Sqrt(B^2 - A C))
@@ -989,6 +1061,8 @@ ComputeTimeInsideGrownWall(OwnPath own_path, Vec3 half_size, double contact_tole
   if (speed_across_axis_squared == 0) {
     return {.is_empty = false, .entry_elapsed = 0, .has_exit = false, .exit_elapsed = 0};
   }
+  const double discriminant = start_dot_velocity_across_axis * start_dot_velocity_across_axis
+      - speed_across_axis_squared * squared_distance_excess;
   const double root_term = math::Sqrt(discriminant);  // m^2/s
   const double exit_elapsed = start_dot_velocity_across_axis <= 0
       ? (-start_dot_velocity_across_axis + root_term) / speed_across_axis_squared
@@ -1992,9 +2066,8 @@ struct ParticleMove {
 // surface closer than tol, a crossing of a surface grown by at most tol, the touching rule's tol and the end check's
 // tol / 2. 4 leaves 4 - Sqrt(2) = 2.59 tol above the largest of them for rounding: of a distance, at most tol / 128
 // (contact/contact_tolerance.h); of the sums of the rule, a few units of numbers below 2^42 tol; and of the closed
-// forms' hit times, which a sweep of several metres aimed at the centre of a small sphere was measured to move by
-// about one tol at the scale's edge, coordinates 2^40 tol (36 tol at 2^45, outside the scale, where the rule leaves
-// nothing out: ComputeOutOfRangeDistance, step 1).
+// forms' hits, within 0.013 tol of the grown surface at the scale's edge, coordinates 2^40 tol (FindSphereHit;
+// outside the scale the rule leaves nothing out: ComputeOutOfRangeDistance, step 1).
 inline constexpr double kLeftOutWindowInTolerances = 4;
 // No unit, in contact tolerances. The largest coordinate, of the particle's start and of a solid's origin, at which
 // the rule leaves the solid out: the scale ComputeContactTolerance gives, tol at least 2^-40 of the largest coordinate,

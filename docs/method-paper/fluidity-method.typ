@@ -824,11 +824,14 @@ the grid
 (`ComputeContactScale`, `ComputeContactTolerance`). The reach is the length of the half size of a box, a sphere, a
 cylinder or the domain box; the domain box lets the particles' extent count, since every particle is inside it.
 
-Why $2^(-40)$: write $epsilon = 2^(-52)$ for the machine epsilon, the gap between 1 and the next double. Computing
-$d$ takes a subtraction of the origin, a rotation made of three-term dot products and the shape's own formula.
-Together they misplace $d$ by at most about $32 epsilon L$. The relative term
-$2^(-40)$ is $4096 epsilon = 128 times 32 epsilon$, so $"tol"$ is at least 128 times that error. The term in the
-cell width keeps $"tol"$ positive for a scene at the origin.
+Why $2^(-40)$: write $epsilon = 2^(-52)$ for the machine epsilon, the gap between 1 and the next double. Computing $d$
+takes a subtraction of the origin, a rotation made of three-term dot products and the shape's own formula. Together they
+misplace $d$ by at most about $32 epsilon L$. A hit is placed about as finely: to first order the closed forms of
+@sec-round-solids put it within $14 epsilon M + 3 epsilon L$, $M$ the largest own coordinate along the path, at most
+$"tol"\/64$ when every coordinate is within $2^40 "tol"$ (@eq:sphere-discriminant). That premise is `MoveParticle`'s
+Requires: the check below tests thickness only, and only the $2^(-40)$ share of the tolerance, with the particles inside
+$L$ as a domain box keeps them, gives it. The relative term $2^(-40)$ is $4096 epsilon = 128 times 32 epsilon$, so
+$"tol"$ is at least 128 times that error. The term in the cell width keeps $"tol"$ positive for a scene at the origin.
 
 A worked example, with numbers of this paper's own: in a scene whose largest coordinate is 10 m and whose
 smallest cell is 0.01 m wide, $"tol" = 9.31 times 10^(-12) + 9.09 times 10^(-12) = 1.84 times 10^(-11)$ m. The
@@ -954,7 +957,7 @@ a particle on the last $"tol"\/8$ of a box's grown top, its centre at least $7\/
 the side plane and falls past the box, where the top held it before.
 
 After the first response of a step every solid gets a stricter form of the rule. After a hit the particle stands at $d =
-"tol"$ only up to rounding, possibly a few rounding units outside, and the response leaves an approach of a few rounding
+"tol"$ only up to rounding, within $"tol"\/64$ either side, and the response leaves an approach of a few rounding
 units along every normal (@sec-contact-response). With the rule above such a start would count as outside, and the
 closed form would hit the same solid again from two rounding-sized numbers. So `MoveParticle` passes the sweep whether a
 response was made in the step and the largest bound $b$ of the approach the responses so far may have left, one number
@@ -1210,13 +1213,43 @@ $
 $ <eq:sphere-hit-time>
 
 $gamma$ equals $bold(q) dot bold(q) - R^2$, but computed from the gap its sign is exactly the sign of the gap that
-the touching rule below reads, so the two can never disagree about a start on the grown sphere. There is no hit when
-$alpha = 0$, when the path does not approach the centre ($beta >= 0$), or when the root does not exist ($beta^2 <
-alpha gamma$); otherwise the hit is kept when $t_"hit" <= "duration"$. The root equals the textbook $(-beta -
-sqrt(beta^2 - alpha gamma))\/alpha$, but it never divides by a small $alpha$ and never subtracts two nearly equal
-numbers. For a fixed sphere of radius 0.5 m at the origin and a particle from (−2, 0.3, 0) at (2, 0, 0) m/s (this
-paper's numbers): $alpha = 4$, $beta = -4$, $gamma = 4.09 - R^2$, and $t_"hit" = 1 - sqrt(R^2 - 0.09)\/2$, which
-is $0.8 - 0.625 "tol"$ s. The hit point is (−0.4, 0.3, 0) less $1.25 "tol"$ along x, with normal (−0.8, 0.6, 0).
+the touching rule below reads, so the two can never disagree about a start on the grown sphere. The discriminant
+$beta^2 - alpha gamma$ is computed in one of two forms, equal in exact arithmetic by Lagrange's identity $|bold(q)|^2
+|bold(w)|^2 - (bold(q) dot bold(w))^2 = |bold(q) times bold(w)|^2$:
+
+$
+  Delta = beta^2 - alpha gamma quad "when" gamma <= R^2, quad
+  Delta = alpha R^2 - |bold(q) times bold(w)|^2 quad "otherwise".
+$ <eq:sphere-discriminant>
+
+There is no hit when $alpha = 0$, when the path does not approach the centre ($beta >= 0$), or when the root does not
+exist ($Delta < 0$); otherwise the hit is kept when $t_"hit" <= "duration"$, with $beta^2 - alpha gamma$ in
+@eq:sphere-hit-time read as $Delta$. The root equals the textbook $(-beta - sqrt(Delta))\/alpha$, but it never divides
+by a small $alpha$, and on a start near the grown sphere, $gamma$ small, it does not subtract two nearly equal numbers.
+For a fixed sphere of radius 0.5 m at the origin and a particle from (−2, 0.3, 0) at (2, 0, 0) m/s (this paper's
+numbers): $alpha = 4$, $beta = -4$, $gamma = 4.09 - R^2$, and $t_"hit" = 1 - sqrt(R^2 - 0.09)\/2$, which is $0.8 - 0.625
+"tol"$ s. The hit point is (−0.4, 0.3, 0) less $1.25 "tol"$ along x, with normal (−0.8, 0.6, 0).
+
+The discriminant needs the second form. Far from a small sphere, $beta^2$ and $alpha gamma$ are both about $|bold(q)|^2
+|bold(w)|^2$ and each rounds by about $epsilon |bold(q)|^2 |bold(w)|^2$, while their difference, $|bold(w)|^2 (R^2 -
+h^2)$ with $h$ the distance of the line from the centre, is at most $R^2 |bold(w)|^2$: the hit moved by about $epsilon
+|bold(q)|^2 \/ R$. At the edge of the scale the tolerance protects, $|bold(q)| = 2^41.5 "tol"$ and a radius of 1000 tol,
+a path through the centre stopped 32,150 tol short of the sphere, a path 1300 tol deep passed through it with no hit,
+and a path 250 tol beside it was hit. In $alpha R^2 - |bold(q) times bold(w)|^2$ no term is of size $|bold(q)|^2$: the
+cross product has length $h |bold(w)|$ and rounds by about $epsilon |bold(q)| |bold(w)|$ per axis, so $Delta$ rounds by
+about $5 epsilon alpha R |bold(q)|$. Near the sphere, $gamma <= R^2$, both forms have terms of size $alpha R^2$, and
+$beta^2 - alpha gamma$ keeps the gap's digits for a start just outside the surface moving nearly along it, where both
+its terms are small. For the computed coefficients, $alpha t^2 + 2 beta t + gamma$ at the computed root is exactly
+$gamma (Delta' - Delta) \/ (-beta + sqrt(Delta'))^2$, at most $|Delta' - Delta| \/ alpha$, so the discriminant's
+rounding moves the hit by at most about $3 epsilon |bold(q)|$ along the distance. Counted to first order, with the
+rounding of the gap, of the other coefficients, of the own path and of the solid's pose at $t_0$ (about $epsilon L$),
+the hit's true distance is within $14 epsilon |bold(q)| + 3 epsilon L$ of $"tol"$, and a path called free comes no
+nearer than $"tol" - 7 epsilon |bold(q)| - epsilon L$. For a cylinder, whose turn into own axes rounds the start and the
+velocity by about $2.6 epsilon$ each, read $|bold(q)|$ as the largest own coordinate along the path, not $rho_0$. These
+are estimates summed term by term, not a proof. When every coordinate is within $2^40 "tol"$ of the origin, as
+`MoveParticle` requires, $|bold(q)| <= 2 sqrt(3) times 2^40 "tol"$ and the total is about 0.013 tol, under $"tol"\/64$.
+Measured against an independent double-double reference with radii up to the largest that premise admits, about $2^39$
+tol: at most 0.0024 tol over 8.7 million sphere and cylinder paths, and $3.1 epsilon |bold(q)|$ on fixed spheres.
 
 *Cylinder.* The cylinder is grown with sharp edges: radius $R = "radius" + "tol"$, half height $H =
 "half_height" + "tol"$. The grown cylinder is the part shared by the grown wall, taken as unbounded along the axis,
@@ -1234,22 +1267,22 @@ $ <eq:cylinder-hit-time>
 The wall interval comes from the sphere's quadratic in the x and y parts only: $alpha_rho = w_x^2 + w_y^2$,
 $beta_rho = q_x w_x + q_y w_y$ and $gamma_rho = (d_"wall" - "tol") (rho_0 + R)$, from the gap, with $rho_0 =
 sqrt(q_x^2 + q_y^2)$ and $d_"wall" = rho_0 - "radius"$ as @eq:cylinder-distance computes it. When the start is beyond
-the grown wall, $d_"wall" - "tol" > 0$, the interval is the one written above, and it is empty when the path does not
-move toward the axis ($alpha_rho = 0$ or $beta_rho >= 0$) or the root does not exist ($beta_rho^2 < alpha_rho
-gamma_rho$). Otherwise the path is inside the grown wall from $t = 0$ until the larger root, written $-gamma_rho \/
-(beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho))$ when $beta_rho > 0$ so that nothing cancels, or for ever when
-$alpha_rho = 0$. The caps' interval is the one written above when the start is beyond a grown cap, $d_"cap" - "tol" >
-0$ with $sigma_0$ the sign of $q_z$, and empty unless the path moves toward that cap ($sigma_0 w_z < 0$); otherwise
-the path is between the grown caps from $t = 0$ until it reaches the grown cap it moves toward, or for ever when
-$w_z = 0$. A start the distance puts beyond the grown wall or a cap is beyond it here, bit for bit, since both read
-the same computed gaps. The hit is the later entry, provided it comes no later than either exit: the same test of
-entry and exit as for a box. Both limits count, so a path that meets the sharp rim edge exactly is a hit. A path
-that goes into the cylinder through the rim edge leaves both regions long after it enters them, so the rounding of
-the two entry times can change which one is later but cannot make the path miss; only a path that grazes the edge
-sits on the limit, where a hit and a miss are both safe. (Accepting each entry only where the path is inside the
-other region at that time is the same in exact arithmetic, but there a path through the edge can have both entries
-rejected by rounding and pass through the solid.) The face, normal and distance reported are those of
-@eq:cylinder-distance at the hit position.
+the grown wall, $d_"wall" - "tol" > 0$, the interval is the one written above, its discriminant computed as
+@eq:sphere-discriminant in the plane across the axis (the cross product's part along the axis, $q_x w_y - q_y w_x$), and
+it is empty when the path does not move toward the axis ($alpha_rho = 0$ or $beta_rho >= 0$) or the root does not exist
+(a discriminant below 0). Otherwise the path is inside the grown wall from $t = 0$ until the larger root, written
+$-gamma_rho \/ (beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho))$ when $beta_rho > 0$ so that nothing cancels, or for
+ever when $alpha_rho = 0$. The caps' interval is the one written above when the start is beyond a grown cap, $d_"cap" -
+"tol" > 0$ with $sigma_0$ the sign of $q_z$, and empty unless the path moves toward that cap ($sigma_0 w_z < 0$);
+otherwise the path is between the grown caps from $t = 0$ until it reaches the grown cap it moves toward, or for ever
+when $w_z = 0$. A start the distance puts beyond the grown wall or a cap is beyond it here, bit for bit, since both read
+the same computed gaps. The hit is the later entry, provided it comes no later than either exit: the same test of entry
+and exit as for a box. Both limits count, so a path that meets the sharp rim edge exactly is a hit. A path that goes
+into the cylinder through the rim edge leaves both regions long after it enters them, so the rounding of the two entry
+times can change which one is later but cannot make the path miss; only a path that grazes the edge sits on the limit,
+where a hit and a miss are both safe. (Accepting each entry only where the path is inside the other region at that time
+is the same in exact arithmetic, but there a path through the edge can have both entries rejected by rounding and pass
+through the solid.) The face, normal and distance reported are those of @eq:cylinder-distance at the hit position.
 
 On the wall or a cap proper that entry is the hit: there the sharp grown surface is the true one. Beside a rim, where
 both $d_"wall"$ and $d_"cap"$ are positive at the entry, the sharp corner lies up to $sqrt(2) "tol"$ from the rim, so
@@ -1322,8 +1355,9 @@ $(-(0.5 + "tol"), 0, 0)$ moving at (0, 1, 0) m/s, along the tangent, is free; mo
   ([Read the start], [Compute the distance and the normal in world axes and the gap $g_0$. Below $-"tol"$: hit at 0.
     In $[-"tol", 0]$: the touching rule with the rate from the surface's velocity, hit at 0 when $"rate" times
     "duration" < -"tol"$, no hit otherwise.]),
-  ([Find the root], [Compute the three coefficients of @eq:sphere-hit-time, the constant from the gap. No hit when
-    the velocity is zero, the path does not approach the centre or the root does not exist.]),
+  ([Find the root], [Compute the three coefficients of @eq:sphere-hit-time, the constant from the gap, and the
+    discriminant by @eq:sphere-discriminant. No hit when the velocity is zero, the path does not approach the centre
+    or the root does not exist.]),
   ([Keep the hit], [Compute the root without cancellation; it is the hit when it is at most `duration`.]),
 )
 
