@@ -174,5 +174,22 @@ TEST(ComputeMemoryBytes, SumOfEntriesOverflowing_Saturates) {
   EXPECT_EQ(ComputeMemoryBytes(estimate, MemoryCounts{}), kLargestBytes);
 }
 
+TEST(ComputeRunMemoryBytes, DriverStackEntry_IsNotInTheBlock) {
+  // The stack the driver holds for a GPU function counts in the total, never in the run's block.
+  const std::array estimate = {
+      MemoryEstimateEntry{.name = "a: buffer", .given_count = 1000, .bytes_each = 4},
+      MemoryEstimateEntry{
+          .name = "b: stack",
+          .given_count = 2048,
+          .bytes_each = 12800,
+          .where = MemoryWhere::kDriverStack,
+      },
+  };
+  const MemoryCounts no_counts;
+  EXPECT_EQ(ComputeRunMemoryBytes(estimate, no_counts, MemoryWhere::kRunOn), 4096U);
+  EXPECT_EQ(ComputeMemoryBytes(estimate, no_counts, MemoryWhere::kDriverStack), 2048U * 12800U);
+  EXPECT_EQ(ComputeMemoryBytes(estimate, no_counts), 4000U + (2048U * 12800U));
+}
+
 }  // namespace
 }  // namespace fluidity

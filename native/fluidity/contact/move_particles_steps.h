@@ -15,9 +15,17 @@
 //   Example: three particles with ids 7, 3 and 5 at indexes 0, 1 and 2, where 7 and 5 fail: (5, 2) comes before
 //   (7, 0), so the call reports particle 5 whatever order the threads finish in.
 //
+//   The GPU cannot keep a running minimum in one variable without making the threads wait for each other, so its loop
+//   writes each particle's failure beside it (ApplyParticleVisitAt) and reduces after the loop: the smallest failing
+//   id, then the smallest index among the failing particles with that id, then that particle's failure
+//   (FirstFailureMinima, ComputeIsFailureWithParticleId, ComputeFirstFailure). Minima and integer sums give the same
+//   answer in every order, so the GPU may update them with atomic operations.
+//
 // Owns:    MoveParticlesCall, kLargestInputSpeedSum, CheckParticleSpeeds, kLargestCoordinateInTolerances,
 //          CheckParticleCoordinates, ComputeParticleMoveAt,
-//          ApplyParticleOutputsAt, ComputeIsEarlierFailure, MoveParticleCounts, ComputeParticleCounts
+//          ApplyParticleOutputsAt, ComputeIsEarlierFailure, MoveParticleCounts, ComputeParticleCounts,
+//          ParticleVisit, ApplyParticleVisitAt, FirstFailureMinima, ComputeIsFailureWithParticleId,
+//          ComputeFirstFailure
 // Uses:    Vec3 (base/vec3.h), math::Abs, math::IsFinite, math::Max (base/scalar_math.h), PerParticleVelocity
 //          (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError,
 //          ContactCloseCall, ContactFailure (contact/contact_error.h), Solid, PlateSide (contact/solid_shapes.h),
@@ -28,6 +36,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 
@@ -279,6 +288,87 @@ FLUIDITY_CPU_AND_GPU constexpr MoveParticleCounts ComputeParticleCounts(ContactK
       .hit_count = kind == ContactKind::kHit ? 1U : 0U,
       .started_inside_count = kind == ContactKind::kStartedInsideSolid ? 1U : 0U,
   };
+}
+
+// What one visit of a particle leaves for a reduction that runs after the loop: whether it failed, the id of a failing
+// particle, and what a moved particle adds to the counts.
+struct ParticleVisit {
+  bool has_failure = false;
+  std::uint64_t particle_id = 0;  // The failing particle's id; 0 when it moved.
+  MoveParticleCounts counts{};  // ComputeParticleCounts of its kind when it moved; {0, 0} when it failed.
+};
+
+// Visits particle `index` for a loop that reduces after it, as the GPU's does: moves it (ComputeParticleMoveAt),
+// writes its failure to call.failure_per_particle[index], ContactFailure{} when it moved, and its outputs when it
+// moved (ApplyParticleOutputsAt). The GPU runs it once per thread and item; CPU tests run it over every thread block
+// and thread.
+//
+// Example: a particle with id 9 that starts 0.01 m inside a floor with start_overlap_tolerance 0 gives {has_failure
+//   true, particle_id 9, counts {0, 0}}, and failure_per_particle[index] holds kStartsInsideSolid with particle id 9.
+//   A particle that hits the floor gives {false, 0, {1, 0}} and its outputs.
+// Requires: index < call.particle_count; call.failure_per_particle holds particle_count failures; the call passed the
+//   CPU half's checks.
+FLUIDITY_CPU_AND_GPU inline ParticleVisit ApplyParticleVisitAt(const MoveParticlesCall& call, std::size_t index) {
+  assert(call.failure_per_particle != nullptr);
+  SolidContactResult result;
+  ContactFailure failure;
+  const ContactError error = ComputeParticleMoveAt(call, index, &result, &failure);
+  // The returned error is the one source of "failed": the stored failure carries it, so the flag of the reduction and
+  // the failures its index search reads (ComputeIsFailureWithParticleId) always agree.
+  if (error != ContactError::kNone) {
+    failure.error = error;
+    call.failure_per_particle[index] = failure;
+    return {.has_failure = true, .particle_id = failure.particle_id, .counts = {}};
+  }
+  call.failure_per_particle[index] = ContactFailure{};
+  ApplyParticleOutputsAt(call, index, result);
+  return {.has_failure = false, .particle_id = 0, .counts = ComputeParticleCounts(result.kind)};
+}
+
+// The state of the search for a call's first failure, in the order of ComputeIsEarlierFailure, as two integer minima
+// and a flag: each can only go down (the minima) or up (the flag), so the threads may update it in any order and it
+// ends the same. The flag is kept apart, so no id or index stands for "no failure". The GPU holds it in the one-value
+// first-failure buffer until the last step writes the failure over it, so it fits there.
+// Example: particles with ids 50 at index 5 and 9 at index 700 fail: {9, 700, 1}. None fails: {2^64 - 1, 2^64 - 1, 0}.
+struct FirstFailureMinima {
+  std::uint64_t smallest_failing_id = 0xFFFFFFFFFFFFFFFF;  // The smallest particle id among the failing particles.
+  // The smallest index among the failing particles with that id.
+  std::uint64_t smallest_failing_index = 0xFFFFFFFFFFFFFFFF;
+  std::uint32_t has_failure = 0;  // 1 when a particle failed. An integer, so the GPU can set it with an atomic or.
+};
+static_assert(sizeof(std::size_t) == sizeof(std::uint64_t), "an index fits in smallest_failing_index");
+static_assert(sizeof(FirstFailureMinima) <= sizeof(ContactFailure), "the minima fit in the first-failure buffer");
+static_assert(alignof(FirstFailureMinima) <= alignof(ContactFailure), "the minima fit in the first-failure buffer");
+
+// Computes whether particle `index` failed and has the id `particle_id`: the second minimum of FirstFailureMinima
+// takes the indexes of these particles only. Reads call.particle_id and call.failure_per_particle, which the visit
+// wrote; whether the particle failed comes from its error, never from its id.
+// Example: after the visits of FirstFailureMinima's example, (index 700, id 9) gives true, (5, 9) false, (700, 50)
+//   false.
+// Requires: index < call.particle_count; every particle was visited (ApplyParticleVisitAt).
+FLUIDITY_CPU_AND_GPU inline bool
+ComputeIsFailureWithParticleId(const MoveParticlesCall& call, std::size_t index, std::uint64_t particle_id) {
+  return call.particle_id[index] == particle_id && call.failure_per_particle[index].error != ContactError::kNone;
+}
+
+// Computes the failure a call reports from the final minima: the failure of particle minima.smallest_failing_index,
+// or ContactFailure{} when no particle failed. A flag without an index, which ApplyParticleVisitAt rules out, gives
+// kRunOnCallFailed instead of a read past the failures.
+// Example: minima {9, 700, 1} gives failure_per_particle[700]; {2^64 - 1, 2^64 - 1, 0} gives ContactFailure{};
+//   {9, 2^64 - 1, 1} gives kRunOnCallFailed.
+// Requires: the minima are final: every particle was visited and every failing particle with the smallest failing id
+//   was compared.
+FLUIDITY_CPU_AND_GPU inline ContactFailure
+ComputeFirstFailure(const MoveParticlesCall& call, FirstFailureMinima minima) {
+  if (minima.has_failure == 0) {
+    return ContactFailure{};
+  }
+  // Release builds drop asserts, so the bound is checked here: an index past the failures would read GPU memory
+  // that is not the call's.
+  if (minima.smallest_failing_index >= call.particle_count) {
+    return ContactFailure{.error = ContactError::kRunOnCallFailed};
+  }
+  return call.failure_per_particle[minima.smallest_failing_index];
 }
 
 }  // namespace fluidity::contact

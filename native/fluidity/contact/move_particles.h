@@ -25,7 +25,7 @@
 //   contact record  ParticleContact: what one particle's move met in one step, kept per particle
 //   first failure   the failure a call reports: the one with the lowest particle id, then the lowest index
 // Owns:    ContactBuffers, BuildContactBuffers, MoveParticlesInputs, MovedParticles, MoveParticlesResult,
-//          MoveParticles, BuildContactMemoryEstimate
+//          MoveParticles, BuildContactMemoryEstimate, BuildContactStackEstimate
 // Uses:    Buffer, BufferError (base/buffer.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h),
 //          MemoryEstimateEntry (base/memory_count.h), PerParticleVelocity (base/per_particle_velocity.h), Vec3
 //          (base/vec3.h), CPU-only guard (base/cpu_only.h), ContactFailure (contact/contact_error.h), Solid, PlateSide
@@ -132,7 +132,10 @@ class ContactBuffers {
 // Method: CheckCanRunOn(run_on) first, then BuildBuffer(run_on, size, run_memory) for the solids copy
 //   (max_solid_count), the failure per particle (max_particle_count), the call result (1) and the first failure (1).
 //   A RunMemory of ComputeRunMemoryBytes(BuildContactMemoryEstimate(...), counts, MemoryWhere::kRunOn) bytes holds
-//   them to the byte. A size of 0 takes no piece.
+//   them to the byte. A size of 0 takes no piece. On the GPU, step 3 then raises the GPU's per-thread stack to what the
+//   particle visits need (BuildContactStackEstimate), which the driver takes at once outside run_memory, so a GPU too
+//   full for it fails here, not at the first MoveParticles call. The stack belongs to the GPU's context for the rest
+//   of the process.
 // Example: BuildContactBuffers(RunOn::kCpu, 1000, 4, run_memory) asks for 800 + 32,000 + 16 + 32 bytes, as pieces of
 //   1,024, 32,000, 256 and 256 bytes; max_particle_count() is 1000 and max_solid_count() is 4.
 // Requires: run_on == run_memory.run_on() when run_on can run, checked by assert in debug builds.
@@ -140,7 +143,8 @@ class ContactBuffers {
 //                          a usable GPU. Nothing is taken from run_memory.
 //        kOutOfMemory      a buffer does not fit in what run_memory has left; magnitude is the bytes that buffer asked
 //                          for. The pieces already taken stay in the block, since a piece is never freed alone, and the
-//                          step stops.
+//                          step stops. On the GPU also: the GPU cannot give the particle visits their stack (step 3);
+//                          magnitude is that stack's bytes, BuildContactStackEstimate's entry.
 //        No buffers are returned on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-run-memory>
 std::expected<ContactBuffers, ContactFailure>
@@ -226,6 +230,18 @@ struct MovedParticles {
 // Read: docs/method-paper/fluidity-method.typ <sec-contact>, <proc-move-particle>
 std::expected<MoveParticlesResult, ContactFailure>
 MoveParticles(const MoveParticlesInputs& inputs, const MovedParticles& moved, ContactBuffers& buffers);
+
+// Builds the estimate entry of the stack the GPU's particle visits need, which BuildContactBuffers takes on the GPU
+// outside the run's memory: "contact: GPU stack of the particle visits", kGivenCount, kWholeRun,
+// MemoryWhere::kDriverStack, the visit function's local bytes per thread (bytes_each) for every thread the GPU can hold
+// at once (given_count: threads per multiprocessor x multiprocessors). For RunOn::kCpu the entry counts nothing.
+//
+// Method: the driver gives each resident thread the per-thread stack, so the count is the GPU's resident threads, not
+//   the particles. The bytes per thread come from the compiled function (cudaFuncGetAttributes).
+// Example: CUDA 13.4, a 36-multiprocessor sm_120 card: 55,296 threads x 12,784 bytes, about 707 MB. RunOn::kCpu: 0.
+// Fails: kRunOnCallFailed  RunOn::kGpu cannot run (CheckCanRunOn), or a query of the GPU failed.
+// Read: docs/method-paper/fluidity-method.typ <sec-memory-estimate>
+std::expected<MemoryEstimateEntry, ContactFailure> BuildContactStackEstimate(RunOn run_on);
 
 // Builds the memory estimate of BuildContactBuffers (base/memory_count.h): one entry per buffer, in the order it
 // builds them, each kGivenCount, kWholeRun, MemoryWhere::kRunOn, one copy: "contact: solids copy" (max_solid_count x

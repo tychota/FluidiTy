@@ -50,6 +50,10 @@ enum class CountedPer : std::uint8_t {
 enum class MemoryWhere : std::uint8_t {
   kRunOn,  // In the memory of the processor the run uses: GPU memory in a GPU run, CPU memory in a CPU run.
   kCpu,  // Always in CPU memory, even in a GPU run.
+  // In the memory of the processor the run uses, but held by its driver outside every RunMemory: the stack the GPU
+  // gives each resident thread of a GPU function. The run counts it against the processor's memory and never reserves
+  // it in its block; a CPU run has none.
+  kDriverStack,
 };
 
 // How long the array of an entry is kept. It names the lifetime for the reader; it does not change the sum.
@@ -92,8 +96,9 @@ struct MemoryCounts {
 // Read: docs/method-paper/fluidity-method.typ <sec-memory-estimate>
 std::uint64_t ComputeMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts);
 
-// Sums the bytes of the entries kept in `where` only. The step compares the kRunOn sum with the processor's memory
-// and the kCpu sum with CPU memory. Saturation, kept_for and counted_per behave as in the two-argument form.
+// Sums the bytes of the entries kept in `where` only. The step compares the kRunOn sum plus the kDriverStack sum with
+// the processor's memory and the kCpu sum with CPU memory. Saturation, kept_for and counted_per behave as in the
+// two-argument form.
 std::uint64_t
 ComputeMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts, MemoryWhere where);
 

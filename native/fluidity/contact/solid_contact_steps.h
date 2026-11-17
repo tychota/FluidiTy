@@ -152,7 +152,7 @@
 //          MoveToRestGapOfNearSurfaces, ActiveSurface, ActiveSurfaces, ComputeIsExactCopy, ComputeIsSortedBefore,
 //          ApplyActiveSurface, ApplyDirections, FindActiveSurfaces, ApplyCloseCall, JointTargets,
 //          ComputeIsPushingBefore, BuildJointTargets, ComputeIsWithinSlack, ComputeFastestApproachedSolid, JointChange,
-//          ApplyCharge, JointFriction, ComputeFrictionStep, kFrictionOrders, ComputeMeanOverOrders,
+//          ApplyCharge, JointFriction, ComputeFrictionStep, ComputeFrictionOrderMember, ComputeMeanOverOrders,
 //          ComputeJointFriction, ApplyStick, ApplySecondSolve, ComputeJointChange, ApplyJointCharges,
 //          ApplyJointResponse, ApplyHit, CheckStartOfSolid, ComputeIsStartInsideSolid, ComputeIsInArrayOrderBefore,
 //          StartResponse, FindStartResponse, ApplyStartRules, ApplySettleAtEnd, CheckEndOutsideSolids,
@@ -4273,17 +4273,24 @@ ComputeFrictionStep(Vec3 velocity, const ActiveSurface& pushing, double friction
   return -(friction_limit / sideways_speed) * sideways;
 }
 
-// The orders in which two or three used directions apply their friction one after the other: for three every order;
-// for two, orders 0 and 2, whose first two members are {0, 1} and {1, 0}.
-// NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in CorrectionTargets.
-inline constexpr int kFrictionOrders[kMaxFrictionOrders][kMaxUsedDirections] = {
-    {0, 1, 2},
-    {0, 2, 1},
-    {1, 0, 2},
-    {1, 2, 0},
-    {2, 0, 1},
-    {2, 1, 0},
-};
+// Computes member `member_index` of order `order_index` among the orders in which two or three used directions apply
+// their friction one after the other: for three every order; for two, orders 0 and 2, whose first two members are
+// {0, 1} and {1, 0}.
+// Example: order 3 is {1, 2, 0}, so (3, 1) gives 2.
+// Requires: order_index < kMaxFrictionOrders and member_index < kMaxUsedDirections.
+FLUIDITY_CPU_AND_GPU constexpr int ComputeFrictionOrderMember(int order_index, int member_index) {
+  // A table local to the function: GPU code cannot index a table at namespace scope, which lives in CPU memory only.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as in CorrectionTargets.
+  constexpr int kFrictionOrders[kMaxFrictionOrders][kMaxUsedDirections] = {
+      {0, 1, 2},
+      {0, 2, 1},
+      {1, 0, 2},
+      {1, 2, 0},
+      {2, 0, 1},
+      {2, 1, 0},
+  };
+  return kFrictionOrders[order_index][member_index];
+}
 
 // Computes the mean over every order of the used directions of their own frictions applied one after the other from
 // v0, for pushing surfaces that move differently (plan decision P20, item 5).
@@ -4322,7 +4329,7 @@ FLUIDITY_CPU_AND_GPU inline JointFriction ComputeMeanOverOrders(
     const int table_index = used_count == 2 ? 2 * order_index : order_index;
     Vec3 stepped = frictionless_velocity;  // m/s
     for (int member_index = 0; member_index < used_count; ++member_index) {
-      const int used_index = kFrictionOrders[table_index][member_index];
+      const int used_index = ComputeFrictionOrderMember(table_index, member_index);
       const Vec3 step = ComputeFrictionStep(stepped, pushing[used_index], friction_limits[used_index]);
       stepped = stepped + step;
       friction.shares[used_index] = friction.shares[used_index] + step;

@@ -121,11 +121,41 @@ TEST(WriteResultDigestToFile, TwoResults_AppendTwoLines) {
   WriteResultDigestToFile(path, "second", {});
   std::stringstream text;
   {
-    // The file is closed before it is removed: Windows refuses to remove an open file.
+    // The file is closed before it is removed: Windows rejects the removal of an open file.
     const std::ifstream file(path);
     text << file.rdbuf();
   }
   EXPECT_EQ(text.str(), "first af63dc4c8601ec8c\nsecond cbf29ce484222325\n");
+  std::filesystem::remove(path);
+}
+
+TEST(WriteResultNoteToFile, NoteThenTiming_AppendTwoLines) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "fluidity_test_support_notes.txt";
+  std::filesystem::remove(path);
+  WriteResultNoteToFile(path, "a note");
+  WriteResultTimingToFile(path, "a time", 2.5);
+  std::stringstream text;
+  {
+    // The file is closed before it is removed: Windows rejects the removal of an open file.
+    const std::ifstream file(path);
+    text << file.rdbuf();
+  }
+  EXPECT_EQ(text.str(), "a note\na time 2.5 ns per item\n");
+  std::filesystem::remove(path);
+}
+
+TEST(WriteResultTimingToFile, TwoTimings_AppendTwoLinesOfFourDigits) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "fluidity_test_support_timings.txt";
+  std::filesystem::remove(path);
+  WriteResultTimingToFile(path, "first", 12.345678);
+  WriteResultTimingToFile(path, "second", 1234567.0);
+  std::stringstream text;
+  {
+    // The file is closed before it is removed: Windows rejects the removal of an open file.
+    const std::ifstream file(path);
+    text << file.rdbuf();
+  }
+  EXPECT_EQ(text.str(), "first 12.35 ns per item\nsecond 1.235e+06 ns per item\n");
   std::filesystem::remove(path);
 }
 

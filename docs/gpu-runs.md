@@ -35,6 +35,7 @@ build:      PASS|FAIL
 cpu tests:  <passed>/<total> PASS|FAIL
 gpu tests:  <passed>/<total> PASS|FAIL
 repeat run: PASS <n> identical digests|FAIL <reason>
+notes:      <n> lines in notes-first.txt, <m> discrete mismatches[ (send notes-first.txt)]|none written|NOT RUN
 sanitizer:  see the forms below
 result:     PASS|FAIL
 ```
@@ -57,7 +58,96 @@ build passed but no test could start, so no test ran and the later test lines re
 The repeat run means the GPU wrote the same bytes twice. For each of the two runs the script sets
 `FLUIDITY_RESULT_DIGEST_FILE` to its own file in the log folder (`digests-first.txt`, `digests-second.txt`); the
 `gpu` tests of the buffers, the sums and the stable order append a named digest of every GPU result they check.
-`repeat run: PASS` requires the same tests with the same outcomes and two identical, non-empty digest files.
+`repeat run: PASS` requires the same tests with the same outcomes and two identical, non-empty digest files. The
+contact tests add theirs too.
+
+Some gpu tests also write notes: a time per item, or a finding that does not fail the test but that must be read.
+Each of the two runs appends them to its own file in the log folder, `notes-first.txt` and `notes-second.txt` (the
+script sets `FLUIDITY_RESULT_NOTES_FILE`; the tests call `WriteResultNote` and `WriteResultTiming`). Notes are never
+compared and never decide PASS or FAIL. The `notes:` line of the block counts the lines of `notes-first.txt` and,
+among them, the discrete mismatches (below). Send `notes-first.txt` with the block, always: it holds the timings.
+
+## What to look for: contact (`move_particles_gpu_test`, `shared_formulas_gpu_test`)
+
+The GPU half of `MoveParticles` (`native/fluidity/contact/move_particles_gpu.cu`) and the shared contact formulas run
+for the first time here. A pass looks like this:
+
+- `gpu tests:` counts the tests of both programs among the passed ones: 12 in `move_particles_gpu_test` and 1 in
+  `shared_formulas_gpu_test`. A failure of `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`,
+  `ObliqueCasesOnGpu_MatchCpu`, `RoundCasesOnGpu_MatchCpu` or `MillionParticlesOnGpu_MatchCpuAndTimed` means a GPU
+  result differs from the CPU's: by bits for a scene with no turning or spinning solid, beyond contact design 6's
+  bounds otherwise. The log (`ctest-gpu`) lists up to 20 failing scenes, each with its set, case index, scene name
+  where it has one, field, CPU value, GPU value (17 digits and hexadecimal, so they read back exactly), the difference
+  and the bound, and says how many more were cut.
+- `repeat run: PASS`: the digests of the contact tests (`MoveParticles on the GPU, ...`,
+  `MoveParticlesOnGpuInLaunchSize, ...`, `Shared contact formulas on the GPU, 32 inputs`) are the same in both runs.
+- `notes:` with 0 discrete mismatches, and in `notes-first.txt`:
+  - one line per set, `MoveParticles, catalogue: 0 discrete mismatches in 25 scenes with a turning or spinning solid
+    (allowed 2), 0 failing scenes`, and the same for the oblique and round cases (no turning solid there);
+  - `MoveParticles visit stack: <bytes> bytes x <threads> resident threads`;
+  - the timings `MoveParticles, 1,000,000 particles, <n> solids, GPU` and `..., CPU one thread` for 1, 8 and 32
+    solids. For reference, one thread of an Apple M3 Pro took about 100, 700 and 2,800 ns per particle on a similar
+    scene. The GPU's own ratio of 32 to 1 solids shows whether the far-solid rule works there as on the CPU.
+- `sanitizer: PASS 0 errors`. Under memcheck `move_particles_gpu_test` makes about 20,500 calls (each a dozen
+  allocations, copies and four launches): expect 10 to 40 minutes for it alone, against 2 to 4 minutes per normal
+  run. Let it finish on the first run: it is the only check of the GPU half's memory accesses (the reuse of the
+  failure buffer, the atomics). If time is short, a run whose other lines pass is still worth sending, with the
+  sanitizer line as it ends.
+- In the log of the first gpu run (`ctest-gpu`), the lines `largest difference ... m, ... m/s, ...` per set: 0 for
+  every `no turn` line (anything else is a failure already), and the size of the last-bit differences of the turning
+  and spinning catalogue scenes and of the shared formulas, which calibrates the bounds.
+
+### Discrete mismatches on turning and spinning scenes
+
+The catalogue has 25 scenes with a turning or spinning solid. Their poses go through a sine, whose last bits differ
+between the CPU's library and the GPU's, so their positions and velocities are compared within contact design 6's
+bounds. A scene built on a threshold can then end with another discrete result on the GPU: another face, kind, solid
+index, hit count or error. Such a scene is a discrete mismatch: the test does not fail on it, but writes one line per
+differing field to `notes-first.txt`, `discrete mismatch, catalogue, case <i> <scene>: <field>: cpu <value>, gpu
+<value>`, and counts it. The test fails when more of these scenes have a mismatch than one in ten, rounded down (more than 2 of 25): a mistake
+in the GPU's turning code would change most of them. The review expects 0 to 2, most likely in
+`SettleNearSpinningCylinder`, `TurningStackedBoxes`, `TurningBoxNearFloor` or `TurningCylinderRimHit`.
+
+A nonzero count is not a failure. It means the rule "discrete fields equal on both processors" of contact design 6
+does not hold for that scene on this card, which is a decision for the owner. Send `notes-first.txt`: its lines name
+each scene and field with both values, enough to rebuild the case on the CPU. Scenes without angular velocity stay
+exact: any difference there fails the test.
+
+### First exercised on the owner's GPU
+
+The CPU tests run the per-particle and per-thread functions over every thread block and thread, but these parts run
+for the first time on the card. What a failure of each would look like:
+
+- The 64-bit `atomicMin`, the 32-bit `atomicOr` and the 64-bit `atomicAdd`, through the cast to `unsigned long
+  long` (`move_particles_gpu.cu`, `ToAtomicInteger`): `MoveParticlesOnGpuInLaunchSize.*` fail with a wrong particle id
+  or wrong counts, or the counts of the set tests differ (`counts.hit_count: cpu ..., gpu ...`).
+- The reuse of the first-failure buffer for the minima, read whole and then written over by one thread
+  (`StartReduction`, `WriteFirstFailure`): the failure tests report a failure with nonsense fields (an error 255, a
+  particle no test used), or the sanitizer reports an access in `WriteFirstFailure`.
+- The early return of `FindSmallestFailingIndex` on the flag: a run without failure that reports one, or a failure
+  reported as none (`result: cpu failure ..., gpu success`).
+- The four launches, their status chain and the wait (`MoveParticlesOnGpuInLaunchSize`, `CheckGpuWork`), and the CPU
+  half's GPU branch (`move_particles_cpu.cc`: reading the counts and the failure back): every `MoveParticles` test fails
+  with `failure.error` `kRunOnCallFailed` while `SharedFormulas` passes.
+- The launch bound and the stack: the visit function uses 255 registers and 12,784 bytes of stack per thread on
+  `sm_120` (11,264 on `sm_86` and `sm_89`). `BuildContactBuffers` now sets the GPU's per-thread stack to that size
+  (`cudaDeviceSetLimit`), and the driver takes it at once, about 0.7 GB on a 36-multiprocessor card, for the rest of the
+  process: a card too full fails there with `kOutOfMemory` and the stack's bytes as magnitude, not at the first launch.
+  A launch that still fails (registers, a stack the driver did not give) shows as `kRunOnCallFailed` on every
+  `MoveParticles` test while `SharedFormulas` passes. Watch the GPU memory in Task Manager: about 0.7 GB stays taken.
+- `MoveParticle` as GPU code: the `no turn` largest differences must be 0, and the catalogue, oblique and round sets
+  pass bit for bit. A difference there is a broken same-bits promise: send the log lines.
+- The shared formulas as GPU code (`shared_formulas_test_gpu.cu`): `SharedFormulas.OnGpu_MatchCpu` names the input and
+  the value that differs.
+- `run_gpu_tests.ps1` with its notes file and `notes:` line: if the block lacks the `notes:` line or reads `NOT RUN`
+  after the gpu tests ran, send `notes-first.txt` and the script's output.
+
+What a first run may show instead, and what it means:
+
+- `MoveParticles` tests fail with `kRunOnCallFailed` and the shared formulas pass: the visit function did not launch
+  or failed while it ran (above). Keep the logs.
+- Only the turning or spinning scenes fail, by a few rounding units: the bound of contact design 6 is too tight for this
+  card's sine; the printed difference and bound say by how much.
 
 ## What the single run cannot show
 

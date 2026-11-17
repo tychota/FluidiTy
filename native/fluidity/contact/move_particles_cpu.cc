@@ -222,7 +222,7 @@ std::expected<MoveParticleCounts, ContactFailure> ApplyLoopOnCpu(const MoveParti
 std::expected<ContactBuffers, ContactFailure>
 BuildContactBuffers(RunOn run_on, std::size_t max_particle_count, std::size_t max_solid_count, RunMemory& run_memory) {
   // NOLINTEND(bugprone-easily-swappable-parameters)
-  // Steps: 1 the processor  2 the four pieces, in the order of BuildContactMemoryEstimate
+  // Steps: 1 the processor  2 the four pieces, in the order of BuildContactMemoryEstimate  3 on the GPU, the stack
   // Step 1: a processor that cannot run is reported before the block is touched, so a GPU asked for in a build
   // without GPU code fails here whatever block was passed.
   if (!CheckCanRunOn(run_on).has_value()) {
@@ -257,7 +257,56 @@ BuildContactBuffers(RunOn run_on, std::size_t max_particle_count, std::size_t ma
     return std::unexpected(ToContactFailure(first_failure.error(), ComputeAskedBytes<ContactFailure>(1)));
   }
   buffers.first_failure_ = std::move(*first_failure);
+
+#if defined(FLUIDITY_HAS_GPU)
+  // Step 3: the visits' stack, taken now so that a GPU too full for it fails here rather than at the first launch.
+  if (run_on == RunOn::kGpu) {
+    VisitStackOnGpu stack;
+    if (ComputeVisitStackOnGpu(&stack) != RunOnCallStatus::kDone) {
+      return std::unexpected(ContactFailure{.error = ContactError::kRunOnCallFailed});
+    }
+    const RunOnCallStatus reserved = ReserveVisitStackOnGpu(stack.bytes_per_thread);
+    if (reserved == RunOnCallStatus::kOutOfMemory) {
+      const double stack_bytes =
+          static_cast<double>(stack.bytes_per_thread) * static_cast<double>(stack.resident_threads);
+      return std::unexpected(ContactFailure{.error = ContactError::kOutOfMemory, .magnitude = stack_bytes});
+    }
+    if (reserved != RunOnCallStatus::kDone) {
+      return std::unexpected(ContactFailure{.error = ContactError::kRunOnCallFailed});
+    }
+  }
+#endif
   return buffers;
+}
+
+std::expected<MemoryEstimateEntry, ContactFailure> BuildContactStackEstimate(RunOn run_on) {
+  MemoryEstimateEntry entry = {
+      .name = "contact: GPU stack of the particle visits",
+      .counted_per = CountedPer::kGivenCount,
+      .given_count = 0,
+      .bytes_each = 0,
+      .copies = 1,
+      .kept_for = KeptFor::kWholeRun,
+      .where = MemoryWhere::kDriverStack,
+  };
+  if (run_on == RunOn::kCpu) {
+    return entry;
+  }
+  if (!CheckCanRunOn(run_on).has_value()) {
+    return std::unexpected(ContactFailure{.error = ContactError::kRunOnCallFailed});
+  }
+#if defined(FLUIDITY_HAS_GPU)
+  VisitStackOnGpu stack;
+  if (ComputeVisitStackOnGpu(&stack) != RunOnCallStatus::kDone) {
+    return std::unexpected(ContactFailure{.error = ContactError::kRunOnCallFailed});
+  }
+  entry.given_count = stack.resident_threads;
+  entry.bytes_each = static_cast<std::uint32_t>(stack.bytes_per_thread);
+  return entry;
+#else
+  // Without GPU code CheckCanRunOn never accepts the GPU, so no caller reaches this.
+  return std::unexpected(ContactFailure{.error = ContactError::kRunOnCallFailed});
+#endif
 }
 
 std::expected<MoveParticlesResult, ContactFailure>

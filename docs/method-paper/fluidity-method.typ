@@ -387,7 +387,11 @@ gives the number of items. `ComputeMemoryBytes` adds the entries as if every arr
 a peak that never falls below the real need. Its products and sums stop at the largest 64-bit number instead of
 wrapping around, so a scene too large to count is reported as too large, never as small. `ReadMemoryAvailable` reads
 the total and the free memory of the chosen processor: a reading at one moment, not a promise, since other programs
-take and give back memory. `ReadProcessorDescription` gives the run report the processor's name, the software that
+take and give back memory. An entry also says where its memory lives: in the run's memory, always in CPU memory, or
+held by the GPU's driver outside every block, as the stack the driver gives each thread a GPU function can run at
+once. Contact's particle visit needs about 12 KB of stack per thread, so on a card that holds 55,296 threads at once
+the driver holds about 0.7 GB; `BuildContactBuffers` asks for it when it builds the buffers, so a card too full says so
+then, not at the first step. `ReadProcessorDescription` gives the run report the processor's name, the software that
 drives it and the software the program was built with, as text the machine reports.
 
 @tab-memory-estimate works a small estimate. An entry's bytes are its item count times its bytes per item times
@@ -670,9 +674,19 @@ $2^480$ m/s for a velocity or a solid's motion, are bad input. So are coordinate
 computed for: on some axis, a particle's start plus its travel at `for_this_step` over the step, or a solid's origin
 over the step plus its reach, above $2^40 "tol"$, the premise `MoveParticle`'s rounding bounds rest on. The outputs belong to the step's try: after a failure their
 contents are unspecified, and the step discards the whole try. When several particles fail, the one reported is the
-failing particle with the lowest id, then the lowest index, found by integer minima. The CPU
-and the GPU give equal discrete results (kinds, solids, faces, counts, errors) and floating-point results within a
-tolerance; with no turning solid the expected difference is zero (@sec-conventions).
+failing particle with the lowest id, then the lowest index. The CPU loop keeps it as it goes. The GPU cannot: each
+thread writes its particle's failure beside the particle, and three short GPU functions follow the visits: the smallest
+failing id, then the smallest index among the failing particles with that id, both atomic integer minima, then that
+particle's failure. A flag, set by an atomic or, says whether any particle failed, so no id stands for "none"; the
+counts are atomic integer sums. Integer minima, an or and integer sums end with the same values in every order of the
+threads, so the report is the same on every run and in every launch size; no floating-point value is summed. The CPU
+and the GPU give equal discrete results (kinds, solids, faces, counts, errors). With no turning or spinning solid the
+floating-point results have the same bits: every formula uses only $+$, $-$, $times$, $\/$, absolute values and
+square roots, each correctly rounded on both processors, and neither may fuse a product into an addition
+(`-ffp-contract=off`, `/fp:precise`, `--fmad=false`, @sec-conventions). A turning or spinning solid is posed through
+a rotation built from sines, whose last bits differ between the processors' libraries, so its results agree within
+$f + 2^(-40) |a|$ of the CPU's value $a$, with the floor $f$ a quarter of the contact tolerance for positions,
+$2^(-40)$ times the largest input speed for velocities, and $2^(-40)$ for hit fractions and normals.
 
 Most particles are far from most solids, so the cost of a move is mostly its reads of the solids. The start's depth
 check reads each solid once. A solid whose distance there is above the particle's reach $R$ (its travel at the start's

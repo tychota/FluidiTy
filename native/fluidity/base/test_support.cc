@@ -10,8 +10,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <ios>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,8 +123,43 @@ void WriteResultDigestToFile(
   EXPECT_TRUE(file.good()) << "cannot append to the digest file " << path.string();
 }
 
+void WriteResultNoteToFile(const std::filesystem::path& path, std::string_view line) {
+  // One write per line, as for the digests.
+  const std::string text = std::string(line) + "\n";
+  std::ofstream file(path, std::ios::app | std::ios::binary);
+  file << text;
+  file.flush();
+  EXPECT_TRUE(file.good()) << "cannot append to the notes file " << path.string();
+}
+
+void WriteResultNote(std::string_view line) {
+  const std::string path = FindEnvironmentVariable(kResultNotesFileVariable);
+  if (path.empty()) {
+    return;
+  }
+  WriteResultNoteToFile(path, line);
+}
+
+void WriteResultTimingToFile(const std::filesystem::path& path, std::string_view name, double nanoseconds_per_item) {
+  std::ostringstream line;
+  line << name << " " << std::setprecision(4) << nanoseconds_per_item << " ns per item";
+  WriteResultNoteToFile(path, line.str());
+}
+
+void WriteResultTiming(std::string_view name, double nanoseconds_per_item) {
+  const std::string path = FindEnvironmentVariable(kResultNotesFileVariable);
+  if (path.empty()) {
+    return;
+  }
+  WriteResultTimingToFile(path, name, nanoseconds_per_item);
+}
+
 std::string FindResultDigestFile() {
-  const std::string variable(kResultDigestFileVariable);
+  return FindEnvironmentVariable(kResultDigestFileVariable);
+}
+
+std::string FindEnvironmentVariable(std::string_view name) {
+  const std::string variable(name);
 #if defined(_MSC_VER)
   // MSVC deprecates getenv (warning C4996, an error under /WX); _dupenv_s returns a copy the caller frees.
   char* path = nullptr;

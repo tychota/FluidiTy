@@ -492,7 +492,7 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   `windows-release-cuda`, runs the `cpu` tests (never the `no_gpu` tests, which fail on a machine with a GPU), runs
   the `gpu` tests twice and compares the result digests the two runs write (`docs/gpu-runs.md`), runs each `gpu`
   test program under `compute-sanitizer --tool memcheck`, and prints a block
-  of ten lines (a title and nine lines) ending in `result: PASS` or `result: FAIL`; the owner pastes that block
+  of eleven lines (a title and ten lines) ending in `result: PASS` or `result: FAIL`; the owner pastes that block
   back. Its full logs are in `out/gpu-run/<UTC time>/`. The script selects the GPU tests with `ctest -L '^gpu$'`: a
   label is a regular expression, so a bare `-L gpu` would also run the `no_gpu` tests. The script was parsed with
   PowerShell 7.4 in a Linux container and exercised there with stand-in tools; it has never run on Windows or

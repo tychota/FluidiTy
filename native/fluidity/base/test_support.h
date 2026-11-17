@@ -13,14 +13,18 @@
 //   a call fails. WriteResultDigest appends a named digest of result bytes to the file that the environment
 //   variable FLUIDITY_RESULT_DIGEST_FILE names, and does nothing when it is unset: tools/run_gpu_tests.ps1 sets it
 //   for each of its two runs of the gpu tests and demands identical files, so "repeat run: PASS" means the GPU
-//   wrote the same bytes twice.
+//   wrote the same bytes twice. WriteResultNote and WriteResultTiming append a line (a finding the owner must read, or
+//   a measured time per item) to the notes file that FLUIDITY_RESULT_NOTES_FILE names, kept apart from the digests
+//   because times differ between runs and notes are read, not compared.
 //   Example: CheckWithinTolerance(1.0, 1.0 + 2e-16, {.absolute_floor = 1e-15, .relative_term = 1e-15}) passes.
 //
 // Words:
 //   digest  a 64-bit number computed from bytes (FNV-1a), equal for equal bytes and almost never for different ones
 // Owns:    ToBits, Tolerance, CheckWithinTolerance, CheckSameBitsOrBothNaN, BuildBufferHolding, ReadAll,
 //          ComputeResultDigest, WriteResultDigestToFile, WriteResultDigest, FindResultDigestFile,
-//          kResultDigestFileVariable, BuildMixedValues, BuildKeysWithManyTies, BuildKeysDifferingInTopByte
+//          kResultDigestFileVariable, kResultNotesFileVariable, WriteResultNoteToFile, WriteResultNote,
+//          WriteResultTimingToFile, WriteResultTiming,
+//          FindEnvironmentVariable, BuildMixedValues, BuildKeysWithManyTies, BuildKeysDifferingInTopByte
 // Uses:    Buffer, BuildBuffer, WriteBuffer, ReadBuffer (base/buffer.h), RunOn (base/run_on.h), CPU-only guard
 //          (base/cpu_only.h), GoogleTest
 // Used by: the tests of base/ (the library fluidity_base_test_support)
@@ -136,6 +140,32 @@ void WriteResultDigest(std::string_view name, std::span<const Value> values);
 
 // The file named by FLUIDITY_RESULT_DIGEST_FILE, or an empty text when the variable is unset.
 std::string FindResultDigestFile();
+
+// The environment variable that names the notes file WriteResultNote and WriteResultTiming append to.
+inline constexpr std::string_view kResultNotesFileVariable = "FLUIDITY_RESULT_NOTES_FILE";
+
+// Appends `line` and a line end to the file at `path`. Fails the calling test when the file cannot be written.
+// Example: ("discrete mismatch, catalogue, case 7 TurningBoxNearFloor: record.face: cpu 1, gpu 5") appends that line.
+void WriteResultNoteToFile(const std::filesystem::path& path, std::string_view line);
+
+// Appends `line` to the notes file named by FLUIDITY_RESULT_NOTES_FILE; does nothing when that variable is unset or
+// empty. For a finding of a gpu test that does not fail it but that the owner must see and send back.
+void WriteResultNote(std::string_view line);
+
+// Appends the line `<name> <value, 4 significant digits> ns per item` to the file at `path`. Fails the calling test
+// when the file cannot be written.
+// Example: ("MoveParticles on the GPU, 1 solid", 12.345678) appends "MoveParticles on the GPU, 1 solid 12.35 ns per
+//   item".
+void WriteResultTimingToFile(const std::filesystem::path& path, std::string_view name, double nanoseconds_per_item);
+
+// Appends the timing line of a measured GPU result to the notes file (FLUIDITY_RESULT_NOTES_FILE); does nothing
+// when that variable is unset or empty. Timings change from run to run, so they never go to the digest file, whose two
+// runs must be equal. `name` names the measurement, unique among the gpu tests.
+// Example: WriteResultTiming("MoveParticles on the GPU, 1,000,000 particles, 8 solids", 41.7).
+void WriteResultTiming(std::string_view name, double nanoseconds_per_item);
+
+// The value of the environment variable `name`, or an empty text when it is unset.
+std::string FindEnvironmentVariable(std::string_view name);
 
 template <typename Value>
 void WriteResultDigest(std::string_view name, std::span<const Value> values) {

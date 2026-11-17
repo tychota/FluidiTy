@@ -43,6 +43,12 @@
 #               FLUIDITY_RESULT_DIGEST_FILE to its own file in the log folder; the gpu tests of the buffers, the sums
 #               and the stable order append a named digest of every GPU result they check (WriteResultDigest in
 #               native/fluidity/base/test_support.h), and the two files must be equal and not empty.
+#               The tests also append notes, findings that do not fail a test, and timings to notes-first.txt and
+#               notes-second.txt in the same folder (FLUIDITY_RESULT_NOTES_FILE, WriteResultNote, WriteResultTiming);
+#               notes are read, never compared.
+#   notes:      the lines of notes-first.txt, and among them the discrete mismatches the gpu tests counted on scenes
+#               with a turning or spinning solid. Never decides the result; any nonzero count means: send
+#               notes-first.txt back with the block (docs/gpu-runs.md).
 #   sanitizer:  each gpu test program under `compute-sanitizer --tool memcheck`, errors added up. It reads
 #               `PASS 0 errors`, `FAIL <n> errors in <k> executables`, `FAIL not installed`, or one of two other
 #               `FAIL` reasons (no gpu test programs found; errors not counted but a program failed).
@@ -92,6 +98,8 @@ $script:Report = [ordered]@{
   cpuTests  = [pscustomobject]@{ Label = 'cpu tests:'; Text = 'FAIL not run'; Passed = $false }
   gpuTests  = [pscustomobject]@{ Label = 'gpu tests:'; Text = 'FAIL not run'; Passed = $false }
   repeat    = [pscustomobject]@{ Label = 'repeat run:'; Text = 'FAIL not run'; Passed = $false }
+  # Information only: it never makes the result FAIL.
+  notes     = [pscustomobject]@{ Label = 'notes:'; Text = 'NOT RUN'; Passed = $true }
   sanitizer = [pscustomobject]@{ Label = 'sanitizer:'; Text = 'FAIL not run'; Passed = $false }
 }
 
@@ -572,14 +580,40 @@ function Read-DigestLines {
   return ,@(Get-Content -LiteralPath $Path | Where-Object { $_.Trim() -ne '' } | Sort-Object)
 }
 
-# Runs the gpu-labelled tests with FLUIDITY_RESULT_DIGEST_FILE set to the run's digest file, then unsets it.
+# The notes file of one run of the gpu tests, in the log folder: timings and findings that do not fail a test. They
+# are kept apart from the digests and never compared; the owner sends them back (docs/gpu-runs.md).
+function Get-NotesFile {
+  param([string]$RunName)
+  return (Join-Path $script:LogDirectory ('notes-' + $RunName + '.txt'))
+}
+
+# Sets the notes line from the first run's notes file: how many lines, and how many discrete mismatches.
+function Set-NotesLine {
+  $path = Get-NotesFile -RunName 'first'
+  if (-not (Test-Path -LiteralPath $path)) {
+    Set-ReportLine -Key 'notes' -Text 'none written' -Passed $true
+    return
+  }
+  $lines = @(Get-Content -LiteralPath $path | Where-Object { $_.Trim() -ne '' })
+  $mismatches = @($lines | Where-Object { $_.StartsWith('discrete mismatch') })
+  $text = '{0} lines in notes-first.txt, {1} discrete mismatches' -f $lines.Count, $mismatches.Count
+  if ($mismatches.Count -gt 0) {
+    $text += ' (send notes-first.txt)'
+  }
+  Set-ReportLine -Key 'notes' -Text $text -Passed $true
+}
+
+# Runs the gpu-labelled tests with FLUIDITY_RESULT_DIGEST_FILE set to the run's digest file and
+# FLUIDITY_RESULT_NOTES_FILE to its notes file, then unsets both.
 function Invoke-GpuCtestRun {
   param([string]$LogName, [string]$RunName)
   $env:FLUIDITY_RESULT_DIGEST_FILE = Get-DigestFile -RunName $RunName
+  $env:FLUIDITY_RESULT_NOTES_FILE = Get-NotesFile -RunName $RunName
   try {
     return (Invoke-CtestRun -LogName $LogName -LabelPattern '^gpu$')
   } finally {
     Remove-Item -Path Env:FLUIDITY_RESULT_DIGEST_FILE -ErrorAction SilentlyContinue
+    Remove-Item -Path Env:FLUIDITY_RESULT_NOTES_FILE -ErrorAction SilentlyContinue
   }
 }
 
@@ -747,6 +781,7 @@ function Invoke-GpuRun {
   }
   Invoke-CpuTests
   $firstGpuRun = Invoke-GpuTests
+  Set-NotesLine
   if ($script:Report['gpuTests'].Passed) {
     Invoke-RepeatRun -FirstRun $firstGpuRun
   }
