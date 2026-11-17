@@ -1,0 +1,59 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_efe144e1c10268 505-506
+docs/glossary.md
+  s_4f0877e2acdcf0::t_0dc9cb66b8d122 14-17
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_dbaec03e95c8d1 887
+native/fluidity/base/buffer.h
+  s_4f0877e2acdcf0::t_e5e26fa4b76370 89,376
+native/fluidity/base/buffer_bytes.h
+  s_4f0877e2acdcf0::t_f2ad6dc58f5758 9
+native/fluidity/base/check_can_run_on.h
+  s_4f0877e2acdcf0::t_aace3a7c955578 60
+native/fluidity/base/run_memory.h
+  s_4f0877e2acdcf0::t_1a0a1279aac3e0 163-164
+native/fluidity/base/run_on_call.h
+  s_4f0877e2acdcf0::t_4258850dfb79ef 6-11,37,55-56
+native/fluidity/base/stable_order_gpu.h
+  s_4f0877e2acdcf0::t_263e34f2a5f710 7-10
+native/fluidity/contact/contact_error_message.h
+  s_4f0877e2acdcf0::t_50fcaff628a0b5 7,34
+native/fluidity/contact/find_first_hit_test.cc
+  s_4f0877e2acdcf0::t_a6d34f02a127a2 2474-2477
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_fbdcd63bc4910b 5837-5839
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_934a52337f2c71 131,435
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_e08e2bf1ab5881 380,909,1705,1728,2234,2494,3010
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_97587555e6bc95 262,802,811
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_6969723d17e0cf 431
+tools/add_session_note.py
+  s_4f0877e2acdcf0::t_55a4225a1d2285 13
+tools/add_session_note_test.py
+  s_4f0877e2acdcf0::t_7b20074b46f8b9 68,76
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_4d5218d2c80562 14-17,36,135-188,576
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_3e67480912a5e0 36-37,119-185
+tools/fluidity_targets_test.py
+  s_4f0877e2acdcf0::t_3a9fdaf4d3b19f 114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ff5f550b40cfa8a0f0124537890f7cefee2deb8a",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
