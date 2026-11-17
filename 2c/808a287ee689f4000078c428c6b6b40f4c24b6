@@ -1,0 +1,41 @@
+native/fluidity/contact/round_solid_hit_rounding_test.cc
+  s_4f0877e2acdcf0::t_14578f646690d7 1-591,598,607
+  s_4f0877e2acdcf0::t_f4cced046a6ccc 592-597
+  s_4f0877e2acdcf0::t_917bd2f9e0bb2e 599-601,604-606
+  s_4f0877e2acdcf0::t_54079adb8cdd2f 608-610
+  s_eacd903cd3ca11::t_f5a6a9e21673d8 602-603,611-648
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_6f0b3a79c41acf 829-833,959,1215-1247,1265-1280,1353-1355
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_eb24c0174b18a3 31
+native/fluidity/contact/contact_tolerance.h
+  s_4f0877e2acdcf0::t_8ca87c95a9a7b1 15-17
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_5ac71744153107 96-99,208-213
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_417d5f24018d96 411-413,881-889,891-913,956-962,967-968,982-990,992-997,1018-1030,1046-1047,2051-2052
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2c808a287ee689f4000078c428c6b6b40f4c24b6",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_eacd903cd3ca11": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac12cd3afe582fe84",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
