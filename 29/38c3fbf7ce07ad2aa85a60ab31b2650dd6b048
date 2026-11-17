@@ -1,0 +1,35 @@
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_5d1ac151474c01 263,265-271
+native/fluidity/contact/move_particles.h
+  s_4f0877e2acdcf0::t_59cd3cd72c5c6a 185-187,189-193,210-215
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_9d47e1394c2ab8 1417-1420
+native/fluidity/contact/move_particles_steps.h
+  s_4f0877e2acdcf0::t_991fc8c4ee5aca 18
+  s_4f0877e2acdcf0::t_fd3cbcc6615030 13-14,19,21,94-95,122-175,183-185,198-201
+native/fluidity/contact/move_particles_cpu.cc
+  s_4f0877e2acdcf0::t_4496694c0aee97 20,146-150,174-179,283
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_e49af446815f25 669-671
+native/fluidity/contact/move_particles_test.cc
+  s_4f0877e2acdcf0::t_7edf43b36e72ff 7,32,338-365,370-375,398-400,882-884,887,889,906-909,912,950-1002
+  s_4f0877e2acdcf0::t_79d6c2cb71d717 1003-1004
+docs/glossary.md
+  s_4f0877e2acdcf0::t_c032f2a9c82553 128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2938c3fbf7ce07ad2aa85a60ab31b2650dd6b048",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
