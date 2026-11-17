@@ -65,7 +65,7 @@ def test_named_commit_gets_the_note_and_head_does_not(repository):
     assert len(listed) == 1
 
 
-def test_empty_model_list_is_refused_and_writes_nothing(repository, capsys):
+def test_empty_model_list_fails_and_writes_nothing(repository, capsys):
     code = add_session_note.main(["--session", SESSION, "--models", " , ", "--repository", str(repository)])
     assert code == 2
     assert "model list is empty" in capsys.readouterr().err
@@ -73,7 +73,7 @@ def test_empty_model_list_is_refused_and_writes_nothing(repository, capsys):
 
 
 @pytest.mark.parametrize("session", ["http://claude.ai/code/session_1", "claude.ai/code/session_1", "https://"])
-def test_session_that_is_not_an_https_url_is_refused(repository, capsys, session):
+def test_session_that_is_not_an_https_url_fails(repository, capsys, session):
     code = add_session_note.main(["--session", session, "--models", "claude-opus-5-5", "--repository", str(repository)])
     assert code == 2
     assert "https URL" in capsys.readouterr().err

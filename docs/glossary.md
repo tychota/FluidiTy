@@ -11,8 +11,10 @@ How to read the tables:
   come first where the word is a physical quantity.
 - **Never say** lists the words that are banned for that concept, separated by commas. A word in parentheses
   limits the ban to one sense: `component (for this)` bans `component` only for this concept, and `row (alone)`
-  bans `row` unless it is part of the allowed phrase. A word without parentheses is banned everywhere. The rules
-  check prints a note, not a failure, for a word banned in one sense.
+  bans `row` unless it is part of the allowed phrase. A word without parentheses is banned everywhere. A banned word
+  covers its regular inflections too: a banned verb its -s, -ed and -ing forms, a banned noun its plural; the rules
+  check lists the few inflected forms that are words of their own (`WORDS_OF_THEIR_OWN` in `tools/check_rules.py`).
+  The rules check prints a note, not a failure, for a word banned in one sense.
 - A tool reads this file. Every vocabulary table keeps exactly the header `| Say | Plain meaning | Never say |`.
 
 A new word is added here in the same commit that first uses it. Words that are still being settled are not

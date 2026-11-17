@@ -160,8 +160,8 @@ std::expected<Buffer<Value>, BufferError> BuildBuffer(RunOn run_on, std::size_t 
   if (size == 0) {
     return Buffer<Value>(nullptr, 0, run_on, CpuMemory::kOrdinary);
   }
-  // A product that would wrap around is replaced by the largest byte count, which no block can hold, so the piece is
-  // refused as too large instead of taking a small wrapped size.
+  // A product that would wrap around is replaced by the largest byte count, which no block can hold, so the piece
+  // fails as too large instead of taking a small wrapped size.
   constexpr std::size_t kLargestSize = std::numeric_limits<std::size_t>::max();
   const bool byte_count_fits = size <= kLargestSize / sizeof(Value);
   const std::size_t byte_count = byte_count_fits ? size * sizeof(Value) : kLargestSize;

@@ -4,11 +4,10 @@
 //
 // Idea: the CPU half checks sizes, splits the bytes of the order buffers into GpuOrderBufferAreas, and calls one
 //   function here with raw GPU pointers. Each function returns a RunOnCallStatus: kDone, kSizeMismatch when a check
-//   made on the GPU refused the inputs before anything was written (a total above 2^32 - 1, a destination out of
-//   range), or a failed GPU call. They exist only in a build
-//   with GPU code, so base/stable_order_cpu.cc names them only under `#if defined(FLUIDITY_HAS_GPU)`. This file uses
-//   the C++20 subset and includes no CPU-only header, so base/stable_order_gpu.cu includes it too. Callers use
-//   base/stable_order.h.
+//   made on the GPU found the inputs out of range before anything was written (a total above 2^32 - 1, a destination
+//   out of range), or a failed GPU call. They exist only in a build with GPU code, so base/stable_order_cpu.cc names
+//   them only under `#if defined(FLUIDITY_HAS_GPU)`. This file uses the C++20 subset and includes no CPU-only header,
+//   so base/stable_order_gpu.cu includes it too. Callers use base/stable_order.h.
 //
 // Owns:    GpuOrderBufferAreas, BuildGpuStableOrder, BuildGpuGroupsByDestination, ComputeGpuExclusivePrefixSum
 // Uses:    RunOnCallStatus (base/run_on_call.h)

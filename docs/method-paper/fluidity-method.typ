@@ -884,7 +884,7 @@ Three rules use the tolerance (@fig-contact-tolerance):
   thicknesses, the box and domain box widths (twice the smallest half size), the sphere diameters and the
   cylinder diameters and heights, or the cell width when there is none of these. Since $1024 times 2^(-40) =
   2^(-30)$, this fails only for a feature about $10^9$ times smaller than its distance from the origin. The
-  tolerance is never enlarged to make contact pass: a scene it cannot protect is refused.
+  tolerance is never enlarged to make contact pass: a scene it cannot protect fails the check.
 
 For a scene with a plate of half thickness 0.002 m and a box of half sizes (1, 2, 3) at (10, 0, 0), the thinnest
 solid is 0.004 m and the largest coordinate is $10 + |(1, 2, 3)| = 13.74$ m.

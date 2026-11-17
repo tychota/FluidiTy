@@ -128,7 +128,7 @@ namespace fluidity::contact {
 //   unit: start_elapsed + (step_duration - start_elapsed) can exceed step_duration by one. inputs.contact_tolerance is
 //   finite and zero or more. When inputs.plate_side.plate_id is the solid_id of a
 //   solid, that solid is a plate and the side is kAlongNormal or kAgainstNormal (an id that names no solid sees
-//   every plate with both faces; MoveParticle refuses it).
+//   every plate with both faces; MoveParticle fails on it with kBadInput).
 // Fails: kTooCloseToCall  the search toward a turning solid needs more than kMaxAdvanceCount advances before the
 //                         earliest hit of the other solids: the path hovers near it or grazes it, with too little
 //                         motion along its normal, which is rare (FindHitOnTurningSolid: Cost). *close_call is
@@ -432,7 +432,7 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
     // the same distances and pass, so it is not read again.
     // A particle beyond its reach makes the settle read every solid. No input is known that reaches here beyond it (the
     // sweeps' checks and P7's bound over a carry leave it within): the check keeps the settle's bound on its own
-    // check rather than on those steps' margins (ComputeIsSolidOutOfRange).
+    // check rather than on the room those steps leave (ComputeIsSolidOutOfRange).
     if (!ComputeIsWithinParticleReach(inputs, move, 0)) {
       move.left_out_solids = 0;
     }

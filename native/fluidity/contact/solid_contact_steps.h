@@ -377,7 +377,7 @@ FLUIDITY_CPU_AND_GPU constexpr DistanceToSolid ComputeFaceDistance(SolidPose pos
 // Method: when plate_side.plate_id is the solid's solid_id, the solid is that plate and the distance is
 //   s * p.z - half_thickness, s = +1 for kAlongNormal and -1 for kAgainstNormal, with face kHighZ or kLowZ and normal
 //   s times the own z axis (ComputeFaceDistance of ToFacePlane). A start inside the thickness is then inside by more
-//   than half the thickness on one side. plate_id 0 names no solid, since CheckSolid refuses the id 0. Same bits on
+//   than half the thickness on one side. plate_id 0 names no solid, since CheckSolid fails on the id 0. Same bits on
 //   CPU and GPU as ComputeDistanceToSolid.
 // Units: m, world, at the time of the pose.
 // Example: a plate of id 5 through the origin with normal {0, 0, 1} and half thickness 0.01, and the point
@@ -906,7 +906,7 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
 //   ComputeContactTolerance, at least 2^-40 of the largest coordinate, gives it when the particle lies within that
 //   coordinate, as the domain box ensures; CheckContactTolerance checks only the thickness. Under the premise:
 //   14 * 3.47 * 2^-12 + 3 * 2^-12 = 0.0126 tol, about 0.013 tol, under tol / 64 = 0.0156 tol. Measured with radii up to
-//   the largest the premise admits, about 2^39 tol (a sphere's reach is Sqrt(3) radius), against an independent
+//   the largest the premise allows, about 2^39 tol (a sphere's reach is Sqrt(3) radius), against an independent
 //   double-double reference: worst 3.1 eps P on fixed spheres, at most 0.0024 tol over 8.7 million sphere and cylinder
 //   paths, with any duration and start_elapsed; no hit beside the sphere and no path through it.
 //   Why the far form. Far from a small sphere B^2 and A C are both about P^2 |u|^2 and nearly equal, each rounds by
@@ -1702,7 +1702,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       return ContactError::kNone;
     }
     case SolidShape::kDomainBox:
-      // Step 1: CheckSolid refuses a domain box that moves, so it never turns.
+      // Step 1: CheckSolid fails on a domain box that moves, so it never turns.
       assert(!is_turning_solid);
       *hit_on_solid = FindHitOnDomainBox(inputs, solid_index, sweep, touched);
       return ContactError::kNone;
@@ -1725,7 +1725,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       return ContactError::kNone;
     }
   }
-  // An unknown shape has no closed form, so reaching this line is a caller bug: CheckSolid refuses it.
+  // An unknown shape has no closed form, so reaching this line is a caller bug: CheckSolid fails on it.
   assert(false && "FindFirstHitOnSolid has no closed form for this shape");
   return ContactError::kBadInput;
 }
@@ -2231,7 +2231,7 @@ ComputeOutOfRangeDistance(const SolidContactInputs& inputs, std::uint32_t solid_
 //                   solid, checked just before it; a longer move reads every solid. The point may use the allowance,
 //                   so here the window carries the bound. No input is known that needs the check before the settle:
 //                   the sweeps' checks and P7 leave the particle within the reach in every scene measured. It is kept
-//                   so that this step's bound rests on its own check, not on the margins of the carry and P7's bound.
+//                   so that this step's bound rests on its own check, not on the room the carry and P7's bound leave.
 //   end check       at the settled point. After a settle that did not move the particle, or moved it off one near solid
 //                   by at most the threshold, the point is within the reach: the distance is above the window, beyond
 //                   tol / 2. After a longer move off one solid, or a move off several surfaces, the settle has read
@@ -2491,7 +2491,7 @@ MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, Solid
       return moved_point;
     }
   }
-  // An unknown shape stops at ComputeDistanceToSolid's assertion: CheckSolid refuses it.
+  // An unknown shape stops at ComputeDistanceToSolid's assertion: CheckSolid fails on it.
   const DistanceToSolid at_point = ComputeDistanceForParticle(inputs, solid_index, pose, point, inputs.plate_side);
   return point + (contact_tolerance - at_point.distance) * at_point.normal_out_of_solid;
 }
@@ -3007,7 +3007,7 @@ FindShortestCorrection(const CorrectionTargets& targets, double slack, Corrected
 // order on equal sums (plan decision P20, item 3).
 //
 // Method: a second pass over the same subsets as FindShortestCorrection, solved again, so no list of candidates is
-//   kept. The shortest itself qualifies, so one is always found.
+//   kept. The shortest itself is admissible, so one is always found.
 // Requires: shortest is FindShortestCorrection of these targets and slack for a velocity, and was found.
 FLUIDITY_CPU_AND_GPU inline SmallestCorrection
 FindCorrectionOfLargestFrictionSum(const CorrectionTargets& targets, double slack, const SmallestCorrection& shortest) {

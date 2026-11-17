@@ -111,7 +111,7 @@ def test_test_library_gpu_sources_record_their_cc_files_as_gpu_only(tmp_path):
     assert gpu_only_sources_of(project, body) == ["gpu_support.cc"]
 
 
-def test_cuda_configuration_refuses_nvcc_flags_from_the_environment(tmp_path):
+def test_cuda_configuration_fails_on_nvcc_flags_from_the_environment(tmp_path):
     """The refusal comes before enable_language(CUDA), so this needs no CUDA compiler."""
     for variable in ("NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS"):
         environment = {key: value for key, value in os.environ.items() if not key.startswith("NVCC_")}

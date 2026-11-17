@@ -2471,9 +2471,10 @@ Solid BuildPlateWithNormalZ(Vec3 angular_velocity) {
 }
 
 TEST(FindFirstHit, SpinningFlatSolid_IsClosedForm) {
-  // A flat solid is unbounded sideways, so a spin about its normal leaves its shape as it is (plan decision P17): it
-  // is not a turning solid, and the closed form gives the bits of the floor without the spin. 1 rad/s keeps the turn
-  // within kMaxTurnPerStep, so a spin counted as a turn shows here as another hit time, not as a refused solid.
+  // A flat solid is unbounded sideways, so a spin about its normal leaves its shape as it is (plan decision P17): it is
+  // not a turning solid, and the closed form gives the bits of the floor without the spin. 1 rad/s keeps the turn
+  // within kMaxTurnPerStep, so a spin counted as a turn shows here as another hit time, not as a solid CheckSolid fails
+  // on.
   const Path path = {.start = {.x = 0.3, .y = 0, .z = 0.5}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1};
   const std::array spinning = {BuildSpinningFloor(1)};
   const FirstHit first_hit = FindHit(BuildInputs(spinning, 1), path);

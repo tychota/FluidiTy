@@ -428,7 +428,7 @@ TEST(CheckSolid, MovingDomainBox_IsBadInput) {
 }
 
 TEST(CheckSolid, DomainBoxWithTurnedAxes_IsBadInput) {
-  // A true rotation, a quarter turn about z, so only the domain box's alignment rule refuses it.
+  // A true rotation, a quarter turn about z, so only the domain box's alignment rule fails on it.
   Solid solid = BuildValidDomainBox();
   solid.pose_at_step_start.axes =
       BuildAxesFromColumns({.x = 0, .y = 1, .z = 0}, {.x = -1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = 1});

@@ -259,7 +259,7 @@ inline constexpr double kNegligibleTurnShare = 0x1p-46;
 //
 // Method: the x axis is Cross(e, normal) normalised, e the world axis on which the normal has its smallest part
 //   (the first in x, y, z order on ties); the y axis is Cross(normal, x axis). The normal is not normalised here: a
-//   normal that is not a unit vector gives axes that CheckSolid refuses.
+//   normal that is not a unit vector gives axes that CheckSolid fails on.
 // Example: normal {0, 0, 1}. Its parts on x and y tie at 0, so e is x, and Cross({1, 0, 0}, {0, 0, 1}) gives the
 //   x axis {0, -1, 0}. The axes are x {0, -1, 0}, y {1, 0, 0}, z {0, 0, 1}.
 // Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>
@@ -799,7 +799,7 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& 
       keep_if_nearer(closed.back, half_size.y - own_point.y, -own_y_axis, SolidFace::kHighY);
       keep_if_nearer(closed.bottom, half_size.z + own_point.z, own_z_axis, SolidFace::kLowZ);
       keep_if_nearer(closed.top, half_size.z - own_point.z, -own_z_axis, SolidFace::kHighZ);
-      // CheckSolid refuses a domain box with every side open.
+      // CheckSolid fails on a domain box with every side open.
       assert(has_nearest);
       return nearest;
     }
@@ -808,7 +808,7 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceToSolid(const Solid& 
     case SolidShape::kCylinder:
       return ComputeDistanceToCylinder(own_point, half_size, pose.axes);
   }
-  // An unknown shape has no formula, so reaching this line is a caller bug: CheckSolid refuses it.
+  // An unknown shape has no formula, so reaching this line is a caller bug: CheckSolid fails on it.
   assert(false && "ComputeDistanceToSolid has no formula for this shape");
   return DistanceToSolid{};
 }

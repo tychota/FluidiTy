@@ -10,7 +10,7 @@ Usage (from the repository root):
     uv run python tools/add_session_note.py --session <url> --models <id>[,<id>...] [<commit>]
 
 <commit> defaults to HEAD. An existing note on that commit is replaced. The models are de-duplicated and written in a
-fixed order: opus, sonnet, haiku, fable, then any other id in alphabetical order. The command refuses an empty model
+fixed order: opus, sonnet, haiku, fable, then any other id in alphabetical order. The command fails on an empty model
 list and a session link that is not an https URL. Notes stay in the local repository unless they are pushed on
 purpose (AGENTS.md "Commands").
 """

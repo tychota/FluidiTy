@@ -11,7 +11,10 @@ always printed.
 
 The vocabulary comes from docs/glossary.md (only the "Never say" column is read) and the allowed verbs
 come from the "Allowed verbs" section of AGENTS.md. Words are matched on tokens, so `cut` does not match
-`execute`. String literals are never scanned; identifiers, comments and Python docstrings are.
+`execute`. The last word of a banned entry also matches its regular inflections (`inflected_forms`), so a banned
+verb catches its -s, -ed and -ing forms and a banned noun its plural; a longer word that only starts with it, an
+irregular form and the few inflected forms that are words of their own here (`WORDS_OF_THEIR_OWN`) do not match.
+String literals are never scanned; identifiers, comments and Python docstrings are.
 
 Which rules apply to which files (a deliberate choice, written down here):
 - `file-header`, `bare-bool` and `verb` apply to `.h` and `.cuh` files, where the public declarations are.
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import io
 import re
 import subprocess
@@ -126,6 +130,60 @@ def split_name_words(text: str) -> list[str]:
     for piece in split_name_pieces(text):
         words.extend(match.lower() for match in _WORD_PIECE.findall(piece))
     return words
+
+
+_VOWELS = frozenset("aeiou")
+# Inflected forms of a banned word that are words of their own in this code base, with the sense they carry. They are
+# never matched as an inflection; the banned word itself still is.
+WORDS_OF_THEIR_OWN = {
+    "qualified": "C++: a name written with its namespace, as in a namespace-qualified name",
+}
+
+
+@functools.cache
+def inflected_forms(word: str) -> frozenset[str]:
+    """The word and its regular inflections, by the English spelling rules: -s, or -es after s, x, z, ch and sh, and
+    both after o (plural or third person: `walks`, `passes`, `echoes`); -ed and -ing, a final silent e dropped (`make`:
+    `maked`, `making`); a final y after a consonant becomes -ies and -ied (`carry`: `carries`, `carried`, `carrying`);
+    a final consonant after one short vowel is doubled as well as kept single (`stop`: `stopped` and `stoped`). Forms
+    that are not English words are harmless: no code writes them. Irregular forms are not made (`mouse` gives no
+    `mice`), so a word only spelled like an inflection of another is not caught, and a derived word (`walker`) is
+    another word."""
+    forms = {word}
+    if len(word) >= 2 and word.endswith("y") and word[-2] not in _VOWELS:
+        forms |= {word[:-1] + "ies", word[:-1] + "ied", word + "ing"}
+        return frozenset(forms)
+    forms.add(word + "es" if word.endswith(("s", "x", "z", "ch", "sh")) else word + "s")
+    if word.endswith("o"):
+        forms.add(word + "es")
+    if word.endswith("e"):
+        forms |= {word + "d", word[:-1] + "ing"}
+        return frozenset(forms)
+    forms |= {word + "ed", word + "ing"}
+    ends_consonant_vowel_consonant = (
+        len(word) >= 3
+        and word[-1] not in _VOWELS
+        and word[-1] not in "wxy"
+        and word[-2] in _VOWELS
+        and word[-3] not in _VOWELS
+    )
+    if ends_consonant_vowel_consonant:
+        forms |= {word + word[-1] + "ed", word + word[-1] + "ing"}
+    return frozenset(forms)
+
+
+def contains_phrase(tokens: Sequence[str], phrase: Sequence[str]) -> bool:
+    """True when `phrase` appears as consecutive items of `tokens`, its last word in any of its inflected forms."""
+    width = len(phrase)
+    if width == 0:
+        return False
+    last_word = phrase[-1]
+    last_forms = {form for form in inflected_forms(last_word) if form == last_word or form not in WORDS_OF_THEIR_OWN}
+    for start in range(len(tokens) - width + 1):
+        leading_match = tuple(tokens[start : start + width - 1]) == tuple(phrase[:-1])
+        if leading_match and tokens[start + width - 1] in last_forms:
+            return True
+    return False
 
 
 def contains_run(tokens: Sequence[str], phrase: Sequence[str]) -> bool:
@@ -515,7 +573,7 @@ def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], re
                 sequences.append((segment, "comment"))
         for tokens, where in sequences:
             for entry in glossary:
-                if entry.words in ABBREVIATIONS or not contains_run(tokens, entry.words):
+                if entry.words in ABBREVIATIONS or not contains_phrase(tokens, entry.words):
                     continue
                 key = entry.spelled.lower()
                 if entry.qualifier is None:

@@ -3,12 +3,12 @@
 // Purpose: give every GPU half (`<name>_gpu.cu`) one status to return and one rule for the size of a launch, so the
 //   CPU half of every operation turns a GPU failure into its error the same way.
 //
-// Idea: a GPU half returns kDone, or kOutOfMemory when an allocation failed, or kSizeMismatch when a check that the
-//   GPU half made refused the inputs before it wrote anything (a total too large, a destination out of range), or
-//   kCallFailed for any other failed GPU call. The CPU half turns the status into its own error; ToBufferError
-//   (base/buffer.h) is that mapping for BufferError. A GPU function runs as thread blocks of kThreadBlockSize
-//   threads, at most kMaxThreadBlockCount thread blocks; each thread handles the items i, i + (number of threads), and
-//   so on, so a fixed number of thread blocks covers any count.
+// Idea: a GPU half returns kDone, or kOutOfMemory when an allocation failed, or kSizeMismatch when a check that the GPU
+//   half made found the inputs out of range before it wrote anything (a total too large, a destination out of range),
+//   or kCallFailed for any other failed GPU call. The CPU half turns the status into its own error; ToBufferError
+//   (base/buffer.h) is that mapping for BufferError. A GPU function runs as thread blocks of kThreadBlockSize threads,
+//   at most kMaxThreadBlockCount thread blocks; each thread handles the items i, i + (number of threads), and so on, so
+//   a fixed number of thread blocks covers any count.
 //   Example: ComputeLaunchSize(1000) gives 4 thread blocks of 256 threads; ComputeLaunchSize(10^9) gives 65,535
 //   thread blocks, and each thread handles about 60 items.
 //
@@ -34,7 +34,7 @@ namespace fluidity {
 enum class RunOnCallStatus : std::uint8_t {
   kDone,  // The outputs hold the answer.
   kOutOfMemory,  // An allocation of the call failed. Nothing was written. Only allocations return it.
-  kSizeMismatch,  // A check made by the GPU half refused the inputs, such as a total above 2^32 - 1. Nothing written.
+  kSizeMismatch,  // A GPU half's check found the inputs out of range (a total above 2^32 - 1). Nothing written.
   kCallFailed,  // Another GPU call failed. The outputs are unspecified.
 };
 
@@ -52,8 +52,8 @@ struct LaunchSize {
 };
 
 // The launch of a simple GPU function over `item_count` items: one thread per item in thread blocks of
-// kThreadBlockSize, at most kMaxThreadBlockCount thread blocks. item_count 0 gives 0 thread blocks, which the GPU
-// refuses: a caller with no items does not launch.
+// kThreadBlockSize, at most kMaxThreadBlockCount thread blocks. item_count 0 gives 0 thread blocks, a launch the GPU
+// fails on: a caller with no items does not launch.
 // Example: 1 item gives 1 thread block; 256 give 1; 257 give 2; 10^9 give 65,535.
 FLUIDITY_CPU_AND_GPU constexpr LaunchSize ComputeLaunchSize(std::size_t item_count) {
   const std::size_t needed = item_count / kThreadBlockSize + (item_count % kThreadBlockSize != 0 ? 1 : 0);

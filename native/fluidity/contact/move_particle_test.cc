@@ -5834,9 +5834,9 @@ bool ComputeIsWellOutsideEverySolid(const SolidContactInputs& inputs, Vec3 point
   return true;
 }
 
-// Builds the inputs of one generated path in a scene, or none when 50 starts in a row are closer than 2 tol to a
-// solid. Draw order: three NextSigned for the start offset (m, up to 1 per axis from the scene's start, drawn again for
-// each refused start), three for for_this_step and three for for_next_step (m/s, up to 2 per axis from the scene's
+// Builds the inputs of one generated path in a scene, or none when 50 starts in a row are closer than 2 tol to a solid.
+// Draw order: three NextSigned for the start offset (m, up to 1 per axis from the scene's start, drawn again for each
+// start that is too close), three for for_this_step and three for for_next_step (m/s, up to 2 per axis from the scene's
 // velocities), one Next for the friction (0 to 1).
 bool BuildGeneratedPath(const SolidContactInputs& scene_inputs, CaseGenerator& generator, SolidContactInputs* inputs) {
   *inputs = scene_inputs;

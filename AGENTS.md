@@ -502,8 +502,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 - Session note, after each commit: `uv run python tools/add_session_note.py --session <url> --models <id>[,<id>...]
   [<commit>]` writes or replaces the note of `<commit>` (default `HEAD`) in `refs/notes/claude-session`: the lines
   `session: <url>` and `models: <ids>`, the ids de-duplicated and ordered opus, sonnet, haiku, fable, then others.
-  It refuses an empty model list and a link that is not https. Every clone needs this once, so notes follow amend and
-  rebase and show in `git log`:
+  It fails on an empty model list and on a link that is not https. Every clone needs this once, so notes follow amend
+  and rebase and show in `git log`:
 
   ```sh
   git config notes.rewriteRef refs/notes/claude-session

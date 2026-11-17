@@ -4,7 +4,7 @@
 //
 // Idea: inner contact code returns the enum and never builds text. The outer boundary, the command line and the
 //   Blender add-on, calls these two functions. The message says what the user can do. The name is the enumerator
-//   without the k, in snake case, such as "solid_too_thin"; programs match on it, so a published name never changes.
+//   without the k, in snake case, such as "solid_too_thin"; programs match on it, so a name in use never changes.
 //
 // Owns:    ToMessage(ContactError), ToMessage(ContactCloseCall), ToName(ContactError), ToName(ContactCloseCall)
 // Uses:    CPU-only guard (base/cpu_only.h), ContactError and ContactCloseCall (contact/contact_error.h)
@@ -31,7 +31,7 @@ std::string_view ToMessage(ContactError error);
 std::string_view ToMessage(ContactCloseCall close_call);
 
 // Converts an error to its code: the enumerator without the k, in snake_case, such as "solid_too_thin". The command
-// line and the Blender add-on use it, so a code never changes once published. An out-of-range value gives "unknown".
+// line and the Blender add-on use it, so a code never changes once it is in use. An out-of-range value gives "unknown".
 std::string_view ToName(ContactError error);
 
 // Converts a close call to its code, in the same form: "squeezed_between_solids". An out-of-range value gives

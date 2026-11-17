@@ -86,7 +86,7 @@ BufferError ToBufferError(RunOnCallStatus status);
 std::string_view ToMessage(BufferError error);
 
 // Converts an error to its code: the enumerator without the k, in snake_case, such as "size_mismatch". The command
-// line and the Blender add-on use it, so a code never changes once published. An out-of-range value gives "unknown".
+// line and the Blender add-on use it, so a code never changes once it is in use. An out-of-range value gives "unknown".
 std::string_view ToName(BufferError error);
 
 // The kind of CPU memory a CPU buffer asks for. GPU buffers ignore it.
@@ -373,7 +373,7 @@ CopyBuffer(const Buffer<Value>& from, std::size_t first, std::size_t count, Buff
       !slice.has_value()) {
     return slice;
   }
-  // Both slices are inside their buffers, so count * sizeof(Value) cannot wrap around. CopyBufferBytes refuses
+  // Both slices are inside their buffers, so count * sizeof(Value) cannot wrap around. CopyBufferBytes fails on
   // overlapping byte ranges.
   return CopyBufferBytes(to.run_on(), from.data() + first, count * sizeof(Value), to.data() + to_first);
 }

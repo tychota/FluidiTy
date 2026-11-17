@@ -57,7 +57,7 @@ std::expected<void, RunOnError> CheckCanRunOn(RunOn run_on);
 std::string_view ToMessage(RunOnError error);
 
 // Converts an error to its code: the enumerator without the k, in snake_case, such as "gpu_not_built". The command
-// line and the Blender add-on use it, so a code never changes once published. An out-of-range value gives "unknown".
+// line and the Blender add-on use it, so a code never changes once it is in use. An out-of-range value gives "unknown".
 std::string_view ToName(RunOnError error);
 
 }  // namespace fluidity

@@ -33,7 +33,8 @@ def glossary(tmp_path: Path) -> Path:
         + "| `floor` | A side. | floor (for a side: math::Floor keeps the word) |\n"
         + "| `solid` | Cannot enter. | wall |\n"
         + "| `max_...` | A limit. | reserve, lower, epsilon |\n"
-        + "| (nothing) | Not used. | quantum |\n",
+        + "| (nothing) | Not used. | quantum |\n"
+        + "| `SplitCell` | Split one cell. | refine, bin, qualify, leaf, halo |\n",
         encoding="utf-8",
     )
     return path
@@ -113,6 +114,73 @@ def test_multi_word_entry_matches_consecutive_tokens(tmp_path, glossary):
 def test_word_inside_longer_token_does_not_match(tmp_path, glossary):
     write(tmp_path, "a.cc", "int quantumness;\nint rewall;\n")
     assert run(tmp_path, glossary) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "// Two leafs.",
+        "// It refines the cell.",
+        "// Refining the cell is not done.",
+        "// The cell was refined twice.",
+        "// Particles are binned.",
+        "// Two bins.",
+        "// The value qualifies.",
+        "// It qualifies.",
+        "// Two halos and two haloes.",
+        "int RefinedCellCount;",
+        "int binning_pass;",
+        "// The narrow bands of the liquid.",
+    ],
+)
+def test_inflected_banned_word_fails(tmp_path, glossary, line):
+    write(tmp_path, "a.cc", line + "\n")
+    assert rules(run(tmp_path, glossary)) == ["banned-word"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "// A refinement of the solver.",
+        "// A binary file.",
+        "// The leaves of the tree.",
+        "int combined;",
+        "// The narrows band.",
+        "// A qualifier of the type.",
+        "// The namespace-qualified name.",
+        "int qualified_name;",
+    ],
+)
+def test_word_that_only_looks_like_an_inflection_passes(tmp_path, glossary, line):
+    write(tmp_path, "a.cc", line + "\n")
+    assert rules(run(tmp_path, glossary)) == []
+
+
+def test_inflection_of_one_sense_word_is_a_note(tmp_path, glossary):
+    write(tmp_path, "a.cc", "// Two floors.\n")
+    assert rules(run(tmp_path, glossary)) == ["one-sense-word"]
+
+
+@pytest.mark.parametrize(
+    ("word", "forms"),
+    [
+        ("refuse", {"refuse", "refuses", "refused", "refusing"}),
+        ("qualify", {"qualify", "qualifies", "qualified", "qualifying"}),
+        ("make", {"make", "makes", "maked", "making"}),
+        ("bin", {"bin", "bins", "bined", "bining", "binned", "binning"}),
+        ("attempt", {"attempt", "attempts", "attempted", "attempting"}),
+        ("halo", {"halo", "halos", "haloes", "haloed", "haloing"}),
+        ("basis", {"basis", "basises", "basised", "basising", "basissed", "basissing"}),
+    ],
+)
+def test_inflected_forms_follow_the_spelling_rules(word, forms):
+    assert check_rules.inflected_forms(word) == forms
+
+
+def test_real_glossary_catches_an_inflected_banned_word(tmp_path):
+    write(tmp_path, "a.cc", "// A scene the tolerance cannot protect is refused.\n")
+    findings = check_rules.check_paths([tmp_path], check_rules.DEFAULT_GLOSSARY_PATH)
+    assert rules(findings) == ["banned-word"]
 
 
 def test_camel_case_identifier_is_split(tmp_path, glossary):

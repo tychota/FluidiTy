@@ -6,7 +6,7 @@
 // Idea: the templates of base/buffer.h check what needs the value type (sizes, slices, the byte count) and then
 //   call one of these functions with raw bytes and the buffer's processor. Each function does the rest once for
 //   every value type: it allocates, frees or copies with memcpy on the CPU, or with the CUDA runtime in a build with
-//   GPU code, and it refuses two byte ranges that overlap. BufferError and CpuMemory are only declared here (their
+//   GPU code, and it fails on two byte ranges that overlap. BufferError and CpuMemory are only declared here (their
 //   underlying type is fixed, so the declaration is complete); base/buffer.h defines their values.
 //
 // Owns:    BufferBytes, BuildBufferBytes, FreeBufferBytes, WriteBufferBytes, ReadBufferBytes, CopyBufferBytes
