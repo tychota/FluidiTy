@@ -9,6 +9,7 @@
 #include "fluidity/contact/contact_test_cases.h"
 #include "fluidity/contact/left_out_solids_test_sets.h"
 #include "fluidity/contact/solid_contact.h"
+#include "fluidity/contact/solid_contact_steps.h"
 #include "fluidity/contact/solid_contact_types.h"
 #include "fluidity/contact/solid_shapes.h"
 
@@ -77,23 +78,6 @@ TEST(LeftOutSolids, FarParticle_ReadsEachOutOfRangeSolidOnce) {
   for (const Solid& solid : solids) {
     EXPECT_EQ(solid_read_counts.pose_reads[solid.solid_id], 1) << "solid " << solid.solid_id;
     EXPECT_EQ(solid_read_counts.distance_reads[solid.solid_id], 1) << "solid " << solid.solid_id;
-  }
-}
-
-TEST(LeftOutSolids, OutsideScale_ReadsEverySolid) {
-  // tol 2^-30 m: the scale of ComputeContactTolerance ends at coordinates of 2^40 tol = 1024 m. A particle at rest
-  // 512 m from the origin leaves a sphere 10 m away out (read once); at 2048 m it reads it as without the rule.
-  for (const double coordinate : {512.0, 2048.0}) {
-    SCOPED_TRACE(coordinate);
-    const MoveParticleCase scene = {
-        .name = "FarFromOrigin",
-        .solids = {ToSolid(Sphere{.center = {.x = coordinate + 10, .y = 0, .z = 0}, .radius = 1}, SolidMotion(), 1)},
-        .inputs = left_out_sets::BuildSetInputs({.x = coordinate, .y = 0, .z = 0}, left_out_sets::kAtRest, 0.01, 0.3),
-    };
-    ContactError error = ContactError::kNone;
-    const SolidReads reads = ComputeReadsOfSolid(scene, 1, &error);
-    EXPECT_EQ(error, ContactError::kNone);
-    EXPECT_EQ(reads.distance_reads > 1, coordinate > 1024);
   }
 }
 
@@ -195,6 +179,26 @@ TEST(LeftOutSolids, FastSpinningTiltedCylinder_KeepsSlowApproachCloseCall) {
   EXPECT_EQ(MoveParticle(ToSolidContactInputs(scene), &result, &failure), ContactError::kTooCloseToCall);
   EXPECT_EQ(failure.close_call, ContactCloseCall::kSlowApproachToTurningSolid);
   EXPECT_EQ(failure.solid_id, 1U);
+}
+
+TEST(LeftOutSolids, LongStartMove_ReadsEverySolidForTheStartResponse) {
+  // A V of two flat solids moves the particle off both faces, 32 tol to its rest point; a third flat solid 1.03125 tol
+  // beyond that point was left out at the start, 33 tol away. Read again from the moved start, it is active and
+  // approached: the start response hits it once, as with every solid read (EverySet_SameBitsAsReadingEverySolid
+  // compares the bits). Left out, it would give no hit and kind kNone.
+  const MoveParticleCase scene = FindBoundaryCase("LongStartMoveIntoLeftOutWall", 0);
+  const SolidContactInputs inputs = ToSolidContactInputs(scene);
+  constexpr std::uint32_t kWallIndex = 2;
+  const SolidPose wall_pose = inputs.solids[kWallIndex].pose_at_step_start;
+  const DistanceToSolid wall_at_start =
+      ComputeDistanceForParticle(inputs, kWallIndex, wall_pose, inputs.start_position, inputs.plate_side);
+  EXPECT_TRUE(ComputeIsSolidOutOfRange(inputs, kWallIndex, wall_at_start.distance, ComputeParticleReach(inputs)));
+  SolidContactResult result;
+  ASSERT_EQ(MoveParticle(inputs, &result, nullptr), ContactError::kNone);
+  EXPECT_EQ(result.kind, ContactKind::kHit);
+  EXPECT_EQ(result.hit_count, 1);
+  ContactError error = ContactError::kNone;
+  EXPECT_GT(ComputeReadsOfSolid(scene, 3, &error).distance_reads, 1);
 }
 
 TEST(LeftOutSolids, PushedIntoFarSphere_SphereReadAfterTheResponse) {

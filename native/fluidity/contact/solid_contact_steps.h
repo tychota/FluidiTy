@@ -136,8 +136,8 @@
 //          ComputeTimeBetweenGrownCaps, FindCylinderRimHit, FindCylinderHit, HasConvexDistance, GapLowerModel,
 //          ComputeSecondOrderAdvance, FindHitOnTurningSolid, ComputeIsTurningSolid, FindFirstHitOnSolid,
 //          ComputeEarlierHit, kMaxLeftOutSolids, ComputeIsLeftOut, FindEarliestHitWithTurningSolids, TouchedSolid,
-//          FindFirstHitOfSweep, ParticleMove, kLeftOutWindowInTolerances, kLeftOutLargestCoordinateInTolerances,
-//          kLeftOutRestGapMoveInTolerances, kBoxDistanceShare,
+//          FindFirstHitOfSweep, ParticleMove, kLeftOutWindowInTolerances, kLeftOutRestGapMoveInTolerances,
+//          kBoxDistanceShare,
 //          ComputeLeftOutRestGapMove, ComputeParticleReach, ComputeOutOfRangeDistance, ComputeIsSolidOutOfRange,
 //          ComputeIsWithinParticleReach,
 //          CheckSolidContactInputs, ToSideAtHit, ApplyReactionChange, CheckHitCountBelowLimit, MoveToRestGap,
@@ -2064,15 +2064,15 @@ struct ParticleMove {
 // with sharp rims, where a sweep may enter; the others are a turning solid's hit at 1.25 tol, a rim hit at tol +
 // tol / 1024, the active window tol + tol / 16, a hit through a box's or a plane's face planes grown by tol, a near
 // surface closer than tol, a crossing of a surface grown by at most tol, the touching rule's tol and the end check's
-// tol / 2. 4 leaves 4 - Sqrt(2) = 2.59 tol above the largest of them for rounding: of a distance, at most tol / 128
-// (contact/contact_tolerance.h); of the sums of the rule, a few units of numbers below 2^42 tol; and of the closed
-// forms' hits, within 0.013 tol of the grown surface at the scale's edge, coordinates 2^40 tol (FindSphereHit;
-// outside the scale the rule leaves nothing out: ComputeOutOfRangeDistance, step 1).
+// tol / 2.
+// Which phases need it: in the sweeps the move allowance alone does the job (reads stay within R - 6 tol of the
+// start, and 6 tol exceeds Sqrt(2) tol); the window carries the bound only at the settle and the end check, whose
+// points may use the allowance (a domain-box corner's settle moves 5.2 tol of the 6, leaving 0.8 tol).
+// 4 leaves 4 - Sqrt(2) = 2.59 tol above the largest of them for rounding: of a distance, at most tol / 128
+// (contact/contact_tolerance.h); of the sums of the rule, a few units of numbers below 2^42 tol; and of a closed form's
+// hit time, whose hit lies within about 0.013 tol of the grown surface under MoveParticle's coordinate premise, every
+// coordinate within 2^40 tol (its Requires; FindSphereHit: a first-order estimate, measured at most 0.0024 tol).
 inline constexpr double kLeftOutWindowInTolerances = 4;
-// No unit, in contact tolerances. The largest coordinate, of the particle's start and of a solid's origin, at which
-// the rule leaves the solid out: the scale ComputeContactTolerance gives, tol at least 2^-40 of the largest coordinate,
-// within which the rounding the window holds was bounded.
-inline constexpr double kLeftOutLargestCoordinateInTolerances = 0x1p40;
 // No unit, in contact tolerances. The threshold a move off one near solid is checked against while solids are left
 // out, beyond twice start_overlap_tolerance: the reach counts one such move at the start and one in the settle, and a
 // longer move, or any move off several surfaces, reads every solid (ComputeMoveOffOneNearSolid, ApplyStartRules,
@@ -2111,11 +2111,10 @@ FLUIDITY_CPU_AND_GPU inline double ComputeParticleReach(const SolidContactInputs
 //   velocity, o its origin at the start, a = min(Length(w) T, 2) the largest turn's chord per unit of arm (a chord of
 //   a turn by an angle b is 2 sin(b / 2) <= min(b, 2) times the arm), and x a point the move reads at a time t of the
 //   step, within R of the start (ComputeIsWithinParticleReach and the checks of the moves off near surfaces):
-//   1 Never left out: a solid at an index of kMaxLeftOutSolids or more, a domain box, and a solid whose origin, or the
-//     particle's start, has a coordinate above kLeftOutLargestCoordinateInTolerances * tol: outside the scale of
-//     ComputeContactTolerance the closed forms round by more than the window.
-//   2 A lower bound of f(x, t), shape by shape. ComputeSolidPose turns the axes A about the origin and moves the
-//   origin:
+//   1 Never left out: a solid at an index of kMaxLeftOutSolids or more and a domain box. The bounds below hold under
+//     MoveParticle's coordinate premise, every coordinate within 2^40 tol of the origin (its Requires; MoveParticles
+//     checks it), which bounds the rounding of a distance and of a hit time (kLeftOutWindowInTolerances).
+//   2 A lower bound of f(x, t), shape by shape. ComputeSolidPose turns the axes A about the origin and moves it:
 //     o(t) = o + v_lin t, the point's own coordinates p = Transpose(A(t)) (x - o(t)).
 //     flat solid, plate, box that does not turn  f is a plane's or a plate's distance, or the largest of a box's
 //       face-plane gaps, each 1-Lipschitz in p, and p moves from the start's by at most |x - start| + Length(v_lin) t +
@@ -2135,14 +2134,20 @@ FLUIDITY_CPU_AND_GPU inline double ComputeParticleReach(const SolidContactInputs
 //     gap it samples is at least G = (d - travel) / share - tol - tol / 64 (tol / 64 the rounding of two distances), so
 //     each advance is at least G / bound, bound = Length(v - v_lin) + Length(w) r_max; over a sweep of duration t,
 //     bound * t <= R + Length(v_lin) T + Length(w) T r_far, since Length(v) t <= R within the reach and r_max <= r_far.
-//     kMaxAdvanceCount - 1 advances then cover the sweep when d >= travel + share (tol + tol / 64 + (R + Length(v_lin)
-//     T
-//     + Length(w) T r_far) / (kMaxAdvanceCount - 1)); out_distance is the larger of the two.
-//   A result that is not finite gives DBL_MAX.
+//     kMaxAdvanceCount - 1 advances then cover the sweep when
+//     d >= travel + share (tol + tol / 64 + (R + Length(v_lin) T + Length(w) T r_far) / (kMaxAdvanceCount - 1));
+//     out_distance is the larger of the two.
+//   Which term each phase needs: in the sweeps the reach check leaves every point read within R - M of the start,
+//   M = ComputeLeftOutRestGapMove, so the distance there is above M + window (over share for a turning box), and
+//   M >= 6 tol alone, or M / 2 for a turning box, exceeds Sqrt(2) tol and the hit rounding; the window carries the
+//   bound at the settle and the end check, whose points may use all of M but 0.8 tol (a domain-box corner's settle
+//   move, 5.2 tol); the box share is needed only by step 4, since without it in step 3 a turning box's distance would
+//   still be above window / 2 = 2 tol. A result that is not finite gives DBL_MAX.
 // Units: m, world; s for the step.
-// Example: tol 2^-30 m, a particle at rest (R = 12 tol), a fixed sphere: 14 tol. The sphere moving at 1 m/s for
-//   0.01 s: 0.01 m + 14 tol. A box turning at 1 rad/s for 0.01 s, half size {0.3, 0.4, 0}: 0.005 m + 12 tol, times 1,
-//   plus 4 tol, then the larger with step 4.
+// Example: tol 2^-30 m, a particle at rest (R = 12 tol), a fixed sphere: 16 tol. The sphere moving at 1 m/s for
+//   0.01 s: 0.01 m + 16 tol. A box of half size {0.3, 0.4, 0} turning about z at 1 rad/s for 0.01 s, the particle at
+//   rest 1 m above its centre: travel 0.005 m + 12 tol plus a window of 8 tol (share 2); step 4 gives the larger,
+//   0.005 m + 2 (tol + tol / 64 + about 0.01 m / 127), about 0.00516 m.
 // Requires: solid_index < inputs.solid_count; the solid passed CheckSolid.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
 // clang-tidy: the solid's index and the particle's reach, in the order the rule reads them.
@@ -2156,15 +2161,6 @@ ComputeOutOfRangeDistance(const SolidContactInputs& inputs, std::uint32_t solid_
   const Solid& solid = inputs.solids[solid_index];
   // Step 1: a domain box's walls are near every particle of the scene sooner or later, and a cheap test would not pay.
   if (solid_index >= kMaxLeftOutSolids || solid.shape == SolidShape::kDomainBox) {
-    return kNeverOutOfRange;
-  }
-  const auto compute_largest_coordinate = [](Vec3 point) -> double {
-    return math::Max(math::Max(math::Abs(point.x), math::Abs(point.y)), math::Abs(point.z));
-  };
-  const double largest_coordinate = kLeftOutLargestCoordinateInTolerances * inputs.contact_tolerance;  // m
-  const bool is_within_scale = compute_largest_coordinate(inputs.start_position) <= largest_coordinate
-      && compute_largest_coordinate(solid.pose_at_step_start.origin) <= largest_coordinate;
-  if (!is_within_scale) {
     return kNeverOutOfRange;
   }
   // Step 2: how far the distance can fall from the start's, shape by shape. The terms of a turn are computed only for a
@@ -2208,27 +2204,33 @@ ComputeOutOfRangeDistance(const SolidContactInputs& inputs, std::uint32_t solid_
 // check: its distance at the start, at the pose of time 0, with the particle's plate side, is above
 // ComputeOutOfRangeDistance. The move then leaves it out of its reads (ComputeIsLeftOut), and each phase leaves it out
 // only while the particle stays within its reach; why no phase can then find it near:
-//   start rules     at time 0 and points within one move off one near solid of the start (a move off several surfaces
-//                   reads every solid): its distance there is above the window, so it is not near, not active, not
-//                   started inside, and no crossing or iterate meets it.
+//   start rules     at time 0 and points within one move off one near solid of the start: its distance there is
+//                   above the window, so it is not near, not active, not started inside, and no crossing or iterate
+//                   meets it. A move off several surfaces, or one longer than ComputeLeftOutRestGapMove, reads every
+//                   solid from the moved start (ApplyStartRules): the start response there reads the active surfaces
+//                   without the touching rule, so a solid left out that the move brought within the active window
+//                   would lose its response (a V of two flat solids moving the particle 32 tol, measured in
+//                   move_particle_left_out_test.cc).
 //   each sweep      the path stays within the reach of the start, checked before every sweep with the velocity of that
 //                   sweep (ComputeIsWithinParticleReach), so a response that redirects or speeds the particle leaves it
-//                   in or makes the move read every solid; the distance there stays above the window
-//                   (ComputeOutOfRangeDistance, steps 2 and 3), beyond every hit of the closed forms, the touching rule
-//                   and the rim search; a turning solid's search ends free within its advances (step 4).
-//   carry on a turning solid and P7's closing bound  P7 reads every solid, as without the rule; the carry may take
-//                   the particle beyond its reach, which the check before the settle then sees.
-//   settle          read with the solid left out only when the end is within the reach less one move off one near
-//                   solid; a longer move reads every solid.
+//                   in or makes the move read every solid; the points read are within R - M of the start, so the
+//                   allowance M alone keeps the distance above Sqrt(2) tol (ComputeOutOfRangeDistance, steps 2 and 3),
+//                   beyond every hit of the closed forms, the touching rule and the rim search; a turning solid's
+//                   search ends free within its advances (step 4).
+//   carry on a turning solid and P7's closing bound  P7 reads every solid, as without the rule, and keeps the
+//                   particle above tol from each over the carry.
+//   settle          read with the solid left out only when the point is within the reach less one move off one near
+//                   solid, checked just before it; a longer move reads every solid. The point may use the allowance,
+//                   so here the window carries the bound. No input is known that needs the check before the settle:
+//                   the sweeps' checks and P7 leave the particle within the reach in every scene measured. It is kept
+//                   so that this step's bound rests on its own check, not on the margins of the carry and P7's bound.
 //   end check       at the settled point. After a settle that did not move the particle, or moved it off one near solid
-//   by
-//                   at most the threshold, the point is within the reach: the distance is above the window, beyond tol
-//                   /
-//                   2. After a longer move off one solid, or a move off several surfaces, the settle has read every
-//                   solid at that very point and pose (ComputeIsAtLeastFromEverySolid: at least tol - tol / 128), so
-//                   the end check, reading the same distances, passes for the solids it leaves out.
+//                   by at most the threshold, the point is within the reach: the distance is above the window, beyond
+//                   tol / 2. After a longer move off one solid, or a move off several surfaces, the settle has read
+//                   every solid at that very point and pose (ComputeIsAtLeastFromEverySolid: at least tol - tol / 128),
+//                   so the end check, reading the same distances, passes for the solids it leaves out.
 // With FLUIDITY_CONTACT_READ_EVERY_SOLID defined (a test build that compares the answers) no solid is out of range.
-// Example: tol 2^-30 m, a particle at rest 1 m above a fixed sphere: out of range (14 tol). The same particle 10 tol
+// Example: tol 2^-30 m, a particle at rest 1 m above a fixed sphere: out of range (16 tol). The same particle 10 tol
 //   above it: in range.
 // Requires: as ComputeOutOfRangeDistance.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>

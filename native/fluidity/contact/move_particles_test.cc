@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -28,6 +29,7 @@
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_error.h"
 #include "fluidity/contact/contact_test_cases.h"
+#include "fluidity/contact/contact_tolerance.h"
 #include "fluidity/contact/move_particles_steps.h"
 #include "fluidity/contact/solid_contact.h"
 #include "fluidity/contact/solid_contact_types.h"
@@ -333,12 +335,44 @@ void ExpectSameFailure(const ContactFailure& actual, const ContactFailure& expec
   EXPECT_EQ(fluidity::ToBits(actual.magnitude), fluidity::ToBits(expected.magnitude));
 }
 
-// Runs one catalogue scene as a one-particle call and checks it against MoveParticle on the same inputs; says whether
-// it failed.
+// The first solid of a scene whose origin over the step plus its reach, as ComputeContactScale counts them, lies
+// beyond kLargestCoordinateInTolerances contact tolerances, or nullptr: a scene MoveParticles names as bad input
+// before it reads a particle, and MoveParticle runs outside its premise on coordinates.
+const Solid* FindSolidBeyondLargestCoordinate(const MoveParticleCase& test_case) {
+  const double largest_coordinate = kLargestCoordinateInTolerances * test_case.inputs.contact_tolerance;  // m
+  for (const Solid& solid : test_case.solids) {
+    const double step_duration = test_case.inputs.step_duration;
+    const double tolerance = test_case.inputs.contact_tolerance;
+    if (ComputeContactScale(&solid, 1, step_duration, tolerance).largest_coordinate > largest_coordinate) {
+      return &solid;
+    }
+  }
+  return nullptr;
+}
+
+// Checks that a one-particle call names `solid` as bad input, beyond the largest coordinate, before any particle.
+void ExpectCallNamesSolidBeyond(ParticleArrays& arrays, const Solid& solid) {
+  CpuContactBuffers buffers(1, arrays.solids.size());
+  const ContactFailure failure =
+      MoveParticles(arrays.ToInputs(), arrays.ToMoved(), buffers.buffers()).error_or(ContactFailure{});
+  EXPECT_EQ(failure.error, ContactError::kBadInput);
+  EXPECT_FALSE(failure.has_particle_id);
+  EXPECT_EQ(failure.solid_id, solid.solid_id);
+}
+
+// Runs one catalogue scene as a one-particle call and checks it against MoveParticle on the same inputs, or, for a
+// scene with a solid beyond the largest coordinate, that the call names that solid as bad input; says whether it
+// failed.
 bool CheckCaseSameAsMoveParticle(const MoveParticleCase& test_case) {
   ParticleArrays arrays;
   arrays.solids = test_case.solids;
   arrays.AddParticle(test_case.inputs, 77);
+  const bool has_valid_scalars = test_case.inputs.contact_tolerance > 0 && test_case.inputs.step_duration > 0;
+  const Solid* const solid_beyond = has_valid_scalars ? FindSolidBeyondLargestCoordinate(test_case) : nullptr;
+  if (solid_beyond != nullptr) {
+    ExpectCallNamesSolidBeyond(arrays, *solid_beyond);
+    return true;
+  }
   SolidContactResult expected;
   ContactFailure expected_failure;
   const ContactError expected_error = MoveParticle(ToSolidContactInputs(test_case), &expected, &expected_failure);
@@ -361,7 +395,9 @@ bool CheckCaseSameAsMoveParticle(const MoveParticleCase& test_case) {
 
 TEST(MoveParticles, EveryCase_SameAsMoveParticle) {
   // Each scene of the catalogue as a one-particle call, against MoveParticle on the same inputs: the outputs bit for
-  // bit on success, the same error, close call, solid and magnitude on failure, for every scene.
+  // bit on success, the same error, close call, solid and magnitude on failure, for every scene but the five with a
+  // ball of radius 2^40 tol, whose top lies at 2^41 tol: the call names the ball as bad input, beyond
+  // kLargestCoordinateInTolerances, and MoveParticle, which does not check its premise on coordinates, runs them.
   int failing_case_count = 0;
   for (const MoveParticleCase& test_case : BuildMoveParticleCases()) {
     SCOPED_TRACE(std::string(test_case.name));
@@ -843,13 +879,14 @@ TEST(MoveParticles, OutputOverIdsFrictionsOrPlateSides_IsBadInput) {
 
 TEST(MoveParticles, FallingTooFastForStep_IsCloseCallNamingParticleAndFloor) {
   // MoveParticle's check at a hit on one surface, through the call: tol 2^-30 m, so 2^40 tol = 1024 m, a step of
-  // 0.1 s, a particle 2 tol above the fixed floor falling at 1.01 x 1024 / 0.1 m/s. The call names the particle, the
-  // floor and the close call; a step a hundred times shorter moves it.
+  // 0.1 s, a particle 2 tol above the fixed floor moving at 0.6 x 1024 / 0.1 m/s along x and down z: each axis stays
+  // within 1024 m over the step, but the sum of absolute axes times the step is 1.2 x 1024 m. The call names the
+  // particle, the floor and the close call; a step a hundred times shorter moves it.
   ParticleArrays arrays;
   arrays.solids = {move_particle_cases::BuildFloor(1)};
-  const double bound_speed = 0x1p40 * kTolerance / 0.1;  // m/s
+  const double axis_speed = 0.6 * 0x1p40 * kTolerance / 0.1;  // m/s
   arrays.AddParticle(
-      BuildFloorParticle({.x = 0, .y = 0, .z = 2 * kTolerance}, {.x = 0, .y = 0, .z = -1.01 * bound_speed}),
+      BuildFloorParticle({.x = 0, .y = 0, .z = 2 * kTolerance}, {.x = axis_speed, .y = 0, .z = -axis_speed}),
       4
   );
   CpuContactBuffers buffers(1, 1);
@@ -866,12 +903,13 @@ TEST(MoveParticles, FallingTooFastForStep_IsCloseCallNamingParticleAndFloor) {
 }
 
 TEST(MoveParticles, FastParticleThatHitsNothing_Moves) {
-  // The speeds are checked where a response needs them, at a hit: a particle at 1e5 m/s along the floor, 2e4 m in a
-  // step of 0.2 s, far above 2^40 tol = 1024 m, hits nothing and moves; so does one at rest 1000 m from the origin of
-  // a floor spinning at 1 rad/s.
+  // The speeds are checked where a response needs them, at a hit: a particle at 4608 m/s along x and along y over the
+  // floor, 921.6 m on each axis in a step of 0.2 s, within 2^40 tol = 1024 m, but whose sum of absolute axes times the
+  // step, 1843.2 m, is above it, hits nothing and moves; so does one at rest 1000 m from the origin of a floor spinning
+  // at 1 rad/s.
   ParticleArrays arrays;
   arrays.solids = {move_particle_cases::BuildFloor(1)};
-  SolidContactInputs fast = BuildFloorParticle({.x = 0, .y = 0, .z = 1}, {.x = 1e5, .y = 0, .z = 0});
+  SolidContactInputs fast = BuildFloorParticle({.x = 0, .y = 0, .z = 1}, {.x = 4608, .y = 4608, .z = 0});
   fast.step_duration = 0.2;
   arrays.AddParticle(fast, 3);
   CpuContactBuffers buffers(1, 1);
@@ -907,6 +945,61 @@ TEST(MoveParticles, SpeedAboveLargestInputSum_IsBadInputNamingIt) {
   EXPECT_EQ(solid_failure.error, ContactError::kBadInput);
   EXPECT_FALSE(solid_failure.has_particle_id);
   EXPECT_EQ(solid_failure.solid_id, 1U);
+}
+
+// Runs one particle with id 5 above the floor for a step of 0.125 s with tol 2^-30 m, among `solids` (the floor
+// first), and returns the call's failure, or ContactFailure{} on success.
+ContactFailure RunCoordinatesCall(std::vector<Solid> solids, Vec3 start, Vec3 velocity) {
+  ParticleArrays arrays;
+  arrays.solids = std::move(solids);
+  SolidContactInputs inputs = BuildFloorParticle(start, velocity);
+  inputs.step_duration = 0.125;
+  arrays.AddParticle(inputs, 5);
+  CpuContactBuffers buffers(1, arrays.solids.size());
+  return MoveParticles(arrays.ToInputs(), arrays.ToMoved(), buffers.buffers()).error_or(ContactFailure{});
+}
+
+TEST(MoveParticles, ParticleBeyondLargestCoordinate_IsBadInputNamingIt) {
+  // tol 2^-30 m, so MoveParticle's premise ends at 2^40 tol = 1024 m on every axis (kLargestCoordinateInTolerances),
+  // and a step of 0.125 s. The start plus the travel along each axis: 1000 + 192 * 0.125 = 1024 m and a start at
+  // -1024 m pass; 1000 + 193 * 0.125 = 1024.125 m and a start one double beyond -1024 m are bad input, naming the
+  // particle and the coordinate.
+  const std::vector<Solid> floor = {move_particle_cases::BuildFloor(1)};
+  const Vec3 start = {.x = 1000, .y = 0, .z = 1};
+  EXPECT_EQ(RunCoordinatesCall(floor, start, {.x = 192, .y = 0, .z = 0}).error, ContactError::kNone);
+  EXPECT_EQ(RunCoordinatesCall(floor, {.x = 0, .y = -1024, .z = 1}, {}).error, ContactError::kNone);
+  const ContactFailure fast = RunCoordinatesCall(floor, start, {.x = 193, .y = 0, .z = 0});
+  EXPECT_EQ(fast.error, ContactError::kBadInput);
+  EXPECT_TRUE(fast.has_particle_id);
+  EXPECT_EQ(fast.particle_id, 5U);
+  EXPECT_EQ(fast.solid_id, 0U);
+  EXPECT_EQ(fast.magnitude, 1024.125);
+  const double beyond = std::nextafter(-1024.0, -2048.0);  // m
+  const ContactFailure far = RunCoordinatesCall(floor, {.x = 0, .y = beyond, .z = 1}, {});
+  EXPECT_EQ(far.error, ContactError::kBadInput);
+  EXPECT_TRUE(far.has_particle_id);
+  EXPECT_EQ(far.magnitude, -beyond);
+}
+
+TEST(MoveParticles, SolidBeyondLargestCoordinate_IsBadInputNamingIt) {
+  // A box of half sizes {3, 4, 12}, reach Length = 13 m, with tol 2^-30 m (bound 1024 m) and a step of 0.125 s: its
+  // origin at the end of the step plus its reach, 1000 + 88 * 0.125 + 13 = 1024 m, passes; moving at 96 m/s, 1025 m,
+  // is bad input naming the box and the coordinate, before any particle is read.
+  const auto build_box = [](double speed) -> Solid {
+    return ToSolid(
+        Box{.center = {.x = 1000, .y = 0, .z = 20}, .axes = kIdentity, .half_size = {.x = 3, .y = 4, .z = 12}},
+        {.linear_velocity = {.x = speed, .y = 0, .z = 0}, .angular_velocity = {}},
+        2
+    );
+  };
+  const Vec3 start = {.x = 0, .y = 0, .z = 1};
+  const ContactFailure within = RunCoordinatesCall({move_particle_cases::BuildFloor(1), build_box(88)}, start, {});
+  EXPECT_EQ(within.error, ContactError::kNone);
+  const ContactFailure beyond = RunCoordinatesCall({move_particle_cases::BuildFloor(1), build_box(96)}, start, {});
+  EXPECT_EQ(beyond.error, ContactError::kBadInput);
+  EXPECT_FALSE(beyond.has_particle_id);
+  EXPECT_EQ(beyond.solid_id, 2U);
+  EXPECT_EQ(beyond.magnitude, 1025.0);
 }
 
 TEST(MoveParticles, TinySpeed_MovesAsMoveParticle) {

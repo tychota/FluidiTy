@@ -182,13 +182,15 @@ struct MovedParticles {
 //     null, and the solids count with every array); step_duration not finite and positive, start_overlap_tolerance
 //     not finite and zero or more, contact_tolerance not finite and positive; solids.size() not below kNoSolid, or
 //     solid_ids not strictly ascending; then, for each solid in array order, its linear and angular velocity summed
-//     over their axes above kLargestInputSpeedSum, and CheckSolid for step_duration. A failed check writes nothing, and
-//     solids_copy() keeps its last value.
+//     over their axes above kLargestInputSpeedSum, CheckSolid for step_duration, and its origin over the step plus its
+//     reach (ComputeContactScale) above kLargestCoordinateInTolerances * contact_tolerance on some axis. A failed check
+//     writes nothing, and solids_copy() keeps its last value.
 //   2 The solids are copied into the buffers (solids_copy()).
-//   3 One visit per particle, on run_on(): both velocities at most kLargestInputSpeedSum (CheckParticleSpeeds), then
-//     MoveParticle, then its outputs at its index; a particle that fails writes nothing and the visits go on. The
-//     first failure in the order (particle_id, index) is kept, and the kinds are counted. On the CPU one loop in index
-//     order; on the GPU one thread per particle.
+//   3 One visit per particle, on run_on(): both velocities at most kLargestInputSpeedSum (CheckParticleSpeeds), on
+//     each axis the start plus the travel at for_this_step at most kLargestCoordinateInTolerances * contact_tolerance
+//     (CheckParticleCoordinates), then MoveParticle, then its outputs at its index; a particle that fails writes
+//     nothing and the visits go on. The first failure in the order (particle_id, index) is kept, and the kinds are
+//     counted. On the CPU one loop in index order; on the GPU one thread per particle.
 //   Same bits on CPU and GPU when every solid's angular velocity is zero (MoveParticle); with a turning or spinning
 //   solid the floating-point outputs agree within design 6's tolerance and the discrete ones exactly.
 // Units: m, m/s and s, world.
@@ -205,10 +207,12 @@ struct MovedParticles {
 // Fails: kBuffersTooSmall  particle_count above max_particle_count() or solids.size() above max_solid_count().
 //        kBadInput         a required pointer is null, reaction is null with a reacting solid, two arrays overlap, a
 //                          scalar is out of range, there are kNoSolid solids or more, or the solid_ids do not ascend;
-//                          a solid moves or turns faster than kLargestInputSpeedSum or fails CheckSolid with kBadInput
-//                          (solid_id: that solid's); or the first failing particle has a velocity above
-//                          kLargestInputSpeedSum (CheckParticleSpeeds: magnitude that sum) or fails MoveParticle with
-//                          kBadInput.
+//                          a solid moves or turns faster than kLargestInputSpeedSum, fails CheckSolid with kBadInput
+//                          or reaches beyond 2^40 contact tolerances (solid_id: that solid's; magnitude: that
+//                          coordinate, m, for the last); or the first failing particle has a velocity above
+//                          kLargestInputSpeedSum (CheckParticleSpeeds: magnitude that sum), starts or moves beyond
+//                          2^40 contact tolerances (CheckParticleCoordinates: magnitude that coordinate, m), or fails
+//                          MoveParticle with kBadInput.
 //        kTooCloseToCall   a solid turns more than kMaxTurnPerStep during the step (close_call kSolidTurnsTooFar, its
 //                          solid_id); or as MoveParticle for the first failing particle, kMovesTooFastForStep included.
 //                          The step shortens the step and tries again.

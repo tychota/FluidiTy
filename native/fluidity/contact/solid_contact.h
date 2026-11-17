@@ -260,12 +260,15 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //   it ends at {0.1, 0, 0.2 + 2^-30} with kind kNone and both velocities unchanged; at {0, 0, -0.0005} and at rest,
 //   with start_overlap_tolerance 0.001, it moves to z = 2^-30 with kind kStartedInsideSolid and stays there.
 // Requires: result is not null. Each solid passed CheckSolid for inputs.step_duration (plan decision P9).
-//   Coordinates relative to the tolerance, required and not checked: every solid's origin with its reach
+//   Coordinates relative to the tolerance, required and not checked here: every solid's origin with its reach
 //   (Length(half_size)) over the step, the particle's start and its path within 2^40 * inputs.contact_tolerance of the
-//   origin. The tolerance of ComputeContactTolerance, at least 2^-40 of the largest coordinate, gives it when the
-//   particles lie within that coordinate, as a domain box ensures; CheckContactTolerance checks only the thickness.
-//   The rounding bounds rest on it: a hit within tol / 64 of the rest gap, a distance within tol / 128. Beyond it
-//   the move still runs, but those bounds, and the settle's and the end check's room that rests on them, do not hold.
+//   origin on every axis. The tolerance of ComputeContactTolerance, at least 2^-40 of the largest coordinate, gives it
+//   when the particles lie within that coordinate, as a domain box ensures; CheckContactTolerance checks only the
+//   thickness. MoveParticles checks it before each move (kBadInput): the solids as ComputeContactScale counts them,
+//   and the particle's start with its straight path at velocity.for_this_step (CheckParticleCoordinates); a path a
+//   response sends farther stays required. The rounding bounds rest on it: a hit within tol / 64 of the rest gap, a
+//   distance within tol / 128. Beyond it the move still runs, but those bounds, and the room that the settle, the end
+//   check and the rule that leaves out far solids keep for them, do not hold.
 //   The speeds are checked, not required: at every hit, the response's allowance times the time left must be at most
 //   tol / 64, so that the particle approaches any solid by at most tol / 16 over the step. With one active surface the
 //   allowance is 2^-46 times the sum of the absolute axes of velocity.for_this_step and of the solid velocity, so the
@@ -406,7 +409,9 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
   if (error == ContactError::kNone) {
     // A settle that read every solid at least tol away left the particle where it read them: the end check would read
     // the same distances and pass, so it is not read again.
-    // A carry on a turning solid may have taken the particle beyond its reach: the settle then reads every solid.
+    // A particle beyond its reach makes the settle read every solid. No input is known that reaches here beyond it (the
+    // sweeps' checks and P7's bound over a carry leave it within): the check keeps the settle's bound on its own
+    // check rather than on those steps' margins (ComputeIsSolidOutOfRange).
     if (!ComputeIsWithinParticleReach(inputs, move, 0)) {
       move.left_out_solids = 0;
     }

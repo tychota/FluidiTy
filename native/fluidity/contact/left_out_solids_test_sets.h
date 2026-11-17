@@ -400,6 +400,39 @@ inline std::vector<MoveParticleCase> BuildLeftOutBoundaryCases() {
           },
       .inputs = BuildSetInputs(kOrigin, kAtRest, 0.002, 0.3),
   });
+  // A long move at the start: a V of two flat solids through the origin, normals {sin a, +-cos a, 0} with sin a = 2^-6,
+  // and the particle on the bisector at x = 32 tol, 0.5 tol from both faces. The move off both faces takes it 32 tol to
+  // the rest point at x = 64 tol; a third flat solid, normal {-1, 0, 0}, has its face 1.03125 tol beyond that point,
+  // 33 tol from the start, so the start leaves it out. The particle approaches it at 1e-3 tol per step.
+  {
+    constexpr double kSinOfHalfAngle = 0x1p-6;
+    const double cos_of_half_angle = std::sqrt(1 - (kSinOfHalfAngle * kSinOfHalfAngle));
+    const double rest_x = kTestContactTolerance / kSinOfHalfAngle;  // m, 64 tol
+    constexpr double kStep = 0.01;  // s
+    const Vec3 approach = {.x = 1e-3 * kTestContactTolerance / kStep, .y = 0, .z = 0};  // m/s
+    const Vec3 upper_normal = {.x = kSinOfHalfAngle, .y = cos_of_half_angle, .z = 0};
+    const Vec3 lower_normal = {.x = kSinOfHalfAngle, .y = -cos_of_half_angle, .z = 0};
+    const Vec3 wall_point = {.x = rest_x + (1.03125 * kTestContactTolerance), .y = 0, .z = 0};
+    cases.push_back({
+        .name = "LongStartMoveIntoLeftOutWall",
+        .solids =
+            {
+                ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = upper_normal}, kStill, 1),
+                ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = lower_normal}, kStill, 2),
+                ToSolid(
+                    FlatSolid{.point_on_surface = wall_point, .normal_out_of_solid = {.x = -1, .y = 0, .z = 0}},
+                    kStill,
+                    3
+                ),
+            },
+        .inputs = BuildSetInputs(
+            {.x = rest_x / 2, .y = 0, .z = 0},
+            {.for_next_step = approach, .for_this_step = approach},
+            kStep,
+            0.3
+        ),
+    });
+  }
   // A domain box far from the particle: never left out.
   cases.push_back({
       .name = "FarDomainBox",

@@ -10,13 +10,15 @@
 //   (ComputeIsEarlierFailure), with a flag that says whether any particle failed, and adds the counts as integers, so
 //   the reported failure and the counts do not depend on that order. No floating-point value is summed across
 //   particles. Before each move the particle's speeds are checked against the largest speeds whose response rounding
-//   MoveParticle can bound (CheckParticleSpeeds), which MoveParticle does not check itself.
+//   MoveParticle can bound (CheckParticleSpeeds), and its start and path against the largest coordinate its rounding
+//   bounds hold for (CheckParticleCoordinates), which MoveParticle does not check itself.
 //   Example: three particles with ids 7, 3 and 5 at indexes 0, 1 and 2, where 7 and 5 fail: (5, 2) comes before
 //   (7, 0), so the call reports particle 5 whatever order the threads finish in.
 //
-// Owns:    MoveParticlesCall, kLargestInputSpeedSum, CheckParticleSpeeds, ComputeParticleMoveAt,
+// Owns:    MoveParticlesCall, kLargestInputSpeedSum, CheckParticleSpeeds, kLargestCoordinateInTolerances,
+//          CheckParticleCoordinates, ComputeParticleMoveAt,
 //          ApplyParticleOutputsAt, ComputeIsEarlierFailure, MoveParticleCounts, ComputeParticleCounts
-// Uses:    Vec3 (base/vec3.h), math::Abs, math::IsFinite (base/scalar_math.h), PerParticleVelocity
+// Uses:    Vec3 (base/vec3.h), math::Abs, math::IsFinite, math::Max (base/scalar_math.h), PerParticleVelocity
 //          (base/per_particle_velocity.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError,
 //          ContactCloseCall, ContactFailure (contact/contact_error.h), Solid, PlateSide (contact/solid_shapes.h),
 //          SolidContactInputs, SolidContactResult, SolidReaction, ParticleContact, ToParticleContact, ContactKind
@@ -89,9 +91,8 @@ inline constexpr double kLargestInputSpeedSum = 0x1p480;
 // Example: for_this_step {1e150, 0, 0} m/s passes; {2^481, 0, 0} m/s fails with magnitude 2^481.
 // Requires: index < call.particle_count; the call passed the CPU half's checks.
 // Fails: kBadInput  a velocity's sum of absolute axes is above kLargestInputSpeedSum (magnitude: that sum, m/s): a
-// value
-//                   gone wrong upstream, which no shorter step cures. *failure gets the error, the particle's id with
-//                   has_particle_id, solid_id 0 and the magnitude; it is not written on success.
+//                   value gone wrong upstream, which no shorter step cures. *failure gets the error, the particle's id
+//                   with has_particle_id, solid_id 0 and the magnitude; it is not written on success.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
 FLUIDITY_CPU_AND_GPU inline ContactError
 CheckParticleSpeeds(const MoveParticlesCall& call, std::size_t index, ContactFailure* failure) {
@@ -118,8 +119,60 @@ CheckParticleSpeeds(const MoveParticlesCall& call, std::size_t index, ContactFai
   return ContactError::kBadInput;
 }
 
-// Moves particle `index` of the call for one step, without writing any output: checks its speeds (CheckParticleSpeeds),
-// then runs MoveParticle on its inputs and the call's solids.
+// No unit, in contact tolerances. The largest coordinate MoveParticles accepts, on any axis, for a particle's start and
+// its path at velocity.for_this_step over the step, and for a solid's origin over the step with its reach: the
+// premise of MoveParticle on coordinates (contact/solid_contact.h, Requires), which it does not check. Its rounding
+// bounds rest on it: a hit within tol / 64 of the rest gap, a distance within tol / 128, and the room of the rule that
+// leaves out far solids. The tolerance of ComputeContactTolerance, at least 2^-40 of the scene's largest coordinate,
+// gives it for every solid and every particle start inside the domain box.
+inline constexpr double kLargestCoordinateInTolerances = 0x1p40;
+
+// Checks that particle `index` starts and moves within MoveParticle's premise on coordinates: on each axis, the
+// start's coordinate plus its travel at velocity.for_this_step over the step, |start| + |velocity| * step_duration, at
+// most kLargestCoordinateInTolerances * contact_tolerance. The straight path at that velocity stays within it; a path
+// that a response sends farther is required and not checked. A path aimed out of the domain box fails here only when
+// it would end beyond the bound, past the room the box's reach leaves (its half diagonal against its half size on
+// that axis), though its wall would stop it first. Changes nothing but *failure.
+//
+// Method: one comparison per axis. A value that is not finite passes, for MoveParticle to report with its own
+//   failure. Same bits on CPU and GPU: + * and comparisons only.
+// Units: m, m/s and s, world.
+// Example: tol 2^-30 m, so the bound is 1024 m, and a step of 0.125 s: a particle at {1000, 0, 0} moving at
+//   {192, 0, 0} m/s reaches 1024 m and passes; at {-1000, 0, 0} moving at {0, 0, 0} it passes; at {1000, 0, 0} moving
+//   at {193, 0, 0} m/s it reaches 1024.125 m and fails with magnitude 1024.125.
+// Requires: index < call.particle_count; the call passed the CPU half's checks.
+// Fails: kBadInput  an axis's |start| + |velocity| * step_duration is above the bound (magnitude: the largest such sum,
+//                   m): a particle far outside the scene its tolerance was computed for, which no shorter step cures.
+//                   *failure gets the error, the particle's id with has_particle_id, solid_id 0 and the magnitude; it
+//                   is not written on success.
+// Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-tolerance>
+FLUIDITY_CPU_AND_GPU inline ContactError
+CheckParticleCoordinates(const MoveParticlesCall& call, std::size_t index, ContactFailure* failure) {
+  const Vec3 start = call.start_position[index];
+  const Vec3 velocity = call.velocity.for_this_step[index];
+  const double step_duration = call.step_duration;
+  const double largest_coordinate = kLargestCoordinateInTolerances * call.contact_tolerance;  // m
+  const double x_extent = math::Abs(start.x) + (math::Abs(velocity.x) * step_duration);  // m
+  const double y_extent = math::Abs(start.y) + (math::Abs(velocity.y) * step_duration);  // m
+  const double z_extent = math::Abs(start.z) + (math::Abs(velocity.z) * step_duration);  // m
+  const double largest_extent = math::Max(math::Max(x_extent, y_extent), z_extent);  // m
+  // An infinite extent is left to MoveParticle, which reports a value that is not finite as kBadInput; math::Max drops
+  // a NaN, which MoveParticle reports the same way.
+  const bool is_beyond_scale = largest_extent > largest_coordinate && math::IsFinite(largest_extent);
+  if (!is_beyond_scale) {
+    return ContactError::kNone;
+  }
+  failure->error = ContactError::kBadInput;
+  failure->close_call = ContactCloseCall::kNone;
+  failure->has_particle_id = true;
+  failure->particle_id = call.particle_id[index];
+  failure->solid_id = 0;
+  failure->magnitude = largest_extent;
+  return ContactError::kBadInput;
+}
+
+// Moves particle `index` of the call for one step, without writing any output: checks its speeds (CheckParticleSpeeds)
+// and its coordinates (CheckParticleCoordinates), then runs MoveParticle on its inputs and the call's solids.
 //
 // Method: the inputs of MoveParticle are the particle's values at `index`, the call's solids and scalars, and its
 //   plate side, or {0, kNoPlate} when call.plate_side is null. The failure, when there is one, gets the particle's id.
@@ -127,8 +180,9 @@ CheckParticleSpeeds(const MoveParticlesCall& call, std::size_t index, ContactFai
 // Example: a particle at {0.9, 0, 0} moving at {1, 0, 0} m/s for 0.2 s toward the fixed flat solid x >= 1, friction
 //   0: *result is MoveParticle's result for those inputs, ending at {1 - tol, 0, 0} with kind kHit.
 // Requires: index < call.particle_count; result and failure are not null; the call passed the CPU half's checks.
-// Fails: as CheckParticleSpeeds, then as MoveParticle. *failure is always written: ContactFailure{} on success, the
-//        failure with the particle's id and has_particle_id otherwise. *result is written on success only.
+// Fails: as CheckParticleSpeeds, then as CheckParticleCoordinates, then as MoveParticle. *failure is always written:
+//        ContactFailure{} on success, the failure with the particle's id and has_particle_id otherwise. *result is
+//        written on success only.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline ContactError ComputeParticleMoveAt(
     const MoveParticlesCall& call,
@@ -140,6 +194,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError ComputeParticleMoveAt(
   const ContactError speeds_error = CheckParticleSpeeds(call, index, failure);
   if (speeds_error != ContactError::kNone) {
     return speeds_error;
+  }
+  const ContactError coordinates_error = CheckParticleCoordinates(call, index, failure);
+  if (coordinates_error != ContactError::kNone) {
+    return coordinates_error;
   }
   SolidContactInputs inputs;
   inputs.start_position = call.start_position[index];

@@ -17,6 +17,7 @@
 #include "fluidity/base/scalar_math.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_error.h"
+#include "fluidity/contact/contact_tolerance.h"
 #include "fluidity/contact/move_particles.h"
 #include "fluidity/contact/move_particles_steps.h"
 #include "fluidity/contact/solid_contact_types.h"
@@ -142,9 +143,11 @@ ContactError CheckCallScalars(const MoveParticlesInputs& inputs) {
 
 // Checks the solids of a call once for all particles: fewer than kNoSolid, strictly ascending solid_ids (as
 // CheckSolidContactInputs), then, for each solid, its linear and angular velocity summed over their axes at most
-// kLargestInputSpeedSum and CheckSolid for the step, which MoveParticle requires and does not check. The failure names
-// the solid those two fail for; the count and the order name none.
-ContactFailure CheckCallSolids(std::span<const Solid> solids, double step_duration) {
+// kLargestInputSpeedSum, CheckSolid for the step, and its origin over the step with its reach, as ComputeContactScale
+// counts them, at most kLargestCoordinateInTolerances * contact_tolerance: what MoveParticle requires and does not
+// check. The failure names the solid those three fail for, with the coordinate as magnitude for the last; the count
+// and the order name none.
+ContactFailure CheckCallSolids(std::span<const Solid> solids, double step_duration, double contact_tolerance) {
   if (solids.size() >= kNoSolid) {
     return {.error = ContactError::kBadInput};
   }
@@ -167,6 +170,12 @@ ContactFailure CheckCallSolids(std::span<const Solid> solids, double step_durati
     const ContactError error = CheckSolid(solid, step_duration, &close_call);
     if (error != ContactError::kNone) {
       return {.error = error, .close_call = close_call, .solid_id = solid.solid_id};
+    }
+    // The coordinates' part of MoveParticle's Requires, after CheckSolid, which ComputeContactScale requires. The
+    // cell width there only sets thinnest_solid, which this check does not read.
+    const double solid_coordinate = ComputeContactScale(&solid, 1, step_duration, contact_tolerance).largest_coordinate;
+    if (solid_coordinate > kLargestCoordinateInTolerances * contact_tolerance) {
+      return {.error = ContactError::kBadInput, .solid_id = solid.solid_id, .magnitude = solid_coordinate};
     }
   }
   return {};
@@ -271,7 +280,7 @@ MoveParticles(const MoveParticlesInputs& inputs, const MovedParticles& moved, Co
   if (scalars_error != ContactError::kNone) {
     return std::unexpected(ContactFailure{.error = scalars_error});
   }
-  const ContactFailure solids_failure = CheckCallSolids(inputs.solids, inputs.step_duration);
+  const ContactFailure solids_failure = CheckCallSolids(inputs.solids, inputs.step_duration, inputs.contact_tolerance);
   if (solids_failure.error != ContactError::kNone) {
     return std::unexpected(solids_failure);
   }

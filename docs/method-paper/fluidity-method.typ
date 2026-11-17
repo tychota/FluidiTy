@@ -666,7 +666,9 @@ checks itself once: sizes, pointers, overlapping arrays, the scalars and every s
 once, moves it and writes its outputs. At every hit on one surface, the speeds involved times the time left must stay
 within $2^40 "tol"$, the bound that keeps a response's rounding below $"tol"\/64$; otherwise the move is too close to
 call (`kMovesTooFastForStep`), and a shorter step cures it. Speeds beyond any scene, a sum of absolute axes above
-$2^480$ m/s for a velocity or a solid's motion, are bad input. The outputs belong to the step's try: after a failure their
+$2^480$ m/s for a velocity or a solid's motion, are bad input. So are coordinates beyond the scale the tolerance was
+computed for: on some axis, a particle's start plus its travel at `for_this_step` over the step, or a solid's origin
+over the step plus its reach, above $2^40 "tol"$, the premise `MoveParticle`'s rounding bounds rest on. The outputs belong to the step's try: after a failure their
 contents are unspecified, and the step discards the whole try. When several particles fail, the one reported is the
 failing particle with the lowest id, then the lowest index, found by integer minima. The CPU
 and the GPU give equal discrete results (kinds, solids, faces, counts, errors) and floating-point results within a
@@ -681,8 +683,14 @@ times an arm: the half diagonal for a box or a cylinder, none for a sphere, the 
 a flat solid or a plate. A turning box's distance is its largest face-plane gap, which a turn moves by the particle's
 arm, not the box's; it is at least the true distance over $sqrt(3)$, so the box's window counts twice. The particle's
 distance from the start plus the travel still to come is checked against $R$ before every sweep and before the
-settle; past it, every solid is read again. The answers are the same bits either way; a particle far from 32 solids
-costs one read of each instead of three.
+settle, and a move off the start longer than one move off one near solid reads them all as well; past either, every
+solid is read again. In the sweeps the move allowance alone keeps the distance above the largest window; the $4 "tol"$
+carries the bound at the settle and the end check, and the box's double count is needed only by the stepping search of
+a turning box. Phase by phase, a solid left out is above every window a phase reads, with room for the rounding of a
+distance ($"tol"\/128$) and of a closed form's hit (about $0.013 "tol"$, a first-order estimate under `MoveParticle`'s
+premise that every coordinate is within $2^40 "tol"$). That the answers are the same bits as with every solid read is
+measured, not proved: on 40,240 test scenes and 71.7 million generated ones, none differs. A particle far from 32
+solids costs one read of each instead of three.
 
 == Solid shapes <sec-solid-shapes>
 

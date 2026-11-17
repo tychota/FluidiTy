@@ -1414,9 +1414,10 @@ inline std::vector<MoveParticleCase> BuildSeveralSurfaceStartCases() {
       .solids = {BuildFloor(1), BuildFixedSphere({.x = 0, .y = 0, .z = 0.5}, 0.5, 2)},
       .inputs = BuildSeveralSurfaceInputs({.x = short_x, .y = 0, .z = short_height}, {}, 0.01),
   });
-  // A ball of radius 1024 m resting on the floor (R / tol = 2^40), the largest a scene allows, and the particle at rest
-  // halfway up the gap, f times the rest point's distance x* = 2 Sqrt(1024 tol) = 0.001953125 m from the contact:
-  // f = 0.1, 0.01, and 0.0005, within 1.8e-8 R of the contact.
+  // A ball of radius 1024 m resting on the floor (R / tol = 2^40, the bound kMaxRestGapIterations is measured at; its
+  // top lies at 2^41 tol, beyond MoveParticle's premise on coordinates, so MoveParticles names it as bad input while
+  // MoveParticle runs it), and the particle at rest halfway up the gap, f times the rest point's distance x* = 2
+  // Sqrt(1024 tol) = 0.001953125 m from the contact: f = 0.1, 0.01, and 0.0005, within 1.8e-8 R of the contact.
   const double deep_rest_distance = 2 * std::sqrt(1024 * kTolerance);  // m
   for (const double share : {0.1, 0.01, 0.0005}) {
     const double start_x = share * deep_rest_distance;  // m
