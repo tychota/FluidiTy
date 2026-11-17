@@ -1,0 +1,23 @@
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_395e88e1f63c6a 39-40
+native/fluidity/contact/contact_main_comparison_test_cases.h
+  s_4f0877e2acdcf0::t_a8abfd3140c5f4 8-22,46,80-81,97,128-129,145-146,191-192,209-210,227-228,279-280,360-361,381-382
+native/fluidity/contact/move_particles_scene_test.cc
+  s_4f0877e2acdcf0::t_ce556b25e47033 11-14,16,25,136-157,161,164,173,181-182,194-205,209-219,221-223,367-370,388-389,406-408,411-412,422-426,428-440,443-444,446,448,452-480,493-953,1026-1048,1052-1055
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "84e60929772cd1fe1198a27ae7a5996c9e0202b5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
