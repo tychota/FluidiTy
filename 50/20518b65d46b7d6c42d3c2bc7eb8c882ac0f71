@@ -1,0 +1,29 @@
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_0faf03bbb7327a 409-411
+native/fluidity/contact/left_out_solids_test_sets.h
+  s_4f0877e2acdcf0::t_7c326ae79bfbde 403-435
+docs/glossary.md
+  s_4f0877e2acdcf0::t_a6ceba0e07c65a 122
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_effd8c8f0a7b94 684-691
+native/fluidity/contact/move_particle_left_out_test.cc
+  s_4f0877e2acdcf0::t_4a34cc2ca94b71 12,184-203
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_5a2358e118715f 139-140,2067-2074,2114-2117,2137-2145,2147-2150,2207-2213,2216-2226,2228-2231,2233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5020518b65d46b7d6c42d3c2bc7eb8c882ac0f71",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
