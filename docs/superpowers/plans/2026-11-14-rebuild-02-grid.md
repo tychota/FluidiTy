@@ -160,9 +160,29 @@ Owner decision: a position exactly on a cell side or at a cell centre still has 
   belong to a cell that does not touch. Checked by computation on a uniform grid at 512 lattice positions (27
   each) and on the all-split worst case at 4,096 lattice and 3,000 random positions (largest count still 76).
 - Changed: Task 1a Step 1 (the paper's sentence), Task 16 (the face search keeps its own strict test, and says
-  why), Task 17 (the rule, `ComputeIsCandidateOffset`, four count tests), Task 18 (weights may be 0; three tests
+  why), Task 17 (the rule, four count tests; its float predicate is replaced in the fourth revision), Task 18 (weights may be 0; three tests
   of the faces of weight 0; the note about lattice positions removed), Task 19 (the same predicate); design
   3.5, 5.4 and 7. Unchanged: the bounds 76, 56, 112 and 270.
+
+### Fourth revision 2026-11-19: the candidate window is chosen in whole quarter widths
+
+The test of the third revision, written on float offsets, gives 2 or 4 planes on an axis at positions within a
+rounding step of a cell side or centre (found by program: about 2 % of such positions, also in frames whose
+origin and width are powers of two, because `FindCellAt`'s floor and the offsets can disagree). Ruling: the
+window is chosen by integers.
+
+- **The rule.** Per axis, `q = floor(4 * ((x_p - origin) / h - c))` clamped to 0..3, with `c` and `h` the
+  coordinate and width of the cell `FindCellAt` returned; a face is a candidate when its centre's coordinate
+  `n`, in quarter widths from that cell's low corner (an integer, from the ids), has `q - 5 <= n <= q + 6` on
+  each axis. It is the half-open rule `-1.5 h < d <= 1.5 h` on the lattice every face centre lies on. The
+  float offset is used only for the weight.
+- Changed: Task 5 (`NearbyFaces` takes the cell and the three `q`), Task 17 (rule, two functions, tests in a
+  non-dyadic frame and one rounding step from sides and centres, the bound 76 checked over the 64 windows),
+  Task 18 (one test), Task 19 (the same `q`); design 3.5, 5.4, 7. The outcome of the third revision stands: 27
+  faces and `is_complete` at every position among cells of one size.
+- Not proven: that this window gives the same candidates as the exact half-open rule on mixed sizes in
+  general. It was checked by program on three neighbourhoods. `FindNearbyFaces,
+  RandomGrids_MatchGeometricChecker` (Task 17) is the test that settles it on random four-level grids.
 
 **Proposed model per task**
 
@@ -668,7 +688,9 @@ Load the same three skills.
     in integer smallest-cell units; a width in metres is `biggest_cell_width` halved `level` times (exact).
     Answers: `FacePieces()` (every face piece as axis, level, `cell_high_coord`, low cell id or none, high cell
     id or none, area), `TouchingCells(CellId)`, `Corners()` (each physical corner once), `ContainingCell(Vec3)`,
-    `NearbyFaces(Vec3, Axis)` (the candidate rule of design 5.4 step 2 by brute force),
+    `NearbyFaces(CellId cell, std::array<int, 3> window_quarters, Axis)` (the candidate rule of design 5.4 step 2 by
+    brute force over every face piece, in integer smallest-cell units: touching, levels and the window `q - 5 <=
+    n <= q + 6`; the caller passes the cell and the three `q`, so the checker shares only that definition),
     `FacesWithin(FacePieceId, double radius_in_cell_widths)`.
 
 - [ ] **Step 1: Failing tests** (label `cpu`): `TEST(GeometricGrid, OneBigCell_HasSixFacePieces)`;
@@ -1973,18 +1995,29 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - Produces: `NearbyFaceList`, `NearbyFaceMask`, `NearbyFaceFit`, `FindNearbyFaces`, `ToMaskOfAll` (design 3.5).
   Candidate rule: design 5.4 steps 1 and 2. On `kPositionOutsideGrid` or `kTooManyNearbyFaces` the list has
   `count` 0 and `*error` is set; otherwise `*error = kNone`.
-- **The distance test, exactly.** For each axis, `d = x_f - x_p` in metres (doubles, face centre minus
-  position) and `h` the width of the cell that contains the position; a face is a candidate when `d > -1.5 * h
-  && d <= 1.5 * h` on all three axes (`1.5 * h` is exact). One private inline function holds it, `bool
-  ComputeIsCandidateOffset(double offset, double cell_width)`; `FindNearbyFaces` and the face form of Task 19
-  call it and nothing else, so CPU, GPU and both forms make the same choice. Why the high end is the closed
-  one (write it in the header): a cell owns its low side, so a position on a low side has, across the axis,
-  face centres at -0.5 h, 0.5 h and 1.5 h in the three touching columns; closing the low end instead would ask
-  for a face at -1.5 h, which belongs to a cell that does not touch. Why every position of a same-size
-  neighbourhood gets 27: on each axis the faces of the touching cells are one width apart, and a window of
-  three widths that is open at one end and closed at the other holds exactly three of them wherever it lies.
-  A face at exactly 1.5 h has weight 0 and slope 0 (the weight curve is 0 there), so the sums of Task 18 do
-  not change and the kept weights still sum to 1.
+- **The window test, exactly** (no float comparison decides whether a face is a candidate). Two private inline
+  functions hold it; `FindNearbyFaces` and the face form of Task 19 call them and nothing else, so CPU, GPU
+  and both forms make the same choice:
+  - `int ComputeCandidateWindowQuarter(double position, double origin, double cell_width, std::int32_t
+    cell_coord)`: `q = math::Floor(4 * ((position - origin) / cell_width - cell_coord))`, then clamped to 0..3.
+    One per axis, for the cell `FindCellAt` returned. The clamp ties `q` to that cell: whatever rounding does,
+    the window is one of the four the cell has.
+  - `bool ComputeIsInCandidateWindow(std::int64_t face_quarter, int window_quarter)`: `window_quarter - 5 <=
+    face_quarter && face_quarter <= window_quarter + 6`. `face_quarter` is the face centre's coordinate on that
+    axis in quarter widths of the containing cell, from its low corner, found from the ids alone: for a face
+    piece of level `l` with coordinate `k` in cells of its level and the cell of level `p` with coordinate `c`,
+    it is `2^(p - l + 2) * k - 4 c` along the face's own axis (`2 k`, `4 k` or `8 k` for `l = p + 1, p, p - 1`)
+    and `2^(p - l + 1) * (2 k + 1) - 4 c` across (`2 k + 1`, `4 k + 2`, `8 k + 4`), in `std::int64_t`.
+  What the header says: in real numbers this is `-1.5 h < x_f - x_p <= 1.5 h` (twelve quarter steps, the low
+  end open, the high end closed, because a cell owns its low side), and every face centre of the three levels
+  lies on the quarter lattice, so the integer test loses nothing. Among cells of one size the faces on the own
+  axis are at `n = 4 k` and the window holds exactly three of them (`-4, 0, 4` for `q` 0 or 1; `0, 4, 8` for
+  `q` 2 or 3); across they are at `n = 4 k + 2` and the window always holds `-2, 2, 6`, the three touching
+  columns. So every position has 27 faces, by construction. A face at exactly 1.5 h has weight 0, so the kept
+  weights still sum to 1; a face the window keeps whose float offset rounds to just beyond 1.5 h also has
+  weight 0, because the weight curve is 0 at and beyond its reach.
+- **The bound 76.** The candidates of a position depend on it only through its cell and the three `q`, so a
+  cell has 64 candidate lists per axis and the bound is checked by going through them (tests below).
 - The file header says what a caller on the GPU must know (Global Constraints "GPU stack"): the list is about
   320 B and the weights of Task 18 about 600 B per thread, so a module whose GPU function calls them declares
   its own stack entry.
@@ -1992,10 +2025,27 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(FindNearbyFaces, AllNeighboursSplit_Has76)`: level-0 cell `{1,1,1}` of a 3^3 level-0 box whose 26
     other cells are split; a position at the centre; each axis gives exactly 76.
-  - `TEST(FindNearbyFaces, SmallRandomGrids_NeverExceed76)`: 10,000 small random grids, 10 positions each,
-    every axis.
-  - `TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker)`: the 200 grids, 50 positions each: the same list
-    as `GeometricGrid::NearbyFaces`, in ascending order.
+  - `TEST(FindNearbyFaces, AllNeighboursSplitEveryWindow_NeverExceeds76)`: the same grid; one position in each
+    of the 64 windows of the cell (`low + (q + 0.5) h / 4` per axis): no axis gives more than 76. These 64
+    positions stand for every position of the cell.
+  - `TEST(FindNearbyFaces, SmallRandomGrids_NeverExceed76)`: 200 small random grids, every active cell, all 64
+    windows, every axis; the largest count is reported with `RecordProperty`.
+  - `TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker)`: the 200 grids, 50 positions each, of which 10
+    on a cell side or centre: the same list as `GeometricGrid::NearbyFaces(cell, {q_x, q_y, q_z}, axis)`, in
+    ascending order. This is the test of the window rule on mixed sizes.
+  - `TEST(ComputeCandidateWindowQuarter, AnyRounding_StaysInZeroToThree)`: a position one step below the
+    cell's low corner and one at its high corner give 0 and 3.
+  - `TEST(FindNearbyFaces, CellCentreInNonDyadicFrame_Has27)`: 1 level, origin `{-17.616723516683763, 0, 0}`,
+    width 0.0375, the 5^3 cells around cell `{-28, 2, 2}`; position x `-18.647973516683763` (that cell's
+    centre as doubles give it), y and z at `2.3` widths: each axis gives 27, and also at one and at three
+    rounding steps either side in x (`std::nextafter`). A float test of the offsets gives 36 here.
+  - `TEST(FindNearbyFaces, OneStepBelowCellSide_Has27)`: origin `{-0.5, -0.5, -0.5}`, width 0.0625, the 5^3
+    cells around cell `{34, 10, 10}`; position x `1.6249999999999998` (one step below the side at 1.625;
+    `FindCellAt` gives cell 34), y and z at 10.3 widths from the origin: each axis gives 27; the same one step
+    above the side and at the side. A float test of the offsets gives 18 on the Y and Z axes here.
+  - `TEST(FindNearbyFaces, NonDyadicFrameAtSidesAndCentres_AlwaysHas27)`: origin `{-17.616723516683763, 0.3,
+    -7.1}`, width 0.0375, uniform 9^3; for 1,000 positions made of a cell's side or centre on each axis, moved
+    by -3 to +3 rounding steps: 27 on every axis.
   - Four tests on a uniform 5^3 grid, origin 0, width 1 m, the middle cell `{2,2,2}`; each axis gives exactly
     27 in every one:
     `TEST(FindNearbyFaces, UniformGridOffCentre_Has27)`: position `{2.6, 2.7, 2.8}`; no offset is 1.5 h.
@@ -2047,6 +2097,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     0, the other 18 weights `> 0`, `W = 1` within `1e-14`.
   - `TEST(ComputeNearbyFaceWeights, OnCellSide_IsCompleteWithNineZeroWeights)`: `{2.0, 2.6, 2.7}`: the X axis
     has no weight of 0; the Y and Z axes have 9 each; `is_complete` on all three; `W = 1` within `1e-14`.
+  - `TEST(ComputeNearbyFaceWeights, NonDyadicFrameAtSidesAndCentres_IsComplete)`: the 1,000 positions of Task
+    17's test of that name: `is_complete`, `fit == kFull`, every weight `>= 0`, `W = 1` within `1e-14`.
   - `TEST(ComputeNearbyFaceWeights, AtCellCorner_IsCompleteWithFifteenZeroWeights)`: `{2.0, 2.0, 2.0}`: 15
     weights of 0 and 12 above 0 on each axis; `is_complete`; `W = 1` within `1e-14`.
   - `TEST(ComputeNearbyFaceWeights, LinearField_IsReproduced)`: value `a + b . x_f` (`a = 0.7`,
@@ -2078,8 +2130,9 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 **Interfaces:**
 - Consumes: Task 18 (`ComputeRawFaceWeight`, `NearbyFaceWeights`).
 - Produces (design 3.7): `NearbyFaceSums`, `ToNearbyFaceSums`, `ComputeFaceWeight(tables, face, position, cell,
-  sums)`. Returns weight 0 (and zero vectors) when `face` fails the candidate rule for `position`; the distance test is
-  `ComputeIsCandidateOffset` of Task 17, the same function the list form went through.
+  sums)`. Returns weight 0 (and zero vectors) when `face` fails the candidate rule for `position`; the test is
+  `ComputeCandidateWindowQuarter` and `ComputeIsInCandidateWindow` of Task 17, with `q` computed from
+  `position` and `cell` exactly as the list form computes it.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(ComputeFaceWeight, SeenFromFace_IsBitIdentical)`: the 200 random grids, 50 positions, random masks;

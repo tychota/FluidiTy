@@ -520,7 +520,7 @@ struct NearbyFaceWeights {        // DECIDED name. One axis, one particle positi
   Mat3 inverse_weighted_spread;   // 1/m2. Meaningful only when fit == kFull.
   NearbyFaceFit fit;
   bool is_complete;               // All faces kept, all same size as the cell, 27 of them (true at every position of
-                                  // a same-size neighbourhood, also on a cell side or at a centre).
+                                  // a same-size neighbourhood: the candidates are chosen in integers, 5.4).
 };
 struct FaceWeight {               // DECIDED name.
   FacePlaceIndex face;
@@ -1072,7 +1072,11 @@ uniform curve instead of the radial one; new: the bounded candidate rule):
    level is `p - 1`, `p` or `p + 1`, and whose centre `x_f` satisfies `-1.5 h < x_f - x_p <= 1.5 h` on each axis (owner decision
    2026-11-19: open at the low end, closed at the high end, because a cell owns its low side; so every position of
    a same-size neighbourhood, a cell side, centre or corner included, has exactly 27 candidates, those at
-   exactly `1.5 h` with weight 0). List them in ascending `FacePlaceIndex`.
+   exactly `1.5 h` with weight 0). The test is made in integers, never on float offsets (ruling 2026-11-19: a
+   float test gives 2 or 4 planes within a rounding step of a side or centre): per axis `q = floor(4 ((x_p -
+   origin) / h - c))` clamped to 0..3, `c` the coordinate of the cell `FindCellAt` returned, and a face is a
+   candidate when its centre's coordinate `n` in quarter widths from that cell's low corner (an integer, from
+   the ids) has `q - 5 <= n <= q + 6`. List them in ascending `FacePlaceIndex`.
 3. The caller removes candidates it may not use (other side of a plate, not `outside_solid`, no value) by
    clearing bits of the mask. The grid never looks at physics.
 4. Raw weight: `w_f = Q(d_x) Q(d_y) Q(d_z) * (area_f / h^2)` with `d = (x_f - x_p) / h`. Raw change with the
@@ -1102,7 +1106,8 @@ always enough. Complete same-size neighbourhood: 27. All 26 neighbour places spl
 at -1/2, 0, 1/2, 1, 3/2 with 16, 16, 12, 16, 16 pieces = 76. Same-size neighbours whose far face is split
 into quarters: 36 + 18 = 54. Replacing a small neighbour by a same-size one removes at least as many pieces
 as it adds, so 76 is the maximum. The half-open test of step 2 does not change it: the faces `1.5 h` beyond the
-centre belong to small cells that do not touch `c`. A test searches for a counter-example.
+centre belong to small cells that do not touch `c`. A cell has 64 candidate lists per axis (the values of `q`);
+tests go through all of them on the worst case and on random grids.
 
 ### 5.5 Ranges and border
 
@@ -1288,6 +1293,7 @@ Analytic, CPU (label `cpu`), discrete results compared exactly:
 | `..., FacesOnOnePlane_IsMeanOnly` | mask keeps one plane | `kMeanOnly`; none kept: `kNone` |
 | `FindNearbyFaces, AllNeighboursSplit_Has76` and `..., SmallRandomGrids_NeverExceed76` | constructed worst case; 10,000 random | 76; never more |
 | `FindNearbyFaces, UniformGridOffCentre_Has27`, `..., UniformGridAtCellCentre_Has27`, `..., UniformGridOnCellSide_Has27`, `..., UniformGridAtCellCorner_Has27`; `ComputeNearbyFaceWeights, AtExactCellCentre_IsCompleteWithNineZeroWeights`, `..., OnCellSide_IsCompleteWithNineZeroWeights`, `..., AtCellCorner_IsCompleteWithFifteenZeroWeights` (owner decision 2026-11-19) | uniform 5^3, positions off the centre, at the centre, on a low side, at a low corner | 27 per axis each; `is_complete`; 0, 9, 9 (cross axes) and 15 faces of weight 0; `W = 1` |
+| `FindNearbyFaces, AllNeighboursSplitEveryWindow_NeverExceeds76`; `..., CellCentreInNonDyadicFrame_Has27`, `..., OneStepBelowCellSide_Has27`, `..., NonDyadicFrameAtSidesAndCentres_AlwaysHas27`; `ComputeNearbyFaceWeights, NonDyadicFrameAtSidesAndCentres_IsComplete` (ruling 2026-11-19) | the 64 windows of the worst-case cell; origin -17.616723516683763, width 0.0375, a cell centre; origin -0.5, width 0.0625, x 1.6249999999999998; positions within 3 rounding steps of sides and centres | at most 76; 27 per axis; `is_complete` |
 | `FindNearbyFaces, RangeWithBorder_HoldsEveryFace` | random grids cut by `BuildRanges` | every listed face is stored in the range or its border |
 | `FindBorderBlocks, TouchingCells_EqualsGeometricReadSet`, `..., FourCellWidths_EqualsBlockRuleByCoordinates`, `..., FourCellWidths_HoldsEveryFaceWithinFourWidths` NEW | random grids, random ascending block sets, both widths | equals the test-only geometric checker; ascending, no repeats, no block of the set; the span form gives the same list and the full count when the span is short |
 | `FindBorderBlocks, PlaneFourPieceBeyondTouchingCell_IsInBorder` NEW | range ends at a block side; the touching cell's high face is stored in the next block (5.1 step 5) | that block is in the `kTouchingCells` border |
