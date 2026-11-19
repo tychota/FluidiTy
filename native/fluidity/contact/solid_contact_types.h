@@ -207,7 +207,10 @@ struct SolidContactResult {
   Vec3 position{};  // m, world, at the end of the step.
   PerParticleVelocity<Vec3> velocity{};  // m/s, world, after the response.
   ContactKind kind = ContactKind::kNone;
-  double hit_fraction = 0;  // No unit, 0 to 1. When the first hit happens, as a share of the step. 0 without a hit.
+  // No unit, 0 to 1, both included and never above 1. When the first hit happens, as a share of the step. 0 without a
+  // hit. The first hit's time is that of the first sweep, from 0, so it is at most step_duration exactly, and the
+  // division of a smaller double by a larger one rounds to at most 1 (ApplyJointResponse, step 3).
+  double hit_fraction = 0;
   Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the first hit. Zero without a hit.
   // m/s, at the first hit: Dot(normal_out_of_solid, velocity - surface velocity) before the response. Negative means
   // approaching. Zero or positive is possible, a known choice: a turning solid has no touching rule, so a particle
@@ -231,7 +234,7 @@ struct ParticleContact {
   SolidFace face = SolidFace::kHighZ;  // The face of the first hit.
   SolidSide side_at_hit = SolidSide::kNoPlate;  // The side of the plate that was hit, when it is a plate.
   std::uint32_t solid_index = kNoSolid;  // Index into solids of the first hit's solid, not its solid_id.
-  double hit_fraction = 0;  // No unit, 0 to 1. When the first hit happens, as a share of the step. 0 without a hit.
+  double hit_fraction = 0;  // No unit, 0 to 1, never above 1. As in SolidContactResult. 0 without a hit.
   Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the first hit. Zero without a hit.
   // m/s, at the first hit. Negative means approaching; zero or positive is possible, as in SolidContactResult.
   PerParticleVelocity<double> approach_speed{};

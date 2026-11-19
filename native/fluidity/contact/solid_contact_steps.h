@@ -4806,6 +4806,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
     const Vec3 normal = record_surface.normal_out_of_solid;
     const Vec3 solid_velocity = record_surface.solid_velocity;
     result.kind = ContactKind::kHit;
+    // At most 1, though a later hit's elapsed may exceed step_duration by one rounding unit: the first response is
+    // the start's, at 0, or that of the first sweep's hit, which starts at 0, so elapsed is 0 + first_hit.elapsed,
+    // exact, and every search keeps first_hit.elapsed within the sweep's duration, step_duration - 0. A correctly
+    // rounded quotient of x <= y is at most 1.
     result.hit_fraction = move->elapsed / inputs.step_duration;
     result.normal_out_of_solid = normal;
     result.approach_speed = {

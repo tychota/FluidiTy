@@ -454,6 +454,44 @@ TEST(MoveParticle, DomainCorner_ThreeSidesHitInOneStep) {
   ExpectNearRelative(result.hit_fraction, (0.1 - kTolerance) / 0.5, 1);
 }
 
+// Moves a particle from {start_x, 0, 0} at 1 m/s for 0.5 s toward the fixed flat solid x >= 1 and returns its hit
+// fraction, or -1 when it does not hit.
+double ComputeHitFractionTowardFlatSolid(double start_x) {
+  const std::array solids = {move_particle_cases::BuildFlatSolid({.x = 1, .y = 0, .z = 0}, -kUnitX, kNoMotion, 1)};
+  SolidContactInputs inputs = move_particle_cases::BuildCaseInputs({
+      .start_position = {.x = start_x, .y = 0, .z = 0},
+      .velocity = kUnitX,
+      .step_duration = 0.5,
+      .friction = 0,
+  });
+  inputs.solids = solids.data();
+  inputs.solid_count = 1;
+  SolidContactResult result;
+  EXPECT_EQ(MoveParticle(inputs, &result, nullptr), ContactError::kNone);
+  return result.kind == ContactKind::kHit ? result.hit_fraction : -1;
+}
+
+TEST(MoveParticle, HitAtEndOfStep_HitFractionIsAtMostOne) {
+  // 16 starts one rounding unit apart around 0.5 - tol, where the hit lands at the very end of the step
+  // (ComputeHitFractionTowardFlatSolid): no hit fraction exceeds 1, and some are exactly 1, the boundary the field
+  // promises (the first hit's time is within the first sweep, which starts at 0).
+  double start_x = 0.5 - kTolerance;  // m
+  for (int step_back = 0; step_back < 8; ++step_back) {
+    start_x = std::nextafter(start_x, 0.0);
+  }
+  int hit_count = 0;
+  int at_one_count = 0;
+  for (int start_index = 0; start_index < 16; ++start_index) {
+    const double hit_fraction = ComputeHitFractionTowardFlatSolid(start_x);
+    hit_count += hit_fraction >= 0 ? 1 : 0;
+    at_one_count += hit_fraction == 1.0 ? 1 : 0;
+    EXPECT_LE(hit_fraction, 1.0) << start_x;
+    start_x = std::nextafter(start_x, 1.0);
+  }
+  EXPECT_GT(hit_count, 0);
+  EXPECT_GT(at_one_count, 0);
+}
+
 TEST(MoveParticle, OctagonRoom_FifthHitIsTooManyHits) {
   // The particle hits side 0 of the room, slides along sides 0, 1, 2 and 3, and meets side 4 (id 5) at 0.279 s.
   const MoveParticleCall call = RunMove("OctagonRoom");
