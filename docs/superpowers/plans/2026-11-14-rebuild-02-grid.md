@@ -215,6 +215,24 @@ one axis. Owner decision: keep every candidate and size the list for the proven 
   `ComputeIsInCandidateWindow`, `window_quarter` (`n_p`), `face_quarter` (`n_f`). Where the fourth entry above
   writes `q` and `n`, read `n_p` and `n_f`.
 
+### Seventh revision 2026-11-19: three findings of the review of the paper's parallel build
+
+- **One order of input checks on both processors.** Frame, version, list shape and list length (more than `64 *
+  max_cell_blocks` cells is `kTooManyCellBlocks`, `cell` zero) are checked on the CPU, in that order, before any
+  id is looked at and before any keyed check; they never take part in the key minimum. The CPU path checked
+  ids first. Tasks 8, 9a, 10; design 5.1 item 8. New tests with a list that is too long and holds a bad id.
+- **A prefix sum reads only values written at this launch.** A thread whose earlier step failed does nothing,
+  except that a value a prefix sum will read is written as 0. Otherwise the sum adds stale words, passes `2^32
+  - 1` (from about 93,000 cells) and the true error is reported as `kBadInput`. Global Constraints "One launch
+  pattern"; Tasks 11a (P7 a, P8 marks), 23 (marks); new replay tests that start from working arrays full of
+  `0xFFFFFFFF`. Sorts may read stale keys: `BuildStableOrder` fails on no value. On a valid list the sums cannot
+  pass `2^32 - 1`: the split-cell counts add up to at most `n / 7`, and marks are 0 or 1 over fewer than `2^32`
+  places.
+- **The coordinate limit.** At the low limit nothing lies beyond a cell. At the high limit a bigger cell may,
+  found at its own size level, where its coordinate is in range. Tasks 1b, 7a, 8b.
+- Small: `n` is `active_count`; only an id with bit 63 clear has the largest sort key; the `CellId{0}` entries
+  of the tail write nothing at P10 (b); the status step is part of the check (Tasks 10, 11b).
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -297,7 +315,9 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
   (65,535). Its body is one `FLUIDITY_CPU_AND_GPU` per-item function of a shared steps header
   (`grid_build_steps.h`, `border_block_steps.h`, `grid_piece_steps.h`). A thread may issue an integer
   `atomicMin` of the key an item returns and an integer `atomicAdd` of the count an item returns, per item or
-  summed over its items first. There is no other launch form. The GPU's only atomics are these two, and their results do not
+  summed over its items first. There is no other launch form. A thread that finds an earlier step failed does
+  nothing, with one exception: a value that a prefix sum will read is written as 0, so no prefix sum ever adds
+  a value of an earlier launch. The GPU's only atomics are these two, and their results do not
   depend on thread timing.
 - **Replay tests.** For each operation a `cpu` test in `<name>_steps_test.cc` runs the per-item functions for
   every thread block and thread of the launch, in launch order and in reverse, atomics replaced by a plain
@@ -556,8 +576,9 @@ Load the same three skills.
   `<proc-count-grid>` with four steps: 1 check and sort the list (steps 1 to 4 of `<proc-build-grid>`); 2
   count the active cells per level; 3 count the face pieces, one cell at a time, from the place beside each of
   its six sides (active, inside a bigger cell, split or absent); 4 add the split cells, sort by block and
-  count the distinct blocks. Say why it exists (the planner counts before any buffers exist) and that a cell
-  beside the coordinate limit has no cell beyond it. Code comments `// Step N:` in Task 8b follow these
+  count the distinct blocks. Say why it exists (the planner counts before any buffers exist) and that a place
+  beyond the coordinate limit of its own size level holds no cell of that level and gets no id: at the low limit
+  nothing lies beyond a cell; at the high limit a bigger cell may, found at its own size level. Code comments `// Step N:` in Task 8b follow these
   numbers.
 - [ ] **Step 5: Run** the `typst compile` command of Task 1a; read the new pages.
 - [ ] **Step 6: Commit.** Subject: `Describe the parallel grid build in the method paper`.
@@ -943,7 +964,8 @@ Load the same three skills.
   - **Cells beside a cell: no id outside the range.** Every function here and in Task 8b that looks at a place
     beside a cell works on the raw `CellCoord` (plain integers), derives the bigger cell's coordinate (`floor(c
     / 2)`) or a small cell's (`2 c`, `2 c + 1`) by arithmetic, and makes an id only for a coordinate that
-    `ComputeIsCoordInRange` accepts at its own level. A coordinate outside the range holds no cell. An id is
+    `ComputeIsCoordInRange` accepts at its own level. A coordinate outside the range of its own level holds no cell of that level; a bigger cell may still cover the
+    place at the high limit, and is found at its own level, where the halved coordinate is in range. An id is
     never made first and tested after: outside the range it would be the id of another cell.
   - `std::uint32_t FindSortedCellAt(const CellId* sorted_cells, std::uint32_t count, SizeLevel size_level,
     CellCoord coord)`: `kNoIndex` when `coord` is outside the range, else `FindSortedCell` of its id. The one
@@ -1132,7 +1154,7 @@ Load the same three skills.
   sorted_cells, SiblingCheck sibling_check)` (steps 2 to 4 of `<proc-build-grid>`, each run to its end before
   the next, positions in order, by Task 7a's checks), and
   `std::expected<std::uint32_t, GridFailure> BuildSortedCellList(const GridInputs& inputs, GridBuffers&
-  buffers, SiblingCheck sibling_check)`: steps 1 to 4 into the lent builder buffers' `cell ids` array, which
+  buffers, SiblingCheck sibling_check)`: the input checks, then steps 1 to 4, into the lent builder buffers' `cell ids` array, which
   then holds the list in fixed cell order; returns the cell count. (It is named `Build`, not `Check`, because
   it writes the sorted list.) CPU here; Task 10 adds the GPU path.
   `BuildGrid` (Task 9a) starts from it.
@@ -1140,7 +1162,10 @@ Load the same three skills.
   `cell` and the bigger (or earlier) in `other_cell`; `kSiblingCellMissing` names the first missing small cell
   (eighth order) in `cell` and its big cell in `other_cell`; `kSizeStepRuleBroken` names the smaller cell in
   `cell` and the bigger in `other_cell`; `kCoordOutOfRange` and `kBadInput` from an id name the first such id
-  in input order. Step 1 runs over the list in input order before the sort. The CPU sorts with `std::sort` and
+  in input order. **Order, the same on both processors:** `CheckGridInputs` (frame, version, list shape), then
+  the list length against `64 * buffers.max_cell_blocks()` (`kTooManyCellBlocks`, `cell` zero), and only then
+  step 1 on the ids. These input checks come before every keyed check and never take part in the key minimum.
+  The forms without buffers have no length check. Step 1 runs over the list in input order before the sort. The CPU sorts with `std::sort` and
   the comparator "pass 2, then pass 1, then pass 0 of `ToCellSortKey`".
 
 - [ ] **Step 1: Failing tests** (label `cpu`), frame origin 0, width 1 m, 3 levels:
@@ -1158,6 +1183,9 @@ Load the same three skills.
   - `TEST(CheckSizeStepRule, IntoBuffers_EqualsSpanForm)`: the three `...TwoLevelsApart` lists and the 200
     random grids, with CPU buffers for 4,096 blocks.
   - `TEST(CheckSizeStepRule, MoreCellsThanPlaces_IsTooManyCellBlocks)`: buffers for 1 block, 65 cells.
+  - `TEST(CheckSizeStepRule, TooLongListWithBadId_IsTooManyCellBlocks)`: buffers for 1 block, 65 cells of
+    which the first has bit 63 clear: `kTooManyCellBlocks` with `cell` and `other_cell` zero, not `kBadInput`;
+    the same list with a version of 0 is `kBadInput` (the frame and version come first).
   - `TEST(BuildSortedCellList, ShuffledList_LeavesFixedCellOrder)`: the 200 random grids: the `cell ids`
     array then equals the list sorted with `ComesBefore`.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step N:` comments from `<proc-build-grid>`.
@@ -1309,6 +1337,8 @@ Load the same three skills.
   - `TEST(BuildGrid, AboveBuffersRoom_IsTooManyCellBlocks)`: buffers for 8 blocks; 9 level-0 cells `{4 i, 0,
     0}` fail with `cell` zero and return no grid; the same buffers then build the first 8.
   - `TEST(BuildGrid, MoreCellsThanPlaces_IsTooManyCellBlocks)`: buffers for 8 blocks, `64 * 8 + 1` cells.
+  - `TEST(BuildGrid, TooLongListWithBadId_IsTooManyCellBlocks)`: the same list with one id whose bit 63 is
+    clear and one coordinate of `kMaxCoord + 1`: `kTooManyCellBlocks`, `cell` zero.
   - `TEST(BuildGrid, SplitCellsOverflowThePlaces_IsTooManyCellBlocks)`: buffers for 1 block; the 64 level-1
     cells of the 8 level-0 cells `{0..1, 0..1, 0..1}`: the 64 cells fit the places, the 8 split cells they
     add do not (72 above 64): `kTooManyCellBlocks`, `cell` zero. This is the room failure found after the
@@ -1427,7 +1457,8 @@ Load the same three skills.
   clear bit 63 of one id; set a coordinate to `kMaxCoord + 1`). "The 500 mutated lists" are
   seeds 1..500.
 - **The parallel form of steps 1 to 4:**
-  - P1 (CPU, nothing launched yet): `CheckGridInputs`; a list of more than `64 * max_cell_blocks` cells is
+  - In the steps below `n` is the list's cell count (`active_count` in the per-item functions).
+  - P1 (CPU, nothing launched yet), in the order of Task 8: `CheckGridInputs`; then a list of more than `64 * max_cell_blocks` cells is
     `kTooManyCellBlocks`, `cell` zero. Then a one-thread GPU function resets the status (`failure_key =
     kNoFailureKey`, counts zero): nothing is written from the CPU.
   - P2, one thread per input index `i`: `atomicMin` of `ComputeCellIdFailureKey` (step 1, position `i`).
@@ -1438,7 +1469,7 @@ Load the same three skills.
   - P4, P5 (only with `kRequire`), P6, one thread per sorted position `j`: each first reads `failure_key` and
     returns when an earlier step failed; else `atomicMin` of `ComputeSortedCellFailureKey`. So no step runs on
     data an earlier step found bad.
-  - Status: a one-thread GPU function fills `error`, `cell`, `other_cell` from the smallest key with
+  - Status (part of the check: `BuildSortedCellList` is not done before it): a one-thread GPU function fills `error`, `cell`, `other_cell` from the smallest key with
     `ComputeFailureCells` (step 1: the input id at that index). The CPU reads `GridBuildStatus` with one
     `ReadBuffer`: the only transfer of the operation.
 
@@ -1454,6 +1485,8 @@ Load the same three skills.
   status records it reads to `WriteResultDigest`):
   - `TEST(CheckSizeStepRule, OnGpu_EqualsCpu)`: the three `...TwoLevelsApart` lists, `OneLevelApart`, the empty
     list and the 200 random grids: the result is identical to `CheckSizeStepRule(frame, span)`.
+  - `TEST(CheckSizeStepRule, OnGpuTooLongListWithBadId_SameFailureAsCpu)`: Task 8's list of that test, in GPU
+    buffers for 1 block: `kTooManyCellBlocks`, `cell` and `other_cell` zero, as on the CPU; nothing is launched.
   - `TEST(CheckSizeStepRule, OnGpuSeveralFailures_SameFirstFailureAsCpu)`: the 500 mutated lists, both
     `SiblingCheck` values through `BuildSortedCellList`: `GridFailure` (error, cell, other_cell) equals the
     CPU path's exactly.
@@ -1500,9 +1533,12 @@ Load the same three skills.
   `WriteSplitCellsOnGpu`, `WriteSortTailOnGpu`, `WriteBlockSortKeysOnGpu`, `WriteBlockStartMarksOnGpu`,
   `WriteBlockIdsOnGpu`), compiled here and sequenced by Task 11b.
 - **The parallel form of step 5.** Every GPU function loops grid-stride over a count it reads from
-  `GridBuildStatus`, so no count comes back mid-build, and returns at once when an earlier step failed.
+  `GridBuildStatus`, so no count comes back mid-build. When an earlier step failed it writes nothing, except in the two steps
+  whose output a prefix sum reads, P7 (a) and the marks of P8: there every thread writes 0. The prefix sums
+  then add zeros, never words of an earlier launch (after P3 `second order` holds a permutation of `0..n-1`,
+  whose sum passes `2^32 - 1` from 92,683 cells, and the base call would fail with a size error).
   - P7 add split cells. (a) One thread per sorted active cell writes `ComputeSplitCellCountToAdd` into `second
-    order`; `ComputeExclusivePrefixSum` in place over `n` entries (the total lands at index `n`). (b) One
+    order`, or 0 when an earlier step failed; `ComputeExclusivePrefixSum` in place over `n` entries (the total lands at index `n`). (b) One
     thread reads the total into `split_cells` and takes `ComputeRoomFailureKey(n + split_cells, 64 *
     max_cell_blocks, 5)`. (c) One thread per active cell: `ApplySplitCellWritesAt`. (d) **The tail fill:** one
     thread per place below `sort_count = ComputeSortCount(n, max_cell_blocks)`: `ApplySortTailFillAt` with
@@ -1513,7 +1549,8 @@ Load the same three skills.
   - P8 sort cells by block and number the blocks. Three `ToBlockSortKey` passes over `sort_count` places with
     `BuildStableOrder` (final order in `order`; `CellId{0}` has the key `~0` and sorts last). No gather:
     sorted entry `j` is `cell_ids[order[j]]`, and it comes from the active list exactly when `order[j] < n`.
-    One thread per sorted place writes `ComputeBlockStartMark` into `second order`;
+    One thread per sorted place writes `ComputeBlockStartMark` into `second order`, or 0 when an earlier step
+    failed (step 5 at P7 included);
     `ComputeExclusivePrefixSum` in place; one thread reads the total into `cell_blocks` and takes
     `ComputeRoomFailureKey(cell_blocks, max_cell_blocks, 6)`; one thread per sorted place:
     `ApplyBlockIdWriteAt`. The sort keys are the fixed block order, so `block_ids` comes out in fixed order.
@@ -1537,9 +1574,16 @@ Load the same three skills.
     `block_ids` equals the CPU's. A copy of the sequence with step (d) left out gives more than 14 blocks, the
     extra ones being the blocks of the stale ids at places 14 and 15 (15 blocks for random grid 1, whose two
     stale cells share a block): the test shows it, so the fill is seen to matter.
+  - `TEST(BuildGrid, StaleLargeValuesWithFailingList_ReportsTheTrueError)`: every working array of the replay
+    (sort keys, both orders, the status's counts) starts as `0xFFFFFFFF` words. Three lists into room for 100
+    blocks: one with a repeated cell (step 2), one with a missing sibling (step 3), and the 64 level-1 cells of
+    8 level-0 cells into room for 1 (step 5 at P7). Both prefix sums return without error in each, and the
+    failure is `kCellsOverlap`, `kSiblingCellMissing`, `kTooManyCellBlocks`, with the CPU's cells, never
+    `kBadInput`. A copy of P7 (a) that returns early instead of writing 0 makes the first prefix sum fail: the
+    test shows it.
   - `TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds)`: P2 to P8 replayed on CPU
     buffers that held another grid before; on the 200 random grids, a list of 9 level-0 blocks into room for 8
-    (step 6), a list of `64 * 8 + 1` cells into the same (step 5 at P1) and the 64 level-1 cells of 8 level-0
+    (step 6), a list of `64 * 8 + 1` cells into the same (the length check of P1) and the 64 level-1 cells of 8 level-0
     cells into room for 1 (step 5 at P7, after the split cells are counted): `block_ids`, `cell_blocks`,
     `split_cells` and every `GridFailure` equal the CPU build's.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step P7:` and `// Step P8:` comments. **Step 4:**
@@ -1561,7 +1605,7 @@ Load the same three skills.
 - Consumes: Tasks 10 and 11a, Task 7b (`FindBlockNeighbours`, `ComputeCoveredCellState`,
   `ComputeFacePieceKind`, `ComputeFailureCells`), Task 9c (`ReadGrid`, in tests), slice `ReadBuffer`.
 - Shared per-item functions added to `grid_build_steps.h`: `ApplyBlockNeighboursWriteAt` (P9: one block's 36
-  entries through `FindBlockNeighbours`), `ApplyAbsentStateAt` (P10a), `int ApplySortedCellStateAt(...)` (P10b:
+  entries through `FindBlockNeighbours`), `ApplyAbsentStateAt` (P10a), `int ApplySortedCellStateAt(...)` (P10b: an entry `CellId{0}` of the tail writes nothing and returns `-1`; else
   writes `kActive` for an entry of the active list or `kSplit` for an added one, at
   `ComputeBlockIndexOfSortedEntry` and the cell's local place; returns the level of an active entry, else
   `-1`), `ApplyCoveredCellStateAt` (P10c: a place still `kAbsent` takes `ComputeCoveredCellState`),
@@ -1599,7 +1643,7 @@ Load the same three skills.
   - `TEST(BuildGrid, OnGpu_EqualsCpuTablesBitForBit)`: the empty list, one cell, the two-size fixture, and the
     200 random grids, into GPU buffers for 4,096 blocks.
   - `TEST(BuildGrid, OnGpuFailures_EqualCpuFailures)`: the 500 mutated lists, 9 level-0 blocks into buffers for
-    8 (step 6), `64 * 8 + 1` cells into the same (step 5 at P1) and the 64 level-1 cells of 8 level-0 cells
+    8 (step 6), `64 * 8 + 1` cells into the same (the length check of P1) and the 64 level-1 cells of 8 level-0 cells
     into room for 1 (step 5 at P7).
   - `TEST(BuildGrid, OnGpuFailedBuildThenRebuild_EqualsFreshBuffers)`: a failing mutated list, then grid B into
     the same buffers; B equals B built into fresh buffers.
@@ -2500,7 +2544,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   `WriteBorderMarksOnGpu`, `WriteBorderBlocksOnGpu`.
 - **The parallel form:** (1) CPU: the same-buffer, count and room checks; a one-thread GPU function resets the
   status. (2) One thread per `border_so_far` entry `i`: ascending, outside `range`, below the block count,
-  else `atomicMin(ToFailureKey(1, i, 0))` with `kBadInput`. (3) One thread per block `b` of the grid (the
+  else `atomicMin(ToFailureKey(1, i, 0))` with `kBadInput`. (3) One thread per block `b` of the grid, which
+  writes mark 0 when step 2 failed, so the prefix sum of step 4 never adds stale words (the
   count is known on the CPU from `grid.counts()`): mark = `b` outside `range` and (`b` in `border_so_far` or
   `ComputeIsBorderBlock`). (4) `ComputeExclusivePrefixSum` in place over the block count (the total lands one
   past the last block). (5) One thread per block: `b` was marked exactly when `sums[b + 1] != sums[b]`; a
@@ -2509,6 +2554,9 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   order of `b` is kept by the prefix sum, so the list is the CPU's.
 
 - [ ] **Step 1: Tests.** Label `cpu` (`border_block_steps_test.cc`):
+  `TEST(FindBorderBlocks, StaleLargeMarksWithBadBorderSoFar_PrefixSumAddsZeros)`: the marks array starts as
+  `0xFFFFFFFF` words; `border_so_far` is not ascending: after step 3 every mark is 0, the prefix sum returns
+  without error with a total of 0, and the failure is the CPU form's `kBadInput` of step 2.
   `TEST(FindBorderBlocks, EveryThreadBlockAndThread_EqualsCpuStackedLayers)`: steps 2 to 5 replayed on CPU
   buffers as Global Constraints "Replay tests" says; on Task 22b's grids, ranges and layers and the failing
   inputs of `OnGpuFailures_EqualCpuFailures`: lists, counts and failures equal the CPU form's.

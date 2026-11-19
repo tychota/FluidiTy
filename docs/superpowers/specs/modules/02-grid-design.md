@@ -1013,7 +1013,10 @@ and weights.
    the part of the velocity along `+axis`. Flow out of `cell_low` is positive.
 7. `FacePieceId` and `CellId` do not depend on which blocks exist; indexes do. `FindCellPlace` and
    `FindFacePlace` translate an id into the current version, which is what remap needs.
-8. `BuildGrid` steps (CPU builder): 1 check frame, version and coordinates; 2 copy the ids into the lent
+8. `BuildGrid` steps (CPU builder): first the input checks, in this order on both processors: frame, version,
+   list shape, then the list length (more than `64 * max_cell_blocks` cells is `kTooManyCellBlocks`, `cell` zero);
+   they come before every keyed check and never take part in the key minimum (ruling 2026-11-19: the CPU used
+   to look at the ids first). Then 1 check the ids (form and coordinates); 2 copy the ids into the lent
    builder buffers and sort them in place, reject overlaps; 3 mark split cells and check the siblings of every active and every split cell (each active cell checks its
    own siblings and those of the split cells its eighth-0 chain adds; plan revision 2026-11-19); 4 check the size-step
    rule; 5 create and sort blocks in the buffers' block-id table, check their count against the buffers' room;
@@ -1027,8 +1030,10 @@ and weights.
 9. **Parallel build (new, A17; `<proc-build-grid-in-parallel>`).** Each sequential step becomes "compute a key,
    stable sort, mark, prefix-sum, scatter" (`BuildStableOrder` and `ComputeExclusivePrefixSum` with the buffers'
    `OrderBuffers`). Every kernel loops grid-stride over a count it reads from `GridBuildStatus`, so no count comes
-   back mid-build, and returns at once when an earlier step failed. P1 (CPU) input checks, `n` above
-   `64 * max_cell_blocks` is step 5; a one-thread kernel resets the status. P2 one thread per input index:
+   back mid-build, and writes nothing when an earlier step failed, except that a value a
+   prefix sum reads (the split-cell counts of P7, the marks of P8, the border marks) is written as 0, so no prefix
+   sum adds words of an earlier launch (ruling 2026-11-19). P1 (CPU) the input checks of item 8; `n` above
+   `64 * max_cell_blocks` fails there, before any key exists; a one-thread kernel resets the status. P2 one thread per input index:
    `CheckCellId`. P3 three stable-sort passes of `ToCellSortKey` (least significant first: x with the level, then
    y, then z, in level-15 units) put the cells in fixed cell order (= `ComesBefore`). P4 overlaps, P5 siblings,
    P6 size-step rule: one thread per sorted position; each check looks only at the smaller cell of a pair, so a
