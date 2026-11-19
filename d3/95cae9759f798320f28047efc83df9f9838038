@@ -1,0 +1,29 @@
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_fd5136bfaad03b 17,71-75
+native/fluidity/grid/grid_test_support_test.cc
+  s_625aa751fc3297::t_a03ecb0d859639 566-568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d395cae9759f798320f28047efc83df9f9838038",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_625aa751fc3297": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a848e483ed39a5548",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
