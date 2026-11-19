@@ -3,19 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
-#include <cstdint>
 #include <random>
+
+#include "fluidity/grid/grid_test_support.h"
 
 namespace fluidity::grid {
 namespace {
-
-// Maps the 64 raw bits of a generator to a double in [0, 1): the top 53 bits, scaled by 2^-53. The standard fixes the
-// raw output of std::mt19937_64 for a seed, and this mapping is exact, so every standard library gives the same
-// offsets. A distribution class such as std::uniform_real_distribution has no fixed output, so none is used.
-double ToUnitFraction(std::uint64_t raw_bits) {
-  constexpr double kScale = 1.0 / 9007199254740992.0;  // 2^-53
-  return static_cast<double>(raw_bits >> 11U) * kScale;
-}
 
 static_assert(ComputeCompleteWeightedSpread(2.0) == 1.0);
 
@@ -23,7 +16,7 @@ TEST(ComputeWeightCurve, AnyPosition_ThreeNeighboursSumToOne) {
   // A fixed seed: the test checks the same offsets on every run.
   std::mt19937_64 generator(20261114);  // NOLINT(bugprone-random-generator-seed)
   for (int draw = 0; draw < 1000; ++draw) {
-    const double offset = ToUnitFraction(generator()) - 0.5;
+    const double offset = ToUnitDouble(generator()) - 0.5;
     const WeightCurveValue below = ComputeWeightCurve(offset - 1.0);
     const WeightCurveValue middle = ComputeWeightCurve(offset);
     const WeightCurveValue above = ComputeWeightCurve(offset + 1.0);

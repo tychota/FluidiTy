@@ -11,6 +11,7 @@
 #include <type_traits>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/grid/grid_test_support.h"
 
 namespace fluidity::grid {
 namespace {
@@ -288,12 +289,12 @@ FixedOrderKey ToFixedOrderKey(int size_level, CellCoord low_corner_in_cells) {
 // corner at the limits come up.
 std::int32_t ToRandomCoord(std::uint64_t raw) {
   const std::uint64_t span = 2 * static_cast<std::uint64_t>(kMaxCoord) + 2;
-  const std::int32_t coord = static_cast<std::int32_t>(raw % span) - kMaxCoord;
-  switch ((raw >> 40U) % 4) {
+  const std::int32_t coord = static_cast<std::int32_t>(ToUniformIndex(raw, span)) - kMaxCoord;
+  switch (ToUniformIndex(raw >> 40U, 4)) {
     case 0:
-      return -kMaxCoord + static_cast<std::int32_t>((raw >> 20U) % 8);
+      return -kMaxCoord + static_cast<std::int32_t>(ToUniformIndex(raw >> 20U, 8));
     case 1:
-      return kMaxCoord + 1 - static_cast<std::int32_t>((raw >> 20U) % 8);
+      return kMaxCoord + 1 - static_cast<std::int32_t>(ToUniformIndex(raw >> 20U, 8));
     default:
       return coord;
   }
@@ -305,7 +306,7 @@ struct RandomCell {
 };
 
 RandomCell ToRandomCell(std::mt19937_64& generator) {
-  const auto size_level = static_cast<int>(generator() % static_cast<std::uint64_t>(kMaxSizeLevels));
+  const auto size_level = static_cast<int>(ToUniformIndex(generator(), kMaxSizeLevels));
   const std::int32_t x = ToRandomCoord(generator());
   const std::int32_t y = ToRandomCoord(generator());
   const std::int32_t z = ToRandomCoord(generator());
@@ -322,7 +323,7 @@ TEST(ComesBefore, RandomCells_MatchTheDirectComparison) {
     if (pair % 4 == 0) {
       // A quarter of the pairs share the low corner: the same cell, or a cell of a smaller size level. A low corner
       // that the smaller size level cannot name is skipped.
-      const auto size_level_steps = static_cast<int>(generator() % static_cast<std::uint64_t>(16 - first.size_level));
+      const auto size_level_steps = static_cast<int>(ToUniformIndex(generator(), 16 - first.size_level));
       const auto cells_per_cell =
           static_cast<std::int64_t>(std::uint64_t{1} << static_cast<unsigned>(size_level_steps));
       const std::int64_t x = first.cell_coord.x * cells_per_cell;
