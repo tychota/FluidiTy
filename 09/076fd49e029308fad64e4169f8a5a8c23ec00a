@@ -1,0 +1,27 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_14ca78665bb43b 29-31
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_6fe6d899c6c62c 13
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_20304cb323f631 23-26,32-33,63-64,66-71,75-76
+native/fluidity/grid/weight_curve.h
+  s_4f0877e2acdcf0::t_8c06651102272b 15-17,23-25,32,50-52,58-59,70-71,76-79,81-82,92-93,99
+native/fluidity/grid/weight_curve_test.cc
+  s_4f0877e2acdcf0::t_b4fe3fe671910b 5,12-14,38-44,49-73,101-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "09076fd49e029308fad64e4169f8a5a8c23ec00a",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
