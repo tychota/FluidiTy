@@ -1,0 +1,55 @@
+native/fluidity/grid/grid_test_support_test.cc
+  s_4f0877e2acdcf0::t_65cf216b44c423 670
+  s_4f0877e2acdcf0::t_35f27f47fc2bc5 559-584
+  s_4f0877e2acdcf0::t_6cf6fc8640beea 1-99,107-534,543-544,548-558,585-622,624-669,671-710
+  s_4f0877e2acdcf0::t_ab7bb12d39d87f 100-106
+  s_4f0877e2acdcf0::t_98e2ae8eb64e81 623
+  s_4f0877e2acdcf0::t_103dedc160131f 535-542,545-547
+  s_4f0877e2acdcf0::t_76d70250b4e07b 711-713
+  s_625aa751fc3297::t_26945840c652dc 714-735
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_45d356c6a6d5d7 11-14,16,18-19
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_8bea14b6830ecf 23-24
+  s_4f0877e2acdcf0::t_eb476cd3fe94d1 1-22,25-97,110-185,189-191
+  s_4f0877e2acdcf0::t_61a318f2c1fcb0 98-109
+  s_4f0877e2acdcf0::t_05e3183fca7bc2 186,188
+  s_4f0877e2acdcf0::t_4165c374f98ed3 187
+  s_4f0877e2acdcf0::t_33fff466e5714d 192-193
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_6acf273e9f63ff 114-116,119
+  s_4f0877e2acdcf0::t_00436a9d79d6ca 241-244
+  s_4f0877e2acdcf0::t_956637029ef513 10,53-59,64,76,82-88,90,97-99,117-118,152-157,161-169,171-172,176,178-180,185,187,195,197-200,202,207,212,218,222-223,304-305,307,314-316,327,329-332,350-358,360-366,373,375-376,378,389,437-438,445,465,514-516,527
+  s_4f0877e2acdcf0::t_b22cd425cff4c1 1-2,6,9,11,15-16,22-23,96,131-132,148-149,251-252,257,347-349,367-371,384-386,409-410,448-451,501,517,534-536
+  s_4f0877e2acdcf0::t_426243940512db 3-5,7-8,12-14,17-21,24-52,60-63,65-75,77-81,95,100-113,120-130,133-147,150-151,158-160,170,173-175,177,181-184,186,188-194,196,201,203-206,208-211,213-217,219-221,224-240,245-250,253-256,259-270,272-303,306,308-313,317-326,328,333-346,359,372,374,377,379-383,387-388,390-408,411-413,416-436,439-444,446-447,452-464,466-500,502-513,518-526,528-533
+  s_4f0877e2acdcf0::t_97e0a6cef71ecd 89,91-94
+  s_4f0877e2acdcf0::t_5c2e64cf0777af 258,271,414-415,537-579
+native/fluidity/grid/grid_ids_test.cc
+  s_4f0877e2acdcf0::t_d472e0d0ab0267 14,292-293,295,297,309,326
+native/fluidity/grid/weight_curve_test.cc
+  s_4f0877e2acdcf0::t_727b5115576a6c 8-9,19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "14eb9134cc0ffb069e7f1e2ec9f32236817fddba",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_625aa751fc3297": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a848e483ed39a5548",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
