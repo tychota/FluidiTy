@@ -1,0 +1,21 @@
+docs/superpowers/plans/2026-11-14-rebuild-02-grid.md
+  s_4f0877e2acdcf0::t_df43d79b131f13 204-217,724-725,2034-2035,2046-2047,2055,2057-2061,2072,2079-2083,2088,2132-2133,2141-2146,2178-2184,2206
+docs/superpowers/specs/modules/02-grid-design.md
+  s_4f0877e2acdcf0::t_df43d79b131f13 1078,1080-1081,1086-1088,1094,1104-1105,1122-1123,1128,1130,1135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8205e1a78d11d94a33b2ae835a3e838435228036",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
