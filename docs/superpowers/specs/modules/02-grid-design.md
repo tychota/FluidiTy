@@ -210,7 +210,7 @@ enum class GridError : std::uint8_t {  // NEW. One enum for the module.
                           // Nothing falls back to the CPU.
   kWrongGridVersion,      // A buffer or index of another grid version was passed, or values bound to no grid.
   kPositionOutsideGrid,   // No active cell contains the position.
-  kTooManyNearbyFaces,    // More than kMaxNearbyFaces candidates: the size-step rule does not hold here.
+  kTooManyNearbyFaces,    // More than kMaxNearbyFaces candidates. A guard: no valid grid reaches it (5.4).
   kOutOfMemory,           // Changed (reconcile item 31): moved to the last place. Only the builders: the run's
                           // RunMemory (BufferError::kRunMemoryTooSmall) or the processor could not hold a buffer.
 };
@@ -491,7 +491,8 @@ struct WeightCurveValue { double weight; double slope; };   // NEW. No unit; slo
 // DECIDED word `weight_curve`. Papers: quadratic B-spline. Zero at and beyond 1.5 cell widths.
 WeightCurveValue ComputeWeightCurve(double distance_in_cell_widths);
 inline constexpr double kWeightCurveReach = 1.5;            // NEW. Cell widths.
-inline constexpr int kMaxNearbyFaces = 76;                  // NEW. Per axis; derivation in section 5.4.
+inline constexpr int kMaxNearbyFaces = 216;                 // Per axis. Changed (owner decision 2026-11-19; was 76):
+                                                            // no valid grid passes 212, proof in 5.4.
 inline constexpr double kMinWeightSum = 0.1;                // NEW. Ported from the old paper's mask rule.
 inline constexpr double kMinPivotShare = 1e-12;             // NEW. Ported: graded_mac_transfer_3d.cc:19.
 
@@ -502,14 +503,15 @@ struct NearbyFaceList {           // NEW. The candidates for one axis, before an
   int count;
   FacePlaceIndex faces[kMaxNearbyFaces];   // Ascending index order.
 };
-struct NearbyFaceMask { std::uint64_t bits[2]; };   // NEW. Bit i set = face i of the list is kept.
+struct NearbyFaceMask { std::uint64_t bits[4]; };   // Bit i (of word i / 64) set = face i of the list is kept.
+                                                    // Changed 2026-11-19: four words, for 216 faces. 32 B.
 
 enum class NearbyFaceFit : std::uint8_t {   // NEW.
   kFull,      // Weights, mean and an invertible spread: a fitted_velocity_change can be computed.
   kMeanOnly,  // Weights are valid but the kept faces are too few or too flat to fit a change.
   kNone,      // No kept face has weight. The particle cannot read or write the grid on this axis.
 };
-struct NearbyFaceWeights {        // DECIDED name. One axis, one particle position. About 600 bytes, never stored.
+struct NearbyFaceWeights {        // DECIDED name. One axis, one particle position. 1,152 bytes (the list is 888), never stored.
   NearbyFaceList list;
   NearbyFaceMask kept;
   Vec3 position;                  // m, world.
@@ -1101,13 +1103,34 @@ Properties to state in the header and test: constants are reproduced for any kep
 reproduced whenever `fit == kFull`; weights are never negative, and 0 only for a face exactly `1.5 h` away; weights jump when the particle changes cell across a
 size change (as on `main`), which is the known open physics "traction across cells of different sizes".
 
-**Why 76.** Candidates only come from the cell and the cells touching it, so one layer of border cells is
-always enough. Complete same-size neighbourhood: 27. All 26 neighbour places split (56 small cells): planes
-at -1/2, 0, 1/2, 1, 3/2 with 16, 16, 12, 16, 16 pieces = 76. Same-size neighbours whose far face is split
-into quarters: 36 + 18 = 54. Replacing a small neighbour by a same-size one removes at least as many pieces
-as it adds, so 76 is the maximum. The half-open test of step 2 does not change it: the faces `1.5 h` beyond the
-centre belong to small cells that do not touch `c`. A cell has 64 candidate lists per axis (the values of `q`);
-tests go through all of them on the worst case and on random grids.
+**Why at most 212, and 124 in practice** (owner decision 2026-11-19; the earlier bound of 76 and its argument
+"replacing a small neighbour by a same-size one removes at least as many pieces as it adds" were wrong: a
+same-size neighbour's far faces can be split by smaller cells beyond it, and those pieces are candidates).
+
+*What is known.* Complete same-size neighbourhood: 27. All 26 neighbour places split: 76 in every window. The
+largest case known is 124 on one axis: a cell whose 8 corner neighbours and 6 of its 12 edge neighbours have its
+size, with every other neighbour and everything beyond one level smaller. 124 is the exact maximum where only two
+cell sizes meet: the count is a quadratic function of the 26 neighbours being whole or split, and it was maximised
+over all `2^26` cases, 64 windows and 3 axes. A neighbour one level bigger is believed to give fewer pieces; that
+case is not searched exhaustively.
+
+*What is proven: no valid grid passes 212.* Work on one axis, in quarter widths `h / 4` from the low corner of `c`.
+1. The smallest candidate is a piece of level `p + 1`: a square of side `h / 2`. Call its possible places slots:
+   planes at even `n` along the axis, centres at odd `n` across.
+2. A candidate lies on a face of `c` or of a cell touching `c`. Its plane is an even `n` inside the window and
+   inside `-4..8` (a touching cell one level bigger has its other faces at `-8` or `12`, outside every window):
+   at most 6 planes. Across, it covers at least one slot whose centre is inside the window and inside `-3..7`: a
+   piece of level `p + 1` is one slot; a piece of level `p` or `p - 1` has its centre in the window, so the slot
+   one quarter to one side of that centre is in the window too, and it lies in `-3..7` because the piece is on a
+   cell that touches `c`. The window holds at most 6 odd `n` in `-3..7`.
+3. Pieces of one axis do not overlap, so two candidates never get the same slot.
+4. So there are at most `6 x 6 x 6 = 216` candidates, less the 4 slots of the plane `n = 2` that lie inside `c`
+   itself, where no piece can be: 212.
+
+`kMaxNearbyFaces` is 216, the count before the last subtraction; the mask has four 64-bit words.
+`kTooManyNearbyFaces` therefore guards against a broken table, not against a grid. A cell has 64 candidate lists
+per axis (the values of `q`); tests go through all of them on the 76 case, on the 124 case and on random grids,
+and report the largest count found.
 
 ### 5.5 Ranges and border
 
@@ -1248,7 +1271,9 @@ of its own size (rest volume `(w/2)³`), so the batch plan's 512 particles per f
   flat device arrays sized for the limit, owned by the module that built them, and stay on the device; only
   `ReadValues`/`WriteValues` (and the batched run's slice copies of `buffer()`) cross. Work is divided one thread
   per item (block, cell place or face place), or one thread per particle for weights; weights are computed in
-  registers and local memory (about 600 B per axis) and never stored. Every GPU function of the build uses Foundation's `ComputeLaunchSize`: thread
+  local memory (1,152 B per axis, 3,456 B when three axes are held at once; above the driver's default stack of
+  1,024 B per thread, so each module whose GPU function calls the weights declares a `kDriverStack` entry as
+  contact does; the grid's own GPU functions do not call them and have none) and never stored. Every GPU function of the build uses Foundation's `ComputeLaunchSize`: thread
   blocks of 256 threads, at most 65,535 of them, looping grid-stride.
 - **Returned to the CPU:** one `GridBuildStatus` per grid operation on the GPU (counts, or the first failure);
   for border search, the count. No table, no block id. A stage's failure is its own compact record.
@@ -1291,9 +1316,9 @@ Analytic, CPU (label `cpu`), discrete results compared exactly:
 | `..., LinearField_IsReproduced` | value `a + b.x` on faces, mixed sizes and masks, `fit == kFull` | value at particle within `1e-13 (|a| + |b| h)`; fitted row equals `b` within `1e-11 |b|` |
 | `..., WeightChange_MatchesFiniteDifference` | centred difference, step `1e-6 h`, away from cell sides | within `1e-7 / h` |
 | `..., FacesOnOnePlane_IsMeanOnly` | mask keeps one plane | `kMeanOnly`; none kept: `kNone` |
-| `FindNearbyFaces, AllNeighboursSplit_Has76` and `..., SmallRandomGrids_NeverExceed76` | constructed worst case; 10,000 random | 76; never more |
+| `FindNearbyFaces, AllNeighboursSplit_Has76`, `..., AllNeighboursSplitEveryWindow_Has76`, `..., TwoSizesWorstCase_Has124`, `..., SmallRandomGrids_NeverExceedTheProvenBound`; `ComputeNearbyFaceWeights, TwoSizesWorstCase_WeightsSumToOne` (owner decision 2026-11-19) | all 26 neighbours split, every window; level-1 cell `{2,2,2}` of a 6^3 box with 14 neighbours kept, position `{4.75, 4.25, 4.75}` m, Y axis; 200 small random grids, every cell and window | 76; 124 and weights summing to 1; never above 212, largest count reported |
 | `FindNearbyFaces, UniformGridOffCentre_Has27`, `..., UniformGridAtCellCentre_Has27`, `..., UniformGridOnCellSide_Has27`, `..., UniformGridAtCellCorner_Has27`; `ComputeNearbyFaceWeights, AtExactCellCentre_IsCompleteWithNineZeroWeights`, `..., OnCellSide_IsCompleteWithNineZeroWeights`, `..., AtCellCorner_IsCompleteWithFifteenZeroWeights` (owner decision 2026-11-19) | uniform 5^3, positions off the centre, at the centre, on a low side, at a low corner | 27 per axis each; `is_complete`; 0, 9, 9 (cross axes) and 15 faces of weight 0; `W = 1` |
-| `FindNearbyFaces, AllNeighboursSplitEveryWindow_NeverExceeds76`; `..., CellCentreInNonDyadicFrame_Has27`, `..., OneStepBelowCellSide_Has27`, `..., NonDyadicFrameAtSidesAndCentres_AlwaysHas27`; `ComputeNearbyFaceWeights, NonDyadicFrameAtSidesAndCentres_IsComplete` (ruling 2026-11-19) | the 64 windows of the worst-case cell; origin -17.616723516683763, width 0.0375, a cell centre; origin -0.5, width 0.0625, x 1.6249999999999998; positions within 3 rounding steps of sides and centres | at most 76; 27 per axis; `is_complete` |
+| `FindNearbyFaces, CellCentreInNonDyadicFrame_Has27`, `..., OneStepBelowCellSide_Has27`, `..., NonDyadicFrameAtSidesAndCentres_AlwaysHas27`; `ComputeNearbyFaceWeights, NonDyadicFrameAtSidesAndCentres_IsComplete` (ruling 2026-11-19) | origin -17.616723516683763, width 0.0375, a cell centre; origin -0.5, width 0.0625, x 1.6249999999999998; positions within 3 rounding steps of sides and centres | 27 per axis; `is_complete` |
 | `FindNearbyFaces, RangeWithBorder_HoldsEveryFace` | random grids cut by `BuildRanges` | every listed face is stored in the range or its border |
 | `FindBorderBlocks, TouchingCells_EqualsGeometricReadSet`, `..., FourCellWidths_EqualsBlockRuleByCoordinates`, `..., FourCellWidths_HoldsEveryFaceWithinFourWidths` NEW | random grids, random ascending block sets, both widths | equals the test-only geometric checker; ascending, no repeats, no block of the set; the span form gives the same list and the full count when the span is short |
 | `FindBorderBlocks, PlaneFourPieceBeyondTouchingCell_IsInBorder` NEW | range ends at a block side; the touching cell's high face is stored in the next block (5.1 step 5) | that block is in the `kTouchingCells` border |
@@ -1527,9 +1552,10 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
    Decision: A, the uniform quadratic curve in the particle's cell width times the face piece's area share,
    weights divided by their sum, fit with the measured weighted spread. Source: owner answer A7 (Q19).
 2. **Bounded candidate rule.** Nearby faces come only from the containing cell and cells touching it, levels
-   `p - 1..p + 1` (at most 76 per axis, one layer of border cells). Alternative: every face within 1.5 widths
+   `p - 1..p + 1` (at most 212 per axis, 124 the largest case known; one layer of border cells; revised 2026-11-19). Alternative: every face within 1.5 widths
    whatever its level: no fixed bound (over 1,000 possible) and two border layers. Recommend the bounded rule.
-   Decision: the bounded rule, `kMaxNearbyFaces = 76`, with `kMinWeightSum = 0.1` as the floor below which the
+   Decision: the bounded rule, `kMaxNearbyFaces = 216` (owner decision 2026-11-19; it was 76, which a valid grid
+   passes), with `kMinWeightSum = 0.1` as the floor below which the
    fit is `kMeanOnly`. Source: recommended option (owner's standing instruction, 2026-11-14), Q20 and Q51.
 3. **`owner` (O5).** Recommend banning it as an identifier in grid, transfer and pressure: say `stored in`
    for a block (`ToCellBlockId(cell)`), `cell_low`/`cell_high` with `kNoIndex` for a border piece, and

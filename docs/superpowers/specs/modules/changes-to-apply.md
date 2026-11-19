@@ -586,3 +586,33 @@ Later designs use the new name wherever they cite the old one.
 | step | `ReadyScene` fields I/O fills | also `material_sets`, `open_sea_material_index`, `gas_sources`, `gas_wind`, `gas_markers`, `gas_active_cells`, `has_cell_resize`; `SimulationSnapshot::gas` is `std::optional<gas::GasAmountsSnapshot>` |
 | step | reason `liquids_that_do_not_mix_are_blended` | `liquids_that_do_not_mix_touch` (`CapabilityReason::kLiquidsThatDoNotMixTouch`); counts `kCapabilityReasonCount = 19`, `kRejectReasonCount = 23`, `kSuggestedChangeCount = 13`, `kStepLimitCount = 11`; the step declares only `ToName(StepError)`; `io/stable_names.h` declares `ToName` for `Stage`, `RejectReason`, `CapabilityReason`, `SuggestedChange`, `StepLimit` |
 | Foundation (decision) | `std::expected<std::uint64_t, BufferError> ReadMemoryAvailable(RunOn)` | `struct MemoryAvailable { std::uint64_t total_bytes; std::uint64_t free_bytes; };` and `std::expected<MemoryAvailable, BufferError> ReadMemoryAvailable(RunOn run_on)`; a total of 0 means unknown |
+
+## Nearby faces: 216 per axis and a mask of four words (grid, owner decision 2026-11-19)
+
+The grid's bound of 76 nearby faces per axis was wrong (a valid grid reaches 124). `grid::kMaxNearbyFaces` is now
+216, `grid::NearbyFaceMask` is `std::uint64_t bits[4]` (32 B, was 16 B), `sizeof(grid::NearbyFaceList)` is 888 B
+(was 328) and `sizeof(grid::NearbyFaceWeights)` is 1,152 B (was about 600). Candidates at exactly 1.5 widths are
+kept with weight 0, so a kept weight may be 0. Apply to each document below; none was edited.
+
+- **04 Transfer (design and plan).** Any array or loop sized by 76, and any mask handled as two words
+  (`FindSameSideFaces` returns a `grid::NearbyFaceMask`): use `kMaxNearbyFaces` and four words, or loop on
+  `list.count`. The per-set memory figures of `shared-interface.md` (d) that count per-particle or per-thread
+  bytes must be recomputed if they include a list, a mask or weights. A GPU function that calls
+  `ComputeNearbyFaceWeights` keeps 1,152 B per axis (3,456 B for three axes) per thread, above the driver's
+  default of 1,024 B: transfer declares a `MemoryWhere::kDriverStack` entry, as `BuildContactStackEstimate` does,
+  from the compiled function's local bytes. A test that expects every kept weight above 0 must allow 0.
+- **03 Particles (design and plan).** The same for its uses of `FindNearbyFaces`, `NearbyFaceMask` and the
+  weights: sizes, the stack entry if a GPU function of particles calls them, and "weight above 0".
+- **06 Viscosity (design).** Its `FindNearbyFaces` call per cell centre: an output sized by 76 becomes
+  `kMaxNearbyFaces`; at a cell centre the list has 27 faces on a uniform grid, 9 of them of weight 0.
+- **08 Solids and plates.** Code that clears mask bits (other side of a plate, not `outside_solid`): bit `i` is
+  in word `i / 64`, up to index 215.
+- **13 Surface, foam and spray (design).** Its uses of `ToMaskOfAll`, `NearbyFaceMask`, the weights: sizes and the
+  stack entry if on the GPU.
+- **10 Step (run plan and memory).** The sum of `kDriverStack` entries now has one per module whose GPU function
+  calls the weights, not only contact's. The driver keeps one stack size for the whole context, so the bytes held
+  are the largest of the entries times the resident threads, not their sum: the run plan should take the largest.
+- **11 Cell resize and batches.** No size changes; `grid::CellSizeFacts::velocity_gradient_size` is now
+  `velocity_change_size` (the glossary bans the old words).
+- **Every plan that names them:** `storage_count` is `grid_count`; `IsBorderBlock` is `ComputeIsBorderBlock`;
+  `ApplySizeStepClosure` is `BuildSizeStepClosure`; the four value classes are aliases of `grid::GridValues`.

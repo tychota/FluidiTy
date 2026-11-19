@@ -184,6 +184,23 @@ window is chosen by integers.
   general. It was checked by program on three neighbourhoods. `FindNearbyFaces,
   RandomGrids_MatchGeometricChecker` (Task 17) is the test that settles it on random four-level grids.
 
+### Fifth revision 2026-11-19: 216 nearby faces per axis
+
+An independent check refuted the bound of 76: a valid grid where two cell sizes meet reaches 124 candidates on
+one axis. Owner decision: keep every candidate and size the list for the proven ceiling.
+
+- `kMaxNearbyFaces = 216`. 124 is the largest case known and the exact maximum where two cell sizes meet
+  (searched over every arrangement of the 26 neighbours); 212 is proven for any valid grid (design 5.4);
+  `kTooManyNearbyFaces` stays as a guard no valid grid reaches. `NearbyFaceMask` is four 64-bit words.
+- Sizes: `NearbyFaceList` 888 B, `NearbyFaceMask` 32 B, `NearbyFaceWeights` 1,152 B for one axis; 3,456 B for
+  three axes held at once. Every GPU function that calls the weights is above the driver's default stack.
+- Stack entry: the grid's own GPU functions (build, border search, grid pieces) do not call the weights and
+  stay under 1,024 B, so the grid still has no `kDriverStack` entry. The modules whose GPU functions call the
+  weights own theirs (`changes-to-apply.md`). Task 20's test runner measures and reports the bytes.
+- Changed: Global Constraints (the constant, "GPU stack"), Task 17 (bound, sizes, the 124 fixture, tests
+  renamed), Task 18 (the 124 fixture's weights, size), Task 20 (stack measurement); design 3.3, 3.5, 5.4, 6, 7,
+  11. Where the third and fourth entries above say "76", read this entry.
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -209,7 +226,7 @@ window is chosen by integers.
 | 13a | opus | Numerics with infinities. |
 | 13b | sonnet | Integer lookups and a table with exact expected values. |
 | 13c | opus | A search over probes with a tie rule, and the GPU runner. |
-| 14, 15, 16, 17 | opus | Table walks across sizes with exact bounds (56, 76, 112). |
+| 14, 15, 16, 17 | opus | Table walks across sizes with exact bounds (56, 216, 112). |
 | 18, 19 | opus | Ported numerics with bit identity between two forms. |
 | 20 | sonnet | A test runner copied from `base/shared_math_test_gpu`. |
 | 21 | sonnet | One template over `Buffer` with stated numbers. |
@@ -283,8 +300,9 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
   the driver", and a `gpu` test per GPU half reads the largest local size (`cudaFuncGetAttributes`,
   `localSizeBytes`) and compares it with 1,024. If that test fails on hardware, the remedy is an entry as
   contact's, not a larger limit set in silence. The shared functions `FindNearbyFaces` and
-  `ComputeNearbyFaceWeights` return about 1 kB by value; their header says that a module whose GPU function
-  calls them owns the stack entry for it.
+  `ComputeNearbyFaceWeights` return 888 B and 1,152 B by value (one axis; 3,456 B for three axes held at once),
+  above the default: their header says that a module whose GPU function calls them owns the stack entry for
+  it, as contact owns its own. The grid's test runner of Task 20 measures the bytes.
 - **Working buffers.** A function that needs working memory has one form, which takes its buffers. The grid's
   build working memory is `GridBuilderBuffers` (Task 6b), which holds the `OrderBuffers` that every
   `BuildStableOrder` and `ComputeExclusivePrefixSum` of a build takes; border search has `BorderSearchBuffers`
@@ -326,7 +344,7 @@ Grid's own:
   with plain doubles.
 - Constants, exactly: `kMaxSizeLevels = 16`, `kBlockWidthInCells = 4`, `kCellPlacesPerBlock = 64`,
   `kFacePlacesPerBlock = 240`, `kCornerPlacesPerBlock = 125`, `kMaxCoord = (1 << 18) - 1`,
-  `kNoIndex = 0xFFFFFFFF`, `kWeightCurveReach = 1.5`, `kMaxNearbyFaces = 76`, `kMinWeightSum = 0.1`,
+  `kNoIndex = 0xFFFFFFFF`, `kWeightCurveReach = 1.5`, `kMaxNearbyFaces = 216`, `kMinWeightSum = 0.1`,
   `kMinPivotShare = 1e-12`, `kMaxCellsNearFace = 112`, `kMaxFaceSearchRadius = 4.0`,
   `kMaxCellBlocksLimit = (1u << 26) - 1`, `GridSettings::max_cell_blocks = 0`. No compile-time room is ever an
   allocation size: `BuildGridBuffers` and `BuildGridBuilderBuffers` with 0, or above `kMaxCellBlocksLimit`, are
@@ -2016,20 +2034,32 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   columns. So every position has 27 faces, by construction. A face at exactly 1.5 h has weight 0, so the kept
   weights still sum to 1; a face the window keeps whose float offset rounds to just beyond 1.5 h also has
   weight 0, because the weight curve is 0 at and beyond its reach.
-- **The bound 76.** The candidates of a position depend on it only through its cell and the three `q`, so a
-  cell has 64 candidate lists per axis and the bound is checked by going through them (tests below).
-- The file header says what a caller on the GPU must know (Global Constraints "GPU stack"): the list is about
-  320 B and the weights of Task 18 about 600 B per thread, so a module whose GPU function calls them declares
-  its own stack entry.
+- **The bound.** `kMaxNearbyFaces = 216` and `struct NearbyFaceMask { std::uint64_t bits[4]; }` (bit `i` of
+  word `i / 64` is face `i` of the list). The header says, with the proof of design 5.4 in five lines: 124 is
+  the largest count known and the exact maximum where two cell sizes meet; no valid grid passes 212; so
+  `kTooManyNearbyFaces` is a guard that no valid grid reaches, kept because a list must never be overrun. The
+  candidates of a position depend on it only through its cell and the three `q`, so a cell has 64 candidate
+  lists per axis and tests go through them.
+- **Sizes**, asserted in the header: `sizeof(NearbyFaceList) == 888` (24 B and 216 indexes of 4 B),
+  `sizeof(NearbyFaceMask) == 32`, and in Task 18 `sizeof(NearbyFaceWeights) == 1152`. The file header says what
+  a caller on the GPU must know (Global Constraints "GPU stack"): one axis keeps 1,152 B per thread and three
+  axes held at once 3,456 B, above the driver's default of 1,024 B, so a module whose GPU function calls them
+  declares its own stack entry.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(FindNearbyFaces, AllNeighboursSplit_Has76)`: level-0 cell `{1,1,1}` of a 3^3 level-0 box whose 26
     other cells are split; a position at the centre; each axis gives exactly 76.
-  - `TEST(FindNearbyFaces, AllNeighboursSplitEveryWindow_NeverExceeds76)`: the same grid; one position in each
-    of the 64 windows of the cell (`low + (q + 0.5) h / 4` per axis): no axis gives more than 76. These 64
-    positions stand for every position of the cell.
-  - `TEST(FindNearbyFaces, SmallRandomGrids_NeverExceed76)`: 200 small random grids, every active cell, all 64
-    windows, every axis; the largest count is reported with `RecordProperty`.
+  - `TEST(FindNearbyFaces, AllNeighboursSplitEveryWindow_Has76)`: the same grid; one position in each of the
+    64 windows of the cell (`low + (q + 0.5) h / 4` per axis): every window and axis gives exactly 76.
+  - `TEST(FindNearbyFaces, TwoSizesWorstCase_Has124)`: 3 levels, origin 0, biggest width 4 m. The level-0 box
+    `{0..2}^3` is split everywhere, giving 6^3 level-1 places of width 2 m. The cell is level 1 `{2,2,2}`. Of
+    its 26 neighbours, 14 stay at level 1: the 8 corners, `(-1,-1,0)`, `(1,-1,0)` and `(0,+-1,+-1)` (as `(dx,
+    dy, dz)`); the 12 others and every level-1 place farther out are split into level-2 cells (15 level-1 and
+    1,608 level-2 cells). Position `{4.75, 4.25, 4.75}` m (window `(1, 0, 1)`): the Y axis gives exactly 124,
+    and no axis in any of the 64 windows of that cell gives more.
+  - `TEST(FindNearbyFaces, SmallRandomGrids_NeverExceedTheProvenBound)`: 200 small random grids, every active
+    cell, all 64 windows, every axis: never above 212; the largest count is reported with
+    `RecordProperty("largest_nearby_faces", ...)`.
   - `TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker)`: the 200 grids, 50 positions each, of which 10
     on a cell side or centre: the same list as `GeometricGrid::NearbyFaces(cell, {q_x, q_y, q_z}, axis)`, in
     ascending order. This is the test of the window rule on mixed sizes.
@@ -2056,9 +2086,9 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     `TEST(FindNearbyFaces, UniformGridAtCellCorner_Has27)`: `{2.0, 2.0, 2.0}`: each list holds 15 faces with an
     offset of `+1.5 h` on one of its two cross axes (9 + 9 - 3), and none at `-1.5 h`.
   - `TEST(FindNearbyFaces, Outside_IsPositionOutsideGrid)`.
-  - `TEST(ToMaskOfAll, SeventySixFaces_SetsExactlyThoseBits)`.
-- [ ] **Step 2: Run**, fail. **Step 3: Implement**; the header explains "why 76" (design 5.4; the half-open test leaves it
-  unchanged: the faces 1.5 h beyond a cell centre in the worst case belong to cells that do not touch). `Read:`
+  - `TEST(ToMaskOfAll, OneHundredTwentyFourFaces_SetsExactlyThoseBits)`: bits 0..123 set and 124..255 clear
+    (the mask spans two words and stops inside the second); with a count of 216, bits 0..215.
+- [ ] **Step 2: Run**, fail. **Step 3: Implement**; the header gives the bound's proof (design 5.4, "Why at most 212"). `Read:`
   `<sec-nearby-faces>`.
 - [ ] **Step 4: Commit.** Subject: `List the faces near a position`.
 
@@ -2097,6 +2127,11 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     0, the other 18 weights `> 0`, `W = 1` within `1e-14`.
   - `TEST(ComputeNearbyFaceWeights, OnCellSide_IsCompleteWithNineZeroWeights)`: `{2.0, 2.6, 2.7}`: the X axis
     has no weight of 0; the Y and Z axes have 9 each; `is_complete` on all three; `W = 1` within `1e-14`.
+  - `TEST(ComputeNearbyFaceWeights, TwoSizesWorstCase_WeightsSumToOne)`: the grid and position of Task 17's
+    `TwoSizesWorstCase_Has124`, all kept, each axis: `|sum weight - 1| <= 1e-14`, `|sum weight_change| <= 1e-13
+    / h`, every weight `>= 0`, `is_complete` false; on the Y axis all 124 entries are read back through
+    `ComputeFaceWeight`.
+  - `TEST(NearbyFaceWeights, OneAxis_Is1152Bytes)`: the `static_assert` of the size.
   - `TEST(ComputeNearbyFaceWeights, NonDyadicFrameAtSidesAndCentres_IsComplete)`: the 1,000 positions of Task
     17's test of that name: `is_complete`, `fit == kFull`, every weight `>= 0`, `W = 1` within `1e-14`.
   - `TEST(ComputeNearbyFaceWeights, AtCellCorner_IsCompleteWithFifteenZeroWeights)`: `{2.0, 2.0, 2.0}`: 15
@@ -2161,8 +2196,11 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   `CheckWithinTolerance`, `WriteResultDigest`.
 - Each test builds every grid twice from one list: on the CPU (the reference) and on the GPU from a GPU copy of
   the list made in the test's setup.
-- The runner's weights function keeps a list and its weights per thread, above the driver's default stack; its
-  file header says so and that the driver grows the stack at the first launch (a test runner reserves nothing).
+- The runner's weights function keeps a list and its weights per thread (1,152 B and more), above the driver's
+  default stack of 1,024 B; its file header says so and that the driver grows the stack at the first launch (a
+  test runner reserves nothing). The runner also has `RunOnCallStatus ComputeWeightsRunnerStackOnGpu(
+  std::uint64_t* bytes_per_thread)` (`cudaFuncGetAttributes`, `localSizeBytes`), so the hardware run gives the
+  modules that call the weights a measured number for their stack entry.
 
 - [ ] **Step 1: Tests** (label `gpu`, one thread per position, outputs copied back with `ReadBuffer` and passed
   to `WriteResultDigest`):
@@ -2173,10 +2211,12 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   - `TEST(FindCornerPlaces, OnGpu_EqualsCpu)`: every active cell of the 10 grids; the 8 corner places
     identical (corners have no table: this shows the GPU-built tables answer them as the CPU's do).
   - `TEST(FindCellAt, OnGpu_EqualsCpu)`: the 10,000 positions, both forms.
+  - `TEST(ComputeNearbyFaceWeights, OnGpuRunner_ReportsItsStack)`: the bytes are at least
+    `sizeof(NearbyFaceWeights)` and are written with `RecordProperty("weights_runner_stack_bytes", ...)`.
 - [ ] **Step 2: Run** the gate. Expected: `PASS cuda` (compiled and linked; nothing of this task runs in the
   container: the shared functions' `cpu` tests are the evidence until the hardware run).
 - [ ] **Step 3: Commit.** Subject: `Compile the shared grid functions into GPU tests`. Body: `GPU: compiled, not
-  run`; the four tests by name.
+  run`; the five tests by name.
 
 ### Task 21: Value buffers bound to a grid version
 

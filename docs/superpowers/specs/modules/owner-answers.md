@@ -114,6 +114,7 @@ the `rebuild` branch.
 | A102 | A hair-thin gap between two colliders (2026-11-19) | Warn before the run: the scene check lists pairs of colliders separated by a gap of a few tolerances and tells the artist to join them or move them apart. Contact does not change. Scene check (I/O and step designs). |
 | A103 | When unsure (2026-11-19) | "If unsure, ask me." A ruling I am not confident in goes to the owner as a question with a recommendation. |
 | A104 | Nearby faces at an exact cell side or cell centre (2026-11-19) | Keep the zero-weight faces: every interior position has 27 nearby faces per axis and `is_complete` is true. Needs a half-open test on the offset (a closed test on both ends would keep 36). Grid design and plan. |
+| A105 | Most face pieces a particle can see on one axis (2026-11-19) | The design's bound of 76 is false (124 where two cell sizes meet; 212 proven for any grid). Keep every face within 1.5 cell widths and size the list for 216, so no valid grid fails; same physics; about 3.4 kB of GPU working memory per particle thread in transfer. Not chosen: 128, walking the faces without a list as `main` does, using fewer faces at size changes. |
 
 ## Everything else
 
