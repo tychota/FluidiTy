@@ -54,6 +54,9 @@ A design must no longer say "until the owner answers".
 
 - A1, A2, `ToName`. No sand. `contact::BuildContactSolids` is not contact's: see 08.
 - Provide what solids, step and render output read: nothing new beyond its section 3.
+- **Contact as built (2026-11-19).** Module 1 is built (branch `rebuild`, tip `f2375124`); design sections 3.5 and
+  6 now describe it, with its known limits. What it changes for later designs is under 08 Solids, 10 Step, 11 Cell
+  resize and batches and 01b Mesh solids below, each headed "From contact as built (2026-11-19)".
 
 ## 02 Grid
 
@@ -152,6 +155,29 @@ A design must no longer say "until the owner answers".
 - From batches: per-solid sums are independent of where batches are cut (block partials, then tree sum); the
   "merge push lists across batches" duty is removed.
 - `DriveWaves`: the step calls it (solids question 8, recommended).
+- **From contact as built (2026-11-19).** Each fact below is in the contact headers (`native/fluidity/contact/`).
+  - *Reacting solids.* 5.1 (`reports_reaction = true` unless fixed) and the stage text that shortens the step on
+    `kSecondReactingSolid` meet a limit: one particle record holds one reacting solid. When one response at the start
+    of a step pushes two reacting solids (a particle in the crease of two driven shapes that touch), the failure has
+    `can_shorter_step_cure` false and recurs at every step length. Shorten the step on `kSecondReactingSolid` only
+    when `can_shorter_step_cure` is true. Whether driven solids report a reaction at all is an open owner question
+    (final review of module 1, question 2); until it is answered, say what a driven solid's reaction is for.
+  - *What `MoveParticles` writes.* After a failed call the records and reactions are unspecified;
+    `ApplyContactReactions` reads them only from a try that succeeded. `SolidReaction` is 56 bytes: `solid_index` at
+    0, `hit_position` at 8 (where the first change against this solid happened), `velocity_for_next_step_change` at
+    32 (the sum of every change this solid caused in the step).
+  - *Limits a solid must meet.* Each solid's origin over the step plus its reach must lie within 2^40 contact
+    tolerances of the origin on every axis, and its linear and angular velocity, each summed over its axes, at most
+    2^480; otherwise `MoveParticles` fails `kBadInput` naming the solid. A tolerance from `ComputeContactTolerance`
+    over a scale that holds the domain box and every solid meets the first.
+  - *Solid count.* Contact can leave a far solid out of a particle's reads only for the first 64 solids of the array
+    (one 64-bit mask per particle, `kMaxLeftOutSolids`); the domain box and solids at index 64 and above are read by
+    every particle. Results do not change, the cost does. Nothing else bounds `max_solid_count`.
+  - *Sampling faces and corners (5.4).* `ComputeSolidVelocitySample` poses every solid again at each call (two sines
+    for a turning one), so a call per face costs faces times solids poses. A box's distance outside an edge or a
+    corner is the largest of its face-plane distances, shorter than the straight line by up to `Sqrt(3)`. `side` is
+    the plate side the point is on, `{0, kNoPlate}` inside the plate's thickness; the domain box is a candidate like
+    any solid.
 
 ## 09 Gas
 
@@ -206,6 +232,47 @@ A design must no longer say "until the owner answers".
   it, keep it in place with the solids' velocity, or report the solids by id as a scene problem. Measured in the
   contact model: none in wedges of 5 degrees or more; frequent where a solid is driven into another (a ball pushed
   into a tilted plane it penetrates: 30 % of such draws).
+- **From contact as built (2026-11-19).** Each fact below is in the contact headers (`contact_error.h`,
+  `move_particles.h`, `move_particles_steps.h`, `solid_contact_types.h`); design 01 sections 3.5 and 6 give them in
+  full.
+  - *Retry rule.* `ContactFailure::can_shorter_step_cure` (byte 3) says whether a shorter step can cure a
+    `kTooCloseToCall`. It is false for every other error and for close calls met at the start of the step whose test
+    reads no time left: a particle in the crease of a turning solid and another solid, two reacting solids pushed by
+    one response, solids closing on a particle, an escape faster than 64 times the speeds involved, more than 8
+    directions or 16 surfaces. Map `kTooCloseToCall` to `kContactTooCloseToCall` (shorten) only when the flag is true;
+    when false, stop or act as the owner decides, naming the solid (`solid_id`) and contact's `ToName` code. The
+    comment of `kContactTooCloseToCall` ("`kSecondReactingSolid` included") becomes "when `can_shorter_step_cure`".
+    True says a cure exists, not that one halving finds it: one catalogue scene needs the step cut to 2^-26 of its
+    length, 26 halvings. Two retries (`max_retries_per_step`) are far from that, so the step needs a limit of its own
+    for contact's curable close calls, and the owner's answer on what a lasting failure does (remove the particle,
+    stop with a message, or check such scenes when they are loaded).
+  - *Errors 5.6 does not map yet.* `kStartsInNarrowGap` (a scene error, as `kStartsInsideSolid`); `kBadInput` from the
+    coordinate check: a particle's start plus its straight path, or a solid's origin over the step plus its reach,
+    beyond `kLargestCoordinateInTolerances` = 2^40 contact tolerances on some axis, so the step computes the tolerance
+    from a scale that holds the domain box and removes particles beyond open sides before they travel that far;
+    `kBadInput` from a speed above `kLargestInputSpeedSum` = 2^480 m/s summed over the axes; the new last close call
+    `kMovesTooFastForStep` (cured by a shorter step); `kOutOfMemory` from `BuildContactBuffers` only.
+  - *Which failure.* `MoveParticles` reports the lowest (particle id, index), whatever failed; `has_particle_id` (byte
+    2) is true for a failure of one particle and false for a failure of the call's checks, where `particle_id` 0 means
+    nothing. So inside one call a scene error can hide behind a close call of a particle with a lower id; the step's
+    "highest `RejectKind`" rule sees only what each call reports.
+  - *Outputs.* After a failure that is not a call check, the outputs of the call are unspecified: particles before
+    and after the failing one may have been written. The step discards the whole try. No output array may share a
+    byte with an input array or another output (`kBadInput`), so `MovedParticles::position` and
+    `velocity_for_next_step` are try arrays apart from the committed `start_position` and velocities.
+  - *Signature and record.* `MoveParticles(const MoveParticlesInputs&, const MovedParticles&, ContactBuffers&)`.
+    `ParticleContact` lives in `solid_contact_types.h`, 56 bytes. `hit_count` is 0 to 4 (`kMaxHitsPerStep`) and counts
+    moments, not surfaces; `normal_out_of_solid` and `approach_speed` are those of the first hit only; a `kHit` may
+    record an approach speed of zero or more (a particle leaving a turning solid).
+  - *Memory.* The contact names of section 4 list `BuildContactMemoryEstimate` only. Beside it,
+    `BuildContactStackEstimate(RunOn)` gives one entry, `MemoryWhere::kDriverStack`: the GPU stack of the particle
+    visits, about 12.8 kB per resident thread, 707 MB on a 36-multiprocessor card. `BuildContactBuffers` on the GPU
+    reserves it at once and fails `kOutOfMemory` with its bytes when the card cannot hold it; it stays with the GPU's
+    context for the rest of the process. The run plan compares the `kRunOn` sum plus the `kDriverStack` sum with the
+    GPU's memory. The failure array is 32 bytes per particle.
+  - *GPU pass.* Steps 2, 4 and 6 of 5.5 are one fused pass on the GPU. If that pass moves particles itself, it calls
+    `ComputeParticleMoveAt` (the speed and coordinate checks, then `MoveParticle`), not `MoveParticle`. Each
+    `MoveParticles` call copies the solids to the GPU and reads two values back, so each call waits for the GPU.
 
 ## 11 Cell resize and batches
 
@@ -214,6 +281,22 @@ A design must no longer say "until the owner answers".
 - A9: remove sand from "practical scenes"; A10: gas arrays are remapped; the fire scene is workable in batches.
 - Folder names: `cell_resize/` and `batches/` (recommended).
 - Align with the updated step, grid and particles entries above.
+- **From contact as built (2026-11-19).** Each fact below is in `contact/move_particles.h` and
+  `contact/move_particles_steps.h`.
+  - *GPU stack, once per process.* `BuildContactBuffers` on the GPU raises the GPU's per-thread stack for the
+    particle visits (about 707 MB on a 36-multiprocessor card, `BuildContactStackEstimate`,
+    `MemoryWhere::kDriverStack`).
+    It belongs to the GPU's context, not to one `ContactBuffers`: the loaded instance and the whole instance of 5.7
+    share it, so the batch plan counts that entry once, outside `bytes_per_loaded_block` and
+    `bytes_per_loaded_particle`. Per loaded particle contact takes 32 bytes (one `ContactFailure`), beside the step's
+    56-byte record and 56-byte reaction.
+  - *One tolerance for every batch.* Every particle and solid must lie within 2^40 contact tolerances of the origin
+    (`kBadInput` otherwise), and the bits of a move depend on the tolerance, so every batch passes the run's one
+    `contact_tolerance`, computed from the whole domain box, never from the loaded piece.
+  - *Failures across batches.* Inside one call the failure reported is the lowest (particle id, index). Ids are
+    unique, so comparing `particle_id` (when `has_particle_id`) across batches gives the same answer wherever the
+    batches are cut; never compare the index, which depends on the cut. After a failed call the outputs are
+    unspecified: a failed batched try discards the outputs of every batch, not only of the failing one.
 
 ## 12 I/O and CLI
 
@@ -287,6 +370,33 @@ A design must no longer say "until the owner answers".
   otherwise.
 
 ## 01b Mesh solids (A80; simple route A94, 2026-11-15)
+
+**From contact as built (2026-11-19).** The 01b plan (`plans/2026-11-14-rebuild-01b-mesh-solids.md`) and the 01b
+design's contact sections (5.4 to 5.7) are written against the contact of plan Task 10, which no longer exists: a list
+of touched surfaces with the normal recorded at the hit, neighbour passes, a resting sweep at `tol / 2` whose hit is
+moved to the rest gap, the rim move, a seventeenth hit that rests, and the per-particle names Task 16 of the contact
+plan first proposed (`ApplyMoveParticleAt` and its call description). As built there is no surface list (one joint
+response over every active surface, plan P20), no hit is moved (P21), a hit on a turning solid ends the sweeps with a
+carry in the solid's own axes, and the call description is `MoveParticlesCall` with `ComputeParticleMoveAt`. The 01b
+plan must be planned again on the code as built before any of its tasks runs; the entries below that came from it are to
+be checked again in that pass. Facts the new plan must start from, each in the contact headers:
+- `ContactFailure` (32 bytes): `error` 0, `close_call` 1, `has_particle_id` 2, `can_shorter_step_cure` 3,
+  `particle_id` 8, `solid_id` 16, `magnitude` 24. `mesh_problem` cannot sit at offset 2 or 3: both are taken. Bytes 4
+  to 7 are padding (the header says so), so byte 4 is free for a one-byte `MeshProblem`, size unchanged. Every mesh
+  failure must set `can_shorter_step_cure` by the rule of `contact_error.h` (`kMeshNotUsable`: false).
+- `Solid` is 200 bytes, `reports_reaction` at 192; a 4-byte `mesh_index` fits at 196.
+- `hit_count` is at most `kMaxHitsPerStep` = 4, and a hit is a moment with one joint response, not a surface.
+- `MoveParticles` checks each solid's origin over the step plus its reach, `Length(half_size)`, against 2^40
+  contact tolerances; a mesh's `half_size` must hold every vertex for that check to cover the mesh.
+- Only the first 64 solids can be left out of a particle's reads (`kMaxLeftOutSolids`).
+- Adding `meshes` to the call changes `MoveParticlesCall`, whose size (136 bytes) is asserted.
+- On the GPU the visit already takes 255 registers and up to 12,784 bytes of stack per thread; a tree search needs
+  its own stack on top, and `BuildContactStackEstimate` grows with it.
+- What module 1's final review asks of contact before 1b is planned (section 4 of `final-review.md` in the contact
+  ledger): the surfaces of one solid within a window as one per-shape function with a varying count (a concave edge
+  of one mesh is two surfaces of one solid; as built `FindActiveSurfaces` lists one surface per solid, so a particle
+  pressed into a concave edge would end in `kTooManyHits` at every step length); per-shape answers in exhaustive
+  switches; the carry only for shapes whose distance is convex.
 
 Rewritten 2026-11-15 from `01b-mesh-solids-design.md` ("01b") after A94. Every entry is **to apply**; each edit
 is marked `(A80)` where it lands. Order (A82): the contact entries are applied by the 01b plan

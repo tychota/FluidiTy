@@ -1718,6 +1718,31 @@ each branch.
 - [ ] **Step 4: Run** build, tests, gate.
 - [ ] **Step 5: Commit.** Subject: `Find the first hit of a straight path on a sphere and a cylinder`.
 
+### Task 8b: A round solid's hit without losing the small difference
+
+**As built (2026-11-17, commit `ed7af0cb`, written note 2026-11-19).** Added during Task 15b's review; in the branch
+it sits right after Task 15b's commit. Commit subject: `Find a round solid's hit without losing the small difference`.
+
+*Why.* `FindSphereHit` and the cylinder wall's entry (`ComputeTimeInsideGrownWall`) took the discriminant as
+`B^2 - A C`. Far from a small round solid both terms are about `|p0|^2 |u|^2` and nearly equal, so their difference
+lost its digits. With coordinates up to `2^40 tol`, 35 % of 100,000 paths aimed through a sphere of radius 512 to
+1512 tol passed through with no hit (up to 1,497 tol deep), and other hits stopped up to 6.5e4 tol short.
+
+*Rule.* Two forms of one discriminant, chosen by the start: `B^2 - A C` when `C <= R^2` (start within `Sqrt(2) R` of
+the centre), else `A R^2 - |p0 x u|^2` (Lagrange's identity, no term of size `|p0|^2`). The cylinder's wall uses the
+same two forms in the plane across the axis, only when the start is outside the grown wall. Nothing else changed:
+the free tests, the root `C / (-B + Sqrt(D))` and the intervals are as Task 8a built them. The near form stays near
+the sphere because there it keeps the gap's digits for a start just outside moving almost along the surface. Method
+paper: `<eq:sphere-discriminant>`.
+
+*Bound.* About `14 eps |p0|`, so about 0.013 tol at the edge of the scale, under `tol / 64`: a first-order estimate,
+stated as such in the code. Measured worst 0.0024 tol. Pass-through on the same 100,000 paths: 0.
+
+*Tests.* New program `round_solid_hit_rounding_test.cc` (11 tests, label `cpu`) against a double-double reference;
+built `-O1` in debug on GCC and Clang so it runs in under a second. The coordinate premise this bound rests on
+became a stated Requires of `MoveParticle` and a call check of `MoveParticles` (Task 15,
+`kLargestCoordinateInTolerances`).
+
 ### Task 9: First hit on turning solids
 
 **Kind:** numerics
@@ -3259,6 +3284,20 @@ coordinate / tol; Task 9b's thin margins of the search stand.
 
 ### Task 14: Tests that replace the rounding enclosures
 
+**As built (2026-11-16, commit `44770821`), where this task's text below differs:** tests only, no contact code
+changed. `move_particle_tolerance_test.cc` has 6 tests. `SceneTurnedRigidly_ResultTurnsWithIt` became
+`SceneTurnedExactly_ResultTurnsWithIt`: four exact turns (entries 0 and +-1, no sine), every field compared; bit for
+bit in the 128 of 215 scenes whose input vectors all lie in an axis plane, within 2^-48 of the scene's scale times the
+normals' conditioning in the others. The turn by `Rotation({0.3, -0.5, 0.7})` was dropped: it changed 14 hit counts
+where a velocity exactly along a surface became an approach of 1e-16 m/s. New direct test
+`SlidingFloorUnderSide_SqueezeCapReadsTheFloorsSpeedByItsLength` (no exact turn can catch that defect). The far
+re-counts of Tasks 11b and 12 live in `move_particle_test.cc` through `GeneratedSetPlace`. Measured: oblique set 0
+ends below `tol / 2`, least end 0.999919 tol, the naive control ends inside in 4,886 of 10,000; round set 9,267 hits,
+least end 0.999915 tol. Finding left to the owner: large curved solids (radius 100 to 1000 m) that sink slowly into
+what they touch squeeze the particle in their cusp at every step length (317 to 374 of 2,000 moving draws); the far
+moving tangent slides keep a success floor of 1,600, not 1,950. "Step 6" in this text is step 5 of `MoveParticle` as
+built.
+
 **Kind:** numerics
 
 **Files:**
@@ -3345,6 +3384,32 @@ tangent`; `friction = Next()`. `T = 0x1p-6` s, one flat solid id 1, `tol = Compu
 - [ ] **Step 4: Commit.** Subject: `Show the rest gap keeps particles outside without enclosures`.
 
 ### Task 15: `MoveParticles` on the CPU
+
+**As built (2026-11-16, commit `493e414f`, with later changes from Task 15b's review and the final fix wave), where
+this task's text below differs:**
+- One pass: each particle is visited once (`ComputeParticleMoveAt`, then `ApplyParticleOutputsAt` on success). A
+  particle that fails writes nothing and the loop goes on; after any failure but a failed call check the outputs
+  are unspecified, and the step discards the whole try. A failed call check writes nothing and keeps `solids_copy()`.
+- No output may share a byte with an input array or with another output (`kBadInput`); inputs may share with each
+  other.
+- `MoveParticles(const MoveParticlesInputs&, const MovedParticles& moved, ContactBuffers&)`: `moved` is `const`.
+- The failure reported is the lowest particle id, then the lowest index (`ComputeIsEarlierFailure`), with a flag for
+  "some particle failed". `ComputeFailureKey` and `kNoFailureKey` do not exist. `ContactFailure` gained
+  `bool has_particle_id` at byte 2 (particle id 0 is a valid id); size stays 32.
+- The shared per-particle header `move_particles_steps.h` was created here, not in Task 16. Its call description is
+  `MoveParticlesCall` (136 bytes, asserted).
+- Speeds: `MoveParticle` checks at every hit on one surface that the speeds involved times the time left stay within
+  `2^40 tol`, else `kTooCloseToCall` with the new last close call `kMovesTooFastForStep` (name
+  `moves_too_fast_for_step`). `MoveParticles` checks only that both velocities, and each solid's linear and angular
+  velocity, summed over their axes, are at most `kLargestInputSpeedSum = 2^480` (`kBadInput`). The early speed
+  estimate (factors 2 and 12) was built and then removed.
+- Coordinates (added in Task 15b's second review round): each solid's origin over the step plus its reach, and each
+  particle's start plus its straight path at `for_this_step`, must lie within `kLargestCoordinateInTolerances =
+  2^40` contact tolerances on every axis (`kBadInput`, naming the solid or the particle).
+- `ParticleContact` lives in the shared `solid_contact_types.h` (56 bytes, asserted), with `ToParticleContact`.
+- Layout assertions added: `sizeof(Solid) == 200` and its offsets, `sizeof(ContactFailure) == 32` and its offsets.
+- Timings after the review (M3 Pro, one thread, a million particles): 102, 715 and 2,776 ns per particle with 1, 8
+  and 32 solids; Task 15b brought them down.
 
 **Kind:** integration
 
@@ -3453,6 +3518,20 @@ inside that padding, and the size stays 200.
 ns per particle with 1, 8 and 32 solids, almost all of it three pose-and-distance reads per far solid per particle.
 A particle that cannot come within reach of a solid during the step should cost one cheap test for that solid.
 
+**As built (2026-11-17, commit `2e9ecb16` and its kept fixup `df568a0b`), where this task's text below differs:**
+the start's depth check already reads every solid once; that read's distance is compared with
+`ComputeOutOfRangeDistance` (`ComputeIsSolidOutOfRange`). A solid left out is a bit in a 64-bit mask kept in the
+private `ParticleMove::left_out_solids` (no public field: an early version put it in `SolidContactInputs`). Never
+left out: the domain box, a solid at index 64 or above (`kMaxLeftOutSolids`), a bound that is not finite. Read as
+before: P7's closing-bound test and the move off several near surfaces. Before every sweep and before the settle,
+`ComputeIsWithinParticleReach` checks that the particle stayed where the rule assumed, and clears the mask for the
+rest of the move when it did not. The tests live in a new program `move_particle_left_out_test.cc` (16 tests) with a
+reference copy of the headers built to read every solid. Same bits as reading every solid on 40,240 test scenes and
+71.7 million generated ones: measured, not proved. The scale guard of the first version was retired once Task 8b
+fixed the round solids' hit; the coordinate check moved to `MoveParticles` (Task 15 note). Reads per far solid per
+particle: 3 to 1. Timings (M3 Pro, one thread, a million particles): 57, 211 and 773 ns per particle with 1, 8 and
+32 solids.
+
 **Files:**
 - Modify: `native/fluidity/contact/solid_contact_steps.h`, `solid_contact.h` (and `solid_contact_types.h` if a small
   per-call value is needed), `move_particles_steps.h` only if the loop must pass something new.
@@ -3493,6 +3572,23 @@ today. The domain box and any solid for which the bound is not finite are never 
 - [ ] **Step 6: Gate and commit.**
 
 ### Task 16: `MoveParticles` on the GPU
+
+**As built (2026-11-17, commit `2534bafa`), where this task's text below differs:** compiled, never run on a GPU.
+The names come from Task 15 as built: the call description is `MoveParticlesCall`, the per-particle work is
+`ApplyParticleVisitAt` (move, write the failure beside the particle, outputs on success), and the reduction is
+`FirstFailureMinima`, `ComputeIsFailureWithParticleId`, `ComputeFirstFailure`. Four GPU functions in one stream:
+start the reduction; visit every particle (atomic minimum of the failing id, atomic or of the flag, atomic sums of
+the counts); find the smallest failing index among the particles with that id; write the first failure. The minima
+live in the bytes of the one-value first-failure buffer, so the call takes no memory of its own. The visit function
+needs 255 registers and 11,264 to 12,784 bytes of stack per thread (`__launch_bounds__(256, 1)`).
+`BuildContactBuffers(RunOn::kGpu, ...)` reserves that stack at once (`cudaDeviceSetLimit`) and fails `kOutOfMemory`
+with its bytes when the card cannot hold it; the stack belongs to the GPU's context for the rest of the process. New
+public `BuildContactStackEstimate(RunOn)`: one entry "contact: GPU stack of the particle visits",
+`MemoryWhere::kDriverStack` (new in `base/memory_count.h`), resident threads times the visit's local bytes (about
+707 MB on a 36-multiprocessor card); 0 bytes on the CPU. On scenes with a turning or spinning solid the GPU test
+counts discrete mismatches and writes them to the notes file, failing only above one scene in ten
+(`SetComparison`). `move_particles_gpu_test` has 12 tests, `move_particles_steps_test` (label `cpu`) 32;
+`kFrictionOrders` became the function `ComputeFrictionOrderMember` for device code, same bits.
 
 **Kind:** device
 
@@ -3605,6 +3701,21 @@ today. The domain box and any solid for which the bound is not finite are never 
 
 ### Task 17: Scene-level tests: conservation and comparison with `main`
 
+**As built (2026-11-17, commit `468d9f60`), where this task's text below differs:** tests only. The data header is
+`contact_main_comparison_test_cases.h` (a test header by name, so the gate does not compile it alone); 24 old calls
+stored in the old Y-up axes and turned by `ToZUp` in the test. `main` was not built: the old results were read from
+the old code and its tests (commit `9d5ea078`). Renamed: `..._SummedChangeHasNoAngularMomentum`,
+`..._ChangeHasNoAngularMomentumAboutCentre` ("moment" means a time in this module),
+`MainFlatSolidAndPlateCases_AgreeAfterTurningToZUp`. The oblique reaction test takes each case against its own
+solid (against the solid of case 0 only one particle hit). 17 tests in `move_particles_scene_test.cc`, four scenes
+added in review: a closed domain box over 3,000 steps, a reacting floor under 1,000 resting particles (the
+reactions sum to the weight impulse), a right-angled groove that holds at friction 0.5 and slides at 0.3, and a
+swarm of 1,000 particles among every shape for 120 steps (0 failures, no end within `tol / 2`). Findings pinned:
+sliding off a frictionless sphere, the last hit comes 0.0143 rad before the analytic angle at 1 ms
+(`..._LastHitWithinFifteenThousandthsOfAnalyticAngle`); energy never rises. Two old results differ on purpose: a
+start on a plate's middle plane is moved out through the face its normal points to, and a solid sliding at 1e20 m/s
+is `kMovesTooFastForStep`.
+
 **Kind:** integration
 
 **Files:**
@@ -3667,6 +3778,19 @@ today. The domain box and any solid for which the bound is not finite are never 
 
 ### Task 18: Comment pass and hand-over
 
+**As built (2026-11-17, commits `8a508ba2` and `3a134851`), where this task's text below differs:** Step 2 was not
+done: the comment pass is new commits at the tip, not fixups folded into each owner commit (folding wording across
+three redesigns would have cost days of conflicts for the same final tree). Commit A makes every contact comment,
+the glossary and the paper true of the code; code identity checked on every changed file with comments stripped,
+848 test names and every assertion count unchanged. Commit B makes the banned-word check catch inflected forms
+(-s, -ed, -ing) and rewords the lines it then flags. `round_solid_hit_rounding_test` is built `-O1` in debug on GCC
+and Clang (11.4 s to 0.8 s). The design-against-branch table, the public names and the known limits are in the
+ledger's `task-18-hand-over.md`; the design's sections 3.5 and 6 were brought up to date from it on 2026-11-19.
+`docs/gpu-runs.md` has the entry: module `contact`, compiled, not run, the 12 tests of `move_particles_gpu_test` and
+`SharedFormulas.OnGpu_MatchCpu`. Open items left for later: test and scene names that say "Wall" for an upright
+flat solid, and the factor 2^20 between `kLargestInputSpeedSum` and the asserted 2^500, which is not proved for
+joint responses.
+
 **Kind:** mechanical
 
 **Amended 2026-11-14 (Foundation as built):** hand-over records the Task 16 same-bits promise instead of `fluidity_add_shared_test`; the GPU tests write result digests.
@@ -3697,3 +3821,28 @@ today. The domain box and any solid for which the bound is not finite are never 
   `MoveParticles.TwoFailures_ReportsLowestParticleId`, `SharedFormulas.OnGpu_MatchCpu`. Fold into Task 16's commit.
 - [ ] **Step 5: Hand over** in one message: `git log --oneline` of the contact commits; the gate's output; the
   new public names with their reasons; the deviations of Step 3; the statement that no contact device code has run.
+
+### Final fix wave (after the whole-branch review)
+
+**As built (2026-11-19, commits `f669e80d` to `f2375124`, six commits, gate green on each).** Not a task of this
+plan's first text: the fixes the final review asked for before the push.
+- **A shorter step can cure it, or not.** `ContactFailure` gained `bool can_shorter_step_cure` at byte 3 (it was
+  padding). Layout now: `error` 0, `close_call` 1, `has_particle_id` 2, `can_shorter_step_cure` 3, `particle_id` 8,
+  `solid_id` 16, `magnitude` 24, size 32; bytes 4 to 7 and 20 to 23 are padding. The flag is true only for
+  `kTooCloseToCall`, and only when what failed comes at a hit after the start of the step, or its test reads the
+  time left (`kMovesTooFastForStep`, a squeeze over several surfaces from the rounding over the time left, a hover,
+  the end check, a solid that turns too far, a turning solid near another solid farther than `tol + tol / 16`). A
+  close call of a hit at the start whose test reads no time left recurs at every step length: false. True says a
+  cure exists, not that one halving finds it: one catalogue scene needs the step cut to 2^-26 of its length. New
+  program `move_particle_shorter_step_test.cc` (15 tests) checks both ways on every failing catalogue scene.
+- **A hit may record an approach speed of zero or more.** Stated at both `approach_speed` fields: a turning solid has
+  no touching rule, so a particle leaving it within 1.25 tol is still a hit. Pinned by two tests.
+- **`hit_fraction` is never above 1**, stated with the reason (no clamp needed).
+- **Names.** `TouchedSolid` is `TouchedRule`, `kTouchedSolidRestingGapShare` is `kTouchedRuleRestingGapShare`; the
+  messages of `kTurningSolidNearOtherSolid` (the carry), `kSqueezedBetweenSolids` and `kTooManyHits` say what the
+  code does. `ToName` strings unchanged.
+- **Tests** state their tolerances in place, no longer citing a design that is not in the repository.
+- **Solver.** `SolveSubsetMultipliers` skips a triple of surfaces whose dots' determinant rounds to zero.
+Results identical to before on 80,261 `MoveParticle` scenes and 20,240 `MoveParticles` calls, except for the new
+field. Left for the owner: what a failure that no shorter step cures does to a run; the failure order still ignores
+what failed, so a scene error can hide behind a close call.

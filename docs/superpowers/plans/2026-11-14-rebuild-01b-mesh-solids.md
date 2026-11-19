@@ -1,5 +1,10 @@
 # Rebuild Mesh Solids (contact part) Implementation Plan
 
+> **Stale (note of 2026-11-19).** This plan is written against an earlier contact (plan Task 10: a list of touched
+> surfaces, the rim move, a resting sweep at `tol / 2`, `ContactFailure::mesh_problem` at offset 2). Module 1 as
+> built differs, and offsets 2 and 3 of `ContactFailure` are taken. Do not run any task of it: plan it again from the
+> entry "From contact as built (2026-11-19)" under "01b Mesh solids" in `specs/modules/changes-to-apply.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a solid be a closed mesh of triangles in `native/fluidity/contact/`: the mesh type and its tree of

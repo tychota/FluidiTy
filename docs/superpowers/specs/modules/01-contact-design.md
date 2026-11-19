@@ -5,7 +5,10 @@ cylinder added 2026-11-15 (A74: 3.2, 5.7, 6, 7, 8, Q18); aligned 2026-11-15 with
 after its review (5.1, 5.3, 5.5, 5.7, 8: cylinder gaps `wall_distance`/`cap_distance`, reaction from the slide, no
 touching rule on a turning solid, rim move for closed-form hits only, section order). Module 1
 of the rebuild. Names shared between modules are fixed in `shared-interface.md`; where it still says
-`state`/`travel`, A1 replaced them by `for_next_step`/`for_this_step`.
+`state`/`travel`, A1 replaced them by `for_next_step`/`for_this_step`. Sections 3.5 and 6 rewritten 2026-11-19 to
+the module as built (branch `rebuild`, tip `f2375124`), with its known limits in 6; the other sections still differ
+from the code where the contact ledger's `task-18-hand-over.md` lists it (for example 3.1's `ContactFailure`, which
+3.5 gives as built).
 
 ## 1. Purpose
 
@@ -346,75 +349,125 @@ Deviations from the naming review's sketch, all forced by the shared-header rule
 writes `ContactFailure` through a pointer (no `std::expected` in a shared header; the shared-header form of
 A2); `solids` is pointer plus count.
 
-### 3.5 `contact/move_particles.h` (CPU only), private `move_particles_cpu.cc`, `move_particles_gpu.cu`
+### 3.5 `contact/move_particles.h` (CPU only), `move_particles_steps.h` (shared), private CPU and GPU halves
+
+Rewritten 2026-11-19 to the code as built (branch `rebuild`, tip `f2375124`). Every size below is asserted in the
+code.
 
 ```cpp
-struct ParticleContact {                   // N. One per particle, kept where the simulation runs. 64 bytes.
+// solid_contact_types.h (shared, so the GPU writes it and the materials and solids read it on the device).
+struct ParticleContact {                 // One per particle, kept where the simulation runs. 56 bytes, no padding.
   ContactKind kind = ContactKind::kNone;
-  std::uint8_t hit_count = 0;
-  SolidFace face = SolidFace::kHighZ;
+  std::uint8_t hit_count = 0;            // 0 to kMaxHitsPerStep (4): moments with a joint response, not surfaces.
+  SolidFace face = SolidFace::kHighZ;    // Of the first hit.
   SolidSide side_at_hit = SolidSide::kNoPlate;
-  std::uint32_t solid_index = kNoSolid;
-  double hit_fraction = 0;
-  Vec3 normal_out_of_solid{};
-  PerParticleVelocity<double> approach_speed{};  // m/s
+  std::uint32_t solid_index = kNoSolid;  // Offset 4. Index into solids, not the solid_id.
+  double hit_fraction = 0;               // Offset 8. 0 to 1, never above 1. 0 without a hit.
+  Vec3 normal_out_of_solid{};            // Offset 16. At the first hit only.
+  PerParticleVelocity<double> approach_speed{};  // Offset 40. m/s, at the first hit. Negative means approaching;
+                                         // zero or more is possible (a hit on a turning solid the particle leaves).
 };
-class ContactBuffers;  // N. Preallocated: a copy of the solids and one failure code per particle. Members:
-// run_on(), max_particle_count(), max_solid_count(), and NEW (2026-11-15, sand; reconcile item 33)
-// std::span<const Solid> solids_copy() const: the solids the last MoveParticles call wrote, on run_on() (empty
-// before the first call); sand's GPU hit split reads it instead of copying the solids per call.
-// Changed (A58): builds every buffer as a piece of `run_memory` (the run's one reserved block). Requires:
-// run_on == run_memory.run_on() (debug assertion, A30). Fails kOutOfMemory (magnitude = bytes asked; pieces
-// already taken stay in the block), kRunOnCallFailed.
-std::expected<ContactBuffers, ContactFailure> BuildContactBuffers(RunOn run_on, std::size_t max_particle_count,
-                                                                 std::size_t max_solid_count,
-                                                                 RunMemory& run_memory);
-struct MoveParticlesInputs {             // N. Borrowed pointers on the processor `buffers` was built for.
-  std::size_t particle_count = 0;        // Particles of one material in one range of cell blocks.
-  const std::uint64_t* particle_id = nullptr;
-  const Vec3* start_position = nullptr;  // m
-  PerParticleVelocity<const Vec3*> velocity{};  // m/s, before the response.
-  const double* friction = nullptr;      // No unit, per particle (a mixture blends its ingredients; gas 0).
-  const PlateSide* plate_side = nullptr; // Null: no particle of this material is committed to a plate.
-  std::span<const Solid> solids;         // CPU memory, ascending solid_id. A few hundred bytes per solid.
-  double step_duration = 0;              // s
-  double start_overlap_tolerance = 0;    // m
-  double contact_tolerance = 0;          // m
-};
-struct MovedParticles {                  // N. Trial outputs, same indexes as the inputs, same processor.
-  Vec3* position = nullptr;              // m
-  Vec3* velocity_for_next_step = nullptr;  // m/s, after the response.
-  ParticleContact* record = nullptr;
-  SolidReaction* reaction = nullptr;     // Null when no solid has reports_reaction.
-};
-struct MoveParticlesResult {             // N
+constexpr ParticleContact ToParticleContact(const SolidContactResult& result);  // Field by field, bit for bit.
+// SolidReaction is 56 bytes: solid_index at 0, hit_position at 8, velocity_for_next_step_change at 32.
+
+// move_particles.h (CPU only).
+struct MoveParticlesResult {             // 16 bytes, the layout of MoveParticleCounts. Integer sums.
   std::uint64_t hit_count = 0;             // Particles with kind == kHit.
   std::uint64_t started_inside_count = 0;  // Particles with kind == kStartedInsideSolid.
 };
-// Runs MoveParticle for each particle of the range. On failure the trial outputs hold unspecified values and
-// must not be committed; the failure reported is the one with the lowest particle_id.
+class ContactBuffers;  // Move-only, built only by BuildContactBuffers. run_on(), max_particle_count(),
+// max_solid_count(), solids_copy(): the solids of the last call that passed its call checks, on run_on() (empty
+// before the first such call). Holds four pieces of the run's memory: the solids copy (200 bytes per solid), one
+// ContactFailure per particle (32 bytes, used by the GPU's reduction), the call result (16 bytes), the first
+// failure (32 bytes).
+std::expected<ContactBuffers, ContactFailure> BuildContactBuffers(RunOn run_on, std::size_t max_particle_count,
+                                                                 std::size_t max_solid_count,
+                                                                 RunMemory& run_memory);
+struct MoveParticlesInputs {             // Borrowed arrays on run_on(), particle_count values each.
+  std::size_t particle_count = 0;        // Particles of one material in one range of cell blocks.
+  const std::uint64_t* particle_id = nullptr;  // Unique in the call, below 2^64 - 1 (required, not checked).
+  const Vec3* start_position = nullptr;  // m, world.
+  PerParticleVelocity<const Vec3*> velocity{};  // m/s, world, before the response.
+  const double* friction = nullptr;      // No unit, per particle (a mixture blends its ingredients; gas 0).
+  const PlateSide* plate_side = nullptr; // Null: no particle of this material is committed to a plate.
+  std::span<const Solid> solids;         // CPU memory, ascending solid_id. 200 bytes per solid.
+  double step_duration = 0;              // s, positive.
+  double start_overlap_tolerance = 0;    // m, zero or more.
+  double contact_tolerance = 0;          // m, positive. From ComputeContactTolerance.
+};
+struct MovedParticles {                  // Outputs of one try, same indexes, same processor.
+  Vec3* position = nullptr;              // m, world, at the end of the step.
+  Vec3* velocity_for_next_step = nullptr;  // m/s, world, after the response.
+  ParticleContact* record = nullptr;
+  SolidReaction* reaction = nullptr;     // May be null only when no solid has reports_reaction.
+};
 std::expected<MoveParticlesResult, ContactFailure> MoveParticles(const MoveParticlesInputs& inputs,
-                                                                 MovedParticles& moved, ContactBuffers& buffers);
-// N. The rows BuildContactBuffers allocates from, for the sizing estimate (base/memory_count.h). Changed (A58):
-// one row per buffer, all kRunOn, kWholeRun: "contact: solids copy", "contact: failure per particle", "contact:
-// call result" (1 MoveParticlesResult), "contact: first failure" (1 ContactFailure), so ComputeRunMemoryBytes of
-// the rows equals the bytes BuildContactBuffers hands out.
-std::vector<MemoryEstimateEntry> BuildContactMemoryEstimate(std::size_t max_particle_count, std::size_t max_solid_count);
+                                                                 const MovedParticles& moved,
+                                                                 ContactBuffers& buffers);
+// The entries of BuildContactBuffers' four pieces, each kGivenCount, kWholeRun, MemoryWhere::kRunOn: "contact:
+// solids copy", "contact: failure per particle", "contact: call result", "contact: first failure".
+std::vector<MemoryEstimateEntry> BuildContactMemoryEstimate(std::size_t max_particle_count,
+                                                            std::size_t max_solid_count);
+// The GPU stack of the particle visits, which BuildContactBuffers takes on the GPU outside the run's memory: one
+// entry "contact: GPU stack of the particle visits", MemoryWhere::kDriverStack, the visit's local bytes per thread
+// times the threads the GPU holds at once (about 12.8 kB x 55,296 = 707 MB on a 36-multiprocessor card). 0 bytes
+// for RunOn::kCpu. Fails kRunOnCallFailed when the GPU cannot run or a query of it fails.
+std::expected<MemoryEstimateEntry, ContactFailure> BuildContactStackEstimate(RunOn run_on);
 ```
 
+**`ContactFailure` as `MoveParticles` returns it** (32 bytes): `error` at 0, `close_call` at 1, `has_particle_id`
+at 2, `can_shorter_step_cure` at 3, `particle_id` at 8, `solid_id` at 16, `magnitude` at 24; bytes 4 to 7 and 20 to
+23 are padding. `has_particle_id` is true for a failure of one particle and false for a failure of the call's checks
+(particle id 0 is a valid id). `can_shorter_step_cure` is true only for `kTooCloseToCall`, and only when what failed
+comes at a hit after the start of the step or its test reads the time left (full rule: the field's comment in
+`contact_error.h`). A close call of a hit at the start whose test reads no time left recurs at every step length:
+false. True says a cure exists, not that one halving finds it (one catalogue scene needs 2^-26 of the step).
+`ContactCloseCall` has a ninth value, last: `kMovesTooFastForStep` (name `moves_too_fast_for_step`): at a hit on one
+surface, the speeds involved times the time left exceed `2^40 tol`.
+
+**Call checks**, before any particle is read, in this order; a failed check writes nothing and keeps
+`solids_copy()`: more particles or solids than the buffers hold (`kBuffersTooSmall`); a required pointer null, or
+`reaction` null while a solid has `reports_reaction`; two arrays overlapping, an output with an input or with
+another output (`plate_side` and `reaction` count when not null, `solids` with every array); a scalar out of range;
+`kNoSolid` solids or more, or `solid_id`s not strictly ascending; then per solid in array order: its linear or
+angular velocity summed over its axes above `kLargestInputSpeedSum` (2^480), `CheckSolid` (its error, or
+`kTooCloseToCall` with `kSolidTurnsTooFar`, which a shorter step cures), and its origin over the step plus its reach
+beyond `kLargestCoordinateInTolerances` (2^40) contact tolerances on some axis. All `kBadInput` unless named.
+
+**Per particle** (one visit each, on `run_on()`): `CheckParticleSpeeds` (both velocities summed over their axes at
+most 2^480, else `kBadInput`), `CheckParticleCoordinates` (on each axis the start plus the travel at
+`for_this_step` at most 2^40 contact tolerances, else `kBadInput`), then `MoveParticle`, then its outputs at its
+index. A particle that fails writes nothing; the visits go on.
+
+**Failure reported:** the lowest `particle_id`, then the lowest index, whatever failed. The order is a known choice
+left to the step: a scene error of one particle can hide behind a close call of a particle with a lower id. After a
+failure that is not a call check the outputs are unspecified (particles before and after the failing one may have
+been written); the step discards the whole try. Fails: `kBuffersTooSmall`, `kBadInput`, `kTooCloseToCall` (any close
+call of `MoveParticle`, `kMovesTooFastForStep` included, or `kSolidTurnsTooFar`), `kStartsInsideSolid`,
+`kOnWrongSideOfPlate`, `kStartsInNarrowGap` (scene errors), `kRunOnCallFailed`. `BuildContactBuffers` fails
+`kRunOnCallFailed` or `kOutOfMemory` (magnitude: the bytes of the piece, or of the GPU stack, that did not fit).
+
+**`move_particles_steps.h`** (shared by the two halves, private to contact but visible): `MoveParticlesCall` (every
+pointer and value of one call, 136 bytes), `kLargestInputSpeedSum`, `CheckParticleSpeeds`,
+`kLargestCoordinateInTolerances`, `CheckParticleCoordinates`, `ComputeParticleMoveAt` (the two checks, then
+`MoveParticle`), `ApplyParticleOutputsAt`, `ComputeIsEarlierFailure`, `MoveParticleCounts`, `ComputeParticleCounts`,
+`ParticleVisit`, `ApplyParticleVisitAt`, `FirstFailureMinima`, `ComputeIsFailureWithParticleId`,
+`ComputeFirstFailure`. A pass of another module that moves particles on the GPU in the same function must call
+`ComputeParticleMoveAt`, not `MoveParticle`, or it loses the two checks.
+
 The pointer fields are how the cycle with the particles module (built later) is broken: contact includes no
-particles header. The step fills `MoveParticlesInputs` from `particles::ParticleFields` (`id`, `position`,
-`velocity`, `plate_side`) and `MovedParticles` from `particles::ParticleFieldsToChange` (`position.write`,
-`velocity.for_next_step.write`), one call per material and range of cell blocks. `record` and `reaction` point
-into `Buffer<ParticleContact>` and `Buffer<SolidReaction>` that the step owns as working buffers. `BuildContactBuffers`
-maps a `BufferError` to `kBuffersTooSmall` (`kSizeMismatch`), `kOutOfMemory` (`kOutOfMemory`, `kRunMemoryTooSmall`;
-changed 2026-11-15, reconcile item 31: it was `kBuffersTooSmall`) or `kRunOnCallFailed`. Gas marker
-particles are moved by the same call with `friction` 0; contact has no gas-specific case.
+particles header. The step fills `MoveParticlesInputs` from the particle arrays (`id`, `position`, both velocities,
+`plate_side`) and `MovedParticles` from the arrays it writes the step's new positions and velocities to, one call
+per material and range of cell blocks. `record` and `reaction` point into `Buffer<ParticleContact>` and
+`Buffer<SolidReaction>` that the step owns as working buffers. Contact adds no floating-point value across
+particles: each particle's reaction is written beside it, and the solids module sums them in a fixed order. Gas
+marker particles are moved by the same call with `friction` 0; contact has no gas-specific case.
 
 Not declared here: `math::Length`, `math::Normalized`, `math::IsFinite`,
 `math::Rotation(Vec3 rotation_vector) -> Mat3` (turn by `|v|` rad about `v`),
 `PerParticleVelocity<T> { T for_next_step; T for_this_step; }` (A1) and `Buffer<T>`. They are Foundation
-additions in `base/`, declared once in `shared-interface.md` section (a).
+additions in `base/`, declared once in `shared-interface.md` section (a). `MemoryWhere::kDriverStack` is a
+Foundation value added by contact (`base/memory_count.h`).
 
 ## 4. Consumes from other modules
 
@@ -866,46 +919,88 @@ search starts only outside, `d > 1.25 tol`, where the distance is differentiable
 
 ## 6. CPU and GPU
 
-**Shared:** everything in 3.1 to 3.4. `MoveParticle` is the same code on both sides and uses only `+ - * /`,
-`sqrt`, comparisons, and `sin`/`cos` inside `math::Rotation` (turning solids only).
+Rewritten 2026-11-19 to the code as built (tip `f2375124`). No contact code has run on a GPU yet: the GPU half is
+compiled and linked in the CUDA container only (`docs/gpu-runs.md`, module `contact`, "compiled, not run").
 
-Same bits (NEW, A74): the sphere and cylinder branches of `ComputeDistanceToSolid` (any pose given), of
-`ComputeSolidVelocitySample` and `FindFirstHit` (solids with `angular_velocity` exactly zero), the rim move and the
-touching rule use only `+ - * /`, `math::Abs` and `math::Sqrt` (the same-bits group of `base/scalar_math.h`), so
-they give the same bits on CPU and GPU unless NaN, like the other shapes. None calls a function of the last-bits
-group (`Sin`, `Cos`, `Exp`, `Log`, `Pow`, `Cbrt`, `Expm1`); there is no `acos` or `atan` anywhere in contact (tests
-may use `std::asin` and `std::acos` on the CPU for expected values). A spinning sphere or cylinder (angular velocity
-not zero, shape not turning) and a turning cylinder reach `math::Rotation` through `ComputeSolidPose` and agree
-within the tolerance below. A spinning sphere or cylinder is posed with its spin through `ComputeSolidPose`, which
-uses `Sin`, so spinning round solids are compared within the tolerance, not by bits (controller ruling 15,
-2026-11-15; revisit only if the hardware run needs exact parity).
+**Shared:** everything in 3.1 to 3.4 and `move_particles_steps.h`. `MoveParticle` is the same code on both sides.
 
-**CPU (`move_particles_cpu.cc`):** one loop over the index range calling `MoveParticle`. Particles are
-independent, so the range may be cut into fixed chunks for threads. Each thread keeps its own failure with the
-lowest `particle_id`; the chunks are merged in chunk order. Counts are integer sums.
+**Same bits.** When every solid's angular velocity is zero, `MoveParticle` and `MoveParticles` give the same bits on
+CPU and GPU unless NaN: they use only `+ - * /`, `math::Abs`, `math::Sqrt`, `math::Length` and comparisons, built
+with `--fmad=false` on the GPU and `-ffp-contract=off` (`/fp:precise` under MSVC) on the CPU. The sphere and
+cylinder branches are in this group: the closed forms (with the two discriminant forms of 5.7), the rim search and
+the touching rule. Nothing in contact calls `acos` or `atan`. A turning or spinning solid is posed by
+`math::Rotation`, which calls `Sin`, so its results may differ in the last bits and are compared within the
+tolerance below.
 
-**GPU (`move_particles_gpu.cu`):** one thread per particle. Arrays (owner in brackets): `particle_id` `uint64`,
-`start_position` `Vec3`, `velocity.for_next_step` and `velocity.for_this_step` `Vec3`, `friction` `double`,
-`plate_side` `PlateSide` (particles, read only); trial `position`, trial `velocity_for_next_step` (particles,
-written); `ParticleContact`, optional `SolidReaction` (step working buffers, written, read later by materials and solids on
-the device); the solids copy and one `ContactFailure` per particle (`ContactBuffers`). All stay on the device. Per
-call the CPU sends the solids (`solid_count * sizeof(Solid)`, well under a megabyte) and the scalar inputs, and
-receives one `MoveParticlesResult` and one `ContactFailure`. A second function reduces the failures to the one
-with the lowest `particle_id` (an integer minimum, the same on every run) and counts kinds with integer sums. No
-floating-point value is ever summed, so there is no order to fix.
+**CPU (`move_particles_cpu.cc`):** one loop in index order on one thread. It keeps the first failure in the order
+(particle id, index) with a flag that says whether any particle failed, and adds the counts as integers. The
+per-particle failure array of `ContactBuffers` is built on the CPU too but not read there.
+
+**GPU (`move_particles_gpu.cu`):** one thread per particle, four GPU functions in one stream: start the reduction;
+visit every particle (`ApplyParticleVisitAt`: move it, write its failure beside it, its outputs on success; atomic
+minimum of the failing id, atomic or of the flag, atomic sums of the counts); find the smallest failing index among
+the particles with that id; write that particle's failure. The minima live in the bytes of the one-value
+first-failure buffer, so a call takes no memory of its own. Only integer minima, or and sums cross threads, so the
+report is the same in every launch order; no floating-point value is summed. Per call the CPU copies the solids to
+the GPU and reads back the counts and one failure, so each call waits for the GPU. The visit function needs 255
+registers and 11,264 to 12,784 bytes of stack per thread (`__launch_bounds__(256, 1)`: one block of 256 threads per
+multiprocessor). `BuildContactBuffers` on the GPU raises the stack limit to that size at once, so a card too full
+fails there with `kOutOfMemory`, not at the first call; the stack stays with the GPU's context for the rest of the
+process and serves every other GPU function too. Its size is `BuildContactStackEstimate`'s entry, about 707 MB on a
+36-multiprocessor card; the per-particle failure array adds 32 bytes per particle.
 
 **Range of cell blocks:** the range is the particle index range of those blocks. Contact reads no cell, so it
 needs no border cells. A particle may end outside the range's blocks; regrouping is the particles module's (module
 3). In a batched run the solids are the same for every batch.
 
-**Fusing:** `MoveParticle` may also be called from inside another module's per-particle function (as `main`
-does after its grid-to-particle read); the batch operation is the form this module ships and tests.
+**Fusing:** another module's per-particle function on the GPU may move particles in the same pass, but it must call
+`ComputeParticleMoveAt` (the speed and coordinate checks, then `MoveParticle`), not `MoveParticle` alone; the batch
+operation is the form this module ships and tests.
 
-**CPU versus GPU tolerance (proposal, calibrated by the hardware run):** `kind`, `solid_index`, `face`,
-`side_at_hit`, `hit_count` and the error are compared exactly. A floating-point value `a` against `b` passes
-when `|a - b| <= floor + 0x1p-40 * max(|a|, |b|)` with `floor = contact_tolerance / 4` for positions,
-`0x1p-40 * largest input speed` for velocities and speeds, `0x1p-40` for `hit_fraction`. When every angular
-velocity is zero the expected difference is zero, and the test prints the largest difference seen.
+**CPU versus GPU tolerance (calibrated by the hardware run):** `kind`, `solid_index`, `face`, `side_at_hit`,
+`hit_count`, the reacting solid, the counts and every field of the failure but `magnitude` are compared exactly.
+A floating-point value `a` against `b` passes when `|a - b| <= floor + 0x1p-40 * max(|a|, |b|)` with `floor =
+contact_tolerance / 4` for positions, `0x1p-40 * largest input speed` for velocities and speeds, `0x1p-40` for
+`hit_fraction` and normals. When every angular velocity is zero the expected difference is zero and any difference
+fails. On scenes with a turning or spinning solid a discrete difference is counted and written to the notes file,
+not failed, up to one scene in ten of a set (`SetComparison`, a test rule standing in for the owner's ruling). Each
+test prints the largest difference seen.
+
+**Known limits** (as built, each pinned by a test named in the ledger's `task-18-hand-over.md`):
+- Friction between solids that move differently is the mean over the orders of their frictions; it can push past
+  sticking to one solid (5.5 % of 24,401 responses, up to 0.22 of the speeds).
+- The move off near surfaces at the start and the settle read solids in array order: a reordered array or an exact
+  copy changes the position by a unit in the last place.
+- A third solid within the rounding window of a cusp's rest point gives a false `kStartsInNarrowGap`.
+- Beside a cylinder's rim at the rest gap level with the cap, an approach that sinks less than tol in the step gets
+  no response, and the sign of the start's computed gap decides between that and a hit. The same holds at a box's
+  edge strip.
+- A particle on the last `tol / 8` of a box's grown top falls off.
+- A box's grown edges stay sharp: a step up of `tol / 32` between boxes side by side is not seen, one of `tol / 4`
+  stops the particle, a ledge deeper than `tol / 8` is seen.
+- Two flush boxes that turn together cannot be crossed at their seam (`kTurningSolidNearOtherSolid`).
+- On a face turning away, the carry may leave the particle off the face; a particle leaving a turning face is still
+  a hit, with an approach speed of zero or more, and its free flight is bent by the carry.
+- A frictionless particle on a turning face drifts at third order in the step's turn.
+- A conveyor lying on a floor with equal friction: the first in sorted order acts.
+- Two reacting solids pushed in one crease give `kSecondReactingSolid` at every step length.
+- Squeezes the geometry decides: one face closing on a fixed one at under 0.8953 degrees, two at under 1.7906, give
+  `kSqueezedBetweenSolids`; met at the start of a step, no shorter step cures them.
+- A hover or graze toward a turning solid that needs more than 128 advances is `kSlowApproachToTurningSolid`.
+- The neck of two touching balls needs shorter steps (in proportion to `Sqrt(R tol) / speed`).
+- Sliding off a frictionless sphere, the last hit comes 0.0143 rad before the analytic angle at 1 ms steps.
+- A tilting cylinder within P17's bound can be entered by up to `tol / 4` before the settle (measured 0.241 tol).
+- Stated as unproved in the code, with no test: the rounding of the sphere's and cylinder's closed-form hit times is
+  a first-order estimate (0.013 tol, measured at most 0.0024 tol); the rule that leaves out far solids gives the
+  same bits as reading every solid (measured on 71.7 million generated scenes, not proved); a plate thinner than
+  `tol / 8` that no particle is committed to could have its middle passed at the extreme of the speed bound (never
+  built); the factor 2^20 between `kLargestInputSpeedSum` and the asserted 2^500 is not proved for joint
+  responses.
+- Only the first 64 solids of a call can be left out of a particle's reads (`kMaxLeftOutSolids`, the bits of one
+  mask); solids at index 64 and above, and the domain box, are read by every particle. Results do not change; cost
+  does.
+- A path aimed out of the domain box farther than the scale allows is `kBadInput`, even if a closed side would
+  stop it; the step must remove particles beyond open sides before they travel that far.
 
 ## 7. Tests
 
