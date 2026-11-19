@@ -1020,7 +1020,7 @@ TEST(FindFirstHit, CloseCall_NamesTurningSolid) {
   const ContactError error =
       FindFirstHit(inputs, {.x = 0, .y = 0, .z = 0.5 + 0x1p-17}, kAtRest, 0, 1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kTooCloseToCall);
-  EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
+  EXPECT_EQ(close_call, ContactCloseCall::kHoverNearTurningSolid);
   EXPECT_EQ(first_hit.solid_index, 1U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.distance, 0);
@@ -2372,7 +2372,7 @@ TEST(FindFirstHit, TurningBoxHoverOnSpinAxisBeyondAdvanceLimit_IsCloseCall) {
   const ContactError error =
       FindFirstHit(inputs, {.x = 0, .y = 0, .z = 0.5 + 0x1p-17}, kAtRest, 0, 1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kTooCloseToCall);
-  EXPECT_EQ(close_call, ContactCloseCall::kSlowApproachToTurningSolid);
+  EXPECT_EQ(close_call, ContactCloseCall::kHoverNearTurningSolid);
   EXPECT_EQ(first_hit.solid_index, 0U);
 }
 

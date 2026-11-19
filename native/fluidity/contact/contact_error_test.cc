@@ -42,8 +42,8 @@ constexpr std::array kCloseCallNames = {
     CloseCallNameEntry{.close_call = ContactCloseCall::kTooManyHits, .name = "too_many_hits"},
     CloseCallNameEntry{.close_call = ContactCloseCall::kSqueezedBetweenSolids, .name = "squeezed_between_solids"},
     CloseCallNameEntry{
-        .close_call = ContactCloseCall::kSlowApproachToTurningSolid,
-        .name = "slow_approach_to_turning_solid",
+        .close_call = ContactCloseCall::kHoverNearTurningSolid,
+        .name = "hover_near_turning_solid",
     },
     CloseCallNameEntry{
         .close_call = ContactCloseCall::kTurningSolidNearOtherSolid,

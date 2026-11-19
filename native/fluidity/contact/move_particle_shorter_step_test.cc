@@ -282,7 +282,7 @@ TEST(MoveParticle, HoverNearTurningBox_CuredByOneHalving) {
   EXPECT_EQ(
       CountHalvingsToSuccess(
           FindMoveParticleCase("TurningBoxHoverOnSpinAxis"),
-          ContactCloseCall::kSlowApproachToTurningSolid,
+          ContactCloseCall::kHoverNearTurningSolid,
           8
       ),
       1

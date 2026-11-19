@@ -132,7 +132,7 @@ namespace fluidity::contact {
 // Fails: kTooCloseToCall  the search toward a turning solid needs more than kMaxAdvanceCount advances before the
 //                         earliest hit of the other solids: the path hovers near it or grazes it, with too little
 //                         motion along its normal, which is rare (FindHitOnTurningSolid: Cost). *close_call is
-//                         kSlowApproachToTurningSolid, and *first_hit is FirstHit{} but for solid_index, the index of
+//                         kHoverNearTurningSolid, and *first_hit is FirstHit{} but for solid_index, the index of
 //                         that turning solid, so the caller can name it; the caller shortens the step and tries again.
 //        kBadInput        a solid is of an unknown shape; a debug build stops at an assertion first. *first_hit is
 //                         unchanged.
@@ -327,7 +327,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //                             above 2^40 tol, naming that surface's solid),
 //                             kSecondReactingSolid (one step charges two solids with reports_reaction, naming the
 //                             higher index when one response pushes both), kEndsTooCloseToSolid (the end check),
-//                             kSlowApproachToTurningSolid (passed on from the sweep, with that turning solid's id), or
+//                             kHoverNearTurningSolid (passed on from the sweep, with that turning solid's id), or
 //                             kTurningSolidNearOtherSolid (another solid within the carry's closing bound after a hit
 //                             on a turning solid, naming the turning solid; a shorter step shortens the bound).
 //        Whether a shorter step can cure the failure is *failure's can_shorter_step_cure (contact/contact_error.h has

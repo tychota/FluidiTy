@@ -1621,7 +1621,7 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsTurningSolid(const SolidContactInputs&
 //   values.
 // Fails: kBadInput        the solid is of an unknown shape; a debug build stops at an assertion first.
 //        kTooCloseToCall  the stepping search toward a turning solid needs more than kMaxAdvanceCount advances; the
-//                         only close call is kSlowApproachToTurningSolid.
+//                         only close call is kHoverNearTurningSolid.
 //        On failure *hit_on_solid is unchanged.
 // Read: docs/method-paper/fluidity-method.typ <proc-find-first-hit>, <sec-first-hit>, <sec-round-solids>
 //
@@ -2032,7 +2032,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOfSweep(
   const ContactError turning_error = FindEarliestHitWithTurningSolids(inputs, sweep, &earliest, left_out_solids);
   if (turning_error == ContactError::kTooCloseToCall) {
     if (close_call != nullptr) {
-      *close_call = ContactCloseCall::kSlowApproachToTurningSolid;
+      *close_call = ContactCloseCall::kHoverNearTurningSolid;
     }
     *first_hit = earliest;
     return turning_error;

@@ -51,7 +51,7 @@ std::string_view ToMessage(ContactCloseCall close_call) {
     case ContactCloseCall::kSqueezedBetweenSolids:
       return "A particle is squeezed between solids that close on it, or would be pushed out of them too fast. Use a "
              "shorter step or keep the solids apart.";
-    case ContactCloseCall::kSlowApproachToTurningSolid:
+    case ContactCloseCall::kHoverNearTurningSolid:
       return "A particle hovers near a turning solid or grazes it, too slowly for the hit to be found safely. Use a "
              "shorter step or turn the solid more slowly.";
     case ContactCloseCall::kTurningSolidNearOtherSolid:
@@ -105,8 +105,8 @@ std::string_view ToName(ContactCloseCall close_call) {
       return "too_many_hits";
     case ContactCloseCall::kSqueezedBetweenSolids:
       return "squeezed_between_solids";
-    case ContactCloseCall::kSlowApproachToTurningSolid:
-      return "slow_approach_to_turning_solid";
+    case ContactCloseCall::kHoverNearTurningSolid:
+      return "hover_near_turning_solid";
     case ContactCloseCall::kTurningSolidNearOtherSolid:
       return "turning_solid_near_other_solid";
     case ContactCloseCall::kSecondReactingSolid:

@@ -170,14 +170,14 @@ TEST(LeftOutSolids, TurningFloorFarFromAxis_RisesIntoParticle) {
   EXPECT_NEAR(result.position.z, 0.1, 1e-6);
 }
 
-TEST(LeftOutSolids, FastSpinningTiltedCylinder_KeepsSlowApproachCloseCall) {
+TEST(LeftOutSolids, FastSpinningTiltedCylinder_KeepsHoverNearTurningSolidCloseCall) {
   // 3 m away, the turning cylinder's stepping search runs out of advances: the rule's step 4 keeps it read, so the
   // move gives the close call the search gives, naming the cylinder.
   SolidContactResult result;
   ContactFailure failure;
   const MoveParticleCase scene = FindBoundaryCase("FastSpinningTiltedCylinder", 0);
   EXPECT_EQ(MoveParticle(ToSolidContactInputs(scene), &result, &failure), ContactError::kTooCloseToCall);
-  EXPECT_EQ(failure.close_call, ContactCloseCall::kSlowApproachToTurningSolid);
+  EXPECT_EQ(failure.close_call, ContactCloseCall::kHoverNearTurningSolid);
   EXPECT_EQ(failure.solid_id, 1U);
 }
 

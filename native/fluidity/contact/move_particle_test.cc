@@ -1438,7 +1438,7 @@ TEST(MoveParticle, TurningBoxHoverOnSpinAxis_PassesOnCloseCall) {
       call.failure,
       {
           .error = ContactError::kTooCloseToCall,
-          .close_call = ContactCloseCall::kSlowApproachToTurningSolid,
+          .close_call = ContactCloseCall::kHoverNearTurningSolid,
           .can_shorter_step_cure = true,
           .solid_id = 1,
       }
@@ -6003,7 +6003,7 @@ struct GeneratedCounts {
   int several_hit_paths = 0;
   int too_many_hits = 0;
   int second_reacting_solid = 0;
-  int slow_approach = 0;
+  int hover_near_turning_solid = 0;
   int near_other_solid = 0;  // kTurningSolidNearOtherSolid.
   int squeezed = 0;
   std::map<std::string_view, std::array<int, 8>> failures_per_scene;  // Per close call, in ContactCloseCall order.
@@ -6110,7 +6110,7 @@ void CheckGeneratedPath(const SolidContactInputs& inputs, std::string_view scene
   counts.too_many_hits += failure.close_call == ContactCloseCall::kTooManyHits ? 1 : 0;
   ++counts.failures_per_scene[scene_name].at(static_cast<std::size_t>(failure.close_call));
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
-  counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
+  counts.hover_near_turning_solid += failure.close_call == ContactCloseCall::kHoverNearTurningSolid ? 1 : 0;
   counts.near_other_solid += failure.close_call == ContactCloseCall::kTurningSolidNearOtherSolid ? 1 : 0;
   counts.squeezed += failure.close_call == ContactCloseCall::kSqueezedBetweenSolids ? 1 : 0;
 }
@@ -6148,9 +6148,9 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
   // paths drawn within 1 m of their start, so a fifth of the paths hit, not a quarter.
   std::cout << "paths " << counts.paths << ", free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", several hits " << counts.several_hit_paths << ", too many hits " << counts.too_many_hits
-            << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
-            << ", turning solid near other solid " << counts.near_other_solid << ", squeezed " << counts.squeezed
-            << "\n";
+            << ", second reacting solid " << counts.second_reacting_solid << ", hover near turning solid "
+            << counts.hover_near_turning_solid << ", turning solid near other solid " << counts.near_other_solid
+            << ", squeezed " << counts.squeezed << "\n";
   PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(counts.paths, 40000);
   EXPECT_GT(counts.hit_paths, counts.paths / 5);
@@ -6172,7 +6172,7 @@ struct NearStartCounts {
   int started_inside_paths = 0;  // Success with kind kStartedInsideSolid.
   int too_many_hits = 0;
   int second_reacting_solid = 0;
-  int slow_approach = 0;
+  int hover_near_turning_solid = 0;
   int near_other_solid = 0;  // kTurningSolidNearOtherSolid.
   int squeezed = 0;
   std::map<std::string_view, std::array<int, 8>> failures_per_scene;  // Per close call, in ContactCloseCall order.
@@ -6302,7 +6302,7 @@ void CheckGeneratedNearStart(
   counts.too_many_hits += failure.close_call == ContactCloseCall::kTooManyHits ? 1 : 0;
   ++counts.failures_per_scene[scene_name].at(static_cast<std::size_t>(failure.close_call));
   counts.second_reacting_solid += failure.close_call == ContactCloseCall::kSecondReactingSolid ? 1 : 0;
-  counts.slow_approach += failure.close_call == ContactCloseCall::kSlowApproachToTurningSolid ? 1 : 0;
+  counts.hover_near_turning_solid += failure.close_call == ContactCloseCall::kHoverNearTurningSolid ? 1 : 0;
   counts.near_other_solid += failure.close_call == ContactCloseCall::kTurningSolidNearOtherSolid ? 1 : 0;
   counts.squeezed += failure.close_call == ContactCloseCall::kSqueezedBetweenSolids ? 1 : 0;
 }
@@ -6314,9 +6314,9 @@ void ExpectNearStartCounts(const NearStartCounts& counts) {
   std::cout << "near starts: within tolerance " << starts.at(0) << ", on surface " << starts.at(1)
             << ", slightly inside " << starts.at(2) << "; free " << counts.free_paths << ", hit " << counts.hit_paths
             << ", started inside " << counts.started_inside_paths << ", too many hits " << counts.too_many_hits
-            << ", second reacting solid " << counts.second_reacting_solid << ", slow approach " << counts.slow_approach
-            << ", turning solid near other solid " << counts.near_other_solid << ", squeezed " << counts.squeezed
-            << "\n";
+            << ", second reacting solid " << counts.second_reacting_solid << ", hover near turning solid "
+            << counts.hover_near_turning_solid << ", turning solid near other solid " << counts.near_other_solid
+            << ", squeezed " << counts.squeezed << "\n";
   PrintFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(starts.at(0), 15000);
   EXPECT_GT(starts.at(1), 15000);
@@ -8406,9 +8406,8 @@ void PrintTurningMoveCounts(const char* set_name, const TurningMoveCounts& count
             << counts.carried_moves << ", least end before the settle " << counts.least_carried_end_share
             << " tol; too many hits " << failures.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits))
             << ", squeezed " << failures.at(static_cast<std::size_t>(ContactCloseCall::kSqueezedBetweenSolids))
-            << ", slow approach "
-            << failures.at(static_cast<std::size_t>(ContactCloseCall::kSlowApproachToTurningSolid))
-            << ", near other solid "
+            << ", hover near turning solid "
+            << failures.at(static_cast<std::size_t>(ContactCloseCall::kHoverNearTurningSolid)) << ", near other solid "
             << failures.at(static_cast<std::size_t>(ContactCloseCall::kTurningSolidNearOtherSolid))
             << ", second reacting solid "
             << failures.at(static_cast<std::size_t>(ContactCloseCall::kSecondReactingSolid)) << ", ends too close "

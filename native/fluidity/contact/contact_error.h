@@ -60,7 +60,7 @@ enum class ContactCloseCall : std::uint8_t {
   kSqueezedBetweenSolids,
   // The stepping search toward a turning solid ran out of advances: the particle hovers near the solid or grazes it,
   // with almost no motion along its normal.
-  kSlowApproachToTurningSolid,
+  kHoverNearTurningSolid,
   // After a hit on a turning solid, another solid is within the closing bound of the carry in the turning solid's axes,
   // which sweeps nothing, so the carry is not safe.
   kTurningSolidNearOtherSolid,
@@ -86,7 +86,7 @@ struct ContactFailure {
   //          before that hit does not meet it. At any moment: the rounding of a response over the time left
   //          (kMovesTooFastForStep, and kSqueezedBetweenSolids with several surfaces), a turning solid near other
   //          solids that are all farther than the active window tol + tol / 16 (the closing bound shrinks with the
-  //          time left), a hover near a turning solid (kSlowApproachToTurningSolid), the end check
+  //          time left), a hover near a turning solid (kHoverNearTurningSolid), the end check
   //          (kEndsTooCloseToSolid) and a solid that turns too far (kSolidTurnsTooFar).
   //   false  every error but kTooCloseToCall, and the close calls of a hit at the start of the step (elapsed 0)
   //          whose test does not read the time left: solids that close on the particle or an escape above the speed

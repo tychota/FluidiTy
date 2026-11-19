@@ -1103,7 +1103,7 @@ $dot(g)$, $K$ and the root carry relative rounding only, so the path stays farth
 the hit.
 
 The search stops with a hit when $g(t) <= "tol"\/4$, and with no hit when $t >= "duration"$. More than 128 advances
-(`kMaxAdvanceCount`) is "too close to call, slow approach to a turning solid", and the step is tried again shorter. With
+(`kMaxAdvanceCount`) is "too close to call, hover near a turning solid", and the step is tried again shorter. With
 the second-order advance this is rare: it remains for a path that hovers near the solid or grazes it, with almost no
 motion along its normal (a graze is the same thing near the tangent point), where each advance is only about $sqrt(2
 g\/K)$. A particle at rest $2^(-17)$ m above the top face of a box of half size 0.5 m turning at (0, 0, 1) rad/s, on its
@@ -1159,7 +1159,7 @@ When several solids are hit, the earliest time wins, and equal times keep the lo
     The inputs are not checked here.],
   outputs: [`FirstHit`: the time since $t_0$, the index of the solid hit (`kNoSolid` when the path is free), and the
     distance, normal and face at the hit.],
-  fails: [a search toward a turning solid needs more than 128 advances: "too close to call, slow approach to a
+  fails: [a search toward a turning solid needs more than 128 advances: "too close to call, hover near a
     turning solid".],
   ([Solid that does not turn], [First, for each solid in array order that does not turn (a box with angular velocity
     exactly zero, a flat solid or plate whose angular velocity has no part across its normal longer than $2^(-46)
