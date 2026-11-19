@@ -112,6 +112,8 @@ the `rebuild` branch.
 | A100 | Friction between solids that move differently (2026-11-19) | "Ideally exact but this won't happen so keep it is fine": the mean over orders stays, documented and pinned. |
 | A101 | Name of the close call for a particle hovering beside a turning solid (2026-11-19) | Rename `kSlowApproachToTurningSolid` to `kHoverNearTurningSolid` now, before another module reads it. |
 | A102 | A hair-thin gap between two colliders (2026-11-19) | Warn before the run: the scene check lists pairs of colliders separated by a gap of a few tolerances and tells the artist to join them or move them apart. Contact does not change. Scene check (I/O and step designs). |
+| A103 | When unsure (2026-11-19) | "If unsure, ask me." A ruling I am not confident in goes to the owner as a question with a recommendation. |
+| A104 | Nearby faces at an exact cell side or cell centre (2026-11-19) | Keep the zero-weight faces: every interior position has 27 nearby faces per axis and `is_complete` is true. Needs a half-open test on the offset (a closed test on both ends would keep 36). Grid design and plan. |
 
 ## Everything else
 

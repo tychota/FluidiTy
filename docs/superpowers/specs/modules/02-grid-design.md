@@ -519,11 +519,13 @@ struct NearbyFaceWeights {        // DECIDED name. One axis, one particle positi
   Mat3 weighted_spread;           // m2, symmetric. DECIDED name. cell_width^2 / 4 * identity when complete.
   Mat3 inverse_weighted_spread;   // 1/m2. Meaningful only when fit == kFull.
   NearbyFaceFit fit;
-  bool is_complete;               // All faces kept, all same size as the cell, 27 of them.
+  bool is_complete;               // All faces kept, all same size as the cell, 27 of them (true at every position of
+                                  // a same-size neighbourhood, also on a cell side or at a centre).
 };
 struct FaceWeight {               // DECIDED name.
   FacePlaceIndex face;
-  double weight;                  // No unit, positive. Kept weights of one axis sum to 1.
+  double weight;                  // No unit, never negative; 0 for a face exactly 1.5 widths away. Kept weights of
+                                  // one axis sum to 1.
   Vec3 offset;                    // m. Face position minus particle position.
   Vec3 offset_from_mean;          // m. offset - mean_offset. Use this one in fits and in writes.
   Vec3 weight_change;             // 1/m. Derivative of `weight` with respect to the particle position. NEW.
@@ -1067,8 +1069,10 @@ uniform curve instead of the radial one; new: the bounded candidate rule):
 
 1. Find the active cell `c` that contains `x_p`; `h` is its width and `p` its size level.
 2. **Candidates:** the face pieces of this axis that belong to `c` or to a cell touching `c`, whose own size
-   level is `p - 1`, `p` or `p + 1`, and whose centre `x_f` satisfies `|x_f - x_p| < 1.5 h` on each axis. List
-   them in ascending `FacePlaceIndex`.
+   level is `p - 1`, `p` or `p + 1`, and whose centre `x_f` satisfies `-1.5 h < x_f - x_p <= 1.5 h` on each axis (owner decision
+   2026-11-19: open at the low end, closed at the high end, because a cell owns its low side; so every position of
+   a same-size neighbourhood, a cell side, centre or corner included, has exactly 27 candidates, those at
+   exactly `1.5 h` with weight 0). List them in ascending `FacePlaceIndex`.
 3. The caller removes candidates it may not use (other side of a plate, not `outside_solid`, no value) by
    clearing bits of the mask. The grid never looks at physics.
 4. Raw weight: `w_f = Q(d_x) Q(d_y) Q(d_z) * (area_f / h^2)` with `d = (x_f - x_p) / h`. Raw change with the
@@ -1090,14 +1094,15 @@ separate code path. Transfer then computes, per axis, `fitted_velocity_change ro
 particle's momentum exactly. `exact_velocity_change row = sum value * weight_change`.
 
 Properties to state in the header and test: constants are reproduced for any kept set; linear fields are
-reproduced whenever `fit == kFull`; weights are positive; weights jump when the particle changes cell across a
+reproduced whenever `fit == kFull`; weights are never negative, and 0 only for a face exactly `1.5 h` away; weights jump when the particle changes cell across a
 size change (as on `main`), which is the known open physics "traction across cells of different sizes".
 
 **Why 76.** Candidates only come from the cell and the cells touching it, so one layer of border cells is
 always enough. Complete same-size neighbourhood: 27. All 26 neighbour places split (56 small cells): planes
 at -1/2, 0, 1/2, 1, 3/2 with 16, 16, 12, 16, 16 pieces = 76. Same-size neighbours whose far face is split
 into quarters: 36 + 18 = 54. Replacing a small neighbour by a same-size one removes at least as many pieces
-as it adds, so 76 is the maximum. A test searches for a counter-example.
+as it adds, so 76 is the maximum. The half-open test of step 2 does not change it: the faces `1.5 h` beyond the
+centre belong to small cells that do not touch `c`. A test searches for a counter-example.
 
 ### 5.5 Ranges and border
 
@@ -1282,6 +1287,7 @@ Analytic, CPU (label `cpu`), discrete results compared exactly:
 | `..., WeightChange_MatchesFiniteDifference` | centred difference, step `1e-6 h`, away from cell sides | within `1e-7 / h` |
 | `..., FacesOnOnePlane_IsMeanOnly` | mask keeps one plane | `kMeanOnly`; none kept: `kNone` |
 | `FindNearbyFaces, AllNeighboursSplit_Has76` and `..., SmallRandomGrids_NeverExceed76` | constructed worst case; 10,000 random | 76; never more |
+| `FindNearbyFaces, UniformGridOffCentre_Has27`, `..., UniformGridAtCellCentre_Has27`, `..., UniformGridOnCellSide_Has27`, `..., UniformGridAtCellCorner_Has27`; `ComputeNearbyFaceWeights, AtExactCellCentre_IsCompleteWithNineZeroWeights`, `..., OnCellSide_IsCompleteWithNineZeroWeights`, `..., AtCellCorner_IsCompleteWithFifteenZeroWeights` (owner decision 2026-11-19) | uniform 5^3, positions off the centre, at the centre, on a low side, at a low corner | 27 per axis each; `is_complete`; 0, 9, 9 (cross axes) and 15 faces of weight 0; `W = 1` |
 | `FindNearbyFaces, RangeWithBorder_HoldsEveryFace` | random grids cut by `BuildRanges` | every listed face is stored in the range or its border |
 | `FindBorderBlocks, TouchingCells_EqualsGeometricReadSet`, `..., FourCellWidths_EqualsBlockRuleByCoordinates`, `..., FourCellWidths_HoldsEveryFaceWithinFourWidths` NEW | random grids, random ascending block sets, both widths | equals the test-only geometric checker; ascending, no repeats, no block of the set; the span form gives the same list and the full count when the span is short |
 | `FindBorderBlocks, PlaneFourPieceBeyondTouchingCell_IsInBorder` NEW | range ends at a block side; the touching cell's high face is stored in the next block (5.1 step 5) | that block is in the `kTouchingCells` border |

@@ -137,8 +137,7 @@ The scan is `preflight-2.md` beside the first. One line per finding.
 - **Q5** `<proc-count-grid>` is added by Task 1b; Task 8b's step comments cite it.
 - **Q6** The six questions of the first report take their recommended answers, except the one Q3 reverses.
 - **M1** `BuildGridFromBuffers` (Task 9a) is what Task 24 consumes. **M2** `BuildBorderSearchMemoryEstimate` is
-  declared in `grid_memory_estimate.h`. **M3** `UniformGridOffCentre_Has27` and `UniformGridAtCellCentre_Has18`:
-  both counts are right, for the positions named (Task 17). **M4** `ApplyFixedShuffle` (Task 5). **M5**
+  declared in `grid_memory_estimate.h`. **M3** superseded by the third revision (27 at every position). **M4** `ApplyFixedShuffle` (Task 5). **M5**
   `SplitCellsOverflowThePlaces_IsTooManyCellBlocks` and its list in Tasks 11a, 11b. **M6** `ComputeSortCount` in
   64 bits, with its test. **M7**, **M9** Global Constraints "Replay tests". **M8** `BuildTestGrid` takes a CPU
   span and copies it for a GPU grid. **M10** Task 7 split into 7a and 7b; `ComputeCellStateBeside` gives the far
@@ -149,6 +148,21 @@ The scan is `preflight-2.md` beside the first. One line per finding.
 - **M15**, **M16**, **M18**, **M19** design 7 test names, `storage`, "band", `const GridFrame&`, the border
   wording and the 8 steps are brought in line with the plan. **M17** recorded in Task 27. **M20** GPU-half
   names start with an allowed verb. **M21** `BuildSizeStepClosure`. **M22** plain glossary meanings.
+
+### Third revision 2026-11-19: the owner's rule for faces at exactly 1.5 widths
+
+Owner decision: a position exactly on a cell side or at a cell centre still has 27 nearby faces per axis and
+`is_complete` true; the faces of weight 0 are kept.
+
+- **The rule.** A candidate's offset `d = x_f - x_p` satisfies `-1.5 h < d <= 1.5 h` on each axis (open on the
+  low end, closed on the high end), in place of the strict `|d| < 1.5 h`. The closed end must be the high one:
+  a cell owns its low side, so a position on a low side needs the faces 1.5 h above it, and those 1.5 h below
+  belong to a cell that does not touch. Checked by computation on a uniform grid at 512 lattice positions (27
+  each) and on the all-split worst case at 4,096 lattice and 3,000 random positions (largest count still 76).
+- Changed: Task 1a Step 1 (the paper's sentence), Task 16 (the face search keeps its own strict test, and says
+  why), Task 17 (the rule, `ComputeIsCandidateOffset`, four count tests), Task 18 (weights may be 0; three tests
+  of the faces of weight 0; the note about lattice positions removed), Task 19 (the same predicate); design
+  3.5, 5.4 and 7. Unchanged: the bounds 76, 56, 112 and 270.
 
 **Proposed model per task**
 
@@ -427,10 +441,10 @@ Load the `typesetting-with-typst`, `drawing-with-cetz` and `typesetting-document
   `<sec-face-pieces>` one identity, one area, stored with the smaller cell, plane 4 versus plane 0; 4
   `<sec-cell-blocks>` blocks, the fixed order, id versus index, grid versions, buffers built once, ranges and
   border, grid pieces, and where a corner is stored (design 3.7, with the tie rule of Task 15); 5 the weight
-  curve with `<eq:weight-curve>` (design 5.3); 6 `<sec-nearby-faces>` candidates, kept mask,
+  curve with `<eq:weight-curve>` (design 5.3); 6 `<sec-nearby-faces>` candidates (with the half-open rule of Task 17, in the sentence given there), kept mask,
   `<eq:scaled-weights>` (design 5.4 steps 4 to 6), mean, `<eq:weighted-spread>`, the three fit outcomes, the
   complete case as a special case, and the stated properties (constants always reproduced, linear fields when
-  `kFull`, weights positive, weights jump when a particle changes cell across a size change); 7
+  `kFull`, weights never negative, and 0 only for a face exactly 1.5 widths away, weights jump when a particle changes cell across a size change); 7
   `<sec-grid-memory>` memory per block: the table of design 3.6 with the entries of Task 6a, and one sentence
   that the grid's GPU functions need no stack held by the driver.
 - [ ] **Step 2: Citations.** [2] Ding 2020, [1] Jiang 2015, [3] Hu 2018, [18] Stomakhin 2014, [5] Wang 2020,
@@ -1925,7 +1939,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - Produces (design 3.7): `kMaxCellsNearFace`, `CellsNearFace`, `FindCellsNearFace`, `kMaxFaceSearchRadius`,
   `FaceSearch`, `BuildFaceSearch`, `FindNextFace`.
 - **Decided here:** a radius above `kMaxFaceSearchRadius` is treated as `kMaxFaceSearchRadius` (documented,
-  tested); "within" is `|x_f - x_face| < radius * width` on each axis, the same strict box as design 5.4. The
+  tested); "within" is the strict `|x_f - x_face| < radius * width` on each axis. It is not the half-open test of
+  `FindNearbyFaces`: this search relates two faces and must give the same answer from either of them. The
   search reads the 27 same-level blocks around the face's block, the bigger block of each and the 8 smaller
   blocks of each: at most 270 block indexes, each visited once.
 - **Worked example for the header:** on a uniform grid of width 1 m, radius 1.5 around an X face piece finds
@@ -1958,6 +1973,18 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - Produces: `NearbyFaceList`, `NearbyFaceMask`, `NearbyFaceFit`, `FindNearbyFaces`, `ToMaskOfAll` (design 3.5).
   Candidate rule: design 5.4 steps 1 and 2. On `kPositionOutsideGrid` or `kTooManyNearbyFaces` the list has
   `count` 0 and `*error` is set; otherwise `*error = kNone`.
+- **The distance test, exactly.** For each axis, `d = x_f - x_p` in metres (doubles, face centre minus
+  position) and `h` the width of the cell that contains the position; a face is a candidate when `d > -1.5 * h
+  && d <= 1.5 * h` on all three axes (`1.5 * h` is exact). One private inline function holds it, `bool
+  ComputeIsCandidateOffset(double offset, double cell_width)`; `FindNearbyFaces` and the face form of Task 19
+  call it and nothing else, so CPU, GPU and both forms make the same choice. Why the high end is the closed
+  one (write it in the header): a cell owns its low side, so a position on a low side has, across the axis,
+  face centres at -0.5 h, 0.5 h and 1.5 h in the three touching columns; closing the low end instead would ask
+  for a face at -1.5 h, which belongs to a cell that does not touch. Why every position of a same-size
+  neighbourhood gets 27: on each axis the faces of the touching cells are one width apart, and a window of
+  three widths that is open at one end and closed at the other holds exactly three of them wherever it lies.
+  A face at exactly 1.5 h has weight 0 and slope 0 (the weight curve is 0 there), so the sums of Task 18 do
+  not change and the kept weights still sum to 1.
 - The file header says what a caller on the GPU must know (Global Constraints "GPU stack"): the list is about
   320 B and the weights of Task 18 about 600 B per thread, so a module whose GPU function calls them declares
   its own stack entry.
@@ -1969,14 +1996,19 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     every axis.
   - `TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker)`: the 200 grids, 50 positions each: the same list
     as `GeometricGrid::NearbyFaces`, in ascending order.
-  - `TEST(FindNearbyFaces, UniformGridOffCentre_Has27)`: uniform 5^3 grid of width `h`, position = the centre
-    of the middle cell plus `{0.1, 0.2, 0.3} h`: each axis gives 27 (three planes along the axis, 3 x 3 across).
-  - `TEST(FindNearbyFaces, UniformGridAtCellCentre_Has18)`: the centre itself: each axis gives 18. Along the
-    axis the faces lie at 0.5 h and 1.5 h on either side, and the rule is the strict `< 1.5 h`, so only two
-    planes pass. The two left out have weight exactly 0, so nothing is lost; the header says so.
+  - Four tests on a uniform 5^3 grid, origin 0, width 1 m, the middle cell `{2,2,2}`; each axis gives exactly
+    27 in every one:
+    `TEST(FindNearbyFaces, UniformGridOffCentre_Has27)`: position `{2.6, 2.7, 2.8}`; no offset is 1.5 h.
+    `TEST(FindNearbyFaces, UniformGridAtCellCentre_Has27)`: `{2.5, 2.5, 2.5}`; for each axis the list holds
+    the 9 faces at `+1.5 h` along that axis and none at `-1.5 h`.
+    `TEST(FindNearbyFaces, UniformGridOnCellSide_Has27)`: `{2.0, 2.6, 2.7}`, on the low X side, which belongs
+    to the cell: the X list has no offset of 1.5 h; the Y and Z lists each hold 9 faces at `+1.5 h` along x.
+    `TEST(FindNearbyFaces, UniformGridAtCellCorner_Has27)`: `{2.0, 2.0, 2.0}`: each list holds 15 faces with an
+    offset of `+1.5 h` on one of its two cross axes (9 + 9 - 3), and none at `-1.5 h`.
   - `TEST(FindNearbyFaces, Outside_IsPositionOutsideGrid)`.
   - `TEST(ToMaskOfAll, SeventySixFaces_SetsExactlyThoseBits)`.
-- [ ] **Step 2: Run**, fail. **Step 3: Implement**; the header explains "why 76" (design 5.4). `Read:`
+- [ ] **Step 2: Run**, fail. **Step 3: Implement**; the header explains "why 76" (design 5.4; the half-open test leaves it
+  unchanged: the faces 1.5 h beyond a cell centre in the worst case belong to cells that do not touch). `Read:`
   `<sec-nearby-faces>`.
 - [ ] **Step 4: Commit.** Subject: `List the faces near a position`.
 
@@ -2004,12 +2036,19 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(ComputeNearbyFaceWeights, CompleteSameSize_MatchesClosedForm)`: uniform 8^3, `h = 0.25` m, 1,000
-    random positions (Task 5's generator, never a lattice: a position on a cell side or at a cell centre has
-    fewer than 27 faces) inside the central 4^3 cells, all kept: 27 faces; `W = 1` within `1e-14`, `mean_offset = 0`
+    random positions (Task 5's generator) inside the central 4^3 cells, all kept: 27 faces; `W = 1` within `1e-14`, `mean_offset = 0`
     within `1e-14 h`, `weighted_spread = h^2/4 I` within `1e-14 h^2`; `is_complete`; `fit == kFull`.
   - `TEST(ComputeNearbyFaceWeights, AnyKeptSet_WeightsSumToOne)`: the 200 random grids, 50 positions, random
     masks with at least one kept face of positive weight: `|sum weight - 1| <= 1e-14`, `|sum weight_change| <=
-    1e-13 / h` (each axis), every kept weight `> 0`.
+    1e-13 / h` (each axis), every kept weight `>= 0`.
+  - `TEST(ComputeNearbyFaceWeights, AtExactCellCentre_IsCompleteWithNineZeroWeights)`: the uniform 5^3 grid
+    and the position `{2.5, 2.5, 2.5}` of Task 17, all kept: for each axis 27 faces, `is_complete`, `fit ==
+    kFull`, exactly 9 weights equal to 0 (the faces at `+1.5 h` along the axis), their `weight_change` exactly
+    0, the other 18 weights `> 0`, `W = 1` within `1e-14`.
+  - `TEST(ComputeNearbyFaceWeights, OnCellSide_IsCompleteWithNineZeroWeights)`: `{2.0, 2.6, 2.7}`: the X axis
+    has no weight of 0; the Y and Z axes have 9 each; `is_complete` on all three; `W = 1` within `1e-14`.
+  - `TEST(ComputeNearbyFaceWeights, AtCellCorner_IsCompleteWithFifteenZeroWeights)`: `{2.0, 2.0, 2.0}`: 15
+    weights of 0 and 12 above 0 on each axis; `is_complete`; `W = 1` within `1e-14`.
   - `TEST(ComputeNearbyFaceWeights, LinearField_IsReproduced)`: value `a + b . x_f` (`a = 0.7`,
     `b = {0.3, -1.1, 2.0}`) on the 200 grids with random masks, only where `fit == kFull`: `sum weight * value
     - fitted . mean_offset` within `1e-13 (|a| + |b| h)` of `a + b . x_p`; the fitted matrix row `(sum weight *
@@ -2039,7 +2078,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 **Interfaces:**
 - Consumes: Task 18 (`ComputeRawFaceWeight`, `NearbyFaceWeights`).
 - Produces (design 3.7): `NearbyFaceSums`, `ToNearbyFaceSums`, `ComputeFaceWeight(tables, face, position, cell,
-  sums)`. Returns weight 0 (and zero vectors) when `face` fails the candidate rule for `position`.
+  sums)`. Returns weight 0 (and zero vectors) when `face` fails the candidate rule for `position`; the distance test is
+  `ComputeIsCandidateOffset` of Task 17, the same function the list form went through.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(ComputeFaceWeight, SeenFromFace_IsBitIdentical)`: the 200 random grids, 50 positions, random masks;
