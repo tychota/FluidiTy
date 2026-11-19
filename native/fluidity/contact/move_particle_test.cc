@@ -5642,6 +5642,42 @@ CorrectionTargets BuildShallowPitTargets() {
   return pit;
 }
 
+// Three equalities whose normals {1, 0, 0}, {0, 1, 0} and Normalized({1, 0, 2^-560}) give a triple product of 2^-560
+// (about 2.6e-169), not 0, while the first and third dot rounds to 1, so the determinant of the dots is exactly 0:
+// normals in one plane up to a rounding unit. Right sides 1.
+SubsetEquations BuildDotsDeterminantZeroEquations() {
+  SubsetEquations equations;
+  equations.count = 3;
+  equations.normals[0] = kUnitX;
+  equations.normals[1] = kUnitY;
+  equations.normals[2] = math::Normalized({.x = 1, .y = 0, .z = 0x1p-560});
+  for (double& right_side : equations.right_sides) {
+    right_side = 1;
+  }
+  return equations;
+}
+
+TEST(SolveSubsetMultipliers, DotsDeterminantZeroWithTripleProductNot_IsNotSolved) {
+  // No division by a determinant that rounds to 0: not solved, as for three normals in one plane.
+  const SubsetEquations equations = BuildDotsDeterminantZeroEquations();
+  ASSERT_NE(math::Dot(equations.normals[0], math::Cross(equations.normals[1], equations.normals[2])), 0.0);
+  EXPECT_FALSE(SolveSubsetMultipliers(equations, CorrectedQuantity::kPosition).is_solved);
+}
+
+TEST(SolveCorrectionOfSubset, DotsDeterminantZero_HasNoCandidate) {
+  // The same outcome as before the guard, when the quotients were NaN and rejected as not finite.
+  const SubsetEquations equations = BuildDotsDeterminantZeroEquations();
+  CorrectionTargets targets;
+  targets.count = 3;
+  for (int surface_index = 0; surface_index < 3; ++surface_index) {
+    targets.normals[surface_index] = equations.normals[surface_index];
+    targets.targets[surface_index] = 1;
+  }
+  const SmallestCorrection candidate =
+      SolveCorrectionOfSubset(targets, {.count = 3, .surfaces = {0, 1, 2}}, 0, CorrectedQuantity::kPosition);
+  EXPECT_FALSE(candidate.is_found);
+}
+
 TEST(SolveSmallestCorrection, OneTwoAndThreeSurfaces_MatchClosedForms) {
   const double root_three = std::numbers::sqrt3;
   const Vec3 floor_normal = {.x = 0, .y = 0, .z = 1};

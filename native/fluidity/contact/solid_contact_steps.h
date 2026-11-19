@@ -2692,7 +2692,10 @@ struct SubsetMultipliers {
 //                  1 - c^2 <= 0 as computed: parallel or opposite normals, which no pair of equalities can meet.
 //   three          m_k = Determinant of G with column k replaced by b, over Determinant(G), each expanded along its
 //                  first line (math::Determinant). None when Dot(n_1, Cross(n_2, n_3)) == 0 as computed: three normals
-//                  in one plane, where Determinant(G), its square, vanishes.
+//                  in one plane, where Determinant(G), its square, vanishes; and none when Determinant(G) == 0 as
+//                  computed although the triple product is not (normals in one plane up to a rounding unit, or a
+//                  square that underflows), where the quotients would be infinite or NaN and the caller would reject
+//                  them (SolveCorrectionOfSubset).
 //   For a velocity, a pair is also not used when 1 + c < kVelocityPairLimitShare, and a triple when one of its pairs is
 //   or when |Dot(n_1, Cross(n_2, n_3))| < kVelocityTripleLimit: the refinements could not bring the residual within
 //   the velocity's allowance. A position needs no such limit (kVelocityPairLimitShare). Same bits on CPU and GPU:
@@ -2753,6 +2756,10 @@ SolveSubsetMultipliers(const SubsetEquations& equations, CorrectedQuantity quant
       .zz = math::Dot(normal_three, normal_three),
   };
   const double dots_determinant = math::Determinant(dots);
+  // The same outcome as quotients that are infinite or NaN, without the division.
+  if (dots_determinant == 0) {
+    return multipliers;
+  }
   const double right_x = equations.right_sides[0];
   const double right_y = equations.right_sides[1];
   const double right_z = equations.right_sides[2];
