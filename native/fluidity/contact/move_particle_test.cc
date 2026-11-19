@@ -8292,7 +8292,6 @@ void CheckTurningMove(const TurningMoveSet& set, const SolidContactInputs& input
   const bool is_carried = move.elapsed == inputs.step_duration && ComputeIsTurningSolid(inputs, 0)
       && result.hit_count > 0 && !hit_faces.empty();
   if (is_carried) {
-    const Solid& turning_solid = set.solids.at(0);
     const double end_distance = ComputeDistanceToSolid(
                                     turning_solid,
                                     ComputeSolidPose(turning_solid, inputs.step_duration),
