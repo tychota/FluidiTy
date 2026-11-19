@@ -30,7 +30,7 @@
 // Owns:    FindFirstHit, MoveParticle
 // Uses:    Vec3 (base/vec3.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), ContactError, ContactCloseCall,
 //          ContactFailure (contact/contact_error.h), Solid, kNoSolid (contact/solid_shapes.h), SolidContactInputs,
-//          SolidContactResult, FirstHit (contact/solid_contact_types.h), Sweep, TouchedSolid, FindFirstHitOfSweep,
+//          SolidContactResult, FirstHit (contact/solid_contact_types.h), Sweep, TouchedRule, FindFirstHitOfSweep,
 //          ParticleMove, CheckSolidContactInputs, ApplyStartRules, ComputeIsTurningSolid, ApplyHit,
 //          ApplyHitOnTurningSolid, ApplySettleAtEnd, CheckEndOutsideSolids, ComputeIsWithinParticleReach
 //          (contact/solid_contact_steps.h)
@@ -155,14 +155,14 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 ) {
   // NOLINTEND(bugprone-easily-swappable-parameters)
   // FindFirstHitOfSweep asserts the preconditions.
-  // The sweep with no earlier hit in the step: no solid gets the touching rule of a touched solid.
+  // The sweep with no earlier hit in the step: no solid gets the touched rule.
   const Sweep sweep = {
       .start = start,
       .velocity_for_this_step = velocity_for_this_step,
       .start_elapsed = start_elapsed,
       .duration = duration,
   };
-  const TouchedSolid not_touched;
+  const TouchedRule not_touched;
   return FindFirstHitOfSweep(inputs, sweep, not_touched, first_hit, close_call);
 }
 
@@ -208,7 +208,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //     sweep then hits it at 0 when the start is within 1.25 tol of it (step 4).
 //   3 Find the first hit (FindFirstHitOfSweep) from the current position along velocity.for_this_step, with the solids
 //     posed at the time already used and duration = step_duration - elapsed, computed afresh before every sweep. After
-//     the first response of the step every solid that does not turn has the touching rule of a touched solid, on every
+//     the first response of the step every solid that does not turn has the touched rule, on every
 //     surface, after the bounding surfaces a start may rest on: a start gap up to tol / 16 rests on it, and it is hit
 //     at 0 only when the path approaches it faster than the largest allowance of the responses so far. So rounding does
 //     not make a solid hit again, while a solid that is really approached again, by a push from another solid or
@@ -394,7 +394,7 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
         .start_elapsed = move.elapsed,
         .duration = duration,
     };
-    const TouchedSolid touched = {
+    const TouchedRule touched = {
         .is_touched = move.has_response,
         .approach_allowance = move.this_step_approach_allowance,
     };

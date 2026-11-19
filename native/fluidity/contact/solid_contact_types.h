@@ -31,7 +31,7 @@
 //   tangent contact  two convex solids touching at a point or along a line, a ball resting on a floor or two touching
 //                   balls; the free space around the contact is a cusp, whose angle shrinks to 0
 //   wedge angle     of two surfaces, 180 degrees minus the angle between their normals
-// Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare, kTouchedSolidRestingGapShare,
+// Owns:    ContactKind, kMaxHitsPerStep, kMaxAdvanceCount, kTurningSolidHitGapShare, kTouchedRuleRestingGapShare,
 //          kBoundingSurfaceRestingDepthShare, kBoundingSurfaceSinkShare, kRimHitGapShare, kMaxRimAdvanceCount,
 //          kMaxRestGapMoveInTolerances, kMaxRestGapIterations, kMaxConstrainingSurfaces, kMaxSlideDirections,
 //          kMaxUsedDirections, kMaxFrictionOrders, kSameNormalAxisDifference, kMaxCorrectionRefinements,
@@ -89,7 +89,7 @@ inline constexpr double kTurningSolidHitGapShare = 0.25;
 // Rounding leaves a hit position a few rounding units off the rest gap (a computed distance is off by at most
 // tol / 128, contact/contact_tolerance.h), so a sixteenth is far above it, and far below the tol that the touching
 // rule allows below zero. A power of two keeps the test exact.
-inline constexpr double kTouchedSolidRestingGapShare = 0x1p-4;
+inline constexpr double kTouchedRuleRestingGapShare = 0x1p-4;
 // No unit. How far below its rest gap, as a share of the contact tolerance, a start may be and still rest on a
 // bounding surface that does not give its distance (plan decision P21, item 1). A particle at rest is within tol / 128
 // of the rest gap after the settle and comes at most tol / 16 nearer after a response; an eighth holds both. A power

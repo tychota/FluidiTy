@@ -761,7 +761,7 @@ TEST(FindFirstHitOfSweep, BoxBesideItLevelWithItsTop_FreeAlsoAfterAResponse) {
       .velocity_for_this_step = {.x = -1, .y = 0, .z = 0},
       .duration = 1,
   };
-  const TouchedSolid touched = {.is_touched = true, .approach_allowance = 0x1p-46};
+  const TouchedRule touched = {.is_touched = true, .approach_allowance = 0x1p-46};
   FirstHit first_hit;
   ASSERT_EQ(FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, nullptr), ContactError::kNone);
   ExpectFree(first_hit);
@@ -1862,7 +1862,7 @@ TEST(FindFirstHitOfSweep, CylinderBesideRimRestingOnWall_FreeAlsoAfterAResponse)
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 down = {.x = 0, .y = 0, .z = -1};
-  const TouchedSolid touched = {.is_touched = true, .approach_allowance = 0x1p-46};
+  const TouchedRule touched = {.is_touched = true, .approach_allowance = 0x1p-46};
   const Sweep above_seam = {
       .start = {.x = 0.5 + kTolerance, .y = 0, .z = 1 + 3.0 / 16 * kTolerance},
       .velocity_for_this_step = down,
@@ -1876,7 +1876,7 @@ TEST(FindFirstHitOfSweep, CylinderBesideRimRestingOnWall_FreeAlsoAfterAResponse)
       .velocity_for_this_step = down,
       .duration = 1,
   };
-  ASSERT_EQ(FindFirstHitOfSweep(inputs, inside_rest_gap, TouchedSolid{}, &first_hit, nullptr), ContactError::kNone);
+  ASSERT_EQ(FindFirstHitOfSweep(inputs, inside_rest_gap, TouchedRule{}, &first_hit, nullptr), ContactError::kNone);
   ExpectFree(first_hit);
 }
 
@@ -3187,7 +3187,7 @@ struct RimPath {
   RimPathKind kind = RimPathKind::kThroughRim;
   OwnPath own_path{};
   double duration = 0;  // s.
-  TouchedSolid touched{};
+  TouchedRule touched{};
 };
 
 // A uniform draw between low and high.
@@ -3378,7 +3378,7 @@ RimPath BuildRimPath(CaseGenerator& generator, Vec3 half_size) {
   const Vec3 velocity = path.own_path.velocity;
   const double allowance = 0x1p-46 * (std::abs(velocity.x) + std::abs(velocity.y) + std::abs(velocity.z));  // m/s
   path.touched =
-      generator.Next() < 0.3 ? TouchedSolid{.is_touched = true, .approach_allowance = allowance} : TouchedSolid{};
+      generator.Next() < 0.3 ? TouchedRule{.is_touched = true, .approach_allowance = allowance} : TouchedRule{};
   return path;
 }
 

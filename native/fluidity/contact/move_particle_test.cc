@@ -2869,7 +2869,7 @@ ApplyStepsBeforeSettle(const SolidContactInputs& inputs, ParticleMove* move, std
         .start_elapsed = move->elapsed,
         .duration = duration,
     };
-    const TouchedSolid touched = {
+    const TouchedRule touched = {
         .is_touched = move->has_response,
         .approach_allowance = move->this_step_approach_allowance,
     };
@@ -7201,7 +7201,7 @@ TEST(MoveParticle, GeneratedTangentContactSlidesFarFromOrigin_FailOnlyWhereAShor
 struct SweepAfterObliqueHit {
   MoveParticleCase scene;
   Sweep sweep;
-  TouchedSolid touched;
+  TouchedRule touched;
   Vec3 normal_out_of_solid{};
 };
 
@@ -7236,7 +7236,7 @@ TEST(FindFirstHitOfSweep, NotTouchedAfterRoundedHit_HitsSameSolidAgain) {
   // rounding-sized approach of the response makes the closed form hit the same solid again.
   const SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();
   FirstHit first_hit;
-  const TouchedSolid not_touched;
+  const TouchedRule not_touched;
   const ContactError error =
       FindFirstHitOfSweep(ToSolidContactInputs(after_hit.scene), after_hit.sweep, not_touched, &first_hit, nullptr);
   EXPECT_EQ(error, ContactError::kNone);

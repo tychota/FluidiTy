@@ -46,17 +46,17 @@ std::string_view ToMessage(ContactCloseCall close_call) {
     case ContactCloseCall::kNone:
       return "There is no close call.";
     case ContactCloseCall::kTooManyHits:
-      return "A particle hit more solids in one step than contact handles. Use a shorter step or move the solids "
-             "apart.";
+      return "A particle met solids too many times in one step, or too many solid surfaces at once, for contact to "
+             "handle. Use a shorter step or move the solids apart.";
     case ContactCloseCall::kSqueezedBetweenSolids:
-      return "A particle is squeezed between two solids that close on it. Use a shorter step or keep the solids "
-             "apart.";
+      return "A particle is squeezed between solids that close on it, or would be pushed out of them too fast. Use a "
+             "shorter step or keep the solids apart.";
     case ContactCloseCall::kSlowApproachToTurningSolid:
       return "A particle hovers near a turning solid or grazes it, too slowly for the hit to be found safely. Use a "
              "shorter step or turn the solid more slowly.";
     case ContactCloseCall::kTurningSolidNearOtherSolid:
-      return "A turning solid is too near another solid for a safe slide. Use a shorter step or keep the two "
-             "solids apart.";
+      return "A turning solid is too near another solid to carry a particle safely along it. Use a shorter step or "
+             "keep the two solids apart.";
     case ContactCloseCall::kSecondReactingSolid:
       return "A particle touched a second solid that takes a reaction in the same step. Use a shorter step or keep "
              "those solids apart.";

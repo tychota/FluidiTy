@@ -123,6 +123,34 @@ TEST(ToMessage, StartsInNarrowGap_SaysWhatTheUserCanDo) {
   );
 }
 
+TEST(ToMessage, TooManyHits_SaysMomentsOrSurfaces) {
+  // A fifth hit, or more surfaces or directions at one hit than one response reads.
+  EXPECT_EQ(
+      ToMessage(ContactCloseCall::kTooManyHits),
+      "A particle met solids too many times in one step, or too many solid surfaces at once, for contact to handle. "
+      "Use a shorter step or move the solids apart."
+  );
+}
+
+TEST(ToMessage, SqueezedBetweenSolids_SaysEitherCause) {
+  // Solids closing on the particle, or an escape above the speed cap or too fast for the time left; any number of
+  // solids.
+  EXPECT_EQ(
+      ToMessage(ContactCloseCall::kSqueezedBetweenSolids),
+      "A particle is squeezed between solids that close on it, or would be pushed out of them too fast. Use a shorter "
+      "step or keep the solids apart."
+  );
+}
+
+TEST(ToMessage, TurningSolidNearOtherSolid_SaysCarry) {
+  // The rest of the step after a hit on a turning solid is a carry along it, not a slide.
+  EXPECT_EQ(
+      ToMessage(ContactCloseCall::kTurningSolidNearOtherSolid),
+      "A turning solid is too near another solid to carry a particle safely along it. Use a shorter step or keep the "
+      "two solids apart."
+  );
+}
+
 TEST(ToName, OutOfRangeValues_AreUnknown) {
   EXPECT_EQ(ToName(static_cast<ContactError>(255)), "unknown");
   EXPECT_EQ(ToName(static_cast<ContactCloseCall>(255)), "unknown");
