@@ -381,8 +381,8 @@ inline std::vector<MoveParticleCase> BuildLeftOutBoundaryCases() {
       .inputs = BuildSetInputs({.x = 10, .y = 0, .z = 0.05}, kAtRest, 0.01, 0.3),
   });
   // A cylinder 3 m from a particle at rest, spinning at 1e5 rad/s about an axis tilted by 1e-5 rad from its own: it
-  // turns (plan decision P17), and the stepping search's bound counts the whole spin, so the search runs out of
-  // advances in 2 ms: kHoverNearTurningSolid, which only the rule's step 4 keeps.
+  // turns (method paper <sec-slide-and-spin>), and the stepping search's bound counts the whole spin, so the search
+  // runs out of advances in 2 ms: kHoverNearTurningSolid, which only the rule's step 4 keeps.
   cases.push_back({
       .name = "FastSpinningTiltedCylinder",
       .solids =

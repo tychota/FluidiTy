@@ -247,8 +247,9 @@ TEST(ComputeShapeTurningAngularVelocity, Box_IsFullAngularVelocity) {
 }
 
 TEST(ComputeShapeTurningAngularVelocity, FlatSolidAndPlateSpinAboutNormal_IsNoTurn) {
-  // Both are unbounded along their own x and y, so a spin about the normal leaves the shape as it is (plan decision
-  // P17): only the part across the normal remains, as for a cylinder. A box keeps its whole angular velocity.
+  // Both are unbounded along their own x and y, so a spin about the normal leaves the shape as it is (method paper
+  // <sec-not-turning>): only the part across the normal remains, as for a cylinder. A box keeps its whole angular
+  // velocity.
   const SolidMotion turning = BuildTurning({.x = 2, .y = 0, .z = 100});
 
   ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildFloorWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
@@ -1635,7 +1636,8 @@ TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex) {
 }
 
 TEST(ComputeSolidVelocitySample, BeyondSearchDistance_HasNoSolid) {
-  // Distance 0.3 and search distance 0.2: every field keeps its default, the solid's velocity included (P10).
+  // Distance 0.3 and search distance 0.2: every field keeps its default, the solid's velocity included (method paper
+  // <sec-nearest-solid-surface>).
   const std::array<Solid, 1> solids = {
       BuildFlatSolid({.x = 0, .y = 0, .z = -0.3}, kUp, BuildMoving({.x = 1, .y = 0, .z = 0}), 2),
   };
@@ -1678,7 +1680,8 @@ TEST(ComputeSolidVelocitySample, PlateBelow_ReportsAgainstNormal) {
 }
 
 TEST(ComputeSolidVelocitySample, PlateInsideThickness_HasSolidOnNoSide) {
-  // Inside the thickness the plate is still the nearest solid, but the point is on neither side (P10).
+  // Inside the thickness the plate is still the nearest solid, but the point is on neither side (method paper
+  // <sec-plate-sides>).
   const std::array<Solid, 1> solids = {BuildFlatLyingPlate()};
 
   const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0, .y = 0, .z = 0.05}, 1);

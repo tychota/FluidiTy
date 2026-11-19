@@ -252,7 +252,7 @@ struct SphereScene {
   std::vector<ExpectedHit> expected_hits;  // ClassifySpherePath, one per particle.
 };
 
-// Builds the reacting sphere's scene. P11 generator, per particle in this order: the direction (three NextSigned, drawn
+// Builds the reacting sphere's scene. CaseGenerator, per particle in this order: the direction (three NextSigned, drawn
 // again while shorter than 0.25, then normalized), the jitter, 0.3 times three NextSigned. Start centre + 2 direction,
 // both velocities -direction + jitter.
 SphereScene BuildSphereScene() {
@@ -507,7 +507,7 @@ struct DomainBoxRun {
 };
 
 // Moves 16 particles in the closed unit domain box (every side closed), each on its own, for 3000 steps of 1 ms; each
-// step first subtracts 9.81 T from the z of both velocities. P11 generator, per particle: the start, 0.1 + 0.8 Next on
+// step first subtracts 9.81 T from the z of both velocities. CaseGenerator, per particle: the start, 0.1 + 0.8 Next on
 // each axis; the velocity, 2 NextSigned m/s on each axis; the friction alternates 0 and 0.5.
 DomainBoxRun ComputeDomainBoxRun() {
   constexpr int kCount = 16;
@@ -834,7 +834,7 @@ constexpr int kSwarmCount = 1000;
 constexpr int kSwarmStepCount = 120;
 constexpr double kSwarmStepDuration = 2e-3;  // s
 
-// Builds the swarm's particles among `solids`, ids 1 + index. P11 generator, per particle: the start, 0.05 + 1.9 Next
+// Builds the swarm's particles among `solids`, ids 1 + index. CaseGenerator, per particle: the start, 0.05 + 1.9 Next
 // m on each axis, drawn again while within 0.02 m of a solid; the velocity, NextSigned m/s on each axis; the friction,
 // Next.
 ParticleRange BuildSwarmRange(const std::vector<Solid>& solids) {

@@ -201,9 +201,9 @@ TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace) {
   // Plate through the origin, normal +z, half thickness 0.01; the start is inside it at z = -0.005, moving at +1 m/s.
   // Seen by an uncommitted particle the plate has two faces and the nearer is kLowZ: distance -0.005, a start deeper
   // than tol inside, so a hit at 0 on kLowZ. Committed to kAlongNormal, the plate is the half space below its kHighZ
-  // face (plan decision P3): distance -0.005 - 0.01 = -0.015, also a hit at 0, but on kHighZ with normal +z. Not free
-  // in the committed case: P3's half space contains the whole thickness, so a committed particle can never be freer
-  // than an uncommitted one, and only the face tells the two apart.
+  // face (method paper <sec-plate-sides>): distance -0.005 - 0.01 = -0.015, also a hit at 0, but on kHighZ with normal
+  // +z. Not free in the committed case: the committed half space contains the whole thickness, so a committed particle
+  // can never be freer than an uncommitted one, and only the face tells the two apart.
   const std::array solids = {
       ToSolid(Plate{.center = {}, .normal = {.x = 0, .y = 0, .z = 1}, .half_thickness = 0.01}, kNoMotion, 5),
   };
@@ -732,8 +732,8 @@ TEST(FindFirstHit, BoxRestingOnTop_SlidingOffTheEdgeIsFree) {
 TEST(FindFirstHit, BoxRestingOnEdge_RestsOnTheOtherFacePlane) {
   // One tolerance from both kHighX and kHighZ: their gaps tie at 0 and the tie keeps kHighX, which gives the distance.
   // Sinking along the x face is free. Pushing into kHighX is free too: the start rests on the plane of kHighZ, which
-  // the sweep tries first (plan decision P21, item 16 b; with the touching rule on the distance first, a hit at 0 on
-  // kHighX). Pushing in while sinking into the top's plane by tol / 32 does not rest on it, so the distance's face
+  // the sweep tries first (method paper <sec-touching-rule>; with the touching rule on the distance first, a hit at 0
+  // on kHighX). Pushing in while sinking into the top's plane by tol / 32 does not rest on it, so the distance's face
   // rules: a hit at 0 on kHighX.
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
@@ -770,8 +770,9 @@ TEST(FindFirstHitOfSweep, BoxBesideItLevelWithItsTop_FreeAlsoAfterAResponse) {
 
 TEST(FindFirstHit, BoxDownItsGrownSidePlanePastTheEdge_IsFree) {
   // Down the plane of kHighX at its rest gap, past the top edge: kHighZ gives the distance, and the start rests on the
-  // plane of kHighX, which the whole box lies behind, so the sweep is free (plan decision P21, item 8). Without that
-  // rule the path enters the grown box through the plane of kHighZ at 2.5 - tol s and stops dead at the box's side.
+  // plane of kHighX, which the whole box lies behind, so the sweep is free (method paper <sec-touching-rule>). Without
+  // that rule the path enters the grown box through the plane of kHighZ at 2.5 - tol s and stops dead at the box's
+  // side.
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
@@ -825,7 +826,8 @@ TEST(FindFirstHit, BoxBoundingSurfaceWindowAndSink) {
 
 TEST(FindFirstHit, BoxFaceThatGivesTheDistance_KeepsItsOwnTouchingRule) {
   // tol / 128 above the top's rest gap, sinking by tol / 128 over 1 s while moving along it: kHighZ gives the distance,
-  // so the plain closed form decides (plan decision P2 alone) and its plane is entered at 1 s exactly.
+  // so the plain closed form decides (the touching rule of method paper <sec-touching-rule> alone) and its plane is
+  // entered at 1 s exactly.
   const std::array solids = {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
@@ -1103,7 +1105,8 @@ TEST(FindFirstHit, SphereMovingAway_IsFree) {
 }
 
 TEST(FindFirstHit, SphereTouchingTangentPath_IsNotAHit) {
-  // At distance tol (gap 0) and moving along the tangent plane: rate 0, so the touching rule frees it (plan P16).
+  // At distance tol (gap 0) and moving along the tangent plane: rate 0, so the touching rule frees it (method paper
+  // <sec-round-starts>).
   const std::array solids = {BuildSphere({}, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
   ExpectFree(FindHit(
@@ -1142,8 +1145,9 @@ TEST(FindFirstHit, MovingSphere_UsesRelativeVelocity) {
 }
 
 TEST(FindFirstHit, SpinningSphere_IsClosedForm) {
-  // A spin about the centre does not change the shape (plan P17): the head-on time of the sphere at rest, at the
-  // start of the step and a quarter of a second into it, when the spin has turned the sphere's axes by 1.25 rad.
+  // A spin about the centre does not change the shape (method paper <sec-slide-and-spin>): the head-on time of the
+  // sphere at rest, at the start of the step and a quarter of a second into it, when the spin has turned the sphere's
+  // axes by 1.25 rad.
   const std::array solids = {
       BuildSphere({}, {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 5}}),
   };
@@ -1400,7 +1404,8 @@ TEST(FindFirstHit, CylinderParallelToAxisOutside_IsFree) {
 TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim) {
   // The path never meets the wall (no motion across the axis) and enters the grown disc at {0.5 + tol / 2, 0, 1 + tol}
   // at 2 - tol s, beside the high rim, Sqrt(1.25) tol from it: the sharp corner of the grown shape. The rim search goes
-  // on to where the true distance is tol, Sqrt(0.75) tol above the cap's plane, in 2 advances (plan decision P21).
+  // on to where the true distance is tol, Sqrt(0.75) tol above the cap's plane, in 2 advances (method paper
+  // <sec-round-first-hit>).
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
   const FirstHit first_hit = FindHit(
@@ -1490,7 +1495,7 @@ TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree) {
   // Wall and cap distances 0.9 tol: inside the grown sharp cylinder, but at the true distance 0.9 Sqrt(2) tol > tol,
   // in its rim corner. The entry is 0 and the rim search decides: along the rim's normal the true distance reaches tol
   // after (0.9 - Sqrt(0.5)) tol s, one advance. Along {-1, 0, 0} the start rests on the cap's plane, 0.1 tol inside
-  // its rest gap, and does not sink: free (plan decision P21, item 1). Moving away is free.
+  // its rest gap, and does not sink: free (method paper <sec-touching-rule>). Moving away is free.
   const Vec3 corner_start = {.x = 0.5 + 0.9 * kTolerance, .y = 0, .z = 1 + 0.9 * kTolerance};
   const FirstHit approaching =
       FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = -1}, .duration = 1});
@@ -1514,8 +1519,8 @@ TEST(FindFirstHit, CylinderRimCornerStartAlongTangent_IsFree) {
 }
 
 TEST(FindFirstHit, SpinningCylinderAboutAxis_IsClosedForm) {
-  // A spin about the cylinder's own axis does not change its shape (plan P17): the wall time of the cylinder at rest,
-  // at the start of the step and a quarter of a second into it.
+  // A spin about the cylinder's own axis does not change its shape (method paper <sec-slide-and-spin>): the wall time
+  // of the cylinder at rest, at the start of the step and a quarter of a second into it.
   const std::array solids = {
       BuildCylinder({}, kAxisZ, {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 5}}),
   };
@@ -1537,8 +1542,9 @@ TEST(FindFirstHit, SpinningCylinderAboutAxis_IsClosedForm) {
 }
 
 TEST(FindFirstHit, TiltedSpinningCylinder_IsClosedForm) {
-  // A spin about a tilted axis leaves a part across the axis of a few rounding units, far below the bound of plan
-  // P17, so the cylinder is still swept by the closed form: the cap is hit 2 - tol after a start 3 m along the axis.
+  // A spin about a tilted axis leaves a part across the axis of a few rounding units, far below the bound of method
+  // paper <sec-slide-and-spin>, so the cylinder is still swept by the closed form: the cap is hit 2 - tol after a start
+  // 3 m along the axis.
   const Vec3 axis = ToColumn(kTiltedAxes, 2);
   const std::array solids = {BuildCylinder({}, axis, {.linear_velocity = {}, .angular_velocity = 5 * axis})};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
@@ -1560,8 +1566,8 @@ Solid BuildCylinderTurningAcross(double across_rate) {
 }
 
 TEST(FindFirstHit, CylinderTurningAcrossBelowBound_IsClosedForm) {
-  // In a step of 2 s the turn moves the surface by at most (tol / 64) * 2 * 3 = 0.09375 tol <= tol / 8 (plan P17):
-  // the wall is hit at 2 - tol by the closed form.
+  // In a step of 2 s the turn moves the surface by at most (tol / 64) * 2 * 3 = 0.09375 tol <= tol / 8 (method paper
+  // <sec-slide-and-spin>): the wall is hit at 2 - tol by the closed form.
   const std::array solids = {BuildCylinderTurningAcross(kTolerance / 64)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
   const FirstHit first_hit =
@@ -1572,7 +1578,7 @@ TEST(FindFirstHit, CylinderTurningAcrossBelowBound_IsClosedForm) {
 
 TEST(FindFirstHit, CylinderTurningAcrossAtBound_IsClosedForm) {
   // In a step of 1 s at tol / 24 rad/s the bound's product (tol / 24) * 1 * 3 rounds to exactly tol / 8: the bound
-  // itself still counts as not turning (plan P17 turns only above it).
+  // itself still counts as not turning (method paper <sec-slide-and-spin>: it turns only above it).
   const std::array solids = {BuildCylinderTurningAcross(kTolerance / 24)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const FirstHit first_hit =
@@ -1675,7 +1681,7 @@ TEST(FindFirstHit, CylinderMovingAwayFromCapOrWall_IsFree) {
 TEST(FindFirstHit, CylinderDownItsGrownWallPastTheRim_IsFree) {
   // Down the axis direction at exactly the grown radius 0.5 + tol, beside the high rim: the start rests on the wall
   // taken as unbounded along the axis, which the whole cylinder lies behind, and does not sink toward it, so the sweep
-  // is free (plan decision P21, item 1). The sharp grown edge alone would stop it Sqrt(2) tol from the rim.
+  // is free (method paper <sec-touching-rule>). The sharp grown edge alone would stop it Sqrt(2) tol from the rim.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
   ExpectFree(FindHit(
@@ -1748,8 +1754,8 @@ TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink) {
 
 TEST(FindFirstHit, CylinderWallThatGivesTheDistance_KeepsItsOwnTouchingRule) {
   // Beside the wall, tol / 128 above its rest gap, sinking by tol / 64 over 2 s while rising along it: the wall gives
-  // the distance, so the plain closed form decides (plan decision P16 alone) and the grown wall is reached at 1 s, at
-  // the height of the cap's plane, still on the wall proper.
+  // the distance, so the plain closed form decides (the touching rule of method paper <sec-round-starts> alone) and the
+  // grown wall is reached at 1 s, at the height of the cap's plane, still on the wall proper.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
   const FirstHit first_hit = FindHit(
@@ -1857,8 +1863,8 @@ TEST(FindFirstHit, CylinderStartAtCentre_HitsAtZeroWithDegenerateNormal) {
 
 TEST(FindFirstHitOfSweep, CylinderBesideRimRestingOnWall_FreeAlsoAfterAResponse) {
   // 3 / 16 tol above the cap's plane at the wall's rest gap, beside the rim 1.0174 tol away, falling along the wall:
-  // the sweep tries the wall first and rests on it, so it is free, touched or not (plan decision P21, item 16 b); as
-  // built the touched rule read the rim inside its window first and hit it at 0. tol / 32 inside the wall's rest gap
+  // the sweep tries the wall first and rests on it, so it is free, touched or not (method paper <sec-touching-rule>);
+  // as built the touched rule read the rim inside its window first and hit it at 0. tol / 32 inside the wall's rest gap
   // and tol / 8 above the cap's plane, the rim inside its own touching window: free too (was a hit at 0).
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
@@ -2125,7 +2131,8 @@ struct RimSearchCase {
 
 TEST(FindCylinderRimHit, AdvanceCounts) {
   // The own paths of the first-hit tests, from the entry of the two intervals: each advance is the gap over the speed
-  // at which it closes, so a path along the rim's normal needs one and a path down the wall two (plan decision P21).
+  // at which it closes, so a path along the rim's normal needs one and a path down the wall two (method paper
+  // <sec-round-first-hit>).
   const auto expect_advances = [](RimSearchCase search_case) {
     const RimSearch search = SearchRimFromEntry(search_case.own_path, kCylinderHalfSize, search_case.duration);
     EXPECT_TRUE(search.hit_time.has_hit);
@@ -2430,8 +2437,9 @@ TEST(FindFirstHit, CylinderTurningAcrossAxis_ReachesRestingParticleAtTrigonometr
 
 TEST(FindFirstHit, TurningPlateCommitted_SearchUsesCommittedHalfSpace) {
   // The plate of CommittedPlate_UsesOnlyCommittedFace, turning about an axis in its plane: a turning solid, searched
-  // with the distance a committed particle sees (plan decision P3). From inside the thickness at z = -0.005 both forms
-  // hit at 0, an uncommitted particle on kLowZ at -0.005, a particle committed to kAlongNormal on kHighZ at -0.015.
+  // with the distance a committed particle sees (method paper <sec-plate-sides>). From inside the thickness at z =
+  // -0.005 both forms hit at 0, an uncommitted particle on kLowZ at -0.005, a particle committed to kAlongNormal on
+  // kHighZ at -0.015.
   const std::array solids = {
       ToSolid(
           Plate{.center = {}, .normal = {.x = 0, .y = 0, .z = 1}, .half_thickness = 0.01},
@@ -2472,10 +2480,10 @@ Solid BuildPlateWithNormalZ(Vec3 angular_velocity) {
 }
 
 TEST(FindFirstHit, SpinningFlatSolid_IsClosedForm) {
-  // A flat solid is unbounded sideways, so a spin about its normal leaves its shape as it is (plan decision P17): it is
-  // not a turning solid, and the closed form gives the bits of the floor without the spin. 1 rad/s keeps the turn
-  // within kMaxTurnPerStep, so a spin counted as a turn shows here as another hit time, not as a solid CheckSolid fails
-  // on.
+  // A flat solid is unbounded sideways, so a spin about its normal leaves its shape as it is (method paper
+  // <sec-not-turning>): it is not a turning solid, and the closed form gives the bits of the floor without the spin. 1
+  // rad/s keeps the turn within kMaxTurnPerStep, so a spin counted as a turn shows here as another hit time, not as a
+  // solid CheckSolid fails on.
   const Path path = {.start = {.x = 0.3, .y = 0, .z = 0.5}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1};
   const std::array spinning = {BuildSpinningFloor(1)};
   const FirstHit first_hit = FindHit(BuildInputs(spinning, 1), path);
@@ -2489,7 +2497,7 @@ TEST(FindFirstHit, SpinningFlatSolid_IsClosedForm) {
 
 TEST(FindFirstHit, RestingOnSpinningFlatSolid_TouchingRuleFrees) {
   // At rest on the spinning floor (distance tol) and sliding along it: a solid that does not turn keeps its touching
-  // rule (plan decision P2). Counted as turning, it would be hit at 0.
+  // rule (method paper <sec-touching-rule>). Counted as turning, it would be hit at 0.
   const std::array solids = {BuildSpinningFloor(5)};
   const Path path = {
       .start = {.x = 0.3, .y = 0, .z = kTolerance},
@@ -2523,8 +2531,8 @@ TEST(FindFirstHit, RestingOnSpinningPlate_TouchingRuleFrees) {
 }
 
 TEST(FindFirstHit, PlateTurningAboutAxisInItsPlane_IsTurning) {
-  // A turn about an axis in the plate's plane tilts its faces: a turning solid, which has no touching rule (plan
-  // decision P2), so the same resting particle is hit at 0.
+  // A turn about an axis in the plate's plane tilts its faces: a turning solid, which has no touching rule (method
+  // paper <sec-turning-solid>), so the same resting particle is hit at 0.
   const std::array solids = {BuildPlateWithNormalZ({.x = 1, .y = 0, .z = 0})};
   const Path path = {
       .start = {.x = 0.3, .y = 0, .z = 0.01 + kTolerance},
@@ -3035,7 +3043,7 @@ TEST(FindFirstHit, GeneratedSphereSweeps_AgreeWithSlowReference) {
 TEST(FindFirstHit, GeneratedCylinderSweeps_AgreeWithSlowReference) {
   // A cylinder of radius 0.5 m and half height 0.75 m along the tilted axis, moving at {0.25, -0.5, 0.125} m/s and
   // spinning about its own axis, which leaves the shape. A hit beside a rim is where the rim search stops, up to
-  // tol / 1024 beyond tol (plan decision P21).
+  // tol / 1024 beyond tol (method paper <sec-round-first-hit>).
   const Vec3 axis = ToColumn(kTiltedAxes, 2);
   const std::array solids = {
       ToSolid(
@@ -3155,8 +3163,8 @@ TEST(FindFirstHit, GeneratedRimEdgeSweeps_AgreeWithSlowReference) {
           1
       ),
   };
-  // The model of plan decision P21 on the same draws, for the two cylinders along z: 1, 2 or 3 advances in 7,189,
-  // 32,918 and 9,893 paths; the cylinder's own axes turn the start, which may move a few between neighbours.
+  // A model of the rim search in double precision, on the same draws, for the two cylinders along z: 1, 2 or 3 advances
+  // in 7,189, 32,918 and 9,893 paths; the cylinder's own axes turn the start, which may move a few between neighbours.
   constexpr std::array<int, 3> kModelHitsPerAdvanceCount = {7189, 32918, 9893};
   for (std::size_t cylinder_index = 0; cylinder_index < cylinders.size(); ++cylinder_index) {
     const Solid& cylinder = cylinders.at(cylinder_index);
@@ -3173,7 +3181,7 @@ TEST(FindFirstHit, GeneratedRimEdgeSweeps_AgreeWithSlowReference) {
   }
 }
 
-// The kinds of path past a cylinder's rim of plan decision P21, item 15 (a).
+// The kinds of path past a cylinder's rim (method paper <sec-round-first-hit>).
 enum class RimPathKind : std::uint8_t {
   kThroughRim,  // Through the rim's neighbourhood at every angle.
   kDownWall,  // Down the wall at its rest gap toward the rim, from beyond the cap.
@@ -3251,9 +3259,8 @@ double DrawSlant(CaseGenerator& generator) {
 
 // Builds one path past the rim of a cylinder of the given half size, in its own axes. Draws, in this order: the kind
 // (0.35 through the rim, 0.15 down the wall, 0.15 along the cap, 0.15 a graze, 0.1 from the corner, 0.1 anywhere, by
-// one Next); the kind's own draws, as in plan decision P21's model (the speed 2^(6 Next - 3) m/s, path lengths tol
-// 2^(1 + 11 Next)); and whether the touched rule applies, Next < 0.3, with an allowance of 2^-46 times the sum of the
-// velocity's absolute coordinates.
+// one Next); the kind's own draws (the speed 2^(6 Next - 3) m/s, path lengths tol 2^(1 + 11 Next)); and whether the
+// touched rule applies, Next < 0.3, with an allowance of 2^-46 times the sum of the velocity's absolute coordinates.
 RimPath BuildRimPath(CaseGenerator& generator, Vec3 half_size) {
   const double radius = half_size.x;  // m
   const double half_height = half_size.z;  // m
@@ -3388,8 +3395,9 @@ struct RimPathCounts {
   int paths = 0;
   int deep_starts = 0;  // Starts deeper than tol inside, not swept.
   int hits = 0;
-  int free_by_touching_rule = 0;  // Free by the touching rule on the distance (plan decisions P2 and P16).
-  int free_resting = 0;  // Free because the start rests on a bounding surface (plan decision P21, item 1).
+  // Free by the touching rule on the distance (method paper <sec-touching-rule>, <sec-round-starts>).
+  int free_by_touching_rule = 0;
+  int free_resting = 0;  // Free because the start rests on a bounding surface (method paper <sec-touching-rule>).
   int free_other = 0;
   int near_limit =
       0;  // Starts within rounding of a limit of the bounding surfaces' rule, where either answer is right.
@@ -3398,9 +3406,10 @@ struct RimPathCounts {
   double least_resting_distance = 1;  // m, the smallest true distance along a resting path.
 };
 
-// Whether a start beside a cylinder's rim rests on its wall or its cap's plane by plan decision P21's numbers, written
-// here (-tol / 8, tol / 16, tol / 64), on gaps and rates computed apart from the code: in world axes, with std::hypot.
-// Near a limit, within 2^-20 tol, rounding may decide either way, and is_near_limit says so.
+// Whether a start beside a cylinder's rim rests on its wall or its cap's plane by the numbers of method paper
+// <sec-touching-rule>, written here (-tol / 8, tol / 16, tol / 64), on gaps and rates computed apart from the code: in
+// world axes, with std::hypot. Near a limit, within 2^-20 tol, rounding may decide either way, and is_near_limit says
+// so.
 struct RestingStart {
   bool is_beside_rim = false;
   bool is_resting = false;
@@ -3546,10 +3555,10 @@ std::pair<int, int> PrintRimPathCounts(const RimPathCounts& counts) {
 
 TEST(FindFirstHit, GeneratedPathsPastACylinderRim_AgreeWithSlowReference) {
   // 20,000 paths (BuildRimPath) past the rims of the four cylinders of GeneratedRimEdgeSweeps, the cylinder by one
-  // Next before each path, in the six kinds of plan decision P21's model: through the rim's neighbourhood, down the
-  // wall and along the cap at their rest gaps, grazing the round rim, from the rim corner, and from anywhere, a third
-  // with the touched rule. The model on its own draws: no missed hit, no hit farther than tol / 1024 plus rounding, at
-  // most 5 advances, 2.0 on average, and the smallest true gap along a resting path -0.126 tol.
+  // Next before each path, in six kinds: through the rim's neighbourhood, down the wall and along the cap at their rest
+  // gaps, grazing the round rim, from the rim corner, and from anywhere, a third with the touched rule. The model on
+  // its own draws: no missed hit, no hit farther than tol / 1024 plus rounding, at most 5 advances, 2.0 on average, and
+  // the smallest true gap along a resting path -0.126 tol.
   const Vec3 tilted_axis = ToColumn(kTiltedAxes, 2);
   const std::array cylinders = {
       ToSolid(Cylinder{.center = {}, .axis = kAxisZ, .radius = 0.5, .half_height = 1}, kNoMotion, 1),

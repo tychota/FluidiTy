@@ -815,7 +815,10 @@ def _check_declarations(
             return
         if name in exact_names or name in allowed_names or _starts_with_verb(name, verbs):
             return
-        text = f"function '{name}' does not start with an allowed verb (AGENTS.md); list it for owner review"
+        text = (
+            f"function '{name}' does not start with an allowed verb (AGENTS.md); "
+            "list it with its reason in tools/check_rules_allowed_names.txt"
+        )
         reporter.add(statement_line, FAIL, "verb", text, key=name)
 
     continues_preprocessor_line = False

@@ -91,9 +91,9 @@ inline constexpr double kTurningSolidHitGapShare = 0.25;
 // rule allows below zero. A power of two keeps the test exact.
 inline constexpr double kTouchedRuleRestingGapShare = 0x1p-4;
 // No unit. How far below its rest gap, as a share of the contact tolerance, a start may be and still rest on a
-// bounding surface that does not give its distance (plan decision P21, item 1). A particle at rest is within tol / 128
-// of the rest gap after the settle and comes at most tol / 16 nearer after a response; an eighth holds both. A power
-// of two keeps the test exact.
+// bounding surface that does not give its distance (method paper <sec-touching-rule>). A particle at rest is within
+// tol / 128 of the rest gap after the settle and comes at most tol / 16 nearer after a response; an eighth holds both.
+// A power of two keeps the test exact.
 inline constexpr double kBoundingSurfaceRestingDepthShare = 0x1p-3;
 // No unit. The most a path may sink toward a bounding surface it rests on during one sweep, as a share of the contact
 // tolerance: what a response may leave, allowance * time left <= tol / 64, so a velocity a response left never sinks
@@ -300,7 +300,7 @@ struct CorrectionTargets {
   double speeds_before_change = 0;
   // No unit, for a velocity only: the friction (friction * friction_scale) of each direction's pushing surface. Among
   // the changes no longer than the shortest plus its slack, the solver keeps the one with the largest sum of
-  // frictions[k] * multipliers[k] (plan decision P20, item 3). All 0 for a position.
+  // frictions[k] * multipliers[k] (method paper <sec-move-particle>). All 0 for a position.
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): a C array, as above.
   double frictions[kMaxSlideDirections]{};
 };

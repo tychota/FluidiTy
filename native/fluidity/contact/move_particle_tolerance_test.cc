@@ -186,9 +186,9 @@ MoveParticleCase BuildSlidingFloorUnderSide(double sliding_speed) {
 TEST(MoveParticle, SlidingFloorUnderSide_SqueezeCapReadsTheFloorsSpeedByItsLength) {
   // The particle must leave the wedge at {1 / tan(0.8 degrees), 0, 1}, 1 / sin(0.8 degrees) = 71.622 m/s, whatever the
   // floor's sliding along the wedge's edge, which a frictionless response does not read. The cap is 64 times the
-  // largest speed involved, the floor's Length (plan decision P20, item 7): sliding at 0.75 m/s its speed is 1.25 m/s,
-  // a cap of 80 m/s, and the particle is carried out; at 0.4 m/s it is 1.0770 m/s, a cap of 68.93 m/s, and the
-  // particle is squeezed. A cap that read the floor's largest axis, 1 m/s in both, would squeeze both: no turn of a
+  // largest speed involved, the floor's Length (method paper <sec-move-particle>): sliding at 0.75 m/s its speed is
+  // 1.25 m/s, a cap of 80 m/s, and the particle is carried out; at 0.4 m/s it is 1.0770 m/s, a cap of 68.93 m/s, and
+  // the particle is squeezed. A cap that read the floor's largest axis, 1 m/s in both, would squeeze both: no turn of a
   // scene can show that, since a turn that permutes axes keeps every vector's largest axis.
   const double wedge_angle = 0.8 * std::numbers::pi / 180;  // rad
   const MoveParticleCase carried_scene = BuildSlidingFloorUnderSide(0.75);
@@ -263,9 +263,9 @@ bool ComputeHasVectorOutOfEveryAxisPlane(const MoveParticleCase& scene) {
 }
 
 // Computes whether two axes of two solids share one direction without being equal: every component within
-// kSameNormalAxisDifference, not every component equal. Plan decision P20 then reads the shared direction's normal from
-// the surface that comes first when the surfaces are sorted by their normal's x, y, z (item 1), and charges a tie to
-// the first in that order (item 4); a turn that permutes the axes permutes that order.
+// kSameNormalAxisDifference, not every component equal. The joint response (method paper <sec-move-particle>) then
+// reads the shared direction's normal from the surface that comes first when the surfaces are sorted by their normal's
+// x, y, z, and charges a tie to the first in that order; a turn that permutes the axes permutes that order.
 bool ComputeIsSameDirectionNotEqual(Vec3 first, Vec3 second) {
   const Vec3 difference = first - second;
   const bool is_within = std::abs(difference.x) <= kSameNormalAxisDifference
@@ -294,9 +294,9 @@ bool ComputeHasSurfacesSharingDirection(const MoveParticleCase& scene) {
 
 // Computes how much a scene's flat surfaces amplify a rounding unit of their normals in a joint response or a rest
 // point: 1 over the smallest sine between two normals, or the smallest |triple product| of three, of its flat solids
-// and plates, at least 1. Normals closer than 2^-40 count as one direction (plan decision P20, item 1), and the result
-// is capped at 2^20: the solver uses no pair below kVelocityPairLimitShare = 2^-40 (a sine of about 1.4e-6) nor a
-// triple below kVelocityTripleLimit = 2^-20, so the change never solves along a worse pair or triple.
+// and plates, at least 1. Normals closer than 2^-40 count as one direction (method paper <sec-move-particle>), and the
+// result is capped at 2^20: the solver uses no pair below kVelocityPairLimitShare = 2^-40 (a sine of about 1.4e-6) nor
+// a triple below kVelocityTripleLimit = 2^-20, so the change never solves along a worse pair or triple.
 double ComputeNormalsAmplification(const MoveParticleCase& scene) {
   std::vector<Vec3> normals;
   for (const Solid& solid : scene.solids) {
@@ -326,7 +326,7 @@ struct TurnComparison {
   // No unit. 0: bit for bit. Otherwise the largest difference, as a share of the scene's coordinate scale (positions)
   // or speed scale (velocities), or of 1 (the hit fraction and the normal).
   double share = 0;
-  bool compares_reacting_solid = true;  // false when surfaces share a direction: P20 item 4 may charge the other.
+  bool compares_reacting_solid = true;  // false when surfaces share a direction: a tie may charge the other.
   double coordinate_scale = 0;  // m: the largest |coordinate| of the inputs plus the reach, or the speed times T.
   double speed_scale = 0;  // m/s: the largest speed of the particle or of a solid's surface near its path.
 };
@@ -335,18 +335,19 @@ struct TurnComparison {
 // velocities.
 //
 // Method: bit for bit when no input vector has three nonzero components (ComputeHasVectorOutOfEveryAxisPlane).
-//   Otherwise sums of three products are added in another order, and plan decision P20 sorts the surfaces of a joint
+//   Otherwise sums of three products are added in another order, and the joint response sorts the surfaces of a joint
 //   response by their normal's x, y, z, which the turn permutes, so the subsets of the solve are walked in another
 //   order: each such sum may differ by about 2 rounding units of its largest term, a move makes a few in series (the
 //   start, a hit, a response, the settle), and a joint response or a rest point amplifies them by its normals'
 //   conditioning (ComputeNormalsAmplification). So the share is 2^-48, 16 rounding units, times that amplification
 //   (measured at most 3 rounding units times it). The speed scale is the largest speed of the particle, of a solid's
 //   surface near its path, and of either move's resulting velocities, since a response's rounding is relative to the
-//   speeds it computes, as its allowance is (P20 item 8); the coordinate scale is the largest |coordinate| of the
-//   inputs plus the solids' reach, or that speed times the step. When two surfaces share a direction without equal
-//   normals (ComputeHasSurfacesSharingDirection), the turn may make the other one's normal the direction's (P20 items 1
-//   and 4), which moves a change by up to kSameNormalAxisDifference of the speeds (P20 item 14 c): the share is at
-//   least 2^-40 (measured 901 rounding units, 2^-42.2), and the reacting solid of a tie is not compared.
+//   speeds it computes, as its allowance is (method paper <sec-move-particle>); the coordinate scale is the largest
+//   |coordinate| of the inputs plus the solids' reach, or that speed times the step. When two surfaces share a
+//   direction without equal normals (ComputeHasSurfacesSharingDirection), the turn may make the other one's normal the
+//   direction's, which moves a change by up to kSameNormalAxisDifference of the speeds (method paper
+//   <sec-move-particle>): the share is at least 2^-40 (measured 901 rounding units, 2^-42.2), and the reacting solid of
+//   a tie is not compared.
 TurnComparison ComputeTurnComparison(const MoveParticleCase& scene, double largest_result_speed) {
   const SolidContactInputs& inputs = scene.inputs;
   const auto largest_axis = [](Vec3 vector) {

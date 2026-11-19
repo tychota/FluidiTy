@@ -121,8 +121,8 @@
 //                  true distance, until the gap is at most kRimHitGapShare of tol (FindCylinderRimHit)
 //   turning solid  a solid whose shape turns during the step: a box with an angular velocity other than {0, 0, 0},
 //                  a flat solid or a plate with an angular velocity whose part across the normal is more than
-//                  rounding (kNegligibleTurnShare of it), or a cylinder whose axis tilts beyond plan decision P17's
-//                  bound. It has no touching rule
+//                  rounding (kNegligibleTurnShare of it), or a cylinder whose axis tilts beyond the bound of method
+//                  paper <sec-slide-and-spin>. It has no touching rule
 //   second-order advance  the advance of the stepping search toward a solid whose distance is convex: the positive
 //                  root of g + gdot s - K s^2 / 2, gdot the gap rate and K the gap curvature bound
 //   level with     of a point and a bounding surface: its gap to it is in [-tol / 8, tol / 16], the gap alone,
@@ -285,8 +285,9 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeColumn(Mat3 axes, Axis axis) {
   return {.x = axes.xz, .y = axes.yz, .z = axes.zz};
 }
 
-// Converts the side a particle is committed to into the one face plane it sees of that plate (plan decision P3): kHighZ
-// at own z = +half_thickness for kAlongNormal, kLowZ at own z = -half_thickness for kAgainstNormal.
+// Converts the side a particle is committed to into the one face plane it sees of that plate (method paper
+// <sec-plate-sides>): kHighZ at own z = +half_thickness for kAlongNormal, kLowZ at own z = -half_thickness for
+// kAgainstNormal.
 //
 // Units: m for half_thickness.
 // Example: kAgainstNormal, half_thickness 0.25: face kLowZ, sign_out_of_solid -1, offset 0.25, so a point at own z = -1
@@ -372,8 +373,8 @@ FLUIDITY_CPU_AND_GPU constexpr DistanceToSolid ComputeFaceDistance(SolidPose pos
 }
 
 // Computes the distance from a world point to one solid as a particle committed to plate_side sees it: a plate the
-// particle is committed to is the half space behind its committed face (plan decision P3); every other solid gives
-// ComputeDistanceToSolid.
+// particle is committed to is the half space behind its committed face (method paper <sec-plate-sides>); every other
+// solid gives ComputeDistanceToSolid.
 //
 // Method: when plate_side.plate_id is the solid's solid_id, the solid is that plate and the distance is
 //   s * p.z - half_thickness, s = +1 for kAlongNormal and -1 for kAgainstNormal, with face kHighZ or kLowZ and normal
@@ -408,7 +409,7 @@ FLUIDITY_CPU_AND_GPU inline DistanceToSolid ComputeDistanceForParticle(
 // the path's velocity measured from the solid, the two in the same axes.
 //
 // Method: with tol = inputs.contact_tolerance, gap = at_start.distance - tol and
-//   rate = Dot(at_start.normal_out_of_solid, relative_velocity) (plan decisions P2 and P16):
+//   rate = Dot(at_start.normal_out_of_solid, relative_velocity) (method paper <sec-touching-rule>, <sec-round-starts>):
 //   gap > limit       kOutside. The limit is 0, or kTouchedRuleRestingGapShare * tol = tol / 16 once the particle
 //                     had a response in this step (touched.is_touched), for every solid.
 //   gap < -tol        kHitAtStart: deeper inside than one tolerance.
@@ -464,7 +465,7 @@ FLUIDITY_CPU_AND_GPU inline StartCase ComputeStartCase(
 
 // Computes whether a point is level with a bounding surface: its gap to it is in the window of that surface's rest gap,
 // -kBoundingSurfaceRestingDepthShare * tol <= gap <= kTouchedRuleRestingGapShare * tol, the gap alone, whatever the
-// velocity (plan decision P21, item 16).
+// velocity (method paper <sec-touching-rule>).
 //
 // Method: from tol / 8 inside the rest gap to the touched window's tol / 16 outside it, both limits included. A NaN
 //   compares false. Same bits on CPU and GPU: only * and comparisons.
@@ -482,8 +483,8 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsLevelWithBoundingSurface(double con
 }
 
 // Computes whether a sweep's start rests on one bounding surface of a solid that does not turn, one that does not give
-// the start's distance: the touching rule of a bounding surface (plan decision P21, item 1). A sweep that rests on one
-// is free of the whole solid, which lies behind it.
+// the start's distance: the touching rule of a bounding surface (method paper <sec-touching-rule>). A sweep that rests
+// on one is free of the whole solid, which lies behind it.
 //
 // Method: true when the start is level with the surface (ComputeIsLevelWithBoundingSurface), from tol / 8 inside the
 //   rest gap to the touched window's tol / 16 outside it, and gap_rate * duration >=
@@ -547,11 +548,11 @@ FLUIDITY_CPU_AND_GPU inline Vec3 ComputeVelocityFromSurface(
 //   velocity is used because the start rules' approach test and the joint response measure from it: a spin of 100 m/s
 //   at the particle rounds omega x r by about 1e-14 m/s along the normal, and a rate measured from linear_velocity
 //   alone could then see an approach beyond the touched rule's allowance that the response had left within it, and hit
-//   the spinning solid at 0 by rounding. A cylinder whose axis tilts within plan decision P17's bound keeps its closed
-//   form, but its surface moves along the normal at a speed that changes across it: the rate follows that true motion
-//   where the sweep starts, as the response does (a particle that slides on may come up to tol / 4 nearer than the rest
-//   gap, FindFirstHitOfSweep, step 3) (a cap sinking at 3e-10 m/s under the particle was hit again at 0 in every sweep
-//   when the rate was measured from linear_velocity alone).
+//   the spinning solid at 0 by rounding. A cylinder whose axis tilts within the bound of method paper
+//   <sec-slide-and-spin> keeps its closed form, but its surface moves along the normal at a speed that changes across
+//   it: the rate follows that true motion where the sweep starts, as the response does (a particle that slides on may
+//   come up to tol / 4 nearer than the rest gap, FindFirstHitOfSweep, step 3) (a cap sinking at 3e-10 m/s under the
+//   particle was hit again at 0 in every sweep when the rate was measured from linear_velocity alone).
 // Units: m for the distance, m/s for the velocities, s for the duration.
 // Example: a fixed flat solid with normal {0, 0, 1}, tol 2^-30 and at_start.distance tol (the rest gap): the velocity
 //   {5, 0, -tol / 4} for 1 s gives kRestingAndFree; {5, 0, -1} gives kHitAtStart. With at_start.distance 2 tol:
@@ -603,8 +604,8 @@ ComputeOwnPath(const SolidContactInputs& inputs, std::uint32_t solid_index, Soli
 //
 // Method: a free sweep gives FirstHit{} (solid_index kNoSolid). Otherwise at_hit is ComputeDistanceToSolid at the
 //   position sweep.start + velocity_for_this_step * elapsed, at the pose of start_elapsed + elapsed: the face comes
-//   from the region of the hit position, so a cylinder hit beside its rim reports a rim (plan decisions P15 and P21).
-//   A hit at 0 gives the distance at the start, the one the start case read.
+//   from the region of the hit position, so a cylinder hit beside its rim reports a rim (method paper
+//   <sec-round-first-hit>). A hit at 0 gives the distance at the start, the one the start case read.
 // Units: s for the time; m and m/s, world, for the sweep.
 // Example: a fixed sphere of radius 0.5 m at the origin, the sweep from {-2, 0, 0} at {1, 0, 0} m/s and a hit at
 //   1.5 - tol s: at_hit is tol, normal {-1, 0, 0}, face kCurved, up to rounding.
@@ -713,7 +714,7 @@ FLUIDITY_CPU_AND_GPU inline FirstHit FindEntryThroughFacePlanes(
 }
 
 // Computes whether a sweep's start rests on a face plane other than the one that gives its distance: the touching
-// rule of a bounding surface for a flat solid, a plate or a box (plan decision P21, items 1 and 16).
+// rule of a bounding surface for a flat solid, a plate or a box (method paper <sec-touching-rule>).
 //
 // Method: in the solid's own axes at the pose of sweep.start_elapsed (ComputeOwnPath), for each face plane whose face
 //   is not face_of_start_distance, gap = sign_out_of_solid * p.axis - offset - tol and rate = sign_out_of_solid *
@@ -764,7 +765,7 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsRestingOnOtherFacePlane(
 //   plate side. First ComputeIsRestingOnOtherFacePlane: a start that rests on a face plane other than at_start's,
 //   a seam of two flush solids where the gap to the next solid's coplanar face is rounding of either sign, is free of
 //   the whole solid, which lies behind that plane. It comes before the touching rule on the distance, whatever the
-//   sign of the distance's gap (plan decision P21, item 16 b): after a response the touched rule would read the
+//   sign of the distance's gap (method paper <sec-touching-rule>): after a response the touched rule would read the
 //   distance's face, a side plane continued past the edge, as approached, a hit at 0 and a dead stop. Then
 //   ComputeStartCase of at_start, with touched: kHitAtStart gives a hit at 0 with at_start; kRestingAndFree gives no
 //   hit, for the whole solid, which lies behind the surface the particle rests on; kOutside gives
@@ -881,10 +882,10 @@ FindHitOnDomainBox(const SolidContactInputs& inputs, std::uint32_t solid_index, 
 // Method: with p0 = own_path.start, u = own_path.velocity (ComputeOwnPath), tol = inputs.contact_tolerance,
 //   R = radius + tol:
 //   1 at_start = ComputeDistanceToSolid at the sweep's start and the pose of start_elapsed, in world axes, and
-//     ComputeStartCase of it with the velocity from the surface there (plan decision P16): kHitAtStart is a hit at 0,
-//     kRestingAndFree is free. These are the distance, normal and solid velocity a joint response reads, so after a
-//     response the touching rule sees exactly the approach it left (FindFirstHitOfSweep); a spin about the centre has
-//     no part along the normal, so the rate is that of the translating sphere up to rounding.
+//     ComputeStartCase of it with the velocity from the surface there (method paper <sec-round-starts>): kHitAtStart is
+//     a hit at 0, kRestingAndFree is free. These are the distance, normal and solid velocity a joint response reads, so
+//     after a response the touching rule sees exactly the approach it left (FindFirstHitOfSweep); a spin about the
+//     centre has no part along the normal, so the rate is that of the translating sphere up to rounding.
 //   2 kOutside, so the gap g0 = |p0| - radius - tol is positive (|p0| - radius is at_start.distance, bit for bit). A =
 //     Dot(u, u), B = Dot(p0, u), C = g0 * (|p0| + R), which equals Dot(p0, p0) - R^2 but takes its sign from the gap,
 //     so it is positive. Free when A == 0 or B >= 0 (the path does not approach the centre). The discriminant B^2 - A C
@@ -1134,7 +1135,7 @@ ComputeTimeBetweenGrownCaps(OwnPath own_path, Vec3 half_size, double contact_tol
 
 // Finds the first hit of a straight path beside a cylinder's rim by the rim search: from the entry into the cylinder
 // grown with sharp edges, advances along the path on the true distance until the gap closes, stops closing, or would
-// not close within the sweep (plan decision P21, items 3 d, 3 e and 4).
+// not close within the sweep (method paper <sec-round-first-hit>).
 //
 // Method: samples at elapsed, the first at entry_elapsed, each reading ComputeDistanceToCylinder at own_path.start +
 //   own_path.velocity * elapsed with the identity for the axes, so its normal is in own axes: gap = d - tol and
@@ -1218,17 +1219,17 @@ FLUIDITY_CPU_AND_GPU inline HitTime FindCylinderRimHit(
 // the touching rule of its bounding surfaces beside a rim, the entry into the cylinder grown with sharp edges, and the
 // rim search from that entry.
 //
-// Method (plan decisions P15, P16 and P21), with p0 = own_path.start, u = own_path.velocity (ComputeOwnPath), tol =
-//   inputs.contact_tolerance:
+// Method (method paper <proc-cylinder-first-hit>), with p0 = own_path.start, u = own_path.velocity (ComputeOwnPath),
+//   tol = inputs.contact_tolerance:
 //   1 at_start = ComputeDistanceToSolid at the sweep's start and the pose of start_elapsed, in world axes.
 //   2 A start beside a rim (at_start.face kLowRim or kHighRim, so the wall and the cap distances are both positive):
 //     the wall, taken as unbounded along the axis, and the cap's plane on the start's side are bounding surfaces, and
 //     neither gives the distance. Their gaps rho0 - radius - tol and |p0.z| - half_height - tol, with the rates
 //     (p0.x u.x + p0.y u.y) / rho0 and cap_sign u.z, go to ComputeIsRestingOnBoundingSurface: a start that rests on
 //     either is free. This comes before the touching rule on the distance, whatever the sign of the distance's gap
-//     (plan decision P21, item 16 b): the distance there is the rim, and after a response the touched rule would read
-//     an approach to the rim at a start the sweep must call free, a hit at 0 that turns the particle across a seam.
-//     Then ComputeStartCase of at_start with the velocity from the surface there: kHitAtStart is a hit at 0,
+//     (method paper <sec-touching-rule>): the distance there is the rim, and after a response the touched rule would
+//     read an approach to the rim at a start the sweep must call free, a hit at 0 that turns the particle across a
+//     seam. Then ComputeStartCase of at_start with the velocity from the surface there: kHitAtStart is a hit at 0,
 //     kRestingAndFree is free. These are what a joint response reads, as for a sphere (FindSphereHit). Elsewhere the
 //     wall or a cap gives the distance and the touching rule alone rules on it.
 //   3 The grown cylinder with sharp edges is the part shared by the grown unbounded wall and the space between the
@@ -1268,7 +1269,7 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Swe
   const SolidPose pose = ComputeSolidPose(solid, sweep.start_elapsed);
   const DistanceToSolid at_start = ComputeDistanceToSolid(solid, pose, sweep.start);
 
-  // Step 2, before the touching rule on the distance, whatever the sign of its gap (plan decision P21, item 16 b):
+  // Step 2, before the touching rule on the distance, whatever the sign of its gap (method paper <sec-touching-rule>):
   // beside a rim the distance is the rim's, whose normal leans across a seam, and the touched rule would read an
   // approach to it at a start that rests on the wall or the cap's plane. A start level with one of them that does not
   // rest on it goes on to the touching rule: before any response the plain rule frees a path that sinks less than tol
@@ -1277,8 +1278,8 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Swe
   // hits it at 0, within tol / 1024; at or below tol the plain rule frees it. Either way the path stays outside the
   // cylinder (at d >= 0 from the rest gap, a sink below tol) and the settle lifts the particle to tol. The own start is
   // the point at_start was read at, bit for bit, so a rim face means both distances are positive there and rho0 >
-  // radius > 0. The rates come from linear_velocity, in own axes: a tilt within plan decision P17's bound adds its
-  // surface speed to the slack that bound already allows.
+  // radius > 0. The rates come from linear_velocity, in own axes: a tilt within the bound of method paper
+  // <sec-slide-and-spin> adds its surface speed to the slack that bound already allows.
   const OwnPath own_path = ComputeOwnPath(inputs, solid_index, pose, sweep);
   const bool is_beside_rim = at_start.face == SolidFace::kLowRim || at_start.face == SolidFace::kHighRim;
   if (is_beside_rim) {
@@ -1326,11 +1327,13 @@ FindCylinderHit(const SolidContactInputs& inputs, std::uint32_t solid_index, Swe
 }
 
 // Says whether a shape's distance is convex in the solid's own axes, with the normal its distance reports a
-// subgradient of it: the condition for the second-order advance of the stepping search (plan decision P18).
+// subgradient of it: the condition for the second-order advance of the stepping search (method paper
+// <sec-turning-solid>).
 //
 // Method: with p the point in the solid's own axes, true for
 //   flat solid  p.z, linear.
-//   plate       |p.z| - half_thickness, and s * p.z - half_thickness for a committed particle (plan decision P3).
+//   plate       |p.z| - half_thickness, and s * p.z - half_thickness for a committed particle (method paper
+//               <sec-plate-sides>).
 //   box         the largest of |p_k| - half_size_k over the own axes.
 //   sphere      |p| - radius, the true distance to a convex solid, negative inside.
 //   cylinder    the true distance to a convex solid, negative inside (the cylinder's distance formula).
@@ -1366,7 +1369,7 @@ struct GapLowerModel {
 // which the model, and so the gap, stays at least 0.
 //
 // Method: with g = gap, gdot = gap_rate and K = gap_curvature_bound, the root of g + gdot s - K s^2 / 2 = 0 written
-//   so that no two terms of opposite sign meet (plan decision P18):
+//   so that no two terms of opposite sign meet (method paper <eq:second-order-advance>):
 //   gdot <= 0  2 g / (Sqrt(gdot^2 + 2 K g) - gdot): the denominator adds two terms >= 0.
 //   gdot > 0   (gdot + Sqrt(gdot^2 + 2 K g)) / K: the numerator adds two positive terms.
 //   The sum under the root adds two terms >= 0, so rounding cannot make it negative. K == 0 with gdot >= 0 is the one
@@ -1425,7 +1428,7 @@ FLUIDITY_CPU_AND_GPU inline double ComputeSecondOrderAdvance(GapLowerModel gap_m
 //   Sqrt(2 g / K): a particle at rest 2^-17 m above a box's face, on its turn axis, needs 182 advances.
 //   There is no touching rule: a turning face does not stay in its plane, so the touching rule's plane argument fails.
 //   A particle resting on the solid, at distance tol, has g(0) = 0 and is hit at 0 in every step; the response and
-//   the carry in the solid's axes then take it with the solid (plan decisions P2 and P7). The gap is read only
+//   the carry in the solid's axes then take it with the solid (method paper <sec-turning-solid>). The gap is read only
 //   through ComputeDistanceForParticle and may come from any face: the first-order advance fits any distance that
 //   changes no faster than the point it is measured at, the second-order advance a convex one whose normal is a
 //   subgradient (HasConvexDistance). Same bits on CPU and GPU cannot be promised: ComputeSolidPose turns the axes
@@ -1561,14 +1564,15 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindHitOnTurningSolid(
 // stepping search, not from a closed form.
 //
 // Method: with shape_turning = ComputeShapeTurningAngularVelocity(solid), the part of the angular velocity that
-//   changes the shape. A flat solid, a plate or a box turns when shape_turning is not exactly {0, 0, 0} (plan
-//   decision P7): for a flat solid and a plate it is the part across the normal, so a spin about the normal is not a
-//   turn (plan decision P17), and it is {0, 0, 0} when that part is no longer than kNegligibleTurnShare of the
-//   angular velocity, which is all a spin about a tilted normal leaves by rounding. A sphere never turns: shape_turning
-//   is {0, 0, 0}. A cylinder turns when Length(shape_turning) * step_duration * Length(half_size) > tol / 8 (plan
-//   decision P17): its axis then tilts enough to move its surface by more than tol / 8 during the step. Below that,
-//   which includes a spin about a tilted axis that rounding leaves with a tiny part across it, the closed form at the
-//   pose of start_elapsed holds. A domain box never moves. Same bits on CPU and GPU: only + - * and Sqrt.
+//   changes the shape. A flat solid, a plate or a box turns when shape_turning is not exactly {0, 0, 0} (method paper
+//   <sec-not-turning>): for a flat solid and a plate it is the part across the normal, so a spin about the normal is
+//   not a turn (method paper <sec-not-turning>), and it is {0, 0, 0} when that part is no longer than
+//   kNegligibleTurnShare of the angular velocity, which is all a spin about a tilted normal leaves by rounding. A
+//   sphere never turns: shape_turning is {0, 0, 0}. A cylinder turns when Length(shape_turning) * step_duration *
+//   Length(half_size) > tol / 8 (method paper <sec-slide-and-spin>): its axis then tilts enough to move its surface by
+//   more than tol / 8 during the step. Below that, which includes a spin about a tilted axis that rounding leaves with
+//   a tiny part across it, the closed form at the pose of start_elapsed holds. A domain box never moves. Same bits on
+//   CPU and GPU: only + - * and Sqrt.
 // Example: a box turning at {0, 0, 1} rad/s turns; a flat solid with normal {0, 0, 1} turning at {0, 0, 5} rad/s does
 //   not, and at {1, 0, 0} rad/s it does.
 // Requires: solid_index < inputs.solid_count.
@@ -1578,11 +1582,11 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsTurningSolid(const SolidContactInputs&
   const Solid& solid = inputs.solids[solid_index];
   const Vec3 shape_turning = ComputeShapeTurningAngularVelocity(solid);
   if (solid.shape != SolidShape::kCylinder) {
-    // Plan decision P7: a turn of any size other than exactly zero.
+    // Method paper <sec-not-turning>: a turn of any size other than exactly zero.
     return shape_turning.x != 0 || shape_turning.y != 0 || shape_turning.z != 0;
   }
-  // Plan decision P17: rounding leaves a tiny part across a cylinder's axis even in a spin about a tilted axis, so
-  // its test is a bound on how far the tilt moves the surface, not an exact zero.
+  // Method paper <sec-slide-and-spin>: rounding leaves a tiny part across a cylinder's axis even in a spin about a
+  // tilted axis, so its test is a bound on how far the tilt moves the surface, not an exact zero.
   // Method paper <sec-round-solids>:  |omega_across| T |half_size| <= tol / 8
   const double surface_movement_from_tilt =
       math::Length(shape_turning) * inputs.step_duration * math::Length(solid.half_size);  // m
@@ -1594,9 +1598,9 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsTurningSolid(const SolidContactInputs&
 //
 // Method: ComputeIsTurningSolid says whether the solid's shape turns during the step: a box whose angular velocity is
 //   not exactly {0, 0, 0}, a flat solid or a plate whose angular velocity has a part across its normal (beyond
-//   rounding), or a cylinder whose axis tilts beyond plan decision P17's bound; never a sphere or a domain box. One
-//   switch over the shape gives a turning solid FindHitOnTurningSolid, the same search for every shape that can turn,
-//   and every other solid its closed form:
+//   rounding), or a cylinder whose axis tilts beyond the bound of method paper <sec-slide-and-spin>; never a sphere or
+//   a domain box. One switch over the shape gives a turning solid FindHitOnTurningSolid, the same search for every
+//   shape that can turn, and every other solid its closed form:
 //   flat solid  FindHitOnConvexSolid with its one face plane, kHighZ at own z = 0.
 //   plate       FindHitOnConvexSolid with kLowZ and kHighZ at own z = -half_thickness and +half_thickness, or only
 //               the committed face (ToFacePlane) when inputs.plate_side names this plate.
@@ -1667,9 +1671,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       if (is_turning_solid) {
         return FindHitOnTurningSolid(inputs, solid_index, sweep, hit_on_solid, nullptr);
       }
-      // Step 1: a committed particle sees only the committed face (plan decision P3). For every start this gives the
-      // two-face result: a start outside the committed half space is beyond the committed face, which both forms
-      // enter first, and every other start is settled by the start rule on the P3 distance. It states P3 here.
+      // Step 1: a committed particle sees only the committed face (method paper <sec-plate-sides>). For every start
+      // this gives the two-face result: a start outside the committed half space is beyond the committed face, which
+      // both forms enter first, and every other start is settled by the start rule on the committed distance. It states
+      // that rule here.
       const PlateSide plate_side = inputs.plate_side;
       if (plate_side.plate_id == solid.solid_id) {
         const FacePlane committed_face = ToFacePlane(plate_side.side, half_size.z);
@@ -1708,15 +1713,15 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHitOnSolid(
       *hit_on_solid = FindHitOnDomainBox(inputs, solid_index, sweep, touched);
       return ContactError::kNone;
     case SolidShape::kSphere: {
-      // Step 1: a spin about the centre moves the surface but not the shape (plan decision P17), so a sphere never
-      // turns and always has its closed form, the touching rule included.
+      // Step 1: a spin about the centre moves the surface but not the shape (method paper <sec-slide-and-spin>), so a
+      // sphere never turns and always has its closed form, the touching rule included.
       assert(!is_turning_solid);
       const HitTime hit_time = FindSphereHit(inputs, solid_index, sweep, touched);
       *hit_on_solid = ToFirstHit(inputs, solid_index, sweep, hit_time);
       return ContactError::kNone;
     }
     case SolidShape::kCylinder: {
-      // Step 2: an axis that tilts beyond plan decision P17's bound.
+      // Step 2: an axis that tilts beyond the bound of method paper <sec-slide-and-spin>.
       if (is_turning_solid) {
         return FindHitOnTurningSolid(inputs, solid_index, sweep, hit_on_solid, nullptr);
       }
@@ -1869,15 +1874,15 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindEarliestHitWithTurningSolids(
 //   start, or later in the sweep when the start is farther than tol / 16 from its rest gap. Only a solid left out
 //   (left_out_solids, ComputeIsSolidOutOfRange) is skipped, farther than every window from the whole path. With
 //   touched.is_touched false this is FindFirstHit, bit for bit.
-//   Why every solid gets the touched rule after a response (plan decision P20, item 9, which replaces the list of
-//   solids met that P2 kept), in four steps:
-//   1 Before any response the velocities are the inputs, and the plain touching rule holds (plan decision P12).
+//   Why every solid gets the touched rule after a response (method paper <sec-touching-rule>), in four steps:
+//   1 Before any response the velocities are the inputs, and the plain touching rule holds (method paper
+//   <sec-touching-rule>).
 //   2 Every sweep after a response starts where the latest response was made, at its time, with the velocity it
 //     returned: a hit is followed by its response at the same position and pose (ApplyHit moves no hit, a rim hit
 //     included), and the start's response by the first sweep. A solid whose start gap is within the touched
 //     rule's window [-tol, tol / 16] there is within tol + tol / 16, so it was an active surface of that response, or
-//     the particle passes it at a bounding surface's level (ComputeIsPassedAtBoundingSurfaceLevel, plan decision
-//     P21, item 16), which FindActiveSurfaces leaves out unless it was the surface hit. The second kind is never
+//     the particle passes it at a bounding surface's level (ComputeIsPassedAtBoundingSurfaceLevel, method paper
+//     <sec-touching-rule>), which FindActiveSurfaces leaves out unless it was the surface hit. The second kind is never
 //     listed, so it asks nothing of the bit-for-bit argument below: its sweep tries the bounding surfaces first, and
 //     is free while it rests on the one the particle is level with (step 3 bounds that sweep); otherwise the touching
 //     rule reads its distance, which no response targeted. Touched, it hits the solid at 0 on that distance's face for
@@ -1893,22 +1898,22 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindEarliestHitWithTurningSolids(
 //     the hit's distance, normal and face, which are that same function at that same position and pose: ToFirstHit
 //     evaluates ComputeDistanceToSolid at start + velocity * elapsed and the pose of start_elapsed + elapsed, the
 //     expressions ApplyHit moves the particle and the clock with. A rim hit is within tol / 1024 of tol, inside the
-//     window, so the next sweep reads it by the touched rule like a wall hit (plan decision P21). That response left
-//     the velocity approaching every active surface by at most its allowance (ComputeJointChange: one surface, the
-//     bound of ComputeLargestApproachLeftAfterResponse; several, the test of step 7 or a solve's answer within its
-//     slack), and touched.approach_allowance, the largest allowance of the responses so far, is at least it. The
-//     touching rule reads that approach by the same expressions, for every shape (ComputeStartCase with
+//     window, so the next sweep reads it by the touched rule like a wall hit (method paper <sec-round-first-hit>). That
+//     response left the velocity approaching every active surface by at most its allowance (ComputeJointChange: one
+//     surface, the bound of ComputeLargestApproachLeftAfterResponse; several, the test of step 7 or a solve's answer
+//     within its slack), and touched.approach_allowance, the largest allowance of the responses so far, is at least it.
+//     The touching rule reads that approach by the same expressions, for every shape (ComputeStartCase with
 //     ComputeVelocityFromSurface): the normal of ComputeDistanceToSolid in world axes, a sphere's and a cylinder's too,
 //     and the solid velocity of ComputeSolidVelocity at the particle, so its rate is minus the response's own target,
 //     bit for bit. No curvature enters: the normal is read at the very point where the response read it, not at a
 //     point the particle slid to, so how fast a round surface's normal turns does not matter here. (A rate read in a
 //     sphere's or a cylinder's own axes from linear_velocity alone would differ: by the rotation's rounding, and by the
-//     surface velocity of a cylinder whose axis tilts within plan decision P17's bound, which is not rounding; a cap
-//     sinking at 3e-10 m/s under the particle would be hit again at 0 in every sweep.) One known exception: a
-//     surface whose normal agrees with its direction's within kSameNormalAxisDifference but not bit for bit, in a
-//     change that uses another direction too, is missed by up to 2^-40 of the change; the sweep then sees an approach
-//     and hits it at 0, one more hit, never a missed one. A solid outside the window takes its closed form, whatever
-//     touched says.
+//     surface velocity of a cylinder whose axis tilts within the bound of method paper <sec-slide-and-spin>, which is
+//     not rounding; a cap sinking at 3e-10 m/s under the particle would be hit again at 0 in every sweep.) One known
+//     exception: a surface whose normal agrees with its direction's within kSameNormalAxisDifference but not bit for
+//     bit, in a change that uses another direction too, is missed by up to 2^-40 of the change; the sweep then sees an
+//     approach and hits it at 0, one more hit, never a missed one. A solid outside the window takes its closed form,
+//     whatever touched says.
 //   3 What replaces the allowance of each listed entry: one number per velocity, the largest so far. Response j asserts
 //     (one active surface) or checks (several, kSqueezedBetweenSolids) b_j * t_left_j <= tol / 64, t_left_j the time
 //     left at it. Between response k and the next, a free path approaches any solid at up to max over j <= k of b_j,
@@ -1916,29 +1921,30 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindEarliestHitWithTurningSolids(
 //     particle comes closer to any solid by at most tol / 16 in the step. The approach is measured from the surface's
 //     velocity; a round solid's shape moves only with linear_velocity, since a spin's omega x r has no part along its
 //     normal (rounding aside, a few units of |omega x r|, which the allowance counts). A cylinder whose axis tilts
-//     within plan decision P17's bound is the exception, and P17's own. The touching rule reads the surface's normal
-//     speed where the sweep starts; a particle that slides across the tilting surface keeps that speed while the
-//     surface under its new position moves the other way, so the gap falls by up to the normal speed of the surface at
-//     the start minus that under the particle, accumulated over the sweep: at most 2 |omega_across| max|arm| T, and
-//     P17's bound, |omega_across| T Length(half_size) <= tol / 8 with max|arm| <= Length(half_size), makes that less
-//     than tol / 4 (a sweep the closed form decides, from outside the window, keeps P17's tol / 8). So the true grown
-//     shape is entered by up to tol / 4 without a hit; no hit into the solid is missed: the particle ends at least tol
-//     - tol / 16 - tol / 4 = 0.6875 tol from it, above the end check's tol / 2 (measured: 0.241 tol, an end at 0.759
-//     tol before the settle, tol after it, LongCylinderTiltingUnderSlide). This is outside the tol / 16 above; the
-//     settle lifts the particle back. A rim hit of such a cylinder carries the same slack: the rim search reads the
-//     pose of the sweep's start, as the intervals do, so its hit is within tol / 1024 of tol there and within P17's
-//     slack of it at the true pose. A sweep that rests on a bounding surface (ComputeIsRestingOnBoundingSurface, plan
-//     decision P21) is a third bound, read afresh at every sweep's start, not a sum over sweeps, and tried before the
-//     touching rule on the distance, whatever the sign of that distance's gap. The solid lies behind the surface, so
-//     its distance at any point is at least the surface's gap plus tol: a box's distance is its largest face gap, a
-//     cylinder's at least the larger of its wall and cap distances. Along a straight path the surface's gap is at least
-//     its start value plus gap_rate * t: a plane's gap is linear in t, the distance from the axis convex in t, and |z|
-//     >= cap_sign * z. The rule asks start_gap >= -tol / 8 and gap_rate * duration >= -tol / 64, and t <= duration, so
-//     the gap stays at least -tol / 8 - tol / 64 = -9 / 64 tol and the path at least 55 / 64 tol from the solid. What
-//     this gives up: a path the true distance would stop up to 9 / 64 tol inside the rest gap is not hit, the room
-//     between the rule's floor and tol. 55 / 64 tol is above the end check's tol / 2 by 23 / 64 tol, before the settle
-//     lifts the particle back; on a cylinder tilting within P17's bound, read at the pose of the sweep's start, the
-//     true shape may be up to tol / 4 nearer, 39 / 64 tol, still above tol / 2 by 7 / 64 tol.
+//     within the bound of method paper <sec-slide-and-spin> is the exception, which that section bounds. The touching
+//     rule reads the surface's normal speed where the sweep starts; a particle that slides across the tilting surface
+//     keeps that speed while the surface under its new position moves the other way, so the gap falls by up to the
+//     normal speed of the surface at the start minus that under the particle, accumulated over the sweep: at most 2
+//     |omega_across| max|arm| T, and that bound, |omega_across| T Length(half_size) <= tol / 8 with max|arm| <=
+//     Length(half_size), makes that less than tol / 4 (a sweep the closed form decides, from outside the window, keeps
+//     that bound's tol / 8). So the true grown shape is entered by up to tol / 4 without a hit; no hit into the solid
+//     is missed: the particle ends at least tol - tol / 16 - tol / 4 = 0.6875 tol from it, above the end check's
+//     tol / 2 (measured: 0.241 tol, an end at 0.759 tol before the settle, tol after it,
+//     LongCylinderTiltingUnderSlide). This is outside the tol / 16 above; the settle lifts the particle back. A rim hit
+//     of such a cylinder carries the same slack: the rim search reads the pose of the sweep's start, as the intervals
+//     do, so its hit is within tol / 1024 of tol there and within the tilt's slack of it at the true pose. A sweep that
+//     rests on a bounding surface (ComputeIsRestingOnBoundingSurface, method paper <sec-touching-rule>) is a third
+//     bound, read afresh at every sweep's start, not a sum over sweeps, and tried before the touching rule on the
+//     distance, whatever the sign of that distance's gap. The solid lies behind the surface, so its distance at any
+//     point is at least the surface's gap plus tol: a box's distance is its largest face gap, a cylinder's at least the
+//     larger of its wall and cap distances. Along a straight path the surface's gap is at least its start value plus
+//     gap_rate * t: a plane's gap is linear in t, the distance from the axis convex in t, and |z| >= cap_sign * z. The
+//     rule asks start_gap >= -tol / 8 and gap_rate * duration >= -tol / 64, and t <= duration, so the gap stays at
+//     least -tol / 8 - tol / 64 = -9 / 64 tol and the path at least 55 / 64 tol from the solid. What this gives up: a
+//     path the true distance would stop up to 9 / 64 tol inside the rest gap is not hit, the room between the rule's
+//     floor and tol. 55 / 64 tol is above the end check's tol / 2 by 23 / 64 tol, before the settle lifts the particle
+//     back; on a cylinder tilting within that bound, read at the pose of the sweep's start, the true shape may be up to
+//     tol / 4 nearer, 39 / 64 tol, still above tol / 2 by 7 / 64 tol.
 //   4 The resting window: a particle the touched rule lets rest starts at a gap of at most tol / 16, the window of the
 //     active surfaces, and ends the step no deeper than tol / 16 below where it rested. What is proved is that bound,
 //     not d >= 0: before the first response the plain rule lets a path end on a surface, d near 0, and the touched
@@ -1947,7 +1953,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindEarliestHitWithTurningSolids(
 //     2^40 tol), a non-committed plate thinner than tol / 8 could have its middle passed, and one thinner than tol / 16
 //     be passed through, after which the settle lifts the particle to the far side. Neither has been constructed
 //     (measured: 300,000 generated crowded scenes with plates down to tol / 4 thick kept every sweep at 0.99945 tol or
-//     more) nor proved impossible: a limit under plan decision P3.
+//     more) nor proved impossible: a limit of the touched rule (method paper <sec-touching-rule>).
 //   A turning solid has none of the four steps. Its surface velocity at the particle, v_lin + omega x r, changes as the
 //   particle slides, and its normal turns, so a rate read where a sweep starts says nothing about the gap later, and
 //   the stepping search hits it at 0 from any gap up to tol / 4, whatever the velocity: swept again after a hit, the
@@ -1967,8 +1973,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindEarliestHitWithTurningSolids(
 //     sink is at most that angle times L (measured, not proved: 12,000 generated moves ended no nearer than 0.999998
 //     tol before the settle).
 //   3 The allowance: the carry removes the response's leftover approach to the turning solid, and every other solid
-//     stays farther than tol during the carry (CheckOtherSolidsBeyondClosingBound, plan decision P7), so the tol / 16
-//     of the touched rule is not spent.
+//     stays farther than tol during the carry (CheckOtherSolidsBeyondClosingBound, method paper <sec-move-particle>),
+//     so the tol / 16 of the touched rule is not spent.
 //   4 The window: the carry ends at least at the hit's own distance, in [tol - tol / 64, 1.25 tol] after a stepping
 //     search, about tol after the start's move, less the rounding of step 2.
 // Units: m, m/s and s, world.
@@ -2226,13 +2232,14 @@ ComputeOutOfRangeDistance(const SolidContactInputs& inputs, std::uint32_t solid_
 //                   allowance M alone keeps the distance above Sqrt(2) tol (ComputeOutOfRangeDistance, steps 2 and 3),
 //                   beyond every hit of the closed forms, the touching rule and the rim search; a turning solid's
 //                   search ends free within its advances (step 4).
-//   carry on a turning solid and P7's closing bound  P7 reads every solid, as without the rule, and keeps the
-//                   particle above tol from each over the carry.
+//   carry on a turning solid  its closing bound reads every solid, as without the rule, and keeps the particle above
+//                   tol from each over the carry.
 //   settle          read with the solid left out only when the point is within the reach less one move off one near
 //                   solid, checked just before it; a longer move reads every solid. The point may use the allowance,
 //                   so here the window carries the bound. No input is known that needs the check before the settle:
-//                   the sweeps' checks and P7 leave the particle within the reach in every scene measured. It is kept
-//                   so that this step's bound rests on its own check, not on the room the carry and P7's bound leave.
+//                   the sweeps' checks and the closing bound leave the particle within the reach in every scene
+//                   measured. It is kept so that this step's bound rests on its own check, not on the room the carry
+//                   and the closing bound leave.
 //   end check       at the settled point. After a settle that did not move the particle, or moved it off one near solid
 //                   by at most the threshold, the point is within the reach: the distance is above the window, beyond
 //                   tol / 2. After a longer move off one solid, or a move off several surfaces, the settle has read
@@ -2280,9 +2287,9 @@ ComputeIsWithinParticleReach(const SolidContactInputs& inputs, const ParticleMov
 // Method: in this order: the start and both velocities are finite; step_duration is finite and positive; friction is
 //   finite and zero or more; start_overlap_tolerance is finite and zero or more; contact_tolerance is finite and
 //   positive; solids is not null unless solid_count is 0; the solid_ids are strictly ascending; and the plate side is
-//   {0, kNoPlate}, or names the solid_id of a plate among the solids with the side kAlongNormal or kAgainstNormal (plan
-//   decision P3). The solids themselves are not checked here: the step calls CheckSolid once per step (plan decision
-//   P9).
+//   {0, kNoPlate}, or names the solid_id of a plate among the solids with the side kAlongNormal or kAgainstNormal
+//   (method paper <sec-plate-sides>). The solids themselves are not checked here: the step calls CheckSolid once per
+//   step (method paper <sec-checks-before-step>).
 // Example: step_duration 0, a friction of -1, a contact_tolerance of 0, solid_ids {2, 1} or the plate side {99,
 //   kAlongNormal} with no solid of id 99 each give kBadInput.
 // Fails: kBadInput  a value above is not finite or out of range. A scene or particle array that went wrong upstream;
@@ -2309,7 +2316,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckSolidContactInputs(const SolidCont
       return ContactError::kBadInput;
     }
   }
-  // Plan decision P3: a committed particle sees its plate as a half space, so the side must name a plate.
+  // Method paper <sec-plate-sides>: a committed particle sees its plate as a half space, so the side must name a plate.
   const PlateSide plate_side = inputs.plate_side;
   const bool is_committed = plate_side.plate_id != 0;
   if (!is_committed) {
@@ -2340,8 +2347,8 @@ FLUIDITY_CPU_AND_GPU constexpr SolidSide ToSideAtHit(const Solid& solid, SolidFa
   return face == SolidFace::kHighZ ? SolidSide::kAlongNormal : SolidSide::kAgainstNormal;
 }
 
-// Adds one change of velocity.for_next_step, made against one solid, to the reaction of a particle's move (plan
-// decision P5), and fails when a second reacting solid would need the one record.
+// Adds one change of velocity.for_next_step, made against one solid, to the reaction of a particle's move (method paper
+// <sec-move-particle>), and fails when a second reacting solid would need the one record.
 //
 // Method: a solid without reports_reaction, and a change of exactly {0, 0, 0}, change nothing: a zero change adds
 //   nothing to the push on the solid, so it neither claims the record nor conflicts with it (an exact test, the same
@@ -2408,7 +2415,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyReactionChange(
 //
 // Method: result.hit_count == kMaxHitsPerStep fails: a hit is one joint response, however many surfaces it reads, so
 //   a particle that meets solids at a fifth separate moment of one step is in a gap too narrow for this step length.
-//   The start's hit counts too (plan decision P4); it is one, so the start alone never reaches the limit.
+//   The start's hit counts too (method paper <sec-move-particle>); it is one, so the start alone never reaches the
+//   limit.
 // Example: hit_count 3 passes; hit_count 4 fails, naming the solid of the fifth hit.
 // Requires: solid_index < inputs.solid_count; result.hit_count <= kMaxHitsPerStep; failure is not null.
 // Fails: kTooCloseToCall  a fifth hit: *failure is kTooManyHits with that solid's solid_id. A shorter step has fewer
@@ -2500,7 +2508,7 @@ MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, Solid
 }
 
 // Checks that a particle committed to a plate does not start more than one contact tolerance beyond that plate's
-// other face, and says kOnWrongSideOfPlate when it does (plan decision P3).
+// other face, and says kOnWrongSideOfPlate when it does (method paper <sec-plate-sides>).
 //
 // Method: only for the plate inputs.plate_side names. With s = +1 for kAlongNormal and -1 for kAgainstNormal and p the
 //   start in the plate's own axes at the pose, the distance beyond the other face is -s * p.z - half_thickness:
@@ -2514,9 +2522,9 @@ MoveToRestGap(const SolidContactInputs& inputs, std::uint32_t solid_index, Solid
 // Requires: solid_index < inputs.solid_count; pose is that solid's pose; inputs passed CheckSolidContactInputs;
 //   failure is not null.
 // Fails: kOnWrongSideOfPlate  the start is beyond the other face of its committed plate by more than tol. *failure
-//                             names the plate's solid_id, with the distance beyond that face as the magnitude (plan
-//                             decision P6). A particle that crossed its plate in an earlier step, or a plate side that
-//                             went wrong upstream; the step stops.
+//                             names the plate's solid_id, with the distance beyond that face as the magnitude (method
+//                             paper <sec-move-particle>). A particle that crossed its plate in an earlier step, or a
+//                             plate side that went wrong upstream; the step stops.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-solid-shapes>, <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOnCommittedSide(
@@ -2612,7 +2620,7 @@ struct NearSurfaces {
 //
 // Method: one switch over the shape.
 //   flat solid, plate, box, sphere, cylinder  at_point, the surface that gives the distance. Its distance is convex,
-//     with the normal a subgradient (plan decision P18), which the move off near surfaces relies on.
+//     with the normal a subgradient (method paper <sec-move-particle>), which the move off near surfaces relies on.
 //   domain box  every closed side in face order, its distance into the box being ComputeFaceDistance of ToFacePlane: a
 //     particle in a corner is near two or three sides, each a flat face of its own, as the sweep treats them
 //     (FindHitOnDomainBox). at_point is the nearest of them. Each side's distance is linear, so convex too.
@@ -2686,7 +2694,7 @@ struct SubsetMultipliers {
 
 // Solves one subset's equalities for their multipliers, by Cramer's rule on the equations of the normals' dots.
 //
-// Method (plan decision P19, item 2), with the dots G_ij = Dot(n_i, n_j) and the right sides b:
+// Method (method paper <sec-move-particle>), with the dots G_ij = Dot(n_i, n_j) and the right sides b:
 //   one surface    m = b: the normal is a unit vector, so its own dot is 1 up to rounding.
 //   two surfaces   c = Dot(n_a, n_b), m_a = (b_a - c b_b) / (1 - c^2) and m_b = (b_b - c b_a) / (1 - c^2). None when
 //                  1 - c^2 <= 0 as computed: parallel or opposite normals, which no pair of equalities can meet.
@@ -3014,7 +3022,7 @@ FindShortestCorrection(const CorrectionTargets& targets, double slack, Corrected
 
 // Finds, for a velocity, the candidate with the largest sum of friction limits among those no longer than the
 // shortest plus its slack: sum over k of targets.frictions[used_surfaces[k]] * multipliers[k], the first in subset
-// order on equal sums (plan decision P20, item 3).
+// order on equal sums (method paper <sec-move-particle>).
 //
 // Method: a second pass over the same subsets as FindShortestCorrection, solved again, so no list of candidates is
 //   kept. The shortest itself is admissible, so one is always found.
@@ -3054,15 +3062,15 @@ FindCorrectionOfLargestFrictionSum(const CorrectionTargets& targets, double slac
 // Solves for the smallest change w with Dot(n_i, w) >= target_i for every surface, up to the slack: the move of a
 // point off several near surfaces at once, or the frictionless change of a velocity that approaches several.
 //
-// Method (plan decision P19, item 2): the problem is convex, so its exact answer meets some subset of at most three
-//   surfaces as equalities (three independent normals fix a point in space) and every other surface as an inequality.
-//   So the solver tries each single surface, each pair and each triple, in that order, each in ascending indices
-//   (ComputeNextSubset: 4 + 6 + 4 = 14 subsets of four surfaces, at most kMaxCorrectionSubsets = 92 of eight), as
-//   SolveCorrectionOfSubset solves them; it keeps a candidate that meets every target within the slack
+// Method (method paper <sec-move-particle>): the problem is convex, so its exact answer meets some subset of at most
+//   three surfaces as equalities (three independent normals fix a point in space) and every other surface as an
+//   inequality. So the solver tries each single surface, each pair and each triple, in that order, each in ascending
+//   indices (ComputeNextSubset: 4 + 6 + 4 = 14 subsets of four surfaces, at most kMaxCorrectionSubsets = 92 of eight),
+//   as SolveCorrectionOfSubset solves them; it keeps a candidate that meets every target within the slack
 //   (ComputeIsWithinTargets) and has the smallest Length(change), the first in that order on a tie. A position has no
 //   empty subset: the move off near surfaces calls it only when a surface is short of the rest gap. Fixed loops, no
 //   allocation, only + - * /, Abs and Sqrt: the same bits on CPU and GPU.
-//   A velocity differs in two ways (plan decision P20, item 3).
+//   A velocity differs in two ways (method paper <sec-move-particle>).
 //   No change: when every target is at most the slack passed, the answer is no change, used_count 0, so a velocity
 //   that approaches no surface beyond its allowance is never changed by rounding-sized targets. The slack passed, not
 //   the candidate's own 2^-46 (speeds): beside a floor sliding at 100 m/s, a slow real approach of 1e-13 m/s to an
@@ -3568,7 +3576,8 @@ FindNearSolids(const SolidContactInputs& inputs, double pose_elapsed, Vec3 point
 //   closed side of a domain box in turn. The move is kept when every solid is then at least tol - tol / 1024 away
 //   (ComputeIsAtLeastFromEverySolid) and the move crosses no surface of another solid (ApplyCrossedSurfaces);
 //   otherwise is_found is false and MoveToRestGapOfNearSurfaces moves off all the surfaces at once. It is not limited
-//   by the move cap: it is the move of plan decision P12, at most start_overlap_tolerance + tol at the start.
+//   by the move cap: it is the start's move of method paper <sec-move-particle>, at most start_overlap_tolerance + tol
+//   at the start.
 // Units: m, world; s for pose_elapsed.
 // Example: a fixed floor and the point {0.5, 0, tol / 4}: {0.5, 0, tol}, the same bits as MoveToRestGap.
 // Requires: near.count is 1 and near.last_solid_index names the near solid; pose_elapsed is within the step.
@@ -3613,8 +3622,8 @@ FLUIDITY_CPU_AND_GPU inline RestGapMove ComputeMoveOffOneNearSolid(
 }
 
 // Computes the point at the rest gap of every surface a point is near, at the solids' pose pose_elapsed seconds into
-// the step, as near to the point as the solver finds: one move off several near surfaces at once (plan decision P19,
-// item 1). The start rules and the settle call it with every solid.
+// the step, as near to the point as the solver finds: one move off several near surfaces at once (method paper
+// <sec-move-particle>). The start rules and the settle call it with every solid.
 //
 // Method, with p0 = point and tol = inputs.contact_tolerance:
 //   1 No surface closer than tol (FindNearSolids): p0 itself.
@@ -3638,11 +3647,11 @@ FLUIDITY_CPU_AND_GPU inline RestGapMove ComputeMoveOffOneNearSolid(
 //   4 The last iterate is kept when every solid is at least tol - tol / 128 from it, by its true distances; otherwise
 //     none is found. It is within the cap of p0, since every change was shortened to it.
 //   What the iterates guarantee for convex shapes (every shape of module 1: the domain box per side): each surface's
-//   distance satisfies d_i(y) >= d_i(x) + Dot(n_i(x), y - x) for every y, the subgradient inequality of plan decision
-//   P18. So an iterate x_(k+1) that the solver found and the cap did not shorten meets, for each surface that
-//   constrained it, d_i(x_(k+1)) >= tol - slack, the slack being tol / 1024 plus the rounding of composing the change
-//   (ComputeIsWithinTargets), which nothing bounds when the multipliers are huge. Such an iterate meets its own
-//   linearisation up to that slack, so w = x_(k+1) - p0 meets the targets of the next one, and the smallest w is no
+//   distance satisfies d_i(y) >= d_i(x) + Dot(n_i(x), y - x) for every y, the subgradient inequality of method paper
+//   <sec-move-particle>. So an iterate x_(k+1) that the solver found and the cap did not shorten meets, for each
+//   surface that constrained it, d_i(x_(k+1)) >= tol - slack, the slack being tol / 1024 plus the rounding of composing
+//   the change (ComputeIsWithinTargets), which nothing bounds when the multipliers are huge. Such an iterate meets its
+//   own linearisation up to that slack, so w = x_(k+1) - p0 meets the targets of the next one, and the smallest w is no
 //   longer: from the first unshortened iterate on, the iterates come no farther from p0, up to the slack. A shortened
 //   iterate (the cap, or a crossing) meets neither, so before it nothing is promised: a deep start can end beyond the
 //   rest point (measured: from 0.005 x* and nearer at R / tol = 2^29, 8 iterates end at 1.1256 x*, both distances tol).
@@ -3822,12 +3831,12 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsExactCopy(const ActiveSurface& firs
 // Computes whether one active surface comes before another in the sorted order: by normal x, y, z, then solid velocity
 // x, y, z, then friction, each compared by <, then a reacting solid before one that does not react, then solid index.
 //
-// Method (plan decision P20, item 1): every sum and every tie of the joint response reads the surfaces in this order,
-//   which their values decide, so the velocities are the same bits for every order of the solids array (measured: 0
-//   differences over every permutation of 119,999 corners; in array order, 554 of 39,999 differ, by at most 1.7e-13 of
-//   the speed). Two surfaces equal in every value key differ only in reports_reaction (else one is an exact copy of
-//   the other, dropped): the reacting one comes first, so a stick on such coincident surfaces is charged to the
-//   reacting solid whatever the array order (P5). The solid index then never decides between two kept surfaces of
+// Method (method paper <sec-move-particle>): every sum and every tie of the joint response reads the surfaces in this
+//   order, which their values decide, so the velocities are the same bits for every order of the solids array
+//   (measured: 0 differences over every permutation of 119,999 corners; in array order, 554 of 39,999 differ, by at
+//   most 1.7e-13 of the speed). Two surfaces equal in every value key differ only in reports_reaction (else one is an
+//   exact copy of the other, dropped): the reacting one comes first, so a stick on such coincident surfaces is charged
+//   to the reacting solid whatever the array order. The solid index then never decides between two kept surfaces of
 //   different solids; it stays as the last key so that the order is total.
 // Example: normals {0, 0, 1} and {1, 0, 0}: {0, 0, 1} first, its x is smaller. Two floors with normal {0, 0, 1}, one
 //   fixed and one moving at {1, 0, 0}: the fixed one first.
@@ -3966,7 +3975,7 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsLevelWithOtherBoxFacePlane(
 }
 
 // Computes whether a point passes a solid at a bounding surface's level: the solid does not turn, and the point is
-// level with one of its bounding surfaces other than the one that gives at_point (plan decision P21, item 16).
+// level with one of its bounding surfaces other than the one that gives at_point (method paper <sec-touching-rule>).
 //
 // Method: in the solid's own axes at pose, p = Transpose(pose.axes) * (point - pose.origin), the point
 //   ComputeDistanceToSolid reads. A cylinder: at_point.face is kLowRim or kHighRim, and the wall's gap rho - radius -
@@ -4021,9 +4030,10 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsPassedAtBoundingSurfaceLevel(
   return false;
 }
 
-// Finds the active surfaces of one hit (plan decision P20, item 1): every surface of every solid that the particle at
-// its position is within tol + tol / 16 of, read afresh at the pose of move.elapsed, but for a solid it passes at a
-// bounding surface's level, and the surface the sweep hit, whatever its distance, with the hit's own normal and face.
+// Finds the active surfaces of one hit (method paper <sec-move-particle>): every surface of every solid that the
+// particle at its position is within tol + tol / 16 of, read afresh at the pose of move.elapsed, but for a solid it
+// passes at a bounding surface's level, and the surface the sweep hit, whatever its distance, with the hit's own normal
+// and face.
 //
 // Method: every solid in array order, every surface in its list (FindSurfacesOfSolid), with its distance and normal at
 //   the position now. A surface within the window counts whether or not a velocity approaches it, touched or not: at
@@ -4033,13 +4043,13 @@ FLUIDITY_CPU_AND_GPU inline bool ComputeIsPassedAtBoundingSurfaceLevel(
 //   1.25 tol away, and with the hit's normal, along which the hit measured the approach. No hit is moved before its
 //   response, so the surfaces read here are those the particle is on at the hit itself: a floor beside a rim hit within
 //   tol / 1024 of tol is read at its own rest gap. A solid the particle passes at a bounding surface's level
-//   (ComputeIsPassedAtBoundingSurfaceLevel) contributes nothing unless the sweep hit it (plan decision P21, item 16 a),
-//   at the start as at a hit on another solid, with the pose of move.elapsed: its distance there is a rim whose normal
-//   leans across a seam, or a box's face plane continued past the edge, and the sweep is free of it while the particle
-//   rests at that level; not that bounding surface in its place, which would hold up a particle beside a lone solid
-//   with nothing under it. Each surface carries its solid's velocity at the particle, friction times its
-//   friction_scale, and reports_reaction. Exact copies are dropped and the rest sorted (ApplyActiveSurface), then the
-//   directions are assigned (ApplyDirections). Cost: one distance per solid.
+//   (ComputeIsPassedAtBoundingSurfaceLevel) contributes nothing unless the sweep hit it (method paper
+//   <sec-touching-rule>), at the start as at a hit on another solid, with the pose of move.elapsed: its distance there
+//   is a rim whose normal leans across a seam, or a box's face plane continued past the edge, and the sweep is free of
+//   it while the particle rests at that level; not that bounding surface in its place, which would hold up a particle
+//   beside a lone solid with nothing under it. Each surface carries its solid's velocity at the particle, friction
+//   times its friction_scale, and reports_reaction. Exact copies are dropped and the rest sorted (ApplyActiveSurface),
+//   then the directions are assigned (ApplyDirections). Cost: one distance per solid.
 // Units: m, m/s, world.
 // Example: a fixed floor and a particle at {0.5, 0, tol}: one surface, normal {0, 0, 1}. At {0.5, 0, 0.02}: none.
 //   Eight coincident fixed floors and an upright flat solid, the particle at their corner: two surfaces, the upright
@@ -4150,8 +4160,8 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsPushingBefore(const ActiveSurface& 
   return surface.reports_reaction && !kept.reports_reaction;
 }
 
-// Builds the targets of one velocity against the active surfaces, and each direction's pushing surface (plan decision
-// P20, items 3 and 4).
+// Builds the targets of one velocity against the active surfaces, and each direction's pushing surface (method paper
+// <sec-move-particle>).
 //
 // Method: speeds = |v|_1 + sum of |u_i|_1, in the sorted order. Each surface's own target is -Dot(n_i, v - u_i),
 //   measured along its own normal from its own solid; a direction's target is the largest of its surfaces'. The
@@ -4220,7 +4230,7 @@ FLUIDITY_CPU_AND_GPU inline JointTargets BuildJointTargets(const ActiveSurfaces&
 }
 
 // Computes the solid a velocity approaches fastest: that of the active surface with the largest own target, the
-// lowest solid index on a tie (plan decision P20, item 10). A squeeze names it.
+// lowest solid index on a tie (method paper <sec-move-particle>). A squeeze names it.
 //
 // Example: a fixed floor and a ceiling coming down at 1 m/s, the velocity {0, 0, 0}: the ceiling (own target 1 m/s
 //   against 0).
@@ -4268,7 +4278,7 @@ FLUIDITY_CPU_AND_GPU inline void ApplyCharge(JointChange* change, std::uint32_t 
   ++change->charge_count;
 }
 
-// The friction of one joint response over its used directions (plan decision P20, item 5).
+// The friction of one joint response over its used directions (method paper <sec-move-particle>).
 struct JointFriction {
   Vec3 velocity{};  // m/s, world: x1, the frictionless velocity v0 with the friction change F.
   Vec3 change{};  // m/s, world: F.
@@ -4282,7 +4292,7 @@ struct JointFriction {
 };
 
 // Computes one surface's friction step on a velocity y: its sideways part relative to the solid, shortened by the
-// friction limit, whole when the limit reaches it (plan decision P20, item 5).
+// friction limit, whole when the limit reaches it (method paper <sec-move-particle>).
 //
 // Method: t = y - u; t = t - Dot(n, t) n; the step is -t when friction_limit >= Length(t), else
 //   -(friction_limit / Length(t)) t. It never reverses the sideways velocity.
@@ -4320,7 +4330,7 @@ FLUIDITY_CPU_AND_GPU constexpr int ComputeFrictionOrderMember(int order_index, i
 }
 
 // Computes the mean over every order of the used directions of their own frictions applied one after the other from
-// v0, for pushing surfaces that move differently (plan decision P20, item 5).
+// v0, for pushing surfaces that move differently (method paper <sec-move-particle>).
 //
 // Method: for each order (2 or 6), y = v0, and for each used direction in the order y = y + ComputeFrictionStep(y),
 //   that step being the order's share of the direction. F is the sum over the orders of y - v0 times 1 / order count,
@@ -4330,11 +4340,11 @@ FLUIDITY_CPU_AND_GPU constexpr int ComputeFrictionOrderMember(int order_index, i
 //   sticking to its solid, reversing the sliding relative to it (measured: 1,331 of 24,401 generated responses that
 //   used the mean, 5.5 %, by up to 0.22 and at p99 0.072 of the summed speeds; pinned by
 //   MeanOverOrdersBetweenMovingSolids_FrictionCanPassStick_KnownLimit). The exact answer for solids that move
-//   differently is a question for the owner. When the solid velocities differ by rounding only it agrees with the stick
-//   or slip of one solid velocity to 1.7e-14 of the speed (20,000 wedges). It approximates the exact answer of the same
-//   friction model: median 0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed over 2,418 draws with
-//   friction up to 2 and solids up to 1 m/s apart; more passes do not help. Adding every surface's own friction from
-//   the same v0 instead reverses the sliding when two velocities are one rounding unit apart.
+//   differently is still open. When the solid velocities differ by rounding only it agrees with the stick or slip of
+//   one solid velocity to 1.7e-14 of the speed (20,000 wedges). It approximates the exact answer of the same friction
+//   model: median 0.046, p90 0.19, p99 0.37 and at worst 0.66 of the largest speed over 2,418 draws with friction up to
+//   2 and solids up to 1 m/s apart; more passes do not help. Adding every surface's own friction from the same v0
+//   instead reverses the sliding when two velocities are one rounding unit apart.
 // Units: m/s, world.
 // Example: a floor moving at {0, 1, 0} and a fixed side with normal {1, 0, 0}, v0 {0, 1, 0}, both limits 0.2 m/s. The
 //   floor first: its step is 0, the side's {0, -0.2, 0}, y {0, 0.8, 0}. The side first: {0, 0.8, 0}, then the floor
@@ -4373,7 +4383,7 @@ FLUIDITY_CPU_AND_GPU inline JointFriction ComputeMeanOverOrders(
 }
 
 // Computes the friction of one joint response from the frictionless velocity v0, the pushes and each used direction's
-// pushing surface (plan decision P20, item 5).
+// pushing surface (method paper <sec-move-particle>).
 //
 // Method, with L_k = friction_k * push_k each used direction's friction limit:
 //   every L_k zero  F = 0, x1 = v0.
@@ -4453,9 +4463,9 @@ FLUIDITY_CPU_AND_GPU inline JointFriction ComputeJointFriction(
   return friction;
 }
 
-// Computes the stick of a velocity that no change leaves every active surface (plan decision P20, item 7): it takes
-// the solid velocity of the active surface it approaches fastest, and any direction that velocity still approaches
-// beyond the slack is a squeeze.
+// Computes the stick of a velocity that no change leaves every active surface (method paper <sec-move-particle>): it
+// takes the solid velocity of the active surface it approaches fastest, and any direction that velocity still
+// approaches beyond the slack is a squeeze.
 //
 // Method: the surface with the largest own target (a tie: the first in the sorted order); the velocity becomes its
 //   solid velocity, one charge, that velocity minus the velocity passed, to its solid. With the slack
@@ -4500,8 +4510,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyStick(
   return ContactError::kNone;
 }
 
-// Computes the second frictionless solve of a joint response, from v + F (plan decision P20, item 6): the pushes are
-// found afresh, so friction lifts a particle off a surface only when it overcomes what pressed it there.
+// Computes the second frictionless solve of a joint response, from v + F (method paper <sec-move-particle>): the pushes
+// are found afresh, so friction lifts a particle off a surface only when it overcomes what pressed it there.
 //
 // Method: z = v + F with its targets (BuildJointTargets). No target above the allowance so far: z, with the allowance
 //   Max(allowance so far, 2^-46 speeds). Else SolveSmallestCorrection; none found: the stick from z (ApplyStick);
@@ -4557,8 +4567,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplySecondSolve(
   return ContactError::kNone;
 }
 
-// Computes what one joint response does to one velocity over the active surfaces (plan decision P20, items 2 to 8,
-// and 10).
+// Computes what one joint response does to one velocity over the active surfaces (method paper <sec-move-particle>).
 //
 // Method, with v the velocity, b the allowance so far (0 before the first response of the step) and u_i, n_i each
 //   active surface's solid velocity and normal:
@@ -4628,7 +4637,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ComputeJointChange(
   const JointTargets built = BuildJointTargets(active, velocity);
   const double speeds = built.targets.speeds_before_change;  // m/s
   change->approached_solid_index = ComputeFastestApproachedSolid(active, built);
-  // Step 3: plan decision P20, item 3, the slack passed and not the candidate's own.
+  // Step 3: the slack passed and not the candidate's own (method paper <sec-move-particle>).
   if (ComputeIsWithinSlack(built.targets, approach_allowance_so_far)) {
     change->approach_allowance = math::Max(approach_allowance_so_far, kApproachLeftAfterResponseShare * speeds);
     return ContactError::kNone;
@@ -4701,7 +4710,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ComputeJointChange(
 }
 
 // Applies the charges of one joint change of velocity.for_next_step to the reaction, in ascending solid index, equal
-// indexes in their order, at the particle's position (plan decision P20, item 12).
+// indexes in their order, at the particle's position (method paper <sec-move-particle>).
 //
 // Method: an insertion order over at most 2 * kMaxUsedDirections charges, then ApplyReactionChange for each. In
 //   ascending solid index, so two reacting solids pushed by one response fail with kSecondReactingSolid naming the
@@ -4747,7 +4756,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointCharges(
 }
 
 // Applies one hit to a particle's move, at its position: the record when it is the first, both velocities through the
-// joint response over the active surfaces, the reaction, the allowances, and one more hit (plan decision P20).
+// joint response over the active surfaces, the reaction, the allowances, and one more hit (method paper
+// <sec-move-particle>).
 //
 // Method (method paper <proc-move-particle>, step 4):
 //   1 More active surfaces or directions than one response reads, or a fifth hit, is kTooManyHits naming the record's
@@ -4890,7 +4900,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
 }
 
 // Applies one hit of a sweep to a particle's move: moves the particle to the hit, then one joint response over every
-// surface it is on there (plan decision P20, item 11).
+// surface it is on there (method paper <sec-move-particle>).
 //
 // Method (method paper <proc-move-particle>, step 4):
 //   1 A fifth hit fails (CheckHitCountBelowLimit).
@@ -4898,7 +4908,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
 //     first_hit.elapsed: the expressions FindFirstHit evaluates the hit with, so the solid is posed at the same time
 //     and first_hit.at_hit is that solid's distance, normal and face at that very position. Nothing moves the particle
 //     afterwards: a rim hit is already where the rim search found the true distance within tol / 1024 of tol, and a
-//     hit of the stepping search toward a turning solid is used where that search stopped (plan decision P21).
+//     hit of the stepping search toward a turning solid is used where that search stopped (method paper
+//     <sec-move-particle>).
 //   3 The active surfaces there, the hit surface with the hit's normal (FindActiveSurfaces), and ApplyJointResponse
 //     with the hit surface as the record's.
 // Units: s for times; m and m/s, world.
@@ -4941,8 +4952,8 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
   return ApplyJointResponse(inputs, active, record_surface, move, failure);
 }
 
-// The rest of a step carried in a turning solid's own axes (plan decision P7): where the particle is in them when the
-// carry starts, and the velocity it keeps in them.
+// The rest of a step carried in a turning solid's own axes (method paper <sec-move-particle>): where the particle is in
+// them when the carry starts, and the velocity it keeps in them.
 struct SolidAxesCarry {
   Vec3 own_position{};  // m, own axes: Transpose(A) (x - o), at the particle's position and the pose of move.elapsed.
   // m/s, own axes: Transpose(A_mid) (for_this_step - u(x)), u the solid's surface velocity at the particle at the
@@ -4952,8 +4963,8 @@ struct SolidAxesCarry {
   double time_left = 0;  // s, zero or more: the step's duration minus the time already used.
 };
 
-// Computes the carry of the rest of a step in a turning solid's own axes (plan decision P7), from the particle's
-// position and velocity.for_this_step at the moment of a response at that solid.
+// Computes the carry of the rest of a step in a turning solid's own axes (method paper <sec-move-particle>), from the
+// particle's position and velocity.for_this_step at the moment of a response at that solid.
 //
 // Method: with t the time left, A, o the solid's axes and origin at the pose of move.elapsed (the carry's start), A_mid
 //   its axes at the pose of move.elapsed + t / 2, x the particle's position and n the normal of the solid's distance
@@ -5022,7 +5033,8 @@ ComputeSolidAxesCarry(const SolidContactInputs& inputs, std::uint32_t solid_inde
 }
 
 // Checks that no other solid can come within the contact tolerance of the particle while the rest of the step is
-// carried in a turning solid's axes (plan decision P7), and says kTurningSolidNearOtherSolid when one can.
+// carried in a turning solid's axes (method paper <sec-move-particle>), and says kTurningSolidNearOtherSolid when one
+// can.
 //
 // Method: for every solid j but the turning solid, d_j its distance at the carry's start, the call fails when
 //     d_j - tol <= t (|w| + |v_lin| + |omega| r + |v_lin_j| + |omega_j| r_j),
@@ -5124,9 +5136,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
   return error;
 }
 
-// Applies the carry of the rest of the step in a turning solid's own axes (plan decision P7): the particle moves in a
-// straight line in those axes, where the solid stands still, and is placed with the solid's pose at the end of the
-// step.
+// Applies the carry of the rest of the step in a turning solid's own axes (method paper <sec-move-particle>): the
+// particle moves in a straight line in those axes, where the solid stands still, and is placed with the solid's pose at
+// the end of the step.
 //
 // Method: own_end = own_position + own_velocity * time_left; the position becomes o_end + A_end own_end, with A_end,
 //   o_end the axes and origin of ComputeSolidPose(solid, step_duration), and the elapsed time becomes step_duration.
@@ -5134,10 +5146,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
 //   A particle that leaves the solid is carried too, a known choice: the stepping search hits it at 0 whatever its
 //   velocity, and the rest of its free flight is a straight line in the solid's axes, bent in world axes. Leaving a
 //   face turning at 2 rad/s at 3 m/s, 0.2 m from the axis, it ends 3e-6 m from its straight flight after 1 ms.
-//   Why the particle stays out of the solid: in its own axes the solid's distance d is convex (plan decision P18,
-//   HasConvexDistance), and n_own = Transpose(A) n, the normal at own_position read with the pose of the carry's start,
-//   is a subgradient of it there. own_velocity is one constant vector in own axes, whatever axes turned it there (the
-//   middle ones), so the carry is a straight line in own axes, and along it
+//   Why the particle stays out of the solid: in its own axes the solid's distance d is convex (method paper
+//   <sec-turning-solid>, HasConvexDistance), and n_own = Transpose(A) n, the normal at own_position read with the pose
+//   of the carry's start, is a subgradient of it there. own_velocity is one constant vector in own axes, whatever axes
+//   turned it there (the middle ones), so the carry is a straight line in own axes, and along it
 //   d(own_position + own_velocity s) >= d(own_position) + Dot(n_own, own_velocity) s >= d(own_position), since the
 //   carry removed the part of own_velocity into the surface. Unlike a sweep in world axes, the shape does not move in
 //   these axes, so no gap curvature bound enters: the bound holds for the whole time left, exactly. Rounding: the two
@@ -5168,7 +5180,7 @@ FLUIDITY_CPU_AND_GPU inline void ApplyCarryInSolidAxes(
 }
 
 // Applies one hit of a sweep on a turning solid to a particle's move: the joint response, unless the hit is the moment
-// of the latest response, then plan decision P7's test of the other solids, then the carry of the rest of the step in
+// of the latest response, then the closing bound's test of the other solids, then the carry of the rest of the step in
 // the solid's own axes, which ends the hits of the step.
 //
 // Method (method paper <proc-move-particle>, step 4):
@@ -5212,7 +5224,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyHitOnTurningSolid(
       return hit_error;
     }
   }
-  // Step 2: plan decision P7. A solid within the closing bound could be met during the carry, which sweeps nothing.
+  // Step 2: a solid within the closing bound could be met during the carry, which sweeps nothing.
   const SolidAxesCarry carry = ComputeSolidAxesCarry(inputs, first_hit.solid_index, *move);
   const ContactError closing_error =
       CheckOtherSolidsBeyondClosingBound(inputs, first_hit.solid_index, *move, carry, failure);
@@ -5225,7 +5237,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyHitOnTurningSolid(
 }
 
 // Checks the start of a particle's move against one solid, at the start as given and the pose of time 0: the checks
-// of the start rules that fail (method paper <proc-move-particle>, step 2; plan decisions P3, P4 and P12).
+// of the start rules that fail (method paper <proc-move-particle>, step 2).
 //
 // Method, with d the distance ComputeDistanceForParticle gives at the start, with the particle's plate side:
 //   1 A particle committed to this plate and beyond its other face by more than tol fails
@@ -5245,8 +5257,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyHitOnTurningSolid(
 //   start_distance_read are not null.
 // Fails: kOnWrongSideOfPlate  as CheckStartOnCommittedSide.
 //        kStartsInsideSolid   d < -start_overlap_tolerance: *failure names the solid_id, with the depth -d as the
-//                             magnitude (plan decision P6). A particle placed inside a solid, or left there by an
-//                             earlier step; the step stops.
+//                             magnitude (method paper <sec-move-particle>). A particle placed inside a solid, or left
+//                             there by an earlier step; the step stops.
 //        *failure is written only on failure; *is_clear_of_solid and *start_distance_read only on success.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-solid-shapes>, <sec-contact-tolerance>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOfSolid(
@@ -5262,7 +5274,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOfSolid(
   // Steps: 1 wrong side of the plate  2 too deep inside
   const Solid& solid = inputs.solids[solid_index];
   const SolidPose start_pose = ComputeSolidPose(solid, 0);
-  // Step 1: the specific diagnosis comes before the depth (plan decision P3).
+  // Step 1: the specific diagnosis comes before the depth (method paper <sec-plate-sides>).
   const ContactError side_error = CheckStartOnCommittedSide(inputs, solid_index, start_pose, start, failure);
   if (side_error != ContactError::kNone) {
     return side_error;
@@ -5302,7 +5314,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckStartOfSolid(
 }
 
 // Computes whether the start of a particle's move, as given, was inside one solid: its distance at the pose of time 0,
-// with the particle's plate side, below 0 (plan decision P4).
+// with the particle's plate side, below 0 (method paper <sec-move-particle>).
 //
 // Requires: solid_index < inputs.solid_count.
 FLUIDITY_CPU_AND_GPU inline bool
@@ -5328,10 +5340,10 @@ struct StartResponse {
   ActiveSurface record_surface{};  // The surface whose record the response writes, when has_response.
 };
 
-// Finds the record of the start's response (plan decision P20, item 10): the first, in array order (solid, then face),
-// of the active surfaces whose solid the start was inside or that a velocity approaches (ComputeIsApproachingSolid);
-// when none is, but the start was inside some solid, the surface that gives the first such solid's distance, read at
-// the moved start.
+// Finds the record of the start's response (method paper <sec-move-particle>): the first, in array order (solid, then
+// face), of the active surfaces whose solid the start was inside or that a velocity approaches
+// (ComputeIsApproachingSolid); when none is, but the start was inside some solid, the surface that gives the first such
+// solid's distance, read at the moved start.
 //
 // Method: the start has a response when it was inside a solid as given (d < 0), or when either velocity approaches an
 //   active surface at the moved start, below 0 or below the rounding of a spinning solid's surface velocity. A solid
@@ -5392,18 +5404,18 @@ FLUIDITY_CPU_AND_GPU inline StartResponse FindStartResponse(
   return start_response;
 }
 
-// Applies the start rules of every solid to a particle's move: step 2 of MoveParticle (plan decisions P4 and P12, both
-// amended by P19 and P20).
+// Applies the start rules of every solid to a particle's move: step 2 of MoveParticle (method paper
+// <sec-move-particle>).
 //
 // Method:
 //   1 The checks that fail, every solid in array order, at the start as given and the pose of time 0
 //     (CheckStartOfSolid): the wrong side of the committed plate, then the depth. The first solid that fails decides.
 //   2 One move of the start off every near surface of every solid at once (MoveToRestGapOfNearSurfaces at time 0),
-//     whatever the velocity: with one near solid along its normal, as P12 always moved it. Why one move and not one per
-//     solid in turn: in a wedge sharper than a right angle each solid's move pushes the start toward the other, so a
-//     start resting on both faces would fail at every step length (measured with moves in turn: 2000 of 2000 at 60 and
-//     at 30 degrees; 8 % of the generated starts at 85 degrees, 49 % at 60, 98 % at 5), and in the cusp under a ball
-//     resting on a floor the angle goes to 0. No move found is kStartsInNarrowGap.
+//     whatever the velocity: with one near solid along its normal. Why one move and not one per solid in turn: in a
+//     wedge sharper than a right angle each solid's move pushes the start toward the other, so a start resting on both
+//     faces would fail at every step length (measured with moves in turn: 2000 of 2000 at 60 and at 30 degrees; 8 % of
+//     the generated starts at 85 degrees, 49 % at 60, 98 % at 5), and in the cusp under a ball resting on a floor the
+//     angle goes to 0. No move found is kStartsInNarrowGap.
 //   3 The active surfaces at the moved start (FindActiveSurfaces), read there and not at the start as given: the
 //     sweep that follows reads the normal at the moved start, and the response must leave no approach along that one.
 //     A surface near the start as given but farther than tol + tol / 16 after the move is not in the response: of two
@@ -5411,7 +5423,7 @@ FLUIDITY_CPU_AND_GPU inline StartResponse FindStartResponse(
 //   4 The start has a response when it was inside a solid as given, or a velocity approaches an active surface
 //     (FindStartResponse): one joint response at time 0 (ApplyJointResponse), one hit however many surfaces, and kind
 //     kStartedInsideSolid when the start was inside. Otherwise the move was silent: no hit, no record, and the sweeps
-//     keep the plain touching rule (plan decision P12: a touching particle that leaves is free).
+//     keep the plain touching rule (method paper <sec-move-particle>: a touching particle that leaves is free).
 // Units: m, m/s and s, world.
 // Example: a fixed floor and an upright flat solid at x = 1, a particle at {1 - tol / 2, 0, tol / 2} moving at
 //   {1, 0, -1} m/s, friction 0: the start moves to {1 - tol, 0, tol}; one response over both: kind kHit, hit_count 1,
@@ -5491,7 +5503,7 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
   if (math::Length(start_move.moved_point - start) > ComputeLeftOutRestGapMove(inputs)) {
     move->left_out_solids = 0;
   }
-  // Step 3: plan decision P20, item 10: at the moved start.
+  // Step 3: the start's response reads the active surfaces at the moved start.
   const ActiveSurfaces active = FindActiveSurfaces(inputs, *move, nullptr);
   // Step 4: a start inside, or an approach, is one hit at time 0; a particle that leaves was moved silently.
   const StartResponse start_response = FindStartResponse(inputs, active, start, *move);
@@ -5509,8 +5521,8 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
 }
 
 // Applies the settle at the end of a particle's move: one move off every near surface of every solid, touched or not,
-// at the solids' pose at the end of the step (MoveToRestGapOfNearSurfaces), to the rest gap of all of them (plan
-// decision P19, item 7). Returns whether every solid was read at least tol away and the particle did not move, so
+// at the solids' pose at the end of the step (MoveToRestGapOfNearSurfaces), to the rest gap of all of them (method
+// paper <sec-move-particle>). Returns whether every solid was read at least tol away and the particle did not move, so
 // that the end check, which would read the same distances at the same pose and point, passes without reading them.
 //
 // Method: the distances and normals are read afresh at the end pose, not the normals recorded at the hits, because a
@@ -5518,12 +5530,12 @@ ApplyStartRules(const SolidContactInputs& inputs, ParticleMove* move, ContactFai
 //   ones: one move off several surfaces leaves out a near solid it does not read, and could push the particle into it
 //   (in the cusp under a ball touching an upright, the settle off the touched ball alone ended 0.43 tol from the
 //   untouched upright); and a sweep may bring the particle within tol of a solid it never touched, which the settle
-//   lifts back to the rest gap, as plan decision P12 promises. When no move is found within the cap (two surfaces
-//   closer than 2 tol at the end, a solid that closed on the particle), the particle stays where it is and the end
-//   check decides (CheckEndOutsideSolids). The settle only moves the particle away from every near surface: a point it
-//   returns is at least tol - tol / 128 from every solid, so the sweeps' bound (any solid approached by at most tol /
-//   16 in the step after a response, FindFirstHitOfSweep) is untouched. Cost: a particle near no solid at the end pays
-//   one distance per solid here, and the end check then reads none; a particle that moves pays the iterates of
+//   lifts back to the rest gap, as method paper <sec-move-particle> promises. When no move is found within the cap (two
+//   surfaces closer than 2 tol at the end, a solid that closed on the particle), the particle stays where it is and the
+//   end check decides (CheckEndOutsideSolids). The settle only moves the particle away from every near surface: a point
+//   it returns is at least tol - tol / 128 from every solid, so the sweeps' bound (any solid approached by at most
+//   tol / 16 in the step after a response, FindFirstHitOfSweep) is untouched. Cost: a particle near no solid at the end
+//   pays one distance per solid here, and the end check then reads none; a particle that moves pays the iterates of
 //   MoveToRestGapOfNearSurfaces.
 // Units: m, world.
 // Example: a particle that ends a slide along a fixed floor with normal {0, 0, 1} at z = tol / 4 ends at z = tol. At
@@ -5546,11 +5558,11 @@ FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inpu
   // point, it lifts every solid within tol back to the rest gap and the end check's tol / 2 is met; when it finds none
   // (two surfaces closer than 2 tol, or a solid that closed on the particle), the particle stays where it is and the
   // end check decides, failing with kEndsTooCloseToSolid when a solid is nearer than tol / 2. A cylinder tilting within
-  // plan decision P17's bound is the exception: it ends at d >= tol - tol / 16 - tol / 4 after a hit on its wall, a cap
-  // or a rim alike (step 3 of that proof; measured 0.759 tol), and at d >= 39 / 64 tol beside a bounding surface, still
-  // above the end check's tol / 2. A turning solid the particle was carried on ends at least as far as where the carry
-  // started, less the carry's rounding (ApplyCarryInSolidAxes): tol - tol / 64 or more after a stepping search, about
-  // tol after the start's move; every other solid stays farther than tol during a carry
+  // the bound of method paper <sec-slide-and-spin> is the exception: it ends at d >= tol - tol / 16 - tol / 4 after a
+  // hit on its wall, a cap or a rim alike (step 3 of that proof; measured 0.759 tol), and at d >= 39 / 64 tol beside a
+  // bounding surface, still above the end check's tol / 2. A turning solid the particle was carried on ends at least as
+  // far as where the carry started, less the carry's rounding (ApplyCarryInSolidAxes): tol - tol / 64 or more after a
+  // stepping search, about tol after the start's move; every other solid stays farther than tol during a carry
   // (CheckOtherSolidsBeyondClosingBound); and a turning solid that was not hit stayed at tol - tol / 64 or more along
   // every sweep, by the stepping search. So the assertion holds for every solid, a turning one included. Deeper than
   // -2 tol means a hit at a wrong pose or position, which the move below would silently repair, so a debug build stops.
@@ -5594,8 +5606,9 @@ FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inpu
 //   0.25 tol. An end at z = tol / 2 passes.
 // Requires: failure is not null.
 // Fails: kTooCloseToCall  a solid is closer than tol / 2 at the end of the step: *failure is kEndsTooCloseToSolid with
-//                         that solid's solid_id and the distance d as the magnitude (plan decision P6). A shorter step
-//                         gives the hits a chance to keep the particle out: can_shorter_step_cure is true.
+//                         that solid's solid_id and the distance d as the magnitude (method paper <sec-move-particle>).
+//                         A shorter step gives the hits a chance to keep the particle out: can_shorter_step_cure is
+//                         true.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-tolerance>, <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckEndOutsideSolids(

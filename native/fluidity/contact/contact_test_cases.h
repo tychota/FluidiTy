@@ -717,7 +717,7 @@ inline std::vector<MoveParticleCase> BuildFloorStartCases() {
       .solids = {BuildMovingFloor(0, -kUnitZ, 1)},
       .inputs = BuildRestingStartInputs({.height = -0.01, .start_overlap_tolerance = 0.001}),
   });
-  // Plan decision P12: the paper's second example, moving away from the fixed floor.
+  // Method paper <sec-move-particle>: the paper's second example, moving away from the fixed floor.
   cases.push_back({
       .name = "StartsWithinToleranceMovingAway",
       .solids = {BuildFloor(1)},
@@ -1304,8 +1304,8 @@ inline Solid BuildFixedSphere(Vec3 center, double radius, std::uint32_t solid_id
 }
 
 // The scenes of a start near several surfaces at once: acute and flat wedges, corners and pockets, faces facing each
-// other, and the tangent contacts of round solids (plan decision P19). Fixed solids through the origin and friction 0
-// unless stated.
+// other, and the tangent contacts of round solids (method paper <sec-move-particle>). Fixed solids through the origin
+// and friction 0 unless stated.
 inline std::vector<MoveParticleCase> BuildSeveralSurfaceStartCases() {
   std::vector<MoveParticleCase> cases;
   // A wedge of 10 degrees falling on both faces at 0.981 m/s for 0.1 s.
@@ -2426,9 +2426,9 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
           .friction = 0,
       }),
   });
-  // A cylinder along z at the origin, radius 0.5 m and half height 0.25 m, tilting at {1e-9, 0, 0} rad/s, below plan
-  // decision P17's bound for 0.1 s; a particle at rest in the rim corner over its high rim on the +y side, 0.9 tol
-  // beyond the wall and the cap, 1.27 tol from the rim, where the rim rises toward it at 1.77e-10 m/s.
+  // A cylinder along z at the origin, radius 0.5 m and half height 0.25 m, tilting at {1e-9, 0, 0} rad/s, below the
+  // bound of method paper <sec-slide-and-spin> for 0.1 s; a particle at rest in the rim corner over its high rim on the
+  // +y side, 0.9 tol beyond the wall and the cap, 1.27 tol from the rim, where the rim rises toward it at 1.77e-10 m/s.
   const Solid tilting_flat_cylinder = ToSolid(
       Cylinder{.center = {}, .axis = kUnitZ, .radius = 0.5, .half_height = 0.25},
       {.linear_velocity = {}, .angular_velocity = {.x = 1e-9, .y = 0, .z = 0}},
@@ -2545,9 +2545,9 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
           .friction = 0,
       }),
   });
-  // The cylinder of CylinderRim tilting at {1e-11, 0, 0} rad/s, below plan decision P17's bound for 4 s
-  // (1e-11 * 4 * Length(half_size) = 4.5e-11 m < tol / 8): its closed form and rim search find the rim hit at the pose
-  // of the sweep's start.
+  // The cylinder of CylinderRim tilting at {1e-11, 0, 0} rad/s, below the bound of method paper <sec-slide-and-spin>
+  // for 4 s (1e-11 * 4 * Length(half_size) = 4.5e-11 m < tol / 8): its closed form and rim search find the rim hit at
+  // the pose of the sweep's start.
   cases.push_back({
       .name = "SlowlyTiltingCylinderRim",
       .solids =
@@ -2559,10 +2559,10 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
           .friction = 0,
       }),
   });
-  // A long thin cylinder along x, radius 0.1 m and half height 2 m, tilting about y at 0.99 of plan decision P17's
-  // bound for 1 s, measured with the largest arm, Sqrt(0.1^2 + 2^2): a particle tol above its top at x = 1.95 slides
-  // along it to x = -1.95 while falling onto it, so the surface under it moves the other way from where the sweep
-  // started.
+  // A long thin cylinder along x, radius 0.1 m and half height 2 m, tilting about y at 0.99 of the bound of method
+  // paper <sec-slide-and-spin> for 1 s, measured with the largest arm, Sqrt(0.1^2 + 2^2): a particle tol above its top
+  // at x = 1.95 slides along it to x = -1.95 while falling onto it, so the surface under it moves the other way from
+  // where the sweep started.
   const double long_cylinder_tilt_rate = 0.99 * (kTolerance / 8) / std::sqrt(0.1 * 0.1 + 2.0 * 2.0);  // rad/s
   const SolidMotion long_cylinder_tilt = {
       .linear_velocity = {},
@@ -2580,8 +2580,9 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
       }),
   });
   // Two generated scenes whose settle depends on the array (MoveToRestGapOfNearSurfaces, Order); the
-  // digits are the probe's. A small cylinder spinning about its axis and tilting within plan decision P17's bound,
-  // alone and with an exact copy appended; a floor, a moving cylinder and a ball, in array order and reversed.
+  // digits are the probe's. A small cylinder spinning about its axis and tilting within the bound of method paper
+  // <sec-slide-and-spin>, alone and with an exact copy appended; a floor, a moving cylinder and a ball, in array order
+  // and reversed.
   // NOLINTBEGIN(modernize-use-std-numbers)
   const Vec3 spinning_axis = {.x = 0.54424759236949605, .y = 0.82685055739460867, .z = -0.14181930029524106};
   const Vec3 tilt_axis = {.x = 0.25166100768697314, .y = 0.0003495224909581074, .z = 0.96781538272751455};
@@ -2653,11 +2654,11 @@ inline std::vector<MoveParticleCase> BuildRoundSolidCases() {
   return cases;
 }
 
-// The scenes of a cylinder's rim at its true distance and of flush seams between solids (plan decision P21): two drums
-// of one radius stacked, a puck flush in a floor, a drum standing on a floor, a rim crest just under a floor, a rim met
-// from the side, the rim sliding over a floor a little lower, two boxes stacked, two boxes side by side and a box flush
-// in a floor. They come after every other scene in BuildMoveParticleCases, so the generated sets keep the draws of the
-// scenes before them.
+// The scenes of a cylinder's rim at its true distance and of flush seams between solids (method paper
+// <sec-touching-rule>, <sec-round-first-hit>): two drums of one radius stacked, a puck flush in a floor, a drum
+// standing on a floor, a rim crest just under a floor, a rim met from the side, the rim sliding over a floor a little
+// lower, two boxes stacked, two boxes side by side and a box flush in a floor. They come after every other scene in
+// BuildMoveParticleCases, so the generated sets keep the draws of the scenes before them.
 inline std::vector<MoveParticleCase> BuildRimAndSeamCases() {
   std::vector<MoveParticleCase> cases;
   // Two drums along z, radius 0.5 m and half height 0.5 m, the upper from z = 1 to 2 and the lower from 0 to 1, and a
@@ -2860,8 +2861,8 @@ inline std::vector<MoveParticleCase> BuildBadInputCases() {
   return cases;
 }
 
-// The scenes of a slide on a turning solid: the rest of the step carried in its axes (plan decision P7), and the test
-// of the other solids that comes before it.
+// The scenes of a slide on a turning solid: the rest of the step carried in its axes (method paper
+// <sec-move-particle>), and the test of the other solids that comes before it.
 inline std::vector<MoveParticleCase> BuildTurningSlideCases() {
   std::vector<MoveParticleCase> cases;
   // A box of half size 0.5 m at the origin turning at 1 rad/s about z: the turning box of the scenes below.
@@ -3096,7 +3097,7 @@ inline SolidContactInputs BuildFarInputs(Vec3 start_position, PerParticleVelocit
 // the oblique set far from the origin. The solid moves, the particle meets it at a share of the step, slides on with
 // friction, and must end the step outside it.
 //
-// Method: per case, in this order of draws (P11 generator, one for the whole set): the normal (three NextSigned,
+// Method: per case, in this order of draws (one CaseGenerator for the whole set): the normal (three NextSigned,
 //   drawn again while shorter than 0.25, then normalized); the point on the surface, 1000 times three NextSigned m;
 //   the solid's linear velocity, 10 times three NextSigned m/s; gap = 0.01 Next + 2 tol m; the tangent, the normalized
 //   cross product of the normal with three NextSigned, drawn again while that product is shorter than 0.25;
@@ -3147,14 +3148,14 @@ inline std::vector<MoveParticleCase> BuildObliqueCases(int count) {
 // "RoundFarFromOrigin": the round set far from the origin. The solid moves without turning; the particle starts outside
 // its bounding ball and aims, relative to it, at a point of the box around it, reached at a share of the step.
 //
-// Method: per case, in this order of draws (P11 generator, one for the whole set): is_sphere = Next < 0.5; the centre,
+// Method: per case, in this order of draws (one CaseGenerator for the whole set): is_sphere = Next < 0.5; the centre,
 //   1000 times three NextSigned m; radius = 0.05 + 0.45 Next m; half_height = 0.05 + 0.45 Next m (drawn for both
 //   shapes, used by the cylinder); the axis (three NextSigned, drawn again while shorter than 0.25, then normalized;
 //   drawn for both shapes); the linear velocity, 10 times three NextSigned m/s; the direction, drawn as the axis was;
 //   start = centre + (Length(half_size) + 0.01 + 0.05 Next) direction; target = centre + axes (0.9 half_size times
-//   three NextSigned, axis by axis); hit_share = 0.1 + 0.8 Next; for_this_step = linear velocity + (target - start) /
-//   (T hit_share); for_next_step = for_this_step + 0.5 times three NextSigned; friction Next. T = 2^-6 s, the solid's
-//   id 1, tol kFarFromOriginContactTolerance.
+//   three NextSigned, axis by axis); hit_share = 0.1 + 0.8 Next; for_this_step = linear velocity + (target -
+//   start) / (T hit_share); for_next_step = for_this_step + 0.5 times three NextSigned; friction Next. T = 2^-6 s, the
+//   solid's id 1, tol kFarFromOriginContactTolerance.
 // Example: a cylinder's target is within 0.9 of its half height of its middle, and within 0.9 radius along each own
 //   axis across it, so up to 1.27 radius from its axis: most cylinder paths, and fewer sphere paths, hit.
 inline std::vector<MoveParticleCase> BuildRoundCases(int count) {

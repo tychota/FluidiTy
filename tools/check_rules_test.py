@@ -263,6 +263,12 @@ def test_unlisted_verb_fails(tmp_path, glossary):
     assert "EvaluateWeight" in findings[0].text
 
 
+def test_unlisted_verb_says_where_to_list_the_name(tmp_path, glossary):
+    write(tmp_path, "a.h", FULL_HEADER + "double EvaluateWeight(double x);\n")
+    findings = run(tmp_path, glossary)
+    assert "list it with its reason in tools/check_rules_allowed_names.txt" in findings[0].text
+
+
 def test_allowed_verb_must_end_at_a_word_boundary(tmp_path, glossary):
     write(tmp_path, "a.h", FULL_HEADER + "double Computer(double x);\n")
     assert rules(run(tmp_path, glossary)) == ["verb"]
@@ -418,7 +424,7 @@ def test_real_glossary_and_rules_load():
     assert {"TryStep", "ResizeCells", "MixParticleVelocity"} <= names
 
 
-# ---- Review fixes ----
+# ---- Library names, listed names and member definitions ----
 
 
 @pytest.mark.parametrize(

@@ -796,7 +796,7 @@ surface. The two agree everywhere except outside an edge or a corner, where $d$ 
 tie gives `kLowX`. For a domain box from (0, 0, 0) to (1, 1, 1) with an open top, the point (0.5, 0.5, 0.95) is at $d =
 0.5$: four sides tie and left wins. With the top closed it would be at 0.05 from the top.
 
-=== The two sides of a plate
+=== The two sides of a plate <sec-plate-sides>
 
 A plate is thin, often thinner than a cell. Particles on its two sides must stay on their own side, even when the
 grid around them cannot tell the sides apart; papers on moving thin solids keep the two sides apart in the same way
@@ -820,7 +820,7 @@ and goes to $p_z = -(0.01 + "tol")$. A committed particle more than $"tol"$ beyo
 half space: a particle on the other side is not inside its half space but on the wrong side, and the error says so. A
 `plate_id` that names no plate among the solids is a bad input.
 
-=== Checks before the step
+=== Checks before the step <sec-checks-before-step>
 
 `CheckSolid` checks one solid: finite values and a step duration $T > 0$; axes that form a rotation, each column a unit
 vector up to a squared length within $2^(-40)$ of 1, each pair of columns at right angles up to a dot product of at most
@@ -912,7 +912,7 @@ $g = d - "tol"$ reaches zero. The solids are sampled $t_0 + t$ seconds into the 
 the part of the step already used. It returns the time, the solid's index in the array and the distance, normal and face
 at the hit, or no solid when the path is free. @proc-find-first-hit lists the steps; this part explains them.
 
-=== A solid that does not turn
+=== A solid that does not turn <sec-not-turning>
 
 A box turns when its angular velocity is not exactly (0, 0, 0). A flat solid or a plate turns when the part of its
 angular velocity across its normal, $bold(omega) - (bold(omega) dot bold(e)_z) bold(e)_z$ with $bold(e)_z$ the normal,
@@ -949,7 +949,7 @@ and the y and z faces are neither entered nor left: the hit is at $0.25 - "tol"\
 particle committed to one of its sides is a single face (@sec-solid-shapes). A sphere and a cylinder have closed
 forms of their own, in @sec-round-solids.
 
-=== A particle resting on a surface
+=== A particle resting on a surface <sec-touching-rule>
 
 After every hit the particle sits on the surface at $d = "tol"$ and is swept again for the rest of the step. If that
 surface counted as hit again at once, every slide would end after a few steps in "too many hits". So the surface a
@@ -1048,7 +1048,7 @@ a step that starts $33\/32 "tol"$ beyond the seam at the floor's rest gap: the b
 plane continued above the top, $1.03 "tol"$ away while its edge is $1.43 "tol"$ away; the active surfaces are the
 floor's alone, and the step keeps its velocity, where a response on that plane stopped it dead (the tests' numbers).
 
-=== A turning solid
+=== A turning solid <sec-turning-solid>
 
 A turning solid's gap is not linear in time, and its faces do not keep their direction. Contact steps toward it
 instead (citation needed). The gap cannot shrink faster than
@@ -1231,7 +1231,7 @@ These numbers are this paper's own.
     nearest, the sphere's centre and a point on the cylinder's axis, the normal is the solid's own −x axis.],
 ) <fig-round-solids>
 
-=== First hit of a path
+=== First hit of a path <sec-round-first-hit>
 
 The path meets the solid grown by $"tol"$. Here $bold(q)$ is the start relative to the solid's origin at time $t_0$
 and $bold(w) = bold(v) - bold(v)_"lin"$ the velocity relative to the solid, both turned into the solid's own axes.
@@ -1358,7 +1358,7 @@ passes over the rim.
     arrow at the sphere's hit is the normal there.],
 ) <fig-round-first-hit>
 
-=== Starts on or near a round solid
+=== Starts on or near a round solid <sec-round-starts>
 
 The start's gap $g_0 = d - "tol"$ uses the true distance. A start deeper than $"tol"$ inside the grown solid, $g_0
 < -"tol"$, is hit at $t = 0$, as for a flat face. With $g_0$ in $[-"tol", 0]$ the touching rule applies, with $"rate" =
@@ -1420,7 +1420,7 @@ $(-(0.5 + "tol"), 0, 0)$ moving at (0, 1, 0) m/s, along the tangent, is free; mo
     "tol"\/1024$ (a hit), $dot(g) >= 0$ or the end of the sweep (no hit), at most 16.]),
 )
 
-=== Slide and spin
+=== Slide and spin <sec-slide-and-spin>
 
 After a hit the response leaves a velocity along the tangent plane at the hit. The sweep goes on along that tangent
 in a straight line. On a sphere or a cylinder wall the path leaves the surface, its distance growing as
@@ -1532,7 +1532,7 @@ friction 0.5: `for_next_step` has approach −3 m/s and sideways speed 1 m/s, an
 zero; `for_this_step` has approach −1 m/s and no sideways speed, so it too becomes zero. The record keeps both
 approach speeds, −3 and −1 m/s.
 
-=== Moving one particle
+=== Moving one particle <sec-move-particle>
 
 `MoveParticle` moves one particle for one step in five steps (@proc-move-particle): check the inputs, classify the
 start, find the first hit, apply the joint response, and settle and check the end. Without any hit the end position is
