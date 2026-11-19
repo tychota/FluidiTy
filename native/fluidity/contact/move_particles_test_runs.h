@@ -928,7 +928,8 @@ class SetComparison {
 // Converts a run to the 64-bit words a digest reads: the result or the failure field by field, then every particle's
 // integers and the bits of its doubles. Field by field, so padding bytes, which no run promises to write alike, never
 // reach the digest.
-// Example: a failed run gives {1, error, close call, has_particle_id, particle_id, solid_id, magnitude bits}.
+// Example: a failed run gives {1, error, close call, has_particle_id, can_shorter_step_cure, particle_id, solid_id,
+//   magnitude bits}.
 inline std::vector<std::uint64_t> ToFieldBits(const MovedRange& moved) {
   std::vector<std::uint64_t> words;
   if (moved.result.has_value()) {
@@ -949,6 +950,7 @@ inline std::vector<std::uint64_t> ToFieldBits(const MovedRange& moved) {
       static_cast<std::uint64_t>(failure.error),
       static_cast<std::uint64_t>(failure.close_call),
       failure.has_particle_id ? 1U : 0U,
+      failure.can_shorter_step_cure ? 1U : 0U,
       failure.particle_id,
       failure.solid_id,
       ToBits(failure.magnitude),

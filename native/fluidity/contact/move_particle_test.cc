@@ -7281,7 +7281,7 @@ TEST(FindFirstHitOfSweep, NotTouchedAfterRoundedHit_HitsSameSolidAgain) {
   EXPECT_EQ(first_hit.solid_index, 0U);
 }
 
-TEST(FindFirstHitOfSweep, TouchedSolidAfterRoundedHit_IsFree) {
+TEST(FindFirstHitOfSweep, TouchedRuleAfterRoundedHit_IsFree) {
   const SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();
   FirstHit first_hit;
   const ContactError error = FindFirstHitOfSweep(
@@ -7295,7 +7295,7 @@ TEST(FindFirstHitOfSweep, TouchedSolidAfterRoundedHit_IsFree) {
   EXPECT_EQ(first_hit.solid_index, kNoSolid);
 }
 
-TEST(FindFirstHitOfSweep, TouchedSolidReallyApproached_IsHitAtStart) {
+TEST(FindFirstHitOfSweep, TouchedRuleReallyApproached_IsHitAtStart) {
   // The same start, now moving into the surface at 1e-9 m/s, far beyond the allowance: hit at 0.
   SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();
   after_hit.sweep.velocity_for_this_step =
@@ -7313,7 +7313,7 @@ TEST(FindFirstHitOfSweep, TouchedSolidReallyApproached_IsHitAtStart) {
   EXPECT_EQ(first_hit.elapsed, 0);
 }
 
-TEST(FindFirstHitOfSweep, TouchedSolidFartherThanSixteenthOfTolerance_TakesClosedForm) {
+TEST(FindFirstHitOfSweep, TouchedRuleFartherThanSixteenthOfTolerance_TakesClosedForm) {
   // A start tol / 2 above the rest gap of the solid hit, approaching at 1 m/s: outside the touched window of tol / 16,
   // so the closed form finds the hit tol / 2 later, not at 0.
   SweepAfterObliqueHit after_hit = BuildSweepAfterObliqueHit();

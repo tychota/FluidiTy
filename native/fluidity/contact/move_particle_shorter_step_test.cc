@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <set>
 #include <string>
@@ -14,6 +15,7 @@
 #include "fluidity/contact/solid_contact.h"
 #include "fluidity/contact/solid_contact_steps.h"
 #include "fluidity/contact/solid_contact_types.h"
+#include "fluidity/contact/solid_shapes.h"
 
 namespace fluidity::contact {
 namespace {
@@ -114,6 +116,106 @@ TEST(MoveParticle, DescendingBoxAtBottomSide_SameSqueezeAtEveryShorterStep) {
 TEST(MoveParticle, SeventeenFloorsAtStart_TooManyHitsAtEveryShorterStep) {
   // 17 active surfaces at the start, one more than one response reads (kMaxTrackedSurfaces), naming the record's solid.
   ExpectSameCloseCallAtShorterSteps(BuildShorterStepCase("SeventeenFloorsAtStart"), ContactCloseCall::kTooManyHits, 1);
+}
+
+// The scene PaddleThroughBottomSideRestingOnIt with one more fixed solid near the particle, beyond the window of the
+// active surfaces but within the closing bound of the carry, given the lowest id (first in the array) or the highest
+// (last). The bottom side, within the window, fails at every step length whatever the order.
+enum class ExtraSolidPlace : std::uint8_t {
+  kFirst,  // Lowest id.
+  kLast,  // Highest id.
+};
+
+MoveParticleCase BuildPaddleSceneWithExtraSolid(Solid extra, ExtraSolidPlace place) {
+  MoveParticleCase scene = BuildShorterStepCase("PaddleThroughBottomSideRestingOnIt");
+  Solid domain_box = scene.solids[0];
+  Solid paddle = scene.solids[1];
+  if (place == ExtraSolidPlace::kFirst) {
+    extra.solid_id = 1;
+    paddle.solid_id = 2;
+    domain_box.solid_id = 3;
+    scene.solids = {extra, paddle, domain_box};
+  } else {
+    domain_box.solid_id = 1;
+    paddle.solid_id = 2;
+    extra.solid_id = 3;
+    scene.solids = {domain_box, paddle, extra};
+  }
+  return scene;
+}
+
+// A fixed flat ceiling 3 tol above the particle of PaddleThroughBottomSideRestingOnIt (2 tol beyond the rest gap).
+Solid BuildCeilingAboveRestingParticle() {
+  const MoveParticleCase base = BuildShorterStepCase("PaddleThroughBottomSideRestingOnIt");
+  const double ceiling_height = base.inputs.start_position.z + (3 * base.inputs.contact_tolerance);  // m
+  return ToSolid(
+      FlatSolid{
+          .point_on_surface = {.x = 0, .y = 0, .z = ceiling_height},
+          .normal_out_of_solid = -move_particle_cases::kUnitZ,
+      },
+      SolidMotion(),
+      1
+  );
+}
+
+// A fixed ball of radius 4 mm whose surface is 0.6 mm beyond the rest gap of the same particle.
+Solid BuildBallNearRestingParticle() {
+  const MoveParticleCase base = BuildShorterStepCase("PaddleThroughBottomSideRestingOnIt");
+  const Vec3 start = base.inputs.start_position;
+  const double radius = 0.004;  // m
+  const double centre_distance = radius + base.inputs.contact_tolerance + 6e-4;  // m
+  const double offset_y = 0.0045;  // m
+  const double offset_z = std::sqrt((centre_distance * centre_distance) - (offset_y * offset_y));  // m
+  return ToSolid(
+      Sphere{.center = {.x = start.x, .y = start.y + offset_y, .z = start.z + offset_z}, .radius = radius},
+      SolidMotion(),
+      1
+  );
+}
+
+// Fails the calling test unless the scene fails with kTurningSolidNearOtherSolid naming the paddle (id 2) and
+// can_shorter_step_cure false at T and at T / 2^k for each listed k.
+void ExpectNoCureAtHalvings(const MoveParticleCase& scene, std::initializer_list<int> halving_counts) {
+  for (const int halving_count : halving_counts) {
+    SCOPED_TRACE("step divided by 2^" + std::to_string(halving_count));
+    const MoveParticleCall call = RunMoveWithHalvings(scene, halving_count);
+    EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
+    EXPECT_EQ(call.failure.close_call, ContactCloseCall::kTurningSolidNearOtherSolid);
+    EXPECT_EQ(call.failure.solid_id, 2U);
+    EXPECT_FALSE(call.failure.can_shorter_step_cure);
+  }
+}
+
+TEST(MoveParticle, PaddleSceneWithCeilingFirst_NoCureWhateverTheOrder) {
+  // The ceiling, beyond the window, fails the closing bound first in the array; the bottom side, within it, fails at
+  // every step length, so the flag is false. Taken from the first failing solid it said true down to T / 2^25.
+  ExpectNoCureAtHalvings(
+      BuildPaddleSceneWithExtraSolid(BuildCeilingAboveRestingParticle(), ExtraSolidPlace::kFirst),
+      {0, 1, 2, 4, 8, 16, 25, 26}
+  );
+}
+
+TEST(MoveParticle, PaddleSceneWithCeilingLast_NoCure) {
+  ExpectNoCureAtHalvings(
+      BuildPaddleSceneWithExtraSolid(BuildCeilingAboveRestingParticle(), ExtraSolidPlace::kLast),
+      {0, 1, 2, 4, 8, 16, 25, 26}
+  );
+}
+
+TEST(MoveParticle, PaddleSceneWithBallFirst_NoCureWhateverTheOrder) {
+  // The ball 0.6 mm away fails the closing bound at T only; taken from the first failing solid the flag said true at
+  // T, false from T / 2.
+  ExpectNoCureAtHalvings(
+      BuildPaddleSceneWithExtraSolid(BuildBallNearRestingParticle(), ExtraSolidPlace::kFirst),
+      {0, 1, 2, 4}
+  );
+}
+
+TEST(MoveParticle, PaddleSceneWithBallLast_NoCure) {
+  ExpectNoCureAtHalvings(
+      BuildPaddleSceneWithExtraSolid(BuildBallNearRestingParticle(), ExtraSolidPlace::kLast),
+      {0, 1, 2, 4}
+  );
 }
 
 // --- Close calls that a shorter step cures: a hit after the start, or a test that reads the time left ---

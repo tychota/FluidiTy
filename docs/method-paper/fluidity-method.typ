@@ -452,7 +452,7 @@ debug build stops the program if a block is destroyed while one is still alive. 
 values of those buffers are gone, but destroying them later is still safe, because the block leaves its small
 count behind for them. Moving a buffer or a block moves no memory and keeps the pieces where they are.
 
-A piece that does not fit in what is left of the block is refused with `kRunMemoryTooSmall`: nothing is taken and
+A piece that does not fit in what is left of the block fails with `kRunMemoryTooSmall`: nothing is taken and
 nothing is written, and the block is unchanged. It is an error, not a broken precondition, because the caller
 cannot guarantee it: what fits depends on a plan made elsewhere, and limits raised while the run goes on can
 cause it. The run reserves exactly what its estimate gives, so the error usually means the estimate missed an

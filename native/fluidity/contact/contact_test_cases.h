@@ -1949,11 +1949,11 @@ inline std::vector<MoveParticleCase> BuildClosingWedgeCases() {
   return cases;
 }
 
-// The scenes of a first outside check of the slide: an edge of the domain box against the same edge of two flat solids,
+// Slides in edges and corners: an edge of the domain box against the same edge of two flat solids,
 // with friction; a domain corner with two chamfers across it (five directions); moving three-face corners with a
 // coincident fourth face; an obtuse wedge listed in both orders; two coincident reacting solids whose normals differ
 // by rounding; a slow slide into a sliver wedge.
-inline std::vector<MoveParticleCase> BuildSlideReviewCases() {
+inline std::vector<MoveParticleCase> BuildEdgeAndCornerSlideCases() {
   std::vector<MoveParticleCase> cases;
   // The unit domain box, and the flat solids x = 0, y = 0 and z = 0 in the same place: the particle at
   // {0.005, 0.5, 0.005} moving at {-1, 0.5, -1} m/s for 0.02 s meets the x and z sides at the same time. Friction 0.5.
@@ -2114,10 +2114,10 @@ struct RestPointWedge {
   Vec3 velocity{};  // m/s
 };
 
-// The scenes of a second outside check of the slide: wedges at their rest point listed in both orders, with friction; a
+// Slides in wedges and over coincident grounds: wedges at their rest point listed in both orders, with friction; a
 // narrow wedge on a reacting floor near the velocity pair limit; a domain box and a side with and without a ground
 // lying on the box's bottom, or a ground with twice the friction; the copy fuzz scenes.
-inline std::vector<MoveParticleCase> BuildSecondReviewCases() {
+inline std::vector<MoveParticleCase> BuildWedgeOrderAndCoincidentGroundCases() {
   std::vector<MoveParticleCase> cases;
   const double degree = std::numbers::pi / 180;  // rad
   // Wedges of 30, 45, 60 and 75 degrees with the floor, the particle at the rest point {tol / tan(a / 2), 0, tol} for
@@ -3017,10 +3017,10 @@ inline std::vector<MoveParticleCase> BuildMoveParticleCases() {
   for (MoveParticleCase& test_case : move_particle_cases::BuildClosingWedgeCases()) {
     cases.push_back(std::move(test_case));
   }
-  for (MoveParticleCase& test_case : move_particle_cases::BuildSlideReviewCases()) {
+  for (MoveParticleCase& test_case : move_particle_cases::BuildEdgeAndCornerSlideCases()) {
     cases.push_back(std::move(test_case));
   }
-  for (MoveParticleCase& test_case : move_particle_cases::BuildSecondReviewCases()) {
+  for (MoveParticleCase& test_case : move_particle_cases::BuildWedgeOrderAndCoincidentGroundCases()) {
     cases.push_back(std::move(test_case));
   }
   for (MoveParticleCase& test_case : move_particle_cases::BuildBadInputCases()) {

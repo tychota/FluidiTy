@@ -521,8 +521,10 @@ TEST(ToFieldBits, Failure_IsItsFieldsInOrder) {
   MovedRange moved;
   moved.result = std::unexpected(
       ContactFailure{
-          .error = ContactError::kStartsInsideSolid,
+          .error = ContactError::kTooCloseToCall,
+          .close_call = ContactCloseCall::kSqueezedBetweenSolids,
           .has_particle_id = true,
+          .can_shorter_step_cure = true,
           .particle_id = 9,
           .solid_id = 1,
           .magnitude = 0.01,
@@ -530,8 +532,9 @@ TEST(ToFieldBits, Failure_IsItsFieldsInOrder) {
   );
   const std::vector<std::uint64_t> expected = {
       1,
-      static_cast<std::uint64_t>(ContactError::kStartsInsideSolid),
-      0,
+      static_cast<std::uint64_t>(ContactError::kTooCloseToCall),
+      static_cast<std::uint64_t>(ContactCloseCall::kSqueezedBetweenSolids),
+      1,
       1,
       9,
       1,

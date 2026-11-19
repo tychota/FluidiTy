@@ -5049,10 +5049,13 @@ ComputeSolidAxesCarry(const SolidContactInputs& inputs, std::uint32_t solid_inde
 // Fails: kTooCloseToCall  kTurningSolidNearOtherSolid: another solid's gap is within the closing bound. *failure
 //                         names the turning solid, magnitude 0: which other solid fails first depends on the array's
 //                         order, the turning solid does not. A shorter step shortens the closing bound, so
-//                         can_shorter_step_cure is true when the carry starts after the start of the step or the other
-//                         solid is farther than the active window tol + tol / 16. Within the window at the start (the
-//                         particle rests on the other solid, as in the crease of a paddle and its shaft, or of a
-//                         paddle and the floor it passes through) no shorter step cures it: false.
+//                         can_shorter_step_cure is true when the carry starts after the start of the step, or when
+//                         every failing other solid is farther than the active window tol + tol / 16, whatever their
+//                         order in the array. When one failing solid is within the window at the start (the particle
+//                         rests on it, as in the crease of a paddle and its shaft, or of a paddle and the floor it
+//                         passes through), it is false: exact at the rest gap, a choice above it, where a step shorter
+//                         than the gap over the closing speed would cure it (tol / 32 above the rest gap of a 1 ms
+//                         step: cured at 2^-32 of it), a step not worth trying.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
@@ -5074,6 +5077,13 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
   // Method paper <proc-move-particle>:  |w| + |v_lin| + |omega| r
   const double carry_speed_bound = math::Length(carry.own_velocity) + math::Length(turning_solid.motion.linear_velocity)
       + math::Length(turning_solid.motion.angular_velocity) * arm_length;  // m/s
+  // A carry from a hit after the start fails at its first failing solid: a step that ends before the hit cures it.
+  // From the start, a shorter step cures it only when every failing solid is beyond the window of FindActiveSurfaces,
+  // so the scan goes on after a failure until it meets a failing solid within the window, whatever the array's order.
+  const bool is_after_start = ComputeCanShorterStepCureHitAt(move.elapsed);
+  const double active_distance =
+      inputs.contact_tolerance + kTouchedRuleRestingGapShare * inputs.contact_tolerance;  // m
+  bool has_failing_solid = false;
   for (std::uint32_t other_index = 0; other_index < inputs.solid_count; ++other_index) {
     const Solid& other = inputs.solids[other_index];
     if (other_index == solid_index || ComputeIsSameSpaceThroughStep(other, turning_solid)) {
@@ -5089,20 +5099,29 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
     const double closing_bound = time_left * closing_speed_bound;  // m
     // A NaN bound compares false, so it fails too: no bound means no safe carry.
     const bool is_beyond_closing_bound = other_distance - inputs.contact_tolerance > closing_bound;
-    if (!is_beyond_closing_bound) {
-      // A gap beyond the window of FindActiveSurfaces is beyond the closing bound of a short enough step. A gap within
-      // it would need a step shorter than tol / 16 over the closing speed, a carry the particle resting there gets
-      // at no step length worth trying.
-      const double active_distance =
-          inputs.contact_tolerance + kTouchedRuleRestingGapShare * inputs.contact_tolerance;  // m
-      const bool is_beyond_active_window = other_distance > active_distance;
+    if (is_beyond_closing_bound) {
+      continue;
+    }
+    has_failing_solid = true;
+    // A gap beyond the window is beyond the closing bound of a short enough step. A gap within it is reported as no
+    // cure, a choice exact only at the rest gap: a gap above it would need a step shorter than the gap over the closing
+    // speed (tol / 32 above the rest gap: still failing at 2^-30 of a 1 ms step, cured at 2^-32), no step worth trying.
+    const bool is_beyond_active_window = other_distance > active_distance;
+    if (is_after_start || !is_beyond_active_window) {
       const ContactError error =
           ApplyCloseCall(inputs, ContactCloseCall::kTurningSolidNearOtherSolid, solid_index, failure);
-      failure->can_shorter_step_cure = ComputeCanShorterStepCureHitAt(move.elapsed) || is_beyond_active_window;
+      failure->can_shorter_step_cure = is_after_start;
       return error;
     }
   }
-  return ContactError::kNone;
+  if (!has_failing_solid) {
+    return ContactError::kNone;
+  }
+  // Every failing solid is beyond the window, at the start: a shorter step cures the carry.
+  const ContactError error =
+      ApplyCloseCall(inputs, ContactCloseCall::kTurningSolidNearOtherSolid, solid_index, failure);
+  failure->can_shorter_step_cure = true;
+  return error;
 }
 
 // Applies the carry of the rest of the step in a turning solid's own axes (plan decision P7): the particle moves in a

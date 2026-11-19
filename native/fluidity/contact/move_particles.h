@@ -63,7 +63,9 @@ namespace fluidity::contact {
 
 // What one MoveParticles call counts. Integer sums, the same in every order of the particles.
 struct MoveParticlesResult {
-  std::uint64_t hit_count = 0;  // Particles with kind == kHit.
+  // Particles with kind == kHit, those recorded when leaving a turning solid included (a hit at 0 whatever the
+  // velocity, with an approach speed of zero or more: SolidContactResult::approach_speed).
+  std::uint64_t hit_count = 0;
   std::uint64_t started_inside_count = 0;  // Particles with kind == kStartedInsideSolid.
 };
 // The GPU writes the counts as MoveParticleCounts and the CPU reads them as this struct.
@@ -197,7 +199,9 @@ struct MovedParticles {
 //     counted. On the CPU one loop in index order; on the GPU one thread per particle.
 //     The order ignores what failed, a known choice left to the step module: when particle 5 has a close call and
 //     particle 9 starts inside a solid, the call reports particle 5's close call, so a scene error can hide behind a
-//     close call. It shows only in a later try in which particle 5 moves.
+//     close call. It shows only in a later try in which particle 5 moves. The same holds for can_shorter_step_cure:
+//     it is the reported particle's, not the call's, so a close call a shorter step cures (particle 5, true) may hide
+//     one no shorter step cures (particle 9, false), and the call succeeds at no step length.
 //   Same bits on CPU and GPU when every solid's angular velocity is zero (MoveParticle); with a turning or spinning
 //   solid the floating-point outputs are promised to agree within the bounds of method paper <sec-contact> (a quarter
 //   of tol for positions) and the discrete ones exactly; neither is measured on a GPU yet (docs/gpu-runs.md).
@@ -223,8 +227,8 @@ struct MovedParticles {
 //                          MoveParticle with kBadInput.
 //        kTooCloseToCall   a solid turns more than kMaxTurnPerStep during the step (close_call kSolidTurnsTooFar, its
 //                          solid_id, can_shorter_step_cure true); or as MoveParticle for the first failing particle,
-//                          kMovesTooFastForStep included, with MoveParticle's can_shorter_step_cure: the step shortens
-//                          the step and tries again only when it is true.
+//                          kMovesTooFastForStep included, with MoveParticle's can_shorter_step_cure for that particle
+//                          (the reported particle's, not the call's: see Method, step 3).
 //        kStartsInsideSolid, kOnWrongSideOfPlate, kStartsInNarrowGap  as MoveParticle, for the first failing particle.
 //                          Scene errors; the step stops.
 //        kRunOnCallFailed  a call to the GPU failed; the run stops.

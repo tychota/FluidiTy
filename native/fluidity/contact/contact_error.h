@@ -84,16 +84,19 @@ struct ContactFailure {
   //   true   a hit after the start (elapsed > 0) and whatever its response meets: a fifth hit, a squeeze, too many
   //          surfaces or directions, a second reacting solid, a turning solid near another solid; a step that ends
   //          before that hit does not meet it. At any moment: the rounding of a response over the time left
-  //          (kMovesTooFastForStep, and kSqueezedBetweenSolids with several surfaces), a turning solid near another
-  //          solid that is farther than the active window tol + tol / 16 (the closing bound shrinks with the time
-  //          left), a hover near a turning solid (kSlowApproachToTurningSolid), the end check (kEndsTooCloseToSolid)
-  //          and a solid that turns too far (kSolidTurnsTooFar).
+  //          (kMovesTooFastForStep, and kSqueezedBetweenSolids with several surfaces), a turning solid near other
+  //          solids that are all farther than the active window tol + tol / 16 (the closing bound shrinks with the
+  //          time left), a hover near a turning solid (kSlowApproachToTurningSolid), the end check
+  //          (kEndsTooCloseToSolid) and a solid that turns too far (kSolidTurnsTooFar).
   //   false  every error but kTooCloseToCall, and the close calls of a hit at the start of the step (elapsed 0)
   //          whose test does not read the time left: solids that close on the particle or an escape above the speed
   //          cap (kSqueezedBetweenSolids), more than 8 directions or 16 surfaces or a fifth hit (kTooManyHits), two
   //          reacting solids pushed by one response (kSecondReactingSolid), and a turning solid near another solid
-  //          within the active window (kTurningSolidNearOtherSolid). The start, the velocities and the poses of time 0
-  //          decide them, the same at every step length.
+  //          within the active window (kTurningSolidNearOtherSolid, false if any failing solid is within it). The
+  //          start, the velocities and the poses of time 0 decide them, the same at every step length. Within the
+  //          window the false is exact at the rest gap and a choice above it: a gap above the rest gap would need a
+  //          step shorter than the gap over the closing speed (tol / 32 above it, at 1 ms: still failing at 2^-30 of
+  //          the step, cured at 2^-32), reported as no step worth trying.
   // true says a cure exists, not that one halving finds it: the step that cures can be as short as the moment of the
   // hit (2^-26 of the step for the catalogue's GrazingWedgeClosingFast).
   bool can_shorter_step_cure = false;
