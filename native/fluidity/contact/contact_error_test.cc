@@ -149,6 +149,7 @@ TEST(ContactFailure, Default_IsNoneWithZeroContext) {
   EXPECT_EQ(failure.error, ContactError::kNone);
   EXPECT_EQ(failure.close_call, ContactCloseCall::kNone);
   EXPECT_FALSE(failure.has_particle_id);
+  EXPECT_FALSE(failure.can_shorter_step_cure);
   EXPECT_EQ(failure.particle_id, 0U);
   EXPECT_EQ(failure.solid_id, 0U);
   EXPECT_EQ(failure.magnitude, 0.0);

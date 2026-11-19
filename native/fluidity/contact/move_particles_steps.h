@@ -124,6 +124,7 @@ CheckParticleSpeeds(const MoveParticlesCall& call, std::size_t index, ContactFai
   failure->error = ContactError::kBadInput;
   failure->close_call = ContactCloseCall::kNone;
   failure->has_particle_id = true;
+  failure->can_shorter_step_cure = false;
   failure->particle_id = call.particle_id[index];
   failure->solid_id = 0;
   failure->magnitude = is_next_step_too_fast ? next_step_speed_sum : this_step_speed_sum;
@@ -176,6 +177,7 @@ CheckParticleCoordinates(const MoveParticlesCall& call, std::size_t index, Conta
   failure->error = ContactError::kBadInput;
   failure->close_call = ContactCloseCall::kNone;
   failure->has_particle_id = true;
+  failure->can_shorter_step_cure = false;
   failure->particle_id = call.particle_id[index];
   failure->solid_id = 0;
   failure->magnitude = largest_extent;

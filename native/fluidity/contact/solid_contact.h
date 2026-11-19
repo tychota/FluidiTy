@@ -329,24 +329,27 @@ FLUIDITY_CPU_AND_GPU inline ContactError FindFirstHit(
 //                             higher index when one response pushes both), kEndsTooCloseToSolid (the end check),
 //                             kSlowApproachToTurningSolid (passed on from the sweep, with that turning solid's id), or
 //                             kTurningSolidNearOtherSolid (another solid within the carry's closing bound after a hit
-//                             on a turning solid, naming the turning solid; a shorter step shortens the bound). The
-//                             step module shortens the step and tries again, which helps when the failure comes from
-//                             the sweeps.
-//        Failures a shorter step cannot fix: the scene errors kOnWrongSideOfPlate, kStartsInsideSolid and
-//        kStartsInNarrowGap; the close calls that the start alone decides: two reacting solids pushed by the start's
-//        response, and a start within tol of a turning solid and of another solid (kTurningSolidNearOtherSolid at every
-//        step length, as at the seam of two flush boxes that turn together: a turning solid has no bounding surface,
-//        plan decision P21, item 10); more than 8 directions or 16 surfaces active at once; a particle in the crease of
-//        two reacting solids that pushes into both (a question for the owner under P5); and the squeezes that the
-//        geometry and the speeds decide, solids closing on the particle or an escape above the speed cap (one face
-//        closing on a fixed one at under 0.8953 degrees, two at under 1.7906). A particle that zig-zags into the neck
-//        of two touching balls can need a step shortened in proportion to Sqrt(R tol) / speed to keep within four hits,
-//        and four moving faces within a few tol of each other but not at one rest point are met one after the other (13
-//        of 283,929 such corners fail at every step length). The step module decides what a squeeze that lasts does.
-//        Only the squeeze whose rounding over the time left is too large is cured by a shorter step. On failure *result
-//        is unchanged. When failure is not null, *failure is always written: ContactFailure{} on success; on failure
-//        the error, the close call, the solid's solid_id (never its index) and the magnitude of plan decision P6.
-//        particle_id stays 0.
+//                             on a turning solid, naming the turning solid; a shorter step shortens the bound).
+//        Whether a shorter step can cure the failure is *failure's can_shorter_step_cure (contact/contact_error.h has
+//        the rule): never for the scene errors kOnWrongSideOfPlate, kStartsInsideSolid and kStartsInNarrowGap, nor for
+//        kBadInput; for a close call, true when the hit that meets it comes after the start of the step, or its test
+//        reads the time left (the rounding over the time left, kMovesTooFastForStep, a hover, the end check, a
+//        turning solid near another solid farther than tol + tol / 16). A close call of a hit at the start that reads
+//        no time left recurs at every step length: two reacting solids pushed by the start's response (a crease of
+//        two driven boxes), a start within tol + tol / 16 of a turning solid and of another solid (the seam of two
+//        flush boxes that turn together, a paddle through the floor or on its shaft: a turning solid has no bounding
+//        surface, plan decision P21, item 10), more than 8 directions or 16 surfaces active at once, and the squeezes
+//        of solids that close on the particle or an escape above the speed cap (one face closing on a fixed one at
+//        under 0.8953 degrees, two at under 1.7906, a box driven down onto the floor). The same squeeze at a later hit
+//        is cured by a step that ends before it, and comes back at the start of a later step. A particle that
+//        zig-zags into the neck of two touching balls can need a step shortened in proportion to
+//        Sqrt(R tol) / speed to keep within four hits, and four moving faces within a few tol of each other but not
+//        at one rest point are met one after the other (13 of 283,929 such corners failed at every step length tried,
+//        a measurement made before can_shorter_step_cure existed). The step module decides what a failure that lasts
+//        does.
+//        On failure *result is unchanged. When failure is not null, *failure is always written: ContactFailure{} on
+//        success; on failure the error, the close call, can_shorter_step_cure, the solid's solid_id (never its index)
+//        and the magnitude of plan decision P6. particle_id stays 0.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <fig-sweep-hit-slide>, <sec-contact-response>,
 //       <sec-contact-tolerance>, <sec-round-solids>
 FLUIDITY_CPU_AND_GPU inline ContactError
@@ -405,8 +408,10 @@ MoveParticle(const SolidContactInputs& inputs, SolidContactResult* result, Conta
     if (error != ContactError::kNone) {
       move_failure.error = error;
       move_failure.close_call = close_call;
+      // A hover or a graze runs out of advances over the sweep's duration: a shorter sweep needs fewer.
       if (error == ContactError::kTooCloseToCall) {
         move_failure.solid_id = inputs.solids[first_hit.solid_index].solid_id;
+        move_failure.can_shorter_step_cure = true;
       }
       break;
     }

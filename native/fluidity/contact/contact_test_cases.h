@@ -20,10 +20,10 @@
 //
 // Owns:    kTestContactTolerance, ExpectVec3Near, CaseGenerator, MoveParticleCase, ToSolidContactInputs,
 //          BuildMoveParticleCases, FindMoveParticleCase, kFarFromOriginContactTolerance, BuildObliqueCases,
-//          BuildRoundCases, EndDistanceCounts, ComputeEndDistanceCounts
+//          BuildRoundCases, EndDistanceCounts, ComputeEndDistanceCounts, BuildShorterStepCase
 // Uses:    Vec3 (base/vec3.h), Mat3, kIdentity (base/mat3.h), CPU-only guard (base/cpu_only.h), Solid, ToSolid and
 //          the shape structs (contact/solid_shapes.h), SolidContactInputs (contact/solid_contact_types.h),
-//          ComputeContactTolerance (contact/contact_tolerance.h), MoveParticle and FindFirstHit
+//          ComputeContactScale, ComputeContactTolerance (contact/contact_tolerance.h), MoveParticle and FindFirstHit
 //          (contact/solid_contact.h), GoogleTest
 // Used by: the tests of contact/
 // Read:    docs/method-paper/fluidity-method.typ <sec-contact-tolerance>, <proc-move-particle>
@@ -3278,6 +3278,188 @@ inline EndDistanceCounts ComputeEndDistanceCounts(const std::vector<MoveParticle
     counts.naive_ends_inside += naive_end_distance < 0 ? 1 : 0;
   }
   return counts;
+}
+
+// The scenes of the close calls that a shorter step cures or does not cure (ContactFailure::can_shorter_step_cure),
+// each in two forms where it has both: touching at the start, where no shorter step cures it, and a millimetre away,
+// where a step that ends before the hit does. They are not in BuildMoveParticleCases, whose counts other tests print.
+// A domain box 2 m wide, from {-1, -1, 0} to {1, 1, 2}, its top open, with cells of 0.01 m. Each scene's contact
+// tolerance is ComputeContactTolerance for its solids over a step of 1 ms (about 1.18e-11 m), kept when a test
+// shortens the step. Friction 0 unless named.
+//   PaddleThroughBottomSideRestingOnIt         a box paddle 0.8 x 0.02 x 1 m turning at 2 rad/s about z, its
+//                                              lower end 1 cm below the bottom side; the particle at rest on the
+//                                              bottom side, at the rest gap of the paddle's face
+//   PaddleThroughBottomSideOneMillimetreAbove  the same, the particle 1 mm above the bottom side
+//   PaddleOnShaftInCrease         a shaft (cylinder of radius 5 cm) spinning at 2 rad/s and a paddle box turning with
+//                                 it; the particle at rest in their crease, at the rest gap of both
+//   DrivenBoxesInCrease           an L of two boxes moving together at {0.5, 0, 0.5} m/s, both with reports_reaction;
+//                                 the particle at rest in their crease, at the rest gap of both
+//   DrivenBoxesNearCrease         the same, the particle 1 mm from each box, over a step of 10 ms
+//   DescendingBoxAtBottomSide         a box moving down at 0.5 m/s, its bottom 2 tol above the bottom side; the
+//                                     particle at rest on the bottom side under it
+//   DescendingBoxClosingOnBottomSide  the same box 0.2 mm above the particle
+//   SeventeenFloorsAtStart        17 fixed flat solids through the origin with normal +z, friction scales 1 to 17 (so
+//                                 no two are copies), friction 0.5, contact tolerance 2^-30 m; the particle tol / 32
+//                                 beyond the rest gap, falling at 0.1 m/s for 10 ms: 17 active surfaces
+//   SeventeenFloorsBelowFalling   the same floors, the particle 1 mm above them, falling at 0.1 m/s for 0.1 s
+// Example: BuildShorterStepCase("DescendingBoxAtBottomSide") is the box of id 2 over the bottom side of the domain box,
+//   id 1.
+// Requires: name outlives the scene, which keeps it as its name.
+inline MoveParticleCase BuildShorterStepCase(std::string_view name) {
+  constexpr double kCellWidth = 0.01;  // m
+  constexpr double kStepDuration = 1e-3;  // s
+  const Solid domain_box = ToSolid(
+      DomainBox{.low_corner = {.x = -1, .y = -1, .z = 0}, .high_corner = {.x = 1, .y = 1, .z = 2}, .closed = {}},
+      1
+  );
+  const SolidMotion turning = {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 2}};
+  // The tolerance of a scene depends on its solids only, so it is found before the start that uses it.
+  const auto compute_tolerance = [&](const std::vector<Solid>& solids) -> double {
+    return ComputeContactTolerance(
+        ComputeContactScale(solids.data(), static_cast<std::uint32_t>(solids.size()), kStepDuration, kCellWidth)
+    );
+  };
+  const auto build_case = [&](std::vector<Solid> solids, move_particle_cases::CaseParticle particle) {
+    SolidContactInputs inputs = move_particle_cases::BuildCaseInputs(particle);
+    inputs.start_overlap_tolerance = 1e-4;
+    inputs.contact_tolerance = compute_tolerance(solids);
+    return MoveParticleCase{.name = name, .solids = std::move(solids), .inputs = inputs};
+  };
+  if (name == "PaddleThroughBottomSideRestingOnIt" || name == "PaddleThroughBottomSideOneMillimetreAbove") {
+    const std::vector<Solid> solids = {
+        domain_box,
+        ToSolid(
+            Box{.center = {.x = 0, .y = 0, .z = 0.49}, .axes = kIdentity, .half_size = {.x = 0.4, .y = 0.01, .z = 0.5}},
+            turning,
+            2
+        ),
+    };
+    const double tolerance = compute_tolerance(solids);  // m
+    const double height = name == "PaddleThroughBottomSideRestingOnIt" ? tolerance : 1e-3;  // m
+    const Vec3 gravity_step = {.x = 0, .y = 0, .z = -9.81 * kStepDuration};  // m/s
+    return build_case(
+        solids,
+        {
+            .start_position = {.x = 0.2, .y = 0.01 + tolerance, .z = height},
+            .velocity = gravity_step,
+            .step_duration = kStepDuration,
+        }
+    );
+  }
+  if (name == "PaddleOnShaftInCrease") {
+    const std::vector<Solid> solids = {
+        domain_box,
+        ToSolid(
+            Cylinder{
+                .center = {.x = 0, .y = 0, .z = 1},
+                .axis = {.x = 0, .y = 0, .z = 1},
+                .radius = 0.05,
+                .half_height = 0.8,
+            },
+            turning,
+            2
+        ),
+        ToSolid(
+            Box{.center = {.x = 0.2, .y = 0, .z = 1}, .axes = kIdentity, .half_size = {.x = 0.2, .y = 0.01, .z = 0.3}},
+            {.linear_velocity = {.x = 0, .y = 0.4, .z = 0}, .angular_velocity = {.x = 0, .y = 0, .z = 2}},
+            3
+        ),
+    };
+    const double tolerance = compute_tolerance(solids);  // m
+    const double crease_y = 0.01 + tolerance;  // m
+    const double crease_x = std::sqrt(((0.05 + tolerance) * (0.05 + tolerance)) - (crease_y * crease_y));  // m
+    return build_case(
+        solids,
+        {.start_position = {.x = crease_x, .y = crease_y, .z = 1}, .velocity = {}, .step_duration = kStepDuration}
+    );
+  }
+  if (name == "DrivenBoxesInCrease" || name == "DrivenBoxesNearCrease") {
+    const SolidMotion driven = {.linear_velocity = {.x = 0.5, .y = 0, .z = 0.5}, .angular_velocity = {}};
+    std::vector<Solid> solids = {
+        domain_box,
+        ToSolid(
+            Box{.center = {.x = 0, .y = 0, .z = 1}, .axes = kIdentity, .half_size = {.x = 0.3, .y = 0.3, .z = 0.05}},
+            driven,
+            2
+        ),
+        ToSolid(
+            Box{
+                .center = {.x = -0.35, .y = 0, .z = 1.2},
+                .axes = kIdentity,
+                .half_size = {.x = 0.05, .y = 0.3, .z = 0.25},
+            },
+            driven,
+            3
+        ),
+    };
+    solids[1].reports_reaction = true;
+    solids[2].reports_reaction = true;
+    const double tolerance = compute_tolerance(solids);  // m
+    if (name == "DrivenBoxesInCrease") {
+      return build_case(
+          solids,
+          {
+              .start_position = {.x = -0.3 + tolerance, .y = 0, .z = 1.05 + tolerance},
+              .velocity = {},
+              .step_duration = kStepDuration,
+          }
+      );
+    }
+    return build_case(
+        solids,
+        {
+            .start_position = {.x = -0.3 + 1e-3, .y = 0, .z = 1.05 + 1e-3},
+            .velocity = {},
+            .step_duration = 10 * kStepDuration,
+        }
+    );
+  }
+  if (name == "DescendingBoxAtBottomSide" || name == "DescendingBoxClosingOnBottomSide") {
+    const SolidMotion down = {.linear_velocity = {.x = 0, .y = 0, .z = -0.5}, .angular_velocity = {}};
+    const Box descending = {
+        .center = {.x = 0, .y = 0, .z = 0.1002},
+        .axes = kIdentity,
+        .half_size = {.x = 0.3, .y = 0.3, .z = 0.1},
+    };
+    const double tolerance = compute_tolerance({domain_box, ToSolid(descending, down, 2)});  // m
+    Box placed = descending;
+    if (name == "DescendingBoxAtBottomSide") {
+      placed.center.z = 0.1 + 2 * tolerance;
+    }
+    MoveParticleCase scene = build_case(
+        {domain_box, ToSolid(placed, down, 2)},
+        {.start_position = {.x = 0, .y = 0, .z = tolerance}, .velocity = {}, .step_duration = kStepDuration}
+    );
+    scene.inputs.contact_tolerance = tolerance;
+    return scene;
+  }
+  if (name == "SeventeenFloorsAtStart" || name == "SeventeenFloorsBelowFalling") {
+    std::vector<Solid> floors;
+    for (std::uint32_t floor_id = 1; floor_id <= 17; ++floor_id) {
+      Solid floor = ToSolid(
+          FlatSolid{.point_on_surface = {}, .normal_out_of_solid = {.x = 0, .y = 0, .z = 1}},
+          SolidMotion(),
+          floor_id
+      );
+      floor.friction_scale = floor_id;
+      floors.push_back(floor);
+    }
+    const bool is_at_start = name == "SeventeenFloorsAtStart";
+    const double height = is_at_start ? kTestContactTolerance + (kTestContactTolerance / 32) : 1e-3;  // m
+    MoveParticleCase scene = build_case(
+        floors,
+        {
+            .start_position = {.x = 0, .y = 0, .z = height},
+            .velocity = {.x = 0, .y = 0, .z = -0.1},
+            .step_duration = is_at_start ? 10 * kStepDuration : 100 * kStepDuration,
+            .friction = 0.5,
+        }
+    );
+    scene.inputs.contact_tolerance = kTestContactTolerance;
+    return scene;
+  }
+  ADD_FAILURE() << "no shorter-step case named " << name;
+  return {};
 }
 
 }  // namespace fluidity::contact

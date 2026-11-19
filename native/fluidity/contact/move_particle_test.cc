@@ -177,6 +177,7 @@ void ExpectUntouched(const SolidContactResult& result) {
 void ExpectFailure(const ContactFailure& actual, ContactFailure expected) {
   EXPECT_EQ(actual.error, expected.error);
   EXPECT_EQ(actual.close_call, expected.close_call);
+  EXPECT_EQ(actual.can_shorter_step_cure, expected.can_shorter_step_cure);
   EXPECT_EQ(actual.particle_id, expected.particle_id);
   EXPECT_EQ(actual.solid_id, expected.solid_id);
   EXPECT_EQ(actual.magnitude, expected.magnitude);
@@ -197,11 +198,30 @@ void ExpectNoReaction(const SolidReaction& reaction) {
   ExpectVec3Equal(reaction.velocity_for_next_step_change, {});
 }
 
+// Whether a shorter step can cure a close call (ContactFailure::can_shorter_step_cure), as a test expects it.
+enum class ShorterStep : std::uint8_t {
+  kDoesNotCure,  // Decided at the start of the step: the same close call at every step length.
+  kCures,  // A hit after the start, or a test that reads the time left.
+};
+
 // Fails the calling test unless the call failed with kTooCloseToCall and the close call, naming solid_id, magnitude 0,
-// and left the result unchanged.
-void ExpectCloseCall(const MoveParticleCall& call, ContactCloseCall close_call, std::uint32_t solid_id) {
+// with can_shorter_step_cure as shorter_step says, and left the result unchanged.
+void ExpectCloseCall(
+    const MoveParticleCall& call,
+    ContactCloseCall close_call,
+    std::uint32_t solid_id,
+    ShorterStep shorter_step
+) {
   EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
-  ExpectFailure(call.failure, {.error = ContactError::kTooCloseToCall, .close_call = close_call, .solid_id = solid_id});
+  ExpectFailure(
+      call.failure,
+      {
+          .error = ContactError::kTooCloseToCall,
+          .close_call = close_call,
+          .can_shorter_step_cure = shorter_step == ShorterStep::kCures,
+          .solid_id = solid_id,
+      }
+  );
   ExpectUntouched(call.result);
 }
 
@@ -439,7 +459,12 @@ TEST(MoveParticle, OctagonRoom_FifthHitIsTooManyHits) {
   EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
   ExpectFailure(
       call.failure,
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kTooManyHits, .solid_id = 5}
+      {
+          .error = ContactError::kTooCloseToCall,
+          .close_call = ContactCloseCall::kTooManyHits,
+          .can_shorter_step_cure = true,
+          .solid_id = 5,
+      }
   );
   ExpectUntouched(call.result);
 }
@@ -566,7 +591,12 @@ TEST(MoveParticle, TurningBoxHitsRestingParticle_EndsOnFaceAtEndPose) {
 TEST(MoveParticle, TurningBoxNearFloor_IsTurningSolidNearOtherSolid) {
   // The same hit with a fixed floor 0.05 m below the particle: in the 0.1143 s left the floor is within the carry's
   // closing bound (plan decision P7), so the step is too close to call, naming the turning box.
-  ExpectCloseCall(RunMove("TurningBoxNearFloor"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  ExpectCloseCall(
+      RunMove("TurningBoxNearFloor"),
+      ContactCloseCall::kTurningSolidNearOtherSolid,
+      1,
+      ShorterStep::kCures
+  );
 }
 
 TEST(MoveParticle, TurningBoxSlide_KeepsSidewaysPartInSolidAxes) {
@@ -871,7 +901,12 @@ TEST(MoveParticle, RestingOnTurningBoxNearFloor_StepLengthDecidesCloseCall) {
   // passes 0.05 - tol from T = 0.0426415 s (with the axes of the hit the carry would give 0.0426373 s). T 0.1:
   // 0.1172 m, too close to call. T 0.04: 0.0469 m, a carry that ends at the rest gap of the box at its end pose, at the
   // same height above the floor.
-  ExpectCloseCall(RunMove("RestingOnTurningBoxNearFloor"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  ExpectCloseCall(
+      RunMove("RestingOnTurningBoxNearFloor"),
+      ContactCloseCall::kTurningSolidNearOtherSolid,
+      1,
+      ShorterStep::kCures
+  );
   const MoveParticleCase scene = BuildSceneFrom(
       "RestingOnTurningBoxNearFloor",
       {.position = {.x = 0.5 + kTolerance, .y = 0, .z = -0.45}, .velocity = {}, .step_duration = 0.04}
@@ -903,7 +938,7 @@ TEST(MoveParticle, RestingOnTurningBoxNearMovingFloor_FloorMotionAddsToClosingBo
   for (const SolidMotion& floor_motion : floor_motions) {
     MoveParticleCase moving_floor_scene = scene;
     moving_floor_scene.solids.at(1).motion = floor_motion;
-    ExpectCloseCall(RunMove(moving_floor_scene), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+    ExpectCloseCall(RunMove(moving_floor_scene), ContactCloseCall::kTurningSolidNearOtherSolid, 1, ShorterStep::kCures);
   }
 }
 
@@ -963,7 +998,7 @@ TEST(MoveParticle, TurningBoxWithFixedBoxInItsPlace_IsTurningSolidNearOtherSolid
   fixed_box.solid_id = 2;
   fixed_box.motion = kNoMotion;
   scene.solids.push_back(fixed_box);
-  ExpectCloseCall(RunMove(scene), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  ExpectCloseCall(RunMove(scene), ContactCloseCall::kTurningSolidNearOtherSolid, 1, ShorterStep::kCures);
 }
 
 TEST(MoveParticle, StartInsideFloorThenTurningBox_SecondHitHasItsResponse) {
@@ -1063,7 +1098,12 @@ TEST(MoveParticle, TurningStackedBoxes_SeamIsNearOtherSolid) {
   // its carry for 1 s could reach the lower one: too close to call. A step of 0.1 s keeps the lower box beyond the
   // closing bound, and the carry stays on the upper box. At the seam, within tol of both, every step length is too
   // close to call.
-  ExpectCloseCall(RunMove("TurningStackedBoxes"), ContactCloseCall::kTurningSolidNearOtherSolid, 1);
+  ExpectCloseCall(
+      RunMove("TurningStackedBoxes"),
+      ContactCloseCall::kTurningSolidNearOtherSolid,
+      1,
+      ShorterStep::kCures
+  );
   const MoveParticleCall short_step = RunMoveWith(
       "TurningStackedBoxes",
       {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 1.8}, .velocity = -kUnitZ, .step_duration = 0.1}
@@ -1078,7 +1118,8 @@ TEST(MoveParticle, TurningStackedBoxes_SeamIsNearOtherSolid) {
             {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 1}, .velocity = -kUnitZ, .step_duration = step_duration}
         ),
         ContactCloseCall::kTurningSolidNearOtherSolid,
-        1
+        1,
+        ShorterStep::kDoesNotCure
     );
   }
 }
@@ -1161,7 +1202,12 @@ TEST(MoveParticle, TwoReactingSolids_IsSecondReactingSolid) {
   EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
   ExpectFailure(
       call.failure,
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kSecondReactingSolid, .solid_id = 2}
+      {
+          .error = ContactError::kTooCloseToCall,
+          .close_call = ContactCloseCall::kSecondReactingSolid,
+          .can_shorter_step_cure = true,
+          .solid_id = 2,
+      }
   );
   ExpectUntouched(call.result);
 }
@@ -1247,7 +1293,12 @@ TEST(MoveParticle, CeilingClosingFasterThanParticleLeaves_IsSqueezedBetweenSolid
   // sticks to the ceiling, the surface it approaches fastest, which still approaches the floor: a squeeze naming the
   // floor, the solid the stuck velocity approaches fastest (the record is the ceiling's). Before the floor was read at
   // the hit, its touching rule let the particle sink to z = 0.25 tol, and the end check failed (kEndsTooCloseToSolid).
-  ExpectCloseCall(RunMove("CeilingClosingFasterThanParticleLeaves"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(
+      RunMove("CeilingClosingFasterThanParticleLeaves"),
+      ContactCloseCall::kSqueezedBetweenSolids,
+      1,
+      ShorterStep::kCures
+  );
 }
 
 // A particle 2 tol above the fixed floor (id 1), falling at `speed_share` times the speed whose response bound reaches
@@ -1270,7 +1321,12 @@ MoveParticleCase BuildFallingAtShareOfSpeedBound(double speed_share) {
 TEST(MoveParticle, FallingAboveSpeedBound_IsMovesTooFastForStepNamingFloor) {
   // One active surface: the response's allowance times the time left above tol / 64 is a close call, checked in every
   // build, naming that surface's solid. A shorter step cures it.
-  ExpectCloseCall(RunMove(BuildFallingAtShareOfSpeedBound(1.01)), ContactCloseCall::kMovesTooFastForStep, 1);
+  ExpectCloseCall(
+      RunMove(BuildFallingAtShareOfSpeedBound(1.01)),
+      ContactCloseCall::kMovesTooFastForStep,
+      1,
+      ShorterStep::kCures
+  );
 }
 
 TEST(MoveParticle, FallingBelowSpeedBound_HitsAndStops) {
@@ -1289,6 +1345,7 @@ TEST(MoveParticle, TurningBoxHoverOnSpinAxis_PassesOnCloseCall) {
       {
           .error = ContactError::kTooCloseToCall,
           .close_call = ContactCloseCall::kSlowApproachToTurningSolid,
+          .can_shorter_step_cure = true,
           .solid_id = 1,
       }
   );
@@ -1616,7 +1673,12 @@ TEST(MoveParticle, CornerWithinTolerance_OneHitOverBothSolids) {
 TEST(MoveParticle, TwoReactingSolidsWithinTolerance_IsSecondReactingSolid) {
   ExpectStartFailure(
       "TwoReactingSolidsWithinTolerance",
-      {.error = ContactError::kTooCloseToCall, .close_call = ContactCloseCall::kSecondReactingSolid, .solid_id = 2}
+      {
+          .error = ContactError::kTooCloseToCall,
+          .close_call = ContactCloseCall::kSecondReactingSolid,
+          .can_shorter_step_cure = false,
+          .solid_id = 2,
+      }
   );
 }
 
@@ -2440,7 +2502,12 @@ TEST(MoveParticle, CornerPushOnSecondReactingSolid_IsSecondReactingSolid) {
   // The floor and the side are both active at the start: one joint response pushes both, two reacting solids, and the
   // charges, in ascending solid index, fail at the side, the higher index, id 2. Without the side reacting: one hit,
   // and the floor is charged its push {0, 0, 2 + 1 / Sqrt(3)}.
-  ExpectCloseCall(RunMove("CornerPushOnSecondReactingSolid"), ContactCloseCall::kSecondReactingSolid, 2);
+  ExpectCloseCall(
+      RunMove("CornerPushOnSecondReactingSolid"),
+      ContactCloseCall::kSecondReactingSolid,
+      2,
+      ShorterStep::kDoesNotCure
+  );
   const MoveParticleCall call = RunMove("CornerPushOnNonReactingSide");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
@@ -4006,7 +4073,12 @@ TEST(MoveParticle, FloorRisingFastUnderSixtyDegreeWall_EscapeTooFastForStepIsCur
   // speeds it involves, times the 1 s left is above tol / 64: kSqueezedBetweenSolids naming the rising floor, the
   // solid the particle approaches fastest. In a step of 0.25 s it is carried out, one hit; the solver's rounding at
   // 577 m/s leaves the velocity within 1e-15 of that speed of the closed form.
-  ExpectCloseCall(RunMove("FloorRisingFastUnderSixtyDegreeWall"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(
+      RunMove("FloorRisingFastUnderSixtyDegreeWall"),
+      ContactCloseCall::kSqueezedBetweenSolids,
+      1,
+      ShorterStep::kCures
+  );
   MoveParticleCase shorter = FindMoveParticleCase("FloorRisingFastUnderSixtyDegreeWall");
   shorter.inputs.step_duration = 0.25;
   const MoveParticleCall call = RunMove(shorter);
@@ -4040,14 +4112,19 @@ TEST(MoveParticle, OneFaceClosingAtPointEightDegrees_IsSqueezedBetweenSolids) {
   // particle approaches fastest. A step ten times shorter does not cure it. The limit is the closed form
   // asin(1 / 64) = 0.8953 degrees: 0.89 is squeezed (64.38 m/s), 0.90 carried out (63.6646 m/s), since the cap reads
   // the speeds before the response.
-  ExpectCloseCall(RunMove("OneFaceClosingAtPointEightDegrees"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(
+      RunMove("OneFaceClosingAtPointEightDegrees"),
+      ContactCloseCall::kSqueezedBetweenSolids,
+      1,
+      ShorterStep::kDoesNotCure
+  );
   MoveParticleCase shorter = FindMoveParticleCase("OneFaceClosingAtPointEightDegrees");
   shorter.inputs.step_duration = 0.001;
-  ExpectCloseCall(RunMove(shorter), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(RunMove(shorter), ContactCloseCall::kSqueezedBetweenSolids, 1, ShorterStep::kDoesNotCure);
   const double degree = std::numbers::pi / 180;  // rad
   const MoveParticleCase below_limit =
       move_particle_cases::BuildClosingWedgeCase("OneFaceClosingAtPointEightNineDegrees", 0.89 * degree, 1, 0);
-  ExpectCloseCall(RunMove(below_limit), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(RunMove(below_limit), ContactCloseCall::kSqueezedBetweenSolids, 1, ShorterStep::kDoesNotCure);
   const MoveParticleCase above_limit =
       move_particle_cases::BuildClosingWedgeCase("OneFaceClosingAtPointNineDegrees", 0.9 * degree, 1, 0);
   const MoveParticleCall call = RunMove(above_limit);
@@ -4064,11 +4141,16 @@ TEST(MoveParticle, TwoFacesClosingSymmetrically_CapAtOnePointSevenNineDegrees) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_NEAR(math::Length(call.result.velocity.for_this_step), 1 / std::sin(std::numbers::pi / 180), 1e-9);
-  ExpectCloseCall(RunMove("TwoFacesClosingAtOnePointSixDegrees"), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(
+      RunMove("TwoFacesClosingAtOnePointSixDegrees"),
+      ContactCloseCall::kSqueezedBetweenSolids,
+      1,
+      ShorterStep::kDoesNotCure
+  );
   const double degree = std::numbers::pi / 180;  // rad
   const MoveParticleCase below_limit =
       move_particle_cases::BuildClosingWedgeCase("TwoFacesClosingAtOnePointSevenNineDegrees", 1.79 * degree, 1, 1);
-  ExpectCloseCall(RunMove(below_limit), ContactCloseCall::kSqueezedBetweenSolids, 1);
+  ExpectCloseCall(RunMove(below_limit), ContactCloseCall::kSqueezedBetweenSolids, 1, ShorterStep::kDoesNotCure);
   const MoveParticleCase above_limit =
       move_particle_cases::BuildClosingWedgeCase("TwoFacesClosingAtOnePointEightDegrees", 1.8 * degree, 1, 1);
   const MoveParticleCall above_call = RunMove(above_limit);
@@ -4076,13 +4158,15 @@ TEST(MoveParticle, TwoFacesClosingSymmetrically_CapAtOnePointSevenNineDegrees) {
   EXPECT_NEAR(math::Length(above_call.result.velocity.for_this_step), 1 / std::sin(0.9 * degree), 1e-9);
 }
 
-TEST(MoveParticle, GrazingWedgeClosingFast_IsSqueezedAtEveryStepLength) {
+TEST(MoveParticle, GrazingWedgeClosingFast_IsSqueezedAtStepsDownToOneMillisecond) {
   // The escape would be 1 / tan(1e-5) = 1e5 m/s: before the cap the model launched the particle 1 km in a step of
-  // 0.01 s. Squeezed at 0.1, 0.01 and 0.001 s, naming the side, the solid the particle approaches fastest.
+  // 0.01 s. Squeezed at 0.1, 0.01 and 0.001 s, naming the side, the solid the particle approaches fastest. The squeeze
+  // comes at a hit after the start of the step, so a step that ends before it cures it: 2^-26 of 0.1 s does
+  // (EveryCatalogueFailure_ShorterStepCuresExactlyWhenFlagSays).
   for (const double step_duration : {0.1, 0.01, 0.001}) {
     MoveParticleCase scene = FindMoveParticleCase("GrazingWedgeClosingFast");
     scene.inputs.step_duration = step_duration;
-    ExpectCloseCall(RunMove(scene), ContactCloseCall::kSqueezedBetweenSolids, 2);
+    ExpectCloseCall(RunMove(scene), ContactCloseCall::kSqueezedBetweenSolids, 2, ShorterStep::kCures);
   }
 }
 
@@ -4102,7 +4186,7 @@ TEST(MoveParticle, ClosingCeiling_IsSqueezedBetweenSolids) {
   // The ceiling reaches the particle at 0.05 - tol s and carries it down onto the floor, hit at 0.1 - 2 tol s, the
   // record of that hit; there the two close at 1 m/s and no velocity approaches neither. The particle sticks to the
   // ceiling, the solid it approaches fastest, which still approaches the floor: squeezed, naming the ceiling, id 2.
-  ExpectCloseCall(RunMove("ClosingCeiling"), ContactCloseCall::kSqueezedBetweenSolids, 2);
+  ExpectCloseCall(RunMove("ClosingCeiling"), ContactCloseCall::kSqueezedBetweenSolids, 2, ShorterStep::kCures);
 }
 
 // --- The slide: scenes of a first outside check ---
@@ -4870,8 +4954,18 @@ TEST(MoveParticle, TwoReactingSolidsInCrease_IsSecondReactingSolid) {
   Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 2);
   floor.reports_reaction = true;
   side.reports_reaction = true;
-  ExpectCloseCall(RunMove(BuildOrderedScene({floor, side}, inputs)), ContactCloseCall::kSecondReactingSolid, 2);
-  ExpectCloseCall(RunMove(BuildOrderedScene({side, floor}, inputs)), ContactCloseCall::kSecondReactingSolid, 2);
+  ExpectCloseCall(
+      RunMove(BuildOrderedScene({floor, side}, inputs)),
+      ContactCloseCall::kSecondReactingSolid,
+      2,
+      ShorterStep::kDoesNotCure
+  );
+  ExpectCloseCall(
+      RunMove(BuildOrderedScene({side, floor}, inputs)),
+      ContactCloseCall::kSecondReactingSolid,
+      2,
+      ShorterStep::kDoesNotCure
+  );
   side.reports_reaction = false;
   const MoveParticleCall call = RunMove(BuildOrderedScene({floor, side}, inputs));
   ASSERT_EQ(call.error, ContactError::kNone);
@@ -6751,10 +6845,33 @@ struct TangentSlideCounts {
   int other_failures = 0;
 };
 
+// Fails the calling test unless a squeeze of the tangent slides keeps to its can_shorter_step_cure: one at the start
+// comes back at a sixteenth of the step, still false; one at a later hit is cured by a step that ends before it, within
+// 40 halvings.
+void ExpectTangentSqueezeKeepsToFlag(SolidContactInputs inputs, const ContactFailure& failure) {
+  SolidContactResult result;
+  ContactFailure shorter_failure;
+  if (!failure.can_shorter_step_cure) {
+    inputs.step_duration = inputs.step_duration / 16;
+    EXPECT_EQ(MoveParticle(inputs, &result, &shorter_failure), ContactError::kTooCloseToCall);
+    EXPECT_EQ(shorter_failure.close_call, ContactCloseCall::kSqueezedBetweenSolids);
+    EXPECT_FALSE(shorter_failure.can_shorter_step_cure);
+    return;
+  }
+  bool is_cured = false;
+  for (int halving_count = 1; halving_count <= 40 && !is_cured; ++halving_count) {
+    inputs.step_duration = inputs.step_duration / 2;
+    is_cured = MoveParticle(inputs, &result, &shorter_failure) == ContactError::kNone;
+  }
+  EXPECT_TRUE(is_cured);
+}
+
 // Runs MoveParticle on one tangent slide and counts it: a success ends at least tol / 2 from every solid. A failure may
-// only be kTooManyHits, run again with the step halved up to eight times (1/256) until one succeeds, or
-// kSqueezedBetweenSolids where the ball closes on the other solid (a ball sinking into a floor): the speed cap's
-// squeeze, which the geometry decides and a shorter step does not cure (plan decision P19, item 6).
+// only be kTooManyHits, which a shorter step cures (can_shorter_step_cure), run again with the step halved up to eight
+// times (1/256) until one succeeds, or kSqueezedBetweenSolids where the ball closes on the other solid (a ball sinking
+// into a floor): the speed cap's squeeze, which the geometry decides (plan decision P19, item 6): at every step length
+// when the start's response meets it, and until a step ends before the hit when a later hit does
+// (ExpectTangentSqueezeKeepsToFlag).
 void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSlideCounts& counts) {
   SolidContactInputs inputs = start.inputs;
   SolidContactResult result;
@@ -6769,6 +6886,7 @@ void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSli
   const Vec3 closing_velocity = start.solids.at(1).motion.linear_velocity - start.solids.at(0).motion.linear_velocity;
   const bool is_ball_closing = math::Dot(closing_velocity, start.contact_normal) < 0;
   if (is_close_call && failure.close_call == ContactCloseCall::kSqueezedBetweenSolids && is_ball_closing) {
+    ExpectTangentSqueezeKeepsToFlag(inputs, failure);
     ++counts.squeezed;
     return;
   }
@@ -6779,6 +6897,7 @@ void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSli
     return;
   }
   ++counts.too_many_hits;
+  EXPECT_TRUE(failure.can_shorter_step_cure);
   int halving_count = 1;
   for (; halving_count <= 8; ++halving_count) {
     inputs.step_duration = inputs.step_duration / 2;

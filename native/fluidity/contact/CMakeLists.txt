@@ -34,6 +34,7 @@ if(TARGET move_particle_left_out_test)
   target_compile_definitions(move_particle_left_out_test PRIVATE FLUIDITY_COUNT_SOLID_READS)
 endif()
 fluidity_add_test(move_particle_tolerance_test SOURCES move_particle_tolerance_test.cc LABEL cpu)
+fluidity_add_test(move_particle_shorter_step_test SOURCES move_particle_shorter_step_test.cc LABEL cpu)
 fluidity_add_test(round_solid_hit_rounding_test SOURCES round_solid_hit_rounding_test.cc LABEL cpu)
 # Its two generated sets compare 20,000 paths with a double-double reference that searches 160 times per path: about
 # 11 s unoptimised. -O1 in a debug build keeps every assert and every IEEE result (no fast math, no contraction) and

@@ -221,8 +221,9 @@ int CheckGpuHalfSameAsCpuLoop(const ParticleRange& range) {
 // Whether two failures are the same field by field, the magnitude by its bits.
 bool IsSameFailure(const ContactFailure& first, const ContactFailure& second) {
   return first.error == second.error && first.close_call == second.close_call
-      && first.has_particle_id == second.has_particle_id && first.particle_id == second.particle_id
-      && first.solid_id == second.solid_id && ToBits(first.magnitude) == ToBits(second.magnitude);
+      && first.has_particle_id == second.has_particle_id && first.can_shorter_step_cure == second.can_shorter_step_cure
+      && first.particle_id == second.particle_id && first.solid_id == second.solid_id
+      && ToBits(first.magnitude) == ToBits(second.magnitude);
 }
 
 // Checks that every answer reports `expected`.

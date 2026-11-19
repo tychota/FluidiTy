@@ -4,13 +4,15 @@
 //   carries both with the particle and the solid they are about.
 //
 // Idea: contact either moves a particle safely or says why it cannot. A failure is a ContactError. The most common
-//   one, kTooCloseToCall, means the answer for this step length is not safe, so the step is shortened and tried
-//   again. A close call is the reason behind it. ContactFailure holds both, plus the ids and one length. It is a
-//   plain struct that never allocates, so GPU code can fill it. The text of each value is in
-//   contact/contact_error_message.h, which only the CPU may include.
+//   one, kTooCloseToCall, means the answer for this step length is not safe. A close call is the reason behind it.
+//   Some close calls are cured by a shorter step and some are not: a particle squeezed between two solids that
+//   already touch it at the start of the step is squeezed at every step length. ContactFailure says which in
+//   can_shorter_step_cure, so the step shortens the step only when that can help. ContactFailure holds the error, the
+//   close call, that flag, the ids and one length. It is a plain struct that never allocates, so GPU code can fill it.
+//   The text of each value is in contact/contact_error_message.h, which only the CPU may include.
 //
 // Words:
-//   close call  a step that contact cannot answer safely; the step is shortened and tried again
+//   close call  a step that contact cannot answer safely at this step length; a shorter step may cure it or not
 // Owns:    ContactError, ContactCloseCall, ContactFailure
 // Uses:    nothing
 // Used by: every contact function that can fail, and the step, which maps a failure to a rejected try
@@ -28,7 +30,9 @@ enum class ContactError : std::uint8_t {
   kNone,  // No error. No function returns it as an error.
   kBadInput,  // A value is not finite or is out of range.
   kStartsInsideSolid,  // The start is deeper inside a solid than start_overlap_tolerance allows.
-  kTooCloseToCall,  // No safe answer for this step length. The caller should shorten the step.
+  // No safe answer for this step length. A shorter step may cure it; ContactFailure::can_shorter_step_cure says
+  // whether.
+  kTooCloseToCall,
   kOnWrongSideOfPlate,  // The start is on the other side of the plate the particle is committed to.
   kSolidTooThin,  // A solid is thinner, or a cell narrower, than 1024 contact tolerances.
   kBuffersTooSmall,  // More particles or solids than the contact buffers were built for.
@@ -75,16 +79,38 @@ struct ContactFailure {
   // The failure is about one particle, named by particle_id. false for a failure of a whole call or of one move of
   // MoveParticle, which knows no id; particle_id is then 0, which is also a valid id, so this flag tells them apart.
   bool has_particle_id = false;
+  // A shorter step can cure the failure: the same inputs with a shorter step_duration may succeed. true only for
+  // kTooCloseToCall, and only when what failed comes after the start of the step or reads the time left:
+  //   true   a hit after the start (elapsed > 0) and whatever its response meets: a fifth hit, a squeeze, too many
+  //          surfaces or directions, a second reacting solid, a turning solid near another solid; a step that ends
+  //          before that hit does not meet it. At any moment: the rounding of a response over the time left
+  //          (kMovesTooFastForStep, and kSqueezedBetweenSolids with several surfaces), a turning solid near another
+  //          solid that is farther than the active window tol + tol / 16 (the closing bound shrinks with the time
+  //          left), a hover near a turning solid (kSlowApproachToTurningSolid), the end check (kEndsTooCloseToSolid)
+  //          and a solid that turns too far (kSolidTurnsTooFar).
+  //   false  every error but kTooCloseToCall, and the close calls of a hit at the start of the step (elapsed 0)
+  //          whose test does not read the time left: solids that close on the particle or an escape above the speed
+  //          cap (kSqueezedBetweenSolids), more than 8 directions or 16 surfaces or a fifth hit (kTooManyHits), two
+  //          reacting solids pushed by one response (kSecondReactingSolid), and a turning solid near another solid
+  //          within the active window (kTurningSolidNearOtherSolid). The start, the velocities and the poses of time 0
+  //          decide them, the same at every step length.
+  // true says a cure exists, not that one halving finds it: the step that cures can be as short as the moment of the
+  // hit (2^-26 of the step for the catalogue's GrazingWedgeClosingFast).
+  bool can_shorter_step_cure = false;
   std::uint64_t particle_id = 0;  // The particle's stable id when has_particle_id; 0 otherwise.
   std::uint32_t solid_id = 0;  // 0 when the failure is not about one solid.
   // m. The overlap depth or the offending length; the bytes asked for kOutOfMemory. 0 when not relevant.
   double magnitude = 0;
 };
 // The GPU writes one failure per particle and the CPU reads the reported one back byte for byte, so both compilers must
-// lay it out alike: error at 0, close_call at 1, has_particle_id at 2, particle_id at 8, solid_id at 16, magnitude at
-// 24.
+// lay it out alike: error at 0, close_call at 1, has_particle_id at 2, can_shorter_step_cure at 3, particle_id at 8,
+// solid_id at 16, magnitude at 24. Bytes 4 to 7 and 20 to 23 are padding.
 static_assert(sizeof(ContactFailure) == 32, "the contact buffers charge 32 bytes per failure");
 static_assert(offsetof(ContactFailure, has_particle_id) == 2, "the CPU and the GPU read one layout of ContactFailure");
+static_assert(
+    offsetof(ContactFailure, can_shorter_step_cure) == 3,
+    "the CPU and the GPU read one layout of ContactFailure"
+);
 static_assert(offsetof(ContactFailure, particle_id) == 8, "the CPU and the GPU read one layout of ContactFailure");
 static_assert(offsetof(ContactFailure, solid_id) == 16, "the CPU and the GPU read one layout of ContactFailure");
 static_assert(offsetof(ContactFailure, magnitude) == 24, "the CPU and the GPU read one layout of ContactFailure");

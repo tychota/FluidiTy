@@ -649,7 +649,11 @@ items with a smaller destination, so an empty group starts where the next one do
 A particle travels in a straight line during one step. When that line meets a solid, the particle must not go
 in. Contact moves one particle for one step and stops it at solid surfaces: it finds the first time the line meets
 a solid (the hit), removes the speed into the solid, takes away some sideways speed by friction, and spends the
-rest of the step sliding along the surface (the slide). The straight path of one step is the sweep.
+rest of the step sliding along the surface (the slide). The straight path of one step is the sweep. When contact
+cannot answer a step safely it fails with a close call. Some close calls are cured by a shorter step and some are not:
+a particle squeezed between solids that already touch it is squeezed at every step length. The failure's
+`can_shorter_step_cure` says which: true only for a close call met at a hit after the start of the step, which a step
+that ends before the hit does not meet, or whose test reads the time left.
 
 The same code moves particles of every material: liquids, snow, springy solids and gas markers. Only two values
 differ between them: the friction number and the plate side a particle may carry. The code has no case for one
@@ -1694,8 +1698,10 @@ faster than 64 times the largest speed involved (both velocities before the resp
 velocities) is a squeeze too: a wedge closing at speed $V$ pushes the particle out at $V \/ sin a$, unbounded as it
 flattens, so one face closing on a fixed one squeezes below $"asin"(1\/64) = 0.8953$ degrees and two faces closing
 symmetrically below $2 "asin"(1\/64) = 1.7906$ degrees, both closed forms, since the cap reads the speeds before any
-friction; the geometry and the speeds decide, so a shorter step does not help, and the step module decides what a
-lasting squeeze does. A squeeze names the solid the failing velocity approaches fastest. The response's bound,
+friction. The geometry and the speeds decide, so at a hit at the start of the step a shorter step does not help,
+and the step module decides what a lasting squeeze does; at a later hit a step that ends before it does, until the
+solids reach the particle at the start of a later step. A squeeze names the solid the failing velocity approaches
+fastest. The response's bound,
 $2^(-46) (|bold(v)|_1 + |bold(w)|_1 + sum_i |bold(u)_i|_1)$ for each change made, raises the move's bound of that
 velocity; with several active surfaces, a bound whose product with the time left exceeds $"tol" \/ 64$ is a squeeze
 too, too fast for the step, which a shorter step cures.
@@ -1769,7 +1775,10 @@ that touches its bottom, and a particle at rest on its side 0.05 m above the flo
 (0.5 + "tol") cos(t_"left"\/2)$ and $r = 0.6727$ m, so the test fails for $t_"left" >= 0.0426$ s: a step of 0.1 s is too
 close to call, one of 0.04 s carries. Known limit: two flush boxes turning together cannot be crossed at their seam,
 since a turning solid has no bounding surface and the carry sweeps nothing; within $"tol"$ of both, every step length is
-too close to call.
+too close to call. So is a particle resting on the floor against a paddle that turns through it, or in the crease of a
+paddle and its shaft. The failure says so: `can_shorter_step_cure` is false when the carry starts at the start of the
+step and the other solid is within the window $"tol" + "tol"\/16$, and true otherwise, since the bound shrinks with
+$t_"left"$.
 
 At the end the particle moves once more off every surface it is closer to than $"tol"$, at the end pose, as at the
 start: every solid, touched or not, since a move off the touched ones alone could push it into another (an upright

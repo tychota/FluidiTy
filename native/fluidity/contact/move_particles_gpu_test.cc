@@ -235,7 +235,8 @@ std::vector<LaunchSize> BuildLaunchSizes(std::size_t particle_count) {
   }
   const ContactFailure& actual = answer.first_failure;
   const bool is_same = actual.error == expected.error && actual.close_call == expected.close_call
-      && actual.has_particle_id == expected.has_particle_id && actual.particle_id == expected.particle_id
+      && actual.has_particle_id == expected.has_particle_id
+      && actual.can_shorter_step_cure == expected.can_shorter_step_cure && actual.particle_id == expected.particle_id
       && actual.solid_id == expected.solid_id && ToBits(actual.magnitude) == ToBits(expected.magnitude);
   if (!is_same) {
     return ::testing::AssertionFailure() << "reports particle " << actual.particle_id << ", magnitude "

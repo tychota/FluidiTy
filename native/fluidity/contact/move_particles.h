@@ -195,6 +195,9 @@ struct MovedParticles {
 //     (CheckParticleCoordinates), then MoveParticle, then its outputs at its index; a particle that fails writes
 //     nothing and the visits go on. The first failure in the order (particle_id, index) is kept, and the kinds are
 //     counted. On the CPU one loop in index order; on the GPU one thread per particle.
+//     The order ignores what failed, a known choice left to the step module: when particle 5 has a close call and
+//     particle 9 starts inside a solid, the call reports particle 5's close call, so a scene error can hide behind a
+//     close call. It shows only in a later try in which particle 5 moves.
 //   Same bits on CPU and GPU when every solid's angular velocity is zero (MoveParticle); with a turning or spinning
 //   solid the floating-point outputs are promised to agree within the bounds of method paper <sec-contact> (a quarter
 //   of tol for positions) and the discrete ones exactly; neither is measured on a GPU yet (docs/gpu-runs.md).
@@ -219,8 +222,9 @@ struct MovedParticles {
 //                          2^40 contact tolerances (CheckParticleCoordinates: magnitude that coordinate, m), or fails
 //                          MoveParticle with kBadInput.
 //        kTooCloseToCall   a solid turns more than kMaxTurnPerStep during the step (close_call kSolidTurnsTooFar, its
-//                          solid_id); or as MoveParticle for the first failing particle, kMovesTooFastForStep included.
-//                          The step shortens the step and tries again.
+//                          solid_id, can_shorter_step_cure true); or as MoveParticle for the first failing particle,
+//                          kMovesTooFastForStep included, with MoveParticle's can_shorter_step_cure: the step shortens
+//                          the step and tries again only when it is true.
 //        kStartsInsideSolid, kOnWrongSideOfPlate, kStartsInNarrowGap  as MoveParticle, for the first failing particle.
 //                          Scene errors; the step stops.
 //        kRunOnCallFailed  a call to the GPU failed; the run stops.

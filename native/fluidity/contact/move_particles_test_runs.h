@@ -602,6 +602,12 @@ inline void ApplyFailureDifferences(
       reference.has_particle_id ? 1 : 0,
       compared.has_particle_id ? 1 : 0
   );
+  ApplyIntegerDifference(
+      differences,
+      "failure.can_shorter_step_cure",
+      reference.can_shorter_step_cure ? 1 : 0,
+      compared.can_shorter_step_cure ? 1 : 0
+  );
   ApplyIntegerDifference(differences, "failure.particle_id", reference.particle_id, compared.particle_id);
   ApplyIntegerDifference(differences, "failure.solid_id", reference.solid_id, compared.solid_id);
   ApplyDoubleDifference(

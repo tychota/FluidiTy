@@ -158,7 +158,8 @@
 //          ComputeIsSameNormal, ApplyRestGapTarget, ComputeSweptGrowth, FindEarliestCrossing, ApplyCrossedSurfaces,
 //          RestGapTargets, BuildRestGapTargets, RestGapMove, NearSolids, FindNearSolids, ComputeMoveOffOneNearSolid,
 //          MoveToRestGapOfNearSurfaces, ActiveSurface, ActiveSurfaces, ComputeIsExactCopy, ComputeIsSortedBefore,
-//          ApplyActiveSurface, ApplyDirections, FindActiveSurfaces, ApplyCloseCall, JointTargets,
+//          ApplyActiveSurface, ApplyDirections, FindActiveSurfaces, ApplyCloseCall, ComputeCanShorterStepCureHitAt,
+//          JointTargets,
 //          ComputeIsPushingBefore, BuildJointTargets, ComputeFastestApproachedSolid, JointChange, ApplyCharge,
 //          JointFriction, ComputeFrictionStep, ComputeFrictionOrderMember, ComputeMeanOverOrders, ComputeJointFriction,
 //          ApplyStick, ApplySecondSolve, ComputeJointChange, ApplyJointCharges, ApplyJointResponse, ApplyHit,
@@ -2355,7 +2356,8 @@ FLUIDITY_CPU_AND_GPU constexpr SolidSide ToSideAtHit(const Solid& solid, SolidFa
 // Fails: kTooCloseToCall  a second, different solid with reports_reaction changed velocity.for_next_step in this
 //                         step. *failure is kSecondReactingSolid with that solid's solid_id. A shorter step separates
 //                         two hits, but not two reacting solids that one joint response pushes: that fails at every
-//                         step length.
+//                         step length. can_shorter_step_cure stays false: the caller, which knows the moment of the
+//                         response, sets it (ApplyJointCharges).
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-response>, <proc-move-particle>
 //
@@ -2410,7 +2412,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyReactionChange(
 // Example: hit_count 3 passes; hit_count 4 fails, naming the solid of the fifth hit.
 // Requires: solid_index < inputs.solid_count; result.hit_count <= kMaxHitsPerStep; failure is not null.
 // Fails: kTooCloseToCall  a fifth hit: *failure is kTooManyHits with that solid's solid_id. A shorter step has fewer
-//                         hits along its sweeps.
+//                         hits along its sweeps. can_shorter_step_cure stays false: the caller, which knows the moment
+//                         of the hit, sets it (ComputeCanShorterStepCureHitAt).
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckHitCountBelowLimit(
@@ -4088,7 +4091,7 @@ FindActiveSurfaces(const SolidContactInputs& inputs, const ParticleMove& move, c
 }
 
 // Applies a close call to a particle's move: *failure becomes kTooCloseToCall with that close call, naming one solid,
-// magnitude 0, and the error is returned.
+// magnitude 0, can_shorter_step_cure false, and the error is returned. The caller sets can_shorter_step_cure.
 //
 // Requires: solid_index < inputs.solid_count; failure is not null.
 FLUIDITY_CPU_AND_GPU inline ContactError ApplyCloseCall(
@@ -4107,6 +4110,15 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyCloseCall(
       .magnitude = 0,
   };
   return ContactError::kTooCloseToCall;
+}
+
+// Computes whether a shorter step can cure a close call that a hit `elapsed` seconds into the step meets, when the
+// test that failed does not read the time left (ContactFailure::can_shorter_step_cure): only for a hit after the start
+// of the step. A step that ends before the hit does not meet it. A hit at the start is decided by the start, the
+// velocities and the poses of time 0, the same at every step length.
+// Example: a squeeze at a hit 0.4 ms into a step of 1 ms gives true (a step of 0.25 ms ends before it); at 0, false.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeCanShorterStepCureHitAt(double elapsed) {
+  return elapsed > 0;
 }
 
 // The targets one velocity has against the active surfaces: per direction for the solver, and per surface.
@@ -4688,7 +4700,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError ComputeJointChange(
 //   ascending solid index, so two reacting solids pushed by one response fail with kSecondReactingSolid naming the
 //   higher index, whatever the order of the used directions.
 // Requires: move and failure are not null.
-// Fails: kTooCloseToCall  kSecondReactingSolid (ApplyReactionChange). *failure is written only on failure.
+// Fails: kTooCloseToCall  kSecondReactingSolid (ApplyReactionChange), which a shorter step cures only for a response
+//                         after the start of the step (ComputeCanShorterStepCureHitAt): two reacting solids pushed by
+//                         the start's response are pushed at every step length. *failure is written only on failure.
 FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointCharges(
     const SolidContactInputs& inputs,
     const JointChange& change,
@@ -4718,6 +4732,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointCharges(
         failure
     );
     if (reaction_error != ContactError::kNone) {
+      failure->can_shorter_step_cure = ComputeCanShorterStepCureHitAt(move->elapsed);
       return reaction_error;
     }
   }
@@ -4740,7 +4755,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointCharges(
 //     time left must be at most tol / 64, checked in every build. Above it, with one active surface, the speeds
 //     involved were too large for the time left: kMovesTooFastForStep naming that surface's solid; with several,
 //     kSqueezedBetweenSolids naming the solid for_this_step approached fastest: the escape is too fast for the time
-//     left. A shorter step cures both.
+//     left. A shorter step cures both: can_shorter_step_cure is true. The other close calls of steps 1 to 4 are cured
+//     only for a hit after the start of the step (ComputeCanShorterStepCureHitAt).
 //   6 Both allowances are raised to the response's, has_response becomes true, hit_count grows by one.
 //   Why the touched rule holds after it for every solid, with the largest allowance so far: FindFirstHitOfSweep.
 // Units: s for times; m and m/s, world.
@@ -4765,12 +4781,18 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
   assert(move != nullptr && failure != nullptr);
   SolidContactResult& result = move->result;
   // Steps: 1 limits  2 largest speed  3 record  4 for_next_step  5 for_this_step  6 allowances
+  // A close call of steps 1 to 4 reads no time left: whether a shorter step cures it depends on the hit's moment only.
+  const bool can_shorter_step_cure_at_hit = ComputeCanShorterStepCureHitAt(move->elapsed);
   // Step 1: one response reads every surface at once, so more than it can read is too many.
   if (active.has_too_many) {
-    return ApplyCloseCall(inputs, ContactCloseCall::kTooManyHits, record_surface.solid_index, failure);
+    const ContactError error =
+        ApplyCloseCall(inputs, ContactCloseCall::kTooManyHits, record_surface.solid_index, failure);
+    failure->can_shorter_step_cure = can_shorter_step_cure_at_hit;
+    return error;
   }
   const ContactError hit_limit_error = CheckHitCountBelowLimit(inputs, record_surface.solid_index, result, failure);
   if (hit_limit_error != ContactError::kNone) {
+    failure->can_shorter_step_cure = can_shorter_step_cure_at_hit;
     return hit_limit_error;
   }
   // Step 2: the speeds before the response bound the escape of both velocities.
@@ -4806,7 +4828,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
       &squeezing_solid_index
   );
   if (next_step_error != ContactError::kNone) {
-    return ApplyCloseCall(inputs, ContactCloseCall::kSqueezedBetweenSolids, squeezing_solid_index, failure);
+    const ContactError error =
+        ApplyCloseCall(inputs, ContactCloseCall::kSqueezedBetweenSolids, squeezing_solid_index, failure);
+    failure->can_shorter_step_cure = can_shorter_step_cure_at_hit;
+    return error;
   }
   const ContactError charge_error = ApplyJointCharges(inputs, next_step_change, move, failure);
   if (charge_error != ContactError::kNone) {
@@ -4823,7 +4848,10 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
       &squeezing_solid_index
   );
   if (this_step_error != ContactError::kNone) {
-    return ApplyCloseCall(inputs, ContactCloseCall::kSqueezedBetweenSolids, squeezing_solid_index, failure);
+    const ContactError error =
+        ApplyCloseCall(inputs, ContactCloseCall::kSqueezedBetweenSolids, squeezing_solid_index, failure);
+    failure->can_shorter_step_cure = can_shorter_step_cure_at_hit;
+    return error;
   }
   const double time_left = inputs.step_duration - move->elapsed;  // s
   const double largest_approach_gain = kTouchedSolidRestingGapShare / kMaxHitsPerStep * inputs.contact_tolerance;  // m
@@ -4832,7 +4860,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
     // One surface: the speeds were too large for the time left. Several: the escape was. A shorter step cures both.
     const ContactCloseCall close_call =
         active.count > 1 ? ContactCloseCall::kSqueezedBetweenSolids : ContactCloseCall::kMovesTooFastForStep;
-    return ApplyCloseCall(inputs, close_call, this_step_change.approached_solid_index, failure);
+    const ContactError error = ApplyCloseCall(inputs, close_call, this_step_change.approached_solid_index, failure);
+    failure->can_shorter_step_cure = true;
+    return error;
   }
   // Step 6: one number per velocity covers every response so far.
   result.velocity = {
@@ -4866,7 +4896,8 @@ FLUIDITY_CPU_AND_GPU inline ContactError ApplyJointResponse(
 // Requires: first_hit is a hit of FindFirstHitOfSweep on move's position and velocity_for_this_step, from
 //   move->elapsed; move and failure are not null.
 // Fails: kTooCloseToCall  a fifth hit (kTooManyHits, with the hit solid's solid_id), or as ApplyJointResponse.
-//                         A shorter step has fewer hits.
+//                         A shorter step has fewer hits: can_shorter_step_cure is true for a fifth hit after the start
+//                         of the step (ComputeCanShorterStepCureHitAt at the hit's moment).
 //        *failure is written only on failure; *move is then unspecified.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-round-solids>
 FLUIDITY_CPU_AND_GPU inline ContactError
@@ -4878,6 +4909,7 @@ ApplyHit(const SolidContactInputs& inputs, FirstHit first_hit, ParticleMove* mov
   // Step 1: a particle that keeps hitting solids in one step is in a gap too narrow for this step length.
   const ContactError hit_limit_error = CheckHitCountBelowLimit(inputs, first_hit.solid_index, result, failure);
   if (hit_limit_error != ContactError::kNone) {
+    failure->can_shorter_step_cure = ComputeCanShorterStepCureHitAt(move->elapsed + first_hit.elapsed);
     return hit_limit_error;
   }
   // Step 2: these are FindFirstHit's own expressions, so the position and the pose are those of the hit.
@@ -5005,7 +5037,11 @@ ComputeSolidAxesCarry(const SolidContactInputs& inputs, std::uint32_t solid_inde
 //   failure is not null.
 // Fails: kTooCloseToCall  kTurningSolidNearOtherSolid: another solid's gap is within the closing bound. *failure
 //                         names the turning solid, magnitude 0: which other solid fails first depends on the array's
-//                         order, the turning solid does not. A shorter step shortens the closing bound.
+//                         order, the turning solid does not. A shorter step shortens the closing bound, so
+//                         can_shorter_step_cure is true when the carry starts after the start of the step or the other
+//                         solid is farther than the active window tol + tol / 16. Within the window at the start (the
+//                         particle rests on the other solid, as in the crease of a paddle and its shaft, or of a
+//                         paddle and the floor it passes through) no shorter step cures it: false.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <proc-move-particle>, <sec-contact-response>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
@@ -5043,7 +5079,16 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
     // A NaN bound compares false, so it fails too: no bound means no safe carry.
     const bool is_beyond_closing_bound = other_distance - inputs.contact_tolerance > closing_bound;
     if (!is_beyond_closing_bound) {
-      return ApplyCloseCall(inputs, ContactCloseCall::kTurningSolidNearOtherSolid, solid_index, failure);
+      // A gap beyond the window of FindActiveSurfaces is beyond the closing bound of a short enough step. A gap within
+      // it would need a step shorter than tol / 16 over the closing speed, a carry the particle resting there gets
+      // at no step length worth trying.
+      const double active_distance =
+          inputs.contact_tolerance + kTouchedSolidRestingGapShare * inputs.contact_tolerance;  // m
+      const bool is_beyond_active_window = other_distance > active_distance;
+      const ContactError error =
+          ApplyCloseCall(inputs, ContactCloseCall::kTurningSolidNearOtherSolid, solid_index, failure);
+      failure->can_shorter_step_cure = ComputeCanShorterStepCureHitAt(move.elapsed) || is_beyond_active_window;
+      return error;
     }
   }
   return ContactError::kNone;
@@ -5517,7 +5562,7 @@ FLUIDITY_CPU_AND_GPU inline bool ApplySettleAtEnd(const SolidContactInputs& inpu
 // Requires: failure is not null.
 // Fails: kTooCloseToCall  a solid is closer than tol / 2 at the end of the step: *failure is kEndsTooCloseToSolid with
 //                         that solid's solid_id and the distance d as the magnitude (plan decision P6). A shorter step
-//                         gives the hits a chance to keep the particle out.
+//                         gives the hits a chance to keep the particle out: can_shorter_step_cure is true.
 //        *failure is written only on failure.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-tolerance>, <proc-move-particle>
 FLUIDITY_CPU_AND_GPU inline ContactError CheckEndOutsideSolids(
@@ -5542,6 +5587,7 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckEndOutsideSolids(
       *failure = {
           .error = ContactError::kTooCloseToCall,
           .close_call = ContactCloseCall::kEndsTooCloseToSolid,
+          .can_shorter_step_cure = true,
           .particle_id = 0,
           .solid_id = solid.solid_id,
           .magnitude = end_distance,

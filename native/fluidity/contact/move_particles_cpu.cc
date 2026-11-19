@@ -168,8 +168,14 @@ ContactFailure CheckCallSolids(std::span<const Solid> solids, double step_durati
     }
     ContactCloseCall close_call = ContactCloseCall::kNone;
     const ContactError error = CheckSolid(solid, step_duration, &close_call);
+    // A solid that turns too far turns less in a shorter step; a bad shape stays bad.
     if (error != ContactError::kNone) {
-      return {.error = error, .close_call = close_call, .solid_id = solid.solid_id};
+      return {
+          .error = error,
+          .close_call = close_call,
+          .can_shorter_step_cure = error == ContactError::kTooCloseToCall,
+          .solid_id = solid.solid_id,
+      };
     }
     // The coordinates' part of MoveParticle's Requires, after CheckSolid, which ComputeContactScale requires. The
     // cell width there only sets thinnest_solid, which this check does not read.
