@@ -104,6 +104,14 @@ the `rebuild` branch.
 | A92 | Mesh solids: cells below the scene's smallest near thin walls (2026-11-15) | Not in the first version; the artist's smallest cell width and refinement zones stay the knob. Design 01b question 11. |
 | A93 | Mesh solids: a gap narrower than one cell between two walls (2026-11-15) | A note; the run goes on. Design 01b question 12. |
 | A94 | Mesh solids: the simple route for thin walls (2026-11-15) | "I answered what I think but I'm not happy with the choice. Maybe we over-engineer blade / thin wall." Then: "Simple route now." The first version of mesh solids is for meshes with real thickness only. A part thinner than the pressure solve can see is reported by the scene check as a finding that names the part; no thin-wall mechanism is built (no closed faces, no sides on mesh parts, no growth). Module 1's plates keep the rules already approved. A85 and A89 to A93 are kept as the recorded preference for a later piece, with `literature-thin-walls.md` as its evidence; they bind nothing in the first version. |
+| A95 | After contact: what to build next (2026-11-19) | Module 2, grid. Mesh solids (1b) are planned again later, when the step module shows what meshes need from contact. |
+| A96 | A contact failure that no shorter step cures (2026-11-19) | The run stops at that frame with the reason, naming the particle and the solid. Nothing wrong is written; no particle is removed. Step design (10). |
+| A97 | Review bar for later modules (2026-11-19) | "Keep the full bar": every round gets an independent reviewer and every finding is fixed, as in module 1. The lower bar proposed after module 1 is not taken. |
+| A98 | "plan decision P..." citations in code (2026-11-19) | Replace them by the method paper's labels; a decision with no paper section gets one sentence in place. |
+| A99 | Notes pushed by the owner's git-ai tool (2026-11-19) | "Leave as is." |
+| A100 | Friction between solids that move differently (2026-11-19) | "Ideally exact but this won't happen so keep it is fine": the mean over orders stays, documented and pinned. |
+| A101 | Name of the close call for a particle hovering beside a turning solid (2026-11-19) | Rename `kSlowApproachToTurningSolid` to `kHoverNearTurningSolid` now, before another module reads it. |
+| A102 | A hair-thin gap between two colliders (2026-11-19) | Warn before the run: the scene check lists pairs of colliders separated by a gap of a few tolerances and tells the artist to join them or move them apart. Contact does not change. Scene check (I/O and step designs). |
 
 ## Everything else
 
