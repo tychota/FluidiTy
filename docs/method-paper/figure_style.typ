@@ -170,4 +170,138 @@
   mark: (start: "stealth", end: "stealth", fill: colour, scale: small-arrow-scale),
 )
 
-// `cell-grid(...)`, which draws cells of mixed sizes, arrives with the grid module.
+// Cells of mixed sizes, first used by the grid figures. A figure draws a 2D slice of the grid: the first coordinate
+// runs to the right and the second up. A cell is `(x, y, size_level)`, with integer coordinates in cells of its own
+// size level, as `CellCoord` counts them. Lengths below are in widths of a size-level-0 cell, so a cell of size level
+// `l` is 2^-l wide and every cell is aligned by construction.
+
+// The low corner and the width of `cell`: `(low-x, low-y, width)`.
+#let cell-box(cell) = {
+  let (x, y, size-level) = cell
+  let width = calc.pow(2.0, -size-level)
+  (x * width, y * width, width)
+}
+
+// The index in `cells` of the cell whose box holds `point`, low sides included and high sides not; none when no
+// cell holds it.
+#let find-cell-at(cells, point) = {
+  let (point-x, point-y) = point
+  let found = none
+  for (index, cell) in cells.enumerate() {
+    let (low-x, low-y, width) = cell-box(cell)
+    let is-inside-x = low-x <= point-x and point-x < low-x + width
+    let is-inside-y = low-y <= point-y and point-y < low-y + width
+    if found == none and is-inside-x and is-inside-y {
+      found = index
+    }
+  }
+  found
+}
+
+// The face pieces of the slice, each listed once with its smaller cell, as the grid stores them. Each piece is a
+// dictionary: `axis` (0 for the first axis, 1 for the second), `centre` (a point), `length` (the piece's width),
+// `size-level` (its smaller cell's), and `cell-low` and `cell-high` (indexes into `cells`, none at the slice's edge).
+// A side beside smaller cells is not a piece: the smaller cells' sides are.
+#let cell-grid-face-pieces(cells) = {
+  let pieces = ()
+  for (index, cell) in cells.enumerate() {
+    let (low-x, low-y, width) = cell-box(cell)
+    let step-across = width / 1024
+    for axis in (0, 1) {
+      // The middle of the cell's low side and of its high side along `axis`.
+      let low-middle = if axis == 0 { (low-x, low-y + width / 2) } else { (low-x + width / 2, low-y) }
+      let high-middle = if axis == 0 {
+        (low-x + width, low-y + width / 2)
+      } else {
+        (low-x + width / 2, low-y + width)
+      }
+      let shifted(point, distance) = if axis == 0 {
+        (point.at(0) + distance, point.at(1))
+      } else {
+        (point.at(0), point.at(1) + distance)
+      }
+      // High side: a piece with this cell on its low side, unless smaller cells lie across it.
+      let high-neighbour = find-cell-at(cells, shifted(high-middle, step-across))
+      let is-high-piece = high-neighbour == none or cell-box(cells.at(high-neighbour)).at(2) >= width
+      if is-high-piece {
+        pieces.push((
+          axis: axis,
+          centre: high-middle,
+          length: width,
+          size-level: cell.at(2),
+          cell-low: index,
+          cell-high: high-neighbour,
+        ))
+      }
+      // Low side: a piece only beside a bigger cell or the slice's edge; beside a same-size cell it is that cell's
+      // high side, listed there.
+      let low-neighbour = find-cell-at(cells, shifted(low-middle, -step-across))
+      let is-low-piece = low-neighbour == none or cell-box(cells.at(low-neighbour)).at(2) > width
+      if is-low-piece {
+        pieces.push((
+          axis: axis,
+          centre: low-middle,
+          length: width,
+          size-level: cell.at(2),
+          cell-low: low-neighbour,
+          cell-high: index,
+        ))
+      }
+    }
+  }
+  pieces
+}
+
+// The drawing point of the slice point `point`, for a slice drawn at `origin` with a size-level-0 cell `unit` wide.
+#let cell-grid-point(origin, unit, point) = (origin.at(0) + unit * point.at(0), origin.at(1) + unit * point.at(1))
+
+// Draws the cells of `cells`, a list of `(x, y, size_level)`, with the low corner of coordinate (0, 0) at `origin`
+// and a size-level-0 cell `unit` drawing units wide. `fill-of`, when given, maps a cell to its fill. `centre-dots`
+// draws a dot at each cell centre, where the pressure lives. `face-arrows` draws on each face piece a short arrow
+// along its +axis, where a velocity part lives, in `arrow-colour`.
+#let cell-grid(
+  origin,
+  cells,
+  unit: 1,
+  fill-of: none,
+  centre-dots: false,
+  face-arrows: false,
+  arrow-colour: palette.liquid,
+) = {
+  import cetz.draw: *
+  for cell in cells {
+    let (low-x, low-y, width) = cell-box(cell)
+    let cell-fill = if fill-of == none { white } else { fill-of(cell) }
+    rect(
+      cell-grid-point(origin, unit, (low-x, low-y)),
+      cell-grid-point(origin, unit, (low-x + width, low-y + width)),
+      fill: cell-fill,
+      stroke: guide-stroke + black,
+    )
+  }
+  if centre-dots {
+    for cell in cells {
+      let (low-x, low-y, width) = cell-box(cell)
+      let centre = cell-grid-point(origin, unit, (low-x + width / 2, low-y + width / 2))
+      circle(centre, radius: 0.05, fill: black, stroke: none)
+    }
+  }
+  if face-arrows {
+    for piece in cell-grid-face-pieces(cells) {
+      let half-arrow = 0.2 * piece.length
+      let (centre-x, centre-y) = piece.centre
+      let (arrow-start, arrow-tip) = if piece.axis == 0 {
+        ((centre-x - half-arrow, centre-y), (centre-x + half-arrow, centre-y))
+      } else {
+        ((centre-x, centre-y - half-arrow), (centre-x, centre-y + half-arrow))
+      }
+      coloured-arrow(
+        cell-grid-point(origin, unit, arrow-start),
+        cell-grid-point(origin, unit, arrow-tip),
+        colour: arrow-colour,
+        stroke-width: guide-stroke,
+        small: true,
+      )
+    }
+  }
+}

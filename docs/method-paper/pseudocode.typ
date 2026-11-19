@@ -10,8 +10,9 @@
 //
 // `title`: the function or operation, usually a code name. `label`: a label such as <proc-check-can-run-on>.
 // Named arguments `inputs`, `outputs` and `fails` give the lines "Inputs", "Outputs" and "Fails when"; each is
-// optional. Every positional argument is one step, as a pair `([short name], [what the step does])`. Steps are
-// numbered from 1 in the order given.
+// optional. A named argument `closing` gives one unnumbered line after the last step, such as where the same
+// procedure runs in another form. Every positional argument is one step, as a pair `([short name], [what the step
+// does])`. Steps are numbered from 1 in the order given.
 #let procedure(title, label, ..steps) = {
   let named = steps.named()
   let header-lines = (
@@ -49,6 +50,13 @@
     line(length: 100%, stroke: procedure-rule)
     v(0.2em)
     grid(columns: (1.4em, 1fr), row-gutter: 0.65em, ..step-cells)
+    let closing = named.at("closing", default: none)
+    if closing != none {
+      v(0.2em)
+      line(length: 100%, stroke: procedure-rule)
+      v(0.2em)
+      closing
+    }
   })
 
   // A procedure floats to the top or bottom of a page, as the drawn figures do. Kept in place, a tall procedure

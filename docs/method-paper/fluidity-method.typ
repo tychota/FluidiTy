@@ -29,6 +29,9 @@
 #import "figures/contact_response.typ": contact-response-figure
 #import "figures/contact_round_solids.typ": round-first-hit-figure, round-solids-figure
 #import "figures/contact_move_off_near_surfaces.typ": move-off-near-surfaces-figure
+#import "figures/grid_staggered.typ": staggered-grid-figure
+#import "figures/grid_face_pieces.typ": face-pieces-figure
+#import "figures/grid_nearby_faces.typ": nearby-faces-figure
 
 #let serif = ("Equity OT A", "Libertinus Serif")
 #let sans = ("Hermes Maia OT 3", "Libertinus Sans")
@@ -98,7 +101,7 @@ and its main procedure as numbered steps, and the steps match the `// Step N:` c
 holds what every module shares: the conventions, the notation, how one operation runs on either processor, how a
 sum of many doubles is added in one fixed order, and how items are put in an order that never depends on timing.
 It also holds the first module, contact with solids: how a particle moves during a step when solids are in its
-way.
+way, and the second, the grid: where the simulation keeps its values, and which faces a particle reads and writes.
 
 = Conventions <sec-conventions>
 
@@ -220,6 +223,21 @@ coefficients of a quadratic, has no code word and is defined where it is used.
     [$bold(v)_"lin"$, $bold(omega)$], [a solid's `linear_velocity` (m/s) and `angular_velocity` (rad/s)],
     [$L$, $w_"min"$], [`largest_coordinate` and `smallest_cell_width`, in metres],
     [$t_0$], [`start_elapsed`, the part of the step already used, in seconds],
+    table.hline(stroke: 0.4pt),
+    [$l$], [`size_level` of a cell, 0 for the biggest cells (@sec-grid)],
+    [$h_0$, $h_l$], [`biggest_cell_width` and the width of a cell of size level $l$, in metres],
+    [$h$], [`cell_width`: the width of the active cell that holds a position, in metres],
+    [$Q$, $Q'$], [the `weight_curve` and its slope (`WeightCurveValue`), no unit],
+    [$bold(x)_p$, $bold(x)_f$], [a particle's `position` and a face piece's centre, in metres, world],
+    [$bold(d)$], [a face's offset from the particle in cell widths, $(bold(x)_f - bold(x)_p) \/ h$; not the contact
+      $d$],
+    [$n_p$, $n_f$], [on one axis, the position's quarter of its cell (0 to 3) and a face centre's place, both in quarter
+      widths from the cell's low corner, integers],
+    [$"area"_f$], [the area of a face piece, in m²],
+    [$w_f$, $bold(g)_f$], [the raw weight of a face (no unit) and its change with the position (1/m)],
+    [$W$, $bold(G)$], [`weight_sum` (no unit) and `raw_weight_change_sum` (1/m)],
+    [$hat(w)_f$], [`weight` of a `FaceWeight`, no unit; its change with the position is `weight_change`, 1/m],
+    [$bold(m)$, $S$], [`mean_offset` (m) and `weighted_spread` (m²)],
     table.hline(stroke: 0.6pt),
   )),
   caption: [Paper symbols and their code words.],
@@ -1857,6 +1875,494 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
     $d < "tol"\/2$; otherwise write the result.]),
 )
 
+= The grid <sec-grid>
+
+The grid is the fixed scaffolding the simulation computes on. Space is cut into cubic cells: the pressure lives at
+cell centres, and each part of the velocity lives on the cell faces it crosses. Cells may have different sizes, each
+size half the one before, and only the parts of space that hold material are kept, in cell blocks of 4 × 4 × 4
+cells. The grid also answers the one geometric question a particle asks it: which faces are near this position, and
+how much weight does each get?
+
+The grid never looks at physics. It owns no physical field: velocity, mass, pressure and the open area of a face
+belong to the modules that compute them, which keep them in value buffers laid out by the grid (@sec-cell-blocks).
+Which faces a particle may use is the caller's choice, passed as a mask (@sec-nearby-faces). Every material uses
+the same faces and the same weights: liquids, snow, springy solids and gas markers, as Stomakhin et al. [18] put
+varied materials on one staggered grid. Materials that do not mix are separate material sets, each with its own
+values on the same faces.
+
+== Where values live
+
+Each cell carries one pressure, at its centre. Each face carries one part of the velocity: the part along the axis
+the face is normal to. A face normal to X carries the x part, a face normal to Y the y part and a face normal to Z
+the z part (@fig-staggered-grid). Papers call this a staggered grid, or the marker-and-cell grid of Harlow and Welch
+(1965). The flow through a face, which the pressure solve balances, is then read where it is kept, with no average
+of neighbouring values, and the pressure difference of two cells acts on the face between them.
+
+Every face has one fixed orientation: its normal is +axis. The cell on its minus side is its `cell_low`, the cell on
+its plus side its `cell_high`. A value kept on a face is the velocity part along +axis, so a positive value is
+flow out of `cell_low` into `cell_high`, whatever the code that reads it.
+
+#figure(
+  staggered-grid-figure(),
+  placement: auto,
+  caption: [Pressure at the cell centre, each velocity part on the faces normal to its axis. In the slice (X to the
+    right, Z up) every face carries its value along +axis, so the cell on its low side and the cell on its high
+    side are fixed by the face alone.],
+) <fig-staggered-grid>
+
+== Cells of mixed sizes <sec-cell-sizes>
+
+A cell has a size level $l$: 0 for the biggest cells, then 1, 2 and so on, at most 16 size levels in all
+(`kMaxSizeLevels`). Its width is
+
+$ h_l = h_0 / 2^l, $
+
+where $h_0$ is the `biggest_cell_width`. A grid's frame (`GridFrame`) gives $h_0$, the world position of the low corner
+of the cell with coordinate (0, 0, 0), and how many size levels the grid uses, from 1 to 16; the last of them holds the
+smallest cells. The origin is finite, $h_0$ is finite and positive, and the smallest width $w_"min" = h_0 \/ 2^(L - 1)$,
+for $L$ size levels, is a normal double, at least $2^(-1022)$: every halving down to it is then exact. A cell is named
+by its size level and its integer coordinate (`CellCoord`), counted in cells of its own size level: the cell of size
+level $l$ and coordinate $(i, j, k)$ covers $i h_l <= x < (i + 1) h_l$ from the frame's origin, and the same along Y and
+Z. Each coordinate lies between $-(2^18 - 1)$ and $2^18 - 1$ (`kMaxCoord`), at every size level; a cell beyond is
+`kCoordOutOfRange`. Cells of different size levels are aligned by construction: the cell $(i, j, k)$ of size level $l$
+covers exactly the eight cells $(2i + a, 2j + b, 2k + c)$ of size level $l + 1$, with $a$, $b$ and $c$ each 0 or 1. Its
+cell eighth, $a + 2b + 4c$, says which of the eight a small cell is. Wang, Sun and Zhu [6] solve the pressure on a grid
+of this shape, which papers call an octree.
+
+A grid is described by one list: its active cells, the cells that exist and are not split, in any order. They carry
+the values. A big cell is either active or split into all eight of its small cells, its sibling cells, each of them
+active or split in turn; a lone small cell without its siblings is `kSiblingCellMissing`. A cell listed twice, or a
+cell listed with a bigger cell that holds it, is `kCellsOverlap`. The active cells therefore fill the space they
+cover once, with no gap inside a split cell.
+
+*Splitting near the coordinate limits.* A split cell needs its eight small cells in range, so a cell can be split only
+when each of its coordinates lies between $-(2^17 - 1)$ and $2^17 - 1$, at every size level. Two consequences follow.
+A cell of size level 1 or more at $-$`kMaxCoord` lies in a big cell at $-2^17$, whose small cells reach $-2^18$: no
+valid list holds it, and the check reports `kSiblingCellMissing` without naming that small cell, since no id can. And a
+cell of size level $l$ at $c$ holds cells of size level $m$ only when one of its cells of size level #box[$m - 1$], from
+#box[$c dot 2^(m - 1 - l)$] to #box[$(c + 1) dot 2^(m - 1 - l) - 1$], can be split. For example, a cell of size level 0 holds cells
+of size level 15 only between $-8$ and $7$ on each axis, and at $-8$ not at its low corner, whose cell of size level 14
+lies at $-2^17$. A scene that needs small cells farther out moves the frame's origin or uses larger biggest cells.
+
+*The size-step rule.* Two active cells that touch, by a face, an edge or a corner, differ by at most one size level.
+A grid that breaks it is `kSizeStepRuleBroken`, which names both cells. One size level is the rule for two reasons.
+The side of a big cell then meets at most four smaller cells, its quarters, so a face is one face piece or four
+(@sec-face-pieces). And the faces near a particle come from at most three size levels, and their number has a proven
+ceiling, so the list of one particle lives in a fixed array on either processor (@sec-nearby-faces). A grid that
+needs a faster change of size closes it with cells of the size levels between.
+
+Which active cell holds a position is one formula. Per axis, the coordinate in the smallest cells is
+$floor((x - "origin") \/ w_"min")$, and the search walks down from the cell block of size level 0 through the
+split cells to the active one (`FindCellAt`). A cell owns its low sides and not its high sides. A position that is
+not finite, or whose coordinate lies outside the range a size-level-0 id can name, is in no cell, before any integer
+conversion. Since this is the only definition of "inside", a particle one rounding step from a cell side is placed
+in the same cell by every module.
+
+The difference and the quotient are each rounded once, to within $2^(-53)$ of their value relatively, so the coordinate
+never decreases as $x$ grows, and a position farther than about $2^(-52) |x - "origin"|$ from every side lies in its
+exact cell. A nearer one may land in the cell on either side, and even the side as computed may land below it: the error
+grows with the distance from the origin, not with $|x|$. Where $c w_"min"$ and the side $"origin" + c w_"min"$ are both
+doubles, as with origin 0 and $h_0 = 1$ m, a position on the side gives exactly $c$ and lies in the cell above; with
+origin 0 and $h_0$ a power of two nothing else rounds. In every frame a negative quotient of at most $2^(-1075)$ in
+size, a position within $2^(-1075) w_"min"$ below the origin, rounds to $-0$ and lies in cell 0, not $-1$. No second
+test recovers the exact side. There the side is no double, so nothing exact exists to compare with, and a second test
+would be a second definition of "inside", which the window quarters of @sec-nearby-faces, taken from the same quotient,
+would not share. A search that starts from a block near the position, the particle's block at the step before, finds the
+same cell: it climbs to that block's block of size level 0, makes at most two moves through the neighbour tables
+(@sec-cell-blocks) and otherwise searches, so it only saves the binary search.
+
+== Face pieces <sec-face-pieces>
+
+Between cells of two sizes, a side is not one face. The +X side of a big cell beside four small cells is four face
+pieces, each the whole −X side of one small cell and one quarter of the big side (@fig-face-pieces). The grid keeps
+face pieces, never whole sides, with three rules:
+
++ *One identity.* A face piece is named by its `FacePieceId`: its axis, its size level and the coordinate of the cell
+  place on its high side at that size level. The id does not depend on which other cells exist.
++ *One area.* A face piece is kept at the size level of its smaller cell and has that cell's face area, $h_l^2$.
++ *Kept once.* Every face piece exists exactly once, in exactly one cell block. A value on it therefore has exactly
+  one writer, and the flow through a big side is the sum over its pieces (`FindFacePieces` lists the up to 24 pieces
+  of a cell's six sides).
+
+Each cell block (@sec-cell-blocks) has, for each axis, five planes of 4 × 4 face places at its own size level: plane
+0 is the low side of its first layer of cells along that axis, plane 4 the high side of its last. A face place is a
+face piece when the two cell places beside it are:
+
+/ active and active: `kBetweenCells`, two cells of one size;
+/ active and inside a bigger cell: `kBetweenCells`, the small cell's whole side and one quarter of the big cell's
+  side;
+/ active and absent: `kGridEdgeLow` when the active cell is on the high side, `kGridEdgeHigh` when it is on the low
+  side. What lies beyond is not the grid's to say: the pressure solve and the solids decide what such a face means.
+
+Every other face place is `kNotAPiece`. A place between an active cell and a split one is not a face piece: the four
+face pieces of that side live one size level down, at the size level of the small cells. So a face piece is always
+kept at the size level of its smaller cell.
+
+Plane 4 of a cell block and plane 0 of the block of the same size level on its high side are the same places in space.
+When that block exists, the face piece is kept there, in its plane 0, and plane 4 of the first block is `kNotAPiece`.
+Plane 4 holds a face piece only where no block of the same size level lies on the high side. This rule makes "kept
+once" hold across blocks.
+
+*Geometry of a face piece.* A face piece of size level $l$ along an axis, whose high cell place has the coordinate
+$c$, lies on the plane $c h_l$ from the origin along that axis; its centre is at $(c' + 1\/2) h_l$ on each other axis,
+for that axis's coordinate $c'$, and its area is $h_l^2$. Its `cell_low` and `cell_high` are the cell places beside it
+at size level $l$, or, where such a place lies inside a bigger cell, that bigger active cell one size level up. The
+distance between their centres along the axis, which a pressure difference across the face piece is divided by, is
+half the width of each: $(h_"low" + h_"high") \/ 2$. For the four face pieces of a big cell's side it is
+$h_(l - 1) \/ 2 + h_l \/ 2 = 3\/4 h_(l - 1)$, measured along the axis from the big cell's centre, whatever the
+quarter. At the grid's edge only one cell is there, and the distance is half its width. In a grid piece, a
+`kOutsidePiece` whose other cell lies in a block not loaded gives only half the width of the loaded cell: the grid
+piece's tables cannot know whether the missing cell is of the same size level or one bigger, so that number is no
+distance between two cells.
+
+#figure(
+  face-pieces-figure(),
+  placement: auto,
+  caption: [Left: the side of a big cell that four small cells touch is four face pieces, each with its own value.
+    Middle: the same in a vertical slice, where two of the four show; each face piece is kept with its small
+    cell. Right:
+    cells two size levels apart may not touch.],
+) <fig-face-pieces>
+
+== Cell blocks <sec-cell-blocks>
+
+Only the parts of space that hold material are kept, in cell blocks: 4 × 4 × 4 cell places of one size level, as Wang
+et al. [5] and Fei, Huang and Gao [15] keep sparse grids on the GPU. A block exists when at least one of its places
+holds an active or a split cell. Blocks therefore exist at every size level above a small cell, about 14 % more blocks
+than the active cells alone would need ($1\/8 + 1\/64 + dots.h = 1\/7$) when the smallest cells fill a large, compact
+region; a layer one block thick needs about a third more ($1\/4 + 1\/16 + dots.h = 1\/3$). Each place has a state
+(`CellState`): active; split; inside a bigger cell, covered by an active cell one size level bigger; or absent.
+
+A block holds 64 cell places, 240 face places (3 axes × 5 planes × 16) and 125 corner places (the 5 × 5 × 5 lattice
+of its corners). An index counts places across blocks: the cell place $(x, y, z)$ of block $b$ is
+$64 b + (4z + y) times 4 + x$, the face places of block $b$ start at $240 b$, axis by axis, and the corner place
+$(x, y, z)$ of block $b$ is $125 b + (5z + y) times 5 + x$.
+
+*The fixed order.* Blocks are listed in one order everywhere: by the low corner, measured in widths of a size-level-15
+cell, by $z$, then $y$, then $x$, and then the bigger cell (the smaller size level) first. Cells are ordered the same
+way. With Z up, a run of consecutive blocks is a horizontal layer of the grid. The order depends only on the cells,
+never on the order of the input list or of the work, so every table built from it is the same on every run.
+
+*Neighbour tables.* For each block the grid keeps its 27 neighbours of the same size level (ordered by their offset in
+z, then in y, then in x, with "none" where no block is), its bigger block (the block of the next bigger cells that
+covers it, size level $l - 1$; none at size level 0) and its 8 smaller blocks, by cell eighth. These tables and the
+sorted list of block ids are the grid's whole spatial index: a search is a binary search in the block ids followed by
+moves through the tables.
+
+*Id versus index.* An id (`CellId`, `CellBlockId`, `FacePieceId`) names a place and a size in space; the same cell has
+the same id in every grid version, and the id 0 is never valid. An index (`CellPlaceIndex`, `FacePlaceIndex`,
+`CornerPlaceIndex`, `CellBlockIndex`) is a position in the arrays of one grid version: it depends on which blocks
+exist, and after the cells change, the same cell may sit at another index. A value kept across a change is found again
+by its id (`FindCellPlace`, `FindFacePlace`).
+
+*Grid versions.* Each time the set of active cells changes, the new grid gets the next version number. Version 0 means
+"bound to no grid"; a built grid has version 1 or more. Values carry the version of the grid they were laid out for,
+and a function that takes values and a grid checks that the two agree.
+
+*Buffers built once.* A grid version is built without allocating. `BuildGridBuffers` allocates once, for a room of
+`max_cell_blocks` blocks, every array a grid version needs; `BuildGrid` fills them with the tables of one version
+(@proc-build-grid), and the buffers then belong to that grid. `TakeBuffers` gives them back for the next version. The
+temporary arrays a build needs, the builder buffers (`GridBuilderBuffers`), belong to the caller, who lends one set to
+several grid buffers on one processor; no operation on a built grid reads them. The room comes from the run's plan,
+and a grid that outgrows it is `kTooManyCellBlocks`, after which the run raises its limits. Value buffers
+(`CellValues`, `FaceValues`, `CornerValues`, `CellBlockValues`: one value per cell, face or corner place, or per block)
+are built once with room for the same number of blocks. `ApplyGridVersion` binds them to a new version: it records
+the version and the block count, and their contents become unspecified until the owning module fills them again.
+
+*Ranges and border.* A stage works on a range: a run of consecutive blocks in the fixed order (`CellBlockRange`). It
+writes only values kept in blocks of the range, and it may read values of the range and of its border blocks. Since
+every face piece is kept in exactly one block, every value has one writer. The border of a set of blocks, at the
+width `kTouchingCells`, is every block outside the set that holds an active cell touching a cell of the set, or holds
+a face piece of such a cell. The second part matters: a face piece is kept with its smaller cell, and plane 4 of a
+block moves to plane 0 of its high neighbour, so a nearby face of a cell touching the range can lie one block beyond
+that cell. The width `kFourCellWidths` adds every block a face search of four cell widths reads from a face piece of
+the set. A pass that runs several stages on one load needs stacked borders: the border of its last stage around the
+range, then the border of the stage before around the range plus that border, and so on. In a run in one piece the
+range is every block and the border is empty. A sum over the grid that is not a sum per destination is one partial
+sum per block, kept in the fixed block order, then added by @proc-tree-sum, so a total is the same in one piece and in
+any cut into ranges.
+
+*Grid pieces.* A grid piece (`GridPiece`) is one range of a whole grid with its border, built as a grid of its own for
+a run in batches. It lists its blocks in the whole grid's fixed order, never the range first. The border blocks lie
+before or after the range, so the range is a run of the piece too, and a sum per destination visits the blocks it reads
+in the same order as in the whole grid. The piece copies the whole grid's tables block by block. A neighbour that was
+not loaded becomes "none"; a `kBetweenCells` face piece whose other cell lies in a block not loaded becomes
+`kOutsidePiece`; and a plane-4 place stays `kNotAPiece` when its high neighbour exists in the whole grid but was not
+loaded, so a grid piece never has a face piece that the whole grid does not have.
+
+*Where a corner is kept.* The pressure solve and the solids keep values at cell corners. A corner is a point of the
+5 × 5 × 5 lattice of every block whose box holds it, sides included, so one point can be a lattice point of several
+blocks: two blocks of one size level that share a side, or blocks of two size levels. It is kept once. Among the
+blocks of the grid whose lattice holds the point, it is kept in a block of the smallest cells, the largest size level
+value; and among several blocks of that size level, in the one that comes last in the fixed order, the highest $z$,
+then $y$, then $x$: the block on the high side, as for face plane 4. The size level counts whether or not a cell of
+that block touches the point. A corner of a small cell in the middle of a big cell's side or edge therefore belongs to
+the small cells only. For example, in a grid of one size level with cells of width 1 m and coordinates (3, 0, 0)
+(block 0) and (4, 0, 0) (block 1), the corner at (4, 0, 0) m is lattice point (4, 0, 0) of block 0 and (0, 0, 0) of
+block 1; it is kept in block 1, at corner index 125. With the cell (3, 0, 0) alone it is index 4.
+
+#procedure(
+  [`BuildGrid` on the CPU, the tables of one grid version],
+  <proc-build-grid>,
+  inputs: [the frame, the version (1 or more), the active cells in any order, and grid buffers with lent builder
+    buffers.],
+  outputs: [a grid that owns the buffers: the block ids in the fixed order, the neighbour tables, the cell states,
+    the face piece kinds and the counts.],
+  fails: [the first failure by step, then by position: bad input, a coordinate out of range, overlapping cells, a
+    missing sibling cell, a broken size-step rule (both cells named), too many cell blocks. Nothing is returned; the
+    buffers stay with the caller. No step allocates.],
+  ([Check frame, version and ids], [Every frame value finite, $h_0 > 0$, 1 to 16 size levels, a smallest width of
+    at least $2^(-1022)$, version 1 or more; one list, its count within its buffer (else bad input); at most the room's
+    cell places (else too many cell blocks, before any id is read); then every id valid, of a frame size level, each
+    coordinate within ±`kMaxCoord`.]),
+  ([Sort, find overlaps], [Copy the ids into the builder buffers and sort them in the fixed order. Fail when a cell
+    is listed twice or a bigger listed cell holds a smaller one.]),
+  ([Mark split cells, check siblings], [Every bigger cell that holds an active cell is split. Each active cell checks
+    that its seven siblings exist, active or split; when it is eighth 0 it adds the split cell one size level up and
+    checks that cell's siblings, and so on up while the added cell is eighth 0 too.]),
+  ([Size-step rule], [Every two touching active cells differ by at most one size level. Each pair is checked at its
+    smaller cell, so a broken pair is reported once.]),
+  ([Blocks and their count], [Every block that holds an active or split cell, sorted into the block-id table in
+    the fixed order. Fail with too many cell blocks when the active and split cells exceed 64 times the room, or the
+    blocks exceed the room.]),
+  ([Neighbour tables], [For each block, its 27 neighbours of the same size level, its bigger block and its 8 smaller
+    blocks, by binary search in the block ids.]),
+  ([Cell states], [Each cell place: active, split, inside a bigger cell, or absent.]),
+  ([Face piece kinds], [Each face place from the two cell places beside it (@sec-face-pieces); plane 4 is
+    `kNotAPiece` where the block of the same size level on the high side exists.]),
+  closing: [On the GPU, the same steps run in parallel through the same shared rules (@sec-grid, part 8), and give
+    the same tables byte for byte.],
+)
+
+== The weight curve
+
+A particle passes values to the faces near it, and reads values back from them, with weights. The weight of a face
+along one axis is the weight curve of the distance $t$ from the particle, in cell widths:
+
+$ Q(t) = cases(
+  3\/4 - t^2 & "if" |t| < 1\/2,
+  (3\/2 - |t|)^2 \/ 2 & "if" 1\/2 <= |t| < 3\/2,
+  0 & "otherwise",
+) \
+Q'(t) = cases(
+  -2 t & "if" |t| < 1\/2,
+  -(3\/2 - |t|) "sign"(t) & "if" 1\/2 <= |t| < 3\/2,
+  0 & "otherwise",
+) $ <eq:weight-curve>
+
+Papers call it the quadratic B-spline. It is zero at and beyond 1.5 cell widths, and its slope $Q'$ is continuous.
+For faces one width apart it has three sums that hold wherever the particle is: for any $t$, over every integer $k$,
+
+$ sum_k Q(t - k) = 1, quad sum_k (k - t) Q(t - k) = 0, \
+  sum_k (k - t)^2 Q(t - k) = 1\/4. $
+
+The weights of faces of one size therefore add up to 1, their mean is the particle's own position, and their spread
+along each axis is a quarter of a cell width squared. In three dimensions the weight is the product of the curve on
+the three axes, $Q(d_x) Q(d_y) Q(d_z)$, and the three sums hold axis by axis. For example, at $t = 0.4$ the three faces
+at offsets $-1.4$, $-0.4$ and $0.6$ get $Q = 0.005$, $0.59$ and $0.405$, which add up to 1.
+
+== Nearby faces and their weights <sec-nearby-faces>
+
+Each axis has its own faces, so a particle has three lists of nearby faces, one per axis, each with its own weights,
+as Ding, Shinar and Schroeder [2] do on a staggered grid. Where every cell around the particle has one size, a list
+holds 27 faces with the weights of the curve. Near a change of size, a solid or the liquid surface, faces of other
+sizes enter the list or some faces are left out, and the weights must follow: they are scaled to add up to 1, and the
+fit of how the velocity varies around the particle is measured from the faces actually kept. @proc-nearby-face-weights
+lists the steps for one position and one axis; this part explains them, with $h$ the width of the active cell that
+holds the position $bold(x)_p$ and $bold(x)_f$ the centre of a face piece $f$.
+
+#procedure(
+  [`FindNearbyFaces` and `ComputeNearbyFaceWeights`, the nearby faces of one axis and their weights],
+  <proc-nearby-face-weights>,
+  inputs: [the grid's tables, a position $bold(x)_p$, an axis, a cell block near the position, and the caller's
+    kept mask.],
+  outputs: [`NearbyFaceWeights`: the candidates, the mask, $W$, $bold(G)$, $bold(m)$, $S$, its inverse and the fit.
+    For each kept face, `ComputeFaceWeight` gives $hat(w)_f$, the offset, the offset from the mean and the weight's
+    change.],
+  fails: [no active cell holds the position (`kPositionOutsideGrid`), or more candidates than the list's 216 places
+    (`kInternalFault`, a broken table); the list then has no face.],
+  ([Find the cell], [Find the active cell that holds $bold(x)_p$; $h$ is its width and $l$ its size level.]),
+  ([List the candidates], [The face pieces of this axis that belong to the cell or to a cell touching it, of size
+    level $l - 1$, $l$ or $l + 1$, whose centre satisfies $-1.5 h < x_f - x_p <= 1.5 h$ on each axis, tested in
+    whole quarter widths: $n_p - 5 <= n_f <= n_p + 6$ with $n_p$ the position's quarter of the cell, clamped to 0 to
+    3, and $n_f$ the face centre's, both counted from the cell's low corner. List them in ascending face index.]),
+  ([Leave faces out], [The caller clears the bits of the faces it may not use. The grid never looks at physics.]),
+  ([Raw weights], [For each kept face, $w_f$ and $bold(g)_f$ of @eq:scaled-weights.]),
+  ([Sums], [Over the kept faces in list order: $W = sum w_f$ and $bold(G) = sum bold(g)_f$. If $W <= 0$, no kept
+    face has weight: the fit is `kNone`, every weight, change, mean and spread is zero, and steps 6 to 9 do not run,
+    so nothing divides by $W$.]),
+  ([Scale], [$hat(w)_f = w_f \/ W$ and its change $(bold(g)_f - hat(w)_f bold(G)) \/ W$. The weights add up to 1
+    and their changes to 0.]),
+  ([Mean], [$bold(m) = sum hat(w)_f (bold(x)_f - bold(x)_p)$; each face's offset from the mean is $bold(x)_f -
+    bold(x)_p - bold(m)$.]),
+  ([Spread], [$S$ of @eq:weighted-spread, in m².]),
+  ([Fit], [Factorise $S \/ h^2$ by Cholesky. If a pivot is at most
+    `kMinPivotShare` times the trace or $W$ is below `kMinWeightSum`, it is `kMeanOnly`; else `kFull`, with
+    $S^(-1)$.]),
+)
+
+*Candidates.* The candidates are the face pieces of the axis that belong to the cell holding the position or to a
+cell touching it, whose own size level is at most one away from that cell's, and whose centre lies within one and a
+half cell widths of the position on each axis, from just above $-1.5 h$ up to and including $+1.5 h$:
+$-1.5 h < x_f - x_p <= 1.5 h$. The low end is open and the high end closed because a cell owns its low side. The
+choice is made in whole quarter widths, never on rounded distances. On each axis, the quarter of the cell that holds
+the position, $n_p = floor(4 ((x_p - "origin") \/ h - c))$ with $c$ the cell's coordinate, clamped to 0 to 3, fixes a
+window twelve quarter widths long. The face centre is counted in quarter widths of the cell from the cell's low
+corner, an integer $n_f$ found from the ids alone, and the face is a candidate when $n_p - 5 <= n_f <= n_p + 6$. Every
+face centre of the three size levels lies on that quarter lattice, so the integer test loses nothing, and both
+processors make the same choice. Among cells of one size the window holds exactly three planes of faces on every
+axis. Along the face's own axis the faces sit at $n_f = 4k$, and the window holds $-4$, 0 and 4 for $n_p$ of 0 or 1,
+and 0, 4 and 8 for $n_p$ of 2 or 3; across it they sit at $n_f = 4k + 2$, and the window always holds $-2$, 2 and 6.
+So every position has 27 faces, at a cell side, at a cell centre or at a corner alike, and a face exactly $1.5 h$ away
+has weight zero. The candidates are listed in ascending face index.
+
+*How many.* Among cells of one size a position has 27 candidate faces on each axis. Where cell sizes change it has
+more: 76 when all 26 neighbours are split, and 124 in the largest case known, a cell whose eight corner neighbours and
+six of its edge neighbours have its own size while every other neighbour, and everything beyond, is one size level
+smaller. 124 is the exact maximum where only two cell sizes meet. No valid grid can pass 212. To see why, count in
+quarter widths from the cell's low corner. The smallest candidate is a square of half a cell width. A candidate lies
+on a face of the cell or of a cell that touches it, so along the axis it sits on one of at most six planes inside the
+window, and across each of the two other directions it covers at least one of at most six half-width places inside
+the window. A smallest piece is one such place. A bigger piece has its centre in the window, so the place one
+quarter to one side of that centre is in the window too, and the piece covers it. Faces of one axis never overlap, so
+no two candidates share a place: at most 6 × 6 × 6 = 216. Four of those places can hold no face: the 2 × 2 places of
+the plane through the cell's own middle, $n_f = 2$, which lie inside the active cell. That leaves 212.
+
+The list has room for 216 faces per axis (`kMaxNearbyFaces`), and the kept mask has one bit per place in the list, in
+four 64-bit words. Running out of room would mean a broken table, not a grid: it is reported as an internal fault
+(`kInternalFault`) and never overruns the list.
+
+*Leaving faces out.* The caller clears the bits of a mask (`NearbyFaceMask`) for the candidates the particle may not
+use: a face on the other side of a plate, a face inside a solid, a face with no value. The grid never looks at
+physics; the mask is the caller's. Hu et al. [3] leave out grid values across a cut in this way, so that material on
+the two sides of a thin solid does not exchange momentum.
+
+*Scaling.* The raw weight of a kept face is the curve's product times its area in cell faces, $"area"_f \/ h^2$: 1
+for a face of the cell's own size, 1/4 for a smaller face, 4 for a bigger one. Its change with the particle's position
+follows from the slope. The raw weights and their changes are added over the kept faces in list order, and each is
+divided by the sum:
+
+$ w_f = Q(d_x) Q(d_y) Q(d_z) "area"_f / h^2, quad bold(d) = (bold(x)_f - bold(x)_p) / h, \
+  bold(g)_f = -"area"_f / h^3 vec(Q'(d_x) Q(d_y) Q(d_z), Q(d_x) Q'(d_y) Q(d_z), Q(d_x) Q(d_y) Q'(d_z)), \
+  W = sum_f w_f, quad bold(G) = sum_f bold(g)_f, \
+  hat(w)_f = w_f / W, quad (partial hat(w)_f) / (partial bold(x)_p) = (bold(g)_f - hat(w)_f bold(G)) / W. $
+<eq:scaled-weights>
+
+The scaled weights $hat(w)_f$ add up to 1, and their changes add up to 0, whatever was left out.
+
+*Mean and spread.* The mean offset $bold(m)$ is the weighted mean of the faces' offsets from the particle, and the
+weighted spread $S$ (m², symmetric) measures how far the kept faces spread around that mean:
+
+$ bold(m) = sum_f hat(w)_f (bold(x)_f - bold(x)_p), \
+  S = sum_f hat(w)_f (bold(x)_f - bold(x)_p - bold(m)) (bold(x)_f - bold(x)_p - bold(m))^T. $ <eq:weighted-spread>
+
+Each face's offset from the mean, $bold(x)_f - bold(x)_p - bold(m)$ (`offset_from_mean`), is the one used in fits and
+in writes. The fit of how the velocity varies around the particle, as Jiang et al. [1] make it, needs the inverse of
+$S$. It is
+computed by a Cholesky factorisation of $S \/ h^2$, and the result has one of three outcomes (`NearbyFaceFit`):
+
+/ `kFull`: weights, mean and an invertible spread: a fitted velocity change can be computed.
+/ `kMeanOnly`: the weights are valid but the kept faces are too few or too flat to fit a change: a pivot of the
+  factorisation is at most $10^(-12)$ times the trace (`kMinPivotShare`), or $W$ is below 0.1 (`kMinWeightSum`).
+/ `kNone`: $W <= 0$: no kept face has weight, and the particle cannot read or write the grid on this axis.
+
+*The complete case.* When all 27 faces of one size are kept, the curve's sums give $W = 1$, $bold(G) = 0$, $bold(m) =
+0$ and $S = h^2\/4$ times the identity, up to rounding (@fig-nearby-faces). The inverse spread is then $4\/h^2$ times
+the identity, the constant a uniform grid uses in place of the inverse. Here the inverse is always measured from the
+faces kept, so the uniform case is the special case of one rule and never a separate path in the code.
+
+A transfer uses the weights this way, per axis, with $v_f$ the value on face $f$. The fitted change, one matrix row,
+is $bold(r) = (sum_f hat(w)_f v_f (bold(x)_f - bold(x)_p - bold(m))^T) S^(-1)$; the value at the particle is
+$v_p = sum_f hat(w)_f v_f - bold(r) dot bold(m)$; and a particle writes $v_p + bold(r) dot (bold(x)_f - bold(x)_p -
+bold(m))$ to face $f$ with weight $hat(w)_f$. Since the weighted offsets from the mean add up to zero, the written
+momentum is exactly the particle's. The exact change of the read value with the position is
+$sum_f v_f (partial hat(w)_f) / (partial bold(x)_p)$. A face can also compute the weight one particle gives it
+(`ComputeFaceWeight` with the particle's sums `NearbyFaceSums`), with the same bits as the particle's own list.
+
+*Properties.* These hold for every grid and every mask whose fit is not `kNone`:
+
+- Constants are reproduced for any kept set: the weights add up to 1.
+- Linear fields are reproduced whenever the fit is `kFull`. For $v_f = a + bold(b) dot (bold(x)_f - bold(x)_p)$, the
+  fitted matrix row is $bold(b)$, because the weighted offsets from the mean add up to zero and $S S^(-1)$ is the
+  identity, and the value at the particle is $a$.
+- Weights are never negative, and are zero only for a face exactly $1.5 h$ away on some axis, where the curve is zero:
+  a candidate's other offsets lie strictly inside the curve's range, and every area is positive.
+- Weights jump when a particle changes cell across a size change: the width $h$, the candidates and the area factors
+  all follow the cell that holds the particle. This is a known open question of the method, the force passed between
+  cells of different sizes.
+
+#figure(
+  nearby-faces-figure(),
+  placement: auto,
+  caption: [The nearby faces of the X axis in a vertical slice. Left: a particle in a big cell beside smaller cells,
+    with a plate on its other side. Faces beyond the plate are left out (hollow); each kept face is a dot whose area
+    is its weight. The weights move the mean (arrow) toward the kept faces, and the spread (dashed ellipse) is measured
+    from them. Right: with 9 faces of one size all kept (27 in three dimensions), the mean offset is 0 and the spread
+    is $h^2\/4$ on every axis: the dashed circle has radius $h\/2$.],
+) <fig-nearby-faces>
+
+
+== Memory per block <sec-grid-memory>
+
+Every array of a grid version has room for `max_cell_blocks` blocks, so its memory is counted per cell block. Each
+array is one memory piece of the run's reserved block (@sec-run-memory) and one entry of the memory estimate
+(@sec-memory-estimate), listed in the order the builders take their memory pieces. @tab-grid-memory gives the
+entries. The five tables are the grid itself, 456 bytes per block, about 7.1 bytes per cell place. The builder buffers
+are what a build needs while it runs. The CPU builder sorts the cell ids in place and needs nothing else; the GPU
+build also keeps sort keys, two orders and the working buffers of @proc-stable-order, whose `OrderBuffers` take 6 bytes
+per item and 4,096 bytes more on the GPU. Three of its entries hold one more item than the cell places, because a prefix
+sum writes its total after the last entry: hence the 4 bytes once of each order, and the 6 bytes once of the order
+buffers. A GPU grid keeps nothing in CPU memory: the only value that comes back from a build on the GPU is its status
+record.
+
+#figure(
+  align(left, {
+    set par(justify: false)
+    table(
+      columns: (1fr, auto, auto, auto),
+      align: (left, left, right, left),
+      table.hline(stroke: 0.6pt),
+      table.header([*Entry*], [*Counted per*], [*Bytes per block*], [*Where*]),
+      table.hline(stroke: 0.4pt),
+      [block ids], [cell block], [8], [run],
+      [same-size-level neighbour blocks], [cell block], [108], [run],
+      [bigger and smaller blocks], [cell block], [36], [run],
+      [cell states], [cell place], [64], [run],
+      [face piece kinds], [face place], [240], [run],
+      [*grid tables*], [], [*456*], [run],
+      table.hline(stroke: 0.4pt),
+      [_CPU grid:_ builder buffers: cell ids], [cell place], [512], [CPU],
+      [_CPU grid:_ piece map], [cell block], [4], [CPU],
+      [*one CPU grid*], [], [*972*], [456 run, 516 CPU],
+      table.hline(stroke: 0.4pt),
+      [_GPU grid:_ builder buffers: cell ids], [cell place], [512], [run],
+      [_GPU grid:_ builder buffers: sort keys], [cell place], [512], [run],
+      [_GPU grid:_ builder buffers: order], [given count], [256, and 4 once], [run],
+      [_GPU grid:_ builder buffers: second order], [given count], [256, and 4 once], [run],
+      [_GPU grid:_ builder buffers: order buffers], [given count], [384, and 4,102 once], [run],
+      [_GPU grid:_ piece map], [cell block], [4], [run],
+      [_GPU grid:_ build status], [given count], [one record], [run],
+      [*GPU builder buffers, one set*], [], [*1,920, and 4,110 once*], [run],
+      [*one GPU grid with lent builder buffers*], [], [*460, and one record*], [run],
+      table.hline(stroke: 0.4pt),
+      [`CellValues` of `double`], [cell place], [512], [run],
+      [`FaceValues` of `double`], [face place], [1,920], [run],
+      [`CornerValues` of `double`], [corner place], [1,000], [run],
+      table.hline(stroke: 0.6pt),
+    )
+  }),
+  caption: [The grid's memory per cell block. "Run" is the memory of the processor the run chose, "CPU" always CPU
+    memory. Every entry names one array; the bold lines are totals. The value buffers at the end belong to the
+    modules that keep values on the grid.],
+) <tab-grid-memory>
+
+A run on the GPU keeps two grids, the committed one and the one of the step's try, which share one set of builder
+buffers: 2 × 460 + 1,920 = 2,840 bytes per block, plus the 4,110 bytes and two status records once. A grid of
+1,000,000 blocks (64 million cell places) and its try therefore take about 2.84 GB. The grid's own GPU functions keep
+under the driver's default stack of 1,024 bytes per thread, so the grid has no entry held by the driver. A GPU
+function that computes nearby-face weights keeps 1,152 bytes per thread for one axis, or 3,456 for three, which is
+above that default, so the module it belongs to counts a stack held by the driver, as contact does for its particle
+visit.
 // Every floating figure and procedure is placed before the references start.
 #place.flush()
 
