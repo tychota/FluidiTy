@@ -13,9 +13,11 @@
 // optional. `breakable: true` lets a procedure taller than a page continue on the next one. A named argument
 // `closing` gives one unnumbered line after the last step, such as where the same procedure runs in another form.
 // Every positional argument is one step, as a pair `([short name], [what the step does])`. Steps are numbered from
-// 1 in the order given.
+// 1 in the order given. A named argument `step-prefix`, such as "P", is written before every step number, for a
+// procedure whose steps the code cites as `// Step P1:` to keep them apart from those of another procedure.
 #let procedure(title, label, ..steps) = {
   let named = steps.named()
+  let step-prefix = named.at("step-prefix", default: "")
   let header-lines = (
     ("Inputs", named.at("inputs", default: none)),
     ("Outputs", named.at("outputs", default: none)),
@@ -37,7 +39,7 @@
     .map(((index, step)) => {
       let (short-name, body) = step
       (
-        text(font: procedure-font, weight: "bold", number-type: "lining", str(index + 1)),
+        text(font: procedure-font, weight: "bold", number-type: "lining", step-prefix + str(index + 1)),
         [#text(font: procedure-font, weight: "bold", short-name). #body],
       )
     })
@@ -51,7 +53,8 @@
   // page, before or after the procedure's parts, never between a header and its steps.
   let is-breakable = named.at("breakable", default: false)
   let kept-together-count = if is-breakable { calc.min(1, steps.pos().len()) } else { steps.pos().len() }
-  let step-grid(cells) = grid(columns: (1.4em, 1fr), row-gutter: 0.65em, ..cells)
+  let number-width = if step-prefix == "" { 1.4em } else { 2.2em }
+  let step-grid(cells) = grid(columns: (number-width, 1fr), row-gutter: 0.65em, ..cells)
 
   let body = block(width: 100%, stroke: (top: procedure-rule, bottom: procedure-rule), inset: (y: 0.7em), {
     set align(left)

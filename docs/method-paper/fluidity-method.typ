@@ -32,6 +32,7 @@
 #import "figures/grid_staggered.typ": staggered-grid-figure
 #import "figures/grid_face_pieces.typ": face-pieces-figure
 #import "figures/grid_nearby_faces.typ": nearby-faces-figure
+#import "figures/grid_parallel_build.typ": parallel-build-figure
 
 #let serif = ("Equity OT A", "Libertinus Serif")
 #let sans = ("Hermes Maia OT 3", "Libertinus Sans")
@@ -238,6 +239,8 @@ coefficients of a quadratic, has no code word and is defined where it is used.
     [$W$, $bold(G)$], [`weight_sum` (no unit) and `raw_weight_change_sum` (1/m)],
     [$hat(w)_f$], [`weight` of a `FaceWeight`, no unit; its change with the position is `weight_change`, 1/m],
     [$bold(m)$, $S$], [`mean_offset` (m) and `weighted_spread` (m²)],
+    [$n$], [`active_count`: the number of active cells in the list a grid is built from, in @sec-parallel-build
+      and @proc-count-grid],
     table.hline(stroke: 0.6pt),
   )),
   caption: [Paper symbols and their code words.],
@@ -2131,8 +2134,43 @@ block 1; it is kept in block 1, at corner index 125. With the cell (3, 0, 0) alo
   ([Cell states], [Each cell place: active, split, inside a bigger cell, or absent.]),
   ([Face piece kinds], [Each face place from the two cell places beside it (@sec-face-pieces); plane 4 is
     `kNotAPiece` where the block of the same size level on the high side exists.]),
-  closing: [On the GPU, the same steps run in parallel through the same shared rules (@sec-grid, part 8), and give
-    the same tables byte for byte.],
+  closing: [On the GPU, the same steps run in parallel through the same shared rules (@proc-build-grid-in-parallel),
+    and give the same tables byte for byte.],
+)
+
+*Counting without tables.* A run's room, the `max_cell_blocks` of its buffers, is planned before any buffers exist:
+the plan counts the cell blocks of the scene and sizes the buffers from that count. Building the tables to count
+them would need buffers sized by the very number asked for; sized for the worst case of one block per cell, they
+would cost about 1.1 kB per active cell. So `ComputeGridCounts` counts from the sorted ids alone
+(@proc-count-grid), in one CPU array of 8 bytes per active or split cell, at most 9.2 bytes per active cell. It makes
+the checks of `BuildGrid` without the length check and the block check, since no room exists yet. It states the face
+rule of @sec-face-pieces a second time, from the places beside each cell instead of from built tables, and tests compare
+its counts with those of built grids. Every place beside a cell is found by integer arithmetic on its coordinate. A
+place beyond the coordinate limit of its own size level, outside ±`kMaxCoord`, holds no cell of that size level, and
+its small cells lie beyond the limit of theirs. No id is made for such a place, since the id would name another cell.
+
+#procedure(
+  [`ComputeGridCounts` on the CPU, the counts of a list without its tables],
+  <proc-count-grid>,
+  inputs: [the frame, the version (1 or more) and the list of $n$ active cells in CPU memory, in any order.],
+  outputs: [`GridCounts`: the cell blocks, the active cells in all and per size level, and the face pieces.],
+  fails: [the first failure of steps 1 to 4 of @proc-build-grid: bad input, a coordinate out of range, overlapping
+    cells, a missing sibling cell, a broken size-step rule. Out of memory when the copy cannot be allocated (the bytes
+    asked are reported). Never too many cell blocks, since there is no room yet.],
+  ([Check and sort the list], [Copy the $n$ ids into one array with room for $n + floor(n\/7)$ ids, and run steps 1
+    to 4 of @proc-build-grid on the copy, without the length check, siblings included. The copy is then in the fixed
+    cell order.]),
+  ([Count the active cells], [One pass over the copy: the active cells of each size level and their total.]),
+  ([Count the face pieces], [One active cell at a time. Beside each of its six sides, the place of the cell's own
+    size level is _active_ when a cell of that size level is listed there, and _split_ when one of the four small
+    cells of that place that touch the side is listed (the size-step rule makes all four active). Each lookup is a
+    binary search in the sorted ids, made only for a coordinate in range at its own size level. The low side counts
+    one face piece unless the place is split. The high side counts one unless the place is active (that cell counts
+    the piece on its low side) or split (its small cells count theirs). A place inside a bigger cell and an absent
+    place both leave one face piece with the cell, so the count needs no lookup of the bigger cell.]),
+  ([Count the blocks], [Append the split cells that each active cell adds (its big cell when it is eighth 0, and
+    on up while the added cell is eighth 0 too), sort every id by the key of its block (@sec-parallel-build), and
+    count the runs of equal block ids.]),
 )
 
 == The weight curve
@@ -2364,6 +2402,170 @@ under the driver's default stack of 1,024 bytes per thread, so the grid has no e
 function that computes nearby-face weights keeps 1,152 bytes per thread for one axis, or 3,456 for three, which is
 above that default, so the module it belongs to counts a stack held by the driver, as contact does for its particle
 visit.
+
+== Building the tables in parallel <sec-parallel-build>
+
+A run is all CPU or all GPU (@sec-run-on). In a GPU run the list of active cells is made on the GPU, the grid is
+built there, and the stages read it there. The cell list never leaves the GPU and no table comes back: the only value
+copied to the CPU is the build's status record, which holds the counts or the first failure. @proc-build-grid is
+written for one thread that walks the list in order. On the GPU many threads run at once, and a step whose result
+depended on which thread came first would give another grid from run to run. So each sequential step becomes the
+same five parts: compute a key for each item, put the items in a stable order by that key (@proc-stable-order),
+mark the items where something starts, take the exclusive prefix sum of the marks, and let each marked item write
+its result at the place its sum gives, a scatter. Each part is one thread per item, or a call of `BuildStableOrder`
+or `ComputeExclusivePrefixSum`, whose results do not depend on timing (@sec-stable-order). The only values threads
+share are an integer minimum and integer counts, and neither depends on the order in which threads add to them.
+
+*Numbering the blocks.* Step 5 of @proc-build-grid lists the blocks in the fixed order. In parallel, every active
+and split cell takes the key of its block, and the stable order puts the cells of one block side by side, the blocks
+in the fixed order. Say the sorted cells, here of one size, lie in the blocks $[A, A, B, C, C, C]$. An entry is
+marked 1 when it is the first of its run: the first entry, or one whose block differs from the entry before. The
+marks are
+$[1, 0, 1, 1, 0, 0]$, their exclusive sums $[0, 1, 1, 2, 3, 3]$, and the total, 3, is the block count. The first
+entry of each run writes its block at the index its sum gives: $A$ at 0, $B$ at 1, $C$ at 2. Any entry finds its
+block index as its sum plus its mark minus 1. The first entry of a run has the index as its sum and a mark of 1; every
+other entry has a sum one past the index, since the run's first entry was counted, and a mark of 0. A mark is a
+function of the sorted list alone, so every thread computes it again where it needs it, and no thread waits for
+another. @fig-parallel-build shows the same steps on a grid of two sizes with its own list,
+$[A, B, B, C, C, C, C]$, where the split cell that its small cells add joins the run of its block.
+
+#figure(
+  parallel-build-figure(),
+  placement: auto,
+  caption: [Numbering the blocks in a vertical slice of a grid of two sizes. Six active cells, numbered in input
+    order, lie in three blocks: $A$ and $B$ of the big cells, which the dashed line at $x = 0$ divides, and $C$ of
+    the small cells, whose low corner is $B$'s and which comes after $B$ because the bigger cells come first. The
+    split cell 6 is added after the active cells. The first entry of each run writes its block; the sums give every
+    block its index in the fixed order. Any starting order gives the same marks. In three dimensions the slice has
+    four more small cells behind it, which join run $C$.],
+) <fig-parallel-build>
+
+*The keys are the fixed order.* The order of blocks and cells is kept because the sort keys are the fixed order
+itself, written as three unsigned integers, one per pass of the stable order, the least significant first. For a
+coordinate $c$ of a cell of size level $l$, the biased coordinate is
+
+$ b(c, l) = (c + 2^(18 + l)) dot 2^(15 - l) = c dot 2^(15 - l) + 2^33, $
+
+the cell's low corner in widths of a size-level-15 cell, moved up by $2^33$. A cell's key is $16 b(x, l) + l$ in the
+first pass, $b(y, l)$ in the second and $b(z, l)$ in the third. After the three passes the cells are ordered by $z$,
+then $y$, then $x$, and at one low corner the bigger cell, of the smaller $l$, comes first. A block's key is the same
+with the block's low corner, $4 floor(c \/ 4)$, in place of $c$, so every cell of a block has the key of its block.
+No key is ever negative, so no negative number is shifted, and both processors compute the same bits with integer
+adds and shifts. A valid coordinate is at least $-(2^18 - 1)$, so $c + 2^(18 + l) >= 1$. A block's low corner is at
+least $-2^18$, so its sum is at least 0, and 0 only for the lowest block of size level 0. The largest biased value is
+$(2^18 - 1 + 2^18) dot 2^15 = 2^34 - 2^15$, so the first pass stays below $2^38$. An id that is not a cell id at
+all, such as the id 0, has the largest key, $2^64 - 1$, in every pass, and sorts last. An id of a size level the frame
+does not use, or with a coordinate out of range, keeps an ordinary key.
+
+*The first failure.* @proc-build-grid reports the first failure by step, then by position. In parallel each failing item
+computes one integer, its failure key, $"step" dot 2^56 + "position" dot 2^8 + "detail"$, and the GPU keeps the smallest
+with an integer minimum. The minimum of a set of integers does not depend on the order in which the threads offer them.
+The step counts the checks in the order of @proc-build-grid: 1 the ids, 2 overlaps, 3 siblings, 4 the size-step rule,
+then 5 the active and split cells against the room's cell places and 6 the blocks against the room, the two checks of
+its step 5, and 7 a block that has no bigger block in the list, which no valid list produces and which is reported as an
+internal fault with no cell. Step 5 has a second key, with detail 1: more active and split cells than the sort by block
+orders, also a state no valid list produces, reported the same way. The position is the index in the input list for
+step 1, the place in the fixed cell order for steps 2 to 4, 0 for steps 5 and 6, and the block's index for step 7. The
+detail says which sibling is missing, in which of the 26 directions the size-step rule is broken, or which key of step 5
+it is. The input checks of P1, the frame, the version, the shape of
+the list and its length, come before every keyed check on both processors, so they never take part in the minimum. Each
+later step first reads the smallest key and does nothing when an earlier step failed, with one exception: every array
+that a prefix sum reads is written in full at every launch, with zeros after a failure, so the sum never reads values
+left by an earlier grid or an earlier step. A stable order may still read keys left from before, which cannot make it
+fail, and its result is then never used. So no step acts on data that an earlier step found bad. Once the key is known,
+one thread runs that check again at that position to name its cells. The CPU runs each step to its end before the next
+and scans the positions in order, so it stops at the same failure.
+
+*No cell of an earlier build.* The builder buffers are reused, so they hold the cells of the build before. The split
+cells are counted on the GPU, so the CPU does not know how many entries the sort by block must order. It sorts a
+count it does know, $min(n + floor(n \/ 7), 64 dot #raw("max_cell_blocks"))$, where $n$ is the number of active
+cells: every split cell has eight small cells, each active or split, so there are at most $n \/ 7$ split cells.
+Before that sort, every place after the last active or split cell, up to that count, is filled with the id 0,
+which is never valid, sorts last and is never marked. Without the fill those places would still hold cells of the build
+before, and they would become blocks.
+
+*Why the tables equal the CPU's.* Each table entry is a function of the sorted list, not of the order in which the
+work was done. A block's neighbours come from a binary search in the sorted block ids, a cell state from the sorted
+cells and the block tables, and a face piece kind from the two cell states beside its place. The CPU builder and the
+GPU write every entry through the same shared rules (@sec-run-on), with integers only, and their sorted lists are the
+same, since the stable order is. So the tables are the same byte for byte. The counts are sums of integers, kept with
+integer adds, which do not depend on the order either. @proc-build-grid-in-parallel lists the twelve steps, each with
+what one thread handles. The code numbers them P1 to P12, apart from the steps of @proc-build-grid.
+
+#procedure(
+  [`BuildGrid` on the GPU, the tables of one grid version in parallel],
+  <proc-build-grid-in-parallel>,
+  breakable: true,
+  step-prefix: "P",
+  inputs: [the frame, the version (1 or more), the list of $n$ active cells in any order in a buffer on the GPU, with
+    $n$ as a CPU number, and grid buffers on the GPU with their lent builder buffers.],
+  outputs: [the tables of @proc-build-grid in the grid buffers, and the status record, the one value copied back to
+    the CPU.],
+  fails: [as @proc-build-grid, the failure of the smallest key. No grid is returned, and the buffers stay usable.
+    After a failed GPU call their contents are unspecified, and the run stops. A state that no input can produce is
+    reported as an internal fault, never as bad input.],
+  ([Check the inputs, on the CPU], [The frame, the version, the shape of the list (bad input) and its length,
+    as in step 1 of @proc-build-grid: a list of more than $64 dot #raw("max_cell_blocks")$ cells fails with too many
+    cell blocks before any id is read and before anything runs on the GPU. Then one thread resets the status record:
+    no failure, every count zero. Nothing is written from the CPU.]),
+  ([Check the ids, one thread per input cell], [Each id as in step 1 of @proc-build-grid; a bad id offers its
+    failure key, step 1 at its input index, to the integer minimum.]),
+  ([Sort into the fixed cell order, one thread per input cell], [For each of the three passes, each thread writes
+    its cell's key of that pass, and a stable order follows, starting from the order of the pass before. Then the
+    thread of place $j$ copies the input cell `order[j]` to place $j$ of the cell ids. A bad id still has a key: the
+    sort runs, and its result is never used.]),
+  ([Overlaps, one thread per sorted cell], [Each thread first reads the smallest key and returns when an earlier
+    step failed, as in every step after this one, except where it writes a value that a prefix sum reads: it then
+    writes 0. A cell equal to the one before, or held by a listed bigger cell,
+    offers its key, as in step 2 of @proc-build-grid.]),
+  ([Siblings, one thread per sorted cell], [The siblings of the cell, and those of the split cells its eighth-0
+    chain adds, as in step 3 of @proc-build-grid. A check of a list that is still being split (`CheckSizeStepRule`)
+    skips this step.]),
+  ([Size-step rule, one thread per sorted cell], [The first of the 26 directions, in $z$, then $y$, then $x$ order,
+    in which an active cell two or more size levels bigger touches the cell, as in step 4 of @proc-build-grid.]),
+  ([Add split cells and fill the tail of the array], [(a) One thread per active cell writes how many split cells
+    it adds, or 0 when an earlier step failed; an exclusive prefix sum gives each its first place and the total.
+    (b) One thread reads the total, the split cells, and fails with too many cell blocks (key step 5) when the
+    active and split cells pass
+    $64 dot #raw("max_cell_blocks")$. Otherwise, when they pass the sort count,
+    $min(n + floor(n \/ 7), 64 dot #raw("max_cell_blocks"))$, it reports an internal fault (key step 5, position 0,
+    detail 1): the bound $n \/ 7$ rules this out, and the sort of P8 would leave cells out. Both keys are of step 5,
+    so every later step does nothing after either. (c) Unless an earlier step or (b) failed, one thread per active
+    cell writes the split cells it adds after the $n$ active cells, at $n$ plus its sum. (d) Unless an earlier step
+    or (b) failed, one thread per place below the sort count writes the id 0 at every place from $n$ plus the split
+    cells on.]),
+  ([Sort cells by block and number the blocks], [Three passes of the block keys order the places below the sort
+    count; the id 0 sorts last. Sorted entry $j$ is the cell at place `order[j]`, an active cell when `order[j]`
+    is below $n$. One thread per sorted entry writes its mark, 0 when an earlier step failed, else 1 for a valid entry
+    that is the first of its block and 0 for any other. An exclusive prefix sum of the marks; one thread reads the
+    total, the block count, and fails with too many cell blocks (key step 6) above `max_cell_blocks`. Then, unless the
+    block count or an earlier step failed, each marked entry writes its block id at its sum, so the block ids come out
+    in the fixed order.]),
+  ([Neighbour tables, one thread per block], [The 27 neighbours, the bigger block and the 8 smaller blocks, as in
+    step 6 of @proc-build-grid. A block of size level 1 or more without its bigger block then offers its key, step 7
+    at its index, an internal fault.]),
+  ([Cell states, one thread per cell place], [(a) One thread per cell place writes absent. (b) One thread per
+    sorted entry writes active for an active cell or split for an added one, at its block index, its sum plus its
+    mark minus 1, and its place in the block, and adds 1 to the active cells of its size level with an integer add.
+    An entry of the fill writes nothing.
+    (c) Two launches, one thread per cell place in each. The first computes the state each place takes, inside a
+    bigger cell for a place still absent whose covering place in the bigger block is active, and writes it to the
+    sort keys, free after P8; it reads only active marks, and writes no state. The second copies each place's
+    answer into its state. No launch reads a place that another of its threads writes.]),
+  ([Face piece kinds, one thread per face place], [Each kind from the two cell states beside the place, as in step 8
+    of @proc-build-grid. A thread adds up the face pieces of its places and adds the sum to the count with one
+    integer add.]),
+  ([Counts and status, one thread], [On success, the active cells as the sum over the 16 size levels; on failure,
+    the error of the smallest key and the cells its check names. The CPU then copies the status record back: the
+    one transfer of the build. On success the buffers belong to the new grid; a record without a failure that counts
+    more blocks than the room, or other active cells than $n$, is an internal fault.]),
+  closing: [A GPU function that needs a count found during the build, the split cells or the blocks, reads it from
+    the status record, so no count comes back during the build: the launches of P9, P10 (a), (c) and P11 are sized
+    for the room, P10 (b) for the sort count, and a thread past the count does nothing. Each launch starts only
+    once the one before it started. P10 and P11 come after every keyed step, so any key stops them. Steps P1 to
+    P6, then the failure half of P12, are also the check of a list on the GPU before a build.],
+)
+
 // Every floating figure and procedure is placed before the references start.
 #place.flush()
 
