@@ -1075,21 +1075,23 @@ uniform curve instead of the radial one; new: the bounded candidate rule):
    2026-11-19: open at the low end, closed at the high end, because a cell owns its low side; so every position of
    a same-size neighbourhood, a cell side, centre or corner included, has exactly 27 candidates, those at
    exactly `1.5 h` with weight 0). The test is made in integers, never on float offsets (ruling 2026-11-19: a
-   float test gives 2 or 4 planes within a rounding step of a side or centre): per axis `q = floor(4 ((x_p -
+   float test gives 2 or 4 planes within a rounding step of a side or centre): per axis `n_p = floor(4 ((x_p -
    origin) / h - c))` clamped to 0..3, `c` the coordinate of the cell `FindCellAt` returned, and a face is a
-   candidate when its centre's coordinate `n` in quarter widths from that cell's low corner (an integer, from
-   the ids) has `q - 5 <= n <= q + 6`. List them in ascending `FacePlaceIndex`.
+   candidate when its centre's coordinate `n_f` in quarter widths from that cell's low corner (an integer, from
+   the ids) has `n_p - 5 <= n_f <= n_p + 6` (the paper's symbols). List them in ascending `FacePlaceIndex`.
 3. The caller removes candidates it may not use (other side of a plate, not `outside_solid`, no value) by
    clearing bits of the mask. The grid never looks at physics.
 4. Raw weight: `w_f = Q(d_x) Q(d_y) Q(d_z) * (area_f / h^2)` with `d = (x_f - x_p) / h`. Raw change with the
    particle position: `g_f = -(area_f / h^3) * (Q'(d_x) Q(d_y) Q(d_z), Q(d_x) Q'(d_y) Q(d_z), ...)`.
-5. Sums over kept faces in list order: `W = sum w_f`, `G = sum g_f`.
+5. Sums over kept faces in list order: `W = sum w_f`, `G = sum g_f`. If `W <= 0`, no kept face has weight: the
+   fit is `kNone`, every weight, change, mean and spread is zero, and steps 6 to 9 do not run, so nothing divides
+   by `W` (as `<proc-nearby-face-weights>`).
 6. Scaled weight and change: `weight = w_f / W`, `weight_change = (g_f - weight * G) / W`. Then
    `sum weight = 1` and `sum weight_change = 0` whatever was left out.
 7. `mean_offset = sum weight * (x_f - x_p)`; `offset_from_mean = (x_f - x_p) - mean_offset`.
 8. `weighted_spread = sum weight * offset_from_mean * offset_from_mean^T` (m2).
 9. Invert by Cholesky on `weighted_spread / h^2`. If a pivot is at most `kMinPivotShare * trace`, or
-   `W < kMinWeightSum`, the fit is `kMeanOnly`; if `W <= 0`, `kNone`.
+   `W < kMinWeightSum`, the fit is `kMeanOnly`; else `kFull`, with the inverse.
 
 **What replaces `4 / h^2`:** `inverse_weighted_spread`, always measured from the faces actually kept. When all
 27 same-size faces are kept, steps 5 to 8 give `W = 1`, `G = 0`, `mean_offset = 0` and
@@ -1099,7 +1101,8 @@ separate code path. Transfer then computes, per axis, `fitted_velocity_change ro
 `sum weight * value - row . mean_offset`, and writes `value + row . offset_from_mean`, which keeps the
 particle's momentum exactly. `exact_velocity_change row = sum value * weight_change`.
 
-Properties to state in the header and test: constants are reproduced for any kept set; linear fields are
+Properties to state in the header and test, for every grid and every mask whose fit is not `kNone`: constants are
+reproduced for any kept set; linear fields are
 reproduced whenever `fit == kFull`; weights are never negative, and 0 only for a face exactly `1.5 h` away; weights jump when the particle changes cell across a
 size change (as on `main`), which is the known open physics "traction across cells of different sizes".
 
@@ -1116,20 +1119,20 @@ case is not searched exhaustively.
 
 *What is proven: no valid grid passes 212.* Work on one axis, in quarter widths `h / 4` from the low corner of `c`.
 1. The smallest candidate is a piece of level `p + 1`: a square of side `h / 2`. Call its possible places slots:
-   planes at even `n` along the axis, centres at odd `n` across.
-2. A candidate lies on a face of `c` or of a cell touching `c`. Its plane is an even `n` inside the window and
+   planes at even `n_f` along the axis, centres at odd `n_f` across.
+2. A candidate lies on a face of `c` or of a cell touching `c`. Its plane is an even `n_f` inside the window and
    inside `-4..8` (a touching cell one level bigger has its other faces at `-8` or `12`, outside every window):
    at most 6 planes. Across, it covers at least one slot whose centre is inside the window and inside `-3..7`: a
    piece of level `p + 1` is one slot; a piece of level `p` or `p - 1` has its centre in the window, so the slot
    one quarter to one side of that centre is in the window too, and it lies in `-3..7` because the piece is on a
-   cell that touches `c`. The window holds at most 6 odd `n` in `-3..7`.
+   cell that touches `c`. The window holds at most 6 odd `n_f` in `-3..7`.
 3. Pieces of one axis do not overlap, so two candidates never get the same slot.
-4. So there are at most `6 x 6 x 6 = 216` candidates, less the 4 slots of the plane `n = 2` that lie inside `c`
+4. So there are at most `6 x 6 x 6 = 216` candidates, less the 4 slots of the plane `n_f = 2` that lie inside `c`
    itself, where no piece can be: 212.
 
 `kMaxNearbyFaces` is 216, the count before the last subtraction; the mask has four 64-bit words.
 `kTooManyNearbyFaces` therefore guards against a broken table, not against a grid. A cell has 64 candidate lists
-per axis (the values of `q`); tests go through all of them on the 76 case, on the 124 case and on random grids,
+per axis (the values of `n_p`); tests go through all of them on the 76 case, on the 124 case and on random grids,
 and report the largest count found.
 
 ### 5.5 Ranges and border
