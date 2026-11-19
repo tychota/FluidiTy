@@ -1,0 +1,47 @@
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_5cac6e92277f95 2549-2550
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_d1d7bc2d398082 647-649,943-944,988,1191-1194,1932-1934,2559-2560,2823,2840-2841,3822-3825,4008-4009,5549-5550,6430-6432,7232
+native/fluidity/contact/move_particle_tolerance_test.cc
+  s_4f0877e2acdcf0::t_156aa38fbfb9aa 191
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_1122ed62899092 105-106,285-286
+native/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_4cd49eb8b9b975 96
+native/fluidity/contact/solid_shapes.h
+  s_4f0877e2acdcf0::t_81f08ae419a7a0 244,254-256,376-378,400-402
+native/fluidity/contact/solid_shapes_test.cc
+  s_4f0877e2acdcf0::t_3bf949e66d6a3c 1684
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_477dfe96665fab 818
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_f2b9d5c606b10a 421
+native/fluidity/contact/find_first_hit_test.cc
+  s_aa17b66d32d806::t_a719c1604b95f1 1149-1150,1570,3262-3263
+native/fluidity/contact/solid_contact_steps.h
+  s_aa17b66d32d806::t_0370d3600bf007 608,1570-1575,1589,1676-1677,1913-1916,2623,3651,3838-3840,4343-4347,4467-4468
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "43ba9ed25de994a962443ad9b1088a2ea1094fc9",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_aa17b66d32d806": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a76c44eb5559cbd61",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
