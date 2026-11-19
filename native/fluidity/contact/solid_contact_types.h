@@ -209,7 +209,11 @@ struct SolidContactResult {
   ContactKind kind = ContactKind::kNone;
   double hit_fraction = 0;  // No unit, 0 to 1. When the first hit happens, as a share of the step. 0 without a hit.
   Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the first hit. Zero without a hit.
-  PerParticleVelocity<double> approach_speed{};  // m/s, at the first hit. Negative means approaching.
+  // m/s, at the first hit: Dot(normal_out_of_solid, velocity - surface velocity) before the response. Negative means
+  // approaching. Zero or positive is possible, a known choice: a turning solid has no touching rule, so a particle
+  // within 1.25 tol of it is hit whatever its velocity (one leaving a face turning at 2 rad/s at 3 m/s records
+  // +2.6 m/s, kind kHit), and a start inside a solid it leaves records that solid (kind kStartedInsideSolid).
+  PerParticleVelocity<double> approach_speed{};
   std::uint32_t solid_index = kNoSolid;  // Index into solids of the first hit's solid, not its solid_id.
   SolidFace face = SolidFace::kHighZ;  // The face of the first hit.
   SolidSide side_at_hit = SolidSide::kNoPlate;  // The side of the plate that was hit, when it is a plate.
@@ -229,7 +233,8 @@ struct ParticleContact {
   std::uint32_t solid_index = kNoSolid;  // Index into solids of the first hit's solid, not its solid_id.
   double hit_fraction = 0;  // No unit, 0 to 1. When the first hit happens, as a share of the step. 0 without a hit.
   Vec3 normal_out_of_solid{};  // No unit, unit vector, world, at the first hit. Zero without a hit.
-  PerParticleVelocity<double> approach_speed{};  // m/s, at the first hit. Negative means approaching.
+  // m/s, at the first hit. Negative means approaching; zero or positive is possible, as in SolidContactResult.
+  PerParticleVelocity<double> approach_speed{};
 };
 // The GPU writes one record per particle and the materials and the solids read it there, so both compilers must lay it
 // out alike: 8 bytes of discrete fields, then hit_fraction at 8, the normal at 16 and the two approach speeds at 40.

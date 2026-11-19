@@ -1752,7 +1752,11 @@ the line, that part points out and is kept, a known choice: the particle ends up
 t_"left"$ off the face, as a free flight in the solid's axes, while the velocity the response returned has no part along
 the normal (a top face tilting at 0.5 rad/s under a sliding particle: up to 41,617 $"tol"$ at $T = 1\/120$ s, $5.3 times
 10^(-3)$ m at 0.1 s). It does not build up from step to step, since the next sweep and gravity bring the particle back,
-and the path converges at first order in the step. The proof of @sec-first-hit is unchanged: the carry is still a
+and the path converges at first order in the step. A particle that leaves the face is carried too, a known choice:
+the stepping search hits it at 0 whatever its velocity, its record has kind "hit" with a positive approach speed, and
+the rest of its free flight is a straight line in the solid's axes, bent in world axes (leaving at 3 m/s a face
+turning at 2 rad/s, 0.2 m from the axis: +2.6 m/s recorded, and the end $3 times 10^(-6)$ m from the straight flight
+after 1 ms). The proof of @sec-first-hit is unchanged: the carry is still a
 straight line in own axes with no part along the hit's normal into the solid. The cost is one more pose. The hit loop
 ends there; why no later sweep may meet the solid again is in @sec-first-hit. Before that, every other solid $j$ is
 tested: the call is "too close to call, turning solid near another solid", naming the turning solid, when

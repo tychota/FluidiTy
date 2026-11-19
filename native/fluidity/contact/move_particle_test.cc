@@ -21,6 +21,7 @@
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_error.h"
 #include "fluidity/contact/contact_test_cases.h"
+#include "fluidity/contact/contact_tolerance.h"
 #include "fluidity/contact/solid_contact.h"
 #include "fluidity/contact/solid_contact_steps.h"
 #include "fluidity/contact/solid_contact_types.h"
@@ -1090,6 +1091,59 @@ TEST(MoveParticle, TurningBoxBesideFarFloorInEitherOrder_SameMove) {
   ExpectVec3Equal(other.result.velocity.for_this_step, call.result.velocity.for_this_step);
   ExpectVec3Equal(other.result.velocity.for_next_step, call.result.velocity.for_next_step);
   ExpectVec3Equal(other.result.position, call.result.position);
+}
+
+// A particle at the rest gap of the +y face of a box 0.8 x 0.02 x 1 m centred at {0, 0, 1} and turning at 2 rad/s
+// about z, at x = 0.2 m, leaving the face at 3 m/s along +y for a step of 1 ms, in the domain box from {-1, -1, 0} to
+// {1, 1, 2} with the contact tolerance of cells of 0.01 m (about 1.18e-11 m).
+MoveParticleCase BuildLeavingTurningFace() {
+  constexpr double kStepDuration = 1e-3;  // s
+  std::vector<Solid> solids = {
+      ToSolid(
+          DomainBox{.low_corner = {.x = -1, .y = -1, .z = 0}, .high_corner = {.x = 1, .y = 1, .z = 2}, .closed = {}},
+          1
+      ),
+      ToSolid(
+          Box{.center = {.x = 0, .y = 0, .z = 1}, .axes = kIdentity, .half_size = {.x = 0.4, .y = 0.01, .z = 0.5}},
+          {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 2}},
+          2
+      ),
+  };
+  const double tolerance = ComputeContactTolerance(ComputeContactScale(solids.data(), 2, kStepDuration, 0.01));  // m
+  SolidContactInputs inputs = move_particle_cases::BuildCaseInputs({
+      .start_position = {.x = 0.2, .y = 0.01 + tolerance, .z = 1},
+      .velocity = {.x = 0, .y = 3, .z = 0},
+      .step_duration = kStepDuration,
+      .friction = 0,
+  });
+  inputs.contact_tolerance = tolerance;
+  return {.name = "LeavingTurningFace", .solids = std::move(solids), .inputs = inputs};
+}
+
+TEST(MoveParticle, LeavingTurningFaceKnownChoice_RecordsHitWithPositiveApproachSpeed) {
+  // A turning solid has no touching rule: the stepping search hits the particle at 0 whatever its velocity. The face
+  // moves at {-0.02, 0.4, 0} m/s under it, so the record says kHit at fraction 0 with approach speed 3 - 0.4 = +2.6
+  // m/s, and the response leaves both velocities as they were.
+  const MoveParticleCall call = RunMove(BuildLeavingTurningFace());
+  ASSERT_EQ(call.error, ContactError::kNone);
+  EXPECT_EQ(call.result.kind, ContactKind::kHit);
+  EXPECT_EQ(call.result.hit_count, 1);
+  EXPECT_EQ(call.result.hit_fraction, 0.0);
+  EXPECT_NEAR(call.result.approach_speed.for_this_step, 2.6, 1e-15);
+  EXPECT_NEAR(call.result.approach_speed.for_next_step, 2.6, 1e-15);
+  ExpectBothVelocitiesNear(call.result, {.x = 0, .y = 3, .z = 0}, 0);
+}
+
+TEST(MoveParticle, LeavingTurningFaceKnownChoice_CarryBendsFreeFlight) {
+  // The rest of the step is carried in the box's axes: a straight line there, bent by the turn of 2e-3 rad in world
+  // axes. The free flight would end at x = 0.2; the carry ends 3e-6 m short of it (measured 0.1999970000039).
+  const MoveParticleCase scene = BuildLeavingTurningFace();
+  const MoveParticleCall call = RunMove(scene);
+  ASSERT_EQ(call.error, ContactError::kNone);
+  const Vec3 free_flight_end = scene.inputs.start_position + scene.inputs.velocity.for_this_step * 1e-3;
+  EXPECT_NEAR(free_flight_end.x - call.result.position.x, 3e-6, 1e-9);
+  EXPECT_NEAR(call.result.position.y, 0.0129999984451, 1e-12);
+  EXPECT_EQ(call.result.position.z, 1.0);
 }
 
 TEST(MoveParticle, TurningStackedBoxes_SeamIsNearOtherSolid) {

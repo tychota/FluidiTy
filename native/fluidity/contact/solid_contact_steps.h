@@ -5101,6 +5101,9 @@ FLUIDITY_CPU_AND_GPU inline ContactError CheckOtherSolidsBeyondClosingBound(
 // Method: own_end = own_position + own_velocity * time_left; the position becomes o_end + A_end own_end, with A_end,
 //   o_end the axes and origin of ComputeSolidPose(solid, step_duration), and the elapsed time becomes step_duration.
 //   The velocities are left as the response made them: the carry moves the particle, it is no response.
+//   A particle that leaves the solid is carried too, a known choice: the stepping search hits it at 0 whatever its
+//   velocity, and the rest of its free flight is a straight line in the solid's axes, bent in world axes. Leaving a
+//   face turning at 2 rad/s at 3 m/s, 0.2 m from the axis, it ends 3e-6 m from its straight flight after 1 ms.
 //   Why the particle stays out of the solid: in its own axes the solid's distance d is convex (plan decision P18,
 //   HasConvexDistance), and n_own = Transpose(A) n, the normal at own_position read with the pose of the carry's start,
 //   is a subgradient of it there. own_velocity is one constant vector in own axes, whatever axes turned it there (the
