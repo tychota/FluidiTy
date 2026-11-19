@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <set>
 #include <string_view>
@@ -55,14 +56,37 @@ constexpr std::array kCloseCallNames = {
     CloseCallNameEntry{.close_call = ContactCloseCall::kMovesTooFastForStep, .name = "moves_too_fast_for_step"},
 };
 
-// kStartsInNarrowGap is the last value, so it is the count minus one: a value added after it fails here. kOutOfMemory
-// keeps its number, 8: values keep their numbers, and a new one is added last.
+// Each table holds one entry for each value up to its last enumerator, kStartsInNarrowGap and kMovesTooFastForStep.
+// A value added before the last one moves it and fails here. A value added after it leaves these asserts true; the
+// tests below that try every byte fail when that value has a name, and -Wswitch fails the build when it has no case in
+// contact_error_message.cc. kOutOfMemory keeps its number, 8: values keep their numbers, and a new one is added last.
 static_assert(static_cast<std::uint8_t>(ContactError::kOutOfMemory) == 8);
-static_assert(static_cast<std::uint8_t>(ContactError::kStartsInNarrowGap) == 9);
+static_assert(static_cast<std::size_t>(ContactError::kStartsInNarrowGap) + 1 == kErrorNames.size());
 static_assert(kErrorNames.size() == 10);
 static_assert(static_cast<std::uint8_t>(ContactCloseCall::kEndsTooCloseToSolid) == 7);
-static_assert(static_cast<std::uint8_t>(ContactCloseCall::kMovesTooFastForStep) == 8);
+static_assert(static_cast<std::size_t>(ContactCloseCall::kMovesTooFastForStep) + 1 == kCloseCallNames.size());
 static_assert(kCloseCallNames.size() == 9);
+
+TEST(ToName, EveryNamedContactError_IsInTheTable) {
+  for (int number = 0; number <= 255; ++number) {
+    const auto error = static_cast<ContactError>(number);
+    if (ToName(error) == "unknown") {
+      continue;
+    }
+    EXPECT_LT(static_cast<std::size_t>(number), kErrorNames.size()) << ToName(error) << " is missing from kErrorNames";
+  }
+}
+
+TEST(ToName, EveryNamedContactCloseCall_IsInTheTable) {
+  for (int number = 0; number <= 255; ++number) {
+    const auto close_call = static_cast<ContactCloseCall>(number);
+    if (ToName(close_call) == "unknown") {
+      continue;
+    }
+    EXPECT_LT(static_cast<std::size_t>(number), kCloseCallNames.size())
+        << ToName(close_call) << " is missing from kCloseCallNames";
+  }
+}
 
 TEST(ToName, EveryContactError_IsSnakeCaseOfEnumerator) {
   std::set<std::string_view> names;
