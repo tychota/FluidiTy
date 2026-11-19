@@ -1,0 +1,43 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_ab8563bd23e24c 455
+native/fluidity/contact/contact_error.h
+  s_4f0877e2acdcf0::t_64d142ef8baead 87-90,95-99
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_72dae0d09f38ab 1952,1956,2117,2120,3020,3023
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_c7a1ed65eba134 7284,7298,7316
+native/fluidity/contact/move_particles.h
+  s_4f0877e2acdcf0::t_5e2d5c16999eed 66-68,202-204,230-231
+native/fluidity/contact/move_particles_steps_test.cc
+  s_4f0877e2acdcf0::t_41c7305e72a289 524-525,527,535-537
+native/fluidity/contact/move_particles_test_runs.h
+  s_4f0877e2acdcf0::t_0ef6502c41e66c 931-932,953
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_4586583576a84b 5052-5058,5080-5086,5102-5110,5113,5117-5124
+native/fluidity/contact/move_particle_shorter_step_test.cc
+  s_243513646541ad::t_c62b6533ccdce5 7,18,121-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7e7762e2320731f472663470c4397b10932ddd70",
+  "prompts": {},
+  "sessions": {
+    "s_243513646541ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a8cacf39cd14e3265",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
