@@ -1,0 +1,38 @@
+native/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_c1b965823d3541 1-383
+  s_4f0877e2acdcf0::t_dfe5ba880d6710 384-397
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_902f078d1c29d8 1-58
+native/fluidity/grid/grid_ids_test.cc
+  s_4f0877e2acdcf0::t_6170cfea6a461c 185-194,198
+  s_4f0877e2acdcf0::t_51a4a0bffe66f6 1-142,144-184,195-197,199-201,203-247,249-289,299-300,307-315,317-321,326-380
+  s_4f0877e2acdcf0::t_a34e0eb7ecbbf9 143,202,248,290-298,301-306,316,322-325,381-400
+native/fluidity/grid/grid_ids_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_bbf58d0ade74f6 1-27
+docs/glossary.md
+  s_4f0877e2acdcf0::t_1352b9ef12beb0 31,43,193,195-196
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_f26006e8c07fd9 4-5,11-12
+native/fluidity/grid/grid_error.h
+  s_4f0877e2acdcf0::t_482bbbb506c8eb 7-10,17,25-26,56-57
+native/fluidity/grid/grid_error_test.cc
+  s_4f0877e2acdcf0::t_cb42b27c1df0ed 167-173,176-177
+tools/check_rules_allowed_names.txt
+  s_4f0877e2acdcf0::t_464933eb16aaee 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "debd1b419a71ffeef346999e5b54110e4ea78d31",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
