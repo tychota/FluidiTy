@@ -28,7 +28,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `NearbyFaceWeights`, `FaceWeight` | The grid faces near one particle, each with the weight the particle gives it. | stencil, support (for the grid faces near a particle), node (for a grid point near a particle), sample (for this), slot, row (alone) |
 | `weight_curve` | The function that turns a distance into a weight. | basis, kernel (for this), quadratic kernel |
 | `index` | Position in any array or sequence. | slot, ordinal |
-| `place`, `CellPlaceIndex`, `FacePlaceIndex`, `CornerPlaceIndex` | A position in the arrays of one grid version. It is valid for that version only: after the grid changes, the same cell may sit at another place. Use `id` for an identity that must survive the change. | slot |
+| `place`, `CellPlaceIndex`, `FacePlaceIndex`, `CornerPlaceIndex` | A position in the arrays of one grid version (`grid/grid_ids.h`). It is valid for that version only: after the grid changes, the same cell may sit at another place. A cell block has 64 cell places, 240 face places and 125 corner places: cell place (x, y, z) of block b is `64 b + (4 z + y) * 4 + x`, corner place (x, y, z) is `125 b + (5 z + y) * 5 + x`. Use `id` for an identity that must survive the change. | slot |
 | `id` | Stable identity that survives reordering. | |
 | `cell_coord`, `CellCoord` | Integer (x, y, z) location of a cell. | CellIndex3D |
 | `axis` | The x, y or z part of a vector or grid. | component (for this) |
@@ -40,7 +40,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `open_area` | m2. Area of a face not blocked by solid. | |
 | `open_fraction` | No unit, 0 to 1. The open area as a fraction of the face area. | aperture |
 | `liquid_covered_area` | m2. Area of a solid face that liquid touches. | wetted |
-| `cell_eighth` | One of the 8 sub-boxes of a cell. | octant |
+| `cell_eighth` | One of the 8 sub-boxes of a cell, numbered `x + 2 y + 4 z`, 0..7, where each of x, y and z is 0 for the low half and 1 for the high half (`ComputeSmallCell`, `ComputeCellEighth`). | octant |
 | `distance_to_surface` | m. Distance to the liquid surface, negative inside the liquid. | signed distance |
 | `sample_weight` | Weight of one sample point in a sum that approximates an integral. | quadrature weight |
 
@@ -190,8 +190,10 @@ Every grid is a mixed-size grid from its first commit; these words name its part
 | `sibling_cells` | The 8 small cells of one big cell. | family |
 | `active_cell` | A cell that is not split. | leaf |
 | `size_level` | 0 is the biggest. | level (alone) |
-| `face_piece` | The part of a big face that touches one small cell. | subface |
+| `face_piece`, `face piece`, `FacePieceId` | The part of a face between two cells or at the grid's edge, kept once, at the size level of its smaller cell: between a big cell and four small cells, each small cell's whole side. Its id names its axis, its size level and the cell place on its high side. Not a grid piece, not a memory piece. | subface |
 | `size_step_rule` | Neighbours differ by at most one size level. | 2:1 closure |
+| `fixed order`, `ComesBefore` | The one order of cell blocks and cells everywhere: by the low corner, in widths of a size-level-15 cell, by `z`, then `y`, then `x`, and at one low corner the bigger one (the smaller size level) first. It depends only on the cells, so every table built from it is the same on every run. | |
+| `grid version`, `GridVersion` | A number that grows by one each time the set of active cells changes. 0 means bound to no grid; a built grid has 1 or more. Places belong to one grid version; ids survive every version. | |
 | `SplitCell`, `MergeCells`, `ResizeCells` | Split one big cell into its 8 small cells; merge 8 sibling cells into one big cell; change cell sizes after a committed step. | refine, coarsen, adapt |
 | `particle_region` | Liquid near the surface, carried by particles. | band, narrow band |
 | `grid_only_region` | Liquid with no particles. | core (for liquid with no particles) |

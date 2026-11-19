@@ -9,3 +9,4 @@ MoveParticle  # the one-particle move of contact; Move is the verb of the MovePa
 MoveToRestGap  # private step: moves a point to one contact tolerance from a solid
 HasConvexDistance  # private predicate of the stepping search: true when a shape may take the second-order advance; the mesh solids add their case
 MoveToRestGapOfNearSurfaces  # private step: moves a point to the rest gap of every near surface at once
+ComesBefore  # the fixed order of cells and blocks, a predicate read as a sentence: first comes before second

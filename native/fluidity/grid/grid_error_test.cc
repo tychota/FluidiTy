@@ -172,8 +172,24 @@ TEST(GridFailure, Default_IsNoneWithZeroMagnitude) {
   EXPECT_EQ(failure.magnitude, 0U);
 }
 
+TEST(GridFailure, Default_NamesNoCell) {
+  // CellId{0} is never a valid id, so a default failure names no cell.
+  const GridFailure failure;
+  EXPECT_EQ(failure.cell.value, 0U);
+  EXPECT_EQ(failure.other_cell.value, 0U);
+}
+
 TEST(GridFailure, IsTriviallyCopyable) {
   EXPECT_TRUE(std::is_trivially_copyable_v<GridFailure>);
+}
+
+TEST(GridFailure, FieldOrder_IsErrorCellsThenMagnitude) {
+  // The error, padded to 8 bytes, the two cell ids and the magnitude: the CPU and the GPU write one layout.
+  EXPECT_EQ(offsetof(GridFailure, error), 0U);
+  EXPECT_EQ(offsetof(GridFailure, cell), 8U);
+  EXPECT_EQ(offsetof(GridFailure, other_cell), 16U);
+  EXPECT_EQ(offsetof(GridFailure, magnitude), 24U);
+  EXPECT_EQ(sizeof(GridFailure), 32U);
 }
 
 }  // namespace

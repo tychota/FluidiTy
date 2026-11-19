@@ -22,7 +22,9 @@ std::string_view ToMessage(GridError error) {
              "place once.";
     case GridError::kSiblingCellMissing:
       return "A big cell is split into small cells, but one of its 8 small cells is missing. List all 8 small cells "
-             "or use the big cell.";
+             "or use the big cell. When the missing cell lies beyond the lowest cell coordinate, it can never be "
+             "listed: a cell is split only when its small cells fit the coordinate range. Move the grid origin or use "
+             "larger biggest cells.";
     case GridError::kSizeStepRuleBroken:
       return "Two touching cells differ by more than one size level. Add cells of the in-between size, or make the "
              "neighbouring cells more alike.";
