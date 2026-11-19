@@ -79,7 +79,8 @@ FirstHit FindHit(const SolidContactInputs& inputs, Path path) {
 }
 
 // Fails the calling test unless |actual - expected| <= 2^-44 * max(|actual|, |expected|, reference): the relative
-// tolerance of the contact tests (contact design 7), with reference the largest input of the test (1 for times of
+// tolerance of the contact tests, a few hundred rounding units of the larger value: room for the rounding of a closed
+// form, far below what a wrong formula gives. reference is the largest input of the test (1 for times of
 // about a second).
 void ExpectNearRelative(double actual, double expected, double reference) {
   const double scale = std::max({std::abs(actual), std::abs(expected), reference});

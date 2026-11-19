@@ -1570,8 +1570,8 @@ void ExpectNoSolidSample(const SolidVelocitySample& sample) {
   EXPECT_EQ(sample.distance, 0);
 }
 
-// Design 7's tolerance for velocities and fractions: |actual - expected| <= 2^-44 * max(|actual|, |expected|,
-// reference), with reference the largest input value of its kind in the test.
+// The relative tolerance of the contact tests for velocities and fractions: |actual - expected| <= 2^-44 *
+// max(|actual|, |expected|, reference), with reference the largest input value of its kind in the test.
 void ExpectNearRelative(double actual, double expected, double reference) {
   const double largest = std::max({std::abs(actual), std::abs(expected), reference});
   EXPECT_NEAR(actual, expected, 0x1p-44 * largest);
@@ -1743,8 +1743,9 @@ TEST(ComputeSolidVelocitySample, MovingSphereAtElapsed_UsesPoseAtThatTime) {
 
   EXPECT_TRUE(sample.has_solid);
   // The spin turns the sphere's axes through Sin and Cos, whose last bits differ between libraries, so the turn into
-  // its own axes and back rounds differently. Design 7's relative tolerance leaves room for that: reference 2 m for
-  // the distance, 1 for the normal, and the largest input speed, 3 m/s at the point, for the velocity.
+  // its own axes and back rounds differently. The relative tolerance of the contact tests leaves room for that:
+  // reference 2 m for the distance, 1 for the normal, and the largest input speed, 3 m/s at the point, for the
+  // velocity.
   ExpectNearRelative(sample.distance, 2, 2);
   ExpectVec3NearRelative(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0}, 1);
   ExpectVec3NearRelative(sample.solid_velocity, {.x = 1, .y = 1, .z = 0}, 3);

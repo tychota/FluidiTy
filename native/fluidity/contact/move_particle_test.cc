@@ -31,7 +31,8 @@ namespace fluidity::contact {
 namespace {
 
 constexpr double kTolerance = kTestContactTolerance;  // m, 2^-30.
-constexpr double kPositionTolerance = 2 * kTolerance;  // m, contact design 7.
+// m. Two contact tolerances: an expected rest point is written to within the rest gap, and rounding adds far less.
+constexpr double kPositionTolerance = 2 * kTolerance;
 constexpr SolidMotion kNoMotion = move_particle_cases::kNoMotion;  // A solid that neither moves nor turns.
 constexpr Vec3 kUnitX = move_particle_cases::kUnitX;
 constexpr Vec3 kUnitY = move_particle_cases::kUnitY;
@@ -116,7 +117,8 @@ MoveParticleCall RunMoveWith(std::string_view case_name, SceneStart start) {
 }
 
 // Fails the calling test unless |actual - expected| <= 2^-44 * max(|actual|, |expected|, reference): the relative
-// tolerance of the contact tests (contact design 7), with reference the largest input speed of the test (1 for
+// tolerance of the contact tests, a few hundred rounding units of the larger value: room for the rounding of a closed
+// form, far below what a wrong formula gives. reference is the largest input speed of the test (1 for
 // fractions).
 void ExpectNearRelative(double actual, double expected, double reference) {
   const double scale = std::max({std::abs(actual), std::abs(expected), reference});
@@ -2432,7 +2434,7 @@ TEST(MoveParticle, ObliqueCornerResidue_SlidesOnWithoutSqueezeOrStop) {
 
 TEST(MoveParticle, GrooveSlideAlongEdge_KeepsSpeedAlongEdge) {
   // Both faces of the 60 degree wedge are active at the start: one joint response keeps the part along the common line.
-  // The velocity of the solid hit last (design 5.5 as it was) gives {0, 0, 0}.
+  // A rule that took the velocity of the solid hit last, one surface after the other, would give {0, 0, 0}.
   const SolidContactResult result = ExpectEndAtRestGap(
       "GrooveSlideAlongEdge",
       {.x = std::numbers::sqrt3 * kTolerance, .y = 0.01, .z = kTolerance},
