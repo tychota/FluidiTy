@@ -1832,6 +1832,7 @@ to $x = 2.3$ m, $"tol"$ above the surface at its end height of 0.5 m. If the sol
 #procedure(
   [`MoveParticle`, one particle for one step],
   <proc-move-particle>,
+  breakable: true,
   inputs: [`start_position`, both velocities, the solids in ascending `solid_id`, `step_duration`, `friction`,
     `start_overlap_tolerance`, `contact_tolerance` and the particle's `plate_side`.],
   outputs: [The end position, both velocities after the response, the kind, the record of the first hit, the hit

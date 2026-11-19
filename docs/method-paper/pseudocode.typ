@@ -10,9 +10,10 @@
 //
 // `title`: the function or operation, usually a code name. `label`: a label such as <proc-check-can-run-on>.
 // Named arguments `inputs`, `outputs` and `fails` give the lines "Inputs", "Outputs" and "Fails when"; each is
-// optional. A named argument `closing` gives one unnumbered line after the last step, such as where the same
-// procedure runs in another form. Every positional argument is one step, as a pair `([short name], [what the step
-// does])`. Steps are numbered from 1 in the order given.
+// optional. `breakable: true` lets a procedure taller than a page continue on the next one. A named argument
+// `closing` gives one unnumbered line after the last step, such as where the same procedure runs in another form.
+// Every positional argument is one step, as a pair `([short name], [what the step does])`. Steps are numbered from
+// 1 in the order given.
 #let procedure(title, label, ..steps) = {
   let named = steps.named()
   let header-lines = (
@@ -42,14 +43,30 @@
     })
     .flatten()
 
+  // A procedure floats to the top or bottom of a page, as the drawn figures do. Kept in place, a tall procedure
+  // that does not fit moves to the next page whole and leaves the end of this one white. A float never breaks, so a
+  // procedure taller than a page would run off it: `breakable: true` keeps such a procedure in the text instead,
+  // where it continues on the next page. Its caption, header and first step then form one piece that never
+  // breaks, so a page never ends with a header alone, and a float waiting for a page goes to the top of the next
+  // page, before or after the procedure's parts, never between a header and its steps.
+  let is-breakable = named.at("breakable", default: false)
+  let kept-together-count = if is-breakable { calc.min(1, steps.pos().len()) } else { steps.pos().len() }
+  let step-grid(cells) = grid(columns: (1.4em, 1fr), row-gutter: 0.65em, ..cells)
+
   let body = block(width: 100%, stroke: (top: procedure-rule, bottom: procedure-rule), inset: (y: 0.7em), {
     set align(left)
     set par(justify: false, first-line-indent: 0pt)
-    header
-    v(0.2em)
-    line(length: 100%, stroke: procedure-rule)
-    v(0.2em)
-    grid(columns: (1.4em, 1fr), row-gutter: 0.65em, ..step-cells)
+    block(breakable: not is-breakable, spacing: 0pt, {
+      header
+      v(0.2em)
+      line(length: 100%, stroke: procedure-rule)
+      v(0.2em)
+      step-grid(step-cells.slice(0, 2 * kept-together-count))
+    })
+    if kept-together-count < steps.pos().len() {
+      v(0.65em)
+      block(spacing: 0pt, step-grid(step-cells.slice(2 * kept-together-count)))
+    }
     let closing = named.at("closing", default: none)
     if closing != none {
       v(0.2em)
@@ -59,7 +76,11 @@
     }
   })
 
-  // A procedure floats to the top or bottom of a page, as the drawn figures do. Kept in place, a tall procedure
-  // that does not fit moves to the next page whole and leaves the end of this one white.
-  [#figure(body, kind: "procedure", supplement: [Procedure], caption: title, placement: auto)#label]
+  if is-breakable {
+    show figure.where(kind: "procedure"): set block(breakable: true)
+    show figure.caption: set block(sticky: true)
+    [#figure(body, kind: "procedure", supplement: [Procedure], caption: title)#label]
+  } else {
+    [#figure(body, kind: "procedure", supplement: [Procedure], caption: title, placement: auto)#label]
+  }
 }
