@@ -1,11 +1,13 @@
-// Proves that the shared headers grid/grid_ids.h and grid/grid_tables.h compile as GPU code: label no_gpu.
+// Proves that the shared headers grid/grid_ids.h, grid/grid_tables.h and grid/weight_curve.h compile as GPU code:
+// label no_gpu.
 //
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
-// code for every function of grid_ids.h, the helpers the header's functions call included, and for CellBlockRange,
-// GridFrame, CellState and FacePieceKind read and written by GPU code. The CUDA compiler generates GPU code for a
-// shared function only where GPU code calls it, so each function is called here once. A shared function that calls
-// a CPU-only function fails this build. That build is the proof; the test only takes the function's address, which
-// needs no GPU.
+// code for every function of grid_ids.h and weight_curve.h, the helpers those functions call included, and for
+// CellBlockRange, GridFrame, CellState, FacePieceKind and WeightCurveValue read and written by GPU code. The integer
+// results go to `results`, and the double results of weight_curve.h go to `double_results`. The CUDA compiler
+// generates GPU code for a shared function only where GPU code calls it, so each function is called here once. A
+// shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
+// function's address, which needs no GPU.
 
 #include <gtest/gtest.h>
 
@@ -14,19 +16,22 @@
 #include "fluidity/base/axis.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/weight_curve.h"
 
 namespace fluidity::grid {
 namespace {
 
-// Reads its inputs from `values` (4 integers), the range, the frame and the two tables, and writes one integer per
-// shared function to `results`, so the compiler cannot drop any call.
-__global__ void ComputeWithEveryGridIdFunction(
+// Reads its inputs from `values` (4 integers), the range, the frame and the two tables, and writes at least one
+// integer per shared function to `results` and the doubles of weight_curve.h to `double_results`, so the compiler
+// cannot drop any call.
+__global__ void ComputeWithEverySharedGridFunction(
     const std::int32_t* values,
     CellBlockRange range,
     GridFrame frame,
     const CellState* cell_states,
     const FacePieceKind* face_piece_kinds,
-    std::uint64_t* results
+    std::uint64_t* results,
+    double* double_results
 ) {
   const auto size_level = static_cast<SizeLevel>(values[0] & 7);
   const CellCoord cell_coord = {.x = values[1], .y = values[2], .z = values[3]};
@@ -55,10 +60,21 @@ __global__ void ComputeWithEveryGridIdFunction(
   results[result_index++] = frame.biggest_cell_width > frame.origin.z ? 1 : 0;
   results[result_index++] = cell_states[place] == CellState::kActive ? 1 : 0;
   results[result_index++] = face_piece_kinds[place] == FacePieceKind::kBetweenCells ? 1 : 0;
+  // weight_curve.h: the curve, the spread and the constants.
+  // weight_curve.h writes doubles, so they go to their own buffer and no double is converted to an integer.
+  int double_result_index = 0;
+  const WeightCurveValue curve_value = ComputeWeightCurve(frame.origin.x);
+  double_results[double_result_index++] = curve_value.weight;
+  double_results[double_result_index++] = curve_value.slope;
+  double_results[double_result_index++] = ComputeCompleteWeightedSpread(frame.biggest_cell_width);
+  double_results[double_result_index++] = kWeightCurveReach;
+  double_results[double_result_index++] = kMinWeightSum;
+  double_results[double_result_index++] = kMinPivotShare;
+  results[result_index++] = static_cast<std::uint64_t>(kMaxNearbyFaces);
 }
 
-TEST(CellBlockRange, BuiltForTheGpu_HasAnAddress) {
-  const auto function_address = &ComputeWithEveryGridIdFunction;
+TEST(SharedGridFunctions, BuiltForTheGpu_HaveAnAddress) {
+  const auto function_address = &ComputeWithEverySharedGridFunction;
   EXPECT_NE(function_address, nullptr);
 }
 
