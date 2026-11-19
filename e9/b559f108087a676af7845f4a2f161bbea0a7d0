@@ -1,0 +1,25 @@
+docs/method-paper/figures/grid_face_pieces.typ
+  s_4f0877e2acdcf0::t_68f3e312a5e929 2,13-14,27
+docs/method-paper/figures/grid_nearby_faces.typ
+  s_4f0877e2acdcf0::t_3ef4d0347de7f4 1-8,82-83,142,144
+docs/method-paper/figures/grid_staggered.typ
+  s_4f0877e2acdcf0::t_0d90f28f106fd4 2,44,55,57
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_f9dea49928105e 232-235,1939-1940,1944,1993-1998,2006-2008,2011-2013,2135-2164,2167-2168,2170-2192,2260,2272,2307-2309,2321-2324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e9b559f108087a676af7845f4a2f161bbea0a7d0",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
