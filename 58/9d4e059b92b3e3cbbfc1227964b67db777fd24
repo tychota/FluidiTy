@@ -1,0 +1,19 @@
+native/fluidity/grid/grid_error_message.cc
+  s_296b4388b58bee::t_eef898e2734fec 32-33,35-36,42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "589d4e059b92b3e3cbbfc1227964b67db777fd24",
+  "prompts": {},
+  "sessions": {
+    "s_296b4388b58bee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ada5a6831df01a424",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
