@@ -1,0 +1,19 @@
+native/fluidity/contact/contact_error_test.cc
+  s_296b4388b58bee::t_7d058c25e5b82b 6,59-62,64,67,70-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9e017e8b7e2a14ff0d2ae8415562f470e892e028",
+  "prompts": {},
+  "sessions": {
+    "s_296b4388b58bee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ada5a6831df01a424",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
