@@ -34,15 +34,15 @@ One line per finding: what changed, and where.
 
 **Blocking findings**
 
-- **B1** `GridFrame` is created by Task 3 in `grid_tables.h` (that type only). Task 5 consumes it. Task 7 adds
-  `CellState`, `FacePieceKind`, `GridTables`.
+- **B1** `GridFrame` is created by Task 3 in `grid_tables.h` (that type only). Task 5 consumes it. Task 7b adds
+  `GridTables` (second revision, K2: the two enums are Task 3's).
 - **B2** Task 8 keeps the checks only. The one-argument `ComputeGridCounts` is new Task 8b: it counts on the
   sorted ids (blocks by unique block id, face pieces by id lookups, 8 B per active or split cell). The buffers
   form moved to Task 9b, after the CPU build. Design 3.3 updated.
 - **B3** `ComesBefore` is added to `tools/check_rules_allowed_names.txt` by Task 3. Renamed:
-  `ComputeSplitCellCountToAdd` (Task 7), `ComputeIsInBlockSet`, `ComputeIsBorderBlock` (Task 22a, design 5.5).
-- **B4** Renamed: `FactorTwoNearSurface_IsSmallest`, `SlopedSurfaceTank_PassesEveryCheck`,
-  `SlopedSurfaceTankOnGpu_EqualsCpu`, `w_depth`; the text says "the cells within 8 smallest widths of the
+  `ComputeSplitCellCountToAdd` (Task 7a), `ComputeIsInBlockSet`, `ComputeIsBorderBlock` (Task 22a, design 5.5).
+- **B4** Renamed: `FactorTwoNearSurface_IsSmallest`, the scene tests (their final names are in the second
+  revision, K1), `w_depth`; the text says "the cells within 8 smallest widths of the
   surface" (Tasks 13a, 26a, 27; design 3.8, 5.9, 7).
 
 **Rulings**
@@ -50,7 +50,7 @@ One line per finding: what changed, and where.
 - **R1** `GridError` and `GridFailure` in `grid_error.h`; `ToMessage` and `ToName` in
   `grid_error_message.h/.cc`, as contact is built (Task 2; design 3.3). Task 2 creates no `staggered_grid.h`.
 - **R2** Both sort keys use the offset `2^(18 + level)` before the shift, in unsigned arithmetic; range proof and
-  the test `ToBlockSortKey, LowestBlockAtLevelZero_IsZero` in Task 7.
+  the test `ToBlockSortKey, LowestBlockAtLevelZero_IsZero` in Task 7a.
 - **R3** Task 3 produces `ComesBefore` for blocks and for cells; design 3.1 gained the second.
 - **R4** `ComputeCellSizeFactorTable` is shared and `constexpr`: an exact power of two times one of three
   hexadecimal literals; no library call (Task 13b; design 3.8).
@@ -67,7 +67,7 @@ One line per finding: what changed, and where.
   `CheckCanRunOn(run_on)` first and returns `kRunOnCallFailed` before it touches the block, and its `no_gpu`
   test passes a CPU `RunMemory`. The four grid builders do the same, so `kRunOnCallFailed` stays in their
   `Fails:` lists and the `no_gpu` tests now reach the builder (Tasks 6b, 21, 22b).
-- **R11** `GridFrame` is passed by value in every shared function (Tasks 7, 10, 12, 13a; design 3.2).
+- **R11** `GridFrame` is passed by value in every shared function (Tasks 7a, 10, 12, 13a; design 3.2).
   `GridTables`, `CellSizeSettings`, `CellWidthsByLevel`, `CellSizeFacts` and the lists stay by reference.
 - **R12** No build of `main` and no worktree of it. The numbers come from `main`'s Python reference, read with
   `git show` and run outside both checkouts; they live in `grid_main_comparison_test_cases.h` (Task 26b).
@@ -109,13 +109,46 @@ One line per finding: what changed, and where.
   **N19** `math::Min`, `math::Max`. **N20** `NextToBigCell_IsOneLevelSmaller`; glossary lines for the
   refinement words (Task 13b). **N21** the 10,000-grid tests use the small generator arguments.
 - **N22** removed from Task 20. **N23** Task 21 is Kind `mechanical`. **N24** Task 22a lists
-  `grid_test_support`. **N25** the CPU `BorderSearchBuffers` holds no array and its estimate has no entry (Task
-  22b). **N26** Task 27 checks 3.8 and 5.9. **N27** `ReadMemoryAvailable(kGpu)->free_bytes`. **N28** design
+  `grid_test_support`. **N25** the CPU form of border search now reads its marks array (Task 22b; second revision, Q3). **N26** Task 27 checks 3.8 and 5.9. **N27** `ReadMemoryAvailable(kGpu)->free_bytes`. **N28** design
   lines 323 and 981 reworded; Global Constraints "Comments" forbids copying design comments. **N29** Global
   Constraints "Build registration". **N30** design 6 and 7 corrected. **N31** the compile test follows
   `base_constants_gpu_compile_test.cu`.
 - Left as they are: test names with `EveryThreadBlockAndThread` (contact as built has the same name); the word
   "rows" inside design sections no finding quotes (the plan never copies it).
+
+### Second revision 2026-11-19, after the second scan
+
+The scan is `preflight-2.md` beside the first. One line per finding.
+
+- **K1** `tank` is banned too: `SlopedSurfaceInBox_PassesEveryCheck`, `SlopedSurfaceInBoxOnGpu_EqualsCpu`, the
+  scene is "a domain box of liquid with a sloped surface" (Task 26a, 27; design 7). The whole banned list of
+  the glossary was run over the plan and the design with the rules tool.
+- **K2** `CellState` and `FacePieceKind` are produced by Task 3; Task 7b adds only `GridTables`.
+- **K3** `CheckSiblingsAt` also walks the eighth-0 chain, so every split cell has its siblings checked once;
+  test `MissingCellBesideSplitSiblings_NamesTheMissing`; a matching mutation (Tasks 7a, 10; design 5.1).
+- **K4** The tail-fill test uses 14 lone level-0 cells (tail of 2) and asserts the stale ids were there and are
+  gone (Task 11a).
+- **Q1** `FindCellAt`'s guard is stated in cells of the frame's smallest level, with its proof; tests at 262144 m
+  and 524288.25 m (Task 13; design 3.2, 5.2).
+- **Q2** A place beside a cell is looked up by raw coordinate through `FindSortedCellAt`; no id is made outside
+  the range. `ComputeIsCoordInRange` (Task 3); fixtures at both limits (Tasks 7a, 7b, 8b).
+- **Q3** The design binds: the CPU keeps its `border marks` entry, and the CPU form reads it (Task 22b).
+- **Q4** `main`'s Python reference, 100 positions as the design says (Task 26b; design 7 says "reference").
+- **Q5** `<proc-count-grid>` is added by Task 1b; Task 8b's step comments cite it.
+- **Q6** The six questions of the first report take their recommended answers, except the one Q3 reverses.
+- **M1** `BuildGridFromBuffers` (Task 9a) is what Task 24 consumes. **M2** `BuildBorderSearchMemoryEstimate` is
+  declared in `grid_memory_estimate.h`. **M3** `UniformGridOffCentre_Has27` and `UniformGridAtCellCentre_Has18`:
+  both counts are right, for the positions named (Task 17). **M4** `ApplyFixedShuffle` (Task 5). **M5**
+  `SplitCellsOverflowThePlaces_IsTooManyCellBlocks` and its list in Tasks 11a, 11b. **M6** `ComputeSortCount` in
+  64 bits, with its test. **M7**, **M9** Global Constraints "Replay tests". **M8** `BuildTestGrid` takes a CPU
+  span and copies it for a GPU grid. **M10** Task 7 split into 7a and 7b; `ComputeCellStateBeside` gives the far
+  side of a face place. **M11** the scene of Task 26a is defined. **M12** the tolerance of Task 26b.
+  **M13** the header names tests, not tasks. **M14** `BuildSortedCellList` replaces `CheckCellListOnBuffers`.
+- Found while re-reading the glossary's banned list (K1): `velocity_gradient_size` holds the banned "velocity
+  gradient"; it is `velocity_change_size` in Task 13a and design 3.8, 5.9, 7.
+- **M15**, **M16**, **M18**, **M19** design 7 test names, `storage`, "band", `const GridFrame&`, the border
+  wording and the 8 steps are brought in line with the plan. **M17** recorded in Task 27. **M20** GPU-half
+  names start with an allowed verb. **M21** `BuildSizeStepClosure`. **M22** plain glossary meanings.
 
 **Proposed model per task**
 
@@ -128,7 +161,8 @@ One line per finding: what changed, and where.
 | 5 | opus | The oracle of every random test; a quiet error here hides real ones. |
 | 6a | sonnet | Entries and arithmetic are worked out in the task. |
 | 6b | opus | Ownership, lending and exact accounting of memory pieces. |
-| 7 | opus | The rules both builders share; the sort keys must be right at the limits. |
+| 7a | opus | The rules both builders share; the sort keys and the sibling walk must be right at the limits. |
+| 7b | opus | The face rule across block sides and sizes. |
 | 8 | opus | The first-failure order must match the GPU's key. |
 | 8b | opus | A second statement of the face rule, held only by its tests. |
 | 9a | opus | The CPU oracle. |
@@ -180,7 +214,7 @@ Copied from the Foundation plan:
 - Naming: no `3D` suffix, no `Cuda`/`Gpu`/`Device`/`host` in public names, no bare `bool` parameters, no
   abbreviations (MAC, PIC, APIC, P2G, G2P, EOS), no milestone codes. A free function starts with a verb of
   `AGENTS.md` "Allowed verbs"; any other name must be in `tools/check_rules_allowed_names.txt` with its reason
-  (this plan adds one: `ComesBefore`, Task 3). Functions of a private `_gpu.h` end in `OnGpu`.
+  (this plan adds one: `ComesBefore`, Task 3). Functions of a private `_gpu.h` start with an allowed verb too and end in `OnGpu`.
 - 120 columns, two-space indent, `//` comments, braces on every control-flow body.
 - Tests are named `TEST(FunctionOrType, Situation_Outcome)`, one behaviour each, in `*_test.cc` beside the code.
 - Deletion is the default: add a dependency, file or tool only when a task here names it.
@@ -203,7 +237,10 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
 - **Replay tests.** For each operation a `cpu` test in `<name>_steps_test.cc` runs the per-item functions for
   every thread block and thread of the launch, in launch order and in reverse, atomics replaced by a plain
   minimum and addition, `BuildStableOrder` and `ComputeExclusivePrefixSum` on the CPU between the steps, and
-  compares with the CPU builder. It is the main evidence until the hardware run.
+  compares with the CPU builder. CPU buffers hold only what the CPU builder needs, so the replay builds the
+  GPU's working arrays (sort keys, the two orders, marks, an `OrderBuffers`, a status record) in the test, on
+  the CPU, and takes `cell ids` and the tables from CPU buffers. It is the main evidence until the hardware
+  run. A no-allocation test builds its reference grids before the counted part begins.
 - **GPU stack.** A GPU function that keeps more local bytes than the driver's default stack (1,024 B per thread)
   makes the driver hold a stack for every resident thread outside the run's memory; contact declares that as a
   `MemoryWhere::kDriverStack` entry (`BuildContactStackEstimate`, `contact/move_particles.h`). The grid's own
@@ -242,7 +279,7 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
   function", never "kernel" (that word is kept out of the code). "piece" has three senses and is never bare
   where two could be meant: a "face piece", a "grid piece" (`GridPiece`), and a "memory piece" (the bytes of
   one buffer inside a `RunMemory`). An estimate line is an "entry"; "row" is a matrix row only. Banned in every
-  name, message and comment, also inflected: "refuse", "band", "tile", "slab", "family", "margin", "nudge",
+  name, message and comment, also inflected: "refuse", "band", "tank", "tile", "slab", "family", "margin", "nudge",
   "signed distance", a `View` suffix, "system" for a set of equations.
 
 Grid's own:
@@ -293,7 +330,7 @@ Grid's own:
   physical field and has no identifier containing `owner`.
 - **Fixed order** everywhere: blocks and cells by low corner in level-15 cell units by `z`, then `y`, then
   `x`, then bigger level first. A reported failure is the first in that order: the smallest `(step, position)`
-  failure key of Task 7, on both processors.
+  failure key of Task 7a, on both processors.
 - **Errors of this module.** Every `std::expected` has `GridFailure` as its error. The one `BufferError`
   mapping: `kOutOfMemory` and `kRunMemoryTooSmall` become `GridError::kOutOfMemory` with
   `GridFailure::magnitude` = the bytes asked; `kRunOnCallFailed` stays `kRunOnCallFailed`; `kSizeMismatch`
@@ -309,7 +346,8 @@ Grid's own:
   output with the helpers of Task 5 (never `std::uniform_*_distribution`, whose output differs between
   standard libraries). "The 200 random grids" are `BuildRandomGridCells(seed, 4, 3)` for seeds 1..200 (4 levels,
   a box of 3 x 3 x 3 level-0 cells: at most 252 blocks, so they fit buffers for 4,096 blocks), each list
-  shuffled with seed `seed + 1000`. "The 100 random grids" are seeds 1..100 of the same. "Small random grids"
+  shuffled with `ApplyFixedShuffle(cells, seed + 1000)` (Task 5; never `std::shuffle`, whose order differs
+  between standard libraries). "The 100 random grids" are seeds 1..100 of the same. "Small random grids"
   are `BuildRandomGridCells(seed, 3, 2)`; every test of 10,000 grids uses them, so it stays fast in a debug
   build.
 - Comparisons with the proof of concept turn Y-up into Z-up with `new = {old.x, -old.z, old.y}`: old cell `z = k`
@@ -358,7 +396,7 @@ Expected: seven `PASS` lines (format, rules, cpu debug, cpu release, tidy, paper
    and `ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth` (Task 13a),
    `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (Task 13c).
 8. **A block or a cell at the coordinate limit.** A sort key that goes negative there sorts the block last on
-   the GPU only. Pinned: `ToBlockSortKey, LowestBlockAtLevelZero_IsZero` (Task 7).
+   the GPU only. Pinned: `ToBlockSortKey, LowestBlockAtLevelZero_IsZero` (Task 7a).
 
 ---
 
@@ -405,7 +443,7 @@ Load the `typesetting-with-typst`, `drawing-with-cetz` and `typesetting-document
   (1 check frame, version and ids; 2 sort, find overlaps; 3 mark split cells, check siblings; 4 size-step rule;
   5 blocks and their count; 6 neighbour tables; 7 cell states; 8 face piece kinds) and a closing line "on the
   GPU: section 8" (Task 1b fills the reference); `<proc-nearby-face-weights>` with the 9 steps of design 5.4.
-  Code comments `// Step N:` in Tasks 8, 8b, 9a, 17 and 18 follow these numbers.
+  Code comments `// Step N:` in Tasks 8, 9a, 17 and 18 follow these numbers.
 - [ ] **Step 5: Run** `typst compile docs/method-paper/fluidity-method.typ out/paper/fluidity-method.pdf`. Read
   every new page; fix overlaps and clipped labels.
 - [ ] **Step 6: Commit.** Subject: `Describe the grid in the method paper`.
@@ -423,7 +461,8 @@ Load the same three skills.
 **Interfaces:**
 - Consumes: Task 1a (`<sec-grid>`, `<proc-build-grid>`, `cell-grid`); `<sec-stable-order>`, `<sec-run-on>`
   (Foundation's sections).
-- Produces labels: `<sec-parallel-build>`, `<fig-parallel-build>`, `<proc-build-grid-in-parallel>`.
+- Produces labels: `<sec-parallel-build>`, `<fig-parallel-build>`, `<proc-build-grid-in-parallel>`,
+  `<proc-count-grid>`.
 
 - [ ] **Step 1: Text.** Part 8 of `<sec-grid>`, `<sec-parallel-build>`: a run is all CPU or all GPU, so in a
   GPU run the cell list never leaves the GPU and only a status record comes back. Each sequential step of
@@ -431,7 +470,7 @@ Load the same three skills.
   block-index example: blocks `[A, A, B, C, C, C]` in sorted order give marks `[1, 0, 1, 1, 0, 0]` and exclusive
   sums `[0, 1, 1, 2, 3, 3]`; the first entry of each run writes its block at index 0, 1, 2, and any entry's
   block index is `sum + mark - 1`. The fixed order is kept because the sort keys are the fixed order itself;
-  state the key formula of Task 7 and why it is never negative. The first failure is the smallest
+  state the key formula of Task 7a and why it is never negative. The first failure is the smallest
   `(step, position)` pair, found with an integer minimum, so it does not depend on thread timing. The tail of
   the sorted array is filled with the never-valid id before the sort, so no cell of an earlier build is read.
   Why the tables are then identical to the CPU's: each entry is a function of the sorted list, not of the order
@@ -447,8 +486,15 @@ Load the same three skills.
   cell states, one thread per cell place; P11 face piece kinds, one thread per face place; P12 counts and
   status. Replace the closing line of `<proc-build-grid>` by a reference to this procedure. Code comments
   `// Step PN:` in Tasks 10, 11a and 11b follow these numbers.
-- [ ] **Step 4: Run** the `typst compile` command of Task 1a; read the new pages.
-- [ ] **Step 5: Commit.** Subject: `Describe the parallel grid build in the method paper`.
+- [ ] **Step 4: Counting without tables.** One paragraph in `<sec-cell-blocks>` and the procedure
+  `<proc-count-grid>` with four steps: 1 check and sort the list (steps 1 to 4 of `<proc-build-grid>`); 2
+  count the active cells per level; 3 count the face pieces, one cell at a time, from the place beside each of
+  its six sides (active, inside a bigger cell, split or absent); 4 add the split cells, sort by block and
+  count the distinct blocks. Say why it exists (the planner counts before any buffers exist) and that a cell
+  beside the coordinate limit has no cell beyond it. Code comments `// Step N:` in Task 8b follow these
+  numbers.
+- [ ] **Step 5: Run** the `typst compile` command of Task 1a; read the new pages.
+- [ ] **Step 6: Commit.** Subject: `Describe the parallel grid build in the method paper`.
 
 ### Task 2: Grid errors
 
@@ -488,7 +534,7 @@ Load the same three skills.
 **Files:**
 - Create: `native/fluidity/grid/grid_ids.h` (S), `grid_ids_test.cc`, `grid_ids_gpu_compile_test.cu` (label
   `no_gpu`, registered as `base_constants_gpu_compile_test.cu` is in `base/CMakeLists.txt`),
-  `grid_tables.h` (S; `GridFrame` only for now)
+  `grid_tables.h` (S; for now `GridFrame`, `CellState` and `FacePieceKind`)
 - Modify: `grid_error.h` (`GridFailure` gains `CellId cell{}; CellId other_cell{};`), `docs/glossary.md`,
   `tools/check_rules_allowed_names.txt` (one line: `ComesBefore  # the fixed order of cells and blocks, a
   predicate read as a sentence: first comes before second`), build registration
@@ -499,7 +545,10 @@ Load the same three skills.
   `CornerPlaceIndex`, both `ToCellBlockIndex`), with these two additions to what the design lists:
   `bool ComesBefore(CellId first, CellId second)` beside the `CellBlockId` form, and `struct CellBlockRange`
   (declared here so shared headers of other modules take it on either processor).
-- Produces `struct GridFrame` of design 3.2 in `grid_tables.h`, and nothing else there yet.
+- Produces in `grid_tables.h` the `GridFrame` struct and the `CellState` and `FacePieceKind` enums of design
+  3.2 (the buffers of Task 6b hold these element types), and nothing else there yet.
+- Produces also `constexpr bool ComputeIsCoordInRange(CellCoord coord)`: every axis in
+  `-kMaxCoord..kMaxCoord`. Code that looks at a place beside a cell calls it before it makes an id.
 - **Decided here** (the design says only "packs"):
   - Valid cell coordinates are `-kMaxCoord..kMaxCoord` on each axis. A coordinate is stored as `c + kMaxCoord`
     in 19 bits, so the stored values `0..2^19 - 2` are valid and `2^19 - 1` means `kMaxCoord + 1`.
@@ -508,7 +557,7 @@ Load the same three skills.
   - `FacePieceId`: bits 61..62 hold `axis + 1` (so 0 is never valid), 57..60 size level, coordinates as above.
     `cell_high_coord` may be `kMaxCoord + 1` along the normal axis (the high side of the last cell).
   - What the header must say: `ToCellId` keeps only 19 bits per axis. `kMaxCoord + 1` is the one value outside
-    the range that keeps its meaning (the checks of Task 7 report it as `kCoordOutOfRange`); any other value
+    the range that keeps its meaning (the checks of Task 7a report it as `kCoordOutOfRange`); any other value
     outside the range gives the id of another cell, so a caller checks its coordinates first.
     `ComputeSmallCell` of a cell whose doubled coordinate leaves the range does the same.
   - `ComesBefore`: compare `(z, y, x)` of the low corner in level-15 units as `std::int64_t` (cell coordinate
@@ -529,6 +578,8 @@ Load the same three skills.
   - `TEST(ComesBefore, BiggerBlockAtSameCorner_ComesFirst)`, `TEST(ComesBefore, LowerZ_ComesFirst)`,
     `TEST(ComesBefore, CellsAtCoordLimits_OrderByLowCorner)` (level 0 `{-kMaxCoord, 0, 0}` before level 15
     `{-kMaxCoord, 0, 0}` before level 0 `{kMaxCoord, 0, 0}`; neither of two equal ids comes before the other).
+  - `TEST(ComputeIsCoordInRange, OnePastEitherLimit_IsOutside)`: `{kMaxCoord, -kMaxCoord, 0}` is inside;
+    `{kMaxCoord + 1, 0, 0}` and `{0, 0, -kMaxCoord - 1}` are outside.
   - `TEST(ToCellBlockIndex, PlaceIndexes_DivideByPlacesPerBlock)`: cell 130 gives 2; face 479 gives 1.
   - `TEST(CellBlockRange, IsTriviallyCopyable)`: `static_assert`, and `sizeof(CellBlockRange) == 8`.
   Label `no_gpu`, `grid_ids_gpu_compile_test.cu`, in the form of `base/base_constants_gpu_compile_test.cu`: a
@@ -543,7 +594,8 @@ Load the same three skills.
   bigger first) and `face piece` (the part of a face between two cells or at the grid's edge; not a grid piece,
   not a memory piece).
 - [ ] **Step 4: Commit.** Subject: `Add stable ids and per-version indexes for cells, blocks and faces`. List
-  every new name of 3.1, the 3.7 additions, `CellBlockRange`, `GridFrame`, and `ComesBefore` as the one name
+  every new name of 3.1, the 3.7 additions, `CellBlockRange`, `GridFrame`, `CellState`, `FacePieceKind`, `ComputeIsCoordInRange`, and `ComesBefore` as the
+  one name
   outside the allowed verbs.
 
 ### Task 4: The weight curve
@@ -592,8 +644,11 @@ Load the same three skills.
     machine gives the same list: start from the box of level-0 cells `{0..n-1}^3`; visit the cells in fixed
     order, level by level; split a level-0 cell when `ToUniformIndex(raw, 2) == 0` and a smaller cell when
     `ToUniformIndex(raw, 4) == 0`, down to `size_level_count - 1`, one raw number per cell visited; then
-    `ApplySizeStepClosure`.
-  - `std::vector<CellId> ApplySizeStepClosure(std::vector<CellId> cells, int size_level_count)`: split any
+    `BuildSizeStepClosure`.
+  - `void ApplyFixedShuffle(std::vector<CellId>& cells, std::uint64_t seed)`: the project's own shuffle, the
+    same on every machine: a `std::mt19937_64` of `seed`; for `i` from the last index down to 1, swap entry `i`
+    with entry `ToUniformIndex(raw, i + 1)`, one raw number per swap.
+  - `std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_level_count)`: split any
     active cell two or more levels bigger than a touching cell, repeat until none; for hand-built scenes too.
   - `class GeometricGrid`: built from a `GridFrame` and an active-cell list, with no blocks and no tables. Works
     in integer smallest-cell units; a width in metres is `biggest_cell_width` halved `level` times (exact).
@@ -606,6 +661,8 @@ Load the same three skills.
   `TEST(GeometricGrid, SplitCellBesideBigCell_HasFourQuarterFacePieces)` (areas 0.25 m2 each; 41 face pieces in
   all for level 0 `{0,0,0}` with the 8 level-1 cells of `{1,0,0}`);
   `TEST(BuildRandomGridCells, SameSeed_GivesSameList)`;
+  `TEST(ApplyFixedShuffle, SeedOne_GivesAPermutationThatDiffersFromSeedTwo)` (100 distinct ids: the same set
+  after the shuffle, the same order for the same seed, another order for seed 2, and not the input order);
   `TEST(BuildRandomGridCells, AnySeed_KeepsSiblingsAndSizeStep)` (100 seeds, checked by brute force);
   `TEST(BuildRandomGridCells, TwoHundredGrids_UseEveryLevel)` (over seeds 1..200 with arguments `(4, 3)`, each
   of the 4 levels holds an active cell in at least one grid, and no grid has more than 13,824 cells).
@@ -702,7 +759,8 @@ Load the same three skills.
   memory piece where a face piece or a grid piece could be meant"), build registration
 
 **Interfaces:**
-- Consumes: Task 6a; `Buffer`, `BuildBuffer(RunOn, std::size_t, RunMemory&)`, `RunMemory`, `BuildRunMemory`,
+- Consumes: Task 6a; `CellBlockId`, `CellState`, `FacePieceKind` (Task 3: the element types of the tables);
+  `Buffer`, `BuildBuffer(RunOn, std::size_t, RunMemory&)`, `RunMemory`, `BuildRunMemory`,
   `OrderBuffers`, `BuildOrderBuffers`, `CheckCanRunOn`, `ToBufferError`, `BufferError`.
 - Produces, in `staggered_grid.h` (design 3.3; comments written here without the design's history):
 
@@ -781,18 +839,18 @@ Load the same three skills.
   `BuildGridBuffers`, `GridBuilderBuffers`, `BuildGridBuilderBuffers` (one builder buffers can serve every grid
   of a run), `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize` (Foundation's buffers pattern).
 
-### Task 7: Shared build formulas
+### Task 7a: Shared build formulas: keys, checks and split cells
 
 **Kind:** numerics
 
 **Files:**
 - Create: `native/fluidity/grid/grid_build_steps.h` (S, private; included by no public header),
   `grid_build_steps_test.cc` (label `cpu`)
-- Modify: `grid_tables.h` (add the `CellState`, `FacePieceKind`, `GridTables` types of design 3.2; types only),
-  build registration
+- Modify: build registration
 
 **Interfaces:**
-- Consumes: Tasks 2, 3 (`ComesBefore` for cells and blocks, `GridFrame`), `GridBuildStatus` (Task 6a).
+- Consumes: Tasks 2, 3 (`ComesBefore` for cells and blocks, `GridFrame`, `ComputeIsCoordInRange`),
+  `GridBuildStatus` (Task 6a); `ApplyFixedShuffle`, `BuildRandomGridCells` (Task 5, tests).
 - Produces, all `FLUIDITY_CPU_AND_GPU`, `noexcept`, on raw pointers and counts, allocating nothing:
   - **Sort keys.** `std::uint64_t ToCellSortKey(CellId cell, int pass)` and `std::uint64_t
     ToBlockSortKey(CellId cell, int pass)`: three passes for `BuildStableOrder`, least significant first. For
@@ -814,14 +872,37 @@ Load the same three skills.
     binary search with `ComesBefore`; `kNoIndex` if absent. `FindCellBlock` (Task 12) calls the second.
   - `CellId ComputeBigCellAtLevel(CellId cell, SizeLevel size_level)`: the cell of `size_level` (the cell's own
     level or a bigger one) that contains `cell`.
+  - **Cells beside a cell: no id outside the range.** Every function here and in Task 8b that looks at a place
+    beside a cell works on the raw `CellCoord` (plain integers), derives the bigger cell's coordinate (`floor(c
+    / 2)`) or a small cell's (`2 c`, `2 c + 1`) by arithmetic, and makes an id only for a coordinate that
+    `ComputeIsCoordInRange` accepts at its own level. A coordinate outside the range holds no cell. An id is
+    never made first and tested after: outside the range it would be the id of another cell.
+  - `std::uint32_t FindSortedCellAt(const CellId* sorted_cells, std::uint32_t count, SizeLevel size_level,
+    CellCoord coord)`: `kNoIndex` when `coord` is outside the range, else `FindSortedCell` of its id. The one
+    lookup the checks below and Task 8b use for a place beside a cell.
   - `struct CellCheck { GridError error; CellId cell; CellId other_cell; std::uint8_t detail; };` and the
     checks of one sorted position, each `CellCheck Check...At(const CellId* sorted_cells, std::uint32_t count,
-    std::uint32_t position)`: `CheckOverlapAt` (step 2: equal to the entry before; else the nearest active
-    bigger cell that contains it, one level up first), `CheckSiblingsAt` (step 3: the first missing eighth of
-    the cell's big cell; detail = that eighth), `CheckSizeStepAt` (step 4: the first of the 26 directions in
-    `(dz, dy, dx)` order whose same-level neighbour place is covered by an active cell two or more levels
-    bigger; detail = direction 0..25). Each check looks only at the smaller cell of a pair, so every broken
-    pair is reported at exactly one position.
+    std::uint32_t position)`:
+    - `CheckOverlapAt` (step 2): equal to the entry before; else the nearest active bigger cell that contains
+      it, one level up first.
+    - `CheckSiblingsAt` (step 3): the siblings of the cell, and of every split cell this cell adds. Let `d` be
+      the cell. Repeat while `d` is not of level 0: every one of the 8 small cells of `ComputeBigCell(d)` must
+      be *present*; the first that is not (eighth order) is the failure, with `cell` = that small cell,
+      `other_cell` = the big cell, and `detail = (walk step << 3) | eighth`. Then, if `d` is eighth 0 of its
+      big cell, `d` becomes that big cell (the split cell `ComputeSplitCellCountToAdd` adds) and the walk goes
+      on; otherwise it stops. A small cell is *present* when it is active (`FindSortedCell`) or split, and it
+      is recognised as split by going down its eighth-0 small cells, at most to level 15, until an active one
+      is found. So every split cell has its siblings checked exactly once, at the position of the active cell
+      at the end of its eighth-0 chain. Why this finds every gap (write it in the header): take the smallest
+      cell that has an active cell inside its big cell but none inside itself; its big cell has a small cell
+      that is active, or split with a whole eighth-0 chain (a broken chain would give a smaller gap), and the
+      walk from that chain's end checks this big cell.
+    - `CheckSizeStepAt` (step 4): the first of the 26 directions in `(dz, dy, dx)` order (0..25, the cell
+      itself left out) whose same-level place beside the cell is covered by an active cell two or more levels
+      bigger; detail = the direction. The covering coordinate at each bigger level is found by halving the
+      raw coordinate, and looked up with `FindSortedCellAt`.
+    Each check looks only at the smaller cell of a pair, so every broken pair is reported at exactly one
+    position.
   - **Failure key.** `ToFailureKey(int step, std::uint64_t position, std::uint8_t detail)` =
     `(step << 56) | (position << 8) | detail`, with `ToFailureStep`, `ToFailurePosition`. The first failure is
     the smallest key: earliest step, then smallest position (input index for step 1, place in fixed cell order
@@ -834,19 +915,7 @@ Load the same three skills.
   - `int ComputeSplitCellCountToAdd(CellId cell)`: how many split cells this active cell adds. It adds its big
     cell when it is eighth 0 of it, then that cell's big cell when that one is eighth 0 too, and so on (a loop
     of at most 15 steps, no search); the cells are `ComputeBigCellAtLevel(cell, level - 1)`, `level - 2`, ...
-    Because siblings exist together, every split cell is added exactly once.
-  - `void FindBlockNeighbours(const CellBlockId* block_ids, std::uint32_t block_count, CellBlockIndex block,
-    std::uint32_t* same_level_blocks, std::uint32_t* bigger_block, std::uint32_t* smaller_blocks)`: the 27, 1
-    and 8 table entries of one block, by `FindSortedBlock`. Layouts, the one place they are defined:
-    `same_level_blocks[block * 27 + ((dz + 1) * 3 + (dy + 1)) * 3 + (dx + 1)]` (entry 13 is the block itself),
-    `smaller_blocks[block * 8 + cell_eighth]`; face local place for axis X `(z * 4 + y) * 5 + x`, Y
-    `(z * 5 + y) * 4 + x`, Z `(z * 4 + y) * 4 + x`, where the coordinate along the normal is the plane 0..4 and
-    plane `p` is the low side of local cell `p`.
-  - `CellState ComputeCoveredCellState(const GridTables& tables, CellPlaceIndex cell)`: for a place that is
-    neither active nor split, `kInsideBiggerCell` when the covering place of `bigger_block` is `kActive`, else
-    `kAbsent`. It reads only `kActive` marks, which no thread of that step changes.
-  - `FacePieceKind ComputeFacePieceKind(const GridTables& tables, FacePlaceIndex face)`: design 5.1 item 5 for
-    one face place (both sides, the plane-4 rule), from the cell states and neighbour tables.
+    Because siblings exist together (step 3 has passed), every split cell is added exactly once.
 
 - [ ] **Step 1: Failing tests** (label `cpu`), frame origin 0, width 1 m, 3 levels unless stated:
   - `TEST(ToCellSortKey, ThreePasses_GiveComesBeforeOrder)`: 10,000 random ids at levels 0..3 from seed
@@ -858,25 +927,101 @@ Load the same three skills.
     below `2^38`.
   - `TEST(ToBlockSortKey, LowestBlockAtLevelZero_IsZero)`: level 0 `{-kMaxCoord, -kMaxCoord, -kMaxCoord}`: all
     three passes are 0, and every pass is smaller than or equal to that of level 0 `{-kMaxCoord + 4, ...}`.
-  - `TEST(ToBlockSortKey, CellsOfOneBlock_HaveEqualKeys)`; `TEST(ToBlockSortKey, InvalidId_SortsLast)` (`CellId{0}`
-    gives `~0` in each pass).
+  - `TEST(ToBlockSortKey, CellsOfOneBlock_HaveEqualKeys)`; `TEST(ToBlockSortKey, InvalidId_SortsLast)`
+    (`CellId{0}` gives `~0` in each pass).
+  - `TEST(FindSortedCellAt, CoordOutsideRange_IsNoIndex)`: a list holding level 1 `{1, 0, 0}`; the coordinate
+    `{-kMaxCoord - 1, 0, 0}` at level 0 gives `kNoIndex`, though packing it would give another cell's id.
   - `TEST(CheckOverlapAt, RepeatedCell_NamesBothCells)`; `TEST(CheckOverlapAt,
-    CellInsideActiveBigCell_NamesBothCells)`; `TEST(CheckSiblingsAt, SevenOfEight_NamesTheMissing)`;
-    `TEST(CheckSizeStepAt, CornerTouchTwoLevelsApart_NamesDirectionZero)` (level 2 `{4,4,4}` with level 0
+    CellInsideActiveBigCell_NamesBothCells)`; `TEST(CheckSiblingsAt, SevenOfEight_NamesTheMissing)`.
+  - `TEST(CheckSiblingsAt, MissingCellBesideSplitSiblings_NamesTheMissing)`: big cell level 0 `{0,0,0}`; its
+    eighth 0 (level 1 `{0,0,0}`) is missing; each of the other 7 level-1 cells is split into its 8 level-2
+    cells (56 active cells). Over all positions the smallest failure key belongs to the first cell in fixed
+    order that is eighth 0 of its level-1 cell; `error` is `kSiblingCellMissing`, `cell` is level 1 `{0,0,0}`,
+    `other_cell` is level 0 `{0,0,0}`, `detail == (1 << 3) | 0`.
+  - `TEST(CheckSiblingsAt, SplitSiblings_Pass)`: the same with the 8 level-2 cells of level 1 `{0,0,0}` added
+    (64 cells): no failure at any position.
+  - `TEST(CheckSizeStepAt, CornerTouchTwoLevelsApart_NamesDirectionZero)` (level 2 `{4,4,4}` with level 0
     `{0,0,0}`: direction `(dz, dy, dx) = (-1, -1, -1)` is 0).
+  - `TEST(CheckSizeStepAt, CellAtLowCoordLimit_SeesNoCellBeyond)`: level 2 `{-kMaxCoord, 0, 0}` with level 0
+    `{65536, 0, 0}` (524,287 level-2 widths away; the cell a packed id beyond the limit would point at): no
+    failure.
+  - `TEST(CheckSizeStepAt, CellAtHighCoordLimit_SeesTheBigCellBeside)`: level 2 `{kMaxCoord, 0, 0}` with level
+    0 `{65536, 0, 0}`, which really is beside it: `kSizeStepRuleBroken`, direction `(0, 0, +1)`, detail 13.
   - `TEST(ToFailureKey, StepOutranksPosition)`: `ToFailureKey(2, 0, 0) > ToFailureKey(1, 2^40, 255)`.
-  - `TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells)`: for the three fixtures above, the cells of
-    the check at that position.
+  - `TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells)`: for an overlap, a sibling and a size-step
+    fixture above, the cells of the check at that position.
   - `TEST(ComputeSplitCellCountToAdd, RandomGrids_AddEachSplitCellOnce)`: the 200 random grids: the added cells
     are distinct and equal the brute-force set of split cells.
   - `TEST(ComputeBigCellAtLevel, TwoLevelsUp_HalvesTwice)`: level 3 `{-5, 6, 7}` at level 1 is `{-2, 1, 1}`.
-  - `TEST(ComputeFacePieceKind, TwoSizeFixture_GivesFourQuarterFacePieces)`: tables built by hand for level 0
-    `{0,0,0}` and the 8 level-1 cells of `{1,0,0}`.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement.** Header comment: "the CPU and the GPU builders call these
   functions and nothing else for a table entry; that is why their tables are identical". `Read:`
   `<sec-parallel-build>`, `<proc-build-grid-in-parallel>`.
-- [ ] **Step 4: Commit.** Subject: `Put every per-cell and per-face build rule in one shared header`. Private
-  names only; `CellState`, `FacePieceKind`, `GridTables` listed as new public names.
+- [ ] **Step 4: Commit.** Subject: `Put the build's keys and cell checks in one shared header`. Private names
+  only.
+
+### Task 7b: Shared build formulas: neighbour tables, cell states and face piece kinds
+
+**Kind:** numerics
+
+**Files:**
+- Modify: `grid_tables.h` (add the `GridTables` struct of design 3.2; the type only), `grid_build_steps.h`,
+  `grid_build_steps_test.cc`, build registration
+
+**Interfaces:**
+- Consumes: Task 7a (`FindSortedBlock`), Task 3 (`CellState`, `FacePieceKind`, the index types).
+- Produces `GridTables`, and in `grid_build_steps.h`:
+  - `void FindBlockNeighbours(const CellBlockId* block_ids, std::uint32_t block_count, CellBlockIndex block,
+    std::uint32_t* same_level_blocks, std::uint32_t* bigger_block, std::uint32_t* smaller_blocks)`: the 27, 1
+    and 8 table entries of one block, by `FindSortedBlock`; a block coordinate outside the range has no block
+    (`kNoIndex`), decided before any id is made. Layouts, the one place they are defined:
+    `same_level_blocks[block * 27 + ((dz + 1) * 3 + (dy + 1)) * 3 + (dx + 1)]` (entry 13 is the block itself),
+    `smaller_blocks[block * 8 + cell_eighth]`; face local place for axis X `(z * 4 + y) * 5 + x`, Y
+    `(z * 5 + y) * 4 + x`, Z `(z * 4 + y) * 4 + x`, where the coordinate along the normal is the plane 0..4 and
+    plane `p` is the low side of local cell `p`.
+  - `CellState ComputeCoveredCellState(const GridTables& tables, CellPlaceIndex cell)`: for a place that is
+    neither active nor split, `kInsideBiggerCell` when the covering place of `bigger_block` is `kActive`, else
+    `kAbsent`. It reads only `kActive` marks, which no thread of that step changes.
+  - `CellState ComputeCellStateBeside(const GridTables& tables, CellBlockIndex block, int local_x, int local_y,
+    int local_z)`: the state of a cell place of `block`'s level given by local coordinates of which one may be
+    `-1` or `4` (one cell outside the block). Inside the block: the stored state. Outside, when the same-level
+    neighbour block on that side exists: the stored state of its place (local 3 or 0). When it does not exist,
+    no cell of this level is there; the place is `kInsideBiggerCell` when an active cell one level bigger
+    covers it, else `kAbsent`. The covering place is found through `bigger_block`: `block` is the low or the
+    high half of its bigger block along the axis; if the place lies on the half's outer side, the cover is in
+    the bigger block's same-level neighbour on that side (absent block: `kAbsent`), otherwise in the bigger
+    block itself. A level-0 block has no bigger block: `kAbsent`.
+  - `FacePieceKind ComputeFacePieceKind(const GridTables& tables, FacePlaceIndex face)`: design 5.1 item 5 for
+    one face place. Plane `p` lies between local cells `p - 1` (low) and `p` (high) along the axis; both
+    states come from `ComputeCellStateBeside`. Plane 4 is `kNotAPiece` when the same-level block on the high
+    side exists (the face piece is stored at that block's plane 0). Otherwise: active and active, or active
+    and `kInsideBiggerCell`: `kBetweenCells`; active on the high side and `kAbsent` on the low:
+    `kGridEdgeLow`; active on the low side and `kAbsent` on the high: `kGridEdgeHigh`; anything else (active
+    beside `kSplit`, or no active side): `kNotAPiece`.
+- **Worked example for the header** (the two-size fixture: level 0 `{0,0,0}` and the 8 level-1 cells of
+  `{1,0,0}`; block 0 of level 0, block 1 of level 1): plane 2 of block 1 along X lies between level-1 local
+  cells 1 (inside the big cell: `kInsideBiggerCell`) and 2 (active), so its four places beside the active
+  cells are `kBetweenCells`; plane 1 of block 0 along X lies between the active big cell and the split cell:
+  `kNotAPiece`.
+
+- [ ] **Step 1: Failing tests** (label `cpu`), tables built by hand:
+  - `TEST(FindBlockNeighbours, TwoSizeFixture_LinksBiggerAndSmaller)`: block 1's `bigger_block` is 0; block
+    0's `smaller_blocks[0]` is 1 and its other 7 are `kNoIndex`; entry 13 of each is itself.
+  - `TEST(FindBlockNeighbours, BlockAtCoordLimit_HasNoBlockBeyond)`: the block of level 0 `{-kMaxCoord, 0, 0}`
+    and the block of level 0 `{kMaxCoord, 0, 0}`: neither lists the other.
+  - `TEST(ComputeCoveredCellState, PlaceInsideActiveBigCell_IsInsideBiggerCell)`.
+  - `TEST(ComputeCellStateBeside, NoNeighbourBlockButBigCellBeside_IsInsideBiggerCell)`: level 0 `{-1,0,0}`
+    active and the 8 level-1 cells of level 0 `{0,0,0}`: the place beside level-1 cell `{0,0,0}` on its low X
+    side (local `-1` of the level-1 block, which has no level-1 neighbour block there) is
+    `kInsideBiggerCell`; on its low Y side it is `kAbsent`.
+  - `TEST(ComputeFacePieceKind, TwoSizeFixture_GivesFourQuarterFacePieces)`: the worked example: exactly 4
+    `kBetweenCells` places on plane 2 of block 1 along X, and `kNotAPiece` on plane 1 of block 0.
+  - `TEST(ComputeFacePieceKind, PlaneFourWithHighBlock_IsNotAPiece)`: level 0 `{3,0,0}` and `{4,0,0}`: plane 4
+    of the first block is `kNotAPiece` and plane 0 of the second is `kBetweenCells`; with `{3,0,0}` alone,
+    plane 4 is `kGridEdgeHigh`.
+- [ ] **Step 2: Run**, fail. **Step 3: Implement.** `Read:` `<sec-face-pieces>`, `<sec-cell-blocks>`,
+  `<sec-parallel-build>`.
+- [ ] **Step 4: Commit.** Subject: `Put the build's table rules in the shared header`. `GridTables` listed as
+  a new public name.
 
 ### Task 8: Checking a cell list on the CPU: `CheckSizeStepRule`
 
@@ -888,7 +1033,7 @@ Load the same three skills.
 - Modify: `staggered_grid.h`, build registration
 
 **Interfaces:**
-- Consumes: Task 7 (`CheckCellId`, the three checks, the failure key, `ToCellSortKey`), Task 6b
+- Consumes: Task 7a (`CheckCellId`, the three checks, the failure key, `ToCellSortKey`), Task 6b
   (`ToGridBuffersArrays`, `ToGridBuilderBuffersArrays`).
 - Produces: `GridInputs` and both `CheckSizeStepRule` forms (design 3.3).
 
@@ -917,12 +1062,13 @@ Load the same three skills.
   `biggest_cell_width` finite and positive, `size_level_count` in 1..16; version not 0; the two-list and count
   rules; all `kBadInput`), `std::expected<void, GridFailure> CheckSortedCells(std::span<const CellId>
   sorted_cells, SiblingCheck sibling_check)` (steps 2 to 4 of `<proc-build-grid>`, each run to its end before
-  the next, positions in order, by Task 7's checks), and
-  `std::expected<std::uint32_t, GridFailure> CheckCellListOnBuffers(const GridInputs& inputs, GridBuffers&
+  the next, positions in order, by Task 7a's checks), and
+  `std::expected<std::uint32_t, GridFailure> BuildSortedCellList(const GridInputs& inputs, GridBuffers&
   buffers, SiblingCheck sibling_check)`: steps 1 to 4 into the lent builder buffers' `cell ids` array, which
-  then holds the list in fixed cell order; returns the cell count. CPU here; Task 10 adds the GPU path.
+  then holds the list in fixed cell order; returns the cell count. (It is named `Build`, not `Check`, because
+  it writes the sorted list.) CPU here; Task 10 adds the GPU path.
   `BuildGrid` (Task 9a) starts from it.
-- **Failure context**, as Task 7's checks give it: `kCellsOverlap` names the smaller (or repeated) cell in
+- **Failure context**, as Task 7a's checks give it: `kCellsOverlap` names the smaller (or repeated) cell in
   `cell` and the bigger (or earlier) in `other_cell`; `kSiblingCellMissing` names the first missing small cell
   (eighth order) in `cell` and its big cell in `other_cell`; `kSizeStepRuleBroken` names the smaller cell in
   `cell` and the bigger in `other_cell`; `kCoordOutOfRange` and `kBadInput` from an id name the first such id
@@ -944,7 +1090,7 @@ Load the same three skills.
   - `TEST(CheckSizeStepRule, IntoBuffers_EqualsSpanForm)`: the three `...TwoLevelsApart` lists and the 200
     random grids, with CPU buffers for 4,096 blocks.
   - `TEST(CheckSizeStepRule, MoreCellsThanPlaces_IsTooManyCellBlocks)`: buffers for 1 block, 65 cells.
-  - `TEST(CheckCellListOnBuffers, ShuffledList_LeavesFixedCellOrder)`: the 200 random grids: the `cell ids`
+  - `TEST(BuildSortedCellList, ShuffledList_LeavesFixedCellOrder)`: the 200 random grids: the `cell ids`
     array then equals the list sorted with `ComesBefore`.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step N:` comments from `<proc-build-grid>`.
 - [ ] **Step 4: Commit.** Subject: `Check a list of active cells before building a grid`. New names:
@@ -959,15 +1105,16 @@ Load the same three skills.
 - Create: `native/fluidity/grid/grid_cell_count_test.cc`
 
 **Interfaces:**
-- Consumes: Task 8 (`CheckGridInputs`, `CheckSortedCells`), Task 7 (`FindSortedCell`,
+- Consumes: Task 8 (`CheckGridInputs`, `CheckSortedCells`), Task 7a (`FindSortedCellAt`,
   `ComputeSplitCellCountToAdd`, `ComputeBigCellAtLevel`, `ToBlockSortKey`), `GeometricGrid` (Task 5, tests).
 - Produces: `std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs)` (design 3.3):
   counts without building. Same checks as `BuildGrid` (siblings required) except the block limit, so the
   planner can count a scene before any buffers exist. Requires a CPU list.
 - **Why it does not build tables.** A build needs buffers sized by the block count, which is the number asked
   for; sized for the worst case (one block per cell) they would cost about 1.1 kB per active cell. So this form
-  counts on the sorted ids alone. It is a second statement of the face rule, kept honest by the tests below
-  and by `ComputeGridCounts, RandomGrids_EqualBuiltCounts` (Task 9a). The header says this.
+  counts on the sorted ids alone. It is a second statement of the face rule. The header says so and names the
+  tests that hold the two statements together (`ComputeGridCounts, RandomGrids_EqualGeometricChecker` and
+  `ComputeGridCounts, RandomGrids_EqualBuiltCounts`), by their names only.
 - **Method** (one `std::vector<CellId>` reserved once for `n + n / 7` ids: every split cell has 8 small cells,
   so there are at most `n / 7` of them; 8 B per active or split cell, at most 9.2 B per active cell):
   1. Copy the `n` ids; steps 1 to 4 as Task 8, with `SiblingCheck::kRequire`. The copy is now in fixed cell
@@ -975,12 +1122,14 @@ Load the same three skills.
   2. `active_cells_per_level` and `active_cells`: one pass.
   3. `face_pieces`: one pass over the active cells, summing the private
      `int ComputeFacePieceCountOfCell(std::span<const CellId> sorted_cells, std::uint32_t position)`. For a
-     cell `c` of level `p` and each axis, with `N` the same-level place beside `c`: `N` is *active* when
-     `FindSortedCell` finds it; *inside a bigger cell* when `ComputeBigCell(N)` is found; *split* when the
-     small cell of `N` that touches `c` by a face is found (after step 4 that small cell is active); else
-     *absent*. Low side: 1 face piece unless `N` is split. High side: 1 face piece when `N` is inside a bigger
-     cell or absent, else 0 (an active `N` counts the shared face piece on its own low side; a split `N`'s
-     small cells count theirs). At most 18 binary searches per cell.
+     cell `c` of level `p` and each axis, let `N` be the coordinate of the same-level place beside `c`. Every
+     lookup is `FindSortedCellAt` (Task 7a), on coordinates found by arithmetic, so a coordinate outside
+     `-kMaxCoord..kMaxCoord` at its level holds no cell and no id is made for it. The place is *active* when
+     `N` is found at level `p`; *inside a bigger cell* when `floor(N / 2)` is found at level `p - 1`; *split*
+     when the small cell of `N` that touches `c` by a face is found at level `p + 1` (after step 4 that small
+     cell is active); else *absent*. Low side: 1 face piece unless the place is split. High side: 1 face piece
+     when the place is inside a bigger cell or absent, else 0 (an active place counts the shared face piece on
+     its own low side; a split place's small cells count theirs). At most 18 binary searches per cell.
   4. `cell_blocks`: append the split cells (`ComputeSplitCellCountToAdd`, `ComputeBigCellAtLevel`), sort all
      ids with the comparator "pass 2, then 1, then 0 of `ToBlockSortKey`", and count the runs of equal
      `ToCellBlockId`. A count above `2^32 - 1` cannot occur (`n` fits `std::uint32_t`).
@@ -994,6 +1143,10 @@ Load the same three skills.
     are shared with the big cell, 12 between the small cells).
   - `TEST(ComputeGridCounts, TwoCellsAcrossABlockSide_ShareOneFacePiece)`: level 0 `{3,0,0}` and `{4,0,0}`: 2
     blocks, 11 face pieces.
+  - `TEST(ComputeGridCounts, CellsAtBothCoordLimits_CountTheirEdgeFacePieces)`: 2 levels: level 0 `{-kMaxCoord,
+    0, 0}`, level 0 `{kMaxCoord, 0, 0}` and the 8 level-1 cells of level 0 `{0,0,0}`: `face_pieces == 48` (6 + 6
+    + 36) and `cell_blocks == 4`. A count through packed ids beyond the limit would find level-1 cell `{1,0,0}`
+    beside the first cell and give 47.
   - `TEST(ComputeGridCounts, RandomGrids_EqualGeometricChecker)`: the 200 random grids: `face_pieces ==
     GeometricGrid::FacePieces().size()`; `cell_blocks` equals the size of a `std::set` of `ToCellBlockId` over
     every active cell and every bigger cell that contains one.
@@ -1005,8 +1158,8 @@ Load the same three skills.
     `OneSplitCell`.
   - `TEST(ComputeGridCounts, MoreBlocksThanAnyTestRoom_CountsThemAll)`: the 4,097 level-0 cells `{4 i, 0, 0}`,
     `i = 0..4096`: `cell_blocks == 4097`, `face_pieces == 6 * 4097`.
-- [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step N:` comments for the four steps above. `Read:`
-  `<sec-face-pieces>`, `<sec-cell-blocks>`.
+- [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step N:` comments from `<proc-count-grid>`. `Read:`
+  `<proc-count-grid>`, `<sec-face-pieces>`, `<sec-cell-blocks>`.
 - [ ] **Step 4: Commit.** Subject: `Count the blocks and face pieces of a cell list without building it`. New
   name: `ComputeGridCounts`.
 
@@ -1024,7 +1177,7 @@ Load the same three skills.
   new` must be part of the program itself, and a program that does not count must not get it.
 
 **Interfaces:**
-- Consumes: Task 7 (types and formulas), Task 8 (`CheckCellListOnBuffers`), Task 8b (`ComputeGridCounts`).
+- Consumes: Tasks 7a and 7b (types and formulas), Task 8 (`BuildSortedCellList`), Task 8b (`ComputeGridCounts`).
 - Produces: `StaggeredGrid` with every accessor of design 3.3 (`all_blocks()` returns `{0,
   counts().cell_blocks}`), `std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs,
   GridBuffers& buffers)`, `GridBuffers TakeBuffers(StaggeredGrid&& grid)`. On success the buffers move into
@@ -1039,16 +1192,22 @@ Load the same three skills.
   // while its pieces are alive.
   struct TestGrid {
     RunMemory run_memory;
+    Buffer<CellId> cell_list;  // The list on the grid's processor; empty for a CPU grid.
     std::unique_ptr<GridBuilderBuffers> builder_buffers;
     StaggeredGrid grid;
   };
-  // Reserves exactly the estimate for one grid of the room, then BuildGridBuilderBuffers, BuildGridBuffers and
-  // BuildGrid on settings.run_on. With settings.max_cell_blocks 0 (the default) the room is
-  // ComputeGridCounts(inputs).cell_blocks, at least 1. Fails as those functions do.
+  // Reserves exactly the estimate for one grid of the room (for a GPU grid, plus one memory piece for the
+  // list), then BuildGridBuilderBuffers, BuildGridBuffers and BuildGrid on settings.run_on. The list is
+  // inputs.active_cells, a span in CPU memory; inputs.active_cell_buffer must be null. For a GPU grid the span
+  // is counted on the CPU and copied to cell_list, which the build then reads. With settings.max_cell_blocks 0
+  // (the default) the room is ComputeGridCounts(inputs).cell_blocks, at least 1. Fails as those functions do.
   std::expected<TestGrid, GridFailure> BuildTestGrid(const GridInputs& inputs, const GridSettings& settings = {});
   ```
   `TestGrid` declares its move constructor and deletes move assignment.
-- **The CPU build, steps 5 to 8 of `<proc-build-grid>`.** After `CheckCellListOnBuffers` the `cell ids` array
+- Produces, private, in `grid_buffers_internal.h`: `StaggeredGrid BuildGridFromBuffers(GridBuffers&& buffers,
+  GridFrame frame, GridVersion version, const GridCounts& counts)`: the one place a `StaggeredGrid` is made from
+  filled buffers. `BuildGrid`, `ReadGrid` (Task 9c) and `BuildGridPiece` (Task 24) call it.
+- **The CPU build, steps 5 to 8 of `<proc-build-grid>`.** After `BuildSortedCellList` the `cell ids` array
   holds the `n` active cells. Step 5: append the split cells at `[n, n + s)`; `n + s` above `64 *
   max_cell_blocks` fails. Sort each of the two parts with `std::sort` and the comparator "pass 2, then 1, then
   0 of `ToBlockSortKey`", then walk both in key order and write each new `CellBlockId` to `block_ids`; more
@@ -1056,7 +1215,7 @@ Load the same three skills.
   `FindBlockNeighbours` per block. Step 7: every place `kAbsent`; each active cell `kActive` and each split
   cell `kSplit` at its block (`FindSortedBlock`) and local place; then `ComputeCoveredCellState` for the
   places still `kAbsent`. Step 8: `ComputeFacePieceKind` per face place, counting the face pieces. The working
-  order of the CPU is its own; every table entry is written through Task 7's functions and in no other way. No
+  order of the CPU is its own; every table entry is written through the functions of Tasks 7a and 7b and in no other way. No
   `std::stable_sort` (it may allocate).
 - **The block limit on both processors:** `kTooManyCellBlocks` with `cell` zero. The first cell beyond the
   limit is not named: the GPU cannot name it without working memory beyond the room.
@@ -1082,9 +1241,14 @@ Load the same three skills.
   - `TEST(BuildGrid, AboveBuffersRoom_IsTooManyCellBlocks)`: buffers for 8 blocks; 9 level-0 cells `{4 i, 0,
     0}` fail with `cell` zero and return no grid; the same buffers then build the first 8.
   - `TEST(BuildGrid, MoreCellsThanPlaces_IsTooManyCellBlocks)`: buffers for 8 blocks, `64 * 8 + 1` cells.
+  - `TEST(BuildGrid, SplitCellsOverflowThePlaces_IsTooManyCellBlocks)`: buffers for 1 block; the 64 level-1
+    cells of the 8 level-0 cells `{0..1, 0..1, 0..1}`: the 64 cells fit the places, the 8 split cells they
+    add do not (72 above 64): `kTooManyCellBlocks`, `cell` zero. This is the room failure found after the
+    split cells are counted, not at the first check.
   - `TEST(BuildGrid, IntoBuffers_AllocatesNothing)`: buffers for 4,096 blocks; the 100 random grids built and
     their buffers taken back in turn: the counter stays 0 after `BuildGridBuffers`, the addresses in
-    `ToGridBuffersArrays` do not change, and each grid's used tables equal those of `BuildTestGrid`.
+    `ToGridBuffersArrays` do not change, and each grid's used tables equal those of a `BuildTestGrid` grid built
+    before the counted part.
   - `TEST(BuildGrid, EmptyList_GivesEmptyGrid)`: version 1, zero blocks, `all_blocks()` is `{0, 0}`.
   - `TEST(BuildTestGrid, DefaultSettings_SizedToTheList)`: a 9-block list gives `max_cell_blocks() == 9`.
   - `TEST(StaggeredGrid, CpuGrid_HasNoGpuTables)`: `tables(RunOn::kGpu).version.value == 0`, null arrays.
@@ -1171,13 +1335,13 @@ Load the same three skills.
   (`fluidity_add_gpu_sources(staggered_grid_gpu.cu)`)
 
 **Interfaces:**
-- Consumes: Task 7 (`ToCellSortKey`, `CheckCellId`, the three checks, the failure key, `ComputeFailureCells`),
-  Task 8 (`CheckGridInputs`, `CheckSortedCells` as oracle, `SiblingCheck`, `CheckCellListOnBuffers`), Task 6b
+- Consumes: Task 7a (`ToCellSortKey`, `CheckCellId`, the three checks, the failure key, `ComputeFailureCells`),
+  Task 8 (`CheckGridInputs`, `CheckSortedCells` as oracle, `SiblingCheck`, `BuildSortedCellList`), Task 6b
   (the array accessors), `GridBuildStatus`; `BuildStableOrder` with the `OrderBuffers` of the lent
   `GridBuilderBuffers`, `ReadBuffer`, `ToBufferError`, `RunOnCallStatus`, `ComputeLaunchSize`,
   `ApplyGpuFunction`, `CheckGpuWork`, `ComputeGridStride`; test support `ReadAll`, `WriteResultDigest`.
-- Produces: the GPU path of `CheckCellListOnBuffers`, and so of `CheckSizeStepRule(inputs, buffers)`. The CPU
-  half runs P1, then calls one GPU-half function per step (`ResetBuildStatusOnGpu`, `CheckCellIdsOnGpu`,
+- Produces: the GPU path of `BuildSortedCellList`, and so of `CheckSizeStepRule(inputs, buffers)`. The CPU
+  half runs P1, then calls one GPU-half function per step (`ApplyBuildStatusResetOnGpu`, `CheckCellIdsOnGpu`,
   `WriteCellSortKeysOnGpu`, `CopySortedCellsOnGpu`, `CheckSortedCellsOnGpu`, `WriteFailureCellsOnGpu`), each
   returning `RunOnCallStatus`, with `BuildStableOrder` between them. A status other than `kDone`, and a
   `BufferError` from `BuildStableOrder` or `ReadBuffer`, go through `ToBufferError` and the module's one mapping
@@ -1186,12 +1350,13 @@ Load the same three skills.
 - Shared per-item functions added to `grid_build_steps.h`:
   `std::uint64_t ComputeCellIdFailureKey(GridFrame frame, const CellId* input, std::uint64_t index)` (P2;
   `kNoFailureKey` when the id is good) and `std::uint64_t ComputeSortedCellFailureKey(const CellId*
-  sorted_cells, std::uint32_t count, std::uint32_t position, int step)` (P4 to P6: the Task 7 check of that
+  sorted_cells, std::uint32_t count, std::uint32_t position, int step)` (P4 to P6: the Task 7a check of that
   step at that position).
 - Test support added (`grid_test_support`): `std::vector<CellId> BuildMutatedGridCells(std::uint64_t seed)`:
   the shuffled list of `BuildRandomGridCells(seed, 4, 3)` with 1 to 4 mutations drawn from seed `seed + 7000`
   (repeat a cell; drop a cell; add a cell's big cell; add a cell two levels smaller beside a big cell, with
-  its siblings; clear bit 63 of one id; set a coordinate to `kMaxCoord + 1`). "The 500 mutated lists" are
+  its siblings; drop every active cell inside one small cell of a split cell, so a whole sibling is missing;
+  clear bit 63 of one id; set a coordinate to `kMaxCoord + 1`). "The 500 mutated lists" are
   seeds 1..500.
 - **The parallel form of steps 1 to 4:**
   - P1 (CPU, nothing launched yet): `CheckGridInputs`; a list of more than `64 * max_cell_blocks` cells is
@@ -1213,7 +1378,7 @@ Load the same three skills.
   - `TEST(BuildMutatedGridCells, FiveHundredLists_BreakEveryRule)` (`grid_test_support_test.cc`): over the 500
     lists, `CheckSortedCells` or step 1 reports each of `kBadInput`, `kCoordOutOfRange`, `kCellsOverlap`,
     `kSiblingCellMissing` and `kSizeStepRuleBroken` at least once.
-  - `TEST(CheckCellListOnBuffers, EveryThreadBlockAndThread_SameFirstFailureAsCpu)`
+  - `TEST(BuildSortedCellList, EveryThreadBlockAndThread_SameFirstFailureAsCpu)`
     (`grid_build_steps_test.cc`): P2 to P6 replayed on CPU buffers as Global Constraints "Replay tests" says;
     on the 200 random grids, the three `...TwoLevelsApart` lists of Task 8 and the 500 mutated lists, for both
     `SiblingCheck` values: the sorted list and the `GridFailure` equal the CPU path's exactly.
@@ -1222,7 +1387,7 @@ Load the same three skills.
   - `TEST(CheckSizeStepRule, OnGpu_EqualsCpu)`: the three `...TwoLevelsApart` lists, `OneLevelApart`, the empty
     list and the 200 random grids: the result is identical to `CheckSizeStepRule(frame, span)`.
   - `TEST(CheckSizeStepRule, OnGpuSeveralFailures_SameFirstFailureAsCpu)`: the 500 mutated lists, both
-    `SiblingCheck` values through `CheckCellListOnBuffers`: `GridFailure` (error, cell, other_cell) equals the
+    `SiblingCheck` values through `BuildSortedCellList`: `GridFailure` (error, cell, other_cell) equals the
     CPU path's exactly.
   - `TEST(CheckSizeStepRule, OnGpuTwice_GivesIdenticalFailure)`: the 500 mutated lists, twice.
   - `TEST(CheckSizeStepRule, OnGpu_AllocatesNothing)`: 100 calls; `ReadMemoryAvailable(RunOn::kGpu)->free_bytes`
@@ -1240,7 +1405,7 @@ Load the same three skills.
 - Modify: `grid_build_steps.h`, `grid_build_steps_test.cc`, `staggered_grid_gpu.h`, `staggered_grid_gpu.cu`
 
 **Interfaces:**
-- Consumes: Task 10 (the sorted list in `cell ids`, the GPU-half pattern), Task 7
+- Consumes: Task 10 (the sorted list in `cell ids`, the GPU-half pattern), Task 7a
   (`ComputeSplitCellCountToAdd`, `ComputeBigCellAtLevel`, `ToBlockSortKey`), Task 9a (the CPU build as oracle);
   `BuildStableOrder`, `ComputeExclusivePrefixSum`.
 - Shared per-item functions added to `grid_build_steps.h` (`n` = active cells):
@@ -1249,6 +1414,9 @@ Load the same three skills.
     `cell_ids[n + sums[position] + k]`.
   - `std::uint64_t ComputeRoomFailureKey(std::uint64_t needed, std::uint64_t room, int step)`: the key of step
     5 or 6 at position 0 when `needed > room`, else `kNoFailureKey`.
+  - `std::uint32_t ComputeSortCount(std::uint32_t active_count, std::uint32_t max_cell_blocks)`: `min(n + n /
+    7, 64 * max_cell_blocks)`, computed in `std::uint64_t` (the sum can pass `2^32`); the result fits 32 bits
+    because `64 * kMaxCellBlocksLimit = 2^32 - 64`.
   - `void ApplySortTailFillAt(CellId* cell_ids, std::uint32_t used_count, std::uint32_t place)`: writes
     `CellId{0}` when `place >= used_count`.
   - `std::uint32_t ComputeBlockStartMark(const CellId* cell_ids, const std::uint32_t* order, std::uint32_t
@@ -1261,7 +1429,7 @@ Load the same three skills.
   - `void ApplyBlockIdWriteAt(CellBlockId* block_ids, const CellId* cell_ids, const std::uint32_t* order, const
     std::uint32_t* sums, std::uint32_t position)`: a marked entry writes its `CellBlockId` at `sums[position]`.
 - Produces: the GPU-half functions of P7 and P8 (`WriteSplitCellCountsOnGpu`, `CheckRoomOnGpu`,
-  `WriteSplitCellsOnGpu`, `FillSortTailOnGpu`, `WriteBlockSortKeysOnGpu`, `WriteBlockStartMarksOnGpu`,
+  `WriteSplitCellsOnGpu`, `WriteSortTailOnGpu`, `WriteBlockSortKeysOnGpu`, `WriteBlockStartMarksOnGpu`,
   `WriteBlockIdsOnGpu`), compiled here and sequenced by Task 11b.
 - **The parallel form of step 5.** Every GPU function loops grid-stride over a count it reads from
   `GridBuildStatus`, so no count comes back mid-build, and returns at once when an earlier step failed.
@@ -1269,7 +1437,7 @@ Load the same three skills.
     order`; `ComputeExclusivePrefixSum` in place over `n` entries (the total lands at index `n`). (b) One
     thread reads the total into `split_cells` and takes `ComputeRoomFailureKey(n + split_cells, 64 *
     max_cell_blocks, 5)`. (c) One thread per active cell: `ApplySplitCellWritesAt`. (d) **The tail fill:** one
-    thread per place below `sort_count = min(n + n / 7, 64 * max_cell_blocks)`: `ApplySortTailFillAt` with
+    thread per place below `sort_count = ComputeSortCount(n, max_cell_blocks)`: `ApplySortTailFillAt` with
     `used_count = n + split_cells`. `sort_count` is a CPU number that bounds active plus split cells (every
     split cell has 8 small cells, so `split_cells <= n / 7`); the sort of P8 runs over it because the exact
     count stays on the GPU. Without (d) the places between hold cells of the build before, and they would
@@ -1290,12 +1458,20 @@ Load the same three skills.
     `[n, n + split_cells)` hold each split cell once, in any thread order.
   - `TEST(ComputeRoomFailureKey, OneAboveRoom_IsTheStepsKey)`: `(513, 512, 5)` gives `ToFailureKey(5, 0, 0)`;
     `(512, 512, 5)` gives `kNoFailureKey`.
-  - `TEST(ApplySortTailFillAt, UsedBuffers_HoldNoStaleCell)`: the `cell ids` array first holds the sorted cells
-    of random grid 1 (a full build), then P2 to P8 run for the two-size fixture (9 cells): every place from
-    `n + split_cells` to `sort_count` is `CellId{0}`, `cell_blocks == 2`, and `block_ids` equals the CPU's.
+  - `TEST(ComputeSortCount, LargestRoom_FitsThirtyTwoBits)`: `(4294967232, kMaxCellBlocksLimit)` gives
+    4,294,967,232 (the sum `n + n / 7` is above `2^32`); `(14, 100)` gives 16; `(9, 100)` gives 10; `(100, 1)`
+    gives 64.
+  - `TEST(ApplySortTailFillAt, UsedBuffers_HoldNoStaleCell)`: buffers for 100 blocks whose `cell ids` array
+    first holds the sorted cells of random grid 1 (a full build). Then P2 to P8 run for the 14 lone level-0
+    cells `{4 i, 0, 0}`, `i = 0..13`: `n = 14`, no split cell, `sort_count = 16`, so the tail is places 14 and
+    15. The test asserts first that, just before step (d), those two places hold valid ids of the build before
+    (bit 63 set), then that after it they hold `CellId{0}`, and at the end that `cell_blocks == 14` and
+    `block_ids` equals the CPU's. A copy of the sequence with step (d) left out gives 16 blocks: the test shows
+    it, so the fill is seen to matter.
   - `TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds)`: P2 to P8 replayed on CPU
     buffers that held another grid before; on the 200 random grids, a list of 9 level-0 blocks into room for 8
-    (step 6) and a list of `64 * 8 + 1` cells into the same (step 5): `block_ids`, `cell_blocks`,
+    (step 6), a list of `64 * 8 + 1` cells into the same (step 5 at P1) and the 64 level-1 cells of 8 level-0
+    cells into room for 1 (step 5 at P7, after the split cells are counted): `block_ids`, `cell_blocks`,
     `split_cells` and every `GridFailure` equal the CPU build's.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step P7:` and `// Step P8:` comments. **Step 4:**
   the gate; expected `PASS cuda`.
@@ -1313,7 +1489,7 @@ Load the same three skills.
   counter)
 
 **Interfaces:**
-- Consumes: Tasks 10 and 11a, Task 7 (`FindBlockNeighbours`, `ComputeCoveredCellState`,
+- Consumes: Tasks 10 and 11a, Task 7b (`FindBlockNeighbours`, `ComputeCoveredCellState`,
   `ComputeFacePieceKind`, `ComputeFailureCells`), Task 9c (`ReadGrid`, in tests), slice `ReadBuffer`.
 - Shared per-item functions added to `grid_build_steps.h`: `ApplyBlockNeighboursWriteAt` (P9: one block's 36
   entries through `FindBlockNeighbours`), `ApplyAbsentStateAt` (P10a), `int ApplySortedCellStateAt(...)` (P10b:
@@ -1323,7 +1499,9 @@ Load the same three skills.
   `std::uint32_t ApplyFacePieceKindWriteAt(...)` (P11: writes `ComputeFacePieceKind`, returns 1 for a face
   piece), `ApplyBuildStatusResult` (P12, one thread: `active_cells` as the sum of the 16 levels, or the
   failure's error and cells).
-- Produces: the GPU paths of `BuildGrid(inputs, buffers)` and `ComputeGridCounts(inputs, buffers)`, and in
+- Produces: the GPU-half functions `WriteBlockNeighboursOnGpu`, `WriteCellStatesOnGpu`,
+  `WriteFacePieceKindsOnGpu`, `WriteBuildStatusResultOnGpu`; the GPU paths of `BuildGrid(inputs, buffers)` and
+  `ComputeGridCounts(inputs, buffers)`, and in
   `staggered_grid_gpu.h` `RunOnCallStatus ComputeLargestBuildStackOnGpu(std::uint64_t* bytes_per_thread)` (the
   largest `localSizeBytes` over the GPU functions of this file).
 - **The parallel form of steps 6 to 8.** Launches are sized on the CPU from the room (`max_cell_blocks`
@@ -1352,7 +1530,8 @@ Load the same three skills.
   - `TEST(BuildGrid, OnGpu_EqualsCpuTablesBitForBit)`: the empty list, one cell, the two-size fixture, and the
     200 random grids, into GPU buffers for 4,096 blocks.
   - `TEST(BuildGrid, OnGpuFailures_EqualCpuFailures)`: the 500 mutated lists, 9 level-0 blocks into buffers for
-    8 (step 6) and `64 * 8 + 1` cells into the same (step 5).
+    8 (step 6), `64 * 8 + 1` cells into the same (step 5 at P1) and the 64 level-1 cells of 8 level-0 cells
+    into room for 1 (step 5 at P7).
   - `TEST(BuildGrid, OnGpuFailedBuildThenRebuild_EqualsFreshBuffers)`: a failing mutated list, then grid B into
     the same buffers; B equals B built into fresh buffers.
   - `TEST(BuildGrid, RebuildIntoUsedGpuBuffers_EqualsFreshBuffers)`: build random grid 1, take its buffers
@@ -1383,7 +1562,7 @@ Load the same three skills.
 - Create: `native/fluidity/grid/grid_tables_test.cc`
 
 **Interfaces:**
-- Consumes: Task 7 (`FindSortedBlock`, the table layouts), Task 9a (`BuildTestGrid`, in tests).
+- Consumes: Tasks 7a and 7b (`FindSortedBlock`, the table layouts), Task 9a (`BuildTestGrid`, in tests).
 - Produces (design 3.2 and 3.7): `ComputeCellWidth(GridFrame frame, SizeLevel size_level)`, `ComputeCellCenter`,
   `ComputeFacePosition`, `ComputeFaceArea`, `ToAxis`, `ToCellId(tables, cell)`, `ToFacePieceId(tables, face)`,
   `FindCellLow`, `FindCellHigh`, `ComputeCellCenterDistance`, `FindCellBlock`, `FindCellPlace`, `FindFacePlace`,
@@ -1422,10 +1601,15 @@ Load the same three skills.
 - Consumes: Task 12; `math::Floor`, `math::IsFinite`.
 - Produces: both `FindCellAt` forms (design 3.2), by design 5.2.
 - **Decided here**, the same first steps for both forms, so they cannot disagree:
-  1. Per axis `f = math::Floor((position - origin) / smallest_cell_width)`, a double. A non-finite `f`, or an
-     `f` outside `[-(kMaxCoord + 1) * 2^15, (kMaxCoord + 1) * 2^15)` (both bounds exact doubles; no cell of any
-     level lies beyond them), returns `kNoIndex`. Only then is `f` cast, to `std::int64_t`: the smallest-level
-     coordinate of a cell can reach `2^33`, which does not fit 32 bits.
+  1. Per axis `f = math::Floor((position - origin) / smallest_cell_width)`, a double, in cells of the frame's
+     smallest level `L - 1` (`L = size_level_count`). The guard, in those same units: a non-finite `f`, an `f <
+     -kMaxCoord * 2^(L - 1)` or an `f >= (kMaxCoord + 1) * 2^(L - 1)` returns `kNoIndex` (both bounds are exact
+     doubles, below `2^34`). Only then is `f` cast, to `std::int64_t` (it can reach `2^33`, which does not fit
+     32 bits). Proof that the guard is exact: a level-0 cell has a coordinate in `-kMaxCoord..kMaxCoord`, so it
+     covers smallest-level coordinates from `c * 2^(L - 1)` to `(c + 1) * 2^(L - 1) - 1`, and the union over
+     valid `c` is exactly the guarded interval; every smaller cell lies inside a level-0 cell. Inside the
+     guard the level-0 coordinate `floor(f / 2^(L - 1))` is in range, so its block id is never the id of
+     another block. The walk down goes through `smaller_blocks` and local places; it makes no id.
   2. The search form finds the level-0 block of that coordinate with `FindCellBlock` and walks down following
      `kSplit` through `smaller_blocks`.
   3. The `near` form starts at `near`'s level-0 block instead (`bigger_block` upward) and moves toward the
@@ -1440,7 +1624,12 @@ Load the same three skills.
     `{0,0,0}`; `{1.0, 0.5, 0.5}` gives level-1 `{2,1,1}`; `{1.5, 0.25, 0.25}` gives level-1 `{3,0,0}`.
   - `TEST(FindCellAt, OutsideEveryCell_IsNoIndex)`: `{-0.5, 0.5, 0.5}` and `{2.0, 0.5, 0.5}`.
   - `TEST(FindCellAt, HugeOrNotFinitePosition_IsNoIndex)`: x of `1e300`, `-1e300`, infinity and NaN, both
-    forms; x of `(kMaxCoord + 1) * 0.5` m (one smallest cell beyond the last representable one).
+    forms.
+  - `TEST(FindCellAt, PositionBeyondTheIdRange_IsNoIndex)`: in this fixture (level-0 width 1 m) both forms give
+    `kNoIndex` for x = 262144 m (level-0 coordinate `kMaxCoord + 1`, one past the last level-0 cell), for x =
+    -262144 m, and for x = 524288.25 m: its level-0 coordinate `2^19` packed into an id is the id of level-0
+    `{0,0,0}`, so without the guard the big cell would be returned. x = 262143.5 m (the last level-0 cell,
+    which holds no active cell) is `kNoIndex` through the search.
   - `TEST(FindCellAt, NearForm_EqualsSearchOnRandomPositions)`: the 200 random grids, 1,000 positions each in
     the box widened by one cell; `near` in turn the found cell's block, a block two moves away, the last block
     of the grid (many moves away) and `kNoIndex`: every `near` form equals the search form, which equals
@@ -1467,6 +1656,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - Consumes: `SizeLevel`, `kMaxSizeLevels`, `GridFrame`, `ComputeCellWidth` (Tasks 3, 12); `math::Sqrt`,
   `math::Min`, `math::Max` (`base/scalar_math.h`; they pass infinities through exactly and give the same bits
   on both processors).
+- The field the design first called `velocity_gradient_size` is `CellSizeFacts::velocity_change_size` (1/s): the
+  glossary bans "velocity gradient" and gives "velocity change" for it; the rules step fails the old name.
 - Produces, of design 3.8: `CellSizeSettings`, `CellWidthsByLevel`, `CellSizeFacts`, `ComputeReferenceSpeed`,
   `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, and
   `CellWidthsByLevel ComputeCellWidthsByLevel(GridFrame frame)` (`width[l] = ComputeCellWidth(frame, l)` for
@@ -1475,7 +1666,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   - `ComputeWantedCellWidth`, in this order of operations, so both processors round alike: `w_min =
     widths.width[settings.smallest_size_level]`, `w_max = widths.width[0]`; `w_depth = w_min * Max(1, depth /
     (surface_reach_in_cell_widths * w_min))`; `w_solid = w_min * Max(1, distance / (solid_reach_in_cell_widths *
-    w_min))`; `w_shear = shear_width_factor * reference_speed / gradient` when `gradient > 0`, else
+    w_min))`; `w_shear = shear_width_factor * reference_speed / velocity_change_size` when that size is above 0, else
     `+infinity`; `wanted = Max(w_min, Min(Min(Min(w_depth, w_solid), w_shear) * cell_size_factor, w_max))`. The
     result is `w_min` at once where `touches_air_pocket`, `wants_smallest_cells`, or `depth <
     surface_reach_in_cell_widths * w_min` (the cells within 8 smallest widths of the surface: the factor does
@@ -1488,7 +1679,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   - `ComputeReferenceSpeed` is `Max(largest_liquid_speed, Sqrt(gravity_size * biggest_cell_width))`.
 - Test cases (`cell_size_rule_test_cases.h`): `CellSizeFacts BuildTestCellSizeFacts(int i, double
   cell_size_factor)`: depth `(i % 97) * 0.013` m (`+infinity` when `i % 11 == 0`), distance `(i % 89) * 0.011` m
-  (`+infinity` when `i % 7 == 0`), gradient `(i % 83) * 0.37` 1/s, `touches_air_pocket` when `i % 31 == 0`,
+  (`+infinity` when `i % 7 == 0`), `velocity_change_size` `(i % 83) * 0.37` 1/s, `touches_air_pocket` when `i % 31 == 0`,
   `wants_smallest_cells` when `i % 37 == 0`; and `double ComputeTestReferenceSpeed(int i)` = `0.5 + (i % 13) *
   0.25`. "The 10,000 fact sets" are `i = 0..9999`.
 
@@ -1505,21 +1696,21 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   (Task 13b's formula).
 - [ ] **Step 2: Failing tests** (label `cpu`). Unless stated: frame `biggest_cell_width` 1 m, 5 levels (widths
   1, 0.5, 0.25, 0.125, 0.0625, all exact), `smallest_size_level` 4, default settings, facts at their "far"
-  values (`depth_below_surface` and `distance_to_solid` `+infinity`, gradient 0, `cell_size_factor` 1, flags
+  values (`depth_below_surface` and `distance_to_solid` `+infinity`, `velocity_change_size` 0, `cell_size_factor` 1, flags
   false), `reference_speed` 1 m/s; comparisons exact.
   - `TEST(ComputeCellWidthsByLevel, EveryLevel_EqualsComputeCellWidth)`: bit for bit; 0 beyond level 4.
   - `TEST(ComputeWantedCellWidth, SurfaceCell_IsSmallest)`: depth 0 gives 0.0625, also with distance 10 and
     with `cell_size_factor` 4.
-  - `TEST(ComputeWantedCellWidth, UniformTranslation_NoShearSplit)`: gradient 0, `reference_speed` 5: 1.0, and
+  - `TEST(ComputeWantedCellWidth, UniformTranslation_NoShearSplit)`: `velocity_change_size` 0, `reference_speed` 5: 1.0, and
     level 0.
-  - `TEST(ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth)`: far facts with gradient `1e-300`, then
+  - `TEST(ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth)`: far facts with `velocity_change_size` `1e-300`, then
     with depth `DBL_MAX`: 1.0, never NaN.
   - `TEST(ComputeWantedCellWidth, DepthBeyondReach_GrowsLinearly)`: depth 1.0 gives 0.125 (`0.0625 * 1.0 /
     0.5`); depth 0.25 gives 0.0625; depth 100 gives 1.0 (clamped).
   - `TEST(ComputeWantedCellWidth, SolidBeyondReach_GrowsLinearly)`: distance 0.5 gives 0.25 (`0.0625 * 0.5 /
     0.125`); with depth 1.0 as well, 0.125.
-  - `TEST(ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverGradient)`: frame 0.5 m, 6 levels,
-    `smallest_size_level` 5 (`w_min` 0.015625), gradient `sqrt(2) * 10`: 0.0176776695296637 within 1e-15
+  - `TEST(ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverVelocityChange)`: frame 0.5 m, 6 levels,
+    `smallest_size_level` 5 (`w_min` 0.015625), `velocity_change_size` `sqrt(2) * 10`: 0.0176776695296637 within 1e-15
     relative; `ComputeWantedSizeLevel` gives 5.
   - `TEST(ComputeWantedCellWidth, PocketOrGas_IsSmallest)`: each flag with depth 100: 0.0625.
   - `TEST(ComputeWantedCellWidth, FactorOne_SameBitsAsNoFactor)`: the 10,000 fact sets with factor 1 give the
@@ -1547,7 +1738,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 **Files:**
 - Modify: `cell_size_rule.h`, `cell_size_rule_test_cases.h`, `docs/glossary.md` (`cell size factor`,
-  `refinement volume`: the owner's words for the artist's wish; "refine" stays banned as a verb for cells)
+  `refinement volume`. Meanings to write: a cell size factor is a number that multiplies a cell's wanted width,
+  1 leaving it unchanged; a refinement volume is a 3D array of such factors over the domain, one per key time)
 - Create: `native/fluidity/grid/cell_size_factor_test.cc`; build registration
 
 **Interfaces:**
@@ -1776,7 +1968,12 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     every axis.
   - `TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker)`: the 200 grids, 50 positions each: the same list
     as `GeometricGrid::NearbyFaces`, in ascending order.
-  - `TEST(FindNearbyFaces, UniformGrid_Has27)`; `TEST(FindNearbyFaces, Outside_IsPositionOutsideGrid)`.
+  - `TEST(FindNearbyFaces, UniformGridOffCentre_Has27)`: uniform 5^3 grid of width `h`, position = the centre
+    of the middle cell plus `{0.1, 0.2, 0.3} h`: each axis gives 27 (three planes along the axis, 3 x 3 across).
+  - `TEST(FindNearbyFaces, UniformGridAtCellCentre_Has18)`: the centre itself: each axis gives 18. Along the
+    axis the faces lie at 0.5 h and 1.5 h on either side, and the rule is the strict `< 1.5 h`, so only two
+    planes pass. The two left out have weight exactly 0, so nothing is lost; the header says so.
+  - `TEST(FindNearbyFaces, Outside_IsPositionOutsideGrid)`.
   - `TEST(ToMaskOfAll, SeventySixFaces_SetsExactlyThoseBits)`.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement**; the header explains "why 76" (design 5.4). `Read:`
   `<sec-nearby-faces>`.
@@ -2043,15 +2240,13 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     std::uint32_t max_cell_blocks() const;
     RunOn run_on() const;
   };
-  // Builds them as memory pieces of run_memory, in the order of BuildBorderSearchMemoryEstimate's entries. On
-  // the CPU the search needs no array and no piece is taken.
+  // Builds them as memory pieces of run_memory, in the order of BuildBorderSearchMemoryEstimate's entries.
   // Requires: run_on == run_memory.run_on() when run_on can run, checked by assert in debug builds.
   // Fails: kRunOnCallFailed (CheckCanRunOn failed; nothing taken), kBadInput (0 or above kMaxCellBlocksLimit),
   //        kOutOfMemory (magnitude is the bytes of the array that did not fit).
   std::expected<BorderSearchBuffers, GridFailure> BuildBorderSearchBuffers(RunOn run_on,
                                                                            std::uint32_t max_cell_blocks,
                                                                            RunMemory& run_memory);
-  std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks);
   // Every block outside `range` that is in border_so_far or in the border, at `width`, of range plus
   // border_so_far: one more layer of a stacked border, merged with the layers before. Ascending, each once.
   // Writes the first border_blocks.size() entries and returns how many there are in all. Allocates nothing.
@@ -2069,14 +2264,19 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   ```
   A stacked border is this call once per layer with two output buffers used in turn; no merge is needed
   between layers.
+- Produces also, declared in `grid_memory_estimate.h` beside the grid's estimate (not in
+  `cell_block_range.h`): `std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on,
+  std::uint32_t max_cell_blocks)`.
 - **Entries** of `BuildBorderSearchMemoryEstimate` (`grid: ` prefix, `KeptFor::kWholeRun`, `copies = 1`,
-  `where = kRunOn`). For `kCpu`: none (the CPU walk appends as it goes). For `kGpu`, each one `kGivenCount`
-  entry with `bytes_each = 1`: `border marks` (`4 * (max_cell_blocks + 1)` B), `border order buffers`
-  (`bytes_per_item * (max_cell_blocks + 1) + fixed_bytes` of `ComputeOrderBuffersSize(RunOn::kGpu)`: an
-  `OrderBuffers` built once and passed to every prefix sum of the search), `border status`
-  (`sizeof(GridBuildStatus)`).
-- The CPU form: for each block `b` in index order, outside `range`, and in `border_so_far` or
-  `ComputeIsBorderBlock(tables, {range, border_so_far, count}, b, width)`: append.
+  `where = kRunOn`), each one `kGivenCount` entry with `bytes_each = 1`. On both processors: `border marks`
+  (`4 * (max_cell_blocks + 1)` B). For `kGpu` also: `border order buffers` (`bytes_per_item * (max_cell_blocks +
+  1) + fixed_bytes` of `ComputeOrderBuffersSize(RunOn::kGpu)`: an `OrderBuffers` built once and passed to every
+  prefix sum of the search) and `border status` (`sizeof(GridBuildStatus)`). CPU total: `4 * max_cell_blocks +
+  4` B, as the design states.
+- The CPU form uses the marks, in two passes, so the array the estimate counts is the array the code reads and
+  both processors mark by one rule: pass 1 writes for each block `b` the mark "outside `range`, and in
+  `border_so_far` or `ComputeIsBorderBlock(tables, {range, border_so_far, count}, b, width)`"; pass 2 walks the
+  marks in index order and appends.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(FindBorderBlocks, StackedBufferForm_EqualsSpanFormLayerByLayer)`: the 100 random grids, ranges from
@@ -2087,8 +2287,12 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     `TEST(FindBorderBlocks, BorderSoFarInsideRange_IsBadInput)`;
     `TEST(FindBorderBlocks, SearchBuffersTooSmall_IsTooManyCellBlocks)`;
     `TEST(FindBorderBlocks, StackedBufferForm_AllocatesNothing)`.
-  - `TEST(BuildBorderSearchMemoryEstimate, Cpu_HasNoEntry)`: empty, and `BuildBorderSearchBuffers(kCpu, 1000,
-    run_memory)` leaves `handed_out_bytes() == 0`.
+  - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedBytes)`: the CPU estimate at 1,000 blocks is one
+    entry of 4,004 B (`4 * max_cell_blocks + 4`), and the marks array of `BuildBorderSearchBuffers(kCpu, 1000,
+    run_memory)` holds 1,001 entries of 4 B.
+  - `TEST(BuildBorderSearchBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)`: a CPU `RunMemory` of
+    `ComputeRunMemoryBytes` of the estimate at 1,000 blocks (4,096 B: one memory piece of 4,004 B rounded):
+    `handed_out_bytes() == reserved_bytes()`.
   - `TEST(BuildBorderSearchMemoryEstimate, Gpu_CountsMarksOrderBuffersAndStatus)`: at 1,000 blocks the `kRunOn`
     sum is `4004 + bytes_per_item * 1001 + fixed_bytes + sizeof(GridBuildStatus)`; the sum of
     `ComputeRunMemoryPieceBytes` over the three entries equals `ComputeRunMemoryBytes` of the estimate.
@@ -2112,7 +2316,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 **Interfaces:**
 - Consumes: `BlockSet`, `ComputeIsInBlockSet`, `ComputeIsBorderBlock` (Task 22a), Task 22b, `GridBuildStatus`,
-  `ToFailureKey` (Task 7); `ComputeExclusivePrefixSum` (with the `OrderBuffers` of `BorderSearchBuffers`),
+  `ToFailureKey` (Task 7a); `ComputeExclusivePrefixSum` (with the `OrderBuffers` of `BorderSearchBuffers`),
   `ReadBuffer`, `ToBufferError`, `ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`.
 - Shared per-item functions added to `border_block_steps.h`: `std::uint64_t
   ComputeBorderSoFarFailureKey(...)` (step 2, one entry), `std::uint32_t ComputeBorderMark(...)` (step 3, one
@@ -2120,6 +2324,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - Produces: the GPU path of the buffer form of `FindBorderBlocks` and of `BuildBorderSearchBuffers`; in
   `cell_block_range_gpu.h`, `RunOnCallStatus ComputeLargestBorderSearchStackOnGpu(std::uint64_t* bytes_per_thread)` and
   the "Stack:" sentence in the file header.
+- GPU-half functions, one per step: `ApplyBorderStatusResetOnGpu`, `CheckBorderSoFarOnGpu`,
+  `WriteBorderMarksOnGpu`, `WriteBorderBlocksOnGpu`.
 - **The parallel form:** (1) CPU: the same-buffer, count and room checks; a one-thread GPU function resets the
   status. (2) One thread per `border_so_far` entry `i`: ascending, outside `range`, below the block count,
   else `atomicMin(ToFailureKey(1, i, 0))` with `kBadInput`. (3) One thread per block `b` of the grid (the
@@ -2163,8 +2369,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   piece. `piece map`: for each block of a grid piece, its index in the whole grid), build registration
 
 **Interfaces:**
-- Consumes: the table layouts (Task 7), `ToGridBuffersArrays` (Task 6b), `StaggeredGrid`, `TakeBuffers` (Task
-  9a), `FindBorderBlocks` (Tasks 22a, 22b), `FindSortedBlock`.
+- Consumes: the table layouts (Task 7b), `ToGridBuffersArrays` and `BuildGridFromBuffers`
+  (`grid_buffers_internal.h`, Tasks 6b and 9a), `StaggeredGrid`, `TakeBuffers` (Task 9a), `FindBorderBlocks` (Tasks 22a, 22b), `FindSortedBlock`.
 - Produces (design 3.4): `GridPiece` with its accessors, both `BuildGridPiece` forms, `GridBuffers
   TakeBuffers(GridPiece&& piece)`, by design 5.8 "Pieces keep the fixed order". The parameter of both forms is
   named `buffers`. Both forms run on `whole.run_on()`; the span form requires a CPU whole grid (`assert`).
@@ -2231,13 +2437,15 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 **Interfaces:**
 - Consumes: `ToPiecePlace`, `ToPieceNeighbour`, `ComputePieceFaceKind` (Task 24), `GridBuildStatus`,
-  `ToFailureKey` (Task 7), `ReadGrid` (Task 9c, tests), the GPU build (Task 11b); `ComputeLaunchSize`,
+  `ToFailureKey` (Task 7a), `ReadGrid` (Task 9c, tests), the GPU build (Task 11b); `ComputeLaunchSize`,
   `ApplyGpuFunction`, `CheckGpuWork`, `ToBufferError`.
 - Shared per-item functions added to `grid_piece_steps.h`: `ComputePieceBorderFailureKey` (step 2),
   `ApplyPieceMapWriteAt` (step 3), `ApplyPieceBlockCopyAt` (step 4), `int ApplyPieceCellStateCopyAt(...)`
   (step 5; returns the level of an active cell, else `-1`), `std::uint32_t ApplyPieceFaceKindWriteAt(...)`
   (step 6; returns 1 for a face piece).
-- Produces: the GPU path of the buffer form of `BuildGridPiece`; in `grid_piece_gpu.h`, `RunOnCallStatus
+- Produces: the GPU-half functions `ApplyPieceStatusResetOnGpu`, `CheckPieceBorderOnGpu`, `WritePieceMapOnGpu`,
+  `CopyPieceBlocksOnGpu`, `CopyPieceCellStatesOnGpu`, `WritePieceFaceKindsOnGpu`; the GPU path of the buffer
+  form of `BuildGridPiece`; in `grid_piece_gpu.h`, `RunOnCallStatus
   ComputeLargestGridPieceStackOnGpu(std::uint64_t* bytes_per_thread)` and the "Stack:" sentence.
 - **The parallel form** (no sort and no prefix sum: the border is already ascending): (1) CPU: `range` inside
   the whole grid, `range.block_count + border_block_count <= buffers.max_cell_blocks()` (else
@@ -2276,22 +2484,25 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   `SOURCES` also list `grid_functions_test_gpu.cu`); build registration
 
 **Interfaces:**
-- Consumes: every public grid function; `ApplySizeStepClosure` (Task 5); Task 20's runner.
-- The scene, a tank with a sloped surface: frame width 1 m, 3 levels, level-0 box 16 x 4 x 8; every level-2
-  cell whose centre is within 1 m of the plane `z = 4 + 0.25 x` is active (with its siblings), then
-  `ApplySizeStepClosure` fills the rest. "The 1,000 positions" are from seed `20261119`, inside level-2 cells.
+- Consumes: every public grid function; `BuildSizeStepClosure` (Task 5); Task 20's runner.
+- The scene, a domain box of liquid with a sloped surface: frame origin 0, width 1 m, 3 levels, the box of
+  16 x 4 x 8 level-0 cells. A level-2 cell is *marked* when its centre `(x, y, z)` has `|z - (4 + 0.25 x)| < 1`:
+  the distance is measured along `z`, not at right angles to the plane, so it is exact in doubles. The start
+  list: a level-0 cell with no marked centre inside stays whole; one that has a marked centre is replaced by
+  its 8 level-1 cells; each of those with a marked centre inside is replaced by its 8 level-2 cells. Then
+  `BuildSizeStepClosure(list, 3)`. "The 1,000 positions" are from seed `20261119`, each inside a marked cell.
 
-- [ ] **Step 1: Scene test** (label `cpu`): `TEST(StaggeredGrid, SlopedSurfaceTank_PassesEveryCheck)`: build;
+- [ ] **Step 1: Scene test** (label `cpu`): `TEST(StaggeredGrid, SlopedSurfaceInBox_PassesEveryCheck)`: build;
   `grid.counts()` equals `ComputeGridCounts(inputs)`; cut into ranges of 8 blocks; for every range build a
   grid piece with a stacked touching border; at the 1,000 positions, the grid piece's weights equal the
   whole grid's byte for byte and sum to 1 within `1e-14`.
-- [ ] **Step 2: GPU test** (label `gpu`): `TEST(StaggeredGrid, SlopedSurfaceTankOnGpu_EqualsCpu)`: the same
+- [ ] **Step 2: GPU test** (label `gpu`): `TEST(StaggeredGrid, SlopedSurfaceInBoxOnGpu_EqualsCpu)`: the same
   cell list put on the GPU; the GPU grid equals the CPU grid (`ReadGrid`, byte for byte); for every range of 8
   blocks, the GPU's stacked touching border and GPU grid piece equal the CPU's; `ComputeNearbyFaceWeights` run
   through Task 20's runner on the GPU grid piece at the 1,000 positions matches the CPU's within the
   CPU-versus-GPU tolerance (`CheckWithinTolerance`); everything read back goes to `WriteResultDigest`.
 - [ ] **Step 3: Run** the gate. Expected: `PASS cuda`.
-- [ ] **Step 4: Commit.** Subject: `Check the grid on a tank with a sloped surface`. Body: `GPU: compiled, not
+- [ ] **Step 4: Commit.** Subject: `Check the grid on a box of liquid with a sloped surface`. Body: `GPU: compiled, not
   run`; the `gpu` test by name.
 
 ### Task 26b: Comparison with the proof of concept
@@ -2305,24 +2516,30 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 **Interfaces:**
 - Follows `contact/contact_main_comparison_test_cases.h`: the old code's outcomes are data in a header whose
   comment says how they were found; the comparison needs no code from `main`.
-- **How the numbers are produced.** Nothing of `main` is built. `main` carries a Python reference of its
-  uniform weights, `reference/src/fluidity_reference/basis.py` (`quadratic_stencil(position, h, offset)`
-  returns the 27 nodes, weights and gradients), which its C++ (`native/src/sparse_mac_grid_3d.cc` lines
-  266-310) is tested against. In a temporary directory outside both checkouts: `git show
-  main:reference/src/fluidity_reference/basis.py > basis.py`, and a throwaway driver (not committed) run with
-  `uv run --no-project --with numpy python driver.py`. For `h = 0.25` m, the 20 positions `p_i = {1.0 + 0.0355
-  i, 1.0 + 0.0265 i, 1.0 + 0.0185 i}` (Y-up), `i = 0..19`, and each face axis (offset 0 along the axis and 0.5
-  along the two others; confirm against the C++ lines above by reading them), it prints with `%.17g` each
-  sample's face position `(node + offset) * h`, weight, face position minus `p_i`, and gradient. If numpy
-  cannot be fetched, stop and report; do not retype the formula.
-- The header holds the 1,620 samples (20 x 3 x 27) turned to Z-up with `new = {x, -z, y}` (old axes X, Y, Z
-  become X, Z, Y), the commit of `main` they came from, and the driver's formula in its comment.
+- **How the numbers are produced.** Nothing of `main` is built or checked out. `main` carries a Python
+  reference of its uniform weights, `reference/src/fluidity_reference/basis.py` (`quadratic_stencil(position,
+  h, offset)` returns the 27 nodes, weights and gradients), with the same formula as its C++
+  (`native/src/sparse_mac_grid_3d.cc` lines 285-296). In a temporary directory outside both checkouts: `git
+  show main:reference/src/fluidity_reference/basis.py > basis.py`, and a throwaway driver (not committed) run
+  with `uv run --no-project --with numpy python driver.py`. For `h = 0.25` m, the 100 positions `p_i = {1.0 +
+  0.0071 i, 1.0 + 0.0053 i, 1.0 + 0.0037 i}` (Y-up), `i = 0..99`, and each face axis (offset 0 along the axis
+  and 0.5 along the two others; confirm against the C++ lines 266-310 by reading them), it prints each
+  sample's node (three integers) and, with `%.17g`, its weight and gradient. If numpy cannot be fetched, stop
+  and report; do not retype the formula.
+- The header holds the 8,100 samples (100 x 3 x 27), one line each: position index, old axis, node, weight,
+  gradient, as `main` gave them (Y-up); the commit of `main` they came from; and the driver's formula in its
+  comment. The test turns them to Z-up with `new = {x, -z, y}` (old axes X, Y, Z become X, Z, Y) and computes
+  a face position as `(node + offset) * h`.
 
 - [ ] **Step 1: Produce the numbers** as above and write the header.
 - [ ] **Step 2: Failing tests** (label `cpu`, supporting evidence only):
-  - `TEST(ComputeNearbyFaceWeights, CompleteCase_MatchesMainWithinRelativeTolerance)`: the turned positions on
-    a uniform 16^3 grid at width 0.25 m with origin `{0, -4, 0}`; faces matched by position; weight, offset and
-    `weight_change` within `1e-13` relative; all 1,620 samples are matched.
+  - `TEST(ComputeNearbyFaceWeights, CompleteCase_MatchesMainWithinTolerance)`: the turned positions on a
+    uniform 16^3 grid at width 0.25 m with origin `{0, -4, 0}`; faces matched by position. For every sample of
+    `main` whose weight is not 0: the face is in the list, and weight and `weight_change` agree within `1e-15
+    + 1e-13 |value|` (a plain relative bound fails where the exact value is 0, as the slope at `i = 0`, where
+    the position lies on face planes); `offset` equals the face position minus the position within the same
+    bound times `h`. For a sample of weight 0 the face is absent from the list or has weight within `1e-15`.
+    All 8,100 samples are visited.
   - `TEST(BuildGrid, MainJunctionFixture_HasSamePiecesAsMain)`: `git show
     main:native/tests/test_adaptive_mac_topology_3d.cc`, `MakeJunction(3, true)` (lines 22-37, smallest width
     0.5 m, all 8 small cells present), turned to Z-up: 24 `kBetweenCells` face pieces, all 0.25 m2; 12 with
@@ -2352,9 +2569,11 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   earlier than their design sections; the four value buffers are one template `GridValues`; the one-argument
   `ComputeGridCounts` counts on the sorted ids and never builds tables; `kTooManyCellBlocks` names no cell;
   `CheckSizeStepRule` does not check siblings; `FindCellAt` with `near` falls back to the search; the corner
-  tie rule of Task 15; the CPU `BorderSearchBuffers` holds no array; `ComputeCellSizeFactorTable` is shared
+  tie rule of Task 15; the CPU border search marks then appends; `ComputeCellSizeFactorTable` is shared
   and calls no library function; `FindNearestCommittedCell` is an added name; the comparison with `main` uses
-  20 positions from `main`'s Python reference; the grid has no stack entry held by the driver, with the three
+  `main`'s Python reference, with samples of weight 0 handled apart; `SharedBuilderBuffers_OtherLiveGridUnchanged`
+  does not call `FindCellAt` (it is built later) and its GPU form does not compare free bytes with the estimate
+  (the reservation tests do); the sibling check walks the eighth-0 chain; the grid has no stack entry held by the driver, with the three
   `gpu` tests that pin it.
 - [ ] **Step 4: `docs/gpu-runs.md`:** add the grid's entry, result `compiled, not run`, with every `gpu` test of
   Tasks 10, 11b, 13c, 20, 21, 23, 25 and 26a by full name (`Suite.Name`), copied from the test files (`ctest -N

@@ -204,7 +204,7 @@ enum class GridError : std::uint8_t {  // NEW. One enum for the module.
   kCellsOverlap,          // The same cell twice, or a cell and a bigger cell that contains it.
   kSiblingCellMissing,    // A big cell is split but one of its 8 small cells is absent.
   kSizeStepRuleBroken,    // Two touching cells differ by more than one size level.
-  kTooManyCellBlocks,     // More blocks than the storage or the values have room for (max_cell_blocks). Names no
+  kTooManyCellBlocks,     // More blocks than the buffers or the values have room for (max_cell_blocks). Names no
                           // cell (`cell` zero) when a grid or piece does not fit its buffers (A17, decision 18).
   kRunOnCallFailed,       // CheckCanRunOn failed for the chosen RunOn, or a call to that processor failed.
                           // Nothing falls back to the CPU.
@@ -261,7 +261,7 @@ struct GridCounts {               // NEW. Everything the sizing estimate needs f
 // build status record, all on the GPU and nothing on the CPU for a GPU grid (A17). It uses the GridBuilderBuffers
 // lent to it by BuildGridBuffers (reconcile; A31: always lent, it never owns builder buffers). Move-only. It belongs
 // to no grid (BuildGrid, BuildGridPiece move it into one; TakeBuffers gives it back), so its contents mean nothing.
-// A moved-from storage has max_cell_blocks() == 0.
+// A moved-from GridBuffers has max_cell_blocks() == 0.
 class GridBuffers {
  public:
   std::uint32_t max_cell_blocks() const;
@@ -276,8 +276,8 @@ class StaggeredGrid {             // DECIDED name (decision 13). Move-only. Owns
   // Changed (A17): tables(run_on()) only. tables(kCpu) on a GPU grid and tables(kGpu) on a CPU grid return
   // version 0 and null arrays (the design's "kCpu always works" no longer holds; ReadGrid copies on request).
   GridTables tables(RunOn run_on) const;
-  RunOn run_on() const;                    // NEW. The storage's.
-  std::uint32_t max_cell_blocks() const;   // NEW. The storage's room, at least counts().cell_blocks.
+  RunOn run_on() const;                    // NEW. The buffers'.
+  std::uint32_t max_cell_blocks() const;   // NEW. The buffers' room, at least counts().cell_blocks.
 };
 
 // Counts without building. Requires a CPU list (A30, debug assertion). Same checks as BuildGrid except the block
@@ -337,7 +337,7 @@ enum class BuilderBuffersSharing : std::uint8_t {
 // cells above 64 * buffers.max_cell_blocks(), or blocks above buffers.max_cell_blocks(); `cell` zero),
 // kRunOnCallFailed. An empty list builds an empty grid (zero blocks).
 std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, GridBuffers& buffers);
-// NEW. Takes back the storage of a grid that is no longer needed, for the next BuildGrid or BuildGridPiece.
+// NEW. Takes back the buffers of a grid that is no longer needed, for the next BuildGrid or BuildGridPiece.
 // Allocates nothing. Every GridTables taken from `grid` is invalid afterwards. Changed (A29): was ReleaseBuffers.
 GridBuffers TakeBuffers(StaggeredGrid&& grid);
 // Removed (A31): the allocating BuildGrid(inputs, settings). Tests use the test-only BuildTestGrid of
@@ -379,11 +379,11 @@ struct GridBuildStatus {        // The only thing a grid operation on the GPU re
 };                              // Trivially copyable (static_assert).
 ```
 
-A caller that keeps a committed and a try grid (the step) builds two storages once, at the limit, on its run's
+A caller that keeps a committed and a try grid (the step) builds two grid buffers once, at the limit, on its run's
 processor, and moves them between grids with `BuildGrid` and `TakeBuffers`; raising the limit
-(`step::ApplyLimits`) builds new storages and rebuilds the committed grid into one with the same `GridInputs`,
+(`step::ApplyLimits`) builds new grid buffers and rebuilds the committed grid into one with the same `GridInputs`,
 which gives the same tables. Reconcile (decision 29): the step's simulation state owns one `GridBuilderBuffers` (built
-first, freed last, rebuilt by `ApplyLimits` with the storages) lent to the committed and free `GridBuffers` and,
+first, freed last, rebuilt by `ApplyLimits` with the grid buffers) lent to the committed and free `GridBuffers` and,
 in a batched run, the loaded try's buffers; the batched GPU run's CPU grid copy pair shares one CPU `GridBuilderBuffers`;
 cell resize's two CPU grids in a one-piece GPU run share one CPU `GridBuilderBuffers`. Every other caller (pressure's
 `SolveBatches`, tests and tools) owns a `GridBuilderBuffers` for its buffers (A31: no form builds its own). In a GPU run the step calls `BuildGrid` on the GPU each time the cell set changes:
@@ -394,7 +394,7 @@ stage status), and takes the new grid's counts from `grid.counts()` (A17).
 
 `CellBlockRange` is declared in `grid_ids.h` (3.1). `cell_block_range.h` is CPU only and includes `grid_piece.h`,
 so the spelling `cell_block_range.h` still reaches `GridPiece` (plan decision, decision 23: `GridPiece` owns
-storage and gets its own header).
+buffers and gets its own header).
 
 ```cpp
 struct RangeWithBorder {          // NEW. DECIDED word `border_cells`.
@@ -467,7 +467,7 @@ class GridPiece {
   // NEW (A17). The piece map on grid().run_on(), [grid().counts().cell_blocks] entries used, ascending.
   const Buffer<CellBlockIndex>& block_in_whole_grid_buffer() const;
 };
-// NEW form. Builds the piece of `whole` made of `range` and `border_blocks` into `storage`. Requires a CPU whole
+// NEW form. Builds the piece of `whole` made of `range` and `border_blocks` into `buffers`. Requires a CPU whole
 // grid (A17; a `Requires:` precondition checked by a debug assertion, A30). Allocates nothing; same ownership rule as BuildGrid. `border_blocks` is
 // ascending, outside `range`, below the whole grid's block count (a FindBorderBlocks result, stacked or not).
 // Fails kBadInput, kTooManyCellBlocks (range plus border exceed buffers.max_cell_blocks(); `cell` zero),
@@ -556,7 +556,7 @@ class CellValues {         // NEW. One value per cell place; meaningful where th
   RunOn run_on() const;
   Value* data();           // Valid on run_on() only. Indexed by CellPlaceIndex of the bound grid.
   const Value* data() const;
-  Buffer<Value>& buffer();              // The storage (base/buffer.h), size max_cell_blocks() * 64. The ordered
+  Buffer<Value>& buffer();              // The buffer (base/buffer.h), size max_cell_blocks() * 64. The ordered
   const Buffer<Value>& buffer() const;  // sums of base/ take it with count block_count() * 64.
 };
 // Same members. Places per block: 240 (FacePlaceIndex), 125 (CornerPlaceIndex), 1 (CellBlockIndex).
@@ -658,7 +658,7 @@ one piece are bound again with `ApplyGridVersion` at every load.
 `BuildGridMemoryEstimate` (`BuildGridBuffers` and `BuildGridBuilderBuffers` walk these same rows, the builder
 buffers rows for the second, and allocate each on `run_on` or the CPU as its `where` says, so the estimate cannot drift; there is no other table of processors). Rows in this fixed order,
 names prefixed `grid: `, sizes `sizeof` of the real types. Every row is `KeptFor::kWholeRun` with
-`copies = storage_count` (with `kOneForAllGrids`, the `builder buffers:` rows `copies = 1`: they are the
+`copies = grid_count` (with `kOneForAllGrids`, the `builder buffers:` rows `copies = 1`: they are the
 `GridBuilderBuffers`). Changed (A17): a GPU grid keeps nothing on the CPU; the CPU copy of the tables is gone.
 
 | Row | Counted per | Bytes each | Per block | Where |
@@ -671,7 +671,7 @@ names prefixed `grid: `, sizes `sizeof` of the real types. Every row is `KeptFor
 | **grid tables total** | | | **456 B (7.1 B per cell place)** | `kRunOn` |
 | *CPU grid:* builder buffers: cell ids | cell place | 8 | 512 | `kCpu` |
 | *CPU grid:* piece map | cell block | 4 | 4 | `kCpu` |
-| **one CPU storage** | | | **972 B: 456 `kRunOn`, 516 `kCpu`** | |
+| **one CPU grid's buffers** | | | **972 B: 456 `kRunOn`, 516 `kCpu`** | |
 | *GPU grid:* builder buffers: cell ids (sorted active cells, then active and split cells) | cell place | 8 | 512 | `kRunOn` |
 | *GPU grid:* builder buffers: sort keys | cell place | 8 | 512 | `kRunOn` |
 | *GPU grid:* builder buffers: order (`64 * max_cell_blocks + 1` entries; changed A58: one entry, was a per-place row plus half of `prefix sum ends`) | given count `4 * (64 * max_cell_blocks + 1)` | 1 | 256 (+ 4 once) | `kRunOn` |
@@ -679,7 +679,7 @@ names prefixed `grid: `, sizes `sizeof` of the real types. Every row is `KeptFor
 | *GPU grid:* builder buffers: order buffers (the `OrderBuffers` for `64 * max_cell_blocks + 1` items; reconcile item 28; changed A58: one entry, was a per-place row plus `order buffers, fixed part`) | given count `bytes_per_item * (64 * max_cell_blocks + 1) + fixed_bytes` | 1 | 64 x `bytes_per_item` (+ `fixed_bytes + bytes_per_item` once) | `kRunOn` |
 | *GPU grid:* piece map | cell block | 4 | 4 | `kRunOn` |
 | *GPU grid:* build status | given count 1 | `sizeof(GridBuildStatus)` | | `kRunOn` |
-| **one GPU storage with its own builder buffers** | | | **1,996 B + 64 x order bytes per item, plus `fixed_bytes` + `bytes_per_item` + 8 + `sizeof(GridBuildStatus)`; 0 `kCpu`** (reconcile: with `ComputeOrderBuffersSize(kGpu) = {6, 4096}`, 2,380 B per block + 4,096 + 6 + 8 + `sizeof(GridBuildStatus)`) | |
+| **one GPU grid's buffers with their own builder buffers** | | | **1,996 B + 64 x order bytes per item, plus `fixed_bytes` + `bytes_per_item` + 8 + `sizeof(GridBuildStatus)`; 0 `kCpu`** (reconcile: with `ComputeOrderBuffersSize(kGpu) = {6, 4096}`, 2,380 B per block + 4,096 + 6 + 8 + `sizeof(GridBuildStatus)`) | |
 | *NEW (reconcile):* **GPU buffers (builder buffers lent)** | | | **460 B (456 tables + 4 piece map) + `sizeof(GridBuildStatus)`, per buffers** | `kRunOn` |
 | *NEW (reconcile):* **GPU `GridBuilderBuffers`** | | | **1,920 B (1,536 + 64 x 6) + 4,096 + 6 + 8, once** | `kRunOn` |
 | *NEW (reconcile):* **CPU buffers (builder buffers lent); CPU `GridBuilderBuffers`** | | | **456 `kRunOn` + 4 `kCpu` per buffers; 512 B `kCpu` once** (the CPU builder sorts with `std::sort`, no `OrderBuffers`) | |
@@ -758,7 +758,7 @@ FacePlaceIndex FindNextFace(const GridTables& tables, FaceSearch* search);   // 
 // cell_block_range.h
 enum class BorderWidth : std::uint8_t {
   kTouchingCells,    // Blocks storing an active cell that touches a cell of the set, or storing a face piece
-                     // of such a cell (5.1 step 5: a piece may be stored in its other cell's block). Enough
+                     // of a cell of the set or of such a touching cell (5.1 step 5: a piece may be stored in its other cell's block). Enough
                      // for nearby faces (5.4) and touching cells.
   kFourCellWidths,   // Also every block FaceSearch can read from a face piece stored in the set. For
                      // transfer's fills.
@@ -818,14 +818,14 @@ struct CellWidthsByLevel {                    // NEW. m. width[l] = ComputeCellW
 };
 // NEW (plan decision, grid plan Task 13a). Fills width[l] for l < frame.size_level_count, 0 beyond: the one place
 // the table is filled.
-CellWidthsByLevel ComputeCellWidthsByLevel(const GridFrame& frame);
+CellWidthsByLevel ComputeCellWidthsByLevel(GridFrame frame);
 struct CellSizeFacts {                        // NEW (A41, moved). What the rule reads about one active cell.
   double cell_width = 0;                      // m.
   double depth_below_surface = 0;             // m. 0 at the surface; +infinity beyond reach. NEW (A66): a negative
                                               //   value (step::BuildStartCells' centre bound minus half the cell
                                               //   diagonal) counts as the surface: max(1, ...) gives w_min.
   double distance_to_solid = 0;               // m. +infinity: none within reach. Negative: as for the depth (A66).
-  double velocity_gradient_size = 0;          // 1/s. Held maximum (cell resize); 0 outside liquid.
+  double velocity_change_size = 0;          // 1/s. Held maximum (cell resize); 0 outside liquid.
   double cell_size_factor = 1;                // NEW (A78, A79; replaces artist_size_level). No unit, 1/64..64: the
                                               //   refinement volume's smallest factor over the cell
                                               //   (CellSizeFactorTable of ComputeCellSizeFactorCode); 1: no wish.
@@ -949,11 +949,11 @@ passes that cell's block as `near`; transfer builds the kept mask (same `contact
 samples in `CornerValues`; solids fills `grid_edge_is_open_to_sky` in a `FaceValues<std::uint8_t>`.
 
 **Step (PROVIDED, step 3.2, 3.3, 3.10, 5.3):** stage `ChooseActiveCells` (`step::Stage::kChooseActiveCells`)
-produces the `active_cells` list and calls `BuildGrid(inputs, storage)` with `version + 1` into the try grid's
-storage, on the run's processor (A17: in a GPU run the list is a `Buffer<CellId>` on the GPU,
+produces the `active_cells` list and calls `BuildGrid(inputs, buffers)` with `version + 1` into the try grid's
+buffers, on the run's processor (A17: in a GPU run the list is a `Buffer<CellId>` on the GPU,
 `GridInputs::active_cell_buffer`, with its entry count as a CPU number); `ReadyScene::grid_frame` gives the frame;
-`SimulationLimits::max_cell_blocks` sizes the two storages and every value buffer (reconcile: set by
-`step::BuildRunPlan` from the scene, 5.8); the step owns one `GridBuilderBuffers` lent to both storages and counts them with
+`SimulationLimits::max_cell_blocks` sizes the two grid buffers and every value buffer (reconcile: set by
+`step::BuildRunPlan` from the scene, 5.8); the step owns one `GridBuilderBuffers` lent to both grid buffers and counts them with
 `BuildGridMemoryEstimate(run_on, 2, max_cell_blocks, BuilderBuffersSharing::kOneForAllGrids)` (reconcile, decision 29); the step binds
 `GridFields` with `ApplyGridVersion`. The step relies on `BuildGrid` accepting an empty list (`plan-decisions.md`,
 Step). In a batched GPU run the step also keeps a CPU copy of the grid built with the CPU builder from the same list
@@ -1010,17 +1010,18 @@ and weights.
 7. `FacePieceId` and `CellId` do not depend on which blocks exist; indexes do. `FindCellPlace` and
    `FindFacePlace` translate an id into the current version, which is what remap needs.
 8. `BuildGrid` steps (CPU builder): 1 check frame, version and coordinates; 2 copy the ids into the lent
-   builder buffers and sort them in place, reject overlaps; 3 mark split cells and check siblings; 4 check the size-step
-   rule; 5 create and sort blocks in the storage's block-id table, check their count against the storage's room;
+   builder buffers and sort them in place, reject overlaps; 3 mark split cells and check the siblings of every active and every split cell (each active cell checks its
+   own siblings and those of the split cells its eighth-0 chain adds; plan revision 2026-11-19); 4 check the size-step
+   rule; 5 create and sort blocks in the buffers' block-id table, check their count against the buffers' room;
    6 fill neighbour tables; 7 fill cell states; 8 fill face piece kinds; 9 (changed, A17) on GPU buffers the
    whole build runs on the GPU by item 9 below: nothing is uploaded. No step allocates. Nothing is returned on
-   failure and the storage stays with the caller. The reported problem is the first by the failure key of item 9.
+   failure and the buffers stays with the caller. The reported problem is the first by the failure key of item 9.
    The CPU builder writes every table entry through the shared rules of `grid_build_steps.h` (sort keys, the
    per-position checks, `FindBlockNeighbours`, `ComputeCoveredCellState`, `ComputeFacePieceKind`) and in no other
    way; the GPU kernels call the same functions, which is why the tables are identical. Frame, version and input
    shape are checked on the CPU before any work on either processor.
 9. **Parallel build (new, A17; `<proc-build-grid-in-parallel>`).** Each sequential step becomes "compute a key,
-   stable sort, mark, prefix-sum, scatter" (`BuildStableOrder` and `ComputeExclusivePrefixSum` with the storage's
+   stable sort, mark, prefix-sum, scatter" (`BuildStableOrder` and `ComputeExclusivePrefixSum` with the buffers'
    `OrderBuffers`). Every kernel loops grid-stride over a count it reads from `GridBuildStatus`, so no count comes
    back mid-build, and returns at once when an earlier step failed. P1 (CPU) input checks, `n` above
    `64 * max_cell_blocks` is step 5; a one-thread kernel resets the status. P2 one thread per input index:
@@ -1047,7 +1048,9 @@ and weights.
 ### 5.2 Containing cell
 
 `coordinate = floor((position - origin) / smallest_cell_width)` per axis, then walk down from the level-0
-block (or from `near`) following `kSplit`. This one formula is the only definition of "inside", so a particle
+block (or from `near`) following `kSplit`. Before any integer cast, a coordinate that is not finite or outside `[-kMaxCoord 2^(L-1), (kMaxCoord + 1) 2^(L-1))`
+(`L` = `size_level_count`; exactly the cells a level-0 id can name) gives `kNoIndex` (plan revision 2026-11-19).
+This one formula is the only definition of "inside", so a particle
 one rounding step from a cell side is assigned consistently everywhere. The exact-edge recovery of
 `sparse_mac_grid_3d.cc:83-198` is not ported.
 
@@ -1132,7 +1135,7 @@ any batch cut.
 Ids that survive a version change with `FindCellPlace`/`FindFacePlace`; `ComputeBigCell`, `ComputeSmallCell`,
 `ComputeCellEighth`; `FindTouchingCells`; `CheckSizeStepRule` on a proposed list (its `GridFailure` names the
 two cells, which is what a "which cells must also split" search needs); `ComputeGridCounts` before
-building; `BuildGrid` with `version + 1` into a storage, and `ApplyGridVersion` for the remapped values, so a
+building; `BuildGrid` with `version + 1` into grid buffers, and `ApplyGridVersion` for the remapped values, so a
 resize allocates nothing; `FindFacePieces` for the flux through a big face as the sum of its pieces;
 `FindBorderBlocks` and `BuildGridPiece`. `SplitCell`, `MergeCells`, `ResizeCells`, the closure search
 (`RefinementClosure` on `main`) and all value remap belong to the cell resize and batches design.
@@ -1150,18 +1153,18 @@ values (gas 5.3), so the grid provides none. Sand (A9) uses the same places and 
 ### 5.8 Storage, bound values and pieces (new; step question 4, cell resize and batches)
 
 **No allocation per grid version.** `BuildGridBuffers` allocates, once, every array a grid of at most
-`max_cell_blocks` blocks needs (the rows of 3.6). `BuildGrid` fills it, and the storage moves into the grid;
+`max_cell_blocks` blocks needs (the rows of 3.6). `BuildGrid` fills it, and the buffers move into the grid;
 `TakeBuffers` gives it back for the next version. Value buffers are built once with room for the same
 limit and bound to each new version by `ApplyGridVersion`, which only records the version and the block count:
 the arrays keep their size and their contents become unspecified (the step and the cell resize design then fill them, by
 `CellId` and `FacePieceId` or by remap). A bind runs on the CPU and launches nothing; on the GPU a version costs
 the parallel build of 5.1 item 9 and the read of one status record, and no table crosses (A17). Raising the limit
-is the only path that builds new storages and values (`step::ApplyLimits`).
+is the only path that builds new grid buffers and values (`step::ApplyLimits`).
 
 **One `GridBuilderBuffers`, lent (new, reconcile).** The builder buffers are needed only while a build or check runs,
-so a caller with several storages on one processor builds one `GridBuilderBuffers` and lends it to each with
-`BuildGridBuffers(settings, builder_buffers)` (A31: every `GridBuffers` borrows one; none owns its own); one build or check uses it at a time, and a build into one storage leaves a
-live grid in another storage unchanged.
+so a caller with several grid buffers on one processor builds one `GridBuilderBuffers` and lends it to each with
+`BuildGridBuffers(settings, builder_buffers)` (A31: every `GridBuffers` borrows one; none owns its own); one build or check uses it at a time, and a build into one set of grid buffers leaves a
+live grid in other grid buffers unchanged.
 
 **Room sized by the planner (new, reconcile).** The grid has no default room. `limits.max_cell_blocks` = the blocks
 `step::BuildRunPlan` counts from the scene times `start_limit_headroom` (1.25), capped by the domain's blocks at the
@@ -1178,7 +1181,7 @@ order as the whole grid does (cell resize and batches, 5.10). The piece's tables
 becomes `kOutsidePiece`. A plane-4 place stays `kNotAPiece` when its high neighbour exists in the whole grid but
 was not loaded, so no piece is created that the whole grid does not have, and every face place keeps its kind
 and its place within its block. `FindCellAt` on a piece returns `kNoIndex` for a position in a block not loaded.
-The piece map (`block_in_whole_grid`) is in the storage; `range_in_whole_grid` and the map are what the batched
+The piece map (`block_in_whole_grid`) is in the buffers; `range_in_whole_grid` and the map are what the batched
 run's slice copies read. Both forms write every entry through shared rules (`ToPiecePlace`: border entries below
 the range first, then the range, then the rest, so each entry's place is computed alone; `ToPieceNeighbour`:
 binary search in the map, `kNoIndex` when not loaded; `ComputePieceFaceKind`). **On the GPU (A17)** the buffer form
@@ -1210,7 +1213,7 @@ resize's (the last "later").
 NEW (A66): the same rule builds the start grid. `step::BuildStartCells` (CPU, before any step) computes facts from
 the start shapes alone, with the depth and solid distance at a cell's centre minus half its diagonal (`sqrt(3) w /
 2`; both distances are 1-Lipschitz, so the value bounds every point of the cell from below and may be negative),
-`velocity_gradient_size` 0 (a start region's velocity is uniform) and the first refinement key's factor over the
+`velocity_change_size` 0 (a start region's velocity is uniform) and the first refinement key's factor over the
 cell's box (A78, A79); it splits
 every cell wider than `ComputeWantedCellWidth`, one level per pass, then closes the one-size-step rule
 (`CheckSizeStepRule` passes on the result). The grid's first version is built from `StartCells::cells` by
@@ -1229,7 +1232,7 @@ of its own size (rest volume `(w/2)³`), so the batch plan's 512 particles per f
   tables are compared with bit for bit. The span forms of `FindBorderBlocks` and `BuildGridPiece`,
   `BuildRangeWithBorder`, and the one-argument `ComputeGridCounts` and `CheckSizeStepRule` are CPU only.
   `ApplyGridVersion` runs on the CPU for every grid. Stages loop `for block in range`, `for place in block`.
-- **GPU layout:** the six arrays of `GridTables` and the builder buffers as device arrays sized for the storage's
+- **GPU layout:** the six arrays of `GridTables` and the builder buffers as device arrays sized for the buffers'
   `max_cell_blocks`, element types as declared, owned by the `GridBuffers` the `StaggeredGrid` holds (the builder
   buffers by the lent `GridBuilderBuffers`, reconcile, A31), alive for the whole run; the used part is rewritten per version by the GPU build. `CellValues`/`FaceValues` are single
   flat device arrays sized for the limit, owned by the module that built them, and stay on the device; only
@@ -1240,11 +1243,11 @@ of its own size (rest volume `(w/2)³`), so the batch plan's 512 particles per f
 - **Returned to the CPU:** one `GridBuildStatus` per grid operation on the GPU (counts, or the first failure);
   for border search, the count. No table, no block id. A stage's failure is its own compact record.
 - **Per step for the GPU run (changed, A17):** the cell list is already on the GPU; `BuildGrid` builds the next
-  version into the try storage on the GPU and reads back the status record. No block id comes down, no table goes
+  version into the try grid buffers on the GPU and reads back the status record. No block id comes down, no table goes
   up, no field value moves. `ReadGrid` (456 B per block down) is the one explicit copy, for tests, tools and a
   caller that accepts the transfer (cell resize).
 - **Batched run:** `BuildGridPiece` builds a small `StaggeredGrid` for a range plus its stacked border into one
-  storage of `max_loaded_blocks`, reused by every batch; on a GPU whole grid it builds the piece's tables on the
+  set of buffers of `max_loaded_blocks`, reused by every batch; on a GPU whole grid it builds the piece's tables on the
   GPU (buffer form), and the loaded values are bound to it with `ApplyGridVersion`. Stage code is unchanged
   because it only ever sees `(grid, range)`.
 
@@ -1254,17 +1257,17 @@ Analytic, CPU (label `cpu`), discrete results compared exactly:
 
 | Test | Setup | Expected |
 |---|---|---|
-| `BuildGrid, OneBigCell_HasSixEdgePieces` | 1 level, 1 cell, width 1 m | 6 pieces, each 1 m2, 3 `kGridEdgeLow`, 3 `kGridEdgeHigh` |
-| `BuildGrid, SplitCellBesideBigCell_HasFourQuarterPieces` | 2 cells of 1 m, the +X one split | 4 `kBetweenCells` X-pieces of 0.25 m2 with the same `cell_low`; their areas sum to 1 m2; centre distance 0.75 m |
+| `BuildGrid, OneBigCell_HasSixEdgeFacePieces` | 1 level, 1 cell, width 1 m | 6 pieces, each 1 m2, 3 `kGridEdgeLow`, 3 `kGridEdgeHigh` |
+| `BuildGrid, SplitCellBesideBigCell_HasFourQuarterFacePieces` | 2 cells of 1 m, the +X one split | 4 `kBetweenCells` X-pieces of 0.25 m2 with the same `cell_low`; their areas sum to 1 m2; centre distance 0.75 m |
 | `BuildGrid, AnyInputOrder_GivesSameTables` | 200 random valid grids, ids shuffled | identical bytes |
 | `BuildGrid, EveryCellSide_IsCoveredOnce` | 200 random valid grids, up to 4 levels | for every active cell and side, piece areas sum to the cell's face area (exact: powers of two) |
-| `BuildGrid, ClosedSurface_SignedAreasCancel` | same grids | per cell, sum over pieces of `+-area * axis` is exactly zero |
-| `CheckSizeStepRule, CornerTouchTwoLevelsApart_IsRejected` | level 0 cell and a level 2 cell touching at a corner | `kSizeStepRuleBroken`, both ids reported; same for edge and face |
+| `BuildGrid, ClosedSurface_AreasCancel` | same grids | per cell, sum over pieces of `+-area * axis` is exactly zero |
+| `CheckSizeStepRule, CornerTouchTwoLevelsApart_IsSizeStepRuleBroken` | level 0 cell and a level 2 cell touching at a corner | `kSizeStepRuleBroken`, both ids reported; same for edge and face |
 | `BuildGrid, LoneSmallCell_IsSiblingCellMissing` | 7 of 8 siblings | `kSiblingCellMissing` |
-| `ComputeGridCounts, BadIdAfterRepeat_IsBadInputOfFirstBadId` NEW (A17) | input `{a, a, bad1, bad2}` | `kBadInput` naming `bad1` (step 1 outranks step 2; input order within step 1) |
+| `CheckSizeStepRule, BadIdAfterRepeat_IsBadInputOfFirstBadId` NEW (A17) | input `{a, a, bad1, bad2}` | `kBadInput` naming `bad1` (step 1 outranks step 2; input order within step 1) |
 | `ToCellSortKey, ThreePasses_GiveComesBeforeOrder` NEW (A17) | 10,000 random ids, levels 0..3 | the three stable passes give the `ComesBefore` order |
-| `CountSplitCellsToAdd, RandomGrids_AddEachSplitCellOnce` NEW (A17) | 200 random grids | added ancestors distinct, equal to the brute-force set of split cells and to the places the CPU build marks `kSplit` |
-| `GridInputs, SpanAndBufferBoth_IsBadInput`, `..., BufferCountAboveSize_IsBadInput`, `..., CpuBufferList_GivesSameCountsAsSpan` NEW (A17) | the two list forms | as named |
+| `ComputeSplitCellCountToAdd, RandomGrids_AddEachSplitCellOnce` NEW (A17) | 200 random grids | added ancestors distinct, equal to the brute-force set of split cells and to the places the CPU build marks `kSplit` |
+| `GridInputs, TwoLists_IsBadInput`, `..., BufferCountAboveSize_IsBadInput`, `ComputeGridCounts, CpuBufferList_GivesSameCountsAsSpan` NEW (A17) | the two list forms | as named |
 | `ComputeGridCounts, IntoBuffers_EqualsSpanForm` NEW (A17; renamed, A31) | 200 random grids, CPU buffers for 4,096 blocks; a grid of 4,097 blocks | equal counts; `kTooManyCellBlocks` with `cell` zero while the one-argument form gives `cell_blocks == 4097` |
 | `CheckSizeStepRule, IntoBuffers_EqualsSpanForm` NEW (A17) | the corner, edge and face lists and 200 random grids | identical results |
 | `ComputeGridCounts, IntoBuffers_AllocatesNothing` NEW (A17) | 100 grids through both buffers forms | allocation counter stays 0 |
@@ -1278,33 +1281,33 @@ Analytic, CPU (label `cpu`), discrete results compared exactly:
 | `..., LinearField_IsReproduced` | value `a + b.x` on faces, mixed sizes and masks, `fit == kFull` | value at particle within `1e-13 (|a| + |b| h)`; fitted row equals `b` within `1e-11 |b|` |
 | `..., WeightChange_MatchesFiniteDifference` | centred difference, step `1e-6 h`, away from cell sides | within `1e-7 / h` |
 | `..., FacesOnOnePlane_IsMeanOnly` | mask keeps one plane | `kMeanOnly`; none kept: `kNone` |
-| `FindNearbyFaces, AllNeighboursSplit_Has76` and `..., RandomGrids_NeverExceed76` | constructed worst case; 10,000 random | 76; never more |
-| `FindNearbyFaces, RangeAndBorder_ContainEveryFace` | random grids cut by `BuildRanges` | every listed face is stored in the range or its border |
-| `FindBorderBlocks, MatchesGeometricReach` NEW | random grids, random ascending block sets, both widths | equals the test-only geometric checker; ascending, no repeats, no block of the set; the span form gives the same list and the full count when the span is short |
+| `FindNearbyFaces, AllNeighboursSplit_Has76` and `..., SmallRandomGrids_NeverExceed76` | constructed worst case; 10,000 random | 76; never more |
+| `FindNearbyFaces, RangeWithBorder_HoldsEveryFace` | random grids cut by `BuildRanges` | every listed face is stored in the range or its border |
+| `FindBorderBlocks, TouchingCells_EqualsGeometricReadSet`, `..., FourCellWidths_EqualsBlockRuleByCoordinates`, `..., FourCellWidths_HoldsEveryFaceWithinFourWidths` NEW | random grids, random ascending block sets, both widths | equals the test-only geometric checker; ascending, no repeats, no block of the set; the span form gives the same list and the full count when the span is short |
 | `FindBorderBlocks, PlaneFourPieceBeyondTouchingCell_IsInBorder` NEW | range ends at a block side; the touching cell's high face is stored in the next block (5.1 step 5) | that block is in the `kTouchingCells` border |
 | `FindBorderBlocks, StackedBorders_HoldEveryRead` NEW | random grids, the pass-1 stack (touching, touching, four widths, touching) | every face and cell a stage of the stack reads from its run set is loaded |
 | `FindBorderBlocks, StackedBufferForm_EqualsSpanFormLayerByLayer` NEW (A17) | 100 random grids, ranges of 4 blocks, the pass-1 layers, CPU buffers | at each layer the buffer form's list equals `std::merge` of `border_so_far` and the span form on range plus `border_so_far` |
-| `FindBorderBlocks, StackedBufferFormShortOutput_WritesFirstAndReturnsTotal`, `..., StackedBufferFormAliasedOutput_IsBadInput`, `..., BorderSoFarInsideRange_IsBadInput`, `..., StackedBufferForm_AllocatesNothing` NEW (A17) | as named | as named |
+| `FindBorderBlocks, StackedBufferFormShortOutput_WritesFirstEntriesReturnsTotal`, `..., StackedBufferFormSameBufferTwice_IsBadInput`, `..., BorderSoFarInsideRange_IsBadInput`, `..., StackedBufferForm_AllocatesNothing` NEW (A17) | as named | as named |
 | `BuildBorderSearchMemoryEstimate, MatchesAllocatedBytes` NEW (A17) | CPU search buffers | `4 * max_cell_blocks + 4` |
 | `ComputeIsBorderBlock, PlaneFourFixture_MarksBlockC` NEW (A17) | the plane-4 fixture built by hand (shared-formula test) | block C marked |
 | `BuildGridPiece, BufferForm_EqualsSpanForm` NEW (A17) | the grids of `KeepsWholeGridOrder`, border from the stacked buffer form on CPU buffers | same tables, map and counts as the span form |
 | `BuildGridPiece, SameWeightsAsWholeGrid` | positions in the range | identical bytes |
 | `BuildGridPiece, KeepsWholeGridOrder` NEW | random grids, ranges, stacked borders | `block_in_whole_grid` ascending; `range` is a run; per block, states and kinds equal the whole grid's except `kOutsidePiece` exactly where the other cell's block was not loaded |
 | `BuildGridPiece, BlockSumsInPieceOrder_EqualWholeGrid` NEW | per-block partials summed with `math::TreeSum` over pieces from 3 different cuts | identical bytes to the one-piece sum |
-| `BuildGrid, IntoStorage_AllocatesNothing` NEW | storage for 4,096 blocks; 100 random grids built and their buffers taken back in turn; allocations counted through a replaced global `operator new` in the test executable (plan decision) | zero allocations after `BuildGridBuffers`; storage addresses unchanged; tables equal those of `BuildTestGrid` byte for byte |
-| `BuildGrid, AboveStorageRoom_IsTooManyCellBlocks` NEW | storage for 8 blocks, a 9-block grid | `kTooManyCellBlocks` with `cell` zero, no grid; the same storage then builds an 8-block grid |
-| `BuildGrid, VersionZero_IsBadInput` NEW | `version = 0` | `kBadInput` |
+| `BuildGrid, IntoBuffers_AllocatesNothing` NEW | buffers for 4,096 blocks; 100 random grids built and their buffers taken back in turn; allocations counted through a replaced global `operator new` in the test executable (plan decision) | zero allocations after `BuildGridBuffers`; buffer addresses unchanged; tables equal those of `BuildTestGrid` byte for byte |
+| `BuildGrid, AboveBuffersRoom_IsTooManyCellBlocks` NEW | buffers for 8 blocks, a 9-block grid | `kTooManyCellBlocks` with `cell` zero, no grid; the same grid buffers then builds an 8-block grid |
+| `GridInputs, VersionZero_IsBadInput` NEW | `version = 0` | `kBadInput` |
 | `ApplyGridVersion, RebindsWithoutAllocating` NEW | each value type with room for 4,096 blocks, bound to 100 versions | no allocation; `grid_version()`, `block_count()` follow the grid; above the room `kTooManyCellBlocks` and the values unchanged |
-| `ReadValues, NotBoundOrWrongSpan_Fails` NEW | values bound to no grid; a span one entry short | `kWrongGridVersion`; `kBadInput` |
+| `ReadValues, NotBound_IsWrongGridVersion`, `..., SpanOneEntryShort_IsBadInput` NEW | values bound to no grid; a span one entry short | `kWrongGridVersion`; `kBadInput` |
 | `ToName, EveryError_IsStableSnakeCase` NEW | every `GridError` | lower snake case of the enumerator without `k`, unique; `ToName(kTooManyCellBlocks) == "too_many_cell_blocks"` |
-| `ComputeMemoryBytes, MatchesAllocatedBytes` | `BuildGridBuilderBuffers` and `BuildGridBuffers` on the CPU at 1,000 blocks | `1000 * 972`; with `where`, `kRunOn` `1000 * 456`, `kCpu` `1000 * 516` |
+| `BuildGridMemoryEstimate, CpuGrid_IsNineHundredSeventyTwoBytesPerBlock`, `BuildGridBuffers, CpuBuffers_HoldTheEstimatedBytes` | `BuildGridBuilderBuffers` and `BuildGridBuffers` on the CPU at 1,000 blocks | `1000 * 972`; with `where`, `kRunOn` `1000 * 456`, `kCpu` `1000 * 516` |
 | `BuildGridMemoryEstimate, GpuRun_KeepsNothingOnTheCpu` NEW (A17) | `BuildGridMemoryEstimate(kGpu, 1, 1000)` at 1,000 blocks | `kCpu` 0; `kRunOn` `1000 * (1996 + 64 * bytes_per_item) + fixed_bytes + bytes_per_item + 8 + sizeof(GridBuildStatus)` |
-| `BuildGridMemoryEstimate, NoRowIsACpuCopy`, `..., TwoStorages_DoublesEveryRow` NEW (A17) | both processors | no row named a CPU copy; `copies == 2`, totals per `where` double |
+| `BuildGridMemoryEstimate, NoEntryIsACpuCopy`, `..., TwoGrids_DoublesEveryEntry` NEW (A17) | both processors | no row named a CPU copy; `copies == 2`, totals per `where` double |
 | `BuildGridBuffers, ZeroBlocks_IsBadInput`, `..., AboveLimit_IsBadInput` NEW (A17) | 0 and `kMaxCellBlocksLimit + 1` | `kBadInput` |
-| `BuildGridMemoryEstimate, SharedBuilderBuffers_CountedOnce` NEW (reconcile) | both processors, storage count 2, `kOneForAllGrids` | every `builder buffers:` row `copies == 1`, every other row `copies == 2`; GPU `kRunOn` at 1,000 blocks `1000 * (2 * 460 + 1920) + 4096 + 6 + 8 + 2 * sizeof(GridBuildStatus)` |
-| `BuildGridBuffers, TwoGridBuffersShareBuilderBuffers_AllocatedEqualsEstimate` NEW (reconcile) | `BuildGridBuilderBuffers(kCpu, 1000)`, two `BuildGridBuffers({.max_cell_blocks = 1000}, builder_buffers)` | bytes of the builder buffers and both buffers equal `ComputeMemoryBytes(BuildGridMemoryEstimate(kCpu, 2, 1000, kOneForAllGrids))` at 1,000 blocks; neither `GridBuffers` holds a builder buffers array |
+| `BuildGridMemoryEstimate, SharedBuilderBuffers_CountedOnce` NEW (reconcile) | both processors, 2 grids, `kOneForAllGrids` | every `builder buffers:` row `copies == 1`, every other row `copies == 2`; GPU `kRunOn` at 1,000 blocks `1000 * (2 * 460 + 1920) + 4096 + 6 + 8 + 2 * sizeof(GridBuildStatus)` |
+| `BuildGridBuffers, TwoBuffersShareBuilderBuffers_HoldTheSharedEstimate` NEW (reconcile) | `BuildGridBuilderBuffers(kCpu, 1000)`, two `BuildGridBuffers({.max_cell_blocks = 1000}, builder_buffers)` | bytes of the builder buffers and both buffers equal `ComputeMemoryBytes(BuildGridMemoryEstimate(kCpu, 2, 1000, kOneForAllGrids))` at 1,000 blocks; neither `GridBuffers` holds a builder buffers array |
 | `BuildGridBuffers, LentBuilderBuffersTooSmall_IsBadInput` NEW (reconcile; other-processor half dropped, A30) | builder buffers for 500, buffers for 1,000 | `kBadInput`, nothing allocated |
-| `BuildGridBuilderBuffers, ZeroBlocks_IsBadInput`, `GridSettings, DefaultRoomIsZero_BuildGridBuffersIsBadInput` NEW (reconcile) | 0; `GridSettings{}` | `kBadInput` |
+| `BuildGridBuilderBuffers, ZeroBlocks_IsBadInput`, `BuildGridBuffers, ZeroBlocks_IsBadInput` NEW (reconcile) | 0; `GridSettings{}` | `kBadInput` |
 | `BuildGrid, SharedBuilderBuffers_OtherLiveGridUnchanged` NEW (reconcile) | one `GridBuilderBuffers` for 4,096 blocks lent to two buffers; grid A in the first, 100 random grids built (buffers taken back) in turn in the second (and both buffers-form checks) | A's tables, counts and `FindCellAt` on 1,000 positions byte-identical before and after; each B equals B built with its own builder buffers |
 | `BuildTestGrid, DefaultSettings_SizedToTheList` NEW (reconcile; was `BuildGrid, ...`, A31) | `BuildTestGrid(inputs, GridSettings{})` of a 9-block list | a grid with `max_cell_blocks() == 9` |
 
@@ -1318,14 +1321,14 @@ smallest level 4, far facts unless named):**
 | `ComputeWantedCellWidth, UniformTranslation_NoShearSplit` | gradient 0, `U_ref` 5 | 1.0, level 0 |
 | `ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth` | gradient 1e-300; depth `DBL_MAX` | 1.0, never NaN |
 | `ComputeWantedCellWidth, DepthBeyondReach_GrowsLinearly`; `..., SolidBeyondReach_GrowsLinearly` | depth 1.0; 0.25; 100; then distance 0.5; distance 0.5 with depth 1.0 | 0.125; 0.0625; 1.0; then 0.25; 0.125 |
-| `ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverGradient` | frame 0.5 m, 6 levels, gradient `sqrt(2) x 10`, `U_ref` 1 | 0.0176776695296637 within 1e-15 relative; level 5 |
+| `ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverVelocityChange` | frame 0.5 m, 6 levels, gradient `sqrt(2) x 10`, `U_ref` 1 | 0.0176776695296637 within 1e-15 relative; level 5 |
 | `ComputeWantedCellWidth, PocketOrGas_IsSmallest` | flags with depth 100 | 0.0625 |
 | `ComputeWantedCellWidth, FactorOne_SameBitsAsNoFactor`, `..., FactorHalf_HalvesDeepWidth`, `..., FactorTwo_DoublesDeepWidth`, `..., FactorTwoNearSurface_IsSmallest` (A78, A79) | factor 1 over 10,000 fact sets; depth 1.0 with factor 0.5; with 2; depth 0.25 with 2 | bit for bit; 0.0625; 0.25; 0.0625 |
 | `ComputeWantedSizeLevel, WidthEqualToALevel_GivesThatLevel`, `..., BelowSmallestWidth_GivesSmallestLevel` | 0.125, `nextafter(0.125, 0)`, 0.2, 5; 0.01 | 3, 4, 3, 0; 4 |
 | `ComputeReferenceSpeed, SlowLiquid_UsesGravityWaveSpeed` | (0.1, 9.81, 1); (5, 9.81, 1) | `sqrt(9.81)` bit for bit; 5 |
-| `ComputeCellSizeFactorTable, QuarterDoublings` (A78) | | `factor[24] == 1`, `factor[28] == 2`, `factor[20] == 0.5`, `factor[0] == 0x1p-6` exactly |
-| `ComputeCellSizeFactorCode, NoVolume_IsZero`, `..., SmallCell_ReadsItsSample`, `..., BigCell_IsSmallestCodeOverItsBox`, `..., OutsideLattice_IsZero` (A78, A79) | frame 1 m, 5 levels, spacing 4 smallest cells (8 x 4 x 4 samples), a one-sample-wide line of code -8 at sample x 5 | 0; the sample's code; -8 for the level-0 cell holding x 5, 0 for the other; 0 |
-| `ComputeNewCellSizeLevel, NextToBigCell_OneLevelFiner` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
+| `ComputeCellSizeFactorTable, QuarterDoublings_AreExact` (A78) | | `factor[24] == 1`, `factor[28] == 2`, `factor[20] == 0.5`, `factor[0] == 0x1p-6` exactly |
+| `ComputeCellSizeFactorCode, NoVolume_IsZero`, `..., SmallCell_ReadsItsSample`, `..., BigCell_IsSmallestCodeOverItsBox`, `..., OutsideTheVolume_IsZero` (A78, A79) | frame 1 m, 5 levels, spacing 4 smallest cells (8 x 4 x 4 samples), a one-sample-wide line of code -8 at sample x 5 | 0; the sample's code; -8 for the level-0 cell holding x 5, 0 for the other; 0 |
+| `ComputeNewCellSizeLevel, NextToBigCell_IsOneLevelSmaller` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
 | `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest` (NEW, A66) | depth `-0.03` alone; distance `-0.03` alone; depth `-0.03` with factor 4 | 0.0625; 0.0625; 0.0625, never NaN |
 | `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (`gpu`) | 10,000 fact sets from a fixed formula | identical bytes, levels and factor codes (`ComputeCellSizeFactorCode` on the fixture above) |
 | `ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu` (`gpu`) | random 3-level grid on both processors, 10,000 positions | identical levels |
@@ -1349,8 +1352,9 @@ geometrically, with no blocks and no tables, removes it and runs on every platfo
 grids" tests above. `proofs/Fluidity/UniformTile.lean` (the 8^3 tile) describes machinery that is gone.
 
 **Comparison with `main`** (supporting only): the 27 weights, offsets and derivatives of
-`BuildMacFaceGeometryStencil3D` for 100 positions, rotated to Z-up, against the complete-neighbourhood case
-within `1e-13` relative; piece count and areas of `test_adaptive_mac_topology_3d.cc`'s two-size fixture with
+`main`'s Python reference `quadratic_stencil` (`reference/src/fluidity_reference/basis.py`, the formula of its
+C++ `BuildMacFaceGeometryStencil3D`; read with `git show`, nothing of `main` is built) for 100 positions,
+rotated to Z-up, against the complete-neighbourhood case within `1e-15 + 1e-13 |value|`; piece count and areas of `test_adaptive_mac_topology_3d.cc`'s two-size fixture with
 all 8 siblings present. The radial weights of `main` are not compared: the curve changed on purpose.
 
 **GPU** (label `gpu`; every grid built twice from one list, on the CPU as the reference and on the GPU from a GPU
@@ -1364,22 +1368,22 @@ on the GPU, not uploaded.
 | `CheckSizeStepRule, OnGpuTwice_GivesIdenticalFailure`, `..., OnGpu_AllocatesNothing` (A30 removed `OnGpuBuffersWithCpuList_IsBadInput` and `ComputeGridCounts, GpuBufferListInOneArgumentForm_IsBadInput`) | as named (GPU free bytes unchanged after the first call) |
 | `BuildGrid, OnGpu_EqualsCpuTablesBitForBit` | empty list, one cell, the two-size fixture, 200 shuffled random grids into GPU buffers for 4,096 blocks: version, counts and the used part of all five tables equal |
 | `BuildGrid, OnGpuFailures_EqualCpuFailures` | the 500 mutated lists, 9 blocks into room for 8 (step 6), `64 * 8 + 1` cells (step 5): identical `GridFailure` |
-| `BuildGrid, OnGpuFailedBuildThenRebuild_EqualsFreshBuffers`, `BuildGrid, RebuildIntoUsedGpuStorage_EqualsFreshStorage` | the second grid equals the same grid built into fresh buffers |
-| `BuildGrid, IntoGpuStorage_AllocatesNothing`, `BuildGrid, OnGpuTwice_GivesIdenticalBytes`; `ComputeGridCounts, OnGpu_EqualsCpu` | free bytes unchanged, `operator new` counter 0; identical bytes; equal counts |
+| `BuildGrid, OnGpuFailedBuildThenRebuild_EqualsFreshBuffers`, `BuildGrid, RebuildIntoUsedGpuBuffers_EqualsFreshBuffers` | the second grid equals the same grid built into fresh buffers |
+| `BuildGrid, IntoGpuBuffers_AllocatesNothing`, `BuildGrid, OnGpuTwice_GivesIdenticalBytes`; `ComputeGridCounts, OnGpu_EqualsCpu` | free bytes unchanged, `operator new` counter 0; identical bytes; equal counts |
 | `ComputeMemoryBytes, MatchesAllocatedGpuBytes` | the drop in GPU free bytes equals the `kRunOn` rows of `BuildGridMemoryEstimate(kGpu, 1, 1000)` at 1,000 blocks for one `GridBuilderBuffers` and one `GridBuffers` (up to the driver's stated granularity); no CPU array allocated |
 | `BuildGrid, OnGpuSharedBuilderBuffers_OtherLiveGridUnchanged` NEW (reconcile) | the CPU shared builder buffers test on GPU buffers, compared through `ReadGrid`; the drop in free GPU bytes for one `GridBuilderBuffers` and two buffers equals `ComputeMemoryBytes(BuildGridMemoryEstimate(kGpu, 2, 1000, kOneForAllGrids), counts, kRunOn)` (granularity as above) |
 | `ComputeNearbyFaceWeights, OnGpu_MatchesCpu`, `..., OnGpuTwice_GivesIdenticalBytes`; `FindCornerPlaces, OnGpu_EqualsCpu` | weights for 10,000 positions on random mixed grids within `|difference| <= 1e-15 + 1e-13 * |value|` (offsets: times `h`), discrete fields exact; identical bytes; corner places identical |
 | `WriteValues, OnGpuThenReadValues_ReturnsTheSameValues`; `ApplyGridVersion, OnGpuGrid_LaunchesNothing` | `ReadValues(WriteValues(x)) == x`; 100 GPU grids bound in turn: free bytes and contents unchanged |
 | `FindBorderBlocks, OnGpu_EqualsCpuStackedLayers`, `..., OnGpuShortOutput_SameCountAsCpu`, `..., OnGpuFailures_EqualCpuFailures`, `..., OnGpu_AllocatesNothing`, `..., OnGpuTwice_GivesIdenticalBytes`; `BuildBorderSearchMemoryEstimate, MatchesAllocatedGpuBytes` | lists and counts equal the CPU's layer by layer; identical failures |
 | `BuildGridPiece, OnGpu_EqualsCpuPiece`, `..., OnGpuFailures_EqualCpuFailures`, `..., OnGpu_AllocatesNothing`, `..., OnGpuTwice_GivesIdenticalBytes` (A30 removed `SpanFormOnGpuWhole_IsBadInput`) | piece tables, map, version and counts equal the CPU piece's byte for byte |
-| `StaggeredGrid, SlopedSurfaceTankOnGpu_EqualsCpu` | the tank with a sloped surface (below): GPU grid, stacked borders and pieces equal the CPU's; weights on the GPU piece within the CPU-versus-GPU tolerance |
+| `StaggeredGrid, SlopedSurfaceInBoxOnGpu_EqualsCpu` | the box of liquid with a sloped surface (below): GPU grid, stacked borders and pieces equal the CPU's; weights on the GPU piece within the CPU-versus-GPU tolerance |
 
 **Runs in the container without a GPU** (label `no_gpu`): `BuildGridBuilderBuffers`, `BuildBorderSearchBuffers` and
 `BuildFaceValues` with `run_on = kGpu` return `kRunOnCallFailed` and nothing;
 every `cpu` test, since the shared headers are the same code the
 GPU kernels compile.
 
-**Scene** (label `cpu`): `StaggeredGrid, SlopedSurfaceTank_PassesEveryCheck`: width 1 m, 3 levels, level-0 box
+**Scene** (label `cpu`): `StaggeredGrid, SlopedSurfaceInBox_PassesEveryCheck`: width 1 m, 3 levels, level-0 box
 16 x 4 x 8, level-2 cells within 1 m of `z = 4 + 0.25 x` with the size-step closure; counts equal
 `ComputeGridCounts`; ranges of 8 blocks, a piece with a stacked touching border per range; at 1,000 positions,
 piece weights equal whole-grid weights byte for byte and sum to 1 within `1e-14`.
@@ -1415,8 +1419,8 @@ left-out faces hollow, the mean offset arrow and the spread ellipse, beside the 
 NEW (A41, A61–A63): `<sec-cell-size-rule>` with `<eq:wanted-cell-width>` (5.9): the four terms, the clamp, `c_u`
 as a starting value, `U_ref`, the new-cell rule, the artist inputs, levels by comparison.
 
-Pseudocode: `<proc-build-grid>` (the 9 steps of 5.1 item 8, step 9 reading "on the GPU, see
-`<proc-build-grid-in-parallel>`") and `<proc-nearby-face-weights>` (the 9 steps of 5.4).
+Pseudocode: `<proc-build-grid>` (steps 1 to 8 of 5.1 item 8, with a closing line "on the GPU, see
+`<proc-build-grid-in-parallel>`"), `<proc-count-grid>` (the four steps of the count without tables, 3.3) and `<proc-nearby-face-weights>` (the 9 steps of 5.4).
 
 Cite from the old list: [2] Ding 2020 (weights per face axis), [1] Jiang 2015 (the fit and its spread), [3] Hu
 2018 (leaving out faces across a cut), [18] Stomakhin 2014 (all materials on one staggered grid), [5] Wang
@@ -1576,9 +1580,9 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     samples its 8 corners itself (8 times the samples, no shared index).
     Decision: corner places, 125 per block, as in 3.7. Source: recommended option (owner's standing
     instruction, 2026-11-14), Q43.
-15. **(Update) No allocation inside a try.** Step question 4: a) the grid gains storage for a limit and values
+15. **(Update) No allocation inside a try.** Step question 4: a) the grid gains buffers for a limit and values
     bound to a version; b) allocate in stage 2 when the list changed. Module 9 asks the same for pieces.
-    Decision: a, for whole grids and pieces: `GridBuffers`, `BuildGridBuffers`, `BuildGrid(inputs, storage)`,
+    Decision: a, for whole grids and pieces: `GridBuffers`, `BuildGridBuffers`, `BuildGrid(inputs, buffers)`,
     `ReleaseBuffers` (now `TakeBuffers`, decision 33), `BuildCellValues(run_on, max_cell_blocks)` and the other forms, `ApplyGridVersion`
     (5.8). Source: recommended option (owner's standing instruction, 2026-11-14), step question 4;
     `changes-to-apply.md` section 02.
@@ -1613,9 +1617,9 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     `block_in_whole_grid()` is empty for a GPU piece; `BuildRangeWithBorder` requires a CPU grid; `BuildRanges`
     works on either. Cell resize and batches, and pressure's solve batches, use the buffer forms in a GPU run.
     Source: `plan-decisions.md` "Grid built on the GPU (A17)".
-21. **(A17) Memory and limit.** A GPU storage keeps everything on the GPU and nothing on the CPU: 456 B tables +
+21. **(A17) Memory and limit.** The buffers of a GPU grid keep everything on the GPU and nothing on the CPU: 456 B tables +
     1,536 B builder buffers + 4 B piece map = 1,996 B per block, plus the order buffers, `fixed_bytes`, 8 B and
-    `sizeof(GridBuildStatus)`; a CPU storage is unchanged (456 B `kRunOn`, 516 B `kCpu`). Every row carries its
+    `sizeof(GridBuildStatus)`; those of a CPU grid are unchanged (456 B `kRunOn`, 516 B `kCpu`). Every row carries its
     `MemoryWhere`; sizes are `sizeof` of the real types. `max_cell_blocks <= kMaxCellBlocksLimit = (1u << 26) - 1`.
     Source: `plan-decisions.md` "Grid built on the GPU (A17)" and "Foundation `base/`", "Applies to every plan".
     **Amended by decision 30** (reconcile): the 1,996 B is the old one-buffers figure without the order buffers;
@@ -1641,12 +1645,12 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
 28. **(Reconcile) No default room.** `GridSettings::max_cell_blocks` defaults to 0; the design's `1u << 22` is
     withdrawn. `BuildGridBuffers` and `BuildGridBuilderBuffers` with 0 are `kBadInput`; the allocating
     `BuildGrid(inputs, settings)` (now the test-only `BuildTestGrid`, decision 34) with 0 sizes its buffers to the list's blocks (at least 1). No compile-time room is
-    an allocation size. Closes the former open point 1 (a GPU storage at `1u << 22` held about 8.4 GB, two of them
+    an allocation size. Closes the former open point 1 (GPU grid buffers at `1u << 22` held about 8.4 GB, two of them
     above a 16 GB GPU). Decision: no default room; the planner sizes it (decision 31). Source: `plan-decisions.md`,
     Reconcile pass item 11.
 29. **(Reconcile) One `GridBuilderBuffers` lent to several buffers.** `GridBuilderBuffers`, `BuildGridBuilderBuffers`,
     `BuildGridBuffers(const GridSettings&, GridBuilderBuffers&)`, `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }` and
-    `BuildGridMemoryEstimate(run_on, storage_count, builder_buffers_sharing = kOnePerGrid)` (3.3, 3.6). The caller owns the
+    `BuildGridMemoryEstimate(run_on, grid_count, builder_buffers_sharing = kOnePerGrid)` (3.3, 3.6). The caller owns the
     builder buffers; the buffers must not outlive them; they are not moved while lent; one build or check uses them at a
     time; no operation on a built grid reads them. Owners: the step's simulation state (committed, free and loaded-try buffers),
     the batched GPU run's CPU grid copy pair, cell resize's two CPU grids in a one-piece GPU run.
@@ -1745,10 +1749,10 @@ None. (The former points 1, default room, and 2, order buffers size, are decided
 The artist regions and the top-view map (A63) are removed. The rule reads one keyed volume of cell size factors over
 the domain box, stored as a min-pyramid of one-byte codes (`f = 2^(c/4)`, 1/64 to 64; `RefinementFactors`,
 `ComputeCellSizeFactorCode`, `CellSizeFactorTable`), and multiplies the physical width by the cell's smallest factor:
-`w = clamp(min(w_depth, w_solid, w_shear) x f, w_min, w_max)`, `w_min` in the pinned surface band, pockets and gas.
+`w = clamp(min(w_depth, w_solid, w_shear) x f, w_min, w_max)`, `w_min` in the cells within 8 smallest widths of the surface, pockets and gas.
 Why a product: the artist scales what the flow needs instead of overriding it; a harmonic mean (the owner's other
 idea) cannot say "leave it to the physics" without a special value and keeps the result between the two widths.
-Limit of the first version: the factor does not reach the pinned surface band, so a hero region finer than `w_min`
+Limit of the first version: the factor does not reach the cells within 8 smallest widths of the surface, so a hero region finer than `w_min`
 needs a smaller scene `w_min` (with factors above 1 elsewhere); a zone that lowers `w_min` locally waits for coarse
 surface cells (A61, A68). Zones, meshes and the camera are I/O's builder, outside the solver. Source: A72, A73, A77,
 A78, A79; `plan-decisions.md` "Refinement volume (A78, A79; reshapes A72, A73, A77)".
