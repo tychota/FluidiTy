@@ -701,7 +701,7 @@ size (the two GPU orders, the GPU `OrderBuffers`, the border marks and the borde
 reservation equals the bytes handed out for any room.
 
 `BuildBorderSearchMemoryEstimate(run_on, max_cell_blocks)` (NEW, A17; `grid: ` prefix, `KeptFor::kWholeRun`,
-`copies = 1`; changed A58: one entry per array, the affine ones `kGivenCount` of their exact bytes): `border marks`
+`copies = 1`; changed A58: one entry per array, the ones with a fixed part `kGivenCount` of their exact bytes): `border marks`
 (given count `4 * (max_cell_blocks + 1)`, 1 B; was a per-block row plus `border marks end`), `where = kRunOn`; for
 `kGpu` also `border order buffers` (given count `bytes_per_item * (max_cell_blocks + 1) + fixed_bytes` of
 `ComputeOrderBuffersSize(kGpu)`, 1 B; the `OrderBuffers` of `BorderSearchBuffers`, reconcile item 28; was a

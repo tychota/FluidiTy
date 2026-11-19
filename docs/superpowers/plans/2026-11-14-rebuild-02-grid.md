@@ -1146,7 +1146,7 @@ Load the same three skills.
   - `TEST(ComputeGridCounts, CellsAtBothCoordLimits_CountTheirEdgeFacePieces)`: 2 levels: level 0 `{-kMaxCoord,
     0, 0}`, level 0 `{kMaxCoord, 0, 0}` and the 8 level-1 cells of level 0 `{0,0,0}`: `face_pieces == 48` (6 + 6
     + 36) and `cell_blocks == 4`. A count through packed ids beyond the limit would find level-1 cell `{1,0,0}`
-    beside the first cell and give 47.
+    beside the first cell, and level-1 cell `{0,0,0}` beside the second, and give 46.
   - `TEST(ComputeGridCounts, RandomGrids_EqualGeometricChecker)`: the 200 random grids: `face_pieces ==
     GeometricGrid::FacePieces().size()`; `cell_blocks` equals the size of a `std::set` of `ToCellBlockId` over
     every active cell and every bigger cell that contains one.
@@ -1168,8 +1168,8 @@ Load the same three skills.
 **Kind:** numerics
 
 **Files:**
-- Modify: `staggered_grid.h`, `staggered_grid_cpu.cc`, `grid_test_support.h`, `grid_test_support.cc`, build
-  registration
+- Modify: `staggered_grid.h`, `staggered_grid_cpu.cc`, `grid_buffers_internal.h` (`BuildGridFromBuffers`),
+  `grid_test_support.h`, `grid_test_support.cc`, build registration
 - Create: `native/fluidity/grid/staggered_grid_test.cc`, `allocation_counter_test_support.h`,
   `allocation_counter_test_support.cc`, `staggered_grid_no_gpu_test.cc`
 - `allocation_counter_test_support.cc` is listed in the `SOURCES` of every test program that counts allocations
@@ -1466,8 +1466,9 @@ Load the same three skills.
     cells `{4 i, 0, 0}`, `i = 0..13`: `n = 14`, no split cell, `sort_count = 16`, so the tail is places 14 and
     15. The test asserts first that, just before step (d), those two places hold valid ids of the build before
     (bit 63 set), then that after it they hold `CellId{0}`, and at the end that `cell_blocks == 14` and
-    `block_ids` equals the CPU's. A copy of the sequence with step (d) left out gives 16 blocks: the test shows
-    it, so the fill is seen to matter.
+    `block_ids` equals the CPU's. A copy of the sequence with step (d) left out gives more than 14 blocks, the
+    extra ones being the blocks of the stale ids at places 14 and 15 (15 blocks for random grid 1, whose two
+    stale cells share a block): the test shows it, so the fill is seen to matter.
   - `TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds)`: P2 to P8 replayed on CPU
     buffers that held another grid before; on the 200 random grids, a list of 9 level-0 blocks into room for 8
     (step 6), a list of `64 * 8 + 1` cells into the same (step 5 at P1) and the 64 level-1 cells of 8 level-0
@@ -2003,7 +2004,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
   - `TEST(ComputeNearbyFaceWeights, CompleteSameSize_MatchesClosedForm)`: uniform 8^3, `h = 0.25` m, 1,000
-    positions inside the central 4^3 cells, all kept: 27 faces; `W = 1` within `1e-14`, `mean_offset = 0`
+    random positions (Task 5's generator, never a lattice: a position on a cell side or at a cell centre has
+    fewer than 27 faces) inside the central 4^3 cells, all kept: 27 faces; `W = 1` within `1e-14`, `mean_offset = 0`
     within `1e-14 h`, `weighted_spread = h^2/4 I` within `1e-14 h^2`; `is_complete`; `fit == kFull`.
   - `TEST(ComputeNearbyFaceWeights, AnyKeptSet_WeightsSumToOne)`: the 200 random grids, 50 positions, random
     masks with at least one kept face of positive weight: `|sum weight - 1| <= 1e-14`, `|sum weight_change| <=
