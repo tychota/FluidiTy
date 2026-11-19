@@ -1,0 +1,23 @@
+docs/method-paper/figures/grid_parallel_build.typ
+  s_4f0877e2acdcf0::t_1d8439b771665a 1-142
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_9a3468d0ecfff3 35,242,2099-2133,2365-2503
+docs/method-paper/pseudocode.typ
+  s_4f0877e2acdcf0::t_40f897f5179aa3 16-17,20,42,56-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9b8cf21fa411fd236486f4b3ab05e64bdec53270",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
