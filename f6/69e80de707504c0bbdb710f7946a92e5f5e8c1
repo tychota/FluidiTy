@@ -1,0 +1,52 @@
+native/fluidity/contact/move_particle_shorter_step_test.cc
+  s_4f0877e2acdcf0::t_4986366ada699a 1-269
+  s_4f0877e2acdcf0::t_2ba750904fdf78 270-294
+docs/glossary.md
+  s_4f0877e2acdcf0::t_9afd8511d1d1b5 87-88,123
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_52063fd4d98171 652-656,1701-1704,1778-1781
+native/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_48bf1cf5dab874 37
+native/fluidity/contact/contact_error.h
+  s_4f0877e2acdcf0::t_8397b2e149a3e8 7-12,15,33-35,82-99,106-107,110-113
+native/fluidity/contact/contact_error_test.cc
+  s_4f0877e2acdcf0::t_f40804fa86926e 152
+native/fluidity/contact/contact_test_cases.h
+  s_4f0877e2acdcf0::t_ada39124e3712c 23,26,3283-3464
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_2735cb258bd089 180,201-206,208-214,216-224,462-467,594-599,904-909,941,1001,1101-1106,1121-1122,1205-1210,1296-1301,1324-1329,1348,1676-1681,2505-2510,4076-4081,4115-4120,4123,4127,4144-4149,4153,4161,4163-4165,4169,4189,4957-4968,6848-6868,6870-6874,6889,6900
+native/fluidity/contact/move_particles.h
+  s_4f0877e2acdcf0::t_4724097f0bcab6 198-200,225-227
+native/fluidity/contact/move_particles_cpu.cc
+  s_4f0877e2acdcf0::t_380cf52364e68a 171,173-178
+native/fluidity/contact/move_particles_gpu_test.cc
+  s_4f0877e2acdcf0::t_53c134c38ffd26 238-239
+native/fluidity/contact/move_particles_steps.h
+  s_4f0877e2acdcf0::t_6475bb1a844dc3 127,180
+native/fluidity/contact/move_particles_steps_test.cc
+  s_4f0877e2acdcf0::t_c8c36f31600983 224-226
+native/fluidity/contact/move_particles_test.cc
+  s_4f0877e2acdcf0::t_d821d6efa051f9 14,331-332,336,401-404,780,905,946,984,1048-1127,1163,1222
+native/fluidity/contact/move_particles_test_runs.h
+  s_4f0877e2acdcf0::t_08385928111a56 605-610
+native/fluidity/contact/solid_contact.h
+  s_4f0877e2acdcf0::t_685386092d1a63 332-352,411,414
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_ad6921c9d66b40 161-162,2359-2360,2415-2416,4094,4115-4123,4703-4705,4735,4758-4759,4784-4785,4788-4791,4795,4831-4834,4851-4854,4863-4865,4899-4900,4912,5040-5044,5082-5091,5565,5590
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f669e80de707504c0bbdb710f7946a92e5f5e8c1",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
