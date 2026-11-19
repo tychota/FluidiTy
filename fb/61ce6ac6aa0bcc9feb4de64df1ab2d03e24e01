@@ -1,0 +1,19 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_c072354e13952f 2082-2085
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fb61ce6ac6aa0bcc9feb4de64df1ab2d03e24e01",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
