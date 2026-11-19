@@ -1,0 +1,40 @@
+docs/method-paper/figure_style.typ
+  s_4f0877e2acdcf0::t_99c3474f3400ef 173-307
+docs/method-paper/figures/grid_staggered.typ
+  s_4f0877e2acdcf0::t_6df00ac5bd189d 1,3-43,45-54,56,58-83
+  s_4f0877e2acdcf0::t_64b24dd86c7b1b 84-88
+  s_4f0877e2acdcf0::t_0d90f28f106fd4 2,44,55,57
+docs/method-paper/figures/grid_face_pieces.typ
+  s_4f0877e2acdcf0::t_2b1b730938f91d 1,3-12,15-26,28-60
+  s_4f0877e2acdcf0::t_68f3e312a5e929 2,13-14,27
+docs/method-paper/figures/grid_nearby_faces.typ
+  s_4f0877e2acdcf0::t_610068b65a7566 9-81,84-141,143
+  s_4f0877e2acdcf0::t_edc744e9e1c63f 145
+  s_4f0877e2acdcf0::t_3ef4d0347de7f4 1-8,82-83,142,144
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_968092c88cf653 32-34,104,226-231,236-240,1879-1939,1942-1944,1946-1993,2000-2006,2010,2016-2080,2084-2137,2168-2169,2172,2198-2245,2247-2264,2266-2267,2268-2276,2278-2311,2315-2325
+  s_4f0877e2acdcf0::t_f9dea49928105e 232-235,1940-1941,1945,1994-1996,2007-2009,2138-2167,2170-2171,2173-2189,2194-2197,2265,2277,2312-2314,2326-2329
+  s_4f0877e2acdcf0::t_e4fe8b389a06a0 1835
+  s_4f0877e2acdcf0::t_7ee7f37d36977b 2081-2083
+  s_4f0877e2acdcf0::t_667f0b5d17e4c2 1997-1999,2011-2015,2190-2193,2246
+docs/method-paper/pseudocode.typ
+  s_4f0877e2acdcf0::t_ac0884c8c17f40 70-76
+  s_4f0877e2acdcf0::t_4893b9434dd2ae 13-16,80,82-85
+  s_4f0877e2acdcf0::t_c838cb1d8d14a1 46-55,59-69,79,81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f33b3bcf986ce9d5aa107d556be89ba69a83914c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
