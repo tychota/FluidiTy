@@ -1,0 +1,21 @@
+native/fluidity/contact/move_particle_test.cc
+  s_4f0877e2acdcf0::t_eb609938c1e06f 5645-5680
+native/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_1bfec038115129 2695-2698,2759-2762
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f2375124242e4bee88823024bb781045ec2f493f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
