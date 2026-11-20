@@ -28,11 +28,11 @@
 //          kMaxCoord, kNoIndex, CellCoord, SizeLevel, CellId, CellBlockId, FacePieceId, CellBlockIndex,
 //          CellPlaceIndex, FacePlaceIndex, CornerPlaceIndex, GridVersion, CellBlockRange, ComputeIsCoordInRange,
 //          ToCellId, ToSizeLevel, ToCellCoord, ToCellBlockId, ToFacePieceId, ComputeBigCell, ComputeSmallCell,
-//          ComputeCellEighth, ComesBefore, ToCellBlockIndex; and, for this header's own functions only, the bit
-//          layout kIdCoordBitCount, kIdCoordMask, kIdSizeLevelShift, kIdSizeLevelMask, kIdAxisShift, kIdCellMark and
-//          the helpers ComputePackedId, ComputeUnpackedCoord, ComputeUnpackedSizeLevel, ComputeBiggerCellCoord,
-//          ComputeIsEarlierInFixedOrder, of which the grid's shared build steps (grid/grid_build_steps.h) also use
-//          kIdCellMark, kIdAxisShift and ComputeBiggerCellCoord
+//          ComputeCellEighth, ComesBefore, ToCellBlockIndex, ToCellPlaceIndex; and, for this header's own functions
+//          only, the bit layout kIdCoordBitCount, kIdCoordMask, kIdSizeLevelShift, kIdSizeLevelMask, kIdAxisShift,
+//          kIdCellMark and the helpers ComputePackedId, ComputeUnpackedCoord, ComputeUnpackedSizeLevel,
+//          ComputeBiggerCellCoord, ComputeIsEarlierInFixedOrder, of which the grid's shared build steps
+//          (grid/grid_build_steps.h) also use kIdCellMark, kIdAxisShift and ComputeBiggerCellCoord
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h)
 // Used by: every grid table (grid/grid_tables.h), GridFailure (grid/grid_error.h), and the modules that keep values
 //          per cell, per face piece or per cell block
@@ -400,6 +400,21 @@ FLUIDITY_CPU_AND_GPU constexpr CellBlockIndex ToCellBlockIndex(CellPlaceIndex ce
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellBlockIndex ToCellBlockIndex(FacePlaceIndex face) noexcept {
   return {.value = face.value / static_cast<std::uint32_t>(kFacePlacesPerBlock)};
+}
+
+// Gives the cell place of a cell in its block, given the block's index: 64 block + (4 z + y) * 4 + x, where x, y and z
+// are the cell's local coordinates in the block, its coordinate minus 4 floor(c / 4) on each axis. The low two bits of
+// a coordinate are that local coordinate, also for a negative coordinate. The block index is used as given, so the
+// result is the cell's place only when `block` is the index of the block that holds the cell.
+//
+// Example: the cell {5, -1, 2} of block 3 has local coordinates (1, 3, 2): place 64 x 3 + (4 x 2 + 3) x 4 + 1 = 237.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex ToCellPlaceIndex(CellBlockIndex block, CellCoord cell_coord) noexcept {
+  const std::uint32_t local_x = static_cast<std::uint32_t>(cell_coord.x) & 3U;
+  const std::uint32_t local_y = static_cast<std::uint32_t>(cell_coord.y) & 3U;
+  const std::uint32_t local_z = static_cast<std::uint32_t>(cell_coord.z) & 3U;
+  const std::uint32_t place_in_block = (((local_z * 4U) + local_y) * 4U) + local_x;
+  return {.value = (block.value * static_cast<std::uint32_t>(kCellPlacesPerBlock)) + place_in_block};
 }
 
 }  // namespace fluidity::grid

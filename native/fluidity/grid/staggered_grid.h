@@ -1,8 +1,9 @@
-// The settings and counts of a grid, the buffers a grid is built into, and how its builder buffers are shared.
+// The settings and counts of a grid, the buffers a grid is built into, the built grid, and how its builder buffers
+// are shared.
 //
 // Purpose: declare the values a caller chooses before it builds a grid (the room and the processor), the buffers
-//   built once for those choices, the counts a built grid reports, and the choice of how many sets of builder
-//   buffers a run keeps.
+//   built once for those choices, the build of one grid version into them and the grid that owns them then, the counts
+//   a built grid reports, and the choice of how many sets of builder buffers a run keeps.
 //
 // Idea: a grid lives in arrays with room for a fixed number of cell blocks, chosen once for the run: the grid
 //   buffers. Building a grid also needs temporary arrays, the builder buffers. They hold nothing between builds, so
@@ -12,6 +13,8 @@
 //   once per grid, as BuilderBuffersSharing says. The builders take their memory pieces in the order of those
 //   entries, so the bytes they take equal the estimate. They do not read an entry's `where`: on the CPU the kRunOn
 //   and the kCpu entries all come from the one RunMemory passed, so a CPU caller reserves both in one CPU block.
+//   A build fills the grid buffers with the tables of one grid version and allocates nothing; the buffers then belong
+//   to the StaggeredGrid it returns, until TakeBuffers gives them back for the next version.
 //   Example: the step keeps a committed grid and a try grid. With kOneForAllGrids they share one set of builder
 //   buffers, and the estimate counts that set once: on the CPU, 2 x 460 + 512 = 1,432 bytes per block.
 //
@@ -23,21 +26,23 @@
 //   memory piece     the bytes of one buffer inside a RunMemory's block (base/run_memory.h)
 // Owns:    kMaxCellBlocksLimit, GridSettings, GridInputs, GridCounts, BuilderBuffersSharing, GridBuilderBuffers,
 //          BuildGridBuilderBuffers, GridBuilderBuffersSize, ComputeGridBuilderBuffersSize, GridBuffers,
-//          BuildGridBuffers, ComputeGridCounts, CheckSizeStepRule
+//          BuildGridBuffers, StaggeredGrid, BuildGrid, TakeBuffers, ComputeGridCounts, CheckSizeStepRule
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer (base/buffer.h), MemoryEstimateEntry (base/memory_count.h),
 //          RunMemory (base/run_memory.h), RunOn (base/run_on.h), GridBuffersArrays, GridBuilderBuffersArrays,
-//          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries, ComputeHasLoanOf
-//          (grid/grid_buffers_internal.h), GridFailure (grid/grid_error.h), CellId, GridVersion, kMaxSizeLevels
-//          (grid/grid_ids.h), GridFrame (grid/grid_tables.h)
+//          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries, BuildGridFromBuffers, ComputeHasLoanOf
+//          (grid/grid_buffers_internal.h), GridFailure (grid/grid_error.h), CellId, GridVersion, CellBlockRange,
+//          kMaxSizeLevels (grid/grid_ids.h), GridFrame, GridTables (grid/grid_tables.h)
 // Implementation uses: CheckCanRunOn (base/check_can_run_on.h), ComputeMemoryBytes (base/memory_count.h),
 //          BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
 //          (grid/grid_memory_estimate.h), BuildSortedCellList and the checks of a cell list (grid/grid_cell_checks.h),
-//          FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel, ToBlockSortKey
-//          (grid/grid_build_steps.h)
-// Used by: the grid's builders and memory estimate, the step, which chooses the room and owns the buffers and counts a
-//          list to plan it, and cell resize, which checks the lists it splits
+//          FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel, ToBlockSortKey, FindSortedBlock,
+//          FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeFacePieceKind,
+//          ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h)
+// Used by: the grid's builders and memory estimate, the step, which chooses the room, owns the buffers, counts a list
+//          to plan it and builds its grids, every module that reads a grid's tables, and cell resize, which checks the
+//          lists it splits
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>,
-//          <proc-build-grid>, <sec-parallel-build>, <proc-count-grid>
+//          <proc-build-grid>, <sec-parallel-build>, <proc-count-grid>, <sec-face-pieces>
 
 #pragma once
 
@@ -286,6 +291,112 @@ class GridBuffers {
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>
 std::expected<GridBuffers, GridFailure>
 BuildGridBuffers(const GridSettings& settings, GridBuilderBuffers& builder_buffers, RunMemory& run_memory);
+
+// One built grid version: the grid buffers that hold its tables, its frame, its version and its counts. A grid keeps
+// pressure at cell centers and each velocity part on the faces it crosses; also called MAC grid, Harlow and Welch 1965.
+// Its tables live on the processor of its buffers only, and its version and counts are kept on the CPU.
+//
+// Move-only; owns its GridBuffers. BuildGrid makes one, and TakeBuffers gives its buffers back for the next version.
+// A moved-from grid, or one whose buffers were taken back, has version 0, zero counts and no tables.
+class StaggeredGrid {
+ public:
+  StaggeredGrid(const StaggeredGrid&) = delete;
+  StaggeredGrid& operator=(const StaggeredGrid&) = delete;
+  StaggeredGrid(StaggeredGrid&& other) noexcept;
+  StaggeredGrid& operator=(StaggeredGrid&& other) noexcept;
+  ~StaggeredGrid() = default;
+
+  // 1 or more for a built grid.
+  [[nodiscard]] GridVersion version() const {
+    return version_;
+  }
+
+  [[nodiscard]] const GridCounts& counts() const {
+    return counts_;
+  }
+
+  // Every block of the grid: {0, counts().cell_blocks}.
+  [[nodiscard]] CellBlockRange all_blocks() const {
+    return {.first_block = 0, .block_count = counts_.cell_blocks};
+  }
+
+  // The tables on `run_on`: those of the grid when run_on is run_on(). The other processor holds no table, so for it
+  // the result has version 0, no block and null arrays.
+  // Example: tables(RunOn::kCpu) of a CPU grid of 2 blocks has block_count 2; tables(RunOn::kGpu) of it has version 0.
+  [[nodiscard]] GridTables tables(RunOn run_on) const;
+
+  // The processor of the buffers.
+  [[nodiscard]] RunOn run_on() const {
+    return buffers_.run_on();
+  }
+
+  // The room of the buffers, at least counts().cell_blocks.
+  [[nodiscard]] std::uint32_t max_cell_blocks() const {
+    return buffers_.max_cell_blocks();
+  }
+
+ private:
+  friend StaggeredGrid
+  BuildGridFromBuffers(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);
+  friend GridBuffers TakeBuffers(StaggeredGrid&& grid);
+
+  StaggeredGrid(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);
+
+  GridBuffers buffers_;
+  GridFrame frame_{};
+  GridVersion version_{};
+  GridCounts counts_{};
+};
+
+// Builds the grid of `inputs` into `buffers`: the tables of one grid version, method paper <proc-build-grid>. On
+// success the buffers move into the returned grid and `buffers` is left moved-from. On failure no grid is returned,
+// and `buffers` keeps its arrays and its lent builder buffers, so it can build again.
+//
+// Method: the input checks and steps 1 to 4 as BuildSortedCellList (grid/grid_cell_checks.h), siblings required, which
+//   leave the n active cells sorted in the lent builder buffers' cell ids. Step 5 appends the split cells that
+//   ComputeSplitCellCountToAdd and ComputeBigCellAtSizeLevel give, sorts the active and the split cells each by their
+//   block, and walks both in the fixed order of their blocks, writing each block id once. Step 6 runs
+//   FindBlockNeighbours for every block; then ComputeBlockFaultKey, step 7 of the failure key (<sec-parallel-build>),
+//   checks every block. Step 7 marks every cell place kAbsent, each active cell kActive and each split cell kSplit at
+//   its place (ToCellPlaceIndex), then gives each place still kAbsent its ComputeCoveredCellState. Step 8 writes
+//   ComputeFacePieceKind at every face place and counts the face pieces. Every table entry comes from those shared
+//   functions (grid/grid_build_steps.h, grid/grid_ids.h), the ones the GPU build calls, so the two give the same
+//   bytes. Allocates nothing.
+// Order: each step runs over every position before the next, so the failure reported is the first by the failure key
+//   (<sec-parallel-build>): the GPU's smallest key.
+// Example: with 3 size levels, size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0} gives
+//   version 1, 2 blocks (size level 0 (0,0,0), then size level 1 (0,0,0)), 9 active cells and 41 face pieces. The 9
+//   size-level-0 cells {4 i, 0, 0}, each in a block of its own, into buffers for 8 blocks are kTooManyCellBlocks.
+// Requires: as CheckSizeStepRule(inputs, buffers).
+// Fails: kBadInput, kCoordOutOfRange, kCellsOverlap, kSizeStepRuleBroken  as CheckSizeStepRule(inputs, buffers)
+//        kSiblingCellMissing  a big cell is split and one of its small cells is not present: cell = that small cell, or
+//                             CellId{0} beyond the coordinate range; other_cell = its big cell
+//                             (grid/grid_cell_checks.h, CheckSortedCells, says which cell when the missing one is
+//                             eighth 0)
+//        kTooManyCellBlocks   more than 64 * buffers.max_cell_blocks() cells, before any id is read; the active and
+//                             split cells above that number (step 5); more blocks than buffers.max_cell_blocks() (step
+//                             5). cell and other_cell zero: the GPU cannot name the first cell beyond the room without
+//                             working memory beyond it. The caller raises the room.
+//        kRunOnCallFailed     buffers.run_on() is the GPU: the library has no GPU build of a grid, so after the input
+//                             checks no id is read and nothing is written
+//        kInternalFault       a state no input causes, checked in every build: a table array whose size is not the
+//                             room's, a block of size level 1 or more without its bigger block (step 7 of the failure
+//                             key), a cell whose block step 5 did not write, or a failure whose cells disagree with
+//                             it; zero cells
+//        After a failed input check nothing is written; after a later failure the builder buffers' cell ids and the
+//        tables are unspecified.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>,
+//       <sec-cell-blocks>, <sec-face-pieces>
+std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, GridBuffers& buffers);
+
+// Takes back the buffers of a grid that is no longer needed, for the next BuildGrid. Allocates nothing.
+//
+// Method: the buffers move out of the grid with their arrays and their loan of builder buffers. The grid is left with
+//   version 0, zero counts and no tables, and every GridTables taken from it is invalid.
+// Example: BuildGrid of version 1 into buffers, TakeBuffers(std::move(grid)), then BuildGrid of version 2 into the
+//   same buffers: the tables of version 2 lie in the same memory.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
+GridBuffers TakeBuffers(StaggeredGrid&& grid);
 
 // Counts the cell blocks, the active cells and the face pieces that a list of active cells in CPU memory would give,
 // without building the grid: what a run's plan needs to choose the room before any buffers exist.

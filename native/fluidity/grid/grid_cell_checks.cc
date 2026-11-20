@@ -289,6 +289,14 @@ std::expected<void, GridFailure> CheckSortedCells(std::span<const CellId> sorted
   return std::unexpected(ToGridFailureOfKey(GridFrame(), std::span<const CellId>(), sorted_cells, failure_key));
 }
 
+bool ComputeIsEarlierBlock(CellId first, CellId second) {
+  return ComputeIsEarlierBySortKeys(first, second, ToBlockSortKey);
+}
+
+void ApplyFixedBlockOrder(std::span<CellId> cells) {
+  std::ranges::sort(cells, ComputeIsEarlierBlock);
+}
+
 std::expected<std::uint32_t, GridFailure>
 BuildSortedCellList(const GridInputs& inputs, GridBuffers& buffers, SiblingCheck sibling_check) {
   // Steps: 1 the input checks, then the ids (<proc-build-grid> step 1)  2 the copy into the cell ids and its sort
@@ -468,9 +476,7 @@ std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& input
     }
   }
   const std::span<CellId> cells_by_block(copy.get(), used_count);
-  std::ranges::sort(cells_by_block, [](CellId first, CellId second) {
-    return ComputeIsEarlierBySortKeys(first, second, ToBlockSortKey);
-  });
+  ApplyFixedBlockOrder(cells_by_block);
   std::uint64_t block_count = 0;
   for (std::size_t position = 0; position < used_count; ++position) {
     const bool is_new_block = position == 0

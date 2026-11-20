@@ -19,7 +19,8 @@
 // Words:
 //   input checks  the checks of a call before any id is read: frame, version, list shape, lent builder buffers, length
 //   keyed checks  steps 1 to 4 of <proc-build-grid>, whose failures are ordered by their failure key
-// Owns:    SiblingCheck, CheckGridInputs, CheckLentBuilderBuffers, CheckSortedCells, BuildSortedCellList
+// Owns:    SiblingCheck, CheckGridInputs, CheckLentBuilderBuffers, CheckSortedCells, ComputeIsEarlierBlock,
+//          ApplyFixedBlockOrder, BuildSortedCellList
 // Uses:    CPU-only guard (base/cpu_only.h), GridFailure (grid/grid_error.h), CellId (grid/grid_ids.h), GridInputs,
 //          GridBuffers (grid/staggered_grid.h)
 // Implementation uses: math::IsFinite (base/scalar_math.h), WriteBuffer, CopyBuffer (base/buffer.h),
@@ -28,7 +29,7 @@
 //          CheckSizeStepAt, ToFailureKey, ComputeFailureCells, FindSortedCellAt, ComputeSplitCellCountToAdd,
 //          ComputeBigCellAtSizeLevel, ToBlockSortKey (grid/grid_build_steps.h)
 // Used by: CheckSizeStepRule, ComputeGridCounts (defined beside these checks) and the builds of a grid on buffers
-//          (grid/)
+//          (grid/), such as BuildGrid
 // Read:    docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>, <proc-count-grid>
 
 #pragma once
@@ -109,6 +110,22 @@ std::expected<void, GridFailure> CheckLentBuilderBuffers(const GridBuffers& buff
 //                        same check, so no input causes it.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
 std::expected<void, GridFailure> CheckSortedCells(std::span<const CellId> sorted_cells, SiblingCheck sibling_check);
+
+// Says whether the cell block of `first` comes before that of `second` in the fixed order: the three passes of
+// ToBlockSortKey compared from the last pass to the first, the order the GPU's stable order of the passes gives. Two
+// cells of one block give false both ways.
+// Example: size level 0 {3,0,0} and size level 1 {0,0,0} lie in size level 0 (0,0,0) and size level 1 (0,0,0): the
+//   first comes before the second, since at one low corner the bigger cells come first.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>
+bool ComputeIsEarlierBlock(CellId first, CellId second);
+
+// Sorts cells by their cell block, the blocks in the fixed order, in place, without allocating: std::ranges::sort with
+// ComputeIsEarlierBlock. The cells of one block end side by side, in no stated order among themselves.
+// Example: {size level 0 {4,0,0}, size level 1 {0,0,0}, size level 0 {1,0,0}} gives size level 0 {1,0,0}, size level
+//   1 {0,0,0}, size level 0 {4,0,0}: the size-level-1 block (0,0,0) shares the low corner of the first block and comes
+//   after it, before the block whose low corner is x = 4.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid>
+void ApplyFixedBlockOrder(std::span<CellId> cells);
 
 // Builds the sorted cell list of `inputs` in the lent builder buffers' cell ids, the start of every build and every
 // check of a list on buffers, and returns the cell count: the first that many cell ids are the list in fixed order.

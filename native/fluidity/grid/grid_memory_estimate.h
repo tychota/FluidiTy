@@ -65,8 +65,9 @@ MemoryCounts ToMemoryCounts(const GridCounts& counts, std::uint64_t particles);
 //   kOneForAllGrids the entries named "builder buffers: ..." have copies = 1, because one set is lent to every grid.
 //   Entries, in this order:
 //   1 The five tables, MemoryWhere::kRunOn: block ids (8 bytes per block), same-size-level neighbour blocks (108),
-//     bigger and smaller blocks (36: the bigger block of every block first, then its 8 smaller blocks), cell states
-//     (1 byte per cell place), face piece kinds (1 byte per face place). 456 bytes per block.
+//     bigger and smaller blocks (36: one bigger and 8 smaller blocks, laid out as ComputeSmallerBlocksStart of
+//     grid/grid_buffers_internal.h states), cell states (1 byte per cell place), face piece kinds (1 byte per face
+//     place). 456 bytes per block.
 //   2 On the CPU: builder buffers: cell ids (8 bytes per cell place) and piece map (4 per block), both
 //     MemoryWhere::kCpu.
 //   3 On the GPU, all MemoryWhere::kRunOn: builder buffers: cell ids (8 per cell place), builder buffers: sort keys

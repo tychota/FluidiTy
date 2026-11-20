@@ -1369,6 +1369,35 @@ TEST(FindBlockNeighbours, TwoSizeFixture_LinksBiggerAndSmaller) {
   EXPECT_EQ(tables.same_size_level_blocks.at((1 * kSameSizeLevelEntriesPerBlock) + kSelfEntry), 1U);
 }
 
+// The size-level-1 block (0,0,0) alone has no bigger block: step 7, position 0, which ComputeFailureCells names as an
+// internal fault with no cell. With the size-level-0 block (0,0,0) before it, block 1's bigger block is block 0, and
+// block 0, of size level 0, never has one: no fault. No cell list reaches the first case through a build, since the
+// sibling check stops it, so the test is on the function.
+TEST(ComputeBlockFaultKey, BlockWithoutItsBiggerBlock_IsStepSeven) {
+  TableVectors lone_tables = BuildEmptyTables(ToUnitFrame(2), {ToBlock(1, 0, 0, 0)});
+  ApplyFoundNeighbours(lone_tables);
+  const std::uint64_t lone_key =
+      ComputeBlockFaultKey(lone_tables.block_ids.data(), lone_tables.bigger_block.data(), CellBlockIndex{0});
+  EXPECT_EQ(lone_key, ToFailureKey(7, 0, 0));
+  ExpectSameCheck(
+      ComputeFailureCells(ToUnitFrame(2), nullptr, 0, nullptr, 0, lone_key),
+      {.error = GridError::kInternalFault, .cell = CellId{0}, .other_cell = CellId{0}, .detail = 0}
+  );
+
+  TableVectors two_size_tables = BuildEmptyTables(ToUnitFrame(2), {ToBlock(0, 0, 0, 0), ToBlock(1, 0, 0, 0)});
+  ApplyFoundNeighbours(two_size_tables);
+  for (std::uint32_t block = 0; block < 2; ++block) {
+    EXPECT_EQ(
+        ComputeBlockFaultKey(
+            two_size_tables.block_ids.data(),
+            two_size_tables.bigger_block.data(),
+            CellBlockIndex{block}
+        ),
+        kNoFailureKey
+    );
+  }
+}
+
 TEST(FindBlockNeighbours, BlockAtCoordLimit_HasNoBlockBeyond) {
   // Size level 0 {-kMaxCoord,0,0} is in block (floor(-(2^18 - 1) / 4), 0, 0) = (-2^16, 0, 0), and {kMaxCoord,0,0} in
   // block (2^16 - 1, 0, 0). Each lies at one end of the range, so neither is a neighbour of the other.

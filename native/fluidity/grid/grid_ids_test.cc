@@ -406,6 +406,20 @@ TEST(ToCellBlockIndex, PlaceIndexes_DivideByPlacesPerBlock) {
   EXPECT_EQ(ToCellBlockIndex(FacePlaceIndex{480}).value, 2U);
 }
 
+static_assert(ToCellPlaceIndex(CellBlockIndex{3}, {.x = 5, .y = -1, .z = 2}).value == 237);
+
+// Local coordinates by the test's own floor: {5, -1, 2} lies in block coordinate (1, -1, 0) at local (1, 3, 2), so in
+// block 3 its place is 192 + (4 x 2 + 3) x 4 + 1 = 237. The lowest coordinate -kMaxCoord = -262,143 is local 1, and
+// kMaxCoord is local 3. The cells {-kMaxCoord, kMaxCoord, 0} and {kMaxCoord, -kMaxCoord, 3} lie in two different
+// blocks; given block index 0 for each, as if each block were the first, they are at (4 x 0 + 3) x 4 + 1 = 13 and
+// (4 x 3 + 1) x 4 + 3 = 55.
+TEST(ToCellPlaceIndex, CellCoord_GivesLocalPlaceInItsBlock) {
+  EXPECT_EQ(ToCellPlaceIndex(CellBlockIndex{3}, {.x = 5, .y = -1, .z = 2}).value, 237U);
+  EXPECT_EQ(ToCellPlaceIndex(CellBlockIndex{0}, {.x = -kMaxCoord, .y = kMaxCoord, .z = 0}).value, 13U);
+  EXPECT_EQ(ToCellPlaceIndex(CellBlockIndex{0}, {.x = kMaxCoord, .y = -kMaxCoord, .z = 3}).value, 55U);
+  EXPECT_EQ(ToCellPlaceIndex(CellBlockIndex{1}, {.x = 0, .y = 0, .z = 0}).value, 64U);
+}
+
 static_assert(std::is_trivially_copyable_v<CellBlockRange>);
 static_assert(sizeof(CellBlockRange) == 8);
 

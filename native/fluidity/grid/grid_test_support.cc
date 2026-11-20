@@ -7,7 +7,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <expected>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <set>
@@ -16,9 +19,17 @@
 #include <vector>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
+#include "fluidity/base/run_on.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/grid_buffers_internal.h"
+#include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_memory_estimate.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
 namespace {
@@ -605,6 +616,192 @@ std::vector<GeometricFacePiece> GeometricGrid::FacesWithin(FacePieceId face, dou
     }
   }
   return faces_within;
+}
+
+TestGrid::TestGrid(
+    RunMemory run_memory,
+    Buffer<CellId> cell_list,
+    std::unique_ptr<GridBuilderBuffers> builder_buffers,
+    StaggeredGrid grid
+)
+    : run_memory(std::move(run_memory)),
+      cell_list(std::move(cell_list)),
+      builder_buffers(std::move(builder_buffers)),
+      grid(std::move(grid)) {
+}
+
+std::expected<TestGrid, GridFailure> BuildTestGrid(const GridInputs& inputs, const GridSettings& settings) {
+  // Steps: 1 the room  2 the RunMemory  3 the list on the grid's processor  4 the builder buffers and the buffers
+  // 5 the grid
+  if (inputs.active_cell_buffer != nullptr) {
+    ADD_FAILURE() << "BuildTestGrid takes its list as a span in CPU memory";
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
+  // Step 1.
+  std::uint32_t max_cell_blocks = settings.max_cell_blocks;
+  if (max_cell_blocks == 0) {
+    const std::expected<GridCounts, GridFailure> counts = ComputeGridCounts(inputs);
+    if (!counts.has_value()) {
+      return std::unexpected(counts.error());
+    }
+    max_cell_blocks = std::max<std::uint32_t>(counts->cell_blocks, 1);
+  }
+  // A room above the limit is bad input for the builders; reserving memory for it first could fail another way.
+  if (max_cell_blocks > kMaxCellBlocksLimit) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
+
+  // Step 2: exactly the estimate of one grid; on the GPU, one memory piece more for the list.
+  const RunOn run_on = settings.run_on;
+  const std::vector<MemoryEstimateEntry> estimate = BuildGridMemoryEstimate(run_on, 1, max_cell_blocks);
+  GridCounts room_counts{};
+  room_counts.cell_blocks = max_cell_blocks;
+  const MemoryCounts memory_counts = ToMemoryCounts(room_counts, 0);
+  std::size_t reserved_bytes = ComputeRunMemoryBytes(estimate, memory_counts, MemoryWhere::kRunOn);
+  if (run_on == RunOn::kCpu) {
+    reserved_bytes += ComputeRunMemoryBytes(estimate, memory_counts, MemoryWhere::kCpu);
+  } else {
+    reserved_bytes += ComputeRunMemoryPieceBytes(inputs.active_cells.size_bytes());
+  }
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(run_on, reserved_bytes);
+  if (!run_memory.has_value()) {
+    return std::unexpected(ToGridFailure(run_memory.error(), reserved_bytes));
+  }
+
+  // Step 3: a GPU build reads its list from the GPU.
+  Buffer<CellId> cell_list;
+  GridInputs grid_inputs = inputs;
+  if (run_on == RunOn::kGpu) {
+    std::expected<Buffer<CellId>, BufferError> list =
+        BuildBuffer<CellId>(run_on, inputs.active_cells.size(), *run_memory);
+    if (!list.has_value()) {
+      return std::unexpected(ToGridFailure(list.error(), inputs.active_cells.size_bytes()));
+    }
+    if (const std::expected<void, BufferError> written = WriteBuffer(inputs.active_cells, *list);
+        !written.has_value()) {
+      return std::unexpected(ToGridFailure(written.error(), inputs.active_cells.size_bytes()));
+    }
+    cell_list = std::move(*list);
+    grid_inputs.active_cells = {};
+    grid_inputs.active_cell_buffer = &cell_list;
+    grid_inputs.active_cell_buffer_count = static_cast<std::uint32_t>(inputs.active_cells.size());
+  }
+
+  // Step 4: the builder buffers on the heap, so a move of the TestGrid never moves what the buffers borrow.
+  std::expected<GridBuilderBuffers, GridFailure> built_builder_buffers =
+      BuildGridBuilderBuffers(run_on, max_cell_blocks, *run_memory);
+  if (!built_builder_buffers.has_value()) {
+    return std::unexpected(built_builder_buffers.error());
+  }
+  auto builder_buffers = std::make_unique<GridBuilderBuffers>(std::move(*built_builder_buffers));
+  std::expected<GridBuffers, GridFailure> buffers =
+      BuildGridBuffers({.max_cell_blocks = max_cell_blocks, .run_on = run_on}, *builder_buffers, *run_memory);
+  if (!buffers.has_value()) {
+    return std::unexpected(buffers.error());
+  }
+
+  // Step 5. On failure the buffers are destroyed before the builder buffers they borrow, and both before the RunMemory.
+  std::expected<StaggeredGrid, GridFailure> grid = BuildGrid(grid_inputs, *buffers);
+  if (!grid.has_value()) {
+    return std::unexpected(grid.error());
+  }
+  return TestGrid(std::move(*run_memory), std::move(cell_list), std::move(builder_buffers), std::move(*grid));
+}
+
+namespace {
+
+// Says whether `count` items at two addresses have the same bytes.
+template <typename Value>
+bool ComputeIsSameBytes(const Value* first, const Value* second, std::size_t count) {
+  if (count == 0) {
+    return true;
+  }
+  if (first == nullptr || second == nullptr) {
+    return false;
+  }
+  return std::memcmp(first, second, count * sizeof(Value)) == 0;
+}
+
+}  // namespace
+
+GridBuffers TakeEmptyGridBuffers(std::expected<TestGrid, GridFailure>& owner) {
+  EXPECT_TRUE(owner.has_value());
+  return TakeBuffers(std::move(owner->grid));
+}
+
+std::tuple<std::uint32_t, std::array<std::uint64_t, kMaxSizeLevels>, std::uint64_t, std::uint64_t> ToGridCountFields(
+    const GridCounts& counts
+) {
+  std::array<std::uint64_t, kMaxSizeLevels> per_size_level{};
+  for (std::size_t size_level = 0; size_level < per_size_level.size(); ++size_level) {
+    per_size_level.at(size_level) = counts.active_cells_per_size_level[size_level];
+  }
+  return {counts.cell_blocks, per_size_level, counts.active_cells, counts.face_pieces};
+}
+
+bool ComputeIsSameUsedTables(const GridTables& first, const GridTables& second) {
+  if (first.version.value != second.version.value || first.block_count != second.block_count) {
+    return false;
+  }
+  const std::size_t block_count = first.block_count;
+  return ComputeIsSameBytes(first.block_ids, second.block_ids, block_count)
+      && ComputeIsSameBytes(first.same_size_level_blocks, second.same_size_level_blocks, 27 * block_count)
+      && ComputeIsSameBytes(first.bigger_block, second.bigger_block, block_count)
+      && ComputeIsSameBytes(first.smaller_blocks, second.smaller_blocks, 8 * block_count)
+      && ComputeIsSameBytes(first.cell_states, second.cell_states, kCellPlacesPerBlock * block_count)
+      && ComputeIsSameBytes(first.face_piece_kinds, second.face_piece_kinds, kFacePlacesPerBlock * block_count);
+}
+
+bool ComputeIsSameGrid(const StaggeredGrid& first, const StaggeredGrid& second) {
+  return ComputeIsSameUsedTables(first.tables(RunOn::kCpu), second.tables(RunOn::kCpu))
+      && ToGridCountFields(first.counts()) == ToGridCountFields(second.counts());
+}
+
+std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t group_size) {
+  std::vector<std::size_t> ordered_grids(kRandomGridCount);
+  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+    ordered_grids.at(grid) = grid;
+  }
+  std::ranges::stable_sort(ordered_grids, [](std::size_t first, std::size_t second) {
+    return BuildShuffledRandomGrids().at(first).size() > BuildShuffledRandomGrids().at(second).size();
+  });
+  const std::array<std::size_t, 3> group_starts = {
+      0,
+      (kRandomGridCount / 2) - (group_size / 2),
+      kRandomGridCount - group_size,
+  };
+  std::vector<std::size_t> grids;
+  grids.reserve(3 * group_size);
+  for (const std::size_t group_start : group_starts) {
+    for (std::size_t position = group_start; position < group_start + group_size; ++position) {
+      grids.push_back(ordered_grids.at(position));
+    }
+  }
+  return grids;
+}
+
+std::vector<TestGrid> BuildReferenceGrids(const std::vector<std::size_t>& grids) {
+  const GridFrame frame = {
+      .origin = {.x = 0, .y = 0, .z = 0},
+      .biggest_cell_width = 1.0,
+      .size_level_count = static_cast<std::uint8_t>(kRandomGridSizeLevelCount),
+  };
+  std::vector<TestGrid> reference_grids;
+  reference_grids.reserve(grids.size());
+  for (const std::size_t grid : grids) {
+    const GridInputs inputs = {
+        .frame = frame,
+        .active_cells = BuildShuffledRandomGrids().at(grid),
+        .version = {.value = 1},
+    };
+    std::expected<TestGrid, GridFailure> reference_grid =
+        BuildTestGrid(inputs, {.max_cell_blocks = kMaxRandomGridCellBlocks});
+    EXPECT_TRUE(reference_grid.has_value()) << grid;
+    if (reference_grid.has_value()) {
+      reference_grids.push_back(std::move(*reference_grid));
+    }
+  }
+  return reference_grids;
 }
 
 }  // namespace fluidity::grid

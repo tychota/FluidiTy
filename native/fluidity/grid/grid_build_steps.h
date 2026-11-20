@@ -56,15 +56,17 @@
 // Owns:    kSortKeyPassCount, ToCellSortKey, ToBlockSortKey, CheckCellId, FindSortedCell, FindSortedBlock,
 //          ComputeBigCellAtSizeLevel, FindSortedCellAt, CellCheck, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
 //          ToFailureKey, ToFailureStep, ToFailurePosition, ComputeFailureCells, ComputeSplitCellCountToAdd,
-//          FindBlockNeighbours, ComputeCoveredCellState, ComputeCellStateBeside, ComputeFacePieceKind; and, for this
-//          header's own functions and types only, ComputeBiasedCorner, ComputeSortKeyOfCorner, ComputeIsCellPresent,
-//          ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry, ComputeStoredCellState,
-//          ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and the struct LocalPlace
-// Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), GridError (grid/grid_error.h), CellId, CellBlockId,
-//          CellBlockIndex, CellPlaceIndex, FacePlaceIndex, CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels,
-//          kCellPlacesPerBlock, kFacePlacesPerBlock, kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId,
-//          ToCellCoord, ToSizeLevel, ToCellBlockIndex, ComputeBigCell, ComputeCellEighth, ComputeBiggerCellCoord and
-//          the id bit layout (grid/grid_ids.h), GridFrame, GridTables, CellState, FacePieceKind (grid/grid_tables.h)
+//          FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeCellStateBeside,
+//          ComputeFacePieceKind; and, for this header's own functions and types only, ComputeBiasedCorner,
+//          ComputeSortKeyOfCorner, ComputeIsCellPresent, ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry,
+//          ComputeStoredCellState, ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and
+//          the struct LocalPlace
+// Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), kNoFailureKey (grid/grid_build_status.h), GridError
+//          (grid/grid_error.h), CellId, CellBlockId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex, CellCoord,
+//          SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kCellPlacesPerBlock, kFacePlacesPerBlock, kNoIndex,
+//          ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockIndex, ComputeBigCell,
+//          ComputeCellEighth, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h), GridFrame, GridTables,
+//          CellState, FacePieceKind (grid/grid_tables.h)
 // Used by: the grid's CPU builder, its GPU half and the counting of a list (grid/); private to grid/
 // Read:    docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>,
 //          <proc-build-grid>, <sec-cell-blocks>, <sec-face-pieces>
@@ -75,6 +77,7 @@
 #include <cstdint>
 
 #include "fluidity/base/cpu_and_gpu.h"
+#include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -654,6 +657,28 @@ FLUIDITY_CPU_AND_GPU constexpr void FindBlockNeighbours(
     }
     smaller_blocks[(block_number * 8) + cell_eighth] = smaller;
   }
+}
+
+// Computes the failure key of one block that has no bigger block although it is of size level 1 or more: step 7 of
+// the failure key (<sec-parallel-build>, "The first failure"), checked once the neighbour tables are written.
+//
+// Method: a block of size level 1 or more holds the small cells of a split cell one size level bigger, so the block of
+//   that split cell exists, and FindBlockNeighbours finds it. A bigger_block entry of kNoIndex there is a state no
+//   valid list produces: ToFailureKey(7, block, 0). Every other block gives kNoFailureKey. ComputeFailureCells names
+//   that key kInternalFault with no cell, on both processors.
+// Example: in the block ids {size level 1 (0,0,0)} alone, block 0 gives ToFailureKey(7, 0, 0); in {size level 0
+//   (0,0,0), size level 1 (0,0,0)}, both blocks give kNoFailureKey.
+// Requires: block is below the count of block_ids, and bigger_block holds the entry FindBlockNeighbours wrote for it.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t
+ComputeBlockFaultKey(const CellBlockId* block_ids, const std::uint32_t* bigger_block, CellBlockIndex block) noexcept {
+  assert(block_ids != nullptr && bigger_block != nullptr);
+  const CellId block_as_cell = {.value = block_ids[block.value].value};
+  const bool is_below_size_level_zero = ToSizeLevel(block_as_cell) != SizeLevel{0};
+  if (is_below_size_level_zero && bigger_block[block.value] == kNoIndex) {
+    return ToFailureKey(7, block.value, 0);
+  }
+  return kNoFailureKey;
 }
 
 // The cell place given by local coordinates, x, y and z, of a block: 0..3 inside the block, and on at most one axis

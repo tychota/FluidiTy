@@ -25,11 +25,12 @@
 // Owns:    the entry names and item bytes of BuildGridMemoryEstimate, GridArray, FindGridArray,
 //          ComputeIsBuilderBuffersArray, ComputeIsGridArrayOnProcessor, CheckGridArrayEntries, ToGridFailure,
 //          GridBuffersArrays, GridBuilderBuffersArrays, ToGridBuffersArrays, ToGridBuilderBuffersArrays,
-//          ComputeHasLoanOf, BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries
+//          ComputeHasLoanOf, ComputeSmallerBlocksStart, BuildGridFromBuffers, BuildGridBuilderBuffersFromEntries,
+//          BuildGridBuffersFromEntries
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, BufferError (base/buffer.h), MemoryEstimateEntry
 //          (base/memory_count.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h), OrderBuffers
 //          (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h), GridFailure (grid/grid_error.h),
-//          CellBlockId, CellId (grid/grid_ids.h), CellState, FacePieceKind (grid/grid_tables.h)
+//          CellBlockId, CellId, GridVersion (grid/grid_ids.h), CellState, FacePieceKind, GridFrame (grid/grid_tables.h)
 // Used by: grid/grid_memory_estimate.cc, which spells its entries with these names; grid/staggered_grid.h, which
 //          holds these arrays; the grid's builders, checks and tests
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <tab-grid-memory>
@@ -60,6 +61,8 @@ namespace fluidity::grid {
 
 class GridBuffers;
 class GridBuilderBuffers;
+class StaggeredGrid;
+struct GridCounts;
 struct GridSettings;
 
 // The name of each entry of BuildGridMemoryEstimate, one spelling for the estimate and the builders.
@@ -82,7 +85,7 @@ inline constexpr std::uint32_t kBlockIdBytes = 8;
 inline constexpr std::uint32_t kBlockIndexBytes = 4;
 // 27 per block: the blocks of the same size level around a block, the block itself included.
 inline constexpr std::uint32_t kSameSizeLevelNeighbourBlocksBytes = 27 * kBlockIndexBytes;
-// 9 per block: the bigger block, then the 8 smaller blocks.
+// 9 per block: one bigger block and 8 smaller blocks, laid out as ComputeSmallerBlocksStart states.
 inline constexpr std::uint32_t kBiggerAndSmallerBlocksBytes = (1 + 8) * kBlockIndexBytes;
 inline constexpr std::uint32_t kCellStateBytes = 1;
 inline constexpr std::uint32_t kFacePieceKindBytes = 1;
@@ -143,7 +146,7 @@ struct GridBuffersArrays {
   Buffer<CellBlockId> block_ids;  // One per block, in the fixed order.
   // 27 per block: the blocks of the same size level around each block, itself included.
   Buffer<std::uint32_t> same_size_level_neighbour_blocks;
-  // 9 per block: the bigger block of every block first, then the 8 smaller blocks of every block.
+  // 9 per block, in the layout ComputeSmallerBlocksStart states.
   Buffer<std::uint32_t> bigger_and_smaller_blocks;
   Buffer<CellState> cell_states;  // 64 per block, one per cell place.
   Buffer<FacePieceKind> face_piece_kinds;  // 240 per block, one per face place.
@@ -151,6 +154,16 @@ struct GridBuffersArrays {
   Buffer<GridBuildStatus> build_status;  // On the GPU one record; empty on the CPU.
   GridBuilderBuffers* builder_buffers = nullptr;  // Lent by the caller of BuildGridBuffers; never owned.
 };
+
+// Computes the index in bigger_and_smaller_blocks where the smaller blocks start, and so states the array's layout:
+// first the bigger block of each of the room's max_cell_blocks blocks, then from this index on the 8 smaller blocks of
+// each block, by block and then by eighth, whatever the block count of the grid. The one statement of the layout, for
+// the build and for StaggeredGrid::tables.
+// Example: a room of 1,000 blocks keeps the bigger blocks at 0..999 and the 8 smaller blocks of block b at
+//   1,000 + 8 b to 1,000 + 8 b + 7.
+constexpr std::size_t ComputeSmallerBlocksStart(std::uint32_t max_cell_blocks) {
+  return max_cell_blocks;
+}
 
 // The builder buffers, one per "grid: builder buffers: ..." entry of BuildGridMemoryEstimate, for max_cell_blocks
 // blocks. The CPU builder sorts the cell ids in place, so on the CPU every array but cell_ids is empty and there are
@@ -176,6 +189,14 @@ const GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(const GridBuilderBuff
 // that were moved from or assigned to, since the count moves or is left behind with the loan. It reads both objects,
 // so builder_buffers must still exist.
 bool ComputeHasLoanOf(const GridBuffers& buffers, const GridBuilderBuffers& builder_buffers);
+
+// Builds a grid from buffers that a build has filled: the one place a StaggeredGrid is made. The buffers move into the
+// grid, which keeps the frame, the version and the counts.
+// Example: BuildGrid, once the tables of version 3 are written, calls it with that version and the counts it found.
+// Requires: version 1 or more; counts.cell_blocks at most buffers.max_cell_blocks(); the buffers hold the tables of
+//   that version. Checked by assert in debug builds, the first two.
+StaggeredGrid
+BuildGridFromBuffers(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);
 
 // BuildGridBuilderBuffers and BuildGridBuffers (grid/staggered_grid.h) with the estimate given, so a test can pass
 // one the builders do not know. The public forms pass BuildGridMemoryEstimate(run_on, 1, max_cell_blocks). Same

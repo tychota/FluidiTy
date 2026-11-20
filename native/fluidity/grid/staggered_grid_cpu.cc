@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -19,9 +20,12 @@
 #include "fluidity/base/stable_order.h"
 #include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_build_steps.h"
+#include "fluidity/grid/grid_cell_checks.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_memory_estimate.h"
+#include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
@@ -250,6 +254,91 @@ std::uint64_t ComputeBuilderBuffersEntryBytes(RunOn run_on, std::uint32_t max_ce
     }
   }
   return byte_sum;
+}
+
+// The failure keys' steps that the build checks after the sorted list (<sec-parallel-build>, "The first failure"): the
+// two checks of <proc-build-grid> step 5. Step 7 comes from ComputeBlockFaultKey.
+constexpr int kCellPlacesStep = 5;  // The active and split cells against the room's cell places.
+constexpr int kBlockCountStep = 6;  // The blocks against the room.
+
+// Names the failure of a key of steps 5 to 7 with ComputeFailureCells, as the GPU names its smallest key. These steps
+// name no cell, so no list is passed.
+GridFailure ToGridFailureOfBuildKey(std::uint64_t failure_key) {
+  const CellCheck cell_check = ComputeFailureCells(GridFrame(), nullptr, 0, nullptr, 0, failure_key);
+  return {.error = cell_check.error, .cell = cell_check.cell, .other_cell = cell_check.other_cell};
+}
+
+// Says whether every table array has the size of the room, as BuildGridBuffers built it from the estimate.
+bool ComputeHasTablesOfRoom(const GridBuffersArrays& arrays, std::uint32_t max_cell_blocks) {
+  const std::size_t room = max_cell_blocks;
+  return arrays.block_ids.size() == room && arrays.same_size_level_neighbour_blocks.size() == 27 * room
+      && arrays.bigger_and_smaller_blocks.size() == 9 * room && arrays.cell_states.size() == kCellPlacesPerBlock * room
+      && arrays.face_piece_kinds.size() == kFacePlacesPerBlock * room;
+}
+
+// Writes `state` at the place of each cell in the block that step 5 wrote for it: <proc-build-grid> step 7, the place
+// from ToCellPlaceIndex. Returns false, at the first such cell, when a cell's block is not among the block ids.
+bool ApplyStateOfCells(
+    std::span<const CellId> cells,
+    CellState state,
+    const GridTables& tables,
+    CellState* cell_states
+) {
+  return std::ranges::all_of(cells, [state, &tables, cell_states](CellId cell) {
+    const CellBlockIndex block = FindSortedBlock(tables.block_ids, tables.block_count, ToCellBlockId(cell));
+    if (block.value == kNoIndex) {
+      return false;
+    }
+    cell_states[ToCellPlaceIndex(block, ToCellCoord(cell)).value] = state;
+    return true;
+  });
+}
+
+// Writes, after the active cells at the start of `cells`, the split cells each one adds: <proc-build-grid> step 5.
+// `cells` has room for exactly the split cells ComputeSplitCellCountToAdd counts, which the caller summed.
+void ApplySplitCellsAfterActiveCells(std::span<CellId> cells, std::uint32_t active_count) {
+  std::size_t added_position = active_count;
+  for (std::uint32_t position = 0; position < active_count; ++position) {
+    const CellId cell = cells[position];
+    const int size_level_number = static_cast<int>(ToSizeLevel(cell));
+    const int added_count = ComputeSplitCellCountToAdd(cell);
+    for (int added = 1; added <= added_count; ++added) {
+      cells[added_position] = ComputeBigCellAtSizeLevel(cell, static_cast<SizeLevel>(size_level_number - added));
+      ++added_position;
+    }
+  }
+}
+
+// Writes the block of every cell once into block_ids, in the fixed order: <proc-build-grid> step 5. Both lists are in
+// the fixed block order (ApplyFixedBlockOrder), so taking the earlier of the two next cells visits every block in that
+// order, and a block differs from the last one written exactly when it is new. The keys are the fixed order, so the
+// block ids need no sort of their own. Returns the block count, or nothing when block_ids has no room for them all.
+std::optional<std::uint32_t> ApplyBlockIdsOfCells(
+    std::span<const CellId> active_cells,
+    std::span<const CellId> split_cells,
+    std::span<CellBlockId> block_ids
+) {
+  std::uint32_t block_count = 0;
+  std::size_t active_position = 0;
+  std::size_t split_position = 0;
+  while (active_position < active_cells.size() || split_position < split_cells.size()) {
+    const bool is_active_done = active_position == active_cells.size();
+    const bool is_split_done = split_position == split_cells.size();
+    const bool is_split_next = is_active_done
+        || (!is_split_done && ComputeIsEarlierBlock(split_cells[split_position], active_cells[active_position]));
+    const CellId cell = is_split_next ? split_cells[split_position++] : active_cells[active_position++];
+    const CellBlockId block = ToCellBlockId(cell);
+    const bool is_new_block = block_count == 0 || block_ids[block_count - 1].value != block.value;
+    if (!is_new_block) {
+      continue;
+    }
+    if (block_count == block_ids.size()) {
+      return std::nullopt;
+    }
+    block_ids[block_count] = block;
+    ++block_count;
+  }
+  return block_count;
 }
 
 }  // namespace
@@ -631,6 +720,176 @@ std::expected<GridBuffers, GridFailure> BuildGridBuffersFromEntries(
   ++*buffers.lent_count_;
   buffers.max_cell_blocks_ = settings.max_cell_blocks;
   return buffers;
+}
+
+StaggeredGrid::StaggeredGrid(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts)
+    : buffers_(std::move(buffers)), frame_(frame), version_(version), counts_(counts) {
+}
+
+StaggeredGrid::StaggeredGrid(StaggeredGrid&& other) noexcept
+    : buffers_(std::move(other.buffers_)),
+      frame_(other.frame_),
+      version_(std::exchange(other.version_, GridVersion{})),
+      counts_(std::exchange(other.counts_, GridCounts{})) {
+}
+
+StaggeredGrid& StaggeredGrid::operator=(StaggeredGrid&& other) noexcept {
+  if (this != &other) {
+    buffers_ = std::move(other.buffers_);
+    frame_ = other.frame_;
+    version_ = std::exchange(other.version_, GridVersion{});
+    counts_ = std::exchange(other.counts_, GridCounts{});
+  }
+  return *this;
+}
+
+GridTables StaggeredGrid::tables(RunOn run_on) const {
+  // The tables live on the buffers' processor only; a grid moved from or taken back holds none.
+  const bool holds_tables = run_on == buffers_.run_on() && version_.value != 0;
+  if (!holds_tables) {
+    return {};
+  }
+  const GridBuffersArrays& arrays = ToGridBuffersArrays(buffers_);
+  const std::uint32_t* const bigger_and_smaller_blocks = arrays.bigger_and_smaller_blocks.data();
+  return {
+      .frame = frame_,
+      .version = version_,
+      .block_count = counts_.cell_blocks,
+      .block_ids = arrays.block_ids.data(),
+      .same_size_level_blocks = arrays.same_size_level_neighbour_blocks.data(),
+      .bigger_block = bigger_and_smaller_blocks,
+      .smaller_blocks = bigger_and_smaller_blocks + ComputeSmallerBlocksStart(buffers_.max_cell_blocks()),
+      .cell_states = arrays.cell_states.data(),
+      .face_piece_kinds = arrays.face_piece_kinds.data(),
+  };
+}
+
+StaggeredGrid
+BuildGridFromBuffers(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts) {
+  // Requires: a built grid's version and a block count within the room.
+  assert(version.value != 0);
+  assert(counts.cell_blocks <= buffers.max_cell_blocks());
+  return {std::move(buffers), frame, version, counts};
+}
+
+GridBuffers TakeBuffers(StaggeredGrid&& grid) {
+  GridBuffers buffers = std::move(grid.buffers_);
+  grid.version_ = GridVersion{};
+  grid.counts_ = GridCounts{};
+  return buffers;
+}
+
+std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, GridBuffers& buffers) {
+  // Steps of <proc-build-grid>: 1 to 4 the input checks, the ids and the sorted list  5 the split cells and the
+  // blocks  6 the neighbour tables  7 the cell states  8 the face piece kinds
+  // Steps 1 to 4: the n active cells, sorted in the fixed order at the start of the builder buffers' cell ids.
+  const std::expected<std::uint32_t, GridFailure> sorted_count =
+      BuildSortedCellList(inputs, buffers, SiblingCheck::kRequire);
+  if (!sorted_count.has_value()) {
+    return std::unexpected(sorted_count.error());
+  }
+  const std::uint32_t active_count = *sorted_count;
+  GridBuffersArrays& arrays = ToGridBuffersArrays(buffers);
+  const std::uint32_t room = buffers.max_cell_blocks();
+  // BuildGridBuffers built every table for the room from the estimate's entries; other sizes mean the two disagree.
+  if (!ComputeHasTablesOfRoom(arrays, room)) {
+    return std::unexpected(ToInternalFault());
+  }
+  Buffer<CellId>& cell_ids = ToGridBuilderBuffersArrays(*arrays.builder_buffers).cell_ids;
+
+  // Step 5: the split cells, then the blocks. Once the siblings passed, each split cell is the big cell of exactly one
+  // eighth-0 small cell, so the cells that ComputeSplitCellCountToAdd counts are each added once.
+  std::uint64_t split_count = 0;
+  for (std::uint32_t position = 0; position < active_count; ++position) {
+    split_count += static_cast<std::uint64_t>(ComputeSplitCellCountToAdd(cell_ids.data()[position]));
+  }
+  const std::uint64_t cell_count = active_count + split_count;
+  // The active and split cells need more cell places than the room has: the caller raises the room.
+  if (cell_count > std::uint64_t{kCellPlacesPerBlock} * room) {
+    return std::unexpected(ToGridFailureOfBuildKey(ToFailureKey(kCellPlacesStep, 0, 0)));
+  }
+  // The lent builder buffers hold 64 cell ids per block of a room at least the buffers' (CheckLentBuilderBuffers).
+  if (cell_ids.size() < cell_count) {
+    return std::unexpected(ToInternalFault());
+  }
+  const std::span<CellId> cells(cell_ids.data(), static_cast<std::size_t>(cell_count));
+  ApplySplitCellsAfterActiveCells(cells, active_count);
+  // The two parts stay apart, so step 7 knows which cells are active and which are split.
+  const std::span<CellId> active_cells = cells.first(active_count);
+  const std::span<CellId> split_cells = cells.subspan(active_count);
+  ApplyFixedBlockOrder(active_cells);
+  ApplyFixedBlockOrder(split_cells);
+  CellBlockId* const block_ids = arrays.block_ids.data();
+  const std::optional<std::uint32_t> written_block_count =
+      ApplyBlockIdsOfCells(active_cells, split_cells, std::span<CellBlockId>(block_ids, room));
+  // More blocks than the room holds: the caller raises the room. No cell is named, as on the GPU.
+  if (!written_block_count.has_value()) {
+    return std::unexpected(ToGridFailureOfBuildKey(ToFailureKey(kBlockCountStep, 0, 0)));
+  }
+  const std::uint32_t block_count = *written_block_count;
+
+  // Step 6: the neighbour tables of every block. Then ComputeBlockFaultKey over the blocks, step 7 of the failure key
+  // (<sec-parallel-build>, "The first failure").
+  std::uint32_t* const same_size_level_blocks = arrays.same_size_level_neighbour_blocks.data();
+  std::uint32_t* const bigger_block = arrays.bigger_and_smaller_blocks.data();
+  std::uint32_t* const smaller_blocks = bigger_block + ComputeSmallerBlocksStart(room);
+  for (std::uint32_t block = 0; block < block_count; ++block) {
+    FindBlockNeighbours(block_ids, block_count, {block}, same_size_level_blocks, bigger_block, smaller_blocks);
+  }
+  for (std::uint32_t block = 0; block < block_count; ++block) {
+    const std::uint64_t fault_key = ComputeBlockFaultKey(block_ids, bigger_block, {block});
+    // A block of size level 1 or more lies in a split cell whose block step 5 wrote; without it, the build is wrong.
+    if (fault_key != kNoFailureKey) {
+      return std::unexpected(ToGridFailureOfBuildKey(fault_key));
+    }
+  }
+
+  // Step 7: every place kAbsent, the active and the split cells at their places, then the places covered by an active
+  // cell one size level bigger. ComputeCoveredCellState reads only kActive marks, which this last pass never writes.
+  CellState* const cell_states = arrays.cell_states.data();
+  const GridTables tables = {
+      .frame = inputs.frame,
+      .version = inputs.version,
+      .block_count = block_count,
+      .block_ids = block_ids,
+      .same_size_level_blocks = same_size_level_blocks,
+      .bigger_block = bigger_block,
+      .smaller_blocks = smaller_blocks,
+      .cell_states = cell_states,
+      .face_piece_kinds = arrays.face_piece_kinds.data(),
+  };
+  const std::size_t cell_place_count = std::size_t{kCellPlacesPerBlock} * block_count;
+  std::fill_n(cell_states, cell_place_count, CellState::kAbsent);
+  // Step 5 wrote the block of every cell, so FindSortedBlock finds each; a miss is a fault in the build.
+  const bool are_cells_placed = ApplyStateOfCells(active_cells, CellState::kActive, tables, cell_states)
+      && ApplyStateOfCells(split_cells, CellState::kSplit, tables, cell_states);
+  if (!are_cells_placed) {
+    return std::unexpected(ToInternalFault());
+  }
+  for (std::size_t place = 0; place < cell_place_count; ++place) {
+    if (cell_states[place] == CellState::kAbsent) {
+      cell_states[place] = ComputeCoveredCellState(tables, {static_cast<std::uint32_t>(place)});
+    }
+  }
+
+  // Step 8: the kind of every face place, from the two cell places beside it.
+  GridCounts counts{};
+  FacePieceKind* const face_piece_kinds = arrays.face_piece_kinds.data();
+  const std::size_t face_place_count = std::size_t{kFacePlacesPerBlock} * block_count;
+  for (std::size_t face = 0; face < face_place_count; ++face) {
+    const FacePieceKind kind = ComputeFacePieceKind(tables, {static_cast<std::uint32_t>(face)});
+    face_piece_kinds[face] = kind;
+    if (kind != FacePieceKind::kNotAPiece) {
+      ++counts.face_pieces;
+    }
+  }
+
+  counts.cell_blocks = block_count;
+  counts.active_cells = active_count;
+  for (const CellId cell : active_cells) {
+    ++counts.active_cells_per_size_level[static_cast<std::size_t>(ToSizeLevel(cell))];
+  }
+  return BuildGridFromBuffers(std::move(buffers), inputs.frame, inputs.version, counts);
 }
 
 }  // namespace fluidity::grid

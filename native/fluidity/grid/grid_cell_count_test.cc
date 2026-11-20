@@ -7,6 +7,7 @@
 #include <set>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "fluidity/base/buffer.h"
@@ -261,7 +262,7 @@ TEST(ComputeGridCounts, FullySplitCell_FillsTheCopyToItsLastId) {
 // One more size-level-0 cell, alone at {262139, 262140, 262140}, adds 6 face pieces and 1 block: 462 and 17. It lies
 // where a split lookup from size level 15 would land if it were made: the size-level-15 cell at 131070 on each axis
 // has the place 131069 below its low X side, whose small cell 2 x 131069 + 1 at size level 16 would pack as this cell.
-// So a count that looked below size level 15 would read that side as split, in a release build too.
+// So a count that made the split lookup at size level 16 would read that side as split, in a release build too.
 TEST(ComputeGridCounts, CellSplitDownToSizeLevelFifteen_EqualsGeometricChecker) {
   std::vector<CellId> cells;
   CellId cell = ToCell(0, 3, 3, 3);
@@ -324,6 +325,25 @@ TEST(ComputeGridCounts, RandomGrids_EqualGeometricChecker) {
     SCOPED_TRACE(grid);
     const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(grid);
     ExpectCheckerCounts(ComputeCountsOfList(ToUnitFrame(4), cells), ToUnitFrame(4), cells);
+  }
+}
+
+// The counts of a list equal those of the grid built from it, field by field: the face pieces counted from the places
+// beside each cell equal those counted from the built kinds, on all 200 random grids.
+TEST(ComputeGridCounts, RandomGrids_EqualBuiltCounts) {
+  // One set of buffers for 4,096 blocks, the most the tests build, given back after each grid.
+  std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(4), {}), {.max_cell_blocks = 4096});
+  ASSERT_TRUE(owner.has_value());
+  GridBuffers buffers = TakeBuffers(std::move(owner->grid));
+  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+    SCOPED_TRACE(grid);
+    const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(grid);
+    const std::expected<GridCounts, GridFailure> counts = ComputeCountsOfList(ToUnitFrame(4), cells);
+    std::expected<StaggeredGrid, GridFailure> built = BuildGrid(ToInputs(ToUnitFrame(4), cells), buffers);
+    ASSERT_TRUE(counts.has_value());
+    ASSERT_TRUE(built.has_value());
+    EXPECT_EQ(ToCountFields(*counts), ToCountFields(built->counts()));
+    buffers = TakeBuffers(std::move(*built));
   }
 }
 

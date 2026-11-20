@@ -1,7 +1,8 @@
-// Test-only: a geometric checker of mixed-size grids, and random grids that every machine builds alike.
+// Test-only: a geometric checker of mixed-size grids, random grids that every machine builds alike, and grids that
+// own their memory.
 //
-// Purpose: give grid tests an answer to compare the grid's tables against, computed another way, and lists of
-//   active cells drawn from a seed that give the same list on every machine.
+// Purpose: give grid tests an answer to compare the grid's tables against, computed another way, lists of active cells
+//   drawn from a seed that give the same list on every machine, and one call that builds a grid with its own memory.
 //
 // Idea: GeometricGrid sees only the list of active cells. It turns each cell into a box of whole units, a unit being
 //   the width of a cell of the frame's last size level, and answers every question by looking at every cell or face
@@ -15,6 +16,8 @@
 //   function lists them in place order, so a test compares the two as sets (or orders both by one key it states) and
 //   checks the grid's own order apart. FacesWithin makes one pass over every face piece per call, so a test over many
 //   grids calls it for a few chosen faces of each grid, not for every face.
+//   TestGrid keeps a built grid together with the RunMemory, the builder buffers and the list its buffers come from,
+//   destroyed in the order the lending rules ask for.
 //   Example: the size-level-0 cell {0,0,0} beside the 8 size-level-1 cells of the size-level-0 cell {1,0,0}, in a
 //   frame of 2 size levels and biggest cells 1 m wide, has 41 face pieces: the big cell's 5 whole sides, the 4 quarters
 //   between it and the small cells, the 12 sides between small cells and their 20 outer sides.
@@ -25,11 +28,19 @@
 //                    been split, again and again, until none is left
 //   window quarter   n_p of the method paper: the quarter of its cell that holds a position, 0..3 on each axis
 // Owns:    ToUniformIndex, ToUnitDouble, BuildRandomGridCells, ApplyFixedShuffle, kRandomGridCount,
-//          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid
-// Uses:    Axis (base/axis.h), Vec3 (base/vec3.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h),
-//          GridFrame (grid/grid_tables.h), CPU-only guard (base/cpu_only.h)
+//          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid,
+//          TestGrid, BuildTestGrid, TakeEmptyGridBuffers, kRandomGridSizeLevelCount, kMaxRandomGridCellBlocks,
+//          ToGridCountFields, ComputeIsSameUsedTables, ComputeIsSameGrid, FindRandomGridsSpreadBySize,
+//          BuildReferenceGrids
+// Uses:    Axis (base/axis.h), Buffer (base/buffer.h), RunMemory (base/run_memory.h), Vec3 (base/vec3.h), GridFailure
+//          (grid/grid_error.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h), GridFrame
+//          (grid/grid_tables.h), GridSettings, GridInputs, GridBuilderBuffers, StaggeredGrid (grid/staggered_grid.h),
+//          CPU-only guard (base/cpu_only.h)
 // Implementation uses: ToCellId, ToCellCoord, ToSizeLevel, ToFacePieceId, ComputeSmallCell,
-//          ComputeIsCoordInRange (grid/grid_ids.h), GoogleTest (ADD_FAILURE)
+//          ComputeIsCoordInRange (grid/grid_ids.h), BuildRunMemory, BuildBuffer, WriteBuffer, ComputeRunMemoryBytes,
+//          ComputeRunMemoryPieceBytes (base/), BuildGridMemoryEstimate, ToMemoryCounts (grid/grid_memory_estimate.h),
+//          ToGridFailure (grid/grid_buffers_internal.h), BuildGridBuilderBuffers, BuildGridBuffers, BuildGrid,
+//          ComputeGridCounts (grid/staggered_grid.h), GoogleTest (ADD_FAILURE)
 // Used by: the tests of grid/ (the library fluidity_grid_test_support), never the library itself
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-face-pieces>,
 //          <sec-cell-blocks>, <sec-nearby-faces>
@@ -41,13 +52,20 @@
 
 #include <array>
 #include <cstdint>
+#include <expected>
+#include <memory>
 #include <optional>
+#include <tuple>
 #include <vector>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
 
@@ -215,5 +233,75 @@ class GeometricGrid {
   std::vector<UnitBox> active_boxes_;  // One per entry of active_cells_.
   std::vector<GeometricFacePiece> face_pieces_;  // Found once, by the constructor.
 };
+
+// A grid with its own memory, for tests. run_memory is declared first, so it is destroyed last, after the buffers that
+// are memory pieces of it. The builder buffers are held by pointer so that moving a TestGrid never moves the lent
+// GridBuilderBuffers. Move construction only: a RunMemory must not be assigned over while its pieces are alive.
+struct TestGrid {
+  TestGrid(
+      RunMemory run_memory,
+      Buffer<CellId> cell_list,
+      std::unique_ptr<GridBuilderBuffers> builder_buffers,
+      StaggeredGrid grid
+  );
+  TestGrid(const TestGrid&) = delete;
+  TestGrid& operator=(const TestGrid&) = delete;
+  TestGrid(TestGrid&& other) noexcept = default;
+  TestGrid& operator=(TestGrid&& other) = delete;
+  ~TestGrid() = default;
+
+  RunMemory run_memory;
+  Buffer<CellId> cell_list;  // The list on the grid's processor; empty for a CPU grid.
+  std::unique_ptr<GridBuilderBuffers> builder_buffers;
+  StaggeredGrid grid;
+};
+
+// Builds a grid with memory of its own: reserves exactly the estimate for one grid of the room (for a GPU grid, plus
+// one memory piece for the list), then BuildGridBuilderBuffers, BuildGridBuffers and BuildGrid on settings.run_on.
+//
+// Method: the list is inputs.active_cells, a span in CPU memory. For a GPU grid the span's length is taken on the CPU
+//   and the span is copied to cell_list, which the build then reads. With settings.max_cell_blocks 0 (the default) the
+//   room is ComputeGridCounts(inputs).cell_blocks, at least 1.
+// Example: the 9 size-level-0 cells {4 i, 0, 0} with default settings give a CPU grid whose max_cell_blocks() is 9.
+// Requires: inputs.active_cell_buffer is null; otherwise the calling test fails and kBadInput is returned.
+// Fails: as ComputeGridCounts (default room only), BuildRunMemory (through ToGridFailure), BuildGridBuilderBuffers,
+//        BuildGridBuffers and BuildGrid; kBadInput for a room above kMaxCellBlocksLimit, before any memory is reserved.
+std::expected<TestGrid, GridFailure> BuildTestGrid(const GridInputs& inputs, const GridSettings& settings = {});
+
+// The size levels of the frame the random grids are built in (BuildShuffledRandomGrids).
+inline constexpr int kRandomGridSizeLevelCount = 4;
+
+// The most cell blocks a random grid has (BuildShuffledRandomGrids): the room of a reference grid that keeps its own
+// memory.
+inline constexpr std::uint32_t kMaxRandomGridCellBlocks = 252;
+
+// Takes the empty buffers out of `owner`, a grid of no cells built with BuildTestGrid, so a test has grid buffers of
+// the owner's room on the CPU. Their builder buffers and memory stay in `owner`, which must outlive the buffers.
+// Requires: `owner` holds a grid; otherwise the calling test fails and the owner is read anyway.
+GridBuffers TakeEmptyGridBuffers(std::expected<TestGrid, GridFailure>& owner);
+
+// Every field of counts, as one comparable value: the blocks, the active cells per size level, the active cells and the
+// face pieces.
+std::tuple<std::uint32_t, std::array<std::uint64_t, kMaxSizeLevels>, std::uint64_t, std::uint64_t> ToGridCountFields(
+    const GridCounts& counts
+);
+
+// Says whether two sets of tables have the same version, the same block count and the same bytes in the used part of
+// every table: the block ids, 27 neighbours, the bigger block and 8 smaller blocks per block, 64 cell states and 240
+// face piece kinds per block. Allocates nothing, so a test may call it while it counts allocations.
+bool ComputeIsSameUsedTables(const GridTables& first, const GridTables& second);
+
+// Says whether two grids have the same counts and the same used tables on the CPU. Allocates nothing.
+bool ComputeIsSameGrid(const StaggeredGrid& first, const StaggeredGrid& second);
+
+// A spread of the random lists by size: with the kRandomGridCount entries ordered by cell count, most first and the
+// first entry first among equal counts, the group_size entries at the top, the group_size entries centred on the middle
+// position (kRandomGridCount / 2) and the group_size entries at the bottom, in that order.
+// Example: group_size 10 takes ordered positions 0..9, 95..104 and 190..199.
+std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t group_size);
+
+// The random grids of the given entries, each version 1 with its own memory, in a room of kMaxRandomGridCellBlocks. A
+// grid that fails to build fails the calling test and is left out.
+std::vector<TestGrid> BuildReferenceGrids(const std::vector<std::size_t>& grids);
 
 }  // namespace fluidity::grid

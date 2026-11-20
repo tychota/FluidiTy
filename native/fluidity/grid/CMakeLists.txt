@@ -31,5 +31,19 @@ fluidity_add_test(grid_memory_estimate_test SOURCES grid_memory_estimate_test.cc
 # Replaces the nothrow allocation functions for the whole program, so it shares its program with no other test.
 fluidity_add_test(grid_out_of_memory_test SOURCES grid_out_of_memory_test.cc LABEL cpu)
 fluidity_add_test(grid_shared_gpu_compile_test SOURCES grid_shared_gpu_compile_test.cu LABEL no_gpu)
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  staggered_grid_test
+  SOURCES
+  staggered_grid_test.cc
+  allocation_counter_test_support.cc
+  LABEL
+  cpu
+  LINKS
+  fluidity_grid_test_support
+)
+fluidity_add_test(
+  staggered_grid_no_gpu_test SOURCES staggered_grid_no_gpu_test.cc LABEL no_gpu LINKS fluidity_grid_test_support
+)
 fluidity_add_test(grid_test_support_test SOURCES grid_test_support_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(weight_curve_test SOURCES weight_curve_test.cc LABEL cpu LINKS fluidity_grid_test_support)
