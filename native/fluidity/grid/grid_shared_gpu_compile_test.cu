@@ -1,12 +1,13 @@
-// Proves that the shared headers grid/grid_build_status.h, grid/grid_ids.h, grid/grid_tables.h and
-// grid/weight_curve.h compile as GPU code:
+// Proves that the shared headers grid/grid_build_status.h, grid/grid_build_steps.h, grid/grid_ids.h,
+// grid/grid_tables.h and grid/weight_curve.h compile as GPU code:
 // label no_gpu.
 //
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
-// code for every function of grid_ids.h and weight_curve.h, the helpers those functions call included, and for
-// CellBlockRange, GridFrame, CellState, FacePieceKind, WeightCurveValue and GridBuildStatus read and written by GPU
-// code. The integer results go to `results`, and the double results of weight_curve.h go to `double_results`. The CUDA
-// compiler generates GPU code for a shared function only where GPU code calls it, so each function is called here once.
+// code for every function of grid_build_steps.h, grid_ids.h and weight_curve.h, the helpers those functions call
+// included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, WeightCurveValue, GridBuildStatus and
+// CellCheck read and written by GPU code. The integer results go to `results`, and the double results of
+// weight_curve.h go to `double_results`. The CUDA compiler generates GPU code for a shared function only where GPU
+// code calls it, so each function is called here once.
 // A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
 // function's address, which needs no GPU.
 
@@ -16,6 +17,7 @@
 
 #include "fluidity/base/axis.h"
 #include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/weight_curve.h"
@@ -23,9 +25,9 @@
 namespace fluidity::grid {
 namespace {
 
-// Reads its inputs from `values` (4 integers), the range, the frame and the two tables, and writes at least one
-// integer per shared function to `results` and the doubles of weight_curve.h to `double_results`, so the compiler
-// cannot drop any call.
+// Reads its inputs from `values` (4 integers), the range, the frame, the two tables and the sorted cells and blocks,
+// and writes at least one integer per shared function to `results` and the doubles of weight_curve.h to
+// `double_results`, so the compiler cannot drop any call.
 __global__ void ComputeWithEverySharedGridFunction(
     const std::int32_t* values,
     CellBlockRange range,
@@ -33,6 +35,9 @@ __global__ void ComputeWithEverySharedGridFunction(
     const CellState* cell_states,
     const FacePieceKind* face_piece_kinds,
     GridBuildStatus* build_status,
+    const CellId* sorted_cells,
+    const CellBlockId* sorted_blocks,
+    std::uint32_t sorted_count,
     std::uint64_t* results,
     double* double_results
 ) {
@@ -69,6 +74,26 @@ __global__ void ComputeWithEverySharedGridFunction(
   build_status->cell = cell;
   build_status->active_cells_per_size_level[values[0] & 15] = build_status->face_pieces + build_status->cell_blocks;
   results[result_index++] = build_status->failure_key + static_cast<std::uint64_t>(build_status->error);
+  // grid_build_steps.h: the keys, the checks of one sorted position, the failure key and the split cells.
+  const int pass = values[3] % kSortKeyPassCount;
+  results[result_index++] = ToCellSortKey(cell, pass) + ToBlockSortKey(cell, pass);
+  results[result_index++] = static_cast<std::uint64_t>(CheckCellId(frame, cell));
+  results[result_index++] = FindSortedCell(sorted_cells, sorted_count, cell);
+  results[result_index++] = FindSortedBlock(sorted_blocks, sorted_count, block).value;
+  results[result_index++] = ComputeBigCellAtSizeLevel(small_cell, size_level).value;
+  results[result_index++] = FindSortedCellAt(sorted_cells, sorted_count, size_level, cell_coord);
+  const auto position = static_cast<std::uint32_t>(values[1]);
+  const CellCheck overlap_check = CheckOverlapAt(sorted_cells, sorted_count, position);
+  const CellCheck sibling_check = CheckSiblingsAt(sorted_cells, sorted_count, position);
+  const CellCheck size_step_check = CheckSizeStepAt(sorted_cells, sorted_count, position);
+  results[result_index++] = overlap_check.cell.value + sibling_check.other_cell.value + size_step_check.detail;
+  const std::uint64_t failure_key = ToFailureKey(values[0] & 7, position, static_cast<std::uint8_t>(values[2]));
+  results[result_index++] = static_cast<std::uint64_t>(ToFailureStep(failure_key)) + ToFailurePosition(failure_key);
+  // The sorted cells stand in for the input list too: only the call matters here.
+  const CellCheck failure_cells =
+      ComputeFailureCells(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, failure_key);
+  results[result_index++] = static_cast<std::uint64_t>(failure_cells.error) + failure_cells.cell.value;
+  results[result_index++] = static_cast<std::uint64_t>(ComputeSplitCellCountToAdd(cell));
   // weight_curve.h: the curve, the spread and the constants.
   // weight_curve.h writes doubles, so they go to their own buffer and no double is converted to an integer.
   int double_result_index = 0;
