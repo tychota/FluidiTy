@@ -1,0 +1,25 @@
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_e37e027105a3cb 23-27,48,142-143,222,281,316-319,323,326-333,463-466,468-474,477,479-486,493-503,524-526
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_d9d66101290074 219-236,318,493,495,498,500,505,508,515,573,666-668,672,675-692,696-702,704-714,718-722,727-767,772,847,921,934-937,956-963,969-976,987-994,1008-1015,1023,1027-1034,1043-1050,1055,1057,1059,1065-1131,1136-1156,1159,1165-1167,1172-1175
+native/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_c47b606e96a51e 31-35,126-128
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_335b06a27622a7 83,92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6f450e53740c754649bac4740caf58c7ea535af9",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
