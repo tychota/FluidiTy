@@ -1,0 +1,25 @@
+docs/superpowers/specs/modules/02-grid-design.md
+  s_4f0877e2acdcf0::t_ee3fc07187297d 1062-1064
+  s_4f0877e2acdcf0::t_5aeddc8317a143 87-92,162,231-233,385,833,839,862,866,1266,1324,1380,1388,1392,1427,1509,1766,1770
+docs/superpowers/plans/2026-11-14-rebuild-02-grid.md
+  s_4f0877e2acdcf0::t_5aeddc8317a143 53,71,102,109,265-288,470-478,548-549,553,826,1034,1039,1058-1059,1080-1087,1090,1101,1116,1128,1147,1150,1244-1250,1253-1254,1263,1265-1267,1274,1280-1283,1305,1329,1336,1438,1577-1578,1587,1591,1597-1598,1621,1813,1840,1885,1887,1925,1948,1950,1956,2004,2036,2039,2041
+  s_4f0877e2acdcf0::t_ee3fc07187297d 1275-1279
+docs/superpowers/specs/modules/changes-to-apply.md
+  s_4f0877e2acdcf0::t_ee3fc07187297d 659-675
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d7b5cca45308f44e9f1a6914d55ba1b50ea9c7ef",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
