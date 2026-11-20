@@ -23,6 +23,7 @@ fluidity_add_test_library(fluidity_grid_test_support SOURCES grid_test_support.c
 fluidity_add_test(grid_buffers_test SOURCES grid_buffers_test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_cell_checks_test SOURCES grid_cell_checks_test.cc LABEL cpu LINKS fluidity_grid_test_support)
+fluidity_add_test(grid_cell_count_test SOURCES grid_cell_count_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_buffers_no_gpu_test SOURCES grid_buffers_no_gpu_test.cc LABEL no_gpu)
 fluidity_add_test(grid_error_test SOURCES grid_error_test.cc LABEL cpu)
 fluidity_add_test(grid_ids_test SOURCES grid_ids_test.cc LABEL cpu LINKS fluidity_grid_test_support)

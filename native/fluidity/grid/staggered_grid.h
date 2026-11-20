@@ -23,7 +23,7 @@
 //   memory piece     the bytes of one buffer inside a RunMemory's block (base/run_memory.h)
 // Owns:    kMaxCellBlocksLimit, GridSettings, GridInputs, GridCounts, BuilderBuffersSharing, GridBuilderBuffers,
 //          BuildGridBuilderBuffers, GridBuilderBuffersSize, ComputeGridBuilderBuffersSize, GridBuffers,
-//          BuildGridBuffers, CheckSizeStepRule
+//          BuildGridBuffers, ComputeGridCounts, CheckSizeStepRule
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer (base/buffer.h), MemoryEstimateEntry (base/memory_count.h),
 //          RunMemory (base/run_memory.h), RunOn (base/run_on.h), GridBuffersArrays, GridBuilderBuffersArrays,
 //          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries, ComputeHasLoanOf
@@ -31,11 +31,13 @@
 //          (grid/grid_ids.h), GridFrame (grid/grid_tables.h)
 // Implementation uses: CheckCanRunOn (base/check_can_run_on.h), ComputeMemoryBytes (base/memory_count.h),
 //          BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
-//          (grid/grid_memory_estimate.h), BuildSortedCellList and the checks of a cell list (grid/grid_cell_checks.h)
-// Used by: the grid's builders and memory estimate, the step, which chooses the room and owns the buffers, and cell
-//          resize, which checks the lists it splits
+//          (grid/grid_memory_estimate.h), BuildSortedCellList and the checks of a cell list (grid/grid_cell_checks.h),
+//          FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel, ToBlockSortKey
+//          (grid/grid_build_steps.h)
+// Used by: the grid's builders and memory estimate, the step, which chooses the room and owns the buffers and counts a
+//          list to plan it, and cell resize, which checks the lists it splits
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>,
-//          <proc-build-grid>, <sec-parallel-build>
+//          <proc-build-grid>, <sec-parallel-build>, <proc-count-grid>
 
 #pragma once
 
@@ -284,6 +286,41 @@ class GridBuffers {
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>
 std::expected<GridBuffers, GridFailure>
 BuildGridBuffers(const GridSettings& settings, GridBuilderBuffers& builder_buffers, RunMemory& run_memory);
+
+// Counts the cell blocks, the active cells and the face pieces that a list of active cells in CPU memory would give,
+// without building the grid: what a run's plan needs to choose the room before any buffers exist.
+//
+// Method: method paper <proc-count-grid>. (1) The checks of a build except the length and the room: CheckGridInputs,
+//   the ids in input order, then a CPU copy of the ids sorted into the fixed order and checked for overlaps, siblings
+//   and the size step rule. (2) The active cells, per size level, in one pass. (3) The face pieces, one active cell at
+//   a time, by binary searches in the sorted copy: is the place of the cell's own size level beside a side active, and
+//   is it split. The low side counts one face piece unless the place is split; the high side counts one unless the
+//   place is active or split. A place inside a bigger cell and an absent place give the same count, so the count needs
+//   no lookup of the bigger cell: at most 9 searches per cell. (4) The blocks: the split cells appended to the copy,
+//   all ids sorted by their block, and the runs of one block counted. This is a second statement of the face rule of
+//   <sec-face-pieces>, from the places beside each cell instead of from built tables. The test
+//   ComputeGridCounts.RandomGrids_EqualGeometricChecker holds it to the face rule. It builds no table because tables
+//   need buffers sized by the block count, the number asked for; sized for the worst case, one block per cell, they
+//   would cost about 1.1 kB per active cell.
+// Memory: one CPU allocation of n + floor(n / 7) ids for n active cells, 8 bytes each: 8 bytes per active or split
+//   cell, since a split cell has 8 small cells and so there are at most n / 7 of them; at most 9.2 bytes per active
+//   cell. Two sorts and four linear passes, O(n log n).
+// Example: with 3 size levels, size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0} gives 2
+//   blocks, active_cells_per_size_level {1, 8, 0, ...}, 9 active cells and 41 face pieces: the big cell's 5 whole
+//   sides, the small cells' 24 outer sides (4 of them shared with the big cell) and the 12 between them. The copy
+//   holds 9 + 1 ids, 80 bytes.
+// Requires: the list is in CPU memory: the span, or a CPU active_cell_buffer. An empty list has no processor. Checked
+//   by assert in debug builds.
+// Fails: kBadInput           as CheckGridInputs; more than 2^32 - 1 cells; then the first bad id in input order, as
+//                            CheckSizeStepRule's span form
+//        kCoordOutOfRange, kCellsOverlap, kSiblingCellMissing, kSizeStepRuleBroken  as a build of the list, with the
+//                            same cells: the first failure by step, then by position
+//        kOutOfMemory        the copy could not be allocated; magnitude = its bytes, 8 (n + floor(n / 7)); zero cells
+//        kInternalFault      more split cells than the copy has room for, more than 2^32 - 1 blocks, or the cells
+//                            named for a failure disagree with it; zero cells. No input causes it.
+//        Never kTooManyCellBlocks: there is no room yet. An empty list gives zero counts and allocates nothing.
+// Read: docs/method-paper/fluidity-method.typ <proc-count-grid>, <sec-face-pieces>, <sec-cell-blocks>
+std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs);
 
 // Checks a list of active cells in CPU memory: its ids, overlaps and the size step rule, but not the siblings, since
 // cell resize checks its lists while it splits cells and some siblings do not exist yet.

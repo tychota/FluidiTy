@@ -1,6 +1,7 @@
 #include "fluidity/grid/grid_cell_checks.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -96,12 +97,15 @@ std::expected<void, GridFailure> CheckInputIds(GridFrame frame, std::span<const 
   return {};
 }
 
-// Says whether `first` comes before `second` by the three passes of ToCellSortKey, the last pass compared first: the
+// One pass of a sort key of a cell: ToCellSortKey or ToBlockSortKey.
+using SortKeyOfPass = std::uint64_t (*)(CellId cell, int pass) noexcept;
+
+// Says whether `first` comes before `second` by the three passes of a sort key, the last pass compared first: the
 // order the stable order of the passes gives, least significant first.
-bool ComputeIsEarlierBySortKeys(CellId first, CellId second) {
+bool ComputeIsEarlierBySortKeys(CellId first, CellId second, SortKeyOfPass sort_key_of_pass) {
   for (int pass = kSortKeyPassCount - 1; pass >= 0; --pass) {
-    const std::uint64_t first_key = ToCellSortKey(first, pass);
-    const std::uint64_t second_key = ToCellSortKey(second, pass);
+    const std::uint64_t first_key = sort_key_of_pass(first, pass);
+    const std::uint64_t second_key = sort_key_of_pass(second, pass);
     if (first_key != second_key) {
       return first_key < second_key;
     }
@@ -112,7 +116,9 @@ bool ComputeIsEarlierBySortKeys(CellId first, CellId second) {
 // Sorts cells into the fixed order, in place, without allocating. Equal keys mean equal ids once step 1 has passed,
 // so the unstable std::ranges::sort gives the bytes of the GPU's stable order.
 void ApplyFixedCellOrder(std::span<CellId> cells) {
-  std::ranges::sort(cells, ComputeIsEarlierBySortKeys);
+  std::ranges::sort(cells, [](CellId first, CellId second) {
+    return ComputeIsEarlierBySortKeys(first, second, ToCellSortKey);
+  });
 }
 
 // The failure key of the first failing position of one check over a sorted list, or kNoFailureKey.
@@ -138,6 +144,84 @@ bool ComputeIsListInCellIds(std::span<const CellId> list, const Buffer<CellId>& 
   const CellId* const list_end = list.data() + list.size();
   const CellId* const cell_ids_end = cell_ids.data() + cell_ids.size();
   return is_before(list.data(), cell_ids_end) && is_before(cell_ids.data(), list_end);
+}
+
+// The step from a cell to the place beside its high side along x, y and z. The low side's step is the negation.
+constexpr std::array<CellCoord, 3> kHighSideSteps = {
+    CellCoord{.x = 1, .y = 0, .z = 0},
+    CellCoord{.x = 0, .y = 1, .z = 0},
+    CellCoord{.x = 0, .y = 0, .z = 1},
+};
+
+// Computes the place of a cell's own size level one `step` beside it, on the raw coordinate: -2^18..2^18 on each axis,
+// so at most one place beyond a coordinate limit. `step` is one of kHighSideSteps or its negation.
+CellCoord ComputeCoordBeside(CellId cell, CellCoord step) {
+  const CellCoord cell_coord = ToCellCoord(cell);
+  return {
+      .x = cell_coord.x + step.x,
+      .y = cell_coord.y + step.y,
+      .z = cell_coord.z + step.z,
+  };
+}
+
+// Says whether a cell of the cell's own size level is listed at the place one `step` beside it.
+// FindSortedCellAt makes no id for a place beyond a coordinate limit, where no cell of that size level can be.
+// Requires: sorted_cells is in the fixed order and passed CheckSortedCells with siblings; `cell` is one of them.
+bool ComputeIsPlaceActive(std::span<const CellId> sorted_cells, CellId cell, CellCoord step) {
+  const auto count = static_cast<std::uint32_t>(sorted_cells.size());
+  return FindSortedCellAt(sorted_cells.data(), count, ToSizeLevel(cell), ComputeCoordBeside(cell, step)) != kNoIndex;
+}
+
+// Says whether the place of the cell's own size level one `step` beside it is split: whether the small cell of that
+// place on the cell's side is listed. Along the axis that small cell is 2 N + 1 beside the low side and 2 N beside
+// the high side; across it is the low half, 2 c. It is one of the four small cells that touch the side, and the size
+// step rule makes all four active once one is. The small cells of a place beyond a coordinate limit are beyond it
+// too. FindSortedCellAt makes no id for them: packed, such an id would name another cell near the middle of the
+// range, such as coordinate 0 or 1 for the small cells beyond kMaxCoord or -kMaxCoord.
+// Requires: as ComputeIsPlaceActive.
+bool ComputeIsPlaceSplit(std::span<const CellId> sorted_cells, CellId cell, CellCoord step) {
+  const int size_level_number = static_cast<int>(ToSizeLevel(cell));
+  if (size_level_number + 1 >= kMaxSizeLevels) {
+    return false;
+  }
+  const CellCoord beside_coord = ComputeCoordBeside(cell, step);
+  // |N| <= 2^18, so 2 N + 1 fits a 32-bit integer.
+  const CellCoord small_coord = {
+      .x = (2 * beside_coord.x) + (step.x < 0 ? 1 : 0),
+      .y = (2 * beside_coord.y) + (step.y < 0 ? 1 : 0),
+      .z = (2 * beside_coord.z) + (step.z < 0 ? 1 : 0),
+  };
+  const auto count = static_cast<std::uint32_t>(sorted_cells.size());
+  const auto small_size_level = static_cast<SizeLevel>(size_level_number + 1);
+  return FindSortedCellAt(sorted_cells.data(), count, small_size_level, small_coord) != kNoIndex;
+}
+
+// Computes how many face pieces the active cell at `position` of a sorted list keeps: <proc-count-grid> step 3. A face
+// piece is kept once, with its smaller cell, and between two cells of one size level by the cell on its high side,
+// which owns its low side.
+// Low side: one face piece unless the place beside it is split, whose small cells keep their own. An active place,
+// a place inside a bigger cell and an absent place each leave one with this cell: shared with a cell of the same
+// size, a quarter of the bigger cell's side, or the grid's edge.
+// High side: one face piece unless the place is active (that cell keeps it on its low side) or split.
+// A place inside a bigger cell and an absent place give the same count on either side, so the count never tells them
+// apart; only the kind of the face piece differs, and kinds exist only in a built grid's tables. At most 9 binary
+// searches: the high side's split search is skipped when the place is active, and every split search at size level 15.
+// Requires: as ComputeIsPlaceActive; position < sorted_cells.size().
+int ComputeFacePieceCountOfCell(std::span<const CellId> sorted_cells, std::uint32_t position) {
+  const CellId cell = sorted_cells[position];
+  int face_piece_count = 0;
+  for (const CellCoord high_step : kHighSideSteps) {
+    const CellCoord low_step = {.x = -high_step.x, .y = -high_step.y, .z = -high_step.z};
+    if (!ComputeIsPlaceSplit(sorted_cells, cell, low_step)) {
+      ++face_piece_count;
+    }
+    const bool is_high_place_kept_elsewhere =
+        ComputeIsPlaceActive(sorted_cells, cell, high_step) || ComputeIsPlaceSplit(sorted_cells, cell, high_step);
+    if (!is_high_place_kept_elsewhere) {
+      ++face_piece_count;
+    }
+  }
+  return face_piece_count;
 }
 
 }  // namespace
@@ -308,6 +392,101 @@ std::expected<void, GridFailure> CheckSizeStepRule(const GridInputs& inputs, Gri
     return std::unexpected(built.error());
   }
   return {};
+}
+
+std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs) {
+  // Steps of <proc-count-grid>: 1 check and sort the list  2 count the active cells  3 count the face pieces
+  // 4 count the blocks
+  // Step 1: the input checks of a build, without the length check, since there is no room yet.
+  if (const std::expected<void, GridFailure> inputs_checked = CheckGridInputs(inputs); !inputs_checked.has_value()) {
+    return std::unexpected(inputs_checked.error());
+  }
+  const bool has_buffer_list = inputs.active_cell_buffer != nullptr;
+  const std::span<const CellId> input_cells = has_buffer_list
+      ? std::span<const CellId>(inputs.active_cell_buffer->data(), inputs.active_cell_buffer_count)
+      : inputs.active_cells;
+  // Requires: a CPU list. An empty list has no processor.
+  const bool is_list_on_cpu =
+      input_cells.empty() || !has_buffer_list || inputs.active_cell_buffer->run_on() == RunOn::kCpu;
+  assert(is_list_on_cpu);
+  static_cast<void>(is_list_on_cpu);
+  // No 32-bit position indexes a longer list, and no grid holds one; the scene needs bigger cells.
+  if (input_cells.size() > kMaxListCount) {
+    return std::unexpected(ToBadInput());
+  }
+  // <proc-build-grid> step 1, before anything is allocated.
+  if (const std::expected<void, GridFailure> ids_checked = CheckInputIds(inputs.frame, input_cells);
+      !ids_checked.has_value()) {
+    return std::unexpected(ids_checked.error());
+  }
+  GridCounts counts{};
+  if (input_cells.empty()) {
+    return counts;
+  }
+  // The one allocation: the n ids, then the split cells of step 4. A split cell has 8 small cells, each active or
+  // split, so n + s cells hold 8 s small cells and 7 s <= n - 1: at most floor(n / 7) split cells. It is allocated
+  // without throwing, since the library runs without exceptions.
+  const std::size_t active_count = input_cells.size();
+  const std::size_t copy_room = active_count + (active_count / 7);
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a std::vector cannot report a failed allocation without exceptions.
+  const std::unique_ptr<CellId[]> copy(new (std::nothrow) CellId[copy_room]);
+  if (copy == nullptr) {
+    return std::unexpected(GridFailure{.error = GridError::kOutOfMemory, .magnitude = copy_room * sizeof(CellId)});
+  }
+  const std::span<CellId> sorted_cells(copy.get(), active_count);
+  std::ranges::copy(input_cells, sorted_cells.begin());
+  ApplyFixedCellOrder(sorted_cells);
+  if (const std::expected<void, GridFailure> sorted_checked = CheckSortedCells(sorted_cells, SiblingCheck::kRequire);
+      !sorted_checked.has_value()) {
+    return std::unexpected(sorted_checked.error());
+  }
+
+  // Step 2.
+  for (const CellId cell : sorted_cells) {
+    ++counts.active_cells_per_size_level[static_cast<std::size_t>(ToSizeLevel(cell))];
+  }
+  counts.active_cells = active_count;
+
+  // Step 3.
+  for (std::uint32_t position = 0; position < active_count; ++position) {
+    counts.face_pieces += static_cast<std::uint64_t>(ComputeFacePieceCountOfCell(sorted_cells, position));
+  }
+
+  // Step 4: every split cell is added once, by the active cell at its low corner (ComputeSplitCellCountToAdd).
+  std::size_t used_count = active_count;
+  for (std::size_t position = 0; position < active_count; ++position) {
+    const CellId cell = sorted_cells[position];
+    const int added_count = ComputeSplitCellCountToAdd(cell);
+    // Step 1 checked the siblings, so the bound above holds; more split cells is a fault in FluidiTy.
+    if (used_count + static_cast<std::size_t>(added_count) > copy_room) {
+      return std::unexpected(ToInternalFault());
+    }
+    const int size_level_number = static_cast<int>(ToSizeLevel(cell));
+    for (int added = 1; added <= added_count; ++added) {
+      copy[used_count] = ComputeBigCellAtSizeLevel(cell, static_cast<SizeLevel>(size_level_number - added));
+      ++used_count;
+    }
+  }
+  const std::span<CellId> cells_by_block(copy.get(), used_count);
+  std::ranges::sort(cells_by_block, [](CellId first, CellId second) {
+    return ComputeIsEarlierBySortKeys(first, second, ToBlockSortKey);
+  });
+  std::uint64_t block_count = 0;
+  for (std::size_t position = 0; position < used_count; ++position) {
+    const bool is_new_block = position == 0
+        || ToCellBlockId(cells_by_block[position]).value != ToCellBlockId(cells_by_block[position - 1]).value;
+    if (is_new_block) {
+      ++block_count;
+    }
+  }
+  // Each block of size level 1 or more holds the small cells of a split cell of the size level above, and no two blocks
+  // share one; each block of size level 0 holds a size-level-0 cell. So the blocks are at most the size-level-0 cells
+  // plus the split cells, which is at most n. More is a fault in FluidiTy.
+  if (block_count > std::numeric_limits<std::uint32_t>::max()) {
+    return std::unexpected(ToInternalFault());
+  }
+  counts.cell_blocks = static_cast<std::uint32_t>(block_count);
+  return counts;
 }
 
 }  // namespace fluidity::grid

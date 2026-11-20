@@ -25,9 +25,11 @@
 // Implementation uses: math::IsFinite (base/scalar_math.h), WriteBuffer, CopyBuffer (base/buffer.h),
 //          ToGridBuffersArrays, ToGridBuilderBuffersArrays, ComputeHasLoanOf, ToGridFailure
 //          (grid/grid_buffers_internal.h), CheckCellId, ToCellSortKey, CheckOverlapAt, CheckSiblingsAt,
-//          CheckSizeStepAt, ToFailureKey, ComputeFailureCells (grid/grid_build_steps.h)
-// Used by: CheckSizeStepRule and the builds of a grid on buffers (grid/)
-// Read:    docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
+//          CheckSizeStepAt, ToFailureKey, ComputeFailureCells, FindSortedCellAt, ComputeSplitCellCountToAdd,
+//          ComputeBigCellAtSizeLevel, ToBlockSortKey (grid/grid_build_steps.h)
+// Used by: CheckSizeStepRule, ComputeGridCounts (defined beside these checks) and the builds of a grid on buffers
+//          (grid/)
+// Read:    docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>, <proc-count-grid>
 
 #pragma once
 

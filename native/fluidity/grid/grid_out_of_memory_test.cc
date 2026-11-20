@@ -1,4 +1,4 @@
-// Test-only: reaches the two allocations the grid makes outside a RunMemory, by replacing the nothrow forms of the
+// Test-only: reaches the allocations the grid makes outside a RunMemory, by replacing the nothrow forms of the
 // global allocation functions in this test program alone. A replacement holds for the whole program, so these tests
 // live in a program of their own. The replacements forward to the ordinary forms, so the memory they give is freed by
 // the ordinary delete the code calls, and they fail only while a test asks them to. The ordinary forms throw when the
@@ -151,6 +151,71 @@ TEST(CheckSizeStepRule, EmptyList_AllocatesNothing) {
   ApplyNothrowFailure(NothrowFailure::kOff);
   EXPECT_EQ(array_call_count, 0);
   EXPECT_TRUE(result.has_value());
+}
+
+// Size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0}: a list the count passes.
+std::vector<CellId> BuildOneSplitCell() {
+  std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
+  for (std::int32_t z = 0; z < 2; ++z) {
+    for (std::int32_t y = 0; y < 2; ++y) {
+      for (std::int32_t x = 2; x < 4; ++x) {
+        cells.push_back(ToCell(1, x, y, z));
+      }
+    }
+  }
+  return cells;
+}
+
+GridInputs ToInputs(std::span<const CellId> active_cells) {
+  return {.frame = ToUnitFrame(), .active_cells = active_cells, .version = {.value = 1}};
+}
+
+// 9 cells: the copy has room for 9 + 9 / 7 = 10 ids of 8 bytes, 80 bytes, asked in one nothrow array call.
+TEST(ComputeGridCounts, CopyNotAllocated_IsOutOfMemoryOfItsBytes) {
+  const std::vector<CellId> cells = BuildOneSplitCell();
+  ApplyNothrowFailure(NothrowFailure::kAsked);
+  const std::expected<GridCounts, GridFailure> counts = ComputeGridCounts(ToInputs(cells));
+  const int array_call_count = ToAllocationControl().array_call_count;
+  ApplyNothrowFailure(NothrowFailure::kOff);
+  EXPECT_EQ(array_call_count, 1);
+  ASSERT_FALSE(counts.has_value());
+  EXPECT_EQ(counts.error().error, GridError::kOutOfMemory);
+  EXPECT_EQ(counts.error().magnitude, 80U);
+  EXPECT_EQ(counts.error().cell.value, 0U);
+  EXPECT_EQ(counts.error().other_cell.value, 0U);
+}
+
+// The failed call leaves nothing behind: the same list then counts, with its one allocation.
+TEST(ComputeGridCounts, CopyAllocatedAfterAFailedOne_Counts) {
+  const std::vector<CellId> cells = BuildOneSplitCell();
+  ApplyNothrowFailure(NothrowFailure::kAsked);
+  ASSERT_FALSE(ComputeGridCounts(ToInputs(cells)).has_value());
+  ApplyNothrowFailure(NothrowFailure::kOff);
+  const std::expected<GridCounts, GridFailure> counts = ComputeGridCounts(ToInputs(cells));
+  EXPECT_EQ(ToAllocationControl().array_call_count, 1);
+  ASSERT_TRUE(counts.has_value());
+  EXPECT_EQ(counts->face_pieces, 41U);
+}
+
+// The ids are checked before the copy is made.
+TEST(ComputeGridCounts, BadId_AllocatesNothing) {
+  const std::vector<CellId> cells = {ToCell(0, 0, 0, 0), CellId{0}};
+  ApplyNothrowFailure(NothrowFailure::kAsked);
+  const std::expected<GridCounts, GridFailure> counts = ComputeGridCounts(ToInputs(cells));
+  const int array_call_count = ToAllocationControl().array_call_count;
+  ApplyNothrowFailure(NothrowFailure::kOff);
+  EXPECT_EQ(array_call_count, 0);
+  ASSERT_FALSE(counts.has_value());
+  EXPECT_EQ(counts.error().error, GridError::kBadInput);
+}
+
+TEST(ComputeGridCounts, EmptyList_AllocatesNothing) {
+  ApplyNothrowFailure(NothrowFailure::kAsked);
+  const std::expected<GridCounts, GridFailure> counts = ComputeGridCounts(ToInputs({}));
+  const int array_call_count = ToAllocationControl().array_call_count;
+  ApplyNothrowFailure(NothrowFailure::kOff);
+  EXPECT_EQ(array_call_count, 0);
+  EXPECT_TRUE(counts.has_value());
 }
 
 // The lent count of builder buffers is 8 bytes on the heap, allocated before any memory piece: its failure is
