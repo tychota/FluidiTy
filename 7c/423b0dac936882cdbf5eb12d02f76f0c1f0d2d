@@ -1,0 +1,43 @@
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_9081caeab69320 9,12
+  s_4f0877e2acdcf0::t_127f0ddcdbfac2 1425-1442
+  s_4f0877e2acdcf0::t_e0e24d51d519bf 1199-1424,1443-1668,1670-1673,1676-1705,1707,1709-1875,1877-1892,1894-1907,1909-1921,1923-1927
+  s_4f0877e2acdcf0::t_127862ab1b1092 1669,1674-1675,1706,1708,1876,1893,1908,1922,1928-1963
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_3c590953d5f0a1 1-2,4-5,11-14,19-27
+  s_4f0877e2acdcf0::t_194747e88dc8de 36
+  s_4f0877e2acdcf0::t_9cc14a005c7942 66-89
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_09b032be530eea 621-622,624
+  s_4f0877e2acdcf0::t_d892fb4d98f9ff 698-701
+  s_4f0877e2acdcf0::t_3762b38783f455 586-593
+  s_4f0877e2acdcf0::t_192b26c79e0c0f 585
+  s_4f0877e2acdcf0::t_3ebcd0d7dc9323 553-584,594-620,623,625-697,702-779,782-791,793-794,797-828,830-885
+  s_4f0877e2acdcf0::t_e299400db50412 780-781
+  s_4f0877e2acdcf0::t_4561309420418d 829
+  s_4f0877e2acdcf0::t_b190f5db57ede7 54-55,58-62,64-67,70
+  s_4f0877e2acdcf0::t_52bf496ad27379 2-3
+  s_4f0877e2acdcf0::t_ecef1e80533bfd 39-44
+  s_4f0877e2acdcf0::t_f6f0b3baa88ab4 792,795-796
+  s_4f0877e2acdcf0::t_d023b750126f6a 886
+docs/glossary.md
+  s_4f0877e2acdcf0::t_1873b5ee7c5fa4 199
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_15c9cb15412f8a 7-8,29-31,42,99-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7c423b0dac936882cdbf5eb12d02f76f0c1f0d2d",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
