@@ -656,3 +656,20 @@ sizes itself. No design below was edited.
   in FluidiTy with the request to report it; the stable name `internal_fault` is added to the lists they match
   on.
 - **01b Mesh solids.** As contact, when it is planned again.
+
+## Grid names and limits as built (2026-11-20)
+
+- **Every plan and design that names them:** `grid::CellWidthsByLevel` is `CellWidthsBySizeLevel`,
+  `ComputeCellWidthsByLevel` is `ComputeCellWidthsBySizeLevel` (cell resize, step), and
+  `GridTables::same_level_blocks` is `same_size_level_blocks` (any module that walks the neighbour tables). The rule
+  behind it: an identifier or a test name says "SizeLevel", never a bare "Level".
+- **10 Step and 12 I/O (where a scene's frame is chosen).** A cell can be split only when each of its coordinates is
+  within `-(2^17 - 1)..2^17 - 1` at its own size level. With `L` size levels, only the size-level-0 cells from
+  `-(2^(19 - L) - 1)` to `2^(19 - L) - 1` can be split all the way: -7 to 7 with 16 size levels. So the frame's
+  origin is placed at (or just below) the domain's low corner or at its centre, never far from the scene, and the
+  scene check fails before the run, with a message about the domain's size, when the domain spans more than
+  `2^(20 - L) - 2` size-level-0 cells on an axis or lies outside that range. Otherwise the first sign is a
+  `kSiblingCellMissing` that names no cell.
+- **Every module that reads `grid::GridFailure`.** `other_cell` is also the big cell of a sibling failure, and
+  `cell` is `CellId{0}` when the missing small cell lies outside the coordinate range; a message that prints `cell`
+  must handle that case.

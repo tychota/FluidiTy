@@ -84,7 +84,12 @@ inline constexpr int kMaxSizeLevels = 16;        // NEW. 4 bits in an id.
 inline constexpr int kBlockWidthInCells = 4;     // NEW. Ported value; tuning it is out of scope.
 inline constexpr int kCellPlacesPerBlock = 64;   // NEW. 4 x 4 x 4.
 inline constexpr int kFacePlacesPerBlock = 240;  // NEW. 3 axes x (5 planes x 4 x 4).
-inline constexpr int kMaxCoord = (1 << 18) - 1;  // NEW. Coordinates fit 19 signed bits at every level.
+inline constexpr int kMaxCoord = (1 << 18) - 1;  // NEW. Coordinates fit 19 signed bits at every size level.
+// What the range allows (as built, 2026-11-20): a cell can be split only when each coordinate is within
+// -(2^17 - 1)..2^17 - 1 at its own size level, so that its 8 small cells are in range. A cell of size level 1 or more
+// at -kMaxCoord is therefore never valid, and with all 16 size levels in use only the size-level-0 cells from -8 to
+// 7 can be split down to size level 15 (the one at -8 only away from its low corner). The scene's frame origin is
+// placed so that its cells stay far from the limits (step and I/O designs).
 
 struct CellCoord { std::int32_t x, y, z; };      // DECIDED. In cells of the cell's own size level.
 enum class SizeLevel : std::uint8_t {};          // DECIDED word. 0 is the biggest cell.
@@ -154,7 +159,7 @@ struct GridTables {                               // NEW.
   GridVersion version;
   std::uint32_t block_count;                      // Blocks of this version. Every array below is read up to it.
   const CellBlockId* block_ids;                   // [block_count], in the fixed order.
-  const std::uint32_t* same_level_blocks;         // [block_count * 27], (dz, dy, dx) order, kNoIndex if none.
+  const std::uint32_t* same_size_level_blocks;         // [block_count * 27], (dz, dy, dx) order, kNoIndex if none.
   const std::uint32_t* bigger_block;              // [block_count], kNoIndex at level 0.
   const std::uint32_t* smaller_blocks;            // [block_count * 8], by cell_eighth of the block.
   const CellState* cell_states;                   // [block_count * 64].
@@ -223,7 +228,9 @@ enum class GridError : std::uint8_t {  // NEW. One enum for the module.
 struct GridFailure {              // NEW. DECIDED shape (A2).
   GridError error = GridError::kNone;
   CellId cell{};                  // First failing cell in fixed order. Zero when unused.
-  CellId other_cell{};            // The second cell of an overlap or a size-step break. Zero when unused.
+  CellId other_cell{};            // The second cell of an overlap or a size-step break; the big cell of a sibling
+                                  // failure (then `cell` is the missing small cell, or CellId{0} when that small
+                                  // cell lies outside the coordinate range). Zero when unused.
   std::uint64_t magnitude = 0;    // NEW (A58, reconcile item 31). kOutOfMemory: bytes asked. Zero otherwise.
 };
 // The error value of every std::expected in this module is GridFailure (A2).
@@ -375,7 +382,7 @@ struct GridBuildStatus {        // The only thing a grid operation on the GPU re
   std::uint64_t failure_key;    // kNoFailureKey, or (step << 56) | (position << 8) | detail (5.1 item 9).
   GridError error;              // kNone on success; else the failure's error.
   CellId cell;                  // GridFailure::cell; zero when unused.
-  CellId other_cell;            // GridFailure::other_cell; zero when unused.
+  CellId other_cell;            // GridFailure::other_cell (also the big cell of a sibling failure); zero when unused.
   std::uint32_t cell_blocks;    // Blocks built (grid or piece); later kernels read it as their count.
   std::uint32_t split_cells;    // Split cells added at step P7; later kernels read it. The CPU ignores it.
   std::uint32_t result_count;   // FindBorderBlocks: entries found. Otherwise 0.
@@ -823,13 +830,13 @@ struct CellSizeSettings {                     // NEW (A41). Chosen once per scen
   std::uint32_t min_merge_wait_steps = 8;     // Committed steps the merge test holds without a break.
   std::uint32_t max_cell_splits_per_resize = 1u << 16;   // Limit. More wanted splits wait.
 };
-struct CellWidthsByLevel {                    // NEW. m. width[l] = ComputeCellWidth(frame, l), computed once on the CPU.
+struct CellWidthsBySizeLevel {                    // NEW. m. width[l] = ComputeCellWidth(frame, l), computed once on the CPU.
   double width[kMaxSizeLevels];               // Compared, never recomputed with log2 or pow on either processor.
   std::uint8_t size_level_count = 1;
 };
 // NEW (plan decision, grid plan Task 13a). Fills width[l] for l < frame.size_level_count, 0 beyond: the one place
 // the table is filled.
-CellWidthsByLevel ComputeCellWidthsByLevel(GridFrame frame);
+CellWidthsBySizeLevel ComputeCellWidthsBySizeLevel(GridFrame frame);
 struct CellSizeFacts {                        // NEW (A41, moved). What the rule reads about one active cell.
   double cell_width = 0;                      // m.
   double depth_below_surface = 0;             // m. 0 at the surface; +infinity beyond reach. NEW (A66): a negative
@@ -852,11 +859,11 @@ double ComputeReferenceSpeed(double largest_liquid_speed, double gravity_size, d
 // w_min where touches_air_pocket, wants_smallest_cells, or depth_below_surface < surface_reach_in_cell_widths * w_min
 // (the cells within 8 smallest widths of the surface, A61: the factor does not reach them in the first version). An infinite fact gives an
 // infinite term, never NaN. No FMA contraction (strict rounding of the shared headers).
-double ComputeWantedCellWidth(const CellSizeSettings& settings, const CellWidthsByLevel& widths,
+double ComputeWantedCellWidth(const CellSizeSettings& settings, const CellWidthsBySizeLevel& widths,
                               double reference_speed, const CellSizeFacts& facts);
 // The biggest level (smallest index) whose width <= wanted_width, by comparison with widths.width;
 // size_level_count - 1 when wanted_width is below every width.
-SizeLevel ComputeWantedSizeLevel(const CellWidthsByLevel& widths, double wanted_width);
+SizeLevel ComputeWantedSizeLevel(const CellWidthsBySizeLevel& widths, double wanted_width);
 // A cell that is not in the committed grid (stage ChooseActiveCells): the level of the nearest committed active
 // cell (FindCellAt probes at position + {-1,0,1}^3 * biggest width, nearest centre, ties in fixed cell order) plus
 // one, capped at smallest_size_level; smallest_size_level when none is found. This is the rule above for a new cell:
@@ -1052,7 +1059,9 @@ and weights.
    per block. P10 cell states, one thread per place and per sorted entry, then `ComputeCoveredCellState`. P11
    face piece kinds, one thread per face place, grid-stride like every other step; a thread adds up its face pieces
    and issues one integer `atomicAdd`. P7 ends by writing `CellId{0}` to every place from `n + split_cells` to the
-   sort count, so the sort of P8 never reads a cell of the build before (plan revision 2026-11-19). P12 counts and status; one `ReadBuffer` of
+   sort count, so the sort of P8 never reads a cell of the build before (plan revision 2026-11-19). P12 counts and status: one thread names the failure with the shared `ComputeFailureCells(frame, input cells,
+   input count, sorted cells, count, key)`, which handles step 1 (the input id as given) as well as steps 2 to 6, and
+   which the CPU builder calls too (as built, 2026-11-20); one `ReadBuffer` of
    `GridBuildStatus`, the only transfer. Corner places need no table.
    **First failure, both processors:** the smallest key `(step << 56) | (position << 8) | detail`: step 1 id
    checks (position = input index), 2 overlaps, 3 siblings, 4 size-step rule (position = place in fixed cell
@@ -1254,7 +1263,7 @@ widths of the surface (`depth < 8 w_min`, A61), where it stays `w_min`; the look
 `w_min`. A new cell borders air, so its depth is 0 and its wanted width `w_min` (A61); `ComputeNewCellSizeLevel`
 gives it the nearest committed cell's level plus one, capped at the smallest, which keeps the size-step rule
 against the cell it grew from, and the next resize refines it to `w_min`. Levels come from comparing the wanted
-width with `CellWidthsByLevel`, never from `log2`; every term is a local read and exact min and max, so CPU and GPU,
+width with `CellWidthsBySizeLevel`, never from `log2`; every term is a local read and exact min and max, so CPU and GPU,
 and any batch cut, give the same bytes. The merge hysteresis, the held gradient and the curvature term are cell
 resize's (the last "later").
 
@@ -1312,7 +1321,7 @@ Analytic, CPU (label `cpu`), discrete results compared exactly:
 | `BuildGrid, AnyInputOrder_GivesSameTables` | 200 random valid grids, ids shuffled | identical bytes |
 | `BuildGrid, EveryCellSide_IsCoveredOnce` | 200 random valid grids, up to 4 levels | for every active cell and side, piece areas sum to the cell's face area (exact: powers of two) |
 | `BuildGrid, ClosedSurface_AreasCancel` | same grids | per cell, sum over pieces of `+-area * axis` is exactly zero |
-| `CheckSizeStepRule, CornerTouchTwoLevelsApart_IsSizeStepRuleBroken` | level 0 cell and a level 2 cell touching at a corner | `kSizeStepRuleBroken`, both ids reported; same for edge and face |
+| `CheckSizeStepRule, CornerTouchTwoSizeLevelsApart_IsSizeStepRuleBroken` | level 0 cell and a level 2 cell touching at a corner | `kSizeStepRuleBroken`, both ids reported; same for edge and face |
 | `BuildGrid, LoneSmallCell_IsSiblingCellMissing` | 7 of 8 siblings | `kSiblingCellMissing` |
 | `CheckSizeStepRule, BadIdAfterRepeat_IsBadInputOfFirstBadId` NEW (A17) | input `{a, a, bad1, bad2}` | `kBadInput` naming `bad1` (step 1 outranks step 2; input order within step 1) |
 | `ToCellSortKey, ThreePasses_GiveComesBeforeOrder` NEW (A17) | 10,000 random ids, levels 0..3 | the three stable passes give the `ComesBefore` order |
@@ -1368,7 +1377,7 @@ smallest level 4, far facts unless named):**
 
 | Test | Setup | Expected |
 |---|---|---|
-| `ComputeCellWidthsByLevel, EqualsComputeCellWidthPerLevel` | frame 1 m, 5 levels | bit for bit; 0 beyond |
+| `ComputeCellWidthsBySizeLevel, EqualsComputeCellWidthPerLevel` | frame 1 m, 5 levels | bit for bit; 0 beyond |
 | `ComputeWantedCellWidth, SurfaceCell_IsSmallest` | depth 0, also with distance 10, factor 4 (A78) | 0.0625 exactly |
 | `ComputeWantedCellWidth, UniformTranslation_NoShearSplit` | gradient 0, `U_ref` 5 | 1.0, level 0 |
 | `ComputeWantedCellWidth, NothingWithinReach_IsBiggestWidth` | gradient 1e-300; depth `DBL_MAX` | 1.0, never NaN |
@@ -1376,11 +1385,11 @@ smallest level 4, far facts unless named):**
 | `ComputeWantedCellWidth, ShearTerm_IsShearFactorTimesSpeedOverVelocityChange` | frame 0.5 m, 6 levels, gradient `sqrt(2) x 10`, `U_ref` 1 | 0.0176776695296637 within 1e-15 relative; level 5 |
 | `ComputeWantedCellWidth, PocketOrGas_IsSmallest` | flags with depth 100 | 0.0625 |
 | `ComputeWantedCellWidth, FactorOne_SameBitsAsNoFactor`, `..., FactorHalf_HalvesDeepWidth`, `..., FactorTwo_DoublesDeepWidth`, `..., FactorTwoNearSurface_IsSmallest` (A78, A79) | factor 1 over 10,000 fact sets; depth 1.0 with factor 0.5; with 2; depth 0.25 with 2 | bit for bit; 0.0625; 0.25; 0.0625 |
-| `ComputeWantedSizeLevel, WidthEqualToALevel_GivesThatLevel`, `..., BelowSmallestWidth_GivesSmallestLevel` | 0.125, `nextafter(0.125, 0)`, 0.2, 5; 0.01 | 3, 4, 3, 0; 4 |
+| `ComputeWantedSizeLevel, WidthEqualToASizeLevel_GivesThatSizeLevel`, `..., BelowSmallestWidth_GivesSmallestSizeLevel` | 0.125, `nextafter(0.125, 0)`, 0.2, 5; 0.01 | 3, 4, 3, 0; 4 |
 | `ComputeReferenceSpeed, SlowLiquid_UsesGravityWaveSpeed` | (0.1, 9.81, 1); (5, 9.81, 1) | `sqrt(9.81)` bit for bit; 5 |
 | `ComputeCellSizeFactorTable, QuarterDoublings_AreExact` (A78) | | `factor[24] == 1`, `factor[28] == 2`, `factor[20] == 0.5`, `factor[0] == 0x1p-6` exactly |
 | `ComputeCellSizeFactorCode, NoVolume_IsZero`, `..., SmallCell_ReadsItsSample`, `..., BigCell_IsSmallestCodeOverItsBox`, `..., OutsideTheVolume_IsZero` (A78, A79) | frame 1 m, 5 levels, spacing 4 smallest cells (8 x 4 x 4 samples), a one-sample-wide line of code -8 at sample x 5 | 0; the sample's code; -8 for the level-0 cell holding x 5, 0 for the other; 0 |
-| `ComputeNewCellSizeLevel, NextToBigCell_IsOneLevelSmaller` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
+| `ComputeNewCellSizeLevel, NextToBigCell_IsOneSizeLevelSmaller` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
 | `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest` (NEW, A66) | depth `-0.03` alone; distance `-0.03` alone; depth `-0.03` with factor 4 | 0.0625; 0.0625; 0.0625, never NaN |
 | `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (`gpu`) | 10,000 fact sets from a fixed formula | identical bytes, levels and factor codes (`ComputeCellSizeFactorCode` on the fixture above) |
 | `ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu` (`gpu`) | random 3-level grid on both processors, 10,000 positions | identical levels |
@@ -1415,7 +1424,7 @@ on the GPU, not uploaded.
 
 | Test | Expected |
 |---|---|
-| `CheckSizeStepRule, OnGpu_EqualsCpu` | the corner lists, `OneLevelApart`, the empty list, 200 shuffled random grids: identical results |
+| `CheckSizeStepRule, OnGpu_EqualsCpu` | the corner lists, `OneSizeLevelApart`, the empty list, 200 shuffled random grids: identical results |
 | `CheckSizeStepRule, OnGpuSeveralFailures_SameFirstFailureAsCpu` | 500 random grids with 1 to 4 mutations (repeat, drop, add a big cell, add a two-levels-smaller cell with siblings, clear bit 63, coordinate `kMaxCoord + 1`), with and without the sibling check: `GridFailure` equal to the CPU's |
 | `CheckSizeStepRule, OnGpuTwice_GivesIdenticalFailure`, `..., OnGpu_AllocatesNothing` (A30 removed `OnGpuBuffersWithCpuList_IsBadInput` and `ComputeGridCounts, GpuBufferListInOneArgumentForm_IsBadInput`) | as named (GPU free bytes unchanged after the first call) |
 | `BuildGrid, OnGpu_EqualsCpuTablesBitForBit` | empty list, one cell, the two-size fixture, 200 shuffled random grids into GPU buffers for 4,096 blocks: version, counts and the used part of all five tables equal |
@@ -1497,7 +1506,7 @@ the old list: cited by author and year only (decision 11).
 | (none) | `GridBuilderBuffers` (`BuildGridBuilderBuffers`), `BuilderBuffersSharing`: the builder buffers lent to several `GridBuffers` | NEW (reconcile) |
 | replaced 2026-11-14 (A29, A31): `ReleaseBuffers`, `GridScratch`, `BuildGridScratch`, `GridScratchSize`, `ComputeGridScratchSize`, `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`, `scratch_sharing`, "build scratch", the allocating `BuildGrid(inputs, settings)` | `TakeBuffers`, `GridBuilderBuffers`, `BuildGridBuilderBuffers`, `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize`, `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`, `builder_buffers_sharing`, "builder buffers" (prose: "working buffers"), test-only `BuildTestGrid` | owner answers A29, A31 |
 | `cell_resize::CellSizeSettings`, `cell_resize::CellSizeFacts`, `cell_resize::ComputeWantedCellWidth`, `cell_resize::ChooseCellSize`, `step::StepCallbacks::choose_cell_size` | `grid::CellSizeSettings`, `grid::CellSizeFacts`, `grid::ComputeWantedCellWidth` (moved); the callback is removed: stage 2 calls `grid::ComputeNewCellSizeLevel` | owner answers A41, A61; `plan-decisions.md` item 2 |
-| (none) | `CellWidthsByLevel`, `ComputeCellWidthsByLevel`, `ComputeReferenceSpeed`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, (A78, A79) `CellSizeFactorTable`, `ComputeCellSizeFactorTable`, `RefinementFactors`, `ComputeCellSizeFactorCode`; glossary rows `wanted cell width`, `reference speed`, `cell size factor`, `refinement volume` | NEW (A41, A61–A63; A78, A79 replaced `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`) |
+| (none) | `CellWidthsBySizeLevel`, `ComputeCellWidthsBySizeLevel`, `ComputeReferenceSpeed`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, (A78, A79) `CellSizeFactorTable`, `ComputeCellSizeFactorTable`, `RefinementFactors`, `ComputeCellSizeFactorCode`; glossary rows `wanted cell width`, `reference speed`, `cell size factor`, `refinement volume` | NEW (A41, A61–A63; A78, A79 replaced `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`) |
 | memory rows `prefix sum ends`, `order buffers, fixed part`, `border marks end`, `border order buffers, fixed part` | folded into the one entry of their array (`order`, `second order`, `order buffers`, `border marks`, `border order buffers`) | A58, reconcile ruling |
 | `kGridMemoryEstimate` (first draft) | `BuildGridMemoryEstimate` | NEW (every module's `Build<Module>MemoryEstimate`) |
 | `BlockIndex3D` | `CellBlockId` | DECIDED (`cell_block`, `id`) |
@@ -1754,11 +1763,11 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     buffers", fixed part `fixed_bytes + bytes_per_item`. Source: `reconcile-todo.md` items 20 and 28.
 
 36. **(A41, A61, A62, A63) The shared cell size rule is the grid's.** `cell_size_rule.h` (S) holds
-    `CellSizeSettings` and `CellSizeFacts` (moved from cell resize), `CellWidthsByLevel`, `ComputeReferenceSpeed`,
+    `CellSizeSettings` and `CellSizeFacts` (moved from cell resize), `CellWidthsBySizeLevel`, `ComputeReferenceSpeed`,
     `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, ~~`CellSizeRegion`,
     `ArtistCellSizes`, `ComputeArtistSizeLevel`~~ (replaced by the refinement volume, decision below, A78, A79) (3.8, 5.9), built in grid plan Task 13a; the grid owns it because
     the step and cell resize both read it and both come after grid. The `ChooseCellSize` callback is removed
-    (decision 7 amended). Plan decisions: `ComputeCellWidthsByLevel`; `artist_size_level` 0 means none; regions
+    (decision 7 amended). Plan decisions: `ComputeCellWidthsBySizeLevel`; `artist_size_level` 0 means none; regions
     inclusive; ties of the new-cell probe by `ComesBefore`. Source: owner answers A41, A61, A62, A63;
     `plan-decisions.md` "Owner answers A40–A64 applied", item 2.
 37. **(A58) One reserved block per run.** Every builder (`BuildGridBuilderBuffers`, `BuildGridBuffers`,
