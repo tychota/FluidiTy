@@ -1,0 +1,38 @@
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_89da338e5a6d56 285-319
+  s_4f0877e2acdcf0::t_54b3e78f5aa33f 26-27
+  s_4f0877e2acdcf0::t_f024999dc11c8e 34-38,40
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_faf0b95f5dfefa 400-494
+  s_4f0877e2acdcf0::t_89950dec10c4c4 100-103,105,107-108,119-121
+  s_4f0877e2acdcf0::t_1ea9b89902d0dc 149-229
+  s_4f0877e2acdcf0::t_5f22eaa2862ea2 4
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_3aa8eb6e3ca0fe 32
+  s_4f0877e2acdcf0::t_0a234cfcd59329 30-31
+  s_4f0877e2acdcf0::t_d847be17d1ab89 28-29
+native/fluidity/grid/grid_cell_count_test.cc
+  s_4f0877e2acdcf0::t_a18a088ff3ae2e 1-419
+  s_4f0877e2acdcf0::t_cd45d23aa5703b 420-421
+native/fluidity/grid/grid_out_of_memory_test.cc
+  s_4f0877e2acdcf0::t_6e849d76dcd014 1
+  s_4f0877e2acdcf0::t_c532a6893644d6 156-220
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_22c4280b1d0067 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1eecaeb95403f393c51e1b85e031ed4dd575dc39",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
