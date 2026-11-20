@@ -1,12 +1,13 @@
-// Proves that the shared headers grid/grid_ids.h, grid/grid_tables.h and grid/weight_curve.h compile as GPU code:
+// Proves that the shared headers grid/grid_build_status.h, grid/grid_ids.h, grid/grid_tables.h and
+// grid/weight_curve.h compile as GPU code:
 // label no_gpu.
 //
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
 // code for every function of grid_ids.h and weight_curve.h, the helpers those functions call included, and for
-// CellBlockRange, GridFrame, CellState, FacePieceKind and WeightCurveValue read and written by GPU code. The integer
-// results go to `results`, and the double results of weight_curve.h go to `double_results`. The CUDA compiler
-// generates GPU code for a shared function only where GPU code calls it, so each function is called here once. A
-// shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
+// CellBlockRange, GridFrame, CellState, FacePieceKind, WeightCurveValue and GridBuildStatus read and written by GPU
+// code. The integer results go to `results`, and the double results of weight_curve.h go to `double_results`. The CUDA
+// compiler generates GPU code for a shared function only where GPU code calls it, so each function is called here once.
+// A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
 // function's address, which needs no GPU.
 
 #include <gtest/gtest.h>
@@ -14,6 +15,7 @@
 #include <cstdint>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/weight_curve.h"
@@ -30,6 +32,7 @@ __global__ void ComputeWithEverySharedGridFunction(
     GridFrame frame,
     const CellState* cell_states,
     const FacePieceKind* face_piece_kinds,
+    GridBuildStatus* build_status,
     std::uint64_t* results,
     double* double_results
 ) {
@@ -60,6 +63,12 @@ __global__ void ComputeWithEverySharedGridFunction(
   results[result_index++] = frame.biggest_cell_width > frame.origin.z ? 1 : 0;
   results[result_index++] = cell_states[place] == CellState::kActive ? 1 : 0;
   results[result_index++] = face_piece_kinds[place] == FacePieceKind::kBetweenCells ? 1 : 0;
+  // grid_build_status.h: the record, read and written by GPU code.
+  build_status->failure_key = values[0] == 0 ? kNoFailureKey : build_status->failure_key;
+  build_status->error = GridError::kBadInput;
+  build_status->cell = cell;
+  build_status->active_cells_per_size_level[values[0] & 15] = build_status->face_pieces + build_status->cell_blocks;
+  results[result_index++] = build_status->failure_key + static_cast<std::uint64_t>(build_status->error);
   // weight_curve.h: the curve, the spread and the constants.
   // weight_curve.h writes doubles, so they go to their own buffer and no double is converted to an integer.
   int double_result_index = 0;
