@@ -410,7 +410,7 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
   (Task 22b). Two buffers on different processors break a documented `Requires:` precondition, checked by
   `assert` in debug builds; it is never an error value.
 - **Errors.** A failed check writes nothing. After `kRunOnCallFailed` the outputs are unspecified and the run
-  stops. `kOutOfMemory` comes only from the four builders. A memory piece that does not fit is an error in every
+  stops. `kOutOfMemory` comes from the four builders and from the one form that makes its own copy of a list (`CheckSizeStepRule` on a span, which allocates without throwing). A memory piece that does not fit is an error in every
   build, debug and release alike (`BufferError::kRunMemoryTooSmall`); no test of it is skipped in a debug build.
 - **Exactness.** Discrete outputs (every table, count and failure) are equal on CPU and GPU. Floating-point
   results agree within the CPU-versus-GPU tolerance below unless a header promises the same bits.
