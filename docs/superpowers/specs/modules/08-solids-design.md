@@ -1092,7 +1092,7 @@ solid-against-solid contact exists. A free solid may leave the liquid and fall f
    than the analytic distance the corner is owned by the nearest particle (ties: lower `particle_id`) and
    `corner_velocity = velocity.for_next_step + fitted_velocity_change * (corner - position)`. Only particles
    within `kCoverageCapInCells * w + particle_radius` can matter, so the search reads the cell block of the
-   corner and its 26 same-level neighbours with their bigger and smaller blocks. `CheckSolidsCanRun` rejects a
+   corner and its 26 same-size-level neighbours with their bigger and smaller blocks. `CheckSolidsCanRun` rejects a
    `particle_radius` above one block width minus that cap at the smallest cell width (`(4 -
    kCoverageCapInCells) * smallest_cell_width`), which is what makes the 27 blocks enough (report
    CUDA 10.2). The exhaustive scan stays as a test oracle.
