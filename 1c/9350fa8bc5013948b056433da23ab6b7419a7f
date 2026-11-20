@@ -1,0 +1,27 @@
+docs/method-paper/figures/grid_parallel_build.typ
+  s_4f0877e2acdcf0::t_0cd3da84dd39f4 96
+  s_4f0877e2acdcf0::t_1d8439b771665a 1,4-91,98-149
+  s_4f0877e2acdcf0::t_993ccf5768ac42 2-3,92-95,97
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_732b7a7ad0f6fc 2119-2121,2134-2135,2394-2396,2438-2447,2477-2480,2497-2499,2506-2509
+  s_4f0877e2acdcf0::t_98a735e348296c 242-243,2402-2403,2408-2413,2429-2431,2453-2454,2488-2489,2515,2525-2526
+  s_4f0877e2acdcf0::t_9a3468d0ecfff3 35,2110-2118,2124-2130,2133,2136-2137,2144-2146,2378-2393,2397-2401,2404-2407,2414-2428,2432-2437,2448-2452,2455-2474,2481-2487,2490-2496,2500-2505,2510-2514,2516-2524,2527-2528
+docs/method-paper/pseudocode.typ
+  s_4f0877e2acdcf0::t_40f897f5179aa3 16-17,20,42,56-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c9350fa8bc5013948b056433da23ab6b7419a7f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
