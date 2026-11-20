@@ -1,0 +1,25 @@
+native/fluidity/grid/grid_buffers_test.cc
+  s_4f0877e2acdcf0::t_2d9706df888bfb 560-587
+native/fluidity/grid/grid_memory_estimate.h
+  s_4f0877e2acdcf0::t_d85c9d3891c65e 34-35
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_766a0e39ed2e16 45,90-95,116-117,119,140-142,146-148,164-165,236
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_6a07ef28ceec0f 6-7,376-380,388-389,399-400,406-407,410-421,434-435,445,457-460,462,519-523,619-620,622-623
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "36178bd0b4d13771755c64fe418c0a0742ebaf30",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
