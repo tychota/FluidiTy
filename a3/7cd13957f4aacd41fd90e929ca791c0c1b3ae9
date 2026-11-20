@@ -1,0 +1,30 @@
+docs/superpowers/specs/modules/02-grid-design.md
+  s_4f0877e2acdcf0::t_e5f2a06d3aa367 1772-1773
+  s_4f0877e2acdcf0::t_4dbac28a0abfac 196-197,215-220
+docs/superpowers/plans/2026-11-14-rebuild-02-grid.md
+  s_4f0877e2acdcf0::t_4dbac28a0abfac 236-255,443-449,623-624,631-632,635,637,640-641,922-926,953-955,1351-1352,1484-1486,1527-1530,1625,1675,2377-2378,2506-2507,2520-2521,2667-2668,2845
+docs/superpowers/specs/modules/00-how-to-write-a-module-design.md
+  s_4f0877e2acdcf0::t_e5f2a06d3aa367 60-64
+docs/superpowers/specs/modules/owner-answers.md
+  s_4f0877e2acdcf0::t_660ec2bdc82407 118
+docs/superpowers/specs/modules/00-how-to-write-a-module-plan.md
+  s_4f0877e2acdcf0::t_e5f2a06d3aa367 80-84
+docs/superpowers/specs/modules/changes-to-apply.md
+  s_4f0877e2acdcf0::t_e5f2a06d3aa367 619-656
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a37cd13957f4aacd41fd90e929ca791c0c1b3ae9",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
