@@ -25,7 +25,7 @@
 // Owns:    the entry names and item bytes of BuildGridMemoryEstimate, GridArray, FindGridArray,
 //          ComputeIsBuilderBuffersArray, ComputeIsGridArrayOnProcessor, CheckGridArrayEntries, ToGridFailure,
 //          GridBuffersArrays, GridBuilderBuffersArrays, ToGridBuffersArrays, ToGridBuilderBuffersArrays,
-//          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries
+//          ComputeHasLoanOf, BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, BufferError (base/buffer.h), MemoryEstimateEntry
 //          (base/memory_count.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h), OrderBuffers
 //          (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h), GridFailure (grid/grid_error.h),
@@ -170,6 +170,12 @@ const GridBuffersArrays& ToGridBuffersArrays(const GridBuffers& buffers);
 // The arrays of `builder_buffers`. The grid module's code gets at them only this way.
 GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(GridBuilderBuffers& builder_buffers);
 const GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(const GridBuilderBuffers& builder_buffers);
+
+// Computes whether `buffers` hold a loan counted by the lent count of `builder_buffers`: the count the buffers return
+// their loan to is not null and is the one builder_buffers own. It fails for other builder buffers, and for lent ones
+// that were moved from or assigned to, since the count moves or is left behind with the loan. It reads both objects,
+// so builder_buffers must still exist.
+bool ComputeHasLoanOf(const GridBuffers& buffers, const GridBuilderBuffers& builder_buffers);
 
 // BuildGridBuilderBuffers and BuildGridBuffers (grid/staggered_grid.h) with the estimate given, so a test can pass
 // one the builders do not know. The public forms pass BuildGridMemoryEstimate(run_on, 1, max_cell_blocks). Same

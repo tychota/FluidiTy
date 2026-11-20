@@ -478,6 +478,10 @@ const GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(const GridBuilderBuff
   return builder_buffers.arrays_;
 }
 
+bool ComputeHasLoanOf(const GridBuffers& buffers, const GridBuilderBuffers& builder_buffers) {
+  return buffers.lent_count_ != nullptr && buffers.lent_count_ == builder_buffers.lent_count_.get();
+}
+
 std::expected<GridBuilderBuffers, GridFailure>
 BuildGridBuilderBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory& run_memory) {
   const std::vector<MemoryEstimateEntry> estimate = BuildGridMemoryEstimate(run_on, 1, max_cell_blocks);

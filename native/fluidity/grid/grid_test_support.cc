@@ -353,6 +353,20 @@ void ApplyFixedShuffle(std::vector<CellId>& cells, std::uint64_t seed) {
   }
 }
 
+const std::vector<std::vector<CellId>>& BuildShuffledRandomGrids() {
+  static const std::vector<std::vector<CellId>> shuffled_grids = [] {
+    std::vector<std::vector<CellId>> grids;
+    grids.reserve(kRandomGridCount);
+    for (std::uint64_t seed = 1; seed <= kRandomGridCount; ++seed) {
+      std::vector<CellId> cells = BuildRandomGridCells(seed, 4, 3);
+      ApplyFixedShuffle(cells, seed + 1000);
+      grids.push_back(std::move(cells));
+    }
+    return grids;
+  }();
+  return shuffled_grids;
+}
+
 std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_level_count) {
   // Each round splits every cell that touches a cell two or more size levels smaller. A split makes new such pairs
   // only with cells bigger still, so the rounds end.

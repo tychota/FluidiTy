@@ -24,8 +24,8 @@
 //   size-step closure  the list after every active cell two or more size levels bigger than a cell it touches has
 //                    been split, again and again, until none is left
 //   window quarter   n_p of the method paper: the quarter of its cell that holds a position, 0..3 on each axis
-// Owns:    ToUniformIndex, ToUnitDouble, BuildRandomGridCells, ApplyFixedShuffle, BuildSizeStepClosure, UnitBox,
-//          ToUnitBox, GeometricFacePiece, GeometricGrid
+// Owns:    ToUniformIndex, ToUnitDouble, BuildRandomGridCells, ApplyFixedShuffle, kRandomGridCount,
+//          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid
 // Uses:    Axis (base/axis.h), Vec3 (base/vec3.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h),
 //          GridFrame (grid/grid_tables.h), CPU-only guard (base/cpu_only.h)
 // Implementation uses: ToCellId, ToCellCoord, ToSizeLevel, ToFacePieceId, ComputeSmallCell,
@@ -87,6 +87,17 @@ std::vector<CellId> BuildRandomGridCells(std::uint64_t seed, int size_level_coun
 //   ToUniformIndex(raw, i + 1), one raw number per swap. Papers call it the Fisher-Yates shuffle.
 // Example: a list of 0 or 1 cells takes no number and is unchanged.
 void ApplyFixedShuffle(std::vector<CellId>& cells, std::uint64_t seed);
+
+// The number of lists BuildShuffledRandomGrids holds.
+inline constexpr std::uint64_t kRandomGridCount = 200;
+
+// Builds the random grids that grid tests share, once per test program: for each seed s of 1..kRandomGridCount,
+// entry s - 1 is BuildRandomGridCells(s, 4, 3) shuffled with ApplyFixedShuffle(cells, s + 1000). Each list is valid
+// and in no particular order; 4 size levels in a box of 3 x 3 x 3 size-level-0 cells give at most 252 cell blocks.
+//
+// Method: a function-local static, built on the first call, so the tests of one program build the lists once.
+// Example: entry 0 is the list of seed 1, shuffled with seed 1001.
+const std::vector<std::vector<CellId>>& BuildShuffledRandomGrids();
 
 // Builds the size-step closure of a list: splits every active cell two or more size levels bigger than an active cell
 // it touches, by a side, an edge or a corner, into its 8 small cells, and repeats until no such cell is left. The

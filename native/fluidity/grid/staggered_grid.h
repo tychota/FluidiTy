@@ -21,18 +21,21 @@
 //                    buffers of the stable order
 //   room             the number of cell blocks an array has memory for: max_cell_blocks
 //   memory piece     the bytes of one buffer inside a RunMemory's block (base/run_memory.h)
-// Owns:    kMaxCellBlocksLimit, GridSettings, GridCounts, BuilderBuffersSharing, GridBuilderBuffers,
+// Owns:    kMaxCellBlocksLimit, GridSettings, GridInputs, GridCounts, BuilderBuffersSharing, GridBuilderBuffers,
 //          BuildGridBuilderBuffers, GridBuilderBuffersSize, ComputeGridBuilderBuffersSize, GridBuffers,
-//          BuildGridBuffers
-// Uses:    CPU-only guard (base/cpu_only.h), MemoryEstimateEntry (base/memory_count.h), RunMemory
-//          (base/run_memory.h), RunOn (base/run_on.h), GridBuffersArrays, GridBuilderBuffersArrays,
-//          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries (grid/grid_buffers_internal.h), GridFailure
-//          (grid/grid_error.h), kMaxSizeLevels (grid/grid_ids.h)
+//          BuildGridBuffers, CheckSizeStepRule
+// Uses:    CPU-only guard (base/cpu_only.h), Buffer (base/buffer.h), MemoryEstimateEntry (base/memory_count.h),
+//          RunMemory (base/run_memory.h), RunOn (base/run_on.h), GridBuffersArrays, GridBuilderBuffersArrays,
+//          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries, ComputeHasLoanOf
+//          (grid/grid_buffers_internal.h), GridFailure (grid/grid_error.h), CellId, GridVersion, kMaxSizeLevels
+//          (grid/grid_ids.h), GridFrame (grid/grid_tables.h)
 // Implementation uses: CheckCanRunOn (base/check_can_run_on.h), ComputeMemoryBytes (base/memory_count.h),
 //          BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
-//          (grid/grid_memory_estimate.h)
-// Used by: the grid's builders and memory estimate, and the step, which chooses the room and owns the buffers
-// Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>
+//          (grid/grid_memory_estimate.h), BuildSortedCellList and the checks of a cell list (grid/grid_cell_checks.h)
+// Used by: the grid's builders and memory estimate, the step, which chooses the room and owns the buffers, and cell
+//          resize, which checks the lists it splits
+// Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>,
+//          <proc-build-grid>, <sec-parallel-build>
 
 #pragma once
 
@@ -45,12 +48,14 @@
 #include <memory>
 #include <span>
 
+#include "fluidity/base/buffer.h"
 #include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_tables.h"
 
 namespace fluidity::grid {
 
@@ -69,6 +74,19 @@ struct GridSettings {
   // A run's room comes from its plan, never from a constant.
   std::uint32_t max_cell_blocks = 0;
   RunOn run_on = RunOn::kCpu;  // The caller's choice. Never changed silently.
+};
+
+// What one build or check of a list of active cells needs. The list is the only description of the grid.
+// When active_cell_buffer is set it is the list, its first active_cell_buffer_count entries, and active_cells must be
+// empty; otherwise active_cells is the list. An empty list is a valid grid with no cells.
+// Example: a CPU caller passes {.frame = frame, .active_cells = cells, .version = {1}}; a GPU run passes a buffer of
+//   ids on the GPU and its count instead.
+struct GridInputs {
+  GridFrame frame;
+  std::span<const CellId> active_cells;  // A list in CPU memory, any order.
+  const Buffer<CellId>* active_cell_buffer = nullptr;  // Or a list in a buffer, any order.
+  std::uint32_t active_cell_buffer_count = 0;  // Entries of *active_cell_buffer used.
+  GridVersion version;  // 1 or more: the version of the grid before plus 1.
 };
 
 // What a built grid knows about its size, kept on the CPU. Everything the memory estimate needs from a grid.
@@ -141,6 +159,7 @@ class GridBuilderBuffers {
   );
   friend GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(GridBuilderBuffers& builder_buffers);
   friend const GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(const GridBuilderBuffers& builder_buffers);
+  friend bool ComputeHasLoanOf(const GridBuffers& buffers, const GridBuilderBuffers& builder_buffers);
 
   GridBuilderBuffers() = default;
 
@@ -231,6 +250,7 @@ class GridBuffers {
   );
   friend GridBuffersArrays& ToGridBuffersArrays(GridBuffers& buffers);
   friend const GridBuffersArrays& ToGridBuffersArrays(const GridBuffers& buffers);
+  friend bool ComputeHasLoanOf(const GridBuffers& buffers, const GridBuilderBuffers& builder_buffers);
 
   GridBuffers() = default;
 
@@ -264,5 +284,59 @@ class GridBuffers {
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <sec-run-memory>
 std::expected<GridBuffers, GridFailure>
 BuildGridBuffers(const GridSettings& settings, GridBuilderBuffers& builder_buffers, RunMemory& run_memory);
+
+// Checks a list of active cells in CPU memory: its ids, overlaps and the size step rule, but not the siblings, since
+// cell resize checks its lists while it splits cells and some siblings do not exist yet.
+//
+// Method: the frame first (finite origin, positive biggest cell width, 1 to 16 size levels). Then method paper
+//   <proc-build-grid> steps 1, 2 and 4: every id in input order, then a CPU copy of the ids sorted into the fixed order
+//   and checked for overlaps, then for the size step rule, each step over every position before the next. The failure
+//   reported is the first by step, then by position: the one the GPU's smallest failure key gives.
+// Example: with 3 size levels, size level 0 {0,0,0} and size level 2 {4,4,4} touch at a corner: kSizeStepRuleBroken,
+//   cell size level 2 {4,4,4}, other_cell size level 0 {0,0,0}. Size level 0 {0,0,0} beside size level 1 {2,0,0}
+//   passes, and so do 7 of the 8 small cells of one big cell. The list {a, a, b} where b has bit 63 clear is
+//   kBadInput naming b: step 1 comes before the overlap of step 2.
+// Requires: active_cells is in CPU memory.
+// Fails: kBadInput           a frame value as above, or more than 2^32 - 1 cells, which no 32-bit position indexes;
+//                            then the first id in input order
+//                            with bit 63 clear, bits 61..62 set, or a size level of size_level_count or more: cell =
+//                            that id as given
+//        kCoordOutOfRange    the first id in input order with a coordinate of kMaxCoord + 1: cell = that id
+//        kCellsOverlap       the first overlap in the fixed order: cell = the smaller or repeated cell, other_cell =
+//                            the bigger cell that holds it, or the same cell
+//        kSizeStepRuleBroken the first break in the fixed order: cell = the smaller cell, other_cell = the active cell
+//                            two or more size levels bigger that touches it
+//        kInternalFault      the failure found and the cells named for it disagree; zero cells. No input causes it.
+//        kOutOfMemory        the CPU copy of the ids could not be allocated; magnitude = its bytes, 8 per cell.
+//        Allocates one CPU copy of the ids, 8 B per cell, and writes nothing else.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
+std::expected<void, GridFailure> CheckSizeStepRule(GridFrame frame, std::span<const CellId> active_cells);
+
+// Checks the list of `inputs` as the span form does, on buffers.run_on(), allocating nothing: the lent builder
+// buffers' cell ids hold the sorted copy. The library has a CPU form of this check only (see kRunOnCallFailed). The
+// buffers hold no grid before or after; their contents become unspecified.
+//
+// Method: the input checks come first, in this order, and never take part in the order of failures: the frame, the
+//   version and the shape of the list (two lists, a count above its buffer), then the lent builder buffers, then the
+//   length, more than 64 * buffers.max_cell_blocks() cells, before any id is read. Then steps 1, 2 and 4 of
+//   <proc-build-grid> as the span form.
+// Example: grid buffers for 1 block and a list of 65 cells whose first id has bit 63 clear: kTooManyCellBlocks with
+//   cell and other_cell zero, not kBadInput. The same list with version 0 is kBadInput.
+// Requires: the list is on buffers.run_on(), a span in CPU memory, except an empty list, which has no processor;
+//   checked by assert in debug builds. The lent builder buffers still exist: builder buffers that were destroyed
+//   cannot be detected.
+// Fails: kBadInput           a frame value as for the span form; version 0; both lists given; active_cell_buffer_count
+//                            above the size of active_cell_buffer, or above 0 without one; a list that lies in the
+//                            lent builder buffers' cell ids; buffers without lent builder buffers, with builder
+//                            buffers other than the lent ones, or lent ones with less room than the buffers. Each of
+//                            these writes nothing. Then a bad id as for the span form.
+//        kTooManyCellBlocks  more than 64 * buffers.max_cell_blocks() cells, a list of any length; cell and other_cell
+//                            zero; nothing written
+//        kRunOnCallFailed    buffers.run_on() is the GPU: the library has no GPU form of this check, so after the
+//                            input checks the function reads no id and writes nothing
+//        kCoordOutOfRange, kCellsOverlap, kSizeStepRuleBroken as for the span form
+//        kInternalFault      as for the span form, or a size error from a copy of base/ after the sizes were checked
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
+std::expected<void, GridFailure> CheckSizeStepRule(const GridInputs& inputs, GridBuffers& buffers);
 
 }  // namespace fluidity::grid

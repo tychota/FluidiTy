@@ -692,6 +692,16 @@ TEST(ApplyFixedShuffle, SeedOne_GivesAPermutationThatDiffersFromSeedTwo) {
   EXPECT_NE(ToValues(seed_one), ToValues(input));
 }
 
+TEST(BuildShuffledRandomGrids, FirstAndLastEntries_AreTheirSeedsShuffled) {
+  const std::vector<std::vector<CellId>>& grids = BuildShuffledRandomGrids();
+  ASSERT_EQ(grids.size(), kRandomGridCount);
+  for (const std::uint64_t seed : {std::uint64_t{1}, kRandomGridCount}) {
+    std::vector<CellId> expected = BuildRandomGridCells(seed, 4, 3);
+    ApplyFixedShuffle(expected, seed + 1000);
+    EXPECT_EQ(ToValues(grids.at(seed - 1)), ToValues(expected)) << seed;
+  }
+}
+
 TEST(BuildRandomGridCells, AnySeed_KeepsSiblingsAndSizeStep) {
   for (std::uint64_t seed = 1; seed <= 100; ++seed) {
     const std::vector<CellId> cells = BuildRandomGridCells(seed, 4, 3);

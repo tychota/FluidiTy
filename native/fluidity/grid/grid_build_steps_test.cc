@@ -218,16 +218,14 @@ std::vector<CellId> BuildChainToSizeLevelFifteen(int missing_size_level_one_eigh
   return ToSortedCells(cells);
 }
 
-// The 200 random grids, each list shuffled and then sorted into the fixed order. Built once for the whole file, since
-// several tests read them; seed s is entry s - 1.
+// The 200 random grids of the test support, each list sorted into the fixed order. Built once for the whole file,
+// since several tests read them; seed s is entry s - 1.
 const std::vector<std::vector<CellId>>& BuildSortedRandomGrids() {
   static const std::vector<std::vector<CellId>> sorted_grids = [] {
     std::vector<std::vector<CellId>> grids;
-    grids.reserve(200);
-    for (std::uint64_t seed = 1; seed <= 200; ++seed) {
-      std::vector<CellId> cells = BuildRandomGridCells(seed, 4, 3);
-      ApplyFixedShuffle(cells, seed + 1000);
-      grids.push_back(ToSortedCells(cells));
+    grids.reserve(kRandomGridCount);
+    for (const std::vector<CellId>& shuffled_cells : BuildShuffledRandomGrids()) {
+      grids.push_back(ToSortedCells(shuffled_cells));
     }
     return grids;
   }();
