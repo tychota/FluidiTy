@@ -286,6 +286,20 @@ names and contracts.
 - **Lent builder buffers are checked before use**, in every build (Task 8, referred to by Tasks 9a, 9b, 10,
   11a, 11b, 24, 25).
 
+### Eleventh revision 2026-11-20: after the review of the shared table rules (Task 7b, built)
+
+- **A block without its bigger block** (a state no valid list produces) is reported, not left as `kAbsent`
+  states. Failure key step 7, position = the block's index: `ComputeBlockFaultKey` in `grid_build_steps.h`. The
+  CPU build takes it in step 6 and the GPU in P9 (integer `atomicMin`, as every keyed check); both name it with
+  `ComputeFailureCells`, which already gives `kInternalFault` and zero cells for a step above 6. No position or
+  cell is reported, so the two processors cannot differ (Tasks 9a, 10, 11b).
+- **Where the table layouts are defined:** on `GridTables` in `grid_tables.h`, once (Tasks 7b, 12, 24).
+- Step 7 is stated wherever the steps are listed: design 5.1 item 9; and Task 9a names the built places that
+  still said six (`grid_build_status.h`, `grid_build_steps.h`, the glossary row, the paper's "The first
+  failure").
+- Task 12: an id is made from a place only when it is active or split. Task 9a: its comparison with the checker
+  covers all 200 grids and says which block keeps a face piece of plane 4.
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -1146,7 +1160,8 @@ Load the same three skills.
   - `void FindBlockNeighbours(const CellBlockId* block_ids, std::uint32_t block_count, CellBlockIndex block,
     std::uint32_t* same_size_level_blocks, std::uint32_t* bigger_block, std::uint32_t* smaller_blocks)`: the 27, 1
     and 8 table entries of one block, by `FindSortedBlock`; a block coordinate outside the range has no block
-    (`kNoIndex`), decided before any id is made. Layouts, the one place they are defined:
+    (`kNoIndex`), decided before any id is made. The layouts are defined once, in the comments of `GridTables` in
+    `grid_tables.h` (the public type every module reads); this function follows them:
     `same_size_level_blocks[block * 27 + ((dz + 1) * 3 + (dy + 1)) * 3 + (dx + 1)]` (entry 13 is the block itself),
     `smaller_blocks[block * 8 + cell_eighth]`; face local place for axis X `(z * 4 + y) * 5 + x`, Y
     `(z * 5 + y) * 4 + x`, Z `(z * 4 + y) * 4 + x`, where the coordinate along the normal is the plane 0..4 and
@@ -1413,6 +1428,33 @@ Load the same three skills.
   places still `kAbsent`. Step 8: `ComputeFacePieceKind` per face place, counting the face pieces. The working
   order of the CPU is its own; every table entry is written through the functions of Tasks 7a and 7b and in no other way. No
   `std::stable_sort` (it may allocate).
+- **A block without its bigger block.** Step 6 ends with one pass over the blocks: the shared `std::uint64_t
+  ComputeBlockFaultKey(const CellBlockId* block_ids, const std::uint32_t* bigger_block, CellBlockIndex block)`
+  (added to `grid_build_steps.h` here) gives `ToFailureKey(7, block, 0)` when the block is of size level 1 or
+  more and its `bigger_block` entry is `kNoIndex`, else `kNoFailureKey`. No valid list produces it (a small
+  cell's big cell is split, so its block exists). The build stops at the first one and returns what
+  `ComputeFailureCells` gives for that key: `kInternalFault`, zero cells. Steps 7 and 8 do not run.
+- **The step range is 1 to 7 everywhere.** This task adds step 7, so it also updates what is already built
+  and still says six (fold each into the commit that owns the file, with `git commit --fixup`):
+  - `native/fluidity/grid/grid_build_status.h`, the comment of `failure_key` (near line 47, "the place in the
+    fixed cell order for steps 2 to 4, and 0 for steps 5 and 6"): add "and the block's index for step 7, a block
+    without its bigger block".
+  - `native/fluidity/grid/grid_build_steps.h`, `ComputeFailureCells` (near line 482, "the key's step is 0 or
+    above 6"): the `Method:` gains "Step 7, a block of size level 1 or more without its bigger block, gives
+    kInternalFault with zero cells: a fault in the build, reported with no cell", and `Fails:` reads "the key's
+    step is 0 or above 7 ...". The code does not change (it already returns that for step 7); add
+    `TEST(ComputeFailureCells, StepSeven_IsInternalFaultWithNoCell)` and keep the test of a step above 7.
+    Search both files and `grid_build_steps_test.cc` for "6" beside "step" once more; these two were the only
+    places on 2026-11-20.
+  - `docs/glossary.md`, the row `failure key`: say the steps are 1 to 7, the seventh being a block without its
+    bigger block.
+  - The method paper, `<sec-parallel-build>`, paragraph "The first failure". Replace "then 5 the active and split
+    cells against the room's cell places and 6 the blocks against the room, the two checks of its step 5." by
+    "then 5 the active and split cells against the room's cell places and 6 the blocks against the room, the two
+    checks of its step 5, and 7 a block that has no bigger block in the list, which no valid list produces and
+    which is reported as an internal fault with no cell." Replace "and 0 for steps 5 and 6." by "0 for steps 5
+    and 6, and the block's index for step 7." This is a fixup of the commit `Describe the parallel grid build
+    in the method paper`.
 - **A block that cannot be found.** In step 7 `FindSortedBlock` of a cell's own block among the ids step 5 just
   wrote cannot return `kNoIndex`; if it does, the build returns `kInternalFault` (checked in every build).
 - **The block limit on both processors:** `kTooManyCellBlocks` with `cell` zero. The first cell beyond the
@@ -1429,9 +1471,17 @@ Load the same three skills.
     sorted with `ComesBefore`: the used part of every table array is byte-identical.
   - `TEST(ComputeGridCounts, RandomGrids_EqualBuiltCounts)`: the 200 grids: `ComputeGridCounts(inputs)` equals
     `grid.counts()` field by field.
-  - `TEST(BuildGrid, FacePieceKinds_MatchGeometricChecker)`: the 200 grids: every geometric face piece is
-    exactly one place whose kind is `kBetweenCells`, `kGridEdgeLow` or `kGridEdgeHigh` as the checker says; no
-    other place is a face piece.
+  - `TEST(BuildGrid, FacePieceKinds_MatchGeometricChecker)`: all 200 grids (the shared rules' own test compares
+    on 40 seeds): every geometric face piece is exactly one place whose kind is `kBetweenCells`, `kGridEdgeLow`
+    or `kGridEdgeHigh` as the checker says; no other place is a face piece. For a face piece on the high side
+    of a block's last cell: it is at plane 0 of the block of the same size level on the high side when that
+    block exists (the low block's plane 4 place is then `kNotAPiece`), else at
+    plane 4 of its own block.
+  - `TEST(ComputeBlockFaultKey, BlockWithoutItsBiggerBlock_IsStepSeven)`: a hand-made block list holding only
+    the size-level-1 block `{0,0,0}`, tables from `FindBlockNeighbours`: `ToFailureKey(7, 0, 0)`, and
+    `ComputeFailureCells` of it is `kInternalFault` with zero cells; with the size-level-0 block added:
+    `kNoFailureKey` for both. No cell list reaches this through `BuildGrid` (the sibling check stops it), so
+    the test is on the function.
   - `TEST(BuildGrid, CellStates_MatchGeometricChecker)`: `kActive` exactly at the list's cells, `kSplit` exactly
     at the bigger cells that contain one, `kInsideBiggerCell` exactly at places an active bigger cell covers.
   - `TEST(BuildGrid, AddedSplitCells_AreThePlacesMarkedSplit)`: the 200 grids: the cells
@@ -1455,7 +1505,8 @@ Load the same three skills.
   Label `no_gpu`: `TEST(BuildTestGrid, OnGpuWithoutAGpu_IsRunOnCallFailed)`: settings `run_on = kGpu`.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement** with `// Step N:` comments. `Read:` `<proc-build-grid>`,
   `<sec-cell-blocks>`, `<sec-face-pieces>`.
-- [ ] **Step 4: Commit.** Subject: `Build a grid version into buffers without allocating`. New names:
+- [ ] **Step 4: Commit**, after the fixups of "The step range is 1 to 7 everywhere" are folded into their
+  owning commits and the gate passes on each. Subject: `Build a grid version into buffers without allocating`. New names:
   `StaggeredGrid`, `BuildGrid`, `TakeBuffers`.
 
 ### Task 9b: `ComputeGridCounts` on buffers, and builder buffers shared by two grids
@@ -1547,7 +1598,8 @@ Load the same three skills.
   `BufferError` from `BuildStableOrder` or `ReadBuffer`, go through `ToBufferError` and the module's one mapping
   into `GridFailure`. After `kRunOnCallFailed` the buffers' contents are unspecified, they hold no grid, and
   the run stops. A status record that contradicts itself (a failure key with error `kNone`, no key with an
-  error, or a key whose step is not 1 to 6) is `kInternalFault`, as is a size error from `BuildStableOrder` or
+  error, or a key whose step is not 1 to 7; step 7 itself is the fault of a block without its bigger block)
+  is `kInternalFault`, as is a size error from `BuildStableOrder` or
   `ReadBuffer` (through the mapping).
 - Shared per-item functions added to `grid_build_steps.h`:
   `std::uint64_t ComputeCellIdFailureKey(GridFrame frame, const CellId* input, std::uint64_t index)` (P2;
@@ -1731,7 +1783,10 @@ Load the same three skills.
 - **The parallel form of steps 6 to 8.** Launches are sized on the CPU from the room (`max_cell_blocks`
   blocks, `64` or `240` times that for places); each thread handles only the items below the count it reads
   from the status.
-  - P9 neighbour tables: one thread per block.
+  - P9 neighbour tables: one thread per block writes its 36 entries, then takes an integer `atomicMin` of
+    `ComputeBlockFaultKey` (Task 9a): a block of size level 1 or more without its bigger block is failure key
+    step 7. P10 and P11 return when a key is set, and P12 names it with `ComputeFailureCells`:
+    `kInternalFault`, zero cells, as the CPU's step 6.
   - P10 cell states: (a) one thread per cell place writes `kAbsent`; (b) one thread per sorted entry:
     `ApplySortedCellStateAt`, then an integer `atomicAdd` of 1 into `active_cells_per_size_level[level]` for an
     active entry; (c) one thread per cell place: `ApplyCoveredCellStateAt`. Step (c) reads only `kActive`
@@ -1749,6 +1804,10 @@ Load the same three skills.
   another grid before; on the lists of the two `gpu` tests `OnGpu_EqualsCpuTablesBitForBit` and
   `OnGpuFailures_EqualCpuFailures` below: version, counts, the used part of the five tables and every
   `GridFailure` equal the CPU build's byte for byte.
+  `TEST(BuildGrid, ReplayWithBlockWithoutItsBiggerBlock_IsInternalFault)`: the replay of P9 to P12 started
+  from a hand-made `block_ids` holding only the size-level-1 block `{0,0,0}` (the replay owns its arrays, so it
+  can start there): the status has key step 7, error `kInternalFault`, zero cells, and no cell state or face
+  kind was written.
   Label `gpu` (lists put on the GPU with `WriteBuffer` in setup only; tables read with `ReadGrid`; each test
   passes the tables, counts and failures it reads to `WriteResultDigest`):
   - `TEST(BuildGrid, OnGpu_EqualsCpuTablesBitForBit)`: the empty list, one cell, the two-size fixture, and the
@@ -1786,12 +1845,17 @@ Load the same three skills.
 - Create: `native/fluidity/grid/grid_tables_test.cc`
 
 **Interfaces:**
-- Consumes: Tasks 7a and 7b (`FindSortedBlock`, the table layouts), Task 9a (`BuildTestGrid`, in tests).
+- Consumes: Tasks 7a and 7b (`FindSortedBlock`; the table layouts, defined on `GridTables` in `grid_tables.h`),
+  Task 9a (`BuildTestGrid`, in tests).
 - Produces (design 3.2 and 3.7): `ComputeCellWidth(GridFrame frame, SizeLevel size_level)`, `ComputeCellCenter`,
   `ComputeFacePosition`, `ComputeFaceArea`, `ToAxis`, `ToCellId(tables, cell)`, `ToFacePieceId(tables, face)`,
   `FindCellLow`, `FindCellHigh`, `ComputeCellCenterDistance`, `FindCellBlock`, `FindCellPlace`, `FindFacePlace`,
   `ToSizeLevel(tables, block)`. `FindCellBlock` is `FindSortedBlock` over `tables.block_ids`, so the build and
   every stage search blocks with one function.
+- An id is made from a place only when its state is `kActive` or `kSplit`: a place that is inside a bigger
+  cell or absent can have a coordinate outside the range (only `-2^18`, the low place of a block at the
+  limit), where a packed id would name another cell. `ToCellId(tables, cell)` of such a place returns
+  `CellId{0}`; the header says so.
 - **Decided here:** `ComputeCellWidth` halves `biggest_cell_width` `size_level` times (exact, no `pow`).
   `ComputeCellCenterDistance` is the distance along the face piece's axis (as `main`'s
   `cell_center_distance`). `FindCellLow`/`FindCellHigh` on a face piece beside a bigger cell return the bigger
@@ -2705,7 +2769,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   piece. `piece map`: for each block of a grid piece, its index in the whole grid), build registration
 
 **Interfaces:**
-- Consumes: the table layouts (Task 7b), `ToGridBuffersArrays` and `BuildGridFromBuffers`
+- Consumes: the table layouts (on `GridTables` in `grid_tables.h`, Task 7b), `ToGridBuffersArrays` and `BuildGridFromBuffers`
   (`grid_buffers_internal.h`, Tasks 6b and 9a), `StaggeredGrid`, `TakeBuffers` (Task 9a), `FindBorderBlocks` (Tasks 22a, 22b), `FindSortedBlock`.
 - Produces (design 3.4): `GridPiece` with its accessors, both `BuildGridPiece` forms, `GridBuffers
   TakeBuffers(GridPiece&& piece)`, by design 5.8 "Pieces keep the fixed order". The parameter of both forms is

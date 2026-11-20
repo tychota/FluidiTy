@@ -1066,7 +1066,10 @@ and weights.
    **First failure, both processors:** the smallest key `(step << 56) | (position << 8) | detail`: step 1 id
    checks (position = input index), 2 overlaps, 3 siblings, 4 size-step rule (position = place in fixed cell
    order, detail = missing eighth or direction 0..25), 5 and 6 room (position 0, `kTooManyCellBlocks`, `cell`
-   zero). The CPU runs each step to its end and scans positions in order; the GPU takes an integer `atomicMin`.
+   zero). Step 7 (as built, 2026-11-20): a block of size level 1 or more without its bigger block
+   (position = the block's index), a state no valid list produces: `kInternalFault`, with no cell and no
+   position reported, so both processors return the same failure. The steps are 1 to 7.
+   The CPU runs each step to its end and scans positions in order; the GPU takes an integer `atomicMin`.
    The GPU's only atomics are integer `atomicMin` (first failure) and `atomicAdd` (counts), whose results do not
    depend on thread timing.
 
