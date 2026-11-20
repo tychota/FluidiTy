@@ -416,7 +416,7 @@ struct SceneCounts {                   // Step 1 of programme design 8a.
   // Sum of ReadyScene::start_particles over materials.
   std::uint64_t start_particle_count = 0;
   std::uint64_t particles_from_sources = 0;
-  // NEW (A66). Active cells of the first grid per size level (= grid.active_cells_per_level).
+  // NEW (A66). Active cells of the first grid per size level (= grid.active_cells_per_size_level).
   std::array<std::uint64_t, grid::kMaxSizeLevels> start_cells_per_level{};
   // NEW (A66). Cell blocks of the first grid, every level (= grid.cell_blocks). limits.max_cell_blocks is
   // ceil(start_limit_headroom x start_cell_blocks), capped by the domain's blocks (5.9 step 2).

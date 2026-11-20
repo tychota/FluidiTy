@@ -251,7 +251,7 @@ struct GridInputs {               // DECIDED suffix. NEW form (A17): the list in
 // So a GPU run passes a Buffer<CellId> on the GPU, a CPU run either form, tests and tools a span.
 struct GridCounts {               // NEW. Everything the sizing estimate needs from the grid.
   std::uint32_t cell_blocks;
-  std::uint64_t active_cells_per_level[kMaxSizeLevels];
+  std::uint64_t active_cells_per_size_level[kMaxSizeLevels];
   std::uint64_t active_cells;
   std::uint64_t face_pieces;      // Places whose kind is not kNotAPiece.
 };
@@ -374,7 +374,7 @@ struct GridBuildStatus {        // The only thing a grid operation on the GPU re
   std::uint32_t split_cells;    // Split cells added at step P7; later kernels read it. The CPU ignores it.
   std::uint32_t result_count;   // FindBorderBlocks: entries found. Otherwise 0.
   std::uint64_t active_cells;
-  std::uint64_t active_cells_per_level[kMaxSizeLevels];
+  std::uint64_t active_cells_per_size_level[kMaxSizeLevels];
   std::uint64_t face_pieces;    // Places whose kind is not kNotAPiece.
 };                              // Trivially copyable (static_assert).
 ```
@@ -668,7 +668,7 @@ names prefixed `grid: `, sizes `sizeof` of the real types. Every row is `KeptFor
 | Row | Counted per | Bytes each | Per block | Where |
 |---|---|---|---|---|
 | block ids | cell block | 8 | 8 | `kRunOn` |
-| same-level neighbour blocks | cell block | 27 x 4 | 108 | `kRunOn` |
+| same-size-level neighbour blocks | cell block | 27 x 4 | 108 | `kRunOn` |
 | bigger and smaller blocks | cell block | 9 x 4 | 36 | `kRunOn` |
 | cell states | cell place | 1 | 64 | `kRunOn` |
 | face piece kinds | face place | 1 | 240 | `kRunOn` |
@@ -1151,13 +1151,13 @@ range is `all_blocks()` and the border is empty.
 **Border blocks** (`FindBorderBlocks`). `kTouchingCells`: a block outside the set is in the border when it
 stores an active cell that touches a cell of the set, or stores a face piece of such a cell. The second part
 matters: a piece is stored with its smaller cell, and plane 4 of a block moves to plane 0 of its high
-same-level neighbour (5.1 step 5), so a nearby face of a cell touching the range can lie one block beyond that
+same-size-level neighbour (5.1 step 5), so a nearby face of a cell touching the range can lie one block beyond that
 cell. `kFourCellWidths` adds every block `FaceSearch` reads from a face piece stored in the set: the 27
 same-level blocks around the piece's block and their bigger and smaller blocks. Both are computed by walking
 the grid's blocks once in index order and testing each against the sorted set through its own neighbour
 tables (the reverse of the same relation), so the result is ascending with no repeats and the walk allocates
 nothing. The per-block test is the shared `ComputeIsBorderBlock(tables, set, block, width)` of `border_block_steps.h`,
-through the block's own 27 same-level neighbours, its bigger block and its 8 smaller blocks (the grid's spatial
+through the block's own 27 same-size-level neighbours, its bigger block and its 8 smaller blocks (the grid's spatial
 index: no other search structure is built). **On the GPU (A17)** one thread per block marks it (outside the range,
 and in `border_so_far` or `ComputeIsBorderBlock`), an exclusive prefix sum over the marks gives each marked block its place,
 and a scatter writes the list; index order is kept, so the list is the CPU walk's, and only the count comes back.

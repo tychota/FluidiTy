@@ -794,7 +794,7 @@ Load the same three skills.
       BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid);
   ```
 - **Entries**, in this fixed order, names prefixed `grid: `, all `KeptFor::kWholeRun`:
-  1. The five tables, `where = kRunOn`: `block ids` (kCellBlock, 8 B), `same-level neighbour blocks`
+  1. The five tables, `where = kRunOn`: `block ids` (kCellBlock, 8 B), `same-size-level neighbour blocks`
      (kCellBlock, 108 B), `bigger and smaller blocks` (kCellBlock, 36 B: one array, the bigger block of every
      block first, then the 8 smaller blocks of every block), `cell states` (kCellPlace, 1 B), `face piece kinds`
      (kFacePlace, 1 B). 456 B per block.
@@ -1078,7 +1078,7 @@ Load the same three skills.
     no cell of this level is there; the place is `kInsideBiggerCell` when an active cell one level bigger
     covers it, else `kAbsent`. The covering place is found through `bigger_block`: `block` is the low or the
     high half of its bigger block along the axis; if the place lies on the half's outer side, the cover is in
-    the bigger block's same-level neighbour on that side (absent block: `kAbsent`), otherwise in the bigger
+    the bigger block's same-size-level neighbour on that side (absent block: `kAbsent`), otherwise in the bigger
     block itself. A level-0 block has no bigger block: `kAbsent`.
   - `FacePieceKind ComputeFacePieceKind(const GridTables& tables, FacePlaceIndex face)`: design 5.1 item 5 for
     one face place. Plane `p` lies between local cells `p - 1` (low) and `p` (high) along the axis; both
@@ -1215,7 +1215,7 @@ Load the same three skills.
   so there are at most `n / 7` of them; 8 B per active or split cell, at most 9.2 B per active cell):
   1. Copy the `n` ids; steps 1 to 4 as Task 8, with `SiblingCheck::kRequire`. The copy is now in fixed cell
      order.
-  2. `active_cells_per_level` and `active_cells`: one pass.
+  2. `active_cells_per_size_level` and `active_cells`: one pass.
   3. `face_pieces`: one pass over the active cells, summing the private
      `int ComputeFacePieceCountOfCell(std::span<const CellId> sorted_cells, std::uint32_t position)`. For a
      cell `c` of level `p` and each axis, let `N` be the coordinate of the same-level place beside `c`. Every
@@ -1234,7 +1234,7 @@ Load the same three skills.
 - [ ] **Step 1: Failing tests** (label `cpu`), frame origin 0, width 1 m, 3 levels:
   - `TEST(ComputeGridCounts, OneBigCell_HasSixFacePieces)`: 1 block, 6 face pieces, `active_cells == 1`.
   - `TEST(ComputeGridCounts, OneSplitCell_CountsBlocksOfBothLevels)`: level 0 `{0,0,0}` and the 8 level-1 cells
-    of `{1,0,0}`: `cell_blocks == 2`, `active_cells_per_level = {1, 8}`, `active_cells == 9`,
+    of `{1,0,0}`: `cell_blocks == 2`, `active_cells_per_size_level = {1, 8}`, `active_cells == 9`,
     `face_pieces == 41` (5 whole faces of the big cell, 24 outer quarter faces of the small cells of which 4
     are shared with the big cell, 12 between the small cells).
   - `TEST(ComputeGridCounts, TwoCellsAcrossABlockSide_ShareOneFacePiece)`: level 0 `{3,0,0}` and `{4,0,0}`: 2
@@ -1622,7 +1622,7 @@ Load the same three skills.
   from the status.
   - P9 neighbour tables: one thread per block.
   - P10 cell states: (a) one thread per cell place writes `kAbsent`; (b) one thread per sorted entry:
-    `ApplySortedCellStateAt`, then an integer `atomicAdd` of 1 into `active_cells_per_level[level]` for an
+    `ApplySortedCellStateAt`, then an integer `atomicAdd` of 1 into `active_cells_per_size_level[level]` for an
     active entry; (c) one thread per cell place: `ApplyCoveredCellStateAt`. Step (c) reads only `kActive`
     marks, which no thread of (c) writes.
   - P11 face piece kinds: one thread per face place, grid-stride like every other step; a thread adds up the
@@ -2387,7 +2387,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   `struct BlockSet { CellBlockRange range; const CellBlockIndex* sorted_blocks; std::uint32_t sorted_count; };`
   `bool ComputeIsInBlockSet(const BlockSet& set, CellBlockIndex block)` (in `range`, or found by binary search)
   and `bool ComputeIsBorderBlock(const GridTables& tables, const BlockSet& set, CellBlockIndex block,
-  BorderWidth width)`: the per-block test of design 5.5 through `block`'s own 27 same-level neighbours, its
+  BorderWidth width)`: the per-block test of design 5.5 through `block`'s own 27 same-size-level neighbours, its
   bigger block and its 8 smaller blocks. The grid's neighbour tables are the only search structure. The CPU
   walk is "for each block in index order, if not in the set and `ComputeIsBorderBlock`, append"; the span
   forms use `BlockSet{{0, 0}, blocks.data(), blocks.size()}`.
