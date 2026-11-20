@@ -233,6 +233,26 @@ one axis. Owner decision: keep every candidate and size the list for the proven 
 - Small: `n` is `active_count`; only an id with bit 63 clear has the largest sort key; the `CellId{0}` entries
   of the tail write nothing at P10 (b); the status step is part of the check (Tasks 10, 11b).
 
+### Eighth revision 2026-11-20: a dedicated error for an impossible internal state
+
+Owner decision: a module reports an impossible internal state through a dedicated error value, checked in every
+build, never as bad input and never by a debug-only assertion.
+
+- `GridError::kInternalFault`, just before `kOutOfMemory`, which stays last: thirteen values, `kOutOfMemory` is
+  12, stable name `internal_fault`. Its message says the fault is in FluidiTy, not in the scene, and asks the
+  user to report it with the scene (Task 2; design 3.3).
+- The one `BufferError` mapping sends `kSizeMismatch` to `kInternalFault` (it was `kBadInput`): the grid checks
+  every caller's size itself before it calls `base/`, so a size error from `base/` is the grid's own fault.
+- "Cannot happen" paths that now return `kInternalFault`: a builder whose arrays and estimate entries do not
+  match (Tasks 6b, 21, 22b); a size error from a sort, a prefix sum or a copy of `base/` inside a grid
+  operation (every task, through the mapping); a status record that does not fit its own failure key (Task
+  10); a block that a build cannot find among the block ids it just wrote, or a count read back from the GPU
+  above the room (Tasks 9a, 11b, 24, 25).
+- Left as they are: `kBadInput` for what a caller can pass wrongly (frame, version, list shape, a bad id, a
+  room of 0, builder buffers too small, a span of the wrong size, a border list that is not ascending);
+  `kTooManyNearbyFaces` (a question for the owner, not changed here); the `Requires:` preconditions on
+  processors, which are a caller's contract, not an internal state.
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -420,7 +440,13 @@ Grid's own:
 - **Errors of this module.** Every `std::expected` has `GridFailure` as its error. The one `BufferError`
   mapping: `kOutOfMemory` and `kRunMemoryTooSmall` become `GridError::kOutOfMemory` with
   `GridFailure::magnitude` = the bytes asked; `kRunOnCallFailed` stays `kRunOnCallFailed`; `kSizeMismatch`
-  becomes `kBadInput`.
+  becomes `kInternalFault`.
+- **Impossible states.** `GridError::kInternalFault` is returned, in debug and release alike, when the grid
+  finds a state that no input can produce: a size error from a `base/` call inside a grid operation (the grid
+  checks every caller's sizes itself first, and returns `kBadInput` for those), arrays that do not match the
+  estimate's entries, a table or status record that contradicts what the same operation just wrote. It is never
+  `kBadInput`, and never an `assert` alone. `cell` and `other_cell` are zero. A task that adds such a check says
+  so in its header comment under `Fails:`.
 - **Tolerances**, exactly (design section 7): discrete results (ids, counts, kinds, indexes, areas that are
   powers of two) are compared exactly. Weight curve: `|sum - 1| <= 4e-16`, slope sum `<= 4e-16`. Complete case:
   `W = 1`, `mean_offset = 0`, `weighted_spread = h^2/4 I` within `1e-14 h^2`. Any kept set: `|sum weight - 1| <=
@@ -594,23 +620,25 @@ Load the same three skills.
 
 **Interfaces:**
 - Follows `contact/contact_error.h` and `contact/contact_error_message.h/.cc` as built.
-- Produces in `grid_error.h`: `enum class GridError : std::uint8_t` with the twelve enumerators of design 3.3 in
-  that order (`kOutOfMemory` last), and `struct GridFailure { GridError error = GridError::kNone; std::uint64_t
+- Produces in `grid_error.h`: `enum class GridError : std::uint8_t` with the thirteen enumerators of design 3.3 in
+  that order (`kInternalFault` twelfth, `kOutOfMemory` last), and `struct GridFailure { GridError error = GridError::kNone; std::uint64_t
   magnitude = 0; }` (Task 3 adds `cell` and `other_cell` between them once `CellId` exists). It is shared
   because `FindNearbyFaces`, in a shared header, reports through a `GridError*`.
 - Produces in `grid_error_message.h`: `std::string_view ToMessage(GridError error)`, `std::string_view
   ToName(GridError error)`. An out-of-range value gives the text of an unknown error and the name `"unknown"`.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
-  - `TEST(ToName, EveryError_IsStableSnakeCase)`: for each of the 12 values the name is the enumerator without
-    `k` in lower snake case; all 12 distinct; `ToName(GridError::kTooManyCellBlocks) == "too_many_cell_blocks"`,
+  - `TEST(ToName, EveryError_IsStableSnakeCase)`: for each of the 13 values the name is the enumerator without
+    `k` in lower snake case; all 13 distinct; `ToName(GridError::kInternalFault) == "internal_fault"`; `ToName(GridError::kTooManyCellBlocks) == "too_many_cell_blocks"`,
     `ToName(GridError::kNone) == "none"`.
   - `TEST(ToMessage, EveryError_HasADistinctNonEmptyMessage)`.
+  - `TEST(ToMessage, InternalFault_SaysItIsNotTheScene)`: the text contains "FluidiTy" and "report".
   - `TEST(GridError, OutOfMemory_IsTheLastValue)`: `static_assert(static_cast<int>(GridError::kOutOfMemory) ==
-    11)`, `ToName(GridError::kOutOfMemory) == "out_of_memory"`, and `GridFailure{}.magnitude == 0`.
+    12)`, `static_cast<int>(GridError::kInternalFault) == 11`, `ToName(GridError::kOutOfMemory) == "out_of_memory"`, and `GridFailure{}.magnitude == 0`.
 - [ ] **Step 2: Run** and see the compile fail. **Step 3: Implement.** Messages say what the user can do
   (`kTooManyCellBlocks`: "The grid needs more cell blocks than the limit. Raise max_cell_blocks or use fewer
-  small cells."). `Read:` `<sec-grid>`.
+  small cells."; `kInternalFault`: "FluidiTy found a state inside the grid that should never occur. This is a fault
+  in FluidiTy, not in your scene. Please report it and attach the scene."). `Read:` `<sec-grid>`.
 - [ ] **Step 4: Commit.** Subject: `Add the grid's errors`. New names: `GridError` (one enum for the module),
   `GridFailure`, `ToMessage`, `ToName`.
 
@@ -891,7 +919,11 @@ Load the same three skills.
   ```
   and `class GridBuffers` (`max_cell_blocks()`, `run_on()`; move-only; a moved-from one has room 0).
 - Both builders walk the entries of `BuildGridMemoryEstimate(run_on, 1, max_cell_blocks)` in order, one
-  `BuildBuffer` (or `BuildOrderBuffers`) per entry, so the estimate and the arrays cannot drift apart.
+  `BuildBuffer` (or `BuildOrderBuffers`) per entry, so the estimate and the arrays cannot drift apart. Each
+  goes through a private form in `grid_buffers_internal.h` that takes the entries as a span
+  (`BuildGridBuffersFromEntries`, `BuildGridBuilderBuffersFromEntries`); an entry it has no array for, an array
+  left without an entry, or an entry whose bytes differ from its array's, is `kInternalFault` (in every build;
+  the memory pieces already taken stay in the block). Both `Fails:` lists name it.
 - Produces, in `grid_buffers_internal.h` (this module's code and tests only): `struct GridBuffersArrays` (one
   `Buffer` per entry of the grid's own arrays, and a pointer to the lent `GridBuilderBuffers`), `struct
   GridBuilderBuffersArrays` (one `Buffer` per builder entry; on the GPU also the `OrderBuffers`), and
@@ -918,6 +950,9 @@ Load the same three skills.
     run_memory)->byte_count() == 1000 * bytes_per_cell_block + fixed_bytes` (512,000).
   - `TEST(ComputeGridBuilderBuffersSize, EitherProcessor_EqualsBuilderEntries)`: for `kCpu` and `kGpu`, the
     formula at 1,000 blocks equals the sum of the `builder buffers:` entries (no GPU memory needed).
+  - `TEST(BuildGridBuffers, EntriesNotMatchingArrays_IsInternalFault)`: the private form with the CPU
+    estimate less its `cell states` entry, then with that entry's `bytes_each` doubled: `kInternalFault` both
+    times; the same for `BuildGridBuilderBuffersFromEntries` with no entry at all.
   - `TEST(GridBuffers, MovedFrom_HasNoRoom)`.
   Label `no_gpu` (as `contact/move_particles_no_gpu_test.cc`): `TEST(BuildGridBuilderBuffers,
   OnGpuWithoutAGpu_IsRunOnCallFailed)`: `BuildGridBuilderBuffers(RunOn::kGpu, 1000, cpu_run_memory)` fails
@@ -1313,6 +1348,8 @@ Load the same three skills.
   places still `kAbsent`. Step 8: `ComputeFacePieceKind` per face place, counting the face pieces. The working
   order of the CPU is its own; every table entry is written through the functions of Tasks 7a and 7b and in no other way. No
   `std::stable_sort` (it may allocate).
+- **A block that cannot be found.** In step 7 `FindSortedBlock` of a cell's own block among the ids step 5 just
+  wrote cannot return `kNoIndex`; if it does, the build returns `kInternalFault` (checked in every build).
 - **The block limit on both processors:** `kTooManyCellBlocks` with `cell` zero. The first cell beyond the
   limit is not named: the GPU cannot name it without working memory beyond the room.
 - `BuildGrid` with `buffers.run_on() == kGpu` returns `kRunOnCallFailed` until Task 11b adds the GPU path.
@@ -1444,7 +1481,9 @@ Load the same three skills.
   returning `RunOnCallStatus`, with `BuildStableOrder` between them. A status other than `kDone`, and a
   `BufferError` from `BuildStableOrder` or `ReadBuffer`, go through `ToBufferError` and the module's one mapping
   into `GridFailure`. After `kRunOnCallFailed` the buffers' contents are unspecified, they hold no grid, and
-  the run stops.
+  the run stops. A status record that contradicts itself (a failure key with error `kNone`, no key with an
+  error, or a key whose step is not 1 to 6) is `kInternalFault`, as is a size error from `BuildStableOrder` or
+  `ReadBuffer` (through the mapping).
 - Shared per-item functions added to `grid_build_steps.h`:
   `std::uint64_t ComputeCellIdFailureKey(GridFrame frame, const CellId* input, std::uint64_t index)` (P2;
   `kNoFailureKey` when the id is good) and `std::uint64_t ComputeSortedCellFailureKey(const CellId*
@@ -1485,6 +1524,10 @@ Load the same three skills.
   status records it reads to `WriteResultDigest`):
   - `TEST(CheckSizeStepRule, OnGpu_EqualsCpu)`: the three `...TwoLevelsApart` lists, `OneLevelApart`, the empty
     list and the 200 random grids: the result is identical to `CheckSizeStepRule(frame, span)`.
+  - `TEST(BuildSortedCellList, StatusThatContradictsItself_IsInternalFault)` (label `cpu`, in the replay file:
+    the CPU half's reading of a status record is one private function, `ToGridFailure(const GridBuildStatus&)`;
+    a record with a key and `kNone`, one with an error and no key, and one with step 9 each give
+    `kInternalFault`).
   - `TEST(CheckSizeStepRule, OnGpuTooLongListWithBadId_SameFailureAsCpu)`: Task 8's list of that test, in GPU
     buffers for 1 block: `kTooManyCellBlocks`, `cell` and `other_cell` zero, as on the CPU; nothing is launched.
   - `TEST(CheckSizeStepRule, OnGpuSeveralFailures_SameFirstFailureAsCpu)`: the 500 mutated lists, both
@@ -1579,7 +1622,7 @@ Load the same three skills.
     blocks: one with a repeated cell (step 2), one with a missing sibling (step 3), and the 64 level-1 cells of
     8 level-0 cells into room for 1 (step 5 at P7). Both prefix sums return without error in each, and the
     failure is `kCellsOverlap`, `kSiblingCellMissing`, `kTooManyCellBlocks`, with the CPU's cells, never
-    `kBadInput`. A copy of P7 (a) that returns early instead of writing 0 makes the first prefix sum fail: the
+    `kInternalFault` (what a size error of the prefix sum maps to). A copy of P7 (a) that returns early instead of writing 0 makes the first prefix sum fail: the
     test shows it.
   - `TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds)`: P2 to P8 replayed on CPU
     buffers that held another grid before; on the 200 random grids, a list of 9 level-0 blocks into room for 8
@@ -1629,7 +1672,7 @@ Load the same three skills.
     values its places return and issues one integer `atomicAdd` into `face_pieces`.
   - P12 status: one thread, `ApplyBuildStatusResult`; then one `ReadBuffer` of `GridBuildStatus`. On success
     the buffers move into the returned grid with the record's counts; on failure no grid is returned and the
-    buffers stay usable.
+    buffers stay usable. A record without failure whose `cell_blocks` is above the room is `kInternalFault`.
   - Corner places need no table (design 3.7): `FindCornerPlaces` reads the tables built here.
 - File header of `staggered_grid_gpu.h`: the "Stack:" sentence of Global Constraints "GPU stack".
 
@@ -2331,7 +2374,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   in `grid_values_cpu.cc` with the module's one `BufferError` mapping. No GPU half: values cross only through
   `base/` `Buffer` calls. Read and Write use the slice forms over the bound part only.
 - The builders follow Global Constraints "One reserved block per run": `CheckCanRunOn` first, one memory
-  piece, `kOutOfMemory` with the bytes asked.
+  piece, `kOutOfMemory` with the bytes asked. `ReadValues` and `WriteValues` compare the span's size with the
+  bound part themselves (`kBadInput`); a size error from the `base/` copy after that check is `kInternalFault`.
 - `ApplyGridVersion` reads only `grid.version()` and `grid.counts().cell_blocks`, which every grid keeps on the
   CPU, and records them; it launches nothing and copies nothing, on either processor. Requires: the values are
   on the grid's processor, checked by `assert`. A grid with more blocks than the room is `kTooManyCellBlocks`.
@@ -2459,7 +2503,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   // Builds them as memory pieces of run_memory, in the order of BuildBorderSearchMemoryEstimate's entries.
   // Requires: run_on == run_memory.run_on() when run_on can run, checked by assert in debug builds.
   // Fails: kRunOnCallFailed (CheckCanRunOn failed; nothing taken), kBadInput (0 or above kMaxCellBlocksLimit),
-  //        kOutOfMemory (magnitude is the bytes of the array that did not fit).
+  //        kOutOfMemory (magnitude is the bytes of the array that did not fit), kInternalFault (the arrays do
+  //        not match the estimate's entries).
   std::expected<BorderSearchBuffers, GridFailure> BuildBorderSearchBuffers(RunOn run_on,
                                                                            std::uint32_t max_cell_blocks,
                                                                            RunMemory& run_memory);
@@ -2472,6 +2517,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   //                            above its size
   //        kTooManyCellBlocks  search_buffers is too small for the grid
   //        kRunOnCallFailed    a call to the GPU failed
+  //        kInternalFault      the prefix sum of the marks failed, or the count read back is above the grid's
+  //                            block count: a fault in the grid, not in the inputs
   std::expected<std::uint32_t, GridFailure> FindBorderBlocks(const StaggeredGrid& grid, CellBlockRange range,
                                                              const Buffer<CellBlockIndex>& border_so_far,
                                                              std::uint32_t border_so_far_count, BorderWidth width,
@@ -2617,6 +2664,8 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     count, CellBlockIndex piece_block, int face_place_in_block)`: the whole grid's kind, except
     `kOutsidePiece` for a `kBetweenCells` face piece whose other cell's block is not loaded; a plane-4 place
     stays `kNotAPiece` when its high neighbour exists in the whole grid but is not loaded (design 5.8).
+- A loaded block's neighbour that `ToPieceNeighbour` should find and does not (a block of the range missing
+  from the map the same call wrote) is `kInternalFault`; `kBadInput` stays for the border list a caller passes.
 - **Worked example for the header:** whole grid of blocks 0..9, range `{4, 3}`, border `{1, 2, 8}`: the piece
   map is `[1, 2, 4, 5, 6, 8]`, `range()` is `{2, 3}`, `range_in_whole_grid()` is `{4, 3}`.
 
@@ -2793,7 +2842,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   and calls no library function; `FindNearestCommittedCell` is an added name; the comparison with `main` uses
   `main`'s Python reference, with samples of weight 0 handled apart; `SharedBuilderBuffers_OtherLiveGridUnchanged`
   does not call `FindCellAt` (it is built later) and its GPU form does not compare free bytes with the estimate
-  (the reservation tests do); the sibling check walks the eighth-0 chain; the grid has no stack entry held by the driver, with the three
+  (the reservation tests do); the sibling check walks the eighth-0 chain; `kInternalFault` is a thirteenth error and `kSizeMismatch` maps to it; the grid has no stack entry held by the driver, with the three
   `gpu` tests that pin it.
 - [ ] **Step 4: `docs/gpu-runs.md`:** add the grid's entry, result `compiled, not run`, with every `gpu` test of
   Tasks 10, 11b, 13c, 20, 21, 23, 25 and 26a by full name (`Suite.Name`), copied from the test files (`ctest -N

@@ -193,7 +193,8 @@ CellFacePieces FindFacePieces(const GridTables& tables, CellPlaceIndex cell);  /
 through `GridError*`); `ToMessage` and `ToName` are in the CPU-only `grid_error_message.h/.cc`, as contact is built
 (`contact_error.h`, `contact_error_message.h`); the rest is in `staggered_grid.h`. A `BufferError` from `base/`
 maps as follows: `kOutOfMemory` and `kRunMemoryTooSmall` (A58) to `kOutOfMemory`, `kRunOnCallFailed` to `kRunOnCallFailed`, `kSizeMismatch` to
-`kBadInput` (A30: `kRunOnMismatch` no longer exists; buffers on two processors are a precondition).
+`kInternalFault` (A106, 2026-11-20; it was `kBadInput`: the grid checks every caller's sizes itself, so a size error
+from `base/` inside a grid operation is the grid's own fault) (A30: `kRunOnMismatch` no longer exists; buffers on two processors are a precondition).
 
 ```cpp
 enum class GridError : std::uint8_t {  // NEW. One enum for the module.
@@ -211,7 +212,12 @@ enum class GridError : std::uint8_t {  // NEW. One enum for the module.
   kWrongGridVersion,      // A buffer or index of another grid version was passed, or values bound to no grid.
   kPositionOutsideGrid,   // No active cell contains the position.
   kTooManyNearbyFaces,    // More than kMaxNearbyFaces candidates. A guard: no valid grid reaches it (5.4).
-  kOutOfMemory,           // Changed (reconcile item 31): moved to the last place. Only the builders: the run's
+  kInternalFault,         // NEW (A106). A state no input can produce: a size error from base/ inside a grid
+                          // operation, arrays that do not match the estimate's entries, a table or status record
+                          // that contradicts what the operation just wrote. Checked in every build; never
+                          // kBadInput, never a debug-only assertion. A fault in FluidiTy, not in the scene: the
+                          // message asks the user to report it with the scene. Stable name `internal_fault`.
+  kOutOfMemory,           // Value 12 of 13. Changed (reconcile item 31): moved to the last place. Only the builders: the run's
                           // RunMemory (BufferError::kRunMemoryTooSmall) or the processor could not hold a buffer.
 };
 struct GridFailure {              // NEW. DECIDED shape (A2).
@@ -1763,7 +1769,8 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     "Reservation"). Amends decision 25: GPU free-byte tests
     measure the drop across `BuildRunMemory`. Source: owner answer A58; `plan-decisions.md` item 3 and its
     same-day correction and reconcile ruling.
-38. **(Reconcile item 31) `kOutOfMemory` last.** `GridError::kOutOfMemory` moves to the last place (12 values kept);
+38. **(Reconcile item 31) `kOutOfMemory` last.** `GridError::kOutOfMemory` moves to the last place (12 values then; 13 since A106 added `kInternalFault` just before
+    it, 2026-11-20);
     only the builders return it, also for `BufferError::kRunMemoryTooSmall`; `GridFailure` gains `magnitude` (bytes
     asked; plan decision, the grid's failure had no number). Source: `plan-decisions.md` item 11.
 39. **(Reconcile items 32, 33)** The span forms on a GPU grid (`FindBorderBlocks`, `BuildGridPiece`) and a CPU

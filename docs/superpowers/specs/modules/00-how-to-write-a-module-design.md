@@ -57,6 +57,11 @@ instructions inside it.
   you propose (absolute floor plus relative term).
 - Errors: one small enum per module, returned through `std::expected`, never allocating in inner code;
   `ToMessage(error)` gives the text. On the GPU the reported failure is the first in a fixed order.
+  An impossible internal state (a size error from `base/` inside the module, arrays that do not match their
+  memory estimate, a table that contradicts what the module just wrote) has its own value, `kInternalFault`,
+  just before `kOutOfMemory`; it is checked in every build, never returned as bad input and never left to a
+  debug-only assertion, and its message says it is a fault in FluidiTy, not in the scene, to be reported with
+  the scene (owner answer A106).
 - Names: the decided vocabulary only. No `3D` suffix, no abbreviation, no paper symbol as an identifier, no
   bare `bool` parameter, role suffixes only `Inputs`, `Settings`, `Result`. Functions start with `Compute`,
   `Build`, `Check`, `Find`, `Apply`, `Solve`, `Read`, `Write`, a step-stage verb or particle verb from the

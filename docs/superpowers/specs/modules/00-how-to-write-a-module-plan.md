@@ -77,6 +77,11 @@ Rules for the tasks:
    module calls you, your tests call your functions directly with hand-built inputs. Do not stub other modules.
    When your module must change a file owned by an earlier module (a design entry marked NEW in that module),
    make it its own task, placed first, with that module's tests extended.
+8a. **Impossible states (owner answer A106).** The error task gives the module's enum `kInternalFault` (stable
+   name `internal_fault`, a message that says the fault is in FluidiTy and asks for a report with the scene).
+   Every task whose code can meet a state no input produces returns it, in every build, lists it under
+   `Fails:`, and has a test that reaches it through a private form; it is never `kBadInput` and never an
+   `assert` alone. The module's `BufferError` mapping sends `kSizeMismatch` to it.
 8. **Commit rule:** every task ends with the gate and one commit. New public names are listed in the commit
    message. Glossary rows and method-paper text change in the same commit as the code that needs them.
 9. **Last tasks:** scene-level tests for the module; then "Comment pass and hand-over" as in the Foundation

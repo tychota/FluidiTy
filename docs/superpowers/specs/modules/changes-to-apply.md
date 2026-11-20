@@ -616,3 +616,41 @@ kept with weight 0, so a kept weight may be 0. Apply to each document below; non
   `velocity_change_size` (the glossary bans the old words).
 - **Every plan that names them:** `storage_count` is `grid_count`; `IsBorderBlock` is `ComputeIsBorderBlock`;
   `ApplySizeStepClosure` is `BuildSizeStepClosure`; the four value classes are aliases of `grid::GridValues`.
+
+## An impossible internal state has its own error value (owner answer A106, 2026-11-20)
+
+Rule, for every module: the error enum has `kInternalFault` (stable name `internal_fault`), placed just before
+`kOutOfMemory` where the module has that value last, else last. It is returned, in debug and release alike, for a
+state no input can produce. It is never `kBadInput` (or the module's word for bad input) and never a debug-only
+assertion. `ToMessage` says it is a fault in FluidiTy, not in the scene, and asks the user to report it with the
+scene. The module's `BufferError` mapping sends `kSizeMismatch` to it, after the module has checked every caller's
+sizes itself. No design below was edited.
+
+- **01 Contact (as built; one small commit).** `contact/contact_error.h`: add `ContactError::kInternalFault`.
+  `kStartsInNarrowGap` is documented "Last value" and `kOutOfMemory` is not last there, so say where it goes
+  (recommended: last, after `kStartsInNarrowGap`, so no built value moves) and update that comment.
+  `contact/contact_error_message.cc` and `.h`: its message and name. `contact/contact_error_test.cc`: the counts
+  and the new name. `contact/move_particles_cpu.cc` line 35 to 40: the mapping sends `kSizeMismatch` to
+  `kBuffersTooSmall`; decide per call whether a caller's count can cause it (then `kBuffersTooSmall` stays, checked
+  before the `base/` call) or not (then `kInternalFault`). The first-failure reduction's "flag without index" case
+  (`ComputeFirstFailure, FlagWithoutIndex_IsRunOnCallFailed` in `move_particles_steps_test.cc`) is an impossible
+  state reported as `kRunOnCallFailed`: it becomes `kInternalFault`. The `assert`s of `contact_tolerance.h` and
+  `solid_contact_types.h` on finite inputs are checks of a caller's values, not internal states; review each one.
+  Method paper `<sec-contact>` if it lists the errors. Glossary: no new word.
+- **02 Grid.** Done in the grid plan (eighth revision) and design 3.3. Open: whether `kTooManyNearbyFaces` folds
+  into `kInternalFault`.
+- **03 Particles, 04 Transfer, 05 Pressure, 06 Viscosity, 07 Materials, 08 Solids, 09 Gas, 11 Cell resize and
+  batches, 13 Surface, foam and spray, 15 Sand (design and plan of each).** Add the value to the module's error
+  enum in section 3, with its message and stable name; change the `BufferError` mapping; and go through section
+  3's `Fails:` lists and section 5 for every "cannot happen", "should never", "checked by a debug assertion" or
+  bad-input result that no caller input can cause (a count read back from the GPU above its room, a group or
+  order that base/ returns inconsistent, a grid version that changed inside one call, a solver state that
+  contradicts its own bookkeeping) and return `kInternalFault` there. A module that maps the grid's errors maps
+  `grid::GridError::kInternalFault` to its own `kInternalFault`.
+- **10 Step.** Its error and reject kinds gain the value; a stage's `kInternalFault` stops the run (it is not a
+  reason to retry with a shorter step or raised limits) and the report shows the message with the module's name.
+  `kRejectReasonCount` and any count of error values change.
+- **12 I/O and CLI, 14 Blender add-on.** The CLI's exit code and the add-on's panel show the message as a fault
+  in FluidiTy with the request to report it; the stable name `internal_fault` is added to the lists they match
+  on.
+- **01b Mesh solids.** As contact, when it is planned again.
