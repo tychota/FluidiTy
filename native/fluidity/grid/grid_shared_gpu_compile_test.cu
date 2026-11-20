@@ -4,8 +4,8 @@
 //
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
 // code for every function of grid_build_steps.h, grid_ids.h and weight_curve.h, the helpers those functions call
-// included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, WeightCurveValue, GridBuildStatus and
-// CellCheck read and written by GPU code. The integer results go to `results`, and the double results of
+// included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables, WeightCurveValue, GridBuildStatus
+// and CellCheck read and written by GPU code. The integer results go to `results`, and the double results of
 // weight_curve.h go to `double_results`. The CUDA compiler generates GPU code for a shared function only where GPU
 // code calls it, so each function is called here once.
 // A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
@@ -26,8 +26,9 @@ namespace fluidity::grid {
 namespace {
 
 // Reads its inputs from `values` (4 integers), the range, the frame, the two tables and the sorted cells and blocks,
-// and writes at least one integer per shared function to `results` and the doubles of weight_curve.h to
-// `double_results`, so the compiler cannot drop any call.
+// writes the neighbour tables of one block to `block_tables` (27 + 1 + 8 entries per sorted block), and writes at least
+// one integer per shared function to `results` and the doubles of weight_curve.h to `double_results`, so the compiler
+// cannot drop any call.
 __global__ void ComputeWithEverySharedGridFunction(
     const std::int32_t* values,
     CellBlockRange range,
@@ -38,6 +39,7 @@ __global__ void ComputeWithEverySharedGridFunction(
     const CellId* sorted_cells,
     const CellBlockId* sorted_blocks,
     std::uint32_t sorted_count,
+    std::uint32_t* block_tables,
     std::uint64_t* results,
     double* double_results
 ) {
@@ -94,6 +96,33 @@ __global__ void ComputeWithEverySharedGridFunction(
       ComputeFailureCells(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, failure_key);
   results[result_index++] = static_cast<std::uint64_t>(failure_cells.error) + failure_cells.cell.value;
   results[result_index++] = static_cast<std::uint64_t>(ComputeSplitCellCountToAdd(cell));
+  // grid_build_steps.h: the table entries of one block, one cell place and one face place, read through GridTables.
+  std::uint32_t* same_size_level_blocks = block_tables;
+  std::uint32_t* bigger_block = block_tables + (27 * static_cast<std::uint64_t>(sorted_count));
+  std::uint32_t* smaller_blocks = bigger_block + sorted_count;
+  FindBlockNeighbours(
+      sorted_blocks,
+      sorted_count,
+      CellBlockIndex{place},
+      same_size_level_blocks,
+      bigger_block,
+      smaller_blocks
+  );
+  const GridTables tables = {
+      .frame = frame,
+      .version = GridVersion{1},
+      .block_count = sorted_count,
+      .block_ids = sorted_blocks,
+      .same_size_level_blocks = same_size_level_blocks,
+      .bigger_block = bigger_block,
+      .smaller_blocks = smaller_blocks,
+      .cell_states = cell_states,
+      .face_piece_kinds = face_piece_kinds,
+  };
+  results[result_index++] = static_cast<std::uint64_t>(ComputeCoveredCellState(tables, CellPlaceIndex{place}));
+  const CellState state_beside = ComputeCellStateBeside(tables, CellBlockIndex{place}, values[1] & 3, 0, 0);
+  results[result_index++] = static_cast<std::uint64_t>(state_beside) + tables.version.value;
+  results[result_index++] = static_cast<std::uint64_t>(ComputeFacePieceKind(tables, FacePlaceIndex{place}));
   // weight_curve.h: the curve, the spread and the constants.
   // weight_curve.h writes doubles, so they go to their own buffer and no double is converted to an integer.
   int double_result_index = 0;

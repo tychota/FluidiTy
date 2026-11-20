@@ -1,5 +1,6 @@
 // The formulas of a grid build that the CPU builder and the GPU builder share: sort keys, the checks of one sorted
-// cell, and the split cells that one active cell adds.
+// cell, the split cells that one active cell adds, and the table entries of one block, one cell place and one
+// face place.
 //
 // Purpose: write once each rule a grid build applies to one item, so the CPU builder and every GPU thread run the
 //   same code. The CPU and the GPU builders call these functions and nothing else for a table entry; that is why their
@@ -35,6 +36,12 @@
 //   Example: the size-level-0 cell {0,0,0} and the size-level-2 cell {4,4,4} touch at a corner. Sorted, the first is
 //   at position 0 and the second at position 1. CheckSizeStepAt at position 1 reports direction 0, (dz, dy, dx) =
 //   (-1, -1, -1), with the failure key ToFailureKey(4, 1, 0) = (4 << 56) | (1 << 8).
+//   Table entries. Once the block ids are sorted, each block finds its neighbours by binary search, each cell place
+//   that holds no active or split cell asks the place that covers it in the bigger block, and each face place looks
+//   at the two cell places beside it. A place beside a block is a local coordinate -1 or 4: the same-size-level
+//   block on that side holds it, or, when there is none, only a cell one size level bigger can cover it.
+//   Example: size level 0 {0,0,0} active beside the 8 size-level-1 cells of {1,0,0}: the size-level-1 places
+//   x = 0..1 are kInsideBiggerCell, and the X faces at x = 2 between them and the small cells are 4 kBetweenCells.
 //
 // Words:
 //   sort key          the unsigned integer an item is sorted by in one pass of the stable order
@@ -44,17 +51,23 @@
 //                     eighth-0 chain
 //   walk step         one size level of the sibling check's climb from an active cell through the split cells it adds
 //   failure key       the number (step, position, detail) whose smallest value names the first failure of a build
+//   local coordinate  the coordinate of a cell place in its block, 0..3 on each axis; -1 and 4 are one cell beyond
+//   cover             of a place, the place one size level bigger that holds it: floor(c / 2) at size level l - 1
 // Owns:    kSortKeyPassCount, ToCellSortKey, ToBlockSortKey, CheckCellId, FindSortedCell, FindSortedBlock,
 //          ComputeBigCellAtSizeLevel, FindSortedCellAt, CellCheck, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
-//          ToFailureKey, ToFailureStep, ToFailurePosition, ComputeFailureCells, ComputeSplitCellCountToAdd; and, for
-//          this header's own functions only, ComputeBiasedCorner, ComputeSortKeyOfCorner, ComputeIsCellPresent
+//          ToFailureKey, ToFailureStep, ToFailurePosition, ComputeFailureCells, ComputeSplitCellCountToAdd,
+//          FindBlockNeighbours, ComputeCoveredCellState, ComputeCellStateBeside, ComputeFacePieceKind; and, for this
+//          header's own functions and types only, ComputeBiasedCorner, ComputeSortKeyOfCorner, ComputeIsCellPresent,
+//          ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry, ComputeStoredCellState,
+//          ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and the struct LocalPlace
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), GridError (grid/grid_error.h), CellId, CellBlockId,
-//          CellBlockIndex, CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kNoIndex, ComesBefore,
-//          ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ComputeBigCell, ComputeCellEighth,
-//          ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h), GridFrame (grid/grid_tables.h)
+//          CellBlockIndex, CellPlaceIndex, FacePlaceIndex, CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels,
+//          kCellPlacesPerBlock, kFacePlacesPerBlock, kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId,
+//          ToCellCoord, ToSizeLevel, ToCellBlockIndex, ComputeBigCell, ComputeCellEighth, ComputeBiggerCellCoord and
+//          the id bit layout (grid/grid_ids.h), GridFrame, GridTables, CellState, FacePieceKind (grid/grid_tables.h)
 // Used by: the grid's CPU builder, its GPU half and the counting of a list (grid/); private to grid/
 // Read:    docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>,
-//          <proc-build-grid>, <sec-cell-blocks>
+//          <proc-build-grid>, <sec-cell-blocks>, <sec-face-pieces>
 
 #pragma once
 
@@ -538,6 +551,340 @@ FLUIDITY_CPU_AND_GPU constexpr int ComputeSplitCellCountToAdd(CellId cell) noexc
     chain_cell = ComputeBigCell(chain_cell);
   }
   return added_count;
+}
+
+// Computes the id of the block of size_level at a block coordinate: the same bits as ToCellBlockId gives for any cell
+// of that block. A block id packs its block coordinate as a cell id packs a cell coordinate.
+// Requires: size_level < kMaxSizeLevels; each coordinate within -kMaxCoord..kMaxCoord + 1.
+FLUIDITY_CPU_AND_GPU constexpr CellBlockId ComputeBlockIdAt(SizeLevel size_level, CellCoord block_coord) noexcept {
+  return {.value = ToCellId(size_level, block_coord).value};
+}
+
+// Finds the block of size_level at a raw block coordinate in the sorted block ids: the one lookup for a block beside
+// a block, above it or below it. A coordinate outside -kMaxCoord..kMaxCoord holds no block and gives kNoIndex before
+// any id is made, since its packed id would name another block.
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t FindSortedBlockAt(
+    const CellBlockId* sorted_blocks,
+    std::uint32_t count,
+    SizeLevel size_level,
+    CellCoord block_coord
+) noexcept {
+  if (!ComputeIsCoordInRange(block_coord)) {
+    return kNoIndex;
+  }
+  return FindSortedBlock(sorted_blocks, count, ComputeBlockIdAt(size_level, block_coord)).value;
+}
+
+// Computes the entry 0..26 of the offset (dx, dy, dz), each -1, 0 or +1, in a block's 27 same-size-level neighbours:
+// ((dz + 1) * 3 + (dy + 1)) * 3 + (dx + 1). The offset (0, 0, 0) is entry 13.
+FLUIDITY_CPU_AND_GPU constexpr int ComputeNeighbourEntry(int dx, int dy, int dz) noexcept {
+  return ((((dz + 1) * 3) + (dy + 1)) * 3) + (dx + 1);
+}
+
+// Finds the 27 same-size-level neighbour blocks, the bigger block and the 8 smaller blocks of one block, and writes
+// them to its entries of the three tables: method paper <proc-build-grid> step 6,
+// <proc-build-grid-in-parallel> step P9.
+//
+// Method: entry 13 is the block itself; every other entry is FindSortedBlock of the block id at the entry's block
+//   coordinate. For a block of size level l at block coordinate b, the neighbour at offset d is at b + d (size level
+//   l), the bigger block at floor(b / 2) (size level l - 1), and the smaller block of eighth e at 2 b + (e & 1,
+//   (e >> 1) & 1, (e >> 2) & 1) (size level l + 1). Each eighth of a block is 2 x 2 x 2 of its cells, whose small
+//   cells fill exactly one block of size level l + 1. A block coordinate outside -kMaxCoord..kMaxCoord has no block,
+//   decided before any id is made. A size-level-0 block has no bigger block, and a size-level-15 block no smaller
+//   blocks. The entries go where the layouts of GridTables (grid/grid_tables.h) put them. When the block of size
+//   level l - 1 at floor(b / 2) is not in the list, bigger_block gets kNoIndex; a build treats that, for a block of
+//   size level 1 or more, as an internal fault, since every such block lies in a split cell whose block exists.
+// Example: the blocks {size level 0 (0,0,0), size level 1 (0,0,0)}: block 1 has bigger block 0; block 0 has smaller
+//   block 1 for eighth 0 and kNoIndex for eighths 1..7; entry 13 of each is the block itself, every other
+//   neighbour entry kNoIndex.
+// Requires: block_ids holds block_count ids in the fixed order, each once, every coordinate within
+//   -kMaxCoord..kMaxCoord + 1; block < block_count; each table has room for block_count entries of the block.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <proc-build-grid-in-parallel>, <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU constexpr void FindBlockNeighbours(
+    const CellBlockId* block_ids,
+    std::uint32_t block_count,
+    CellBlockIndex block,
+    std::uint32_t* same_size_level_blocks,
+    std::uint32_t* bigger_block,
+    std::uint32_t* smaller_blocks
+) noexcept {
+  assert(block_ids != nullptr && block.value < block_count);
+  assert(same_size_level_blocks != nullptr && bigger_block != nullptr && smaller_blocks != nullptr);
+  // A block id has the bits of the cell id at its block coordinate, so ToCellCoord and ToSizeLevel read it back.
+  const CellId block_as_cell = {.value = block_ids[block.value].value};
+  const CellCoord block_coord = ToCellCoord(block_as_cell);
+  const SizeLevel size_level = ToSizeLevel(block_as_cell);
+  const auto size_level_number = static_cast<int>(size_level);
+  const std::uint64_t block_number = block.value;
+
+  for (int dz = -1; dz <= 1; ++dz) {
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        const auto entry = static_cast<std::uint64_t>(ComputeNeighbourEntry(dx, dy, dz));
+        const bool is_self = dx == 0 && dy == 0 && dz == 0;
+        const CellCoord neighbour_coord = {.x = block_coord.x + dx, .y = block_coord.y + dy, .z = block_coord.z + dz};
+        same_size_level_blocks[(block_number * 27) + entry] =
+            is_self ? block.value : FindSortedBlockAt(block_ids, block_count, size_level, neighbour_coord);
+      }
+    }
+  }
+
+  bigger_block[block_number] = kNoIndex;
+  if (size_level_number >= 1) {
+    const CellCoord bigger_coord = {
+        .x = ComputeBiggerCellCoord(block_coord.x, 1),
+        .y = ComputeBiggerCellCoord(block_coord.y, 1),
+        .z = ComputeBiggerCellCoord(block_coord.z, 1),
+    };
+    const auto bigger_size_level = static_cast<SizeLevel>(size_level_number - 1);
+    bigger_block[block_number] = FindSortedBlockAt(block_ids, block_count, bigger_size_level, bigger_coord);
+  }
+
+  for (unsigned cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    std::uint32_t smaller = kNoIndex;
+    if (size_level_number < kMaxSizeLevels - 1) {
+      // Every coordinate is at most 2^18 in size, so 2 b + 1 fits a 32-bit integer.
+      const CellCoord smaller_coord = {
+          .x = (2 * block_coord.x) + static_cast<std::int32_t>(cell_eighth & 1U),
+          .y = (2 * block_coord.y) + static_cast<std::int32_t>((cell_eighth >> 1U) & 1U),
+          .z = (2 * block_coord.z) + static_cast<std::int32_t>((cell_eighth >> 2U) & 1U),
+      };
+      const auto smaller_size_level = static_cast<SizeLevel>(size_level_number + 1);
+      smaller = FindSortedBlockAt(block_ids, block_count, smaller_size_level, smaller_coord);
+    }
+    smaller_blocks[(block_number * 8) + cell_eighth] = smaller;
+  }
+}
+
+// The cell place given by local coordinates, x, y and z, of a block: 0..3 inside the block, and on at most one axis
+// -1 or 4, one place beyond the block's low or high side.
+struct LocalPlace {
+  int x;
+  int y;
+  int z;
+};
+
+// Computes the stored state of local place (x, y, z), each 0..3, of a block that exists.
+FLUIDITY_CPU_AND_GPU constexpr CellState
+ComputeStoredCellState(const GridTables& tables, std::uint32_t block, LocalPlace place) noexcept {
+  const int place_in_block = (((place.z * 4) + place.y) * 4) + place.x;
+  const std::uint64_t block_start = static_cast<std::uint64_t>(block) * kCellPlacesPerBlock;
+  return tables.cell_states[block_start + static_cast<std::uint64_t>(place_in_block)];
+}
+
+// Computes the local coordinate of a place one cell beyond a block side in the block on that side: -1 is 3 of the
+// block below, 4 is 0 of the block above, 0..3 stay.
+FLUIDITY_CPU_AND_GPU constexpr int ComputeLocalCoordInNeighbour(int local_coord) noexcept {
+  if (local_coord < 0) {
+    return 3;
+  }
+  if (local_coord > 3) {
+    return 0;
+  }
+  return local_coord;
+}
+
+// Computes the side, -1, 0 or +1, on which a local coordinate lies beyond a block: -1 below 0, +1 above 3.
+FLUIDITY_CPU_AND_GPU constexpr int ComputeBlockSide(int local_coord) noexcept {
+  if (local_coord < 0) {
+    return -1;
+  }
+  if (local_coord > 3) {
+    return 1;
+  }
+  return 0;
+}
+
+// Says whether an active cell one size level bigger covers a local place of `block` (each local coordinate 0..3, or
+// -1 or 4 on one axis), through the bigger block.
+//
+// Method: on each axis, a block at block coordinate b is the low half (b even) or the high half (b odd) of its bigger
+//   block, so its local coordinate c is the bigger block's 2 (b & 1) + floor(c / 2): 0..3 inside, -1 or 4 beyond.
+//   The halving of -1 is -1, taken through ComputeBiggerCellCoord. Beyond, the covering place lies in the bigger
+//   block's same-size-level neighbour on that side, at local 3 or 0. No bigger block, or no such neighbour, covers
+//   nothing. Only a kActive cover counts: a place marked kInsideBiggerCell covers nothing one size level down.
+FLUIDITY_CPU_AND_GPU constexpr bool
+ComputeIsCoveredByActiveBigCell(const GridTables& tables, std::uint32_t block, LocalPlace place) noexcept {
+  const std::uint32_t bigger_block = tables.bigger_block[block];
+  if (bigger_block == kNoIndex) {
+    return false;
+  }
+  const CellCoord block_coord = ToCellCoord(CellId{.value = tables.block_ids[block].value});
+  // The low bit of a coordinate as unsigned is its parity, for a negative coordinate too.
+  const auto half_x = static_cast<std::int32_t>(static_cast<std::uint32_t>(block_coord.x) & 1U);
+  const auto half_y = static_cast<std::int32_t>(static_cast<std::uint32_t>(block_coord.y) & 1U);
+  const auto half_z = static_cast<std::int32_t>(static_cast<std::uint32_t>(block_coord.z) & 1U);
+  const LocalPlace covering_place = {
+      .x = (2 * half_x) + ComputeBiggerCellCoord(place.x, 1),
+      .y = (2 * half_y) + ComputeBiggerCellCoord(place.y, 1),
+      .z = (2 * half_z) + ComputeBiggerCellCoord(place.z, 1),
+  };
+  const int side_x = ComputeBlockSide(covering_place.x);
+  const int side_y = ComputeBlockSide(covering_place.y);
+  const int side_z = ComputeBlockSide(covering_place.z);
+  std::uint32_t covering_block = bigger_block;
+  if (side_x != 0 || side_y != 0 || side_z != 0) {
+    const auto entry = static_cast<std::uint64_t>(ComputeNeighbourEntry(side_x, side_y, side_z));
+    covering_block = tables.same_size_level_blocks[(static_cast<std::uint64_t>(bigger_block) * 27) + entry];
+    if (covering_block == kNoIndex) {
+      return false;
+    }
+  }
+  const LocalPlace place_in_covering_block = {
+      .x = ComputeLocalCoordInNeighbour(covering_place.x),
+      .y = ComputeLocalCoordInNeighbour(covering_place.y),
+      .z = ComputeLocalCoordInNeighbour(covering_place.z),
+  };
+  return ComputeStoredCellState(tables, covering_block, place_in_covering_block) == CellState::kActive;
+}
+
+// Computes the state of a cell place that holds neither an active nor a split cell: method paper <proc-build-grid>
+// step 7, <proc-build-grid-in-parallel> step P10 (c).
+//
+// Method: kInsideBiggerCell when the place of the bigger block that covers it is kActive, else kAbsent. A block of
+//   size level l at block coordinate b is the low or the high half of its bigger block on each axis, so its local
+//   coordinate c is the bigger block's 2 (b & 1) + floor(c / 2). A block with no bigger block, size level 0, gives
+//   kAbsent. It reads only kActive marks, and no call of this step writes one, so the places may be filled in any
+//   order, or all at once.
+// Example: in the blocks {size level 0 (0,0,0), size level 1 (0,0,0)} with size level 0 {0,0,0} active and {1,0,0}
+//   split, the size-level-1 place (1, 0, 1) is kInsideBiggerCell, covered by place (0, 0, 0); the place (0, 2, 0) is
+//   kAbsent, since its covering place (0, 1, 0) holds no active cell.
+// Requires: `cell` is a place of block 0..block_count - 1 whose stored state is neither kActive nor kSplit; the
+//   block ids, the neighbour tables, the bigger blocks and every kActive mark are written.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <proc-build-grid-in-parallel>, <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU constexpr CellState
+ComputeCoveredCellState(const GridTables& tables, CellPlaceIndex cell) noexcept {
+  const std::uint32_t block = ToCellBlockIndex(cell).value;
+  assert(block < tables.block_count);
+  assert(tables.cell_states[cell.value] != CellState::kActive && tables.cell_states[cell.value] != CellState::kSplit);
+  const auto place_in_block = static_cast<int>(cell.value % static_cast<std::uint32_t>(kCellPlacesPerBlock));
+  const LocalPlace place = {
+      .x = place_in_block % 4,
+      .y = (place_in_block / 4) % 4,
+      .z = place_in_block / 16,
+  };
+  return ComputeIsCoveredByActiveBigCell(tables, block, place) ? CellState::kInsideBiggerCell : CellState::kAbsent;
+}
+
+// Computes the state of a cell place of the size level of `block`, given by local coordinates of which one may lie one
+// cell beyond the block, -1 or 4.
+//
+// Method: inside the block, the stored state. Beyond it, when the same-size-level neighbour block on that side
+//   exists, the stored state of its place, at local 3 or 0. When it does not, no cell of this size level is there:
+//   the place is kInsideBiggerCell when an active cell one size level bigger covers it, else kAbsent. The cover is
+//   found through the bigger block: `block` is the low or the high half of it along the axis; on the half's outer
+//   side the cover lies in the bigger block's same-size-level neighbour on that side (kAbsent when there is none),
+//   on its inner side in the bigger block itself. A size-level-0 block has no bigger block: kAbsent.
+//   Coordinate limits: a neighbour beyond -kMaxCoord..kMaxCoord has no entry in the tables, so nothing lies beyond the
+//   low limit, and beyond the high limit only a bigger cell, found at its own size level through the bigger block.
+// Example: with size level 0 {-1,0,0} active and the 8 size-level-1 cells of size level 0 {0,0,0}, the
+//   size-level-1 block (0,0,0) has no size-level-1 neighbour on its low X side; local (-1, 0, 0) is the size-level-1
+//   place x = -1, covered by size level 0 {-1,0,0}: kInsideBiggerCell. Local (0, -1, 0) lies under the bigger block's
+//   low Y side, where no block is: kAbsent.
+// Requires: block < block_count; each local coordinate is -1..4, and at most one of them is outside 0..3; every cell
+//   state of the grid is written.
+// Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
+//
+// clang-tidy: three local coordinates in x, y, z order; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr CellState
+ComputeCellStateBeside(const GridTables& tables, CellBlockIndex block, int local_x, int local_y, int local_z) noexcept {
+  assert(block.value < tables.block_count);
+  const int side_x = ComputeBlockSide(local_x);
+  const int side_y = ComputeBlockSide(local_y);
+  const int side_z = ComputeBlockSide(local_z);
+  const bool is_at_most_one_place_beyond =
+      local_x >= -1 && local_x <= 4 && local_y >= -1 && local_y <= 4 && local_z >= -1 && local_z <= 4;
+  const int beyond_count = (side_x != 0 ? 1 : 0) + (side_y != 0 ? 1 : 0) + (side_z != 0 ? 1 : 0);
+  assert(is_at_most_one_place_beyond && beyond_count <= 1);
+  static_cast<void>(is_at_most_one_place_beyond);
+  const LocalPlace place = {.x = local_x, .y = local_y, .z = local_z};
+  if (beyond_count == 0) {
+    return ComputeStoredCellState(tables, block.value, place);
+  }
+  const auto entry = static_cast<std::uint64_t>(ComputeNeighbourEntry(side_x, side_y, side_z));
+  const std::uint32_t neighbour = tables.same_size_level_blocks[(static_cast<std::uint64_t>(block.value) * 27) + entry];
+  if (neighbour != kNoIndex) {
+    const LocalPlace place_in_neighbour = {
+        .x = ComputeLocalCoordInNeighbour(local_x),
+        .y = ComputeLocalCoordInNeighbour(local_y),
+        .z = ComputeLocalCoordInNeighbour(local_z),
+    };
+    return ComputeStoredCellState(tables, neighbour, place_in_neighbour);
+  }
+  return ComputeIsCoveredByActiveBigCell(tables, block.value, place) ? CellState::kInsideBiggerCell
+                                                                     : CellState::kAbsent;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Computes what one face place holds: method paper <proc-build-grid> step 8, <proc-build-grid-in-parallel> step P11.
+//
+// Method: the face place's block, axis and local place come from its index (layout of GridTables). Plane p lies
+//   between the local cells p - 1 (low) and p (high) along the axis; both states come from ComputeCellStateBeside.
+//   Plane 4 is kNotAPiece when the same-size-level block on the high side exists, since the face piece is kept at
+//   that block's plane 0. Otherwise: active and active, or active and kInsideBiggerCell (either side) give
+//   kBetweenCells; active on the high side and kAbsent on the low give kGridEdgeLow; active on the low side and
+//   kAbsent on the high give kGridEdgeHigh; anything else, active beside kSplit or no active side, gives kNotAPiece.
+//   So a face piece is kept once, at the size level of its smaller cell (<sec-face-pieces>).
+// Example: size level 0 {0,0,0} active and the 8 size-level-1 cells of size level 0 {1,0,0}: block 0 of size level 0
+//   and block 1 of size level 1. Plane 2 of block 1 along X lies between size-level-1 local cells 1 (inside the big
+//   cell: kInsideBiggerCell) and 2 (active), so its 4 places beside the active cells are kBetweenCells. Plane 1 of
+//   block 0 along X lies between the active big cell and the split cell: kNotAPiece.
+// Requires: `face` is a face place of block 0..block_count - 1; every cell state of the grid is written.
+// Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <proc-build-grid>, <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr FacePieceKind
+ComputeFacePieceKind(const GridTables& tables, FacePlaceIndex face) noexcept {
+  const CellBlockIndex block = ToCellBlockIndex(face);
+  assert(block.value < tables.block_count);
+  const auto place_in_block = static_cast<int>(face.value % static_cast<std::uint32_t>(kFacePlacesPerBlock));
+  const int axis_number = place_in_block / 80;
+  const int place_on_axis = place_in_block % 80;
+  // The place's local coordinates; along the axis the plane, 0..4, the low side of local cell p.
+  LocalPlace high_place{};
+  LocalPlace low_place{};
+  int plane = 0;
+  if (axis_number == 0) {
+    high_place = {.x = place_on_axis % 5, .y = (place_on_axis / 5) % 4, .z = place_on_axis / 20};
+    plane = high_place.x;
+    low_place = {.x = plane - 1, .y = high_place.y, .z = high_place.z};
+  } else if (axis_number == 1) {
+    high_place = {.x = place_on_axis % 4, .y = (place_on_axis / 4) % 5, .z = place_on_axis / 20};
+    plane = high_place.y;
+    low_place = {.x = high_place.x, .y = plane - 1, .z = high_place.z};
+  } else {
+    high_place = {.x = place_on_axis % 4, .y = (place_on_axis / 4) % 4, .z = place_on_axis / 16};
+    plane = high_place.z;
+    low_place = {.x = high_place.x, .y = high_place.y, .z = plane - 1};
+  }
+
+  if (plane == 4) {
+    const int side_x = axis_number == 0 ? 1 : 0;
+    const int side_y = axis_number == 1 ? 1 : 0;
+    const int side_z = axis_number == 2 ? 1 : 0;
+    const auto entry = static_cast<std::uint64_t>(ComputeNeighbourEntry(side_x, side_y, side_z));
+    const std::uint32_t high_block =
+        tables.same_size_level_blocks[(static_cast<std::uint64_t>(block.value) * 27) + entry];
+    if (high_block != kNoIndex) {
+      return FacePieceKind::kNotAPiece;
+    }
+  }
+
+  const CellState low_state = ComputeCellStateBeside(tables, block, low_place.x, low_place.y, low_place.z);
+  const CellState high_state = ComputeCellStateBeside(tables, block, high_place.x, high_place.y, high_place.z);
+  const bool is_low_active = low_state == CellState::kActive;
+  const bool is_high_active = high_state == CellState::kActive;
+  const bool is_low_cell = is_low_active || low_state == CellState::kInsideBiggerCell;
+  const bool is_high_cell = is_high_active || high_state == CellState::kInsideBiggerCell;
+  if ((is_low_active && is_high_cell) || (is_high_active && is_low_cell)) {
+    return FacePieceKind::kBetweenCells;
+  }
+  if (is_high_active && low_state == CellState::kAbsent) {
+    return FacePieceKind::kGridEdgeLow;
+  }
+  if (is_low_active && high_state == CellState::kAbsent) {
+    return FacePieceKind::kGridEdgeHigh;
+  }
+  return FacePieceKind::kNotAPiece;
 }
 
 }  // namespace fluidity::grid
