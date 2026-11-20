@@ -637,8 +637,10 @@ sizes itself. No design below was edited.
   state reported as `kRunOnCallFailed`: it becomes `kInternalFault`. The `assert`s of `contact_tolerance.h` and
   `solid_contact_types.h` on finite inputs are checks of a caller's values, not internal states; review each one.
   Method paper `<sec-contact>` if it lists the errors. Glossary: no new word.
-- **02 Grid.** Done in the grid plan (eighth revision) and design 3.3. Open: whether `kTooManyNearbyFaces` folds
-  into `kInternalFault`.
+- **02 Grid.** Done in the grid plan (eighth and ninth revisions) and design 3.3. `grid::GridError::kTooManyNearbyFaces`
+  no longer exists (A107): it is `kInternalFault`, value 10; `kOutOfMemory` is 11. Every module that maps or names
+  the grid's errors (particles, transfer, viscosity, surface and foam, the step's reasons, the CLI's and the
+  add-on's lists of stable names) drops `too_many_nearby_faces` and maps the one value `kInternalFault`.
 - **03 Particles, 04 Transfer, 05 Pressure, 06 Viscosity, 07 Materials, 08 Solids, 09 Gas, 11 Cell resize and
   batches, 13 Surface, foam and spray, 15 Sand (design and plan of each).** Add the value to the module's error
   enum in section 3, with its message and stable name; change the `BufferError` mapping; and go through section

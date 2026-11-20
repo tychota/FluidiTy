@@ -253,6 +253,15 @@ build, never as bad input and never by a debug-only assertion.
   `kTooManyNearbyFaces` (a question for the owner, not changed here); the `Requires:` preconditions on
   processors, which are a caller's contract, not an internal state.
 
+### Ninth revision 2026-11-20: too many nearby faces is the internal fault
+
+Owner decision (A107): `kTooManyNearbyFaces` is folded into `kInternalFault`. `GridError` has twelve values
+again; `kInternalFault` takes the place `kTooManyNearbyFaces` had (value 10) and `kOutOfMemory` is 11 and last.
+`FindNearbyFaces` reports `kInternalFault` when the candidates do not fit the list. Changed: Task 2 (counts and
+tests), Task 17 (the guard and its test, now `MoreFacesThanRoom_IsInternalFault`), Task 27; design 3.3, 3.5 and
+5.4. Where the fifth, sixth and eighth entries above name `kTooManyNearbyFaces` or count thirteen values, read
+this entry.
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -620,21 +629,21 @@ Load the same three skills.
 
 **Interfaces:**
 - Follows `contact/contact_error.h` and `contact/contact_error_message.h/.cc` as built.
-- Produces in `grid_error.h`: `enum class GridError : std::uint8_t` with the thirteen enumerators of design 3.3 in
-  that order (`kInternalFault` twelfth, `kOutOfMemory` last), and `struct GridFailure { GridError error = GridError::kNone; std::uint64_t
+- Produces in `grid_error.h`: `enum class GridError : std::uint8_t` with the twelve enumerators of design 3.3 in
+  that order (`kInternalFault` eleventh, `kOutOfMemory` last), and `struct GridFailure { GridError error = GridError::kNone; std::uint64_t
   magnitude = 0; }` (Task 3 adds `cell` and `other_cell` between them once `CellId` exists). It is shared
   because `FindNearbyFaces`, in a shared header, reports through a `GridError*`.
 - Produces in `grid_error_message.h`: `std::string_view ToMessage(GridError error)`, `std::string_view
   ToName(GridError error)`. An out-of-range value gives the text of an unknown error and the name `"unknown"`.
 
 - [ ] **Step 1: Failing tests** (label `cpu`):
-  - `TEST(ToName, EveryError_IsStableSnakeCase)`: for each of the 13 values the name is the enumerator without
-    `k` in lower snake case; all 13 distinct; `ToName(GridError::kInternalFault) == "internal_fault"`; `ToName(GridError::kTooManyCellBlocks) == "too_many_cell_blocks"`,
+  - `TEST(ToName, EveryError_IsStableSnakeCase)`: for each of the 12 values the name is the enumerator without
+    `k` in lower snake case; all 12 distinct; `ToName(GridError::kInternalFault) == "internal_fault"`; `ToName(GridError::kTooManyCellBlocks) == "too_many_cell_blocks"`,
     `ToName(GridError::kNone) == "none"`.
   - `TEST(ToMessage, EveryError_HasADistinctNonEmptyMessage)`.
   - `TEST(ToMessage, InternalFault_SaysItIsNotTheScene)`: the text contains "FluidiTy" and "report".
   - `TEST(GridError, OutOfMemory_IsTheLastValue)`: `static_assert(static_cast<int>(GridError::kOutOfMemory) ==
-    12)`, `static_cast<int>(GridError::kInternalFault) == 11`, `ToName(GridError::kOutOfMemory) == "out_of_memory"`, and `GridFailure{}.magnitude == 0`.
+    11)`, `static_cast<int>(GridError::kInternalFault) == 10`, `ToName(GridError::kOutOfMemory) == "out_of_memory"`, and `GridFailure{}.magnitude == 0`.
 - [ ] **Step 2: Run** and see the compile fail. **Step 3: Implement.** Messages say what the user can do
   (`kTooManyCellBlocks`: "The grid needs more cell blocks than the limit. Raise max_cell_blocks or use fewer
   small cells."; `kInternalFault`: "FluidiTy found a state inside the grid that should never occur. This is a fault
@@ -2112,7 +2121,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 **Interfaces:**
 - Consumes: `FindCellAt(tables, position, near)`, `FindTouchingCells`, `FindFacePieces`, `GridError`.
 - Produces: `NearbyFaceList`, `NearbyFaceMask`, `NearbyFaceFit`, `FindNearbyFaces`, `ToMaskOfAll` (design 3.5).
-  Candidate rule: design 5.4 steps 1 and 2. On `kPositionOutsideGrid` or `kTooManyNearbyFaces` the list has
+  Candidate rule: design 5.4 steps 1 and 2. On `kPositionOutsideGrid` or `kInternalFault` (more candidates than the list holds) the list has
   `count` 0 and `*error` is set; otherwise `*error = kNone`.
 - **The window test, exactly** (no float comparison decides whether a face is a candidate). Two private inline
   functions hold it; `FindNearbyFaces` and the face form of Task 19 call them and nothing else, so CPU, GPU
@@ -2138,13 +2147,14 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 - **The bound.** `kMaxNearbyFaces = 216` and `struct NearbyFaceMask { std::uint64_t bits[4]; }` (bit `i` of
   word `i / 64` is face `i` of the list). The header says, with the proof of design 5.4 in five lines: 124 is
   the largest count known and the exact maximum where two cell sizes meet; no valid grid passes 212; so
-  `kTooManyNearbyFaces` is a guard that no valid grid reaches, kept because a list must never be overrun. The
+  running out of room is therefore an impossible state, reported as `kInternalFault`; the check is kept because
+  a list must never be overrun. The
   candidates of a position depend on it only through its cell and the three `n_p`, so a cell has 64 candidate
   lists per axis and tests go through them.
 - **The one writer of the list.** A private form `NearbyFaceList FindNearbyFacesWithRoom(const GridTables&
   tables, Vec3 position, Axis axis, CellBlockIndex near, int max_faces, GridError* error)` does the walk;
   `FindNearbyFaces` is that form with `kMaxNearbyFaces`. It appends through one statement that tests `count <
-  max_faces` first; on the first face that does not fit it sets `kTooManyNearbyFaces`, sets `count` to 0 and
+  max_faces` first; on the first face that does not fit it sets `kInternalFault`, sets `count` to 0 and
   returns. So the guard is reached by a valid grid and a smaller room, and the test needs no invalid table.
 - **Sizes**, asserted in the header: `sizeof(NearbyFaceList) == 888` (24 B and 216 indexes of 4 B),
   `sizeof(NearbyFaceMask) == 32`, and in Task 18 `sizeof(NearbyFaceWeights) == 1152`. The file header says what
@@ -2163,9 +2173,9 @@ chooses active cells) and cell resize both read; the passes that apply them belo
     dy, dz)`); the 12 others and every level-1 place farther out are split into level-2 cells (15 level-1 and
     1,608 level-2 cells). Position `{4.75, 4.25, 4.75}` m (window `(1, 0, 1)`): the Y axis gives exactly 124,
     and no axis in any of the 64 windows of that cell gives more.
-  - `TEST(FindNearbyFaces, MoreFacesThanRoom_IsTooManyNearbyFaces)`: the grid and position of
+  - `TEST(FindNearbyFaces, MoreFacesThanRoom_IsInternalFault)`: the grid and position of
     `TwoSizesWorstCase_Has124`, Y axis, through `FindNearbyFacesWithRoom` with `max_faces = 100`: `*error ==
-    kTooManyNearbyFaces`, `count == 0`, and no entry of `faces` from index 100 on was written (the returned
+    kInternalFault`, `count == 0`, and no entry of `faces` from index 100 on was written (the returned
     list is value-initialised, so those entries are 0; a second run with `max_faces = 124` returns all 124 and
     `kNone`, and with 123 fails).
   - `TEST(FindNearbyFaces, SmallRandomGrids_NeverExceedTheProvenBound)`: 200 small random grids, every active
@@ -2842,7 +2852,7 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   and calls no library function; `FindNearestCommittedCell` is an added name; the comparison with `main` uses
   `main`'s Python reference, with samples of weight 0 handled apart; `SharedBuilderBuffers_OtherLiveGridUnchanged`
   does not call `FindCellAt` (it is built later) and its GPU form does not compare free bytes with the estimate
-  (the reservation tests do); the sibling check walks the eighth-0 chain; `kInternalFault` is a thirteenth error and `kSizeMismatch` maps to it; the grid has no stack entry held by the driver, with the three
+  (the reservation tests do); the sibling check walks the eighth-0 chain; `kInternalFault` replaces `kTooManyNearbyFaces` and `kSizeMismatch` maps to it; the grid has no stack entry held by the driver, with the three
   `gpu` tests that pin it.
 - [ ] **Step 4: `docs/gpu-runs.md`:** add the grid's entry, result `compiled, not run`, with every `gpu` test of
   Tasks 10, 11b, 13c, 20, 21, 23, 25 and 26a by full name (`Suite.Name`), copied from the test files (`ctest -N

@@ -211,13 +211,13 @@ enum class GridError : std::uint8_t {  // NEW. One enum for the module.
                           // Nothing falls back to the CPU.
   kWrongGridVersion,      // A buffer or index of another grid version was passed, or values bound to no grid.
   kPositionOutsideGrid,   // No active cell contains the position.
-  kTooManyNearbyFaces,    // More than kMaxNearbyFaces candidates. A guard: no valid grid reaches it (5.4).
-  kInternalFault,         // NEW (A106). A state no input can produce: a size error from base/ inside a grid
-                          // operation, arrays that do not match the estimate's entries, a table or status record
-                          // that contradicts what the operation just wrote. Checked in every build; never
+  kInternalFault,         // NEW (A106, A107). A state no input can produce: more nearby-face candidates than
+                          // kMaxNearbyFaces (5.4; it replaces kTooManyNearbyFaces), a size error from base/ inside
+                          // a grid operation, arrays that do not match the estimate's entries, a table or status
+                          // record that contradicts what the operation just wrote. Checked in every build; never
                           // kBadInput, never a debug-only assertion. A fault in FluidiTy, not in the scene: the
                           // message asks the user to report it with the scene. Stable name `internal_fault`.
-  kOutOfMemory,           // Value 12 of 13. Changed (reconcile item 31): moved to the last place. Only the builders: the run's
+  kOutOfMemory,           // Value 11, the last of 12. Changed (reconcile item 31): moved to the last place. Only the builders: the run's
                           // RunMemory (BufferError::kRunMemoryTooSmall) or the processor could not hold a buffer.
 };
 struct GridFailure {              // NEW. DECIDED shape (A2).
@@ -539,7 +539,8 @@ struct FaceWeight {               // DECIDED name.
   Vec3 weight_change;             // 1/m. Derivative of `weight` with respect to the particle position. NEW.
 };
 
-// Fails: kPositionOutsideGrid, kTooManyNearbyFaces (returned in *error; the list then has count 0).
+// Fails: kPositionOutsideGrid, kInternalFault when the candidates do not fit the list (returned in *error; the
+// list then has count 0).
 NearbyFaceList FindNearbyFaces(const GridTables& tables, Vec3 position, Axis axis, CellBlockIndex near,
                                GridError* error);
 NearbyFaceMask ToMaskOfAll(const NearbyFaceList& list);
@@ -1142,7 +1143,7 @@ case is not searched exhaustively.
    itself, where no piece can be: 212.
 
 `kMaxNearbyFaces` is 216, the count before the last subtraction; the mask has four 64-bit words.
-`kTooManyNearbyFaces` therefore guards against a broken table, not against a grid. A cell has 64 candidate lists
+Running out of room therefore means a broken table, not a grid: it is `kInternalFault` (A107). A cell has 64 candidate lists
 per axis (the values of `n_p`); tests go through all of them on the 76 case, on the 124 case and on random grids,
 and report the largest count found.
 
@@ -1769,8 +1770,8 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     "Reservation"). Amends decision 25: GPU free-byte tests
     measure the drop across `BuildRunMemory`. Source: owner answer A58; `plan-decisions.md` item 3 and its
     same-day correction and reconcile ruling.
-38. **(Reconcile item 31) `kOutOfMemory` last.** `GridError::kOutOfMemory` moves to the last place (12 values then; 13 since A106 added `kInternalFault` just before
-    it, 2026-11-20);
+38. **(Reconcile item 31) `kOutOfMemory` last.** `GridError::kOutOfMemory` moves to the last place (12 values; since A106 and A107 `kInternalFault` stands just
+    before it, in the place of `kTooManyNearbyFaces`, 2026-11-20);
     only the builders return it, also for `BufferError::kRunMemoryTooSmall`; `GridFailure` gains `magnitude` (bytes
     asked; plan decision, the grid's failure had no number). Source: `plan-decisions.md` item 11.
 39. **(Reconcile items 32, 33)** The span forms on a GPU grid (`FindBorderBlocks`, `BuildGridPiece`) and a CPU
