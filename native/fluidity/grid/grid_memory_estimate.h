@@ -31,7 +31,8 @@
 // Owns:    ToMemoryCounts, BuildGridMemoryEstimate
 // Uses:    CPU-only guard (base/cpu_only.h), MemoryCounts, MemoryEstimateEntry (base/memory_count.h), RunOn
 //          (base/run_on.h), GridCounts, BuilderBuffersSharing (grid/staggered_grid.h)
-// Implementation uses: ComputeOrderBuffersSize (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h)
+// Implementation uses: ComputeOrderBuffersSize (base/stable_order.h), the entry names and item bytes
+//          (grid/grid_buffers_internal.h), GridBuildStatus (grid/grid_build_status.h)
 // Used by: the step's run plan, and the grid's buffer builders, which take one memory piece for each entry
 // Read:    docs/method-paper/fluidity-method.typ <sec-grid-memory>, <tab-grid-memory>
 

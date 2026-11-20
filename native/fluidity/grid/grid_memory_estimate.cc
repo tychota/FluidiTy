@@ -7,25 +7,13 @@
 #include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/stable_order.h"
+#include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
 namespace {
-
-// Bytes of one item of each array: a block id is 8 bytes and a block index 4. The 27 same-size-level neighbours include
-// the block itself.
-constexpr std::uint32_t kBlockIdBytes = 8;
-constexpr std::uint32_t kSameSizeLevelNeighbourBlocksBytes = 27 * 4;
-constexpr std::uint32_t kBiggerAndSmallerBlocksBytes = (1 + 8) * 4;  // The bigger block, then the 8 smaller blocks.
-constexpr std::uint32_t kCellStateBytes = 1;
-constexpr std::uint32_t kFacePieceKindBytes = 1;
-constexpr std::uint32_t kCellIdBytes = 8;
-constexpr std::uint32_t kSortKeyBytes = 8;
-constexpr std::uint32_t kPieceMapBytes = 4;
-// Bytes of one item of the two orders of the GPU build (a 32-bit index each).
-constexpr std::uint32_t kOrderItemBytes = 4;
 
 // The entry of an array counted per cell block, cell place or face place.
 MemoryEstimateEntry BuildCountedEntry(
@@ -86,24 +74,24 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
 
   // The tables come first on both processors, always in the run's memory: 456 bytes per block.
   std::vector<MemoryEstimateEntry> estimate = {
-      BuildCountedEntry("grid: block ids", CountedPer::kCellBlock, kBlockIdBytes, grid_count, MemoryWhere::kRunOn),
+      BuildCountedEntry(kBlockIdsEntryName, CountedPer::kCellBlock, kBlockIdBytes, grid_count, MemoryWhere::kRunOn),
       BuildCountedEntry(
-          "grid: same-size-level neighbour blocks",
+          kSameSizeLevelNeighbourBlocksEntryName,
           CountedPer::kCellBlock,
           kSameSizeLevelNeighbourBlocksBytes,
           grid_count,
           MemoryWhere::kRunOn
       ),
       BuildCountedEntry(
-          "grid: bigger and smaller blocks",
+          kBiggerAndSmallerBlocksEntryName,
           CountedPer::kCellBlock,
           kBiggerAndSmallerBlocksBytes,
           grid_count,
           MemoryWhere::kRunOn
       ),
-      BuildCountedEntry("grid: cell states", CountedPer::kCellPlace, kCellStateBytes, grid_count, MemoryWhere::kRunOn),
+      BuildCountedEntry(kCellStatesEntryName, CountedPer::kCellPlace, kCellStateBytes, grid_count, MemoryWhere::kRunOn),
       BuildCountedEntry(
-          "grid: face piece kinds",
+          kFacePieceKindsEntryName,
           CountedPer::kFacePlace,
           kFacePieceKindBytes,
           grid_count,
@@ -114,14 +102,14 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
   if (run_on == RunOn::kCpu) {
     // The CPU builder sorts the cell ids with std::sort in CPU memory and needs no OrderBuffers.
     estimate.push_back(BuildCountedEntry(
-        "grid: builder buffers: cell ids",
+        kBuilderCellIdsEntryName,
         CountedPer::kCellPlace,
         kCellIdBytes,
         builder_buffers_copies,
         MemoryWhere::kCpu
     ));
     estimate.push_back(
-        BuildCountedEntry("grid: piece map", CountedPer::kCellBlock, kPieceMapBytes, grid_count, MemoryWhere::kCpu)
+        BuildCountedEntry(kPieceMapEntryName, CountedPer::kCellBlock, kPieceMapBytes, grid_count, MemoryWhere::kCpu)
     );
     return estimate;
   }
@@ -134,35 +122,30 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
   const std::uint64_t order_buffers_bytes =
       (std::uint64_t{order_buffers_size.bytes_per_item} * order_item_count) + order_buffers_size.fixed_bytes;
   estimate.push_back(BuildCountedEntry(
-      "grid: builder buffers: cell ids",
+      kBuilderCellIdsEntryName,
       CountedPer::kCellPlace,
       kCellIdBytes,
       builder_buffers_copies,
       MemoryWhere::kRunOn
   ));
   estimate.push_back(BuildCountedEntry(
-      "grid: builder buffers: sort keys",
+      kBuilderSortKeysEntryName,
       CountedPer::kCellPlace,
       kSortKeyBytes,
       builder_buffers_copies,
       MemoryWhere::kRunOn
   ));
   estimate.push_back(
-      BuildGivenEntry("grid: builder buffers: order", kOrderItemBytes * order_item_count, 1, builder_buffers_copies)
-  );
-  estimate.push_back(BuildGivenEntry(
-      "grid: builder buffers: second order",
-      kOrderItemBytes * order_item_count,
-      1,
-      builder_buffers_copies
-  ));
-  estimate.push_back(
-      BuildGivenEntry("grid: builder buffers: order buffers", order_buffers_bytes, 1, builder_buffers_copies)
+      BuildGivenEntry(kBuilderOrderEntryName, kOrderItemBytes * order_item_count, 1, builder_buffers_copies)
   );
   estimate.push_back(
-      BuildCountedEntry("grid: piece map", CountedPer::kCellBlock, kPieceMapBytes, grid_count, MemoryWhere::kRunOn)
+      BuildGivenEntry(kBuilderSecondOrderEntryName, kOrderItemBytes * order_item_count, 1, builder_buffers_copies)
   );
-  estimate.push_back(BuildGivenEntry("grid: build status", 1, sizeof(GridBuildStatus), grid_count));
+  estimate.push_back(BuildGivenEntry(kBuilderOrderBuffersEntryName, order_buffers_bytes, 1, builder_buffers_copies));
+  estimate.push_back(
+      BuildCountedEntry(kPieceMapEntryName, CountedPer::kCellBlock, kPieceMapBytes, grid_count, MemoryWhere::kRunOn)
+  );
+  estimate.push_back(BuildGivenEntry(kBuildStatusEntryName, 1, sizeof(GridBuildStatus), grid_count));
   return estimate;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
