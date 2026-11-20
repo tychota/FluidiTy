@@ -1,0 +1,14 @@
+native/fluidity/grid/grid_build_steps.h
+  h_745d560834e283 142-143,318-322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fabcf70446edf5739bef0e267260fb9e1e32585c",
+  "prompts": {},
+  "humans": {
+    "h_745d560834e283": {
+      "author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
