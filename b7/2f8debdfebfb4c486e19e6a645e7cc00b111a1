@@ -1,0 +1,48 @@
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_a25e06a08e6d00 1-298
+  s_4f0877e2acdcf0::t_d5ce9ba8de7f63 299-300
+native/fluidity/grid/grid_cell_checks_test.cc
+  s_4f0877e2acdcf0::t_3a48ff247a8e02 1-752
+  s_4f0877e2acdcf0::t_9488d95326f976 753-803
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_a8f9f7bcc91b01 51,58
+  s_4f0877e2acdcf0::t_adadff8a5bc93f 74-86
+  s_4f0877e2acdcf0::t_c3f81637b116b8 24,26-31,34-38
+  s_4f0877e2acdcf0::t_a4d100b66635cd 283-333
+  s_4f0877e2acdcf0::t_d6ad548eb49300 157
+  s_4f0877e2acdcf0::t_52cd6fbcefef80 248
+native/fluidity/grid/grid_test_support_test.cc
+  s_4f0877e2acdcf0::t_ca6cd3565f3014 695-704
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_c9503d24692862 221-222,226-228
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_e87211da2fae14 481-484
+native/fluidity/grid/grid_buffers_internal.h
+  s_4f0877e2acdcf0::t_739b9a41e30db7 174-179
+  s_4f0877e2acdcf0::t_15be4f36eceee4 28
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_d5f25820cac80e 106-108
+  s_4f0877e2acdcf0::t_88a515a071eb6e 1-105,109-116
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_64ac22a3f3f423 5,15-17,25
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_c1f4a76505968b 356-369
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_705ac9818e9590 27-28,91-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b72f8debdfebfb4c486e19e6a645e7cc00b111a1",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
