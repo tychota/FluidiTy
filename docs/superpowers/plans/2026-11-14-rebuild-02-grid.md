@@ -300,6 +300,18 @@ names and contracts.
 - Task 12: an id is made from a place only when it is active or split. Task 9a: its comparison with the checker
   covers all 200 grids and says which block keeps a face piece of plane 4.
 
+### Twelfth revision 2026-11-20: the list count as built (Task 8b)
+
+- The count of face pieces does not ask whether the place beside a cell is inside a bigger cell or absent: both
+  give one face piece. Rule as built: on a cell's low side, one face piece unless the place beside it is split;
+  on its high side, one unless the place is active or split. 9 binary searches per cell, not up to 18. Kinds
+  (between cells, grid's edge) exist only in a built grid's tables. Task 8b, Task 1b's procedure text; design
+  3.3.
+- `kOutOfMemory` has three sources: the four builders, the span form of `CheckSizeStepRule` and
+  `ComputeGridCounts(inputs)`; each of the last two allocates one copy of the ids without throwing (Global
+  Constraints "Errors"; design 3.3).
+- Task 9b is not affected: it runs the build and counts face pieces from the kinds the build wrote.
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -410,7 +422,9 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
   (Task 22b). Two buffers on different processors break a documented `Requires:` precondition, checked by
   `assert` in debug builds; it is never an error value.
 - **Errors.** A failed check writes nothing. After `kRunOnCallFailed` the outputs are unspecified and the run
-  stops. `kOutOfMemory` comes from the four builders and from the one form that makes its own copy of a list (`CheckSizeStepRule` on a span, which allocates without throwing). A memory piece that does not fit is an error in every
+  stops. `kOutOfMemory` comes from three sources: the four builders, the span form of `CheckSizeStepRule`
+  and `ComputeGridCounts(inputs)`; each of the last two makes one copy of the ids and allocates it without
+  throwing. A memory piece that does not fit is an error in every
   build, debug and release alike (`BufferError::kRunMemoryTooSmall`); no test of it is skipped in a debug build.
 - **Exactness.** Discrete outputs (every table, count and failure) are equal on CPU and GPU. Floating-point
   results agree within the CPU-versus-GPU tolerance below unless a header promises the same bits.
@@ -657,7 +671,7 @@ Load the same three skills.
 - [ ] **Step 4: Counting without tables.** One paragraph in `<sec-cell-blocks>` and the procedure
   `<proc-count-grid>` with four steps: 1 check and sort the list (steps 1 to 4 of `<proc-build-grid>`); 2
   count the active cells per level; 3 count the face pieces, one cell at a time, from the place beside each of
-  its six sides (active, inside a bigger cell, split or absent); 4 add the split cells, sort by block and
+  its six sides (split or not on a low side; active, split or neither on a high side); 4 add the split cells, sort by block and
   count the distinct blocks. Say why it exists (the planner counts before any buffers exist) and that a place
   beyond the coordinate limit of its own size level holds no cell of that level and gets no id: at the low limit
   nothing lies beyond a cell; at the high limit a bigger cell may, found at its own size level. Code comments `// Step N:` in Task 8b follow these
@@ -1333,14 +1347,16 @@ Load the same three skills.
   2. `active_cells_per_size_level` and `active_cells`: one pass.
   3. `face_pieces`: one pass over the active cells, summing the private
      `int ComputeFacePieceCountOfCell(std::span<const CellId> sorted_cells, std::uint32_t position)`. For a
-     cell `c` of level `p` and each axis, let `N` be the coordinate of the same-level place beside `c`. Every
-     lookup is `FindSortedCellAt` (Task 7a), on coordinates found by arithmetic, so a coordinate outside
-     `-kMaxCoord..kMaxCoord` at its level holds no cell and no id is made for it. The place is *active* when
-     `N` is found at level `p`; *inside a bigger cell* when `floor(N / 2)` is found at level `p - 1`; *split*
-     when the small cell of `N` that touches `c` by a face is found at level `p + 1` (after step 4 that small
-     cell is active); else *absent*. Low side: 1 face piece unless the place is split. High side: 1 face piece
-     when the place is inside a bigger cell or absent, else 0 (an active place counts the shared face piece on
-     its own low side; a split place's small cells count theirs). At most 18 binary searches per cell.
+     cell `c` of size level `p` and each axis, let `N` be the coordinate of the same-size-level place beside
+     `c`. Every lookup is `FindSortedCellAt` (Task 7a), on coordinates found by arithmetic, so a coordinate
+     outside `-kMaxCoord..kMaxCoord` at its size level holds no cell and no id is made for it. The place is
+     *split* when the small cell of `N` that touches `c` by a face is found at size level `p + 1` (after step 4
+     that small cell is active), and *active* when `N` is found at size level `p`. Low side: 1 face piece
+     unless the place is split. High side: 1 face piece unless the place is active or split (an active place
+     counts the shared face piece on its own low side; a split place's small cells count theirs). Whether the
+     place is inside a bigger cell or absent is not looked up: both give one face piece, and the kinds of face
+     pieces exist only in a built grid's tables. 9 binary searches per cell (1 on each low side, 2 on each
+     high side).
   4. `cell_blocks`: append the split cells (`ComputeSplitCellCountToAdd`, `ComputeBigCellAtSizeLevel`), sort all
      ids with the comparator "pass 2, then 1, then 0 of `ToBlockSortKey`", and count the runs of equal
      `ToCellBlockId`. A count above `2^32 - 1` cannot occur (`n` fits `std::uint32_t`).

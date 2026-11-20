@@ -222,8 +222,10 @@ enum class GridError : std::uint8_t {  // NEW. One enum for the module.
                           // record that contradicts what the operation just wrote. Checked in every build; never
                           // kBadInput, never a debug-only assertion. A fault in FluidiTy, not in the scene: the
                           // message asks the user to report it with the scene. Stable name `internal_fault`.
-  kOutOfMemory,           // Value 11, the last of 12. Changed (reconcile item 31): moved to the last place. Only the builders: the run's
-                          // RunMemory (BufferError::kRunMemoryTooSmall) or the processor could not hold a buffer.
+  kOutOfMemory,           // Value 11, the last of 12. Changed (reconcile item 31): moved to the last place. Three sources: the four
+                          // builders (the run's RunMemory, BufferError::kRunMemoryTooSmall, or the processor could
+                          // not hold a buffer), the span form of CheckSizeStepRule and ComputeGridCounts(inputs),
+                          // each of which allocates one copy of the ids without throwing.
 };
 struct GridFailure {              // NEW. DECIDED shape (A2).
   GridError error = GridError::kNone;
@@ -296,7 +298,9 @@ class StaggeredGrid {             // DECIDED name (decision 13). Move-only. Owns
 // Counts without building. Requires a CPU list (A30, debug assertion). Same checks as BuildGrid except the block
 // limit, so a planner can count beyond any room: the stated reason this form stays beside the buffers form (A31).
 // It builds no table (plan revision 2026-11-19): it sorts a CPU copy of the ids, counts face pieces by id lookups
-// (per active cell and side: is the place beside it active, inside a bigger cell, split or absent), appends the
+// (as built, 2026-11-20: on a cell's low side one face piece unless the place beside it is split; on its high side
+// one unless the place is active or split; whether the place is inside a bigger cell or absent is not looked up,
+// both give one face piece, and kinds exist only in a built grid's tables; 9 binary searches per cell), appends the
 // split cells, sorts by block and counts the distinct block ids. One allocation of 8 B per active or split cell
 // (at most 9.2 B per active cell); two sorts and four passes. Tables sized for the worst case would cost about
 // 1.1 kB per active cell, and their size is the count being asked for.
