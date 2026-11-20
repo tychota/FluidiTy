@@ -1,0 +1,19 @@
+native/fluidity/grid/grid_tables.h
+  s_75c9845ace619f::t_e30dd2461cca57 76-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ec57ee158dbeb083f71e78bdd77174548f55482f",
+  "prompts": {},
+  "sessions": {
+    "s_75c9845ace619f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-acd9ba0b5c92d72d4",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
