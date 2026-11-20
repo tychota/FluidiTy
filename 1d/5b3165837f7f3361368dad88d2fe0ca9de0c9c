@@ -1,0 +1,56 @@
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_9081caeab69320 9,12
+  s_4f0877e2acdcf0::t_127f0ddcdbfac2 1425-1442
+  s_4f0877e2acdcf0::t_e0e24d51d519bf 1199-1424,1443-1668,1670-1673,1676-1695,1699,1709-1716,1718,1720-1732,1740-1884,1888-1895,1897-1912,1914-1927,1929-1941,1943-1947
+  s_4f0877e2acdcf0::t_127862ab1b1092 1669,1674-1675,1717,1719,1896,1913,1928,1942,1948-1983
+  s_4f0877e2acdcf0::t_ee05d9fbe8d0d0 1696-1698,1700-1708,1733-1739,1885-1887
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_3c590953d5f0a1 1-2,4-5,11-14,19-26
+  s_4f0877e2acdcf0::t_194747e88dc8de 36
+  s_4f0877e2acdcf0::t_9cc14a005c7942 66-75,79-92
+  s_4f0877e2acdcf0::t_4639b0ed3764f3 27
+  s_75c9845ace619f::t_e30dd2461cca57 76-78
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_09b032be530eea 621-622,624
+  s_4f0877e2acdcf0::t_d892fb4d98f9ff 698-701
+  s_4f0877e2acdcf0::t_3762b38783f455 586-590
+  s_4f0877e2acdcf0::t_192b26c79e0c0f 585
+  s_4f0877e2acdcf0::t_3ebcd0d7dc9323 553-584,594-620,623,625-697,702-779,782-791,793-794,797-828,830-885
+  s_4f0877e2acdcf0::t_e299400db50412 780-781
+  s_4f0877e2acdcf0::t_4561309420418d 829
+  s_4f0877e2acdcf0::t_b190f5db57ede7 54-55,58-59,64-67,70
+  s_4f0877e2acdcf0::t_52bf496ad27379 2-3
+  s_4f0877e2acdcf0::t_ecef1e80533bfd 39-44
+  s_4f0877e2acdcf0::t_f6f0b3baa88ab4 792,795-796
+  s_4f0877e2acdcf0::t_d023b750126f6a 886
+  s_4f0877e2acdcf0::t_618e86993ccd5d 60-62,591-593
+docs/glossary.md
+  s_4f0877e2acdcf0::t_1873b5ee7c5fa4 199
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_15c9cb15412f8a 7-8,29-31,42,99-122,124-125
+  s_4f0877e2acdcf0::t_be8e5628d42c73 123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1d5b3165837f7f3361368dad88d2fe0ca9de0c9c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_75c9845ace619f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-acd9ba0b5c92d72d4",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
