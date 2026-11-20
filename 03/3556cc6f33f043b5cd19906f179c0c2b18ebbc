@@ -1,0 +1,62 @@
+native/fluidity/grid/grid_memory_estimate.cc
+  s_4f0877e2acdcf0::t_da69fe9c1b83eb 1-16,18-19,21-90,92,94-170
+  s_4f0877e2acdcf0::t_bb14d3cd9045fe 17,20,91,93
+native/fluidity/grid/grid_memory_estimate.h
+  s_4f0877e2acdcf0::t_3c7ef4e410415d 1-8,10-29,31-65,67-81,84-93
+  s_4f0877e2acdcf0::t_c178aece4659eb 9
+  s_4f0877e2acdcf0::t_6fe9553beae5cb 30
+  s_4f0877e2acdcf0::t_991dc41a8b85c1 94-96
+  s_4f0877e2acdcf0::t_914252965acb1f 66,82-83
+native/fluidity/grid/grid_build_status.h
+  s_4f0877e2acdcf0::t_68c0494961fd9b 1-8,12-15,17-23,25-43,49-58,60-73,75-79
+  s_4f0877e2acdcf0::t_b8dfa01197e64f 16
+  s_4f0877e2acdcf0::t_c146df8be2935e 9-11,24,44-48,59,74
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_d9f1ab38e47655 1-49,51-61
+  s_4f0877e2acdcf0::t_c528a02ec6e126 50
+native/fluidity/grid/grid_memory_estimate_test.cc
+  s_4f0877e2acdcf0::t_4ea9d2ec411880 1-4,5,6-7,10-61,64-67,69-102,104-161,174-181,199-262,266-268,270-308,352-364
+  s_4f0877e2acdcf0::t_442ca7ebe788e7 365-373
+  s_4f0877e2acdcf0::t_e4a1fc5adf647c 8-9,62-63,68,103,162-173,182-198,263-265,269,309-351
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_d4179b9c95a682 2,6,8,12,20
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_459a59f339cad1 1-2,7-10,18,35,66-69,71
+  s_4f0877e2acdcf0::t_7c4e275334271b 70
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_64293f079d18bf 2333
+  s_4f0877e2acdcf0::t_8c61682a36c811 2188,2237-2238
+  s_4f0877e2acdcf0::t_8615c4fc9253fb 2468-2469
+docs/glossary.md
+  s_7904bb60678dc9::t_55ccea6acc6a83 199
+native/fluidity/grid/grid_error.h
+  s_4f0877e2acdcf0::t_bff4358220afd5 7-11,46-48
+native/fluidity/grid/grid_error_message.cc
+  s_4f0877e2acdcf0::t_09d85af53d079d 40-41,72-73
+native/fluidity/grid/grid_error_test.cc
+  s_4f0877e2acdcf0::t_b1c63f1ab7cbe7 76-78,143-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "033556cc6f33f043b5cd19906f179c0c2b18ebbc",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_7904bb60678dc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a0624f5717551af28",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
