@@ -995,11 +995,17 @@ bool ComputeIsSameUsedTables(const GridTables& first, const GridTables& second) 
 }
 
 bool ComputeIsSameGrid(const StaggeredGrid& first, const StaggeredGrid& second) {
-  return ComputeIsSameUsedTables(first.tables(RunOn::kCpu), second.tables(RunOn::kCpu))
+  const GridFrame first_frame = first.tables(RunOn::kCpu).frame;
+  const GridFrame second_frame = second.tables(RunOn::kCpu).frame;
+  const bool is_same_frame = first_frame.origin.x == second_frame.origin.x
+      && first_frame.origin.y == second_frame.origin.y && first_frame.origin.z == second_frame.origin.z
+      && first_frame.biggest_cell_width == second_frame.biggest_cell_width
+      && first_frame.size_level_count == second_frame.size_level_count;
+  return is_same_frame && ComputeIsSameUsedTables(first.tables(RunOn::kCpu), second.tables(RunOn::kCpu))
       && ToGridCountFields(first.counts()) == ToGridCountFields(second.counts());
 }
 
-std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t group_size) {
+std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t count) {
   std::vector<std::size_t> ordered_grids(kRandomGridCount);
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
     ordered_grids.at(grid) = grid;
@@ -1007,17 +1013,13 @@ std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t group_size) {
   std::ranges::stable_sort(ordered_grids, [](std::size_t first, std::size_t second) {
     return BuildShuffledRandomGrids().at(first).size() > BuildShuffledRandomGrids().at(second).size();
   });
-  const std::array<std::size_t, 3> group_starts = {
-      0,
-      (kRandomGridCount / 2) - (group_size / 2),
-      kRandomGridCount - group_size,
-  };
   std::vector<std::size_t> grids;
-  grids.reserve(3 * group_size);
-  for (const std::size_t group_start : group_starts) {
-    for (std::size_t position = group_start; position < group_start + group_size; ++position) {
-      grids.push_back(ordered_grids.at(position));
-    }
+  grids.reserve(count);
+  for (std::size_t position = 0; position < count; ++position) {
+    // Integer arithmetic only, so every machine picks the same ranks: 0 for a count of 1, else floor(position * 199 /
+    // (count - 1)), which is 0 for the first position and kRandomGridCount - 1 for the last.
+    const std::size_t rank = count == 1 ? 0 : position * (kRandomGridCount - 1) / (count - 1);
+    grids.push_back(ordered_grids.at(rank));
   }
   return grids;
 }

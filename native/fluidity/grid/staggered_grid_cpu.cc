@@ -779,7 +779,12 @@ GridBuffers TakeBuffers(StaggeredGrid&& grid) {
   return buffers;
 }
 
-std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, GridBuffers& buffers) {
+namespace {
+
+// Runs the steps of a build into `buffers` and returns the counts of the tables written. BuildGrid and the buffers form
+// of ComputeGridCounts both call it, so the counts come from the very tables a build writes. The buffers keep their
+// arrays and their loan, and their contents are unspecified after a failure.
+std::expected<GridCounts, GridFailure> BuildGridTables(const GridInputs& inputs, GridBuffers& buffers) {
   // Steps of <proc-build-grid>: 1 to 4 the input checks, the ids and the sorted list  5 the split cells and the
   // blocks  6 the neighbour tables  7 the cell states  8 the face piece kinds
   // Steps 1 to 4: the n active cells, sorted in the fixed order at the start of the builder buffers' cell ids.
@@ -889,7 +894,22 @@ std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, Gr
   for (const CellId cell : active_cells) {
     ++counts.active_cells_per_size_level[static_cast<std::size_t>(ToSizeLevel(cell))];
   }
-  return BuildGridFromBuffers(std::move(buffers), inputs.frame, inputs.version, counts);
+  return counts;
+}
+
+}  // namespace
+
+std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, GridBuffers& buffers) {
+  const std::expected<GridCounts, GridFailure> counts = BuildGridTables(inputs, buffers);
+  if (!counts.has_value()) {
+    return std::unexpected(counts.error());
+  }
+  return BuildGridFromBuffers(std::move(buffers), inputs.frame, inputs.version, *counts);
+}
+
+std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs, GridBuffers& buffers) {
+  // The tables are written and then left unspecified: the caller wanted the counts only.
+  return BuildGridTables(inputs, buffers);
 }
 
 }  // namespace fluidity::grid

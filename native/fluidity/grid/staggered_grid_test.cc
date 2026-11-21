@@ -712,16 +712,16 @@ BuildsInTurn ApplyBuildsInTurn(
   return builds;
 }
 
-// 30 random grids spread by size (FindRandomGridsSpreadBySize: the 10 with the most cells, the 10 around the middle
-// and the 10 with the fewest), built one after the other into buffers for 4,096 blocks and taken back each time,
-// with the buffers' arrays never moving. The reference grids are built first, each with its own memory; the counted
-// part builds, compares and takes back only. The build is meant to write only into buffers sized once for the room;
-// this test checks it over small, middling and large grids, so an allocation that only some sizes reach still shows,
-// and building 30 in turn checks that taking the buffers back and building again allocates nothing.
+// 30 random grids spread by size (FindRandomGridsSpreadBySize: at evenly spaced ranks of the size order, from the grid
+// with the most cells to the one with the fewest), built one after the other into buffers for 4,096 blocks and taken
+// back each time, with the buffers' arrays never moving. The reference grids are built first, each with its own memory;
+// the counted part builds, compares and takes back only. The build is meant to write only into buffers sized once for
+// the room; this test checks it over small, middling and large grids, so an allocation that only some sizes reach still
+// shows, and building 30 in turn checks that taking the buffers back and building again allocates nothing.
 TEST(BuildGrid, IntoBuffers_AllocatesNothing) {
   constexpr std::size_t kGridCount = 30;
   const GridFrame frame = ToUnitFrame(kRandomGridSizeLevelCount);
-  const std::vector<std::size_t> grids = FindRandomGridsSpreadBySize(kGridCount / 3);
+  const std::vector<std::size_t> grids = FindRandomGridsSpreadBySize(kGridCount);
   const std::vector<TestGrid> reference_grids = BuildReferenceGrids(grids);
   ASSERT_EQ(reference_grids.size(), kGridCount);
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(frame, {}), {.max_cell_blocks = kRandomGridRoom});

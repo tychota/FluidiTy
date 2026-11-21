@@ -433,6 +433,24 @@ GridBuffers TakeBuffers(StaggeredGrid&& grid);
 // Read: docs/method-paper/fluidity-method.typ <proc-count-grid>, <sec-face-pieces>, <sec-cell-blocks>
 std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs);
 
+// Counts the cell blocks, the active cells and the face pieces of the list of `inputs` as BuildGrid would, by running
+// the steps of that build into `buffers` and reading the counts from what it wrote. Allocates nothing. The buffers
+// hold no grid before or after; their arrays and loan stay, and their contents become unspecified.
+//
+// Method: the steps of BuildGrid, siblings required, so the counts are those of the grid BuildGrid would return. Unlike
+//   the one-argument form, which has no room, this form needs the room of `buffers`.
+//   An empty list gives zero counts, as the one-argument form does.
+// Example: the 9 size-level-0 cells {4 i, 0, 0}, each in a block of its own, into buffers for 8 blocks are
+//   kTooManyCellBlocks with cell and other_cell zero, while the one-argument form counts 9 cell blocks.
+// Requires: as CheckSizeStepRule(inputs, buffers).
+// Fails: as BuildGrid for the same inputs and buffers, including kBadInput when `buffers` is moved from (a build moved
+//        it into a grid, or it was moved to another object), kTooManyCellBlocks when the grid does not fit the
+//        buffers (cell and other_cell zero) and kRunOnCallFailed when buffers.run_on() is the GPU: the library has no
+//        GPU build of a grid, so after the input checks no id is read and nothing is written. A failed call leaves
+//        `buffers` usable.
+// Read: docs/method-paper/fluidity-method.typ <proc-count-grid>, <proc-build-grid>
+std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs, GridBuffers& buffers);
+
 // Checks a list of active cells in CPU memory: its ids, overlaps and the size step rule, but not the siblings, since
 // cell resize checks its lists while it splits cells and some siblings do not exist yet.
 //

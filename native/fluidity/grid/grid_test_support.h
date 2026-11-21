@@ -288,7 +288,7 @@ inline constexpr std::uint32_t kMaxRandomGridCellBlocks = 252;
 
 // Takes the empty buffers out of `owner`, a grid of no cells built with BuildTestGrid, so a test has grid buffers of
 // the owner's room on the CPU. Their builder buffers and memory stay in `owner`, which must outlive the buffers.
-// Requires: `owner` holds a grid; otherwise the calling test fails and the owner is read anyway.
+// Requires: `owner` holds a grid.
 GridBuffers TakeEmptyGridBuffers(std::expected<TestGrid, GridFailure>& owner);
 
 // Every field of counts, as one comparable value: the blocks, the active cells per size level, the active cells and the
@@ -302,14 +302,19 @@ std::tuple<std::uint32_t, std::array<std::uint64_t, kMaxSizeLevels>, std::uint64
 // face piece kinds per block. Allocates nothing, so a test may call it while it counts allocations.
 bool ComputeIsSameUsedTables(const GridTables& first, const GridTables& second);
 
-// Says whether two grids have the same counts and the same used tables on the CPU. Allocates nothing.
+// Says whether two grids have the same frame, the same counts and the same used tables on the CPU. Allocates nothing.
 bool ComputeIsSameGrid(const StaggeredGrid& first, const StaggeredGrid& second);
 
-// A spread of the random lists by size: with the kRandomGridCount entries ordered by cell count, most first and the
-// first entry first among equal counts, the group_size entries at the top, the group_size entries centred on the middle
-// position (kRandomGridCount / 2) and the group_size entries at the bottom, in that order.
-// Example: group_size 10 takes ordered positions 0..9, 95..104 and 190..199.
-std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t group_size);
+// A spread of `count` random lists by size, so tests see small, middling and large grids and the sizes between them.
+//
+// Method: the kRandomGridCount entries are ordered by cell count, most cells first and the entry with the lower index
+//   first among equal counts. Position i = 0..count - 1 of the result takes the entry of rank floor(i x
+//   (kRandomGridCount - 1) / (count - 1)) in that order, in integer arithmetic, so every machine picks the same grids;
+//   a count of 1 takes rank 0. The first position is the entry with the most cells and the last the one with the
+//   fewest.
+// Example: count 4 takes ranks 0, 66, 132 and 199; count 3 takes ranks 0, 99 and 199.
+// Requires: 1 <= count <= kRandomGridCount; otherwise the result repeats entries or is empty.
+std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t count);
 
 // The random grids of the given entries, each version 1 with its own memory, in a room of kMaxRandomGridCellBlocks. A
 // grid that fails to build fails the calling test and is left out.

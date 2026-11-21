@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <map>
 #include <optional>
@@ -20,8 +21,10 @@
 #include "fluidity/base/axis.h"
 #include "fluidity/base/test_support.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
 namespace {
@@ -1293,6 +1296,160 @@ TEST(GeometricGridDeathTest, OverlappingCells_Asserts) {
 #else
   EXPECT_DEATH(BuildCheckerOfOverlappingCells(), "holds_no_listed_cell");
 #endif
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Helpers that compare grids and pick random grids
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Tables of 2 blocks, owned by the test so one byte of each can be changed.
+struct OwnedTables {
+  static constexpr std::size_t kBlockCount = 2;
+
+  std::vector<CellBlockId> block_ids = std::vector<CellBlockId>(kBlockCount, CellBlockId{7});
+  std::vector<std::uint32_t> same_size_level_blocks = std::vector<std::uint32_t>(std::size_t{27} * kBlockCount, 1);
+  std::vector<std::uint32_t> bigger_block = std::vector<std::uint32_t>(kBlockCount, 2);
+  std::vector<std::uint32_t> smaller_blocks = std::vector<std::uint32_t>(std::size_t{8} * kBlockCount, 3);
+  std::vector<CellState> cell_states =
+      std::vector<CellState>(std::size_t{kCellPlacesPerBlock} * kBlockCount, CellState::kActive);
+  std::vector<FacePieceKind> face_piece_kinds =
+      std::vector<FacePieceKind>(std::size_t{kFacePlacesPerBlock} * kBlockCount, FacePieceKind::kBetweenCells);
+
+  [[nodiscard]] GridTables ToTables() const {
+    return {
+        .version = {.value = 1},
+        .block_count = kBlockCount,
+        .block_ids = block_ids.data(),
+        .same_size_level_blocks = same_size_level_blocks.data(),
+        .bigger_block = bigger_block.data(),
+        .smaller_blocks = smaller_blocks.data(),
+        .cell_states = cell_states.data(),
+        .face_piece_kinds = face_piece_kinds.data(),
+    };
+  }
+};
+
+// Tables equal to OwnedTables{} except for the last entry of the table `table`, 0..5 in the order of GridTables.
+OwnedTables BuildTablesWithLastEntryChanged(std::size_t table) {
+  OwnedTables tables;
+  switch (table) {
+    case 0:
+      tables.block_ids.back().value ^= 1U;
+      break;
+    case 1:
+      tables.same_size_level_blocks.back() ^= 1U;
+      break;
+    case 2:
+      tables.bigger_block.back() ^= 1U;
+      break;
+    case 3:
+      tables.smaller_blocks.back() ^= 1U;
+      break;
+    case 4:
+      tables.cell_states.back() = CellState::kSplit;
+      break;
+    default:
+      tables.face_piece_kinds.back() = FacePieceKind::kNotAPiece;
+      break;
+  }
+  return tables;
+}
+
+TEST(ComputeIsSameUsedTables, EqualTables_AreSame) {
+  const OwnedTables first;
+  const OwnedTables second;
+  EXPECT_TRUE(ComputeIsSameUsedTables(first.ToTables(), second.ToTables()));
+}
+
+// The last entry of each table is its last used byte, so a check that stops one item early would miss it.
+TEST(ComputeIsSameUsedTables, OneByteDifferentInAnyTable_IsNotSame) {
+  const OwnedTables first;
+  for (std::size_t table = 0; table < 6; ++table) {
+    SCOPED_TRACE(table);
+    const OwnedTables second = BuildTablesWithLastEntryChanged(table);
+    EXPECT_FALSE(ComputeIsSameUsedTables(first.ToTables(), second.ToTables()));
+  }
+}
+
+TEST(ComputeIsSameUsedTables, DifferentVersion_IsNotSame) {
+  const OwnedTables first;
+  const OwnedTables second;
+  GridTables other_version = second.ToTables();
+  other_version.version = {.value = 2};
+  EXPECT_FALSE(ComputeIsSameUsedTables(first.ToTables(), other_version));
+}
+
+TEST(ComputeIsSameGrid, SameListTwice_IsSameAndOtherListIsNot) {
+  const std::vector<CellId> cells = BuildSplitCellBesideBigCell();
+  const std::vector<CellId> other_cells = {ToCell(0, 0, 0, 0)};
+  const std::expected<TestGrid, GridFailure> first =
+      BuildTestGrid({.frame = ToUnitFrame(2), .active_cells = cells, .version = {.value = 1}});
+  const std::expected<TestGrid, GridFailure> second =
+      BuildTestGrid({.frame = ToUnitFrame(2), .active_cells = cells, .version = {.value = 1}});
+  const std::expected<TestGrid, GridFailure> other =
+      BuildTestGrid({.frame = ToUnitFrame(2), .active_cells = other_cells, .version = {.value = 1}});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  ASSERT_TRUE(other.has_value());
+  EXPECT_TRUE(ComputeIsSameGrid(first->grid, second->grid));
+  EXPECT_FALSE(ComputeIsSameGrid(first->grid, other->grid));
+}
+
+// The same list and version in a frame with another origin: the tables are equal bytes, the grids are not the same.
+TEST(ComputeIsSameGrid, OtherFrame_IsNotSame) {
+  const std::vector<CellId> cells = BuildSplitCellBesideBigCell();
+  GridFrame moved_frame = ToUnitFrame(2);
+  moved_frame.origin.x = 0.5;
+  const std::expected<TestGrid, GridFailure> first =
+      BuildTestGrid({.frame = ToUnitFrame(2), .active_cells = cells, .version = {.value = 1}});
+  const std::expected<TestGrid, GridFailure> moved =
+      BuildTestGrid({.frame = moved_frame, .active_cells = cells, .version = {.value = 1}});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(moved.has_value());
+  EXPECT_FALSE(ComputeIsSameGrid(first->grid, moved->grid));
+}
+
+TEST(ToGridCountFields, EveryField_IsKeptInOrder) {
+  GridCounts counts{};
+  counts.cell_blocks = 2;
+  counts.active_cells_per_size_level[0] = 1;
+  counts.active_cells_per_size_level[1] = 8;
+  counts.active_cells = 9;
+  counts.face_pieces = 41;
+  const auto [cell_blocks, per_size_level, active_cells, face_pieces] = ToGridCountFields(counts);
+  EXPECT_EQ(cell_blocks, 2U);
+  EXPECT_EQ(per_size_level.at(0), 1U);
+  EXPECT_EQ(per_size_level.at(1), 8U);
+  EXPECT_EQ(per_size_level.at(2), 0U);
+  EXPECT_EQ(active_cells, 9U);
+  EXPECT_EQ(face_pieces, 41U);
+}
+
+// Count 4 takes ranks floor(i x 199 / 3) for i = 0..3: 0, 66, 132 and 199. The test finds the rank of each grid it gets
+// by counting the grids before it in the order (more cells, or as many cells and a lower index), not by sorting.
+TEST(FindRandomGridsSpreadBySize, FourGrids_TakeRanks0_66_132_199) {
+  const std::vector<std::size_t> grids = FindRandomGridsSpreadBySize(4);
+  ASSERT_EQ(grids.size(), 4U);
+  const std::array<std::size_t, 4> expected_ranks = {0, 66, 132, 199};
+  for (std::size_t position = 0; position < grids.size(); ++position) {
+    SCOPED_TRACE(position);
+    const std::size_t grid = grids.at(position);
+    std::size_t rank = 0;
+    for (std::size_t other = 0; other < kRandomGridCount; ++other) {
+      const std::size_t other_size = BuildShuffledRandomGrids().at(other).size();
+      const std::size_t grid_size = BuildShuffledRandomGrids().at(grid).size();
+      rank += (other_size > grid_size || (other_size == grid_size && other < grid)) ? 1 : 0;
+    }
+    EXPECT_EQ(rank, expected_ranks.at(position));
+  }
+}
+
+TEST(FindRandomGridsSpreadBySize, OneGrid_IsTheBiggest) {
+  const std::vector<std::size_t> grids = FindRandomGridsSpreadBySize(1);
+  ASSERT_EQ(grids.size(), 1U);
+  for (const std::vector<CellId>& other : BuildShuffledRandomGrids()) {
+    EXPECT_LE(other.size(), BuildShuffledRandomGrids().at(grids.front()).size());
+  }
 }
 
 }  // namespace
