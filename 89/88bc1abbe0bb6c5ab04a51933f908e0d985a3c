@@ -1,0 +1,19 @@
+native/fluidity/grid/read_grid_test.cc
+  s_52c5f2dd59b45e::t_dd64b56aa4ca06 292-294
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8988bc1abbe0bb6c5ab04a51933f908e0d985a3c",
+  "prompts": {},
+  "sessions": {
+    "s_52c5f2dd59b45e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a7bb20b31a49fd637",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
