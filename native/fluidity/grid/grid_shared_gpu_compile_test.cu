@@ -5,10 +5,10 @@
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
 // code for every function of cell_size_rule.h, grid_build_steps.h, grid_ids.h, grid_tables.h and weight_curve.h, the
 // helpers those functions call included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables,
-// WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel and CellSizeFacts read and
-// written by GPU code. The integer results go to `results`, and the double results of weight_curve.h, grid_tables.h
-// and cell_size_rule.h go to `double_results`. The CUDA compiler generates GPU code for a shared
-// function only where GPU code calls it, so each function is called here once.
+// WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel, CellSizeFacts,
+// CellSizeFactorTable and RefinementFactors read and written by GPU code. The integer results go to `results`, and the
+// double results of weight_curve.h, grid_tables.h and cell_size_rule.h go to `double_results`. The CUDA compiler
+// generates GPU code for a shared function only where GPU code calls it, so each function is called here once.
 // A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
 // function's address, which needs no GPU.
 
@@ -49,7 +49,8 @@ __global__ void ComputeWithEverySharedGridFunction(
     CellState* written_cell_states,
     FacePieceKind* written_face_piece_kinds,
     std::uint64_t* results,
-    double* double_results
+    double* double_results,
+    const std::int8_t* volume_codes
 ) {
   const auto size_level = static_cast<SizeLevel>(values[0] & 7);
   const CellCoord cell_coord = {.x = values[1], .y = values[2], .z = values[3]};
@@ -210,6 +211,13 @@ __global__ void ComputeWithEverySharedGridFunction(
   const double wanted_width = ComputeWantedCellWidth(facts, reference_speed, widths, settings);
   double_results[double_result_index++] = wanted_width;
   results[result_index++] = static_cast<std::uint64_t>(ComputeWantedSizeLevel(wanted_width, widths));
+  // cell_size_rule.h: the table of cell size factors, and the factor code of a cell in a refinement volume of one
+  // entry, whose layer-0 array is `volume_codes`.
+  const CellSizeFactorTable factor_table = ComputeCellSizeFactorTable();
+  RefinementFactors volume{.count_x = 1, .count_y = 1, .count_z = 1, .entry_spacing_log2 = 0, .layer_count = 1};
+  volume.layer_codes[0] = volume_codes;
+  const int factor_code = ComputeCellSizeFactorCode(volume, settings.smallest_size_level, sorted_cells[0]);
+  double_results[double_result_index++] = factor_table.factor[factor_code + kMaxCellSizeFactorCode];
   results[result_index++] = static_cast<std::uint64_t>(kMaxNearbyFaces);
 }
 

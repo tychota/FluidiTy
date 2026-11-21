@@ -2617,14 +2617,32 @@ floor: with zero gravity and a liquid at rest it is 0, so any velocity change ab
 smallest width, while a velocity change of 0 still gives no shear term.
 
 *The cell size factor.* An artist can ask for more or less detail in parts of the scene with a volume of cell size
-factors: a table of positive factors over the scene. A cell reads the smallest factor over its box. The smallest
-factor over any box comes from layers of halved size, each entry the smallest of the 2 × 2 × 2 entries of the layer
-below, so a cell reads a few entries of the layer whose entries are about as wide as the cell, not every entry its
-box covers. The factor multiplies the width the physics asks for rather than replacing it, so it scales the rule
-without hiding it: a factor of 0.5 halves the width wherever the physics alone allows bigger cells, a factor of 2
-doubles it, the clamp still bounds the result, and the cells kept smallest above stay smallest. A factor of 1 gives
-the rule's own width bit for bit, since a product by 1 is exact. The table is the same on every machine, because
-one formula, written once for both processors, computes it from the scene, so every machine chooses the same cells.
+factors: a table of positive factors over the scene. A cell reads the smallest factor over its box. Each factor is
+stored as a whole number $c$ from $-24$ to $24$, its cell size factor code, and the factor is $f = 2^(c \/ 4)$: four
+steps make one doubling, so the 49 factors run from $2^(-6)$ to $2^6$. The table of the 49 factors is computed with no
+library function: a power of two, started at $2^(-6)$ and doubled before every fourth factor, times the double nearest
+$2^0$, $2^(1\/4)$, $2^(1\/2)$ or $2^(3\/4)$, written as a hexadecimal literal. A double times a power of two is exact
+while the result stays in range, here $2^(-6)$ to $2^6$, so every machine holds the same 49 bit patterns. A code
+stored outside $-24$ to $24$ reads as the nearest limit, and outside the volume the code is 0, factor 1.
+
+The smallest code over any box comes from layers of halved size. Layer 0 holds one code per entry, one entry for every
+$2^m$ smallest cells on each axis ($m$ is `entry_spacing_log2`), and layer $L$ has $ceil(n \/ 2^L)$ entries per axis for
+$n$ entries of layer 0, each the smallest code over the 2 × 2 × 2 entries of layer $L - 1$ that exist. A cell $s$ size
+levels above the smallest size level (the smallest size level minus its own, so $s = 0$ for the smallest cells) is as
+wide as $2^s$ smallest cells. If $s <= m$ it lies inside one entry of layer 0, the one at index $floor(i 2^s \/ 2^m)$
+for its coordinate $i$ on each axis. Otherwise it reads layer $L = s - m$ at index $i$, an entry that is the smallest
+code over exactly the entries its box covers that exist, so a cell reads one entry of the layer whose entries are as
+wide as the cell, not every entry its box covers. A negative index, or an index at or beyond the layer's entry count,
+gives code 0, as does a layer the volume does not hold. A cell whose box reaches past the last entry of the volume on
+an axis, which happens when $(i + 1) 2^L > n$, reads the smaller of that entry and 0, since outside the volume the
+code is 0: the smallest code over the whole box holds for every cell, and a positive code never enlarges a cell
+that straddles the edge of the volume. A cell inside one entry of layer 0 never reaches outside. The lookup uses
+integers only, so every machine reads the same entry. The factor multiplies the width the physics asks for rather
+than replacing it, so it scales the rule without hiding it: a factor of 0.5 halves the width wherever the physics alone
+allows bigger cells, a factor of 2 doubles it, the clamp still bounds the result, and the cells kept smallest above
+stay smallest. A factor of 1 gives the rule's own width bit for bit, since a product by 1 is exact. The table is the
+same on every machine, because one formula, written once for both processors, computes it from the scene, so every
+machine chooses the same cells.
 
 *The wanted size level.* A cell's wanted size level is the first $l$, from 0 up, with $h_l <= w$, and the last size
 level of the frame when none is. It comes from comparing $w$ with a table of the widths $h_l$, never from

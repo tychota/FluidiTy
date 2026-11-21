@@ -38,16 +38,22 @@
 //   wanted size level   the first size level, from 0 up, whose width is at most the wanted cell width
 //   reference speed     m/s. The speed the shear term measures a velocity change against
 //   cell size factor    no unit, positive. The artist's scale on the wanted cell width, from a volume of factors
+//   cell size factor code  an integer from -24 to 24: the factor is 2^(code / 4), one quarter doubling per step
+//   refinement volume   the 3D array of cell size factor codes over the scene, stored as layers of halved size;
+//                       one stored code is an entry of the volume
 //   velocity change size  1/s. How fast the velocity changes per metre around a cell
 //   surface reach       no unit. surface_reach_in_cell_widths: how many smallest cell widths below the surface keep
 //                       the smallest width. Not the reach of a solid
 //   solid reach         no unit. solid_reach_in_cell_widths: how many smallest cell widths from the nearest solid keep
 //                       the smallest width. Not the reach of a solid
 // Owns:    CellSizeSettings, CellWidthsBySizeLevel, CellSizeFacts, ComputeTableSizeLevelCount,
-//          ComputeCellWidthsBySizeLevel, ComputeReferenceSpeed, ComputeWantedCellWidth, ComputeWantedSizeLevel
+//          ComputeCellWidthsBySizeLevel, ComputeReferenceSpeed, ComputeWantedCellWidth, ComputeWantedSizeLevel,
+//          kCellSizeFactorStepsPerDoubling, kMaxCellSizeFactorCode, CellSizeFactorTable,
+//          ComputeCellSizeFactorTable, RefinementFactors, ComputeCellSizeFactorCode, ComputeRefinementLayerExtent,
+//          ComputeRefinementEntryIndex, ComputeRefinementBoxReachesOutside
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), math::Sqrt, math::Min, math::Max, math::IsNan,
-//          math::kPositiveInfinity (base/scalar_math.h), SizeLevel, kMaxSizeLevels (grid/grid_ids.h), GridFrame,
-//          ComputeCellWidth (grid/grid_tables.h)
+//          math::kPositiveInfinity (base/scalar_math.h), SizeLevel, CellId, CellCoord, kMaxSizeLevels, ToSizeLevel,
+//          ToCellCoord (grid/grid_ids.h), GridFrame, ComputeCellWidth (grid/grid_tables.h)
 // Used by: the step's ChooseActiveCells stage (step/) and ResizeCells (cell_resize/)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-size-rule>, <eq:wanted-cell-width>
 
@@ -285,6 +291,245 @@ ComputeWantedSizeLevel(double wanted_width, const CellWidthsBySizeLevel& widths)
     }
   }
   return static_cast<SizeLevel>(last_size_level);
+}
+
+// How many steps of the cell size factor code make one doubling of the factor: 4, so the factor of code c is
+// 2^(c / 4), and a step is a ratio of about 1.19.
+inline constexpr int kCellSizeFactorStepsPerDoubling = 4;
+// The largest code magnitude: codes run from -kMaxCellSizeFactorCode to kMaxCellSizeFactorCode, 6 doublings each
+// way, so factors run from 2^-6 = 1/64 to 2^6 = 64.
+inline constexpr int kMaxCellSizeFactorCode = 24;
+
+// The 49 cell size factors, one per code. No unit: pure numbers. Index a code with factor[code +
+// kMaxCellSizeFactorCode], for a code from -24 to 24.
+struct CellSizeFactorTable {
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
+  double factor[2 * kMaxCellSizeFactorCode + 1] = {};  // factor[i] is 2^((i - 24) / 4), the nearest double.
+};
+
+// Computes the table of cell size factors: factor[i] = 2^(i / 4 - 6) * root[i % 4] for the index i = 0..48 (integer
+// division), with root = {1, 2^(1/4), 2^(1/2), 2^(3/4)} each written as the hexadecimal literal of the double nearest
+// the real root. So factor[24] = 1 for code 0, factor[28] = 2, factor[20] = 0.5 and factor[26] is the double nearest
+// the square root of 2, which is math::Sqrt(2.0).
+//
+// Method: the power of two starts at 2^-6 and is doubled before every fourth factor; a double times a power of two is
+//   exact while the result stays in range, here 2^-6 to 2^6. Each root is a literal, so no compiler rounds a decimal.
+//   Every factor is therefore one fixed bit pattern on every machine and on both processors, and the function calls no
+//   library function, so it is usable in a static_assert.
+// Example: factor[25] = 0x1.306fe0a31b715p+0 = 1.189207115002721 (code 1); factor[1] = 0x1.306fe0a31b715p-6;
+//   factor[48] = 64.
+// Units: none.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
+FLUIDITY_CPU_AND_GPU constexpr CellSizeFactorTable ComputeCellSizeFactorTable() noexcept {
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): see CellSizeFactorTable.
+  constexpr double kQuarterRoots[kCellSizeFactorStepsPerDoubling] = {
+      1.0,
+      0x1.306fe0a31b715p+0,
+      // NOLINTNEXTLINE(modernize-use-std-numbers): the literal is the specification, equal to std::numbers::sqrt2.
+      0x1.6a09e667f3bcdp+0,
+      0x1.ae89f995ad3adp+0,
+  };
+  CellSizeFactorTable table{};
+  double power_of_two = 0x1p-6;
+  for (int factor_index = 0; factor_index <= 2 * kMaxCellSizeFactorCode; ++factor_index) {
+    const int root_index = factor_index % kCellSizeFactorStepsPerDoubling;
+    if (factor_index > 0 && root_index == 0) {
+      power_of_two = power_of_two * 2.0;
+    }
+    table.factor[factor_index] = power_of_two * kQuarterRoots[root_index];
+  }
+  return table;
+}
+
+// The refinement volume as the lookup reads it: layer 0 holds one code per entry over the scene, and each layer above
+// holds the smallest code over 2 x 2 x 2 entries of the layer below. Plain pointers and counts, so device code reads
+// it as it reads GridTables; the caller owns the arrays, which must outlive every lookup. Small enough that shared
+// functions take it by const reference.
+struct RefinementFactors {
+  // Entries of layer 0 per axis; layer L has ceil(count / 2^L) per axis. The volume is usable with every count 1 to
+  // 2^20; any count outside that, count_x == 0 (no volume) included, makes every lookup return 0.
+  std::int32_t count_x = 0;
+  std::int32_t count_y = 0;
+  std::int32_t count_z = 0;
+  // The distance between neighbouring entries of layer 0, as log2 of a count of smallest cells: 2 means one entry per
+  // 4 smallest cells on each axis. Valid from 0 to 31; any other value makes every lookup return 0.
+  std::int32_t entry_spacing_log2 = 0;
+  // The layers that hold data, 1 to kMaxSizeLevels. Zero or less makes every lookup return 0; more than
+  // kMaxSizeLevels reads as kMaxSizeLevels.
+  std::int32_t layer_count = 0;
+  // layer_codes[L] holds the entries of layer L below layer_count, x fastest, then y, then z: the entry (x, y, z) is
+  // at (z * layer_extent_y + y) * layer_extent_x + x, where layer_extent_a is ceil(count_a / 2^L). Each array must
+  // hold exactly the layer_extent_x * layer_extent_y * layer_extent_z entries its counts say; the lookup cannot check
+  // that. A code is any int8_t; the lookup clamps it. A null layer reads as 0.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
+  const std::int8_t* layer_codes[kMaxSizeLevels] = {};
+};
+
+// Computes how many entries a layer of a refinement volume holds along one axis: ceil(count / 2^layer), where count is
+// the entries of layer 0 on that axis. Private to ComputeCellSizeFactorCode.
+//
+// Example: count 5 gives 5, 3, 2 and 1 entries in layers 0, 1, 2 and 3.
+// Requires: count 1..2^20 and layer 0..kMaxSizeLevels - 1, so the sum below fits in 64 bits.
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeRefinementLayerExtent(std::int32_t count, unsigned layer) noexcept {
+  const std::uint64_t layer_unit = std::uint64_t{1} << layer;
+  return (static_cast<std::uint64_t>(count) + layer_unit - 1U) >> layer;
+}
+
+// Computes where a cell lies along one axis of a refinement volume, as an entry index of the layer the cell reads, or
+// -1 when it lies outside that layer. Private to ComputeCellSizeFactorCode, whose comment explains cell_width_log2 and
+// the layer.
+//
+// Method: the index is cell_coord when layer > 0, and (cell_coord << cell_width_log2) >> spacing in layer 0, done in
+//   64-bit unsigned arithmetic after a negative coordinate has been turned away, so no shift is of a negative value.
+//   It lies inside the layer when it is below ComputeRefinementLayerExtent.
+// Requires: cell_width_log2 and spacing 0..31 with cell_width_log2 <= spacing in layer 0; layer 0..kMaxSizeLevels - 1;
+//   count 1..2^20. With cell_coord below 2^19, cell_coord << cell_width_log2 stays below 2^50, so the shift loses
+//   no bit.
+// clang-tidy: four counts of different meaning; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr std::int64_t ComputeRefinementEntryIndex(
+    std::int32_t cell_coord,
+    unsigned cell_width_log2,
+    unsigned spacing,
+    unsigned layer,
+    std::int32_t count
+) noexcept {
+  if (cell_coord < 0) {
+    return -1;
+  }
+  const auto unsigned_coord = static_cast<std::uint64_t>(cell_coord);
+  std::uint64_t index = unsigned_coord;
+  if (layer == 0) {
+    index = (unsigned_coord << cell_width_log2) >> spacing;
+  }
+  if (index >= ComputeRefinementLayerExtent(count, layer)) {
+    return -1;
+  }
+  return static_cast<std::int64_t>(index);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Tells whether the box of the entry at `index` of layer `layer` reaches past the last entry of layer 0 on one axis:
+// the entry covers layer-0 entries index * 2^layer up to (index + 1) * 2^layer - 1, so it reaches outside when
+// (index + 1) * 2^layer > count. Private to ComputeCellSizeFactorCode. It is false in layer 0, where an entry of the
+// volume is its own box.
+//
+// Example: count 5, layer 1: index 2 covers layer-0 entries 4 and 5, so it reaches outside; index 1 covers 2 and 3.
+// Requires: index below ComputeRefinementLayerExtent(count, layer); layer 0..kMaxSizeLevels - 1; count 1..2^20. Then
+//   (index + 1) << layer is at most 2^35, so the shift loses no bit.
+// clang-tidy: an index, a layer and a count; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr bool
+ComputeRefinementBoxReachesOutside(std::int64_t index, unsigned layer, std::int32_t count) noexcept {
+  const std::uint64_t box_end = static_cast<std::uint64_t>(index + 1) << layer;
+  const auto unsigned_count = static_cast<std::uint64_t>(count);
+  return box_end > unsigned_count;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Computes the cell size factor code of one cell: the smallest code the refinement volume holds over the cell's box,
+// where outside the volume the code is 0 (factor 1), clamped to -kMaxCellSizeFactorCode..kMaxCellSizeFactorCode. A
+// cell wholly outside the volume gives 0, and a cell that reaches outside on any axis gives the smaller of the codes
+// inside and 0, so a positive code never enlarges a cell that straddles the volume's edge. A caller turns it into a
+// factor with ComputeCellSizeFactorTable().factor[code + kMaxCellSizeFactorCode] and passes that as
+// CellSizeFacts::cell_size_factor.
+//
+// Method: integer only, so every machine reads the same entry. cell_width_log2 (s in the method paper) is
+//   smallest_size_level minus the cell's size level: the cell is 2^s smallest cells wide. coord is the cell's
+//   coordinate in cells of its own size level, and spacing is entry_spacing_log2. An entry of layer L is as wide as
+//   2^s smallest cells when L = s - spacing.
+//   When s <= spacing, the cell lies inside one entry of layer 0: the one at (coord << s) >> spacing per axis. That
+//   entry is its own box, so the cell cannot reach outside the volume. Otherwise it reads layer L = s - spacing at
+//   index coord: an entry of that layer is the smallest code over the layer-0 entries coord * 2^L up to
+//   (coord + 1) * 2^L - 1 that exist. If (coord + 1) * 2^L is more than count on an axis, the cell reaches outside
+//   the volume there, and the code is the smaller of that entry and 0.
+//   Every index is checked against the layer's count ceil(count / 2^L) before the read: a negative coordinate or an
+//   index at or beyond the count gives 0. A cell whose layer is not stored (L at or beyond layer_count, or a null
+//   layer) gives 0, as does no volume. The layers hold the smallest code over the entries that exist, so the lookup,
+//   not the layers, accounts for the outside.
+//   The shifts are done in unsigned 64 bits, after a negative coordinate has been turned away: a coordinate is 32 bits,
+//   and below 2^19 for a cell of a grid, and a shift of layer 0 is by s <= spacing <= 31, so coord << s stays below
+//   2^50 and no shift is of a negative value, by a negative amount or by 64 or more. Layer shifts are by at most
+//   kMaxSizeLevels - 1.
+// Units: none: a code is a count of quarter doublings of the factor.
+// Example: in the fixture of the tests (biggest cells 1 m, 5 size levels, smallest_size_level 4, entry_spacing_log2 2,
+//   2 x 1 x 1 size-level-0 cells, so layer 0 is 8 x 4 x 4 entries, layers 1 and 2 are 4 x 2 x 2 and 2 x 1 x 1, and
+//   code -8 on x = 5 of layer 0, 0 elsewhere): the size-level-4 cell {20, 3, 3} has s = 0 and reads entry 5 of layer
+//   0, giving -8; {19, 3, 3} reads entry 4, giving 0. The size-level-0 cell {1, 0, 0} has s = 4, L = 2, and reads
+//   layer 2 at index 1: the smallest code over x = 4..7, so -8; {0, 0, 0} gives 0. The size-level-2 cell {5, 0, 0}
+//   has s = 2 and reads entry 5 of layer 0, giving -8. The size-level-4 cell {40, 0, 0} lies beyond 8 entries, so 0.
+//   With count_x 5 instead of 8, spacing 0 and code +3 on every entry, the size-level-3 cell {2, 0, 0} (s = 1) reads
+//   layer 1 at index 2, which covers layer-0 entries 4 and 5; entry 5 does not exist, so it gives 0, not 3, while
+//   {1, 0, 0} covers entries 2 and 3 and gives 3.
+// Requires: volume as RefinementFactors says; smallest_size_level and the cell's size level from a grid, the cell's
+//   size level at most smallest_size_level (a smaller cell, s < 0, is not in the rule and gives 0). Nothing outside is
+//   undefined: for any cell, any smallest size level and any counts, spacing and layer count, the call reads only
+//   inside a layer, provided each layer array holds the entries its counts say (the call cannot check that).
+// Result outside the preconditions: 0, except that a stored code beyond -24..24 gives the nearest limit, so the result
+//   always indexes the table of ComputeCellSizeFactorTable; a caller may rely on -24..24 and never needs its own check.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
+FLUIDITY_CPU_AND_GPU constexpr int
+ComputeCellSizeFactorCode(const RefinementFactors& volume, SizeLevel smallest_size_level, CellId cell) noexcept {
+  // Step 1: a volume that can be read. 2^20 per axis keeps the product of three counts below 2^60, in 64 bits.
+  constexpr std::int32_t kMaxCount = 1'048'576;  // 2^20.
+  constexpr std::int32_t kMaxSpacingLog2 = 31;
+  const bool has_usable_x = volume.count_x >= 1 && volume.count_x <= kMaxCount;
+  const bool has_usable_y = volume.count_y >= 1 && volume.count_y <= kMaxCount;
+  const bool has_usable_z = volume.count_z >= 1 && volume.count_z <= kMaxCount;
+  const bool has_usable_spacing = volume.entry_spacing_log2 >= 0 && volume.entry_spacing_log2 <= kMaxSpacingLog2;
+  const bool has_layers = volume.layer_count >= 1;
+  if (!has_usable_x || !has_usable_y || !has_usable_z || !has_usable_spacing || !has_layers) {
+    return 0;
+  }
+  const std::int32_t layer_count = volume.layer_count < kMaxSizeLevels ? volume.layer_count : kMaxSizeLevels;
+
+  // Step 2: cell_width_log2 is below 0 only for a cell smaller than the smallest size level, and at most 255
+  // otherwise. The layer is 0 when it is at most spacing (then at most 31), else the difference. A layer the volume
+  // does not hold reads 0.
+  const int cell_width_log2 = static_cast<int>(smallest_size_level) - static_cast<int>(ToSizeLevel(cell));
+  if (cell_width_log2 < 0) {
+    return 0;
+  }
+  const int spacing = volume.entry_spacing_log2;
+  const int layer = cell_width_log2 <= spacing ? 0 : cell_width_log2 - spacing;
+  if (layer >= layer_count || volume.layer_codes[layer] == nullptr) {
+    return 0;
+  }
+
+  // Step 3: every index inside the layer's extent before the read; a negative coordinate is outside.
+  const auto unsigned_width_log2 = static_cast<unsigned>(layer == 0 ? cell_width_log2 : 0);
+  const auto unsigned_spacing = static_cast<unsigned>(spacing);
+  const auto unsigned_layer = static_cast<unsigned>(layer);
+  const CellCoord cell_coord = ToCellCoord(cell);
+  const std::int64_t index_x =
+      ComputeRefinementEntryIndex(cell_coord.x, unsigned_width_log2, unsigned_spacing, unsigned_layer, volume.count_x);
+  const std::int64_t index_y =
+      ComputeRefinementEntryIndex(cell_coord.y, unsigned_width_log2, unsigned_spacing, unsigned_layer, volume.count_y);
+  const std::int64_t index_z =
+      ComputeRefinementEntryIndex(cell_coord.z, unsigned_width_log2, unsigned_spacing, unsigned_layer, volume.count_z);
+  if (index_x < 0 || index_y < 0 || index_z < 0) {
+    return 0;
+  }
+  const auto extent_x = static_cast<std::int64_t>(ComputeRefinementLayerExtent(volume.count_x, unsigned_layer));
+  const auto extent_y = static_cast<std::int64_t>(ComputeRefinementLayerExtent(volume.count_y, unsigned_layer));
+  const std::int64_t entry_index = (index_z * extent_y + index_y) * extent_x + index_x;
+  // NOLINTNEXTLINE(bugprone-signed-char-misuse): the byte is a number from -128 to 127, not a character.
+  const int stored_code = static_cast<int>(volume.layer_codes[layer][entry_index]);
+  int code = stored_code;
+  if (stored_code < -kMaxCellSizeFactorCode) {
+    code = -kMaxCellSizeFactorCode;
+  }
+  if (stored_code > kMaxCellSizeFactorCode) {
+    code = kMaxCellSizeFactorCode;
+  }
+  // Step 4: outside the volume the code is 0, so a box that reaches outside takes the smaller of the code and 0.
+  const bool reaches_outside = ComputeRefinementBoxReachesOutside(index_x, unsigned_layer, volume.count_x)
+      || ComputeRefinementBoxReachesOutside(index_y, unsigned_layer, volume.count_y)
+      || ComputeRefinementBoxReachesOutside(index_z, unsigned_layer, volume.count_z);
+  if (reaches_outside && code > 0) {
+    return 0;
+  }
+  return code;
 }
 
 }  // namespace fluidity::grid
