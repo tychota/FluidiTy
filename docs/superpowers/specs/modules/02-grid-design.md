@@ -241,9 +241,12 @@ std::string_view ToMessage(GridError error);
 // and the add-on use it.
 std::string_view ToName(GridError error);
 
-// NEW (A17). Largest max_cell_blocks: every cell-place count (64 * max_cell_blocks) then fits the std::uint32_t
-// orders and prefix sums of base/.
-inline constexpr std::uint32_t kMaxCellBlocksLimit = (1u << 26) - 1;
+// Largest max_cell_blocks: 17,895,697 = floor((2^32 - 1) / 240). Changed 2026-11-21 (it was 2^26 - 1): a place index
+// has 32 bits and must stay below kNoIndex, and a block has 240 face places, the most of the three kinds, so this is
+// the largest room for which every place index fits (largest face place 4,294,967,279). Corner places (125 per
+// block) and cell places (64 per block, at most 1,145,324,608, which also fits the std::uint32_t orders and prefix
+// sums of base/) fit as well; three static_asserts say so. About 1.1 billion cells and 50 GB of grid memory.
+inline constexpr std::uint32_t kMaxCellBlocksLimit = 0xFFFFFFFFu / 240;
 struct GridSettings {             // DECIDED suffix.
   // Room, 1..kMaxCellBlocksLimit. Changed (reconcile, decision 28): no default room; the default 0 is kBadInput in
   // BuildGridBuffers and BuildGridBuilderBuffers (the test-only BuildTestGrid with 0 sizes its buffers to the list's
@@ -1689,7 +1692,8 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
 21. **(A17) Memory and limit.** The buffers of a GPU grid keep everything on the GPU and nothing on the CPU: 456 B tables +
     1,536 B builder buffers + 4 B piece map = 1,996 B per block, plus the order buffers, `fixed_bytes`, 8 B and
     `sizeof(GridBuildStatus)`; those of a CPU grid are unchanged (456 B `kRunOn`, 516 B `kCpu`). Every row carries its
-    `MemoryWhere`; sizes are `sizeof` of the real types. `max_cell_blocks <= kMaxCellBlocksLimit = (1u << 26) - 1`.
+    `MemoryWhere`; sizes are `sizeof` of the real types. `max_cell_blocks <= kMaxCellBlocksLimit = 17,895,697` (`floor((2^32 - 1) / 240)`, so every
+    face place index fits; it was `2^26 - 1` until 2026-11-21).
     Source: `plan-decisions.md` "Grid built on the GPU (A17)" and "Foundation `base/`", "Applies to every plan".
     **Amended by decision 30** (reconcile): the 1,996 B is the old one-buffers figure without the order buffers;
     the builder buffers can be one `GridBuilderBuffers` counted once.

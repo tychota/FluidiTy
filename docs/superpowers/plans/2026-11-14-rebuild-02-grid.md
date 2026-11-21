@@ -312,6 +312,15 @@ names and contracts.
   Constraints "Errors"; design 3.3).
 - Task 9b is not affected: it runs the build and counts face pieces from the kinds the build wrote.
 
+### Thirteenth revision 2026-11-21: the block limit follows from the face place index
+
+A face place index has 32 bits and a block has 240 face places, so `kMaxCellBlocksLimit` is `floor((2^32 - 1) /
+240) = 17,895,697`, not `2^26 - 1`. The largest face place is then 4,294,967,279, clear of `kNoIndex`; corner
+places (125 per block) and cell places (64 per block, at most 1,145,324,608) fit as well. It is the largest room
+for which every place index fits: about 1.1 billion cells and about 50 GB of grid memory. Changed: Global
+Constraints (the constant, with the three `static_assert`s), Task 6a (which defines it), Task 11a
+(`ComputeSortCount` and its test); design 3.3 and decision 28's text; `changes-to-apply.md`.
+
 **Proposed model per task**
 
 | Task | Model | Reason |
@@ -461,10 +470,14 @@ Grid's own:
   `kFacePlacesPerBlock = 240`, `kCornerPlacesPerBlock = 125`, `kMaxCoord = (1 << 18) - 1`,
   `kNoIndex = 0xFFFFFFFF`, `kWeightCurveReach = 1.5`, `kMaxNearbyFaces = 216`, `kMinWeightSum = 0.1`,
   `kMinPivotShare = 1e-12`, `kMaxCellsNearFace = 112`, `kMaxFaceSearchRadius = 4.0`,
-  `kMaxCellBlocksLimit = (1u << 26) - 1`, `GridSettings::max_cell_blocks = 0`. No compile-time room is ever an
-  allocation size: `BuildGridBuffers` and `BuildGridBuilderBuffers` with 0, or above `kMaxCellBlocksLimit`, are
-  `kBadInput`. With the limit every cell-place count (`64 * max_cell_blocks`) fits the `std::uint32_t` orders
-  and prefix sums of `base/`.
+  `kMaxCellBlocksLimit = 0xFFFFFFFF / 240` (17,895,697), `GridSettings::max_cell_blocks = 0`. No compile-time
+  room is ever an allocation size: `BuildGridBuffers` and `BuildGridBuilderBuffers` with 0, or above
+  `kMaxCellBlocksLimit`, are `kBadInput`. The limit is the largest room for which every place index fits 32
+  bits and stays below `kNoIndex`: a block has 240 face places, the most of the three kinds, so the largest
+  face place is 4,294,967,279. The reason is written once, where the constant is defined (`staggered_grid.h`),
+  with three `static_assert`s: `kFacePlacesPerBlock`, `kCornerPlacesPerBlock` and `kCellPlacesPerBlock` times
+  the limit (in 64 bits) are each at or below `kNoIndex`. Every cell-place count (`64 * max_cell_blocks`, at
+  most 1,145,324,608) then also fits the `std::uint32_t` orders and prefix sums of `base/`.
 - **Builder buffers are lent.** The `grid: builder buffers: ...` entries live in a move-only
   `GridBuilderBuffers` that the caller owns and lends to every `GridBuffers` built with
   `BuildGridBuffers(settings, builder_buffers, run_memory)`. No operation on a built grid reads them, so two
@@ -1695,8 +1708,8 @@ Load the same three skills.
   - `std::uint64_t ComputeRoomFailureKey(std::uint64_t needed, std::uint64_t room, int step)`: the key of step
     5 or 6 at position 0 when `needed > room`, else `kNoFailureKey`.
   - `std::uint32_t ComputeSortCount(std::uint32_t active_count, std::uint32_t max_cell_blocks)`: `min(n + n /
-    7, 64 * max_cell_blocks)`, computed in `std::uint64_t` (the sum can pass `2^32`); the result fits 32 bits
-    because `64 * kMaxCellBlocksLimit = 2^32 - 64`.
+    7, 64 * max_cell_blocks)`, computed in `std::uint64_t` (for a count above the room the sum can pass `2^32`);
+    the result fits 32 bits because `64 * kMaxCellBlocksLimit = 1,145,324,608`.
   - `void ApplySortTailFillAt(CellId* cell_ids, std::uint32_t used_count, std::uint32_t place)`: writes
     `CellId{0}` when `place >= used_count`.
   - `std::uint32_t ComputeBlockStartMark(const CellId* cell_ids, const std::uint32_t* order, std::uint32_t
@@ -1742,8 +1755,9 @@ Load the same three skills.
     `[n, n + split_cells)` hold each split cell once, in any thread order.
   - `TEST(ComputeRoomFailureKey, OneAboveRoom_IsTheStepsKey)`: `(513, 512, 5)` gives `ToFailureKey(5, 0, 0)`;
     `(512, 512, 5)` gives `kNoFailureKey`.
-  - `TEST(ComputeSortCount, LargestRoom_FitsThirtyTwoBits)`: `(4294967232, kMaxCellBlocksLimit)` gives
-    4,294,967,232 (the sum `n + n / 7` is above `2^32`); `(14, 100)` gives 16; `(9, 100)` gives 10; `(100, 1)`
+  - `TEST(ComputeSortCount, LargestRoom_FitsThirtyTwoBits)`: `(1145324608, kMaxCellBlocksLimit)` gives
+    1,145,324,608 (the room's cell places; `n + n / 7` is 1,308,942,409); `(4294967295, kMaxCellBlocksLimit)`
+    gives 1,145,324,608 too (the sum, 4,908,534,051, is above `2^32`); `(14, 100)` gives 16; `(9, 100)` gives 10; `(100, 1)`
     gives 64.
   - `TEST(ApplySortTailFillAt, UsedBuffers_HoldNoStaleCell)`: buffers for 100 blocks whose `cell ids` array
     first holds the sorted cells of random grid 1 (a full build). Then P2 to P8 run for the 14 lone level-0

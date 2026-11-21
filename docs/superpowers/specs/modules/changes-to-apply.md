@@ -673,3 +673,19 @@ sizes itself. No design below was edited.
 - **Every module that reads `grid::GridFailure`.** `other_cell` is also the big cell of a sibling failure, and
   `cell` is `CellId{0}` when the missing small cell lies outside the coordinate range; a message that prints `cell`
   must handle that case.
+
+## The grid's block limit is 17,895,697 (2026-11-21)
+
+`grid::kMaxCellBlocksLimit` is `floor((2^32 - 1) / 240) = 17,895,697`, not `(1u << 26) - 1 = 67,108,863`: a face
+place index has 32 bits and a block has 240 face places. At most 1,145,324,608 cell places. No document below was
+edited.
+
+- **10 Step (design and plan; `plan-decisions.md`, `shared-interface.md`, `reconcile-todo.md` where they quote the
+  number).** The run plan's cap on `limits.max_cell_blocks`, its "does not fit" test and any text or test that
+  uses `1u << 26`, `2^26 - 1` or 67,108,863: use the constant, never the number. A scene that needs more blocks
+  than the limit does not fit, whatever the memory.
+- **12 I/O and CLI (design and plan).** The scene check that compares the domain's blocks at the smallest cell
+  with the limit, and its message, quote the new number through the constant.
+- **13 Surface, foam and spray (design and plan).** The same wherever a buffer or a test is sized at the limit.
+- **11 Cell resize and batches.** `max_loaded_blocks` and any limit raised by `ApplyLimits` stay at or below the
+  constant; a test at "limit + 1" uses the constant.
