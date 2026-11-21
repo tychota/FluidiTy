@@ -846,6 +846,35 @@ std::vector<CellId> BuildSizeStepBreakWithSiblings() {
   return cells;
 }
 
+std::vector<CellId> BuildLoneCellsAlongX(std::size_t count) {
+  std::vector<CellId> cells(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    cells.at(index) = ToCellId(SizeLevel{0}, {.x = 4 * static_cast<std::int32_t>(index), .y = 0, .z = 0});
+  }
+  return cells;
+}
+
+std::vector<CellId> BuildSmallCellsOfEightBigCells() {
+  std::vector<CellId> cells;
+  const CellId big_cell = ToCellId(SizeLevel{0}, {.x = 0, .y = 0, .z = 0});
+  for (int big_cell_eighth = 0; big_cell_eighth < 8; ++big_cell_eighth) {
+    const CellId split_cell = ComputeSmallCell(big_cell, big_cell_eighth);
+    for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+      cells.push_back(ComputeSmallCell(split_cell, cell_eighth));
+    }
+  }
+  return cells;
+}
+
+std::vector<CellId> BuildTwoSizeFixtureCells() {
+  std::vector<CellId> cells = {ToCellId(SizeLevel{0}, {.x = 0, .y = 0, .z = 0})};
+  const CellId split_cell = ToCellId(SizeLevel{0}, {.x = 1, .y = 0, .z = 0});
+  for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    cells.push_back(ComputeSmallCell(split_cell, cell_eighth));
+  }
+  return cells;
+}
+
 std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_level_count) {
   // Each round splits every cell that touches a cell two or more size levels smaller. A split makes new such pairs
   // only with cells bigger still, so the rounds end.

@@ -56,12 +56,15 @@
 // Owns:    kSortKeyPassCount, ToCellSortKey, ToBlockSortKey, CheckCellId, FindSortedCell, FindSortedBlock,
 //          ComputeBigCellAtSizeLevel, FindSortedCellAt, CellCheck, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
 //          kIdStep, kOverlapStep, kSiblingStep, kSizeStepRuleStep, ToFailureKey, ToFailureStep, ToFailurePosition,
-//          ComputeFailureCells, ComputeCellIdFailureKey, ComputeSortedCellFailureKey, ComputeHasEarlierStepFailed,
-//          ComputeResetBuildStatus, ApplyFailureCells, ComputeSplitCellCountToAdd, kCellPlacesStep, kBlockCountStep,
-//          kBlockFaultStep, ApplySplitCellWritesAt, ComputeRoomFailureKey, ComputeSortCount, kSortCountFaultKey,
-//          ComputeCellPlacesFailureKey, ApplySortTailFillAt,
+//          ToFailureDetail, ComputeFailureCells, ComputeCellIdFailureKey, ComputeSortedCellFailureKey,
+//          ComputeHasEarlierStepFailed, ComputeResetBuildStatus, ApplyFailureCells, ComputeSplitCellCountToAdd,
+//          kCellPlacesStep, kBlockCountStep, kBlockFaultStep, ApplySplitCellWritesAt, ComputeRoomFailureKey,
+//          ComputeSortCount, kSortCountFaultKey, ComputeCellPlacesFailureKey, ApplySortTailFillAt,
 //          ComputeBlockStartMark, ComputeBlockIndexOfSortedEntry, ApplyBlockIdWriteAt, FindBlockNeighbours,
-//          ComputeBlockFaultKey, ComputeCoveredCellState, ComputeCellStateBeside, ComputeFacePieceKind; and, for this
+//          ComputeBlockFaultKey, ComputeCoveredCellState, ComputeCellStateBeside, ComputeFacePieceKind,
+//          kTableEntryStep, ApplyBlockNeighboursWriteAt, ApplyAbsentStateAt, ApplySortedCellStateAt,
+//          ComputeCellStateAfterCover, ApplyCoverAnswerAt, ApplyCoverAnswerCopyAt, ApplyFacePieceKindWriteAt,
+//          ApplyBuildStatusResult; and, for this
 //          header's own functions and types only, ComputeBiasedCorner, ComputeSortKeyOfCorner, ComputeIsCellPresent,
 //          ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry, ComputeStoredCellState,
 //          ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and the struct LocalPlace
@@ -69,6 +72,7 @@
 //          GridError (grid/grid_error.h), CellId, CellBlockId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex,
 //          CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kCellPlacesPerBlock, kFacePlacesPerBlock,
 //          kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockIndex,
+//          ToCellPlaceIndex,
 //          ComputeBigCell, ComputeCellEighth, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h),
 //          GridFrame, GridTables, CellState, FacePieceKind (grid/grid_tables.h)
 // Used by: the grid's CPU builder, its GPU half and the counting of a list (grid/); private to grid/
@@ -484,6 +488,15 @@ FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ToFailurePosition(std::uint64_t fai
   return (failure_key >> 8U) & ((std::uint64_t{1} << 48U) - 1);
 }
 
+// Gives the detail of a failure key: its low 8 bits. 255 for kNoFailureKey.
+//
+// Example: ToFailureDetail(ToFailureKey(3, 7, 9)) = 9; ToFailureDetail(ToFailureKey(5, 0, 1)) = 1, the detail of the
+//   sort count's fault.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>
+FLUIDITY_CPU_AND_GPU constexpr std::uint8_t ToFailureDetail(std::uint64_t failure_key) noexcept {
+  return static_cast<std::uint8_t>(failure_key & 0xFFU);
+}
+
 // Computes the error and the cells of a build's smallest failure key, once the minimum is known, so one thread can fill
 // the status record: method paper <proc-build-grid-in-parallel> step P12.
 //
@@ -518,7 +531,7 @@ FLUIDITY_CPU_AND_GPU constexpr CellCheck ComputeFailureCells(
   const std::uint64_t position = ToFailurePosition(failure_key);
   const CellCheck internal_fault = {.error = GridError::kInternalFault};
   // Step 5 with detail 0 is the room's cell places; with detail 1 the sort count, a fault (kSortCountFaultKey).
-  const bool is_room_key = step == 6 || (step == 5 && (failure_key & 0xFFU) == 0);
+  const bool is_room_key = step == 6 || (step == 5 && ToFailureDetail(failure_key) == 0);
   if (is_room_key) {
     return {.error = GridError::kTooManyCellBlocks};
   }
@@ -1096,8 +1109,8 @@ ComputeIsCoveredByActiveBigCell(const GridTables& tables, std::uint32_t block, L
 // Method: kInsideBiggerCell when the place of the bigger block that covers it is kActive, else kAbsent. A block of
 //   size level l at block coordinate b is the low or the high half of its bigger block on each axis, so its local
 //   coordinate c is the bigger block's 2 (b & 1) + floor(c / 2). A block with no bigger block, size level 0, gives
-//   kAbsent. It reads only kActive marks, and no call of this step writes one, so the places may be filled in any
-//   order, or all at once.
+//   kAbsent. It reads only kActive marks and writes nothing. The CPU builder writes its answers in place, since a pass
+//   of one thread never changes a kActive mark; the GPU writes them to an array apart first (ApplyCoverAnswerAt).
 // Example: in the blocks {size level 0 (0,0,0), size level 1 (0,0,0)} with size level 0 {0,0,0} active and {1,0,0}
 //   split, the size-level-1 place (1, 0, 1) is kInsideBiggerCell, covered by place (0, 0, 0); the place (0, 2, 0) is
 //   kAbsent, since its covering place (0, 1, 0) holds no active cell.
@@ -1238,5 +1251,180 @@ ComputeFacePieceKind(const GridTables& tables, FacePlaceIndex face) noexcept {
   }
   return FacePieceKind::kNotAPiece;
 }
+
+// The step of the cell states and the face piece kinds, <proc-build-grid-in-parallel> P10 and P11, in the numbering of
+// the failure key. It comes after every keyed step, so ComputeHasEarlierStepFailed(key, kTableEntryStep) holds for any
+// key: P10 and P11 do nothing once a key is set. No key of this step exists.
+inline constexpr int kTableEntryStep = 8;
+
+// Writes the 36 neighbour table entries of one block and gives the failure key the block offers: method paper
+// <proc-build-grid-in-parallel> step P9, for one thread's item.
+//
+// Method: FindBlockNeighbours writes the 27 same-size-level entries, the bigger block and the 8 smaller blocks of
+//   `block`. ComputeBlockFaultKey then reads the bigger block just written: ToFailureKey(7, block, 0) for a block of
+//   size level 1 or more without its bigger block, else kNoFailureKey. The entries of block b are 27 b..27 b + 26, b
+//   and 8 b..8 b + 7 of the three tables, so no two blocks write one entry, and a block reads back only its own.
+// Example: in the blocks {size level 0 (0,0,0), size level 1 (0,0,0)}, block 1 writes bigger block 0 and gives
+//   kNoFailureKey. In {size level 1 (0,0,0)} alone, block 0 writes bigger block kNoIndex and gives ToFailureKey(7, 0,
+//   0).
+// Requires: as FindBlockNeighbours.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ApplyBlockNeighboursWriteAt(
+    const CellBlockId* block_ids,
+    std::uint32_t block_count,
+    CellBlockIndex block,
+    std::uint32_t* same_size_level_blocks,
+    std::uint32_t* bigger_block,
+    std::uint32_t* smaller_blocks
+) noexcept {
+  FindBlockNeighbours(block_ids, block_count, block, same_size_level_blocks, bigger_block, smaller_blocks);
+  return ComputeBlockFaultKey(block_ids, bigger_block, block);
+}
+
+// Writes kAbsent at one cell place: method paper <proc-build-grid-in-parallel> step P10 (a), for one thread's item.
+// Every place of the used blocks starts absent, so no state of an earlier build is left.
+// Requires: cell_states has more than place.value entries.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr void ApplyAbsentStateAt(CellState* cell_states, CellPlaceIndex place) noexcept {
+  assert(cell_states != nullptr);
+  cell_states[place.value] = CellState::kAbsent;
+}
+
+// Writes the state of the cell of one sorted entry of the sort by block at its place, and gives the size level of an
+// active cell: method paper <proc-build-grid-in-parallel> step P10 (b), for one thread's item.
+//
+// Method: sorted entry j is cell_ids[order[j]]. The id 0 of the tail fill writes nothing and gives -1. Any other entry
+//   is an active cell when order[j] < active_count, the active cells being the first active_count places of the cell
+//   ids, and a split cell otherwise. It writes kActive or kSplit at ToCellPlaceIndex(its block index, its coordinate),
+//   the block index ComputeBlockIndexOfSortedEntry gives. It gives the size level of an active cell, so the caller
+//   counts it, and -1 for a split cell. No two cells of a grid share a place: two cells of one block with the same
+//   local coordinates are one cell, and an active cell is never a split cell, since none overlaps another.
+// Example: active cells {size level 1 {0,0,0}, ..., {1,1,1}} and the split cell size level 0 {0,0,0} at place 8, sorted
+//   by block: the split cell is entry 0, in block 0, and writes kSplit at place 0, giving -1; the active cell {1,0,0}
+//   writes kActive at 64 + 1, giving 1.
+// Requires: order is the final order of P8, a permutation of 0..sort count - 1; sums holds the exclusive prefix sums of
+//   the marks; the block ids were written; cell_states has 64 places per block; position is below the sort count.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: a count and a position; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr int ApplySortedCellStateAt(
+    CellState* cell_states,
+    const CellId* cell_ids,
+    const std::uint32_t* order,
+    const std::uint32_t* sums,
+    std::uint32_t active_count,
+    std::uint32_t position
+) noexcept {
+  assert(cell_states != nullptr && cell_ids != nullptr && order != nullptr);
+  const std::uint32_t cell_place = order[position];
+  const CellId cell = cell_ids[cell_place];
+  if ((cell.value & kIdCellMark) == 0) {
+    return -1;
+  }
+  const CellBlockIndex block = {.value = ComputeBlockIndexOfSortedEntry(cell_ids, order, sums, position)};
+  const bool is_active = cell_place < active_count;
+  cell_states[ToCellPlaceIndex(block, ToCellCoord(cell)).value] = is_active ? CellState::kActive : CellState::kSplit;
+  return is_active ? static_cast<int>(ToSizeLevel(cell)) : -1;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Computes the state one cell place holds once P10 (c) has run: method paper <proc-build-grid-in-parallel> step
+// P10 (c), the answer of one place.
+//
+// Method: a place whose stored state is kAbsent takes ComputeCoveredCellState, kInsideBiggerCell when the place that
+//   covers it in the bigger block is kActive; every other place keeps its stored state. It writes nothing, and reads
+//   only stored states and the block tables.
+// Example: in the blocks {size level 0 (0,0,0), size level 1 (0,0,0)} with size level 0 {0,0,0} active and {1,0,0}
+//   split, place 64 + 16 + 1, local (1, 0, 1) of block 1, gives kInsideBiggerCell; place 64 + 8, local (0, 2, 0),
+//   gives kAbsent; place 0, the active cell, gives kActive.
+// Requires: place is a place of block 0..tables.block_count - 1; the neighbour tables and every kActive and kSplit mark
+//   are written.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <proc-build-grid>
+FLUIDITY_CPU_AND_GPU constexpr CellState
+ComputeCellStateAfterCover(const GridTables& tables, CellPlaceIndex place) noexcept {
+  const CellState stored_state = tables.cell_states[place.value];
+  if (stored_state != CellState::kAbsent) {
+    return stored_state;
+  }
+  return ComputeCoveredCellState(tables, place);
+}
+
+// Writes the answer of one cell place into a word array: method paper <proc-build-grid-in-parallel> step P10 (c), the
+// first launch, for one thread's item.
+//
+// Method: cover_answers[place] = ComputeCellStateAfterCover(tables, place), the state's value widened to 64 bits. The
+//   answers go to an array apart from the cell states, so the launch that computes them reads cell states that none
+//   of its threads writes; the second launch copies them (ApplyCoverAnswerCopyAt).
+// Example: as ComputeCellStateAfterCover; place 64 + 16 + 1 of its example writes the value of kInsideBiggerCell.
+// Requires: as ComputeCellStateAfterCover; cover_answers has more than place.value words and overlaps no table.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr void
+ApplyCoverAnswerAt(const GridTables& tables, std::uint64_t* cover_answers, CellPlaceIndex place) noexcept {
+  assert(cover_answers != nullptr);
+  cover_answers[place.value] = static_cast<std::uint64_t>(ComputeCellStateAfterCover(tables, place));
+}
+
+// Copies the answer of one cell place into its state: method paper <proc-build-grid-in-parallel> step P10 (c), the
+// second launch, for one thread's item. Each place reads its own answer and writes its own state.
+// Requires: cover_answers[place.value] was written by ApplyCoverAnswerAt; cell_states has more than place.value
+//   entries.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr void
+ApplyCoverAnswerCopyAt(const std::uint64_t* cover_answers, CellState* cell_states, CellPlaceIndex place) noexcept {
+  assert(cover_answers != nullptr && cell_states != nullptr);
+  cell_states[place.value] = static_cast<CellState>(cover_answers[place.value]);
+}
+
+// Writes the kind of one face place and gives 1 when it is a face piece, else 0: method paper
+// <proc-build-grid-in-parallel> step P11, for one thread's item.
+//
+// Method: ComputeFacePieceKind, from the two cell states beside the place; every kind but kNotAPiece is a face piece.
+//   Only face_piece_kinds is written, and ComputeFacePieceKind reads none of it.
+// Example: in the two-size grid of ComputeFacePieceKind, place 240 + 2 + 5 of block 1, plane 2 along X between a place
+//   inside the big cell and the active small cell {2,1,0}, writes kBetweenCells and gives 1.
+// Requires: face_piece_kinds is the array tables.face_piece_kinds names; face is a place of block
+//   0..tables.block_count - 1; every cell state of the grid is written.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-face-pieces>
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
+ApplyFacePieceKindWriteAt(const GridTables& tables, FacePieceKind* face_piece_kinds, FacePlaceIndex face) noexcept {
+  assert(face_piece_kinds != nullptr && face_piece_kinds == tables.face_piece_kinds);
+  const FacePieceKind kind = ComputeFacePieceKind(tables, face);
+  face_piece_kinds[face.value] = kind;
+  return kind != FacePieceKind::kNotAPiece ? 1U : 0U;
+}
+
+// Writes the result of a build into its status record once every step has run: method paper
+// <proc-build-grid-in-parallel> step P12, one thread.
+//
+// Method: ApplyFailureCells writes the error and the cells of the smallest key, kNone and zero cells without one. On
+//   success the active cells are then the sum of the 16 counts of active cells per size level that P10 (b) added up.
+//   On failure the counts are left as they are: the CPU half reads none of them.
+// Example: a record without a failure whose counts per size level are {1, 8, 0, ...} gets active_cells 9 and error
+//   kNone. A record holding ToFailureKey(7, 0, 0) gets kInternalFault and zero cells.
+// Requires: as ApplyFailureCells.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: counts of cells; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr void ApplyBuildStatusResult(
+    GridFrame frame,
+    const CellId* input_cells,
+    std::uint32_t input_count,
+    const CellId* sorted_cells,
+    std::uint32_t count,
+    GridBuildStatus* status
+) noexcept {
+  ApplyFailureCells(frame, input_cells, input_count, sorted_cells, count, status);
+  if (status->failure_key != kNoFailureKey) {
+    return;
+  }
+  std::uint64_t active_cells = 0;
+  for (const std::uint64_t size_level_count : status->active_cells_per_size_level) {
+    active_cells += size_level_count;
+  }
+  status->active_cells = active_cells;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 }  // namespace fluidity::grid

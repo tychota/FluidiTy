@@ -20,9 +20,11 @@
 //   input checks  the checks of a call before any id is read: frame, version, list shape, lent builder buffers, length
 //   keyed checks  steps 1 to 4 of <proc-build-grid>, whose failures are ordered by their failure key
 // Owns:    SiblingCheck, CheckGridInputs, CheckLentBuilderBuffers, CheckCellListInputs, CheckSortedCells,
-//          ComputeIsEarlierBlock, ApplyFixedBlockOrder, ToGridFailure(const GridBuildStatus&), BuildSortedCellList
-// Uses:    CPU-only guard (base/cpu_only.h), GridBuildStatus (grid/grid_build_status.h), GridFailure
-//          (grid/grid_error.h), CellId (grid/grid_ids.h), GridInputs, GridBuffers (grid/staggered_grid.h)
+//          ComputeIsEarlierBlock, ApplyFixedBlockOrder, ToGridFailure(const GridBuildStatus&), ToInputCells,
+//          ApplyCallsInOrder, ApplyListChecksInParallel (when GPU code is compiled in), BuildSortedCellList
+// Uses:    CPU-only guard (base/cpu_only.h), RunOnCallStatus (base/run_on_call.h), GridBuildStatus
+//          (grid/grid_build_status.h), GridFailure (grid/grid_error.h), CellId (grid/grid_ids.h), GridFrame
+//          (grid/grid_tables.h), GridInputs, GridBuffers (grid/staggered_grid.h)
 // Implementation uses: math::IsFinite (base/scalar_math.h), WriteBuffer, CopyBuffer, ReadBuffer, ToBufferError
 //          (base/buffer.h), BuildStableOrder (base/stable_order.h), RunOnCallStatus (base/run_on_call.h),
 //          ToGridBuffersArrays, ToGridBuilderBuffersArrays, ComputeHasLoanOf, ToGridFailure
@@ -43,9 +45,11 @@
 #include <expected>
 #include <span>
 
+#include "fluidity/base/run_on_call.h"
 #include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
@@ -158,6 +162,53 @@ void ApplyFixedBlockOrder(std::span<CellId> cells);
 //                        cells. The GPU writes the key and the error together, so no input causes it.
 // Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
 GridFailure ToGridFailure(const GridBuildStatus& status);
+
+// Gives the list of `inputs`: the span active_cells, or the first active_cell_buffer_count ids of active_cell_buffer.
+// Example: {.active_cell_buffer = a buffer of 100 ids, .active_cell_buffer_count = 9} gives its first 9 ids.
+// Requires: CheckGridInputs(inputs) passed, so at most one list is given and the count fits its buffer.
+std::span<const CellId> ToInputCells(const GridInputs& inputs);
+
+// Runs calls in the order given and stops at the first that does not give RunOnCallStatus::kDone: the calls after it
+// are never made. Gives that call's status, or kDone when every call was made and started. The GPU half of a build
+// makes its steps through it, so a step whose start failed is never followed by a step that relies on it.
+// Example: ApplyCallsInOrder(first, second, third) where second gives kCallFailed makes first and second, not third,
+//   and gives kCallFailed.
+template <typename... Calls>
+RunOnCallStatus ApplyCallsInOrder(Calls&&... calls) {
+  RunOnCallStatus call_status = RunOnCallStatus::kDone;
+  // The fold over && stops at the first false, so no call after a failed one is evaluated.
+  static_cast<void>(((call_status = calls(), call_status == RunOnCallStatus::kDone) && ...));
+  return call_status;
+}
+
+#if defined(FLUIDITY_HAS_GPU)
+// Runs the keyed checks of a list on GPU buffers, method paper <proc-build-grid-in-parallel> steps P1 (the reset)
+// to P6, and leaves their result on that processor: the smallest failure key in the buffers' status record and, when
+// no key is set, the list in the fixed order in the first input_cells.size() cell ids. Nothing is copied back, so a
+// build goes on from there and a check names the failure after it.
+//
+// Method: the arrays are checked first. Then one GPU-half call per step: one thread resets the status record, P2
+//   checks the ids, P3 writes the three passes of ToCellSortKey and orders them with BuildStableOrder, the last order
+//   left in the lent builder buffers' order, and copies the cells into the cell ids in that order; P4, P5 when
+//   sibling_check is kRequire, and P6 check the sorted positions, each thread doing nothing once an earlier step
+//   failed. The per-item rules are the CPU's (ComputeCellIdFailureKey, ComputeSortedCellFailureKey). Allocates nothing.
+// Example: the list {size level 0 {0,0,0}, size level 2 {4,4,4}} leaves ToFailureKey(4, 1, 0) in the record; a valid
+//   list leaves kNoFailureKey and its sorted cells.
+// Requires: buffers.run_on() is the GPU; CheckCellListInputs passed for this list and these buffers; input_cells lies
+//   in GPU memory, or is empty.
+// Fails: kRunOnCallFailed  a GPU call failed to start: nothing after it is started, and the run stops
+//        kInternalFault    an array of the builder buffers too small for the list, no order buffers, no status record,
+//                          or a size error from BuildStableOrder: each contradicts the builders of the buffers
+//        A failure of the list itself is not a failure here: it is the key left in the status record.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+std::expected<void, GridFailure> ApplyListChecksInParallel(
+    GridFrame frame,
+    std::span<const CellId> input_cells,
+    GridBuffers& buffers,
+    SiblingCheck sibling_check
+);
+
+#endif
 
 // Builds the sorted cell list of `inputs` in the lent builder buffers' cell ids, the start of every build and every
 // check of a list on buffers, and returns the cell count: the first that many cell ids are the list in fixed order.

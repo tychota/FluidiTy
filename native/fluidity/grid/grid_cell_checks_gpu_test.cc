@@ -329,7 +329,7 @@ TEST(CheckSizeStepRule, OnGpu_AllocatesNothing) {
 // function), which a debug build with -G does not do.
 TEST(CheckSizeStepRule, OnGpuFunctions_KeepUnderTheDefaultStack) {
   std::uint64_t largest_bytes = 0;
-  ASSERT_EQ(ComputeLargestStackOnGpu(&largest_bytes), RunOnCallStatus::kDone);
+  ASSERT_EQ(ComputeLargestBuildStackOnGpu(&largest_bytes), RunOnCallStatus::kDone);
   RecordProperty("largest_stack_bytes", static_cast<int>(largest_bytes));
   EXPECT_LT(largest_bytes, 1024U);
   WriteResultDigest(

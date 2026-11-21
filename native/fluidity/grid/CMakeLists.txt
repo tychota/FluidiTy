@@ -51,6 +51,18 @@ fluidity_add_test(
   fluidity_base_test_support
   fluidity_grid_test_support
 )
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  staggered_grid_gpu_test
+  SOURCES
+  staggered_grid_gpu_test.cc
+  allocation_counter_test_support.cc
+  LABEL
+  gpu
+  LINKS
+  fluidity_base_test_support
+  fluidity_grid_test_support
+)
 fluidity_add_test(grid_cell_count_test SOURCES grid_cell_count_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_buffers_no_gpu_test SOURCES grid_buffers_no_gpu_test.cc LABEL no_gpu)
 fluidity_add_test(grid_error_test SOURCES grid_error_test.cc LABEL cpu)

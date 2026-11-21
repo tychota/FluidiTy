@@ -1,37 +1,44 @@
-// The GPU half of the check of a cell list and of the first steps of a build, private to grid/: what
-// grid/staggered_grid_gpu.cu defines.
+// The GPU half of the check of a cell list and of a grid build, private to grid/: what grid/staggered_grid_gpu.cu
+// defines.
 //
 // Purpose: let grid/grid_cell_checks.cc run method paper <proc-build-grid-in-parallel> steps P1 to P6, and the failure
-//   half of P12, and let the grid's builder run P7 and P8, without including a CUDA header.
+//   half of P12, and let the grid's builder run P7 to P12, without including a CUDA header.
 //
-// Idea: the CPU half has run the input checks of P1 and calls one function here per step, with the stable orders of P3
-//   between them. Each function starts one GPU function over plain GPU pointers and counts: a thin grid-stride loop
-//   that calls a per-item rule of grid/grid_build_steps.h for each item, which a CPU test replays for every thread
-//   block and thread. The threads share only the status record's failure key, to which they offer keys with an integer
-//   atomic minimum, so the smallest key does not depend on the order the threads run in. The functions use the default
-//   stream, so the GPU runs them, and the stable orders between them, in the order they are called. Each returns how
-//   its start went. An error while a GPU function runs is reported by the next wait: the wait at the end of each
-//   BuildStableOrder for the functions before the copy in sorted order, as BufferError kRunOnCallFailed, or the wait at
-//   the end of WriteFailureCellsOnGpu for the rest. Either way the check fails with kRunOnCallFailed.
-//   The functions of P7 and P8 read counts that only the GPU knows, the split cells and the blocks, from the status
-//   record, so no count comes back during a build. After an earlier step's failure each does nothing, except where a
-//   prefix sum reads what it writes: there it writes 0, so the sum never adds words of an earlier launch. Both keys of
-//   P7 (b), the room's and kSortCountFaultKey, are of step 5, so every later function stops on either: P8 never sorts
-//   a list cut short.
-//   This file exists only in a build with GPU code, so grid/grid_cell_checks.cc names it only under
+// Idea: the CPU half has run the input checks of P1 and calls one function here per step, with the stable orders and
+//   prefix sums between them. Each function starts GPU functions over plain GPU pointers and counts: a thin grid-stride
+//   loop that calls a per-item rule of grid/grid_build_steps.h for each item, which a CPU test replays for every thread
+//   block and thread. The threads share only the status record: its failure key, to which they offer keys with an
+//   integer atomic minimum, and its counts, to which they add with integer atomic adds, so neither the smallest key nor
+//   a count depends on the order the threads run in. Each function's comment says which places one thread writes and
+//   reads, and why no two threads of a launch write one place. The functions use the default stream, so the GPU runs
+//   them, and the stable orders between them, in the order they are called. Each returns how its start went. An error
+//   while a GPU function runs is reported by the next wait: the wait at the end of each BuildStableOrder or
+//   ComputeExclusivePrefixSum for the functions before it, as BufferError kRunOnCallFailed, or the wait at the end of
+//   WriteFailureCellsOnGpu or WriteBuildStatusResultOnGpu for the rest. Either way the call fails with
+//   kRunOnCallFailed.
+//   The functions of P7 to P11 read counts that only the GPU knows, the split cells and the blocks, from the status
+//   record, so no count comes back during a build. Their launches are sized on the CPU, from the active cells, the
+//   sort count or the room, and the threads beyond the count read from the record do nothing. After an earlier step's
+//   failure each does nothing, except where a prefix sum reads what it writes: there it writes 0, so the sum never adds
+//   words of an earlier launch. Both keys of P7 (b), the room's and kSortCountFaultKey, are of step 5, so every later
+//   function stops on either: P8 never sorts a list cut short. P10 and P11 come after every keyed step, so any key
+//   stops them.
+//   This header is used only when GPU code is compiled in, so the CPU files name it only under
 //   `#if defined(FLUIDITY_HAS_GPU)`. It uses the C++20 subset and includes no CPU-only header.
 //
 // Stack: every function here keeps under the driver's default of 1,024 B per thread, so the grid has no entry held by
-//   the driver. The GPU functions keep no local array: a few indexes, a failure key, a CellCheck (24 bytes) and the
-//   coordinates of the checks of grid/grid_build_steps.h. ComputeLargestStackOnGpu reads the bytes the compiler gave.
+//   the driver. The GPU functions keep no local array: a few indexes, a failure key, a CellCheck (24 bytes), a copy of
+//   GridTables and the coordinates of the rules of grid/grid_build_steps.h. ComputeLargestBuildStackOnGpu
+//   reads the bytes the compiler gave.
 //
 // Owns:    ApplyBuildStatusResetOnGpu, CheckCellIdsOnGpu, WriteCellSortKeysOnGpu, CopySortedCellsOnGpu,
 //          CheckSortedCellsOnGpu, WriteFailureCellsOnGpu, WriteSplitCellCountsOnGpu, CheckCellPlacesOnGpu,
 //          CheckBlockCountOnGpu, WriteSplitCellsOnGpu, WriteSortTailOnGpu, WriteBlockSortKeysOnGpu,
-//          WriteBlockStartMarksOnGpu, WriteBlockIdsOnGpu, ComputeLargestStackOnGpu
+//          WriteBlockStartMarksOnGpu, WriteBlockIdsOnGpu, WriteBlockNeighboursOnGpu, SortedBlockEntries,
+//          WriteCellStatesOnGpu, WriteFacePieceKindsOnGpu, WriteBuildStatusResultOnGpu, ComputeLargestBuildStackOnGpu
 // Uses:    RunOnCallStatus (base/run_on_call.h), GridBuildStatus (grid/grid_build_status.h), CellId, CellBlockId
-//          (grid/grid_ids.h), GridFrame (grid/grid_tables.h)
-// Used by: grid/grid_cell_checks.cc, grid/grid_cell_checks_gpu_test.cc and the grid's builder; defined in
+//          (grid/grid_ids.h), GridFrame, GridTables, CellState, FacePieceKind (grid/grid_tables.h)
+// Used by: grid/grid_cell_checks.cc, grid/staggered_grid_cpu.cc and the gpu tests of grid/; defined in
 //          grid/staggered_grid_gpu.cu
 // Read:    docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
 
@@ -212,9 +219,104 @@ RunOnCallStatus WriteBlockIdsOnGpu(
     const GridBuildStatus* status
 );
 
+// Step P9: one thread per block of the room, max_cell_blocks threads; the threads of blocks at or above
+// status->cell_blocks (capped at the room) do nothing. Each thread first does nothing when
+// ComputeHasEarlierStepFailed(key, kBlockFaultStep); otherwise it runs ApplyBlockNeighboursWriteAt for its block and
+// offers the key it gives, of step 7 for a block of size level 1 or more without its bigger block, with an integer
+// atomic minimum. A key of step 7 offered by another thread does not stop a thread.
+// Races: block b writes entries 27 b..27 b + 26 of same_size_level_blocks, bigger_block[b] and 8 b..8 b + 7 of
+//   smaller_blocks, and reads back only bigger_block[b]; no two threads write one entry. Every thread reads block_ids
+//   and status->cell_blocks, which no thread of this launch writes. Threads share only the failure key, through the
+//   atomic minimum, whose final value does not depend on their order.
+// Requires: block_ids holds the block ids P8 wrote; the three tables have room for max_cell_blocks blocks, and
+//   smaller_blocks is the part of the bigger and smaller blocks that ComputeSmallerBlocksStart gives; all GPU memory,
+//   the tables overlapping none of the others. max_cell_blocks is 1 or more.
+// Fails: kCallFailed  the GPU function did not start
+RunOnCallStatus WriteBlockNeighboursOnGpu(
+    const CellBlockId* block_ids,
+    std::uint32_t* same_size_level_blocks,
+    std::uint32_t* bigger_block,
+    std::uint32_t* smaller_blocks,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+);
+
+// The sorted entries of the sort by block that P10 (b) places: what P7 and P8 left in the builder buffers.
+struct SortedBlockEntries {
+  const CellId* cell_ids = nullptr;  // The active cells, then the split cells, then the id 0, up to sort_count.
+  const std::uint32_t* order = nullptr;  // The final order of P8: sorted entry j is cell_ids[order[j]].
+  const std::uint32_t* sums = nullptr;  // The exclusive prefix sums of P8's marks, sort_count + 1 words.
+  std::uint32_t active_count = 0;  // n: the places below it hold the active cells.
+  std::uint32_t sort_count = 0;  // The places P8 sorted, ComputeSortCount(n, max_cell_blocks).
+};
+
+// Step P10, four GPU functions in turn, (a), (b) and the two launches of (c). Each thread first does nothing when
+// ComputeHasEarlierStepFailed(key, kTableEntryStep), which holds for any key: no state is written after a failure. The
+// block count is status->cell_blocks, capped at the room; the launches of (a) and (c) are sized for the room, 64
+// max_cell_blocks places, and the threads of places beyond the block count do nothing; (b) is sized for the sort count.
+//   (a) One thread per cell place runs ApplyAbsentStateAt. Races: place p writes cell_states[p] alone and reads only
+//   the status record, which no thread writes.
+//   (b) One thread per sorted entry j below sorted_entries.sort_count runs ApplySortedCellStateAt and, for an active
+//   cell, adds 1 to status->active_cells_per_size_level of its size level with an integer atomic add. Races: entry j
+//   writes the place of its own cell; no two entries hold one cell, and two cells never share a place
+//   (ApplySortedCellStateAt), so no two threads write one place. The cell ids, the order and the sums it reads are
+//   written by no thread of this launch. The 16 counts are shared only through the atomic add, whose total does not
+//   depend on the order of the threads. sort_count 0 starts nothing.
+//   (c), first launch: one thread per cell place runs ApplyCoverAnswerAt, which writes the place's state after the
+//   cover into cover_answers[p]. Races: place p writes cover_answers[p] alone. It reads cell states, the neighbour
+//   tables and the block ids, and no thread of this launch writes any of them: it reads only kActive marks, and no
+//   thread of it writes a state at all.
+//   (c), second launch: one thread per cell place runs ApplyCoverAnswerCopyAt. Races: place p reads cover_answers[p]
+//   and writes cell_states[p], both its own; no other thread touches either.
+// Requires: tables holds the GPU pointers of the build's block ids, neighbour tables and cell states (cell_states the
+//   same array, writable), its block_count unused; sorted_entries as SortedBlockEntries says, from P8; cover_answers
+//   holds 64 max_cell_blocks words that overlap no other argument and hold nothing needed after P8 (the builder's
+//   sort keys); P9 ran; all GPU memory. max_cell_blocks is 1 or more.
+// Fails: kCallFailed  one of the GPU functions did not start; the ones after it were not started
+RunOnCallStatus WriteCellStatesOnGpu(
+    GridTables tables,
+    CellState* cell_states,
+    const SortedBlockEntries& sorted_entries,
+    std::uint64_t* cover_answers,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+);
+
+// Step P11: one thread per face place of the room, 240 max_cell_blocks places; the threads of places beyond 240 times
+// the block count (status->cell_blocks, capped at the room) do nothing. Each thread first does nothing when
+// ComputeHasEarlierStepFailed(key, kTableEntryStep); otherwise it runs ApplyFacePieceKindWriteAt for each of its
+// places, adds up what they give and adds that sum to status->face_pieces with one integer atomic add.
+// Races: place f writes face_piece_kinds[f] alone. The cell states, neighbour tables and block ids it reads are written
+//   by no thread of this launch. The face piece count is shared only through the atomic add.
+// Requires: tables as for WriteCellStatesOnGpu, with every cell state written (P10 ran) and face_piece_kinds the same
+//   array as tables.face_piece_kinds, writable; all GPU memory. max_cell_blocks is 1 or more.
+// Fails: kCallFailed  the GPU function did not start
+RunOnCallStatus WriteFacePieceKindsOnGpu(
+    GridTables tables,
+    FacePieceKind* face_piece_kinds,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+);
+
+// Step P12 of a build: one thread runs ApplyBuildStatusResult, which writes the error and the cells of the smallest
+// key, or, without a failure, active_cells as the sum of the 16 counts per size level. Then the CPU waits for the GPU.
+// Requires: the lists are the ones P2 to P6 checked, the sorted list the first count cell ids; all GPU memory.
+// Fails: kCallFailed  the GPU function did not start, or a GPU function started since the last wait (the last stable
+//                     order or prefix sum of P8 waits for the ones before it) failed while it ran; the record is then
+//                     unspecified
+RunOnCallStatus WriteBuildStatusResultOnGpu(
+    GridFrame frame,
+    const CellId* input_cells,
+    std::uint32_t input_count,
+    const CellId* sorted_cells,
+    std::uint32_t count,
+    GridBuildStatus* status
+);
+
 // Reads the largest local memory per thread, in bytes, that the compiler gave any GPU function of this file
-// (cudaFuncGetAttributes, localSizeBytes), so a test can compare it with the driver's default stack of 1,024 B.
+// (cudaFuncGetAttributes, localSizeBytes), so a test can compare it with the driver's default stack of 1,024 B. It
+// covers the GPU functions of the check of a list and of the build alike, so one query answers for both.
 // Fails: kCallFailed  a query failed; *bytes_per_thread is then unchanged
-RunOnCallStatus ComputeLargestStackOnGpu(std::uint64_t* bytes_per_thread);
+RunOnCallStatus ComputeLargestBuildStackOnGpu(std::uint64_t* bytes_per_thread);
 
 }  // namespace fluidity::grid

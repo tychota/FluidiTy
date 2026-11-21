@@ -26,8 +26,9 @@ namespace fluidity::grid {
 namespace {
 
 // Reads its inputs from `values` (4 integers), the range, the frame, the two tables and the sorted cells and blocks,
-// writes split cells and the id 0 to `cell_ids`, block ids to `block_ids` and the neighbour tables of one block to
-// `block_tables` (27 + 1 + 8 entries per sorted block), and writes at least
+// writes split cells and the id 0 to `cell_ids`, block ids to `block_ids`, the neighbour tables of one block to
+// `block_tables` (27 + 1 + 8 entries per sorted block) and states and kinds to `written_cell_states` and
+// `written_face_piece_kinds`, and writes at least
 // one integer per shared function to `results` and the doubles of weight_curve.h to `double_results`, so the compiler
 // cannot drop any call.
 __global__ void ComputeWithEverySharedGridFunction(
@@ -43,6 +44,8 @@ __global__ void ComputeWithEverySharedGridFunction(
     CellId* cell_ids,
     CellBlockId* block_ids,
     std::uint32_t* block_tables,
+    CellState* written_cell_states,
+    FacePieceKind* written_face_piece_kinds,
     std::uint64_t* results,
     double* double_results
 ) {
@@ -93,7 +96,8 @@ __global__ void ComputeWithEverySharedGridFunction(
   const CellCheck size_step_check = CheckSizeStepAt(sorted_cells, sorted_count, position);
   results[result_index++] = overlap_check.cell.value + sibling_check.other_cell.value + size_step_check.detail;
   const std::uint64_t failure_key = ToFailureKey(values[0] & 7, position, static_cast<std::uint8_t>(values[2]));
-  results[result_index++] = static_cast<std::uint64_t>(ToFailureStep(failure_key)) + ToFailurePosition(failure_key);
+  results[result_index++] = static_cast<std::uint64_t>(ToFailureStep(failure_key)) + ToFailurePosition(failure_key)
+      + ToFailureDetail(failure_key);
   // The sorted cells stand in for the input list too: only the call matters here.
   const CellCheck failure_cells =
       ComputeFailureCells(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, failure_key);
@@ -142,6 +146,32 @@ __global__ void ComputeWithEverySharedGridFunction(
   const CellState state_beside = ComputeCellStateBeside(tables, CellBlockIndex{place}, values[1] & 3, 0, 0);
   results[result_index++] = static_cast<std::uint64_t>(state_beside) + tables.version.value;
   results[result_index++] = static_cast<std::uint64_t>(ComputeFacePieceKind(tables, FacePlaceIndex{place}));
+  // The per-item rules of the tables in parallel (<proc-build-grid-in-parallel> P9 to P12). The written tables stand in
+  // for the ones the GridTables reads: only the calls matter here.
+  results[result_index++] = ApplyBlockNeighboursWriteAt(
+      sorted_blocks,
+      sorted_count,
+      CellBlockIndex{place},
+      same_size_level_blocks,
+      bigger_block,
+      smaller_blocks
+  );
+  ApplyAbsentStateAt(written_cell_states, CellPlaceIndex{place});
+  const int sorted_size_level =
+      ApplySortedCellStateAt(written_cell_states, cell_ids, block_tables, block_tables, sorted_count, position);
+  results[result_index++] = static_cast<std::uint64_t>(sorted_size_level + kTableEntryStep);
+  GridTables written_tables = tables;
+  written_tables.cell_states = written_cell_states;
+  written_tables.face_piece_kinds = written_face_piece_kinds;
+  results[result_index++] =
+      static_cast<std::uint64_t>(ComputeCellStateAfterCover(written_tables, CellPlaceIndex{place}));
+  // The end of `results` stands in for the answers of P10 (c): only the calls matter here.
+  std::uint64_t* const cover_answers = results + 64;
+  ApplyCoverAnswerAt(written_tables, cover_answers, CellPlaceIndex{place});
+  ApplyCoverAnswerCopyAt(cover_answers, written_cell_states, CellPlaceIndex{place});
+  results[result_index++] = ApplyFacePieceKindWriteAt(written_tables, written_face_piece_kinds, FacePlaceIndex{place});
+  ApplyBuildStatusResult(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, build_status);
+  results[result_index++] = build_status->active_cells;
   // weight_curve.h: the curve, the spread and the constants.
   // weight_curve.h writes doubles, so they go to their own buffer and no double is converted to an integer.
   int double_result_index = 0;

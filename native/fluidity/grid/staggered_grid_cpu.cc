@@ -28,6 +28,11 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
+#if defined(FLUIDITY_HAS_GPU)
+#include "fluidity/base/run_on_call.h"
+#include "fluidity/grid/staggered_grid_gpu.h"
+#endif
+
 namespace fluidity::grid {
 namespace {
 
@@ -882,20 +887,322 @@ std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, Gr
 
 namespace {
 
+#if defined(FLUIDITY_HAS_GPU)
+
+// The arrays and the CPU counts of one build on the GPU: what every GPU step of P7 to P12 takes. The pointers are GPU
+// memory of the buffers and their lent builder buffers.
+struct ParallelBuild {
+  GridFrame frame{};
+  std::span<const CellId> input_cells;  // The list, n ids in GPU memory.
+  std::uint32_t active_count = 0;  // n.
+  std::uint32_t sort_count = 0;  // ComputeSortCount(n, max_cell_blocks): the places P8 sorts.
+  std::uint32_t max_cell_blocks = 0;  // The room of the buffers.
+  GridBuffersArrays* arrays = nullptr;
+  GridBuilderBuffersArrays* builder_arrays = nullptr;
+  OrderBuffers* order_buffers = nullptr;  // The builder buffers' order buffers; null when they have none.
+};
+
+// The failure of a GPU-half call that did not start: kRunOnCallFailed, through the mapping of base/.
+GridFailure ToCallFailure(RunOnCallStatus call_status) {
+  return ToGridFailure(ToBufferError(call_status), 0);
+}
+
+// Says whether the arrays of a build on the GPU have the sizes the builders give them for the room: every table of the
+// room, 64 cell ids and sort keys per block, 64 order entries per block plus 1 for the total of a prefix sum, the order
+// buffers and the status record.
+bool ComputeHasParallelBuildArrays(const ParallelBuild& build) {
+  const std::size_t room_cell_places = std::size_t{kCellPlacesPerBlock} * build.max_cell_blocks;
+  const GridBuilderBuffersArrays& builder_arrays = *build.builder_arrays;
+  return ComputeHasTablesOfRoom(*build.arrays, build.max_cell_blocks)
+      && builder_arrays.cell_ids.size() >= room_cell_places && builder_arrays.sort_keys.size() >= room_cell_places
+      && builder_arrays.order.size() > room_cell_places && builder_arrays.second_order.size() > room_cell_places
+      && build.order_buffers != nullptr && build.arrays->build_status.size() >= 1;
+}
+
+// <proc-build-grid-in-parallel> P7: the split cells' counts and their prefix sum in second_order, the check of the
+// active and split cells against the room and the sort count, the split cells after the active cells, and the id 0 in
+// the tail up to the sort count.
+std::expected<void, GridFailure> ApplySplitCellStepsInParallel(const ParallelBuild& build) {
+  GridBuilderBuffersArrays& builder_arrays = *build.builder_arrays;
+  CellId* const cell_ids = builder_arrays.cell_ids.data();
+  std::uint32_t* const sums = builder_arrays.second_order.data();
+  GridBuildStatus* const status = build.arrays->build_status.data();
+  // (a) The counts, then their prefix sum in place.
+  if (const RunOnCallStatus call_status = WriteSplitCellCountsOnGpu(cell_ids, build.active_count, status, sums);
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // ComputeHasParallelBuildArrays checked the sizes, so a size error here is a total above 2^32 - 1, which the zeros
+  // written after a failure and the counts of a valid list never give: an internal fault, through the mapping.
+  if (const std::expected<void, BufferError> summed = ComputeExclusivePrefixSum(
+          builder_arrays.second_order,
+          build.active_count,
+          builder_arrays.second_order,
+          *build.order_buffers
+      );
+      !summed.has_value()) {
+    return std::unexpected(ToGridFailure(summed.error(), 0));
+  }
+  // (b) to (d).
+  const std::uint64_t room_cell_places = std::uint64_t{kCellPlacesPerBlock} * build.max_cell_blocks;
+  // (b) to (d), each made only once the one before it started: the writes of (c) and (d) rely on the key of (b).
+  const RunOnCallStatus call_status = ApplyCallsInOrder(
+      [&] {
+        return CheckCellPlacesOnGpu(sums, build.active_count, room_cell_places, build.sort_count, status);
+      },
+      [&] {
+        return WriteSplitCellsOnGpu(cell_ids, sums, build.active_count, status);
+      },
+      [&] {
+        return WriteSortTailOnGpu(cell_ids, build.active_count, build.sort_count, status);
+      }
+  );
+  if (call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  return {};
+}
+
+// <proc-build-grid-in-parallel> P8: three passes of the block keys over the sort count, alternating the two orders as
+// P3 does, the final order left in `order`; the marks and their prefix sum in second_order; the block count against the
+// room; the block ids.
+std::expected<void, GridFailure> ApplyBlockIdStepsInParallel(const ParallelBuild& build) {
+  GridBuilderBuffersArrays& builder_arrays = *build.builder_arrays;
+  const CellId* const cell_ids = builder_arrays.cell_ids.data();
+  GridBuildStatus* const status = build.arrays->build_status.data();
+  const std::array<const Buffer<std::uint32_t>*, kSortKeyPassCount> previous_orders = {
+      nullptr,
+      &builder_arrays.order,
+      &builder_arrays.second_order,
+  };
+  const std::array<Buffer<std::uint32_t>*, kSortKeyPassCount> pass_orders = {
+      &builder_arrays.order,
+      &builder_arrays.second_order,
+      &builder_arrays.order,
+  };
+  for (int pass = 0; pass < kSortKeyPassCount; ++pass) {
+    const auto pass_index = static_cast<std::size_t>(pass);
+    if (const RunOnCallStatus call_status =
+            WriteBlockSortKeysOnGpu(cell_ids, build.sort_count, pass, status, builder_arrays.sort_keys.data());
+        call_status != RunOnCallStatus::kDone) {
+      return std::unexpected(ToCallFailure(call_status));
+    }
+    // After a failure the keys may be left from before; the order cannot fail on them, and it is then never used.
+    if (const std::expected<void, BufferError> ordered = BuildStableOrder(
+            builder_arrays.sort_keys,
+            build.sort_count,
+            previous_orders.at(pass_index),
+            *pass_orders.at(pass_index),
+            *build.order_buffers
+        );
+        !ordered.has_value()) {
+      return std::unexpected(ToGridFailure(ordered.error(), 0));
+    }
+  }
+  const std::uint32_t* const order = builder_arrays.order.data();
+  std::uint32_t* const sums = builder_arrays.second_order.data();
+  if (const RunOnCallStatus call_status = WriteBlockStartMarksOnGpu(cell_ids, order, build.sort_count, status, sums);
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // The marks are 0 or 1 over at most 2^32 - 1 places, so the total fits; a size error is an internal fault.
+  if (const std::expected<void, BufferError> summed = ComputeExclusivePrefixSum(
+          builder_arrays.second_order,
+          build.sort_count,
+          builder_arrays.second_order,
+          *build.order_buffers
+      );
+      !summed.has_value()) {
+    return std::unexpected(ToGridFailure(summed.error(), 0));
+  }
+  CellBlockId* const block_ids = build.arrays->block_ids.data();
+  // The scatter is made only once the block count started: it relies on the key of step 6.
+  const RunOnCallStatus call_status = ApplyCallsInOrder(
+      [&] {
+        return CheckBlockCountOnGpu(sums, build.sort_count, build.max_cell_blocks, status);
+      },
+      [&] {
+        return WriteBlockIdsOnGpu(block_ids, cell_ids, order, sums, build.sort_count, status);
+      }
+  );
+  if (call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  return {};
+}
+
+// <proc-build-grid-in-parallel> P9 to P11: the neighbour tables, the cell states and the face piece kinds, each launch
+// sized for the room, its threads acting on the blocks the status record counts.
+std::expected<void, GridFailure> ApplyTableStepsInParallel(const ParallelBuild& build) {
+  GridBuffersArrays& arrays = *build.arrays;
+  GridBuilderBuffersArrays& builder_arrays = *build.builder_arrays;
+  GridBuildStatus* const status = arrays.build_status.data();
+  std::uint32_t* const same_size_level_blocks = arrays.same_size_level_neighbour_blocks.data();
+  std::uint32_t* const bigger_block = arrays.bigger_and_smaller_blocks.data();
+  std::uint32_t* const smaller_blocks = bigger_block + ComputeSmallerBlocksStart(build.max_cell_blocks);
+  // The GPU functions take the block count from the status record, so block_count is 0 here.
+  const GridTables tables = {
+      .frame = build.frame,
+      .version = {},
+      .block_count = 0,
+      .block_ids = arrays.block_ids.data(),
+      .same_size_level_blocks = same_size_level_blocks,
+      .bigger_block = bigger_block,
+      .smaller_blocks = smaller_blocks,
+      .cell_states = arrays.cell_states.data(),
+      .face_piece_kinds = arrays.face_piece_kinds.data(),
+  };
+  const SortedBlockEntries sorted_entries = {
+      .cell_ids = builder_arrays.cell_ids.data(),
+      .order = builder_arrays.order.data(),
+      .sums = builder_arrays.second_order.data(),
+      .active_count = build.active_count,
+      .sort_count = build.sort_count,
+  };
+  // The sort keys are free once P8's last stable order has run, and hold 64 words per block of the room
+  // (ComputeHasParallelBuildArrays), one per cell place: the answers of P10 (c) go there.
+  std::uint64_t* const cover_answers = builder_arrays.sort_keys.data();
+  // Each step is made only once the one before it started: P10 and P11 read the tables P9 writes.
+  const RunOnCallStatus call_status = ApplyCallsInOrder(
+      [&] {
+        return WriteBlockNeighboursOnGpu(
+            arrays.block_ids.data(),
+            same_size_level_blocks,
+            bigger_block,
+            smaller_blocks,
+            build.max_cell_blocks,
+            status
+        );
+      },
+      [&] {
+        return WriteCellStatesOnGpu(
+            tables,
+            arrays.cell_states.data(),
+            sorted_entries,
+            cover_answers,
+            build.max_cell_blocks,
+            status
+        );
+      },
+      [&] {
+        return WriteFacePieceKindsOnGpu(tables, arrays.face_piece_kinds.data(), build.max_cell_blocks, status);
+      }
+  );
+  if (call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  return {};
+}
+
+// Converts the status record of a build that P12 wrote, read back by the CPU, to the build's counts or its failure.
+// Requires: the record of a build of active_count cells into a room of max_cell_blocks.
+std::expected<GridCounts, GridFailure>
+ToGridCountsOfStatus(const GridBuildStatus& status, std::uint32_t active_count, std::uint32_t max_cell_blocks) {
+  const GridFailure failure = ToGridFailure(status);
+  if (failure.error != GridError::kNone) {
+    return std::unexpected(failure);
+  }
+  // Without a failure, step 6 found the blocks within the room, and P10 (b) counted every active cell once: a record
+  // that says otherwise contradicts the steps that wrote it.
+  if (status.cell_blocks > max_cell_blocks || status.active_cells != active_count) {
+    return std::unexpected(ToInternalFault());
+  }
+  GridCounts counts{};
+  counts.cell_blocks = status.cell_blocks;
+  std::ranges::copy(status.active_cells_per_size_level, &counts.active_cells_per_size_level[0]);
+  counts.active_cells = status.active_cells;
+  counts.face_pieces = status.face_pieces;
+  return counts;
+}
+
+// <proc-build-grid-in-parallel> P1 to P12 on GPU buffers: the input checks of P1 on the CPU, the steps one GPU-half
+// call each, with the stable orders and prefix sums between them, and the one read of the status record. Returns the
+// counts of the tables written; after a failure the contents are unspecified and the buffers stay usable.
+std::expected<GridCounts, GridFailure> BuildGridTablesInParallel(const GridInputs& inputs, GridBuffers& buffers) {
+  // Steps: 1 the input checks and the arrays  2 P1 to P6  3 P7  4 P8  5 P9 to P11  6 P12 and the read of the record
+  // Step 1: the input checks, as on the CPU, before anything runs on the GPU.
+  if (const std::expected<void, GridFailure> inputs_checked = CheckCellListInputs(inputs, buffers);
+      !inputs_checked.has_value()) {
+    return std::unexpected(inputs_checked.error());
+  }
+  GridBuffersArrays& arrays = ToGridBuffersArrays(buffers);
+  const std::span<const CellId> input_cells = ToInputCells(inputs);
+  // The length check passed, so n is at most 64 max_cell_blocks, below 2^32.
+  const auto active_count = static_cast<std::uint32_t>(input_cells.size());
+  GridBuilderBuffersArrays& builder_arrays = ToGridBuilderBuffersArrays(*arrays.builder_buffers);
+  const ParallelBuild build = {
+      .frame = inputs.frame,
+      .input_cells = input_cells,
+      .active_count = active_count,
+      .sort_count = ComputeSortCount(active_count, buffers.max_cell_blocks()),
+      .max_cell_blocks = buffers.max_cell_blocks(),
+      .arrays = &arrays,
+      .builder_arrays = &builder_arrays,
+      .order_buffers = builder_arrays.order_buffers.has_value() ? &*builder_arrays.order_buffers : nullptr,
+  };
+  // BuildGridBuilderBuffers and BuildGridBuffers built every array from the estimate's entries for a room at least the
+  // buffers', so other sizes mean the two disagree.
+  if (!ComputeHasParallelBuildArrays(build)) {
+    return std::unexpected(ToInternalFault());
+  }
+  // Steps 2 to 5: the keyed checks leave their key in the status record, and every later step reads it there.
+  if (const std::expected<void, GridFailure> checked =
+          ApplyListChecksInParallel(inputs.frame, input_cells, buffers, SiblingCheck::kRequire);
+      !checked.has_value()) {
+    return std::unexpected(checked.error());
+  }
+  if (const std::expected<void, GridFailure> added = ApplySplitCellStepsInParallel(build); !added.has_value()) {
+    return std::unexpected(added.error());
+  }
+  if (const std::expected<void, GridFailure> numbered = ApplyBlockIdStepsInParallel(build); !numbered.has_value()) {
+    return std::unexpected(numbered.error());
+  }
+  if (const std::expected<void, GridFailure> written = ApplyTableStepsInParallel(build); !written.has_value()) {
+    return std::unexpected(written.error());
+  }
+  // Step 6: P12, then the one transfer of the build. The sorted active cells are still the first n cell ids: P7 writes
+  // after them and P8 orders the places without moving them.
+  const CellId* const cell_ids = build.builder_arrays->cell_ids.data();
+  if (const RunOnCallStatus call_status = WriteBuildStatusResultOnGpu(
+          inputs.frame,
+          input_cells.data(),
+          active_count,
+          cell_ids,
+          active_count,
+          arrays.build_status.data()
+      );
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  GridBuildStatus read_status{};
+  const std::expected<void, BufferError> read =
+      ReadBuffer(arrays.build_status, 0, std::span<GridBuildStatus>(&read_status, 1));
+  if (!read.has_value()) {
+    return std::unexpected(ToGridFailure(read.error(), sizeof(GridBuildStatus)));
+  }
+  return ToGridCountsOfStatus(read_status, active_count, build.max_cell_blocks);
+}
+
+#endif
+
 // Runs the steps of a build into `buffers` and returns the counts of the tables written. BuildGrid and the buffers form
 // of ComputeGridCounts both call it, so the counts come from the very tables a build writes. The buffers keep their
 // arrays and their loan, and their contents are unspecified after a failure.
 std::expected<GridCounts, GridFailure> BuildGridTables(const GridInputs& inputs, GridBuffers& buffers) {
   // Steps of <proc-build-grid>: 1 to 4 the input checks, the ids and the sorted list  5 the split cells and the
   // blocks  6 the neighbour tables  7 the cell states  8 the face piece kinds
-  // The library has no GPU build of a grid yet: on GPU buffers the input checks run, and then no id is read and
-  // nothing is written.
+  // On GPU buffers the same steps run in parallel, <proc-build-grid-in-parallel>.
   if (buffers.run_on() != RunOn::kCpu) {
+#if defined(FLUIDITY_HAS_GPU)
+    return BuildGridTablesInParallel(inputs, buffers);
+#else
+    // Without GPU code BuildGridBuffers never builds GPU buffers, so no caller reaches this past the input checks.
     if (const std::expected<void, GridFailure> inputs_checked = CheckCellListInputs(inputs, buffers);
         !inputs_checked.has_value()) {
       return std::unexpected(inputs_checked.error());
     }
     return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+#endif
   }
   // Steps 1 to 4: the n active cells, sorted in the fixed order at the start of the builder buffers' cell ids.
   const std::expected<std::uint32_t, GridFailure> sorted_count =

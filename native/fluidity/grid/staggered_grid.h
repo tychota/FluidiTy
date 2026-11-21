@@ -37,7 +37,12 @@
 //          (grid/grid_memory_estimate.h), BuildSortedCellList, CheckCellListInputs and the checks of a cell list
 //          (grid/grid_cell_checks.h), FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel,
 //          ToBlockSortKey, FindSortedBlock, FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState,
-//          ComputeFacePieceKind, ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h)
+//          ComputeFacePieceKind, ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h);
+//          and, when GPU code is compiled in, the GPU path of BuildGrid and ComputeGridCounts:
+//          ApplyListChecksInParallel, ApplyCallsInOrder, ToInputCells, ToGridFailure(const GridBuildStatus&)
+//          (grid/grid_cell_checks.h), BuildStableOrder, ComputeExclusivePrefixSum (base/stable_order.h), ToBufferError
+//          (base/buffer.h), ComputeSortCount (grid/grid_build_steps.h) and the GPU half of P7 to P12
+//          (grid/staggered_grid_gpu.h)
 // Used by: the grid's builders and memory estimate, the step, which chooses the room, owns the buffers, counts a list
 //          to plan it and builds its grids, every module that reads a grid's tables, and cell resize, which checks the
 //          lists it splits
@@ -362,7 +367,9 @@ class StaggeredGrid {
 //   its place (ToCellPlaceIndex), then gives each place still kAbsent its ComputeCoveredCellState. Step 8 writes
 //   ComputeFacePieceKind at every face place and counts the face pieces. Every table entry comes from those shared
 //   functions (grid/grid_build_steps.h, grid/grid_ids.h), the ones the GPU build calls, so the two give the same
-//   bytes. Allocates nothing.
+//   bytes. On GPU buffers the same steps run in parallel, <proc-build-grid-in-parallel> P1 to P12, through the same
+//   per-item rules; the status record, which holds the counts or the first failure, is the one value copied back to
+//   the CPU, and no table leaves the GPU. Allocates nothing on either processor.
 // Order: each step runs over every position before the next, so the failure reported is the first by the failure key
 //   (<sec-parallel-build>): the GPU's smallest key.
 // Example: with 3 size levels, size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0} gives
@@ -378,12 +385,15 @@ class StaggeredGrid {
 //                             split cells above that number (step 5); more blocks than buffers.max_cell_blocks() (step
 //                             5). cell and other_cell zero: the GPU cannot name the first cell beyond the room without
 //                             working memory beyond it. The caller raises the room.
-//        kRunOnCallFailed     buffers.run_on() is the GPU: the library has no GPU build of a grid, so after the input
-//                             checks no id is read and nothing is written
+//        kRunOnCallFailed     a GPU call failed: the buffers' contents are unspecified, and the run stops
 //        kInternalFault       a state no input causes, checked in every build: a table array whose size is not the
 //                             room's, a block of size level 1 or more without its bigger block (step 7 of the failure
 //                             key), a cell whose block step 5 did not write, or a failure whose cells disagree with
-//                             it; zero cells
+//                             it; on the GPU also a builder array too small for the room, a size error from a stable
+//                             order, a prefix sum or a read of base/, more active and split cells than the sort by
+//                             block orders (kSortCountFaultKey), or a status record that contradicts itself or, without
+//                             a failure, counts more blocks than the room or other active cells than the list; zero
+//                             cells
 //        After a failed input check nothing is written; after a later failure the builder buffers' cell ids and the
 //        tables are unspecified.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>,
@@ -471,16 +481,16 @@ std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& input
 // hold no grid before or after; their arrays and loan stay, and their contents become unspecified.
 //
 // Method: the steps of BuildGrid, siblings required, so the counts are those of the grid BuildGrid would return. Unlike
-//   the one-argument form, which has no room, this form needs the room of `buffers`.
+//   the one-argument form, which has no room, this form needs the room of `buffers`. On GPU buffers the counts come
+//   from the status record of the build, the one value copied back to the CPU.
 //   An empty list gives zero counts, as the one-argument form does.
 // Example: the 9 size-level-0 cells {4 i, 0, 0}, each in a block of its own, into buffers for 8 blocks are
 //   kTooManyCellBlocks with cell and other_cell zero, while the one-argument form counts 9 cell blocks.
 // Requires: as CheckSizeStepRule(inputs, buffers).
 // Fails: as BuildGrid for the same inputs and buffers, including kBadInput when `buffers` is moved from (a build moved
 //        it into a grid, or it was moved to another object), kTooManyCellBlocks when the grid does not fit the
-//        buffers (cell and other_cell zero) and kRunOnCallFailed when buffers.run_on() is the GPU: the library has no
-//        GPU build of a grid, so after the input checks no id is read and nothing is written. A failed call leaves
-//        `buffers` usable.
+//        buffers (cell and other_cell zero) and kRunOnCallFailed when a GPU call failed. A failed call leaves `buffers`
+//        usable, except after kRunOnCallFailed, when the run stops.
 // Read: docs/method-paper/fluidity-method.typ <proc-count-grid>, <proc-build-grid>
 std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& inputs, GridBuffers& buffers);
 

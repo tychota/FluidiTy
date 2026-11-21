@@ -34,7 +34,8 @@
 //          TestGrid, BuildTestGrid, TakeEmptyGridBuffers, kRandomGridSizeLevelCount, kMaxRandomGridCellBlocks,
 //          ToGridCountFields, ComputeIsSameUsedTables, ComputeIsSameGrid, FindRandomGridsSpreadBySize,
 //          BuildReferenceGrids, kMutatedGridCount, BuildMutatedGridCells,
-//          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings
+//          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings, BuildLoneCellsAlongX, BuildSmallCellsOfEightBigCells,
+//          BuildTwoSizeFixtureCells
 // Uses:    Axis (base/axis.h), Buffer (base/buffer.h), RunMemory (base/run_memory.h), Vec3 (base/vec3.h), GridFailure
 //          (grid/grid_error.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h), GridFrame
 //          (grid/grid_tables.h), GridSettings, GridInputs, GridBuilderBuffers, StaggeredGrid (grid/staggered_grid.h),
@@ -54,6 +55,7 @@
 #include "fluidity/base/cpu_only.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -158,6 +160,19 @@ std::vector<CellId> BuildLargeBoxOfCells(const std::vector<CellId>& extra_cells)
 //   level 2 x = 3, inside size level 0 {0,0,0}, two size levels bigger: kSizeStepRuleBroken, cell size level 2
 //   {4,0,0}, other_cell size level 0 {0,0,0}, with siblings required or not.
 std::vector<CellId> BuildSizeStepBreakWithSiblings();
+
+// Builds `count` lone size-level-0 cells {4 i, 0, 0}, i = 0..count - 1, each in a block of its own.
+// Example: 9 such cells need 9 blocks, so buffers for 8 blocks fail with kTooManyCellBlocks at the block count.
+std::vector<CellId> BuildLoneCellsAlongX(std::size_t count);
+
+// Builds the 8 size-level-0 cells {0..1, 0..1, 0..1}, each split into its 8 size-level-1 cells: 64 active cells that
+// add 8 split cells, 72 in all, above the 64 cell places of a room of 1 block.
+std::vector<CellId> BuildSmallCellsOfEightBigCells();
+
+// Builds the two-size fixture: size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0}, 9 cells,
+// for a frame of 2 or more size levels.
+// Example: built, it has 2 blocks, size level 0 (0,0,0) and size level 1 (0,0,0), 9 active cells and 41 face pieces.
+std::vector<CellId> BuildTwoSizeFixtureCells();
 
 // Builds the size-step closure of a list: splits every active cell two or more size levels bigger than an active cell
 // it touches, by a side, an edge or a corner, into its 8 small cells, and repeats until no such cell is left. The

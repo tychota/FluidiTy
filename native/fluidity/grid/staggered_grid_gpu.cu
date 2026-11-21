@@ -1,16 +1,17 @@
-// The GPU half of the check of a cell list and of the first steps of a build, private to grid/: the functions declared
-// in grid/staggered_grid_gpu.h.
+// The GPU half of the check of a cell list and of a grid build, private to grid/: the functions declared in
+// grid/staggered_grid_gpu.h.
 //
-// Thin GPU functions, one per step of method paper <proc-build-grid-in-parallel> P1 to P6, the parts of P7 and P8 and
-// the failure half of P12, each a grid-stride loop (or one thread) over a per-item rule of grid/grid_build_steps.h,
-// which the CPU check calls too and a CPU test replays for every thread block and thread; the copy in sorted order is
-// one assignment per item. The only operation between threads is the integer atomic minimum of the failure key: its
-// final value does not depend on the order the threads apply it. Every call uses the default stream, so each function
-// sees what the one before it, and the stable orders and prefix sums between them, wrote.
+// Thin GPU functions, one per step of method paper <proc-build-grid-in-parallel> P1 to P12, or per part of a step, each
+// a grid-stride loop (or one thread) over a per-item rule of grid/grid_build_steps.h, which the CPU check and build
+// call too and a CPU test replays for every thread block and thread; the copy in sorted order is one assignment per
+// item. The only operations between threads are the integer atomic minimum of the failure key and the integer atomic
+// adds of the counts: their final values do not depend on the order the threads apply them. Every call uses the default
+// stream, so each function sees what the one before it, and the stable orders and prefix sums between them, wrote.
 // Launches, the wait and statuses go through base/gpu_launch.cuh.
-// Stack: no function keeps a local array. The largest locals are the CellCheck of a sorted position (24 bytes) and the
-// coordinates and loop counters of CheckSiblingsAt and CheckSizeStepAt, all in registers or a few dozen bytes of
-// stack; ComputeLargestStackOnGpu reads what the compiler gave.
+// Stack: no function keeps a local array. The largest locals are the CellCheck of a sorted position (24 bytes), the
+// copy of GridTables of P10 (c) and P11, and the coordinates and loop counters of CheckSiblingsAt, CheckSizeStepAt and
+// ComputeFacePieceKind, all in registers or a few dozen bytes of stack; ComputeLargestBuildStackOnGpu reads what the
+// compiler gave.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
 
 #include <cuda_runtime.h>
@@ -248,6 +249,158 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBlockIds(
   }
 }
 
+// A 64-bit count of `status` as the CUDA atomics take it.
+__device__ unsigned long long* ToAtomicCount(std::uint64_t* count) {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
+  return reinterpret_cast<unsigned long long*>(count);
+}
+
+// The blocks of the build that the tables of the room hold: the block count of the status record, at most the room.
+// The count passes the room only after a failure of step 6, when every step that reads it does nothing.
+__device__ std::uint32_t ComputeUsedBlockCount(const GridBuildStatus* status, std::uint32_t max_cell_blocks) {
+  const std::uint32_t cell_blocks = status->cell_blocks;
+  return cell_blocks < max_cell_blocks ? cell_blocks : max_cell_blocks;
+}
+
+// Step P9: one item per block of the room; the items below the block count are the blocks. A block offers the key of
+// step 7 when it has no bigger block although it is of size level 1 or more.
+__global__ void __launch_bounds__(kThreadBlockSize) WriteBlockNeighbours(
+    const CellBlockId* block_ids,
+    std::uint32_t* same_size_level_blocks,
+    std::uint32_t* bigger_block,
+    std::uint32_t* smaller_blocks,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+) {
+  const GridStride stride = ComputeGridStride();
+  const std::uint32_t block_count = ComputeUsedBlockCount(status, max_cell_blocks);
+  for (std::size_t block = stride.first_item; block < block_count; block += stride.item_step) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockFaultStep)) {
+      return;
+    }
+    const std::uint64_t failure_key = ApplyBlockNeighboursWriteAt(
+        block_ids,
+        block_count,
+        CellBlockIndex{static_cast<std::uint32_t>(block)},
+        same_size_level_blocks,
+        bigger_block,
+        smaller_blocks
+    );
+    if (failure_key != kNoFailureKey) {
+      atomicMin(ToAtomicFailureKey(status), failure_key);
+    }
+  }
+}
+
+// Step P10 (a): one item per cell place of the room; the items below 64 times the block count are the places.
+__global__ void __launch_bounds__(
+    kThreadBlockSize
+) WriteAbsentStates(CellState* cell_states, std::uint32_t max_cell_blocks, const GridBuildStatus* status) {
+  const GridStride stride = ComputeGridStride();
+  const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * ComputeUsedBlockCount(status, max_cell_blocks);
+  for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+      return;
+    }
+    ApplyAbsentStateAt(cell_states, CellPlaceIndex{static_cast<std::uint32_t>(place)});
+  }
+}
+
+// Step P10 (b): one item per sorted entry of the sort by block. An active entry adds 1 to the count of its size level.
+__global__ void __launch_bounds__(kThreadBlockSize) WriteSortedCellStates(
+    CellState* cell_states,
+    const CellId* cell_ids,
+    const std::uint32_t* order,
+    const std::uint32_t* sums,
+    std::uint32_t active_count,
+    std::uint32_t sort_count,
+    GridBuildStatus* status
+) {
+  const GridStride stride = ComputeGridStride();
+  for (std::size_t position = stride.first_item; position < sort_count; position += stride.item_step) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+      return;
+    }
+    const int size_level =
+        ApplySortedCellStateAt(cell_states, cell_ids, order, sums, active_count, static_cast<std::uint32_t>(position));
+    if (size_level >= 0) {
+      atomicAdd(ToAtomicCount(&status->active_cells_per_size_level[size_level]), 1ULL);
+    }
+  }
+}
+
+// Step P10 (c), the first launch: one item per cell place of the room; each writes its answer to cover_answers. The
+// tables' block count is the status record's.
+__global__ void __launch_bounds__(kThreadBlockSize) WriteCoverAnswers(
+    GridTables tables,
+    std::uint64_t* cover_answers,
+    std::uint32_t max_cell_blocks,
+    const GridBuildStatus* status
+) {
+  const GridStride stride = ComputeGridStride();
+  tables.block_count = ComputeUsedBlockCount(status, max_cell_blocks);
+  const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * tables.block_count;
+  for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+      return;
+    }
+    ApplyCoverAnswerAt(tables, cover_answers, CellPlaceIndex{static_cast<std::uint32_t>(place)});
+  }
+}
+
+// Step P10 (c), the second launch: one item per cell place of the room; each copies its own answer into its state.
+__global__ void __launch_bounds__(kThreadBlockSize) CopyCoverAnswers(
+    const std::uint64_t* cover_answers,
+    CellState* cell_states,
+    std::uint32_t max_cell_blocks,
+    const GridBuildStatus* status
+) {
+  const GridStride stride = ComputeGridStride();
+  const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * ComputeUsedBlockCount(status, max_cell_blocks);
+  for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+      return;
+    }
+    ApplyCoverAnswerCopyAt(cover_answers, cell_states, CellPlaceIndex{static_cast<std::uint32_t>(place)});
+  }
+}
+
+// Step P11: one item per face place of the room. A thread adds up the face pieces of its places and adds the sum to
+// the record once.
+__global__ void __launch_bounds__(kThreadBlockSize) WriteFacePieceKinds(
+    GridTables tables,
+    FacePieceKind* face_piece_kinds,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+) {
+  const GridStride stride = ComputeGridStride();
+  tables.block_count = ComputeUsedBlockCount(status, max_cell_blocks);
+  const std::size_t face_place_count = std::size_t{kFacePlacesPerBlock} * tables.block_count;
+  std::uint64_t face_piece_sum = 0;
+  for (std::size_t face = stride.first_item; face < face_place_count; face += stride.item_step) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+      return;
+    }
+    face_piece_sum +=
+        ApplyFacePieceKindWriteAt(tables, face_piece_kinds, FacePlaceIndex{static_cast<std::uint32_t>(face)});
+  }
+  if (face_piece_sum != 0) {
+    atomicAdd(ToAtomicCount(&status->face_pieces), face_piece_sum);
+  }
+}
+
+// Step P12, one thread.
+__global__ void WriteBuildStatusResult(
+    GridFrame frame,
+    const CellId* input_cells,
+    std::uint32_t input_count,
+    const CellId* sorted_cells,
+    std::uint32_t count,
+    GridBuildStatus* status
+) {
+  ApplyBuildStatusResult(frame, input_cells, input_count, sorted_cells, count, status);
+}
+
 // The launch of a GPU function that one thread runs.
 constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
 
@@ -446,23 +599,140 @@ RunOnCallStatus WriteBlockIdsOnGpu(
   );
 }
 
-RunOnCallStatus ComputeLargestStackOnGpu(std::uint64_t* bytes_per_thread) {
+RunOnCallStatus WriteBlockNeighboursOnGpu(
+    const CellBlockId* block_ids,
+    std::uint32_t* same_size_level_blocks,
+    std::uint32_t* bigger_block,
+    std::uint32_t* smaller_blocks,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+) {
+  return ApplyGpuFunction(
+      WriteBlockNeighbours,
+      ComputeLaunchSize(max_cell_blocks),
+      block_ids,
+      same_size_level_blocks,
+      bigger_block,
+      smaller_blocks,
+      max_cell_blocks,
+      status
+  );
+}
+
+RunOnCallStatus WriteCellStatesOnGpu(
+    GridTables tables,
+    CellState* cell_states,
+    const SortedBlockEntries& sorted_entries,
+    std::uint64_t* cover_answers,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+) {
+  const std::size_t room_cell_places = std::size_t{kCellPlacesPerBlock} * max_cell_blocks;
+  if (const RunOnCallStatus started = ApplyGpuFunction(
+          WriteAbsentStates,
+          ComputeLaunchSize(room_cell_places),
+          cell_states,
+          max_cell_blocks,
+          status
+      );
+      started != RunOnCallStatus::kDone) {
+    return started;
+  }
+  // A launch of 0 thread blocks fails, and with no sorted entry there is no cell to place.
+  if (sorted_entries.sort_count != 0) {
+    if (const RunOnCallStatus started = ApplyGpuFunction(
+            WriteSortedCellStates,
+            ComputeLaunchSize(sorted_entries.sort_count),
+            cell_states,
+            sorted_entries.cell_ids,
+            sorted_entries.order,
+            sorted_entries.sums,
+            sorted_entries.active_count,
+            sorted_entries.sort_count,
+            status
+        );
+        started != RunOnCallStatus::kDone) {
+      return started;
+    }
+  }
+  if (const RunOnCallStatus started = ApplyGpuFunction(
+          WriteCoverAnswers,
+          ComputeLaunchSize(room_cell_places),
+          tables,
+          cover_answers,
+          max_cell_blocks,
+          status
+      );
+      started != RunOnCallStatus::kDone) {
+    return started;
+  }
+  return ApplyGpuFunction(
+      CopyCoverAnswers,
+      ComputeLaunchSize(room_cell_places),
+      cover_answers,
+      cell_states,
+      max_cell_blocks,
+      status
+  );
+}
+
+RunOnCallStatus WriteFacePieceKindsOnGpu(
+    GridTables tables,
+    FacePieceKind* face_piece_kinds,
+    std::uint32_t max_cell_blocks,
+    GridBuildStatus* status
+) {
+  const std::size_t room_face_places = std::size_t{kFacePlacesPerBlock} * max_cell_blocks;
+  return ApplyGpuFunction(
+      WriteFacePieceKinds,
+      ComputeLaunchSize(room_face_places),
+      tables,
+      face_piece_kinds,
+      max_cell_blocks,
+      status
+  );
+}
+
+RunOnCallStatus WriteBuildStatusResultOnGpu(
+    GridFrame frame,
+    const CellId* input_cells,
+    std::uint32_t input_count,
+    const CellId* sorted_cells,
+    std::uint32_t count,
+    GridBuildStatus* status
+) {
+  if (const RunOnCallStatus started = ApplyGpuFunction(
+          WriteBuildStatusResult,
+          kOneThread,
+          frame,
+          input_cells,
+          input_count,
+          sorted_cells,
+          count,
+          status
+      );
+      started != RunOnCallStatus::kDone) {
+    return started;
+  }
+  // The wait reports an error of a GPU function started since the last wait, the one of the last stable order or
+  // prefix sum of P8.
+  return CheckGpuWork();
+}
+
+RunOnCallStatus ComputeLargestBuildStackOnGpu(std::uint64_t* bytes_per_thread) {
   std::uint64_t largest_bytes = 0;
-  const std::array<cudaError_t, 14> errors = {
-      ApplyLargerStack(ApplyBuildStatusReset, &largest_bytes),
-      ApplyLargerStack(CheckCellIds, &largest_bytes),
-      ApplyLargerStack(WriteCellSortKeys, &largest_bytes),
-      ApplyLargerStack(CopySortedCells, &largest_bytes),
-      ApplyLargerStack(CheckSortedPositions, &largest_bytes),
-      ApplyLargerStack(WriteFailureCells, &largest_bytes),
-      ApplyLargerStack(WriteSplitCellCounts, &largest_bytes),
-      ApplyLargerStack(CheckCellPlaces, &largest_bytes),
-      ApplyLargerStack(CheckBlockCount, &largest_bytes),
-      ApplyLargerStack(WriteSplitCells, &largest_bytes),
-      ApplyLargerStack(WriteSortTail, &largest_bytes),
-      ApplyLargerStack(WriteBlockSortKeys, &largest_bytes),
-      ApplyLargerStack(WriteBlockStartMarks, &largest_bytes),
-      ApplyLargerStack(WriteBlockIds, &largest_bytes),
+  const std::array<cudaError_t, 21> errors = {
+      ApplyLargerStack(ApplyBuildStatusReset, &largest_bytes),  ApplyLargerStack(CheckCellIds, &largest_bytes),
+      ApplyLargerStack(WriteCellSortKeys, &largest_bytes),      ApplyLargerStack(CopySortedCells, &largest_bytes),
+      ApplyLargerStack(CheckSortedPositions, &largest_bytes),   ApplyLargerStack(WriteFailureCells, &largest_bytes),
+      ApplyLargerStack(WriteSplitCellCounts, &largest_bytes),   ApplyLargerStack(CheckCellPlaces, &largest_bytes),
+      ApplyLargerStack(CheckBlockCount, &largest_bytes),        ApplyLargerStack(WriteSplitCells, &largest_bytes),
+      ApplyLargerStack(WriteSortTail, &largest_bytes),          ApplyLargerStack(WriteBlockSortKeys, &largest_bytes),
+      ApplyLargerStack(WriteBlockStartMarks, &largest_bytes),   ApplyLargerStack(WriteBlockIds, &largest_bytes),
+      ApplyLargerStack(WriteBlockNeighbours, &largest_bytes),   ApplyLargerStack(WriteAbsentStates, &largest_bytes),
+      ApplyLargerStack(WriteSortedCellStates, &largest_bytes),  ApplyLargerStack(WriteCoverAnswers, &largest_bytes),
+      ApplyLargerStack(CopyCoverAnswers, &largest_bytes),       ApplyLargerStack(WriteFacePieceKinds, &largest_bytes),
+      ApplyLargerStack(WriteBuildStatusResult, &largest_bytes),
   };
   for (const cudaError_t error : errors) {
     if (error != cudaSuccess) {

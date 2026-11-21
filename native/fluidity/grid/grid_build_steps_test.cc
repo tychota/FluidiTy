@@ -953,10 +953,20 @@ TEST(ToFailureKey, PackedFields_ReadBack) {
   const std::uint64_t largest_key = ToFailureKey(6, kLargestPosition, 255);
   EXPECT_EQ(ToFailureStep(largest_key), 6);
   EXPECT_EQ(ToFailurePosition(largest_key), kLargestPosition);
-  EXPECT_EQ(largest_key & 0xFFU, 255U);
+  EXPECT_EQ(ToFailureDetail(largest_key), 255U);
   EXPECT_LT(largest_key, kNoFailureKey);
   EXPECT_EQ(ToFailureStep(ToFailureKey(1, 0, 0)), 1);
   EXPECT_EQ(ToFailurePosition(ToFailureKey(1, 0, 0)), 0U);
+}
+
+// The detail is the low 8 bits alone: neither the position nor the step leaks into it.
+TEST(ToFailureDetail, PackedKeys_GiveTheLowEightBits) {
+  EXPECT_EQ(ToFailureDetail(ToFailureKey(3, 7, 9)), 9U);
+  EXPECT_EQ(ToFailureDetail(kSortCountFaultKey), 1U);
+  EXPECT_EQ(ToFailureDetail(ToFailureKey(5, 0, 0)), 0U);
+  EXPECT_EQ(ToFailureDetail(ToFailureKey(7, kLargestPosition, 0)), 0U);
+  EXPECT_EQ(ToFailureDetail(ToFailureKey(4, 1, 25)), 25U);
+  EXPECT_EQ(ToFailureDetail(kNoFailureKey), 255U);
 }
 
 TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells) {
@@ -2224,6 +2234,207 @@ TEST(ComputeFacePieceKind, SmallCellsAtLowCoordLimit_GiveTheCheckersFacePieces) 
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// The per-item rules of the tables in parallel (<proc-build-grid-in-parallel> P9 to P12)
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Block 1 of the two-size blocks writes its 36 entries, bigger block 0 among them, and offers no key; block 0 is of
+// size level 0 and offers none either.
+TEST(ApplyBlockNeighboursWriteAt, BlockWithItsBiggerBlock_OffersNoKey) {
+  TableVectors two_size_tables = BuildEmptyTables(ToUnitFrame(2), {ToBlock(0, 0, 0, 0), ToBlock(1, 0, 0, 0)});
+  std::ranges::fill(two_size_tables.bigger_block, 7U);
+  for (const std::uint32_t block : {1U, 0U}) {
+    const std::uint64_t failure_key = ApplyBlockNeighboursWriteAt(
+        two_size_tables.block_ids.data(),
+        2,
+        CellBlockIndex{block},
+        two_size_tables.same_size_level_blocks.data(),
+        two_size_tables.bigger_block.data(),
+        two_size_tables.smaller_blocks.data()
+    );
+    EXPECT_EQ(failure_key, kNoFailureKey) << block;
+  }
+  EXPECT_EQ(two_size_tables.bigger_block, (std::vector<std::uint32_t>{kNoIndex, 0}));
+  EXPECT_EQ(two_size_tables.smaller_blocks.at(0), 1U);
+  EXPECT_EQ(two_size_tables.same_size_level_blocks.at(kSameSizeLevelEntriesPerBlock + kSelfEntry), 1U);
+}
+
+// The size-level-1 block alone writes kNoIndex as its bigger block and offers the key of step 7 at index 0.
+TEST(ApplyBlockNeighboursWriteAt, BlockWithoutItsBiggerBlock_OffersStepSeven) {
+  TableVectors lone_tables = BuildEmptyTables(ToUnitFrame(2), {ToBlock(1, 0, 0, 0)});
+  lone_tables.bigger_block.at(0) = 7;
+  const std::uint64_t lone_key = ApplyBlockNeighboursWriteAt(
+      lone_tables.block_ids.data(),
+      1,
+      CellBlockIndex{0},
+      lone_tables.same_size_level_blocks.data(),
+      lone_tables.bigger_block.data(),
+      lone_tables.smaller_blocks.data()
+  );
+  EXPECT_EQ(lone_key, ToFailureKey(kBlockFaultStep, 0, 0));
+  EXPECT_EQ(lone_tables.bigger_block.at(0), kNoIndex);
+}
+
+// The sorted entries of the sort by block over the 8 size-level-1 cells of size level 0 {0,0,0}, the split cell it adds
+// at place 8 and the id 0 of the tail at place 9: the order a stable order of the block keys gives, the marks and their
+// exclusive sums.
+struct SplitCellSortedEntries {
+  std::vector<CellId> cell_ids;
+  std::vector<std::uint32_t> order;
+  std::vector<std::uint32_t> sums;
+};
+
+SplitCellSortedEntries BuildSplitCellSortedEntries() {
+  SplitCellSortedEntries entries;
+  AppendSmallCells(ToCell(0, 0, 0, 0), entries.cell_ids);
+  entries.cell_ids.push_back(ToCell(0, 0, 0, 0));
+  entries.cell_ids.push_back(CellId{0});
+  const auto count = static_cast<std::uint32_t>(entries.cell_ids.size());
+  for (std::uint32_t place = 0; place < count; ++place) {
+    entries.order.push_back(place);
+  }
+  std::ranges::stable_sort(entries.order, [&entries](std::uint32_t first, std::uint32_t second) {
+    return ComputeIsEarlierBlock(entries.cell_ids.at(first), entries.cell_ids.at(second));
+  });
+  std::uint32_t mark_sum = 0;
+  for (std::uint32_t position = 0; position < count; ++position) {
+    entries.sums.push_back(mark_sum);
+    mark_sum += ComputeBlockStartMark(entries.cell_ids.data(), entries.order.data(), position);
+  }
+  entries.sums.push_back(mark_sum);
+  return entries;
+}
+
+// Every entry, run last to first, over places that hold a stale kInsideBiggerCell: the split cell is entry 0, in block
+// 0, and writes kSplit at place 0; each active cell writes kActive at its local place in block 1 and gives size level
+// 1; the id 0 writes nothing and gives -1, as the split cell does. Every other place keeps the stale state.
+TEST(ApplySortedCellStateAt, SortedEntries_MarkEachCellAtItsPlace) {
+  const SplitCellSortedEntries entries = BuildSplitCellSortedEntries();
+  ASSERT_EQ(entries.sums.back(), 2U);
+  std::vector<CellState> cell_states(std::size_t{2} * kCellPlacesPerBlock, CellState::kInsideBiggerCell);
+  std::map<int, int> entries_per_result;
+  for (std::uint32_t position = 10; position-- > 0;) {
+    const int result = ApplySortedCellStateAt(
+        cell_states.data(),
+        entries.cell_ids.data(),
+        entries.order.data(),
+        entries.sums.data(),
+        8,
+        position
+    );
+    ++entries_per_result[result];
+  }
+  EXPECT_EQ(entries_per_result, (std::map<int, int>{{-1, 2}, {1, 8}}));
+  std::vector<CellState> expected_states(std::size_t{2} * kCellPlacesPerBlock, CellState::kInsideBiggerCell);
+  expected_states.at(ToCellPlace(0, 0, 0, 0)) = CellState::kSplit;
+  for (int z = 0; z <= 1; ++z) {
+    for (int y = 0; y <= 1; ++y) {
+      for (int x = 0; x <= 1; ++x) {
+        expected_states.at(ToCellPlace(1, x, y, z)) = CellState::kActive;
+      }
+    }
+  }
+  EXPECT_TRUE(cell_states == expected_states);
+}
+
+// The two-size fixture without its cover: every place's state after the cover, from ComputeCellStateAfterCover, is the
+// fixture with its cover. The 8 places of block 1 inside the active big cell give kInsideBiggerCell; the active, split
+// and absent places give their own state.
+TEST(ComputeCellStateAfterCover, TwoSizeFixture_GivesTheFixtureWithItsCover) {
+  const TableVectors tables = BuildTwoSizeFixtureWithoutCover();
+  const GridTables grid_tables = tables.ToGridTables();
+  std::vector<CellState> states_after_cover;
+  states_after_cover.reserve(std::size_t{2} * kCellPlacesPerBlock);
+  for (std::uint32_t place = 0; place < 2 * kCellPlacesPerBlock; ++place) {
+    states_after_cover.push_back(ComputeCellStateAfterCover(grid_tables, CellPlaceIndex{place}));
+  }
+  EXPECT_TRUE(states_after_cover == BuildTwoSizeFixture().cell_states);
+}
+
+// The two launches of P10 (c) over the fixture without its cover, each run last to first, the answers in words that
+// held stale values: the first writes every place's answer and no state; the second copies them, giving the fixture
+// with its cover.
+TEST(ApplyCoverAnswerAt, TwoLaunches_GiveTheFixtureWithItsCover) {
+  TableVectors tables = BuildTwoSizeFixtureWithoutCover();
+  const GridTables grid_tables = tables.ToGridTables();
+  const std::vector<CellState> states_before = tables.cell_states;
+  std::vector<std::uint64_t> cover_answers(std::size_t{2} * kCellPlacesPerBlock, ~std::uint64_t{0});
+  for (std::uint32_t place = 2 * kCellPlacesPerBlock; place-- > 0;) {
+    ApplyCoverAnswerAt(grid_tables, cover_answers.data(), CellPlaceIndex{place});
+  }
+  EXPECT_TRUE(tables.cell_states == states_before);
+  for (std::uint32_t place = 2 * kCellPlacesPerBlock; place-- > 0;) {
+    ApplyCoverAnswerCopyAt(cover_answers.data(), tables.cell_states.data(), CellPlaceIndex{place});
+  }
+  EXPECT_TRUE(tables.cell_states == BuildTwoSizeFixture().cell_states);
+}
+
+// The calls run in order up to the first that does not start, and not one after it.
+TEST(ApplyCallsInOrder, CallThatDidNotStart_StopsTheCallsAfterIt) {
+  std::vector<int> made_calls;
+  const auto make_call = [&made_calls](int call, RunOnCallStatus call_status) {
+    return [&made_calls, call, call_status] {
+      made_calls.push_back(call);
+      return call_status;
+    };
+  };
+  const RunOnCallStatus stopped = ApplyCallsInOrder(
+      make_call(1, RunOnCallStatus::kDone),
+      make_call(2, RunOnCallStatus::kCallFailed),
+      make_call(3, RunOnCallStatus::kDone)
+  );
+  EXPECT_EQ(stopped, RunOnCallStatus::kCallFailed);
+  EXPECT_EQ(made_calls, (std::vector<int>{1, 2}));
+  made_calls.clear();
+  const RunOnCallStatus done =
+      ApplyCallsInOrder(make_call(4, RunOnCallStatus::kDone), make_call(5, RunOnCallStatus::kDone));
+  EXPECT_EQ(done, RunOnCallStatus::kDone);
+  EXPECT_EQ(made_calls, (std::vector<int>{4, 5}));
+}
+
+// The two-size fixture, every face place run last to first: each writes ComputeFacePieceKind and gives 1 for a face
+// piece, 41 in all, the count of the grid of size level 0 {0,0,0} beside the 8 small cells of size level 0 {1,0,0}.
+TEST(ApplyFacePieceKindWriteAt, TwoSizeFixture_GivesFortyOneFacePieces) {
+  TableVectors tables = BuildTwoSizeFixture();
+  std::ranges::fill(tables.face_piece_kinds, FacePieceKind::kOutsidePiece);
+  const GridTables grid_tables = tables.ToGridTables();
+  std::uint32_t face_piece_count = 0;
+  for (std::uint32_t face = 2 * kFacePlacesPerBlock; face-- > 0;) {
+    face_piece_count += ApplyFacePieceKindWriteAt(grid_tables, tables.face_piece_kinds.data(), FacePlaceIndex{face});
+  }
+  EXPECT_EQ(face_piece_count, 41U);
+  for (std::uint32_t face = 0; face < 2 * kFacePlacesPerBlock; ++face) {
+    EXPECT_EQ(tables.face_piece_kinds.at(face), ComputeFacePieceKind(grid_tables, FacePlaceIndex{face})) << face;
+  }
+}
+
+// Without a failure the record gets error kNone and active_cells, the sum of the counts per size level.
+TEST(ApplyBuildStatusResult, NoFailure_SumsTheSizeLevels) {
+  GridBuildStatus status = ComputeResetBuildStatus();
+  status.active_cells = 99;
+  status.active_cells_per_size_level[0] = 1;
+  status.active_cells_per_size_level[1] = 8;
+  status.active_cells_per_size_level[15] = 3;
+  ApplyBuildStatusResult(ToUnitFrame(16), nullptr, 0, nullptr, 0, &status);
+  EXPECT_EQ(status.error, GridError::kNone);
+  EXPECT_EQ(status.active_cells, 12U);
+  EXPECT_EQ(status.cell.value, 0U);
+}
+
+// The key of step 7 gives kInternalFault with zero cells, and the counts stay as they were.
+TEST(ApplyBuildStatusResult, StepSevenKey_IsInternalFaultWithCountsLeft) {
+  GridBuildStatus status = ComputeResetBuildStatus();
+  status.failure_key = ToFailureKey(kBlockFaultStep, 0, 0);
+  status.active_cells = 99;
+  status.active_cells_per_size_level[0] = 1;
+  status.cell = ToCell(0, 1, 2, 3);
+  ApplyBuildStatusResult(ToUnitFrame(2), nullptr, 0, nullptr, 0, &status);
+  EXPECT_EQ(status.error, GridError::kInternalFault);
+  EXPECT_EQ(status.cell.value, 0U);
+  EXPECT_EQ(status.other_cell.value, 0U);
+  EXPECT_EQ(status.active_cells, 99U);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // The check of a list on the GPU (<proc-build-grid-in-parallel> P1 to P6), replayed on the CPU
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -2248,17 +2459,26 @@ struct ReplayLaunch {
   std::size_t thread_count = 0;
 };
 
-// Runs apply_item(index) for every item of one launch over item_count items, one thread after the other in
-// launch.order, each thread over its items as the grid-stride loop of a GPU function walks them: index = thread,
-// thread + thread count, and so on, where thread = thread block x thread block size + thread in the thread block.
-// apply_item returns false where the GPU function returns, which ends that thread's loop. A launch of 0 items does
-// not start.
+// Runs apply_item(index) for every item below item_count of one launch sized for launch_item_count items, one thread
+// after the other in launch.order, each thread over its items as the grid-stride loop of a GPU function walks them:
+// index = thread, thread + thread count, and so on, where thread = thread block x thread block size + thread in the
+// thread block. apply_item returns false where the GPU function returns, which ends that thread's loop. A launch sized
+// for 0 items does not start. The GPU functions of P9 to P11 are sized for the room and act on the items below a count
+// they read from the status record, so their two counts differ.
+//
+// clang-tidy: two counts of items; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 template <typename ApplyItem>
-void ApplyEveryThreadOfLaunch(std::size_t item_count, ReplayLaunch launch, ApplyItem apply_item) {
-  if (item_count == 0) {
+void ApplyEveryThreadOfSizedLaunch(
+    std::size_t launch_item_count,
+    std::size_t item_count,
+    ReplayLaunch launch,
+    ApplyItem apply_item
+) {
+  if (launch_item_count == 0) {
     return;
   }
-  const LaunchSize launch_size = ComputeLaunchSize(item_count);
+  const LaunchSize launch_size = ComputeLaunchSize(launch_item_count);
   const std::size_t launch_thread_count =
       static_cast<std::size_t>(launch_size.thread_block_count) * launch_size.thread_block_size;
   const std::size_t thread_count = launch.thread_count == 0 ? launch_thread_count : launch.thread_count;
@@ -2272,6 +2492,14 @@ void ApplyEveryThreadOfLaunch(std::size_t item_count, ReplayLaunch launch, Apply
   }
 }
 
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Runs apply_item over a launch sized for its items, as ApplyEveryThreadOfSizedLaunch says.
+template <typename ApplyItem>
+void ApplyEveryThreadOfLaunch(std::size_t item_count, ReplayLaunch launch, ApplyItem apply_item) {
+  ApplyEveryThreadOfSizedLaunch(item_count, item_count, launch, apply_item);
+}
+
 // The GPU's working arrays of a check or a build, its cell ids and its block ids, built on the CPU by the replay. CPU
 // builder buffers hold only the cell ids of the CPU check, and the replay keeps its own, so the CPU check never writes
 // what the replay compares.
@@ -2283,10 +2511,18 @@ struct ReplayArrays {
   Buffer<std::uint32_t> second_order;
   std::optional<OrderBuffers> order_buffers;
   Buffer<CellBlockId> block_ids;
+  Buffer<std::uint32_t> same_size_level_blocks;  // 27 per block.
+  // 1 per block, the bigger blocks, then 8 per block, the smaller blocks, from ComputeSmallerBlocksStart of the room.
+  Buffer<std::uint32_t> bigger_and_smaller_blocks;
+  Buffer<CellState> cell_states;  // 64 per block.
+  Buffer<FacePieceKind> face_piece_kinds;  // 240 per block.
   GridBuildStatus status{};
   // The first sort count cell ids just before P7 (d), the tail fill, of the last build replay.
   std::vector<CellId> cells_before_tail_fill;
   int failed_prefix_sum_count = 0;  // Prefix sums of the last build replay that returned an error.
+  // Places of P10 (c) and P11 whose block, bigger block or a neighbour of either named a block at or past the block
+  // count: the replay counts them and skips the place, where the GPU would read past its tables.
+  int stale_table_read_count = 0;
 };
 
 // The entries after the room's part of each replay array, filled with a fixed pattern that no step writes: a write
@@ -2295,7 +2531,7 @@ constexpr std::size_t kGuardCount = 16;
 
 // Builds the working arrays for a room of max_cell_blocks blocks, as BuildGridBuilderBuffers and BuildGridBuffers size
 // them on the GPU, each followed by kGuardCount guard entries: 64 cell ids, sort keys and order entries per block, plus
-// 1 order entry for the total of a prefix sum, and one block id per block. The guards hold their pattern
+// 1 order entry for the total of a prefix sum, and the five tables of the room. The guards hold their pattern
 // (ApplyGuardValues).
 ReplayArrays BuildReplayArrays(std::uint32_t max_cell_blocks) {
   const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * max_cell_blocks;
@@ -2311,10 +2547,24 @@ ReplayArrays BuildReplayArrays(std::uint32_t max_cell_blocks) {
   std::expected<OrderBuffers, BufferError> order_buffers = BuildOrderBuffers(RunOn::kCpu, place_count + 1);
   std::expected<Buffer<CellBlockId>, BufferError> block_ids =
       BuildBuffer<CellBlockId>(RunOn::kCpu, max_cell_blocks + kGuardCount);
+  const std::size_t room = max_cell_blocks;
+  std::expected<Buffer<std::uint32_t>, BufferError> same_size_level_blocks =
+      BuildBuffer<std::uint32_t>(RunOn::kCpu, (kSameSizeLevelEntriesPerBlock * room) + kGuardCount);
+  std::expected<Buffer<std::uint32_t>, BufferError> bigger_and_smaller_blocks =
+      BuildBuffer<std::uint32_t>(RunOn::kCpu, ((1 + kSmallerBlocksPerBlock) * room) + kGuardCount);
+  std::expected<Buffer<CellState>, BufferError> cell_states =
+      BuildBuffer<CellState>(RunOn::kCpu, place_count + kGuardCount);
+  std::expected<Buffer<FacePieceKind>, BufferError> face_piece_kinds =
+      BuildBuffer<FacePieceKind>(RunOn::kCpu, (std::size_t{kFacePlacesPerBlock} * room) + kGuardCount);
   const bool is_built = cell_ids.has_value() && sort_keys.has_value() && order.has_value() && second_order.has_value()
-      && order_buffers.has_value() && block_ids.has_value();
+      && order_buffers.has_value() && block_ids.has_value() && same_size_level_blocks.has_value()
+      && bigger_and_smaller_blocks.has_value() && cell_states.has_value() && face_piece_kinds.has_value();
   EXPECT_TRUE(is_built);
   if (is_built) {
+    arrays.same_size_level_blocks = std::move(*same_size_level_blocks);
+    arrays.bigger_and_smaller_blocks = std::move(*bigger_and_smaller_blocks);
+    arrays.cell_states = std::move(*cell_states);
+    arrays.face_piece_kinds = std::move(*face_piece_kinds);
     arrays.cell_ids = std::move(*cell_ids);
     arrays.sort_keys = std::move(*sort_keys);
     arrays.order = std::move(*order);
@@ -2334,7 +2584,9 @@ CellId ToGuardCellId() {
   return ToCell(4, 2000, 2000, 2000);
 }
 constexpr std::uint64_t kGuardSortKey = 0x5A5A5A5A5A5A5A5AU;
-constexpr std::uint32_t kGuardOrderEntry = 0xA5A5A5A5U;
+constexpr std::uint32_t kGuardOrderEntry = 0xA5A5A5A5U;  // Also the guard of the two neighbour tables.
+constexpr auto kGuardCellState = static_cast<CellState>(0xA5U);  // No value of the enum.
+constexpr auto kGuardFacePieceKind = static_cast<FacePieceKind>(0x5AU);  // No value of the enum.
 
 // The guard entries of one array: the last kGuardCount.
 template <typename Value>
@@ -2354,6 +2606,18 @@ void ApplyGuardValues(ReplayArrays& arrays) {
   std::ranges::fill(ToGuardEntries(arrays.order), kGuardOrderEntry);
   std::ranges::fill(ToGuardEntries(arrays.second_order), kGuardOrderEntry);
   std::ranges::fill(ToGuardEntries(arrays.block_ids), ToCellBlockId(ToGuardCellId()));
+  std::ranges::fill(ToGuardEntries(arrays.same_size_level_blocks), kGuardOrderEntry);
+  std::ranges::fill(ToGuardEntries(arrays.bigger_and_smaller_blocks), kGuardOrderEntry);
+  std::ranges::fill(ToGuardEntries(arrays.cell_states), kGuardCellState);
+  std::ranges::fill(ToGuardEntries(arrays.face_piece_kinds), kGuardFacePieceKind);
+}
+
+// Says whether every guard entry of one array holds `guard`.
+template <typename Value>
+bool ComputeAreGuardEntries(const Buffer<Value>& buffer, Value guard) {
+  return std::ranges::all_of(ToGuardEntries(buffer), [guard](Value entry) {
+    return entry == guard;
+  });
 }
 
 // Says whether every guard entry still holds its pattern: no write left the room's part of an array.
@@ -2384,9 +2648,16 @@ bool ComputeAreGuardsUnchanged(const ReplayArrays& arrays) {
                return entry == kGuardOrderEntry;
              }
       )
-      && std::ranges::all_of(ToGuardEntries(arrays.block_ids), [guard_block](CellBlockId block) {
-           return block.value == guard_block.value;
-         });
+      && std::ranges::all_of(
+             ToGuardEntries(arrays.block_ids),
+             [guard_block](CellBlockId block) {
+               return block.value == guard_block.value;
+             }
+      )
+      && ComputeAreGuardEntries(arrays.same_size_level_blocks, kGuardOrderEntry)
+      && ComputeAreGuardEntries(arrays.bigger_and_smaller_blocks, kGuardOrderEntry)
+      && ComputeAreGuardEntries(arrays.cell_states, kGuardCellState)
+      && ComputeAreGuardEntries(arrays.face_piece_kinds, kGuardFacePieceKind);
 }
 
 // A cell id that no list of these tests holds, written where a result is expected, so a result never written shows.
@@ -2394,16 +2665,21 @@ CellId ToStaleCellId() {
   return ToCell(3, 1000, 1000, 1000);
 }
 
-// Writes large values over every working array, the cell ids and the block ids, and a status record that already holds
+// Writes large values over every working array, the cell ids and the tables, and a status record that already holds
 // the smallest key there is, as an earlier check could leave them. A replay that read any of them before writing it
 // would differ from the CPU: the stale key would win the minimum, a stale sort key or order would misplace a cell, a
-// stale cell id would stay in the sorted list or become a block. The guards keep their patterns.
+// stale cell id would stay in the sorted list or become a block, a stale neighbour entry, kSplit state or
+// kOutsidePiece kind would stay in a table, kSplit even stopping P10 (c) at that place. The guards keep their patterns.
 void ApplyStaleValues(ReplayArrays& arrays) {
   std::fill_n(arrays.cell_ids.data(), arrays.cell_ids.size(), ToStaleCellId());
   std::fill_n(arrays.sort_keys.data(), arrays.sort_keys.size(), ~std::uint64_t{0} - 1);
   std::fill_n(arrays.order.data(), arrays.order.size(), kNoIndex - 1);
   std::fill_n(arrays.second_order.data(), arrays.second_order.size(), kNoIndex - 1);
   std::fill_n(arrays.block_ids.data(), arrays.block_ids.size(), ToCellBlockId(ToStaleCellId()));
+  std::fill_n(arrays.same_size_level_blocks.data(), arrays.same_size_level_blocks.size(), kNoIndex - 1);
+  std::fill_n(arrays.bigger_and_smaller_blocks.data(), arrays.bigger_and_smaller_blocks.size(), kNoIndex - 1);
+  std::fill_n(arrays.cell_states.data(), arrays.cell_states.size(), CellState::kSplit);
+  std::fill_n(arrays.face_piece_kinds.data(), arrays.face_piece_kinds.size(), FacePieceKind::kOutsidePiece);
   ApplyGuardValues(arrays);
   arrays.status = ComputeResetBuildStatus();
   arrays.status.failure_key = ToFailureKey(kIdStep, 0, 0);
@@ -2692,10 +2968,184 @@ bool ApplyBlockStepsByReplay(
   return true;
 }
 
-// Replays a build on the GPU up to the block ids, <proc-build-grid-in-parallel> P1 to P8, then the failure half of
-// P12: the input checks of P1 with CheckCellListInputs on `buffers`, which gives the room, then the steps of
-// ApplyListCheckStepsByReplay with the siblings required, and ApplyBlockStepsByReplay. A failed prefix sum or stable
-// order gives kInternalFault, as the CPU half's mapping of a size error does. Returns the failure the status names.
+// The tables of the replay arrays for the block count of their status record, at most the room, as a GPU function of
+// P10 (c) or P11 sees them.
+GridTables ToReplayTables(GridFrame frame, GridVersion version, const ReplayArrays& arrays) {
+  const std::uint32_t* const bigger_block = arrays.bigger_and_smaller_blocks.data();
+  return {
+      .frame = frame,
+      .version = version,
+      .block_count = std::min(arrays.status.cell_blocks, arrays.max_cell_blocks),
+      .block_ids = arrays.block_ids.data(),
+      .same_size_level_blocks = arrays.same_size_level_blocks.data(),
+      .bigger_block = bigger_block,
+      .smaller_blocks = bigger_block + ComputeSmallerBlocksStart(arrays.max_cell_blocks),
+      .cell_states = arrays.cell_states.data(),
+      .face_piece_kinds = arrays.face_piece_kinds.data(),
+  };
+}
+
+// Says whether an entry is a block of the tables or kNoIndex.
+bool ComputeIsBlockEntryInRange(const GridTables& tables, std::uint32_t entry) {
+  return entry == kNoIndex || entry < tables.block_count;
+}
+
+// Says whether every block entry that a place of `block` may read through P10 (c) or P11 names a block of the tables or
+// kNoIndex: the block's bigger block and 27 neighbours, and, when the bigger block is a block, its 27 neighbours.
+bool ComputeAreTableEntriesInRange(const GridTables& tables, std::uint32_t block) {
+  const auto are_neighbours_in_range = [&tables](std::uint32_t of_block) {
+    const std::span<const std::uint32_t> neighbours(
+        tables.same_size_level_blocks + (std::size_t{kSameSizeLevelEntriesPerBlock} * of_block),
+        kSameSizeLevelEntriesPerBlock
+    );
+    return std::ranges::all_of(neighbours, [&tables](std::uint32_t entry) {
+      return ComputeIsBlockEntryInRange(tables, entry);
+    });
+  };
+  const std::uint32_t bigger_block = tables.bigger_block[block];
+  if (!ComputeIsBlockEntryInRange(tables, bigger_block) || !are_neighbours_in_range(block)) {
+    return false;
+  }
+  return bigger_block == kNoIndex || are_neighbours_in_range(bigger_block);
+}
+
+// The replay's instrument for stale reads: two blocks with every entry kNoIndex are in range; one stale entry, at 2 or
+// more with 2 blocks, makes block 0 out of range in each of the three places it may read: its bigger block, its own
+// neighbours with no bigger block, and the neighbours of its bigger block, block 1, while its own are in range.
+TEST(ComputeAreTableEntriesInRange, StaleEntryInEachPlace_IsOutOfRange) {
+  const TableVectors in_range = BuildEmptyTables(ToUnitFrame(2), {ToBlock(0, 0, 0, 0), ToBlock(1, 0, 0, 0)});
+  EXPECT_TRUE(ComputeAreTableEntriesInRange(in_range.ToGridTables(), 0));
+  TableVectors stale_bigger = in_range;
+  stale_bigger.bigger_block.at(0) = 2;
+  EXPECT_FALSE(ComputeAreTableEntriesInRange(stale_bigger.ToGridTables(), 0));
+  TableVectors stale_own_neighbour = in_range;
+  stale_own_neighbour.same_size_level_blocks.at(0) = kNoIndex - 1;
+  EXPECT_FALSE(ComputeAreTableEntriesInRange(stale_own_neighbour.ToGridTables(), 0));
+  TableVectors stale_bigger_neighbour = in_range;
+  stale_bigger_neighbour.bigger_block.at(0) = 1;
+  stale_bigger_neighbour.same_size_level_blocks.at(kSameSizeLevelEntriesPerBlock) = 2;
+  EXPECT_FALSE(ComputeAreTableEntriesInRange(stale_bigger_neighbour.ToGridTables(), 0));
+  EXPECT_FALSE(ComputeAreTableEntriesInRange(stale_bigger_neighbour.ToGridTables(), 1));
+}
+
+// Replays P9 to P11 into the tables of `arrays`, for a room of arrays.max_cell_blocks blocks, after P8 left the block
+// ids, the final order in arrays.order and the sums of the marks in arrays.second_order: every thread of every launch
+// as `launch` says, each launch sized for the room (or, for P10 (b), the sort count) as the GPU half sizes it, the
+// threads acting on the items below the counts of the status record. The atomic minimum and adds become plain ones.
+//
+// clang-tidy: two counts; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+void ApplyTableStepsByReplay(
+    GridFrame frame,
+    std::uint32_t active_count,
+    std::uint32_t sort_count,
+    ReplayLaunch launch,
+    ReplayArrays& arrays
+) {
+  GridBuildStatus& status = arrays.status;
+  const std::uint32_t room = arrays.max_cell_blocks;
+  const GridTables tables = ToReplayTables(frame, GridVersion{1}, arrays);
+  const std::uint32_t block_count = tables.block_count;
+  const auto has_earlier_failure = [&status](int step) {
+    return ComputeHasEarlierStepFailed(status.failure_key, step);
+  };
+  // P9: one thread per block of the room; a block of size level 1 or more without its bigger block offers step 7.
+  std::uint32_t* const same_size_level_blocks = arrays.same_size_level_blocks.data();
+  std::uint32_t* const bigger_block = arrays.bigger_and_smaller_blocks.data();
+  std::uint32_t* const smaller_blocks = bigger_block + ComputeSmallerBlocksStart(room);
+  ApplyEveryThreadOfSizedLaunch(room, block_count, launch, [&](std::size_t block) {
+    if (has_earlier_failure(kBlockFaultStep)) {
+      return false;
+    }
+    const std::uint64_t failure_key = ApplyBlockNeighboursWriteAt(
+        arrays.block_ids.data(),
+        block_count,
+        CellBlockIndex{static_cast<std::uint32_t>(block)},
+        same_size_level_blocks,
+        bigger_block,
+        smaller_blocks
+    );
+    status.failure_key = std::min(status.failure_key, failure_key);
+    return true;
+  });
+  // P10 (a), (b) and (c), then P11: any key stops them.
+  const std::size_t room_cell_places = std::size_t{kCellPlacesPerBlock} * room;
+  CellState* const cell_states = arrays.cell_states.data();
+  const std::size_t used_cell_places = std::size_t{kCellPlacesPerBlock} * block_count;
+  ApplyEveryThreadOfSizedLaunch(room_cell_places, used_cell_places, launch, [&](std::size_t place) {
+    if (has_earlier_failure(kTableEntryStep)) {
+      return false;
+    }
+    ApplyAbsentStateAt(cell_states, CellPlaceIndex{static_cast<std::uint32_t>(place)});
+    return true;
+  });
+  ApplyEveryThreadOfLaunch(sort_count, launch, [&](std::size_t position) {
+    if (has_earlier_failure(kTableEntryStep)) {
+      return false;
+    }
+    const int size_level = ApplySortedCellStateAt(
+        cell_states,
+        arrays.cell_ids.data(),
+        arrays.order.data(),
+        arrays.second_order.data(),
+        active_count,
+        static_cast<std::uint32_t>(position)
+    );
+    if (size_level >= 0) {
+      ++status.active_cells_per_size_level[static_cast<std::size_t>(size_level)];
+    }
+    return true;
+  });
+  // Which blocks read only blocks of the tables or kNoIndex, found once after P9: nothing after it changes a block
+  // entry.
+  std::vector<bool> is_block_in_range(block_count);
+  for (std::uint32_t block = 0; block < block_count; ++block) {
+    is_block_in_range[block] = ComputeAreTableEntriesInRange(tables, block);
+  }
+  // P10 (c): the answers into the sort keys, free after P8, then the copy into the states.
+  std::uint64_t* const cover_answers = arrays.sort_keys.data();
+  ApplyEveryThreadOfSizedLaunch(room_cell_places, used_cell_places, launch, [&](std::size_t place) {
+    if (has_earlier_failure(kTableEntryStep)) {
+      return false;
+    }
+    if (!is_block_in_range[place / kCellPlacesPerBlock]) {
+      ++arrays.stale_table_read_count;
+      return true;
+    }
+    ApplyCoverAnswerAt(tables, cover_answers, CellPlaceIndex{static_cast<std::uint32_t>(place)});
+    return true;
+  });
+  ApplyEveryThreadOfSizedLaunch(room_cell_places, used_cell_places, launch, [&](std::size_t place) {
+    if (has_earlier_failure(kTableEntryStep)) {
+      return false;
+    }
+    ApplyCoverAnswerCopyAt(cover_answers, cell_states, CellPlaceIndex{static_cast<std::uint32_t>(place)});
+    return true;
+  });
+  const std::size_t room_face_places = std::size_t{kFacePlacesPerBlock} * room;
+  const std::size_t used_face_places = std::size_t{kFacePlacesPerBlock} * block_count;
+  ApplyEveryThreadOfSizedLaunch(room_face_places, used_face_places, launch, [&](std::size_t face) {
+    if (has_earlier_failure(kTableEntryStep)) {
+      return false;
+    }
+    if (!is_block_in_range[face / kFacePlacesPerBlock]) {
+      ++arrays.stale_table_read_count;
+      return true;
+    }
+    status.face_pieces += ApplyFacePieceKindWriteAt(
+        tables,
+        arrays.face_piece_kinds.data(),
+        FacePlaceIndex{static_cast<std::uint32_t>(face)}
+    );
+    return true;
+  });
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Replays a build on the GPU, <proc-build-grid-in-parallel> P1 to P12: the input checks of P1 with CheckCellListInputs
+// on `buffers`, which gives the room, then the steps of ApplyListCheckStepsByReplay with the siblings required,
+// ApplyBlockStepsByReplay, ApplyTableStepsByReplay and ApplyBuildStatusResult. A failed prefix sum or stable order
+// gives kInternalFault, as the CPU half's mapping of a size error does. Returns the failure the status names.
 GridFailure ApplyGpuBuildStepsByReplay(
     const GridInputs& inputs,
     const GridBuffers& buffers,
@@ -2704,6 +3154,7 @@ GridFailure ApplyGpuBuildStepsByReplay(
     ReplayArrays& arrays
 ) {
   arrays.failed_prefix_sum_count = 0;
+  arrays.stale_table_read_count = 0;
   arrays.cells_before_tail_fill.clear();
   if (const std::expected<void, GridFailure> inputs_checked = CheckCellListInputs(inputs, buffers);
       !inputs_checked.has_value()) {
@@ -2723,7 +3174,8 @@ GridFailure ApplyGpuBuildStepsByReplay(
   if (!ApplyBlockStepsByReplay(count, max_cell_blocks, launch, change, arrays)) {
     return {.error = GridError::kInternalFault};
   }
-  ApplyFailureCells(inputs.frame, input_cells.data(), count, arrays.cell_ids.data(), count, &arrays.status);
+  ApplyTableStepsByReplay(inputs.frame, count, ComputeSortCount(count, max_cell_blocks), launch, arrays);
+  ApplyBuildStatusResult(inputs.frame, input_cells.data(), count, arrays.cell_ids.data(), count, &arrays.status);
   return ToGridFailure(arrays.status);
 }
 
@@ -3006,14 +3458,46 @@ enum class ReplayStart : std::uint8_t {
   kAfterPreviousList,  // The arrays as the replay of the list before left them, cells of another grid included.
 };
 
-// What one build replay gave: the failure, the block ids written, and the two counts of the status record.
+// The `count` values from `first`, copied into a vector.
+template <typename Value>
+std::vector<Value> ToVector(const Value* first, std::size_t count) {
+  return std::vector<Value>(first, first + count);
+}
+
+// The used part of the five tables of `tables`, block_count blocks of each, copied into vectors.
+TableVectors ToTableVectors(const GridTables& tables) {
+  const std::size_t block_count = tables.block_count;
+  return {
+      .frame = tables.frame,
+      .block_ids = ToVector(tables.block_ids, block_count),
+      .same_size_level_blocks = ToVector(tables.same_size_level_blocks, kSameSizeLevelEntriesPerBlock * block_count),
+      .bigger_block = ToVector(tables.bigger_block, block_count),
+      .smaller_blocks = ToVector(tables.smaller_blocks, kSmallerBlocksPerBlock * block_count),
+      .cell_states = ToVector(tables.cell_states, kCellPlacesPerBlock * block_count),
+      .face_piece_kinds = ToVector(tables.face_piece_kinds, kFacePlacesPerBlock * block_count),
+  };
+}
+
+// What one build replay gave: the failure, on success the counts and the used tables, and the two counts the status
+// record holds after P8.
 struct BuildReplayResult {
   GridFailure failure;
-  std::vector<std::uint64_t> block_values;  // The first cell_blocks block ids, on success only.
+  std::optional<TableVectors> tables;  // On success only.
+  GridCounts counts{};  // On success only: the counts of the status record.
   std::uint32_t cell_blocks = 0;
   std::uint32_t split_cells = 0;
   int failed_prefix_sum_count = 0;
 };
+
+// The counts of a build's status record, as the CPU half of a build on the GPU reads them on success.
+GridCounts ToCountsOfStatus(const GridBuildStatus& status) {
+  GridCounts counts{};
+  counts.cell_blocks = status.cell_blocks;
+  std::ranges::copy(status.active_cells_per_size_level, &counts.active_cells_per_size_level[0]);
+  counts.active_cells = status.active_cells;
+  counts.face_pieces = status.face_pieces;
+  return counts;
+}
 
 // Replays the build of `inputs` on the room of `buffers` into `arrays` (ApplyGpuBuildStepsByReplay), collects what it
 // gave and expects every guard of the arrays unchanged: no step wrote past an array of the room.
@@ -3030,10 +3514,10 @@ BuildReplayResult ComputeBuildReplay(
   result.split_cells = arrays.status.split_cells;
   result.failed_prefix_sum_count = arrays.failed_prefix_sum_count;
   EXPECT_TRUE(ComputeAreGuardsUnchanged(arrays)) << "a write left the room's part of a replay array";
+  EXPECT_EQ(arrays.stale_table_read_count, 0) << "P10 (c) or P11 read a block past the block count";
   if (result.failure.error == GridError::kNone && result.cell_blocks <= arrays.max_cell_blocks) {
-    for (std::uint32_t block = 0; block < result.cell_blocks; ++block) {
-      result.block_values.push_back(arrays.block_ids.data()[block].value);
-    }
+    result.tables = ToTableVectors(ToReplayTables(inputs.frame, inputs.version, arrays));
+    result.counts = ToCountsOfStatus(arrays.status);
   }
   return result;
 }
@@ -3060,33 +3544,28 @@ ExpectedBlocks ComputeExpectedBlocks(std::span<const CellId> cells) {
   };
 }
 
-// The first block_count block ids of CPU buffers, as values.
-std::vector<std::uint64_t> ToCpuBlockValues(const GridBuffers& buffers, std::uint32_t block_count) {
-  const CellBlockId* const block_ids = ToGridBuffersArrays(buffers).block_ids.data();
-  std::vector<std::uint64_t> block_values(block_count);
-  for (std::uint32_t block = 0; block < block_count; ++block) {
-    block_values[block] = block_ids[block].value;
-  }
-  return block_values;
-}
-
 // What the CPU build of a list gave, and what the status counts of its replay must be.
 struct CpuBuildOfList {
   GridFailure failure;
-  std::vector<std::uint64_t> block_values;  // On success only.
+  std::optional<TableVectors> tables;  // On success only: the used part of the grid's tables.
+  GridCounts counts{};  // On success only.
   bool is_list_too_long = false;  // The input checks of P1 failed it: the replay never reached the GPU steps.
   ExpectedBlocks status_counts;  // The split cells and blocks the status record must hold otherwise.
 };
 
-// Runs the buffers form of ComputeGridCounts on the CPU buffers. The status counts: after a failure of steps 1 to 4,
-// zero; otherwise the split cells of the list, and the blocks of the list unless step 5 failed, when the marks are 0.
+// Runs BuildGrid on the CPU buffers, keeps the version check, the counts and the used tables of the grid, and takes
+// the buffers back. The status counts: after a failure of steps 1 to 4, zero; otherwise the split cells of the list,
+// and the blocks of the list unless step 5 failed, when the marks are 0.
 CpuBuildOfList ComputeCpuBuildOfList(const GridInputs& inputs, GridBuffers& buffers) {
   CpuBuildOfList cpu_build;
-  const std::expected<GridCounts, GridFailure> cpu_counts = ComputeGridCounts(inputs, buffers);
-  if (cpu_counts.has_value()) {
-    cpu_build.block_values = ToCpuBlockValues(buffers, cpu_counts->cell_blocks);
+  std::expected<StaggeredGrid, GridFailure> cpu_grid = BuildGrid(inputs, buffers);
+  if (cpu_grid.has_value()) {
+    EXPECT_EQ(cpu_grid->version().value, inputs.version.value);
+    cpu_build.tables = ToTableVectors(cpu_grid->tables(RunOn::kCpu));
+    cpu_build.counts = cpu_grid->counts();
+    buffers = TakeBuffers(std::move(*cpu_grid));
   } else {
-    cpu_build.failure = cpu_counts.error();
+    cpu_build.failure = cpu_grid.error();
   }
   const std::uint64_t room_cell_places = std::uint64_t{kCellPlacesPerBlock} * buffers.max_cell_blocks();
   cpu_build.is_list_too_long = inputs.active_cells.size() > room_cell_places;
@@ -3102,20 +3581,32 @@ CpuBuildOfList ComputeCpuBuildOfList(const GridInputs& inputs, GridBuffers& buff
   return cpu_build;
 }
 
-// Expects one build replay to give the CPU's failure, no failed prefix sum, on success the CPU's block ids, and, when
-// the GPU steps ran, the status counts.
+// Says whether two copies of used tables hold the same bytes: the block count and every entry of the five tables.
+bool ComputeIsSameTableVectors(const std::optional<TableVectors>& first, const std::optional<TableVectors>& second) {
+  if (!first.has_value() || !second.has_value()) {
+    return first.has_value() == second.has_value();
+  }
+  return ComputeIsSameUsedTables(first->ToGridTables(), second->ToGridTables());
+}
+
+// Expects one build replay to give the CPU's failure, no failed prefix sum, on success the CPU's counts and the same
+// bytes in the used part of the five tables, and, when the GPU steps ran, the status counts after P8.
 void ExpectBuildReplayEqualsCpuBuild(
     const BuildReplayResult& replay,
     const CpuBuildOfList& cpu_build,
     const std::string& context
 ) {
-  EXPECT_EQ(ToFailureFields(replay.failure), ToFailureFields(cpu_build.failure)) << context;
-  EXPECT_EQ(replay.failed_prefix_sum_count, 0) << context;
-  EXPECT_EQ(replay.block_values, cpu_build.block_values) << context;
-  if (!cpu_build.is_list_too_long) {
-    EXPECT_EQ(replay.split_cells, cpu_build.status_counts.split_cells) << context;
-    EXPECT_EQ(replay.cell_blocks, cpu_build.status_counts.cell_blocks) << context;
-  }
+  SCOPED_TRACE(context);
+  EXPECT_EQ(ToFailureFields(replay.failure), ToFailureFields(cpu_build.failure));
+  EXPECT_EQ(replay.failed_prefix_sum_count, 0);
+  EXPECT_TRUE(ComputeIsSameTableVectors(replay.tables, cpu_build.tables));
+  EXPECT_EQ(ToGridCountFields(replay.counts), ToGridCountFields(cpu_build.counts));
+  // The input checks of P1 stop a list too long before any GPU step, so the record keeps no count of it.
+  const ExpectedBlocks replay_status_counts = {.split_cells = replay.split_cells, .cell_blocks = replay.cell_blocks};
+  const ExpectedBlocks expected_status_counts =
+      cpu_build.is_list_too_long ? replay_status_counts : cpu_build.status_counts;
+  EXPECT_EQ(replay_status_counts.split_cells, expected_status_counts.split_cells);
+  EXPECT_EQ(replay_status_counts.cell_blocks, expected_status_counts.cell_blocks);
 }
 
 // Replays the build of `cells` in both launch orders with `thread_count` threads (0 for the GPU's own), the forward
@@ -3145,25 +3636,6 @@ void ExpectBuildReplayEqualsCpu(
   const CpuBuildOfList cpu_build = ComputeCpuBuildOfList(inputs, buffers);
   ExpectBuildReplayEqualsCpuBuild(replays.at(0), cpu_build, name + ", forward");
   ExpectBuildReplayEqualsCpuBuild(replays.at(1), cpu_build, name + ", reverse");
-}
-
-// The 8 size-level-0 cells {0..1, 0..1, 0..1}, each split into its 8 size-level-1 cells: 64 active cells that add 8
-// split cells, 72 in all, above the 64 cell places of a room of 1.
-std::vector<CellId> BuildSmallCellsOfEightBigCells() {
-  std::vector<CellId> cells;
-  for (int big_cell = 0; big_cell < 8; ++big_cell) {
-    AppendSmallCells(ComputeSmallCell(ToCell(0, 0, 0, 0), big_cell), cells);
-  }
-  return cells;
-}
-
-// `count` lone size-level-0 cells {4 i, 0, 0}, each in its own block.
-std::vector<CellId> BuildLoneCellsAlongX(std::size_t count) {
-  std::vector<CellId> cells(count);
-  for (std::size_t index = 0; index < count; ++index) {
-    cells[index] = ToCell(0, 4 * static_cast<std::int32_t>(index), 0, 0);
-  }
-  return cells;
 }
 
 // Replays the full build of random grid 1 into `arrays` after ApplyStaleValues, then the build of the 14 lone cells
@@ -3362,16 +3834,29 @@ TEST(BuildGrid, CellsBeyondSortCount_IsInternalFaultWithNoBlockWritten) {
   EXPECT_EQ(arrays.block_ids.data()[0].value, ToCellBlockId(ToStaleCellId()).value);
 }
 
-// The random grids pass every step: their block ids and counts show P7 and P8 give the CPU's table. The lists that fail
-// show each room check: 9 blocks into room for 8 (step 6), 513 cells into the same (the length check of P1), and 72
-// active and split cells into room for 1 (step 5, after the split cells are counted). Each replay starts from arrays
-// that held another grid.
-TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds) {
+// The lists of the gpu tests BuildGrid.OnGpu_EqualsCpuTablesBitForBit and BuildGrid.OnGpuFailures_EqualCpuFailures,
+// replayed through P12. The empty list, one cell, the two-size fixture and the random grids pass every step: their
+// version, counts and the used part of the five tables show P7 to P12 give the CPU's grid byte for byte. The mutated
+// lists, seeds 1..kReplayedMutatedGridCount as in the check's replay (all 500 would take the test program past 45 s in
+// the debug preset; the gpu test runs them all), fail at steps 1 to 4, and show every later step stops. The room
+// checks: 9 blocks into room for 8 (step 6), 513 cells into the same (the length check of P1), and 72 active and split
+// cells into room for 1 (step 5, after the split cells are counted). Each replay starts from arrays that held another
+// grid, and the CPU build runs in CPU buffers that held one too.
+TEST(BuildGrid, EveryThreadBlockAndThread_EqualsCpuTables) {
   std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
   ReplayArrays arrays = BuildReplayArrays();
   ASSERT_TRUE(arrays.order_buffers.has_value());
   ApplyStaleValues(arrays);
+  const std::vector<CellId> one_cell = {ToCell(0, 1, -2, 3)};
+  const std::vector<CellId> two_size_cells = BuildTwoSizeFixtureCells();
+  for (const auto& [frame, cells, name] : {
+           std::tuple{ToUnitFrame(3), std::span<const CellId>(), std::string("the empty list")},
+           std::tuple{ToUnitFrame(3), std::span<const CellId>(one_cell), std::string("one cell")},
+           std::tuple{ToUnitFrame(3), std::span<const CellId>(two_size_cells), std::string("the two-size fixture")},
+       }) {
+    ExpectBuildReplayEqualsCpu(frame, cells, 0, ReplayStart::kAfterPreviousList, buffers, arrays, name);
+  }
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
     ExpectBuildReplayEqualsCpu(
         ToUnitFrame(4),
@@ -3381,6 +3866,17 @@ TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds) {
         buffers,
         arrays,
         "random grid " + std::to_string(grid)
+    );
+  }
+  for (std::uint64_t seed = 1; seed <= kReplayedMutatedGridCount; ++seed) {
+    ExpectBuildReplayEqualsCpu(
+        ToUnitFrame(4),
+        BuildMutatedGridCells(seed),
+        0,
+        ReplayStart::kAfterPreviousList,
+        buffers,
+        arrays,
+        "mutated list " + std::to_string(seed)
     );
   }
 
@@ -3418,6 +3914,103 @@ TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds) {
         arrays_of_1,
         "72 cells into one block" + threads
     );
+  }
+}
+
+// Says whether every value of the room's part of a replay table still holds `stale`, the value ApplyStaleValues wrote.
+template <typename Value>
+bool ComputeIsRoomPartStale(const Buffer<Value>& table, std::size_t room_count, Value stale) {
+  return std::ranges::all_of(std::span<const Value>(table.data(), room_count), [stale](Value value) {
+    return value == stale;
+  });
+}
+
+// Replays P9 to P12 after a failure of step 6, the block count, in arrays whose states are a stale kAbsent and whose
+// neighbour tables hold the stale kNoIndex - 1, with `launch`: the block count of the record names the whole room. P9
+// stops on the key of step 6, and P10 and P11 stop on any key, so no stale entry is read (a P10 (c) that went on would
+// read the stale neighbours and be counted), no state or face piece kind is written and no guard changes.
+void ExpectNoTableReadAfterBlockCountFailure(ReplayLaunch launch, ReplayArrays& arrays) {
+  const std::size_t room = arrays.max_cell_blocks;
+  ApplyStaleValues(arrays);
+  std::fill_n(arrays.cell_states.data(), kCellPlacesPerBlock * room, CellState::kAbsent);
+  arrays.status = ComputeResetBuildStatus();
+  arrays.status.failure_key = ToFailureKey(kBlockCountStep, 0, 0);
+  arrays.status.cell_blocks = arrays.max_cell_blocks + 1;
+  arrays.stale_table_read_count = 0;
+  ApplyTableStepsByReplay(ToUnitFrame(2), 0, 0, launch, arrays);
+  EXPECT_EQ(arrays.stale_table_read_count, 0);
+  EXPECT_TRUE(ComputeIsRoomPartStale(arrays.cell_states, kCellPlacesPerBlock * room, CellState::kAbsent));
+  EXPECT_TRUE(
+      ComputeIsRoomPartStale(arrays.face_piece_kinds, kFacePlacesPerBlock * room, FacePieceKind::kOutsidePiece)
+  );
+  EXPECT_TRUE(ComputeIsRoomPartStale(arrays.bigger_and_smaller_blocks, 9 * room, kNoIndex - 1));
+  EXPECT_TRUE(ComputeAreGuardsUnchanged(arrays));
+}
+
+// After a failure of step 6 no step of P9 to P11 reads or writes a table: both launch orders, the GPU's own launch and
+// 1 and 7 threads.
+TEST(BuildGrid, ReplayAfterBlockCountFailure_ReadsNoStaleTable) {
+  ReplayArrays arrays = BuildReplayArrays(8);
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  for (const LaunchOrder order : kLaunchOrders) {
+    for (const std::size_t thread_count : {std::size_t{0}, std::size_t{1}, std::size_t{7}}) {
+      SCOPED_TRACE(
+          std::string(order == LaunchOrder::kForward ? "forward" : "reverse") + ", threads "
+          + std::to_string(thread_count)
+      );
+      ExpectNoTableReadAfterBlockCountFailure({.order = order, .thread_count = thread_count}, arrays);
+    }
+  }
+}
+
+// Replays P9 to P12 alone on the size-level-1 blocks (0,0,0) and (1,0,0), written by hand in arrays that hold stale
+// values, with `launch`, and expects the key of step 7 at block 0, kInternalFault with no cell, both bigger blocks
+// written kNoIndex, every cell state and face piece kind still stale, no count added and every guard unchanged.
+void ExpectBlocksWithoutBiggerBlockFault(ReplayLaunch launch, ReplayArrays& arrays) {
+  const std::size_t room = arrays.max_cell_blocks;
+  ApplyStaleValues(arrays);
+  arrays.status = ComputeResetBuildStatus();
+  arrays.status.cell_blocks = 2;
+  arrays.block_ids.data()[0] = ToBlock(1, 0, 0, 0);
+  arrays.block_ids.data()[1] = ToBlock(1, 1, 0, 0);
+  ApplyTableStepsByReplay(ToUnitFrame(2), 0, 0, launch, arrays);
+  ApplyBuildStatusResult(ToUnitFrame(2), nullptr, 0, nullptr, 0, &arrays.status);
+  const std::tuple<std::uint64_t, GridError, std::uint64_t, std::uint64_t> record = {
+      arrays.status.failure_key,
+      arrays.status.error,
+      arrays.status.active_cells,
+      arrays.status.face_pieces,
+  };
+  EXPECT_EQ(record, std::make_tuple(ToFailureKey(kBlockFaultStep, 0, 0), GridError::kInternalFault, 0U, 0U));
+  EXPECT_EQ(ToFailureFields(ToGridFailure(arrays.status)), ToFailureFields({.error = GridError::kInternalFault}));
+  const std::array<std::uint32_t, 2> bigger_blocks = {
+      arrays.bigger_and_smaller_blocks.data()[0],
+      arrays.bigger_and_smaller_blocks.data()[1],
+  };
+  EXPECT_EQ(bigger_blocks, (std::array<std::uint32_t, 2>{kNoIndex, kNoIndex}));
+  EXPECT_TRUE(ComputeIsRoomPartStale(arrays.cell_states, kCellPlacesPerBlock * room, CellState::kSplit));
+  EXPECT_TRUE(
+      ComputeIsRoomPartStale(arrays.face_piece_kinds, kFacePlacesPerBlock * room, FacePieceKind::kOutsidePiece)
+  );
+  EXPECT_TRUE(ComputeAreGuardsUnchanged(arrays));
+}
+
+// The replay of P9 to P12 alone, from block ids written by hand: the size-level-1 blocks (0,0,0) and (1,0,0) with no
+// size-level-0 block, which no valid list gives, since the siblings check stops it. Both blocks offer the key of step
+// 7; the smaller, at block 0, wins in either launch order, since a key of step 7 does not stop a thread of P9. P10 and
+// P11 then do nothing, so every cell state and face piece kind keeps its stale value; P12 names kInternalFault with no
+// cell. Both launch orders, the GPU's own launch and 1 and 7 threads; no write leaves the arrays.
+TEST(BuildGrid, ReplayWithBlockWithoutItsBiggerBlock_IsInternalFault) {
+  ReplayArrays arrays = BuildReplayArrays(8);
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  for (const LaunchOrder order : kLaunchOrders) {
+    for (const std::size_t thread_count : {std::size_t{0}, std::size_t{1}, std::size_t{7}}) {
+      SCOPED_TRACE(
+          std::string(order == LaunchOrder::kForward ? "forward" : "reverse") + ", threads "
+          + std::to_string(thread_count)
+      );
+      ExpectBlocksWithoutBiggerBlockFault({.order = order, .thread_count = thread_count}, arrays);
+    }
   }
 }
 
