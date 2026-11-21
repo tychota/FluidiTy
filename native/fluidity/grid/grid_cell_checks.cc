@@ -60,6 +60,13 @@ std::expected<void, GridFailure> CheckGridFrame(GridFrame frame) {
   if (!is_origin_finite || !is_width_positive || !is_size_level_count_in_range) {
     return std::unexpected(ToBadInput());
   }
+  // The smallest width must be a normal double, at least 2^-1022: every halving of the biggest width down to it is
+  // then exact, and no position divided by it loses its cell to underflow. Below, halving rounds or gives 0. A frame
+  // that small is a bad scene value too (biggest cells 2^-1007 m wide with 16 size levels, say).
+  const auto smallest_size_level = static_cast<SizeLevel>(frame.size_level_count - 1);
+  if (ComputeCellWidth(frame, smallest_size_level) < std::numeric_limits<double>::min()) {
+    return std::unexpected(ToBadInput());
+  }
   return {};
 }
 

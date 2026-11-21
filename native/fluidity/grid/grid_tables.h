@@ -23,8 +23,8 @@
 //   the bigger block. An id is made only from a place that holds a cell or a face piece: other places give the id 0.
 //   A position gives its active cell by one floor per axis and a walk down from its size-level-0 block (FindCellAt).
 //   Precision. Write a width as s 2^e with s an odd integer of k bits, the bits its significand needs; h_0 and every
-//   h_l have the same s. A width h_l is exact: each halving of a double is (unless h_0 is below 2^-1007, where halving
-//   leaves the normal range). A centre or a face position is origin + m h_l, with m = c or c + 1/2 exact: two
+//   h_l have the same s. A width h_l is exact: each halving of a normal double is, and a checked frame keeps its
+//   smallest width normal (GridFrame). A centre or a face position is origin + m h_l, with m = c or c + 1/2 exact: two
 //   correctly rounded operations, a product then a sum (no fused multiply-add: contraction is off on both
 //   processors). It is exact when m h_l and its sum with the origin are both doubles, as when the origin and h_0 are
 //   multiples of a power of two with few significant bits (origin 0 and h_0 = 1 m for every grid in range).
@@ -80,7 +80,9 @@ namespace fluidity::grid {
 // Where a grid sits in the world and how big its cells are.
 struct GridFrame {
   Vec3 origin{};  // m, world. Low corner of the cell with coordinate (0, 0, 0).
-  double biggest_cell_width = 0;  // m, positive. The width h_0 of a cell of size level 0.
+  // m, finite and positive. The width h_0 of a cell of size level 0. Halved size_level_count - 1 times it is still a
+  // normal double, at least 2^-1022, so every width is exact: the frame check of every build turns down a smaller one.
+  double biggest_cell_width = 0;
   std::uint8_t size_level_count = 0;  // 1..16. Size level size_level_count - 1 holds the smallest cells.
 };
 
@@ -156,8 +158,9 @@ FindSortedBlock(const CellBlockId* sorted_blocks, std::uint32_t count, CellBlock
 
 // Computes the width h_l = h_0 / 2^l of a cell of size_level, in m.
 //
-// Method: halves biggest_cell_width size_level times. Each halving of a double is exact, so the width is exact, unless
-//   biggest_cell_width is below 2^-1007, where halving leaves the normal range.
+// Method: halves biggest_cell_width size_level times. Each halving of a normal double is exact. A checked frame keeps
+//   its smallest width normal (GridFrame), so for size_level below size_level_count the width is exact. Below the
+//   normal range a halving rounds, as for a frame the check turns down.
 // Units: m.
 // Example: biggest cells 1 m wide give 0x1p-15 m at size level 15; 3 m wide give 0.75 m at size level 2.
 // Requires: size_level < kMaxSizeLevels.

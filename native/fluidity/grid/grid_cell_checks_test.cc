@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -358,6 +359,29 @@ TEST(CheckSizeStepRule, BadFrame_IsBadInput) {
   width_not_finite.biggest_cell_width = std::numeric_limits<double>::infinity();
   for (const GridFrame frame : {origin_not_finite, width_zero, width_not_finite, ToUnitFrame(0), ToUnitFrame(17)}) {
     ExpectFailure(CheckSizeStepRule(frame, cells), GridError::kBadInput);
+  }
+}
+
+// The frame of `size_level_count` size levels whose smallest width, the biggest halved size_level_count - 1 times, is
+// smallest_width m.
+GridFrame ToFrameOfSmallestWidth(int size_level_count, double smallest_width) {
+  GridFrame frame = ToUnitFrame(size_level_count);
+  frame.biggest_cell_width = std::ldexp(smallest_width, size_level_count - 1);
+  return frame;
+}
+
+// The smallest width is checked against 2^-1022, the smallest normal double: exactly 2^-1022 passes, one halving below
+// is kBadInput, for 1, 2, 8 and 16 size levels. With 16 size levels that is biggest cells of 2^-1007 m and 2^-1008 m.
+TEST(CheckSizeStepRule, SmallestWidthBelowNormalRange_IsBadInput) {
+  const std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
+  constexpr double kSmallestNormal = std::numeric_limits<double>::min();
+  for (const int size_level_count : {1, 2, 8, 16}) {
+    SCOPED_TRACE(testing::Message() << "size levels " << size_level_count);
+    EXPECT_TRUE(CheckSizeStepRule(ToFrameOfSmallestWidth(size_level_count, kSmallestNormal), cells).has_value());
+    ExpectFailure(
+        CheckSizeStepRule(ToFrameOfSmallestWidth(size_level_count, kSmallestNormal / 2), cells),
+        GridError::kBadInput
+    );
   }
 }
 

@@ -497,10 +497,11 @@ std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& input
 // Checks a list of active cells in CPU memory: its ids, overlaps and the size step rule, but not the siblings, since
 // cell resize checks its lists while it splits cells and some siblings do not exist yet.
 //
-// Method: the frame first (finite origin, positive biggest cell width, 1 to 16 size levels). Then method paper
-//   <proc-build-grid> steps 1, 2 and 4: every id in input order, then a CPU copy of the ids sorted into the fixed order
-//   and checked for overlaps, then for the size step rule, each step over every position before the next. The failure
-//   reported is the first by step, then by position: the one the GPU's smallest failure key gives.
+// Method: the frame first (finite origin, positive biggest cell width, 1 to 16 size levels, smallest width at least
+//   2^-1022, a normal double). Then method paper <proc-build-grid> steps 1, 2 and 4: every id in input order, then a
+//   CPU copy of the ids sorted into the fixed order and checked for overlaps, then for the size step rule, each step
+//   over every position before the next. The failure reported is the first by step, then by position: the one the GPU's
+//   smallest failure key gives.
 // Example: with 3 size levels, size level 0 {0,0,0} and size level 2 {4,4,4} touch at a corner: kSizeStepRuleBroken,
 //   cell size level 2 {4,4,4}, other_cell size level 0 {0,0,0}. Size level 0 {0,0,0} beside size level 1 {2,0,0}
 //   passes, and so do 7 of the 8 small cells of one big cell. The list {a, a, b} where b has bit 63 clear is

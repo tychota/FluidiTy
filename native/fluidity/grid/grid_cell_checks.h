@@ -63,8 +63,9 @@ enum class SiblingCheck : std::uint8_t {
 // Checks the frame, the version and the shape of the list of `inputs`: the first input checks of every build and
 // every check of a list. Changes nothing.
 //
-// Order: the frame (origin finite, biggest_cell_width finite and positive, size_level_count 1..16), then the version,
-//   then the shape of the list.
+// Order: the frame (origin finite, biggest_cell_width finite and positive, size_level_count 1..16, and the smallest
+//   width, biggest_cell_width halved size_level_count - 1 times, a normal double: at least 2^-1022), then the
+//   version, then the shape of the list.
 // Example: {.frame = {origin 0, width 1 m, 3 size levels}, .active_cells = 5 ids, .version = {1}} passes;
 //   the same with an active_cell_buffer set as well is kBadInput.
 // Fails: kBadInput  a frame value as above; version 0; active_cell_buffer set while active_cells is not empty;
