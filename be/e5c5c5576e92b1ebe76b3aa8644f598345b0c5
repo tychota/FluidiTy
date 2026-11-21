@@ -1,0 +1,19 @@
+native/fluidity/grid/staggered_grid.h
+  s_c6e15346466ab3::t_4cab1ebff85b90 218-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bee5c5c5576e92b1ebe76b3aa8644f598345b0c5",
+  "prompts": {},
+  "sessions": {
+    "s_c6e15346466ab3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aa762a951e0d02060",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
