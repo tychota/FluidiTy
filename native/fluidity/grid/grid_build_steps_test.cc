@@ -6,18 +6,30 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <map>
+#include <optional>
 #include <random>
 #include <set>
+#include <span>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/run_on.h"
+#include "fluidity/base/run_on_call.h"
+#include "fluidity/base/stable_order.h"
+#include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_cell_checks.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/grid_test_support.h"
+#include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
 namespace {
@@ -2024,6 +2036,512 @@ TEST(ComputeFacePieceKind, SmallCellsAtLowCoordLimit_GiveTheCheckersFacePieces) 
   EXPECT_EQ(pieces, BuildFacePiecesOfChecker(ToUnitFrame(2), cells));
   const FacePieceId big_low_side = ToFacePieceId(Axis::kX, SizeLevel{0}, {.x = -kTwoToThe17, .y = 0, .z = 0});
   EXPECT_TRUE(pieces.contains({big_low_side.value, FacePieceKind::kGridEdgeLow}));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The check of a list on the GPU (<proc-build-grid-in-parallel> P1 to P6), replayed on the CPU
+// ---------------------------------------------------------------------------------------------------------------------
+
+// The order in which the replay runs the threads of one launch.
+enum class LaunchOrder : std::uint8_t {
+  kForward,  // Thread block 0, thread 0 first.
+  kReverse,  // The last thread of the last thread block first.
+};
+
+constexpr std::array<LaunchOrder, 2> kLaunchOrders = {LaunchOrder::kForward, LaunchOrder::kReverse};
+constexpr std::array<SiblingCheck, 2> kSiblingChecks = {SiblingCheck::kRequire, SiblingCheck::kSkip};
+
+// The room of the CPU buffers the replay tests check lists in: 262,144 cell places, more than any list here.
+constexpr std::uint32_t kReplayRoom = 4096;
+
+// How the replay runs the threads of every launch.
+struct ReplayLaunch {
+  LaunchOrder order = LaunchOrder::kForward;
+  // Threads of a launch. 0 is the GPU's own: the thread blocks of ComputeLaunchSize(item count) times their size, one
+  // item per thread for any list here. A smaller number gives each thread several items, as the GPU does for a list of
+  // more than 65,535 x 256 cells.
+  std::size_t thread_count = 0;
+};
+
+// Runs apply_item(index) for every item of one launch over item_count items, one thread after the other in
+// launch.order, each thread over its items as the grid-stride loop of a GPU function walks them: index = thread,
+// thread + thread count, and so on, where thread = thread block x thread block size + thread in the thread block.
+// apply_item returns false where the GPU function returns, which ends that thread's loop. A launch of 0 items does
+// not start.
+template <typename ApplyItem>
+void ApplyEveryThreadOfLaunch(std::size_t item_count, ReplayLaunch launch, ApplyItem apply_item) {
+  if (item_count == 0) {
+    return;
+  }
+  const LaunchSize launch_size = ComputeLaunchSize(item_count);
+  const std::size_t launch_thread_count =
+      static_cast<std::size_t>(launch_size.thread_block_count) * launch_size.thread_block_size;
+  const std::size_t thread_count = launch.thread_count == 0 ? launch_thread_count : launch.thread_count;
+  for (std::size_t visited = 0; visited < thread_count; ++visited) {
+    const std::size_t thread = launch.order == LaunchOrder::kForward ? visited : thread_count - 1 - visited;
+    for (std::size_t index = thread; index < item_count; index += thread_count) {
+      if (!apply_item(index)) {
+        break;
+      }
+    }
+  }
+}
+
+// The GPU's working arrays of a check and its cell ids, built on the CPU by the replay. CPU builder buffers hold only
+// the cell ids of the CPU check, and the replay keeps its own, so the CPU check never writes what the replay compares.
+struct ReplayArrays {
+  Buffer<CellId> cell_ids;
+  Buffer<std::uint64_t> sort_keys;
+  Buffer<std::uint32_t> order;
+  Buffer<std::uint32_t> second_order;
+  std::optional<OrderBuffers> order_buffers;
+  GridBuildStatus status{};
+};
+
+// Builds the working arrays for kReplayRoom blocks, as BuildGridBuilderBuffers sizes them on the GPU.
+ReplayArrays BuildReplayArrays() {
+  constexpr std::size_t kPlaceCount = std::size_t{kCellPlacesPerBlock} * kReplayRoom;
+  ReplayArrays arrays;
+  std::expected<Buffer<CellId>, BufferError> cell_ids = BuildBuffer<CellId>(RunOn::kCpu, kPlaceCount);
+  std::expected<Buffer<std::uint64_t>, BufferError> sort_keys = BuildBuffer<std::uint64_t>(RunOn::kCpu, kPlaceCount);
+  std::expected<Buffer<std::uint32_t>, BufferError> order = BuildBuffer<std::uint32_t>(RunOn::kCpu, kPlaceCount + 1);
+  std::expected<Buffer<std::uint32_t>, BufferError> second_order =
+      BuildBuffer<std::uint32_t>(RunOn::kCpu, kPlaceCount + 1);
+  std::expected<OrderBuffers, BufferError> order_buffers = BuildOrderBuffers(RunOn::kCpu, kPlaceCount + 1);
+  const bool is_built = cell_ids.has_value() && sort_keys.has_value() && order.has_value() && second_order.has_value()
+      && order_buffers.has_value();
+  EXPECT_TRUE(is_built);
+  if (is_built) {
+    arrays.cell_ids = std::move(*cell_ids);
+    arrays.sort_keys = std::move(*sort_keys);
+    arrays.order = std::move(*order);
+    arrays.second_order = std::move(*second_order);
+    arrays.order_buffers = std::move(*order_buffers);
+  }
+  return arrays;
+}
+
+// A cell id that no list of these tests holds, written where a result is expected, so a result never written shows.
+CellId ToStaleCellId() {
+  return ToCell(3, 1000, 1000, 1000);
+}
+
+// Writes large values over every working array and the cell ids, and a status record that already holds the smallest
+// key there is, as an earlier check could leave them. A replay that read any of them before writing it would differ
+// from the CPU: the stale key would win the minimum, a stale sort key or order would misplace a cell, a stale cell id
+// would stay in the sorted list.
+void ApplyStaleValues(ReplayArrays& arrays) {
+  std::fill_n(arrays.cell_ids.data(), arrays.cell_ids.size(), ToStaleCellId());
+  std::fill_n(arrays.sort_keys.data(), arrays.sort_keys.size(), ~std::uint64_t{0} - 1);
+  std::fill_n(arrays.order.data(), arrays.order.size(), kNoIndex - 1);
+  std::fill_n(arrays.second_order.data(), arrays.second_order.size(), kNoIndex - 1);
+  arrays.status = ComputeResetBuildStatus();
+  arrays.status.failure_key = ToFailureKey(kIdStep, 0, 0);
+  arrays.status.error = GridError::kBadInput;
+  arrays.status.cell = ToCell(0, 1, 2, 3);
+}
+
+// Replays <proc-build-grid-in-parallel> P1 to P6 and the failure half of P12 on the CPU, with the per-item rules the
+// GPU functions of grid/staggered_grid_gpu.cu call, in the same sequence as BuildSortedCellList's GPU path: every
+// thread of every launch as `launch` says, the atomic minimum replaced by a plain minimum, BuildStableOrder on the CPU
+// between the passes. The sorted list goes to arrays.cell_ids. Returns ToGridFailure of the status record it wrote.
+GridFailure ApplyGpuStepsByReplay(
+    GridFrame frame,
+    std::span<const CellId> input_cells,
+    SiblingCheck sibling_check,
+    ReplayLaunch launch,
+    ReplayArrays& arrays
+) {
+  if (!arrays.order_buffers.has_value()) {
+    ADD_FAILURE() << "the replay has no order buffers";
+    return {.error = GridError::kInternalFault};
+  }
+  OrderBuffers& order_buffers = *arrays.order_buffers;
+  const auto count = static_cast<std::uint32_t>(input_cells.size());
+  const CellId* const input = input_cells.data();
+  CellId* const sorted_cells = arrays.cell_ids.data();
+  GridBuildStatus& status = arrays.status;
+  const auto offer_key = [&status](std::uint64_t failure_key) {
+    status.failure_key = std::min(status.failure_key, failure_key);
+  };
+  // P1: the reset, one thread.
+  status = ComputeResetBuildStatus();
+  // P2: the ids, one thread per input index.
+  ApplyEveryThreadOfLaunch(count, launch, [&](std::size_t index) {
+    offer_key(ComputeCellIdFailureKey(frame, input, index));
+    return true;
+  });
+  // P3: three passes, alternating the two orders as the GPU path does, then the copy in sorted order.
+  const std::array<const Buffer<std::uint32_t>*, kSortKeyPassCount> previous_orders = {
+      nullptr,
+      &arrays.order,
+      &arrays.second_order,
+  };
+  const std::array<Buffer<std::uint32_t>*, kSortKeyPassCount> pass_orders = {
+      &arrays.order,
+      &arrays.second_order,
+      &arrays.order,
+  };
+  for (int pass = 0; pass < kSortKeyPassCount; ++pass) {
+    ApplyEveryThreadOfLaunch(count, launch, [&](std::size_t index) {
+      arrays.sort_keys.data()[index] = ToCellSortKey(input[index], pass);
+      return true;
+    });
+    const auto pass_index = static_cast<std::size_t>(pass);
+    const std::expected<void, BufferError> ordered = BuildStableOrder(
+        arrays.sort_keys,
+        count,
+        previous_orders.at(pass_index),
+        *pass_orders.at(pass_index),
+        order_buffers
+    );
+    if (!ordered.has_value()) {
+      ADD_FAILURE() << "BuildStableOrder failed";
+      return {.error = GridError::kInternalFault};
+    }
+  }
+  ApplyEveryThreadOfLaunch(count, launch, [&](std::size_t position) {
+    sorted_cells[position] = input[arrays.order.data()[position]];
+    return true;
+  });
+  // P4, P5 when siblings are required, P6: a thread returns once an earlier step's key is there.
+  for (const int step : {kOverlapStep, kSiblingStep, kSizeStepRuleStep}) {
+    if (step == kSiblingStep && sibling_check == SiblingCheck::kSkip) {
+      continue;
+    }
+    ApplyEveryThreadOfLaunch(count, launch, [&](std::size_t position) {
+      if (ComputeHasEarlierStepFailed(status.failure_key, step)) {
+        return false;
+      }
+      offer_key(ComputeSortedCellFailureKey(sorted_cells, count, static_cast<std::uint32_t>(position), step));
+      return true;
+    });
+  }
+  // P12, the failure half, one thread; then the CPU half's reading of the record.
+  ApplyFailureCells(frame, input, count, sorted_cells, count, &status);
+  return ToGridFailure(status);
+}
+
+// Every field of a failure, as one comparable value.
+std::tuple<GridError, std::uint64_t, std::uint64_t, std::uint64_t> ToFailureFields(const GridFailure& failure) {
+  return {failure.error, failure.cell.value, failure.other_cell.value, failure.magnitude};
+}
+
+// What one replay gave: the failure and the first n cell ids.
+struct ReplayResult {
+  GridFailure failure;
+  std::vector<std::uint64_t> sorted_values;
+};
+
+// Replays the GPU check of `cells` in both launch orders, each after ApplyStaleValues, and returns the results in the
+// order of kLaunchOrders.
+std::array<ReplayResult, 2> ComputeReplaysInBothOrders(
+    GridFrame frame,
+    std::span<const CellId> cells,
+    SiblingCheck sibling_check,
+    std::size_t thread_count,
+    ReplayArrays& arrays
+) {
+  std::array<ReplayResult, 2> results;
+  for (std::size_t order_index = 0; order_index < kLaunchOrders.size(); ++order_index) {
+    ApplyStaleValues(arrays);
+    const ReplayLaunch launch = {.order = kLaunchOrders.at(order_index), .thread_count = thread_count};
+    results.at(order_index).failure = ApplyGpuStepsByReplay(frame, cells, sibling_check, launch, arrays);
+    results.at(order_index).sorted_values =
+        ToValues(std::vector<CellId>(arrays.cell_ids.data(), arrays.cell_ids.data() + cells.size()));
+  }
+  return results;
+}
+
+// Says whether a failure is one of step 1, the ids: the replay's sorted list is then never used and is not compared.
+bool ComputeIsIdFailure(const GridFailure& failure) {
+  return failure.error == GridError::kBadInput || failure.error == GridError::kCoordOutOfRange;
+}
+
+// Expects each replay to give cpu_failure and, unless the ids failed, expected_sorted. `context` names the list and
+// the sibling check.
+void ExpectReplaysEqualCpu(
+    const std::array<ReplayResult, 2>& replays,
+    const GridFailure& cpu_failure,
+    const std::vector<std::uint64_t>& expected_sorted,
+    const std::string& context
+) {
+  for (std::size_t order_index = 0; order_index < replays.size(); ++order_index) {
+    const std::string order_context = context + (order_index == 0 ? ", forward" : ", reverse");
+    EXPECT_EQ(ToFailureFields(replays.at(order_index).failure), ToFailureFields(cpu_failure)) << order_context;
+    if (!ComputeIsIdFailure(cpu_failure)) {
+      EXPECT_EQ(replays.at(order_index).sorted_values, expected_sorted) << order_context;
+    }
+  }
+}
+
+// Replays the GPU check of `cells` for each of `sibling_checks`, in both launch orders and with `thread_count` threads
+// (0 for the GPU's own), on the replay's own cell ids, then runs BuildSortedCellList on the CPU buffers. Expects the
+// same failure, and, unless the ids failed, the sorted list of ComesBefore, which is also the CPU check's when it
+// passes. `name` says which list failed.
+void ExpectReplayEqualsCpu(
+    GridFrame frame,
+    std::span<const CellId> cells,
+    std::span<const SiblingCheck> sibling_checks,
+    std::size_t thread_count,
+    GridBuffers& buffers,
+    ReplayArrays& arrays,
+    const std::string& name
+) {
+  const Buffer<CellId>& cpu_cell_ids =
+      ToGridBuilderBuffersArrays(*ToGridBuffersArrays(buffers).builder_buffers).cell_ids;
+  const GridInputs inputs = {.frame = frame, .active_cells = cells, .version = {.value = 1}};
+  const std::vector<std::uint64_t> expected_sorted = ToValues(ToSortedCells({cells.begin(), cells.end()}));
+  for (const SiblingCheck sibling_check : sibling_checks) {
+    const std::array<ReplayResult, 2> replays =
+        ComputeReplaysInBothOrders(frame, cells, sibling_check, thread_count, arrays);
+    const std::expected<std::uint32_t, GridFailure> cpu_result = BuildSortedCellList(inputs, buffers, sibling_check);
+    const std::string context = name + (sibling_check == SiblingCheck::kRequire ? ", siblings" : ", no siblings");
+    if (cpu_result.has_value()) {
+      const std::vector<CellId> cpu_sorted(cpu_cell_ids.data(), cpu_cell_ids.data() + *cpu_result);
+      EXPECT_EQ(ToValues(cpu_sorted), expected_sorted) << context;
+    }
+    ExpectReplaysEqualCpu(
+        replays,
+        cpu_result.has_value() ? GridFailure{} : cpu_result.error(),
+        expected_sorted,
+        context
+    );
+  }
+}
+
+// Size level 0 {0,0,0} and a size-level-2 cell beyond its high side that touches it at a corner, along an edge and on
+// a side: the three lists two size levels apart of the CPU check's tests.
+std::array<std::vector<CellId>, 3> BuildEveryTwoSizeLevelsApartList() {
+  return {
+      std::vector<CellId>{ToCell(0, 0, 0, 0), ToCell(2, 4, 4, 4)},
+      std::vector<CellId>{ToCell(0, 0, 0, 0), ToCell(2, 4, 4, 0)},
+      std::vector<CellId>{ToCell(0, 0, 0, 0), ToCell(2, 4, 0, 0)},
+  };
+}
+
+// A CPU grid of no cells in a room of kReplayRoom blocks, whose buffers TakeEmptyGridBuffers hands to a test.
+std::expected<TestGrid, GridFailure> BuildReplayBuffersOwner() {
+  const GridInputs no_cells = {.frame = ToUnitFrame(4), .active_cells = {}, .version = {.value = 1}};
+  return BuildTestGrid(no_cells, {.max_cell_blocks = kReplayRoom});
+}
+
+// The mutated lists of the replay: seeds 1..kReplayedMutatedGridCount. They hold every combination of earliest failing
+// step, sibling check and one or several failing items in that step that seeds 1..500 hold, so the other 400 would
+// add about 5 s to a debug run and no new case; the gpu tests check all 500 on hardware.
+constexpr std::uint64_t kReplayedMutatedGridCount = 100;
+
+// Adds to errors_seen the error the CPU check gives `cells` with each sibling check, kNone when it passes.
+void ApplyCpuErrors(
+    GridFrame frame,
+    std::span<const CellId> cells,
+    GridBuffers& buffers,
+    std::set<GridError>& errors_seen
+) {
+  const GridInputs inputs = {.frame = frame, .active_cells = cells, .version = {.value = 1}};
+  for (const SiblingCheck sibling_check : kSiblingChecks) {
+    const std::expected<std::uint32_t, GridFailure> cpu_result = BuildSortedCellList(inputs, buffers, sibling_check);
+    errors_seen.insert(cpu_result.has_value() ? GridError::kNone : cpu_result.error().error);
+  }
+}
+
+// The random grids are valid: no item offers a key, so they show the sorted list and that no per-item rule fails, with
+// siblings required, which runs every step that skipping them runs, and P5 too. The lists that fail, two size levels
+// apart, BuildSizeStepBreakWithSiblings (siblings pass, then the size step rule fails) and mutated, show the first
+// failure, with and without siblings, where the order of the threads could matter.
+TEST(BuildSortedCellList, EveryThreadBlockAndThread_SameFirstFailureAsCpu) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays();
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  constexpr std::array<SiblingCheck, 1> kSiblingsRequired = {SiblingCheck::kRequire};
+  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+    const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(grid);
+    ExpectReplayEqualsCpu(
+        ToUnitFrame(4),
+        cells,
+        kSiblingsRequired,
+        0,
+        buffers,
+        arrays,
+        "random grid " + std::to_string(grid)
+    );
+  }
+  for (const std::vector<CellId>& cells : BuildEveryTwoSizeLevelsApartList()) {
+    ExpectReplayEqualsCpu(ToUnitFrame(3), cells, kSiblingChecks, 0, buffers, arrays, "two size levels apart");
+  }
+  ExpectReplayEqualsCpu(
+      ToUnitFrame(3),
+      BuildSizeStepBreakWithSiblings(),
+      kSiblingChecks,
+      0,
+      buffers,
+      arrays,
+      "size step break with siblings"
+  );
+  std::set<GridError> errors_seen;
+  for (std::uint64_t seed = 1; seed <= kReplayedMutatedGridCount; ++seed) {
+    const std::vector<CellId> cells = BuildMutatedGridCells(seed);
+    ExpectReplayEqualsCpu(
+        ToUnitFrame(4),
+        cells,
+        kSiblingChecks,
+        0,
+        buffers,
+        arrays,
+        "mutated list " + std::to_string(seed)
+    );
+    ApplyCpuErrors(ToUnitFrame(4), cells, buffers, errors_seen);
+  }
+  for (const GridError error : {
+           GridError::kBadInput,
+           GridError::kCoordOutOfRange,
+           GridError::kCellsOverlap,
+           GridError::kSiblingCellMissing,
+           GridError::kSizeStepRuleBroken,
+       }) {
+    EXPECT_TRUE(errors_seen.contains(error)) << static_cast<int>(error);
+  }
+}
+
+// The list of BuildSizeStepBreakWithSiblings passes the siblings, so with siblings required the size step rule fails:
+// size level 2 {4,0,0}, at position 1, beside size level 0 {0,0,0} in direction 12.
+TEST(BuildSortedCellList, SizeStepBreakWithSiblings_IsSizeStepRuleBrokenEitherWay) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  const std::vector<CellId> cells = BuildSizeStepBreakWithSiblings();
+  const GridFailure expected = {
+      .error = GridError::kSizeStepRuleBroken,
+      .cell = ToCell(2, 4, 0, 0),
+      .other_cell = ToCell(0, 0, 0, 0),
+  };
+  for (const SiblingCheck sibling_check : kSiblingChecks) {
+    const std::expected<std::uint32_t, GridFailure> result = BuildSortedCellList(
+        {.frame = ToUnitFrame(3), .active_cells = cells, .version = {.value = 1}},
+        buffers,
+        sibling_check
+    );
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(ToFailureFields(result.error()), ToFailureFields(expected));
+  }
+}
+
+// The size-level-2 cell {188,188,188} touches the box's last cell, size level 0 {46,46,46}, at the corner (47, 47, 47)
+// m: sorted last, it fails the size step rule, or first its siblings, at position 103,823. Each list runs with the
+// GPU's own launch, one item per thread, and with 1,000 threads, about 104 items per thread, the shape the GPU takes
+// for a list of more than 65,535 x 256 cells.
+TEST(BuildSortedCellList, LargeListAfterStaleValues_SameFirstFailureAsCpu) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays();
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  const std::vector<CellId> failing_cells = BuildLargeBoxOfCells({ToCell(2, 188, 188, 188)});
+  const std::vector<CellId> valid_cells = BuildLargeBoxOfCells({});
+  for (const std::vector<CellId>* cells : {&failing_cells, &valid_cells}) {
+    for (const std::size_t thread_count : {std::size_t{0}, std::size_t{1000}}) {
+      ExpectReplayEqualsCpu(
+          ToUnitFrame(3),
+          *cells,
+          kSiblingChecks,
+          thread_count,
+          buffers,
+          arrays,
+          "large box of " + std::to_string(cells->size()) + ", threads " + std::to_string(thread_count)
+      );
+    }
+  }
+  // The failure is the one the CPU names, not the stale record's.
+  const std::expected<std::uint32_t, GridFailure> skipped = BuildSortedCellList(
+      {.frame = ToUnitFrame(3), .active_cells = failing_cells, .version = {.value = 1}},
+      buffers,
+      SiblingCheck::kSkip
+  );
+  ASSERT_FALSE(skipped.has_value());
+  EXPECT_EQ(skipped.error().error, GridError::kSizeStepRuleBroken);
+  EXPECT_EQ(skipped.error().cell.value, ToCell(2, 188, 188, 188).value);
+}
+
+// With 1 and 7 threads every thread has several items, so a thread of P4 to P6 returns after an item of its own when
+// an earlier step failed: the lists that fail, in both launch orders.
+TEST(BuildSortedCellList, SeveralItemsPerThread_SameFirstFailureAsCpu) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays();
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  for (const std::size_t thread_count : {std::size_t{1}, std::size_t{7}}) {
+    const std::string threads = ", threads " + std::to_string(thread_count);
+    for (const std::vector<CellId>& cells : BuildEveryTwoSizeLevelsApartList()) {
+      ExpectReplayEqualsCpu(ToUnitFrame(3), cells, kSiblingChecks, thread_count, buffers, arrays, "apart" + threads);
+    }
+    for (std::uint64_t seed = 1; seed <= 20; ++seed) {
+      ExpectReplayEqualsCpu(
+          ToUnitFrame(4),
+          BuildMutatedGridCells(seed),
+          kSiblingChecks,
+          thread_count,
+          buffers,
+          arrays,
+          "mutated list " + std::to_string(seed) + threads
+      );
+    }
+  }
+}
+
+// A status record holding `error` and the cells size level 1 {2,0,0} and size level 0 {1,0,0} under `failure_key`.
+GridBuildStatus ToStatusRecord(std::uint64_t failure_key, GridError error) {
+  GridBuildStatus status = ComputeResetBuildStatus();
+  status.failure_key = failure_key;
+  status.error = error;
+  status.cell = ToCell(1, 2, 0, 0);
+  status.other_cell = ToCell(0, 1, 0, 0);
+  return status;
+}
+
+// A key with no error, an error with no key, and keys of steps 0, 8 and 9, just outside the steps 1 to 7: each is a
+// record the GPU cannot write, and each gives kInternalFault with no cell.
+TEST(BuildSortedCellList, StatusThatContradictsItself_IsInternalFault) {
+  const std::array<GridBuildStatus, 5> records = {
+      ToStatusRecord(ToFailureKey(kOverlapStep, 5, 0), GridError::kNone),
+      ToStatusRecord(kNoFailureKey, GridError::kCellsOverlap),
+      ToStatusRecord(ToFailureKey(0, 3, 0), GridError::kCellsOverlap),
+      ToStatusRecord(ToFailureKey(8, 0, 0), GridError::kCellsOverlap),
+      ToStatusRecord(ToFailureKey(9, 0, 0), GridError::kCellsOverlap),
+  };
+  for (std::size_t record = 0; record < records.size(); ++record) {
+    EXPECT_EQ(ToFailureFields(ToGridFailure(records.at(record))), ToFailureFields({.error = GridError::kInternalFault}))
+        << record;
+  }
+}
+
+// Step 7, a block without its bigger block, is a fault of the build: whatever cells the record holds, none is reported.
+TEST(BuildSortedCellList, StatusOfStepSeven_IsInternalFaultWithNoCell) {
+  const GridBuildStatus status = ToStatusRecord(ToFailureKey(7, 2, 0), GridError::kInternalFault);
+  EXPECT_EQ(ToFailureFields(ToGridFailure(status)), ToFailureFields({.error = GridError::kInternalFault}));
+}
+
+// Steps 1 and 6, the ends of the steps a check or a build names cells for, give the record's error and cells.
+TEST(BuildSortedCellList, StatusOfFirstAndSixthStep_GivesTheRecordsFailure) {
+  const GridBuildStatus id_status = ToStatusRecord(ToFailureKey(kIdStep, 4, 0), GridError::kBadInput);
+  const GridFailure id_failure = ToGridFailure(id_status);
+  EXPECT_EQ(id_failure.error, GridError::kBadInput);
+  EXPECT_EQ(id_failure.cell.value, ToCell(1, 2, 0, 0).value);
+  const GridBuildStatus room_status = ToStatusRecord(ToFailureKey(6, 0, 0), GridError::kTooManyCellBlocks);
+  EXPECT_EQ(ToGridFailure(room_status).error, GridError::kTooManyCellBlocks);
+}
+
+TEST(BuildSortedCellList, StatusWithKeyAndError_GivesTheErrorAndItsCells) {
+  GridBuildStatus status = ComputeResetBuildStatus();
+  EXPECT_EQ(ToFailureFields(ToGridFailure(status)), ToFailureFields({}));
+  status.failure_key = ToFailureKey(kSizeStepRuleStep, 1, 0);
+  status.error = GridError::kSizeStepRuleBroken;
+  status.cell = ToCell(2, 4, 4, 4);
+  status.other_cell = ToCell(0, 0, 0, 0);
+  const GridFailure expected = {
+      .error = GridError::kSizeStepRuleBroken,
+      .cell = ToCell(2, 4, 4, 4),
+      .other_cell = ToCell(0, 0, 0, 0),
+  };
+  EXPECT_EQ(ToFailureFields(ToGridFailure(status)), ToFailureFields(expected));
 }
 
 }  // namespace

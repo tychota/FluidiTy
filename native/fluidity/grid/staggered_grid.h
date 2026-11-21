@@ -34,10 +34,10 @@
 //          kMaxSizeLevels (grid/grid_ids.h), GridFrame, GridTables (grid/grid_tables.h)
 // Implementation uses: ReadBuffer (base/buffer.h), CheckCanRunOn (base/check_can_run_on.h), ComputeMemoryBytes
 //          (base/memory_count.h), BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
-//          (grid/grid_memory_estimate.h), BuildSortedCellList and the checks of a cell list (grid/grid_cell_checks.h),
-//          FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel, ToBlockSortKey, FindSortedBlock,
-//          FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeFacePieceKind,
-//          ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h)
+//          (grid/grid_memory_estimate.h), BuildSortedCellList, CheckCellListInputs and the checks of a cell list
+//          (grid/grid_cell_checks.h), FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel,
+//          ToBlockSortKey, FindSortedBlock, FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState,
+//          ComputeFacePieceKind, ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h)
 // Used by: the grid's builders and memory estimate, the step, which chooses the room, owns the buffers, counts a list
 //          to plan it and builds its grids, every module that reads a grid's tables, and cell resize, which checks the
 //          lists it splits
@@ -511,14 +511,16 @@ std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& input
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
 std::expected<void, GridFailure> CheckSizeStepRule(GridFrame frame, std::span<const CellId> active_cells);
 
-// Checks the list of `inputs` as the span form does, on buffers.run_on(), allocating nothing: the lent builder
-// buffers' cell ids hold the sorted copy. The library has a CPU form of this check only (see kRunOnCallFailed). The
-// buffers hold no grid before or after; their contents become unspecified.
+// Checks the list of `inputs` as the span form does, on buffers.run_on(), allocating nothing on either processor: the
+// lent builder buffers' cell ids hold the sorted copy. The buffers hold no grid before or after, and their contents are
+// unspecified afterwards.
 //
 // Method: the input checks come first, in this order, and never take part in the order of failures: the frame, the
 //   version and the shape of the list (two lists, a count above its buffer), then the lent builder buffers, then the
 //   length, more than 64 * buffers.max_cell_blocks() cells, before any id is read. Then steps 1, 2 and 4 of
-//   <proc-build-grid> as the span form.
+//   <proc-build-grid> as the span form. On the GPU the same steps run as <proc-build-grid-in-parallel> steps P1 to P4
+//   and P6, through the same per-item rules (BuildSortedCellList, grid/grid_cell_checks.h), so the result is the CPU's;
+//   the status record is the one value copied back to the CPU.
 // Example: grid buffers for 1 block and a list of 65 cells whose first id has bit 63 clear: kTooManyCellBlocks with
 //   cell and other_cell zero, not kBadInput. The same list with version 0 is kBadInput.
 // Requires: the list is on buffers.run_on(), a span in CPU memory, except an empty list, which has no processor;
@@ -531,11 +533,13 @@ std::expected<void, GridFailure> CheckSizeStepRule(GridFrame frame, std::span<co
 //                            these writes nothing. Then a bad id as for the span form.
 //        kTooManyCellBlocks  more than 64 * buffers.max_cell_blocks() cells, a list of any length; cell and other_cell
 //                            zero; nothing written
-//        kRunOnCallFailed    buffers.run_on() is the GPU: the library has no GPU form of this check, so after the
-//                            input checks the function reads no id and writes nothing
+//        kRunOnCallFailed    a GPU call failed: the buffers' contents are unspecified, and the run stops
 //        kCoordOutOfRange, kCellsOverlap, kSizeStepRuleBroken as for the span form
-//        kInternalFault      as for the span form, or a size error from a copy of base/ after the sizes were checked
-// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
+//        kInternalFault      as for the span form, or a size error from a copy, an order or a read of base/ after the
+//                            sizes were checked, or on the GPU a builder array too small for the list or a status
+//                            record that contradicts itself (a key without an error, an error without a key, a key of
+//                            no step 1 to 7); zero cells
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>, <proc-build-grid-in-parallel>
 std::expected<void, GridFailure> CheckSizeStepRule(const GridInputs& inputs, GridBuffers& buffers);
 
 }  // namespace fluidity::grid

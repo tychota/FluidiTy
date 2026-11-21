@@ -893,6 +893,15 @@ namespace {
 std::expected<GridCounts, GridFailure> BuildGridTables(const GridInputs& inputs, GridBuffers& buffers) {
   // Steps of <proc-build-grid>: 1 to 4 the input checks, the ids and the sorted list  5 the split cells and the
   // blocks  6 the neighbour tables  7 the cell states  8 the face piece kinds
+  // The library has no GPU build of a grid yet: on GPU buffers the input checks run, and then no id is read and
+  // nothing is written.
+  if (buffers.run_on() != RunOn::kCpu) {
+    if (const std::expected<void, GridFailure> inputs_checked = CheckCellListInputs(inputs, buffers);
+        !inputs_checked.has_value()) {
+      return std::unexpected(inputs_checked.error());
+    }
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+  }
   // Steps 1 to 4: the n active cells, sorted in the fixed order at the start of the builder buffers' cell ids.
   const std::expected<std::uint32_t, GridFailure> sorted_count =
       BuildSortedCellList(inputs, buffers, SiblingCheck::kRequire);

@@ -19,15 +19,17 @@
 // Words:
 //   input checks  the checks of a call before any id is read: frame, version, list shape, lent builder buffers, length
 //   keyed checks  steps 1 to 4 of <proc-build-grid>, whose failures are ordered by their failure key
-// Owns:    SiblingCheck, CheckGridInputs, CheckLentBuilderBuffers, CheckSortedCells, ComputeIsEarlierBlock,
-//          ApplyFixedBlockOrder, BuildSortedCellList
-// Uses:    CPU-only guard (base/cpu_only.h), GridFailure (grid/grid_error.h), CellId (grid/grid_ids.h), GridInputs,
-//          GridBuffers (grid/staggered_grid.h)
-// Implementation uses: math::IsFinite (base/scalar_math.h), WriteBuffer, CopyBuffer (base/buffer.h),
+// Owns:    SiblingCheck, CheckGridInputs, CheckLentBuilderBuffers, CheckCellListInputs, CheckSortedCells,
+//          ComputeIsEarlierBlock, ApplyFixedBlockOrder, ToGridFailure(const GridBuildStatus&), BuildSortedCellList
+// Uses:    CPU-only guard (base/cpu_only.h), GridBuildStatus (grid/grid_build_status.h), GridFailure
+//          (grid/grid_error.h), CellId (grid/grid_ids.h), GridInputs, GridBuffers (grid/staggered_grid.h)
+// Implementation uses: math::IsFinite (base/scalar_math.h), WriteBuffer, CopyBuffer, ReadBuffer, ToBufferError
+//          (base/buffer.h), BuildStableOrder (base/stable_order.h), RunOnCallStatus (base/run_on_call.h),
 //          ToGridBuffersArrays, ToGridBuilderBuffersArrays, ComputeHasLoanOf, ToGridFailure
-//          (grid/grid_buffers_internal.h), CheckCellId, ToCellSortKey, CheckOverlapAt, CheckSiblingsAt,
-//          CheckSizeStepAt, ToFailureKey, ComputeFailureCells, FindSortedCellAt, ComputeSplitCellCountToAdd,
-//          ComputeBigCellAtSizeLevel, ToBlockSortKey (grid/grid_build_steps.h)
+//          (grid/grid_buffers_internal.h), CheckCellId, ToCellSortKey, ComputeCellIdFailureKey,
+//          ComputeSortedCellFailureKey, ToFailureStep, ComputeFailureCells, FindSortedCellAt,
+//          ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel, ToBlockSortKey (grid/grid_build_steps.h), and in a
+//          build with GPU code the GPU half of the check (grid/staggered_grid_gpu.h)
 // Used by: CheckSizeStepRule, ComputeGridCounts (defined beside these checks) and the builds of a grid on buffers
 //          (grid/), such as BuildGrid
 // Read:    docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>, <proc-count-grid>
@@ -41,6 +43,7 @@
 #include <expected>
 #include <span>
 
+#include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/staggered_grid.h"
@@ -81,6 +84,21 @@ std::expected<void, GridFailure> CheckGridInputs(const GridInputs& inputs);
 // Fails: kBadInput  one of (1) to (3) fails; cell and other_cell zero.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>
 std::expected<void, GridFailure> CheckLentBuilderBuffers(const GridBuffers& buffers);
+
+// Checks the call of a check or a build of a list on buffers before any id is read: the input checks, the same on both
+// processors. Changes nothing.
+//
+// Order: CheckGridInputs; CheckLentBuilderBuffers; a list that does not lie in the lent builder buffers' cell ids,
+//   which the sorted copy would overwrite while it is read; then the length, more than 64 * buffers.max_cell_blocks()
+//   cells, of a list of any length.
+// Example: grid buffers for 1 block and a list of 65 cells whose first id has bit 63 clear: kTooManyCellBlocks, since
+//   no id is read; the same list with version 0 is kBadInput, since the version comes first.
+// Requires: the list is on buffers.run_on(), a span in CPU memory, except an empty list, which has no processor;
+//   checked by assert in debug builds. The lent builder buffers still exist.
+// Fails: kBadInput           as CheckGridInputs and CheckLentBuilderBuffers, or a list that lies in the cell ids
+//        kTooManyCellBlocks  more cells than the room's cell places; cell and other_cell zero
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+std::expected<void, GridFailure> CheckCellListInputs(const GridInputs& inputs, const GridBuffers& buffers);
 
 // Checks a list sorted in the fixed order: <proc-build-grid> steps 2 to 4, overlaps, the siblings when sibling_check
 // is kRequire, then the size step rule. Changes nothing.
@@ -127,20 +145,42 @@ bool ComputeIsEarlierBlock(CellId first, CellId second);
 // Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid>
 void ApplyFixedBlockOrder(std::span<CellId> cells);
 
+// Converts the status record that a check or a build on the GPU wrote, read back by the CPU, to the failure it names:
+// the CPU half's one reading of the record. error kNone when the record holds no failure.
+//
+// Method: no failure is failure_key kNoFailureKey with error kNone. A failure is a key of step 1 to 7
+//   (<sec-parallel-build>) with an error other than kNone, and gives that error with the record's cell and other_cell.
+// Example: {failure_key ToFailureKey(4, 1, 0), kSizeStepRuleBroken, cell a, other_cell b} gives kSizeStepRuleBroken, a,
+//   b. {kNoFailureKey, kNone} gives kNone.
+// Fails: kInternalFault  a record that contradicts itself: a key with error kNone, error other than kNone without a
+//                        key, or a key whose step is not 1 to 7; also a record whose error is kInternalFault, such as
+//                        the key of step 7. Zero cells. The GPU writes the key and the error together, so no input
+//                        causes it.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+GridFailure ToGridFailure(const GridBuildStatus& status);
+
 // Builds the sorted cell list of `inputs` in the lent builder buffers' cell ids, the start of every build and every
 // check of a list on buffers, and returns the cell count: the first that many cell ids are the list in fixed order.
 //
-// Method: CheckGridInputs, then CheckLentBuilderBuffers and a list that does not lie in the builder buffers' cell ids,
-//   then the length (more than 64 * buffers.max_cell_blocks() cells is kTooManyCellBlocks before any id is read):
-//   the input checks. Then <proc-build-grid> step 1, CheckCellId on every id in input order; step 2, a copy of the ids
-//   into the cell ids, sorted there in place; and CheckSortedCells for steps 2 to 4. Allocates nothing. The library
-//   has no GPU form of this check: buffers on the GPU are kRunOnCallFailed after the input checks, with no id read.
+// Method: CheckCellListInputs, the input checks. On the CPU, <proc-build-grid> step 1, CheckCellId on every id in
+//   input order; step 2, a copy of the ids into the cell ids, sorted there in place; and CheckSortedCells for steps 2
+//   to 4. On the GPU, <proc-build-grid-in-parallel> steps P1 to P6 and the failure half of P12: one GPU function
+//   resets the status record, P2 checks the ids, P3 writes the three passes of ToCellSortKey and orders them with
+//   BuildStableOrder in the lent builder buffers, then copies the cells into the cell ids in that order, P4 to P6 check
+//   the sorted positions, each thread doing nothing once an earlier step failed, and one thread names the smallest
+//   failure key with ComputeFailureCells. The CPU then reads the status record back, the one transfer, and
+//   ToGridFailure turns it into the result. The per-item rules are the CPU's (ComputeCellIdFailureKey,
+//   ComputeSortedCellFailureKey), so the two processors give the same sorted list and the same failure. Allocates
+//   nothing on either processor.
 // Example: with kSkip, the list {size level 1 {2,0,0}, size level 0 {0,0,0}} returns 2, and the cell ids start with
 //   size level 0 {0,0,0}, size level 1 {2,0,0}. With kRequire the same list is kSiblingCellMissing: the size-level-1
 //   cell {2,0,0} is eighth 0 of size level 0 {1,0,0}, whose eighth 1, size level 1 {3,0,0}, is not listed.
 // Requires: as CheckSizeStepRule(inputs, buffers) (grid/staggered_grid.h).
 // Fails: as CheckSizeStepRule(inputs, buffers), with kSiblingCellMissing when sibling_check is kRequire. A failure of
-//        an input check writes nothing; a later failure leaves the cell ids unspecified.
+//        an input check writes nothing; a later failure leaves the cell ids unspecified. On the GPU also
+//        kRunOnCallFailed (a GPU call failed: the buffers' contents are unspecified, and the run stops) and
+//        kInternalFault (an array of the builder buffers too small for the list, a size error from BuildStableOrder or
+//        ReadBuffer, or a status record that contradicts itself, as ToGridFailure says).
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>
 std::expected<std::uint32_t, GridFailure>
 BuildSortedCellList(const GridInputs& inputs, GridBuffers& buffers, SiblingCheck sibling_check);

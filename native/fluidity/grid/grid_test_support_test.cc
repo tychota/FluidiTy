@@ -21,6 +21,8 @@
 #include "fluidity/base/axis.h"
 #include "fluidity/base/test_support.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/grid_build_steps.h"
+#include "fluidity/grid/grid_cell_checks.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -1450,6 +1452,50 @@ TEST(FindRandomGridsSpreadBySize, OneGrid_IsTheBiggest) {
   for (const std::vector<CellId>& other : BuildShuffledRandomGrids()) {
     EXPECT_LE(other.size(), BuildShuffledRandomGrids().at(grids.front()).size());
   }
+}
+
+// The first failure of a list by step, then by position: step 1 on the ids in input order, then CheckSortedCells on a
+// copy sorted with ComesBefore. kNone when the list passes.
+GridError ComputeFirstFailureError(const std::vector<CellId>& cells, SiblingCheck sibling_check) {
+  for (const CellId cell : cells) {
+    const GridError id_error = CheckCellId(ToUnitFrame(4), cell);
+    if (id_error != GridError::kNone) {
+      return id_error;
+    }
+  }
+  std::vector<CellId> sorted_cells = cells;
+  std::ranges::sort(sorted_cells, [](CellId first, CellId second) {
+    return ComesBefore(first, second);
+  });
+  const std::expected<void, GridFailure> checked = CheckSortedCells(sorted_cells, sibling_check);
+  return checked.has_value() ? GridError::kNone : checked.error().error;
+}
+
+TEST(BuildMutatedGridCells, FiveHundredLists_BreakEveryRule) {
+  std::set<GridError> errors_seen;
+  std::size_t passing_count = 0;
+  for (std::uint64_t seed = 1; seed <= kMutatedGridCount; ++seed) {
+    const std::vector<CellId> cells = BuildMutatedGridCells(seed);
+    for (const SiblingCheck sibling_check : {SiblingCheck::kRequire, SiblingCheck::kSkip}) {
+      const GridError error = ComputeFirstFailureError(cells, sibling_check);
+      errors_seen.insert(error);
+      passing_count += error == GridError::kNone ? 1 : 0;
+    }
+  }
+  for (const GridError error : {
+           GridError::kBadInput,
+           GridError::kCoordOutOfRange,
+           GridError::kCellsOverlap,
+           GridError::kSiblingCellMissing,
+           GridError::kSizeStepRuleBroken,
+       }) {
+    EXPECT_TRUE(errors_seen.contains(error)) << static_cast<int>(error);
+  }
+  RecordProperty("passing_checks", static_cast<int>(passing_count));
+}
+
+TEST(BuildMutatedGridCells, SameSeed_GivesSameList) {
+  EXPECT_EQ(ToValues(BuildMutatedGridCells(17)), ToValues(BuildMutatedGridCells(17)));
 }
 
 }  // namespace

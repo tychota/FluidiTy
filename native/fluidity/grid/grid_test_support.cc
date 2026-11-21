@@ -621,6 +621,231 @@ const std::vector<std::vector<CellId>>& BuildShuffledRandomGrids() {
   return shuffled_grids;
 }
 
+namespace {
+
+// The size levels and the box of the lists BuildMutatedGridCells starts from: BuildRandomGridCells(seed, 4, 3).
+constexpr int kMutatedGridSizeLevelCount = 4;
+constexpr std::int32_t kMutatedGridBoxWidth = 3;
+
+// Says whether an id is a cell id a frame of the mutated lists' size levels uses, with coordinates in range.
+bool ComputeIsUsableCell(CellId cell) {
+  const bool has_cell_mark = (cell.value & (std::uint64_t{1} << 63U)) != 0;
+  const bool has_axis_bits = ((cell.value >> 61U) & 3U) != 0;
+  return has_cell_mark && !has_axis_bits && static_cast<int>(ToSizeLevel(cell)) < kMutatedGridSizeLevelCount
+      && ComputeIsCoordInRange(ToCellCoord(cell));
+}
+
+// Finds the first index from `start` on, wrapping around, whose cell is usable and passes `is_wanted`.
+template <typename CellPredicate>
+std::optional<std::size_t>
+FindUsableCellFrom(const std::vector<CellId>& cells, std::size_t start, CellPredicate is_wanted) {
+  for (std::size_t offset = 0; offset < cells.size(); ++offset) {
+    const std::size_t index = (start + offset) % cells.size();
+    if (ComputeIsUsableCell(cells.at(index)) && is_wanted(cells.at(index))) {
+      return index;
+    }
+  }
+  return std::nullopt;
+}
+
+// The coordinate of the size-level-0 cell that holds the coordinate `coord` of size level `size_level`: the floor of
+// coord / 2^size_level.
+std::int32_t ToSizeLevelZeroCoord(std::int32_t coord, SizeLevel size_level) {
+  const auto width = static_cast<std::int32_t>(1U << static_cast<unsigned>(size_level));
+  return coord >= 0 ? coord / width : -((-coord + width - 1) / width);
+}
+
+// Mutation 3: the small cells of the cell one size level smaller than `cell`, just beyond its side `side` (0..5: -x,
+// +x, -y, +y, -z, +z), when that side lies on the boundary of the box; empty otherwise.
+std::vector<CellId> BuildCellsTwoSizeLevelsSmallerBeside(CellId cell, int side) {
+  const int size_level = static_cast<int>(ToSizeLevel(cell));
+  const CellCoord cell_coord = ToCellCoord(cell);
+  const int axis = side / 2;
+  const std::int32_t step = (side % 2 == 0) ? -1 : 1;
+  std::array<std::int32_t, 3> beside = {cell_coord.x, cell_coord.y, cell_coord.z};
+  beside.at(static_cast<std::size_t>(axis)) += step;
+  const std::int32_t beside_on_axis =
+      ToSizeLevelZeroCoord(beside.at(static_cast<std::size_t>(axis)), ToSizeLevel(cell));
+  const bool is_beyond_box = beside_on_axis < 0 || beside_on_axis >= kMutatedGridBoxWidth;
+  if (!is_beyond_box) {
+    return {};
+  }
+  // The cell one size level smaller inside the place beside, on the cell's side along the axis, the low half across.
+  std::array<std::int32_t, 3> middle_coord = {2 * beside.at(0), 2 * beside.at(1), 2 * beside.at(2)};
+  if (step < 0) {
+    middle_coord.at(static_cast<std::size_t>(axis)) += 1;
+  }
+  const CellId middle_cell = ToCellId(
+      static_cast<SizeLevel>(size_level + 1),
+      {.x = middle_coord.at(0), .y = middle_coord.at(1), .z = middle_coord.at(2)}
+  );
+  std::vector<CellId> small_cells;
+  small_cells.reserve(8);
+  for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    small_cells.push_back(ComputeSmallCell(middle_cell, cell_eighth));
+  }
+  return small_cells;
+}
+
+// Mutation 2: the big cell of a usable cell of size level 1 or more, from drawn_index on, appended.
+void ApplyBigCellAdded(std::vector<CellId>& cells, std::size_t drawn_index) {
+  const std::optional<std::size_t> found = FindUsableCellFrom(cells, drawn_index, [](CellId cell) {
+    return ToSizeLevel(cell) != SizeLevel{0};
+  });
+  if (found.has_value()) {
+    cells.push_back(ComputeBigCell(cells.at(*found)));
+  }
+}
+
+// The cells of mutation 3 for `cell`, trying its sides from first_side on; empty when no side lies on the box's
+// boundary or the cell is too small for cells two size levels smaller.
+std::vector<CellId> FindCellsTwoSizeLevelsSmallerBeside(CellId cell, int first_side) {
+  if (static_cast<int>(ToSizeLevel(cell)) > kMutatedGridSizeLevelCount - 3) {
+    return {};
+  }
+  for (int offset = 0; offset < 6; ++offset) {
+    std::vector<CellId> small_cells = BuildCellsTwoSizeLevelsSmallerBeside(cell, (first_side + offset) % 6);
+    if (!small_cells.empty()) {
+      return small_cells;
+    }
+  }
+  return {};
+}
+
+// Mutation 3: the cells two size levels smaller beside the first usable cell from drawn_index on that has them.
+void ApplySmallCellsBesideAdded(std::vector<CellId>& cells, std::size_t drawn_index, int first_side) {
+  const std::optional<std::size_t> found = FindUsableCellFrom(cells, drawn_index, [first_side](CellId cell) {
+    return !FindCellsTwoSizeLevelsSmallerBeside(cell, first_side).empty();
+  });
+  if (found.has_value()) {
+    const std::vector<CellId> small_cells = FindCellsTwoSizeLevelsSmallerBeside(cells.at(*found), first_side);
+    cells.insert(cells.end(), small_cells.begin(), small_cells.end());
+  }
+}
+
+// Says whether the usable cell `cell` lies inside `outer`, a cell box of the same frame.
+bool ComputeIsInsideBox(CellId cell, const UnitBox& outer) {
+  const UnitBox box = ToUnitBox(cell, kMutatedGridSizeLevelCount);
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const bool is_inside_on_axis =
+        box.low.at(axis) >= outer.low.at(axis) && box.low.at(axis) + box.width <= outer.low.at(axis) + outer.width;
+    if (!is_inside_on_axis) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Mutation 4: every usable cell inside the big cell of a cell of size level 2 or more, or inside a cell of size level
+// 1, found from drawn_index on, removed.
+void ApplyCellsInsideDropped(std::vector<CellId>& cells, std::size_t drawn_index) {
+  const std::optional<std::size_t> found = FindUsableCellFrom(cells, drawn_index, [](CellId cell) {
+    return ToSizeLevel(cell) != SizeLevel{0};
+  });
+  if (!found.has_value()) {
+    return;
+  }
+  const CellId found_cell = cells.at(*found);
+  const CellId dropped_cell = static_cast<int>(ToSizeLevel(found_cell)) >= 2 ? ComputeBigCell(found_cell) : found_cell;
+  const UnitBox dropped_box = ToUnitBox(dropped_cell, kMutatedGridSizeLevelCount);
+  std::erase_if(cells, [&dropped_box](CellId cell) {
+    return ComputeIsUsableCell(cell) && ComputeIsInsideBox(cell, dropped_box);
+  });
+}
+
+// Mutation 6: one coordinate of the id at `index`, on the axis 0..2, set to kMaxCoord + 1.
+//
+// clang-tidy: an index and an axis number; the swappable-parameters check flags the two integers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void ApplyCoordBeyondRange(std::vector<CellId>& cells, std::size_t index, std::uint64_t axis) {
+  const CellId cell = cells.at(index);
+  CellCoord coord = ToCellCoord(cell);
+  if (axis == 0) {
+    coord.x = kMaxCoord + 1;
+  } else if (axis == 1) {
+    coord.y = kMaxCoord + 1;
+  } else {
+    coord.z = kMaxCoord + 1;
+  }
+  cells.at(index) = ToCellId(ToSizeLevel(cell), coord);
+}
+
+// Applies one mutation of BuildMutatedGridCells, drawing its own numbers from `generator`: first the index it starts
+// from, then what the kind needs.
+void ApplyGridMutation(std::vector<CellId>& cells, std::uint64_t kind, std::mt19937_64& generator) {
+  if (cells.empty()) {
+    return;
+  }
+  const auto drawn_index = static_cast<std::size_t>(ToUniformIndex(generator(), cells.size()));
+  switch (kind) {
+    case 0: {
+      const auto insert_index = static_cast<std::ptrdiff_t>(ToUniformIndex(generator(), cells.size() + 1));
+      const CellId repeated = cells.at(drawn_index);
+      cells.insert(cells.begin() + insert_index, repeated);
+      return;
+    }
+    case 1:
+      cells.erase(cells.begin() + static_cast<std::ptrdiff_t>(drawn_index));
+      return;
+    case 2:
+      ApplyBigCellAdded(cells, drawn_index);
+      return;
+    case 3:
+      ApplySmallCellsBesideAdded(cells, drawn_index, static_cast<int>(ToUniformIndex(generator(), 6)));
+      return;
+    case 4:
+      ApplyCellsInsideDropped(cells, drawn_index);
+      return;
+    case 5:
+      cells.at(drawn_index).value &= ~(std::uint64_t{1} << 63U);
+      return;
+    default:
+      ApplyCoordBeyondRange(cells, drawn_index, ToUniformIndex(generator(), 3));
+      return;
+  }
+}
+
+}  // namespace
+
+std::vector<CellId> BuildMutatedGridCells(std::uint64_t seed) {
+  std::vector<CellId> cells = BuildRandomGridCells(seed, kMutatedGridSizeLevelCount, kMutatedGridBoxWidth);
+  ApplyFixedShuffle(cells, seed + 1000);
+  std::mt19937_64 generator(seed + 7000);
+  const std::uint64_t mutation_count = 1 + ToUniformIndex(generator(), 4);
+  for (std::uint64_t mutation = 0; mutation < mutation_count; ++mutation) {
+    ApplyGridMutation(cells, ToUniformIndex(generator(), 7), generator);
+  }
+  return cells;
+}
+
+std::vector<CellId> BuildLargeBoxOfCells(const std::vector<CellId>& extra_cells) {
+  constexpr std::int32_t kBoxWidth = 47;
+  std::vector<CellId> cells = extra_cells;
+  cells.reserve(extra_cells.size() + (std::size_t{kBoxWidth} * kBoxWidth * kBoxWidth));
+  for (std::int32_t z = 0; z < kBoxWidth; ++z) {
+    for (std::int32_t y = 0; y < kBoxWidth; ++y) {
+      for (std::int32_t x = 0; x < kBoxWidth; ++x) {
+        cells.push_back(ToCellId(SizeLevel{0}, {.x = x, .y = y, .z = z}));
+      }
+    }
+  }
+  ApplyFixedShuffle(cells, 4711);
+  return cells;
+}
+
+std::vector<CellId> BuildSizeStepBreakWithSiblings() {
+  std::vector<CellId> cells = {ToCellId(SizeLevel{0}, {.x = 0, .y = 0, .z = 0})};
+  const CellId split_cell = ToCellId(SizeLevel{0}, {.x = 1, .y = 0, .z = 0});
+  for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
+    cells.push_back(ComputeSmallCell(split_cell, cell_eighth));
+  }
+  const CellId split_small_cell = ComputeSmallCell(split_cell, 0);
+  for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    cells.push_back(ComputeSmallCell(split_small_cell, cell_eighth));
+  }
+  return cells;
+}
+
 std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_level_count) {
   // Each round splits every cell that touches a cell two or more size levels smaller. A split makes new such pairs
   // only with cells bigger still, so the rounds end.

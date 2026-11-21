@@ -95,6 +95,12 @@ __global__ void ComputeWithEverySharedGridFunction(
   const CellCheck failure_cells =
       ComputeFailureCells(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, failure_key);
   results[result_index++] = static_cast<std::uint64_t>(failure_cells.error) + failure_cells.cell.value;
+  // The per-item rules of the check of a list on the GPU (<proc-build-grid-in-parallel> P1 to P6 and P12).
+  results[result_index++] = ComputeCellIdFailureKey(frame, sorted_cells, position);
+  results[result_index++] = ComputeSortedCellFailureKey(sorted_cells, sorted_count, position, kSizeStepRuleStep);
+  results[result_index++] = ComputeHasEarlierStepFailed(failure_key, kSiblingStep) ? 1 : 0;
+  results[result_index++] = ComputeResetBuildStatus().failure_key;
+  ApplyFailureCells(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, build_status);
   results[result_index++] = static_cast<std::uint64_t>(ComputeSplitCellCountToAdd(cell));
   // grid_build_steps.h: the table entries of one block, one cell place and one face place, read through GridTables.
   std::uint32_t* same_size_level_blocks = block_tables;

@@ -55,18 +55,20 @@
 //   cover             of a place, the place one size level bigger that holds it: floor(c / 2) at size level l - 1
 // Owns:    kSortKeyPassCount, ToCellSortKey, ToBlockSortKey, CheckCellId, FindSortedCell, FindSortedBlock,
 //          ComputeBigCellAtSizeLevel, FindSortedCellAt, CellCheck, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
-//          ToFailureKey, ToFailureStep, ToFailurePosition, ComputeFailureCells, ComputeSplitCellCountToAdd,
+//          kIdStep, kOverlapStep, kSiblingStep, kSizeStepRuleStep, ToFailureKey, ToFailureStep, ToFailurePosition,
+//          ComputeFailureCells, ComputeCellIdFailureKey, ComputeSortedCellFailureKey, ComputeHasEarlierStepFailed,
+//          ComputeResetBuildStatus, ApplyFailureCells, ComputeSplitCellCountToAdd,
 //          FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeCellStateBeside,
 //          ComputeFacePieceKind; and, for this header's own functions and types only, ComputeBiasedCorner,
 //          ComputeSortKeyOfCorner, ComputeIsCellPresent, ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry,
 //          ComputeStoredCellState, ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and
 //          the struct LocalPlace
-// Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), kNoFailureKey (grid/grid_build_status.h), GridError
-//          (grid/grid_error.h), CellId, CellBlockId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex, CellCoord,
-//          SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kCellPlacesPerBlock, kFacePlacesPerBlock, kNoIndex,
-//          ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockIndex, ComputeBigCell,
-//          ComputeCellEighth, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h), GridFrame, GridTables,
-//          CellState, FacePieceKind (grid/grid_tables.h)
+// Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), kNoFailureKey, GridBuildStatus (grid/grid_build_status.h),
+//          GridError (grid/grid_error.h), CellId, CellBlockId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex,
+//          CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kCellPlacesPerBlock, kFacePlacesPerBlock,
+//          kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockIndex,
+//          ComputeBigCell, ComputeCellEighth, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h),
+//          GridFrame, GridTables, CellState, FacePieceKind (grid/grid_tables.h)
 // Used by: the grid's CPU builder, its GPU half and the counting of a list (grid/); private to grid/
 // Read:    docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>,
 //          <proc-build-grid>, <sec-cell-blocks>, <sec-face-pieces>
@@ -437,6 +439,12 @@ CheckSizeStepAt(const CellId* sorted_cells, std::uint32_t count, std::uint32_t p
   return {};
 }
 
+// The steps of the failure key that check the ids and the sorted list: <proc-build-grid> steps 1 to 4.
+inline constexpr int kIdStep = 1;  // The ids, in input order.
+inline constexpr int kOverlapStep = 2;  // Overlaps, in the fixed order.
+inline constexpr int kSiblingStep = 3;  // Siblings, in the fixed order.
+inline constexpr int kSizeStepRuleStep = 4;  // The size step rule, in the fixed order.
+
 // Computes the failure key of one failing item: (step << 56) | (position << 8) | detail.
 //
 // Method: the step takes the high 8 bits, the position the next 48, the detail the low 8, so the smallest key is the
@@ -533,6 +541,113 @@ FLUIDITY_CPU_AND_GPU constexpr CellCheck ComputeFailureCells(
     cell_check = CheckSizeStepAt(sorted_cells, count, sorted_position);
   }
   return cell_check.error == GridError::kNone ? internal_fault : cell_check;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Computes the failure key that one input id offers: method paper <proc-build-grid-in-parallel> step P2, for one
+// thread's item.
+//
+// Method: CheckCellId of the id at `index`; a failing id offers ToFailureKey(kIdStep, index, 0), and a good one
+//   offers kNoFailureKey, which no minimum keeps.
+// Example: with CellId{0} at index 3, index 3 gives ToFailureKey(1, 3, 0) = (1 << 56) | (3 << 8); a valid id gives the
+//   key kNoFailureKey.
+// Requires: input_cells holds more than `index` ids.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t
+ComputeCellIdFailureKey(GridFrame frame, const CellId* input_cells, std::uint64_t index) noexcept {
+  assert(input_cells != nullptr);
+  if (CheckCellId(frame, input_cells[index]) == GridError::kNone) {
+    return kNoFailureKey;
+  }
+  return ToFailureKey(kIdStep, index, 0);
+}
+
+// Computes the failure key that one sorted position offers in one step: method paper <proc-build-grid-in-parallel>
+// steps P4 to P6, for one thread's item.
+//
+// Method: CheckOverlapAt for kOverlapStep, CheckSiblingsAt for kSiblingStep, CheckSizeStepAt for kSizeStepRuleStep, at
+//   `position`; a failure offers ToFailureKey(step, position, its detail), no failure kNoFailureKey.
+// Example: in {size level 0 {0,0,0}, size level 2 {4,4,4}}, step kSizeStepRuleStep at position 1 gives
+//   ToFailureKey(4, 1, 0); at position 0 it gives kNoFailureKey.
+// Requires: step is kOverlapStep, kSiblingStep or kSizeStepRuleStep; position < count; the list is in the fixed order
+//   and every id passed CheckCellId; for the siblings and the size step rule, no cells overlap. A step that is none of
+//   the three gives kNoFailureKey in a release build.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: a count, a position and a step; the swappable-parameters check flags the integers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeSortedCellFailureKey(
+    const CellId* sorted_cells,
+    std::uint32_t count,
+    std::uint32_t position,
+    int step
+) noexcept {
+  assert(step == kOverlapStep || step == kSiblingStep || step == kSizeStepRuleStep);
+  CellCheck cell_check{};
+  if (step == kOverlapStep) {
+    cell_check = CheckOverlapAt(sorted_cells, count, position);
+  } else if (step == kSiblingStep) {
+    cell_check = CheckSiblingsAt(sorted_cells, count, position);
+  } else if (step == kSizeStepRuleStep) {
+    cell_check = CheckSizeStepAt(sorted_cells, count, position);
+  }
+  if (cell_check.error == GridError::kNone) {
+    return kNoFailureKey;
+  }
+  return ToFailureKey(step, position, cell_check.detail);
+}
+
+// Says whether the smallest failure key so far comes from a step before `step`: the test a thread of steps P4 to P6
+// makes before its item (<sec-parallel-build>, "The first failure"), so no step runs on a list that an earlier step
+// found bad.
+//
+// Method: the key's step is below `step`. A key of `step` itself, which another thread of the same step may have
+//   offered already, does not count: a thread that stopped for it could leave out a smaller key of that step.
+// Example: with the key ToFailureKey(2, 9, 0), step 3 gives true and step 2 gives false; kNoFailureKey gives false.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeHasEarlierStepFailed(std::uint64_t failure_key, int step) noexcept {
+  return failure_key != kNoFailureKey && ToFailureStep(failure_key) < step;
+}
+
+// Computes the status record of a check or a build on the GPU before its first step: no failure, every count zero.
+// Method paper <proc-build-grid-in-parallel> step P1, the one thread that resets the record.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr GridBuildStatus ComputeResetBuildStatus() noexcept {
+  GridBuildStatus status{};
+  status.failure_key = kNoFailureKey;
+  return status;
+}
+
+// Writes the error and the cells of the smallest failure key of `status` into it, once every step of a check has run:
+// method paper <proc-build-grid-in-parallel> step P12, the failure half, one thread.
+//
+// Method: kNoFailureKey gives error kNone and zero cells. Any other key gives the error and the cells
+//   ComputeFailureCells names for it, which runs that key's check again at its position: step 1 on the input list,
+//   steps 2 to 4 on the sorted list. The key and the counts are left as they are.
+// Example: the key ToFailureKey(4, 1, 0) over {size level 0 {0,0,0}, size level 2 {4,4,4}} writes kSizeStepRuleBroken,
+//   cell size level 2 {4,4,4}, other_cell size level 0 {0,0,0}.
+// Requires: status is not null; the lists are the ones the key's checks ran on, as ComputeFailureCells requires.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: counts of cells; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr void ApplyFailureCells(
+    GridFrame frame,
+    const CellId* input_cells,
+    std::uint32_t input_count,
+    const CellId* sorted_cells,
+    std::uint32_t count,
+    GridBuildStatus* status
+) noexcept {
+  assert(status != nullptr);
+  const std::uint64_t failure_key = status->failure_key;
+  CellCheck cell_check{};
+  if (failure_key != kNoFailureKey) {
+    cell_check = ComputeFailureCells(frame, input_cells, input_count, sorted_cells, count, failure_key);
+  }
+  status->error = cell_check.error;
+  status->cell = cell_check.cell;
+  status->other_cell = cell_check.other_cell;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 

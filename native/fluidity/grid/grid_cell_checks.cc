@@ -23,6 +23,12 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
+#if defined(FLUIDITY_HAS_GPU)
+#include "fluidity/base/run_on_call.h"
+#include "fluidity/base/stable_order.h"
+#include "fluidity/grid/staggered_grid_gpu.h"
+#endif
+
 namespace fluidity::grid {
 namespace {
 
@@ -32,11 +38,9 @@ constexpr std::uint64_t kMaxListCount = std::numeric_limits<std::uint32_t>::max(
 // own beyond the length check.
 static_assert(std::uint64_t{kCellPlacesPerBlock} * kMaxCellBlocksLimit <= kMaxListCount);
 
-// The failure keys' steps of <proc-build-grid> (<sec-parallel-build>).
-constexpr int kIdStep = 1;
-constexpr int kOverlapStep = 2;
-constexpr int kSiblingStep = 3;
-constexpr int kSizeStepRuleStep = 4;
+// The last step of the failure key, a block without its bigger block (<sec-parallel-build>): a status record holds a
+// key of step kIdStep to this one.
+constexpr int kLastFailureStep = 7;
 
 GridFailure ToBadInput() {
   return {.error = GridError::kBadInput};
@@ -83,15 +87,14 @@ GridFailure ToGridFailureOfKey(
   return {.error = cell_check.error, .cell = cell_check.cell, .other_cell = cell_check.other_cell};
 }
 
-// <proc-build-grid> step 1: CheckCellId on every id in input order; the first failure has the smallest key of the
-// step. Requires: at most kMaxListCount ids.
+// <proc-build-grid> step 1: the key ComputeCellIdFailureKey gives every id in input order, the GPU's per-item rule;
+// the first failure has the smallest key of the step. Requires: at most kMaxListCount ids.
 std::expected<void, GridFailure> CheckInputIds(GridFrame frame, std::span<const CellId> input_cells) {
   for (std::size_t index = 0; index < input_cells.size(); ++index) {
-    if (CheckCellId(frame, input_cells[index]) != GridError::kNone) {
+    const std::uint64_t failure_key = ComputeCellIdFailureKey(frame, input_cells.data(), index);
+    if (failure_key != kNoFailureKey) {
       // The list holds an id no grid of this frame can have; the caller made the list wrong.
-      return std::unexpected(
-          ToGridFailureOfKey(frame, input_cells, std::span<const CellId>(), ToFailureKey(kIdStep, index, 0))
-      );
+      return std::unexpected(ToGridFailureOfKey(frame, input_cells, std::span<const CellId>(), failure_key));
     }
   }
   return {};
@@ -121,14 +124,14 @@ void ApplyFixedCellOrder(std::span<CellId> cells) {
   });
 }
 
-// The failure key of the first failing position of one check over a sorted list, or kNoFailureKey.
-template <typename CheckAt>
-std::uint64_t FindFirstFailureKey(std::span<const CellId> sorted_cells, int step, CheckAt check_at) {
+// The failure key of the first failing position of one step over a sorted list, or kNoFailureKey: the key
+// ComputeSortedCellFailureKey gives each position in order, the GPU's per-item rule.
+std::uint64_t FindFirstFailureKey(std::span<const CellId> sorted_cells, int step) {
   const auto count = static_cast<std::uint32_t>(sorted_cells.size());
   for (std::uint32_t position = 0; position < count; ++position) {
-    const CellCheck cell_check = check_at(sorted_cells.data(), count, position);
-    if (cell_check.error != GridError::kNone) {
-      return ToFailureKey(step, position, cell_check.detail);
+    const std::uint64_t failure_key = ComputeSortedCellFailureKey(sorted_cells.data(), count, position, step);
+    if (failure_key != kNoFailureKey) {
+      return failure_key;
     }
   }
   return kNoFailureKey;
@@ -273,14 +276,14 @@ std::expected<void, GridFailure> CheckSortedCells(std::span<const CellId> sorted
     return std::unexpected(ToInternalFault());
   }
   // Step 2: a cell listed twice, or inside a bigger listed cell.
-  std::uint64_t failure_key = FindFirstFailureKey(sorted_cells, kOverlapStep, CheckOverlapAt);
+  std::uint64_t failure_key = FindFirstFailureKey(sorted_cells, kOverlapStep);
   // Step 3: every small cell of every split cell is present.
   if (failure_key == kNoFailureKey && sibling_check == SiblingCheck::kRequire) {
-    failure_key = FindFirstFailureKey(sorted_cells, kSiblingStep, CheckSiblingsAt);
+    failure_key = FindFirstFailureKey(sorted_cells, kSiblingStep);
   }
   // Step 4: no two touching cells two or more size levels apart.
   if (failure_key == kNoFailureKey) {
-    failure_key = FindFirstFailureKey(sorted_cells, kSizeStepRuleStep, CheckSizeStepAt);
+    failure_key = FindFirstFailureKey(sorted_cells, kSizeStepRuleStep);
   }
   if (failure_key == kNoFailureKey) {
     return {};
@@ -297,44 +300,202 @@ void ApplyFixedBlockOrder(std::span<CellId> cells) {
   std::ranges::sort(cells, ComputeIsEarlierBlock);
 }
 
-std::expected<std::uint32_t, GridFailure>
-BuildSortedCellList(const GridInputs& inputs, GridBuffers& buffers, SiblingCheck sibling_check) {
-  // Steps: 1 the input checks, then the ids (<proc-build-grid> step 1)  2 the copy into the cell ids and its sort
-  // 3 the checks of the sorted list (<proc-build-grid> steps 2 to 4)
-  // Step 1: the input checks, in the order of <sec-parallel-build>, before any id is read.
-  if (const std::expected<void, GridFailure> inputs_checked = CheckGridInputs(inputs); !inputs_checked.has_value()) {
-    return std::unexpected(inputs_checked.error());
+GridFailure ToGridFailure(const GridBuildStatus& status) {
+  const bool has_failure_key = status.failure_key != kNoFailureKey;
+  const bool has_error = status.error != GridError::kNone;
+  if (!has_failure_key && !has_error) {
+    return {};
   }
+  // The record the GPU just wrote contradicts itself: a key without an error, an error without a key, or a key of no
+  // step of <sec-parallel-build>. No input can cause it; it is a fault in FluidiTy.
+  const int failure_step = ToFailureStep(status.failure_key);
+  const bool is_known_step = failure_step >= kIdStep && failure_step <= kLastFailureStep;
+  if (!has_failure_key || !has_error || !is_known_step) {
+    return ToInternalFault();
+  }
+  // An internal fault names no cell, whatever the record holds.
+  if (status.error == GridError::kInternalFault) {
+    return ToInternalFault();
+  }
+  return {.error = status.error, .cell = status.cell, .other_cell = status.other_cell};
+}
+
+namespace {
+
+// The list of `inputs`: the span, or the used part of the buffer. Requires: CheckGridInputs passed.
+std::span<const CellId> ToInputCells(const GridInputs& inputs) {
+  if (inputs.active_cell_buffer != nullptr) {
+    return {inputs.active_cell_buffer->data(), inputs.active_cell_buffer_count};
+  }
+  return inputs.active_cells;
+}
+
+#if defined(FLUIDITY_HAS_GPU)
+
+// <proc-build-grid-in-parallel> steps P1 (the reset) to P6 and the failure half of P12 on the GPU, for a list whose
+// input checks passed: one GPU-half call per step, the stable orders of P3 between them, then the one read of the
+// status record. On success the first `input_cells.size()` cell ids hold the list in the fixed order.
+// Requires: buffers.run_on() is the GPU; input_cells is GPU memory, or empty; CheckCellListInputs passed.
+std::expected<std::uint32_t, GridFailure> BuildSortedCellListOnGpu(
+    GridFrame frame,
+    std::span<const CellId> input_cells,
+    GridBuffers& buffers,
+    SiblingCheck sibling_check
+) {
+  // Steps: 1 the arrays  2 P1, the reset  3 P2, the ids  4 P3, the sort  5 P4 to P6, the sorted list  6 P12, the
+  // failure, and the read of the record
+  // Step 1: BuildGridBuilderBuffers and BuildGridBuffers built every array from the estimate's entries for a room at
+  // least the buffers', so an array too small for the list, or a missing one, contradicts them.
+  GridBuffersArrays& arrays = ToGridBuffersArrays(buffers);
+  GridBuilderBuffersArrays& builder_arrays = ToGridBuilderBuffersArrays(*arrays.builder_buffers);
+  const std::size_t count = input_cells.size();
+  const bool has_room_for_list = builder_arrays.cell_ids.size() >= count && builder_arrays.sort_keys.size() >= count
+      && builder_arrays.order.size() >= count && builder_arrays.second_order.size() >= count;
+  if (!has_room_for_list || !builder_arrays.order_buffers.has_value() || arrays.build_status.size() < 1) {
+    return std::unexpected(ToInternalFault());
+  }
+  const CellId* const input = input_cells.data();
+  const auto input_count = static_cast<std::uint32_t>(count);
+  CellId* const sorted_cells = builder_arrays.cell_ids.data();
+  GridBuildStatus* const status = arrays.build_status.data();
+  // A failed GPU call leaves the buffers unspecified, and the run stops (kRunOnCallFailed). ToGridFailure maps a size
+  // error of base/ to kInternalFault: the sizes were checked above.
+  const auto to_call_failure = [](RunOnCallStatus call_status) {
+    return std::unexpected(ToGridFailure(ToBufferError(call_status), 0));
+  };
+
+  // Step 2: P1, the reset. Nothing is written from the CPU.
+  if (const RunOnCallStatus call_status = ApplyBuildStatusResetOnGpu(status); call_status != RunOnCallStatus::kDone) {
+    return to_call_failure(call_status);
+  }
+  // Step 3: P2.
+  if (const RunOnCallStatus call_status = CheckCellIdsOnGpu(frame, input, input_count, status);
+      call_status != RunOnCallStatus::kDone) {
+    return to_call_failure(call_status);
+  }
+  // Step 4: P3, three passes, the least significant first, alternating the two orders so that no pass reads the order
+  // it writes; the last pass leaves the order in `order`. A list that failed P2 is sorted too: its keys are ordinary
+  // numbers, and P4 to P6 then read the failure and do nothing.
+  const std::array<const Buffer<std::uint32_t>*, kSortKeyPassCount> previous_orders = {
+      nullptr,
+      &builder_arrays.order,
+      &builder_arrays.second_order,
+  };
+  const std::array<Buffer<std::uint32_t>*, kSortKeyPassCount> pass_orders = {
+      &builder_arrays.order,
+      &builder_arrays.second_order,
+      &builder_arrays.order,
+  };
+  for (int pass = 0; pass < kSortKeyPassCount; ++pass) {
+    const auto pass_index = static_cast<std::size_t>(pass);
+    if (const RunOnCallStatus call_status =
+            WriteCellSortKeysOnGpu(input, input_count, pass, builder_arrays.sort_keys.data());
+        call_status != RunOnCallStatus::kDone) {
+      return to_call_failure(call_status);
+    }
+    const std::expected<void, BufferError> ordered = BuildStableOrder(
+        builder_arrays.sort_keys,
+        count,
+        previous_orders.at(pass_index),
+        *pass_orders.at(pass_index),
+        *builder_arrays.order_buffers
+    );
+    if (!ordered.has_value()) {
+      return std::unexpected(ToGridFailure(ordered.error(), 0));
+    }
+  }
+  if (const RunOnCallStatus call_status =
+          CopySortedCellsOnGpu(input, builder_arrays.order.data(), input_count, sorted_cells);
+      call_status != RunOnCallStatus::kDone) {
+    return to_call_failure(call_status);
+  }
+  // Step 5: P4, P5 when siblings are required, P6.
+  const std::array<int, 3> sorted_steps = {kOverlapStep, kSiblingStep, kSizeStepRuleStep};
+  for (const int step : sorted_steps) {
+    if (step == kSiblingStep && sibling_check == SiblingCheck::kSkip) {
+      continue;
+    }
+    if (const RunOnCallStatus call_status = CheckSortedCellsOnGpu(sorted_cells, input_count, step, status);
+        call_status != RunOnCallStatus::kDone) {
+      return to_call_failure(call_status);
+    }
+  }
+  // Step 6: P12, the failure half, then the one transfer of the check.
+  if (const RunOnCallStatus call_status =
+          WriteFailureCellsOnGpu(frame, input, input_count, sorted_cells, input_count, status);
+      call_status != RunOnCallStatus::kDone) {
+    return to_call_failure(call_status);
+  }
+  GridBuildStatus read_status{};
+  const std::expected<void, BufferError> read =
+      ReadBuffer(arrays.build_status, 0, std::span<GridBuildStatus>(&read_status, 1));
+  if (!read.has_value()) {
+    return std::unexpected(ToGridFailure(read.error(), sizeof(GridBuildStatus)));
+  }
+  const GridFailure failure = ToGridFailure(read_status);
+  if (failure.error != GridError::kNone) {
+    return std::unexpected(failure);
+  }
+  return input_count;
+}
+
+#endif
+
+}  // namespace
+
+std::expected<void, GridFailure> CheckCellListInputs(const GridInputs& inputs, const GridBuffers& buffers) {
+  // Steps: 1 the frame, the version and the list shape  2 the lent builder buffers and the list's memory  3 the length
+  // Step 1.
+  if (const std::expected<void, GridFailure> inputs_checked = CheckGridInputs(inputs); !inputs_checked.has_value()) {
+    return inputs_checked;
+  }
+  // Step 2.
   if (const std::expected<void, GridFailure> loan_checked = CheckLentBuilderBuffers(buffers);
       !loan_checked.has_value()) {
-    return std::unexpected(loan_checked.error());
+    return loan_checked;
   }
-  const bool has_buffer_list = inputs.active_cell_buffer != nullptr;
-  const std::span<const CellId> input_cells = has_buffer_list
-      ? std::span<const CellId>(inputs.active_cell_buffer->data(), inputs.active_cell_buffer_count)
-      : inputs.active_cells;
-  Buffer<CellId>& cell_ids = ToGridBuilderBuffersArrays(*ToGridBuffersArrays(buffers).builder_buffers).cell_ids;
+  const std::span<const CellId> input_cells = ToInputCells(inputs);
+  const Buffer<CellId>& cell_ids = ToGridBuilderBuffersArrays(*ToGridBuffersArrays(buffers).builder_buffers).cell_ids;
   // The sorted copy would overwrite the list while it is read; the caller passes a list of its own.
   if (ComputeIsListInCellIds(input_cells, cell_ids)) {
     return std::unexpected(ToBadInput());
   }
   // Requires: one processor. An empty list has none.
+  const bool has_buffer_list = inputs.active_cell_buffer != nullptr;
   const bool is_list_on_processor = input_cells.empty()
       || (has_buffer_list ? inputs.active_cell_buffer->run_on() == buffers.run_on() : buffers.run_on() == RunOn::kCpu);
   assert(is_list_on_processor);
   static_cast<void>(is_list_on_processor);
-  // The length, before any id is read: a list longer than the room's cell places cannot fit, whatever its ids. The
-  // caller raises the room. It also bounds every list to 32-bit positions: 64 * kMaxCellBlocksLimit < 2^32, so a span
-  // of any length is kTooManyCellBlocks here, as the length check of a build promises, never bad input.
+  // Step 3: the length, before any id is read: a list longer than the room's cell places cannot fit, whatever its ids.
+  // The caller raises the room. It also bounds every list to 32-bit positions: 64 * kMaxCellBlocksLimit < 2^32, so a
+  // span of any length is kTooManyCellBlocks here, as the length check of a build promises, never bad input.
   const std::uint64_t cell_place_count = std::uint64_t{kCellPlacesPerBlock} * buffers.max_cell_blocks();
   if (input_cells.size() > cell_place_count) {
     return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
   }
-  // The library has no GPU form of this check. A list on the GPU is never read back to the CPU for it, so the
-  // function stops here without reading an id.
-  if (buffers.run_on() != RunOn::kCpu) {
-    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+  return {};
+}
+
+std::expected<std::uint32_t, GridFailure>
+BuildSortedCellList(const GridInputs& inputs, GridBuffers& buffers, SiblingCheck sibling_check) {
+  // Steps: 1 the input checks, then the ids (<proc-build-grid> step 1)  2 the copy into the cell ids and its sort
+  // 3 the checks of the sorted list (<proc-build-grid> steps 2 to 4). On the GPU, <proc-build-grid-in-parallel> steps
+  // P1 to P6 after the input checks.
+  // Step 1: the input checks, in the order of <sec-parallel-build>, before any id is read.
+  if (const std::expected<void, GridFailure> inputs_checked = CheckCellListInputs(inputs, buffers);
+      !inputs_checked.has_value()) {
+    return std::unexpected(inputs_checked.error());
   }
+  const std::span<const CellId> input_cells = ToInputCells(inputs);
+  if (buffers.run_on() != RunOn::kCpu) {
+#if defined(FLUIDITY_HAS_GPU)
+    return BuildSortedCellListOnGpu(inputs.frame, input_cells, buffers, sibling_check);
+#else
+    // Without GPU code BuildGridBuffers never builds GPU buffers, so no caller reaches this.
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+#endif
+  }
+  Buffer<CellId>& cell_ids = ToGridBuilderBuffersArrays(*ToGridBuffersArrays(buffers).builder_buffers).cell_ids;
   // The builder buffers hold 64 cell ids per block of a room at least the buffers': fewer contradicts their builder.
   if (cell_ids.size() < input_cells.size()) {
     return std::unexpected(ToInternalFault());
@@ -347,7 +508,7 @@ BuildSortedCellList(const GridInputs& inputs, GridBuffers& buffers, SiblingCheck
 
   // Step 2: the copy, then the sort in place. The sizes and the overlap were checked above, so a copy error of base/
   // is a fault in FluidiTy (ToGridFailure maps kSizeMismatch to kInternalFault).
-  const std::expected<void, BufferError> copied = has_buffer_list
+  const std::expected<void, BufferError> copied = inputs.active_cell_buffer != nullptr
       ? CopyBuffer(*inputs.active_cell_buffer, 0, input_cells.size(), cell_ids, 0)
       : WriteBuffer(input_cells, cell_ids, 0);
   if (!copied.has_value()) {

@@ -33,7 +33,8 @@
 //          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid,
 //          TestGrid, BuildTestGrid, TakeEmptyGridBuffers, kRandomGridSizeLevelCount, kMaxRandomGridCellBlocks,
 //          ToGridCountFields, ComputeIsSameUsedTables, ComputeIsSameGrid, FindRandomGridsSpreadBySize,
-//          BuildReferenceGrids
+//          BuildReferenceGrids, kMutatedGridCount, BuildMutatedGridCells,
+//          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings
 // Uses:    Axis (base/axis.h), Buffer (base/buffer.h), RunMemory (base/run_memory.h), Vec3 (base/vec3.h), GridFailure
 //          (grid/grid_error.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h), GridFrame
 //          (grid/grid_tables.h), GridSettings, GridInputs, GridBuilderBuffers, StaggeredGrid (grid/staggered_grid.h),
@@ -118,6 +119,45 @@ inline constexpr std::uint64_t kRandomGridCount = 200;
 // Method: a function-local static, built on the first call, so the tests of one program build the lists once.
 // Example: entry 0 is the list of seed 1, shuffled with seed 1001.
 const std::vector<std::vector<CellId>>& BuildShuffledRandomGrids();
+
+// The number of mutated lists the tests run: BuildMutatedGridCells of seeds 1..kMutatedGridCount.
+inline constexpr std::uint64_t kMutatedGridCount = 500;
+
+// Builds a list that breaks the rules of a grid: the random list of BuildRandomGridCells(seed, 4, 3), shuffled with
+// ApplyFixedShuffle(cells, seed + 1000), then changed by 1 to 4 mutations drawn from one std::mt19937_64 of seed +
+// 7000, the same on every machine.
+//
+// Method: the first raw number gives the count, 1 + ToUniformIndex(raw, 4); then each mutation takes one raw number for
+//   its kind, ToUniformIndex(raw, 7), and its own numbers after it:
+//   0 repeat a cell, inserted at a drawn index (an overlap);
+//   1 drop a cell (a missing sibling, unless it was a size-level-0 cell);
+//   2 add the big cell of a cell of size level 1 or more (an overlap);
+//   3 add the 8 small cells of the cell one size level smaller than a cell of size level 0 or 1, just beyond the box of
+//     size-level-0 cells beside it: cells two size levels smaller beside it, with their siblings (the size step rule;
+//     with siblings required, the missing siblings of their big cell come first);
+//   4 drop every active cell inside one cell of size level 1 or more (the big cell of a cell of size level 2 or more,
+//     or a cell of size level 1), so a whole sibling of a split cell is missing;
+//   5 clear bit 63 of one id (bad input);
+//   6 set one coordinate of one id to kMaxCoord + 1 (a coordinate out of range).
+//   A mutation that needs a valid id (bit 63 set, coordinates in range, size level below 4) looks for one from a drawn
+//   index on and is left out when there is none. A mutation may undo or hide an earlier one; the tests compare two
+//   checks of the same list, not a planned failure.
+// Example: seed 1 starts from entry 0 of BuildShuffledRandomGrids.
+std::vector<CellId> BuildMutatedGridCells(std::uint64_t seed);
+
+// Builds a large list: the size-level-0 cells of the box 0..46 on each axis, 103,823 cells, with `extra_cells` before
+// them, all shuffled with ApplyFixedShuffle(cells, 4711).
+// Example: with the size-level-2 cell {188,188,188}, which touches the box's last cell at the corner (47, 47, 47) m,
+//   the list has 103,824 cells and, sorted, breaks the size step rule at its last position, 103,823.
+std::vector<CellId> BuildLargeBoxOfCells(const std::vector<CellId>& extra_cells);
+
+// Builds a list whose siblings are all present and which breaks the size step rule, for a frame of 3 size levels: size
+// level 0 {0,0,0}, the size-level-1 cells of eighths 1 to 7 of size level 0 {1,0,0}, and the 8 size-level-2 cells of
+// its eighth 0, size level 1 {2,0,0}: 16 cells.
+// Example: sorted, size level 2 {4,0,0} is at position 1; its place in direction 12, (dz, dy, dx) = (0, 0, -1), is size
+//   level 2 x = 3, inside size level 0 {0,0,0}, two size levels bigger: kSizeStepRuleBroken, cell size level 2
+//   {4,0,0}, other_cell size level 0 {0,0,0}, with siblings required or not.
+std::vector<CellId> BuildSizeStepBreakWithSiblings();
 
 // Builds the size-step closure of a list: splits every active cell two or more size levels bigger than an active cell
 // it touches, by a side, an edge or a corner, into its 8 small cells, and repeats until no such cell is left. The
