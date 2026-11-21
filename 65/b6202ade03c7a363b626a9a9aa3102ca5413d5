@@ -1,0 +1,21 @@
+native/fluidity/grid/find_cell_at_test.cc
+  s_4f0877e2acdcf0::t_5e53b509fd67e7 88-101,135-136,142,146,149-150,154-157,165-166,199-213,250
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_f10df07f4f4bf8 55-56,792-803,812-813,815-825,830-833,840,849-852,856-857,868
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "65b6202ade03c7a363b626a9a9aa3102ca5413d5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
