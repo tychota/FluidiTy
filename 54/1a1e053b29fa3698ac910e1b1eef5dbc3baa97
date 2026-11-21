@@ -1,0 +1,44 @@
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_4027b9f2aa8ff8 1-2,5-6,18,33-37,53-57,63,66-67,126-151,154-336,339-362,365-387,389-404,407-431,434-495,506-528,530-555,558-618
+  s_4f0877e2acdcf0::t_e909299954cd46 47-52,337-338,363-364,388,405-406,432-433,496-498,529,556-557
+  s_4f0877e2acdcf0::t_581eadd1237d4b 19-32,152-153,499-505
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_7f28e1931f6415 110
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_bf8653d38bd0d0 288,1285
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_0e6c1ea69f7034 40-45
+  s_4f0877e2acdcf0::t_9560b3a2f13cc2 39
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_349aca7d2ec25b 56,77
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_b946d4a535b6ae 6-10,19,32-33,145-152,193-198
+native/fluidity/grid/grid_tables_test.cc
+  h_745d560834e283 275-287
+  s_4f0877e2acdcf0::t_4b56f84737a82a 5,251-274,288-299
+  s_4f0877e2acdcf0::t_a40a8e722064a9 1-4,6-9,11-27,30-55,80,91-173,175-227,231-250,300-325,387-427,431-460,465-494,499-523,528-533,620-691
+  s_4f0877e2acdcf0::t_ceb8bc7bdf51b0 716,718-745,754-756,764-783,792,794-795,804,806-814,823-848,871-899
+  s_4f0877e2acdcf0::t_36972966cda3ff 10,28-29,56-70,73-77,81-84,86-90,174,228-230,326-386,534-569,578-596,616
+  s_4f0877e2acdcf0::t_af90c282fd4732 71-72,78-79,85,428-430,461-464,495-498,524-527,570-577,597-615,617-619,692-715,717,746-753,757-763,784-791,793,796-803,805,815-822,849-870
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "541a1e053b29fa3698ac910e1b1eef5dbc3baa97",
+  "prompts": {},
+  "humans": {
+    "h_745d560834e283": {
+      "author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  },
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}

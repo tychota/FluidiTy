@@ -1,0 +1,35 @@
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_b4deedf2c6668b 63-69
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_d93b3e81d9acc3 66-68
+native/fluidity/grid/grid_cell_checks_test.cc
+  s_4f0877e2acdcf0::t_112ee4e2d3e396 7,365-387
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_cf0817707032f4 500
+  s_4f0877e2acdcf0::t_67525699ae8793 501-504
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_55ac7c1f572458 26-27,83-85,161-163
+  s_4f0877e2acdcf0::t_f10df07f4f4bf8 55-56,792-803,812-813,815-819,824-825,830-833,840,849-852,856-857,868
+  s_4f0877e2acdcf0::t_00994445824d8f 820-823
+native/fluidity/grid/find_cell_at_test.cc
+  s_4f0877e2acdcf0::t_5e53b509fd67e7 88-101,135-136,142,146,149-150,154-157,165-166,199-213,250
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_9c4f1a2fa31d09 1924-1934,1965-1969,1976,2118-2121
+  s_4f0877e2acdcf0::t_66a26263ccd813 1970-1975
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4855f5ada13b3e210beaffa7665538ba7f72ec97",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
