@@ -38,6 +38,7 @@ if(NOT MSVC)
   )
 endif()
 
+fluidity_add_test(find_cell_at_test SOURCES find_cell_at_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_buffers_test SOURCES grid_buffers_test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_cell_checks_test SOURCES grid_cell_checks_test.cc LABEL cpu LINKS fluidity_grid_test_support)

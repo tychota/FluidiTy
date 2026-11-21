@@ -44,37 +44,6 @@ GridInputs ToInputs(GridFrame frame, std::span<const CellId> active_cells) {
   return {.frame = frame, .active_cells = active_cells, .version = {.value = 1}};
 }
 
-// Every random grid: 0..kRandomGridCount - 1.
-std::vector<std::size_t> ToAllRandomGrids() {
-  std::vector<std::size_t> grids(kRandomGridCount);
-  for (std::size_t grid = 0; grid < grids.size(); ++grid) {
-    grids.at(grid) = grid;
-  }
-  return grids;
-}
-
-// The 200 random grids, built with their own memory, and the checker of each, in entry order.
-struct RandomGridsWithCheckers {
-  std::vector<TestGrid> grids;
-  std::vector<GeometricGrid> checkers;
-};
-
-RandomGridsWithCheckers BuildRandomGridsWithCheckers() {
-  RandomGridsWithCheckers built = {.grids = BuildReferenceGrids(ToAllRandomGrids()), .checkers = {}};
-  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
-    built.checkers.emplace_back(ToUnitFrame(kRandomGridSizeLevelCount), BuildShuffledRandomGrids().at(grid));
-  }
-  return built;
-}
-
-// The random grids and their checkers, built on the first call and kept for the test program. Building the 200 grids
-// takes about 5 s in the debug preset, against a fraction of a second for the checks, and the gate runs each test in a
-// process of its own; so the random-grid checks are three tests, each running several readers on one build.
-const RandomGridsWithCheckers& FindRandomGridsWithCheckers() {
-  static const RandomGridsWithCheckers built = BuildRandomGridsWithCheckers();
-  return built;
-}
-
 // Hands each of the 200 random grids, with its checker and its list, to read_grid(tables, checker, cells), under a
 // trace that names the grid's entry. A grid that failed to build fails the calling test, and no grid is handed on.
 template <typename ReadGrid>

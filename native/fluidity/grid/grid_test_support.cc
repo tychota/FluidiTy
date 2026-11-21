@@ -1302,4 +1302,25 @@ std::vector<TestGrid> BuildReferenceGrids(const std::vector<std::size_t>& grids)
   return reference_grids;
 }
 
+const RandomGridsWithCheckers& FindRandomGridsWithCheckers() {
+  static const RandomGridsWithCheckers built = [] {
+    std::vector<std::size_t> all_grids(kRandomGridCount);
+    for (std::size_t grid = 0; grid < all_grids.size(); ++grid) {
+      all_grids.at(grid) = grid;
+    }
+    RandomGridsWithCheckers grids_with_checkers = {.grids = BuildReferenceGrids(all_grids), .checkers = {}};
+    const GridFrame frame = {
+        .origin = {.x = 0, .y = 0, .z = 0},
+        .biggest_cell_width = 1.0,
+        .size_level_count = static_cast<std::uint8_t>(kRandomGridSizeLevelCount),
+    };
+    grids_with_checkers.checkers.reserve(kRandomGridCount);
+    for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+      grids_with_checkers.checkers.emplace_back(frame, BuildShuffledRandomGrids().at(grid));
+    }
+    return grids_with_checkers;
+  }();
+  return built;
+}
+
 }  // namespace fluidity::grid

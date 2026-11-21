@@ -33,7 +33,8 @@
 //          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid,
 //          TestGrid, BuildTestGrid, TakeEmptyGridBuffers, kRandomGridSizeLevelCount, kMaxRandomGridCellBlocks,
 //          ToGridCountFields, ComputeIsSameUsedTables, ComputeIsSameGrid, FindRandomGridsSpreadBySize,
-//          BuildReferenceGrids, kMutatedGridCount, BuildMutatedGridCells,
+//          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers, kMutatedGridCount,
+//          BuildMutatedGridCells,
 //          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings, BuildLoneCellsAlongX, BuildSmallCellsOfEightBigCells,
 //          BuildTwoSizeFixtureCells
 // Uses:    Axis (base/axis.h), Buffer (base/buffer.h), RunMemory (base/run_memory.h), Vec3 (base/vec3.h), GridFailure
@@ -374,5 +375,20 @@ std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t count);
 // The random grids of the given entries, each version 1 with its own memory, in a room of kMaxRandomGridCellBlocks. A
 // grid that fails to build fails the calling test and is left out.
 std::vector<TestGrid> BuildReferenceGrids(const std::vector<std::size_t>& grids);
+
+// The kRandomGridCount random grids, built as BuildReferenceGrids builds them, and the checker of each, in entry order.
+struct RandomGridsWithCheckers {
+  std::vector<TestGrid> grids;
+  std::vector<GeometricGrid> checkers;  // In the random grids' frame: origin 0, biggest cells 1 m wide, 4 size levels.
+};
+
+// Finds the random grids and their checkers, built on the first call and kept for the test program.
+//
+// Method: a function-local static. Building the 200 grids takes about 5 s in the debug preset, against a fraction of a
+//   second for most checks, and the gate runs each test in a process of its own; so a test program puts all of its
+//   checks over the random grids in as few tests as it can, each running several checks on one build.
+// Example: entry 0 holds the grid and the checker of BuildShuffledRandomGrids().at(0). A grid that fails to build
+//   fails the calling test and is left out, so a caller checks that kRandomGridCount grids are there.
+const RandomGridsWithCheckers& FindRandomGridsWithCheckers();
 
 }  // namespace fluidity::grid

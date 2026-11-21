@@ -154,6 +154,10 @@ __global__ void ComputeWithEverySharedGridFunction(
   const CellState state_beside = ComputeCellStateBeside(tables, CellBlockIndex{place}, values[1] & 3, 0, 0);
   results[result_index++] = static_cast<std::uint64_t>(state_beside) + tables.version.value;
   results[result_index++] = static_cast<std::uint64_t>(ComputeFacePieceKind(tables, FacePlaceIndex{place}));
+  // grid_tables.h: the active cell that contains a position, by search and from a block near it.
+  const Vec3 world_position = {.x = frame.origin.x, .y = frame.origin.y, .z = frame.biggest_cell_width};
+  results[result_index++] =
+      FindCellAt(tables, world_position).value + FindCellAt(tables, world_position, CellBlockIndex{place}).value;
   // The per-item rules of the tables in parallel (<proc-build-grid-in-parallel> P9 to P12). The written tables stand in
   // for the ones the GridTables reads: only the calls matter here.
   results[result_index++] = ApplyBlockNeighboursWriteAt(
