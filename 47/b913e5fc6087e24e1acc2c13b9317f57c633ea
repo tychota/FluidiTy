@@ -1,0 +1,31 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_b748715c721dae 200
+native/fluidity/grid/grid_build_status.h
+  s_4f0877e2acdcf0::t_fe03ef7c23072a 48-50
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_1fd4ebc5b5d55c 61-62,456-457,493-494,686-691,721,743-746,761-810
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_6f5e214445cfb5 1275-1284,1296-1297,1301-1323,1341-1342,2292-2299,2304-2308,2310,2312-2313,2332-2391,2400,2407,2415-2416,2422,2533-2535,2554-2573,2599,2601,2618-2619,2621,2714-2716,3019-3020,3033-3034,3188,3262,3264,3273,3303-3365,3396-3397,3400-3401,3406-3411,3416-3417
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_87b470e1ac4a41 112-113
+native/fluidity/grid/staggered_grid_gpu.cu
+  s_4f0877e2acdcf0::t_88bc188101b1ef 134-135,141-168,177,191,210,228-229,246,343,345-356,359,453,461-462
+native/fluidity/grid/staggered_grid_gpu.h
+  s_4f0877e2acdcf0::t_c61d2017c169fd 18-20,29-31,117-123,125,127-141,146,161,172-173,186-189,202-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "47b913e5fc6087e24e1acc2c13b9317f57c633ea",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
