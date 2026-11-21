@@ -1,0 +1,51 @@
+native/fluidity/grid/grid_cell_checks_gpu_test.cc
+  s_4f0877e2acdcf0::t_144b208766cfb8 1-302
+  s_4f0877e2acdcf0::t_9e68951126b29c 303-311
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_96b819897afe4b 66-67
+  s_4f0877e2acdcf0::t_b3009296bf6d18 547-604,606-652
+  s_4f0877e2acdcf0::t_32a2c4c6c5f47b 58-60
+  s_4f0877e2acdcf0::t_73851c51ea9055 442-447
+  s_4f0877e2acdcf0::t_97993bab852949 605
+  s_4f0877e2acdcf0::t_d6f5e958a10f03 68-71,546
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_2de1ca7c74e3d8 98-103
+native/fluidity/grid/staggered_grid_gpu.cu
+  s_4f0877e2acdcf0::t_18521dc9dcff9e 1-206
+native/fluidity/grid/staggered_grid_gpu.h
+  s_4f0877e2acdcf0::t_669592c6f542e2 1-98
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_4654a2bc525939 12,19,40-49
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_32d22f751dc071 9,11,14-16,21-25,27,32,2041-2414
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_2678a3255b6e63 26-31,41-43,90-91,94-95,97,127-129,132-134,279,282,286,303-448,450,452,455,457-458,464,469-471,476-489,491-494,496,498,511
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_2203b4f12f095c 22-27,29-32,46,88-102,148-161,165-174,180-183
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_d1737fd6c7df9e 624-820
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_74294218604342 36,122-147
+native/fluidity/grid/grid_test_support_test.cc
+  s_4f0877e2acdcf0::t_8a878107eb3295 24-25,1457-1500
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_6474362616bfb3 37-40,514-516,521-523,536,538-542
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_ccdd741fdb6564 896-904
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c94c588245a5f16113e8f071e28bbb9d22ba7414",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
