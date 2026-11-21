@@ -4,17 +4,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
-#include <map>
 #include <memory>
 #include <optional>
 #include <random>
 #include <set>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -159,142 +161,383 @@ std::array<std::int64_t, 3> ToDoubledCentre(const GeometricFacePiece& piece, int
   return doubled_centre;
 }
 
-// The cells of a list, their boxes, and for one axis the cells whose low side or high side lies on each plane. Only
-// cells on one plane can meet across it, so a side is compared with those cells alone.
-struct CellsOnPlanes {
-  const std::vector<CellId>& cells;
-  const std::vector<UnitBox>& boxes;
-  Axis axis;
-  std::map<std::int64_t, std::vector<std::size_t>> by_low_plane;
-  std::map<std::int64_t, std::vector<std::size_t>> by_high_plane;
+// floor(value / divisor) for a positive divisor, a negative value included.
+std::int64_t ComputeFloorDivision(std::int64_t value, std::int64_t divisor) {
+  const std::int64_t quotient = value / divisor;
+  const bool is_rounded_toward_zero = value % divisor != 0 && value < 0;
+  return is_rounded_toward_zero ? quotient - 1 : quotient;
+}
+
+// The cell of one size level at given coordinates, listed or not. The coordinates may lie outside the range ids
+// can name.
+struct Place {
+  int size_level = 0;
+  std::array<std::int64_t, 3> coord{};  // In cells of size_level, indexed by axis (x, y, z).
 };
 
-CellsOnPlanes BuildCellsOnPlanes(const std::vector<CellId>& cells, const std::vector<UnitBox>& boxes, Axis axis) {
-  CellsOnPlanes cells_on_planes =
-      {.cells = cells, .boxes = boxes, .axis = axis, .by_low_plane = {}, .by_high_plane = {}};
-  const auto axis_index = static_cast<std::size_t>(axis);
-  for (std::size_t cell_index = 0; cell_index < cells.size(); ++cell_index) {
-    const UnitBox& box = boxes.at(cell_index);
-    cells_on_planes.by_low_plane[box.low.at(axis_index)].push_back(cell_index);
-    cells_on_planes.by_high_plane[box.low.at(axis_index) + box.width].push_back(cell_index);
-  }
-  return cells_on_planes;
+Place ToPlace(CellId cell) {
+  const CellCoord coord = ToCellCoord(cell);
+  return {.size_level = ToSizeLevelNumber(cell), .coord = {coord.x, coord.y, coord.z}};
 }
 
-// Appends the pieces between one cell and the cells beyond its high side, and gives the area they cover, in units
-// squared. Aligned cells of two sizes that meet share the whole side of the smaller one, which is the piece.
-std::int64_t AppendPiecesOnHighSide(
-    GridFrame frame,
-    const CellsOnPlanes& cells_on_planes,
-    std::size_t cell_index,
-    std::vector<GeometricFacePiece>& pieces
-) {
-  const auto axis_index = static_cast<std::size_t>(cells_on_planes.axis);
-  const CellId cell = cells_on_planes.cells.at(cell_index);
-  const UnitBox& box = cells_on_planes.boxes.at(cell_index);
-  const std::int64_t high_plane = box.low.at(axis_index) + box.width;
-  const auto beyond = cells_on_planes.by_low_plane.find(high_plane);
-  if (beyond == cells_on_planes.by_low_plane.end()) {
-    return 0;
+// The id of a place, or none when a coordinate lies outside -kMaxCoord..kMaxCoord: no id names such a place, so no
+// listed cell is there, and none inside it either.
+std::optional<CellId> FindPlaceId(Place place) {
+  for (const std::int64_t coord : place.coord) {
+    if (coord < -kMaxCoord || coord > kMaxCoord) {
+      return std::nullopt;
+    }
   }
-  std::int64_t covered_area = 0;
-  for (const std::size_t other_index : beyond->second) {
-    const UnitBox& other_box = cells_on_planes.boxes.at(other_index);
-    const std::int64_t shared_area = ComputeSharedArea(box, other_box, axis_index);
-    if (shared_area == 0) {
+  const CellCoord coord = {
+      .x = static_cast<std::int32_t>(place.coord.at(0)),
+      .y = static_cast<std::int32_t>(place.coord.at(1)),
+      .z = static_cast<std::int32_t>(place.coord.at(2)),
+  };
+  return ToCellId(static_cast<SizeLevel>(place.size_level), coord);
+}
+
+// The box of a place in whole units of size level size_level_count - 1, as ToUnitBox gives for a cell.
+UnitBox ToPlaceBox(Place place, int size_level_count) {
+  const std::int64_t width = ComputeWidthInUnits(static_cast<SizeLevel>(place.size_level), size_level_count);
+  return {
+      .low = {place.coord.at(0) * width, place.coord.at(1) * width, place.coord.at(2) * width},
+      .width = width,
+  };
+}
+
+// The checker's own lookup of a list by place: the ids of the active cells, and of every place that holds a smaller
+// active cell, which is split. Made from the list alone, with ToCellId to name places, so it shares nothing with the
+// grid's tables.
+struct CellsByPlace {
+  std::unordered_set<std::uint64_t> active_values;
+  std::unordered_set<std::uint64_t> split_values;
+};
+
+// Adds one active cell and every bigger place that holds it. The bigger places are coordinates floor(c / 2), one size
+// level up at a time, and stay in range. A place already known as split has its bigger places known too, so the walk
+// stops there.
+void ApplyActiveCell(CellId cell, CellsByPlace& cells_by_place) {
+  cells_by_place.active_values.insert(cell.value);
+  Place place = ToPlace(cell);
+  while (place.size_level > 0) {
+    place.size_level -= 1;
+    for (std::int64_t& coord : place.coord) {
+      coord = ComputeFloorDivision(coord, 2);
+    }
+    const bool is_new = cells_by_place.split_values.insert(FindPlaceId(place).value_or(CellId{0}).value).second;
+    if (!is_new) {
+      break;
+    }
+  }
+}
+
+// Requires: no repeated and no overlapping cells, as BuildSizeStepClosure and GeometricGrid state. A broken
+// requirement stops a debug build at an assert; the searches would otherwise give answers that differ from the plain
+// scans they replace. A release build skips the checks.
+CellsByPlace BuildCellsByPlace(const std::vector<CellId>& cells) {
+  CellsByPlace cells_by_place;
+  for (const CellId cell : cells) {
+    const bool is_cell_listed_once = !cells_by_place.active_values.contains(cell.value);
+    assert(is_cell_listed_once);
+    static_cast<void>(is_cell_listed_once);
+    ApplyActiveCell(cell, cells_by_place);
+  }
+  // Two cells overlap only when one holds the other, so the bigger one is active and among the split places too.
+  for (const CellId cell : cells) {
+    const bool holds_no_listed_cell = !cells_by_place.split_values.contains(cell.value);
+    assert(holds_no_listed_cell);
+    static_cast<void>(holds_no_listed_cell);
+  }
+  return cells_by_place;
+}
+
+// How far FindActiveCellsInside searches.
+enum class SearchEnd : std::uint8_t {
+  kEveryWantedCell,  // Finds every wanted cell.
+  kFirstWantedCell,  // Stops at the first wanted cell, for a yes-or-no question.
+};
+
+// Finds the active cells that is_wanted accepts inside the places to visit, going down through split places: of a
+// split place, its 8 small places are visited. A place that is_kept turns down is skipped with everything inside it.
+// The order is the search's own.
+//
+// Requires: is_kept accepts a small place only if it accepts the place that holds it, so a place turned down hides
+//   nothing the caller wants.
+template <typename IsKept, typename IsWanted>
+std::vector<CellId> FindActiveCellsInside(
+    const CellsByPlace& cells_by_place,
+    std::vector<Place> places_to_visit,
+    const IsKept& is_kept,
+    const IsWanted& is_wanted,
+    SearchEnd search_end
+) {
+  std::vector<CellId> found_cells;
+  while (!places_to_visit.empty()) {
+    const Place place = places_to_visit.back();
+    places_to_visit.pop_back();
+    const std::optional<CellId> place_id = FindPlaceId(place);
+    if (!place_id.has_value() || !is_kept(place)) {
       continue;
     }
-    covered_area += shared_area;
-    const bool is_this_cell_smaller = box.width <= other_box.width;
-    const CellId other_cell = cells_on_planes.cells.at(other_index);
-    const CellId smaller_cell = is_this_cell_smaller ? cell : other_cell;
-    std::array<std::int64_t, 3> piece_low_corner = is_this_cell_smaller ? box.low : other_box.low;
-    piece_low_corner.at(axis_index) = high_plane;
-    pieces.push_back(BuildFacePiece(
-        frame,
-        cells_on_planes.axis,
-        ToSizeLevelNumber(smaller_cell),
-        piece_low_corner,
-        {.low = cell, .high = other_cell}
-    ));
+    if (cells_by_place.active_values.contains(place_id->value)) {
+      if (is_wanted(*place_id)) {
+        found_cells.push_back(*place_id);
+        if (search_end == SearchEnd::kFirstWantedCell) {
+          return found_cells;
+        }
+      }
+      continue;
+    }
+    if (!cells_by_place.split_values.contains(place_id->value)) {
+      continue;
+    }
+    for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+      const auto eighth_bits = static_cast<unsigned>(cell_eighth);
+      Place small_place = {.size_level = place.size_level + 1, .coord = {}};
+      for (std::size_t index = 0; index < 3; ++index) {
+        const std::int64_t bit = (eighth_bits >> index) & 1U;
+        small_place.coord.at(index) = 2 * place.coord.at(index) + bit;
+      }
+      places_to_visit.push_back(small_place);
+    }
   }
-  return covered_area;
+  return found_cells;
 }
 
-// Units squared. The area of one cell's low side that cells below it cover.
-std::int64_t ComputeLowSideCoveredArea(const CellsOnPlanes& cells_on_planes, std::size_t cell_index) {
-  const auto axis_index = static_cast<std::size_t>(cells_on_planes.axis);
-  const UnitBox& box = cells_on_planes.boxes.at(cell_index);
-  const auto below = cells_on_planes.by_high_plane.find(box.low.at(axis_index));
-  if (below == cells_on_planes.by_high_plane.end()) {
-    return 0;
-  }
-  std::int64_t covered_area = 0;
-  for (const std::size_t other_index : below->second) {
-    covered_area += ComputeSharedArea(box, cells_on_planes.boxes.at(other_index), axis_index);
-  }
-  return covered_area;
-}
-
-// Finds every face piece of a list by brute force (method paper, <sec-face-pieces>), in the order of FacePieces().
+// Finds the active cells beyond the high side of a cell along `axis`: the cells whose low side lies on that side's
+// plane and shares some area with it. Each is found once; the order is the search's own.
 //
-// For each axis and cell, every cell whose low side lies on the cell's high side, and shares some area with it, makes
-// one piece: the smaller cell's side, at its size level. So each piece between two cells is found once, from its low
-// cell. A side that no cell covers is one piece at the grid's edge. A side covered only in part breaks the siblings
-// rule, which the checker requires.
-std::vector<GeometricFacePiece>
-BuildFacePieces(GridFrame frame, const std::vector<CellId>& cells, const std::vector<UnitBox>& boxes) {
-  std::vector<GeometricFacePiece> pieces;
-  for (const Axis axis : kAxes) {
-    const auto axis_index = static_cast<std::size_t>(axis);
-    const CellsOnPlanes cells_on_planes = BuildCellsOnPlanes(cells, boxes, axis);
-    for (std::size_t cell_index = 0; cell_index < cells.size(); ++cell_index) {
-      const CellId cell = cells.at(cell_index);
-      const UnitBox& box = boxes.at(cell_index);
-      const int size_level = ToSizeLevelNumber(cell);
-      const std::int64_t side_area = box.width * box.width;
-      const std::int64_t high_side_covered_area = AppendPiecesOnHighSide(frame, cells_on_planes, cell_index, pieces);
-      const std::int64_t low_side_covered_area = ComputeLowSideCoveredArea(cells_on_planes, cell_index);
-      if (high_side_covered_area == 0) {
-        std::array<std::int64_t, 3> piece_low_corner = box.low;
-        piece_low_corner.at(axis_index) += box.width;
-        pieces.push_back(
-            BuildFacePiece(frame, axis, size_level, piece_low_corner, {.low = cell, .high = std::nullopt})
-        );
-      }
-      if (low_side_covered_area == 0) {
-        pieces.push_back(BuildFacePiece(frame, axis, size_level, box.low, {.low = std::nullopt, .high = cell}));
-      }
-      const bool is_high_side_whole = high_side_covered_area == 0 || high_side_covered_area == side_area;
-      const bool is_low_side_whole = low_side_covered_area == 0 || low_side_covered_area == side_area;
-      EXPECT_TRUE(is_high_side_whole && is_low_side_whole)
-          << "a side of cell " << cell.value << " is covered only in part: siblings are missing";
+// Method: a cell as big as this one or bigger is aligned, so it covers the whole side and holds the unit just beyond
+//   the side's low corner; the place holding that unit is looked up at each size level 0 to the cell's own. Smaller
+//   cells lie inside the place of the cell's size level beyond the side; FindActiveCellsInside goes down from it
+//   through the places that touch the cell and share area with its side.
+// Requires: the list has no overlapping cells, so a cell found the first way leaves no smaller cell to find.
+std::vector<CellId>
+FindCellsBeyondHighSide(const CellsByPlace& cells_by_place, CellId cell, Axis axis, int size_level_count) {
+  const auto axis_index = static_cast<std::size_t>(axis);
+  const UnitBox box = ToUnitBox(cell, size_level_count);
+
+  std::array<std::int64_t, 3> unit_beyond = box.low;
+  unit_beyond.at(axis_index) += box.width;
+  for (int size_level = 0; size_level <= ToSizeLevelNumber(cell); ++size_level) {
+    const std::int64_t place_width = ComputeWidthInUnits(static_cast<SizeLevel>(size_level), size_level_count);
+    Place place = {.size_level = size_level, .coord = {}};
+    for (std::size_t index = 0; index < 3; ++index) {
+      place.coord.at(index) = ComputeFloorDivision(unit_beyond.at(index), place_width);
+    }
+    const std::optional<CellId> place_id = FindPlaceId(place);
+    if (place_id.has_value() && cells_by_place.active_values.contains(place_id->value)) {
+      return {*place_id};
     }
   }
 
-  // By axis, then by centre in z, y, x. Pieces of one axis never overlap, so no two share a centre.
-  const int size_level_count = frame.size_level_count;
-  const auto to_order_key = [size_level_count](const GeometricFacePiece& piece) {
-    const std::array<std::int64_t, 3> centre = ToDoubledCentre(piece, size_level_count);
-    return std::tuple(piece.axis, centre.at(2), centre.at(1), centre.at(0));
+  Place place_beyond = ToPlace(cell);
+  place_beyond.coord.at(axis_index) += 1;
+  const auto is_on_side = [&box, axis_index, size_level_count](Place place) {
+    const UnitBox place_box = ToPlaceBox(place, size_level_count);
+    return ComputeIsTouching(place_box, box) && ComputeSharedArea(place_box, box, axis_index) > 0;
   };
-  std::ranges::sort(pieces, [&to_order_key](const GeometricFacePiece& first, const GeometricFacePiece& second) {
-    return to_order_key(first) < to_order_key(second);
+  const auto is_any_cell = [](CellId /*cell*/) {
+    return true;
+  };
+  return FindActiveCellsInside(cells_by_place, {place_beyond}, is_on_side, is_any_cell, SearchEnd::kEveryWantedCell);
+}
+
+// Says whether an active cell two or more size levels smaller than `cell` touches it, by a side, an edge or a corner.
+//
+// Method: such a cell lies inside one of the 26 places of the size level of `cell` around it, and every bigger place
+//   that holds it touches `cell` too. So FindActiveCellsInside starts from those 26 places and goes down through the
+//   places that touch `cell`.
+// Requires: `cell` is active and overlaps no other active cell.
+bool ComputeIsTouchedByMuchSmallerCell(const CellsByPlace& cells_by_place, CellId cell, int size_level_count) {
+  const int size_level = ToSizeLevelNumber(cell);
+  // A cell of the last two size levels has no cell two size levels smaller.
+  if (size_level + 2 >= size_level_count) {
+    return false;
+  }
+  const UnitBox box = ToUnitBox(cell, size_level_count);
+  const Place cell_place = ToPlace(cell);
+  std::vector<Place> places_around;
+  for (int neighbour = 0; neighbour < 27; ++neighbour) {
+    const std::array<std::int64_t, 3> offset = {neighbour % 3 - 1, (neighbour / 3) % 3 - 1, neighbour / 9 - 1};
+    if (offset == std::array<std::int64_t, 3>{0, 0, 0}) {
+      continue;
+    }
+    Place place = cell_place;
+    for (std::size_t index = 0; index < 3; ++index) {
+      place.coord.at(index) += offset.at(index);
+    }
+    places_around.push_back(place);
+  }
+  const auto is_touching = [&box, size_level_count](Place place) {
+    return ComputeIsTouching(ToPlaceBox(place, size_level_count), box);
+  };
+  const auto is_much_smaller = [size_level](CellId touching_cell) {
+    return ToSizeLevelNumber(touching_cell) >= size_level + 2;
+  };
+  const std::vector<CellId> much_smaller_cells =
+      FindActiveCellsInside(cells_by_place, places_around, is_touching, is_much_smaller, SearchEnd::kFirstWantedCell);
+  return !much_smaller_cells.empty();
+}
+
+// A list of active cells with what BuildFacePieces reads of it: the frame, each entry's box, the checker's lookup by
+// place, and each cell's entry by id. The checker requires distinct cells, so each id names one entry.
+struct ListOfCells {
+  GridFrame frame;
+  const std::vector<CellId>& cells;
+  const std::vector<UnitBox>& boxes;
+  CellsByPlace cells_by_place;
+  std::unordered_map<std::uint64_t, std::size_t> index_by_value;
+};
+
+ListOfCells BuildListOfCells(GridFrame frame, const std::vector<CellId>& cells, const std::vector<UnitBox>& boxes) {
+  ListOfCells list = {
+      .frame = frame,
+      .cells = cells,
+      .boxes = boxes,
+      .cells_by_place = BuildCellsByPlace(cells),
+      .index_by_value = {},
+  };
+  for (std::size_t cell_index = 0; cell_index < cells.size(); ++cell_index) {
+    list.index_by_value.insert({cells.at(cell_index).value, cell_index});
+  }
+  return list;
+}
+
+// Units squared, per entry of a list and along one axis: the area of the entry's high side and of its low side that
+// other cells cover.
+struct SideCover {
+  std::vector<std::int64_t> high_side_areas;
+  std::vector<std::int64_t> low_side_areas;
+};
+
+// Appends the face pieces between two cells along `axis` and gives the area they cover on each side of each cell.
+// Every cell whose low side lies on a cell's high side, and shares some area with it, makes one piece: the smaller
+// cell's side, at its size level, since aligned cells of two sizes that meet share the whole side of the smaller one.
+// So each piece is found once, from its low cell, and its area counts on the low cell's high side and on the high
+// cell's low side.
+SideCover ApplyPiecesBetweenCells(const ListOfCells& list, Axis axis, std::vector<GeometricFacePiece>& pieces) {
+  const auto axis_index = static_cast<std::size_t>(axis);
+  const int size_level_count = list.frame.size_level_count;
+  SideCover cover = {
+      .high_side_areas = std::vector<std::int64_t>(list.cells.size(), 0),
+      .low_side_areas = std::vector<std::int64_t>(list.cells.size(), 0),
+  };
+  for (std::size_t cell_index = 0; cell_index < list.cells.size(); ++cell_index) {
+    const CellId cell = list.cells.at(cell_index);
+    const UnitBox& box = list.boxes.at(cell_index);
+    for (const CellId other_cell : FindCellsBeyondHighSide(list.cells_by_place, cell, axis, size_level_count)) {
+      const std::size_t other_index = list.index_by_value.at(other_cell.value);
+      const UnitBox& other_box = list.boxes.at(other_index);
+      const std::int64_t shared_area = ComputeSharedArea(box, other_box, axis_index);
+      cover.high_side_areas.at(cell_index) += shared_area;
+      cover.low_side_areas.at(other_index) += shared_area;
+      const bool is_this_cell_smaller = box.width <= other_box.width;
+      const CellId smaller_cell = is_this_cell_smaller ? cell : other_cell;
+      std::array<std::int64_t, 3> piece_low_corner = is_this_cell_smaller ? box.low : other_box.low;
+      piece_low_corner.at(axis_index) = box.low.at(axis_index) + box.width;
+      pieces.push_back(BuildFacePiece(
+          list.frame,
+          axis,
+          ToSizeLevelNumber(smaller_cell),
+          piece_low_corner,
+          {.low = cell, .high = other_cell}
+      ));
+    }
+  }
+  return cover;
+}
+
+// Appends one piece at the grid's edge for each side along `axis` that no cell covers. A side covered only in part
+// breaks the siblings rule, which the checker requires, and fails the calling test.
+void ApplyEdgePieces(
+    const ListOfCells& list,
+    Axis axis,
+    const SideCover& cover,
+    std::vector<GeometricFacePiece>& pieces
+) {
+  const auto axis_index = static_cast<std::size_t>(axis);
+  for (std::size_t cell_index = 0; cell_index < list.cells.size(); ++cell_index) {
+    const CellId cell = list.cells.at(cell_index);
+    const UnitBox& box = list.boxes.at(cell_index);
+    const int size_level = ToSizeLevelNumber(cell);
+    const std::int64_t side_area = box.width * box.width;
+    const std::int64_t high_side_covered_area = cover.high_side_areas.at(cell_index);
+    const std::int64_t low_side_covered_area = cover.low_side_areas.at(cell_index);
+    if (high_side_covered_area == 0) {
+      std::array<std::int64_t, 3> piece_low_corner = box.low;
+      piece_low_corner.at(axis_index) += box.width;
+      pieces.push_back(
+          BuildFacePiece(list.frame, axis, size_level, piece_low_corner, {.low = cell, .high = std::nullopt})
+      );
+    }
+    if (low_side_covered_area == 0) {
+      pieces.push_back(BuildFacePiece(list.frame, axis, size_level, box.low, {.low = std::nullopt, .high = cell}));
+    }
+    const bool is_high_side_whole = high_side_covered_area == 0 || high_side_covered_area == side_area;
+    const bool is_low_side_whole = low_side_covered_area == 0 || low_side_covered_area == side_area;
+    EXPECT_TRUE(is_high_side_whole && is_low_side_whole)
+        << "a side of cell " << cell.value << " is covered only in part: siblings are missing";
+  }
+}
+
+// Finds every face piece of a list (method paper, <sec-face-pieces>), in the order of FacePieces(): the pieces between
+// two cells (ApplyPiecesBetweenCells), then a piece at the grid's edge for each side no cell covers.
+std::vector<GeometricFacePiece>
+BuildFacePieces(GridFrame frame, const std::vector<CellId>& cells, const std::vector<UnitBox>& boxes) {
+  const int size_level_count = frame.size_level_count;
+  const ListOfCells list = BuildListOfCells(frame, cells, boxes);
+  std::vector<GeometricFacePiece> pieces;
+  for (const Axis axis : kAxes) {
+    const SideCover cover = ApplyPiecesBetweenCells(list, axis, pieces);
+    ApplyEdgePieces(list, axis, cover, pieces);
+  }
+
+  // By axis, then by centre in z, y, x. Pieces of one axis never overlap, so no two share a centre and the order is
+  // the same whatever order the sort compares in. Each key is found once.
+  struct KeyedPiece {
+    std::array<std::int64_t, 4> key;  // The axis, then the doubled centre's z, y and x.
+    std::size_t index;  // The piece's entry in `pieces`.
+  };
+  std::vector<KeyedPiece> keyed_pieces;
+  keyed_pieces.reserve(pieces.size());
+  for (std::size_t index = 0; index < pieces.size(); ++index) {
+    const std::array<std::int64_t, 3> centre = ToDoubledCentre(pieces.at(index), size_level_count);
+    const auto axis_number = static_cast<std::int64_t>(pieces.at(index).axis);
+    keyed_pieces.push_back({.key = {axis_number, centre.at(2), centre.at(1), centre.at(0)}, .index = index});
+  }
+  std::ranges::sort(keyed_pieces, [](const KeyedPiece& first, const KeyedPiece& second) {
+    return first.key < second.key;
   });
-  return pieces;
+  std::vector<GeometricFacePiece> ordered_pieces;
+  ordered_pieces.reserve(pieces.size());
+  for (const KeyedPiece& keyed_piece : keyed_pieces) {
+    ordered_pieces.push_back(pieces.at(keyed_piece.index));
+  }
+  return ordered_pieces;
 }
 
 // Puts cells in the checker's own order: by the low corner in units, z, then y, then x, and at one low corner the
 // bigger cell first. It is the fixed order of the method paper (<sec-cell-blocks>) stated in units, so a test can
-// compare ComesBefore with it.
+// compare ComesBefore with it. Each cell's key is found once; only one cell has a given key, so the order is the same
+// whatever order the sort compares in.
 void ApplyUnitOrder(std::vector<CellId>& cells, int size_level_count) {
-  const auto to_order_key = [size_level_count](CellId cell) {
-    const UnitBox box = ToUnitBox(cell, size_level_count);
-    return std::tuple(box.low.at(2), box.low.at(1), box.low.at(0), -box.width);
+  struct KeyedCell {
+    std::array<std::int64_t, 4> key;  // Units: low z, low y, low x, minus the width.
+    CellId cell;
   };
-  std::ranges::sort(cells, [&to_order_key](CellId first, CellId second) {
-    return to_order_key(first) < to_order_key(second);
+  std::vector<KeyedCell> keyed_cells;
+  keyed_cells.reserve(cells.size());
+  for (const CellId cell : cells) {
+    const UnitBox box = ToUnitBox(cell, size_level_count);
+    keyed_cells.push_back({.key = {box.low.at(2), box.low.at(1), box.low.at(0), -box.width}, .cell = cell});
+  }
+  std::ranges::sort(keyed_cells, [](const KeyedCell& first, const KeyedCell& second) {
+    return first.key < second.key;
   });
+  for (std::size_t index = 0; index < cells.size(); ++index) {
+    cells.at(index) = keyed_cells.at(index).cell;
+  }
 }
 
 }  // namespace
@@ -381,24 +624,20 @@ const std::vector<std::vector<CellId>>& BuildShuffledRandomGrids() {
 std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_level_count) {
   // Each round splits every cell that touches a cell two or more size levels smaller. A split makes new such pairs
   // only with cells bigger still, so the rounds end.
+  // The lookup is built once and kept up to date as cells are split.
+  CellsByPlace cells_by_place = BuildCellsByPlace(cells);
   while (true) {
-    const std::vector<UnitBox> boxes = ToUnitBoxes(cells, size_level_count);
+    // Every cell of a round is judged on the list as it was when the round began, then the round's splits are made.
+    std::vector<bool> is_too_big(cells.size(), false);
+    for (std::size_t cell_index = 0; cell_index < cells.size(); ++cell_index) {
+      is_too_big.at(cell_index) =
+          ComputeIsTouchedByMuchSmallerCell(cells_by_place, cells.at(cell_index), size_level_count);
+    }
     std::vector<CellId> closed_cells;
     int split_count = 0;
     for (std::size_t cell_index = 0; cell_index < cells.size(); ++cell_index) {
       const CellId cell = cells.at(cell_index);
-      const int size_level = ToSizeLevelNumber(cell);
-      bool is_too_big = false;
-      // A cell of the last two size levels has no cell two size levels smaller.
-      const bool can_be_too_big = size_level + 2 < size_level_count;
-      for (std::size_t other_index = 0; can_be_too_big && other_index < cells.size(); ++other_index) {
-        const bool is_two_smaller = ToSizeLevelNumber(cells.at(other_index)) >= size_level + 2;
-        if (is_two_smaller && ComputeIsTouching(boxes.at(cell_index), boxes.at(other_index))) {
-          is_too_big = true;
-          break;
-        }
-      }
-      if (!is_too_big) {
+      if (!is_too_big.at(cell_index)) {
         closed_cells.push_back(cell);
         continue;
       }
@@ -411,8 +650,11 @@ std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_lev
         closed_cells.push_back(cell);
         continue;
       }
+      cells_by_place.active_values.erase(cell.value);
       for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
-        closed_cells.push_back(ComputeSmallCell(cell, cell_eighth));
+        const CellId small_cell = ComputeSmallCell(cell, cell_eighth);
+        closed_cells.push_back(small_cell);
+        ApplyActiveCell(small_cell, cells_by_place);
       }
       ++split_count;
     }

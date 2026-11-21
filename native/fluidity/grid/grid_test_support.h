@@ -5,10 +5,12 @@
 //   drawn from a seed that give the same list on every machine, and one call that builds a grid with its own memory.
 //
 // Idea: GeometricGrid sees only the list of active cells. It turns each cell into a box of whole units, a unit being
-//   the width of a cell of the frame's last size level, and answers every question by looking at every cell or face
-//   piece in turn: no cell blocks, no tables, no binary search. It restates each rule of the method paper in its own
-//   plain code and calls no grid function that decides what it checks, so a grid function and the checker agree only
-//   when both follow the paper. It is slow on purpose: most loops are quadratic, fine up to a few thousand cells.
+//   the width of a cell of the frame's last size level. It finds the cells across each side of a cell with its own
+//   lookup of the list by place, an id per place made with ToCellId, and answers the other questions by looking at
+//   every cell or face piece in turn: no cell blocks, no grid tables, no binary search. It restates each rule of the
+//   method paper in its own plain code and calls no grid function that decides what it checks, so a grid function and
+//   the checker agree only when both follow the paper. Its questions stay plain rather than fast: each looks at every
+//   cell or face piece, fine up to a few thousand cells.
 //   Random numbers come from std::mt19937_64, whose raw output the C++ standard fixes for a seed, mapped by
 //   ToUniformIndex and ToUnitDouble only. The standard's distribution classes and std::shuffle are not used: their
 //   output differs between standard libraries.
@@ -121,11 +123,16 @@ const std::vector<std::vector<CellId>>& BuildShuffledRandomGrids();
 // it touches, by a side, an edge or a corner, into its 8 small cells, and repeats until no such cell is left. The
 // result is in the fixed order, stated in units as TouchingCells orders. For random grids and hand-built scenes alike.
 //
-// Method: brute force over every pair of cells in each round, in whole units of size level size_level_count - 1.
+// Method: rounds, in whole units of size level size_level_count - 1. A round first judges every cell on the list as
+//   it was when the round began, then splits the cells judged too big. To judge a cell it looks, with the checker's
+//   own lookup of the list by place, for a touching active cell two or more size levels smaller: it starts from the
+//   26 places of the cell's size level around it and goes down through the places that touch it and hold smaller
+//   cells.
 // Example: the size-level-0 cell {0,0,0} beside size-level-2 cells in its +X neighbour, 3 size levels: it becomes its
 //   8 size-level-1 cells, which differ by one size level from the size-level-2 cells.
-// Requires: every cell's size level is below size_level_count; the list has no overlapping cells. A split whose small
-//   cells would leave -kMaxCoord..kMaxCoord fails the calling test and is not made.
+// Requires: every cell's size level is below size_level_count; the list has no repeated and no overlapping cells. In a
+//   debug build a repeated or overlapping cell stops the program at an assert; a release build gives an invalid list.
+//   A split whose small cells would leave -kMaxCoord..kMaxCoord fails the calling test and is not made.
 std::vector<CellId> BuildSizeStepClosure(std::vector<CellId> cells, int size_level_count);
 
 // The box of one cell in whole units of the last size level: it covers low <= u < low + width on each axis.
@@ -152,11 +159,14 @@ struct GeometricFacePiece {
   double area = 0;  // m2. The face area of a cell of size_level.
 };
 
-// A mixed-size grid seen through its active cells alone, for tests: every answer is found by brute force over the
-// cells or the face pieces, in whole units, so it shares no table and no search with the grid functions.
+// A mixed-size grid seen through its active cells alone, for tests: the face pieces come from its own lookup of the
+// list by place, every other answer from a pass over the cells or the face pieces, in whole units, so it shares no
+// table and no search with the grid functions.
 //
-// Requires (for every member): the list keeps siblings together, has no overlapping cells, and every size level is
-//   below frame.size_level_count. A side of a cell that other cells cover only in part fails the calling test.
+// Requires (for every member): the list keeps siblings together, has no repeated and no overlapping cells, and every
+//   size level is below frame.size_level_count. In a debug build the constructor stops the program at an assert on a
+//   repeated or overlapping cell; a release build gives wrong answers. A side of a cell that other cells cover only in
+//   part fails the calling test.
 class GeometricGrid {
  public:
   // Keeps the frame and the list, and finds every face piece.
@@ -166,8 +176,9 @@ class GeometricGrid {
   //
   // Method: for each axis and each active cell, looks at every cell whose low side lies on the cell's high plane and
   //   shares some area with its high side. Each such pair is one piece, of the smaller cell's size level and side. A
-  //   side that no cell covers is one piece at the grid's edge (method paper, <sec-face-pieces>). Cells are grouped by
-  //   plane first, only so that a cell is not compared with cells on other planes.
+  //   side that no cell covers is one piece at the grid's edge (method paper, <sec-face-pieces>). The cells across a
+  //   side come from the checker's own lookup of the list by place: the place across the side at each size level up
+  //   to the cell's own, then down through the places that hold smaller cells.
   // Example: the grid of the file header gives 13 X, 14 Y and 14 Z pieces.
   [[nodiscard]] const std::vector<GeometricFacePiece>& FacePieces() const;
 

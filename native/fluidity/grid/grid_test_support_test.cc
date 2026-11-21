@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -12,10 +13,12 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <tuple>
 #include <vector>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/base/test_support.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -805,6 +808,491 @@ TEST(GeometricGrid, RandomGrids_FacePieceIdsAreDistinct) {
     }
     EXPECT_EQ(ids.size(), grid.FacePieces().size()) << seed;
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Recorded digests
+// ---------------------------------------------------------------------------------------------------------------------
+//
+// Each test below turns a group of answers into 64-bit words, in the order the answers give them, and compares the
+// ComputeResultDigest of those words (64-bit FNV-1a over their bytes, base/test_support.h) with the value the test
+// support gave when the test was written. A faster way to find the same answers keeps every digest; a changed list,
+// answer or order changes it. The words are read in the machine's byte order, little-endian on every machine the
+// project builds for.
+
+std::uint64_t ComputeWordsDigest(const std::vector<std::uint64_t>& words) {
+  return ComputeResultDigest(std::as_bytes(std::span<const std::uint64_t>(words)));
+}
+
+// A signed whole number as a word: its two's-complement bits.
+std::uint64_t ToWord(std::int64_t number) {
+  return static_cast<std::uint64_t>(number);
+}
+
+// Appends the length of `cells`, then the value of each cell in order.
+void ApplyCellsToWords(const std::vector<CellId>& cells, std::vector<std::uint64_t>& words) {
+  words.push_back(cells.size());
+  for (const CellId cell : cells) {
+    words.push_back(cell.value);
+  }
+}
+
+// Appends the length of `pieces`, then every field of each piece in order, the area by its bits.
+void ApplyFacePiecesToWords(const std::vector<GeometricFacePiece>& pieces, std::vector<std::uint64_t>& words) {
+  words.push_back(pieces.size());
+  for (const GeometricFacePiece& piece : pieces) {
+    words.push_back(piece.id.value);
+    words.push_back(static_cast<std::uint64_t>(piece.axis));
+    words.push_back(static_cast<std::uint64_t>(piece.size_level));
+    words.push_back(ToWord(piece.cell_high_coord.x));
+    words.push_back(ToWord(piece.cell_high_coord.y));
+    words.push_back(ToWord(piece.cell_high_coord.z));
+    words.push_back(ToValue(piece.cell_low));
+    words.push_back(ToValue(piece.cell_high));
+    words.push_back(std::bit_cast<std::uint64_t>(piece.area));
+  }
+}
+
+// Moves every cell by offset_in_biggest_cells size-level-0 cells on each axis: a cell of size level l moves by
+// offset_in_biggest_cells x 2^l of its own coordinates.
+std::vector<CellId> BuildMovedCells(const std::vector<CellId>& cells, std::int32_t offset_in_biggest_cells) {
+  std::vector<CellId> moved_cells;
+  moved_cells.reserve(cells.size());
+  for (const CellId cell : cells) {
+    const int size_level = static_cast<int>(ToSizeLevel(cell));
+    const auto cells_per_biggest_cell = static_cast<std::int32_t>(1U << static_cast<unsigned>(size_level));
+    const std::int32_t offset = offset_in_biggest_cells * cells_per_biggest_cell;
+    const CellCoord coord = ToCellCoord(cell);
+    moved_cells.push_back(ToCell(size_level, coord.x + offset, coord.y + offset, coord.z + offset));
+  }
+  return moved_cells;
+}
+
+// Size-level-0 cell {1,1,1} and its 26 neighbours split into their size-level-1 cells, in a frame of 2 size levels.
+std::vector<CellId> BuildAllNeighboursSplit() {
+  std::vector<CellId> cells = {ToCell(0, 1, 1, 1)};
+  for (std::int32_t z = 0; z < 3; ++z) {
+    for (std::int32_t y = 0; y < 3; ++y) {
+      for (std::int32_t x = 0; x < 3; ++x) {
+        if (x != 1 || y != 1 || z != 1) {
+          AppendSmallCells(ToCell(0, x, y, z), cells);
+        }
+      }
+    }
+  }
+  return cells;
+}
+
+// A list whose checker answers the digest tests read.
+struct DigestGrid {
+  GridFrame frame;
+  std::vector<CellId> cells;
+};
+
+// The grids of the checker's digest tests: hand-built grids of 1 to 3 size levels, shuffled random grids, one of them
+// in a frame whose origin is away from 0, and random grids moved across zero and to both coordinate limits.
+// Keep the moved grids: they are the only tests that place cells at negative coordinates, where a lookup that
+// truncates instead of rounding down finds the wrong place beyond a side. The chain scenes of
+// HandBuiltScenes_KeepTheirDigest are, likewise, the only tests that see a closure stop a round early.
+std::vector<DigestGrid> BuildDigestGrids() {
+  std::vector<CellId> at_coord_limits = {ToCell(0, -kMaxCoord, 0, 0), ToCell(0, kMaxCoord, 0, 0)};
+  AppendSmallCells(ToCell(0, 0, 0, 0), at_coord_limits);
+  std::vector<CellId> uniform_cells;
+  for (std::int32_t z = 0; z < 5; ++z) {
+    for (std::int32_t y = 0; y < 5; ++y) {
+      for (std::int32_t x = 0; x < 5; ++x) {
+        uniform_cells.push_back(ToCell(0, x, y, z));
+      }
+    }
+  }
+  const GridFrame worst_case_frame = {
+      .origin = {.x = 0, .y = 0, .z = 0},
+      .biggest_cell_width = 4.0,
+      .size_level_count = 3,
+  };
+  const GridFrame moved_origin_frame = {
+      .origin = {.x = -1.5, .y = 0.25, .z = 3.0},
+      .biggest_cell_width = 0.5,
+      .size_level_count = 4,
+  };
+  // The box moved to size-level-0 cells 2^15 - 3..2^15 - 1, and to -(2^15 - 1)..-(2^15 - 3).
+  constexpr auto kHighOffset = static_cast<std::int32_t>((1U << 15U) - 3U);
+  constexpr std::int32_t kLowOffset = -static_cast<std::int32_t>((1U << 15U) - 1U);
+  const std::vector<std::vector<CellId>>& random_grids = BuildShuffledRandomGrids();
+  return {
+      {.frame = ToUnitFrame(2), .cells = BuildSplitCellBesideBigCell()},
+      {.frame = ToUnitFrame(2), .cells = at_coord_limits},
+      {.frame = ToUnitFrame(2), .cells = BuildAllNeighboursSplit()},
+      {.frame = ToUnitFrame(1), .cells = uniform_cells},
+      {.frame = worst_case_frame, .cells = BuildTwoSizesWorstCase()},
+      {.frame = ToUnitFrame(4), .cells = random_grids.at(0)},
+      {.frame = moved_origin_frame, .cells = random_grids.at(1)},
+      {.frame = ToUnitFrame(4), .cells = random_grids.at(99)},
+      {.frame = ToUnitFrame(4), .cells = random_grids.at(199)},
+      {.frame = ToUnitFrame(4), .cells = BuildMovedCells(random_grids.at(2), -1)},
+      {.frame = ToUnitFrame(4), .cells = BuildMovedCells(random_grids.at(3), kHighOffset)},
+      {.frame = ToUnitFrame(4), .cells = BuildMovedCells(random_grids.at(4), kLowOffset)},
+  };
+}
+
+// The step that visits about `wanted_count` of `count` entries, at least 1.
+std::size_t ComputeVisitStep(std::size_t count, std::size_t wanted_count) {
+  return std::max<std::size_t>(count / wanted_count, 1);
+}
+
+TEST(BuildRandomGridCells, SeedsOneToTwoHundred_KeepTheirDigest) {
+  std::vector<std::uint64_t> words;
+  for (std::uint64_t seed = 1; seed <= 200; ++seed) {
+    ApplyCellsToWords(BuildRandomGridCells(seed, 4, 3), words);
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0xcb78fa151cdbdd79ULL);
+}
+
+TEST(BuildRandomGridCells, OtherSizeLevelCountsAndBoxes_KeepTheirDigest) {
+  // Pairs (size_level_count, biggest_cells_per_axis), each for seeds 1..10.
+  constexpr std::array<std::array<int, 2>, 5> kSizes = {{{1, 3}, {2, 4}, {3, 3}, {5, 2}, {3, 1}}};
+  std::vector<std::uint64_t> words;
+  for (const std::array<int, 2>& size : kSizes) {
+    for (std::uint64_t seed = 1; seed <= 10; ++seed) {
+      ApplyCellsToWords(BuildRandomGridCells(seed, size.at(0), size.at(1)), words);
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x9b6001a17bb5ed90ULL);
+}
+
+TEST(ApplyFixedShuffle, ListsOfSeveralLengths_KeepTheirDigest) {
+  std::vector<std::uint64_t> words;
+  for (const std::int32_t length : {0, 1, 2, 3, 100}) {
+    for (const std::uint64_t seed : {std::uint64_t{1}, std::uint64_t{2}, std::uint64_t{12345}}) {
+      std::vector<CellId> cells;
+      cells.reserve(static_cast<std::size_t>(length));
+      for (std::int32_t x = 0; x < length; ++x) {
+        cells.push_back(ToCell(0, x, 0, 0));
+      }
+      ApplyFixedShuffle(cells, seed);
+      ApplyCellsToWords(cells, words);
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x3f40ceca5040a133ULL);
+}
+
+TEST(BuildShuffledRandomGrids, AllEntries_KeepTheirDigest) {
+  std::vector<std::uint64_t> words;
+  for (const std::vector<CellId>& cells : BuildShuffledRandomGrids()) {
+    ApplyCellsToWords(cells, words);
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x8c4637ae9848f431ULL);
+}
+
+// Size-level-0 cell {0,0,0} beside size level 0 {1,0,0} split down to last_size_level at its low corner, siblings
+// kept. The closure takes several rounds: each splits the cells the last round's splits left too big.
+std::vector<CellId> BuildSplitChain(int last_size_level) {
+  std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
+  CellId chain_cell = ToCell(0, 1, 0, 0);
+  for (int size_level = 0; size_level < last_size_level; ++size_level) {
+    for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
+      cells.push_back(ComputeSmallCell(chain_cell, cell_eighth));
+    }
+    chain_cell = ComputeSmallCell(chain_cell, 0);
+  }
+  cells.push_back(chain_cell);
+  return cells;
+}
+
+TEST(BuildSizeStepClosure, HandBuiltScenes_KeepTheirDigest) {
+  // Size-level-2 cells beside the size-level-0 cell {0,0,0} at x = 1 m, 3 size levels.
+  std::vector<CellId> side_touch = {ToCell(0, 0, 0, 0)};
+  for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
+    side_touch.push_back(ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth));
+  }
+  AppendSmallCells(ToCell(1, 2, 0, 0), side_touch);
+  // Size-level-2 cell {4,4,4} touches the size-level-0 cell {0,0,0} at the corner {1, 1, 1} m only, 3 size levels.
+  std::vector<CellId> corner_touch = {ToCell(0, 0, 0, 0)};
+  for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
+    corner_touch.push_back(ComputeSmallCell(ToCell(0, 1, 1, 1), cell_eighth));
+  }
+  AppendSmallCells(ToCell(1, 2, 2, 2), corner_touch);
+  const std::vector<CellId> chain = BuildSplitChain(3);
+  const std::vector<CellId> long_chain = BuildSplitChain(5);
+  // Size level 0 {-8,0,0} split along the path of eighth-7 cells down to size level 15, 16 size levels.
+  std::vector<CellId> deep_path = {ToCell(0, -8, 0, 0)};
+  CellId path_cell = ToCell(0, -8, 0, 0);
+  for (int size_level = 0; size_level < 15; ++size_level) {
+    std::erase_if(deep_path, [path_cell](CellId cell) {
+      return cell.value == path_cell.value;
+    });
+    AppendSmallCells(path_cell, deep_path);
+    path_cell = ComputeSmallCell(path_cell, 7);
+  }
+  std::vector<CellId> shuffled_chain = chain;
+  ApplyFixedShuffle(shuffled_chain, 7);
+
+  std::vector<std::uint64_t> words;
+  ApplyCellsToWords(BuildSizeStepClosure({}, 3), words);
+  ApplyCellsToWords(BuildSizeStepClosure({ToCell(0, 2, -3, 4)}, 3), words);
+  ApplyCellsToWords(BuildSizeStepClosure(BuildSplitCellBesideBigCell(), 2), words);
+  ApplyCellsToWords(BuildSizeStepClosure(side_touch, 3), words);
+  ApplyCellsToWords(BuildSizeStepClosure(corner_touch, 3), words);
+  ApplyCellsToWords(BuildSizeStepClosure(chain, 4), words);
+  ApplyCellsToWords(BuildSizeStepClosure(chain, 6), words);
+  ApplyCellsToWords(BuildSizeStepClosure(long_chain, 6), words);
+  ApplyCellsToWords(BuildSizeStepClosure(shuffled_chain, 4), words);
+  ApplyCellsToWords(BuildSizeStepClosure(BuildMovedCells(chain, -5), 4), words);
+  ApplyCellsToWords(BuildSizeStepClosure(deep_path, kMaxSizeLevels), words);
+  EXPECT_EQ(ComputeWordsDigest(words), 0x64ad4802c9506729ULL);
+}
+
+TEST(GeometricGrid, FacePiecesOfDigestGrids_KeepTheirDigest) {
+  std::vector<std::uint64_t> words;
+  for (const DigestGrid& digest_grid : BuildDigestGrids()) {
+    ApplyFacePiecesToWords(GeometricGrid(digest_grid.frame, digest_grid.cells).FacePieces(), words);
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x98da295875fd6dafULL);
+}
+
+TEST(GeometricGrid, TouchingCellsOfDigestGrids_KeepTheirDigest) {
+  // About 50 active cells of each grid, and the big cell of each, which is not active.
+  std::vector<std::uint64_t> words;
+  for (const DigestGrid& digest_grid : BuildDigestGrids()) {
+    const GeometricGrid grid(digest_grid.frame, digest_grid.cells);
+    const std::size_t step = ComputeVisitStep(digest_grid.cells.size(), 50);
+    for (std::size_t index = 0; index < digest_grid.cells.size(); index += step) {
+      const CellId cell = digest_grid.cells.at(index);
+      ApplyCellsToWords(grid.TouchingCells(cell), words);
+      if (static_cast<int>(ToSizeLevel(cell)) > 0) {
+        ApplyCellsToWords(grid.TouchingCells(ComputeBigCell(cell)), words);
+      }
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0xb4b1cfce250b11bfULL);
+}
+
+TEST(GeometricGrid, CornersOfDigestGrids_KeepTheirDigest) {
+  std::vector<std::uint64_t> words;
+  for (const DigestGrid& digest_grid : BuildDigestGrids()) {
+    const GeometricGrid grid(digest_grid.frame, digest_grid.cells);
+    const std::vector<std::array<std::int64_t, 3>> corners_in_units = grid.CornersInUnits();
+    words.push_back(corners_in_units.size());
+    for (const std::array<std::int64_t, 3>& corner : corners_in_units) {
+      words.insert(words.end(), {ToWord(corner.at(0)), ToWord(corner.at(1)), ToWord(corner.at(2))});
+    }
+    const std::vector<Vec3> corners = grid.Corners();
+    words.push_back(corners.size());
+    for (const Vec3 corner : corners) {
+      words.insert(
+          words.end(),
+          {
+              std::bit_cast<std::uint64_t>(corner.x),
+              std::bit_cast<std::uint64_t>(corner.y),
+              std::bit_cast<std::uint64_t>(corner.z),
+          }
+      );
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x4b6b0e5485e9d832ULL);
+}
+
+TEST(GeometricGrid, ContainingCellOfDigestGrids_KeepsItsDigest) {
+  // About 100 corners of each grid, each as itself and moved half a unit down and up on every axis, then positions
+  // that are in no cell.
+  std::vector<std::uint64_t> words;
+  for (const DigestGrid& digest_grid : BuildDigestGrids()) {
+    const GeometricGrid grid(digest_grid.frame, digest_grid.cells);
+    const std::vector<Vec3> corners = grid.Corners();
+    const double unit_width =
+        std::ldexp(digest_grid.frame.biggest_cell_width, 1 - static_cast<int>(digest_grid.frame.size_level_count));
+    const std::size_t step = ComputeVisitStep(corners.size(), 100);
+    for (std::size_t index = 0; index < corners.size(); index += step) {
+      const Vec3 corner = corners.at(index);
+      for (const double shift : {0.0, -0.5, 0.5}) {
+        const double offset = shift * unit_width;
+        words.push_back(
+            ToValue(grid.ContainingCell({.x = corner.x + offset, .y = corner.y + offset, .z = corner.z + offset}))
+        );
+      }
+    }
+    for (const double far : {std::nan(""), std::numeric_limits<double>::infinity(), 1e12, -1e12}) {
+      words.push_back(ToValue(grid.ContainingCell({.x = far, .y = 0, .z = 0})));
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x3cb7358576b363a0ULL);
+}
+
+// The window quarters the nearby-face digest reads: the 8 windows of quarters 0 and 3, and window (1, 2, 1).
+std::vector<std::array<int, 3>> BuildDigestWindows() {
+  std::vector<std::array<int, 3>> windows = {{1, 2, 1}};
+  for (int corner = 0; corner < 8; ++corner) {
+    const auto corner_bits = static_cast<unsigned>(corner);
+    windows.push_back({
+        (corner_bits & 1U) != 0 ? 3 : 0,
+        (corner_bits & 2U) != 0 ? 3 : 0,
+        (corner_bits & 4U) != 0 ? 3 : 0,
+    });
+  }
+  return windows;
+}
+
+TEST(GeometricGrid, NearbyFacesOfDigestGrids_KeepTheirDigest) {
+  // About 6 active cells of each grid, in every window of BuildDigestWindows, on every axis.
+  std::vector<std::uint64_t> words;
+  for (const DigestGrid& digest_grid : BuildDigestGrids()) {
+    const GeometricGrid grid(digest_grid.frame, digest_grid.cells);
+    const std::size_t step = ComputeVisitStep(digest_grid.cells.size(), 6);
+    for (std::size_t index = 0; index < digest_grid.cells.size(); index += step) {
+      for (const std::array<int, 3>& window_quarters : BuildDigestWindows()) {
+        for (const Axis axis : kAxes) {
+          ApplyFacePiecesToWords(grid.NearbyFaces(digest_grid.cells.at(index), window_quarters, axis), words);
+        }
+      }
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x679836b2a613cb75ULL);
+}
+
+TEST(GeometricGrid, FacesWithinOfDigestGrids_KeepTheirDigest) {
+  // About 10 face pieces of each grid, at radii 0.5, 1.5, 2.5 and 4 cell widths.
+  std::vector<std::uint64_t> words;
+  for (const DigestGrid& digest_grid : BuildDigestGrids()) {
+    const GeometricGrid grid(digest_grid.frame, digest_grid.cells);
+    const std::vector<GeometricFacePiece>& pieces = grid.FacePieces();
+    const std::size_t step = ComputeVisitStep(pieces.size(), 10);
+    for (std::size_t index = 0; index < pieces.size(); index += step) {
+      for (const double radius : {0.5, 1.5, 2.5, 4.0}) {
+        ApplyFacePiecesToWords(grid.FacesWithin(pieces.at(index).id, radius), words);
+      }
+    }
+  }
+  EXPECT_EQ(ComputeWordsDigest(words), 0x87afcf5bb15da649ULL);
+}
+
+// Appends every answer of the checker of one small grid: its face pieces, the touching cells of every active cell and
+// of its big cell, its corners in units and in metres, the containing cell of every corner and of every corner moved
+// half a unit down and up, the nearby faces of every cell in every window of BuildDigestWindows on every axis, and the
+// faces within 0.5, 1.5, 2.5 and 4 cell widths of every face piece.
+void ApplyEveryCheckerAnswerToWords(const DigestGrid& digest_grid, std::vector<std::uint64_t>& words) {
+  const GeometricGrid grid(digest_grid.frame, digest_grid.cells);
+  ApplyFacePiecesToWords(grid.FacePieces(), words);
+  for (const CellId cell : digest_grid.cells) {
+    ApplyCellsToWords(grid.TouchingCells(cell), words);
+    if (static_cast<int>(ToSizeLevel(cell)) > 0) {
+      ApplyCellsToWords(grid.TouchingCells(ComputeBigCell(cell)), words);
+    }
+  }
+  for (const std::array<std::int64_t, 3>& corner : grid.CornersInUnits()) {
+    words.insert(words.end(), {ToWord(corner.at(0)), ToWord(corner.at(1)), ToWord(corner.at(2))});
+  }
+  const double unit_width =
+      std::ldexp(digest_grid.frame.biggest_cell_width, 1 - static_cast<int>(digest_grid.frame.size_level_count));
+  for (const Vec3 corner : grid.Corners()) {
+    words.insert(
+        words.end(),
+        {
+            std::bit_cast<std::uint64_t>(corner.x),
+            std::bit_cast<std::uint64_t>(corner.y),
+            std::bit_cast<std::uint64_t>(corner.z),
+        }
+    );
+    for (const double shift : {0.0, -0.5, 0.5}) {
+      const double offset = shift * unit_width;
+      const Vec3 position = {.x = corner.x + offset, .y = corner.y + offset, .z = corner.z + offset};
+      words.push_back(ToValue(grid.ContainingCell(position)));
+    }
+  }
+  for (const CellId cell : digest_grid.cells) {
+    for (const std::array<int, 3>& window_quarters : BuildDigestWindows()) {
+      for (const Axis axis : kAxes) {
+        ApplyFacePiecesToWords(grid.NearbyFaces(cell, window_quarters, axis), words);
+      }
+    }
+  }
+  for (const GeometricFacePiece& piece : grid.FacePieces()) {
+    for (const double radius : {0.5, 1.5, 2.5, 4.0}) {
+      ApplyFacePiecesToWords(grid.FacesWithin(piece.id, radius), words);
+    }
+  }
+}
+
+// The 8 size-level-1 cells of size-level-0 cell {131071,0,0}, whose high sides at x = kMaxCoord + 1 face size-level-0
+// cell {131072,0,0}, and size-level-0 cell {131070,0,0} below them, 2 size levels. Across those high sides no
+// size-level-1 id exists, so the cell beyond is found one size level up. Recorded on the test support with the lookups
+// by place; the scans they replaced give the same digest.
+TEST(GeometricGrid, BiggerCellBeyondHighCoordLimit_KeepsItsDigest) {
+  constexpr auto kLastSplitCoord = static_cast<std::int32_t>((1U << 17U) - 1U);
+  std::vector<CellId> cells = {ToCell(0, kLastSplitCoord + 1, 0, 0), ToCell(0, kLastSplitCoord - 1, 0, 0)};
+  AppendSmallCells(ToCell(0, kLastSplitCoord, 0, 0), cells);
+  ASSERT_TRUE(CheckSiblingsTogether(cells));
+  ASSERT_TRUE(CheckSizeStepByBruteForce(cells, 2));
+  const GeometricGrid grid(ToUnitFrame(2), cells);
+  EXPECT_EQ(grid.FacePieces().size(), 46U);
+
+  std::vector<std::uint64_t> words;
+  ApplyEveryCheckerAnswerToWords({.frame = ToUnitFrame(2), .cells = cells}, words);
+  EXPECT_EQ(ComputeWordsDigest(words), 0xd15762d10c5f1fd6ULL);
+}
+
+#if !defined(NDEBUG)
+// What each death test runs. A braced list inside EXPECT_DEATH cannot hold a comma outside parentheses, so each one is
+// its own function.
+
+// Size-level-0 cell {0,0,0} listed twice.
+std::vector<CellId> BuildRepeatedCell() {
+  return {ToCell(0, 0, 0, 0), ToCell(0, 0, 0, 0)};
+}
+
+// Size-level-0 cell {0,0,0} and its size-level-1 cell {0,0,0}, inside it.
+std::vector<CellId> BuildOverlappingCells() {
+  return {ToCell(0, 0, 0, 0), ToCell(1, 0, 0, 0)};
+}
+
+void BuildClosureOfRepeatedCell() {
+  static_cast<void>(BuildSizeStepClosure(BuildRepeatedCell(), 2));
+}
+
+void BuildClosureOfOverlappingCells() {
+  static_cast<void>(BuildSizeStepClosure(BuildOverlappingCells(), 2));
+}
+
+void BuildCheckerOfRepeatedCell() {
+  const GeometricGrid grid(ToUnitFrame(2), BuildRepeatedCell());
+  static_cast<void>(grid.FacePieces().size());
+}
+
+void BuildCheckerOfOverlappingCells() {
+  const GeometricGrid grid(ToUnitFrame(2), BuildOverlappingCells());
+  static_cast<void>(grid.FacePieces().size());
+}
+#endif
+
+TEST(BuildSizeStepClosureDeathTest, RepeatedCell_Asserts) {
+#if defined(NDEBUG)
+  GTEST_SKIP() << "release build: assert compiles to nothing";
+#else
+  EXPECT_DEATH(BuildClosureOfRepeatedCell(), "is_cell_listed_once");
+#endif
+}
+
+TEST(BuildSizeStepClosureDeathTest, OverlappingCells_Asserts) {
+#if defined(NDEBUG)
+  GTEST_SKIP() << "release build: assert compiles to nothing";
+#else
+  EXPECT_DEATH(BuildClosureOfOverlappingCells(), "holds_no_listed_cell");
+#endif
+}
+
+TEST(GeometricGridDeathTest, RepeatedCell_Asserts) {
+#if defined(NDEBUG)
+  GTEST_SKIP() << "release build: assert compiles to nothing";
+#else
+  EXPECT_DEATH(BuildCheckerOfRepeatedCell(), "is_cell_listed_once");
+#endif
+}
+
+TEST(GeometricGridDeathTest, OverlappingCells_Asserts) {
+#if defined(NDEBUG)
+  GTEST_SKIP() << "release build: assert compiles to nothing";
+#else
+  EXPECT_DEATH(BuildCheckerOfOverlappingCells(), "holds_no_listed_cell");
+#endif
 }
 
 }  // namespace
