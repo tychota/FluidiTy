@@ -1,0 +1,27 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_cb84a4916492b8 202
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_986b38cfa41e4c 2622-2626,2634-2640
+native/fluidity/grid/cell_size_factor_test.cc
+  s_4f0877e2acdcf0::t_5aa3626f1f60ca 4,7,24-25,32-34,55,90,116-119,124-129,134-145,150-151,153-154,164-165,184,189,192,197,203,209-213,216-218,221-223,226-239,242-340,347-348,350,353-355,359,362-363,366-370,374-375,377-379,383-384,387,390-392,403-405,425-427,434,436-438,489-496,503-508,512-569
+native/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_e8356cb3fcc7b7 53,310-311,316,318,335-337,340,347-348,362-364,380-381,383-388,393,404,413-435,438-446,449-450,452-454,462-464,467-468,487-491,495,501,506,508,510,519,521,524-531,533
+native/fluidity/grid/cell_size_rule_test_cases.h
+  s_4f0877e2acdcf0::t_3f03806cc08acf 86,88-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4176343d7fea895a983221093f8bd6a276113a26",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
