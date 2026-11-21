@@ -1,0 +1,14 @@
+native/fluidity/grid/staggered_grid_gpu.h
+  h_745d560834e283 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d50115e8c462116bdbc926702fcac29422c0e652",
+  "prompts": {},
+  "humans": {
+    "h_745d560834e283": {
+      "author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
