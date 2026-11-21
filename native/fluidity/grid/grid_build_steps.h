@@ -53,7 +53,7 @@
 //   failure key       the number (step, position, detail) whose smallest value names the first failure of a build
 //   local coordinate  the coordinate of a cell place in its block, 0..3 on each axis; -1 and 4 are one cell beyond
 //   cover             of a place, the place one size level bigger that holds it: floor(c / 2) at size level l - 1
-// Owns:    kSortKeyPassCount, ToCellSortKey, ToBlockSortKey, CheckCellId, FindSortedCell, FindSortedBlock,
+// Owns:    kSortKeyPassCount, ToCellSortKey, ToBlockSortKey, CheckCellId, FindSortedCell,
 //          ComputeBigCellAtSizeLevel, FindSortedCellAt, CellCheck, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
 //          kIdStep, kOverlapStep, kSiblingStep, kSizeStepRuleStep, ToFailureKey, ToFailureStep, ToFailurePosition,
 //          ToFailureDetail, ComputeFailureCells, ComputeCellIdFailureKey, ComputeSortedCellFailureKey,
@@ -74,7 +74,7 @@
 //          kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockIndex,
 //          ToCellPlaceIndex,
 //          ComputeBigCell, ComputeCellEighth, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h),
-//          GridFrame, GridTables, CellState, FacePieceKind (grid/grid_tables.h)
+//          GridFrame, GridTables, CellState, FacePieceKind, FindSortedBlock (grid/grid_tables.h)
 // Used by: the grid's CPU builder, its GPU half and the counting of a list (grid/); private to grid/
 // Read:    docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>,
 //          <proc-build-grid>, <sec-cell-blocks>, <sec-face-pieces>
@@ -208,29 +208,6 @@ FindSortedCell(const CellId* sorted_cells, std::uint32_t count, CellId cell) noe
   }
   const bool is_found = low < count && sorted_cells[low].value == cell.value;
   return is_found ? low : kNoIndex;
-}
-
-// Finds a cell block in the block ids of a grid, sorted in the fixed order.
-//
-// Method: binary search with ComesBefore, as FindSortedCell.
-// Example: in the blocks {size level 0 (0,0,0), size level 1 (0,0,0)}, size level 1 (0,0,0) is at index 1.
-// Requires: sorted_blocks holds count ids in the fixed order; it may be null when count is 0.
-// Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-cell-blocks>
-FLUIDITY_CPU_AND_GPU constexpr CellBlockIndex
-FindSortedBlock(const CellBlockId* sorted_blocks, std::uint32_t count, CellBlockId block) noexcept {
-  assert(sorted_blocks != nullptr || count == 0);
-  std::uint32_t low = 0;
-  std::uint32_t high = count;
-  while (low < high) {
-    const std::uint32_t middle = low + ((high - low) / 2);
-    if (ComesBefore(sorted_blocks[middle], block)) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  const bool is_found = low < count && sorted_blocks[low].value == block.value;
-  return {.value = is_found ? low : kNoIndex};
 }
 
 // Computes the cell of size_level that holds `cell`: each coordinate divided by 2^(the cell's size level -

@@ -36,13 +36,13 @@
 //          (base/memory_count.h), BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
 //          (grid/grid_memory_estimate.h), BuildSortedCellList, CheckCellListInputs and the checks of a cell list
 //          (grid/grid_cell_checks.h), FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel,
-//          ToBlockSortKey, FindSortedBlock, FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState,
-//          ComputeFacePieceKind, ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h);
-//          and, when GPU code is compiled in, the GPU path of BuildGrid and ComputeGridCounts:
-//          ApplyListChecksInParallel, ApplyCallsInOrder, ToInputCells, ToGridFailure(const GridBuildStatus&)
-//          (grid/grid_cell_checks.h), BuildStableOrder, ComputeExclusivePrefixSum (base/stable_order.h), ToBufferError
-//          (base/buffer.h), ComputeSortCount (grid/grid_build_steps.h) and the GPU half of P7 to P12
-//          (grid/staggered_grid_gpu.h)
+//          ToBlockSortKey, FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeFacePieceKind,
+//          ComputeFailureCells (grid/grid_build_steps.h), ToCellPlaceIndex (grid/grid_ids.h),
+//          FindCellBlock (grid/grid_tables.h); and, when GPU code is compiled in, the GPU path of BuildGrid and
+//          ComputeGridCounts: ApplyListChecksInParallel, ApplyCallsInOrder, ToInputCells,
+//          ToGridFailure(const GridBuildStatus&) (grid/grid_cell_checks.h), BuildStableOrder,
+//          ComputeExclusivePrefixSum (base/stable_order.h), ToBufferError (base/buffer.h), ComputeSortCount
+//          (grid/grid_build_steps.h) and the GPU half of P7 to P12 (grid/staggered_grid_gpu.h)
 // Used by: the grid's builders and memory estimate, the step, which chooses the room, owns the buffers, counts a list
 //          to plan it and builds its grids, every module that reads a grid's tables, and cell resize, which checks the
 //          lists it splits

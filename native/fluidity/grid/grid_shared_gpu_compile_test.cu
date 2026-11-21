@@ -3,11 +3,11 @@
 // label no_gpu.
 //
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
-// code for every function of grid_build_steps.h, grid_ids.h and weight_curve.h, the helpers those functions call
-// included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables, WeightCurveValue, GridBuildStatus
-// and CellCheck read and written by GPU code. The integer results go to `results`, and the double results of
-// weight_curve.h go to `double_results`. The CUDA compiler generates GPU code for a shared function only where GPU
-// code calls it, so each function is called here once.
+// code for every function of grid_build_steps.h, grid_ids.h, grid_tables.h and weight_curve.h, the helpers those
+// functions call included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables, WeightCurveValue,
+// GridBuildStatus and CellCheck read and written by GPU code. The integer results go to `results`, and the double
+// results of weight_curve.h and grid_tables.h go to `double_results`. The CUDA compiler generates GPU code for a shared
+// function only where GPU code calls it, so each function is called here once.
 // A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
 // function's address, which needs no GPU.
 
@@ -16,6 +16,7 @@
 #include <cstdint>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/base/vec3.h"
 #include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_ids.h"
@@ -28,9 +29,8 @@ namespace {
 // Reads its inputs from `values` (4 integers), the range, the frame, the two tables and the sorted cells and blocks,
 // writes split cells and the id 0 to `cell_ids`, block ids to `block_ids`, the neighbour tables of one block to
 // `block_tables` (27 + 1 + 8 entries per sorted block) and states and kinds to `written_cell_states` and
-// `written_face_piece_kinds`, and writes at least
-// one integer per shared function to `results` and the doubles of weight_curve.h to `double_results`, so the compiler
-// cannot drop any call.
+// `written_face_piece_kinds`, and writes at least one integer per shared function to `results` and the doubles of
+// weight_curve.h and grid_tables.h to `double_results`, so the compiler cannot drop any call.
 __global__ void ComputeWithEverySharedGridFunction(
     const std::int32_t* values,
     CellBlockRange range,
@@ -142,6 +142,14 @@ __global__ void ComputeWithEverySharedGridFunction(
       .cell_states = cell_states,
       .face_piece_kinds = face_piece_kinds,
   };
+  // grid_tables.h: the addressing and geometry of the places, read through GridTables.
+  const FacePlaceIndex face = {.value = place};
+  results[result_index++] = FindCellBlock(tables, block).value + static_cast<std::uint64_t>(ToAxis(face));
+  results[result_index++] = static_cast<std::uint64_t>(ToSizeLevel(tables, CellBlockIndex{place}));
+  results[result_index++] = ToCellId(tables, CellPlaceIndex{place}).value + ToFacePieceId(tables, face).value;
+  results[result_index++] = FindCellLow(tables, face).value + FindCellHigh(tables, face).value;
+  results[result_index++] = FindCellPlace(tables, cell).value;
+  results[result_index++] = FindFacePlace(tables, ToFacePieceId(axis, size_level, cell_coord)).value;
   results[result_index++] = static_cast<std::uint64_t>(ComputeCoveredCellState(tables, CellPlaceIndex{place}));
   const CellState state_beside = ComputeCellStateBeside(tables, CellBlockIndex{place}, values[1] & 3, 0, 0);
   results[result_index++] = static_cast<std::uint64_t>(state_beside) + tables.version.value;
@@ -182,6 +190,12 @@ __global__ void ComputeWithEverySharedGridFunction(
   double_results[double_result_index++] = kWeightCurveReach;
   double_results[double_result_index++] = kMinWeightSum;
   double_results[double_result_index++] = kMinPivotShare;
+  // grid_tables.h: widths, positions, areas and distances, in m and m2.
+  double_results[double_result_index++] = ComputeCellWidth(frame, size_level);
+  const Vec3 cell_center = ComputeCellCenter(tables, CellPlaceIndex{place});
+  const Vec3 face_position = ComputeFacePosition(tables, face);
+  double_results[double_result_index++] = cell_center.x + face_position.y;
+  double_results[double_result_index++] = ComputeFaceArea(tables, face) + ComputeCellCenterDistance(tables, face);
   results[result_index++] = static_cast<std::uint64_t>(kMaxNearbyFaces);
 }
 

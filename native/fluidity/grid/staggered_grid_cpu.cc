@@ -285,7 +285,7 @@ bool ApplyStateOfCells(
     CellState* cell_states
 ) {
   return std::ranges::all_of(cells, [state, &tables, cell_states](CellId cell) {
-    const CellBlockIndex block = FindSortedBlock(tables.block_ids, tables.block_count, ToCellBlockId(cell));
+    const CellBlockIndex block = FindCellBlock(tables, ToCellBlockId(cell));
     if (block.value == kNoIndex) {
       return false;
     }
@@ -1282,7 +1282,7 @@ std::expected<GridCounts, GridFailure> BuildGridTables(const GridInputs& inputs,
   };
   const std::size_t cell_place_count = std::size_t{kCellPlacesPerBlock} * block_count;
   std::fill_n(cell_states, cell_place_count, CellState::kAbsent);
-  // Step 5 wrote the block of every cell, so FindSortedBlock finds each; a miss is a fault in the build.
+  // Step 5 wrote the block of every cell, so FindCellBlock finds each; a miss is a fault in the build.
   const bool are_cells_placed = ApplyStateOfCells(active_cells, CellState::kActive, tables, cell_states)
       && ApplyStateOfCells(split_cells, CellState::kSplit, tables, cell_states);
   if (!are_cells_placed) {
