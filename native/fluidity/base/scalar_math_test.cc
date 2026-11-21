@@ -102,6 +102,26 @@ TEST(IsFinite, LargestDouble_IsFinite) {
   EXPECT_TRUE(math::IsFinite(std::numeric_limits<double>::max()));
 }
 
+TEST(IsNan, NaN_IsNan) {
+  static_assert(math::IsNan(kNaN));
+  EXPECT_TRUE(math::IsNan(kNaN));
+}
+
+TEST(IsNan, InfinityAndNumbers_AreNotNan) {
+  static_assert(!math::IsNan(kInfinity));
+  EXPECT_FALSE(math::IsNan(kInfinity));
+  EXPECT_FALSE(math::IsNan(-kInfinity));
+  EXPECT_FALSE(math::IsNan(0.0));
+  EXPECT_FALSE(math::IsNan(-1.5));
+}
+
+TEST(PositiveInfinity, Constant_IsTheStandardInfinity) {
+  static_assert(math::kPositiveInfinity == kInfinity);
+  static_assert(math::kPositiveInfinity > std::numeric_limits<double>::max());
+  EXPECT_FALSE(math::IsFinite(math::kPositiveInfinity));
+  EXPECT_EQ(math::Min(math::kPositiveInfinity, 2.0), 2.0);
+}
+
 TEST(Cbrt, PerfectCube_IsItsRoot) {
   EXPECT_NEAR(math::Cbrt(27.0), 3.0, kLastBitsTolerance);
   EXPECT_NEAR(math::Cbrt(-8.0), -2.0, kLastBitsTolerance);

@@ -2566,6 +2566,86 @@ what one thread handles. The code numbers them P1 to P12, apart from the steps o
     P6, then the failure half of P12, are also the check of a list on the GPU before a build.],
 )
 
+== The cell size rule <sec-cell-size-rule>
+
+The grid keeps small cells where the flow needs detail and big cells elsewhere. The cell size rule says, one cell at a
+time, how wide that cell should be: its wanted cell width. Two parts of the simulation read it: the step, when it
+chooses the active cells of a try (`ChooseActiveCells`), and cell resize, after a committed step (`ResizeCells`). The
+grid owns the formulas (`grid/cell_size_rule.h`); the passes that apply them to every cell belong to those modules.
+
+*What a cell knows.* The rule reads a few facts of one cell (`CellSizeFacts`): its depth $d$ below the liquid surface
+and its distance $e$ to the nearest solid, both in metres and $+infinity$ when nothing is near; the size $G$ of its
+velocity change, in 1/s, how fast the velocity changes per metre around the cell; its cell size factor $f$, a positive
+number without unit; and two flags, whether the cell touches an air pocket and whether gas lies in or beside it
+(`wants_smallest_cells`). With $w_"min"$ the width of the smallest size level the settings allow
+(`smallest_size_level`) and $w_"max" = h_0$ the width of size level 0, the wanted cell width is
+
+$ w & = w_"min" quad "if" d < n_"surface" w_"min" "or" e < n_"solid" w_"min", "and otherwise" \
+  w_"depth" & = w_"min" max(1, d / (n_"surface" w_"min")), \
+  w_"solid" & = w_"min" max(1, e / (n_"solid" w_"min")), \
+  w_"shear" & = cases(c_u U_"ref" \/ G & "if" G > 0, +infinity & "otherwise",) \
+  w & = max(w_"min", min(min(w_"depth", w_"solid", w_"shear") f, w_"max")), $ <eq:wanted-cell-width>
+
+The first line keeps the smallest width, whatever the factor, at pockets and gas, within the surface reach and within
+the solid reach: for a cell that touches an air pocket, a cell with gas in or beside it, a cell less than $n_"surface"$
+smallest widths below the surface and a cell less than $n_"solid"$ smallest widths from the nearest solid. A fact or a
+reference speed that is not a number gives $w_"min"$ too, the side that keeps detail. The surface reach $n_"surface" =
+8$ and the solid reach $n_"solid" = 2$ count smallest cell widths, unlike the reach of a solid, and are settings
+(`surface_reach_in_cell_widths`, `solid_reach_in_cell_widths`). A negative depth or distance counts as the surface or
+the solid. The result always lies between $w_"min"$ and $w_"max"$.
+
+*Why these terms.* The flow changes fastest over short distances at the surface and beside a solid, so cells there
+stay the smallest. Beyond the surface reach or the solid reach, a term grows in proportion to the distance: a cell
+twice as deep may be twice as wide. The width then doubles only across $n$ cells of one size, so the number of cells
+across any depth is about the same at every size level, and the size changes slowly enough that the size-step rule
+(@sec-cell-sizes) rarely has to step in; where the shear term changes fast between neighbours, it does. For example,
+with $h_0 = 1$ m and 5 size levels, $w_"min" = 0.0625$ m: a depth of 1 m gives $0.0625 times 1 \/ 0.5 = 0.125$ m, a
+distance of 0.5 m to a solid gives $0.0625 times 0.5 \/ 0.125 = 0.25$ m, and a cell with both gets the smaller,
+0.125 m. Away from both, the shear term keeps cells small where the velocity changes over a short distance: a cell is
+about as wide as the distance over which the velocity changes by $c_u U_"ref"$. Its factor $c_u = 0.25$
+(`shear_width_factor`) is a starting value, to be calibrated against scenes. A liquid that moves as a whole, with
+$G = 0$, has no shear term and needs no small cells.
+
+*The reference speed.* The shear term measures a velocity change against
+
+$ U_"ref" = max(u_"max", sqrt(g w_"max")), $
+
+where $u_"max"$ is the largest liquid speed, in m/s, and $g$ the size of gravity, in m/s². The second speed is that of
+a gravity wave in liquid as deep as the biggest cell is wide. A nearly still liquid still carries waves at about that
+speed, so its small velocity changes are measured against it and do not split cells. The reference speed has no
+floor: with zero gravity and a liquid at rest it is 0, so any velocity change above 0 gives a shear term of 0 and the
+smallest width, while a velocity change of 0 still gives no shear term.
+
+*The cell size factor.* An artist can ask for more or less detail in parts of the scene with a volume of cell size
+factors: a table of positive factors over the scene. A cell reads the smallest factor over its box. The smallest
+factor over any box comes from layers of halved size, each entry the smallest of the 2 × 2 × 2 entries of the layer
+below, so a cell reads a few entries of the layer whose entries are about as wide as the cell, not every entry its
+box covers. The factor multiplies the width the physics asks for rather than replacing it, so it scales the rule
+without hiding it: a factor of 0.5 halves the width wherever the physics alone allows bigger cells, a factor of 2
+doubles it, the clamp still bounds the result, and the cells kept smallest above stay smallest. A factor of 1 gives
+the rule's own width bit for bit, since a product by 1 is exact. The table is the same on every machine, because
+one formula, written once for both processors, computes it from the scene, so every machine chooses the same cells.
+
+*The wanted size level.* A cell's wanted size level is the first $l$, from 0 up, with $h_l <= w$, and the last size
+level of the frame when none is. It comes from comparing $w$ with a table of the widths $h_l$, never from
+$log_2(h_0 \/ w)$ or from $2^(-l)$ by `pow`: those functions may round their last bits differently on the two
+processors. The widths of the table are exact halvings (@sec-cell-sizes), and the rule uses only products,
+quotients, comparisons, min, max and one correctly rounded square root, in one fixed order with no sum, so no fused
+multiply-add can arise. The CPU and the GPU therefore give the same bytes. The rule reads only the facts of its own
+cell, so any cut of the grid into batches gives each cell the same size level too. For example, in the frame above,
+$w = 0.125$ m gives size level 3, the double just below it gives 4, and 0.2 m gives 3.
+
+*New cells.* When liquid enters space with no cell, the step adds a cell there. The new cell borders air, so its depth
+is 0 and the rule wants $w_"min"$. It starts instead one size level smaller than its nearest committed neighbour: the
+smallest the size-step rule allows beside that neighbour. The cap keeps the size-step rule with the cells already
+there, and later resizes bring the cell down to its wanted width.
+
+*The start grid.* The grid of the first step comes from the same rule, read from the scene's start shapes instead of
+from particles. A cell's depth and distance are taken at its centre minus half its diagonal, a bound that no point of
+the cell is below, so no point of the cell wants a smaller cell than the cell gets. The start has no velocity change,
+so no shear term. The wanted cells are then closed under the size-step rule: a cell two or more size levels bigger
+than a cell it touches is split, again and again, until none is left.
+
 // Every floating figure and procedure is placed before the references start.
 #place.flush()
 

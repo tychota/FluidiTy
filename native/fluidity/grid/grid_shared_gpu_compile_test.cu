@@ -1,12 +1,13 @@
-// Proves that the shared headers grid/grid_build_status.h, grid/grid_build_steps.h, grid/grid_ids.h,
-// grid/grid_tables.h and grid/weight_curve.h compile as GPU code:
+// Proves that the shared headers grid/cell_size_rule.h, grid/grid_build_status.h, grid/grid_build_steps.h,
+// grid/grid_ids.h, grid/grid_tables.h and grid/weight_curve.h compile as GPU code:
 // label no_gpu.
 //
 // The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
-// code for every function of grid_build_steps.h, grid_ids.h, grid_tables.h and weight_curve.h, the helpers those
-// functions call included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables, WeightCurveValue,
-// GridBuildStatus and CellCheck read and written by GPU code. The integer results go to `results`, and the double
-// results of weight_curve.h and grid_tables.h go to `double_results`. The CUDA compiler generates GPU code for a shared
+// code for every function of cell_size_rule.h, grid_build_steps.h, grid_ids.h, grid_tables.h and weight_curve.h, the
+// helpers those functions call included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables,
+// WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel and CellSizeFacts read and
+// written by GPU code. The integer results go to `results`, and the double results of weight_curve.h, grid_tables.h
+// and cell_size_rule.h go to `double_results`. The CUDA compiler generates GPU code for a shared
 // function only where GPU code calls it, so each function is called here once.
 // A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
 // function's address, which needs no GPU.
@@ -17,6 +18,7 @@
 
 #include "fluidity/base/axis.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/cell_size_rule.h"
 #include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_ids.h"
@@ -30,7 +32,7 @@ namespace {
 // writes split cells and the id 0 to `cell_ids`, block ids to `block_ids`, the neighbour tables of one block to
 // `block_tables` (27 + 1 + 8 entries per sorted block) and states and kinds to `written_cell_states` and
 // `written_face_piece_kinds`, and writes at least one integer per shared function to `results` and the doubles of
-// weight_curve.h and grid_tables.h to `double_results`, so the compiler cannot drop any call.
+// weight_curve.h, grid_tables.h and cell_size_rule.h to `double_results`, so the compiler cannot drop any call.
 __global__ void ComputeWithEverySharedGridFunction(
     const std::int32_t* values,
     CellBlockRange range,
@@ -200,6 +202,14 @@ __global__ void ComputeWithEverySharedGridFunction(
   const Vec3 face_position = ComputeFacePosition(tables, face);
   double_results[double_result_index++] = cell_center.x + face_position.y;
   double_results[double_result_index++] = ComputeFaceArea(tables, face) + ComputeCellCenterDistance(tables, face);
+  // cell_size_rule.h: the widths table, the reference speed, the wanted cell width (m) and the wanted size level.
+  const CellWidthsBySizeLevel widths = ComputeCellWidthsBySizeLevel(frame);
+  const CellSizeSettings settings = {.smallest_size_level = static_cast<SizeLevel>(frame.size_level_count - 1)};
+  const CellSizeFacts facts = {.depth_below_surface = frame.origin.x, .velocity_change_size = frame.origin.y};
+  const double reference_speed = ComputeReferenceSpeed(frame.origin.z, 9.81, frame.biggest_cell_width);
+  const double wanted_width = ComputeWantedCellWidth(facts, reference_speed, widths, settings);
+  double_results[double_result_index++] = wanted_width;
+  results[result_index++] = static_cast<std::uint64_t>(ComputeWantedSizeLevel(wanted_width, widths));
   results[result_index++] = static_cast<std::uint64_t>(kMaxNearbyFaces);
 }
 

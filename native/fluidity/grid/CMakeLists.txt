@@ -1,4 +1,5 @@
 fluidity_add_headers(
+  cell_size_rule.h
   grid_build_status.h
   grid_build_steps.h
   grid_buffers_internal.h
@@ -38,6 +39,7 @@ if(NOT MSVC)
   )
 endif()
 
+fluidity_add_test(cell_size_rule_test SOURCES cell_size_rule_test.cc LABEL cpu)
 fluidity_add_test(find_cell_at_test SOURCES find_cell_at_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_buffers_test SOURCES grid_buffers_test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps_test.cc LABEL cpu LINKS fluidity_grid_test_support)

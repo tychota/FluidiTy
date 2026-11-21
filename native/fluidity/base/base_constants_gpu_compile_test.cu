@@ -1,10 +1,10 @@
 // Proves that the shared headers of base/ compile as GPU code: label no_gpu.
 //
 // The GPU function below is never launched. Building it makes the CUDA compiler generate GPU code for every
-// function of scalar_math.h, vec3.h, mat3.h, axis.h and tree_sum.h, for PerParticleVelocity<Vec3>, and for reads of
-// the class-type constants kUp and kIdentity at run time. A shared function that calls a CPU-only function, or a
-// constant that GPU code cannot read, fails this build. The test only takes the function's address, which needs no
-// GPU.
+// function of scalar_math.h, vec3.h, mat3.h, axis.h and tree_sum.h, for PerParticleVelocity<Vec3>, for reads of the
+// class-type constants kUp and kIdentity at run time, and for a read of the double constant math::kPositiveInfinity.
+// A shared function that calls a CPU-only function, or a constant that GPU code cannot read, fails this build. The
+// test only takes the function's address, which needs no GPU.
 
 #include <gtest/gtest.h>
 
@@ -57,6 +57,8 @@ __global__ void ComputeWithEverySharedFunction(const double* values, double* res
   results[result_index++] = math::Min(value, gravity);
   results[result_index++] = math::Max(value, gravity);
   results[result_index++] = math::IsFinite(value) ? 1.0 : 0.0;
+  results[result_index++] = math::Min(value, math::kPositiveInfinity);
+  results[result_index++] = math::IsNan(value) ? 1.0 : 0.0;
   // vec3.h
   results[result_index++] = (vector + gravity_vector).x;
   results[result_index++] = (vector - gravity_vector).y;

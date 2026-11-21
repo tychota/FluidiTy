@@ -7,7 +7,7 @@
 //   the C++ library on the CPU and the CUDA math library on the GPU, so a formula is written once with math::Sqrt,
 //   math::Exp and the others.
 //   The functions come in two groups.
-//   Same bits on CPU and GPU: Floor, Abs, Sqrt, Min, Max and IsFinite. IEEE 754 fixes their result exactly: Sqrt
+//   Same bits on CPU and GPU: Floor, Abs, Sqrt, Min, Max, IsFinite and IsNan. IEEE 754 fixes their result exactly: Sqrt
 //     is correctly rounded, and both processors follow IEEE 754 for a double square root. A formula built only
 //     from these and from add, subtract, multiply and divide also gives the same bits, as math::Length does.
 //     A result that is NaN is the exception: IEEE 754 leaves the bits of a NaN open, so each processor may give
@@ -21,7 +21,8 @@
 //   correctly rounded the exact answer rounded once to the nearest double
 //   rounding unit     the gap between a double and the next larger double
 // Owns:    math::Floor, math::Abs, math::Sqrt, math::Cbrt, math::Exp, math::Expm1, math::Log, math::Pow,
-//          math::Sin, math::Cos, math::Min, math::Max, math::IsFinite(double)
+//          math::Sin, math::Cos, math::Min, math::Max, math::IsFinite(double), math::IsNan,
+//          math::kPositiveInfinity
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), the CUDA math library under the CUDA compiler
 // Used by: base/vec3.h, base/mat3.h, every shared header with a formula
 // Read:    docs/method-paper/fluidity-method.typ <sec-conventions>
@@ -37,8 +38,14 @@
 #if !defined(__CUDACC__)
 #include <cmath>
 #endif
+#include <limits>
 
 namespace fluidity::math {
+
+// Positive infinity, the double above every finite double. A constant evaluated on the CPU at compile time, so GPU
+// code reads it as a plain double; GPU code could not call std::numeric_limits<double>::infinity() itself.
+// Example: Min(kPositiveInfinity, 2) = 2; IsFinite(kPositiveInfinity) is false.
+inline constexpr double kPositiveInfinity = std::numeric_limits<double>::infinity();
 
 // Computes the largest whole number that is not above the value.
 //
@@ -241,6 +248,16 @@ FLUIDITY_CPU_AND_GPU inline bool IsFinite(double value) noexcept {
 #else
   return std::isfinite(value);
 #endif
+}
+
+// Says whether a value is NaN.
+//
+// Method: same answer on CPU and GPU. Only a NaN compares unequal to itself, as Min and Max test it, so the answer
+//   needs no library call and is usable in a constant expression.
+// Example: IsNan(0.0 / 0.0) is true. IsNan(kPositiveInfinity) is false.
+// Read: docs/method-paper/fluidity-method.typ <sec-conventions>
+FLUIDITY_CPU_AND_GPU constexpr bool IsNan(double value) noexcept {
+  return !(value == value);
 }
 
 }  // namespace fluidity::math
