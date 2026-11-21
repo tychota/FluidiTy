@@ -1,0 +1,41 @@
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_04a0cdc223d9cf 550-553,601-602
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_5f6ed148fb07a5 2057-2070,2072,2077,2079,2081,2090-2091,2093,2105,2111-2115,2124-2143,2146-2147,2152-2153,2162,2169-2170,2186,2203-2204,2212,2216,2221,2230-2238,2242-2266,2269-2273,2278-2281,2286,2291-2292,2294,2296-2297,2299,2301-2302,2304-2309,2329-2331,2350-2351,2359,2362,2364,2371,2373-2381,2389,2407-2425,2430-2432,2441-2451,2464-2501,2503-2512,2516-2531
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_68c9bb7df338c9 821-848
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_bf0f6695d36a54 36-37,138-139,148-161
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_5e483454b7c119 515-516
+native/fluidity/grid/staggered_grid_gpu.cu
+  s_4f0877e2acdcf0::t_f0d17bea5a0a67 183-184
+native/fluidity/grid/staggered_grid_gpu.h
+  s_4f0877e2acdcf0::t_b1da6884363554 1,12-14,26,62-64,82-84
+native/fluidity/grid/grid_cell_checks_gpu_test.cc
+  s_3cbbb2f829c506::t_7006c4e0a91bbc 4-8,30,131-158,166-167,183-184,186,197,218-220,251,255,263,276,298-299,302,306,327-329,341-436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ee0ed8bc55a1a8b1c9196b04c7ad495c30ecf6f",
+  "prompts": {},
+  "sessions": {
+    "s_3cbbb2f829c506": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-adcdda0633cbf2b17",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
