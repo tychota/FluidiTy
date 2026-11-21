@@ -1,0 +1,62 @@
+native/fluidity/grid/grid_cell_count_test.cc
+  s_4f0877e2acdcf0::t_82887cbeb76f71 10,334-337,342,344-346
+  s_4f0877e2acdcf0::t_54730ebd57e4fe 265,331-333,338-341,343,347-349
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_243075819da0be 1,23-24,28,259-278,281-291,293-314,316-343,725-830,833-894
+  s_4f0877e2acdcf0::t_145d799988e690 279-280,292,315,831-832
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_4e766f1d3d79af 34-47
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_516c0d1ffb8c08 10,12,21-24,26-27,29,31,620-709
+native/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_2e690d00d830a9 31-35,405-406,409-410,411-419
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_484e660f669fe9 663,672
+  s_4f0877e2acdcf0::t_92f9a8a32d7945 59-69,80,662,664-671,673-683
+native/fluidity/grid/grid_ids_test.cc
+  s_4f0877e2acdcf0::t_8afdde37228e4a 409-412,416-422
+native/fluidity/grid/allocation_counter_test_support.cc
+  s_4f0877e2acdcf0::t_8cb703720258c2 1-12,14-30,33-35,40-170
+  s_4f0877e2acdcf0::t_c2a40dad00705b 13,31-32,36-39
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_74abc3e5088bba 40,359-364
+  s_4f0877e2acdcf0::t_5ce097ac069326 1-2,5-6,16-17,29,32-34,38-39,41-43,45,295-358,365-387,390-400
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_4e54f89046956e 22-23,32,114-129
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_daec94cc6eddd3 5
+  s_4f0877e2acdcf0::t_ba2c5399916760 1-2,4,19-20,31-36,38-41,53-54,59-60,62,65,234-267
+native/fluidity/grid/grid_buffers_internal.h
+  s_4f0877e2acdcf0::t_635ab4418e1fed 88,149,158-161
+  s_4f0877e2acdcf0::t_64de9ed17c8e58 28-29,33,64-65,162-167,193-200
+native/fluidity/grid/grid_memory_estimate.h
+  s_4f0877e2acdcf0::t_a0edfcc59d7c03 68-70
+native/fluidity/grid/staggered_grid_test.cc
+  s_4f0877e2acdcf0::t_861ae4e98f0334 1-10,12,14-224,227-228,230-379,381-396,446-471,520-521,529,535-553,555,562-564,569,573-589,591,593-596,598-599,601-603,605-610,612-614,617-618,620-624,626-641,648-713,715,726-740,771-772,775-791,799-801,803,805-808,810-815,822,824,827-831,833-840,855-856
+  s_4f0877e2acdcf0::t_48447e77f34052 11,13,225-226,229,380,397-445,472-476,494,498-507,515-517,522,525-527,554,556-559,565-568,570-572,590,592,597,600,604,611,615-616,619,625,647,714,719-722,841-854
+native/fluidity/grid/staggered_grid_no_gpu_test.cc
+  s_4f0877e2acdcf0::t_db3cddf6b61431 1-31
+native/fluidity/grid/allocation_counter_test_support.h
+  s_4f0877e2acdcf0::t_5a69a0613b1e76 29-30
+  s_4f0877e2acdcf0::t_a66e6c2bf02447 1-28,31-33
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_59484c2c23484d 292-299,479
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_44f9d741703bb9 1372-1400
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d70df4aeccd1c87860003641d2a85add20f84479",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
