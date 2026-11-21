@@ -1,0 +1,70 @@
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_b7bbc129ca3925 20-21
+  s_4f0877e2acdcf0::t_11115d1474db3f 22-23
+  s_4f0877e2acdcf0::t_4654a2bc525939 12,19,44-53
+native/fluidity/grid/grid_test_support_test.cc
+  s_4f0877e2acdcf0::t_8a878107eb3295 24-25,1457-1500
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_2de1ca7c74e3d8 98-103
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_74294218604342 123-137,140-147
+  s_4f0877e2acdcf0::t_bf0f6695d36a54 36-37,138-139,148-161
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_ccdd741fdb6564 896-904
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_68c9bb7df338c9 821-848
+  s_4f0877e2acdcf0::t_d1737fd6c7df9e 624-820
+native/fluidity/grid/grid_cell_checks_gpu_test.cc
+  s_3cbbb2f829c506::t_7006c4e0a91bbc 4-8,30,129-156,164-165,181-182,184,195,213-215,253,265-267,280,324,331-332
+  s_4f0877e2acdcf0::t_9e68951126b29c 329-330,333-334
+  s_4f0877e2acdcf0::t_144b208766cfb8 1-3,9-29,31-128,157-163,166-180,183,185-194,196-212,216-252,254-264,268-279,281-323,325-328
+  s_4f0877e2acdcf0::t_dabb4472c3c989 335-461
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_5e483454b7c119 516-517
+  s_4f0877e2acdcf0::t_6474362616bfb3 37-40,515,522-524,537,539-543
+native/fluidity/grid/staggered_grid_gpu.cu
+  s_4f0877e2acdcf0::t_18521dc9dcff9e 1-182,185-207
+  s_4f0877e2acdcf0::t_f0d17bea5a0a67 183-184
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_b3009296bf6d18 547-549,554-600,603-604,606-652
+  s_4f0877e2acdcf0::t_97993bab852949 605
+  s_4f0877e2acdcf0::t_04a0cdc223d9cf 550-553,601-602
+  s_4f0877e2acdcf0::t_73851c51ea9055 442-447
+  s_4f0877e2acdcf0::t_32a2c4c6c5f47b 58-60
+  s_4f0877e2acdcf0::t_96b819897afe4b 66-67
+  s_4f0877e2acdcf0::t_d6f5e958a10f03 68-71,546
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_32d22f751dc071 9,11,14-16,21-25,27,32,2041-2056,2071,2073-2076,2078,2080,2082-2089,2092,2094-2104,2106-2110,2116-2123,2144-2145,2148-2151,2154-2161,2163-2168,2171-2185,2187-2202,2205-2211,2213-2215,2217-2220,2222-2229,2239-2241,2267-2268,2274-2277,2282-2285,2287-2290,2293,2295,2298,2300,2303,2310-2328,2332-2349,2352-2358,2360-2361,2363,2365-2370,2372,2382-2388,2390-2406,2426-2429,2433-2440,2452-2463,2502,2513-2515,2532-2546
+  s_4f0877e2acdcf0::t_5f6ed148fb07a5 2057-2070,2072,2077,2079,2081,2090-2091,2093,2105,2111-2115,2124-2143,2146-2147,2152-2153,2162,2169-2170,2186,2203-2204,2212,2216,2221,2230-2238,2242-2266,2269-2273,2278-2281,2286,2291-2292,2294,2296-2297,2299,2301-2302,2304-2309,2329-2331,2350-2351,2359,2362,2364,2371,2373-2381,2389,2407-2425,2430-2432,2441-2451,2464-2501,2503-2512,2516-2531
+native/fluidity/grid/staggered_grid_gpu.h
+  s_4f0877e2acdcf0::t_b1da6884363554 1,12-14,26,62-64,82-84
+  s_4f0877e2acdcf0::t_669592c6f542e2 2-11,15-25,27-61,65-81,85-99
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_2203b4f12f095c 22-27,29-32,46,89-103,149-162,166-175,181-184
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_2678a3255b6e63 26-31,41-43,97-98,101-102,104,134-136,139-141,286,289,293,310-455,457,459,462,464-465,471,476-478,483-496,498-501,503,505,518
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e8fefb9290d52cd8e6af0c8487d63dae98b118e4",
+  "prompts": {},
+  "sessions": {
+    "s_3cbbb2f829c506": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-adcdda0633cbf2b17",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}

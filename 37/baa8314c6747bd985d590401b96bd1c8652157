@@ -1,0 +1,48 @@
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_6e18f4424e4828 1305-1325
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_59a36ef63683cc 36-37
+  s_4f0877e2acdcf0::t_3036bfe9b5ac01 379-393
+native/fluidity/grid/find_cell_at_test.cc
+  s_4f0877e2acdcf0::t_5bb7e5f48db1ea 1-87,102-134,137-141,143-145,147-148,151-153,158-164,167-198,214-249,251-384
+  s_4f0877e2acdcf0::t_6a9295ec5a0ae3 385-485
+  s_4f0877e2acdcf0::t_5e53b509fd67e7 88-101,135-136,142,146,149-150,154-157,165-166,199-213,250
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_b86233b8cdedf7 41
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_195eb89750b288 157-160
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_3d43315775d2ee 6-7,24,52-54,57-60,64-65,74,629-791,804-811,814,826-829,834-839,841-848,853-855,858-867,869-872
+  s_4f0877e2acdcf0::t_55ac7c1f572458 26-27,83-85,161-163
+  s_4f0877e2acdcf0::t_f10df07f4f4bf8 55-56,792-803,812-813,815-819,824-825,830-833,840,849-852,856-857,868
+  s_4f0877e2acdcf0::t_00994445824d8f 820-823
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_c96bc8007a3fe1 1977
+  s_4f0877e2acdcf0::t_9c4f1a2fa31d09 1924-1934,1965-1969,1976,2118-2121
+  s_4f0877e2acdcf0::t_66a26263ccd813 1970-1975
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_b4deedf2c6668b 63-69
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_d93b3e81d9acc3 66-68
+native/fluidity/grid/grid_cell_checks_test.cc
+  s_4f0877e2acdcf0::t_112ee4e2d3e396 7,365-387
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_cf0817707032f4 500
+  s_4f0877e2acdcf0::t_67525699ae8793 501-504
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "37baa8314c6747bd985d590401b96bd1c8652157",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
