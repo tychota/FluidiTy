@@ -26,14 +26,14 @@
 //   memory piece     the bytes of one buffer inside a RunMemory's block (base/run_memory.h)
 // Owns:    kMaxCellBlocksLimit, GridSettings, GridInputs, GridCounts, BuilderBuffersSharing, GridBuilderBuffers,
 //          BuildGridBuilderBuffers, GridBuilderBuffersSize, ComputeGridBuilderBuffersSize, GridBuffers,
-//          BuildGridBuffers, StaggeredGrid, BuildGrid, TakeBuffers, ComputeGridCounts, CheckSizeStepRule
+//          BuildGridBuffers, StaggeredGrid, BuildGrid, TakeBuffers, ReadGrid, ComputeGridCounts, CheckSizeStepRule
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer (base/buffer.h), MemoryEstimateEntry (base/memory_count.h),
 //          RunMemory (base/run_memory.h), RunOn (base/run_on.h), GridBuffersArrays, GridBuilderBuffersArrays,
 //          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries, BuildGridFromBuffers, ComputeHasLoanOf
 //          (grid/grid_buffers_internal.h), GridFailure (grid/grid_error.h), CellId, GridVersion, CellBlockRange,
 //          kMaxSizeLevels (grid/grid_ids.h), GridFrame, GridTables (grid/grid_tables.h)
-// Implementation uses: CheckCanRunOn (base/check_can_run_on.h), ComputeMemoryBytes (base/memory_count.h),
-//          BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
+// Implementation uses: ReadBuffer (base/buffer.h), CheckCanRunOn (base/check_can_run_on.h), ComputeMemoryBytes
+//          (base/memory_count.h), BuildOrderBuffers (base/stable_order.h), BuildGridMemoryEstimate, ToMemoryCounts
 //          (grid/grid_memory_estimate.h), BuildSortedCellList and the checks of a cell list (grid/grid_cell_checks.h),
 //          FindSortedCellAt, ComputeSplitCellCountToAdd, ComputeBigCellAtSizeLevel, ToBlockSortKey, FindSortedBlock,
 //          FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeFacePieceKind,
@@ -339,6 +339,7 @@ class StaggeredGrid {
   friend StaggeredGrid
   BuildGridFromBuffers(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);
   friend GridBuffers TakeBuffers(StaggeredGrid&& grid);
+  friend std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, GridBuffers& cpu_buffers);
 
   StaggeredGrid(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);
 
@@ -397,6 +398,38 @@ std::expected<StaggeredGrid, GridFailure> BuildGrid(const GridInputs& inputs, Gr
 //   same buffers: the tables of version 2 lie in the same memory.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 GridBuffers TakeBuffers(StaggeredGrid&& grid);
+
+// Copies the used part of the five tables of `grid` into `cpu_buffers` and returns a grid on the CPU with the same
+// frame, version and counts: the one explicit copy of a grid's tables, for tests, tools and a caller that accepts a
+// transfer from the GPU. Allocates nothing. On success `cpu_buffers` moves into the returned grid and is left
+// moved-from; on failure it keeps its arrays and its loan and can build again.
+//
+// Method: one read of base/ for each part of a table, from the grid's arrays to the front of the buffers' arrays: the
+//   block ids, 27 neighbours per block, the bigger block of each block, the 8 smaller blocks of each block, 64 cell
+//   states and 240 face piece kinds per block, 456 bytes per block. Only the first counts().cell_blocks blocks of
+//   each array are read, so the bytes are 456 per block of the grid, never of the room. The bigger blocks and the
+//   smaller blocks are two reads, since the layout of bigger_and_smaller_blocks depends on the room
+//   (ComputeSmallerBlocksStart): the smaller blocks go where the room of `cpu_buffers` puts them, not where the room
+//   of `grid` has them, so the two rooms may differ. The piece map is no part of a grid and is not copied. The loan
+//   of builder buffers stays with `cpu_buffers`: a copy builds nothing, so the returned grid's buffers keep the loan
+//   they had, and TakeBuffers then BuildGrid work on them as on buffers a build filled. The reads stop at the first
+//   failure. A GPU grid goes through the same reads, which then cross from the GPU; a failed read from the GPU and a
+//   destination whose arrays do not have its room's size are the two failures no run on the CPU reaches.
+// Example: a grid of 2 blocks in a room of 252, read into buffers of room 4,096, gives a grid with the same version
+//   and counts whose first 2 blocks hold the same tables; max_cell_blocks() of the result is 4,096.
+// Fails: kBadInput           `grid` holds no tables (version 0: moved from, or its buffers were taken back);
+//                            `cpu_buffers` is moved from (room 0) or is not on the CPU, checked in every build before
+//                            anything is written
+//        kTooManyCellBlocks  cpu_buffers.max_cell_blocks() is below grid.counts().cell_blocks; cell and other_cell
+//                            zero
+//        kRunOnCallFailed    a read from the GPU failed
+//        kInternalFault      a state no input causes, checked in every build: a table array of `cpu_buffers` whose
+//                            size is not its room's, or a size error from a read of base/ after the sizes were checked
+//        After a failed check nothing is written. After a failed read the tables of `cpu_buffers` are unspecified.
+//        After a success the part of each table beyond the first counts().cell_blocks blocks is unspecified: it may
+//        hold the entries of an earlier grid.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-buffer>
+std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, GridBuffers& cpu_buffers);
 
 // Counts the cell blocks, the active cells and the face pieces that a list of active cells in CPU memory would give,
 // without building the grid: what a run's plan needs to choose the room before any buffers exist.

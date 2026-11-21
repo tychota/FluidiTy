@@ -781,6 +781,112 @@ GridBuffers TakeBuffers(StaggeredGrid&& grid) {
 
 namespace {
 
+// Reads `count` items of `source`, from index `source_first`, into `destination` from index `destination_first`. The
+// one copy of every table: base/ chooses the processor from the source, so a GPU table crosses to the CPU here and a
+// CPU table is a plain copy.
+// Requires: the destination slice lies inside the destination array. ReadGrid checks that once, by comparing every
+//   destination array with its room. The source slice is checked by ReadBuffer, whose size error is an internal fault.
+template <BufferValue Value>
+std::expected<void, GridFailure> ReadTablePart(
+    const Buffer<Value>& source,
+    // clang-tidy: two indexes and a count; the swappable-parameters check flags the integers.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    std::size_t source_first,
+    std::size_t count,
+    Buffer<Value>& destination,
+    std::size_t destination_first
+) {
+  const std::span<Value> values(destination.data() + destination_first, count);
+  const std::expected<void, BufferError> read = ReadBuffer(source, source_first, values);
+  if (!read.has_value()) {
+    return std::unexpected(ToGridFailure(read.error(), 0));
+  }
+  return {};
+}
+
+// Reads the used part of the five tables of `source` into `destination`: the first block_count blocks of each, in the
+// order of the tables, and stops at the first failed read. The smaller blocks start at the room of each array's own
+// buffers (ComputeSmallerBlocksStart), which differ when the two rooms do.
+std::expected<void, GridFailure> ReadUsedTables(
+    const GridBuffersArrays& source,
+    // clang-tidy: two rooms and a block count; the swappable-parameters check flags the integers.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    std::uint32_t source_room,
+    std::uint32_t block_count,
+    GridBuffersArrays& destination,
+    std::uint32_t destination_room
+) {
+  const std::size_t blocks = block_count;
+  const std::size_t source_smaller_start = ComputeSmallerBlocksStart(source_room);
+  const std::size_t destination_smaller_start = ComputeSmallerBlocksStart(destination_room);
+  if (auto read = ReadTablePart(source.block_ids, 0, blocks, destination.block_ids, 0); !read.has_value()) {
+    return read;
+  }
+  if (auto read = ReadTablePart(
+          source.same_size_level_neighbour_blocks,
+          0,
+          27 * blocks,
+          destination.same_size_level_neighbour_blocks,
+          0
+      );
+      !read.has_value()) {
+    return read;
+  }
+  if (auto read = ReadTablePart(source.bigger_and_smaller_blocks, 0, blocks, destination.bigger_and_smaller_blocks, 0);
+      !read.has_value()) {
+    return read;
+  }
+  if (auto read = ReadTablePart(
+          source.bigger_and_smaller_blocks,
+          source_smaller_start,
+          8 * blocks,
+          destination.bigger_and_smaller_blocks,
+          destination_smaller_start
+      );
+      !read.has_value()) {
+    return read;
+  }
+  if (auto read = ReadTablePart(source.cell_states, 0, kCellPlacesPerBlock * blocks, destination.cell_states, 0);
+      !read.has_value()) {
+    return read;
+  }
+  return ReadTablePart(source.face_piece_kinds, 0, kFacePlacesPerBlock * blocks, destination.face_piece_kinds, 0);
+}
+
+}  // namespace
+
+std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, GridBuffers& cpu_buffers) {
+  // A destination on the GPU would be written through a GPU pointer as if it were CPU memory: a caller's mistake with
+  // a defined failure, in every build.
+  const bool has_grid_tables = grid.version_.value != 0;
+  const bool is_destination_moved_from = cpu_buffers.max_cell_blocks() == 0;
+  const bool is_destination_on_cpu = cpu_buffers.run_on() == RunOn::kCpu;
+  if (!has_grid_tables || is_destination_moved_from || !is_destination_on_cpu) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
+  if (grid.counts_.cell_blocks > cpu_buffers.max_cell_blocks()) {
+    return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
+  }
+  GridBuffersArrays& destination = ToGridBuffersArrays(cpu_buffers);
+  // BuildGridBuffers built every table for the room from the estimate's entries; other sizes mean the two disagree.
+  if (!ComputeHasTablesOfRoom(destination, cpu_buffers.max_cell_blocks())) {
+    return std::unexpected(ToInternalFault());
+  }
+  const std::expected<void, GridFailure> read = ReadUsedTables(
+      ToGridBuffersArrays(grid.buffers_),
+      grid.buffers_.max_cell_blocks(),
+      grid.counts_.cell_blocks,
+      destination,
+      cpu_buffers.max_cell_blocks()
+  );
+  if (!read.has_value()) {
+    return std::unexpected(read.error());
+  }
+  return BuildGridFromBuffers(std::move(cpu_buffers), grid.frame_, grid.version_, grid.counts_);
+}
+
+namespace {
+
 // Runs the steps of a build into `buffers` and returns the counts of the tables written. BuildGrid and the buffers form
 // of ComputeGridCounts both call it, so the counts come from the very tables a build writes. The buffers keep their
 // arrays and their loan, and their contents are unspecified after a failure.
