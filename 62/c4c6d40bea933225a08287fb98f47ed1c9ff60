@@ -1,0 +1,29 @@
+native/fluidity/grid/grid_counts_on_buffers_test.cc
+  s_4f0877e2acdcf0::t_90b8cf46e1e002 18,45-48,52-53,56-66,70-74,76,94,104,141-228,237-239,242-243,245,250,253-254,260,280,288-289,297-298,300-301,364-381,384-385,387,390,403-426,428,434,436,438-440,442-443,445-461
+native/fluidity/grid/staggered_grid.h
+  s_1a11f6f8e92cb9::t_01c3886569f7cf 442,445-446
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "62c4c6d40bea933225a08287fb98f47ed1c9ff60",
+  "prompts": {},
+  "sessions": {
+    "s_1a11f6f8e92cb9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab9ebdb8195690eca",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
