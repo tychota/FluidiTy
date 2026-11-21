@@ -1,0 +1,33 @@
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_06ca50fbfca042 57-67
+native/fluidity/grid/grid_counts_on_buffers_test.cc
+  s_4f0877e2acdcf0::t_715ca6e596e264 1-466
+native/fluidity/grid/grid_test_support.cc
+  s_4f0877e2acdcf0::t_baf6aef6fbcbb7 1002,1011-1016
+native/fluidity/grid/grid_test_support.h
+  s_4f0877e2acdcf0::t_db84a45fbe2f7b 291,308-317
+native/fluidity/grid/grid_test_support_test.cc
+  s_4f0877e2acdcf0::t_c9f8f0e2691a19 11,24,27,1301-1440
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_5e3226a62bf546 436-453
+native/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_9da53c12bd46ea 782-787,897-912
+native/fluidity/grid/staggered_grid_test.cc
+  s_4f0877e2acdcf0::t_7427542db85700 715-720,724
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5c0ba017993ec24ef9a880296308dd701cbc78b2",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
