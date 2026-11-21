@@ -57,12 +57,14 @@
 //          ComputeBigCellAtSizeLevel, FindSortedCellAt, CellCheck, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
 //          kIdStep, kOverlapStep, kSiblingStep, kSizeStepRuleStep, ToFailureKey, ToFailureStep, ToFailurePosition,
 //          ComputeFailureCells, ComputeCellIdFailureKey, ComputeSortedCellFailureKey, ComputeHasEarlierStepFailed,
-//          ComputeResetBuildStatus, ApplyFailureCells, ComputeSplitCellCountToAdd,
-//          FindBlockNeighbours, ComputeBlockFaultKey, ComputeCoveredCellState, ComputeCellStateBeside,
-//          ComputeFacePieceKind; and, for this header's own functions and types only, ComputeBiasedCorner,
-//          ComputeSortKeyOfCorner, ComputeIsCellPresent, ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry,
-//          ComputeStoredCellState, ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and
-//          the struct LocalPlace
+//          ComputeResetBuildStatus, ApplyFailureCells, ComputeSplitCellCountToAdd, kCellPlacesStep, kBlockCountStep,
+//          kBlockFaultStep, ApplySplitCellWritesAt, ComputeRoomFailureKey, ComputeSortCount, kSortCountFaultKey,
+//          ComputeCellPlacesFailureKey, ApplySortTailFillAt,
+//          ComputeBlockStartMark, ComputeBlockIndexOfSortedEntry, ApplyBlockIdWriteAt, FindBlockNeighbours,
+//          ComputeBlockFaultKey, ComputeCoveredCellState, ComputeCellStateBeside, ComputeFacePieceKind; and, for this
+//          header's own functions and types only, ComputeBiasedCorner, ComputeSortKeyOfCorner, ComputeIsCellPresent,
+//          ComputeBlockIdAt, FindSortedBlockAt, ComputeNeighbourEntry, ComputeStoredCellState,
+//          ComputeLocalCoordInNeighbour, ComputeBlockSide, ComputeIsCoveredByActiveBigCell, and the struct LocalPlace
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), kNoFailureKey, GridBuildStatus (grid/grid_build_status.h),
 //          GridError (grid/grid_error.h), CellId, CellBlockId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex,
 //          CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kCellPlacesPerBlock, kFacePlacesPerBlock,
@@ -451,7 +453,8 @@ inline constexpr int kSizeStepRuleStep = 4;  // The size step rule, in the fixed
 //   earliest step, then the smallest position, then the smallest detail. The steps: 1 the ids (position = input
 //   index), 2 overlaps, 3 siblings, 4 the size step rule (position = place in the fixed cell order), 5 the active and
 //   split cells against 64 max_cell_blocks, 6 the blocks against max_cell_blocks (position 0), 7 a block of size level
-//   1 or more without its bigger block (position = the block's index).
+//   1 or more without its bigger block (position = the block's index). Step 5 with detail 1 is the active and split
+//   cells beyond the sort count (kSortCountFaultKey).
 // Example: ToFailureKey(2, 5, 0) = 144115188075857152, above ToFailureKey(1, 2^40, 255).
 // Requires: step < 256; position < 2^48.
 // Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>
@@ -486,16 +489,17 @@ FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ToFailurePosition(std::uint64_t fai
 //
 // Method: step 1 runs CheckCellId again on the input id at the key's position, in input order, and names that id as
 //   given, its raw value, even when bit 63 is clear. Steps 2, 3 and 4 run CheckOverlapAt, CheckSiblingsAt or
-//   CheckSizeStepAt again at the key's position in the sorted list. Steps 5 and 6 give kTooManyCellBlocks with zero
-//   cells. Step 7, a block of size level 1 or more without its bigger block, gives kInternalFault with zero cells: a
-//   fault in the build, reported with no cell.
+//   CheckSizeStepAt again at the key's position in the sorted list. Step 5 with detail 0 and step 6 give
+//   kTooManyCellBlocks with zero cells. Step 5 with detail 1, the cells beyond the sort count (kSortCountFaultKey), and
+//   step 7, a block of size level 1 or more without its bigger block, give kInternalFault with zero cells: a fault in
+//   the build, reported with no cell.
 // Example: in {size level 0 {0,0,0}, size level 2 {4,4,4}}, ToFailureKey(4, 1, 0) gives kSizeStepRuleBroken, cell
 //   size level 2 {4,4,4}, other_cell size level 0 {0,0,0}, detail 0. With CellId{0} at input index 3,
 //   ToFailureKey(1, 3, 0) gives kBadInput with cell CellId{0}.
-// Fails: kInternalFault  the key's step is 0 or above 7, its position is not below input_count (step 1) or count
-//                        (steps 2 to 4), or the check finds no failure there; zero cells. A key that the build
-//                        computed from these lists never has any of these, so each means a fault in the build. Step 7
-//                        gives it too, as above.
+// Fails: kInternalFault  the key's step is 0 or above 7, step 5 has a detail of 2 or more, its position is not below
+//                        input_count (step 1) or count (steps 2 to 4), or the check finds no failure there; zero
+//                        cells. A key that the build computed from these lists never has any of these, so each means
+//                        a fault in the build. Step 5 with detail 1 and step 7 give it too, as above.
 // Requires: the lists are the ones the key's checks ran on; input_cells holds input_count ids in input order and
 //   sorted_cells count ids in the fixed order; either may be null when its count is 0.
 // Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
@@ -513,8 +517,13 @@ FLUIDITY_CPU_AND_GPU constexpr CellCheck ComputeFailureCells(
   const int step = ToFailureStep(failure_key);
   const std::uint64_t position = ToFailurePosition(failure_key);
   const CellCheck internal_fault = {.error = GridError::kInternalFault};
-  if (step == 5 || step == 6) {
+  // Step 5 with detail 0 is the room's cell places; with detail 1 the sort count, a fault (kSortCountFaultKey).
+  const bool is_room_key = step == 6 || (step == 5 && (failure_key & 0xFFU) == 0);
+  if (is_room_key) {
     return {.error = GridError::kTooManyCellBlocks};
+  }
+  if (step == 5) {
+    return internal_fault;
   }
   if (step == 1) {
     if (position >= input_count) {
@@ -671,6 +680,209 @@ FLUIDITY_CPU_AND_GPU constexpr int ComputeSplitCellCountToAdd(CellId cell) noexc
   return added_count;
 }
 
+// The steps of the failure key that a build checks after the sorted list: the two checks of <proc-build-grid> step 5,
+// then a block without its bigger block (<sec-parallel-build>, "The first failure").
+inline constexpr int kCellPlacesStep = 5;  // The active and split cells against the room's cell places.
+inline constexpr int kBlockCountStep = 6;  // The blocks against the room.
+inline constexpr int kBlockFaultStep = 7;  // A block of size level 1 or more without its bigger block.
+
+// Writes the split cells that the active cell at one sorted position adds after the active cells: method paper
+// <proc-build-grid-in-parallel> step P7 (c), for one thread's item.
+//
+// Method: the cell at `position` adds k = ComputeSplitCellCountToAdd(cell) cells, the cells
+//   ComputeBigCellAtSizeLevel(cell, l - 1 - i) for i = 0..k - 1 and l the cell's size level, and writes them to
+//   cell_ids[active_count + sums[position]] to cell_ids[active_count + sums[position] + k - 1]. The exclusive prefix
+//   sum of the counts gives each position its own places, so no two positions write one place, and the threads may
+//   run in any order. No order of the k cells among those places is promised: P8 sorts every cell again by its block,
+//   and nothing after it reads a place of the cell ids by its index.
+// Example: active cells {size level 1 {0,0,0}, ..., size level 1 {1,1,1}}, the 8 small cells of size level 0 {0,0,0},
+//   have counts {1, 0, ..., 0} and sums {0, 1, ..., 1}: position 0 writes size level 0 {0,0,0} at place 8 + 0.
+// Requires: cell_ids holds active_count sorted active cells, then room for their split cells; sums holds the exclusive
+//   prefix sums of ComputeSplitCellCountToAdd over the active_count cells; position < active_count.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: a count and a position; the swappable-parameters check flags the integers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr void ApplySplitCellWritesAt(
+    CellId* cell_ids,
+    const std::uint32_t* sums,
+    std::uint32_t active_count,
+    std::uint32_t position
+) noexcept {
+  assert(cell_ids != nullptr && sums != nullptr && position < active_count);
+  const CellId cell = cell_ids[position];
+  const int size_level_number = static_cast<int>(ToSizeLevel(cell));
+  const int added_count = ComputeSplitCellCountToAdd(cell);
+  const std::uint64_t first_place = static_cast<std::uint64_t>(active_count) + sums[position];
+  for (int added = 0; added < added_count; ++added) {
+    const auto big_size_level = static_cast<SizeLevel>(size_level_number - 1 - added);
+    cell_ids[first_place + static_cast<std::uint64_t>(added)] = ComputeBigCellAtSizeLevel(cell, big_size_level);
+  }
+}
+
+// Computes the failure key of a count against the room: method paper <proc-build-grid-in-parallel> steps P7 (b) and
+// P8, the one thread that reads a total.
+//
+// Method: ToFailureKey(step, 0, 0) when needed > room, else kNoFailureKey. Step 5 compares the active and split cells
+//   with 64 max_cell_blocks (through ComputeCellPlacesFailureKey), step 6 the blocks with max_cell_blocks.
+// Example: (513, 512, 5) gives ToFailureKey(5, 0, 0); (512, 512, 5) gives kNoFailureKey.
+// Requires: step is kCellPlacesStep or kBlockCountStep.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: a count and a room; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t
+ComputeRoomFailureKey(std::uint64_t needed, std::uint64_t room, int step) noexcept {
+  assert(step == kCellPlacesStep || step == kBlockCountStep);
+  if (needed > room) {
+    return ToFailureKey(step, 0, 0);
+  }
+  return kNoFailureKey;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Computes the count of places that the sort by block orders: method paper <sec-parallel-build>, "No cell of an
+// earlier build", a CPU number that bounds the active and split cells.
+//
+// Method: min(n + floor(n / 7), 64 max_cell_blocks), in 64-bit arithmetic. Every split cell has 8 small cells, active
+//   or split, so there are at most n / 7 split cells; a build with more than 64 max_cell_blocks cells fails step 5.
+//   The sum passes 2^32 - 1 from n = 3,758,096,384, but the minimum always fits 32 bits, since 64
+//   kMaxCellBlocksLimit is 1,145,324,608.
+// Example: (14, 100) gives 16; (9, 100) gives 10; (6, 100) gives 6; (100, 1) gives 64; and (4294967295, 17895697)
+//   gives 1,145,324,608.
+// Requires: max_cell_blocks is at most kMaxCellBlocksLimit (grid/staggered_grid.h), so 64 max_cell_blocks < 2^32.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+//
+// clang-tidy: a count and a room; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
+ComputeSortCount(std::uint32_t active_count, std::uint32_t max_cell_blocks) noexcept {
+  const std::uint64_t bound = static_cast<std::uint64_t>(active_count) + (active_count / 7U);
+  const std::uint64_t room_cell_places = std::uint64_t{kCellPlacesPerBlock} * max_cell_blocks;
+  assert(room_cell_places <= 0xFFFFFFFFU);
+  return static_cast<std::uint32_t>(bound < room_cell_places ? bound : room_cell_places);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// The failure key of active and split cells that fit the room but not the sort count, which no valid list produces
+// (<sec-parallel-build>, "No cell of an earlier build"): step 5 at position 0 with detail 1, a second key of the check
+// of the active and split cells. ComputeFailureCells names it kInternalFault with no cell. The room's key,
+// ToFailureKey(5, 0, 0), is smaller, so it wins when both checks fail; every later step stops on either, since both
+// are of step 5.
+inline constexpr std::uint64_t kSortCountFaultKey = ToFailureKey(kCellPlacesStep, 0, 1);
+
+// Computes the failure key of the active and split cells: method paper <proc-build-grid-in-parallel> step P7 (b).
+//
+// Method: ComputeRoomFailureKey(cell_count, room_cell_places, kCellPlacesStep) when the cells do not fit the room, the
+//   room's key of step 5. Otherwise kSortCountFaultKey, of step 5 with detail 1, when they do not fit sort_count, since
+//   P8 sorts only sort_count places and would leave the others out of the grid; the n / 7 bound of ComputeSortCount
+//   says this never happens, so it is an internal fault, checked in every build. Else kNoFailureKey. When both fail,
+//   the room's key, the smaller, is given.
+// Example: (72, 64, 64) gives ToFailureKey(5, 0, 0); (16, 64, 15) gives kSortCountFaultKey, ToFailureKey(5, 0, 1);
+//   (16, 64, 16) gives kNoFailureKey.
+// Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>, <sec-parallel-build>
+//
+// clang-tidy: a count, a room and a sort count; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeCellPlacesFailureKey(
+    std::uint64_t cell_count,
+    std::uint64_t room_cell_places,
+    std::uint32_t sort_count
+) noexcept {
+  const std::uint64_t room_key = ComputeRoomFailureKey(cell_count, room_cell_places, kCellPlacesStep);
+  if (room_key != kNoFailureKey) {
+    return room_key;
+  }
+  if (cell_count > sort_count) {
+    return kSortCountFaultKey;
+  }
+  return kNoFailureKey;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Writes the id 0 at one place of the tail of the cell ids: method paper <proc-build-grid-in-parallel> step P7 (d),
+// for one thread's item.
+//
+// Method: a place at or after used_count, the active and split cells, gets CellId{0}; a place before it is left as it
+//   is. The id 0 is never valid, sorts last in the sort by block and is never marked, so a cell of an earlier build
+//   left in the tail never becomes a block.
+// Example: used_count 14: places 14 and 15 get CellId{0}, place 13 keeps its cell.
+// Requires: cell_ids has more than `place` entries.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+//
+// clang-tidy: a count and a place; the swappable-parameters check flags the integers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+FLUIDITY_CPU_AND_GPU constexpr void
+ApplySortTailFillAt(CellId* cell_ids, std::uint32_t used_count, std::uint32_t place) noexcept {
+  assert(cell_ids != nullptr);
+  if (place >= used_count) {
+    cell_ids[place] = CellId{0};
+  }
+}
+
+// Computes the mark of one sorted entry of the sort by block: method paper <proc-build-grid-in-parallel> step P8,
+// <sec-parallel-build> "Numbering the blocks".
+//
+// Method: sorted entry j is cell_ids[order[j]]. Its mark is 1 when it is a cell id (bit 63 set) and the first entry
+//   of its block: position 0, or an entry whose ToCellBlockId differs from the entry before. Else 0. The id 0 sorts
+//   after every cell, so it never comes before a cell.
+// Example: entries in the blocks [A, A, B, C, C, C] and then CellId{0} give the marks [1, 0, 1, 1, 0, 0, 0].
+// Requires: order holds more than `position` indexes into cell_ids.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
+ComputeBlockStartMark(const CellId* cell_ids, const std::uint32_t* order, std::uint32_t position) noexcept {
+  assert(cell_ids != nullptr && order != nullptr);
+  const CellId cell = cell_ids[order[position]];
+  if ((cell.value & kIdCellMark) == 0) {
+    return 0;
+  }
+  if (position == 0) {
+    return 1;
+  }
+  const CellId entry_before = cell_ids[order[position - 1]];
+  return ToCellBlockId(entry_before).value != ToCellBlockId(cell).value ? 1U : 0U;
+}
+
+// Computes the block index of one sorted entry of the sort by block: its sum plus its mark minus 1.
+//
+// Method: after the exclusive prefix sum of the marks, the first entry of a run holds the block index as its sum, with
+//   mark 1, and every other entry holds the index plus one, since the run's first entry was counted, with mark 0. The
+//   mark is a function of the sorted ids alone, so any thread computes it again.
+// Example: marks [1, 0, 1, 1, 0, 0] have sums [0, 1, 1, 2, 3, 3] and give the indexes [0, 0, 1, 2, 2, 2].
+// Requires: as ComputeBlockStartMark; sums holds the exclusive prefix sums of the marks; the entry is a cell id.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t ComputeBlockIndexOfSortedEntry(
+    const CellId* cell_ids,
+    const std::uint32_t* order,
+    const std::uint32_t* sums,
+    std::uint32_t position
+) noexcept {
+  assert(sums != nullptr);
+  return sums[position] + ComputeBlockStartMark(cell_ids, order, position) - 1U;
+}
+
+// Writes the block id of one sorted entry that starts its block: method paper <proc-build-grid-in-parallel> step P8,
+// the scatter, for one thread's item.
+//
+// Method: a marked entry writes ToCellBlockId of its cell at block_ids[sums[position]]; an unmarked one writes
+//   nothing. The sort keys are the fixed block order, so the block ids come out in that order, each once.
+// Example: entries in the blocks [A, A, B, C, C, C] write A at 0, B at 1 and C at 2.
+// Requires: as ComputeBlockIndexOfSortedEntry, without the last condition; block_ids has room for the block count, the
+//   total of the sums.
+// Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
+FLUIDITY_CPU_AND_GPU constexpr void ApplyBlockIdWriteAt(
+    CellBlockId* block_ids,
+    const CellId* cell_ids,
+    const std::uint32_t* order,
+    const std::uint32_t* sums,
+    std::uint32_t position
+) noexcept {
+  assert(block_ids != nullptr && sums != nullptr);
+  if (ComputeBlockStartMark(cell_ids, order, position) == 1) {
+    block_ids[sums[position]] = ToCellBlockId(cell_ids[order[position]]);
+  }
+}
+
 // Computes the id of the block of size_level at a block coordinate: the same bits as ToCellBlockId gives for any cell
 // of that block. A block id packs its block coordinate as a cell id packs a cell coordinate.
 // Requires: size_level < kMaxSizeLevels; each coordinate within -kMaxCoord..kMaxCoord + 1.
@@ -791,7 +1003,7 @@ ComputeBlockFaultKey(const CellBlockId* block_ids, const std::uint32_t* bigger_b
   const CellId block_as_cell = {.value = block_ids[block.value].value};
   const bool is_below_size_level_zero = ToSizeLevel(block_as_cell) != SizeLevel{0};
   if (is_below_size_level_zero && bigger_block[block.value] == kNoIndex) {
-    return ToFailureKey(7, block.value, 0);
+    return ToFailureKey(kBlockFaultStep, block.value, 0);
   }
   return kNoFailureKey;
 }

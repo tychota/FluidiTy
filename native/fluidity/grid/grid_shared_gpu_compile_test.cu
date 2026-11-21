@@ -26,7 +26,8 @@ namespace fluidity::grid {
 namespace {
 
 // Reads its inputs from `values` (4 integers), the range, the frame, the two tables and the sorted cells and blocks,
-// writes the neighbour tables of one block to `block_tables` (27 + 1 + 8 entries per sorted block), and writes at least
+// writes split cells and the id 0 to `cell_ids`, block ids to `block_ids` and the neighbour tables of one block to
+// `block_tables` (27 + 1 + 8 entries per sorted block), and writes at least
 // one integer per shared function to `results` and the doubles of weight_curve.h to `double_results`, so the compiler
 // cannot drop any call.
 __global__ void ComputeWithEverySharedGridFunction(
@@ -39,6 +40,8 @@ __global__ void ComputeWithEverySharedGridFunction(
     const CellId* sorted_cells,
     const CellBlockId* sorted_blocks,
     std::uint32_t sorted_count,
+    CellId* cell_ids,
+    CellBlockId* block_ids,
     std::uint32_t* block_tables,
     std::uint64_t* results,
     double* double_results
@@ -102,6 +105,16 @@ __global__ void ComputeWithEverySharedGridFunction(
   results[result_index++] = ComputeResetBuildStatus().failure_key;
   ApplyFailureCells(frame, sorted_cells, sorted_count, sorted_cells, sorted_count, build_status);
   results[result_index++] = static_cast<std::uint64_t>(ComputeSplitCellCountToAdd(cell));
+  // The per-item rules of the split cells and the block ids (<proc-build-grid-in-parallel> P7 and P8). block_tables
+  // stands in for the sums and the order: only the calls matter here.
+  ApplySplitCellWritesAt(cell_ids, block_tables, sorted_count, position);
+  results[result_index++] = ComputeRoomFailureKey(sorted_count, position, kCellPlacesStep);
+  results[result_index++] = ComputeCellPlacesFailureKey(sorted_count, position, place) + kSortCountFaultKey;
+  const std::uint32_t sort_count = ComputeSortCount(sorted_count, place);
+  ApplySortTailFillAt(cell_ids, sort_count, position);
+  results[result_index++] = ComputeBlockStartMark(cell_ids, block_tables, position);
+  results[result_index++] = ComputeBlockIndexOfSortedEntry(cell_ids, block_tables, block_tables, position);
+  ApplyBlockIdWriteAt(block_ids, cell_ids, block_tables, block_tables, position);
   // grid_build_steps.h: the table entries of one block, one cell place and one face place, read through GridTables.
   std::uint32_t* same_size_level_blocks = block_tables;
   std::uint32_t* bigger_block = block_tables + (27 * static_cast<std::uint64_t>(sorted_count));

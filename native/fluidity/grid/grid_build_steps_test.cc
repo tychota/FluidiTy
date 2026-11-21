@@ -1224,6 +1224,191 @@ TEST(ComputeSplitCellCountToAdd, CellsAtCoordLimits_StopAtTheFirstOtherEighth) {
   EXPECT_EQ(ComputeSplitCellCountToAdd(ToCell(0, 0, 0, 0)), 0);
 }
 
+// The exclusive prefix sums of ComputeSplitCellCountToAdd over `cells`, the total at the end, by the test's own loop.
+std::vector<std::uint32_t> ToSplitCellSums(const std::vector<CellId>& cells) {
+  std::vector<std::uint32_t> sums(cells.size() + 1, 0);
+  for (std::size_t position = 0; position < cells.size(); ++position) {
+    sums[position + 1] = sums[position] + static_cast<std::uint32_t>(ComputeSplitCellCountToAdd(cells[position]));
+  }
+  return sums;
+}
+
+// The cell ids after ApplySplitCellWritesAt ran for every position of `positions`, one after the other: `cells`, then
+// room for the split cells and two places more, all first holding the stale id.
+//
+// clang-tidy: the sums and the positions; the swappable-parameters check flags the two lists of integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+std::vector<CellId> ComputeCellIdsWithSplitCells(
+    const std::vector<CellId>& cells,
+    const std::vector<std::uint32_t>& sums,
+    const std::vector<std::uint32_t>& positions
+) {
+  std::vector<CellId> cell_ids(cells.size() + sums.back() + 2, ToCell(3, 1000, 1000, 1000));
+  std::ranges::copy(cells, cell_ids.begin());
+  for (const std::uint32_t position : positions) {
+    ApplySplitCellWritesAt(cell_ids.data(), sums.data(), ToCount(cells), position);
+  }
+  return cell_ids;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Expects `cell_ids` to hold `cells`, then each split cell of `cells` once, then the two stale ids.
+void ExpectSplitCellsAppended(
+    const std::vector<CellId>& cell_ids,
+    const std::vector<CellId>& cells,
+    std::uint64_t seed
+) {
+  const auto active_end = cell_ids.begin() + static_cast<std::ptrdiff_t>(cells.size());
+  const auto used_end = cell_ids.end() - 2;
+  const std::vector<std::uint64_t> appended_values = ToValues(std::vector<CellId>(active_end, used_end));
+  const std::set<std::uint64_t> distinct_values(appended_values.begin(), appended_values.end());
+  EXPECT_EQ(distinct_values.size(), appended_values.size()) << seed;
+  EXPECT_EQ(distinct_values, BuildSplitCellsByUnitBoxes(cells, 4)) << seed;
+  EXPECT_EQ(ToValues(std::vector<CellId>(cell_ids.begin(), active_end)), ToValues(cells)) << seed;
+  const std::vector<std::uint64_t> stale_values = {
+      ToCell(3, 1000, 1000, 1000).value,
+      ToCell(3, 1000, 1000, 1000).value,
+  };
+  EXPECT_EQ(ToValues(std::vector<CellId>(used_end, cell_ids.end())), stale_values) << seed;
+}
+
+// Puts positions in an order drawn from `seed`, the same on every machine: the shuffle of ApplyFixedShuffle.
+void ApplyFixedPositionShuffle(std::vector<std::uint32_t>& positions, std::uint64_t seed) {
+  std::mt19937_64 random_numbers(seed);
+  for (std::size_t index = positions.size(); index > 1; --index) {
+    std::swap(positions[index - 1], positions[ToUniformIndex(random_numbers(), index)]);
+  }
+}
+
+// Each position writes its own places, so the threads of P7 (c) may run in any order: here first to last, last to
+// first and one seeded shuffle per grid. The places after the split cells keep the stale id.
+TEST(ApplySplitCellWritesAt, RandomGrids_AppendExactlyTheSplitCells) {
+  for (std::uint64_t seed = 1; seed <= kRandomGridCount; ++seed) {
+    const std::vector<CellId>& cells = BuildSortedRandomGrid(seed);
+    const std::vector<std::uint32_t> sums = ToSplitCellSums(cells);
+    std::vector<std::uint32_t> positions(cells.size());
+    for (std::uint32_t position = 0; position < ToCount(cells); ++position) {
+      positions[position] = position;
+    }
+    ExpectSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
+    std::ranges::reverse(positions);
+    ExpectSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
+    ApplyFixedPositionShuffle(positions, seed + 2000);
+    ExpectSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
+  }
+}
+
+// P8 orders only the sort count's places, so cells beyond it, which the n / 7 bound rules out, are an internal fault,
+// the key of step 5 with detail 1; the room's key of step 5, detail 0, is smaller and wins when both hold.
+TEST(ComputeCellPlacesFailureKey, CellsBeyondSortCount_IsTheInternalFaultKey) {
+  static_assert(kSortCountFaultKey == ToFailureKey(kCellPlacesStep, 0, 1));
+  EXPECT_EQ(ComputeCellPlacesFailureKey(16, 64, 15), kSortCountFaultKey);
+  EXPECT_EQ(ComputeCellPlacesFailureKey(16, 64, 16), kNoFailureKey);
+  EXPECT_EQ(ComputeCellPlacesFailureKey(72, 64, 15), ToFailureKey(kCellPlacesStep, 0, 0));
+  // Every later step stops on the fault with the one rule of an earlier step.
+  EXPECT_TRUE(ComputeHasEarlierStepFailed(kSortCountFaultKey, kBlockCountStep));
+  EXPECT_TRUE(ComputeHasEarlierStepFailed(kSortCountFaultKey, kBlockFaultStep));
+}
+
+// The fault names no cell; the room's key of step 5 stays kTooManyCellBlocks; a detail of 2 or more is no key of
+// step 5.
+TEST(ComputeFailureCells, CellPlacesKeys_GiveTheirErrors) {
+  const auto to_error = [](std::uint64_t failure_key) {
+    return ComputeFailureCells(GridFrame(), nullptr, 0, nullptr, 0, failure_key);
+  };
+  ExpectSameCheck(to_error(kSortCountFaultKey), {.error = GridError::kInternalFault});
+  ExpectSameCheck(to_error(ToFailureKey(kCellPlacesStep, 0, 0)), {.error = GridError::kTooManyCellBlocks});
+  ExpectSameCheck(to_error(ToFailureKey(kCellPlacesStep, 0, 2)), {.error = GridError::kInternalFault});
+}
+
+TEST(ComputeRoomFailureKey, OneAboveRoom_IsTheStepsKey) {
+  EXPECT_EQ(ComputeRoomFailureKey(513, 512, kCellPlacesStep), ToFailureKey(kCellPlacesStep, 0, 0));
+  EXPECT_EQ(ComputeRoomFailureKey(512, 512, kCellPlacesStep), kNoFailureKey);
+  EXPECT_EQ(ComputeRoomFailureKey(9, 8, kBlockCountStep), ToFailureKey(kBlockCountStep, 0, 0));
+}
+
+// 64 x kMaxCellBlocksLimit = 1,145,324,608 places: the largest sort count, which fits 32 bits although n + n / 7 does
+// not always.
+TEST(ComputeSortCount, LargestRoom_FitsThirtyTwoBits) {
+  constexpr std::uint32_t kLargestRoomCellPlaces = 1145324608;
+  static_assert(std::uint64_t{kCellPlacesPerBlock} * kMaxCellBlocksLimit == kLargestRoomCellPlaces);
+  // n + n / 7 is 1,308,942,409 here, above the room's cell places.
+  EXPECT_EQ(ComputeSortCount(kLargestRoomCellPlaces, kMaxCellBlocksLimit), kLargestRoomCellPlaces);
+  // n + n / 7 is 4,908,534,051 here, above 2^32.
+  EXPECT_EQ(ComputeSortCount(4294967295U, kMaxCellBlocksLimit), kLargestRoomCellPlaces);
+  EXPECT_EQ(ComputeSortCount(14, 100), 16U);
+  EXPECT_EQ(ComputeSortCount(9, 100), 10U);
+  // n / 6 would give 7 here.
+  EXPECT_EQ(ComputeSortCount(6, 100), 6U);
+  EXPECT_EQ(ComputeSortCount(100, 1), 64U);
+}
+
+// Six size-level-0 cells in the blocks [A, A, B, C, C, C], A = (0,0,0), B = (1,0,0), C = (2,0,0), then CellId{0},
+// stored in another order than sorted so that every read goes through `order`.
+struct SixSortedCells {
+  std::array<CellId, 7> cell_ids;
+  std::array<std::uint32_t, 7> order;  // Sorted entry j is cell_ids[order[j]].
+};
+
+SixSortedCells BuildSixSortedCells() {
+  const std::array<CellId, 7> sorted = {
+      ToCell(0, 0, 0, 0),
+      ToCell(0, 1, 0, 0),
+      ToCell(0, 4, 0, 0),
+      ToCell(0, 8, 0, 0),
+      ToCell(0, 9, 1, 0),
+      ToCell(0, 10, 0, 3),
+      CellId{0},
+  };
+  SixSortedCells six = {
+      .cell_ids = std::array<CellId, 7>(),
+      .order = std::array<std::uint32_t, 7>{2, 5, 3, 4, 6, 0, 1},
+  };
+  for (std::size_t position = 0; position < sorted.size(); ++position) {
+    six.cell_ids.at(six.order.at(position)) = sorted.at(position);
+  }
+  return six;
+}
+
+TEST(ComputeBlockStartMark, SixSortedCells_MarkEachRunOnce) {
+  const SixSortedCells six = BuildSixSortedCells();
+  std::array<std::uint32_t, 7> marks{};
+  std::array<std::uint32_t, 8> sums{};
+  for (std::uint32_t position = 0; position < 7; ++position) {
+    marks.at(position) = ComputeBlockStartMark(six.cell_ids.data(), six.order.data(), position);
+    sums.at(position + 1) = sums.at(position) + marks.at(position);
+  }
+  EXPECT_EQ(marks, (std::array<std::uint32_t, 7>{1, 0, 1, 1, 0, 0, 0}));
+  EXPECT_EQ(sums, (std::array<std::uint32_t, 8>{0, 1, 1, 2, 3, 3, 3, 3}));
+  std::array<std::uint32_t, 6> block_indexes{};
+  for (std::uint32_t position = 0; position < 6; ++position) {
+    block_indexes.at(position) =
+        ComputeBlockIndexOfSortedEntry(six.cell_ids.data(), six.order.data(), sums.data(), position);
+  }
+  EXPECT_EQ(block_indexes, (std::array<std::uint32_t, 6>{0, 0, 1, 2, 2, 2}));
+}
+
+// The id 0 at position 0 is no cell, so not even the first entry marks it.
+TEST(ComputeBlockStartMark, IdZeroFirst_IsNotMarked) {
+  const std::array<CellId, 1> cell_ids = {CellId{0}};
+  const std::array<std::uint32_t, 1> order = {0};
+  EXPECT_EQ(ComputeBlockStartMark(cell_ids.data(), order.data(), 0), 0U);
+}
+
+TEST(ApplyBlockIdWriteAt, SixSortedCells_WriteEachBlockOnceInOrder) {
+  const SixSortedCells six = BuildSixSortedCells();
+  const std::array<std::uint32_t, 8> sums = {0, 1, 1, 2, 3, 3, 3, 3};
+  const CellBlockId stale_block = ToCellBlockId(ToCell(3, 28, 28, 28));
+  std::array<CellBlockId, 4> block_ids = {stale_block, stale_block, stale_block, stale_block};
+  for (std::uint32_t visited = 0; visited < 7; ++visited) {
+    ApplyBlockIdWriteAt(block_ids.data(), six.cell_ids.data(), six.order.data(), sums.data(), 6 - visited);
+  }
+  EXPECT_EQ(block_ids.at(0).value, ToCellBlockId(ToCell(0, 0, 0, 0)).value);
+  EXPECT_EQ(block_ids.at(1).value, ToCellBlockId(ToCell(0, 4, 0, 0)).value);
+  EXPECT_EQ(block_ids.at(2).value, ToCellBlockId(ToCell(0, 8, 0, 0)).value);
+  EXPECT_EQ(block_ids.at(3).value, stale_block.value);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Neighbour tables, cell states and face piece kinds: method paper <proc-build-grid> steps 6 to 8
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2087,29 +2272,47 @@ void ApplyEveryThreadOfLaunch(std::size_t item_count, ReplayLaunch launch, Apply
   }
 }
 
-// The GPU's working arrays of a check and its cell ids, built on the CPU by the replay. CPU builder buffers hold only
-// the cell ids of the CPU check, and the replay keeps its own, so the CPU check never writes what the replay compares.
+// The GPU's working arrays of a check or a build, its cell ids and its block ids, built on the CPU by the replay. CPU
+// builder buffers hold only the cell ids of the CPU check, and the replay keeps its own, so the CPU check never writes
+// what the replay compares.
 struct ReplayArrays {
+  std::uint32_t max_cell_blocks = 0;  // The room the arrays are sized for.
   Buffer<CellId> cell_ids;
   Buffer<std::uint64_t> sort_keys;
   Buffer<std::uint32_t> order;
   Buffer<std::uint32_t> second_order;
   std::optional<OrderBuffers> order_buffers;
+  Buffer<CellBlockId> block_ids;
   GridBuildStatus status{};
+  // The first sort count cell ids just before P7 (d), the tail fill, of the last build replay.
+  std::vector<CellId> cells_before_tail_fill;
+  int failed_prefix_sum_count = 0;  // Prefix sums of the last build replay that returned an error.
 };
 
-// Builds the working arrays for kReplayRoom blocks, as BuildGridBuilderBuffers sizes them on the GPU.
-ReplayArrays BuildReplayArrays() {
-  constexpr std::size_t kPlaceCount = std::size_t{kCellPlacesPerBlock} * kReplayRoom;
+// The entries after the room's part of each replay array, filled with a fixed pattern that no step writes: a write
+// past an array of the room on the GPU lands there in the replay, and the test sees it without a sanitizer.
+constexpr std::size_t kGuardCount = 16;
+
+// Builds the working arrays for a room of max_cell_blocks blocks, as BuildGridBuilderBuffers and BuildGridBuffers size
+// them on the GPU, each followed by kGuardCount guard entries: 64 cell ids, sort keys and order entries per block, plus
+// 1 order entry for the total of a prefix sum, and one block id per block. The guards hold their pattern
+// (ApplyGuardValues).
+ReplayArrays BuildReplayArrays(std::uint32_t max_cell_blocks) {
+  const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * max_cell_blocks;
   ReplayArrays arrays;
-  std::expected<Buffer<CellId>, BufferError> cell_ids = BuildBuffer<CellId>(RunOn::kCpu, kPlaceCount);
-  std::expected<Buffer<std::uint64_t>, BufferError> sort_keys = BuildBuffer<std::uint64_t>(RunOn::kCpu, kPlaceCount);
-  std::expected<Buffer<std::uint32_t>, BufferError> order = BuildBuffer<std::uint32_t>(RunOn::kCpu, kPlaceCount + 1);
+  arrays.max_cell_blocks = max_cell_blocks;
+  std::expected<Buffer<CellId>, BufferError> cell_ids = BuildBuffer<CellId>(RunOn::kCpu, place_count + kGuardCount);
+  std::expected<Buffer<std::uint64_t>, BufferError> sort_keys =
+      BuildBuffer<std::uint64_t>(RunOn::kCpu, place_count + kGuardCount);
+  std::expected<Buffer<std::uint32_t>, BufferError> order =
+      BuildBuffer<std::uint32_t>(RunOn::kCpu, place_count + 1 + kGuardCount);
   std::expected<Buffer<std::uint32_t>, BufferError> second_order =
-      BuildBuffer<std::uint32_t>(RunOn::kCpu, kPlaceCount + 1);
-  std::expected<OrderBuffers, BufferError> order_buffers = BuildOrderBuffers(RunOn::kCpu, kPlaceCount + 1);
+      BuildBuffer<std::uint32_t>(RunOn::kCpu, place_count + 1 + kGuardCount);
+  std::expected<OrderBuffers, BufferError> order_buffers = BuildOrderBuffers(RunOn::kCpu, place_count + 1);
+  std::expected<Buffer<CellBlockId>, BufferError> block_ids =
+      BuildBuffer<CellBlockId>(RunOn::kCpu, max_cell_blocks + kGuardCount);
   const bool is_built = cell_ids.has_value() && sort_keys.has_value() && order.has_value() && second_order.has_value()
-      && order_buffers.has_value();
+      && order_buffers.has_value() && block_ids.has_value();
   EXPECT_TRUE(is_built);
   if (is_built) {
     arrays.cell_ids = std::move(*cell_ids);
@@ -2117,8 +2320,73 @@ ReplayArrays BuildReplayArrays() {
     arrays.order = std::move(*order);
     arrays.second_order = std::move(*second_order);
     arrays.order_buffers = std::move(*order_buffers);
+    arrays.block_ids = std::move(*block_ids);
   }
   return arrays;
+}
+
+ReplayArrays BuildReplayArrays() {
+  return BuildReplayArrays(kReplayRoom);
+}
+
+// The guard patterns: values no step writes and no list of these tests holds.
+CellId ToGuardCellId() {
+  return ToCell(4, 2000, 2000, 2000);
+}
+constexpr std::uint64_t kGuardSortKey = 0x5A5A5A5A5A5A5A5AU;
+constexpr std::uint32_t kGuardOrderEntry = 0xA5A5A5A5U;
+
+// The guard entries of one array: the last kGuardCount.
+template <typename Value>
+std::span<Value> ToGuardEntries(Buffer<Value>& buffer) {
+  return std::span<Value>(buffer.data(), buffer.size()).last(kGuardCount);
+}
+
+template <typename Value>
+std::span<const Value> ToGuardEntries(const Buffer<Value>& buffer) {
+  return std::span<const Value>(buffer.data(), buffer.size()).last(kGuardCount);
+}
+
+// Writes the guard patterns after the room's part of every array.
+void ApplyGuardValues(ReplayArrays& arrays) {
+  std::ranges::fill(ToGuardEntries(arrays.cell_ids), ToGuardCellId());
+  std::ranges::fill(ToGuardEntries(arrays.sort_keys), kGuardSortKey);
+  std::ranges::fill(ToGuardEntries(arrays.order), kGuardOrderEntry);
+  std::ranges::fill(ToGuardEntries(arrays.second_order), kGuardOrderEntry);
+  std::ranges::fill(ToGuardEntries(arrays.block_ids), ToCellBlockId(ToGuardCellId()));
+}
+
+// Says whether every guard entry still holds its pattern: no write left the room's part of an array.
+bool ComputeAreGuardsUnchanged(const ReplayArrays& arrays) {
+  const CellId guard_cell = ToGuardCellId();
+  const CellBlockId guard_block = ToCellBlockId(guard_cell);
+  return std::ranges::all_of(
+             ToGuardEntries(arrays.cell_ids),
+             [guard_cell](CellId cell) {
+               return cell.value == guard_cell.value;
+             }
+         )
+      && std::ranges::all_of(
+             ToGuardEntries(arrays.sort_keys),
+             [](std::uint64_t key) {
+               return key == kGuardSortKey;
+             }
+      )
+      && std::ranges::all_of(
+             ToGuardEntries(arrays.order),
+             [](std::uint32_t entry) {
+               return entry == kGuardOrderEntry;
+             }
+      )
+      && std::ranges::all_of(
+             ToGuardEntries(arrays.second_order),
+             [](std::uint32_t entry) {
+               return entry == kGuardOrderEntry;
+             }
+      )
+      && std::ranges::all_of(ToGuardEntries(arrays.block_ids), [guard_block](CellBlockId block) {
+           return block.value == guard_block.value;
+         });
 }
 
 // A cell id that no list of these tests holds, written where a result is expected, so a result never written shows.
@@ -2126,26 +2394,45 @@ CellId ToStaleCellId() {
   return ToCell(3, 1000, 1000, 1000);
 }
 
-// Writes large values over every working array and the cell ids, and a status record that already holds the smallest
-// key there is, as an earlier check could leave them. A replay that read any of them before writing it would differ
-// from the CPU: the stale key would win the minimum, a stale sort key or order would misplace a cell, a stale cell id
-// would stay in the sorted list.
+// Writes large values over every working array, the cell ids and the block ids, and a status record that already holds
+// the smallest key there is, as an earlier check could leave them. A replay that read any of them before writing it
+// would differ from the CPU: the stale key would win the minimum, a stale sort key or order would misplace a cell, a
+// stale cell id would stay in the sorted list or become a block. The guards keep their patterns.
 void ApplyStaleValues(ReplayArrays& arrays) {
   std::fill_n(arrays.cell_ids.data(), arrays.cell_ids.size(), ToStaleCellId());
   std::fill_n(arrays.sort_keys.data(), arrays.sort_keys.size(), ~std::uint64_t{0} - 1);
   std::fill_n(arrays.order.data(), arrays.order.size(), kNoIndex - 1);
   std::fill_n(arrays.second_order.data(), arrays.second_order.size(), kNoIndex - 1);
+  std::fill_n(arrays.block_ids.data(), arrays.block_ids.size(), ToCellBlockId(ToStaleCellId()));
+  ApplyGuardValues(arrays);
   arrays.status = ComputeResetBuildStatus();
   arrays.status.failure_key = ToFailureKey(kIdStep, 0, 0);
   arrays.status.error = GridError::kBadInput;
   arrays.status.cell = ToCell(0, 1, 2, 3);
 }
 
-// Replays <proc-build-grid-in-parallel> P1 to P6 and the failure half of P12 on the CPU, with the per-item rules the
-// GPU functions of grid/staggered_grid_gpu.cu call, in the same sequence as BuildSortedCellList's GPU path: every
-// thread of every launch as `launch` says, the atomic minimum replaced by a plain minimum, BuildStableOrder on the CPU
-// between the passes. The sorted list goes to arrays.cell_ids. Returns ToGridFailure of the status record it wrote.
-GridFailure ApplyGpuStepsByReplay(
+// Writes 0xFFFFFFFF words over the sort keys, both orders and the whole status record, its counts included, and the
+// stale id over the cell ids: a prefix sum that read two such words would pass 2^32 - 1 and fail. The guards keep their
+// patterns.
+void ApplyStaleAllOnesWords(ReplayArrays& arrays) {
+  ApplyStaleValues(arrays);
+  std::fill_n(arrays.sort_keys.data(), arrays.sort_keys.size(), ~std::uint64_t{0});
+  std::fill_n(arrays.order.data(), arrays.order.size(), ~std::uint32_t{0});
+  std::fill_n(arrays.second_order.data(), arrays.second_order.size(), ~std::uint32_t{0});
+  ApplyGuardValues(arrays);
+  arrays.status.cell_blocks = ~std::uint32_t{0};
+  arrays.status.split_cells = ~std::uint32_t{0};
+  arrays.status.result_count = ~std::uint32_t{0};
+  arrays.status.active_cells = ~std::uint64_t{0};
+  std::ranges::fill(arrays.status.active_cells_per_size_level, ~std::uint64_t{0});
+  arrays.status.face_pieces = ~std::uint64_t{0};
+}
+
+// Replays <proc-build-grid-in-parallel> P1 to P6 on the CPU, with the per-item rules the GPU functions of
+// grid/staggered_grid_gpu.cu call, in the same sequence as BuildSortedCellList's GPU path: every thread of every launch
+// as `launch` says, the atomic minimum replaced by a plain minimum, BuildStableOrder on the CPU between the passes. The
+// sorted list goes to arrays.cell_ids. Returns false, after a test failure, when BuildStableOrder fails.
+bool ApplyListCheckStepsByReplay(
     GridFrame frame,
     std::span<const CellId> input_cells,
     SiblingCheck sibling_check,
@@ -2154,7 +2441,7 @@ GridFailure ApplyGpuStepsByReplay(
 ) {
   if (!arrays.order_buffers.has_value()) {
     ADD_FAILURE() << "the replay has no order buffers";
-    return {.error = GridError::kInternalFault};
+    return false;
   }
   OrderBuffers& order_buffers = *arrays.order_buffers;
   const auto count = static_cast<std::uint32_t>(input_cells.size());
@@ -2197,7 +2484,7 @@ GridFailure ApplyGpuStepsByReplay(
     );
     if (!ordered.has_value()) {
       ADD_FAILURE() << "BuildStableOrder failed";
-      return {.error = GridError::kInternalFault};
+      return false;
     }
   }
   ApplyEveryThreadOfLaunch(count, launch, [&](std::size_t position) {
@@ -2217,9 +2504,227 @@ GridFailure ApplyGpuStepsByReplay(
       return true;
     });
   }
+  return true;
+}
+
+// Replays P1 to P6 and the failure half of P12, the GPU path of BuildSortedCellList, as ApplyListCheckStepsByReplay
+// says. Returns ToGridFailure of the status record it wrote.
+GridFailure ApplyGpuStepsByReplay(
+    GridFrame frame,
+    std::span<const CellId> input_cells,
+    SiblingCheck sibling_check,
+    ReplayLaunch launch,
+    ReplayArrays& arrays
+) {
+  if (!ApplyListCheckStepsByReplay(frame, input_cells, sibling_check, launch, arrays)) {
+    return {.error = GridError::kInternalFault};
+  }
   // P12, the failure half, one thread; then the CPU half's reading of the record.
-  ApplyFailureCells(frame, input, count, sorted_cells, count, &status);
-  return ToGridFailure(status);
+  const auto count = static_cast<std::uint32_t>(input_cells.size());
+  ApplyFailureCells(frame, input_cells.data(), count, arrays.cell_ids.data(), count, &arrays.status);
+  return ToGridFailure(arrays.status);
+}
+
+// How a build replay differs from the GPU's sequence: a copy with one part changed, so a test shows the part matters.
+enum class ReplayChange : std::uint8_t {
+  kNone,  // The GPU's sequence.
+  kWithoutTailFill,  // P7 (d), the tail fill, left out.
+  kSplitCountsReturnEarly,  // A thread of P7 (a) returns after an earlier step's failure instead of writing 0.
+  // P7 (b) checks the cells against one place less than they need in place of the sort count, the state the n / 7
+  // bound rules out.
+  kSortCountBelowCells,
+};
+
+// Runs ComputeExclusivePrefixSum in place over the first `count` words of `sums`, as the GPU path does between the
+// launches of P7 and P8. An error is counted in arrays.failed_prefix_sum_count and returns false: the CPU half maps a
+// size error of base/ to kInternalFault.
+bool ApplyPrefixSumOfReplay(std::uint32_t count, ReplayArrays& arrays) {
+  if (!arrays.order_buffers.has_value()) {
+    return false;
+  }
+  const std::expected<void, BufferError> summed =
+      ComputeExclusivePrefixSum(arrays.second_order, count, arrays.second_order, *arrays.order_buffers);
+  if (!summed.has_value()) {
+    ++arrays.failed_prefix_sum_count;
+    return false;
+  }
+  return true;
+}
+
+// The key of P7 (b) in the replay: ComputeCellPlacesFailureKey against the room's cell places and the sort count, or,
+// for ReplayChange::kSortCountBelowCells, against one place less than the cells need in place of the sort count.
+//
+// clang-tidy: three counts; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+std::uint64_t ComputeCellPlacesKeyOfReplay(
+    std::uint32_t active_count,
+    std::uint32_t split_cells,
+    std::uint32_t max_cell_blocks,
+    ReplayChange change
+) {
+  const std::uint64_t room_cell_places = std::uint64_t{kCellPlacesPerBlock} * max_cell_blocks;
+  const std::uint64_t cell_count = std::uint64_t{active_count} + split_cells;
+  const bool is_bound_lowered = change == ReplayChange::kSortCountBelowCells && cell_count > 0;
+  const std::uint32_t sort_count = ComputeSortCount(active_count, max_cell_blocks);
+  const auto checked_sort_count = static_cast<std::uint32_t>(is_bound_lowered ? cell_count - 1 : sort_count);
+  return ComputeCellPlacesFailureKey(cell_count, room_cell_places, checked_sort_count);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Replays P7 and P8 on the sorted list of `active_count` cells in arrays.cell_ids, for a room of max_cell_blocks, with
+// the per-item rules the GPU functions call, every thread of every launch as `launch` says, each prefix sum and stable
+// order on the CPU between the launches. Returns false when a prefix sum or a stable order fails.
+//
+// clang-tidy: a count and a room; the swappable-parameters check flags the integers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+bool ApplyBlockStepsByReplay(
+    std::uint32_t active_count,
+    std::uint32_t max_cell_blocks,
+    ReplayLaunch launch,
+    ReplayChange change,
+    ReplayArrays& arrays
+) {
+  if (!arrays.order_buffers.has_value()) {
+    ADD_FAILURE() << "the replay has no order buffers";
+    return false;
+  }
+  OrderBuffers& order_buffers = *arrays.order_buffers;
+  CellId* const cell_ids = arrays.cell_ids.data();
+  std::uint32_t* const sums = arrays.second_order.data();
+  const std::uint32_t* const order = arrays.order.data();
+  GridBuildStatus& status = arrays.status;
+  const auto offer_key = [&status](std::uint64_t failure_key) {
+    status.failure_key = std::min(status.failure_key, failure_key);
+  };
+  const auto has_earlier_failure = [&status](int step) {
+    return ComputeHasEarlierStepFailed(status.failure_key, step);
+  };
+  // Step P7 (a): the count of each active cell, or 0 after an earlier failure, then the prefix sum in place.
+  ApplyEveryThreadOfLaunch(active_count, launch, [&](std::size_t position) {
+    if (has_earlier_failure(kCellPlacesStep)) {
+      if (change == ReplayChange::kSplitCountsReturnEarly) {
+        return false;
+      }
+      sums[position] = 0;
+      return true;
+    }
+    sums[position] = static_cast<std::uint32_t>(ComputeSplitCellCountToAdd(cell_ids[position]));
+    return true;
+  });
+  if (!ApplyPrefixSumOfReplay(active_count, arrays)) {
+    return false;
+  }
+  // Step P7 (b), one thread: the cells against the room's cell places, then against the sort count.
+  const std::uint32_t sort_count = ComputeSortCount(active_count, max_cell_blocks);
+  status.split_cells = sums[active_count];
+  offer_key(ComputeCellPlacesKeyOfReplay(active_count, status.split_cells, max_cell_blocks, change));
+  // Step P7 (c).
+  ApplyEveryThreadOfLaunch(active_count, launch, [&](std::size_t position) {
+    if (has_earlier_failure(kBlockCountStep)) {
+      return false;
+    }
+    ApplySplitCellWritesAt(cell_ids, sums, active_count, static_cast<std::uint32_t>(position));
+    return true;
+  });
+  // Step P7 (d): the tail fill, over the CPU's sort count, with the used count from the status record.
+  arrays.cells_before_tail_fill.assign(cell_ids, cell_ids + sort_count);
+  if (change != ReplayChange::kWithoutTailFill) {
+    ApplyEveryThreadOfLaunch(sort_count, launch, [&](std::size_t place) {
+      if (has_earlier_failure(kBlockCountStep)) {
+        return false;
+      }
+      ApplySortTailFillAt(cell_ids, active_count + status.split_cells, static_cast<std::uint32_t>(place));
+      return true;
+    });
+  }
+  // Step P8: three passes of the block keys, alternating the orders as P3 does, the final order in arrays.order.
+  const std::array<const Buffer<std::uint32_t>*, kSortKeyPassCount> previous_orders = {
+      nullptr,
+      &arrays.order,
+      &arrays.second_order,
+  };
+  const std::array<Buffer<std::uint32_t>*, kSortKeyPassCount> pass_orders = {
+      &arrays.order,
+      &arrays.second_order,
+      &arrays.order,
+  };
+  for (int pass = 0; pass < kSortKeyPassCount; ++pass) {
+    ApplyEveryThreadOfLaunch(sort_count, launch, [&](std::size_t place) {
+      if (has_earlier_failure(kBlockCountStep)) {
+        return false;
+      }
+      arrays.sort_keys.data()[place] = ToBlockSortKey(cell_ids[place], pass);
+      return true;
+    });
+    const auto pass_index = static_cast<std::size_t>(pass);
+    const std::expected<void, BufferError> ordered = BuildStableOrder(
+        arrays.sort_keys,
+        sort_count,
+        previous_orders.at(pass_index),
+        *pass_orders.at(pass_index),
+        order_buffers
+    );
+    if (!ordered.has_value()) {
+      ADD_FAILURE() << "BuildStableOrder failed";
+      return false;
+    }
+  }
+  // Step P8: the marks, or 0 after an earlier failure, step 5 included, then the prefix sum in place.
+  ApplyEveryThreadOfLaunch(sort_count, launch, [&](std::size_t position) {
+    sums[position] = has_earlier_failure(kBlockCountStep)
+        ? 0U
+        : ComputeBlockStartMark(cell_ids, order, static_cast<std::uint32_t>(position));
+    return true;
+  });
+  if (!ApplyPrefixSumOfReplay(sort_count, arrays)) {
+    return false;
+  }
+  // Step P8: the block count against the room, one thread, then the scatter of the block ids.
+  status.cell_blocks = sums[sort_count];
+  offer_key(ComputeRoomFailureKey(status.cell_blocks, max_cell_blocks, kBlockCountStep));
+  ApplyEveryThreadOfLaunch(sort_count, launch, [&](std::size_t position) {
+    if (has_earlier_failure(kBlockFaultStep)) {
+      return false;
+    }
+    ApplyBlockIdWriteAt(arrays.block_ids.data(), cell_ids, order, sums, static_cast<std::uint32_t>(position));
+    return true;
+  });
+  return true;
+}
+
+// Replays a build on the GPU up to the block ids, <proc-build-grid-in-parallel> P1 to P8, then the failure half of
+// P12: the input checks of P1 with CheckCellListInputs on `buffers`, which gives the room, then the steps of
+// ApplyListCheckStepsByReplay with the siblings required, and ApplyBlockStepsByReplay. A failed prefix sum or stable
+// order gives kInternalFault, as the CPU half's mapping of a size error does. Returns the failure the status names.
+GridFailure ApplyGpuBuildStepsByReplay(
+    const GridInputs& inputs,
+    const GridBuffers& buffers,
+    ReplayLaunch launch,
+    ReplayChange change,
+    ReplayArrays& arrays
+) {
+  arrays.failed_prefix_sum_count = 0;
+  arrays.cells_before_tail_fill.clear();
+  if (const std::expected<void, GridFailure> inputs_checked = CheckCellListInputs(inputs, buffers);
+      !inputs_checked.has_value()) {
+    return inputs_checked.error();
+  }
+  const std::uint32_t max_cell_blocks = buffers.max_cell_blocks();
+  // The guards lie just after the room's part of each array only when the arrays are sized for this room.
+  if (arrays.max_cell_blocks != max_cell_blocks) {
+    ADD_FAILURE() << "the replay arrays are sized for another room";
+    return {.error = GridError::kInternalFault};
+  }
+  const std::span<const CellId> input_cells = inputs.active_cells;
+  if (!ApplyListCheckStepsByReplay(inputs.frame, input_cells, SiblingCheck::kRequire, launch, arrays)) {
+    return {.error = GridError::kInternalFault};
+  }
+  const auto count = static_cast<std::uint32_t>(input_cells.size());
+  if (!ApplyBlockStepsByReplay(count, max_cell_blocks, launch, change, arrays)) {
+    return {.error = GridError::kInternalFault};
+  }
+  ApplyFailureCells(inputs.frame, input_cells.data(), count, arrays.cell_ids.data(), count, &arrays.status);
+  return ToGridFailure(arrays.status);
 }
 
 // Every field of a failure, as one comparable value.
@@ -2320,10 +2825,14 @@ std::array<std::vector<CellId>, 3> BuildEveryTwoSizeLevelsApartList() {
   };
 }
 
-// A CPU grid of no cells in a room of kReplayRoom blocks, whose buffers TakeEmptyGridBuffers hands to a test.
-std::expected<TestGrid, GridFailure> BuildReplayBuffersOwner() {
+// A CPU grid of no cells in a room of max_cell_blocks blocks, whose buffers TakeEmptyGridBuffers hands to a test.
+std::expected<TestGrid, GridFailure> BuildReplayBuffersOwner(std::uint32_t max_cell_blocks) {
   const GridInputs no_cells = {.frame = ToUnitFrame(4), .active_cells = {}, .version = {.value = 1}};
-  return BuildTestGrid(no_cells, {.max_cell_blocks = kReplayRoom});
+  return BuildTestGrid(no_cells, {.max_cell_blocks = max_cell_blocks});
+}
+
+std::expected<TestGrid, GridFailure> BuildReplayBuffersOwner() {
+  return BuildReplayBuffersOwner(kReplayRoom);
 }
 
 // The mutated lists of the replay: seeds 1..kReplayedMutatedGridCount. They hold every combination of earliest failing
@@ -2487,6 +2996,431 @@ TEST(BuildSortedCellList, SeveralItemsPerThread_SameFirstFailureAsCpu) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// The build on the GPU up to the block ids (<proc-build-grid-in-parallel> P1 to P8), replayed on the CPU
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Which arrays a build replay starts from.
+enum class ReplayStart : std::uint8_t {
+  kAfterStaleValues,  // ApplyStaleValues first.
+  kAfterPreviousList,  // The arrays as the replay of the list before left them, cells of another grid included.
+};
+
+// What one build replay gave: the failure, the block ids written, and the two counts of the status record.
+struct BuildReplayResult {
+  GridFailure failure;
+  std::vector<std::uint64_t> block_values;  // The first cell_blocks block ids, on success only.
+  std::uint32_t cell_blocks = 0;
+  std::uint32_t split_cells = 0;
+  int failed_prefix_sum_count = 0;
+};
+
+// Replays the build of `inputs` on the room of `buffers` into `arrays` (ApplyGpuBuildStepsByReplay), collects what it
+// gave and expects every guard of the arrays unchanged: no step wrote past an array of the room.
+BuildReplayResult ComputeBuildReplay(
+    const GridInputs& inputs,
+    const GridBuffers& buffers,
+    ReplayLaunch launch,
+    ReplayChange change,
+    ReplayArrays& arrays
+) {
+  BuildReplayResult result;
+  result.failure = ApplyGpuBuildStepsByReplay(inputs, buffers, launch, change, arrays);
+  result.cell_blocks = arrays.status.cell_blocks;
+  result.split_cells = arrays.status.split_cells;
+  result.failed_prefix_sum_count = arrays.failed_prefix_sum_count;
+  EXPECT_TRUE(ComputeAreGuardsUnchanged(arrays)) << "a write left the room's part of a replay array";
+  if (result.failure.error == GridError::kNone && result.cell_blocks <= arrays.max_cell_blocks) {
+    for (std::uint32_t block = 0; block < result.cell_blocks; ++block) {
+      result.block_values.push_back(arrays.block_ids.data()[block].value);
+    }
+  }
+  return result;
+}
+
+// The split cells and the blocks of a list, by the test's own floor, for a list that passed steps 1 to 4.
+struct ExpectedBlocks {
+  std::uint32_t split_cells = 0;
+  std::uint32_t cell_blocks = 0;
+};
+
+ExpectedBlocks ComputeExpectedBlocks(std::span<const CellId> cells) {
+  const std::vector<CellId> active_cells(cells.begin(), cells.end());
+  const std::set<std::uint64_t> split_cells = BuildSplitCells(active_cells);
+  std::set<std::uint64_t> blocks;
+  for (const CellId cell : active_cells) {
+    blocks.insert(ToBlockOfCell(cell).value);
+  }
+  for (const std::uint64_t split_cell : split_cells) {
+    blocks.insert(ToBlockOfCell(CellId{.value = split_cell}).value);
+  }
+  return {
+      .split_cells = static_cast<std::uint32_t>(split_cells.size()),
+      .cell_blocks = static_cast<std::uint32_t>(blocks.size()),
+  };
+}
+
+// The first block_count block ids of CPU buffers, as values.
+std::vector<std::uint64_t> ToCpuBlockValues(const GridBuffers& buffers, std::uint32_t block_count) {
+  const CellBlockId* const block_ids = ToGridBuffersArrays(buffers).block_ids.data();
+  std::vector<std::uint64_t> block_values(block_count);
+  for (std::uint32_t block = 0; block < block_count; ++block) {
+    block_values[block] = block_ids[block].value;
+  }
+  return block_values;
+}
+
+// What the CPU build of a list gave, and what the status counts of its replay must be.
+struct CpuBuildOfList {
+  GridFailure failure;
+  std::vector<std::uint64_t> block_values;  // On success only.
+  bool is_list_too_long = false;  // The input checks of P1 failed it: the replay never reached the GPU steps.
+  ExpectedBlocks status_counts;  // The split cells and blocks the status record must hold otherwise.
+};
+
+// Runs the buffers form of ComputeGridCounts on the CPU buffers. The status counts: after a failure of steps 1 to 4,
+// zero; otherwise the split cells of the list, and the blocks of the list unless step 5 failed, when the marks are 0.
+CpuBuildOfList ComputeCpuBuildOfList(const GridInputs& inputs, GridBuffers& buffers) {
+  CpuBuildOfList cpu_build;
+  const std::expected<GridCounts, GridFailure> cpu_counts = ComputeGridCounts(inputs, buffers);
+  if (cpu_counts.has_value()) {
+    cpu_build.block_values = ToCpuBlockValues(buffers, cpu_counts->cell_blocks);
+  } else {
+    cpu_build.failure = cpu_counts.error();
+  }
+  const std::uint64_t room_cell_places = std::uint64_t{kCellPlacesPerBlock} * buffers.max_cell_blocks();
+  cpu_build.is_list_too_long = inputs.active_cells.size() > room_cell_places;
+  const bool has_passed_sorted_checks =
+      cpu_build.failure.error == GridError::kNone || cpu_build.failure.error == GridError::kTooManyCellBlocks;
+  if (!has_passed_sorted_checks || cpu_build.is_list_too_long) {
+    return cpu_build;
+  }
+  cpu_build.status_counts = ComputeExpectedBlocks(inputs.active_cells);
+  if (inputs.active_cells.size() + cpu_build.status_counts.split_cells > room_cell_places) {
+    cpu_build.status_counts.cell_blocks = 0;
+  }
+  return cpu_build;
+}
+
+// Expects one build replay to give the CPU's failure, no failed prefix sum, on success the CPU's block ids, and, when
+// the GPU steps ran, the status counts.
+void ExpectBuildReplayEqualsCpuBuild(
+    const BuildReplayResult& replay,
+    const CpuBuildOfList& cpu_build,
+    const std::string& context
+) {
+  EXPECT_EQ(ToFailureFields(replay.failure), ToFailureFields(cpu_build.failure)) << context;
+  EXPECT_EQ(replay.failed_prefix_sum_count, 0) << context;
+  EXPECT_EQ(replay.block_values, cpu_build.block_values) << context;
+  if (!cpu_build.is_list_too_long) {
+    EXPECT_EQ(replay.split_cells, cpu_build.status_counts.split_cells) << context;
+    EXPECT_EQ(replay.cell_blocks, cpu_build.status_counts.cell_blocks) << context;
+  }
+}
+
+// Replays the build of `cells` in both launch orders with `thread_count` threads (0 for the GPU's own), the forward
+// order from `start` and the reverse one after ApplyStaleValues, then runs the CPU build (ComputeCpuBuildOfList), and
+// expects each replay to equal it (ExpectBuildReplayEqualsCpuBuild). On success the status block count is the CPU's.
+//
+// clang-tidy: a room and a thread count; the swappable-parameters check flags the integers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void ExpectBuildReplayEqualsCpu(
+    GridFrame frame,
+    std::span<const CellId> cells,
+    std::size_t thread_count,
+    ReplayStart start,
+    GridBuffers& buffers,
+    ReplayArrays& arrays,
+    const std::string& name
+) {
+  const GridInputs inputs = {.frame = frame, .active_cells = cells, .version = {.value = 1}};
+  std::array<BuildReplayResult, 2> replays;
+  for (std::size_t order_index = 0; order_index < kLaunchOrders.size(); ++order_index) {
+    if (order_index == 1 || start == ReplayStart::kAfterStaleValues) {
+      ApplyStaleValues(arrays);
+    }
+    const ReplayLaunch launch = {.order = kLaunchOrders.at(order_index), .thread_count = thread_count};
+    replays.at(order_index) = ComputeBuildReplay(inputs, buffers, launch, ReplayChange::kNone, arrays);
+  }
+  const CpuBuildOfList cpu_build = ComputeCpuBuildOfList(inputs, buffers);
+  ExpectBuildReplayEqualsCpuBuild(replays.at(0), cpu_build, name + ", forward");
+  ExpectBuildReplayEqualsCpuBuild(replays.at(1), cpu_build, name + ", reverse");
+}
+
+// The 8 size-level-0 cells {0..1, 0..1, 0..1}, each split into its 8 size-level-1 cells: 64 active cells that add 8
+// split cells, 72 in all, above the 64 cell places of a room of 1.
+std::vector<CellId> BuildSmallCellsOfEightBigCells() {
+  std::vector<CellId> cells;
+  for (int big_cell = 0; big_cell < 8; ++big_cell) {
+    AppendSmallCells(ComputeSmallCell(ToCell(0, 0, 0, 0), big_cell), cells);
+  }
+  return cells;
+}
+
+// `count` lone size-level-0 cells {4 i, 0, 0}, each in its own block.
+std::vector<CellId> BuildLoneCellsAlongX(std::size_t count) {
+  std::vector<CellId> cells(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    cells[index] = ToCell(0, 4 * static_cast<std::int32_t>(index), 0, 0);
+  }
+  return cells;
+}
+
+// Replays the full build of random grid 1 into `arrays` after ApplyStaleValues, then the build of the 14 lone cells
+// {4 i, 0, 0} with `change`, both on the room of `buffers`, and returns the second.
+BuildReplayResult ComputeLoneCellsAfterGridOne(ReplayChange change, const GridBuffers& buffers, ReplayArrays& arrays) {
+  const GridInputs grid_one_inputs = {
+      .frame = ToUnitFrame(4),
+      .active_cells = BuildShuffledRandomGrids().at(0),
+      .version = {.value = 1},
+  };
+  const std::vector<CellId> lone_cells = BuildLoneCellsAlongX(14);
+  const GridInputs lone_inputs = {.frame = ToUnitFrame(4), .active_cells = lone_cells, .version = {.value = 1}};
+  const ReplayLaunch launch = {.order = LaunchOrder::kForward, .thread_count = 0};
+  ApplyStaleValues(arrays);
+  const BuildReplayResult grid_one_build =
+      ComputeBuildReplay(grid_one_inputs, buffers, launch, ReplayChange::kNone, arrays);
+  EXPECT_EQ(grid_one_build.failure.error, GridError::kNone);
+  return ComputeBuildReplay(lone_inputs, buffers, launch, change, arrays);
+}
+
+// Expects places 14 and 15 of the lone cells' build to hold cell ids just before step (d) and the id 0 after it.
+void ExpectTailStaleThenFilled(const ReplayArrays& arrays) {
+  ASSERT_EQ(arrays.cells_before_tail_fill.size(), 16U);
+  const std::array<std::uint64_t, 2> cell_marks_before = {
+      arrays.cells_before_tail_fill.at(14).value & kIdCellMark,
+      arrays.cells_before_tail_fill.at(15).value & kIdCellMark,
+  };
+  EXPECT_EQ(cell_marks_before, (std::array<std::uint64_t, 2>{kIdCellMark, kIdCellMark}));
+  const std::array<std::uint64_t, 2> values_after = {
+      arrays.cell_ids.data()[14].value,
+      arrays.cell_ids.data()[15].value,
+  };
+  EXPECT_EQ(values_after, (std::array<std::uint64_t, 2>{0, 0}));
+}
+
+// Just before step (d) the tail places 14 and 15 hold cells of random grid 1, the build before; the fill turns them
+// into the id 0, so the 14 lone cells give 14 blocks, the CPU's. The copy without the fill shows those cells become
+// blocks: they share one block, so 15.
+TEST(ApplySortTailFillAt, UsedBuffers_HoldNoStaleCell) {
+  constexpr std::uint32_t kRoom = 100;
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner(kRoom);
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays(kRoom);
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+
+  const BuildReplayResult lone_build = ComputeLoneCellsAfterGridOne(ReplayChange::kNone, buffers, arrays);
+  ExpectTailStaleThenFilled(arrays);
+  const std::vector<CellId> lone_cells = BuildLoneCellsAlongX(14);
+  const CpuBuildOfList cpu_build =
+      ComputeCpuBuildOfList({.frame = ToUnitFrame(4), .active_cells = lone_cells, .version = {.value = 1}}, buffers);
+  EXPECT_EQ(lone_build.cell_blocks, 14U);
+  ExpectBuildReplayEqualsCpuBuild(lone_build, cpu_build, "lone cells after random grid 1");
+
+  const BuildReplayResult without_fill = ComputeLoneCellsAfterGridOne(ReplayChange::kWithoutTailFill, buffers, arrays);
+  EXPECT_EQ(without_fill.cell_blocks, 15U);
+}
+
+// Replays the build of `cells` on the room of `buffers` in both launch orders, each after ApplyStaleAllOnesWords, and
+// expects no failed prefix sum and the CPU build's failure, whose error is `error`.
+void ExpectTrueErrorAfterAllOnesWords(
+    const std::vector<CellId>& cells,
+    GridBuffers& buffers,
+    GridError error,
+    ReplayArrays& arrays
+) {
+  const GridInputs inputs = {.frame = ToUnitFrame(4), .active_cells = cells, .version = {.value = 1}};
+  std::array<BuildReplayResult, 2> replays;
+  for (std::size_t order_index = 0; order_index < kLaunchOrders.size(); ++order_index) {
+    ApplyStaleAllOnesWords(arrays);
+    const ReplayLaunch launch = {.order = kLaunchOrders.at(order_index), .thread_count = 0};
+    replays.at(order_index) = ComputeBuildReplay(inputs, buffers, launch, ReplayChange::kNone, arrays);
+  }
+  const CpuBuildOfList cpu_build = ComputeCpuBuildOfList(inputs, buffers);
+  EXPECT_EQ(cpu_build.failure.error, error);
+  ExpectBuildReplayEqualsCpuBuild(
+      replays.at(0),
+      cpu_build,
+      "error " + std::to_string(static_cast<int>(error)) + ", forward"
+  );
+  ExpectBuildReplayEqualsCpuBuild(
+      replays.at(1),
+      cpu_build,
+      "error " + std::to_string(static_cast<int>(error)) + ", reverse"
+  );
+}
+
+// Every working array starts as 0xFFFFFFFF words. P7 (a) and the marks of P8 write 0 after an earlier failure, so both
+// prefix sums add zeros and the build names the true failure, never kInternalFault.
+TEST(BuildGrid, StaleLargeValuesWithFailingList_ReportsTheTrueError) {
+  std::expected<TestGrid, GridFailure> owner_of_100 = BuildReplayBuffersOwner(100);
+  GridBuffers buffers_of_100 = TakeEmptyGridBuffers(owner_of_100);
+  std::expected<TestGrid, GridFailure> owner_of_1 = BuildReplayBuffersOwner(1);
+  GridBuffers buffers_of_1 = TakeEmptyGridBuffers(owner_of_1);
+  ReplayArrays arrays = BuildReplayArrays(100);
+  ReplayArrays arrays_of_1 = BuildReplayArrays(1);
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  ASSERT_TRUE(arrays_of_1.order_buffers.has_value());
+  std::vector<CellId> repeated_cell = BuildLoneCellsAlongX(9);
+  repeated_cell.push_back(ToCell(0, 8, 0, 0));
+  ExpectTrueErrorAfterAllOnesWords(repeated_cell, buffers_of_100, GridError::kCellsOverlap, arrays);
+  ExpectTrueErrorAfterAllOnesWords(BuildSevenOfEightSiblings(), buffers_of_100, GridError::kSiblingCellMissing, arrays);
+  ExpectTrueErrorAfterAllOnesWords(
+      BuildSmallCellsOfEightBigCells(),
+      buffers_of_1,
+      GridError::kTooManyCellBlocks,
+      arrays_of_1
+  );
+}
+
+// After P3 the order P7 (a) writes into holds a permutation of 0..n - 1, whose sum passes 2^32 - 1 from 92,683 cells.
+// The box of 103,825 cells fails its siblings at the last position; a copy of P7 (a) that returns there instead of
+// writing 0 leaves that permutation, and the first prefix sum fails. The GPU's sequence names the CPU's failure.
+TEST(BuildGrid, SplitCountsThatReturnEarly_FailThePrefixSum) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays();
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  const std::vector<CellId> failing_cells = BuildLargeBoxOfCells({ToCell(2, 188, 188, 188)});
+  const GridInputs inputs = {.frame = ToUnitFrame(3), .active_cells = failing_cells, .version = {.value = 1}};
+
+  const ReplayLaunch launch = {.order = LaunchOrder::kForward, .thread_count = 0};
+  ApplyStaleAllOnesWords(arrays);
+  const BuildReplayResult as_on_gpu = ComputeBuildReplay(inputs, buffers, launch, ReplayChange::kNone, arrays);
+  ApplyStaleAllOnesWords(arrays);
+  const BuildReplayResult returning_early =
+      ComputeBuildReplay(inputs, buffers, launch, ReplayChange::kSplitCountsReturnEarly, arrays);
+  const std::expected<GridCounts, GridFailure> cpu_counts = ComputeGridCounts(inputs, buffers);
+  ASSERT_FALSE(cpu_counts.has_value());
+  EXPECT_EQ(cpu_counts.error().error, GridError::kSiblingCellMissing);
+  EXPECT_EQ(as_on_gpu.failed_prefix_sum_count, 0);
+  EXPECT_EQ(ToFailureFields(as_on_gpu.failure), ToFailureFields(cpu_counts.error()));
+  EXPECT_EQ(returning_early.failed_prefix_sum_count, 1);
+  EXPECT_EQ(returning_early.failure.error, GridError::kInternalFault);
+}
+
+// A failing list and the valid grid whose build the arrays hold before it.
+struct ListAfterOtherGrid {
+  std::vector<CellId> other_cells;  // A valid list that fits the room.
+  std::vector<CellId> failing_cells;
+  std::size_t thread_count = 0;  // 0 for the GPU's own.
+};
+
+// Replays and checks the build of lists.other_cells, then that of lists.failing_cells from the arrays it left
+// (ExpectBuildReplayEqualsCpu), so the failing list starts from buffers that held another grid.
+void ExpectFailingListAfterOtherGrid(
+    const ListAfterOtherGrid& lists,
+    GridBuffers& buffers,
+    ReplayArrays& arrays,
+    const std::string& name
+) {
+  ExpectBuildReplayEqualsCpu(
+      ToUnitFrame(4),
+      lists.other_cells,
+      lists.thread_count,
+      ReplayStart::kAfterStaleValues,
+      buffers,
+      arrays,
+      name + ", the grid before"
+  );
+  ExpectBuildReplayEqualsCpu(
+      ToUnitFrame(4),
+      lists.failing_cells,
+      lists.thread_count,
+      ReplayStart::kAfterPreviousList,
+      buffers,
+      arrays,
+      name
+  );
+}
+
+// Active and split cells that fit the room but, with P7 (b) checking against one place less than they need, not the
+// sort count: the check offers kSortCountFaultKey, which reads as kInternalFault with no cell; every later step stops,
+// so the marks are 0 and no block id is written; no write leaves the arrays.
+TEST(BuildGrid, CellsBeyondSortCount_IsInternalFaultWithNoBlockWritten) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  const GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays();
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  const GridInputs inputs = {
+      .frame = ToUnitFrame(4),
+      .active_cells = BuildShuffledRandomGrids().at(0),
+      .version = {.value = 1},
+  };
+  ApplyStaleValues(arrays);
+  const BuildReplayResult replay = ComputeBuildReplay(
+      inputs,
+      buffers,
+      {.order = LaunchOrder::kForward, .thread_count = 0},
+      ReplayChange::kSortCountBelowCells,
+      arrays
+  );
+  EXPECT_EQ(arrays.status.failure_key, kSortCountFaultKey);
+  EXPECT_EQ(ToFailureFields(replay.failure), ToFailureFields({.error = GridError::kInternalFault}));
+  EXPECT_GT(replay.split_cells, 0U);
+  EXPECT_EQ(replay.cell_blocks, 0U);
+  EXPECT_EQ(arrays.block_ids.data()[0].value, ToCellBlockId(ToStaleCellId()).value);
+}
+
+// The random grids pass every step: their block ids and counts show P7 and P8 give the CPU's table. The lists that fail
+// show each room check: 9 blocks into room for 8 (step 6), 513 cells into the same (the length check of P1), and 72
+// active and split cells into room for 1 (step 5, after the split cells are counted). Each replay starts from arrays
+// that held another grid.
+TEST(BuildGrid, EveryThreadBlockAndThreadUpToBlockIds_EqualsCpuBlockIds) {
+  std::expected<TestGrid, GridFailure> owner = BuildReplayBuffersOwner();
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  ReplayArrays arrays = BuildReplayArrays();
+  ASSERT_TRUE(arrays.order_buffers.has_value());
+  ApplyStaleValues(arrays);
+  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+    ExpectBuildReplayEqualsCpu(
+        ToUnitFrame(4),
+        BuildShuffledRandomGrids().at(grid),
+        0,
+        ReplayStart::kAfterPreviousList,
+        buffers,
+        arrays,
+        "random grid " + std::to_string(grid)
+    );
+  }
+
+  std::expected<TestGrid, GridFailure> owner_of_8 = BuildReplayBuffersOwner(8);
+  GridBuffers buffers_of_8 = TakeEmptyGridBuffers(owner_of_8);
+  std::expected<TestGrid, GridFailure> owner_of_1 = BuildReplayBuffersOwner(1);
+  GridBuffers buffers_of_1 = TakeEmptyGridBuffers(owner_of_1);
+  ReplayArrays arrays_of_8 = BuildReplayArrays(8);
+  ReplayArrays arrays_of_1 = BuildReplayArrays(1);
+  ASSERT_TRUE(arrays_of_8.order_buffers.has_value());
+  ASSERT_TRUE(arrays_of_1.order_buffers.has_value());
+  const std::vector<CellId> eight_blocks = BuildLoneCellsAlongX(8);
+  const std::vector<CellId> one_block = {ToCell(0, 0, 0, 0), ToCell(0, 1, 0, 0), ToCell(0, 2, 0, 0)};
+  for (const std::size_t thread_count : {std::size_t{0}, std::size_t{1}, std::size_t{7}}) {
+    const std::string threads = ", threads " + std::to_string(thread_count);
+    ExpectFailingListAfterOtherGrid(
+        {.other_cells = eight_blocks, .failing_cells = BuildLoneCellsAlongX(9), .thread_count = thread_count},
+        buffers_of_8,
+        arrays_of_8,
+        "nine blocks into eight" + threads
+    );
+    ExpectFailingListAfterOtherGrid(
+        {
+            .other_cells = eight_blocks,
+            .failing_cells = BuildLoneCellsAlongX((64 * 8) + 1),
+            .thread_count = thread_count,
+        },
+        buffers_of_8,
+        arrays_of_8,
+        "513 cells into eight blocks" + threads
+    );
+    ExpectFailingListAfterOtherGrid(
+        {.other_cells = one_block, .failing_cells = BuildSmallCellsOfEightBigCells(), .thread_count = thread_count},
+        buffers_of_1,
+        arrays_of_1,
+        "72 cells into one block" + threads
+    );
+  }
+}
+
 // A status record holding `error` and the cells size level 1 {2,0,0} and size level 0 {1,0,0} under `failure_key`.
 GridBuildStatus ToStatusRecord(std::uint64_t failure_key, GridError error) {
   GridBuildStatus status = ComputeResetBuildStatus();
@@ -2511,6 +3445,18 @@ TEST(BuildSortedCellList, StatusThatContradictsItself_IsInternalFault) {
     EXPECT_EQ(ToFailureFields(ToGridFailure(records.at(record))), ToFailureFields({.error = GridError::kInternalFault}))
         << record;
   }
+}
+
+// A key of step 5 with a detail of 2 or more is no key a build offers: the record contradicts itself, whatever its
+// error. The sort count fault, step 5 with detail 1, carries kInternalFault and names no cell.
+TEST(BuildSortedCellList, StatusOfStepFiveWithUnknownDetail_IsInternalFault) {
+  const GridBuildStatus unknown_detail =
+      ToStatusRecord(ToFailureKey(kCellPlacesStep, 0, 2), GridError::kTooManyCellBlocks);
+  EXPECT_EQ(ToFailureFields(ToGridFailure(unknown_detail)), ToFailureFields({.error = GridError::kInternalFault}));
+  const GridBuildStatus sort_count_fault = ToStatusRecord(kSortCountFaultKey, GridError::kInternalFault);
+  EXPECT_EQ(ToFailureFields(ToGridFailure(sort_count_fault)), ToFailureFields({.error = GridError::kInternalFault}));
+  const GridBuildStatus room = ToStatusRecord(ToFailureKey(kCellPlacesStep, 0, 0), GridError::kTooManyCellBlocks);
+  EXPECT_EQ(ToGridFailure(room).error, GridError::kTooManyCellBlocks);
 }
 
 // Step 7, a block without its bigger block, is a fault of the build: whatever cells the record holds, none is reported.

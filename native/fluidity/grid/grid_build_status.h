@@ -45,8 +45,9 @@ struct GridBuildStatus {
   // bits: the number of the check, 1 the ids, 2 overlaps, 3 siblings, 4 the size step rule, 5 the active and split
   // cells against the room, 6 the blocks against the room, 7 a block without its bigger block. The position takes 48
   // bits: the index in the input list for step 1, the place in the fixed cell order for steps 2 to 4, 0 for steps 5 and
-  // 6, and the block's index for step 7. The detail takes the low 8 bits: which sibling is missing, or in which of the
-  // 26 directions the size step rule breaks.
+  // 6, and the block's index for step 7. The detail takes the low 8 bits: which sibling is missing, in which of the
+  // 26 directions the size step rule breaks, or, as 1 with step 5, active and split cells beyond the sort count, a
+  // state no valid list produces.
   std::uint64_t failure_key;
   GridError error;  // kNone on success; else the failure's error.
   CellId cell;  // GridFailure::cell. CellId{0} when unused.

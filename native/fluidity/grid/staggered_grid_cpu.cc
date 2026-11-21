@@ -256,11 +256,6 @@ std::uint64_t ComputeBuilderBuffersEntryBytes(RunOn run_on, std::uint32_t max_ce
   return byte_sum;
 }
 
-// The failure keys' steps that the build checks after the sorted list (<sec-parallel-build>, "The first failure"): the
-// two checks of <proc-build-grid> step 5. Step 7 comes from ComputeBlockFaultKey.
-constexpr int kCellPlacesStep = 5;  // The active and split cells against the room's cell places.
-constexpr int kBlockCountStep = 6;  // The blocks against the room.
-
 // Names the failure of a key of steps 5 to 7 with ComputeFailureCells, as the GPU names its smallest key. These steps
 // name no cell, so no list is passed.
 GridFailure ToGridFailureOfBuildKey(std::uint64_t failure_key) {

@@ -153,9 +153,9 @@ void ApplyFixedBlockOrder(std::span<CellId> cells);
 // Example: {failure_key ToFailureKey(4, 1, 0), kSizeStepRuleBroken, cell a, other_cell b} gives kSizeStepRuleBroken, a,
 //   b. {kNoFailureKey, kNone} gives kNone.
 // Fails: kInternalFault  a record that contradicts itself: a key with error kNone, error other than kNone without a
-//                        key, or a key whose step is not 1 to 7; also a record whose error is kInternalFault, such as
-//                        the key of step 7. Zero cells. The GPU writes the key and the error together, so no input
-//                        causes it.
+//                        key, a key whose step is not 1 to 7, or a key of step 5 with a detail of 2 or more; also a
+//                        record whose error is kInternalFault, such as the key of step 7 or kSortCountFaultKey. Zero
+//                        cells. The GPU writes the key and the error together, so no input causes it.
 // Read: docs/method-paper/fluidity-method.typ <sec-parallel-build>, <proc-build-grid-in-parallel>
 GridFailure ToGridFailure(const GridBuildStatus& status);
 

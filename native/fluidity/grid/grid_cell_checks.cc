@@ -308,9 +308,11 @@ GridFailure ToGridFailure(const GridBuildStatus& status) {
   }
   // The record the GPU just wrote contradicts itself: a key without an error, an error without a key, or a key of no
   // step of <sec-parallel-build>. No input can cause it; it is a fault in FluidiTy.
+  // Step 5 has two keys only: detail 0, the room's cell places, and detail 1, the sort count (kSortCountFaultKey).
   const int failure_step = ToFailureStep(status.failure_key);
   const bool is_known_step = failure_step >= kIdStep && failure_step <= kLastFailureStep;
-  if (!has_failure_key || !has_error || !is_known_step) {
+  const bool is_unknown_cell_places_key = failure_step == kCellPlacesStep && (status.failure_key & 0xFFU) > 1;
+  if (!has_failure_key || !has_error || !is_known_step || is_unknown_cell_places_key) {
     return ToInternalFault();
   }
   // An internal fault names no cell, whatever the record holds.
