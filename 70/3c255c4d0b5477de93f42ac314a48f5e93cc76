@@ -1,0 +1,27 @@
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_5aeaf310d1a0df 3012-3030,3841-3844
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_c55cc02ebe8aec 24,26-27
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_f077615ca3900c 41-45
+native/fluidity/grid/staggered_grid_gpu.h
+  s_4f0877e2acdcf0::t_94d8ff0d8cb32c 26-27
+native/fluidity/grid/staggered_grid_gpu_test.cc
+  s_4f0877e2acdcf0::t_f3cdbdba6a65e4 722
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "703c255c4d0b5477de93f42ac314a48f5e93cc76",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
