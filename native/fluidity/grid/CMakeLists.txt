@@ -19,6 +19,18 @@ target_sources(
 # Test-only: the geometric checker and the random grids that grid tests compare the grid against. Never linked by
 # the library.
 fluidity_add_test_library(fluidity_grid_test_support SOURCES grid_test_support.cc LINKS fluidity_base_test_support)
+# The gate runs one process per test, and each process that uses them builds the 200 random grids and their checkers
+# again. Unoptimised, that took about 1 s per process; at -O2 it takes about 0.1 s, and serial ctest in the debug
+# preset dropped from 19.6 to 9.5 s for grid_build_steps_test and from 32.9 to 25.9 s for grid_cell_count_test. Only
+# this test-only target gets the flag, in Debug, and only with GCC, Clang and AppleClang on their usual command line:
+# asserts stay on (no NDEBUG), and the library and the test programs are still built for the debugger. Compilers with
+# the MSVC command line (MSVC itself and clang-cl, for both of which CMake sets MSVC) keep their debug flags, whose
+# run-time checks (/RTC1) cannot be combined with optimisation.
+if(NOT MSVC)
+  target_compile_options(
+    fluidity_grid_test_support PRIVATE "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>>:-O2>"
+  )
+endif()
 
 fluidity_add_test(grid_buffers_test SOURCES grid_buffers_test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps_test.cc LABEL cpu LINKS fluidity_grid_test_support)
