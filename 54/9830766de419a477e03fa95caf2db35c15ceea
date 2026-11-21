@@ -1,0 +1,33 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_86f1c6d665ee87 197-199
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_73f4238e27df7b 2579-2581,2583-2584,2589-2595,2598-2601,2615-2617,2627,2636
+native/fluidity/base/base_constants_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_19caf910013468 4-7,60-61
+native/fluidity/base/scalar_math.h
+  s_4f0877e2acdcf0::t_8bd23854d103ae 10,24-25,41,45-49,253-265
+native/fluidity/base/scalar_math_test.cc
+  s_4f0877e2acdcf0::t_eccc7621162a7a 105-122
+native/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_68042a5f1704a5 14-17,19-22,24-33,42-50,68-71,73-75,77-79,81-82,87,91-92,99,102-104,106,109,116-130,139-141,144,146,162-164,180-183,188-189,191,194-195,197-205,207-208,211,213-218,225-229,232-234,238-240,245,250-253,255-256,260-264,274-276,280
+native/fluidity/grid/cell_size_rule_test.cc
+  s_4f0877e2acdcf0::t_2bed8f442c2dca 79-82,238-262,266,272,276-278,281-290,293,295-304,307-312,315-321,324-325,328-334,337-348,383-386,396-400,402-417,421-456
+native/fluidity/grid/cell_size_rule_test_cases.h
+  s_4f0877e2acdcf0::t_2092bd3074e4cb 16-17,25,33,35-36,44-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "549830766de419a477e03fa95caf2db35c15ceea",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
