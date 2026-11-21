@@ -1,0 +1,19 @@
+native/fluidity/grid/grid_ids.h
+  s_c6e15346466ab3::t_5b5233f7dd8020 268-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e91dbbe777bc344edb1062016f310666344236d1",
+  "prompts": {},
+  "sessions": {
+    "s_c6e15346466ab3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aa762a951e0d02060",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
