@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "preset",
+      "type": "pickString",
+      "description": "Configure preset (its toolchain folder is out/conan/<preset>)",
+      "options": ["macos-debug-cpu", "macos-release-cpu", "linux-debug-cpu", "linux-release-cpu", "windows-debug-cpu", "windows-release-cpu"],
+      "default": "macos-debug-cpu"
+    },
+    {
+      "id": "buildType",
+      "type": "pickString",
+      "description": "Conan build type; Debug for a debug preset, Release for a release preset",
+      "options": ["Debug", "Release"],
+      "default": "Debug"
+    }
+  ],
+  "tasks": [
+    {
+      // The Conan step of the gate (tools/check_commit.py): the packages and out/conan/<preset>/conan_toolchain.cmake.
+      "label": "Prepare",
+      "type": "shell",
+      "command": "uv run conan profile detect --exist-ok && uv run conan install . --lockfile conan.lock -of out/conan/${input:preset} -s build_type=${input:buildType} -s compiler.cppstd=23 -s:b compiler.cppstd=23 --build=missing",
+      "options": { "env": { "CONAN_HOME": "${workspaceFolder}/out/conan-home" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "Gate quick",
+      "type": "shell",
+      "command": "uv run python tools/check_commit.py --speed quick",
+      "problemMatcher": []
+    },
+    {
+      "label": "Gate commit",
+      "type": "shell",
+      "command": "uv run python tools/check_commit.py --speed commit",
+      "problemMatcher": []
+    },
+    {
+      "label": "Gate full",
+      "type": "shell",
+      "command": "uv run python tools/check_commit.py --speed full",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  // CMake Tools reads CMakePresets.json. It does not configure on open: the presets name a toolchain file that the
+  // task `Prepare` writes (Conan install), so a configure before that step would fail.
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": false,
+  // IntelliSense takes its flags from CMake Tools. If that provider has nothing yet, the compile commands of the
+  // debug CPU preset on macOS are the fallback; on Linux or Windows change the preset name in the path.
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/out/build/macos-debug-cpu/compile_commands.json",
+  "C_Cpp.default.cppStandard": "c++23",
+
+  // CUDA sources are read as C++. On a machine without the CUDA toolkit the editor still shows unknown CUDA words
+  // (`__global__`, `<<<...>>>`, `cudaMemcpy`) in .cu and .cuh files; the build is not affected.
+  "files.associations": {
+    "*.cu": "cpp",
+    "*.cuh": "cpp"
+  },
+
+  // Under `<x>.h` fold the tests and the private halves of the operation `<x>`.
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "*.h": "${capture}.test.cc, ${capture}.*.test.cc, ${capture}.*.test.cu, ${capture}.cc, ${capture}_cpu.cc, ${capture}_gpu.cu, ${capture}_gpu.h, ${capture}.cu",
+    "*.py": "${capture}_test.py"
+  },
+
+  "material-icon-theme.files.associations": {
+    "*.test.cc": "test-js",
+    "*.test.cu": "test-js",
+    "*_test.py": "test-js"
+  },
+  "material-icon-theme.folders.associations": {
+    "testing": "test"
+  },
+
+  "search.exclude": {
+    "out": true,
+    ".venv": true
+  },
+  "files.watcherExclude": {
+    "**/out/**": true,
+    "**/.venv/**": true
+  }
+}

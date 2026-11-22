@@ -42,6 +42,16 @@ first), so that CMake finds the MSVC compiler. In PowerShell, the first line is
 Only the macOS presets have been run so far, and `linux-release-cuda` has been built in the container below. The
 other Linux and Windows presets are written but not yet run.
 
+### VS Code
+
+`.vscode/` holds the settings for the C/C++, CMake Tools and Material Icon Theme extensions (VS Code offers to
+install them). Open the repository folder, run the task `Prepare` (Terminal, Run Task) and pick the preset and the
+Conan build type, then pick the same configure preset in CMake Tools. `Prepare` is the Conan step above; CMake Tools
+does not configure on open, because the preset needs the toolchain file that step writes. The tasks `Gate quick`,
+`Gate commit` and `Gate full` run `tools/check_commit.py` at that speed. In the Explorer, a header folds its tests and
+its private CPU and GPU files under it. On a machine without the CUDA toolkit the editor marks CUDA words in `.cu` and
+`.cuh` files as unknown.
+
 ### CI
 
 `.github/workflows/checks.yml` describes the checks CI runs: format and rules, the CPU build and tests on Linux, macOS and Windows,
