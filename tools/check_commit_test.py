@@ -540,6 +540,8 @@ def ctest_commands(fake, preset=DEBUG_PRESET):
         (["CMakePresets.json"], None),
         (["conanfile.py"], None),
         (["conan.lock"], None),
+        (["pyproject.toml"], None),
+        (["uv.lock"], None),
         (["docs/CMakeLists.txt"], frozenset()),
     ],
 )
@@ -571,7 +573,7 @@ def test_full_speed_runs_every_step_and_ignores_the_tidy_cache(monkeypatch, caps
 def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_left_out(monkeypatch, capsys, repo):
     fake = FakeRun(changed=["src/fluidity/grid/a.cc"], untracked=["src/fluidity/contact/new.h"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
-    assert exit_code == 0
+    assert exit_code == 3
     assert lines == [
         "PASS format",
         "PASS rules",
@@ -581,6 +583,7 @@ def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_lef
         "PASS tidy",
         "NOT RUN paper (quick)",
         "NOT RUN cuda (quick)",
+        "QUICK ONLY: not the commit gate",
     ]
     (debug_ctest,) = ctest_commands(fake)
     assert debug_ctest[debug_ctest.index("-L") + 1] == "^(contact|grid)$"
@@ -601,7 +604,7 @@ def test_quick_runs_every_module_for_a_change_outside_a_module_folder(monkeypatc
 def test_quick_runs_no_test_when_only_docs_and_tools_changed(monkeypatch, capsys, repo):
     fake = FakeRun(changed=["docs/design/x.md", "tools/check_commit.py"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
-    assert exit_code == 0
+    assert exit_code == 3
     assert "NOTE modules: none" in lines
     assert ctest_commands(fake) == []
     assert ["cmake", "--build", "--preset", DEBUG_PRESET] in fake.commands
@@ -631,5 +634,49 @@ def test_a_failure_in_quick_still_says_what_it_left_out(monkeypatch, capsys, rep
 @pytest.mark.parametrize("speed", ["quick", "commit", "full"])
 def test_only_runs_one_step_at_every_speed(monkeypatch, capsys, repo, speed):
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--speed", speed, "--only", "paper")
+    assert exit_code == (3 if speed == "quick" else 0)
+    assert lines == ["PASS paper", *(["QUICK ONLY: not the commit gate"] if speed == "quick" else [])]
+
+
+@pytest.mark.parametrize("speed", ["commit", "full"])
+def test_commit_and_full_speed_exit_zero_when_every_check_passes(monkeypatch, capsys, repo, speed):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--speed", speed)
     assert exit_code == 0
-    assert lines == ["PASS paper"]
+    assert "QUICK ONLY: not the commit gate" not in lines
+
+
+def test_a_quick_pass_never_exits_zero_and_ends_with_the_quick_only_line(monkeypatch, capsys, repo):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--speed", "quick")
+    assert exit_code == check_commit.EXIT_QUICK_ONLY == 3
+    assert lines[-1] == "QUICK ONLY: not the commit gate"
+
+
+def test_a_failed_quick_run_exits_one_and_not_three(monkeypatch, capsys, repo):
+    fake = FakeRun(failing=lambda command: command[0] == "clang-format")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert exit_code == 1
+    assert "QUICK ONLY: not the commit gate" not in lines
+
+
+def test_the_help_text_names_the_exit_codes(capsys):
+    with pytest.raises(SystemExit):
+        check_commit.main(["--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "0 = commit or full speed" in help_text
+    assert "3 = quick speed" in help_text
+    assert "QUICK ONLY: not the commit gate" in help_text
+
+
+def test_quick_with_only_runs_the_named_step_in_full(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["src/fluidity/grid/a.cc"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick", "--only", "cpu")
+    assert exit_code == 3
+    assert lines[:2] == [f"PASS cpu {DEBUG_PRESET}", f"PASS cpu {RELEASE_PRESET}"]
+    assert all("-L" not in command for command in ctest_commands(fake))
+
+
+def test_quick_lists_a_moved_file_under_its_old_and_new_path(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["src/fluidity/grid/a.cc"])
+    run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    (diff_command,) = [command for command in fake.commands if command[:3] == ["git", "diff", "--name-only"]]
+    assert "--no-renames" in diff_command

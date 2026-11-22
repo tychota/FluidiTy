@@ -823,3 +823,43 @@ def test_words_check_reports_the_same_findings_in_the_same_order_as_trying_every
                     slow.add(line.number, check_rules.NOTE, "one-sense-word", text_of_finding, key=entry.spelled)
     assert fast.findings() == slow.findings()
     assert len(fast.findings()) >= 4
+
+
+def test_findings_of_a_line_follow_the_glossary_order_even_when_a_set_would_not():
+    """The candidate positions go through a set. Positions 8 (eight) and 1 (one) sit in a small set in the order 8, 1 (8 shares the
+    first slot of an 8-slot table), so only the sort in _check_words puts the findings in glossary order."""
+    words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    entries = [check_rules.NeverSayEntry((word,), word, None) for word in words]
+    lines = check_rules.split_lines(Path("x.h"), "// eight and one\n")
+    reporter = check_rules._Reporter(Path("x.h"))
+    check_rules._check_words(lines, entries, reporter)
+    assert [finding.text for finding in reporter.findings()] == [
+        "'one' is banned (docs/glossary.md); found in a comment",
+        "'eight' is banned (docs/glossary.md); found in a comment",
+    ]
+
+
+@pytest.mark.parametrize("macro", ["__clang__", "__GNUC__", "_MSC_VER", "__apple_build_version__"])
+def test_include_under_a_condition_on_a_compiler_macro_fails(tmp_path, glossary, macro):
+    write(tmp_path, "a.cc", f'#if defined({macro})\n#include "fluidity/base/x.h"\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == ["compiler-include"]
+
+
+def test_include_in_the_else_or_elif_branch_of_a_compiler_condition_fails(tmp_path, glossary):
+    write(tmp_path, "a.cc", '#ifdef __clang__\n#else\n#include "x.h"\n#endif\n')
+    write(tmp_path, "b.cc", '#if FOO\n#elif defined(_MSC_VER) && 1\n#include "x.h"\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == ["compiler-include", "compiler-include"]
+
+
+def test_include_in_a_block_nested_in_a_compiler_condition_fails(tmp_path, glossary):
+    write(tmp_path, "a.cc", '#if __GNUC__\n#if FOO\n#include "x.h"\n#endif\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == ["compiler-include"]
+
+
+def test_include_after_a_compiler_condition_ends_or_under_another_condition_passes(tmp_path, glossary):
+    write(
+        tmp_path,
+        "a.cc",
+        '#if defined(__clang__)\nint f();\n#endif\n#include "x.h"\n#if FOO\n#include "y.h"\n#endif\n',
+    )
+    assert run(tmp_path, glossary) == []

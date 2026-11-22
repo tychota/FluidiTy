@@ -29,6 +29,10 @@ Which rules apply to which files (a deliberate choice, written down here):
   brackets, fails from another folder, or from a header whose stem does not end in `_gpu`. One exception: a test
   (a file with `.test.` in its name) may include a private GPU header of the `testing/` folder of its own folder, as
   `fluidity/grid/testing/cell_size_rule_runner_gpu.h` from `fluidity/grid/cell_size_rule.gpu.test.cc`.
+- `compiler-include` applies to every C++ file: an `#include` inside an `#if`, `#ifdef`, `#ifndef` or `#elif` block
+  whose condition names `__clang__`, `__GNUC__`, `_MSC_VER` or `__apple_build_version__` fails, in any branch of the
+  block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
+  it must be the list that clang-tidy sees.
 """
 
 from __future__ import annotations
@@ -922,6 +926,35 @@ def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine],
             reporter.add(line.number, FAIL, "private-gpu-include", text, key=str(included))
 
 
+# The predefined macros that differ between the build compiler and the clang-tidy preprocessor.
+_COMPILER_MACROS = re.compile(r"\b(?:__clang__|__GNUC__|_MSC_VER|__apple_build_version__)\b")
+_CONDITION_OPENER = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b")
+_CONDITION_BRANCH = re.compile(r"^\s*#\s*(?:elif|elifdef|elifndef)\b")
+_CONDITION_ELSE = re.compile(r"^\s*#\s*else\b")
+_CONDITION_CLOSER = re.compile(r"^\s*#\s*endif\b")
+
+
+def _check_compiler_includes(lines: list[ScannedLine], reporter: _Reporter) -> None:
+    """Fails an `#include` inside a conditional block whose condition names a compiler macro.
+
+    Each open block is one flag: True once a condition of the block (the `#if` or any `#elif`) names a compiler
+    macro. The `#else` branch of such a block depends on the compiler as well, so the flag stays on for it."""
+    open_blocks: list[bool] = []
+    for line in lines:
+        code = line.code
+        if _CONDITION_OPENER.match(code):
+            open_blocks.append(_COMPILER_MACROS.search(code) is not None)
+        elif _CONDITION_BRANCH.match(code):
+            if open_blocks and _COMPILER_MACROS.search(code):
+                open_blocks[-1] = True
+        elif _CONDITION_CLOSER.match(code):
+            if open_blocks:
+                open_blocks.pop()
+        elif _is_include_line(code) and any(open_blocks):
+            text = "an #include under a condition on a compiler macro; the header list of the tidy cache would differ"
+            reporter.add(line.number, FAIL, "compiler-include", text)
+
+
 def check_text(
     path: Path,
     text: str,
@@ -947,6 +980,7 @@ def check_text(
         _check_role_suffix(lines, reporter)
         _check_shared_by_reference(lines, reporter)
         _check_private_gpu_includes(path, text, lines, reporter)
+        _check_compiler_includes(lines, reporter)
     if suffix in HEADER_SUFFIXES:
         _check_declarations(lines, None if is_private_gpu_file else verbs, exact_names, allowed_names, reporter)
     if suffix == ".h" and not is_private_gpu_file:

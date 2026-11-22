@@ -48,7 +48,9 @@ other Linux and Windows presets are written but not yet run.
 install them). Open the repository folder, run the task `Prepare` (Terminal, Run Task) and pick the preset and the
 Conan build type, then pick the same configure preset in CMake Tools. `Prepare` is the Conan step above; CMake Tools
 does not configure on open, because the preset needs the toolchain file that step writes. The tasks `Gate quick`,
-`Gate commit` and `Gate full` run `tools/check_commit.py` at that speed. In the Explorer, a header folds its tests and
+`Gate commit` and `Gate full` run `tools/check_commit.py` at that speed. A quick run whose checks passed exits with
+code 3 and prints `QUICK ONLY: not the commit gate`; the task `Gate quick` shows that as a pass, and it is still not the
+commit gate. In the Explorer, a header folds its tests and
 its private CPU and GPU files under it. On a machine without the CUDA toolkit the editor marks CUDA words in `.cu` and
 `.cuh` files as unknown.
 

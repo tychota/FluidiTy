@@ -468,10 +468,15 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     untracked. A change under `src/fluidity/<module>/` selects that module; a change elsewhere under `src/` or
     `cmake/`, or to a top-level build file, selects every module; a change to docs or tools selects none. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
-    paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule.
+    paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule: a quick run
+    whose checks all passed exits with code 3, never 0, and prints `QUICK ONLY: not the commit gate` as its last
+    line. A top-level build file is `CMakeLists.txt`, `CMakePresets.json`, `conanfile.py`, `conan.lock`,
+    `pyproject.toml` or `uv.lock`. An untracked file counts as changed, but only with `--allow-dirty`, because the
+    gate stops at `FAIL tree` for it otherwise.
   - `commit`, the default: every step below, with the parallel tests and the tidy cache. Run it before each commit.
   - `full`: `commit` with `--no-cache`, so tidy checks every file. Run it before a push; CI uses it.
-  `--only <step>` works at every speed (a step that `quick` leaves out runs when named).
+  `--only <step>` works at every speed. At `quick` it runs the named step in full (every module's tests, both
+  presets), and the exit code is still 3.
   - `FAIL tree: unstaged or untracked: <paths>`: printed first, only when a file is untracked or has unstaged
     changes outside the ignored paths; every step is then `NOT RUN`. Staged changes are fine. With `--allow-dirty`
     the gate prints `NOTE tree: unstaged or untracked files are being tested` instead and goes on; use it for work
@@ -514,7 +519,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     means exactly that: the cuda step is never skipped and never passes without running.
   - `NOT RUN <check>`: an earlier check failed, so this one did not run.
 
-  The exit code is 0 only when every check reads PASS. A commit lands only then.
+  Exit codes (`tools/check_commit.py --help` lists them): 0 means that every check read PASS at `commit` or `full`
+  speed; a commit lands only then. 1 means that a check failed. 3 means a `quick` run whose checks all passed; it is
+  not the commit gate and never satisfies the commit rule. `quick` never exits 0.
 - CI: `.github/workflows/checks.yml` describes the checks CI will run (format and rules, the CPU build on Linux, macOS
   and Windows, and the CUDA compile). It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every
   job green on Linux, macOS, Windows and the CUDA compile, so the Windows CPU code has been compiled and its tests run.

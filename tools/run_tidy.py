@@ -17,13 +17,28 @@ key is the SHA-256 of
   - the contents of every .clang-tidy file that applies (the file's folder and each folder above it, up to the
     repository),
   - the arguments given to clang-tidy for the file,
-  - the compile command of the file, from <build folder>/compile_commands.json,
+  - every compile command of the file in <build folder>/compile_commands.json (clang-tidy checks the file once for
+    each of them, and a shared source can be compiled by several targets with different options),
   - the contents of the file, and
-  - the contents of every header it includes, as the compiler lists them. A header outside the repository, or inside
-    the repository's out/ folder (system and Conan headers, generated files), counts by path, size and modification
-    time instead of contents.
-Only a pass is stored: a file that fails is checked again on the next run. --no-cache ignores the cache and stores
-nothing.
+  - the contents of every header that any of those commands includes, as the compiler lists them. A header outside
+    the repository, or inside the repository's out/ folder (system and Conan headers, generated files), counts by
+    path, size and modification time instead of contents.
+Only a pass is stored: a file that fails is checked again on the next run. The key is computed again after
+clang-tidy returned 0, from the same dependency list, and the pass is stored only when both keys are equal, so a
+file edited while clang-tidy read it is never stored under the text that clang-tidy did not see. --no-cache ignores
+the cache and stores nothing. A marker that was not used for 30 days is deleted at the end of a run.
+
+A file whose dependency list cannot be made fails its check (it is never a pass and never checked unseen): the
+compiler fails, prints no dependency, does not list the file itself, or lists a file that does not exist.
+
+Assumption: the dependency list comes from the compiler of the compile command (the build compiler), not from the
+preprocessor of the pinned clang-tidy. The tool environment has no clang of the version of clang-tidy (the pip
+package holds only clang-tidy), so the two can differ in predefined macros (`__clang__`, `__GNUC__`, `_MSC_VER`,
+`__apple_build_version__`, `__clang_analyzer__`) and in `__has_include` answers. The list is right while no
+`#include` depends on such a macro; tools/check_rules.py fails an `#include` under a condition on one of the
+four compiler macros (rule `compiler-include`), so the assumption is checked on every commit. On Windows the
+compile command is an MSVC one, `shlex` mangles it and `cl` has no `-M`, so the listing fails and every file fails
+unless --no-cache is given.
 """
 
 from __future__ import annotations
@@ -36,12 +51,15 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_CACHE_FOLDER = Path("out") / "tidy-cache"
+# A cache marker that no run used for this long is deleted.
+CACHE_MARKER_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 HEADER_CHECK_FOLDER = "header_check"
 HEADER_ALONE_CHECKS = "--checks=-misc-include-cleaner"
 CLANG_TIDY_CONFIG_NAME = ".clang-tidy"
@@ -84,11 +102,11 @@ def dependency_command(compile_command: str) -> list[str]:
 
 def parse_dependencies(makefile_rule: str) -> list[str]:
     """The files of a Makefile rule `target: dependency ...` as the compiler prints it: a backslash and a newline
-    continue the line, and a backslash and a space is a space inside a name. The target is not returned."""
+    continue the line, and a backslash and a space is a space inside a name, and a backslash and `#` is a `#`. The target is not returned."""
     joined = makefile_rule.replace("\\\r\n", " ").replace("\\\n", " ")
     _, _, after_target = joined.partition(": ")
     names = re.split(r"(?<!\\)\s+", after_target.strip())
-    return sorted({name.replace("\\ ", " ") for name in names if name})
+    return sorted({name.replace("\\ ", " ").replace("\\#", "#") for name in names if name})
 
 
 def applicable_config_files(path: Path, repository: Path) -> list[Path]:
@@ -131,7 +149,7 @@ def cache_key(
     version_text: str,
     config_files: Sequence[Path],
     tidy_options: Sequence[str],
-    compile_command: str,
+    compile_commands: Sequence[str],
     source: Path,
     dependencies: Sequence[Path],
     repository: Path,
@@ -142,7 +160,7 @@ def cache_key(
         version_text,
         *(f"config:{config.resolve()}:{hashlib.sha256(config.read_bytes()).hexdigest()}" for config in config_files),
         "options:" + "\0".join(tidy_options),
-        "command:" + compile_command,
+        *(f"command:{command}" for command in compile_commands),
         "source:" + header_fingerprint(source, repository),
         *(f"dependency:{header_fingerprint(dependency, repository)}" for dependency in dependencies),
     ]
@@ -152,19 +170,27 @@ def cache_key(
     return digest.hexdigest()
 
 
-def read_compile_commands(build_folder: Path) -> dict[Path, tuple[str, Path]]:
-    """The compile command and working folder of each file of <build folder>/compile_commands.json, by resolved path."""
+def read_compile_commands(build_folder: Path) -> dict[Path, list[tuple[str, Path]]]:
+    """Every compile command and working folder of each file of <build folder>/compile_commands.json, by resolved
+    path, in the order of the file. A source that several targets compile has one command for each."""
     entries = json.loads((build_folder / "compile_commands.json").read_text(encoding="utf-8"))
-    found = {}
+    found: dict[Path, list[tuple[str, Path]]] = {}
     for entry in entries:
         directory = Path(entry["directory"])
         command = entry.get("command") or shlex.join(entry["arguments"])
-        found[Path(directory, entry["file"]).resolve()] = (command, directory)
+        commands = found.setdefault(Path(directory, entry["file"]).resolve(), [])
+        if (command, directory) not in commands:
+            commands.append((command, directory))
     return found
 
 
-def read_dependencies(compile_command: str, directory: Path) -> list[Path] | None:
-    """The files the compiler lists for the command, or None when the compiler fails (the check then runs uncached)."""
+class DependencyListError(Exception):
+    """The files that a compile command depends on could not be listed."""
+
+
+def read_dependencies(compile_command: str, directory: Path, source: Path) -> list[Path]:
+    """The files the compiler lists for the command. Raises DependencyListError when the compiler fails, when its
+    output does not name `source` itself (an empty or foreign list), or when a listed file does not exist."""
     completed = subprocess.run(
         dependency_command(compile_command),
         cwd=directory,
@@ -174,8 +200,14 @@ def read_dependencies(compile_command: str, directory: Path) -> list[Path] | Non
         check=False,
     )
     if completed.returncode != 0:
-        return None
-    return [Path(directory, name) for name in parse_dependencies(completed.stdout)]
+        raise DependencyListError(f"the compiler exited with {completed.returncode}")
+    dependencies = [Path(directory, name) for name in parse_dependencies(completed.stdout)]
+    if source.resolve() not in {dependency.resolve() for dependency in dependencies}:
+        raise DependencyListError("the compiler's list does not name the file itself")
+    missing = [str(dependency) for dependency in dependencies if not dependency.exists()]
+    if missing:
+        raise DependencyListError("a listed file does not exist: " + ", ".join(missing))
+    return dependencies
 
 
 def clang_tidy_version_text() -> str:
@@ -192,27 +224,30 @@ def check_file(
     repository: Path,
     cache_folder: Path | None,
     version_text: str,
-    commands: dict[Path, tuple[str, Path]],
+    commands: dict[Path, list[tuple[str, Path]]],
 ) -> TidyResult:
-    """Checks one file with clang-tidy, unless the cache holds a pass for its key, and stores a pass."""
+    """Checks one file with clang-tidy, unless the cache holds a pass for its key, and stores a pass. With the cache
+    on, a file whose dependencies cannot be listed fails without running clang-tidy."""
     options = tidy_arguments(path)
     marker: Path | None = None
-    entry = commands.get(path.resolve())
-    if cache_folder is not None and entry is not None:
-        dependencies = read_dependencies(*entry)
-        if dependencies is not None:
-            key = cache_key(
-                version_text,
-                applicable_config_files(path, repository),
-                options,
-                entry[0],
-                path,
-                dependencies,
-                repository,
-            )
-            marker = cache_folder / key
-            if marker.exists():
-                return TidyResult(str(path), True, "")
+    key = ""
+    entries = commands.get(path.resolve())
+    compile_commands = [command for command, _ in entries or []]
+    config_files = applicable_config_files(path, repository)
+    dependencies: list[Path] = []
+    if cache_folder is not None and entries:
+        union: set[Path] = set()
+        try:
+            for command, directory in entries:
+                union.update(read_dependencies(command, directory, path))
+        except DependencyListError as error:
+            return TidyResult(str(path), False, f"cannot list the dependencies of {path}: {error}\n")
+        dependencies = sorted(union)
+        key = cache_key(version_text, config_files, options, compile_commands, path, dependencies, repository)
+        marker = cache_folder / key
+        if marker.exists():
+            marker.touch()
+            return TidyResult(str(path), True, "")
     completed = subprocess.run(
         ["clang-tidy", "-p", str(build_folder), "--quiet", *options, str(path)],
         cwd=repository,
@@ -223,9 +258,24 @@ def check_file(
     )
     passed = completed.returncode == 0
     if passed and marker is not None:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        # A file may change while clang-tidy reads it. Store the pass only for text that is still the text of the key.
+        key_after = cache_key(version_text, config_files, options, compile_commands, path, dependencies, repository)
+        if key_after == key:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
     return TidyResult(str(path), passed, completed.stdout or "")
+
+
+def prune_cache(cache_folder: Path, now: float) -> None:
+    """Deletes the markers of `cache_folder` that were last used more than CACHE_MARKER_MAX_AGE_SECONDS before `now`."""
+    if not cache_folder.is_dir():
+        return
+    for marker in cache_folder.iterdir():
+        try:
+            if now - marker.stat().st_mtime > CACHE_MARKER_MAX_AGE_SECONDS:
+                marker.unlink()
+        except OSError:
+            continue
 
 
 def run_tidy(
@@ -246,6 +296,8 @@ def run_tidy(
                 files,
             )
         )
+    if cache_folder is not None:
+        prune_cache(cache_folder, time.time())
     return sorted(results, key=lambda result: result.path)
 
 

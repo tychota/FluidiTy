@@ -12,12 +12,22 @@ The speed (--speed, default commit):
           and tidy (the cache makes it check only what changed). The modules are named by a line `NOTE modules: ...`.
           A changed file is one that differs from HEAD, staged or not, or is untracked. A change under
           src/fluidity/<module>/ selects that module; a change elsewhere under src/ or cmake/, or to a top-level
-          build file (CMakeLists.txt, CMakePresets.json, conanfile.py, conan.lock), selects every module; a change
+          build file (CMakeLists.txt, CMakePresets.json, conanfile.py, conan.lock, pyproject.toml, uv.lock), selects
+          every module; a change
           elsewhere (docs, tools) selects none. The release build, the paper and cuda are left out, each printed as
-          `NOT RUN <step> (quick)`, so a quick pass is never read as a full one.
+          `NOT RUN <step> (quick)`, so a quick pass is never read as a full one. An untracked file is a changed file,
+          but the gate stops at `FAIL tree` for one unless --allow-dirty is given, so it selects modules only then.
+          With --only, quick runs the named step in full (every module's tests, both presets).
   commit  before each commit: every step below, with the parallel tests and the tidy cache.
   full    before a push, and in CI: commit with --no-cache, so tidy checks every file.
 --only <step> runs that step at any speed; a step that quick leaves out runs in full when named.
+
+The exit code (EXIT_* below):
+  0  commit or full speed, and every check read PASS. Only this code satisfies the commit rule.
+  1  a check failed (FAIL), or git could not be read.
+  3  quick speed, and every check that ran read PASS. This is not the commit gate: the last line printed is
+     `QUICK ONLY: not the commit gate`, and the code is never 0, so a script or a hook that reads only the exit code
+     cannot take a quick run for a commit-gate pass.
 
 The steps, in order:
   format  check that the clang-format on PATH is the version pyproject.toml pins, then clang-format, as a dry run,
@@ -88,10 +98,21 @@ COMPILED_MARKER = "compiled: "
 # The tools whose version the gate checks against pyproject.toml before it runs them.
 PINNED_TOOLS = ("clang-format", "clang-tidy")
 
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_QUICK_ONLY = 3
+QUICK_ONLY_LINE = "QUICK ONLY: not the commit gate"
+EXIT_CODES_HELP = (
+    "exit codes: 0 = commit or full speed and every check passed (the only code that satisfies the commit rule); "
+    "1 = a check failed; 3 = quick speed and every check that ran passed, which is not the commit gate "
+    f"(the last line printed is '{QUICK_ONLY_LINE}')"
+)
 SPEED_NAMES = ("quick", "commit", "full")
 DEFAULT_SPEED = "commit"
 # A change to one of these files, or under src/ outside a module folder, or under cmake/, can change any module.
-TOP_LEVEL_BUILD_FILES = frozenset({"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock"})
+TOP_LEVEL_BUILD_FILES = frozenset(
+    {"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock", "pyproject.toml", "uv.lock"}
+)
 MODULES_ROOT = ("src", "fluidity")
 
 PAPER_DIRECTORY = Path("docs") / "method-paper"
@@ -226,9 +247,9 @@ def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[s
 
 
 def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
-    """The modules whose tests a change can affect: None when every module (the change is under src/ outside a
+    """The modules whose folders hold a changed file: None when every module (the change is under src/ outside a
     module folder, under cmake/, or to a top-level build file), otherwise the module folders named under
-    src/fluidity/, possibly none."""
+    src/fluidity/, possibly none. A module that only includes a changed header of another module is not selected."""
     modules: set[str] = set()
     for path in changed_paths:
         parts = Path(path).parts
@@ -369,10 +390,12 @@ class Gate:
         return Outcome(outcome.passed, outcome.reason, notes)
 
     def changed_paths(self) -> list[str] | None:
-        """The files that differ from HEAD, staged or not, and the untracked files; None when git fails."""
+        """The files that differ from HEAD, staged or not, and the untracked files; None when git fails.
+
+        `--no-renames` lists a moved file under both its old and its new path, so the module it left is selected."""
         listed: list[str] = []
         for arguments in (
-            ["git", "diff", "--name-only", "-z", "HEAD"],
+            ["git", "diff", "--name-only", "-z", "--no-renames", "HEAD"],
             ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         ):
             try:
@@ -598,9 +621,9 @@ class Gate:
                 dirty.append(path)
         return dirty
 
-    def checks(self, speed: str = DEFAULT_SPEED) -> list[Check]:
+    def checks(self, speed: str = DEFAULT_SPEED, only: str | None = None) -> list[Check]:
         debug_preset, release_preset = host_cpu_presets()
-        changed_only = speed == "quick"
+        changed_only = speed == "quick" and only is None
 
         def check_debug_preset() -> Outcome:
             return self.check_cpu_preset(debug_preset, changed_modules_only=changed_only)
@@ -632,7 +655,11 @@ def read_line_texts(text: str) -> list[tuple[int, str]]:
 
 
 def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
-    parser = argparse.ArgumentParser(description="Run every check a commit must pass.")
+    parser = argparse.ArgumentParser(
+        description="Run every check a commit must pass.",
+        epilog=EXIT_CODES_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--speed",
         choices=SPEED_NAMES,
@@ -646,7 +673,7 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
     parser.add_argument("--no-cache", action="store_true", help="run clang-tidy on every file, whatever passed before")
     arguments = parser.parse_args(argv)
     gate = Gate(repo_root, use_tidy_cache=not (arguments.no_cache or arguments.speed == "full"))
-    checks = [check for check in gate.checks(arguments.speed) if arguments.only in (None, check.step)]
+    checks = [check for check in gate.checks(arguments.speed, arguments.only) if arguments.only in (None, check.step)]
     failed = False
     dirty = gate.dirty_paths()
     if dirty is None:
@@ -672,7 +699,12 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
         else:
             print(f"FAIL {check.title}: {outcome.reason}", flush=True)
             failed = True
-    return 1 if failed else 0
+    if failed:
+        return EXIT_FAIL
+    if arguments.speed == "quick":
+        print(QUICK_ONLY_LINE, flush=True)
+        return EXIT_QUICK_ONLY
+    return EXIT_PASS
 
 
 if __name__ == "__main__":

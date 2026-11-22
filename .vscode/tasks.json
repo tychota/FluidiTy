@@ -26,9 +26,18 @@
       "problemMatcher": []
     },
     {
+      // A quick run whose checks all passed exits with code 3 ("QUICK ONLY: not the commit gate"), never 0. The task
+      // maps 3 to success so that the editor shows a pass as a pass; any other non-zero code stays a failure. The
+      // last line of the output still says that this is not the commit gate.
       "label": "Gate quick",
-      "type": "shell",
-      "command": "uv run python tools/check_commit.py --speed quick",
+      "type": "process",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-c",
+        "import subprocess, sys; code = subprocess.call(['uv', 'run', 'python', 'tools/check_commit.py', '--speed', 'quick']); sys.exit(0 if code in (0, 3) else 1)"
+      ],
       "problemMatcher": []
     },
     {
