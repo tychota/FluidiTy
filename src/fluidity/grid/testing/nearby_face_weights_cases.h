@@ -9,9 +9,11 @@
 // Owns:    FindWeightsOfAllFaces, ComputeKeptWeightTotal, ComputeKeptWeightChangeTotal, CheckWeightsAddUp,
 //          CheckCompleteClosedForm, ComputeKeptRawChangeMagnitude, CheckIsCompleteWithUnitWeightSum,
 //          CheckKeptWeightsAreNotNegative, CheckVectorIsNear, CheckMatrixIsNear, ComputeZeroWeightCount,
-//          ComputePositiveWeightCount, CheckHasNoWeight, kWeightSumTolerance, kWeightChangeSumTolerance
+//          ComputePositiveWeightCount, CheckHasNoWeight, kWeightSumTolerance, kWeightChangeSumTolerance, LinearField,
+//          ValueCentring, ComputeLinearValue, ComputeFittedMatrixRow, CheckHasSameBits, CheckFaceWeightHasSameBits
 // Uses:    the headers it includes
-// Used by: src/fluidity/grid/nearby_face_weights.test.cc, tests/grid/nearby_face_weights_on_many_positions.test.cc and
+// Used by: src/fluidity/grid/nearby_face_weights.test.cc, src/fluidity/grid/nearby_face_weights.face_seen.test.cc,
+// tests/grid/nearby_face_weights_on_many_positions.test.cc and
 //          tests/grid/nearby_face_weights_on_random_grids.test.cc
 // Read:    the test files that include it
 
@@ -22,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -119,6 +122,27 @@ inline Vec3 ComputeFittedMatrixRow(
     }
   }
   return weights.inverse_weighted_spread * moment;
+}
+
+// Checks that two doubles have the same bits.
+inline void CheckHasSameBits(double actual, double expected) {
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(actual), std::bit_cast<std::uint64_t>(expected));
+}
+
+// Checks that two weights of a face have the same bits in `weight`, `offset`, `offset_from_mean` and `weight_change`,
+// and name the same face.
+inline void CheckFaceWeightHasSameBits(const FaceWeight& actual, const FaceWeight& expected) {
+  EXPECT_EQ(actual.face.value, expected.face.value);
+  CheckHasSameBits(actual.weight, expected.weight);
+  CheckHasSameBits(actual.offset.x, expected.offset.x);
+  CheckHasSameBits(actual.offset.y, expected.offset.y);
+  CheckHasSameBits(actual.offset.z, expected.offset.z);
+  CheckHasSameBits(actual.offset_from_mean.x, expected.offset_from_mean.x);
+  CheckHasSameBits(actual.offset_from_mean.y, expected.offset_from_mean.y);
+  CheckHasSameBits(actual.offset_from_mean.z, expected.offset_from_mean.z);
+  CheckHasSameBits(actual.weight_change.x, expected.weight_change.x);
+  CheckHasSameBits(actual.weight_change.y, expected.weight_change.y);
+  CheckHasSameBits(actual.weight_change.z, expected.weight_change.z);
 }
 
 // Checks that three numbers are within `tolerance` of the three of `expected`; a tolerance of 0 asks for equality.

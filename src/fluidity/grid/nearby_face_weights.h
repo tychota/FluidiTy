@@ -50,7 +50,9 @@
 //   0 and the spread is h^2 / 4 times the identity, so the inverse spread is 4 / h^2 times the identity, up to
 //   rounding. That case is never a separate path in the code.
 //   The weight of one face is computed with the same operations in ComputeNearbyFaceWeights and in
-//   ComputeFaceWeight, so a face that asks what a particle gives it gets the particle's own bits.
+//   ComputeFaceWeight, so a face that asks what a particle gives it gets the particle's own bits. A face asks with
+//   the particle's NearbyFaceSums, the particle's position and cell, and its own place; it decides itself, by the
+//   window test of the list, whether the particle's list holds it.
 //
 // Words:
 //   candidate       a face that may get weight from a position, before any face is left out
@@ -63,11 +65,12 @@
 //   weight change   the derivative of a face's weight with respect to the particle's position, in 1/m
 //   weighted spread the symmetric 3 x 3 matrix of the weighted offsets from the mean (grid/weight_curve.h)
 // Owns:    NearbyFaceList, NearbyFaceMask, NearbyFaceFit, NearbyFaceWeights, FaceWeight, FindNearbyFaces, ToMaskOfAll,
-//          ComputeNearbyFaceWeights, ComputeFaceWeight; and, for this header's own functions and the tests of the
+//          NearbyFaceSums, ToNearbyFaceSums, ComputeNearbyFaceWeights, ComputeFaceWeight (for a list entry and for a
+//          face); and, for this header's own functions and the tests of the
 //          grid only, FindNearbyFacesWithRoom, ComputeCandidateWindowQuarter, ComputeIsInCandidateWindow,
-//          ApplyNearbyFaceInsert, RawFaceWeight, ComputeRawFaceWeight, ComputeIsKept, ComputeKeptFaceWeight,
-//          ComputeIsCompleteNeighbourhood, CholeskyInverse, ComputeCholeskySolution, ComputeCholeskyInverse,
-//          kFindNearbyFacesCallBytes
+//          ApplyNearbyFaceInsert, RawFaceWeight, ComputeRawFaceWeight, ComputeIsKept, ComputeScaledFaceWeight,
+//          ComputeKeptFaceWeight, ComputeIsCandidateFace, ComputeIsCompleteNeighbourhood, CholeskyInverse,
+//          ComputeCholeskySolution, ComputeCholeskyInverse, kFindNearbyFacesCallBytes
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Mat3 (base/mat3.h), math::Floor, math::Sqrt,
 //          math::IsFinite (base/scalar_math.h), Vec3 (base/vec3.h), FindCellAt (grid/find_cell_at.h), FindCellBlock,
 //          GridTables, ToCellId, ToSizeLevel, ToAxis, ComputeCellWidth, ComputeFacePosition, ComputeFaceArea
@@ -359,6 +362,29 @@ struct FaceWeight {
   Vec3 weight_change;  // 1/m. Derivative of `weight` with respect to the position.
 };
 
+// The sums of a particle's kept faces on one axis that a face needs to compute the weight the particle gives it. A
+// particle makes one from its NearbyFaceWeights (ToNearbyFaceSums) and hands it to the faces that ask.
+struct NearbyFaceSums {
+  Axis axis;  // The axis of the particle's list: only faces of this axis can get weight.
+  NearbyFaceFit fit;  // What the particle's kept faces allow. kNone: no face gets weight.
+  double weight_sum;  // No unit. W, the sum of the kept raw weights.
+  Vec3 raw_weight_change_sum;  // 1/m. G, the sum of the kept raw weight changes.
+  Vec3 mean_offset;  // m. Weighted mean of (face position - position) over the kept faces.
+};
+
+// Makes the sums a face needs from a particle's weights: the axis of its list, the fit, W, G and the mean offset.
+// Requires: `weights` is from ComputeNearbyFaceWeights.
+// Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
+FLUIDITY_CPU_AND_GPU constexpr NearbyFaceSums ToNearbyFaceSums(const NearbyFaceWeights& weights) noexcept {
+  return {
+      .axis = weights.list.axis,
+      .fit = weights.fit,
+      .weight_sum = weights.weight_sum,
+      .raw_weight_change_sum = weights.raw_weight_change_sum,
+      .mean_offset = weights.mean_offset,
+  };
+}
+
 // The raw weight of one face and its change with the position, before the sums scale them. For this header's own
 // functions only.
 struct RawFaceWeight {
@@ -410,33 +436,52 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsKept(const NearbyFaceMask& mask, in
   return ((word >> static_cast<unsigned>(position_in_list % 64)) & 1U) != 0U;
 }
 
-// Computes what a kept face gets from the position of `weights`, scaled by the sums of `weights`, and its offset from
-// the mean offset of `weights`. The one place the scaling is written, so the particle's own pass and a face's question
-// give the same bits. For this header's own functions only.
+// Computes what a face gets from a position, scaled by the sums of the particle's kept faces, and its offset from the
+// mean offset of the sums. The one place the scaling is written, so the particle's own pass and a face's question give
+// the same bits. For this header's own functions only.
 //
-// Method: weight = w_f / W and weight_change = (g_f - weight G) / W, per axis, with W and G the sums of
-//   `weights`. offset_from_mean uses weights.mean_offset as it stands, so a caller that has not set it yet gets the
-//   offset back.
+// Method: weight = w_f / W and weight_change = (g_f - weight G) / W, per axis, with W and G the sums. offset_from_mean
+//   uses sums.mean_offset as it stands, so a caller that has not set it yet gets the offset back.
+// Requires: sums.weight_sum is above 0; `face` is a place of block 0..tables.block_count - 1; `cell_width` is finite
+//   and above 0; `position` is finite.
+// Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
+FLUIDITY_CPU_AND_GPU inline FaceWeight ComputeScaledFaceWeight(
+    const GridTables& tables,
+    FacePlaceIndex face,
+    Vec3 position,
+    double cell_width,
+    const NearbyFaceSums& sums
+) noexcept {
+  const RawFaceWeight raw = ComputeRawFaceWeight(tables, face, position, cell_width);
+  const Vec3 offset = ComputeFacePosition(tables, face) - position;
+  const double weight = raw.weight / sums.weight_sum;
+  return {
+      .face = face,
+      .weight = weight,
+      .offset = offset,
+      .offset_from_mean = offset - sums.mean_offset,
+      .weight_change = {
+          .x = (raw.weight_change.x - (weight * sums.raw_weight_change_sum.x)) / sums.weight_sum,
+          .y = (raw.weight_change.y - (weight * sums.raw_weight_change_sum.y)) / sums.weight_sum,
+          .z = (raw.weight_change.z - (weight * sums.raw_weight_change_sum.z)) / sums.weight_sum,
+      },
+  };
+}
+
+// Computes what a kept face of a list gets from the position of `weights`, by the sums of `weights`. For this header's
+// own functions only.
 // Requires: weights.weight_sum is above 0, position_in_list is 0..weights.list.count - 1.
 // Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
 FLUIDITY_CPU_AND_GPU inline FaceWeight
 ComputeKeptFaceWeight(const GridTables& tables, const NearbyFaceWeights& weights, int position_in_list) noexcept {
   assert(position_in_list >= 0 && position_in_list < weights.list.count);
-  const FacePlaceIndex face = weights.list.faces[position_in_list];
-  const RawFaceWeight raw = ComputeRawFaceWeight(tables, face, weights.position, weights.list.cell_width);
-  const Vec3 offset = ComputeFacePosition(tables, face) - weights.position;
-  const double weight = raw.weight / weights.weight_sum;
-  return {
-      .face = face,
-      .weight = weight,
-      .offset = offset,
-      .offset_from_mean = offset - weights.mean_offset,
-      .weight_change = {
-          .x = (raw.weight_change.x - (weight * weights.raw_weight_change_sum.x)) / weights.weight_sum,
-          .y = (raw.weight_change.y - (weight * weights.raw_weight_change_sum.y)) / weights.weight_sum,
-          .z = (raw.weight_change.z - (weight * weights.raw_weight_change_sum.z)) / weights.weight_sum,
-      },
-  };
+  return ComputeScaledFaceWeight(
+      tables,
+      weights.list.faces[position_in_list],
+      weights.position,
+      weights.list.cell_width,
+      ToNearbyFaceSums(weights)
+  );
 }
 
 // Says whether a mask keeps all 27 faces of a list and every one has the size level of the cell. For this header's own
@@ -696,6 +741,84 @@ ComputeFaceWeight(const GridTables& tables, const NearbyFaceWeights& weights, in
     };
   }
   return ComputeKeptFaceWeight(tables, weights, position_in_list);
+}
+
+// Says whether a face is a candidate of a position in its cell: of a size level one below the cell's, the same or one
+// above, with its centre in the window of the position's quarter of the cell on each axis. The test of
+// FindNearbyFacesWithRoom, made on one face; the axis of the face is not looked at. For this header's own functions
+// only.
+//
+// Method: the window quarter of each axis comes from ComputeCandidateWindowQuarter with the same inputs the list form
+//   uses, and the face centre is tested in quarter widths from the cell's low corner (ComputeIsInCandidateWindow).
+// Requires: `face` is a place of block 0..tables.block_count - 1; `cell` is the active cell FindCellAt gives for
+//   `position`; `position` is finite.
+// Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
+FLUIDITY_CPU_AND_GPU inline bool
+ComputeIsCandidateFace(const GridTables& tables, FacePlaceIndex face, Vec3 position, CellPlaceIndex cell) noexcept {
+  const CellId cell_id = ToCellId(tables, cell);
+  const SizeLevel cell_size_level = ToSizeLevel(cell_id);
+  const auto cell_size_level_number = static_cast<int>(cell_size_level);
+  const auto face_size_level = static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(face)));
+  const int size_level_difference = face_size_level - cell_size_level_number;
+  if (size_level_difference < -1 || size_level_difference > 1) {
+    return false;
+  }
+  const CellCoord cell_coord = ToCellCoord(cell_id);
+  const double cell_width = ComputeCellWidth(tables.frame, cell_size_level);
+  const GridFrame frame = tables.frame;
+  const int window_quarter_x = ComputeCandidateWindowQuarter(position.x, frame.origin.x, cell_width, cell_coord.x);
+  const int window_quarter_y = ComputeCandidateWindowQuarter(position.y, frame.origin.y, cell_width, cell_coord.y);
+  const int window_quarter_z = ComputeCandidateWindowQuarter(position.z, frame.origin.z, cell_width, cell_coord.z);
+  const QuarterWidthPoint face_center = ComputeFaceCenterInQuarterWidths(tables, face, cell_size_level_number);
+  return ComputeIsInCandidateWindow(face_center.x - (4 * std::int64_t{cell_coord.x}), window_quarter_x)
+      && ComputeIsInCandidateWindow(face_center.y - (4 * std::int64_t{cell_coord.y}), window_quarter_y)
+      && ComputeIsInCandidateWindow(face_center.z - (4 * std::int64_t{cell_coord.z}), window_quarter_z);
+}
+
+// Computes the weight a particle gives one face, seen from the face: the same scaled weight, offsets and weight change
+// the particle's own list gives it, bit for bit.
+//
+// Method: the face is a candidate when it is of the axis of `sums` and ComputeIsCandidateFace says so for `position`
+//   and `cell`. A candidate gets what ComputeNearbyFaceWeights gives a kept face: w_f / W and (g_f - weight G) / W,
+//   by the same operations (ComputeScaledFaceWeight), with the cell's width as the list's. Any other face gets nothing.
+//   When the fit of the sums is kNone no face has weight: the weight and the change are 0 and so is offset_from_mean,
+//   and `offset` is still the face's position minus the position.
+// Units: as FaceWeight; `position` in m, world.
+// Ties: a face exactly 1.5 widths away is a candidate and has weight 0.
+// Example: unit grid (h = 1 m), position {2.5, 2.5, 2.5}, X axis, all 27 faces kept: the face at offset {-0.5, 0, 0}
+//   gets 0.28125, as the list gives it. A face 3 cells away is no candidate: weight 0, every vector 0, face echoed.
+// Requires: `sums` is from ToNearbyFaceSums of weights made for `position`, `cell` and `tables`; `cell` is the active
+//   cell FindCellAt gives for `position`; `face` is a place of block 0..tables.block_count - 1, and the particle kept
+//   it if it is a candidate. The caller, not this function, knows the particle's mask.
+// Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <eq:scaled-weights>
+FLUIDITY_CPU_AND_GPU inline FaceWeight ComputeFaceWeight(
+    const GridTables& tables,
+    FacePlaceIndex face,
+    Vec3 position,
+    CellPlaceIndex cell,
+    const NearbyFaceSums& sums
+) noexcept {
+  const Vec3 zero_vector = {.x = 0.0, .y = 0.0, .z = 0.0};
+  if (ToAxis(face) != sums.axis || !ComputeIsCandidateFace(tables, face, position, cell)) {
+    return {
+        .face = face,
+        .weight = 0.0,
+        .offset = zero_vector,
+        .offset_from_mean = zero_vector,
+        .weight_change = zero_vector,
+    };
+  }
+  if (sums.fit == NearbyFaceFit::kNone) {
+    return {
+        .face = face,
+        .weight = 0.0,
+        .offset = ComputeFacePosition(tables, face) - position,
+        .offset_from_mean = zero_vector,
+        .weight_change = zero_vector,
+    };
+  }
+  const double cell_width = ComputeCellWidth(tables.frame, ToSizeLevel(ToCellId(tables, cell)));
+  return ComputeScaledFaceWeight(tables, face, position, cell_width, sums);
 }
 
 }  // namespace fluidity::grid

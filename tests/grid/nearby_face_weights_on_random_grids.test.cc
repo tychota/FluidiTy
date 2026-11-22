@@ -137,6 +137,28 @@ TEST(ComputeNearbyFaceWeights, LinearField_IsReproduced) {
   EXPECT_GT(checked_count, 5000);
 }
 
+// Checks that a face asking the particle's sums for its own weight gets the same bytes as the particle's list gives,
+// for every kept face: weight, offset, offset from the mean and weight change.
+void CheckFaceFormMatchesListForm(const GridTables& tables, const NearbyFaceWeights& weights) {
+  const NearbyFaceSums sums = ToNearbyFaceSums(weights);
+  for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
+    if (!ComputeIsKept(weights.kept, position_in_list)) {
+      continue;
+    }
+    const FaceWeight from_list = ComputeFaceWeight(tables, weights, position_in_list);
+    const FaceWeight from_face = ComputeFaceWeight(tables, from_list.face, weights.position, weights.list.cell, sums);
+    CheckFaceWeightHasSameBits(from_face, from_list);
+  }
+}
+
+// The 200 random grids, 50 positions, random masks with a kept face of weight: the face form with the particle's sums
+// returns the same bytes as the list form for every kept face.
+TEST(ComputeFaceWeight, SeenFromFace_IsBitIdentical) {
+  const int checked_count = ApplyToRandomWeights(50, CheckFaceFormMatchesListForm);
+  RecordProperty("checked_lists", checked_count);
+  EXPECT_GT(checked_count, 20000);
+}
+
 // Says whether a coordinate along one axis lies at least 0.01 widths from the two sides of its cell.
 bool ComputeIsAwayFromCellSides(double position_on_axis, double origin_on_axis, double cell_width) {
   const double cells_from_origin = (position_on_axis - origin_on_axis) / cell_width;

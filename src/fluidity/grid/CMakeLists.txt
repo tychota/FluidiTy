@@ -96,6 +96,9 @@ fluidity_add_test(
   staggered_grid_no_gpu_test SOURCES staggered_grid.no_gpu.test.cc LABEL no_gpu LINKS fluidity_grid_testing
 )
 fluidity_add_test(nearby_face_weights_test SOURCES nearby_face_weights.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(
+  nearby_face_weights_face_seen_test SOURCES nearby_face_weights.face_seen.test.cc LABEL cpu LINKS fluidity_grid_testing
+)
 fluidity_add_test(face_search_test SOURCES face_search.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_tables_test SOURCES grid_tables.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_support_test SOURCES testing/grid_support.test.cc LABEL cpu LINKS fluidity_grid_testing)
