@@ -1,0 +1,30 @@
+native/fluidity/grid/face_search_test.cc
+  s_4f0877e2acdcf0::t_babf9cca45ce69 1-844
+  s_4f0877e2acdcf0::t_3dc992c076daab 845-1016
+docs/glossary.md
+  s_4f0877e2acdcf0::t_a4a99690d9e758 201-202
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_0f6753931dcc95 2117-2118,2410-2442
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_bc5f161a97648c 126
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_a7abcca4f59bff 8-14,179-185
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_696d8f5300ac08 8-9,32-35,91-94,100-102,110-112,117-119,122,1644-2034
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f4916b74bf054404858f01e4bc91aa6fdfe80901",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
