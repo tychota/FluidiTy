@@ -2112,6 +2112,10 @@ and a grid that outgrows it is `kTooManyCellBlocks`, after which the run raises 
 (`CellValues`, `FaceValues`, `CornerValues`, `CellBlockValues`: one value per cell, face or corner place, or per block)
 are built once with room for the same number of blocks. `ApplyGridVersion` binds them to a new version: it records
 the version and the block count, and their contents become unspecified until the owning module fills them again.
+A function of another module that takes values and a grid compares the values' version and block count with the grid's
+and fails with `kWrongGridVersion` when they differ. A grid piece has the whole grid's version, so values loaded for one
+piece are bound again at every load. `ReadValues` and `WriteValues` are the only copies between value buffers and CPU
+memory: they take the bound part only.
 
 *Ranges and border.* A stage works on a range: a run of consecutive blocks in the fixed order (`CellBlockRange`). It
 writes only values kept in blocks of the range, and it may read values of the range and of its border blocks. Since

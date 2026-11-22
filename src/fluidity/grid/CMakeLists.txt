@@ -12,6 +12,7 @@ fluidity_add_headers(
   grid_ids.h
   grid_memory_estimate.h
   grid_tables.h
+  grid_values.h
   nearby_face_weights.h
   staggered_grid.h
   staggered_grid_gpu.h
@@ -20,7 +21,7 @@ fluidity_add_headers(
 )
 
 target_sources(
-  fluidity PRIVATE grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc staggered_grid_cpu.cc
+  fluidity PRIVATE grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_values_cpu.cc staggered_grid_cpu.cc
 )
 fluidity_add_gpu_sources(staggered_grid_gpu.cu)
 # ptxas prints the stack frame and the spills of each GPU function for each architecture, so every compile of the file
@@ -100,6 +101,11 @@ fluidity_add_test(
   nearby_face_weights_face_seen_test SOURCES nearby_face_weights.face_seen.test.cc LABEL cpu LINKS fluidity_grid_testing
 )
 fluidity_add_test(face_search_test SOURCES face_search.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(grid_values_test SOURCES grid_values.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(grid_values_no_gpu_test SOURCES grid_values.no_gpu.test.cc LABEL no_gpu)
+fluidity_add_test(
+  grid_values_gpu_test SOURCES grid_values.gpu.test.cc LABEL gpu LINKS fluidity_base_testing fluidity_grid_testing
+)
 fluidity_add_test(grid_tables_test SOURCES grid_tables.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_support_test SOURCES testing/grid_support.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(touching_cells_test SOURCES touching_cells.test.cc LABEL cpu LINKS fluidity_grid_testing)

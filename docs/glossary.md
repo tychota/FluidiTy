@@ -47,6 +47,7 @@ listed; they arrive with the module that settles them (`docs/design/programme.md
 | `cell_eighth` | One of the 8 sub-boxes of a cell, numbered `x + 2 y + 4 z`, 0..7, where each of x, y and z is 0 for the low half and 1 for the high half (`ComputeSmallCell`, `ComputeCellEighth`). | octant |
 | `distance_to_surface` | m. Distance to the liquid surface, negative inside the liquid. | signed distance |
 | `sample_weight` | Weight of one sample point in a sum that approximates an integral. | quadrature weight |
+| `GridValues`, `CellValues`, `FaceValues`, `CornerValues`, `CellBlockValues`, `ApplyGridVersion`, `ReadValues`, `WriteValues`, `CheckGridVersion` | Buffers of one value per cell place, face place, corner place or cell block, built once with room for `max_cell_blocks` blocks and bound to one grid version. `ApplyGridVersion` only writes down the grid's version and block count, so the contents become unspecified until the owning module fills them again; a function that takes values and a grid checks `grid_version()` and `block_count()` against the grid's. `ReadValues` and `WriteValues` copy the bound part to and from CPU memory (`grid/grid_values.h`, `<sec-cell-blocks>`). | FaceField, CellField, FacePieceValues |
 
 ## Solids and the domain
 

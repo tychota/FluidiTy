@@ -348,3 +348,30 @@ fluidity_add_test(
   LINKS
   fluidity_grid_testing
 )
+
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  apply_grid_version_on_random_grids_functional_test
+  SOURCES
+  apply_grid_version_on_random_grids.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  apply_grid_version_on_gpu_functional_test
+  SOURCES
+  apply_grid_version_on_gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
