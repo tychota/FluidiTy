@@ -1,0 +1,23 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_3fca89a87788b2 2640-2645
+native/fluidity/grid/cell_size_factor_test.cc
+  s_4f0877e2acdcf0::t_b69ea396cfb414 203,235-260,262,352,450-454,473,476,486,493,504,508,515,551,554,557-561,566,569-573,578-584,587-591,593-597
+native/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_a9c7f231247b24 311-313,386-387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "99fdd0c86e98540c2ee5a530eef3ff819f3fc7a3",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
