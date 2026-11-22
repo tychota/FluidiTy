@@ -1,0 +1,27 @@
+src/fluidity/grid/nearby_face_weights.h
+  s_4f0877e2acdcf0::t_d9e1e88684cdd0 39-41,559-570
+src/fluidity/grid/nearby_face_weights.test.cc
+  s_4f0877e2acdcf0::t_500dcd629667c1 12-13,15-16,333-359,564,582-617,621-647
+src/fluidity/grid/testing/nearby_face_weights_cases.h
+  s_4f0877e2acdcf0::t_a960ecf81e35ce 26,75-123,179-181
+tests/grid/nearby_face_weights_on_many_positions.test.cc
+  s_4f0877e2acdcf0::t_07802839e4733b 58-64,67
+tests/grid/nearby_face_weights_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_4396527cc21bf0 92-93,97-100,102,113,117,119,126-127,129,132-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5d30c69d35a86e417f1bf1726405f61c0f7d995f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
