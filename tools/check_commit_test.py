@@ -353,10 +353,15 @@ def test_missing_compile_commands_fails_tidy(monkeypatch, capsys, repo):
     ]
 
 
+def tidy_commands(fake):
+    """The commands that run tools/run_tidy.py, which runs clang-tidy over the files it is given."""
+    return [command for command in fake.commands if any(Path(part).name == "run_tidy.py" for part in command)]
+
+
 def test_tidy_checks_each_header_alone(monkeypatch, capsys, repo):
     fake = FakeRun()
     run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
-    tidied = [part for command in fake.commands if command[0] == "clang-tidy" for part in command]
+    tidied = [part for command in tidy_commands(fake) for part in command]
     assert "native/fluidity/a.cc" in tidied
     assert any(part.endswith(HEADER_CHECK_FILE) for part in tidied)
 
@@ -364,7 +369,7 @@ def test_tidy_checks_each_header_alone(monkeypatch, capsys, repo):
 def test_tidy_leaves_a_file_outside_the_cpu_build_to_the_cuda_step(monkeypatch, capsys, repo):
     fake = FakeRun(tracked=["native/fluidity/a.cc", "native/fluidity/b_gpu_test.cc"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
-    tidied = [part for command in fake.commands if command[0] == "clang-tidy" for part in command]
+    tidied = [part for command in tidy_commands(fake) for part in command]
     assert exit_code == 0
     assert lines == ["PASS tidy"]
     assert "native/fluidity/b_gpu_test.cc" not in tidied
@@ -459,3 +464,26 @@ def test_container_runs_its_tests_on_every_core(monkeypatch, capsys, repo):
     script = next(command for command in fake.commands if command[:2] == ["docker", "run"])[-1]
     ctest_line = next(line for line in script.splitlines() if line.startswith("ctest"))
     assert '--parallel "$(nproc)"' in ctest_line
+
+
+def test_tidy_runs_one_command_that_may_use_the_cache(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
+    (command,) = tidy_commands(fake)
+    assert "--no-cache" not in command
+    assert command[command.index("--build-folder") + 1] == f"out/build/{DEBUG_PRESET}"
+
+
+def test_no_cache_flag_reaches_the_tidy_command(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy", "--no-cache")
+    (command,) = tidy_commands(fake)
+    assert "--no-cache" in command
+
+
+def test_failing_tidy_fails_the_step_with_its_log(monkeypatch, capsys, repo):
+    fake = FakeRun(failing=lambda command: any(Path(part).name == "run_tidy.py" for part in command))
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
+    assert exit_code == 1
+    assert lines[0].startswith("FAIL tidy:")
+    assert "out/check-commit/tidy.log" in lines[0]

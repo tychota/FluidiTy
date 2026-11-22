@@ -1,6 +1,6 @@
 """Runs every check a commit must pass, in order, and prints one line per check.
 
-Usage: uv run python tools/check_commit.py [--only format|rules|cpu|tidy|paper|cuda] [--allow-dirty]
+Usage: uv run python tools/check_commit.py [--only format|rules|cpu|tidy|paper|cuda] [--allow-dirty] [--no-cache]
 
 The gate checks what will be committed. Before any step it reads `git status`: an untracked file or an unstaged
 change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Staged changes are fine. With
@@ -19,7 +19,9 @@ The steps, in order:
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
           debug preset, over every tracked .cc file under native/ that the CPU build compiles, and over each
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
-          build compiles, such as a GPU-only test, is tidied by the cuda step.
+          build compiles, such as a GPU-only test, is tidied by the cuda step. tools/run_tidy.py runs one clang-tidy
+          per file, one per core at once, and does not check a file again while nothing it depends on has changed
+          (the cache is out/tidy-cache/); --no-cache checks every file.
   paper   compile the method paper with typst, and check that every label named on a `Read:` line under native/
           (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper.
   cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run
@@ -211,8 +213,9 @@ def host_cpu_presets() -> tuple[str, str]:
 class Gate:
     """Runs the checks for one repository. Every command goes through `subprocess.run`."""
 
-    def __init__(self, repo_root: Path) -> None:
+    def __init__(self, repo_root: Path, use_tidy_cache: bool = True) -> None:
         self.repo_root = repo_root
+        self.use_tidy_cache = use_tidy_cache
         self.environment = dict(os.environ, CONAN_HOME=str(repo_root / "out" / "conan-home"))
         self.started_logs: set[str] = set()
 
@@ -383,13 +386,21 @@ class Gate:
         header_checks = sorted(
             str(path) for path in compiled if HEADER_CHECK_FOLDER in path.parts and path.name.endswith(".h.cc")
         )
-        tidy = ["clang-tidy", "-p", build_folder.as_posix(), "--quiet"]
-        command_list = [[*tidy, *in_build]]
-        if header_checks:
-            # A header-alone file includes its header and uses nothing from it, which is its purpose, so the
-            # include check is off for it. The header itself is still checked through HeaderFilterRegex.
-            command_list.append([*tidy, "--checks=-misc-include-cleaner", *header_checks])
-        return self.commands("tidy", command_list)
+        # tools/run_tidy.py runs one clang-tidy per file, as many at once as there are cores, prints the failures
+        # sorted by path, and skips a file that passed while nothing it depends on has changed. It turns the include
+        # check off for a header-alone file, which includes its header and uses nothing from it. The header itself is
+        # still checked through HeaderFilterRegex.
+        command = [
+            sys.executable,
+            str(self.repo_root / "tools" / "run_tidy.py"),
+            "--build-folder",
+            build_folder.as_posix(),
+            "--repository",
+            str(self.repo_root),
+        ]
+        if not self.use_tidy_cache:
+            command.append("--no-cache")
+        return self.command("tidy", [*command, *in_build, *header_checks])
 
     def check_paper(self) -> Outcome:
         compiled = self.command("paper", ["typst", "compile", PAPER_TYPST_FILE.as_posix(), PAPER_PDF.as_posix()])
@@ -539,8 +550,9 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
     parser.add_argument(
         "--allow-dirty", action="store_true", help="test the working tree even with unstaged or untracked files"
     )
+    parser.add_argument("--no-cache", action="store_true", help="run clang-tidy on every file, whatever passed before")
     arguments = parser.parse_args(argv)
-    gate = Gate(repo_root)
+    gate = Gate(repo_root, use_tidy_cache=not arguments.no_cache)
     checks = [check for check in gate.checks() if arguments.only in (None, check.step)]
     failed = False
     dirty = gate.dirty_paths()
