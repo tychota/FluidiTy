@@ -52,6 +52,7 @@ fluidity_add_test(
   fluidity_base_test_support
   fluidity_grid_test_support
 )
+fluidity_add_test(corners_test SOURCES corners_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(find_cell_at_test SOURCES find_cell_at_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_buffers_test SOURCES grid_buffers_test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps_test.cc LABEL cpu LINKS fluidity_grid_test_support)

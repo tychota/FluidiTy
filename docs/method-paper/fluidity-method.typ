@@ -2044,6 +2044,16 @@ lists. For example, a big cell whose only other cells are the eight small cells 
 touches the four small cells beside that side and has nine face pieces: its five other sides whole and the four
 quarters of that side.
 
+*The cells around an edge.* `FindCellsAroundEdge` gives the cells around one of the 12 edges of an active cell, for the
+viscosity solve. The edge is parallel to the third axis of two axes the caller names, on the side of each that a
+quarter number picks. The cell is the first of four places; the others are the places of its size level across the
+first axis, across the second, and across both. A place is given only when it holds an active cell of the cell's
+size. A flag says whether every cell around the edge has that size: a split place, or a place inside a bigger active
+cell, clears it; an absent place, at the grid's edge, does not. Where no block of the cell's size level lies, the
+place is inside a bigger cell when the bigger block's place there is active, and absent otherwise. Two equal axes, an
+axis that is not x, y or z, a quarter outside 0..3, a place without an active cell, an index of no place and the
+tables of no grid give the empty result.
+
 #figure(
   face-pieces-figure(),
   placement: auto,
@@ -2119,16 +2129,48 @@ not loaded becomes "none"; a `kBetweenCells` face piece whose other cell lies in
 `kOutsidePiece`; and a plane-4 place stays `kNotAPiece` when its high neighbour exists in the whole grid but was not
 loaded, so a grid piece never has a face piece that the whole grid does not have.
 
-*Where a corner is kept.* The pressure solve and the solids keep values at cell corners. A corner is a point of the
+*Where a corner is stored.* The pressure solve and the solids keep values at cell corners. A corner is a point of the
 5 × 5 × 5 lattice of every block whose box holds it, sides included, so one point can be a lattice point of several
-blocks: two blocks of one size level that share a side, or blocks of two size levels. It is kept once. Among the
-blocks of the grid whose lattice holds the point, it is kept in a block of the smallest cells, the largest size level
-value; and among several blocks of that size level, in the one that comes last in the fixed order, the highest $z$,
-then $y$, then $x$: the block on the high side, as for face plane 4. The size level counts whether or not a cell of
+blocks: two blocks of one size level that share a side, or blocks of two size levels. It is stored once. Among the
+blocks of the grid whose lattice holds the point, it is stored in a block of the smallest cells (the largest size level
+value); and among several blocks of that size level, in the one that comes last in the fixed order (the highest $z$,
+then $y$, then $x$: the block on the high side, as for face plane 4). The size level counts whether or not a cell of
 that block touches the point. A corner of a small cell in the middle of a big cell's side or edge therefore belongs to
-the small cells only. For example, in a grid of one size level with cells of width 1 m and coordinates (3, 0, 0)
-(block 0) and (4, 0, 0) (block 1), the corner at (4, 0, 0) m is lattice point (4, 0, 0) of block 0 and (0, 0, 0) of
-block 1; it is kept in block 1, at corner index 125. With the cell (3, 0, 0) alone it is index 4.
+the small cells only, and so does a corner of the big cell that no small cell touches, when it lies on the lattice of a
+block of the small cells.
+
+`FindCornerPlaces` gives the 8 corners of an active cell, bit 0 of the corner number for the high $x$ side, bit 1 for
+high $y$, bit 2 for high $z$, and the 4 corners of a face piece, which are those of its smaller cell on that side. For a
+cell of size level $l$ it looks, from size level $min(l + 2, L - 1)$ up to $l$, at the up to 8 blocks of that size
+level around the point with `FindCellBlock`, and stops at the first size level that has one. No block of a smaller size
+level can hold the point on its lattice. A block of size level $m$ is the box of one place of size level $m - 2$; for
+$m >= l + 3$ the point can lie on that box only as one of its corners, and the block exists only when that place is
+split, so by the siblings rule an active cell of size level $m - 1$ or more has the point as a corner. That cell touches
+the cell of size level $l$, and the size-step rule gives $m <= l + 2$. A grid piece holds some of the whole grid's
+blocks, so the bound holds there too. At size level $m$ the point's coordinate $p$, in cells of size level $m$, is an
+integer, and the blocks whose lattice holds it are $floor(p\/4)$ on each axis, and $floor(p\/4) - 1$ as well when $p$
+is a multiple of 4. The cell's own block holds the point, so the search ends at the cell's size level at the latest.
+Two cells that share a corner each start at or beyond the size level that stores it, and neither goes past its own
+size level, whose block holds the point: they find the same corner place. A place that holds no active cell or no face
+piece, an index of no place and the tables of no grid give no corner, and `ComputeCornerPosition` gives $+infinity$ on
+each axis for an index of no place; a caller tells such an index by the index, since a real corner of a frame whose
+positions overflow gives $+infinity$ too. A corner place belongs to one set of tables: on a grid piece's border a
+corner may be stored at another size level than in the whole grid, so values are matched between a grid piece and the
+whole grid by position or id, never by corner place.
+
+`ComputeCornerPosition` gives a corner place's position, origin $+ m h_l$ on each axis, for the integer coordinate $m$ of
+the lattice point at its block's size level $l$: one product and one sum, as for a cell centre. The same point at size
+level $l + j$ has the coordinate $m 2^j$ and the width $h_l \/ 2^j$, so the product is the same number, rounded the same
+way. One point has one corner place, so it has one position, with the same bits on the CPU and the GPU.
+
+For example, in a grid of one size level with cells of width 1 m, origin 0, and the cells $(3, 0, 0)$ (block 0) and
+$(4, 0, 0)$ (block 1), the corner at $(4, 0, 0)$ m is lattice point $(4, 0, 0)$ of block 0 and $(0, 0, 0)$ of block
+1; it is stored in block 1, at corner index 125. With the cell $(3, 0, 0)$ alone it is index 4. In the grid of a big
+cell $(0, 0, 0)$ of size level 0 beside the eight small cells of $(1, 0, 0)$, block 0 is the size-level-0 block and
+block 1 the size-level-1 block, which covers 0 to 2 m. The point $(1, 0.5, 0.5)$ m is the low corner of the small cell
+$(2, 1, 1)$: lattice point $(2, 1, 1)$ of block 1, index $125 + 32 = 157$, none of the big cell's corners. The big
+cell's corner at $(1, 0, 0)$ m is index 127, the low corner of the small cell $(2, 0, 0)$ too, and its corner at
+$(0, 0, 0)$ m is index 125, though no small cell touches it: every corner of the big cell is stored in block 1.
 
 #procedure(
   [`BuildGrid` on the CPU, the tables of one grid version],

@@ -5,12 +5,13 @@
 // The GPU function below is never launched. Compiling it in the CUDA container makes the CUDA compiler generate GPU
 // code for every function of cell_size_rule.h, grid_build_steps.h, grid_ids.h, grid_tables.h and weight_curve.h, the
 // helpers those functions call included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables,
-// TouchingCells, CellFacePieces, WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel,
-// CellSizeFacts, CellSizeFactorTable and RefinementFactors read and written by GPU code. The integer results go to
-// `results`, and the double results of weight_curve.h, grid_tables.h and cell_size_rule.h go to `double_results`. The
-// CUDA compiler generates GPU code for a shared function only where GPU code calls it, so each function is called here
-// once. A shared function that calls a CPU-only function fails to compile in the CUDA container. That compile is the
-// proof; the test only takes the function's address, which needs no GPU.
+// TouchingCells, CellFacePieces, CellCorners, FaceCorners, CellsAroundEdge, WeightCurveValue, GridBuildStatus,
+// CellCheck, CellSizeSettings, CellWidthsBySizeLevel, CellSizeFacts, CellSizeFactorTable and RefinementFactors read and
+// written by GPU code. The integer results go to `results`, and the double results of weight_curve.h, grid_tables.h and
+// cell_size_rule.h go to `double_results`. The CUDA compiler generates GPU code for a shared function only where GPU
+// code calls it, so each function is called here once. A shared function that calls a CPU-only function fails to
+// compile in the CUDA container. That compile is the proof; the test only takes the function's address, which
+// needs no GPU.
 
 #include <gtest/gtest.h>
 
@@ -74,6 +75,7 @@ __global__ void ComputeWithEverySharedGridFunction(
   const auto place = static_cast<std::uint32_t>(values[2]);
   results[result_index++] = ToCellBlockIndex(CellPlaceIndex{place}).value - range.first_block;
   results[result_index++] = ToCellBlockIndex(FacePlaceIndex{place}).value + range.block_count;
+  results[result_index++] = ToCellBlockIndex(CornerPlaceIndex{place}).value;
   // grid_tables.h: its types, read by GPU code.
   results[result_index++] = static_cast<std::uint64_t>(frame.size_level_count);
   results[result_index++] = frame.biggest_cell_width > frame.origin.z ? 1 : 0;
@@ -168,6 +170,12 @@ __global__ void ComputeWithEverySharedGridFunction(
   const CellFacePieces cell_face_pieces = FindFacePieces(tables, CellPlaceIndex{place});
   results[result_index++] = static_cast<std::uint64_t>(cell_face_pieces.count)
       + cell_face_pieces.faces[place % static_cast<std::uint32_t>(kMaxCellFacePieces)].value;
+  // grid_tables.h: where the corners of a cell and of a face piece are stored, and the cells around an edge.
+  const CellCorners cell_corners = FindCornerPlaces(tables, CellPlaceIndex{place});
+  const FaceCorners face_corners = FindCornerPlaces(tables, face);
+  results[result_index++] = cell_corners.corners[place % 8U].value + face_corners.corners[place % 4U].value;
+  const CellsAroundEdge around_edge = FindCellsAroundEdge(tables, CellPlaceIndex{place}, axis, Axis::kZ, values[1] & 3);
+  results[result_index++] = around_edge.cells[place % 4U].value + (around_edge.is_same_size ? 1U : 0U);
   // The per-item rules of the tables in parallel (<proc-build-grid-in-parallel> P9 to P12). The written tables stand in
   // for the ones the GridTables reads: only the calls matter here.
   results[result_index++] = ApplyBlockNeighboursWriteAt(
@@ -210,6 +218,7 @@ __global__ void ComputeWithEverySharedGridFunction(
   const Vec3 face_position = ComputeFacePosition(tables, face);
   double_results[double_result_index++] = cell_center.x + face_position.y;
   double_results[double_result_index++] = ComputeFaceArea(tables, face) + ComputeCellCenterDistance(tables, face);
+  double_results[double_result_index++] = ComputeCornerPosition(tables, CornerPlaceIndex{place}).z;
   // cell_size_rule.h: the widths table, the reference speed, the wanted cell width (m) and the wanted size level.
   const CellWidthsBySizeLevel widths = ComputeCellWidthsBySizeLevel(frame);
   const CellSizeSettings settings = {.smallest_size_level = static_cast<SizeLevel>(frame.size_level_count - 1)};

@@ -402,6 +402,14 @@ FLUIDITY_CPU_AND_GPU constexpr CellBlockIndex ToCellBlockIndex(FacePlaceIndex fa
   return {.value = face.value / static_cast<std::uint32_t>(kFacePlacesPerBlock)};
 }
 
+// Gives the block of a corner place: corner.value / 125.
+//
+// Example: corner place 249 is in block 1, 250 in block 2.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU constexpr CellBlockIndex ToCellBlockIndex(CornerPlaceIndex corner) noexcept {
+  return {.value = corner.value / static_cast<std::uint32_t>(kCornerPlacesPerBlock)};
+}
+
 // Gives the cell place of a cell in its block, given the block's index: 64 block + (4 z + y) * 4 + x, where x, y and z
 // are the cell's local coordinates in the block, its coordinate minus 4 floor(c / 4) on each axis. The low two bits of
 // a coordinate are that local coordinate, also for a negative coordinate. The block index is used as given, so the

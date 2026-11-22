@@ -398,12 +398,16 @@ TEST(ComputeIsCoordInRange, OnePastEitherLimit_IsOutside) {
 
 static_assert(ToCellBlockIndex(CellPlaceIndex{130}).value == 2);
 static_assert(ToCellBlockIndex(FacePlaceIndex{479}).value == 1);
+static_assert(ToCellBlockIndex(CornerPlaceIndex{249}).value == 1);
 
 TEST(ToCellBlockIndex, PlaceIndexes_DivideByPlacesPerBlock) {
   EXPECT_EQ(ToCellBlockIndex(CellPlaceIndex{130}).value, 2U);
   EXPECT_EQ(ToCellBlockIndex(FacePlaceIndex{479}).value, 1U);
   EXPECT_EQ(ToCellBlockIndex(CellPlaceIndex{63}).value, 0U);
   EXPECT_EQ(ToCellBlockIndex(FacePlaceIndex{480}).value, 2U);
+  EXPECT_EQ(ToCellBlockIndex(CornerPlaceIndex{124}).value, 0U);
+  EXPECT_EQ(ToCellBlockIndex(CornerPlaceIndex{249}).value, 1U);
+  EXPECT_EQ(ToCellBlockIndex(CornerPlaceIndex{250}).value, 2U);
 }
 
 static_assert(ToCellPlaceIndex(CellBlockIndex{3}, {.x = 5, .y = -1, .z = 2}).value == 237);
