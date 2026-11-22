@@ -1,0 +1,213 @@
+.clang-tidy
+  s_4f0877e2acdcf0::t_3453f8c3a9a494 22
+.github/workflows/checks.yml
+  s_4f0877e2acdcf0::t_a3c6c3949706c9 10
+AGENTS.md
+  s_4f0877e2acdcf0::t_36ccbe71479737 218,254,257,280-304,468,483,490,496,504-506
+CMakeLists.txt
+  s_4f0877e2acdcf0::t_880d2b630c834e 76-78
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_f572a645b8e5d4 65,73
+docs/design/programme.md
+  s_4f0877e2acdcf0::t_5b3bb900884e50 195
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_71e5a3c7cab7a1 72,141,171
+src/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_d4505c1f68bb7a 38,40-77
+src/fluidity/base/buffer.gpu.test.cc
+  s_4f0877e2acdcf0::t_bf7be141569384 3-4,16
+src/fluidity/base/buffer.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_944d5ae6453793 3-4
+src/fluidity/base/buffer.test.cc
+  s_4f0877e2acdcf0::t_cb19d8abd28221 19
+src/fluidity/base/check_can_run_on.gpu.test.cc
+  s_4f0877e2acdcf0::t_fda8fe6c9e6877 3-4
+src/fluidity/base/check_can_run_on.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_426a1561043d84 3-4
+src/fluidity/base/check_can_run_on_math.test.cc
+  s_4f0877e2acdcf0::t_9eced39f4650c9 8
+src/fluidity/base/ordered_sums.gpu.test.cc
+  s_4f0877e2acdcf0::t_998e5562661247 3-4,20
+src/fluidity/base/ordered_sums.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_59dbcfe0892431 6-7
+src/fluidity/base/ordered_sums.test.cc
+  s_4f0877e2acdcf0::t_ade9a9651f3295 17
+src/fluidity/base/processor_description.gpu.test.cc
+  s_4f0877e2acdcf0::t_e43af00e3f4e6a 3-4
+src/fluidity/base/processor_description.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_2c513903ed3473 3-4
+src/fluidity/base/run_memory.gpu.test.cc
+  s_4f0877e2acdcf0::t_76d0595ba0aedb 3-4,20
+src/fluidity/base/run_memory.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_604be9a567b1ae 3-4
+src/fluidity/base/run_memory.test.cc
+  s_4f0877e2acdcf0::t_b6d2e23833590b 20
+src/fluidity/base/scalar_math.shared.gpu.test.cc
+  s_4f0877e2acdcf0::t_1fb1e6ba59f54c 16-17,22
+src/fluidity/base/stable_order.gpu.test.cc
+  s_4f0877e2acdcf0::t_1b6f6a75184329 3-4,18
+src/fluidity/base/stable_order.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_fd0ef6ad1ca9dd 6-7
+src/fluidity/base/stable_order.test.cc
+  s_4f0877e2acdcf0::t_384cc6972764e8 17
+src/fluidity/base/stable_order_steps.h
+  s_4f0877e2acdcf0::t_a6cb86f6e730d1 28
+src/fluidity/base/stable_order_steps.test.cc
+  s_4f0877e2acdcf0::t_d81eea06c9e78b 24
+src/fluidity/base/testing/base_support.cc
+  s_4f0877e2acdcf0::t_d7d7fd76ee7575 1
+src/fluidity/base/testing/base_support.h
+  s_4f0877e2acdcf0::t_59f93008e376c0 30
+src/fluidity/base/testing/base_support.test.cc
+  s_4f0877e2acdcf0::t_a786f468062922 1,117,133,148
+src/fluidity/base/testing/shared_math_runner_gpu.cu
+  s_4f0877e2acdcf0::t_7c72e035b64903 1,10
+src/fluidity/base/testing/shared_math_runner_gpu.h
+  s_4f0877e2acdcf0::t_70db8a1888477b 1,19
+src/fluidity/base/tree_sum.test.cc
+  s_4f0877e2acdcf0::t_25b5cf376ba2b8 12
+src/fluidity/base/tree_sum_layers.h
+  s_4f0877e2acdcf0::t_6ded34793a1972 19
+src/fluidity/base/tree_sum_layers.test.cc
+  s_4f0877e2acdcf0::t_f2beadcc3a97e9 19
+src/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_c4ed4483608c2a 17-28,31-32,36-38,48-50
+src/fluidity/contact/move_particles.gpu.test.cc
+  s_4f0877e2acdcf0::t_7b37f105ee10db 4-7,11,32,35,39-40
+src/fluidity/contact/move_particles.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_66fea8476ff751 3-4
+src/fluidity/contact/move_particles.scene.test.cc
+  s_4f0877e2acdcf0::t_4525eede07d3c1 3-4,24,31-33
+src/fluidity/contact/move_particles.test.cc
+  s_4f0877e2acdcf0::t_b191e56e39ccf1 28,37
+src/fluidity/contact/move_particles_gpu.h
+  s_4f0877e2acdcf0::t_4687adc79b7b43 15
+src/fluidity/contact/move_particles_steps.test.cc
+  s_4f0877e2acdcf0::t_02b40448a2db96 7,28,34-35
+src/fluidity/contact/solid_contact.move_particle.test.cc
+  s_4f0877e2acdcf0::t_670a04a887d205 1-2,29,2426-2428
+src/fluidity/contact/solid_contact.move_particle_left_out.test.cc
+  s_4f0877e2acdcf0::t_2b17b3dabbd6ce 1-2,14-15,18-19
+src/fluidity/contact/solid_contact.move_particle_left_out_reference.test.cc
+  s_4f0877e2acdcf0::t_b93c3b90a41a9e 5-7,20
+src/fluidity/contact/solid_contact.move_particle_shorter_step.test.cc
+  s_4f0877e2acdcf0::t_7bfcd0c1207669 1-2,19
+src/fluidity/contact/solid_contact.move_particle_tolerance.test.cc
+  s_4f0877e2acdcf0::t_0615de98c26f27 1-2,22,28
+src/fluidity/contact/solid_contact.round_solid_hit_rounding.test.cc
+  s_4f0877e2acdcf0::t_fb86be2d7ad58e 1-2,23
+src/fluidity/contact/solid_contact_steps.find_first_hit.test.cc
+  s_4f0877e2acdcf0::t_3ba1169549ad61 1-2,23
+src/fluidity/contact/solid_contact_steps.h
+  s_4f0877e2acdcf0::t_d680e3ea2a819c 2228
+src/fluidity/contact/solid_contact_types.h
+  s_4f0877e2acdcf0::t_8f73349eee8463 123-124
+src/fluidity/contact/solid_contact_types.response.test.cc
+  s_4f0877e2acdcf0::t_3ea6c64891a41f 1-2,8,10
+src/fluidity/contact/solid_shapes.shared_formulas.gpu.test.cc
+  s_4f0877e2acdcf0::t_b75b3a922e2e53 8-9,23,25
+src/fluidity/contact/solid_shapes.test.cc
+  s_4f0877e2acdcf0::t_932e1ca91c35f0 17
+src/fluidity/contact/testing/contact_main_comparison_cases.h
+  s_4f0877e2acdcf0::t_08aff1814f91bc 26
+src/fluidity/contact/testing/left_out_solids_sets.h
+  s_4f0877e2acdcf0::t_96952cbbdf2804 14-16,39
+src/fluidity/contact/testing/move_particles_runs.h
+  s_4f0877e2acdcf0::t_ec896dbf43f534 30,32-36,66,73,110,149
+src/fluidity/contact/testing/shared_formulas_runner_gpu.cu
+  s_4f0877e2acdcf0::t_541dadacf83613 1-2,10
+src/fluidity/contact/testing/shared_formulas_runner_gpu.h
+  s_4f0877e2acdcf0::t_54ee383cebd1b0 1-2,20-21
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_624689ebbee766 28,38,42-43,47-48,52-53,55-59,63,67-68,74-75,79-80,82-86,88-89,94-95,99,105-106,110,116-117,121,124,126-130
+src/fluidity/grid/cell_size_rule.factor.test.cc
+  s_4f0877e2acdcf0::t_ca60bdc4ba1323 1-2,15-16,59
+src/fluidity/grid/cell_size_rule.gpu.test.cc
+  s_4f0877e2acdcf0::t_836e817c6788f0 7-8,25,31-33
+src/fluidity/grid/cell_size_rule.test.cc
+  s_4f0877e2acdcf0::t_d1bf7e2060cecf 23-24
+src/fluidity/grid/grid_build_steps.test.cc
+  s_4f0877e2acdcf0::t_77baa61c539706 32
+src/fluidity/grid/grid_cell_checks.gpu.test.cc
+  s_4f0877e2acdcf0::t_5ddecb3196a951 10-11,30,39
+src/fluidity/grid/grid_cell_checks.test.cc
+  s_4f0877e2acdcf0::t_0de82408190d70 24,31
+src/fluidity/grid/grid_ids.test.cc
+  s_4f0877e2acdcf0::t_b27948192cf152 14
+src/fluidity/grid/grid_tables.corners.test.cc
+  s_4f0877e2acdcf0::t_a50e8e66fd8d43 1-2,23
+src/fluidity/grid/grid_tables.face_search.test.cc
+  s_4f0877e2acdcf0::t_e081fcb1046e92 1-2,25
+src/fluidity/grid/grid_tables.find_cell_at.test.cc
+  s_4f0877e2acdcf0::t_e74b4b47399113 1-2,24
+src/fluidity/grid/grid_tables.test.cc
+  s_4f0877e2acdcf0::t_339d1de1929ca5 23
+src/fluidity/grid/grid_tables.touching_cells.test.cc
+  s_4f0877e2acdcf0::t_5a78c2c7e5011f 1-2,23
+src/fluidity/grid/staggered_grid.buffers.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_0baf20ba6a664a 3-4
+src/fluidity/grid/staggered_grid.buffers.test.cc
+  s_4f0877e2acdcf0::t_1181b992b8d64f 1-2
+src/fluidity/grid/staggered_grid.cell_count.test.cc
+  s_4f0877e2acdcf0::t_adf7f4f1cab83f 1-2,17,21
+src/fluidity/grid/staggered_grid.counts_on_buffers.test.cc
+  s_4f0877e2acdcf0::t_b2d4cc6224e77d 1-2,24-25,277,421
+src/fluidity/grid/staggered_grid.gpu.test.cc
+  s_4f0877e2acdcf0::t_470df2d281c16b 12,33,40-42
+src/fluidity/grid/staggered_grid.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_4d15672505eb29 1-2,11
+src/fluidity/grid/staggered_grid.out_of_memory.test.cc
+  s_4f0877e2acdcf0::t_271f26143f0128 8-9
+src/fluidity/grid/staggered_grid.read.test.cc
+  s_4f0877e2acdcf0::t_15493ae5a2d274 1-2,17-18,309
+src/fluidity/grid/staggered_grid.test.cc
+  s_4f0877e2acdcf0::t_970c26c2b83eed 27-28
+src/fluidity/grid/testing/allocation_counter.cc
+  s_4f0877e2acdcf0::t_5a0830dc842a05 6
+src/fluidity/grid/testing/allocation_counter.h
+  s_4f0877e2acdcf0::t_be2186416b24b8 5,10
+src/fluidity/grid/testing/cell_size_rule_runner_gpu.cu
+  s_4f0877e2acdcf0::t_64e208549c90f7 1,17
+src/fluidity/grid/testing/cell_size_rule_runner_gpu.h
+  s_4f0877e2acdcf0::t_9350dc40f185e1 1,21
+src/fluidity/grid/testing/grid_support.cc
+  s_4f0877e2acdcf0::t_a6bff5ea50338b 1
+src/fluidity/grid/testing/grid_support.h
+  s_4f0877e2acdcf0::t_035afa5a261da6 49
+src/fluidity/grid/testing/grid_support.test.cc
+  s_4f0877e2acdcf0::t_6729c62fba26a8 1,22,823-825
+src/fluidity/grid/weight_curve.test.cc
+  s_4f0877e2acdcf0::t_4bd027166ded7a 8
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_ecbe316c2c8808 14,25,33,38,43-44,46-48,93,95,104,110,112-113,205,211-212,224,229,231,352,459,467,493
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_c1ed3887b1ebe0 34-35,60,101-102,109,150,154,166,170,175,244-245,249-250,255-256,260,264-265,272-278,284-291,316,385,390,395,399,403,410,413,425-426,433,440,447,454,460,530-533,536-537,551,557,572
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_6a579bbe57fb7e 4,29-31,53,69-70,884-894,915-916
+tools/check_rules_allowed_names.txt
+  s_4f0877e2acdcf0::t_b4491305a82434 7
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_1ca270c309f38b 581,583,631,692-714,751-753,760-761,769
+tools/fluidity_targets_test.py
+  s_4f0877e2acdcf0::t_a4843c23f4c4a7 146,148,164-187
+tools/run_gpu_tests.ps1
+  s_4f0877e2acdcf0::t_7327fa37dc8464 45
+tools/run_tidy_test.py
+  s_4f0877e2acdcf0::t_43e9bda4002ed7 41,45-46,50-51,60,70,77,88,98,100-101,109,116,129,139,157,165,194,196-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c22eea72377f02dd6c8df5a453e3bfa84890c386",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
