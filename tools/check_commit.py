@@ -1,10 +1,23 @@
 """Runs every check a commit must pass, in order, and prints one line per check.
 
-Usage: uv run python tools/check_commit.py [--only format|rules|cpu|tidy|paper|cuda] [--allow-dirty] [--no-cache]
+Usage: uv run python tools/check_commit.py [--speed quick|commit|full] [--only format|rules|cpu|tidy|paper|cuda]
+       [--allow-dirty] [--no-cache]
 
 The gate checks what will be committed. Before any step it reads `git status`: an untracked file or an unstaged
 change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Staged changes are fine. With
 --allow-dirty it prints `NOTE tree: unstaged or untracked files are being tested` and goes on, for work in progress.
+
+The speed (--speed, default commit):
+  quick   while working: format, rules, the debug preset built, the debug tests of the modules whose files changed,
+          and tidy (the cache makes it check only what changed). The modules are named by a line `NOTE modules: ...`.
+          A changed file is one that differs from HEAD, staged or not, or is untracked. A change under
+          native/fluidity/<module>/ selects that module; a change elsewhere under native/ or cmake/, or to a top-level
+          build file (CMakeLists.txt, CMakePresets.json, conanfile.py, conan.lock), selects every module; a change
+          elsewhere (docs, tools) selects none. The release build, the paper and cuda are left out, each printed as
+          `NOT RUN <step> (quick)`, so a quick pass is never read as a full one.
+  commit  before each commit: every step below, with the parallel tests and the tidy cache.
+  full    before a push, and in CI: commit with --no-cache, so tidy checks every file.
+--only <step> runs that step at any speed; a step that quick leaves out runs in full when named.
 
 The steps, in order:
   format  check that the clang-format on PATH is the version pyproject.toml pins, then clang-format, as a dry run,
@@ -74,6 +87,12 @@ CONTAINER_SOURCE_ROOT = "/src"
 COMPILED_MARKER = "compiled: "
 # The tools whose version the gate checks against pyproject.toml before it runs them.
 PINNED_TOOLS = ("clang-format", "clang-tidy")
+
+SPEED_NAMES = ("quick", "commit", "full")
+DEFAULT_SPEED = "commit"
+# A change to one of these files, or under native/ outside a module folder, or under cmake/, can change any module.
+TOP_LEVEL_BUILD_FILES = frozenset({"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock"})
+MODULES_ROOT = ("native", "fluidity")
 
 PAPER_DIRECTORY = Path("docs") / "method-paper"
 PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
@@ -148,11 +167,13 @@ class Outcome:
 
 @dataclass(frozen=True)
 class Check:
-    """One line of the gate: the step it belongs to, the text printed after PASS or FAIL, and how to run it."""
+    """One line of the gate: the step it belongs to, the text printed after PASS or FAIL, and how to run it.
+    `in_quick` is False for a line that the quick speed leaves out."""
 
     step: str
     title: str
     run: Callable[[], Outcome]
+    in_quick: bool = True
 
 
 def container_platform() -> str:
@@ -202,6 +223,26 @@ def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[s
             include_path = str(Path(path[len(CONTAINER_HEADER_CHECK_ROOT) :]).with_suffix(""))
             compiled.add("native/" + include_path)
     return [path for path in tracked if path not in compiled and not is_test_header(path)]
+
+
+def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
+    """The modules whose tests a change can affect: None when every module (the change is under native/ outside a
+    module folder, under cmake/, or to a top-level build file), otherwise the module folders named under
+    native/fluidity/, possibly none."""
+    modules: set[str] = set()
+    for path in changed_paths:
+        parts = Path(path).parts
+        if len(parts) == 1 and parts[0] in TOP_LEVEL_BUILD_FILES:
+            return None
+        if parts[:1] == ("cmake",):
+            return None
+        if parts[:1] != (MODULES_ROOT[0],):
+            continue
+        if parts[:2] == MODULES_ROOT and len(parts) >= 4:
+            modules.add(parts[2])
+        else:
+            return None
+    return frozenset(modules)
 
 
 def host_cpu_presets() -> tuple[str, str]:
@@ -327,7 +368,32 @@ class Gate:
         )
         return Outcome(outcome.passed, outcome.reason, notes)
 
-    def check_cpu_preset(self, preset: str) -> Outcome:
+    def changed_paths(self) -> list[str] | None:
+        """The files that differ from HEAD, staged or not, and the untracked files; None when git fails."""
+        listed: list[str] = []
+        for arguments in (
+            ["git", "diff", "--name-only", "-z", "HEAD"],
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        ):
+            try:
+                completed = subprocess.run(
+                    arguments,
+                    cwd=self.repo_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=False,
+                )
+            except FileNotFoundError:
+                return None
+            if completed.returncode != 0:
+                return None
+            listed.extend(path for path in (completed.stdout or "").split("\0") if path)
+        return listed
+
+    def check_cpu_preset(self, preset: str, changed_modules_only: bool = False) -> Outcome:
+        """Fetches the packages, configures, builds and tests `preset`. With `changed_modules_only` it runs only the
+        tests of the modules that the changed files select (see modules_of_changes), and says which on a note."""
         # Conan runs every time, so a change to conanfile.py or conan.lock reaches the toolchain file.
         toolchain_folder = Path("out") / "conan" / preset
         build_type = "Debug" if "-debug-" in preset else "Release"
@@ -352,8 +418,24 @@ class Gate:
         ]
         command_list.append(["cmake", "--preset", preset])
         command_list.append(["cmake", "--build", "--preset", preset])
-        command_list.append(["ctest", "--preset", preset, "--parallel", str(os.cpu_count() or 1)])
-        return self.commands(f"cpu-{preset}", command_list)
+        notes: tuple[str, ...] = ()
+        ctest = ["ctest", "--preset", preset, "--parallel", str(os.cpu_count() or 1)]
+        if changed_modules_only:
+            changed = self.changed_paths()
+            modules = None if changed is None else modules_of_changes(changed)
+            if modules is None:
+                notes = ("NOTE modules: all",)
+            elif modules:
+                names = sorted(modules)
+                notes = (f"NOTE modules: {', '.join(names)}",)
+                # Labels are regular expressions; the anchors keep `grid` from matching another module's name.
+                ctest += ["-L", "^(" + "|".join(re.escape(name) for name in names) + ")$", "--no-tests=ignore"]
+            else:
+                notes = ("NOTE modules: none",)
+        if not notes or notes[0] != "NOTE modules: none":
+            command_list.append(ctest)
+        outcome = self.commands(f"cpu-{preset}", command_list)
+        return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
 
     def check_tidy(self) -> Outcome:
         version = self.check_tool_version("tidy", "clang-tidy")
@@ -516,16 +598,21 @@ class Gate:
                 dirty.append(path)
         return dirty
 
-    def checks(self) -> list[Check]:
+    def checks(self, speed: str = DEFAULT_SPEED) -> list[Check]:
         debug_preset, release_preset = host_cpu_presets()
+        changed_only = speed == "quick"
+
+        def check_debug_preset() -> Outcome:
+            return self.check_cpu_preset(debug_preset, changed_modules_only=changed_only)
+
         return [
             Check("format", "format", self.check_format),
             Check("rules", "rules", self.check_rules),
-            Check("cpu", f"cpu {debug_preset}", lambda: self.check_cpu_preset(debug_preset)),
-            Check("cpu", f"cpu {release_preset}", lambda: self.check_cpu_preset(release_preset)),
+            Check("cpu", f"cpu {debug_preset}", check_debug_preset),
+            Check("cpu", f"cpu {release_preset}", lambda: self.check_cpu_preset(release_preset), in_quick=False),
             Check("tidy", "tidy", self.check_tidy),
-            Check("paper", "paper", self.check_paper),
-            Check("cuda", "cuda", self.check_cuda),
+            Check("paper", "paper", self.check_paper, in_quick=False),
+            Check("cuda", "cuda", self.check_cuda, in_quick=False),
         ]
 
 
@@ -546,14 +633,20 @@ def read_line_texts(text: str) -> list[tuple[int, str]]:
 
 def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
     parser = argparse.ArgumentParser(description="Run every check a commit must pass.")
+    parser.add_argument(
+        "--speed",
+        choices=SPEED_NAMES,
+        default=DEFAULT_SPEED,
+        help="quick while working, commit before each commit (default), full before a push and in CI",
+    )
     parser.add_argument("--only", choices=STEP_NAMES, help="run one step only")
     parser.add_argument(
         "--allow-dirty", action="store_true", help="test the working tree even with unstaged or untracked files"
     )
     parser.add_argument("--no-cache", action="store_true", help="run clang-tidy on every file, whatever passed before")
     arguments = parser.parse_args(argv)
-    gate = Gate(repo_root, use_tidy_cache=not arguments.no_cache)
-    checks = [check for check in gate.checks() if arguments.only in (None, check.step)]
+    gate = Gate(repo_root, use_tidy_cache=not (arguments.no_cache or arguments.speed == "full"))
+    checks = [check for check in gate.checks(arguments.speed) if arguments.only in (None, check.step)]
     failed = False
     dirty = gate.dirty_paths()
     if dirty is None:
@@ -565,6 +658,9 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
         print(f"FAIL tree: unstaged or untracked: {', '.join(dirty)}", flush=True)
         failed = True
     for check in checks:
+        if arguments.speed == "quick" and arguments.only is None and not check.in_quick:
+            print(f"NOT RUN {check.title} (quick)", flush=True)
+            continue
         if failed:
             print(f"NOT RUN {check.title}", flush=True)
             continue

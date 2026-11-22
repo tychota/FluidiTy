@@ -51,6 +51,8 @@ class FakeRun:
         versions=None,
         compiled=None,
         rules_output="",
+        changed=(),
+        untracked=(),
     ):
         self.commands = []
         self._failing = failing or (lambda command: False)
@@ -66,6 +68,8 @@ class FakeRun:
             compiled += [header_check_path(path) for path in self._tracked if path.endswith((".h", ".cuh"))]
         self._compiled = compiled
         self._rules_output = rules_output
+        self._changed = list(changed)
+        self._untracked = list(untracked)
 
     def __call__(self, command, **kwargs):
         self.commands.append(list(command))
@@ -76,6 +80,10 @@ class FakeRun:
         output = ""
         if command[:2] == ["git", "ls-files"]:
             output = "".join(f"{path}\n" for path in self._tracked)
+        if command[:3] == ["git", "ls-files", "--others"]:
+            output = "".join(f"{path}\0" for path in self._untracked)
+        if command[:3] == ["git", "diff", "--name-only"]:
+            output = "".join(f"{path}\0" for path in self._changed)
         if command[:2] == ["git", "status"]:
             output = self._status
         if command[1:] == ["--version"] and Path(command[0]).name in self._versions:
@@ -487,3 +495,127 @@ def test_failing_tidy_fails_the_step_with_its_log(monkeypatch, capsys, repo):
     assert exit_code == 1
     assert lines[0].startswith("FAIL tidy:")
     assert "out/check-commit/tidy.log" in lines[0]
+
+
+ALL_STEP_LINES = [
+    "PASS format",
+    "PASS rules",
+    f"PASS cpu {DEBUG_PRESET}",
+    f"PASS cpu {RELEASE_PRESET}",
+    "PASS tidy",
+    "PASS paper",
+    "PASS cuda",
+]
+
+
+def ctest_commands(fake, preset=DEBUG_PRESET):
+    return [command for command in fake.commands if command[:3] == ["ctest", "--preset", preset]]
+
+
+@pytest.mark.parametrize(
+    ("changed", "expected"),
+    [
+        (["native/fluidity/grid/a.cc"], frozenset({"grid"})),
+        (["native/fluidity/grid/a.cc", "native/fluidity/base/b.h"], frozenset({"grid", "base"})),
+        (["docs/design/x.md", "tools/check_commit.py", "AGENTS.md"], frozenset()),
+        ([], frozenset()),
+        (["native/fluidity/grid/a.cc", "native/fluidity/CMakeLists.txt"], None),
+        (["native/CMakeLists.txt"], None),
+        (["cmake/fluidity_targets.cmake"], None),
+        (["CMakeLists.txt"], None),
+        (["CMakePresets.json"], None),
+        (["conanfile.py"], None),
+        (["conan.lock"], None),
+        (["docs/CMakeLists.txt"], frozenset()),
+    ],
+)
+def test_modules_of_changes(changed, expected):
+    assert check_commit.modules_of_changes(changed) == expected
+
+
+def test_commit_is_the_default_speed_and_runs_every_step(monkeypatch, capsys, repo):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(changed=["native/fluidity/grid/a.cc"]))
+    assert exit_code == 0
+    assert lines == ALL_STEP_LINES
+
+
+def test_commit_speed_runs_all_tests_and_uses_the_tidy_cache(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["native/fluidity/grid/a.cc"])
+    run_gate(monkeypatch, capsys, repo, fake, "--speed", "commit")
+    assert all("-L" not in command for command in ctest_commands(fake))
+    assert "--no-cache" not in tidy_commands(fake)[0]
+
+
+def test_full_speed_runs_every_step_and_ignores_the_tidy_cache(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "full")
+    assert exit_code == 0
+    assert lines == ALL_STEP_LINES
+    assert "--no-cache" in tidy_commands(fake)[0]
+
+
+def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_left_out(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["native/fluidity/grid/a.cc"], untracked=["native/fluidity/contact/new.h"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert exit_code == 0
+    assert lines == [
+        "PASS format",
+        "PASS rules",
+        "NOTE modules: contact, grid",
+        f"PASS cpu {DEBUG_PRESET}",
+        f"NOT RUN cpu {RELEASE_PRESET} (quick)",
+        "PASS tidy",
+        "NOT RUN paper (quick)",
+        "NOT RUN cuda (quick)",
+    ]
+    (debug_ctest,) = ctest_commands(fake)
+    assert debug_ctest[debug_ctest.index("-L") + 1] == "^(contact|grid)$"
+    assert ctest_commands(fake, RELEASE_PRESET) == []
+    assert not any(command[:2] == ["docker", "build"] or command[0] == "typst" for command in fake.commands)
+    assert ["cmake", "--build", "--preset", DEBUG_PRESET] in fake.commands
+    assert ["cmake", "--build", "--preset", RELEASE_PRESET] not in fake.commands
+
+
+def test_quick_runs_every_module_for_a_change_outside_a_module_folder(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["cmake/fluidity_targets.cmake"])
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert "NOTE modules: all" in lines
+    (debug_ctest,) = ctest_commands(fake)
+    assert "-L" not in debug_ctest
+
+
+def test_quick_runs_no_test_when_only_docs_and_tools_changed(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["docs/design/x.md", "tools/check_commit.py"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert exit_code == 0
+    assert "NOTE modules: none" in lines
+    assert ctest_commands(fake) == []
+    assert ["cmake", "--build", "--preset", DEBUG_PRESET] in fake.commands
+
+
+def test_quick_runs_every_module_when_git_cannot_list_the_changes(monkeypatch, capsys, repo):
+    fake = FakeRun(failing=lambda command: command[:3] == ["git", "diff", "--name-only"])
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert "NOTE modules: all" in lines
+
+
+def test_a_failure_in_quick_still_says_what_it_left_out(monkeypatch, capsys, repo):
+    fake = FakeRun(failing=lambda command: command[0] == "clang-format")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert exit_code == 1
+    assert lines[0].startswith("FAIL format")
+    assert lines[1:] == [
+        "NOT RUN rules",
+        f"NOT RUN cpu {DEBUG_PRESET}",
+        f"NOT RUN cpu {RELEASE_PRESET} (quick)",
+        "NOT RUN tidy",
+        "NOT RUN paper (quick)",
+        "NOT RUN cuda (quick)",
+    ]
+
+
+@pytest.mark.parametrize("speed", ["quick", "commit", "full"])
+def test_only_runs_one_step_at_every_speed(monkeypatch, capsys, repo, speed):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--speed", speed, "--only", "paper")
+    assert exit_code == 0
+    assert lines == ["PASS paper"]

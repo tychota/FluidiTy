@@ -422,7 +422,8 @@ A commit lands only when all of these hold:
    session link). Each commit has a git note in `refs/notes/claude-session` with two lines, `session: <link>` and
    `models: <model ids, comma separated>`; `tools/add_session_note.py` writes it ("Commands").
 
-A commit passes every part of this gate that exists at that commit.
+A commit passes every part of this gate that exists at that commit, at the `commit` speed (see "Commands"):
+`quick` while working, `commit` before each commit, `full` before a push and in CI.
 
 **GPU honesty.** Device code is "compiled, not run" until the owner's hardware run, which happens once, after
 all modules are written. Until then every module's status reads "GPU: compiled, not run". `docs/gpu-runs.md`
@@ -436,7 +437,17 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 
 - Gate for every commit. The gate checks what will be committed, so the order is: stage (`git add`), run the gate
   from the repository root, `uv run python tools/check_commit.py`, then commit. Add `--only <step>` to run one
-  step: `format`, `rules`, `cpu`, `tidy`, `paper` or `cuda`. It prints one line per check, in this order:
+  step: `format`, `rules`, `cpu`, `tidy`, `paper` or `cuda`. It prints one line per check, in this order.
+  `--speed quick|commit|full` chooses how much runs:
+  - `quick`, while working: format; rules; the debug preset built; the debug tests of the modules that changed;
+    tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
+    untracked. A change under `native/fluidity/<module>/` selects that module; a change elsewhere under `native/` or
+    `cmake/`, or to a top-level build file, selects every module; a change to docs or tools selects none. The gate
+    prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
+    paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule.
+  - `commit`, the default: every step below, with the parallel tests and the tidy cache. Run it before each commit.
+  - `full`: `commit` with `--no-cache`, so tidy checks every file. Run it before a push; CI uses it.
+  `--only <step>` works at every speed (a step that `quick` leaves out runs when named).
   - `FAIL tree: unstaged or untracked: <paths>`: printed first, only when a file is untracked or has unstaged
     changes outside the ignored paths; every step is then `NOT RUN`. Staged changes are fine. With `--allow-dirty`
     the gate prints `NOTE tree: unstaged or untracked files are being tested` instead and goes on; use it for work

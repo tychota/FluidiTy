@@ -61,12 +61,13 @@ jobs:
       - name: Install the tools of uv.lock
         run: uv sync --frozen
 
-      # These two steps are the gate's own `format` and `rules` steps, so CI and the local gate cannot disagree.
+      # These two steps are the gate's own `format` and `rules` steps, at the speed `full`, so CI and the local gate cannot
+      # disagree.
       - name: Gate step format
-        run: uv run --frozen python tools/check_commit.py --only format
+        run: uv run --frozen python tools/check_commit.py --speed full --only format
 
       - name: Gate step rules
-        run: uv run --frozen python tools/check_commit.py --only rules
+        run: uv run --frozen python tools/check_commit.py --speed full --only rules
 
   cpu:
     name: cpu ${{ matrix.platform }} ${{ matrix.configuration }}
@@ -229,4 +230,4 @@ jobs:
       # The gate needs only the Python standard library, so no development tool is installed on the runner. The
       # Conan packages and the build tree live in a Docker volume of this run and are fetched anew each time.
       - name: Gate step cuda
-        run: uv run --frozen --no-dev python tools/check_commit.py --only cuda
+        run: uv run --frozen --no-dev python tools/check_commit.py --speed full --only cuda
