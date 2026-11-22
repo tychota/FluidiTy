@@ -1,0 +1,212 @@
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  build_grid_on_gpu_functional_test
+  SOURCES
+  build_grid_on_gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  build_grid_functional_test
+  SOURCES
+  build_grid.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  cell_corners_on_random_grids_functional_test
+  SOURCES
+  cell_corners_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  cell_size_factor_on_large_volume_functional_test
+  SOURCES
+  cell_size_factor_on_large_volume.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  cell_size_rule_on_gpu_functional_test
+  SOURCES
+  cell_size_rule_on_gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/cell_size_rule_runner_gpu.cu
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  face_search_on_grids_functional_test
+  SOURCES
+  face_search_on_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  find_cell_at_near_form_on_positions_functional_test
+  SOURCES
+  find_cell_at_near_form_on_positions.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_build_steps_on_random_grids_functional_test
+  SOURCES
+  grid_build_steps_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_cell_checks_on_gpu_functional_test
+  SOURCES
+  grid_cell_checks_on_gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_cell_checks_on_random_grids_functional_test
+  SOURCES
+  grid_cell_checks_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_counts_on_buffers_functional_test
+  SOURCES
+  grid_counts_on_buffers.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_counts_on_random_grids_functional_test
+  SOURCES
+  grid_counts_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_ids_on_random_ids_functional_test
+  SOURCES
+  grid_ids_on_random_ids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_support_on_random_grids_functional_test
+  SOURCES
+  grid_support_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_tables_on_random_grids_functional_test
+  SOURCES
+  grid_tables_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  read_grid_into_buffers_functional_test
+  SOURCES
+  read_grid_into_buffers.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  touching_cells_on_random_grids_functional_test
+  SOURCES
+  touching_cells_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)

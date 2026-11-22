@@ -53,18 +53,6 @@ MoveParticleCase FindBoundaryCase(std::string_view name, int occurrence) {
   return {};
 }
 
-TEST(LeftOutSolids, EverySet_SameBitsAsReadingEverySolid) {
-  // The catalogue, the oblique and round sets, the crowded, far, mixed and boundary sets: every bit of every answer is
-  // the same with the rule and with every solid read.
-  for (int set_index = 0; set_index < kLeftOutSetCount; ++set_index) {
-    SCOPED_TRACE(set_index);
-    const std::vector<std::uint64_t> with_rule = ComputeResultBits(static_cast<LeftOutSet>(set_index));
-    const std::vector<std::uint64_t> reading_every_solid = left_out_reference::ComputeReferenceResultBits(set_index);
-    EXPECT_FALSE(with_rule.empty());
-    EXPECT_EQ(with_rule, reading_every_solid);
-  }
-}
-
 TEST(LeftOutSolids, FarParticle_ReadsEachOutOfRangeSolidOnce) {
   // The far set's particles above z = 0 and its 32 solids below z = -0.5: a particle at rest at z = 0.5 reads each
   // solid once, in the start's depth check, and the domain box of the crowded set is read more than once.

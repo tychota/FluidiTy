@@ -8,16 +8,17 @@ change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Stag
 --allow-dirty it prints `NOTE tree: unstaged or untracked files are being tested` and goes on, for work in progress.
 
 The speed (--speed, default commit):
-  quick   while working: format, rules, the debug preset built, the debug tests of the modules whose files changed,
-          and tidy (the cache makes it check only what changed). The modules are named by a line `NOTE modules: ...`.
-          A changed file is one that differs from HEAD, staged or not, or is untracked. A change under
-          src/fluidity/<module>/ selects that module; a change elsewhere under src/ or cmake/, or to a top-level
-          build file (CMakeLists.txt, CMakePresets.json, conanfile.py, conan.lock, pyproject.toml, uv.lock), selects
-          every module; a change
-          elsewhere (docs, tools) selects none. The release build, the paper and cuda are left out, each printed as
+  quick   while working: format, rules, the debug preset built, the debug unit tests of the modules whose files
+          changed, and tidy (the cache makes it check only what changed). The modules are named by a line
+          `NOTE modules: ...`. A changed file is one that differs from HEAD, staged or not, or is untracked. A change
+          under src/fluidity/<module>/ selects that module's unit tests; a change under tests/<module>/ selects the
+          module too and also runs its functional tests (a line `NOTE functional tests: ...` names them); a change
+          elsewhere under src/ or tests/ or under cmake/, or to a top-level build file (CMakeLists.txt,
+          CMakePresets.json, conanfile.py, conan.lock, pyproject.toml, uv.lock), selects the unit tests of every
+          module; a change elsewhere (docs, tools) selects none. The release build, the paper and cuda are left out, each printed as
           `NOT RUN <step> (quick)`, so a quick pass is never read as a full one. An untracked file is a changed file,
           but the gate stops at `FAIL tree` for one unless --allow-dirty is given, so it selects modules only then.
-          With --only, quick runs the named step in full (every module's tests, both presets).
+          With --only, quick runs the named step in full (every module's unit and functional tests, both presets).
   commit  before each commit: every step below, with the parallel tests and the tidy cache.
   full    before a push, and in CI: commit with --no-cache, so tidy checks every file.
 --only <step> runs that step at any speed; a step that quick leaves out runs in full when named.
@@ -32,29 +33,32 @@ The exit code (EXIT_* below):
 The steps, in order:
   format  check that the clang-format on PATH is the version pyproject.toml pins, then clang-format, as a dry run,
           on every tracked C++ and CUDA file.
-  rules   tools/check_rules.py on src/, then the pytest suite of tools/, then actionlint on .github/workflows/.
+  rules   tools/check_rules.py on src/ and tests/, then the pytest suite of tools/, then actionlint on .github/workflows/.
           The rules check prints a NOTE only for a line the staged changes add; the gate prints each such note on a
           line `rules note: <note>` before the PASS or FAIL line.
   cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
           debug and the release CPU presets of the platform the gate runs on. ctest runs one test per core at once.
           (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
-          `--parallel <cores>`.)
+          `--parallel <cores>`.) On the debug preset ctest also writes a JUnit file (out/check-commit/), and the step
+          fails, naming the test, when a test labelled `unit` took more than 200 ms; it prints a line
+          `NOTE unit test over 50 ms: <name> (<ms> ms)` for each one above 50 ms. The rule is 50 ms for a unit test run
+          alone; 200 ms allows for one test per core running at once.
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
-          debug preset, over every tracked .cc file under src/ that the CPU build compiles, and over each
+          debug preset, over every tracked .cc file under src/ and tests/ that the CPU build compiles, and over each
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
           build compiles, such as a GPU-only test, is tidied by the cuda step. tools/run_tidy.py runs one clang-tidy
           per file, one per core at once, and does not check a file again while nothing it depends on has changed
           (the cache is out/tidy-cache/); --no-cache checks every file.
-  paper   compile the method paper with typst, and check that every label named on a `Read:` line under src/
+  paper   compile the method paper with typst, and check that every label named on a `Read:` line under src/ and tests/
           (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper.
   cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run
           clang-tidy over the .cc files that only the CUDA build compiles (the list CMake writes to
           gpu_only_sources.txt), and run the tests labelled cpu and no_gpu. The container has no GPU, so GPU code is
-          compiled, not run. Then every tracked .cc and .cu file under src/ must appear in the CUDA build's compile
-          commands, and every tracked .h and .cuh file under src/ must be compiled alone there, as a header-alone
+          compiled, not run. Then every tracked .cc and .cu file under src/ and tests/ must appear in the CUDA build's compile
+          commands, and every tracked .h and .cuh file under src/ and tests/ must be compiled alone there, as a header-alone
           file (header_check/<include path>.cc or .cu, which fluidity_add_headers writes): a file that is neither
-          fails the step by name. The exception is a test header (a header in a `testing/` folder, such as
-          fluidity/base/testing/base_support.h): the header-alone files belong to the library, which does not link
+          fails the step by name. The exception is a test header (a header directly in
+          src/fluidity/<module>/testing/, such as fluidity/base/testing/base_support.h): the header-alone files belong to the library, which does not link
           GoogleTest, so a test header is compiled by the test programs that include it.
 
 The container keeps its tools, Conan packages and build tree in a Docker volume named after a short hash of the
@@ -78,6 +82,7 @@ import platform
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,6 +119,15 @@ TOP_LEVEL_BUILD_FILES = frozenset(
     {"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock", "pyproject.toml", "uv.lock"}
 )
 MODULES_ROOT = ("src", "fluidity")
+# The functional tests, one folder per module: tests/<module>/.
+FUNCTIONAL_TESTS_ROOT = "tests"
+# The source folders that every file-wise check covers: the unit tests sit beside the headers, the functional tests
+# under tests/.
+SOURCE_FOLDERS = ("src", "tests")
+# A unit test takes at most 50 ms alone in the debug build. The gate runs one test per core at once, which slows each
+# one, so it fails a unit test only above 200 ms and prints a note above 50 ms.
+UNIT_TEST_NOTE_SECONDS = 0.05
+UNIT_TEST_LIMIT_SECONDS = 0.2
 
 PAPER_DIRECTORY = Path("docs") / "method-paper"
 PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
@@ -122,7 +136,7 @@ LOG_DIRECTORY = Path("out") / "check-commit"
 
 CPP_PATTERNS = ("*.cc", "*.h", "*.cu", "*.cuh")
 # The sources a build compiles; every tracked one must be in the CUDA build.
-COMPILED_PATTERNS = ("src/*.cc", "src/*.cu", "src/*.h", "src/*.cuh")
+COMPILED_PATTERNS = tuple(f"{folder}/*{suffix}" for folder in SOURCE_FOLDERS for suffix in (".cc", ".cu", ".h", ".cuh"))
 HEADER_EXTENSIONS = (".h", ".cuh")
 DOCKER_NOT_RUNNING = "Docker is not running (start it with: colima start)"
 DOCKER_NOT_FOUND = "Docker is not installed (no docker command on PATH)"
@@ -251,14 +265,20 @@ def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[s
 
 def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
     """The modules whose folders hold a changed file: None when every module (the change is under src/ outside a
-    module folder, under cmake/, or to a top-level build file), otherwise the module folders named under
-    src/fluidity/, possibly none. A module that only includes a changed header of another module is not selected."""
+    module folder, under cmake/, under tests/ outside a module folder, or to a top-level build file), otherwise the
+    module folders named under src/fluidity/ or tests/, possibly none. A module that only includes a changed header
+    of another module is not selected."""
     modules: set[str] = set()
     for path in changed_paths:
         parts = Path(path).parts
         if len(parts) == 1 and parts[0] in TOP_LEVEL_BUILD_FILES:
             return None
         if parts[:1] == ("cmake",):
+            return None
+        if parts[:1] == (FUNCTIONAL_TESTS_ROOT,):
+            if len(parts) >= 3:
+                modules.add(parts[1])
+                continue
             return None
         if parts[:1] != (MODULES_ROOT[0],):
             continue
@@ -267,6 +287,40 @@ def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
         else:
             return None
     return frozenset(modules)
+
+
+def modules_with_changed_functional_tests(changed_paths: Sequence[str]) -> frozenset[str]:
+    """The modules with a changed file under tests/<module>/: their functional tests run in a quick run too."""
+    modules = set()
+    for path in changed_paths:
+        parts = Path(path).parts
+        if parts[:1] == (FUNCTIONAL_TESTS_ROOT,) and len(parts) >= 3:
+            modules.add(parts[1])
+    return frozenset(modules)
+
+
+def slow_unit_tests(junit_text: str) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """The unit tests that took too long, from the JUnit file of ctest: (above the limit, above the note level but not
+    above the limit), each slowest first. A test is a unit test when its labels (`cmake_labels`, joined by `;`) hold
+    `unit`."""
+    over_limit: list[tuple[str, float]] = []
+    over_note: list[tuple[str, float]] = []
+    for case in ElementTree.fromstring(junit_text).iter("testcase"):
+        labels = ""
+        for label_property in case.iter("property"):
+            if label_property.get("name") == "cmake_labels":
+                labels = label_property.get("value", "")
+        if "unit" not in labels.split(";"):
+            continue
+        seconds = float(case.get("time", "0"))
+        name = case.get("name", "")
+        if seconds > UNIT_TEST_LIMIT_SECONDS:
+            over_limit.append((name, seconds))
+        elif seconds > UNIT_TEST_NOTE_SECONDS:
+            over_note.append((name, seconds))
+    over_limit.sort(key=lambda entry: entry[1], reverse=True)
+    over_note.sort(key=lambda entry: entry[1], reverse=True)
+    return over_limit, over_note
 
 
 def host_cpu_presets() -> tuple[str, str]:
@@ -373,7 +427,7 @@ class Gate:
             [
                 sys.executable,
                 str(tools / "check_rules.py"),
-                str(self.repo_root / "src"),
+                *[str(self.repo_root / folder) for folder in SOURCE_FOLDERS],
                 "--notes-on-staged-lines",
                 "--repository",
                 str(self.repo_root),
@@ -445,23 +499,65 @@ class Gate:
         command_list.append(["cmake", "--preset", preset])
         command_list.append(["cmake", "--build", "--preset", preset])
         notes: tuple[str, ...] = ()
-        ctest = ["ctest", "--preset", preset, "--parallel", str(os.cpu_count() or 1)]
+        cores = str(os.cpu_count() or 1)
+        # The debug preset also times its unit tests: ctest writes each test's time and labels to a JUnit file.
+        junit_path = self.repo_root / LOG_DIRECTORY / f"junit-{preset}.xml"
+        is_debug = "-debug-" in preset
+        ctest = ["ctest", "--preset", preset, "--parallel", cores]
+        if is_debug:
+            ctest += ["--output-junit", str(junit_path)]
+        ctest_runs: list[list[str]] = [ctest]
         if changed_modules_only:
             changed = self.changed_paths()
             modules = None if changed is None else modules_of_changes(changed)
+            # Labels are regular expressions; the anchors keep `grid` from matching another module's name and
+            # `unit` from matching nothing else.
             if modules is None:
                 notes = ("NOTE modules: all",)
+                ctest_runs = [[*ctest, "-L", "^unit$"]]
             elif modules:
                 names = sorted(modules)
                 notes = (f"NOTE modules: {', '.join(names)}",)
-                # Labels are regular expressions; the anchors keep `grid` from matching another module's name.
-                ctest += ["-L", "^(" + "|".join(re.escape(name) for name in names) + ")$", "--no-tests=ignore"]
+                module_label = "^(" + "|".join(re.escape(name) for name in names) + ")$"
+                ctest_runs = [[*ctest, "-L", module_label, "-L", "^unit$", "--no-tests=ignore"]]
+                functional = sorted(modules_with_changed_functional_tests(changed or ()))
+                if functional:
+                    notes += (f"NOTE functional tests: {', '.join(functional)}",)
+                    functional_label = "^(" + "|".join(re.escape(name) for name in functional) + ")$"
+                    ctest_runs.append(
+                        ["ctest", "--preset", preset, "--parallel", cores]
+                        + ["-L", functional_label, "-L", "^functional$", "--no-tests=ignore"]
+                    )
             else:
                 notes = ("NOTE modules: none",)
-        if not notes or notes[0] != "NOTE modules: none":
-            command_list.append(ctest)
+                ctest_runs = []
+        if is_debug:
+            junit_path.parent.mkdir(parents=True, exist_ok=True)
+            junit_path.unlink(missing_ok=True)
+        command_list.extend(ctest_runs)
         outcome = self.commands(f"cpu-{preset}", command_list)
-        return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
+        if not outcome.passed or not is_debug or not ctest_runs:
+            return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
+        return self.check_unit_test_times(junit_path, notes, outcome.output)
+
+    def check_unit_test_times(self, junit_path: Path, notes: tuple[str, ...], output: str) -> Outcome:
+        """Fails when a unit test of the debug run took more than UNIT_TEST_LIMIT_SECONDS, naming it, and adds a
+        note for each one above UNIT_TEST_NOTE_SECONDS."""
+        try:
+            junit_text = junit_path.read_text(encoding="utf-8")
+            over_limit, over_note = slow_unit_tests(junit_text)
+        except (OSError, ElementTree.ParseError, ValueError) as error:
+            return Outcome(False, f"the JUnit file of ctest cannot be read ({error})", notes, output)
+        time_notes = tuple(
+            f"NOTE unit test over {UNIT_TEST_NOTE_SECONDS * 1000:.0f} ms: {name} ({seconds * 1000:.0f} ms)"
+            for name, seconds in over_note
+        )
+        if over_limit:
+            shown = ", ".join(f"{name} ({seconds * 1000:.0f} ms)" for name, seconds in over_limit[:3])
+            more = f" and {len(over_limit) - 3} more" if len(over_limit) > 3 else ""
+            reason = f"unit tests over {UNIT_TEST_LIMIT_SECONDS * 1000:.0f} ms: {shown}{more}"
+            return Outcome(False, reason, notes + time_notes, output)
+        return Outcome(True, "", notes + time_notes, output)
 
     def check_tidy(self) -> Outcome:
         version = self.check_tool_version("tidy", "clang-tidy")
@@ -482,7 +578,7 @@ class Gate:
             # Not a list of objects with "directory" and "file": the build folder is broken, not the sources.
             reason = f"is malformed ({type(error).__name__}: {error}); delete {build_folder.as_posix()} and run cpu"
             return Outcome(False, f"{build_folder.as_posix()}/compile_commands.json {reason}")
-        files = self.tracked_files(["src/*.cc"])
+        files = self.tracked_files([f"{folder}/*.cc" for folder in SOURCE_FOLDERS])
         if files is None:
             return Outcome(False, "git ls-files failed")
         files = [path for path in files if path.endswith(".cc")]
@@ -490,7 +586,7 @@ class Gate:
         # for a tracked source that no build compiles.
         in_build = [path for path in files if (self.repo_root / path).resolve() in compiled]
         if not in_build:
-            return Outcome(False, "no tracked .cc file under src/ is in the CPU build")
+            return Outcome(False, "no tracked .cc file under src/ or tests/ is in the CPU build")
         header_checks = sorted(
             str(path) for path in compiled if HEADER_CHECK_FOLDER in path.parts and path.name.endswith(".h.cc")
         )
@@ -516,7 +612,8 @@ class Gate:
             return compiled
         defined = self.paper_labels()
         missing = []
-        for path in sorted((self.repo_root / "src").rglob("*")):
+        paths = sorted(path for folder in SOURCE_FOLDERS for path in (self.repo_root / folder).rglob("*"))
+        for path in paths:
             if not path.is_file() or path.suffix not in {".h", ".cuh", ".cc", ".cu"}:
                 continue
             relative = path.relative_to(self.repo_root).as_posix()

@@ -579,6 +579,7 @@ def test_digit_separator_does_not_hide_the_rest_of_the_line(tmp_path, glossary):
 
 def test_default_scan_path_is_relative_to_the_repository(tmp_path, glossary, monkeypatch, capsys):
     write(tmp_path / "src", "a.cc", "int stencil_count;\n")
+    write(tmp_path / "tests", "b.cc", "int fine;\n")
     monkeypatch.setattr(check_rules, "REPO_ROOT", tmp_path)
     monkeypatch.chdir(tmp_path / "src")
     assert check_rules.main(["--glossary", str(glossary)]) == 1
@@ -873,3 +874,33 @@ def test_test_may_not_include_a_private_gpu_header_of_the_testing_folder_that_is
 def test_header_with_test_in_its_name_may_not_include_the_runner_header_of_the_testing_folder(tmp_path, glossary):
     write(tmp_path / "fluidity" / "grid", "cell_size_rule.test.h", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
     assert "private-gpu-include" in rules(run(tmp_path, glossary))
+
+
+def test_test_under_tests_may_include_the_private_gpu_header_of_its_module(tmp_path, glossary):
+    write(tmp_path / "tests" / "grid", "build_grid_on_gpu.test.cc", '#include "fluidity/grid/staggered_grid_gpu.h"\n')
+    write(tmp_path / "tests" / "grid", "cell_size_rule_on_gpu.test.cc", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
+    assert run(tmp_path, glossary) == []
+
+
+def test_test_under_tests_may_not_include_the_private_gpu_header_of_another_module(tmp_path, glossary):
+    write(tmp_path / "tests" / "contact", "move_particles_on_gpu.test.cc", '#include "fluidity/grid/staggered_grid_gpu.h"\n')
+    assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
+
+
+def test_file_under_tests_that_is_not_a_test_may_not_include_a_private_gpu_header(tmp_path, glossary):
+    write(tmp_path / "tests" / "grid", "helper.cc", '#include "fluidity/grid/staggered_grid_gpu.h"\n')
+    assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
+
+
+def test_test_under_tests_may_not_include_a_private_gpu_header_of_the_testing_folder_that_is_not_a_runner(tmp_path, glossary):
+    write(tmp_path / "tests" / "grid", "x_on_gpu.test.cc", '#include "fluidity/grid/testing/other_gpu.h"\n')
+    assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
+
+
+def test_default_scan_covers_tests_as_it_covers_src(tmp_path, glossary, monkeypatch, capsys):
+    write(tmp_path / "src", "a.cc", "int fine;\n")
+    write(tmp_path / "tests", "b.cc", "int stencil_count;\n")
+    monkeypatch.setattr(check_rules, "REPO_ROOT", tmp_path)
+    assert check_rules.main(["--glossary", str(glossary)]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL banned-word" in output and "b.cc" in output

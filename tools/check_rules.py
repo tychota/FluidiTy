@@ -1,7 +1,7 @@
 """Applies the mechanical items of the AGENTS.md checklist to files.
 
 Usage: uv run python tools/check_rules.py [PATH ...] [--glossary PATH] [--allowed-names PATH]
-                                         [--notes-on-staged-lines [--repository PATH]]   (default path: src)
+                                         [--notes-on-staged-lines [--repository PATH]]   (default paths: src and tests)
 
 Output lines are `path:line: FAIL <rule-id> <text>` and `path:line: NOTE <rule-id> <text>`.
 The exit code is 1 when any FAIL was printed, 2 when an input is missing or malformed, otherwise 0.
@@ -28,7 +28,9 @@ Which rules apply to which files (a deliberate choice, written down here):
   applies to every C++ file: an `#include` of a `*_gpu.h` or `*_gpu.cuh` header, written with quotes or angle
   brackets, fails from another folder, or from a header whose stem does not end in `_gpu`. One exception: a test
   (a file with `.test.` in its name) may include a private GPU header of the `testing/` folder of its own folder, as
-  `fluidity/grid/testing/cell_size_rule_runner_gpu.h` from `fluidity/grid/cell_size_rule.gpu.test.cc`.
+  `fluidity/grid/testing/cell_size_rule_runner_gpu.h` from `fluidity/grid/cell_size_rule.gpu.test.cc`. A test in
+  `tests/<module>/` counts as a file of the folder `fluidity/<module>`: it may include that folder's private GPU
+  headers, as a test beside them could.
 - `compiler-include` applies to every C++ file: an `#include` inside an `#if`, `#ifdef`, `#ifndef` or `#elif` block
   whose condition names `__clang__`, `__GNUC__`, `_MSC_VER` or `__apple_build_version__` fails, in any branch of the
   block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
@@ -54,7 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GLOSSARY_PATH = REPO_ROOT / "docs" / "glossary.md"
 DEFAULT_AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 DEFAULT_ALLOWED_NAMES_PATH = Path(__file__).resolve().parent / "check_rules_allowed_names.txt"
-DEFAULT_SCAN_PATH = "src"
+DEFAULT_SCAN_PATHS = ("src", "tests")
 
 SCANNED_SUFFIXES = {".h", ".cuh", ".cc", ".cu", ".py", ".lean"}
 CPP_SUFFIXES = {".h", ".cuh", ".cc", ".cu"}
@@ -72,6 +74,8 @@ BACKEND_EXEMPT_IDENTIFIERS = {"FLUIDITY_CPU_AND_GPU", "FLUIDITY_HAS_GPU"}
 PRIVATE_GPU_STEM_SUFFIX = "_gpu"
 # The folder of a module that holds the code its tests share; a test may include its private GPU headers.
 TEST_CODE_FOLDER = "testing"
+# The folder of the functional tests, one folder per module: tests/<module>/.
+TESTS_FOLDER = "tests"
 # `cpu_and_gpu.h` ends in `_gpu` but is the shared mark every shared header includes, not a private GPU header.
 SHARED_STEM_SUFFIX = "_and_gpu"
 
@@ -900,6 +904,13 @@ def _is_test_including_own_testing_folder(path: Path, including_folder: str, inc
     return including_folder.endswith("/" + parent_of_included)
 
 
+def _is_test_of_module_under_tests(path: Path) -> bool:
+    """True for a test (`.test.` in its name, a .cc or .cu file) in `tests/<module>/`."""
+    if ".test." not in path.name or path.suffix not in {".cc", ".cu"}:
+        return False
+    return path.resolve().parent.parent.name == TESTS_FOLDER
+
+
 def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine], reporter: _Reporter) -> None:
     """Fails an include of a `*_gpu.h` or `*_gpu.cuh` header from another folder, or from a header that is not
     itself `_gpu`.
@@ -909,6 +920,9 @@ def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine],
     raw_lines = text.splitlines()
     including_is_public_header = path.suffix in HEADER_SUFFIXES and not is_private_gpu_stem(path.stem)
     including_folder = path.resolve().parent.as_posix()
+    if _is_test_of_module_under_tests(path):
+        # The folder of the module's headers: a test of tests/<module>/ stands where a test beside them would.
+        including_folder = f"/fluidity/{path.resolve().parent.name}"
     for line in lines:
         if not _is_include_line(line.code) or line.number > len(raw_lines):
             continue
@@ -1095,7 +1109,7 @@ def keep_notes_on_lines(findings: list[Finding], added_lines: dict[str, set[int]
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Apply the mechanical AGENTS.md checks to files.")
     parser.add_argument(
-        "paths", nargs="*", help=f"files or directories (default: {DEFAULT_SCAN_PATH} in the repository root)"
+        "paths", nargs="*", help=f"files or directories (default: {' and '.join(DEFAULT_SCAN_PATHS)} in the repository root)"
     )
     parser.add_argument("--glossary", default=str(DEFAULT_GLOSSARY_PATH), help="path of docs/glossary.md")
     parser.add_argument(
@@ -1112,7 +1126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--repository", default=str(REPO_ROOT), help="the git repository whose staged changes are read"
     )
     arguments = parser.parse_args(argv)
-    paths = [Path(path) for path in arguments.paths] or [REPO_ROOT / DEFAULT_SCAN_PATH]
+    paths = [Path(path) for path in arguments.paths] or [REPO_ROOT / name for name in DEFAULT_SCAN_PATHS]
     missing = [path for path in paths if not path.exists()]
     if missing:
         for path in missing:

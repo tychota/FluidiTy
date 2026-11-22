@@ -5,8 +5,6 @@
 // for a turning or spinning solid they are compared within the GPU bounds of method paper <sec-contact>. The test
 // prints the largest difference it saw, so the hardware run can calibrate the bounds.
 
-#include "fluidity/contact/solid_shapes.h"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -22,6 +20,7 @@
 #include "fluidity/base/run_on_call.h"
 #include "fluidity/base/testing/base_support.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/contact/solid_shapes.h"
 #include "fluidity/contact/testing/shared_formulas_runner_gpu.h"
 
 namespace fluidity::contact {

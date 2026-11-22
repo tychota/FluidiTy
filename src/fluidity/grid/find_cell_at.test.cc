@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -10,8 +9,6 @@
 #include <cstdlib>
 #include <expected>
 #include <limits>
-#include <optional>
-#include <random>
 #include <set>
 #include <span>
 #include <vector>
@@ -22,62 +19,11 @@
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
+#include "fluidity/grid/testing/find_cell_at_cases.h"
 #include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
 namespace {
-
-// A frame with its origin at 0 and biggest cells 1 m wide: every cell side in it is a double with few significant
-// bits, so a position on a side is exactly on it.
-constexpr GridFrame ToUnitFrame(int size_level_count) {
-  return {
-      .origin = {.x = 0, .y = 0, .z = 0},
-      .biggest_cell_width = 1.0,
-      .size_level_count = static_cast<std::uint8_t>(size_level_count),
-  };
-}
-
-CellId ToCell(int size_level, std::int32_t x, std::int32_t y, std::int32_t z) {
-  return ToCellId(static_cast<SizeLevel>(size_level), {.x = x, .y = y, .z = z});
-}
-
-// The inputs of a CPU list of version 1.
-GridInputs ToInputs(GridFrame frame, std::span<const CellId> active_cells) {
-  return {.frame = frame, .active_cells = active_cells, .version = {.value = 1}};
-}
-
-// The id of the cell at a place FindCellAt gave, or CellId{0} for kNoIndex. A found place must be kActive.
-CellId ToFoundCellId(const GridTables& tables, CellPlaceIndex cell) {
-  if (cell.value == kNoIndex) {
-    return CellId{0};
-  }
-  EXPECT_EQ(tables.cell_states[cell.value], CellState::kActive);
-  return ToCellId(tables, cell);
-}
-
-// The near values every hand-built test tries: each block of the grid, kNoIndex, block_count and a large index that is
-// not kNoIndex.
-std::vector<CellBlockIndex> BuildEveryNearValue(const GridTables& tables) {
-  std::vector<CellBlockIndex> near_values;
-  near_values.reserve(tables.block_count + 3);
-  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
-    near_values.push_back({.value = block});
-  }
-  near_values.push_back({.value = kNoIndex});
-  near_values.push_back({.value = tables.block_count});
-  near_values.push_back({.value = kNoIndex - 1});
-  return near_values;
-}
-
-// The id of the active cell that holds `position` by the search form, or CellId{0}, after checking that the near
-// form gives the same place for every value of BuildEveryNearValue.
-CellId FindCellIdAt(const GridTables& tables, Vec3 position) {
-  const CellPlaceIndex searched = FindCellAt(tables, position);
-  for (const CellBlockIndex near : BuildEveryNearValue(tables)) {
-    EXPECT_EQ(FindCellAt(tables, position, near).value, searched.value) << "near " << near.value;
-  }
-  return ToFoundCellId(tables, searched);
-}
 
 // Expects kNoIndex at `position` from the search form and from the near form with `near` 0, 1 and kNoIndex.
 void ExpectNoCellThroughEitherForm(const GridTables& tables, Vec3 position) {
@@ -213,63 +159,6 @@ TEST(FindCellAt, NegativeQuotientBelowNormalRange_LiesInCellZero) {
   EXPECT_EQ(FindCellIdAt(tables, {.x = -0x1p-1020, .y = 0.5, .z = 0.5}).value, ToCell(0, -1, 0, 0).value);
 }
 
-// Size-level-0 cells over 4 x 2 x 2 size-level-0 blocks, block coordinates (0..3, 0..1, 0..1), without block
-// (1, 1, 0), and one cell split, so the near form crosses blocks: one or two moves away, three moves away, and past the
-// block that does not exist. 15 size-level-0 blocks and 1 size-level-1 block, in block (2, 0, 0).
-std::vector<CellId> BuildCellsOverSeveralBlocks() {
-  std::vector<CellId> cells;
-  for (std::int32_t z = 0; z < 8; ++z) {
-    for (std::int32_t y = 0; y < 8; ++y) {
-      for (std::int32_t x = 0; x < 16; ++x) {
-        const bool is_in_missing_block = x >= 4 && x < 8 && y >= 4 && z < 4;
-        if (is_in_missing_block) {
-          continue;
-        }
-        if (x == 9 && y == 2 && z == 1) {
-          for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
-            cells.push_back(ComputeSmallCell(ToCell(0, x, y, z), cell_eighth));
-          }
-          continue;
-        }
-        cells.push_back(ToCell(0, x, y, z));
-      }
-    }
-  }
-  return cells;
-}
-
-// Expects FindCellIdAt, both forms, to give the checker's cell at `position`, and says whether a cell holds it.
-bool ExpectCheckerCellAt(const GridTables& tables, const GeometricGrid& checker, Vec3 position) {
-  SCOPED_TRACE(testing::Message() << "position " << position.x << ", " << position.y << ", " << position.z);
-  const std::optional<CellId> checker_cell = checker.ContainingCell(position);
-  const CellId found_cell = FindCellIdAt(tables, position);
-  EXPECT_EQ(found_cell.value, checker_cell.has_value() ? checker_cell->value : 0U);
-  return found_cell.value != 0;
-}
-
-// From every block of the grid and from values that are not blocks, the near form finds what the search finds, and the
-// search agrees with the geometric checker, on a lattice of quarter metres that holds every cell side.
-TEST(FindCellAt, NearFormAcrossSizeLevelZeroBlocks_EqualsSearch) {
-  const std::vector<CellId> cells = BuildCellsOverSeveralBlocks();
-  const GridFrame frame = ToUnitFrame(2);
-  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(frame, cells));
-  ASSERT_TRUE(test_grid.has_value());
-  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
-  ASSERT_EQ(tables.block_count, 16U);
-  const GeometricGrid checker(frame, cells);
-  std::size_t found_count = 0;
-  // z = 1.25 m holds the split cell, and z = 5.5 m lies above the missing block.
-  for (const double position_z : {1.25, 5.5}) {
-    for (int y_quarter = -4; y_quarter <= 36; ++y_quarter) {
-      for (int x_quarter = -4; x_quarter <= 68; ++x_quarter) {
-        const Vec3 position = {.x = x_quarter * 0.25, .y = y_quarter * 0.25, .z = position_z};
-        found_count += ExpectCheckerCellAt(tables, checker, position) ? 1 : 0;
-      }
-    }
-  }
-  EXPECT_GT(found_count, 0U);
-}
-
 // The size-level-0 block coordinate of a block, or of the size-level-0 block above it.
 CellCoord ToBiggestBlockCoord(const GridTables& tables, CellBlockIndex block) {
   std::uint32_t biggest_block = block.value;
@@ -393,94 +282,6 @@ TEST(FindCellAt, FrameNotDyadic_BothFormsAgreeNearAnEdge) {
   EXPECT_EQ(ExpectCellsAroundSide(tables, checker, 2), 7U);
   EXPECT_EQ(ExpectCellsAroundSide(tables, checker, 3), 7U);
   EXPECT_GT(ExpectCellsAroundSide(tables, checker, 4), 0U);
-}
-
-// The block of the same size level as `block` whose block coordinate is two away on some axis and at most two on
-// every axis, or kNoIndex when the grid has none.
-CellBlockIndex FindBlockTwoMovesAway(const GridTables& tables, CellBlockIndex block) {
-  const CellCoord block_coord = ToCellCoord(CellId{tables.block_ids[block.value].value});
-  for (std::uint32_t other = 0; other < tables.block_count; ++other) {
-    if (ToSizeLevel(tables, CellBlockIndex{other}) != ToSizeLevel(tables, block)) {
-      continue;
-    }
-    const CellCoord other_coord = ToCellCoord(CellId{tables.block_ids[other].value});
-    const std::int32_t distance_x = std::abs(other_coord.x - block_coord.x);
-    const std::int32_t distance_y = std::abs(other_coord.y - block_coord.y);
-    const std::int32_t distance_z = std::abs(other_coord.z - block_coord.z);
-    const std::int32_t largest_distance = std::max({distance_x, distance_y, distance_z});
-    if (largest_distance == 2) {
-      return {.value = other};
-    }
-  }
-  return {.value = kNoIndex};
-}
-
-// What the random-position check counted over one grid.
-struct RandomPositionCounts {
-  std::size_t found_count = 0;  // Positions in an active cell.
-  std::size_t two_moves_count = 0;  // Positions tried from a block two moves away.
-  std::size_t wrong_count = 0;  // Positions where some form or the checker disagreed.
-};
-
-// For 1,000 positions of one random grid in its box widened by one size-level-0 cell, half drawn freely and half on
-// the lattice of smallest cells, so on cell sides: the search agrees with the checker, and the near form agrees with
-// the search from the found cell's block, a block two moves from it, the last block, a drawn block, block_count and
-// kNoIndex.
-RandomPositionCounts CountRandomPositions(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
-  RandomPositionCounts counts;
-  std::mt19937_64 generator(seed);
-  constexpr int kPositionCount = 1000;
-  for (int position_index = 0; position_index < kPositionCount; ++position_index) {
-    std::array<double, 3> coordinates{};
-    for (double& coordinate : coordinates) {
-      const double unit_draw = ToUnitDouble(generator());
-      // The box 0..3 m widened by 1 m on each side, 5 m wide; the lattice is 40 smallest cells of 1/8 m.
-      coordinate = position_index % 2 == 0 ? -1.0 + (5.0 * unit_draw) : -1.0 + (std::floor(40.0 * unit_draw) / 8.0);
-    }
-    const Vec3 position = {.x = coordinates.at(0), .y = coordinates.at(1), .z = coordinates.at(2)};
-    const CellPlaceIndex searched = FindCellAt(tables, position);
-    const CellId found_cell = searched.value == kNoIndex ? CellId{0} : ToCellId(tables, searched);
-    const std::optional<CellId> checker_cell = checker.ContainingCell(position);
-    bool is_right = found_cell.value == (checker_cell.has_value() ? checker_cell->value : 0U);
-    is_right = is_right && (searched.value == kNoIndex || tables.cell_states[searched.value] == CellState::kActive);
-    const CellBlockIndex found_block =
-        searched.value == kNoIndex ? CellBlockIndex{0} : ToCellBlockIndex(CellPlaceIndex{searched.value});
-    const CellBlockIndex two_moves_away = FindBlockTwoMovesAway(tables, found_block);
-    const std::vector<CellBlockIndex> near_values = {
-        found_block,
-        two_moves_away,
-        {.value = tables.block_count - 1},
-        {.value = static_cast<std::uint32_t>(ToUniformIndex(generator(), tables.block_count))},
-        {.value = tables.block_count},
-        {.value = kNoIndex},
-    };
-    for (const CellBlockIndex near : near_values) {
-      is_right = is_right && FindCellAt(tables, position, near).value == searched.value;
-    }
-    counts.found_count += found_cell.value != 0 ? 1 : 0;
-    counts.two_moves_count += two_moves_away.value != kNoIndex ? 1 : 0;
-    counts.wrong_count += is_right ? 0 : 1;
-  }
-  return counts;
-}
-
-// The 200 random grids: every near form equals the search form, which equals GeometricGrid::ContainingCell. The one
-// test of this program over the random grids, so they are built once.
-TEST(FindCellAt, NearForm_EqualsSearchOnRandomPositions) {
-  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-  ASSERT_EQ(built.grids.size(), kRandomGridCount);
-  RandomPositionCounts total;
-  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
-    SCOPED_TRACE(testing::Message() << "FindCellAt on random positions, random grid " << grid);
-    const RandomPositionCounts counts =
-        CountRandomPositions(built.grids.at(grid).grid.tables(RunOn::kCpu), built.checkers.at(grid), grid + 1);
-    EXPECT_EQ(counts.wrong_count, 0U);
-    total.found_count += counts.found_count;
-    total.two_moves_count += counts.two_moves_count;
-  }
-  // Positions in cells and positions tried from two moves away both occur, so both were compared.
-  EXPECT_GT(total.found_count, 0U);
-  EXPECT_GT(total.two_moves_count, 0U);
 }
 
 }  // namespace

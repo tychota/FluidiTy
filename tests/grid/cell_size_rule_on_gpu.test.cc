@@ -4,8 +4,6 @@
 // for bit: the method paper promises the same bytes on both processors (<sec-cell-size-rule>). Every GPU result goes
 // to WriteResultDigest under a unique name, so the repeat run shows the GPU gave the same bytes twice.
 
-#include "fluidity/grid/cell_size_rule.h"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -24,6 +22,7 @@
 #include "fluidity/base/run_on_call.h"
 #include "fluidity/base/testing/base_support.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/cell_size_rule.h"
 #include "fluidity/grid/find_cell_at.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"

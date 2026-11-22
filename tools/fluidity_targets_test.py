@@ -139,7 +139,7 @@ def test_cuda_configuration_fails_on_nvcc_flags_from_the_environment(tmp_path):
         )
 
 
-def test_a_test_gets_its_backend_label_and_the_name_of_its_module(tmp_path):
+def test_a_test_gets_its_backend_label_its_module_and_the_unit_tier(tmp_path):
     """The label list is written into the discovery script that gtest_discover_tests generates, where ctest reads it."""
     project = tmp_path / "project"
     (project / "grid").mkdir(parents=True)
@@ -160,7 +160,7 @@ def test_a_test_gets_its_backend_label_and_the_name_of_its_module(tmp_path):
     generated = "".join(
         path.read_text(encoding="utf-8") for path in (project / "build" / "grid").glob("grid_test*_discovery.cmake")
     )
-    assert "[==[LABELS]==] [==[cpu;grid]==]" in generated
+    assert "[==[LABELS]==] [==[cpu;grid;unit]==]" in generated
 
 
 def test_a_test_in_the_testing_folder_of_a_module_gets_the_name_of_its_module(tmp_path):
@@ -184,4 +184,46 @@ def test_a_test_in_the_testing_folder_of_a_module_gets_the_name_of_its_module(tm
         path.read_text(encoding="utf-8")
         for path in (project / "build" / "grid").glob("grid_support_test*_discovery.cmake")
     )
-    assert "[==[LABELS]==] [==[cpu;grid]==]" in generated
+    assert "[==[LABELS]==] [==[cpu;grid;unit]==]" in generated
+
+
+def configure_one_test(tmp_path, folder, call):
+    """Configures a project with one test program in `folder` (below the project) made by `call`."""
+    project = tmp_path / "project"
+    (project / folder).mkdir(parents=True)
+    (project / folder / "grid.test.cc").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (project / folder / "CMakeLists.txt").write_text(call + "\n", encoding="utf-8")
+    configured = configure(
+        project,
+        "include(GoogleTest)\n"
+        "set(BUILD_TESTING ON)\n"
+        "add_library(GTest::gtest_main INTERFACE IMPORTED)\n"
+        "add_library(fluidity STATIC source.cc)\n"
+        "fluidity_apply_compile_flags(fluidity EXCEPTIONS OFF)\n"
+        f"add_subdirectory({folder})\n",
+    )
+    generated = "".join(
+        path.read_text(encoding="utf-8") for path in (project / "build" / folder).glob("*_test*_discovery.cmake")
+    )
+    return configured, generated
+
+
+def test_a_test_with_the_functional_tier_gets_that_label(tmp_path):
+    call = "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu TIER functional)"
+    configured, generated = configure_one_test(tmp_path, "grid", call)
+    assert configured.returncode == 0, configured.stdout
+    assert "[==[LABELS]==] [==[cpu;grid;functional]==]" in generated
+
+
+def test_a_test_under_tests_gets_the_name_of_its_module_folder(tmp_path):
+    call = "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu TIER functional)"
+    configured, generated = configure_one_test(tmp_path, "tests/grid", call)
+    assert configured.returncode == 0, configured.stdout
+    assert "[==[LABELS]==] [==[cpu;grid;functional]==]" in generated
+
+
+def test_a_tier_other_than_unit_or_functional_fails_the_configuration(tmp_path):
+    call = "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu TIER slow)"
+    configured, _ = configure_one_test(tmp_path, "grid", call)
+    assert configured.returncode != 0
+    assert "needs TIER unit or functional" in " ".join(configured.stdout.split())

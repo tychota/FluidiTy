@@ -8,8 +8,6 @@
 // WriteResultDigest under a unique name, so the repeat run shows the GPU wrote the same bits twice; the time per
 // particle of the large ranges goes to WriteResultTiming.
 
-#include "fluidity/contact/move_particles.h"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -32,6 +30,7 @@
 #include "fluidity/base/testing/base_support.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/contact/contact_error.h"
+#include "fluidity/contact/move_particles.h"
 #include "fluidity/contact/move_particles_gpu.h"
 #include "fluidity/contact/move_particles_steps.h"
 #include "fluidity/contact/solid_contact_types.h"

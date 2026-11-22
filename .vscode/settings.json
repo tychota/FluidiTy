@@ -28,7 +28,8 @@
     "*.test.cu": "test-js"
   },
   "material-icon-theme.folders.associations": {
-    "testing": "test"
+    "testing": "test",
+    "tests": "test"
   },
 
   "search.exclude": {

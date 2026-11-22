@@ -1,7 +1,5 @@
 // Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
 
-#include "fluidity/base/stable_order.h"
-
 #include <gtest/gtest.h>
 
 #include <array>
@@ -15,6 +13,7 @@
 #include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/stable_order.h"
 #include "fluidity/base/testing/base_support.h"
 
 namespace fluidity {

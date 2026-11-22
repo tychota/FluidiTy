@@ -22,9 +22,6 @@ fluidity_add_test(move_particle_test SOURCES solid_contact.move_particle.test.cc
 fluidity_add_test(move_particles_test SOURCES move_particles.test.cc LABEL cpu LINKS fluidity_base_testing)
 fluidity_add_test(move_particles_steps_test SOURCES move_particles_steps.test.cc LABEL cpu
                   LINKS fluidity_base_testing)
-fluidity_add_test(move_particles_gpu_test SOURCES move_particles.gpu.test.cc LABEL gpu LINKS fluidity_base_testing)
-fluidity_add_test(shared_formulas_gpu_test SOURCES solid_shapes.shared_formulas.gpu.test.cc testing/shared_formulas_runner_gpu.cu LABEL gpu
-                  LINKS fluidity_base_testing)
 fluidity_add_test(move_particles_no_gpu_test SOURCES move_particles.no_gpu.test.cc LABEL no_gpu)
 # The test of the rule that leaves out a solid a particle cannot come near counts the reads of each solid
 # (FLUIDITY_COUNT_SOLID_READS, contact/solid_shapes.h) and compares with a copy built to read every solid.
@@ -36,15 +33,6 @@ endif()
 fluidity_add_test(move_particle_tolerance_test SOURCES solid_contact.move_particle_tolerance.test.cc LABEL cpu)
 fluidity_add_test(move_particle_shorter_step_test SOURCES solid_contact.move_particle_shorter_step.test.cc LABEL cpu)
 fluidity_add_test(round_solid_hit_rounding_test SOURCES solid_contact.round_solid_hit_rounding.test.cc LABEL cpu)
-# Its two generated sets compare 20,000 paths with a double-double reference that searches 160 times per path: about
-# 11 s unoptimised. -O1 in a debug build keeps every assert and every IEEE result (no fast math, no contraction) and
-# runs it in under a second, with the same printed counts and worst cases. MSVC is left unoptimised: its debug builds
-# use /RTC1, which no /O option may be combined with.
-if(TARGET round_solid_hit_rounding_test)
-  target_compile_options(round_solid_hit_rounding_test PRIVATE
-    "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>>:-O1>"
-  )
-endif()
 fluidity_add_test(solid_shapes_test SOURCES solid_shapes.test.cc LABEL cpu)
 fluidity_add_test(move_particles_scene_test SOURCES move_particles.scene.test.cc LABEL cpu
                   LINKS fluidity_base_testing)

@@ -1,0 +1,72 @@
+fluidity_add_test(
+  ordered_sums_on_gpu_functional_test
+  SOURCES
+  ordered_sums_on_gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  scalar_math_shared_on_gpu_functional_test
+  SOURCES
+  scalar_math_shared_on_gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/base/testing/shared_math_runner_gpu.cu
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  stable_order_against_std_sort_functional_test
+  SOURCES
+  stable_order_against_std_sort.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  stable_order_on_gpu_functional_test
+  SOURCES
+  stable_order_on_gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  stable_order_steps_in_every_thread_order_functional_test
+  SOURCES
+  stable_order_steps_in_every_thread_order.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  tree_sum_layers_in_every_thread_order_functional_test
+  SOURCES
+  tree_sum_layers_in_every_thread_order.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)

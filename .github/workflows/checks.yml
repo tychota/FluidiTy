@@ -7,7 +7,7 @@
 #
 # What each job proves:
 #   rules         The C++ and CUDA sources are clang-format 23.1 clean, tools/check_rules.py reports no FAIL under
-#                 src/, the pytest suite of tools/ passes, and this file is accepted by actionlint.
+#                 src/ and tests/, the pytest suite of tools/ passes, and this file is accepted by actionlint.
 #   cpu           The strict CPU build (warnings as errors) of `<os>-<configuration>-cpu` configures, builds and passes
 #                 all its tests (a CPU build registers only `cpu` tests) on Linux (GCC 13), macOS (Xcode 16.4) and
 #                 Windows (VS 2022). The Windows job is the only place the Windows CPU code is compiled; the

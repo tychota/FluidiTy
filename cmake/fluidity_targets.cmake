@@ -125,12 +125,15 @@ function(fluidity_record_gpu_only_sources)
   endforeach()
 endfunction()
 
-# fluidity_add_test(<name> SOURCES <files...> LABEL <cpu|gpu|no_gpu> [LINKS <targets...>])
+# fluidity_add_test(<name> SOURCES <files...> LABEL <cpu|gpu|no_gpu> [TIER <unit|functional>] [LINKS <targets...>])
 #
 # Builds one GoogleTest program linked to the library and registers each of its tests with CTest under the label,
 # so `ctest -L '^cpu$'` runs the CPU tests only. Each test also gets the name of its module, the name of the folder of
 # the calling CMakeLists.txt (base, grid, contact), so `ctest --preset macos-debug-cpu -L grid` runs the grid tests
-# alone. A label filter is a regular expression: a bare `-L gpu` would also
+# alone, and its tier, `unit` (the default) or `functional`, so `ctest -L unit` runs the unit tests only. A unit test
+# checks one function on input written by hand and lives beside its header under src/; a functional test runs several
+# steps together or works on generated input and lives under tests/<module>/. Every test therefore has three labels:
+# backend, module and tier. A label filter is a regular expression: a bare `-L gpu` would also
 # select the no_gpu tests, so `ctest -L '^gpu$'` runs the tests that need a GPU.
 #   cpu     runs on the CPU only.
 #   gpu     needs a CUDA GPU at run time.
@@ -143,12 +146,18 @@ function(fluidity_add_test name)
   if(NOT BUILD_TESTING)
     return()
   endif()
-  cmake_parse_arguments(PARSE_ARGV 1 arg "" "LABEL" "SOURCES;LINKS")
+  cmake_parse_arguments(PARSE_ARGV 1 arg "" "LABEL;TIER" "SOURCES;LINKS")
   if(NOT arg_SOURCES)
     message(FATAL_ERROR "fluidity_add_test(${name}) needs SOURCES.")
   endif()
   if(NOT arg_LABEL MATCHES "^(cpu|gpu|no_gpu)$")
     message(FATAL_ERROR "fluidity_add_test(${name}) needs LABEL cpu, gpu or no_gpu, not '${arg_LABEL}'.")
+  endif()
+  if(NOT arg_TIER)
+    set(arg_TIER unit)
+  endif()
+  if(NOT arg_TIER MATCHES "^(unit|functional)$")
+    message(FATAL_ERROR "fluidity_add_test(${name}) needs TIER unit or functional, not '${arg_TIER}'.")
   endif()
   if(arg_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "fluidity_add_test(${name}) got unknown arguments: ${arg_UNPARSED_ARGUMENTS}")
@@ -167,7 +176,7 @@ function(fluidity_add_test name)
   add_executable(${name} ${arg_SOURCES})
   target_link_libraries(${name} PRIVATE fluidity GTest::gtest_main ${arg_LINKS})
   fluidity_apply_compile_flags(${name} EXCEPTIONS ON)
-  gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "${arg_LABEL};${module_name}")
+  gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "${arg_LABEL};${module_name};${arg_TIER}")
 endfunction()
 
 # fluidity_add_test_library(<name> SOURCES <files...> [GPU_SOURCES <files...>] [LINKS <targets...>])

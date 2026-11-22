@@ -18,7 +18,6 @@
 #include <expected>
 #include <span>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "fluidity/base/memory_count.h"
@@ -33,238 +32,10 @@
 #include "fluidity/contact/solid_shapes.h"
 #include "fluidity/contact/testing/contact_cases.h"
 #include "fluidity/contact/testing/move_particles_runs.h"
+#include "fluidity/contact/testing/move_particles_steps_cases.h"
 
 namespace fluidity::contact {
 namespace {
-
-// The order in which the simulated thread blocks and threads of one launch run.
-enum class ThreadOrder : std::uint8_t {
-  kLaunchOrder,  // Thread block 0, thread 0 first.
-  kReverse,  // The last thread of the last thread block first.
-};
-
-// Index `visit` of `count`, in `order`.
-std::size_t ToVisited(std::size_t visit, std::size_t count, ThreadOrder order) {
-  return order == ThreadOrder::kLaunchOrder ? visit : count - 1 - visit;
-}
-
-// Calls `run_item(item)` for every item a launch of `launch_size` covers by grid stride, thread by thread in `order`,
-// as ComputeGridStride gives each thread its items.
-template <typename RunItem>
-void RunLaunch(LaunchSize launch_size, std::size_t item_count, ThreadOrder order, RunItem run_item) {
-  const std::size_t thread_count = std::size_t{launch_size.thread_block_count} * launch_size.thread_block_size;
-  for (std::size_t block_visit = 0; block_visit < launch_size.thread_block_count; ++block_visit) {
-    const std::size_t thread_block = ToVisited(block_visit, launch_size.thread_block_count, order);
-    for (std::size_t thread_visit = 0; thread_visit < launch_size.thread_block_size; ++thread_visit) {
-      const std::size_t thread = ToVisited(thread_visit, launch_size.thread_block_size, order);
-      const std::size_t first_item = (thread_block * launch_size.thread_block_size) + thread;
-      for (std::size_t item = first_item; item < item_count; item += thread_count) {
-        run_item(item);
-      }
-    }
-  }
-}
-
-// The arrays of one call in CPU memory, as the GPU half reads and writes them, with every output at
-// kUnwrittenPosition or its default.
-struct CallArrays {
-  ParticleRange range;
-  std::vector<Vec3> position;
-  std::vector<Vec3> velocity_for_next_step;
-  std::vector<ParticleContact> record;
-  std::vector<SolidReaction> reaction;
-  std::vector<ContactFailure> failure_per_particle;
-
-  explicit CallArrays(ParticleRange particle_range)
-      : range(std::move(particle_range)),
-        position(range.size(), kUnwrittenPosition),
-        velocity_for_next_step(range.size(), kUnwrittenPosition),
-        record(range.size()),
-        reaction(range.size()),
-        failure_per_particle(range.size()) {
-  }
-
-  // The call the CPU half would pass to the GPU half, with every pointer in CPU memory.
-  MoveParticlesCall ToCall() {
-    return {
-        .particle_count = range.size(),
-        .particle_id = range.particle_id.data(),
-        .start_position = range.start_position.data(),
-        .velocity =
-            {
-                .for_next_step = range.velocity_for_next_step.data(),
-                .for_this_step = range.velocity_for_this_step.data(),
-            },
-        .friction = range.friction.data(),
-        .plate_side = range.plate_side.data(),
-        .solids = range.solids.data(),
-        .position = position.data(),
-        .velocity_for_next_step = velocity_for_next_step.data(),
-        .record = record.data(),
-        .reaction = reaction.data(),
-        .failure_per_particle = failure_per_particle.data(),
-        .step_duration = range.step_duration,
-        .start_overlap_tolerance = range.start_overlap_tolerance,
-        .contact_tolerance = range.contact_tolerance,
-        .solid_count = static_cast<std::uint32_t>(range.solids.size()),
-    };
-  }
-
-  // The outputs and the answer of the GPU half in the form of a MoveParticles run.
-  [[nodiscard]] MovedRange ToMovedRange(MoveParticleCounts counts, const ContactFailure& first_failure) const {
-    MovedRange moved{
-        .result =
-            MoveParticlesResult{.hit_count = counts.hit_count, .started_inside_count = counts.started_inside_count},
-        .position = position,
-        .velocity_for_next_step = velocity_for_next_step,
-        .record = record,
-        .reaction = reaction,
-    };
-    if (first_failure.error != ContactError::kNone) {
-      moved.result = std::unexpected(first_failure);
-    }
-    return moved;
-  }
-};
-
-// The answer of the GPU half: its counts and its first failure.
-struct GpuHalfAnswer {
-  MoveParticleCounts counts;
-  ContactFailure first_failure;
-};
-
-// MoveParticlesOnGpuInLaunchSize run on the CPU: its four GPU functions, each over every thread block and thread in
-// `order`, with plain minima, or and additions where the GPU uses atomics. Fails the calling test when a launch does
-// not visit every particle exactly once.
-GpuHalfAnswer RunGpuHalfOnCpu(const MoveParticlesCall& call, LaunchSize launch_size, ThreadOrder order) {
-  // Step 1: StartReduction.
-  GpuHalfAnswer answer;
-  FirstFailureMinima minima;
-  // Step 2: VisitEveryParticle.
-  std::vector<int> visit_counts(call.particle_count, 0);
-  RunLaunch(launch_size, call.particle_count, order, [&](std::size_t index) {
-    ++visit_counts[index];
-    const ParticleVisit visit = ApplyParticleVisitAt(call, index);
-    if (visit.has_failure) {
-      minima.smallest_failing_id = std::min(minima.smallest_failing_id, visit.particle_id);
-      minima.has_failure |= 1U;
-      return;
-    }
-    answer.counts.hit_count += visit.counts.hit_count;
-    answer.counts.started_inside_count += visit.counts.started_inside_count;
-  });
-  EXPECT_TRUE(std::ranges::all_of(visit_counts, [](int count) {
-    return count == 1;
-  }));
-  // Step 3: FindSmallestFailingIndex.
-  if (minima.has_failure != 0) {
-    const std::uint64_t smallest_failing_id = minima.smallest_failing_id;
-    RunLaunch(launch_size, call.particle_count, order, [&](std::size_t index) {
-      if (ComputeIsFailureWithParticleId(call, index, smallest_failing_id)) {
-        minima.smallest_failing_index = std::min<std::uint64_t>(minima.smallest_failing_index, index);
-      }
-    });
-  }
-  // Step 4: WriteFirstFailure.
-  answer.first_failure = ComputeFirstFailure(call, minima);
-  return answer;
-}
-
-// The launch sizes every range runs in: the GPU half's own, one thread, and two that give each thread several items.
-std::vector<LaunchSize> BuildLaunchSizes(std::size_t particle_count) {
-  return {
-      ComputeLaunchSize(particle_count),
-      {.thread_block_count = 1, .thread_block_size = 1},
-      {.thread_block_count = 3, .thread_block_size = 64},
-      {.thread_block_count = 7, .thread_block_size = 100},
-  };
-}
-
-// The answers of the GPU half run on the CPU over `range` in every launch size of BuildLaunchSizes and both orders,
-// each on fresh outputs.
-std::vector<GpuHalfAnswer> RunGpuHalfInEveryLaunch(const ParticleRange& range) {
-  std::vector<GpuHalfAnswer> answers;
-  for (const LaunchSize launch_size : BuildLaunchSizes(range.size())) {
-    for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
-      CallArrays arrays(range);
-      answers.push_back(RunGpuHalfOnCpu(arrays.ToCall(), launch_size, order));
-    }
-  }
-  return answers;
-}
-
-// Runs `range` through the CPU half's loop (MoveParticles on the CPU) and through the GPU half run on the CPU in every
-// launch size and both orders, and checks they agree bit for bit: the result or the failure, and on success every
-// output. A range whose call check fails never reaches the GPU half and is not compared. Returns how many runs of the
-// GPU half were compared.
-int CheckGpuHalfSameAsCpuLoop(const ParticleRange& range) {
-  const MovedRange cpu_run = ComputeMovedRange(RunOn::kCpu, range, ReactionArray::kGiven);
-  const bool failed_call_check = !cpu_run.result.has_value() && !cpu_run.result.error().has_particle_id;
-  if (failed_call_check) {
-    return 0;
-  }
-  const ComparisonBounds bounds = ComputeComparisonBounds(range);
-  int compared_count = 0;
-  for (const LaunchSize launch_size : BuildLaunchSizes(range.size())) {
-    for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
-      CallArrays arrays(range);
-      const GpuHalfAnswer answer = RunGpuHalfOnCpu(arrays.ToCall(), launch_size, order);
-      const MovedRange gpu_half_run = arrays.ToMovedRange(answer.counts, answer.first_failure);
-      EXPECT_TRUE(CheckSameMove(cpu_run, gpu_half_run, Agreement::kSameBits, bounds))
-          << launch_size.thread_block_count << " thread blocks of " << launch_size.thread_block_size << " threads";
-      ++compared_count;
-    }
-  }
-  return compared_count;
-}
-
-// Whether two failures are the same field by field, the magnitude by its bits.
-bool IsSameFailure(const ContactFailure& first, const ContactFailure& second) {
-  return first.error == second.error && first.close_call == second.close_call
-      && first.has_particle_id == second.has_particle_id && first.can_shorter_step_cure == second.can_shorter_step_cure
-      && first.particle_id == second.particle_id && first.solid_id == second.solid_id
-      && ToBits(first.magnitude) == ToBits(second.magnitude);
-}
-
-// Checks that every answer reports `expected`.
-::testing::AssertionResult
-CheckEveryFailure(const std::vector<GpuHalfAnswer>& answers, const ContactFailure& expected) {
-  for (std::size_t run = 0; run < answers.size(); ++run) {
-    if (!IsSameFailure(answers[run].first_failure, expected)) {
-      return ::testing::AssertionFailure()
-          << "run " << run << " reports particle " << answers[run].first_failure.particle_id << ", magnitude "
-          << answers[run].first_failure.magnitude;
-    }
-  }
-  return ::testing::AssertionSuccess();
-}
-
-// A floor failure of kStartsInsideSolid for particle `particle_id`, `depth` m deep, as the floor range gives.
-ContactFailure BuildFloorFailure(std::uint64_t particle_id, double depth) {
-  return {
-      .error = ContactError::kStartsInsideSolid,
-      .has_particle_id = true,
-      .particle_id = particle_id,
-      .solid_id = 1,
-      .magnitude = depth,
-  };
-}
-
-TEST(ApplyParticleVisitAt, EveryThreadBlockAndThread_SameAsCpuLoop) {
-  // Every catalogue scene as a one-particle call, the 10,000 oblique particles as one call against the solid of their
-  // first case, and the 10,000 round scenes as one call each.
-  int compared_count = 0;
-  std::uint64_t id = 1;
-  for (const MoveParticleCase& test_case : BuildMoveParticleCases()) {
-    SCOPED_TRACE(test_case.name);
-    compared_count += CheckGpuHalfSameAsCpuLoop(BuildOneParticleRange(test_case, id++));
-  }
-  compared_count += CheckGpuHalfSameAsCpuLoop(BuildPackedObliqueRange(10000));
-  for (const MoveParticleCase& test_case : BuildRoundCases(10000)) {
-    compared_count += CheckGpuHalfSameAsCpuLoop(BuildOneParticleRange(test_case, id++));
-  }
-  EXPECT_GT(compared_count, 8 * 10000);
-}
 
 TEST(FirstFailureMinima, TwoFailuresInEveryLaunchAndOrder_ReportLowestParticleId) {
   // 1000 particles over the floor; ids 50 at index 5 and 9 at index 700, in another thread block, start 0.01 m deep.
@@ -274,20 +45,6 @@ TEST(FirstFailureMinima, TwoFailuresInEveryLaunchAndOrder_ReportLowestParticleId
   range.particle_id[700] = 9;
   EXPECT_TRUE(CheckEveryFailure(RunGpuHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
   EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
-}
-
-TEST(FirstFailureMinima, SeveralFailuresAnywhere_ReportLowestIdThenIndex) {
-  // Failing particles at the first and last index and at thread block edges, with ids that put the lowest anywhere.
-  const std::array<std::size_t, 5> failing_indexes = {0, 255, 256, 511, 999};
-  for (const std::size_t lowest_index : failing_indexes) {
-    SCOPED_TRACE(lowest_index);
-    ParticleRange range = BuildFloorRange(1000, failing_indexes);
-    for (const std::size_t failing_index : failing_indexes) {
-      range.particle_id[failing_index] = 100 + failing_index;
-    }
-    range.particle_id[lowest_index] = 3;
-    EXPECT_TRUE(CheckEveryFailure(RunGpuHalfInEveryLaunch(range), BuildFloorFailure(3, 0.01)));
-  }
 }
 
 TEST(FirstFailureMinima, EqualIdsFailing_ReportsLowerIndex) {
@@ -340,11 +97,13 @@ TEST(BuildContactStackEstimate, Cpu_CountsNothingOutsideTheBlock) {
 }
 
 #if !defined(FLUIDITY_HAS_GPU)
+
 TEST(BuildContactStackEstimate, GpuInBuildWithoutGpuCode_IsRunOnCallFailed) {
   const std::expected<MemoryEstimateEntry, ContactFailure> entry = BuildContactStackEstimate(RunOn::kGpu);
   ASSERT_FALSE(entry.has_value());
   EXPECT_EQ(entry.error().error, ContactError::kRunOnCallFailed);
 }
+
 #endif
 
 TEST(ComputeFirstFailure, StartMinima_IsNoFailure) {
@@ -382,26 +141,6 @@ TEST(ComputeParticleCounts, SummedOverThreads_EqualsCpuCounts) {
   });
   EXPECT_TRUE(is_one_and_one_every_time);
   EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
-}
-
-TEST(ComputeLaunchSize, GridStride_VisitsEveryParticleOnce) {
-  // Around one thread block, and above the most thread blocks, where each thread takes two items.
-  for (const std::size_t count : {
-           std::size_t{1},
-           std::size_t{255},
-           std::size_t{256},
-           std::size_t{257},
-           std::size_t{1000000},
-           (std::size_t{kMaxThreadBlockCount} * kThreadBlockSize) + 1,
-       }) {
-    std::vector<std::uint8_t> visit_counts(count, 0);
-    RunLaunch(ComputeLaunchSize(count), count, ThreadOrder::kLaunchOrder, [&visit_counts](std::size_t item) {
-      ++visit_counts[item];
-    });
-    EXPECT_TRUE(std::ranges::all_of(visit_counts, [](std::uint8_t visits) {
-      return visits == 1;
-    })) << count;
-  }
 }
 
 // One CPU run of the oblique particles packed against the solid of their first case, which hit and miss.

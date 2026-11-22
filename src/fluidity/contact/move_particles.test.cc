@@ -12,7 +12,6 @@
 #include <expected>
 #include <limits>
 #include <numbers>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,157 +34,17 @@
 #include "fluidity/contact/solid_contact_types.h"
 #include "fluidity/contact/solid_shapes.h"
 #include "fluidity/contact/testing/contact_cases.h"
+#include "fluidity/contact/testing/move_particles_cases.h"
 
 namespace fluidity::contact {
 namespace {
-
-constexpr double kTolerance = kTestContactTolerance;  // m, 2^-30.
 constexpr SolidMotion kNoMotion = move_particle_cases::kNoMotion;
+
 constexpr Vec3 kUnitX = move_particle_cases::kUnitX;
+
 constexpr Vec3 kUnitZ = move_particle_cases::kUnitZ;
+
 constexpr MemoryCounts kNoCounts = MemoryCounts();  // The contact estimate counts by given counts only.
-
-// A RunMemory of exactly the contact estimate and the CPU contact buffers built from it. The block is declared first,
-// so it is destroyed after its pieces.
-class CpuContactBuffers {
- public:
-  CpuContactBuffers(std::size_t max_particle_count, std::size_t max_solid_count) {
-    const std::vector<MemoryEstimateEntry> estimate = BuildContactMemoryEstimate(max_particle_count, max_solid_count);
-    const MemoryCounts no_counts;
-    const std::uint64_t bytes = ComputeRunMemoryBytes(estimate, no_counts, MemoryWhere::kRunOn);
-    std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, bytes);
-    EXPECT_TRUE(run_memory.has_value());
-    if (!run_memory.has_value()) {
-      return;
-    }
-    RunMemory& block = run_memory_.emplace(std::move(*run_memory));
-    std::expected<ContactBuffers, ContactFailure> buffers =
-        BuildContactBuffers(RunOn::kCpu, max_particle_count, max_solid_count, block);
-    EXPECT_TRUE(buffers.has_value());
-    if (buffers.has_value()) {
-      buffers_.emplace(std::move(*buffers));
-    }
-  }
-  CpuContactBuffers(const CpuContactBuffers&) = delete;
-  CpuContactBuffers& operator=(const CpuContactBuffers&) = delete;
-  CpuContactBuffers(CpuContactBuffers&&) = delete;
-  CpuContactBuffers& operator=(CpuContactBuffers&&) = delete;
-  ~CpuContactBuffers() = default;
-
-  // The buffers; a test whose buffers could not be built has already failed, and stops here.
-  ContactBuffers& buffers() {
-    if (!buffers_.has_value()) {
-      std::abort();
-    }
-    return *buffers_;
-  }
-
- private:
-  std::optional<RunMemory> run_memory_;
-  std::optional<ContactBuffers> buffers_;
-};
-
-// The particle arrays of one MoveParticles call on the CPU, with its outputs, filled one particle at a time.
-struct ParticleArrays {
-  std::vector<std::uint64_t> particle_id;
-  std::vector<Vec3> start_position;
-  std::vector<Vec3> velocity_for_next_step_before;
-  std::vector<Vec3> velocity_for_this_step;
-  std::vector<double> friction;
-  std::vector<PlateSide> plate_side;
-  std::vector<Solid> solids;
-  double step_duration = 0;
-  double start_overlap_tolerance = 0;
-  double contact_tolerance = 0;
-  std::vector<Vec3> position;
-  std::vector<Vec3> velocity_for_next_step;
-  std::vector<ParticleContact> record;
-  std::vector<SolidReaction> reaction;
-
-  // Adds one particle with the particle values of `inputs`; the call's scalars are those of the first particle.
-  void AddParticle(const SolidContactInputs& inputs, std::uint64_t id) {
-    if (particle_id.empty()) {
-      step_duration = inputs.step_duration;
-      start_overlap_tolerance = inputs.start_overlap_tolerance;
-      contact_tolerance = inputs.contact_tolerance;
-    }
-    particle_id.push_back(id);
-    start_position.push_back(inputs.start_position);
-    velocity_for_next_step_before.push_back(inputs.velocity.for_next_step);
-    velocity_for_this_step.push_back(inputs.velocity.for_this_step);
-    friction.push_back(inputs.friction);
-    plate_side.push_back(inputs.plate_side);
-    position.emplace_back();
-    velocity_for_next_step.emplace_back();
-    record.emplace_back();
-    reaction.emplace_back();
-  }
-
-  [[nodiscard]] MoveParticlesInputs ToInputs() const {
-    return {
-        .particle_count = particle_id.size(),
-        .particle_id = particle_id.data(),
-        .start_position = start_position.data(),
-        .velocity =
-            {.for_next_step = velocity_for_next_step_before.data(), .for_this_step = velocity_for_this_step.data()},
-        .friction = friction.data(),
-        .plate_side = plate_side.data(),
-        .solids = solids,
-        .step_duration = step_duration,
-        .start_overlap_tolerance = start_overlap_tolerance,
-        .contact_tolerance = contact_tolerance,
-    };
-  }
-
-  MovedParticles ToMoved() {
-    return {
-        .position = position.data(),
-        .velocity_for_next_step = velocity_for_next_step.data(),
-        .record = record.data(),
-        .reaction = reaction.data(),
-    };
-  }
-
-  // The call the CPU half builds from these arrays, for running the per-particle functions directly.
-  MoveParticlesCall ToCall() {
-    return {
-        .particle_count = particle_id.size(),
-        .particle_id = particle_id.data(),
-        .start_position = start_position.data(),
-        .velocity =
-            {.for_next_step = velocity_for_next_step_before.data(), .for_this_step = velocity_for_this_step.data()},
-        .friction = friction.data(),
-        .plate_side = plate_side.data(),
-        .solids = solids.data(),
-        .position = position.data(),
-        .velocity_for_next_step = velocity_for_next_step.data(),
-        .record = record.data(),
-        .reaction = reaction.data(),
-        .step_duration = step_duration,
-        .start_overlap_tolerance = start_overlap_tolerance,
-        .contact_tolerance = contact_tolerance,
-        .solid_count = static_cast<std::uint32_t>(solids.size()),
-    };
-  }
-
-  // The inputs of MoveParticle for particle `index`, pointing at `solids`.
-  [[nodiscard]] SolidContactInputs ToSolidContactInputs(std::size_t index) const {
-    SolidContactInputs inputs;
-    inputs.start_position = start_position[index];
-    inputs.velocity = {
-        .for_next_step = velocity_for_next_step_before[index],
-        .for_this_step = velocity_for_this_step[index],
-    };
-    inputs.solids = solids.empty() ? nullptr : solids.data();
-    inputs.solid_count = static_cast<std::uint32_t>(solids.size());
-    inputs.step_duration = step_duration;
-    inputs.friction = friction[index];
-    inputs.start_overlap_tolerance = start_overlap_tolerance;
-    inputs.contact_tolerance = contact_tolerance;
-    inputs.plate_side = plate_side[index];
-    return inputs;
-  }
-};
 
 // The bytes of every output array, to compare a call's outputs before and after.
 std::vector<std::byte> CopyOutputBytes(const ParticleArrays& arrays) {
@@ -296,36 +155,6 @@ std::vector<std::uint64_t> ToOutputBits(const ParticleArrays& arrays) {
     bits.insert(bits.end(), record_bits.begin(), record_bits.end());
   }
   return bits;
-}
-
-// One particle above the fixed floor z <= 0 (solid id 1), contact tolerance 2^-30 m, a step of 0.1 s.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a start and a velocity, as SolidContactInputs orders them.
-SolidContactInputs BuildFloorParticle(Vec3 start_position, Vec3 velocity) {
-  SolidContactInputs inputs;
-  inputs.start_position = start_position;
-  inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
-  inputs.step_duration = 0.1;
-  inputs.friction = 0.5;
-  inputs.contact_tolerance = kTolerance;
-  return inputs;
-}
-
-// `count` particles above the fixed floor (id 1), each falling or moving on, ids 1000 + index; those at
-// `failing_indexes` start 0.01 m deep in the floor, with start_overlap_tolerance 0, and fail.
-ParticleArrays BuildFloorParticles(std::size_t count, std::span<const std::size_t> failing_indexes) {
-  ParticleArrays arrays;
-  arrays.solids = {move_particle_cases::BuildFloor(1)};
-  for (std::size_t index = 0; index < count; ++index) {
-    const double share = static_cast<double>(index % 97) / 97.0;
-    Vec3 start = {.x = share, .y = 0.5 - share, .z = 0.02 + (0.1 * share)};
-    for (const std::size_t failing_index : failing_indexes) {
-      if (index == failing_index) {
-        start.z = -0.01;
-      }
-    }
-    arrays.AddParticle(BuildFloorParticle(start, {.x = 1, .y = 0, .z = -1 + share}), 1000 + index);
-  }
-  return arrays;
 }
 
 // Checks the failure of a call against MoveParticle's: the same error, close call, whether a shorter step can cure it,
@@ -593,80 +422,6 @@ TEST(MoveParticles, EqualIdsFailing_ReportsLowerIndex) {
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().particle_id, 9U);
   EXPECT_EQ(result.error().magnitude, 0.01);
-}
-
-// One thread's view of the failures: whether any particle it visited failed, the first of them in the order of
-// ComputeIsEarlierFailure, and its index.
-struct ThreadFailure {
-  bool has_failure = false;
-  ContactFailure failure;
-  std::size_t index = 0;
-};
-
-// Keeps `candidate` in `kept` when it comes first in the order of ComputeIsEarlierFailure.
-void ApplyEarlierFailure(const ThreadFailure& candidate, ThreadFailure* kept) {
-  const bool is_earlier = candidate.has_failure
-      && (!kept->has_failure
-          || ComputeIsEarlierFailure(
-              candidate.failure.particle_id,
-              candidate.index,
-              kept->failure.particle_id,
-              kept->index
-          ));
-  if (is_earlier) {
-    *kept = candidate;
-  }
-}
-
-// The failure a loop over `call` reports when `thread_count` threads share the particles grid-stride, as GPU threads
-// do: each thread visits index thread, thread + thread_count, ... and keeps its first failure; the threads are then
-// merged last to first, the order least like the CPU loop's.
-ContactFailure FindFailureOfThreads(const MoveParticlesCall& call, std::size_t thread_count) {
-  std::vector<ThreadFailure> thread_failures(thread_count);
-  for (std::size_t thread = 0; thread < thread_count; ++thread) {
-    for (std::size_t index = thread; index < call.particle_count; index += thread_count) {
-      SolidContactResult particle_result;
-      ThreadFailure candidate;
-      candidate.index = index;
-      candidate.has_failure =
-          ComputeParticleMoveAt(call, index, &particle_result, &candidate.failure) != ContactError::kNone;
-      ApplyEarlierFailure(candidate, &thread_failures[thread]);
-    }
-  }
-  ThreadFailure reported;
-  for (std::size_t thread = thread_count; thread-- > 0;) {
-    ApplyEarlierFailure(thread_failures[thread], &reported);
-  }
-  return reported.failure;
-}
-
-TEST(MoveParticles, FailingParticleAnywhere_SameReportInEveryThreadCountAndRun) {
-  // 1000 particles over the floor, one failing at each of several indexes in turn, with a second failure of a higher
-  // id. MoveParticles twice, then the per-particle functions as any number of threads would share them: the same
-  // failure every time.
-  constexpr std::size_t kCount = 1000;
-  for (const std::size_t failing_index :
-       {std::size_t{0}, std::size_t{1}, std::size_t{499}, std::size_t{998}, std::size_t{999}}) {
-    SCOPED_TRACE(failing_index);
-    const std::array<std::size_t, 2> failing_indexes = {failing_index, 500};
-    ParticleArrays arrays = BuildFloorParticles(kCount, failing_indexes);
-    arrays.particle_id[failing_index] = 7;
-    arrays.particle_id[500] = 8;
-    CpuContactBuffers buffers(kCount, 1);
-    std::vector<ContactFailure> reported;
-    for (int run = 0; run < 2; ++run) {
-      const MovedParticles moved = arrays.ToMoved();
-      reported.push_back(MoveParticles(arrays.ToInputs(), moved, buffers.buffers()).error_or(ContactFailure{}));
-    }
-    for (const std::size_t thread_count :
-         {std::size_t{1}, std::size_t{2}, std::size_t{3}, std::size_t{8}, std::size_t{256}, std::size_t{1024}}) {
-      reported.push_back(FindFailureOfThreads(arrays.ToCall(), thread_count));
-    }
-    const bool is_particle_seven_every_time = std::ranges::all_of(reported, [](const ContactFailure& failure) {
-      return failure.error == ContactError::kStartsInsideSolid && failure.particle_id == 7;
-    });
-    EXPECT_TRUE(is_particle_seven_every_time);
-  }
 }
 
 // The bytes of every input array, to show a call reads them and writes nothing there.
@@ -1154,6 +909,7 @@ TEST(MoveParticles, ScalarOutOfRange_IsBadInput) {
 }
 
 #if !defined(FLUIDITY_HAS_GPU)
+
 TEST(BuildContactBuffers, GpuInBuildWithoutGpuCode_IsRunOnCallFailed) {
   std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 4096);
   ASSERT_TRUE(run_memory.has_value());
@@ -1163,6 +919,7 @@ TEST(BuildContactBuffers, GpuInBuildWithoutGpuCode_IsRunOnCallFailed) {
   EXPECT_FALSE(buffers.error().can_shorter_step_cure);
   EXPECT_EQ(run_memory->handed_out_bytes(), 0U);
 }
+
 #endif
 
 TEST(BuildContactMemoryEstimate, ThousandParticlesFourSolids_MatchesBufferSizes) {

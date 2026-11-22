@@ -9,8 +9,6 @@
 // one digest of the used part of each table. This program lists the allocation counter, so a test can show that a
 // build on the GPU allocates nothing on the CPU.
 
-#include "fluidity/grid/staggered_grid.h"
-
 #include <gtest/gtest.h>
 
 #include <array>
@@ -37,6 +35,7 @@
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_memory_estimate.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/staggered_grid_gpu.h"
 #include "fluidity/grid/testing/allocation_counter.h"
 #include "fluidity/grid/testing/grid_support.h"

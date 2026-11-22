@@ -303,6 +303,27 @@ The Python tests under `tools/` keep `<name>_test.py`, which is what pytest find
 module (`base`, `grid`, `contact`) is the folder of the `CMakeLists.txt`, so a test in `testing/` carries it too.
 The name of a CMake target does not have to follow the file name.
 
+**Unit tests and functional tests.** Two kinds of test, in two places.
+
+- A **unit test** checks one function on input written by hand in the test, and takes at most 50 ms in the debug
+  build. It lives beside its header: `src/fluidity/<module>/<header>.test.cc`. Its CTest label is `unit`.
+- A **functional test** runs several steps together or works on generated input: it builds a whole grid, loops over
+  random grids, compares the CPU against the thread or GPU form over many cases, or runs a scene. It lives in
+  `tests/<module>/<what it exercises>.test.cc`, one folder per module, each with its own `CMakeLists.txt`. Its CTest
+  label is `functional`. The name of a functional test says what it exercises (`grid_tables_on_random_grids`), and it
+  need not start with the stem of a header.
+- `e2e/` is for runs through the public entry of the program. It holds only a `README.md` that says so for now.
+
+A test file that holds both kinds is split: the unit tests stay where they are, the functional tests move to
+`tests/<module>/`, and a helper that both parts call goes to `src/fluidity/<module>/testing/<name>_cases.h`, written
+once. `fluidity_add_test` takes `TIER unit|functional` (unit when it is left out), and gives each test three labels: its
+backend (`cpu`, `gpu`, `no_gpu`), its module and its tier. The module label of a test in `tests/<module>/` is
+`<module>`. The tools that cover the test files under `src/` (format, rules, tidy, the compiled-everything check of the
+cuda step) cover `tests/` in the same way; a test in `tests/<module>/` may include the private GPU headers of
+`fluidity/<module>/`. In the debug run of the gate, a `unit` test that takes more than 200 ms fails the step (the
+rule is 50 ms for a test run alone, and 200 ms allows for one test per core at once); the gate prints a `NOTE` for each
+one between 50 and 200 ms.
+
 **The two halves of an operation.** The public function lives in `<name>_cpu.cc`: it checks its inputs, chooses the half
 by `RunOn`, runs the CPU loop itself, and calls the GPU half under `#if defined(FLUIDITY_HAS_GPU)`. `Buffer` is laid out
 differently: its public functions are templates in `base/buffer.h` that call the byte functions of
@@ -463,10 +484,12 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   from the repository root, `uv run python tools/check_commit.py`, then commit. Add `--only <step>` to run one
   step: `format`, `rules`, `cpu`, `tidy`, `paper` or `cuda`. It prints one line per check, in this order.
   `--speed quick|commit|full` chooses how much runs:
-  - `quick`, while working: format; rules; the debug preset built; the debug tests of the modules that changed;
+  - `quick`, while working: format; rules; the debug preset built; the debug unit tests of the modules that changed;
     tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
-    untracked. A change under `src/fluidity/<module>/` selects that module; a change elsewhere under `src/` or
-    `cmake/`, or to a top-level build file, selects every module; a change to docs or tools selects none. The gate
+    untracked. A change under `src/fluidity/<module>/` selects that module's unit tests; a change under
+    `tests/<module>/` selects the module too and also runs its functional tests (`NOTE functional tests: <names>`); a
+    change elsewhere under `src/` or `tests/` or under `cmake/`, or to a top-level build file, selects the unit tests
+    of every module; a change to docs or tools selects none. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
     paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule: a quick run
     whose checks all passed exits with code 3, never 0, and prints `QUICK ONLY: not the commit gate` as its last
@@ -485,20 +508,22 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     tracked C++ or CUDA file. Another version fails the step and names both versions.
   - `rules note: <path>:<line>: NOTE <rule> <text>`: a word banned in one sense only, on a line the staged changes
     add. Read it and keep the word only in its allowed sense; a note never fails the gate.
-  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `src/`, the pytest suite of `tools/` passes, and
+  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `src/` and `tests/`, the pytest suite of `tools/` passes, and
     `actionlint` accepts the files of `.github/workflows/`.
   - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (every
     run, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
-    platform.
+    platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms
+    (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`), and prints `NOTE unit test over 50 ms:
+    <name> (<ms> ms)` for each one between 50 and 200 ms.
   - `PASS tidy`: the clang-tidy on `PATH` is the pinned version, and it reports nothing, with the debug preset's
-    compile commands, on every tracked `.cc` file under `src/` that the CPU build compiles, and on each header
+    compile commands, on every tracked `.cc` file under `src/` and `tests/` that the CPU build compiles, and on each header
     compiled alone (`header_check/`). A `.cc` file that only the CUDA build compiles, such as a GPU-only test, is
     tidied by the `cuda` step. `tools/run_tidy.py` runs one clang-tidy per file, one per core at once, and prints
     the failures sorted by path. A file that passed is not checked again while nothing it depends on has changed
     (its text, the headers it includes, its compile command, the `.clang-tidy` files, the clang-tidy version); the
     cache is `out/tidy-cache/`, and `--no-cache` ignores it and stores nothing.
-  - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `src/`,
+  - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `src/` and `tests/`,
     including its continuation lines, is defined in the paper. A label starts with its kind: `<sec-...>`,
     `<fig-...>`, `<proc-...>`, `<eq-...>` or `<tab-...>` (`:` may replace `-`); other text in angle brackets, such as
     `<first author>`, is not a label.
@@ -506,7 +531,7 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     `linux-release-cuda` compiled and linked, every `.cu` file and the `gpu` tests included; clang-tidy reported
     nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`); the tests
     labelled `cpu` and `no_gpu` passed (`ctest -L '^(cpu|no_gpu)$'`); every tracked `.cc` and `.cu` file under
-    `src/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `src/` is compiled
+    `src/` and `tests/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `src/` is compiled
     alone there, through its header-alone file (`header_check/`), except a test header (a header directly in
     `src/fluidity/<module>/testing/`), which the test programs that include it compile (`FAIL cuda: not compiled by the CUDA build: <paths>`
     otherwise).
@@ -535,6 +560,10 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   runs the grid tests alone, and `ctest --preset macos-debug-cpu -L '^cpu$' -L grid` the grid tests labelled `cpu`.
   The gate runs ctest with one job per core (`--parallel <cores>`); run it the same way by hand, with
   `--parallel <cores>`. A preset cannot say "all cores" in a form every CMake version accepts.
+- Run the unit tests or the functional tests: every test also carries its tier, so `ctest --preset macos-debug-cpu -L unit`
+  runs the unit tests of every module, `-L functional` the functional tests, and `-LE functional` everything but the
+  functional tests. `-L grid` runs both tiers of one module. Two `-L` options are joined by "and":
+  `ctest --preset macos-debug-cpu -L grid -L unit` runs the grid tests that are also unit tests.
 - Test labels: `cpu` tests run everywhere, `no_gpu` tests run only in the CUDA container (a machine without a GPU,
   because they assert that no GPU is usable), and `gpu` tests run only on hardware.
 - GPU run for the owner, on Windows with an NVIDIA GPU, in PowerShell 7, from the repository root:

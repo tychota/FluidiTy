@@ -76,6 +76,8 @@ endif()
 add_subdirectory(src/fluidity/base)
 add_subdirectory(src/fluidity/contact)
 add_subdirectory(src/fluidity/grid)
+# Functional tests, after the modules: they link the test libraries that the modules build.
+add_subdirectory(tests)
 
 # Last: every target now exists, so the check sees them all.
 fluidity_check_compile_flags()

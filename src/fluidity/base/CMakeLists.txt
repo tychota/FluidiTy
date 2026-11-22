@@ -58,13 +58,7 @@ fluidity_add_test(stable_order_test SOURCES stable_order.test.cc LABEL cpu LINKS
 fluidity_add_test(stable_order_steps_test SOURCES stable_order_steps.test.cc LABEL cpu
                   LINKS fluidity_base_testing)
 fluidity_add_test(check_can_run_on_gpu_test SOURCES check_can_run_on.gpu.test.cc LABEL gpu)
-fluidity_add_test(shared_math_gpu_test SOURCES scalar_math.shared.gpu.test.cc testing/shared_math_runner_gpu.cu LABEL gpu
-                  LINKS fluidity_base_testing)
 fluidity_add_test(buffer_gpu_test SOURCES buffer.gpu.test.cc LABEL gpu LINKS fluidity_base_testing)
-fluidity_add_test(ordered_sums_gpu_test SOURCES ordered_sums.gpu.test.cc LABEL gpu
-                  LINKS fluidity_base_testing)
-fluidity_add_test(stable_order_gpu_test SOURCES stable_order.gpu.test.cc LABEL gpu
-                  LINKS fluidity_base_testing)
 fluidity_add_test(processor_description_gpu_test SOURCES processor_description.gpu.test.cc LABEL gpu)
 fluidity_add_test(run_memory_gpu_test SOURCES run_memory.gpu.test.cc LABEL gpu LINKS fluidity_base_testing)
 fluidity_add_test(check_can_run_on_no_gpu_test SOURCES check_can_run_on.no_gpu.test.cc LABEL no_gpu)

@@ -45,44 +45,11 @@ endif()
 
 fluidity_add_test(cell_size_factor_test SOURCES cell_size_rule.factor.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(cell_size_rule_test SOURCES cell_size_rule.test.cc LABEL cpu LINKS fluidity_grid_testing)
-fluidity_add_test(
-  cell_size_rule_gpu_test
-  SOURCES
-  cell_size_rule.gpu.test.cc
-  testing/cell_size_rule_runner_gpu.cu
-  LABEL
-  gpu
-  LINKS
-  fluidity_base_testing
-  fluidity_grid_testing
-)
 fluidity_add_test(corners_test SOURCES cell_corners.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(find_cell_at_test SOURCES find_cell_at.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_buffers_test SOURCES staggered_grid.buffers.test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_cell_checks_test SOURCES grid_cell_checks.test.cc LABEL cpu LINKS fluidity_grid_testing)
-fluidity_add_test(
-  grid_cell_checks_gpu_test
-  SOURCES
-  grid_cell_checks.gpu.test.cc
-  LABEL
-  gpu
-  LINKS
-  fluidity_base_testing
-  fluidity_grid_testing
-)
-# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
-fluidity_add_test(
-  staggered_grid_gpu_test
-  SOURCES
-  staggered_grid.gpu.test.cc
-  testing/allocation_counter.cc
-  LABEL
-  gpu
-  LINKS
-  fluidity_base_testing
-  fluidity_grid_testing
-)
 fluidity_add_test(grid_cell_count_test SOURCES staggered_grid.cell_count.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_buffers_no_gpu_test SOURCES staggered_grid.buffers.no_gpu.test.cc LABEL no_gpu)
 fluidity_add_test(grid_error_test SOURCES grid_error.test.cc LABEL cpu)

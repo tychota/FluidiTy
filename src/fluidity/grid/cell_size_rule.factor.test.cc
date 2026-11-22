@@ -13,6 +13,7 @@
 #include "fluidity/base/scalar_math.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/testing/cell_size_rule_cases.h"
+#include "fluidity/grid/testing/cell_size_rule_factor_cases.h"
 #include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
@@ -40,42 +41,46 @@ constexpr bool ComputeEveryFourthFactorDoubles() {
 }
 
 static_assert(kCellSizeFactorStepsPerDoubling == 4);
+
 static_assert(kMaxCellSizeFactorCode == 24);
+
 static_assert(sizeof(kTable.factor) == 49 * sizeof(double));
+
 static_assert(kTable.factor[24] == 1.0);
+
 static_assert(kTable.factor[28] == 2.0);
+
 static_assert(kTable.factor[20] == 0.5);
+
 static_assert(kTable.factor[0] == 0x1p-6);
+
 static_assert(kTable.factor[48] == 64.0);
+
 static_assert(kTable.factor[25] == 0x1.306fe0a31b715p+0);
+
 // NOLINTNEXTLINE(modernize-use-std-numbers): the literal is the specification.
 static_assert(kTable.factor[26] == 0x1.6a09e667f3bcdp+0);
+
 static_assert(kTable.factor[27] == 0x1.ae89f995ad3adp+0);
+
 static_assert(kTable.factor[1] == 0x1.306fe0a31b715p-6);
+
 static_assert(kTable.factor[47] == 0x1.ae89f995ad3adp+5);
+
 static_assert(ComputeEveryFourthFactorDoubles());
+
 static_assert(ComputeIsStrictlyIncreasing());
 
-// The fixture of testing/cell_size_rule_cases.h, which the GPU test shares.
-constexpr SizeLevel kSmallestSizeLevel = kFactorFixtureSmallestSizeLevel;
 constexpr int kFixtureCountX = kFactorFixtureCountX;
+
 constexpr int kFixtureCountY = kFactorFixtureCountY;
+
 constexpr int kFixtureCountZ = kFactorFixtureCountZ;
+
 constexpr int kFixtureSpacing = kFactorFixtureSpacing;
 
 TestRefinementVolume BuildFixtureVolume(int layer_count) {
   return BuildFactorFixtureVolume(layer_count);
-}
-
-CellId ToTestCell(int size_level, int x, int y, int z) {
-  return ToCellId(static_cast<SizeLevel>(size_level), {.x = x, .y = y, .z = z});
-}
-
-// The factor code of the cell of `size_level` at (x, y, z), with the fixture's smallest size level.
-// clang-tidy: a size level and three coordinates; the swappable-parameters check flags the integers.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-int ComputeFixtureCode(const RefinementFactors& factors, int size_level, int x, int y, int z) {
-  return ComputeCellSizeFactorCode(factors, kSmallestSizeLevel, ToTestCell(size_level, x, y, z));
 }
 
 TEST(ComputeCellSizeFactorTable, QuarterDoublings_AreExact) {
@@ -216,52 +221,6 @@ TEST(ComputeCellSizeFactorCode, CountOutsideOneToTwoToTheTwenty_IsZeroOnEveryAxi
     RefinementFactors bad_z = volume.factors;
     bad_z.count_z = bad_count;
     EXPECT_EQ(ComputeProbeCode(bad_z), 0) << "z " << bad_count;
-  }
-}
-
-// A volume of `count` entries on `axis` (0 for x, 1 for y, 2 for z) and 1 on the others, spacing 0, 3 layers, layer 0
-// holding `code` at every entry except those of `coded_entries`, which hold -7.
-// clang-tidy: three integers of different meaning; the swappable-parameters check flags them.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-TestRefinementVolume BuildLongVolume(int axis, int count, std::int8_t code, const std::vector<int>& coded_entries) {
-  std::vector<std::int8_t> codes(static_cast<std::size_t>(count), code);
-  for (const int coded_entry : coded_entries) {
-    codes[static_cast<std::size_t>(coded_entry)] = -7;
-  }
-  return BuildTestRefinementFactors(axis == 0 ? count : 1, axis == 1 ? count : 1, axis == 2 ? count : 1, 0, 3, codes);
-}
-
-// The code of the size-level-`size_level` cell at coordinate `coord` on `axis` and 0 on the others, in `volume`.
-// clang-tidy: three integers of different meaning; the swappable-parameters check flags them.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-int ComputeLongVolumeCode(const TestRefinementVolume& volume, int axis, int size_level, int coord) {
-  const int x = axis == 0 ? coord : 0;
-  const int y = axis == 1 ? coord : 0;
-  const int z = axis == 2 ? coord : 0;
-  return ComputeFixtureCode(volume.factors, size_level, x, y, z);
-}
-
-// The next two tests: 2^20 entries on one axis, each array as long as its counts say, codes 0 except -7 at entries
-// kMaxCoord = 2^18 - 1 and 2^20 - 1, with smallest size level 4 and spacing 0. A cell coordinate is at most kMaxCoord.
-constexpr int kLongCount = 1'048'576;
-
-TEST(ComputeCellSizeFactorCode, CountOfTwoToTheTwenty_ReadsLayerZeroAtTheLargestCoordinate) {
-  // A size-level-4 cell reads layer 0 at its coordinate: entry kMaxCoord, and the entry before it holds 0.
-  for (int axis = 0; axis < 3; ++axis) {
-    const TestRefinementVolume volume = BuildLongVolume(axis, kLongCount, 0, {kMaxCoord, kLongCount - 1});
-    EXPECT_EQ(ComputeLongVolumeCode(volume, axis, 4, kMaxCoord), -7) << axis;
-    EXPECT_EQ(ComputeLongVolumeCode(volume, axis, 4, kMaxCoord - 1), 0) << axis;
-  }
-}
-
-TEST(ComputeCellSizeFactorCode, CountOfTwoToTheTwenty_ReadsItsLastEntry) {
-  // A size-level-2 cell is 4 smallest cells wide and reads layer 2 at index kMaxCoord: the smallest code over layer-0
-  // entries 4 * kMaxCoord = 2^20 - 4 up to 2^20 - 1, so the last entry is reached this way. The cell before it covers
-  // entries 2^20 - 8 up to 2^20 - 5, which hold 0.
-  for (int axis = 0; axis < 3; ++axis) {
-    const TestRefinementVolume volume = BuildLongVolume(axis, kLongCount, 0, {kMaxCoord, kLongCount - 1});
-    EXPECT_EQ(ComputeLongVolumeCode(volume, axis, 2, kMaxCoord), -7) << axis;
-    EXPECT_EQ(ComputeLongVolumeCode(volume, axis, 2, kMaxCoord - 1), 0) << axis;
   }
 }
 

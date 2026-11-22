@@ -53,6 +53,7 @@ class FakeRun:
         rules_output="",
         changed=(),
         untracked=(),
+        test_times=(("Fast.Unit", "base;cpu;unit", 0.01),),
     ):
         self.commands = []
         self._failing = failing or (lambda command: False)
@@ -70,6 +71,16 @@ class FakeRun:
         self._rules_output = rules_output
         self._changed = list(changed)
         self._untracked = list(untracked)
+        # What ctest writes to the JUnit file: (test name, `;`-joined labels, seconds) for each test it ran.
+        self._test_times = list(test_times)
+
+    def junit_text(self):
+        cases = "".join(
+            f'<testcase name="{name}" classname="{name}" time="{seconds}" status="run"><properties>'
+            f'<property name="cmake_labels" value="{labels}"/></properties></testcase>'
+            for name, labels, seconds in self._test_times
+        )
+        return f'<?xml version="1.0"?><testsuite name="(empty)" tests="{len(self._test_times)}">{cases}</testsuite>'
 
     def __call__(self, command, **kwargs):
         self.commands.append(list(command))
@@ -90,6 +101,8 @@ class FakeRun:
             output = VERSION_TEXT[Path(command[0]).name].format(self._versions[Path(command[0]).name])
         if command[:2] == ["docker", "run"]:
             output = "".join(f"compiled: {path}\n" for path in self._compiled)
+        if command[0] == "ctest" and "--output-junit" in command:
+            Path(command[command.index("--output-junit") + 1]).write_text(self.junit_text(), encoding="utf-8")
         if any(Path(part).name == "check_rules.py" for part in command):
             output = self._rules_output
         return_code = 1 if self._failing(command) else 0
@@ -468,11 +481,19 @@ def test_label_inside_paper_comment_is_not_a_definition(monkeypatch, capsys, rep
     assert lines == ["FAIL paper: src/fluidity/b.h:3 cites <sec-commented>, which the paper does not define"]
 
 
+def without_junit(command):
+    """`command` without the `--output-junit <file>` pair that the debug run adds."""
+    if "--output-junit" not in command:
+        return list(command)
+    index = command.index("--output-junit")
+    return list(command[:index]) + list(command[index + 2 :])
+
+
 def test_cpu_step_runs_ctest_with_one_job_per_core(monkeypatch, capsys, repo):
     monkeypatch.setattr(check_commit.os, "cpu_count", lambda: 7)
     fake = FakeRun()
     run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
-    ctest_runs = [command for command in fake.commands if command[0] == "ctest"]
+    ctest_runs = [without_junit(command) for command in fake.commands if command[0] == "ctest"]
     assert ctest_runs == [
         ["ctest", "--preset", DEBUG_PRESET, "--parallel", "7"],
         ["ctest", "--preset", RELEASE_PRESET, "--parallel", "7"],
@@ -483,7 +504,7 @@ def test_cpu_step_runs_ctest_with_one_job_when_the_core_count_is_unknown(monkeyp
     monkeypatch.setattr(check_commit.os, "cpu_count", lambda: None)
     fake = FakeRun()
     run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
-    assert ["ctest", "--preset", DEBUG_PRESET, "--parallel", "1"] in fake.commands
+    assert ["ctest", "--preset", DEBUG_PRESET, "--parallel", "1"] in [without_junit(c) for c in fake.commands]
 
 
 def test_container_runs_its_tests_on_every_core(monkeypatch, capsys, repo):
@@ -551,6 +572,10 @@ def ctest_commands(fake, preset=DEBUG_PRESET):
         (["pyproject.toml"], None),
         (["uv.lock"], None),
         (["docs/CMakeLists.txt"], frozenset()),
+        (["tests/grid/build_grid.test.cc"], frozenset({"grid"})),
+        (["tests/grid/CMakeLists.txt", "src/fluidity/base/a.h"], frozenset({"grid", "base"})),
+        (["tests/CMakeLists.txt"], None),
+        (["tests/README.md"], None),
     ],
 )
 def test_modules_of_changes(changed, expected):
@@ -595,6 +620,7 @@ def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_lef
     ]
     (debug_ctest,) = ctest_commands(fake)
     assert debug_ctest[debug_ctest.index("-L") + 1] == "^(contact|grid)$"
+    assert "^unit$" in debug_ctest and "^functional$" not in debug_ctest
     assert ctest_commands(fake, RELEASE_PRESET) == []
     assert not any(command[:2] == ["docker", "build"] or command[0] == "typst" for command in fake.commands)
     assert ["cmake", "--build", "--preset", DEBUG_PRESET] in fake.commands
@@ -606,7 +632,8 @@ def test_quick_runs_every_module_for_a_change_outside_a_module_folder(monkeypatc
     _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
     assert "NOTE modules: all" in lines
     (debug_ctest,) = ctest_commands(fake)
-    assert "-L" not in debug_ctest
+    assert debug_ctest[debug_ctest.index("-L") + 1] == "^unit$"
+    assert "^functional$" not in debug_ctest
 
 
 def test_quick_runs_no_test_when_only_docs_and_tools_changed(monkeypatch, capsys, repo):
@@ -688,3 +715,99 @@ def test_quick_lists_a_moved_file_under_its_old_and_new_path(monkeypatch, capsys
     run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
     (diff_command,) = [command for command in fake.commands if command[:3] == ["git", "diff", "--name-only"]]
     assert "--no-renames" in diff_command
+
+
+def test_modules_with_changed_functional_tests_are_those_with_a_change_under_tests():
+    changed = ["tests/grid/a.test.cc", "src/fluidity/base/a.h", "tests/contact/CMakeLists.txt", "tests/CMakeLists.txt"]
+    assert check_commit.modules_with_changed_functional_tests(changed) == frozenset({"grid", "contact"})
+    assert check_commit.modules_with_changed_functional_tests(["src/fluidity/base/a.h"]) == frozenset()
+
+
+def test_quick_runs_the_functional_tests_of_a_module_whose_tests_changed(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["tests/grid/a.test.cc", "src/fluidity/base/a.h"])
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert "NOTE modules: base, grid" in lines
+    assert "NOTE functional tests: grid" in lines
+    unit_run, functional_run = ctest_commands(fake)
+    assert unit_run[unit_run.index("-L") + 1] == "^(base|grid)$" and "^unit$" in unit_run
+    assert functional_run[functional_run.index("-L") + 1] == "^(grid)$" and "^functional$" in functional_run
+    assert "^unit$" not in functional_run
+
+
+def test_quick_runs_no_functional_test_when_only_src_changed(monkeypatch, capsys, repo):
+    fake = FakeRun(changed=["src/fluidity/grid/a.cc"])
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert not any(line.startswith("NOTE functional tests") for line in lines)
+    assert all("^functional$" not in command for command in ctest_commands(fake))
+
+
+def test_commit_speed_times_the_debug_run_only(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--speed", "commit")
+    assert "--output-junit" in ctest_commands(fake)[0]
+    assert "--output-junit" not in ctest_commands(fake, RELEASE_PRESET)[0]
+
+
+def test_unit_test_over_200_ms_fails_the_debug_run_and_is_named(monkeypatch, capsys, repo):
+    fake = FakeRun(test_times=[("Fast.Unit", "base;cpu;unit", 0.01), ("Slow.Case", "grid;cpu;unit", 0.25)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 1
+    assert lines[0] == f"FAIL cpu {DEBUG_PRESET}: unit tests over 200 ms: Slow.Case (250 ms)"
+
+
+def test_unit_test_between_50_and_200_ms_gets_a_note_and_passes(monkeypatch, capsys, repo):
+    fake = FakeRun(test_times=[("Middling.Case", "grid;cpu;unit", 0.08), ("Exactly.Limit", "grid;cpu;unit", 0.2)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 0
+    assert "NOTE unit test over 50 ms: Middling.Case (80 ms)" in lines
+    assert "NOTE unit test over 50 ms: Exactly.Limit (200 ms)" in lines
+    assert f"PASS cpu {DEBUG_PRESET}" in lines
+
+
+def test_functional_test_may_take_any_time(monkeypatch, capsys, repo):
+    fake = FakeRun(test_times=[("Long.Run", "grid;cpu;functional", 30.0)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 0
+    assert not any(line.startswith("NOTE unit test") for line in lines)
+
+
+def test_unreadable_junit_file_fails_the_debug_run(monkeypatch, capsys, repo):
+    class NoJunit(FakeRun):
+        def junit_text(self):
+            return "not xml"
+
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, NoJunit(), "--only", "cpu")
+    assert exit_code == 1
+    assert lines[0].startswith(f"FAIL cpu {DEBUG_PRESET}: the JUnit file of ctest cannot be read")
+
+
+def test_slow_unit_tests_reads_labels_and_times_from_the_junit_text():
+    fake = FakeRun(test_times=[("A.One", "base;cpu;unit", 0.3), ("B.Two", "base;cpu;functional", 9.0), ("C.Three", "base;cpu;unit", 0.06)])
+    over_limit, over_note = check_commit.slow_unit_tests(fake.junit_text())
+    assert over_limit == [("A.One", 0.3)]
+    assert over_note == [("C.Three", 0.06)]
+
+
+def test_rules_step_covers_src_and_tests(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    rules_command = next(c for c in fake.commands if any(Path(part).name == "check_rules.py" for part in c))
+    assert str(repo / "src") in rules_command and str(repo / "tests") in rules_command
+
+
+def test_tidy_and_the_cuda_check_cover_tests_as_they_cover_src(monkeypatch, capsys, repo):
+    fake = FakeRun(tracked=["src/fluidity/a.h", "src/fluidity/a.cc", "tests/grid/b.test.cc"])
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
+    listings = [c for c in fake.commands if c[:2] == ["git", "ls-files"]]
+    assert any("tests/*.cc" in listing for listing in listings)
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(tracked=["src/fluidity/a.h", "src/fluidity/a.cc", "tests/grid/b.test.cc"], compiled=[header_check_path("src/fluidity/a.h"), "/src/src/fluidity/a.cc"]), "--only", "cuda")
+    assert exit_code == 1
+    assert lines == ["FAIL cuda: not compiled by the CUDA build: tests/grid/b.test.cc"]
+
+
+def test_paper_check_reads_the_read_lines_of_tests_too(monkeypatch, capsys, repo):
+    (repo / "tests" / "grid").mkdir(parents=True)
+    (repo / "tests" / "grid" / "a.test.cc").write_text("// Read:    docs/method-paper/fluidity-method.typ <sec-nowhere>\n", encoding="utf-8")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
+    assert exit_code == 1
+    assert lines == ["FAIL paper: tests/grid/a.test.cc:1 cites <sec-nowhere>, which the paper does not define"]
