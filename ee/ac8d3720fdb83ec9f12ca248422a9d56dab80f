@@ -1,0 +1,29 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_14d7904806b281 327-333,586-587,640-646
+cmake/fluidity_targets.cmake
+  s_4f0877e2acdcf0::t_e7a25c413efde8 141-144,147-148,184-203
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_a65f278ab3f116 76-79,189-190,406-412,905-907,909-910,915-926
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_6c4e936340189a 817-842
+tools/fluidity_targets_test.py
+  s_4f0877e2acdcf0::t_d1337e28340eab 199,209-211,219-229,236
+tools/run_gpu_tests.ps1
+  s_4f0877e2acdcf0::t_20814090b36186 470-471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eeac8d3720fdb83ec9f12ca248422a9d56dab80f",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
