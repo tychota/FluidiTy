@@ -1,0 +1,25 @@
+.github/workflows/checks.yml
+  s_4f0877e2acdcf0::t_3a35e03f32d3f1 64-65,67,70,233
+AGENTS.md
+  s_4f0877e2acdcf0::t_359c2aa170ce99 425-426,440-450
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_9c0485700c89ba 3-4,10-21,91-96,170-171,176,228-247,371-396,421-438,601,603-607,611-612,614-615,636-641,648-649,661-663
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_cb074f07dd25b9 54-55,71-72,83-86,498-621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "45030b9cc9f988a03e60c50222da69d556b7bd83",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
