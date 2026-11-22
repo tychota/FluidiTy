@@ -26,7 +26,8 @@ verb catches its -s, -ed and -ing forms and a banned noun its plural; a longer w
 irregular form and the few inflected forms that are words of their own here (`WORDS_OF_THEIR_OWN`) do not match.
 String literals are never scanned; identifiers, comments and Python docstrings are.
 
-Which rules apply to which files (a deliberate choice, written down here):
+Which rules apply to which files (a deliberate choice, written down here). The folders `src`, `tests` and `testing`
+are read from the path below the repository (--repository), so a clone inside a folder named `tests` changes nothing:
 - `file-header`, `bare-bool` and `verb` apply to `.h` and `.cuh` files, where the public declarations are.
 - `backend-name` applies to `.h` files only, because a `.cuh` file is allowed to name its backend, and not to test
   files (`.test.` in the name, or a `testing` or `tests` folder): a test may name the backend it tests, as in
@@ -43,8 +44,8 @@ Which rules apply to which files (a deliberate choice, written down here):
   `tests/<module>/` counts as a file of the folder `fluidity/<module>`: it may include that folder's private GPU
   headers, as a test beside them could.
 - `compiler-include` applies to every C++ file: an `#include` inside an `#if`, `#ifdef`, `#ifndef` or `#elif` block
-  whose condition names `__clang__`, `__GNUC__`, `_MSC_VER` or `__apple_build_version__` fails, in any branch of the
-  block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
+  whose condition names `__clang__`, `__clang_analyzer__`, `__GNUC__`, `_MSC_VER`, `__apple_build_version__` or
+  `__has_include` fails, in any branch of the block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
   it must be the list that clang-tidy sees.
 - `one-word-comment` applies to C++ files under src and tests. `test-helper-verb` applies to the functions defined in
   test files (`.test.` in the name, or a `testing` or `tests` folder): it is `verb` for them, and the same
@@ -141,7 +142,7 @@ RULE_TABLE = (
     Rule("test-name-and", NOTE, "TEST names in C++ files", "a test that checks two things should be two tests"),
     Rule("many-inputs", NOTE, "functions of test files and private helpers", "more than four inputs hide the call"),
     Rule("short-local", NOTE, "C++ files", "a one-letter variable or parameter says nothing; the project uses none"),
-    Rule("process-word", NOTE, "comments of C++ files", "a comment says what the code does, not how it was made"),
+    Rule("process-word", NOTE, "comments of every scanned file", "a comment says what the code does, not how it was made"),
     Rule("test-without-check", NOTE, "TEST bodies in C++ files", "a test with no check passes whatever the code does"),
 )
 
@@ -1064,8 +1065,11 @@ def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine],
             reporter.add(line.number, FAIL, "private-gpu-include", text, key=str(included))
 
 
-# The predefined macros that differ between the build compiler and the clang-tidy preprocessor.
-_COMPILER_MACROS = re.compile(r"\b(?:__clang__|__GNUC__|_MSC_VER|__apple_build_version__)\b")
+# The predefined macros and operators that differ between the build compiler and the clang-tidy preprocessor:
+# `__clang_analyzer__` is defined by clang-tidy alone, and `__has_include` can answer differently for a standard header.
+_COMPILER_MACROS = re.compile(
+    r"\b(?:__clang__|__clang_analyzer__|__GNUC__|_MSC_VER|__apple_build_version__|__has_include|__has_include_next)\b"
+)
 _CONDITION_OPENER = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b")
 _CONDITION_BRANCH = re.compile(r"^\s*#\s*(?:elif|elifdef|elifndef)\b")
 _CONDITION_ELSE = re.compile(r"^\s*#\s*else\b")
@@ -1095,8 +1099,9 @@ def _check_compiler_includes(lines: list[ScannedLine], reporter: _Reporter) -> N
 
 # A comment line whose whole text is one word, as `// Done` or `// ok.`.
 _ONE_WORD_COMMENT = re.compile(r"[A-Za-z][A-Za-z0-9_'-]*[.!:;,?]*")
-# The one word of such a line that is not a comment about the code: the end of a namespace.
-_ONE_WORD_COMMENT_EXEMPT_PREFIXES = ("NOLINT", "namespace")
+# The one word of such a line that is not a comment about the code: the end of a namespace, a NOLINT marker, and
+# `// fallthrough`, which GCC's -Wimplicit-fallthrough reads.
+_ONE_WORD_COMMENT_EXEMPT_PREFIXES = ("NOLINT", "namespace", "fallthrough")
 
 
 def _check_one_word_comments(lines: list[ScannedLine], reporter: _Reporter) -> None:
@@ -1181,13 +1186,25 @@ def _note_test_shape(lines: list[ScannedLine], reporter: _Reporter) -> None:
         index = max(end, index) + 1
 
 
-def _is_test_file(path: Path) -> bool:
-    """A test file has `.test.` in its name, or lies in a `testing` folder or a `tests` folder."""
-    return ".test." in path.name or TEST_CODE_FOLDER in path.parts[:-1] or TESTS_FOLDER in path.parts[:-1]
+def _parts_in_repository(path: Path, repository: Path) -> tuple[str, ...]:
+    """The folders and the name of `path` below `repository`, so that the place of a clone (a folder named `tests` above
+    it) decides nothing. A path outside `repository` keeps all its parts."""
+    for candidate, root in ((path, repository), (path.resolve(), repository.resolve())):
+        try:
+            return candidate.relative_to(root).parts
+        except ValueError:
+            continue
+    return path.parts
 
 
-def _is_under_source_folders(path: Path) -> bool:
-    return "src" in path.parts or TESTS_FOLDER in path.parts
+def _is_test_file(path: Path, parts: tuple[str, ...]) -> bool:
+    """A test file has `.test.` in its name, or lies in a `testing` folder or a `tests` folder; `parts` are the parts of
+    `path` below the repository (see _parts_in_repository)."""
+    return ".test." in path.name or TEST_CODE_FOLDER in parts[:-1] or TESTS_FOLDER in parts[:-1]
+
+
+def _is_under_source_folders(parts: tuple[str, ...]) -> bool:
+    return "src" in parts or TESTS_FOLDER in parts
 
 
 def check_text(
@@ -1197,9 +1214,12 @@ def check_text(
     verbs: set[str],
     exact_names: set[str],
     allowed_names: set[str],
+    repository: Path = REPO_ROOT,
 ) -> list[Finding]:
-    """Returns the findings for one file, ordered by line."""
+    """Returns the findings for one file, ordered by line. `repository` is the root that the folders `src`, `tests` and
+    `testing` are read from: a folder of that name above it does not count."""
     lines = split_lines(path, text)
+    parts = _parts_in_repository(path, repository)
     reporter = _Reporter(path)
     suffix = path.suffix
     if suffix == ".typ":
@@ -1221,9 +1241,9 @@ def check_text(
         _check_private_gpu_includes(path, text, lines, reporter)
         _check_compiler_includes(lines, reporter)
         _note_test_shape(lines, reporter)
-        if _is_under_source_folders(path):
+        if _is_under_source_folders(parts):
             _check_one_word_comments(lines, reporter)
-    is_test_file = _is_test_file(path)
+    is_test_file = _is_test_file(path, parts)
     if suffix in HEADER_SUFFIXES:
         _check_declarations(
             lines,
@@ -1279,13 +1299,15 @@ def check_paths(
     glossary_path: Path | str = DEFAULT_GLOSSARY_PATH,
     allowed_names_path: Path | str | None = DEFAULT_ALLOWED_NAMES_PATH,
     agents_path: Path | str = DEFAULT_AGENTS_PATH,
+    repository: Path | str = REPO_ROOT,
 ) -> list[Finding]:
-    """Checks every scanned file under `paths` and returns the findings in file and line order."""
+    """Checks every scanned file under `paths` and returns the findings in file and line order. `repository` is the
+    root that the folders of a file are read from (see check_text)."""
     glossary = load_glossary(Path(glossary_path))
     verbs, exact_names = load_allowed_verbs(Path(agents_path))
     allowed_names = load_allowed_names(Path(allowed_names_path) if allowed_names_path else None)
     file_paths = list(iter_files(Path(path) for path in paths))
-    context = (glossary, verbs, exact_names, allowed_names)
+    context = (glossary, verbs, exact_names, allowed_names, Path(repository))
     if len(file_paths) >= PARALLEL_MIN_FILES and "fork" in multiprocessing.get_all_start_methods():
         return _check_files_in_processes(file_paths, context)
     findings: list[Finding] = []
@@ -1294,17 +1316,17 @@ def check_paths(
     return findings
 
 
-# What a worker process needs to check a file: the glossary, the allowed verbs, the exact names and the allowed
-# names. A forked worker inherits it, so nothing is sent through a pipe but the file path and its findings.
-_WorkerContext = tuple[Sequence[NeverSayEntry], set[str], set[str], set[str]]
+# What a worker process needs to check a file: the glossary, the allowed verbs, the exact names, the allowed names
+# and the repository root. A forked worker inherits it, so nothing is sent through a pipe but the file path and its findings.
+_WorkerContext = tuple[Sequence[NeverSayEntry], set[str], set[str], set[str], Path]
 _worker_context: _WorkerContext | None = None
 
 
 def _check_file(file_path: Path, context: _WorkerContext) -> list[Finding]:
     """The findings for one file. Each file is checked on its own text, so the order of checking changes nothing."""
-    glossary, verbs, exact_names, allowed_names = context
+    glossary, verbs, exact_names, allowed_names, repository = context
     text = file_path.read_bytes().decode("utf-8", errors="replace")
-    return check_text(file_path, text, glossary, verbs, exact_names, allowed_names)
+    return check_text(file_path, text, glossary, verbs, exact_names, allowed_names, repository)
 
 
 def _check_file_in_worker(file_path: Path) -> list[Finding]:
@@ -1496,7 +1518,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"nothing was scanned: no {' '.join(sorted(SCANNED_SUFFIXES))} files under {listed}", file=sys.stderr)
         return 2
     try:
-        findings = check_paths(paths, Path(arguments.glossary), Path(arguments.allowed_names))
+        findings = check_paths(
+            paths, Path(arguments.glossary), Path(arguments.allowed_names), repository=Path(arguments.repository)
+        )
     except (GlossaryError, RulesFileError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

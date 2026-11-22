@@ -851,9 +851,16 @@ def test_findings_of_a_line_follow_the_glossary_order_even_when_a_set_would_not(
     ]
 
 
-@pytest.mark.parametrize("macro", ["__clang__", "__GNUC__", "_MSC_VER", "__apple_build_version__"])
+@pytest.mark.parametrize(
+    "macro", ["__clang__", "__GNUC__", "_MSC_VER", "__apple_build_version__", "__clang_analyzer__"]
+)
 def test_include_under_a_condition_on_a_compiler_macro_fails(tmp_path, glossary, macro):
     write(tmp_path, "a.cc", f'#if defined({macro})\n#include "fluidity/base/x.h"\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == ["compiler-include"]
+
+
+def test_include_under_a_has_include_condition_fails(tmp_path, glossary):
+    write(tmp_path, "a.cc", "#if __has_include(<span>)\n#include <span>\n#endif\n")
     assert rules(run(tmp_path, glossary)) == ["compiler-include"]
 
 
@@ -1246,3 +1253,21 @@ def test_also_notes_flags_go_together_and_a_bad_commit_is_an_error(repository, g
     assert check_rules.main(common + ["--also-notes-json", str(destination)]) == 2
     assert check_rules.main(common + ["--also-notes-since", "no-such-commit", "--also-notes-json", str(destination)]) == 2
     assert not destination.exists()
+
+
+def test_a_clone_under_a_folder_named_tests_still_checks_backend_names_of_production_headers(tmp_path, glossary):
+    clone = tmp_path / "tests" / "clone"
+    write(clone, "src/fluidity/grid/a.h", FULL_HEADER + "void WriteCudaBuffer();\n")
+    findings = check_rules.check_paths([clone / "src"], glossary, repository=clone)
+    assert rules(findings) == ["backend-name"]
+
+
+def test_a_test_file_of_a_clone_under_a_folder_named_tests_is_still_a_test_file(tmp_path, glossary):
+    clone = tmp_path / "tests" / "clone"
+    write(clone, "tests/grid/a.h", FULL_HEADER + "inline void CheckGpuThing();\n")
+    assert check_rules.check_paths([clone / "tests"], glossary, repository=clone) == []
+
+
+def test_a_fallthrough_comment_is_not_a_one_word_comment(tmp_path, glossary):
+    write(tmp_path, "src/a.cc", "void Pick(int value) {\n  switch (value) {\n    case 1:\n      // fallthrough\n    case 2:\n      break;\n  }\n}\n")
+    assert rules(run(tmp_path, glossary)) == []
