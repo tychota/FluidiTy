@@ -1,0 +1,21 @@
+.vscode/tasks.json
+  s_4f0877e2acdcf0::t_aa4aa87aec6580 29-31,33-40
+README.md
+  s_4f0877e2acdcf0::t_6475ec10417ec6 51-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d7d93e8d0786f9f59187bef120e8a9fe9b6e6328",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
