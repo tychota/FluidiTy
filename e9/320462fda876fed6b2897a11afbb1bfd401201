@@ -1,0 +1,27 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_cc22e38083a9f5 2321-2323
+src/fluidity/grid/nearby_face_weights.h
+  s_4f0877e2acdcf0::t_914da24437cdb6 24-30,67-68,82,132-137,139-140,143-145,152-153,162,342-349
+src/fluidity/grid/nearby_face_weights.test.cc
+  s_4f0877e2acdcf0::t_0e60f4fe76b03d 6,117-126,140-186
+src/fluidity/grid/testing/nearby_faces_cases.h
+  s_4f0877e2acdcf0::t_100a76eff6bce5 13-14,228-303
+tests/grid/nearby_faces.test.cc
+  s_4f0877e2acdcf0::t_6c97eff21fb29e 45-65,74-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e9320462fda876fed6b2897a11afbb1bfd401201",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
