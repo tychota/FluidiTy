@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -53,21 +54,177 @@ void CheckWriteThenReadReturnsTheSameValues(GridValues<double, kPlacesPerBlock>&
   EXPECT_EQ(read, written);
 }
 
-// The piece the room form takes: places x 1,000 blocks x 8 bytes, rounded up to 256.
+// The piece the room form takes for 1,000 blocks: `expected_place_count` doubles, rounded up to 256 bytes. The caller
+// writes the count as a literal, so a wrong number of places per block in a name fails here.
 template <int kPlacesPerBlock>
 void CheckTakesOnePieceOfPlacesTimesSize(
     const std::expected<GridValues<double, kPlacesPerBlock>, GridFailure>& built,
-    const RunMemory& run_memory
+    const RunMemory& run_memory,
+    std::size_t expected_place_count
 ) {
   ASSERT_TRUE(built.has_value());
-  EXPECT_EQ(
-      run_memory.handed_out_bytes(),
-      ComputeRunMemoryPieceBytes(std::size_t{1000} * kPlacesPerBlock * sizeof(double))
-  );
+  EXPECT_EQ(run_memory.handed_out_bytes(), ComputeRunMemoryPieceBytes(expected_place_count * sizeof(double)));
   EXPECT_EQ(built->max_cell_blocks(), 1000U);
   EXPECT_EQ(built->block_count(), 0U);
   EXPECT_EQ(built->grid_version().value, 0U);
-  EXPECT_EQ(built->buffer().size(), std::size_t{1000} * kPlacesPerBlock);
+  EXPECT_EQ(built->buffer().size(), expected_place_count);
+}
+
+constexpr std::uint32_t kRoomOfEightBlocks = 8;
+constexpr std::int32_t kGridOfThreeBlocks = 3;
+constexpr double kUntouched = -7.0;
+
+// Values with room for 8 blocks, bound to `grid` (3 blocks), every place of the room set to `kUntouched`.
+template <int kPlacesPerBlock>
+void CheckBindsToTheGridAndFillsTheRoom(
+    std::expected<GridValues<double, kPlacesPerBlock>, GridFailure>& built,
+    const StaggeredGrid& grid
+) {
+  ASSERT_TRUE(built.has_value());
+  ASSERT_TRUE(ApplyGridVersion(*built, grid).has_value());
+  ASSERT_EQ(built->block_count(), static_cast<std::uint32_t>(kGridOfThreeBlocks));
+  ASSERT_EQ(built->max_cell_blocks(), kRoomOfEightBlocks);
+  std::fill_n(built->data(), built->buffer().size(), kUntouched);
+}
+
+// Reads with a span of exactly the 3 bound blocks: the first 3 blocks come back, however large the room.
+template <int kPlacesPerBlock>
+void CheckReadCoversExactlyTheBoundBlocks(GridValues<double, kPlacesPerBlock>& values) {
+  const std::size_t bound_place_count = std::size_t{kGridOfThreeBlocks} * kPlacesPerBlock;
+  for (std::size_t index = 0; index < bound_place_count; ++index) {
+    values.data()[index] = 0.5 + static_cast<double>(index);
+  }
+  std::vector<double> read(bound_place_count, -1.0);
+  ASSERT_TRUE(ReadValues(values, std::span<double>(read)).has_value());
+  for (std::size_t index = 0; index < bound_place_count; ++index) {
+    EXPECT_EQ(read[index], 0.5 + static_cast<double>(index));
+  }
+}
+
+// A span sized for the whole room is not the bound extent: it fails and the span keeps what it held.
+template <int kPlacesPerBlock>
+void CheckReadSizedForTheRoomIsBadInput(GridValues<double, kPlacesPerBlock>& values) {
+  std::vector<double> read(std::size_t{kRoomOfEightBlocks} * kPlacesPerBlock, -1.0);
+  const std::expected<void, GridFailure> result = ReadValues(values, std::span<double>(read));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, GridError::kBadInput);
+  EXPECT_EQ(read, std::vector<double>(read.size(), -1.0));
+}
+
+// Writes the 3 bound blocks: the places past them keep what they held.
+template <int kPlacesPerBlock>
+void CheckWriteLeavesThePlacesPastTheBoundBlocks(GridValues<double, kPlacesPerBlock>& values) {
+  const std::size_t bound_place_count = std::size_t{kGridOfThreeBlocks} * kPlacesPerBlock;
+  const std::vector<double> written(bound_place_count, 2.5);
+  ASSERT_TRUE(WriteValues<double>(written, &values).has_value());
+  for (std::size_t index = 0; index < values.buffer().size(); ++index) {
+    EXPECT_EQ(values.data()[index], index < bound_place_count ? 2.5 : kUntouched);
+  }
+}
+
+// A span sized for the whole room is not the bound extent: it fails and no value changes.
+template <int kPlacesPerBlock>
+void CheckWriteSizedForTheRoomIsBadInput(GridValues<double, kPlacesPerBlock>& values) {
+  const std::vector<double> written(std::size_t{kRoomOfEightBlocks} * kPlacesPerBlock, 2.5);
+  const std::expected<void, GridFailure> result = WriteValues<double>(written, &values);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, GridError::kBadInput);
+  for (std::size_t index = 0; index < values.buffer().size(); ++index) {
+    EXPECT_EQ(values.data()[index], kUntouched);
+  }
+}
+
+// Values with room for 8 blocks, bound to a grid of 3, set up for one of the checks above.
+struct FourValuesOfRoomEight {
+  TestGrid test_grid;
+  RunMemory run_memory;
+  std::expected<CellValues<double>, GridFailure> cell_values;
+  std::expected<FaceValues<double>, GridFailure> face_values;
+  std::expected<CornerValues<double>, GridFailure> corner_values;
+  std::expected<CellBlockValues<double>, GridFailure> block_values;
+};
+
+FourValuesOfRoomEight BuildFourValuesOfRoomEight() {
+  FourValuesOfRoomEight four = {
+      .test_grid = BuildGridOfBlocks(kGridOfThreeBlocks, {.value = 1}),
+      .run_memory = BuildCpuRunMemory(kTwoMebibytes),
+      .cell_values = std::unexpected(GridFailure{}),
+      .face_values = std::unexpected(GridFailure{}),
+      .corner_values = std::unexpected(GridFailure{}),
+      .block_values = std::unexpected(GridFailure{}),
+  };
+  four.cell_values = BuildCellValues<double>(RunOn::kCpu, kRoomOfEightBlocks, four.run_memory);
+  four.face_values = BuildFaceValues<double>(RunOn::kCpu, kRoomOfEightBlocks, four.run_memory);
+  four.corner_values = BuildCornerValues<double>(RunOn::kCpu, kRoomOfEightBlocks, four.run_memory);
+  four.block_values = BuildCellBlockValues<double>(RunOn::kCpu, kRoomOfEightBlocks, four.run_memory);
+  CheckBindsToTheGridAndFillsTheRoom(four.cell_values, four.test_grid.grid);
+  CheckBindsToTheGridAndFillsTheRoom(four.face_values, four.test_grid.grid);
+  CheckBindsToTheGridAndFillsTheRoom(four.corner_values, four.test_grid.grid);
+  CheckBindsToTheGridAndFillsTheRoom(four.block_values, four.test_grid.grid);
+  return four;
+}
+
+TEST(ReadValues, RoomAboveTheGrid_CoversExactlyTheBoundBlocks) {
+  FourValuesOfRoomEight four = BuildFourValuesOfRoomEight();
+  CheckReadCoversExactlyTheBoundBlocks(*four.cell_values);
+  CheckReadCoversExactlyTheBoundBlocks(*four.face_values);
+  CheckReadCoversExactlyTheBoundBlocks(*four.corner_values);
+  CheckReadCoversExactlyTheBoundBlocks(*four.block_values);
+}
+
+TEST(ReadValues, SpanSizedForTheRoom_IsBadInput) {
+  FourValuesOfRoomEight four = BuildFourValuesOfRoomEight();
+  CheckReadSizedForTheRoomIsBadInput(*four.cell_values);
+  CheckReadSizedForTheRoomIsBadInput(*four.face_values);
+  CheckReadSizedForTheRoomIsBadInput(*four.corner_values);
+  CheckReadSizedForTheRoomIsBadInput(*four.block_values);
+}
+
+TEST(WriteValues, RoomAboveTheGrid_LeavesThePlacesPastTheBoundBlocksUntouched) {
+  FourValuesOfRoomEight four = BuildFourValuesOfRoomEight();
+  CheckWriteLeavesThePlacesPastTheBoundBlocks(*four.cell_values);
+  CheckWriteLeavesThePlacesPastTheBoundBlocks(*four.face_values);
+  CheckWriteLeavesThePlacesPastTheBoundBlocks(*four.corner_values);
+  CheckWriteLeavesThePlacesPastTheBoundBlocks(*four.block_values);
+}
+
+TEST(WriteValues, SpanSizedForTheRoom_IsBadInput) {
+  FourValuesOfRoomEight four = BuildFourValuesOfRoomEight();
+  CheckWriteSizedForTheRoomIsBadInput(*four.cell_values);
+  CheckWriteSizedForTheRoomIsBadInput(*four.face_values);
+  CheckWriteSizedForTheRoomIsBadInput(*four.corner_values);
+  CheckWriteSizedForTheRoomIsBadInput(*four.block_values);
+}
+
+// The span starts one entry into the values, so it overlaps them without being the same range.
+TEST(ReadValues, SpanOverlappingTheValues_IsBadInputWithNothingChanged) {
+  FourValuesOfRoomEight four = BuildFourValuesOfRoomEight();
+  CellValues<double>& values = *four.cell_values;
+  const std::size_t bound_place_count = std::size_t{kGridOfThreeBlocks} * kCellPlacesPerBlock;
+  for (std::size_t index = 0; index < values.buffer().size(); ++index) {
+    values.data()[index] = 0.5 + static_cast<double>(index);
+  }
+  const std::vector<double> before(values.data(), values.data() + values.buffer().size());
+  const std::expected<void, GridFailure> result =
+      ReadValues(values, std::span<double>(values.data() + 1, bound_place_count));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, GridError::kBadInput);
+  EXPECT_EQ(std::vector<double>(values.data(), values.data() + values.buffer().size()), before);
+}
+
+TEST(WriteValues, SpanOverlappingTheValues_IsBadInputWithNothingChanged) {
+  FourValuesOfRoomEight four = BuildFourValuesOfRoomEight();
+  CellValues<double>& values = *four.cell_values;
+  const std::size_t bound_place_count = std::size_t{kGridOfThreeBlocks} * kCellPlacesPerBlock;
+  for (std::size_t index = 0; index < values.buffer().size(); ++index) {
+    values.data()[index] = 0.5 + static_cast<double>(index);
+  }
+  const std::vector<double> before(values.data(), values.data() + values.buffer().size());
+  const std::expected<void, GridFailure> result =
+      WriteValues<double>(std::span<const double>(values.data() + 1, bound_place_count), &values);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, GridError::kBadInput);
+  EXPECT_EQ(std::vector<double>(values.data(), values.data() + values.buffer().size()), before);
 }
 
 TEST(ApplyGridVersion, OtherGrid_FollowsTheGrid) {
@@ -225,11 +382,15 @@ TEST(BuildFaceValues, IntoRunMemory_TakesOnePieceOfPlacesTimesSize) {
       BuildCornerValues<double>(RunOn::kCpu, 1000, corner_memory);
   const std::expected<CellBlockValues<double>, GridFailure> block_values =
       BuildCellBlockValues<double>(RunOn::kCpu, 1000, block_memory);
-  CheckTakesOnePieceOfPlacesTimesSize(cell_values, cell_memory);
-  CheckTakesOnePieceOfPlacesTimesSize(face_values, face_memory);
-  CheckTakesOnePieceOfPlacesTimesSize(corner_values, corner_memory);
-  CheckTakesOnePieceOfPlacesTimesSize(block_values, block_memory);
+  // 1,000 blocks of 64, 240, 125 and 1 places, written as numbers so that a wrong alias fails.
+  CheckTakesOnePieceOfPlacesTimesSize(cell_values, cell_memory, 64'000);
+  CheckTakesOnePieceOfPlacesTimesSize(face_values, face_memory, 240'000);
+  CheckTakesOnePieceOfPlacesTimesSize(corner_values, corner_memory, 125'000);
+  CheckTakesOnePieceOfPlacesTimesSize(block_values, block_memory, 1'000);
+  EXPECT_EQ(cell_memory.handed_out_bytes(), 512'000U);
   EXPECT_EQ(face_memory.handed_out_bytes(), 1'920'000U);
+  EXPECT_EQ(corner_memory.handed_out_bytes(), 1'000'192U);
+  EXPECT_EQ(block_memory.handed_out_bytes(), 8'192U);
 }
 
 TEST(BuildFaceValues, ForAGrid_TakesOnePieceOfItsBlocksTimesPlacesTimesSize) {

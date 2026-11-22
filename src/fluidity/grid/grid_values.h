@@ -1,7 +1,8 @@
 // Buffers of one value per place of every cell block, bound to one grid version.
 //
 // Purpose: give every module one type for a per-cell, per-face, per-corner or per-block array, so a value is found
-//   by the same place index the grid's tables use, and a function can tell which grid the values were laid out for.
+//   by the same place index the grid's tables use, and a function can tell which grid version the values were laid
+//   out for.
 //
 // Idea: a grid has 64 cell places, 240 face places and 125 corner places in each cell block (grid/grid_ids.h). Values
 //   are built once with room for `max_cell_blocks` blocks, and never grow. Each new grid version is bound to them by
@@ -9,11 +10,11 @@
 //   contents become unspecified until the module that owns them fills them again. A bind runs on the CPU, copies
 //   nothing from the GPU and allocates nothing. A function that takes values and a grid compares grid_version() and
 //   block_count() with the grid's and fails with kWrongGridVersion when they differ. A grid piece has the whole grid's
-//   version, so values loaded for one piece are bound again at every load. The one class template GridValues has four
-//   names: CellValues, FaceValues, CornerValues and CellBlockValues (one value per block). They are four types, so a
-//   face buffer cannot be passed for a cell buffer. Values leave CPU memory and come back to it only through
-//   WriteValues and ReadValues, which copy the bound part with the slice forms of base/buffer.h, so every copy to or
-//   from the GPU is visible at the call.
+//   version, so values loaded for one piece are bound again at every load.
+//   What a bind checks: the version number only. The values remember that number and the block count, not the grid
+//   object, so two grid objects with the same version number cannot be told apart: values bound to one pass
+//   CheckGridVersion against the other. The caller must therefore know which grid its values belong to, and must not
+//   keep two grids at once with the same version number when it relies on that check.
 //   Example: values with room for 4 blocks, bound to a grid of 3 blocks: block_count() is 3, and a CellValues holds
 //   3 x 64 = 192 meaningful values. Bound to a grid of 2 blocks next, block_count() is 2 and the 192 values are
 //   unspecified.
@@ -262,6 +263,11 @@ BuildCellBlockValues(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory& run
 
 // Binds `values` to `grid` (a whole grid or a grid piece's grid): grid_version() and block_count() become the grid's.
 //
+// What it checks: only that the grid's block count fits the room. It writes down the grid's version number, not the
+//   grid: a later check of the values against a grid compares version numbers, so two grid objects with the same
+//   version number are not told apart, and values bound to one pass for the other. The caller must make sure the grid
+//   it binds is the grid it later uses, and that no two grids it keeps at once share a version number. A grid at
+//   version 0 (moved from, or its buffers taken back) binds, and leaves the values bound to no grid.
 // Method: reads only grid.version() and grid.counts().cell_blocks, which every grid keeps on the CPU, and writes them
 //   down. It allocates, launches and copies nothing, on either processor. The contents of the values become
 //   unspecified: no value is touched, and the owning module fills them again.
@@ -316,13 +322,13 @@ BuildCellBlockValues(const StaggeredGrid& grid, RunMemory& run_memory) {
 // Method: checks the bind, then the span's size, then copies the first block_count() x places per block entries with
 //   the slice form of ReadBuffer. A moved-from or never-bound object is bound to no grid.
 // Example: CellValues bound to a grid of 2 blocks need a span of 128 entries; a span of 127 is kBadInput.
-// Requires: `cpu_values` is CPU memory and does not overlap the values.
+// Requires: `cpu_values` is CPU memory.
 // Fails: kWrongGridVersion  the values are bound to no grid (grid_version().value is 0)
-//        kBadInput          cpu_values.size() differs from block_count() x places per block
+//        kBadInput          cpu_values.size() differs from block_count() x places per block, or `cpu_values`
+//                           overlaps the values (the caller's mistake)
 //        kRunOnCallFailed   the copy from the GPU failed
-//        kInternalFault     the copy reported a size error although the sizes were checked here: `cpu_values`
-//                           overlaps the values, or FluidiTy has a fault
-//        A failed check writes nothing. After kRunOnCallFailed the span is unspecified.
+//        A failed check writes nothing: the span and the values are unchanged. After kRunOnCallFailed the span is
+//        unspecified.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 template <BufferValue Value, int kPlacesPerBlock>
 std::expected<void, GridFailure>
@@ -336,6 +342,10 @@ ReadValues(const GridValues<Value, kPlacesPerBlock>& values, std::type_identity_
   }
   const std::expected<void, BufferError> read = ReadBuffer(values.buffer(), 0, cpu_values);
   if (!read.has_value()) {
+    // The size was checked above, so the buffer's size error can only be an overlap: the caller's span.
+    if (read.error() == BufferError::kSizeMismatch) {
+      return std::unexpected(GridFailure{.error = GridError::kBadInput});
+    }
     return std::unexpected(ToGridFailure(read.error(), 0));
   }
   return {};
@@ -346,7 +356,7 @@ ReadValues(const GridValues<Value, kPlacesPerBlock>& values, std::type_identity_
 //
 // Method: as ReadValues, with the slice form of WriteBuffer. Places past the bound part are not touched.
 // Example: CellValues bound to a grid of 2 blocks take 128 entries.
-// Requires: `cpu_values` is CPU memory and does not overlap the values; `values` is not null.
+// Requires: `cpu_values` is CPU memory; `values` is not null.
 // Fails: as ReadValues; after kRunOnCallFailed the bound part is unspecified.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 template <BufferValue Value, int kPlacesPerBlock>
@@ -362,6 +372,10 @@ WriteValues(std::type_identity_t<std::span<const Value>> cpu_values, GridValues<
   }
   const std::expected<void, BufferError> written = WriteBuffer(cpu_values, values->buffer(), 0);
   if (!written.has_value()) {
+    // The size was checked above, so the buffer's size error can only be an overlap: the caller's span.
+    if (written.error() == BufferError::kSizeMismatch) {
+      return std::unexpected(GridFailure{.error = GridError::kBadInput});
+    }
     return std::unexpected(ToGridFailure(written.error(), 0));
   }
   return {};

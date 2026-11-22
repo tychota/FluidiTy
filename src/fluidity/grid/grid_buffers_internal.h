@@ -137,7 +137,8 @@ CheckGridArrayEntries(std::span<const MemoryEstimateEntry> estimate, RunOn run_o
 // Converts a buffer failure to a grid failure, the module's one mapping: kOutOfMemory and kRunMemoryTooSmall give
 // kOutOfMemory with asked_bytes as magnitude; kSizeMismatch gives kInternalFault, since the grid's room limit keeps
 // every count a buffer function checks in range and no build can produce it; kRunOnCallFailed, and any other value,
-// give kRunOnCallFailed.
+// give kRunOnCallFailed. A caller's span is not a build: ReadValues and WriteValues (grid/grid_values.h) report their
+// own kSizeMismatch, a span that overlaps the values, as kBadInput and do not call this for it.
 GridFailure ToGridFailure(BufferError error, std::uint64_t asked_bytes);
 
 // The arrays of one grid version, one per non-builder entry of BuildGridMemoryEstimate, for max_cell_blocks blocks.
