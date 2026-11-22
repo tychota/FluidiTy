@@ -20,9 +20,10 @@
 //          ApplyTableStepsByReplay, ApplyParallelBuildStepsByReplay, ToFailureFields, BuildReplayBuffersOwner,
 //          BuildReplayBuffersOwner, ToVector, ToTableVectors, BuildReplayResult, ToCountsOfStatus, ComputeBuildReplay,
 //          ExpectedBlocks, ComputeExpectedBlocks, CpuBuildOfList, ComputeCpuBuildOfList, ComputeIsSameTableVectors,
-//          CheckBuildReplayEqualsCpuBuild
+//          CheckBuildReplayEqualsCpuBuild, kTwoToThe34, kTwoToThe38
 // Uses:    the headers it includes
-// Used by: src/fluidity/grid/grid_build_steps.test.cc and tests/grid/grid_build_steps_on_random_grids.test.cc
+// Used by: src/fluidity/grid/grid_build_steps.test.cc, tests/grid/cell_lists_on_every_size_level.test.cc and
+//          tests/grid/grid_build_steps_on_random_grids.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -1316,5 +1317,9 @@ inline void CheckBuildReplayEqualsCpuBuild(
   EXPECT_EQ(replay_status_counts.split_cells, expected_status_counts.split_cells);
   EXPECT_EQ(replay_status_counts.cell_blocks, expected_status_counts.cell_blocks);
 }
+
+inline constexpr std::uint64_t kTwoToThe34 = std::uint64_t{1} << 34U;
+
+inline constexpr std::uint64_t kTwoToThe38 = std::uint64_t{1} << 38U;
 
 }  // namespace fluidity::grid

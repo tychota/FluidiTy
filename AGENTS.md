@@ -281,11 +281,13 @@ a header that is not itself `_gpu`. The one exception is a test (a file with `.t
 include a `<name>_runner_gpu` header of the `testing/` folder of its own folder (the test is a `.cc` or `.cu` file).
 
 **Names of test files.** A file with `.test.` in its name is a test, and nothing else carries the word `test` in
-its name, apart from the `testing/` folders, `tools/run_gpu_tests.ps1` and the Python tests under `tools/`. Each
-module folder may hold a `testing/` folder for code that its tests share and that is not itself a test. The stem of a test is the stem of a header of the same folder, so that an editor folds the test under that
+its name, apart from the `testing/` folders, the `tests/` folder, `tools/run_gpu_tests.ps1` and the Python tests under
+`tools/`. Each module folder may hold a `testing/` folder for code that its tests share and that is not itself a test.
+The stem of a unit test is the stem of a header of the same folder, so that an editor folds the test under that
 header; when the file tests one concern of the header, a topic follows the stem, as in
 `staggered_grid.cell_count.test.cc`, and the topic leaves out the words the header's name already says. This departs
-from Google's `<name>_test.cc`.
+from Google's `<name>_test.cc`. A functional test is named for what it exercises, not for a header
+(`tests/<module>/<what it exercises>.test.cc`, see "Unit tests and functional tests" below).
 
 | What | Name |
 |---|---|
@@ -298,6 +300,7 @@ from Google's `<name>_test.cc`.
 | cases, sets and runs that tests share | `testing/<name>_cases.h`, `testing/<name>_sets.h`, `testing/<name>_runs.h` |
 | other code that tests share | `testing/<name>.h`, `testing/<name>.cc` (for example `base/testing/base_support.h`) |
 | a test of the code in `testing/` | `testing/<name>.test.cc` |
+| a functional test | `tests/<module>/<what it exercises>.test.cc` (also `_on_gpu`, for one that needs a GPU) |
 
 The Python tests under `tools/` keep `<name>_test.py`, which is what pytest finds. The CTest label that names the
 module (`base`, `grid`, `contact`) is the folder of the `CMakeLists.txt`, so a test in `testing/` carries it too.
@@ -312,6 +315,10 @@ The name of a CMake target does not have to follow the file name.
   `tests/<module>/<what it exercises>.test.cc`, one folder per module, each with its own `CMakeLists.txt`. Its CTest
   label is `functional`. The name of a functional test says what it exercises (`grid_tables_on_random_grids`), and it
   need not start with the stem of a header.
+- The kind follows the definition, not the clock. A test that loops over generated or random input, over a list of
+  cases that code computes, or over many steps (a hundred or more) is functional even when it takes 10 ms. A test
+  that checks one call, or a short hand-written list of calls, on input written by hand is a unit test, even when
+  the function under test builds a whole grid (`BuildGrid`).
 - `e2e/` is for runs through the public entry of the program. It holds only a `README.md` that says so for now.
 
 A test file that holds both kinds is split: the unit tests stay where they are, the functional tests move to
@@ -501,7 +508,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   - `quick`, while working: format; rules; the debug preset built; the debug unit tests of the modules that changed;
     tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
     untracked. A change under `src/fluidity/<module>/` selects that module's unit tests; a change under
-    `tests/<module>/` selects the module too and also runs its functional tests (`NOTE functional tests: <names>`); a
+    `tests/<module>/` or under `src/fluidity/<module>/testing/` selects the module too and also runs its functional
+    tests (`NOTE functional tests: <names>`), because they use the shared test code of that folder; a
     change elsewhere under `src/` or `tests/` or under `cmake/`, or to a top-level build file, selects the unit tests
     of every module; a change to docs or tools selects none. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
@@ -534,8 +542,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     run, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
     platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms
-    (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`), and prints `NOTE unit test over 50 ms:
-    <name> (<ms> ms)` for each one between 50 and 200 ms.
+    (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`). It fails too when a test has neither the
+    `unit` nor the `functional` label, or when the JUnit file of ctest is missing. It prints
+    `NOTE unit test over 50 ms: <name> (<ms> ms)` for each unit test between 50 and 200 ms.
   - `PASS tidy`: the clang-tidy on `PATH` is the pinned version, and it reports nothing, with the debug preset's
     compile commands, on every tracked `.cc` file under `src/` and `tests/` that the CPU build compiles, and on each header
     compiled alone (`header_check/`). A `.cc` file that only the CUDA build compiles, such as a GPU-only test, is

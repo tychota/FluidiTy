@@ -48,9 +48,8 @@
 //          ComputeSideBeyondBlock, FindLocalCellPlace, FindActiveCellHolding, ToBlockLocalCoord, ComputeMovedAlongAxis
 //          and ApplyAscendingInsert
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Vec3 (base/vec3.h), CellId, CellBlockId,
-// FacePieceId,
-//          CellBlockIndex, CellPlaceIndex, FacePlaceIndex, GridVersion, CellCoord, SizeLevel, kNoIndex, kMaxCoord,
-//          kMaxSizeLevels, kBlockWidthInCells, kCellPlacesPerBlock, kFacePlacesPerBlock, kIdCellMark,
+//          FacePieceId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex, GridVersion, CellCoord, SizeLevel, kNoIndex,
+//          kMaxCoord, kMaxSizeLevels, kBlockWidthInCells, kCellPlacesPerBlock, kFacePlacesPerBlock, kIdCellMark,
 //          ComputeIsCoordInRange, ComputePackedId, ComesBefore, ToSizeLevel, ToCellCoord, ToCellBlockId,
 //          ToCellBlockIndex, ToCellPlaceIndex, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h)
 // Used by: the grid's buffers and builders, every module that reads the grid's tables, and the other grid table headers

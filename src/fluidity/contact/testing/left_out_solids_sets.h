@@ -12,8 +12,8 @@
 // Owns:    LeftOutSet, kLeftOutSetCount, ComputeExpectedOutOfRangeDistance, FindStartAtBoundary,
 //          BuildLeftOutBoundaryCases, BuildLeftOutSet, ComputeResultBits
 // Uses:    the scene catalogue and generator (contact/testing/contact_cases.h), MoveParticle (contact/solid_contact.h)
-// Used by: contact/solid_contact.move_particle_left_out.test.cc and
-//          contact/solid_contact.move_particle_left_out_reference.test.cc
+// Used by: contact/solid_contact.move_particle_left_out.test.cc, contact/testing/left_out_reference.cc and
+//          tests/contact/move_particle_left_out_every_set.test.cc
 // Read:    docs/method-paper/fluidity-method.typ <proc-move-particle>
 
 #pragma once

@@ -6,9 +6,10 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    ToUnitFrame, ToCell, ToSizeLevelNumber, ToInputs, ComputeCountsOfList, ToFloorOfHalf, ToBigCellByDivision,
-//          ComputeCheckerBlockCount, ComputeActiveCellsPerSizeLevel, ToCountFields, CheckCheckerCounts
+//          ComputeCheckerBlockCount, ComputeActiveCellsPerSizeLevel, ToCountFields, CheckCheckerCounts, ToSmallCells
 // Uses:    the headers it includes
-// Used by: src/fluidity/grid/staggered_grid.cell_count.test.cc and tests/grid/grid_counts_on_random_grids.test.cc
+// Used by: src/fluidity/grid/staggered_grid.cell_count.test.cc, tests/grid/grid_counts_on_many_cells.test.cc and
+//          tests/grid/grid_counts_on_random_grids.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -126,6 +127,21 @@ inline void CheckCheckerCounts(
   EXPECT_EQ(counts->cell_blocks, ComputeCheckerBlockCount(active_cells));
   EXPECT_EQ(counts->active_cells, active_cells.size());
   EXPECT_EQ(std::get<1>(ToCountFields(*counts)), ComputeActiveCellsPerSizeLevel(active_cells));
+}
+
+// The 8 small cells of a big cell, by the test's own arithmetic: 2 c and 2 c + 1 on each axis, in eighth order.
+inline std::vector<CellId> ToSmallCells(CellId big_cell) {
+  const CellCoord coord = ToCellCoord(big_cell);
+  const int small_size_level = ToSizeLevelNumber(big_cell) + 1;
+  std::vector<CellId> small_cells;
+  for (std::int32_t dz = 0; dz < 2; ++dz) {
+    for (std::int32_t dy = 0; dy < 2; ++dy) {
+      for (std::int32_t dx = 0; dx < 2; ++dx) {
+        small_cells.push_back(ToCell(small_size_level, (2 * coord.x) + dx, (2 * coord.y) + dy, (2 * coord.z) + dz));
+      }
+    }
+  }
+  return small_cells;
 }
 
 }  // namespace fluidity::grid

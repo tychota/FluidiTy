@@ -10,40 +10,10 @@
 #include <vector>
 
 #include "fluidity/base/testing/base_support.h"
+#include "fluidity/base/testing/tree_sum_cases.h"
 
 namespace fluidity {
 namespace {
-
-// The padded tree written the plain way, to compare with math::TreeSum: copies the values into an array padded
-// with +0.0 to the next power of two, then adds neighbours in pairs, layer after layer, in place.
-double ComputePaddedTreeSum(std::span<const double> values) {
-  if (values.empty()) {
-    return 0.0;
-  }
-  std::size_t place_count = 1;
-  while (place_count < values.size()) {
-    place_count *= 2;
-  }
-  std::vector<double> sides(place_count, 0.0);
-  for (std::size_t index = 0; index < values.size(); ++index) {
-    sides[index] = values[index];
-  }
-  for (std::size_t side_count = place_count; side_count > 1; side_count /= 2) {
-    for (std::size_t pair = 0; pair < side_count / 2; ++pair) {
-      sides[pair] = sides[2 * pair] + sides[2 * pair + 1];
-    }
-  }
-  return sides[0];
-}
-
-// The mixed values of the test support, with every tenth value -0.0, so the padding rule is exercised too.
-std::vector<double> BuildMixedValuesWithNegativeZeros(std::size_t count) {
-  std::vector<double> values = BuildMixedValues(count);
-  for (std::size_t index = 9; index < count; index += 10) {
-    values[index] = -0.0;
-  }
-  return values;
-}
 
 TEST(TreeSum, Empty_IsZero) {
   EXPECT_EQ(ToBits(math::TreeSum(nullptr, 0)), ToBits(0.0));
@@ -86,24 +56,6 @@ TEST(TreeSum, SevenValues_EqualsEightWithATrailingZero) {
   std::vector<double> eight = seven;
   eight.push_back(0.0);
   EXPECT_EQ(ToBits(math::TreeSum(seven.data(), seven.size())), ToBits(math::TreeSum(eight.data(), eight.size())));
-}
-
-TEST(TreeSum, EveryCountUpTo300_EqualsThePaddedTree) {
-  const std::vector<double> values = BuildMixedValuesWithNegativeZeros(300);
-  for (std::size_t count = 0; count <= values.size(); ++count) {
-    const std::span<const double> first_values(values.data(), count);
-    EXPECT_EQ(ToBits(math::TreeSum(values.data(), count)), ToBits(ComputePaddedTreeSum(first_values)))
-        << "count " << count;
-  }
-}
-
-TEST(TreeSum, AllNegativeZeros_EveryCountMatchesPaddedTree) {
-  const std::vector<double> values(300, -0.0);
-  for (std::size_t count = 0; count <= values.size(); ++count) {
-    const std::span<const double> first_values(values.data(), count);
-    EXPECT_EQ(ToBits(math::TreeSum(values.data(), count)), ToBits(ComputePaddedTreeSum(first_values)))
-        << "count " << count;
-  }
 }
 
 TEST(TreeSum, PowerOfTwoCount_EqualsThePaddedTree) {

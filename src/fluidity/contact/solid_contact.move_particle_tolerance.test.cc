@@ -32,59 +32,6 @@ namespace {
 
 // --- Many steps on one moving solid ---
 
-TEST(MoveParticle, SlidesTenThousandSteps_NeverStartsInside) {
-  // A particle pressed onto a moving oblique flat solid for 10,000 steps of 1/240 s, each step starting where the last
-  // ended, with both velocities set again each step to the solid's velocity + {0.2, 0.1, -0.3} - 0.5 normal m/s, and
-  // friction 0.3. The production contact_tolerance of a scene 100 m across. Every step succeeds with one hit, the
-  // response at the start, and ends between tol / 2 and 2 tol from the solid: rounding never builds up over the steps.
-  const Vec3 normal = math::Normalized({.x = 1, .y = 2, .z = 3});
-  const SolidMotion motion = {.linear_velocity = {.x = 0.5, .y = -0.25, .z = 0.125}, .angular_velocity = {}};
-  const Vec3 point_on_surface = {.x = 0.3, .y = -0.2, .z = 0.1};  // m
-  std::array solids = {move_particle_cases::BuildFlatSolid(point_on_surface, normal, motion, 1)};
-  const double contact_tolerance = ComputeContactTolerance({
-      .largest_coordinate = 100,
-      .smallest_cell_width = 0.01,
-      .thinnest_solid = 0.01,
-  });  // m
-  constexpr double kStepDuration = 1.0 / 240;  // s
-  const Vec3 velocity = motion.linear_velocity + Vec3{.x = 0.2, .y = 0.1, .z = -0.3} - 0.5 * normal;  // m/s
-  SolidContactInputs inputs;
-  inputs.start_position = point_on_surface + contact_tolerance * normal;
-  inputs.solids = solids.data();
-  inputs.solid_count = 1;
-  inputs.step_duration = kStepDuration;
-  inputs.friction = 0.3;
-  inputs.contact_tolerance = contact_tolerance;
-  int failed_steps = 0;
-  int steps_not_one_hit = 0;
-  int steps_out_of_range = 0;
-  double least_share = 2;  // Of tol.
-  double largest_share = 0;  // Of tol.
-  for (int step = 0; step < 10000; ++step) {
-    inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
-    SolidContactResult result;
-    ContactFailure failure;
-    if (MoveParticle(inputs, &result, &failure) != ContactError::kNone) {
-      ++failed_steps;
-      break;
-    }
-    Solid& solid = solids.at(0);
-    solid.pose_at_step_start = ComputeSolidPose(solid, kStepDuration);
-    const double end_share =
-        ComputeDistanceToSolid(solid, solid.pose_at_step_start, result.position).distance / contact_tolerance;
-    least_share = std::min(least_share, end_share);
-    largest_share = std::max(largest_share, end_share);
-    steps_out_of_range += end_share >= 0.5 && end_share <= 2 ? 0 : 1;
-    steps_not_one_hit += result.hit_count == 1 ? 0 : 1;
-    inputs.start_position = result.position;
-  }
-  std::cout << "ten thousand slide steps: least end distance " << least_share << " tol, largest " << largest_share
-            << " tol\n";
-  EXPECT_EQ(failed_steps, 0);
-  EXPECT_EQ(steps_out_of_range, 0);
-  EXPECT_EQ(steps_not_one_hit, 0);
-}
-
 // --- A thin plate at the production tolerance ---
 
 TEST(MoveParticle, FastParticleThinPlate_IsStopped) {

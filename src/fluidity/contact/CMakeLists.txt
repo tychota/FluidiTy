@@ -26,7 +26,7 @@ fluidity_add_test(move_particles_no_gpu_test SOURCES move_particles.no_gpu.test.
 # The test of the rule that leaves out a solid a particle cannot come near counts the reads of each solid
 # (FLUIDITY_COUNT_SOLID_READS, contact/solid_shapes.h) and compares with a copy built to read every solid.
 fluidity_add_test(move_particle_left_out_test SOURCES solid_contact.move_particle_left_out.test.cc
-                  solid_contact.move_particle_left_out_reference.test.cc LABEL cpu)
+                  testing/left_out_reference.cc LABEL cpu)
 if(TARGET move_particle_left_out_test)
   target_compile_definitions(move_particle_left_out_test PRIVATE FLUIDITY_COUNT_SOLID_READS)
 endif()

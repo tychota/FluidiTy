@@ -6,7 +6,8 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    kTolerance, kNoMotion, kGravity, ToReactingSolid, FallingParticle, SlideOffSphere, ComputeSlideOffSphere,
-//          kAnalyticLeavingAngle
+//          kAnalyticLeavingAngle, CheckEqualAxes, ExpectedHit, ComputeIsClassifiedRight, ObliqueReactionRun,
+//          ToZUpSolid, ZUpMove, ComputeZUpMove
 // Uses:    the headers it includes
 // Used by: src/fluidity/contact/move_particles.scene.test.cc and tests/contact/move_particles_scenes.test.cc
 // Read:    the test files that include it
@@ -138,5 +139,85 @@ inline SlideOffSphere ComputeSlideOffSphere(double step_duration) {
 // v^2 = v0^2 + 2 g R (1 - cos), leaving when v^2 / R = g cos: cos(angle) = 2/3 + v0^2 / (3 g R), here
 // acos(2/3 + 0.01^2 / (3 * 9.81)) from the top.
 constexpr double kAnalyticLeavingAngle = 0.8410641118063884;
+
+// Fails the calling test when an axis of actual is not equal to the same axis of expected (+0 and -0 are equal).
+inline void CheckEqualAxes(Vec3 actual, Vec3 expected) {
+  EXPECT_EQ(actual.x, expected.x) << "axis x";
+  EXPECT_EQ(actual.y, expected.y) << "axis y";
+  EXPECT_EQ(actual.z, expected.z) << "axis z";
+}
+
+// How a generated path was classified without the function under test.
+enum class ExpectedHit : std::uint8_t {
+  kHit,  // Clearly meets the solid during the step.
+  kMiss,  // Clearly does not.
+  kTooCloseToTell,  // Grazes it within the classification's 1e-9 m or 1e-6 m.
+};
+
+// Whether a run met the classification: always for a path too close to tell. `seen` is kHit or kMiss.
+inline bool ComputeIsClassifiedRight(ExpectedHit expected, ExpectedHit seen) {
+  return expected == ExpectedHit::kTooCloseToTell || expected == seen;
+}
+
+// What one oblique case did against its own solid made reacting, one MoveParticles call.
+struct ObliqueReactionRun {
+  ExpectedHit expected = ExpectedHit::kTooCloseToTell;  // ComputeFlatSolidPathClass.
+  ExpectedHit expected_reaction = ExpectedHit::kTooCloseToTell;  // ComputeFlatSolidReactionClass: kHit must react.
+  bool has_moved = false;  // The call succeeded.
+  bool is_reacting = false;  // The particle's reaction names the solid.
+  bool is_classified_right = false;  // ComputeIsClassifiedRight, for the hit and for the reaction.
+  bool is_reaction_the_change = false;  // ComputeIsReactionTheChange.
+};
+
+// The solid of one old case in Z-up axes, solid id 1: a fixed or moving flat solid or plate.
+inline Solid ToZUpSolid(const MainComparisonCase& old_case) {
+  const Vec3 normal = ToZUp(old_case.normal);
+  const Vec3 point_on_plane = old_case.plane_coordinate * normal;  // m
+  const SolidMotion motion = {.linear_velocity = ToZUp(old_case.solid_velocity), .angular_velocity = {}};
+  if (old_case.solid_kind == MainSolidKind::kPlate) {
+    return ToSolid(
+        Plate{.center = point_on_plane, .normal = normal, .half_thickness = old_case.half_thickness},
+        motion,
+        1
+    );
+  }
+  return ToSolid(FlatSolid{.point_on_surface = point_on_plane, .normal_out_of_solid = normal}, motion, 1);
+}
+
+// What this code does with one old case: CheckSolid, as the step checks every solid once, then MoveParticle with the
+// test contact tolerance.
+struct ZUpMove {
+  ContactError error = ContactError::kNone;
+  ContactFailure failure;
+  SolidContactResult result;
+};
+
+inline ZUpMove ComputeZUpMove(const MainComparisonCase& old_case) {
+  std::vector<Solid> solids;
+  if (old_case.solid_kind != MainSolidKind::kNone) {
+    solids.push_back(ToZUpSolid(old_case));
+  }
+  ZUpMove move;
+  for (const Solid& solid : solids) {
+    move.error = CheckSolid(solid, old_case.step_duration);
+    if (move.error != ContactError::kNone) {
+      return move;
+    }
+  }
+  SolidContactInputs inputs;
+  inputs.start_position = ToZUp(old_case.start_position);
+  inputs.velocity = {
+      .for_next_step = ToZUp(old_case.velocity_for_next_step),
+      .for_this_step = ToZUp(old_case.velocity_for_this_step),
+  };
+  inputs.solids = solids.empty() ? nullptr : solids.data();
+  inputs.solid_count = static_cast<std::uint32_t>(solids.size());
+  inputs.step_duration = old_case.step_duration;
+  inputs.friction = old_case.friction;
+  inputs.start_overlap_tolerance = old_case.start_overlap_tolerance;
+  inputs.contact_tolerance = kTolerance;
+  move.error = MoveParticle(inputs, &move.result, &move.failure);
+  return move;
+}
 
 }  // namespace fluidity::contact

@@ -14,7 +14,6 @@
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/testing/cell_size_rule_cases.h"
 #include "fluidity/grid/testing/cell_size_rule_factor_cases.h"
-#include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
 namespace {
@@ -96,13 +95,6 @@ TEST(ComputeCellSizeFactorTable, MiddleRoot_IsTheSquareRootOfTwo) {
   EXPECT_EQ(kTable.factor[26], math::Sqrt(2.0));
 }
 
-TEST(ComputeCellSizeFactorCode, NoVolume_IsZero) {
-  const RefinementFactors no_volume{};
-  for (const CellId cell : BuildRandomGridCells(7, 5, 4)) {
-    EXPECT_EQ(ComputeCellSizeFactorCode(no_volume, kSmallestSizeLevel, cell), 0);
-  }
-}
-
 TEST(ComputeCellSizeFactorCode, SmallCell_ReadsItsEntry) {
   const TestRefinementVolume volume = BuildFixtureVolume(3);
   EXPECT_EQ(ComputeFixtureCode(volume.factors, 4, 20, 3, 3), -8);
@@ -170,24 +162,9 @@ std::int64_t ComputePowerOfTwo(int exponent) {
   return static_cast<std::int64_t>(std::uint64_t{1} << static_cast<unsigned>(exponent));
 }
 
-// The code a one-entry volume (one size-level-4 cell wide) gives for the stored code.
-int ComputeCodeOfStoredCode(int stored_code) {
-  const std::vector<std::int8_t> codes = {static_cast<std::int8_t>(stored_code)};
-  const TestRefinementVolume volume = BuildTestRefinementFactors(1, 1, 1, 0, 1, codes);
-  return ComputeFixtureCode(volume.factors, 4, 0, 0, 0);
-}
-
 TEST(ComputeCellSizeFactorCode, StoredCodeAtTheLimits_IsClampedToTheTable) {
   for (const int stored : {-24, 24, -23, 23, -25, 25, 127, -128, 0}) {
     EXPECT_EQ(ComputeCodeOfStoredCode(stored), std::clamp(stored, -24, 24)) << stored;
-  }
-}
-
-TEST(ComputeCellSizeFactorCode, EveryStoredCode_IndexesTheTable) {
-  for (int stored = -128; stored <= 127; ++stored) {
-    const int table_index = ComputeCodeOfStoredCode(stored) + kMaxCellSizeFactorCode;
-    EXPECT_GE(table_index, 0) << stored;
-    EXPECT_LE(table_index, 48) << stored;
   }
 }
 

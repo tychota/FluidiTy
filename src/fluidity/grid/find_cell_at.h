@@ -14,9 +14,8 @@
 //          BiasedSmallestCellCoord, ToBiasedSmallestCellCoord, ToBiggestBlockId, FindActiveCellBelow,
 //          FindBiggestBlockFrom and FindCellAtCoord
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), math::Floor, math::IsFinite (base/scalar_math.h), Vec3
-// (base/vec3.h),
-//          GridFrame, GridTables, FindCellBlock, ToSizeLevel, ComputeCellWidth, ToCellId (grid/grid_tables.h), the id
-//          types and constants (grid/grid_ids.h)
+//          (base/vec3.h), GridFrame, GridTables, FindCellBlock, ToSizeLevel, ComputeCellWidth, ToCellId
+//          (grid/grid_tables.h), the id types and constants (grid/grid_ids.h)
 // Used by: the grid's builders, the particle stages and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 

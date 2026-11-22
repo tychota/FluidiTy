@@ -4,13 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "fluidity/contact/testing/left_out_reference.h"
 #include "fluidity/contact/testing/left_out_solids_sets.h"
-
-namespace left_out_reference {
-// The bits of the answers on one set with no solid ever left out
-// (solid_contact.move_particle_left_out_reference.test.cc).
-std::vector<std::uint64_t> ComputeReferenceResultBits(int set_index);
-}  // namespace left_out_reference
 
 namespace fluidity::contact {
 namespace {

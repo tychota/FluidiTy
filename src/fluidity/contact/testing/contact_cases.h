@@ -18,7 +18,7 @@
 //   them: every end at least tol / 2 outside every solid, beside a naive control that hits at the surface and has no
 //   settle.
 //
-// Owns:    kTestContactTolerance, ExpectVec3Near, CaseGenerator, MoveParticleCase, ToSolidContactInputs,
+// Owns:    kFixed, kTestContactTolerance, ExpectVec3Near, CaseGenerator, MoveParticleCase, ToSolidContactInputs,
 //          BuildMoveParticleCases, FindMoveParticleCase, kFarFromOriginContactTolerance, BuildObliqueCases,
 //          BuildRoundCases, EndDistanceCounts, ComputeEndDistanceCounts, BuildShorterStepCase
 // Uses:    Vec3 (base/vec3.h), Mat3, kIdentity (base/mat3.h), CPU-only guard (base/cpu_only.h), Solid, ToSolid and
@@ -3462,5 +3462,7 @@ inline MoveParticleCase BuildShorterStepCase(std::string_view name) {
   ADD_FAILURE() << "no shorter-step case named " << name;
   return {};
 }
+
+inline constexpr Vec3 kFixed = {.x = 0, .y = 0, .z = 0};  // m/s, the velocity of a solid that does not move.
 
 }  // namespace fluidity::contact

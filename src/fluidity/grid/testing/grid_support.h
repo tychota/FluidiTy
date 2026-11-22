@@ -36,7 +36,7 @@
 //          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers, kMutatedGridCount,
 //          BuildMutatedGridCells,
 //          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings, BuildLoneCellsAlongX, BuildSmallCellsOfEightBigCells,
-//          BuildTwoSizeFixtureCells
+//          BuildTwoSizeFixtureCells, ComputeHasNoIndexPastCount
 // Uses:    Axis (base/axis.h), Buffer (base/buffer.h), RunMemory (base/run_memory.h), Vec3 (base/vec3.h), GridFailure
 //          (grid/grid_error.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h), GridFrame
 //          (grid/grid_tables.h), GridSettings, GridInputs, GridBuilderBuffers, StaggeredGrid (grid/staggered_grid.h),
@@ -59,6 +59,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -390,5 +391,16 @@ struct RandomGridsWithCheckers {
 // Example: entry 0 holds the grid and the checker of BuildShuffledRandomGrids().at(0). A grid that fails to build
 //   fails the calling test and is left out, so a caller checks that kRandomGridCount grids are there.
 const RandomGridsWithCheckers& FindRandomGridsWithCheckers();
+
+// Says whether every entry from `count` on is kNoIndex: the bytes past the list are fixed.
+template <typename PlaceArray>
+bool ComputeHasNoIndexPastCount(const PlaceArray& places, int count) {
+  for (auto entry = static_cast<std::size_t>(count); entry < std::size(places); ++entry) {
+    if (places[entry].value != kNoIndex) {
+      return false;
+    }
+  }
+  return true;
+}
 
 }  // namespace fluidity::grid

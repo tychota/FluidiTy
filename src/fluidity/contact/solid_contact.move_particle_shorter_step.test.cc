@@ -1,14 +1,10 @@
-#include "fluidity/contact/solid_contact.h"
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
-#include <iostream>
-#include <set>
 #include <string>
 
 #include "fluidity/base/vec3.h"
@@ -17,26 +13,10 @@
 #include "fluidity/contact/solid_contact_types.h"
 #include "fluidity/contact/solid_shapes.h"
 #include "fluidity/contact/testing/contact_cases.h"
+#include "fluidity/contact/testing/solid_contact_move_particle_shorter_step_cases.h"
 
 namespace fluidity::contact {
 namespace {
-
-// What one MoveParticle call returned.
-struct MoveParticleCall {
-  ContactError error = ContactError::kNone;
-  SolidContactResult result{};
-  ContactFailure failure{};
-};
-
-// Runs MoveParticle on a scene with its step divided by 2^halving_count, every other input kept, the contact tolerance
-// included.
-MoveParticleCall ComputeMoveWithHalvings(const MoveParticleCase& scene, int halving_count) {
-  SolidContactInputs inputs = ToSolidContactInputs(scene);
-  inputs.step_duration = std::ldexp(inputs.step_duration, -halving_count);
-  MoveParticleCall call;
-  call.error = MoveParticle(inputs, &call.result, &call.failure);
-  return call;
-}
 
 // Fails the calling test unless the scene fails with kTooCloseToCall, that close call and that solid, and
 // can_shorter_step_cure false, at its step T and at T / 2, T / 4 and T / 16.
@@ -53,22 +33,6 @@ void CheckSameCloseCallAtShorterSteps(
     EXPECT_EQ(call.failure.solid_id, solid_id);
     EXPECT_FALSE(call.failure.can_shorter_step_cure);
   }
-}
-
-// Halves the scene's step until MoveParticle succeeds, at most max_halving_count times, and returns how many halvings
-// that took, or max_halving_count + 1 when none succeeded. Fails the calling test unless every failure on the way is
-// kTooCloseToCall with that close call and can_shorter_step_cure true.
-int ComputeCountHalvingsToSuccess(const MoveParticleCase& scene, ContactCloseCall close_call, int max_halving_count) {
-  for (int halving_count = 0; halving_count <= max_halving_count; ++halving_count) {
-    const MoveParticleCall call = ComputeMoveWithHalvings(scene, halving_count);
-    if (call.error == ContactError::kNone) {
-      return halving_count;
-    }
-    EXPECT_EQ(call.error, ContactError::kTooCloseToCall) << "after " << halving_count << " halvings";
-    EXPECT_EQ(call.failure.close_call, close_call) << "after " << halving_count << " halvings";
-    EXPECT_TRUE(call.failure.can_shorter_step_cure) << "after " << halving_count << " halvings";
-  }
-  return max_halving_count + 1;
 }
 
 // --- Close calls that no shorter step cures: decided at the start of the step ---
@@ -332,74 +296,6 @@ TEST(CheckEndOutsideSolids, EndTooClose_ShorterStepCures) {
 }
 
 // --- Every failure of the catalogue ---
-
-// Fails the calling test unless a failure with can_shorter_step_cure false comes back at T / 2, T / 4 and T / 16:
-// the same error, close call and solid, still false.
-void CheckLastingFailure(const MoveParticleCase& scene, const ContactFailure& failure, ContactError error) {
-  for (const int halving_count : {1, 2, 4}) {
-    SCOPED_TRACE("step divided by 2^" + std::to_string(halving_count));
-    const MoveParticleCall shorter = ComputeMoveWithHalvings(scene, halving_count);
-    EXPECT_EQ(shorter.error, error);
-    EXPECT_EQ(shorter.failure.close_call, failure.close_call);
-    EXPECT_EQ(shorter.failure.solid_id, failure.solid_id);
-    EXPECT_FALSE(shorter.failure.can_shorter_step_cure);
-  }
-}
-
-// What the failures of the catalogue gave.
-struct CatalogueFailureCounts {
-  int lasting = 0;  // can_shorter_step_cure false.
-  int cured = 0;  // can_shorter_step_cure true.
-  int most_halvings = 0;  // The most halvings a cured failure needed.
-  std::set<ContactError> errors;  // Every error met.
-};
-
-// The most halvings a failure of the catalogue with can_shorter_step_cure true needs: GrazingWedgeClosingFast's hit
-// comes 2^-26 of 0.1 s into the step, and every longer step meets it.
-constexpr int kMostCatalogueHalvings = 26;
-
-// Checks one scene of the catalogue and counts it: a failure with can_shorter_step_cure false comes back at shorter
-// steps (CheckLastingFailure); one with it true is a close call cured within kMostCatalogueHalvings halvings, every
-// failure on the way true.
-void CheckCatalogueScene(const MoveParticleCase& scene, CatalogueFailureCounts& counts) {
-  const MoveParticleCall call = ComputeMoveWithHalvings(scene, 0);
-  if (call.error == ContactError::kNone) {
-    return;
-  }
-  counts.errors.insert(call.error);
-  if (!call.failure.can_shorter_step_cure) {
-    ++counts.lasting;
-    CheckLastingFailure(scene, call.failure, call.error);
-    return;
-  }
-  ++counts.cured;
-  EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
-  const int halving_count = ComputeCountHalvingsToSuccess(scene, call.failure.close_call, kMostCatalogueHalvings);
-  EXPECT_LE(halving_count, kMostCatalogueHalvings);
-  counts.most_halvings = std::max(counts.most_halvings, halving_count);
-}
-
-TEST(MoveParticle, EveryCatalogueFailure_ShorterStepCuresExactlyWhenFlagSays) {
-  // Every scene of BuildMoveParticleCases that fails (CheckCatalogueScene). Every error other than kTooCloseToCall is
-  // false, and the four errors of a scene are each met.
-  CatalogueFailureCounts counts;
-  for (const MoveParticleCase& scene : BuildMoveParticleCases()) {
-    SCOPED_TRACE(std::string(scene.name));
-    CheckCatalogueScene(scene, counts);
-  }
-  std::cout << "catalogue failures: lasting " << counts.lasting << ", cured " << counts.cured << " (most halvings "
-            << counts.most_halvings << ")\n";
-  EXPECT_GT(counts.lasting, 0);
-  EXPECT_GT(counts.cured, 0);
-  EXPECT_EQ(counts.most_halvings, kMostCatalogueHalvings);
-  const std::set<ContactError> scene_errors = {
-      ContactError::kBadInput,
-      ContactError::kStartsInsideSolid,
-      ContactError::kOnWrongSideOfPlate,
-      ContactError::kStartsInNarrowGap,
-  };
-  EXPECT_TRUE(std::ranges::includes(counts.errors, scene_errors));
-}
 
 }  // namespace
 }  // namespace fluidity::contact

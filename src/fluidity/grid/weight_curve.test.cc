@@ -3,29 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
-#include <random>
-
-#include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
 namespace {
 
 static_assert(ComputeCompleteWeightedSpread(2.0) == 1.0);
-
-TEST(ComputeWeightCurve, AnyPosition_ThreeNeighboursSumToOne) {
-  // A fixed seed: the test checks the same offsets on every run.
-  std::mt19937_64 generator(20261114);  // NOLINT(bugprone-random-generator-seed)
-  for (int draw = 0; draw < 1000; ++draw) {
-    const double offset = ToUnitDouble(generator()) - 0.5;
-    const WeightCurveValue below = ComputeWeightCurve(offset - 1.0);
-    const WeightCurveValue middle = ComputeWeightCurve(offset);
-    const WeightCurveValue above = ComputeWeightCurve(offset + 1.0);
-    const double weight_sum = below.weight + middle.weight + above.weight;
-    const double slope_sum = below.slope + middle.slope + above.slope;
-    EXPECT_NEAR(weight_sum, 1.0, 4e-16) << offset;
-    EXPECT_NEAR(slope_sum, 0.0, 4e-16) << offset;
-  }
-}
 
 TEST(ComputeWeightCurve, AtAndBeyondReach_IsZero) {
   const double just_past_one_and_a_half = std::nextafter(1.5, 2.0);
@@ -77,12 +59,6 @@ TEST(ComputeWeightCurve, InsideAndOutsideHalf_MatchTheWorkedExamples) {
   const WeightCurveValue outer = ComputeWeightCurve(-1.25);
   EXPECT_EQ(outer.weight, 0.03125);
   EXPECT_EQ(outer.slope, 0.25);
-}
-
-TEST(ComputeWeightCurve, AnyDistance_IsNeverNegative) {
-  for (int step = -400; step <= 400; ++step) {
-    EXPECT_GE(ComputeWeightCurve(0.005 * step).weight, 0.0) << step;
-  }
 }
 
 TEST(ComputeCompleteWeightedSpread, WidthTwo_IsOne) {

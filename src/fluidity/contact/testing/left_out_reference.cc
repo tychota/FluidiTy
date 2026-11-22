@@ -6,12 +6,10 @@
 // renamed to fluidity_read_every_solid before the headers are read: the two copies never share a name, and each program
 // part calls its own.
 
+#include "fluidity/contact/testing/left_out_reference.h"
+
 #include <cstdint>
 #include <vector>
-
-namespace left_out_reference {
-std::vector<std::uint64_t> ComputeReferenceResultBits(int set_index);
-}  // namespace left_out_reference
 
 // NOLINTBEGIN(cppcoreguidelines-macro-usage): the renaming that keeps the two copies of the headers apart.
 #define FLUIDITY_CONTACT_READ_EVERY_SOLID

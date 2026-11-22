@@ -5,7 +5,7 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    ToListedPlaces, ComputeHasNoIndexPastCount, ComputeIsStrictlyAscending, ToCheckerTouchingPlaces,
+// Owns:    ToListedPlaces, ComputeIsStrictlyAscending, ToCheckerTouchingPlaces,
 //          ToCheckerFacePiecesByCell, ToAscendingFacePlaces, CellSurfaceSums, ComputeCellSurfaceSums,
 //          ActiveCellReaderMistakes, LargestCounts, FindActiveCellReaderMistakes, CheckNoMistake
 // Uses:    the headers it includes
@@ -51,17 +51,6 @@ std::vector<std::uint32_t> ToListedPlaces(const PlaceArray& places, int count) {
     listed_places.push_back(places[entry].value);
   }
   return listed_places;
-}
-
-// Says whether every entry from `count` on is kNoIndex: the bytes past the list are fixed.
-template <typename PlaceArray>
-bool ComputeHasNoIndexPastCount(const PlaceArray& places, int count) {
-  for (auto entry = static_cast<std::size_t>(count); entry < std::size(places); ++entry) {
-    if (places[entry].value != kNoIndex) {
-      return false;
-    }
-  }
-  return true;
 }
 
 inline bool ComputeIsStrictlyAscending(const std::vector<std::uint32_t>& places) {

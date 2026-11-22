@@ -39,9 +39,33 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  cell_lists_on_every_size_level_functional_test
+  SOURCES
+  cell_lists_on_every_size_level.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   cell_size_factor_on_large_volume_functional_test
   SOURCES
   cell_size_factor_on_large_volume.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  cell_size_factor_on_many_inputs_functional_test
+  SOURCES
+  cell_size_factor_on_many_inputs.test.cc
   LABEL
   cpu
   TIER
@@ -139,6 +163,18 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  grid_counts_on_many_cells_functional_test
+  SOURCES
+  grid_counts_on_many_cells.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   grid_counts_on_random_grids_functional_test
   SOURCES
   grid_counts_on_random_grids.test.cc
@@ -154,6 +190,18 @@ fluidity_add_test(
   grid_ids_on_random_ids_functional_test
   SOURCES
   grid_ids_on_random_ids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  grid_support_on_many_draws_functional_test
+  SOURCES
+  grid_support_on_many_draws.test.cc
   LABEL
   cpu
   TIER
@@ -203,6 +251,18 @@ fluidity_add_test(
   touching_cells_on_random_grids_functional_test
   SOURCES
   touching_cells_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  weight_curve_on_many_positions_functional_test
+  SOURCES
+  weight_curve_on_many_positions.test.cc
   LABEL
   cpu
   TIER

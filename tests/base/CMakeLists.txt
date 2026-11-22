@@ -1,9 +1,57 @@
 fluidity_add_test(
+  buffer_on_gpu_functional_test
+  SOURCES
+  buffer_on_gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  buffer_on_many_values_functional_test
+  SOURCES
+  buffer_on_many_values.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  check_can_run_on_math_inputs_functional_test
+  SOURCES
+  check_can_run_on_math_inputs.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
   ordered_sums_on_gpu_functional_test
   SOURCES
   ordered_sums_on_gpu.test.cc
   LABEL
   gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  ordered_sums_on_thousand_values_functional_test
+  SOURCES
+  ordered_sums_on_thousand_values.test.cc
+  LABEL
+  cpu
   TIER
   functional
   LINKS
@@ -27,6 +75,18 @@ fluidity_add_test(
   stable_order_against_std_sort_functional_test
   SOURCES
   stable_order_against_std_sort.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  stable_order_on_generated_keys_functional_test
+  SOURCES
+  stable_order_on_generated_keys.test.cc
   LABEL
   cpu
   TIER
@@ -63,6 +123,30 @@ fluidity_add_test(
   tree_sum_layers_in_every_thread_order_functional_test
   SOURCES
   tree_sum_layers_in_every_thread_order.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  tree_sum_layers_on_every_count_functional_test
+  SOURCES
+  tree_sum_layers_on_every_count.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  tree_sum_on_every_count_functional_test
+  SOURCES
+  tree_sum_on_every_count.test.cc
   LABEL
   cpu
   TIER

@@ -4,8 +4,7 @@
 //   list of the face pieces of its six sides, from the tables of one grid version, on the CPU or the GPU.
 //
 // Idea: around a cell. The 26 places of its size level around an active cell give its touching cells: the cell there,
-// the
-//   bigger active cell that covers the place, or the small cells of a split place next to it, at most 56 in all
+//   the bigger active cell that covers the place, or the small cells of a split place next to it, at most 56 in all
 //   (FindTouchingCells). Each of its six sides is one face piece, or four kept one size level smaller beside a split
 //   place, at most 24 (FindFacePieces). Both lists are plain fixed arrays in ascending index order.
 //   The two-size example used below: 2 size levels, biggest cells 1 m wide, origin 0; the size-level-0 cell {0,0,0}
@@ -20,16 +19,13 @@
 //                   cell. Not a grid piece, not a memory piece
 //   touching cell   an active cell that shares a side, an edge or a corner with a given cell
 // Owns:    kMaxTouchingCells, kMaxCellFacePieces, TouchingCells, CellFacePieces, FindTouchingCells, FindFacePieces;
-// and,
-//          for this header's own functions only, CellSide, SmallCellHalves, PlaceOffset, ComputeCoordAlongAxis,
+//          and, for this header's own functions only, CellSide, SmallCellHalves, PlaceOffset, ComputeCoordAlongAxis,
 //          FindHighSideFacePlace, FindSmallCellBlock, ApplyTouchingSmallCells and ApplyFacePiecesBesideSplitPlace
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), GridTables, BlockLocalCoord, FacePlaceParts,
 //          ToBlockLocalCoord, ComputeMovedAlongAxis, ToFacePlaceIndex, ApplyAscendingInsert,
 //          ComputeIsActiveCellPlace, FindLocalCellPlace, FindActiveCellHolding, FindCellBlock, ToSizeLevel
 //          (grid/grid_tables.h), the id types and constants (grid/grid_ids.h)
-// Used by: face_search.h, cell_corners.h (through the shared helpers it does not own), the grid's builders and the
-// tests of the
-//          grid
+// Used by: face_search.h, the grid's builders and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-face-pieces>
 
 #pragma once

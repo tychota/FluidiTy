@@ -36,7 +36,7 @@ fluidity_add_test(
   move_particle_left_out_every_set_functional_test
   SOURCES
   move_particle_left_out_every_set.test.cc
-  ${PROJECT_SOURCE_DIR}/src/fluidity/contact/solid_contact.move_particle_left_out_reference.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/contact/testing/left_out_reference.cc
   LABEL
   cpu
   TIER
@@ -54,6 +54,42 @@ fluidity_add_test(
   cpu
   TIER
   functional
+)
+
+fluidity_add_test(
+  move_particle_shorter_step_on_catalogue_functional_test
+  SOURCES
+  move_particle_shorter_step_on_catalogue.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  move_particle_slides_over_many_steps_functional_test
+  SOURCES
+  move_particle_slides_over_many_steps.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
+
+fluidity_add_test(
+  move_particles_against_move_particle_functional_test
+  SOURCES
+  move_particles_against_move_particle.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
 )
 
 fluidity_add_test(
@@ -122,6 +158,18 @@ if(TARGET round_solid_hit_on_generated_sweeps_functional_test)
     "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>>:-O1>"
   )
 endif()
+
+fluidity_add_test(
+  smallest_correction_on_generated_cases_functional_test
+  SOURCES
+  smallest_correction_on_generated_cases.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+)
 
 fluidity_add_test(
   solid_shapes_shared_formulas_on_gpu_functional_test

@@ -5,9 +5,10 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    kSmallestSizeLevel, ToTestCell, ComputeFixtureCode, BuildLongVolume
+// Owns:    kSmallestSizeLevel, ToTestCell, ComputeFixtureCode, BuildLongVolume, ComputeCodeOfStoredCode
 // Uses:    the headers it includes
-// Used by: src/fluidity/grid/cell_size_rule.factor.test.cc and tests/grid/cell_size_factor_on_large_volume.test.cc
+// Used by: src/fluidity/grid/cell_size_rule.factor.test.cc, tests/grid/cell_size_factor_on_large_volume.test.cc and
+//          tests/grid/cell_size_factor_on_many_inputs.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -57,6 +58,13 @@ BuildLongVolume(int axis, int count, std::int8_t code, const std::vector<int>& c
     codes[static_cast<std::size_t>(coded_entry)] = -7;
   }
   return BuildTestRefinementFactors(axis == 0 ? count : 1, axis == 1 ? count : 1, axis == 2 ? count : 1, 0, 3, codes);
+}
+
+// The code a one-entry volume (one size-level-4 cell wide) gives for the stored code.
+inline int ComputeCodeOfStoredCode(int stored_code) {
+  const std::vector<std::int8_t> codes = {static_cast<std::int8_t>(stored_code)};
+  const TestRefinementVolume volume = BuildTestRefinementFactors(1, 1, 1, 0, 1, codes);
+  return ComputeFixtureCode(volume.factors, 4, 0, 0, 0);
 }
 
 }  // namespace fluidity::grid

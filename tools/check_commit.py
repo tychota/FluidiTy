@@ -298,13 +298,30 @@ def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
 
 
 def modules_with_changed_functional_tests(changed_paths: Sequence[str]) -> frozenset[str]:
-    """The modules with a changed file under tests/<module>/: their functional tests run in a quick run too."""
+    """The modules with a changed file under tests/<module>/ or under src/fluidity/<module>/testing/: their
+    functional tests run in a quick run too, because the functional tests use the shared test code of that folder."""
     modules = set()
     for path in changed_paths:
         parts = Path(path).parts
         if parts[:1] == (FUNCTIONAL_TESTS_ROOT,) and len(parts) >= 3:
             modules.add(parts[1])
+        if parts[:2] == MODULES_ROOT and len(parts) >= 5 and parts[3] == "testing":
+            modules.add(parts[2])
     return frozenset(modules)
+
+
+def tests_without_tier(junit_text: str) -> list[str]:
+    """The tests of the JUnit file of ctest whose labels (`cmake_labels`) hold neither `unit` nor `functional`, in
+    file order. Every test has a tier, so one without it means the rule that times the unit tests cannot see it."""
+    untiered: list[str] = []
+    for case in ElementTree.fromstring(junit_text).iter("testcase"):
+        labels = ""
+        for label_property in case.iter("property"):
+            if label_property.get("name") == "cmake_labels":
+                labels = label_property.get("value", "")
+        if not {"unit", "functional"} & set(labels.split(";")):
+            untiered.append(case.get("name", ""))
+    return untiered
 
 
 def slow_unit_tests(junit_text: str) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
@@ -586,8 +603,13 @@ class Gate:
         try:
             junit_text = junit_path.read_text(encoding="utf-8")
             over_limit, over_note = slow_unit_tests(junit_text)
+            untiered = tests_without_tier(junit_text)
         except (OSError, ElementTree.ParseError, ValueError) as error:
             return Outcome(False, f"the JUnit file of ctest cannot be read ({error})", notes, output)
+        if untiered:
+            shown = ", ".join(untiered[:3])
+            more = f" and {len(untiered) - 3} more" if len(untiered) > 3 else ""
+            return Outcome(False, f"tests without a tier label (unit or functional): {shown}{more}", notes, output)
         time_notes = tuple(
             f"NOTE unit test over {UNIT_TEST_NOTE_SECONDS * 1000:.0f} ms: {name} ({seconds * 1000:.0f} ms)"
             for name, seconds in over_note

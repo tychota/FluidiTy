@@ -18,10 +18,10 @@
 //          BuildFaceSearch, FindNextFace; and, for this header's own functions only, ApplyCellNearFaceInsert,
 //          ComputeClampedFaceSearchRadius, FindBlockAtCoord, ApplyFaceSearchBlockInsert, QuarterWidthPoint,
 //          ComputeFaceCenterInQuarterWidths and ComputeIsWithinQuarterRadius
-// Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), math::Floor, math::IsFinite,
-//          math::kPositiveInfinity (base/scalar_math.h), TouchingCells, FindTouchingCells (grid/touching_cells.h),
-//          GridTables, FindCellLow, FindCellHigh, FindCellBlock, ToSizeLevel, ToAxis, ComputeHighPlaceCoord,
-//          ApplyAscendingInsert (grid/grid_tables.h), the id types and constants (grid/grid_ids.h)
+// Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), TouchingCells, FindTouchingCells
+//          (grid/touching_cells.h), GridTables, FindCellLow, FindCellHigh, FindCellBlock, ToSizeLevel, ToAxis,
+//          ComputeHighPlaceCoord, ApplyAscendingInsert (grid/grid_tables.h), the id types and constants
+//          (grid/grid_ids.h)
 // Used by: the particle stages that look for nearby faces, and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <sec-face-search>
 

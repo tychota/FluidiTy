@@ -6,7 +6,6 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    ToUnitFrame, ToCell, ToInputs, ToTablesOf, ApplyAppendSmallCells, ToListedPlaces,
-// ComputeHasNoIndexPastCount,
 //          FindGivenFaces, FindWalkedFaces, BuildCellWithEveryNeighbourSplit, BuildBiggerBlockBehindAbsentNeighbour,
 //          BuildThreeSizeCells, BuildBoxOfCells, BuildUniformBox, BuildSameSizePairWithEveryNeighbourSplit,
 //          ComputeLargestCellsNearFace
@@ -43,7 +42,6 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/grid_support.h"
-#include "fluidity/grid/touching_cells.h"
 
 namespace fluidity::grid {
 
@@ -85,17 +83,6 @@ std::vector<std::uint32_t> ToListedPlaces(const PlaceArray& places, int count) {
     listed_places.push_back(places[entry].value);
   }
   return listed_places;
-}
-
-// Says whether every entry from `count` on is kNoIndex: the bytes past the list are fixed.
-template <typename PlaceArray>
-bool ComputeHasNoIndexPastCount(const PlaceArray& places, int count) {
-  for (auto entry = static_cast<std::size_t>(count); entry < std::size(places); ++entry) {
-    if (places[entry].value != kNoIndex) {
-      return false;
-    }
-  }
-  return true;
 }
 
 // The face pieces FindNextFace gives from `search` until kNoIndex, in order. After more calls than the face places of

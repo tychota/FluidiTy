@@ -12,8 +12,6 @@ namespace {
 
 constexpr Vec3 kUpwardNormal = {.x = 0, .y = 0, .z = 1};
 
-constexpr Vec3 kFixed = {.x = 0, .y = 0, .z = 0};  // m/s, the velocity of a solid that does not move.
-
 // m/s. Sideways 3 along x and 1 into a flat solid: the paper's figure.
 constexpr Vec3 kSidewaysThreeIntoOne = {.x = 3, .y = 0, .z = -1};
 
@@ -193,32 +191,6 @@ TEST(ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit) {
 }
 
 // --- Generated cases ---
-
-TEST(ComputeContactResponse, FixedSolid_NeverRaisesSpeed) {
-  // Removing the approach and moving toward a fixed solid's zero velocity can only shorten the velocity; rounding may
-  // add a few rounding units. Draw order per case: a normal of three NextSigned() values, drawn again while its length
-  // is below 0.25, then normalised; a velocity of 10 times three NextSigned() values; friction 2 * Next().
-  CaseGenerator generator;
-  int approaching_count = 0;
-  for (int case_index = 0; case_index < 1000; ++case_index) {
-    Vec3 normal{};
-    do {
-      normal = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
-    } while (math::Length(normal) < 0.25);
-    normal = math::Normalized(normal);
-    const Vec3 direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
-    const Vec3 velocity = 10 * direction;
-    const double friction = 2 * generator.Next();
-
-    const Vec3 after = ComputeContactResponse(velocity, kFixed, normal, friction);
-    EXPECT_LE(math::Length(after), math::Length(velocity) * (1 + 0x1p-50)) << "case " << case_index;
-    if (math::Dot(normal, velocity) < 0) {
-      ++approaching_count;
-    }
-  }
-  // About half the cases approach, so the set exercises the removal and friction, not only the unchanged branch.
-  EXPECT_GT(approaching_count, 400);
-}
 
 }  // namespace
 }  // namespace fluidity::contact

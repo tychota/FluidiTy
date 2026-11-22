@@ -8,10 +8,12 @@
 // Owns:    kTolerance, kNoMotion, kUnitX, kUnitZ, MoveParticleCall, BuildUntouchedResult, ComputeMove, ComputeMove,
 //          MoveBeforeSettle, ApplyStepsBeforeSettle, ComputeMoveBeforeSettle, ComputePositionBeforeSettle,
 //          BuildOrderedScene, ToWedgeSideNormal, BuildRestPointInputs, BuildMovingFlatSolid, ToPermutedSolids,
-//          BuildUnitVector, BuildUnitVector
+//          BuildUnitVector, BuildUnitVector, BuildCorrectionTargets, SharpSurfaceResult, CheckBothVelocitiesNear
 // Uses:    the headers it includes
-// Used by: src/fluidity/contact/solid_contact.move_particle.test.cc and
-//          tests/contact/move_particle_on_generated_paths.test.cc
+// Used by: src/fluidity/contact/solid_contact.move_particle.test.cc,
+//          tests/contact/move_particle_on_generated_paths.test.cc,
+//          tests/contact/move_particle_slides_over_many_steps.test.cc and
+//          tests/contact/smallest_correction_on_generated_cases.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -239,6 +241,37 @@ inline Vec3 BuildUnitVector(CaseGenerator& generator) {
     direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
   }
   return math::Normalized(direction);
+}
+
+// A CorrectionTargets of the given normals and targets.
+inline CorrectionTargets
+BuildCorrectionTargets(std::initializer_list<Vec3> normals, std::initializer_list<double> targets) {
+  CorrectionTargets built;
+  int index = 0;
+  for (const Vec3 normal : normals) {
+    built.normals[index] = normal;
+    ++index;
+  }
+  built.count = index;
+  index = 0;
+  for (const double target : targets) {
+    built.targets[index] = target;
+    ++index;
+  }
+  return built;
+}
+
+// What one case of the sharp-surface set gave: its refinements and the largest approach it left, in rounding units of
+// the summed speeds (0 when no change was needed).
+struct SharpSurfaceResult {
+  int refinement_count = 0;
+  double largest_share_left = 0;
+};
+
+// Fails the calling test unless both velocities are within tolerance of expected on each axis.
+inline void CheckBothVelocitiesNear(const SolidContactResult& result, Vec3 expected, double tolerance) {
+  ExpectVec3Near(result.velocity.for_next_step, expected, tolerance);
+  ExpectVec3Near(result.velocity.for_this_step, expected, tolerance);
 }
 
 }  // namespace fluidity::contact

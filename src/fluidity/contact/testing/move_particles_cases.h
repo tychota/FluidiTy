@@ -5,9 +5,11 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    kTolerance, CpuContactBuffers, ParticleArrays, BuildFloorParticle, BuildFloorParticles
+// Owns:    kTolerance, CpuContactBuffers, ParticleArrays, BuildFloorParticle, BuildFloorParticles, CopyOutputBytes,
+//          ApplyOutputFill, ToBits, ToFieldBits, ToRecordFieldBits, CheckSameOutputs
 // Uses:    the headers it includes
-// Used by: src/fluidity/contact/move_particles.test.cc and tests/contact/move_particles_in_every_thread_count.test.cc
+// Used by: src/fluidity/contact/move_particles.test.cc, tests/contact/move_particles_against_move_particle.test.cc and
+//          tests/contact/move_particles_in_every_thread_count.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -225,6 +227,103 @@ inline ParticleArrays BuildFloorParticles(std::size_t count, std::span<const std
     arrays.AddParticle(BuildFloorParticle(start, {.x = 1, .y = 0, .z = -1 + share}), 1000 + index);
   }
   return arrays;
+}
+
+// The bytes of every output array, to compare a call's outputs before and after.
+inline std::vector<std::byte> CopyOutputBytes(const ParticleArrays& arrays) {
+  std::vector<std::byte> bytes;
+  const auto append = [&bytes](std::span<const std::byte> more) {
+    bytes.insert(bytes.end(), more.begin(), more.end());
+  };
+  append(std::as_bytes(std::span(arrays.position)));
+  append(std::as_bytes(std::span(arrays.velocity_for_next_step)));
+  append(std::as_bytes(std::span(arrays.record)));
+  append(std::as_bytes(std::span(arrays.reaction)));
+  return bytes;
+}
+
+// Fills every output array with one byte value, so a write of any value shows.
+inline void ApplyOutputFill(ParticleArrays& arrays, unsigned char value) {
+  std::memset(static_cast<void*>(arrays.position.data()), value, arrays.position.size() * sizeof(Vec3));
+  std::memset(static_cast<void*>(arrays.velocity_for_next_step.data()), value, arrays.position.size() * sizeof(Vec3));
+  std::memset(static_cast<void*>(arrays.record.data()), value, arrays.record.size() * sizeof(ParticleContact));
+  std::memset(static_cast<void*>(arrays.reaction.data()), value, arrays.reaction.size() * sizeof(SolidReaction));
+}
+
+// The 64 bits of each axis.
+inline std::array<std::uint64_t, 3> ToBits(Vec3 vector) {
+  return {fluidity::ToBits(vector.x), fluidity::ToBits(vector.y), fluidity::ToBits(vector.z)};
+}
+
+// The fields of a contact record as integers, the doubles as their bits, so two records compare with one ==.
+inline std::vector<std::uint64_t> ToFieldBits(const ParticleContact& record) {
+  return {
+      static_cast<std::uint64_t>(record.kind),
+      record.hit_count,
+      static_cast<std::uint64_t>(record.face),
+      static_cast<std::uint64_t>(record.side_at_hit),
+      record.solid_index,
+      fluidity::ToBits(record.hit_fraction),
+      fluidity::ToBits(record.normal_out_of_solid.x),
+      fluidity::ToBits(record.normal_out_of_solid.y),
+      fluidity::ToBits(record.normal_out_of_solid.z),
+      fluidity::ToBits(record.approach_speed.for_next_step),
+      fluidity::ToBits(record.approach_speed.for_this_step),
+  };
+}
+
+// The record fields of a move's result as ToFieldBits(const ParticleContact&) lists them, read from the result itself
+// and not through ToParticleContact, so a wrong field in that conversion shows.
+inline std::vector<std::uint64_t> ToRecordFieldBits(const SolidContactResult& result) {
+  return {
+      static_cast<std::uint64_t>(result.kind),
+      result.hit_count,
+      static_cast<std::uint64_t>(result.face),
+      static_cast<std::uint64_t>(result.side_at_hit),
+      result.solid_index,
+      fluidity::ToBits(result.hit_fraction),
+      fluidity::ToBits(result.normal_out_of_solid.x),
+      fluidity::ToBits(result.normal_out_of_solid.y),
+      fluidity::ToBits(result.normal_out_of_solid.z),
+      fluidity::ToBits(result.approach_speed.for_next_step),
+      fluidity::ToBits(result.approach_speed.for_this_step),
+  };
+}
+
+// The fields of a solid as integers, the doubles as their bits, the axes included.
+inline std::vector<std::uint64_t> ToFieldBits(const Solid& solid) {
+  const Mat3& axes = solid.pose_at_step_start.axes;
+  const std::array<Vec3, 4> vectors = {
+      solid.pose_at_step_start.origin,
+      solid.motion.linear_velocity,
+      solid.motion.angular_velocity,
+      solid.half_size,
+  };
+  std::vector<std::uint64_t> bits = {
+      static_cast<std::uint64_t>(solid.shape),
+      solid.solid_id,
+      fluidity::ToBits(solid.friction_scale),
+      solid.reports_reaction ? 1U : 0U,
+  };
+  for (const Vec3 vector : vectors) {
+    bits.insert(bits.end(), {fluidity::ToBits(vector.x), fluidity::ToBits(vector.y), fluidity::ToBits(vector.z)});
+  }
+  for (const double axis_value : {axes.xx, axes.xy, axes.xz, axes.yx, axes.yy, axes.yz, axes.zx, axes.zy, axes.zz}) {
+    bits.push_back(fluidity::ToBits(axis_value));
+  }
+  return bits;
+}
+
+// Checks that the outputs at `index` are, bit for bit, what MoveParticle gave in `expected`.
+inline void CheckSameOutputs(const ParticleArrays& arrays, std::size_t index, const SolidContactResult& expected) {
+  EXPECT_EQ(ToBits(arrays.position[index]), ToBits(expected.position)) << "index " << index;
+  EXPECT_EQ(ToBits(arrays.velocity_for_next_step[index]), ToBits(expected.velocity.for_next_step)) << "index " << index;
+  EXPECT_EQ(ToFieldBits(arrays.record[index]), ToRecordFieldBits(expected)) << "index " << index;
+  const SolidReaction& reaction = arrays.reaction[index];
+  EXPECT_EQ(reaction.solid_index, expected.reaction.solid_index) << "index " << index;
+  EXPECT_EQ(ToBits(reaction.hit_position), ToBits(expected.reaction.hit_position)) << "index " << index;
+  EXPECT_EQ(ToBits(reaction.velocity_for_next_step_change), ToBits(expected.reaction.velocity_for_next_step_change))
+      << "index " << index;
 }
 
 }  // namespace fluidity::contact

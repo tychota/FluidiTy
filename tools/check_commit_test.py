@@ -722,6 +722,12 @@ def test_quick_lists_a_moved_file_under_its_old_and_new_path(monkeypatch, capsys
     assert "--no-renames" in diff_command
 
 
+def test_a_change_under_a_testing_folder_selects_the_functional_tests_of_its_module():
+    changed = ["src/fluidity/grid/testing/grid_support.cc", "src/fluidity/base/a.h", "src/fluidity/contact/testing/x.h"]
+    assert check_commit.modules_with_changed_functional_tests(changed) == frozenset({"grid", "contact"})
+    assert check_commit.modules_with_changed_functional_tests(["src/fluidity/grid/a.test.cc"]) == frozenset()
+
+
 def test_modules_with_changed_functional_tests_are_those_with_a_change_under_tests():
     changed = ["tests/grid/a.test.cc", "src/fluidity/base/a.h", "tests/contact/CMakeLists.txt", "tests/CMakeLists.txt"]
     assert check_commit.modules_with_changed_functional_tests(changed) == frozenset({"grid", "contact"})
@@ -791,6 +797,26 @@ def test_slow_unit_tests_reads_labels_and_times_from_the_junit_text():
     over_limit, over_note = check_commit.slow_unit_tests(fake.junit_text())
     assert over_limit == [("A.One", 0.3)]
     assert over_note == [("C.Three", 0.06)]
+
+
+def test_test_without_a_tier_label_fails_the_debug_run(monkeypatch, capsys, repo):
+    fake = FakeRun(test_times=[("Fine.Case", "grid;cpu;unit", 0.01), ("Plain.Case", "grid;cpu", 0.01)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 1
+    assert lines[0] == f"FAIL cpu {DEBUG_PRESET}: tests without a tier label (unit or functional): Plain.Case"
+
+
+def test_missing_junit_file_fails_the_debug_run(monkeypatch, capsys, repo):
+    class DeletesJunit(FakeRun):
+        def __call__(self, command, **kwargs):
+            result = super().__call__(command, **kwargs)
+            if command[0] == "ctest" and "--output-junit" in command:
+                Path(command[command.index("--output-junit") + 1]).unlink()
+            return result
+
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, DeletesJunit(), "--only", "cpu")
+    assert exit_code == 1
+    assert lines[0].startswith(f"FAIL cpu {DEBUG_PRESET}: the JUnit file of ctest cannot be read")
 
 
 def test_rules_step_covers_src_and_tests(monkeypatch, capsys, repo):

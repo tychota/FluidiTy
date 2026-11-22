@@ -26,11 +26,141 @@
 #include "fluidity/contact/solid_contact_types.h"
 #include "fluidity/contact/solid_shapes.h"
 #include "fluidity/contact/testing/contact_cases.h"
+#include "fluidity/contact/testing/contact_main_comparison_cases.h"
 #include "fluidity/contact/testing/move_particles_runs.h"
 #include "fluidity/contact/testing/move_particles_scene_cases.h"
 
 namespace fluidity::contact {
 namespace {
+
+// The largest absolute axis of a vector.
+double ComputeLargestAxis(Vec3 vector) {
+  return std::max({std::abs(vector.x), std::abs(vector.y), std::abs(vector.z)});
+}
+
+// Classifies the one particle of a range against its one flat solid that moves without turning: the solid's distance
+// changes at the constant rate Dot(normal, for_this_step - solid velocity), so the path's gap at the end of the step is
+// start distance - tol + rate * T. Below -1e-9 m it hits, above 1e-9 m it misses.
+ExpectedHit ComputeFlatSolidPathClass(const ParticleRange& range) {
+  const Solid& solid = range.solids[0];
+  const Vec3 normal = {
+      .x = solid.pose_at_step_start.axes.xz,
+      .y = solid.pose_at_step_start.axes.yz,
+      .z = solid.pose_at_step_start.axes.zz,
+  };
+  const double start_distance = math::Dot(normal, range.start_position[0] - solid.pose_at_step_start.origin);  // m
+  const double rate = math::Dot(normal, range.velocity_for_this_step[0] - solid.motion.linear_velocity);  // m/s
+  const double end_gap = start_distance - range.contact_tolerance + (rate * range.step_duration);  // m
+  if (end_gap < -1e-9) {
+    return ExpectedHit::kHit;
+  }
+  return end_gap > 1e-9 ? ExpectedHit::kMiss : ExpectedHit::kTooCloseToTell;
+}
+
+// Whether one particle's reaction is its change of velocity.for_next_step: with a reaction, after minus before within
+// 2^-44 of the larger of the two on every axis; without one, for_next_step unchanged bit for bit.
+bool ComputeIsReactionTheChange(Vec3 before, Vec3 after, const SolidReaction& reaction) {
+  if (reaction.solid_index == kNoSolid) {
+    return ToBits(after.x) == ToBits(before.x) && ToBits(after.y) == ToBits(before.y)
+        && ToBits(after.z) == ToBits(before.z);
+  }
+  const double bound = 0x1p-44 * std::max(ComputeLargestAxis(before), ComputeLargestAxis(after));  // m/s
+  const Vec3 difference = reaction.velocity_for_next_step_change - (after - before);  // m/s
+  return ComputeLargestAxis(difference) <= bound;
+}
+
+// Classifies whether the one particle of a range must be charged to its one flat solid, which moves without turning:
+// the hit's response changes velocity.for_next_step only when that velocity approaches the solid, Dot(normal,
+// for_next_step - solid velocity) < 0, and a flat solid is hit once, so a clear hit whose for_next_step approaches by
+// more than 1e-9 m/s must react (kHit), one whose for_next_step leaves by more than 1e-9 m/s must not (kMiss: the
+// response returns it bit for bit and charges nothing), and a path that is not a clear hit must not react either.
+ExpectedHit ComputeFlatSolidReactionClass(const ParticleRange& range, ExpectedHit expected_hit) {
+  if (expected_hit != ExpectedHit::kHit) {
+    return expected_hit;
+  }
+  const Solid& solid = range.solids[0];
+  const Vec3 normal = {
+      .x = solid.pose_at_step_start.axes.xz,
+      .y = solid.pose_at_step_start.axes.yz,
+      .z = solid.pose_at_step_start.axes.zz,
+  };
+  const double next_step_rate = math::Dot(normal, range.velocity_for_next_step[0] - solid.motion.linear_velocity);
+  if (next_step_rate < -1e-9) {
+    return ExpectedHit::kHit;
+  }
+  return next_step_rate > 1e-9 ? ExpectedHit::kMiss : ExpectedHit::kTooCloseToTell;
+}
+
+ObliqueReactionRun ComputeObliqueReactionRun(const MoveParticleCase& test_case) {
+  ParticleRange range = BuildOneParticleRange(test_case, 1);
+  range.solids[0] = ToReactingSolid(range.solids[0]);
+  ObliqueReactionRun run;
+  run.expected = ComputeFlatSolidPathClass(range);
+  run.expected_reaction = ComputeFlatSolidReactionClass(range, run.expected);
+  const MovedRange moved = ComputeMovedRange(RunOn::kCpu, range, ReactionArray::kGiven);
+  run.has_moved = moved.result.has_value();
+  if (!run.has_moved) {
+    return run;
+  }
+  const SolidReaction& reaction = moved.reaction[0];
+  run.is_reacting = reaction.solid_index == 0;
+  const ExpectedHit seen_hit = moved.record[0].kind != ContactKind::kNone ? ExpectedHit::kHit : ExpectedHit::kMiss;
+  const ExpectedHit seen_reaction = run.is_reacting ? ExpectedHit::kHit : ExpectedHit::kMiss;
+  run.is_classified_right = ComputeIsClassifiedRight(run.expected, seen_hit)
+      && ComputeIsClassifiedRight(run.expected_reaction, seen_reaction);
+  run.is_reaction_the_change =
+      ComputeIsReactionTheChange(range.velocity_for_next_step[0], moved.velocity_for_next_step[0], reaction);
+  return run;
+}
+
+// Fails the calling test unless this code gave, for an old case that ended in an error, the matching error: kBadInput
+// for the old InvalidArgument, kStartsInsideSolid for the old FailedPrecondition.
+void CheckSameErrorAsMain(const MainComparisonCase& old_case, const ZUpMove& move) {
+  const ContactError expected_error = old_case.old_status == MainStatusCode::kInvalidArgument
+      ? ContactError::kBadInput
+      : ContactError::kStartsInsideSolid;
+  EXPECT_EQ(move.error, expected_error);
+}
+
+// Fails the calling test unless this code's first hit matches the old hit of a case with one. The face's normal is the
+// old normal turned to Z-up, within 2^-52 on every axis. The share of the step: this code stops one tolerance before
+// the surface, so a hit along the path comes earlier by tol over the speed at which the gap closes, rate = Dot(normal,
+// for_this_step - solid velocity), and its share is old - tol / (|rate| T) within 1e-12 (the rounding of a time near 1
+// s is about 1e-16); a hit at the start is at share 0 in both. Example: line 211 closes at 10 m/s over 1 s, so the
+// share is 0.4 - tol / 10 = 0.3999999999069.
+void CheckSameHitAsMain(const MainComparisonCase& old_case, const ZUpMove& move) {
+  const Vec3 normal = ToZUp(old_case.old_normal_out_of_solid);
+  ExpectVec3Near(move.result.normal_out_of_solid, normal, 0x1p-52);
+  if (old_case.old_hit_fraction == 0) {
+    EXPECT_EQ(move.result.hit_fraction, 0);
+    return;
+  }
+  const double rate = math::Dot(normal, ToZUp(old_case.velocity_for_this_step - old_case.solid_velocity));  // m/s
+  const double expected_fraction = old_case.old_hit_fraction - (kTolerance / (std::abs(rate) * old_case.step_duration));
+  EXPECT_NEAR(move.result.hit_fraction, expected_fraction, 1e-12);
+}
+
+// Fails the calling test unless this code moved the particle as the old code did: hit or no hit the same, and the hit
+// as CheckSameHitAsMain checks it; the end within 1.25 tol of the old end on every axis (this code rests tol off the
+// surface, the old code on it; measured: at most 1.0 tol on an axis); both velocities within 2^-40 of the largest speed
+// of the case's inputs (measured: equal to the old tests' expected values, difference 0; the bound is far above the
+// rounding of a response and far below any change a wrong rule makes).
+void CheckSameMoveAsMain(const MainComparisonCase& old_case, const ZUpMove& move) {
+  ASSERT_EQ(move.error, ContactError::kNone);
+  EXPECT_EQ(move.result.kind != ContactKind::kNone, old_case.old_has_hit);
+  if (old_case.old_has_hit) {
+    CheckSameHitAsMain(old_case, move);
+  }
+  ExpectVec3Near(move.result.position, ToZUp(old_case.old_position), 1.25 * kTolerance);
+  const double largest_speed = std::max({
+      ComputeLargestAxis(old_case.velocity_for_next_step),
+      ComputeLargestAxis(old_case.velocity_for_this_step),
+      ComputeLargestAxis(old_case.solid_velocity),
+  });  // m/s
+  const double velocity_bound = 0x1p-40 * largest_speed;  // m/s
+  ExpectVec3Near(move.result.velocity.for_next_step, ToZUp(old_case.old_velocity_for_next_step), velocity_bound);
+  ExpectVec3Near(move.result.velocity.for_this_step, ToZUp(old_case.old_velocity_for_this_step), velocity_bound);
+}
 
 TEST(MoveParticle, SlidingOffFrictionlessSphere_SmallStepsLastHitNearAnalyticAngle) {
   // The same slide at 0.125 and 0.0625 ms (16,833 and 33,666 steps): the last hit settles about 0.004 rad before the
@@ -421,6 +551,118 @@ TEST(MoveParticles, SwarmAmongSolidsOfEveryShape_NeverEndsWithinHalfTolerance) {
   EXPECT_EQ(run.ends_closer_than_half_tolerance, 0);
   EXPECT_EQ(run.ends_inside, 0);
   EXPECT_LE(run.largest_hit_count, kMaxHitsPerStep);
+}
+
+TEST(MoveParticles, ReactionSum_EqualsSumOfVelocityChanges) {
+  // The first 100 oblique cases (BuildObliqueCases), each against its own solid made reacting, one MoveParticles call
+  // per case: a moving flat solid far from the origin, paths that meet it at a share of the step, frictions from 0 to
+  // 1, two different velocities. Per particle, the reaction is velocity.for_next_step after minus before, within 2^-44
+  // of the larger of the two; a particle without a reaction keeps for_next_step bit for bit. So the reactions sum to
+  // the change of the particles' velocities, which the solids module turns into a force. Each path is classified
+  // without MoveParticle, its hit (ComputeFlatSolidPathClass) and whether it is charged
+  // (ComputeFlatSolidReactionClass), and the hits and reactions seen must be those. The set is built so every path hits
+  // (hit_share <= 0.9): 100 clear hits; for_next_step is for_this_step plus 0.5 times three NextSigned, which leaves
+  // the solid in 10 of them: 90 must react.
+  std::vector<ObliqueReactionRun> runs;
+  for (const MoveParticleCase& test_case : BuildObliqueCases(100)) {
+    runs.push_back(ComputeObliqueReactionRun(test_case));
+  }
+  std::vector<int> failing_cases;  // Indexes of the cases whose call failed or broke one of the rules.
+  for (std::size_t case_index = 0; case_index < runs.size(); ++case_index) {
+    const ObliqueReactionRun& run = runs[case_index];
+    if (!(run.has_moved && run.is_classified_right && run.is_reaction_the_change)) {
+      failing_cases.push_back(static_cast<int>(case_index));
+    }
+  }
+  const auto clear_hit_count = std::ranges::count_if(runs, [](const ObliqueReactionRun& run) {
+    return run.expected == ExpectedHit::kHit;
+  });
+  const auto must_react_count = std::ranges::count_if(runs, [](const ObliqueReactionRun& run) {
+    return run.expected_reaction == ExpectedHit::kHit;
+  });
+  const auto reacting_count = std::ranges::count_if(runs, [](const ObliqueReactionRun& run) {
+    return run.is_reacting;
+  });
+  std::cout << "oblique cases: clear hits " << clear_hit_count << ", must react " << must_react_count << ", reacting "
+            << reacting_count << "\n";
+  EXPECT_EQ(failing_cases, std::vector<int>{});
+  EXPECT_EQ(clear_hit_count, 100);
+  EXPECT_EQ(must_react_count, 90);
+  EXPECT_EQ(reacting_count, 90);
+}
+
+TEST(MoveParticle, RestingOnTopOfSphere_Stays) {
+  // A fixed sphere of radius 1 m at the origin and a particle at rest on its top, {0, 0, 1 + tol}; 1000 steps of
+  // 1 ms, each adding {0, 0, -9.81 T} to both velocities. The normal at the top is {0, 0, 1} exactly, so each step's
+  // response removes the whole velocity: x and y stay exactly 0, both velocities end every step exactly 0, and the
+  // particle stays at the rest gap.
+  const std::vector<Solid> solids = {ToSolid(Sphere{.center = {}, .radius = 1}, kNoMotion, 1)};
+  FallingParticle particle = {.position = {.x = 0, .y = 0, .z = 1 + kTolerance}, .velocity = {}};
+  for (int step = 0; step < 1000; ++step) {
+    SCOPED_TRACE(step);
+    particle.velocity.z -= kGravity * 1e-3;
+    SolidContactInputs inputs = move_particle_cases::BuildCaseInputs({
+        .start_position = particle.position,
+        .velocity = particle.velocity,
+        .step_duration = 1e-3,
+        .friction = 0,
+    });
+    inputs.solids = solids.data();
+    inputs.solid_count = 1;
+    SolidContactResult result;
+    ASSERT_EQ(MoveParticle(inputs, &result, nullptr), ContactError::kNone);
+    EXPECT_EQ(result.position.x, 0);
+    EXPECT_EQ(result.position.y, 0);
+    EXPECT_NEAR(result.position.z, 1 + kTolerance, 2 * kTolerance);
+    CheckEqualAxes(result.velocity.for_next_step, {});
+    CheckEqualAxes(result.velocity.for_this_step, {});
+    particle = {.position = result.position, .velocity = result.velocity.for_next_step};
+  }
+}
+
+TEST(MoveParticle, SlidingOffFrictionlessSphere_NeverGainsEnergy) {
+  // The same slide. Removing the speed into the solid takes energy out, and nothing puts any in, so g z + |v|^2 / 2
+  // never rises above its start. Measured: 0.0141 m^2/s^2 lost of 9.81 at 1 ms, about half as much at 0.5 ms (the loss
+  // shrinks with the step), and no step's end above the start.
+  const SlideOffSphere slide = ComputeSlideOffSphere(1e-3);
+  std::cout << std::setprecision(8) << "sliding off: energy " << slide.start_energy << " at the start, "
+            << slide.end_energy << " at the end, largest gain " << slide.largest_energy_gain << " m^2/s^2\n";
+  ASSERT_FALSE(slide.has_failed);
+  EXPECT_LE(slide.largest_energy_gain, 0);
+  EXPECT_LT(slide.end_energy, slide.start_energy);
+}
+
+TEST(MoveParticle, MainFlatSolidAndPlateCases_AgreeAfterTurningToZUp) {
+  // Every old case marked kAgrees, turned to Z-up: a result as CheckSameMoveAsMain checks it, an error as
+  // CheckSameErrorAsMain does. The two cases marked kDiffers have tests of their own below. The counts come from the
+  // list alone.
+  const std::vector<MainComparisonCase> cases = BuildMainComparisonCases();
+  const auto is_differing = [](const MainComparisonCase& old_case) {
+    return old_case.agreement == MainAgreement::kDiffers;
+  };
+  const auto has_reason = [](const MainComparisonCase& old_case) {
+    return old_case.why_different != nullptr;
+  };
+  EXPECT_EQ(std::ranges::count_if(cases, is_differing), 2);
+  EXPECT_EQ(std::ranges::count_if(cases, has_reason), 2);
+  int moved_count = 0;
+  int failed_count = 0;
+  for (const MainComparisonCase& old_case : cases) {
+    SCOPED_TRACE("main line " + std::to_string(old_case.source_line));
+    if (is_differing(old_case)) {
+      continue;
+    }
+    const ZUpMove move = ComputeZUpMove(old_case);
+    if (old_case.old_status == MainStatusCode::kOk) {
+      ++moved_count;
+      CheckSameMoveAsMain(old_case, move);
+    } else {
+      ++failed_count;
+      CheckSameErrorAsMain(old_case, move);
+    }
+  }
+  EXPECT_EQ(moved_count, 11);
+  EXPECT_EQ(failed_count, 11);
 }
 
 }  // namespace
