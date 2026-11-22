@@ -1,0 +1,33 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_509e3d41638000 2024-2028,2032-2039
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_368fd9d6ea99f6 5,12-13
+native/fluidity/grid/touching_cells_test.cc
+  s_4f0877e2acdcf0::t_3e980b62f99f29 146-151,254-255,336-409,432,451,462-465,472-492,503-506,513-525,538,544,555,564,605-607,633,641-703
+native/fluidity/grid/grid_tables.h
+  s_361c1e93508006::t_b1d0272495c14c 62-64,889-890,892-897,904-905,907-912,919-932,966,1095-1100,1146-1148,1154,1163,1165,1168-1169,1171,1180-1182,1199-1201,1220-1223,1229,1231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8cf3dd5c441ee791faf84dfef90e2f48c1a1505e",
+  "prompts": {},
+  "sessions": {
+    "s_361c1e93508006": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a22fad34ad8678a2e",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
