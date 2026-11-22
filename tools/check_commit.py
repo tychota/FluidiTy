@@ -7,6 +7,11 @@ The gate checks what will be committed. Before any step it reads `git status`: a
 change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Staged changes are fine. With
 --allow-dirty it prints `NOTE tree: unstaged or untracked files are being tested` and goes on, for work in progress.
 
+The tree is read again after the last step, and right before and after the cuda container run (which mounts the
+live working tree): when the index tree (`git write-tree`) differs from the one at the start, or a file became
+unstaged or untracked, the gate prints `FAIL tree: changed while the gate ran (<what changed>)` and exits 1,
+whatever the steps printed. This holds at every speed and with --only.
+
 The speed (--speed, default commit):
   quick   while working: format, rules, the test programs of the modules whose files changed built in the debug
           preset, their debug unit tests, and tidy (the cache makes it check only what changed). The modules are named by a line
@@ -489,6 +494,10 @@ def host_cpu_presets() -> tuple[str, str]:
     return f"{prefix}-debug-cpu", f"{prefix}-release-cpu"
 
 
+class TreeChanged(Exception):
+    """The tree the gate is checking changed while the gate ran. The message says what changed."""
+
+
 class Gate:
     """Runs the checks for one repository. Every command goes through `subprocess.run`."""
 
@@ -499,6 +508,8 @@ class Gate:
         self.started_logs: set[str] = set()
         # The changed files, read once: no step of the gate edits a tracked file.
         self.changed_cache: list[str] | None | bool = False
+        # The tree being checked, recorded by `record_tree` at the start: the index tree hash and the dirty paths.
+        self.recorded_tree: tuple[str, tuple[str, ...]] | None = None
 
     def command(self, log_name: str, arguments: Sequence[str]) -> Outcome:
         """Runs one command from the repository root and adds its output to the step's log, which keeps the last run."""
@@ -1015,6 +1026,8 @@ class Gate:
         )
         if not image.passed:
             return image
+        # The container reads the live working tree, so a change during its run could be compiled half written.
+        self.fail_if_tree_changed()
         built = self.command(
             "cuda",
             [
@@ -1033,12 +1046,19 @@ class Gate:
                 CONTAINER_SCRIPT,
             ],
         )
+        self.fail_if_tree_changed()
         if not built.passed:
             return built
         missing = sources_not_compiled(tracked, built.output)
         if missing:
             return Outcome(False, "not compiled by the CUDA build: " + ", ".join(missing))
         return Outcome(True)
+
+    def fail_if_tree_changed(self) -> None:
+        """Raises TreeChanged when the tree differs from the one recorded at the start."""
+        change = self.tree_change()
+        if change:
+            raise TreeChanged(change)
 
     def dirty_paths(self) -> list[str] | None:
         """Untracked files and files with unstaged changes, or None when git fails. Ignored files are left out.
@@ -1071,6 +1091,50 @@ class Gate:
             if index_status == "?" or tree_status != " ":
                 dirty.append(path)
         return dirty
+
+    def index_tree(self) -> str | None:
+        """The hash of the tree of the index (`git write-tree`), or None when git fails."""
+        try:
+            completed = subprocess.run(
+                ["git", "write-tree"],
+                cwd=self.repo_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+        if completed.returncode != 0:
+            return None
+        return (completed.stdout or "").strip()
+
+    def record_tree(self, dirty: Sequence[str]) -> bool:
+        """Records the tree that the gate checks: the index tree and the paths that differ from it. False when git
+        cannot say."""
+        tree = self.index_tree()
+        if tree is None:
+            return False
+        self.recorded_tree = (tree, tuple(dirty))
+        return True
+
+    def tree_change(self) -> str | None:
+        """What differs from the tree recorded at the start, or None when it is the same tree. The working tree is
+        compared with the index as at the start: a path that became unstaged or untracked is a change."""
+        if self.recorded_tree is None:
+            return None
+        recorded_hash, recorded_dirty = self.recorded_tree
+        tree = self.index_tree()
+        dirty = self.dirty_paths()
+        if tree is None or dirty is None:
+            return "git could not be read"
+        reasons = []
+        if tree != recorded_hash:
+            reasons.append(f"the index tree is {tree}, it was {recorded_hash}")
+        new_dirty = [path for path in dirty if path not in recorded_dirty]
+        if new_dirty:
+            reasons.append(f"unstaged or untracked: {', '.join(new_dirty)}")
+        return "; ".join(reasons) or None
 
     def checks(self, speed: str = DEFAULT_SPEED, only: str | None = None) -> list[Check]:
         debug_preset, release_preset = host_cpu_presets()
@@ -1146,6 +1210,10 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
     elif dirty:
         print(f"FAIL tree: unstaged or untracked: {', '.join(dirty)}", flush=True)
         failed = True
+    if dirty is not None and not gate.record_tree(dirty):
+        print("FAIL tree: git write-tree failed", flush=True)
+        failed = True
+    tree_change_reported = False
     for check in checks:
         if arguments.speed == "quick" and arguments.only is None and not check.in_quick:
             print(f"NOT RUN {check.title} (quick)", flush=True)
@@ -1159,7 +1227,14 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
             # A step that was asked for by name and could not run checked nothing, so it is not a pass.
             failed = failed or arguments.only == check.step
             continue
-        outcome = check.run()
+        try:
+            outcome = check.run()
+        except TreeChanged as changed:
+            print(f"FAIL tree: changed while the gate ran ({changed})", flush=True)
+            print(f"NOT RUN {check.title} (the tree changed)", flush=True)
+            failed = True
+            tree_change_reported = True
+            continue
         for note in outcome.notes:
             print(note, flush=True)
         if outcome.passed:
@@ -1167,6 +1242,10 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
         else:
             print(f"FAIL {check.title}: {outcome.reason}", flush=True)
             failed = True
+    change = None if tree_change_reported else gate.tree_change()
+    if change:
+        print(f"FAIL tree: changed while the gate ran ({change})", flush=True)
+        failed = True
     if failed:
         return EXIT_FAIL
     if arguments.speed == "quick":

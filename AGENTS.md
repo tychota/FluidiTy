@@ -537,6 +537,10 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     changes outside the ignored paths; every step is then `NOT RUN`. Staged changes are fine. With `--allow-dirty`
     the gate prints `NOTE tree: unstaged or untracked files are being tested` instead and goes on; use it for work
     in progress, never for a commit.
+  - `FAIL tree: changed while the gate ran (<what changed>)`: printed last, at every speed and with `--only`, when
+    the index tree (`git write-tree`) or the set of unstaged or untracked files differs from the start, checked after
+    the last step and right before and after the cuda container run, which reads the live working tree. It exits 1
+    whatever the steps printed, so do not edit files while the gate runs.
   - `PASS format`: the clang-format on `PATH` is the version `pyproject.toml` pins, and it reports no change in any
     tracked C++ or CUDA file. Another version fails the step and names both versions.
   - `rules note: <path>:<line>: NOTE <rule> <text>`: any NOTE rule of `tools/check_rules.py` (a word banned in one

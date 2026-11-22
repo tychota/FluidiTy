@@ -47,6 +47,7 @@ class FakeRun:
         missing_programs=(),
         tracked=None,
         status="",
+        trees=("tree-at-start",),
         timing_out=None,
         versions=None,
         compiled=None,
@@ -60,7 +61,11 @@ class FakeRun:
         self._failing = failing or (lambda command: False)
         self._missing_programs = set(missing_programs)
         self._tracked = tracked if tracked is not None else ["src/fluidity/a.h", "src/fluidity/a.cc"]
-        self._status = status
+        # `status` and `trees` are one answer for every call, or a list of answers, one per call (the last repeats).
+        self._statuses = [status] if isinstance(status, str) else list(status)
+        self._trees = list(trees)
+        self.status_calls = 0
+        self.tree_calls = 0
         self._timing_out = timing_out or (lambda command: False)
         self._versions = versions if versions is not None else dict(PINNED_VERSIONS)
         # What the CUDA build compiles, as container paths; by default every tracked .cc and .cu file, and the
@@ -101,7 +106,11 @@ class FakeRun:
         if command[:3] == ["git", "diff", "--name-only"]:
             output = "".join(f"{path}\0" for path in self._changed)
         if command[:2] == ["git", "status"]:
-            output = self._status
+            output = self._statuses[min(self.status_calls, len(self._statuses) - 1)]
+            self.status_calls += 1
+        if command[:2] == ["git", "write-tree"]:
+            output = self._trees[min(self.tree_calls, len(self._trees) - 1)] + "\n"
+            self.tree_calls += 1
         if command[1:] == ["--version"] and Path(command[0]).name in self._versions:
             output = VERSION_TEXT[Path(command[0]).name].format(self._versions[Path(command[0]).name])
         if command[:2] == ["docker", "run"]:
@@ -1372,3 +1381,66 @@ def test_test_programs_to_build_reads_modules_and_tiers():
         "grid_test",
     ]
     assert pick(PROGRAMS_TEXT, frozenset({"other"}), frozenset()) == []
+
+
+TREE_CHANGED = "FAIL tree: changed while the gate ran"
+
+
+def tree_lines(lines):
+    return [line for line in lines if line.startswith("FAIL tree")]
+
+
+def test_a_file_modified_during_a_step_fails_the_gate_whatever_the_steps_printed(monkeypatch, capsys, repo):
+    fake = FakeRun(status=["", " M src/fluidity/a.h\0"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")
+    assert exit_code == 1
+    assert "PASS format" in lines
+    assert lines[-1] == f"{TREE_CHANGED} (unstaged or untracked: src/fluidity/a.h)"
+
+
+def test_a_file_added_during_a_step_fails_the_gate(monkeypatch, capsys, repo):
+    fake = FakeRun(status=["", "?? src/fluidity/new.h\0"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "paper")
+    assert exit_code == 1
+    assert lines[-1] == f"{TREE_CHANGED} (unstaged or untracked: src/fluidity/new.h)"
+
+
+def test_a_change_of_the_index_during_a_step_fails_the_gate(monkeypatch, capsys, repo):
+    fake = FakeRun(trees=["tree-at-start", "tree-later"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")
+    assert exit_code == 1
+    assert lines[-1] == f"{TREE_CHANGED} (the index tree is tree-later, it was tree-at-start)"
+
+
+def test_a_tree_that_does_not_change_passes_with_no_tree_line(monkeypatch, capsys, repo):
+    fake = FakeRun(status="M  src/fluidity/a.h\0")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")
+    assert exit_code == 0
+    assert tree_lines(lines) == []
+
+
+def test_a_change_during_a_quick_run_fails_it_with_exit_one(monkeypatch, capsys, repo):
+    fake = FakeRun(status=["", " M src/fluidity/a.h\0"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert exit_code == 1
+    assert len(tree_lines(lines)) == 1
+    assert "QUICK ONLY: not the commit gate" not in lines
+
+
+def test_a_change_just_before_the_cuda_container_runs_stops_the_step(monkeypatch, capsys, repo):
+    # Calls of `git status`: the start, right before the container, right after it, after the last step.
+    fake = FakeRun(status=["", " M src/fluidity/a.h\0"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
+    assert exit_code == 1
+    assert len(tree_lines(lines)) == 1
+    assert not any(command[:2] == ["docker", "run"] for command in fake.commands)
+    assert "PASS cuda" not in lines
+
+
+def test_a_change_while_the_cuda_container_runs_fails_instead_of_passing(monkeypatch, capsys, repo):
+    fake = FakeRun(status=["", "", " M src/fluidity/a.h\0"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
+    assert exit_code == 1
+    assert any(command[:2] == ["docker", "run"] for command in fake.commands)
+    assert len(tree_lines(lines)) == 1
+    assert "PASS cuda" not in lines
