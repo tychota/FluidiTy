@@ -1,0 +1,29 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_a26a43e4d137f6 204-205
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_97921015580e7f 2657-2658,2660-2661,2665-2681
+native/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_fb60b4f4bf768e 34-40,57,63-64,68-69,549,551-552,554-572,578-579,583-584,591-592,594-608,610,624-632,634,638,640,650-651,654-660,662,664-667,672
+native/fluidity/grid/cell_size_rule_gpu_test.cc
+  s_4f0877e2acdcf0::t_e70313c3ed7a66 9-10,15,18,119-120,134-222,237-257,259-262,272,274-288,290-306
+native/fluidity/grid/cell_size_rule_test.cc
+  s_4f0877e2acdcf0::t_f4631ea95a8c43 9,500-504,513-523,534-537,555,569-630,717-780
+native/fluidity/grid/cell_size_rule_test_gpu.h
+  s_4f0877e2acdcf0::t_c6ff3462b22169 6-12,19-20,50,57,59-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3dea516e2fb320f09316bf737d03361b5a0cebb2",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
