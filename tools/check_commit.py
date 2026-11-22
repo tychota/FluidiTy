@@ -8,14 +8,23 @@ change prints `FAIL tree: unstaged or untracked: <paths>` and no step runs. Stag
 --allow-dirty it prints `NOTE tree: unstaged or untracked files are being tested` and goes on, for work in progress.
 
 The speed (--speed, default commit):
-  quick   while working: format, rules, the debug preset built, the debug unit tests of the modules whose files
-          changed, and tidy (the cache makes it check only what changed). The modules are named by a line
+  quick   while working: format, rules, the test programs of the modules whose files changed built in the debug
+          preset, their debug unit tests, and tidy (the cache makes it check only what changed). The modules are named by a line
           `NOTE modules: ...`. A changed file is one that differs from HEAD, staged or not, or is untracked. A change
           under src/fluidity/<module>/ selects that module's unit tests; a change under tests/<module>/ selects the
           module too and also runs its functional tests (a line `NOTE functional tests: ...` names them); a change
           elsewhere under src/ or tests/ or under cmake/, or to a top-level build file (CMakeLists.txt,
           CMakePresets.json, conanfile.py, conan.lock, pyproject.toml, uv.lock), selects the unit tests of every
-          module; a change elsewhere (docs, tools) selects none. The release build, the paper and cuda are left out, each printed as
+          module; a change elsewhere (docs, tools) selects none. Only the test programs of the selected modules are
+          built (the unit programs, and the functional ones of a module whose tests changed; the list is
+          out/build/<preset>/test_programs.txt, which CMake writes), so a quick run does not see a break in a module
+          that is not selected; `NOTE built: <n> test programs` says so. With every module selected, or with no list,
+          the whole preset is built; with none selected nothing is built. Conan and the configure do not run while
+          the build folder holds a hash (gate-configure-hash) equal to the hash of the contents of conanfile.py,
+          conan.lock, CMakePresets.json, pyproject.toml, uv.lock, every CMakeLists.txt and every file under cmake/;
+          the line `NOTE conan and configure: not run (their files are unchanged)` says so. A run of Conan and the
+          configure that passed stores the hash, at every speed; one that failed removes it. A compiler or SDK
+          upgrade is not in the hash: run `--speed commit` to configure again. The release build, the paper and cuda are left out, each printed as
           `NOT RUN <step> (quick)`, so a quick pass is never read as a full one. An untracked file is a changed file,
           but the gate stops at `FAIL tree` for one unless --allow-dirty is given, so it selects modules only then.
           With --only, quick runs the named step in full (every module's unit and functional tests, both presets).
@@ -44,7 +53,7 @@ The steps, in order:
           line `NOT RUN tools tests (quick, tools unchanged)`, while no changed file is under tools/, cmake/ or
           .github/ or is CMakeLists.txt, pyproject.toml or uv.lock at the top level (TOOLS_TEST_INPUTS); a change
           that git cannot list runs it. The rules check and actionlint always run.
-  cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
+  cpu     (always, at commit and full speed) fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
           debug and the release CPU presets of the platform the gate runs on. ctest runs one test per core at once.
           (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
           `--parallel <cores>`.) On the debug preset ctest also writes a JUnit file (out/check-commit/), and the step
@@ -133,6 +142,14 @@ TOP_LEVEL_BUILD_FILES = frozenset(
 # the top-level CMakeLists.txt) and the workflows; a quick run leaves them out while no changed file is one of these.
 TOOLS_TEST_FOLDERS = ("tools", "cmake", ".github")
 TOOLS_TEST_INPUTS = frozenset({"CMakeLists.txt", "pyproject.toml", "uv.lock"})
+# The build folder keeps, after a successful Conan install and configure, a hash of everything those two read; a quick
+# run that finds the same hash does neither. CMake writes the list of test programs next to it (see
+# fluidity_write_test_programs in cmake/fluidity_targets.cmake).
+CONFIGURE_STATE_FILE = "gate-configure-hash"
+TEST_PROGRAMS_FILE = "test_programs.txt"
+# The files a configure reads, besides every CMakeLists.txt and everything under cmake/.
+CONFIGURE_INPUT_FILES = ("conanfile.py", "conan.lock", "CMakePresets.json", "pyproject.toml", "uv.lock")
+CONFIGURE_INPUT_FOLDER = "cmake"
 NOT_RUN_TOOLS_TESTS = "NOT RUN tools tests (quick, tools unchanged)"
 MODULES_ROOT = ("src", "fluidity")
 # The functional tests, one folder per module: tests/<module>/.
@@ -370,6 +387,48 @@ def slow_unit_tests(junit_text: str) -> tuple[list[tuple[str, float]], list[tupl
     return over_limit, over_note
 
 
+def configure_inputs_hash(repo_root: Path, preset: str) -> str:
+    """The SHA-256 over the contents of everything that Conan install and CMake configure read for `preset`: the files
+    of CONFIGURE_INPUT_FILES, every CMakeLists.txt, every file under cmake/, and the preset and platform names. A file
+    that does not exist counts by its absence. Folders that start with a dot, and out/, are not entered."""
+    digest = hashlib.sha256()
+    digest.update(f"{preset}\0{platform.system()}\0".encode("utf-8"))
+    paths = [repo_root / name for name in CONFIGURE_INPUT_FILES]
+    for folder, subfolders, names in os.walk(repo_root):
+        subfolders[:] = sorted(
+            name for name in subfolders if not name.startswith(".") and name not in ("out", "__pycache__")
+        )
+        relative_folder = Path(folder).relative_to(repo_root)
+        in_cmake_folder = relative_folder.parts[:1] == (CONFIGURE_INPUT_FOLDER,)
+        paths.extend(Path(folder, name) for name in sorted(names) if name == "CMakeLists.txt" or in_cmake_folder)
+    for path in sorted(set(paths)):
+        try:
+            content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            content_hash = "absent"
+        digest.update(f"{path.relative_to(repo_root).as_posix()}\0{content_hash}\0".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def test_programs_to_build(
+    programs_text: str, modules: frozenset[str], functional_modules: frozenset[str]
+) -> list[str] | None:
+    """The test programs a quick run needs: the unit programs of `modules` and the functional programs of
+    `functional_modules`, from the lines `<module> <tier> <program>` of test_programs.txt, sorted. None when no line is
+    well formed, so that the caller builds everything."""
+    wanted: set[str] = set()
+    seen_line = False
+    for line in programs_text.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            return None
+        seen_line = True
+        module, tier, program = fields
+        if (tier == "unit" and module in modules) or (tier == "functional" and module in functional_modules):
+            wanted.add(program)
+    return sorted(wanted) if seen_line else None
+
+
 def host_cpu_presets() -> tuple[str, str]:
     """The debug and release CPU presets of the platform the gate runs on."""
     prefix = {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux")
@@ -604,13 +663,52 @@ class Gate:
             listed.extend(path for path in (completed.stdout or "").split("\0") if path)
         return listed
 
+    def configure_state_path(self, preset: str) -> Path:
+        return self.repo_root / "out" / "build" / preset / CONFIGURE_STATE_FILE
+
+    def store_configure_state(self, preset: str) -> None:
+        """Keeps the hash of the files that the Conan install and the configure that just passed have read. When it
+        cannot be written the next quick run runs both again."""
+        state_path = self.configure_state_path(preset)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(configure_inputs_hash(self.repo_root, preset) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+    def configure_is_current(self, preset: str) -> bool:
+        """True when the build folder of `preset` was configured with the files as they are now: Conan's toolchain file
+        and CMake's cache exist, and the hash that the last successful install and configure stored is the hash of the
+        files now (see configure_inputs_hash)."""
+        build_folder = self.repo_root / "out" / "build" / preset
+        toolchain = self.repo_root / "out" / "conan" / preset / "conan_toolchain.cmake"
+        if not (build_folder / "CMakeCache.txt").is_file() or not toolchain.is_file():
+            return False
+        try:
+            stored = self.configure_state_path(preset).read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        return stored == configure_inputs_hash(self.repo_root, preset)
+
+    def quick_build_targets(
+        self, preset: str, modules: frozenset[str], functional_modules: frozenset[str]
+    ) -> list[str] | None:
+        """The test programs to build for the modules a quick run tests, or None when the whole preset is built: the
+        list CMake wrote is missing or is not well formed."""
+        try:
+            programs_text = (self.repo_root / "out" / "build" / preset / TEST_PROGRAMS_FILE).read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return test_programs_to_build(programs_text, modules, functional_modules)
+
     def check_cpu_preset(self, preset: str, changed_modules_only: bool = False) -> Outcome:
-        """Fetches the packages, configures, builds and tests `preset`. With `changed_modules_only` it runs only the
-        tests of the modules that the changed files select (see modules_of_changes), and says which on a note."""
-        # Conan runs every time, so a change to conanfile.py or conan.lock reaches the toolchain file.
+        """Fetches the packages, configures, builds and tests `preset`. With `changed_modules_only` (a quick run) it
+        also runs only the tests of the modules that the changed files select (see modules_of_changes) and builds only
+        their test programs, says which on notes, and does not run Conan or configure again while the files they read
+        are the ones of the last successful run (see configure_is_current)."""
         toolchain_folder = Path("out") / "conan" / preset
         build_type = "Debug" if "-debug-" in preset else "Release"
-        command_list: list[list[str]] = [
+        setup_commands: list[list[str]] = [
             ["conan", "profile", "detect", "--exist-ok"],
             [
                 "conan",
@@ -628,9 +726,8 @@ class Gate:
                 "compiler.cppstd=23",
                 "--build=missing",
             ],
+            ["cmake", "--preset", preset],
         ]
-        command_list.append(["cmake", "--preset", preset])
-        command_list.append(["cmake", "--build", "--preset", preset])
         notes: tuple[str, ...] = ()
         cores = str(os.cpu_count() or 1)
         # The debug preset also times its unit tests: ctest writes each test's time and labels to a JUnit file.
@@ -640,6 +737,7 @@ class Gate:
         if is_debug:
             ctest += ["--output-junit", str(junit_path)]
         ctest_runs: list[list[str]] = [ctest]
+        build_command = ["cmake", "--build", "--preset", preset]
         if changed_modules_only:
             changed = self.changed_paths()
             modules = None if changed is None else modules_of_changes(changed)
@@ -664,11 +762,28 @@ class Gate:
             else:
                 notes = ("NOTE modules: none",)
                 ctest_runs = []
+            if modules is not None:
+                targets = self.quick_build_targets(
+                    preset, modules, frozenset(modules_with_changed_functional_tests(changed or ()))
+                )
+                if targets is not None:
+                    notes += (f"NOTE built: {len(targets)} test programs",)
+                    build_command = [*build_command, "--target", *targets] if targets else []
         if is_debug:
             junit_path.parent.mkdir(parents=True, exist_ok=True)
             junit_path.unlink(missing_ok=True)
-        command_list.extend(ctest_runs)
-        outcome = self.commands(f"cpu-{preset}", command_list)
+        log_name = f"cpu-{preset}"
+        if changed_modules_only and self.configure_is_current(preset):
+            notes += ("NOTE conan and configure: not run (their files are unchanged)",)
+        else:
+            # Conan runs every time at the commit and full speeds, so a change to conanfile.py or conan.lock always
+            # reaches the toolchain file.
+            self.configure_state_path(preset).unlink(missing_ok=True)
+            fetched = self.commands(log_name, setup_commands)
+            if not fetched.passed:
+                return Outcome(False, fetched.reason, notes, fetched.output)
+            self.store_configure_state(preset)
+        outcome = self.commands(log_name, [*([build_command] if build_command else []), *ctest_runs])
         if not outcome.passed or not is_debug or not ctest_runs:
             return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
         return self.check_unit_test_times(junit_path, notes, outcome.output)

@@ -505,13 +505,18 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   from the repository root, `uv run python tools/check_commit.py`, then commit. Add `--only <step>` to run one
   step: `format`, `rules`, `cpu`, `tidy`, `paper` or `cuda`. It prints one line per check, in this order.
   `--speed quick|commit|full` chooses how much runs:
-  - `quick`, while working: format; rules; the debug preset built; the debug unit tests of the modules that changed;
-    tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
+  - `quick`, while working: format; rules; the test programs of the modules that changed built in the debug preset;
+    their debug unit tests; tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
     untracked. A change under `src/fluidity/<module>/` selects that module's unit tests; a change under
     `tests/<module>/` or under `src/fluidity/<module>/testing/` selects the module too and also runs its functional
     tests (`NOTE functional tests: <names>`), because they use the shared test code of that folder; a
     change elsewhere under `src/` or `tests/` or under `cmake/`, or to a top-level build file, selects the unit tests
-    of every module; a change to docs or tools selects none. The gate
+    of every module; a change to docs or tools selects none. Only the test programs of the selected modules are built
+    (`NOTE built: <n> test programs`; with every module selected the whole preset is built, with none nothing is), so a
+    quick run does not see a break in a module that is not selected. Conan and the configure are left out
+    (`NOTE conan and configure: not run (their files are unchanged)`) while the build folder holds the hash of the
+    contents of `conanfile.py`, `conan.lock`, `CMakePresets.json`, `pyproject.toml`, `uv.lock`, every `CMakeLists.txt`
+    and every file under `cmake/`; a compiler or SDK upgrade is not in it, so run `--speed commit` after one. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
     paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule: a quick run
     whose checks all passed exits with code 3, never 0, and prints `QUICK ONLY: not the commit gate` as its last
@@ -542,8 +547,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     word the glossary bans. The step runs when the working tree has no change, so run the gate again after the commit;
     with changes it prints `NOT RUN message (uncommitted changes)`, and `--speed quick` leaves it out. It also reads one
     commit (`tools/check_message.py <commit>`), a range (`--range A..B`) or a file (`--file PATH`).
-  - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (every
-    run, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
+  - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (at every
+    run but a quick one with unchanged files, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
     platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms
     (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`). It fails too when a test has neither the

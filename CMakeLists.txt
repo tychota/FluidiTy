@@ -82,3 +82,4 @@ add_subdirectory(tests)
 # Last: every target now exists, so the check sees them all.
 fluidity_check_compile_flags()
 fluidity_write_gpu_only_sources()
+fluidity_write_test_programs()

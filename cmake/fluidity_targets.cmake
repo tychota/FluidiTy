@@ -176,6 +176,7 @@ function(fluidity_add_test name)
   add_executable(${name} ${arg_SOURCES})
   target_link_libraries(${name} PRIVATE fluidity GTest::gtest_main ${arg_LINKS})
   fluidity_apply_compile_flags(${name} EXCEPTIONS ON)
+  set_property(GLOBAL APPEND PROPERTY FLUIDITY_TEST_PROGRAMS "${module_name} ${arg_TIER} ${name}")
   gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "${arg_LABEL};${module_name};${arg_TIER}")
 endfunction()
 
@@ -221,6 +222,21 @@ function(fluidity_write_gpu_only_sources)
     string(APPEND sources_text "\n")
   endif()
   file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/gpu_only_sources.txt" CONTENT "${sources_text}")
+endfunction()
+
+# fluidity_write_test_programs()
+#
+# Writes test_programs.txt in the build folder: one line `<module> <tier> <program>` for each test program made by
+# fluidity_add_test in this build, in the order of the calls. The gate's quick speed builds only the programs of the
+# modules whose files changed (`cmake --build --preset <preset> --target <program>...`). Called once, at the end of the
+# top-level CMakeLists.txt.
+function(fluidity_write_test_programs)
+  get_property(programs GLOBAL PROPERTY FLUIDITY_TEST_PROGRAMS)
+  list(JOIN programs "\n" programs_text)
+  if(programs_text)
+    string(APPEND programs_text "\n")
+  endif()
+  file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/test_programs.txt" CONTENT "${programs_text}")
 endfunction()
 
 # fluidity_check_compile_flags()

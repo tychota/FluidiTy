@@ -1018,3 +1018,242 @@ def test_quick_with_only_rules_still_follows_the_quick_rule_for_the_tools_tests(
     fake = FakeRun(changed=["src/fluidity/grid/a.h"])
     run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick", "--only", "rules")
     assert len(pytest_commands(fake)) == 2
+
+
+# Quick: Conan, configure and the build of only what the changed modules test -------------------------------------
+
+PROGRAMS_TEXT = (
+    "base unit base_test\n"
+    "grid unit grid_test\n"
+    "grid unit grid_corners_test\n"
+    "grid functional grid_big_functional_test\n"
+    "contact unit contact_test\n"
+    "contact functional contact_big_functional_test\n"
+)
+SETUP_FILES = {
+    "conanfile.py": "# conan\n",
+    "conan.lock": "{}\n",
+    "CMakePresets.json": "{}\n",
+    "CMakeLists.txt": "project(x)\n",
+    "src/fluidity/grid/CMakeLists.txt": "# grid\n",
+    "cmake/fluidity_targets.cmake": "# targets\n",
+}
+
+
+def conan_runs(fake) -> list[list[str]]:
+    return [command for command in fake.commands if command[:2] == ["conan", "install"]]
+
+
+def configure_runs(fake) -> list[list[str]]:
+    return [command for command in fake.commands if command[:2] == ["cmake", "--preset"]]
+
+
+def build_runs(fake) -> list[list[str]]:
+    return [command for command in fake.commands if command[:3] == ["cmake", "--build", "--preset"]]
+
+
+@pytest.fixture
+def configured(repo):
+    """A repository whose debug build folder was configured by a successful run: the files Conan and CMake read, the
+    files they leave, the stored hash and the list of test programs."""
+    for name, text in SETUP_FILES.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    build_folder = repo / "out" / "build" / DEBUG_PRESET
+    (build_folder / "CMakeCache.txt").write_text("# cache\n", encoding="utf-8")
+    (build_folder / "test_programs.txt").write_text(PROGRAMS_TEXT, encoding="utf-8")
+    toolchain = repo / "out" / "conan" / DEBUG_PRESET / "conan_toolchain.cmake"
+    toolchain.parent.mkdir(parents=True)
+    toolchain.write_text("# toolchain\n", encoding="utf-8")
+    (build_folder / check_commit.CONFIGURE_STATE_FILE).write_text(
+        check_commit.configure_inputs_hash(repo, DEBUG_PRESET) + "\n", encoding="utf-8"
+    )
+    return repo
+
+
+def quick_cpu(monkeypatch, capsys, repo, fake, *extra):
+    return run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick", "--allow-dirty", *extra)
+
+
+def test_quick_runs_conan_and_configure_when_the_build_folder_has_no_stored_hash(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, repo, fake)
+    assert len(conan_runs(fake)) == 1
+    assert configure_runs(fake) == [["cmake", "--preset", DEBUG_PRESET]]
+
+
+def test_a_passed_cpu_step_stores_the_hash_and_the_next_quick_run_skips_conan_and_configure(monkeypatch, capsys, repo):
+    for name, text in SETUP_FILES.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text, encoding="utf-8")
+    (repo / "out" / "conan" / DEBUG_PRESET).mkdir(parents=True)
+    (repo / "out" / "conan" / DEBUG_PRESET / "conan_toolchain.cmake").write_text("#\n", encoding="utf-8")
+    (repo / "out" / "build" / DEBUG_PRESET / "CMakeCache.txt").write_text("#\n", encoding="utf-8")
+    first = FakeRun()
+    run_gate(monkeypatch, capsys, repo, first, "--only", "cpu")
+    assert len(conan_runs(first)) == 2 and len(configure_runs(first)) == 2
+    second = FakeRun()
+    _, lines = quick_cpu(monkeypatch, capsys, repo, second)
+    assert conan_runs(second) == [] and configure_runs(second) == []
+    assert "NOTE conan and configure: not run (their files are unchanged)" in lines
+    assert [["conan", "profile", "detect", "--exist-ok"]] != [c for c in second.commands if c[:1] == ["conan"]]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "conanfile.py",
+        "conan.lock",
+        "CMakePresets.json",
+        "CMakeLists.txt",
+        "src/fluidity/grid/CMakeLists.txt",
+        "cmake/fluidity_targets.cmake",
+        "cmake/new_helper.cmake",
+        "src/fluidity/base/CMakeLists.txt",
+        "pyproject.toml",
+        "uv.lock",
+    ],
+)
+def test_a_changed_or_new_file_that_conan_or_configure_reads_runs_both_again(monkeypatch, capsys, configured, name):
+    path = configured / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(path.read_text(encoding="utf-8") + "# changed\n" if path.exists() else "# new\n", encoding="utf-8")
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert len(conan_runs(fake)) == 1
+    assert configure_runs(fake) == [["cmake", "--preset", DEBUG_PRESET]]
+
+
+def test_a_touched_but_identical_file_that_conan_reads_does_not_run_them_again(monkeypatch, capsys, configured):
+    for name in ("conan.lock", "CMakeLists.txt"):
+        path = configured / name
+        path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert conan_runs(fake) == [] and configure_runs(fake) == []
+
+
+def test_a_change_to_a_source_file_does_not_run_conan_or_configure(monkeypatch, capsys, configured):
+    (configured / "src" / "fluidity" / "a.h").write_text("// edited\n", encoding="utf-8")
+    fake = FakeRun(changed=["src/fluidity/a.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert conan_runs(fake) == [] and configure_runs(fake) == []
+
+
+@pytest.mark.parametrize("missing", ["out/build/{preset}/CMakeCache.txt", "out/conan/{preset}/conan_toolchain.cmake"])
+def test_a_missing_file_of_the_last_configure_runs_conan_and_configure_again(monkeypatch, capsys, configured, missing):
+    (configured / missing.format(preset=DEBUG_PRESET)).unlink()
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert len(conan_runs(fake)) == 1 and len(configure_runs(fake)) == 1
+
+
+def test_a_stored_hash_of_another_preset_does_not_count(monkeypatch, capsys, configured):
+    state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
+    state.write_text(check_commit.configure_inputs_hash(configured, RELEASE_PRESET) + "\n", encoding="utf-8")
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert len(conan_runs(fake)) == 1
+
+
+@pytest.mark.parametrize("speed", ["commit", "full"])
+def test_commit_and_full_speed_run_conan_and_configure_whatever_is_stored(monkeypatch, capsys, configured, speed):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, configured, fake, "--speed", speed, "--only", "cpu")
+    assert len(conan_runs(fake)) == 2 and len(configure_runs(fake)) == 2
+
+
+def test_quick_with_only_cpu_runs_conan_and_configure_whatever_is_stored(monkeypatch, capsys, configured):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, configured, fake, "--speed", "quick", "--only", "cpu")
+    assert len(conan_runs(fake)) == 2 and len(configure_runs(fake)) == 2
+
+
+@pytest.mark.parametrize("failing", ["conan", "cmake"])
+def test_a_failed_conan_or_configure_removes_the_stored_hash(monkeypatch, capsys, configured, failing):
+    state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
+    (configured / "conan.lock").write_text("{ }\n", encoding="utf-8")
+    fake = FakeRun(failing=lambda command: command[0] == failing and command[1] in ("install", "--preset"))
+    exit_code, _ = quick_cpu(monkeypatch, capsys, configured, fake)
+    assert exit_code == 1
+    assert not state.exists()
+    again = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, again)
+    assert len(conan_runs(again)) == 1
+
+
+def test_quick_builds_only_the_unit_test_programs_of_the_changed_module(monkeypatch, capsys, configured):
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    _, lines = quick_cpu(monkeypatch, capsys, configured, fake)
+    debug_builds = [command for command in build_runs(fake) if command[3] == DEBUG_PRESET]
+    assert debug_builds == [["cmake", "--build", "--preset", DEBUG_PRESET, "--target", "grid_corners_test", "grid_test"]]
+    assert "NOTE built: 2 test programs" in lines
+
+
+def test_quick_builds_the_functional_programs_of_a_module_whose_tests_changed(monkeypatch, capsys, configured):
+    fake = FakeRun(changed=["tests/grid/a.test.cc", "src/fluidity/contact/a.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    (build,) = build_runs(fake)
+    assert build[4:] == ["--target", "contact_test", "grid_big_functional_test", "grid_corners_test", "grid_test"]
+
+
+def test_quick_builds_everything_when_a_change_selects_every_module(monkeypatch, capsys, configured):
+    fake = FakeRun(changed=["src/fluidity/shared.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert build_runs(fake) == [["cmake", "--build", "--preset", DEBUG_PRESET]]
+
+
+def test_quick_builds_everything_when_git_cannot_list_the_changes(monkeypatch, capsys, configured):
+    fake = FakeRun(failing=lambda command: command[:3] == ["git", "diff", "--name-only"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert build_runs(fake) == [["cmake", "--build", "--preset", DEBUG_PRESET]]
+
+
+def test_quick_builds_nothing_when_no_module_changed(monkeypatch, capsys, configured):
+    fake = FakeRun(changed=["docs/design/x.md"])
+    _, lines = quick_cpu(monkeypatch, capsys, configured, fake)
+    assert build_runs(fake) == []
+    assert "NOTE modules: none" in lines
+
+
+@pytest.mark.parametrize("programs", [None, "", "grid unit\n", "grid unit grid_test extra\n"])
+def test_quick_builds_everything_when_the_program_list_is_missing_or_malformed(
+    monkeypatch, capsys, configured, programs
+):
+    listing = configured / "out" / "build" / DEBUG_PRESET / check_commit.TEST_PROGRAMS_FILE
+    if programs is None:
+        listing.unlink()
+    else:
+        listing.write_text(programs, encoding="utf-8")
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert build_runs(fake) == [["cmake", "--build", "--preset", DEBUG_PRESET]]
+
+
+def test_quick_with_only_builds_every_program_and_the_release_preset_is_never_narrowed(monkeypatch, capsys, configured):
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    run_gate(monkeypatch, capsys, configured, fake, "--speed", "quick", "--only", "cpu", "--allow-dirty")
+    assert build_runs(fake) == [
+        ["cmake", "--build", "--preset", DEBUG_PRESET],
+        ["cmake", "--build", "--preset", RELEASE_PRESET],
+    ]
+
+
+@pytest.mark.parametrize("speed", ["commit", "full"])
+def test_commit_and_full_speed_build_everything(monkeypatch, capsys, configured, speed):
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    run_gate(monkeypatch, capsys, configured, fake, "--speed", speed, "--only", "cpu", "--allow-dirty")
+    assert all("--target" not in command for command in build_runs(fake))
+
+
+def test_test_programs_to_build_reads_modules_and_tiers():
+    pick = check_commit.test_programs_to_build
+    assert pick(PROGRAMS_TEXT, frozenset({"grid"}), frozenset()) == ["grid_corners_test", "grid_test"]
+    assert pick(PROGRAMS_TEXT, frozenset({"grid", "base"}), frozenset({"grid"})) == [
+        "base_test",
+        "grid_big_functional_test",
+        "grid_corners_test",
+        "grid_test",
+    ]
+    assert pick(PROGRAMS_TEXT, frozenset({"other"}), frozenset()) == []
