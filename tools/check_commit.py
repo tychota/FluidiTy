@@ -136,6 +136,9 @@ PAPER_DIRECTORY = Path("docs") / "method-paper"
 PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
 PAPER_PDF = Path("out") / "paper" / "fluidity-method.pdf"
 LOG_DIRECTORY = Path("out") / "check-commit"
+# The doubtful lines of the last commit: the command that lists them and the file it writes.
+NOTES_JSON = LOG_DIRECTORY / "notes.json"
+NOTES_SINCE_ARGUMENTS = f"--notes-since HEAD~1 --json {NOTES_JSON.as_posix()}"
 
 CPP_PATTERNS = ("*.cc", "*.h", "*.cu", "*.cuh")
 # The sources a build compiles; every tracked one must be in the CUDA build.
@@ -425,7 +428,24 @@ class Gate:
             return version
         return self.command("format", ["clang-format", "--dry-run", "--Werror", *files])
 
-    def check_rules(self) -> Outcome:
+    def count_doubtful_lines(self) -> int:
+        """The notes of the lines that the last commit adds (`check_rules.py --notes-since HEAD~1 --json`), or 0 when
+        they cannot be listed. The notes are written to NOTES_JSON for a reader to open."""
+        notes_path = self.repo_root / NOTES_JSON
+        notes_path.unlink(missing_ok=True)
+        listed = self.command(
+            "notes",
+            [sys.executable, str(self.repo_root / "tools" / "check_rules.py"), "--notes-since", "HEAD~1", "--json"]
+            + [str(notes_path), "--repository", str(self.repo_root)],
+        )
+        if not listed.passed:
+            return 0
+        try:
+            return len(json.loads(notes_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return 0
+
+    def check_rules(self, lists_doubtful_lines: bool = False) -> Outcome:
         tools = self.repo_root / "tools"
         rules = self.command(
             "rules",
@@ -449,6 +469,10 @@ class Gate:
                 ["actionlint"],
             ],
         )
+        if lists_doubtful_lines and outcome.passed:
+            count = self.count_doubtful_lines()
+            if count:
+                notes += (f"NOTE {count} doubtful lines: uv run python tools/check_rules.py {NOTES_SINCE_ARGUMENTS}",)
         return Outcome(outcome.passed, outcome.reason, notes)
 
     def check_message(self) -> Outcome:
@@ -746,7 +770,7 @@ class Gate:
 
         return [
             Check("format", "format", self.check_format),
-            Check("rules", "rules", self.check_rules),
+            Check("rules", "rules", lambda: self.check_rules(lists_doubtful_lines=not changed_only)),
             Check(
                 "message",
                 "message",

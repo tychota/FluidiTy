@@ -150,7 +150,7 @@ def test_all_steps_pass_exits_zero(monkeypatch, capsys, repo):
 def test_rules_step_lints_the_workflow_files(monkeypatch, capsys, repo):
     fake = FakeRun()
     run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
-    assert fake.commands[-1] == ["actionlint"]
+    assert ["actionlint"] in fake.commands
 
 
 def test_failing_actionlint_fails_the_rules_step(monkeypatch, capsys, repo):
@@ -850,3 +850,44 @@ def test_quick_leaves_the_message_step_out(monkeypatch, capsys, repo):
     _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
     assert "NOT RUN message (quick)" in lines
     assert message_commands(fake) == []
+
+
+class NotesWriter(FakeRun):
+    """A FakeRun whose check_rules.py writes `count` notes to the --json path it is given, as the real one does."""
+
+    def __init__(self, count, **kwargs):
+        super().__init__(**kwargs)
+        self._count = count
+
+    def __call__(self, command, **kwargs):
+        if "--json" in command:
+            Path(command[command.index("--json") + 1]).write_text(json.dumps([{}] * self._count), encoding="utf-8")
+        return super().__call__(command, **kwargs)
+
+
+def test_rules_step_prints_the_count_of_doubtful_lines_and_the_command_that_lists_them(monkeypatch, capsys, repo):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, NotesWriter(3), "--only", "rules")
+    assert exit_code == 0
+    assert lines == [
+        "NOTE 3 doubtful lines: uv run python tools/check_rules.py --notes-since HEAD~1 --json out/check-commit/notes.json",
+        "PASS rules",
+    ]
+
+
+def test_rules_step_prints_no_doubtful_line_line_for_zero_notes(monkeypatch, capsys, repo):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, NotesWriter(0), "--only", "rules")
+    assert exit_code == 0
+    assert lines == ["PASS rules"]
+
+
+def test_doubtful_lines_never_fail_the_gate_and_a_failed_listing_prints_nothing(monkeypatch, capsys, repo):
+    fake = NotesWriter(2, failing=lambda command: "--json" in command)
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    assert exit_code == 0
+    assert lines == ["PASS rules"]
+
+
+def test_quick_does_not_list_doubtful_lines(monkeypatch, capsys, repo):
+    fake = NotesWriter(2)
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert not any("doubtful" in line for line in lines)

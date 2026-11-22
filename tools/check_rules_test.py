@@ -1,5 +1,6 @@
 """Tests for tools/check_rules.py. Each test builds a small tree and checks the findings."""
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -248,7 +249,7 @@ def test_abbreviation_with_digit_fails(tmp_path, glossary):
 
 
 def test_bare_bool_parameter_fails(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "void ApplyForces(double x, bool bounded);\n")
+    write(tmp_path, "a.h", FULL_HEADER + "void ApplyForces(double value, bool bounded);\n")
     assert rules(run(tmp_path, glossary)) == ["bare-bool"]
 
 
@@ -258,40 +259,40 @@ def test_bool_field_is_allowed(tmp_path, glossary):
 
 
 def test_unlisted_verb_fails(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "double EvaluateWeight(double x);\n")
+    write(tmp_path, "a.h", FULL_HEADER + "double EvaluateWeight(double value);\n")
     findings = run(tmp_path, glossary)
     assert rules(findings) == ["verb"]
     assert "EvaluateWeight" in findings[0].text
 
 
 def test_unlisted_verb_says_where_to_list_the_name(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "double EvaluateWeight(double x);\n")
+    write(tmp_path, "a.h", FULL_HEADER + "double EvaluateWeight(double value);\n")
     findings = run(tmp_path, glossary)
     assert "list it with its reason in tools/check_rules_allowed_names.txt" in findings[0].text
 
 
 def test_allowed_verb_must_end_at_a_word_boundary(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "double Computer(double x);\n")
+    write(tmp_path, "a.h", FULL_HEADER + "double Computer(double value);\n")
     assert rules(run(tmp_path, glossary)) == ["verb"]
 
 
 def test_listed_physical_name_is_allowed(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "void MoveParticles(double x);\nvoid TryStep(double x);\n")
+    write(tmp_path, "a.h", FULL_HEADER + "void MoveParticles(double value);\nvoid TryStep(double value);\n")
     assert run(tmp_path, glossary) == []
 
 
 def test_math_namespace_noun_is_allowed(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "namespace fluidity::math {\ndouble Dot(Vec3 a, Vec3 b);\n}\n")
+    write(tmp_path, "a.h", FULL_HEADER + "namespace fluidity::math {\ndouble Dot(Vec3 first, Vec3 second);\n}\n")
     assert run(tmp_path, glossary) == []
 
 
 def test_member_function_is_not_a_free_function(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "struct Grid {\n  double Weight(double x) const;\n};\n")
+    write(tmp_path, "a.h", FULL_HEADER + "struct Grid {\n  double Weight(double value) const;\n};\n")
     assert run(tmp_path, glossary) == []
 
 
 def test_inline_definition_in_header_is_not_scanned_for_verbs(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "inline double ComputeTwice(double x) {\n  return Twice(x);\n}\n")
+    write(tmp_path, "a.h", FULL_HEADER + "inline double ComputeTwice(double value) {\n  return Twice(value);\n}\n")
     assert run(tmp_path, glossary) == []
 
 
@@ -301,7 +302,7 @@ def test_operator_is_allowed(tmp_path, glossary):
 
 
 def test_verb_rule_does_not_apply_to_cc_files(tmp_path, glossary):
-    write(tmp_path, "a.cc", "double EvaluateWeight(double x);\n")
+    write(tmp_path, "a.cc", "double EvaluateWeight(double value);\n")
     assert run(tmp_path, glossary) == []
 
 
@@ -311,7 +312,7 @@ def test_to_conversion_is_allowed(tmp_path, glossary):
 
 
 def test_allowed_name_file_exempts(tmp_path, glossary):
-    write(tmp_path / "src", "a.h", FULL_HEADER + "double EvaluateWeight(double x);\n")
+    write(tmp_path / "src", "a.h", FULL_HEADER + "double EvaluateWeight(double value);\n")
     names = write(tmp_path, "names.txt", "EvaluateWeight  # owner approved\n")
     assert run(tmp_path / "src", glossary, names) == []
 
@@ -498,7 +499,7 @@ def test_bool_that_is_not_a_parameter_is_allowed(tmp_path, glossary, declaration
 
 
 def test_bare_bool_on_third_line_of_declaration_fails(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "void ApplyForces(double x,\n    double y,\n    bool bounded);\n")
+    write(tmp_path, "a.h", FULL_HEADER + "void ApplyForces(double value,\n    double second,\n    bool bounded);\n")
     assert rules(run(tmp_path, glossary)) == ["bare-bool"]
 
 
@@ -548,7 +549,7 @@ def test_names_with_a_digit_but_no_dimension_are_allowed(tmp_path, glossary, nam
 
 
 def test_math_dot_is_allowed(tmp_path, glossary):
-    write(tmp_path, "a.h", FULL_HEADER + "namespace fluidity::math {\ndouble Dot(Vec3 a, Vec3 b);\n}\n")
+    write(tmp_path, "a.h", FULL_HEADER + "namespace fluidity::math {\ndouble Dot(Vec3 first, Vec3 second);\n}\n")
     assert run(tmp_path, glossary) == []
 
 
@@ -1018,3 +1019,173 @@ def test_rule_table_ids_are_unique_and_levels_are_known():
     ids = [rule.rule_id for rule in check_rules.RULE_TABLE]
     assert len(ids) == len(set(ids))
     assert {rule.level for rule in check_rules.RULE_TABLE} <= {check_rules.FAIL, check_rules.NOTE}
+
+
+# NOTE rules --------------------------------------------------------------------------------------------
+
+
+def notes(tmp_path, glossary, name, text, folder="src"):
+    write(tmp_path / folder, name, text)
+    return rules(run(tmp_path, glossary), "NOTE")
+
+
+def test_and_in_a_test_name_is_a_note(tmp_path, glossary):
+    assert notes(tmp_path, glossary, "a.test.cc", "TEST(Grid, BuildsAndChecks_Works) { EXPECT_TRUE(true); }\n") == [
+        "test-name-and"
+    ]
+
+
+@pytest.mark.parametrize("name", ["BlockAndroid_Works", "Android_Works", "Standard_Works"])
+def test_and_inside_a_longer_word_of_a_test_name_is_quiet(tmp_path, glossary, name):
+    assert notes(tmp_path, glossary, "a.test.cc", f"TEST(Grid, {name}) {{ EXPECT_TRUE(true); }}\n") == []
+
+
+def test_function_with_more_than_four_inputs_in_a_test_file_is_a_note(tmp_path, glossary):
+    text = "void CheckAll(int first, int second, int third, int fourth, int fifth) {}\n"
+    assert notes(tmp_path, glossary, "a.test.cc", text) == ["many-inputs"]
+
+
+def test_function_with_four_inputs_in_a_test_file_is_quiet(tmp_path, glossary):
+    assert notes(tmp_path, glossary, "a.test.cc", "void CheckAll(int first, int second, int third, int fourth) {}\n") == []
+
+
+def test_private_helper_with_many_inputs_is_a_note_and_a_public_one_is_quiet(tmp_path, glossary):
+    text = "int ComputeAll(int first, int second, int third, int fourth, int fifth);\n"
+    definition = text.replace(";", " { return 0; }")
+    assert notes(tmp_path / "public", glossary, "a.h", text) == []
+    assert notes(tmp_path / "anonymous", glossary, "b.cc", "namespace {\n" + definition + "}\n") == ["many-inputs"]
+    assert notes(tmp_path / "static", glossary, "c.cc", "static " + definition) == ["many-inputs"]
+    assert notes(tmp_path / "plain", glossary, "d.cc", definition) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["  const double x = 1.0;\n", "  for (int i = 0; i < 3; ++i) {\n  }\n", "  auto& v = values;\n", "  std::size_t k{3};\n"],
+)
+def test_one_letter_local_is_a_note(tmp_path, glossary, body):
+    assert notes(tmp_path, glossary, "a.cc", "void ApplyIt() {\n" + body + "}\n") == ["short-local"]
+
+
+def test_one_letter_parameter_is_a_note(tmp_path, glossary):
+    assert notes(tmp_path, glossary, "a.cc", "double ComputeIt(double x) { return 0.0; }\n") == ["short-local"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "void ApplyIt() {\n  const double width = 1.0;\n  value.x = 2.0;\n  const Vec3 point = {.x = 1, .y = 2};\n}\n",
+        "template <typename T>\nT ComputeIt(T value) { return value; }\n",
+        "struct Vec2 {\n  double x;\n  double y;\n};\n",
+        "double ComputeIt(double) { return 0.0; }\n",
+    ],
+)
+def test_names_that_are_not_one_letter_locals_are_quiet(tmp_path, glossary, text):
+    assert notes(tmp_path, glossary, "a.cc", text) == []
+
+
+@pytest.mark.parametrize("word", ["task", "Brief", "review", "reviewer", "round", "plan", "ruling"])
+def test_process_word_in_a_comment_is_a_note(tmp_path, glossary, word):
+    assert notes(tmp_path, glossary, "a.cc", f"// As the {word} said.\nint fine;\n") == ["process-word"]
+
+
+@pytest.mark.parametrize(
+    "text", ["// Task 12 decided it.\n", "// Ruling 5 holds.\n"]
+)
+def test_numbered_process_word_in_a_comment_is_a_note(tmp_path, glossary, text):
+    assert notes(tmp_path, glossary, "a.cc", text) == ["process-word"]
+
+
+def test_process_word_in_code_or_inside_a_longer_word_is_quiet(tmp_path, glossary):
+    assert notes(tmp_path, glossary, "a.cc", "int task_count;\n// Rounding and planes and reviews.\n") == []
+
+
+def test_test_without_a_check_is_a_note(tmp_path, glossary):
+    text = "TEST(Grid, Builds) {\n  Build();\n}\n"
+    assert notes(tmp_path, glossary, "a.test.cc", text) == ["test-without-check"]
+
+
+@pytest.mark.parametrize(
+    "check", ["EXPECT_EQ(a, b);", "ASSERT_TRUE(ok);", "CheckGrid(grid);", "SUCCEED();", "FAIL();", "GTEST_SKIP();"]
+)
+def test_test_with_a_check_is_quiet(tmp_path, glossary, check):
+    text = f"TEST(Grid, Builds) {{\n  Build();\n  {check}\n}}\n"
+    assert notes(tmp_path, glossary, "a.test.cc", text) == []
+
+
+def test_two_tests_are_judged_one_by_one(tmp_path, glossary):
+    text = "TEST(Grid, A) {\n  EXPECT_TRUE(true);\n}\n\nTEST(Grid, B) {\n  Build();\n}\n"
+    write(tmp_path / "src", "a.test.cc", text)
+    findings = [f for f in run(tmp_path, glossary) if f.rule_id == "test-without-check"]
+    assert [f.line for f in findings] == [5]
+
+
+# --notes-since and --json -------------------------------------------------------------------------------
+
+
+def git(repository: Path, *arguments: str) -> None:
+    subprocess.run(["git", *arguments], cwd=repository, check=True, stdout=subprocess.DEVNULL)
+
+
+@pytest.fixture
+def repository(tmp_path: Path) -> Path:
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "a@b.c")
+    git(tmp_path, "config", "user.name", "A")
+    git(tmp_path, "config", "commit.gpgsign", "false")
+    write(tmp_path / "src", "a.cc", "// The plan.\nint fine;\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "First")
+    return tmp_path
+
+
+def test_notes_since_writes_the_notes_of_added_lines_sorted_with_their_source(repository, glossary, tmp_path_factory):
+    write(repository / "src", "a.cc", "// The plan.\nint fine;\n// The round.\n")
+    write(repository / "src", "b.cc", "// A review.\n")
+    destination = tmp_path_factory.mktemp("out") / "notes.json"
+    exit_code = check_rules.main(
+        [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+        + ["--notes-since", "HEAD", "--json", str(destination)]
+    )
+    records = json.loads(destination.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert [(r["path"], r["line"], r["rule"], r["source_line"]) for r in records] == [
+        ("src/a.cc", 3, "process-word", "// The round."),
+        ("src/b.cc", 1, "process-word", "// A review."),
+    ]
+    assert set(records[0]) == {"path", "line", "rule", "text", "source_line"}
+
+
+def test_notes_since_prints_the_count(repository, glossary, tmp_path_factory, capsys):
+    write(repository / "src", "b.cc", "// A review.\n")
+    destination = tmp_path_factory.mktemp("out") / "notes.json"
+    check_rules.main(
+        [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+        + ["--notes-since", "HEAD", "--json", str(destination)]
+    )
+    assert capsys.readouterr().out.startswith("1 doubtful lines")
+
+
+def test_notes_since_a_commit_that_does_not_exist_is_an_error(repository, glossary, tmp_path_factory, capsys):
+    destination = tmp_path_factory.mktemp("out") / "notes.json"
+    exit_code = check_rules.main(
+        [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+        + ["--notes-since", "no-such-commit", "--json", str(destination)]
+    )
+    assert exit_code == 2
+    assert not destination.exists()
+
+
+def test_json_without_notes_since_is_an_error(repository, glossary, capsys):
+    exit_code = check_rules.main([str(repository / "src"), "--glossary", str(glossary), "--json", "x.json"])
+    assert exit_code == 2
+
+
+def test_notes_since_without_json_prints_the_lines_it_adds(repository, glossary, capsys):
+    write(repository / "src", "b.cc", "// A review.\n")
+    check_rules.main(
+        [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+        + ["--notes-since", "HEAD"]
+    )
+    out = capsys.readouterr().out
+    assert "b.cc:1: NOTE process-word" in out
+    assert "a.cc" not in out

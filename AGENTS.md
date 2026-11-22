@@ -450,6 +450,20 @@ FluidiTy's own array file holds only the saved state and internal run records.
 - [ ] `Read` lines copied from the method paper's bibliography, never from memory.
 - [ ] New public names listed in the commit message.
 
+## Checks, notes and review
+
+`tools/check_rules.py` reports two levels. A FAIL is a rule with no false positive: it fails the gate. A NOTE is a
+detector that can be wrong: it never fails the gate, and it is printed only for the lines a change adds. The gate
+prints `NOTE <n> doubtful lines: uv run python tools/check_rules.py --notes-since HEAD~1 --json out/check-commit/notes.json`
+when there are any, and that command writes the list: path, line, rule, the note and the source line.
+
+- Whoever hands a change in fixes every NOTE of it, or answers it in one line (why the line stays).
+- A rule is one entry in `RULE_TABLE` (id, level, files, reason) and one pair of tests: it fires, and it stays
+  quiet on the nearest innocent text.
+- A fault that a review finds three times becomes a NOTE.
+- A NOTE that has no wrong hit over a whole module becomes a FAIL.
+- A rule that never fires over two modules, or whose notes are left unfixed more than one time in three, is removed.
+
 ## Commit rule
 
 A commit lands only when all of these hold:

@@ -1,13 +1,16 @@
 """Applies the mechanical items of the AGENTS.md checklist to files.
 
 Usage: uv run python tools/check_rules.py [PATH ...] [--glossary PATH] [--allowed-names PATH]
-                                         [--notes-on-staged-lines [--repository PATH]]   (default paths: src and tests)
+                                         [--notes-on-staged-lines | --notes-since COMMIT [--json PATH]]
+                                         [--repository PATH]   (default paths: src, tests and docs/method-paper)
 
 Output lines are `path:line: FAIL <rule-id> <text>` and `path:line: NOTE <rule-id> <text>`.
 The exit code is 1 when any FAIL was printed, 2 when an input is missing or malformed, otherwise 0.
 Notes never change the exit code. With --notes-on-staged-lines a NOTE is printed only for a line that the staged
 changes of the repository add (`git diff --cached`), so a commit shows the notes of its own lines; FAIL lines are
-always printed.
+always printed. With --notes-since COMMIT the lines are those the working tree adds to COMMIT, committed or not; with
+--json PATH as well, the notes of those lines are written to PATH as a JSON list of `{path, line, rule, text,
+source_line}`, sorted by path, line and rule, and their count is printed.
 
 The vocabulary comes from docs/glossary.md (only the "Never say" column is read) and the allowed verbs
 come from the "Allowed verbs" section of AGENTS.md. Words are matched on tokens, so `cut` does not match
@@ -48,6 +51,7 @@ import argparse
 import ast
 import functools
 import io
+import json
 import re
 import subprocess
 import sys
@@ -122,6 +126,11 @@ RULE_TABLE = (
     Rule("one-word-comment", FAIL, "C++ files under src and tests", "a one-word comment says nothing the code does not"),
     Rule("test-helper-verb", FAIL, "functions defined in test files", "a test helper starts with an allowed verb"),
     Rule("paper-line-length", FAIL, "docs/method-paper/*.typ", "a paper line is at most 120 columns"),
+    Rule("test-name-and", NOTE, "TEST names in C++ files", "a test that checks two things should be two tests"),
+    Rule("many-inputs", NOTE, "functions of test files and private helpers", "more than four inputs hide the call"),
+    Rule("short-local", NOTE, "C++ files", "a one-letter variable or parameter says nothing; the project uses none"),
+    Rule("process-word", NOTE, "comments of C++ files", "a comment says what the code does, not how it was made"),
+    Rule("test-without-check", NOTE, "TEST bodies in C++ files", "a test with no check passes whatever the code does"),
 )
 
 
@@ -870,6 +879,36 @@ def _brace_kind(statement: str) -> _Scope:
     return _Scope("other")
 
 
+MAX_INPUTS = 4
+# A declaration of a variable or a parameter with a one-letter name: a type, then the name, then what follows a name.
+_TYPE_BEFORE_NAME = (
+    r"(?:auto|bool|char|int|long|short|float|double|unsigned|size_t|u?int(?:8|16|32|64)_t"
+    r"|std::[A-Za-z_]\w*(?:<[^;(){}]*>)?|[A-Z][A-Za-z0-9_]*(?:<[^;(){}]*>)?)"
+)
+_SHORT_LOCAL = re.compile(
+    r"(?<![\w:.>])" + _TYPE_BEFORE_NAME + r"(?:\s+const)?\s*[&*]*\s+([A-Za-z])\s*(?=[=;,){:\[({])"
+)
+
+
+def _is_private_helper(statement: str, stack: list[_Scope]) -> bool:
+    """True for a function in an anonymous namespace or declared `static`."""
+    in_anonymous_namespace = any(scope.kind == "namespace" and not scope.name for scope in stack)
+    return in_anonymous_namespace or re.match(r"(?:(?:inline|constexpr)\s+)*static\b", statement) is not None
+
+
+def _note_short_parameters(declared: _Declared, line: int, reporter: _Reporter) -> None:
+    for parameter in declared.parameters:
+        match = re.search(r"\b([A-Za-z])\s*(?:=.*)?$", parameter)
+        if match and re.search(r"[\w>&*]\s*[&*]*\s+[A-Za-z]\b", parameter.split("=")[0]):
+            text = f"the parameter '{match.group(1)}' of '{declared.name}' has a one-letter name"
+            reporter.add(line, NOTE, "short-local", text, key=f"{declared.name}:{match.group(1)}")
+
+
+def _note_short_locals(line: ScannedLine, reporter: _Reporter) -> None:
+    for match in _SHORT_LOCAL.finditer(line.code):
+        reporter.add(line.number, NOTE, "short-local", f"'{match.group(1)}' is a one-letter name", key=match.group(1))
+
+
 def _check_declarations(
     lines: list[ScannedLine],
     verbs: set[str] | None,
@@ -878,11 +917,15 @@ def _check_declarations(
     reporter: _Reporter,
     is_test_file: bool = False,
     checks_bare_bool: bool = True,
+    declarations_are_private: bool = False,
 ) -> None:
     """Applies `verb` to free functions and `bare-bool` to every function declared at declaration scope.
 
     `verbs` None skips the verb rule (a private `_gpu` header) and keeps bare-bool. In a test file the verb rule is
     `test-helper-verb`, and a macro call such as `TEST(...)`, `main` and the GoogleTest hooks are not helpers.
+    `many-inputs` and `short-local` are NOTEs: the first for a private free function (every one when
+    `declarations_are_private`, else one in an anonymous namespace or `static`), the second for a one-letter parameter
+    and, in a function body, a one-letter local variable.
     A brace-stack scan assembles each statement. Declaration scope is a namespace or the braces of a class; function
     definitions, enums and initializers are skipped. A free function is declared where every scope is a namespace.
     """
@@ -899,6 +942,11 @@ def _check_declarations(
                 text = f"'{declared.name}' has a bool parameter; use an enum or two functions"
                 reporter.add(statement_line, FAIL, "bare-bool", text, key=f"{declared.name}:{index}")
         is_free = all(scope.kind == "namespace" for scope in stack)
+        _note_short_parameters(declared, statement_line, reporter)
+        is_private = declarations_are_private or _is_private_helper(statement.strip(), stack)
+        if is_free and is_private and not declared.is_member_definition and len(declared.parameters) > MAX_INPUTS:
+            text = f"'{declared.name}' takes {len(declared.parameters)} inputs; a group of them could be a struct"
+            reporter.add(statement_line, NOTE, "many-inputs", text, key=declared.name)
         in_math = any(scope.name.split("::")[-1] == "math" for scope in stack if scope.kind == "namespace")
         name = declared.name
         if verbs is None or not is_free or declared.is_member_definition or in_math:
@@ -920,6 +968,8 @@ def _check_declarations(
         continues_preprocessor_line = is_preprocessor_line and line.code.rstrip().endswith("\\")
         if is_preprocessor_line:
             continue
+        if any(scope.kind == "other" for scope in stack):
+            _note_short_locals(line, reporter)
         for character in line.code:
             at_declaration_scope = all(scope.kind != "other" for scope in stack)
             if character == ";":
@@ -1071,6 +1121,54 @@ def _check_paper_line_length(path: Path, text: str, reporter: _Reporter) -> None
         reporter.add(number, FAIL, "paper-line-length", f"the line has {len(line)} columns; the limit is {PAPER_LINE_LIMIT}")
 
 
+# Words of a comment that name the process that made the code, not what the code does.
+PROCESS_COMMENT_WORDS = frozenset({"task", "brief", "review", "reviewer", "round", "plan", "ruling"})
+_COMMENT_WORD = re.compile(r"[A-Za-z]+")
+
+
+def _note_process_words(lines: list[ScannedLine], reporter: _Reporter) -> None:
+    """Notes a process word in a comment; `Task 12` and `Ruling 5` are caught by the word itself."""
+    for line in lines:
+        for word in dict.fromkeys(word.lower() for word in _COMMENT_WORD.findall(line.comment)):
+            if word in PROCESS_COMMENT_WORDS:
+                text = f"'{word}' in a comment names how the work was done; say what the code does"
+                reporter.add(line.number, NOTE, "process-word", text, key=word)
+
+
+_TEST_MACRO_START = re.compile(r"^\s*(?:TEST|TEST_F|TEST_P)\s*\(\s*\w+\s*,\s*(\w+)")
+_TEST_CHECK = re.compile(
+    r"\b(?:EXPECT|ASSERT)_\w+|\b(?:Check|Expect)\w*\s*\(|\bSUCCEED\b|\bFAIL\b|\bGTEST_SKIP\b|\bADD_FAILURE\w*"
+)
+
+
+def _note_test_shape(lines: list[ScannedLine], reporter: _Reporter) -> None:
+    """Notes `And` in the name of a test, and a test body with no check. A body ends where its first brace closes."""
+    index = 0
+    while index < len(lines):
+        start = _TEST_MACRO_START.match(lines[index].code)
+        if not start:
+            index += 1
+            continue
+        if "And" in split_name_pieces(start.group(1)):
+            reporter.add(lines[index].number, NOTE, "test-name-and", f"the test name '{start.group(1)}' says And")
+        depth = 0
+        opened = False
+        body = ""
+        end = index
+        while end < len(lines):
+            for character in lines[end].code:
+                depth += character == "{"
+                depth -= character == "}"
+                opened = opened or character == "{"
+            body += lines[end].code + "\n"
+            if opened and depth <= 0:
+                break
+            end += 1
+        if opened and not _TEST_CHECK.search(body):
+            reporter.add(lines[index].number, NOTE, "test-without-check", f"the test '{start.group(1)}' has no check")
+        index = max(end, index) + 1
+
+
 def _is_test_file(path: Path) -> bool:
     """A test file has `.test.` in its name, or lies in a `testing` folder or a `tests` folder."""
     return ".test." in path.name or TEST_CODE_FOLDER in path.parts[:-1] or TESTS_FOLDER in path.parts[:-1]
@@ -1101,6 +1199,7 @@ def check_text(
     if suffix in HEADER_SUFFIXES:
         _check_file_header(lines, reporter)
     _check_words(lines, glossary, reporter)
+    _note_process_words(lines, reporter)
     _check_milestones(path, lines, reporter)
     _check_dimension_suffix(lines, reporter)
     is_private_gpu_file = is_private_gpu_stem(path.stem)
@@ -1109,15 +1208,31 @@ def check_text(
         _check_shared_by_reference(lines, reporter)
         _check_private_gpu_includes(path, text, lines, reporter)
         _check_compiler_includes(lines, reporter)
+        _note_test_shape(lines, reporter)
         if _is_under_source_folders(path):
             _check_one_word_comments(lines, reporter)
     is_test_file = _is_test_file(path)
     if suffix in HEADER_SUFFIXES:
         _check_declarations(
-            lines, None if is_private_gpu_file else verbs, exact_names, allowed_names, reporter, is_test_file
+            lines,
+            None if is_private_gpu_file else verbs,
+            exact_names,
+            allowed_names,
+            reporter,
+            is_test_file,
+            declarations_are_private=is_test_file or is_private_gpu_file,
         )
-    elif suffix in CPP_SUFFIXES and is_test_file and not is_private_gpu_file:
-        _check_declarations(lines, verbs, exact_names, allowed_names, reporter, True, checks_bare_bool=False)
+    elif suffix in CPP_SUFFIXES:
+        _check_declarations(
+            lines,
+            verbs if is_test_file and not is_private_gpu_file else None,
+            exact_names,
+            allowed_names,
+            reporter,
+            is_test_file,
+            checks_bare_bool=False,
+            declarations_are_private=is_test_file or is_private_gpu_file,
+        )
     if suffix == ".h" and not is_private_gpu_file:
         _check_backend_names(lines, allowed_names, reporter)
     return sorted(reporter.findings(), key=lambda finding: (finding.line, finding.rule_id))
@@ -1203,6 +1318,66 @@ def staged_added_lines(repository: Path) -> dict[str, set[int]] | None:
     return parse_added_lines(completed.stdout)
 
 
+def added_lines_since(repository: Path, commit: str) -> dict[str, set[int]] | None:
+    """The lines the working tree of `repository` adds to `commit`: committed, staged and unstaged changes, and every
+    line of an untracked file. None when git fails, for example when `commit` does not exist."""
+
+    def run_git(arguments: list[str]) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", *arguments],
+                cwd=repository,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+        return completed.stdout if completed.returncode == 0 else None
+
+    diff = run_git(["diff", "--unified=0", "--no-color", "--no-ext-diff", commit])
+    untracked = run_git(["ls-files", "--others", "--exclude-standard", "-z"])
+    if diff is None or untracked is None:
+        return None
+    added = parse_added_lines(diff)
+    for relative in filter(None, untracked.split("\0")):
+        try:
+            count = len((repository / relative).read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            continue
+        if count:
+            added[relative] = set(range(1, count + 1))
+    return added
+
+
+def notes_as_records(findings: list[Finding], repository: Path) -> list[dict[str, object]]:
+    """The NOTE findings as `{path, line, rule, text, source_line}`, path relative to `repository`, sorted by path,
+    line and rule. `source_line` is the text of the line in the file as it is now."""
+    root = repository.resolve()
+    records = []
+    for finding in findings:
+        if finding.severity != NOTE:
+            continue
+        absolute = Path(finding.path).resolve()
+        try:
+            relative = absolute.relative_to(root).as_posix()
+            source_lines = absolute.read_text(encoding="utf-8", errors="replace").splitlines()
+        except (ValueError, OSError):
+            continue
+        source_line = source_lines[finding.line - 1] if 0 < finding.line <= len(source_lines) else ""
+        records.append(
+            {
+                "path": relative,
+                "line": finding.line,
+                "rule": finding.rule_id,
+                "text": finding.text,
+                "source_line": source_line,
+            }
+        )
+    return sorted(records, key=lambda record: (record["path"], record["line"], record["rule"]))
+
+
 def keep_notes_on_lines(findings: list[Finding], added_lines: dict[str, set[int]], repository: Path) -> list[Finding]:
     """Keeps every FAIL, and a NOTE only when its line is in `added_lines` (repository-relative paths).
 
@@ -1240,7 +1415,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print a NOTE only for a line that the staged changes add (FAIL lines are always printed)",
     )
     parser.add_argument(
-        "--repository", default=str(REPO_ROOT), help="the git repository whose staged changes are read"
+        "--notes-since",
+        metavar="COMMIT",
+        help="print a NOTE only for a line that the working tree adds to COMMIT (committed or not)",
+    )
+    parser.add_argument(
+        "--json",
+        metavar="PATH",
+        help="with --notes-since: write the notes as a JSON list of {path, line, rule, text, source_line} and print "
+        "their count; FAIL lines are not printed and do not change the exit code",
+    )
+    parser.add_argument(
+        "--repository", default=str(REPO_ROOT), help="the git repository whose changes are read"
     )
     arguments = parser.parse_args(argv)
     default_paths = [REPO_ROOT / name for name in DEFAULT_SCAN_PATHS if (REPO_ROOT / name).exists()]
@@ -1259,7 +1445,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (GlossaryError, RulesFileError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    if arguments.notes_on_staged_lines:
+    if arguments.json and not arguments.notes_since:
+        print("error: --json needs --notes-since", file=sys.stderr)
+        return 2
+    if arguments.notes_since:
+        repository = Path(arguments.repository)
+        added_lines = added_lines_since(repository, arguments.notes_since)
+        if added_lines is None:
+            print(f"error: git could not read the changes of {repository} since {arguments.notes_since}", file=sys.stderr)
+            return 2
+        findings = keep_notes_on_lines(findings, added_lines, repository)
+        if arguments.json:
+            records = notes_as_records(findings, repository)
+            Path(arguments.json).parent.mkdir(parents=True, exist_ok=True)
+            Path(arguments.json).write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+            print(f"{len(records)} doubtful lines, written to {arguments.json}")
+            return 0
+    elif arguments.notes_on_staged_lines:
         repository = Path(arguments.repository)
         added_lines = staged_added_lines(repository)
         if added_lines is None:
