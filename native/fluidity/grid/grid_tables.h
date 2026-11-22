@@ -3,8 +3,8 @@
 //
 // Purpose: declare the frame that places the grid in the world, the element types of the grid's per-place tables,
 //   and GridTables, the one way code on the CPU or the GPU reads the tables of one grid version; and give every stage
-//   one set of functions that turn places into ids, positions, widths and areas and back, and that find the active
-//   cell that contains a position.
+//   one set of functions that turn places into ids, positions, widths and areas and back, that find the active cell
+//   that contains a position, and that list the active cells touching a cell and the face pieces of its sides.
 //
 // Idea: a grid's frame says where the cell with coordinate (0, 0, 0) starts, how wide the biggest cells are, and how
 //   many size levels the grid uses; a cell of size level l is h_0 / 2^l wide. Each cell place of a cell block holds
@@ -22,6 +22,10 @@
 //   cell places beside it, or, where such a place lies inside a bigger cell, that bigger active cell, found through
 //   the bigger block. An id is made only from a place that holds a cell or a face piece: other places give the id 0.
 //   A position gives its active cell by one floor per axis and a walk down from its size-level-0 block (FindCellAt).
+//   Around a cell. The 26 places of its size level around an active cell give its touching cells: the cell there, the
+//   bigger active cell that covers the place, or the small cells of a split place next to it, at most 56 in all
+//   (FindTouchingCells). Each of its six sides is one face piece, or four kept one size level smaller beside a split
+//   place, at most 24 (FindFacePieces). Both lists are plain fixed arrays in ascending index order.
 //   Precision. Write a width as s 2^e with s an odd integer of k bits, the bits its significand needs; h_0 and every
 //   h_l have the same s. A width h_l is exact: each halving of a normal double is, and a checked frame keeps its
 //   smallest width normal (GridFrame). A centre or a face position is origin + m h_l, with m = c or c + 1/2 exact: two
@@ -46,14 +50,18 @@
 //   bigger block    of a block of size level l, the block of size level l - 1 whose cells cover it
 //   smaller blocks  of a block of size level l, the 8 blocks of size level l + 1 that its cells cover, one per
 //                   eighth of the block
+//   touching cell   an active cell that shares a side, an edge or a corner with a given cell
 // Owns:    GridFrame, CellState, FacePieceKind, GridTables, FindSortedBlock, ComputeCellWidth,
 //          ToSizeLevel (of a block), FindCellBlock, ToAxis, ComputeCellCenter, ComputeFacePosition, ComputeFaceArea,
 //          ToCellId (of a place), ToFacePieceId (of a place), FindCellLow, FindCellHigh, ComputeCellCenterDistance,
-//          FindCellPlace, FindFacePlace, FindCellAt (two forms); and, for this header's own functions only,
-//          BlockLocalCoord, FacePlaceParts, ToFacePlaceParts, ComputeLocalPlaceCoord, ComputeHighPlaceCoord,
+//          FindCellPlace, FindFacePlace, FindCellAt (two forms), kMaxTouchingCells, kMaxCellFacePieces,
+//          TouchingCells, CellFacePieces, FindTouchingCells, FindFacePieces; and, for this header's own functions
+//          only, BlockLocalCoord, FacePlaceParts, ToFacePlaceParts, ComputeLocalPlaceCoord, ComputeHighPlaceCoord,
 //          ComputeSideBeyondBlock, FindLocalCellPlace, FindActiveCellHolding, kSmallestCellCoordBias,
 //          BiasedSmallestCellCoord, ToBiasedSmallestCellCoord, ToBiggestBlockId, FindActiveCellBelow,
-//          FindBiggestBlockFrom and FindCellAtCoord
+//          FindBiggestBlockFrom, FindCellAtCoord, PlaceOffset, CellSide, SmallCellHalves, ToBlockLocalCoord,
+//          ComputeCoordAlongAxis, ComputeMovedAlongAxis, ToFacePlaceIndex, FindHighSideFacePlace, FindSmallCellBlock,
+//          ApplyAscendingInsert, ApplyTouchingSmallCells, ComputeIsActiveCellPlace and ApplyFacePiecesBesideSplitPlace
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), math::Floor, math::IsFinite
 //          (base/scalar_math.h), Vec3 (base/vec3.h), CellId, CellBlockId, FacePieceId, CellBlockIndex,
 //          CellPlaceIndex, FacePlaceIndex, GridVersion, CellCoord, SizeLevel, kNoIndex, kMaxCoord, kMaxSizeLevels,
@@ -204,8 +212,9 @@ FLUIDITY_CPU_AND_GPU constexpr Axis ToAxis(FacePlaceIndex face) noexcept {
   return static_cast<Axis>(place_in_block / 80U);
 }
 
-// The local coordinates of a cell place in a block, 0..3 inside it; -1 or 4 on at most one axis, one place beyond the
-// block's low or high side. For this header's own functions only.
+// The local coordinates of a cell place in a block, 0..3 inside it; -1 or 4 on an axis one place beyond the block's
+// low or high side, on one axis for a face place and on up to three for a place around a cell. For this header's own
+// functions only.
 struct BlockLocalCoord {
   int x;
   int y;
@@ -275,9 +284,9 @@ FLUIDITY_CPU_AND_GPU constexpr int ComputeSideBeyondBlock(int local_coord) noexc
   return local_coord > 3 ? 1 : 0;
 }
 
-// Finds local place (x, y, z) of `block`, of which at most one local coordinate is -1 or 4, among the cell places of
-// the grid: in the block itself, or at local 3 or 0 of the same-size-level neighbour on that side. kNoIndex when that
-// neighbour does not exist. For this header's own functions only.
+// Finds local place (x, y, z) of `block`, each local coordinate -1..4, among the cell places of the grid: in the block
+// itself, or at local 3 or 0, on each axis beyond the block, of the same-size-level neighbour on those sides, one of
+// the 26 around it. kNoIndex when that neighbour does not exist. For this header's own functions only.
 FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
 FindLocalCellPlace(const GridTables& tables, std::uint32_t block, BlockLocalCoord local) noexcept {
   const int side_x = ComputeSideBeyondBlock(local.x);
@@ -299,8 +308,8 @@ FindLocalCellPlace(const GridTables& tables, std::uint32_t block, BlockLocalCoor
   return (holding_block * static_cast<std::uint32_t>(kCellPlacesPerBlock)) + place_in_block;
 }
 
-// Finds the active cell that holds local place (x, y, z) of `block`, at most one of them -1 or 4: the place itself
-// when it is kActive, else the active cell one size level bigger that covers it. kNoIndex when neither exists.
+// Finds the active cell that holds local place (x, y, z) of `block`, each of them -1..4: the place itself when it is
+// kActive, else the active cell one size level bigger that covers it. kNoIndex when neither exists.
 //
 // Method: the place of the block's size level comes from FindLocalCellPlace. When it is kActive it is the answer; when
 //   it is kSplit or kAbsent no active cell holds it. When it is kInsideBiggerCell, or no block of that size level holds
@@ -868,6 +877,362 @@ FindCellAt(const GridTables& tables, Vec3 position, CellBlockIndex near) noexcep
     return {.value = FindCellAtCoord(tables, coord)};
   }
   return {.value = FindActiveCellBelow(tables, biggest_block, coord)};
+}
+
+// The most active cells that touch one cell under the size step rule: 4 across each of its 6 sides, 2 across each of
+// its 12 edges and 1 across each of its 8 corners (FindTouchingCells).
+inline constexpr int kMaxTouchingCells = 56;
+
+// The most face pieces of one cell under the size step rule: 4 on each of its 6 sides (FindFacePieces).
+inline constexpr int kMaxCellFacePieces = 24;
+
+// The active cells that touch one cell, as FindTouchingCells gives them. A default-made value is an empty list: count
+// 0 and every entry kNoIndex.
+struct TouchingCells {
+  FLUIDITY_CPU_AND_GPU constexpr TouchingCells() noexcept {
+    for (CellPlaceIndex& entry : cells) {
+      entry = CellPlaceIndex{kNoIndex};
+    }
+  }
+
+  // The places of the touching cells, cells[0..count - 1], in ascending index order; kNoIndex from count on.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
+  CellPlaceIndex cells[kMaxTouchingCells] = {};
+  int count = 0;  // 0..kMaxTouchingCells.
+};
+
+// The face pieces of one cell's six sides, as FindFacePieces gives them. A default-made value is an empty list: count
+// 0 and every entry kNoIndex.
+struct CellFacePieces {
+  FLUIDITY_CPU_AND_GPU constexpr CellFacePieces() noexcept {
+    for (FacePlaceIndex& entry : faces) {
+      entry = FacePlaceIndex{kNoIndex};
+    }
+  }
+
+  // The face places of the face pieces, faces[0..count - 1], in ascending index order; kNoIndex from count on.
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
+  FacePlaceIndex faces[kMaxCellFacePieces] = {};
+  int count = 0;  // 0..kMaxCellFacePieces.
+};
+
+// One side of a cell: its axis, and -1 for the low side or +1 for the high side. For this header's own functions only.
+struct CellSide {
+  Axis axis;
+  int side_step;
+};
+
+// The half, 0 or 1, of a small cell of a split place on each axis: 0 for the low half, 1 for the high half. For this
+// header's own functions only.
+struct SmallCellHalves {
+  int x;
+  int y;
+  int z;
+};
+
+// An offset of -1, 0 or +1 cell places on each axis, toward one of the 26 places around a cell. For this header's own
+// functions only.
+struct PlaceOffset {
+  int x;
+  int y;
+  int z;
+};
+
+// Gives the local coordinates, 0..3, of a cell place in its block. For this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr BlockLocalCoord ToBlockLocalCoord(CellPlaceIndex cell) noexcept {
+  const auto place_in_block = static_cast<int>(cell.value % static_cast<std::uint32_t>(kCellPlacesPerBlock));
+  return {.x = place_in_block % 4, .y = (place_in_block / 4) % 4, .z = place_in_block / 16};
+}
+
+// Gives the coordinate of `local` along `axis`. For this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr int ComputeCoordAlongAxis(BlockLocalCoord local, Axis axis) noexcept {
+  if (axis == Axis::kX) {
+    return local.x;
+  }
+  return axis == Axis::kY ? local.y : local.z;
+}
+
+// Computes `local` moved by `step` places along `axis`. For this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr BlockLocalCoord
+ComputeMovedAlongAxis(BlockLocalCoord local, Axis axis, int step) noexcept {
+  return {
+      .x = local.x + (axis == Axis::kX ? step : 0),
+      .y = local.y + (axis == Axis::kY ? step : 0),
+      .z = local.z + (axis == Axis::kZ ? step : 0),
+  };
+}
+
+// Gives the face place of `axis` in a block whose high cell place has the local coordinates parts.local, the plane
+// 0..4 along the axis: the inverse of ToFacePlaceParts. For this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr FacePlaceIndex ToFacePlaceIndex(FacePlaceParts parts, Axis axis) noexcept {
+  const auto x = static_cast<std::uint32_t>(parts.local.x);
+  const auto y = static_cast<std::uint32_t>(parts.local.y);
+  const auto z = static_cast<std::uint32_t>(parts.local.z);
+  std::uint32_t place_on_axis = (((z * 4U) + y) * 4U) + x;
+  if (axis == Axis::kX) {
+    place_on_axis = (((z * 4U) + y) * 5U) + x;
+  } else if (axis == Axis::kY) {
+    place_on_axis = (((z * 5U) + y) * 4U) + x;
+  }
+  return {
+      .value = (parts.block * static_cast<std::uint32_t>(kFacePlacesPerBlock))
+          + (80U * static_cast<std::uint32_t>(axis)) + place_on_axis,
+  };
+}
+
+// Finds the face place that keeps the face piece on the high side, along `axis`, of local place `local` (0..3 on each
+// axis) of `block`: plane local + 1 of the block, except that plane 4 is plane 0 of the block of the same size level
+// on the high side when that block exists, as the face piece is kept once (<sec-face-pieces>). For this header's own
+// functions only.
+FLUIDITY_CPU_AND_GPU constexpr FacePlaceIndex
+FindHighSideFacePlace(const GridTables& tables, std::uint32_t block, BlockLocalCoord local, Axis axis) noexcept {
+  const BlockLocalCoord plane_local = ComputeMovedAlongAxis(local, axis, 1);
+  if (ComputeCoordAlongAxis(plane_local, axis) == kBlockWidthInCells) {
+    // Entry 13 is the block itself; +1, +3 and +9 step one block along x, y and z.
+    int entry = 13 + 9;
+    if (axis == Axis::kX) {
+      entry = 13 + 1;
+    } else if (axis == Axis::kY) {
+      entry = 13 + 3;
+    }
+    const std::uint32_t high_block = tables.same_size_level_blocks[(static_cast<std::uint64_t>(block) * 27) + entry];
+    if (high_block != kNoIndex) {
+      return ToFacePlaceIndex({.block = high_block, .local = ComputeMovedAlongAxis(local, axis, -3)}, axis);
+    }
+  }
+  return ToFacePlaceIndex({.block = block, .local = plane_local}, axis);
+}
+
+// Finds the block that holds the small cells of a split cell place: the smaller block of its block for the cell
+// eighth of its local coordinates. kNoIndex when the tables have none, which a built grid never gives. For this
+// header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
+FindSmallCellBlock(const GridTables& tables, CellPlaceIndex split_place) noexcept {
+  const BlockLocalCoord local = ToBlockLocalCoord(split_place);
+  const int cell_eighth = (local.x / 2) + (2 * (local.y / 2)) + (4 * (local.z / 2));
+  return tables.smaller_blocks[(static_cast<std::uint64_t>(ToCellBlockIndex(split_place).value) * 8) + cell_eighth];
+}
+
+// Inserts `place` into places[0..count - 1], kept in ascending index order, and adds one to count; an equal place
+// already listed is left as it is. Writes places[count]: the caller keeps count below the array's length. For this
+// header's own functions only.
+template <typename PlaceIndex>
+FLUIDITY_CPU_AND_GPU constexpr void ApplyAscendingInsert(PlaceIndex* places, int& count, PlaceIndex place) noexcept {
+  int position = count;
+  while (position > 0 && places[position - 1].value > place.value) {
+    --position;
+  }
+  if (position > 0 && places[position - 1].value == place.value) {
+    return;
+  }
+  for (int moved = count; moved > position; --moved) {
+    places[moved] = places[moved - 1];
+  }
+  places[position] = place;
+  ++count;
+}
+
+// Inserts into `touching` the active small cells of a split place that touch the cell at offset -`offset` from it:
+// on each axis, the low half of the split place where the offset is +1, the high half where it is -1, both where it is
+// 0. So 4 small cells across a side, 2 across an edge, 1 across a corner. A small place that is not kActive is left
+// out. For this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr void ApplyTouchingSmallCells(
+    const GridTables& tables,
+    CellPlaceIndex split_place,
+    PlaceOffset offset,
+    TouchingCells& touching
+) noexcept {
+  const std::uint32_t small_block = FindSmallCellBlock(tables, split_place);
+  if (small_block == kNoIndex) {
+    return;
+  }
+  const BlockLocalCoord split_local = ToBlockLocalCoord(split_place);
+  // The halves of each axis: from (offset < 0 ? 1 : 0) to (offset > 0 ? 0 : 1).
+  const auto first_half = [](int axis_offset) {
+    return axis_offset < 0 ? 1 : 0;
+  };
+  const auto last_half = [](int axis_offset) {
+    return axis_offset > 0 ? 0 : 1;
+  };
+  for (int half_z = first_half(offset.z); half_z <= last_half(offset.z); ++half_z) {
+    for (int half_y = first_half(offset.y); half_y <= last_half(offset.y); ++half_y) {
+      for (int half_x = first_half(offset.x); half_x <= last_half(offset.x); ++half_x) {
+        // A small cell's local coordinate is twice the split place's parity plus its half, 0..3.
+        const BlockLocalCoord small_local = {
+            .x = (2 * (split_local.x % 2)) + half_x,
+            .y = (2 * (split_local.y % 2)) + half_y,
+            .z = (2 * (split_local.z % 2)) + half_z,
+        };
+        const std::uint32_t small_place = FindLocalCellPlace(tables, small_block, small_local);
+        if (tables.cell_states[small_place] == CellState::kActive) {
+          ApplyAscendingInsert(touching.cells, touching.count, CellPlaceIndex{small_place});
+        }
+      }
+    }
+  }
+}
+
+// Says whether `cell` is a kActive place of the tables: its block is below block_count, so tables of no grid and
+// kNoIndex give false before any array is read. For this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsActiveCellPlace(const GridTables& tables, CellPlaceIndex cell) noexcept {
+  if (ToCellBlockIndex(cell).value >= tables.block_count) {
+    return false;
+  }
+  return tables.cell_states[cell.value] == CellState::kActive;
+}
+
+// Finds every active cell that shares a side, an edge or a corner with an active cell: its touching cells.
+//
+// Method: looks at the 26 places of the cell's size level l around it, through the same-size-level neighbours of its
+//   block for a place beyond the block. Each place gives:
+//   - kActive: that cell, of size level l;
+//   - kSplit: its small cells, of size level l + 1, that touch the cell: 4 across a side, 2 across an edge, 1 across a
+//     corner. The size step rule makes them active and leaves no smaller cell there; a small place that is not kActive
+//     is left out;
+//   - kInsideBiggerCell, or no block of size level l there: the active cell of size level l - 1 that covers the place,
+//     when there is one; one bigger cell may cover up to 4 of the 26 places and is listed once;
+//   - kAbsent: nothing.
+//   Every touching cell is found this way. A cell of size level l - 1 covers 2 x 2 x 2 aligned places of size level l,
+//   so one that touches the cell covers at least one of the 26 places. A cell of size level l + 1 that touches it lies
+//   inside one of them. The size step rule leaves no other size.
+//   The list has at most 6 x 4 + 12 x 2 + 8 x 1 = 56 = kMaxTouchingCells entries, reached when the 26 places are all
+//   split: a place adds at most as many cells as a split place there would, 4, 2 or 1. That holds whatever the tables'
+//   cell states say, so even tables that contradict themselves never make the list pass its array.
+// Order: ascending CellPlaceIndex.
+// Example: in the two-size example above, the big cell, place 0, touches the four size-level-1 cells with x = 2, at
+//   places 64 + 2, 64 + 4 + 2, 64 + 16 + 2 and 64 + 20 + 2: count 4.
+// Requires: every block index entry of the tables (same_size_level_blocks, bigger_block, smaller_blocks) is kNoIndex
+//   or below block_count, as in every built grid. Any `cell`: a place that is not kActive (split, inside a bigger cell
+//   or absent), an index of no place (kNoIndex, or a block at or beyond block_count) and the tables of no grid
+//   (block_count 0) give count 0 and read nothing beyond the tables. Every entry from count on is kNoIndex, so the
+//   result has the same bytes on the CPU and the GPU.
+// Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-sizes>, <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU constexpr TouchingCells FindTouchingCells(const GridTables& tables, CellPlaceIndex cell) noexcept {
+  TouchingCells touching;
+  if (!ComputeIsActiveCellPlace(tables, cell)) {
+    return touching;
+  }
+  const std::uint32_t block = ToCellBlockIndex(cell).value;
+  const BlockLocalCoord local = ToBlockLocalCoord(cell);
+  for (int offset_z = -1; offset_z <= 1; ++offset_z) {
+    for (int offset_y = -1; offset_y <= 1; ++offset_y) {
+      for (int offset_x = -1; offset_x <= 1; ++offset_x) {
+        const bool is_cell_itself = offset_x == 0 && offset_y == 0 && offset_z == 0;
+        if (is_cell_itself) {
+          continue;
+        }
+        // Each local coordinate is -1..4, which FindLocalCellPlace and FindActiveCellHolding take on every axis.
+        const BlockLocalCoord around_local = {
+            .x = local.x + offset_x,
+            .y = local.y + offset_y,
+            .z = local.z + offset_z,
+        };
+        const std::uint32_t around_place = FindLocalCellPlace(tables, block, around_local);
+        if (around_place != kNoIndex && tables.cell_states[around_place] == CellState::kSplit) {
+          const PlaceOffset offset = {.x = offset_x, .y = offset_y, .z = offset_z};
+          ApplyTouchingSmallCells(tables, CellPlaceIndex{around_place}, offset, touching);
+          continue;
+        }
+        const std::uint32_t holding_place = FindActiveCellHolding(tables, block, around_local);
+        if (holding_place != kNoIndex) {
+          ApplyAscendingInsert(touching.cells, touching.count, CellPlaceIndex{holding_place});
+        }
+      }
+    }
+  }
+  return touching;
+}
+
+// Inserts into `face_pieces` the four face pieces between a split place and the cell across one of its sides, `side`
+// of the cell: side_step +1 when the split place lies on the cell's high side, -1 on its low side. Each is the side of
+// one small cell of the split place that faces the cell, its low side for +1 and its high side for -1, found where
+// <sec-face-pieces> keeps it. A face place of kind kNotAPiece, which only a grid piece gives there, is left out. For
+// this header's own functions only.
+FLUIDITY_CPU_AND_GPU constexpr void ApplyFacePiecesBesideSplitPlace(
+    const GridTables& tables,
+    CellPlaceIndex split_place,
+    CellSide side,
+    CellFacePieces& face_pieces
+) noexcept {
+  const std::uint32_t small_block = FindSmallCellBlock(tables, split_place);
+  if (small_block == kNoIndex) {
+    return;
+  }
+  const BlockLocalCoord split_local = ToBlockLocalCoord(split_place);
+  // Along the axis, the half next to the cell: the low half when the split place lies above it, the high half below.
+  const int half_along_axis = side.side_step > 0 ? 0 : 1;
+  for (int small_cell_number = 0; small_cell_number < 4; ++small_cell_number) {
+    // One small cell next to the cell: across the axis, both halves of each of the two other axes, in x, y, z order.
+    const int first_half = small_cell_number % 2;
+    const int second_half = small_cell_number / 2;
+    SmallCellHalves halves = {.x = first_half, .y = second_half, .z = half_along_axis};
+    if (side.axis == Axis::kX) {
+      halves = {.x = half_along_axis, .y = first_half, .z = second_half};
+    } else if (side.axis == Axis::kY) {
+      halves = {.x = first_half, .y = half_along_axis, .z = second_half};
+    }
+    // A small cell's local coordinate is twice the split place's parity plus its half, 0..3.
+    const BlockLocalCoord small_local = {
+        .x = (2 * (split_local.x % 2)) + halves.x,
+        .y = (2 * (split_local.y % 2)) + halves.y,
+        .z = (2 * (split_local.z % 2)) + halves.z,
+    };
+    const FacePlaceIndex small_face = side.side_step > 0
+        ? ToFacePlaceIndex({.block = small_block, .local = small_local}, side.axis)
+        : FindHighSideFacePlace(tables, small_block, small_local, side.axis);
+    if (tables.face_piece_kinds[small_face.value] != FacePieceKind::kNotAPiece) {
+      ApplyAscendingInsert(face_pieces.faces, face_pieces.count, small_face);
+    }
+  }
+}
+
+// Finds the face pieces of an active cell's six sides.
+//
+// Method: on each side, the face place of the cell's size level l that the side lies on: the plane of the cell's local
+//   coordinate for its low side, the next plane for its high side, where plane 4 is plane 0 of the block of size level
+//   l on the high side when that block exists. When that place holds a face piece (any kind but kNotAPiece), it is the
+//   side's one face piece: beside an active cell of size level l or l - 1, or at the grid's edge. When it does not, the
+//   place across the side is split, and the side is four face pieces at size level l + 1: the sides of its four small
+//   cells that face the cell, each found where <sec-face-pieces> keeps it, plane 4 included.
+//   In a grid piece a kOutsidePiece face piece is listed like any other, and a side whose face pieces lie in a block
+//   the grid piece did not load gives none.
+//   The list has at most 6 x 4 = 24 = kMaxCellFacePieces entries, reached when the 6 side places are all split: a side
+//   gives one face piece or the four of its split place. That holds whatever the tables' cell states and face piece
+//   kinds say, so even tables that contradict themselves never make the list pass its array.
+// Order: ascending FacePlaceIndex.
+// Example: in the two-size example above, the big cell, place 0, has 9: its -X, -Y, +Y, -Z and +Z sides whole, at X
+//   place 0 and Y places 80 and 80 + 4 and Z places 160 and 160 + 16 of block 0, and its +X side as the 4 face pieces
+//   at X places 2, 2 + 5, 2 + 20 and 2 + 25 of block 1, 240 + 2 and so on.
+// Requires: as FindTouchingCells. Any `cell`: a place that is not kActive, an index of no place and the tables of no
+//   grid give count 0 and read nothing beyond the tables. Every entry from count on is kNoIndex, so the result has the
+//   same bytes on the CPU and the GPU.
+// Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU constexpr CellFacePieces FindFacePieces(const GridTables& tables, CellPlaceIndex cell) noexcept {
+  CellFacePieces face_pieces;
+  if (!ComputeIsActiveCellPlace(tables, cell)) {
+    return face_pieces;
+  }
+  const std::uint32_t block = ToCellBlockIndex(cell).value;
+  const BlockLocalCoord local = ToBlockLocalCoord(cell);
+  for (int axis_number = 0; axis_number < 3; ++axis_number) {
+    // Side step -1 is the low side, +1 the high side.
+    for (int side_step = -1; side_step <= 1; side_step += 2) {
+      const CellSide side = {.axis = static_cast<Axis>(axis_number), .side_step = side_step};
+      const FacePlaceIndex whole_side_face = side_step > 0
+          ? FindHighSideFacePlace(tables, block, local, side.axis)
+          : ToFacePlaceIndex({.block = block, .local = local}, side.axis);
+      if (tables.face_piece_kinds[whole_side_face.value] != FacePieceKind::kNotAPiece) {
+        ApplyAscendingInsert(face_pieces.faces, face_pieces.count, whole_side_face);
+        continue;
+      }
+      const std::uint32_t across_place =
+          FindLocalCellPlace(tables, block, ComputeMovedAlongAxis(local, side.axis, side_step));
+      if (across_place != kNoIndex && tables.cell_states[across_place] == CellState::kSplit) {
+        ApplyFacePiecesBesideSplitPlace(tables, CellPlaceIndex{across_place}, side, face_pieces);
+      }
+    }
+  }
+  return face_pieces;
 }
 
 }  // namespace fluidity::grid

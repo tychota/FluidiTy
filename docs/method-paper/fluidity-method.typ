@@ -1985,8 +1985,8 @@ face pieces, never whole sides, with three rules:
   place on its high side at that size level. The id does not depend on which other cells exist.
 + *One area.* A face piece is kept at the size level of its smaller cell and has that cell's face area, $h_l^2$.
 + *Kept once.* Every face piece exists exactly once, in exactly one cell block. A value on it therefore has exactly
-  one writer, and the flow through a big side is the sum over its pieces (`FindFacePieces` lists the up to 24 pieces
-  of a cell's six sides).
+  one writer, and the flow through a big side is the sum over its face pieces (`FindFacePieces` lists the up to 24
+  face pieces of a cell's six sides).
 
 Each cell block (@sec-cell-blocks) has, for each axis, five planes of 4 × 4 face places at its own size level: plane
 0 is the low side of its first layer of cells along that axis, plane 4 the high side of its last. A face place is a
@@ -2018,6 +2018,31 @@ quarter. At the grid's edge only one cell is there, and the distance is half its
 `kOutsidePiece` whose other cell lies in a block not loaded gives only half the width of the loaded cell: the grid
 piece's tables cannot know whether the missing cell is of the same size level or one bigger, so that number is no
 distance between two cells.
+
+*The face pieces of one cell.* `FindFacePieces` lists the face pieces of an active cell's six sides, in ascending index
+order. On each side it reads the face place of the cell's own size level that the side lies on; plane 4 is plane 0 of
+the block of the same size level on the high side, when that block exists. When that place holds a face piece, the side
+is that one face piece: beside a cell of the same size, beside a bigger cell, or at the grid's edge. Otherwise the place
+across the side is split, and the side is the four face pieces of its small cells that face the cell, found where they
+are kept, plane 4 included. By the size-step rule a side is one face piece or four, so a cell has at most
+$6 times 4 = 24$ face pieces (`kMaxCellFacePieces`).
+
+*The cells that touch one cell.* `FindTouchingCells` lists the touching cells of an active cell: the active cells that
+share a side, an edge or a corner with it, in ascending index order. It reads the 26 places of the cell's size level
+around it. An active place is one touching cell. A place inside a bigger cell, or with no block of its size level, gives
+the active cell one size level bigger that covers it, listed once though it may cover up to four of the 26 places. A
+split place gives its small cells next to the cell: four across a side, two across an edge, one across a corner. The
+size-step rule makes them active and leaves no smaller cell there. Every cell that touches the cell is found this way. A
+cell one size level bigger is aligned to pairs of places on each axis, so one that touches the cell covers at least one
+of the 26 places. A cell one size level smaller lies inside one of them. The size-step rule leaves no other size. No
+place gives more cells than a split place would, so a cell touches at most $6 times 4 + 12 times 2 + 8 times 1 = 56$
+cells (`kMaxTouchingCells`), reached when all 26 places are split.
+
+Both bounds hold whatever the tables say, so the two lists fit fixed arrays on either processor even for tables that
+contradict themselves. A place that holds no active cell, an index of no place and the tables of no grid give empty
+lists. For example, a big cell whose only other cells are the eight small cells of the split cell on its +X side
+touches the four small cells beside that side and has nine face pieces: its five other sides whole and the four
+quarters of that side.
 
 #figure(
   face-pieces-figure(),

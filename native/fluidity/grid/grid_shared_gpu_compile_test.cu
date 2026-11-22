@@ -2,15 +2,15 @@
 // grid/grid_ids.h, grid/grid_tables.h and grid/weight_curve.h compile as GPU code:
 // label no_gpu.
 //
-// The GPU function below is never launched. Building it in the CUDA container makes the CUDA compiler generate GPU
+// The GPU function below is never launched. Compiling it in the CUDA container makes the CUDA compiler generate GPU
 // code for every function of cell_size_rule.h, grid_build_steps.h, grid_ids.h, grid_tables.h and weight_curve.h, the
 // helpers those functions call included, and for CellBlockRange, GridFrame, CellState, FacePieceKind, GridTables,
-// WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel, CellSizeFacts,
-// CellSizeFactorTable and RefinementFactors read and written by GPU code. The integer results go to `results`, and the
-// double results of weight_curve.h, grid_tables.h and cell_size_rule.h go to `double_results`. The CUDA compiler
-// generates GPU code for a shared function only where GPU code calls it, so each function is called here once.
-// A shared function that calls a CPU-only function fails this build. That build is the proof; the test only takes the
-// function's address, which needs no GPU.
+// TouchingCells, CellFacePieces, WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel,
+// CellSizeFacts, CellSizeFactorTable and RefinementFactors read and written by GPU code. The integer results go to
+// `results`, and the double results of weight_curve.h, grid_tables.h and cell_size_rule.h go to `double_results`. The
+// CUDA compiler generates GPU code for a shared function only where GPU code calls it, so each function is called here
+// once. A shared function that calls a CPU-only function fails to compile in the CUDA container. That compile is the
+// proof; the test only takes the function's address, which needs no GPU.
 
 #include <gtest/gtest.h>
 
@@ -161,6 +161,13 @@ __global__ void ComputeWithEverySharedGridFunction(
   const Vec3 world_position = {.x = frame.origin.x, .y = frame.origin.y, .z = frame.biggest_cell_width};
   results[result_index++] =
       FindCellAt(tables, world_position).value + FindCellAt(tables, world_position, CellBlockIndex{place}).value;
+  // grid_tables.h: the active cells that touch a cell and the face pieces of its sides.
+  const TouchingCells touching = FindTouchingCells(tables, CellPlaceIndex{place});
+  results[result_index++] = static_cast<std::uint64_t>(touching.count)
+      + touching.cells[place % static_cast<std::uint32_t>(kMaxTouchingCells)].value;
+  const CellFacePieces cell_face_pieces = FindFacePieces(tables, CellPlaceIndex{place});
+  results[result_index++] = static_cast<std::uint64_t>(cell_face_pieces.count)
+      + cell_face_pieces.faces[place % static_cast<std::uint32_t>(kMaxCellFacePieces)].value;
   // The per-item rules of the tables in parallel (<proc-build-grid-in-parallel> P9 to P12). The written tables stand in
   // for the ones the GridTables reads: only the calls matter here.
   results[result_index++] = ApplyBlockNeighboursWriteAt(

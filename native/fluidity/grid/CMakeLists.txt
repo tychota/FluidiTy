@@ -124,4 +124,5 @@ fluidity_add_test(
 )
 fluidity_add_test(grid_tables_test SOURCES grid_tables_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_test_support_test SOURCES grid_test_support_test.cc LABEL cpu LINKS fluidity_grid_test_support)
+fluidity_add_test(touching_cells_test SOURCES touching_cells_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(weight_curve_test SOURCES weight_curve_test.cc LABEL cpu LINKS fluidity_grid_test_support)
