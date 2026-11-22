@@ -2,6 +2,7 @@
 
 Usage: uv run python tools/check_rules.py [PATH ...] [--glossary PATH] [--allowed-names PATH]
                                          [--notes-on-staged-lines | --notes-since COMMIT [--json PATH]]
+                                         [--also-notes-since COMMIT --also-notes-json PATH]
                                          [--repository PATH]   (default paths: src, tests and docs/method-paper)
 
 Output lines are `path:line: FAIL <rule-id> <text>` and `path:line: NOTE <rule-id> <text>`.
@@ -11,6 +12,12 @@ changes of the repository add (`git diff --cached`), so a commit shows the notes
 always printed. With --notes-since COMMIT the lines are those the working tree adds to COMMIT, committed or not; with
 --json PATH as well, the notes of those lines are written to PATH as a JSON list of `{path, line, rule, text,
 source_line}`, sorted by path, line and rule, and their count is printed.
+With --also-notes-since COMMIT and --also-notes-json PATH one run does both jobs: it prints what it prints without
+them (the FAIL lines and the notes of the chosen mode) and also writes the notes of the lines the working tree adds
+to COMMIT to PATH, in the same form as --json. The files are read and checked once, so the gate gets the tree check
+and the list of doubtful lines for the price of one scan.
+Files are checked one process each at a time when there are PARALLEL_MIN_FILES or more of them and the system can
+fork; the findings come back in file order, so the output is the same as for a serial run.
 
 The vocabulary comes from docs/glossary.md (only the "Never say" column is read) and the allowed verbs
 come from the "Allowed verbs" section of AGENTS.md. Words are matched on tokens, so `cut` does not match
@@ -53,6 +60,8 @@ import ast
 import functools
 import io
 import json
+import multiprocessing
+import os
 import re
 import subprocess
 import sys
@@ -67,6 +76,8 @@ DEFAULT_GLOSSARY_PATH = REPO_ROOT / "docs" / "glossary.md"
 DEFAULT_AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 DEFAULT_ALLOWED_NAMES_PATH = Path(__file__).resolve().parent / "check_rules_allowed_names.txt"
 DEFAULT_SCAN_PATHS = ("src", "tests", "docs/method-paper")
+# Below this many files a run checks them in this process: starting workers costs more than it saves.
+PARALLEL_MIN_FILES = 16
 
 SCANNED_SUFFIXES = {".h", ".cuh", ".cc", ".cu", ".py", ".lean", ".typ"}
 CPP_SUFFIXES = {".h", ".cuh", ".cc", ".cu"}
@@ -1273,11 +1284,44 @@ def check_paths(
     glossary = load_glossary(Path(glossary_path))
     verbs, exact_names = load_allowed_verbs(Path(agents_path))
     allowed_names = load_allowed_names(Path(allowed_names_path) if allowed_names_path else None)
+    file_paths = list(iter_files(Path(path) for path in paths))
+    context = (glossary, verbs, exact_names, allowed_names)
+    if len(file_paths) >= PARALLEL_MIN_FILES and "fork" in multiprocessing.get_all_start_methods():
+        return _check_files_in_processes(file_paths, context)
     findings: list[Finding] = []
-    for file_path in iter_files(Path(path) for path in paths):
-        text = file_path.read_bytes().decode("utf-8", errors="replace")
-        findings.extend(check_text(file_path, text, glossary, verbs, exact_names, allowed_names))
+    for file_path in file_paths:
+        findings.extend(_check_file(file_path, context))
     return findings
+
+
+# What a worker process needs to check a file: the glossary, the allowed verbs, the exact names and the allowed
+# names. A forked worker inherits it, so nothing is sent through a pipe but the file path and its findings.
+_WorkerContext = tuple[Sequence[NeverSayEntry], set[str], set[str], set[str]]
+_worker_context: _WorkerContext | None = None
+
+
+def _check_file(file_path: Path, context: _WorkerContext) -> list[Finding]:
+    """The findings for one file. Each file is checked on its own text, so the order of checking changes nothing."""
+    glossary, verbs, exact_names, allowed_names = context
+    text = file_path.read_bytes().decode("utf-8", errors="replace")
+    return check_text(file_path, text, glossary, verbs, exact_names, allowed_names)
+
+
+def _check_file_in_worker(file_path: Path) -> list[Finding]:
+    assert _worker_context is not None
+    return _check_file(file_path, _worker_context)
+
+
+def _check_files_in_processes(file_paths: Sequence[Path], context: _WorkerContext) -> list[Finding]:
+    """Checks the files in one forked process per core and returns the findings in the order of `file_paths`."""
+    global _worker_context
+    _worker_context = context
+    try:
+        with multiprocessing.get_context("fork").Pool(min(len(file_paths), os.cpu_count() or 1)) as pool:
+            per_file = pool.map(_check_file_in_worker, file_paths, chunksize=4)
+    finally:
+        _worker_context = None
+    return [finding for findings in per_file for finding in findings]
 
 
 # A hunk header of a diff with no context lines: `@@ -<old> +<first>[,<count>] @@`.
@@ -1427,6 +1471,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "their count; FAIL lines are not printed and do not change the exit code",
     )
     parser.add_argument(
+        "--also-notes-since",
+        metavar="COMMIT",
+        help="with --also-notes-json: also write the notes of the lines the working tree adds to COMMIT, from the same scan",
+    )
+    parser.add_argument(
+        "--also-notes-json",
+        metavar="PATH",
+        help="with --also-notes-since: where to write those notes (the form of --json); the usual output is unchanged",
+    )
+    parser.add_argument(
         "--repository", default=str(REPO_ROOT), help="the git repository whose changes are read"
     )
     arguments = parser.parse_args(argv)
@@ -1449,6 +1503,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.json and not arguments.notes_since:
         print("error: --json needs --notes-since", file=sys.stderr)
         return 2
+    if bool(arguments.also_notes_since) != bool(arguments.also_notes_json):
+        print("error: --also-notes-since and --also-notes-json go together", file=sys.stderr)
+        return 2
+    if arguments.also_notes_since:
+        also_repository = Path(arguments.repository)
+        also_added_lines = added_lines_since(also_repository, arguments.also_notes_since)
+        if also_added_lines is None:
+            print(
+                f"error: git could not read the changes of {also_repository} since {arguments.also_notes_since}",
+                file=sys.stderr,
+            )
+            return 2
+        also_records = notes_as_records(keep_notes_on_lines(findings, also_added_lines, also_repository), also_repository)
+        Path(arguments.also_notes_json).parent.mkdir(parents=True, exist_ok=True)
+        Path(arguments.also_notes_json).write_text(json.dumps(also_records, indent=2) + "\n", encoding="utf-8")
     if arguments.notes_since:
         repository = Path(arguments.repository)
         added_lines = added_lines_since(repository, arguments.notes_since)

@@ -38,7 +38,12 @@ The steps, in order:
           on every tracked C++ and CUDA file.
   rules   tools/check_rules.py on src/ and tests/, then the pytest suite of tools/, then actionlint on .github/workflows/.
           The rules check prints a NOTE only for a line the staged changes add; the gate prints each such note on a
-          line `rules note: <note>` before the PASS or FAIL line.
+          line `rules note: <note>` before the PASS or FAIL line. At commit and full speed the same scan also writes
+          the doubtful lines of the last commit (--also-notes-since), so the files are read once. The pytest suite
+          runs one pytest process for each test file of tools/, all at once. At quick speed it is left out, with a
+          line `NOT RUN tools tests (quick, tools unchanged)`, while no changed file is under tools/, cmake/ or
+          .github/ or is CMakeLists.txt, pyproject.toml or uv.lock at the top level (TOOLS_TEST_INPUTS); a change
+          that git cannot list runs it. The rules check and actionlint always run.
   cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
           debug and the release CPU presets of the platform the gate runs on. ctest runs one test per core at once.
           (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
@@ -87,6 +92,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,6 +127,11 @@ DEFAULT_SPEED = "commit"
 TOP_LEVEL_BUILD_FILES = frozenset(
     {"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock", "pyproject.toml", "uv.lock"}
 )
+# The tests of tools/ read the tools, the CMake helper file (fluidity_targets_test.py configures a project with it and
+# the top-level CMakeLists.txt) and the workflows; a quick run leaves them out while no changed file is one of these.
+TOOLS_TEST_FOLDERS = ("tools", "cmake", ".github")
+TOOLS_TEST_INPUTS = frozenset({"CMakeLists.txt", "pyproject.toml", "uv.lock"})
+NOT_RUN_TOOLS_TESTS = "NOT RUN tools tests (quick, tools unchanged)"
 MODULES_ROOT = ("src", "fluidity")
 # The functional tests, one folder per module: tests/<module>/.
 FUNCTIONAL_TESTS_ROOT = "tests"
@@ -271,6 +282,15 @@ def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[s
     return [path for path in tracked if path not in compiled and not is_test_header(path)]
 
 
+def affects_tools_tests(path: str) -> bool:
+    """True when a change to `path` can change the result of the tests of tools/: a file under tools/, cmake/ or
+    .github/, or one of the top-level files that the tests configure or read (see TOOLS_TEST_INPUTS)."""
+    parts = Path(path).parts
+    if parts[:1] in {(folder,) for folder in TOOLS_TEST_FOLDERS}:
+        return True
+    return len(parts) == 1 and parts[0] in TOOLS_TEST_INPUTS
+
+
 def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
     """The modules whose folders hold a changed file: None when every module (the change is under src/ outside a
     module folder, under cmake/, under tests/ outside a module folder, or to a top-level build file), otherwise the
@@ -362,11 +382,18 @@ class Gate:
         self.use_tidy_cache = use_tidy_cache
         self.environment = dict(os.environ, CONAN_HOME=str(repo_root / "out" / "conan-home"))
         self.started_logs: set[str] = set()
+        # The changed files, read once: no step of the gate edits a tracked file.
+        self.changed_cache: list[str] | None | bool = False
 
     def command(self, log_name: str, arguments: Sequence[str]) -> Outcome:
         """Runs one command from the repository root and adds its output to the step's log, which keeps the last run."""
+        return self.log_outcome(log_name, arguments, self.run_command(arguments))
+
+    def run_command(self, arguments: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
+        """Runs one command from the repository root, or returns None when the program is not on PATH. It writes no
+        log, so several can run at once."""
         try:
-            completed = subprocess.run(
+            return subprocess.run(
                 list(arguments),
                 cwd=self.repo_root,
                 env=self.environment,
@@ -376,6 +403,13 @@ class Gate:
                 check=False,
             )
         except FileNotFoundError:
+            return None
+
+    def log_outcome(
+        self, log_name: str, arguments: Sequence[str], completed: subprocess.CompletedProcess[str] | None
+    ) -> Outcome:
+        """Adds a finished command to the step's log and reads its outcome."""
+        if completed is None:
             return Outcome(False, f"{arguments[0]} was not found on PATH")
         log_path = self.repo_root / LOG_DIRECTORY / f"{log_name}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -389,6 +423,14 @@ class Gate:
         shown = " ".join(arguments[:3])
         relative_log = log_path.relative_to(self.repo_root).as_posix()
         return Outcome(False, f"`{shown} ...` exited with {completed.returncode} (log: {relative_log})", output=output)
+
+    def commands_at_once(self, log_name: str, command_list: Sequence[Sequence[str]]) -> Outcome:
+        """Runs the commands at the same time, one thread each, then logs them in the order given. Returns the outcome
+        of the first one that failed, or a pass when none did."""
+        with ThreadPoolExecutor(max_workers=max(1, len(command_list))) as pool:
+            finished = list(pool.map(self.run_command, command_list))
+        outcomes = [self.log_outcome(log_name, arguments, done) for arguments, done in zip(command_list, finished)]
+        return next((outcome for outcome in outcomes if not outcome.passed), Outcome(True))
 
     def check_tool_version(self, log_name: str, tool: str) -> Outcome:
         """Fails unless `tool --version` prints the version pyproject.toml pins for it."""
@@ -445,25 +487,51 @@ class Gate:
             return version
         return self.command("format", ["clang-format", "--dry-run", "--Werror", *files])
 
-    def count_doubtful_lines(self) -> int:
-        """The notes of the lines that the last commit adds (`check_rules.py --notes-since HEAD~1 --json`), or 0 when
-        they cannot be listed. The notes are written to NOTES_JSON for a reader to open."""
-        notes_path = self.repo_root / NOTES_JSON
-        notes_path.unlink(missing_ok=True)
-        listed = self.command(
-            "notes",
-            [sys.executable, str(self.repo_root / "tools" / "check_rules.py"), "--notes-since", "HEAD~1", "--json"]
-            + [str(notes_path), "--repository", str(self.repo_root)],
-        )
-        if not listed.passed:
-            return 0
+    def parent_commit_exists(self) -> bool:
+        """True when `HEAD~1` names a commit, so the lines the last commit adds can be listed."""
         try:
-            return len(json.loads(notes_path.read_text(encoding="utf-8")))
+            completed = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", "HEAD~1"],
+                cwd=self.repo_root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except FileNotFoundError:
+            return False
+        return completed.returncode == 0
+
+    def count_doubtful_lines(self) -> int:
+        """The notes of the lines that the last commit adds, as the tree check wrote them to NOTES_JSON in the same
+        scan, or 0 when the file cannot be read."""
+        try:
+            return len(json.loads((self.repo_root / NOTES_JSON).read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return 0
 
-    def check_rules(self, lists_doubtful_lines: bool = False) -> Outcome:
+    def tools_tests_unchanged(self) -> bool:
+        """True when no changed file can change the result of the tools' tests (see TOOLS_TEST_INPUTS). False when git
+        cannot list the changes."""
+        changed = self.changed_paths()
+        if changed is None:
+            return False
+        return not any(affects_tools_tests(path) for path in changed)
+
+    def tools_test_commands(self, tools: Path) -> list[list[str]]:
+        """One pytest command for each test file of tools/, so they can run at once. With no test file found it is one
+        command for the whole folder, as before."""
+        files = sorted({*tools.glob("*_test.py"), *tools.glob("test_*.py")})
+        if not files:
+            return [[sys.executable, "-m", "pytest", "-q", str(tools)]]
+        return [[sys.executable, "-m", "pytest", "-q", str(file)] for file in files]
+
+    def check_rules(self, lists_doubtful_lines: bool = False, skips_unchanged_tools_tests: bool = False) -> Outcome:
         tools = self.repo_root / "tools"
+        notes_path = self.repo_root / NOTES_JSON
+        # One scan gives the tree check and, when asked, the doubtful lines of the last commit.
+        lists_notes = lists_doubtful_lines and self.parent_commit_exists()
+        if lists_notes:
+            notes_path.unlink(missing_ok=True)
         rules = self.command(
             "rules",
             [
@@ -471,6 +539,7 @@ class Gate:
                 str(tools / "check_rules.py"),
                 *[str(self.repo_root / folder) for folder in (*SOURCE_FOLDERS, PAPER_DIRECTORY)],
                 "--notes-on-staged-lines",
+                *(["--also-notes-since", "HEAD~1", "--also-notes-json", str(notes_path)] if lists_notes else []),
                 "--repository",
                 str(self.repo_root),
             ],
@@ -478,15 +547,14 @@ class Gate:
         notes = tuple(f"rules note: {line}" for line in rules.output.splitlines() if ": NOTE " in line)
         if not rules.passed:
             return Outcome(False, rules.reason, notes)
-        outcome = self.commands(
-            "rules",
-            [
-                [sys.executable, "-m", "pytest", "-q", str(tools)],
-                # With no argument actionlint finds the workflow files of the repository it runs in.
-                ["actionlint"],
-            ],
-        )
-        if lists_doubtful_lines and outcome.passed:
+        if skips_unchanged_tools_tests and self.tools_tests_unchanged():
+            notes += (NOT_RUN_TOOLS_TESTS,)
+            tests = Outcome(True)
+        else:
+            tests = self.commands_at_once("rules", self.tools_test_commands(tools))
+        # With no argument actionlint finds the workflow files of the repository it runs in.
+        outcome = tests if not tests.passed else self.command("rules", ["actionlint"])
+        if lists_notes and outcome.passed:
             count = self.count_doubtful_lines()
             if count:
                 notes += (f"NOTE {count} doubtful lines: uv run python tools/check_rules.py {NOTES_SINCE_ARGUMENTS}",)
@@ -504,9 +572,15 @@ class Gate:
         return "uncommitted changes" if changed else None
 
     def changed_paths(self) -> list[str] | None:
-        """The files that differ from HEAD, staged or not, and the untracked files; None when git fails.
+        """The files that differ from HEAD, staged or not, and the untracked files; None when git fails. The answer
+        is kept for the rest of the run.
 
         `--no-renames` lists a moved file under both its old and its new path, so the module it left is selected."""
+        if self.changed_cache is False:
+            self.changed_cache = self.read_changed_paths()
+        return self.changed_cache  # type: ignore[return-value]
+
+    def read_changed_paths(self) -> list[str] | None:
         listed: list[str] = []
         for arguments in (
             ["git", "diff", "--name-only", "-z", "--no-renames", "HEAD"],
@@ -792,7 +866,11 @@ class Gate:
 
         return [
             Check("format", "format", self.check_format),
-            Check("rules", "rules", lambda: self.check_rules(lists_doubtful_lines=not changed_only)),
+            Check(
+                "rules",
+                "rules",
+                lambda: self.check_rules(lists_doubtful_lines=not changed_only, skips_unchanged_tools_tests=changed_only),
+            ),
             Check(
                 "message",
                 "message",

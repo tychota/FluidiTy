@@ -1198,3 +1198,51 @@ def test_notes_since_without_json_prints_the_lines_it_adds(repository, glossary,
     out = capsys.readouterr().out
     assert "b.cc:1: NOTE process-word" in out
     assert "a.cc" not in out
+
+
+# One scan for the tree check and the doubtful lines; files checked in several processes -------------------------
+
+
+def test_files_checked_in_several_processes_give_the_findings_of_a_serial_run(tmp_path, glossary, monkeypatch):
+    for number in range(check_rules.PARALLEL_MIN_FILES + 4):
+        text = "int stencil_count;\n" if number % 3 == 0 else "// A review.\nint fine;\n"
+        write(tmp_path / "src", f"file{number:02d}.cc", text)
+    in_processes = run(tmp_path, glossary)
+    monkeypatch.setattr(check_rules, "PARALLEL_MIN_FILES", 10**6)
+    serial = run(tmp_path, glossary)
+    assert in_processes == serial
+    assert [finding.path for finding in in_processes] == sorted(finding.path for finding in in_processes)
+    assert "banned-word" in rules(in_processes, "FAIL")
+
+
+def test_also_notes_since_writes_the_notes_and_keeps_the_usual_output(repository, glossary, tmp_path_factory, capsys):
+    write(repository / "src", "b.cc", "// A review.\nint stencil_count;\n")
+    destination = tmp_path_factory.mktemp("out") / "notes.json"
+    exit_code = check_rules.main(
+        [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+        + ["--also-notes-since", "HEAD", "--also-notes-json", str(destination)]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "b.cc:2: FAIL banned-word" in out
+    records = json.loads(destination.read_text(encoding="utf-8"))
+    assert [(r["path"], r["line"], r["rule"]) for r in records] == [("src/b.cc", 1, "process-word")]
+
+
+def test_also_notes_since_gives_the_list_that_notes_since_json_gives(repository, glossary, tmp_path_factory):
+    write(repository / "src", "a.cc", "// The plan.\nint fine;\n// The round.\n")
+    write(repository / "src", "b.cc", "// A review.\n")
+    folder = tmp_path_factory.mktemp("out")
+    common = [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+    check_rules.main(common + ["--notes-since", "HEAD", "--json", str(folder / "alone.json")])
+    check_rules.main(common + ["--also-notes-since", "HEAD", "--also-notes-json", str(folder / "also.json")])
+    assert (folder / "also.json").read_text(encoding="utf-8") == (folder / "alone.json").read_text(encoding="utf-8")
+
+
+def test_also_notes_flags_go_together_and_a_bad_commit_is_an_error(repository, glossary, tmp_path_factory, capsys):
+    common = [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
+    destination = tmp_path_factory.mktemp("out") / "notes.json"
+    assert check_rules.main(common + ["--also-notes-since", "HEAD"]) == 2
+    assert check_rules.main(common + ["--also-notes-json", str(destination)]) == 2
+    assert check_rules.main(common + ["--also-notes-since", "no-such-commit", "--also-notes-json", str(destination)]) == 2
+    assert not destination.exists()

@@ -612,6 +612,7 @@ def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_lef
     assert exit_code == 3
     assert lines == [
         "PASS format",
+        check_commit.NOT_RUN_TOOLS_TESTS,
         "PASS rules",
         "NOT RUN message (quick)",
         "NOTE modules: contact, grid",
@@ -886,8 +887,10 @@ class NotesWriter(FakeRun):
         self._count = count
 
     def __call__(self, command, **kwargs):
-        if "--json" in command:
-            Path(command[command.index("--json") + 1]).write_text(json.dumps([{}] * self._count), encoding="utf-8")
+        if "--also-notes-json" in command:
+            destination = Path(command[command.index("--also-notes-json") + 1])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(json.dumps([{}] * self._count), encoding="utf-8")
         return super().__call__(command, **kwargs)
 
 
@@ -907,13 +910,111 @@ def test_rules_step_prints_no_doubtful_line_line_for_zero_notes(monkeypatch, cap
 
 
 def test_doubtful_lines_never_fail_the_gate_and_a_failed_listing_prints_nothing(monkeypatch, capsys, repo):
-    fake = NotesWriter(2, failing=lambda command: "--json" in command)
+    fake = NotesWriter(2, failing=lambda command: command[:2] == ["git", "rev-parse"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
     assert exit_code == 0
     assert lines == ["PASS rules"]
+    assert not any("--also-notes-since" in command for command in fake.commands)
+
+
+def test_the_tree_check_and_the_doubtful_lines_come_from_one_scan(monkeypatch, capsys, repo):
+    fake = NotesWriter(1)
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    scans = [command for command in fake.commands if any(Path(part).name == "check_rules.py" for part in command)]
+    assert len(scans) == 1
+    assert ["--also-notes-since", "HEAD~1"] == scans[0][scans[0].index("--also-notes-since") :][:2]
+    assert not any("--notes-since" in command for command in scans)
 
 
 def test_quick_does_not_list_doubtful_lines(monkeypatch, capsys, repo):
     fake = NotesWriter(2)
     _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
     assert not any("doubtful" in line for line in lines)
+
+
+# The tests of tools/ in a quick run -------------------------------------------------------------------------
+
+
+def pytest_commands(fake):
+    return [command for command in fake.commands if command[1:3] == ["-m", "pytest"]]
+
+
+@pytest.fixture
+def tools_with_two_test_files(repo):
+    (repo / "tools").mkdir()
+    for name in ("one_test.py", "two_test.py", "helper.py"):
+        (repo / "tools" / name).write_text("", encoding="utf-8")
+    return repo
+
+
+def test_the_tools_tests_run_one_pytest_for_each_test_file(monkeypatch, capsys, tools_with_two_test_files):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--only", "rules")
+    tested = sorted(Path(command[-1]).name for command in pytest_commands(fake))
+    assert tested == ["one_test.py", "two_test.py"]
+
+
+def test_a_failing_tools_test_file_fails_the_rules_step_and_the_others_still_run(
+    monkeypatch, capsys, tools_with_two_test_files
+):
+    fake = FakeRun(failing=lambda command: command[-1].endswith("one_test.py"))
+    exit_code, lines = run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--only", "rules")
+    assert exit_code == 1
+    assert lines[0].startswith("FAIL rules:")
+    assert len(pytest_commands(fake)) == 2
+    assert ["actionlint"] not in fake.commands
+
+
+def test_quick_leaves_the_tools_tests_out_when_no_tool_changed(monkeypatch, capsys, tools_with_two_test_files):
+    fake = FakeRun(changed=["src/fluidity/grid/a.h", "docs/glossary.md", "AGENTS.md"])
+    _, lines = run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick")
+    assert pytest_commands(fake) == []
+    assert lines[1:3] == ["NOT RUN tools tests (quick, tools unchanged)", "PASS rules"]
+    assert ["actionlint"] in fake.commands
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "tools/check_rules.py",
+        "tools/new_test.py",
+        "cmake/fluidity_targets.cmake",
+        ".github/workflows/checks.yml",
+        "CMakeLists.txt",
+        "pyproject.toml",
+        "uv.lock",
+    ],
+)
+def test_quick_runs_the_tools_tests_when_a_file_they_read_changed(monkeypatch, capsys, tools_with_two_test_files, changed):
+    fake = FakeRun(changed=[changed])
+    _, lines = run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick")
+    assert len(pytest_commands(fake)) == 2
+    assert check_commit.NOT_RUN_TOOLS_TESTS not in lines
+
+
+def test_quick_runs_the_tools_tests_for_an_untracked_tool_file(monkeypatch, capsys, tools_with_two_test_files):
+    fake = FakeRun(untracked=["tools/new_tool.py"])
+    run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick", "--allow-dirty")
+    assert len(pytest_commands(fake)) == 2
+
+
+def test_quick_runs_the_tools_tests_when_git_cannot_list_the_changes(monkeypatch, capsys, tools_with_two_test_files):
+    fake = FakeRun(failing=lambda command: command[:3] == ["git", "diff", "--name-only"])
+    run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick")
+    assert len(pytest_commands(fake)) == 2
+
+
+@pytest.mark.parametrize("speed", ["commit", "full"])
+def test_commit_and_full_always_run_the_tools_tests(monkeypatch, capsys, tools_with_two_test_files, speed):
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    _, lines = run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", speed, "--only", "rules")
+    assert len(pytest_commands(fake)) == 2
+    assert check_commit.NOT_RUN_TOOLS_TESTS not in lines
+
+
+def test_quick_with_only_rules_still_follows_the_quick_rule_for_the_tools_tests(
+    monkeypatch, capsys, tools_with_two_test_files
+):
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick", "--only", "rules")
+    assert len(pytest_commands(fake)) == 2

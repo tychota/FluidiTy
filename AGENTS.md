@@ -531,7 +531,11 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   - `rules note: <path>:<line>: NOTE <rule> <text>`: a word banned in one sense only, on a line the staged changes
     add. Read it and keep the word only in its allowed sense; a note never fails the gate.
   - `PASS rules`: `tools/check_rules.py` reports no FAIL under `src/`, `tests/` and `docs/method-paper/`, the pytest
-    suite of `tools/` passes, and `actionlint` accepts the files of `.github/workflows/`.
+    suite of `tools/` passes, and `actionlint` accepts the files of `.github/workflows/`. The files are checked
+    several at once, and the same scan lists the doubtful lines. The pytest suite runs one process per test file, all
+    at once. At `quick` speed the suite is left out (`NOT RUN tools tests (quick, tools unchanged)`) while no changed
+    file is under `tools/`, `cmake/` or `.github/` or is a top-level `CMakeLists.txt`, `pyproject.toml` or `uv.lock`;
+    at `commit` and `full` speed it always runs.
   - `PASS message`: `tools/check_message.py` accepts the message of `HEAD`: a subject of at most 72 columns, a blank
     line after it, body lines of at most 72, no trailer line (the one exception is a last line `GPU: compiled, not
     run`), no tool or model name, no process word (brief, review, reviewer, fixup, subagent, agent) and no
