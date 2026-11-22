@@ -12,12 +12,14 @@
 //     reference speed       0.5 + (i % 13) * 0.25 m/s
 //   Example: i = 12 gives depth 0.156 m, distance 0.132 m, velocity change size 4.44 1/s, no flag, and 3.5 m/s.
 //   A refinement volume of a test comes from its layer-0 codes: each layer above holds the smallest code over 2 x 2 x 2
-//   entries of the layer below, and the layers own their storage.
+//   entries of the layer below, and the layers own their storage. The factor fixture is one such volume, which the
+//   tests of the factor code on the CPU and on the GPU share.
 //
 // Owns:    kTestFactSetCount, BuildTestCellSizeFacts, ComputeTestReferenceSpeed, TestRefinementVolume,
-//          BuildTestRefinementFactors
+//          BuildTestRefinementFactors, kFactorFixtureSmallestSizeLevel, kFactorFixtureCountX, kFactorFixtureCountY,
+//          kFactorFixtureCountZ, kFactorFixtureSpacing, BuildFactorFixtureVolume
 // Uses:    CPU-only guard (base/cpu_only.h), math::kPositiveInfinity (base/scalar_math.h), CellSizeFacts,
-//          RefinementFactors (grid/cell_size_rule.h)
+//          RefinementFactors (grid/cell_size_rule.h), SizeLevel (grid/grid_ids.h)
 // Used by: the tests of the cell size rule
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
 
@@ -34,6 +36,7 @@
 
 #include "fluidity/base/scalar_math.h"
 #include "fluidity/grid/cell_size_rule.h"
+#include "fluidity/grid/grid_ids.h"
 
 namespace fluidity::grid {
 
@@ -138,5 +141,36 @@ inline TestRefinementVolume BuildTestRefinementFactors(
   return volume;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+// The factor fixture: biggest cells 1 m wide, 5 size levels, smallest size level 4, one entry per 4 smallest cells,
+// 2 x 1 x 1 size-level-0 cells. Layer 0 is 8 x 4 x 4 entries; code -8 on the entries x = 5, 0 elsewhere.
+inline constexpr SizeLevel kFactorFixtureSmallestSizeLevel{4};
+inline constexpr int kFactorFixtureCountX = 8;
+inline constexpr int kFactorFixtureCountY = 4;
+inline constexpr int kFactorFixtureCountZ = 4;
+inline constexpr int kFactorFixtureSpacing = 2;
+
+// Builds the refinement volume of the factor fixture with layer_count layers.
+//
+// Example: 3 layers give layers of 8 x 4 x 4, 4 x 2 x 2 and 2 x 1 x 1 entries, enough for every size level 0..4.
+// Requires: layer_count is 1..kMaxSizeLevels.
+inline TestRefinementVolume BuildFactorFixtureVolume(int layer_count) {
+  const std::size_t entry_count =
+      static_cast<std::size_t>(kFactorFixtureCountX) * kFactorFixtureCountY * kFactorFixtureCountZ;
+  std::vector<std::int8_t> codes(entry_count, 0);
+  for (int z = 0; z < kFactorFixtureCountZ; ++z) {
+    for (int y = 0; y < kFactorFixtureCountY; ++y) {
+      codes[(static_cast<std::size_t>(z) * kFactorFixtureCountY + y) * kFactorFixtureCountX + 5] = -8;
+    }
+  }
+  return BuildTestRefinementFactors(
+      kFactorFixtureCountX,
+      kFactorFixtureCountY,
+      kFactorFixtureCountZ,
+      kFactorFixtureSpacing,
+      layer_count,
+      codes
+  );
+}
 
 }  // namespace fluidity::grid

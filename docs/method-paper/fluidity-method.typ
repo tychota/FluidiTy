@@ -2654,9 +2654,31 @@ cell, so any cut of the grid into batches gives each cell the same size level to
 $w = 0.125$ m gives size level 3, the double just below it gives 4, and 0.2 m gives 3.
 
 *New cells.* When liquid enters space with no cell, the step adds a cell there. The new cell borders air, so its depth
-is 0 and the rule wants $w_"min"$. It starts instead one size level smaller than its nearest committed neighbour: the
-smallest the size-step rule allows beside that neighbour. The cap keeps the size-step rule with the cells already
-there, and later resizes bring the cell down to its wanted width.
+is 0 and the rule wants $w_"min"$. It starts instead one size level smaller than its nearest committed cell, and later
+resizes bring it down to its wanted width.
+
+The nearest committed cell of a position $bold(x)$ is the nearest among the active cells of the committed grid that hold
+one of 27 searched positions, $bold(x) + (i, j, k) h_0$ with each of $i$, $j$, $k$ in ${-1, 0, 1}$, each found as any
+position finds its cell (@sec-cell-blocks). The cell whose centre is nearest $bold(x)$, by squared distance, wins; at an
+equal distance the cell that comes first in the fixed order wins, so the answer does not depend on the order of the
+search. The new cell's size level is that cell's size level plus one, but never smaller than the smallest size level the
+settings allow; when no searched position lies in an active cell, it is that smallest size level. A smallest size level
+beyond the frame reads as the frame's last. For example, with $h_0 = 1$ m, 3 size levels and the size-level-0 cell at
+(0, 0, 0) beside the 8 size-level-1 cells of the size-level-0 cell at (1, 0, 0), from (−0.5, 0.5, 0.5) m the searched
+position (0.5, 0.5, 0.5) m finds the big cell, so the new cell gets size level 1. From (2.25, 0.25, 0.25) m the searched
+position (1.25, 0.25, 0.25) m finds the small cell at (2, 0, 0), whose centre is 1 m away, so the new cell gets size
+level 2; the small cell at (3, 0, 0), whose centre is only 0.5 m away, holds no searched position.
+
+The cell found may therefore not touch the new cell, and a nearer, smaller cell that no searched position finds can lie
+between them. When such a cell is two or more size levels smaller than the new cell, the new cell breaks the size-step
+rule (@sec-cell-sizes). So does the cap when cells already there are smaller than the settings' smallest size level. The
+step that adds cells therefore closes the size-step rule over its new list of cells, as the start grid below does, and
+the check of a cell list turns down a list that breaks it.
+
+Distances are measured in biggest cell widths from the frame's origin, so in any frame the frame check accepts no
+distance overflows, and an underflow never changes which cell is nearer. Every offset $i h_0$ is exact, and each
+distance uses only halvings, a quotient, subtractions, products and sums in a fixed order, with no fused multiply-add on
+either processor, so the CPU and the GPU choose the same cell.
 
 *The start grid.* The grid of the first step comes from the same rule, read from the scene's start shapes instead of
 from particles. A cell's depth and distance are taken at its centre minus half its diagonal, a bound that no point of

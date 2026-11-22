@@ -55,29 +55,15 @@ static_assert(kTable.factor[47] == 0x1.ae89f995ad3adp+5);
 static_assert(ComputeEveryFourthFactorDoubles());
 static_assert(ComputeIsStrictlyIncreasing());
 
-// The fixture: biggest cells 1 m wide, 5 size levels, smallest size level 4, one entry per 4 smallest cells, 2 x 1 x 1
-// size-level-0 cells. Layer 0 is 8 x 4 x 4 entries; code -8 on the entries x = 5, 0 elsewhere.
-constexpr SizeLevel kSmallestSizeLevel{4};
-constexpr int kFixtureCountX = 8;
-constexpr int kFixtureCountY = 4;
-constexpr int kFixtureCountZ = 4;
-constexpr int kFixtureSpacing = 2;
+// The fixture of cell_size_rule_test_cases.h, which the GPU test shares.
+constexpr SizeLevel kSmallestSizeLevel = kFactorFixtureSmallestSizeLevel;
+constexpr int kFixtureCountX = kFactorFixtureCountX;
+constexpr int kFixtureCountY = kFactorFixtureCountY;
+constexpr int kFixtureCountZ = kFactorFixtureCountZ;
+constexpr int kFixtureSpacing = kFactorFixtureSpacing;
 
 TestRefinementVolume BuildFixtureVolume(int layer_count) {
-  std::vector<std::int8_t> codes(static_cast<std::size_t>(kFixtureCountX) * kFixtureCountY * kFixtureCountZ, 0);
-  for (int z = 0; z < kFixtureCountZ; ++z) {
-    for (int y = 0; y < kFixtureCountY; ++y) {
-      codes[(static_cast<std::size_t>(z) * kFixtureCountY + y) * kFixtureCountX + 5] = -8;
-    }
-  }
-  return BuildTestRefinementFactors(
-      kFixtureCountX,
-      kFixtureCountY,
-      kFixtureCountZ,
-      kFixtureSpacing,
-      layer_count,
-      codes
-  );
+  return BuildFactorFixtureVolume(layer_count);
 }
 
 CellId ToTestCell(int size_level, int x, int y, int z) {

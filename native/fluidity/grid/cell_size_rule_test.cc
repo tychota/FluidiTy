@@ -2,16 +2,26 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <bit>
 #include <cfloat>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
+#include <span>
+#include <vector>
 
+#include "fluidity/base/run_on.h"
 #include "fluidity/base/scalar_math.h"
+#include "fluidity/base/vec3.h"
 #include "fluidity/grid/cell_size_rule_test_cases.h"
+#include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/grid_test_support.h"
+#include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {
 namespace {
@@ -481,6 +491,291 @@ TEST(ComputeWantedSizeLevel, CountOutsideOneToSixteen_IsClamped) {
   EXPECT_EQ(ComputeWantedSizeLevel(0.01, widths), SizeLevel{0});
   widths.size_level_count = 40;
   EXPECT_EQ(ComputeWantedSizeLevel(0.01, widths), SizeLevel{5});
+}
+
+CellId ToTestCell(int size_level, std::int32_t x, std::int32_t y, std::int32_t z) {
+  return ToCellId(static_cast<SizeLevel>(size_level), {.x = x, .y = y, .z = z});
+}
+
+// A committed grid of `cells`, built on the CPU in `frame`.
+std::expected<TestGrid, GridFailure> BuildCommittedGridInFrame(GridFrame frame, std::span<const CellId> cells) {
+  return BuildTestGrid({.frame = frame, .active_cells = cells, .version = {.value = 1}});
+}
+
+// A committed grid of `cells`, built on the CPU in a frame of origin 0, biggest cells 1 m wide and size_level_count
+// size levels.
+std::expected<TestGrid, GridFailure> BuildCommittedGrid(int size_level_count, std::span<const CellId> cells) {
+  const GridFrame frame = {
+      .origin = {},
+      .biggest_cell_width = 1.0,
+      .size_level_count = static_cast<std::uint8_t>(size_level_count),
+  };
+  return BuildCommittedGridInFrame(frame, cells);
+}
+
+// The 8 small cells of `big_cell`.
+std::vector<CellId> BuildSmallCells(CellId big_cell) {
+  std::vector<CellId> small_cells;
+  small_cells.reserve(8);
+  for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    small_cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
+  }
+  return small_cells;
+}
+
+// The place of `cell` in `committed`, which must hold it.
+std::uint32_t FindTestCellPlace(const GridTables& committed, CellId cell) {
+  const CellPlaceIndex place = FindCellPlace(committed, cell);
+  EXPECT_NE(place.value, kNoIndex);
+  return place.value;
+}
+
+// The two-size fixture in a frame of 3 size levels: size level 0 {0,0,0} beside the 8 size-level-1 cells of size level
+// 0 {1,0,0}. From (-0.5, 0.5, 0.5) the searched position (0.5, 0.5, 0.5) finds the big cell, whose centre is 1 m away.
+// From (2.25, 0.25, 0.25) the searched position (1.25, 0.25, 0.25) finds the small cell {2,0,0}, whose centre is 1 m
+// away; the small cell {3,0,0}, whose centre is 0.5 m away, holds no searched position. No other searched position
+// finds a cell.
+TEST(ComputeNewCellSizeLevel, NextToBigCell_IsOneSizeLevelSmaller) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(3, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, {.x = -0.5, .y = 0.5, .z = 0.5}, SizeLevel{2}), SizeLevel{1});
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, {.x = 2.25, .y = 0.25, .z = 0.25}, SizeLevel{2}), SizeLevel{2});
+}
+
+TEST(ComputeNewCellSizeLevel, AtSmallestSizeLevel_IsCapped) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(3, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, {.x = 2.25, .y = 0.25, .z = 0.25}, SizeLevel{1}), SizeLevel{1});
+}
+
+// No searched position lies in an active cell: far from the cells, and in a grid of no cells.
+TEST(ComputeNewCellSizeLevel, NoCellNearby_IsSmallestSizeLevel) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(3, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  const Vec3 far_position = {.x = 10.0, .y = 10.0, .z = 10.0};
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, far_position, SizeLevel{2}), SizeLevel{2});
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, far_position, SizeLevel{1}), SizeLevel{1});
+  const std::expected<TestGrid, GridFailure> empty = BuildCommittedGrid(3, {});
+  ASSERT_TRUE(empty.has_value());
+  EXPECT_EQ(ComputeNewCellSizeLevel(empty->grid.tables(RunOn::kCpu), far_position, SizeLevel{2}), SizeLevel{2});
+}
+
+// The tables of no grid have a frame of no size level, which reads as one size level, as ComputeTableSizeLevelCount
+// reads it: size level 0 whatever smallest_size_level asks.
+TEST(ComputeNewCellSizeLevel, TablesOfNoGrid_IsSizeLevelZero) {
+  const Vec3 far_position = {.x = 10.0, .y = 10.0, .z = 10.0};
+  EXPECT_EQ(ComputeNewCellSizeLevel(GridTables{}, far_position, SizeLevel{2}), SizeLevel{0});
+  EXPECT_EQ(ComputeNewCellSizeLevel(GridTables{}, far_position, static_cast<SizeLevel>(200)), SizeLevel{0});
+}
+
+// A NaN or an infinite axis puts every searched position outside the grid.
+TEST(ComputeNewCellSizeLevel, PositionNotFinite_IsSmallestSizeLevel) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(3, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  for (const double value :
+       {std::numeric_limits<double>::quiet_NaN(), math::kPositiveInfinity, -math::kPositiveInfinity}) {
+    EXPECT_EQ(ComputeNewCellSizeLevel(tables, {.x = value, .y = 0.5, .z = 0.5}, SizeLevel{1}), SizeLevel{1}) << value;
+  }
+}
+
+// Size level 0 {0,0,0} split, its small cell {0,1,1} split, that one's {0,2,2} split and that one's {0,4,4} split, in
+// a frame of 5 size levels, closed under the size step rule.
+std::vector<CellId> BuildNestedSplitCells() {
+  const std::array<CellId, 4> split_cells = {
+      ToTestCell(0, 0, 0, 0),
+      ToTestCell(1, 0, 1, 1),
+      ToTestCell(2, 0, 2, 2),
+      ToTestCell(3, 0, 4, 4),
+  };
+  std::vector<CellId> cells;
+  for (std::size_t split_index = 0; split_index < split_cells.size(); ++split_index) {
+    const bool has_split_small_cell = split_index + 1 < split_cells.size();
+    for (const CellId small_cell : BuildSmallCells(split_cells.at(split_index))) {
+      const bool is_split = has_split_small_cell && small_cell.value == split_cells.at(split_index + 1).value;
+      if (!is_split) {
+        cells.push_back(small_cell);
+      }
+    }
+  }
+  return BuildSizeStepClosure(cells, 5);
+}
+
+// The size step rule is kept with the cell found only. 5 size levels: size level 0 {0,0,0} split, its small cell
+// {0,1,1} split, that one's {0,2,2} split and that one's {0,4,4} split, closed under the size step rule. From
+// (-0.01, 0.53, 0.53), 0.01 m outside the grid's -X side, the one searched position inside the grid, (0.99, 0.53,
+// 0.53), finds the size-level-1 cell {1,1,1}, so the new cell gets size level 2. Yet the cell across the face x = 0,
+// 0.04 m from the position, is of size level 4: no searched position lies in it. A new cell there would be two size
+// levels bigger than a cell it touches, so the step that adds cells closes the size step rule over its new list.
+TEST(ComputeNewCellSizeLevel, SmallerCellMissedByTheSearch_CanBreakTheSizeStepRule) {
+  const std::vector<CellId> cells = BuildNestedSplitCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(5, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  const Vec3 position = {.x = -0.01, .y = 0.53, .z = 0.53};
+  EXPECT_EQ(FindNearestCommittedCell(tables, position).value, FindTestCellPlace(tables, ToTestCell(1, 1, 1, 1)));
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, position, SizeLevel{4}), SizeLevel{2});
+  const CellPlaceIndex touching = FindCellAt(tables, {.x = 0.0, .y = 0.53, .z = 0.53});
+  ASSERT_NE(touching.value, kNoIndex);
+  EXPECT_EQ(ToSizeLevel(ToCellId(tables, touching)), SizeLevel{4});
+}
+
+// The two-size fixture in a frame of 2 size levels, so the small cells are of the frame's last size level.
+TEST(ComputeNewCellSizeLevel, SmallestSizeLevelPastTheFrame_ReadsTheLastSizeLevel) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(2, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, {.x = 2.25, .y = 0.25, .z = 0.25}, SizeLevel{5}), SizeLevel{1});
+  EXPECT_EQ(ComputeNewCellSizeLevel(tables, {.x = 10.0, .y = 10.0, .z = 10.0}, SizeLevel{5}), SizeLevel{1});
+}
+
+TEST(FindNearestCommittedCell, TwoCellsEquallyNear_FirstInFixedOrderWins) {
+  const std::array<CellId, 2> cells = {ToTestCell(0, 0, 0, 0), ToTestCell(0, 2, 0, 0)};
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(1, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  // Exactly 1.0 m from both centres: the cell first in the fixed order.
+  EXPECT_EQ(
+      FindNearestCommittedCell(tables, {.x = 1.5, .y = 0.5, .z = 0.5}).value,
+      FindTestCellPlace(tables, cells[0])
+  );
+  // 1.25 m from {0,0,0} and 0.75 m from {2,0,0}.
+  EXPECT_EQ(
+      FindNearestCommittedCell(tables, {.x = 1.75, .y = 0.5, .z = 0.5}).value,
+      FindTestCellPlace(tables, cells[1])
+  );
+  EXPECT_EQ(FindNearestCommittedCell(tables, {.x = 10.0, .y = 10.0, .z = 10.0}).value, kNoIndex);
+}
+
+// Size level 0 {0,0,0} and the 8 size-level-1 cells of size level 0 {2,-1,0}, 2 size levels. From (1.75, 0.5, 0.625)
+// the searched position (2.75, -0.5, 0.625) finds the small cell {5,-1,1}, before (0.75, 0.5, 0.625) finds the big
+// cell. Both centres lie at the squared distance 1.578125 m2. The big cell's low corner has the smaller z, so it comes
+// first in the fixed order, though the search finds it second. Cells of one size are found in their fixed order, so
+// only two sizes tell the fixed order from the search order.
+TEST(FindNearestCommittedCell, TieFoundFirstButLaterInFixedOrder_LosesToTheEarlierCell) {
+  std::vector<CellId> cells = {ToTestCell(0, 0, 0, 0)};
+  for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    cells.push_back(ComputeSmallCell(ToTestCell(0, 2, -1, 0), cell_eighth));
+  }
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(2, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(
+      FindNearestCommittedCell(tables, {.x = 1.75, .y = 0.5, .z = 0.625}).value,
+      FindTestCellPlace(tables, cells[0])
+  );
+}
+
+// Size level 0 {0,0,0} and the 8 size-level-1 cells of size level 0 {2,1,0}, 2 size levels. From (1.875, 0.375, 0.375)
+// the big cell's centre lies at (-1.375, 0.125, 0.125), squared distance 1.921875 m2, and the small cell {5,2,0}'s at
+// (0.875, 0.875, -0.125), 1.546875 m2: the small cell is nearer, though the sum of its axes, 1.875 m, is the larger.
+TEST(FindNearestCommittedCell, NearerInStraightLine_WinsOverSmallerSumOfAxes) {
+  std::vector<CellId> cells = {ToTestCell(0, 0, 0, 0)};
+  for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+    cells.push_back(ComputeSmallCell(ToTestCell(0, 2, 1, 0), cell_eighth));
+  }
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(2, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(
+      FindNearestCommittedCell(tables, {.x = 1.875, .y = 0.375, .z = 0.375}).value,
+      FindTestCellPlace(tables, ToTestCell(1, 5, 2, 0))
+  );
+}
+
+// One cell, found only from a searched position across a corner: every offset -1, or every offset +1.
+TEST(FindNearestCommittedCell, CellOnlyAcrossACorner_IsFound) {
+  const std::array<CellId, 1> cells = {ToTestCell(0, 0, 0, 0)};
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(1, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  const std::uint32_t cell_place = FindTestCellPlace(tables, cells[0]);
+  EXPECT_EQ(FindNearestCommittedCell(tables, {.x = -0.5, .y = -0.5, .z = -0.5}).value, cell_place);
+  EXPECT_EQ(FindNearestCommittedCell(tables, {.x = 1.5, .y = 1.5, .z = 1.5}).value, cell_place);
+}
+
+// Inside {1,0,0}, 0.25 m from its centre and 0.75 m from the centre of {0,0,0}, which a searched position also finds.
+TEST(FindNearestCommittedCell, PositionInsideACell_FindsThatCell) {
+  const std::array<CellId, 2> cells = {ToTestCell(0, 0, 0, 0), ToTestCell(0, 1, 0, 0)};
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(1, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(
+      FindNearestCommittedCell(tables, {.x = 1.25, .y = 0.5, .z = 0.5}).value,
+      FindTestCellPlace(tables, cells[1])
+  );
+}
+
+// Size level 0 {0,0,0} and the 8 size-level-1 cells of size level 0 {2,0,-1}, 2 size levels. From (1, 0.25, -0.625)
+// the big cell's centre (0.5, 0.5, 0.5) and the small cell {4,0,-2}'s centre (2.25, 0.25, -0.75) both lie at the
+// squared distance 1.578125 m2. The small cell's low corner has z = -1, below the big cell's 0, so the small cell comes
+// first in the fixed order and wins. Without z the big cell would be nearer (0.3125 against 1.5625 m2).
+TEST(FindNearestCommittedCell, TieWithSmallCellFirstInFixedOrder_SmallCellWins) {
+  std::vector<CellId> cells = BuildSmallCells(ToTestCell(0, 2, 0, -1));
+  cells.push_back(ToTestCell(0, 0, 0, 0));
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(2, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  EXPECT_EQ(
+      FindNearestCommittedCell(tables, {.x = 1.0, .y = 0.25, .z = -0.625}).value,
+      FindTestCellPlace(tables, ToTestCell(1, 4, 0, -2))
+  );
+}
+
+// A NaN or an infinite axis puts every searched position outside the grid.
+TEST(FindNearestCommittedCell, PositionNotFinite_IsNoIndex) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGrid(3, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  for (const double value :
+       {std::numeric_limits<double>::quiet_NaN(), math::kPositiveInfinity, -math::kPositiveInfinity}) {
+    EXPECT_EQ(FindNearestCommittedCell(tables, {.x = value, .y = 0.5, .z = 0.5}).value, kNoIndex) << value;
+    EXPECT_EQ(FindNearestCommittedCell(tables, {.x = 0.5, .y = value, .z = 0.5}).value, kNoIndex) << value;
+    EXPECT_EQ(FindNearestCommittedCell(tables, {.x = 0.5, .y = 0.5, .z = value}).value, kNoIndex) << value;
+  }
+}
+
+// Cells {0,0,0} and {2,0,0} of one size level, and the position 1.75, 0.5 and 0.5 biggest widths from the origin:
+// 1.25 widths from the centre of {0,0,0} and 0.75 from the centre of {2,0,0}, which is the nearer.
+void ExpectNearerCellInFrame(GridFrame frame) {
+  const std::array<CellId, 2> cells = {ToTestCell(0, 0, 0, 0), ToTestCell(0, 2, 0, 0)};
+  const std::expected<TestGrid, GridFailure> committed = BuildCommittedGridInFrame(frame, cells);
+  ASSERT_TRUE(committed.has_value());
+  const GridTables tables = committed->grid.tables(RunOn::kCpu);
+  const double width = frame.biggest_cell_width;
+  const Vec3 position = {
+      .x = frame.origin.x + (1.75 * width),
+      .y = frame.origin.y + (0.5 * width),
+      .z = frame.origin.z + (0.5 * width),
+  };
+  EXPECT_EQ(FindNearestCommittedCell(tables, position).value, FindTestCellPlace(tables, cells[1]));
+}
+
+// An origin and a width that are not powers of two: every centre and the position round, and the nearer cell
+// still wins.
+TEST(FindNearestCommittedCell, OriginAndWidthNotPowersOfTwo_FindsTheNearerCell) {
+  ExpectNearerCellInFrame(
+      {.origin = {.x = -2.3, .y = 0.7, .z = 1000.1}, .biggest_cell_width = 0.3, .size_level_count = 1}
+  );
+}
+
+// Biggest cells 1e160 m wide: a squared distance in metres would overflow to +infinity for both cells.
+TEST(FindNearestCommittedCell, HugeBiggestCellWidth_FindsTheNearerCell) {
+  ExpectNearerCellInFrame({.origin = {}, .biggest_cell_width = 1e160, .size_level_count = 1});
+}
+
+// Biggest cells 1e-170 m wide: a squared distance in metres would underflow to 0 for both cells.
+TEST(FindNearestCommittedCell, TinyBiggestCellWidth_FindsTheNearerCell) {
+  ExpectNearerCellInFrame({.origin = {}, .biggest_cell_width = 1e-170, .size_level_count = 1});
 }
 
 }  // namespace

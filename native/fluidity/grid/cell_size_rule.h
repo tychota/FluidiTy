@@ -31,6 +31,13 @@
 //   factor (a factor of +0 or -0 with every term +infinity, or a factor of +infinity with a shear term of 0). The rule
 //   tests the shear term for NaN, and its last clamp keeps w_min unless the scaled width is above it, so either NaN
 //   also gives w_min. The wanted width is never NaN.
+//   A new cell, added where liquid enters space with no cell, starts one size level smaller than the nearest committed
+//   cell, and never smaller than the smallest size level. That cell is the nearest among the active cells that hold 27
+//   searched positions one biggest cell width apart. It may not touch the new cell, and a nearer, smaller cell can lie
+//   between them, so the new cell can break the size step rule with a cell it touches. The step that adds cells
+//   therefore closes the size step rule over its new list; the cell list check turns down a list that breaks it.
+//   Example: when the searched position one biggest width to the +X finds a size-level-0 cell, the new cell starts at
+//   size level 1.
 //
 // Words:
 //   cell size rule      the formulas of this file, which say how wide a cell should be
@@ -46,14 +53,20 @@
 //                       the smallest width. Not the reach of a solid
 //   solid reach         no unit. solid_reach_in_cell_widths: how many smallest cell widths from the nearest solid keep
 //                       the smallest width. Not the reach of a solid
+//   nearest committed cell  the active cell of the committed grid, among those that hold the 27 searched positions,
+//                       whose centre is nearest a position. It may not touch the position
+//   searched position   one of the 27 positions position + (i, j, k) * biggest_cell_width, i, j, k in {-1, 0, 1}
 // Owns:    CellSizeSettings, CellWidthsBySizeLevel, CellSizeFacts, ComputeTableSizeLevelCount,
 //          ComputeCellWidthsBySizeLevel, ComputeReferenceSpeed, ComputeWantedCellWidth, ComputeWantedSizeLevel,
 //          kCellSizeFactorStepsPerDoubling, kMaxCellSizeFactorCode, CellSizeFactorTable,
 //          ComputeCellSizeFactorTable, RefinementFactors, ComputeCellSizeFactorCode, ComputeRefinementLayerExtent,
-//          ComputeRefinementEntryIndex, ComputeRefinementBoxReachesOutside
+//          ComputeRefinementEntryIndex, ComputeRefinementBoxReachesOutside,
+//          FindNearestCommittedCell, ComputeNewCellSizeLevel
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), math::Sqrt, math::Min, math::Max, math::IsNan,
-//          math::kPositiveInfinity (base/scalar_math.h), SizeLevel, CellId, CellCoord, kMaxSizeLevels, ToSizeLevel,
-//          ToCellCoord (grid/grid_ids.h), GridFrame, ComputeCellWidth (grid/grid_tables.h)
+//          math::kPositiveInfinity (base/scalar_math.h), Vec3, math::Dot (base/vec3.h), SizeLevel, CellId,
+//          CellCoord, CellPlaceIndex, kNoIndex, kMaxSizeLevels, ToSizeLevel, ToCellCoord, ComesBefore,
+//          ToCellBlockIndex (grid/grid_ids.h), GridFrame, GridTables, ComputeCellWidth, ToCellId, ToSizeLevel (of a
+//          block), FindCellAt (grid/grid_tables.h), math::IsFinite (base/scalar_math.h)
 // Used by: the step's ChooseActiveCells stage (step/) and ResizeCells (cell_resize/)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-size-rule>, <eq:wanted-cell-width>
 
@@ -64,6 +77,7 @@
 
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/base/scalar_math.h"
+#include "fluidity/base/vec3.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 
@@ -530,6 +544,144 @@ ComputeCellSizeFactorCode(const RefinementFactors& volume, SizeLevel smallest_si
     return 0;
   }
   return code;
+}
+
+// Finds the nearest committed cell of a position: among the active cells that hold the 27 searched positions
+// position + (i, j, k) * biggest_cell_width, each of i, j and k in {-1, 0, 1}, the one whose centre is nearest the
+// position. kNoIndex when no searched position lies in an active cell. Only those 27 positions are looked at, so the
+// cell found may not touch the position, and a nearer, smaller cell that holds none of them is missed.
+//
+// Method: FindCellAt(committed, searched position), the form that searches, for k from -1 to 1, then j, then i. Each
+//   distance is measured in biggest cell widths from the frame's origin, so in any frame that passes the frame check
+//   no distance overflows, and an underflow never changes which cell is nearer. The position is q = (position / 2 -
+//   origin / 2) / (biggest_cell_width / 2) per axis; the halves keep the difference finite for every finite position
+//   and origin. A cell of size level l at coordinate c has its centre at (c + 1/2) 2^-l, exact. The squared distance
+//   is Dot(centre - q, centre - q). A smaller squared distance wins; on an equal one the cell whose id comes first
+//   in the fixed order wins (ComesBefore), so the answer does not depend on the order of the search. Cells of one
+//   size are found in their fixed order anyway; a big cell may be found after a small cell that it comes before.
+//   Range. When FindCellAt finds a cell at a searched position, its offset from the origin is at most (kMaxCoord +
+//   1) biggest widths, so |q| stays below 2^19, every centre below 2^18 + 1, each square below 2^40 and their sum
+//   finite. A q that is not finite therefore comes only when no searched position finds a cell: kNoIndex at once.
+//   Two distinct active cells have centres that differ by at least 2^-16 on some axis (each is a multiple of 2^-16),
+//   so when one squared distance underflows the other is at least about 2^-32 and the order is kept. Same answer on
+//   the CPU and the GPU. Each offset i * biggest_cell_width is exact (a product by -1, 0 or 1), so a searched
+//   position is one correctly rounded sum, fused or not. The halves, the difference, the quotient, the centre and
+//   each step of the squared distance are each one correctly rounded IEEE 754 operation, in x, y, z order. Host code
+//   is compiled with contraction off (-ffp-contract=off; /fp:precise for MSVC) and device code with --fmad=false, so
+//   no product and sum are fused on either processor, and every double compared is the same on both. The comparisons
+//   themselves round nothing.
+// Units: position in m, world. The distances compared are in biggest cell widths.
+// Ties: an equal squared distance goes to the cell that comes first in the fixed order (ComesBefore of the two ids).
+// Example: cells {0,0,0} and {2,0,0} of one size level, 1 m wide, origin 0. From (1.5, 0.5, 0.5) both centres are
+//   1.0 m away: the place of {0,0,0}. From (1.75, 0.5, 0.5), 1.25 m and 0.75 m: the place of {2,0,0}. From
+//   (10, 10, 10): kNoIndex.
+// Requires: the tables of a built grid on the processor that calls (GridTables), as FindCellAt. Any position.
+//   Checked in every compile mode: tables with no block, or a frame whose size_level_count is outside
+//   1..kMaxSizeLevels (GridTables{} of no grid included), give kNoIndex before any table is read.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>, <sec-cell-blocks>
+FLUIDITY_CPU_AND_GPU inline CellPlaceIndex
+FindNearestCommittedCell(const GridTables& committed, Vec3 position) noexcept {
+  // Steps: 1 the guards  2 the position in biggest widths  3 the search
+  // Step 1: no block or no usable frame means no cell, and no table is read.
+  const bool has_blocks = committed.block_count > 0;
+  const int size_level_count = committed.frame.size_level_count;
+  const bool has_usable_frame = size_level_count >= 1 && size_level_count <= kMaxSizeLevels;
+  if (!has_blocks || !has_usable_frame) {
+    return {.value = kNoIndex};
+  }
+
+  // Step 2: halving is exact for a normal double and correctly rounded below, the same on both processors.
+  const double search_step = committed.frame.biggest_cell_width;
+  const double half_step = 0.5 * search_step;
+  const Vec3 half_origin = 0.5 * committed.frame.origin;
+  const Vec3 position_in_widths = {
+      .x = ((0.5 * position.x) - half_origin.x) / half_step,
+      .y = ((0.5 * position.y) - half_origin.y) / half_step,
+      .z = ((0.5 * position.z) - half_origin.z) / half_step,
+  };
+  const bool is_finite_in_widths = math::IsFinite(position_in_widths.x) && math::IsFinite(position_in_widths.y)
+      && math::IsFinite(position_in_widths.z);
+  if (!is_finite_in_widths) {
+    return {.value = kNoIndex};
+  }
+
+  // Step 3: the 27 searched positions, the nearest centre, the fixed order on a tie.
+  constexpr GridFrame kUnitFrame = {.origin = {}, .biggest_cell_width = 1.0, .size_level_count = kMaxSizeLevels};
+  std::uint32_t nearest_place = kNoIndex;
+  CellId nearest_cell{};
+  double nearest_squared_distance = 0.0;
+  for (int offset_z = -1; offset_z <= 1; ++offset_z) {
+    for (int offset_y = -1; offset_y <= 1; ++offset_y) {
+      for (int offset_x = -1; offset_x <= 1; ++offset_x) {
+        const Vec3 searched_position = {
+            .x = position.x + (static_cast<double>(offset_x) * search_step),
+            .y = position.y + (static_cast<double>(offset_y) * search_step),
+            .z = position.z + (static_cast<double>(offset_z) * search_step),
+        };
+        const CellPlaceIndex found = FindCellAt(committed, searched_position);
+        if (found.value == kNoIndex) {
+          continue;
+        }
+        const CellId found_cell = ToCellId(committed, found);
+        const CellCoord found_coord = ToCellCoord(found_cell);
+        const double width_in_widths = ComputeCellWidth(kUnitFrame, ToSizeLevel(found_cell));
+        const Vec3 center_in_widths = {
+            .x = (static_cast<double>(found_coord.x) + 0.5) * width_in_widths,
+            .y = (static_cast<double>(found_coord.y) + 0.5) * width_in_widths,
+            .z = (static_cast<double>(found_coord.z) + 0.5) * width_in_widths,
+        };
+        const Vec3 center_offset = center_in_widths - position_in_widths;
+        const double squared_distance = math::Dot(center_offset, center_offset);
+        const bool is_first_found = nearest_place == kNoIndex;
+        const bool is_nearer = squared_distance < nearest_squared_distance;
+        const bool is_as_near = squared_distance == nearest_squared_distance;
+        const bool wins_tie = is_as_near && ComesBefore(found_cell, nearest_cell);
+        if (is_first_found || is_nearer || wins_tie) {
+          nearest_place = found.value;
+          nearest_cell = found_cell;
+          nearest_squared_distance = squared_distance;
+        }
+      }
+    }
+  }
+  return {.value = nearest_place};
+}
+
+// Computes the size level of a new cell, one the step adds where liquid enters space with no cell: one size level
+// smaller than its nearest committed cell (FindNearestCommittedCell), but never smaller than smallest_size_level, and
+// smallest_size_level itself when no searched position lies in an active cell.
+//
+// Method: FindNearestCommittedCell, then the size level of its block plus 1, and the smaller (the bigger cell) of that
+//   and smallest_size_level. The size step rule is kept with the cell found only: that cell may not touch the new
+//   cell, a nearer, smaller cell can be missed, and the cap applies even when the cell found is smaller than
+//   smallest_size_level (settings changed between steps). The step that adds cells therefore closes the size step
+//   rule over its new list, and the cell list check turns down a list that breaks it.
+//   smallest_size_level reads as at most the committed frame's last size level, as in ComputeWantedCellWidth: the
+//   frame's size_level_count clamped by ComputeTableSizeLevelCount, so tables of no grid, whose frame has no size
+//   level, read as one size level and give 0. The result is always a size level of the frame. Integers only, so the
+//   CPU and the GPU agree whenever FindNearestCommittedCell does.
+// Units: position in m, world.
+// Example: size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0}, 3 size levels, biggest
+//   cells 1 m wide, smallest_size_level 2. From (-0.5, 0.5, 0.5) the searched position (0.5, 0.5, 0.5) finds the big
+//   cell: 1. From (2.25, 0.25, 0.25) the searched position (1.25, 0.25, 0.25) finds the small cell {2,0,0}: 2, and 1
+//   with smallest_size_level 1; the small cell {3,0,0}, whose centre is only 0.5 m away, holds no searched
+//   position. (10, 10, 10) finds no cell: 2.
+// Requires: as FindNearestCommittedCell. Any position and any smallest_size_level.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>, <sec-cell-sizes>
+FLUIDITY_CPU_AND_GPU inline SizeLevel
+ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position, SizeLevel smallest_size_level) noexcept {
+  const int last_size_level = ComputeTableSizeLevelCount(committed.frame.size_level_count) - 1;
+  const int asked_smallest_size_level = static_cast<int>(smallest_size_level);
+  const int capped_size_level =
+      asked_smallest_size_level <= last_size_level ? asked_smallest_size_level : last_size_level;
+  const CellPlaceIndex nearest = FindNearestCommittedCell(committed, position);
+  if (nearest.value == kNoIndex) {
+    return static_cast<SizeLevel>(capped_size_level);
+  }
+  const int nearest_size_level = static_cast<int>(ToSizeLevel(committed, ToCellBlockIndex(nearest)));
+  const int one_size_level_smaller = nearest_size_level + 1;
+  const int new_size_level = one_size_level_smaller <= capped_size_level ? one_size_level_smaller : capped_size_level;
+  return static_cast<SizeLevel>(new_size_level);
 }
 
 }  // namespace fluidity::grid
