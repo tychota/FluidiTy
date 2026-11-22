@@ -1,0 +1,83 @@
+src/fluidity/base/run_memory.test.cc
+  s_4f0877e2acdcf0::t_a03cdda5f2a6e4 408,444
+src/fluidity/contact/move_particles.test.cc
+  s_4f0877e2acdcf0::t_754147f865e04b 399,416-418,426,444-445,447-448,518,529,539,550-551,559,562,566,569
+src/fluidity/contact/move_particles_steps.test.cc
+  s_4f0877e2acdcf0::t_b9f279fdc1b842 46-47,57-58,69,77,138-139,143,313,341,361
+src/fluidity/contact/solid_contact.move_particle.test.cc
+  s_4f0877e2acdcf0::t_9f2f82fd2b3c22 2407,2426,2433,4084,4109-4110,4117,4122,4127
+src/fluidity/contact/solid_contact.move_particle_shorter_step.test.cc
+  s_4f0877e2acdcf0::t_4d8735a57bc318 192,204,217,229,239,245,256,279
+src/fluidity/contact/testing/move_particles_steps_cases.h
+  s_4f0877e2acdcf0::t_29e4ff8e4da6f1 8,10,64,141,149,151,155,172,195-196,200,210,221-223,241
+src/fluidity/contact/testing/solid_contact_move_particle_shorter_step_cases.h
+  s_4f0877e2acdcf0::t_0809c8f5b59f39 8,60
+src/fluidity/grid/cell_corners.test.cc
+  s_4f0877e2acdcf0::t_caa5cf324cfa1b 185,221,229,254-255,526,529,567,604
+src/fluidity/grid/face_search.test.cc
+  s_4f0877e2acdcf0::t_4c244885ca1812 278
+src/fluidity/grid/find_cell_at.test.cc
+  s_4f0877e2acdcf0::t_8a5e88b399152e 171,182,232
+src/fluidity/grid/grid_build_steps.test.cc
+  s_4f0877e2acdcf0::t_2e9c4648aba61e 51,91,378,501,1324,1345,1360,1374,1436
+src/fluidity/grid/staggered_grid.buffers.test.cc
+  s_4f0877e2acdcf0::t_4df09ca29c5c2f 629,642,656,676,684,692
+src/fluidity/grid/testing/cell_corners_cases.h
+  s_4f0877e2acdcf0::t_4b8aa472f50c2d 8,68,188,196,476,488,497,507
+src/fluidity/grid/testing/face_search_cases.h
+  s_4f0877e2acdcf0::t_93404750d836a6 8,71,117,132,146,183
+src/fluidity/grid/testing/grid_build_steps_cases.h
+  s_4f0877e2acdcf0::t_6e9744d85253f3 20,1121,1210,1220
+src/fluidity/grid/testing/grid_support.test.cc
+  s_4f0877e2acdcf0::t_6c2902d57891b5 29,77-79,112-114,142,184,296,317,356,446,489,569,575,585,660
+src/fluidity/grid/testing/grid_support_cases.h
+  s_4f0877e2acdcf0::t_e7fde5e075ac10 8,65,75,115
+src/fluidity/grid/touching_cells.test.cc
+  s_4f0877e2acdcf0::t_9f41757a8d2caa 46,110,140,448,464,467
+tests/base/stable_order_steps_in_every_thread_order.test.cc
+  s_4f0877e2acdcf0::t_fed14a96cc28b3 66,81,102,124,172,178,191,201,230,233
+tests/contact/find_first_hit_on_generated_sweeps.test.cc
+  s_4f0877e2acdcf0::t_a40487bbbafb48 259,351,901,953,970,1068,1127,1145,1214,1236,1238,1247,1263-1265,1275,1295-1297,1332,1361,1363,1495
+tests/contact/move_particle_on_generated_paths.test.cc
+  s_4f0877e2acdcf0::t_ca50752e4479c9 995,1047,1049,1060,1461-1466,1509,1549,1562,1567,1637-1638
+tests/contact/move_particle_shorter_step_on_catalogue.test.cc
+  s_4f0877e2acdcf0::t_36d50791352179 49
+tests/contact/move_particles_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_617e80b781b80e 52,74,93,102,113-119,122-123,133-139,142,387,455-456
+tests/contact/move_particles_steps_over_every_thread.test.cc
+  s_4f0877e2acdcf0::t_485c6ce71e47d7 34,36,38,53,68
+tests/grid/build_grid_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_3bfbc7e868223e 175,185,207,211,232,263,412,438,462,595,649,702
+tests/grid/cell_corners_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_95a982a41d27b9 71,109
+tests/grid/face_search_on_grids.test.cc
+  s_4f0877e2acdcf0::t_0fd1b3b84acc8a 141,165,168,348
+tests/grid/find_cell_at_near_form_on_positions.test.cc
+  s_4f0877e2acdcf0::t_db0de87e00e96b 83,130
+tests/grid/grid_cell_checks_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_7a8894b19f5376 133,197,219,276,298,306,451
+tests/grid/grid_support_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_9ef1585f4dc717 152,167
+tests/grid/grid_tables_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_8668fe748e420a 50,61,72,95,102,116,129-130,135,146,159-160,183,205,210,232,303,327,405,433,448,485,498
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_ae6bd70e072749 24-26,1199,1237
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_6fa70b0c9b21c9 340-348
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "576560e7b43544d4cc5d62ce96b5657c5878f104",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
