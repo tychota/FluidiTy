@@ -1,0 +1,84 @@
+src/fluidity/grid/border_block_steps.h
+  s_4f0877e2acdcf0::t_49449d8e56b2ac 1-747,750-751,755,767,769,771-773,775-776,783,792-793,795-796,800-801
+  s_4f0877e2acdcf0::t_6fa6a8494c67d6 748-749,752-754,756-766,768,770,774,777-782,784-791,794,797-799,802-856
+src/fluidity/grid/testing/grid_functions_result_words.h
+  s_4f0877e2acdcf0::t_4c32a300db22fb 318,320-326
+  s_4f0877e2acdcf0::t_d43145fe48699a 316-317,319
+src/fluidity/grid/testing/grid_support.cc
+  s_4f0877e2acdcf0::t_6a882e8f19d51d 947,1348,1352,1355,1357,1362,1378,1380,1386,1397-1399,1401,1414,1426,1433-1434,1439,1444-1445,1447,1457-1458,1461,1464-1695
+  s_4f0877e2acdcf0::t_e56b135c469f4f 11,18,31,945-946,948,1333-1347,1349-1351,1353-1354,1356,1358-1361,1363-1377,1379,1381-1385,1387-1396,1400,1402-1413,1415-1425,1427-1432,1435-1438,1440-1443,1446,1448-1456,1459-1460,1462-1463
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_36114d576dafda 2122-2176
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_667fc16cf4b41d 1-98
+  s_4f0877e2acdcf0::t_291ea429aac87e 99-109
+src/fluidity/grid/testing/grid_support.h
+  s_4f0877e2acdcf0::t_59e991afa28713 40,44,49-50,67-68,76,237-239,313-366,368-371
+  s_4f0877e2acdcf0::t_2352dafac10d80 39,367,372
+tests/grid/shared_grid_functions.gpu.test.cc
+  s_4f0877e2acdcf0::t_271526c383115e 251
+src/fluidity/grid/testing/cell_block_range_cases.h
+  s_4f0877e2acdcf0::t_839183f54c9ca2 15-195,198,201-203
+  s_4f0877e2acdcf0::t_ea206c7e303733 1-14,196-197,199-200,204-205
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_4f0877e2acdcf0::t_c7cb43c3052159 70,72,77,176,276-376,380,401-402
+  s_4f0877e2acdcf0::t_e1f5eacda4f223 10,18-19,64-69,71,73-76,78,162-175,177
+tests/grid/border_blocks_in_grid_pieces.test.cc
+  s_4f0877e2acdcf0::t_d11e00d813e13a 87-90
+  s_4f0877e2acdcf0::t_5ad9b3dca6231c 1-86
+  s_4f0877e2acdcf0::t_75d3c1820bbbfd 91-159
+src/fluidity/grid/testing/grid_functions_answers.h
+  s_4f0877e2acdcf0::t_9f2d4a0687b8df 17-19,23-25,46,299-355
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_d058347146f15f 435-467
+  s_4f0877e2acdcf0::t_2ce7df9a0ef7cf 1-434
+docs/glossary.md
+  s_4f0877e2acdcf0::t_9eb685fb92590d 169-170
+src/fluidity/grid/face_search.test.cc
+  s_4f0877e2acdcf0::t_fc97f66da4d008 477-518
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_89b7dda74ff84b 19,24-25,90-99,104,187-207,216-220
+  s_4f0877e2acdcf0::t_9748b1a2b5a33b 18
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_bfe03fe25194cb 8-103
+  s_4f0877e2acdcf0::t_70b56f55227a74 1-7,104-112
+src/fluidity/grid/border_block_steps.test.cc
+  s_4f0877e2acdcf0::t_5f149ae69f6380 75,89,104,109,112-113,118,120-163,166-167,177
+  s_4f0877e2acdcf0::t_3f649ef15286ac 1-74,76-88,90-103,105-108,110-111,114-117,119,164-165,168-176,178-180
+src/fluidity/grid/cell_block_range.test.cc
+  s_4f0877e2acdcf0::t_54fd3a237b532c 5-323,327
+  s_4f0877e2acdcf0::t_16109962f4bd9d 1-4,324-326,328-330
+tests/grid/cell_block_ranges_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_cbb62e9a6e76d6 27-401,407-411,419-420,437,447-449,451,466,477-478,481,500-501,503-504,506
+  s_4f0877e2acdcf0::t_a59e8778c44c1a 1-26,402-406,412-418,421-436,438-446,450,452-465,467-476,479-480,482-499,502,505,507-707
+tests/grid/border_blocks.gpu.test.cc
+  s_4f0877e2acdcf0::t_72e2828b8e7e72 7-182
+  s_4f0877e2acdcf0::t_86fc04c2599e27 1-6,183-297
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_8222208947bf99 40
+  s_4f0877e2acdcf0::t_ccbebd8cf86a8e 2-3,26,69-80
+src/fluidity/grid/cell_block_range_cpu.cc
+  s_4f0877e2acdcf0::t_43fb447fc7c422 5-124,126,135
+  s_4f0877e2acdcf0::t_13a55a03488281 1-4,125,127-134,136-137
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_c08219f6f9a0b3 29-38,41,43,45-50,127,129,131,133-135,137
+  s_4f0877e2acdcf0::t_d8d56dd6be6bcd 39-40,42,44,51-52,128,130,132,136,138-139
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_7d2185e7b34de7 160,186-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c4ff15b72d2c7fd9185f467c6178c305085a8b81",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": null
+    }
+  }
+}
