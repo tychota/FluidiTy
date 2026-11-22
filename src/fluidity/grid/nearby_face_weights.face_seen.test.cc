@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <vector>
 
@@ -67,20 +69,6 @@ TEST(ComputeFaceWeight, FaceNotInList_IsZero) {
   CheckFaceIsNotInList(tables, far_face, FindWeightsOfAllFaces(tables, near_position, Axis::kX));
 }
 
-// The sums are those of the X list and the face is one of the Y list of the same position: of another axis, it is
-// never in the X list.
-TEST(ComputeFaceWeight, FaceOfAnotherAxis_IsZero) {
-  const std::expected<TestGrid, GridFailure> test_grid = BuildUniformFiveByFiveGrid();
-  ASSERT_TRUE(test_grid.has_value());
-  const GridTables tables = ToTablesOf(test_grid);
-  const Vec3 position = {.x = 2.6, .y = 2.7, .z = 2.8};
-  GridError error = GridError::kInternalFault;
-  const NearbyFaceList y_list = FindNearbyFaces(tables, position, Axis::kY, CellBlockIndex{kNoIndex}, &error);
-  ASSERT_EQ(error, GridError::kNone);
-  ASSERT_GT(y_list.count, 0);
-  CheckFaceIsNotInList(tables, y_list.faces[0], FindWeightsOfAllFaces(tables, position, Axis::kX));
-}
-
 // Finds the position in a list of the face whose offset is exactly `offset`, or -1; `offsets` are the offsets of the
 // list's faces.
 int FindPositionOfOffset(const std::vector<Vec3>& offsets, Vec3 offset) {
@@ -102,8 +90,6 @@ TEST(ComputeFaceWeight, FaceInList_GetsItsWeight) {
   const Vec3 position = {.x = 2.5, .y = 2.5, .z = 2.5};
   const NearbyFaceWeights weights = FindWeightsOfAllFaces(tables, position, Axis::kX);
   const NearbyFaceSums sums = ToNearbyFaceSums(weights);
-  EXPECT_EQ(sums.axis, Axis::kX);
-  EXPECT_EQ(sums.fit, NearbyFaceFit::kFull);
   EXPECT_EQ(sums.weight_sum, weights.weight_sum);
   const int position_in_list =
       FindPositionOfOffset(ToFaceOffsets(tables, weights.list, position), {.x = -0.5, .y = 0.0, .z = 0.0});
@@ -112,6 +98,86 @@ TEST(ComputeFaceWeight, FaceInList_GetsItsWeight) {
   const FaceWeight from_face = ComputeFaceWeight(tables, from_list.face, position, weights.list.cell, sums);
   EXPECT_EQ(from_face.weight, from_list.weight);
   EXPECT_NEAR(from_face.weight, 0.28125, 1e-15);
+}
+
+// Finds the face place of `axis` whose centre is exactly `center`, or kNoIndex. `kind` is kNotAPiece to look for a
+// place that holds no face piece, and any other kind to look for a face piece.
+FacePlaceIndex FindPlaceAt(const GridTables& tables, Axis axis, Vec3 center, FacePieceKind kind) {
+  const bool wants_piece = kind != FacePieceKind::kNotAPiece;
+  for (std::uint32_t place = 0; place < tables.block_count * static_cast<std::uint32_t>(kFacePlacesPerBlock); ++place) {
+    const FacePlaceIndex face = {.value = place};
+    const bool is_piece = tables.face_piece_kinds[place] != FacePieceKind::kNotAPiece;
+    const Vec3 face_center = ComputeFacePosition(tables, face);
+    if (ToAxis(face) == axis && is_piece == wants_piece && face_center.x == center.x && face_center.y == center.y
+        && face_center.z == center.z) {
+      return face;
+    }
+  }
+  return {.value = kNoIndex};
+}
+
+// Finds a face piece of `axis` at size level `level` whose centre lies within 1.4 cell widths of `position` on each
+// axis (1 m widths), or kNoIndex.
+FacePlaceIndex FindPieceNear(const GridTables& tables, Axis axis, int level, Vec3 position) {
+  for (std::uint32_t place = 0; place < tables.block_count * static_cast<std::uint32_t>(kFacePlacesPerBlock); ++place) {
+    const FacePlaceIndex face = {.value = place};
+    if (ToAxis(face) != axis || tables.face_piece_kinds[place] == FacePieceKind::kNotAPiece
+        || static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(face))) != level) {
+      continue;
+    }
+    const Vec3 offset = ComputeFacePosition(tables, face) - position;
+    if (std::abs(offset.x) <= 1.4 && std::abs(offset.y) <= 1.4 && std::abs(offset.z) <= 1.4) {
+      return face;
+    }
+  }
+  return {.value = kNoIndex};
+}
+
+// Checks that the face form gives weight 0 to `face` for the cell {1,1,1} of a grid whose 26 places around it are all
+// split, at `position`, X axis, with every list face kept.
+void CheckFaceOfSplitNeighbourIsZero(const GridTables& tables, FacePlaceIndex face, Vec3 position) {
+  ASSERT_NE(face.value, kNoIndex);
+  const NearbyFaceWeights weights = FindWeightsOfAllFaces(tables, position, Axis::kX);
+  ASSERT_FALSE(ComputeIsListed(tables, position, Axis::kX, face));
+  CheckFaceIsNotInList(tables, face, weights);
+}
+
+// <sec-nearby-faces>: the cell {1,1,1} has all 26 places around it split. The face at (1.0, 0.25, 1.25) lies between
+// two small cells, {1,0,2} and {2,0,2}, that stop 0.5 m short of the cell: it is in the window of the position but is
+// no face piece of the cell or of a touching cell, so the list does not hold it and it gets nothing.
+TEST(ComputeFaceWeight, FaceOfFarSmallCells_IsZero) {
+  const std::expected<TestGrid, GridFailure> test_grid =
+      BuildTestGrid(ToInputs(ToUnitFrame(2), BuildCellWithEveryNeighbourSplit(1, 1, 1)));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  const FacePlaceIndex face =
+      FindPlaceAt(tables, Axis::kX, {.x = 1.0, .y = 0.25, .z = 1.25}, FacePieceKind::kBetweenCells);
+  CheckFaceOfSplitNeighbourIsZero(tables, face, {.x = 1.1, .y = 1.1, .z = 1.6});
+}
+
+// <sec-nearby-faces>: the size-level-1 block over the cell {1,1,1} has places on the cell's middle plane x = 1.5, and
+// none holds a face piece. One of them lies in the window of the position and still gets nothing.
+TEST(ComputeFaceWeight, PlaceThatIsNotAPiece_IsZero) {
+  const std::expected<TestGrid, GridFailure> test_grid =
+      BuildTestGrid(ToInputs(ToUnitFrame(2), BuildCellWithEveryNeighbourSplit(1, 1, 1)));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  const FacePlaceIndex place =
+      FindPlaceAt(tables, Axis::kX, {.x = 1.5, .y = 1.25, .z = 1.25}, FacePieceKind::kNotAPiece);
+  CheckFaceOfSplitNeighbourIsZero(tables, place, {.x = 1.6, .y = 1.6, .z = 1.6});
+}
+
+// <sec-nearby-faces>: a face piece two size levels below the cell's is in no list, even when its centre lies within
+// 1.5 widths of the position.
+TEST(ComputeFaceWeight, FaceTwoSizeLevelsFromCell_IsZero) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(3), BuildThreeSizeCells()));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  const Vec3 position = {.x = 0.9, .y = 0.5, .z = 0.5};
+  const FacePlaceIndex face = FindPieceNear(tables, Axis::kX, 2, position);
+  ASSERT_NE(face.value, kNoIndex);
+  ASSERT_FALSE(ComputeIsListed(tables, position, Axis::kX, face));
+  CheckFaceIsNotInList(tables, face, FindWeightsOfAllFaces(tables, position, Axis::kX));
 }
 
 }  // namespace

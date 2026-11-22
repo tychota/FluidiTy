@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <random>
 #include <vector>
@@ -16,6 +18,7 @@
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
+#include "fluidity/grid/testing/face_search_cases.h"
 #include "fluidity/grid/testing/grid_support.h"
 #include "fluidity/grid/testing/nearby_face_weights_cases.h"
 #include "fluidity/grid/testing/nearby_faces_cases.h"
@@ -157,6 +160,141 @@ TEST(ComputeFaceWeight, SeenFromFace_IsBitIdentical) {
   const int checked_count = ApplyToRandomWeights(50, CheckFaceFormMatchesListForm);
   RecordProperty("checked_lists", checked_count);
   EXPECT_GT(checked_count, 20000);
+}
+
+// Says whether the list holds the face.
+bool ComputeListHolds(const NearbyFaceList& list, FacePlaceIndex face) {
+  for (int position_in_list = 0; position_in_list < list.count; ++position_in_list) {
+    if (list.faces[position_in_list].value == face.value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// How many lists of each fit the face-form check has seen.
+struct FitCounts {
+  int none = 0;
+  int mean_only = 0;
+  int full = 0;
+};
+
+// Adds one list to the count of its fit.
+void ApplyFitCount(NearbyFaceFit fit, FitCounts& counts) {
+  if (fit == NearbyFaceFit::kNone) {
+    ++counts.none;
+  } else if (fit == NearbyFaceFit::kMeanOnly) {
+    ++counts.mean_only;
+  } else {
+    ++counts.full;
+  }
+}
+
+// Checks, for one face place and the particle's sums, that the face form gives nothing to a face the list does not
+// hold, and for a listed face its own offset and, when the particle kept it and has weight, the list form's bits.
+void CheckFaceFormOfPlace(const GridTables& tables, const NearbyFaceWeights& weights, FacePlaceIndex face) {
+  const NearbyFaceSums sums = ToNearbyFaceSums(weights);
+  const FaceWeight from_face = ComputeFaceWeight(tables, face, weights.position, weights.list.cell, sums);
+  const Vec3 zero_vector = {.x = 0.0, .y = 0.0, .z = 0.0};
+  if (!ComputeListHolds(weights.list, face)) {
+    EXPECT_EQ(from_face.weight, 0.0);
+    CheckVectorIsNear(from_face.offset, zero_vector, 0.0);
+    CheckVectorIsNear(from_face.offset_from_mean, zero_vector, 0.0);
+    CheckVectorIsNear(from_face.weight_change, zero_vector, 0.0);
+    return;
+  }
+  EXPECT_GE(from_face.weight, 0.0);
+  CheckVectorIsNear(from_face.offset, ComputeFacePosition(tables, face) - weights.position, 0.0);
+  if (weights.fit == NearbyFaceFit::kNone) {
+    EXPECT_EQ(from_face.weight, 0.0);
+    return;
+  }
+  for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
+    if (weights.list.faces[position_in_list].value == face.value && ComputeIsKept(weights.kept, position_in_list)) {
+      CheckFaceWeightHasSameBits(from_face, ComputeFaceWeight(tables, weights, position_in_list));
+    }
+  }
+}
+
+// Calls CheckFaceFormOfPlace for every place of one axis whose centre lies within 3 widths of the position on each
+// axis, in every block of the grid: every face piece near the cell and every place that holds none.
+void CheckFaceFormOfPlacesNear(const GridTables& tables, const NearbyFaceWeights& weights) {
+  const double search_distance = 3.0 * weights.list.cell_width;
+  const std::uint32_t place_count = tables.block_count * static_cast<std::uint32_t>(kFacePlacesPerBlock);
+  for (std::uint32_t place = 0; place < place_count; ++place) {
+    const FacePlaceIndex face = {.value = place};
+    if (ToAxis(face) != weights.list.axis) {
+      continue;
+    }
+    const Vec3 offset = ComputeFacePosition(tables, face) - weights.position;
+    if (std::abs(offset.x) <= search_distance && std::abs(offset.y) <= search_distance
+        && std::abs(offset.z) <= search_distance) {
+      CheckFaceFormOfPlace(tables, weights, face);
+    }
+  }
+}
+
+// The random numbers and the fit counts of a run of the face-form check.
+struct FaceFormRun {
+  // clang-tidy: the seed is set again for each grid; this one only gives the member a state.
+  std::mt19937_64 generator{1};  // NOLINT(bugprone-random-generator-seed)
+  FitCounts counts;
+};
+
+// The masks tried at each position and axis: every face, a random mask, one face (a mean-only fit or none), no face.
+void CheckFaceFormOfMasks(const GridTables& tables, Vec3 position, Axis axis, FaceFormRun& run) {
+  GridError error = GridError::kInternalFault;
+  const NearbyFaceList list = FindNearbyFaces(tables, position, axis, CellBlockIndex{kNoIndex}, &error);
+  ASSERT_EQ(error, GridError::kNone);
+  NearbyFaceMask one_face{};
+  one_face.bits[0] =
+      std::uint64_t{1} << ToUniformIndex(run.generator(), static_cast<std::uint64_t>(std::min(list.count, 64)));
+  const std::array<NearbyFaceMask, 4> masks =
+      {ToMaskOfAll(list), BuildRandomMask(run.generator, list), one_face, NearbyFaceMask{}};
+  for (const NearbyFaceMask& mask : masks) {
+    const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, list, position, mask);
+    ApplyFitCount(weights.fit, run.counts);
+    CheckFaceFormOfPlacesNear(tables, weights);
+  }
+}
+
+// The 200 random grids, 3 positions each, and the cell with every neighbour split at each of its 64 window quarters,
+// each axis, four masks: the face form gives a face weight only when the list holds it, and then the list's own bits.
+// Every fit comes up.
+TEST(ComputeFaceWeight, FacesNearCell_AreWeightedOnlyWhenListed) {
+  FaceFormRun run;
+  const RandomGridsWithCheckers& random_grids = FindRandomGridsWithCheckers();
+  const std::vector<std::vector<CellId>>& cell_lists = BuildShuffledRandomGrids();
+  for (std::size_t grid_entry = 0; grid_entry < random_grids.grids.size(); ++grid_entry) {
+    const GridTables tables = random_grids.grids[grid_entry].grid.tables(RunOn::kCpu);
+    run.generator.seed(grid_entry + 9001);
+    for (int draw = 0; draw < 3; ++draw) {
+      const PlacedPosition placed =
+          FindDrawnPosition(run.generator, tables.frame, cell_lists[grid_entry], DrawnPlace::kAnywhere);
+      SCOPED_TRACE(grid_entry * 1000 + static_cast<std::size_t>(draw));
+      for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
+        CheckFaceFormOfMasks(tables, placed.position, axis, run);
+      }
+    }
+  }
+  const std::vector<CellId> split_cells = BuildCellWithEveryNeighbourSplit(1, 1, 1);
+  const std::expected<TestGrid, GridFailure> split_grid = BuildTestGrid(ToInputs(ToUnitFrame(2), split_cells));
+  ASSERT_TRUE(split_grid.has_value());
+  const GridTables split_tables = ToTablesOf(split_grid);
+  run.generator.seed(4242);
+  for (int window = 0; window < 64; ++window) {
+    const PlacedPosition placed = ToWindowMiddlePosition(split_tables.frame, ToCell(0, 1, 1, 1), window);
+    SCOPED_TRACE(window);
+    for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
+      CheckFaceFormOfMasks(split_tables, placed.position, axis, run);
+    }
+  }
+  RecordProperty("lists_with_no_weight", run.counts.none);
+  RecordProperty("lists_with_mean_only", run.counts.mean_only);
+  RecordProperty("lists_with_full_fit", run.counts.full);
+  EXPECT_GT(run.counts.none, 0);
+  EXPECT_GT(run.counts.mean_only, 0);
+  EXPECT_GT(run.counts.full, 0);
 }
 
 // Says whether a coordinate along one axis lies at least 0.01 widths from the two sides of its cell.

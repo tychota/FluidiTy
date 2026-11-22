@@ -2393,8 +2393,16 @@ is $bold(r) = (sum_f hat(w)_f v_f (bold(x)_f - bold(x)_p - bold(m))^T) S^(-1)$; 
 $v_p = sum_f hat(w)_f v_f - bold(r) dot bold(m)$; and a particle writes $v_p + bold(r) dot (bold(x)_f - bold(x)_p -
 bold(m))$ to face $f$ with weight $hat(w)_f$. Since the weighted offsets from the mean add up to zero, the written
 momentum is exactly the particle's. The exact change of the read value with the position is
-$sum_f v_f (partial hat(w)_f) / (partial bold(x)_p)$. A face can also compute the weight one particle gives it
-(`ComputeFaceWeight` with the particle's `NearbyFaceWeights`), with the same bits as the particle's own list.
+$sum_f v_f (partial hat(w)_f) / (partial bold(x)_p)$.
+A face can also compute the weight one particle gives it (`ComputeFaceWeight` with the particle's sums for the
+face's axis, `NearbyFaceSums`: $W$, $bold(G)$ and $bold(m)$), with the same bits as the particle's own list. The
+face decides by the rule of the list whether the particle's list holds it: the face is a face piece of the
+particle's cell or of a cell touching it, of a size level within one of the cell's, with its centre in the window of
+the position. The window alone is not the rule, since it also admits face pieces of the small cells of a split place
+that lie beyond the cells touching the particle's. A face the list does not hold gets weight 0. The face cannot see
+the particle's kept mask: it gives a listed face the weight it would have had if the particle had kept it, so the
+caller asks only about faces the particle's mask keeps, which means a mask whose rule the caller can apply to the
+face alone.
 
 *Properties.* These hold for every grid and every mask whose fit is not `kNone`:
 

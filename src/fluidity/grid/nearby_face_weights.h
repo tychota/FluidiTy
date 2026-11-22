@@ -51,8 +51,18 @@
 //   rounding. That case is never a separate path in the code.
 //   The weight of one face is computed with the same operations in ComputeNearbyFaceWeights and in
 //   ComputeFaceWeight, so a face that asks what a particle gives it gets the particle's own bits. A face asks with
-//   the particle's NearbyFaceSums, the particle's position and cell, and its own place; it decides itself, by the
-//   window test of the list, whether the particle's list holds it.
+//   the particle's NearbyFaceSums for the face's axis, the particle's position and cell, and its own place. It decides
+//   itself whether the particle's list holds it, by the rule of the list: the face is a face piece of the particle's
+//   cell or of a cell touching it, of a size level within one of the cell's, with its centre in the window of the
+//   position. A face the list does not hold gets weight 0 and zero vectors, whatever the sums say.
+//   What the caller of the face form must guarantee. The face cannot see the particle's kept mask, so the sums are the
+//   particle's, made from a mask, and the face form gives a listed face the weight it would have had if the particle
+//   had kept it. The caller therefore keeps the rule of its mask decidable from the face alone, without the face's
+//   position in the list or the other faces of the list, and applies that rule itself: it asks about a face only when
+//   the particle's mask would keep it, and it never uses what it gets for a face the particle left out. It passes the
+//   sums of the face's own axis (the sums of ToAxis(face)), the exact double position the weights were made for, and
+//   the active cell that holds that position. When a particle comes to a face through FindCellsNearFace, the face is
+//   among the particle's candidates by construction.
 //
 // Words:
 //   candidate       a face that may get weight from a position, before any face is left out
@@ -363,22 +373,20 @@ struct FaceWeight {
 };
 
 // The sums of a particle's kept faces on one axis that a face needs to compute the weight the particle gives it. A
-// particle makes one from its NearbyFaceWeights (ToNearbyFaceSums) and hands it to the faces that ask.
+// particle makes one for each axis from its NearbyFaceWeights (ToNearbyFaceSums) and hands the one of a face's axis to
+// the faces that ask. No weight at all (fit kNone) shows as `!(weight_sum > 0)`.
 struct NearbyFaceSums {
-  Axis axis;  // The axis of the particle's list: only faces of this axis can get weight.
-  NearbyFaceFit fit;  // What the particle's kept faces allow. kNone: no face gets weight.
   double weight_sum;  // No unit. W, the sum of the kept raw weights.
   Vec3 raw_weight_change_sum;  // 1/m. G, the sum of the kept raw weight changes.
   Vec3 mean_offset;  // m. Weighted mean of (face position - position) over the kept faces.
 };
+static_assert(sizeof(NearbyFaceSums) == 56, "one number and two 3-vectors, 7 x 8 bytes");
 
-// Makes the sums a face needs from a particle's weights: the axis of its list, the fit, W, G and the mean offset.
+// Makes the sums a face needs from a particle's weights: W, G and the mean offset.
 // Requires: `weights` is from ComputeNearbyFaceWeights.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
 FLUIDITY_CPU_AND_GPU constexpr NearbyFaceSums ToNearbyFaceSums(const NearbyFaceWeights& weights) noexcept {
   return {
-      .axis = weights.list.axis,
-      .fit = weights.fit,
       .weight_sum = weights.weight_sum,
       .raw_weight_change_sum = weights.raw_weight_change_sum,
       .mean_offset = weights.mean_offset,
@@ -743,13 +751,21 @@ ComputeFaceWeight(const GridTables& tables, const NearbyFaceWeights& weights, in
   return ComputeKeptFaceWeight(tables, weights, position_in_list);
 }
 
-// Says whether a face is a candidate of a position in its cell: of a size level one below the cell's, the same or one
-// above, with its centre in the window of the position's quarter of the cell on each axis. The test of
-// FindNearbyFacesWithRoom, made on one face; the axis of the face is not looked at. For this header's own functions
-// only.
+// Says whether a face is a candidate of a position in its cell: a face piece of the cell or of a cell touching it, of a
+// size level one below the cell's, the same or one above, with its centre in the window of the position's quarter of
+// the cell on each axis. The test of FindNearbyFacesWithRoom, made on one face; the axis of the face is not looked at.
+// For this header's own functions only.
 //
 // Method: the window quarter of each axis comes from ComputeCandidateWindowQuarter with the same inputs the list form
 //   uses, and the face centre is tested in quarter widths from the cell's low corner (ComputeIsInCandidateWindow).
+//   The list holds the face pieces of the cell and of each cell FindTouchingCells gives. A face piece lies on a side
+//   of exactly the cells FindCellLow and FindCellHigh give for it: a cell's face pieces (FindFacePieces) are the pieces
+//   of its sides, whole beside a cell of its size level or a bigger one or at the grid's edge, and four smaller ones
+//   beside a split place, and for each of them the cell is cell_low or cell_high (<sec-face-pieces>). So the list holds
+//   the face piece exactly when FindCellLow or FindCellHigh is the cell or one of its touching cells. A place that
+//   holds no face piece, a side of the grid's edge with no cell and a side of a block a grid piece did not load all
+//   give kNoIndex, which is never the cell and never in the touching cells. The test costs one FindTouchingCells and
+//   is made last, after the window test has left out most faces.
 // Requires: `face` is a place of block 0..tables.block_count - 1; `cell` is the active cell FindCellAt gives for
 //   `position`; `position` is finite.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
@@ -770,26 +786,49 @@ ComputeIsCandidateFace(const GridTables& tables, FacePlaceIndex face, Vec3 posit
   const int window_quarter_y = ComputeCandidateWindowQuarter(position.y, frame.origin.y, cell_width, cell_coord.y);
   const int window_quarter_z = ComputeCandidateWindowQuarter(position.z, frame.origin.z, cell_width, cell_coord.z);
   const QuarterWidthPoint face_center = ComputeFaceCenterInQuarterWidths(tables, face, cell_size_level_number);
-  return ComputeIsInCandidateWindow(face_center.x - (4 * std::int64_t{cell_coord.x}), window_quarter_x)
+  const bool is_in_window =
+      ComputeIsInCandidateWindow(face_center.x - (4 * std::int64_t{cell_coord.x}), window_quarter_x)
       && ComputeIsInCandidateWindow(face_center.y - (4 * std::int64_t{cell_coord.y}), window_quarter_y)
       && ComputeIsInCandidateWindow(face_center.z - (4 * std::int64_t{cell_coord.z}), window_quarter_z);
+  if (!is_in_window) {
+    return false;
+  }
+  const CellPlaceIndex cell_low = FindCellLow(tables, face);
+  const CellPlaceIndex cell_high = FindCellHigh(tables, face);
+  if (cell_low.value == cell.value || cell_high.value == cell.value) {
+    return true;
+  }
+  const TouchingCells touching = FindTouchingCells(tables, cell);
+  for (int entry = 0; entry < touching.count; ++entry) {
+    const std::uint32_t touching_place = touching.cells[entry].value;
+    if (touching_place == cell_low.value || touching_place == cell_high.value) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Computes the weight a particle gives one face, seen from the face: the same scaled weight, offsets and weight change
 // the particle's own list gives it, bit for bit.
 //
-// Method: the face is a candidate when it is of the axis of `sums` and ComputeIsCandidateFace says so for `position`
-//   and `cell`. A candidate gets what ComputeNearbyFaceWeights gives a kept face: w_f / W and (g_f - weight G) / W,
-//   by the same operations (ComputeScaledFaceWeight), with the cell's width as the list's. Any other face gets nothing.
-//   When the fit of the sums is kNone no face has weight: the weight and the change are 0 and so is offset_from_mean,
-//   and `offset` is still the face's position minus the position.
+// Method: the face is a candidate when the particle's list for the face's axis holds it, which is what
+//   ComputeIsCandidateFace says for `position` and `cell`: a face piece of the cell or of a touching cell, of a size
+//   level within one of the cell's, with its centre in the window (the window test alone is not the rule). A candidate
+//   gets what ComputeNearbyFaceWeights gives a kept face: w_f / W and (g_f - weight G) / W, by the same operations
+//   (ComputeScaledFaceWeight), with the cell's width as the list's. Any other face gets nothing. When no weight at all
+//   is left (`!(sums.weight_sum > 0)`, the fit kNone of the list form) the weight and the change are 0 and so is
+//   offset_from_mean, and `offset` is still the face's position minus the position.
+//   The face cannot see the particle's kept mask. It gives a listed face the weight the face would have had if the
+//   particle had kept it, so the caller asks only about faces its mask keeps (file header, "What the caller of the face
+//   form must guarantee").
 // Units: as FaceWeight; `position` in m, world.
-// Ties: a face exactly 1.5 widths away is a candidate and has weight 0.
+// Ties: a face exactly 1.5 widths away on the high side is a candidate and has weight 0.
 // Example: unit grid (h = 1 m), position {2.5, 2.5, 2.5}, X axis, all 27 faces kept: the face at offset {-0.5, 0, 0}
 //   gets 0.28125, as the list gives it. A face 3 cells away is no candidate: weight 0, every vector 0, face echoed.
-// Requires: `sums` is from ToNearbyFaceSums of weights made for `position`, `cell` and `tables`; `cell` is the active
-//   cell FindCellAt gives for `position`; `face` is a place of block 0..tables.block_count - 1, and the particle kept
-//   it if it is a candidate. The caller, not this function, knows the particle's mask.
+// Requires: `sums` is from ToNearbyFaceSums of the weights of the face's axis (ToAxis(face)), made for exactly
+//   `position`, `cell` and `tables`, from a mask whose rule the caller can also apply to the face alone; `cell` is the
+//   active cell FindCellAt gives for `position`; `face` is a place of block 0..tables.block_count - 1, and the
+//   particle's mask keeps it if it is a candidate. The caller, not this function, knows the particle's mask.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <eq:scaled-weights>
 FLUIDITY_CPU_AND_GPU inline FaceWeight ComputeFaceWeight(
     const GridTables& tables,
@@ -799,7 +838,7 @@ FLUIDITY_CPU_AND_GPU inline FaceWeight ComputeFaceWeight(
     const NearbyFaceSums& sums
 ) noexcept {
   const Vec3 zero_vector = {.x = 0.0, .y = 0.0, .z = 0.0};
-  if (ToAxis(face) != sums.axis || !ComputeIsCandidateFace(tables, face, position, cell)) {
+  if (!ComputeIsCandidateFace(tables, face, position, cell)) {
     return {
         .face = face,
         .weight = 0.0,
@@ -808,7 +847,7 @@ FLUIDITY_CPU_AND_GPU inline FaceWeight ComputeFaceWeight(
         .weight_change = zero_vector,
     };
   }
-  if (sums.fit == NearbyFaceFit::kNone) {
+  if (!(sums.weight_sum > 0.0)) {
     return {
         .face = face,
         .weight = 0.0,
