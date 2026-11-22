@@ -1,0 +1,67 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_39bf6e1f69d93e 200
+  s_4f0877e2acdcf0::t_32440d85601a6d 199
+native/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_253cab6d858f99 405-412
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_c238b7fc60fa1d 55
+native/fluidity/grid/grid_ids_test.cc
+  s_4f0877e2acdcf0::t_44c8b26841749a 401,408-410
+native/fluidity/grid/corners_test.cc
+  s_4f0877e2acdcf0::t_c481093144feab 695-699,702-721,724-727,738-744,746-755,757-769,785-806,825-853,893-897,905-908,911-912,926
+  s_4f0877e2acdcf0::t_6b98ae498ce15f 1-694,700-701
+  s_4f0877e2acdcf0::t_af7678af87ff3e 722-723,728-737,745,756,770-784,807-824,854-892,898-904,914,932
+  s_4f0877e2acdcf0::t_9fa510f47a18c3 909-910
+  s_4f0877e2acdcf0::t_8d7726d50e0120 913
+  s_4f0877e2acdcf0::t_c10042e3ee164a 915-917,923-925
+  s_4f0877e2acdcf0::t_58b819445e6f29 927-931
+  s_4f0877e2acdcf0::t_f2e83a29a5c0c4 933-935
+  s_4f0877e2acdcf0::t_b3e748322af3c9 918-922,936-1238
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_cf47762e733d37 8-12,78,173-178,221
+  s_4f0877e2acdcf0::t_fa27f8fbc7d7a3 13-14
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_4adaa00dd833f3 2047-2052,2132,2134-2137,2139-2142,2160-2173
+  s_4f0877e2acdcf0::t_a02952b22e9845 2053-2055,2143-2159
+  s_4f0877e2acdcf0::t_a0149680237f01 2056
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_43cc5cc29dc0b5 36,1303,1356-1362,1364-1369,1373-1379,1398-1403,1405-1408,1462-1464,1467-1472,1475-1477,1494-1496,1535-1536
+  s_4f0877e2acdcf0::t_3c590953d5f0a1 64-65
+  s_4f0877e2acdcf0::t_55ac7c1f572458 47-48
+  s_4f0877e2acdcf0::t_f9e5dd0eb55206 29-35,37-44
+  s_4f0877e2acdcf0::t_3d43315775d2ee 98-99,696-697,756-757
+  s_4f0877e2acdcf0::t_581eadd1237d4b 46,49
+  s_4f0877e2acdcf0::t_2da533fb58cecc 1610
+  s_4f0877e2acdcf0::t_13673b22cfe83a 1274-1302,1304-1355,1363,1371-1372,1380-1397,1404,1409-1461,1465-1466,1473-1474,1478-1493,1497-1534,1537-1609,1612-1613,1615
+  s_4f0877e2acdcf0::t_7a64f44e57493c 90-94
+  s_4f0877e2acdcf0::t_fb6a9de8a8a111 82-85
+  s_4f0877e2acdcf0::t_42595a232a6443 95-96
+  s_4f0877e2acdcf0::t_f71810c236e298 45
+  s_4f0877e2acdcf0::t_270922596cdfdf 7-8
+  s_4f0877e2acdcf0::t_d8932692f0615f 81
+  s_4f0877e2acdcf0::t_4027b9f2aa8ff8 60-61,103-106
+  s_4f0877e2acdcf0::t_430ce16b584a85 62-63
+  s_4f0877e2acdcf0::t_978f25a972cb48 97
+  s_4f0877e2acdcf0::t_4013c2df20dba4 100-102
+  s_4f0877e2acdcf0::t_344cb0a9a69eeb 1370
+  s_4f0877e2acdcf0::t_1859cbed27d380 1611
+  s_4f0877e2acdcf0::t_0212dd65b9224a 1614
+  s_4f0877e2acdcf0::t_55f7117d703bd3 1616-1618
+  s_4f0877e2acdcf0::t_55302fcf8d2e14 856-857,1619-1630
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0294c89fb4bcada6a0ffd8a53da4cf911e14dfcb",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
