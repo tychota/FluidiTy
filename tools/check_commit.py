@@ -56,7 +56,9 @@ The steps, in order:
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
           build compiles, such as a GPU-only test, is tidied by the cuda step. tools/run_tidy.py runs one clang-tidy
           per file, one per core at once, and does not check a file again while nothing it depends on has changed
-          (the cache is out/tidy-cache/); --no-cache checks every file.
+          (the cache is out/tidy-cache/); --no-cache checks every file. The cache also keeps, after a pass, the list of
+          the file's headers with the size and modification time of each (the stat record of tools/run_tidy.py), so a
+          file whose list is unchanged is a hit without running the compiler to list its headers.
   paper   compile the method paper with typst, and check that every label named on a `Read:` line under src/ and tests/
           (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper.
   cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run

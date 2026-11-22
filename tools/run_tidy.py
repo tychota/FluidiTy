@@ -28,6 +28,23 @@ clang-tidy returned 0, from the same dependency list, and the pass is stored onl
 file edited while clang-tidy read it is never stored under the text that clang-tidy did not see. --no-cache ignores
 the cache and stores nothing. A marker that was not used for 30 days is deleted at the end of a run.
 
+The stat record. Listing the headers means running the compiler's preprocessor on the file, which is most of the time
+of a run in which nothing changed. After a pass the run therefore also stores, for the file, the list of its
+dependencies with what the file system says about everything the key reads: the (size, modification time in
+nanoseconds) of the file, of each listed header, of each `.clang-tidy` file that applies and of the compiler; the
+compile commands and the tidy options and version text; and a fingerprint of the folder layout, which is the sorted
+names in each folder where the compiler looks (every folder under an include folder of the repository, outside its
+out/ folder; the folder alone for any other include folder) and in the folder of each listed header, so a header
+added or removed where it would be found first changes the record. The record is stored only after a pass, only
+when the key before and after clang-tidy are equal and the record taken before and after are equal, and only
+when no listed file was modified in the last STAT_RACY_WINDOW_NS before the record was taken. A later run takes the
+file as passed without running the compiler when all of these are equal to the stored ones and the marker of the
+stored key still exists. Any difference, an unreadable record, or a missing marker makes the run do what it did
+without records: list the headers, compute the key and look for its marker; a touched file whose contents did not
+change is therefore a hit there, and its record is stored again. A record never holds a failure, and it
+cannot make a file pass that no earlier run saw pass with the same key. The assumption is the one of make: a file
+whose contents change keeps neither its size nor its modification time. --no-cache reads and stores no record.
+
 A file whose dependency list cannot be made fails its check (it is never a pass and never checked unseen): the
 compiler fails, prints no dependency, does not list the file itself, or lists a file that does not exist.
 
@@ -49,8 +66,10 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -63,6 +82,14 @@ CACHE_MARKER_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 HEADER_CHECK_FOLDER = "header_check"
 HEADER_ALONE_CHECKS = "--checks=-misc-include-cleaner"
 CLANG_TIDY_CONFIG_NAME = ".clang-tidy"
+# A stored list of what a file depends on (see "The stat record" in the module docstring) is kept in the cache folder
+# under this prefix, next to the markers.
+STAT_RECORD_PREFIX = "stat-"
+# A file whose modification time is this close to the moment its record was taken may still change within the same
+# tick of a coarse clock, so such a record is not stored: the next run takes it, when the file is older.
+STAT_RACY_WINDOW_NS = 2_000_000_000
+# Options of a compile command that name a folder where the compiler looks for headers, and take one argument.
+_INCLUDE_FOLDER_OPTIONS = frozenset({"-I", "-isystem", "-iquote", "-idirafter"})
 # Options of a compile command that name an output or a dependency file, and take one argument.
 _OPTIONS_WITH_ARGUMENT = frozenset({"-o", "-MF", "-MT", "-MQ"})
 # Options of a compile command that choose what the compiler does, which the dependency listing replaces.
@@ -218,6 +245,183 @@ def clang_tidy_version_text() -> str:
     return completed.stdout or ""
 
 
+def file_stamp(path: Path) -> list[int] | None:
+    """The size and the modification time in nanoseconds of `path`, or None when it cannot be read."""
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return [status.st_size, status.st_mtime_ns]
+
+
+def include_folders(compile_command: str, directory: Path) -> list[Path]:
+    """The folders that the compile command names for header lookup (-I, -isystem, -iquote, -idirafter, written with
+    or without a space), as absolute paths, in the order of the command."""
+    folders: list[Path] = []
+    words = iter(shlex.split(compile_command))
+    for word in words:
+        value = None
+        if word in _INCLUDE_FOLDER_OPTIONS:
+            value = next(words, None)
+        else:
+            for option in _INCLUDE_FOLDER_OPTIONS:
+                if word.startswith(option) and len(word) > len(option):
+                    value = word[len(option) :]
+                    break
+        if value:
+            folders.append(Path(directory, value))
+    return folders
+
+
+class FileSystemMemo:
+    """What the file system said during one run, kept so that the many files which share headers do not ask again: the
+    stamp of a file, and the fingerprint of a folder, which is the sorted names in it, alone or with every folder
+    under it. The threads of a run share one. The out/ and .git folders of the repository are never entered: the run
+    itself writes to out/ (the cache, the build), and git writes to .git."""
+
+    def __init__(self, repository: Path) -> None:
+        root = repository.resolve()
+        self.skipped = {root / "out", root / ".git"}
+        self.remembered: dict[tuple[Path, bool], str] = {}
+        self.stamps: dict[str, list[int] | None] = {}
+
+    def stamp(self, path: str) -> list[int] | None:
+        """The (size, modification time in nanoseconds) of `path`, as it was first asked in this run."""
+        if path not in self.stamps:
+            self.stamps[path] = file_stamp(Path(path))
+        return self.stamps[path]
+
+    def fingerprint(self, folder: Path, with_subfolders: bool) -> str:
+        key = (folder, with_subfolders)
+        found = self.remembered.get(key)
+        if found is None:
+            digest = hashlib.sha256()
+            stack = [folder]
+            while stack:
+                current = stack.pop()
+                try:
+                    entries = sorted(os.scandir(current), key=lambda entry: entry.name)
+                except OSError:
+                    digest.update(f"{current}:missing\n".encode("utf-8"))
+                    continue
+                for entry in entries:
+                    is_folder = entry.is_dir()
+                    digest.update(f"{current}/{entry.name}:{'d' if is_folder else 'f'}\n".encode("utf-8"))
+                    if is_folder and with_subfolders and Path(entry.path) not in self.skipped:
+                        stack.append(Path(entry.path))
+            found = digest.hexdigest()
+            self.remembered[key] = found
+        return found
+
+
+def stat_snapshot(
+    source: Path,
+    options: Sequence[str],
+    version_text: str,
+    entries: Sequence[tuple[str, Path]],
+    config_files: Sequence[Path],
+    dependencies: Sequence[Path],
+    repository: Path,
+    memo: FileSystemMemo,
+) -> dict[str, object]:
+    """What the file system says about everything that the key of `source` reads, without reading any contents (see
+    "The stat record" in the module docstring)."""
+    root = repository.resolve()
+    watched_with_subfolders: set[Path] = set()
+    watched_alone: set[str] = {os.path.dirname(os.path.abspath(source))}
+    compilers: dict[str, list[int] | None] = {}
+    for command, directory in entries:
+        words = shlex.split(command)
+        found = shutil.which(words[0]) if words else None
+        compilers[words[0] if words else ""] = memo.stamp(os.path.realpath(found)) if found else None
+        for folder in include_folders(command, directory):
+            resolved = folder.resolve()
+            inside_repository = root in (resolved, *resolved.parents)
+            if inside_repository and "out" not in resolved.relative_to(root).parts[:1]:
+                watched_with_subfolders.add(resolved)
+            else:
+                watched_alone.add(str(resolved))
+    dependency_names = [str(dependency) for dependency in dependencies]
+    watched_alone.update(os.path.dirname(os.path.abspath(name)) for name in dependency_names)
+    tops = [str(top) + os.sep for top in watched_with_subfolders]
+    layout = {str(folder): memo.fingerprint(folder, True) for folder in sorted(watched_with_subfolders)}
+    for folder in sorted(watched_alone):
+        if not any((folder + os.sep).startswith(top) for top in tops):
+            layout[folder] = memo.fingerprint(Path(folder), False)
+    return {
+        "version": version_text,
+        "options": list(options),
+        "commands": [[command, str(directory)] for command, directory in entries],
+        "source": memo.stamp(str(source)),
+        "dependencies": {name: memo.stamp(name) for name in dependency_names},
+        "configs": {str(config): memo.stamp(str(config)) for config in config_files},
+        "compilers": compilers,
+        "layout": layout,
+    }
+
+
+def snapshot_is_racy(snapshot: dict[str, object], taken_ns: int) -> bool:
+    """True when the source or a listed file was modified within STAT_RACY_WINDOW_NS of `taken_ns`, or cannot be
+    read."""
+    dependency_stamps = snapshot["dependencies"].values()  # type: ignore[union-attr]
+    config_stamps = snapshot["configs"].values()  # type: ignore[union-attr]
+    stamps = [snapshot["source"], *dependency_stamps, *config_stamps]
+    return any(stamp is None or stamp[1] > taken_ns - STAT_RACY_WINDOW_NS for stamp in stamps)
+
+
+def stat_record_path(cache_folder: Path, source: Path, options: Sequence[str]) -> Path:
+    identity = "\0".join([str(source.resolve()), *options])
+    return cache_folder / f"{STAT_RECORD_PREFIX}{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+
+def read_stat_record(record_path: Path) -> dict[str, object] | None:
+    """The stored record, or None when there is none or it is not a well-formed one."""
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        if isinstance(record["key"], str) and isinstance(record["snapshot"], dict):
+            return record
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def write_stat_record(record_path: Path, key: str, snapshot: dict[str, object]) -> None:
+    """Stores the record by writing a temporary file and renaming it, so a reader never sees half of one."""
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = record_path.with_name(f"{record_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temporary.write_text(json.dumps({"key": key, "snapshot": snapshot}), encoding="utf-8")
+        os.replace(temporary, record_path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+
+
+def stat_record_hit(
+    cache_folder: Path,
+    record_path: Path,
+    source: Path,
+    options: Sequence[str],
+    version_text: str,
+    entries: Sequence[tuple[str, Path]],
+    config_files: Sequence[Path],
+    repository: Path,
+    memo: FileSystemMemo,
+) -> str | None:
+    """The stored key when the record of `source` says its last pass still holds, that is, when the marker of the key
+    exists and the file system says the same as when the record was taken; otherwise None."""
+    record = read_stat_record(record_path)
+    if record is None or not (cache_folder / str(record["key"])).exists():
+        return None
+    stored = record["snapshot"]
+    listed = stored.get("dependencies")  # type: ignore[union-attr]
+    if not isinstance(listed, dict):
+        return None
+    current = stat_snapshot(
+        source, options, version_text, entries, config_files, [Path(name) for name in listed], repository, memo
+    )
+    return str(record["key"]) if current == stored else None
+
+
 def check_file(
     path: Path,
     build_folder: Path,
@@ -225,6 +429,7 @@ def check_file(
     cache_folder: Path | None,
     version_text: str,
     commands: dict[Path, list[tuple[str, Path]]],
+    memo: FileSystemMemo | None = None,
 ) -> TidyResult:
     """Checks one file with clang-tidy, unless the cache holds a pass for its key, and stores a pass. With the cache
     on, a file whose dependencies cannot be listed fails without running clang-tidy."""
@@ -235,7 +440,31 @@ def check_file(
     compile_commands = [command for command, _ in entries or []]
     config_files = applicable_config_files(path, repository)
     dependencies: list[Path] = []
+    memo = memo if memo is not None else FileSystemMemo(repository)
+    record_path: Path | None = None
+    snapshot: dict[str, object] = {}
+    taken_ns = 0
+
+    def remember_pass() -> None:
+        """Stores the record of this pass, unless a file changed while the check ran or one is too new to trust."""
+        if record_path is None:
+            return
+        fresh_memo = FileSystemMemo(repository)
+        later = stat_snapshot(
+            path, options, version_text, entries or [], config_files, dependencies, repository, fresh_memo
+        )
+        if later == snapshot and not snapshot_is_racy(snapshot, taken_ns):
+            write_stat_record(record_path, key, snapshot)
+
     if cache_folder is not None and entries:
+        record_path = stat_record_path(cache_folder, path, options)
+        stored_key = stat_record_hit(
+            cache_folder, record_path, path, options, version_text, entries, config_files, repository, memo
+        )
+        if stored_key is not None:
+            (cache_folder / stored_key).touch()
+            record_path.touch()
+            return TidyResult(str(path), True, "")
         union: set[Path] = set()
         try:
             for command, directory in entries:
@@ -243,10 +472,13 @@ def check_file(
         except DependencyListError as error:
             return TidyResult(str(path), False, f"cannot list the dependencies of {path}: {error}\n")
         dependencies = sorted(union)
+        taken_ns = time.time_ns()
+        snapshot = stat_snapshot(path, options, version_text, entries, config_files, dependencies, repository, memo)
         key = cache_key(version_text, config_files, options, compile_commands, path, dependencies, repository)
         marker = cache_folder / key
         if marker.exists():
             marker.touch()
+            remember_pass()
             return TidyResult(str(path), True, "")
     completed = subprocess.run(
         ["clang-tidy", "-p", str(build_folder), "--quiet", *options, str(path)],
@@ -263,6 +495,7 @@ def check_file(
         if key_after == key:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
+            remember_pass()
     return TidyResult(str(path), passed, completed.stdout or "")
 
 
@@ -289,10 +522,11 @@ def run_tidy(
     cache and stores nothing."""
     version_text = clang_tidy_version_text()
     commands = read_compile_commands(build_folder)
+    memo = FileSystemMemo(repository)
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         results = list(
             pool.map(
-                lambda path: check_file(path, build_folder, repository, cache_folder, version_text, commands),
+                lambda path: check_file(path, build_folder, repository, cache_folder, version_text, commands, memo),
                 files,
             )
         )

@@ -38,6 +38,8 @@ class FakeRun:
         self.raw_rules = raw_rules or {}
         self.listing_exit_code = listing_exit_code
         self.checked: list[str] = []
+        # The files whose headers the compiler was asked to list.
+        self.listed: list[str] = []
 
     def __call__(self, command, **kwargs):
         if command[:2] == ["clang-tidy", "--version"]:
@@ -45,6 +47,7 @@ class FakeRun:
         if command[0] == COMPILER:
             source = command[command.index("--source") + 1]
             name = Path(source).name
+            self.listed.append(name)
             if self.listing_exit_code != 0:
                 return subprocess.CompletedProcess(command, self.listing_exit_code, stdout="")
             if name in self.raw_rules:
@@ -324,3 +327,218 @@ def test_a_marker_unused_for_a_month_is_deleted_and_a_recent_one_stays(tmp_path)
     run_tidy.prune_cache(tmp_path, now)
     assert not old.exists()
     assert recent.exists()
+
+
+# The stat record: a file that passed is taken as passed without listing its headers -------------------------
+
+OLD_NS = 1_000_000_000 * 10**9
+
+
+def age_files(repo: Path) -> None:
+    """Gives every file of the repository, but the cache, a modification time long before now: the stat record is not
+    stored for a file modified in the last seconds."""
+    for path in repo.rglob("*"):
+        if path.is_file() and "tidy-cache" not in path.parts:
+            os.utime(path, ns=(OLD_NS, OLD_NS))
+
+
+def touch_to(path: Path, seconds_after_old: int) -> None:
+    """Sets a modification time that differs from the aged one and is still old."""
+    os.utime(path, ns=(OLD_NS + seconds_after_old * 10**9, OLD_NS + seconds_after_old * 10**9))
+
+
+def records(repo: Path) -> list[Path]:
+    return sorted((repo / "out" / "tidy-cache").glob(f"{run_tidy.STAT_RECORD_PREFIX}*"))
+
+
+@pytest.fixture
+def stored(monkeypatch, repo):
+    """A repository where every file passed twice: the first run stored the passes, the second one, with aged files,
+    stored the stat records. The shared header is listed by a and b."""
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
+    age_files(repo)
+    run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
+    assert len(records(repo)) == 3
+    return repo
+
+
+def test_a_file_that_passed_is_a_hit_without_listing_its_headers(monkeypatch, stored):
+    third = FakeRun(stored, dependencies_of(stored))
+    results = run(monkeypatch, stored, third)
+    assert third.listed == []
+    assert third.checked == []
+    assert all(result.passed for result in results)
+
+
+def test_a_record_is_not_stored_for_files_modified_a_moment_ago(monkeypatch, repo):
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
+    run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
+    assert records(repo) == []
+    third = FakeRun(repo, dependencies_of(repo))
+    run(monkeypatch, repo, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_changed_header_misses_the_record_and_its_includers_are_checked(monkeypatch, stored):
+    (stored / "src" / "fluidity" / "shared.h").write_text("// shared, changed\n", encoding="utf-8")
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.checked) == ["a.cc", "b.cc"]
+    assert "c.cc" not in third.listed or third.checked != ["c.cc"]
+
+
+def test_a_changed_header_of_the_same_size_and_a_later_time_is_a_miss(monkeypatch, stored):
+    shared = stored / "src" / "fluidity" / "shared.h"
+    shared.write_text("// sharee\n", encoding="utf-8")
+    assert shared.stat().st_size == len("// shared\n")
+    touch_to(shared, 5)
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.checked) == ["a.cc", "b.cc"]
+
+
+def test_a_touched_but_identical_header_is_listed_again_and_still_a_pass_and_is_recorded_again(monkeypatch, stored):
+    touch_to(stored / "src" / "fluidity" / "shared.h", 7)
+    third = FakeRun(stored, dependencies_of(stored))
+    results = run(monkeypatch, stored, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc"]
+    assert third.checked == []
+    assert all(result.passed for result in results)
+    age_files(stored)
+    run(monkeypatch, stored, FakeRun(stored, dependencies_of(stored)))
+    fifth = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, fifth)
+    assert fifth.listed == []
+
+
+def test_a_changed_source_file_misses_the_record(monkeypatch, stored):
+    (stored / "src" / "fluidity" / "c.cc").write_text("// edited\n", encoding="utf-8")
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert third.checked == ["c.cc"]
+    assert third.listed == ["c.cc"]
+
+
+def test_a_changed_compile_flag_misses_the_record(monkeypatch, stored):
+    build = stored / "out" / "build" / "debug"
+    entries = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
+    entries[0]["command"] += " -DOTHER_FLAG"
+    (build / "compile_commands.json").write_text(json.dumps(entries), encoding="utf-8")
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert third.checked == ["a.cc"]
+    assert third.listed == ["a.cc"]
+
+
+def test_a_changed_config_file_of_the_same_size_misses_the_record(monkeypatch, stored):
+    config = stored / ".clang-tidy"
+    config.write_text("Checks: '-*,bugprone-?'\n", encoding="utf-8")
+    assert config.stat().st_size == len("Checks: '-*,bugprone-*'\n")
+    touch_to(config, 9)
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.checked) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_new_config_file_in_a_folder_of_the_source_misses_the_record(monkeypatch, stored):
+    (stored / "src" / "fluidity" / ".clang-tidy").write_text("Checks: '-*'\n", encoding="utf-8")
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.checked) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_header_added_where_the_compiler_looks_misses_the_record(monkeypatch, stored):
+    (stored / "src" / "fluidity" / "new_header.h").write_text("// new\n", encoding="utf-8")
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+    assert third.checked == []
+
+
+def test_a_header_removed_where_the_compiler_looks_misses_the_record(monkeypatch, stored):
+    (stored / "src" / "fluidity" / "unused.h").write_text("// unused\n", encoding="utf-8")
+    age_files(stored)
+    run(monkeypatch, stored, FakeRun(stored, dependencies_of(stored)))
+    run(monkeypatch, stored, FakeRun(stored, dependencies_of(stored)))
+    (stored / "src" / "fluidity" / "unused.h").unlink()
+    after = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, after)
+    assert sorted(after.listed) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_new_clang_tidy_version_misses_the_record(monkeypatch, stored):
+    monkeypatch.setattr(run_tidy, "clang_tidy_version_text", lambda: "LLVM version 99\n")
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.checked) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_record_does_not_pass_a_file_whose_marker_is_gone(monkeypatch, stored):
+    for marker in (stored / "out" / "tidy-cache").iterdir():
+        if not marker.name.startswith(run_tidy.STAT_RECORD_PREFIX):
+            marker.unlink()
+    third = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, third)
+    assert sorted(third.checked) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_an_unreadable_record_is_ignored(monkeypatch, stored):
+    for record in records(stored):
+        record.write_text("not json", encoding="utf-8")
+    third = FakeRun(stored, dependencies_of(stored))
+    results = run(monkeypatch, stored, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+    assert third.checked == []
+    assert all(result.passed for result in results)
+
+
+def test_a_failure_gets_no_record_and_is_checked_on_every_run(monkeypatch, repo):
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    age_files(repo)
+    for _ in range(2):
+        fake = FakeRun(repo, dependencies_of(repo), failing=["b.cc"])
+        results = run(monkeypatch, repo, fake)
+        assert [result.passed for result in results] == [True, False, True]
+    assert len(records(repo)) == 2
+    third = FakeRun(repo, dependencies_of(repo), failing=["b.cc"])
+    run(monkeypatch, repo, third)
+    assert third.checked == ["b.cc"]
+
+
+def test_a_file_that_changes_while_clang_tidy_reads_it_gets_no_record(monkeypatch, repo):
+    shared = repo / "src" / "fluidity" / "shared.h"
+    shared.write_text("// shared\n", encoding="utf-8")
+    age_files(repo)
+
+    def change_time(name):
+        if name == "a.cc":
+            touch_to(shared, 3)
+
+    run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo), on_tidy=change_time))
+    source = repo / "src" / "fluidity" / "a.cc"
+    assert not run_tidy.stat_record_path(repo / "out" / "tidy-cache", source, []).exists()
+    assert run_tidy.stat_record_path(repo / "out" / "tidy-cache", repo / "src" / "fluidity" / "c.cc", []).exists()
+    third = FakeRun(repo, dependencies_of(repo))
+    run(monkeypatch, repo, third)
+    assert "a.cc" in third.listed
+
+
+def test_no_cache_reads_and_stores_no_record(monkeypatch, stored):
+    before = {record: record.read_text(encoding="utf-8") for record in records(stored)}
+    fake = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, fake, no_cache=True)
+    assert sorted(fake.checked) == ["a.cc", "b.cc", "c.cc"]
+    assert fake.listed == []
+    assert {record: record.read_text(encoding="utf-8") for record in records(stored)} == before
+
+
+def test_a_record_that_nothing_used_for_a_month_is_deleted(tmp_path):
+    cache = tmp_path / "tidy-cache"
+    cache.mkdir()
+    old = cache / f"{run_tidy.STAT_RECORD_PREFIX}abc"
+    old.write_text("{}", encoding="utf-8")
+    os.utime(old, (1000, 1000))
+    run_tidy.prune_cache(cache, now=1000 + run_tidy.CACHE_MARKER_MAX_AGE_SECONDS + 1)
+    assert not old.exists()

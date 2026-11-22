@@ -555,7 +555,11 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     tidied by the `cuda` step. `tools/run_tidy.py` runs one clang-tidy per file, one per core at once, and prints
     the failures sorted by path. A file that passed is not checked again while nothing it depends on has changed
     (its text, the headers it includes, its compile command, the `.clang-tidy` files, the clang-tidy version); the
-    cache is `out/tidy-cache/`, and `--no-cache` ignores it and stores nothing.
+    cache is `out/tidy-cache/`, and `--no-cache` ignores it and stores nothing. After a pass the cache also keeps the
+    list of the file's headers with the size and modification time of each, of the file, of the `.clang-tidy` files and
+    of the compiler, and the names in the folders where headers are looked for. While all of these are unchanged the
+    file counts as passed without running the compiler to list its headers. Any difference, or a file modified in the
+    last two seconds, falls back to the contents key above.
   - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `src/` and `tests/`,
     including its continuation lines, is defined in the paper. A label starts with its kind: `<sec-...>`,
     `<fig-...>`, `<proc-...>`, `<eq-...>` or `<tab-...>` (`:` may replace `-`); other text in angle brackets, such as
