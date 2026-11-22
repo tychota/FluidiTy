@@ -27,6 +27,30 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  border_blocks_in_grid_pieces_functional_test
+  SOURCES
+  border_blocks_in_grid_pieces.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  cell_block_ranges_on_random_grids_functional_test
+  SOURCES
+  cell_block_ranges_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   cell_corners_on_random_grids_functional_test
   SOURCES
   cell_corners_on_random_grids.test.cc
@@ -91,6 +115,19 @@ fluidity_add_test(
   cell_surroundings_on_gpu_functional_test
   SOURCES
   cell_surroundings.gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  border_blocks_on_gpu_functional_test
+  SOURCES
+  border_blocks.gpu.test.cc
   LABEL
   gpu
   TIER

@@ -2119,16 +2119,61 @@ memory: they take the bound part only.
 
 *Ranges and border.* A stage works on a range: a run of consecutive blocks in the fixed order (`CellBlockRange`). It
 writes only values kept in blocks of the range, and it may read values of the range and of its border blocks. Since
-every face piece is kept in exactly one block, every value has one writer. The border of a set of blocks, at the width
-`kTouchingCells`, is every block outside the set that holds an active cell touching a cell of the set, or holds a face
-piece of such a cell. The second part matters: a face piece is kept with its smaller cell, and plane 4 of a block moves
-to plane 0 of its high neighbour, so a nearby face of a cell touching the range can lie one block beyond that cell. The
-width `kFourCellWidths` adds every block a face search of four cell widths (@sec-face-search) reads from a face piece of
-the set. A pass that runs several stages on one load needs stacked borders: the border of its last stage around the
-range, then the border of the stage before around the range plus that border, and so on. In a run in one piece the range
-is every block and the border is empty. A sum over the grid that is not a sum per destination is one partial sum per
-block, kept in the fixed block order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut
-into ranges.
+every face piece is kept in exactly one block, every value has one writer. A run in batches loads only the range and its
+border into a grid piece, where every neighbour entry naming a block not loaded reads as none. The border is defined by
+that piece: the border of a set of blocks at a width is the smallest set of blocks outside it such that every reader of
+that width, run from any place kept in the set (an active cell, a face piece or a corner place) on the tables of a piece
+holding exactly the set and its border, gives the answer it gives on the whole grid. So the border holds every block a
+reader reads, on the way or as a result, not only the blocks of the places it returns.
+
+At the width `kTouchingCells` a stage may call, from an active cell of the set, `FindTouchingCells`, `FindFacePieces`
+of the cell and of each cell touching it, `FindCornerPlaces`, `FindCellsAroundEdge`, `FindCellAt` for a position in
+the cell's closed box, and `FindNearbyFaces` for a position that `FindCellAt` gives to the cell (a cell owns its low
+sides, so a position on its high side belongs to the cell beyond, whose nearby faces may lie one step further); from
+a face piece, its two cells (`FindCellLow`, `FindCellHigh`), its corners, and, for `ParticlesToGrid`, which adds
+into each face piece from the particles of the cells that can list it, the cells of `FindCellsNearFace` at most one
+size level bigger than the face piece: a cell two size levels bigger never lists it, since `FindNearbyFaces` keeps
+face pieces within one size level of the particle's cell; from a corner place, its position. The width
+`kFourCellWidths` adds, from a face piece, every cell near it (@sec-face-search) and every block that
+`BuildFaceSearch` lists for it. That list depends on the block of the start and not on which of its face pieces is
+the start, and `FindNextFace` reads only the blocks of the list, so a radius below 4 reads fewer blocks and is
+covered. A stage calls these readers from places kept in the set only, never a lookup by id; from a border place it
+needs a stacked layer.
+
+Three examples show what a border of returned places alone would miss. A face piece between a small cell and a
+bigger cell is kept at the small cell's size level, at plane 0 of the block above when the small cell sits at local 3
+of the block below (@sec-face-pieces): a stage that writes the face piece and reads its two cells reads the block
+below, which may hold no cell touching a cell of the set. A corner is kept at the smallest size level whose lattice
+holds the point: a stage that writes a cell's value and reads its corners reads the block that keeps them, which may
+hold no cell touching that cell. And the readers walk through bigger blocks: `FindCellAt` walks down from the
+size-level-0 block through every bigger block of the cell it finds; `FindCellLow`, `FindCellHigh` and
+`FindTouchingCells` reach a bigger cell through the bigger block of their own block; `FindTouchingCells` and
+`FindFacePieces` reach small cells through the block that holds the split place, and `FindFacePieces` of a cell
+touching the set reads the block of the small cells across its split side even when the face pieces it lists are kept
+in the next block. With 2 size levels and the size-level-0 cells of coordinates 0 to 3 on each axis, all active but
+those of coordinates 0 to 2, which are split, every place a reader returns from the size-level-1 block $(0, 0, 0)$ is
+kept at size level 1, yet `FindCellAt` finds no cell in a piece without the size-level-0 block. So the border holds
+every bigger block, up to size level 0, of each block of the set and of each block read. A few of them lie on no
+walk; the rule takes them rather than tell, reader by reader, which bigger blocks a walk passes.
+
+Each block can be asked from its own side (`ComputeIsBorderBlock`), through the grid's neighbour tables and the
+readers themselves: whether one of its active cells, face pieces or corner places is read from a place of the set, or
+whether a block under it is in the set or read. Each relation is reversed exactly. Touching is symmetric; a face piece
+is on a side of exactly its two cells, so `FindFacePieces` of a cell is the reverse of `FindCellLow` and
+`FindCellHigh`; a corner of a cell of size level $l$ is kept at size level $l$, $l + 1$ or $l + 2$, so the cells that
+can have a corner kept in a block of size level $m$ are the 307 places of size levels $m - 2$ to $m$ whose boxes meet
+the block's, and `FindCornerPlaces` run forward on those that the set reads says which corners land in the block. The
+face search is reversed through its three position rules: for a block $X$ of the same size level as the start's block
+$S$, $S$ is one of the 27 positions around $X$; for $X$ one size level bigger, $S$ lies under one of them; for $X$ one
+size level smaller, $S$ is one of the 27 positions around the bigger block of $X$. A first look at the blocks around
+$X$, at most two size levels away, skips the blocks that no reader of the set reads directly. The same set comes
+forward, one place at a time (`ApplyCellPlaceReadMarks`, `ApplyFacePlaceReadMarks`): each place of the set runs its
+readers and marks every block they read, with its bigger blocks; marks are only ever set to 1, so places marked at
+once cannot conflict, and the marked blocks outside the set, in index order, are the border. A pass that runs several
+stages on one load needs stacked borders: the border of its last stage around the range, then the border of the stage
+before around the range plus that border, and so on. In a run in one piece the range is every block and the border is
+empty. A sum over the grid that is not a sum per destination is one partial sum per block, kept in the fixed block
+order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut into ranges.
 
 *Grid pieces.* A grid piece (`GridPiece`) is one range of a whole grid with its border, built as a grid of its own for
 a run in batches. It lists its blocks in the whole grid's fixed order, never the range first. The border blocks lie

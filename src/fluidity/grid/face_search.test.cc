@@ -474,5 +474,47 @@ TEST(FindNextFace, SearchOfOtherTables_ReadsOnlyTheseTables) {
   EXPECT_TRUE(std::ranges::all_of(given_faces, is_face_piece_of_fixture));
 }
 
+// The block list of BuildFaceSearch from `face` at the largest radius, in its own order.
+std::vector<std::uint32_t> FindSearchBlocks(const GridTables& tables, FacePlaceIndex face) {
+  const FaceSearch search = BuildFaceSearch(tables, face, kMaxFaceSearchRadius);
+  std::vector<std::uint32_t> search_blocks;
+  search_blocks.reserve(static_cast<std::size_t>(search.block_count));
+  for (int entry = 0; entry < search.block_count; ++entry) {
+    search_blocks.push_back(search.blocks[entry].value);
+  }
+  return search_blocks;
+}
+
+// Checks that every face piece of `block` gives the block list of its first face piece, and that it has more than one.
+void CheckFacePiecesOfBlockGiveSameBlocks(const GridTables& tables, std::uint32_t block) {
+  std::vector<std::uint32_t> first_blocks;
+  int face_piece_count = 0;
+  for (std::uint32_t place_in_block = 0; place_in_block < kFacePlacesPerBlock; ++place_in_block) {
+    const FacePlaceIndex face = {.value = (block * kFacePlacesPerBlock) + place_in_block};
+    if (tables.face_piece_kinds[face.value] == FacePieceKind::kNotAPiece) {
+      continue;
+    }
+    const std::vector<std::uint32_t> search_blocks = FindSearchBlocks(tables, face);
+    if (face_piece_count == 0) {
+      first_blocks = search_blocks;
+    }
+    EXPECT_EQ(search_blocks, first_blocks) << "block " << block << ", face place " << face.value;
+    ++face_piece_count;
+  }
+  EXPECT_GT(face_piece_count, 1) << "block " << block;
+}
+
+// The block list depends on the start's block alone: every face piece of a block, of any axis, gives the list of the
+// block's first face piece. The border of a set (border_block_steps.h) asks one face piece of each block for all.
+TEST(BuildFaceSearch, EveryFacePieceOfOneBlock_GivesTheSameBlocks) {
+  const std::vector<CellId> cells = BuildTwoSizeFixtureCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(2), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    CheckFacePiecesOfBlockGiveSameBlocks(tables, block);
+  }
+}
+
 }  // namespace
 }  // namespace fluidity::grid

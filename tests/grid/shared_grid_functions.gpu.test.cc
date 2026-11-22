@@ -248,7 +248,7 @@ TEST(ComputeFacePlaceFacts, OnGpu_SameBitsAsCpu) {
 TEST(GridRunners, OnGpu_FunctionsLoadWithTheirBlockSize) {
   std::vector<RunnerFunctionInfo> functions;
   ASSERT_EQ(ReadRunnerFunctionInfo(&functions), RunOnCallStatus::kDone) << ReadLastRunnerFailure();
-  EXPECT_EQ(functions.size(), 14U);
+  EXPECT_EQ(functions.size(), 16U);
   for (const RunnerFunctionInfo& function : functions) {
     SCOPED_TRACE(function.name);
     EXPECT_GE(function.most_threads_per_block, static_cast<int>(kThreadBlockSize));

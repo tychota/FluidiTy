@@ -1,4 +1,6 @@
 fluidity_add_headers(
+  border_block_steps.h
+  cell_block_range.h
   cell_corners.h
   cell_size_rule.h
   face_search.h
@@ -21,7 +23,7 @@ fluidity_add_headers(
 )
 
 target_sources(
-  fluidity PRIVATE grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_values_cpu.cc staggered_grid_cpu.cc
+  fluidity PRIVATE cell_block_range_cpu.cc grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_values_cpu.cc staggered_grid_cpu.cc
 )
 fluidity_add_gpu_sources(staggered_grid_gpu.cu)
 # ptxas prints the stack frame and the spills of each GPU function for each architecture, so every compile of the file
@@ -35,6 +37,7 @@ set_source_files_properties(staggered_grid_gpu.cu TARGET_DIRECTORY fluidity PROP
 fluidity_add_test_library(
   fluidity_grid_testing
   SOURCES
+  testing/grid_piece_support.cc
   testing/grid_support.cc
   GPU_SOURCES
   testing/cell_size_rule_runner_gpu.cu
@@ -63,6 +66,18 @@ if(NOT MSVC)
   )
 endif()
 
+fluidity_add_test(border_block_steps_test SOURCES border_block_steps.test.cc LABEL cpu LINKS fluidity_grid_testing)
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  cell_block_range_test
+  SOURCES
+  cell_block_range.test.cc
+  testing/allocation_counter.cc
+  LABEL
+  cpu
+  LINKS
+  fluidity_grid_testing
+)
 fluidity_add_test(cell_size_factor_test SOURCES cell_size_rule.factor.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(cell_size_rule_test SOURCES cell_size_rule.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(corners_test SOURCES cell_corners.test.cc LABEL cpu LINKS fluidity_grid_testing)

@@ -313,6 +313,17 @@ inline void ApplyWordsOf(const CellPlaceFacts& facts, ResultWords& words) {
   words.Add("place_of_id", facts.place_of_id.value);
 }
 
+inline void ApplyWordsOf(const BorderBlockResult& result, ResultWords& words) {
+  words.Add("is_border", result.is_border);
+}
+
+inline void ApplyWordsOf(const ReadMarksResult& result, ResultWords& words) {
+  int block = 0;
+  for (const std::uint8_t mark : result.marks) {
+    words.Add("marks[" + std::to_string(block++) + "]", mark);
+  }
+}
+
 inline void ApplyWordsOf(const FacePlaceFacts& facts, ResultWords& words) {
   words.AddDouble("center_distance", facts.center_distance);
   words.Add("id", facts.id.value);

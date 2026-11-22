@@ -157,7 +157,7 @@ bits: places, counts and every double (the weights and face weights included, si
 `sqrt` and `floor` and the build forbids fused multiply-add). The programs are `build_grid_on_gpu_functional_test`,
 `cell_size_rule_on_gpu_functional_test`, `find_cell_at_on_gpu_functional_test`,
 `nearby_face_weights_on_gpu_functional_test`, `cell_surroundings_on_gpu_functional_test` and
-`shared_grid_functions_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
+`shared_grid_functions_on_gpu_functional_test` and `border_blocks_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
 `fluidity_grid_testing`. What to look at first, in this order:
 
 1. **Does it build on Windows?** The runners start a GPU function that takes a function pointer as a template argument,
@@ -182,6 +182,15 @@ bits: places, counts and every double (the weights and face weights included, si
    `--fmad=false` reached `nvcc`, and that MSVC was not given `/arch:AVX2` with `/fp:contract`. With those flags the
    bits must be equal. A difference in a place, a count or a mask is a table difference: compare with
    `build_grid_on_gpu_functional_test` first, since a wrong GPU table shows there before it shows here.
+
+Two things about `border_blocks_on_gpu_functional_test` (`ComputeIsBorderBlock` on every block of 5 random grids, 3 block
+sets each, both widths). Its GPU function (`ComputeBorderBlockResultsOnGpu`) has the biggest stack frame of the runners
+after the weights runner: 3,664 bytes per thread and 255 registers on `sm_86` and `sm_89`, 2,680 bytes and 255 registers
+on `sm_120` (`cuobjdump --dump-resource-usage`, no local memory beyond the stack). That is above the driver's default
+1,024 bytes; the driver grows the stack at the first launch, as for the weights runner. The test may be slow on the GPU:
+a block next to the set can cost up to about 2 million table reads (the `Work:` of `ComputeIsBorderBlock`), one thread
+does all of them, and the threads of a warp that meet different blocks wait for the slowest. If `cudaErrorLaunchTimeout`
+appears, run the card without a display attached.
 
 To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
 programs of the `linux-release-cuda` build:

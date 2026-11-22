@@ -36,16 +36,18 @@
 //          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers, kMutatedGridCount,
 //          BuildMutatedGridCells,
 //          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings, BuildLoneCellsAlongX, BuildSmallCellsOfEightBigCells,
-//          BuildTwoSizeFixtureCells, ComputeHasNoIndexPastCount
+//          BuildTwoSizeFixtureCells, ComputeHasNoIndexPastCount, GeometricReadBlocks, BuildGeometricReadBlocks,
+//          FindDirectReadsGeometrically, FindBorderGeometrically
 // Uses:    Axis (base/axis.h), Buffer (base/buffer.h), RunMemory (base/run_memory.h), Vec3 (base/vec3.h), GridFailure
 //          (grid/grid_error.h), CellId, CellCoord, SizeLevel, FacePieceId (grid/grid_ids.h), GridFrame
 //          (grid/grid_tables.h), GridSettings, GridInputs, GridBuilderBuffers, StaggeredGrid (grid/staggered_grid.h),
-//          CPU-only guard (base/cpu_only.h)
+//          BorderWidth (grid/border_block_steps.h), CPU-only guard (base/cpu_only.h)
 // Implementation uses: ToCellId, ToCellCoord, ToSizeLevel, ToFacePieceId, ComputeSmallCell,
 //          ComputeIsCoordInRange (grid/grid_ids.h), BuildRunMemory, BuildBuffer, WriteBuffer, ComputeRunMemoryBytes,
 //          ComputeRunMemoryPieceBytes (base/), BuildGridMemoryEstimate, ToMemoryCounts (grid/grid_memory_estimate.h),
 //          ToGridFailure (grid/grid_buffers_internal.h), BuildGridBuilderBuffers, BuildGridBuffers, BuildGrid,
-//          ComputeGridCounts (grid/staggered_grid.h), GoogleTest (ADD_FAILURE)
+//          ComputeGridCounts (grid/staggered_grid.h), FindCellPlace, FindFacePlace (grid/grid_tables.h), GoogleTest
+//          (ADD_FAILURE, EXPECT_NE)
 // Used by: the tests of grid/ (the library fluidity_grid_testing), never the library itself
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-face-pieces>,
 //          <sec-cell-blocks>, <sec-nearby-faces>
@@ -62,6 +64,8 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <set>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -69,6 +73,7 @@
 #include "fluidity/base/buffer.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -229,6 +234,9 @@ class GeometricGrid {
   // Keeps the frame and the list, and finds every face piece.
   GeometricGrid(GridFrame frame, std::vector<CellId> active_cells);
 
+  // The active cells, as the list the checker was made from.
+  [[nodiscard]] const std::vector<CellId>& ActiveCells() const;
+
   // Every face piece, each once, ordered by axis, then by centre in z, then y, then x.
   //
   // Method: for each axis and each active cell, looks at every cell whose low side lies on the cell's high plane and
@@ -301,6 +309,66 @@ class GeometricGrid {
   std::vector<UnitBox> active_boxes_;  // One per entry of active_cells_.
   std::vector<GeometricFacePiece> face_pieces_;  // Found once, by the constructor.
 };
+
+// The blocks that the readers of each border width read from the places kept in each block of a grid, found from the
+// geometry of its active cells, for tests. A block's own index is in its entry.
+struct GeometricReadBlocks {
+  // [block]: the blocks read at kTouchingCells from the active cells, face pieces and corner places kept in the block.
+  std::vector<std::set<std::uint32_t>> touching_cells;
+  // [block]: the blocks read at kFourCellWidths from them, those of touching_cells included.
+  std::vector<std::set<std::uint32_t>> four_cell_widths;
+  // [block]: its bigger block, found by its id; kNoIndex at size level 0. The blocks above are read directly; the
+  // bigger blocks that the readers walk through come from this table, in FindBorderGeometrically.
+  std::vector<std::uint32_t> bigger_block;
+};
+
+// Finds, from the geometry, the blocks each block's places are read through, by the border's definition run forward.
+//
+// Method: the places come from `geometry` alone, and the tables are asked only where each is kept: FindCellPlace for
+//   a cell, FindFacePlace for a face piece, and the list of block ids for a corner. From each active cell c,
+//   kTouchingCells reads c, the cells touching c (GeometricGrid::TouchingCells), the face pieces of c and of each
+//   touching cell (the pieces whose cell_low or cell_high is that cell), the two cells of each such face piece that
+//   is one size level smaller than the cell it belongs to (the small cell across a split side), and the 8 corners of
+//   c. From each face piece f it reads f's two cells, its 4 corners, and the cells touching either of f's cells at
+//   most one size level bigger than f (transfer). A corner place reads its own block only. kFourCellWidths adds, from
+//   each face piece f, the other cells touching its cells and the blocks a face search lists for it. Every block
+//   reads itself. The bigger block of each block comes from coordinate arithmetic on the block id and the map of
+//   block ids, not from the tables' bigger_block.
+//   A corner is kept by the rule of method paper <sec-cell-blocks> read directly: among every block of the grid whose
+//   box holds the point, sides included, one of the largest size level, and among those the last by z, then y, then
+//   x. Every size level is tried, from the frame's last, with no bound on how far from the cell's own.
+//   The face search part restates the position rule of BuildFaceSearch by coordinate arithmetic on the id of every
+//   block of the grid, with no neighbour table: it shares the rule, not the code, and the reader test is the evidence
+//   that the search reads nothing else.
+//   Each list of touching cells is found once per cell; GeometricGrid::TouchingCells looks at every active cell, so
+//   the whole call looks at every pair of active cells.
+// Example: one size level, cells {3,3,0}, {4,3,0} and {6,6,0} in the blocks 0, 1 and 2: block 0 reads {0, 1, 2} at
+//   kTouchingCells, and so does block 2: the cell_low of its face piece is {4,3,0}, which {3,3,0} touches.
+// Requires: `tables` are those of a CPU grid built from the cells of `geometry`. A cell, face piece or corner the
+//   tables do not find fails the calling test.
+GeometricReadBlocks BuildGeometricReadBlocks(const GeometricGrid& geometry, const GridTables& tables);
+
+// Finds the blocks outside a set that a block of the set reads directly at `width`: the places its readers return or
+// list, and the blocks of small cells they go through, before any bigger block is added; in ascending index.
+// Example: with 2 size levels, the size-level-0 cells {0..3}^3 all active but {0..2}^3, which are split, the
+//   size-level-1 block (0,0,0) reads only size-level-1 blocks directly.
+// Requires: `blocks` is below the number of entries of `read_blocks`.
+std::vector<CellBlockIndex> FindDirectReadsGeometrically(
+    const GeometricReadBlocks& read_blocks,
+    std::span<const CellBlockIndex> blocks,
+    BorderWidth width
+);
+
+// Finds the border of a set of blocks from the blocks each block reads: every block that a block of the set reads at
+// `width` directly (FindDirectReadsGeometrically), and every bigger block, up to size level 0, of a block of the set
+// or of a block read directly, outside the set, in ascending index, each once.
+// Example: with the blocks read in the example above, the set {0} gives {1, 2} at kTouchingCells and {2} gives {0, 1}.
+// Requires: `blocks` is below the number of entries of `read_blocks`.
+std::vector<CellBlockIndex> FindBorderGeometrically(
+    const GeometricReadBlocks& read_blocks,
+    std::span<const CellBlockIndex> blocks,
+    BorderWidth width
+);
 
 // A grid with its own memory, for tests. run_memory is declared first, so it is destroyed last, after the buffers that
 // are memory pieces of it. The builder buffers are held by pointer so that moving a TestGrid never moves the lent

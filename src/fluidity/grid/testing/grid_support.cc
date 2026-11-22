@@ -8,12 +8,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <memory>
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +28,7 @@
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
@@ -939,6 +942,10 @@ GeometricGrid::GeometricGrid(GridFrame frame, std::vector<CellId> active_cells)
       face_pieces_(BuildFacePieces(frame_, active_cells_, active_boxes_)) {
 }
 
+const std::vector<CellId>& GeometricGrid::ActiveCells() const {
+  return active_cells_;
+}
+
 const std::vector<GeometricFacePiece>& GeometricGrid::FacePieces() const {
   return face_pieces_;
 }
@@ -1321,6 +1328,369 @@ const RandomGridsWithCheckers& FindRandomGridsWithCheckers() {
     return grids_with_checkers;
   }();
   return built;
+}
+
+namespace {
+
+// Says whether the block at coordinate `listed` of size level `listed_size_level` is one of the positions a face
+// search reads from the block at coordinate `start` of size level `start_size_level`. Those are the 27 positions of
+// the start's own size level around it, the 27 positions of the next bigger size level around floor(start / 2), and
+// the positions of the next smaller size level whose floor(listed / 2) is within 1 of the start on each axis.
+bool ComputeIsFaceSearchPosition(int start_size_level, CellCoord start, int listed_size_level, CellCoord listed) {
+  const auto is_within_one = [](CellCoord first, CellCoord second) {
+    return std::abs(first.x - second.x) <= 1 && std::abs(first.y - second.y) <= 1 && std::abs(first.z - second.z) <= 1;
+  };
+  const auto to_half = [](CellCoord coord) {
+    return CellCoord{
+        .x = ComputeBiggerCellCoord(coord.x, 1),
+        .y = ComputeBiggerCellCoord(coord.y, 1),
+        .z = ComputeBiggerCellCoord(coord.z, 1),
+    };
+  };
+  if (listed_size_level == start_size_level) {
+    return is_within_one(start, listed);
+  }
+  if (listed_size_level == start_size_level - 1) {
+    return is_within_one(to_half(start), listed);
+  }
+  return listed_size_level == start_size_level + 1 && is_within_one(start, to_half(listed));
+}
+
+// The width of a cell of `size_level` in whole units of the last size level: 2^(size_level_count - 1 - size_level).
+std::int64_t ComputeUnitsPerCell(int size_level_count, int size_level) {
+  return static_cast<std::int64_t>(std::uint64_t{1} << static_cast<unsigned>(size_level_count - 1 - size_level));
+}
+
+// Every place of a grid as the geometry sees it, with the block that keeps it, found once for BuildGeometricReadBlocks.
+struct GeometricPlaceBlocks {
+  int size_level_count = 0;
+  std::unordered_map<std::uint64_t, std::uint32_t> block_of_id;  // Block id to block index, from the tables.
+  std::unordered_map<std::uint64_t, std::uint32_t> block_of_cell;  // Active cell id to the block keeping it.
+  std::unordered_map<std::uint64_t, std::vector<CellId>> touching_of_cell;  // GeometricGrid::TouchingCells.
+  std::vector<std::uint32_t> block_of_piece;  // [entry of FacePieces()]: the block keeping the face piece.
+  // Active cell id to the entries of FacePieces() whose cell_low or cell_high is that cell.
+  std::unordered_map<std::uint64_t, std::vector<std::size_t>> pieces_of_cell;
+};
+
+GeometricPlaceBlocks BuildGeometricPlaceBlocks(const GeometricGrid& geometry, const GridTables& tables) {
+  GeometricPlaceBlocks places;
+  places.size_level_count = tables.frame.size_level_count;
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    places.block_of_id.emplace(tables.block_ids[block].value, block);
+  }
+  for (const CellId cell : geometry.ActiveCells()) {
+    const CellPlaceIndex place = FindCellPlace(tables, cell);
+    EXPECT_NE(place.value, kNoIndex) << "no place for the cell " << cell.value;
+    places.block_of_cell.emplace(cell.value, ToCellBlockIndex(place).value);
+    places.touching_of_cell.emplace(cell.value, geometry.TouchingCells(cell));
+  }
+  const std::vector<GeometricFacePiece>& face_pieces = geometry.FacePieces();
+  places.block_of_piece.reserve(face_pieces.size());
+  for (std::size_t piece_number = 0; piece_number < face_pieces.size(); ++piece_number) {
+    const GeometricFacePiece& piece = face_pieces.at(piece_number);
+    const FacePlaceIndex place = FindFacePlace(tables, piece.id);
+    EXPECT_NE(place.value, kNoIndex) << "no place for the face piece " << piece.id.value;
+    places.block_of_piece.push_back(ToCellBlockIndex(place).value);
+    for (const std::optional<CellId>& piece_cell : {piece.cell_low, piece.cell_high}) {
+      if (piece_cell.has_value()) {
+        places.pieces_of_cell[piece_cell->value].push_back(piece_number);
+      }
+    }
+  }
+  return places;
+}
+
+// Finds, among the blocks of `size_level` whose box holds a corner, sides included, the last by z, then y, then x.
+// kNoIndex when none does, or when the point is not a corner of the lattice of that size level.
+std::uint32_t
+FindLastBlockHolding(const GeometricPlaceBlocks& places, std::array<std::int64_t, 3> point, int size_level) {
+  const std::int64_t cell_units = ComputeUnitsPerCell(places.size_level_count, size_level);
+  const std::int64_t block_units = 4 * cell_units;
+  const bool is_on_lattice = std::ranges::all_of(point, [cell_units](std::int64_t coord) {
+    return coord % cell_units == 0;
+  });
+  if (!is_on_lattice) {
+    return kNoIndex;
+  }
+  // On each axis the blocks b with 4 b <= p <= 4 b + 4 in cells: floor(p / 4), and the one below at a multiple of 4.
+  // Trying the higher one first on z, then y, then x makes the first block found the last by z, then y, then x.
+  const auto floor_divide = [](std::int64_t numerator, std::int64_t denominator) {
+    const std::int64_t quotient = numerator / denominator;
+    return (numerator % denominator != 0 && numerator < 0) ? quotient - 1 : quotient;
+  };
+  std::array<std::int64_t, 3> high_block{};
+  std::array<int, 3> step_down_count{};
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    high_block.at(axis) = floor_divide(point.at(axis), block_units);
+    step_down_count.at(axis) = point.at(axis) % block_units == 0 ? 1 : 0;
+  }
+  for (int candidate = 0; candidate < 8; ++candidate) {
+    // The step down on x, y and z; candidates come in the order of the z step, then y, then x, each 0 before 1.
+    const std::array<int, 3> step = {candidate % 2, (candidate / 2) % 2, candidate / 4};
+    const bool is_candidate = step.at(0) <= step_down_count.at(0) && step.at(1) <= step_down_count.at(1)
+        && step.at(2) <= step_down_count.at(2);
+    if (!is_candidate) {
+      continue;
+    }
+    const CellCoord block_low_cell = {
+        .x = static_cast<std::int32_t>(4 * (high_block.at(0) - step.at(0))),
+        .y = static_cast<std::int32_t>(4 * (high_block.at(1) - step.at(1))),
+        .z = static_cast<std::int32_t>(4 * (high_block.at(2) - step.at(2))),
+    };
+    const CellBlockId block_id = ToCellBlockId(ToCellId(static_cast<SizeLevel>(size_level), block_low_cell));
+    const auto found = places.block_of_id.find(block_id.value);
+    if (found != places.block_of_id.end()) {
+      return found->second;
+    }
+  }
+  return kNoIndex;
+}
+
+// Finds the block that keeps a corner, a point in whole units of the last size level, by the rule read directly: of
+// every block whose box holds the point, one of the largest size level, and among those the last by z, then y, then
+// x. Every size level is tried, from the frame's last. A corner no block holds fails the calling test.
+std::uint32_t FindCornerBlockGeometrically(const GeometricPlaceBlocks& places, std::array<std::int64_t, 3> point) {
+  for (int size_level = places.size_level_count - 1; size_level >= 0; --size_level) {
+    const std::uint32_t block = FindLastBlockHolding(places, point, size_level);
+    if (block != kNoIndex) {
+      return block;
+    }
+  }
+  ADD_FAILURE() << "no block for the corner " << point.at(0) << " " << point.at(1) << " " << point.at(2);
+  return kNoIndex;
+}
+
+// Adds to `blocks_read` what kTouchingCells reads from the active cell `cell`: the blocks of the cell, of the cells
+// touching it, of the face pieces of each of these, of the small cell across each such face piece that is one size
+// level smaller than the cell it belongs to, and of its 8 corners.
+void ApplyBlocksReadFromCell(
+    const GeometricGrid& geometry,
+    const GeometricPlaceBlocks& places,
+    CellId cell,
+    std::set<std::uint32_t>& blocks_read
+) {
+  std::vector<CellId> cell_and_touching = places.touching_of_cell.at(cell.value);
+  cell_and_touching.push_back(cell);
+  for (const CellId read_cell : cell_and_touching) {
+    blocks_read.insert(places.block_of_cell.at(read_cell.value));
+    const auto pieces = places.pieces_of_cell.find(read_cell.value);
+    if (pieces == places.pieces_of_cell.end()) {
+      continue;
+    }
+    for (const std::size_t piece_number : pieces->second) {
+      blocks_read.insert(places.block_of_piece.at(piece_number));
+      // A face piece smaller than its cell lies on a split side: the side's small cell is read too.
+      const GeometricFacePiece& piece = geometry.FacePieces().at(piece_number);
+      if (piece.size_level == ToSizeLevel(read_cell)) {
+        continue;
+      }
+      for (const std::optional<CellId>& piece_cell : {piece.cell_low, piece.cell_high}) {
+        if (piece_cell.has_value()) {
+          blocks_read.insert(places.block_of_cell.at(piece_cell->value));
+        }
+      }
+    }
+  }
+  const UnitBox box = ToUnitBox(cell, places.size_level_count);
+  for (const std::int64_t corner_z : {box.low.at(2), box.low.at(2) + box.width}) {
+    for (const std::int64_t corner_y : {box.low.at(1), box.low.at(1) + box.width}) {
+      for (const std::int64_t corner_x : {box.low.at(0), box.low.at(0) + box.width}) {
+        blocks_read.insert(FindCornerBlockGeometrically(places, {corner_x, corner_y, corner_z}));
+      }
+    }
+  }
+}
+
+// Adds what is read from the face piece `piece`: its two cells, its 4 corners, and the cells touching either of its
+// cells at most one size level bigger than it, whose particles can list it, at kTouchingCells, to `blocks_read`; the
+// other cells touching either of its cells at kFourCellWidths, to `wide_blocks_read`.
+void ApplyBlocksReadFromFacePiece(
+    const GeometricPlaceBlocks& places,
+    const GeometricFacePiece& piece,
+    std::set<std::uint32_t>& blocks_read,
+    std::set<std::uint32_t>& wide_blocks_read
+) {
+  const int lowest_listing_size_level = static_cast<int>(piece.size_level) - 1;
+  for (const std::optional<CellId>& piece_cell : {piece.cell_low, piece.cell_high}) {
+    if (!piece_cell.has_value()) {
+      continue;
+    }
+    blocks_read.insert(places.block_of_cell.at(piece_cell->value));
+    for (const CellId touching_cell : places.touching_of_cell.at(piece_cell->value)) {
+      const bool can_list_piece = static_cast<int>(ToSizeLevel(touching_cell)) >= lowest_listing_size_level;
+      (can_list_piece ? blocks_read : wide_blocks_read).insert(places.block_of_cell.at(touching_cell.value));
+    }
+  }
+  // The 4 corners: the high cell place's low corner, moved by one cell across each of the two other axes.
+  const std::int64_t cell_units = ComputeUnitsPerCell(places.size_level_count, static_cast<int>(piece.size_level));
+  const std::array<std::int64_t, 3> low_corner = {
+      piece.cell_high_coord.x * cell_units,
+      piece.cell_high_coord.y * cell_units,
+      piece.cell_high_coord.z * cell_units,
+  };
+  const auto axis_index = static_cast<std::size_t>(piece.axis);
+  const std::size_t first_across = axis_index == 0 ? 1 : 0;
+  const std::size_t second_across = axis_index == 2 ? 1 : 2;
+  for (const std::int64_t first_step : {std::int64_t{0}, cell_units}) {
+    for (const std::int64_t second_step : {std::int64_t{0}, cell_units}) {
+      std::array<std::int64_t, 3> corner = low_corner;
+      corner.at(first_across) += first_step;
+      corner.at(second_across) += second_step;
+      blocks_read.insert(FindCornerBlockGeometrically(places, corner));
+    }
+  }
+}
+
+// Adds to `wide_blocks_read` every block of the grid at a position a face search from `start_block` reads.
+void ApplyFaceSearchPositions(
+    const GridTables& tables,
+    std::uint32_t start_block,
+    std::set<std::uint32_t>& wide_blocks_read
+) {
+  const CellId start_id = {.value = tables.block_ids[start_block].value};
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    const CellId listed_id = {.value = tables.block_ids[block].value};
+    const bool is_searched = ComputeIsFaceSearchPosition(
+        static_cast<int>(ToSizeLevel(start_id)),
+        ToCellCoord(start_id),
+        static_cast<int>(ToSizeLevel(listed_id)),
+        ToCellCoord(listed_id)
+    );
+    if (is_searched) {
+      wide_blocks_read.insert(block);
+    }
+  }
+}
+
+// Finds the bigger block of every block by its id: the block of size level l - 1 at half its coordinate, rounded
+// down, looked up in the map of block ids; kNoIndex at size level 0.
+std::vector<std::uint32_t> FindBiggerBlocksByIds(const GridTables& tables, const GeometricPlaceBlocks& places) {
+  std::vector<std::uint32_t> bigger_blocks(tables.block_count, kNoIndex);
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    const CellId block_id = {.value = tables.block_ids[block].value};
+    const int size_level = static_cast<int>(ToSizeLevel(block_id));
+    if (size_level == 0) {
+      continue;
+    }
+    const CellCoord block_coord = ToCellCoord(block_id);
+    // The bigger block's coordinate is floor(b / 2); its low cell is 4 times that, at size level l - 1.
+    const CellCoord bigger_low_cell = {
+        .x = 4 * ComputeBiggerCellCoord(block_coord.x, 1),
+        .y = 4 * ComputeBiggerCellCoord(block_coord.y, 1),
+        .z = 4 * ComputeBiggerCellCoord(block_coord.z, 1),
+    };
+    const CellBlockId bigger_id = ToCellBlockId(ToCellId(static_cast<SizeLevel>(size_level - 1), bigger_low_cell));
+    const auto found = places.block_of_id.find(bigger_id.value);
+    if (found == places.block_of_id.end()) {
+      ADD_FAILURE() << "no bigger block for the block " << block;
+      continue;
+    }
+    bigger_blocks.at(block) = found->second;
+  }
+  return bigger_blocks;
+}
+
+}  // namespace
+
+GeometricReadBlocks BuildGeometricReadBlocks(const GeometricGrid& geometry, const GridTables& tables) {
+  // Steps: 1 where places are kept  2 from each active cell  3 from each face piece  4 the wider width
+  //        5 the bigger block of every block, for FindBorderGeometrically
+  // Step 1. Each block reads itself, so FindBorderGeometrically adds the bigger blocks of a block of the set.
+  const GeometricPlaceBlocks places = BuildGeometricPlaceBlocks(geometry, tables);
+  GeometricReadBlocks read_blocks = {
+      .touching_cells = std::vector<std::set<std::uint32_t>>(tables.block_count),
+      .four_cell_widths = std::vector<std::set<std::uint32_t>>(tables.block_count),
+      .bigger_block = {},
+  };
+  // Step 2.
+  for (const CellId cell : geometry.ActiveCells()) {
+    ApplyBlocksReadFromCell(geometry, places, cell, read_blocks.touching_cells.at(places.block_of_cell.at(cell.value)));
+  }
+  // Step 3.
+  const std::vector<GeometricFacePiece>& face_pieces = geometry.FacePieces();
+  std::set<std::uint32_t> blocks_with_face_piece;
+  for (std::size_t piece_number = 0; piece_number < face_pieces.size(); ++piece_number) {
+    const std::uint32_t piece_block = places.block_of_piece.at(piece_number);
+    blocks_with_face_piece.insert(piece_block);
+    read_blocks.touching_cells.at(piece_block).insert(piece_block);
+    ApplyBlocksReadFromFacePiece(
+        places,
+        face_pieces.at(piece_number),
+        read_blocks.touching_cells.at(piece_block),
+        read_blocks.four_cell_widths.at(piece_block)
+    );
+  }
+  // Step 4: the face search lists blocks by the position of the start's block, so each block with a face piece
+  //   reads the same list from all of them.
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    read_blocks.touching_cells.at(block).insert(block);
+    const std::set<std::uint32_t>& blocks_read = read_blocks.touching_cells.at(block);
+    read_blocks.four_cell_widths.at(block).insert(blocks_read.begin(), blocks_read.end());
+    if (blocks_with_face_piece.contains(block)) {
+      ApplyFaceSearchPositions(tables, block, read_blocks.four_cell_widths.at(block));
+    }
+  }
+  // Step 5.
+  read_blocks.bigger_block = FindBiggerBlocksByIds(tables, places);
+  return read_blocks;
+}
+
+std::vector<CellBlockIndex> FindDirectReadsGeometrically(
+    const GeometricReadBlocks& read_blocks,
+    std::span<const CellBlockIndex> blocks,
+    BorderWidth width
+) {
+  const std::vector<std::set<std::uint32_t>>& read_blocks_of_width =
+      width == BorderWidth::kTouchingCells ? read_blocks.touching_cells : read_blocks.four_cell_widths;
+  std::set<std::uint32_t> blocks_of_set;
+  for (const CellBlockIndex block : blocks) {
+    blocks_of_set.insert(block.value);
+  }
+  std::set<std::uint32_t> direct_blocks;
+  for (const std::uint32_t block : blocks_of_set) {
+    for (const std::uint32_t read_block : read_blocks_of_width.at(block)) {
+      if (!blocks_of_set.contains(read_block)) {
+        direct_blocks.insert(read_block);
+      }
+    }
+  }
+  std::vector<CellBlockIndex> result;
+  result.reserve(direct_blocks.size());
+  for (const std::uint32_t block : direct_blocks) {
+    result.push_back({.value = block});
+  }
+  return result;
+}
+
+std::vector<CellBlockIndex> FindBorderGeometrically(
+    const GeometricReadBlocks& read_blocks,
+    std::span<const CellBlockIndex> blocks,
+    BorderWidth width
+) {
+  std::set<std::uint32_t> blocks_of_set;
+  for (const CellBlockIndex block : blocks) {
+    blocks_of_set.insert(block.value);
+  }
+  // The set and the blocks read directly, each with its bigger blocks up to size level 0.
+  std::vector<std::uint32_t> waiting(blocks_of_set.begin(), blocks_of_set.end());
+  for (const CellBlockIndex block : FindDirectReadsGeometrically(read_blocks, blocks, width)) {
+    waiting.push_back(block.value);
+  }
+  std::set<std::uint32_t> read_with_bigger(waiting.begin(), waiting.end());
+  while (!waiting.empty()) {
+    const std::uint32_t bigger_block = read_blocks.bigger_block.at(waiting.back());
+    waiting.pop_back();
+    if (bigger_block != kNoIndex && read_with_bigger.insert(bigger_block).second) {
+      waiting.push_back(bigger_block);
+    }
+  }
+  std::vector<CellBlockIndex> result;
+  for (const std::uint32_t block : read_with_bigger) {
+    if (!blocks_of_set.contains(block)) {
+      result.push_back({.value = block});
+    }
+  }
+  return result;
 }
 
 }  // namespace fluidity::grid

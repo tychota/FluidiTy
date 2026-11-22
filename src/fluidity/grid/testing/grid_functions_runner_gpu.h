@@ -15,12 +15,14 @@
 // Owns:    FindCellsAtOnGpu, ComputeNearbyFaceResultsOnGpu, ComputeFaceWeightResultsOnGpu, FindCellCornersOnGpu,
 //          FindFaceCornersOnGpu, ComputeCornerPositionsOnGpu, FindCellsAroundEdgesOnGpu, FindTouchingCellsOnGpu,
 //          FindFacePiecesOnGpu, FindCellsNearFacesOnGpu, WalkFaceSearchesOnGpu, ComputeFormulasOnGpu,
-//          ComputeCellPlaceFactsOnGpu, ComputeFacePlaceFactsOnGpu, RunnerFunctionInfo, ReadRunnerFunctionInfo,
+//          ComputeCellPlaceFactsOnGpu, ComputeFacePlaceFactsOnGpu,
+//          ComputeBorderBlockResultsOnGpu, ComputeReadMarksResultsOnGpu, RunnerFunctionInfo, ReadRunnerFunctionInfo,
 //          ReadLastRunnerFailure
 // Uses:    RunOnCallStatus (base/run_on_call.h), GridTables (grid/grid_tables.h), the queries and results of
 //          grid/testing/grid_functions_answers.h
 // Used by: the GPU tests of the grid in tests/grid/ (find_cell_at.gpu.test.cc, nearby_face_weights.gpu.test.cc,
-//          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
+//          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc,
+//          border_blocks.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
 //          which defines the runners
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>, <sec-cell-blocks>, <sec-face-pieces>,
 //          <sec-nearby-faces>, <sec-face-search>
@@ -85,10 +87,21 @@
 //   ComputeCellSizeFactorCode, ComputeCellSizeFactorTable, ComputeNewCellSizeLevel,
 //   ComputeRefinementBoxReachesOutside, ComputeRefinementEntryIndex, ComputeRefinementLayerExtent,
 //   ComputeWantedCellWidth, ComputeWantedSizeLevel, FindNearestCommittedCell
+//
+// Reached by ComputeIsBorderBlock, which ComputeBorderBlockResult asks (border_blocks.gpu.test.cc):
+//   ComputeSmallerBlockPosition, ComputeIsPositionWithin, ComputeIsBlockSetAroundOneBlock,
+//   ComputeIsBlockSetUnderNear, ComputeIsBlockSetUnderWide, ComputeIsBlockSetAround, ComputeHasFacePieceInBlockSet,
+//   ComputeIsBiggerCellBesideTouchingSet, ComputeIsCellOfBlockRead, ComputeIsFacePieceOfBlockRead,
+//   ComputeReadCornerMask, ComputeIsReadCornerKeptIn, ComputeIsCornerOfBlockRead, ComputeIsBlockInFaceSearchOfSetBlock,
+//   ComputeIsBlockInFaceSearchOfBlockSet, ComputeIsBlockReadDirectly, ComputeIsInBlockSet
+//
+// Reached by ComputeReadMarksResult (border_blocks.gpu.test.cc): ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
+//   ApplyReadMark, ApplyPlaceReadMark
 
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -171,6 +184,27 @@ ComputeCellPlaceFactsOnGpu(const GridTables& tables, const CellPlaceIndex* queri
 RunOnCallStatus
 ComputeFacePlaceFactsOnGpu(const GridTables& tables, const FacePlaceIndex* queries, int count, FacePlaceFacts* results);
 
+// Runs ComputeReadMarksResult over the queries: the forward form of the border, one thread per place.
+RunOnCallStatus ComputeReadMarksResultsOnGpu(
+    const GridTables& tables,
+    const ReadMarksQuery* queries,
+    int count,
+    ReadMarksResult* results
+);
+
+// Runs ComputeBorderBlockResult over the queries, against one block set: the blocks of `range` and the blocks of
+// `sorted_blocks`, which this runner copies to the GPU, so the set's list is a GPU pointer when a GPU thread reads it.
+// Requires: as above, and sorted_blocks ascending with no repeats (BlockSet), possibly empty; each query's block is
+//   below the block count of `tables`.
+RunOnCallStatus ComputeBorderBlockResultsOnGpu(
+    const GridTables& tables,
+    CellBlockRange range,
+    std::span<const CellBlockIndex> sorted_blocks,
+    const BorderBlockQuery* queries,
+    int count,
+    BorderBlockResult* results
+);
+
 // What cudaFuncGetAttributes says about one GPU function of the runners.
 struct RunnerFunctionInfo {
   std::string name;  // The runner that starts it.
@@ -179,11 +213,11 @@ struct RunnerFunctionInfo {
   int most_threads_per_block = 0;  // maxThreadsPerBlock: the largest block this function can start with.
 };
 
-// Reads cudaFuncGetAttributes of the GPU function of every runner above, in the order of the runners. Loading the
-// attributes loads the code image for the device, so it fails when the binary has none for this GPU. It launches
-// nothing, so it says nothing about whether the stack is enough: the runners themselves show that.
-// Writes `functions` only on success.
-// Fails: kCallFailed  a GPU call failed, for example because the code was built for another GPU
+// Reads cudaFuncGetAttributes of the GPU function of every runner above, in the order of the runners, then the border
+// block runner and the read marks runner. Loading the attributes loads the code image for the device, so it fails when
+// the binary has none for this GPU. It launches nothing, so it says nothing about whether the stack is enough: the
+// runners themselves show that. Writes `functions` only on success. Fails: kCallFailed  a GPU call failed, for example
+// because the code was built for another GPU
 RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* functions);
 
 // The text of the last CUDA call that failed in a runner of this thread, such as "copy of the results to the CPU:

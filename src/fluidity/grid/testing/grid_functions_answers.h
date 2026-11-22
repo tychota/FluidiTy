@@ -14,11 +14,15 @@
 //
 // Owns:    FindCellAtQuery, FoundCells, NearbyFaceQuery, NearbyFaceResult, FaceWeightQuery, FaceWeightResult,
 //          FormulaQuery, FormulaResult, CellPlaceFacts, FacePlaceFacts, EdgeQuery, FaceSearchQuery, FaceSearchWalk,
-//          kMaxFaceSearchWalkFaces, FindCellsAtPosition, ComputeNearbyFaceResult, ComputeFaceWeightResult,
+//          kMaxFaceSearchWalkFaces, BorderBlockQuery, BorderBlockResult, ComputeBorderBlockResult, MarkedPlaceKind,
+//          kMaxMarkedBlocks, ReadMarksQuery, ReadMarksResult, ComputeReadMarksResult,
+//          FindCellsAtPosition, ComputeNearbyFaceResult, ComputeFaceWeightResult,
 //          ComputeFormulaResult, ComputeCellPlaceFacts, ComputeFacePlaceFacts, FindCellCornersOf, FindFaceCornersOf,
 //          ComputeCornerPositionOf, FindCellsAroundEdgeOf, FindTouchingCellsOf, FindFacePiecesOf, FindCellsNearFaceOf,
 //          FindFaceSearchWalk
-// Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Vec3 (base/vec3.h), CellCorners,
+// Uses:    BorderWidth, BlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
+//          (grid/border_block_steps.h),
+//          Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Vec3 (base/vec3.h), CellCorners,
 //          FaceCorners, ComputeCornerPosition, FindCellsAroundEdge, CellsAroundEdge (grid/cell_corners.h),
 //          ComputeCellWidthsBySizeLevel, ComputeReferenceSpeed (grid/cell_size_rule.h), CellsNearFace,
 //          FindCellsNearFace, FaceSearch, BuildFaceSearch, FindNextFace (grid/face_search.h), FindCellAt
@@ -39,6 +43,7 @@
 #include "fluidity/base/axis.h"
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/cell_corners.h"
 #include "fluidity/grid/cell_size_rule.h"
 #include "fluidity/grid/face_search.h"
@@ -289,6 +294,63 @@ FLUIDITY_CPU_AND_GPU inline FacePlaceFacts ComputeFacePlaceFacts(const GridTable
       .id_from_parts = ToFacePieceId(ToAxis(face), ToSizeLevel(tables, block), ComputeHighPlaceCoord(tables, face)),
       .place_of_id = FindFacePlace(tables, id),
   };
+}
+
+// The query of the border block test: one block and one border width, against the block set the runner holds.
+struct BorderBlockQuery {
+  CellBlockIndex block;  // Below tables.block_count.
+  BorderWidth width;
+};
+
+// What the border block test says for one BorderBlockQuery: 1 for a border block, 0 for any other. An integer, so the
+// result has no padding and compares by its bits.
+struct BorderBlockResult {
+  std::uint32_t is_border;
+};
+
+// Answers one BorderBlockQuery against `set`, whose sorted list must be readable where the caller runs.
+FLUIDITY_CPU_AND_GPU inline BorderBlockResult
+ComputeBorderBlockResult(const GridTables& tables, const BlockSet& set, const BorderBlockQuery& query) {
+  return {.is_border = ComputeIsBorderBlock(tables, set, query.block, query.width) ? 1U : 0U};
+}
+
+// Which kind of place a ReadMarksQuery starts from.
+enum class MarkedPlaceKind : std::uint8_t {
+  kCellPlace,  // ApplyCellPlaceReadMarks.
+  kFacePlace,  // ApplyFacePlaceReadMarks.
+};
+
+// The most blocks a ReadMarksResult holds a mark for: the room of a random grid (kMaxRandomGridCellBlocks, 252),
+// rounded up.
+inline constexpr int kMaxMarkedBlocks = 256;
+
+// The query of the forward form of the border: one place, its kind and one border width.
+struct ReadMarksQuery {
+  std::uint32_t place;  // A cell place or a face place, by `kind`, of block 0..tables.block_count - 1.
+  MarkedPlaceKind kind;
+  BorderWidth width;
+};
+
+// The marks one place makes: marks[b] is 1 for each block its readers read, with its bigger blocks, and 0 for every
+// other block. Bytes, so the result has no padding and compares by its bits.
+struct ReadMarksResult {
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
+  std::uint8_t marks[kMaxMarkedBlocks];
+};
+
+// Answers one ReadMarksQuery from zeroed marks. Tables of more than kMaxMarkedBlocks blocks give no mark.
+FLUIDITY_CPU_AND_GPU inline ReadMarksResult
+ComputeReadMarksResult(const GridTables& tables, const ReadMarksQuery& query) {
+  ReadMarksResult result{};
+  if (tables.block_count > static_cast<std::uint32_t>(kMaxMarkedBlocks)) {
+    return result;
+  }
+  if (query.kind == MarkedPlaceKind::kCellPlace) {
+    ApplyCellPlaceReadMarks(tables, CellPlaceIndex{query.place}, query.width, result.marks);
+  } else {
+    ApplyFacePlaceReadMarks(tables, FacePlaceIndex{query.place}, query.width, result.marks);
+  }
+  return result;
 }
 
 }  // namespace fluidity::grid
