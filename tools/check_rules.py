@@ -172,13 +172,19 @@ def inflected_forms(word: str) -> frozenset[str]:
     return frozenset(forms)
 
 
+@functools.cache
+def matching_last_forms(last_word: str) -> frozenset[str]:
+    """The forms of the last word of a phrase that count as the phrase: the word itself, and each inflection that is
+    not a word of its own."""
+    return frozenset(form for form in inflected_forms(last_word) if form == last_word or form not in WORDS_OF_THEIR_OWN)
+
+
 def contains_phrase(tokens: Sequence[str], phrase: Sequence[str]) -> bool:
     """True when `phrase` appears as consecutive items of `tokens`, its last word in any of its inflected forms."""
     width = len(phrase)
     if width == 0:
         return False
-    last_word = phrase[-1]
-    last_forms = {form for form in inflected_forms(last_word) if form == last_word or form not in WORDS_OF_THEIR_OWN}
+    last_forms = matching_last_forms(phrase[-1])
     for start in range(len(tokens) - width + 1):
         leading_match = tuple(tokens[start : start + width - 1]) == tuple(phrase[:-1])
         if leading_match and tokens[start + width - 1] in last_forms:
@@ -562,7 +568,20 @@ def _check_file_header(lines: list[ScannedLine], reporter: _Reporter) -> None:
         reporter.add(1, FAIL, "file-header", "file header lacks " + ", ".join(f"'{label}:'" for label in missing))
 
 
+def _entries_by_last_form(glossary: Sequence[NeverSayEntry]) -> dict[str, list[int]]:
+    """For each form of the last word that counts as a phrase, the positions in `glossary` of the entries it ends.
+    An entry can match a token list only when one of these forms is in it, so the others are never tried."""
+    by_form: dict[str, list[int]] = {}
+    for position, entry in enumerate(glossary):
+        if not entry.words or entry.words in ABBREVIATIONS:
+            continue
+        for form in matching_last_forms(entry.words[-1]):
+            by_form.setdefault(form, []).append(position)
+    return by_form
+
+
 def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], reporter: _Reporter) -> None:
+    by_last_form = _entries_by_last_form(glossary)
     for line in lines:
         sequences: list[tuple[list[str], str]] = []
         if not _is_include_line(line.code):
@@ -572,8 +591,11 @@ def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], re
             for segment in comment_segments(line.comment):
                 sequences.append((segment, "comment"))
         for tokens, where in sequences:
-            for entry in glossary:
-                if entry.words in ABBREVIATIONS or not contains_phrase(tokens, entry.words):
+            # The glossary order is kept, so the findings come in the same order as when every entry was tried.
+            candidates = sorted({position for token in set(tokens) for position in by_last_form.get(token, ())})
+            for position in candidates:
+                entry = glossary[position]
+                if not contains_phrase(tokens, entry.words):
                     continue
                 key = entry.spelled.lower()
                 if entry.qualifier is None:

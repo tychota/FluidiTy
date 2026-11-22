@@ -767,3 +767,36 @@ def test_notes_on_staged_lines_keeps_notes_of_added_lines_only(tmp_path, glossar
     assert "a.cc:1: NOTE" not in output
     assert "a.cc:2: NOTE one-sense-word" in output
     assert "a.cc:3: FAIL banned-word" in output
+
+
+def test_words_check_reports_the_same_findings_in_the_same_order_as_trying_every_entry():
+    """_check_words tries only the entries whose last word is in the line; the findings must be those of a loop over
+    every entry, in glossary order."""
+    entries = [
+        check_rules.NeverSayEntry(("old", "stencil"), "old stencil", None),
+        check_rules.NeverSayEntry(("stencil",), "stencil", "for a pattern"),
+        check_rules.NeverSayEntry(("wall",), "wall", None),
+        check_rules.NeverSayEntry(("refine",), "refine", None),
+    ]
+    text = "// An old stencil near the walls, and a stencil that refined.\nint wall_stencil = 0;\n"
+    lines = check_rules.split_lines(Path("x.h"), text)
+
+    fast = check_rules._Reporter(Path("x.h"))
+    check_rules._check_words(lines, entries, fast)
+
+    slow = check_rules._Reporter(Path("x.h"))
+    for line in lines:
+        sequences = [(check_rules.split_name_words(name), "name") for name in check_rules._identifiers(line.code)]
+        sequences += [(segment, "comment") for segment in check_rules.comment_segments(line.comment)]
+        for tokens, where in sequences:
+            for entry in entries:
+                if not check_rules.contains_phrase(tokens, entry.words):
+                    continue
+                if entry.qualifier is None:
+                    text_of_finding = f"'{entry.spelled}' is banned (docs/glossary.md); found in a {where}"
+                    slow.add(line.number, check_rules.FAIL, "banned-word", text_of_finding, key=entry.spelled)
+                else:
+                    text_of_finding = f"'{entry.spelled}' is banned in one sense only: {entry.qualifier}"
+                    slow.add(line.number, check_rules.NOTE, "one-sense-word", text_of_finding, key=entry.spelled)
+    assert fast.findings() == slow.findings()
+    assert len(fast.findings()) >= 4
