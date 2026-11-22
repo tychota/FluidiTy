@@ -885,11 +885,15 @@ def _check_declarations(
 _INCLUDED_PATH = re.compile(r'^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)')
 
 
-def _is_test_including_own_testing_folder(path: Path, including_folder: str, included_folder: str) -> bool:
-    """True when `path` is a test (`.test.` in its name) and `included_folder` is the `testing/` folder directly under
-    the folder of `path`, such as `fluidity/grid/testing` for a test in `.../fluidity/grid`."""
-    if ".test." not in path.name:
+def _is_test_including_own_testing_folder(path: Path, including_folder: str, included: Path) -> bool:
+    """True when `path` is a test (`.test.` in its name, a .cc or .cu file) and `included` is a
+    `testing/<name>_runner_gpu` header in the `testing/` folder directly under the folder of `path`, such as
+    `fluidity/grid/testing` for a test in `.../fluidity/grid`."""
+    if ".test." not in path.name or path.suffix not in {".cc", ".cu"}:
         return False
+    if not included.stem.endswith("_runner_gpu"):
+        return False
+    included_folder = included.parent.as_posix()
     parent_of_included, _, last_part = included_folder.rpartition("/")
     if last_part != TEST_CODE_FOLDER or parent_of_included == "":
         return False
@@ -916,7 +920,7 @@ def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine],
             continue
         included_folder = included.parent.as_posix()
         same_folder = included_folder in ("", ".") or including_folder.endswith("/" + included_folder)
-        if not same_folder and _is_test_including_own_testing_folder(path, including_folder, included_folder):
+        if not same_folder and _is_test_including_own_testing_folder(path, including_folder, included):
             same_folder = True
         if not same_folder:
             text = f"'{included}' is private to its folder; only files of that folder include it"

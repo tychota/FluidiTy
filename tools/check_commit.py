@@ -222,8 +222,11 @@ def read_tool_version(version_output: str) -> str | None:
 
 
 def is_test_header(path: str) -> bool:
-    """Whether `path` is a header of test code, which the header-alone check does not cover."""
-    return path.endswith(HEADER_EXTENSIONS) and TEST_CODE_FOLDER in Path(path).parts[:-1]
+    """Whether `path` is a header of test code, which the header-alone check does not cover: a header directly in
+    `src/fluidity/<module>/testing/`, and nowhere else."""
+    parts = Path(path).parts
+    is_in_module_testing_folder = len(parts) == 5 and parts[:2] == ("src", "fluidity") and parts[3] == TEST_CODE_FOLDER
+    return path.endswith(HEADER_EXTENSIONS) and is_in_module_testing_folder
 
 
 def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[str]:

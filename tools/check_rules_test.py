@@ -690,18 +690,18 @@ def test_private_gpu_cuh_header_included_from_another_folder_fails(tmp_path, glo
 
 
 def test_test_may_include_the_private_gpu_header_of_the_testing_folder_beside_it(tmp_path, glossary):
-    write(tmp_path / "fluidity" / "grid", "cell_size_rule.gpu.test.cc", '#include "fluidity/grid/testing/runner_gpu.h"\n')
-    write(tmp_path / "fluidity" / "grid" / "testing", "runner_gpu.cu", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    write(tmp_path / "fluidity" / "grid", "cell_size_rule.gpu.test.cc", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
+    write(tmp_path / "fluidity" / "grid" / "testing", "cell_size_rule_runner_gpu.cu", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
     assert run(tmp_path, glossary) == []
 
 
 def test_file_that_is_not_a_test_may_not_include_a_private_gpu_header_of_the_testing_folder(tmp_path, glossary):
-    write(tmp_path / "fluidity" / "grid", "grid_cpu.cc", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    write(tmp_path / "fluidity" / "grid", "grid_cpu.cc", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
     assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
 
 
 def test_test_may_not_include_the_private_gpu_header_of_the_testing_folder_of_another_module(tmp_path, glossary):
-    write(tmp_path / "fluidity" / "contact", "move_particles.gpu.test.cc", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    write(tmp_path / "fluidity" / "contact", "move_particles.gpu.test.cc", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
     assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
 
 
@@ -863,3 +863,13 @@ def test_include_after_a_compiler_condition_ends_or_under_another_condition_pass
         '#if defined(__clang__)\nint f();\n#endif\n#include "x.h"\n#if FOO\n#include "y.h"\n#endif\n',
     )
     assert run(tmp_path, glossary) == []
+
+
+def test_test_may_not_include_a_private_gpu_header_of_the_testing_folder_that_is_not_a_runner(tmp_path, glossary):
+    write(tmp_path / "fluidity" / "grid", "cell_size_rule.gpu.test.cc", '#include "fluidity/grid/testing/other_gpu.h"\n')
+    assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
+
+
+def test_header_with_test_in_its_name_may_not_include_the_runner_header_of_the_testing_folder(tmp_path, glossary):
+    write(tmp_path / "fluidity" / "grid", "cell_size_rule.test.h", '#include "fluidity/grid/testing/cell_size_rule_runner_gpu.h"\n')
+    assert "private-gpu-include" in rules(run(tmp_path, glossary))

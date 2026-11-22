@@ -18,10 +18,21 @@
   ],
   "tasks": [
     {
-      // The Conan step of the gate (tools/check_commit.py): the packages and out/conan/<preset>/conan_toolchain.cmake.
+      // The first of the two Conan commands of the gate (tools/check_commit.py). Two tasks run in sequence, because
+      // Windows PowerShell 5.1 has no `&&`.
+      "label": "Prepare: Conan profile",
+      "type": "shell",
+      "command": "uv run conan profile detect --exist-ok",
+      "options": { "env": { "CONAN_HOME": "${workspaceFolder}/out/conan-home" } },
+      "problemMatcher": []
+    },
+    {
+      // The Conan step of the gate: the packages and out/conan/<preset>/conan_toolchain.cmake.
       "label": "Prepare",
       "type": "shell",
-      "command": "uv run conan profile detect --exist-ok && uv run conan install . --lockfile conan.lock -of out/conan/${input:preset} -s build_type=${input:buildType} -s compiler.cppstd=23 -s:b compiler.cppstd=23 --build=missing",
+      "dependsOn": ["Prepare: Conan profile"],
+      "dependsOrder": "sequence",
+      "command": "uv run conan install . --lockfile conan.lock -of out/conan/${input:preset} -s build_type=${input:buildType} -s compiler.cppstd=23 -s:b compiler.cppstd=23 --build=missing",
       "options": { "env": { "CONAN_HOME": "${workspaceFolder}/out/conan-home" } },
       "problemMatcher": []
     },

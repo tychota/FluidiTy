@@ -278,11 +278,11 @@ the same folder include it. Its names may say `Gpu` and use any verb. It include
 that calls it compiles without the CUDA compiler. The rules check skips the backend-name and verb rules for files
 whose stem ends in `_gpu` (`.h`, `.cu`), and fails an `#include` of a `*_gpu.h` header from another folder or from
 a header that is not itself `_gpu`. The one exception is a test (a file with `.test.` in its name), which may
-include a private GPU header of the `testing/` folder of its own folder.
+include a `<name>_runner_gpu` header of the `testing/` folder of its own folder (the test is a `.cc` or `.cu` file).
 
 **Names of test files.** A file with `.test.` in its name is a test, and nothing else carries the word `test` in
-its name. Each module folder may hold a `testing/` folder for code that its tests share and that is not itself a
-test. The stem of a test is the stem of a header of the same folder, so that an editor folds the test under that
+its name, apart from the `testing/` folders, `tools/run_gpu_tests.ps1` and the Python tests under `tools/`. Each
+module folder may hold a `testing/` folder for code that its tests share and that is not itself a test. The stem of a test is the stem of a header of the same folder, so that an editor folds the test under that
 header; when the file tests one concern of the header, a topic follows the stem, as in
 `grid_tables.face_search.test.cc`, and the topic leaves out the words the header's name already says. This departs
 from Google's `<name>_test.cc`.
@@ -507,8 +507,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`); the tests
     labelled `cpu` and `no_gpu` passed (`ctest -L '^(cpu|no_gpu)$'`); every tracked `.cc` and `.cu` file under
     `src/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `src/` is compiled
-    alone there, through its header-alone file (`header_check/`), except a test header (a header in a `testing/` folder),
-    which the test programs that include it compile (`FAIL cuda: not compiled by the CUDA build: <paths>`
+    alone there, through its header-alone file (`header_check/`), except a test header (a header directly in
+    `src/fluidity/<module>/testing/`), which the test programs that include it compile (`FAIL cuda: not compiled by the CUDA build: <paths>`
     otherwise).
     Nothing ran on a GPU: the container has none, so GPU code stays "compiled, not run". The container keeps its
     tools, packages and build tree in a Docker volume named `fluidity-cuda-out-<hash>`, one per checkout path; list

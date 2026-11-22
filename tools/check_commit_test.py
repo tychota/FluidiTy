@@ -289,6 +289,14 @@ def test_header_with_test_in_its_name_outside_a_testing_folder_needs_a_header_al
     assert lines == ["FAIL cuda: not compiled by the CUDA build: src/fluidity/base/test_helpers.h"]
 
 
+def test_header_in_a_testing_folder_at_another_depth_needs_a_header_alone_file(monkeypatch, capsys, repo):
+    tracked = ["src/testing/x.h", "src/fluidity/grid/tables/testing/y.h"]
+    fake = FakeRun(tracked=tracked, compiled=[])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
+    assert exit_code == 1
+    assert lines == ["FAIL cuda: not compiled by the CUDA build: src/testing/x.h, src/fluidity/grid/tables/testing/y.h"]
+
+
 def test_container_tidies_the_sources_only_the_cuda_build_compiles(monkeypatch, capsys, repo):
     fake = FakeRun()
     run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")

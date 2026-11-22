@@ -25,8 +25,7 @@
 
   "material-icon-theme.files.associations": {
     "*.test.cc": "test-js",
-    "*.test.cu": "test-js",
-    "*_test.py": "test-js"
+    "*.test.cu": "test-js"
   },
   "material-icon-theme.folders.associations": {
     "testing": "test"
