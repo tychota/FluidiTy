@@ -1,0 +1,58 @@
+native/fluidity/grid/grid_error.h
+  s_4f0877e2acdcf0::t_44cc975e9df0a8 49-51
+native/fluidity/grid/grid_cell_checks.h
+  s_4f0877e2acdcf0::t_3aa8eb6e3ca0fe 32
+  s_4f0877e2acdcf0::t_d847be17d1ab89 28-29
+  s_4f0877e2acdcf0::t_0a234cfcd59329 30-31
+native/fluidity/grid/grid_cell_count_test.cc
+  s_4f0877e2acdcf0::t_a37fc1833d0b2d 256-285
+  s_4f0877e2acdcf0::t_65311ebb6f9906 220-223,330-353,355-357,359,364-365,367,369,374-376,378,380,384-385,387
+  s_4f0877e2acdcf0::t_a18a088ff3ae2e 1-219,224-255,286-329,354,358,360-363,366,368,370-373,377,379,381-383,386,388-472
+  s_4f0877e2acdcf0::t_cd45d23aa5703b 473-474
+native/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_54b3e78f5aa33f 26
+  s_4f0877e2acdcf0::t_89da338e5a6d56 290-295,305-324
+  s_4f0877e2acdcf0::t_f024999dc11c8e 34-38,40
+  s_4f0877e2acdcf0::t_f85f84932c699b 296-298
+  s_4f0877e2acdcf0::t_b6cf094b9ec274 299-304
+native/fluidity/grid/grid_cell_checks.cc
+  s_4f0877e2acdcf0::t_5f22eaa2862ea2 4
+  s_4f0877e2acdcf0::t_89950dec10c4c4 100-103,105,107-108,119-121
+  s_4f0877e2acdcf0::t_4e70e4cf8fe123 179-180,207-208
+  s_4f0877e2acdcf0::t_faf0b95f5dfefa 397-481,485-491
+  s_4f0877e2acdcf0::t_1ea9b89902d0dc 149-155,159,161-164,186,197-198,210-214,216-217,221-226
+  s_4f0877e2acdcf0::t_f202b04473b45c 156-158,160,165-178,181-185,187-196,199-206,209,215,218-220,482-484
+native/fluidity/grid/grid_out_of_memory_test.cc
+  s_4f0877e2acdcf0::t_c532a6893644d6 156-220
+  s_4f0877e2acdcf0::t_6e849d76dcd014 1
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_22c4280b1d0067 26
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_b69a3dcbd856aa 2465
+  s_4f0877e2acdcf0::t_4c128eb511540f 2460-2464,2471-2477
+docs/glossary.md
+  s_4f0877e2acdcf0::t_c4ec288c45b846 200
+native/fluidity/grid/grid_build_status.h
+  s_4f0877e2acdcf0::t_0e1791b0a56d39 48-49
+  s_4f0877e2acdcf0::t_a3cc1f1651e583 46-47
+native/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_d91a4e8013154b 442-443,479-480,484,486-487
+native/fluidity/grid/grid_build_steps_test.cc
+  s_4f0877e2acdcf0::t_16e79ed6b925b1 1057,1065-1082
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b1622722ae917f0e2ac9fa3c845424292a0042de",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
