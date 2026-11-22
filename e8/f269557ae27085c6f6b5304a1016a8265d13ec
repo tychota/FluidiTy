@@ -1,0 +1,23 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_2dd56da2ed9ab7 537
+tools/check_message.py
+  s_4f0877e2acdcf0::t_1afa276c0702d2 47-48
+tools/check_message_test.py
+  s_4f0877e2acdcf0::t_ff49c4e301b0d3 76,82-86,135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e8f269557ae27085c6f6b5304a1016a8265d13ec",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
