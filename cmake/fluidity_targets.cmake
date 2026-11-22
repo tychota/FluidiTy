@@ -138,10 +138,14 @@ endfunction()
 #   cpu     runs on the CPU only.
 #   gpu     needs a CUDA GPU at run time.
 #   no_gpu  checks behaviour on a machine without a usable GPU (for example, that choosing the GPU fails).
-# Tests are listed when ctest runs (PRE_TEST), not after the build, so building never runs a test program: a GPU
-# test program on a machine without the CUDA runtime cannot break the build. Does nothing when BUILD_TESTING is OFF.
+# A unit test is its own ctest entry (listed when ctest runs, PRE_TEST, so building never runs a test program: a GPU
+# test program on a machine without the CUDA runtime cannot break the build). A functional program is ONE ctest entry
+# named like the program, which runs every TEST of the program in one process, so the fixtures its tests share are
+# built once; its labels are the same three, and it has a timeout of FLUIDITY_FUNCTIONAL_TEST_TIMEOUT_SECONDS. Does nothing when BUILD_TESTING is OFF.
 # The gpu and no_gpu tests need GPU code, so they are built only when FLUIDITY_ENABLE_CUDA is ON. SOURCES may list .cu
 # files; they are compiled with the device flags.
+set(FLUIDITY_FUNCTIONAL_TEST_TIMEOUT_SECONDS 1800)
+
 function(fluidity_add_test name)
   if(NOT BUILD_TESTING)
     return()
@@ -177,7 +181,26 @@ function(fluidity_add_test name)
   target_link_libraries(${name} PRIVATE fluidity GTest::gtest_main ${arg_LINKS})
   fluidity_apply_compile_flags(${name} EXCEPTIONS ON)
   set_property(GLOBAL APPEND PROPERTY FLUIDITY_TEST_PROGRAMS "${module_name} ${arg_TIER} ${name}")
-  gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "${arg_LABEL};${module_name};${arg_TIER}")
+  if(arg_TIER STREQUAL "functional")
+    # One ctest entry runs the whole program, so the fixtures its tests share (random grids and their checkers) are
+    # built once. gtest writes the results of its tests to gtest_reports/<name>.xml, which the gate reads to count
+    # them; --gtest_brief=1 prints only the failures, each under its TEST name, and the summary.
+    add_test(
+      NAME ${name}
+      COMMAND ${name} --gtest_brief=1 "--gtest_output=xml:${PROJECT_BINARY_DIR}/gtest_reports/${name}.xml"
+    )
+    set_tests_properties(
+      ${name}
+      PROPERTIES
+        LABELS "${arg_LABEL};${module_name};${arg_TIER}"
+        TIMEOUT ${FLUIDITY_FUNCTIONAL_TEST_TIMEOUT_SECONDS}
+        # Like gtest_discover_tests: a program that skipped a test is reported as skipped, so a skip is never read as
+        # a pass (tools/run_gpu_tests.ps1 fails a run that skipped anything).
+        SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+    )
+  else()
+    gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "${arg_LABEL};${module_name};${arg_TIER}")
+  endif()
 endfunction()
 
 # fluidity_add_test_library(<name> SOURCES <files...> [GPU_SOURCES <files...>] [LINKS <targets...>])

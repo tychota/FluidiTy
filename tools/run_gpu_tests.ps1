@@ -467,6 +467,8 @@ function Invoke-Build {
 # summary line is missing), Skipped (how many tests were skipped or disabled), and Outcomes: a sorted array of
 # `<test name> <outcome>` strings, one per test. ctest counts a skipped test as passed, so without the Skipped count a
 # GPU test that quietly skipped itself would look like a pass.
+# A functional GPU test program is one ctest entry (all its TESTs run in one process), so Total and the outcomes count
+# programs, not TESTs; a skipped TEST makes the whole entry skipped (SKIP_REGULAR_EXPRESSION), which fails the run.
 #
 # What ctest 4.4.4 (the version uv.lock pins) prints, captured from a throwaway project:
 #   all pass:      `100% tests passed out of 3`                      (no "tests failed" part when none fails)

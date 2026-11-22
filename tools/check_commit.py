@@ -73,7 +73,10 @@ The steps, in order:
           `--parallel <cores>`.) On the debug preset ctest also writes a JUnit file (out/check-commit/), and the step
           fails, naming the test, when a test labelled `unit` took more than 200 ms; it prints a line
           `NOTE unit test over 50 ms: <name> (<ms> ms)` for each one above 50 ms. The rule is 50 ms for a unit test run
-          alone; 200 ms allows for one test per core running at once.
+          alone; 200 ms allows for one test per core running at once. A functional test program is ONE ctest entry
+          (all its TESTs run in one process); a functional entry has no 50/200 ms limit, and the step prints
+          `NOTE functional tests run: <n> gtest tests in <m> programs (one ctest entry each)`, counted from the XML
+          report each program writes (out/build/<preset>/gtest_reports/).
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
           debug preset, over every tracked .cc file under src/ and tests/ that the CPU build compiles, and over each
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
@@ -183,6 +186,8 @@ FUNCTIONAL_TESTS_ROOT = "tests"
 # The source folders that every file-wise check covers: the unit tests sit beside the headers, the functional tests
 # under tests/.
 SOURCE_FOLDERS = ("src", "tests")
+# Where CMake's fluidity_add_test makes gtest write the XML report of each functional program, below the build folder.
+FUNCTIONAL_REPORTS_FOLDER = "gtest_reports"
 # A unit test takes at most 50 ms alone in the debug build. The gate runs one test per core at once, which slows each
 # one, so it fails a unit test only above 200 ms and prints a note above 50 ms.
 UNIT_TEST_NOTE_SECONDS = 0.05
@@ -396,6 +401,13 @@ def tests_without_tier(junit_text: str) -> list[str]:
         if not {"unit", "functional"} & set(labels.split(";")):
             untiered.append(case.get("name", ""))
     return untiered
+
+
+def count_functional_tests(report_texts: Sequence[str]) -> int:
+    """The number of gtest tests in the XML reports that the functional test programs wrote (one report per program,
+    from `--gtest_output=xml:`): the `tests` count of each root element, summed. A functional program is one ctest
+    entry, so ctest's own count is the number of programs, not of tests."""
+    return sum(int(ElementTree.fromstring(text).get("tests", "0")) for text in report_texts)
 
 
 def slow_unit_tests(junit_text: str) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
@@ -890,10 +902,27 @@ class Gate:
             if targets is not None:
                 notes += (f"NOTE built: {len(targets)} test programs",)
                 build_command = [*build_command, "--target", *targets] if targets else []
+        reports_folder = self.repo_root / "out" / "build" / preset / FUNCTIONAL_REPORTS_FOLDER
+        for stale_report in reports_folder.glob("*.xml"):
+            stale_report.unlink()
         outcome = self.commands(log_name, [*([build_command] if build_command else []), *ctest_runs])
+        if outcome.passed:
+            notes += self.functional_test_count_notes(reports_folder)
         if not outcome.passed or not is_debug or not ctest_runs:
             return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
         return self.check_unit_test_times(junit_path, notes, outcome.output)
+
+    def functional_test_count_notes(self, reports_folder: Path) -> tuple[str, ...]:
+        """One note with the number of gtest tests that ran inside the functional programs of this run, from the reports
+        they wrote, so that the few ctest entries (one per program) are not read as few tests."""
+        report_paths = sorted(reports_folder.glob("*.xml"))
+        if not report_paths:
+            return ()
+        try:
+            count = count_functional_tests([path.read_text(encoding="utf-8") for path in report_paths])
+        except (OSError, ElementTree.ParseError, ValueError):
+            return ("NOTE functional tests run: count unreadable",)
+        return (f"NOTE functional tests run: {count} gtest tests in {len(report_paths)} programs (one ctest entry each)",)
 
     def check_unit_test_times(self, junit_path: Path, notes: tuple[str, ...], output: str) -> Outcome:
         """Fails when a unit test of the debug run took more than UNIT_TEST_LIMIT_SECONDS, naming it, and adds a

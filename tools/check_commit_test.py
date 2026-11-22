@@ -814,6 +814,32 @@ def test_slow_unit_tests_reads_labels_and_times_from_the_junit_text():
     assert over_note == [("C.Three", 0.06)]
 
 
+def test_count_functional_tests_adds_up_the_tests_of_every_report():
+    first = '<?xml version="1.0"?><testsuites tests="40" failures="0"><testsuite name="A" tests="40"/></testsuites>'
+    second = '<?xml version="1.0"?><testsuites tests="2" failures="0"><testsuite name="B" tests="2"/></testsuites>'
+    assert check_commit.count_functional_tests([first, second]) == 42
+    assert check_commit.count_functional_tests([]) == 0
+
+
+def test_functional_program_entries_are_not_timed_and_their_tests_are_counted(monkeypatch, capsys, repo):
+    class WritesReports(FakeRun):
+        def __call__(self, command, **kwargs):
+            if command[0] == "ctest" and "--output-junit" in command:
+                reports = repo / "out" / "build" / DEBUG_PRESET / "gtest_reports"
+                reports.mkdir(parents=True, exist_ok=True)
+                for name, count in (("grid_functional_test", 30), ("contact_functional_test", 12)):
+                    (reports / f"{name}.xml").write_text(
+                        f'<?xml version="1.0"?><testsuites tests="{count}" failures="0"/>', encoding="utf-8"
+                    )
+            return super().__call__(command, **kwargs)
+
+    fake = WritesReports(test_times=[("grid_functional_test", "cpu;grid;functional", 90.0)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 0
+    assert "NOTE functional tests run: 42 gtest tests in 2 programs (one ctest entry each)" in lines
+    assert not any(line.startswith("NOTE unit test") for line in lines)
+
+
 def test_test_without_a_tier_label_fails_the_debug_run(monkeypatch, capsys, repo):
     fake = FakeRun(test_times=[("Fine.Case", "grid;cpu;unit", 0.01), ("Plain.Case", "grid;cpu", 0.01)])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")

@@ -196,6 +196,7 @@ def configure_one_test(tmp_path, folder, call):
     configured = configure(
         project,
         "include(GoogleTest)\n"
+        "enable_testing()\n"
         "set(BUILD_TESTING ON)\n"
         "add_library(GTest::gtest_main INTERFACE IMPORTED)\n"
         "add_library(fluidity STATIC source.cc)\n"
@@ -205,6 +206,9 @@ def configure_one_test(tmp_path, folder, call):
     generated = "".join(
         path.read_text(encoding="utf-8") for path in (project / "build" / folder).glob("*_test*_discovery.cmake")
     )
+    ctest_file = project / "build" / folder / "CTestTestfile.cmake"
+    if ctest_file.exists():
+        generated += ctest_file.read_text(encoding="utf-8")
     return configured, generated
 
 
@@ -212,14 +216,24 @@ def test_a_test_with_the_functional_tier_gets_that_label(tmp_path):
     call = "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu TIER functional)"
     configured, generated = configure_one_test(tmp_path, "grid", call)
     assert configured.returncode == 0, configured.stdout
-    assert "[==[LABELS]==] [==[cpu;grid;functional]==]" in generated
+    assert 'LABELS "cpu;grid;functional"' in generated
+
+
+def test_a_functional_program_is_one_ctest_entry_that_runs_the_whole_program(tmp_path):
+    call = "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu TIER functional)"
+    configured, generated = configure_one_test(tmp_path, "grid", call)
+    assert configured.returncode == 0, configured.stdout
+    assert 'add_test("grid_test" ' in generated
+    assert '"--gtest_brief=1" "--gtest_output=xml:' in generated
+    assert 'TIMEOUT "1800"' in generated
+    assert "discover" not in generated.lower()
 
 
 def test_a_test_under_tests_gets_the_name_of_its_module_folder(tmp_path):
     call = "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu TIER functional)"
     configured, generated = configure_one_test(tmp_path, "tests/grid", call)
     assert configured.returncode == 0, configured.stdout
-    assert "[==[LABELS]==] [==[cpu;grid;functional]==]" in generated
+    assert 'LABELS "cpu;grid;functional"' in generated
 
 
 def test_a_tier_other_than_unit_or_functional_fails_the_configuration(tmp_path):

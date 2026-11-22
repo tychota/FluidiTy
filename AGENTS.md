@@ -324,7 +324,13 @@ The name of a CMake target does not have to follow the file name.
 A test file that holds both kinds is split: the unit tests stay where they are, the functional tests move to
 `tests/<module>/`, and a helper that both parts call goes to `src/fluidity/<module>/testing/<name>_cases.h`, written
 once. `fluidity_add_test` takes `TIER unit|functional` (unit when it is left out), and gives each test three labels: its
-backend (`cpu`, `gpu`, `no_gpu`), its module and its tier. The module label of a test in `tests/<module>/` is
+backend (`cpu`, `gpu`, `no_gpu`), its module and its tier. A unit test is
+one ctest entry per TEST (one process each, so isolation is kept). A functional test program is ONE ctest entry,
+named like the program (`grid_tables_on_random_grids_functional_test`), that runs every TEST of the program in one
+process, so the fixtures its tests share (the random grids and their checkers) are built once. The entry carries
+the same three labels and a timeout (`FLUIDITY_FUNCTIONAL_TEST_TIMEOUT_SECONDS`). Because the TESTs of a functional
+program share a process, none may rely on static state, a counter or a file left by an earlier TEST, or on running
+alone: build such state in the TEST or reset it in a fixture. The module label of a test in `tests/<module>/` is
 `<module>`. The tools that cover the test files under `src/` (format, rules, tidy, the compiled-everything check of the
 cuda step) cover `tests/` in the same way; a test in `tests/<module>/` may include the private GPU headers of
 `fluidity/<module>/`. In the debug run of the gate, a `unit` test that takes more than 200 ms fails the step (the
@@ -577,7 +583,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms
     (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`). It fails too when a test has neither the
     `unit` nor the `functional` label, or when the JUnit file of ctest is missing. It prints
-    `NOTE unit test over 50 ms: <name> (<ms> ms)` for each unit test between 50 and 200 ms.
+    `NOTE unit test over 50 ms: <name> (<ms> ms)` for each unit test between 50 and 200 ms. A functional entry (a whole program) has no
+    time limit but its ctest timeout; the step prints `NOTE functional tests run: <n> gtest tests in <m> programs`.
   - `PASS tidy`: the clang-tidy on `PATH` is the pinned version, and it reports nothing, with the debug preset's
     compile commands, on every tracked `.cc` file under `src/` and `tests/` that the CPU build compiles, and on each header
     compiled alone (`header_check/`). A `.cc` file that only the CUDA build compiles, such as a GPU-only test, is
@@ -630,6 +637,13 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   runs the grid tests alone, and `ctest --preset macos-debug-cpu -L '^cpu$' -L grid` the grid tests labelled `cpu`.
   The gate runs ctest with one job per core (`--parallel <cores>`); run it the same way by hand, with
   `--parallel <cores>`. A preset cannot say "all cores" in a form every CMake version accepts.
+- Run one functional TEST: the ctest entry is the whole program, so use the program with a gtest filter,
+  `out/build/macos-debug-cpu/tests/<module>/<program> --gtest_filter='Suite.Name'` (`--gtest_brief=1` prints only
+  failures), or `ctest --preset macos-debug-cpu -R '^<program>$' --output-on-failure` for the whole program. A failing
+  entry prints the failing TEST by name (`[  FAILED  ] Suite.Name`). The number of ctest entries is smaller than the
+  number of TESTs: the gate prints `NOTE functional tests run: <n> gtest tests in <m> programs (one ctest entry
+  each)`, counted from the XML report of each program (`out/build/<preset>/gtest_reports/`). The count of
+  `TEST(Suite, Name)` macros under `src/` and `tests/` does not change when programs are registered this way.
 - Run the unit tests or the functional tests: every test also carries its tier, so `ctest --preset macos-debug-cpu -L unit`
   runs the unit tests of every module, `-L functional` the functional tests, and `-LE functional` everything but the
   functional tests. `-L grid` runs both tiers of one module. Two `-L` options are joined by "and":
