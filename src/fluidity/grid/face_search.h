@@ -22,7 +22,7 @@
 //          (grid/touching_cells.h), GridTables, FindCellLow, FindCellHigh, FindCellBlock, ToSizeLevel, ToAxis,
 //          ComputeHighPlaceCoord, ApplyAscendingInsert (grid/grid_tables.h), the id types and constants
 //          (grid/grid_ids.h)
-// Used by: the particle stages that look for nearby faces, and the tests of the grid
+// Used by: the particle stages that look for nearby faces, nearby_face_weights.h, and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <sec-face-search>
 
 #pragma once
@@ -185,7 +185,7 @@ FLUIDITY_CPU_AND_GPU constexpr void ApplyFaceSearchBlockInsert(FaceSearch& searc
 }
 
 // The centre of a face piece in quarter widths of the start's size level, from the frame's origin. For this header's
-// own functions only.
+// own functions and for FindNearbyFacesWithRoom (grid/nearby_face_weights.h) only.
 struct QuarterWidthPoint {
   std::int64_t x;
   std::int64_t y;
@@ -195,7 +195,8 @@ struct QuarterWidthPoint {
 // Computes the centre of the face piece at a face place in quarter widths of size level start_size_level, l. With m
 // its block's size level and g the coordinate of its high cell place, the centre is g h_m along its axis and
 // (g + 1/2) h_m across, and h_m = 2^(l - m) h_l: g 2^(l - m + 2) quarter widths along and (2 g + 1) 2^(l - m + 1)
-// across, integers for m = l - 1, l or l + 1. For this header's own functions only.
+// across, integers for m = l - 1, l or l + 1. For this header's own functions and for FindNearbyFacesWithRoom
+// (grid/nearby_face_weights.h) only.
 // Requires: `face` is a place of block 0..block_count - 1, of size level l - 1, l or l + 1.
 FLUIDITY_CPU_AND_GPU constexpr QuarterWidthPoint
 ComputeFaceCenterInQuarterWidths(const GridTables& tables, FacePlaceIndex face, int start_size_level) noexcept {

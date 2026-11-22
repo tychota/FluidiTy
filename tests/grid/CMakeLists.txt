@@ -235,6 +235,18 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  nearby_faces_functional_test
+  SOURCES
+  nearby_faces.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   read_grid_into_buffers_functional_test
   SOURCES
   read_grid_into_buffers.test.cc
