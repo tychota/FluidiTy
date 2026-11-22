@@ -1,0 +1,31 @@
+.vscode/settings.json
+  s_4f0877e2acdcf0::t_37df627a6fe2a4 28
+.vscode/tasks.json
+  s_4f0877e2acdcf0::t_5c57f08046d344 21-30,33-35
+AGENTS.md
+  s_4f0877e2acdcf0::t_73b02f59bdffb2 281,284-285,510-511
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_b100f5604776ba 225-229
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_8d006ef24c86ee 292-299
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_3922e3fe2dff72 888-892,894-896,923
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_e37d23ed5b0f7b 693-694,699,704,866-875
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a022861acb35fffbfea1e9ca3ee73611636bbb1b",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
