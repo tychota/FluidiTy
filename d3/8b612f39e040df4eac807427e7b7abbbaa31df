@@ -1,0 +1,19 @@
+native/fluidity/grid/corners_test.cc
+  s_4f0877e2acdcf0::t_a94887fffc7a3f 1029-1031,1203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d38b612f39e040df4eac807427e7b7abbbaa31df",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
