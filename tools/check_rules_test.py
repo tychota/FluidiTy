@@ -1,5 +1,6 @@
 """Tests for tools/check_rules.py. Each test builds a small tree and checks the findings."""
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -629,7 +630,7 @@ def test_shared_function_taking_vec3_by_value_passes(tmp_path, glossary):
 
 
 def test_reference_in_file_without_shared_functions_passes(tmp_path, glossary):
-    write(tmp_path, "a.test.cc", "void ExpectNear(const Mat3& actual, const Vec3& expected) {}\n")
+    write(tmp_path, "a.test.cc", "void CheckNear(const Mat3& actual, const Vec3& expected) {}\n")
     assert rules(run(tmp_path, glossary), "FAIL") == []
 
 
@@ -904,3 +905,116 @@ def test_default_scan_covers_tests_as_it_covers_src(tmp_path, glossary, monkeypa
     assert check_rules.main(["--glossary", str(glossary)]) == 1
     output = capsys.readouterr().out
     assert "FAIL banned-word" in output and "b.cc" in output
+
+
+# one-word-comment ----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("comment", ["// Done", "// ok.", "  // Later;"])
+def test_one_word_comment_fails(tmp_path, glossary, comment):
+    write(tmp_path / "src", "a.cc", f"int fine;\n{comment}\nint other;\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == ["one-word-comment"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// Two words\n",
+        "// First line of\n// Done\n",  # A line beside another comment line continues it.
+        "// NOLINT\n",
+        "// NOLINTNEXTLINE(readability-identifier-length)\n",
+        "}  // namespace\n",
+        "int fine;  // Done\n",
+        "//\n",
+    ],
+)
+def test_comment_that_is_not_one_word_on_its_own_passes(tmp_path, glossary, text):
+    write(tmp_path / "src", "a.cc", text)
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_one_word_comment_outside_src_and_tests_is_not_checked(tmp_path, glossary):
+    write(tmp_path / "other", "a.cc", "// Done\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+# test-helper-verb ----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["a.test.cc", "testing/support.cc", "../tests/grid/a.cc"])
+def test_test_helper_without_a_verb_fails(tmp_path, glossary, name):
+    write(tmp_path / "src", name, "void ExpectEqual(int a, int b) {}\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == ["test-helper-verb"]
+
+
+def test_test_helper_with_an_allowed_verb_passes(tmp_path, glossary):
+    write(tmp_path / "src", "a.test.cc", "void CheckEqual(int a, int b) {}\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_test_macros_main_and_hooks_are_not_helpers(tmp_path, glossary):
+    text = (
+        "TEST(Suite, Name) {}\nTEST_F(Fixture, Name) {}\nINSTANTIATE_TEST_SUITE_P(All, Suite, Values(1));\n"
+        "int main(int argc, char** argv) { return 0; }\nvoid PrintTo(const Thing& thing, std::ostream* out) {}\n"
+        "bool operator==(const Thing& a, const Thing& b) { return true; }\n"
+    )
+    write(tmp_path / "src", "a.test.cc", text)
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_function_without_a_verb_in_a_non_test_source_file_is_not_a_test_helper(tmp_path, glossary):
+    write(tmp_path / "src", "a.cc", "void ExpectEqual(int a, int b) {}\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_test_helper_listed_in_the_allowed_names_passes(tmp_path, glossary):
+    names = tmp_path / "names.txt"
+    names.write_text("ExpectEqual  # a reason\n", encoding="utf-8")
+    write(tmp_path / "src", "a.test.cc", "void ExpectEqual(int a, int b) {}\n")
+    assert rules(run(tmp_path, glossary, names), "FAIL") == []
+
+
+# paper-line-length ---------------------------------------------------------------------------------
+
+
+def test_paper_line_over_the_limit_fails(tmp_path, glossary):
+    write(tmp_path / "docs" / "method-paper", "a.typ", "word " * 25 + "\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == ["paper-line-length"]
+
+
+def test_paper_line_at_the_limit_passes(tmp_path, glossary):
+    write(tmp_path / "docs" / "method-paper", "a.typ", "x" * 120 + "\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_paper_line_counts_columns_not_bytes(tmp_path, glossary):
+    write(tmp_path / "docs" / "method-paper", "a.typ", "é" * 120 + "\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_listed_unbreakable_paper_line_passes(tmp_path, glossary):
+    marker = check_rules.PAPER_LONG_LINE_EXEMPTIONS[0][1]
+    name = check_rules.PAPER_LONG_LINE_EXEMPTIONS[0][0]
+    write(tmp_path / "docs" / "method-paper", name, f'#link("https://example.org/{marker}")[A' + "x" * 120 + "\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_banned_word_in_a_paper_file_is_not_this_tools_business(tmp_path, glossary):
+    write(tmp_path / "docs" / "method-paper", "a.typ", "a stencil\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+# The rule table --------------------------------------------------------------------------------------
+
+
+def test_every_rule_the_tool_reports_is_in_the_rule_table():
+    source = Path(check_rules.__file__).read_text(encoding="utf-8")
+    reported = set(re.findall(r'reporter\.add\([^"]*?(?:FAIL|NOTE), "([a-z-]+)"', source))
+    reported |= {"test-helper-verb"}
+    assert reported <= {rule.rule_id for rule in check_rules.RULE_TABLE}
+
+
+def test_rule_table_ids_are_unique_and_levels_are_known():
+    ids = [rule.rule_id for rule in check_rules.RULE_TABLE]
+    assert len(ids) == len(set(ids))
+    assert {rule.level for rule in check_rules.RULE_TABLE} <= {check_rules.FAIL, check_rules.NOTE}

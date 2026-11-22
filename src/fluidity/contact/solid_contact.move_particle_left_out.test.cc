@@ -80,7 +80,7 @@ TEST(LeftOutSolids, FarDomainBox_IsAlwaysRead) {
 
 // Checks one shape's boundary: the start at the out-of-range distance reads the solid more than once, the start one
 // double farther reads it once.
-void ExpectBoundaryOfShape(std::string_view name) {
+void CheckBoundaryOfShape(std::string_view name) {
   SCOPED_TRACE(std::string(name));
   ContactError inside_error = ContactError::kNone;
   ContactError outside_error = ContactError::kNone;
@@ -94,34 +94,34 @@ void ExpectBoundaryOfShape(std::string_view name) {
 }
 
 TEST(LeftOutSolids, FlatSolidAtBoundary_ReadOnlyWithin) {
-  ExpectBoundaryOfShape("Flat");
+  CheckBoundaryOfShape("Flat");
 }
 
 TEST(LeftOutSolids, PlateAtBoundary_ReadOnlyWithin) {
-  ExpectBoundaryOfShape("Plate");
+  CheckBoundaryOfShape("Plate");
 }
 
 TEST(LeftOutSolids, BoxAtBoundary_ReadOnlyWithin) {
-  ExpectBoundaryOfShape("Box");
+  CheckBoundaryOfShape("Box");
 }
 
 TEST(LeftOutSolids, SphereAtBoundary_ReadOnlyWithin) {
-  ExpectBoundaryOfShape("Sphere");
+  CheckBoundaryOfShape("Sphere");
 }
 
 TEST(LeftOutSolids, SpinningCylinderAtBoundary_ReadOnlyWithin) {
   // The turn's term: min(Length(angular_velocity) T, 2) * Length(half_size), 0.4 * 0.15 m here, counts in the bound.
-  ExpectBoundaryOfShape("SpinningCylinder");
+  CheckBoundaryOfShape("SpinningCylinder");
 }
 
 TEST(LeftOutSolids, CylinderAtBoundary_ReadOnlyWithin) {
-  ExpectBoundaryOfShape("Cylinder");
+  CheckBoundaryOfShape("Cylinder");
 }
 
 TEST(LeftOutSolids, TurningBoxAtBoundary_ReadOnlyWithin) {
   // A box turning at 20 rad/s about z: its distance, the largest face-plane gap, is only bounded through its true
   // distance, so the window and the stepping search's gap count twice (kBoxDistanceShare).
-  ExpectBoundaryOfShape("TurningBox");
+  CheckBoundaryOfShape("TurningBox");
 }
 
 TEST(LeftOutSolids, ArrivingSphere_IsReadAndHits) {

@@ -294,7 +294,7 @@ GridBuffers& FindOtherBuffers(SharedBuffers& shared, BuffersOfGridA buffers_of_g
 // a failed build before each. The builder buffers hold nothing between builds, so every byte of A's six arrays, the
 // unused room included, and A's counts are the same before and after, and each grid built into the other buffers equals
 // the same grid built with memory of its own.
-void ExpectOtherGridUnchanged(SharedBuffers& shared, BuffersOfGridA buffers_of_grid_a) {
+void CheckOtherGridUnchanged(SharedBuffers& shared, BuffersOfGridA buffers_of_grid_a) {
   GridBuffers& a_buffers = FindBuffersOfGridA(shared, buffers_of_grid_a);
   GridBuffers& other_buffers = FindOtherBuffers(shared, buffers_of_grid_a);
   constexpr std::size_t kGridCount = 30;
@@ -324,14 +324,14 @@ TEST(BuildGrid, SharedBuilderBuffers_OtherLiveGridUnchanged) {
   std::optional<SharedBuffers> shared = BuildSharedBuffers();
   ASSERT_TRUE(shared.has_value());
   ASSERT_EQ(shared->builder_buffers->lent_count(), 2U);
-  ExpectOtherGridUnchanged(*shared, BuffersOfGridA::kFirst);
+  CheckOtherGridUnchanged(*shared, BuffersOfGridA::kFirst);
 }
 
 // The same with the two buffers swapped: whichever buffers hold the live grid, the other's work leaves it alone.
 TEST(BuildGrid, SharedBuilderBuffers_OtherLiveGridUnchangedInReverseOrder) {
   std::optional<SharedBuffers> shared = BuildSharedBuffers();
   ASSERT_TRUE(shared.has_value());
-  ExpectOtherGridUnchanged(*shared, BuffersOfGridA::kSecond);
+  CheckOtherGridUnchanged(*shared, BuffersOfGridA::kSecond);
 }
 
 }  // namespace

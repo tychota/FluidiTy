@@ -43,7 +43,7 @@ GridInputs ToInputs(GridFrame frame, std::span<const CellId> active_cells) {
 }
 
 // Appends the 8 small cells of `big_cell`, in cell eighth order.
-void AppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -107,7 +107,7 @@ std::vector<CellId> BuildCellWithEveryNeighbourSplit() {
     for (std::int32_t y = -1; y <= 1; ++y) {
       for (std::int32_t x = -1; x <= 1; ++x) {
         if (x != 0 || y != 0 || z != 0) {
-          AppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
         }
       }
     }
@@ -137,7 +137,7 @@ std::vector<CellId> BuildCellWithEverySideNeighbourSplit() {
       const std::int32_t x = axis == 0 ? side_step : 0;
       const std::int32_t y = axis == 1 ? side_step : 0;
       const std::int32_t z = axis == 2 ? side_step : 0;
-      AppendSmallCells(ToCell(0, x, y, z), cells);
+      ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
     }
   }
   return cells;
@@ -445,7 +445,7 @@ std::vector<NamedGrid> BuildGridsAtNegativeAndLimitCoords() {
   constexpr auto kLargestSplitCoord = static_cast<std::int32_t>((1U << 17U) - 1U);
   std::vector<NamedGrid> grids;
   std::vector<CellId> negative_two_size_cells = {ToCell(0, -1, -1, -1)};
-  AppendSmallCells(ToCell(0, 0, -1, -1), negative_two_size_cells);
+  ApplyAppendSmallCells(ToCell(0, 0, -1, -1), negative_two_size_cells);
   grids.push_back({.name = "two-size fixture at -1", .size_level_count = 2, .cells = negative_two_size_cells});
   grids.push_back(
       {.name = "every neighbour split", .size_level_count = 2, .cells = BuildCellWithEveryNeighbourSplit()}
@@ -461,10 +461,10 @@ std::vector<NamedGrid> BuildGridsAtNegativeAndLimitCoords() {
       .cells = {ToCell(0, -kMaxCoord, -kMaxCoord, -kMaxCoord), ToCell(0, -kMaxCoord + 1, -kMaxCoord + 1, -kMaxCoord)},
   });
   std::vector<CellId> high_split_cells = {ToCell(0, kLargestSplitCoord - 1, 0, 0)};
-  AppendSmallCells(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
+  ApplyAppendSmallCells(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
   grids.push_back({.name = "small cells at the high limit", .size_level_count = 2, .cells = high_split_cells});
   std::vector<CellId> low_split_cells = {ToCell(0, -kLargestSplitCoord + 1, 0, 0)};
-  AppendSmallCells(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
+  ApplyAppendSmallCells(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
   grids.push_back({.name = "small cells at the low split limit", .size_level_count = 2, .cells = low_split_cells});
   return grids;
 }
@@ -481,15 +481,15 @@ TEST(GridTables, GridsAtNegativeAndLimitCoords_MatchGeometricChecker) {
     LargestCounts largest_counts;
     const ActiveCellReaderMistakes mistakes =
         FindActiveCellReaderMistakes(ToTablesOf(test_grid), checker, named_grid.cells, largest_counts);
-    ExpectNoMistake("FindTouchingCells: the checker's places", mistakes.touching_cells_not_the_checkers);
-    ExpectNoMistake("FindTouchingCells: strictly ascending", mistakes.touching_cells_out_of_order);
-    ExpectNoMistake("FindTouchingCells: kNoIndex from count on", mistakes.touching_entries_past_count_not_no_index);
-    ExpectNoMistake("FindFacePieces: the checker's places", mistakes.face_pieces_not_the_checkers);
-    ExpectNoMistake("FindFacePieces: the checker's ids as a set", mistakes.face_piece_ids_not_the_checkers);
-    ExpectNoMistake("FindFacePieces: strictly ascending", mistakes.face_pieces_out_of_order);
-    ExpectNoMistake("FindFacePieces: kNoIndex from count on", mistakes.face_entries_past_count_not_no_index);
-    ExpectNoMistake("every side covered once", mistakes.sides_not_covered_once);
-    ExpectNoMistake("surface closed", mistakes.surfaces_not_closed);
+    CheckNoMistake("FindTouchingCells: the checker's places", mistakes.touching_cells_not_the_checkers);
+    CheckNoMistake("FindTouchingCells: strictly ascending", mistakes.touching_cells_out_of_order);
+    CheckNoMistake("FindTouchingCells: kNoIndex from count on", mistakes.touching_entries_past_count_not_no_index);
+    CheckNoMistake("FindFacePieces: the checker's places", mistakes.face_pieces_not_the_checkers);
+    CheckNoMistake("FindFacePieces: the checker's ids as a set", mistakes.face_piece_ids_not_the_checkers);
+    CheckNoMistake("FindFacePieces: strictly ascending", mistakes.face_pieces_out_of_order);
+    CheckNoMistake("FindFacePieces: kNoIndex from count on", mistakes.face_entries_past_count_not_no_index);
+    CheckNoMistake("every side covered once", mistakes.sides_not_covered_once);
+    CheckNoMistake("surface closed", mistakes.surfaces_not_closed);
     EXPECT_GT(largest_counts.touching_cells, 0);
   }
 }

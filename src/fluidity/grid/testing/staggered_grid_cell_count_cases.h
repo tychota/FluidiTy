@@ -6,7 +6,7 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    ToUnitFrame, ToCell, ToSizeLevelNumber, ToInputs, ComputeCountsOfList, ToFloorOfHalf, ToBigCellByDivision,
-//          ComputeCheckerBlockCount, ComputeActiveCellsPerSizeLevel, ToCountFields, ExpectCheckerCounts
+//          ComputeCheckerBlockCount, ComputeActiveCellsPerSizeLevel, ToCountFields, CheckCheckerCounts
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/staggered_grid.cell_count.test.cc and tests/grid/grid_counts_on_random_grids.test.cc
 // Read:    the test files that include it
@@ -115,7 +115,7 @@ inline std::tuple<std::uint32_t, std::array<std::uint64_t, kMaxSizeLevels>, std:
 
 // Expects the counts the checker gives for a valid list: its face pieces, the blocks of every active cell and the
 // bigger cells holding it, and the active cells counted from the list.
-inline void ExpectCheckerCounts(
+inline void CheckCheckerCounts(
     const std::expected<GridCounts, GridFailure>& counts,
     GridFrame frame,
     const std::vector<CellId>& active_cells

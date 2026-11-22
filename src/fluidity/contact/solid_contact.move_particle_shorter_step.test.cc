@@ -30,7 +30,7 @@ struct MoveParticleCall {
 
 // Runs MoveParticle on a scene with its step divided by 2^halving_count, every other input kept, the contact tolerance
 // included.
-MoveParticleCall RunMoveWithHalvings(const MoveParticleCase& scene, int halving_count) {
+MoveParticleCall ComputeMoveWithHalvings(const MoveParticleCase& scene, int halving_count) {
   SolidContactInputs inputs = ToSolidContactInputs(scene);
   inputs.step_duration = std::ldexp(inputs.step_duration, -halving_count);
   MoveParticleCall call;
@@ -40,14 +40,14 @@ MoveParticleCall RunMoveWithHalvings(const MoveParticleCase& scene, int halving_
 
 // Fails the calling test unless the scene fails with kTooCloseToCall, that close call and that solid, and
 // can_shorter_step_cure false, at its step T and at T / 2, T / 4 and T / 16.
-void ExpectSameCloseCallAtShorterSteps(
+void CheckSameCloseCallAtShorterSteps(
     const MoveParticleCase& scene,
     ContactCloseCall close_call,
     std::uint32_t solid_id
 ) {
   for (const int halving_count : {0, 1, 2, 4}) {
     SCOPED_TRACE("step divided by 2^" + std::to_string(halving_count));
-    const MoveParticleCall call = RunMoveWithHalvings(scene, halving_count);
+    const MoveParticleCall call = ComputeMoveWithHalvings(scene, halving_count);
     EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
     EXPECT_EQ(call.failure.close_call, close_call);
     EXPECT_EQ(call.failure.solid_id, solid_id);
@@ -58,9 +58,9 @@ void ExpectSameCloseCallAtShorterSteps(
 // Halves the scene's step until MoveParticle succeeds, at most max_halving_count times, and returns how many halvings
 // that took, or max_halving_count + 1 when none succeeded. Fails the calling test unless every failure on the way is
 // kTooCloseToCall with that close call and can_shorter_step_cure true.
-int CountHalvingsToSuccess(const MoveParticleCase& scene, ContactCloseCall close_call, int max_halving_count) {
+int ComputeCountHalvingsToSuccess(const MoveParticleCase& scene, ContactCloseCall close_call, int max_halving_count) {
   for (int halving_count = 0; halving_count <= max_halving_count; ++halving_count) {
-    const MoveParticleCall call = RunMoveWithHalvings(scene, halving_count);
+    const MoveParticleCall call = ComputeMoveWithHalvings(scene, halving_count);
     if (call.error == ContactError::kNone) {
       return halving_count;
     }
@@ -77,7 +77,7 @@ TEST(MoveParticle, PaddleThroughBottomSideRestingOnIt_SameCloseCallAtEveryShorte
   // A paddle turning through the bottom side of the domain box, the particle resting on that side against the paddle:
   // hit at 0 on the paddle, the side within tol + tol / 16 at the carry's start, so the carry is not safe at any step
   // length.
-  ExpectSameCloseCallAtShorterSteps(
+  CheckSameCloseCallAtShorterSteps(
       BuildShorterStepCase("PaddleThroughBottomSideRestingOnIt"),
       ContactCloseCall::kTurningSolidNearOtherSolid,
       2
@@ -87,7 +87,7 @@ TEST(MoveParticle, PaddleThroughBottomSideRestingOnIt_SameCloseCallAtEveryShorte
 TEST(MoveParticle, PaddleOnShaftInCrease_SameCloseCallAtEveryShorterStep) {
   // The crease of a paddle and the shaft it turns with, the particle at the rest gap of both: the paddle (id 3) is hit
   // at 0 and the shaft lies within the window.
-  ExpectSameCloseCallAtShorterSteps(
+  CheckSameCloseCallAtShorterSteps(
       BuildShorterStepCase("PaddleOnShaftInCrease"),
       ContactCloseCall::kTurningSolidNearOtherSolid,
       3
@@ -97,7 +97,7 @@ TEST(MoveParticle, PaddleOnShaftInCrease_SameCloseCallAtEveryShorterStep) {
 TEST(MoveParticle, DrivenBoxesInCrease_SameCloseCallAtEveryShorterStep) {
   // Two driven boxes with reports_reaction, the particle in their crease: the start's one response pushes both, naming
   // the higher index, id 3.
-  ExpectSameCloseCallAtShorterSteps(
+  CheckSameCloseCallAtShorterSteps(
       BuildShorterStepCase("DrivenBoxesInCrease"),
       ContactCloseCall::kSecondReactingSolid,
       3
@@ -107,7 +107,7 @@ TEST(MoveParticle, DrivenBoxesInCrease_SameCloseCallAtEveryShorterStep) {
 TEST(MoveParticle, DescendingBoxAtBottomSide_SameSqueezeAtEveryShorterStep) {
   // A box 2 tol above the bottom side coming down on a particle at rest between them: the stick to the box still
   // approaches the side, a squeeze naming the domain box (id 1), the solid the failing velocity approaches fastest.
-  ExpectSameCloseCallAtShorterSteps(
+  CheckSameCloseCallAtShorterSteps(
       BuildShorterStepCase("DescendingBoxAtBottomSide"),
       ContactCloseCall::kSqueezedBetweenSolids,
       1
@@ -116,7 +116,7 @@ TEST(MoveParticle, DescendingBoxAtBottomSide_SameSqueezeAtEveryShorterStep) {
 
 TEST(MoveParticle, SeventeenFloorsAtStart_TooManyHitsAtEveryShorterStep) {
   // 17 active surfaces at the start, one more than one response reads (kMaxTrackedSurfaces), naming the record's solid.
-  ExpectSameCloseCallAtShorterSteps(BuildShorterStepCase("SeventeenFloorsAtStart"), ContactCloseCall::kTooManyHits, 1);
+  CheckSameCloseCallAtShorterSteps(BuildShorterStepCase("SeventeenFloorsAtStart"), ContactCloseCall::kTooManyHits, 1);
 }
 
 // The scene PaddleThroughBottomSideRestingOnIt with one more fixed solid near the particle, beyond the window of the
@@ -176,10 +176,10 @@ Solid BuildBallNearRestingParticle() {
 
 // Fails the calling test unless the scene fails with kTurningSolidNearOtherSolid naming the paddle (id 2) and
 // can_shorter_step_cure false at T and at T / 2^k for each listed k.
-void ExpectNoCureAtHalvings(const MoveParticleCase& scene, std::initializer_list<int> halving_counts) {
+void CheckNoCureAtHalvings(const MoveParticleCase& scene, std::initializer_list<int> halving_counts) {
   for (const int halving_count : halving_counts) {
     SCOPED_TRACE("step divided by 2^" + std::to_string(halving_count));
-    const MoveParticleCall call = RunMoveWithHalvings(scene, halving_count);
+    const MoveParticleCall call = ComputeMoveWithHalvings(scene, halving_count);
     EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
     EXPECT_EQ(call.failure.close_call, ContactCloseCall::kTurningSolidNearOtherSolid);
     EXPECT_EQ(call.failure.solid_id, 2U);
@@ -190,14 +190,14 @@ void ExpectNoCureAtHalvings(const MoveParticleCase& scene, std::initializer_list
 TEST(MoveParticle, PaddleSceneWithCeilingFirst_NoCureWhateverTheOrder) {
   // The ceiling, beyond the window, fails the closing bound first in the array; the bottom side, within it, fails at
   // every step length, so the flag is false. Taken from the first failing solid it said true down to T / 2^25.
-  ExpectNoCureAtHalvings(
+  CheckNoCureAtHalvings(
       BuildPaddleSceneWithExtraSolid(BuildCeilingAboveRestingParticle(), ExtraSolidPlace::kFirst),
       {0, 1, 2, 4, 8, 16, 25, 26}
   );
 }
 
 TEST(MoveParticle, PaddleSceneWithCeilingLast_NoCure) {
-  ExpectNoCureAtHalvings(
+  CheckNoCureAtHalvings(
       BuildPaddleSceneWithExtraSolid(BuildCeilingAboveRestingParticle(), ExtraSolidPlace::kLast),
       {0, 1, 2, 4, 8, 16, 25, 26}
   );
@@ -206,14 +206,14 @@ TEST(MoveParticle, PaddleSceneWithCeilingLast_NoCure) {
 TEST(MoveParticle, PaddleSceneWithBallFirst_NoCureWhateverTheOrder) {
   // The ball 0.6 mm away fails the closing bound at T only; taken from the first failing solid the flag said true at
   // T, false from T / 2.
-  ExpectNoCureAtHalvings(
+  CheckNoCureAtHalvings(
       BuildPaddleSceneWithExtraSolid(BuildBallNearRestingParticle(), ExtraSolidPlace::kFirst),
       {0, 1, 2, 4}
   );
 }
 
 TEST(MoveParticle, PaddleSceneWithBallLast_NoCure) {
-  ExpectNoCureAtHalvings(
+  CheckNoCureAtHalvings(
       BuildPaddleSceneWithExtraSolid(BuildBallNearRestingParticle(), ExtraSolidPlace::kLast),
       {0, 1, 2, 4}
   );
@@ -225,7 +225,7 @@ TEST(MoveParticle, PaddleThroughBottomSideOneMillimetreAbove_CuredByOneHalving) 
   // The bottom side 1 mm below the particle is beyond the window: the closing bound of 1 ms, about 0.4 mm/ms times the
   // time left plus the fall, reaches it; that of 0.5 ms does not.
   EXPECT_EQ(
-      CountHalvingsToSuccess(
+      ComputeCountHalvingsToSuccess(
           BuildShorterStepCase("PaddleThroughBottomSideOneMillimetreAbove"),
           ContactCloseCall::kTurningSolidNearOtherSolid,
           8
@@ -237,7 +237,11 @@ TEST(MoveParticle, PaddleThroughBottomSideOneMillimetreAbove_CuredByOneHalving) 
 TEST(MoveParticle, DrivenBoxesNearCrease_CuredByThreeHalvings) {
   // The boxes reach the particle 2 ms into a step of 10 ms and one response pushes both; a step of 1.25 ms ends before.
   EXPECT_EQ(
-      CountHalvingsToSuccess(BuildShorterStepCase("DrivenBoxesNearCrease"), ContactCloseCall::kSecondReactingSolid, 8),
+      ComputeCountHalvingsToSuccess(
+          BuildShorterStepCase("DrivenBoxesNearCrease"),
+          ContactCloseCall::kSecondReactingSolid,
+          8
+      ),
       3
   );
 }
@@ -246,7 +250,7 @@ TEST(MoveParticle, DescendingBoxClosingOnBottomSide_CuredByTwoHalvings) {
   // The box reaches the particle 0.4 ms into the step and squeezes it there; a step of 0.25 ms ends before. The squeeze
   // comes back at the start of a later step, once the box is at the particle (DescendingBoxAtBottomSide).
   EXPECT_EQ(
-      CountHalvingsToSuccess(
+      ComputeCountHalvingsToSuccess(
           BuildShorterStepCase("DescendingBoxClosingOnBottomSide"),
           ContactCloseCall::kSqueezedBetweenSolids,
           8
@@ -258,19 +262,23 @@ TEST(MoveParticle, DescendingBoxClosingOnBottomSide_CuredByTwoHalvings) {
 TEST(MoveParticle, SeventeenFloorsBelowFalling_CuredByFourHalvings) {
   // The particle reaches the 17 floors 10 ms into a step of 100 ms; a step of 6.25 ms ends before.
   EXPECT_EQ(
-      CountHalvingsToSuccess(BuildShorterStepCase("SeventeenFloorsBelowFalling"), ContactCloseCall::kTooManyHits, 8),
+      ComputeCountHalvingsToSuccess(
+          BuildShorterStepCase("SeventeenFloorsBelowFalling"),
+          ContactCloseCall::kTooManyHits,
+          8
+      ),
       4
   );
 }
 
 TEST(MoveParticle, OctagonRoomFifthHit_CuredByTwoHalvings) {
-  EXPECT_EQ(CountHalvingsToSuccess(FindMoveParticleCase("OctagonRoom"), ContactCloseCall::kTooManyHits, 8), 2);
+  EXPECT_EQ(ComputeCountHalvingsToSuccess(FindMoveParticleCase("OctagonRoom"), ContactCloseCall::kTooManyHits, 8), 2);
 }
 
 TEST(MoveParticle, EscapeTooFastForTimeLeft_CuredByOneHalving) {
   // The squeeze of the rounding over the time left, with two active surfaces.
   EXPECT_EQ(
-      CountHalvingsToSuccess(
+      ComputeCountHalvingsToSuccess(
           FindMoveParticleCase("FloorRisingFastUnderSixtyDegreeWall"),
           ContactCloseCall::kSqueezedBetweenSolids,
           8
@@ -281,7 +289,7 @@ TEST(MoveParticle, EscapeTooFastForTimeLeft_CuredByOneHalving) {
 
 TEST(MoveParticle, HoverNearTurningBox_CuredByOneHalving) {
   EXPECT_EQ(
-      CountHalvingsToSuccess(
+      ComputeCountHalvingsToSuccess(
           FindMoveParticleCase("TurningBoxHoverOnSpinAxis"),
           ContactCloseCall::kHoverNearTurningSolid,
           8
@@ -304,7 +312,7 @@ TEST(MoveParticle, FallingAboveSpeedBound_CuredByOneHalving) {
           .friction = 0,
       }),
   };
-  EXPECT_EQ(CountHalvingsToSuccess(scene, ContactCloseCall::kMovesTooFastForStep, 8), 1);
+  EXPECT_EQ(ComputeCountHalvingsToSuccess(scene, ContactCloseCall::kMovesTooFastForStep, 8), 1);
 }
 
 TEST(CheckEndOutsideSolids, EndTooClose_ShorterStepCures) {
@@ -327,10 +335,10 @@ TEST(CheckEndOutsideSolids, EndTooClose_ShorterStepCures) {
 
 // Fails the calling test unless a failure with can_shorter_step_cure false comes back at T / 2, T / 4 and T / 16:
 // the same error, close call and solid, still false.
-void ExpectLastingFailure(const MoveParticleCase& scene, const ContactFailure& failure, ContactError error) {
+void CheckLastingFailure(const MoveParticleCase& scene, const ContactFailure& failure, ContactError error) {
   for (const int halving_count : {1, 2, 4}) {
     SCOPED_TRACE("step divided by 2^" + std::to_string(halving_count));
-    const MoveParticleCall shorter = RunMoveWithHalvings(scene, halving_count);
+    const MoveParticleCall shorter = ComputeMoveWithHalvings(scene, halving_count);
     EXPECT_EQ(shorter.error, error);
     EXPECT_EQ(shorter.failure.close_call, failure.close_call);
     EXPECT_EQ(shorter.failure.solid_id, failure.solid_id);
@@ -351,22 +359,22 @@ struct CatalogueFailureCounts {
 constexpr int kMostCatalogueHalvings = 26;
 
 // Checks one scene of the catalogue and counts it: a failure with can_shorter_step_cure false comes back at shorter
-// steps (ExpectLastingFailure); one with it true is a close call cured within kMostCatalogueHalvings halvings, every
+// steps (CheckLastingFailure); one with it true is a close call cured within kMostCatalogueHalvings halvings, every
 // failure on the way true.
 void CheckCatalogueScene(const MoveParticleCase& scene, CatalogueFailureCounts& counts) {
-  const MoveParticleCall call = RunMoveWithHalvings(scene, 0);
+  const MoveParticleCall call = ComputeMoveWithHalvings(scene, 0);
   if (call.error == ContactError::kNone) {
     return;
   }
   counts.errors.insert(call.error);
   if (!call.failure.can_shorter_step_cure) {
     ++counts.lasting;
-    ExpectLastingFailure(scene, call.failure, call.error);
+    CheckLastingFailure(scene, call.failure, call.error);
     return;
   }
   ++counts.cured;
   EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
-  const int halving_count = CountHalvingsToSuccess(scene, call.failure.close_call, kMostCatalogueHalvings);
+  const int halving_count = ComputeCountHalvingsToSuccess(scene, call.failure.close_call, kMostCatalogueHalvings);
   EXPECT_LE(halving_count, kMostCatalogueHalvings);
   counts.most_halvings = std::max(counts.most_halvings, halving_count);
 }

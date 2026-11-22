@@ -172,7 +172,7 @@ std::array<std::uint64_t, 4> ToFailureWords(const std::expected<Value, GridFailu
 }
 
 // Appends every count of `counts`: the blocks, the active cells per size level, the active cells and the face pieces.
-void AppendCountWords(const GridCounts& counts, std::vector<std::uint64_t>& digest_words) {
+void ApplyAppendCountWords(const GridCounts& counts, std::vector<std::uint64_t>& digest_words) {
   digest_words.push_back(counts.cell_blocks);
   for (const std::uint64_t size_level_count : counts.active_cells_per_size_level) {
     digest_words.push_back(size_level_count);
@@ -182,7 +182,7 @@ void AppendCountWords(const GridCounts& counts, std::vector<std::uint64_t>& dige
 }
 
 // Appends the key, error, cell and other_cell of the status record the GPU wrote into `buffers`, and its counts.
-void AppendStatusWords(const GridBuffers& buffers, std::vector<std::uint64_t>& digest_words) {
+void ApplyAppendStatusWords(const GridBuffers& buffers, std::vector<std::uint64_t>& digest_words) {
   GridBuildStatus status{};
   const std::expected<void, BufferError> read =
       ReadBuffer(ToGridBuffersArrays(buffers).build_status, 0, std::span<GridBuildStatus>(&status, 1));
@@ -204,11 +204,11 @@ std::uint64_t ComputeTableDigest(const Value* first, std::size_t count) {
 }
 
 // Appends the version, the counts and one digest of the used part of each table of a grid on the CPU.
-void AppendGridWords(const StaggeredGrid& cpu_grid, std::vector<std::uint64_t>& digest_words) {
+void ApplyAppendGridWords(const StaggeredGrid& cpu_grid, std::vector<std::uint64_t>& digest_words) {
   const GridTables tables = cpu_grid.tables(RunOn::kCpu);
   const std::size_t block_count = tables.block_count;
   digest_words.push_back(cpu_grid.version().value);
-  AppendCountWords(cpu_grid.counts(), digest_words);
+  ApplyAppendCountWords(cpu_grid.counts(), digest_words);
   digest_words.push_back(ComputeTableDigest(tables.block_ids, block_count));
   digest_words.push_back(ComputeTableDigest(tables.same_size_level_blocks, 27 * block_count));
   digest_words.push_back(ComputeTableDigest(tables.bigger_block, block_count));
@@ -219,7 +219,7 @@ void AppendGridWords(const StaggeredGrid& cpu_grid, std::vector<std::uint64_t>& 
 
 // Reads the GPU's grid back into cpu.read_buffers and expects it to equal the CPU's grid (frame, counts, version and
 // used tables); appends its words, then takes cpu.read_buffers back.
-void ExpectReadBackEqualsCpu(
+void CheckReadBackEqualsCpu(
     const StaggeredGrid& gpu_grid,
     const std::expected<StaggeredGrid, GridFailure>& cpu_grid,
     CpuBuffers& cpu,
@@ -229,15 +229,15 @@ void ExpectReadBackEqualsCpu(
   ASSERT_TRUE(read_grid.has_value());
   EXPECT_TRUE(cpu_grid.has_value() && ComputeIsSameGrid(*read_grid, *cpu_grid));
   EXPECT_EQ(read_grid->version().value, 1U);
-  AppendGridWords(*read_grid, digest_words);
+  ApplyAppendGridWords(*read_grid, digest_words);
   cpu.read_buffers = TakeBuffers(std::move(*read_grid));
 }
 
 // Builds `cells` on the GPU into `gpu_buffers` and on the CPU into cpu.build_buffers and expects the same failure, or,
-// on success, the same grid (ExpectReadBackEqualsCpu). Appends the failure words, the status record when the build ran
+// on success, the same grid (CheckReadBackEqualsCpu). Appends the failure words, the status record when the build ran
 // on the GPU, and on success the grid's words. Every set of buffers is taken back, so the next call starts from
 // buffers that held this grid.
-void ExpectGpuBuildEqualsCpu(
+void CheckGpuBuildEqualsCpu(
     GridFrame frame,
     std::span<const CellId> cells,
     GridBuffers& gpu_buffers,
@@ -252,7 +252,7 @@ void ExpectGpuBuildEqualsCpu(
   const std::array<std::uint64_t, 4> failure_words = ToFailureWords(gpu_grid);
   digest_words.insert(digest_words.end(), failure_words.begin(), failure_words.end());
   if (gpu_grid.has_value()) {
-    ExpectReadBackEqualsCpu(*gpu_grid, cpu_grid, cpu, digest_words);
+    CheckReadBackEqualsCpu(*gpu_grid, cpu_grid, cpu, digest_words);
     gpu_buffers = TakeBuffers(std::move(*gpu_grid));
   }
   if (cpu_grid.has_value()) {
@@ -260,7 +260,7 @@ void ExpectGpuBuildEqualsCpu(
   }
   // A list longer than the room's cell places fails before anything runs on the GPU: the record holds nothing of it.
   if (cells.size() <= std::size_t{kCellPlacesPerBlock} * gpu_buffers.max_cell_blocks()) {
-    AppendStatusWords(gpu_buffers, digest_words);
+    ApplyAppendStatusWords(gpu_buffers, digest_words);
   }
 }
 
@@ -293,7 +293,7 @@ std::vector<std::uint64_t> ComputeFixedAndRandomBuildWords() {
     return digest_words;
   }
   for (const FrameAndCells& list : BuildFixedAndRandomLists()) {
-    ExpectGpuBuildEqualsCpu(list.frame, list.cells, gpu_memory->buffers.front(), *gpu_memory, *cpu, digest_words);
+    CheckGpuBuildEqualsCpu(list.frame, list.cells, gpu_memory->buffers.front(), *gpu_memory, *cpu, digest_words);
   }
   return digest_words;
 }
@@ -309,7 +309,7 @@ TEST(BuildGrid, OnGpu_EqualsCpuTablesBitForBit) {
 //
 // clang-tidy: the failing list and the grid before it; the swappable-parameters check flags the two spans.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-void ExpectSameRoomFailure(
+void CheckSameRoomFailure(
     std::span<const CellId> cells,
     std::span<const CellId> grid_before,
     std::uint32_t max_cell_blocks,
@@ -319,8 +319,8 @@ void ExpectSameRoomFailure(
   ASSERT_NE(gpu_memory, nullptr);
   const std::unique_ptr<CpuBuffers> cpu = BuildCpuBuffers(max_cell_blocks);
   GridBuffers& gpu_buffers = gpu_memory->buffers.front();
-  ExpectGpuBuildEqualsCpu(ToUnitFrame(4), grid_before, gpu_buffers, *gpu_memory, *cpu, digest_words);
-  ExpectGpuBuildEqualsCpu(ToUnitFrame(4), cells, gpu_buffers, *gpu_memory, *cpu, digest_words);
+  CheckGpuBuildEqualsCpu(ToUnitFrame(4), grid_before, gpu_buffers, *gpu_memory, *cpu, digest_words);
+  CheckGpuBuildEqualsCpu(ToUnitFrame(4), cells, gpu_buffers, *gpu_memory, *cpu, digest_words);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -335,13 +335,13 @@ TEST(BuildGrid, OnGpuFailures_EqualCpuFailures) {
   std::vector<std::uint64_t> digest_words;
   for (std::uint64_t seed = 1; seed <= kMutatedGridCount; ++seed) {
     const std::vector<CellId> cells = BuildMutatedGridCells(seed);
-    ExpectGpuBuildEqualsCpu(ToUnitFrame(4), cells, gpu_memory->buffers.front(), *gpu_memory, *cpu, digest_words);
+    CheckGpuBuildEqualsCpu(ToUnitFrame(4), cells, gpu_memory->buffers.front(), *gpu_memory, *cpu, digest_words);
   }
   const std::vector<CellId> eight_blocks = BuildLoneCellsAlongX(8);
   const std::vector<CellId> one_block = {ToCell(0, 0, 0, 0), ToCell(0, 1, 0, 0), ToCell(0, 2, 0, 0)};
-  ExpectSameRoomFailure(BuildLoneCellsAlongX(9), eight_blocks, 8, digest_words);
-  ExpectSameRoomFailure(BuildLoneCellsAlongX((64 * 8) + 1), eight_blocks, 8, digest_words);
-  ExpectSameRoomFailure(BuildSmallCellsOfEightBigCells(), one_block, 1, digest_words);
+  CheckSameRoomFailure(BuildLoneCellsAlongX(9), eight_blocks, 8, digest_words);
+  CheckSameRoomFailure(BuildLoneCellsAlongX((64 * 8) + 1), eight_blocks, 8, digest_words);
+  CheckSameRoomFailure(BuildSmallCellsOfEightBigCells(), one_block, 1, digest_words);
   WriteResultDigest("BuildGrid on the GPU, failures", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -409,7 +409,7 @@ TEST(BuildGrid, OnGpuFailedBuildThenRebuild_EqualsFreshBuffers) {
   ASSERT_TRUE(after_failure.has_value());
   ASSERT_TRUE(from_fresh.has_value());
   EXPECT_TRUE(ComputeIsSameGrid(*after_failure, *from_fresh));
-  AppendGridWords(*after_failure, digest_words);
+  ApplyAppendGridWords(*after_failure, digest_words);
   WriteResultDigest("BuildGrid on the GPU, rebuild after a failure", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -435,7 +435,7 @@ TEST(BuildGrid, RebuildIntoUsedGpuBuffers_EqualsFreshBuffers) {
   ASSERT_TRUE(from_fresh.has_value());
   EXPECT_TRUE(ComputeIsSameGrid(*after_grid_one, *from_fresh));
   std::vector<std::uint64_t> digest_words;
-  AppendGridWords(*after_grid_one, digest_words);
+  ApplyAppendGridWords(*after_grid_one, digest_words);
   WriteResultDigest("BuildGrid on the GPU, rebuild into used buffers", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -459,7 +459,7 @@ void ApplyBuildInTurn(
   const std::uint64_t allocation_count_before = ComputeAllocationCount();
   std::expected<StaggeredGrid, GridFailure> built = BuildGrid(inputs, gpu_buffers);
   if (built.has_value()) {
-    AppendCountWords(built->counts(), builds.digest_words);
+    ApplyAppendCountWords(built->counts(), builds.digest_words);
     gpu_buffers = TakeBuffers(std::move(*built));
   } else {
     ++builds.failed_build_count;
@@ -537,7 +537,7 @@ TEST(ComputeMemoryBytes, MatchesAllocatedGpuBytes) {
 
 // Builds grid_count GPU grid buffers of 1,000 blocks and their builder buffers, shared as `builder_buffers_sharing`
 // says, in a GPU RunMemory of exactly their estimate, and expects the block used to the byte.
-void ExpectGpuBuildersHandOutTheEstimate(BuilderBuffersSharing builder_buffers_sharing, std::uint32_t grid_count) {
+void CheckGpuBuildersHandOutTheEstimate(BuilderBuffersSharing builder_buffers_sharing, std::uint32_t grid_count) {
   constexpr std::uint32_t kThousandBlocks = 1000;
   const std::vector<MemoryEstimateEntry> estimate =
       BuildGridMemoryEstimate(RunOn::kGpu, grid_count, kThousandBlocks, builder_buffers_sharing);
@@ -572,8 +572,8 @@ void ExpectGpuBuildersHandOutTheEstimate(BuilderBuffersSharing builder_buffers_s
 }
 
 TEST(BuildGridBuffers, OnGpuIntoRunMemory_HandsOutExactlyTheEstimate) {
-  ExpectGpuBuildersHandOutTheEstimate(BuilderBuffersSharing::kOnePerGrid, 1);
-  ExpectGpuBuildersHandOutTheEstimate(BuilderBuffersSharing::kOneForAllGrids, 2);
+  CheckGpuBuildersHandOutTheEstimate(BuilderBuffersSharing::kOnePerGrid, 1);
+  CheckGpuBuildersHandOutTheEstimate(BuilderBuffersSharing::kOneForAllGrids, 2);
 }
 
 // The counts of the 200 random grids on the GPU, each after the one before, equal the CPU's.
@@ -592,7 +592,7 @@ TEST(ComputeGridCounts, OnGpu_EqualsCpu) {
     ASSERT_TRUE(gpu_counts.has_value()) << grid;
     ASSERT_TRUE(cpu_counts.has_value()) << grid;
     EXPECT_EQ(ToGridCountFields(*gpu_counts), ToGridCountFields(*cpu_counts)) << grid;
-    AppendCountWords(*gpu_counts, digest_words);
+    ApplyAppendCountWords(*gpu_counts, digest_words);
   }
   WriteResultDigest("ComputeGridCounts on the GPU, random grids", std::span<const std::uint64_t>(digest_words));
 }
@@ -646,7 +646,7 @@ std::size_t ComputeWrongCallsInTurn(
     return wrong_count + 1;
   }
   wrong_count += ComputeIsSameGrid(*read_grid, reference) ? 0 : 1;
-  AppendGridWords(*read_grid, digest_words);
+  ApplyAppendGridWords(*read_grid, digest_words);
   cpu.read_buffers = TakeBuffers(std::move(*read_grid));
   return wrong_count;
 }
@@ -680,7 +680,7 @@ std::size_t ComputeWrongCallsOfGrids(
 // and a failed build before each (ComputeWrongCallsInTurn); each grid it builds, read back, equals the same grid built
 // on the CPU with memory of its own. A read back again equals A's first read: the shared builder buffers hold nothing
 // of A between builds. Appends the digest words.
-void ExpectOtherGpuGridUnchanged(std::size_t buffers_of_grid_a, std::vector<std::uint64_t>& digest_words) {
+void CheckOtherGpuGridUnchanged(std::size_t buffers_of_grid_a, std::vector<std::uint64_t>& digest_words) {
   constexpr std::size_t kGridCount = 30;
   const std::vector<std::size_t> grids = FindRandomGridsSpreadBySize(kGridCount);
   const std::vector<TestGrid> reference_grids = BuildReferenceGrids(grids);
@@ -699,16 +699,16 @@ void ExpectOtherGpuGridUnchanged(std::size_t buffers_of_grid_a, std::vector<std:
   const std::expected<StaggeredGrid, GridFailure> a_after = ReadGrid(*grid_a, cpu->read_buffers);
   ASSERT_TRUE(a_after.has_value());
   EXPECT_TRUE(ComputeIsSameGrid(*a_after, *a_before));
-  AppendGridWords(*a_after, digest_words);
+  ApplyAppendGridWords(*a_after, digest_words);
 }
 
 // Whichever of the two sets holds grid A, the other set's work leaves it alone.
 TEST(BuildGrid, OnGpuSharedBuilderBuffers_OtherLiveGridUnchanged) {
   std::vector<std::uint64_t> first_words;
-  ExpectOtherGpuGridUnchanged(0, first_words);
+  CheckOtherGpuGridUnchanged(0, first_words);
   WriteResultDigest("BuildGrid on the GPU, shared builder buffers", std::span<const std::uint64_t>(first_words));
   std::vector<std::uint64_t> second_words;
-  ExpectOtherGpuGridUnchanged(1, second_words);
+  CheckOtherGpuGridUnchanged(1, second_words);
   WriteResultDigest(
       "BuildGrid on the GPU, shared builder buffers in reverse order",
       std::span<const std::uint64_t>(second_words)

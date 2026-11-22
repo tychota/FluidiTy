@@ -35,6 +35,11 @@ Which rules apply to which files (a deliberate choice, written down here):
   whose condition names `__clang__`, `__GNUC__`, `_MSC_VER` or `__apple_build_version__` fails, in any branch of the
   block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
   it must be the list that clang-tidy sees.
+- `one-word-comment` applies to C++ files under src and tests. `test-helper-verb` applies to the functions defined in
+  test files (`.test.` in the name, or a `testing` or `tests` folder): it is `verb` for them, and the same
+  allowed-names file exempts a name. `paper-line-length` applies to the Typst files of docs/method-paper.
+RULE_TABLE below lists every rule with its level, the files it applies to and its reason; a rule added to the tool
+is one entry there and one pair of tests (it fires, it stays quiet on the nearest innocent text).
 """
 
 from __future__ import annotations
@@ -56,9 +61,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GLOSSARY_PATH = REPO_ROOT / "docs" / "glossary.md"
 DEFAULT_AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 DEFAULT_ALLOWED_NAMES_PATH = Path(__file__).resolve().parent / "check_rules_allowed_names.txt"
-DEFAULT_SCAN_PATHS = ("src", "tests")
+DEFAULT_SCAN_PATHS = ("src", "tests", "docs/method-paper")
 
-SCANNED_SUFFIXES = {".h", ".cuh", ".cc", ".cu", ".py", ".lean"}
+SCANNED_SUFFIXES = {".h", ".cuh", ".cc", ".cu", ".py", ".lean", ".typ"}
 CPP_SUFFIXES = {".h", ".cuh", ".cc", ".cu"}
 HEADER_SUFFIXES = {".h", ".cuh"}
 SKIPPED_DIRECTORY_NAMES = {".superpowers", ".venv", "out", ".git", "__pycache__"}
@@ -90,6 +95,34 @@ UNIT_TOKENS_IN_COMMENTS = {"m2", "m3"}
 
 FAIL = "FAIL"
 NOTE = "NOTE"
+
+
+@dataclass(frozen=True)
+class Rule:
+    rule_id: str
+    level: str  # FAIL: no false positive, fails the gate. NOTE: a detector that can be wrong, a reader decides.
+    applies_to: str
+    reason: str
+
+
+RULE_TABLE = (
+    Rule("file-header", FAIL, ".h and .cuh files", "a header says its purpose, idea, owner, users and reading"),
+    Rule("banned-word", FAIL, "every scanned file", "the glossary's Never say words"),
+    Rule("one-sense-word", NOTE, "every scanned file", "a word banned in one sense only; a reader decides the sense"),
+    Rule("abbreviation", FAIL, "every scanned file", "an abbreviation of the glossary is written out"),
+    Rule("milestone-code", FAIL, "every scanned file", "a milestone code says nothing to a reader of the code"),
+    Rule("dimension-suffix", FAIL, "every scanned file", "a name says Grid3D by its type, not by a 2D or 3D suffix"),
+    Rule("role-suffix", FAIL, "C++ files", "a type is named for what it is, not for the role Input or Options"),
+    Rule("backend-name", FAIL, ".h files", "a shared header names no backend"),
+    Rule("shared-by-reference", FAIL, "C++ files with FLUIDITY_CPU_AND_GPU", "GPU code cannot bind a constant"),
+    Rule("verb", FAIL, ".h and .cuh files", "a function starts with a verb AGENTS.md allows"),
+    Rule("bare-bool", FAIL, ".h and .cuh files", "a bool parameter says nothing at the call"),
+    Rule("private-gpu-include", FAIL, "C++ files", "a private GPU header is for its own folder"),
+    Rule("compiler-include", FAIL, "C++ files", "the tidy cache lists the headers the build compiler sees"),
+    Rule("one-word-comment", FAIL, "C++ files under src and tests", "a one-word comment says nothing the code does not"),
+    Rule("test-helper-verb", FAIL, "functions defined in test files", "a test helper starts with an allowed verb"),
+    Rule("paper-line-length", FAIL, "docs/method-paper/*.typ", "a paper line is at most 120 columns"),
+)
 
 
 class GlossaryError(Exception):
@@ -624,6 +657,22 @@ def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], re
                     )
 
 
+def find_banned_words(text: str, glossary: Sequence[NeverSayEntry]) -> list[str]:
+    """The glossary words banned in every sense that `text` contains, spelled as the glossary spells them, in
+    glossary order. Prose is read as `_check_words` reads a comment: a phrase does not span punctuation. A word banned
+    in one sense only is a NOTE for code, so it is not reported here."""
+    by_last_form = _entries_by_last_form(glossary)
+    found: dict[str, None] = {}
+    for line in text.splitlines():
+        for tokens in comment_segments(line):
+            candidates = sorted({position for token in set(tokens) for position in by_last_form.get(token, ())})
+            for position in candidates:
+                entry = glossary[position]
+                if entry.qualifier is None and contains_phrase(tokens, entry.words):
+                    found.setdefault(entry.spelled, None)
+    return list(found)
+
+
 def _check_milestones(path: Path, lines: list[ScannedLine], reporter: _Reporter) -> None:
     for token in split_name_pieces(path.stem):
         if _MILESTONE.match(token):
@@ -795,6 +844,10 @@ def _declared_function(statement: str) -> _Declared | None:
     return _Declared(names[-1], _split_parameters(text[open_paren + 1 :]), is_member_definition)
 
 
+# A macro call at namespace scope (`TEST(Suite, Name)`, `INSTANTIATE_TEST_SUITE_P(...)`) is not a function.
+_MACRO_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+# Names a test file must spell as GoogleTest and the C runtime ask.
+TEST_FRAMEWORK_NAMES = {"main", "SetUp", "TearDown", "PrintTo"}
 _BARE_BOOL_PARAMETER = re.compile(r"^(?:const\s+)?bool\b(?!\s*[&*(<])")
 
 
@@ -823,10 +876,13 @@ def _check_declarations(
     exact_names: set[str],
     allowed_names: set[str],
     reporter: _Reporter,
+    is_test_file: bool = False,
+    checks_bare_bool: bool = True,
 ) -> None:
     """Applies `verb` to free functions and `bare-bool` to every function declared at declaration scope.
 
-    `verbs` None skips the verb rule (a private `_gpu` header) and keeps bare-bool.
+    `verbs` None skips the verb rule (a private `_gpu` header) and keeps bare-bool. In a test file the verb rule is
+    `test-helper-verb`, and a macro call such as `TEST(...)`, `main` and the GoogleTest hooks are not helpers.
     A brace-stack scan assembles each statement. Declaration scope is a namespace or the braces of a class; function
     definitions, enums and initializers are skipped. A free function is declared where every scope is a namespace.
     """
@@ -839,7 +895,7 @@ def _check_declarations(
         if declared is None or declared.name == "operator":
             return
         for index, parameter in enumerate(declared.parameters):
-            if _BARE_BOOL_PARAMETER.match(parameter):
+            if checks_bare_bool and _BARE_BOOL_PARAMETER.match(parameter):
                 text = f"'{declared.name}' has a bool parameter; use an enum or two functions"
                 reporter.add(statement_line, FAIL, "bare-bool", text, key=f"{declared.name}:{index}")
         is_free = all(scope.kind == "namespace" for scope in stack)
@@ -849,11 +905,13 @@ def _check_declarations(
             return
         if name in exact_names or name in allowed_names or _starts_with_verb(name, verbs):
             return
+        if is_test_file and (_MACRO_NAME.fullmatch(name) or name in TEST_FRAMEWORK_NAMES):
+            return
         text = (
             f"function '{name}' does not start with an allowed verb (AGENTS.md); "
             "list it with its reason in tools/check_rules_allowed_names.txt"
         )
-        reporter.add(statement_line, FAIL, "verb", text, key=name)
+        reporter.add(statement_line, FAIL, "test-helper-verb" if is_test_file else "verb", text, key=name)
 
     continues_preprocessor_line = False
     for line in lines:
@@ -973,6 +1031,55 @@ def _check_compiler_includes(lines: list[ScannedLine], reporter: _Reporter) -> N
             reporter.add(line.number, FAIL, "compiler-include", text)
 
 
+# A comment line whose whole text is one word, as `// Done` or `// ok.`.
+_ONE_WORD_COMMENT = re.compile(r"[A-Za-z][A-Za-z0-9_'-]*[.!:;,?]*")
+# The one word of such a line that is not a comment about the code: the end of a namespace.
+_ONE_WORD_COMMENT_EXEMPT_PREFIXES = ("NOLINT", "namespace")
+
+
+def _check_one_word_comments(lines: list[ScannedLine], reporter: _Reporter) -> None:
+    """Fails a `//` comment line of one word. A line beside another comment line continues a sentence or a list, so it
+    is left alone; `NOLINT...` and the end of a namespace are exempt."""
+
+    def is_comment_only(index: int) -> bool:
+        return 0 <= index < len(lines) and not lines[index].code.strip() and bool(lines[index].comment.strip())
+
+    for index, line in enumerate(lines):
+        if not is_comment_only(index) or is_comment_only(index - 1) or is_comment_only(index + 1):
+            continue
+        word = line.comment.strip()
+        if _ONE_WORD_COMMENT.fullmatch(word) and not word.startswith(_ONE_WORD_COMMENT_EXEMPT_PREFIXES):
+            reporter.add(line.number, FAIL, "one-word-comment", f"the comment '{word}' is one word; say more or delete it")
+
+
+PAPER_LINE_LIMIT = 120
+# Paper lines over the limit that cannot be rewrapped, each with its reason: a Typst content block `[...]` must
+# start right after the `)` of its call, so a long URL and the first word of the block share a line.
+PAPER_LONG_LINE_EXEMPTIONS = (
+    ("references.typ", "Huang_Neural_Kernel_Surface_Reconstruction_CVPR_2023_paper.pdf", "one URL longer than the limit"),
+)
+
+
+def _check_paper_line_length(path: Path, text: str, reporter: _Reporter) -> None:
+    """Fails a line of a method-paper Typst file over PAPER_LINE_LIMIT columns, unless PAPER_LONG_LINE_EXEMPTIONS
+    lists it."""
+    for number, line in enumerate(text.splitlines(), start=1):
+        if len(line) <= PAPER_LINE_LIMIT:
+            continue
+        if any(path.name == name and marker in line for name, marker, _reason in PAPER_LONG_LINE_EXEMPTIONS):
+            continue
+        reporter.add(number, FAIL, "paper-line-length", f"the line has {len(line)} columns; the limit is {PAPER_LINE_LIMIT}")
+
+
+def _is_test_file(path: Path) -> bool:
+    """A test file has `.test.` in its name, or lies in a `testing` folder or a `tests` folder."""
+    return ".test." in path.name or TEST_CODE_FOLDER in path.parts[:-1] or TESTS_FOLDER in path.parts[:-1]
+
+
+def _is_under_source_folders(path: Path) -> bool:
+    return "src" in path.parts or TESTS_FOLDER in path.parts
+
+
 def check_text(
     path: Path,
     text: str,
@@ -985,6 +1092,9 @@ def check_text(
     lines = split_lines(path, text)
     reporter = _Reporter(path)
     suffix = path.suffix
+    if suffix == ".typ":
+        _check_paper_line_length(path, text, reporter)
+        return sorted(reporter.findings(), key=lambda finding: (finding.line, finding.rule_id))
     # Scope of the rules (see the module docstring): file-header, bare-bool and verb look at public
     # declarations, so they apply to .h and .cuh only. backend-name applies to .h only, where names are public
     # and shared; a .cuh file may name its backend.
@@ -999,8 +1109,15 @@ def check_text(
         _check_shared_by_reference(lines, reporter)
         _check_private_gpu_includes(path, text, lines, reporter)
         _check_compiler_includes(lines, reporter)
+        if _is_under_source_folders(path):
+            _check_one_word_comments(lines, reporter)
+    is_test_file = _is_test_file(path)
     if suffix in HEADER_SUFFIXES:
-        _check_declarations(lines, None if is_private_gpu_file else verbs, exact_names, allowed_names, reporter)
+        _check_declarations(
+            lines, None if is_private_gpu_file else verbs, exact_names, allowed_names, reporter, is_test_file
+        )
+    elif suffix in CPP_SUFFIXES and is_test_file and not is_private_gpu_file:
+        _check_declarations(lines, verbs, exact_names, allowed_names, reporter, True, checks_bare_bool=False)
     if suffix == ".h" and not is_private_gpu_file:
         _check_backend_names(lines, allowed_names, reporter)
     return sorted(reporter.findings(), key=lambda finding: (finding.line, finding.rule_id))
@@ -1126,7 +1243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--repository", default=str(REPO_ROOT), help="the git repository whose staged changes are read"
     )
     arguments = parser.parse_args(argv)
-    paths = [Path(path) for path in arguments.paths] or [REPO_ROOT / name for name in DEFAULT_SCAN_PATHS]
+    default_paths = [REPO_ROOT / name for name in DEFAULT_SCAN_PATHS if (REPO_ROOT / name).exists()]
+    paths = [Path(path) for path in arguments.paths] or default_paths
     missing = [path for path in paths if not path.exists()]
     if missing:
         for path in missing:

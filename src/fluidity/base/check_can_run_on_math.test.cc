@@ -12,7 +12,7 @@ namespace fluidity {
 namespace {
 
 // Whether every double of a result is an ordinary number, neither infinite nor NaN.
-bool IsFiniteResult(const MathCheckResult& result) {
+bool ComputeIsFiniteResult(const MathCheckResult& result) {
   const bool vectors_are_finite = math::IsFinite(result.cross) && math::IsFinite(result.rotated_first);
   const bool dot_values_are_finite = math::IsFinite(result.dot) && math::IsFinite(result.square_root_of_dot)
       && math::IsFinite(result.floor_of_scaled_dot);
@@ -49,7 +49,7 @@ TEST(BuildMathCheckInputs, SeveralProducts_AreSubnormal) {
 TEST(ComputeMathCheckResult, EveryInput_GivesFiniteValues) {
   for (int input_index = 0; input_index < kMathCheckInputCount; ++input_index) {
     const MathCheckResult result = ComputeMathCheckResult(BuildMathCheckInputs(input_index));
-    EXPECT_TRUE(IsFiniteResult(result)) << "input " << input_index;
+    EXPECT_TRUE(ComputeIsFiniteResult(result)) << "input " << input_index;
   }
 }
 

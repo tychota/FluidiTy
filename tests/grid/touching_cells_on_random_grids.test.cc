@@ -28,18 +28,18 @@ TEST(GridTables, RandomGrids_EveryActiveCellReaderMatchesGeometricChecker) {
         BuildShuffledRandomGrids().at(grid),
         largest_counts
     );
-    ExpectNoMistake(
+    CheckNoMistake(
         "FindTouchingCells: the checker's places in ascending order",
         mistakes.touching_cells_not_the_checkers
     );
-    ExpectNoMistake("FindTouchingCells: strictly ascending", mistakes.touching_cells_out_of_order);
-    ExpectNoMistake("FindTouchingCells: kNoIndex from count on", mistakes.touching_entries_past_count_not_no_index);
-    ExpectNoMistake("FindFacePieces: the checker's places in ascending order", mistakes.face_pieces_not_the_checkers);
-    ExpectNoMistake("FindFacePieces: the checker's ids as a set", mistakes.face_piece_ids_not_the_checkers);
-    ExpectNoMistake("FindFacePieces: strictly ascending", mistakes.face_pieces_out_of_order);
-    ExpectNoMistake("FindFacePieces: kNoIndex from count on", mistakes.face_entries_past_count_not_no_index);
-    ExpectNoMistake("EveryCellSide_IsCoveredOnce", mistakes.sides_not_covered_once);
-    ExpectNoMistake("ClosedSurface_AreasCancel", mistakes.surfaces_not_closed);
+    CheckNoMistake("FindTouchingCells: strictly ascending", mistakes.touching_cells_out_of_order);
+    CheckNoMistake("FindTouchingCells: kNoIndex from count on", mistakes.touching_entries_past_count_not_no_index);
+    CheckNoMistake("FindFacePieces: the checker's places in ascending order", mistakes.face_pieces_not_the_checkers);
+    CheckNoMistake("FindFacePieces: the checker's ids as a set", mistakes.face_piece_ids_not_the_checkers);
+    CheckNoMistake("FindFacePieces: strictly ascending", mistakes.face_pieces_out_of_order);
+    CheckNoMistake("FindFacePieces: kNoIndex from count on", mistakes.face_entries_past_count_not_no_index);
+    CheckNoMistake("EveryCellSide_IsCoveredOnce", mistakes.sides_not_covered_once);
+    CheckNoMistake("ClosedSurface_AreasCancel", mistakes.surfaces_not_closed);
   }
   // Within the bounds, and beyond what cells of one size give (26 touching cells, 6 face pieces), so split places
   // beside a cell were met.

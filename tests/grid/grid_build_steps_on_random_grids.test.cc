@@ -119,7 +119,7 @@ bool ComputeHoldsActiveCell(
 
 // A named cell has no active cell at the end of its eighth-0 chain, while its big cell holds one. When a removed cell
 // ended the chain of a split cell, that split cell is named too: its chain is broken.
-void ExpectNamedCellAbsent(const std::vector<CellId>& cells, const CellCheck& cell_check, std::uint64_t seed) {
+void CheckNamedCellAbsent(const std::vector<CellId>& cells, const CellCheck& cell_check, std::uint64_t seed) {
   EXPECT_EQ(cell_check.error, GridError::kSiblingCellMissing);
   EXPECT_FALSE(ComputeHoldsActiveCell(cells, cell_check.cell, 4, CornerRule::kSameLowCorner)) << seed;
   EXPECT_TRUE(ComputeHoldsActiveCell(cells, cell_check.other_cell, 4, CornerRule::kAnyCorner)) << seed;
@@ -127,7 +127,7 @@ void ExpectNamedCellAbsent(const std::vector<CellId>& cells, const CellCheck& ce
 
 // Leaves out of one random grid its first cell of size level 1 or more (a size-level-0 cell has no siblings to miss)
 // and checks the siblings at every position.
-void ExpectMissingCellNamedOnlyWithAbsentCells(std::uint64_t seed) {
+void CheckMissingCellNamedOnlyWithAbsentCells(std::uint64_t seed) {
   std::vector<CellId> cells = BuildSortedRandomGrid(seed);
   const auto removed = std::ranges::find_if(cells, [](CellId cell) {
     return ToSizeLevel(cell) != SizeLevel{0};
@@ -143,7 +143,7 @@ void ExpectMissingCellNamedOnlyWithAbsentCells(std::uint64_t seed) {
     if (cell_check.error == GridError::kNone) {
       continue;
     }
-    ExpectNamedCellAbsent(cells, cell_check, seed);
+    CheckNamedCellAbsent(cells, cell_check, seed);
     is_removed_cell_named = is_removed_cell_named || cell_check.cell.value == removed_cell.value;
   }
   EXPECT_TRUE(is_removed_cell_named) << seed;
@@ -151,7 +151,7 @@ void ExpectMissingCellNamedOnlyWithAbsentCells(std::uint64_t seed) {
 
 TEST(CheckSiblingsAt, RandomGridMissingOneCell_NamesTheCellAndOnlyAbsentCells) {
   for (std::uint64_t seed = 1; seed <= 200; ++seed) {
-    ExpectMissingCellNamedOnlyWithAbsentCells(seed);
+    CheckMissingCellNamedOnlyWithAbsentCells(seed);
   }
 }
 
@@ -238,7 +238,7 @@ std::vector<CellId> ComputeCellIdsWithSplitCells(
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
 // Expects `cell_ids` to hold `cells`, then each split cell of `cells` once, then the two stale ids.
-void ExpectSplitCellsAppended(
+void CheckSplitCellsAppended(
     const std::vector<CellId>& cell_ids,
     const std::vector<CellId>& cells,
     std::uint64_t seed
@@ -275,11 +275,11 @@ TEST(ApplySplitCellWritesAt, RandomGrids_AppendExactlyTheSplitCells) {
     for (std::uint32_t position = 0; position < ToCount(cells); ++position) {
       positions[position] = position;
     }
-    ExpectSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
+    CheckSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
     std::ranges::reverse(positions);
-    ExpectSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
+    CheckSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
     ApplyFixedPositionShuffle(positions, seed + 2000);
-    ExpectSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
+    CheckSplitCellsAppended(ComputeCellIdsWithSplitCells(cells, sums, positions), cells, seed);
   }
 }
 
@@ -315,7 +315,7 @@ class BlockLookup {
 };
 
 // Expects the 27 same-size-level entries of one block to be the blocks the lookup finds at b + (dx, dy, dz).
-void ExpectSameSizeLevelEntriesFound(const TableVectors& tables, const BlockLookup& lookup, std::uint32_t block) {
+void CheckSameSizeLevelEntriesFound(const TableVectors& tables, const BlockLookup& lookup, std::uint32_t block) {
   const CellCoord block_coord = ToBlockCoord(tables.block_ids.at(block));
   const int size_level = ToSizeLevelNumber(tables.block_ids.at(block));
   std::uint32_t entry = 0;
@@ -336,7 +336,7 @@ void ExpectSameSizeLevelEntriesFound(const TableVectors& tables, const BlockLook
 
 // Expects the bigger block of one block to be the lookup's at floor(b / 2), size level l - 1, and none at size
 // level 0; and its smaller block of eighth e the lookup's at 2 b + (e % 2, (e / 2) % 2, e / 4), size level l + 1.
-void ExpectBiggerAndSmallerEntriesFound(const TableVectors& tables, const BlockLookup& lookup, std::uint32_t block) {
+void CheckBiggerAndSmallerEntriesFound(const TableVectors& tables, const BlockLookup& lookup, std::uint32_t block) {
   const CellCoord block_coord = ToBlockCoord(tables.block_ids.at(block));
   const int size_level = ToSizeLevelNumber(tables.block_ids.at(block));
   std::uint32_t expected_bigger = kNoIndex;
@@ -369,8 +369,8 @@ TEST(FindBlockNeighbours, RandomGrids_MatchADirectLookup) {
     const TableVectors& tables = BuildRandomGridTables().at(seed - 1);
     const BlockLookup lookup(tables.block_ids);
     for (std::uint32_t block = 0; block < tables.block_ids.size(); ++block) {
-      ExpectSameSizeLevelEntriesFound(tables, lookup, block);
-      ExpectBiggerAndSmallerEntriesFound(tables, lookup, block);
+      CheckSameSizeLevelEntriesFound(tables, lookup, block);
+      CheckBiggerAndSmallerEntriesFound(tables, lookup, block);
     }
   }
 }
@@ -489,7 +489,7 @@ bool ComputeIsIdFailure(const GridFailure& failure) {
 
 // Expects each replay to give cpu_failure and, unless the ids failed, expected_sorted. `context` names the list and
 // the sibling check.
-void ExpectReplaysEqualCpu(
+void CheckReplaysEqualCpu(
     const std::array<ReplayResult, 2>& replays,
     const GridFailure& cpu_failure,
     const std::vector<std::uint64_t>& expected_sorted,
@@ -508,7 +508,7 @@ void ExpectReplaysEqualCpu(
 // (0 for the GPU's own), on the replay's own cell ids, then runs BuildSortedCellList on the CPU buffers. Expects the
 // same failure, and, unless the ids failed, the sorted list of ComesBefore, which is also the CPU check's when it
 // passes. `name` says which list failed.
-void ExpectReplayEqualsCpu(
+void CheckReplayEqualsCpu(
     GridFrame frame,
     std::span<const CellId> cells,
     std::span<const SiblingCheck> sibling_checks,
@@ -530,7 +530,7 @@ void ExpectReplayEqualsCpu(
       const std::vector<CellId> cpu_sorted(cpu_cell_ids.data(), cpu_cell_ids.data() + *cpu_result);
       EXPECT_EQ(ToValues(cpu_sorted), expected_sorted) << context;
     }
-    ExpectReplaysEqualCpu(
+    CheckReplaysEqualCpu(
         replays,
         cpu_result.has_value() ? GridFailure{} : cpu_result.error(),
         expected_sorted,
@@ -580,7 +580,7 @@ TEST(BuildSortedCellList, EveryThreadBlockAndThread_SameFirstFailureAsCpu) {
   constexpr std::array<SiblingCheck, 1> kSiblingsRequired = {SiblingCheck::kRequire};
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
     const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(grid);
-    ExpectReplayEqualsCpu(
+    CheckReplayEqualsCpu(
         ToUnitFrame(4),
         cells,
         kSiblingsRequired,
@@ -591,9 +591,9 @@ TEST(BuildSortedCellList, EveryThreadBlockAndThread_SameFirstFailureAsCpu) {
     );
   }
   for (const std::vector<CellId>& cells : BuildEveryTwoSizeLevelsApartList()) {
-    ExpectReplayEqualsCpu(ToUnitFrame(3), cells, kSiblingChecks, 0, buffers, arrays, "two size levels apart");
+    CheckReplayEqualsCpu(ToUnitFrame(3), cells, kSiblingChecks, 0, buffers, arrays, "two size levels apart");
   }
-  ExpectReplayEqualsCpu(
+  CheckReplayEqualsCpu(
       ToUnitFrame(3),
       BuildSizeStepBreakWithSiblings(),
       kSiblingChecks,
@@ -605,7 +605,7 @@ TEST(BuildSortedCellList, EveryThreadBlockAndThread_SameFirstFailureAsCpu) {
   std::set<GridError> errors_seen;
   for (std::uint64_t seed = 1; seed <= kReplayedMutatedGridCount; ++seed) {
     const std::vector<CellId> cells = BuildMutatedGridCells(seed);
-    ExpectReplayEqualsCpu(
+    CheckReplayEqualsCpu(
         ToUnitFrame(4),
         cells,
         kSiblingChecks,
@@ -640,7 +640,7 @@ TEST(BuildSortedCellList, LargeListAfterStaleValues_SameFirstFailureAsCpu) {
   const std::vector<CellId> valid_cells = BuildLargeBoxOfCells({});
   for (const std::vector<CellId>* cells : {&failing_cells, &valid_cells}) {
     for (const std::size_t thread_count : {std::size_t{0}, std::size_t{1000}}) {
-      ExpectReplayEqualsCpu(
+      CheckReplayEqualsCpu(
           ToUnitFrame(3),
           *cells,
           kSiblingChecks,
@@ -672,10 +672,10 @@ TEST(BuildSortedCellList, SeveralItemsPerThread_SameFirstFailureAsCpu) {
   for (const std::size_t thread_count : {std::size_t{1}, std::size_t{7}}) {
     const std::string threads = ", threads " + std::to_string(thread_count);
     for (const std::vector<CellId>& cells : BuildEveryTwoSizeLevelsApartList()) {
-      ExpectReplayEqualsCpu(ToUnitFrame(3), cells, kSiblingChecks, thread_count, buffers, arrays, "apart" + threads);
+      CheckReplayEqualsCpu(ToUnitFrame(3), cells, kSiblingChecks, thread_count, buffers, arrays, "apart" + threads);
     }
     for (std::uint64_t seed = 1; seed <= 20; ++seed) {
-      ExpectReplayEqualsCpu(
+      CheckReplayEqualsCpu(
           ToUnitFrame(4),
           BuildMutatedGridCells(seed),
           kSiblingChecks,
@@ -700,11 +700,11 @@ enum class ReplayStart : std::uint8_t {
 
 // Replays the build of `cells` in both launch orders with `thread_count` threads (0 for the GPU's own), the forward
 // order from `start` and the reverse one after ApplyStaleValues, then runs the CPU build (ComputeCpuBuildOfList), and
-// expects each replay to equal it (ExpectBuildReplayEqualsCpuBuild). On success the status block count is the CPU's.
+// expects each replay to equal it (CheckBuildReplayEqualsCpuBuild). On success the status block count is the CPU's.
 //
 // clang-tidy: a room and a thread count; the swappable-parameters check flags the integers.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-void ExpectBuildReplayEqualsCpu(
+void CheckBuildReplayEqualsCpu(
     GridFrame frame,
     std::span<const CellId> cells,
     std::size_t thread_count,
@@ -723,8 +723,8 @@ void ExpectBuildReplayEqualsCpu(
     replays.at(order_index) = ComputeBuildReplay(inputs, buffers, launch, ReplayChange::kNone, arrays);
   }
   const CpuBuildOfList cpu_build = ComputeCpuBuildOfList(inputs, buffers);
-  ExpectBuildReplayEqualsCpuBuild(replays.at(0), cpu_build, name + ", forward");
-  ExpectBuildReplayEqualsCpuBuild(replays.at(1), cpu_build, name + ", reverse");
+  CheckBuildReplayEqualsCpuBuild(replays.at(0), cpu_build, name + ", forward");
+  CheckBuildReplayEqualsCpuBuild(replays.at(1), cpu_build, name + ", reverse");
 }
 
 // Replays the full build of random grid 1 into `arrays` after ApplyStaleValues, then the build of the 14 lone cells
@@ -746,7 +746,7 @@ BuildReplayResult ComputeLoneCellsAfterGridOne(ReplayChange change, const GridBu
 }
 
 // Expects places 14 and 15 of the lone cells' build to hold cell ids just before step (d) and the id 0 after it.
-void ExpectTailStaleThenFilled(const ReplayArrays& arrays) {
+void CheckTailStaleThenFilled(const ReplayArrays& arrays) {
   ASSERT_EQ(arrays.cells_before_tail_fill.size(), 16U);
   const std::array<std::uint64_t, 2> cell_marks_before = {
       arrays.cells_before_tail_fill.at(14).value & kIdCellMark,
@@ -771,12 +771,12 @@ TEST(ApplySortTailFillAt, UsedBuffers_HoldNoStaleCell) {
   ASSERT_TRUE(arrays.order_buffers.has_value());
 
   const BuildReplayResult lone_build = ComputeLoneCellsAfterGridOne(ReplayChange::kNone, buffers, arrays);
-  ExpectTailStaleThenFilled(arrays);
+  CheckTailStaleThenFilled(arrays);
   const std::vector<CellId> lone_cells = BuildLoneCellsAlongX(14);
   const CpuBuildOfList cpu_build =
       ComputeCpuBuildOfList({.frame = ToUnitFrame(4), .active_cells = lone_cells, .version = {.value = 1}}, buffers);
   EXPECT_EQ(lone_build.cell_blocks, 14U);
-  ExpectBuildReplayEqualsCpuBuild(lone_build, cpu_build, "lone cells after random grid 1");
+  CheckBuildReplayEqualsCpuBuild(lone_build, cpu_build, "lone cells after random grid 1");
 
   const BuildReplayResult without_fill = ComputeLoneCellsAfterGridOne(ReplayChange::kWithoutTailFill, buffers, arrays);
   EXPECT_EQ(without_fill.cell_blocks, 15U);
@@ -816,14 +816,14 @@ struct ListAfterOtherGrid {
 };
 
 // Replays and checks the build of lists.other_cells, then that of lists.failing_cells from the arrays it left
-// (ExpectBuildReplayEqualsCpu), so the failing list starts from buffers that held another grid.
-void ExpectFailingListAfterOtherGrid(
+// (CheckBuildReplayEqualsCpu), so the failing list starts from buffers that held another grid.
+void CheckFailingListAfterOtherGrid(
     const ListAfterOtherGrid& lists,
     GridBuffers& buffers,
     ReplayArrays& arrays,
     const std::string& name
 ) {
-  ExpectBuildReplayEqualsCpu(
+  CheckBuildReplayEqualsCpu(
       ToUnitFrame(4),
       lists.other_cells,
       lists.thread_count,
@@ -832,7 +832,7 @@ void ExpectFailingListAfterOtherGrid(
       arrays,
       name + ", the grid before"
   );
-  ExpectBuildReplayEqualsCpu(
+  CheckBuildReplayEqualsCpu(
       ToUnitFrame(4),
       lists.failing_cells,
       lists.thread_count,
@@ -892,10 +892,10 @@ TEST(BuildGrid, EveryThreadBlockAndThread_EqualsCpuTables) {
            std::tuple{ToUnitFrame(3), std::span<const CellId>(one_cell), std::string("one cell")},
            std::tuple{ToUnitFrame(3), std::span<const CellId>(two_size_cells), std::string("the two-size fixture")},
        }) {
-    ExpectBuildReplayEqualsCpu(frame, cells, 0, ReplayStart::kAfterPreviousList, buffers, arrays, name);
+    CheckBuildReplayEqualsCpu(frame, cells, 0, ReplayStart::kAfterPreviousList, buffers, arrays, name);
   }
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
-    ExpectBuildReplayEqualsCpu(
+    CheckBuildReplayEqualsCpu(
         ToUnitFrame(4),
         BuildShuffledRandomGrids().at(grid),
         0,
@@ -906,7 +906,7 @@ TEST(BuildGrid, EveryThreadBlockAndThread_EqualsCpuTables) {
     );
   }
   for (std::uint64_t seed = 1; seed <= kReplayedMutatedGridCount; ++seed) {
-    ExpectBuildReplayEqualsCpu(
+    CheckBuildReplayEqualsCpu(
         ToUnitFrame(4),
         BuildMutatedGridCells(seed),
         0,
@@ -929,13 +929,13 @@ TEST(BuildGrid, EveryThreadBlockAndThread_EqualsCpuTables) {
   const std::vector<CellId> one_block = {ToCell(0, 0, 0, 0), ToCell(0, 1, 0, 0), ToCell(0, 2, 0, 0)};
   for (const std::size_t thread_count : {std::size_t{0}, std::size_t{1}, std::size_t{7}}) {
     const std::string threads = ", threads " + std::to_string(thread_count);
-    ExpectFailingListAfterOtherGrid(
+    CheckFailingListAfterOtherGrid(
         {.other_cells = eight_blocks, .failing_cells = BuildLoneCellsAlongX(9), .thread_count = thread_count},
         buffers_of_8,
         arrays_of_8,
         "nine blocks into eight" + threads
     );
-    ExpectFailingListAfterOtherGrid(
+    CheckFailingListAfterOtherGrid(
         {
             .other_cells = eight_blocks,
             .failing_cells = BuildLoneCellsAlongX((64 * 8) + 1),
@@ -945,7 +945,7 @@ TEST(BuildGrid, EveryThreadBlockAndThread_EqualsCpuTables) {
         arrays_of_8,
         "513 cells into eight blocks" + threads
     );
-    ExpectFailingListAfterOtherGrid(
+    CheckFailingListAfterOtherGrid(
         {.other_cells = one_block, .failing_cells = BuildSmallCellsOfEightBigCells(), .thread_count = thread_count},
         buffers_of_1,
         arrays_of_1,

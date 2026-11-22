@@ -233,7 +233,7 @@ constexpr std::array<double Mat3::*, 9> kEntries = {
     &Mat3::zz,
 };
 
-void ExpectMatricesNear(const Mat3& actual, const Mat3& expected, double tolerance) {
+void CheckMatricesNear(const Mat3& actual, const Mat3& expected, double tolerance) {
   for (std::size_t entry = 0; entry < kEntries.size(); ++entry) {
     EXPECT_NEAR(actual.*kEntries[entry], expected.*kEntries[entry], tolerance) << "entry index " << entry;
   }
@@ -270,7 +270,7 @@ TEST(Rotation, QuarterTurnAboutZ_SendsXToY) {
 }
 
 TEST(Rotation, QuarterTurnAboutZ_MatchesHandEntries) {
-  ExpectMatricesNear(
+  CheckMatricesNear(
       math::Rotation(Vec3{.x = 0, .y = 0, .z = std::numbers::pi / 2}),
       kQuarterTurnAboutZ,
       kRotationEntryTolerance
@@ -278,7 +278,7 @@ TEST(Rotation, QuarterTurnAboutZ_MatchesHandEntries) {
 }
 
 TEST(Rotation, QuarterTurnAboutX_MatchesHandEntries) {
-  ExpectMatricesNear(
+  CheckMatricesNear(
       math::Rotation(Vec3{.x = std::numbers::pi / 2, .y = 0, .z = 0}),
       kQuarterTurnAboutX,
       kRotationEntryTolerance
@@ -298,7 +298,7 @@ TEST(Rotation, QuarterTurnAboutY_SendsZToX) {
       .zy = 0,
       .zz = 0,
   };
-  ExpectMatricesNear(
+  CheckMatricesNear(
       math::Rotation(Vec3{.x = 0, .y = std::numbers::pi / 2, .z = 0}),
       kQuarterTurnAboutY,
       kRotationEntryTolerance
@@ -320,7 +320,7 @@ TEST(Rotation, ThirdTurnAboutDiagonal_CyclesTheAxes) {
       .zz = 0,
   };
   const double axis_part = (2 * std::numbers::pi / 3) / std::numbers::sqrt3;
-  ExpectMatricesNear(
+  CheckMatricesNear(
       math::Rotation(Vec3{.x = axis_part, .y = axis_part, .z = axis_part}),
       kCycleXToYToZ,
       kRotationEntryTolerance
@@ -336,7 +336,7 @@ TEST(Rotation, AnyVector_HasDeterminantOne) {
 TEST(Rotation, AnyVector_TransposeUndoesIt) {
   for (const Vec3 rotation_vector : kGeneralRotationVectors) {
     const Mat3 rotation = math::Rotation(rotation_vector);
-    ExpectMatricesNear(math::Transpose(rotation) * rotation, kIdentity, kRotationEntryTolerance);
+    CheckMatricesNear(math::Transpose(rotation) * rotation, kIdentity, kRotationEntryTolerance);
   }
 }
 

@@ -10,34 +10,3 @@ MoveToRestGap  # private step: moves a point to one contact tolerance from a sol
 HasConvexDistance  # private predicate of the stepping search: true when a shape may take the second-order advance; the mesh solids add their case
 MoveToRestGapOfNearSurfaces  # private step: moves a point to the rest gap of every near surface at once
 ComesBefore  # the fixed order of cells and blocks, a predicate read as a sentence: first comes before second
-RunOneLayer  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunLayers  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunLargestMagnitudeLayers  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunLaunch  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-GpuHalfAnswer  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunGpuHalfOnCpu  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunGpuHalfInEveryLaunch  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-CheckGpuHalfSameAsCpuLoop  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-gpu_half_run  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-IsSameFailure  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunMove  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-RunMoveBeforeSettle  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-DrawUnitVector  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-AddExactly  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-MultiplyExactly  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-Renormalize  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-Add  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-Negate  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-Subtract  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-Multiply  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-Dot  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ExpectWithinScale  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-SearchRimFromEntry  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-SearchTurningSolid  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-AppendSmallCells  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ExpectCheckerCellAt  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ApplyGpuBuildStepsByReplay  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ExpectBuildReplayEqualsCpuBuild  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ExpectFailure  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ExpectCheckerCounts  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were
-ExpectNoMistake  # test helper moved to a testing/ header from a test file, where the rule did not apply; the name is kept so the tests that call it stay as they were

@@ -59,7 +59,7 @@ TEST(ComputeIsTurningSolid, GeneratedSpinsAboutNormal_AreNeverTurning) {
 
 // Fails the calling test unless the path stays farther than tol from the solid, checked at 64 times, until the hit
 // (or over the whole duration when free), and a hit sits at distance tol up to rounding. Assumes start_elapsed 0.
-void ExpectFirstHitWhereDistanceReachesTolerance(const Solid& solid, Path path, FirstHit first_hit, int case_index) {
+void CheckFirstHitWhereDistanceReachesTolerance(const Solid& solid, Path path, FirstHit first_hit, int case_index) {
   constexpr double kRoundingAllowance = 1e-14;  // m. Far above the rounding of a distance at unit scale.
   const bool is_hit = first_hit.solid_index != kNoSolid;
   const double end_elapsed = is_hit ? first_hit.elapsed : path.duration;
@@ -105,7 +105,7 @@ TEST(FindFirstHit, GeneratedBoxSweeps_HitWhereDistanceReachesTolerance) {
     const double speed_factor = 1 + generator.Next();  // 1/s
     const Vec3 velocity = motion.linear_velocity + speed_factor * (target - start);
     const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = velocity, .duration = 1});
-    ExpectFirstHitWhereDistanceReachesTolerance(
+    CheckFirstHitWhereDistanceReachesTolerance(
         solids[0],
         {.start = start, .velocity = velocity, .duration = 1},
         first_hit,
@@ -154,7 +154,7 @@ double ComputeSmallestDistanceAlongPath(const Solid& solid, Path path, double en
 // duration of a free path, the true distance never comes below tol; at a hit it is between tol and
 // largest_distance_at_hit (tol for a sphere, tol + tol / 1024 for a cylinder, whose rim search stops within
 // kRimHitGapShare of tol). A hit is never behind the start nor after the duration.
-void ExpectFirstHitAgreesWithReference(
+void CheckFirstHitAgreesWithReference(
     const Solid& solid,
     double largest_distance_at_hit,
     Path path,
@@ -200,7 +200,7 @@ int CheckGeneratedRoundSweeps(const Solid& solid, double largest_distance_at_hit
     const Vec3 velocity = solid.motion.linear_velocity + speed_factor * (target - start);
     const Path path = {.start = start, .velocity = velocity, .start_elapsed = start_elapsed, .duration = 1};
     const FirstHit first_hit = FindHit(inputs, path);
-    ExpectFirstHitAgreesWithReference(solid, largest_distance_at_hit, path, first_hit, case_index);
+    CheckFirstHitAgreesWithReference(solid, largest_distance_at_hit, path, first_hit, case_index);
     if (first_hit.solid_index != kNoSolid) {
       ++hit_count;
     }
@@ -256,7 +256,7 @@ struct RimEdgeCounts {
 // middle plane, for three times the time it takes to reach the edge. A hit is right when the true distance there is
 // between tol and tol + tol / 1024 up to kReferenceAllowance, and the path before it stays at tol or more. A path the
 // reference says must be hit has a true distance below tol - kReferenceAllowance.
-RimEdgeCounts CountRimEdgeMistakes(const Solid& solid, int path_count) {
+RimEdgeCounts ComputeCountRimEdgeMistakes(const Solid& solid, int path_count) {
   const std::array solids = {solid};
   // The longest sweep is 3 * 2 / 0.5 = 12 s.
   const SolidContactInputs inputs = BuildInputs(solids, 12);
@@ -300,7 +300,7 @@ RimEdgeCounts CountRimEdgeMistakes(const Solid& solid, int path_count) {
     // The search again, alone, from the entry of the two intervals, for its count of advances.
     const Sweep sweep = {.start = path.start, .velocity_for_this_step = path.velocity, .duration = path.duration};
     const OwnPath own_path = ComputeOwnPath(inputs, 0, solid.pose_at_step_start, sweep);
-    const RimSearch search = SearchRimFromEntry(own_path, solid.half_size, path.duration);
+    const RimSearch search = FindRimFromEntry(own_path, solid.half_size, path.duration);
     const bool is_rim_entry = search.hit_time.has_hit && first_hit.at_hit.face != SolidFace::kCurved
         && first_hit.at_hit.face != SolidFace::kLowZ && first_hit.at_hit.face != SolidFace::kHighZ;
     const int count_index = is_rim_entry ? search.advance_count : kMaxRimAdvanceCount + 1;
@@ -310,7 +310,7 @@ RimEdgeCounts CountRimEdgeMistakes(const Solid& solid, int path_count) {
 }
 
 // Prints one cylinder's counts of the rim edge sweeps, for the report.
-void PrintRimEdgeCounts(const Solid& cylinder, const RimEdgeCounts& counts) {
+void WriteRimEdgeCounts(const Solid& cylinder, const RimEdgeCounts& counts) {
   std::cout << "rim edge sweeps, radius " << cylinder.half_size.x << ": mistakes " << counts.mistakes << ", must hit "
             << counts.must_hit << ", hits per advance count";
   for (const int hit_count : counts.hits_per_advance_count) {
@@ -348,11 +348,11 @@ TEST(FindFirstHit, GeneratedRimEdgeSweeps_AgreeWithSlowReference) {
   constexpr std::array<int, 3> kModelHitsPerAdvanceCount = {7189, 32918, 9893};
   for (std::size_t cylinder_index = 0; cylinder_index < cylinders.size(); ++cylinder_index) {
     const Solid& cylinder = cylinders.at(cylinder_index);
-    const RimEdgeCounts counts = CountRimEdgeMistakes(cylinder, 50000);
+    const RimEdgeCounts counts = ComputeCountRimEdgeMistakes(cylinder, 50000);
     EXPECT_EQ(counts.mistakes, 0) << "radius " << cylinder.half_size.x;
     // Nearly every path goes deep into the cylinder, so the check is about hits that must not be missed.
     EXPECT_GT(counts.must_hit, 45000) << "radius " << cylinder.half_size.x;
-    PrintRimEdgeCounts(cylinder, counts);
+    WriteRimEdgeCounts(cylinder, counts);
     const bool is_along_z = cylinder_index < 2;
     for (std::size_t advance_count = 1; is_along_z && advance_count <= 3; ++advance_count) {
       const int model_count = kModelHitsPerAdvanceCount.at(advance_count - 1);
@@ -380,12 +380,12 @@ struct RimPath {
 };
 
 // A uniform draw between low and high.
-double DrawBetween(CaseGenerator& generator, double low, double high) {
+double BuildBetween(CaseGenerator& generator, double low, double high) {
   return low + (high - low) * generator.Next();
 }
 
 // A unit vector from three NextSigned, drawn again while shorter than 0.1.
-Vec3 DrawUnitDirection(CaseGenerator& generator) {
+Vec3 BuildUnitDirection(CaseGenerator& generator) {
   Vec3 direction{};
   while (math::Length(direction) < 0.1) {
     direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
@@ -402,7 +402,7 @@ struct RimPointShares {
 // A point beside the rim, in own axes: wall distance shares.wall_share tol and cap distance shares.cap_share tol, at an
 // azimuth of 2 pi Next and on the high cap when Next < 0.5 (two draws). *radial is the unit vector across the axis
 // toward the point and *cap_sign the cap's side.
-Vec3 DrawPointBesideRim(
+Vec3 BuildPointBesideRim(
     CaseGenerator& generator,
     Vec3 half_size,
     RimPointShares shares,
@@ -419,11 +419,11 @@ Vec3 DrawPointBesideRim(
 
 // An offset from a rest gap, in tolerances: 0, a share up to 2^-2 to 2^-30, or up to 8 units of 2^-44, by floor(3
 // Next). Shares out to a quarter put starts beyond the bounding surface's window on both sides.
-double DrawRestGapOffset(CaseGenerator& generator) {
+double BuildRestGapOffset(CaseGenerator& generator) {
   const int choice = static_cast<int>(std::floor(3 * generator.Next()));
   const double share = generator.NextSigned();
-  const double exponent = std::floor(DrawBetween(generator, 2, 31));
-  const double units = std::floor(DrawBetween(generator, -8, 9));
+  const double exponent = std::floor(BuildBetween(generator, 2, 31));
+  const double units = std::floor(BuildBetween(generator, -8, 9));
   if (choice == 0) {
     return 0;
   }
@@ -431,7 +431,7 @@ double DrawRestGapOffset(CaseGenerator& generator) {
 }
 
 // A slant of a path off a plane: 0, 0, 1e-12, 1e-6 or 1e-3, by floor(5 Next), times NextSigned.
-double DrawSlant(CaseGenerator& generator) {
+double BuildSlant(CaseGenerator& generator) {
   constexpr std::array<double, 5> kSlants = {0, 0, 1e-12, 1e-6, 1e-3};
   const double slant = kSlants.at(static_cast<std::size_t>(std::floor(5 * generator.Next())));
   return slant * generator.NextSigned();
@@ -449,52 +449,52 @@ RimPath BuildRimPath(CaseGenerator& generator, Vec3 half_size) {
   Vec3 radial{};
   double cap_sign = 1;
   const auto draw_speed = [&generator] {
-    return std::exp2(DrawBetween(generator, -3, 3));
+    return std::exp2(BuildBetween(generator, -3, 3));
   };  // m/s
   if (kind_draw < 0.35) {
     path.kind = RimPathKind::kThroughRim;
-    const double wall_share = DrawBetween(generator, -2.5, 2.5);
-    const double cap_share = DrawBetween(generator, -2.5, 2.5);
-    const Vec3 target = DrawPointBesideRim(
+    const double wall_share = BuildBetween(generator, -2.5, 2.5);
+    const double cap_share = BuildBetween(generator, -2.5, 2.5);
+    const Vec3 target = BuildPointBesideRim(
         generator,
         half_size,
         {.wall_share = wall_share, .cap_share = cap_share},
         &radial,
         &cap_sign
     );
-    const Vec3 direction = DrawUnitDirection(generator);
-    const double length = kTolerance * std::exp2(DrawBetween(generator, 1, 12));  // m
+    const Vec3 direction = BuildUnitDirection(generator);
+    const double length = kTolerance * std::exp2(BuildBetween(generator, 1, 12));  // m
     const double speed = draw_speed();
     path.own_path = {.start = target - length * direction, .velocity = speed * direction};
     path.duration = 2 * length / speed;
   } else if (kind_draw < 0.5) {
     path.kind = RimPathKind::kDownWall;
-    const double offset = DrawRestGapOffset(generator);
-    const Vec3 start = DrawPointBesideRim(
+    const double offset = BuildRestGapOffset(generator);
+    const Vec3 start = BuildPointBesideRim(
         generator,
         half_size,
-        {.wall_share = 1 + offset, .cap_share = DrawBetween(generator, 2, 2000)},
+        {.wall_share = 1 + offset, .cap_share = BuildBetween(generator, 2, 2000)},
         &radial,
         &cap_sign
     );
     const double speed = draw_speed();
-    const double slant = DrawSlant(generator);
+    const double slant = BuildSlant(generator);
     path.own_path = {.start = start, .velocity = speed * (slant * radial - Vec3{.x = 0, .y = 0, .z = cap_sign})};
     const double length = std::abs(start.z) - half_height + std::min(half_height, 100 * kTolerance);  // m
     path.duration = 1.5 * length / speed;
   } else if (kind_draw < 0.65) {
     path.kind = RimPathKind::kAlongCap;
-    const double offset = DrawRestGapOffset(generator);
-    const Vec3 start = DrawPointBesideRim(
+    const double offset = BuildRestGapOffset(generator);
+    const Vec3 start = BuildPointBesideRim(
         generator,
         half_size,
-        {.wall_share = DrawBetween(generator, 2, 2000), .cap_share = 1 + offset},
+        {.wall_share = BuildBetween(generator, 2, 2000), .cap_share = 1 + offset},
         &radial,
         &cap_sign
     );
     const double speed = draw_speed();
-    const double slant = DrawSlant(generator);
-    const double sideways = DrawBetween(generator, -0.5, 0.5);
+    const double slant = BuildSlant(generator);
+    const double sideways = BuildBetween(generator, -0.5, 0.5);
     const Vec3 across = {.x = -radial.y, .y = radial.x, .z = 0};
     path.own_path = {
         .start = start,
@@ -504,24 +504,24 @@ RimPath BuildRimPath(CaseGenerator& generator, Vec3 half_size) {
     path.duration = 1.5 * length / speed;
   } else if (kind_draw < 0.8) {
     path.kind = RimPathKind::kGraze;
-    const double angle = DrawBetween(generator, 0, std::numbers::pi / 2);  // rad
+    const double angle = BuildBetween(generator, 0, std::numbers::pi / 2);  // rad
     const bool is_rounding_offset = generator.Next() < 0.5;
-    const double rounding_offset = std::floor(DrawBetween(generator, -64, 65)) * 0x1p-46;
-    const double share_offset = DrawBetween(generator, -0.125, 0.125);
+    const double rounding_offset = std::floor(BuildBetween(generator, -64, 65)) * 0x1p-46;
+    const double share_offset = BuildBetween(generator, -0.125, 0.125);
     const double offset = is_rounding_offset ? rounding_offset : share_offset;
     const RimPointShares shares = {
         .wall_share = (1 + offset) * std::cos(angle),
         .cap_share = (1 + offset) * std::sin(angle),
     };
-    const Vec3 target = DrawPointBesideRim(generator, half_size, shares, &radial, &cap_sign);
+    const Vec3 target = BuildPointBesideRim(generator, half_size, shares, &radial, &cap_sign);
     const Vec3 rim_normal = std::cos(angle) * radial + Vec3{.x = 0, .y = 0, .z = cap_sign * std::sin(angle)};
     Vec3 direction{};
     while (math::Length(direction) < 0.1) {
-      const Vec3 drawn = DrawUnitDirection(generator);
+      const Vec3 drawn = BuildUnitDirection(generator);
       direction = drawn - math::Dot(drawn, rim_normal) * rim_normal;
     }
     direction = math::Normalized(direction);
-    const double length = kTolerance * std::exp2(DrawBetween(generator, 1, 12));  // m
+    const double length = kTolerance * std::exp2(BuildBetween(generator, 1, 12));  // m
     const double speed = draw_speed();
     path.own_path = {.start = target - length * direction, .velocity = speed * direction};
     path.duration = 2 * length / speed;
@@ -533,31 +533,31 @@ RimPath BuildRimPath(CaseGenerator& generator, Vec3 half_size) {
       wall_share = generator.Next();
       cap_share = generator.Next();
     }
-    const Vec3 start = DrawPointBesideRim(
+    const Vec3 start = BuildPointBesideRim(
         generator,
         half_size,
         {.wall_share = wall_share, .cap_share = cap_share},
         &radial,
         &cap_sign
     );
-    const Vec3 direction = DrawUnitDirection(generator);
+    const Vec3 direction = BuildUnitDirection(generator);
     const double speed = draw_speed();
     path.own_path = {.start = start, .velocity = speed * direction};
-    path.duration = kTolerance * std::exp2(DrawBetween(generator, 0, 8)) / speed;
+    path.duration = kTolerance * std::exp2(BuildBetween(generator, 0, 8)) / speed;
   } else {
     path.kind = RimPathKind::kAnywhere;
     Vec3 start{};
     do {
       start = {
-          .x = DrawBetween(generator, -3, 3) * radius,
-          .y = DrawBetween(generator, -3, 3) * radius,
-          .z = DrawBetween(generator, -3, 3) * half_height,
+          .x = BuildBetween(generator, -3, 3) * radius,
+          .y = BuildBetween(generator, -3, 3) * radius,
+          .z = BuildBetween(generator, -3, 3) * half_height,
       };
     } while (ComputeDistanceToCylinder(start, half_size, kIdentity).distance <= 2 * kTolerance);
     const Vec3 target = {
-        .x = DrawBetween(generator, -1.2, 1.2) * radius,
-        .y = DrawBetween(generator, -1.2, 1.2) * radius,
-        .z = DrawBetween(generator, -1.2, 1.2) * half_height,
+        .x = BuildBetween(generator, -1.2, 1.2) * radius,
+        .y = BuildBetween(generator, -1.2, 1.2) * radius,
+        .z = BuildBetween(generator, -1.2, 1.2) * half_height,
     };
     const double speed_factor = 1 + generator.Next();  // 1/s
     path.own_path = {.start = start, .velocity = speed_factor * (target - start)};
@@ -597,7 +597,7 @@ struct RestingStart {
 };
 
 // Classifies one start by the decision's numbers (RestingStart).
-RestingStart ClassifyRestingStart(const Solid& cylinder, Path path) {
+RestingStart ComputeRestingStartClass(const Solid& cylinder, Path path) {
   const Vec3 axis = ToColumn(cylinder.pose_at_step_start.axes, 2);
   const Vec3 from_center = path.start - cylinder.pose_at_step_start.origin;  // m
   const double height = math::Dot(from_center, axis);  // m
@@ -638,7 +638,7 @@ bool CheckSearchedRimPath(
 ) {
   const bool is_hit = first_hit.solid_index != kNoSolid;
   const double end_elapsed = is_hit ? first_hit.elapsed : path.duration;  // s
-  const RimSearch search = SearchRimFromEntry(own_path, cylinder.half_size, path.duration);
+  const RimSearch search = FindRimFromEntry(own_path, cylinder.half_size, path.duration);
   const bool is_same = search.hit_time.has_hit == is_hit && search.hit_time.elapsed == first_hit.elapsed;
   const SolidFace face = first_hit.at_hit.face;
   const bool is_rim_hit = is_hit && (face == SolidFace::kLowRim || face == SolidFace::kHighRim);
@@ -656,7 +656,7 @@ bool CheckSearchedRimPath(
 }
 
 // Sweeps one path past a cylinder's rim and checks it against the slow reference, the start classified apart from the
-// code (ClassifyRestingStart), before the touching rule as the sweep tries it: a start that rests on a bounding
+// code (ComputeRestingStartClass), before the touching rule as the sweep tries it: a start that rests on a bounding
 // surface is free and keeps the smallest true distance at 55 / 64 tol - kReferenceAllowance or more; near a limit of
 // the decision's numbers, that or CheckSearchedRimPath's answer; a path freed by the touching rule keeps its own linear
 // bound; any other path as CheckSearchedRimPath checks it.
@@ -682,7 +682,7 @@ void CheckRimPath(const Solid& cylinder, const RimPath& rim_path, RimPathCounts&
   const bool is_hit = first_hit.solid_index != kNoSolid;
   const double end_elapsed = is_hit ? first_hit.elapsed : path.duration;  // s
   const OwnPath own_path = ComputeOwnPath(inputs, 0, pose, sweep);
-  const RestingStart resting = ClassifyRestingStart(cylinder, path);
+  const RestingStart resting = ComputeRestingStartClass(cylinder, path);
   const double resting_gap_limit = rim_path.touched.is_touched ? kTolerance / 16 : 0;  // m
   const bool is_touching_rule = start_gap <= resting_gap_limit;
   const double least_resting_distance = 55 * kTolerance / 64 - kReferenceAllowance;  // m
@@ -715,7 +715,7 @@ void CheckRimPath(const Solid& cylinder, const RimPath& rim_path, RimPathCounts&
 }
 
 // Prints the counts of the paths past a cylinder's rim, for the report, and returns the searches and their advances.
-std::pair<int, int> PrintRimPathCounts(const RimPathCounts& counts) {
+std::pair<int, int> WriteRimPathCounts(const RimPathCounts& counts) {
   int searches = 0;
   int advances = 0;
   std::cout << "paths past a rim " << counts.paths << ", deep starts " << counts.deep_starts << ", hits " << counts.hits
@@ -766,7 +766,7 @@ TEST(FindFirstHit, GeneratedPathsPastACylinderRim_AgreeWithSlowReference) {
     const RimPath rim_path = BuildRimPath(generator, cylinder.half_size);
     CheckRimPath(cylinder, rim_path, counts);
   }
-  const auto [searches, advances] = PrintRimPathCounts(counts);
+  const auto [searches, advances] = WriteRimPathCounts(counts);
   EXPECT_EQ(counts.paths, 20000);
   EXPECT_EQ(counts.mistakes, 0);
   EXPECT_GT(searches, 3000);
@@ -795,7 +795,7 @@ TEST(FindFirstHit, GeneratedGrazingRoundSweeps_NeverHitBehindStart) {
       const double offset = 0.5 + kTolerance + offset_units * 0x1p-52;  // m
       const Path path = {.start = -2 * along_path + offset * toward_offset, .velocity = along_path, .duration = 4};
       const FirstHit first_hit = FindHit(inputs, path);
-      ExpectFirstHitAgreesWithReference(solid, kTolerance, path, first_hit, offset_units);
+      CheckFirstHitAgreesWithReference(solid, kTolerance, path, first_hit, offset_units);
     }
   }
 }
@@ -828,7 +828,7 @@ struct DistanceSample {
 // d(a) - bound (t - a) and d(b) - bound (b - t), whose smallest value over [a, b] is (d(a) + d(b) - bound (b - a)) / 2.
 // An interval where that is too small is cut in half until it passes, a sample is too close, or it can no longer be
 // cut: so the answer cannot miss a dip, whatever FindFirstHit did. *sample_count counts the distances computed.
-bool IsOutsideGrownSolidThroughout(const Solid& solid, Path path, double end_elapsed, int* sample_count) {
+bool ComputeIsOutsideGrownSolidThroughout(const Solid& solid, Path path, double end_elapsed, int* sample_count) {
   const double floor_distance = kTolerance - kReferenceAllowance;  // m
   const double rate_bound = ComputeReferenceRateBound(solid, path, end_elapsed);  // m/s
   const DistanceSample at_start = {.elapsed = 0, .distance = ComputeDistanceAlongPath(solid, path, 0)};
@@ -873,13 +873,13 @@ struct SweepReference {
   double allowance = 0;  // m
 };
 
-// The lower-bound reference (IsOutsideGrownSolidThroughout) as a SweepReference, for the test contact tolerance.
-bool IsOutsideByLowerBound(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count) {
-  return IsOutsideGrownSolidThroughout(inputs.solids[0], path, end_elapsed, sample_count);
+// The lower-bound reference (ComputeIsOutsideGrownSolidThroughout) as a SweepReference, for the test contact tolerance.
+bool ComputeIsOutsideByLowerBound(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count) {
+  return ComputeIsOutsideGrownSolidThroughout(inputs.solids[0], path, end_elapsed, sample_count);
 }
 
 constexpr SweepReference kLowerBoundReference = {
-    .is_outside_throughout = IsOutsideByLowerBound,
+    .is_outside_throughout = ComputeIsOutsideByLowerBound,
     .allowance = kReferenceAllowance,
 };
 
@@ -898,7 +898,7 @@ struct TurningSweepCounts {
 // the grown solid before the hit or over the whole duration (the reference); a hit whose distance is above
 // (1 + kTurningSolidHitGapShare) tol + allowance, so not at the grown surface, or that reports another distance; a
 // time outside the sweep; a direct search that answers otherwise; or any other error.
-void CountTurningSweep(
+void ComputeCountTurningSweep(
     const SolidContactInputs& inputs,
     Path path,
     SweepReference reference,
@@ -909,7 +909,7 @@ void CountTurningSweep(
   FirstHit first_hit;
   const ContactError error =
       FindFirstHit(inputs, path.start, path.velocity, path.start_elapsed, path.duration, &first_hit);
-  const TurningSearch search = SearchTurningSolid(inputs, path);
+  const TurningSearch search = FindTurningSolid(inputs, path);
   counts->advance_counts.push_back(search.advance_count);
   const bool search_agrees = search.error == error && search.first_hit.solid_index == first_hit.solid_index
       && search.first_hit.elapsed == first_hit.elapsed;
@@ -950,7 +950,7 @@ void CountTurningSweep(
 // while it is within 2 tol of the solid (so the search does not stop at once); a target of 0.9 times three NextSigned()
 // values from that origin; a speed factor 1 + Next(). The path heads for the target, which it reaches within
 // 1 / factor <= 1 s, while the solid turns under it.
-TurningSweepCounts CountGeneratedTurningSweeps(const Solid& solid) {
+TurningSweepCounts ComputeCountGeneratedTurningSweeps(const Solid& solid) {
   const std::array solids = {solid};
   const SolidContactInputs inputs = BuildInputs(solids, 1.5);
   CaseGenerator generator;
@@ -967,7 +967,7 @@ TurningSweepCounts CountGeneratedTurningSweeps(const Solid& solid) {
         pose.origin + 0.9 * Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
     const double speed_factor = 1 + generator.Next();  // 1/s
     const Vec3 velocity = solid.motion.linear_velocity + speed_factor * (target - start);
-    CountTurningSweep(
+    ComputeCountTurningSweep(
         inputs,
         {.start = start, .velocity = velocity, .start_elapsed = start_elapsed, .duration = 1},
         kLowerBoundReference,
@@ -995,7 +995,7 @@ int ComputeAdvanceCountPercentile99(std::vector<int> advance_counts) {
 // percentile of advances above them, or, when the criteria require it, hits on no more than a tenth of its paths. A
 // close call is safe but costs a shorter step; it remains for paths that hover near the solid with almost no motion
 // along its normal, where each advance is only about Sqrt(2 g / K).
-void ExpectTurningSweepCounts(const TurningSweepCounts& counts, SweepCriteria criteria, const char* set_name) {
+void CheckTurningSweepCounts(const TurningSweepCounts& counts, SweepCriteria criteria, const char* set_name) {
   const int path_count = counts.hit_count + counts.free_count + counts.close_call_count + counts.mistake_count;
   int advance_sum = 0;
   for (const int advance_count : counts.advance_counts) {
@@ -1065,9 +1065,9 @@ TEST(FindFirstHit, GeneratedTurningSweeps_AgreeWithLowerBoundReference) {
   });
   for (const auto& [solid_name, solid] : solids) {
     ASSERT_EQ(CheckSolid(solid, 1.5), ContactError::kNone) << solid_name;
-    const TurningSweepCounts counts = CountGeneratedTurningSweeps(solid);
+    const TurningSweepCounts counts = ComputeCountGeneratedTurningSweeps(solid);
     // Measured: no close call (first order alone: 32 to 56 per solid).
-    ExpectTurningSweepCounts(counts, {.largest_close_call_count = 1}, solid_name);
+    CheckTurningSweepCounts(counts, {.largest_close_call_count = 1}, solid_name);
     // Enough paths miss for the free answer to be checked too.
     EXPECT_GT(counts.free_count, 100) << solid_name;
   }
@@ -1124,10 +1124,10 @@ TEST(FindFirstHit, GeneratedNearlyTightBoundSweeps_AgreeWithLowerBoundReference)
         .start_elapsed = start_elapsed,
         .duration = 1,
     };
-    CountTurningSweep(BuildInputs(solids, 1.5), path, kLowerBoundReference, &counts);
+    ComputeCountTurningSweep(BuildInputs(solids, 1.5), path, kLowerBoundReference, &counts);
   }
   // Measured: no close call, since the approach uses nearly the whole bound.
-  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 2}, "nearly_tight_bound");
+  CheckTurningSweepCounts(counts, {.largest_close_call_count = 2}, "nearly_tight_bound");
 }
 
 // How a generated path is aimed at a point of a turning solid: it crosses own_target, a point in the solid's own
@@ -1142,7 +1142,7 @@ struct PathAim {
 };
 
 // Returns the path that an aim describes: the world velocity, and the start that goes with it.
-Path AimAtOwnPoint(const Solid& solid, PathAim aim) {
+Path BuildAimAtOwnPoint(const Solid& solid, PathAim aim) {
   const SolidPose aim_pose = ComputeSolidPose(solid, aim.start_elapsed + aim.aim_elapsed);
   const Vec3 target = aim_pose.origin + aim_pose.axes * aim.own_target;
   const Vec3 surface_velocity = ComputeSolidVelocity(solid, aim_pose, target);
@@ -1160,7 +1160,7 @@ Path AimAtOwnPoint(const Solid& solid, PathAim aim) {
 // floor(3 Next()) at NextSigned() times its half size; per own axis a sign, + when Next() < 0.5, and an offset of
 // 2 tol NextSigned(); an approach along minus Next() times the feature's outward diagonal plus 0.8 times three
 // NextSigned() values, so some paths pass the feature sideways; speed relative to the surface 0.5 + 1.5 Next().
-PathAim DrawEdgeOrCornerAim(Vec3 half_size, CaseGenerator* generator) {
+PathAim BuildEdgeOrCornerAim(Vec3 half_size, CaseGenerator* generator) {
   const std::array<double, 3> half_sizes = {half_size.x, half_size.y, half_size.z};
   PathAim aim;
   aim.start_elapsed = 0.5 * generator->Next();
@@ -1191,7 +1191,7 @@ PathAim DrawEdgeOrCornerAim(Vec3 half_size, CaseGenerator* generator) {
 // when Next() < 0.5; offsets 2 tol NextSigned() from the grown radius and from the grown half height; an approach
 // angle in the plane of the axis 0.05 + (pi / 2 - 0.1) Next(), plus 0.5 times three NextSigned() values; speed
 // relative to the surface 0.5 + 1.5 Next().
-PathAim DrawRimAim(CaseGenerator* generator) {
+PathAim BuildRimAim(CaseGenerator* generator) {
   PathAim aim;
   aim.start_elapsed = 0.5 * generator->Next();
   aim.aim_elapsed = 0.25 + 0.5 * generator->Next();
@@ -1211,7 +1211,7 @@ PathAim DrawRimAim(CaseGenerator* generator) {
 
 // Returns whether a path starts farther than 2 tol from the solid, at the pose of its start_elapsed: a generated path
 // that does not is drawn again, so the search does not stop at once.
-bool StartsAwayFromSolid(const Solid& solid, Path path) {
+bool ComputeStartsAwayFromSolid(const Solid& solid, Path path) {
   return ComputeDistanceToSolid(solid, ComputeSolidPose(solid, path.start_elapsed), path.start).distance
       > 2 * kTolerance;
 }
@@ -1233,18 +1233,18 @@ TEST(FindFirstHit, GeneratedOutwardSweeps_AgreeWithLowerBoundReference) {
       outward.start_angle = 0.3 + 1.7 * generator.Next();
       outward.box_speed = 10 * generator.NextSigned();
       solid_and_path = BuildOutwardPath(outward);
-    } while (!StartsAwayFromSolid(solid_and_path.first, solid_and_path.second));
+    } while (!ComputeStartsAwayFromSolid(solid_and_path.first, solid_and_path.second));
     const std::array solids = {solid_and_path.first};
-    CountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, kLowerBoundReference, &counts);
+    ComputeCountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, kLowerBoundReference, &counts);
   }
   // Measured: no close call (first order alone: 118).
-  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 3}, "outward");
+  CheckTurningSweepCounts(counts, {.largest_close_call_count = 3}, "outward");
 }
 
 TEST(FindFirstHit, GeneratedTurningBoxEdgeAndCornerSweeps_AgreeWithLowerBoundReference) {
   // 4000 paths aimed within 2 tol of an edge or a corner of the grown box of half sizes {0.5, 0.25, 1}, which moves at
-  // {0.25, -0.5, 0.125} m/s and turns at {0.48, -0.64, 0.3} rad/s (DrawEdgeOrCornerAim, drawn again until
-  // StartsAwayFromSolid).
+  // {0.25, -0.5, 0.125} m/s and turns at {0.48, -0.64, 0.3} rad/s (BuildEdgeOrCornerAim, drawn again until
+  // ComputeStartsAwayFromSolid).
   const Vec3 half_size = {.x = 0.5, .y = 0.25, .z = 1};
   const Solid solid = ToSolid(
       Box{.center = {.x = 0.25, .y = 0.5, .z = -0.125}, .axes = kTiltedAxes, .half_size = half_size},
@@ -1260,19 +1260,19 @@ TEST(FindFirstHit, GeneratedTurningBoxEdgeAndCornerSweeps_AgreeWithLowerBoundRef
   for (int path_index = 0; path_index < kPathCount; ++path_index) {
     Path path;
     do {
-      path = AimAtOwnPoint(solid, DrawEdgeOrCornerAim(half_size, &generator));
-    } while (!StartsAwayFromSolid(solid, path));
-    CountTurningSweep(inputs, path, kLowerBoundReference, &counts);
+      path = BuildAimAtOwnPoint(solid, BuildEdgeOrCornerAim(half_size, &generator));
+    } while (!ComputeStartsAwayFromSolid(solid, path));
+    ComputeCountTurningSweep(inputs, path, kLowerBoundReference, &counts);
   }
   // Measured: no close call (first order alone: 805, mostly paths that pass the edge or the corner sideways within a
   // few tolerances).
-  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 4}, "box_edges_and_corners");
+  CheckTurningSweepCounts(counts, {.largest_close_call_count = 4}, "box_edges_and_corners");
 }
 
 TEST(FindFirstHit, GeneratedTiltingCylinderRimSweeps_AgreeWithLowerBoundReference) {
   // 4000 paths aimed within 2 tol of the grown rim circle of a cylinder of radius 0.5 m and half height 0.75 m along
   // the tilted axis, moving at {0.25, -0.5, 0.125} m/s and turning at {0.7, 0.4, -0.5} rad/s, which tilts its axis
-  // (DrawRimAim, drawn again until StartsAwayFromSolid).
+  // (BuildRimAim, drawn again until ComputeStartsAwayFromSolid).
   const Solid solid = ToSolid(
       Cylinder{
           .center = {.x = 0.25, .y = 0.5, .z = -0.125},
@@ -1292,12 +1292,12 @@ TEST(FindFirstHit, GeneratedTiltingCylinderRimSweeps_AgreeWithLowerBoundReferenc
   for (int path_index = 0; path_index < kPathCount; ++path_index) {
     Path path;
     do {
-      path = AimAtOwnPoint(solid, DrawRimAim(&generator));
-    } while (!StartsAwayFromSolid(solid, path));
-    CountTurningSweep(inputs, path, kLowerBoundReference, &counts);
+      path = BuildAimAtOwnPoint(solid, BuildRimAim(&generator));
+    } while (!ComputeStartsAwayFromSolid(solid, path));
+    ComputeCountTurningSweep(inputs, path, kLowerBoundReference, &counts);
   }
   // Measured: no close call (first order alone: 291).
-  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 4}, "cylinder_rims");
+  CheckTurningSweepCounts(counts, {.largest_close_call_count = 4}, "cylinder_rims");
 }
 
 TEST(FindFirstHit, GeneratedEndFaceSlideSweeps_AgreeWithLowerBoundReference) {
@@ -1329,10 +1329,15 @@ TEST(FindFirstHit, GeneratedEndFaceSlideSweeps_AgreeWithLowerBoundReference) {
         .z = 0.3 * generator.NextSigned(),
     };
     const Vec3 velocity = ComputeSolidVelocity(solid, ComputeSolidPose(solid, 0), start) + relative_velocity;
-    CountTurningSweep(inputs, {.start = start, .velocity = velocity, .duration = 1}, kLowerBoundReference, &counts);
+    ComputeCountTurningSweep(
+        inputs,
+        {.start = start, .velocity = velocity, .duration = 1},
+        kLowerBoundReference,
+        &counts
+    );
   }
   // Measured: no close call; 5.9 advances on average, 18 at the 99th percentile, 55 at most.
-  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 3}, "end_face_slide");
+  CheckTurningSweepCounts(counts, {.largest_close_call_count = 3}, "end_face_slide");
 }
 
 TEST(FindFirstHit, GeneratedInwardSweeps_AgreeWithLowerBoundReference) {
@@ -1353,12 +1358,12 @@ TEST(FindFirstHit, GeneratedInwardSweeps_AgreeWithLowerBoundReference) {
       inward.start_angle = 0.2 + 1.8 * generator.Next();
       inward.box_speed = 0;
       solid_and_path = BuildOutwardPath(inward);
-    } while (!StartsAwayFromSolid(solid_and_path.first, solid_and_path.second));
+    } while (!ComputeStartsAwayFromSolid(solid_and_path.first, solid_and_path.second));
     const std::array solids = {solid_and_path.first};
-    CountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, kLowerBoundReference, &counts);
+    ComputeCountTurningSweep(BuildInputs(solids, 1), solid_and_path.second, kLowerBoundReference, &counts);
   }
   // Measured: no close call; 5.5 advances on average, 7 at most.
-  ExpectTurningSweepCounts(counts, {.largest_close_call_count = 3}, "inward");
+  CheckTurningSweepCounts(counts, {.largest_close_call_count = 3}, "inward");
 }
 
 // The six face-plane distances of a box at one time of a path, in face order: -p.x - half_size.x, p.x - half_size.x,
@@ -1391,7 +1396,7 @@ struct FacePlaneSample {
 // the six, is at least the largest of those. An interval where that is too small is cut in half until it passes, a
 // sample is too close, or it can no longer be cut. The lower-bound reference would need about gap / bound samples
 // along a particle that hovers a few tolerances off a face, and would not finish here.
-bool IsOutsideBoxThroughout(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count) {
+bool ComputeIsOutsideBoxThroughout(const SolidContactInputs& inputs, Path path, double end_elapsed, int* sample_count) {
   const Solid& box = inputs.solids[0];
   const double floor_distance = inputs.contact_tolerance - inputs.contact_tolerance / 64;  // m
   const double relative_speed = math::Length(path.velocity - box.motion.linear_velocity);  // m/s
@@ -1448,7 +1453,7 @@ TEST(FindFirstHit, GeneratedPaddleSweeps_AgreeWithFacePlaneReference) {
   // exp(log(0.3 tol) + Next() (log(0.01) - log(0.3 tol))) m; normal speed 0.15 * 10^(-8 Next()) m/s; slide
   // 0.45 NextSigned() m/s along x. The start is {x, side (0.01 + tol + gap), z}; the velocity is the surface velocity
   // there, plus the slide, plus the normal speed along {0, side, 0}: negated when approaching, zero when moving with
-  // the face. Reference: IsOutsideBoxThroughout, allowance tol / 64.
+  // the face. Reference: ComputeIsOutsideBoxThroughout, allowance tol / 64.
   const Solid paddle = ToSolid(
       Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.25, .y = 0.01, .z = 0.1}},
       {.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 6}},
@@ -1461,7 +1466,7 @@ TEST(FindFirstHit, GeneratedPaddleSweeps_AgreeWithFacePlaneReference) {
   inputs.contact_tolerance = 0x1p-30 * 0.01;
   const double contact_tolerance = inputs.contact_tolerance;
   const SweepReference reference = {
-      .is_outside_throughout = IsOutsideBoxThroughout,
+      .is_outside_throughout = ComputeIsOutsideBoxThroughout,
       .allowance = contact_tolerance / 64,
   };
   constexpr std::array<double, 3> kNormalSpeedSigns = {-1, 1, 0};  // approaching, separating, moving with the face
@@ -1487,7 +1492,7 @@ TEST(FindFirstHit, GeneratedPaddleSweeps_AgreeWithFacePlaneReference) {
     const Vec3 velocity = ComputeSolidVelocity(paddle, ComputeSolidPose(paddle, 0), start)
         + Vec3{.x = slide_speed, .y = 0, .z = 0}
         + kNormalSpeedSigns.at(kind) * normal_speed * Vec3{.x = 0, .y = side, .z = 0};
-    CountTurningSweep(
+    ComputeCountTurningSweep(
         inputs,
         {.start = start, .velocity = velocity, .duration = kStepDuration},
         reference,
@@ -1497,7 +1502,7 @@ TEST(FindFirstHit, GeneratedPaddleSweeps_AgreeWithFacePlaneReference) {
   // Measured: no close call of any kind; 5.5, 6.3 and 7.9 advances on average, 36, 32 and 41 at the 99th percentile,
   // 119 at most. The first-order advance alone gave close calls on most of these paths.
   for (std::size_t kind = 0; kind < 3; ++kind) {
-    ExpectTurningSweepCounts(
+    CheckTurningSweepCounts(
         counts_per_kind.at(kind),
         {
             .largest_close_call_count = 20,

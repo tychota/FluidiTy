@@ -26,7 +26,7 @@ namespace fluidity::grid {
 namespace {
 
 // Expects kNoIndex at `position` from the search form and from the near form with `near` 0, 1 and kNoIndex.
-void ExpectNoCellThroughEitherForm(const GridTables& tables, Vec3 position) {
+void CheckNoCellThroughEitherForm(const GridTables& tables, Vec3 position) {
   EXPECT_EQ(FindCellAt(tables, position).value, kNoIndex);
   EXPECT_EQ(FindCellAt(tables, position, CellBlockIndex{0}).value, kNoIndex);
   EXPECT_EQ(FindCellAt(tables, position, CellBlockIndex{1}).value, kNoIndex);
@@ -35,7 +35,7 @@ void ExpectNoCellThroughEitherForm(const GridTables& tables, Vec3 position) {
 
 // Expects kNoIndex through either form when `value` is put on each axis in turn, the other two axes at 0.5 m, inside
 // the big cell of the two-size fixture. Each axis has its own guard, so each is tried.
-void ExpectNoCellWithValueOnEachAxis(const GridTables& tables, double value) {
+void CheckNoCellWithValueOnEachAxis(const GridTables& tables, double value) {
   const std::array<Vec3, 3> positions = {
       Vec3{.x = value, .y = 0.5, .z = 0.5},
       Vec3{.x = 0.5, .y = value, .z = 0.5},
@@ -43,7 +43,7 @@ void ExpectNoCellWithValueOnEachAxis(const GridTables& tables, double value) {
   };
   for (std::size_t axis = 0; axis < positions.size(); ++axis) {
     SCOPED_TRACE(testing::Message() << "value " << value << " on axis " << axis);
-    ExpectNoCellThroughEitherForm(tables, positions.at(axis));
+    CheckNoCellThroughEitherForm(tables, positions.at(axis));
   }
 }
 
@@ -95,7 +95,7 @@ TEST(FindCellAt, HugeOrNotFinitePosition_IsNoIndex) {
       std::numeric_limits<double>::quiet_NaN(),
   };
   for (const double bad_value : bad_values) {
-    ExpectNoCellWithValueOnEachAxis(tables, bad_value);
+    CheckNoCellWithValueOnEachAxis(tables, bad_value);
   }
 }
 
@@ -111,7 +111,7 @@ TEST(FindCellAt, PositionBeyondTheIdRange_IsNoIndex) {
   constexpr std::int32_t kWrappingCoord = 524288;  // 2^19: kept as 2^19 + kMaxCoord in 19 bits, it wraps to kMaxCoord.
   ASSERT_EQ(ToCell(0, kWrappingCoord, 0, 0).value, ToCell(0, 0, 0, 0).value);
   for (const double beyond_value : {262144.0, -262144.0, 524288.25}) {
-    ExpectNoCellWithValueOnEachAxis(tables, beyond_value);
+    CheckNoCellWithValueOnEachAxis(tables, beyond_value);
   }
   EXPECT_EQ(FindCellAt(tables, {.x = 262143.5, .y = 0.5, .z = 0.5}).value, kNoIndex);
 }
@@ -168,7 +168,7 @@ CellCoord ToBiggestBlockCoord(const GridTables& tables, CellBlockIndex block) {
   return ToCellCoord(CellId{tables.block_ids[biggest_block].value});
 }
 
-// What CountMoves counted over every pair of a block and a size-level-0 target block.
+// What ComputeCountMoves counted over every pair of a block and a size-level-0 target block.
 struct MoveCounts {
   std::size_t arrived_count = 0;  // Pairs whose moves arrived at the target.
   std::size_t wrong_count = 0;  // Pairs where FindBiggestBlockFrom differed from the expected block.
@@ -179,7 +179,7 @@ struct MoveCounts {
 // Runs FindBiggestBlockFrom from every block toward every size-level-0 block of the grid of
 // BuildCellsOverSeveralBlocks. The expected block is the target, or kNoIndex three blocks away and for a pair of
 // `blocked_moves`, each the near block's size-level-0 coordinate (x, y, z), then the target's.
-MoveCounts CountMoves(const GridTables& tables, const std::set<std::array<std::int32_t, 6>>& blocked_moves) {
+MoveCounts ComputeCountMoves(const GridTables& tables, const std::set<std::array<std::int32_t, 6>>& blocked_moves) {
   MoveCounts counts;
   for (std::uint32_t near = 0; near < tables.block_count; ++near) {
     const CellCoord near_coord = ToBiggestBlockCoord(tables, CellBlockIndex{near});
@@ -229,7 +229,7 @@ TEST(FindBiggestBlockFrom, TargetWithinTwoMoves_IsFoundWithoutSearch) {
       {2, 1, 0, 0, 1, 0},
       {2, 1, 1, 0, 1, 0},
   };
-  const MoveCounts counts = CountMoves(tables, blocked_moves);
+  const MoveCounts counts = ComputeCountMoves(tables, blocked_moves);
   EXPECT_EQ(counts.wrong_count, 0U) << "first wrong: near " << counts.first_wrong_near << ", target "
                                     << counts.first_wrong_target;
   EXPECT_GT(counts.arrived_count, 0U);
@@ -245,7 +245,7 @@ constexpr GridFrame kFrameNotDyadic = {
 // Expects, from three rounding steps below the side at `side` smallest cells to three above, that FindCellIdAt (both
 // forms) gives the checker's cell, a cell beside the side or none beyond the grid's edge, its low x never decreasing
 // as x grows. Gives the number of positions found in a cell.
-std::size_t ExpectCellsAroundSide(const GridTables& tables, const GeometricGrid& checker, int side) {
+std::size_t CheckCellsAroundSide(const GridTables& tables, const GeometricGrid& checker, int side) {
   const double smallest_cell_width = ComputeCellWidth(kFrameNotDyadic, SizeLevel{1});
   double position_x = kFrameNotDyadic.origin.x + (side * smallest_cell_width);
   for (int step = 0; step < 3; ++step) {
@@ -257,7 +257,7 @@ std::size_t ExpectCellsAroundSide(const GridTables& tables, const GeometricGrid&
     SCOPED_TRACE(testing::Message() << "side " << side << ", step " << step);
     const Vec3 position = {.x = position_x, .y = kFrameNotDyadic.origin.y + 0.1, .z = kFrameNotDyadic.origin.z + 0.1};
     position_x = std::nextafter(position_x, 1e6);
-    if (!ExpectCheckerCellAt(tables, checker, position)) {
+    if (!CheckCheckerCellAt(tables, checker, position)) {
       continue;
     }
     const UnitBox box = ToUnitBox(FindCellIdAt(tables, position), kFrameNotDyadic.size_level_count);
@@ -279,9 +279,9 @@ TEST(FindCellAt, FrameNotDyadic_BothFormsAgreeNearAnEdge) {
   ASSERT_TRUE(test_grid.has_value());
   const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
   const GeometricGrid checker(kFrameNotDyadic, cells);
-  EXPECT_EQ(ExpectCellsAroundSide(tables, checker, 2), 7U);
-  EXPECT_EQ(ExpectCellsAroundSide(tables, checker, 3), 7U);
-  EXPECT_GT(ExpectCellsAroundSide(tables, checker, 4), 0U);
+  EXPECT_EQ(CheckCellsAroundSide(tables, checker, 2), 7U);
+  EXPECT_EQ(CheckCellsAroundSide(tables, checker, 3), 7U);
+  EXPECT_GT(CheckCellsAroundSide(tables, checker, 4), 0U);
 }
 
 }  // namespace

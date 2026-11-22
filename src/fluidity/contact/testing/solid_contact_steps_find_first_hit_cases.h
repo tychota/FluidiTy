@@ -6,7 +6,7 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    kTolerance, kNoMotion, kTiltedAxes, BuildInputs, Path, FindHit, ToColumn, BuildSphere, BuildCylinder,
-//          kAxisZ, RimSearch, SearchRimFromEntry, TurningSearch, SearchTurningSolid, kReferenceAllowance,
+//          kAxisZ, RimSearch, FindRimFromEntry, TurningSearch, FindTurningSolid, kReferenceAllowance,
 //          BuildQuarterTurnLongBox, OutwardPath, BuildOutwardPath
 // Uses:    the headers it includes
 // Used by: src/fluidity/contact/solid_contact_steps.find_first_hit.test.cc and
@@ -120,7 +120,7 @@ struct RimSearch {
 
 // Runs the rim search on a path in a cylinder's own axes from the entry the two intervals give, as FindCylinderHit
 // does; a path that does not enter the grown cylinder within the duration is free with no advance.
-inline RimSearch SearchRimFromEntry(OwnPath own_path, Vec3 half_size, double duration) {
+inline RimSearch FindRimFromEntry(OwnPath own_path, Vec3 half_size, double duration) {
   const TimeInterval inside_wall = ComputeTimeInsideGrownWall(own_path, half_size, kTolerance);
   const TimeInterval between_caps = ComputeTimeBetweenGrownCaps(own_path, half_size, kTolerance);
   RimSearch search;
@@ -146,7 +146,7 @@ struct TurningSearch {
 };
 
 // Runs FindHitOnTurningSolid toward solid 0 along one path.
-inline TurningSearch SearchTurningSolid(const SolidContactInputs& inputs, Path path) {
+inline TurningSearch FindTurningSolid(const SolidContactInputs& inputs, Path path) {
   const Sweep sweep = {
       .start = path.start,
       .velocity_for_this_step = path.velocity,

@@ -100,7 +100,7 @@ NamedArray ToNamedArray(std::string_view name, const Buffer<Value>& buffer) {
 
 // The arrays of a CPU grid in the order of the CPU estimate's entries: the five tables, the builder buffers' cell ids,
 // the piece map.
-std::vector<NamedArray> ListCpuArrays(const GridBuilderBuffers& builder_buffers, const GridBuffers& buffers) {
+std::vector<NamedArray> BuildCpuArrays(const GridBuilderBuffers& builder_buffers, const GridBuffers& buffers) {
   const GridBuffersArrays& arrays = ToGridBuffersArrays(buffers);
   const GridBuilderBuffersArrays& builder_arrays = ToGridBuilderBuffersArrays(builder_buffers);
   return {
@@ -116,7 +116,7 @@ std::vector<NamedArray> ListCpuArrays(const GridBuilderBuffers& builder_buffers,
 
 // Checks that the arrays are the estimate's entries, name for name and byte for byte, and that their memory pieces
 // lie in the block in the estimate's order.
-void ExpectArraysEqualEntries(
+void CheckArraysEqualEntries(
     const std::vector<NamedArray>& arrays,
     const std::vector<MemoryEstimateEntry>& estimate,
     const MemoryCounts& counts
@@ -139,7 +139,7 @@ void ExpectArraysEqualEntries(
 
 // Builds one CPU grid of max_cell_blocks blocks with its builder buffers in a CPU RunMemory of exactly its estimate,
 // and checks each array against its entry, then the whole block.
-void ExpectCpuArraysEqualTheEstimate(std::uint32_t max_cell_blocks) {
+void CheckCpuArraysEqualTheEstimate(std::uint32_t max_cell_blocks) {
   const std::vector<MemoryEstimateEntry> estimate = BuildGridMemoryEstimate(RunOn::kCpu, 1, max_cell_blocks);
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(max_cell_blocks);
   ASSERT_TRUE(run_memory.has_value());
@@ -150,7 +150,7 @@ void ExpectCpuArraysEqualTheEstimate(std::uint32_t max_cell_blocks) {
   const std::expected<GridBuffers, GridFailure> buffers = BuildGridBuffers(settings, *builder_buffers, *run_memory);
   ASSERT_TRUE(buffers.has_value());
 
-  ExpectArraysEqualEntries(ListCpuArrays(*builder_buffers, *buffers), estimate, BuildCounts(max_cell_blocks));
+  CheckArraysEqualEntries(BuildCpuArrays(*builder_buffers, *buffers), estimate, BuildCounts(max_cell_blocks));
   EXPECT_EQ(run_memory->handed_out_bytes(), run_memory->reserved_bytes());
 }
 
@@ -199,9 +199,9 @@ TEST(BuildGridBuffers, CpuArrays_HoldThePaperItemCounts) {
 
 TEST(BuildGridBuffers, ThreeRooms_TakeOneMemoryPiecePerEntryInOrder) {
   // One block, where every array is far below its 256-byte rounding; 1,000 blocks; 50,000 blocks (48.6 MB).
-  ExpectCpuArraysEqualTheEstimate(1);
-  ExpectCpuArraysEqualTheEstimate(1000);
-  ExpectCpuArraysEqualTheEstimate(50000);
+  CheckCpuArraysEqualTheEstimate(1);
+  CheckCpuArraysEqualTheEstimate(1000);
+  CheckCpuArraysEqualTheEstimate(50000);
 }
 
 TEST(BuildGridBuffers, TwoBuffersShareBuilderBuffers_HoldTheSharedEstimate) {
@@ -230,7 +230,7 @@ TEST(BuildGridBuffers, TwoBuffersShareBuilderBuffers_HoldTheSharedEstimate) {
 
 // Builds grid_count CPU grid buffers of 1,000 blocks and their builder buffers, shared as `builder_buffers_sharing`
 // says, in a CPU RunMemory of exactly their estimate, and checks that the block is used to the byte.
-void ExpectBuildersHandOutTheEstimate(BuilderBuffersSharing builder_buffers_sharing, std::uint32_t grid_count) {
+void CheckBuildersHandOutTheEstimate(BuilderBuffersSharing builder_buffers_sharing, std::uint32_t grid_count) {
   std::expected<RunMemory, BufferError> run_memory =
       BuildCpuRunMemoryOfEstimate(1000, grid_count, builder_buffers_sharing);
   ASSERT_TRUE(run_memory.has_value());
@@ -249,8 +249,8 @@ void ExpectBuildersHandOutTheEstimate(BuilderBuffersSharing builder_buffers_shar
 }
 
 TEST(BuildGridBuffers, IntoRunMemory_HandsOutExactlyTheEstimate) {
-  ExpectBuildersHandOutTheEstimate(BuilderBuffersSharing::kOnePerGrid, 1);
-  ExpectBuildersHandOutTheEstimate(BuilderBuffersSharing::kOneForAllGrids, 2);
+  CheckBuildersHandOutTheEstimate(BuilderBuffersSharing::kOnePerGrid, 1);
+  CheckBuildersHandOutTheEstimate(BuilderBuffersSharing::kOneForAllGrids, 2);
 }
 
 TEST(BuildGridBuffers, RunMemoryOneMemoryPieceShort_IsOutOfMemory) {
@@ -612,7 +612,7 @@ TEST(GridBuilderBuffers, AssignedIntoMovedFrom_LendWithTheAssignedCount) {
 
 // Builds CPU builder buffers of one block into `builder_buffers` and lends them to new grid buffers.
 std::optional<GridBuffers>
-LendNewBuilderBuffers(RunMemory& run_memory, std::optional<GridBuilderBuffers>& builder_buffers) {
+BuildLentGridBuffers(RunMemory& run_memory, std::optional<GridBuilderBuffers>& builder_buffers) {
   std::expected<GridBuilderBuffers, GridFailure> built = BuildGridBuilderBuffers(RunOn::kCpu, 1, run_memory);
   if (!built.has_value()) {
     return std::nullopt;
@@ -626,26 +626,26 @@ LendNewBuilderBuffers(RunMemory& run_memory, std::optional<GridBuilderBuffers>& 
   return std::move(*buffers);
 }
 
-void MoveLentBuilderBuffers() {
+void CheckMoveLentBuilderBuffers() {
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(1);
   if (!run_memory.has_value()) {
     return;
   }
   std::optional<GridBuilderBuffers> builder_buffers;
-  const std::optional<GridBuffers> buffers = LendNewBuilderBuffers(*run_memory, builder_buffers);
+  const std::optional<GridBuffers> buffers = BuildLentGridBuffers(*run_memory, builder_buffers);
   if (!buffers.has_value() || !builder_buffers.has_value()) {
     return;
   }
   const GridBuilderBuffers moved_to = std::move(*builder_buffers);
 }
 
-void AssignOntoLentBuilderBuffers() {
+void CheckAssignOntoLentBuilderBuffers() {
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(1, 2);
   if (!run_memory.has_value()) {
     return;
   }
   std::optional<GridBuilderBuffers> builder_buffers;
-  const std::optional<GridBuffers> buffers = LendNewBuilderBuffers(*run_memory, builder_buffers);
+  const std::optional<GridBuffers> buffers = BuildLentGridBuffers(*run_memory, builder_buffers);
   std::expected<GridBuilderBuffers, GridFailure> other = BuildGridBuilderBuffers(RunOn::kCpu, 1, *run_memory);
   if (!buffers.has_value() || !builder_buffers.has_value() || !other.has_value()) {
     return;
@@ -653,13 +653,13 @@ void AssignOntoLentBuilderBuffers() {
   *builder_buffers = std::move(*other);
 }
 
-void DestroyLentBuilderBuffers() {
+void CheckDestroyLentBuilderBuffers() {
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(1);
   if (!run_memory.has_value()) {
     return;
   }
   std::optional<GridBuilderBuffers> builder_buffers;
-  const std::optional<GridBuffers> buffers = LendNewBuilderBuffers(*run_memory, builder_buffers);
+  const std::optional<GridBuffers> buffers = BuildLentGridBuffers(*run_memory, builder_buffers);
   if (!buffers.has_value()) {
     return;
   }
@@ -673,7 +673,7 @@ TEST(GridBuilderBuffersDeathTest, MovedWhileLent_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(MoveLentBuilderBuffers(), "moved_from_is_not_lent");
+  EXPECT_DEATH(CheckMoveLentBuilderBuffers(), "moved_from_is_not_lent");
 #endif
 }
 
@@ -681,7 +681,7 @@ TEST(GridBuilderBuffersDeathTest, AssignedToWhileLent_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(AssignOntoLentBuilderBuffers(), "assigned_to_is_not_lent");
+  EXPECT_DEATH(CheckAssignOntoLentBuilderBuffers(), "assigned_to_is_not_lent");
 #endif
 }
 
@@ -689,7 +689,7 @@ TEST(GridBuilderBuffersDeathTest, DestroyedWhileLent_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(DestroyLentBuilderBuffers(), "destroyed_is_not_lent");
+  EXPECT_DEATH(CheckDestroyLentBuilderBuffers(), "destroyed_is_not_lent");
 #endif
 }
 

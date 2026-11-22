@@ -31,11 +31,11 @@ TEST(ApplyParticleVisitAt, EveryThreadBlockAndThread_SameAsCpuLoop) {
   std::uint64_t id = 1;
   for (const MoveParticleCase& test_case : BuildMoveParticleCases()) {
     SCOPED_TRACE(test_case.name);
-    compared_count += CheckGpuHalfSameAsCpuLoop(BuildOneParticleRange(test_case, id++));
+    compared_count += CheckParallelHalfSameAsCpuLoop(BuildOneParticleRange(test_case, id++));
   }
-  compared_count += CheckGpuHalfSameAsCpuLoop(BuildPackedObliqueRange(10000));
+  compared_count += CheckParallelHalfSameAsCpuLoop(BuildPackedObliqueRange(10000));
   for (const MoveParticleCase& test_case : BuildRoundCases(10000)) {
-    compared_count += CheckGpuHalfSameAsCpuLoop(BuildOneParticleRange(test_case, id++));
+    compared_count += CheckParallelHalfSameAsCpuLoop(BuildOneParticleRange(test_case, id++));
   }
   EXPECT_GT(compared_count, 8 * 10000);
 }
@@ -50,7 +50,7 @@ TEST(FirstFailureMinima, SeveralFailuresAnywhere_ReportLowestIdThenIndex) {
       range.particle_id[failing_index] = 100 + failing_index;
     }
     range.particle_id[lowest_index] = 3;
-    EXPECT_TRUE(CheckEveryFailure(RunGpuHalfInEveryLaunch(range), BuildFloorFailure(3, 0.01)));
+    EXPECT_TRUE(CheckEveryFailure(ComputeParallelHalfInEveryLaunch(range), BuildFloorFailure(3, 0.01)));
   }
 }
 
@@ -65,7 +65,7 @@ TEST(ComputeLaunchSize, GridStride_VisitsEveryParticleOnce) {
            (std::size_t{kMaxThreadBlockCount} * kThreadBlockSize) + 1,
        }) {
     std::vector<std::uint8_t> visit_counts(count, 0);
-    RunLaunch(ComputeLaunchSize(count), count, ThreadOrder::kLaunchOrder, [&visit_counts](std::size_t item) {
+    ComputeLaunch(ComputeLaunchSize(count), count, ThreadOrder::kLaunchOrder, [&visit_counts](std::size_t item) {
       ++visit_counts[item];
     });
     EXPECT_TRUE(std::ranges::all_of(visit_counts, [](std::uint8_t visits) {

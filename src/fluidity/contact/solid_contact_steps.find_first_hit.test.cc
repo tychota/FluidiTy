@@ -37,13 +37,13 @@ Solid BuildGround(std::uint32_t solid_id) {
 // tolerance of the contact tests, a few hundred rounding units of the larger value: room for the rounding of a closed
 // form, far below what a wrong formula gives. reference is the largest input of the test (1 for times of
 // about a second).
-void ExpectNearRelative(double actual, double expected, double reference) {
+void CheckNearRelative(double actual, double expected, double reference) {
   const double scale = std::max({std::abs(actual), std::abs(expected), reference});
   EXPECT_LE(std::abs(actual - expected), 0x1p-44 * scale) << actual << " vs " << expected;
 }
 
 // Fails the calling test unless the path is free: no solid, and the other fields at their defaults.
-void ExpectFree(FirstHit first_hit) {
+void CheckFree(FirstHit first_hit) {
   const DistanceToSolid defaults{};
   EXPECT_EQ(first_hit.solid_index, kNoSolid);
   EXPECT_EQ(first_hit.elapsed, 0);
@@ -54,7 +54,7 @@ void ExpectFree(FirstHit first_hit) {
 
 // Fails the calling test unless a distance reported at a rim hit is where the rim search stops: at least tol and at
 // most tol + tol / 1024 (kRimHitGapShare), up to rounding.
-void ExpectRimHitDistance(double distance) {
+void CheckRimHitDistance(double distance) {
   EXPECT_GE(distance, kTolerance - 0x1p-40);
   EXPECT_LE(distance, kTolerance + kTolerance / 1024 + 0x1p-40);
 }
@@ -63,7 +63,7 @@ void ExpectRimHitDistance(double distance) {
 
 TEST(FindFirstHit, NoSolids_IsFree) {
   const SolidContactInputs inputs = BuildInputs({}, 1);
-  ExpectFree(FindHit(inputs, {.start = {}, .velocity = {.x = 1, .y = 2, .z = 3}, .start_elapsed = 0, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = {}, .velocity = {.x = 1, .y = 2, .z = 3}, .start_elapsed = 0, .duration = 1}));
 }
 
 TEST(FindFirstHit, FlatSolidAhead_HitsAtGapOverApproach) {
@@ -81,7 +81,7 @@ TEST(FindFirstHit, FlatSolidAhead_HitsAtGapOverApproach) {
       FindHit(inputs, {.start = {.x = 0.9, .y = 0, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 0.2});
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, (1 - 0.9) - kTolerance);
-  ExpectNearRelative(first_hit.elapsed, 0.1 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 0.1 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 2 * kTolerance);
@@ -136,7 +136,7 @@ TEST(FindFirstHit, BoxEdgeGraze_StaysFree) {
       ),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = 0, .y = 1 + 4 * kTolerance, .z = 0.5}, .velocity = {.x = 1, .y = 1, .z = 0}, .duration = 1}
   ));
@@ -184,7 +184,7 @@ TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace) {
 TEST(FindFirstHit, DomainBoxOpenTop_ExitIsFree) {
   const std::array solids = {ToSolid(DomainBox{.low_corner = {}, .high_corner = {.x = 1, .y = 1, .z = 1}}, 1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = 0.5, .y = 0.5, .z = 0.9}, .velocity = {.x = 0, .y = 0, .z = 1}, .duration = 1})
   );
 }
@@ -257,7 +257,7 @@ TEST(FindFirstHit, StartElapsed_TouchingRuleRisingWithGroundIsFree) {
       ),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {
           .start = {.x = 0, .y = 0, .z = 0.5 + kTolerance},
@@ -321,7 +321,7 @@ TEST(FindFirstHit, StartOnExitPlane_LeavesBeforeEntering) {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = -1, .y = 0.5 + kTolerance, .z = 0}, .velocity = {.x = 1, .y = 1, .z = 0}, .duration = 1}
   ));
@@ -332,7 +332,7 @@ TEST(FindFirstHit, SlidingOnTouchedFace_IsNotAHit) {
   // it cannot cross the surface. The touching rule frees it.
   const std::array solids = {BuildGround(1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = 0, .y = 0, .z = kTolerance}, .velocity = {.x = 5, .y = 0, .z = -kTolerance / 4}, .duration = 1}
   ));
@@ -447,7 +447,7 @@ TEST(FindFirstHit, TiltedMovingBoxEachFace_HitsThatFace) {
     const Vec3 velocity = motion.linear_velocity - 2 * face_case.normal_out_of_solid;
     const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = velocity, .duration = 1});
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
-    ExpectNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
+    CheckNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
     ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 0);
     EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 2 * kTolerance);
@@ -471,7 +471,7 @@ TEST(FindFirstHit, TiltedMovingPlateBothFaces_HitsThatFace) {
     const Vec3 velocity = motion.linear_velocity - 2 * face_case.normal_out_of_solid;
     const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = velocity, .duration = 1});
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
-    ExpectNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
+    CheckNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
     ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 1e-15);
     EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 2 * kTolerance);
@@ -490,7 +490,7 @@ TEST(FindFirstHit, TiltedMovingFlatSolid_HitsItsFace) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = start, .velocity = motion.linear_velocity - 2 * normal, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
+  CheckNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, normal, 1e-15);
 }
@@ -521,7 +521,7 @@ TEST(FindFirstHit, DomainBoxCorner_RestingOnTwoSides_IsFree) {
   const std::array solids = {ToSolid(DomainBox{.low_corner = {}, .high_corner = {.x = 1, .y = 1, .z = 1}}, 1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 velocity = {.x = -kTolerance / 4, .y = -kTolerance / 4, .z = 0.25};
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = kTolerance, .y = kTolerance, .z = 0.5}, .velocity = velocity, .duration = 1})
   );
 }
@@ -588,7 +588,7 @@ TEST(FindFirstHit, StartJustInsideRest_SlidingIsFree) {
   // At z = tol / 2 the gap is -tol / 2, inside the touching window [-tol, 0].
   const std::array solids = {BuildGround(1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {
           .start = {.x = 0, .y = 0, .z = kTolerance / 2},
@@ -614,7 +614,7 @@ TEST(FindFirstHit, StartOnSurface_ParallelPathIsFree) {
   // At z = 0 the gap is exactly -tol, the lower end of the touching window: a path along the surface is free.
   const std::array solids = {BuildGround(1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(inputs, {.start = {}, .velocity = {.x = 3, .y = 4, .z = 0}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = {}, .velocity = {.x = 3, .y = 4, .z = 0}, .duration = 1}));
 }
 
 TEST(FindFirstHit, StartJustBelowSurfaceBeyondWindow_HitsAtZero) {
@@ -632,7 +632,7 @@ TEST(FindFirstHit, TouchingPushExactlyOneTolerance_IsFree) {
   // rate * duration == -tol exactly: the path ends exactly on the surface, still not inside. The limit is free.
   const std::array solids = {BuildGround(1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = 0, .y = 0, .z = kTolerance}, .velocity = {.x = 0, .y = 0, .z = -kTolerance}, .duration = 1}
   ));
@@ -668,7 +668,7 @@ TEST(FindFirstHit, BoxRestingOnTop_SlidingOffTheEdgeIsFree) {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = 0, .y = 0, .z = 0.5 + kTolerance}, .velocity = {.x = 2, .y = 0, .z = 0}, .duration = 1}
   ));
@@ -685,8 +685,8 @@ TEST(FindFirstHit, BoxRestingOnEdge_RestsOnTheOtherFacePlane) {
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 start = {.x = 0.5 + kTolerance, .y = 0, .z = 0.5 + kTolerance};
-  ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1}));
-  ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = start, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
   const FirstHit first_hit =
       FindHit(inputs, {.start = start, .velocity = {.x = -1, .y = 0, .z = -kTolerance / 32}, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
@@ -710,7 +710,7 @@ TEST(FindFirstHitOfSweep, BoxBesideItLevelWithItsTop_FreeAlsoAfterAResponse) {
   const TouchedRule touched = {.is_touched = true, .approach_allowance = 0x1p-46};
   FirstHit first_hit;
   ASSERT_EQ(FindFirstHitOfSweep(inputs, sweep, touched, &first_hit, nullptr), ContactError::kNone);
-  ExpectFree(first_hit);
+  CheckFree(first_hit);
 }
 
 TEST(FindFirstHit, BoxDownItsGrownSidePlanePastTheEdge_IsFree) {
@@ -722,7 +722,7 @@ TEST(FindFirstHit, BoxDownItsGrownSidePlanePastTheEdge_IsFree) {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = 0.5 + kTolerance, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4}
   ));
@@ -744,7 +744,7 @@ TEST(FindFirstHit, BoxBoundingSurfaceWindowAndSink) {
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
     EXPECT_EQ(first_hit.elapsed, elapsed);
   };
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = rest_x - kTolerance / 8, .y = 0, .z = 3}, .velocity = down, .duration = 4})
   );
   expect_top_hit(
@@ -752,14 +752,14 @@ TEST(FindFirstHit, BoxBoundingSurfaceWindowAndSink) {
       2.5 - kTolerance
   );
   const Vec3 rest_start = {.x = rest_x, .y = 0, .z = 3};
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 512, .y = 0, .z = -1}, .duration = 4})
   );
   expect_top_hit(
       FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 128, .y = 0, .z = -1}, .duration = 4}),
       2.5 - kTolerance
   );
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {
           .start = {.x = rest_x + kTolerance / 128, .y = 0, .z = 3},
@@ -808,7 +808,7 @@ TEST(FindFirstHit, HitJustAfterEnd_IsFree) {
   // The same path with the duration one rounding unit short of 1 s.
   const std::array solids = {BuildGround(1)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {
           .start = {.x = 0, .y = 0, .z = 1 + kTolerance},
@@ -821,9 +821,7 @@ TEST(FindFirstHit, HitJustAfterEnd_IsFree) {
 TEST(FindFirstHit, PathParallelToFlatSolid_IsFree) {
   const std::array solids = {BuildGround(1)};
   const SolidContactInputs inputs = BuildInputs(solids, 10);
-  ExpectFree(
-      FindHit(inputs, {.start = {.x = 0, .y = 0, .z = 1}, .velocity = {.x = 3, .y = 4, .z = 0}, .duration = 10})
-  );
+  CheckFree(FindHit(inputs, {.start = {.x = 0, .y = 0, .z = 1}, .velocity = {.x = 3, .y = 4, .z = 0}, .duration = 10}));
 }
 
 TEST(FindFirstHit, PathParallelAboveBoxFace_IsFree) {
@@ -833,7 +831,7 @@ TEST(FindFirstHit, PathParallelAboveBoxFace_IsFree) {
       ToSolid(Box{.center = {}, .axes = kIdentity, .half_size = {.x = 0.5, .y = 0.5, .z = 0.5}}, kNoMotion, 1),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 0.75}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 4})
   );
 }
@@ -875,7 +873,7 @@ TEST(FindFirstHit, BoxEdgeMissedByOneUnit_IsFree) {
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 start = {.x = -1, .y = 2 * kTolerance + 0x1p-52, .z = 0};
-  ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = 1, .y = 1, .z = 0}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = start, .velocity = {.x = 1, .y = 1, .z = 0}, .duration = 1}));
 }
 
 // --- Several solids, the committed plate, and the outputs ---
@@ -980,7 +978,7 @@ TEST(FindFirstHit, SphereHeadOn_HitsAtGapOverSpeed) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
@@ -993,8 +991,8 @@ TEST(FindFirstHit, SphereGrazing_HitsAtQuadraticRoot) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -2, .y = 0.3, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 2 - std::sqrt((0.5 + kTolerance) * (0.5 + kTolerance) - 0.09), 1);
-  ExpectNearRelative(first_hit.elapsed, 1.5999999988358469, 1);
+  CheckNearRelative(first_hit.elapsed, 2 - std::sqrt((0.5 + kTolerance) * (0.5 + kTolerance) - 0.09), 1);
+  CheckNearRelative(first_hit.elapsed, 1.5999999988358469, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -0.8, .y = 0.6, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
@@ -1010,7 +1008,7 @@ TEST(FindFirstHit, SphereTangentWithinRounding_FreeOrHitNearTwo) {
       {.start = {.x = -2, .y = 0.5 + kTolerance, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2}
   );
   if (first_hit.solid_index == kNoSolid) {
-    ExpectFree(first_hit);
+    CheckFree(first_hit);
     return;
   }
   EXPECT_EQ(first_hit.solid_index, 0U);
@@ -1021,7 +1019,7 @@ TEST(FindFirstHit, SphereTangentWithinRounding_FreeOrHitNearTwo) {
 TEST(FindFirstHit, SphereMiss_IsFree) {
   const std::array solids = {BuildSphere({}, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = -2, .y = 0.6, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2})
   );
 }
@@ -1030,7 +1028,7 @@ TEST(FindFirstHit, SphereMovingAway_IsFree) {
   // Dot(start, velocity) = 2 >= 0: the path does not approach the centre.
   const std::array solids = {BuildSphere({}, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 0}, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 2})
   );
 }
@@ -1040,7 +1038,7 @@ TEST(FindFirstHit, SphereTouchingTangentPath_IsNotAHit) {
   // <sec-round-starts>).
   const std::array solids = {BuildSphere({}, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = -(0.5 + kTolerance), .y = 0, .z = 0}, .velocity = {.x = 0, .y = 1, .z = 0}, .duration = 2}
   ));
@@ -1069,7 +1067,7 @@ TEST(FindFirstHit, MovingSphere_UsesRelativeVelocity) {
   const SolidContactInputs inputs = BuildInputs(solids, 2);
   const FirstHit first_hit = FindHit(inputs, {.start = {}, .velocity = kAtRest, .duration = 2});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
@@ -1092,7 +1090,7 @@ TEST(FindFirstHit, SpinningSphere_IsClosedForm) {
     };
     const FirstHit first_hit = FindHit(inputs, path);
     EXPECT_EQ(first_hit.solid_index, 0U) << start_elapsed;
-    ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+    CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
     ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   }
@@ -1124,7 +1122,7 @@ TEST(FindFirstHit, MovingSphereEachDirection_HitsItsSurface) {
     };
     const FirstHit first_hit = FindHit(inputs, path);
     EXPECT_EQ(first_hit.solid_index, 0U);
-    ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+    CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
     ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, direction, 1e-8);
     EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
@@ -1142,7 +1140,7 @@ TEST(FindFirstHit, SphereStartOneToleranceOutsideRest_HitsAfterGapOverSpeed) {
       {.start = {.x = -(0.5 + 2 * kTolerance), .y = 0, .z = 0}, .velocity = {.x = 0.7, .y = 0, .z = 0}, .duration = 1}
   );
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, kTolerance / 0.7, kTolerance);
+  CheckNearRelative(first_hit.elapsed, kTolerance / 0.7, kTolerance);
 }
 
 TEST(FindFirstHit, SphereStartJustInsideRest_PushingInHitsAtZero) {
@@ -1150,7 +1148,7 @@ TEST(FindFirstHit, SphereStartJustInsideRest_PushingInHitsAtZero) {
   const std::array solids = {BuildSphere({}, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 start = {.x = 0, .y = 0, .z = 0.5 + kTolerance / 2};
-  ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = 1, .y = 0, .z = -kTolerance / 4}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = start, .velocity = {.x = 1, .y = 0, .z = -kTolerance / 4}, .duration = 1}));
   const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
@@ -1184,7 +1182,7 @@ TEST(FindFirstHit, SphereHitExactlyAtEnd_IsHit) {
   EXPECT_EQ(first_hit.elapsed, hit_elapsed);
   Path path_ending_before_hit = long_path;
   path_ending_before_hit.duration = hit_elapsed * (1 - 0x1p-40);
-  ExpectFree(FindHit(inputs, path_ending_before_hit));
+  CheckFree(FindHit(inputs, path_ending_before_hit));
 }
 
 TEST(FindFirstHit, StartElapsed_SphereTouchingRuleUsesLaterPose) {
@@ -1212,7 +1210,7 @@ TEST(FindFirstHit, StartElapsed_SphereRisingWithParticleIsFree) {
       BuildSphere({}, {.linear_velocity = {.x = 0, .y = 0, .z = 1}, .angular_velocity = {}}),
   };
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {
           .start = {.x = 0, .y = 0, .z = 1 + kTolerance},
@@ -1248,7 +1246,7 @@ TEST(FindFirstHit, StartElapsed_SphereHitUsesPoseOfTheHit) {
   const SolidContactInputs inputs = BuildInputs(solids, 3);
   const FirstHit first_hit = FindHit(inputs, {.start = {}, .velocity = kAtRest, .start_elapsed = 1, .duration = 2});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -1260,7 +1258,7 @@ TEST(FindFirstHit, CylinderWall_HitsAtRadialGap) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 0.25}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
@@ -1272,7 +1270,7 @@ TEST(FindFirstHit, CylinderCap_HitsAtHeightGap) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = 0.1, .y = 0.2, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
@@ -1286,7 +1284,7 @@ TEST(FindFirstHit, CylinderObliqueWall_CapPlaneOutsideDiscRejected) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 1.5}, .velocity = {.x = 1, .y = 0, .z = -0.5}, .duration = 4});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
 }
 
@@ -1298,7 +1296,7 @@ TEST(FindFirstHit, CylinderOverRimIntoWall_HitsWall) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 2}, .velocity = {.x = 1, .y = 0, .z = -1}, .duration = 4});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
 }
 
@@ -1321,13 +1319,13 @@ TEST(FindFirstHit, CylinderThroughGrownRimEdge_IsHit) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, 0.45 + (8 - std::sqrt(24.0)) / 20 * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  ExpectRimHitDistance(first_hit.at_hit.distance);
+  CheckRimHitDistance(first_hit.at_hit.distance);
 }
 
 TEST(FindFirstHit, CylinderParallelToAxisOutside_IsFree) {
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = 0.6, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4})
   );
 }
@@ -1347,7 +1345,7 @@ TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim) {
   EXPECT_NEAR(first_hit.elapsed, 2 - std::sqrt(0.75) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0.5, .y = 0, .z = std::sqrt(0.75)}, 1e-5);
-  ExpectRimHitDistance(first_hit.at_hit.distance);
+  CheckRimHitDistance(first_hit.at_hit.distance);
 }
 
 TEST(FindFirstHit, CylinderRimHeadOnAtFortyFiveDegrees_HitsAtOneTolerance) {
@@ -1375,21 +1373,21 @@ TEST(FindFirstHit, CylinderRimPassedBeyondOneTolerance_IsFree) {
   for (const double passing_share : {25.0 / 32, 23.0 / 32}) {
     const double offset = passing_share * kTolerance;  // m
     const Vec3 start = {.x = 0.75 + offset, .y = 0, .z = 0.75 + offset};
-    ExpectFree(FindHit(inputs, {.start = start, .velocity = velocity, .duration = 0.5}));
+    CheckFree(FindHit(inputs, {.start = start, .velocity = velocity, .duration = 0.5}));
   }
   const double offset = 22.0 / 32 * kTolerance;  // m
   const Vec3 start = {.x = 0.75 + offset, .y = 0, .z = 0.75 + offset};
   const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = velocity, .duration = 0.5});
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  ExpectRimHitDistance(first_hit.at_hit.distance);
+  CheckRimHitDistance(first_hit.at_hit.distance);
 }
 
 TEST(FindFirstHit, CylinderParallelToCapsAbove_IsFree) {
   // The path is inside the grown wall from 1.5 - tol s, but never between the grown caps' planes: free.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 1.5}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 4})
   );
 }
@@ -1397,7 +1395,7 @@ TEST(FindFirstHit, CylinderParallelToCapsAbove_IsFree) {
 TEST(FindFirstHit, CylinderTouchingWallTangentPath_IsNotAHit) {
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = -(0.5 + kTolerance), .y = 0, .z = 0}, .velocity = {.x = 0, .y = 1, .z = 0}, .duration = 2}
   ));
@@ -1422,7 +1420,7 @@ TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree) {
   // Wall and cap distances tol / 2: true distance Sqrt(0.5) tol, gap (Sqrt(0.5) - 1) tol < 0, so the touching rule
   // decides, and the path leaves along the rim normal.
   const Vec3 touching_start = {.x = 0.5 + kTolerance / 2, .y = 0, .z = 1 + kTolerance / 2};
-  ExpectFree(FindHit(inputs, {.start = touching_start, .velocity = {.x = 1, .y = 0, .z = 1}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = touching_start, .velocity = {.x = 1, .y = 0, .z = 1}, .duration = 1}));
   // Wall and cap distances 0.9 tol: inside the grown sharp cylinder, but at the true distance 0.9 Sqrt(2) tol > tol,
   // in its rim corner. The entry is 0 and the rim search decides: along the rim's normal the true distance reaches tol
   // after (0.9 - Sqrt(0.5)) tol s, one advance. Along {-1, 0, 0} the start rests on the cap's plane, 0.1 tol inside
@@ -1434,9 +1432,9 @@ TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree) {
   EXPECT_NEAR(approaching.elapsed, (0.9 - std::sqrt(0.5)) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(approaching.at_hit.face, SolidFace::kHighRim);
   ExpectVec3Near(approaching.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
-  ExpectRimHitDistance(approaching.at_hit.distance);
-  ExpectFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
-  ExpectFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 1}));
+  CheckRimHitDistance(approaching.at_hit.distance);
+  CheckFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 1}));
 }
 
 TEST(FindFirstHit, CylinderRimCornerStartAlongTangent_IsFree) {
@@ -1446,7 +1444,7 @@ TEST(FindFirstHit, CylinderRimCornerStartAlongTangent_IsFree) {
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 corner_start = {.x = 0.5 + 0.875 * kTolerance, .y = 0, .z = 1 + 0.875 * kTolerance};
-  ExpectFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = 1, .y = 0, .z = -1}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = 1, .y = 0, .z = -1}, .duration = 1}));
 }
 
 TEST(FindFirstHit, SpinningCylinderAboutAxis_IsClosedForm) {
@@ -1466,7 +1464,7 @@ TEST(FindFirstHit, SpinningCylinderAboutAxis_IsClosedForm) {
     };
     const FirstHit first_hit = FindHit(inputs, path);
     EXPECT_EQ(first_hit.solid_index, 0U) << start_elapsed;
-    ExpectNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
+    CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
     ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   }
@@ -1481,7 +1479,7 @@ TEST(FindFirstHit, TiltedSpinningCylinder_IsClosedForm) {
   const SolidContactInputs inputs = BuildInputs(solids, 4);
   const FirstHit first_hit = FindHit(inputs, {.start = 3 * axis, .velocity = -1 * axis, .duration = 4});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
   ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, axis, 1e-8);
 }
@@ -1504,7 +1502,7 @@ TEST(FindFirstHit, CylinderTurningAcrossBelowBound_IsClosedForm) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -4, .y = 0, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
 }
 
 TEST(FindFirstHit, CylinderTurningAcrossAtBound_IsClosedForm) {
@@ -1515,7 +1513,7 @@ TEST(FindFirstHit, CylinderTurningAcrossAtBound_IsClosedForm) {
   const FirstHit first_hit =
       FindHit(inputs, {.start = {.x = -3, .y = 0, .z = 0}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 1 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 1 - kTolerance, 1);
 }
 
 TEST(FindFirstHit, CylinderTurningAcrossAboveBound_RestingParticleIsHitAtZero) {
@@ -1548,14 +1546,14 @@ TEST(FindFirstHit, CylinderTurningAcrossBelowBound_RestingParticleIsFree) {
   // the wall.
   const std::array solids = {BuildCylinderTurningAcross(kTolerance / 64)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
-  ExpectFree(FindHit(inputs, {.start = {.x = -(2 + kTolerance), .y = 0, .z = 0}, .velocity = kAtRest, .duration = 2}));
+  CheckFree(FindHit(inputs, {.start = {.x = -(2 + kTolerance), .y = 0, .z = 0}, .velocity = kAtRest, .duration = 2}));
 }
 
 TEST(FindFirstHit, CylinderTurningAcrossAtBound_RestingParticleIsFree) {
   // (tol / 24) * 1 * 3 rounds to exactly tol / 8, which still counts as not turning: the touching rule frees it.
   const std::array solids = {BuildCylinderTurningAcross(kTolerance / 24)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  ExpectFree(FindHit(inputs, {.start = {.x = -(2 + kTolerance), .y = 0, .z = 0}, .velocity = kAtRest, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = {.x = -(2 + kTolerance), .y = 0, .z = 0}, .velocity = kAtRest, .duration = 1}));
 }
 
 TEST(FindFirstHit, CylinderTurningAcrossBelowBound_LaterShortSweepIsClosedForm) {
@@ -1574,7 +1572,7 @@ TEST(FindFirstHit, CylinderTurningAcrossBelowBound_LaterShortSweepIsClosedForm) 
       }
   );
   EXPECT_EQ(first_hit.solid_index, 0U);
-  ExpectNearRelative(first_hit.elapsed, 0.5 - kTolerance, 1);
+  CheckNearRelative(first_hit.elapsed, 0.5 - kTolerance, 1);
 }
 
 TEST(FindFirstHit, CylinderPathAlongAxis_HitsEachCap) {
@@ -1585,12 +1583,12 @@ TEST(FindFirstHit, CylinderPathAlongAxis_HitsEachCap) {
   const FirstHit from_above =
       FindHit(inputs, {.start = {.x = 0, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4});
   EXPECT_EQ(from_above.solid_index, 0U);
-  ExpectNearRelative(from_above.elapsed, 2 - kTolerance, 1);
+  CheckNearRelative(from_above.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(from_above.at_hit.face, SolidFace::kHighZ);
   const FirstHit from_below =
       FindHit(inputs, {.start = {.x = 0, .y = 0, .z = -3}, .velocity = {.x = 0, .y = 0, .z = 1}, .duration = 4});
   EXPECT_EQ(from_below.solid_index, 0U);
-  ExpectNearRelative(from_below.elapsed, 2 - kTolerance, 1);
+  CheckNearRelative(from_below.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(from_below.at_hit.face, SolidFace::kLowZ);
   ExpectVec3Near(from_below.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 1e-8);
 }
@@ -1598,13 +1596,13 @@ TEST(FindFirstHit, CylinderPathAlongAxis_HitsEachCap) {
 TEST(FindFirstHit, CylinderMovingAwayFromCapOrWall_IsFree) {
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = 0.1, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = 1}, .duration = 4})
   );
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = 0.1, .y = 0, .z = -3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4})
   );
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = -2, .y = 0, .z = 0}, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 4})
   );
 }
@@ -1615,7 +1613,7 @@ TEST(FindFirstHit, CylinderDownItsGrownWallPastTheRim_IsFree) {
   // is free (method paper <sec-touching-rule>). The sharp grown edge alone would stop it Sqrt(2) tol from the rim.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 4);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = 0.5 + kTolerance, .y = 0, .z = 3}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 4}
   ));
@@ -1626,7 +1624,7 @@ TEST(FindFirstHit, CylinderAlongItsGrownCapPlanePastTheRim_IsFree) {
   // rim, and the path stays in that plane: free.
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 2);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = -2, .y = 0, .z = 1 + kTolerance}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2}
   ));
@@ -1642,7 +1640,7 @@ TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink) {
   const SolidContactInputs inputs = BuildInputs(solids, 4);
   const Vec3 down = {.x = 0, .y = 0, .z = -1};
   const double rest_x = 0.5 + kTolerance;  // m
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = rest_x - kTolerance / 8, .y = 0, .z = 3}, .velocity = down, .duration = 4})
   );
   const FirstHit deeper =
@@ -1652,7 +1650,7 @@ TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink) {
   // The search stops within tol / 1024 of the rest gap, where the gap closes at 0.584 m/s: within tol / 512 s.
   EXPECT_NEAR(deeper.elapsed, 2 - std::sqrt(1 - (13.0 / 16) * (13.0 / 16)) * kTolerance, kTolerance / 512);
   const Vec3 rest_start = {.x = rest_x, .y = 0, .z = 3};
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = rest_start, .velocity = {.x = -kTolerance / 512, .y = 0, .z = -1}, .duration = 4})
   );
   const FirstHit sinking =
@@ -1660,11 +1658,11 @@ TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink) {
   EXPECT_EQ(sinking.solid_index, 0U);
   EXPECT_EQ(sinking.at_hit.face, SolidFace::kHighRim);
   const Vec3 quick_sink = {.x = -kTolerance / 128, .y = 0, .z = -2};
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       inputs,
       {.start = {.x = rest_x + kTolerance / 128, .y = 0, .z = 3}, .velocity = quick_sink, .duration = 2}
   ));
-  ExpectFree(
+  CheckFree(
       FindHit(inputs, {.start = {.x = rest_x + kTolerance / 8, .y = 0, .z = 3}, .velocity = quick_sink, .duration = 2})
   );
   // A wall of radius 4 m: the wall's rate is divided by the distance from the axis, so sinking by tol / 128 still
@@ -1673,7 +1671,7 @@ TEST(FindFirstHit, CylinderBoundingSurfaceWindowAndSink) {
       ToSolid(Cylinder{.center = {}, .axis = kAxisZ, .radius = 4, .half_height = 1}, kNoMotion, 1),
   };
   const SolidContactInputs wide_inputs = BuildInputs(wide_solids, 4);
-  ExpectFree(FindHit(
+  CheckFree(FindHit(
       wide_inputs,
       {
           .start = {.x = 4 + kTolerance, .y = 0, .z = 3},
@@ -1710,7 +1708,7 @@ TEST(FindFirstHit, CylinderTangentToWall_FreeOrHitNearTwo) {
       {.start = {.x = -2, .y = 0.5 + kTolerance, .z = 0.25}, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 2}
   );
   if (first_hit.solid_index == kNoSolid) {
-    ExpectFree(first_hit);
+    CheckFree(first_hit);
     return;
   }
   EXPECT_NEAR(first_hit.elapsed, 2, 0x1p-20);
@@ -1729,7 +1727,7 @@ TEST(FindFirstHit, CylinderStartOneToleranceOutsideRest_HitsAfterGapOverSpeed) {
       {.start = {.x = 0.1, .y = 0, .z = 1 + 2 * kTolerance}, .velocity = {.x = 0, .y = 0, .z = -1}, .duration = 1}
   );
   EXPECT_EQ(through_cap.solid_index, 0U);
-  ExpectNearRelative(through_cap.elapsed, kTolerance, kTolerance);
+  CheckNearRelative(through_cap.elapsed, kTolerance, kTolerance);
   EXPECT_EQ(through_cap.at_hit.face, SolidFace::kHighZ);
   const FirstHit through_wall = FindHit(
       inputs,
@@ -1740,7 +1738,7 @@ TEST(FindFirstHit, CylinderStartOneToleranceOutsideRest_HitsAfterGapOverSpeed) {
       }
   );
   EXPECT_EQ(through_wall.solid_index, 0U);
-  ExpectNearRelative(through_wall.elapsed, kTolerance / 0.7, kTolerance);
+  CheckNearRelative(through_wall.elapsed, kTolerance / 0.7, kTolerance);
   EXPECT_EQ(through_wall.at_hit.face, SolidFace::kCurved);
 }
 
@@ -1762,7 +1760,7 @@ TEST(FindFirstHit, CylinderHitExactlyAtEnd_IsHit) {
     EXPECT_EQ(first_hit.elapsed, hit_elapsed);
     Path path_ending_before_hit = long_path;
     path_ending_before_hit.duration = hit_elapsed * (1 - 0x1p-40);
-    ExpectFree(FindHit(inputs, path_ending_before_hit));
+    CheckFree(FindHit(inputs, path_ending_before_hit));
   }
 }
 
@@ -1771,7 +1769,7 @@ TEST(FindFirstHit, CylinderStartJustInsideRest_PushingInHitsAtZero) {
   const std::array solids = {BuildCylinder({}, kAxisZ, kNoMotion)};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Vec3 start = {.x = 0.1, .y = 0.1, .z = -(1 + kTolerance / 2)};
-  ExpectFree(FindHit(inputs, {.start = start, .velocity = {.x = 1, .y = 0, .z = kTolerance / 4}, .duration = 1}));
+  CheckFree(FindHit(inputs, {.start = start, .velocity = {.x = 1, .y = 0, .z = kTolerance / 4}, .duration = 1}));
   const FirstHit first_hit = FindHit(inputs, {.start = start, .velocity = {.x = 0, .y = 0, .z = 1}, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
@@ -1808,14 +1806,14 @@ TEST(FindFirstHitOfSweep, CylinderBesideRimRestingOnWall_FreeAlsoAfterAResponse)
   };
   FirstHit first_hit;
   ASSERT_EQ(FindFirstHitOfSweep(inputs, above_seam, touched, &first_hit, nullptr), ContactError::kNone);
-  ExpectFree(first_hit);
+  CheckFree(first_hit);
   const Sweep inside_rest_gap = {
       .start = {.x = 0.5 + kTolerance - kTolerance / 32, .y = 0, .z = 1 + kTolerance / 8},
       .velocity_for_this_step = down,
       .duration = 1,
   };
   ASSERT_EQ(FindFirstHitOfSweep(inputs, inside_rest_gap, TouchedRule{}, &first_hit, nullptr), ContactError::kNone);
-  ExpectFree(first_hit);
+  CheckFree(first_hit);
 }
 
 TEST(FindFirstHit, StartElapsed_CylinderTouchingRuleUsesLaterPose) {
@@ -1870,7 +1868,7 @@ TEST(FindFirstHit, StartElapsed_CylinderRimCornerMovingWithCylinderIsFree) {
       .start_elapsed = 0.5,
       .duration = 0.5,
   };
-  ExpectFree(FindHit(inputs, path));
+  CheckFree(FindHit(inputs, path));
 }
 
 TEST(FindFirstHit, StartElapsed_CylinderDeepStartUsesLaterPose) {
@@ -1979,7 +1977,7 @@ std::array<CylinderFaceCase, 6> BuildCylinderFaceCases() {
 // Fails the calling test unless each face case hits its face, with a cylinder of radius 0.5 m and half height 1 m at
 // {1, 2, 3} along axis, moving, a quarter of a second into the step. Each case's start and velocity are written in
 // world axes with the cylinder's own axes, so every orientation expects the same hit, up to the rounding of the turn.
-void ExpectEachCylinderFaceHit(Vec3 axis) {
+void CheckEachCylinderFaceHit(Vec3 axis) {
   const SolidMotion motion = {.linear_velocity = {.x = 0.5, .y = -0.25, .z = 1}, .angular_velocity = {}};
   const Vec3 center = {.x = 1, .y = 2, .z = 3};
   const std::array solids = {BuildCylinder(center, axis, motion)};
@@ -1996,7 +1994,7 @@ void ExpectEachCylinderFaceHit(Vec3 axis) {
     };
     const FirstHit first_hit = FindHit(inputs, path);
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
-    ExpectNearRelative(first_hit.elapsed, face_case.hit_elapsed, 1);
+    CheckNearRelative(first_hit.elapsed, face_case.hit_elapsed, 1);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
     ExpectVec3Near(
         first_hit.at_hit.normal_out_of_solid,
@@ -2009,11 +2007,11 @@ void ExpectEachCylinderFaceHit(Vec3 axis) {
 }
 
 TEST(FindFirstHit, MovingCylinderEachFace_HitsThatFace) {
-  ExpectEachCylinderFaceHit(kAxisZ);
+  CheckEachCylinderFaceHit(kAxisZ);
 }
 
 TEST(FindFirstHit, TiltedMovingCylinderEachFace_HitsThatFace) {
-  ExpectEachCylinderFaceHit(ToColumn(kTiltedAxes, 2));
+  CheckEachCylinderFaceHit(ToColumn(kTiltedAxes, 2));
 }
 
 // --- The rim search ---
@@ -2039,7 +2037,7 @@ TEST(FindCylinderRimHit, AdvanceCounts) {
   // at which it closes, so a path along the rim's normal needs one and a path down the wall two (method paper
   // <sec-round-first-hit>).
   const auto expect_advances = [](RimSearchCase search_case) {
-    const RimSearch search = SearchRimFromEntry(search_case.own_path, kCylinderHalfSize, search_case.duration);
+    const RimSearch search = FindRimFromEntry(search_case.own_path, kCylinderHalfSize, search_case.duration);
     EXPECT_TRUE(search.hit_time.has_hit);
     EXPECT_EQ(search.advance_count, search_case.advance_count) << search_case.own_path.start.x;
     return search;
@@ -2183,12 +2181,12 @@ TEST(FindFirstHit, TurningBoxNotReachedInStep_IsFree) {
   const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = -1}})};
   const SolidContactInputs inputs = BuildInputs(solids, 0.2);
   const Vec3 start = {.x = 0.6 * std::cos(0.3), .y = 0.6 * std::sin(0.3), .z = 0};
-  ExpectFree(FindHit(inputs, {.start = start, .velocity = kAtRest, .duration = 0.2}));
+  CheckFree(FindHit(inputs, {.start = start, .velocity = kAtRest, .duration = 0.2}));
 }
 
 // Fails the calling test unless a hit of the stepping search sits at the surface of the grown solid: its distance is
 // in [tol - tol / 64, (1 + kTurningSolidHitGapShare) tol], the rounding allowance below and the stopping gap above.
-void ExpectAtGrownSurface(DistanceToSolid at_hit) {
+void CheckAtGrownSurface(DistanceToSolid at_hit) {
   EXPECT_GE(at_hit.distance, kTolerance - kTolerance / 64);
   EXPECT_LE(at_hit.distance, (1 + kTurningSolidHitGapShare) * kTolerance);
 }
@@ -2205,7 +2203,7 @@ TEST(FindFirstHit, GrazingTurningBox_HitWhereFaceTurnsOntoParticle) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, std::acos((0.5 + kTolerance) / radius), kTurningHitTimeTolerance);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
-  ExpectAtGrownSurface(first_hit.at_hit);
+  CheckAtGrownSurface(first_hit.at_hit);
 }
 
 TEST(FindFirstHit, TurningBoxSlowApproachWithinAdvanceLimit_IsHit) {
@@ -2234,7 +2232,7 @@ TEST(FindFirstHit, TurningBoxSlowApproachBeyondFirstOrderLimit_IsHit) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, std::acos((0.5 + kTolerance) / radius), 4 * kTurningHitTimeTolerance);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
-  ExpectAtGrownSurface(first_hit.at_hit);
+  CheckAtGrownSurface(first_hit.at_hit);
 }
 
 // The remaining close call. On the turn axis, above the top face of a box of half size 0.5 m turning at {0, 0, 1}
@@ -2248,8 +2246,8 @@ TEST(FindFirstHit, TurningBoxHoverOnSpinAxisWithinAdvanceLimit_IsFree) {
   const std::array solids = {BuildTurningBox({.linear_velocity = {}, .angular_velocity = {.x = 0, .y = 0, .z = 1}})};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
   const Path path = {.start = {.x = 0, .y = 0, .z = 0.5 + 0x1p-15}, .velocity = kAtRest, .duration = 1};
-  ExpectFree(FindHit(inputs, path));
-  const TurningSearch search = SearchTurningSolid(inputs, path);
+  CheckFree(FindHit(inputs, path));
+  const TurningSearch search = FindTurningSolid(inputs, path);
   EXPECT_EQ(search.error, ContactError::kNone);
   EXPECT_EQ(search.advance_count, 91);
 }
@@ -2297,7 +2295,7 @@ TEST(FindFirstHit, RestingOnTurningBox_IsHitAtZero) {
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
   EXPECT_EQ(first_hit.at_hit.distance, kTolerance);
   const std::array still = {BuildTurningBox(kNoMotion)};
-  ExpectFree(FindHit(BuildInputs(still, 0.1), {.start = start, .velocity = along_face, .duration = 0.1}));
+  CheckFree(FindHit(BuildInputs(still, 0.1), {.start = start, .velocity = along_face, .duration = 0.1}));
 }
 
 TEST(FindFirstHit, CylinderTurningAcrossAxis_ReachesRestingParticleAtTrigonometricAngle) {
@@ -2389,7 +2387,7 @@ TEST(FindFirstHit, RestingOnSpinningFlatSolid_TouchingRuleFrees) {
       .velocity = {.x = 1, .y = 0, .z = 0},
       .duration = 0.1,
   };
-  ExpectFree(FindHit(BuildInputs(solids, 0.1), path));
+  CheckFree(FindHit(BuildInputs(solids, 0.1), path));
 }
 
 TEST(FindFirstHit, SpinningPlateAboutNormal_IsClosedForm) {
@@ -2412,7 +2410,7 @@ TEST(FindFirstHit, RestingOnSpinningPlate_TouchingRuleFrees) {
       .velocity = {.x = 1, .y = 0, .z = 0},
       .duration = 0.1,
   };
-  ExpectFree(FindHit(BuildInputs(solids, 0.1), path));
+  CheckFree(FindHit(BuildInputs(solids, 0.1), path));
 }
 
 TEST(FindFirstHit, PlateTurningAboutAxisInItsPlane_IsTurning) {
@@ -2475,7 +2473,7 @@ TEST(FindFirstHit, RestingOnFastSpinningTiltedFloor_TouchingRuleFrees) {
   const ContactError error = FindFirstHit(BuildInputs(solids, 0.1), start, kAtRest, 0, 0.1, &first_hit, &close_call);
   EXPECT_EQ(error, ContactError::kNone);
   EXPECT_EQ(close_call, ContactCloseCall::kNone);
-  ExpectFree(first_hit);
+  CheckFree(first_hit);
 }
 
 TEST(FindFirstHit, SlidingOnFastSpinningTiltedFloor_TouchingRuleFrees) {
@@ -2499,7 +2497,7 @@ TEST(FindFirstHit, SlidingOnFastSpinningTiltedFloor_TouchingRuleFrees) {
       );
       EXPECT_EQ(error, ContactError::kNone) << step_duration;
       EXPECT_EQ(close_call, ContactCloseCall::kNone) << step_duration;
-      ExpectFree(first_hit);
+      CheckFree(first_hit);
     }
   }
 }
@@ -2546,7 +2544,7 @@ TEST(FindFirstHit, TurningSolidCloseCallAfterEarlierHit_IsHit) {
   EXPECT_EQ(first_hit.elapsed, (0.6 - start_height) - kTolerance);
   EXPECT_NEAR(first_hit.elapsed, 0.09999236967414615, 1e-17);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  const TurningSearch capped_search = SearchTurningSolid(
+  const TurningSearch capped_search = FindTurningSolid(
       inputs,
       {.start = {.x = 0, .y = 0, .z = start_height}, .velocity = kAtRest, .duration = first_hit.elapsed}
   );
@@ -2649,14 +2647,14 @@ TEST(FindHitOnTurningSolid, TurningRoom_NotConvexSoFirstOrder) {
   room.closed = {.left = true, .right = true, .front = true, .back = true, .bottom = true, .top = true};
   room.motion.angular_velocity = {.x = 0, .y = 0, .z = std::numbers::pi / 2};
   const std::array solids = {room};
-  const TurningSearch search = SearchTurningSolid(
+  const TurningSearch search = FindTurningSolid(
       BuildInputs(solids, 1),
       {.start = {.x = 0.5, .y = 0.7, .z = 0}, .velocity = {.x = 1, .y = -1, .z = 0}, .duration = 1}
   );
   EXPECT_EQ(search.error, ContactError::kNone);
   EXPECT_EQ(search.first_hit.solid_index, 0U);
   EXPECT_NEAR(search.first_hit.elapsed, 0.66938054133, kTurningHitTimeTolerance);
-  ExpectAtGrownSurface(search.first_hit.at_hit);
+  CheckAtGrownSurface(search.first_hit.at_hit);
 }
 
 // A box of half size 0.5 m centred at the origin at the start of the step, moving at {1, 0, 0} m/s and turning at
@@ -2689,7 +2687,7 @@ TEST(FindFirstHit, StartElapsed_TurningBoxLeftBehindIsFree) {
       .start_elapsed = 0.5,
       .duration = 0.25,
   };
-  ExpectFree(FindHit(inputs, path));
+  CheckFree(FindHit(inputs, path));
 }
 
 TEST(FindFirstHit, StartElapsed_TurningBoxSearchUsesLaterPoses) {
@@ -2780,7 +2778,7 @@ TEST(FindFirstHit, TurningLongBoxOutwardPathFromNearOrigin_FarEndOfRadiusBoundsC
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, 0.98010536766574, kTurningHitTimeTolerance);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighX);
-  ExpectAtGrownSurface(first_hit.at_hit);
+  CheckAtGrownSurface(first_hit.at_hit);
 }
 
 TEST(FindFirstHit, TurningLongBoxSlidePastEndFace_CoriolisAndNearEndBoundCurvature) {
@@ -2800,8 +2798,8 @@ TEST(FindFirstHit, TurningLongBoxSlidePastEndFace_CoriolisAndNearEndBoundCurvatu
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, 0.0815739451161, kTurningHitTimeTolerance);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighY);
-  ExpectAtGrownSurface(first_hit.at_hit);
-  EXPECT_EQ(SearchTurningSolid(inputs, path).advance_count, 3);
+  CheckAtGrownSurface(first_hit.at_hit);
+  EXPECT_EQ(FindTurningSolid(inputs, path).advance_count, 3);
 }
 
 TEST(FindFirstHit, TurningLongBoxFaceSweepsOntoParticle_FirstOrderAdvanceIsTheFloor) {
@@ -2810,7 +2808,7 @@ TEST(FindFirstHit, TurningLongBoxFaceSweepsOntoParticle_FirstOrderAdvanceIsTheFl
   // g / bound, is the longer one, and the search keeps it: 3 advances. The second-order advance alone takes 4.
   const std::array solids = {BuildQuarterTurnLongBox({})};
   const SolidContactInputs inputs = BuildInputs(solids, 1);
-  const TurningSearch search = SearchTurningSolid(
+  const TurningSearch search = FindTurningSolid(
       inputs,
       {.start = {.x = -0.5 - kTolerance - 0.4, .y = 3, .z = 0}, .velocity = kAtRest, .duration = 1}
   );
@@ -2913,7 +2911,7 @@ TEST(FindFirstHit, SecondOrderSearchStoppingTimes_PinAdvanceCounts) {
   for (const PinnedCase& pinned_case : pinned_cases) {
     const FirstHit first_hit = FindHit(pinned_case.inputs, pinned_case.path);
     EXPECT_NEAR(first_hit.elapsed, pinned_case.stopping_elapsed, kStoppingTimeTolerance) << pinned_case.name;
-    const TurningSearch search = SearchTurningSolid(pinned_case.inputs, pinned_case.path);
+    const TurningSearch search = FindTurningSolid(pinned_case.inputs, pinned_case.path);
     EXPECT_EQ(search.advance_count, pinned_case.advance_count) << pinned_case.name;
     EXPECT_EQ(search.first_hit.elapsed, first_hit.elapsed) << pinned_case.name;
   }

@@ -41,7 +41,7 @@ TEST(FindCellAt, NearFormAcrossSizeLevelZeroBlocks_EqualsSearch) {
     for (int y_quarter = -4; y_quarter <= 36; ++y_quarter) {
       for (int x_quarter = -4; x_quarter <= 68; ++x_quarter) {
         const Vec3 position = {.x = x_quarter * 0.25, .y = y_quarter * 0.25, .z = position_z};
-        found_count += ExpectCheckerCellAt(tables, checker, position) ? 1 : 0;
+        found_count += CheckCheckerCellAt(tables, checker, position) ? 1 : 0;
       }
     }
   }
@@ -79,7 +79,8 @@ struct RandomPositionCounts {
 // the lattice of smallest cells, so on cell sides: the search agrees with the checker, and the near form agrees with
 // the search from the found cell's block, a block two moves from it, the last block, a drawn block, block_count and
 // kNoIndex.
-RandomPositionCounts CountRandomPositions(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
+RandomPositionCounts
+ComputeCountRandomPositions(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
   RandomPositionCounts counts;
   std::mt19937_64 generator(seed);
   constexpr int kPositionCount = 1000;
@@ -126,7 +127,7 @@ TEST(FindCellAt, NearForm_EqualsSearchOnRandomPositions) {
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
     SCOPED_TRACE(testing::Message() << "FindCellAt on random positions, random grid " << grid);
     const RandomPositionCounts counts =
-        CountRandomPositions(built.grids.at(grid).grid.tables(RunOn::kCpu), built.checkers.at(grid), grid + 1);
+        ComputeCountRandomPositions(built.grids.at(grid).grid.tables(RunOn::kCpu), built.checkers.at(grid), grid + 1);
     EXPECT_EQ(counts.wrong_count, 0U);
     total.found_count += counts.found_count;
     total.two_moves_count += counts.two_moves_count;

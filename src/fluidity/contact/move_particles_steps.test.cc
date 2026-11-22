@@ -43,8 +43,8 @@ TEST(FirstFailureMinima, TwoFailuresInEveryLaunchAndOrder_ReportLowestParticleId
   ParticleRange range = BuildFloorRange(1000, failing_indexes);
   range.particle_id[5] = 50;
   range.particle_id[700] = 9;
-  EXPECT_TRUE(CheckEveryFailure(RunGpuHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
-  EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
+  EXPECT_TRUE(CheckEveryFailure(ComputeParallelHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
+  EXPECT_EQ(CheckParallelHalfSameAsCpuLoop(range), 8);
 }
 
 TEST(FirstFailureMinima, EqualIdsFailing_ReportsLowerIndex) {
@@ -54,8 +54,8 @@ TEST(FirstFailureMinima, EqualIdsFailing_ReportsLowerIndex) {
   range.particle_id[3] = 9;
   range.particle_id[600] = 9;
   range.start_position[600].z = -0.02;
-  EXPECT_TRUE(CheckEveryFailure(RunGpuHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
-  EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
+  EXPECT_TRUE(CheckEveryFailure(ComputeParallelHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
+  EXPECT_EQ(CheckParallelHalfSameAsCpuLoop(range), 8);
 }
 
 TEST(FirstFailureMinima, LargestIdFailingAlone_IsReported) {
@@ -66,7 +66,7 @@ TEST(FirstFailureMinima, LargestIdFailingAlone_IsReported) {
   range.particle_id[42] = 0xFFFFFFFFFFFFFFFF;
   CallArrays arrays(range);
   const ContactFailure failure =
-      RunGpuHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(range.size()), ThreadOrder::kReverse).first_failure;
+      ComputeParallelHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(range.size()), ThreadOrder::kReverse).first_failure;
   EXPECT_EQ(failure.error, ContactError::kStartsInsideSolid);
   EXPECT_EQ(failure.particle_id, 0xFFFFFFFFFFFFFFFF);
 }
@@ -74,7 +74,7 @@ TEST(FirstFailureMinima, LargestIdFailingAlone_IsReported) {
 TEST(FirstFailureMinima, NoFailure_GivesNoFailure) {
   CallArrays arrays(BuildFloorRange(300, {}));
   const ContactFailure failure =
-      RunGpuHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(300), ThreadOrder::kLaunchOrder).first_failure;
+      ComputeParallelHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(300), ThreadOrder::kLaunchOrder).first_failure;
   EXPECT_EQ(failure.error, ContactError::kNone);
   EXPECT_FALSE(failure.has_particle_id);
 }
@@ -135,16 +135,16 @@ TEST(ComputeParticleCounts, SummedOverThreads_EqualsCpuCounts) {
   range.start_position = {{.x = 0, .y = 0, .z = 0.5}, {.x = 0, .y = 0, .z = 0.05}, {.x = 0, .y = 0, .z = -0.005}};
   range.velocity_for_this_step = {{.x = 1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = -1}, {}};
   range.velocity_for_next_step = range.velocity_for_this_step;
-  const std::vector<GpuHalfAnswer> answers = RunGpuHalfInEveryLaunch(range);
-  const bool is_one_and_one_every_time = std::ranges::all_of(answers, [](const GpuHalfAnswer& answer) {
+  const std::vector<ParallelHalfAnswer> answers = ComputeParallelHalfInEveryLaunch(range);
+  const bool is_one_and_one_every_time = std::ranges::all_of(answers, [](const ParallelHalfAnswer& answer) {
     return answer.counts.hit_count == 1 && answer.counts.started_inside_count == 1;
   });
   EXPECT_TRUE(is_one_and_one_every_time);
-  EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
+  EXPECT_EQ(CheckParallelHalfSameAsCpuLoop(range), 8);
 }
 
 // One CPU run of the oblique particles packed against the solid of their first case, which hit and miss.
-MovedRange RunPackedObliqueOnCpu() {
+MovedRange ComputePackedObliqueOnCpu() {
   return ComputeMovedRange(RunOn::kCpu, BuildPackedObliqueRange(300), ReactionArray::kGiven);
 }
 
@@ -160,7 +160,7 @@ TEST(CheckSameMove, TwoCpuRuns_PassSameBits) {
 
 TEST(CheckSameMove, PositionOneUnitInTheLastPlaceAway_FailsSameBitsPassesBounds) {
   const ParticleRange range = BuildPackedObliqueRange(300);
-  const MovedRange reference = RunPackedObliqueOnCpu();
+  const MovedRange reference = ComputePackedObliqueOnCpu();
   MovedRange compared = reference;
   compared.position[17].y = std::nextafter(compared.position[17].y, 1e300);
   const ComparisonBounds bounds = ComputeComparisonBounds(range);
@@ -175,7 +175,7 @@ TEST(CheckSameMove, ValuesBeyondTheirFloors_FailBounds) {
   // floor of the GPU bounds (method paper <sec-contact>).
   const ParticleRange range = BuildPackedObliqueRange(300);
   const ComparisonBounds bounds = ComputeComparisonBounds(range);
-  const MovedRange reference = RunPackedObliqueOnCpu();
+  const MovedRange reference = ComputePackedObliqueOnCpu();
   MovedRange moved_position = reference;
   moved_position.position[3].x += range.contact_tolerance / 2;
   EXPECT_FALSE(CheckSameMove(reference, moved_position, Agreement::kWithinBounds, bounds));
@@ -189,7 +189,7 @@ TEST(CheckSameMove, ValuesBeyondTheirFloors_FailBounds) {
 
 TEST(CheckSameMove, DiscreteFieldDiffers_FailsBoth) {
   const ParticleRange range = BuildPackedObliqueRange(300);
-  const MovedRange reference = RunPackedObliqueOnCpu();
+  const MovedRange reference = ComputePackedObliqueOnCpu();
   MovedRange compared = reference;
   compared.record[11].face = compared.record[11].face == SolidFace::kHighZ ? SolidFace::kLowZ : SolidFace::kHighZ;
   const ComparisonBounds bounds = ComputeComparisonBounds(range);
@@ -199,7 +199,7 @@ TEST(CheckSameMove, DiscreteFieldDiffers_FailsBoth) {
 
 TEST(CheckSameMove, CountsDiffer_Fail) {
   const ParticleRange range = BuildPackedObliqueRange(300);
-  const MovedRange reference = RunPackedObliqueOnCpu();
+  const MovedRange reference = ComputePackedObliqueOnCpu();
   MovedRange compared = reference;
   ++compared.result->hit_count;
   EXPECT_FALSE(CheckSameMove(reference, compared, Agreement::kWithinBounds, ComputeComparisonBounds(range)));
@@ -207,7 +207,7 @@ TEST(CheckSameMove, CountsDiffer_Fail) {
 
 TEST(CheckSameMove, SuccessAgainstFailure_Fails) {
   const ParticleRange range = BuildPackedObliqueRange(300);
-  const MovedRange reference = RunPackedObliqueOnCpu();
+  const MovedRange reference = ComputePackedObliqueOnCpu();
   MovedRange compared = reference;
   compared.result = std::unexpected(ContactFailure{.error = ContactError::kBadInput});
   EXPECT_FALSE(CheckSameMove(reference, compared, Agreement::kWithinBounds, ComputeComparisonBounds(range)));
@@ -310,7 +310,7 @@ TEST(CheckWroteNothing, OneOutputWritten_FailsNamingIt) {
 
 // Ten turning scenes named "Scene", each the reference against itself except the cases in `flipped_cases`, whose
 // compared run is `flipped`.
-SetComparison CompareTenTurningScenes(
+SetComparison ComputeTenTurningSceneComparison(
     const ParticleRange& range,
     const MovedRange& reference,
     const MovedRange& flipped,
@@ -338,7 +338,7 @@ TEST(SetComparison, TurningSceneWithDiscreteMismatch_IsCountedNotFailed) {
   MovedRange flipped = reference;
   flipped.record[0].face = SolidFace::kLowZ;
   const std::array<std::size_t, 1> flipped_cases = {7};
-  const SetComparison comparison = CompareTenTurningScenes(range, reference, flipped, flipped_cases);
+  const SetComparison comparison = ComputeTenTurningSceneComparison(range, reference, flipped, flipped_cases);
   EXPECT_EQ(comparison.turning_case_count(), 10);
   EXPECT_EQ(comparison.discrete_mismatch_count(), 1);
   EXPECT_EQ(comparison.allowed_discrete_mismatch_count(), 1);
@@ -358,7 +358,7 @@ TEST(SetComparison, TwoMismatchesInTenTurningScenes_Fails) {
   MovedRange flipped = reference;
   flipped.record[0].solid_index = 5;
   const std::array<std::size_t, 2> flipped_cases = {0, 1};
-  const SetComparison comparison = CompareTenTurningScenes(range, reference, flipped, flipped_cases);
+  const SetComparison comparison = ComputeTenTurningSceneComparison(range, reference, flipped, flipped_cases);
   EXPECT_FALSE(comparison.CheckPasses());
 }
 

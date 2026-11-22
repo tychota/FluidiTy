@@ -60,7 +60,7 @@ std::vector<CellId> BuildBigCellsAlongX(std::int32_t count) {
 // Size level 2 {4,4,4} is the smaller cell of the pair and names size level 0 {0,0,0}, two size levels bigger.
 TEST(CheckSizeStepRule, CornerTouchTwoSizeLevelsApart_IsSizeStepRuleBroken) {
   const std::vector<CellId> cells = BuildTwoSizeLevelsApart(ToCell(2, 4, 4, 4));
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(ToUnitFrame(3), cells),
       GridError::kSizeStepRuleBroken,
       ToCell(2, 4, 4, 4),
@@ -70,7 +70,7 @@ TEST(CheckSizeStepRule, CornerTouchTwoSizeLevelsApart_IsSizeStepRuleBroken) {
 
 TEST(CheckSizeStepRule, EdgeTouchTwoSizeLevelsApart_IsSizeStepRuleBroken) {
   const std::vector<CellId> cells = BuildTwoSizeLevelsApart(ToCell(2, 4, 4, 0));
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(ToUnitFrame(3), cells),
       GridError::kSizeStepRuleBroken,
       ToCell(2, 4, 4, 0),
@@ -80,7 +80,7 @@ TEST(CheckSizeStepRule, EdgeTouchTwoSizeLevelsApart_IsSizeStepRuleBroken) {
 
 TEST(CheckSizeStepRule, FaceTouchTwoSizeLevelsApart_IsSizeStepRuleBroken) {
   const std::vector<CellId> cells = BuildTwoSizeLevelsApart(ToCell(2, 4, 0, 0));
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(ToUnitFrame(3), cells),
       GridError::kSizeStepRuleBroken,
       ToCell(2, 4, 0, 0),
@@ -111,7 +111,7 @@ TEST(CheckSizeStepRule, BadIdAfterRepeat_IsBadInputOfFirstBadId) {
   const CellId first_bad_id = {.value = cell.value & ~(std::uint64_t{1} << 63U)};
   const CellId second_bad_id = {.value = 0};
   const std::vector<CellId> cells = {cell, cell, first_bad_id, second_bad_id};
-  ExpectFailure(CheckSizeStepRule(ToUnitFrame(3), cells), GridError::kBadInput, first_bad_id);
+  CheckFailure(CheckSizeStepRule(ToUnitFrame(3), cells), GridError::kBadInput, first_bad_id);
 }
 
 // Two ids with bit 61 set keep ordinary sort keys, so sorting puts Y = size level 0 {0,0,0} before X = size level 0
@@ -126,10 +126,10 @@ std::vector<CellId> BuildBadIdsThatSortingReorders() {
 
 TEST(CheckSizeStepRule, BadIdsThatSortingReorders_IsBadInputOfFirstInInputOrder) {
   const std::vector<CellId> cells = BuildBadIdsThatSortingReorders();
-  ExpectFailure(CheckSizeStepRule(ToUnitFrame(3), cells), GridError::kBadInput, cells.at(0));
+  CheckFailure(CheckSizeStepRule(ToUnitFrame(3), cells), GridError::kBadInput, cells.at(0));
   const std::unique_ptr<CpuGridBuffers> grid_buffers = BuildCpuGridBuffers(1);
   ASSERT_NE(grid_buffers, nullptr);
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(ToInputs(ToUnitFrame(3), cells), *grid_buffers->buffers),
       GridError::kBadInput,
       cells.at(0)
@@ -140,7 +140,7 @@ TEST(CheckSizeStepRule, BadIdsThatSortingReorders_IsBadInputOfFirstInInputOrder)
 TEST(CheckSizeStepRule, CoordBeyondLimit_IsCoordOutOfRange) {
   const CellId beyond_limit = ToCell(0, kMaxCoord + 1, 0, 0);
   const std::vector<CellId> cells = {ToCell(0, 0, 0, 0), beyond_limit};
-  ExpectFailure(CheckSizeStepRule(ToUnitFrame(3), cells), GridError::kCoordOutOfRange, beyond_limit);
+  CheckFailure(CheckSizeStepRule(ToUnitFrame(3), cells), GridError::kCoordOutOfRange, beyond_limit);
 }
 
 TEST(CheckSizeStepRule, BigCellsAtBothCoordLimits_Pass) {
@@ -157,7 +157,7 @@ TEST(CheckSizeStepRule, BigCellsAtBothCoordLimits_Pass) {
 // level 2 and is found at size level 0.
 TEST(CheckSizeStepRule, SmallCellAtHighCoordLimitBesideBigCell_IsSizeStepRuleBroken) {
   const std::vector<CellId> cells = {ToCell(0, 65536, 0, 0), ToCell(2, kMaxCoord, 0, 0)};
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(ToUnitFrame(3), cells),
       GridError::kSizeStepRuleBroken,
       ToCell(2, kMaxCoord, 0, 0),
@@ -174,7 +174,7 @@ TEST(CheckSizeStepRule, BadFrame_IsBadInput) {
   GridFrame width_not_finite = ToUnitFrame(3);
   width_not_finite.biggest_cell_width = std::numeric_limits<double>::infinity();
   for (const GridFrame frame : {origin_not_finite, width_zero, width_not_finite, ToUnitFrame(0), ToUnitFrame(17)}) {
-    ExpectFailure(CheckSizeStepRule(frame, cells), GridError::kBadInput);
+    CheckFailure(CheckSizeStepRule(frame, cells), GridError::kBadInput);
   }
 }
 
@@ -194,7 +194,7 @@ TEST(CheckSizeStepRule, SmallestWidthBelowNormalRange_IsBadInput) {
   for (const int size_level_count : {1, 2, 8, 16}) {
     SCOPED_TRACE(testing::Message() << "size levels " << size_level_count);
     EXPECT_TRUE(CheckSizeStepRule(ToFrameOfSmallestWidth(size_level_count, kSmallestNormal), cells).has_value());
-    ExpectFailure(
+    CheckFailure(
         CheckSizeStepRule(ToFrameOfSmallestWidth(size_level_count, kSmallestNormal / 2), cells),
         GridError::kBadInput
     );
@@ -217,7 +217,7 @@ TEST(GridInputs, TwoLists_IsBadInput) {
   GridInputs inputs = ToInputs(ToUnitFrame(1), cells);
   inputs.active_cell_buffer = &cell_buffer;
   inputs.active_cell_buffer_count = 1;
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
 }
 
 TEST(GridInputs, BufferCountAboveSize_IsBadInput) {
@@ -228,7 +228,7 @@ TEST(GridInputs, BufferCountAboveSize_IsBadInput) {
   GridInputs inputs = ToInputs(ToUnitFrame(1), {});
   inputs.active_cell_buffer = &cell_buffer;
   inputs.active_cell_buffer_count = 3;
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
 }
 
 TEST(GridInputs, CountWithoutBuffer_IsBadInput) {
@@ -236,7 +236,7 @@ TEST(GridInputs, CountWithoutBuffer_IsBadInput) {
   ASSERT_NE(grid_buffers, nullptr);
   GridInputs inputs = ToInputs(ToUnitFrame(1), {});
   inputs.active_cell_buffer_count = 1;
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
 }
 
 TEST(GridInputs, VersionZero_IsBadInput) {
@@ -245,7 +245,7 @@ TEST(GridInputs, VersionZero_IsBadInput) {
   const std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
   GridInputs inputs = ToInputs(ToUnitFrame(1), cells);
   inputs.version = {.value = 0};
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
 }
 
 TEST(GridInputs, BufferList_IsCheckedAsTheSpan) {
@@ -259,7 +259,7 @@ TEST(GridInputs, BufferList_IsCheckedAsTheSpan) {
   inputs.active_cell_buffer_count = 2;
   EXPECT_TRUE(CheckSizeStepRule(inputs, *grid_buffers->buffers).has_value());
   inputs.active_cell_buffer_count = 3;
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(inputs, *grid_buffers->buffers),
       GridError::kSizeStepRuleBroken,
       ToCell(2, 4, 4, 4),
@@ -279,7 +279,7 @@ TEST(CheckSizeStepRule, ListInLentCellIds_IsBadInput) {
   GridInputs inputs = ToInputs(ToUnitFrame(3), {});
   inputs.active_cell_buffer = &cell_ids;
   inputs.active_cell_buffer_count = 2;
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
 }
 
 // The arrays of the grid buffers point at no builder buffers, then at builder buffers that were never lent to them, of
@@ -304,7 +304,7 @@ TEST(CheckSizeStepRule, BuilderBuffersNotTheLentOnes_IsBadInput) {
   };
   for (GridBuilderBuffers* const builder_buffers : replacements) {
     arrays.builder_buffers = builder_buffers;
-    ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+    CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
     EXPECT_EQ(ReadLentCellIds(*lent_builder_buffers, cells.size()), cell_ids_before);
   }
 
@@ -319,7 +319,7 @@ TEST(CheckSizeStepRule, MoreCellsThanPlaces_IsTooManyCellBlocks) {
   const std::unique_ptr<CpuGridBuffers> grid_buffers = BuildCpuGridBuffers(1);
   ASSERT_NE(grid_buffers, nullptr);
   const std::vector<CellId> cells = BuildBigCellsAlongX(65);
-  ExpectFailure(
+  CheckFailure(
       CheckSizeStepRule(ToInputs(ToUnitFrame(1), cells), *grid_buffers->buffers),
       GridError::kTooManyCellBlocks
   );
@@ -340,9 +340,9 @@ TEST(CheckSizeStepRule, TooLongListWithBadId_IsTooManyCellBlocks) {
   std::vector<CellId> cells = BuildBigCellsAlongX(65);
   cells.at(0) = {.value = cells.at(0).value & ~(std::uint64_t{1} << 63U)};
   GridInputs inputs = ToInputs(ToUnitFrame(1), cells);
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kTooManyCellBlocks);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kTooManyCellBlocks);
   inputs.version = {.value = 0};
-  ExpectFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
+  CheckFailure(CheckSizeStepRule(inputs, *grid_buffers->buffers), GridError::kBadInput);
 }
 
 // Sorted, the first cell is size level 2 {2,0,0}, eighth 0 of size level 1 {1,0,0}; that cell is eighth 1 of size
@@ -351,7 +351,7 @@ TEST(CheckSizeStepRule, TooLongListWithBadId_IsTooManyCellBlocks) {
 TEST(BuildSortedCellList, MissingCellBesideSplitSiblings_IsSiblingCellMissingOfThatCell) {
   const std::unique_ptr<CpuGridBuffers> grid_buffers = BuildCpuGridBuffers(64);
   ASSERT_NE(grid_buffers, nullptr);
-  ExpectFailure(
+  CheckFailure(
       CheckThroughSortedCellList(ToUnitFrame(3), BuildMissingCellBesideSplitSiblings(), *grid_buffers->buffers),
       GridError::kSiblingCellMissing,
       ToCell(1, 0, 0, 0),
@@ -366,7 +366,7 @@ TEST(BuildSortedCellList, MissingCellBesideSplitSiblings_IsSiblingCellMissingOfT
 TEST(BuildSortedCellList, MissingSiblingAndSizeStepBreak_IsSiblingCellMissing) {
   const std::unique_ptr<CpuGridBuffers> grid_buffers = BuildCpuGridBuffers(1);
   ASSERT_NE(grid_buffers, nullptr);
-  ExpectFailure(
+  CheckFailure(
       CheckThroughSortedCellList(ToUnitFrame(3), BuildTwoSizeLevelsApart(ToCell(2, 4, 4, 4)), *grid_buffers->buffers),
       GridError::kSiblingCellMissing,
       ToCell(2, 5, 4, 4),
@@ -388,7 +388,7 @@ TEST(BuildSortedCellList, EighthZeroCellLeftOut_NamesFirstBiggerCellNotAtEighthZ
       cells.push_back(small_cell);
     }
   }
-  ExpectFailure(
+  CheckFailure(
       CheckThroughSortedCellList(ToUnitFrame(3), cells, *grid_buffers->buffers),
       GridError::kSiblingCellMissing,
       ToCell(1, 1, 0, 0),
@@ -410,7 +410,7 @@ TEST(BuildSortedCellList, SmallCellAtLowCoordLimit_IsSiblingCellMissingWithNoCel
       cells.push_back(ToCell(1, -kMaxCoord, y, z));
     }
   }
-  ExpectFailure(
+  CheckFailure(
       CheckThroughSortedCellList(ToUnitFrame(2), cells, *grid_buffers->buffers),
       GridError::kSiblingCellMissing,
       CellId{0},

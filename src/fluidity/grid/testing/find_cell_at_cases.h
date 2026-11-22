@@ -6,7 +6,7 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    ToUnitFrame, ToCell, ToInputs, ToFoundCellId, BuildEveryNearValue, FindCellIdAt,
-//          BuildCellsOverSeveralBlocks, ExpectCheckerCellAt
+//          BuildCellsOverSeveralBlocks, CheckCheckerCellAt
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/find_cell_at.test.cc and tests/grid/find_cell_at_near_form_on_positions.test.cc
 // Read:    the test files that include it
@@ -120,7 +120,7 @@ inline std::vector<CellId> BuildCellsOverSeveralBlocks() {
 }
 
 // Expects FindCellIdAt, both forms, to give the checker's cell at `position`, and says whether a cell holds it.
-inline bool ExpectCheckerCellAt(const GridTables& tables, const GeometricGrid& checker, Vec3 position) {
+inline bool CheckCheckerCellAt(const GridTables& tables, const GeometricGrid& checker, Vec3 position) {
   SCOPED_TRACE(testing::Message() << "position " << position.x << ", " << position.y << ", " << position.z);
   const std::optional<CellId> checker_cell = checker.ContainingCell(position);
   const CellId found_cell = FindCellIdAt(tables, position);

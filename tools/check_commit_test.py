@@ -138,6 +138,7 @@ def test_all_steps_pass_exits_zero(monkeypatch, capsys, repo):
     assert lines == [
         "PASS format",
         "PASS rules",
+        "PASS message",
         f"PASS cpu {DEBUG_PRESET}",
         f"PASS cpu {RELEASE_PRESET}",
         "PASS tidy",
@@ -199,6 +200,7 @@ def test_first_failure_is_reported_and_exit_is_nonzero(monkeypatch, capsys, repo
     assert lines[0] == "PASS format"
     assert lines[1].startswith("FAIL rules: ")
     assert lines[2:] == [
+        "NOT RUN message",
         f"NOT RUN cpu {DEBUG_PRESET}",
         f"NOT RUN cpu {RELEASE_PRESET}",
         "NOT RUN tidy",
@@ -541,6 +543,7 @@ def test_failing_tidy_fails_the_step_with_its_log(monkeypatch, capsys, repo):
 ALL_STEP_LINES = [
     "PASS format",
     "PASS rules",
+    "PASS message",
     f"PASS cpu {DEBUG_PRESET}",
     f"PASS cpu {RELEASE_PRESET}",
     "PASS tidy",
@@ -583,7 +586,7 @@ def test_modules_of_changes(changed, expected):
 
 
 def test_commit_is_the_default_speed_and_runs_every_step(monkeypatch, capsys, repo):
-    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(changed=["src/fluidity/grid/a.cc"]))
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun())
     assert exit_code == 0
     assert lines == ALL_STEP_LINES
 
@@ -610,6 +613,7 @@ def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_lef
     assert lines == [
         "PASS format",
         "PASS rules",
+        "NOT RUN message (quick)",
         "NOTE modules: contact, grid",
         f"PASS cpu {DEBUG_PRESET}",
         f"NOT RUN cpu {RELEASE_PRESET} (quick)",
@@ -658,6 +662,7 @@ def test_a_failure_in_quick_still_says_what_it_left_out(monkeypatch, capsys, rep
     assert lines[0].startswith("FAIL format")
     assert lines[1:] == [
         "NOT RUN rules",
+        "NOT RUN message (quick)",
         f"NOT RUN cpu {DEBUG_PRESET}",
         f"NOT RUN cpu {RELEASE_PRESET} (quick)",
         "NOT RUN tidy",
@@ -811,3 +816,37 @@ def test_paper_check_reads_the_read_lines_of_tests_too(monkeypatch, capsys, repo
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 1
     assert lines == ["FAIL paper: tests/grid/a.test.cc:1 cites <sec-nowhere>, which the paper does not define"]
+
+
+def message_commands(fake):
+    return [command for command in fake.commands if any(Path(part).name == "check_message.py" for part in command)]
+
+
+def test_message_step_checks_the_message_of_head_when_the_tree_has_no_change(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "message")
+    assert exit_code == 0
+    assert lines == ["PASS message"]
+    assert message_commands(fake)[0][-1] == "HEAD"
+
+
+@pytest.mark.parametrize("fake", [FakeRun(changed=["src/fluidity/a.cc"]), FakeRun(untracked=["src/fluidity/b.h"])])
+def test_message_step_is_not_run_with_uncommitted_changes(monkeypatch, capsys, repo, fake):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "message", "--allow-dirty")
+    assert exit_code == 0
+    assert lines[-1] == "NOT RUN message (uncommitted changes)"
+    assert message_commands(fake) == []
+
+
+def test_failing_message_fails_the_gate(monkeypatch, capsys, repo):
+    fake = FakeRun(failing=lambda command: any(Path(part).name == "check_message.py" for part in command))
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "message")
+    assert exit_code == 1
+    assert lines[0].startswith("FAIL message: ")
+
+
+def test_quick_leaves_the_message_step_out(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert "NOT RUN message (quick)" in lines
+    assert message_commands(fake) == []

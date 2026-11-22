@@ -49,16 +49,16 @@ Mat3 BuildAxesFromColumns(Vec3 column_x, Vec3 column_y, Vec3 column_z) {
   };
 }
 
-void ExpectSameVec3(Vec3 actual, Vec3 expected) {
+void CheckSameVec3(Vec3 actual, Vec3 expected) {
   EXPECT_EQ(actual.x, expected.x) << "axis x";
   EXPECT_EQ(actual.y, expected.y) << "axis y";
   EXPECT_EQ(actual.z, expected.z) << "axis z";
 }
 
-void ExpectSameMat3(Mat3 actual, Mat3 expected) {
-  ExpectSameVec3(ToColumnX(actual), ToColumnX(expected));
-  ExpectSameVec3(ToColumnY(actual), ToColumnY(expected));
-  ExpectSameVec3(ToColumnZ(actual), ToColumnZ(expected));
+void CheckSameMat3(Mat3 actual, Mat3 expected) {
+  CheckSameVec3(ToColumnX(actual), ToColumnX(expected));
+  CheckSameVec3(ToColumnY(actual), ToColumnY(expected));
+  CheckSameVec3(ToColumnZ(actual), ToColumnZ(expected));
 }
 
 // A box at {1, 2, 3} with half sizes 0.5 that does not move: every check passes.
@@ -129,11 +129,11 @@ TEST(ToSolid, FlatSolid_ZAxisIsNormalAndAxesAreARotation) {
 
   EXPECT_EQ(solid.shape, SolidShape::kFlatSolid);
   EXPECT_EQ(solid.solid_id, 2U);
-  ExpectSameVec3(solid.pose_at_step_start.origin, flat_solid.point_on_surface);
-  ExpectSameVec3(ToColumnZ(solid.pose_at_step_start.axes), normal);
+  CheckSameVec3(solid.pose_at_step_start.origin, flat_solid.point_on_surface);
+  CheckSameVec3(ToColumnZ(solid.pose_at_step_start.axes), normal);
   // The normal's smallest part is on x, so x is the world axis crossed with the normal.
   const Vec3 expected_column_x = math::Normalized(math::Cross({.x = 1, .y = 0, .z = 0}, normal));
-  ExpectSameVec3(ToColumnX(solid.pose_at_step_start.axes), expected_column_x);
+  CheckSameVec3(ToColumnX(solid.pose_at_step_start.axes), expected_column_x);
   EXPECT_NEAR(math::Determinant(solid.pose_at_step_start.axes), 1, 1e-15);
 }
 
@@ -147,9 +147,9 @@ TEST(ToSolid, Plate_HalfSizeZIsHalfThickness) {
   const Solid solid = ToSolid(plate, kNoMotion, 5);
 
   EXPECT_EQ(solid.shape, SolidShape::kPlate);
-  ExpectSameVec3(solid.half_size, {.x = 0, .y = 0, .z = 0.25});
-  ExpectSameVec3(solid.pose_at_step_start.origin, plate.center);
-  ExpectSameVec3(ToColumnZ(solid.pose_at_step_start.axes), plate.normal);
+  CheckSameVec3(solid.half_size, {.x = 0, .y = 0, .z = 0.25});
+  CheckSameVec3(solid.pose_at_step_start.origin, plate.center);
+  CheckSameVec3(ToColumnZ(solid.pose_at_step_start.axes), plate.normal);
 }
 
 TEST(ToSolid, DomainBox_OriginIsCentreAndHalfSizeIsHalfExtent) {
@@ -163,7 +163,7 @@ TEST(ToSolid, DomainBox_OriginIsCentreAndHalfSizeIsHalfExtent) {
   EXPECT_EQ(solid.shape, SolidShape::kDomainBox);
   ExpectVec3Near(solid.pose_at_step_start.origin, {.x = 1, .y = 2, .z = 3}, 0);
   ExpectVec3Near(solid.half_size, {.x = 1, .y = 2, .z = 3}, 0);
-  ExpectSameMat3(solid.pose_at_step_start.axes, kIdentity);
+  CheckSameMat3(solid.pose_at_step_start.axes, kIdentity);
   EXPECT_FALSE(solid.closed.top);
   EXPECT_TRUE(solid.closed.bottom);
 }
@@ -174,9 +174,9 @@ TEST(ToSolid, Sphere_HalfSizeIsRadiusAndAxesAreIdentity) {
   const Solid solid = ToSolid(sphere, kNoMotion, 6);
 
   EXPECT_EQ(solid.shape, SolidShape::kSphere);
-  ExpectSameVec3(solid.pose_at_step_start.origin, {.x = 1, .y = 2, .z = 3});
-  ExpectSameVec3(solid.half_size, {.x = 0.5, .y = 0.5, .z = 0.5});
-  ExpectSameMat3(solid.pose_at_step_start.axes, kIdentity);
+  CheckSameVec3(solid.pose_at_step_start.origin, {.x = 1, .y = 2, .z = 3});
+  CheckSameVec3(solid.half_size, {.x = 0.5, .y = 0.5, .z = 0.5});
+  CheckSameMat3(solid.pose_at_step_start.axes, kIdentity);
 }
 
 TEST(ToSolid, Cylinder_ZAxisIsAxisAndHalfSizeIsRadiusRadiusHalfHeight) {
@@ -191,10 +191,10 @@ TEST(ToSolid, Cylinder_ZAxisIsAxisAndHalfSizeIsRadiusRadiusHalfHeight) {
 
   EXPECT_EQ(solid.shape, SolidShape::kCylinder);
   // The axis has parts 0 on y and z; the tie keeps y, and Cross({0, 1, 0}, {1, 0, 0}) = {0, 0, -1}.
-  ExpectSameVec3(ToColumnX(solid.pose_at_step_start.axes), {.x = 0, .y = 0, .z = -1});
-  ExpectSameVec3(ToColumnY(solid.pose_at_step_start.axes), {.x = 0, .y = 1, .z = 0});
-  ExpectSameVec3(ToColumnZ(solid.pose_at_step_start.axes), {.x = 1, .y = 0, .z = 0});
-  ExpectSameVec3(solid.half_size, {.x = 0.5, .y = 0.5, .z = 1});
+  CheckSameVec3(ToColumnX(solid.pose_at_step_start.axes), {.x = 0, .y = 0, .z = -1});
+  CheckSameVec3(ToColumnY(solid.pose_at_step_start.axes), {.x = 0, .y = 1, .z = 0});
+  CheckSameVec3(ToColumnZ(solid.pose_at_step_start.axes), {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(solid.half_size, {.x = 0.5, .y = 0.5, .z = 1});
 }
 
 TEST(ToSolidFace, EveryDomainSide_MatchesSolidFaceOrder) {
@@ -227,7 +227,7 @@ TEST(ComputeShapeTurningAngularVelocity, Cylinder_IsPartAcrossItsAxis) {
       .angular_velocity = {.x = 2, .y = 0, .z = 100},
   };
 
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildUprightCylinder(turning)), {.x = 2, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(BuildUprightCylinder(turning)), {.x = 2, .y = 0, .z = 0});
 }
 
 TEST(ComputeShapeTurningAngularVelocity, Sphere_IsZero) {
@@ -236,14 +236,14 @@ TEST(ComputeShapeTurningAngularVelocity, Sphere_IsZero) {
       .angular_velocity = {.x = 2, .y = 0, .z = 100},
   };
 
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildSphere(0.5, turning)), {.x = 0, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(BuildSphere(0.5, turning)), {.x = 0, .y = 0, .z = 0});
 }
 
 TEST(ComputeShapeTurningAngularVelocity, Box_IsFullAngularVelocity) {
   Solid solid = BuildValidBox();
   solid.motion.angular_velocity = {.x = 2, .y = 0, .z = 100};
 
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 2, .y = 0, .z = 100});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 2, .y = 0, .z = 100});
 }
 
 TEST(ComputeShapeTurningAngularVelocity, FlatSolidAndPlateSpinAboutNormal_IsNoTurn) {
@@ -252,11 +252,11 @@ TEST(ComputeShapeTurningAngularVelocity, FlatSolidAndPlateSpinAboutNormal_IsNoTu
   // velocity.
   const SolidMotion turning = BuildTurning({.x = 2, .y = 0, .z = 100});
 
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildFloorWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildPlateWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(BuildFloorWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(BuildPlateWithNormalZ(turning)), {.x = 2, .y = 0, .z = 0});
   Solid box = BuildValidBox();
   box.motion = turning;
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(box), {.x = 2, .y = 0, .z = 100});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(box), {.x = 2, .y = 0, .z = 100});
 }
 
 // The part of an angular velocity across an own z axis, computed as ComputeShapeTurningAngularVelocity computes it
@@ -280,8 +280,8 @@ TEST(ComputeShapeTurningAngularVelocity, SpinAboutTiltedNormal_IsNoTurn) {
       const SolidMotion spin = BuildTurning(spin_rate * normal);
       const Solid floor = ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, spin, 6);
       const Solid plate = ToSolid(Plate{.center = {}, .normal = normal, .half_thickness = 0.01}, spin, 8);
-      ExpectSameVec3(ComputeShapeTurningAngularVelocity(floor), {.x = 0, .y = 0, .z = 0});
-      ExpectSameVec3(ComputeShapeTurningAngularVelocity(plate), {.x = 0, .y = 0, .z = 0});
+      CheckSameVec3(ComputeShapeTurningAngularVelocity(floor), {.x = 0, .y = 0, .z = 0});
+      CheckSameVec3(ComputeShapeTurningAngularVelocity(plate), {.x = 0, .y = 0, .z = 0});
       const Vec3 own_z_axis = ToColumnZ(floor.pose_at_step_start.axes);
       rounded_across_count += math::Length(ComputeRoundedPartAcross(spin.angular_velocity, own_z_axis)) > 0 ? 1 : 0;
     }
@@ -303,7 +303,7 @@ Solid BuildTiltedFloorWithPartAcross(double across_share) {
 
 TEST(ComputeShapeTurningAngularVelocity, PartAcrossJustBelowShare_IsNoTurn) {
   // 2^-47 across the normal, half of kNegligibleTurnShare (2^-46), plus rounding of about 2^-50: within the share.
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(BuildTiltedFloorWithPartAcross(0x1p-47)), {.x = 0, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(BuildTiltedFloorWithPartAcross(0x1p-47)), {.x = 0, .y = 0, .z = 0});
 }
 
 TEST(ComputeShapeTurningAngularVelocity, PartAcrossJustAboveShare_IsTurn) {
@@ -316,14 +316,14 @@ TEST(ComputeShapeTurningAngularVelocity, PartAcrossJustAboveShare_IsTurn) {
 TEST(ComputeShapeTurningAngularVelocity, CylinderAlongXSpinningAboutX_IsZero) {
   const Solid solid = BuildCylinderAlongX(BuildTurning({.x = 100, .y = 0, .z = 0}));
 
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 0, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 0, .y = 0, .z = 0});
 }
 
 TEST(ComputeShapeTurningAngularVelocity, CylinderAlongXTurningAboutZ_IsFullTurn) {
   // Removing the world z part instead of the part along the cylinder's own axis would give zero here.
   const Solid solid = BuildCylinderAlongX(BuildTurning({.x = 0, .y = 0, .z = 2}));
 
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 0, .y = 0, .z = 2});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(solid), {.x = 0, .y = 0, .z = 2});
 }
 
 TEST(CheckSolid, ValidBox_IsNone) {
@@ -594,9 +594,9 @@ TEST(ComputeSolidVelocity, SpinningTiltedFloor_SurfaceVelocityKeepsTheSpin) {
   const Vec3 normal = {.x = 0, .y = std::sin(0.3), .z = std::cos(0.3)};
   const Solid floor =
       ToSolid(FlatSolid{.point_on_surface = {}, .normal_out_of_solid = normal}, BuildTurning(100 * normal), 6);
-  ExpectSameVec3(ComputeShapeTurningAngularVelocity(floor), {.x = 0, .y = 0, .z = 0});
+  CheckSameVec3(ComputeShapeTurningAngularVelocity(floor), {.x = 0, .y = 0, .z = 0});
   const Vec3 velocity = ComputeSolidVelocity(floor, ComputeSolidPose(floor, 0), {.x = 0.3, .y = 0, .z = 0});
-  ExpectSameVec3(velocity, math::Cross(100 * normal, {.x = 0.3, .y = 0, .z = 0}));
+  CheckSameVec3(velocity, math::Cross(100 * normal, {.x = 0.3, .y = 0, .z = 0}));
   EXPECT_NEAR(math::Length(velocity), 30, 1e-12);
 }
 
@@ -622,7 +622,7 @@ TEST(ComputeSolidPose, QuarterTurnAboutZ_SendsSolidXToWorldY) {
 
   ExpectVec3Near(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
   ExpectVec3Near(ToColumnY(pose.axes), {.x = -1, .y = 0, .z = 0}, 1e-15);
-  ExpectSameVec3(pose.origin, {.x = 0, .y = 0, .z = 0});
+  CheckSameVec3(pose.origin, {.x = 0, .y = 0, .z = 0});
 }
 
 TEST(ComputeSolidPose, TiltedSolidTurning_TurnsAboutWorldAxisNotOwnAxis) {
@@ -656,8 +656,8 @@ TEST(ComputeSolidPose, ZeroElapsed_IsStartPose) {
 
   const SolidPose pose = ComputeSolidPose(solid, 0);
 
-  ExpectSameVec3(pose.origin, solid.pose_at_step_start.origin);
-  ExpectSameMat3(pose.axes, solid.pose_at_step_start.axes);
+  CheckSameVec3(pose.origin, solid.pose_at_step_start.origin);
+  CheckSameMat3(pose.axes, solid.pose_at_step_start.axes);
 }
 
 TEST(ComputeSolidPose, Translating_MovesOriginOnly) {
@@ -674,8 +674,8 @@ TEST(ComputeSolidPose, Translating_MovesOriginOnly) {
 
   const SolidPose pose = ComputeSolidPose(solid, 2);
 
-  ExpectSameVec3(pose.origin, {.x = 2, .y = 2, .z = 3});
-  ExpectSameMat3(pose.axes, solid.pose_at_step_start.axes);
+  CheckSameVec3(pose.origin, {.x = 2, .y = 2, .z = 3});
+  CheckSameMat3(pose.axes, solid.pose_at_step_start.axes);
 }
 
 TEST(ComputeSolidVelocity, Turning_IsLinearPlusAngularCrossArm) {
@@ -688,7 +688,7 @@ TEST(ComputeSolidVelocity, Turning_IsLinearPlusAngularCrossArm) {
   // {1, 0, 0} + Cross({0, 0, 2}, {0, 3, 0}) = {1, 0, 0} + {-6, 0, 0}.
   const Vec3 velocity = ComputeSolidVelocity(solid, solid.pose_at_step_start, {.x = 0, .y = 3, .z = 0});
 
-  ExpectSameVec3(velocity, {.x = -5, .y = 0, .z = 0});
+  CheckSameVec3(velocity, {.x = -5, .y = 0, .z = 0});
 }
 
 TEST(ComputeSolidVelocity, SpinningPlate_SurfaceVelocityKeepsTheSpin) {
@@ -699,7 +699,7 @@ TEST(ComputeSolidVelocity, SpinningPlate_SurfaceVelocityKeepsTheSpin) {
 
   const Vec3 velocity = ComputeSolidVelocity(plate, ComputeSolidPose(plate, 0), {.x = 0.3, .y = 0, .z = 0.01});
 
-  ExpectSameVec3(velocity, {.x = 0, .y = 1.5, .z = 0});
+  CheckSameVec3(velocity, {.x = 0, .y = 1.5, .z = 0});
 }
 
 TEST(ComputeSolidVelocity, MovedPose_ArmIsFromPoseOrigin) {
@@ -713,7 +713,7 @@ TEST(ComputeSolidVelocity, MovedPose_ArmIsFromPoseOrigin) {
   // The arm is {0, 3, 0} - {0, 1, 0} = {0, 2, 0}: {1, 0, 0} + {-4, 0, 0}.
   const Vec3 velocity = ComputeSolidVelocity(solid, moved_pose, {.x = 0, .y = 3, .z = 0});
 
-  ExpectSameVec3(velocity, {.x = -3, .y = 0, .z = 0});
+  CheckSameVec3(velocity, {.x = -3, .y = 0, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, FlatSolidAboveAndBelow_IsSignedHeight) {
@@ -730,10 +730,10 @@ TEST(ComputeDistanceToSolid, FlatSolidAboveAndBelow_IsSignedHeight) {
   // A tilted normal rounds the point and its turn into the own axes: a few rounding units of 3.
   EXPECT_NEAR(above.distance, 0.5, 1e-15);
   EXPECT_EQ(above.face, SolidFace::kHighZ);
-  ExpectSameVec3(above.normal_out_of_solid, normal);
+  CheckSameVec3(above.normal_out_of_solid, normal);
   EXPECT_NEAR(below.distance, -0.25, 1e-15);
   EXPECT_EQ(below.face, SolidFace::kHighZ);
-  ExpectSameVec3(below.normal_out_of_solid, normal);
+  CheckSameVec3(below.normal_out_of_solid, normal);
 }
 
 TEST(ComputeDistanceToSolid, MovedPose_UsesGivenPose) {
@@ -767,14 +767,14 @@ TEST(ComputeDistanceToSolid, PlateEitherSide_IsGapToNearerFace) {
   // 0.3 - 0.1 in double is one rounding unit below 0.2.
   EXPECT_NEAR(above.distance, 0.2, 1e-16);
   EXPECT_EQ(above.face, SolidFace::kHighZ);
-  ExpectSameVec3(above.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
+  CheckSameVec3(above.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
   EXPECT_NEAR(below.distance, 0.2, 1e-16);
   EXPECT_EQ(below.face, SolidFace::kLowZ);
-  ExpectSameVec3(below.normal_out_of_solid, {.x = 0, .y = 0, .z = -1});
+  CheckSameVec3(below.normal_out_of_solid, {.x = 0, .y = 0, .z = -1});
   // On the middle plane p.z = 0 counts as the kHighZ side.
   EXPECT_EQ(middle.distance, -0.1);
   EXPECT_EQ(middle.face, SolidFace::kHighZ);
-  ExpectSameVec3(middle.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
+  CheckSameVec3(middle.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
 }
 
 TEST(ComputeDistanceToSolid, BoxOutsideOneFace_IsGapToThatFace) {
@@ -784,7 +784,7 @@ TEST(ComputeDistanceToSolid, BoxOutsideOneFace_IsGapToThatFace) {
 
   EXPECT_EQ(distance.distance, 2);
   EXPECT_EQ(distance.face, SolidFace::kHighX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, BoxInside_IsMinusDepthOfNearestFace) {
@@ -796,7 +796,7 @@ TEST(ComputeDistanceToSolid, BoxInside_IsMinusDepthOfNearestFace) {
   // 0.9 - 1 in double is a rounding unit of 0.9 away from -0.1.
   EXPECT_NEAR(distance.distance, -0.1, 1e-16);
   EXPECT_EQ(distance.face, SolidFace::kHighX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, BoxCornerTie_TakesFirstFaceInOrder) {
@@ -807,7 +807,7 @@ TEST(ComputeDistanceToSolid, BoxCornerTie_TakesFirstFaceInOrder) {
 
   EXPECT_EQ(distance.distance, 1);
   EXPECT_EQ(distance.face, SolidFace::kLowX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = -1, .y = 0, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = -1, .y = 0, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, BoxOnMiddlePlaneOfNearestAxis_TakesLowFace) {
@@ -824,7 +824,7 @@ TEST(ComputeDistanceToSolid, BoxOnMiddlePlaneOfNearestAxis_TakesLowFace) {
 
   EXPECT_EQ(distance.distance, -0.5);
   EXPECT_EQ(distance.face, SolidFace::kLowX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = -1, .y = 0, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = -1, .y = 0, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, TurnedBox_UsesSolidAxes) {
@@ -841,7 +841,7 @@ TEST(ComputeDistanceToSolid, TurnedBox_UsesSolidAxes) {
 
   EXPECT_EQ(distance.distance, 2);
   EXPECT_EQ(distance.face, SolidFace::kHighX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 1, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 1, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, DomainBoxInside_IsGapToNearestClosedSide) {
@@ -853,7 +853,7 @@ TEST(ComputeDistanceToSolid, DomainBoxInside_IsGapToNearestClosedSide) {
   // 0.5 + (0.1 - 0.5) rounds by a unit of 0.4.
   EXPECT_NEAR(distance.distance, 0.1, 1e-16);
   EXPECT_EQ(distance.face, SolidFace::kLowZ);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
 }
 
 TEST(ComputeDistanceToSolid, DomainBoxOpenTop_IgnoresTop) {
@@ -865,7 +865,7 @@ TEST(ComputeDistanceToSolid, DomainBoxOpenTop_IgnoresTop) {
 
   EXPECT_EQ(distance.distance, 0.5);
   EXPECT_EQ(distance.face, SolidFace::kLowX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, DomainBoxClosedTop_IsGapToTop) {
@@ -878,7 +878,7 @@ TEST(ComputeDistanceToSolid, DomainBoxClosedTop_IsGapToTop) {
   // 0.5 - (0.95 - 0.5): 0.95 itself is rounded, a unit of 0.95 away.
   EXPECT_NEAR(distance.distance, 0.05, 1e-16);
   EXPECT_EQ(distance.face, SolidFace::kHighZ);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 0, .z = -1});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 0, .y = 0, .z = -1});
 }
 
 TEST(ComputeDistanceToSolid, DomainBoxTie_TakesLeftBeforeFront) {
@@ -890,7 +890,7 @@ TEST(ComputeDistanceToSolid, DomainBoxTie_TakesLeftBeforeFront) {
 
   EXPECT_NEAR(distance.distance, 0.2, 1e-16);
   EXPECT_EQ(distance.face, SolidFace::kLowX);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
 }
 
 // One point and the face, distance and normal ComputeDistanceToSolid should give for it.
@@ -901,11 +901,11 @@ struct FaceCase {
   Vec3 normal_out_of_solid{};  // No unit, world.
 };
 
-void ExpectFaceCase(const Solid& solid, const FaceCase& face_case) {
+void CheckFaceCase(const Solid& solid, const FaceCase& face_case) {
   const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, face_case.point);
   EXPECT_EQ(distance.distance, face_case.distance);
   EXPECT_EQ(distance.face, face_case.face);
-  ExpectSameVec3(distance.normal_out_of_solid, face_case.normal_out_of_solid);
+  CheckSameVec3(distance.normal_out_of_solid, face_case.normal_out_of_solid);
 }
 
 TEST(ComputeDistanceToSolid, BoxEachFace_ReportsItsFaceAndNormal) {
@@ -960,7 +960,7 @@ TEST(ComputeDistanceToSolid, BoxEachFace_ReportsItsFaceAndNormal) {
 
   for (const FaceCase& face_case : face_cases) {
     SCOPED_TRACE(static_cast<int>(face_case.face));
-    ExpectFaceCase(solid, face_case);
+    CheckFaceCase(solid, face_case);
   }
 }
 
@@ -1016,7 +1016,7 @@ TEST(ComputeDistanceToSolid, DomainBoxEachClosedSide_ReportsItsSide) {
 
   for (const FaceCase& face_case : face_cases) {
     SCOPED_TRACE(static_cast<int>(face_case.face));
-    ExpectFaceCase(solid, face_case);
+    CheckFaceCase(solid, face_case);
   }
 }
 
@@ -1024,7 +1024,7 @@ TEST(ComputeDistanceToSolid, DomainBoxEachClosedSide_ReportsItsSide) {
 // (4.4e-16), from the square root, a division and the turn through the axes.
 constexpr double kRoundSolidTolerance = 1e-15;
 
-void ExpectFaceCaseNear(const Solid& solid, const FaceCase& face_case) {
+void CheckFaceCaseNear(const Solid& solid, const FaceCase& face_case) {
   const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, face_case.point);
   EXPECT_NEAR(distance.distance, face_case.distance, kRoundSolidTolerance);
   EXPECT_EQ(distance.face, face_case.face);
@@ -1058,7 +1058,7 @@ TEST(ComputeDistanceToSolid, SphereOutside_IsDistanceMinusRadius) {
   const Solid solid = BuildOffsetSphere();
 
   // {0.375, 0, 0.5} from the centre is 0.625 long, a 3-4-5 triangle scaled by 0.125.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 1, .y = 2, .z = 4},
@@ -1067,7 +1067,7 @@ TEST(ComputeDistanceToSolid, SphereOutside_IsDistanceMinusRadius) {
           .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 1.375, .y = 2, .z = 3.5},
@@ -1079,7 +1079,7 @@ TEST(ComputeDistanceToSolid, SphereOutside_IsDistanceMinusRadius) {
 }
 
 TEST(ComputeDistanceToSolid, SphereInside_IsNegative) {
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       BuildOffsetSphere(),
       {
           .point = {.x = 1, .y = 2, .z = 3.25},
@@ -1092,7 +1092,7 @@ TEST(ComputeDistanceToSolid, SphereInside_IsNegative) {
 
 TEST(ComputeDistanceToSolid, SphereCentre_NormalIsMinusSolidXAxis) {
   // Every direction is nearest at the centre. A sphere's axes are kIdentity, so minus its x axis is {-1, 0, 0}.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       BuildOffsetSphere(),
       {
           .point = {.x = 1, .y = 2, .z = 3},
@@ -1116,7 +1116,7 @@ TEST(ComputeDistanceToSolid, TurnedSphereCentre_NormalIsMinusPoseXAxis) {
 
   EXPECT_EQ(distance.distance, -0.5);
   EXPECT_EQ(distance.face, SolidFace::kCurved);
-  ExpectSameVec3(distance.normal_out_of_solid, {.x = 0, .y = -1, .z = 0});
+  CheckSameVec3(distance.normal_out_of_solid, {.x = 0, .y = -1, .z = 0});
 }
 
 TEST(ComputeDistanceToSolid, TurnedSphere_NormalIsInWorldAxes) {
@@ -1137,7 +1137,7 @@ TEST(ComputeDistanceToSolid, TurnedSphere_NormalIsInWorldAxes) {
 
 TEST(ComputeDistanceToSolid, CylinderWall_IsRadialGap) {
   // wall_distance 2, cap_distance -0.25.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       BuildWideCylinder(),
       {
           .point = {.x = 3, .y = 0, .z = 0.25},
@@ -1152,7 +1152,7 @@ TEST(ComputeDistanceToSolid, CylinderCaps_AreHeightGaps) {
   const Solid solid = BuildWideCylinder();
 
   // wall_distance -0.5 for both; cap_distance 1.5 above, 1 below.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0.5, .y = 0, .z = 2},
@@ -1161,7 +1161,7 @@ TEST(ComputeDistanceToSolid, CylinderCaps_AreHeightGaps) {
           .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0, .y = 0.5, .z = -1.5},
@@ -1176,7 +1176,7 @@ TEST(ComputeDistanceToSolid, CylinderRims_AreDistanceToTheCircle) {
   const Solid solid = BuildWideCylinder();
 
   // wall_distance 0.375 and cap_distance 0.5 for both: the distance to the rim circle is 0.625.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 1.375, .y = 0, .z = 1},
@@ -1185,7 +1185,7 @@ TEST(ComputeDistanceToSolid, CylinderRims_AreDistanceToTheCircle) {
           .normal_out_of_solid = {.x = 0.6, .y = 0, .z = 0.8},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0, .y = -1.375, .z = -1},
@@ -1195,7 +1195,7 @@ TEST(ComputeDistanceToSolid, CylinderRims_AreDistanceToTheCircle) {
       }
   );
   // wall_distance 0.5 is the larger gap here, so trying the wall before the rim would wrongly take the wall.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 1.5, .y = 0, .z = 0.875},
@@ -1210,7 +1210,7 @@ TEST(ComputeDistanceToSolid, CylinderInside_NearerOfWallAndCap) {
   const Solid solid = BuildWideCylinder();
 
   // {0.9, 0, 0}: wall_distance -0.1, cap_distance -0.5. {0, 0, 0.375}: wall_distance -1, cap_distance -0.125.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0.9, .y = 0, .z = 0},
@@ -1219,7 +1219,7 @@ TEST(ComputeDistanceToSolid, CylinderInside_NearerOfWallAndCap) {
           .normal_out_of_solid = {.x = 1, .y = 0, .z = 0},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0, .y = 0, .z = 0.375},
@@ -1232,7 +1232,7 @@ TEST(ComputeDistanceToSolid, CylinderInside_NearerOfWallAndCap) {
 
 TEST(ComputeDistanceToSolid, CylinderInsideTie_TakesWall) {
   // wall_distance and cap_distance are both -0.25.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       BuildWideCylinder(),
       {
           .point = {.x = 0.75, .y = 0, .z = 0.25},
@@ -1246,7 +1246,7 @@ TEST(ComputeDistanceToSolid, CylinderInsideTie_TakesWall) {
 TEST(ComputeDistanceToSolid, CylinderMiddlePlaneInCapRegion_TakesHighCap) {
   // At the centre of the wide cylinder, wall_distance -1 and cap_distance -0.5: the caps are nearer and tie, and
   // p.z = 0 takes the high cap.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       BuildWideCylinder(),
       {
           .point = {.x = 0, .y = 0, .z = 0},
@@ -1263,7 +1263,7 @@ TEST(ComputeDistanceToSolid, CylinderOnAxis_NormalIsMinusSolidXAxis) {
   const Solid solid = BuildStillCylinder({.x = 0, .y = 0, .z = 1}, 0.25, 2);
   ASSERT_EQ(ToColumnX(solid.pose_at_step_start.axes).y, -1);
 
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0, .y = 0, .z = 0},
@@ -1279,7 +1279,7 @@ TEST(ComputeDistanceToSolid, CylinderRegionBoundaries_AreContinuous) {
 
   // {1, 0, 0.75}: wall_distance 0, cap_distance 0.25, on the edge of the rim region: the cap.
   // {1.25, 0, 0.5}: wall_distance 0.25, cap_distance 0, on the other edge: the wall. Both are 0.25 away.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 1, .y = 0, .z = 0.75},
@@ -1288,7 +1288,7 @@ TEST(ComputeDistanceToSolid, CylinderRegionBoundaries_AreContinuous) {
           .normal_out_of_solid = {.x = 0, .y = 0, .z = 1},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 1.25, .y = 0, .z = 0.5},
@@ -1313,7 +1313,7 @@ TEST(ComputeDistanceToSolid, CylinderRegionBoundaries_AreContinuous) {
 TEST(ComputeDistanceToSolid, CylinderExactlyOnRim_TakesWall) {
   // wall_distance and cap_distance are both 0. The rim needs both gaps positive, and the wall wins the tie with
   // the cap. A rim test written with >= would divide 0 by 0 here and give a NaN normal.
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       BuildWideCylinder(),
       {
           .point = {.x = 1, .y = 0, .z = 0.5},
@@ -1331,7 +1331,7 @@ TEST(ComputeDistanceToSolid, TurnedCylinder_UsesSolidAxes) {
   // y axis is world y.
   const Solid solid = BuildStillCylinder({.x = 1, .y = 0, .z = 0}, 1, 0.5);
 
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0.25, .y = 3, .z = 0},
@@ -1340,7 +1340,7 @@ TEST(ComputeDistanceToSolid, TurnedCylinder_UsesSolidAxes) {
           .normal_out_of_solid = {.x = 0, .y = 1, .z = 0},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0.25, .y = 0, .z = -3},
@@ -1419,7 +1419,7 @@ TEST(ComputeDistanceToSolid, TiltedCylinderEachFace_ReportsItsFaceAndNormal) {
 
   for (const FaceCase& face_case : face_cases) {
     SCOPED_TRACE(static_cast<int>(face_case.face));
-    ExpectFaceCaseNear(solid, face_case);
+    CheckFaceCaseNear(solid, face_case);
   }
 }
 
@@ -1428,7 +1428,7 @@ TEST(ComputeDistanceToSolid, PaperCylinderExamples_MatchThePaper) {
   // 0.4, rim at 0.5. (0.1, 0, 0.2): wall_distance -0.4, cap_distance -0.05, under the top cap.
   const Solid solid = BuildStillCylinder({.x = 0, .y = 0, .z = 1}, 0.5, 0.25);
 
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0.8, .y = 0, .z = 0.65},
@@ -1437,7 +1437,7 @@ TEST(ComputeDistanceToSolid, PaperCylinderExamples_MatchThePaper) {
           .normal_out_of_solid = {.x = 0.6, .y = 0, .z = 0.8},
       }
   );
-  ExpectFaceCaseNear(
+  CheckFaceCaseNear(
       solid,
       {
           .point = {.x = 0.1, .y = 0, .z = 0.2},
@@ -1481,7 +1481,7 @@ TEST(ComputeSolidVelocity, TurningSphere_IsAngularCrossArm) {
 
   const Vec3 velocity = ComputeSolidVelocity(solid, solid.pose_at_step_start, {.x = 0.5, .y = 0, .z = 0});
 
-  ExpectSameVec3(velocity, {.x = 0, .y = 1, .z = 0});
+  CheckSameVec3(velocity, {.x = 0, .y = 1, .z = 0});
 }
 
 TEST(FindSolidSide, AboveAlongNormal_IsAlongNormal) {
@@ -1562,32 +1562,32 @@ SolidMotion BuildMoving(Vec3 linear_velocity) {
   return {.linear_velocity = linear_velocity, .angular_velocity = {.x = 0, .y = 0, .z = 0}};
 }
 
-void ExpectNoSolidSample(const SolidVelocitySample& sample) {
+void CheckNoSolidSample(const SolidVelocitySample& sample) {
   EXPECT_FALSE(sample.has_solid);
   EXPECT_EQ(sample.solid_index, kNoSolid);
   EXPECT_EQ(sample.side, PlateSide());
-  ExpectSameVec3(sample.normal_out_of_solid, kOrigin);
-  ExpectSameVec3(sample.solid_velocity, kOrigin);
+  CheckSameVec3(sample.normal_out_of_solid, kOrigin);
+  CheckSameVec3(sample.solid_velocity, kOrigin);
   EXPECT_EQ(sample.distance, 0);
 }
 
 // The relative tolerance of the contact tests for velocities and fractions: |actual - expected| <= 2^-44 *
 // max(|actual|, |expected|, reference), with reference the largest input value of its kind in the test.
-void ExpectNearRelative(double actual, double expected, double reference) {
+void CheckNearRelative(double actual, double expected, double reference) {
   const double largest = std::max({std::abs(actual), std::abs(expected), reference});
   EXPECT_NEAR(actual, expected, 0x1p-44 * largest);
 }
 
-void ExpectVec3NearRelative(Vec3 actual, Vec3 expected, double reference) {
-  ExpectNearRelative(actual.x, expected.x, reference);
-  ExpectNearRelative(actual.y, expected.y, reference);
-  ExpectNearRelative(actual.z, expected.z, reference);
+void CheckVec3NearRelative(Vec3 actual, Vec3 expected, double reference) {
+  CheckNearRelative(actual.x, expected.x, reference);
+  CheckNearRelative(actual.y, expected.y, reference);
+  CheckNearRelative(actual.z, expected.z, reference);
 }
 
 TEST(ComputeSolidVelocitySample, NoSolids_HasNoSolid) {
   const SolidVelocitySample sample = ComputeSolidVelocitySample(nullptr, 0, 0, kOrigin, 1);
 
-  ExpectNoSolidSample(sample);
+  CheckNoSolidSample(sample);
 }
 
 TEST(ComputeSolidVelocitySample, TwoSolids_KeepsNearest) {
@@ -1606,12 +1606,12 @@ TEST(ComputeSolidVelocitySample, TwoSolids_KeepsNearest) {
   EXPECT_TRUE(sample_near_last.has_solid);
   EXPECT_EQ(sample_near_last.solid_index, 1U);
   EXPECT_EQ(sample_near_last.distance, 0.1);
-  ExpectSameVec3(sample_near_last.normal_out_of_solid, kUp);
-  ExpectSameVec3(sample_near_last.solid_velocity, {.x = 0, .y = 2, .z = 0});
+  CheckSameVec3(sample_near_last.normal_out_of_solid, kUp);
+  CheckSameVec3(sample_near_last.solid_velocity, {.x = 0, .y = 2, .z = 0});
   EXPECT_TRUE(sample_near_first.has_solid);
   EXPECT_EQ(sample_near_first.solid_index, 0U);
   EXPECT_EQ(sample_near_first.distance, 0.1);
-  ExpectSameVec3(sample_near_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
+  CheckSameVec3(sample_near_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
 }
 
 TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex) {
@@ -1627,12 +1627,12 @@ TEST(ComputeSolidVelocitySample, EqualDistances_KeepsLowerIndex) {
 
   EXPECT_EQ(sample_below_first.solid_index, 0U);
   EXPECT_EQ(sample_below_first.distance, 0.1);
-  ExpectSameVec3(sample_below_first.normal_out_of_solid, kUp);
-  ExpectSameVec3(sample_below_first.solid_velocity, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(sample_below_first.normal_out_of_solid, kUp);
+  CheckSameVec3(sample_below_first.solid_velocity, {.x = 1, .y = 0, .z = 0});
   EXPECT_EQ(sample_above_first.solid_index, 0U);
   EXPECT_EQ(sample_above_first.distance, 0.1);
-  ExpectSameVec3(sample_above_first.normal_out_of_solid, kDown);
-  ExpectSameVec3(sample_above_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
+  CheckSameVec3(sample_above_first.normal_out_of_solid, kDown);
+  CheckSameVec3(sample_above_first.solid_velocity, {.x = 0, .y = 2, .z = 0});
 }
 
 TEST(ComputeSolidVelocitySample, BeyondSearchDistance_HasNoSolid) {
@@ -1644,7 +1644,7 @@ TEST(ComputeSolidVelocitySample, BeyondSearchDistance_HasNoSolid) {
 
   const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, kOrigin, 0.2);
 
-  ExpectNoSolidSample(sample);
+  CheckNoSolidSample(sample);
 }
 
 TEST(ComputeSolidVelocitySample, AtSearchDistance_HasSolid) {
@@ -1667,7 +1667,7 @@ TEST(ComputeSolidVelocitySample, Plate_ReportsSideWithPlateId) {
   EXPECT_EQ(sample.side, (PlateSide{.plate_id = 5, .side = SolidSide::kAlongNormal}));
   // 0.5 - 0.1 in double is 0.4.
   EXPECT_EQ(sample.distance, 0.4);
-  ExpectSameVec3(sample.normal_out_of_solid, kUp);
+  CheckSameVec3(sample.normal_out_of_solid, kUp);
 }
 
 TEST(ComputeSolidVelocitySample, PlateBelow_ReportsAgainstNormal) {
@@ -1676,7 +1676,7 @@ TEST(ComputeSolidVelocitySample, PlateBelow_ReportsAgainstNormal) {
   const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = 0, .y = 0, .z = -0.5}, 1);
 
   EXPECT_EQ(sample.side, (PlateSide{.plate_id = 5, .side = SolidSide::kAgainstNormal}));
-  ExpectSameVec3(sample.normal_out_of_solid, kDown);
+  CheckSameVec3(sample.normal_out_of_solid, kDown);
 }
 
 TEST(ComputeSolidVelocitySample, PlateInsideThickness_HasSolidOnNoSide) {
@@ -1703,8 +1703,8 @@ TEST(ComputeSolidVelocitySample, TurningBox_VelocityAtNearestSurfacePoint) {
   EXPECT_EQ(sample.solid_index, 0U);
   EXPECT_EQ(sample.side, PlateSide());
   EXPECT_EQ(sample.distance, 2);
-  ExpectSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
-  ExpectSameVec3(sample.solid_velocity, {.x = 0, .y = 1, .z = 0});
+  CheckSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(sample.solid_velocity, {.x = 0, .y = 1, .z = 0});
 }
 
 TEST(ComputeSolidVelocitySample, TurningSphere_VelocityAtNearestSurfacePoint) {
@@ -1717,8 +1717,8 @@ TEST(ComputeSolidVelocitySample, TurningSphere_VelocityAtNearestSurfacePoint) {
   EXPECT_EQ(sample.solid_index, 0U);
   EXPECT_EQ(sample.side, (PlateSide{.plate_id = 0, .side = SolidSide::kNoPlate}));
   EXPECT_EQ(sample.distance, 2);
-  ExpectSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
-  ExpectSameVec3(sample.solid_velocity, {.x = 0, .y = 1, .z = 0});
+  CheckSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(sample.solid_velocity, {.x = 0, .y = 1, .z = 0});
 }
 
 TEST(ComputeSolidVelocitySample, TurningCylinder_VelocityAtNearestSurfacePoint) {
@@ -1749,9 +1749,9 @@ TEST(ComputeSolidVelocitySample, MovingSphereAtElapsed_UsesPoseAtThatTime) {
   // its own axes and back rounds differently. The relative tolerance of the contact tests leaves room for that:
   // reference 2 m for the distance, 1 for the normal, and the largest input speed, 3 m/s at the point, for the
   // velocity.
-  ExpectNearRelative(sample.distance, 2, 2);
-  ExpectVec3NearRelative(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0}, 1);
-  ExpectVec3NearRelative(sample.solid_velocity, {.x = 1, .y = 1, .z = 0}, 3);
+  CheckNearRelative(sample.distance, 2, 2);
+  CheckVec3NearRelative(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0}, 1);
+  CheckVec3NearRelative(sample.solid_velocity, {.x = 1, .y = 1, .z = 0}, 3);
 }
 
 TEST(ComputeSolidVelocitySample, DeepInsideSolid_HasSolid) {
@@ -1764,7 +1764,7 @@ TEST(ComputeSolidVelocitySample, DeepInsideSolid_HasSolid) {
   EXPECT_TRUE(sample.has_solid);
   EXPECT_EQ(sample.solid_index, 0U);
   EXPECT_EQ(sample.distance, 0.2 - 1);
-  ExpectSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(sample.normal_out_of_solid, {.x = 1, .y = 0, .z = 0});
 }
 
 TEST(ComputeSolidVelocitySample, MovingPlate_SideFromPoseAtElapsed) {
@@ -1782,8 +1782,8 @@ TEST(ComputeSolidVelocitySample, MovingPlate_SideFromPoseAtElapsed) {
   EXPECT_TRUE(sample.has_solid);
   EXPECT_EQ(sample.side, (PlateSide{.plate_id = 5, .side = SolidSide::kAgainstNormal}));
   EXPECT_EQ(sample.distance, 0.5 - 0.1);
-  ExpectSameVec3(sample.normal_out_of_solid, kDown);
-  ExpectSameVec3(sample.solid_velocity, kUp);
+  CheckSameVec3(sample.normal_out_of_solid, kDown);
+  CheckSameVec3(sample.solid_velocity, kUp);
 }
 
 // The box {0.4, 0.6} x {0.4, 0.6} x {0.4, 0.6} in the middle of the domain box from {0, 0, 0} to {1, 1, 1}, moving at
@@ -1809,8 +1809,8 @@ TEST(ComputeSolidVelocitySample, DomainBoxSideNearest_NormalPointsIntoDomain) {
   EXPECT_EQ(sample.side, PlateSide());
   // 0.5 + (0.1 - 0.5) rounds to two units below 0.1, 0.09999999999999998.
   EXPECT_NEAR(sample.distance, 0.1, 1e-16);
-  ExpectSameVec3(sample.normal_out_of_solid, kUp);
-  ExpectSameVec3(sample.solid_velocity, kOrigin);
+  CheckSameVec3(sample.normal_out_of_solid, kUp);
+  CheckSameVec3(sample.solid_velocity, kOrigin);
 }
 
 TEST(ComputeSolidVelocitySample, BoxNearerThanDomainSide_BoxWins) {
@@ -1824,8 +1824,8 @@ TEST(ComputeSolidVelocitySample, BoxNearerThanDomainSide_BoxWins) {
   EXPECT_TRUE(sample.has_solid);
   EXPECT_EQ(sample.solid_index, 1U);
   EXPECT_EQ(sample.distance, 0.25 - 0.1);
-  ExpectSameVec3(sample.normal_out_of_solid, kDown);
-  ExpectSameVec3(sample.solid_velocity, {.x = 1, .y = 0, .z = 0});
+  CheckSameVec3(sample.normal_out_of_solid, kDown);
+  CheckSameVec3(sample.solid_velocity, {.x = 1, .y = 0, .z = 0});
 }
 
 TEST(ComputeSolidVelocitySample, NaNPoint_HasNoSolid) {
@@ -1833,7 +1833,7 @@ TEST(ComputeSolidVelocitySample, NaNPoint_HasNoSolid) {
 
   const SolidVelocitySample sample = ComputeSolidVelocitySample(solids.data(), 1, 0, {.x = kNaN, .y = 0, .z = 0}, 5);
 
-  ExpectNoSolidSample(sample);
+  CheckNoSolidSample(sample);
 }
 
 }  // namespace

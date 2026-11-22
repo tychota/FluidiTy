@@ -21,7 +21,7 @@ TEST(RunLayers, EveryThreadInLaunchOrder_EqualsTreeSumBitForBit) {
   for (const std::size_t count : BuildComparedCounts()) {
     const std::vector<double> values = BuildMixedValues(count);
     EXPECT_EQ(
-        ToBits(RunLayers(ComputeLayerPairSum, values, ThreadOrder::kLaunchOrder)),
+        ToBits(ComputeLayers(ComputeLayerPairSum, values, ThreadOrder::kLaunchOrder)),
         ToBits(math::TreeSum(values.data(), count))
     ) << "count "
       << count;
@@ -32,7 +32,7 @@ TEST(RunLayers, EveryThreadInReverse_EqualsTreeSumBitForBit) {
   for (const std::size_t count : BuildComparedCounts()) {
     const std::vector<double> values = BuildMixedValues(count);
     EXPECT_EQ(
-        ToBits(RunLayers(ComputeLayerPairSum, values, ThreadOrder::kReverse)),
+        ToBits(ComputeLayers(ComputeLayerPairSum, values, ThreadOrder::kReverse)),
         ToBits(math::TreeSum(values.data(), count))
     ) << "count "
       << count;
@@ -46,7 +46,8 @@ TEST(RunLargestMagnitudeLayers, MixedValues_EqualsTheCpuLoop) {
     for (const double value : values) {
       largest = math::LargerMagnitude(largest, value);
     }
-    EXPECT_EQ(ToBits(RunLargestMagnitudeLayers(values, ThreadOrder::kReverse)), ToBits(largest)) << "count " << count;
+    EXPECT_EQ(ToBits(ComputeLargestMagnitudeLayers(values, ThreadOrder::kReverse)), ToBits(largest))
+        << "count " << count;
   }
 }
 

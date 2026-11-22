@@ -47,7 +47,7 @@ CellId ToCheckerCellOrZero(const std::optional<CellId>& cell) {
 }
 
 // The blocks of a grid that FindCellBlock does not find at their own index.
-std::size_t CountMisplacedBlocks(const GridTables& tables) {
+std::size_t ComputeCountMisplacedBlocks(const GridTables& tables) {
   std::size_t misplaced_count = 0;
   for (std::uint32_t block = 0; block < tables.block_count; ++block) {
     misplaced_count += FindCellBlock(tables, tables.block_ids[block]).value == block ? 0 : 1;
@@ -56,9 +56,9 @@ std::size_t CountMisplacedBlocks(const GridTables& tables) {
 }
 
 // FindCellBlock on one grid: every block at its own index, and a block below the smallest size level nowhere.
-void ExpectBlocksFound(const GridTables& tables) {
+void CheckBlocksFound(const GridTables& tables) {
   SCOPED_TRACE("FindCellBlock");
-  EXPECT_EQ(CountMisplacedBlocks(tables), 0U);
+  EXPECT_EQ(ComputeCountMisplacedBlocks(tables), 0U);
   EXPECT_EQ(FindCellBlock(tables, ToCellBlockId(ToCell(kRandomGridSizeLevelCount, 0, 0, 0))).value, kNoIndex);
 }
 
@@ -69,7 +69,7 @@ struct CellRoundTrips {
   std::size_t active_place_count = 0;
 };
 
-CellRoundTrips CountCellRoundTrips(const GridTables& tables, const std::vector<CellId>& cells) {
+CellRoundTrips ComputeCountCellRoundTrips(const GridTables& tables, const std::vector<CellId>& cells) {
   CellRoundTrips round_trips;
   for (const CellId cell : cells) {
     const CellPlaceIndex place = FindCellPlace(tables, cell);
@@ -90,16 +90,16 @@ CellRoundTrips CountCellRoundTrips(const GridTables& tables, const std::vector<C
 
 // FindCellPlace and ToCellId on one grid: every listed cell is found at a kActive place with its own id, and every
 // kActive or kSplit place round-trips.
-void ExpectCellRoundTrips(const GridTables& tables, const std::vector<CellId>& cells) {
+void CheckCellRoundTrips(const GridTables& tables, const std::vector<CellId>& cells) {
   SCOPED_TRACE("FindCellPlace, ToCellId");
-  const CellRoundTrips round_trips = CountCellRoundTrips(tables, cells);
+  const CellRoundTrips round_trips = ComputeCountCellRoundTrips(tables, cells);
   EXPECT_EQ(round_trips.wrong_active_cell_count, 0U);
   EXPECT_EQ(round_trips.wrong_place_count, 0U);
   EXPECT_EQ(round_trips.active_place_count, cells.size());
 }
 
 // The places of a grid that hold no cell but give an id other than 0.
-std::size_t CountNonzeroIdsWithoutACell(const GridTables& tables) {
+std::size_t ComputeCountNonzeroIdsWithoutACell(const GridTables& tables) {
   std::size_t nonzero_count = 0;
   const std::uint64_t cell_place_count = std::uint64_t{tables.block_count} * kCellPlacesPerBlock;
   for (std::uint64_t place_value = 0; place_value < cell_place_count; ++place_value) {
@@ -113,7 +113,7 @@ std::size_t CountNonzeroIdsWithoutACell(const GridTables& tables) {
 
 // The small cells of eighth 7 of the listed cells of size level 0 to 2 that FindCellPlace finds: they lie inside an
 // active cell, so none is a cell of the grid.
-std::size_t CountFoundSmallCellsOfActiveCells(const GridTables& tables, const std::vector<CellId>& cells) {
+std::size_t ComputeCountFoundSmallCellsOfActiveCells(const GridTables& tables, const std::vector<CellId>& cells) {
   std::size_t found_count = 0;
   for (const CellId cell : cells) {
     const bool can_split = static_cast<int>(ToSizeLevel(cell)) < kRandomGridSizeLevelCount - 1;
@@ -124,15 +124,15 @@ std::size_t CountFoundSmallCellsOfActiveCells(const GridTables& tables, const st
 
 // ToCellId and FindCellPlace on one grid: a place inside a bigger cell or absent gives CellId{0}, and the id of a cell
 // that is not in the grid is not found.
-void ExpectNoIdsWithoutACell(const GridTables& tables, const std::vector<CellId>& cells) {
+void CheckNoIdsWithoutACell(const GridTables& tables, const std::vector<CellId>& cells) {
   SCOPED_TRACE("ToCellId of a place without a cell");
-  EXPECT_EQ(CountNonzeroIdsWithoutACell(tables), 0U);
-  EXPECT_EQ(CountFoundSmallCellsOfActiveCells(tables, cells), 0U);
+  EXPECT_EQ(ComputeCountNonzeroIdsWithoutACell(tables), 0U);
+  EXPECT_EQ(ComputeCountFoundSmallCellsOfActiveCells(tables, cells), 0U);
   EXPECT_EQ(FindCellPlace(tables, CellId{0}).value, kNoIndex);
 }
 
 // The checker's face pieces not found at a face place whose id is the checker's.
-std::size_t CountWrongFacePiecesFound(const GridTables& tables, const GeometricGrid& checker) {
+std::size_t ComputeCountWrongFacePiecesFound(const GridTables& tables, const GeometricGrid& checker) {
   std::size_t wrong_count = 0;
   for (const GeometricFacePiece& face_piece : checker.FacePieces()) {
     const FacePlaceIndex face = FindFacePlace(tables, face_piece.id);
@@ -143,7 +143,7 @@ std::size_t CountWrongFacePiecesFound(const GridTables& tables, const GeometricG
 }
 
 // The face pieces of a grid whose id does not give their place back.
-std::size_t CountFacePlacesNotRoundTripping(const GridTables& tables, const std::vector<FacePlaceIndex>& faces) {
+std::size_t ComputeCountFacePlacesNotRoundTripping(const GridTables& tables, const std::vector<FacePlaceIndex>& faces) {
   std::size_t wrong_count = 0;
   for (const FacePlaceIndex face : faces) {
     wrong_count += FindFacePlace(tables, ToFacePieceId(tables, face)).value == face.value ? 0 : 1;
@@ -153,11 +153,11 @@ std::size_t CountFacePlacesNotRoundTripping(const GridTables& tables, const std:
 
 // FindFacePlace and ToFacePieceId on one grid: every checker face piece is found at a place whose id is the checker's,
 // every face piece place round-trips, and no other place holds a face piece.
-void ExpectFacePieceRoundTrips(const GridTables& tables, const GeometricGrid& checker) {
+void CheckFacePieceRoundTrips(const GridTables& tables, const GeometricGrid& checker) {
   SCOPED_TRACE("FindFacePlace, ToFacePieceId");
   const std::vector<FacePlaceIndex> face_piece_places = FindFacePiecePlaces(tables);
-  EXPECT_EQ(CountWrongFacePiecesFound(tables, checker), 0U);
-  EXPECT_EQ(CountFacePlacesNotRoundTripping(tables, face_piece_places), 0U);
+  EXPECT_EQ(ComputeCountWrongFacePiecesFound(tables, checker), 0U);
+  EXPECT_EQ(ComputeCountFacePlacesNotRoundTripping(tables, face_piece_places), 0U);
   EXPECT_EQ(face_piece_places.size(), checker.FacePieces().size());
 }
 
@@ -180,7 +180,8 @@ struct FuzzedLookups {
   std::size_t wrong_count = 0;
 };
 
-FuzzedLookups CountFuzzedCellLookups(const GridTables& tables, const std::vector<CellId>& cells, std::uint64_t seed) {
+FuzzedLookups
+ComputeCountFuzzedCellLookups(const GridTables& tables, const std::vector<CellId>& cells, std::uint64_t seed) {
   std::vector<std::uint64_t> ids;
   ids.reserve(cells.size());
   for (const CellId cell : cells) {
@@ -200,14 +201,15 @@ FuzzedLookups CountFuzzedCellLookups(const GridTables& tables, const std::vector
 // FindCellPlace on fuzzed values of one grid: any value it accepts gives that same value back through ToCellId. Values
 // with one bit flipped cover a cleared bit 63, set axis bits, absent blocks and places without a cell. Gives the count
 // of accepted values.
-std::size_t ExpectFuzzedCellLookups(const GridTables& tables, const std::vector<CellId>& cells, std::uint64_t seed) {
+std::size_t CheckFuzzedCellLookups(const GridTables& tables, const std::vector<CellId>& cells, std::uint64_t seed) {
   SCOPED_TRACE("FindCellPlace on fuzzed values");
-  const FuzzedLookups lookups = CountFuzzedCellLookups(tables, cells, seed);
+  const FuzzedLookups lookups = ComputeCountFuzzedCellLookups(tables, cells, seed);
   EXPECT_EQ(lookups.wrong_count, 0U);
   return lookups.accepted_count;
 }
 
-FuzzedLookups CountFuzzedFaceLookups(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
+FuzzedLookups
+ComputeCountFuzzedFaceLookups(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
   std::vector<std::uint64_t> ids;
   ids.reserve(checker.FacePieces().size());
   for (const GeometricFacePiece& face_piece : checker.FacePieces()) {
@@ -227,9 +229,9 @@ FuzzedLookups CountFuzzedFaceLookups(const GridTables& tables, const GeometricGr
 // FindFacePlace on fuzzed values of one grid: any value it accepts gives that same value back through ToFacePieceId.
 // Values with one bit flipped cover a set bit 63, wrong axis bits, absent blocks, places off a block's low side and
 // places without a face piece. Gives the count of accepted values.
-std::size_t ExpectFuzzedFaceLookups(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
+std::size_t CheckFuzzedFaceLookups(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
   SCOPED_TRACE("FindFacePlace on fuzzed values");
-  const FuzzedLookups lookups = CountFuzzedFaceLookups(tables, checker, seed);
+  const FuzzedLookups lookups = ComputeCountFuzzedFaceLookups(tables, checker, seed);
   EXPECT_EQ(lookups.wrong_count, 0U);
   return lookups.accepted_count;
 }
@@ -241,8 +243,8 @@ TEST(GridTables, RandomGrids_AnyAcceptedValueNamesItsPlaceBack) {
   std::uint64_t seed = 0;
   ApplyToRandomGrids([&](const GridTables& tables, const GeometricGrid& checker, const std::vector<CellId>& cells) {
     ++seed;
-    accepted_cell_count += ExpectFuzzedCellLookups(tables, cells, seed);
-    accepted_face_count += ExpectFuzzedFaceLookups(tables, checker, seed + 1000);
+    accepted_cell_count += CheckFuzzedCellLookups(tables, cells, seed);
+    accepted_face_count += CheckFuzzedFaceLookups(tables, checker, seed + 1000);
   });
   // Some flipped values name other cells and face pieces of the grids, so the round trips were tried.
   EXPECT_GT(accepted_cell_count, 0U);
@@ -300,7 +302,7 @@ struct PlacesWithoutAFacePiece {
   std::size_t found_not_above_plane_four_count = 0;
 };
 
-PlacesWithoutAFacePiece CountPlacesWithoutAFacePiece(const GridTables& tables) {
+PlacesWithoutAFacePiece ComputeCountPlacesWithoutAFacePiece(const GridTables& tables) {
   PlacesWithoutAFacePiece counts;
   const std::uint64_t face_place_count = std::uint64_t{tables.block_count} * kFacePlacesPerBlock;
   for (std::uint64_t face_place = 0; face_place < face_place_count; ++face_place) {
@@ -322,9 +324,9 @@ PlacesWithoutAFacePiece CountPlacesWithoutAFacePiece(const GridTables& tables) {
 // ToFacePieceId and FindFacePlace on the places of one grid without a face piece: the id 0, and their own id names no
 // face piece, except on plane 4 when the block above keeps the face piece of that id at its plane 0. Gives the count of
 // such plane-4 places.
-std::size_t ExpectPlacesWithoutAFacePiece(const GridTables& tables) {
+std::size_t CheckPlacesWithoutAFacePiece(const GridTables& tables) {
   SCOPED_TRACE("ToFacePieceId of a place without a face piece");
-  const PlacesWithoutAFacePiece counts = CountPlacesWithoutAFacePiece(tables);
+  const PlacesWithoutAFacePiece counts = ComputeCountPlacesWithoutAFacePiece(tables);
   EXPECT_EQ(counts.nonzero_id_count, 0U);
   EXPECT_EQ(counts.found_here_count, 0U);
   EXPECT_EQ(counts.found_not_above_plane_four_count, 0U);
@@ -337,11 +339,11 @@ std::size_t ExpectPlacesWithoutAFacePiece(const GridTables& tables) {
 TEST(GridTables, RandomGrids_EveryIdRoundTripsThroughItsPlace) {
   std::size_t plane_four_below_a_face_piece_count = 0;
   ApplyToRandomGrids([&](const GridTables& tables, const GeometricGrid& checker, const std::vector<CellId>& cells) {
-    ExpectBlocksFound(tables);
-    ExpectCellRoundTrips(tables, cells);
-    ExpectNoIdsWithoutACell(tables, cells);
-    ExpectFacePieceRoundTrips(tables, checker);
-    plane_four_below_a_face_piece_count += ExpectPlacesWithoutAFacePiece(tables);
+    CheckBlocksFound(tables);
+    CheckCellRoundTrips(tables, cells);
+    CheckNoIdsWithoutACell(tables, cells);
+    CheckFacePieceRoundTrips(tables, checker);
+    plane_four_below_a_face_piece_count += CheckPlacesWithoutAFacePiece(tables);
   });
   // Plane 4 below a face piece kept at plane 0 above occurs, so that exception was seen.
   EXPECT_GT(plane_four_below_a_face_piece_count, 0U);
@@ -364,7 +366,8 @@ bool ComputeIsSameVec3(Vec3 first, Vec3 second) {
 
 // The checker's face pieces whose found place fails `is_right(tables, face, face_piece)`, or that are not found.
 template <typename IsRight>
-std::size_t CountWrongFacePieces(const GridTables& tables, const GeometricGrid& checker, const IsRight& is_right) {
+std::size_t
+ComputeCountWrongFacePieces(const GridTables& tables, const GeometricGrid& checker, const IsRight& is_right) {
   std::size_t wrong_count = 0;
   for (const GeometricFacePiece& face_piece : checker.FacePieces()) {
     const FacePlaceIndex face = FindFacePlace(tables, face_piece.id);
@@ -375,27 +378,33 @@ std::size_t CountWrongFacePieces(const GridTables& tables, const GeometricGrid& 
 
 // ComputeFacePosition on one grid: the centre of every face piece is on the plane of its axis, in the middle of the
 // side of its smaller cell.
-void ExpectFacePositions(const GridTables& tables, const GeometricGrid& checker) {
+void CheckFacePositions(const GridTables& tables, const GeometricGrid& checker) {
   SCOPED_TRACE("ComputeFacePosition");
-  const std::size_t wrong_count =
-      CountWrongFacePieces(tables, checker, [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
+  const std::size_t wrong_count = ComputeCountWrongFacePieces(
+      tables,
+      checker,
+      [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
         return ComputeIsSameVec3(ComputeFacePosition(tables, face), ToCheckerFacePosition(face_piece));
-      });
+      }
+  );
   EXPECT_EQ(wrong_count, 0U);
 }
 
 // ComputeFaceArea on one grid: the checker's area of every face piece.
-void ExpectFaceAreas(const GridTables& tables, const GeometricGrid& checker) {
+void CheckFaceAreas(const GridTables& tables, const GeometricGrid& checker) {
   SCOPED_TRACE("ComputeFaceArea");
-  const std::size_t wrong_count =
-      CountWrongFacePieces(tables, checker, [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
+  const std::size_t wrong_count = ComputeCountWrongFacePieces(
+      tables,
+      checker,
+      [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
         return ComputeFaceArea(tables, face) == face_piece.area;
-      });
+      }
+  );
   EXPECT_EQ(wrong_count, 0U);
 }
 
 // The checker's face pieces whose cell on one side is one size level bigger than the face piece.
-std::size_t CountBiggerCellsBeside(const GeometricGrid& checker, bool (*is_bigger)(const GeometricFacePiece&)) {
+std::size_t ComputeCountBiggerCellsBeside(const GeometricGrid& checker, bool (*is_bigger)(const GeometricFacePiece&)) {
   std::size_t bigger_count = 0;
   for (const GeometricFacePiece& face_piece : checker.FacePieces()) {
     bigger_count += is_bigger(face_piece) ? 1 : 0;
@@ -412,27 +421,33 @@ bool ComputeIsHighCellBigger(const GeometricFacePiece& face_piece) {
 }
 
 // FindCellLow on one grid: the checker's cell_low of every face piece. Gives the count of bigger low cells.
-std::size_t ExpectCellLows(const GridTables& tables, const GeometricGrid& checker) {
+std::size_t CheckCellLows(const GridTables& tables, const GeometricGrid& checker) {
   SCOPED_TRACE("FindCellLow");
-  const std::size_t wrong_count =
-      CountWrongFacePieces(tables, checker, [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
+  const std::size_t wrong_count = ComputeCountWrongFacePieces(
+      tables,
+      checker,
+      [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
         return ToCellIdOrZero(tables, FindCellLow(tables, face)).value
             == ToCheckerCellOrZero(face_piece.cell_low).value;
-      });
+      }
+  );
   EXPECT_EQ(wrong_count, 0U);
-  return CountBiggerCellsBeside(checker, ComputeIsLowCellBigger);
+  return ComputeCountBiggerCellsBeside(checker, ComputeIsLowCellBigger);
 }
 
 // FindCellHigh on one grid: the checker's cell_high of every face piece. Gives the count of bigger high cells.
-std::size_t ExpectCellHighs(const GridTables& tables, const GeometricGrid& checker) {
+std::size_t CheckCellHighs(const GridTables& tables, const GeometricGrid& checker) {
   SCOPED_TRACE("FindCellHigh");
-  const std::size_t wrong_count =
-      CountWrongFacePieces(tables, checker, [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
+  const std::size_t wrong_count = ComputeCountWrongFacePieces(
+      tables,
+      checker,
+      [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
         return ToCellIdOrZero(tables, FindCellHigh(tables, face)).value
             == ToCheckerCellOrZero(face_piece.cell_high).value;
-      });
+      }
+  );
   EXPECT_EQ(wrong_count, 0U);
-  return CountBiggerCellsBeside(checker, ComputeIsHighCellBigger);
+  return ComputeCountBiggerCellsBeside(checker, ComputeIsHighCellBigger);
 }
 
 // The checker's distance between the centres of a face piece's cells: half the width of each cell it has.
@@ -444,12 +459,15 @@ double ToCheckerCenterDistance(const GeometricFacePiece& face_piece) {
 
 // ComputeCellCenterDistance on one grid: half the width of each cell beside every face piece, along its axis; half a
 // width at the grid's edge.
-void ExpectCenterDistances(const GridTables& tables, const GeometricGrid& checker) {
+void CheckCenterDistances(const GridTables& tables, const GeometricGrid& checker) {
   SCOPED_TRACE("ComputeCellCenterDistance");
-  const std::size_t wrong_count =
-      CountWrongFacePieces(tables, checker, [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
+  const std::size_t wrong_count = ComputeCountWrongFacePieces(
+      tables,
+      checker,
+      [&tables](FacePlaceIndex face, const GeometricFacePiece& face_piece) {
         return ComputeCellCenterDistance(tables, face) == ToCheckerCenterDistance(face_piece);
-      });
+      }
+  );
   EXPECT_EQ(wrong_count, 0U);
 }
 
@@ -466,7 +484,7 @@ Vec3 ToBoxCenter(CellId cell) {
 }
 
 // The listed cells not found, or whose place has a centre other than the middle of their unit box.
-std::size_t CountWrongCellCenters(const GridTables& tables, const std::vector<CellId>& cells) {
+std::size_t ComputeCountWrongCellCenters(const GridTables& tables, const std::vector<CellId>& cells) {
   std::size_t wrong_count = 0;
   for (const CellId cell : cells) {
     const CellPlaceIndex place = FindCellPlace(tables, cell);
@@ -477,9 +495,9 @@ std::size_t CountWrongCellCenters(const GridTables& tables, const std::vector<Ce
 }
 
 // ComputeCellCenter on one grid: the centre of every active cell is the middle of its unit box.
-void ExpectCellCenters(const GridTables& tables, const std::vector<CellId>& cells) {
+void CheckCellCenters(const GridTables& tables, const std::vector<CellId>& cells) {
   SCOPED_TRACE("ComputeCellCenter");
-  EXPECT_EQ(CountWrongCellCenters(tables, cells), 0U);
+  EXPECT_EQ(ComputeCountWrongCellCenters(tables, cells), 0U);
 }
 
 // Every reader of positions, areas, distances and the cells beside a face piece matches the geometric checker over the
@@ -488,12 +506,12 @@ TEST(GridTables, RandomGrids_EveryReaderMatchesGeometricChecker) {
   std::size_t bigger_low_count = 0;
   std::size_t bigger_high_count = 0;
   ApplyToRandomGrids([&](const GridTables& tables, const GeometricGrid& checker, const std::vector<CellId>& cells) {
-    ExpectCellCenters(tables, cells);
-    ExpectFacePositions(tables, checker);
-    ExpectFaceAreas(tables, checker);
-    bigger_low_count += ExpectCellLows(tables, checker);
-    bigger_high_count += ExpectCellHighs(tables, checker);
-    ExpectCenterDistances(tables, checker);
+    CheckCellCenters(tables, cells);
+    CheckFacePositions(tables, checker);
+    CheckFaceAreas(tables, checker);
+    bigger_low_count += CheckCellLows(tables, checker);
+    bigger_high_count += CheckCellHighs(tables, checker);
+    CheckCenterDistances(tables, checker);
   });
   // A bigger cell on each side occurs, so the way through the bigger block was compared.
   EXPECT_GT(bigger_low_count, 0U);

@@ -155,7 +155,7 @@ static_assert(ComputeBigCell(ComputeSmallCell(kBigCellOfEighths, 6)).value == kB
 
 static_assert(ComputeCellEighth(ComputeSmallCell(kBigCellOfEighths, 6)) == 6);
 
-void ExpectEveryEighthGivesBack(CellId big_cell) {
+void CheckEveryEighthGivesBack(CellId big_cell) {
   const auto small_size_level = static_cast<SizeLevel>(static_cast<int>(ToSizeLevel(big_cell)) + 1);
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     const CellId small_cell = ComputeSmallCell(big_cell, cell_eighth);
@@ -166,9 +166,9 @@ void ExpectEveryEighthGivesBack(CellId big_cell) {
 }
 
 TEST(ComputeSmallCell, EveryEighth_GivesBackItsBigCell) {
-  ExpectEveryEighthGivesBack(kBigCellOfEighths);
+  CheckEveryEighthGivesBack(kBigCellOfEighths);
   // Negative coordinates, and the doubled coordinate -kMaxCoord + 1 near the low limit.
-  ExpectEveryEighthGivesBack(ToCellId(SizeLevel{0}, {.x = -kMaxCoord / 2, .y = 0, .z = -1}));
+  CheckEveryEighthGivesBack(ToCellId(SizeLevel{0}, {.x = -kMaxCoord / 2, .y = 0, .z = -1}));
 }
 
 TEST(ComputeSmallCell, EighthBits_AreXThenYThenZ) {

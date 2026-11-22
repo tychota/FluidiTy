@@ -49,7 +49,8 @@ struct ThreadBlockMemory {
 // The first phase of CountChunkDigits and PlaceChunkItems for one thread block: every thread copies its places of the
 // chunk.
 template <typename Key>
-std::uint32_t RunReadChunk(PassSource<Key> source, std::size_t chunk, ThreadBlockMemory& memory, ThreadOrder order) {
+std::uint32_t
+ComputeReadChunk(PassSource<Key> source, std::size_t chunk, ThreadBlockMemory& memory, ThreadOrder order) {
   const std::uint32_t item_count = ComputeChunkItemCount(source.count, chunk);
   for (std::size_t visit = 0; visit < kChunkThreadBlockSize; ++visit) {
     const auto thread = static_cast<std::uint32_t>(ToVisited(visit, kChunkThreadBlockSize, order));
@@ -62,12 +63,12 @@ std::uint32_t RunReadChunk(PassSource<Key> source, std::size_t chunk, ThreadBloc
 
 // CountChunkDigits over every thread block: chunk_counts[d * chunk_count + chunk].
 template <typename Key>
-void RunCountChunkDigits(PassSource<Key> source, std::vector<std::uint32_t>& chunk_counts, ThreadOrder order) {
+void ComputeCountChunkDigits(PassSource<Key> source, std::vector<std::uint32_t>& chunk_counts, ThreadOrder order) {
   const std::size_t chunk_count = ComputeChunkCount(source.count);
   for (std::size_t visit = 0; visit < chunk_count; ++visit) {
     const std::size_t chunk = ToVisited(visit, chunk_count, order);
     ThreadBlockMemory memory;
-    const std::uint32_t item_count = RunReadChunk(source, chunk, memory, order);
+    const std::uint32_t item_count = ComputeReadChunk(source, chunk, memory, order);
     for (std::size_t thread_visit = 0; thread_visit < kChunkThreadBlockSize; ++thread_visit) {
       const auto digit = static_cast<std::uint32_t>(ToVisited(thread_visit, kChunkThreadBlockSize, order));
       chunk_counts.at(digit * chunk_count + chunk) = ComputeChunkDigitCount(memory.ToChunkItems(item_count), digit);
@@ -77,7 +78,7 @@ void RunCountChunkDigits(PassSource<Key> source, std::vector<std::uint32_t>& chu
 
 // PlaceChunkItems over every thread block.
 template <typename Key>
-void RunPlaceChunkItems(
+void ComputePlaceChunkItems(
     PassSource<Key> source,
     const std::vector<std::uint32_t>& first_places,
     std::vector<std::uint32_t>& next_sequence,
@@ -87,7 +88,7 @@ void RunPlaceChunkItems(
   for (std::size_t visit = 0; visit < chunk_count; ++visit) {
     const std::size_t chunk = ToVisited(visit, chunk_count, order);
     ThreadBlockMemory memory;
-    const std::uint32_t item_count = RunReadChunk(source, chunk, memory, order);
+    const std::uint32_t item_count = ComputeReadChunk(source, chunk, memory, order);
     for (std::size_t thread_visit = 0; thread_visit < kChunkThreadBlockSize; ++thread_visit) {
       const auto digit = static_cast<std::uint32_t>(ToVisited(thread_visit, kChunkThreadBlockSize, order));
       const std::uint32_t first_place = first_places.at(digit * chunk_count + chunk);
@@ -98,7 +99,7 @@ void RunPlaceChunkItems(
 
 // SumChunks over every thread block: totals[chunk] is the sum of the chunk.
 template <typename Value>
-void RunSumChunks(PrefixSumValues<Value> values, std::uint64_t* totals, ThreadOrder order) {
+void ComputeSumChunks(PrefixSumValues<Value> values, std::uint64_t* totals, ThreadOrder order) {
   const std::size_t chunk_count = ComputeChunkCount(values.count);
   for (std::size_t visit = 0; visit < chunk_count; ++visit) {
     const std::size_t chunk = ToVisited(visit, chunk_count, order);
@@ -120,7 +121,7 @@ void RunSumChunks(PrefixSumValues<Value> values, std::uint64_t* totals, ThreadOr
 // WriteChunkPrefixSums over every thread block. Each round runs as on the GPU: every thread reads its addend, then
 // every thread adds it.
 template <typename Value, typename Sum>
-void RunWriteChunkPrefixSums(
+void ComputeWriteChunkPrefixSums(
     PrefixSumValues<Value> values,
     const std::uint64_t* chunk_offsets,
     Sum* sums,
@@ -164,17 +165,17 @@ void RunWriteChunkPrefixSums(
 // The exclusive prefix sum of `values` in place, as ComputeGpuExclusivePrefixSum runs it without the total check:
 // the way up, then the way down, in layer totals of exactly ComputePrefixSumLayerEntryCount entries. Returns the
 // total.
-std::uint64_t RunPrefixSum(std::vector<std::uint32_t>& values, ThreadOrder order) {
+std::uint64_t ComputePrefixSum(std::vector<std::uint32_t>& values, ThreadOrder order) {
   const PrefixSumLayers layers = BuildPrefixSumLayers(values.size());
   std::vector<std::uint64_t> layer_totals(ComputePrefixSumLayerEntryCount(values.size()));
   EXPECT_EQ(layers.first_entry[layers.top_layer] + 1, layer_totals.size()) << "values " << values.size();
-  RunSumChunks(
+  ComputeSumChunks(
       PrefixSumValues<std::uint32_t>{.values = values.data(), .count = values.size()},
       layer_totals.data(),
       order
   );
   for (int layer = 2; layer <= layers.top_layer; ++layer) {
-    RunSumChunks(
+    ComputeSumChunks(
         PrefixSumValues<std::uint64_t>{
             .values = layer_totals.data() + layers.first_entry[layer - 1],
             .count = layers.entry_count[layer - 1],
@@ -187,7 +188,7 @@ std::uint64_t RunPrefixSum(std::vector<std::uint32_t>& values, ThreadOrder order
     const std::uint64_t* const chunk_offsets =
         layer + 1 < layers.top_layer ? layer_totals.data() + layers.first_entry[layer + 1] : nullptr;
     std::uint64_t* const layer_entries = layer_totals.data() + layers.first_entry[layer];
-    RunWriteChunkPrefixSums(
+    ComputeWriteChunkPrefixSums(
         PrefixSumValues<std::uint64_t>{.values = layer_entries, .count = layers.entry_count[layer]},
         chunk_offsets,
         layer_entries,
@@ -197,7 +198,7 @@ std::uint64_t RunPrefixSum(std::vector<std::uint32_t>& values, ThreadOrder order
   const std::uint64_t total = layer_totals[layers.first_entry[layers.top_layer]];
   const std::uint64_t* const chunk_offsets =
       layers.top_layer > 1 ? layer_totals.data() + layers.first_entry[1] : nullptr;
-  RunWriteChunkPrefixSums(
+  ComputeWriteChunkPrefixSums(
       PrefixSumValues<std::uint32_t>{.values = values.data(), .count = values.size()},
       chunk_offsets,
       values.data(),
@@ -210,7 +211,7 @@ std::uint64_t RunPrefixSum(std::vector<std::uint32_t>& values, ThreadOrder order
 // `previous_order` (null for the items in ascending index), alternating between two sequences so that the last pass
 // writes the result.
 template <typename Key>
-std::vector<std::uint32_t> RunPasses(
+std::vector<std::uint32_t> ComputePasses(
     const std::vector<Key>& keys,
     const std::uint32_t* previous_order,
     std::uint32_t pass_count,
@@ -226,18 +227,18 @@ std::vector<std::uint32_t> RunPasses(
     const bool writes_result = (pass_count - 1 - pass) % 2 == 0;
     std::vector<std::uint32_t>& next_sequence = writes_result ? result : second_sequence;
     const PassSource<Key> source = {.keys = keys.data(), .sequence = sequence, .count = count, .pass = pass};
-    RunCountChunkDigits(source, chunk_counts, order);
-    const std::uint64_t total = RunPrefixSum(chunk_counts, order);
+    ComputeCountChunkDigits(source, chunk_counts, order);
+    const std::uint64_t total = ComputePrefixSum(chunk_counts, order);
     EXPECT_EQ(total, count);
-    RunPlaceChunkItems(source, chunk_counts, next_sequence, order);
+    ComputePlaceChunkItems(source, chunk_counts, next_sequence, order);
     sequence = next_sequence.data();
   }
   return result;
 }
 
 // The order of `keys` as BuildGpuStableOrder runs it: all eight passes, no previous order.
-std::vector<std::uint32_t> RunStableOrder(const std::vector<std::uint64_t>& keys, ThreadOrder order) {
-  return RunPasses(keys, nullptr, kKeyPassCount, order);
+std::vector<std::uint32_t> ComputeStableOrder(const std::vector<std::uint64_t>& keys, ThreadOrder order) {
+  return ComputePasses(keys, nullptr, kKeyPassCount, order);
 }
 
 // The order std::stable_sort gives `starting_order`, a list of the indexes of `keys`, by key: equal keys keep their
@@ -268,14 +269,14 @@ constexpr std::array<std::size_t, 8> kComparedCounts = {1, 2, 255, 257, 1023, 10
 TEST(RunStableOrder, EveryThreadInLaunchOrder_EqualsStdStableSort) {
   for (const std::size_t count : kComparedCounts) {
     const std::vector<std::uint64_t> keys = BuildKeysWithManyTies(count);
-    EXPECT_EQ(RunStableOrder(keys, ThreadOrder::kLaunchOrder), ComputeReferenceOrder(keys)) << "count " << count;
+    EXPECT_EQ(ComputeStableOrder(keys, ThreadOrder::kLaunchOrder), ComputeReferenceOrder(keys)) << "count " << count;
   }
 }
 
 TEST(RunStableOrder, EveryThreadInReverse_EqualsStdStableSort) {
   for (const std::size_t count : kComparedCounts) {
     const std::vector<std::uint64_t> keys = BuildKeysDifferingInTopByte(count);
-    EXPECT_EQ(RunStableOrder(keys, ThreadOrder::kReverse), ComputeReferenceOrder(keys)) << "count " << count;
+    EXPECT_EQ(ComputeStableOrder(keys, ThreadOrder::kReverse), ComputeReferenceOrder(keys)) << "count " << count;
   }
 }
 
@@ -289,7 +290,7 @@ TEST(RunPasses, PreviousOrder_KeepsItsOrderAmongEqualKeys) {
     }
     const std::vector<std::uint32_t> expected = ComputeReferenceOrder(keys, previous_order);
     for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
-      EXPECT_EQ(RunPasses(keys, previous_order.data(), kKeyPassCount, order), expected) << "count " << count;
+      EXPECT_EQ(ComputePasses(keys, previous_order.data(), kKeyPassCount, order), expected) << "count " << count;
     }
   }
 }
@@ -305,7 +306,7 @@ TEST(RunPasses, DestinationPassCountBelowEight_EqualsStdStableSort) {
         destinations[item] = static_cast<std::uint32_t>((item * 7919) % destination_count);
       }
       for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
-        EXPECT_EQ(RunPasses(destinations, nullptr, pass_count, order), ComputeReferenceOrder(destinations))
+        EXPECT_EQ(ComputePasses(destinations, nullptr, pass_count, order), ComputeReferenceOrder(destinations))
             << "destination_count " << destination_count << ", count " << count;
       }
     }
@@ -322,7 +323,7 @@ TEST(RunPrefixSum, EveryThreadInBothOrders_EqualsTheRunningSum) {
     std::exclusive_scan(values.begin(), values.end(), expected.begin(), 0U);
     for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
       std::vector<std::uint32_t> sums = values;
-      const std::uint64_t total = RunPrefixSum(sums, order);
+      const std::uint64_t total = ComputePrefixSum(sums, order);
       EXPECT_EQ(sums, expected) << "count " << count;
       EXPECT_EQ(total, std::accumulate(values.begin(), values.end(), std::uint64_t{0})) << "count " << count;
     }

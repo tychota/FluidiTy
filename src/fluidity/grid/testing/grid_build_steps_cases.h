@@ -17,10 +17,10 @@
 //          ComputeAreGuardsUnchanged, ToStaleCellId, ApplyStaleValues, ApplyStaleAllOnesWords,
 //          ApplyListCheckStepsByReplay, ReplayChange, ApplyPrefixSumOfReplay, ComputeCellPlacesKeyOfReplay,
 //          ApplyBlockStepsByReplay, ToReplayTables, ComputeIsBlockEntryInRange, ComputeAreTableEntriesInRange,
-//          ApplyTableStepsByReplay, ApplyGpuBuildStepsByReplay, ToFailureFields, BuildReplayBuffersOwner,
+//          ApplyTableStepsByReplay, ApplyParallelBuildStepsByReplay, ToFailureFields, BuildReplayBuffersOwner,
 //          BuildReplayBuffersOwner, ToVector, ToTableVectors, BuildReplayResult, ToCountsOfStatus, ComputeBuildReplay,
 //          ExpectedBlocks, ComputeExpectedBlocks, CpuBuildOfList, ComputeCpuBuildOfList, ComputeIsSameTableVectors,
-//          ExpectBuildReplayEqualsCpuBuild
+//          CheckBuildReplayEqualsCpuBuild
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/grid_build_steps.test.cc and tests/grid/grid_build_steps_on_random_grids.test.cc
 // Read:    the test files that include it
@@ -1117,7 +1117,7 @@ inline void ApplyTableStepsByReplay(
 // on `buffers`, which gives the room, then the steps of ApplyListCheckStepsByReplay with the siblings required,
 // ApplyBlockStepsByReplay, ApplyTableStepsByReplay and ApplyBuildStatusResult. A failed prefix sum or stable order
 // gives kInternalFault, as the CPU half's mapping of a size error does. Returns the failure the status names.
-inline GridFailure ApplyGpuBuildStepsByReplay(
+inline GridFailure ApplyParallelBuildStepsByReplay(
     const GridInputs& inputs,
     const GridBuffers& buffers,
     ReplayLaunch launch,
@@ -1206,8 +1206,8 @@ inline GridCounts ToCountsOfStatus(const GridBuildStatus& status) {
   return counts;
 }
 
-// Replays the build of `inputs` on the room of `buffers` into `arrays` (ApplyGpuBuildStepsByReplay), collects what it
-// gave and expects every guard of the arrays unchanged: no step wrote past an array of the room.
+// Replays the build of `inputs` on the room of `buffers` into `arrays` (ApplyParallelBuildStepsByReplay), collects what
+// it gave and expects every guard of the arrays unchanged: no step wrote past an array of the room.
 inline BuildReplayResult ComputeBuildReplay(
     const GridInputs& inputs,
     const GridBuffers& buffers,
@@ -1216,7 +1216,7 @@ inline BuildReplayResult ComputeBuildReplay(
     ReplayArrays& arrays
 ) {
   BuildReplayResult result;
-  result.failure = ApplyGpuBuildStepsByReplay(inputs, buffers, launch, change, arrays);
+  result.failure = ApplyParallelBuildStepsByReplay(inputs, buffers, launch, change, arrays);
   result.cell_blocks = arrays.status.cell_blocks;
   result.split_cells = arrays.status.split_cells;
   result.failed_prefix_sum_count = arrays.failed_prefix_sum_count;
@@ -1299,7 +1299,7 @@ ComputeIsSameTableVectors(const std::optional<TableVectors>& first, const std::o
 
 // Expects one build replay to give the CPU's failure, no failed prefix sum, on success the CPU's counts and the same
 // bytes in the used part of the five tables, and, when the GPU steps ran, the status counts after P8.
-inline void ExpectBuildReplayEqualsCpuBuild(
+inline void CheckBuildReplayEqualsCpuBuild(
     const BuildReplayResult& replay,
     const CpuBuildOfList& cpu_build,
     const std::string& context

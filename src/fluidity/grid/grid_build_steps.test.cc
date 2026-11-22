@@ -52,7 +52,7 @@ constexpr std::int32_t kTwoToThe17 = ComputePowerOfTwo(17);
 constexpr std::int32_t kTwoToThe18 = ComputePowerOfTwo(18);
 
 // The 8 small cells of a big cell, by eighth: x + 2 y + 4 z of the high halves.
-void AppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -68,7 +68,7 @@ std::uint32_t FindByScan(const std::vector<CellId>& cells, CellId cell) {
   return kNoIndex;
 }
 
-void ExpectSameCheck(const CellCheck& actual, const CellCheck& expected) {
+void CheckSameCheck(const CellCheck& actual, const CellCheck& expected) {
   EXPECT_EQ(actual.error, expected.error);
   EXPECT_EQ(actual.cell.value, expected.cell.value);
   EXPECT_EQ(actual.other_cell.value, expected.other_cell.value);
@@ -92,7 +92,7 @@ std::vector<CellId> BuildSevenOfEightSiblings() {
 std::vector<CellId> BuildMissingCellBesideSplitSiblings() {
   std::vector<CellId> cells;
   for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
-    AppendSmallCells(ComputeSmallCell(ToCell(0, 0, 0, 0), cell_eighth), cells);
+    ApplyAppendSmallCells(ComputeSmallCell(ToCell(0, 0, 0, 0), cell_eighth), cells);
   }
   return ToSortedCells(cells);
 }
@@ -153,7 +153,7 @@ TEST(ToCellSortKey, EverySizeLevelAtCoordLimits_GiveComesBeforeOrder) {
 }
 
 // The header's bound: biased < 2^34, so passes 1 and 2 are below 2^34 and pass 0, biased x 16 + 15, below 2^38.
-void ExpectKeysBelowProvedBounds(CellId cell) {
+void CheckKeysBelowProvedBounds(CellId cell) {
   EXPECT_LT(ToCellSortKey(cell, 0), kTwoToThe38);
   EXPECT_LT(ToCellSortKey(cell, 1), kTwoToThe34);
   EXPECT_LT(ToCellSortKey(cell, 2), kTwoToThe34);
@@ -164,7 +164,7 @@ void ExpectKeysBelowProvedBounds(CellId cell) {
 
 TEST(ToCellSortKey, EverySizeLevelAtCoordLimits_StaysBelowTheProvedBounds) {
   for (const CellId cell : BuildEverySizeLevelAtCoordLimits()) {
-    ExpectKeysBelowProvedBounds(cell);
+    CheckKeysBelowProvedBounds(cell);
   }
 }
 
@@ -187,7 +187,7 @@ TEST(ToBlockSortKey, LowestBlockAtSizeLevelZero_IsZero) {
 }
 
 // Every in-range cell of one block has the key of the block in each pass.
-void ExpectEqualKeysInBlock(int size_level, CellCoord block_coord) {
+void CheckEqualKeysInBlock(int size_level, CellCoord block_coord) {
   std::vector<CellId> cells;
   for (std::int32_t z = 0; z < 4; ++z) {
     for (std::int32_t y = 0; y < 4; ++y) {
@@ -214,11 +214,11 @@ void ExpectEqualKeysInBlock(int size_level, CellCoord block_coord) {
 
 TEST(ToBlockSortKey, CellsOfOneBlock_HaveEqualKeys) {
   for (const int size_level : {0, 3, 15}) {
-    ExpectEqualKeysInBlock(size_level, {.x = -1, .y = 2, .z = -3});
+    CheckEqualKeysInBlock(size_level, {.x = -1, .y = 2, .z = -3});
     // The block at the low limit holds cells -2^18 + 1..-2^18 + 3 on each axis; the one at the high limit
     // 2^18 - 4..2^18 - 1.
-    ExpectEqualKeysInBlock(size_level, {.x = -kTwoToThe16, .y = -kTwoToThe16, .z = -kTwoToThe16});
-    ExpectEqualKeysInBlock(size_level, {.x = kTwoToThe16 - 1, .y = kTwoToThe16 - 1, .z = kTwoToThe16 - 1});
+    CheckEqualKeysInBlock(size_level, {.x = -kTwoToThe16, .y = -kTwoToThe16, .z = -kTwoToThe16});
+    CheckEqualKeysInBlock(size_level, {.x = kTwoToThe16 - 1, .y = kTwoToThe16 - 1, .z = kTwoToThe16 - 1});
   }
 }
 
@@ -363,11 +363,11 @@ TEST(CheckOverlapAt, RepeatedCell_NamesBothCells) {
   const CellId repeated_cell = ToCell(1, -1, 2, 3);
   const std::vector<CellId> sorted_cells = ToSortedCells({ToCell(1, 0, 2, 3), repeated_cell, repeated_cell});
   const std::uint32_t second_position = FindByScan(sorted_cells, repeated_cell) + 1;
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), second_position),
       {.error = GridError::kCellsOverlap, .cell = repeated_cell, .other_cell = repeated_cell, .detail = 0}
   );
-  ExpectSameCheck(CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), second_position - 1), {});
+  CheckSameCheck(CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), second_position - 1), {});
 }
 
 TEST(CheckOverlapAt, CellInsideActiveBigCell_NamesBothCells) {
@@ -375,18 +375,18 @@ TEST(CheckOverlapAt, CellInsideActiveBigCell_NamesBothCells) {
   const CellId small_cell = ToCell(2, -3, 1, 2);
   const CellId big_cell = ToCell(0, -1, 0, 0);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, big_cell});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kCellsOverlap, .cell = small_cell, .other_cell = big_cell, .detail = 0}
   );
-  ExpectSameCheck(CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, big_cell)), {});
+  CheckSameCheck(CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, big_cell)), {});
 }
 
 TEST(CheckOverlapAt, CellInsideTwoActiveBiggerCells_NamesTheNearest) {
   // Size level 2 {-3, 1, 2} lies in size level 1 {-2, 0, 1} and in size level 0 {-1, 0, 0}; one size level up first.
   const CellId small_cell = ToCell(2, -3, 1, 2);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, ToCell(0, -1, 0, 0), ToCell(1, -2, 0, 1)});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kCellsOverlap, .cell = small_cell, .other_cell = ToCell(1, -2, 0, 1), .detail = 0}
   );
@@ -397,7 +397,7 @@ TEST(CheckOverlapAt, CellAtCoordLimitsInsideSizeLevelZeroCell_NamesBothCells) {
   const CellId small_cell = ToCell(15, kMaxCoord, -kMaxCoord, 0);
   const CellId big_cell = ToCell(0, 7, -8, 0);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, big_cell});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckOverlapAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kCellsOverlap, .cell = small_cell, .other_cell = big_cell, .detail = 0}
   );
@@ -410,7 +410,7 @@ TEST(CheckOverlapAt, CellAtCoordLimitsInsideSizeLevelZeroCell_NamesBothCells) {
 TEST(CheckSiblingsAt, SevenOfEight_NamesTheMissing) {
   const std::vector<CellId> sorted_cells = BuildSevenOfEightSiblings();
   for (std::uint32_t position = 0; position < ToCount(sorted_cells); ++position) {
-    ExpectSameCheck(
+    CheckSameCheck(
         CheckSiblingsAt(sorted_cells.data(), ToCount(sorted_cells), position),
         {
             .error = GridError::kSiblingCellMissing,
@@ -438,7 +438,7 @@ TEST(CheckSiblingsAt, MissingCellBesideSplitSiblings_NamesTheMissing) {
   ASSERT_NE(smallest_key, kNoFailureKey);
   EXPECT_EQ(ToFailurePosition(smallest_key), first_eighth_zero_position);
   // Walk step 1 checks the 8 size-level-1 cells of size level 0 {0,0,0}; its eighth 0 is the missing one.
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSiblingsAt(sorted_cells.data(), ToCount(sorted_cells), first_eighth_zero_position),
       {
           .error = GridError::kSiblingCellMissing,
@@ -451,7 +451,7 @@ TEST(CheckSiblingsAt, MissingCellBesideSplitSiblings_NamesTheMissing) {
 
 TEST(CheckSiblingsAt, SplitSiblings_Pass) {
   std::vector<CellId> cells = BuildMissingCellBesideSplitSiblings();
-  AppendSmallCells(ToCell(1, 0, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(1, 0, 0, 0), cells);
   const std::vector<CellId> sorted_cells = ToSortedCells(cells);
   ASSERT_EQ(sorted_cells.size(), 64U);
   EXPECT_EQ(ComputeSmallestFailureKey(sorted_cells, 3, CheckSiblingsAt), kNoFailureKey);
@@ -475,7 +475,7 @@ TEST(CheckSiblingsAt, MissingSiblingAtTopOfLongChain_IsFoundFromTheChainEnd) {
   // From the end of the eighth-0 chain, size level 15 {-2^15, ...}: walk steps 0..13 pass, walk step 14 checks size
   // level 0 {-1,-1,-1}, so detail = (14 << 3) | 7 = 119.
   const CellId chain_end = ToCell(15, -kTwoToThe15Coord, -kTwoToThe15Coord, -kTwoToThe15Coord);
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSiblingsAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, chain_end)),
       {
           .error = expected_check.error,
@@ -485,7 +485,7 @@ TEST(CheckSiblingsAt, MissingSiblingAtTopOfLongChain_IsFoundFromTheChainEnd) {
       }
   );
   // An active size-level-1 sibling, eighth 1 = {-1,-2,-2}, finds it at its first walk step.
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSiblingsAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, ToCell(1, -1, -2, -2))),
       expected_check
   );
@@ -508,7 +508,7 @@ TEST(CheckSiblingsAt, SiblingBeyondLowCoordLimit_NamesNoCellAndTheBigCell) {
   for (int small_size_level = 1; small_size_level < kMaxSizeLevels; ++small_size_level) {
     const std::vector<CellId> sorted_cells = BuildCellsAtLowCoordLimit(small_size_level);
     for (std::uint32_t position = 0; position < ToCount(sorted_cells); ++position) {
-      ExpectSameCheck(
+      CheckSameCheck(
           CheckSiblingsAt(sorted_cells.data(), ToCount(sorted_cells), position),
           {
               .error = GridError::kSiblingCellMissing,
@@ -557,7 +557,7 @@ TEST(CheckSiblingsAt, MissingSiblingAtHighCoordLimit_NamesTheMissing) {
   for (int small_size_level = 1; small_size_level < kMaxSizeLevels; ++small_size_level) {
     const std::vector<CellId> sorted_cells = BuildPathToHighCoordLimit(small_size_level, 7);
     const CellId eighth_zero_cell = ToCell(small_size_level, kMaxCoord - 1, kMaxCoord - 1, kMaxCoord - 1);
-    ExpectSameCheck(
+    CheckSameCheck(
         CheckSiblingsAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, eighth_zero_cell)),
         {
             .error = GridError::kSiblingCellMissing,
@@ -574,7 +574,7 @@ void ApplySplit(std::vector<CellId>& cells, CellId cell) {
   std::erase_if(cells, [cell](CellId listed_cell) {
     return listed_cell.value == cell.value;
   });
-  AppendSmallCells(cell, cells);
+  ApplyAppendSmallCells(cell, cells);
 }
 
 TEST(CheckSiblingsAt, SizeLevelZeroCellAtMinusEight_HoldsSizeLevelFifteenAwayFromItsLowCorner) {
@@ -603,7 +603,7 @@ TEST(CheckSizeStepAt, CornerTouchTwoSizeLevelsApart_NamesDirectionZero) {
   // Size level 0 {0,0,0} covers size-level-2 places 0..3; the place (-1, -1, -1) from {4,4,4} is (3, 3, 3).
   const CellId small_cell = ToCell(2, 4, 4, 4);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, ToCell(0, 0, 0, 0)});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kSizeStepRuleBroken, .cell = small_cell, .other_cell = ToCell(0, 0, 0, 0), .detail = 0}
   );
@@ -611,7 +611,7 @@ TEST(CheckSizeStepAt, CornerTouchTwoSizeLevelsApart_NamesDirectionZero) {
 
 TEST(CheckSizeStepAt, BigCellOfTheTwo_SeesNothing) {
   const std::vector<CellId> sorted_cells = ToSortedCells({ToCell(2, 4, 4, 4), ToCell(0, 0, 0, 0)});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, ToCell(0, 0, 0, 0))),
       {}
   );
@@ -630,7 +630,7 @@ TEST(CheckSizeStepAt, ThreeSizeLevelsApartBelowZero_NamesTheFirstDirection) {
   // (dz, dy, dx) = (0, 0, -1): 9 (dz + 1) + 3 (dy + 1) + (dx + 1) = 12, before the left-out middle 13.
   const CellId small_cell = ToCell(3, -8, -8, -8);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, ToCell(0, -2, -1, -1)});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kSizeStepRuleBroken, .cell = small_cell, .other_cell = ToCell(0, -2, -1, -1), .detail = 12}
   );
@@ -641,10 +641,7 @@ TEST(CheckSizeStepAt, CellAtLowCoordLimit_SeesNoCellBeyond) {
   // {2^18 / 4, 0, 0} = {65536, 0, 0}: 2^18 + 2^18 - 1 = 524,287 size-level-2 widths from the cell.
   const CellId small_cell = ToCell(2, -kMaxCoord, 0, 0);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, ToCell(0, 65536, 0, 0)});
-  ExpectSameCheck(
-      CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
-      {}
-  );
+  CheckSameCheck(CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)), {});
 }
 
 TEST(CheckSizeStepAt, CellAtHighCoordLimit_SeesTheBigCellBeside) {
@@ -653,7 +650,7 @@ TEST(CheckSizeStepAt, CellAtHighCoordLimit_SeesTheBigCellBeside) {
   // directions before it with dx = +1 have dy or dz = -1, whose places lie in size level 0 y or z = -1.
   const CellId small_cell = ToCell(2, kMaxCoord, 0, 0);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, ToCell(0, 65536, 0, 0)});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kSizeStepRuleBroken, .cell = small_cell, .other_cell = ToCell(0, 65536, 0, 0), .detail = 13}
   );
@@ -665,7 +662,7 @@ TEST(CheckSizeStepAt, SizeLevelFifteenAtHighCoordLimit_SeesTheSizeLevelZeroCellB
   // (dz, dy, dx) = (-1, -1, +1): place (2^18, 2^18 - 2, 2^18 - 2), direction index 0 + 0 + 2 = 2.
   const CellId small_cell = ToCell(15, kMaxCoord, kMaxCoord, kMaxCoord);
   const std::vector<CellId> sorted_cells = ToSortedCells({small_cell, ToCell(0, 8, 7, 7)});
-  ExpectSameCheck(
+  CheckSameCheck(
       CheckSizeStepAt(sorted_cells.data(), ToCount(sorted_cells), FindByScan(sorted_cells, small_cell)),
       {.error = GridError::kSizeStepRuleBroken, .cell = small_cell, .other_cell = ToCell(0, 8, 7, 7), .detail = 2}
   );
@@ -710,7 +707,7 @@ TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells) {
   const CellId repeated_cell = ToCell(1, -1, 2, 3);
   const std::vector<CellId> overlap_cells = ToSortedCells({ToCell(1, 0, 2, 3), repeated_cell, repeated_cell});
   const std::uint32_t overlap_position = FindByScan(overlap_cells, repeated_cell) + 1;
-  ExpectSameCheck(
+  CheckSameCheck(
       ComputeFailureCells(
           ToUnitFrame(3),
           nullptr,
@@ -723,7 +720,7 @@ TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells) {
   );
   // Step 3: seven of eight siblings, at position 3, missing eighth 5 at walk step 0.
   const std::vector<CellId> sibling_cells = BuildSevenOfEightSiblings();
-  ExpectSameCheck(
+  CheckSameCheck(
       ComputeFailureCells(
           ToUnitFrame(3),
           nullptr,
@@ -741,7 +738,7 @@ TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells) {
   );
   // Step 4: the corner touch, size level 2 {4,4,4} after size level 0 {0,0,0}, at position 1, direction 0.
   const std::vector<CellId> size_step_cells = ToSortedCells({ToCell(2, 4, 4, 4), ToCell(0, 0, 0, 0)});
-  ExpectSameCheck(
+  CheckSameCheck(
       ComputeFailureCells(
           ToUnitFrame(3),
           nullptr,
@@ -762,7 +759,7 @@ TEST(ComputeFailureCells, KeyOfEachStep_GivesTheChecksCells) {
 TEST(ComputeFailureCells, RoomSteps_GiveTooManyCellBlocks) {
   const std::vector<CellId> sorted_cells = BuildSevenOfEightSiblings();
   for (const int step : {5, 6}) {
-    ExpectSameCheck(
+    CheckSameCheck(
         ComputeFailureCells(
             ToUnitFrame(3),
             nullptr,
@@ -781,7 +778,7 @@ TEST(ComputeFailureCells, KeyWithoutFailureAtItsPosition_IsInternalFault) {
   const std::vector<CellId> sorted_cells = BuildPathToHighCoordLimit(1, -1);
   const CellCheck internal_fault = {.error = GridError::kInternalFault};
   for (const int step : {2, 3, 4}) {
-    ExpectSameCheck(
+    CheckSameCheck(
         ComputeFailureCells(
             ToUnitFrame(3),
             nullptr,
@@ -797,7 +794,7 @@ TEST(ComputeFailureCells, KeyWithoutFailureAtItsPosition_IsInternalFault) {
 
 TEST(ComputeFailureCells, PositionPastTheList_IsInternalFault) {
   const std::vector<CellId> sorted_cells = BuildSevenOfEightSiblings();
-  ExpectSameCheck(
+  CheckSameCheck(
       ComputeFailureCells(
           ToUnitFrame(3),
           nullptr,
@@ -813,7 +810,7 @@ TEST(ComputeFailureCells, PositionPastTheList_IsInternalFault) {
 TEST(ComputeFailureCells, StepOutsideTheChecks_IsInternalFault) {
   const std::vector<CellId> sorted_cells = BuildSevenOfEightSiblings();
   for (const std::uint64_t failure_key : {ToFailureKey(0, 0, 0), ToFailureKey(8, 0, 0), kNoFailureKey}) {
-    ExpectSameCheck(
+    CheckSameCheck(
         ComputeFailureCells(ToUnitFrame(3), nullptr, 0, sorted_cells.data(), ToCount(sorted_cells), failure_key),
         {.error = GridError::kInternalFault}
     );
@@ -824,7 +821,7 @@ TEST(ComputeFailureCells, StepOutsideTheChecks_IsInternalFault) {
 TEST(ComputeFailureCells, StepSeven_IsInternalFaultWithNoCell) {
   const std::vector<CellId> sorted_cells = BuildSevenOfEightSiblings();
   for (const std::uint64_t block : {0U, 3U}) {
-    ExpectSameCheck(
+    CheckSameCheck(
         ComputeFailureCells(
             ToUnitFrame(3),
             nullptr,
@@ -855,7 +852,7 @@ TEST(ComputeFailureCells, IdStepKey_GivesTheInputIdAndItsCheck) {
   const std::vector<CellId> sorted_cells = ToSortedCells(input_cells);
   for (std::uint32_t input_index = 1; input_index <= 3; ++input_index) {
     const CellId input_cell = input_cells.at(input_index);
-    ExpectSameCheck(
+    CheckSameCheck(
         ComputeFailureCells(
             ToUnitFrame(3),
             input_cells.data(),
@@ -876,7 +873,7 @@ TEST(ComputeFailureCells, IdStepKey_GivesTheInputIdAndItsCheck) {
 TEST(ComputeFailureCells, IdStepKeyAtValidId_IsInternalFault) {
   const std::vector<CellId> input_cells = BuildInputWithBadIds();
   for (const std::uint32_t input_index : {0U, 4U}) {
-    ExpectSameCheck(
+    CheckSameCheck(
         ComputeFailureCells(
             ToUnitFrame(3),
             input_cells.data(),
@@ -892,7 +889,7 @@ TEST(ComputeFailureCells, IdStepKeyAtValidId_IsInternalFault) {
 
 TEST(ComputeFailureCells, IdStepKeyPastTheInput_IsInternalFault) {
   const std::vector<CellId> input_cells = BuildInputWithBadIds();
-  ExpectSameCheck(
+  CheckSameCheck(
       ComputeFailureCells(
           ToUnitFrame(3),
           input_cells.data(),
@@ -941,9 +938,9 @@ TEST(ComputeFailureCells, CellPlacesKeys_GiveTheirErrors) {
   const auto to_error = [](std::uint64_t failure_key) {
     return ComputeFailureCells(GridFrame(), nullptr, 0, nullptr, 0, failure_key);
   };
-  ExpectSameCheck(to_error(kSortCountFaultKey), {.error = GridError::kInternalFault});
-  ExpectSameCheck(to_error(ToFailureKey(kCellPlacesStep, 0, 0)), {.error = GridError::kTooManyCellBlocks});
-  ExpectSameCheck(to_error(ToFailureKey(kCellPlacesStep, 0, 2)), {.error = GridError::kInternalFault});
+  CheckSameCheck(to_error(kSortCountFaultKey), {.error = GridError::kInternalFault});
+  CheckSameCheck(to_error(ToFailureKey(kCellPlacesStep, 0, 0)), {.error = GridError::kTooManyCellBlocks});
+  CheckSameCheck(to_error(ToFailureKey(kCellPlacesStep, 0, 2)), {.error = GridError::kInternalFault});
 }
 
 TEST(ComputeRoomFailureKey, OneAboveRoom_IsTheStepsKey) {
@@ -1128,7 +1125,7 @@ TEST(ComputeBlockFaultKey, BlockWithoutItsBiggerBlock_IsStepSeven) {
   const std::uint64_t lone_key =
       ComputeBlockFaultKey(lone_tables.block_ids.data(), lone_tables.bigger_block.data(), CellBlockIndex{0});
   EXPECT_EQ(lone_key, ToFailureKey(7, 0, 0));
-  ExpectSameCheck(
+  CheckSameCheck(
       ComputeFailureCells(ToUnitFrame(2), nullptr, 0, nullptr, 0, lone_key),
       {.error = GridError::kInternalFault, .cell = CellId{0}, .other_cell = CellId{0}, .detail = 0}
   );
@@ -1400,7 +1397,7 @@ TEST(ComputeFacePieceKind, ThreeSizeLevelsMeeting_GiveTheCheckersFacePieces) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     const CellId small_cell = ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth);
     if (cell_eighth == 1) {
-      AppendSmallCells(small_cell, cells);
+      ApplyAppendSmallCells(small_cell, cells);
     } else {
       cells.push_back(small_cell);
     }
@@ -1421,7 +1418,7 @@ TEST(ComputeFacePieceKind, ThreeSizeLevelsMeeting_GiveTheCheckersFacePieces) {
 
 TEST(ComputeFacePieceKind, SizeLevelZeroCellsAtCoordLimits_GiveTheCheckersFacePieces) {
   std::vector<CellId> cells = {ToCell(0, -kMaxCoord, 0, 0), ToCell(0, kMaxCoord, 0, 0)};
-  AppendSmallCells(ToCell(0, 0, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), cells);
   cells = ToSortedCells(cells);
   const TableVectors tables = BuildTablesOfCells(ToUnitFrame(2), cells);
   const std::multiset<FacePieceWithKind> pieces = BuildFacePiecesOfTables(tables);
@@ -1436,7 +1433,7 @@ TEST(ComputeFacePieceKind, BigCellBeyondHighCoordLimit_IsBetweenCells) {
   // {2^17, 0, 0} active beside it. The high X side of size level 1 x = kMaxCoord is the place x = 2^18, outside the
   // range at size level 1 and inside size level 0 x = 2^17: a face piece between cells, at size level 1.
   std::vector<CellId> cells = {ToCell(0, kTwoToThe17, 0, 0)};
-  AppendSmallCells(ToCell(0, kTwoToThe17 - 1, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, kTwoToThe17 - 1, 0, 0), cells);
   cells = ToSortedCells(cells);
   const TableVectors tables = BuildTablesOfCells(ToUnitFrame(2), cells);
   const std::multiset<FacePieceWithKind> pieces = BuildFacePiecesOfTables(tables);
@@ -1450,7 +1447,7 @@ TEST(ComputeFacePieceKind, SmallCellsAtLowCoordLimit_GiveTheCheckersFacePieces) 
   // Size level 0 {-2^17, 0, 0} active; {-2^17 + 1, 0, 0} split into size level 1 x = -2^18 + 2 and -2^18 + 3. The big
   // cell covers size level 1 x = -2^18 + 1 = -kMaxCoord and x = -2^18, outside the range; nothing lies beyond it.
   std::vector<CellId> cells = {ToCell(0, -kTwoToThe17, 0, 0)};
-  AppendSmallCells(ToCell(0, -kTwoToThe17 + 1, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, -kTwoToThe17 + 1, 0, 0), cells);
   cells = ToSortedCells(cells);
   const TableVectors tables = BuildTablesOfCells(ToUnitFrame(2), cells);
   const std::multiset<FacePieceWithKind> pieces = BuildFacePiecesOfTables(tables);
@@ -1512,7 +1509,7 @@ struct SplitCellSortedEntries {
 
 SplitCellSortedEntries BuildSplitCellSortedEntries() {
   SplitCellSortedEntries entries;
-  AppendSmallCells(ToCell(0, 0, 0, 0), entries.cell_ids);
+  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), entries.cell_ids);
   entries.cell_ids.push_back(ToCell(0, 0, 0, 0));
   entries.cell_ids.push_back(CellId{0});
   const auto count = static_cast<std::uint32_t>(entries.cell_ids.size());
@@ -1704,7 +1701,7 @@ TEST(BuildSortedCellList, SizeStepBreakWithSiblings_IsSizeStepRuleBrokenEitherWa
 
 // Replays the build of `cells` on the room of `buffers` in both launch orders, each after ApplyStaleAllOnesWords, and
 // expects no failed prefix sum and the CPU build's failure, whose error is `error`.
-void ExpectTrueErrorAfterAllOnesWords(
+void CheckTrueErrorAfterAllOnesWords(
     const std::vector<CellId>& cells,
     GridBuffers& buffers,
     GridError error,
@@ -1719,12 +1716,12 @@ void ExpectTrueErrorAfterAllOnesWords(
   }
   const CpuBuildOfList cpu_build = ComputeCpuBuildOfList(inputs, buffers);
   EXPECT_EQ(cpu_build.failure.error, error);
-  ExpectBuildReplayEqualsCpuBuild(
+  CheckBuildReplayEqualsCpuBuild(
       replays.at(0),
       cpu_build,
       "error " + std::to_string(static_cast<int>(error)) + ", forward"
   );
-  ExpectBuildReplayEqualsCpuBuild(
+  CheckBuildReplayEqualsCpuBuild(
       replays.at(1),
       cpu_build,
       "error " + std::to_string(static_cast<int>(error)) + ", reverse"
@@ -1744,9 +1741,9 @@ TEST(BuildGrid, StaleLargeValuesWithFailingList_ReportsTheTrueError) {
   ASSERT_TRUE(arrays_of_1.order_buffers.has_value());
   std::vector<CellId> repeated_cell = BuildLoneCellsAlongX(9);
   repeated_cell.push_back(ToCell(0, 8, 0, 0));
-  ExpectTrueErrorAfterAllOnesWords(repeated_cell, buffers_of_100, GridError::kCellsOverlap, arrays);
-  ExpectTrueErrorAfterAllOnesWords(BuildSevenOfEightSiblings(), buffers_of_100, GridError::kSiblingCellMissing, arrays);
-  ExpectTrueErrorAfterAllOnesWords(
+  CheckTrueErrorAfterAllOnesWords(repeated_cell, buffers_of_100, GridError::kCellsOverlap, arrays);
+  CheckTrueErrorAfterAllOnesWords(BuildSevenOfEightSiblings(), buffers_of_100, GridError::kSiblingCellMissing, arrays);
+  CheckTrueErrorAfterAllOnesWords(
       BuildSmallCellsOfEightBigCells(),
       buffers_of_1,
       GridError::kTooManyCellBlocks,
@@ -1766,7 +1763,7 @@ bool ComputeIsRoomPartStale(const Buffer<Value>& table, std::size_t room_count, 
 // neighbour tables hold the stale kNoIndex - 1, with `launch`: the block count of the record names the whole room. P9
 // stops on the key of step 6, and P10 and P11 stop on any key, so no stale entry is read (a P10 (c) that went on would
 // read the stale neighbours and be counted), no state or face piece kind is written and no guard changes.
-void ExpectNoTableReadAfterBlockCountFailure(ReplayLaunch launch, ReplayArrays& arrays) {
+void CheckNoTableReadAfterBlockCountFailure(ReplayLaunch launch, ReplayArrays& arrays) {
   const std::size_t room = arrays.max_cell_blocks;
   ApplyStaleValues(arrays);
   std::fill_n(arrays.cell_states.data(), kCellPlacesPerBlock * room, CellState::kAbsent);
@@ -1795,7 +1792,7 @@ TEST(BuildGrid, ReplayAfterBlockCountFailure_ReadsNoStaleTable) {
           std::string(order == LaunchOrder::kForward ? "forward" : "reverse") + ", threads "
           + std::to_string(thread_count)
       );
-      ExpectNoTableReadAfterBlockCountFailure({.order = order, .thread_count = thread_count}, arrays);
+      CheckNoTableReadAfterBlockCountFailure({.order = order, .thread_count = thread_count}, arrays);
     }
   }
 }
@@ -1803,7 +1800,7 @@ TEST(BuildGrid, ReplayAfterBlockCountFailure_ReadsNoStaleTable) {
 // Replays P9 to P12 alone on the size-level-1 blocks (0,0,0) and (1,0,0), written by hand in arrays that hold stale
 // values, with `launch`, and expects the key of step 7 at block 0, kInternalFault with no cell, both bigger blocks
 // written kNoIndex, every cell state and face piece kind still stale, no count added and every guard unchanged.
-void ExpectBlocksWithoutBiggerBlockFault(ReplayLaunch launch, ReplayArrays& arrays) {
+void CheckBlocksWithoutBiggerBlockFault(ReplayLaunch launch, ReplayArrays& arrays) {
   const std::size_t room = arrays.max_cell_blocks;
   ApplyStaleValues(arrays);
   arrays.status = ComputeResetBuildStatus();
@@ -1846,7 +1843,7 @@ TEST(BuildGrid, ReplayWithBlockWithoutItsBiggerBlock_IsInternalFault) {
           std::string(order == LaunchOrder::kForward ? "forward" : "reverse") + ", threads "
           + std::to_string(thread_count)
       );
-      ExpectBlocksWithoutBiggerBlockFault({.order = order, .thread_count = thread_count}, arrays);
+      CheckBlocksWithoutBiggerBlockFault({.order = order, .thread_count = thread_count}, arrays);
     }
   }
 }

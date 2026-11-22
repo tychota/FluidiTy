@@ -39,7 +39,7 @@ TEST(ComputeGridCounts, RandomGrids_EqualGeometricChecker) {
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
     SCOPED_TRACE(grid);
     const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(grid);
-    ExpectCheckerCounts(ComputeCountsOfList(ToUnitFrame(4), cells), ToUnitFrame(4), cells);
+    CheckCheckerCounts(ComputeCountsOfList(ToUnitFrame(4), cells), ToUnitFrame(4), cells);
   }
 }
 
@@ -73,7 +73,7 @@ constexpr std::size_t kCheapRandomGridCount = 50;
 //
 // clang-tidy: a grid index and an offset; the swappable-parameters check flags the two integers.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-void ExpectMovedCounts(std::size_t grid, std::int32_t offset_in_biggest_cells) {
+void CheckMovedCounts(std::size_t grid, std::int32_t offset_in_biggest_cells) {
   const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(grid);
   const std::vector<CellId> moved_cells = BuildMovedCells(cells, offset_in_biggest_cells);
   const std::expected<GridCounts, GridFailure> counts = ComputeCountsOfList(ToUnitFrame(4), cells);
@@ -91,7 +91,7 @@ void ExpectMovedCounts(std::size_t grid, std::int32_t offset_in_biggest_cells) {
 TEST(ComputeGridCounts, RandomGridsMovedAcrossZero_CountAsTheChecker) {
   for (std::size_t grid = 0; grid < kCheapRandomGridCount; ++grid) {
     SCOPED_TRACE(grid);
-    ExpectMovedCounts(grid, -1);
+    CheckMovedCounts(grid, -1);
   }
 }
 
@@ -101,7 +101,7 @@ TEST(ComputeGridCounts, RandomGridsMovedToHighCoordLimit_CountAsTheChecker) {
   constexpr auto kHighOffset = static_cast<std::int32_t>((1U << 15U) - 3U);
   for (std::size_t grid = 0; grid < kCheapRandomGridCount; ++grid) {
     SCOPED_TRACE(grid);
-    ExpectMovedCounts(grid, kHighOffset);
+    CheckMovedCounts(grid, kHighOffset);
   }
 }
 
@@ -112,7 +112,7 @@ TEST(ComputeGridCounts, RandomGridsMovedToLowCoordLimit_CountAsTheChecker) {
   constexpr std::int32_t kLowOffset = -static_cast<std::int32_t>((1U << 15U) - 1U);
   for (std::size_t grid = 0; grid < kCheapRandomGridCount; ++grid) {
     SCOPED_TRACE(grid);
-    ExpectMovedCounts(grid, kLowOffset);
+    CheckMovedCounts(grid, kLowOffset);
   }
 }
 

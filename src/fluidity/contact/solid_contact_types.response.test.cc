@@ -18,7 +18,7 @@ constexpr Vec3 kFixed = {.x = 0, .y = 0, .z = 0};  // m/s, the velocity of a sol
 constexpr Vec3 kSidewaysThreeIntoOne = {.x = 3, .y = 0, .z = -1};
 
 // Fails the calling test unless every axis of actual has the bits of the same axis of expected, so +0 and -0 differ.
-void ExpectSameBits(Vec3 actual, Vec3 expected) {
+void CheckSameBits(Vec3 actual, Vec3 expected) {
   EXPECT_EQ(ToBits(actual.x), ToBits(expected.x)) << "axis x: " << actual.x << " vs " << expected.x;
   EXPECT_EQ(ToBits(actual.y), ToBits(expected.y)) << "axis y: " << actual.y << " vs " << expected.y;
   EXPECT_EQ(ToBits(actual.z), ToBits(expected.z)) << "axis z: " << actual.z << " vs " << expected.z;
@@ -31,26 +31,26 @@ TEST(ComputeContactResponse, HeadOn_BecomesSolidVelocity) {
   // and gets solid_velocity by assignment.
   const Vec3 solid_velocity = {.x = 0, .y = 0, .z = 0.5};
   const Vec3 after = ComputeContactResponse({.x = 0, .y = 0, .z = -2}, solid_velocity, kUpwardNormal, 0.3);
-  ExpectSameBits(after, solid_velocity);
+  CheckSameBits(after, solid_velocity);
 }
 
 TEST(ComputeContactResponse, RisingSolidOvertakes_TakesItsNormalSpeed) {
   // The particle moves up at 0.5 m/s and the flat solid rises at 1 m/s: in the world the particle moves away from the
   // solid's surface, but measured from the solid it approaches at -0.5 m/s. Friction 0 keeps the sideways 2.
   const Vec3 after = ComputeContactResponse({.x = 2, .y = 0, .z = 0.5}, {.x = 0, .y = 0, .z = 1}, kUpwardNormal, 0);
-  ExpectSameBits(after, {.x = 2, .y = 0, .z = 1});
+  CheckSameBits(after, {.x = 2, .y = 0, .z = 1});
 }
 
 TEST(ComputeContactResponse, Leaving_IsUnchangedBitForBit) {
   const Vec3 velocity = {.x = 1, .y = 0, .z = 2};
-  ExpectSameBits(ComputeContactResponse(velocity, kFixed, kUpwardNormal, 0.5), velocity);
+  CheckSameBits(ComputeContactResponse(velocity, kFixed, kUpwardNormal, 0.5), velocity);
 }
 
 TEST(ComputeContactResponse, SidewaysOnly_IsUnchangedBitForBit) {
   // Approach speed exactly 0: the boundary of "does not approach". Treated as approaching, it would get to the stick
   // test with into_solid_speed -0, where 3 / -0 is -infinity, and stick at {0, 0, 0}.
   const Vec3 velocity = {.x = 3, .y = 0, .z = 0};
-  ExpectSameBits(ComputeContactResponse(velocity, kFixed, kUpwardNormal, 0.5), velocity);
+  CheckSameBits(ComputeContactResponse(velocity, kFixed, kUpwardNormal, 0.5), velocity);
 }
 
 TEST(ComputeContactResponse, OffAxisNormal_RemovesApproachLeftByRounding) {
@@ -61,7 +61,7 @@ TEST(ComputeContactResponse, OffAxisNormal_RemovesApproachLeftByRounding) {
   // is exactly 0. These values were computed step by step in IEEE doubles, rounding after each operation.
   const Vec3 normal = {.x = 0.6, .y = 0, .z = 0.8};
   const Vec3 after = ComputeContactResponse({.x = -0.7, .y = 0, .z = -0.6}, kFixed, normal, 0);
-  ExpectSameBits(after, {.x = -0x1.47ae147ae147cp-3, .y = 0, .z = 0x1.eb851eb851eb9p-4});
+  CheckSameBits(after, {.x = -0x1.47ae147ae147cp-3, .y = 0, .z = 0x1.eb851eb851eb9p-4});
   EXPECT_EQ(math::Dot(normal, after), 0);
 }
 
@@ -71,7 +71,7 @@ TEST(ComputeContactResponse, OffAxisNormal_RemovesLeavingRemainderToo) {
   // velocity ends exactly along the surface. Computed step by step in IEEE doubles.
   const Vec3 normal = {.x = 0.6, .y = 0, .z = 0.8};
   const Vec3 after = ComputeContactResponse({.x = -0.9, .y = -0.9, .z = -0.9}, kFixed, normal, 0);
-  ExpectSameBits(after, {.x = -0x1.26e978d4fdf3dp-3, .y = -0x1.ccccccccccccdp-1, .z = 0x1.ba5e353f7cedap-4});
+  CheckSameBits(after, {.x = -0x1.26e978d4fdf3dp-3, .y = -0x1.ccccccccccccdp-1, .z = 0x1.ba5e353f7cedap-4});
   EXPECT_EQ(math::Dot(normal, after), 0);
 }
 
@@ -86,7 +86,7 @@ TEST(ComputeContactResponse, OffAxisNormal_LeavesSmallNegativeApproach) {
   const Vec3 normal = {.x = 0.6, .y = 0, .z = 0.8};
   const Vec3 velocity = {.x = -2, .y = 0, .z = -2};
   const Vec3 after = ComputeContactResponse(velocity, kFixed, normal, 0);
-  ExpectSameBits(after, {.x = -0x1.47ae147ae147ap-2, .y = 0, .z = 0x1.eb851eb851eb6p-3});
+  CheckSameBits(after, {.x = -0x1.47ae147ae147ap-2, .y = 0, .z = 0x1.eb851eb851eb6p-3});
   const double approach_left = math::Dot(normal, after - kFixed);
   EXPECT_EQ(approach_left, -0x1p-55);
   EXPECT_LE(math::Abs(approach_left), ComputeLargestApproachLeftAfterResponse(velocity, kFixed));
@@ -99,7 +99,7 @@ TEST(ComputeContactResponse, TinyVelocity_LeavesApproachWithinBound) {
   const Vec3 normal = {.x = 0.6, .y = 0, .z = 0.8};
   const Vec3 velocity = {.x = -0x1p-829, .y = 0, .z = -0x1p-829};
   const Vec3 after = ComputeContactResponse(velocity, kFixed, normal, 0);
-  ExpectSameBits(after, {.x = -0x1.47ae147ae147ap-832, .y = 0, .z = 0x1.eb851eb851eb6p-833});
+  CheckSameBits(after, {.x = -0x1.47ae147ae147ap-832, .y = 0, .z = 0x1.eb851eb851eb6p-833});
   const double approach_left = math::Dot(normal, after - kFixed);
   EXPECT_EQ(approach_left, -0x1p-885);
   EXPECT_EQ(ComputeLargestApproachLeftAfterResponse(velocity, kFixed), 0x1p-874);
@@ -125,13 +125,13 @@ TEST(ComputeLargestApproachLeftAfterResponse, TinySpeeds_BoundedAtSmallestRelati
 TEST(ComputeContactResponse, Slip_ReducesSidewaysByFrictionTimesApproach) {
   // Friction 0.5 takes 0.5 * 1 off the sideways 3: fraction 0.5 * 1 / 3, rounded to 1/6; 3 - 3 * (1/6) rounds to 2.5.
   const Vec3 after = ComputeContactResponse(kSidewaysThreeIntoOne, kFixed, kUpwardNormal, 0.5);
-  ExpectSameBits(after, {.x = 2.5, .y = 0, .z = 0});
+  CheckSameBits(after, {.x = 2.5, .y = 0, .z = 0});
 }
 
 TEST(ComputeContactResponse, SlipFasterApproach_TakesMoreSideways) {
   // Friction 0.25 takes 0.25 * 2 = 0.5 off the sideways 3: fraction 0.25 * 2 / 3, rounded to 1/6, as above.
   const Vec3 after = ComputeContactResponse({.x = 3, .y = 0, .z = -2}, kFixed, kUpwardNormal, 0.25);
-  ExpectSameBits(after, {.x = 2.5, .y = 0, .z = 0});
+  CheckSameBits(after, {.x = 2.5, .y = 0, .z = 0});
 }
 
 TEST(ComputeContactResponse, SlipMovingSolid_BlendsTowardSolidVelocity) {
@@ -139,16 +139,16 @@ TEST(ComputeContactResponse, SlipMovingSolid_BlendsTowardSolidVelocity) {
   // solid, 2.25 in the world. velocity + fraction * (solid_velocity - velocity) gives 2.25 exactly; the form
   // (1 - fraction) * velocity + fraction * solid_velocity rounds to 2.2500000000000004.
   const Vec3 after = ComputeContactResponse(kSidewaysThreeIntoOne, {.x = 0.1, .y = 0, .z = 0}, kUpwardNormal, 0.75);
-  ExpectSameBits(after, {.x = 2.25, .y = 0, .z = 0});
+  CheckSameBits(after, {.x = 2.25, .y = 0, .z = 0});
 }
 
 TEST(ComputeContactResponse, StickAtThreshold_IsSolidVelocity) {
   // Sideways 3 over into-solid 1 is 3: friction 3 takes exactly all of it, and the limit counts as stick.
-  ExpectSameBits(ComputeContactResponse(kSidewaysThreeIntoOne, kFixed, kUpwardNormal, 3), kFixed);
+  CheckSameBits(ComputeContactResponse(kSidewaysThreeIntoOne, kFixed, kUpwardNormal, 3), kFixed);
 }
 
 TEST(ComputeContactResponse, StickAboveThreshold_IsSolidVelocity) {
-  ExpectSameBits(ComputeContactResponse(kSidewaysThreeIntoOne, kFixed, kUpwardNormal, 4), kFixed);
+  CheckSameBits(ComputeContactResponse(kSidewaysThreeIntoOne, kFixed, kUpwardNormal, 4), kFixed);
 }
 
 TEST(ComputeContactResponse, StickAtThresholdMovingSolid_IsSolidVelocityExactly) {
@@ -157,7 +157,7 @@ TEST(ComputeContactResponse, StickAtThresholdMovingSolid_IsSolidVelocityExactly)
   // fraction 1 would give 3.1 + (0.1 - 3.1) = 0.10000000000000009.
   const Vec3 solid_velocity = {.x = 0.1, .y = 0, .z = 0};
   const Vec3 after = ComputeContactResponse({.x = 3.1, .y = 0, .z = -1}, solid_velocity, kUpwardNormal, 3);
-  ExpectSameBits(after, solid_velocity);
+  CheckSameBits(after, solid_velocity);
 }
 
 TEST(ComputeContactResponse, StickAtDividedThreshold_IsSolidVelocity) {
@@ -165,13 +165,13 @@ TEST(ComputeContactResponse, StickAtDividedThreshold_IsSolidVelocity) {
   // sticks. This is why the test divides: written as friction * 0.7 >= 3, the product rounds to 2.9999999999999996,
   // below 3, and the particle would slip at 4.4e-16 m/s.
   const Vec3 after = ComputeContactResponse({.x = 3, .y = 0, .z = -0.7}, kFixed, kUpwardNormal, 0x1.1249249249249p+2);
-  ExpectSameBits(after, kFixed);
+  CheckSameBits(after, kFixed);
 }
 
 TEST(ComputeContactResponse, HugeFriction_Sticks) {
   // A friction near the largest double sticks: it is far above sideways 3 / into-solid 4 = 0.75.
   const Vec3 after = ComputeContactResponse({.x = 3, .y = 0, .z = -4}, kFixed, kUpwardNormal, 1e308);
-  ExpectSameBits(after, kFixed);
+  CheckSameBits(after, kFixed);
 }
 
 TEST(ComputeContactResponse, FrictionZero_KeepsNegativeZeroBitForBit) {
@@ -181,7 +181,7 @@ TEST(ComputeContactResponse, FrictionZero_KeepsNegativeZeroBitForBit) {
   // is -2^-55 (computed step by step in IEEE doubles), so it subtracts -2^-55 * -0 = +0 from y.
   const Vec3 normal = {.x = 0.6, .y = -0.0, .z = 0.8};
   const Vec3 after = ComputeContactResponse({.x = -0.8, .y = -0.0, .z = -0.3}, kFixed, normal, 0);
-  ExpectSameBits(after, {.x = -0x1.78d4fdf3b645bp-2, .y = -0.0, .z = 0x1.1a9fbe76c8b43p-2});
+  CheckSameBits(after, {.x = -0x1.78d4fdf3b645bp-2, .y = -0.0, .z = 0x1.1a9fbe76c8b43p-2});
 }
 
 TEST(ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit) {
@@ -189,7 +189,7 @@ TEST(ComputeContactResponse, FrictionZeroFastSolid_KeepsSidewaysBitForBit) {
   // and v - a n = {1e-9 + 0, 0 + 0, -1 + 1} = {1e-9, 0, +0}. Removed from the velocity measured from the solid
   // and added back, x would be (1e-9 - 1e8) + 1e8 = 0.
   const Vec3 after = ComputeContactResponse({.x = 1e-9, .y = 0, .z = -1}, {.x = 1e8, .y = 0, .z = 0}, kUpwardNormal, 0);
-  ExpectSameBits(after, {.x = 1e-9, .y = 0, .z = +0.0});
+  CheckSameBits(after, {.x = 1e-9, .y = 0, .z = +0.0});
 }
 
 // --- Generated cases ---

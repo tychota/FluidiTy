@@ -41,7 +41,7 @@ struct ExpectedEntry {
 constexpr std::uint64_t kOrderBytes = 4ULL * ((64 * 1000) + 1);  // 4 bytes for each of 64 x 1,000 + 1 items.
 constexpr std::uint64_t kOrderBuffersBytes = (6ULL * ((64 * 1000) + 1)) + 4096;  // {6, 4096} of the GPU.
 
-void ExpectEntry(const MemoryEstimateEntry& entry, const ExpectedEntry& expected) {
+void CheckEntry(const MemoryEstimateEntry& entry, const ExpectedEntry& expected) {
   EXPECT_EQ(entry.name, expected.name);
   const auto fields = std::tie(entry.counted_per, entry.bytes_each, entry.given_count, entry.where, entry.copies);
   const std::uint32_t one_copy = 1;
@@ -51,10 +51,10 @@ void ExpectEntry(const MemoryEstimateEntry& entry, const ExpectedEntry& expected
   EXPECT_EQ(entry.kept_for, KeptFor::kWholeRun) << entry.name;
 }
 
-void ExpectEntries(const std::vector<MemoryEstimateEntry>& estimate, const std::vector<ExpectedEntry>& expected) {
+void CheckEntries(const std::vector<MemoryEstimateEntry>& estimate, const std::vector<ExpectedEntry>& expected) {
   ASSERT_EQ(estimate.size(), expected.size());
   for (std::size_t index = 0; index < expected.size(); ++index) {
-    ExpectEntry(estimate[index], expected[index]);
+    CheckEntry(estimate[index], expected[index]);
   }
 }
 
@@ -108,13 +108,13 @@ std::uint64_t ComputeEntryPieceBytesSum(const std::vector<MemoryEstimateEntry>& 
   return sum_of_pieces;
 }
 
-void ExpectEveryEntryHasCopies(const std::vector<MemoryEstimateEntry>& estimate, std::uint32_t copies) {
+void CheckEveryEntryHasCopies(const std::vector<MemoryEstimateEntry>& estimate, std::uint32_t copies) {
   for (const MemoryEstimateEntry& entry : estimate) {
     EXPECT_EQ(entry.copies, copies) << entry.name;
   }
 }
 
-void ExpectSharedCopies(const std::vector<MemoryEstimateEntry>& estimate, std::size_t builder_buffers_entry_count) {
+void CheckSharedCopies(const std::vector<MemoryEstimateEntry>& estimate, std::size_t builder_buffers_entry_count) {
   std::size_t counted_once = 0;
   for (const MemoryEstimateEntry& entry : estimate) {
     const bool is_builder_buffers_entry = entry.name.starts_with("grid: builder buffers:");
@@ -124,11 +124,11 @@ void ExpectSharedCopies(const std::vector<MemoryEstimateEntry>& estimate, std::s
   EXPECT_EQ(counted_once, builder_buffers_entry_count);
 }
 
-void ExpectTwoGridsDoubleEveryByte(RunOn run_on) {
+void CheckTwoGridsDoubleEveryByte(RunOn run_on) {
   const std::vector<MemoryEstimateEntry> one_grid = BuildGridMemoryEstimate(run_on, 1, 1000);
   const std::vector<MemoryEstimateEntry> two_grids = BuildGridMemoryEstimate(run_on, 2, 1000);
   const MemoryCounts counts = BuildCounts(1000);
-  ExpectEveryEntryHasCopies(two_grids, 2);
+  CheckEveryEntryHasCopies(two_grids, 2);
   EXPECT_EQ(
       ComputeMemoryBytes(two_grids, counts, MemoryWhere::kRunOn),
       2 * ComputeMemoryBytes(one_grid, counts, MemoryWhere::kRunOn)
@@ -139,7 +139,7 @@ void ExpectTwoGridsDoubleEveryByte(RunOn run_on) {
   );
 }
 
-void ExpectNoCpuCopyName(RunOn run_on) {
+void CheckNoCpuCopyName(RunOn run_on) {
   for (const MemoryEstimateEntry& entry : BuildGridMemoryEstimate(run_on, 1, 1000)) {
     EXPECT_FALSE(entry.name.ends_with("(CPU copy)")) << entry.name;
   }
@@ -156,7 +156,7 @@ TEST(BuildGridMemoryEstimate, CpuGrid_IsNineHundredSeventyTwoBytesPerBlock) {
 }
 
 TEST(BuildGridMemoryEstimate, CpuGrid_ListsTheTablesThenTheBuilderBuffers) {
-  ExpectEntries(
+  CheckEntries(
       BuildGridMemoryEstimate(RunOn::kCpu, 1, 1000),
       {
           BuildExpectedPerItemEntry("grid: block ids", CountedPer::kCellBlock, 8, MemoryWhere::kRunOn),
@@ -176,7 +176,7 @@ TEST(BuildGridMemoryEstimate, CpuGrid_ListsTheTablesThenTheBuilderBuffers) {
 }
 
 TEST(BuildGridMemoryEstimate, GpuGrid_ListsTheTablesThenTheBuilderBuffersThenTheStatus) {
-  ExpectEntries(
+  CheckEntries(
       BuildGridMemoryEstimate(RunOn::kGpu, 1, 1000),
       {
           BuildExpectedPerItemEntry("grid: block ids", CountedPer::kCellBlock, 8, MemoryWhere::kRunOn),
@@ -220,26 +220,26 @@ TEST(BuildGridMemoryEstimate, GpuRun_KeepsNothingOnTheCpu) {
 }
 
 TEST(BuildGridMemoryEstimate, CpuRun_NoEntryIsACpuCopy) {
-  ExpectNoCpuCopyName(RunOn::kCpu);
+  CheckNoCpuCopyName(RunOn::kCpu);
 }
 
 TEST(BuildGridMemoryEstimate, GpuRun_NoEntryIsACpuCopy) {
-  ExpectNoCpuCopyName(RunOn::kGpu);
+  CheckNoCpuCopyName(RunOn::kGpu);
 }
 
 TEST(BuildGridMemoryEstimate, CpuTwoGrids_DoublesEveryEntry) {
-  ExpectTwoGridsDoubleEveryByte(RunOn::kCpu);
+  CheckTwoGridsDoubleEveryByte(RunOn::kCpu);
 }
 
 TEST(BuildGridMemoryEstimate, GpuTwoGrids_DoublesEveryEntry) {
-  ExpectTwoGridsDoubleEveryByte(RunOn::kGpu);
+  CheckTwoGridsDoubleEveryByte(RunOn::kGpu);
 }
 
 TEST(BuildGridMemoryEstimate, CpuSharedBuilderBuffers_CountedOnce) {
   const MemoryCounts counts = BuildCounts(1000);
   const std::vector<MemoryEstimateEntry> estimate =
       BuildGridMemoryEstimate(RunOn::kCpu, 2, 1000, BuilderBuffersSharing::kOneForAllGrids);
-  ExpectSharedCopies(estimate, 1);
+  CheckSharedCopies(estimate, 1);
   // Two grids of 456 bytes per block in the run's memory; in CPU memory two piece maps of 4 and one array of cell ids
   // of 512 bytes per block.
   EXPECT_EQ(ComputeMemoryBytes(estimate, counts, MemoryWhere::kRunOn), 2U * 456U * 1000U);
@@ -250,7 +250,7 @@ TEST(BuildGridMemoryEstimate, GpuSharedBuilderBuffers_CountedOnce) {
   const MemoryCounts counts = BuildCounts(1000);
   const std::vector<MemoryEstimateEntry> estimate =
       BuildGridMemoryEstimate(RunOn::kGpu, 2, 1000, BuilderBuffersSharing::kOneForAllGrids);
-  ExpectSharedCopies(estimate, 5);
+  CheckSharedCopies(estimate, 5);
   // Two grids of 460 bytes per block share one set of 1,920 bytes per block, with 4,096 + 6 + 8 once and two status
   // records.
   const std::uint64_t expected_bytes =
@@ -334,7 +334,7 @@ TEST(BuildGridMemoryEstimate, NoGrids_OnePerGridCountsNothing) {
   // Every entry has copies 0, so no entry counts a byte on either processor.
   for (const RunOn run_on : {RunOn::kCpu, RunOn::kGpu}) {
     const std::vector<MemoryEstimateEntry> estimate = BuildGridMemoryEstimate(run_on, 0, 10);
-    ExpectEveryEntryHasCopies(estimate, 0);
+    CheckEveryEntryHasCopies(estimate, 0);
     EXPECT_EQ(ComputeMemoryBytes(estimate, BuildCounts(10)), 0U);
   }
 }

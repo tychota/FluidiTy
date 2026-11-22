@@ -405,7 +405,7 @@ TEST(Buffer, PieceDestroyedAfterItsBlock_IsSafe) {
 #if !defined(NDEBUG)
 // What each death test runs. A braced statement inside EXPECT_DEATH cannot hold a comma outside parentheses, so
 // each one is its own function. A failed build returns early, and EXPECT_DEATH then fails for want of a stop.
-void DestroyBlockBeforeItsPiece() {
+void CheckDestroyBlockBeforeItsPiece() {
   std::optional<RunMemory> run_memory = BuildCpuRunMemory(1024);
   if (!run_memory.has_value()) {
     return;
@@ -441,7 +441,7 @@ TEST(RunMemoryDeathTest, DestroyedBeforeItsPieces_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(DestroyBlockBeforeItsPiece(), "no_piece_is_alive");
+  EXPECT_DEATH(CheckDestroyBlockBeforeItsPiece(), "no_piece_is_alive");
 #endif
 }
 

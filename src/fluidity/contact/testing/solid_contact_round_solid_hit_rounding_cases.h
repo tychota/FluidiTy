@@ -5,10 +5,11 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    kTolerance, kHitDistanceBound, kCellWidth, kLargestCoordinate, RoundScene, DoubleDouble, AddExactly,
-//          MultiplyExactly, Renormalize, Add, Negate, Subtract, ToDoubleDouble, Multiply, DoubleDoubleVec3, Dot,
-//          ComputeReferenceOwnPoint, ComputeRootMinusLength, ComputeReferenceDistance,
-//          ComputeSmallestReferenceDistance, ExpectWithinScale, FindSceneHit, kOppositeCorner, ComputeIsNearForm
+// Owns:    kTolerance, kHitDistanceBound, kCellWidth, kLargestCoordinate, RoundScene, DoubleDouble, ComputeExactSum,
+//          ComputeExactProduct, ComputeRenormalized, ComputeSum, ComputeNegation, ComputeDifference, ToDoubleDouble,
+//          ComputeProduct, DoubleDoubleVec3, ComputeDotProduct, ComputeReferenceOwnPoint, ComputeRootMinusLength,
+//          ComputeReferenceDistance, ComputeSmallestReferenceDistance, CheckWithinScale, FindSceneHit, kOppositeCorner,
+//          ComputeIsNearForm
 // Uses:    the headers it includes
 // Used by: src/fluidity/contact/solid_contact.round_solid_hit_rounding.test.cc and
 //          tests/contact/round_solid_hit_on_generated_sweeps.test.cc
@@ -76,7 +77,7 @@ struct DoubleDouble {
 };
 
 // Returns a + b exactly (Knuth's two-sum: six operations, no condition on the sizes).
-inline DoubleDouble AddExactly(double a, double b) {
+inline DoubleDouble ComputeExactSum(double a, double b) {
   const double sum = a + b;
   const double b_share = sum - a;
   const double a_share = sum - b_share;
@@ -85,31 +86,31 @@ inline DoubleDouble AddExactly(double a, double b) {
 }
 
 // Returns a * b exactly: the fused multiply-add rounds a * b - product once, and that difference is a double.
-inline DoubleDouble MultiplyExactly(double a, double b) {
+inline DoubleDouble ComputeExactProduct(double a, double b) {
   const double product = a * b;
   return {.high = product, .low = std::fma(a, b, -product)};
 }
 
 // Returns high + low exactly as a normalized pair, when |high| >= |low| (Dekker's fast two-sum).
-inline DoubleDouble Renormalize(double high, double low) {
+inline DoubleDouble ComputeRenormalized(double high, double low) {
   const double sum = high + low;
   return {.high = sum, .low = low - (sum - high)};
 }
 
 // Returns x + y, within 3 units of 2^-106 of the sum (the accurate double-word sum).
-inline DoubleDouble Add(DoubleDouble x, DoubleDouble y) {
-  const DoubleDouble high_sum = AddExactly(x.high, y.high);
-  const DoubleDouble low_sum = AddExactly(x.low, y.low);
-  const DoubleDouble first = Renormalize(high_sum.high, high_sum.low + low_sum.high);
-  return Renormalize(first.high, first.low + low_sum.low);
+inline DoubleDouble ComputeSum(DoubleDouble x, DoubleDouble y) {
+  const DoubleDouble high_sum = ComputeExactSum(x.high, y.high);
+  const DoubleDouble low_sum = ComputeExactSum(x.low, y.low);
+  const DoubleDouble first = ComputeRenormalized(high_sum.high, high_sum.low + low_sum.high);
+  return ComputeRenormalized(first.high, first.low + low_sum.low);
 }
 
-inline DoubleDouble Negate(DoubleDouble x) {
+inline DoubleDouble ComputeNegation(DoubleDouble x) {
   return {.high = -x.high, .low = -x.low};
 }
 
-inline DoubleDouble Subtract(DoubleDouble x, DoubleDouble y) {
-  return Add(x, Negate(y));
+inline DoubleDouble ComputeDifference(DoubleDouble x, DoubleDouble y) {
+  return ComputeSum(x, ComputeNegation(y));
 }
 
 inline DoubleDouble ToDoubleDouble(double value) {
@@ -117,10 +118,10 @@ inline DoubleDouble ToDoubleDouble(double value) {
 }
 
 // Returns x * y, within 7 units of 2^-106 of the product.
-inline DoubleDouble Multiply(DoubleDouble x, DoubleDouble y) {
-  const DoubleDouble high_product = MultiplyExactly(x.high, y.high);
+inline DoubleDouble ComputeProduct(DoubleDouble x, DoubleDouble y) {
+  const DoubleDouble high_product = ComputeExactProduct(x.high, y.high);
   const double cross_terms = std::fma(x.high, y.low, x.low * y.high);
-  return Renormalize(high_product.high, high_product.low + cross_terms);
+  return ComputeRenormalized(high_product.high, high_product.low + cross_terms);
 }
 
 // A vector of double-doubles.
@@ -130,8 +131,11 @@ struct DoubleDoubleVec3 {
   DoubleDouble z;
 };
 
-inline DoubleDouble Dot(DoubleDoubleVec3 left, DoubleDoubleVec3 right) {
-  return Add(Add(Multiply(left.x, right.x), Multiply(left.y, right.y)), Multiply(left.z, right.z));
+inline DoubleDouble ComputeDotProduct(DoubleDoubleVec3 left, DoubleDoubleVec3 right) {
+  return ComputeSum(
+      ComputeSum(ComputeProduct(left.x, right.x), ComputeProduct(left.y, right.y)),
+      ComputeProduct(left.z, right.z)
+  );
 }
 
 // The point of a path at elapsed seconds into the sweep, from the solid's origin at that moment, in the solid's own
@@ -145,12 +149,15 @@ inline DoubleDoubleVec3 ComputeReferenceOwnPoint(const RoundScene& scene, double
   const Vec3 linear_velocity = solid.motion.linear_velocity;
   // One world axis, each difference and the pose's product exact.
   const auto compute_world_axis = [&](Axis axis) {
-    const DoubleDouble offset = AddExactly(ComputeCoordinate(start, axis), -ComputeCoordinate(origin, axis));
+    const DoubleDouble offset = ComputeExactSum(ComputeCoordinate(start, axis), -ComputeCoordinate(origin, axis));
     const DoubleDouble relative_speed =
-        AddExactly(ComputeCoordinate(velocity, axis), -ComputeCoordinate(linear_velocity, axis));
+        ComputeExactSum(ComputeCoordinate(velocity, axis), -ComputeCoordinate(linear_velocity, axis));
     const DoubleDouble solid_travel_before =
-        MultiplyExactly(ComputeCoordinate(linear_velocity, axis), scene.start_elapsed);
-    return Subtract(Add(offset, Multiply(relative_speed, ToDoubleDouble(elapsed))), solid_travel_before);
+        ComputeExactProduct(ComputeCoordinate(linear_velocity, axis), scene.start_elapsed);
+    return ComputeDifference(
+        ComputeSum(offset, ComputeProduct(relative_speed, ToDoubleDouble(elapsed))),
+        solid_travel_before
+    );
   };
   const DoubleDoubleVec3 world = {
       .x = compute_world_axis(Axis::kX),
@@ -158,9 +165,12 @@ inline DoubleDoubleVec3 ComputeReferenceOwnPoint(const RoundScene& scene, double
       .z = compute_world_axis(Axis::kZ),
   };
   const Mat3 axes = solid.pose_at_step_start.axes;
-  // Own axis k is column k of the axes: p_k = Dot(column k, world).
+  // Own axis k is column k of the axes: p_k = ComputeDotProduct(column k, world).
   const auto compute_own_axis = [&world](double column_x, double column_y, double column_z) {
-    return Dot({.x = ToDoubleDouble(column_x), .y = ToDoubleDouble(column_y), .z = ToDoubleDouble(column_z)}, world);
+    return ComputeDotProduct(
+        {.x = ToDoubleDouble(column_x), .y = ToDoubleDouble(column_y), .z = ToDoubleDouble(column_z)},
+        world
+    );
   };
   return {
       .x = compute_own_axis(axes.xx, axes.yx, axes.zx),
@@ -172,7 +182,7 @@ inline DoubleDoubleVec3 ComputeReferenceOwnPoint(const RoundScene& scene, double
 // Returns sqrt(squared_length) - length as a double, for squared_length >= 0 and length > 0, without cancellation:
 // (squared_length - length^2) / (sqrt(squared_length) + length).
 inline double ComputeRootMinusLength(DoubleDouble squared_length, double length) {
-  const DoubleDouble excess = Subtract(squared_length, MultiplyExactly(length, length));
+  const DoubleDouble excess = ComputeDifference(squared_length, ComputeExactProduct(length, length));
   return excess.high / (std::sqrt(squared_length.high) + length);
 }
 
@@ -182,13 +192,13 @@ inline double ComputeReferenceDistance(const RoundScene& scene, double elapsed) 
   const Solid& solid = scene.solid;
   const DoubleDoubleVec3 own_point = ComputeReferenceOwnPoint(scene, elapsed);
   if (solid.shape == SolidShape::kSphere) {
-    return ComputeRootMinusLength(Dot(own_point, own_point), solid.half_size.x);
+    return ComputeRootMinusLength(ComputeDotProduct(own_point, own_point), solid.half_size.x);
   }
   const DoubleDouble axis_distance_squared =
-      Add(Multiply(own_point.x, own_point.x), Multiply(own_point.y, own_point.y));
+      ComputeSum(ComputeProduct(own_point.x, own_point.x), ComputeProduct(own_point.y, own_point.y));
   const double wall_distance = ComputeRootMinusLength(axis_distance_squared, solid.half_size.x);
-  const DoubleDouble height = own_point.z.high < 0 ? Negate(own_point.z) : own_point.z;
-  const double cap_distance = Subtract(height, ToDoubleDouble(solid.half_size.z)).high;
+  const DoubleDouble height = own_point.z.high < 0 ? ComputeNegation(own_point.z) : own_point.z;
+  const double cap_distance = ComputeDifference(height, ToDoubleDouble(solid.half_size.z)).high;
   if (wall_distance > 0 && cap_distance > 0) {
     return std::hypot(wall_distance, cap_distance);
   }
@@ -230,7 +240,7 @@ inline double ComputeSmallestReferenceDistance(const RoundScene& scene, double e
 // Fails the calling test unless the scene is within MoveParticle's premise at kTolerance: the solid's largest
 // coordinate over the step, its reach included, and the path's two ends within 2^40 tol of the origin; and unless
 // CheckContactTolerance accepts it, the solid at least 1024 tol thick.
-inline void ExpectWithinScale(const RoundScene& scene) {
+inline void CheckWithinScale(const RoundScene& scene) {
   const double step_duration = scene.start_elapsed + scene.duration;  // s
   const ContactScale scale = ComputeContactScale(&scene.solid, 1, step_duration, kCellWidth);
   EXPECT_LE(scale.largest_coordinate, kLargestCoordinate);

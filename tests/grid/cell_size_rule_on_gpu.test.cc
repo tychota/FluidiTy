@@ -222,7 +222,7 @@ bool ComputeIsTwoSizeTie(const GridTables& tables, Vec3 position) {
 }
 
 // Expects each GPU result to equal the CPU's result of the same position in `cpu_tables`.
-void ExpectSameNewCellResults(
+void CheckSameNewCellResults(
     const GridTables& cpu_tables,
     std::span<const Vec3> positions,
     SizeLevel smallest_size_level,
@@ -236,7 +236,7 @@ void ExpectSameNewCellResults(
 }
 
 // Runs one set of positions on the GPU, expects the CPU's results and writes the GPU results' digest under `name`.
-void ExpectGpuSetEqualsCpu(
+void CheckGpuSetEqualsCpu(
     const TestGrid& gpu_grid,
     const GridTables& cpu_tables,
     std::span<const Vec3> positions,
@@ -252,7 +252,7 @@ void ExpectGpuSetEqualsCpu(
       on_gpu.data()
   );
   ASSERT_EQ(status, RunOnCallStatus::kDone) << name;
-  ExpectSameNewCellResults(cpu_tables, positions, kSmallestSizeLevel, on_gpu);
+  CheckSameNewCellResults(cpu_tables, positions, kSmallestSizeLevel, on_gpu);
   WriteResultDigest(name, std::span<const NewCellResult>(on_gpu));
 }
 
@@ -282,25 +282,25 @@ TEST(ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu) {
     return ComputeIsTwoSizeTie(cpu_tables, position);
   }));
 
-  ExpectGpuSetEqualsCpu(
+  CheckGpuSetEqualsCpu(
       *gpu_grid,
       cpu_tables,
       BuildTestPositions(kPositionCount),
       "ComputeNewCellSizeLevel on the GPU, 10,000 positions: nearest places and size levels"
   );
-  ExpectGpuSetEqualsCpu(
+  CheckGpuSetEqualsCpu(
       *gpu_grid,
       cpu_tables,
       wide_positions,
       "ComputeNewCellSizeLevel on the GPU, 10,000 positions in -2..6 m: nearest places and size levels"
   );
-  ExpectGpuSetEqualsCpu(
+  CheckGpuSetEqualsCpu(
       *gpu_grid,
       cpu_tables,
       lattice_positions,
       "ComputeNewCellSizeLevel on the GPU, 10,000 lattice positions: nearest places and size levels"
   );
-  ExpectGpuSetEqualsCpu(
+  CheckGpuSetEqualsCpu(
       *gpu_grid,
       cpu_tables,
       BuildSpecialPositions(),

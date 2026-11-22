@@ -37,21 +37,21 @@ namespace {
 constexpr SolidMotion kNoMotion = SolidMotion();  // A solid that neither moves nor turns.
 
 // Returns x / y for y != 0, within a few units of 2^-106: a quotient of the highs, then one correction.
-DoubleDouble Divide(DoubleDouble x, DoubleDouble y) {
+DoubleDouble ComputeQuotient(DoubleDouble x, DoubleDouble y) {
   const double first_quotient = x.high / y.high;
-  const DoubleDouble remainder = Subtract(x, Multiply(y, ToDoubleDouble(first_quotient)));
+  const DoubleDouble remainder = ComputeDifference(x, ComputeProduct(y, ToDoubleDouble(first_quotient)));
   const double correction = remainder.high / y.high;
-  return Renormalize(first_quotient, correction);
+  return ComputeRenormalized(first_quotient, correction);
 }
 
 // Returns the square root of x >= 0, within a few units of 2^-106: the double root, corrected once by the remainder.
-DoubleDouble SquareRoot(DoubleDouble x) {
+DoubleDouble ComputeSquareRoot(DoubleDouble x) {
   if (x.high <= 0) {
     return {};
   }
   const double first_root = std::sqrt(x.high);
-  const DoubleDouble remainder = Subtract(x, MultiplyExactly(first_root, first_root));
-  return Renormalize(first_root, remainder.high / (2 * first_root));
+  const DoubleDouble remainder = ComputeDifference(x, ComputeExactProduct(first_root, first_root));
+  return ComputeRenormalized(first_root, remainder.high / (2 * first_root));
 }
 
 // s. The first time the path reaches the grown sphere, or the grown wall of a cylinder taken as unbounded, from the
@@ -63,21 +63,22 @@ double ComputeReferenceEntryTime(const RoundScene& scene) {
   DoubleDoubleVec3 own_start = ComputeReferenceOwnPoint(scene, 0);
   const DoubleDoubleVec3 at_one_second = ComputeReferenceOwnPoint(scene, 1);
   DoubleDoubleVec3 own_velocity = {
-      .x = Subtract(at_one_second.x, own_start.x),
-      .y = Subtract(at_one_second.y, own_start.y),
-      .z = Subtract(at_one_second.z, own_start.z),
+      .x = ComputeDifference(at_one_second.x, own_start.x),
+      .y = ComputeDifference(at_one_second.y, own_start.y),
+      .z = ComputeDifference(at_one_second.z, own_start.z),
   };
   if (solid.shape == SolidShape::kCylinder) {
     own_start.z = {};
     own_velocity.z = {};
   }
-  const DoubleDouble grown_radius = AddExactly(solid.half_size.x, kTolerance);
-  const DoubleDouble speed_squared = Dot(own_velocity, own_velocity);
-  const DoubleDouble start_dot_velocity = Dot(own_start, own_velocity);
-  const DoubleDouble excess = Subtract(Dot(own_start, own_start), Multiply(grown_radius, grown_radius));
+  const DoubleDouble grown_radius = ComputeExactSum(solid.half_size.x, kTolerance);
+  const DoubleDouble speed_squared = ComputeDotProduct(own_velocity, own_velocity);
+  const DoubleDouble start_dot_velocity = ComputeDotProduct(own_start, own_velocity);
+  const DoubleDouble excess =
+      ComputeDifference(ComputeDotProduct(own_start, own_start), ComputeProduct(grown_radius, grown_radius));
   const DoubleDouble discriminant =
-      Subtract(Multiply(start_dot_velocity, start_dot_velocity), Multiply(speed_squared, excess));
-  return Divide(excess, Add(Negate(start_dot_velocity), SquareRoot(discriminant))).high;
+      ComputeDifference(ComputeProduct(start_dot_velocity, start_dot_velocity), ComputeProduct(speed_squared, excess));
+  return ComputeQuotient(excess, ComputeSum(ComputeNegation(start_dot_velocity), ComputeSquareRoot(discriminant))).high;
 }
 
 // m. The center of the small round solids of the written scenes, near a corner of the scale.
@@ -112,8 +113,8 @@ RoundScene BuildCornerScene(const Solid& solid, Vec3 start, double across_in_tol
 
 // Fails the calling test unless the scene's path is hit where the reference distance is tol, within
 // kHitDistanceBound, and at the reference entry time within the time the distance takes to close by that bound.
-void ExpectHitAtGrownSurface(const RoundScene& scene, std::string_view name) {
-  ExpectWithinScale(scene);
+void CheckHitAtGrownSurface(const RoundScene& scene, std::string_view name) {
+  CheckWithinScale(scene);
   const double expected_elapsed = ComputeReferenceEntryTime(scene);
   // m/s. How fast the distance closes at the entry: over 16 tol of the path before it.
   const double time_step = 16 * kTolerance / math::Length(scene.velocity);  // s
@@ -135,7 +136,7 @@ TEST(FindFirstHit, FarSmallSphereHeadOn_IsHitAtGrownSurface) {
   // 2^30 tol^2 |w|^2, came out too large, and the hit stopped the particle 32,150 tol short of the sphere.
   const RoundScene scene = BuildCornerScene(BuildCornerSphere(1000), kOppositeCorner, 0);
   ASSERT_LT(ComputeSmallestReferenceDistance(scene, 1), 0);
-  ExpectHitAtGrownSurface(scene, "far sphere head on");
+  CheckHitAtGrownSurface(scene, "far sphere head on");
 }
 
 TEST(FindFirstHit, FarSmallSphereCrossedOffCenter_IsHitAtGrownSurface) {
@@ -143,14 +144,14 @@ TEST(FindFirstHit, FarSmallSphereCrossedOffCenter_IsHitAtGrownSurface) {
   // rounded below zero and the path went through the sphere with no hit.
   const RoundScene scene = BuildCornerScene(BuildCornerSphere(1500), kOppositeCorner, 187.5);
   ASSERT_LT(ComputeSmallestReferenceDistance(scene, 1), -1300 * kTolerance);
-  ExpectHitAtGrownSurface(scene, "far sphere crossed off center");
+  CheckHitAtGrownSurface(scene, "far sphere crossed off center");
 }
 
 TEST(FindFirstHit, FarSmallSpherePassedBeside_IsFree) {
   // A sphere of radius 1000 tol, the path 1250 tol from its center, 249 tol beyond the grown sphere. Before the fix
   // the discriminant rounded above zero and the path was hit 32,174 tol from the sphere.
   const RoundScene scene = BuildCornerScene(BuildCornerSphere(1000), kOppositeCorner, 1250);
-  ExpectWithinScale(scene);
+  CheckWithinScale(scene);
   ASSERT_GT(ComputeSmallestReferenceDistance(scene, 1), 249 * kTolerance);
   EXPECT_EQ(FindSceneHit(scene).solid_index, kNoSolid);
 }
@@ -160,7 +161,7 @@ TEST(FindFirstHit, FarSmallCylinderWallCrossed_IsHitAtGrownSurface) {
   // the wall's discriminant rounded below zero, the wall interval was empty and the path went through with no hit.
   const RoundScene scene = BuildCornerScene(BuildCornerCylinder(), kOppositeCorner, 300);
   ASSERT_LT(ComputeSmallestReferenceDistance(scene, 1), -690 * kTolerance);
-  ExpectHitAtGrownSurface(scene, "far cylinder wall crossed");
+  CheckHitAtGrownSurface(scene, "far cylinder wall crossed");
 }
 
 TEST(FindFirstHit, FarSmallCylinderWallPassedBeside_IsFree) {
@@ -168,15 +169,15 @@ TEST(FindFirstHit, FarSmallCylinderWallPassedBeside_IsFree) {
   // the fix the wall's discriminant rounded to about zero, and the path was hit where it passes nearest, 1000 tol from
   // the cylinder.
   const RoundScene scene = BuildCornerScene(BuildCornerCylinder(), {.x = 0.875, .y = 0.6875, .z = 0.9375}, 2000);
-  ExpectWithinScale(scene);
+  CheckWithinScale(scene);
   ASSERT_GT(ComputeSmallestReferenceDistance(scene, 1), 999 * kTolerance);
   EXPECT_EQ(FindSceneHit(scene).solid_index, kNoSolid);
 }
 
 // Moves a particle along the scene's path with MoveParticle at kTolerance and fails the calling test unless it hits
 // the solid once and ends at the rest gap, within kHitDistanceBound by the reference distance.
-void ExpectMoveStopsAtRestGap(const RoundScene& scene, std::string_view name) {
-  ExpectWithinScale(scene);
+void CheckMoveStopsAtRestGap(const RoundScene& scene, std::string_view name) {
+  CheckWithinScale(scene);
   SolidContactInputs inputs;
   inputs.start_position = scene.start;
   inputs.velocity.for_this_step = scene.velocity;
@@ -202,15 +203,15 @@ constexpr Vec3 kNearerStart = {.x = -0.45, .y = -0.325, .z = -0.575};
 TEST(MoveParticle, FarSmallSphereHeadOn_StopsAtRestGap) {
   // Before the fix the particle went through the sphere of radius 1000 tol and ended 2000 tol beyond it, with no hit
   // and no failure.
-  ExpectMoveStopsAtRestGap(BuildCornerScene(BuildCornerSphere(1000), kNearerStart, 0), "move into far sphere");
+  CheckMoveStopsAtRestGap(BuildCornerScene(BuildCornerSphere(1000), kNearerStart, 0), "move into far sphere");
 }
 
 TEST(MoveParticle, FarSmallCylinderWallHeadOn_StopsAtRestGap) {
   // Before the fix the move failed with kTooCloseToCall.
-  ExpectMoveStopsAtRestGap(BuildCornerScene(BuildCornerCylinder(), kNearerStart, 0), "move into far cylinder");
+  CheckMoveStopsAtRestGap(BuildCornerScene(BuildCornerCylinder(), kNearerStart, 0), "move into far cylinder");
 }
 
-// Where a scene of ExpectNoJumpAcrossTheSwitch starts: the solid and when its sweep of 1 s starts in the step.
+// Where a scene of CheckNoJumpAcrossTheSwitch starts: the solid and when its sweep of 1 s starts in the step.
 struct SwitchSceneSolid {
   Solid solid;
   double start_elapsed = 0;  // s
@@ -250,13 +251,13 @@ double ComputeHitDistanceError(const RoundScene& scene) {
 // Fails the calling test unless the starts of BuildSwitchScene, step from -16 to 16, take both forms of the
 // discriminant and are each hit within kHitDistanceBound of the grown surface, with no jump between neighbouring
 // starts above kHitDistanceBound.
-void ExpectNoJumpAcrossTheSwitch(const Solid& solid, double start_elapsed) {
+void CheckNoJumpAcrossTheSwitch(const Solid& solid, double start_elapsed) {
   const SwitchSceneSolid switch_solid = {.solid = solid, .start_elapsed = start_elapsed};
   int near_count = 0;
   double previous_error = ComputeHitDistanceError(BuildSwitchScene(switch_solid, -17));  // m
   for (int step = -16; step <= 16; ++step) {
     const RoundScene scene = BuildSwitchScene(switch_solid, step);
-    ExpectWithinScale(scene);
+    CheckWithinScale(scene);
     near_count += ComputeIsNearForm(scene) ? 1 : 0;
     const double error = ComputeHitDistanceError(scene);  // m
     EXPECT_LE(std::abs(error), kHitDistanceBound) << "step " << step;
@@ -276,8 +277,8 @@ TEST(FindFirstHit, StartsEitherSideOfTheDiscriminantSwitch_HitWithoutAJump) {
   const Vec3 axis = math::Normalized(Vec3{.x = 0.36, .y = 0.48, .z = 0.8});
   for (const SolidMotion& motion : {kNoMotion, moving}) {
     const double start_elapsed = motion.linear_velocity.x == 0 ? 0 : 0.75;  // s
-    ExpectNoJumpAcrossTheSwitch(ToSolid(Sphere{.center = center, .radius = radius}, motion, 1), start_elapsed);
-    ExpectNoJumpAcrossTheSwitch(
+    CheckNoJumpAcrossTheSwitch(ToSolid(Sphere{.center = center, .radius = radius}, motion, 1), start_elapsed);
+    CheckNoJumpAcrossTheSwitch(
         ToSolid(Cylinder{.center = center, .axis = axis, .radius = radius, .half_height = radius}, motion, 1),
         start_elapsed
     );
@@ -302,7 +303,7 @@ TEST(FindFirstHit, FarSmallMovingSphereLaterInTheStep_IsHitAtGrownSurface) {
       .duration = 0.25,
       .start_elapsed = start_elapsed,
   };
-  ExpectHitAtGrownSurface(scene, "far moving sphere later in the step");
+  CheckHitAtGrownSurface(scene, "far moving sphere later in the step");
 }
 
 }  // namespace

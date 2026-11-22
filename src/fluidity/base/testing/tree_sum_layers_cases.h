@@ -5,7 +5,7 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    ThreadOrder, PairFormula, RunOneLayer, RunLayers, RunLargestMagnitudeLayers, BuildComparedCounts
+// Owns:    ThreadOrder, PairFormula, ApplyOneLayer, ComputeLayers, ComputeLargestMagnitudeLayers, BuildComparedCounts
 // Uses:    the headers it includes
 // Used by: src/fluidity/base/tree_sum_layers.test.cc and tests/base/tree_sum_layers_in_every_thread_order.test.cc
 // Read:    the test files that include it
@@ -42,7 +42,7 @@ using PairFormula = double (*)(LayerSides, std::size_t);
 
 // One layer as its GPU launch covers it: pair_sums[pair] = formula(sides, side_count, pair) for every pair, visited by
 // thread block and thread in `order`, each thread over first_item, first_item + item_step, ...
-inline void RunOneLayer(
+inline void ApplyOneLayer(
     PairFormula formula,
     std::span<const double> sides,
     std::span<double> pair_sums,
@@ -65,7 +65,7 @@ inline void RunOneLayer(
 // ComputeLayerValueCount(values.size()) doubles, at ComputeLayerArrayOffset. values is not empty. It also checks
 // that every layer fits in the arrays and that the doubles a layer writes never overlap the doubles it reads, since
 // the threads of one layer run in no fixed order.
-inline double RunLayers(PairFormula formula, std::span<const double> values, ThreadOrder order) {
+inline double ComputeLayers(PairFormula formula, std::span<const double> values, ThreadOrder order) {
   const std::size_t count = values.size();
   std::vector<double> layer_values(ComputeLayerValueCount(count));
   std::span<const double> sides = values;
@@ -89,7 +89,7 @@ inline double RunLayers(PairFormula formula, std::span<const double> values, Thr
           << ") and reads [" << sides_offset << ", " << sides_offset + sides.size() << ")";
     }
     const std::span<double> written(layer_values.data() + offset, pair_count);
-    RunOneLayer(formula, sides, written, pair_count, order);
+    ApplyOneLayer(formula, sides, written, pair_count, order);
     sides = written;
     sides_are_in_the_layer_arrays = true;
     sides_offset = offset;
@@ -99,8 +99,8 @@ inline double RunLayers(PairFormula formula, std::span<const double> values, Thr
 }
 
 // The largest magnitude as the GPU computes it: the layers, then the magnitude of the top.
-inline double RunLargestMagnitudeLayers(std::span<const double> values, ThreadOrder order) {
-  return math::LargerMagnitude(RunLayers(ComputeLayerLargerMagnitude, values, order), 0.0);
+inline double ComputeLargestMagnitudeLayers(std::span<const double> values, ThreadOrder order) {
+  return math::LargerMagnitude(ComputeLayers(ComputeLayerLargerMagnitude, values, order), 0.0);
 }
 
 // The counts compared: every count up to 300, which covers every shape of a short tree, then large ones around

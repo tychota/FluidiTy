@@ -46,7 +46,7 @@ std::vector<CellId> ToSmallCells(CellId big_cell) {
   return small_cells;
 }
 
-void ExpectFailure(
+void CheckFailure(
     const std::expected<StaggeredGrid, GridFailure>& result,
     GridError error,
     CellId cell = CellId{0},
@@ -143,7 +143,7 @@ FacePieceKind ToExpectedKind(const GeometricFacePiece& face_piece) {
 }
 
 // The block tables of the fixture of OneSplitCell_GivesTheWorkedTables, in a room of 8 blocks.
-void ExpectOneSplitCellBlockTables(const GridTables& tables) {
+void CheckOneSplitCellBlockTables(const GridTables& tables) {
   const std::vector<std::uint64_t> block_ids = {tables.block_ids[0].value, tables.block_ids[1].value};
   EXPECT_EQ(block_ids, (std::vector<std::uint64_t>{ToCell(0, 0, 0, 0).value, ToCell(1, 0, 0, 0).value}));
   EXPECT_EQ(
@@ -157,7 +157,7 @@ void ExpectOneSplitCellBlockTables(const GridTables& tables) {
 }
 
 // The cell states of the fixture of OneSplitCell_GivesTheWorkedTables.
-void ExpectOneSplitCellStates(const GridTables& tables) {
+void CheckOneSplitCellStates(const GridTables& tables) {
   std::map<std::pair<int, CellState>, int> state_counts;
   for (int place = 0; place < 2 * kCellPlacesPerBlock; ++place) {
     ++state_counts[{place / kCellPlacesPerBlock, tables.cell_states[place]}];
@@ -217,8 +217,8 @@ TEST(BuildGrid, OneSplitCell_GivesTheWorkedTables) {
 
   const GridTables tables = grid.tables(RunOn::kCpu);
   ASSERT_EQ(tables.block_count, 2U);
-  ExpectOneSplitCellBlockTables(tables);
-  ExpectOneSplitCellStates(tables);
+  CheckOneSplitCellBlockTables(tables);
+  CheckOneSplitCellStates(tables);
 }
 
 TEST(BuildGrid, EmptyList_GivesEmptyGrid) {
@@ -237,7 +237,7 @@ TEST(BuildGrid, LoneSmallCell_IsSiblingCellMissing) {
   cells.erase(cells.begin() + 5);
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(3), {}), {.max_cell_blocks = 8});
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
-  ExpectFailure(
+  CheckFailure(
       BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers),
       GridError::kSiblingCellMissing,
       ToCell(1, 1, 0, 1),
@@ -251,7 +251,7 @@ TEST(BuildGrid, AboveBuffersRoom_IsTooManyCellBlocks) {
   const std::vector<CellId> cells = BuildCellsInBlocksOfTheirOwn(9);
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(3), {}), {.max_cell_blocks = 8});
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
-  ExpectFailure(BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers), GridError::kTooManyCellBlocks);
+  CheckFailure(BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers), GridError::kTooManyCellBlocks);
   EXPECT_EQ(buffers.max_cell_blocks(), 8U);
   const std::expected<StaggeredGrid, GridFailure> grid =
       BuildGrid(ToInputs(ToUnitFrame(3), std::span<const CellId>(cells).first(8)), buffers);
@@ -274,7 +274,7 @@ TEST(BuildGrid, MoreCellsThanPlaces_IsTooManyCellBlocks) {
   const std::vector<CellId> cells = BuildMoreCellsThanEightBlocksHold();
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(3), {}), {.max_cell_blocks = 8});
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
-  ExpectFailure(BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers), GridError::kTooManyCellBlocks);
+  CheckFailure(BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers), GridError::kTooManyCellBlocks);
 }
 
 // The same list with an id whose bit 63 is clear and one at kMaxCoord + 1: the length check still comes first, so the
@@ -285,7 +285,7 @@ TEST(BuildGrid, TooLongListWithBadId_IsTooManyCellBlocks) {
   cells.at(7) = ToCell(0, kMaxCoord + 1, 0, 0);
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(3), {}), {.max_cell_blocks = 8});
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
-  ExpectFailure(BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers), GridError::kTooManyCellBlocks);
+  CheckFailure(BuildGrid(ToInputs(ToUnitFrame(3), cells), buffers), GridError::kTooManyCellBlocks);
 }
 
 // The 64 size-level-1 cells of the 8 size-level-0 cells {0..1, 0..1, 0..1} fill the 64 cell places of one block, so
@@ -304,7 +304,7 @@ TEST(BuildGrid, SplitCellsOverflowThePlaces_IsTooManyCellBlocks) {
   ASSERT_EQ(cells.size(), 64U);
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(2), {}), {.max_cell_blocks = 1});
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
-  ExpectFailure(BuildGrid(ToInputs(ToUnitFrame(2), cells), buffers), GridError::kTooManyCellBlocks);
+  CheckFailure(BuildGrid(ToInputs(ToUnitFrame(2), cells), buffers), GridError::kTooManyCellBlocks);
 }
 
 // The 64 size-level-0 cells {0..3, 0..3, 0..3} fill the 64 cell places of one block, with no split cell: 64 cells, not
@@ -353,7 +353,7 @@ TEST(BuildGrid, OneCellAboveThePlaces_IsTooManyCellBlocks) {
   ASSERT_EQ(cells.size(), 64U);
   std::expected<TestGrid, GridFailure> owner = BuildTestGrid(ToInputs(ToUnitFrame(2), {}), {.max_cell_blocks = 1});
   GridBuffers buffers = TakeEmptyGridBuffers(owner);
-  ExpectFailure(BuildGrid(ToInputs(ToUnitFrame(2), cells), buffers), GridError::kTooManyCellBlocks);
+  CheckFailure(BuildGrid(ToInputs(ToUnitFrame(2), cells), buffers), GridError::kTooManyCellBlocks);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -398,7 +398,7 @@ std::vector<CellId> BuildCellsInFixedOrder(std::vector<CellId> cells) {
 
 // Expects grid i, built from its shuffled list and from its sorted list, to carry version i + 2 both times: the grids
 // and their tables.
-void ExpectRandomGridVersion(const StaggeredGrid& shuffled, const StaggeredGrid& sorted, std::size_t grid) {
+void CheckRandomGridVersion(const StaggeredGrid& shuffled, const StaggeredGrid& sorted, std::size_t grid) {
   EXPECT_EQ(shuffled.version().value, grid + 2);
   EXPECT_EQ(shuffled.tables(RunOn::kCpu).version.value, grid + 2);
   EXPECT_EQ(sorted.version().value, grid + 2);
@@ -418,7 +418,7 @@ TEST(BuildGrid, AnyInputOrder_GivesSameTables) {
     inputs.version = ToRandomGridVersion(grid);
     std::expected<StaggeredGrid, GridFailure> sorted = BuildGrid(inputs, sorted_buffers);
     ASSERT_TRUE(sorted.has_value());
-    ExpectRandomGridVersion(shuffled, *sorted, grid);
+    CheckRandomGridVersion(shuffled, *sorted, grid);
     EXPECT_TRUE(ComputeIsSameUsedTables(shuffled.tables(RunOn::kCpu), sorted->tables(RunOn::kCpu)));
     EXPECT_EQ(ToGridCountFields(shuffled.counts()), ToGridCountFields(sorted->counts()));
     sorted_buffers = TakeBuffers(std::move(*sorted));
@@ -500,7 +500,7 @@ FindFacePiecePlaces(const std::map<std::uint64_t, std::uint32_t>& block_indexes,
 
 // Expects the face piece kinds of one built grid to be the checker's: each checker face piece at exactly one place
 // (FindFacePiecePlaces), with the kind its cells give, and kNotAPiece at every other place.
-void ExpectCheckerFacePieceKinds(const GridTables& tables, const GeometricGrid& checker, FacePlacesFound& found) {
+void CheckCheckerFacePieceKinds(const GridTables& tables, const GeometricGrid& checker, FacePlacesFound& found) {
   const std::map<std::uint64_t, std::uint32_t> block_indexes = BuildBlockIndexes(tables);
   std::map<std::uint32_t, FacePieceKind> expected_kinds;
   for (const GeometricFacePiece& face_piece : checker.FacePieces()) {
@@ -532,7 +532,7 @@ TEST(BuildGrid, FacePieceKinds_MatchGeometricChecker) {
   FacePlacesFound found;
   ApplyToRandomGrids([&](std::size_t grid, const StaggeredGrid& built) {
     const GeometricGrid checker(frame, BuildShuffledRandomGrids().at(grid));
-    ExpectCheckerFacePieceKinds(built.tables(RunOn::kCpu), checker, found);
+    CheckCheckerFacePieceKinds(built.tables(RunOn::kCpu), checker, found);
     EXPECT_EQ(built.counts().face_pieces, checker.FacePieces().size());
   });
   // Both ways of keeping a face piece on a block's high side occur, so both were compared.
@@ -543,7 +543,7 @@ TEST(BuildGrid, FacePieceKinds_MatchGeometricChecker) {
 // Expects the cell states of one built grid from the list alone: kActive exactly at the listed cells, kSplit exactly
 // at the bigger cells that hold one (found by halving, the test's own arithmetic), kInsideBiggerCell exactly at the
 // places whose cell one size level bigger is active, kAbsent elsewhere.
-void ExpectCheckerCellStates(const GridTables& tables, const std::vector<CellId>& cells) {
+void CheckCheckerCellStates(const GridTables& tables, const std::vector<CellId>& cells) {
   std::set<PlaceKey> active_places;
   std::set<PlaceKey> split_places;
   for (const CellId cell : cells) {
@@ -585,7 +585,7 @@ void ExpectCheckerCellStates(const GridTables& tables, const std::vector<CellId>
 
 // Expects the kSplit places of one built grid to be exactly the cells the shared rules add: ComputeSplitCellCountToAdd
 // and ComputeBigCellAtSizeLevel over the list.
-void ExpectAddedSplitCellsMarkedSplit(const GridTables& tables, const std::vector<CellId>& cells) {
+void CheckAddedSplitCellsMarkedSplit(const GridTables& tables, const std::vector<CellId>& cells) {
   std::set<PlaceKey> added_places;
   for (const CellId cell : cells) {
     const int size_level = static_cast<int>(ToSizeLevel(cell));
@@ -605,14 +605,14 @@ void ExpectAddedSplitCellsMarkedSplit(const GridTables& tables, const std::vecto
 // All 200 random grids.
 TEST(BuildGrid, CellStates_MatchGeometricChecker) {
   ApplyToRandomGrids([](std::size_t grid, const StaggeredGrid& built) {
-    ExpectCheckerCellStates(built.tables(RunOn::kCpu), BuildShuffledRandomGrids().at(grid));
+    CheckCheckerCellStates(built.tables(RunOn::kCpu), BuildShuffledRandomGrids().at(grid));
   });
 }
 
 // All 200 random grids: the split cells of step 5 are exactly the places marked kSplit.
 TEST(BuildGrid, AddedSplitCells_AreThePlacesMarkedSplit) {
   ApplyToRandomGrids([](std::size_t grid, const StaggeredGrid& built) {
-    ExpectAddedSplitCellsMarkedSplit(built.tables(RunOn::kCpu), BuildShuffledRandomGrids().at(grid));
+    CheckAddedSplitCellsMarkedSplit(built.tables(RunOn::kCpu), BuildShuffledRandomGrids().at(grid));
   });
 }
 

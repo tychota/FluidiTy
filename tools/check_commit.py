@@ -1,6 +1,6 @@
 """Runs every check a commit must pass, in order, and prints one line per check.
 
-Usage: uv run python tools/check_commit.py [--speed quick|commit|full] [--only format|rules|cpu|tidy|paper|cuda]
+Usage: uv run python tools/check_commit.py [--speed quick|commit|full] [--only format|rules|message|cpu|tidy|paper|cuda]
        [--allow-dirty] [--no-cache]
 
 The gate checks what will be committed. Before any step it reads `git status`: an untracked file or an unstaged
@@ -20,6 +20,9 @@ The speed (--speed, default commit):
           but the gate stops at `FAIL tree` for one unless --allow-dirty is given, so it selects modules only then.
           With --only, quick runs the named step in full (every module's unit and functional tests, both presets).
   commit  before each commit: every step below, with the parallel tests and the tidy cache.
+The `message` step checks the message of HEAD (tools/check_message.py). It runs when the working tree has no change,
+that is, when the gate checks a commit already made; otherwise it prints `NOT RUN message (uncommitted changes)`.
+Quick leaves it out.
   full    before a push, and in CI: commit with --no-cache, so tidy checks every file.
 --only <step> runs that step at any speed; a step that quick leaves out runs in full when named.
 
@@ -88,7 +91,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STEP_NAMES = ("format", "rules", "cpu", "tidy", "paper", "cuda")
+STEP_NAMES = ("format", "rules", "message", "cpu", "tidy", "paper", "cuda")
 
 # The CUDA image, pinned by digest: tag 13.4.1-devel-ubuntu24.04, nvcc 13.4.59. It exists for linux/arm64 and
 # linux/amd64; container_platform() picks the one that runs without emulation here.
@@ -209,6 +212,8 @@ class Check:
     title: str
     run: Callable[[], Outcome]
     in_quick: bool = True
+    # Answers why the line cannot run now, as `NOT RUN <title> (<reason>)`, or None when it can.
+    unavailable_reason: Callable[[], str | None] = lambda: None
 
 
 def container_platform() -> str:
@@ -427,7 +432,7 @@ class Gate:
             [
                 sys.executable,
                 str(tools / "check_rules.py"),
-                *[str(self.repo_root / folder) for folder in SOURCE_FOLDERS],
+                *[str(self.repo_root / folder) for folder in (*SOURCE_FOLDERS, PAPER_DIRECTORY)],
                 "--notes-on-staged-lines",
                 "--repository",
                 str(self.repo_root),
@@ -445,6 +450,17 @@ class Gate:
             ],
         )
         return Outcome(outcome.passed, outcome.reason, notes)
+
+    def check_message(self) -> Outcome:
+        """Checks the message of HEAD with tools/check_message.py."""
+        return self.command("message", [sys.executable, str(self.repo_root / "tools" / "check_message.py"), "HEAD"])
+
+    def message_unavailable_reason(self) -> str | None:
+        """The message of HEAD is checked when the working tree has no change: then the gate is checking a commit."""
+        changed = self.changed_paths()
+        if changed is None:
+            return "git could not read the changes"
+        return "uncommitted changes" if changed else None
 
     def changed_paths(self) -> list[str] | None:
         """The files that differ from HEAD, staged or not, and the untracked files; None when git fails.
@@ -731,6 +747,13 @@ class Gate:
         return [
             Check("format", "format", self.check_format),
             Check("rules", "rules", self.check_rules),
+            Check(
+                "message",
+                "message",
+                self.check_message,
+                in_quick=False,
+                unavailable_reason=self.message_unavailable_reason,
+            ),
             Check("cpu", f"cpu {debug_preset}", check_debug_preset),
             Check("cpu", f"cpu {release_preset}", lambda: self.check_cpu_preset(release_preset), in_quick=False),
             Check("tidy", "tidy", self.check_tidy),
@@ -790,6 +813,10 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
             continue
         if failed:
             print(f"NOT RUN {check.title}", flush=True)
+            continue
+        reason = check.unavailable_reason()
+        if reason:
+            print(f"NOT RUN {check.title} ({reason})", flush=True)
             continue
         outcome = check.run()
         for note in outcome.notes:

@@ -7,7 +7,7 @@
 //
 // Owns:    ToListedPlaces, ComputeHasNoIndexPastCount, ComputeIsStrictlyAscending, ToCheckerTouchingPlaces,
 //          ToCheckerFacePiecesByCell, ToAscendingFacePlaces, CellSurfaceSums, ComputeCellSurfaceSums,
-//          ActiveCellReaderMistakes, LargestCounts, FindActiveCellReaderMistakes, ExpectNoMistake
+//          ActiveCellReaderMistakes, LargestCounts, FindActiveCellReaderMistakes, CheckNoMistake
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/touching_cells.test.cc and tests/grid/touching_cells_on_random_grids.test.cc
 // Read:    the test files that include it
@@ -209,7 +209,7 @@ inline ActiveCellReaderMistakes FindActiveCellReaderMistakes(
 }
 
 // Expects no cell of `mistake_count`, under a trace that names the property.
-inline void ExpectNoMistake(const char* property, std::size_t mistake_count) {
+inline void CheckNoMistake(const char* property, std::size_t mistake_count) {
   SCOPED_TRACE(property);
   EXPECT_EQ(mistake_count, 0U);
 }

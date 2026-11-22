@@ -169,7 +169,7 @@ TEST(MoveParticle, SlidingFloorUnderSide_SqueezeCapReadsTheFloorsSpeedByItsLengt
 // --- A scene turned rigidly by an exact turn ---
 
 // Turns a whole scene by turn about the origin: the start, both velocities, and every solid's origin, axes and motion.
-MoveParticleCase TurnScene(const MoveParticleCase& scene, Mat3 turn) {
+MoveParticleCase BuildTurnedScene(const MoveParticleCase& scene, Mat3 turn) {
   MoveParticleCase turned = scene;
   SolidContactInputs& inputs = turned.inputs;
   inputs.start_position = turn * scene.inputs.start_position;
@@ -360,7 +360,7 @@ bool ComputeIsWithinShare(Vec3 first, Vec3 second, double share, double scale) {
 
 // Fails the calling test unless the turned move's result is the first result turned: every discrete field equal (the
 // reacting solid as TurnComparison says), and every floating value within the comparison's share.
-void ExpectResultTurned(
+void CheckResultTurned(
     const SolidContactResult& result,
     const SolidContactResult& turned,
     Mat3 turn,
@@ -404,14 +404,14 @@ struct TurnCounts {
 };
 
 // Moves a scene and the same scene turned, and fails the calling test unless the turned move is the first move turned:
-// the same error, close call and solid named, and on success the result turned (ExpectResultTurned).
-void ExpectTurnedMoveIsMoveTurned(
+// the same error, close call and solid named, and on success the result turned (CheckResultTurned).
+void CheckTurnedMoveIsMoveTurned(
     const MoveParticleCase& scene,
     Mat3 turn,
     std::string_view turn_name,
     TurnCounts& counts
 ) {
-  const MoveParticleCase turned_scene = TurnScene(scene, turn);
+  const MoveParticleCase turned_scene = BuildTurnedScene(scene, turn);
   SolidContactResult result;
   ContactFailure failure;
   const ContactError error = MoveParticle(ToSolidContactInputs(scene), &result, &failure);
@@ -435,21 +435,21 @@ void ExpectTurnedMoveIsMoveTurned(
   const bool are_both_successes = error == ContactError::kNone && turned_error == ContactError::kNone;
   if (are_both_successes) {
     ++counts.successes;
-    ExpectResultTurned(result, turned_result, turn, comparison, label);
+    CheckResultTurned(result, turned_result, turn, comparison, label);
   }
 }
 
 // Moves every scene of BuildMoveParticleCases without a domain box (its closed sides are named by world axis, so a turn
 // would also have to rename them) and the same scene turned, and fails the calling test on any difference
-// (ExpectTurnedMoveIsMoveTurned).
-void ExpectEveryTurnedSceneMovesTurned(Mat3 turn, std::string_view turn_name) {
+// (CheckTurnedMoveIsMoveTurned).
+void CheckEveryTurnedSceneMovesTurned(Mat3 turn, std::string_view turn_name) {
   TurnCounts counts;
   for (const MoveParticleCase& scene : BuildMoveParticleCases()) {
     const bool has_domain_box = std::ranges::any_of(scene.solids, [](const Solid& solid) {
       return solid.shape == SolidShape::kDomainBox;
     });
     if (!has_domain_box) {
-      ExpectTurnedMoveIsMoveTurned(scene, turn, turn_name, counts);
+      CheckTurnedMoveIsMoveTurned(scene, turn, turn_name, counts);
     }
   }
   std::cout << turn_name << ": scenes " << counts.scenes << ", successes " << counts.successes << ", bit for bit "
@@ -471,10 +471,10 @@ TEST(MoveParticle, SceneTurnedExactly_ResultTurnsWithIt) {
   const Mat3 quarter_turn_about_y = {.xx = 0, .xy = 0, .xz = 1, .yx = 0, .yy = 1, .yz = 0, .zx = -1, .zy = 0, .zz = 0};
   const Mat3 quarter_turn_about_z = {.xx = 0, .xy = -1, .xz = 0, .yx = 1, .yy = 0, .yz = 0, .zx = 0, .zy = 0, .zz = 1};
   const Mat3 axes_one_step_round = {.xx = 0, .xy = 0, .xz = 1, .yx = 1, .yy = 0, .yz = 0, .zx = 0, .zy = 1, .zz = 0};
-  ExpectEveryTurnedSceneMovesTurned(quarter_turn_about_x, "quarter turn about x");
-  ExpectEveryTurnedSceneMovesTurned(quarter_turn_about_y, "quarter turn about y");
-  ExpectEveryTurnedSceneMovesTurned(quarter_turn_about_z, "quarter turn about z");
-  ExpectEveryTurnedSceneMovesTurned(axes_one_step_round, "x to y to z to x");
+  CheckEveryTurnedSceneMovesTurned(quarter_turn_about_x, "quarter turn about x");
+  CheckEveryTurnedSceneMovesTurned(quarter_turn_about_y, "quarter turn about y");
+  CheckEveryTurnedSceneMovesTurned(quarter_turn_about_z, "quarter turn about z");
+  CheckEveryTurnedSceneMovesTurned(axes_one_step_round, "x to y to z to x");
 }
 
 }  // namespace

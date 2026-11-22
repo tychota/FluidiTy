@@ -68,7 +68,7 @@ CornerPlaceIndex FindCornerPlaceByFullSearch(const GridTables& tables, LatticePo
 }
 
 // Counts the corners of active cells whose place differs from that of the full search.
-int CountCornersNotTheFullSearchs(const GridTables& tables, const std::vector<CellId>& cells) {
+int ComputeCountCornersNotTheFullSearchs(const GridTables& tables, const std::vector<CellId>& cells) {
   int mistake_count = 0;
   for (const CellId cell_id : cells) {
     const CellCorners cell_corners = FindCornerPlaces(tables, FindCellPlace(tables, cell_id));
@@ -106,7 +106,7 @@ TEST(FindCornerPlaces, ManySizeLevels_BoundedSearchMatchesFullSearch) {
     const std::expected<TestGrid, GridFailure> test_grid =
         BuildTestGrid(ToInputs(ToUnitFrame(named_grid.size_level_count), named_grid.cells));
     ASSERT_TRUE(test_grid.has_value()) << named_grid.name;
-    EXPECT_EQ(CountCornersNotTheFullSearchs(ToTablesOf(test_grid), named_grid.cells), 0) << named_grid.name;
+    EXPECT_EQ(ComputeCountCornersNotTheFullSearchs(ToTablesOf(test_grid), named_grid.cells), 0) << named_grid.name;
   }
 }
 

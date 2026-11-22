@@ -5,7 +5,7 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    SideOfCell, ToUnitFrame, ToCell, ToInputs, AppendSmallCells, ToTablesOf, EdgeValues, ToEdgeValues,
+// Owns:    SideOfCell, ToUnitFrame, ToCell, ToInputs, ApplyAppendSmallCells, ToTablesOf, EdgeValues, ToEdgeValues,
 //          ComputeIsSameVec3, UnitPoint, ToWidthInUnits, ToCellCornerUnits, ToUnitPosition, ToCellCornerOfFaceCorner,
 //          ToMovedCoord, ToCoordsAroundEdge, kAxisPairs, BuildSplitCellAcrossEdge, BuildBigCellOnLowSide, PlaceChecker,
 //          CornerAndEdgeMistakes, UnitPointHash, GridUnderCheck, ApplyCellCornerChecks, ApplyFaceCornerChecks,
@@ -65,7 +65,7 @@ inline GridInputs ToInputs(GridFrame frame, std::span<const CellId> active_cells
 }
 
 // Appends the 8 small cells of `big_cell`, in cell eighth order.
-inline void AppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+inline void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -185,7 +185,7 @@ constexpr std::array<std::array<Axis, 2>, 6> kAxisPairs = {
 // across both axes of the edge x = y = 1 m of {0,0,0} is split.
 inline std::vector<CellId> BuildSplitCellAcrossEdge() {
   std::vector<CellId> cells = {ToCell(0, 0, 0, 0), ToCell(0, 1, 0, 0), ToCell(0, 0, 1, 0)};
-  AppendSmallCells(ToCell(0, 1, 1, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, 1, 1, 0), cells);
   return cells;
 }
 
@@ -193,7 +193,7 @@ inline std::vector<CellId> BuildSplitCellAcrossEdge() {
 // lie in no size-level-1 block and inside the big cell.
 inline std::vector<CellId> BuildBigCellOnLowSide() {
   std::vector<CellId> cells = {ToCell(0, -1, 0, 0)};
-  AppendSmallCells(ToCell(0, 0, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), cells);
   return cells;
 }
 
@@ -473,7 +473,7 @@ inline std::vector<CellId> BuildCellsDownToSmallestAtOrigin() {
       cells.push_back(ComputeSmallCell(ToCell(size_level - 1, 0, 0, 0), cell_eighth));
     }
   }
-  AppendSmallCells(ToCell(kMaxSizeLevels - 2, 0, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(kMaxSizeLevels - 2, 0, 0, 0), cells);
   return cells;
 }
 
@@ -485,7 +485,7 @@ inline std::vector<CellId> BuildCornerStoredTwoSizeLevelsDown() {
   for (int cell_eighth = 0; cell_eighth < 7; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth));
   }
-  AppendSmallCells(ToCell(1, 3, 1, 1), cells);
+  ApplyAppendSmallCells(ToCell(1, 3, 1, 1), cells);
   return cells;
 }
 
@@ -494,7 +494,7 @@ inline std::vector<CellId> BuildCornerStoredTwoSizeLevelsDown() {
 inline std::vector<NamedGrid> BuildGridsAroundOrigin() {
   std::vector<NamedGrid> grids;
   std::vector<CellId> negative_two_size_cells = {ToCell(0, -1, -1, -1)};
-  AppendSmallCells(ToCell(0, 0, -1, -1), negative_two_size_cells);
+  ApplyAppendSmallCells(ToCell(0, 0, -1, -1), negative_two_size_cells);
   grids.push_back({.name = "two-size fixture at -1", .size_level_count = 2, .cells = negative_two_size_cells});
   // The 8 size-level-0 cells around the point (0, 0, 0), one per block, two of them split: 8 blocks of each size
   // level hold the point.
@@ -504,7 +504,7 @@ inline std::vector<NamedGrid> BuildGridsAroundOrigin() {
       for (std::int32_t x = -1; x <= 0; ++x) {
         const bool is_split = (x == 0 && y == 0 && z == 0) || (x == -1 && y == 0 && z == -1);
         if (is_split) {
-          AppendSmallCells(ToCell(0, x, y, z), block_corner_cells);
+          ApplyAppendSmallCells(ToCell(0, x, y, z), block_corner_cells);
         } else {
           block_corner_cells.push_back(ToCell(0, x, y, z));
         }

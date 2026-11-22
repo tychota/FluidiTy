@@ -69,10 +69,7 @@ std::tuple<bool, GridError, std::uint64_t, std::uint64_t, std::uint64_t> ToResul
   return {result.has_value(), failure.error, failure.cell.value, failure.other_cell.value, failure.magnitude};
 }
 
-void ExpectSameResult(
-    const std::expected<void, GridFailure>& actual,
-    const std::expected<void, GridFailure>& expected
-) {
+void CheckSameResult(const std::expected<void, GridFailure>& actual, const std::expected<void, GridFailure>& expected) {
   EXPECT_EQ(ToResultFields(actual), ToResultFields(expected));
 }
 
@@ -90,12 +87,12 @@ TEST(CheckSizeStepRule, IntoBuffers_EqualsSpanForm) {
   for (const std::vector<CellId>& cells : BuildEveryTwoSizeLevelsApartList()) {
     const std::expected<void, GridFailure> span_result = CheckSizeStepRule(ToUnitFrame(3), cells);
     ASSERT_FALSE(span_result.has_value());
-    ExpectSameResult(CheckSizeStepRule(ToInputs(ToUnitFrame(3), cells), *grid_buffers->buffers), span_result);
+    CheckSameResult(CheckSizeStepRule(ToInputs(ToUnitFrame(3), cells), *grid_buffers->buffers), span_result);
   }
   for (const std::vector<CellId>& cells : BuildShuffledRandomGrids()) {
     const std::expected<void, GridFailure> span_result = CheckSizeStepRule(ToUnitFrame(4), cells);
     EXPECT_TRUE(span_result.has_value());
-    ExpectSameResult(CheckSizeStepRule(ToInputs(ToUnitFrame(4), cells), *grid_buffers->buffers), span_result);
+    CheckSameResult(CheckSizeStepRule(ToInputs(ToUnitFrame(4), cells), *grid_buffers->buffers), span_result);
   }
 }
 
@@ -148,7 +145,7 @@ bool ComputeIsAwayFromBigCellCorner(CellId cell) {
 
 // Checks `cells` and the same cells in a second order with `check`, and expects the failure each time.
 template <typename CheckFunction>
-void ExpectFailureInAnyOrder(
+void CheckFailureInAnyOrder(
     std::vector<CellId> cells,
     std::uint64_t seed,
     CheckFunction check,
@@ -157,9 +154,9 @@ void ExpectFailureInAnyOrder(
     CellId other_cell
 ) {
   SCOPED_TRACE(seed);
-  ExpectFailure(check(cells), error, cell, other_cell);
+  CheckFailure(check(cells), error, cell, other_cell);
   ApplyFixedShuffle(cells, seed + 2000);
-  ExpectFailure(check(cells), error, cell, other_cell);
+  CheckFailure(check(cells), error, cell, other_cell);
 }
 
 // A cell listed twice is an overlap of that cell with itself, and the only failure of the list.
@@ -168,7 +165,7 @@ TEST(CheckSizeStepRule, RandomGridWithRepeatedCell_IsCellsOverlapOfThatCell) {
     std::vector<CellId> cells = BuildShuffledRandomGrids().at(seed - 1);
     const CellId repeated_cell = cells.at(seed % cells.size());
     cells.push_back(repeated_cell);
-    ExpectFailureInAnyOrder(
+    CheckFailureInAnyOrder(
         cells,
         seed,
         [](const std::vector<CellId>& list) {
@@ -200,7 +197,7 @@ TEST(CheckSizeStepRule, RandomGridWithBigCellAdded_IsCellsOverlapAtItsLowCorner)
     ASSERT_NE(at_big_corner, cells.end()) << seed;
     const CellId expected_cell = *at_big_corner;
     cells.push_back(big_cell);
-    ExpectFailureInAnyOrder(
+    CheckFailureInAnyOrder(
         cells,
         seed,
         [](const std::vector<CellId>& list) {
@@ -309,7 +306,7 @@ TEST(CheckSizeStepRule, RandomGridWithCellSplitBesideBiggerCell_IsSizeStepRuleBr
       ADD_FAILURE() << "no break found for seed " << seed;
       continue;
     }
-    ExpectFailureInAnyOrder(
+    CheckFailureInAnyOrder(
         cells,
         seed,
         [](const std::vector<CellId>& list) {
@@ -347,7 +344,7 @@ bool ComputeIsAtBigCellCorner(CellId cell) {
 
 // Leaves out of a random grid one cell of size level 1 or more for which `is_wanted` holds, and expects the failure
 // ToExpectedMissingCells gives, in two input orders. Returns the cell left out, or none when the grid has none.
-std::optional<CellId> ExpectLeftOutCellNamed(std::uint64_t seed, bool (*is_wanted)(CellId), GridBuffers& buffers) {
+std::optional<CellId> CheckLeftOutCellNamed(std::uint64_t seed, bool (*is_wanted)(CellId), GridBuffers& buffers) {
   std::vector<CellId> cells = BuildShuffledRandomGrids().at(seed - 1);
   const std::optional<std::size_t> left_out_index = FindCellFrom(cells, seed % cells.size(), [is_wanted](CellId cell) {
     return ComputeHasBigCell(cell) && is_wanted(cell);
@@ -358,7 +355,7 @@ std::optional<CellId> ExpectLeftOutCellNamed(std::uint64_t seed, bool (*is_wante
   const CellId left_out = cells.at(*left_out_index);
   cells.erase(cells.begin() + static_cast<std::ptrdiff_t>(*left_out_index));
   const auto [expected_cell, expected_other_cell] = ToExpectedMissingCells(left_out);
-  ExpectFailureInAnyOrder(
+  CheckFailureInAnyOrder(
       cells,
       seed,
       [&buffers](const std::vector<CellId>& list) {
@@ -382,10 +379,10 @@ TEST(BuildSortedCellList, RandomGridMissingOneCell_NamesTheCellByTheEighthZeroRu
   std::array<int, 4> counts = {};
   for (std::uint64_t seed = 1; seed <= kRandomGridCount; ++seed) {
     const std::optional<CellId> away_left_out =
-        ExpectLeftOutCellNamed(seed, ComputeIsAwayFromBigCellCorner, *grid_buffers->buffers);
+        CheckLeftOutCellNamed(seed, ComputeIsAwayFromBigCellCorner, *grid_buffers->buffers);
     counts.at(0) += static_cast<int>(away_left_out.has_value());
     const std::optional<CellId> corner_left_out =
-        ExpectLeftOutCellNamed(seed, ComputeIsAtBigCellCorner, *grid_buffers->buffers);
+        CheckLeftOutCellNamed(seed, ComputeIsAtBigCellCorner, *grid_buffers->buffers);
     if (corner_left_out.has_value()) {
       ++counts.at(1);
       const bool is_named_itself = ToExpectedMissingCells(*corner_left_out).first.value == corner_left_out->value;

@@ -61,7 +61,7 @@ bool ComputeIsSeamRunRight(const MoveParticleCase& row_scene, const SeamRow& row
     scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
     scene.inputs.step_duration = step_duration;
     scene.inputs.friction = row.friction;
-    const MoveParticleCall call = RunMove(scene);
+    const MoveParticleCall call = ComputeMove(scene);
     if (call.error != ContactError::kNone) {
       return false;
     }
@@ -84,7 +84,7 @@ bool ComputeIsSeamRunRight(const MoveParticleCase& row_scene, const SeamRow& row
 
 // Runs the 18 rows of runs (three steps, three pushes and frictions) for one kind of seam, 400 offsets 4 + s (k + 0.5)
 // / 400 tol before the seam each, and fails the calling test unless every run is right.
-void ExpectSeamRowsKeepTheSpeed(SeamRow row) {
+void CheckSeamRowsKeepTheSpeed(SeamRow row) {
   // The scene is built once: FindMoveParticleCase builds every scene, about 40 times the cost of a move.
   const MoveParticleCase row_scene = FindMoveParticleCase(row.case_name);
   constexpr std::array<double, 3> kStepShares = {0.3, 0.7, 3};
@@ -111,14 +111,14 @@ TEST(MoveParticle, SeamsOverManySteps_Cylinders) {
   // 0.7 and 3 tol, unpressed or pressed at 0.16 m/s into the surface slid on, with friction 0 or 0.3: every step keeps
   // the speed (method paper <sec-touching-rule>). Without that rule, 400, 205 or 224 and 48 runs of 400 lost speed at s
   // = 0.3, 0.7 and 3: some step started within tol + tol / 16 of the next drum's rim and was answered on it.
-  ExpectSeamRowsKeepTheSpeed({
+  CheckSeamRowsKeepTheSpeed({
       .case_name = "StackedDrums",
       .seam_point = {.x = 0.5 + kTolerance, .y = 0, .z = 1},
       .back_from_seam = kUnitZ,
       .along_path = -kUnitZ,
       .push_direction = -kUnitX,
   });
-  ExpectSeamRowsKeepTheSpeed({
+  CheckSeamRowsKeepTheSpeed({
       .case_name = "PuckFlushInFloor",
       .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
       .back_from_seam = kUnitX,
@@ -131,21 +131,21 @@ TEST(MoveParticle, SeamsOverManySteps_Boxes) {
   // As SeamsOverManySteps_Cylinders, across two boxes side by side, onto a box flush in a floor and down two stacked
   // boxes: every run keeps the speed. With the next box as an active surface, 83, 35 and 8 runs of 400 lost speed at
   // steps of 0.3, 0.7 and 3 tol.
-  ExpectSeamRowsKeepTheSpeed({
+  CheckSeamRowsKeepTheSpeed({
       .case_name = "BoxesSideBySide",
       .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
       .back_from_seam = -kUnitX,
       .along_path = kUnitX,
       .push_direction = -kUnitZ,
   });
-  ExpectSeamRowsKeepTheSpeed({
+  CheckSeamRowsKeepTheSpeed({
       .case_name = "BoxFlushInFloor",
       .seam_point = {.x = 0.5, .y = 0, .z = kTolerance},
       .back_from_seam = kUnitX,
       .along_path = -kUnitX,
       .push_direction = -kUnitZ,
   });
-  ExpectSeamRowsKeepTheSpeed({
+  CheckSeamRowsKeepTheSpeed({
       .case_name = "StackedBoxes",
       .seam_point = {.x = 0.5 + kTolerance, .y = 0, .z = 1},
       .back_from_seam = kUnitZ,
@@ -182,10 +182,10 @@ struct GeneratedCorner {
 GeneratedCorner BuildGeneratedCorner(CaseGenerator* generator) {
   GeneratedCorner corner;
   const int face_count = 2 + static_cast<int>(3 * generator->Next());
-  const Vec3 free_direction = DrawUnitVector(generator);
+  const Vec3 free_direction = BuildUnitVector(generator);
   const bool is_moving = generator->Next() < 0.5;
   for (int face_index = 0; face_index < face_count; ++face_index) {
-    const Vec3 normal = math::Normalized(free_direction + 0.9 * DrawUnitVector(generator));
+    const Vec3 normal = math::Normalized(free_direction + 0.9 * BuildUnitVector(generator));
     const Vec3 velocity = {.x = generator->NextSigned(), .y = generator->NextSigned(), .z = generator->NextSigned()};
     const double friction_scale = generator->Next() < 0.5 ? 1 : 2 * generator->Next();
     corner.solids.push_back(BuildMovingFlatSolid(normal, is_moving ? velocity : Vec3{}, friction_scale, 1));
@@ -211,14 +211,14 @@ GeneratedCorner BuildGeneratedCorner(CaseGenerator* generator) {
 TEST(MoveParticle, GeneratedOneSurfaceHits_SameBitsAsContactResponse) {
   // Method paper <sec-move-particle>: with one active surface each velocity gets ComputeContactResponse with that
   // surface and nothing else, the single-surface response bit for bit. 2000 flat solids through the origin, in this
-  // order of draws: the normal (DrawUnitVector), a solid velocity of three NextSigned / 2 m/s or none, the velocity
+  // order of draws: the normal (BuildUnitVector), a solid velocity of three NextSigned / 2 m/s or none, the velocity
   // (three NextSigned m/s), friction 2 Next; the start 0.05 m out along the normal, T 0.1 s. Every call whose path hits
   // the solid has both velocities equal to the response of the velocity given, at the hit's normal.
   CaseGenerator generator;
   int hit_calls = 0;
   int differing_calls = 0;
   for (int draw = 0; draw < 2000; ++draw) {
-    const Vec3 normal = DrawUnitVector(&generator);
+    const Vec3 normal = BuildUnitVector(&generator);
     const bool is_moving = generator.Next() < 0.5;
     const Vec3 drawn_velocity = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
     const Vec3 solid_velocity = is_moving ? 0.5 * drawn_velocity : Vec3{};
@@ -226,7 +226,7 @@ TEST(MoveParticle, GeneratedOneSurfaceHits_SameBitsAsContactResponse) {
     SolidContactInputs inputs = move_particle_cases::BuildSeveralSurfaceInputs(0.05 * normal, velocity, 0.1);
     inputs.friction = 2 * generator.Next();
     const MoveParticleCall call =
-        RunMove(BuildOrderedScene({BuildMovingFlatSolid(normal, solid_velocity, 1, 1)}, inputs));
+        ComputeMove(BuildOrderedScene({BuildMovingFlatSolid(normal, solid_velocity, 1, 1)}, inputs));
     if (call.error != ContactError::kNone || call.result.hit_count != 1) {
       continue;
     }
@@ -252,7 +252,7 @@ TEST(MoveParticle, GeneratedCornersInEveryOrder_SameBits) {
   int failed_draws = 0;
   for (int draw = 0; draw < 2000; ++draw) {
     const GeneratedCorner corner = BuildGeneratedCorner(&generator);
-    const MoveParticleCall first = RunMove(BuildOrderedScene(corner.solids, corner.inputs));
+    const MoveParticleCall first = ComputeMove(BuildOrderedScene(corner.solids, corner.inputs));
     failed_draws += first.error == ContactError::kNone ? 0 : 1;
     std::vector<std::size_t> order(corner.solids.size());
     for (std::size_t index = 0; index < order.size(); ++index) {
@@ -260,7 +260,8 @@ TEST(MoveParticle, GeneratedCornersInEveryOrder_SameBits) {
     }
     bool is_same = true;
     while (std::ranges::next_permutation(order).found) {
-      const MoveParticleCall call = RunMove(BuildOrderedScene(ToPermutedSolids(corner.solids, order), corner.inputs));
+      const MoveParticleCall call =
+          ComputeMove(BuildOrderedScene(ToPermutedSolids(corner.solids, order), corner.inputs));
       is_same = is_same && ComputeIsSameBits(call, first);
     }
     differing_draws += is_same ? 0 : 1;
@@ -285,7 +286,7 @@ double ToNeighbourDouble(double coordinate, int direction) {
 bool ComputeIsSameForEveryRounding(double wedge_angle, const SolidContactInputs& center) {
   const Solid floor = move_particle_cases::BuildFloor(1);
   const Solid side = move_particle_cases::BuildWedgeSide(std::numbers::pi - wedge_angle, 2);
-  const MoveParticleCall reference = RunMove(BuildOrderedScene({floor, side}, center));
+  const MoveParticleCall reference = ComputeMove(BuildOrderedScene({floor, side}, center));
   bool is_same = reference.error == ContactError::kNone;
   for (int start_index = 0; start_index < 27; ++start_index) {
     SolidContactInputs inputs = center;
@@ -294,8 +295,8 @@ bool ComputeIsSameForEveryRounding(double wedge_angle, const SolidContactInputs&
         .y = ToNeighbourDouble(center.start_position.y, start_index / 3 % 3 - 1),
         .z = ToNeighbourDouble(center.start_position.z, start_index / 9 - 1),
     };
-    is_same = is_same && ComputeIsSameBits(RunMove(BuildOrderedScene({floor, side}, inputs)), reference)
-        && ComputeIsSameBits(RunMove(BuildOrderedScene({side, floor}, inputs)), reference);
+    is_same = is_same && ComputeIsSameBits(ComputeMove(BuildOrderedScene({floor, side}, inputs)), reference)
+        && ComputeIsSameBits(ComputeMove(BuildOrderedScene({side, floor}, inputs)), reference);
   }
   return is_same;
 }
@@ -331,7 +332,7 @@ struct FixedCornerCounts {
 };
 
 // Draws one fixed corner and adds what it shows to *counts. In this order: the face count (2 to 4), each unit normal
-// (DrawUnitVector), the start kind, the velocity (each axis in [-1, 1)) and the friction (0 with probability 0.2, else
+// (BuildUnitVector), the start kind, the velocity (each axis in [-1, 1)) and the friction (0 with probability 0.2, else
 // up to 3). The start is the rest point found by the move off near surfaces from tol / 2 along the bisector of the
 // first two normals, 0.002 m out along it (kind below 0.2) or 0.3 tol inside the rest gap (below 0.4). A draw whose
 // rest point is not found, or whose move fails, counts no success.
@@ -340,7 +341,7 @@ void ApplyFixedCornerDraw(CaseGenerator* generator, FixedCornerCounts* counts) {
   std::vector<Solid> solids;
   std::vector<Vec3> normals;
   for (int face_index = 0; face_index < face_count; ++face_index) {
-    normals.push_back(DrawUnitVector(generator));
+    normals.push_back(BuildUnitVector(generator));
     solids.push_back(move_particle_cases::BuildFlatSolid({}, normals.back(), kNoMotion, 1));
   }
   const double start_kind = generator->Next();
@@ -361,7 +362,7 @@ void ApplyFixedCornerDraw(CaseGenerator* generator, FixedCornerCounts* counts) {
   }
   scene.inputs.start_position = rest.moved_point + start_offset * lean;
   scene.inputs.friction = friction;
-  const MoveParticleCall call = RunMove(scene);
+  const MoveParticleCall call = ComputeMove(scene);
   if (call.error != ContactError::kNone) {
     return;
   }
@@ -415,7 +416,7 @@ struct GeneratedCounts {
 
 // Prints, for the report, each scene with a failure: its counts of kTooManyHits, kSqueezedBetweenSolids,
 // kSecondReactingSolid and kTurningSolidNearOtherSolid.
-void PrintFailuresPerScene(const std::map<std::string_view, std::array<int, 8>>& failures_per_scene) {
+void WriteFailuresPerScene(const std::map<std::string_view, std::array<int, 8>>& failures_per_scene) {
   std::cout << "failures per scene (too many hits, squeezed, second reacting solid, turning solid near other solid):";
   for (const auto& [scene_name, counts] : failures_per_scene) {
     std::cout << " " << scene_name << " " << counts.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits)) << " "
@@ -428,7 +429,7 @@ void PrintFailuresPerScene(const std::map<std::string_view, std::array<int, 8>>&
 
 // Fails the calling test unless every solid is at least tol / 2 (of inputs.contact_tolerance) from the end position at
 // its end pose, by ComputeDistanceToSolid itself (the generated paths commit to no plate).
-void ExpectEndOutsideEverySolid(const SolidContactInputs& inputs, Vec3 end_position) {
+void CheckEndOutsideEverySolid(const SolidContactInputs& inputs, Vec3 end_position) {
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     const Solid& solid = inputs.solids[solid_index];
     const double end_distance =
@@ -439,7 +440,7 @@ void ExpectEndOutsideEverySolid(const SolidContactInputs& inputs, Vec3 end_posit
 
 // Fails the calling test unless the end is on the same side of every plate as the start, a property the end check
 // does not test: a plate is unbounded, so a particle can reach its other side only by passing through it.
-void ExpectEndOnStartSideOfEveryPlate(const SolidContactInputs& inputs, Vec3 end_position) {
+void CheckEndOnStartSideOfEveryPlate(const SolidContactInputs& inputs, Vec3 end_position) {
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     const Solid& solid = inputs.solids[solid_index];
     if (solid.shape != SolidShape::kPlate) {
@@ -486,9 +487,9 @@ bool BuildGeneratedPath(const SolidContactInputs& scene_inputs, CaseGenerator& g
 }
 
 // Fails the calling test unless a successful move of a generated path ended outside every solid with a sound record.
-void ExpectGeneratedSuccess(const SolidContactInputs& inputs, const SolidContactResult& result) {
-  ExpectEndOutsideEverySolid(inputs, result.position);
-  ExpectEndOnStartSideOfEveryPlate(inputs, result.position);
+void CheckGeneratedSuccess(const SolidContactInputs& inputs, const SolidContactResult& result) {
+  CheckEndOutsideEverySolid(inputs, result.position);
+  CheckEndOnStartSideOfEveryPlate(inputs, result.position);
   EXPECT_LE(result.hit_count, kMaxHitsPerStep);
   EXPECT_EQ(result.kind == ContactKind::kNone, result.hit_count == 0);
   EXPECT_TRUE(result.hit_fraction >= 0 && result.hit_fraction <= 1);
@@ -503,7 +504,7 @@ void CheckGeneratedPath(const SolidContactInputs& inputs, std::string_view scene
   const ContactError error = MoveParticle(inputs, &result, &failure);
   ++counts.paths;
   if (error == ContactError::kNone) {
-    ExpectGeneratedSuccess(inputs, result);
+    CheckGeneratedSuccess(inputs, result);
     counts.free_paths += result.hit_count == 0 ? 1 : 0;
     counts.hit_paths += result.hit_count > 0 ? 1 : 0;
     counts.several_hit_paths += result.hit_count > 1 ? 1 : 0;
@@ -555,7 +556,7 @@ TEST(MoveParticle, GeneratedPathsInEveryScene_EndOutsideEverySolid) {
             << ", second reacting solid " << counts.second_reacting_solid << ", hover near turning solid "
             << counts.hover_near_turning_solid << ", turning solid near other solid " << counts.near_other_solid
             << ", squeezed " << counts.squeezed << "\n";
-  PrintFailuresPerScene(counts.failures_per_scene);
+  WriteFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(counts.paths, 40000);
   EXPECT_GT(counts.hit_paths, counts.paths / 5);
   EXPECT_GT(counts.several_hit_paths, counts.paths / 60);
@@ -647,7 +648,7 @@ bool BuildGeneratedNearStart(
 
 // Fails the calling test unless the end is on the side of every plate the start rules leave the particle on: the
 // start's side, or, from inside the thickness, the side of the nearer face.
-void ExpectEndOnNearerSideOfEveryPlate(const SolidContactInputs& inputs, Vec3 end_position) {
+void CheckEndOnNearerSideOfEveryPlate(const SolidContactInputs& inputs, Vec3 end_position) {
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     const Solid& solid = inputs.solids[solid_index];
     if (solid.shape != SolidShape::kPlate) {
@@ -666,14 +667,14 @@ void ExpectEndOnNearerSideOfEveryPlate(const SolidContactInputs& inputs, Vec3 en
 
 // Fails the calling test unless a successful move from a generated start near a solid ended outside every solid, on
 // the side of every plate the start rules leave it on, with a sound record.
-void ExpectNearStartSuccess(
+void CheckNearStartSuccess(
     const SolidContactInputs& inputs,
     const SolidContactResult& result,
     NearStartKind start_kind,
     std::string_view scene_name
 ) {
-  ExpectEndOutsideEverySolid(inputs, result.position);
-  ExpectEndOnNearerSideOfEveryPlate(inputs, result.position);
+  CheckEndOutsideEverySolid(inputs, result.position);
+  CheckEndOnNearerSideOfEveryPlate(inputs, result.position);
   EXPECT_EQ(result.kind == ContactKind::kNone, result.hit_count == 0) << scene_name;
   // A start inside the solid is always a hit at 0 that sets the kind.
   if (start_kind == NearStartKind::kSlightlyInside) {
@@ -695,7 +696,7 @@ void CheckGeneratedNearStart(
   const ContactError error = MoveParticle(inputs, &result, &failure);
   ++counts.starts_per_kind.at(static_cast<std::size_t>(start_kind));
   if (error == ContactError::kNone) {
-    ExpectNearStartSuccess(inputs, result, start_kind, scene_name);
+    CheckNearStartSuccess(inputs, result, start_kind, scene_name);
     counts.free_paths += result.kind == ContactKind::kNone ? 1 : 0;
     counts.hit_paths += result.kind == ContactKind::kHit ? 1 : 0;
     counts.started_inside_paths += result.kind == ContactKind::kStartedInsideSolid ? 1 : 0;
@@ -713,7 +714,7 @@ void CheckGeneratedNearStart(
 
 // Prints the counts of the generated starts near a solid for the report, and fails the calling test unless each kind
 // of start is common and the moves end free, with a hit and started inside, each often.
-void ExpectNearStartCounts(const NearStartCounts& counts) {
+void CheckNearStartCounts(const NearStartCounts& counts) {
   const std::array<int, 3>& starts = counts.starts_per_kind;
   std::cout << "near starts: within tolerance " << starts.at(0) << ", on surface " << starts.at(1)
             << ", slightly inside " << starts.at(2) << "; free " << counts.free_paths << ", hit " << counts.hit_paths
@@ -721,7 +722,7 @@ void ExpectNearStartCounts(const NearStartCounts& counts) {
             << ", second reacting solid " << counts.second_reacting_solid << ", hover near turning solid "
             << counts.hover_near_turning_solid << ", turning solid near other solid " << counts.near_other_solid
             << ", squeezed " << counts.squeezed << "\n";
-  PrintFailuresPerScene(counts.failures_per_scene);
+  WriteFailuresPerScene(counts.failures_per_scene);
   EXPECT_GT(starts.at(0), 15000);
   EXPECT_GT(starts.at(1), 15000);
   EXPECT_GT(starts.at(2), 15000);
@@ -767,7 +768,7 @@ TEST(MoveParticle, GeneratedStartsNearSolidsInEveryScene_EndOutsideEverySolid) {
       }
     }
   }
-  ExpectNearStartCounts(counts);
+  CheckNearStartCounts(counts);
 }
 
 // One path of the parallel set: its two flat solids and its inputs, which point at them.
@@ -899,7 +900,7 @@ struct TwoSurfaceCounts {
 
 // Draws a velocity for a two-surface start: slow, up to tol / T per axis, when Next < 0.5, else up to 2 m/s per axis
 // (four draws).
-Vec3 DrawTwoSurfaceVelocity(CaseGenerator& generator, double step_duration, double contact_tolerance) {
+Vec3 BuildTwoSurfaceVelocity(CaseGenerator& generator, double step_duration, double contact_tolerance) {
   const double speed = generator.Next() < 0.5 ? contact_tolerance / step_duration : 2.0;  // m/s
   return speed * Vec3{.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
 }
@@ -977,7 +978,7 @@ void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& co
     ++counts.failures;
     return;
   }
-  ExpectEndOutsideEverySolid(inputs, result.position);
+  CheckEndOutsideEverySolid(inputs, result.position);
   counts.free_paths += result.kind == ContactKind::kNone ? 1 : 0;
   counts.hit_paths += result.kind == ContactKind::kHit ? 1 : 0;
   counts.started_inside_paths += result.kind == ContactKind::kStartedInsideSolid ? 1 : 0;
@@ -987,11 +988,11 @@ void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& co
 
 // Runs the 30,000 draws of the two-surface set: by Next < 0.5 a wedge (BuildTwoSurfaceWedge, wedge angles 5 to 175
 // degrees) or a domain corner (BuildDomainCornerStart); then T = 0.01 + 0.09 * Next s, short enough that a fast
-// particle stays near its corner, away from the far sides, both velocities from one DrawTwoSurfaceVelocity, friction
+// particle stays near its corner, away from the far sides, both velocities from one BuildTwoSurfaceVelocity, friction
 // Next. With moving_wedges, each wedge solid then gets a linear_velocity of three NextSigned m/s, solid A then B; the
 // domain box stays fixed. Start overlap tolerance 2 tol. Every start is within tol of, on, or slightly inside two or
 // three surfaces. The set lies at place (GeneratedSetPlace).
-TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges, const GeneratedSetPlace& place) {
+TwoSurfaceCounts ComputeTwoSurfaceStarts(bool moving_wedges, const GeneratedSetPlace& place) {
   CaseGenerator generator;
   TwoSurfaceCounts counts;
   const std::array domain_solids = {BuildPlacedDomainBox(place)};
@@ -1018,7 +1019,7 @@ TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges, const GeneratedSetPlace
       ++counts.corner_starts;
     }
     inputs.step_duration = 0.01 + 0.09 * generator.Next();
-    const Vec3 velocity = DrawTwoSurfaceVelocity(generator, inputs.step_duration, place.contact_tolerance);
+    const Vec3 velocity = BuildTwoSurfaceVelocity(generator, inputs.step_duration, place.contact_tolerance);
     inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
     inputs.friction = generator.Next();
     for (Solid& wedge_solid : wedge_solids) {
@@ -1043,9 +1044,9 @@ TwoSurfaceCounts RunTwoSurfaceStarts(bool moving_wedges, const GeneratedSetPlace
 }
 
 TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
-  // Fixed wedges and corners (RunTwoSurfaceStarts): no failure at all (the model: 0 of 10,001 acute draws). Before the
-  // slide over several surfaces, 2246 of 7497 acute draws ended in kTooManyHits.
-  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(false, {});
+  // Fixed wedges and corners (ComputeTwoSurfaceStarts): no failure at all (the model: 0 of 10,001 acute draws). Before
+  // the slide over several surfaces, 2246 of 7497 acute draws ended in kTooManyHits.
+  const TwoSurfaceCounts counts = ComputeTwoSurfaceStarts(false, {});
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.free_paths, 1000);
   EXPECT_GT(counts.hit_paths, 1000);
@@ -1056,7 +1057,7 @@ TEST(MoveParticle, GeneratedMovingTwoSurfaceStarts_SucceedDownToFiveDegrees) {
   // The same draws with each wedge solid moving at up to 1 m/s per axis: no failure. Two surfaces that are not
   // parallel always leave a velocity that approaches neither, and from 5 degrees up the escape is at most
   // 1 / sin(2.5 degrees) = 23 times the solids' speeds, below the speed cap (the model: 0 of 35,000).
-  const TwoSurfaceCounts counts = RunTwoSurfaceStarts(true, {});
+  const TwoSurfaceCounts counts = ComputeTwoSurfaceStarts(true, {});
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.hit_paths, 1000);
 }
@@ -1294,7 +1295,7 @@ TangentStart BuildTangentStart(CaseGenerator& generator, TangentScene scene, con
 // Runs MoveParticle on one tangent start and fails the calling test unless it succeeded at least tol / 2 from every
 // solid. With one response per surface in turn, 37 to 49 % per scene ended in kTooManyHits, bouncing between the two
 // surfaces into the cusp.
-bool ExpectTangentStartSucceeds(TangentScene scene, const SolidContactInputs& inputs) {
+bool CheckTangentStartSucceeds(TangentScene scene, const SolidContactInputs& inputs) {
   SolidContactResult result;
   ContactFailure failure;
   const ContactError error = MoveParticle(inputs, &result, &failure);
@@ -1303,7 +1304,7 @@ bool ExpectTangentStartSucceeds(TangentScene scene, const SolidContactInputs& in
                   << static_cast<int>(failure.close_call);
     return false;
   }
-  ExpectEndOutsideEverySolid(inputs, result.position);
+  CheckEndOutsideEverySolid(inputs, result.position);
   return true;
 }
 
@@ -1323,7 +1324,7 @@ TEST(MoveParticle, GeneratedTangentContactStarts_Succeed) {
     for (int draw_index = 0; draw_index < 2000; ++draw_index) {
       TangentStart start = BuildTangentStart(generator, scene, {});
       start.inputs.solids = start.solids.data();
-      successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
+      successes += CheckTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
     }
     std::cout << "tangent scene " << static_cast<int>(scene) << ": success " << successes << " of 2000\n";
   }
@@ -1383,7 +1384,7 @@ struct TangentSlideCounts {
 // Fails the calling test unless a squeeze of the tangent slides keeps to its can_shorter_step_cure: one at the start
 // comes back at a sixteenth of the step, still false; one at a later hit is cured by a step that ends before it, within
 // 40 halvings.
-void ExpectTangentSqueezeKeepsToFlag(SolidContactInputs inputs, const ContactFailure& failure) {
+void CheckTangentSqueezeKeepsToFlag(SolidContactInputs inputs, const ContactFailure& failure) {
   SolidContactResult result;
   ContactFailure shorter_failure;
   if (!failure.can_shorter_step_cure) {
@@ -1406,14 +1407,14 @@ void ExpectTangentSqueezeKeepsToFlag(SolidContactInputs inputs, const ContactFai
 // times (1/256) until one succeeds, or kSqueezedBetweenSolids where the ball closes on the other solid (a ball sinking
 // into a floor): the speed cap's squeeze, which the geometry decides (method paper <sec-move-particle>): at every step
 // length when the start's response meets it, and until a step ends before the hit when a later hit does
-// (ExpectTangentSqueezeKeepsToFlag).
+// (CheckTangentSqueezeKeepsToFlag).
 void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSlideCounts& counts) {
   SolidContactInputs inputs = start.inputs;
   SolidContactResult result;
   ContactFailure failure;
   const ContactError error = MoveParticle(inputs, &result, &failure);
   if (error == ContactError::kNone) {
-    ExpectEndOutsideEverySolid(inputs, result.position);
+    CheckEndOutsideEverySolid(inputs, result.position);
     ++counts.successes;
     return;
   }
@@ -1421,7 +1422,7 @@ void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSli
   const Vec3 closing_velocity = start.solids.at(1).motion.linear_velocity - start.solids.at(0).motion.linear_velocity;
   const bool is_ball_closing = math::Dot(closing_velocity, start.contact_normal) < 0;
   if (is_close_call && failure.close_call == ContactCloseCall::kSqueezedBetweenSolids && is_ball_closing) {
-    ExpectTangentSqueezeKeepsToFlag(inputs, failure);
+    CheckTangentSqueezeKeepsToFlag(inputs, failure);
     ++counts.squeezed;
     return;
   }
@@ -1444,7 +1445,7 @@ void CheckTangentSlide(TangentScene scene, const TangentStart& start, TangentSli
 }
 
 // Prints, for the report, what the tangent slides of one scene and motion gave.
-void PrintTangentSlideCounts(TangentScene scene, bool is_moving, const TangentSlideCounts& counts) {
+void WriteTangentSlideCounts(TangentScene scene, bool is_moving, const TangentSlideCounts& counts) {
   const std::array<int, 9>& cured = counts.cured_after_halvings;
   std::cout << "tangent slides scene " << static_cast<int>(scene) << (is_moving ? " moving" : " fixed") << ": success "
             << counts.successes << ", too many hits " << counts.too_many_hits << " (cured after 1 to 8 halvings:";
@@ -1458,7 +1459,7 @@ void PrintTangentSlideCounts(TangentScene scene, bool is_moving, const TangentSl
 // Runs 2000 draws of the tangent slides of one scene: BuildTangentStart at place, then ApplyTangentSlide, then
 // ApplyTangentMotion, applied only when is_moving, and CheckTangentSlide.
 TangentSlideCounts
-RunTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving, const GeneratedSetPlace& place) {
+ComputeTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving, const GeneratedSetPlace& place) {
   TangentSlideCounts counts;
   for (int draw_index = 0; draw_index < 2000; ++draw_index) {
     TangentStart start = BuildTangentStart(generator, scene, place);
@@ -1475,7 +1476,7 @@ RunTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving, c
 // Fails the calling test unless the slides of one scene had no other failure, every kTooManyHits was cured within
 // eight halvings, and at least 1950 of the 2000 draws succeeded (1958 in the worst scene), so the checks are not
 // vacuous.
-void ExpectTangentSlideCounts(const TangentSlideCounts& counts) {
+void CheckTangentSlideCounts(const TangentSlideCounts& counts) {
   EXPECT_EQ(counts.other_failures, 0);
   EXPECT_EQ(counts.cured_after_halvings.at(8), 0);
   EXPECT_GE(counts.successes, 1950);
@@ -1501,9 +1502,9 @@ TEST(MoveParticle, GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures)
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
-      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving, {});
-      PrintTangentSlideCounts(scene, is_moving, counts);
-      ExpectTangentSlideCounts(counts);
+      const TangentSlideCounts counts = ComputeTangentSlides(generator, scene, is_moving, {});
+      WriteTangentSlideCounts(scene, is_moving, counts);
+      CheckTangentSlideCounts(counts);
     }
   }
 }
@@ -1523,7 +1524,7 @@ TEST(MoveParticle, GeneratedCylinderTangentContactStarts_Succeed) {
     for (int draw_index = 0; draw_index < 2000; ++draw_index) {
       TangentStart start = BuildTangentStart(generator, scene, {});
       start.inputs.solids = start.solids.data();
-      successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
+      successes += CheckTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
     }
     std::cout << "cylinder tangent scene " << static_cast<int>(scene) << ": success " << successes << " of 2000\n";
     EXPECT_EQ(successes, 2000);
@@ -1541,9 +1542,9 @@ TEST(MoveParticle, GeneratedCylinderTangentContactSlides_FailOnlyWhereAShorterSt
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
-      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving, {});
-      PrintTangentSlideCounts(scene, is_moving, counts);
-      ExpectTangentSlideCounts(counts);
+      const TangentSlideCounts counts = ComputeTangentSlides(generator, scene, is_moving, {});
+      WriteTangentSlideCounts(scene, is_moving, counts);
+      CheckTangentSlideCounts(counts);
     }
   }
 }
@@ -1554,12 +1555,12 @@ TEST(MoveParticle, GeneratedTwoSurfaceStartsFarFromOrigin_SucceedDownToFiveDegre
   // The draws of GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees and of its moving wedges, moved about 830 m from
   // the origin with the production tolerance there (kFarFromOrigin: tol about 1.0e-9 m, a coordinate's rounding unit
   // about tol / 9000), where the start distances, the slow speeds and the rest gaps are that tolerance's. No failure.
-  const TwoSurfaceCounts fixed_counts = RunTwoSurfaceStarts(false, kFarFromOrigin);
+  const TwoSurfaceCounts fixed_counts = ComputeTwoSurfaceStarts(false, kFarFromOrigin);
   EXPECT_EQ(fixed_counts.failures, 0);
   EXPECT_GT(fixed_counts.free_paths, 1000);
   EXPECT_GT(fixed_counts.hit_paths, 1000);
   EXPECT_GT(fixed_counts.started_inside_paths, 1000);
-  const TwoSurfaceCounts moving_counts = RunTwoSurfaceStarts(true, kFarFromOrigin);
+  const TwoSurfaceCounts moving_counts = ComputeTwoSurfaceStarts(true, kFarFromOrigin);
   EXPECT_EQ(moving_counts.failures, 0);
   EXPECT_GT(moving_counts.hit_paths, 1000);
 }
@@ -1586,7 +1587,7 @@ TEST(MoveParticle, GeneratedTangentContactStartsFarFromOrigin_Succeed) {
     for (int draw_index = 0; draw_index < 2000; ++draw_index) {
       TangentStart start = BuildTangentStart(generator, scene, kFarFromOriginLargeSolids);
       start.inputs.solids = start.solids.data();
-      successes += ExpectTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
+      successes += CheckTangentStartSucceeds(scene, start.inputs) ? 1 : 0;
     }
     std::cout << "tangent scene " << static_cast<int>(scene) << " far from origin: success " << successes
               << " of 2000\n";
@@ -1608,7 +1609,7 @@ bool ComputeHasClosingCusp(TangentScene scene) {
 // the 2000 draws succeed, as near the origin, or 1550 in a moving scene with a closing cusp: measured 1626 to 1683 here
 // and at least 1622 over 12 generator seeds, about 1650 on average with a standard deviation of about 17
 // draws (a squeeze share near 0.18 of 2000), so 1550 is 4 such deviations below the least seen.
-void ExpectFarTangentSlideCounts(TangentScene scene, const TangentSlideCounts& counts, bool is_moving) {
+void CheckFarTangentSlideCounts(TangentScene scene, const TangentSlideCounts& counts, bool is_moving) {
   const bool can_squeeze = is_moving && ComputeHasClosingCusp(scene);
   EXPECT_EQ(counts.other_failures, 0);
   EXPECT_EQ(counts.cured_after_halvings.at(8), 0);
@@ -1625,14 +1626,14 @@ TEST(MoveParticle, GeneratedTangentContactSlidesFarFromOrigin_FailOnlyWhereAShor
   // so sinking at 1e-3 m/s pushes the particle out at about 1e-3 / 6e-6 = 160 m/s, above 64 times the speeds of the
   // draw (method paper <sec-move-particle>); near the origin the slope is about 1e-4 and the escape below the cap.
   // Measured: 317 to 374 of the 2000 moving draws of the ball on a floor, the two balls, the ball on a tilted floor and
-  // the lying cylinder, about three quarters of the quarter that sink (ExpectFarTangentSlideCounts gives their floor).
+  // the lying cylinder, about three quarters of the quarter that sink (CheckFarTangentSlideCounts gives their floor).
   CaseGenerator generator;
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : kEveryTangentScene) {
-      const TangentSlideCounts counts = RunTangentSlides(generator, scene, is_moving, kFarFromOriginLargeSolids);
+      const TangentSlideCounts counts = ComputeTangentSlides(generator, scene, is_moving, kFarFromOriginLargeSolids);
       std::cout << "far from origin, ";
-      PrintTangentSlideCounts(scene, is_moving, counts);
-      ExpectFarTangentSlideCounts(scene, counts, is_moving);
+      WriteTangentSlideCounts(scene, is_moving, counts);
+      CheckFarTangentSlideCounts(scene, counts, is_moving);
     }
   }
 }
@@ -1844,7 +1845,7 @@ void CheckRoundSolidPath(const RoundSolidPath& path, RoundSolidCounts& counts) {
     ++counts.failures;
     return;
   }
-  ExpectEndOutsideEverySolid(path.inputs, result.position);
+  CheckEndOutsideEverySolid(path.inputs, result.position);
   const bool is_hit = result.hit_count > 0;
   const bool is_rim = result.face == SolidFace::kLowRim || result.face == SolidFace::kHighRim;
   counts.hit_paths += is_hit ? 1 : 0;
@@ -1907,7 +1908,7 @@ constexpr Mat3 kSeamTiltedAxes = {
 };
 
 // Draws a unit vector from three NextSigned, drawn again while shorter than 0.1.
-Vec3 DrawSeamDirection(CaseGenerator& generator) {
+Vec3 BuildSeamDirection(CaseGenerator& generator) {
   Vec3 direction{};
   while (math::Length(direction) < 0.1) {
     direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};
@@ -1916,7 +1917,7 @@ Vec3 DrawSeamDirection(CaseGenerator& generator) {
 }
 
 // Builds one path across a flush seam. Draws, in this order, for every kind: the axes, kSeamTiltedAxes when Next < 0.5,
-// else the world axes; a centre 2 Next times a direction (DrawSeamDirection); the solids' velocity, a direction when
+// else the world axes; a centre 2 Next times a direction (BuildSeamDirection); the solids' velocity, a direction when
 // Next < 1 / 3, else zero; a first size 0.1 + 0.9 Next m; a second 0.1 + 0.9 Next m; a third 0.05 + 0.45 Next m; an
 // azimuth 2 pi Next; the speed 0.5 + 1.5 Next m/s; the push into the surface, 0, 0, 0.16 or 1 m/s by floor(4 Next); the
 // distance before the seam 0.01 + 0.14 Next m; a sideways share -0.3 + 0.6 Next; onto or off the puck, Next < 0.5; the
@@ -1931,9 +1932,9 @@ Vec3 DrawSeamDirection(CaseGenerator& generator) {
 // share along own y, pushed into the tops.
 FlushSeamPath BuildFlushSeamPath(CaseGenerator& generator, FlushSeamKind kind) {
   const bool is_tilted = generator.Next() < 0.5;
-  const Vec3 center = 2 * generator.Next() * DrawSeamDirection(generator);
+  const Vec3 center = 2 * generator.Next() * BuildSeamDirection(generator);
   const bool is_moving = generator.Next() < 1.0 / 3;
-  const Vec3 moving_direction = DrawSeamDirection(generator);
+  const Vec3 moving_direction = BuildSeamDirection(generator);
   const double first_size = 0.1 + 0.9 * generator.Next();  // m
   const double second_size = 0.1 + 0.9 * generator.Next();  // m
   const double third_size = 0.05 + 0.45 * generator.Next();  // m
@@ -2034,7 +2035,7 @@ void CheckFlushSeamPath(const FlushSeamPath& path, FlushSeamCounts& counts) {
 
 // Prints one kind's counts for the report and fails the calling test unless all 2,000 paths succeeded with at most one
 // hit and kept their speed.
-void ExpectFlushSeamCounts(FlushSeamKind kind, const FlushSeamCounts& counts) {
+void CheckFlushSeamCounts(FlushSeamKind kind, const FlushSeamCounts& counts) {
   std::cout << "flush seams kind " << static_cast<int>(kind) << ": paths " << counts.paths << ", failures "
             << counts.failures << ", several hits " << counts.several_hits << ", lost speed " << counts.lost_speed
             << "\n";
@@ -2058,7 +2059,7 @@ TEST(MoveParticle, GeneratedFlushSeams_KeepTheSpeedAlongTheSeam) {
       path.inputs.solids = path.solids.data();
       CheckFlushSeamPath(path, counts);
     }
-    ExpectFlushSeamCounts(kind, counts);
+    CheckFlushSeamCounts(kind, counts);
   }
 }
 
@@ -2412,7 +2413,7 @@ bool BuildTurningMove(const TurningMoveSet& set, CaseGenerator& generator, Solid
 
 // Fails the calling test unless the end position is at least tol / 2 from every solid at its end pose, by
 // ComputeDistanceToSolid itself, with the inputs' own contact tolerance.
-void ExpectEndOutsideEverySolidByItsTolerance(const SolidContactInputs& inputs, Vec3 end_position) {
+void CheckEndOutsideEverySolidByItsTolerance(const SolidContactInputs& inputs, Vec3 end_position) {
   for (std::uint32_t solid_index = 0; solid_index < inputs.solid_count; ++solid_index) {
     const Solid& solid = inputs.solids[solid_index];
     const double end_distance =
@@ -2422,7 +2423,7 @@ void ExpectEndOutsideEverySolidByItsTolerance(const SolidContactInputs& inputs, 
 }
 
 // Runs MoveParticle on the inputs with the solids given in their place, ids renumbered from 1 in that order.
-MoveParticleCall RunMoveWithSolids(const SolidContactInputs& inputs, std::vector<Solid> solids) {
+MoveParticleCall ComputeMoveWithSolids(const SolidContactInputs& inputs, std::vector<Solid> solids) {
   for (std::size_t solid_index = 0; solid_index < solids.size(); ++solid_index) {
     solids.at(solid_index).solid_id = static_cast<std::uint32_t>(solid_index + 1);
   }
@@ -2466,10 +2467,10 @@ void CheckTurningMove(const TurningMoveSet& set, const SolidContactInputs& input
   int advance_count = 0;
   static_cast<void>(FindHitOnTurningSolid(inputs, 0, sweep, &search_hit, &advance_count));
   counts.advance_counts.push_back(advance_count);
-  const MoveParticleCall call = RunMoveWithSolids(inputs, set.solids);
+  const MoveParticleCall call = ComputeMoveWithSolids(inputs, set.solids);
   std::vector<Solid> solids_with_copy = set.solids;
   solids_with_copy.push_back(set.solids.at(0));
-  const MoveParticleCall copy_call = RunMoveWithSolids(inputs, solids_with_copy);
+  const MoveParticleCall copy_call = ComputeMoveWithSolids(inputs, solids_with_copy);
   // A start closer than tol is moved off the solid and its copy at once (MoveToRestGapOfNearSurfaces), which reads the
   // solids in array order: the moved start may differ by a unit in the last place, and so may the surface velocity a
   // turning solid has there. That known limit is measured, not required to be zero.
@@ -2489,7 +2490,7 @@ void CheckTurningMove(const TurningMoveSet& set, const SolidContactInputs& input
     counts.copy_differences += ComputeIsSameMove(call, copy_call, false) ? 0 : 1;
   }
   const std::vector<Solid> reversed_solids(set.solids.rbegin(), set.solids.rend());
-  counts.order_differences += ComputeIsSameMove(call, RunMoveWithSolids(inputs, reversed_solids), false) ? 0 : 1;
+  counts.order_differences += ComputeIsSameMove(call, ComputeMoveWithSolids(inputs, reversed_solids), false) ? 0 : 1;
   const ContactError error = call.error;
   const SolidContactResult& result = call.result;
   const ContactFailure& failure = call.failure;
@@ -2501,8 +2502,8 @@ void CheckTurningMove(const TurningMoveSet& set, const SolidContactInputs& input
     ++counts.other_errors;
     return;
   }
-  ExpectEndOutsideEverySolidByItsTolerance(inputs, result.position);
-  ExpectEndOnNearerSideOfEveryPlate(inputs, result.position);
+  CheckEndOutsideEverySolidByItsTolerance(inputs, result.position);
+  CheckEndOnNearerSideOfEveryPlate(inputs, result.position);
   ++counts.successes_per_hit_count.at(result.hit_count);
   ParticleMove move;
   std::vector<SolidFace> hit_faces;
@@ -2611,7 +2612,7 @@ std::vector<TurningMoveSet> BuildTurningMoveSets() {
 }
 
 // Prints the counts of one generated set of moves near a turning solid, for the report.
-void PrintTurningMoveCounts(const char* set_name, const TurningMoveCounts& counts) {
+void WriteTurningMoveCounts(const char* set_name, const TurningMoveCounts& counts) {
   std::vector<int> advance_counts = counts.advance_counts;
   std::ranges::sort(advance_counts);
   int advance_sum = 0;
@@ -2640,7 +2641,7 @@ void PrintTurningMoveCounts(const char* set_name, const TurningMoveCounts& count
 
 // Fails the calling test unless a generated set of moves near a turning solid had no difference with an exact copy of
 // the turning solid or with the solids in reverse order.
-void ExpectSameTurningMovesWithCopyAndOrder(const TurningMoveSet& set, const TurningMoveCounts& counts) {
+void CheckSameTurningMovesWithCopyAndOrder(const TurningMoveSet& set, const TurningMoveCounts& counts) {
   EXPECT_EQ(counts.copy_differences, 0) << set.name;
   EXPECT_EQ(counts.order_differences, 0) << set.name;
   // Beside a cylinder's rim the normal is read from a vector about tol long, so a last-place change of the moved
@@ -2654,7 +2655,7 @@ void ExpectSameTurningMovesWithCopyAndOrder(const TurningMoveSet& set, const Tur
 // Fails the calling test unless a generated set of moves near a turning solid had no error but close calls, none of
 // them kTooManyHits or kEndsTooCloseToSolid, more than half its moves carried, and every carry ending at 0.99 tol or
 // more before the settle.
-void ExpectTurningMoveOutcomes(const char* set_name, const TurningMoveCounts& counts) {
+void CheckTurningMoveOutcomes(const char* set_name, const TurningMoveCounts& counts) {
   const std::array<int, 8>& failures = counts.failures_per_close_call;
   EXPECT_EQ(counts.other_errors, 0) << set_name;
   EXPECT_EQ(failures.at(static_cast<std::size_t>(ContactCloseCall::kTooManyHits)), 0) << set_name;
@@ -2685,10 +2686,10 @@ TEST(MoveParticle, GeneratedMovesNearTurningSolids_EndOutsideEverySolid) {
         CheckTurningMove(set, inputs, counts);
       }
     }
-    PrintTurningMoveCounts(set.name, counts);
+    WriteTurningMoveCounts(set.name, counts);
     EXPECT_GT(counts.moves, kMovesPerSet * 9 / 10) << set.name;
-    ExpectTurningMoveOutcomes(set.name, counts);
-    ExpectSameTurningMovesWithCopyAndOrder(set, counts);
+    CheckTurningMoveOutcomes(set.name, counts);
+    CheckSameTurningMovesWithCopyAndOrder(set, counts);
   }
 }
 

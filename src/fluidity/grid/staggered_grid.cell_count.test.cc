@@ -33,7 +33,7 @@ std::vector<CellId> ToSmallCells(CellId big_cell) {
   return small_cells;
 }
 
-void ExpectFailure(
+void CheckFailure(
     const std::expected<GridCounts, GridFailure>& result,
     GridError error,
     CellId cell = CellId{0},
@@ -105,7 +105,7 @@ TEST(ComputeGridCounts, CellsAtBothCoordLimits_CountTheirEdgeFacePieces) {
   ASSERT_TRUE(counts.has_value());
   EXPECT_EQ(counts->face_pieces, 48U);
   EXPECT_EQ(counts->cell_blocks, 4U);
-  ExpectCheckerCounts(counts, ToUnitFrame(2), cells);
+  CheckCheckerCounts(counts, ToUnitFrame(2), cells);
 }
 
 // Size level 0 {2^17 - 1,0,0} split, its size-level-1 cells at x = kMaxCoord - 1 and kMaxCoord, and size level 0
@@ -121,7 +121,7 @@ TEST(ComputeGridCounts, SmallCellsAtHighCoordLimitBesideBigCell_KeepItsQuarters)
   ASSERT_TRUE(counts.has_value());
   EXPECT_EQ(counts->face_pieces, 41U);
   EXPECT_EQ(counts->cell_blocks, 3U);
-  ExpectCheckerCounts(counts, ToUnitFrame(2), cells);
+  CheckCheckerCounts(counts, ToUnitFrame(2), cells);
 }
 
 // Size level 0 {0,0,0} split down to size level 3: 512 cells of size level 3 in a cube of 8 on each side. On each axis
@@ -173,7 +173,7 @@ TEST(ComputeGridCounts, CellSplitDownToSizeLevelFifteen_EqualsGeometricChecker) 
   EXPECT_EQ(counts->face_pieces, 462U);
   EXPECT_EQ(counts->cell_blocks, 17U);
   EXPECT_EQ(counts->active_cells, 107U);
-  ExpectCheckerCounts(counts, ToUnitFrame(16), cells);
+  CheckCheckerCounts(counts, ToUnitFrame(16), cells);
 }
 
 TEST(ComputeGridCounts, EmptyList_GivesZeroCounts) {
@@ -214,7 +214,7 @@ TEST(ComputeGridCounts, MoreBlocksThanAnyTestRoom_CountsThemAll) {
 
 TEST(ComputeGridCounts, CellInsideActiveBigCell_IsCellsOverlap) {
   const std::vector<CellId> cells = {ToCell(0, 0, 0, 0), ToCell(1, 1, 1, 1)};
-  ExpectFailure(
+  CheckFailure(
       ComputeCountsOfList(ToUnitFrame(3), cells),
       GridError::kCellsOverlap,
       ToCell(1, 1, 1, 1),
@@ -224,7 +224,7 @@ TEST(ComputeGridCounts, CellInsideActiveBigCell_IsCellsOverlap) {
 
 TEST(ComputeGridCounts, SameCellTwice_IsCellsOverlap) {
   const std::vector<CellId> cells = {ToCell(0, 2, 0, 0), ToCell(0, 2, 0, 0)};
-  ExpectFailure(
+  CheckFailure(
       ComputeCountsOfList(ToUnitFrame(3), cells),
       GridError::kCellsOverlap,
       ToCell(0, 2, 0, 0),
@@ -234,11 +234,7 @@ TEST(ComputeGridCounts, SameCellTwice_IsCellsOverlap) {
 
 TEST(ComputeGridCounts, CoordBeyondLimit_IsCoordOutOfRange) {
   const std::vector<CellId> cells = {ToCell(0, 0, 0, 0), ToCell(0, kMaxCoord + 1, 0, 0)};
-  ExpectFailure(
-      ComputeCountsOfList(ToUnitFrame(3), cells),
-      GridError::kCoordOutOfRange,
-      ToCell(0, kMaxCoord + 1, 0, 0)
-  );
+  CheckFailure(ComputeCountsOfList(ToUnitFrame(3), cells), GridError::kCoordOutOfRange, ToCell(0, kMaxCoord + 1, 0, 0));
 }
 
 // The 7 size-level-1 cells of size level 0 {0,0,0} without eighth 5, size level 1 {1,0,1}: the check that cell
@@ -246,7 +242,7 @@ TEST(ComputeGridCounts, CoordBeyondLimit_IsCoordOutOfRange) {
 TEST(ComputeGridCounts, LoneSmallCell_IsSiblingCellMissing) {
   std::vector<CellId> cells = ToSmallCells(ToCell(0, 0, 0, 0));
   cells.erase(cells.begin() + 5);
-  ExpectFailure(
+  CheckFailure(
       ComputeCountsOfList(ToUnitFrame(3), cells),
       GridError::kSiblingCellMissing,
       ToCell(1, 1, 0, 1),
@@ -266,7 +262,7 @@ TEST(ComputeGridCounts, CellsTwoSizeLevelsApart_IsSizeStepRuleBroken) {
       cells.push_back(cell);
     }
   }
-  ExpectFailure(
+  CheckFailure(
       ComputeCountsOfList(ToUnitFrame(3), cells),
       GridError::kSizeStepRuleBroken,
       ToCell(2, 4, 0, 0),
@@ -278,7 +274,7 @@ TEST(ComputeGridCounts, VersionZero_IsBadInput) {
   const std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
   GridInputs inputs = ToInputs(ToUnitFrame(3), cells);
   inputs.version = {.value = 0};
-  ExpectFailure(ComputeGridCounts(inputs), GridError::kBadInput);
+  CheckFailure(ComputeGridCounts(inputs), GridError::kBadInput);
 }
 
 }  // namespace

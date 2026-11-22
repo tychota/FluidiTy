@@ -182,7 +182,7 @@ struct FaceCornerCounts {
 
 // Compares, for every face piece of the tables, its 4 corners with the corners of its cell_low on that cell's high side
 // and of its cell_high on that cell's low side.
-FaceCornerCounts CountFaceCornersNotTheCellCorners(const GridTables& tables) {
+FaceCornerCounts ComputeCountFaceCornersNotTheCellCorners(const GridTables& tables) {
   FaceCornerCounts counts;
   for (std::uint32_t face_value = 0; face_value < tables.block_count * kFacePlacesPerBlock; ++face_value) {
     const FacePlaceIndex face = {.value = face_value};
@@ -218,7 +218,7 @@ TEST(FindCornerPlaces, FaceCorners_AreTheCellCornersOnThatSide) {
   const std::vector<CellId> cells = BuildUniformCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
-  const FaceCornerCounts counts = CountFaceCornersNotTheCellCorners(ToTablesOf(test_grid));
+  const FaceCornerCounts counts = ComputeCountFaceCornersNotTheCellCorners(ToTablesOf(test_grid));
   EXPECT_EQ(counts.corners_not_the_cell_corners, 0);
   // 3 axes x 9 planes x 8 x 8.
   EXPECT_EQ(counts.face_pieces, 3 * 9 * 64);
@@ -226,7 +226,7 @@ TEST(FindCornerPlaces, FaceCorners_AreTheCellCornersOnThatSide) {
 
 // Counts the edges of a size-level-0 cell, for every ordered pair of axes and every quarter, whose FindCellsAroundEdge
 // result is not the four cells at the test's own coordinates, all of the same size.
-int CountUniformEdgeMistakes(const GridTables& tables, CellCoord cell_coord) {
+int ComputeCountUniformEdgeMistakes(const GridTables& tables, CellCoord cell_coord) {
   int mistake_count = 0;
   const CellPlaceIndex cell = FindCellPlace(tables, ToCellId(SizeLevel{0}, cell_coord));
   for (const std::array<Axis, 2>& axes : kAxisPairs) {
@@ -251,8 +251,8 @@ TEST(FindCellsAroundEdge, UniformGrid_FindsFourSameSize) {
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   const GridTables tables = ToTablesOf(test_grid);
-  EXPECT_EQ(CountUniformEdgeMistakes(tables, {.x = 3, .y = 3, .z = 3}), 0);
-  EXPECT_EQ(CountUniformEdgeMistakes(tables, {.x = 4, .y = 4, .z = 4}), 0);
+  EXPECT_EQ(ComputeCountUniformEdgeMistakes(tables, {.x = 3, .y = 3, .z = 3}), 0);
+  EXPECT_EQ(ComputeCountUniformEdgeMistakes(tables, {.x = 4, .y = 4, .z = 4}), 0);
 }
 
 // A split place around the edge holds smaller cells: no place is given for it and is_same_size is false. In the
@@ -523,10 +523,10 @@ std::vector<NamedGrid> BuildGridsAtCoordLimits() {
       .cells = {ToCell(0, -kMaxCoord, -kMaxCoord, -kMaxCoord), ToCell(0, -kMaxCoord + 1, -kMaxCoord + 1, -kMaxCoord)},
   });
   std::vector<CellId> high_split_cells = {ToCell(0, kLargestSplitCoord - 1, 0, 0)};
-  AppendSmallCells(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
+  ApplyAppendSmallCells(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
   grids.push_back({.name = "small cells at the high limit", .size_level_count = 2, .cells = high_split_cells});
   std::vector<CellId> low_split_cells = {ToCell(0, -kLargestSplitCoord + 1, 0, 0)};
-  AppendSmallCells(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
+  ApplyAppendSmallCells(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
   grids.push_back({.name = "small cells at the low split limit", .size_level_count = 2, .cells = low_split_cells});
   grids.push_back({
       .name = "lone cell at the high limit, 16 size levels",
@@ -564,7 +564,7 @@ constexpr GridFrame ToOffsetFrame(int size_level_count) {
 
 // Counts the corners of active cells whose ComputeCornerPosition differs, in any bit, from origin + (c + bit) h_l
 // computed at the cell's own size level l: the same double from every cell that reaches a corner.
-int CountCornerPositionsNotTheCells(const GridTables& tables, const std::vector<CellId>& cells) {
+int ComputeCountCornerPositionsNotTheCells(const GridTables& tables, const std::vector<CellId>& cells) {
   int mistake_count = 0;
   for (const CellId cell_id : cells) {
     const CellCorners cell_corners = FindCornerPlaces(tables, FindCellPlace(tables, cell_id));
@@ -601,7 +601,7 @@ void CheckHandMadeGrids(const std::vector<NamedGrid>& grids) {
     const GridFrame offset_frame = ToOffsetFrame(named_grid.size_level_count);
     const std::expected<TestGrid, GridFailure> offset_grid = BuildTestGrid(ToInputs(offset_frame, named_grid.cells));
     ASSERT_TRUE(offset_grid.has_value());
-    EXPECT_EQ(CountCornerPositionsNotTheCells(ToTablesOf(offset_grid), named_grid.cells), 0);
+    EXPECT_EQ(ComputeCountCornerPositionsNotTheCells(ToTablesOf(offset_grid), named_grid.cells), 0);
   }
 }
 

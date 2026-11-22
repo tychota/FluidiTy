@@ -5,7 +5,7 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    ToUnitFrame, ToCell, AppendSmallCells, BuildSplitCellBesideBigCell, ToValue, ToValues, kAxes,
+// Owns:    ToUnitFrame, ToCell, ApplyAppendSmallCells, BuildSplitCellBesideBigCell, ToValue, ToValues, kAxes,
 //          ComputeIsKeptWhole, BuildTwoSizesWorstCase, ComputeHasAllSiblings, CheckSiblingsTogether,
 //          ComputeDoBoxesTouch, CheckSizeStepByBruteForce, ComputeWordsDigest, ToWord, ApplyCellsToWords,
 //          ApplyFacePiecesToWords, BuildMovedCells, DigestGrid, BuildDigestWindows
@@ -62,7 +62,7 @@ inline CellId ToCell(int size_level, std::int32_t x, std::int32_t y, std::int32_
 }
 
 // Appends the 8 small cells of big_cell to cells.
-inline void AppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+inline void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -72,7 +72,7 @@ inline void AppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
 // levels.
 inline std::vector<CellId> BuildSplitCellBesideBigCell() {
   std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
-  AppendSmallCells(ToCell(0, 1, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, 1, 0, 0), cells);
   return cells;
 }
 
@@ -112,7 +112,7 @@ inline std::vector<CellId> BuildTwoSizesWorstCase() {
         if (ComputeIsKeptWhole({.x = x - 2, .y = y - 2, .z = z - 2})) {
           cells.push_back(ToCell(1, x, y, z));
         } else {
-          AppendSmallCells(ToCell(1, x, y, z), cells);
+          ApplyAppendSmallCells(ToCell(1, x, y, z), cells);
         }
       }
     }

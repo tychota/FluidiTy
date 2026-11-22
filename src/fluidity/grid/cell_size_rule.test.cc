@@ -747,7 +747,7 @@ TEST(FindNearestCommittedCell, PositionNotFinite_IsNoIndex) {
 
 // Cells {0,0,0} and {2,0,0} of one size level, and the position 1.75, 0.5 and 0.5 biggest widths from the origin:
 // 1.25 widths from the centre of {0,0,0} and 0.75 from the centre of {2,0,0}, which is the nearer.
-void ExpectNearerCellInFrame(GridFrame frame) {
+void CheckNearerCellInFrame(GridFrame frame) {
   const std::array<CellId, 2> cells = {ToTestCell(0, 0, 0, 0), ToTestCell(0, 2, 0, 0)};
   const std::expected<TestGrid, GridFailure> committed = BuildCommittedGridInFrame(frame, cells);
   ASSERT_TRUE(committed.has_value());
@@ -764,19 +764,19 @@ void ExpectNearerCellInFrame(GridFrame frame) {
 // An origin and a width that are not powers of two: every centre and the position round, and the nearer cell
 // still wins.
 TEST(FindNearestCommittedCell, OriginAndWidthNotPowersOfTwo_FindsTheNearerCell) {
-  ExpectNearerCellInFrame(
+  CheckNearerCellInFrame(
       {.origin = {.x = -2.3, .y = 0.7, .z = 1000.1}, .biggest_cell_width = 0.3, .size_level_count = 1}
   );
 }
 
 // Biggest cells 1e160 m wide: a squared distance in metres would overflow to +infinity for both cells.
 TEST(FindNearestCommittedCell, HugeBiggestCellWidth_FindsTheNearerCell) {
-  ExpectNearerCellInFrame({.origin = {}, .biggest_cell_width = 1e160, .size_level_count = 1});
+  CheckNearerCellInFrame({.origin = {}, .biggest_cell_width = 1e160, .size_level_count = 1});
 }
 
 // Biggest cells 1e-170 m wide: a squared distance in metres would underflow to 0 for both cells.
 TEST(FindNearestCommittedCell, TinyBiggestCellWidth_FindsTheNearerCell) {
-  ExpectNearerCellInFrame({.origin = {}, .biggest_cell_width = 1e-170, .size_level_count = 1});
+  CheckNearerCellInFrame({.origin = {}, .biggest_cell_width = 1e-170, .size_level_count = 1});
 }
 
 }  // namespace

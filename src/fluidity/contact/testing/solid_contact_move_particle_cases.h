@@ -5,10 +5,10 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    kTolerance, kNoMotion, kUnitX, kUnitZ, MoveParticleCall, BuildUntouchedResult, RunMove, RunMove,
-//          MoveBeforeSettle, ApplyStepsBeforeSettle, RunMoveBeforeSettle, ComputePositionBeforeSettle,
+// Owns:    kTolerance, kNoMotion, kUnitX, kUnitZ, MoveParticleCall, BuildUntouchedResult, ComputeMove, ComputeMove,
+//          MoveBeforeSettle, ApplyStepsBeforeSettle, ComputeMoveBeforeSettle, ComputePositionBeforeSettle,
 //          BuildOrderedScene, ToWedgeSideNormal, BuildRestPointInputs, BuildMovingFlatSolid, ToPermutedSolids,
-//          DrawUnitVector, DrawUnitVector
+//          BuildUnitVector, BuildUnitVector
 // Uses:    the headers it includes
 // Used by: src/fluidity/contact/solid_contact.move_particle.test.cc and
 //          tests/contact/move_particle_on_generated_paths.test.cc
@@ -86,7 +86,7 @@ inline SolidContactResult BuildUntouchedResult() {
 }
 
 // Runs MoveParticle on one scene, starting from the untouched result and a failure that is not the default.
-inline MoveParticleCall RunMove(const MoveParticleCase& test_case) {
+inline MoveParticleCall ComputeMove(const MoveParticleCase& test_case) {
   MoveParticleCall call;
   call.result = BuildUntouchedResult();
   call.failure = {
@@ -101,8 +101,8 @@ inline MoveParticleCall RunMove(const MoveParticleCase& test_case) {
 }
 
 // Runs MoveParticle on the scene of that name.
-inline MoveParticleCall RunMove(std::string_view case_name) {
-  return RunMove(FindMoveParticleCase(case_name));
+inline MoveParticleCall ComputeMove(std::string_view case_name) {
+  return ComputeMove(FindMoveParticleCase(case_name));
 }
 
 // Where the steps of MoveParticle leave a particle before the settle, and the faces of the hits along the path.
@@ -159,7 +159,7 @@ ApplyStepsBeforeSettle(const SolidContactInputs& inputs, ParticleMove* move, std
 
 // Runs the steps of MoveParticle on one scene up to the end of the last sweep, without the settle and the end check,
 // and returns the position there with the faces of the hits; a failure fails the calling test.
-inline MoveBeforeSettle RunMoveBeforeSettle(const MoveParticleCase& scene) {
+inline MoveBeforeSettle ComputeMoveBeforeSettle(const MoveParticleCase& scene) {
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   MoveBeforeSettle before_settle;
   ParticleMove move;
@@ -168,9 +168,9 @@ inline MoveBeforeSettle RunMoveBeforeSettle(const MoveParticleCase& scene) {
   return before_settle;
 }
 
-// The position RunMoveBeforeSettle returns.
+// The position ComputeMoveBeforeSettle returns.
 inline Vec3 ComputePositionBeforeSettle(const MoveParticleCase& scene) {
-  return RunMoveBeforeSettle(scene).position;
+  return ComputeMoveBeforeSettle(scene).position;
 }
 
 // --- The joint response (method paper <sec-move-particle>) ---
@@ -224,7 +224,7 @@ inline std::vector<Solid> ToPermutedSolids(const std::vector<Solid>& solids, con
 }
 
 // Draws a unit vector from the generator: three signed coordinates, again until the length is in [0.1, 1].
-inline Vec3 DrawUnitVector(CaseGenerator* generator) {
+inline Vec3 BuildUnitVector(CaseGenerator* generator) {
   Vec3 drawn{};
   do {
     drawn = {.x = generator->NextSigned(), .y = generator->NextSigned(), .z = generator->NextSigned()};
@@ -233,7 +233,7 @@ inline Vec3 DrawUnitVector(CaseGenerator* generator) {
 }
 
 // Draws a unit vector: three NextSigned, drawn again while shorter than 0.1.
-inline Vec3 DrawUnitVector(CaseGenerator& generator) {
+inline Vec3 BuildUnitVector(CaseGenerator& generator) {
   Vec3 direction{};
   while (math::Length(direction) < 0.1) {
     direction = {.x = generator.NextSigned(), .y = generator.NextSigned(), .z = generator.NextSigned()};

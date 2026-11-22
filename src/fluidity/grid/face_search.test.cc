@@ -275,7 +275,7 @@ TEST(FindNextFace, BiggerBlockNotInTables_IsFoundById) {
 // lie in the size-level-1 block (2,0,0), under the size-level-0 block (1,0,0), which holds no face piece.
 std::vector<CellId> BuildCellBesideSplitBlock() {
   std::vector<CellId> cells = {ToCell(0, 3, 0, 0)};
-  AppendSmallCells(ToCell(0, 4, 0, 0), cells);
+  ApplyAppendSmallCells(ToCell(0, 4, 0, 0), cells);
   return cells;
 }
 

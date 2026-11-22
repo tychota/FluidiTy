@@ -6,7 +6,7 @@
 //   as it was written when the tests were in one file.
 //
 // Owns:    ToUnitFrame, ToCell, ToValues, ToSizeLevelNumber, ToSmallCells, CpuGridBuffers, BuildCpuGridBuffers,
-//          ToInputs, ReadLentCellIds, ExpectFailure, BuildTwoSizeLevelsApart, CheckThroughSortedCellList
+//          ToInputs, ReadLentCellIds, CheckFailure, BuildTwoSizeLevelsApart, CheckThroughSortedCellList
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/grid_cell_checks.test.cc and tests/grid/grid_cell_checks_on_random_grids.test.cc
 // Read:    the test files that include it
@@ -143,7 +143,7 @@ inline std::vector<std::uint64_t> ReadLentCellIds(const GridBuilderBuffers& buil
   return ToValues(std::span<const CellId>(cell_ids.data(), std::min(count, cell_ids.size())));
 }
 
-inline void ExpectFailure(
+inline void CheckFailure(
     const std::expected<void, GridFailure>& result,
     GridError error,
     CellId cell = CellId{0},
@@ -167,7 +167,7 @@ inline std::vector<CellId> BuildTwoSizeLevelsApart(CellId small_cell) {
 // BuildSortedCellList
 // ---------------------------------------------------------------------------------------------------------------------
 
-// Runs BuildSortedCellList and drops the count, for ExpectFailure.
+// Runs BuildSortedCellList and drops the count, for CheckFailure.
 inline std::expected<void, GridFailure>
 CheckThroughSortedCellList(GridFrame frame, std::span<const CellId> cells, GridBuffers& buffers) {
   const std::expected<std::uint32_t, GridFailure> built =

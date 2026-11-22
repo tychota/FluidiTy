@@ -371,7 +371,8 @@ Values cross between the processors only through `WriteBuffer` (CPU memory to a 
 to CPU memory) (@fig-buffer-crossings). Every copy to or from the GPU is therefore visible where it is called.
 `CopyBuffer` copies between two buffers on the same processor. Two buffers on different processors are a bug in the
 caller, not an error the call reports: same processor is a precondition, checked by an assertion in debug builds
-only. Each copy also has a form that takes a slice: `count` items starting at index `first`. Sizes, slices and overlap are checked
+only. Each copy also has a form that takes a slice: `count` items starting at index `first`. Sizes, slices and overlap
+are checked
 before any memory is touched, so a call stopped by one of these checks writes nothing. Two overlapping ranges, such
 as two slices of one buffer or a span that points into the buffer it is copied to, are not copied, because a plain
 byte copy between them would mix old and new values. A GPU call that fails during the copy is different: the values
@@ -483,7 +484,8 @@ The bytes to reserve come from the same rounding, written once in `ComputeRunMem
 kept in one memory (`MemoryWhere`), `ComputeRunMemoryBytes` adds the copies times the piece bytes of one copy, since
 every copy is its own buffer and its own piece. This is a contract for every module: each copy of an entry is
 exactly one buffer of items × bytes each. A module that keeps 24 bytes per particle as three buffers of 8 bytes
-writes three entries, since three pieces round three times: for 10 particles, 3 × 256 = 768 bytes, not 256. A GPU run reserves one block on the GPU for the `kRunOn` entries and one on the CPU for the `kCpu` entries;
+writes three entries, since three pieces round three times: for 10 particles, 3 × 256 = 768 bytes, not 256. A GPU run
+reserves one block on the GPU for the `kRunOn` entries and one on the CPU for the `kCpu` entries;
 a CPU run reserves one block for both. Applied to @tab-memory-estimate, the positions take 2 × 24,064 = 48,128
 bytes (24,000 rounded up), the velocities 48,128 (48,000 rounded up), and the working buffers 1,024, already a
 multiple of 256: 97,280 bytes in all, 256 more than the sum without rounding. Building the four buffers from a
@@ -566,7 +568,8 @@ every iteration allocates nothing. The CPU reads the values once
 from left to right and computes each pair sum as soon as its two sides exist. It keeps the left sides that still
 wait for their right side, at most one per layer. A count fits in 64 bits, so 64 waiting sums are enough, and the
 CPU code needs no memory beyond them, and its sum buffers hold nothing. Both add the same pairs, so both give the
-same bits. On the GPU, the dot product writes its products to the sum buffers first and then sums them with the same steps;
+same bits. On the GPU, the dot product writes its products to the sum buffers first and then sums them with the same
+steps;
 the CPU computes each product as the tree reaches it.
 
 = Ordering that never depends on timing <sec-stable-order>
@@ -629,7 +632,8 @@ that are equal for every item. The GPU runs all eight passes; skipping changes n
 On the GPU, the sequence is cut into chunks of 1,024 places, and one thread block of 256 threads (the threads of one
 GPU launch unit, which can share fast memory and wait for each other) takes one chunk. Thread `d` of the thread block
 reads the chunk's digits from front to back and counts the items with digit `d`. A table holds these counts, digit
-by digit, and chunk by chunk within a digit. Its exclusive prefix sum gives, for each digit and chunk, the place where that chunk's first item with that digit lands: all items with a smaller digit come before
+by digit, and chunk by chunk within a digit. Its exclusive prefix sum gives, for each digit and chunk, the place where
+that chunk's first item with that digit lands: all items with a smaller digit come before
 it, then the items with the same digit in earlier chunks. Thread `d` then walks its chunk again and places its
 items one after another from there. No two threads write the same place, no counter is shared, and no thread's place
 depends on when another thread runs.
@@ -1944,7 +1948,8 @@ when each of its coordinates lies between $-(2^17 - 1)$ and $2^17 - 1$, at every
 A cell of size level 1 or more at $-$`kMaxCoord` lies in a big cell at $-2^17$, whose small cells reach $-2^18$: no
 valid list holds it, and the check reports `kSiblingCellMissing` without naming that small cell, since no id can. And a
 cell of size level $l$ at $c$ holds cells of size level $m$ only when one of its cells of size level #box[$m - 1$], from
-#box[$c dot 2^(m - 1 - l)$] to #box[$(c + 1) dot 2^(m - 1 - l) - 1$], can be split. For example, a cell of size level 0 holds cells
+#box[$c dot 2^(m - 1 - l)$] to #box[$(c + 1) dot 2^(m - 1 - l) - 1$], can be split. For example, a cell of size level 0
+holds cells
 of size level 15 only between $-8$ and $7$ on each axis, and at $-8$ not at its low corner, whose cell of size level 14
 lies at $-2^17$. A scene that needs small cells farther out moves the frame's origin or uses larger biggest cells.
 
@@ -2158,7 +2163,8 @@ positions overflow gives $+infinity$ too. A corner place belongs to one set of t
 corner may be stored at another size level than in the whole grid, so values are matched between a grid piece and the
 whole grid by position or id, never by corner place.
 
-`ComputeCornerPosition` gives a corner place's position, origin $+ m h_l$ on each axis, for the integer coordinate $m$ of
+`ComputeCornerPosition` gives a corner place's position, origin $+ m h_l$ on each axis, for the integer coordinate $m$
+of
 the lattice point at its block's size level $l$: one product and one sum, as for a cell centre. The same point at size
 level $l + j$ has the coordinate $m 2^j$ and the width $h_l \/ 2^j$, so the product is the same number, rounded the same
 way. One point has one corner place, so it has one position, with the same bits on the CPU and the GPU.

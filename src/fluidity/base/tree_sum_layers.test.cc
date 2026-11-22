@@ -48,7 +48,7 @@ TEST(RunLayers, NegativeZerosOnly_FollowTheTreeSumPaddingRule) {
   for (std::size_t count = 1; count <= 70; ++count) {
     const std::vector<double> values(count, -0.0);
     EXPECT_EQ(
-        ToBits(RunLayers(ComputeLayerPairSum, values, ThreadOrder::kReverse)),
+        ToBits(ComputeLayers(ComputeLayerPairSum, values, ThreadOrder::kReverse)),
         ToBits(math::TreeSum(values.data(), count))
     ) << "count "
       << count;
@@ -60,7 +60,7 @@ TEST(RunLargestMagnitudeLayers, OneNaN_IsNaN) {
   values[617] = std::numeric_limits<double>::quiet_NaN();
   EXPECT_TRUE(CheckSameBitsOrBothNaN(
       std::numeric_limits<double>::quiet_NaN(),
-      RunLargestMagnitudeLayers(values, ThreadOrder::kLaunchOrder)
+      ComputeLargestMagnitudeLayers(values, ThreadOrder::kLaunchOrder)
   ));
 }
 

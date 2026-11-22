@@ -37,17 +37,17 @@ constexpr double kRimHitGap = kTolerance / 1024;
 
 // Returns whether the path's point at elapsed seconds is beside a cylinder's rim by the reference: beyond both the wall
 // and a cap's plane, where the rim search, not the sharp entry, decides the hit.
-bool IsBesideRimByReference(const RoundScene& scene, double elapsed) {
+bool ComputeIsBesideRimByReference(const RoundScene& scene, double elapsed) {
   const Solid& solid = scene.solid;
   if (solid.shape != SolidShape::kCylinder) {
     return false;
   }
   const DoubleDoubleVec3 own_point = ComputeReferenceOwnPoint(scene, elapsed);
   const DoubleDouble axis_distance_squared =
-      Add(Multiply(own_point.x, own_point.x), Multiply(own_point.y, own_point.y));
+      ComputeSum(ComputeProduct(own_point.x, own_point.x), ComputeProduct(own_point.y, own_point.y));
   const double wall_distance = ComputeRootMinusLength(axis_distance_squared, solid.half_size.x);
-  const DoubleDouble height = own_point.z.high < 0 ? Negate(own_point.z) : own_point.z;
-  const double cap_distance = Subtract(height, ToDoubleDouble(solid.half_size.z)).high;
+  const DoubleDouble height = own_point.z.high < 0 ? ComputeNegation(own_point.z) : own_point.z;
+  const double cap_distance = ComputeDifference(height, ToDoubleDouble(solid.half_size.z)).high;
   return wall_distance > 0 && cap_distance > 0;
 }
 
@@ -69,7 +69,7 @@ struct GeneratedCounts {
 // path before it, or the whole path when it is free, never comes nearer than tol - kHitDistanceBound. Returns whether
 // every check held.
 bool CheckAgainstReference(const RoundScene& scene, GeneratedCounts* counts) {
-  ExpectWithinScale(scene);
+  CheckWithinScale(scene);
   const FirstHit first_hit = FindSceneHit(scene);
   const bool is_hit = first_hit.solid_index != kNoSolid;
   const double end_elapsed = is_hit ? first_hit.elapsed : scene.duration;  // s
@@ -89,7 +89,7 @@ bool CheckAgainstReference(const RoundScene& scene, GeneratedCounts* counts) {
     ++counts->hits;
     const double distance_at_hit = ComputeReferenceDistance(scene, first_hit.elapsed);
     // Beside a rim by the reference, not by the face the code reports.
-    const bool is_rim = IsBesideRimByReference(scene, first_hit.elapsed);
+    const bool is_rim = ComputeIsBesideRimByReference(scene, first_hit.elapsed);
     const double largest_distance = kTolerance + kHitDistanceBound + (is_rim ? kRimHitGap : 0);  // m
     is_hit_at_grown_surface = distance_at_hit <= largest_distance;
     if (is_rim) {
@@ -350,7 +350,7 @@ GeneratedCounts CheckGeneratedCases(SolidShape shape, int case_count) {
   return counts;
 }
 
-void PrintCounts(const char* name, const GeneratedCounts& counts) {
+void WriteCounts(const char* name, const GeneratedCounts& counts) {
   std::cout << name << ": built " << counts.built << ", correct " << counts.correct << ", hit " << counts.hits
             << ", must hit " << counts.must_hit << ", rim hits " << counts.rim_hits << ", near form "
             << counts.near_form << ", largest |distance at hit - tol| " << counts.largest_distance_error / kTolerance
@@ -359,7 +359,7 @@ void PrintCounts(const char* name, const GeneratedCounts& counts) {
 
 TEST(FindFirstHit, GeneratedFarSphereSweepsAcrossTheScale_HitWithinBoundOfGrownSurface) {
   const GeneratedCounts counts = CheckGeneratedCases(SolidShape::kSphere, 10000);
-  PrintCounts("generated sphere sweeps across the scale", counts);
+  WriteCounts("generated sphere sweeps across the scale", counts);
   EXPECT_EQ(counts.correct, counts.built);
   // Enough paths must hit for the check to mean something, and enough are free.
   EXPECT_GT(counts.must_hit, 5000);
@@ -371,7 +371,7 @@ TEST(FindFirstHit, GeneratedFarSphereSweepsAcrossTheScale_HitWithinBoundOfGrownS
 
 TEST(FindFirstHit, GeneratedFarCylinderSweepsAcrossTheScale_HitWithinBoundOfGrownSurface) {
   const GeneratedCounts counts = CheckGeneratedCases(SolidShape::kCylinder, 10000);
-  PrintCounts("generated cylinder sweeps across the scale", counts);
+  WriteCounts("generated cylinder sweeps across the scale", counts);
   EXPECT_EQ(counts.correct, counts.built);
   EXPECT_GT(counts.must_hit, 5000);
   EXPECT_LT(counts.hits, 7000);
