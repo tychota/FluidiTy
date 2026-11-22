@@ -5,12 +5,16 @@ Usage: uv run python tools/check_message.py [<commit> | --range A..B | --file PA
 A message fails when:
 - the subject is longer than 72 columns, the line after it is not blank, or a body line is longer than 72 columns (a
   line that is only a URL, and an indented code line, are exempt);
-- the last paragraph has a trailer line, `Key: value` with Key one of TRAILER_KEYS or ending in `-by`; the one
-  allowed trailer-like line is the literal last line `GPU: compiled, not run`;
-- it names a tool or a model (TOOL_WORDS) as a whole word, in any case;
-- it uses a process word (PROCESS_WORDS) as a whole word, in any case; a `fixup!` subject fails too, so a fixup commit
-  cannot be pushed unfolded;
+- the last paragraph has a trailer line, `Key: value` with Key one of TRAILER_KEYS or ending in `-by`; the literal
+  last line `GPU: compiled, not run` is not a trailer (its key is no trailer key), so it passes;
+- it names a tool or a model (TOOL_WORDS) as a whole word, in any case, outside a backtick span and outside a token
+  that holds `/` (a path or a branch name, such as `origin/codex/m7-low-mach-gas`);
+- it uses a process word (PROCESS_WORDS) as a whole word or in a regular inflection (`reviews`, `reviewed`), in any
+  case (the file name AGENTS.md is not the word); a `fixup!`, `squash!` or `amend!` subject fails too, so such a commit cannot be pushed unfolded;
 - it uses a word the glossary bans in every sense, found as check_rules.py finds it in a comment.
+
+A file read with --file loses the lines that start with `#` and everything after git's scissors line, as git does
+before it stores a message, so the file of a `commit-msg` hook (tools/hooks/commit-msg) is read as git will keep it.
 
 Output is one line per problem, `<commit>: <problem>` (`message:` for --file). The exit code is 0 when every message
 passes, 1 when one fails, 2 when the input cannot be read.
@@ -50,7 +54,19 @@ PROCESS_WORDS = ("brief", "review", "reviewer", "fixup", "subagent", "agent")
 _TRAILER_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):\s+\S")
 _URL_ONLY_LINE = re.compile(r"^\s*<?https?://\S+>?\s*$")
 _TOOL_WORD = re.compile(r"\b(" + "|".join(TOOL_WORDS) + r")\b", re.IGNORECASE)
-_PROCESS_WORD = re.compile(r"\b(" + "|".join(PROCESS_WORDS) + r")\b", re.IGNORECASE)
+# A process word also matches its regular inflections, as a glossary word does (check_rules.inflected_forms).
+_PROCESS_WORD = re.compile(
+    r"\b(" + "|".join(sorted({form for word in PROCESS_WORDS for form in check_rules.inflected_forms(word)})) + r")\b",
+    re.IGNORECASE,
+)
+# A subject that git builds for `git commit --fixup`, `--squash` and the amend form: it is folded before a push.
+_UNFOLDED_SUBJECT = re.compile(r"^(fixup|squash|amend)! ", re.IGNORECASE)
+# Text in which a tool word is a name of something else: a backtick span, and a token with a `/` (a path or a branch).
+_BACKTICK_SPAN = re.compile(r"`[^`\n]*`")
+_TOKEN_WITH_SLASH = re.compile(r"\S*/\S*")
+# The name of the project's rules file holds a process word; naming the file is not using the word.
+_RULES_FILE_NAME = re.compile(r"\bAGENTS\.md\b")
+SCISSORS_LINE = "# ------------------------ >8 ------------------------"
 
 
 def is_trailer_key(key: str) -> bool:
@@ -90,9 +106,11 @@ def find_trailer_problems(lines: Sequence[str]) -> list[str]:
 
 def find_word_problems(text: str, glossary: Sequence[check_rules.NeverSayEntry]) -> list[str]:
     problems = []
-    for word in dict.fromkeys(match.lower() for match in _TOOL_WORD.findall(text)):
+    text_without_names = _TOKEN_WITH_SLASH.sub(" ", _BACKTICK_SPAN.sub(" ", text))
+    for word in dict.fromkeys(match.lower() for match in _TOOL_WORD.findall(text_without_names)):
         problems.append(f"'{word}' names a tool or a model; a message does not")
-    for word in dict.fromkeys(match.lower() for match in _PROCESS_WORD.findall(text)):
+    text_without_file_name = _RULES_FILE_NAME.sub(" ", text)
+    for word in dict.fromkeys(match.lower() for match in _PROCESS_WORD.findall(text_without_file_name)):
         problems.append(f"'{word}' is a process word; say what the change does, not how it was made")
     for word in check_rules.find_banned_words(text, glossary):
         problems.append(f"'{word}' is banned (docs/glossary.md)")
@@ -104,7 +122,22 @@ def check_message(text: str, glossary: Sequence[check_rules.NeverSayEntry]) -> l
     lines = text.rstrip().splitlines()
     if not lines:
         return ["the message is empty"]
-    return find_layout_problems(lines) + find_trailer_problems(lines) + find_word_problems(text, glossary)
+    problems = find_layout_problems(lines) + find_trailer_problems(lines)
+    unfolded = _UNFOLDED_SUBJECT.match(lines[0])
+    if unfolded:
+        problems.append(f"'{unfolded.group(1).lower()}!' starts the subject; fold the commit into the one it fixes")
+    return problems + find_word_problems(text, glossary)
+
+
+def strip_git_comments(text: str) -> str:
+    """The message as git stores it: no line that starts with `#`, and nothing from the scissors line on."""
+    kept = []
+    for line in text.splitlines():
+        if line == SCISSORS_LINE:
+            break
+        if not line.startswith("#"):
+            kept.append(line)
+    return "\n".join(kept) + "\n"
 
 
 def read_commit_messages(commits: Sequence[str], repository: Path) -> dict[str, str]:
@@ -149,7 +182,7 @@ def main(argv: Sequence[str] | None = None, repository: Path = check_rules.REPO_
     try:
         glossary = check_rules.load_glossary(check_rules.DEFAULT_GLOSSARY_PATH)
         if arguments.file:
-            messages = {"message": Path(arguments.file).read_text(encoding="utf-8")}
+            messages = {"message": strip_git_comments(Path(arguments.file).read_text(encoding="utf-8"))}
         elif arguments.revision_range:
             messages = read_commit_messages(list_range(arguments.revision_range, repository), repository)
         else:

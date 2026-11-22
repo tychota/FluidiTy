@@ -7,7 +7,8 @@
 #
 # What each job proves:
 #   rules         The C++ and CUDA sources are clang-format 23.1 clean, tools/check_rules.py reports no FAIL under
-#                 src/ and tests/, the pytest suite of tools/ passes, and this file is accepted by actionlint.
+#                 src/, tests/ and docs/method-paper/, the pytest suite of tools/ passes, this file is accepted by
+#                 actionlint, and the message of every pushed commit passes tools/check_message.py.
 #   cpu           The strict CPU build (warnings as errors) of `<os>-<configuration>-cpu` configures, builds and passes
 #                 all its tests (a CPU build registers only `cpu` tests) on Linux (GCC 13), macOS (Xcode 16.4) and
 #                 Windows (VS 2022). The Windows job is the only place the Windows CPU code is compiled; the
@@ -50,6 +51,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The message step reads the commits of the pushed range, so it needs their history.
+          fetch-depth: 0
 
       # uv 0.13.7 is the version of tools/cuda-container/Dockerfile. It installs Python 3.13 (pyproject.toml's
       # requires-python) and the tools of uv.lock; `--frozen` never rewrites the lockfile.
@@ -68,6 +71,27 @@ jobs:
 
       - name: Gate step rules
         run: uv run --frozen python tools/check_commit.py --speed full --only rules
+
+      # The gate's message step needs a clean tree and an upstream, which a runner has not, so this step reads the same
+      # check over the commits sent: a push is `before..sha` when `before` exists and is an ancestor of `sha` (a new
+      # branch has an all-zero `before`, and a forced push may leave one that is gone), a pull request is its own
+      # commits, and any other run reads the commit it started on.
+      - name: Message of every pushed commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PULL_BASE: ${{ github.event.pull_request.base.sha }}
+          PULL_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          check=(uv run --frozen python tools/check_message.py)
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            "${check[@]}" --range "$PULL_BASE..$PULL_HEAD"
+          elif [ "$EVENT_NAME" = "push" ] && ! [[ "$PUSH_BEFORE" =~ ^0+$ ]] \
+              && git merge-base --is-ancestor "$PUSH_BEFORE" "$GITHUB_SHA"; then
+            "${check[@]}" --range "$PUSH_BEFORE..$GITHUB_SHA"
+          else
+            "${check[@]}" "$GITHUB_SHA"
+          fi
 
   cpu:
     name: cpu ${{ matrix.platform }} ${{ matrix.configuration }}

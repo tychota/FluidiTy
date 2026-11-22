@@ -53,6 +53,7 @@ class FakeRun:
         rules_output="",
         changed=(),
         untracked=(),
+        unpushed=(),
         test_times=(("Fast.Unit", "base;cpu;unit", 0.01),),
     ):
         self.commands = []
@@ -71,6 +72,8 @@ class FakeRun:
         self._rules_output = rules_output
         self._changed = list(changed)
         self._untracked = list(untracked)
+        # What `git rev-list @{upstream}..HEAD` lists; empty is the answer of a branch with nothing to push.
+        self._unpushed = list(unpushed)
         # What ctest writes to the JUnit file: (test name, `;`-joined labels, seconds) for each test it ran.
         self._test_times = list(test_times)
 
@@ -93,6 +96,8 @@ class FakeRun:
             output = "".join(f"{path}\n" for path in self._tracked)
         if command[:3] == ["git", "ls-files", "--others"]:
             output = "".join(f"{path}\0" for path in self._untracked)
+        if command[:2] == ["git", "rev-list"]:
+            output = "".join(f"{commit}\n" for commit in self._unpushed)
         if command[:3] == ["git", "diff", "--name-only"]:
             output = "".join(f"{path}\0" for path in self._changed)
         if command[:2] == ["git", "status"]:
@@ -857,10 +862,26 @@ def test_message_step_checks_the_message_of_head_when_the_tree_has_no_change(mon
     assert message_commands(fake)[0][-1] == "HEAD"
 
 
+def test_message_step_checks_every_unpushed_commit(monkeypatch, capsys, repo):
+    fake = FakeRun(unpushed=["aaaa111", "bbbb222"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "message")
+    assert exit_code == 0
+    assert lines == ["PASS message"]
+    assert ["git", "rev-list", "@{upstream}..HEAD"] in fake.commands
+    assert message_commands(fake)[0][-2:] == ["--range", "@{upstream}..HEAD"]
+
+
 @pytest.mark.parametrize("fake", [FakeRun(changed=["src/fluidity/a.cc"]), FakeRun(untracked=["src/fluidity/b.h"])])
 def test_message_step_is_not_run_with_uncommitted_changes(monkeypatch, capsys, repo, fake):
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "commit", "--allow-dirty")
+    assert "NOT RUN message (uncommitted changes)" in lines
+    assert message_commands(fake) == []
+
+
+@pytest.mark.parametrize("fake", [FakeRun(changed=["src/fluidity/a.cc"]), FakeRun(untracked=["src/fluidity/b.h"])])
+def test_only_message_with_uncommitted_changes_is_a_failure(monkeypatch, capsys, repo, fake):
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "message", "--allow-dirty")
-    assert exit_code == 0
+    assert exit_code == 1
     assert lines[-1] == "NOT RUN message (uncommitted changes)"
     assert message_commands(fake) == []
 

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Git runs this before it stores a commit, with the path of the message file as "$1". It fails the commit when the
+# message breaks the rules of tools/check_message.py. Enable it once per clone: git config core.hooksPath tools/hooks
+if ! command -v uv > /dev/null 2>&1; then
+  echo "commit-msg: uv is not on PATH, so the message cannot be checked; install uv (see AGENTS.md)" >&2
+  exit 1
+fi
+exec uv run python tools/check_message.py --file "$1"

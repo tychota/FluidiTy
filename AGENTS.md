@@ -541,12 +541,24 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     at once. At `quick` speed the suite is left out (`NOT RUN tools tests (quick, tools unchanged)`) while no changed
     file is under `tools/`, `cmake/` or `.github/` or is a top-level `CMakeLists.txt`, `pyproject.toml` or `uv.lock`;
     at `commit` and `full` speed it always runs.
-  - `PASS message`: `tools/check_message.py` accepts the message of `HEAD`: a subject of at most 72 columns, a blank
-    line after it, body lines of at most 72, no trailer line (the one exception is a last line `GPU: compiled, not
-    run`), no tool or model name, no process word (brief, review, reviewer, fixup, subagent, agent) and no
-    word the glossary bans. The step runs when the working tree has no change, so run the gate again after the commit;
-    with changes it prints `NOT RUN message (uncommitted changes)`, and `--speed quick` leaves it out. It also reads one
-    commit (`tools/check_message.py <commit>`), a range (`--range A..B`) or a file (`--file PATH`).
+  - `PASS message`: `tools/check_message.py` accepts the message of every commit the push would send, that is, of
+    `@{upstream}..HEAD`, or of `HEAD` alone when the branch has no upstream or nothing is unpushed. A message passes
+    with a subject of at most 72 columns, a blank line after it, body lines of at most 72, no trailer line (the
+    literal last line `GPU: compiled, not run` is not one), no tool or model name (not counted inside a backtick span
+    or in a token with a `/`, such as a branch name), no process word (brief, review, reviewer, fixup, subagent,
+    agent, each also in its regular inflections: `reviews`, `reviewed`), no `fixup!`, `squash!` or `amend!` subject,
+    and no word the glossary bans. The step runs when the working tree has no change, so run the gate again after the
+    commit. With changes it prints `NOT RUN message (uncommitted changes)` and the run can still exit 0; with
+    `--only message` the same line exits 1, because nothing was checked. `--speed quick` leaves it out. It also reads
+    one commit (`tools/check_message.py <commit>`), a range (`--range A..B`) or a file (`--file PATH`, which drops the
+    `#` lines and the scissors part, as git does). CI checks the pushed range in the same way.
+  - The message of the commit being made is checked before the commit exists by a `commit-msg` hook, tracked as
+    `tools/hooks/commit-msg`. Enable it once per clone (it needs `uv` on `PATH` and fails the commit without it):
+
+    ```sh
+    git config core.hooksPath tools/hooks
+    ```
+
   - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (at every
     run but a quick one with unchanged files, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
@@ -586,8 +598,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     means exactly that: the cuda step is never skipped and never passes without running.
   - `NOT RUN <check>`: an earlier check failed, so this one did not run.
 
-  Exit codes (`tools/check_commit.py --help` lists them): 0 means that every check read PASS at `commit` or `full`
-  speed; a commit lands only then. 1 means that a check failed. 3 means a `quick` run whose checks all passed; it is
+  Exit codes (`tools/check_commit.py --help` lists them): 0 means that no check failed at `commit` or `full` speed
+  (the message step may still read `NOT RUN message (uncommitted changes)`; the `commit-msg` hook covers it); a commit
+  lands only then. 1 means that a check failed, or that a step named by `--only` could not run. 3 means a `quick` run whose checks all passed; it is
   not the commit gate and never satisfies the commit rule. `quick` never exits 0.
 - CI: `.github/workflows/checks.yml` describes the checks CI will run (format and rules, the CPU build on Linux, macOS
   and Windows, and the CUDA compile). It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every

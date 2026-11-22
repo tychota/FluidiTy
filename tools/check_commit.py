@@ -29,15 +29,19 @@ The speed (--speed, default commit):
           but the gate stops at `FAIL tree` for one unless --allow-dirty is given, so it selects modules only then.
           With --only, quick runs the named step in full (every module's unit and functional tests, both presets).
   commit  before each commit: every step below, with the parallel tests and the tidy cache.
-The `message` step checks the message of HEAD (tools/check_message.py). It runs when the working tree has no change,
-that is, when the gate checks a commit already made; otherwise it prints `NOT RUN message (uncommitted changes)`.
-Quick leaves it out.
+The `message` step checks the messages of the commits a push would send (tools/check_message.py): every commit of
+`@{upstream}..HEAD`, or HEAD alone when the branch has no upstream or nothing is unpushed. It runs when the working
+tree has no change, that is, when the gate checks commits already made; otherwise it prints
+`NOT RUN message (uncommitted changes)`, and with `--only message` that is a failure (exit 1), because nothing was
+checked. Quick leaves it out. The message of the commit being made is checked before the commit exists by the
+`commit-msg` hook of tools/hooks (see AGENTS.md "Commands").
   full    before a push, and in CI: commit with --no-cache, so tidy checks every file.
 --only <step> runs that step at any speed; a step that quick leaves out runs in full when named.
 
 The exit code (EXIT_* below):
-  0  commit or full speed, and every check read PASS. Only this code satisfies the commit rule.
-  1  a check failed (FAIL), or git could not be read.
+  0  commit or full speed, and no check failed. Only this code satisfies the commit rule. A step can still read
+     `NOT RUN message (uncommitted changes)` under 0: that message step is the hook's job, and `--only message` fails.
+  1  a check failed (FAIL), a step named by --only could not run, or git could not be read.
   3  quick speed, and every check that ran read PASS. This is not the commit gate: the last line printed is
      `QUICK ONLY: not the commit gate`, and the code is never 0, so a script or a hook that reads only the exit code
      cannot take a quick run for a commit-gate pass.
@@ -88,7 +92,8 @@ repository's absolute path (cuda_out_volume), so two checkouts never share a bui
 Output: `PASS <step>` or `FAIL <step>: <reason>`, one line each. The cpu step prints one line per preset. After a
 failure the later lines read `NOT RUN <step>`. The output of each step's commands goes to out/check-commit/<step>.log,
 which keeps the last run.
-The exit code is 0 when every step passed and 1 otherwise. No step is ever reported as passed without running.
+The exit code is 0 when no step failed and 1 otherwise (see the exit codes above). No step is ever reported as passed
+without running.
 """
 
 from __future__ import annotations
@@ -128,7 +133,8 @@ EXIT_FAIL = 1
 EXIT_QUICK_ONLY = 3
 QUICK_ONLY_LINE = "QUICK ONLY: not the commit gate"
 EXIT_CODES_HELP = (
-    "exit codes: 0 = commit or full speed and every check passed (the only code that satisfies the commit rule); "
+    "exit codes: 0 = commit or full speed and no check failed (the only code that satisfies the commit rule; the "
+    "message step may read NOT RUN (uncommitted changes), which the commit-msg hook covers); "
     "1 = a check failed; 3 = quick speed and every check that ran passed, which is not the commit gate "
     f"(the last line printed is '{QUICK_ONLY_LINE}')"
 )
@@ -166,6 +172,8 @@ PAPER_DIRECTORY = Path("docs") / "method-paper"
 PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
 PAPER_PDF = Path("out") / "paper" / "fluidity-method.pdf"
 LOG_DIRECTORY = Path("out") / "check-commit"
+# The commits a push would send, for the message step.
+UNPUSHED_RANGE = "@{upstream}..HEAD"
 # The doubtful lines of the last commit: the command that lists them and the file it writes.
 NOTES_JSON = LOG_DIRECTORY / "notes.json"
 NOTES_SINCE_ARGUMENTS = f"--notes-since HEAD~1 --json {NOTES_JSON.as_posix()}"
@@ -621,9 +629,29 @@ class Gate:
                 notes += (f"NOTE {count} doubtful lines: uv run python tools/check_rules.py {NOTES_SINCE_ARGUMENTS}",)
         return Outcome(outcome.passed, outcome.reason, notes)
 
+    def unpushed_range(self) -> str | None:
+        """`@{upstream}..HEAD` when the branch has an upstream and holds commits that it lacks, else None."""
+        try:
+            completed = subprocess.run(
+                ["git", "rev-list", UNPUSHED_RANGE],
+                cwd=self.repo_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+        if completed.returncode != 0 or not (completed.stdout or "").split():
+            return None
+        return UNPUSHED_RANGE
+
     def check_message(self) -> Outcome:
-        """Checks the message of HEAD with tools/check_message.py."""
-        return self.command("message", [sys.executable, str(self.repo_root / "tools" / "check_message.py"), "HEAD"])
+        """Checks every commit that the upstream lacks with tools/check_message.py, or only HEAD when the branch has no
+        upstream or nothing is unpushed."""
+        script = str(self.repo_root / "tools" / "check_message.py")
+        unpushed = self.unpushed_range()
+        return self.command("message", [sys.executable, script, *(["--range", unpushed] if unpushed else ["HEAD"])])
 
     def message_unavailable_reason(self) -> str | None:
         """The message of HEAD is checked when the working tree has no change: then the gate is checking a commit."""
@@ -1058,6 +1086,8 @@ def main(argv: Sequence[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
         reason = check.unavailable_reason()
         if reason:
             print(f"NOT RUN {check.title} ({reason})", flush=True)
+            # A step that was asked for by name and could not run checked nothing, so it is not a pass.
+            failed = failed or arguments.only == check.step
             continue
         outcome = check.run()
         for note in outcome.notes:

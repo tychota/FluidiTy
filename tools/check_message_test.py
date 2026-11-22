@@ -1,6 +1,7 @@
 """Tests for tools/check_message.py."""
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,7 +48,7 @@ def test_long_url_and_code_lines_are_exempt(line):
 )
 def test_trailer_in_the_last_paragraph_fails(trailer):
     result = problems(f"Subject\n\nBody text.\n\n{trailer}\n")
-    assert len(result) == 1 and "trailer line" in result[0]
+    assert any("trailer line" in found for found in result)
 
 
 def test_session_trailer_fails():
@@ -88,8 +89,33 @@ def test_fixup_subject_fails():
     assert any("fixup" in found for found in problems("fixup! Add the rule\n"))
 
 
+@pytest.mark.parametrize("word", ["reviews", "reviewed", "reviewing", "reviewers", "briefs", "agents", "subagents", "fixups"])
+def test_inflected_process_word_fails(word):
+    result = problems(f"Subject\n\nThe {word} said so.\n")
+    assert len(result) == 1 and "process word" in result[0]
+
+
+@pytest.mark.parametrize("prefix", ["squash!", "amend!", "fixup!", "Squash!"])
+def test_unfolded_autosquash_subject_fails(prefix):
+    assert any("fold" in found for found in problems(f"{prefix} Add the rule\n"))
+
+
+def test_tool_word_inside_a_branch_or_path_or_backticks_passes():
+    assert problems("Port the gas step from origin/codex/m7-low-mach-gas\n") == []
+    assert problems("Subject\n\nRead tools/claude/notes.md and `cursor` too.\n") == []
+
+
+def test_naming_the_rules_file_is_not_using_a_process_word():
+    assert problems("Subject\n\nSay in AGENTS.md how to enable it.\n") == []
+    assert len(problems("Subject\n\nThe agents of AGENTS.md.\n")) == 1
+
+
+def test_tool_word_next_to_a_branch_still_fails():
+    assert len(problems("Subject\n\nPort from origin/codex/m7, written by codex.\n")) == 1
+
+
 def test_process_word_inside_a_longer_word_passes():
-    assert problems("Subject\n\nRounding and tasking and reviews and agentic, cursors.\n") == []
+    assert problems("Subject\n\nRounding and tasking and agentic, cursors, reviewable.\n") == []
 
 
 def test_banned_glossary_word_fails_but_one_sense_word_passes():
@@ -141,3 +167,53 @@ def test_main_reports_an_unreadable_input(repository, capsys):
     assert check_message.main(["no-such-commit"], repository) == 2
     assert check_message.main(["--file", str(repository / "missing.txt")]) == 2
     assert "error:" in capsys.readouterr().err
+
+
+def test_main_drops_git_comment_lines_and_the_scissors_part_of_a_file(tmp_path, capsys):
+    path = tmp_path / "message.txt"
+    text = "Subject\n\nBody.\n# Please enter the message; a review is welcome.\n"
+    path.write_text(text + check_message.SCISSORS_LINE + "\ndiff Claude\n", encoding="utf-8")
+    assert check_message.main(["--file", str(path)]) == 0
+    capsys.readouterr()
+
+
+HOOK = Path(__file__).resolve().parent / "hooks" / "commit-msg"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the hook is a POSIX shell script")
+def test_commit_msg_hook_fails_closed_without_uv(tmp_path):
+    message = tmp_path / "message.txt"
+    message.write_text("Subject\n", encoding="utf-8")
+    completed = subprocess.run(
+        ["/bin/sh", str(HOOK), str(message)],
+        env={"PATH": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "uv is not on PATH" in completed.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the hook is a POSIX shell script")
+def test_commit_msg_hook_runs_the_message_check_on_the_file_it_is_given(tmp_path):
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(f'#!/bin/sh\necho "$@" > "{tmp_path}/arguments.txt"\n', encoding="utf-8")
+    fake_uv.chmod(0o755)
+    completed = subprocess.run(
+        ["/bin/sh", str(HOOK), "/some/message.txt"],
+        env={"PATH": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0
+    arguments = (tmp_path / "arguments.txt").read_text(encoding="utf-8").split()
+    assert arguments == ["run", "python", "tools/check_message.py", "--file", "/some/message.txt"]
+
+
+def test_ci_checks_the_messages_of_the_pushed_range_with_history():
+    workflow = (Path(__file__).resolve().parent.parent / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
+    assert "fetch-depth: 0" in workflow
+    assert 'tools/check_message.py)' in workflow
+    assert '--range "$PUSH_BEFORE..$GITHUB_SHA"' in workflow
