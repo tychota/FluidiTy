@@ -19,7 +19,7 @@ Checks: >
   -readability-math-missing-parentheses,
   -readability-use-concise-preprocessor-directives
 WarningsAsErrors: '*'
-HeaderFilterRegex: 'native/fluidity/.*'
+HeaderFilterRegex: 'src/fluidity/.*'
 FormatStyle: none
 CheckOptions:
   # Google style as AGENTS.md uses it.

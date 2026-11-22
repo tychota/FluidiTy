@@ -31,8 +31,8 @@ HEADER_WITH_KNOWN_LABELS = (
 
 
 def header_check_path(header: str, extension: str = ".cc") -> str:
-    """The container path of the header-alone file the CUDA build compiles for `header` (native/<include path>)."""
-    return f"/out/build/linux-release-cuda/header_check/{header.removeprefix('native/')}{extension}"
+    """The container path of the header-alone file the CUDA build compiles for `header` (src/<include path>)."""
+    return f"/out/build/linux-release-cuda/header_check/{header.removeprefix('src/')}{extension}"
 
 
 class FakeRun:
@@ -57,7 +57,7 @@ class FakeRun:
         self.commands = []
         self._failing = failing or (lambda command: False)
         self._missing_programs = set(missing_programs)
-        self._tracked = tracked if tracked is not None else ["native/fluidity/a.h", "native/fluidity/a.cc"]
+        self._tracked = tracked if tracked is not None else ["src/fluidity/a.h", "src/fluidity/a.cc"]
         self._status = status
         self._timing_out = timing_out or (lambda command: False)
         self._versions = versions if versions is not None else dict(PINNED_VERSIONS)
@@ -98,15 +98,15 @@ class FakeRun:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "native" / "fluidity").mkdir(parents=True)
-    (tmp_path / "native" / "fluidity" / "a.h").write_text(HEADER_WITH_KNOWN_LABELS, encoding="utf-8")
+    (tmp_path / "src" / "fluidity").mkdir(parents=True)
+    (tmp_path / "src" / "fluidity" / "a.h").write_text(HEADER_WITH_KNOWN_LABELS, encoding="utf-8")
     (tmp_path / "docs" / "method-paper").mkdir(parents=True)
     (tmp_path / "docs" / "method-paper" / "fluidity-method.typ").write_text(PAPER_TEXT, encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(PYPROJECT_TEXT, encoding="utf-8")
     build_folder = tmp_path / "out" / "build" / DEBUG_PRESET
     build_folder.mkdir(parents=True)
     entries = [
-        {"directory": str(build_folder), "file": str(tmp_path / "native" / "fluidity" / "a.cc"), "command": "c++"},
+        {"directory": str(build_folder), "file": str(tmp_path / "src" / "fluidity" / "a.cc"), "command": "c++"},
         {"directory": str(build_folder), "file": str(build_folder / HEADER_CHECK_FILE), "command": "c++"},
     ]
     (build_folder / "compile_commands.json").write_text(json.dumps(entries), encoding="utf-8")
@@ -147,11 +147,11 @@ def test_failing_actionlint_fails_the_rules_step(monkeypatch, capsys, repo):
 
 
 def test_read_line_with_unknown_label_fails_paper_step(monkeypatch, capsys, repo):
-    header = repo / "native" / "fluidity" / "b.h"
+    header = repo / "src" / "fluidity" / "b.h"
     header.write_text("// B.\n//\n// Read:    docs/method-paper/fluidity-method.typ <sec-missing>\n", encoding="utf-8")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 1
-    assert lines == ["FAIL paper: native/fluidity/b.h:3 cites <sec-missing>, which the paper does not define"]
+    assert lines == ["FAIL paper: src/fluidity/b.h:3 cites <sec-missing>, which the paper does not define"]
 
 
 def test_read_lines_with_known_labels_pass(monkeypatch, capsys, repo):
@@ -163,16 +163,16 @@ def test_read_lines_with_known_labels_pass(monkeypatch, capsys, repo):
 def test_label_inside_paper_code_is_not_a_definition(monkeypatch, capsys, repo):
     paper = repo / "docs" / "method-paper" / "fluidity-method.typ"
     paper.write_text(PAPER_TEXT + "```text\n<sec-in-code>\n```\n", encoding="utf-8")
-    header = repo / "native" / "fluidity" / "b.h"
+    header = repo / "src" / "fluidity" / "b.h"
     header.write_text("// B.\n//\n// Read:    docs/method-paper/fluidity-method.typ <sec-in-code>\n", encoding="utf-8")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 1
-    assert lines == ["FAIL paper: native/fluidity/b.h:3 cites <sec-in-code>, which the paper does not define"]
+    assert lines == ["FAIL paper: src/fluidity/b.h:3 cites <sec-in-code>, which the paper does not define"]
 
 
 @pytest.mark.parametrize("text", ["<expected>", "<first author> <year>", "<a.h>"])
 def test_angle_brackets_that_are_not_a_label_are_not_a_citation(monkeypatch, capsys, repo, text):
-    header = repo / "native" / "fluidity" / "b.h"
+    header = repo / "src" / "fluidity" / "b.h"
     header.write_text(f"// B.\n//\n// Read:    docs/method-paper/fluidity-method.typ {text}\n", encoding="utf-8")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 0
@@ -241,40 +241,52 @@ def test_cuda_volume_name_depends_on_the_repository_path(tmp_path):
 
 
 def test_source_missing_from_the_cuda_build_fails_cuda(monkeypatch, capsys, repo):
-    tracked = ["native/fluidity/a.cc", "native/fluidity/b_gpu.cu", "native/fluidity/c_test.cc", "native/fluidity/a.h"]
-    fake = FakeRun(tracked=tracked, compiled=["/src/native/fluidity/a.cc"])
+    tracked = ["src/fluidity/a.cc", "src/fluidity/b_gpu.cu", "src/fluidity/c.test.cc", "src/fluidity/a.h"]
+    fake = FakeRun(tracked=tracked, compiled=["/src/src/fluidity/a.cc"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
     assert exit_code == 1
     assert lines == [
-        "FAIL cuda: not compiled by the CUDA build: native/fluidity/b_gpu.cu, native/fluidity/c_test.cc, "
-        "native/fluidity/a.h"
+        "FAIL cuda: not compiled by the CUDA build: src/fluidity/b_gpu.cu, src/fluidity/c.test.cc, "
+        "src/fluidity/a.h"
     ]
 
 
 def test_header_without_a_header_alone_file_fails_cuda_by_name(monkeypatch, capsys, repo):
-    tracked = ["native/fluidity/a.cc", "native/fluidity/a.h", "native/fluidity/orphan.h"]
-    compiled = ["/src/native/fluidity/a.cc", header_check_path("native/fluidity/a.h")]
+    tracked = ["src/fluidity/a.cc", "src/fluidity/a.h", "src/fluidity/orphan.h"]
+    compiled = ["/src/src/fluidity/a.cc", header_check_path("src/fluidity/a.h")]
     fake = FakeRun(tracked=tracked, compiled=compiled)
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
     assert exit_code == 1
-    assert lines == ["FAIL cuda: not compiled by the CUDA build: native/fluidity/orphan.h"]
+    assert lines == ["FAIL cuda: not compiled by the CUDA build: src/fluidity/orphan.h"]
 
 
 def test_cuda_header_compiled_alone_as_a_cu_file_passes_cuda(monkeypatch, capsys, repo):
-    tracked = ["native/fluidity/a.cu", "native/fluidity/launch.cuh"]
-    compiled = ["/src/native/fluidity/a.cu", header_check_path("native/fluidity/launch.cuh", ".cu")]
+    tracked = ["src/fluidity/a.cu", "src/fluidity/launch.cuh"]
+    compiled = ["/src/src/fluidity/a.cu", header_check_path("src/fluidity/launch.cuh", ".cu")]
     fake = FakeRun(tracked=tracked, compiled=compiled)
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
     assert exit_code == 0
     assert lines == ["PASS cuda"]
 
 
-def test_test_headers_need_no_header_alone_file(monkeypatch, capsys, repo):
-    tracked = ["native/fluidity/test_support.h", "native/fluidity/math_test_gpu.h", "native/fluidity/latest.h"]
-    fake = FakeRun(tracked=tracked, compiled=[header_check_path("native/fluidity/latest.h")])
+def test_headers_in_a_testing_folder_need_no_header_alone_file(monkeypatch, capsys, repo):
+    tracked = [
+        "src/fluidity/base/testing/base_support.h",
+        "src/fluidity/grid/testing/cell_size_rule_runner_gpu.h",
+        "src/fluidity/base/latest.h",
+    ]
+    fake = FakeRun(tracked=tracked, compiled=[header_check_path("src/fluidity/base/latest.h")])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
     assert exit_code == 0
     assert lines == ["PASS cuda"]
+
+
+def test_header_with_test_in_its_name_outside_a_testing_folder_needs_a_header_alone_file(monkeypatch, capsys, repo):
+    tracked = ["src/fluidity/base/test_helpers.h"]
+    fake = FakeRun(tracked=tracked, compiled=[])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
+    assert exit_code == 1
+    assert lines == ["FAIL cuda: not compiled by the CUDA build: src/fluidity/base/test_helpers.h"]
 
 
 def test_container_tidies_the_sources_only_the_cuda_build_compiles(monkeypatch, capsys, repo):
@@ -301,7 +313,7 @@ def test_clang_tidy_version_other_than_pinned_fails_tidy(monkeypatch, capsys, re
 
 
 def test_rules_step_prints_the_notes_of_staged_lines(monkeypatch, capsys, repo):
-    note = "native/fluidity/a.cc:3: NOTE one-sense-word 'row' is banned in one sense only: alone"
+    note = "src/fluidity/a.cc:3: NOTE one-sense-word 'row' is banned in one sense only: alone"
     fake = FakeRun(rules_output=note + "\n")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
     rules_command = next(command for command in fake.commands if any(Path(part).name == "check_rules.py" for part in command))
@@ -370,35 +382,35 @@ def test_tidy_checks_each_header_alone(monkeypatch, capsys, repo):
     fake = FakeRun()
     run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
     tidied = [part for command in tidy_commands(fake) for part in command]
-    assert "native/fluidity/a.cc" in tidied
+    assert "src/fluidity/a.cc" in tidied
     assert any(part.endswith(HEADER_CHECK_FILE) for part in tidied)
 
 
 def test_tidy_leaves_a_file_outside_the_cpu_build_to_the_cuda_step(monkeypatch, capsys, repo):
-    fake = FakeRun(tracked=["native/fluidity/a.cc", "native/fluidity/b_gpu_test.cc"])
+    fake = FakeRun(tracked=["src/fluidity/a.cc", "src/fluidity/b.gpu.test.cc"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "tidy")
     tidied = [part for command in tidy_commands(fake) for part in command]
     assert exit_code == 0
     assert lines == ["PASS tidy"]
-    assert "native/fluidity/b_gpu_test.cc" not in tidied
+    assert "src/fluidity/b.gpu.test.cc" not in tidied
 
 
 def test_dirty_tree_stops_every_step(monkeypatch, capsys, repo):
-    fake = FakeRun(status=" M native/fluidity/a.h\0?? native/fluidity/new.h\0M  native/fluidity/a.cc\0")
+    fake = FakeRun(status=" M src/fluidity/a.h\0?? src/fluidity/new.h\0M  src/fluidity/a.cc\0")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")
     assert exit_code == 1
     assert lines == [
-        "FAIL tree: unstaged or untracked: native/fluidity/a.h, native/fluidity/new.h",
+        "FAIL tree: unstaged or untracked: src/fluidity/a.h, src/fluidity/new.h",
         "NOT RUN format",
     ]
     assert not any(command[0] == "clang-format" for command in fake.commands)
 
 
 def test_dirty_path_with_a_space_is_printed_unquoted(monkeypatch, capsys, repo):
-    fake = FakeRun(status="?? native/fluidity/new file.h\0 M native/fluidity/caf\u00e9.h\0")
+    fake = FakeRun(status="?? src/fluidity/new file.h\0 M src/fluidity/caf\u00e9.h\0")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")
     assert exit_code == 1
-    assert lines[0] == "FAIL tree: unstaged or untracked: native/fluidity/new file.h, native/fluidity/caf\u00e9.h"
+    assert lines[0] == "FAIL tree: unstaged or untracked: src/fluidity/new file.h, src/fluidity/caf\u00e9.h"
 
 
 def test_malformed_compile_commands_fails_tidy_with_a_reason(monkeypatch, capsys, repo):
@@ -410,42 +422,42 @@ def test_malformed_compile_commands_fails_tidy_with_a_reason(monkeypatch, capsys
 
 
 def test_staged_changes_are_a_clean_tree(monkeypatch, capsys, repo):
-    renamed = "R  native/fluidity/b.h\0native/fluidity/old.h\0"
-    fake = FakeRun(status="M  native/fluidity/a.cc\0A  native/fluidity/new.h\0" + renamed)
+    renamed = "R  src/fluidity/b.h\0src/fluidity/old.h\0"
+    fake = FakeRun(status="M  src/fluidity/a.cc\0A  src/fluidity/new.h\0" + renamed)
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")
     assert exit_code == 0
     assert lines == ["PASS format"]
 
 
 def test_allow_dirty_notes_and_continues(monkeypatch, capsys, repo):
-    fake = FakeRun(status="?? native/fluidity/new.h\0")
+    fake = FakeRun(status="?? src/fluidity/new.h\0")
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format", "--allow-dirty")
     assert exit_code == 0
     assert lines == ["NOTE tree: unstaged or untracked files are being tested", "PASS format"]
 
 
 def test_read_label_wrapped_onto_the_next_comment_line_is_checked(monkeypatch, capsys, repo):
-    header = repo / "native" / "fluidity" / "b.h"
+    header = repo / "src" / "fluidity" / "b.h"
     header.write_text(
         "// B.\n//\n// Read:    docs/method-paper/fluidity-method.typ <sec-conventions>,\n//          <sec-wrapped>\n",
         encoding="utf-8",
     )
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 1
-    assert lines == ["FAIL paper: native/fluidity/b.h:4 cites <sec-wrapped>, which the paper does not define"]
+    assert lines == ["FAIL paper: src/fluidity/b.h:4 cites <sec-wrapped>, which the paper does not define"]
 
 
 @pytest.mark.parametrize("comment", ["// a note <sec-commented>\n", "/* a note\n<sec-commented> */\n"])
 def test_label_inside_paper_comment_is_not_a_definition(monkeypatch, capsys, repo, comment):
     paper = repo / "docs" / "method-paper" / "fluidity-method.typ"
     paper.write_text(PAPER_TEXT + comment, encoding="utf-8")
-    header = repo / "native" / "fluidity" / "b.h"
+    header = repo / "src" / "fluidity" / "b.h"
     header.write_text(
         "// B.\n//\n// Read:    docs/method-paper/fluidity-method.typ <sec-commented>\n", encoding="utf-8"
     )
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 1
-    assert lines == ["FAIL paper: native/fluidity/b.h:3 cites <sec-commented>, which the paper does not define"]
+    assert lines == ["FAIL paper: src/fluidity/b.h:3 cites <sec-commented>, which the paper does not define"]
 
 
 def test_cpu_step_runs_ctest_with_one_job_per_core(monkeypatch, capsys, repo):
@@ -515,12 +527,14 @@ def ctest_commands(fake, preset=DEBUG_PRESET):
 @pytest.mark.parametrize(
     ("changed", "expected"),
     [
-        (["native/fluidity/grid/a.cc"], frozenset({"grid"})),
-        (["native/fluidity/grid/a.cc", "native/fluidity/base/b.h"], frozenset({"grid", "base"})),
+        (["src/fluidity/grid/a.cc"], frozenset({"grid"})),
+        (["src/fluidity/grid/a.cc", "src/fluidity/base/b.h"], frozenset({"grid", "base"})),
+        (["src/fluidity/grid/testing/grid_support.h"], frozenset({"grid"})),
+        (["src/fluidity/contact/testing/contact_cases.h", "src/fluidity/base/a.test.cc"], frozenset({"contact", "base"})),
         (["docs/design/x.md", "tools/check_commit.py", "AGENTS.md"], frozenset()),
         ([], frozenset()),
-        (["native/fluidity/grid/a.cc", "native/fluidity/CMakeLists.txt"], None),
-        (["native/CMakeLists.txt"], None),
+        (["src/fluidity/grid/a.cc", "src/fluidity/CMakeLists.txt"], None),
+        (["src/CMakeLists.txt"], None),
         (["cmake/fluidity_targets.cmake"], None),
         (["CMakeLists.txt"], None),
         (["CMakePresets.json"], None),
@@ -534,13 +548,13 @@ def test_modules_of_changes(changed, expected):
 
 
 def test_commit_is_the_default_speed_and_runs_every_step(monkeypatch, capsys, repo):
-    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(changed=["native/fluidity/grid/a.cc"]))
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(changed=["src/fluidity/grid/a.cc"]))
     assert exit_code == 0
     assert lines == ALL_STEP_LINES
 
 
 def test_commit_speed_runs_all_tests_and_uses_the_tidy_cache(monkeypatch, capsys, repo):
-    fake = FakeRun(changed=["native/fluidity/grid/a.cc"])
+    fake = FakeRun(changed=["src/fluidity/grid/a.cc"])
     run_gate(monkeypatch, capsys, repo, fake, "--speed", "commit")
     assert all("-L" not in command for command in ctest_commands(fake))
     assert "--no-cache" not in tidy_commands(fake)[0]
@@ -555,7 +569,7 @@ def test_full_speed_runs_every_step_and_ignores_the_tidy_cache(monkeypatch, caps
 
 
 def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_left_out(monkeypatch, capsys, repo):
-    fake = FakeRun(changed=["native/fluidity/grid/a.cc"], untracked=["native/fluidity/contact/new.h"])
+    fake = FakeRun(changed=["src/fluidity/grid/a.cc"], untracked=["src/fluidity/contact/new.h"])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
     assert exit_code == 0
     assert lines == [

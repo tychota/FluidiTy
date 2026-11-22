@@ -215,7 +215,7 @@ Sections, in this order: summary line, `Method`, `Units`, `Ties` or `Order` (onl
 
 ## One worked example
 
-`native/fluidity/contact/solid_contact.h`, its types only. The file header and the docstrings follow the
+`src/fluidity/contact/solid_contact.h`, its types only. The file header and the docstrings follow the
 templates above.
 
 ```cpp
@@ -251,10 +251,10 @@ struct SolidContactResult {
 
 ## Structure
 
-**Folders by concept.** Namespaces mirror folders: `native/fluidity/grid/` is `fluidity::grid`.
+**Folders by concept.** Namespaces mirror folders: `src/fluidity/grid/` is `fluidity::grid`.
 
 ```text
-native/fluidity/
+src/fluidity/
   base/             vectors, small matrices, error and result types (shared by CPU and GPU)
   contact/  grid/  particles/  transfer/  pressure/  viscosity/
   materials/  solids/  gas/  step/  cell_resize/
@@ -277,7 +277,31 @@ live in shared headers. Loops, memory layout and scheduling are not shared.
 the same folder include it. Its names may say `Gpu` and use any verb. It includes no CUDA header, so the CPU file
 that calls it compiles without the CUDA compiler. The rules check skips the backend-name and verb rules for files
 whose stem ends in `_gpu` (`.h`, `.cu`), and fails an `#include` of a `*_gpu.h` header from another folder or from
-a header that is not itself `_gpu`.
+a header that is not itself `_gpu`. The one exception is a test (a file with `.test.` in its name), which may
+include a private GPU header of the `testing/` folder of its own folder.
+
+**Names of test files.** A file with `.test.` in its name is a test, and nothing else carries the word `test` in
+its name. Each module folder may hold a `testing/` folder for code that its tests share and that is not itself a
+test. The stem of a test is the stem of a header of the same folder, so that an editor folds the test under that
+header; when the file tests one concern of the header, a topic follows the stem, as in
+`grid_tables.face_search.test.cc`, and the topic leaves out the words the header's name already says. This departs
+from Google's `<name>_test.cc`.
+
+| What | Name |
+|---|---|
+| a test | `<header>.test.cc` |
+| a test that needs a GPU | `<header>.gpu.test.cc` |
+| a test of the behaviour without a GPU | `<header>.no_gpu.test.cc` |
+| a test that only compiles GPU code | `<header>.gpu_compile.test.cu` |
+| a test of one concern of a header | `<header>.<topic>.test.cc` (also `.gpu.test.cc`, `.no_gpu.test.cc`) |
+| the code that runs a GPU check for a test | `testing/<name>_runner_gpu.h`, `testing/<name>_runner_gpu.cu` |
+| cases, sets and runs that tests share | `testing/<name>_cases.h`, `testing/<name>_sets.h`, `testing/<name>_runs.h` |
+| other code that tests share | `testing/<name>.h`, `testing/<name>.cc` (for example `base/testing/base_support.h`) |
+| a test of the code in `testing/` | `testing/<name>.test.cc` |
+
+The Python tests under `tools/` keep `<name>_test.py`, which is what pytest finds. The CTest label that names the
+module (`base`, `grid`, `contact`) is the folder of the `CMakeLists.txt`, so a test in `testing/` carries it too.
+The name of a CMake target does not have to follow the file name.
 
 **The two halves of an operation.** The public function lives in `<name>_cpu.cc`: it checks its inputs, chooses the half
 by `RunOn`, runs the CPU loop itself, and calls the GPU half under `#if defined(FLUIDITY_HAS_GPU)`. `Buffer` is laid out
@@ -441,7 +465,7 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   `--speed quick|commit|full` chooses how much runs:
   - `quick`, while working: format; rules; the debug preset built; the debug tests of the modules that changed;
     tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
-    untracked. A change under `native/fluidity/<module>/` selects that module; a change elsewhere under `native/` or
+    untracked. A change under `src/fluidity/<module>/` selects that module; a change elsewhere under `src/` or
     `cmake/`, or to a top-level build file, selects every module; a change to docs or tools selects none. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
     paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule.
@@ -456,20 +480,20 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     tracked C++ or CUDA file. Another version fails the step and names both versions.
   - `rules note: <path>:<line>: NOTE <rule> <text>`: a word banned in one sense only, on a line the staged changes
     add. Read it and keep the word only in its allowed sense; a note never fails the gate.
-  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `native/`, the pytest suite of `tools/` passes, and
+  - `PASS rules`: `tools/check_rules.py` reports no FAIL under `src/`, the pytest suite of `tools/` passes, and
     `actionlint` accepts the files of `.github/workflows/`.
   - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (every
     run, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
     platform.
   - `PASS tidy`: the clang-tidy on `PATH` is the pinned version, and it reports nothing, with the debug preset's
-    compile commands, on every tracked `.cc` file under `native/` that the CPU build compiles, and on each header
+    compile commands, on every tracked `.cc` file under `src/` that the CPU build compiles, and on each header
     compiled alone (`header_check/`). A `.cc` file that only the CUDA build compiles, such as a GPU-only test, is
     tidied by the `cuda` step. `tools/run_tidy.py` runs one clang-tidy per file, one per core at once, and prints
     the failures sorted by path. A file that passed is not checked again while nothing it depends on has changed
     (its text, the headers it includes, its compile command, the `.clang-tidy` files, the clang-tidy version); the
     cache is `out/tidy-cache/`, and `--no-cache` ignores it and stores nothing.
-  - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `native/`,
+  - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `src/`,
     including its continuation lines, is defined in the paper. A label starts with its kind: `<sec-...>`,
     `<fig-...>`, `<proc-...>`, `<eq-...>` or `<tab-...>` (`:` may replace `-`); other text in angle brackets, such as
     `<first author>`, is not a label.
@@ -477,9 +501,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     `linux-release-cuda` compiled and linked, every `.cu` file and the `gpu` tests included; clang-tidy reported
     nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`); the tests
     labelled `cpu` and `no_gpu` passed (`ctest -L '^(cpu|no_gpu)$'`); every tracked `.cc` and `.cu` file under
-    `native/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `native/` is compiled
-    alone there, through its header-alone file (`header_check/`), except a test header (`test` as a word of its file
-    name), which the test programs that include it compile (`FAIL cuda: not compiled by the CUDA build: <paths>`
+    `src/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `src/` is compiled
+    alone there, through its header-alone file (`header_check/`), except a test header (a header in a `testing/` folder),
+    which the test programs that include it compile (`FAIL cuda: not compiled by the CUDA build: <paths>`
     otherwise).
     Nothing ran on a GPU: the container has none, so GPU code stays "compiled, not run". The container keeps its
     tools, packages and build tree in a Docker volume named `fluidity-cuda-out-<hash>`, one per checkout path; list

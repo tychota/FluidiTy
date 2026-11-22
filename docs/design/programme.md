@@ -192,7 +192,7 @@ recorded. The programme is done when the owner's hardware run has passed for eve
 **Layout**
 
 ```text
-native/fluidity/
+src/fluidity/
   base/             vectors, small matrices, error and result types (shared by host and device)
   contact/  grid/  particles/  transfer/  pressure/  viscosity/
   materials/  solids/  gas/  step/  cell_resize/

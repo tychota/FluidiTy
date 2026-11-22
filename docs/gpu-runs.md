@@ -69,7 +69,7 @@ among them, the discrete mismatches (below). Send `notes-first.txt` with the blo
 
 ## What to look for: contact (`move_particles_gpu_test`, `shared_formulas_gpu_test`)
 
-The GPU half of `MoveParticles` (`native/fluidity/contact/move_particles_gpu.cu`) and the shared contact formulas run
+The GPU half of `MoveParticles` (`src/fluidity/contact/move_particles_gpu.cu`) and the shared contact formulas run
 for the first time here. A pass looks like this:
 
 - `gpu tests:` counts the tests of both programs among the passed ones: 12 in `move_particles_gpu_test` and 1 in
@@ -138,7 +138,7 @@ for the first time on the card. What a failure of each would look like:
   `MoveParticles` test while `SharedFormulas` passes. Watch the GPU memory in Task Manager: about 0.7 GB stays taken.
 - `MoveParticle` as GPU code: the `no turn` largest differences must be 0, and the catalogue, oblique and round sets
   pass bit for bit. A difference there is a broken same-bits promise: send the log lines.
-- The shared formulas as GPU code (`shared_formulas_test_gpu.cu`): `SharedFormulas.OnGpu_MatchCpu` names the input and
+- The shared formulas as GPU code (`testing/shared_formulas_runner_gpu.cu`): `SharedFormulas.OnGpu_MatchCpu` names the input and
   the value that differs.
 - `run_gpu_tests.ps1` with its notes file and `notes:` line: if the block lacks the `notes:` line or reads `NOT RUN`
   after the gpu tests ran, send `notes-first.txt` and the script's output.
@@ -168,4 +168,4 @@ reads `FAIL not run` (or `NOT RUN`) means an earlier step failed or a tool is mi
 | module | commit | date | GPU and driver | result | notes |
 | --- | --- | --- | --- | --- | --- |
 | Foundation | not run | not run | none | compiled, not run | GPU test programs that exist now: `check_can_run_on_gpu_test`, `shared_math_gpu_test`, `buffer_gpu_test`, `ordered_sums_gpu_test`, `stable_order_gpu_test`, `processor_description_gpu_test`. `tools/run_gpu_tests.ps1` was parsed with PowerShell 7.4 in a Linux container and exercised there with stand-in tools; never run on Windows, never run against a GPU. |
-| contact | not run | not run | none | compiled, not run | GPU test programs: `move_particles_gpu_test` (12 tests: `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`, `MoveParticles.ObliqueCasesOnGpu_MatchCpu`, `MoveParticles.RoundCasesOnGpu_MatchCpu`, `MoveParticles.SameInputTwiceOnGpu_SameBytes`, `MoveParticles.TwoFailuresOnGpu_ReportsLowestParticleId`, `MoveParticlesOnGpuInLaunchSize.FailingParticlesAnywhere_ReportLowestIdInEveryLaunchSize`, `MoveParticlesOnGpuInLaunchSize.EqualIdsFailing_ReportsLowerIndexInEveryLaunchSize`, `MoveParticlesOnGpuInLaunchSize.NoFailure_CountsInEveryLaunchSize`, `MoveParticles.FailedCallCheckOnGpu_WritesNothing`, `BuildContactStackEstimate.OnGpu_IsTheVisitStackForEveryResidentThread`, `MoveParticles.EmptyRangeOnGpu_CountsNothing`, `MoveParticles.MillionParticlesOnGpu_MatchCpuAndTimed`) and `shared_formulas_gpu_test` (1 test: `SharedFormulas.OnGpu_MatchCpu`). `move_particles_gpu.cu` and `shared_formulas_test_gpu.cu` compile and link in the CUDA container; `move_particles_no_gpu_test` (label `no_gpu`, 2 tests) runs there. No contact device code has run on a GPU. What to look for in the first run: the contact part above. |
+| contact | not run | not run | none | compiled, not run | GPU test programs: `move_particles_gpu_test` (12 tests: `MoveParticles.SweepAndMoveCasesOnGpu_MatchCpu`, `MoveParticles.ObliqueCasesOnGpu_MatchCpu`, `MoveParticles.RoundCasesOnGpu_MatchCpu`, `MoveParticles.SameInputTwiceOnGpu_SameBytes`, `MoveParticles.TwoFailuresOnGpu_ReportsLowestParticleId`, `MoveParticlesOnGpuInLaunchSize.FailingParticlesAnywhere_ReportLowestIdInEveryLaunchSize`, `MoveParticlesOnGpuInLaunchSize.EqualIdsFailing_ReportsLowerIndexInEveryLaunchSize`, `MoveParticlesOnGpuInLaunchSize.NoFailure_CountsInEveryLaunchSize`, `MoveParticles.FailedCallCheckOnGpu_WritesNothing`, `BuildContactStackEstimate.OnGpu_IsTheVisitStackForEveryResidentThread`, `MoveParticles.EmptyRangeOnGpu_CountsNothing`, `MoveParticles.MillionParticlesOnGpu_MatchCpuAndTimed`) and `shared_formulas_gpu_test` (1 test: `SharedFormulas.OnGpu_MatchCpu`). `move_particles_gpu.cu` and `testing/shared_formulas_runner_gpu.cu` compile and link in the CUDA container; `move_particles_no_gpu_test` (label `no_gpu`, 2 tests) runs there. No contact device code has run on a GPU. What to look for in the first run: the contact part above. |

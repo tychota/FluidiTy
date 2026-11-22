@@ -143,9 +143,9 @@ def test_a_test_gets_its_backend_label_and_the_name_of_its_module(tmp_path):
     """The label list is written into the discovery script that gtest_discover_tests generates, where ctest reads it."""
     project = tmp_path / "project"
     (project / "grid").mkdir(parents=True)
-    (project / "grid" / "grid_test.cc").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (project / "grid" / "grid.test.cc").write_text("int main() { return 0; }\n", encoding="utf-8")
     (project / "grid" / "CMakeLists.txt").write_text(
-        "fluidity_add_test(grid_test SOURCES grid_test.cc LABEL cpu)\n", encoding="utf-8"
+        "fluidity_add_test(grid_test SOURCES grid.test.cc LABEL cpu)\n", encoding="utf-8"
     )
     configured = configure(
         project,
@@ -159,5 +159,29 @@ def test_a_test_gets_its_backend_label_and_the_name_of_its_module(tmp_path):
     assert configured.returncode == 0, configured.stdout
     generated = "".join(
         path.read_text(encoding="utf-8") for path in (project / "build" / "grid").glob("grid_test*_discovery.cmake")
+    )
+    assert "[==[LABELS]==] [==[cpu;grid]==]" in generated
+
+
+def test_a_test_in_the_testing_folder_of_a_module_gets_the_name_of_its_module(tmp_path):
+    project = tmp_path / "project"
+    (project / "grid" / "testing").mkdir(parents=True)
+    (project / "grid" / "testing" / "grid_support.test.cc").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (project / "grid" / "CMakeLists.txt").write_text(
+        "fluidity_add_test(grid_support_test SOURCES testing/grid_support.test.cc LABEL cpu)\n", encoding="utf-8"
+    )
+    configured = configure(
+        project,
+        "include(GoogleTest)\n"
+        "set(BUILD_TESTING ON)\n"
+        "add_library(GTest::gtest_main INTERFACE IMPORTED)\n"
+        "add_library(fluidity STATIC source.cc)\n"
+        "fluidity_apply_compile_flags(fluidity EXCEPTIONS OFF)\n"
+        "add_subdirectory(grid)\n",
+    )
+    assert configured.returncode == 0, configured.stdout
+    generated = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (project / "build" / "grid").glob("grid_support_test*_discovery.cmake")
     )
     assert "[==[LABELS]==] [==[cpu;grid]==]" in generated

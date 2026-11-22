@@ -11,7 +11,7 @@ The speed (--speed, default commit):
   quick   while working: format, rules, the debug preset built, the debug tests of the modules whose files changed,
           and tidy (the cache makes it check only what changed). The modules are named by a line `NOTE modules: ...`.
           A changed file is one that differs from HEAD, staged or not, or is untracked. A change under
-          native/fluidity/<module>/ selects that module; a change elsewhere under native/ or cmake/, or to a top-level
+          src/fluidity/<module>/ selects that module; a change elsewhere under src/ or cmake/, or to a top-level
           build file (CMakeLists.txt, CMakePresets.json, conanfile.py, conan.lock), selects every module; a change
           elsewhere (docs, tools) selects none. The release build, the paper and cuda are left out, each printed as
           `NOT RUN <step> (quick)`, so a quick pass is never read as a full one.
@@ -22,7 +22,7 @@ The speed (--speed, default commit):
 The steps, in order:
   format  check that the clang-format on PATH is the version pyproject.toml pins, then clang-format, as a dry run,
           on every tracked C++ and CUDA file.
-  rules   tools/check_rules.py on native/, then the pytest suite of tools/, then actionlint on .github/workflows/.
+  rules   tools/check_rules.py on src/, then the pytest suite of tools/, then actionlint on .github/workflows/.
           The rules check prints a NOTE only for a line the staged changes add; the gate prints each such note on a
           line `rules note: <note>` before the PASS or FAIL line.
   cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
@@ -30,22 +30,22 @@ The steps, in order:
           (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
           `--parallel <cores>`.)
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
-          debug preset, over every tracked .cc file under native/ that the CPU build compiles, and over each
+          debug preset, over every tracked .cc file under src/ that the CPU build compiles, and over each
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
           build compiles, such as a GPU-only test, is tidied by the cuda step. tools/run_tidy.py runs one clang-tidy
           per file, one per core at once, and does not check a file again while nothing it depends on has changed
           (the cache is out/tidy-cache/); --no-cache checks every file.
-  paper   compile the method paper with typst, and check that every label named on a `Read:` line under native/
+  paper   compile the method paper with typst, and check that every label named on a `Read:` line under src/
           (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper.
   cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run
           clang-tidy over the .cc files that only the CUDA build compiles (the list CMake writes to
           gpu_only_sources.txt), and run the tests labelled cpu and no_gpu. The container has no GPU, so GPU code is
-          compiled, not run. Then every tracked .cc and .cu file under native/ must appear in the CUDA build's compile
-          commands, and every tracked .h and .cuh file under native/ must be compiled alone there, as a header-alone
+          compiled, not run. Then every tracked .cc and .cu file under src/ must appear in the CUDA build's compile
+          commands, and every tracked .h and .cuh file under src/ must be compiled alone there, as a header-alone
           file (header_check/<include path>.cc or .cu, which fluidity_add_headers writes): a file that is neither
-          fails the step by name. The exception is a test header (`test` as a word of its file name, such as
-          test_support.h): the header-alone files belong to the library, which does not link GoogleTest, so a test
-          header is compiled by the test programs that include it.
+          fails the step by name. The exception is a test header (a header in a `testing/` folder, such as
+          fluidity/base/testing/base_support.h): the header-alone files belong to the library, which does not link
+          GoogleTest, so a test header is compiled by the test programs that include it.
 
 The container keeps its tools, Conan packages and build tree in a Docker volume named after a short hash of the
 repository's absolute path (cuda_out_volume), so two checkouts never share a build tree. List the volumes with
@@ -90,9 +90,9 @@ PINNED_TOOLS = ("clang-format", "clang-tidy")
 
 SPEED_NAMES = ("quick", "commit", "full")
 DEFAULT_SPEED = "commit"
-# A change to one of these files, or under native/ outside a module folder, or under cmake/, can change any module.
+# A change to one of these files, or under src/ outside a module folder, or under cmake/, can change any module.
 TOP_LEVEL_BUILD_FILES = frozenset({"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock"})
-MODULES_ROOT = ("native", "fluidity")
+MODULES_ROOT = ("src", "fluidity")
 
 PAPER_DIRECTORY = Path("docs") / "method-paper"
 PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
@@ -101,16 +101,16 @@ LOG_DIRECTORY = Path("out") / "check-commit"
 
 CPP_PATTERNS = ("*.cc", "*.h", "*.cu", "*.cuh")
 # The sources a build compiles; every tracked one must be in the CUDA build.
-COMPILED_PATTERNS = ("native/*.cc", "native/*.cu", "native/*.h", "native/*.cuh")
+COMPILED_PATTERNS = ("src/*.cc", "src/*.cu", "src/*.h", "src/*.cuh")
 HEADER_EXTENSIONS = (".h", ".cuh")
 DOCKER_NOT_RUNNING = "Docker is not running (start it with: colima start)"
 DOCKER_NOT_FOUND = "Docker is not installed (no docker command on PATH)"
 DOCKER_INFO_TIMEOUT_SECONDS = 10
 HEADER_CHECK_FOLDER = "header_check"
-# Where the CUDA build writes the header-alone files: <this>/<include path>.cc or .cu, for native/<include path>.
+# Where the CUDA build writes the header-alone files: <this>/<include path>.cc or .cu, for src/<include path>.
 CONTAINER_HEADER_CHECK_ROOT = f"/out/build/{CUDA_PRESET}/{HEADER_CHECK_FOLDER}/"
-# A test header has `test` as a word of its file name: test_support.h, shared_math_test_gpu.h.
-_TEST_HEADER_STEM = re.compile(r"(^|_)test(_|$)")
+# A test header is a header in a folder named `testing`: base/testing/base_support.h.
+TEST_CODE_FOLDER = "testing"
 
 # Runs inside the container. /src is the repository, read-only; /out is the named volume, which keeps the Python
 # tools, the Conan packages and the build tree between runs. The presets write to ${sourceDir}/out, which is
@@ -202,14 +202,14 @@ def read_tool_version(version_output: str) -> str | None:
 
 def is_test_header(path: str) -> bool:
     """Whether `path` is a header of test code, which the header-alone check does not cover."""
-    return path.endswith(HEADER_EXTENSIONS) and _TEST_HEADER_STEM.search(Path(path).stem) is not None
+    return path.endswith(HEADER_EXTENSIONS) and TEST_CODE_FOLDER in Path(path).parts[:-1]
 
 
 def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[str]:
     """The tracked files that no `compiled: <path>` line of the container covers, in tracked order.
 
-    The container sees the repository at /src, so `/src/native/a.cc` covers `native/a.cc`. A header is covered by its
-    header-alone file: `/out/build/<preset>/header_check/fluidity/a.h.cc` (or `.h.cu`) covers `native/fluidity/a.h`.
+    The container sees the repository at /src, so `/src/src/a.cc` covers `src/a.cc`. A header is covered by its
+    header-alone file: `/out/build/<preset>/header_check/fluidity/a.h.cc` (or `.h.cu`) covers `src/fluidity/a.h`.
     A test header (is_test_header) is never reported."""
     prefix = CONTAINER_SOURCE_ROOT + "/"
     compiled = set()
@@ -221,14 +221,14 @@ def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[s
             compiled.add(path[len(prefix) :])
         elif path.startswith(CONTAINER_HEADER_CHECK_ROOT):
             include_path = str(Path(path[len(CONTAINER_HEADER_CHECK_ROOT) :]).with_suffix(""))
-            compiled.add("native/" + include_path)
+            compiled.add("src/" + include_path)
     return [path for path in tracked if path not in compiled and not is_test_header(path)]
 
 
 def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
-    """The modules whose tests a change can affect: None when every module (the change is under native/ outside a
+    """The modules whose tests a change can affect: None when every module (the change is under src/ outside a
     module folder, under cmake/, or to a top-level build file), otherwise the module folders named under
-    native/fluidity/, possibly none."""
+    src/fluidity/, possibly none."""
     modules: set[str] = set()
     for path in changed_paths:
         parts = Path(path).parts
@@ -349,7 +349,7 @@ class Gate:
             [
                 sys.executable,
                 str(tools / "check_rules.py"),
-                str(self.repo_root / "native"),
+                str(self.repo_root / "src"),
                 "--notes-on-staged-lines",
                 "--repository",
                 str(self.repo_root),
@@ -456,7 +456,7 @@ class Gate:
             # Not a list of objects with "directory" and "file": the build folder is broken, not the sources.
             reason = f"is malformed ({type(error).__name__}: {error}); delete {build_folder.as_posix()} and run cpu"
             return Outcome(False, f"{build_folder.as_posix()}/compile_commands.json {reason}")
-        files = self.tracked_files(["native/*.cc"])
+        files = self.tracked_files(["src/*.cc"])
         if files is None:
             return Outcome(False, "git ls-files failed")
         files = [path for path in files if path.endswith(".cc")]
@@ -464,7 +464,7 @@ class Gate:
         # for a tracked source that no build compiles.
         in_build = [path for path in files if (self.repo_root / path).resolve() in compiled]
         if not in_build:
-            return Outcome(False, "no tracked .cc file under native/ is in the CPU build")
+            return Outcome(False, "no tracked .cc file under src/ is in the CPU build")
         header_checks = sorted(
             str(path) for path in compiled if HEADER_CHECK_FOLDER in path.parts and path.name.endswith(".h.cc")
         )
@@ -490,7 +490,7 @@ class Gate:
             return compiled
         defined = self.paper_labels()
         missing = []
-        for path in sorted((self.repo_root / "native").rglob("*")):
+        for path in sorted((self.repo_root / "src").rglob("*")):
             if not path.is_file() or path.suffix not in {".h", ".cuh", ".cc", ".cu"}:
                 continue
             relative = path.relative_to(self.repo_root).as_posix()

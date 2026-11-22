@@ -73,9 +73,9 @@ if(BUILD_TESTING)
   include(GoogleTest)
 endif()
 
-add_subdirectory(native/fluidity/base)
-add_subdirectory(native/fluidity/contact)
-add_subdirectory(native/fluidity/grid)
+add_subdirectory(src/fluidity/base)
+add_subdirectory(src/fluidity/contact)
+add_subdirectory(src/fluidity/grid)
 
 # Last: every target now exists, so the check sees them all.
 fluidity_check_compile_flags()

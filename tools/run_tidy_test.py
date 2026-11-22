@@ -38,17 +38,17 @@ class FakeRun:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "native" / "fluidity").mkdir(parents=True)
+    (tmp_path / "src" / "fluidity").mkdir(parents=True)
     (tmp_path / "out" / "build" / "debug").mkdir(parents=True)
     (tmp_path / ".clang-tidy").write_text("Checks: '-*,bugprone-*'\n", encoding="utf-8")
     for name in ("a", "b", "c"):
-        (tmp_path / "native" / "fluidity" / f"{name}.cc").write_text(f'#include "{name}.h"\n', encoding="utf-8")
-        (tmp_path / "native" / "fluidity" / f"{name}.h").write_text("#pragma once\n", encoding="utf-8")
+        (tmp_path / "src" / "fluidity" / f"{name}.cc").write_text(f'#include "{name}.h"\n', encoding="utf-8")
+        (tmp_path / "src" / "fluidity" / f"{name}.h").write_text("#pragma once\n", encoding="utf-8")
     entries = [
         {
             "directory": str(tmp_path / "out" / "build" / "debug"),
-            "command": f"{COMPILER} -I{tmp_path} --source {tmp_path / 'native' / 'fluidity' / (name + '.cc')} -o x.o -c",
-            "file": str(tmp_path / "native" / "fluidity" / f"{name}.cc"),
+            "command": f"{COMPILER} -I{tmp_path} --source {tmp_path / 'src' / 'fluidity' / (name + '.cc')} -o x.o -c",
+            "file": str(tmp_path / "src" / "fluidity" / f"{name}.cc"),
         }
         for name in ("a", "b", "c")
     ]
@@ -57,7 +57,7 @@ def repo(tmp_path: Path) -> Path:
 
 
 def sources(repo: Path) -> list[Path]:
-    return [repo / "native" / "fluidity" / f"{name}.cc" for name in ("c", "a", "b")]
+    return [repo / "src" / "fluidity" / f"{name}.cc" for name in ("c", "a", "b")]
 
 
 def run(monkeypatch, repo: Path, fake: FakeRun, *, no_cache: bool = False) -> list[run_tidy.TidyResult]:
@@ -67,14 +67,14 @@ def run(monkeypatch, repo: Path, fake: FakeRun, *, no_cache: bool = False) -> li
 
 
 def dependencies_of(repo: Path) -> dict[str, list[str]]:
-    folder = repo / "native" / "fluidity"
+    folder = repo / "src" / "fluidity"
     return {f"{name}.cc": [str(folder / f"{name}.h"), str(folder / "shared.h")] for name in ("a", "b", "c")} | {
         "c.cc": [str(folder / "c.h")]
     }
 
 
 def test_files_that_passed_are_not_checked_again(monkeypatch, repo):
-    (repo / "native" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
     first = FakeRun(repo, dependencies_of(repo))
     run(monkeypatch, repo, first)
     assert sorted(first.checked) == ["a.cc", "b.cc", "c.cc"]
@@ -85,7 +85,7 @@ def test_files_that_passed_are_not_checked_again(monkeypatch, repo):
 
 
 def test_a_changed_header_makes_its_includers_miss_the_cache(monkeypatch, repo):
-    shared = repo / "native" / "fluidity" / "shared.h"
+    shared = repo / "src" / "fluidity" / "shared.h"
     shared.write_text("// shared\n", encoding="utf-8")
     run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
     shared.write_text("// shared, changed\n", encoding="utf-8")
@@ -95,10 +95,10 @@ def test_a_changed_header_makes_its_includers_miss_the_cache(monkeypatch, repo):
 
 
 def test_a_changed_unrelated_file_does_not_miss_the_cache(monkeypatch, repo):
-    (repo / "native" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
     run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
-    (repo / "native" / "fluidity" / "unrelated.h").write_text("// new\n", encoding="utf-8")
-    (repo / "native" / "fluidity" / "c.h").write_text("#pragma once\n// changed\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "unrelated.h").write_text("// new\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "c.h").write_text("#pragma once\n// changed\n", encoding="utf-8")
     second = FakeRun(repo, dependencies_of(repo))
     run(monkeypatch, repo, second)
     assert second.checked == ["c.cc"]
@@ -106,14 +106,14 @@ def test_a_changed_unrelated_file_does_not_miss_the_cache(monkeypatch, repo):
 
 def test_a_changed_source_file_is_checked_again(monkeypatch, repo):
     run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo) | {"a.cc": []}))
-    (repo / "native" / "fluidity" / "a.cc").write_text("// edited\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "a.cc").write_text("// edited\n", encoding="utf-8")
     second = FakeRun(repo, dependencies_of(repo) | {"a.cc": []})
     run(monkeypatch, repo, second)
     assert second.checked == ["a.cc"]
 
 
 def test_a_changed_config_file_or_compiler_version_misses_the_cache(monkeypatch, repo):
-    (repo / "native" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
     run(monkeypatch, repo, FakeRun(repo, dependencies_of(repo)))
     (repo / ".clang-tidy").write_text("Checks: '-*,bugprone-*,misc-*'\n", encoding="utf-8")
     second = FakeRun(repo, dependencies_of(repo))
@@ -126,7 +126,7 @@ def test_a_changed_config_file_or_compiler_version_misses_the_cache(monkeypatch,
 
 
 def test_a_failure_is_never_stored(monkeypatch, repo):
-    (repo / "native" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
     first = FakeRun(repo, dependencies_of(repo), failing=["b.cc"])
     results = run(monkeypatch, repo, first)
     assert [result.passed for result in results] == [True, False, True]
@@ -136,7 +136,7 @@ def test_a_failure_is_never_stored(monkeypatch, repo):
 
 
 def test_no_cache_checks_everything_and_stores_nothing(monkeypatch, repo):
-    (repo / "native" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
     first = FakeRun(repo, dependencies_of(repo))
     run(monkeypatch, repo, first, no_cache=True)
     assert not (repo / "out" / "tidy-cache").exists()
@@ -154,7 +154,7 @@ def test_results_and_printed_failures_are_sorted_by_path(monkeypatch, repo, caps
     )
     printed = capsys.readouterr().out
     assert exit_code == 1
-    positions = [printed.index(f"clang-tidy failed: {repo / 'native' / 'fluidity' / f'{name}.cc'}") for name in "abc"]
+    positions = [printed.index(f"clang-tidy failed: {repo / 'src' / 'fluidity' / f'{name}.cc'}") for name in "abc"]
     assert positions == sorted(positions)
     assert "warning in a.cc" in printed
 
@@ -162,7 +162,7 @@ def test_results_and_printed_failures_are_sorted_by_path(monkeypatch, repo, caps
 def test_a_header_alone_file_turns_the_include_check_off(tmp_path):
     header_alone = tmp_path / "header_check" / "fluidity" / "a.h.cc"
     assert run_tidy.tidy_arguments(header_alone) == ["--checks=-misc-include-cleaner"]
-    assert run_tidy.tidy_arguments(tmp_path / "native" / "a.cc") == []
+    assert run_tidy.tidy_arguments(tmp_path / "src" / "a.cc") == []
 
 
 def test_the_dependency_command_drops_outputs_and_asks_for_every_header():
@@ -191,8 +191,8 @@ def test_a_header_outside_the_repository_counts_by_size_and_time_not_contents(tm
 
 
 def test_config_files_of_the_folder_and_every_folder_above_apply(tmp_path):
-    (tmp_path / "native" / "grid").mkdir(parents=True)
+    (tmp_path / "src" / "grid").mkdir(parents=True)
     (tmp_path / ".clang-tidy").write_text("a\n", encoding="utf-8")
-    (tmp_path / "native" / "grid" / ".clang-tidy").write_text("b\n", encoding="utf-8")
-    found = run_tidy.applicable_config_files(tmp_path / "native" / "grid" / "x.cc", tmp_path)
-    assert found == [tmp_path.resolve() / "native" / "grid" / ".clang-tidy", tmp_path.resolve() / ".clang-tidy"]
+    (tmp_path / "src" / "grid" / ".clang-tidy").write_text("b\n", encoding="utf-8")
+    found = run_tidy.applicable_config_files(tmp_path / "src" / "grid" / "x.cc", tmp_path)
+    assert found == [tmp_path.resolve() / "src" / "grid" / ".clang-tidy", tmp_path.resolve() / ".clang-tidy"]

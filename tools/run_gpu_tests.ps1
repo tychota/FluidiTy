@@ -42,7 +42,7 @@
 #               tests, by name, with the same outcomes, and identical result digests. For each run the script sets
 #               FLUIDITY_RESULT_DIGEST_FILE to its own file in the log folder; the gpu tests of the buffers, the sums
 #               and the stable order append a named digest of every GPU result they check (WriteResultDigest in
-#               native/fluidity/base/test_support.h), and the two files must be equal and not empty.
+#               src/fluidity/base/testing/base_support.h), and the two files must be equal and not empty.
 #               The tests also append notes, findings that do not fail a test, and timings to notes-first.txt and
 #               notes-second.txt in the same folder (FLUIDITY_RESULT_NOTES_FILE, WriteResultNote, WriteResultTiming);
 #               notes are read, never compared.

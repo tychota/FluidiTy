@@ -1,0 +1,50 @@
+fluidity_add_headers(
+  contact_error.h
+  contact_error_message.h
+  contact_tolerance.h
+  move_particles.h
+  move_particles_gpu.h
+  move_particles_steps.h
+  solid_contact.h
+  solid_contact_steps.h
+  solid_contact_types.h
+  solid_shapes.h
+)
+
+target_sources(fluidity PRIVATE contact_error_message.cc move_particles_cpu.cc)
+fluidity_add_gpu_sources(move_particles_gpu.cu)
+
+fluidity_add_test(contact_error_test SOURCES contact_error.test.cc LABEL cpu)
+fluidity_add_test(contact_response_test SOURCES solid_contact_types.response.test.cc LABEL cpu LINKS fluidity_base_testing)
+fluidity_add_test(contact_tolerance_test SOURCES contact_tolerance.test.cc LABEL cpu)
+fluidity_add_test(find_first_hit_test SOURCES solid_contact_steps.find_first_hit.test.cc LABEL cpu)
+fluidity_add_test(move_particle_test SOURCES solid_contact.move_particle.test.cc LABEL cpu)
+fluidity_add_test(move_particles_test SOURCES move_particles.test.cc LABEL cpu LINKS fluidity_base_testing)
+fluidity_add_test(move_particles_steps_test SOURCES move_particles_steps.test.cc LABEL cpu
+                  LINKS fluidity_base_testing)
+fluidity_add_test(move_particles_gpu_test SOURCES move_particles.gpu.test.cc LABEL gpu LINKS fluidity_base_testing)
+fluidity_add_test(shared_formulas_gpu_test SOURCES solid_shapes.shared_formulas.gpu.test.cc testing/shared_formulas_runner_gpu.cu LABEL gpu
+                  LINKS fluidity_base_testing)
+fluidity_add_test(move_particles_no_gpu_test SOURCES move_particles.no_gpu.test.cc LABEL no_gpu)
+# The test of the rule that leaves out a solid a particle cannot come near counts the reads of each solid
+# (FLUIDITY_COUNT_SOLID_READS, contact/solid_shapes.h) and compares with a copy built to read every solid.
+fluidity_add_test(move_particle_left_out_test SOURCES solid_contact.move_particle_left_out.test.cc
+                  solid_contact.move_particle_left_out_reference.test.cc LABEL cpu)
+if(TARGET move_particle_left_out_test)
+  target_compile_definitions(move_particle_left_out_test PRIVATE FLUIDITY_COUNT_SOLID_READS)
+endif()
+fluidity_add_test(move_particle_tolerance_test SOURCES solid_contact.move_particle_tolerance.test.cc LABEL cpu)
+fluidity_add_test(move_particle_shorter_step_test SOURCES solid_contact.move_particle_shorter_step.test.cc LABEL cpu)
+fluidity_add_test(round_solid_hit_rounding_test SOURCES solid_contact.round_solid_hit_rounding.test.cc LABEL cpu)
+# Its two generated sets compare 20,000 paths with a double-double reference that searches 160 times per path: about
+# 11 s unoptimised. -O1 in a debug build keeps every assert and every IEEE result (no fast math, no contraction) and
+# runs it in under a second, with the same printed counts and worst cases. MSVC is left unoptimised: its debug builds
+# use /RTC1, which no /O option may be combined with.
+if(TARGET round_solid_hit_rounding_test)
+  target_compile_options(round_solid_hit_rounding_test PRIVATE
+    "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>>:-O1>"
+  )
+endif()
+fluidity_add_test(solid_shapes_test SOURCES solid_shapes.test.cc LABEL cpu)
+fluidity_add_test(move_particles_scene_test SOURCES move_particles.scene.test.cc LABEL cpu
+                  LINKS fluidity_base_testing)

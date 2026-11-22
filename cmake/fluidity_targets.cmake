@@ -62,7 +62,7 @@ endfunction()
 
 # fluidity_add_headers(<files...>)
 #
-# Adds public headers of the calling module folder to the library, as the HEADERS file set, with native/ as the
+# Adds public headers of the calling module folder to the library, as the HEADERS file set, with src/ as the
 # include root. For each header it also writes one .cc file in the build folder that contains only
 # `#include "<header>"` and adds it to the library. Each header is therefore compiled alone, with the library flags
 # (no exceptions, no RTTI, warnings as errors), and a header that forgets one of its own includes fails to build.
@@ -70,7 +70,7 @@ endfunction()
 # header that includes base/cpu_only.h is CPU-only and is skipped, and so is cpu_only.h itself, which stops any GPU
 # build by design. A .cuh header needs the CUDA compiler, so it gets only the .cu file, and only with CUDA ON.
 function(fluidity_add_headers)
-  set(include_root "${PROJECT_SOURCE_DIR}/native")
+  set(include_root "${PROJECT_SOURCE_DIR}/src")
   target_sources(fluidity PUBLIC FILE_SET HEADERS BASE_DIRS "${include_root}" FILES ${ARGN})
   foreach(header IN LISTS ARGN)
     cmake_path(ABSOLUTE_PATH header BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE header_path)

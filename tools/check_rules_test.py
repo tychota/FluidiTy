@@ -578,9 +578,9 @@ def test_digit_separator_does_not_hide_the_rest_of_the_line(tmp_path, glossary):
 
 
 def test_default_scan_path_is_relative_to_the_repository(tmp_path, glossary, monkeypatch, capsys):
-    write(tmp_path / "native", "a.cc", "int stencil_count;\n")
+    write(tmp_path / "src", "a.cc", "int stencil_count;\n")
     monkeypatch.setattr(check_rules, "REPO_ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path / "native")
+    monkeypatch.chdir(tmp_path / "src")
     assert check_rules.main(["--glossary", str(glossary)]) == 1
     assert "FAIL banned-word" in capsys.readouterr().out
 
@@ -628,7 +628,7 @@ def test_shared_function_taking_vec3_by_value_passes(tmp_path, glossary):
 
 
 def test_reference_in_file_without_shared_functions_passes(tmp_path, glossary):
-    write(tmp_path, "a_test.cc", "void ExpectNear(const Mat3& actual, const Vec3& expected) {}\n")
+    write(tmp_path, "a.test.cc", "void ExpectNear(const Mat3& actual, const Vec3& expected) {}\n")
     assert rules(run(tmp_path, glossary), "FAIL") == []
 
 
@@ -689,6 +689,29 @@ def test_private_gpu_cuh_header_included_from_another_folder_fails(tmp_path, glo
     assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
 
 
+def test_test_may_include_the_private_gpu_header_of_the_testing_folder_beside_it(tmp_path, glossary):
+    write(tmp_path / "fluidity" / "grid", "cell_size_rule.gpu.test.cc", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    write(tmp_path / "fluidity" / "grid" / "testing", "runner_gpu.cu", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    assert run(tmp_path, glossary) == []
+
+
+def test_file_that_is_not_a_test_may_not_include_a_private_gpu_header_of_the_testing_folder(tmp_path, glossary):
+    write(tmp_path / "fluidity" / "grid", "grid_cpu.cc", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
+
+
+def test_test_may_not_include_the_private_gpu_header_of_the_testing_folder_of_another_module(tmp_path, glossary):
+    write(tmp_path / "fluidity" / "contact", "move_particles.gpu.test.cc", '#include "fluidity/grid/testing/runner_gpu.h"\n')
+    assert rules(run(tmp_path, glossary)) == ["private-gpu-include"]
+
+
+def test_test_of_another_folder_may_not_include_a_private_gpu_header_outside_testing(tmp_path, glossary):
+    write(tmp_path / "fluidity" / "grid", "grid_tables.gpu.test.cc", '#include "fluidity/grid/other_gpu.h"\n')
+    write(tmp_path / "fluidity" / "contact", "move_particles.gpu.test.cc", '#include "fluidity/grid/other_gpu.h"\n')
+    findings = run(tmp_path, glossary)
+    assert rules(findings) == ["private-gpu-include"]
+
+
 def test_library_header_in_angle_brackets_is_not_a_private_gpu_header(tmp_path, glossary):
     write(tmp_path / "fluidity" / "base", "buffer_gpu.cu", "#include <cuda_runtime.h>\n")
     assert run(tmp_path, glossary) == []
@@ -725,17 +748,17 @@ def test_shared_cpu_and_gpu_header_is_not_a_private_gpu_header(tmp_path, glossar
 # ---- Notes only on the lines a commit adds ----
 
 STAGED_DIFF = (
-    "diff --git a/native/a.cc b/native/a.cc\n"
-    "--- a/native/a.cc\n"
-    "+++ b/native/a.cc\n"
+    "diff --git a/src/a.cc b/src/a.cc\n"
+    "--- a/src/a.cc\n"
+    "+++ b/src/a.cc\n"
     "@@ -2,0 +3,2 @@ int x;\n"
     "+int component;\n"
     "+int y;\n"
     "@@ -9 +11 @@\n"
     "-int old;\n"
     "+int z;\n"
-    "diff --git a/native/gone.cc b/native/gone.cc\n"
-    "--- a/native/gone.cc\n"
+    "diff --git a/src/gone.cc b/src/gone.cc\n"
+    "--- a/src/gone.cc\n"
     "+++ /dev/null\n"
     "@@ -1 +0,0 @@\n"
     "-int component;\n"
@@ -743,7 +766,7 @@ STAGED_DIFF = (
 
 
 def test_added_lines_are_read_from_a_zero_context_diff():
-    assert check_rules.parse_added_lines(STAGED_DIFF) == {"native/a.cc": {3, 4, 11}}
+    assert check_rules.parse_added_lines(STAGED_DIFF) == {"src/a.cc": {3, 4, 11}}
 
 
 def git(root: Path, *arguments: str) -> None:

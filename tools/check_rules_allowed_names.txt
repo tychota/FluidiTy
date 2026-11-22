@@ -4,7 +4,7 @@ kGpuNotBuilt  # decided error value of RunOnError
 kNoGpuFound  # decided error value of RunOnError
 kGpuCallFailed  # decided error value of RunOnError
 kGpuMathDiffers  # decided error value of RunOnError
-ExpectVec3Near  # test-only check of contact/contact_test_cases.h; follows GoogleTest's EXPECT_ wording
+ExpectVec3Near  # test-only check of contact/testing/contact_cases.h; follows GoogleTest's EXPECT_ wording
 MoveParticle  # the one-particle move of contact; Move is the verb of the MoveParticles stage
 MoveToRestGap  # private step: moves a point to one contact tolerance from a solid
 HasConvexDistance  # private predicate of the stepping search: true when a shape may take the second-order advance; the mesh solids add their case

@@ -1,7 +1,7 @@
 """Applies the mechanical items of the AGENTS.md checklist to files.
 
 Usage: uv run python tools/check_rules.py [PATH ...] [--glossary PATH] [--allowed-names PATH]
-                                         [--notes-on-staged-lines [--repository PATH]]   (default path: native)
+                                         [--notes-on-staged-lines [--repository PATH]]   (default path: src)
 
 Output lines are `path:line: FAIL <rule-id> <text>` and `path:line: NOTE <rule-id> <text>`.
 The exit code is 1 when any FAIL was printed, 2 when an input is missing or malformed, otherwise 0.
@@ -26,7 +26,9 @@ Which rules apply to which files (a deliberate choice, written down here):
 - A file whose stem ends in `_gpu` (`buffer_gpu.h`, `buffer_gpu.cu`), but not in `_and_gpu`, is private to its
   folder: `backend-name` and `verb` do not apply to it, because its names wrap GPU calls. `private-gpu-include`
   applies to every C++ file: an `#include` of a `*_gpu.h` or `*_gpu.cuh` header, written with quotes or angle
-  brackets, fails from another folder, or from a header whose stem does not end in `_gpu`.
+  brackets, fails from another folder, or from a header whose stem does not end in `_gpu`. One exception: a test
+  (a file with `.test.` in its name) may include a private GPU header of the `testing/` folder of its own folder, as
+  `fluidity/grid/testing/cell_size_rule_runner_gpu.h` from `fluidity/grid/cell_size_rule.gpu.test.cc`.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GLOSSARY_PATH = REPO_ROOT / "docs" / "glossary.md"
 DEFAULT_AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 DEFAULT_ALLOWED_NAMES_PATH = Path(__file__).resolve().parent / "check_rules_allowed_names.txt"
-DEFAULT_SCAN_PATH = "native"
+DEFAULT_SCAN_PATH = "src"
 
 SCANNED_SUFFIXES = {".h", ".cuh", ".cc", ".cu", ".py", ".lean"}
 CPP_SUFFIXES = {".h", ".cuh", ".cc", ".cu"}
@@ -64,6 +66,8 @@ BACKEND_WORDS = {"cuda", "gpu", "device", "host"}
 # Build macros, not names a caller sees.
 BACKEND_EXEMPT_IDENTIFIERS = {"FLUIDITY_CPU_AND_GPU", "FLUIDITY_HAS_GPU"}
 PRIVATE_GPU_STEM_SUFFIX = "_gpu"
+# The folder of a module that holds the code its tests share; a test may include its private GPU headers.
+TEST_CODE_FOLDER = "testing"
 # `cpu_and_gpu.h` ends in `_gpu` but is the shared mark every shared header includes, not a private GPU header.
 SHARED_STEM_SUFFIX = "_and_gpu"
 
@@ -877,6 +881,17 @@ def _check_declarations(
 _INCLUDED_PATH = re.compile(r'^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)')
 
 
+def _is_test_including_own_testing_folder(path: Path, including_folder: str, included_folder: str) -> bool:
+    """True when `path` is a test (`.test.` in its name) and `included_folder` is the `testing/` folder directly under
+    the folder of `path`, such as `fluidity/grid/testing` for a test in `.../fluidity/grid`."""
+    if ".test." not in path.name:
+        return False
+    parent_of_included, _, last_part = included_folder.rpartition("/")
+    if last_part != TEST_CODE_FOLDER or parent_of_included == "":
+        return False
+    return including_folder.endswith("/" + parent_of_included)
+
+
 def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine], reporter: _Reporter) -> None:
     """Fails an include of a `*_gpu.h` or `*_gpu.cuh` header from another folder, or from a header that is not
     itself `_gpu`.
@@ -897,6 +912,8 @@ def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine],
             continue
         included_folder = included.parent.as_posix()
         same_folder = included_folder in ("", ".") or including_folder.endswith("/" + included_folder)
+        if not same_folder and _is_test_including_own_testing_folder(path, including_folder, included_folder):
+            same_folder = True
         if not same_folder:
             text = f"'{included}' is private to its folder; only files of that folder include it"
             reporter.add(line.number, FAIL, "private-gpu-include", text, key=str(included))
