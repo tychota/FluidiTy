@@ -89,6 +89,20 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  cell_surroundings_on_gpu_functional_test
+  SOURCES
+  cell_surroundings_on_gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   face_search_on_grids_functional_test
   SOURCES
   face_search_on_grids.test.cc
@@ -109,6 +123,20 @@ fluidity_add_test(
   TIER
   functional
   LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  find_cell_at_on_gpu_functional_test
+  SOURCES
+  find_cell_at_on_gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
   fluidity_grid_testing
 )
 
@@ -255,6 +283,20 @@ fluidity_add_test(
   TIER
   functional
   LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  nearby_face_weights_on_gpu_functional_test
+  SOURCES
+  nearby_face_weights_on_gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
   fluidity_grid_testing
 )
 
