@@ -1,7 +1,10 @@
-// The faces near a position: the list a particle may give weight to, before any face is left out.
+// The faces near a position and the weights they get: the list a particle may give weight to, and what each kept face
+// gets.
 //
 // Purpose: give the transfer step, for one position and one axis, the grid faces that can get weight from it, as a
-//   fixed list in ascending index order, from the tables of one grid version, on the CPU or the GPU.
+//   fixed list in ascending index order, from the tables of one grid version, on the CPU or the GPU; then, from the
+//   faces the caller kept, the weight each gets, how fast that weight changes with the position, and the fit of how
+//   a value varies around the position.
 //
 // Idea: a particle passes its values to the faces of its own cell and of the cells touching it, whose centres lie
 //   within one and a half cell widths of it on each axis. The choice is made in whole quarter widths of the cell, never
@@ -21,21 +24,51 @@
 //   it, a thread keeps 1,152 bytes, and 3,456 bytes with three axes held at once. That is above the driver's default
 //   stack of 1,024 bytes, so a module whose GPU function calls them declares its own stack entry.
 //
+//   The weights. Each kept face gets a raw weight: the weight curve (grid/weight_curve.h) on each of the three axes,
+//   multiplied, times the face's area in cell faces (1 for a face of the cell's size, 1/4 for a smaller one, 4 for a
+//   bigger one). The raw weights are added in list order and each is divided by the sum, so what is left out never
+//   changes the total. From the scaled weights come the mean offset (the weighted mean of the faces' offsets from the
+//   position), the weighted spread around it, and the inverse of that spread, which a transfer uses to fit how a
+//   value varies around the position. Four properties hold for every grid and every mask whose fit is not kNone:
+//   1. Constants are reproduced for any kept set: the weights add up to 1, and their changes add up to 0.
+//   2. Linear fields are reproduced whenever the fit is kFull.
+//   3. A weight is never negative, and is 0 only for a face exactly 1.5 cell widths away on some axis.
+//   4. Weights jump when the position changes cell across a size change: the width, the candidates and the area
+//      factors all follow the cell that holds the position. This is the known open question of the force passed
+//      between cells of different sizes.
+//   Worked example, one axis of the complete case (27 same-size faces, all kept). At t = 0.4 the three faces of an
+//   axis lie at offsets -1.4, -0.4 and 0.6 cell widths and get Q = 0.005, 0.59 and 0.405, which add up to 1. Their
+//   mean offset is -1.4 x 0.005 - 0.4 x 0.59 + 0.6 x 0.405 = 0, and their spread is 1.96 x 0.005 + 0.16 x 0.59 +
+//   0.36 x 0.405 = 0.25 cell widths squared. In three dimensions the sum of the products is W = 1, the mean offset is
+//   0 and the spread is h^2 / 4 times the identity, so the inverse spread is 4 / h^2 times the identity, up to
+//   rounding. That case is never a separate path in the code.
+//   The weight of one face is computed with the same operations in ComputeNearbyFaceWeights and in
+//   ComputeFaceWeight, so a face that asks what a particle gives it gets the particle's own bits.
+//
 // Words:
 //   candidate       a face that may get weight from a position, before any face is left out
 //   window quarter  n_p: the quarter of its cell that holds a position, 0..3 on each axis; the candidates of a position
 //                   depend on it only through its cell and these three numbers, so a cell has 64 lists for one axis
 //   kept mask       one bit per face of a list; a set bit means the caller keeps that face
-// Owns:    NearbyFaceList, NearbyFaceMask, NearbyFaceFit, FindNearbyFaces, ToMaskOfAll; and, for this header's own
-//          functions and the tests of the grid only, FindNearbyFacesWithRoom, ComputeCandidateWindowQuarter,
-//          ComputeIsInCandidateWindow, ApplyNearbyFaceInsert
-// Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), math::Floor (base/scalar_math.h), Vec3
-//          (base/vec3.h), FindCellAt (grid/find_cell_at.h), FindCellBlock, GridTables, ToCellId, ToSizeLevel, ToAxis,
-//          ComputeCellWidth (grid/grid_tables.h), ComputeFaceCenterInQuarterWidths (grid/face_search.h),
-//          FindFacePieces, FindTouchingCells (grid/touching_cells.h), GridError (grid/grid_error.h), kMaxNearbyFaces
-//          (grid/weight_curve.h), the id types (grid/grid_ids.h)
+//   offset          a face's position minus the particle's position, in m
+//   mean offset     the weighted mean of the offsets of the kept faces
+//   offset from mean  the offset minus the mean offset; the one used in fits and in writes
+//   weight change   the derivative of a face's weight with respect to the particle's position, in 1/m
+//   weighted spread the symmetric 3 x 3 matrix of the weighted offsets from the mean (grid/weight_curve.h)
+// Owns:    NearbyFaceList, NearbyFaceMask, NearbyFaceFit, NearbyFaceWeights, FaceWeight, FindNearbyFaces, ToMaskOfAll,
+//          ComputeNearbyFaceWeights, ComputeFaceWeight; and, for this header's own functions and the tests of the
+//          grid only, FindNearbyFacesWithRoom, ComputeCandidateWindowQuarter, ComputeIsInCandidateWindow,
+//          ApplyNearbyFaceInsert, RawFaceWeight, ComputeRawFaceWeight, ComputeIsKept, ComputeKeptFaceWeight,
+//          ComputeIsCompleteNeighbourhood, CholeskyInverse, ComputeCholeskySolution, ComputeCholeskyInverse
+// Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Mat3 (base/mat3.h), math::Floor, math::Sqrt,
+//          math::IsFinite (base/scalar_math.h), Vec3 (base/vec3.h), FindCellAt (grid/find_cell_at.h), FindCellBlock,
+//          GridTables, ToCellId, ToSizeLevel, ToAxis, ComputeCellWidth, ComputeFacePosition, ComputeFaceArea
+//          (grid/grid_tables.h), ComputeFaceCenterInQuarterWidths (grid/face_search.h), FindFacePieces,
+//          FindTouchingCells (grid/touching_cells.h), GridError (grid/grid_error.h), ComputeWeightCurve,
+//          kMaxNearbyFaces, kMinWeightSum, kMinPivotShare (grid/weight_curve.h), the id types (grid/grid_ids.h)
 // Used by: the transfer step and the tests of the grid
-// Read:    docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <sec-face-pieces>
+// Read:    docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <proc-nearby-face-weights>,
+//          <eq:scaled-weights>, <eq:weighted-spread>, <sec-face-pieces>
 
 #pragma once
 
@@ -45,6 +78,7 @@
 
 #include "fluidity/base/axis.h"
 #include "fluidity/base/cpu_and_gpu.h"
+#include "fluidity/base/mat3.h"
 #include "fluidity/base/scalar_math.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/grid/face_search.h"
@@ -272,6 +306,360 @@ FLUIDITY_CPU_AND_GPU constexpr NearbyFaceMask ToMaskOfAll(const NearbyFaceList& 
     }
   }
   return mask;
+}
+
+// The weights of the kept faces of one list for one position, and what a transfer needs to fit a value around it.
+// One axis, one position; built when needed and never kept in memory.
+struct NearbyFaceWeights {
+  NearbyFaceList list;  // The candidates, as FindNearbyFaces made them.
+  NearbyFaceMask kept;  // The faces the caller kept.
+  Vec3 position;  // m, world. The position the weights are for.
+  double weight_sum;  // No unit. Sum of the kept raw weights; 1 when all 27 same-size faces are kept.
+  Vec3 mean_offset;  // m. Weighted mean of (face position - position). Zero up to rounding when complete.
+  Vec3 raw_weight_change_sum;  // 1/m. Sum of the kept raw weight changes. Zero up to rounding when complete.
+  Mat3 weighted_spread;  // m2, symmetric. cell_width^2 / 4 times the identity, up to rounding, when complete.
+  Mat3 inverse_weighted_spread;  // 1/m2, symmetric. Zero unless fit is kFull.
+  NearbyFaceFit fit;  // What the kept faces allow.
+  bool is_complete;  // All 27 faces kept and all of the cell's size. False when the fit is kNone.
+};
+static_assert(sizeof(NearbyFaceWeights) == 1152, "a list of 888 bytes, a mask of 32, and 232 bytes of sums");
+static_assert(std::is_trivially_copyable_v<NearbyFaceWeights>);
+
+// What one kept face gets from a position.
+struct FaceWeight {
+  FacePlaceIndex face;  // The face's place.
+  double
+      weight;  // No unit, never negative; 0 for a face exactly 1.5 widths away. Kept weights of one axis add up to 1.
+  Vec3 offset;  // m. The face's position minus the position.
+  Vec3 offset_from_mean;  // m. offset - mean_offset. Use this one in fits and in writes.
+  Vec3 weight_change;  // 1/m. Derivative of `weight` with respect to the position.
+};
+
+// The raw weight of one face and its change with the position, before the sums scale them. For this header's own
+// functions only.
+struct RawFaceWeight {
+  double weight;  // No unit. The weight curve on each axis, multiplied, times the face's area in cell faces.
+  Vec3 weight_change;  // 1/m. The derivative of `weight` with respect to the position.
+};
+
+// Computes the raw weight of a face for a position and its change with the position. Every weight of this header
+// comes from this function, so the particle's list and a face's own question give the same bits. For this header's
+// own functions only.
+//
+// Method: with d = (x_f - x_p) / h on each axis and Q the weight curve, w_f = Q(d_x) Q(d_y) Q(d_z) area_f / h^2 and
+//   g_f = -(area_f / h^3) (Q'(d_x) Q(d_y) Q(d_z), Q(d_x) Q'(d_y) Q(d_z), Q(d_x) Q(d_y) Q'(d_z)). The area in cell
+//   faces is area_f / h^2 and the change's scale is that divided by h; each product is taken left to right.
+// Units: m, world; `cell_width` in m.
+// Example: a face of the cell's size at d = (0.25, 0, 0): w_f = 0.6875 x 0.75 x 0.75 = 0.38671875, and g_f has x
+//   x entry -(1 / h) x (-0.5) x 0.75 x 0.75 = 0.28125 / h.
+// Requires: `face` is a place of block 0..tables.block_count - 1; `cell_width` is finite and above 0; `position` is
+//   finite.
+// Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
+FLUIDITY_CPU_AND_GPU inline RawFaceWeight
+ComputeRawFaceWeight(const GridTables& tables, FacePlaceIndex face, Vec3 position, double cell_width) noexcept {
+  const Vec3 face_position = ComputeFacePosition(tables, face);
+  const WeightCurveValue curve_x = ComputeWeightCurve((face_position.x - position.x) / cell_width);
+  const WeightCurveValue curve_y = ComputeWeightCurve((face_position.y - position.y) / cell_width);
+  const WeightCurveValue curve_z = ComputeWeightCurve((face_position.z - position.z) / cell_width);
+  const double cell_width_square = cell_width * cell_width;
+  const double area_in_cell_faces = ComputeFaceArea(tables, face) / cell_width_square;
+  const double area_per_cell_width = area_in_cell_faces / cell_width;
+  const double curve_product = (curve_x.weight * curve_y.weight) * curve_z.weight;
+  const double slope_x_product = (curve_x.slope * curve_y.weight) * curve_z.weight;
+  const double slope_y_product = (curve_x.weight * curve_y.slope) * curve_z.weight;
+  const double slope_z_product = (curve_x.weight * curve_y.weight) * curve_z.slope;
+  return {
+      .weight = curve_product * area_in_cell_faces,
+      .weight_change = {
+          .x = -(area_per_cell_width * slope_x_product),
+          .y = -(area_per_cell_width * slope_y_product),
+          .z = -(area_per_cell_width * slope_z_product),
+      },
+  };
+}
+
+// Says whether face `position_in_list` of a list is kept by a mask. For this header's own functions only.
+// Requires: position_in_list is 0..kMaxNearbyFaces - 1.
+FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsKept(const NearbyFaceMask& mask, int position_in_list) noexcept {
+  assert(position_in_list >= 0 && position_in_list < kMaxNearbyFaces);
+  const std::uint64_t word = mask.bits[position_in_list / 64];
+  return ((word >> static_cast<unsigned>(position_in_list % 64)) & 1U) != 0U;
+}
+
+// Computes what a kept face gets from the position of `weights`, scaled by the sums of `weights`, and its offset from
+// the mean offset of `weights`. The one place the scaling is written, so the particle's own pass and a face's question
+// give the same bits. For this header's own functions only.
+//
+// Method: weight = w_f / W and weight_change = (g_f - weight G) / W, per axis, with W and G the sums of
+//   `weights`. offset_from_mean uses weights.mean_offset as it stands, so a caller that has not set it yet gets the
+//   offset back.
+// Requires: weights.weight_sum is above 0, position_in_list is 0..weights.list.count - 1.
+// Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
+FLUIDITY_CPU_AND_GPU inline FaceWeight
+ComputeKeptFaceWeight(const GridTables& tables, const NearbyFaceWeights& weights, int position_in_list) noexcept {
+  assert(position_in_list >= 0 && position_in_list < weights.list.count);
+  const FacePlaceIndex face = weights.list.faces[position_in_list];
+  const RawFaceWeight raw = ComputeRawFaceWeight(tables, face, weights.position, weights.list.cell_width);
+  const Vec3 offset = ComputeFacePosition(tables, face) - weights.position;
+  const double weight = raw.weight / weights.weight_sum;
+  return {
+      .face = face,
+      .weight = weight,
+      .offset = offset,
+      .offset_from_mean = offset - weights.mean_offset,
+      .weight_change = {
+          .x = (raw.weight_change.x - (weight * weights.raw_weight_change_sum.x)) / weights.weight_sum,
+          .y = (raw.weight_change.y - (weight * weights.raw_weight_change_sum.y)) / weights.weight_sum,
+          .z = (raw.weight_change.z - (weight * weights.raw_weight_change_sum.z)) / weights.weight_sum,
+      },
+  };
+}
+
+// Says whether a mask keeps all 27 faces of a list and every one has the size level of the cell. For this header's own
+// functions only.
+FLUIDITY_CPU_AND_GPU inline bool
+ComputeIsCompleteNeighbourhood(const GridTables& tables, const NearbyFaceList& list, NearbyFaceMask kept) noexcept {
+  constexpr int kFacesOfOneSize = 27;
+  if (list.count != kFacesOfOneSize) {
+    return false;
+  }
+  const SizeLevel cell_size_level = ToSizeLevel(ToCellId(tables, list.cell));
+  for (int position_in_list = 0; position_in_list < list.count; ++position_in_list) {
+    const SizeLevel face_size_level = ToSizeLevel(tables, ToCellBlockIndex(list.faces[position_in_list]));
+    if (!ComputeIsKept(kept, position_in_list) || face_size_level != cell_size_level) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The inverse of a symmetric matrix by Cholesky factorisation, and whether the factorisation found a usable pivot.
+// For this header's own functions only.
+struct CholeskyInverse {
+  bool is_invertible;  // False when a pivot is at most kMinPivotShare times the trace, or is not finite.
+  Mat3 inverse;  // Symmetric. Zero when is_invertible is false.
+};
+
+// Solves L L^T x = right_side for a factor L that is zero above its diagonal: forward substitution, then backward
+// substitution, each subtracting the known terms in column order. For this header's own functions only. Requires: the
+// diagonal of `factor` is not 0; entries above the diagonal are ignored.
+FLUIDITY_CPU_AND_GPU inline Vec3 ComputeCholeskySolution(Mat3 factor, Vec3 right_side) noexcept {
+  const double forward_x = right_side.x / factor.xx;
+  const double forward_y = (right_side.y - (factor.yx * forward_x)) / factor.yy;
+  const double forward_z = ((right_side.z - (factor.zx * forward_x)) - (factor.zy * forward_y)) / factor.zz;
+  const double solution_z = forward_z / factor.zz;
+  const double solution_y = (forward_y - (factor.zy * solution_z)) / factor.yy;
+  const double solution_x = ((forward_x - (factor.yx * solution_y)) - (factor.zx * solution_z)) / factor.xx;
+  return {.x = solution_x, .y = solution_y, .z = solution_z};
+}
+
+// Computes the inverse of a symmetric matrix by a Cholesky factorisation that stops at a small pivot. For this header's
+// own functions only.
+//
+// Method: reads the entries on and below the diagonal, A = L L^T with L zero above its diagonal. Taking the matrix
+//   rows in turn, each entry of L is its matrix entry minus the products of the entries to its left in that row and
+//   in the row of its column, taken in column order; a diagonal entry is the square root of what is left. A pivot (the
+//   value before the square root) at most kMinPivotShare times the trace, or not finite, ends the factorisation: the
+//   matrix is too flat to invert. Column k of the inverse is the solution of L L^T x = e_k: forward substitution, then
+//   backward substitution, each subtracting in column order. The inverse takes its entries on and below the diagonal
+//   from those columns and is mirrored, so it is exactly symmetric.
+// Requires: the entries are finite.
+// Read: docs/method-paper/fluidity-method.typ <proc-nearby-face-weights>
+FLUIDITY_CPU_AND_GPU inline CholeskyInverse ComputeCholeskyInverse(Mat3 matrix) noexcept {
+  const CholeskyInverse not_invertible = {.is_invertible = false, .inverse = Mat3{}};
+  const double smallest_pivot = kMinPivotShare * ((matrix.xx + matrix.yy) + matrix.zz);
+  const double first_pivot = matrix.xx;
+  if (first_pivot <= smallest_pivot || !math::IsFinite(first_pivot)) {
+    return not_invertible;
+  }
+  const double factor_xx = math::Sqrt(first_pivot);
+  const double factor_yx = matrix.yx / factor_xx;
+  const double second_pivot = matrix.yy - (factor_yx * factor_yx);
+  if (second_pivot <= smallest_pivot || !math::IsFinite(second_pivot)) {
+    return not_invertible;
+  }
+  const double factor_yy = math::Sqrt(second_pivot);
+  const double factor_zx = matrix.zx / factor_xx;
+  const double factor_zy = (matrix.zy - (factor_zx * factor_yx)) / factor_yy;
+  const double third_pivot = (matrix.zz - (factor_zx * factor_zx)) - (factor_zy * factor_zy);
+  if (third_pivot <= smallest_pivot || !math::IsFinite(third_pivot)) {
+    return not_invertible;
+  }
+  const double factor_zz = math::Sqrt(third_pivot);
+  const Mat3 factor = {
+      .xx = factor_xx,
+      .xy = 0.0,
+      .xz = 0.0,
+      .yx = factor_yx,
+      .yy = factor_yy,
+      .yz = 0.0,
+      .zx = factor_zx,
+      .zy = factor_zy,
+      .zz = factor_zz,
+  };
+  const Vec3 first_column = ComputeCholeskySolution(factor, {.x = 1.0, .y = 0.0, .z = 0.0});
+  const Vec3 second_column = ComputeCholeskySolution(factor, {.x = 0.0, .y = 1.0, .z = 0.0});
+  const Vec3 third_column = ComputeCholeskySolution(factor, {.x = 0.0, .y = 0.0, .z = 1.0});
+  return {
+      .is_invertible = true,
+      .inverse = {
+          .xx = first_column.x,
+          .xy = first_column.y,
+          .xz = first_column.z,
+          .yx = first_column.y,
+          .yy = second_column.y,
+          .yz = second_column.z,
+          .zx = first_column.z,
+          .zy = second_column.z,
+          .zz = third_column.z,
+      },
+  };
+}
+
+// Computes the weights of the kept faces of a list for a position, with the sums, the mean offset, the weighted spread
+// and its inverse.
+//
+// Method: steps 4 to 9 of <proc-nearby-face-weights>, after FindNearbyFaces and the caller's mask. Every sum runs over
+//   the kept faces in list order, starting from 0.
+//   Step 4 and 5: W = sum w_f and G = sum g_f (ComputeRawFaceWeight), added face by face, W first.
+//   If W is not above 0, no kept face has weight: the fit is kNone, every sum, the mean offset and both matrices are 0,
+//   and nothing divides by W.
+//   Step 6: each face's weight and change are scaled by W (ComputeKeptFaceWeight).
+//   Step 7: mean_offset = sum weight (x_f - x_p), per axis, face by face.
+//   Step 8: weighted_spread = sum ((weight r_a) r_b) with r the offset from the mean, for the entries ab = xx, yx, yy,
+//   zx, zy, zz in that order; the entries above the diagonal copy those below, so the matrix is exactly symmetric.
+//   Step 9: the Cholesky factor of weighted_spread / h^2 (each entry divided by h x h) with a limit on the pivots
+//   (ComputeCholeskyInverse). The fit is kMeanOnly when a pivot is at most kMinPivotShare times the trace or W is
+//   below kMinWeightSum, else kFull, and the inverse is that of the scaled matrix times 1 / (h x h).
+//   The faces' raw weights are computed again at each step, with the same operations, so no per-face memory is held.
+// Units: position in m, world; the sums, the mean offset and the matrices as in NearbyFaceWeights.
+// Order: list order; the three passes (sums, mean, spread) each visit the kept faces in ascending list position.
+// Example: the complete case of the file header: W = 1, mean_offset = 0 and weighted_spread = h^2 / 4 times the
+//   identity, up to rounding, fit kFull, is_complete true. A mask with only the 9 faces at +1.5 h along the axis gives
+//   W = 0 and fit kNone.
+// Requires: `list` is from FindNearbyFaces with error kNone, for a finite position inside the list's cell (or a
+//   rounding step from it, as every caller's position is); `kept` has no bit set from list.count on; every block
+//   index entry of the tables is kNoIndex or below block_count. `tables` is the one `list` was made from.
+// Read: docs/method-paper/fluidity-method.typ <proc-nearby-face-weights>, <eq:scaled-weights>,
+//       <eq:weighted-spread>
+FLUIDITY_CPU_AND_GPU inline NearbyFaceWeights ComputeNearbyFaceWeights(
+    const GridTables& tables,
+    const NearbyFaceList& list,
+    Vec3 position,
+    NearbyFaceMask kept
+) noexcept {
+  assert(list.count >= 0 && list.count <= kMaxNearbyFaces);
+  NearbyFaceWeights weights{};
+  weights.list = list;
+  weights.kept = kept;
+  weights.position = position;
+  weights.fit = NearbyFaceFit::kNone;
+  // Steps 4 and 5: the raw weights and their sums.
+  double weight_sum = 0.0;
+  Vec3 raw_weight_change_sum = {.x = 0.0, .y = 0.0, .z = 0.0};
+  for (int position_in_list = 0; position_in_list < list.count; ++position_in_list) {
+    if (!ComputeIsKept(kept, position_in_list)) {
+      continue;
+    }
+    const RawFaceWeight raw = ComputeRawFaceWeight(tables, list.faces[position_in_list], position, list.cell_width);
+    weight_sum += raw.weight;
+    raw_weight_change_sum.x += raw.weight_change.x;
+    raw_weight_change_sum.y += raw.weight_change.y;
+    raw_weight_change_sum.z += raw.weight_change.z;
+  }
+  // No kept face has weight (or the sum is not a number): nothing below may divide by it.
+  if (!(weight_sum > 0.0)) {
+    return weights;
+  }
+  weights.weight_sum = weight_sum;
+  weights.raw_weight_change_sum = raw_weight_change_sum;
+  // Steps 6 and 7: the scaled weights and the mean offset. The mean offset is still 0 here, so the offsets from the
+  // mean that these calls give are not used.
+  Vec3 mean_offset = {.x = 0.0, .y = 0.0, .z = 0.0};
+  for (int position_in_list = 0; position_in_list < list.count; ++position_in_list) {
+    if (!ComputeIsKept(kept, position_in_list)) {
+      continue;
+    }
+    const FaceWeight face_weight = ComputeKeptFaceWeight(tables, weights, position_in_list);
+    mean_offset.x += face_weight.weight * face_weight.offset.x;
+    mean_offset.y += face_weight.weight * face_weight.offset.y;
+    mean_offset.z += face_weight.weight * face_weight.offset.z;
+  }
+  weights.mean_offset = mean_offset;
+  // Step 8: the weighted spread, entries on and below the diagonal in the order xx, yx, yy, zx, zy, zz.
+  Mat3 spread = {};
+  for (int position_in_list = 0; position_in_list < list.count; ++position_in_list) {
+    if (!ComputeIsKept(kept, position_in_list)) {
+      continue;
+    }
+    const FaceWeight face_weight = ComputeKeptFaceWeight(tables, weights, position_in_list);
+    const Vec3 from_mean = face_weight.offset_from_mean;
+    const double weighted_x = face_weight.weight * from_mean.x;
+    const double weighted_y = face_weight.weight * from_mean.y;
+    const double weighted_z = face_weight.weight * from_mean.z;
+    spread.xx += weighted_x * from_mean.x;
+    spread.yx += weighted_y * from_mean.x;
+    spread.yy += weighted_y * from_mean.y;
+    spread.zx += weighted_z * from_mean.x;
+    spread.zy += weighted_z * from_mean.y;
+    spread.zz += weighted_z * from_mean.z;
+  }
+  spread.xy = spread.yx;
+  spread.xz = spread.zx;
+  spread.yz = spread.zy;
+  weights.weighted_spread = spread;
+  // Step 9: the fit, from the spread in units of the cell width squared.
+  const double cell_width_square = list.cell_width * list.cell_width;
+  const Mat3 scaled_spread = {
+      .xx = spread.xx / cell_width_square,
+      .xy = spread.xy / cell_width_square,
+      .xz = spread.xz / cell_width_square,
+      .yx = spread.yx / cell_width_square,
+      .yy = spread.yy / cell_width_square,
+      .yz = spread.yz / cell_width_square,
+      .zx = spread.zx / cell_width_square,
+      .zy = spread.zy / cell_width_square,
+      .zz = spread.zz / cell_width_square,
+  };
+  const CholeskyInverse scaled_inverse = ComputeCholeskyInverse(scaled_spread);
+  weights.fit = NearbyFaceFit::kMeanOnly;
+  if (scaled_inverse.is_invertible && weight_sum >= kMinWeightSum) {
+    const double inverse_scale = 1.0 / cell_width_square;
+    weights.fit = NearbyFaceFit::kFull;
+    weights.inverse_weighted_spread = scaled_inverse.inverse * inverse_scale;
+  }
+  weights.is_complete = ComputeIsCompleteNeighbourhood(tables, list, kept);
+  return weights;
+}
+
+// Computes what one kept face gets from the position of `weights`: its scaled weight, offsets and weight change.
+//
+// Method: the weight is w_f / W and its change (g_f - weight G) / W, the same operations as ComputeNearbyFaceWeights
+//   uses, so the bits are the particle's own. When the fit is kNone no face has weight: the weight and the change are 0
+//   and so is offset_from_mean, and `offset` is still the face's position minus the position.
+// Order: call in ascending position_in_list for a fixed order of the caller's sums.
+// Units: as FaceWeight.
+// Example: unit grid (h = 1 m), position {2.5, 2.5, 2.5}, X axis, all 27 faces kept, so W = 1. The face at offset
+//   {-0.5, 0, 0} gets weight 0.5 x 0.75 x 0.75 = 0.28125; the face at offset {+1.5, 0, 0} gets weight 0 and weight
+//   change 0.
+// Requires: `weights` is from ComputeNearbyFaceWeights on `tables`; position_in_list is 0..weights.list.count - 1 and
+//   the face is kept.
+// Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
+FLUIDITY_CPU_AND_GPU inline FaceWeight
+ComputeFaceWeight(const GridTables& tables, const NearbyFaceWeights& weights, int position_in_list) noexcept {
+  assert(position_in_list >= 0 && position_in_list < weights.list.count);
+  assert(ComputeIsKept(weights.kept, position_in_list));
+  if (weights.fit == NearbyFaceFit::kNone) {
+    const FacePlaceIndex face = weights.list.faces[position_in_list];
+    return {
+        .face = face,
+        .weight = 0.0,
+        .offset = ComputeFacePosition(tables, face) - weights.position,
+        .offset_from_mean = {.x = 0.0, .y = 0.0, .z = 0.0},
+        .weight_change = {.x = 0.0, .y = 0.0, .z = 0.0},
+    };
+  }
+  return ComputeKeptFaceWeight(tables, weights, position_in_list);
 }
 
 }  // namespace fluidity::grid

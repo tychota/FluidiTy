@@ -10,9 +10,12 @@
 //          CheckEveryAxisHasCount, BuildFiveByFiveBoxAround, ComputeValueAlong, ToFaceOffsets, ComputeOffsetCountAt,
 //          PlacedPosition, ToPlacedPosition, kPlacedPositionStepsPerCell, kPlacedPositionStepsPerQuarter,
 //          ComputePositionAtStep, ToWindowMiddlePosition, CheckEveryWindowHasCount, FindLargestCountInEveryWindow,
-//          CheckFacesAreAscending, CheckEntriesFromAreZero, ComputeMovedByRoundingSteps
+//          CheckFacesAreAscending, CheckEntriesFromAreZero, ComputeMovedByRoundingSteps, FindDrawnStepInCell,
+//          FindDrawnPosition, ToNonDyadicFrame, FindDrawnCoordinate, kNonDyadicSeed, BuildNonDyadicCells,
+//          FindDrawnNonDyadicPosition
 // Uses:    the headers it includes
-// Used by: src/fluidity/grid/nearby_face_weights.test.cc and tests/grid/nearby_faces.test.cc
+// Used by: src/fluidity/grid/nearby_face_weights.test.cc, tests/grid/nearby_faces.test.cc and
+//          tests/grid/nearby_face_weights_on_many_positions.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -28,6 +31,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <random>
 #include <vector>
 
 #include "fluidity/base/axis.h"
@@ -37,6 +41,7 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
 #include "fluidity/grid/testing/face_search_cases.h"
+#include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
 
@@ -242,6 +247,84 @@ inline double ComputeMovedByRoundingSteps(double position, int step_count) {
     position = std::nextafter(position, direction);
   }
   return position;
+}
+
+// Where a drawn position lies inside its cell, on each axis.
+enum class DrawnPlace : std::uint8_t {
+  kAnywhere,  // Any step of the cell.
+  kSideOrCentre,  // The low side or the centre of the cell.
+};
+
+// Draws one step of a position inside a cell: its low side or its centre, or any step.
+inline std::int64_t FindDrawnStepInCell(std::mt19937_64& generator, DrawnPlace place) {
+  if (place == DrawnPlace::kSideOrCentre) {
+    return ToUniformIndex(generator(), 2) == 0 ? 0 : kPlacedPositionStepsPerCell / 2;
+  }
+  return static_cast<std::int64_t>(ToUniformIndex(generator(), kPlacedPositionStepsPerCell));
+}
+
+// Draws a position inside a cell of the list, on its side or centre on each axis, or anywhere inside it.
+inline PlacedPosition FindDrawnPosition(
+    std::mt19937_64& generator,
+    const GridFrame& frame,
+    const std::vector<CellId>& cells,
+    DrawnPlace place
+) {
+  const CellId cell = cells[ToUniformIndex(generator(), cells.size())];
+  const std::array<std::int64_t, 3> steps = {
+      FindDrawnStepInCell(generator, place),
+      FindDrawnStepInCell(generator, place),
+      FindDrawnStepInCell(generator, place),
+  };
+  return ToPlacedPosition(frame, cell, steps);
+}
+
+// The frame of the uniform 9^3 grid whose origin and width have no short binary fraction.
+constexpr GridFrame ToNonDyadicFrame() {
+  return {
+      .origin = {.x = -17.616723516683763, .y = 0.3, .z = -7.1},
+      .biggest_cell_width = 0.0375,
+      .size_level_count = 1,
+  };
+}
+
+// Draws a position on one axis: a side or a centre of one of the 5 middle cells of the 9, moved by -3 to +3 rounding
+// steps.
+// clang-tidy: an origin and the lowest cell; the swappable-parameters check flags the two numbers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+inline double FindDrawnCoordinate(std::mt19937_64& generator, double origin_on_axis, std::int32_t lowest_cell) {
+  const auto cell =
+      static_cast<std::int32_t>(lowest_cell + 2 + static_cast<std::int32_t>(ToUniformIndex(generator(), 5)));
+  const double centre_fraction = ToUniformIndex(generator(), 2) == 0 ? 0.0 : 0.5;
+  const double coordinate = origin_on_axis + ((static_cast<double>(cell) + centre_fraction) * 0.0375);
+  const int step_count = static_cast<int>(ToUniformIndex(generator(), 7)) - 3;
+  return ComputeMovedByRoundingSteps(coordinate, step_count);
+}
+
+// The seed of the generator that draws the positions of the non-dyadic frame.
+inline constexpr std::uint64_t kNonDyadicSeed = 20261120;
+
+// The 9^3 size-level-0 cells of ToNonDyadicFrame: coordinates -32..-24 on x and 0..8 on y and z.
+inline std::vector<CellId> BuildNonDyadicCells() {
+  std::vector<CellId> cells;
+  for (std::int32_t cell_z = 0; cell_z < 9; ++cell_z) {
+    for (std::int32_t cell_y = 0; cell_y < 9; ++cell_y) {
+      for (std::int32_t cell_x = -32; cell_x < -23; ++cell_x) {
+        cells.push_back(ToCell(0, cell_x, cell_y, cell_z));
+      }
+    }
+  }
+  return cells;
+}
+
+// Draws a position of ToNonDyadicFrame: on each axis a side or a centre of one of the 5 middle cells, moved by -3 to +3
+// rounding steps.
+inline Vec3 FindDrawnNonDyadicPosition(std::mt19937_64& generator, const GridFrame& frame) {
+  return {
+      .x = FindDrawnCoordinate(generator, frame.origin.x, -32),
+      .y = FindDrawnCoordinate(generator, frame.origin.y, 0),
+      .z = FindDrawnCoordinate(generator, frame.origin.z, 0),
+  };
 }
 
 }  // namespace fluidity::grid

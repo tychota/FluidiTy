@@ -2389,7 +2389,7 @@ $v_p = sum_f hat(w)_f v_f - bold(r) dot bold(m)$; and a particle writes $v_p + b
 bold(m))$ to face $f$ with weight $hat(w)_f$. Since the weighted offsets from the mean add up to zero, the written
 momentum is exactly the particle's. The exact change of the read value with the position is
 $sum_f v_f (partial hat(w)_f) / (partial bold(x)_p)$. A face can also compute the weight one particle gives it
-(`ComputeFaceWeight` with the particle's sums `NearbyFaceSums`), with the same bits as the particle's own list.
+(`ComputeFaceWeight` with the particle's `NearbyFaceWeights`), with the same bits as the particle's own list.
 
 *Properties.* These hold for every grid and every mask whose fit is not `kNone`:
 

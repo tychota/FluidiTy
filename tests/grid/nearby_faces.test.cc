@@ -65,30 +65,6 @@ TEST(FindNearbyFaces, SmallRandomGrids_NeverExceedTheProvenBound) {
   EXPECT_GE(largest_count, 27);
 }
 
-// Draws one step of a position inside a cell: its low side or its centre, or any step.
-std::int64_t FindDrawnStepInCell(std::mt19937_64& generator, bool is_on_side_or_centre) {
-  if (is_on_side_or_centre) {
-    return ToUniformIndex(generator(), 2) == 0 ? 0 : kPlacedPositionStepsPerCell / 2;
-  }
-  return static_cast<std::int64_t>(ToUniformIndex(generator(), kPlacedPositionStepsPerCell));
-}
-
-// Draws a position inside a cell of the list, on its side or centre on each axis, or anywhere inside it.
-PlacedPosition FindDrawnPosition(
-    std::mt19937_64& generator,
-    const GridFrame& frame,
-    const std::vector<CellId>& cells,
-    bool is_on_side_or_centre
-) {
-  const CellId cell = cells[ToUniformIndex(generator(), cells.size())];
-  const std::array<std::int64_t, 3> steps = {
-      FindDrawnStepInCell(generator, is_on_side_or_centre),
-      FindDrawnStepInCell(generator, is_on_side_or_centre),
-      FindDrawnStepInCell(generator, is_on_side_or_centre),
-  };
-  return ToPlacedPosition(frame, cell, steps);
-}
-
 // Checks that the list of one axis is the checker's list for the same cell and window, in ascending order, and gives
 // its count.
 int CheckListMatchesChecker(
@@ -122,7 +98,12 @@ int CheckPositionsOfOneGrid(const GridTables& tables, const GeometricGrid& check
   std::mt19937_64 generator(cells.size() + 1);
   int largest_count = 0;
   for (int draw = 0; draw < 50; ++draw) {
-    const PlacedPosition placed = FindDrawnPosition(generator, tables.frame, cells, draw < 10);
+    const PlacedPosition placed = FindDrawnPosition(
+        generator,
+        tables.frame,
+        cells,
+        draw < 10 ? DrawnPlace::kSideOrCentre : DrawnPlace::kAnywhere
+    );
     for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
       SCOPED_TRACE(draw);
       largest_count = std::max(largest_count, CheckListMatchesChecker(tables, checker, placed, axis));
@@ -150,50 +131,16 @@ TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker) {
   EXPECT_LE(largest_count, kMostFacesInAnyValidGrid);
 }
 
-// The frame of the uniform 9^3 grid whose origin and width have no short binary fraction.
-constexpr GridFrame ToNonDyadicFrame() {
-  return {
-      .origin = {.x = -17.616723516683763, .y = 0.3, .z = -7.1},
-      .biggest_cell_width = 0.0375,
-      .size_level_count = 1,
-  };
-}
-
-// Draws a position on one axis: a side or a centre of one of the 5 middle cells of the 9, moved by -3 to +3 rounding
-// steps.
-// clang-tidy: an origin and the lowest cell; the swappable-parameters check flags the two numbers.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-double FindDrawnCoordinate(std::mt19937_64& generator, double origin_on_axis, std::int32_t lowest_cell) {
-  const auto cell =
-      static_cast<std::int32_t>(lowest_cell + 2 + static_cast<std::int32_t>(ToUniformIndex(generator(), 5)));
-  const double centre_fraction = ToUniformIndex(generator(), 2) == 0 ? 0.0 : 0.5;
-  const double coordinate = origin_on_axis + ((static_cast<double>(cell) + centre_fraction) * 0.0375);
-  const int step_count = static_cast<int>(ToUniformIndex(generator(), 7)) - 3;
-  return ComputeMovedByRoundingSteps(coordinate, step_count);
-}
-
 // 1,000 positions made of a side or a centre of a cell on each axis, moved by -3 to +3 rounding steps, in a frame whose
 // origin and width have no short binary fraction: 27 faces on every axis, in every one.
 TEST(FindNearbyFaces, NonDyadicFrameAtSideOrCentre_AlwaysHas27) {
   const GridFrame frame = ToNonDyadicFrame();
-  std::vector<CellId> cells;
-  for (std::int32_t cell_z = 0; cell_z < 9; ++cell_z) {
-    for (std::int32_t cell_y = 0; cell_y < 9; ++cell_y) {
-      for (std::int32_t cell_x = -32; cell_x < -23; ++cell_x) {
-        cells.push_back(ToCell(0, cell_x, cell_y, cell_z));
-      }
-    }
-  }
+  const std::vector<CellId> cells = BuildNonDyadicCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(frame, cells));
   ASSERT_TRUE(test_grid.has_value());
-  std::mt19937_64 generator(20261120);  // NOLINT(bugprone-random-generator-seed)
+  std::mt19937_64 generator(kNonDyadicSeed);  // NOLINT(bugprone-random-generator-seed)
   for (int draw = 0; draw < 1000; ++draw) {
-    const Vec3 position = {
-        .x = FindDrawnCoordinate(generator, frame.origin.x, -32),
-        .y = FindDrawnCoordinate(generator, frame.origin.y, 0),
-        .z = FindDrawnCoordinate(generator, frame.origin.z, 0),
-    };
-    CheckEveryAxisHasCount(ToTablesOf(test_grid), position, 27);
+    CheckEveryAxisHasCount(ToTablesOf(test_grid), FindDrawnNonDyadicPosition(generator, frame), 27);
   }
 }
 

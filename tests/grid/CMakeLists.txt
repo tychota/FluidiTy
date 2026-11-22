@@ -235,6 +235,30 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  nearby_face_weights_on_many_positions_functional_test
+  SOURCES
+  nearby_face_weights_on_many_positions.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  nearby_face_weights_on_random_grids_functional_test
+  SOURCES
+  nearby_face_weights_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   nearby_faces_functional_test
   SOURCES
   nearby_faces.test.cc
