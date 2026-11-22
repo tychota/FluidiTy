@@ -43,7 +43,7 @@ GridInputs ToInputs(GridFrame frame, std::span<const CellId> active_cells) {
 }
 
 // Appends the 8 small cells of `big_cell`, in cell eighth order.
-void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+void ApplySmallCellsToList(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -107,7 +107,7 @@ std::vector<CellId> BuildCellWithEveryNeighbourSplit() {
     for (std::int32_t y = -1; y <= 1; ++y) {
       for (std::int32_t x = -1; x <= 1; ++x) {
         if (x != 0 || y != 0 || z != 0) {
-          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplySmallCellsToList(ToCell(0, x, y, z), cells);
         }
       }
     }
@@ -137,7 +137,7 @@ std::vector<CellId> BuildCellWithEverySideNeighbourSplit() {
       const std::int32_t x = axis == 0 ? side_step : 0;
       const std::int32_t y = axis == 1 ? side_step : 0;
       const std::int32_t z = axis == 2 ? side_step : 0;
-      ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+      ApplySmallCellsToList(ToCell(0, x, y, z), cells);
     }
   }
   return cells;
@@ -445,7 +445,7 @@ std::vector<NamedGrid> BuildGridsAtNegativeAndLimitCoords() {
   constexpr auto kLargestSplitCoord = static_cast<std::int32_t>((1U << 17U) - 1U);
   std::vector<NamedGrid> grids;
   std::vector<CellId> negative_two_size_cells = {ToCell(0, -1, -1, -1)};
-  ApplyAppendSmallCells(ToCell(0, 0, -1, -1), negative_two_size_cells);
+  ApplySmallCellsToList(ToCell(0, 0, -1, -1), negative_two_size_cells);
   grids.push_back({.name = "two-size fixture at -1", .size_level_count = 2, .cells = negative_two_size_cells});
   grids.push_back(
       {.name = "every neighbour split", .size_level_count = 2, .cells = BuildCellWithEveryNeighbourSplit()}
@@ -461,10 +461,10 @@ std::vector<NamedGrid> BuildGridsAtNegativeAndLimitCoords() {
       .cells = {ToCell(0, -kMaxCoord, -kMaxCoord, -kMaxCoord), ToCell(0, -kMaxCoord + 1, -kMaxCoord + 1, -kMaxCoord)},
   });
   std::vector<CellId> high_split_cells = {ToCell(0, kLargestSplitCoord - 1, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
+  ApplySmallCellsToList(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
   grids.push_back({.name = "small cells at the high limit", .size_level_count = 2, .cells = high_split_cells});
   std::vector<CellId> low_split_cells = {ToCell(0, -kLargestSplitCoord + 1, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
+  ApplySmallCellsToList(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
   grids.push_back({.name = "small cells at the low split limit", .size_level_count = 2, .cells = low_split_cells});
   return grids;
 }

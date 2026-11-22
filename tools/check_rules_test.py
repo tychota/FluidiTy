@@ -337,6 +337,15 @@ def test_backend_word_in_header_fails(tmp_path, glossary):
     assert rules(run(tmp_path, glossary)) == ["backend-name"]
 
 
+@pytest.mark.parametrize(
+    "folder", [("fluidity", "grid", "testing"), ("tests", "grid"), ("fluidity", "grid")]
+)
+def test_backend_word_is_allowed_in_test_files_only(tmp_path, glossary, folder):
+    write(tmp_path.joinpath(*folder), "a.h", FULL_HEADER + "inline void CheckGpuThing();\n")
+    expected = ["backend-name"] if folder == ("fluidity", "grid") else []
+    assert rules(run(tmp_path, glossary)) == expected
+
+
 def test_run_on_enumerators_and_cuda_keywords_are_allowed(tmp_path, glossary):
     write(
         tmp_path,

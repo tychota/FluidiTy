@@ -48,7 +48,7 @@ constexpr std::int32_t kTwoToThe17 = ComputePowerOfTwo(17);
 constexpr std::int32_t kTwoToThe18 = ComputePowerOfTwo(18);
 
 // The 8 small cells of a big cell, by eighth: x + 2 y + 4 z of the high halves.
-void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+void ApplySmallCellsToList(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -88,7 +88,7 @@ std::vector<CellId> BuildSevenOfEightSiblings() {
 std::vector<CellId> BuildMissingCellBesideSplitSiblings() {
   std::vector<CellId> cells;
   for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
-    ApplyAppendSmallCells(ComputeSmallCell(ToCell(0, 0, 0, 0), cell_eighth), cells);
+    ApplySmallCellsToList(ComputeSmallCell(ToCell(0, 0, 0, 0), cell_eighth), cells);
   }
   return ToSortedCells(cells);
 }
@@ -375,7 +375,7 @@ TEST(CheckSiblingsAt, MissingCellBesideSplitSiblings_NamesTheMissing) {
 
 TEST(CheckSiblingsAt, SplitSiblings_Pass) {
   std::vector<CellId> cells = BuildMissingCellBesideSplitSiblings();
-  ApplyAppendSmallCells(ToCell(1, 0, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(1, 0, 0, 0), cells);
   const std::vector<CellId> sorted_cells = ToSortedCells(cells);
   ASSERT_EQ(sorted_cells.size(), 64U);
   EXPECT_EQ(ComputeSmallestFailureKey(sorted_cells, 3, CheckSiblingsAt), kNoFailureKey);
@@ -498,7 +498,7 @@ void ApplySplit(std::vector<CellId>& cells, CellId cell) {
   std::erase_if(cells, [cell](CellId listed_cell) {
     return listed_cell.value == cell.value;
   });
-  ApplyAppendSmallCells(cell, cells);
+  ApplySmallCellsToList(cell, cells);
 }
 
 TEST(CheckSiblingsAt, SizeLevelZeroCellAtMinusEight_HoldsSizeLevelFifteenAwayFromItsLowCorner) {
@@ -1321,7 +1321,7 @@ TEST(ComputeFacePieceKind, ThreeSizeLevelsMeeting_GiveTheCheckersFacePieces) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     const CellId small_cell = ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth);
     if (cell_eighth == 1) {
-      ApplyAppendSmallCells(small_cell, cells);
+      ApplySmallCellsToList(small_cell, cells);
     } else {
       cells.push_back(small_cell);
     }
@@ -1342,7 +1342,7 @@ TEST(ComputeFacePieceKind, ThreeSizeLevelsMeeting_GiveTheCheckersFacePieces) {
 
 TEST(ComputeFacePieceKind, SizeLevelZeroCellsAtCoordLimits_GiveTheCheckersFacePieces) {
   std::vector<CellId> cells = {ToCell(0, -kMaxCoord, 0, 0), ToCell(0, kMaxCoord, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(0, 0, 0, 0), cells);
   cells = ToSortedCells(cells);
   const TableVectors tables = BuildTablesOfCells(ToUnitFrame(2), cells);
   const std::multiset<FacePieceWithKind> pieces = BuildFacePiecesOfTables(tables);
@@ -1357,7 +1357,7 @@ TEST(ComputeFacePieceKind, BigCellBeyondHighCoordLimit_IsBetweenCells) {
   // {2^17, 0, 0} active beside it. The high X side of size level 1 x = kMaxCoord is the place x = 2^18, outside the
   // range at size level 1 and inside size level 0 x = 2^17: a face piece between cells, at size level 1.
   std::vector<CellId> cells = {ToCell(0, kTwoToThe17, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, kTwoToThe17 - 1, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(0, kTwoToThe17 - 1, 0, 0), cells);
   cells = ToSortedCells(cells);
   const TableVectors tables = BuildTablesOfCells(ToUnitFrame(2), cells);
   const std::multiset<FacePieceWithKind> pieces = BuildFacePiecesOfTables(tables);
@@ -1371,7 +1371,7 @@ TEST(ComputeFacePieceKind, SmallCellsAtLowCoordLimit_GiveTheCheckersFacePieces) 
   // Size level 0 {-2^17, 0, 0} active; {-2^17 + 1, 0, 0} split into size level 1 x = -2^18 + 2 and -2^18 + 3. The big
   // cell covers size level 1 x = -2^18 + 1 = -kMaxCoord and x = -2^18, outside the range; nothing lies beyond it.
   std::vector<CellId> cells = {ToCell(0, -kTwoToThe17, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, -kTwoToThe17 + 1, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(0, -kTwoToThe17 + 1, 0, 0), cells);
   cells = ToSortedCells(cells);
   const TableVectors tables = BuildTablesOfCells(ToUnitFrame(2), cells);
   const std::multiset<FacePieceWithKind> pieces = BuildFacePiecesOfTables(tables);
@@ -1433,7 +1433,7 @@ struct SplitCellSortedEntries {
 
 SplitCellSortedEntries BuildSplitCellSortedEntries() {
   SplitCellSortedEntries entries;
-  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), entries.cell_ids);
+  ApplySmallCellsToList(ToCell(0, 0, 0, 0), entries.cell_ids);
   entries.cell_ids.push_back(ToCell(0, 0, 0, 0));
   entries.cell_ids.push_back(CellId{0});
   const auto count = static_cast<std::uint32_t>(entries.cell_ids.size());

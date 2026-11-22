@@ -2404,7 +2404,7 @@ struct RestExpectation {
 
 // Runs one step of a particle under gravity: adds {0, 0, -9.81 T} to for_this_step, makes both velocities that, moves
 // the particle, and makes the end and for_this_step the next step's start and velocity. Returns false on failure.
-bool ComputeGravityStep(SolidContactInputs* inputs, SolidContactResult* result) {
+bool ApplyGravityStep(SolidContactInputs* inputs, SolidContactResult* result) {
   const Vec3 gravity_change = {.x = 0, .y = 0, .z = -9.81 * inputs->step_duration};  // m/s
   inputs->velocity.for_this_step = inputs->velocity.for_this_step + gravity_change;
   inputs->velocity.for_next_step = inputs->velocity.for_this_step;
@@ -2423,14 +2423,14 @@ bool ComputeIsRestingAsExpected(const SolidContactResult& result, const RestExpe
   return result.hit_count == expected.hit_count && is_near_x && is_near_z;
 }
 
-// Runs 1000 gravity steps (ComputeGravityStep) from the inputs and fails the calling test unless every step succeeds
+// Runs 1000 gravity steps (ApplyGravityStep) from the inputs and fails the calling test unless every step succeeds
 // and every step from expected.rest_step on rests as expected (ComputeIsRestingAsExpected). Returns the last result.
 SolidContactResult CheckRestsForThousandSteps(SolidContactInputs inputs, const RestExpectation& expected) {
   SolidContactResult result;
   int failed_steps = 0;
   int steps_not_at_rest = 0;
   for (int step = 1; step <= 1000; ++step) {
-    failed_steps += ComputeGravityStep(&inputs, &result) ? 0 : 1;
+    failed_steps += ApplyGravityStep(&inputs, &result) ? 0 : 1;
     const bool is_resting = ComputeIsRestingAsExpected(result, expected);
     steps_not_at_rest += step >= expected.rest_step && !is_resting ? 1 : 0;
   }
@@ -4081,7 +4081,7 @@ TEST(MoveParticle, SliverStopAtShorterSteps_EndsAndStartsAgainAtRestPoint) {
 
 // Runs the edge scene of that name with a friction and a velocity, and returns its result; fails the calling test
 // unless it succeeded.
-SolidContactResult ComputeEdgeScene(std::string_view case_name, double friction, Vec3 velocity) {
+SolidContactResult ComputeEdgeSceneResult(std::string_view case_name, double friction, Vec3 velocity) {
   MoveParticleCase scene = FindMoveParticleCase(case_name);
   scene.inputs.friction = friction;
   scene.inputs.velocity = {.for_next_step = velocity, .for_this_step = velocity};
@@ -4106,25 +4106,25 @@ TEST(MoveParticle, DomainBoxEdgeWithFriction_SameAsFlatSolids) {
       EdgeDraw{.friction = 0.5, .velocity = {.x = -1, .y = 2, .z = -1}},
   };
   for (const EdgeDraw draw : draws) {
-    const SolidContactResult box = ComputeEdgeScene("DomainBoxEdgeWithFriction", draw.friction, draw.velocity);
-    const SolidContactResult flats = ComputeEdgeScene("FlatSolidsEdgeWithFriction", draw.friction, draw.velocity);
+    const SolidContactResult box = ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", draw.friction, draw.velocity);
+    const SolidContactResult flats = ComputeEdgeSceneResult("FlatSolidsEdgeWithFriction", draw.friction, draw.velocity);
     EXPECT_EQ(box.hit_count, 1);
     EXPECT_EQ(flats.hit_count, 1);
     ExpectVec3Near(box.velocity.for_next_step, flats.velocity.for_next_step, 1e-15);
     ExpectVec3Near(box.position, flats.position, kTolerance / 1024);
   }
   ExpectVec3Near(
-      ComputeEdgeScene("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 0.5, .z = -1}).velocity.for_next_step,
+      ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 0.5, .z = -1}).velocity.for_next_step,
       {},
       1e-15
   );
   ExpectVec3Near(
-      ComputeEdgeScene("DomainBoxEdgeWithFriction", 2, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
+      ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", 2, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
       {},
       1e-15
   );
   ExpectVec3Near(
-      ComputeEdgeScene("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
+      ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
       {.x = 0, .y = 1, .z = 0},
       1e-15
   );

@@ -168,7 +168,7 @@ CellCoord ToBiggestBlockCoord(const GridTables& tables, CellBlockIndex block) {
   return ToCellCoord(CellId{tables.block_ids[biggest_block].value});
 }
 
-// What ComputeCountMoves counted over every pair of a block and a size-level-0 target block.
+// What ComputeMoveCounts counted over every pair of a block and a size-level-0 target block.
 struct MoveCounts {
   std::size_t arrived_count = 0;  // Pairs whose moves arrived at the target.
   std::size_t wrong_count = 0;  // Pairs where FindBiggestBlockFrom differed from the expected block.
@@ -179,7 +179,7 @@ struct MoveCounts {
 // Runs FindBiggestBlockFrom from every block toward every size-level-0 block of the grid of
 // BuildCellsOverSeveralBlocks. The expected block is the target, or kNoIndex three blocks away and for a pair of
 // `blocked_moves`, each the near block's size-level-0 coordinate (x, y, z), then the target's.
-MoveCounts ComputeCountMoves(const GridTables& tables, const std::set<std::array<std::int32_t, 6>>& blocked_moves) {
+MoveCounts ComputeMoveCounts(const GridTables& tables, const std::set<std::array<std::int32_t, 6>>& blocked_moves) {
   MoveCounts counts;
   for (std::uint32_t near = 0; near < tables.block_count; ++near) {
     const CellCoord near_coord = ToBiggestBlockCoord(tables, CellBlockIndex{near});
@@ -229,7 +229,7 @@ TEST(FindBiggestBlockFrom, TargetWithinTwoMoves_IsFoundWithoutSearch) {
       {2, 1, 0, 0, 1, 0},
       {2, 1, 1, 0, 1, 0},
   };
-  const MoveCounts counts = ComputeCountMoves(tables, blocked_moves);
+  const MoveCounts counts = ComputeMoveCounts(tables, blocked_moves);
   EXPECT_EQ(counts.wrong_count, 0U) << "first wrong: near " << counts.first_wrong_near << ", target "
                                     << counts.first_wrong_target;
   EXPECT_GT(counts.arrived_count, 0U);

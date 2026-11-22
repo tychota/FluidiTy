@@ -49,7 +49,7 @@ void WriteLargest(const std::string& name, LargestDifference largest) {
 
 // Runs `range` on both processors, compares the GPU with the CPU in `comparison` as case `case_index` (`scene`: its
 // name, or empty), and appends the GPU run's field bits to `digest_words`.
-void ApplyCompareOnBoth(
+void ApplyComparisonOfBothProcessors(
     const ParticleRange& range,
     std::size_t case_index,
     std::string_view scene,
@@ -71,7 +71,7 @@ void ApplyCompareOnBoth(
 
 // Ends a set: prints and writes to the notes file its summary line and every discrete mismatch, prints its largest
 // differences, and checks that it passes (SetComparison::CheckPasses).
-void WriteFinishedSet(const std::string& name, const SetComparison& comparison) {
+void WriteSetSummary(const std::string& name, const SetComparison& comparison) {
   std::cout << comparison.ToSummaryLine() << "\n";
   WriteResultNote("MoveParticles, " + comparison.ToSummaryLine());
   for (const std::string& line : comparison.mismatch_lines()) {
@@ -90,7 +90,7 @@ TEST(MoveParticles, SweepAndMoveCasesOnGpu_MatchCpu) {
   std::vector<std::uint64_t> digest_words;
   std::size_t case_index = 0;
   for (const MoveParticleCase& test_case : BuildMoveParticleCases()) {
-    ApplyCompareOnBoth(
+    ApplyComparisonOfBothProcessors(
         BuildOneParticleRange(test_case, case_index + 1),
         case_index,
         test_case.name,
@@ -99,7 +99,7 @@ TEST(MoveParticles, SweepAndMoveCasesOnGpu_MatchCpu) {
     );
     ++case_index;
   }
-  WriteFinishedSet("catalogue", comparison);
+  WriteSetSummary("catalogue", comparison);
   WriteResultDigest("MoveParticles on the GPU, catalogue scenes", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -110,11 +110,17 @@ TEST(MoveParticles, ObliqueCasesOnGpu_MatchCpu) {
   std::vector<std::uint64_t> digest_words;
   std::size_t case_index = 0;
   for (const MoveParticleCase& test_case : BuildObliqueCases(10000)) {
-    ApplyCompareOnBoth(BuildOneParticleRange(test_case, case_index + 1), case_index, {}, comparison, digest_words);
+    ApplyComparisonOfBothProcessors(
+        BuildOneParticleRange(test_case, case_index + 1),
+        case_index,
+        {},
+        comparison,
+        digest_words
+    );
     ++case_index;
   }
-  ApplyCompareOnBoth(BuildPackedObliqueRange(10000), case_index, "packed", comparison, digest_words);
-  WriteFinishedSet("oblique cases", comparison);
+  ApplyComparisonOfBothProcessors(BuildPackedObliqueRange(10000), case_index, "packed", comparison, digest_words);
+  WriteSetSummary("oblique cases", comparison);
   WriteResultDigest("MoveParticles on the GPU, oblique cases", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -124,10 +130,16 @@ TEST(MoveParticles, RoundCasesOnGpu_MatchCpu) {
   std::vector<std::uint64_t> digest_words;
   std::size_t case_index = 0;
   for (const MoveParticleCase& test_case : BuildRoundCases(10000)) {
-    ApplyCompareOnBoth(BuildOneParticleRange(test_case, case_index + 1), case_index, {}, comparison, digest_words);
+    ApplyComparisonOfBothProcessors(
+        BuildOneParticleRange(test_case, case_index + 1),
+        case_index,
+        {},
+        comparison,
+        digest_words
+    );
     ++case_index;
   }
-  WriteFinishedSet("round cases", comparison);
+  WriteSetSummary("round cases", comparison);
   WriteResultDigest("MoveParticles on the GPU, round cases", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -372,7 +384,7 @@ struct TimedRun {
   MovedRange moved;
 };
 
-TimedRun ComputeTimedMoveParticles(RunOn run_on, const ParticleRange& range) {
+TimedRun ComputeMoveParticlesTimedRun(RunOn run_on, const ParticleRange& range) {
   const std::size_t count = range.size();
   const std::vector<MemoryEstimateEntry> estimate = BuildContactMemoryEstimate(count, range.solids.size());
   std::expected<RunMemory, BufferError> run_memory =
@@ -440,8 +452,8 @@ TEST(MoveParticles, MillionParticlesOnGpu_MatchCpuAndTimed) {
   for (const int solid_count : {1, 8, 32}) {
     SCOPED_TRACE(solid_count);
     const ParticleRange range = BuildCrowdedRange(1000000, solid_count);
-    const TimedRun gpu_run = ComputeTimedMoveParticles(RunOn::kGpu, range);
-    const TimedRun cpu_run = ComputeTimedMoveParticles(RunOn::kCpu, range);
+    const TimedRun gpu_run = ComputeMoveParticlesTimedRun(RunOn::kGpu, range);
+    const TimedRun cpu_run = ComputeMoveParticlesTimedRun(RunOn::kCpu, range);
     ASSERT_TRUE(cpu_run.moved.result.has_value());
     EXPECT_GT(cpu_run.moved.result->hit_count, 900U);
     EXPECT_TRUE(CheckSameMove(cpu_run.moved, gpu_run.moved, Agreement::kSameBits, ComputeComparisonBounds(range)));

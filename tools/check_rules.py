@@ -21,8 +21,9 @@ String literals are never scanned; identifiers, comments and Python docstrings a
 
 Which rules apply to which files (a deliberate choice, written down here):
 - `file-header`, `bare-bool` and `verb` apply to `.h` and `.cuh` files, where the public declarations are.
-- `backend-name` applies to `.h` files only, because a `.cuh` file is allowed to name its backend.
-  Names listed in the allowed-names file are exempt from it, as from `verb`.
+- `backend-name` applies to `.h` files only, because a `.cuh` file is allowed to name its backend, and not to test
+  files (`.test.` in the name, or a `testing` or `tests` folder): a test may name the backend it tests, as in
+  `CheckGpuHalfSameAsCpuLoop`. Names listed in the allowed-names file are exempt from it, as from `verb`.
 - `role-suffix` applies to every C++ file; the word rules and `milestone-code` apply to every scanned file.
 - `shared-by-reference` applies to C++ files that contain FLUIDITY_CPU_AND_GPU: they take Vec3 and Mat3 by value,
   because GPU code cannot bind a reference to a namespace-scope constexpr constant such as kIdentity.
@@ -1195,7 +1196,7 @@ def check_text(
         return sorted(reporter.findings(), key=lambda finding: (finding.line, finding.rule_id))
     # Scope of the rules (see the module docstring): file-header, bare-bool and verb look at public
     # declarations, so they apply to .h and .cuh only. backend-name applies to .h only, where names are public
-    # and shared; a .cuh file may name its backend.
+    # and shared; a .cuh file may name its backend, and so may a test file.
     if suffix in HEADER_SUFFIXES:
         _check_file_header(lines, reporter)
     _check_words(lines, glossary, reporter)
@@ -1233,7 +1234,7 @@ def check_text(
             checks_bare_bool=False,
             declarations_are_private=is_test_file or is_private_gpu_file,
         )
-    if suffix == ".h" and not is_private_gpu_file:
+    if suffix == ".h" and not is_private_gpu_file and not is_test_file:
         _check_backend_names(lines, allowed_names, reporter)
     return sorted(reporter.findings(), key=lambda finding: (finding.line, finding.rule_id))
 

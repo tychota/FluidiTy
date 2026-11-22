@@ -138,7 +138,7 @@ std::vector<NamedGrid> BuildHandGrids() {
   std::vector<NamedGrid> grids;
   grids.push_back({.name = "two-size fixture", .frame = ToUnitFrame(2), .cells = BuildTwoSizeFixtureCells()});
   std::vector<CellId> negative_two_size_cells = {ToCell(0, -1, -1, -1)};
-  ApplyAppendSmallCells(ToCell(0, 0, -1, -1), negative_two_size_cells);
+  ApplySmallCellsToList(ToCell(0, 0, -1, -1), negative_two_size_cells);
   grids.push_back({.name = "two-size fixture at -1", .frame = ToUnitFrame(2), .cells = negative_two_size_cells});
   grids.push_back({
       .name = "every neighbour split",
@@ -162,10 +162,10 @@ std::vector<NamedGrid> BuildHandGrids() {
       .cells = {ToCell(0, -kMaxCoord, -kMaxCoord, -kMaxCoord), ToCell(0, -kMaxCoord + 1, -kMaxCoord, -kMaxCoord)},
   });
   std::vector<CellId> high_split_cells = {ToCell(0, kLargestSplitCoord - 1, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
+  ApplySmallCellsToList(ToCell(0, kLargestSplitCoord, 0, 0), high_split_cells);
   grids.push_back({.name = "small cells at the high split limit", .frame = ToUnitFrame(2), .cells = high_split_cells});
   std::vector<CellId> low_split_cells = {ToCell(0, -kLargestSplitCoord + 1, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
+  ApplySmallCellsToList(ToCell(0, -kLargestSplitCoord, 0, 0), low_split_cells);
   grids.push_back({.name = "small cells at the low split limit", .frame = ToUnitFrame(2), .cells = low_split_cells});
   grids.push_back({
       .name = "bigger block behind an absent neighbour",
@@ -345,7 +345,7 @@ std::vector<CellId> BuildBoxWithOneSplitBlock() {
       for (std::int32_t x = 0; x <= 7; ++x) {
         const bool is_in_split_block = x >= 4 && y <= 3 && z <= 3;
         if (is_in_split_block) {
-          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplySmallCellsToList(ToCell(0, x, y, z), cells);
         } else {
           cells.push_back(ToCell(0, x, y, z));
         }

@@ -26,7 +26,7 @@
 namespace fluidity::grid {
 namespace {
 
-int ComputeCountFacePieces(const std::vector<GeometricFacePiece>& pieces, Axis axis) {
+int ComputeFacePieceCount(const std::vector<GeometricFacePiece>& pieces, Axis axis) {
   return static_cast<int>(std::ranges::count_if(pieces, [axis](const GeometricFacePiece& piece) {
     return piece.axis == axis;
   }));
@@ -74,9 +74,9 @@ TEST(GeometricGrid, OneBigCell_HasSixFacePieces) {
   };
   EXPECT_EQ(pieces.size(), 6U);
   EXPECT_EQ(std::ranges::count_if(pieces, is_whole_edge_side), 6);
-  EXPECT_EQ(ComputeCountFacePieces(pieces, Axis::kX), 2);
-  EXPECT_EQ(ComputeCountFacePieces(pieces, Axis::kY), 2);
-  EXPECT_EQ(ComputeCountFacePieces(pieces, Axis::kZ), 2);
+  EXPECT_EQ(ComputeFacePieceCount(pieces, Axis::kX), 2);
+  EXPECT_EQ(ComputeFacePieceCount(pieces, Axis::kY), 2);
+  EXPECT_EQ(ComputeFacePieceCount(pieces, Axis::kZ), 2);
 }
 
 TEST(GeometricGrid, SplitCellBesideBigCell_HasFourQuarterFacePieces) {
@@ -109,9 +109,9 @@ TEST(GeometricGrid, SplitCellBesideBigCell_FacePiecesPerAxisMatchHandCount) {
   const std::vector<GeometricFacePiece>& pieces = grid.FacePieces();
 
   // X: big -X, 4 quarters, 4 between the small cells, 4 small +X sides. Y and Z: 2 big sides and 3 planes of 4.
-  EXPECT_EQ(ComputeCountFacePieces(pieces, Axis::kX), 13);
-  EXPECT_EQ(ComputeCountFacePieces(pieces, Axis::kY), 14);
-  EXPECT_EQ(ComputeCountFacePieces(pieces, Axis::kZ), 14);
+  EXPECT_EQ(ComputeFacePieceCount(pieces, Axis::kX), 13);
+  EXPECT_EQ(ComputeFacePieceCount(pieces, Axis::kY), 14);
+  EXPECT_EQ(ComputeFacePieceCount(pieces, Axis::kZ), 14);
   double area_sum = 0;
   for (const GeometricFacePiece& piece : pieces) {
     area_sum += piece.area;
@@ -139,7 +139,7 @@ TEST(GeometricGrid, SplitCellBesideBigCell_FacePieceIdNamesTheHighPlace) {
 
 TEST(GeometricGrid, CellsAtBothCoordLimits_Has48FacePieces) {
   std::vector<CellId> cells = {ToCell(0, -kMaxCoord, 0, 0), ToCell(0, kMaxCoord, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(0, 0, 0, 0), cells);
   const GeometricGrid grid(ToUnitFrame(2), cells);
 
   // 6 sides for each lone cell and 36 for the 8 small cells, which touch nothing else.
@@ -181,7 +181,7 @@ TEST(GeometricGrid, AllNeighboursSplit_Touches56Cells) {
     for (std::int32_t y = 0; y < 3; ++y) {
       for (std::int32_t x = 0; x < 3; ++x) {
         if (x != 1 || y != 1 || z != 1) {
-          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplySmallCellsToList(ToCell(0, x, y, z), cells);
         }
       }
     }
@@ -293,7 +293,7 @@ TEST(GeometricGrid, PieceTwoSizeLevelsSmaller_IsNotANearbyFace) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     const CellId small_cell = ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth);
     if (small_cell.value == ToCell(1, 3, 0, 0).value) {
-      ApplyAppendSmallCells(small_cell, cells);
+      ApplySmallCellsToList(small_cell, cells);
     } else {
       cells.push_back(small_cell);
     }
@@ -314,7 +314,7 @@ TEST(GeometricGrid, PieceTwoSizeLevelsSmaller_IsNotANearbyFace) {
 // into its 8 size-level-1 cells. The cell is the size-level-1 cell {0,2,0}: low corner {0, 1, 0} m, quarter 0.125 m.
 TEST(GeometricGrid, MixedSizes_WindowIsOpenBelowAndClosedAbove) {
   std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, 0, 1, 0), cells);
+  ApplySmallCellsToList(ToCell(0, 0, 1, 0), cells);
   const GeometricGrid grid(ToUnitFrame(2), cells);
 
   // Window quarters (2, 2, 0): n_f from -3 to 8 along x and y, from -5 to 6 along z. Hand count of the X pieces:
@@ -353,7 +353,7 @@ TEST(GeometricGrid, AllNeighboursSplit_Has76NearbyFacesInEveryWindow) {
     for (std::int32_t y = 0; y < 3; ++y) {
       for (std::int32_t x = 0; x < 3; ++x) {
         if (x != 1 || y != 1 || z != 1) {
-          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplySmallCellsToList(ToCell(0, x, y, z), cells);
         }
       }
     }
@@ -443,7 +443,7 @@ TEST(BuildSizeStepClosure, CellsTwoSizeLevelsSmallerAlongside_SplitTheBigCell) {
   for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth));
   }
-  ApplyAppendSmallCells(ToCell(1, 2, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(1, 2, 0, 0), cells);
 
   const std::vector<CellId> closed = BuildSizeStepClosure(cells, 3);
 
@@ -486,7 +486,7 @@ TEST(CheckSizeStepByBruteForce, CellsTwoSizeLevelsApart_FailsUntilClosed) {
   for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth));
   }
-  ApplyAppendSmallCells(ToCell(1, 2, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(1, 2, 0, 0), cells);
   const std::vector<CellId> closed = BuildSizeStepClosure(cells, 3);
 
   EXPECT_FALSE(CheckSizeStepByBruteForce(cells, 3));
@@ -566,13 +566,13 @@ TEST(BuildSizeStepClosure, HandBuiltScenes_KeepTheirDigest) {
   for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
     side_touch.push_back(ComputeSmallCell(ToCell(0, 1, 0, 0), cell_eighth));
   }
-  ApplyAppendSmallCells(ToCell(1, 2, 0, 0), side_touch);
+  ApplySmallCellsToList(ToCell(1, 2, 0, 0), side_touch);
   // Size-level-2 cell {4,4,4} touches the size-level-0 cell {0,0,0} at the corner {1, 1, 1} m only, 3 size levels.
   std::vector<CellId> corner_touch = {ToCell(0, 0, 0, 0)};
   for (int cell_eighth = 1; cell_eighth < 8; ++cell_eighth) {
     corner_touch.push_back(ComputeSmallCell(ToCell(0, 1, 1, 1), cell_eighth));
   }
-  ApplyAppendSmallCells(ToCell(1, 2, 2, 2), corner_touch);
+  ApplySmallCellsToList(ToCell(1, 2, 2, 2), corner_touch);
   const std::vector<CellId> chain = BuildSplitChain(3);
   const std::vector<CellId> long_chain = BuildSplitChain(5);
   // Size level 0 {-8,0,0} split along the path of eighth-7 cells down to size level 15, 16 size levels.
@@ -582,7 +582,7 @@ TEST(BuildSizeStepClosure, HandBuiltScenes_KeepTheirDigest) {
     std::erase_if(deep_path, [path_cell](CellId cell) {
       return cell.value == path_cell.value;
     });
-    ApplyAppendSmallCells(path_cell, deep_path);
+    ApplySmallCellsToList(path_cell, deep_path);
     path_cell = ComputeSmallCell(path_cell, 7);
   }
   std::vector<CellId> shuffled_chain = chain;
@@ -657,7 +657,7 @@ void ApplyEveryCheckerAnswerToWords(const DigestGrid& digest_grid, std::vector<s
 TEST(GeometricGrid, BiggerCellBeyondHighCoordLimit_KeepsItsDigest) {
   constexpr auto kLastSplitCoord = static_cast<std::int32_t>((1U << 17U) - 1U);
   std::vector<CellId> cells = {ToCell(0, kLastSplitCoord + 1, 0, 0), ToCell(0, kLastSplitCoord - 1, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, kLastSplitCoord, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(0, kLastSplitCoord, 0, 0), cells);
   ASSERT_TRUE(CheckSiblingsTogether(cells));
   ASSERT_TRUE(CheckSizeStepByBruteForce(cells, 2));
   const GeometricGrid grid(ToUnitFrame(2), cells);

@@ -130,7 +130,7 @@ std::array<std::uint64_t, 4> ToFailureWords(const std::expected<void, GridFailur
 
 // Appends the failure words of `result` to digest_words, then the key, error, cell and other_cell of the status record
 // the GPU wrote into `buffers` during the call.
-void ApplyAppendResultWords(
+void ApplyResultWordsToDigest(
     const std::expected<void, GridFailure>& result,
     const GridBuffers& buffers,
     std::vector<std::uint64_t>& digest_words
@@ -194,7 +194,7 @@ TEST(CheckSizeStepRule, OnGpu_EqualsCpu) {
     const std::expected<void, GridFailure> gpu_result =
         CheckSizeStepRule(ToGpuInputs(frame, cells, *gpu_buffers), *gpu_buffers->buffers);
     EXPECT_EQ(ToFailureWords(gpu_result), ToFailureWords(CheckSizeStepRule(frame, cells))) << list;
-    ApplyAppendResultWords(gpu_result, *gpu_buffers->buffers, digest_words);
+    ApplyResultWordsToDigest(gpu_result, *gpu_buffers->buffers, digest_words);
   }
   WriteResultDigest(
       "CheckSizeStepRule on the GPU, fixed and random lists",
@@ -216,7 +216,7 @@ TEST(CheckSizeStepRule, OnGpuIdWithBitSixtyOneSet_IsBadInputNamingIt) {
   EXPECT_EQ(gpu_result.error().cell.value, bad_id.value);
   EXPECT_EQ(ToFailureWords(gpu_result), ToFailureWords(CheckSizeStepRule(ToUnitFrame(4), cells)));
   std::vector<std::uint64_t> digest_words;
-  ApplyAppendResultWords(gpu_result, *gpu_buffers->buffers, digest_words);
+  ApplyResultWordsToDigest(gpu_result, *gpu_buffers->buffers, digest_words);
   WriteResultDigest("CheckSizeStepRule on the GPU, id with bit 61 set", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -273,7 +273,7 @@ std::vector<std::uint64_t> ComputeMutatedListFailuresOnGpu(GpuGridBuffers& gpu_b
       const std::expected<void, GridFailure> cpu_result =
           ToCheckResult(BuildSortedCellList(cpu_inputs, cpu_buffers, sibling_check));
       EXPECT_EQ(ToFailureWords(gpu_result), ToFailureWords(cpu_result)) << seed;
-      ApplyAppendResultWords(gpu_result, *gpu_buffers.buffers, digest_words);
+      ApplyResultWordsToDigest(gpu_result, *gpu_buffers.buffers, digest_words);
     }
   }
   return digest_words;
@@ -295,7 +295,7 @@ TEST(CheckSizeStepRule, OnGpuTwice_GivesIdenticalFailure) {
   WriteResultDigest("CheckSizeStepRule on the GPU, mutated lists twice", std::span<const std::uint64_t>(second_words));
 }
 
-// Checks `inputs` call_count times and returns the words ApplyAppendResultWords gives every call, in order. Each call
+// Checks `inputs` call_count times and returns the words ApplyResultWordsToDigest gives every call, in order. Each call
 // must pass. The words are reserved first, so the loop allocates nothing on the CPU either.
 std::vector<std::uint64_t> ComputeRepeatedCheckWords(const GridInputs& inputs, GridBuffers& buffers, int call_count) {
   std::vector<std::uint64_t> digest_words;
@@ -303,7 +303,7 @@ std::vector<std::uint64_t> ComputeRepeatedCheckWords(const GridInputs& inputs, G
   for (int call = 0; call < call_count; ++call) {
     const std::expected<void, GridFailure> result = CheckSizeStepRule(inputs, buffers);
     EXPECT_TRUE(result.has_value()) << call;
-    ApplyAppendResultWords(result, buffers, digest_words);
+    ApplyResultWordsToDigest(result, buffers, digest_words);
   }
   return digest_words;
 }
@@ -448,7 +448,7 @@ TEST(CheckSizeStepRule, OnGpuLargeListFailingAtLastPosition_SameFailureAsCpu) {
           sibling_check
       ));
       EXPECT_EQ(ToFailureWords(gpu_result), ToFailureWords(cpu_result)) << cells->size();
-      ApplyAppendResultWords(gpu_result, *gpu_buffers->buffers, digest_words);
+      ApplyResultWordsToDigest(gpu_result, *gpu_buffers->buffers, digest_words);
     }
   }
   WriteResultDigest(

@@ -5,7 +5,7 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    ToUnitFrame, ToCell, ToInputs, ToTablesOf, ApplyAppendSmallCells, ToListedPlaces,
+// Owns:    ToUnitFrame, ToCell, ToInputs, ToTablesOf, ApplySmallCellsToList, ToListedPlaces,
 //          FindGivenFaces, FindWalkedFaces, BuildCellWithEveryNeighbourSplit, BuildBiggerBlockBehindAbsentNeighbour,
 //          BuildThreeSizeCells, BuildBoxOfCells, BuildUniformBox, BuildSameSizePairWithEveryNeighbourSplit,
 //          ComputeLargestCellsNearFace
@@ -68,7 +68,7 @@ inline GridTables ToTablesOf(const std::expected<TestGrid, GridFailure>& test_gr
 }
 
 // Appends the 8 small cells of `big_cell`, in cell eighth order.
-inline void ApplyAppendSmallCells(CellId big_cell, std::vector<CellId>& cells) {
+inline void ApplySmallCellsToList(CellId big_cell, std::vector<CellId>& cells) {
   for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
     cells.push_back(ComputeSmallCell(big_cell, cell_eighth));
   }
@@ -114,7 +114,7 @@ inline std::vector<CellId> BuildCellWithEveryNeighbourSplit(std::int32_t x, std:
     for (std::int32_t offset_y = -1; offset_y <= 1; ++offset_y) {
       for (std::int32_t offset_x = -1; offset_x <= 1; ++offset_x) {
         if (offset_x != 0 || offset_y != 0 || offset_z != 0) {
-          ApplyAppendSmallCells(ToCell(0, x + offset_x, y + offset_y, z + offset_z), cells);
+          ApplySmallCellsToList(ToCell(0, x + offset_x, y + offset_y, z + offset_z), cells);
         }
       }
     }
@@ -129,7 +129,7 @@ inline std::vector<CellId> BuildCellWithEveryNeighbourSplit(std::int32_t x, std:
 // size-level-1 block of the grid: only the position of the bigger block leads to it.
 inline std::vector<CellId> BuildBiggerBlockBehindAbsentNeighbour() {
   std::vector<CellId> cells = {ToCell(0, 4, 0, 0), ToCell(0, 5, 0, 0), ToCell(0, 6, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, 3, 0, 0), cells);
+  ApplySmallCellsToList(ToCell(0, 3, 0, 0), cells);
   return cells;
 }
 
@@ -143,7 +143,7 @@ inline std::vector<CellId> BuildThreeSizeCells() {
     if (ToCellCoord(small_cell).x == 2) {
       cells.push_back(small_cell);
     } else {
-      ApplyAppendSmallCells(small_cell, cells);
+      ApplySmallCellsToList(small_cell, cells);
     }
   }
   return cells;
@@ -180,7 +180,7 @@ inline std::vector<CellId> BuildSameSizePairWithEveryNeighbourSplit() {
       for (std::int32_t x = -1; x <= 2; ++x) {
         const bool is_pair_cell = y == 0 && z == 0 && (x == 0 || x == 1);
         if (!is_pair_cell) {
-          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplySmallCellsToList(ToCell(0, x, y, z), cells);
         }
       }
     }

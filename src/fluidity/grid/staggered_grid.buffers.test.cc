@@ -626,7 +626,7 @@ BuildLentGridBuffers(RunMemory& run_memory, std::optional<GridBuilderBuffers>& b
   return std::move(*buffers);
 }
 
-void CheckMoveLentBuilderBuffers() {
+void ApplyMoveOfLentBuilderBuffers() {
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(1);
   if (!run_memory.has_value()) {
     return;
@@ -639,7 +639,7 @@ void CheckMoveLentBuilderBuffers() {
   const GridBuilderBuffers moved_to = std::move(*builder_buffers);
 }
 
-void CheckAssignOntoLentBuilderBuffers() {
+void ApplyAssignmentOntoLentBuilderBuffers() {
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(1, 2);
   if (!run_memory.has_value()) {
     return;
@@ -653,7 +653,7 @@ void CheckAssignOntoLentBuilderBuffers() {
   *builder_buffers = std::move(*other);
 }
 
-void CheckDestroyLentBuilderBuffers() {
+void ApplyDestructionOfLentBuilderBuffers() {
   std::expected<RunMemory, BufferError> run_memory = BuildCpuRunMemoryOfEstimate(1);
   if (!run_memory.has_value()) {
     return;
@@ -673,7 +673,7 @@ TEST(GridBuilderBuffersDeathTest, MovedWhileLent_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(CheckMoveLentBuilderBuffers(), "moved_from_is_not_lent");
+  EXPECT_DEATH(ApplyMoveOfLentBuilderBuffers(), "moved_from_is_not_lent");
 #endif
 }
 
@@ -681,7 +681,7 @@ TEST(GridBuilderBuffersDeathTest, AssignedToWhileLent_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(CheckAssignOntoLentBuilderBuffers(), "assigned_to_is_not_lent");
+  EXPECT_DEATH(ApplyAssignmentOntoLentBuilderBuffers(), "assigned_to_is_not_lent");
 #endif
 }
 
@@ -689,7 +689,7 @@ TEST(GridBuilderBuffersDeathTest, DestroyedWhileLent_Asserts) {
 #if defined(NDEBUG)
   GTEST_SKIP() << "release build: assert compiles to nothing";
 #else
-  EXPECT_DEATH(CheckDestroyLentBuilderBuffers(), "destroyed_is_not_lent");
+  EXPECT_DEATH(ApplyDestructionOfLentBuilderBuffers(), "destroyed_is_not_lent");
 #endif
 }
 

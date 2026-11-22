@@ -172,7 +172,7 @@ std::array<std::uint64_t, 4> ToFailureWords(const std::expected<Value, GridFailu
 }
 
 // Appends every count of `counts`: the blocks, the active cells per size level, the active cells and the face pieces.
-void ApplyAppendCountWords(const GridCounts& counts, std::vector<std::uint64_t>& digest_words) {
+void ApplyCountWordsToDigest(const GridCounts& counts, std::vector<std::uint64_t>& digest_words) {
   digest_words.push_back(counts.cell_blocks);
   for (const std::uint64_t size_level_count : counts.active_cells_per_size_level) {
     digest_words.push_back(size_level_count);
@@ -182,7 +182,7 @@ void ApplyAppendCountWords(const GridCounts& counts, std::vector<std::uint64_t>&
 }
 
 // Appends the key, error, cell and other_cell of the status record the GPU wrote into `buffers`, and its counts.
-void ApplyAppendStatusWords(const GridBuffers& buffers, std::vector<std::uint64_t>& digest_words) {
+void ApplyStatusWordsToDigest(const GridBuffers& buffers, std::vector<std::uint64_t>& digest_words) {
   GridBuildStatus status{};
   const std::expected<void, BufferError> read =
       ReadBuffer(ToGridBuffersArrays(buffers).build_status, 0, std::span<GridBuildStatus>(&status, 1));
@@ -204,11 +204,11 @@ std::uint64_t ComputeTableDigest(const Value* first, std::size_t count) {
 }
 
 // Appends the version, the counts and one digest of the used part of each table of a grid on the CPU.
-void ApplyAppendGridWords(const StaggeredGrid& cpu_grid, std::vector<std::uint64_t>& digest_words) {
+void ApplyGridWordsToDigest(const StaggeredGrid& cpu_grid, std::vector<std::uint64_t>& digest_words) {
   const GridTables tables = cpu_grid.tables(RunOn::kCpu);
   const std::size_t block_count = tables.block_count;
   digest_words.push_back(cpu_grid.version().value);
-  ApplyAppendCountWords(cpu_grid.counts(), digest_words);
+  ApplyCountWordsToDigest(cpu_grid.counts(), digest_words);
   digest_words.push_back(ComputeTableDigest(tables.block_ids, block_count));
   digest_words.push_back(ComputeTableDigest(tables.same_size_level_blocks, 27 * block_count));
   digest_words.push_back(ComputeTableDigest(tables.bigger_block, block_count));
@@ -229,7 +229,7 @@ void CheckReadBackEqualsCpu(
   ASSERT_TRUE(read_grid.has_value());
   EXPECT_TRUE(cpu_grid.has_value() && ComputeIsSameGrid(*read_grid, *cpu_grid));
   EXPECT_EQ(read_grid->version().value, 1U);
-  ApplyAppendGridWords(*read_grid, digest_words);
+  ApplyGridWordsToDigest(*read_grid, digest_words);
   cpu.read_buffers = TakeBuffers(std::move(*read_grid));
 }
 
@@ -260,7 +260,7 @@ void CheckGpuBuildEqualsCpu(
   }
   // A list longer than the room's cell places fails before anything runs on the GPU: the record holds nothing of it.
   if (cells.size() <= std::size_t{kCellPlacesPerBlock} * gpu_buffers.max_cell_blocks()) {
-    ApplyAppendStatusWords(gpu_buffers, digest_words);
+    ApplyStatusWordsToDigest(gpu_buffers, digest_words);
   }
 }
 
@@ -409,7 +409,7 @@ TEST(BuildGrid, OnGpuFailedBuildThenRebuild_EqualsFreshBuffers) {
   ASSERT_TRUE(after_failure.has_value());
   ASSERT_TRUE(from_fresh.has_value());
   EXPECT_TRUE(ComputeIsSameGrid(*after_failure, *from_fresh));
-  ApplyAppendGridWords(*after_failure, digest_words);
+  ApplyGridWordsToDigest(*after_failure, digest_words);
   WriteResultDigest("BuildGrid on the GPU, rebuild after a failure", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -435,7 +435,7 @@ TEST(BuildGrid, RebuildIntoUsedGpuBuffers_EqualsFreshBuffers) {
   ASSERT_TRUE(from_fresh.has_value());
   EXPECT_TRUE(ComputeIsSameGrid(*after_grid_one, *from_fresh));
   std::vector<std::uint64_t> digest_words;
-  ApplyAppendGridWords(*after_grid_one, digest_words);
+  ApplyGridWordsToDigest(*after_grid_one, digest_words);
   WriteResultDigest("BuildGrid on the GPU, rebuild into used buffers", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -459,7 +459,7 @@ void ApplyBuildInTurn(
   const std::uint64_t allocation_count_before = ComputeAllocationCount();
   std::expected<StaggeredGrid, GridFailure> built = BuildGrid(inputs, gpu_buffers);
   if (built.has_value()) {
-    ApplyAppendCountWords(built->counts(), builds.digest_words);
+    ApplyCountWordsToDigest(built->counts(), builds.digest_words);
     gpu_buffers = TakeBuffers(std::move(*built));
   } else {
     ++builds.failed_build_count;
@@ -592,7 +592,7 @@ TEST(ComputeGridCounts, OnGpu_EqualsCpu) {
     ASSERT_TRUE(gpu_counts.has_value()) << grid;
     ASSERT_TRUE(cpu_counts.has_value()) << grid;
     EXPECT_EQ(ToGridCountFields(*gpu_counts), ToGridCountFields(*cpu_counts)) << grid;
-    ApplyAppendCountWords(*gpu_counts, digest_words);
+    ApplyCountWordsToDigest(*gpu_counts, digest_words);
   }
   WriteResultDigest("ComputeGridCounts on the GPU, random grids", std::span<const std::uint64_t>(digest_words));
 }
@@ -646,7 +646,7 @@ std::size_t ComputeWrongCallsInTurn(
     return wrong_count + 1;
   }
   wrong_count += ComputeIsSameGrid(*read_grid, reference) ? 0 : 1;
-  ApplyAppendGridWords(*read_grid, digest_words);
+  ApplyGridWordsToDigest(*read_grid, digest_words);
   cpu.read_buffers = TakeBuffers(std::move(*read_grid));
   return wrong_count;
 }
@@ -699,7 +699,7 @@ void CheckOtherGpuGridUnchanged(std::size_t buffers_of_grid_a, std::vector<std::
   const std::expected<StaggeredGrid, GridFailure> a_after = ReadGrid(*grid_a, cpu->read_buffers);
   ASSERT_TRUE(a_after.has_value());
   EXPECT_TRUE(ComputeIsSameGrid(*a_after, *a_before));
-  ApplyAppendGridWords(*a_after, digest_words);
+  ApplyGridWordsToDigest(*a_after, digest_words);
 }
 
 // Whichever of the two sets holds grid A, the other set's work leaves it alone.

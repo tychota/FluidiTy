@@ -43,8 +43,8 @@ TEST(FirstFailureMinima, TwoFailuresInEveryLaunchAndOrder_ReportLowestParticleId
   ParticleRange range = BuildFloorRange(1000, failing_indexes);
   range.particle_id[5] = 50;
   range.particle_id[700] = 9;
-  EXPECT_TRUE(CheckEveryFailure(ComputeParallelHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
-  EXPECT_EQ(CheckParallelHalfSameAsCpuLoop(range), 8);
+  EXPECT_TRUE(CheckEveryFailure(ComputeGpuHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
+  EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
 }
 
 TEST(FirstFailureMinima, EqualIdsFailing_ReportsLowerIndex) {
@@ -54,8 +54,8 @@ TEST(FirstFailureMinima, EqualIdsFailing_ReportsLowerIndex) {
   range.particle_id[3] = 9;
   range.particle_id[600] = 9;
   range.start_position[600].z = -0.02;
-  EXPECT_TRUE(CheckEveryFailure(ComputeParallelHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
-  EXPECT_EQ(CheckParallelHalfSameAsCpuLoop(range), 8);
+  EXPECT_TRUE(CheckEveryFailure(ComputeGpuHalfInEveryLaunch(range), BuildFloorFailure(9, 0.01)));
+  EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
 }
 
 TEST(FirstFailureMinima, LargestIdFailingAlone_IsReported) {
@@ -66,7 +66,7 @@ TEST(FirstFailureMinima, LargestIdFailingAlone_IsReported) {
   range.particle_id[42] = 0xFFFFFFFFFFFFFFFF;
   CallArrays arrays(range);
   const ContactFailure failure =
-      ComputeParallelHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(range.size()), ThreadOrder::kReverse).first_failure;
+      ComputeGpuHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(range.size()), ThreadOrder::kReverse).first_failure;
   EXPECT_EQ(failure.error, ContactError::kStartsInsideSolid);
   EXPECT_EQ(failure.particle_id, 0xFFFFFFFFFFFFFFFF);
 }
@@ -74,7 +74,7 @@ TEST(FirstFailureMinima, LargestIdFailingAlone_IsReported) {
 TEST(FirstFailureMinima, NoFailure_GivesNoFailure) {
   CallArrays arrays(BuildFloorRange(300, {}));
   const ContactFailure failure =
-      ComputeParallelHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(300), ThreadOrder::kLaunchOrder).first_failure;
+      ComputeGpuHalfOnCpu(arrays.ToCall(), ComputeLaunchSize(300), ThreadOrder::kLaunchOrder).first_failure;
   EXPECT_EQ(failure.error, ContactError::kNone);
   EXPECT_FALSE(failure.has_particle_id);
 }
@@ -135,12 +135,12 @@ TEST(ComputeParticleCounts, SummedOverThreads_EqualsCpuCounts) {
   range.start_position = {{.x = 0, .y = 0, .z = 0.5}, {.x = 0, .y = 0, .z = 0.05}, {.x = 0, .y = 0, .z = -0.005}};
   range.velocity_for_this_step = {{.x = 1, .y = 0, .z = 0}, {.x = 0, .y = 0, .z = -1}, {}};
   range.velocity_for_next_step = range.velocity_for_this_step;
-  const std::vector<ParallelHalfAnswer> answers = ComputeParallelHalfInEveryLaunch(range);
-  const bool is_one_and_one_every_time = std::ranges::all_of(answers, [](const ParallelHalfAnswer& answer) {
+  const std::vector<GpuHalfAnswer> answers = ComputeGpuHalfInEveryLaunch(range);
+  const bool is_one_and_one_every_time = std::ranges::all_of(answers, [](const GpuHalfAnswer& answer) {
     return answer.counts.hit_count == 1 && answer.counts.started_inside_count == 1;
   });
   EXPECT_TRUE(is_one_and_one_every_time);
-  EXPECT_EQ(CheckParallelHalfSameAsCpuLoop(range), 8);
+  EXPECT_EQ(CheckGpuHalfSameAsCpuLoop(range), 8);
 }
 
 // One CPU run of the oblique particles packed against the solid of their first case, which hit and miss.
@@ -310,7 +310,7 @@ TEST(CheckWroteNothing, OneOutputWritten_FailsNamingIt) {
 
 // Ten turning scenes named "Scene", each the reference against itself except the cases in `flipped_cases`, whose
 // compared run is `flipped`.
-SetComparison ComputeTenTurningSceneComparison(
+SetComparison ComputeTenTurningScenesSetComparison(
     const ParticleRange& range,
     const MovedRange& reference,
     const MovedRange& flipped,
@@ -338,7 +338,7 @@ TEST(SetComparison, TurningSceneWithDiscreteMismatch_IsCountedNotFailed) {
   MovedRange flipped = reference;
   flipped.record[0].face = SolidFace::kLowZ;
   const std::array<std::size_t, 1> flipped_cases = {7};
-  const SetComparison comparison = ComputeTenTurningSceneComparison(range, reference, flipped, flipped_cases);
+  const SetComparison comparison = ComputeTenTurningScenesSetComparison(range, reference, flipped, flipped_cases);
   EXPECT_EQ(comparison.turning_case_count(), 10);
   EXPECT_EQ(comparison.discrete_mismatch_count(), 1);
   EXPECT_EQ(comparison.allowed_discrete_mismatch_count(), 1);
@@ -358,7 +358,7 @@ TEST(SetComparison, TwoMismatchesInTenTurningScenes_Fails) {
   MovedRange flipped = reference;
   flipped.record[0].solid_index = 5;
   const std::array<std::size_t, 2> flipped_cases = {0, 1};
-  const SetComparison comparison = ComputeTenTurningSceneComparison(range, reference, flipped, flipped_cases);
+  const SetComparison comparison = ComputeTenTurningScenesSetComparison(range, reference, flipped, flipped_cases);
   EXPECT_FALSE(comparison.CheckPasses());
 }
 

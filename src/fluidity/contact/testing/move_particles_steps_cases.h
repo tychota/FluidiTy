@@ -5,9 +5,9 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    ThreadOrder, ToVisited, ComputeLaunch, CallArrays, ParallelHalfAnswer, ComputeParallelHalfOnCpu,
+// Owns:    ThreadOrder, ToVisited, ApplyLaunch, CallArrays, GpuHalfAnswer, ComputeGpuHalfOnCpu,
 // BuildLaunchSizes,
-//          ComputeParallelHalfInEveryLaunch, CheckParallelHalfSameAsCpuLoop, ComputeIsSameFailure, CheckEveryFailure,
+//          ComputeGpuHalfInEveryLaunch, CheckGpuHalfSameAsCpuLoop, ComputeIsSameFailure, CheckEveryFailure,
 //          BuildFloorFailure
 // Uses:    the headers it includes
 // Used by: src/fluidity/contact/move_particles_steps.test.cc and
@@ -61,7 +61,7 @@ inline std::size_t ToVisited(std::size_t visit, std::size_t count, ThreadOrder o
 // Calls `run_item(item)` for every item a launch of `launch_size` covers by grid stride, thread by thread in `order`,
 // as ComputeGridStride gives each thread its items.
 template <typename RunItem>
-void ComputeLaunch(LaunchSize launch_size, std::size_t item_count, ThreadOrder order, RunItem run_item) {
+void ApplyLaunch(LaunchSize launch_size, std::size_t item_count, ThreadOrder order, RunItem run_item) {
   const std::size_t thread_count = std::size_t{launch_size.thread_block_count} * launch_size.thread_block_size;
   for (std::size_t block_visit = 0; block_visit < launch_size.thread_block_count; ++block_visit) {
     const std::size_t thread_block = ToVisited(block_visit, launch_size.thread_block_count, order);
@@ -138,7 +138,7 @@ struct CallArrays {
 };
 
 // The answer of the GPU half: its counts and its first failure.
-struct ParallelHalfAnswer {
+struct GpuHalfAnswer {
   MoveParticleCounts counts;
   ContactFailure first_failure;
 };
@@ -146,14 +146,13 @@ struct ParallelHalfAnswer {
 // MoveParticlesOnGpuInLaunchSize run on the CPU: its four GPU functions, each over every thread block and thread in
 // `order`, with plain minima, or and additions where the GPU uses atomics. Fails the calling test when a launch does
 // not visit every particle exactly once.
-inline ParallelHalfAnswer
-ComputeParallelHalfOnCpu(const MoveParticlesCall& call, LaunchSize launch_size, ThreadOrder order) {
+inline GpuHalfAnswer ComputeGpuHalfOnCpu(const MoveParticlesCall& call, LaunchSize launch_size, ThreadOrder order) {
   // Step 1: StartReduction.
-  ParallelHalfAnswer answer;
+  GpuHalfAnswer answer;
   FirstFailureMinima minima;
   // Step 2: VisitEveryParticle.
   std::vector<int> visit_counts(call.particle_count, 0);
-  ComputeLaunch(launch_size, call.particle_count, order, [&](std::size_t index) {
+  ApplyLaunch(launch_size, call.particle_count, order, [&](std::size_t index) {
     ++visit_counts[index];
     const ParticleVisit visit = ApplyParticleVisitAt(call, index);
     if (visit.has_failure) {
@@ -170,7 +169,7 @@ ComputeParallelHalfOnCpu(const MoveParticlesCall& call, LaunchSize launch_size, 
   // Step 3: FindSmallestFailingIndex.
   if (minima.has_failure != 0) {
     const std::uint64_t smallest_failing_id = minima.smallest_failing_id;
-    ComputeLaunch(launch_size, call.particle_count, order, [&](std::size_t index) {
+    ApplyLaunch(launch_size, call.particle_count, order, [&](std::size_t index) {
       if (ComputeIsFailureWithParticleId(call, index, smallest_failing_id)) {
         minima.smallest_failing_index = std::min<std::uint64_t>(minima.smallest_failing_index, index);
       }
@@ -193,12 +192,12 @@ inline std::vector<LaunchSize> BuildLaunchSizes(std::size_t particle_count) {
 
 // The answers of the GPU half run on the CPU over `range` in every launch size of BuildLaunchSizes and both orders,
 // each on fresh outputs.
-inline std::vector<ParallelHalfAnswer> ComputeParallelHalfInEveryLaunch(const ParticleRange& range) {
-  std::vector<ParallelHalfAnswer> answers;
+inline std::vector<GpuHalfAnswer> ComputeGpuHalfInEveryLaunch(const ParticleRange& range) {
+  std::vector<GpuHalfAnswer> answers;
   for (const LaunchSize launch_size : BuildLaunchSizes(range.size())) {
     for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
       CallArrays arrays(range);
-      answers.push_back(ComputeParallelHalfOnCpu(arrays.ToCall(), launch_size, order));
+      answers.push_back(ComputeGpuHalfOnCpu(arrays.ToCall(), launch_size, order));
     }
   }
   return answers;
@@ -208,7 +207,7 @@ inline std::vector<ParallelHalfAnswer> ComputeParallelHalfInEveryLaunch(const Pa
 // launch size and both orders, and checks they agree bit for bit: the result or the failure, and on success every
 // output. A range whose call check fails never reaches the GPU half and is not compared. Returns how many runs of the
 // GPU half were compared.
-inline int CheckParallelHalfSameAsCpuLoop(const ParticleRange& range) {
+inline int CheckGpuHalfSameAsCpuLoop(const ParticleRange& range) {
   const MovedRange cpu_run = ComputeMovedRange(RunOn::kCpu, range, ReactionArray::kGiven);
   const bool failed_call_check = !cpu_run.result.has_value() && !cpu_run.result.error().has_particle_id;
   if (failed_call_check) {
@@ -219,9 +218,9 @@ inline int CheckParallelHalfSameAsCpuLoop(const ParticleRange& range) {
   for (const LaunchSize launch_size : BuildLaunchSizes(range.size())) {
     for (const ThreadOrder order : {ThreadOrder::kLaunchOrder, ThreadOrder::kReverse}) {
       CallArrays arrays(range);
-      const ParallelHalfAnswer answer = ComputeParallelHalfOnCpu(arrays.ToCall(), launch_size, order);
-      const MovedRange parallel_half_run = arrays.ToMovedRange(answer.counts, answer.first_failure);
-      EXPECT_TRUE(CheckSameMove(cpu_run, parallel_half_run, Agreement::kSameBits, bounds))
+      const GpuHalfAnswer answer = ComputeGpuHalfOnCpu(arrays.ToCall(), launch_size, order);
+      const MovedRange gpu_half_run = arrays.ToMovedRange(answer.counts, answer.first_failure);
+      EXPECT_TRUE(CheckSameMove(cpu_run, gpu_half_run, Agreement::kSameBits, bounds))
           << launch_size.thread_block_count << " thread blocks of " << launch_size.thread_block_size << " threads";
       ++compared_count;
     }
@@ -239,7 +238,7 @@ inline bool ComputeIsSameFailure(const ContactFailure& first, const ContactFailu
 
 // Checks that every answer reports `expected`.
 inline ::testing::AssertionResult
-CheckEveryFailure(const std::vector<ParallelHalfAnswer>& answers, const ContactFailure& expected) {
+CheckEveryFailure(const std::vector<GpuHalfAnswer>& answers, const ContactFailure& expected) {
   for (std::size_t run = 0; run < answers.size(); ++run) {
     if (!ComputeIsSameFailure(answers[run].first_failure, expected)) {
       return ::testing::AssertionFailure()

@@ -189,7 +189,7 @@ TEST(MoveParticle, PaddleThroughBottomSideOneMillimetreAbove_CuredByOneHalving) 
   // The bottom side 1 mm below the particle is beyond the window: the closing bound of 1 ms, about 0.4 mm/ms times the
   // time left plus the fall, reaches it; that of 0.5 ms does not.
   EXPECT_EQ(
-      ComputeCountHalvingsToSuccess(
+      ComputeHalvingsToSuccessCount(
           BuildShorterStepCase("PaddleThroughBottomSideOneMillimetreAbove"),
           ContactCloseCall::kTurningSolidNearOtherSolid,
           8
@@ -201,7 +201,7 @@ TEST(MoveParticle, PaddleThroughBottomSideOneMillimetreAbove_CuredByOneHalving) 
 TEST(MoveParticle, DrivenBoxesNearCrease_CuredByThreeHalvings) {
   // The boxes reach the particle 2 ms into a step of 10 ms and one response pushes both; a step of 1.25 ms ends before.
   EXPECT_EQ(
-      ComputeCountHalvingsToSuccess(
+      ComputeHalvingsToSuccessCount(
           BuildShorterStepCase("DrivenBoxesNearCrease"),
           ContactCloseCall::kSecondReactingSolid,
           8
@@ -214,7 +214,7 @@ TEST(MoveParticle, DescendingBoxClosingOnBottomSide_CuredByTwoHalvings) {
   // The box reaches the particle 0.4 ms into the step and squeezes it there; a step of 0.25 ms ends before. The squeeze
   // comes back at the start of a later step, once the box is at the particle (DescendingBoxAtBottomSide).
   EXPECT_EQ(
-      ComputeCountHalvingsToSuccess(
+      ComputeHalvingsToSuccessCount(
           BuildShorterStepCase("DescendingBoxClosingOnBottomSide"),
           ContactCloseCall::kSqueezedBetweenSolids,
           8
@@ -226,7 +226,7 @@ TEST(MoveParticle, DescendingBoxClosingOnBottomSide_CuredByTwoHalvings) {
 TEST(MoveParticle, SeventeenFloorsBelowFalling_CuredByFourHalvings) {
   // The particle reaches the 17 floors 10 ms into a step of 100 ms; a step of 6.25 ms ends before.
   EXPECT_EQ(
-      ComputeCountHalvingsToSuccess(
+      ComputeHalvingsToSuccessCount(
           BuildShorterStepCase("SeventeenFloorsBelowFalling"),
           ContactCloseCall::kTooManyHits,
           8
@@ -236,13 +236,13 @@ TEST(MoveParticle, SeventeenFloorsBelowFalling_CuredByFourHalvings) {
 }
 
 TEST(MoveParticle, OctagonRoomFifthHit_CuredByTwoHalvings) {
-  EXPECT_EQ(ComputeCountHalvingsToSuccess(FindMoveParticleCase("OctagonRoom"), ContactCloseCall::kTooManyHits, 8), 2);
+  EXPECT_EQ(ComputeHalvingsToSuccessCount(FindMoveParticleCase("OctagonRoom"), ContactCloseCall::kTooManyHits, 8), 2);
 }
 
 TEST(MoveParticle, EscapeTooFastForTimeLeft_CuredByOneHalving) {
   // The squeeze of the rounding over the time left, with two active surfaces.
   EXPECT_EQ(
-      ComputeCountHalvingsToSuccess(
+      ComputeHalvingsToSuccessCount(
           FindMoveParticleCase("FloorRisingFastUnderSixtyDegreeWall"),
           ContactCloseCall::kSqueezedBetweenSolids,
           8
@@ -253,7 +253,7 @@ TEST(MoveParticle, EscapeTooFastForTimeLeft_CuredByOneHalving) {
 
 TEST(MoveParticle, HoverNearTurningBox_CuredByOneHalving) {
   EXPECT_EQ(
-      ComputeCountHalvingsToSuccess(
+      ComputeHalvingsToSuccessCount(
           FindMoveParticleCase("TurningBoxHoverOnSpinAxis"),
           ContactCloseCall::kHoverNearTurningSolid,
           8
@@ -276,7 +276,7 @@ TEST(MoveParticle, FallingAboveSpeedBound_CuredByOneHalving) {
           .friction = 0,
       }),
   };
-  EXPECT_EQ(ComputeCountHalvingsToSuccess(scene, ContactCloseCall::kMovesTooFastForStep, 8), 1);
+  EXPECT_EQ(ComputeHalvingsToSuccessCount(scene, ContactCloseCall::kMovesTooFastForStep, 8), 1);
 }
 
 TEST(CheckEndOutsideSolids, EndTooClose_ShorterStepCures) {

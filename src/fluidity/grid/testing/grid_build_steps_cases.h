@@ -17,7 +17,7 @@
 //          ComputeAreGuardsUnchanged, ToStaleCellId, ApplyStaleValues, ApplyStaleAllOnesWords,
 //          ApplyListCheckStepsByReplay, ReplayChange, ApplyPrefixSumOfReplay, ComputeCellPlacesKeyOfReplay,
 //          ApplyBlockStepsByReplay, ToReplayTables, ComputeIsBlockEntryInRange, ComputeAreTableEntriesInRange,
-//          ApplyTableStepsByReplay, ApplyParallelBuildStepsByReplay, ToFailureFields, BuildReplayBuffersOwner,
+//          ApplyTableStepsByReplay, ApplyGpuBuildStepsByReplay, ToFailureFields, BuildReplayBuffersOwner,
 //          BuildReplayBuffersOwner, ToVector, ToTableVectors, BuildReplayResult, ToCountsOfStatus, ComputeBuildReplay,
 //          ExpectedBlocks, ComputeExpectedBlocks, CpuBuildOfList, ComputeCpuBuildOfList, ComputeIsSameTableVectors,
 //          CheckBuildReplayEqualsCpuBuild, kTwoToThe34, kTwoToThe38
@@ -1118,7 +1118,7 @@ inline void ApplyTableStepsByReplay(
 // on `buffers`, which gives the room, then the steps of ApplyListCheckStepsByReplay with the siblings required,
 // ApplyBlockStepsByReplay, ApplyTableStepsByReplay and ApplyBuildStatusResult. A failed prefix sum or stable order
 // gives kInternalFault, as the CPU half's mapping of a size error does. Returns the failure the status names.
-inline GridFailure ApplyParallelBuildStepsByReplay(
+inline GridFailure ApplyGpuBuildStepsByReplay(
     const GridInputs& inputs,
     const GridBuffers& buffers,
     ReplayLaunch launch,
@@ -1207,7 +1207,7 @@ inline GridCounts ToCountsOfStatus(const GridBuildStatus& status) {
   return counts;
 }
 
-// Replays the build of `inputs` on the room of `buffers` into `arrays` (ApplyParallelBuildStepsByReplay), collects what
+// Replays the build of `inputs` on the room of `buffers` into `arrays` (ApplyGpuBuildStepsByReplay), collects what
 // it gave and expects every guard of the arrays unchanged: no step wrote past an array of the room.
 inline BuildReplayResult ComputeBuildReplay(
     const GridInputs& inputs,
@@ -1217,7 +1217,7 @@ inline BuildReplayResult ComputeBuildReplay(
     ReplayArrays& arrays
 ) {
   BuildReplayResult result;
-  result.failure = ApplyParallelBuildStepsByReplay(inputs, buffers, launch, change, arrays);
+  result.failure = ApplyGpuBuildStepsByReplay(inputs, buffers, launch, change, arrays);
   result.cell_blocks = arrays.status.cell_blocks;
   result.split_cells = arrays.status.split_cells;
   result.failed_prefix_sum_count = arrays.failed_prefix_sum_count;

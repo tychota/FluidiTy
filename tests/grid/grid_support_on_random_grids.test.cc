@@ -149,7 +149,7 @@ std::vector<CellId> BuildAllNeighboursSplit() {
     for (std::int32_t y = 0; y < 3; ++y) {
       for (std::int32_t x = 0; x < 3; ++x) {
         if (x != 1 || y != 1 || z != 1) {
-          ApplyAppendSmallCells(ToCell(0, x, y, z), cells);
+          ApplySmallCellsToList(ToCell(0, x, y, z), cells);
         }
       }
     }
@@ -164,7 +164,7 @@ std::vector<CellId> BuildAllNeighboursSplit() {
 // HandBuiltScenes_KeepTheirDigest are, likewise, the only tests that see a closure stop a round early.
 std::vector<DigestGrid> BuildDigestGrids() {
   std::vector<CellId> at_coord_limits = {ToCell(0, -kMaxCoord, 0, 0), ToCell(0, kMaxCoord, 0, 0)};
-  ApplyAppendSmallCells(ToCell(0, 0, 0, 0), at_coord_limits);
+  ApplySmallCellsToList(ToCell(0, 0, 0, 0), at_coord_limits);
   std::vector<CellId> uniform_cells;
   for (std::int32_t z = 0; z < 5; ++z) {
     for (std::int32_t y = 0; y < 5; ++y) {

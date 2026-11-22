@@ -992,7 +992,7 @@ void CheckTwoSurfaceStart(const SolidContactInputs& inputs, TwoSurfaceCounts& co
 // Next. With moving_wedges, each wedge solid then gets a linear_velocity of three NextSigned m/s, solid A then B; the
 // domain box stays fixed. Start overlap tolerance 2 tol. Every start is within tol of, on, or slightly inside two or
 // three surfaces. The set lies at place (GeneratedSetPlace).
-TwoSurfaceCounts ComputeTwoSurfaceStarts(bool moving_wedges, const GeneratedSetPlace& place) {
+TwoSurfaceCounts ComputeTwoSurfaceCounts(bool moving_wedges, const GeneratedSetPlace& place) {
   CaseGenerator generator;
   TwoSurfaceCounts counts;
   const std::array domain_solids = {BuildPlacedDomainBox(place)};
@@ -1044,9 +1044,9 @@ TwoSurfaceCounts ComputeTwoSurfaceStarts(bool moving_wedges, const GeneratedSetP
 }
 
 TEST(MoveParticle, GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees) {
-  // Fixed wedges and corners (ComputeTwoSurfaceStarts): no failure at all (the model: 0 of 10,001 acute draws). Before
+  // Fixed wedges and corners (ComputeTwoSurfaceCounts): no failure at all (the model: 0 of 10,001 acute draws). Before
   // the slide over several surfaces, 2246 of 7497 acute draws ended in kTooManyHits.
-  const TwoSurfaceCounts counts = ComputeTwoSurfaceStarts(false, {});
+  const TwoSurfaceCounts counts = ComputeTwoSurfaceCounts(false, {});
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.free_paths, 1000);
   EXPECT_GT(counts.hit_paths, 1000);
@@ -1057,7 +1057,7 @@ TEST(MoveParticle, GeneratedMovingTwoSurfaceStarts_SucceedDownToFiveDegrees) {
   // The same draws with each wedge solid moving at up to 1 m/s per axis: no failure. Two surfaces that are not
   // parallel always leave a velocity that approaches neither, and from 5 degrees up the escape is at most
   // 1 / sin(2.5 degrees) = 23 times the solids' speeds, below the speed cap (the model: 0 of 35,000).
-  const TwoSurfaceCounts counts = ComputeTwoSurfaceStarts(true, {});
+  const TwoSurfaceCounts counts = ComputeTwoSurfaceCounts(true, {});
   EXPECT_EQ(counts.failures, 0);
   EXPECT_GT(counts.hit_paths, 1000);
 }
@@ -1458,8 +1458,12 @@ void WriteTangentSlideCounts(TangentScene scene, bool is_moving, const TangentSl
 
 // Runs 2000 draws of the tangent slides of one scene: BuildTangentStart at place, then ApplyTangentSlide, then
 // ApplyTangentMotion, applied only when is_moving, and CheckTangentSlide.
-TangentSlideCounts
-ComputeTangentSlides(CaseGenerator& generator, TangentScene scene, bool is_moving, const GeneratedSetPlace& place) {
+TangentSlideCounts ComputeTangentSlideCounts(
+    CaseGenerator& generator,
+    TangentScene scene,
+    bool is_moving,
+    const GeneratedSetPlace& place
+) {
   TangentSlideCounts counts;
   for (int draw_index = 0; draw_index < 2000; ++draw_index) {
     TangentStart start = BuildTangentStart(generator, scene, place);
@@ -1502,7 +1506,7 @@ TEST(MoveParticle, GeneratedTangentContactSlides_FailOnlyWhereAShorterStepCures)
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
-      const TangentSlideCounts counts = ComputeTangentSlides(generator, scene, is_moving, {});
+      const TangentSlideCounts counts = ComputeTangentSlideCounts(generator, scene, is_moving, {});
       WriteTangentSlideCounts(scene, is_moving, counts);
       CheckTangentSlideCounts(counts);
     }
@@ -1542,7 +1546,7 @@ TEST(MoveParticle, GeneratedCylinderTangentContactSlides_FailOnlyWhereAShorterSt
   };
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : scenes) {
-      const TangentSlideCounts counts = ComputeTangentSlides(generator, scene, is_moving, {});
+      const TangentSlideCounts counts = ComputeTangentSlideCounts(generator, scene, is_moving, {});
       WriteTangentSlideCounts(scene, is_moving, counts);
       CheckTangentSlideCounts(counts);
     }
@@ -1555,12 +1559,12 @@ TEST(MoveParticle, GeneratedTwoSurfaceStartsFarFromOrigin_SucceedDownToFiveDegre
   // The draws of GeneratedTwoSurfaceStarts_SucceedDownToFiveDegrees and of its moving wedges, moved about 830 m from
   // the origin with the production tolerance there (kFarFromOrigin: tol about 1.0e-9 m, a coordinate's rounding unit
   // about tol / 9000), where the start distances, the slow speeds and the rest gaps are that tolerance's. No failure.
-  const TwoSurfaceCounts fixed_counts = ComputeTwoSurfaceStarts(false, kFarFromOrigin);
+  const TwoSurfaceCounts fixed_counts = ComputeTwoSurfaceCounts(false, kFarFromOrigin);
   EXPECT_EQ(fixed_counts.failures, 0);
   EXPECT_GT(fixed_counts.free_paths, 1000);
   EXPECT_GT(fixed_counts.hit_paths, 1000);
   EXPECT_GT(fixed_counts.started_inside_paths, 1000);
-  const TwoSurfaceCounts moving_counts = ComputeTwoSurfaceStarts(true, kFarFromOrigin);
+  const TwoSurfaceCounts moving_counts = ComputeTwoSurfaceCounts(true, kFarFromOrigin);
   EXPECT_EQ(moving_counts.failures, 0);
   EXPECT_GT(moving_counts.hit_paths, 1000);
 }
@@ -1630,7 +1634,8 @@ TEST(MoveParticle, GeneratedTangentContactSlidesFarFromOrigin_FailOnlyWhereAShor
   CaseGenerator generator;
   for (const bool is_moving : {false, true}) {
     for (const TangentScene scene : kEveryTangentScene) {
-      const TangentSlideCounts counts = ComputeTangentSlides(generator, scene, is_moving, kFarFromOriginLargeSolids);
+      const TangentSlideCounts counts =
+          ComputeTangentSlideCounts(generator, scene, is_moving, kFarFromOriginLargeSolids);
       std::cout << "far from origin, ";
       WriteTangentSlideCounts(scene, is_moving, counts);
       CheckFarTangentSlideCounts(scene, counts, is_moving);

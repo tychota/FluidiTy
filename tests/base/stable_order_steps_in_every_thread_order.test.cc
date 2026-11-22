@@ -63,7 +63,7 @@ ComputeReadChunk(PassSource<Key> source, std::size_t chunk, ThreadBlockMemory& m
 
 // CountChunkDigits over every thread block: chunk_counts[d * chunk_count + chunk].
 template <typename Key>
-void ComputeCountChunkDigits(PassSource<Key> source, std::vector<std::uint32_t>& chunk_counts, ThreadOrder order) {
+void ApplyChunkDigitCounts(PassSource<Key> source, std::vector<std::uint32_t>& chunk_counts, ThreadOrder order) {
   const std::size_t chunk_count = ComputeChunkCount(source.count);
   for (std::size_t visit = 0; visit < chunk_count; ++visit) {
     const std::size_t chunk = ToVisited(visit, chunk_count, order);
@@ -78,7 +78,7 @@ void ComputeCountChunkDigits(PassSource<Key> source, std::vector<std::uint32_t>&
 
 // PlaceChunkItems over every thread block.
 template <typename Key>
-void ComputePlaceChunkItems(
+void ApplyChunkItemPlaces(
     PassSource<Key> source,
     const std::vector<std::uint32_t>& first_places,
     std::vector<std::uint32_t>& next_sequence,
@@ -99,7 +99,7 @@ void ComputePlaceChunkItems(
 
 // SumChunks over every thread block: totals[chunk] is the sum of the chunk.
 template <typename Value>
-void ComputeSumChunks(PrefixSumValues<Value> values, std::uint64_t* totals, ThreadOrder order) {
+void ApplyChunkTotals(PrefixSumValues<Value> values, std::uint64_t* totals, ThreadOrder order) {
   const std::size_t chunk_count = ComputeChunkCount(values.count);
   for (std::size_t visit = 0; visit < chunk_count; ++visit) {
     const std::size_t chunk = ToVisited(visit, chunk_count, order);
@@ -121,7 +121,7 @@ void ComputeSumChunks(PrefixSumValues<Value> values, std::uint64_t* totals, Thre
 // WriteChunkPrefixSums over every thread block. Each round runs as on the GPU: every thread reads its addend, then
 // every thread adds it.
 template <typename Value, typename Sum>
-void ComputeWriteChunkPrefixSums(
+void ApplyChunkPrefixSums(
     PrefixSumValues<Value> values,
     const std::uint64_t* chunk_offsets,
     Sum* sums,
@@ -169,13 +169,13 @@ std::uint64_t ComputePrefixSum(std::vector<std::uint32_t>& values, ThreadOrder o
   const PrefixSumLayers layers = BuildPrefixSumLayers(values.size());
   std::vector<std::uint64_t> layer_totals(ComputePrefixSumLayerEntryCount(values.size()));
   EXPECT_EQ(layers.first_entry[layers.top_layer] + 1, layer_totals.size()) << "values " << values.size();
-  ComputeSumChunks(
+  ApplyChunkTotals(
       PrefixSumValues<std::uint32_t>{.values = values.data(), .count = values.size()},
       layer_totals.data(),
       order
   );
   for (int layer = 2; layer <= layers.top_layer; ++layer) {
-    ComputeSumChunks(
+    ApplyChunkTotals(
         PrefixSumValues<std::uint64_t>{
             .values = layer_totals.data() + layers.first_entry[layer - 1],
             .count = layers.entry_count[layer - 1],
@@ -188,7 +188,7 @@ std::uint64_t ComputePrefixSum(std::vector<std::uint32_t>& values, ThreadOrder o
     const std::uint64_t* const chunk_offsets =
         layer + 1 < layers.top_layer ? layer_totals.data() + layers.first_entry[layer + 1] : nullptr;
     std::uint64_t* const layer_entries = layer_totals.data() + layers.first_entry[layer];
-    ComputeWriteChunkPrefixSums(
+    ApplyChunkPrefixSums(
         PrefixSumValues<std::uint64_t>{.values = layer_entries, .count = layers.entry_count[layer]},
         chunk_offsets,
         layer_entries,
@@ -198,7 +198,7 @@ std::uint64_t ComputePrefixSum(std::vector<std::uint32_t>& values, ThreadOrder o
   const std::uint64_t total = layer_totals[layers.first_entry[layers.top_layer]];
   const std::uint64_t* const chunk_offsets =
       layers.top_layer > 1 ? layer_totals.data() + layers.first_entry[1] : nullptr;
-  ComputeWriteChunkPrefixSums(
+  ApplyChunkPrefixSums(
       PrefixSumValues<std::uint32_t>{.values = values.data(), .count = values.size()},
       chunk_offsets,
       values.data(),
@@ -227,10 +227,10 @@ std::vector<std::uint32_t> ComputePasses(
     const bool writes_result = (pass_count - 1 - pass) % 2 == 0;
     std::vector<std::uint32_t>& next_sequence = writes_result ? result : second_sequence;
     const PassSource<Key> source = {.keys = keys.data(), .sequence = sequence, .count = count, .pass = pass};
-    ComputeCountChunkDigits(source, chunk_counts, order);
+    ApplyChunkDigitCounts(source, chunk_counts, order);
     const std::uint64_t total = ComputePrefixSum(chunk_counts, order);
     EXPECT_EQ(total, count);
-    ComputePlaceChunkItems(source, chunk_counts, next_sequence, order);
+    ApplyChunkItemPlaces(source, chunk_counts, next_sequence, order);
     sequence = next_sequence.data();
   }
   return result;

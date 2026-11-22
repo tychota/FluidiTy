@@ -5,7 +5,7 @@
 // Idea: the unit tests of a header and its functional tests call the same helpers, so each helper lives here once,
 //   as it was written when the tests were in one file.
 //
-// Owns:    MoveParticleCall, ComputeMoveWithHalvings, ComputeCountHalvingsToSuccess, CatalogueFailureCounts
+// Owns:    MoveParticleCall, ComputeMoveWithHalvings, ComputeHalvingsToSuccessCount, CatalogueFailureCounts
 // Uses:    the headers it includes
 // Used by: src/fluidity/contact/solid_contact.move_particle_shorter_step.test.cc and
 //          tests/contact/move_particle_shorter_step_on_catalogue.test.cc
@@ -57,7 +57,7 @@ inline MoveParticleCall ComputeMoveWithHalvings(const MoveParticleCase& scene, i
 // that took, or max_halving_count + 1 when none succeeded. Fails the calling test unless every failure on the way is
 // kTooCloseToCall with that close call and can_shorter_step_cure true.
 inline int
-ComputeCountHalvingsToSuccess(const MoveParticleCase& scene, ContactCloseCall close_call, int max_halving_count) {
+ComputeHalvingsToSuccessCount(const MoveParticleCase& scene, ContactCloseCall close_call, int max_halving_count) {
   for (int halving_count = 0; halving_count <= max_halving_count; ++halving_count) {
     const MoveParticleCall call = ComputeMoveWithHalvings(scene, halving_count);
     if (call.error == ContactError::kNone) {

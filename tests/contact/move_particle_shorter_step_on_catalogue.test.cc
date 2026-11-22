@@ -46,7 +46,7 @@ void CheckCatalogueScene(const MoveParticleCase& scene, CatalogueFailureCounts& 
   }
   ++counts.cured;
   EXPECT_EQ(call.error, ContactError::kTooCloseToCall);
-  const int halving_count = ComputeCountHalvingsToSuccess(scene, call.failure.close_call, kMostCatalogueHalvings);
+  const int halving_count = ComputeHalvingsToSuccessCount(scene, call.failure.close_call, kMostCatalogueHalvings);
   EXPECT_LE(halving_count, kMostCatalogueHalvings);
   counts.most_halvings = std::max(counts.most_halvings, halving_count);
 }

@@ -396,7 +396,7 @@ TEST(MoveParticles, SpeedAboveLargestInputSum_IsBadInputNamingIt) {
 
 // Runs one particle with id 5 above the floor for a step of 0.125 s with tol 2^-30 m, among `solids` (the floor
 // first), and returns the call's failure, or ContactFailure{} on success.
-ContactFailure ComputeCoordinatesCall(std::vector<Solid> solids, Vec3 start, Vec3 velocity) {
+ContactFailure ComputeCoordinatesCallFailure(std::vector<Solid> solids, Vec3 start, Vec3 velocity) {
   ParticleArrays arrays;
   arrays.solids = std::move(solids);
   SolidContactInputs inputs = BuildFloorParticle(start, velocity);
@@ -413,9 +413,9 @@ TEST(MoveParticles, ParticleBeyondLargestCoordinate_IsBadInputNamingIt) {
   // particle and the coordinate.
   const std::vector<Solid> floor = {move_particle_cases::BuildFloor(1)};
   const Vec3 start = {.x = 1000, .y = 0, .z = 1};
-  EXPECT_EQ(ComputeCoordinatesCall(floor, start, {.x = 192, .y = 0, .z = 0}).error, ContactError::kNone);
-  EXPECT_EQ(ComputeCoordinatesCall(floor, {.x = 0, .y = -1024, .z = 1}, {}).error, ContactError::kNone);
-  const ContactFailure fast = ComputeCoordinatesCall(floor, start, {.x = 193, .y = 0, .z = 0});
+  EXPECT_EQ(ComputeCoordinatesCallFailure(floor, start, {.x = 192, .y = 0, .z = 0}).error, ContactError::kNone);
+  EXPECT_EQ(ComputeCoordinatesCallFailure(floor, {.x = 0, .y = -1024, .z = 1}, {}).error, ContactError::kNone);
+  const ContactFailure fast = ComputeCoordinatesCallFailure(floor, start, {.x = 193, .y = 0, .z = 0});
   EXPECT_EQ(fast.error, ContactError::kBadInput);
   EXPECT_TRUE(fast.has_particle_id);
   EXPECT_EQ(fast.particle_id, 5U);
@@ -423,7 +423,7 @@ TEST(MoveParticles, ParticleBeyondLargestCoordinate_IsBadInputNamingIt) {
   EXPECT_EQ(fast.magnitude, 1024.125);
   EXPECT_FALSE(fast.can_shorter_step_cure);
   const double beyond = std::nextafter(-1024.0, -2048.0);  // m
-  const ContactFailure far = ComputeCoordinatesCall(floor, {.x = 0, .y = beyond, .z = 1}, {});
+  const ContactFailure far = ComputeCoordinatesCallFailure(floor, {.x = 0, .y = beyond, .z = 1}, {});
   EXPECT_EQ(far.error, ContactError::kBadInput);
   EXPECT_TRUE(far.has_particle_id);
   EXPECT_EQ(far.magnitude, -beyond);
@@ -441,9 +441,11 @@ TEST(MoveParticles, SolidBeyondLargestCoordinate_IsBadInputNamingIt) {
     );
   };
   const Vec3 start = {.x = 0, .y = 0, .z = 1};
-  const ContactFailure within = ComputeCoordinatesCall({move_particle_cases::BuildFloor(1), build_box(88)}, start, {});
+  const ContactFailure within =
+      ComputeCoordinatesCallFailure({move_particle_cases::BuildFloor(1), build_box(88)}, start, {});
   EXPECT_EQ(within.error, ContactError::kNone);
-  const ContactFailure beyond = ComputeCoordinatesCall({move_particle_cases::BuildFloor(1), build_box(96)}, start, {});
+  const ContactFailure beyond =
+      ComputeCoordinatesCallFailure({move_particle_cases::BuildFloor(1), build_box(96)}, start, {});
   EXPECT_EQ(beyond.error, ContactError::kBadInput);
   EXPECT_FALSE(beyond.has_particle_id);
   EXPECT_EQ(beyond.solid_id, 2U);
@@ -513,7 +515,7 @@ TEST(MoveParticles, SolidTurningTooFar_CuredByShorterStep) {
 
 // Runs one scene of BuildShorterStepCase as a one-particle call with id 7 and returns its failure, or ContactFailure{}
 // on success.
-ContactFailure ComputeShorterStepCall(std::string_view name) {
+ContactFailure ComputeShorterStepCallFailure(std::string_view name) {
   const MoveParticleCase scene = BuildShorterStepCase(name);
   ParticleArrays arrays;
   arrays.solids = scene.solids;
@@ -524,7 +526,7 @@ ContactFailure ComputeShorterStepCall(std::string_view name) {
 
 TEST(MoveParticles, DescendingBoxClosingOnBottomSide_FailureSaysShorterStepCures) {
   // The squeeze at a hit 0.4 ms into the step, through the call: MoveParticle's flag, with the particle's id.
-  const ContactFailure failure = ComputeShorterStepCall("DescendingBoxClosingOnBottomSide");
+  const ContactFailure failure = ComputeShorterStepCallFailure("DescendingBoxClosingOnBottomSide");
   EXPECT_EQ(failure.error, ContactError::kTooCloseToCall);
   EXPECT_EQ(failure.close_call, ContactCloseCall::kSqueezedBetweenSolids);
   EXPECT_TRUE(failure.can_shorter_step_cure);
@@ -534,7 +536,7 @@ TEST(MoveParticles, DescendingBoxClosingOnBottomSide_FailureSaysShorterStepCures
 
 TEST(MoveParticles, DescendingBoxAtBottomSide_FailureSaysNoShorterStepCures) {
   // The squeeze at the start, through the call.
-  const ContactFailure failure = ComputeShorterStepCall("DescendingBoxAtBottomSide");
+  const ContactFailure failure = ComputeShorterStepCallFailure("DescendingBoxAtBottomSide");
   EXPECT_EQ(failure.error, ContactError::kTooCloseToCall);
   EXPECT_EQ(failure.close_call, ContactCloseCall::kSqueezedBetweenSolids);
   EXPECT_FALSE(failure.can_shorter_step_cure);
@@ -545,8 +547,8 @@ TEST(MoveParticles, DescendingBoxAtBottomSide_FailureSaysNoShorterStepCures) {
 TEST(MoveParticles, PaddleThroughBottomSide_FailureSaysWhetherShorterStepCures) {
   // The turning solid near another solid: resting on the bottom side, within the window, no shorter step cures it;
   // 1 mm above it, the closing bound shrinks with the step.
-  EXPECT_FALSE(ComputeShorterStepCall("PaddleThroughBottomSideRestingOnIt").can_shorter_step_cure);
-  const ContactFailure above = ComputeShorterStepCall("PaddleThroughBottomSideOneMillimetreAbove");
+  EXPECT_FALSE(ComputeShorterStepCallFailure("PaddleThroughBottomSideRestingOnIt").can_shorter_step_cure);
+  const ContactFailure above = ComputeShorterStepCallFailure("PaddleThroughBottomSideOneMillimetreAbove");
   EXPECT_EQ(above.close_call, ContactCloseCall::kTurningSolidNearOtherSolid);
   EXPECT_TRUE(above.can_shorter_step_cure);
 }
@@ -554,17 +556,17 @@ TEST(MoveParticles, PaddleThroughBottomSide_FailureSaysWhetherShorterStepCures) 
 TEST(MoveParticles, DrivenBoxesInCrease_FailureSaysWhetherShorterStepCures) {
   // Two reacting solids pushed by one response: at the start, no shorter step cures it; 1 mm away, a step that ends
   // before the boxes arrive does.
-  const ContactFailure in_crease = ComputeShorterStepCall("DrivenBoxesInCrease");
+  const ContactFailure in_crease = ComputeShorterStepCallFailure("DrivenBoxesInCrease");
   EXPECT_EQ(in_crease.close_call, ContactCloseCall::kSecondReactingSolid);
   EXPECT_FALSE(in_crease.can_shorter_step_cure);
-  EXPECT_TRUE(ComputeShorterStepCall("DrivenBoxesNearCrease").can_shorter_step_cure);
+  EXPECT_TRUE(ComputeShorterStepCallFailure("DrivenBoxesNearCrease").can_shorter_step_cure);
 }
 
 TEST(MoveParticles, SeventeenFloors_FailureSaysWhetherShorterStepCures) {
-  const ContactFailure at_start = ComputeShorterStepCall("SeventeenFloorsAtStart");
+  const ContactFailure at_start = ComputeShorterStepCallFailure("SeventeenFloorsAtStart");
   EXPECT_EQ(at_start.close_call, ContactCloseCall::kTooManyHits);
   EXPECT_FALSE(at_start.can_shorter_step_cure);
-  EXPECT_TRUE(ComputeShorterStepCall("SeventeenFloorsBelowFalling").can_shorter_step_cure);
+  EXPECT_TRUE(ComputeShorterStepCallFailure("SeventeenFloorsBelowFalling").can_shorter_step_cure);
 }
 
 TEST(MoveParticles, ScalarOutOfRange_IsBadInput) {
