@@ -1,0 +1,23 @@
+src/fluidity/grid/grid_buffers_internal.h
+  s_4f0877e2acdcf0::t_9c8b56c008a855 140-141
+src/fluidity/grid/grid_values.h
+  s_4f0877e2acdcf0::t_2aabc2815c6a8a 4-5,13-17,266-270,325,327-328,330-331,345-348,359,375-378
+src/fluidity/grid/grid_values.test.cc
+  s_4f0877e2acdcf0::t_6471bb68248db2 5,57-58,62-63,66,70-227,385-390,392-393
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2ad89bb2d9c10bba63af84ae0313394fd80b6e2a",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}

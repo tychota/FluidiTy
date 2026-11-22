@@ -1,0 +1,49 @@
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_3a7149def56d91 153-196
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_bb773db2e6fc0d 34-52
+src/fluidity/grid/grid_build_steps.h
+  s_4f0877e2acdcf0::t_78b38364915117 273-274,342-343,390-391,933
+src/fluidity/grid/testing/grid_functions_answers.h
+  s_4f0877e2acdcf0::t_46afd673864d67 1-294
+src/fluidity/grid/testing/grid_functions_gpu_cases.h
+  s_4f0877e2acdcf0::t_71fad5bdf6c166 9-10,12-13,25-26,44-59,72-76
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_4f0877e2acdcf0::t_e4d87104558268 7,10-13,18,24-51,61-71,75,81-82,85-86,92-97,101,113-118,121-133,135-141,216,219-270,272,276-279
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_63bac3ff5bf872 1,4,6-13,15-24,27-87,92-93,97,158,162-194
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_c6d9c1057cea4b 5,80,93-106,143,168,302,378
+tests/grid/cell_size_rule.gpu.test.cc
+  s_4f0877e2acdcf0::t_0a85d75b9c1011 7-8
+tests/grid/cell_surroundings.gpu.test.cc
+  s_4f0877e2acdcf0::t_cf793a6ebb683f 28,30,89,246,251
+tests/grid/find_cell_at.gpu.test.cc
+  s_4f0877e2acdcf0::t_c7b8ca1ffbf161 7-8,24,26,98
+tests/grid/grid_cell_checks.gpu.test.cc
+  s_4f0877e2acdcf0::t_0881c17dacdf71 10-11
+tests/grid/nearby_face_weights.gpu.test.cc
+  s_4f0877e2acdcf0::t_1686ec3fd4d877 4-11,15,18,22,29,33-34,36,39,47-48,114-116,133-138,167,171-175,180-245,249-258,262-266,283-296,299-348,352,355,359-360,363-446
+tests/grid/shared_grid_functions.gpu.test.cc
+  s_4f0877e2acdcf0::t_7f23e9f0ffab3d 1-266
+tools/shared_grid_functions_test.py
+  s_4f0877e2acdcf0::t_15f13708648f8c 1-86
+src/fluidity/grid/testing/grid_functions_result_words.h
+  s_4f0877e2acdcf0::t_59075dbc3b91ec 4-6,9-13,18-19,22,24,36,38-39,50,60-79,81-98,100-166,169-171,174-175,177,181-182,184,189-190,192,194,197-199,201,205-207,209,213-215,217,222-223,226,230-241,244-256,260,262-267,269,271,273,275-320,326,328,330,333-383,386-389,391-397,400-404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "08343cdbb62f645a54d749a80251897301efb2cc",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
