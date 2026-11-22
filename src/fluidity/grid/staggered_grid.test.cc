@@ -52,11 +52,15 @@ TEST(ComputeAllocationCount, AlignedRequestNearSizeMax_FailsWithoutWrapping) {
   const volatile std::size_t near_size_max = std::numeric_limits<std::size_t>::max() - 8;
   const std::size_t byte_count = near_size_max;
   constexpr std::align_val_t kAlignment{64};
-  const std::uint64_t allocation_count_before = ComputeAllocationCount();
+  const std::uint64_t count_before_no_throw_request = ComputeAllocationCount();
   void* const memory = ::operator new(byte_count, kAlignment, std::nothrow);
+  const std::uint64_t count_after_no_throw_request = ComputeAllocationCount();
   EXPECT_EQ(memory, nullptr);
+  EXPECT_EQ(count_after_no_throw_request - count_before_no_throw_request, 1U);
+  // The throwing form is counted once too, but a debug runtime may allocate while it raises std::bad_alloc, and that
+  // request is counted as well: so at least one.
   EXPECT_THROW(::operator delete(::operator new(byte_count, kAlignment), kAlignment), std::bad_alloc);
-  EXPECT_EQ(ComputeAllocationCount() - allocation_count_before, 2U);
+  EXPECT_GE(ComputeAllocationCount() - count_after_no_throw_request, 1U);
 }
 
 // Size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0}, 3 size levels. Blocks in the fixed
