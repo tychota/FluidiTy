@@ -21,8 +21,13 @@
 //   The largest count known is 124, and it is the exact maximum where only two cell sizes meet. Running out of room is
 //   therefore an impossible case, reported as kInternalFault. The check stays so that a list is never overrun.
 //   What a caller on the GPU must know: a list is 888 bytes. With the mask, position and sums of one axis that go with
-//   it, a thread keeps 1,152 bytes, and 3,456 bytes with three axes held at once. That is above the driver's default
-//   stack of 1,024 bytes, so a module whose GPU function calls them declares its own stack entry.
+//   it, a thread keeps 1,152 bytes, and 3,456 bytes with three axes held at once. A call to FindNearbyFaces needs more
+//   while it runs: the list it builds (888), its touching cells (228) and its face pieces (100), 1,216 bytes on top of
+//   what the caller holds. With three axes held, that is 4,672 bytes at the moment of the call, and 888 more if the
+//   caller keeps the returned list apart from the weights. Both are above the driver's default stack of 1,024 bytes,
+//   so a module whose GPU function calls them declares its own stack entry, sized from these numbers (the
+//   static_asserts below keep them true) plus its own locals; the exact frame is read from the compiler once a GPU
+//   function calls it.
 //
 //   The weights. Each kept face gets a raw weight: the weight curve (grid/weight_curve.h) on each of the three axes,
 //   multiplied, times the face's area in cell faces (1 for a face of the cell's size, 1/4 for a smaller one, 4 for a
@@ -59,7 +64,8 @@
 //          ComputeNearbyFaceWeights, ComputeFaceWeight; and, for this header's own functions and the tests of the
 //          grid only, FindNearbyFacesWithRoom, ComputeCandidateWindowQuarter, ComputeIsInCandidateWindow,
 //          ApplyNearbyFaceInsert, RawFaceWeight, ComputeRawFaceWeight, ComputeIsKept, ComputeKeptFaceWeight,
-//          ComputeIsCompleteNeighbourhood, CholeskyInverse, ComputeCholeskySolution, ComputeCholeskyInverse
+//          ComputeIsCompleteNeighbourhood, CholeskyInverse, ComputeCholeskySolution, ComputeCholeskyInverse,
+//          kFindNearbyFacesCallBytes
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Mat3 (base/mat3.h), math::Floor, math::Sqrt,
 //          math::IsFinite (base/scalar_math.h), Vec3 (base/vec3.h), FindCellAt (grid/find_cell_at.h), FindCellBlock,
 //          GridTables, ToCellId, ToSizeLevel, ToAxis, ComputeCellWidth, ComputeFacePosition, ComputeFaceArea
@@ -73,6 +79,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
@@ -122,22 +129,28 @@ enum class NearbyFaceFit : std::uint8_t {
 // Computes the window quarter n_p of a position on one axis: the quarter of its cell that holds it, 0..3. For this
 // header's own functions and the tests of the grid only.
 //
-// Method: n_p = floor(4 ((position - origin) / cell_width - cell_coord)), then clamped to 0..3. FindCellAt chose the
-//   cell from the same quotient, so rounding can put the quotient a step outside the cell. The clamp ties n_p to that
-//   cell: whatever rounding does, the window is one of the four the cell has. A NaN gives 0.
+// Method: with the quotient q = (position - origin) / cell_width, n_p = floor(4 q) - 4 cell_coord, then clamped to
+//   0..3. Multiplying by 4 and taking the floor are exact, and so is subtracting 4 cell_coord from the whole number
+//   floor(4 q), since both are far below 2^53 (|cell_coord| < 2^18, so |4 q| < 2^20 for a cell FindCellAt found). So
+//   n_p is exact for the quotient as computed. Subtracting cell_coord from q first would lose bits in cells of a
+//   negative coordinate, so it is not done. The one rounding left is the division of q, the same as in FindCellAt. The
+//   clamp keeps n_p in the four windows of the cell if q lies outside it. A NaN gives 0.
 // Units: position and origin in m, world; cell_width in m.
-// Example: cell {2,...} of width 1 m from the origin 0: position 2.6 gives floor(4 x 0.6) = 2; 1.999999 gives -1,
-//   clamped to 0; 3.0 gives 4, clamped to 3.
+// Example: cell {2,...} of width 1 m from the origin 0: position 2.6 gives floor(4 x 2.6) - 4 x 2 = 10 - 8 = 2;
+//   1.999999 gives -1, clamped to 0; 3.0 gives 4, clamped to 3.
 // Requires: cell_width is finite and above 0; cell_coord is the coordinate that FindCellAt's cell has on this axis.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
+// clang-tidy: the width and the coordinate are no longer combined in one expression, so the swappable-parameters check
+// flags them.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 FLUIDITY_CPU_AND_GPU inline int ComputeCandidateWindowQuarter(
     double position_on_axis,
     double origin_on_axis,
     double cell_width,
     std::int32_t cell_coord
 ) noexcept {
-  const double quarters_into_cell =
-      math::Floor(4.0 * (((position_on_axis - origin_on_axis) / cell_width) - static_cast<double>(cell_coord)));
+  const double quotient = (position_on_axis - origin_on_axis) / cell_width;
+  const double quarters_into_cell = math::Floor(4.0 * quotient) - (4.0 * static_cast<double>(cell_coord));
   if (!(quarters_into_cell >= 0.0)) {
     return 0;
   }
@@ -146,6 +159,7 @@ FLUIDITY_CPU_AND_GPU inline int ComputeCandidateWindowQuarter(
   }
   return static_cast<int>(quarters_into_cell);
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 // Says whether a face centre lies in the window of a window quarter on one axis. For this header's own functions and
 // the tests of the grid only.
@@ -324,6 +338,14 @@ struct NearbyFaceWeights {
 };
 static_assert(sizeof(NearbyFaceWeights) == 1152, "a list of 888 bytes, a mask of 32, and 232 bytes of sums");
 static_assert(std::is_trivially_copyable_v<NearbyFaceWeights>);
+
+// The bytes a call to FindNearbyFaces holds while it runs, on top of its caller's: the list it builds, its touching
+// cells and its face pieces (the file header's GPU text states the numbers).
+inline constexpr std::size_t kFindNearbyFacesCallBytes =
+    sizeof(NearbyFaceList) + sizeof(TouchingCells) + sizeof(CellFacePieces);
+static_assert(sizeof(TouchingCells) == 228 && sizeof(CellFacePieces) == 100, "56 x 4 + 4 and 24 x 4 + 4 bytes");
+static_assert(kFindNearbyFacesCallBytes == 1216, "888 + 228 + 100 bytes: the file header's GPU text");
+static_assert(3 * sizeof(NearbyFaceWeights) + kFindNearbyFacesCallBytes == 4672, "3,456 + 1,216 bytes");
 
 // What one kept face gets from a position.
 struct FaceWeight {

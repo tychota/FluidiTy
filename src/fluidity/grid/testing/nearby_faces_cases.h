@@ -10,6 +10,8 @@
 //          CheckEveryAxisHasCount, BuildFiveByFiveBoxAround, ComputeValueAlong, ToFaceOffsets, ComputeOffsetCountAt,
 //          PlacedPosition, ToPlacedPosition, kPlacedPositionStepsPerCell, kPlacedPositionStepsPerQuarter,
 //          ComputePositionAtStep, ToWindowMiddlePosition, CheckEveryWindowHasCount, FindLargestCountInEveryWindow,
+//          CandidateCountsOfCell, ComputeCandidateCountsInEveryWindow, FindLargestCandidateCount,
+//          CheckCountsMatchFindNearbyFaces,
 //          CheckFacesAreAscending, CheckEntriesFromAreZero, ComputeMovedByRoundingSteps, FindDrawnStepInCell,
 //          FindDrawnPosition, ToNonDyadicFrame, FindDrawnCoordinate, kNonDyadicSeed, BuildNonDyadicCells,
 //          FindDrawnNonDyadicPosition
@@ -221,6 +223,82 @@ inline int FindLargestCountInEveryWindow(const GridTables& tables, CellId cell) 
     }
   }
   return largest_count;
+}
+
+// The candidate counts of one cell: counts[axis][window] for each axis (X, Y, Z) and each of the 64 windows.
+using CandidateCountsOfCell = std::array<std::array<int, 64>, 3>;
+
+// Counts the candidates of one cell on each axis in each of the 64 windows, from the primitives of
+// FindNearbyFacesWithRoom but without a position: the face pieces of the cell and of its touching cells are
+// listed and made unique once, and ComputeIsInCandidateWindow then counts each window. Window w is the one of
+// ToWindowMiddlePosition: quarter x = w % 4, y = (w / 4) % 4, z = w / 16.
+inline CandidateCountsOfCell ComputeCandidateCountsInEveryWindow(const GridTables& tables, CellId cell) {
+  const CellPlaceIndex cell_place = FindCellPlace(tables, cell);
+  const int cell_size_level = static_cast<int>(ToSizeLevel(cell));
+  const CellCoord cell_coord = ToCellCoord(cell);
+  struct CandidateFace {
+    std::uint32_t place;
+    std::size_t axis_number;
+    std::array<std::int64_t, 3> quarters;  // x, y, z, from the cell's low corner.
+  };
+  std::vector<CandidateFace> candidates;
+  const TouchingCells touching = FindTouchingCells(tables, cell_place);
+  for (int entry = -1; entry < touching.count; ++entry) {
+    const CellFacePieces pieces = FindFacePieces(tables, entry < 0 ? cell_place : touching.cells[entry]);
+    for (int piece = 0; piece < pieces.count; ++piece) {
+      const FacePlaceIndex face = pieces.faces[piece];
+      const int level_difference = static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(face))) - cell_size_level;
+      if (level_difference < -1 || level_difference > 1) {
+        continue;
+      }
+      const QuarterWidthPoint centre = ComputeFaceCenterInQuarterWidths(tables, face, cell_size_level);
+      candidates.push_back({
+          .place = face.value,
+          .axis_number = static_cast<std::size_t>(ToAxis(face)),
+          .quarters = {
+              centre.x - (4 * std::int64_t{cell_coord.x}),
+              centre.y - (4 * std::int64_t{cell_coord.y}),
+              centre.z - (4 * std::int64_t{cell_coord.z}),
+          },
+      });
+    }
+  }
+  std::ranges::sort(candidates, {}, &CandidateFace::place);
+  const auto duplicates = std::ranges::unique(candidates, {}, &CandidateFace::place);
+  candidates.erase(duplicates.begin(), duplicates.end());
+  CandidateCountsOfCell counts{};
+  for (int window = 0; window < 64; ++window) {
+    for (const CandidateFace& face : candidates) {
+      const bool is_in_window = ComputeIsInCandidateWindow(face.quarters[0], window % 4)
+          && ComputeIsInCandidateWindow(face.quarters[1], (window / 4) % 4)
+          && ComputeIsInCandidateWindow(face.quarters[2], window / 16);
+      counts[face.axis_number][static_cast<std::size_t>(window)] += is_in_window ? 1 : 0;
+    }
+  }
+  return counts;
+}
+
+// Gives the largest count of a cell, over its axes and windows.
+inline int FindLargestCandidateCount(const CandidateCountsOfCell& counts) {
+  int largest_count = 0;
+  for (const std::array<int, 64>& counts_of_axis : counts) {
+    largest_count = std::max(largest_count, *std::ranges::max_element(counts_of_axis));
+  }
+  return largest_count;
+}
+
+// Checks that FindNearbyFaces, at the middle of each of the 64 windows of a cell and on each axis, lists as many faces
+// as `expected_counts` says (ComputeCandidateCountsInEveryWindow).
+inline void
+CheckCountsMatchFindNearbyFaces(const GridTables& tables, CellId cell, const CandidateCountsOfCell& expected_counts) {
+  for (int window = 0; window < 64; ++window) {
+    const PlacedPosition placed = ToWindowMiddlePosition(tables.frame, cell, window);
+    for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
+      const int expected_count = expected_counts[static_cast<std::size_t>(axis)][static_cast<std::size_t>(window)];
+      EXPECT_EQ(FindNearbyFaceCount(tables, placed.position, axis), expected_count)
+          << "window " << window << " axis " << static_cast<int>(axis);
+    }
+  }
 }
 
 // Checks that the faces of a list are in strictly ascending index order.

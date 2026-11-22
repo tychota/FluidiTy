@@ -42,23 +42,54 @@ TEST(FindNearbyFaces, TwoSizesWorstCaseEveryWindow_NeverPasses124) {
   EXPECT_EQ(FindLargestCountInEveryWindow(ToTablesOf(test_grid), ToCell(1, 2, 2, 2)), 124);
 }
 
-// 200 small random grids, eight cells spread over each, all 64 windows, every axis: the count stays at or below the
-// proven bound.
+// Counts the candidates in the 64 windows of every cell of one grid, on every axis, and gives the largest count. Cell 0
+// and every `cells_between_list_checks`-th cell after it are also checked against FindNearbyFaces itself, at the middle
+// of each window, so the count and the list cannot drift apart.
+int CheckBoundOfOneGrid(
+    const GridTables& tables,
+    const std::vector<CellId>& cells,
+    std::size_t cells_between_list_checks
+) {
+  int largest_count = 0;
+  for (std::size_t entry = 0; entry < cells.size(); ++entry) {
+    const CandidateCountsOfCell counts = ComputeCandidateCountsInEveryWindow(tables, cells[entry]);
+    largest_count = std::max(largest_count, FindLargestCandidateCount(counts));
+    if (entry % cells_between_list_checks == 0) {
+      CheckCountsMatchFindNearbyFaces(tables, cells[entry], counts);
+    }
+  }
+  return largest_count;
+}
+
+// 200 small random grids of 3 size levels: every active cell, all 64 windows, every axis, stays at or below the proven
+// bound.
 TEST(FindNearbyFaces, SmallRandomGrids_NeverExceedTheProvenBound) {
   constexpr int kSizeLevelCount = 3;
   constexpr int kBiggestCellsPerAxis = 2;
-  constexpr std::size_t kCellsPerGrid = 8;
   int largest_count = 0;
   for (std::uint64_t seed = 1; seed <= kRandomGridCount; ++seed) {
     const std::vector<CellId> cells = BuildRandomGridCells(seed, kSizeLevelCount, kBiggestCellsPerAxis);
     const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(kSizeLevelCount), cells));
     ASSERT_TRUE(test_grid.has_value()) << seed;
-    const GridTables tables = ToTablesOf(test_grid);
-    // Each call takes tens of microseconds in the debug build, so eight cells spread over the list stand for all of it.
-    const std::size_t stride = std::max<std::size_t>(1, cells.size() / kCellsPerGrid);
-    for (std::size_t entry = 0; entry < cells.size(); entry += stride) {
-      largest_count = std::max(largest_count, FindLargestCountInEveryWindow(tables, cells[entry]));
-    }
+    largest_count = std::max(largest_count, CheckBoundOfOneGrid(ToTablesOf(test_grid), cells, 64));
+  }
+  RecordProperty("largest_nearby_faces", largest_count);
+  EXPECT_LE(largest_count, kMostFacesInAnyValidGrid);
+  EXPECT_GE(largest_count, 27);
+}
+
+// Every 10th of the 200 random grids of 4 size levels that the checker test uses: the same check on every active cell.
+// A walk over every cell of all 200 takes over a minute in the debug build.
+TEST(FindNearbyFaces, FourLevelRandomGrids_NeverExceedTheProvenBound) {
+  constexpr std::size_t kGridsBetweenChecks = 10;
+  const RandomGridsWithCheckers& random_grids = FindRandomGridsWithCheckers();
+  const std::vector<std::vector<CellId>>& cell_lists = BuildShuffledRandomGrids();
+  ASSERT_EQ(random_grids.grids.size(), kRandomGridCount);
+  int largest_count = 0;
+  for (std::size_t grid_entry = 0; grid_entry < kRandomGridCount; grid_entry += kGridsBetweenChecks) {
+    SCOPED_TRACE(grid_entry);
+    const GridTables tables = random_grids.grids[grid_entry].grid.tables(RunOn::kCpu);
+    largest_count = std::max(largest_count, CheckBoundOfOneGrid(tables, cell_lists[grid_entry], 512));
   }
   RecordProperty("largest_nearby_faces", largest_count);
   EXPECT_LE(largest_count, kMostFacesInAnyValidGrid);

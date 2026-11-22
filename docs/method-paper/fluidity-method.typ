@@ -2318,8 +2318,9 @@ cell touching it, whose own size level is at most one away from that cell's, and
 half cell widths of the position on each axis, from just above $-1.5 h$ up to and including $+1.5 h$:
 $-1.5 h < x_f - x_p <= 1.5 h$. The low end is open and the high end closed because a cell owns its low side. The
 choice is made in whole quarter widths, never on rounded distances. On each axis, the quarter of the cell that holds
-the position, $n_p = floor(4 ((x_p - "origin") \/ h - c))$ with $c$ the cell's coordinate, clamped to 0 to 3, fixes a
-window twelve quarter widths long. The face centre is counted in quarter widths of the cell from the cell's low
+the position, $n_p = floor(4 q) - 4 c$ with $q = (x_p - "origin") \/ h$ and $c$ the cell's coordinate, clamped to 0 to
+3, fixes a window twelve quarter widths long. The floor and the subtraction of whole numbers are exact, so no rounding
+enters after the division. The face centre is counted in quarter widths of the cell from the cell's low
 corner, an integer $n_f$ found from the ids alone, and the face is a candidate when $n_p - 5 <= n_f <= n_p + 6$. Every
 face centre of the three size levels lies on that quarter lattice, so the integer test loses nothing, and both
 processors make the same choice. Among cells of one size the window holds exactly three planes of faces on every

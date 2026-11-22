@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -113,6 +114,16 @@ TEST(ComputeCandidateWindowQuarter, PositionsInsideTheCell_GiveTheirQuarter) {
   EXPECT_EQ(ComputeCandidateWindowQuarter(2.9, 0.0, 1.0, 2), 3);
 }
 
+// The quotient is -(0.25 + 2^-54) in the cell with coordinate -1, so the position is 3/4 of a quarter below the cell's
+// first quarter step: the quarter is 2. Subtracting the coordinate from the quotient first rounds to 0.75 and gives 3.
+TEST(ComputeCandidateWindowQuarter, JustBelowAQuarterInCellMinusOne_RoundsDown) {
+  const double quotient = -(0.25 + std::ldexp(1.0, -54));
+  ASSERT_EQ(quotient, -std::nextafter(0.25, 1.0));
+  EXPECT_EQ(ComputeCandidateWindowQuarter(quotient, 0.0, 1.0, -1), 2);
+  EXPECT_EQ(ComputeCandidateWindowQuarter(-0.25, 0.0, 1.0, -1), 3);
+  EXPECT_EQ(ComputeCandidateWindowQuarter(-0.25 - std::ldexp(1.0, -53), 0.0, 1.0, -1), 2);
+}
+
 TEST(ComputeCandidateWindowQuarter, NotANumber_IsZero) {
   EXPECT_EQ(ComputeCandidateWindowQuarter(std::numeric_limits<double>::quiet_NaN(), 0.0, 1.0, 2), 0);
 }
@@ -124,6 +135,53 @@ TEST(ComputeIsInCandidateWindow, TwelveQuarterSteps_LowEndOpenHighEndClosed) {
   EXPECT_FALSE(ComputeIsInCandidateWindow(8, 1));
   EXPECT_TRUE(ComputeIsInCandidateWindow(-5, 0));
   EXPECT_TRUE(ComputeIsInCandidateWindow(6, 0));
+}
+
+// Sorts the X faces that FindNearbyFaces lists at a position and checks that their centres, in m, are exactly
+// `expected_centres`, written in ascending order of x, then y, then z.
+void CheckXFaceCentresAre(
+    const GridTables& tables,
+    Vec3 position,
+    std::vector<std::array<double, 3>> expected_centres
+) {
+  GridError error = GridError::kInternalFault;
+  const NearbyFaceList list = FindNearbyFaces(tables, position, Axis::kX, CellBlockIndex{kNoIndex}, &error);
+  ASSERT_EQ(error, GridError::kNone);
+  std::vector<std::array<double, 3>> listed_centres;
+  for (int entry = 0; entry < list.count; ++entry) {
+    const Vec3 centre = ComputeFacePosition(tables, list.faces[entry]);
+    listed_centres.push_back({centre.x, centre.y, centre.z});
+  }
+  std::ranges::sort(listed_centres);
+  std::ranges::sort(expected_centres);
+  EXPECT_EQ(listed_centres, expected_centres) << "position x " << position.x;
+}
+
+// The cell {1,0,0} of size level 1 is 0.5 m wide, its +X neighbour is one cell of 1 m and the other neighbours are
+// cells of 0.5 m, so no cell lies beyond the neighbour. Along X the faces within reach lie at x = 0 (n_f = -4 in
+// quarter widths of the cell), 0.5 and 1 (n_f = 0 and 4), four each, at y and z of 0.25 or 0.75 m; the big cell's far
+// side at x = 2 (n_f = 12) is out of every window. The window of a position in quarter n_p starts at n_f = n_p - 5, so
+// the plane x = 0 leaves the list at quarter 2: x = 0.7 (quarter 1) lists 12 faces, x = 0.8 (quarter 2) lists 8. A
+// window off by one quarter changes the list at one of the two positions.
+TEST(FindNearbyFaces, CoarserNeighbour_ListsThePlaneOfTheWindowQuarter) {
+  std::vector<CellId> cells = {ToCell(0, 1, 0, 0)};
+  ApplySmallCellsToList(ToCell(0, 0, 0, 0), cells);
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(2), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  std::vector<std::array<double, 3>> expected_centres;
+  for (const double plane : {0.0, 0.5, 1.0}) {
+    for (const double centre_y : {0.25, 0.75}) {
+      for (const double centre_z : {0.25, 0.75}) {
+        expected_centres.push_back({plane, centre_y, centre_z});
+      }
+    }
+  }
+  CheckXFaceCentresAre(tables, {.x = 0.7, .y = 0.25, .z = 0.25}, expected_centres);
+  std::erase_if(expected_centres, [](const std::array<double, 3>& centre) {
+    return centre[0] == 0.0;
+  });
+  CheckXFaceCentresAre(tables, {.x = 0.8, .y = 0.25, .z = 0.25}, expected_centres);
 }
 
 // The origin and the width have no short binary fraction, so a test of float offsets would list 36 faces here.
