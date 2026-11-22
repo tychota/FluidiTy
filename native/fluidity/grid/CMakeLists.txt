@@ -123,6 +123,7 @@ fluidity_add_test(
 fluidity_add_test(
   staggered_grid_no_gpu_test SOURCES staggered_grid_no_gpu_test.cc LABEL no_gpu LINKS fluidity_grid_test_support
 )
+fluidity_add_test(face_search_test SOURCES face_search_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_tables_test SOURCES grid_tables_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(grid_test_support_test SOURCES grid_test_support_test.cc LABEL cpu LINKS fluidity_grid_test_support)
 fluidity_add_test(touching_cells_test SOURCES touching_cells_test.cc LABEL cpu LINKS fluidity_grid_test_support)

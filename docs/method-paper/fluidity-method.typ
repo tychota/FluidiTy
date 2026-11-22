@@ -2110,16 +2110,16 @@ the version and the block count, and their contents become unspecified until the
 
 *Ranges and border.* A stage works on a range: a run of consecutive blocks in the fixed order (`CellBlockRange`). It
 writes only values kept in blocks of the range, and it may read values of the range and of its border blocks. Since
-every face piece is kept in exactly one block, every value has one writer. The border of a set of blocks, at the
-width `kTouchingCells`, is every block outside the set that holds an active cell touching a cell of the set, or holds
-a face piece of such a cell. The second part matters: a face piece is kept with its smaller cell, and plane 4 of a
-block moves to plane 0 of its high neighbour, so a nearby face of a cell touching the range can lie one block beyond
-that cell. The width `kFourCellWidths` adds every block a face search of four cell widths reads from a face piece of
+every face piece is kept in exactly one block, every value has one writer. The border of a set of blocks, at the width
+`kTouchingCells`, is every block outside the set that holds an active cell touching a cell of the set, or holds a face
+piece of such a cell. The second part matters: a face piece is kept with its smaller cell, and plane 4 of a block moves
+to plane 0 of its high neighbour, so a nearby face of a cell touching the range can lie one block beyond that cell. The
+width `kFourCellWidths` adds every block a face search of four cell widths (@sec-face-search) reads from a face piece of
 the set. A pass that runs several stages on one load needs stacked borders: the border of its last stage around the
-range, then the border of the stage before around the range plus that border, and so on. In a run in one piece the
-range is every block and the border is empty. A sum over the grid that is not a sum per destination is one partial
-sum per block, kept in the fixed block order, then added by @proc-tree-sum, so a total is the same in one piece and in
-any cut into ranges.
+range, then the border of the stage before around the range plus that border, and so on. In a run in one piece the range
+is every block and the border is empty. A sum over the grid that is not a sum per destination is one partial sum per
+block, kept in the fixed block order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut
+into ranges.
 
 *Grid pieces.* A grid piece (`GridPiece`) is one range of a whole grid with its border, built as a grid of its own for
 a run in batches. It lists its blocks in the whole grid's fixed order, never the range first. The border blocks lie
@@ -2407,6 +2407,43 @@ $sum_f v_f (partial hat(w)_f) / (partial bold(x)_p)$. A face can also compute th
     is $h^2\/4$ on every axis: the dashed circle has radius $h\/2$.],
 ) <fig-nearby-faces>
 
+=== Cells near a face and the face search <sec-face-search>
+
+Two readers start from a face piece instead of a particle. `FindCellsNearFace` lists the cells near a face piece: its
+`cell_low`, its `cell_high` and the cells touching either, in ascending index order. Every cell whose particles can
+list the face piece as a nearby face is among them, since a particle's candidates are face pieces of its own cell and
+of the cells touching it. Some listed cells can never list it: a cell touching a bigger `cell_low` may be two size
+levels bigger than the face piece. In a built grid each of the two cells touches the other, so the list has at most
+$57 + 57 - 2 = 112$ cells (`kMaxCellsNearFace`). Tables that contradict themselves could break that, so the list stops
+at 112 and never passes its array. The largest count known is 82: two cells of one size beside each other, with all 34
+places of their size level around the pair split.
+
+A face search (`BuildFaceSearch`, then `FindNextFace` until it gives no face) walks, in ascending face index, the face
+pieces of the start's axis whose size level is one bigger than the start's, the same or one smaller, and whose centre
+lies strictly within $r$ widths $h_l$ of the start's centre on each axis, $r <= 4$ (`kMaxFaceSearchRadius`). A larger
+radius is taken as 4, and a radius that is not above 0, NaN included, finds nothing. The test is exact: both centres
+are integers in quarter widths of $h_l$, and the distance on each axis is compared with $4 r$. Two face pieces of one
+size level therefore find each other or neither, in any frame and on both processors. For example, in a grid of one
+size level, radius 1.5 around a face piece finds the $3 times 3 times 3$ face pieces of its axis centred on it.
+
+The search reads the blocks at three sets of positions around the start's block $B$, of size level $l$: the 27
+positions $B + d$ of size level $l$, the 27 positions of size level $l - 1$ around $floor(B\/2)$, and the 8 positions
+of size level $l + 1$ under each of the first 27, at most 270 blocks (`kMaxFaceSearchBlocks`). The positions are fixed
+whether or not a neighbour exists. These blocks hold every face piece the search can find. Count in widths $h_l$.
+Along the axis the start lies from $4 B$ to $4 B + 4$, plane 4 included, so a face piece within 4 widths lies strictly
+between $4 B - 4$ and $4 B + 8$. It is kept in the block of its high cell place, or at plane 4 of the block below, so
+its plane lies in that block's range, sides included. A block of size level $l$ two positions from $B$, one of size
+level $l + 1$ outside $2 B - 2$ to $2 B + 3$, and one of size level $l - 1$ two positions from $floor(B\/2)$ all lie
+too far. The same holds across the axis, where the centres lie strictly inside the blocks.
+
+Face pieces two or more size levels away are never found, for two reasons. Toward smaller cells: a cell one size level
+smaller is half as wide, the next a quarter, and so on, so face pieces of any smaller size level can lie within 1.5
+widths of a face piece. A search over every smaller size level would read a number of blocks with no bound: it could not
+keep its state in a fixed array on the GPU, and a grid piece would have no finite border for it. Toward bigger cells the
+cost is bounded, at most 8 more blocks per size level within 4 widths, so leaving them out is a choice: one rule for
+both directions, size levels $l - 1$ to $l + 1$, the size levels of a particle's candidates above, so the search loses
+no face piece that a particle in a cell near the start could use. In a grid piece the search reads the blocks at these
+positions that the piece holds, and finds their face pieces only.
 
 == Memory per block <sec-grid-memory>
 
