@@ -534,7 +534,7 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     suite of `tools/` passes, and `actionlint` accepts the files of `.github/workflows/`.
   - `PASS message`: `tools/check_message.py` accepts the message of `HEAD`: a subject of at most 72 columns, a blank
     line after it, body lines of at most 72, no trailer line (the one exception is a last line `GPU: compiled, not
-    run`), no tool or model name, no process word (task, brief, review, reviewer, round, fixup, subagent, agent) and no
+    run`), no tool or model name, no process word (brief, review, reviewer, fixup, subagent, agent) and no
     word the glossary bans. The step runs when the working tree has no change, so run the gate again after the commit;
     with changes it prints `NOT RUN message (uncommitted changes)`, and `--speed quick` leaves it out. It also reads one
     commit (`tools/check_message.py <commit>`), a range (`--range A..B`) or a file (`--file PATH`).

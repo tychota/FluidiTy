@@ -73,10 +73,15 @@ def test_tool_or_model_name_fails(word):
     assert len(result) == 1 and "tool or a model" in result[0]
 
 
-@pytest.mark.parametrize("word", ["task", "Brief", "review", "reviewer", "round", "fixup", "subagent", "agent"])
+@pytest.mark.parametrize("word", ["Brief", "review", "reviewer", "fixup", "subagent", "agent"])
 def test_process_word_fails(word):
     result = problems(f"Subject\n\nThe {word} said so.\n")
     assert len(result) == 1 and "process word" in result[0]
+
+
+@pytest.mark.parametrize("word", ["round", "Round", "task", "tasks"])
+def test_round_and_task_are_ordinary_words(word):
+    assert problems(f"Subject\n\nThe {word} of a number, or a VS Code {word}.\n") == []
 
 
 def test_fixup_subject_fails():
@@ -127,7 +132,7 @@ def test_main_reads_a_file(tmp_path, capsys):
     path = tmp_path / "message.txt"
     path.write_text("Subject\n\nBody.\n", encoding="utf-8")
     assert check_message.main(["--file", str(path)]) == 0
-    path.write_text("Subject\n\nA task.\n", encoding="utf-8")
+    path.write_text("Subject\n\nA review.\n", encoding="utf-8")
     assert check_message.main(["--file", str(path)]) == 1
     capsys.readouterr()
 

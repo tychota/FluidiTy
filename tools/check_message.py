@@ -44,7 +44,8 @@ TOOL_WORDS = (
     "codex",
     "cursor",
 )
-PROCESS_WORDS = ("task", "brief", "review", "reviewer", "round", "fixup", "subagent", "agent")
+# `round` (rounding a number) and `task` (a VS Code task) are ordinary words in this project, so they are not here.
+PROCESS_WORDS = ("brief", "review", "reviewer", "fixup", "subagent", "agent")
 
 _TRAILER_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):\s+\S")
 _URL_ONLY_LINE = re.compile(r"^\s*<?https?://\S+>?\s*$")
