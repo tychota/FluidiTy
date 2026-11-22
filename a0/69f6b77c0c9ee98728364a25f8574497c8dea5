@@ -1,0 +1,49 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_2de8b5c6892471 287
+docs/glossary.md
+  s_4f0877e2acdcf0::t_855fd34d5f9165 197-202
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_1b187192dea026 2,4-6,17,59-60,130,133
+src/fluidity/grid/cell_corners.h
+  s_4f0877e2acdcf0::t_750728826bdbc4 1-425
+src/fluidity/grid/cell_corners.test.cc
+  s_4f0877e2acdcf0::t_8ebc3fed3eb921 1,22
+src/fluidity/grid/cell_size_rule.gpu.test.cc
+  s_4f0877e2acdcf0::t_a8fb4be6ed72e7 27
+src/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_38490e036c44a7 69,81
+src/fluidity/grid/cell_size_rule.test.cc
+  s_4f0877e2acdcf0::t_19926f214c1509 19
+src/fluidity/grid/face_search.h
+  s_4f0877e2acdcf0::t_b20745d3dc4aed 1-441
+src/fluidity/grid/face_search.test.cc
+  s_4f0877e2acdcf0::t_f1cb1166190048 1,24,27
+src/fluidity/grid/find_cell_at.h
+  s_4f0877e2acdcf0::t_3ef92df505d8b4 1-280
+src/fluidity/grid/find_cell_at.test.cc
+  s_4f0877e2acdcf0::t_4c81ae1a92c91d 1,23
+src/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_2241e21e956e5e 6-7,46-58,243,256,273,622,628,639,676
+src/fluidity/grid/grid_tables.shared.gpu_compile.test.cu
+  s_4f0877e2acdcf0::t_92e75cc3575b7a 2-3,7-10,12-15,23,25-26,31,41-42,168,172,179,185
+src/fluidity/grid/touching_cells.h
+  s_4f0877e2acdcf0::t_f1b29efbd60aa5 1-340
+src/fluidity/grid/touching_cells.test.cc
+  s_4f0877e2acdcf0::t_e22c2e71e15191 1,22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a069f6b77c0c9ee98728364a25f8574497c8dea5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
