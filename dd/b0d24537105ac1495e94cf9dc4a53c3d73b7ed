@@ -1,0 +1,119 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_0d9b47a85e110c 284-286,289-290,303,318-321,511-512,545-547
+src/fluidity/base/buffer.gpu.test.cc
+  s_4f0877e2acdcf0::t_facba1d6b0eaf7 15
+src/fluidity/base/testing/buffer_cases.h
+  s_4f0877e2acdcf0::t_bd9c9b6f4a59fa 1-33
+src/fluidity/base/testing/tree_sum_cases.h
+  s_4f0877e2acdcf0::t_85ae025e57bfae 1-54
+src/fluidity/base/tree_sum.test.cc
+  s_4f0877e2acdcf0::t_8b0dc8c05f4776 13
+src/fluidity/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_09a8ee35b69769 29
+src/fluidity/contact/move_particles.scene.test.cc
+  s_4f0877e2acdcf0::t_345ba4cb8fbe8c 136-137
+src/fluidity/contact/solid_contact.move_particle_shorter_step.test.cc
+  s_4f0877e2acdcf0::t_8c965a6e436884 16
+src/fluidity/contact/testing/contact_cases.h
+  s_4f0877e2acdcf0::t_12b56a74a95ed8 21,3466-3467
+src/fluidity/contact/testing/left_out_reference.cc
+  s_4f0877e2acdcf0::t_da80783af49081 9-10
+src/fluidity/contact/testing/left_out_reference.h
+  s_4f0877e2acdcf0::t_6c5a118985ad3d 1-29
+src/fluidity/contact/testing/left_out_solids_sets.h
+  s_4f0877e2acdcf0::t_72e020ae6e8954 15-16
+src/fluidity/contact/testing/move_particles_cases.h
+  s_4f0877e2acdcf0::t_6f0d0d922fbde0 8-9,11-12,232-328
+src/fluidity/contact/testing/move_particles_scene_cases.h
+  s_4f0877e2acdcf0::t_dca658e9aeca7c 9-10,143-222
+src/fluidity/contact/testing/solid_contact_move_particle_cases.h
+  s_4f0877e2acdcf0::t_42c870649e990c 11,13-16,246-276
+src/fluidity/contact/testing/solid_contact_move_particle_shorter_step_cases.h
+  s_4f0877e2acdcf0::t_419d50ca02da56 1-81
+src/fluidity/grid/face_search.h
+  s_4f0877e2acdcf0::t_e4d70558dda850 21-24
+src/fluidity/grid/find_cell_at.h
+  s_4f0877e2acdcf0::t_123fec23911a8c 17-18
+src/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_d82e3229a0cb8d 51-52
+src/fluidity/grid/staggered_grid.test.cc
+  s_4f0877e2acdcf0::t_5c2afb7c883ed8 62-171
+src/fluidity/grid/testing/cell_size_rule_factor_cases.h
+  s_4f0877e2acdcf0::t_2d2854dd451e61 8,10-11,63-69
+src/fluidity/grid/testing/grid_build_steps_cases.h
+  s_4f0877e2acdcf0::t_33e22e32250975 23,25-26,1321-1324
+src/fluidity/grid/testing/grid_support.h
+  s_4f0877e2acdcf0::t_ff12be231c4f09 39,62,395-405
+src/fluidity/grid/testing/staggered_grid_cases.h
+  s_4f0877e2acdcf0::t_10f2d9cc147fb7 8-9,76-160
+src/fluidity/grid/testing/staggered_grid_cell_count_cases.h
+  s_4f0877e2acdcf0::t_bc6e0f78777a8a 9,11-12,132-146
+src/fluidity/grid/testing/touching_cells_cases.h
+  s_4f0877e2acdcf0::t_08acba3a65398b 8
+src/fluidity/grid/touching_cells.h
+  s_4f0877e2acdcf0::t_d19a0690c40e2c 7,22,28
+tests/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_0c5f45be73c6af 1-36,49-60,86-97,133-156
+tests/base/buffer_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_96b9d635868058 1-43
+tests/base/buffer_on_many_values.test.cc
+  s_4f0877e2acdcf0::t_6e62e32815f5f1 1-28
+tests/base/check_can_run_on_math_inputs.test.cc
+  s_4f0877e2acdcf0::t_57a7b16c71fa18 1-56
+tests/base/ordered_sums_on_thousand_values.test.cc
+  s_4f0877e2acdcf0::t_8eddf596c1cad8 1-145
+tests/base/stable_order_on_generated_keys.test.cc
+  s_4f0877e2acdcf0::t_4c94f2332f0a46 1-138
+tests/base/tree_sum_layers_on_every_count.test.cc
+  s_4f0877e2acdcf0::t_51c7af1bbb1adc 1-40
+tests/base/tree_sum_on_every_count.test.cc
+  s_4f0877e2acdcf0::t_125311f99d3eb0 1-33
+tests/contact/CMakeLists.txt
+  s_4f0877e2acdcf0::t_5a3b29e09abafc 39,59-94,162-173
+tests/contact/contact_response_on_generated_cases.test.cc
+  s_4f0877e2acdcf0::t_953a3f3445e390 56-81
+tests/contact/move_particle_left_out_every_set.test.cc
+  s_4f0877e2acdcf0::t_054b3cd24a5efd 7
+tests/contact/move_particle_shorter_step_on_catalogue.test.cc
+  s_4f0877e2acdcf0::t_9e31e09761ed97 1-77
+tests/contact/move_particle_slides_over_many_steps.test.cc
+  s_4f0877e2acdcf0::t_3f5c5b0d9bd18b 1-98
+tests/contact/move_particles_against_move_particle.test.cc
+  s_4f0877e2acdcf0::t_c3ac4df120a726 1-245
+tests/contact/move_particles_scenes.test.cc
+  s_4f0877e2acdcf0::t_f7b43f40ec73fe 29,36-164,556-667
+tests/contact/smallest_correction_on_generated_cases.test.cc
+  s_4f0877e2acdcf0::t_7d9552d0fb30ac 1-169
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_765965a9f0e7a0 41-52,65-76,165-176,201-212,261-272
+tests/grid/cell_lists_on_every_size_level.test.cc
+  s_4f0877e2acdcf0::t_536a6d40887e97 1-90
+tests/grid/cell_size_factor_on_many_inputs.test.cc
+  s_4f0877e2acdcf0::t_8b4cdc4b105379 1-29
+tests/grid/grid_counts_on_many_cells.test.cc
+  s_4f0877e2acdcf0::t_64cbb1749e55aa 1-61
+tests/grid/grid_support_on_many_draws.test.cc
+  s_4f0877e2acdcf0::t_9570ea348d4b6f 1-35
+tests/grid/weight_curve_on_many_positions.test.cc
+  s_4f0877e2acdcf0::t_fdcb9a8d45d8b6 1-33
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_bc38a6fa07fd7c 301-302,308-309,313-326,606,609-612
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_00e7db88de4234 725-730,802-821
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "72ad520c5c69afb9c6fec3c5628a3c559ddc8bba",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
