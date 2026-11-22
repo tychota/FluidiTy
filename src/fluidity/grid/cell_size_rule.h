@@ -66,7 +66,7 @@
 //          math::kPositiveInfinity (base/scalar_math.h), Vec3, math::Dot (base/vec3.h), SizeLevel, CellId,
 //          CellCoord, CellPlaceIndex, kNoIndex, kMaxSizeLevels, ToSizeLevel, ToCellCoord, ComesBefore,
 //          ToCellBlockIndex (grid/grid_ids.h), GridFrame, GridTables, ComputeCellWidth, ToCellId, ToSizeLevel (of a
-//          block), FindCellAt (grid/grid_tables.h), math::IsFinite (base/scalar_math.h)
+//          block) (grid/grid_tables.h), FindCellAt (grid/find_cell_at.h), math::IsFinite (base/scalar_math.h)
 // Used by: the step's ChooseActiveCells stage (step/) and ResizeCells (cell_resize/)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-size-rule>, <eq:wanted-cell-width>
 
@@ -78,6 +78,7 @@
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/base/scalar_math.h"
 #include "fluidity/base/vec3.h"
+#include "fluidity/grid/find_cell_at.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 

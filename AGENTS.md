@@ -284,7 +284,7 @@ include a `<name>_runner_gpu` header of the `testing/` folder of its own folder 
 its name, apart from the `testing/` folders, `tools/run_gpu_tests.ps1` and the Python tests under `tools/`. Each
 module folder may hold a `testing/` folder for code that its tests share and that is not itself a test. The stem of a test is the stem of a header of the same folder, so that an editor folds the test under that
 header; when the file tests one concern of the header, a topic follows the stem, as in
-`grid_tables.face_search.test.cc`, and the topic leaves out the words the header's name already says. This departs
+`staggered_grid.cell_count.test.cc`, and the topic leaves out the words the header's name already says. This departs
 from Google's `<name>_test.cc`.
 
 | What | Name |

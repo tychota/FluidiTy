@@ -1,8 +1,11 @@
 fluidity_add_headers(
+  cell_corners.h
   cell_size_rule.h
+  face_search.h
+  find_cell_at.h
+  grid_buffers_internal.h
   grid_build_status.h
   grid_build_steps.h
-  grid_buffers_internal.h
   grid_cell_checks.h
   grid_error.h
   grid_error_message.h
@@ -11,6 +14,7 @@ fluidity_add_headers(
   grid_tables.h
   staggered_grid.h
   staggered_grid_gpu.h
+  touching_cells.h
   weight_curve.h
 )
 
@@ -52,8 +56,8 @@ fluidity_add_test(
   fluidity_base_testing
   fluidity_grid_testing
 )
-fluidity_add_test(corners_test SOURCES grid_tables.corners.test.cc LABEL cpu LINKS fluidity_grid_testing)
-fluidity_add_test(find_cell_at_test SOURCES grid_tables.find_cell_at.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(corners_test SOURCES cell_corners.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(find_cell_at_test SOURCES find_cell_at.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_buffers_test SOURCES staggered_grid.buffers.test.cc LABEL cpu)
 fluidity_add_test(grid_build_steps_test SOURCES grid_build_steps.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_cell_checks_test SOURCES grid_cell_checks.test.cc LABEL cpu LINKS fluidity_grid_testing)
@@ -123,8 +127,8 @@ fluidity_add_test(
 fluidity_add_test(
   staggered_grid_no_gpu_test SOURCES staggered_grid.no_gpu.test.cc LABEL no_gpu LINKS fluidity_grid_testing
 )
-fluidity_add_test(face_search_test SOURCES grid_tables.face_search.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(face_search_test SOURCES face_search.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_tables_test SOURCES grid_tables.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_support_test SOURCES testing/grid_support.test.cc LABEL cpu LINKS fluidity_grid_testing)
-fluidity_add_test(touching_cells_test SOURCES grid_tables.touching_cells.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(touching_cells_test SOURCES touching_cells.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(weight_curve_test SOURCES weight_curve.test.cc LABEL cpu LINKS fluidity_grid_testing)

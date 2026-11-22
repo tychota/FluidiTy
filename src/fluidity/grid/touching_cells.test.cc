@@ -1,4 +1,4 @@
-#include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/touching_cells.h"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +19,7 @@
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/grid_support.h"
 
