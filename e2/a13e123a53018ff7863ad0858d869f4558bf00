@@ -1,0 +1,44 @@
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_7a64f44e57493c 92-100
+  s_4f0877e2acdcf0::t_063f7343ca77db 57-59
+  s_4f0877e2acdcf0::t_d8932692f0615f 78-82,87
+  s_4f0877e2acdcf0::t_f9e5dd0eb55206 29-45
+  s_4f0877e2acdcf0::t_13673b22cfe83a 1270-1605
+  s_4f0877e2acdcf0::t_270922596cdfdf 7-8
+  s_4f0877e2acdcf0::t_f71810c236e298 46
+  s_4f0877e2acdcf0::t_65290654d3a11c 60-62
+  s_4f0877e2acdcf0::t_fb6a9de8a8a111 88-91
+  s_4f0877e2acdcf0::t_42595a232a6443 101-102
+  s_4f0877e2acdcf0::t_2da533fb58cecc 1606
+native/fluidity/grid/grid_ids_test.cc
+  s_4f0877e2acdcf0::t_44c8b26841749a 401,408-410
+native/fluidity/grid/corners_test.cc
+  s_4f0877e2acdcf0::t_6b98ae498ce15f 1-838,842-843,847,849,861-862
+  s_4f0877e2acdcf0::t_c481093144feab 839-841,844-846,848,850-860,863-1030
+native/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_253cab6d858f99 405-412
+docs/glossary.md
+  s_4f0877e2acdcf0::t_39bf6e1f69d93e 199-200
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_4adaa00dd833f3 2041-2048,2130,2132-2135,2137-2162
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_c238b7fc60fa1d 55
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_cf47762e733d37 8-14,78,173-178,221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e2a13e123a53018ff7863ad0858d869f4558bf00",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
