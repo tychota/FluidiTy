@@ -25,8 +25,9 @@
 #include "fluidity/grid/face_search.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/testing/grid_functions_answers.h"
 #include "fluidity/grid/testing/grid_functions_gpu_cases.h"
-#include "fluidity/grid/testing/grid_functions_result_words_runner_gpu.h"
+#include "fluidity/grid/testing/grid_functions_result_words.h"
 #include "fluidity/grid/testing/grid_functions_runner_gpu.h"
 #include "fluidity/grid/touching_cells.h"
 
@@ -85,7 +86,7 @@ void CheckGpuEqualsCpu(
       static_cast<int>(queries.size()),
       on_gpu.data()
   );
-  ASSERT_EQ(status, RunOnCallStatus::kDone) << name;
+  ASSERT_EQ(status, RunOnCallStatus::kDone) << name << ": " << ReadLastRunnerFailure();
   CheckSameResults(std::span<const Result>(on_cpu), std::span<const Result>(on_gpu), name);
   WriteDigestOfResults(name, std::span<const Result>(on_gpu));
 }
@@ -242,12 +243,12 @@ TEST(BuildFaceSearch, OnGpu_WalksLikeCpu) {
     const GridTables cpu_tables = grid.on_cpu.grid.tables(RunOn::kCpu);
     // The walk of the radius 1.5 lies inside that of 2.5 (the odd queries), so the cut check needs the bigger only.
     for (std::size_t query_index = 1; query_index < queries.size(); query_index += 2) {
-      ASSERT_LE(WalkFaceSearch(cpu_tables, queries[query_index]).faces_found, kMaxFaceSearchWalkFaces);
+      ASSERT_LE(FindFaceSearchWalk(cpu_tables, queries[query_index]).faces_found, kMaxFaceSearchWalkFaces);
     }
     CheckGpuEqualsCpu<FaceSearchWalk, FaceSearchQuery>(
         grid,
         queries,
-        {.answer_on_cpu = WalkFaceSearch, .answer_on_gpu = WalkFaceSearchesOnGpu},
+        {.answer_on_cpu = FindFaceSearchWalk, .answer_on_gpu = WalkFaceSearchesOnGpu},
         ToResultName("BuildFaceSearch and FindNextFace", grid_entry)
     );
   }

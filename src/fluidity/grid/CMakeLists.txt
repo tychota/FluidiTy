@@ -31,7 +31,25 @@ set_source_files_properties(staggered_grid_gpu.cu TARGET_DIRECTORY fluidity PROP
 
 # Test-only: the geometric checker and the random grids that grid tests compare the grid against. Never linked by
 # the library.
-fluidity_add_test_library(fluidity_grid_testing SOURCES testing/grid_support.cc LINKS fluidity_base_testing)
+# The GPU runners of the GPU tests are compiled once here, not once per test program that uses them.
+fluidity_add_test_library(
+  fluidity_grid_testing
+  SOURCES
+  testing/grid_support.cc
+  GPU_SOURCES
+  testing/cell_size_rule_runner_gpu.cu
+  testing/grid_functions_runner_gpu.cu
+  LINKS
+  fluidity_base_testing
+)
+# As for staggered_grid_gpu.cu: ptxas prints the stack frame, the registers and the spills of each GPU function of the
+# runners for each architecture, so the build log of the gate keeps them.
+if(FLUIDITY_ENABLE_CUDA)
+  set_source_files_properties(
+    testing/cell_size_rule_runner_gpu.cu testing/grid_functions_runner_gpu.cu
+    PROPERTIES COMPILE_OPTIONS "-Xptxas=-v"
+  )
+endif()
 # The gate runs one process per test, and each process that uses them builds the 200 random grids and their checkers
 # again. Unoptimised, that took about 1 s per process; at -O2 it takes about 0.1 s, and serial ctest in the debug
 # preset dropped from 19.6 to 9.5 s for grid_build_steps_test and from 32.9 to 25.9 s for grid_cell_count_test. Only

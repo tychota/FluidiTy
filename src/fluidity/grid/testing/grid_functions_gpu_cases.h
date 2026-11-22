@@ -6,10 +6,11 @@
 // Idea: a GPU test builds each grid twice from one list, on the CPU as the reference and on the GPU, and asks the same
 //   queries of both.
 //
-// Owns:    GridOnBothProcessors, BuildRandomGridsOnBothProcessors, FindActiveCellPlaces, FindFacePiecePlaces
+// Owns:    GridOnBothProcessors, BuildGridOnBothProcessors, BuildRandomGridsOnBothProcessors, FindActiveCellPlaces,
+//          FindFacePiecePlaces
 // Uses:    the headers it includes
-// Used by: tests/grid/find_cell_at_on_gpu.test.cc, tests/grid/nearby_face_weights_on_gpu.test.cc and
-//          tests/grid/cell_surroundings_on_gpu.test.cc
+// Used by: tests/grid/find_cell_at.gpu.test.cc, tests/grid/nearby_face_weights.gpu.test.cc,
+//          tests/grid/cell_surroundings.gpu.test.cc and tests/grid/shared_grid_functions.gpu.test.cc
 // Read:    the test files that include it
 
 #pragma once
@@ -21,6 +22,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "fluidity/base/run_on.h"
@@ -38,6 +41,22 @@ struct GridOnBothProcessors {
   TestGrid on_gpu;  // Built on the GPU from a GPU copy of the list.
 };
 
+// Builds one grid twice from a list of active cells, version 1: on the CPU as the reference and on the GPU from a GPU
+// copy of the list. A grid that fails to build on either processor fails the calling test and gives no value, so a
+// caller checks it.
+inline std::optional<GridOnBothProcessors>
+BuildGridOnBothProcessors(GridFrame frame, const std::vector<CellId>& cells) {
+  const GridInputs inputs = {.frame = frame, .active_cells = cells, .version = {.value = 1}};
+  std::expected<TestGrid, GridFailure> on_cpu = BuildTestGrid(inputs);
+  std::expected<TestGrid, GridFailure> on_gpu = BuildTestGrid(inputs, {.run_on = RunOn::kGpu});
+  EXPECT_TRUE(on_cpu.has_value()) << "the grid on the CPU";
+  EXPECT_TRUE(on_gpu.has_value()) << "the grid on the GPU";
+  if (!on_cpu.has_value() || !on_gpu.has_value()) {
+    return std::nullopt;
+  }
+  return GridOnBothProcessors{.cells = cells, .on_cpu = std::move(*on_cpu), .on_gpu = std::move(*on_gpu)};
+}
+
 // Builds the random grids of the entries 0..grid_count - 1 of BuildShuffledRandomGrids (the seeds 1..grid_count) on
 // both processors, version 1, in the frame the random grids share. A grid that fails to build fails the calling test
 // and is left out, so a caller checks the count.
@@ -50,14 +69,11 @@ inline std::vector<GridOnBothProcessors> BuildRandomGridsOnBothProcessors(int gr
   std::vector<GridOnBothProcessors> grids;
   grids.reserve(static_cast<std::size_t>(grid_count));
   for (int entry = 0; entry < grid_count; ++entry) {
-    const std::vector<CellId>& cells = BuildShuffledRandomGrids().at(static_cast<std::size_t>(entry));
-    const GridInputs inputs = {.frame = frame, .active_cells = cells, .version = {.value = 1}};
-    std::expected<TestGrid, GridFailure> on_cpu = BuildTestGrid(inputs);
-    std::expected<TestGrid, GridFailure> on_gpu = BuildTestGrid(inputs, {.run_on = RunOn::kGpu});
-    EXPECT_TRUE(on_cpu.has_value()) << "grid " << entry << " on the CPU";
-    EXPECT_TRUE(on_gpu.has_value()) << "grid " << entry << " on the GPU";
-    if (on_cpu.has_value() && on_gpu.has_value()) {
-      grids.push_back({.cells = cells, .on_cpu = std::move(*on_cpu), .on_gpu = std::move(*on_gpu)});
+    std::optional<GridOnBothProcessors> grid =
+        BuildGridOnBothProcessors(frame, BuildShuffledRandomGrids().at(static_cast<std::size_t>(entry)));
+    EXPECT_TRUE(grid.has_value()) << "grid " << entry;
+    if (grid.has_value()) {
+      grids.push_back(std::move(*grid));
     }
   }
   return grids;

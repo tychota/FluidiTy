@@ -2,7 +2,7 @@
 fluidity_add_test(
   build_grid_on_gpu_functional_test
   SOURCES
-  build_grid_on_gpu.test.cc
+  build_grid.gpu.test.cc
   ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
   LABEL
   gpu
@@ -77,8 +77,7 @@ fluidity_add_test(
 fluidity_add_test(
   cell_size_rule_on_gpu_functional_test
   SOURCES
-  cell_size_rule_on_gpu.test.cc
-  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/cell_size_rule_runner_gpu.cu
+  cell_size_rule.gpu.test.cc
   LABEL
   gpu
   TIER
@@ -91,8 +90,20 @@ fluidity_add_test(
 fluidity_add_test(
   cell_surroundings_on_gpu_functional_test
   SOURCES
-  cell_surroundings_on_gpu.test.cc
-  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  cell_surroundings.gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  shared_grid_functions_on_gpu_functional_test
+  SOURCES
+  shared_grid_functions.gpu.test.cc
   LABEL
   gpu
   TIER
@@ -129,8 +140,7 @@ fluidity_add_test(
 fluidity_add_test(
   find_cell_at_on_gpu_functional_test
   SOURCES
-  find_cell_at_on_gpu.test.cc
-  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  find_cell_at.gpu.test.cc
   LABEL
   gpu
   TIER
@@ -155,7 +165,7 @@ fluidity_add_test(
 fluidity_add_test(
   grid_cell_checks_on_gpu_functional_test
   SOURCES
-  grid_cell_checks_on_gpu.test.cc
+  grid_cell_checks.gpu.test.cc
   LABEL
   gpu
   TIER
@@ -289,8 +299,7 @@ fluidity_add_test(
 fluidity_add_test(
   nearby_face_weights_on_gpu_functional_test
   SOURCES
-  nearby_face_weights_on_gpu.test.cc
-  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  nearby_face_weights.gpu.test.cc
   LABEL
   gpu
   TIER
@@ -366,7 +375,7 @@ fluidity_add_test(
 fluidity_add_test(
   apply_grid_version_on_gpu_functional_test
   SOURCES
-  apply_grid_version_on_gpu.test.cc
+  apply_grid_version.gpu.test.cc
   LABEL
   gpu
   TIER

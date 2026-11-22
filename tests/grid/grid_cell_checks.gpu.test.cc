@@ -7,6 +7,8 @@
 // twice: the failure the call returns, followed, for every call that ran on the GPU, by the status record the GPU wrote
 // (its key, error, cell and other_cell), read back by the test; and the sorted lists.
 
+#include "fluidity/grid/grid_cell_checks.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -28,7 +30,6 @@
 #include "fluidity/base/testing/base_support.h"
 #include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_build_status.h"
-#include "fluidity/grid/grid_cell_checks.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_memory_estimate.h"

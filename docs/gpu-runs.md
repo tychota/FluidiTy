@@ -150,6 +150,50 @@ What a first run may show instead, and what it means:
 - Only the turning or spinning scenes fail, by a few rounding units: the GPU bound of the method paper's contact section
   is too tight for this card's sine; the printed difference and bound say by how much.
 
+## What to look for: grid (the GPU tests of the shared grid functions)
+
+The grid tests build every grid on the GPU and again on the CPU, ask the same questions of both, and demand the same
+bits: places, counts and every double (the weights and face weights included, since their formulas use only `+ - * /`,
+`sqrt` and `floor` and the build forbids fused multiply-add). The programs are `build_grid_on_gpu_functional_test`,
+`cell_size_rule_on_gpu_functional_test`, `find_cell_at_on_gpu_functional_test`,
+`nearby_face_weights_on_gpu_functional_test`, `cell_surroundings_on_gpu_functional_test` and
+`shared_grid_functions_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
+`fluidity_grid_testing`. What to look at first, in this order:
+
+1. **Does it build on Windows?** The runners start a GPU function that takes a function pointer as a template argument,
+   from an unnamed namespace, and the test `.cu` files get `-Xcompiler=/EHsc`. Only GCC has compiled both. If MSVC
+   refuses, the fix is a small function type in place of the pointer, or one plain GPU function per runner.
+2. **Run `build_grid_on_gpu_functional_test` before the others.** Every other grid test builds its grids on the GPU. If
+   that build is wrong, they fail with confusing messages. Look at it first.
+3. **`GridRunners.OnGpu_FunctionsLoadWithTheirBlockSize`.** A failure means the binary has no code for this card, or the
+   driver is too old. It also writes one note per runner to `notes-first.txt`: the local memory and the registers the
+   compiler gave that GPU function, and the most threads per block it allows. The weights runner and the face search
+   runner hold the most local memory.
+4. **Any test that stops on `kCallFailed` or `kOutOfMemory`.** The message now ends with the failed CUDA call, its error
+   name and its text, for example `copy of the results to the CPU, which also waits for the GPU function:
+   cudaErrorIllegalAddress (an illegal memory access was encountered)`. Each name needs another fix. An illegal address:
+   run that program under `compute-sanitizer --tool memcheck`, which names the line. `cudaErrorLaunchTimeout`: the
+   display driver stopped a long call; the face search walks are the longest, so try them first with the card not
+   driving the display. `cudaErrorNoKernelImageForDevice`: no code for this card. `cudaErrorMemoryAllocation` on the
+   copy or the start: the driver could not reserve the local memory of the threads; that memory is about 55,000
+   threads times the local bytes of the notes of point 3. `CUDA_LAUNCH_BLOCKING=1` pins down which launch failed.
+5. **A difference in bits.** The log names the query index, the field and both values in hexadecimal, for the first ten,
+   then the count. If the doubles of the weights differ in the last bits for many queries, check the build log: that
+   `--fmad=false` reached `nvcc`, and that MSVC was not given `/arch:AVX2` with `/fp:contract`. With those flags the
+   bits must be equal. A difference in a place, a count or a mask is a table difference: compare with
+   `build_grid_on_gpu_functional_test` first, since a wrong GPU table shows there before it shows here.
+
+To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
+programs of the `linux-release-cuda` build:
+
+```sh
+cuobjdump --dump-resource-usage <test program>
+```
+
+It prints, for each GPU function and each architecture, `REG` (registers), `STACK` (bytes of stack frame), `SHARED`,
+`LOCAL` (bytes of local memory) and `CONSTANT`. The build log of the gate shows the same through `ptxas`: the runners'
+`.cu` files are compiled with `-Xptxas=-v`.
+
 ## What the single run cannot show
 
 The one planned run uses one RTX 5060 Ti (`sm_120`) on one Windows machine with one driver. It cannot show:

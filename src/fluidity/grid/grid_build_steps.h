@@ -270,6 +270,8 @@ struct CellCheck {
 // Requires: position < count; the list is in the fixed order and every id passed CheckCellId.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <proc-build-grid-in-parallel>
 FLUIDITY_CPU_AND_GPU constexpr CellCheck
+// clang-tidy: a count and a position, compared by the assert; the check stays quiet only while the assert is built in.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 CheckOverlapAt(const CellId* sorted_cells, std::uint32_t count, std::uint32_t position) noexcept {
   assert(sorted_cells != nullptr && position < count);
   const CellId cell = sorted_cells[position];
@@ -337,6 +339,8 @@ ComputeIsCellPresent(const CellId* sorted_cells, std::uint32_t count, SizeLevel 
 // Requires: position < count; the list is in the fixed order, every id passed CheckCellId, and no cells overlap.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <proc-build-grid-in-parallel>
 FLUIDITY_CPU_AND_GPU constexpr CellCheck
+// clang-tidy: a count and a position, compared by the assert; the check stays quiet only while the assert is built in.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 CheckSiblingsAt(const CellId* sorted_cells, std::uint32_t count, std::uint32_t position) noexcept {
   assert(sorted_cells != nullptr && position < count);
   CellId walk_cell = sorted_cells[position];
@@ -383,6 +387,8 @@ CheckSiblingsAt(const CellId* sorted_cells, std::uint32_t count, std::uint32_t p
 // Requires: position < count; the list is in the fixed order, every id passed CheckCellId, and no cells overlap.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <proc-build-grid-in-parallel>, <proc-count-grid>
 FLUIDITY_CPU_AND_GPU constexpr CellCheck
+// clang-tidy: a count and a position, compared by the assert; the check stays quiet only while the assert is built in.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 CheckSizeStepAt(const CellId* sorted_cells, std::uint32_t count, std::uint32_t position) noexcept {
   assert(sorted_cells != nullptr && position < count);
   const CellId cell = sorted_cells[position];
@@ -924,6 +930,7 @@ FLUIDITY_CPU_AND_GPU constexpr void FindBlockNeighbours(
     const CellBlockId* block_ids,
     std::uint32_t block_count,
     CellBlockIndex block,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::uint32_t* same_size_level_blocks,
     std::uint32_t* bigger_block,
     std::uint32_t* smaller_blocks

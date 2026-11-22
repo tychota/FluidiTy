@@ -4,6 +4,8 @@
 // of the function: with and without a starting block. The tables of the GPU grid are built on the GPU, so this also
 // shows that they answer as the CPU's do. Every GPU result goes to WriteResultDigest under a unique name.
 
+#include "fluidity/grid/find_cell_at.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -17,11 +19,11 @@
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/run_on_call.h"
 #include "fluidity/base/vec3.h"
-#include "fluidity/grid/find_cell_at.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/testing/grid_functions_answers.h"
 #include "fluidity/grid/testing/grid_functions_gpu_cases.h"
-#include "fluidity/grid/testing/grid_functions_result_words_runner_gpu.h"
+#include "fluidity/grid/testing/grid_functions_result_words.h"
 #include "fluidity/grid/testing/grid_functions_runner_gpu.h"
 #include "fluidity/grid/testing/grid_support.h"
 
@@ -93,7 +95,7 @@ TEST(FindCellAt, OnGpu_EqualsCpu) {
         static_cast<int>(queries.size()),
         on_gpu.data()
     );
-    ASSERT_EQ(status, RunOnCallStatus::kDone);
+    ASSERT_EQ(status, RunOnCallStatus::kDone) << ReadLastRunnerFailure();
     CheckSameResults(std::span<const FoundCells>(on_cpu), std::span<const FoundCells>(on_gpu), "FindCellAt, position");
     WriteDigestOfResults(
         "FindCellAt on the GPU, both forms, grid " + std::to_string(grid_entry),

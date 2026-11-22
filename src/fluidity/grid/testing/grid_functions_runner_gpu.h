@@ -1,219 +1,102 @@
-// The shared grid functions evaluated for one query, and their GPU runners, for the GPU tests of the grid, private to
-// grid/.
+// The GPU runners of the GPU tests of the shared grid functions, private to grid/.
 //
 // Purpose: run each shared function of the grid tables on the GPU, one thread per query, so a test can compare every
-//   result with the CPU's: exactly for places and counts, within the method paper's tolerance for the weights.
+//   result with the CPU's: equal bits, for places, counts and doubles alike.
 //
-// Idea: each shared function gets one query type and one function that answers a query from the tables. The answer
-//   functions are marked FLUIDITY_CPU_AND_GPU, so the GPU thread and the CPU loop of the test call the same code. A
-//   runner copies the queries to the GPU, runs one thread per query on the tables of a grid built on the GPU, and
-//   copies the results back. The weights runner is the heavy one: a thread keeps the list of faces it found and the
-//   weights computed from it, 1,152 bytes and more, above the driver's default stack of 1,024 bytes per thread. A
-//   test runner reserves nothing: the driver grows the stack at the first launch, as the compiler's frame size for the
-//   function says. ComputeWeightsRunnerStackOnGpu reads that frame size, so the hardware run gives each module that
-//   calls the weights a measured number for its own stack entry.
+// Idea: a runner copies the queries to the GPU, runs the answer function of grid_functions_answers.h with one thread
+//   per query on the tables of a grid built on the GPU, and copies the results back. The weights runner is the heavy
+//   one: a thread keeps the list of faces it found and the weights computed from it, 1,152 bytes and more, above the
+//   driver's default stack of 1,024 bytes per thread. A test runner reserves nothing: the driver grows the stack at
+//   the first launch, as the compiler's frame size for the function says. ReadRunnerFunctionInfo reads those frame
+//   sizes, and ptxas prints them in the build log (`-Xptxas=-v`).
+//   When a runner fails, the status is only kCallFailed or kOutOfMemory; ReadLastRunnerFailure says which CUDA call
+//   failed and with which error.
 //
-// Words:
-//   query   the input of one thread: a position, a place, or a place and a few numbers
-//   walk    the face places a face search gives from its start, in the order FindNextFace gives them
-//
-// Owns:    FindCellAtQuery, FoundCells, NearbyFaceQuery, NearbyFaceResult, FaceWeightQuery, FaceWeightResult,
-//          EdgeQuery, FaceSearchQuery, FaceSearchWalk, kMaxFaceSearchWalkFaces, FindCellsAtPosition,
-//          ComputeNearbyFaceResult, ComputeFaceWeightResult, FindCellCornersOf, FindFaceCornersOf,
-//          ComputeCornerPositionOf, FindCellsAroundEdgeOf, FindTouchingCellsOf, FindFacePiecesOf, FindCellsNearFaceOf,
-//          WalkFaceSearch, FindCellsAtOnGpu, ComputeNearbyFaceResultsOnGpu, ComputeFaceWeightResultsOnGpu,
-//          ComputeWeightsRunnerStackOnGpu, FindCellCornersOnGpu, FindFaceCornersOnGpu, ComputeCornerPositionsOnGpu,
-//          FindCellsAroundEdgesOnGpu, FindTouchingCellsOnGpu, FindFacePiecesOnGpu, FindCellsNearFacesOnGpu,
-//          WalkFaceSearchesOnGpu
-// Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), RunOnCallStatus (base/run_on_call.h), Vec3
-//          (base/vec3.h), CellCorners, FaceCorners, ComputeCornerPosition, FindCellsAroundEdge, CellsAroundEdge
-//          (grid/cell_corners.h), CellsNearFace, FindCellsNearFace, FaceSearch, BuildFaceSearch, FindNextFace
-//          (grid/face_search.h), FindCellAt (grid/find_cell_at.h), GridError (grid/grid_error.h), the id types
-//          (grid/grid_ids.h), GridTables (grid/grid_tables.h), NearbyFaceList, NearbyFaceMask, NearbyFaceWeights,
-//          FaceWeight, FindNearbyFaces, ToMaskOfAll, ComputeNearbyFaceWeights, ComputeFaceWeight, ToNearbyFaceSums
-//          (grid/nearby_face_weights.h), TouchingCells, CellFacePieces, FindTouchingCells, FindFacePieces
-//          (grid/touching_cells.h)
-// Used by: tests/grid/find_cell_at_on_gpu.test.cc, tests/grid/nearby_face_weights_on_gpu.test.cc and
-//          tests/grid/cell_surroundings_on_gpu.test.cc, and testing/grid_functions_runner_gpu.cu, which defines the
-//          runners
+// Owns:    FindCellsAtOnGpu, ComputeNearbyFaceResultsOnGpu, ComputeFaceWeightResultsOnGpu, FindCellCornersOnGpu,
+//          FindFaceCornersOnGpu, ComputeCornerPositionsOnGpu, FindCellsAroundEdgesOnGpu, FindTouchingCellsOnGpu,
+//          FindFacePiecesOnGpu, FindCellsNearFacesOnGpu, WalkFaceSearchesOnGpu, ComputeFormulasOnGpu,
+//          ComputeCellPlaceFactsOnGpu, ComputeFacePlaceFactsOnGpu, RunnerFunctionInfo, ReadRunnerFunctionInfo,
+//          ReadLastRunnerFailure
+// Uses:    RunOnCallStatus (base/run_on_call.h), GridTables (grid/grid_tables.h), the queries and results of
+//          grid/testing/grid_functions_answers.h
+// Used by: the GPU tests of the grid in tests/grid/ (find_cell_at.gpu.test.cc, nearby_face_weights.gpu.test.cc,
+//          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
+//          which defines the runners
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>, <sec-cell-blocks>, <sec-face-pieces>,
 //          <sec-nearby-faces>, <sec-face-search>
+//
+// Shared functions that no answer function above names, each with the public function that reaches it. A test that runs
+// the public function runs them too. tools/shared_grid_functions_test.py fails when a function marked
+// FLUIDITY_CPU_AND_GPU in a header of src/fluidity/grid is named neither in grid_functions_answers.h nor in this file
+// nor in cell_size_rule_runner_gpu.h.
+//
+// Reached by FindCellsAtPosition, which FindCellAt reaches (find_cell_at.gpu.test.cc):
+//   ComesBefore, ComputeBiggerCellCoord, ComputeCellWidth, ComputeIsEarlierInFixedOrder, ComputeLocalPlaceCoord,
+//   ComputePackedId, ComputeUnpackedCoord, ComputeUnpackedSizeLevel, FindActiveCellBelow, FindBiggestBlockFrom,
+//   FindCellAtCoord, FindCellBlock, FindSortedBlock, ToBiasedSmallestCellCoord, ToBiggestBlockId, ToCellBlockId,
+//   ToCellCoord
+//
+// Reached by ComputeNearbyFaceResult, through FindNearbyFaces and ComputeNearbyFaceWeights
+//   (nearby_face_weights.gpu.test.cc):
+//   ApplyAscendingInsert, ApplyFacePiecesBesideSplitPlace, ApplyNearbyFaceInsert, ApplyTouchingSmallCells,
+//   ComputeCandidateWindowQuarter, ComputeCholeskyInverse, ComputeCholeskySolution, ComputeCoordAlongAxis,
+//   ComputeFaceArea, ComputeFaceCenterInQuarterWidths, ComputeFacePosition, ComputeIsActiveCellPlace,
+//   ComputeIsCompleteNeighbourhood, ComputeIsInCandidateWindow, ComputeIsKept, ComputeKeptFaceWeight,
+//   ComputeMovedAlongAxis, ComputeRawFaceWeight, ComputeScaledFaceWeight, ComputeSideBeyondBlock,
+//   ComputeWeightCurve, FindActiveCellHolding, FindHighSideFacePlace, FindLocalCellPlace, FindNearbyFacesWithRoom,
+//   FindSmallCellBlock, ToBlockLocalCoord, ToFacePlaceIndex, ToFacePlaceParts
+//
+// Reached by ComputeFaceWeightResult, through the face form of ComputeFaceWeight (nearby_face_weights.gpu.test.cc):
+//   ComputeIsCandidateFace, FindCellHigh, FindCellLow
+//
+// Reached by FindCellCornersOf, through FindCornerPlaces (cell_surroundings.gpu.test.cc):
+//   FindCornerPlaceInSizeLevel, FindCornerPlaceOfPoint
+//
+// Reached by FindCellsNearFaceOf, through FindCellsNearFace (cell_surroundings.gpu.test.cc):
+//   ApplyCellNearFaceInsert
+//
+// Reached by FindFaceSearchWalk, through BuildFaceSearch and FindNextFace (cell_surroundings.gpu.test.cc):
+//   ApplyFaceSearchBlockInsert, ComputeClampedFaceSearchRadius, ComputeIsCoordInRange,
+//   ComputeIsWithinQuarterRadius, FindBlockAtCoord
+//
+// Reached by ComputeFormulaResult, through ComputeCellWidthsBySizeLevel (shared_grid_functions.gpu.test.cc):
+//   ComputeTableSizeLevelCount
+//
+// Reached by ComputeCellPlaceFacts, through ComputeCellCenter and FindCellPlace (shared_grid_functions.gpu.test.cc):
+//   ToCellPlaceIndex
+//
+// Reached by the GPU build of a grid, StaggeredGrid with RunOn::kGpu (build_grid.gpu.test.cc, and every test that
+//   builds its grid on the GPU):
+//   ApplyAbsentStateAt, ApplyBlockIdWriteAt, ApplyBlockNeighboursWriteAt, ApplyBuildStatusResult,
+//   ApplyCoverAnswerAt, ApplyCoverAnswerCopyAt, ApplyFacePieceKindWriteAt, ApplyFailureCells, ApplySortTailFillAt,
+//   ApplySortedCellStateAt, ApplySplitCellWritesAt, CheckCellId, CheckOverlapAt, CheckSiblingsAt, CheckSizeStepAt,
+//   ComputeBiasedCorner, ComputeBigCell, ComputeBigCellAtSizeLevel, ComputeBlockFaultKey, ComputeBlockIdAt,
+//   ComputeBlockIndexOfSortedEntry, ComputeBlockSide, ComputeBlockStartMark, ComputeCellEighth,
+//   ComputeCellIdFailureKey, ComputeCellPlacesFailureKey, ComputeCellStateAfterCover, ComputeCellStateBeside,
+//   ComputeCoveredCellState, ComputeFacePieceKind, ComputeFailureCells, ComputeHasEarlierStepFailed,
+//   ComputeIsCellPresent, ComputeIsCoveredByActiveBigCell, ComputeLocalCoordInNeighbour, ComputeNeighbourEntry,
+//   ComputeResetBuildStatus, ComputeRoomFailureKey, ComputeSortKeyOfCorner, ComputeSortedCellFailureKey,
+//   ComputeSplitCellCountToAdd, ComputeStoredCellState, FindBlockNeighbours, FindSortedBlockAt, FindSortedCell,
+//   FindSortedCellAt, ToBlockSortKey, ToCellSortKey, ToFailureDetail, ToFailureKey, ToFailurePosition,
+//   ToFailureStep
+//
+// Reached by the cell size rule runner, ComputeCellSizeRuleOnGpu and ComputeNewCellSizeLevelsOnGpu
+//   (cell_size_rule.gpu.test.cc):
+//   ComputeCellSizeFactorCode, ComputeCellSizeFactorTable, ComputeNewCellSizeLevel,
+//   ComputeRefinementBoxReachesOutside, ComputeRefinementEntryIndex, ComputeRefinementLayerExtent,
+//   ComputeWantedCellWidth, ComputeWantedSizeLevel, FindNearestCommittedCell
 
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
-#include "fluidity/base/axis.h"
-#include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/base/run_on_call.h"
-#include "fluidity/base/vec3.h"
-#include "fluidity/grid/cell_corners.h"
-#include "fluidity/grid/face_search.h"
-#include "fluidity/grid/find_cell_at.h"
-#include "fluidity/grid/grid_error.h"
-#include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
-#include "fluidity/grid/nearby_face_weights.h"
-#include "fluidity/grid/touching_cells.h"
+#include "fluidity/grid/testing/grid_functions_answers.h"
 
 namespace fluidity::grid {
-
-// The query of FindCellAt: a position, and the block a search with a starting block begins from.
-struct FindCellAtQuery {
-  Vec3 position;  // m, world.
-  CellBlockIndex near;  // The starting block of the second form of FindCellAt; kNoIndex when the caller has none.
-};
-
-// What both forms of FindCellAt give for one query. 8 bytes and no padding.
-struct FoundCells {
-  CellPlaceIndex without_start;  // FindCellAt(tables, position).
-  CellPlaceIndex with_start;  // FindCellAt(tables, position, near).
-};
-static_assert(sizeof(FoundCells) == 8, "two 32-bit indexes, with no padding");
-
-// Answers one FindCellAt query with both forms.
-FLUIDITY_CPU_AND_GPU inline FoundCells FindCellsAtPosition(const GridTables& tables, const FindCellAtQuery& query) {
-  return {
-      .without_start = FindCellAt(tables, query.position),
-      .with_start = FindCellAt(tables, query.position, query.near),
-  };
-}
-
-// The query of the nearby faces: a position, an axis, and the faces the caller may keep.
-struct NearbyFaceQuery {
-  Vec3 position;  // m, world; inside an active cell, or a rounding step from it.
-  Axis axis;
-  // Bit i of word i / 64 set means the face i of the found list is kept. The answer keeps the faces of the list whose
-  // bit is set here, so the mask never holds a bit from list.count on.
-  NearbyFaceMask drawn_mask;
-};
-
-// What FindNearbyFaces and ComputeNearbyFaceWeights give for one query.
-struct NearbyFaceResult {
-  NearbyFaceWeights weights;  // All zero when error is not kNone.
-  GridError error;  // The error FindNearbyFaces reported.
-};
-
-// Answers one query of the nearby faces: finds the list of the position and the axis with no starting block, keeps the
-// faces the query's mask allows, and computes the weights. When FindNearbyFaces fails, the weights stay zero.
-FLUIDITY_CPU_AND_GPU inline NearbyFaceResult
-ComputeNearbyFaceResult(const GridTables& tables, const NearbyFaceQuery& query) {
-  NearbyFaceResult result{};
-  GridError error = GridError::kInternalFault;
-  const NearbyFaceList list = FindNearbyFaces(tables, query.position, query.axis, CellBlockIndex{kNoIndex}, &error);
-  result.error = error;
-  if (error != GridError::kNone) {
-    return result;
-  }
-  NearbyFaceMask kept = ToMaskOfAll(list);
-  for (int word = 0; word < 4; ++word) {
-    kept.bits[word] &= query.drawn_mask.bits[word];
-  }
-  result.weights = ComputeNearbyFaceWeights(tables, list, query.position, kept);
-  return result;
-}
-
-// The query of ComputeFaceWeight: the weights of a particle, one kept face of its list, and one more face.
-struct FaceWeightQuery {
-  NearbyFaceWeights weights;  // From ComputeNearbyFaceWeights on the same tables.
-  FacePlaceIndex other_face;  // A face place of the tables; it may be outside the list.
-  int position_in_list;  // 0..weights.list.count - 1, and the face is kept.
-};
-
-// What both forms of ComputeFaceWeight give for one query.
-struct FaceWeightResult {
-  FaceWeight from_list;  // The first form, for the face at position_in_list.
-  FaceWeight seen_from_face;  // The second form, for that same face.
-  FaceWeight seen_from_other_face;  // The second form, for other_face.
-};
-
-// Answers one ComputeFaceWeight query with both forms.
-FLUIDITY_CPU_AND_GPU inline FaceWeightResult
-ComputeFaceWeightResult(const GridTables& tables, const FaceWeightQuery& query) {
-  const NearbyFaceWeights& weights = query.weights;
-  const FacePlaceIndex listed_face = weights.list.faces[query.position_in_list];
-  const NearbyFaceSums sums = ToNearbyFaceSums(weights);
-  return {
-      .from_list = ComputeFaceWeight(tables, weights, query.position_in_list),
-      .seen_from_face = ComputeFaceWeight(tables, listed_face, weights.position, weights.list.cell, sums),
-      .seen_from_other_face = ComputeFaceWeight(tables, query.other_face, weights.position, weights.list.cell, sums),
-  };
-}
-
-// Answers one FindCornerPlaces query for a cell place.
-FLUIDITY_CPU_AND_GPU inline CellCorners FindCellCornersOf(const GridTables& tables, const CellPlaceIndex& cell) {
-  return FindCornerPlaces(tables, cell);
-}
-
-// Answers one FindCornerPlaces query for a face place.
-FLUIDITY_CPU_AND_GPU inline FaceCorners FindFaceCornersOf(const GridTables& tables, const FacePlaceIndex& face) {
-  return FindCornerPlaces(tables, face);
-}
-
-// Answers one ComputeCornerPosition query.
-FLUIDITY_CPU_AND_GPU inline Vec3 ComputeCornerPositionOf(const GridTables& tables, const CornerPlaceIndex& corner) {
-  return ComputeCornerPosition(tables, corner);
-}
-
-// The query of FindCellsAroundEdge.
-struct EdgeQuery {
-  CellPlaceIndex cell;
-  Axis first_axis;
-  Axis second_axis;
-  int quarter;  // 0..3: which of the cell's four edges parallel to the third axis.
-};
-
-// Answers one FindCellsAroundEdge query.
-FLUIDITY_CPU_AND_GPU inline CellsAroundEdge FindCellsAroundEdgeOf(const GridTables& tables, const EdgeQuery& query) {
-  return FindCellsAroundEdge(tables, query.cell, query.first_axis, query.second_axis, query.quarter);
-}
-
-// Answers one FindTouchingCells query.
-FLUIDITY_CPU_AND_GPU inline TouchingCells FindTouchingCellsOf(const GridTables& tables, const CellPlaceIndex& cell) {
-  return FindTouchingCells(tables, cell);
-}
-
-// Answers one FindFacePieces query.
-FLUIDITY_CPU_AND_GPU inline CellFacePieces FindFacePiecesOf(const GridTables& tables, const CellPlaceIndex& cell) {
-  return FindFacePieces(tables, cell);
-}
-
-// Answers one FindCellsNearFace query.
-FLUIDITY_CPU_AND_GPU inline CellsNearFace FindCellsNearFaceOf(const GridTables& tables, const FacePlaceIndex& face) {
-  return FindCellsNearFace(tables, face);
-}
-
-// The query of a face search: its start and its radius.
-struct FaceSearchQuery {
-  FacePlaceIndex face;  // The start.
-  double radius_in_cell_widths;  // Widths of a cell of the start's size level, as BuildFaceSearch says.
-};
-
-// The most face places a walk keeps.
-inline constexpr int kMaxFaceSearchWalkFaces = 1024;
-
-// The walk of one face search. 4,100 bytes and no padding.
-struct FaceSearchWalk {
-  int faces_found;  // Every face place FindNextFace gave, also those past kMaxFaceSearchWalkFaces.
-  // The places in the order FindNextFace gave them: faces[0..min(faces_found, kMaxFaceSearchWalkFaces) - 1].
-  // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
-  FacePlaceIndex faces[kMaxFaceSearchWalkFaces];
-};
-static_assert(sizeof(FaceSearchWalk) == 4100, "one 32-bit count and 1,024 32-bit indexes, with no padding");
-
-// Answers one face search query: builds the search, then calls FindNextFace until it gives kNoIndex.
-FLUIDITY_CPU_AND_GPU inline FaceSearchWalk WalkFaceSearch(const GridTables& tables, const FaceSearchQuery& query) {
-  FaceSearchWalk walk{};
-  FaceSearch search = BuildFaceSearch(tables, query.face, query.radius_in_cell_widths);
-  for (FacePlaceIndex face = FindNextFace(tables, &search); face.value != kNoIndex;
-       face = FindNextFace(tables, &search)) {
-    if (walk.faces_found < kMaxFaceSearchWalkFaces) {
-      walk.faces[walk.faces_found] = face;
-    }
-    ++walk.faces_found;
-  }
-  return walk;
-}
 
 // Each runner below computes the answer function named in its summary for queries[i], for i below `count`, on the GPU,
 // into the CPU array `results`. `tables` holds the GPU tables of a built grid (StaggeredGrid::tables(RunOn::kGpu));
@@ -272,15 +155,42 @@ FindFacePiecesOnGpu(const GridTables& tables, const CellPlaceIndex* queries, int
 RunOnCallStatus
 FindCellsNearFacesOnGpu(const GridTables& tables, const FacePlaceIndex* queries, int count, CellsNearFace* results);
 
-// Runs WalkFaceSearch over the queries.
+// Runs FindFaceSearchWalk over the queries.
 RunOnCallStatus
 WalkFaceSearchesOnGpu(const GridTables& tables, const FaceSearchQuery* queries, int count, FaceSearchWalk* results);
 
-// Reads the bytes of local memory per thread that the compiler gave the GPU function of ComputeNearbyFaceResultsOnGpu,
-// cudaFuncGetAttributes' localSizeBytes. It is the frame of the function itself and of every function it calls, so a
-// module that calls the weights adds its own locals to it for its stack entry.
-// Writes `bytes_per_thread` only on success.
-// Fails: kCallFailed  the GPU call failed, for example because the code was built for another GPU
-RunOnCallStatus ComputeWeightsRunnerStackOnGpu(std::uint64_t* bytes_per_thread);
+// Runs ComputeFormulaResult over the queries.
+RunOnCallStatus
+ComputeFormulasOnGpu(const GridTables& tables, const FormulaQuery* queries, int count, FormulaResult* results);
+
+// Runs ComputeCellPlaceFacts over the queries.
+RunOnCallStatus
+ComputeCellPlaceFactsOnGpu(const GridTables& tables, const CellPlaceIndex* queries, int count, CellPlaceFacts* results);
+
+// Runs ComputeFacePlaceFacts over the queries.
+RunOnCallStatus
+ComputeFacePlaceFactsOnGpu(const GridTables& tables, const FacePlaceIndex* queries, int count, FacePlaceFacts* results);
+
+// What cudaFuncGetAttributes says about one GPU function of the runners.
+struct RunnerFunctionInfo {
+  std::string name;  // The runner that starts it.
+  std::uint64_t local_bytes = 0;  // localSizeBytes: the local memory per thread that the compiler gave the function.
+  int register_count = 0;  // numRegs: the registers per thread.
+  int most_threads_per_block = 0;  // maxThreadsPerBlock: the largest block this function can start with.
+};
+
+// Reads cudaFuncGetAttributes of the GPU function of every runner above, in the order of the runners. Loading the
+// attributes loads the code image for the device, so it fails when the binary has none for this GPU. It launches
+// nothing, so it says nothing about whether the stack is enough: the runners themselves show that.
+// Writes `functions` only on success.
+// Fails: kCallFailed  a GPU call failed, for example because the code was built for another GPU
+RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* functions);
+
+// The text of the last CUDA call that failed in a runner of this thread, such as "copy of the results to the CPU:
+// cudaErrorIllegalAddress (an illegal memory access was encountered)": the step, cudaGetErrorName and
+// cudaGetErrorString. Empty after a runner that succeeded. A failed allocation names the error that cudaMalloc left.
+// A test prints it after a status that is not kDone, because the status alone does not say which of the five or more
+// causes it was.
+std::string ReadLastRunnerFailure();
 
 }  // namespace fluidity::grid
