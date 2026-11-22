@@ -1,0 +1,31 @@
+.github/workflows/checks.yml
+  s_4f0877e2acdcf0::t_22ebbaa8425573 10-11,54-55,75-95
+AGENTS.md
+  s_4f0877e2acdcf0::t_39d4513991e225 544-561,601-603
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_1273a71f779ff3 32-37,42-44,95-96,136-137,175-176,632-648,650-654,1089-1090
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_fcecf579887cde 56,75-76,99-100,865-873,876-882,884
+tools/check_message.py
+  s_4f0877e2acdcf0::t_8c7fb15cada04a 8-13,16-18,57-69,109-110,112-113,125-140,185
+tools/check_message_test.py
+  s_4f0877e2acdcf0::t_4c177db53a4003 4,51,92-116,118,170-219
+tools/hooks/commit-msg
+  s_4f0877e2acdcf0::t_e8e1a4895b1f18 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6c230aee94c16fbf24ab9f49a23432f23ed461d2",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
