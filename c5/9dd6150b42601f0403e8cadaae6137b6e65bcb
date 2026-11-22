@@ -1,0 +1,25 @@
+.vscode/extensions.json
+  s_4f0877e2acdcf0::t_e1e0408c1bdde0 1-3
+.vscode/settings.json
+  s_4f0877e2acdcf0::t_a2961a84d4f5b6 1-43
+.vscode/tasks.json
+  s_4f0877e2acdcf0::t_28d14d51c0dc41 1-47
+README.md
+  s_4f0877e2acdcf0::t_f521161208853a 45-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c59dd6150b42601f0403e8cadaae6137b6e65bcb",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
