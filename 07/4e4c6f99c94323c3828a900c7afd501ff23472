@@ -1,0 +1,52 @@
+native/fluidity/grid/cell_size_rule_test_cases.h
+  s_4f0877e2acdcf0::t_3002dcc1ea6abb 145-175
+  s_4f0877e2acdcf0::t_7c325f2bcc2b72 15-16,19-20,22
+  s_4f0877e2acdcf0::t_82f7aacf6bbdfb 39
+native/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_fd53c36b8ce91d 545-645
+  s_4f0877e2acdcf0::t_32e8780b35ad05 76
+  s_4f0877e2acdcf0::t_00c914ed932472 34-36
+  s_4f0877e2acdcf0::t_8094ab0d8e0a52 52-54,59-60,62-65
+  s_4f0877e2acdcf0::t_2e5168d1b3b166 646
+native/fluidity/grid/cell_size_factor_test.cc
+  s_4f0877e2acdcf0::t_a64c2e55d2082a 58-63,66
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_4720ced446f03f 221-224
+native/fluidity/grid/cell_size_rule_test.cc
+  s_4f0877e2acdcf0::t_1f22478c077109 495-601,619-641
+  s_4f0877e2acdcf0::t_801aac03ddb043 5,10,12-13,15,17,19,22-23
+  s_4f0877e2acdcf0::t_d9ac3c6f39d27b 602-618
+  s_4f0877e2acdcf0::t_92aa4d4b7653d9 642-644
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_a1236a29d70bea 43-54
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_11abb6d286cded 2661-2666,2671-2672
+  s_4f0877e2acdcf0::t_e8bf96cff579ed 2667-2670
+native/fluidity/grid/cell_size_rule_test_gpu.cu
+  s_4f0877e2acdcf0::t_c7cb900a91f6eb 1-89,91,93-215
+  s_4f0877e2acdcf0::t_5e5e8e9a5a4f5a 90,92
+native/fluidity/grid/cell_size_rule_gpu_test.cc
+  s_4f0877e2acdcf0::t_7680507327e38d 1-128,131-132,135-136
+  s_4f0877e2acdcf0::t_ec37d81689e66c 129-130,133-134,137-176
+native/fluidity/grid/cell_size_rule_test_gpu.h
+  s_4f0877e2acdcf0::t_7a266e51b2b7d2 1-115
+  s_4f0877e2acdcf0::t_b645570595b61f 116
+docs/glossary.md
+  s_4f0877e2acdcf0::t_1427f352f3f3a0 204-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "074e4c6f99c94323c3828a900c7afd501ff23472",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
