@@ -1,0 +1,37 @@
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_4f0877e2acdcf0::t_ea1b4b17e8cb5e 1-162
+tests/grid/find_cell_at_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_5f833bc8f13df4 1-91
+  s_4f0877e2acdcf0::t_58b92b9eb0bb4c 92-109
+src/fluidity/grid/testing/grid_functions_gpu_cases.h
+  s_4f0877e2acdcf0::t_66abbbcba5e86d 1-88
+tests/grid/cell_surroundings_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_fea6f626d3c994 1-254
+  s_4f0877e2acdcf0::t_0652a5fad71891 255-257
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_a3875f68b90b07 1-284
+  s_4f0877e2acdcf0::t_26b9fe03db86ec 285-286
+tests/grid/nearby_face_weights_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_6e295594a02e78 1-339
+  s_4f0877e2acdcf0::t_17ffbdc96235de 340-357
+src/fluidity/grid/testing/grid_functions_result_words_runner_gpu.h
+  s_4f0877e2acdcf0::t_b49cb8ea4af59a 1-200
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_5418a4fb677068 91-104,129-142,289-302
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "61e0a70e18da026beaf650fe0e043ff195a32542",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
