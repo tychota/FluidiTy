@@ -461,8 +461,10 @@ FluidiTy's own array file holds only the saved state and internal run records.
 
 `tools/check_rules.py` reports two levels. A FAIL is a rule with no false positive: it fails the gate. A NOTE is a
 detector that can be wrong: it never fails the gate, and it is printed only for the lines a change adds. The gate
-prints `NOTE <n> doubtful lines: uv run python tools/check_rules.py --notes-since HEAD~1 --json out/check-commit/notes.json`
-when there are any, and that command writes the list: path, line, rule, the note and the source line.
+prints `NOTE <n> doubtful lines: uv run python tools/check_rules.py --notes-since <base> --json out/check-commit/notes.json`
+when there are any, and that command writes the list: path, line, rule, the note and the source line. The lines are
+those of the change being checked: the staged lines (`<base>` is `HEAD`) when the tree differs from `HEAD`, else the
+lines of `HEAD` itself (`<base>` is `HEAD~1`).
 
 - Whoever hands a change in fixes every NOTE of it, or answers it in one line (why the line stays).
 - A rule is one entry in `RULE_TABLE` (id, level, files, reason) and one pair of tests: it fires, and it stays
@@ -512,11 +514,15 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     tests (`NOTE functional tests: <names>`), because they use the shared test code of that folder; a
     change elsewhere under `src/` or `tests/` or under `cmake/`, or to a top-level build file, selects the unit tests
     of every module; a change to docs or tools selects none. Only the test programs of the selected modules are built
-    (`NOTE built: <n> test programs`; with every module selected the whole preset is built, with none nothing is), so a
-    quick run does not see a break in a module that is not selected. Conan and the configure are left out
+    (`NOTE built: <n> test programs`; with every module selected the whole preset is built, with none nothing is; the
+    list `test_programs.txt` is read after the configure that rewrites it, and a `fluidity_add_test` program of a
+    selected module's `CMakeLists.txt` that the list lacks also builds the whole preset), so a quick run does not see
+    a break in a module that is not selected. Conan and the configure are left out
     (`NOTE conan and configure: not run (their files are unchanged)`) while the build folder holds the hash of the
-    contents of `conanfile.py`, `conan.lock`, `CMakePresets.json`, `pyproject.toml`, `uv.lock`, every `CMakeLists.txt`
-    and every file under `cmake/`; a compiler or SDK upgrade is not in it, so run `--speed commit` after one. The gate
+    contents of `conanfile.py`, `conan.lock`, `CMakePresets.json`, `CMakeUserPresets.json` (when there is one),
+    `pyproject.toml`, `uv.lock`, every `CMakeLists.txt` and every file under `cmake/`. The hash stored after a pass is
+    that of the files as they were before Conan and the configure began. A compiler or SDK upgrade, and a configure
+    made by another tool (an IDE, a hand-run `cmake -D...`), are not in it, so run `--speed commit` after one. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
     paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule: a quick run
     whose checks all passed exits with code 3, never 0, and prints `QUICK ONLY: not the commit gate` as its last
@@ -533,14 +539,16 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     in progress, never for a commit.
   - `PASS format`: the clang-format on `PATH` is the version `pyproject.toml` pins, and it reports no change in any
     tracked C++ or CUDA file. Another version fails the step and names both versions.
-  - `rules note: <path>:<line>: NOTE <rule> <text>`: a word banned in one sense only, on a line the staged changes
-    add. Read it and keep the word only in its allowed sense; a note never fails the gate.
+  - `rules note: <path>:<line>: NOTE <rule> <text>`: any NOTE rule of `tools/check_rules.py` (a word banned in one
+    sense only, `short-local`, `many-inputs`, `process-word`, `test-name-and`, `test-without-check`), on a line the
+    staged changes add. Read it, fix it or answer it; a note never fails the gate.
   - `PASS rules`: `tools/check_rules.py` reports no FAIL under `src/`, `tests/` and `docs/method-paper/`, the pytest
     suite of `tools/` passes, and `actionlint` accepts the files of `.github/workflows/`. The files are checked
     several at once, and the same scan lists the doubtful lines. The pytest suite runs one process per test file, all
     at once. At `quick` speed the suite is left out (`NOT RUN tools tests (quick, tools unchanged)`) while no changed
-    file is under `tools/`, `cmake/` or `.github/` or is a top-level `CMakeLists.txt`, `pyproject.toml` or `uv.lock`;
-    at `commit` and `full` speed it always runs.
+    file is under `tools/`, `cmake/` or `.github/` or is one of the files the tests read: a top-level `CMakeLists.txt`,
+    `pyproject.toml` or `uv.lock`, `AGENTS.md` or `docs/glossary.md` (`TOOLS_TEST_FOLDERS` and `TOOLS_TEST_INPUTS` in
+    `tools/check_commit.py` list them in one place); at `commit` and `full` speed it always runs.
   - `PASS message`: `tools/check_message.py` accepts the message of every commit the push would send, that is, of
     `@{upstream}..HEAD`, or of `HEAD` alone when the branch has no upstream or nothing is unpushed. A message passes
     with a subject of at most 72 columns, a blank line after it, body lines of at most 72, no trailer line (the
@@ -574,7 +582,10 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     (its text, the headers it includes, its compile command, the `.clang-tidy` files, the clang-tidy version); the
     cache is `out/tidy-cache/`, and `--no-cache` ignores it and stores nothing. After a pass the cache also keeps the
     list of the file's headers with the size and modification time of each, of the file, of the `.clang-tidy` files and
-    of the compiler, and the names in the folders where headers are looked for. While all of these are unchanged the
+    of the compiler, the values of `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` and `SDKROOT`, and the names in the
+    folders where headers are looked for (the include folders, the folders of those variables and the folders the
+    compiler searches by itself, which it is asked for once per run). No record is stored for a file that lists a
+    generated header under `out/` (the Conan packages in `out/conan-home` excepted). While all of these are unchanged the
     file counts as passed without running the compiler to list its headers. Any difference, or a file modified in the
     last two seconds, falls back to the contents key above.
   - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `src/` and `tests/`,

@@ -32,12 +32,20 @@ The stat record. Listing the headers means running the compiler's preprocessor o
 of a run in which nothing changed. After a pass the run therefore also stores, for the file, the list of its
 dependencies with what the file system says about everything the key reads: the (size, modification time in
 nanoseconds) of the file, of each listed header, of each `.clang-tidy` file that applies and of the compiler; the
-compile commands and the tidy options and version text; and a fingerprint of the folder layout, which is the sorted
-names in each folder where the compiler looks (every folder under an include folder of the repository, outside its
-out/ folder; the folder alone for any other include folder) and in the folder of each listed header, so a header
-added or removed where it would be found first changes the record. The record is stored only after a pass, only
+compile commands and the tidy options and version text; the values of the environment variables that add header
+folders or a sysroot (TIDY_ENVIRONMENT_VARIABLES); and a fingerprint of the folder layout, which is the sorted names
+in each folder where the compiler looks (every folder under an include folder of the repository, outside its out/
+folder; the folder alone for any other include folder, for each folder of CPATH, C_INCLUDE_PATH and
+CPLUS_INCLUDE_PATH, and for each folder that the compiler searches without being told, which it prints for
+`-E -x c++ -v`, asked once per run for each compiler and its sysroot options) and in the folder of each listed
+header, so a header added or removed where it would be found first changes the record. The stamps are read from the
+file system each time, never kept for the run, so an edit made while the run goes on is seen by the files checked
+after it; only the folder layouts and the compiler's folders are asked once. The record is stored only after a pass, only
 when the key before and after clang-tidy are equal and the record taken before and after are equal, and only
-when no listed file was modified in the last STAT_RACY_WINDOW_NS before the record was taken. A later run takes the
+when no listed file was modified in the last STAT_RACY_WINDOW_NS before the record was taken, and only when no header
+listed besides the file itself is a generated file of the build, that is, under the repository's out/ folder but not
+in the Conan packages (out/conan-home): a folder of generated headers is not searched recursively, so a new header
+there would go unseen. A later run takes the
 file as passed without running the compiler when all of these are equal to the stored ones and the marker of the
 stored key still exists. Any difference, an unreadable record, or a missing marker makes the run do what it did
 without records: list the headers, compute the key and look for its marker; a touched file whose contents did not
@@ -52,8 +60,8 @@ Assumption: the dependency list comes from the compiler of the compile command (
 preprocessor of the pinned clang-tidy. The tool environment has no clang of the version of clang-tidy (the pip
 package holds only clang-tidy), so the two can differ in predefined macros (`__clang__`, `__GNUC__`, `_MSC_VER`,
 `__apple_build_version__`, `__clang_analyzer__`) and in `__has_include` answers. The list is right while no
-`#include` depends on such a macro; tools/check_rules.py fails an `#include` under a condition on one of the
-four compiler macros (rule `compiler-include`), so the assumption is checked on every commit. On Windows the
+`#include` depends on such a macro; tools/check_rules.py fails an `#include` under a condition on one of them
+(rule `compiler-include`), so the assumption is checked on every commit. On Windows the
 compile command is an MSVC one, `shlex` mangles it and `cl` has no `-M`, so the listing fails and every file fails
 unless --no-cache is given.
 """
@@ -74,6 +82,7 @@ import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 
 DEFAULT_CACHE_FOLDER = Path("out") / "tidy-cache"
@@ -88,6 +97,18 @@ STAT_RECORD_PREFIX = "stat-"
 # A file whose modification time is this close to the moment its record was taken may still change within the same
 # tick of a coarse clock, so such a record is not stored: the next run takes it, when the file is older.
 STAT_RACY_WINDOW_NS = 2_000_000_000
+# The environment variables that add folders where the compiler looks for headers or move its sysroot; clang-tidy's
+# driver and the build compiler both read them, so the stat record keeps their values and watches their folders.
+TIDY_ENVIRONMENT_VARIABLES = ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "SDKROOT")
+_ENVIRONMENT_FOLDER_VARIABLES = ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH")
+# Generated files of the build live under this folder of the repository, except the Conan packages, whose folders
+# never change after they are made (the name of a package folder holds its hash).
+GENERATED_FOLDER = "out"
+PACKAGE_FOLDER = ("out", "conan-home")
+# Options of a compile command that change the folders the compiler searches without being told: a word that starts
+# with one of the prefixes, and the word after one of the options that take an argument.
+_SEARCH_PREFIXES = ("--sysroot=", "-stdlib=", "-nostdinc", "--target=", "-std=", "-isysroot")
+_SEARCH_OPTIONS_WITH_ARGUMENT = frozenset({"-isysroot", "-target", "-arch"})
 # Options of a compile command that name a folder where the compiler looks for headers, and take one argument.
 _INCLUDE_FOLDER_OPTIONS = frozenset({"-I", "-isystem", "-iquote", "-idirafter"})
 # Options of a compile command that name an output or a dependency file, and take one argument.
@@ -273,23 +294,74 @@ def include_folders(compile_command: str, directory: Path) -> list[Path]:
     return folders
 
 
+def search_options(words: Sequence[str]) -> tuple[str, ...]:
+    """The words of a compile command that change which folders the compiler searches by itself (sysroot, standard
+    library, target, language standard), in order."""
+    kept: list[str] = []
+    following = iter(words)
+    for word in following:
+        if word in _SEARCH_OPTIONS_WITH_ARGUMENT:
+            kept.append(word)
+            kept.extend(list(islice(following, 1)))
+        elif word.startswith(_SEARCH_PREFIXES):
+            kept.append(word)
+    return tuple(kept)
+
+
+def compiler_search_folders(compiler: str, options: Sequence[str]) -> tuple[str, ...]:
+    """The folders `compiler` searches for headers besides the ones its command names, read from the `#include <...>
+    search starts here:` list that `-E -x c++ -v` prints on an empty input. A macOS framework folder counts as the
+    folder it names. Empty when the compiler cannot be run."""
+    try:
+        completed = subprocess.run(
+            [compiler, *options, "-E", "-x", "c++", "-v", os.devnull],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ()
+    folders: list[str] = []
+    inside_list = False
+    for line in (completed.stderr or "").splitlines():
+        if line.startswith("#include <...> search starts here"):
+            inside_list = True
+        elif line.startswith("End of search list"):
+            break
+        elif inside_list and line.startswith(" "):
+            folders.append(line.strip().removesuffix("(framework directory)").strip())
+    return tuple(folders)
+
+
 class FileSystemMemo:
     """What the file system said during one run, kept so that the many files which share headers do not ask again: the
-    stamp of a file, and the fingerprint of a folder, which is the sorted names in it, alone or with every folder
-    under it. The threads of a run share one. The out/ and .git folders of the repository are never entered: the run
+    fingerprint of a folder, which is the sorted names in it, alone or with every folder under it, and the folders a
+    compiler searches by itself. A file stamp is never kept. The threads of a run share one. The out/ and .git folders of the repository are never entered: the run
     itself writes to out/ (the cache, the build), and git writes to .git."""
 
-    def __init__(self, repository: Path) -> None:
+    def __init__(self, repository: Path, share_compiler_folders_with: FileSystemMemo | None = None) -> None:
         root = repository.resolve()
         self.skipped = {root / "out", root / ".git"}
         self.remembered: dict[tuple[Path, bool], str] = {}
-        self.stamps: dict[str, list[int] | None] = {}
+        # The folders each compiler searches by itself, asked once per run; a memo made later can share them.
+        self.compiler_folders: dict[tuple[str, tuple[str, ...]], tuple[str, ...]] = (
+            share_compiler_folders_with.compiler_folders if share_compiler_folders_with else {}
+        )
 
     def stamp(self, path: str) -> list[int] | None:
-        """The (size, modification time in nanoseconds) of `path`, as it was first asked in this run."""
-        if path not in self.stamps:
-            self.stamps[path] = file_stamp(Path(path))
-        return self.stamps[path]
+        """The (size, modification time in nanoseconds) of `path`, read now: a stamp kept from earlier in the run
+        could hide a file that an editor saved since."""
+        return file_stamp(Path(path))
+
+    def implicit_folders(self, compiler: str, options: tuple[str, ...]) -> tuple[str, ...]:
+        """The folders `compiler` searches for headers without being told, with the sysroot and language options of
+        its command, as its `-E -x c++ -v` run on an empty input prints them (see compiler_search_folders). Asked once
+        per run; an empty answer when the compiler cannot be run."""
+        key = (compiler, options)
+        if key not in self.compiler_folders:
+            self.compiler_folders[key] = compiler_search_folders(compiler, options)
+        return self.compiler_folders[key]
 
     def fingerprint(self, folder: Path, with_subfolders: bool) -> str:
         key = (folder, with_subfolders)
@@ -334,6 +406,8 @@ def stat_snapshot(
         words = shlex.split(command)
         found = shutil.which(words[0]) if words else None
         compilers[words[0] if words else ""] = memo.stamp(os.path.realpath(found)) if found else None
+        if words:
+            watched_alone.update(memo.implicit_folders(words[0], search_options(words[1:])))
         for folder in include_folders(command, directory):
             resolved = folder.resolve()
             inside_repository = root in (resolved, *resolved.parents)
@@ -341,6 +415,8 @@ def stat_snapshot(
                 watched_with_subfolders.add(resolved)
             else:
                 watched_alone.add(str(resolved))
+    for variable in _ENVIRONMENT_FOLDER_VARIABLES:
+        watched_alone.update(name for name in os.environ.get(variable, "").split(os.pathsep) if name)
     dependency_names = [str(dependency) for dependency in dependencies]
     watched_alone.update(os.path.dirname(os.path.abspath(name)) for name in dependency_names)
     tops = [str(top) + os.sep for top in watched_with_subfolders]
@@ -356,8 +432,27 @@ def stat_snapshot(
         "dependencies": {name: memo.stamp(name) for name in dependency_names},
         "configs": {str(config): memo.stamp(str(config)) for config in config_files},
         "compilers": compilers,
+        "environment": {name: os.environ.get(name) for name in TIDY_ENVIRONMENT_VARIABLES},
         "layout": layout,
     }
+
+
+def has_generated_dependency(source: Path, dependencies: Sequence[Path], repository: Path) -> bool:
+    """True when a header listed for `source` (the file itself excepted) is a generated file of the build: under the
+    repository's out/ folder, but not in the Conan packages (GENERATED_FOLDER, PACKAGE_FOLDER). Such a file sits in a
+    folder that the record does not search recursively, so no record is stored for the file."""
+    root = repository.resolve()
+    for dependency in dependencies:
+        resolved = dependency.resolve()
+        if resolved == source.resolve():
+            continue
+        try:
+            parts = resolved.relative_to(root).parts
+        except ValueError:
+            continue
+        if parts[:1] == (GENERATED_FOLDER,) and parts[: len(PACKAGE_FOLDER)] != PACKAGE_FOLDER:
+            return True
+    return False
 
 
 def snapshot_is_racy(snapshot: dict[str, object], taken_ns: int) -> bool:
@@ -449,7 +544,9 @@ def check_file(
         """Stores the record of this pass, unless a file changed while the check ran or one is too new to trust."""
         if record_path is None:
             return
-        fresh_memo = FileSystemMemo(repository)
+        if has_generated_dependency(path, dependencies, repository):
+            return
+        fresh_memo = FileSystemMemo(repository, share_compiler_folders_with=memo)
         later = stat_snapshot(
             path, options, version_text, entries or [], config_files, dependencies, repository, fresh_memo
         )

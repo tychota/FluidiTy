@@ -26,6 +26,7 @@ class FakeRun:
         variant_dependencies: dict[str, list[str]] | None = None,
         raw_rules: dict[str, str] | None = None,
         listing_exit_code: int = 0,
+        implicit_folders: tuple[str, ...] = (),
     ):
         self.repo = repo
         self.dependencies = dependencies
@@ -37,6 +38,9 @@ class FakeRun:
         # The exact text the compiler prints for a file name, in place of a well-formed rule.
         self.raw_rules = raw_rules or {}
         self.listing_exit_code = listing_exit_code
+        # The folders the compiler says it searches by itself, in the text of `-E -x c++ -v`.
+        self.implicit_folders = implicit_folders
+        self.asked_for_folders = 0
         self.checked: list[str] = []
         # The files whose headers the compiler was asked to list.
         self.listed: list[str] = []
@@ -44,6 +48,11 @@ class FakeRun:
     def __call__(self, command, **kwargs):
         if command[:2] == ["clang-tidy", "--version"]:
             return subprocess.CompletedProcess(command, 0, stdout=VERSION_TEXT)
+        if command[0] == COMPILER and "-v" in command:
+            self.asked_for_folders += 1
+            lines = ["#include <...> search starts here:", *(f" {folder}" for folder in self.implicit_folders)]
+            text = "\n".join([*lines, "End of search list."]) + "\n"
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr=text)
         if command[0] == COMPILER:
             source = command[command.index("--source") + 1]
             name = Path(source).name
@@ -542,3 +551,89 @@ def test_a_record_that_nothing_used_for_a_month_is_deleted(tmp_path):
     os.utime(old, (1000, 1000))
     run_tidy.prune_cache(cache, now=1000 + run_tidy.CACHE_MARKER_MAX_AGE_SECONDS + 1)
     assert not old.exists()
+
+
+def make_old_records(monkeypatch, repo, extra_dependencies=(), implicit_folders=()):
+    """Runs every file twice with aged files so that records are stored, and returns what the next run needs."""
+    (repo / "src" / "fluidity" / "shared.h").write_text("// shared\n", encoding="utf-8")
+    dependencies = dependencies_of(repo)
+    dependencies["a.cc"] = [*dependencies["a.cc"], *map(str, extra_dependencies)]
+    run(monkeypatch, repo, FakeRun(repo, dependencies, implicit_folders=implicit_folders))
+    age_files(repo)
+    run(monkeypatch, repo, FakeRun(repo, dependencies, implicit_folders=implicit_folders))
+    return dependencies
+
+
+@pytest.mark.parametrize("variable", ["CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "SDKROOT"])
+def test_a_changed_include_environment_variable_misses_the_record(monkeypatch, repo, variable):
+    dependencies = make_old_records(monkeypatch, repo)
+    assert len(records(repo)) == 3
+    monkeypatch.setenv(variable, str(repo / "elsewhere"))
+    third = FakeRun(repo, dependencies)
+    run(monkeypatch, repo, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_header_added_in_a_folder_of_cpath_misses_the_record(monkeypatch, repo):
+    folder = repo / "extra"
+    folder.mkdir()
+    monkeypatch.setenv("CPATH", str(folder))
+    dependencies = make_old_records(monkeypatch, repo)
+    (folder / "new.h").write_text("// new\n", encoding="utf-8")
+    third = FakeRun(repo, dependencies)
+    run(monkeypatch, repo, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_header_added_in_a_folder_the_compiler_searches_by_itself_misses_the_record(monkeypatch, repo):
+    folder = repo / "sysinclude"
+    folder.mkdir()
+    dependencies = make_old_records(monkeypatch, repo, implicit_folders=(str(folder),))
+    (folder / "new.h").write_text("// new\n", encoding="utf-8")
+    third = FakeRun(repo, dependencies, implicit_folders=(str(folder),))
+    run(monkeypatch, repo, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_the_folders_a_compiler_searches_by_itself_are_asked_once_per_run(monkeypatch, repo):
+    fake = FakeRun(repo, dependencies_of(repo))
+    run(monkeypatch, repo, fake)
+    assert fake.asked_for_folders == 1
+
+
+def test_the_folders_of_a_compiler_are_read_from_its_search_list(monkeypatch):
+    text = "ignored\n#include <...> search starts here:\n /usr/include\n /sdk/Frameworks (framework directory)\nEnd of search list.\n"
+    monkeypatch.setattr(
+        run_tidy.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stderr=text)
+    )
+    assert run_tidy.compiler_search_folders("cc", ()) == ("/usr/include", "/sdk/Frameworks")
+
+
+def test_the_options_that_move_the_search_folders_are_kept():
+    words = ["-I/x", "-isysroot", "/sdk", "-stdlib=libc++", "-O2", "-std=c++23", "-o", "x.o", "-target", "arm64-apple"]
+    assert run_tidy.search_options(words) == ("-isysroot", "/sdk", "-stdlib=libc++", "-std=c++23", "-target", "arm64-apple")
+
+
+def test_a_record_is_not_stored_for_a_file_that_lists_a_generated_header(monkeypatch, repo):
+    generated = repo / "out" / "build" / "debug" / "gen" / "fluidity" / "config.h"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("// generated\n", encoding="utf-8")
+    make_old_records(monkeypatch, repo, extra_dependencies=[generated])
+    assert len(records(repo)) == 2
+
+
+def test_a_record_is_stored_for_a_file_that_lists_a_conan_package_header(monkeypatch, repo):
+    package_header = repo / "out" / "conan-home" / "p" / "b" / "gtest1" / "p" / "include" / "gtest.h"
+    package_header.parent.mkdir(parents=True)
+    package_header.write_text("// package\n", encoding="utf-8")
+    make_old_records(monkeypatch, repo, extra_dependencies=[package_header])
+    assert len(records(repo)) == 3
+
+
+def test_a_stamp_is_read_again_each_time_it_is_asked(tmp_path):
+    memo = run_tidy.FileSystemMemo(tmp_path)
+    header = tmp_path / "a.h"
+    header.write_text("// one\n", encoding="utf-8")
+    first = memo.stamp(str(header))
+    header.write_text("// a longer text\n", encoding="utf-8")
+    assert memo.stamp(str(header)) != first

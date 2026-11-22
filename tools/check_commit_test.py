@@ -850,6 +850,13 @@ def test_paper_check_reads_the_read_lines_of_tests_too(monkeypatch, capsys, repo
     assert lines == ["FAIL paper: tests/grid/a.test.cc:1 cites <sec-nowhere>, which the paper does not define"]
 
 
+def test_the_paper_step_makes_the_folder_of_the_pdf(monkeypatch, capsys, repo):
+    assert not (repo / "out" / "paper").exists()
+    exit_code, _ = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
+    assert exit_code == 0
+    assert (repo / "out" / "paper").is_dir()
+
+
 def message_commands(fake):
     return [command for command in fake.commands if any(Path(part).name == "check_message.py" for part in command)]
 
@@ -924,6 +931,23 @@ def test_rules_step_prints_the_count_of_doubtful_lines_and_the_command_that_list
     ]
 
 
+def test_with_staged_changes_the_doubtful_lines_are_the_staged_lines_only(monkeypatch, capsys, repo):
+    fake = NotesWriter(3, changed=["src/fluidity/a.cc"])
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    (scan,) = [command for command in fake.commands if any(Path(part).name == "check_rules.py" for part in command)]
+    assert scan[scan.index("--also-notes-since") :][:2] == ["--also-notes-since", "HEAD"]
+    assert lines[0] == (
+        "NOTE 3 doubtful lines: uv run python tools/check_rules.py --notes-since HEAD --json out/check-commit/notes.json"
+    )
+
+
+def test_on_a_clean_tree_the_doubtful_lines_are_those_of_head(monkeypatch, capsys, repo):
+    fake = NotesWriter(1)
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "rules")
+    (scan,) = [command for command in fake.commands if any(Path(part).name == "check_rules.py" for part in command)]
+    assert scan[scan.index("--also-notes-since") :][:2] == ["--also-notes-since", "HEAD~1"]
+
+
 def test_rules_step_prints_no_doubtful_line_line_for_zero_notes(monkeypatch, capsys, repo):
     exit_code, lines = run_gate(monkeypatch, capsys, repo, NotesWriter(0), "--only", "rules")
     assert exit_code == 0
@@ -987,7 +1011,7 @@ def test_a_failing_tools_test_file_fails_the_rules_step_and_the_others_still_run
 
 
 def test_quick_leaves_the_tools_tests_out_when_no_tool_changed(monkeypatch, capsys, tools_with_two_test_files):
-    fake = FakeRun(changed=["src/fluidity/grid/a.h", "docs/glossary.md", "AGENTS.md"])
+    fake = FakeRun(changed=["src/fluidity/grid/a.h", "docs/design/programme.md", "README.md"])
     _, lines = run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick")
     assert pytest_commands(fake) == []
     assert lines[1:3] == ["NOT RUN tools tests (quick, tools unchanged)", "PASS rules"]
@@ -1004,6 +1028,8 @@ def test_quick_leaves_the_tools_tests_out_when_no_tool_changed(monkeypatch, caps
         "CMakeLists.txt",
         "pyproject.toml",
         "uv.lock",
+        "AGENTS.md",
+        "docs/glossary.md",
     ],
 )
 def test_quick_runs_the_tools_tests_when_a_file_they_read_changed(monkeypatch, capsys, tools_with_two_test_files, changed):
@@ -1011,6 +1037,13 @@ def test_quick_runs_the_tools_tests_when_a_file_they_read_changed(monkeypatch, c
     _, lines = run_gate(monkeypatch, capsys, tools_with_two_test_files, fake, "--speed", "quick")
     assert len(pytest_commands(fake)) == 2
     assert check_commit.NOT_RUN_TOOLS_TESTS not in lines
+
+
+def test_the_files_that_check_rules_reads_by_default_are_inputs_of_the_tools_tests():
+    import check_rules
+
+    for path in (check_rules.DEFAULT_GLOSSARY_PATH, check_rules.DEFAULT_AGENTS_PATH):
+        assert check_commit.affects_tools_tests(path.relative_to(check_rules.REPO_ROOT).as_posix())
 
 
 def test_quick_runs_the_tools_tests_for_an_untracked_tool_file(monkeypatch, capsys, tools_with_two_test_files):
@@ -1132,6 +1165,7 @@ def test_a_passed_cpu_step_stores_the_hash_and_the_next_quick_run_skips_conan_an
         "cmake/fluidity_targets.cmake",
         "cmake/new_helper.cmake",
         "src/fluidity/base/CMakeLists.txt",
+        "CMakeUserPresets.json",
         "pyproject.toml",
         "uv.lock",
     ],
@@ -1217,6 +1251,66 @@ def test_quick_builds_the_functional_programs_of_a_module_whose_tests_changed(mo
     quick_cpu(monkeypatch, capsys, configured, fake)
     (build,) = build_runs(fake)
     assert build[4:] == ["--target", "contact_test", "grid_big_functional_test", "grid_corners_test", "grid_test"]
+
+
+class ConfigureWritesPrograms(FakeRun):
+    """A FakeRun whose configure writes the list of test programs, as CMake does, and may edit a file while it runs."""
+
+    def __init__(self, programs_text, edit=None, **kwargs):
+        super().__init__(**kwargs)
+        self._programs_text = programs_text
+        self._edit = edit
+
+    def __call__(self, command, **kwargs):
+        if command[:2] == ["cmake", "--preset"]:
+            listing = Path(kwargs["cwd"]) / "out" / "build" / command[2] / check_commit.TEST_PROGRAMS_FILE
+            listing.write_text(self._programs_text, encoding="utf-8")
+            if self._edit is not None:
+                self._edit()
+        return super().__call__(command, **kwargs)
+
+
+def test_quick_reads_the_list_of_test_programs_after_the_configure_that_rewrites_it(monkeypatch, capsys, configured):
+    path = configured / "src" / "fluidity" / "grid" / "CMakeLists.txt"
+    path.write_text("fluidity_add_test(grid_new_test)\n", encoding="utf-8")
+    fake = ConfigureWritesPrograms(PROGRAMS_TEXT + "grid unit grid_new_test\n", changed=["src/fluidity/grid/a.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    (build,) = [command for command in build_runs(fake) if command[3] == DEBUG_PRESET]
+    assert "grid_new_test" in build
+
+
+def test_quick_builds_everything_when_a_selected_module_makes_a_program_the_list_lacks(monkeypatch, capsys, configured):
+    (configured / "src" / "fluidity" / "grid" / "CMakeLists.txt").write_text(
+        "fluidity_add_test(\n  grid_unlisted_test\n  SOURCES a.cc\n)\n", encoding="utf-8"
+    )
+    state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
+    state.write_text(check_commit.configure_inputs_hash(configured, DEBUG_PRESET) + "\n", encoding="utf-8")
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert configure_runs(fake) == []
+    assert build_runs(fake) == [["cmake", "--build", "--preset", DEBUG_PRESET]]
+
+
+def test_a_program_of_an_unselected_module_missing_from_the_list_does_not_widen_the_build(monkeypatch, capsys, configured):
+    (configured / "src" / "fluidity" / "contact").mkdir()
+    (configured / "src" / "fluidity" / "contact" / "CMakeLists.txt").write_text("fluidity_add_test(contact_new_test)\n")
+    state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
+    state.write_text(check_commit.configure_inputs_hash(configured, DEBUG_PRESET) + "\n", encoding="utf-8")
+    fake = FakeRun(changed=["src/fluidity/grid/a.h"])
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert "--target" in build_runs(fake)[0]
+
+
+def test_the_stored_hash_is_that_of_the_files_before_the_configure_ran(monkeypatch, capsys, configured):
+    def edit_the_lockfile():
+        (configured / "conan.lock").write_text("{ \"edited\": true }\n", encoding="utf-8")
+
+    (configured / "conan.lock").write_text("{ \"first\": true }\n", encoding="utf-8")
+    fake = ConfigureWritesPrograms(PROGRAMS_TEXT, edit=edit_the_lockfile)
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    again = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, again)
+    assert len(conan_runs(again)) == 1
 
 
 def test_quick_builds_everything_when_a_change_selects_every_module(monkeypatch, capsys, configured):

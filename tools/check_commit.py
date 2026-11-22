@@ -18,12 +18,15 @@ The speed (--speed, default commit):
           module; a change elsewhere (docs, tools) selects none. Only the test programs of the selected modules are
           built (the unit programs, and the functional ones of a module whose tests changed; the list is
           out/build/<preset>/test_programs.txt, which CMake writes), so a quick run does not see a break in a module
-          that is not selected; `NOTE built: <n> test programs` says so. With every module selected, or with no list,
-          the whole preset is built; with none selected nothing is built. Conan and the configure do not run while
-          the build folder holds a hash (gate-configure-hash) equal to the hash of the contents of conanfile.py,
-          conan.lock, CMakePresets.json, pyproject.toml, uv.lock, every CMakeLists.txt and every file under cmake/;
-          the line `NOTE conan and configure: not run (their files are unchanged)` says so. A run of Conan and the
-          configure that passed stores the hash, at every speed; one that failed removes it. A compiler or SDK
+          that is not selected; `NOTE built: <n> test programs` says so. With every module selected, with no list, or
+          with a list that lacks a program that a CMakeLists.txt of a selected module makes, the whole preset is
+          built; with none selected nothing is built. The list is read after Conan and the configure, which rewrite
+          it. Conan and the configure do not run while the build folder holds a hash (gate-configure-hash) equal to the
+          hash of the contents of conanfile.py, conan.lock, CMakePresets.json, CMakeUserPresets.json (when there is
+          one), pyproject.toml, uv.lock, every CMakeLists.txt and every file under cmake/; the line
+          `NOTE conan and configure: not run (their files are unchanged)` says so. A run of Conan and the configure
+          that passed stores the hash of the files as they were before it began, at every speed; one that failed
+          removes it. A compiler or SDK
           upgrade is not in the hash: run `--speed commit` to configure again. The release build, the paper and cuda are left out, each printed as
           `NOT RUN <step> (quick)`, so a quick pass is never read as a full one. An untracked file is a changed file,
           but the gate stops at `FAIL tree` for one unless --allow-dirty is given, so it selects modules only then.
@@ -51,12 +54,14 @@ The steps, in order:
           on every tracked C++ and CUDA file.
   rules   tools/check_rules.py on src/ and tests/, then the pytest suite of tools/, then actionlint on .github/workflows/.
           The rules check prints a NOTE only for a line the staged changes add; the gate prints each such note on a
-          line `rules note: <note>` before the PASS or FAIL line. At commit and full speed the same scan also writes
-          the doubtful lines of the last commit (--also-notes-since), so the files are read once. The pytest suite
+          line `rules note: <note>` before the PASS or FAIL line (every NOTE rule, not only a word banned in one sense).
+          At commit and full speed the same scan also writes the doubtful lines of the commit being checked
+          (--also-notes-since): the staged lines when the tree differs from HEAD, else the lines of HEAD (HEAD~1..HEAD),
+          so the files are read once. The pytest suite
           runs one pytest process for each test file of tools/, all at once. At quick speed it is left out, with a
-          line `NOT RUN tools tests (quick, tools unchanged)`, while no changed file is under tools/, cmake/ or
-          .github/ or is CMakeLists.txt, pyproject.toml or uv.lock at the top level (TOOLS_TEST_INPUTS); a change
-          that git cannot list runs it. The rules check and actionlint always run.
+          line `NOT RUN tools tests (quick, tools unchanged)`, while no changed file is under a folder of
+          TOOLS_TEST_FOLDERS (tools/, cmake/, .github/) or is one of the files of TOOLS_TEST_INPUTS (CMakeLists.txt,
+          pyproject.toml, uv.lock, AGENTS.md, docs/glossary.md); a change that git cannot list runs it. The rules check and actionlint always run.
   cpu     (always, at commit and full speed) fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
           debug and the release CPU presets of the platform the gate runs on. ctest runs one test per core at once.
           (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
@@ -144,17 +149,27 @@ DEFAULT_SPEED = "commit"
 TOP_LEVEL_BUILD_FILES = frozenset(
     {"CMakeLists.txt", "CMakePresets.json", "conanfile.py", "conan.lock", "pyproject.toml", "uv.lock"}
 )
-# The tests of tools/ read the tools, the CMake helper file (fluidity_targets_test.py configures a project with it and
-# the top-level CMakeLists.txt) and the workflows; a quick run leaves them out while no changed file is one of these.
+# What the tests of tools/ open, stated once; a quick run leaves them out while no changed file is one of these. The
+# folders: the tools and their hook and test files, the CMake helper files (fluidity_targets_test.py configures a
+# project with them), and the workflow that check_message_test.py reads. The files: the top-level CMakeLists.txt,
+# pyproject.toml and uv.lock (the same test), and the glossary and AGENTS.md that check_rules_test.py reads as they
+# are (the banned words and the allowed verbs).
 TOOLS_TEST_FOLDERS = ("tools", "cmake", ".github")
-TOOLS_TEST_INPUTS = frozenset({"CMakeLists.txt", "pyproject.toml", "uv.lock"})
+TOOLS_TEST_INPUTS = frozenset({"CMakeLists.txt", "pyproject.toml", "uv.lock", "AGENTS.md", "docs/glossary.md"})
 # The build folder keeps, after a successful Conan install and configure, a hash of everything those two read; a quick
 # run that finds the same hash does neither. CMake writes the list of test programs next to it (see
 # fluidity_write_test_programs in cmake/fluidity_targets.cmake).
 CONFIGURE_STATE_FILE = "gate-configure-hash"
 TEST_PROGRAMS_FILE = "test_programs.txt"
 # The files a configure reads, besides every CMakeLists.txt and everything under cmake/.
-CONFIGURE_INPUT_FILES = ("conanfile.py", "conan.lock", "CMakePresets.json", "pyproject.toml", "uv.lock")
+CONFIGURE_INPUT_FILES = (
+    "conanfile.py",
+    "conan.lock",
+    "CMakePresets.json",
+    "CMakeUserPresets.json",
+    "pyproject.toml",
+    "uv.lock",
+)
 CONFIGURE_INPUT_FOLDER = "cmake"
 NOT_RUN_TOOLS_TESTS = "NOT RUN tools tests (quick, tools unchanged)"
 MODULES_ROOT = ("src", "fluidity")
@@ -174,9 +189,16 @@ PAPER_PDF = Path("out") / "paper" / "fluidity-method.pdf"
 LOG_DIRECTORY = Path("out") / "check-commit"
 # The commits a push would send, for the message step.
 UNPUSHED_RANGE = "@{upstream}..HEAD"
-# The doubtful lines of the last commit: the command that lists them and the file it writes.
+# The doubtful lines of the commit being checked: the file the scan writes them to, and the command that lists them
+# again. The commit is the staged changes (base HEAD) or, on a clean tree, HEAD itself (base HEAD~1).
 NOTES_JSON = LOG_DIRECTORY / "notes.json"
-NOTES_SINCE_ARGUMENTS = f"--notes-since HEAD~1 --json {NOTES_JSON.as_posix()}"
+STAGED_NOTES_BASE = "HEAD"
+LAST_COMMIT_NOTES_BASE = "HEAD~1"
+
+
+def notes_since_arguments(base: str) -> str:
+    return f"--notes-since {base} --json {NOTES_JSON.as_posix()}"
+
 
 CPP_PATTERNS = ("*.cc", "*.h", "*.cu", "*.cuh")
 # The sources a build compiles; every tracked one must be in the CUDA build.
@@ -310,12 +332,12 @@ def sources_not_compiled(tracked: Sequence[str], compiled_output: str) -> list[s
 
 
 def affects_tools_tests(path: str) -> bool:
-    """True when a change to `path` can change the result of the tests of tools/: a file under tools/, cmake/ or
-    .github/, or one of the top-level files that the tests configure or read (see TOOLS_TEST_INPUTS)."""
+    """True when a change to `path` can change the result of the tests of tools/: a file under a folder of
+    TOOLS_TEST_FOLDERS, or one of the files of TOOLS_TEST_INPUTS (the files the tests read, by their path)."""
     parts = Path(path).parts
     if parts[:1] in {(folder,) for folder in TOOLS_TEST_FOLDERS}:
         return True
-    return len(parts) == 1 and parts[0] in TOOLS_TEST_INPUTS
+    return Path(path).as_posix() in TOOLS_TEST_INPUTS
 
 
 def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
@@ -435,6 +457,30 @@ def test_programs_to_build(
         if (tier == "unit" and module in modules) or (tier == "functional" and module in functional_modules):
             wanted.add(program)
     return sorted(wanted) if seen_line else None
+
+
+# A test program is made by `fluidity_add_test(<program> ...)`.
+_ADD_TEST_CALL = re.compile(r"\bfluidity_add_test\s*\(\s*([A-Za-z0-9_]+)")
+
+
+def has_unlisted_test_program(repo_root: Path, programs_text: str, modules: frozenset[str]) -> bool:
+    """True when a `CMakeLists.txt` of a module in `modules` (src/fluidity/<module>/ or tests/<module>/) makes a test
+    program that the lines `<module> <tier> <program>` of `programs_text` do not list for that module: the list is
+    older than the file, so it cannot say what to build."""
+    listed: dict[str, set[str]] = {}
+    for line in programs_text.splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            listed.setdefault(fields[0], set()).add(fields[2])
+    for module in modules:
+        for folder in (Path(*MODULES_ROOT, module), Path(FUNCTIONAL_TESTS_ROOT, module)):
+            try:
+                text = (repo_root / folder / "CMakeLists.txt").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if any(program not in listed.get(module, set()) for program in _ADD_TEST_CALL.findall(text)):
+                return True
+    return False
 
 
 def host_cpu_presets() -> tuple[str, str]:
@@ -570,8 +616,19 @@ class Gate:
             return False
         return completed.returncode == 0
 
+    def doubtful_lines_base(self) -> str | None:
+        """The commit that the doubtful lines are counted from: HEAD when the tree differs from HEAD (the staged lines
+        are the change being made), HEAD~1 when it does not (HEAD is the change), None when git cannot say or there
+        is no parent to count from."""
+        changed = self.changed_paths()
+        if changed is None:
+            return None
+        if changed:
+            return STAGED_NOTES_BASE
+        return LAST_COMMIT_NOTES_BASE if self.parent_commit_exists() else None
+
     def count_doubtful_lines(self) -> int:
-        """The notes of the lines that the last commit adds, as the tree check wrote them to NOTES_JSON in the same
+        """The notes of the lines that the commit being checked adds, as the tree check wrote them to NOTES_JSON in the same
         scan, or 0 when the file cannot be read."""
         try:
             return len(json.loads((self.repo_root / NOTES_JSON).read_text(encoding="utf-8")))
@@ -597,8 +654,10 @@ class Gate:
     def check_rules(self, lists_doubtful_lines: bool = False, skips_unchanged_tools_tests: bool = False) -> Outcome:
         tools = self.repo_root / "tools"
         notes_path = self.repo_root / NOTES_JSON
-        # One scan gives the tree check and, when asked, the doubtful lines of the last commit.
-        lists_notes = lists_doubtful_lines and self.parent_commit_exists()
+        # One scan gives the tree check and, when asked, the doubtful lines of the commit being checked: the staged
+        # lines when something is staged, else the lines of HEAD.
+        notes_base = self.doubtful_lines_base() if lists_doubtful_lines else None
+        lists_notes = notes_base is not None
         if lists_notes:
             notes_path.unlink(missing_ok=True)
         rules = self.command(
@@ -608,7 +667,7 @@ class Gate:
                 str(tools / "check_rules.py"),
                 *[str(self.repo_root / folder) for folder in (*SOURCE_FOLDERS, PAPER_DIRECTORY)],
                 "--notes-on-staged-lines",
-                *(["--also-notes-since", "HEAD~1", "--also-notes-json", str(notes_path)] if lists_notes else []),
+                *(["--also-notes-since", notes_base, "--also-notes-json", str(notes_path)] if lists_notes else []),
                 "--repository",
                 str(self.repo_root),
             ],
@@ -626,7 +685,8 @@ class Gate:
         if lists_notes and outcome.passed:
             count = self.count_doubtful_lines()
             if count:
-                notes += (f"NOTE {count} doubtful lines: uv run python tools/check_rules.py {NOTES_SINCE_ARGUMENTS}",)
+                command = f"uv run python tools/check_rules.py {notes_since_arguments(notes_base)}"
+                notes += (f"NOTE {count} doubtful lines: {command}",)
         return Outcome(outcome.passed, outcome.reason, notes)
 
     def unpushed_range(self) -> str | None:
@@ -694,13 +754,14 @@ class Gate:
     def configure_state_path(self, preset: str) -> Path:
         return self.repo_root / "out" / "build" / preset / CONFIGURE_STATE_FILE
 
-    def store_configure_state(self, preset: str) -> None:
-        """Keeps the hash of the files that the Conan install and the configure that just passed have read. When it
-        cannot be written the next quick run runs both again."""
+    def store_configure_state(self, preset: str, inputs_hash: str) -> None:
+        """Keeps `inputs_hash`, the hash of the files as they were before the Conan install and the configure that just
+        passed began, so a file edited while they ran is not recorded as read. When it cannot be written the next quick
+        run runs both again."""
         state_path = self.configure_state_path(preset)
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_text(configure_inputs_hash(self.repo_root, preset) + "\n", encoding="utf-8")
+            state_path.write_text(inputs_hash + "\n", encoding="utf-8")
         except OSError:
             pass
 
@@ -722,10 +783,13 @@ class Gate:
         self, preset: str, modules: frozenset[str], functional_modules: frozenset[str]
     ) -> list[str] | None:
         """The test programs to build for the modules a quick run tests, or None when the whole preset is built: the
-        list CMake wrote is missing or is not well formed."""
+        list CMake wrote is missing or is not well formed, or a CMakeLists.txt of a selected module makes a program
+        that the list does not have (see has_unlisted_test_program)."""
         try:
             programs_text = (self.repo_root / "out" / "build" / preset / TEST_PROGRAMS_FILE).read_text(encoding="utf-8")
         except OSError:
+            return None
+        if has_unlisted_test_program(self.repo_root, programs_text, modules | functional_modules):
             return None
         return test_programs_to_build(programs_text, modules, functional_modules)
 
@@ -766,6 +830,8 @@ class Gate:
             ctest += ["--output-junit", str(junit_path)]
         ctest_runs: list[list[str]] = [ctest]
         build_command = ["cmake", "--build", "--preset", preset]
+        changed: list[str] | None = None
+        modules: frozenset[str] | None = None
         if changed_modules_only:
             changed = self.changed_paths()
             modules = None if changed is None else modules_of_changes(changed)
@@ -790,13 +856,6 @@ class Gate:
             else:
                 notes = ("NOTE modules: none",)
                 ctest_runs = []
-            if modules is not None:
-                targets = self.quick_build_targets(
-                    preset, modules, frozenset(modules_with_changed_functional_tests(changed or ()))
-                )
-                if targets is not None:
-                    notes += (f"NOTE built: {len(targets)} test programs",)
-                    build_command = [*build_command, "--target", *targets] if targets else []
         if is_debug:
             junit_path.parent.mkdir(parents=True, exist_ok=True)
             junit_path.unlink(missing_ok=True)
@@ -805,12 +864,21 @@ class Gate:
             notes += ("NOTE conan and configure: not run (their files are unchanged)",)
         else:
             # Conan runs every time at the commit and full speeds, so a change to conanfile.py or conan.lock always
-            # reaches the toolchain file.
+            # reaches the toolchain file. The hash is of the files as they are before the commands run.
+            inputs_hash = configure_inputs_hash(self.repo_root, preset)
             self.configure_state_path(preset).unlink(missing_ok=True)
             fetched = self.commands(log_name, setup_commands)
             if not fetched.passed:
                 return Outcome(False, fetched.reason, notes, fetched.output)
-            self.store_configure_state(preset)
+            self.store_configure_state(preset, inputs_hash)
+        if changed_modules_only and modules is not None:
+            # After the configure, which rewrites the list of test programs that this reads.
+            targets = self.quick_build_targets(
+                preset, modules, frozenset(modules_with_changed_functional_tests(changed or ()))
+            )
+            if targets is not None:
+                notes += (f"NOTE built: {len(targets)} test programs",)
+                build_command = [*build_command, "--target", *targets] if targets else []
         outcome = self.commands(log_name, [*([build_command] if build_command else []), *ctest_runs])
         if not outcome.passed or not is_debug or not ctest_runs:
             return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
@@ -888,6 +956,8 @@ class Gate:
         return self.command("tidy", [*command, *in_build, *header_checks])
 
     def check_paper(self) -> Outcome:
+        # typst does not make the folder of its output file, and a fresh checkout has no out/paper/.
+        (self.repo_root / PAPER_PDF).parent.mkdir(parents=True, exist_ok=True)
         compiled = self.command("paper", ["typst", "compile", PAPER_TYPST_FILE.as_posix(), PAPER_PDF.as_posix()])
         if not compiled.passed:
             return compiled
