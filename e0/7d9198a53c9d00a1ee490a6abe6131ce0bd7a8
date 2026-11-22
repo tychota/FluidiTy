@@ -1,0 +1,37 @@
+README.md
+  s_4f0877e2acdcf0::t_6475ec10417ec6 51-53
+tools/run_tidy_test.py
+  s_4f0877e2acdcf0::t_a7929a8ec3fbe7 4,20-29,33-39,47-53,58-59,224-326
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_6ba3001d5c8902 15-16,18-20,25-31,101-109,113-115,393-395,398,624,626,658-662,676,702-707
+  s_4f0877e2acdcf0::t_b06a74c4f697e2 250,252
+.vscode/tasks.json
+  s_4f0877e2acdcf0::t_aa4aa87aec6580 29-31,33-40
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_4290e3b6afa36e 32-35,929-957,983
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_0a9c42b854f9f9 543-544,576,586,607,637-643,645-682
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_a2850075f4fd79 828-841
+  s_4f0877e2acdcf0::t_fccb0a6826aa8f 826-827,842-865
+AGENTS.md
+  s_4f0877e2acdcf0::t_e0ff61398e58a4 471-475,478-479,522-524
+tools/run_tidy.py
+  s_4f0877e2acdcf0::t_07da133548937e 20-21,23-41,54,61-62,105,109,152,163,173-175,177,181-183,187-193,203-210,227,229-230,233-250,261-265,269-280,299-300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "119391f128ed56b8df7c1fcf67356423f28c58e7",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
