@@ -1,0 +1,40 @@
+src/fluidity/grid/grid_values.h
+  s_4f0877e2acdcf0::t_3e73a9dfecb5ee 1-376
+  s_4f0877e2acdcf0::t_9031ab6f09d8a7 377
+docs/glossary.md
+  s_4f0877e2acdcf0::t_a8fb7ce8a3b384 50
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_72bd1ffbdfc812 2115-2118
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_30c0413c468976 15,24,104-108
+src/fluidity/grid/grid_values.gpu.test.cc
+  s_4f0877e2acdcf0::t_3e7a13b1732a12 1-84
+src/fluidity/grid/grid_values.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_18e8d42f37c4dd 1-27
+src/fluidity/grid/grid_values.test.cc
+  s_4f0877e2acdcf0::t_901870b60a9631 1-272
+src/fluidity/grid/grid_values_cpu.cc
+  s_4f0877e2acdcf0::t_eab77f8f3219cf 1-17
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_867731a6b3b261 351-377
+tests/grid/apply_grid_version_on_gpu.test.cc
+  s_4f0877e2acdcf0::t_72fe0ebe0265d6 1-92
+tests/grid/apply_grid_version_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_de02c907852556 1-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "61bff5d6f70bd0efddda572c3d00846f2bf012d7",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
