@@ -1,0 +1,56 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_246c0ea1eef3dd 2113-2117,2119-2122,2439-2445
+  s_4f0877e2acdcf0::t_0f6753931dcc95 2410-2417,2420-2438,2446
+  s_4f0877e2acdcf0::t_5000ddb180ed9d 2418-2419
+native/fluidity/grid/face_search_test.cc
+  s_4f0877e2acdcf0::t_3dc992c076daab 820-823,825-826,856-920,922-923,925-932,936-938,942-960,962-972,975-981,983-989,998-1006,1008-1009,1014
+  s_4f0877e2acdcf0::t_b676ce8bab7450 812-813
+  s_4f0877e2acdcf0::t_8910549b78f881 90-91,95-96,99,103,105-106,180,225-235,252-256,304-331,362-452,485-496,499-502,656-664,776,797,814,824,827-855,921,924,933-935,939-941,961,973-974,982,990-997
+  s_4f0877e2acdcf0::t_babf9cca45ce69 1-89,92-94,97-98,100-102,104,107-179,181-224,236-251,257-303,332-361,453-484,497-498,503-655,665-774,777-796,798-811,815-819
+  s_4f0877e2acdcf0::t_0ab0e6d16c370a 775
+  s_4f0877e2acdcf0::t_cd24d171fa0c96 1007
+  s_4f0877e2acdcf0::t_228ecfa0482c2e 1010-1013
+  s_4f0877e2acdcf0::t_5261071234a196 1015-1017
+  s_4f0877e2acdcf0::t_94d1fa07919bce 1018-1290
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_4013c2df20dba4 93-94
+  s_4f0877e2acdcf0::t_3d43315775d2ee 101,111
+  s_4f0877e2acdcf0::t_696d8f5300ac08 8-9,32-35,98-99,102,1643-1789,1792-1794,1798-1800,1805-1818,1827-1866,1872-1925,1928-1935,1938-1989,1992-1993,2002-2003,2008-2009,2014,2017,2022-2024,2026
+  s_4f0877e2acdcf0::t_4027b9f2aa8ff8 106-110
+  s_4f0877e2acdcf0::t_d2947ff99c0083 1790-1791,1795-1797,1801-1804,1819-1826,1867-1871,1926-1927,1936-1937
+  s_4f0877e2acdcf0::t_55ac7c1f572458 121
+  s_4f0877e2acdcf0::t_e954de51c0dfc8 91-92
+  s_4f0877e2acdcf0::t_96b8d04a0135d9 100
+  s_4f0877e2acdcf0::t_8e02450ec63b7c 103-105
+  s_4f0877e2acdcf0::t_4ad0e7fbbc8732 1990-1991
+  s_4f0877e2acdcf0::t_864cb0d1bc94e4 1994-1996,1999-2001
+  s_4f0877e2acdcf0::t_8d699a51440cdf 2004-2007
+  s_4f0877e2acdcf0::t_a8ddeabd0a2171 2010-2013
+  s_4f0877e2acdcf0::t_31aed8e3a94b61 2015-2016
+  s_4f0877e2acdcf0::t_f0fe72df288a78 2018-2021
+  s_4f0877e2acdcf0::t_b339cce08b038e 2025
+  s_4f0877e2acdcf0::t_1e34f85df34969 2027-2029
+  s_4f0877e2acdcf0::t_8a50519bcf9885 116-118,1997-1998,2030-2042
+native/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_bc5f161a97648c 126
+native/fluidity/grid/grid_shared_gpu_compile_test.cu
+  s_4f0877e2acdcf0::t_a7abcca4f59bff 8-14,179-185
+docs/glossary.md
+  s_4f0877e2acdcf0::t_ccb99a3ec8f241 201-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4796dcb7166c73c56f68e75beea0cd6a7e5ee5af",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
