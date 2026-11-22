@@ -23,6 +23,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 #include "fluidity/base/axis.h"
@@ -69,6 +70,55 @@ inline Vec3 ComputeKeptWeightChangeTotal(const GridTables& tables, const NearbyF
     }
   }
   return total;
+}
+
+// The linear field of the method paper, v_f = base_value + slope . (x_f - x_p): `base_value` is the value at the
+// position, in the unit of the field, and `slope` its slope, in that unit per m.
+struct LinearField {
+  double base_value;
+  Vec3 slope;
+};
+
+// Whether the values of a fit have their weighted mean taken off before the moment is formed.
+enum class ValueCentring : std::uint8_t {
+  kUncentred,
+  kCentred,
+};
+
+// The value of a linear field on a face whose offset from the position is `offset`, in m.
+inline double ComputeLinearValue(LinearField field, Vec3 offset) {
+  return field.base_value + math::Dot(field.slope, offset);
+}
+
+// Fits one matrix row to the values of a linear field on the kept faces, as the method paper's transfer does: the
+// inverse weighted spread times the sum of weight x value x offset from the mean. With kCentred the weighted mean of
+// the values (the weights added in list order) is taken off each value first, which changes nothing in exact
+// arithmetic.
+// Requires: weights.fit is kFull.
+inline Vec3 ComputeFittedMatrixRow(
+    const GridTables& tables,
+    const NearbyFaceWeights& weights,
+    LinearField field,
+    ValueCentring centring
+) {
+  double weighted_value_sum = 0.0;
+  if (centring == ValueCentring::kCentred) {
+    for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
+      if (ComputeIsKept(weights.kept, position_in_list)) {
+        const FaceWeight face_weight = ComputeFaceWeight(tables, weights, position_in_list);
+        weighted_value_sum += face_weight.weight * ComputeLinearValue(field, face_weight.offset);
+      }
+    }
+  }
+  Vec3 moment = {.x = 0.0, .y = 0.0, .z = 0.0};
+  for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
+    if (ComputeIsKept(weights.kept, position_in_list)) {
+      const FaceWeight face_weight = ComputeFaceWeight(tables, weights, position_in_list);
+      const double value = ComputeLinearValue(field, face_weight.offset) - weighted_value_sum;
+      moment = moment + (face_weight.offset_from_mean * (face_weight.weight * value));
+    }
+  }
+  return weights.inverse_weighted_spread * moment;
 }
 
 // Checks that three numbers are within `tolerance` of the three of `expected`; a tolerance of 0 asks for equality.
@@ -126,7 +176,9 @@ inline Vec3 ComputeKeptRawChangeMagnitude(const GridTables& tables, const Nearby
 // Checks that no kept weight is negative, that the kept weights add up to 1 within kWeightSumTolerance and that their
 // changes add up to 0 within kWeightChangeSumTolerance / cell width on each axis, plus 8 rounding steps of the sum of
 // the absolute raw changes divided by W. The second term matters when W is small: each change is (g - weight G) / W,
-// so its rounding error grows as 1 / W even where the change itself is small.
+// so its rounding error grows as 1 / W even where the change itself is small. The factor 8 is measured, not derived:
+// the main term is the rounding of the sum G itself, which a derivation would bound by the count of kept faces times
+// a rounding step, and the random grids stay well below that.
 inline void CheckWeightsAddUp(const GridTables& tables, const NearbyFaceWeights& weights) {
   CheckKeptWeightsAreNotNegative(tables, weights);
   EXPECT_NEAR(ComputeKeptWeightTotal(tables, weights), 1.0, kWeightSumTolerance);

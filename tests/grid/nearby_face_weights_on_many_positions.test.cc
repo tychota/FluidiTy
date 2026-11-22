@@ -55,12 +55,16 @@ TEST(ComputeNearbyFaceWeights, CompleteSameSize_MatchesClosedForm) {
 }
 
 // How far W may be from 1 in the non-dyadic frame. A face centre there is a double near 18.6 m, so it is rounded by up
-// to half a step of 3.6e-15 m, which is 4.7e-14 of a 0.0375 m cell width; W changes by at most about that much, and
-// the weights scaled by W still add up to 1 within kWeightSumTolerance.
-constexpr double kNonDyadicWeightSumTolerance = 1e-13;
+// to half a step of 3.6e-15 m, which is 4.7e-14 of a 0.0375 m cell width, and the product that places it adds about
+// 3e-15 of the width. Each plane of faces then has a distance off by about 5e-14 of the width, and W changes by that
+// times the sum of |Q'| over the planes of faces (Q' is the slope of the weight curve). That sum gets to 2 at a cell
+// centre, where |Q'| is 1 at the two distances of 0.5, so W is off by up to about 1e-13, and adding the 27 products
+// adds about 3e-15. The scaled weights still add up to 1 within kWeightSumTolerance. A bound of 2e-13 keeps that
+// worst case inside, and a wrong formula is off by more than 1e-3.
+constexpr double kNonDyadicWeightSumTolerance = 2e-13;
 
 // The 1,000 positions of the non-dyadic frame, each on a cell side or centre moved by up to 3 rounding steps: every
-// axis is complete, every weight is at least 0, the scaled weights add up to 1 within 1e-14 and W is 1 within 1e-13.
+// axis is complete, every weight is at least 0, the scaled weights add up to 1 within 1e-14 and W is 1 within 2e-13.
 TEST(ComputeNearbyFaceWeights, NonDyadicFrameAtSideOrCentre_IsComplete) {
   const GridFrame frame = ToNonDyadicFrame();
   const std::vector<CellId> cells = BuildNonDyadicCells();

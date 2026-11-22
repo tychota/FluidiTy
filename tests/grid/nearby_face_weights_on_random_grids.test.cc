@@ -89,55 +89,48 @@ TEST(ComputeNearbyFaceWeights, AnyKeptSet_WeightsSumToOne) {
   EXPECT_GT(checked_count, 20000);
 }
 
-// The value of the linear field a + b . x at a point.
-double ComputeLinearValue(Vec3 point) {
-  constexpr double kConstantPart = 0.7;
-  constexpr Vec3 kSlope = {.x = 0.3, .y = -1.1, .z = 2.0};
-  return kConstantPart + math::Dot(kSlope, point);
-}
-
-// Checks that a full fit reproduces the linear field: the value at the particle, and the fitted matrix row.
+// Checks that a full fit reproduces the paper's linear field a + b . (x_f - x_p): the value at the particle, and the
+// matrix row fitted from the values.
 //
 // A fit with a nearly flat spread (a condition number of 1e6, say) is still kFull, and rounding in the moment is
 // magnified by that number in the inverse: the matrix row is off by about eps cond |value| / h, and the value at the
-// particle by eps cond |value|. The condition number is at most trace(S) trace(S^-1), and the extra tolerance is 16
-// rounding steps of it, so a wrong fit, which is wrong by O(1), still fails.
+// particle by eps cond |value|, as the documentation of ComputeNearbyFaceWeights says. The condition number is at most
+// trace(S) trace(S^-1), and the extra tolerance is 16 rounding steps of it, so a wrong fit, which is wrong by O(1),
+// still fails. The field is centred on the position, so its values stay at its base value a plus b h and do not grow
+// with the distance of the grid from the origin.
 void CheckLinearFieldIsReproduced(const GridTables& tables, const NearbyFaceWeights& weights) {
-  constexpr double kConstantPart = 0.7;
-  constexpr Vec3 kSlope = {.x = 0.3, .y = -1.1, .z = 2.0};
+  constexpr LinearField kField = {.base_value = 0.7, .slope = {.x = 0.3, .y = -1.1, .z = 2.0}};
   if (weights.fit != NearbyFaceFit::kFull) {
     return;
   }
   double weighted_value_sum = 0.0;
   double largest_value = 0.0;
-  Vec3 weighted_moment = {.x = 0.0, .y = 0.0, .z = 0.0};
   for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
     if (!ComputeIsKept(weights.kept, position_in_list)) {
       continue;
     }
     const FaceWeight face_weight = ComputeFaceWeight(tables, weights, position_in_list);
-    const double value = ComputeLinearValue(ComputeFacePosition(tables, face_weight.face));
+    const double value = ComputeLinearValue(kField, face_weight.offset);
     largest_value = std::max(largest_value, std::abs(value));
     weighted_value_sum += face_weight.weight * value;
-    weighted_moment = weighted_moment + (face_weight.offset_from_mean * (face_weight.weight * value));
   }
-  const Vec3 fitted_matrix_row = weights.inverse_weighted_spread * weighted_moment;
+  const Vec3 fitted_matrix_row = ComputeFittedMatrixRow(tables, weights, kField, ValueCentring::kUncentred);
   const double value_at_particle = weighted_value_sum - math::Dot(fitted_matrix_row, weights.mean_offset);
-  const double slope_size = math::Length(kSlope);
+  const double slope_size = math::Length(kField.slope);
   const double spread_trace = weights.weighted_spread.xx + weights.weighted_spread.yy + weights.weighted_spread.zz;
   const double inverse_trace =
       weights.inverse_weighted_spread.xx + weights.inverse_weighted_spread.yy + weights.inverse_weighted_spread.zz;
   const double conditioning_error = 16.0 * std::numeric_limits<double>::epsilon() * spread_trace * inverse_trace;
   const double cell_width = weights.list.cell_width;
   const double value_tolerance =
-      (1e-13 * (kConstantPart + (slope_size * cell_width))) + (conditioning_error * largest_value);
-  EXPECT_NEAR(value_at_particle, ComputeLinearValue(weights.position), value_tolerance);
+      (1e-13 * (kField.base_value + (slope_size * cell_width))) + (conditioning_error * largest_value);
+  EXPECT_NEAR(value_at_particle, kField.base_value, value_tolerance);
   const double matrix_row_tolerance = (1e-11 * slope_size) + (conditioning_error * largest_value / cell_width);
-  EXPECT_LE(math::Length(fitted_matrix_row - kSlope), matrix_row_tolerance);
+  EXPECT_LE(math::Length(fitted_matrix_row - kField.slope), matrix_row_tolerance);
 }
 
-// The value a + b . x_f on every face, the 200 random grids with random masks, only where the fit is kFull: the value
-// at the particle and the fitted matrix row are those of the field.
+// The value a + b . (x_f - x_p) on every face, the 200 random grids with random masks, only where the fit is kFull: the
+// value at the particle and the fitted matrix row are those of the field.
 TEST(ComputeNearbyFaceWeights, LinearField_IsReproduced) {
   const int checked_count = ApplyToRandomWeights(20, CheckLinearFieldIsReproduced);
   RecordProperty("checked_lists", checked_count);

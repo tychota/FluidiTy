@@ -36,7 +36,9 @@
 //   position), the weighted spread around it, and the inverse of that spread, which a transfer uses to fit how a
 //   value varies around the position. Four properties hold for every grid and every mask whose fit is not kNone:
 //   1. Constants are reproduced for any kept set: the weights add up to 1, and their changes add up to 0.
-//   2. Linear fields are reproduced whenever the fit is kFull.
+//   2. Linear fields are reproduced whenever the fit is kFull, in exact arithmetic. In floating point the error of a
+//      fitted slope depends on the spread's condition number and on the size of the values
+//      (ComputeNearbyFaceWeights).
 //   3. A weight is never negative, and is 0 only for a face exactly 1.5 cell widths away on some axis.
 //   4. Weights jump when the position changes cell across a size change: the width, the candidates and the area
 //      factors all follow the cell that holds the position. This is the known open question of the force passed
@@ -554,6 +556,18 @@ FLUIDITY_CPU_AND_GPU inline CholeskyInverse ComputeCholeskyInverse(Mat3 matrix) 
 //   (ComputeCholeskyInverse). The fit is kMeanOnly when a pivot is at most kMinPivotShare times the trace or W is
 //   below kMinWeightSum, else kFull, and the inverse is that of the scaled matrix times 1 / (h x h).
 //   The faces' raw weights are computed again at each step, with the same operations, so no per-face memory is held.
+//   What rounding allows for a fit of values. A kFull fit can still be badly conditioned: the pivot floor lets a spread
+//   through whose largest and smallest eigenvalues differ by a factor of up to about 1e12 (the condition number). The
+//   scaled weights times the offsets from the mean add up to about 1e-16 h, not to 0. A value v on every face adds
+//   v times that sum to the moment, and the inverse spread magnifies it, so the fitted matrix row of a field whose
+//   values are about v is off by about 1e-16 x condition number x v / h, whatever its slope. A caller that fits values
+//   therefore subtracts their weighted mean first, which gives the same matrix row in exact arithmetic and leaves their
+//   size out of the moment; the error is then of the size of the field's variation over a cell width times 1e-16 x
+//   condition number. Worked example: a unit grid, X axis, position {2.5 - 2e-6, 2.5, 2.5}, only the 9 faces at x = 2
+//   and the 9 at x = 1 kept. The faces at x = 1 lie 1.5 - 2e-6 away and weigh about 2e-12 of the others, so S_xx is
+//   about 4e-12, S_yy and S_zz are 0.25 and the floor is 5e-13: the fit is kFull with a condition number near 6e10. For
+//   the field 1 + b . (x_f - x_p) the matrix row fitted from the values is off by 8e-6 in length (1e-16 x
+//   6e10 x 1 / 1 m, measured); fitted from the values minus their weighted mean it is right to 5e-16.
 // Units: position in m, world; the sums, the mean offset and the matrices as in NearbyFaceWeights.
 // Order: list order; the three passes (sums, mean, spread) each visit the kept faces in ascending list position.
 // Example: the complete case of the file header: W = 1, mean_offset = 0 and weighted_spread = h^2 / 4 times the

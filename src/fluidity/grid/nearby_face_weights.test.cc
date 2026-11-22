@@ -9,7 +9,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
+#include <iomanip>
+#include <ios>
 #include <limits>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "fluidity/base/axis.h"
@@ -326,6 +330,33 @@ BuildMaskOfFacesAt(const GridTables& tables, const NearbyFaceWeights& weights, A
   return mask;
 }
 
+// Writes a number with 3 digits after the point and an exponent, for RecordProperty.
+std::string ToScientificText(double value) {
+  std::ostringstream text;
+  text << std::scientific << std::setprecision(3) << value;
+  return text.str();
+}
+
+// Says whether an offset in m is within 1e-9 m of `expected`.
+bool ComputeIsNearOffset(double actual, double expected) {
+  return std::abs(actual - expected) < 1e-9;
+}
+
+// Builds the mask that keeps exactly the faces of a list whose offset from the position, in m, `is_kept_offset`
+// accepts.
+template <typename IsKeptOffset>
+NearbyFaceMask
+BuildMaskOfFacesWhere(const GridTables& tables, const NearbyFaceWeights& weights, IsKeptOffset is_kept_offset) {
+  NearbyFaceMask mask{};
+  const std::vector<Vec3> offsets = ToFaceOffsets(tables, weights.list, weights.position);
+  for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
+    if (is_kept_offset(offsets[static_cast<std::size_t>(position_in_list)])) {
+      mask.bits[position_in_list / 64] |= std::uint64_t{1} << static_cast<unsigned>(position_in_list % 64);
+    }
+  }
+  return mask;
+}
+
 // Builds the mask that keeps only face `position_in_list` of a list.
 NearbyFaceMask BuildMaskOfOneFace(int position_in_list) {
   NearbyFaceMask mask{};
@@ -530,7 +561,7 @@ TEST(ComputeNearbyFaceWeights, FacesOnOnePlane_IsMeanOnly) {
   const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, all_kept.list, position, plane_mask);
   EXPECT_EQ(weights.fit, NearbyFaceFit::kMeanOnly);
   EXPECT_GT(weights.weight_sum, kMinWeightSum);
-  EXPECT_EQ(weights.inverse_weighted_spread.xx, 0.0);
+  CheckMatrixIsNear(weights.inverse_weighted_spread, Mat3{}, 0.0);
   CheckWeightsAddUp(tables, weights);
 }
 
@@ -548,7 +579,70 @@ TEST(ComputeNearbyFaceWeights, WeightSumBelowTheMinimum_IsMeanOnly) {
   EXPECT_GT(weights.weight_sum, 0.0);
   EXPECT_LT(weights.weight_sum, kMinWeightSum);
   EXPECT_EQ(weights.fit, NearbyFaceFit::kMeanOnly);
+  CheckMatrixIsNear(weights.inverse_weighted_spread, Mat3{}, 0.0);
   CheckWeightsAddUp(tables, weights);
+}
+
+// The 8 faces at the corners of the 3 x 3 x 3 lattice of an X list, at the position {2.6, 2.7, 2.8} of the unit grid:
+// offsets x in {-0.6, 1.4}, y in {-1.2, 0.8} and z in {-1.3, 0.7}. The weight curve gives, per axis,
+//   x: Q(0.6) + Q(1.4) = 0.5 x 0.9^2 + 0.5 x 0.1^2 = 0.405 + 0.005 = 0.41,
+//   y: Q(1.2) + Q(0.8) = 0.5 x 0.3^2 + 0.5 x 0.7^2 = 0.045 + 0.245 = 0.29,
+//   z: Q(1.3) + Q(0.7) = 0.5 x 0.2^2 + 0.5 x 0.8^2 = 0.02 + 0.32 = 0.34,
+// so W = 0.41 x 0.29 x 0.34 = 0.040426, below the 0.1 minimum. The weights are products of the axes' weights, so the
+// spread is diagonal; with p the scaled weight of the low face of an axis and 2 the distance between its two faces,
+// each entry is 4 p (1 - p): x 4 x (0.405 / 0.41) (0.005 / 0.41) = 0.0482, y 0.5244, z 0.2215. Every pivot is far
+// above the floor of 1e-12 times the trace, so the spread alone would be invertible; only W keeps the fit mean-only.
+TEST(ComputeNearbyFaceWeights, SmallWeightSumWithFullRankSpread_IsMeanOnly) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildUniformFiveByFiveGrid();
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  const Vec3 position = {.x = 2.6, .y = 2.7, .z = 2.8};
+  const NearbyFaceWeights all_kept = FindWeightsOfAllFaces(tables, position, Axis::kX);
+  const NearbyFaceMask corner_mask = BuildMaskOfFacesWhere(tables, all_kept, [](Vec3 offset) {
+    return (ComputeIsNearOffset(offset.x, -0.6) || ComputeIsNearOffset(offset.x, 1.4))
+        && (ComputeIsNearOffset(offset.y, -1.2) || ComputeIsNearOffset(offset.y, 0.8))
+        && (ComputeIsNearOffset(offset.z, -1.3) || ComputeIsNearOffset(offset.z, 0.7));
+  });
+  const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, all_kept.list, position, corner_mask);
+  EXPECT_NEAR(weights.weight_sum, 0.040426, 1e-12);
+  EXPECT_LT(weights.weight_sum, kMinWeightSum);
+  const double spread_diagonal_x = 4.0 * (0.405 / 0.41) * (0.005 / 0.41);
+  CheckMatrixIsNear(
+      weights.weighted_spread,
+      {.xx = spread_diagonal_x, .xy = 0, .xz = 0, .yx = 0, .yy = 0.5244, .yz = 0, .zx = 0, .zy = 0, .zz = 0.2215},
+      1e-3
+  );
+  EXPECT_TRUE(ComputeCholeskyInverse(weights.weighted_spread).is_invertible);
+  EXPECT_EQ(weights.fit, NearbyFaceFit::kMeanOnly);
+  CheckMatrixIsNear(weights.inverse_weighted_spread, Mat3{}, 0.0);
+  CheckWeightsAddUp(tables, weights);
+}
+
+// The two-plane scenario of the fit's limit: a unit grid, X axis, position {2.5 - 2e-6, 2.5, 2.5}, only the 9 faces at
+// x = 2 and the 9 at x = 1 kept. The faces at x = 1 weigh about 2e-12 of the others, so S_xx is about 4e-12 against a
+// floor of 5e-13: the fit is kFull with a condition number near 6e10. The field is 1 + b . (x_f - x_p). The row fitted
+// from the values has an error of about 8e-6; fitted from the values minus their weighted mean it is right to 1e-13.
+TEST(ComputeNearbyFaceWeights, TwoPlanesOneNearlyWeightless_CentredValuesFitTightly) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildUniformFiveByFiveGrid();
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  const Vec3 position = {.x = 2.5 - 2e-6, .y = 2.5, .z = 2.5};
+  const NearbyFaceWeights all_kept = FindWeightsOfAllFaces(tables, position, Axis::kX);
+  const NearbyFaceMask plane_mask = BuildMaskOfFacesWhere(tables, all_kept, [](Vec3 offset) {
+    return ComputeIsNearOffset(offset.x, -1.5 + 2e-6) || ComputeIsNearOffset(offset.x, -0.5 + 2e-6);
+  });
+  const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, all_kept.list, position, plane_mask);
+  ASSERT_EQ(weights.fit, NearbyFaceFit::kFull);
+  EXPECT_NEAR(weights.weight_sum, 0.5, 1e-5);
+  const double condition_number = weights.weighted_spread.yy / weights.weighted_spread.xx;
+  EXPECT_GT(condition_number, 1e10);
+  constexpr LinearField kField = {.base_value = 1.0, .slope = {.x = 0.3, .y = -1.1, .z = 2.0}};
+  const Vec3 centred_row = ComputeFittedMatrixRow(tables, weights, kField, ValueCentring::kCentred);
+  const Vec3 uncentred_row = ComputeFittedMatrixRow(tables, weights, kField, ValueCentring::kUncentred);
+  RecordProperty("condition_number", ToScientificText(condition_number));
+  RecordProperty("uncentred_row_error", ToScientificText(math::Length(uncentred_row - kField.slope)));
+  RecordProperty("centred_row_error", ToScientificText(math::Length(centred_row - kField.slope)));
+  CheckVectorIsNear(centred_row, kField.slope, 1e-13);
 }
 
 TEST(ComputeNearbyFaceWeights, EmptyMask_IsNone) {
