@@ -204,7 +204,7 @@ jobs:
         run: uv run --frozen cmake --build --preset ${{ env.PRESET }}
 
       - name: Test
-        run: uv run --frozen ctest --preset ${{ env.PRESET }}
+        run: uv run --frozen ctest --preset ${{ env.PRESET }} --parallel 4
 
   # The CUDA compile reuses the gate's `cuda` step instead of retyping it. That step builds
   # tools/cuda-container/Dockerfile and runs the container script of tools/check_commit.py, so the image digest

@@ -13,7 +13,9 @@ The steps, in order:
           The rules check prints a NOTE only for a line the staged changes add; the gate prints each such note on a
           line `rules note: <note>` before the PASS or FAIL line.
   cpu     fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
-          debug and the release CPU presets of the platform the gate runs on.
+          debug and the release CPU presets of the platform the gate runs on. ctest runs one test per core at once.
+          (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
+          `--parallel <cores>`.)
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
           debug preset, over every tracked .cc file under native/ that the CPU build compiles, and over each
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
@@ -116,7 +118,7 @@ python -c 'import json, sys; [print("{COMPILED_MARKER}" + entry["file"]) for ent
 # One path per line; with no path, nothing runs.
 xargs --no-run-if-empty clang-tidy -p /out/build/{CUDA_PRESET} --quiet < /out/build/{CUDA_PRESET}/gpu_only_sources.txt
 # ctest labels are regular expressions: a bare `gpu` would also match `no_gpu`.
-ctest --test-dir /out/build/{CUDA_PRESET} -L '^(cpu|no_gpu)$' --no-tests=error --output-on-failure
+ctest --test-dir /out/build/{CUDA_PRESET} --parallel "$(nproc)" -L '^(cpu|no_gpu)$' --no-tests=error --output-on-failure
 """
 
 # A label in Typst text: <sec-run-on>, <eq:pressure>.
@@ -347,7 +349,7 @@ class Gate:
         ]
         command_list.append(["cmake", "--preset", preset])
         command_list.append(["cmake", "--build", "--preset", preset])
-        command_list.append(["ctest", "--preset", preset])
+        command_list.append(["ctest", "--preset", preset, "--parallel", str(os.cpu_count() or 1)])
         return self.commands(f"cpu-{preset}", command_list)
 
     def check_tidy(self) -> Outcome:

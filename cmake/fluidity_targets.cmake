@@ -128,7 +128,9 @@ endfunction()
 # fluidity_add_test(<name> SOURCES <files...> LABEL <cpu|gpu|no_gpu> [LINKS <targets...>])
 #
 # Builds one GoogleTest program linked to the library and registers each of its tests with CTest under the label,
-# so `ctest -L '^cpu$'` runs the CPU tests only. A label filter is a regular expression: a bare `-L gpu` would also
+# so `ctest -L '^cpu$'` runs the CPU tests only. Each test also gets the name of its module, the name of the folder of
+# the calling CMakeLists.txt (base, grid, contact), so `ctest --preset macos-debug-cpu -L grid` runs the grid tests
+# alone. A label filter is a regular expression: a bare `-L gpu` would also
 # select the no_gpu tests, so `ctest -L '^gpu$'` runs the tests that need a GPU.
 #   cpu     runs on the CPU only.
 #   gpu     needs a CUDA GPU at run time.
@@ -160,10 +162,12 @@ function(fluidity_add_test name)
     fluidity_record_gpu_only_sources(${arg_SOURCES})
   endif()
 
+  cmake_path(GET CMAKE_CURRENT_SOURCE_DIR FILENAME module_name)
+
   add_executable(${name} ${arg_SOURCES})
   target_link_libraries(${name} PRIVATE fluidity GTest::gtest_main ${arg_LINKS})
   fluidity_apply_compile_flags(${name} EXCEPTIONS ON)
-  gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS ${arg_LABEL})
+  gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "${arg_LABEL};${module_name}")
 endfunction()
 
 # fluidity_add_test_library(<name> SOURCES <files...> [GPU_SOURCES <files...>] [LINKS <targets...>])

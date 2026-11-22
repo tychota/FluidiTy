@@ -433,3 +433,29 @@ def test_label_inside_paper_comment_is_not_a_definition(monkeypatch, capsys, rep
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "paper")
     assert exit_code == 1
     assert lines == ["FAIL paper: native/fluidity/b.h:3 cites <sec-commented>, which the paper does not define"]
+
+
+def test_cpu_step_runs_ctest_with_one_job_per_core(monkeypatch, capsys, repo):
+    monkeypatch.setattr(check_commit.os, "cpu_count", lambda: 7)
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    ctest_runs = [command for command in fake.commands if command[0] == "ctest"]
+    assert ctest_runs == [
+        ["ctest", "--preset", DEBUG_PRESET, "--parallel", "7"],
+        ["ctest", "--preset", RELEASE_PRESET, "--parallel", "7"],
+    ]
+
+
+def test_cpu_step_runs_ctest_with_one_job_when_the_core_count_is_unknown(monkeypatch, capsys, repo):
+    monkeypatch.setattr(check_commit.os, "cpu_count", lambda: None)
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert ["ctest", "--preset", DEBUG_PRESET, "--parallel", "1"] in fake.commands
+
+
+def test_container_runs_its_tests_on_every_core(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
+    script = next(command for command in fake.commands if command[:2] == ["docker", "run"])[-1]
+    ctest_line = next(line for line in script.splitlines() if line.startswith("ctest"))
+    assert '--parallel "$(nproc)"' in ctest_line

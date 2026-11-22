@@ -485,6 +485,11 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   `120-virtual`). The owner's hardware run is on an RTX 5060 Ti; it is not recorded yet in `docs/gpu-runs.md`, so
   even that card is untested today. RTX 30 and 40 are compiled for, unverified. On a machine with a GPU, the tests
   that need it are `ctest --preset linux-release-cuda -L '^gpu$'` (a bare `-L gpu` would also match `no_gpu`).
+- Run the tests of one module: every test carries its backend label and the name of its module, the folder of the
+  `CMakeLists.txt` that registered it (`base`, `grid`, `contact`), so `ctest --preset macos-debug-cpu -L grid`
+  runs the grid tests alone, and `ctest --preset macos-debug-cpu -L '^cpu$' -L grid` the grid tests labelled `cpu`.
+  The gate runs ctest with one job per core (`--parallel <cores>`); run it the same way by hand, with
+  `--parallel <cores>`. A preset cannot say "all cores" in a form every CMake version accepts.
 - Test labels: `cpu` tests run everywhere, `no_gpu` tests run only in the CUDA container (a machine without a GPU,
   because they assert that no GPU is usable), and `gpu` tests run only on hardware.
 - GPU run for the owner, on Windows with an NVIDIA GPU, in PowerShell 7, from the repository root:
