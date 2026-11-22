@@ -1,0 +1,23 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_246c0ea1eef3dd 2113-2122,2439-2445
+native/fluidity/grid/face_search_test.cc
+  s_4f0877e2acdcf0::t_b676ce8bab7450 748,1038-1039
+native/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_8af7da0e68aab8 110-111,1688-1690
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "147a0aa7baa6b0850df207c37a18bd021b570233",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
