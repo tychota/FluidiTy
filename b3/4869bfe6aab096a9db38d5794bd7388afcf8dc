@@ -1,0 +1,41 @@
+src/fluidity/grid/border_block_steps.test.cc
+  s_4f0877e2acdcf0::t_7fe99f07062eda 305-306
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_2084f3ad64ffa4 201-202,212-213,265-266
+src/fluidity/grid/cell_block_range.test.cc
+  s_4f0877e2acdcf0::t_04bbe7b7fd9349 62-63,745-746
+src/fluidity/grid/cell_block_range_gpu.h
+  s_4f0877e2acdcf0::t_4c98d4238f4a25 31-32,105-106
+src/fluidity/grid/grid_piece_cpu.cc
+  s_4f0877e2acdcf0::t_f326b737662ee7 304-305
+src/fluidity/grid/grid_piece_gpu.h
+  s_4f0877e2acdcf0::t_7de6b2ec1976f5 32-33,62-63
+src/fluidity/grid/grid_piece_steps.h
+  s_4f0877e2acdcf0::t_da7223405d9440 147-148
+tests/grid/border_blocks.gpu.test.cc
+  s_4f0877e2acdcf0::t_58f241a3b24f61 1,11
+tests/grid/grid_piece_steps.gpu.test.cc
+  s_4f0877e2acdcf0::t_14a50f79f4e819 1
+tests/grid/grid_pieces.gpu.test.cc
+  s_4f0877e2acdcf0::t_950a4fd79cd019 1
+tests/grid/grid_pieces_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_f7b88d2a1ae3b5 183-184,362-363,497-498,513-514
+tests/grid/stacked_borders.gpu.test.cc
+  s_4f0877e2acdcf0::t_9bce9d1aa13f11 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b34869bfe6aab096a9db38d5794bd7388afcf8dc",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
