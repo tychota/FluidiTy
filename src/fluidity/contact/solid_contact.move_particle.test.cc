@@ -204,7 +204,7 @@ TEST(MoveParticle, DocstringExample_StopsOneToleranceShort) {
   const SolidContactResult& result = call.result;
   EXPECT_EQ(result.kind, ContactKind::kHit);
   CheckNearRelative(result.hit_fraction, (0.1 - kTolerance) / 0.2, 1);
-  ExpectVec3Near(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
   CheckVec3NearRelative(result.velocity.for_next_step, {}, 1);
   CheckVec3NearRelative(result.velocity.for_this_step, {}, 1);
   CheckNearRelative(result.approach_speed.for_next_step, -1, 1);
@@ -223,7 +223,7 @@ TEST(MoveParticle, SecondSolidHitFirst_RecordNamesItsIndex) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.solid_index, 1U);
   EXPECT_EQ(call.result.hit_count, 1);
-  ExpectVec3Near(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = 0.5}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = 0.5}, kPositionTolerance);
 }
 
 TEST(MoveParticle, Success_WritesDefaultFailure) {
@@ -236,7 +236,7 @@ TEST(MoveParticle, NullFailure_MovesAsWithFailure) {
   const MoveParticleCase moving = FindMoveParticleCase("DocstringExample");
   SolidContactResult result;
   EXPECT_EQ(MoveParticle(ToSolidContactInputs(moving), &result, nullptr), ContactError::kNone);
-  ExpectVec3Near(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
 }
 
 TEST(MoveParticle, NullFailure_FailsAsWithFailure) {
@@ -255,7 +255,7 @@ TEST(MoveParticle, HitAtEndOfStep_EndsAtTheHit) {
   EXPECT_EQ(call.result.kind, ContactKind::kHit);
   EXPECT_EQ(call.result.hit_fraction, 1);
   EXPECT_EQ(call.result.hit_count, 1);
-  ExpectVec3Near(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
   CheckVec3NearRelative(call.result.velocity.for_this_step, {}, 1);
 }
 
@@ -272,12 +272,12 @@ TEST(MoveParticle, PaperFigureRisingFloor_MatchesFigure) {
   CheckVec3NearRelative(result.velocity.for_next_step, {.x = 0.75, .y = 0, .z = 0.5}, kLargestSpeed);
   CheckNearRelative(result.approach_speed.for_next_step, -3, kLargestSpeed);
   CheckNearRelative(result.approach_speed.for_this_step, -2, kLargestSpeed);
-  ExpectVec3Near(result.position, {.x = 2.3, .y = 0, .z = 0.5 + kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = 2.3, .y = 0, .z = 0.5 + kTolerance}, kPositionTolerance);
   // The rising floor is touched: the slide moves with it, and rounding at the hit is not a second hit.
   EXPECT_EQ(result.hit_count, 1);
   EXPECT_EQ(result.reaction.solid_index, 0U);
   CheckVec3Equal(result.reaction.velocity_for_next_step_change, {.x = -0.75, .y = 0, .z = 3});
-  ExpectVec3Near(result.reaction.hit_position, {.x = 1.5, .y = 0, .z = 0.3 + kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(result.reaction.hit_position, {.x = 1.5, .y = 0, .z = 0.3 + kTolerance}, kPositionTolerance);
 }
 
 TEST(MoveParticle, DifferentVelocities_EachGetsItsOwnApproach) {
@@ -289,7 +289,7 @@ TEST(MoveParticle, DifferentVelocities_EachGetsItsOwnApproach) {
   CheckVec3Equal(call.result.velocity.for_this_step, {});
   EXPECT_EQ(call.result.approach_speed.for_next_step, -3);
   EXPECT_EQ(call.result.approach_speed.for_this_step, -1);
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = kTolerance}, kPositionTolerance);
 }
 
 // --- Plates, moving and fixed ---
@@ -308,13 +308,13 @@ void CheckPlateRowHit(std::string_view case_name, int plate_row, Vec3 axis, bool
   EXPECT_EQ(result.kind, ContactKind::kHit);
   EXPECT_EQ(result.hit_count, 1);
   CheckNearRelative(result.hit_fraction, (1 - kHalfThickness - kTolerance) / 2, 1);
-  ExpectVec3Near(result.normal_out_of_solid, side_sign * axis, 0);
+  CheckVec3IsNear(result.normal_out_of_solid, side_sign * axis, 0);
   CheckNearRelative(result.approach_speed.for_next_step, -2, kLargestSpeed);
   CheckNearRelative(result.approach_speed.for_this_step, -2, kLargestSpeed);
   EXPECT_EQ(result.side_at_hit, is_along_normal_side ? SolidSide::kAlongNormal : SolidSide::kAgainstNormal);
   EXPECT_EQ(result.face, is_along_normal_side ? SolidFace::kHighZ : SolidFace::kLowZ);
   const double end_coordinate = plate_row == 0 ? -(kHalfThickness + kTolerance) : 1 + kHalfThickness + kTolerance;
-  ExpectVec3Near(result.position, end_coordinate * axis, kPositionTolerance);
+  CheckVec3IsNear(result.position, end_coordinate * axis, kPositionTolerance);
   const Vec3 end_velocity = plate_row == 0 ? Vec3{} : 2 * axis;
   CheckVec3NearRelative(result.velocity.for_next_step, end_velocity, kLargestSpeed);
   CheckVec3NearRelative(result.velocity.for_this_step, end_velocity, kLargestSpeed);
@@ -326,7 +326,7 @@ void CheckPlateRowFree(std::string_view case_name, Vec3 axis) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
-  ExpectVec3Near(call.result.position, axis, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, axis, kPositionTolerance);
   CheckVec3Equal(call.result.velocity.for_this_step, axis);
 }
 
@@ -366,7 +366,7 @@ TEST(MoveParticle, FrictionOnSideBottom_LeavesSideways2Point5) {
   const double hit_elapsed = 0.1 - kTolerance;  // s
   CheckVec3NearRelative(call.result.velocity.for_this_step, {.x = 2.5, .y = 0, .z = 0}, 3);
   CheckVec3NearRelative(call.result.velocity.for_next_step, {.x = 2.5, .y = 0, .z = 0}, 3);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       call.result.position,
       {.x = 0.2 + 3 * hit_elapsed + 2.5 * (0.2 - hit_elapsed), .y = 0.5, .z = kTolerance},
       kPositionTolerance
@@ -382,7 +382,7 @@ TEST(MoveParticle, FrictionScaleTwo_DoublesFriction) {
   ASSERT_EQ(call.error, ContactError::kNone);
   CheckVec3NearRelative(call.result.velocity.for_this_step, {.x = 2, .y = 0, .z = 0}, 3);
   CheckVec3NearRelative(call.result.velocity.for_next_step, {.x = 2, .y = 0, .z = 0}, 3);
-  ExpectVec3Near(call.result.position, {.x = 2.5, .y = 0, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 2.5, .y = 0, .z = kTolerance}, kPositionTolerance);
 }
 
 TEST(MoveParticle, DomainCorner_ThreeSidesHitInOneStep) {
@@ -390,7 +390,7 @@ TEST(MoveParticle, DomainCorner_ThreeSidesHitInOneStep) {
   const MoveParticleCall call = ComputeMove("DomainCorner");
   ASSERT_EQ(call.error, ContactError::kNone);
   const SolidContactResult& result = call.result;
-  ExpectVec3Near(result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kPositionTolerance);
   CheckVec3NearRelative(result.velocity.for_next_step, {}, 1);
   CheckVec3NearRelative(result.velocity.for_this_step, {}, 1);
   EXPECT_EQ(result.hit_count, 3);
@@ -472,7 +472,7 @@ TEST(MoveParticle, FloorThenRamp_SlidesUpTheRamp) {
   EXPECT_EQ(call.result.hit_count, 2);
   EXPECT_EQ(call.result.solid_index, 0U);
   CheckVec3NearRelative(call.result.velocity.for_this_step, {.x = 0.64, .y = 0, .z = 0.48}, 1);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       call.result.position,
       {.x = 1.32 - 0.12 * kTolerance, .y = 0, .z = 0.24 + 1.16 * kTolerance},
       kPositionTolerance
@@ -489,10 +489,10 @@ TEST(MoveParticle, FloorThenMovingUpright_SecondSweepPosesItAtSweepStart) {
   EXPECT_EQ(call.result.hit_count, 2);
   CheckVec3NearRelative(call.result.velocity.for_this_step, {.x = -0.5, .y = 0, .z = 0}, 1);
   CheckVec3NearRelative(call.result.velocity.for_next_step, {.x = -0.5, .y = 0, .z = 0}, 1);
-  ExpectVec3Near(call.result.position, {.x = 0.5 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0.5 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
   EXPECT_EQ(call.result.reaction.solid_index, 1U);
   CheckVec3Equal(call.result.reaction.velocity_for_next_step_change, {.x = -1.5, .y = 0, .z = 0});
-  ExpectVec3Near(
+  CheckVec3IsNear(
       call.result.reaction.hit_position,
       {.x = 2.0 / 3 - 2 * kTolerance / 3, .y = 0, .z = kTolerance},
       kPositionTolerance
@@ -600,7 +600,7 @@ TEST(MoveParticle, TurningBoxSlide_KeepsSidewaysPartInSolidAxes) {
   CheckVec3Equal(result.velocity.for_next_step, kUnitZ);
   const SolidPose end_pose = ComputeSolidPose(scene.solids.at(0), 0.1);
   const Vec3 own_end = {.x = 0.5 + kTolerance, .y = -0.1 * (0.5 + kTolerance) * std::cos(0.05), .z = 0.1};
-  ExpectVec3Near(result.position, end_pose.origin + end_pose.axes * own_end, kPositionTolerance);
+  CheckVec3IsNear(result.position, end_pose.origin + end_pose.axes * own_end, kPositionTolerance);
 }
 
 // The state after a run of steps on solids that keep moving: the position, the velocities, and how the steps went.
@@ -680,7 +680,7 @@ void CheckTurntableFrictionlessResidue(double step_duration) {
   EXPECT_EQ(run.steps_with_one_hit, 50);
   EXPECT_GE(run.least_end_share, 0.99);
   EXPECT_LE(run.largest_end_share, 1.01);
-  ExpectVec3Near(run.velocity.for_next_step, {.x = 0, .y = 0, .z = 0}, 1e-15);
+  CheckVec3IsNear(run.velocity.for_next_step, {.x = 0, .y = 0, .z = 0}, 1e-15);
   const double turn = 0.5 * step_duration;  // rad, a
   const double radius = std::hypot(run.position.x, run.position.y);  // m
   const double expected_growth = 50 * std::pow(turn, 4) / 48;  // share of r
@@ -787,7 +787,7 @@ TEST(MoveParticle, TiltingPaddle_SlidesFrictionlessRidesSticking) {
   EXPECT_LE(riding.largest_end_share, 1.01);
   const SolidPose end_pose = ComputeSolidPose(paddle, 0.5);
   const Vec3 own_end = math::Transpose(end_pose.axes) * (riding.position - end_pose.origin);
-  ExpectVec3Near(own_end, start, 2 * kTolerance);
+  CheckVec3IsNear(own_end, start, 2 * kTolerance);
 }
 
 // A box that moves at {0.2, -0.1, 0.05} m/s and turns at {0.3, 0.4, 0.5} rad/s, about no axis of its own, with a
@@ -833,7 +833,7 @@ TEST(MoveParticle, MovingTurningBoxSlide_CarriedWithMidStepAxes) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kHighZ);
-  ExpectVec3Near(call.result.position, expected_end, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, expected_end, kPositionTolerance);
 }
 
 TEST(MoveParticle, MovingTurningBoxSlide_VelocityAgreesWithPathToFirstOrder) {
@@ -1056,7 +1056,7 @@ TEST(MoveParticle, FloorStartThenTurningBoxBeyondWindow_SecondResponseAtTheSameT
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 2);
   EXPECT_EQ(call.result.face, SolidFace::kHighZ);
-  ExpectVec3Near(call.result.velocity.for_next_step, {.x = 0, .y = 0, .z = 0}, 1e-3);
+  CheckVec3IsNear(call.result.velocity.for_next_step, {.x = 0, .y = 0, .z = 0}, 1e-3);
 }
 
 TEST(MoveParticle, TurningBoxBesideFarFloorInEitherOrder_SameMove) {
@@ -1178,7 +1178,7 @@ TEST(MoveParticle, SpinningSphereStick_TakesSurfaceVelocity) {
   CheckNearRelative(call.result.hit_fraction, (0.5 - kTolerance) / 1.5, 1);
   EXPECT_EQ(call.result.face, SolidFace::kCurved);
   EXPECT_EQ(call.result.hit_count, 1);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       call.result.position,
       {.x = 0, .y = -2.0 / 3 - 2 * kTolerance, .z = 1 + kTolerance},
       kPositionTolerance
@@ -1189,7 +1189,7 @@ TEST(MoveParticle, StartOnSurfaceMovingAway_IsFree) {
   const MoveParticleCall call = ComputeMove("StartOnSurfaceMovingAway");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = 0.5}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = 0.5}, kPositionTolerance);
 }
 
 TEST(MoveParticle, FollowingSinkingFloor_EndCheckReadsEndPose) {
@@ -1209,7 +1209,7 @@ TEST(MoveParticle, ReactingSolid_ReactionIsChangeOfNextStepVelocity) {
   EXPECT_EQ(reaction.solid_index, 0U);
   const Vec3 before = test_case.inputs.velocity.for_next_step;
   CheckVec3Equal(reaction.velocity_for_next_step_change, call.result.velocity.for_next_step - before);
-  ExpectVec3Near(reaction.hit_position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
+  CheckVec3IsNear(reaction.hit_position, {.x = 1 - kTolerance, .y = 0, .z = 0}, kPositionTolerance);
 }
 
 TEST(MoveParticle, ReactingDomainCorner_ReactionSumsEveryChange) {
@@ -1219,7 +1219,7 @@ TEST(MoveParticle, ReactingDomainCorner_ReactionSumsEveryChange) {
   const SolidReaction& reaction = call.result.reaction;
   EXPECT_EQ(reaction.solid_index, 0U);
   CheckVec3Equal(reaction.velocity_for_next_step_change, {.x = 1, .y = 1, .z = 1});
-  ExpectVec3Near(
+  CheckVec3IsNear(
       reaction.hit_position,
       {.x = kTolerance, .y = 0.1 + kTolerance, .z = 0.2 + kTolerance},
       kPositionTolerance
@@ -1234,7 +1234,7 @@ TEST(MoveParticle, ReactingUprightAfterFloor_ReactionCountsOnlyTheReactingSolid)
   const SolidReaction& reaction = call.result.reaction;
   EXPECT_EQ(reaction.solid_index, 1U);
   CheckVec3Equal(reaction.velocity_for_next_step_change, {.x = -2, .y = 0, .z = 0});
-  ExpectVec3Near(reaction.hit_position, {.x = 1 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(reaction.hit_position, {.x = 1 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
 }
 
 TEST(MoveParticle, TwoReactingSolids_IsSecondReactingSolid) {
@@ -1422,7 +1422,7 @@ TEST(MoveParticle, FlatSolidPushesRestingParticle_CarriesIt) {
   CheckVec3Equal(result.velocity.for_next_step, {.x = 0, .y = 0, .z = 2});
   EXPECT_EQ(result.approach_speed.for_this_step, -2);
   EXPECT_EQ(result.approach_speed.for_next_step, -2);
-  ExpectVec3Near(result.position, {.x = 0, .y = 0, .z = 0.2 + kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = 0, .y = 0, .z = 0.2 + kTolerance}, kPositionTolerance);
   EXPECT_EQ(result.hit_count, 1);
 }
 
@@ -1436,7 +1436,7 @@ TEST(MoveParticle, FlatSolidPushesParticleWithinTolerance_HitAtStartFromRestGap)
   CheckVec3Equal(result.velocity.for_this_step, {.x = 0, .y = 0, .z = 2});
   EXPECT_EQ(result.approach_speed.for_this_step, -2);
   EXPECT_EQ(result.face, SolidFace::kHighZ);
-  ExpectVec3Near(result.position, {.x = 0, .y = 0, .z = 0.2 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0, .y = 0, .z = 0.2 + kTolerance}, kRestGapTolerance);
   EXPECT_EQ(result.hit_count, 1);
 }
 
@@ -1459,7 +1459,7 @@ TEST(MoveParticle, ShallowOverlap_StartedInsideSolidAndMovedOut) {
   EXPECT_EQ(result.solid_index, 0U);
   CheckVec3Equal(result.normal_out_of_solid, {.x = 0, .y = 0, .z = 1});
   CheckVec3Equal(result.velocity.for_this_step, {});
-  ExpectVec3Near(result.position, {.x = 0, .y = 0, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0, .y = 0, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, ShallowOverlapRisingFloor_CarriedFromRestGap) {
@@ -1471,7 +1471,7 @@ TEST(MoveParticle, ShallowOverlapRisingFloor_CarriedFromRestGap) {
   EXPECT_EQ(result.hit_count, 1);
   EXPECT_EQ(result.approach_speed.for_this_step, -1);
   CheckVec3Equal(result.velocity.for_this_step, {.x = 0, .y = 0, .z = 1});
-  ExpectVec3Near(result.position, {.x = 0, .y = 0, .z = 0.1 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0, .y = 0, .z = 0.1 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DeepOverlap_IsStartsInsideSolid) {
@@ -1527,7 +1527,7 @@ TEST(MoveParticle, ForNextStepApproachesWithinTolerance_IsHitAtStart) {
   EXPECT_EQ(result.approach_speed.for_this_step, 1);
   CheckVec3Equal(result.velocity.for_next_step, {});
   CheckVec3Equal(result.velocity.for_this_step, {.x = 1, .y = 0, .z = 1});
-  ExpectVec3Near(result.position, {.x = 0.1, .y = 0, .z = kTolerance + 0.1}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0.1, .y = 0, .z = kTolerance + 0.1}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, SlowApproachWithinTolerance_IsHitAtStart) {
@@ -1538,7 +1538,7 @@ TEST(MoveParticle, SlowApproachWithinTolerance_IsHitAtStart) {
   EXPECT_EQ(call.result.hit_count, 1);
   CheckVec3Equal(call.result.velocity.for_this_step, {.x = 1, .y = 0, .z = 0});
   CheckVec3Equal(call.result.velocity.for_next_step, {.x = 0, .y = 0, .z = 1});
-  ExpectVec3Near(call.result.position, {.x = 0.1, .y = 0, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0.1, .y = 0, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, StartsWithinToleranceOfSinkingFloorFollowing_ApproachMeasuredFromFloor) {
@@ -1547,7 +1547,7 @@ TEST(MoveParticle, StartsWithinToleranceOfSinkingFloorFollowing_ApproachMeasured
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = kTolerance - 0.1}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = kTolerance - 0.1}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, FiveFloorsWithinStartOverlap_FastestFloorCarries) {
@@ -1571,7 +1571,7 @@ TEST(MoveParticle, SphereApproachingWithinTolerance_IsHitAtStartOnCurvedFace) {
   EXPECT_EQ(result.face, SolidFace::kCurved);
   EXPECT_EQ(result.approach_speed.for_this_step, -1);
   CheckVec3Equal(result.velocity.for_this_step, {.x = -1, .y = 0, .z = 0});
-  ExpectVec3Near(result.position, {.x = -(0.6 + kTolerance), .y = 0, .z = 0}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = -(0.6 + kTolerance), .y = 0, .z = 0}, kRestGapTolerance);
   EXPECT_EQ(result.hit_count, 1);
 }
 
@@ -1582,7 +1582,7 @@ TEST(MoveParticle, SpinningMovingSphereStartWithinTolerance_ApproachReadAtTimeZe
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
   CheckVec3Equal(call.result.velocity.for_this_step, {.x = 1, .y = 0, .z = 0.1});
-  ExpectVec3Near(call.result.position, {.x = 0.1, .y = 0, .z = 0.51 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0.1, .y = 0, .z = 0.51 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, TurningBoxStartWithinTolerance_CarriedOnTheTurnAxis) {
@@ -1595,7 +1595,7 @@ TEST(MoveParticle, TurningBoxStartWithinTolerance_CarriedOnTheTurnAxis) {
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.hit_fraction, 0);
   EXPECT_EQ(call.result.face, SolidFace::kHighZ);
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = 0.5 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = 0.5 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, CommittedSideInsideThickness_PushedToCommittedSide) {
@@ -1606,7 +1606,7 @@ TEST(MoveParticle, CommittedSideInsideThickness_PushedToCommittedSide) {
   EXPECT_EQ(result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(result.face, SolidFace::kHighZ);
   EXPECT_EQ(result.side_at_hit, SolidSide::kAlongNormal);
-  ExpectVec3Near(result.position, {.x = 0, .y = 0, .z = 0.01 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0, .y = 0, .z = 0.01 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, UncommittedInsideThickness_PushedToNearerFace) {
@@ -1617,7 +1617,7 @@ TEST(MoveParticle, UncommittedInsideThickness_PushedToNearerFace) {
   EXPECT_EQ(result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(result.face, SolidFace::kLowZ);
   EXPECT_EQ(result.side_at_hit, SolidSide::kAgainstNormal);
-  ExpectVec3Near(result.position, {.x = 0, .y = 0, .z = -(0.01 + kTolerance)}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0, .y = 0, .z = -(0.01 + kTolerance)}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, CommittedAgainstNormalInsideThickness_PushedToCommittedSide) {
@@ -1626,7 +1626,7 @@ TEST(MoveParticle, CommittedAgainstNormalInsideThickness_PushedToCommittedSide) 
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(call.result.face, SolidFace::kLowZ);
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = -(0.01 + kTolerance)}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = -(0.01 + kTolerance)}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, CommittedSideInsideMovingPlate_PushedOutAndCarried) {
@@ -1636,7 +1636,7 @@ TEST(MoveParticle, CommittedSideInsideMovingPlate_PushedOutAndCarried) {
   EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(call.result.face, SolidFace::kHighZ);
   CheckVec3Equal(call.result.velocity.for_this_step, {.x = 0, .y = 0, .z = 1});
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = 0.11 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = 0.11 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, UncommittedInsideMovingPlate_PushedToLowFaceAndLeftBehind) {
@@ -1647,7 +1647,7 @@ TEST(MoveParticle, UncommittedInsideMovingPlate_PushedToLowFaceAndLeftBehind) {
   EXPECT_EQ(call.result.face, SolidFace::kLowZ);
   EXPECT_EQ(call.result.approach_speed.for_this_step, 1);
   CheckVec3Equal(call.result.velocity.for_this_step, {});
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = -(0.01 + kTolerance)}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = -(0.01 + kTolerance)}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, CommittedBeyondOtherFace_IsOnWrongSideOfPlate) {
@@ -1695,7 +1695,7 @@ TEST(MoveParticle, CommittedWithinToleranceOfOtherFace_PushedToCommittedSide) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(call.result.face, SolidFace::kHighZ);
-  ExpectVec3Near(call.result.position, {.x = 0, .y = 0, .z = 0.01 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0, .y = 0, .z = 0.01 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, CornerWithinTolerance_OneHitOverBothSolids) {
@@ -1710,7 +1710,7 @@ TEST(MoveParticle, CornerWithinTolerance_OneHitOverBothSolids) {
   EXPECT_EQ(result.solid_index, 0U);
   EXPECT_EQ(result.approach_speed.for_this_step, -1);
   CheckVec3Equal(result.velocity.for_this_step, {.x = -0.5, .y = 0, .z = 0});
-  ExpectVec3Near(result.position, {.x = 0.95 - kTolerance, .y = 0, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 0.95 - kTolerance, .y = 0, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, TwoReactingSolidsWithinTolerance_IsSecondReactingSolid) {
@@ -1737,7 +1737,7 @@ TEST(MoveParticle, InsideUprightAfterApproachingFloor_KindIsStartedInsideSolid) 
   EXPECT_EQ(result.approach_speed.for_this_step, -2);
   EXPECT_EQ(result.hit_count, 1);
   CheckVec3Equal(result.velocity.for_this_step, {.x = 0, .y = 0, .z = 1});
-  ExpectVec3Near(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0.1 + kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = 1 - kTolerance, .y = 0, .z = 0.1 + kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerWithinTolerance_MovedFromBothSidesSilently) {
@@ -1747,7 +1747,7 @@ TEST(MoveParticle, DomainCornerWithinTolerance_MovedFromBothSidesSilently) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerSecondSideBeyondTolerance_MovedFromNearSideOnly) {
@@ -1756,14 +1756,14 @@ TEST(MoveParticle, DomainCornerSecondSideBeyondTolerance_MovedFromNearSideOnly) 
   const MoveParticleCall call = ComputeMove("DomainCornerSecondSideBeyondTolerance");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = 0.5, .z = 1.1 * kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = 0.5, .z = 1.1 * kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainBoxOpenBack_LeavesThroughIt) {
   const MoveParticleCall call = ComputeMove("DomainBoxOpenBack");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
-  ExpectVec3Near(call.result.position, {.x = 0.5, .y = 1.1, .z = 0.5}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 0.5, .y = 1.1, .z = 0.5}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerAtOpenTop_MovedFromClosedSideOnly) {
@@ -1771,7 +1771,7 @@ TEST(MoveParticle, DomainCornerAtOpenTop_MovedFromClosedSideOnly) {
   const MoveParticleCall call = ComputeMove("DomainCornerAtOpenTop");
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = 0.5, .z = 1.1 - kTolerance / 4}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = 0.5, .z = 1.1 - kTolerance / 4}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerSlightlyInside_MovedOutOfBothSides) {
@@ -1784,7 +1784,7 @@ TEST(MoveParticle, DomainCornerSlightlyInside_MovedOutOfBothSides) {
   EXPECT_EQ(result.face, SolidFace::kLowX);
   EXPECT_EQ(result.hit_count, 1);
   CheckVec3Equal(result.velocity.for_this_step, {});
-  ExpectVec3Near(result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, WedgeStartPushedTowardFloor_MovesOffBothAtOnce) {
@@ -1798,7 +1798,7 @@ TEST(MoveParticle, WedgeStartPushedTowardFloor_MovesOffBothAtOnce) {
   EXPECT_EQ(result.solid_index, 0U);
   CheckVec3Equal(result.velocity.for_this_step, {.x = -1, .y = 0, .z = 0});
   CheckVec3Equal(result.velocity.for_next_step, {.x = -1, .y = 0, .z = 0});
-  ExpectVec3Near(result.position, {.x = -0.1 - 5.0 / 6 * kTolerance, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = -0.1 - 5.0 / 6 * kTolerance, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, WedgeStartPushedIntoFloor_MovesOffBothAtOnce) {
@@ -1812,7 +1812,7 @@ TEST(MoveParticle, WedgeStartPushedIntoFloor_MovesOffBothAtOnce) {
   CheckVec3Equal(result.velocity.for_this_step, {.x = -1, .y = 0, .z = 0});
   CheckVec3Equal(result.velocity.for_next_step, {.x = -1, .y = 0, .z = 0});
   const double end_x = -0.1 - 0.0005 * 5.0 / 3 - 5.0 / 6 * kTolerance;  // m
-  ExpectVec3Near(result.position, {.x = end_x, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
+  CheckVec3IsNear(result.position, {.x = end_x, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, ParallelSolidAfterStartResponse_RoundingIsNotAnApproach) {
@@ -1825,7 +1825,7 @@ TEST(MoveParticle, ParallelSolidAfterStartResponse_RoundingIsNotAnApproach) {
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.solid_index, 1U);
   EXPECT_EQ(call.result.reaction.solid_index, 1U);
-  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 1.68, .y = 0, .z = 2.24}, 1e-15);
+  CheckVec3IsNear(call.result.reaction.velocity_for_next_step_change, {.x = 1.68, .y = 0, .z = 2.24}, 1e-15);
 }
 
 TEST(MoveParticle, FourCoincidentFloorsBesideUpright_OneHit) {
@@ -1909,7 +1909,7 @@ TEST(MoveParticle, DomainCornerSlowApproachToSecondSide_IsHitOnThatSide) {
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kLowZ);
   CheckVec3Equal(call.result.velocity.for_this_step, {});
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = 0.5, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerNextStepIntoSecondSide_IsHitOnThatSide) {
@@ -1927,7 +1927,7 @@ TEST(MoveParticle, DomainThreeSideCornerAtRest_MovedFromAllThreeSilently) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.kind, ContactKind::kNone);
   EXPECT_EQ(call.result.hit_count, 0);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainThreeSideCornerThisStepApproaches_OneHitOverAllThree) {
@@ -1939,7 +1939,7 @@ TEST(MoveParticle, DomainThreeSideCornerThisStepApproaches_OneHitOverAllThree) {
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kLowX);
   CheckVec3Equal(call.result.velocity.for_this_step, {});
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainThreeSideCornerNextStepApproaches_OneHitOverAllThree) {
@@ -1948,7 +1948,7 @@ TEST(MoveParticle, DomainThreeSideCornerNextStepApproaches_OneHitOverAllThree) {
   EXPECT_EQ(call.result.kind, ContactKind::kHit);
   EXPECT_EQ(call.result.hit_count, 1);
   CheckVec3Equal(call.result.velocity.for_next_step, {});
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainThreeSideCornerSlightlyInside_MovedOutOfAllThree) {
@@ -1957,7 +1957,7 @@ TEST(MoveParticle, DomainThreeSideCornerSlightlyInside_MovedOutOfAllThree) {
   EXPECT_EQ(call.result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kLowX);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerNearestSideComesLater_RecordNamesTheSideHit) {
@@ -1989,7 +1989,7 @@ SolidContactResult CheckEndAtRestGap(std::string_view case_name, Vec3 expected_e
   const MoveParticleCase scene = FindMoveParticleCase(case_name);
   const MoveParticleCall call = ComputeMove(scene);
   EXPECT_EQ(call.error, ContactError::kNone) << case_name;
-  ExpectVec3Near(call.result.position, expected_end, position_tolerance);
+  CheckVec3IsNear(call.result.position, expected_end, position_tolerance);
   CheckAtRestGapOfEverySolid(ToSolidContactInputs(scene), call.result.position);
   return call.result;
 }
@@ -2081,7 +2081,7 @@ TEST(MoveParticle, DomainCornerCutBySolid_HoldsParticleOrIsStartsInNarrowGap) {
   // all four faces; the cut, crossed by the move off the corner's sides, is named.
   const MoveParticleCall far_call = ComputeMove("DomainCornerCutBySolidFarEnough");
   ASSERT_EQ(far_call.error, ContactError::kNone);
-  ExpectVec3Near(far_call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
+  CheckVec3IsNear(far_call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
   EXPECT_EQ(far_call.result.hit_count, 1);
   CheckStartFailure("DomainCornerCutBySolidTooNear", {.error = ContactError::kStartsInNarrowGap, .solid_id = 2});
 }
@@ -2160,7 +2160,7 @@ TEST(MoveParticle, PlateAndSphereRing_MovesOffBothAlongBisector) {
   CheckVec3Equal(call.result.velocity.for_this_step, {});
   const Vec3 ring_point = {.x = std::sqrt(0.1875), .y = 0, .z = 0.01};
   const Vec3 bisector = {.x = std::numbers::sqrt3 / 2, .y = 0, .z = 0.5};
-  ExpectVec3Near(call.result.position, ring_point + 2 * kTolerance * bisector, kAtRestGapTolerance);
+  CheckVec3IsNear(call.result.position, ring_point + 2 * kTolerance * bisector, kAtRestGapTolerance);
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   const double plate_distance =
       ComputeDistanceToSolid(inputs.solids[0], ComputeSolidPose(inputs.solids[0], 0), call.result.position).distance;
@@ -2180,7 +2180,7 @@ TEST(MoveParticle, ParallelSolidAfterStartResponse_NextStepRoundingIsNotAnApproa
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.solid_index, 1U);
   EXPECT_EQ(call.result.reaction.solid_index, 1U);
-  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 1.68, .y = 0, .z = 2.24}, 1e-15);
+  CheckVec3IsNear(call.result.reaction.velocity_for_next_step_change, {.x = 1.68, .y = 0, .z = 2.24}, 1e-15);
 }
 
 TEST(MoveParticle, SlidingFloorThenSlowUprightNextStepOnly_NextStepThresholdIsZeroBeforeAnyResponse) {
@@ -2268,14 +2268,14 @@ TEST(MoveParticle, DomainCornerWithCoincidentGroundAndWall_EndsAtCorner) {
   // coincident surfaces share one target, and {tol, tol, tol} is at the rest gap of all five.
   const MoveParticleCall call = ComputeMove("DomainCornerWithCoincidentGroundAndWall");
   ASSERT_EQ(call.error, ContactError::kNone);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, DomainCornerWithNearlyCoincidentGroundAndWall_EndsAtCorner) {
   // Normals that differ by rounding share one target too, so the five surfaces still leave {tol, tol, tol}.
   const MoveParticleCall call = ComputeMove("DomainCornerWithNearlyCoincidentGroundAndWall");
   ASSERT_EQ(call.error, ContactError::kNone);
-  ExpectVec3Near(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
+  CheckVec3IsNear(call.result.position, {.x = kTolerance, .y = kTolerance, .z = kTolerance}, kAtRestGapTolerance);
 }
 
 TEST(MoveParticle, CuspStartIntoBallOnly_ResponseUsesNormalAtMovedStart) {
@@ -2287,7 +2287,11 @@ TEST(MoveParticle, CuspStartIntoBallOnly_ResponseUsesNormalAtMovedStart) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
   CheckBothVelocitiesNear(call.result, {.x = 4.31583759e-05, .y = 0, .z = 3.72529e-09}, 1e-9);
-  ExpectVec3Near(call.result.position, {.x = 46804.36 * kTolerance, .y = 0, .z = 1.04 * kTolerance}, 0.01 * kTolerance);
+  CheckVec3IsNear(
+      call.result.position,
+      {.x = 46804.36 * kTolerance, .y = 0, .z = 1.04 * kTolerance},
+      0.01 * kTolerance
+  );
 }
 
 // --- The slide along several surfaces (method paper <sec-move-particle>) ---
@@ -2339,10 +2343,10 @@ TEST(MoveParticle, SlideRemovalOnReactingFloor_CountsInReaction) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 2);
   CheckBothVelocitiesNear(call.result, {}, 0);
-  ExpectVec3Near(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, {.x = 1 - kTolerance, .y = 0, .z = kTolerance}, kPositionTolerance);
   EXPECT_EQ(call.result.reaction.solid_index, 0U);
   CheckVec3Equal(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2.5});
-  ExpectVec3Near(
+  CheckVec3IsNear(
       call.result.reaction.hit_position,
       {.x = 0.6 - kTolerance / 2, .y = 0, .z = kTolerance},
       kPositionTolerance
@@ -2360,9 +2364,9 @@ TEST(MoveParticle, AcuteWedgeOnReactingFloor_EachSurfaceChargedItsOwnPush) {
   EXPECT_EQ(call.result.hit_count, 1);
   CheckBothVelocitiesNear(call.result, {}, 1e-15);
   EXPECT_EQ(call.result.reaction.solid_index, 0U);
-  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2}, 4e-15);
+  CheckVec3IsNear(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2}, 4e-15);
   const double face_hit_x = 1 - (1 + std::numbers::sqrt2) * kTolerance;  // m
-  ExpectVec3Near(call.result.reaction.hit_position, {.x = face_hit_x, .y = 0, .z = kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(call.result.reaction.hit_position, {.x = face_hit_x, .y = 0, .z = kTolerance}, kPositionTolerance);
   // The first hit fills the record: the face, at (face_hit_x - 0.5) / 2 s of the 0.5 s step.
   EXPECT_EQ(call.result.solid_index, 1U);
   EXPECT_NEAR(call.result.hit_fraction, (face_hit_x - 0.5) / 2 / 0.5, 1e-12);
@@ -2497,7 +2501,7 @@ SolidContactResult CheckSliverStop(Vec3 velocity, bool is_side_reacting) {
   EXPECT_EQ(call.result.hit_count, 1);
   CheckBothVelocitiesNear(call.result, {}, 0);
   const double rest_x = kTolerance / std::tan(angle / 2);  // m
-  ExpectVec3Near(call.result.position, {.x = rest_x, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  CheckVec3IsNear(call.result.position, {.x = rest_x, .y = 0, .z = kTolerance}, kTolerance / 1024);
   return call.result;
 }
 
@@ -2556,7 +2560,7 @@ TEST(MoveParticle, CornerPushOnSecondReactingSolid_IsSecondReactingSolid) {
   EXPECT_EQ(call.result.hit_count, 1);
   CheckBothVelocitiesNear(call.result, {}, 1e-15);
   EXPECT_EQ(call.result.reaction.solid_index, 1U);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       call.result.reaction.velocity_for_next_step_change,
       {.x = 0, .y = 0, .z = 2 + 1 / std::numbers::sqrt3},
       1e-15
@@ -2640,7 +2644,7 @@ TEST(MoveParticle, SphereHeadOn_StopsOneToleranceShort) {
   EXPECT_EQ(result.kind, ContactKind::kHit);
   EXPECT_EQ(result.face, SolidFace::kCurved);
   EXPECT_EQ(result.hit_count, 1);
-  ExpectVec3Near(result.position, {.x = -(0.5 + kTolerance), .y = 0, .z = 0}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = -(0.5 + kTolerance), .y = 0, .z = 0}, kPositionTolerance);
   CheckBothVelocitiesNear(result, {}, 1e-15);
   EXPECT_EQ(result.approach_speed.for_next_step, -1);
   EXPECT_EQ(result.approach_speed.for_this_step, -1);
@@ -2655,7 +2659,7 @@ TEST(MoveParticle, SphereOblique_SlidesOffAlongTheTangent) {
   const SolidContactResult& result = call.result;
   EXPECT_EQ(result.hit_count, 1);
   CheckBothVelocitiesNear(result, {.x = 0.36, .y = 0.48, .z = 0}, 1e-8);
-  ExpectVec3Near(result.position, {.x = -0.256, .y = 0.492, .z = 0}, 1e-8);
+  CheckVec3IsNear(result.position, {.x = -0.256, .y = 0.492, .z = 0}, 1e-8);
   const double grown_radius = 0.5 + kTolerance;  // m
   CheckNearRelative(result.hit_fraction, (2 - std::sqrt(grown_radius * grown_radius - 0.09)) / 2, 1);
 }
@@ -2729,7 +2733,7 @@ TEST(MoveParticle, CylinderCap_SlidesOnThePlane) {
   EXPECT_EQ(result.face, SolidFace::kHighZ);
   EXPECT_EQ(result.hit_count, 1);
   CheckBothVelocitiesNear(result, {.x = 0.1, .y = 0, .z = 0}, 1e-15);
-  ExpectVec3Near(result.position, {.x = 0.4, .y = 0, .z = 1 + kTolerance}, kPositionTolerance);
+  CheckVec3IsNear(result.position, {.x = 0.4, .y = 0, .z = 1 + kTolerance}, kPositionTolerance);
 }
 
 // What a particle pressed on a spinning top ends with: both velocities and the end position.
@@ -2745,7 +2749,7 @@ void CheckPressedOnSpinningTop(std::string_view case_name, PressedOnTop expected
   ASSERT_EQ(call.error, ContactError::kNone) << case_name;
   EXPECT_EQ(call.result.hit_count, 1) << case_name;
   CheckBothVelocitiesNear(call.result, expected.velocity, 1e-15);
-  ExpectVec3Near(call.result.position, expected.end, kPositionTolerance);
+  CheckVec3IsNear(call.result.position, expected.end, kPositionTolerance);
 }
 
 TEST(MoveParticle, SpinningCylinderPressedOnCap_MovesOnlyThroughFriction) {
@@ -2823,7 +2827,7 @@ TEST(MoveParticle, RimOnFloorSweepingParticleLower_RimAndFloorRespondTogether) {
   const MoveParticleCall call = ComputeMove(scene);
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 2);
-  ExpectVec3Near(call.result.velocity.for_this_step, {.x = 0.875932, .y = 5.139e-5, .z = 0}, 1e-5);
+  CheckVec3IsNear(call.result.velocity.for_this_step, {.x = 0.875932, .y = 5.139e-5, .z = 0}, 1e-5);
 }
 
 TEST(MoveParticle, SlowlyTiltingCylinderRimCornerStart_RisingRimIsNotHit) {
@@ -2995,7 +2999,7 @@ TEST(MoveParticle, StackedDrumsOfOneRadius_SlideDownTheSeamKeepsItsVelocity) {
     EXPECT_EQ(call.result.hit_count, 0);
     CheckVec3Equal(call.result.velocity.for_this_step, {.x = 0, .y = 0, .z = -1});
     CheckVec3Equal(call.result.velocity.for_next_step, {.x = 0, .y = 0, .z = -1});
-    ExpectVec3Near(call.result.position, {.x = rest_x, .y = 0, .z = 0.8}, 0x1p-50);
+    CheckVec3IsNear(call.result.position, {.x = rest_x, .y = 0, .z = 0.8}, 0x1p-50);
     const double end_distance =
         ComputeDistanceToSolid(lower_drum, lower_drum.pose_at_step_start, call.result.position).distance;  // m
     EXPECT_NEAR(end_distance, kTolerance, 0x1p-50);
@@ -3015,7 +3019,7 @@ TEST(MoveParticle, PuckFlushInFloor_SlideOntoItAndOffKeepsItsVelocity) {
   EXPECT_EQ(onto.result.hit_count, 0);
   CheckVec3Equal(onto.result.velocity.for_this_step, -kUnitX);
   CheckVec3Equal(onto.result.velocity.for_next_step, -kUnitX);
-  ExpectVec3Near(onto.result.position, {.x = 0.4 + 3 * kTolerance, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  CheckVec3IsNear(onto.result.position, {.x = 0.4 + 3 * kTolerance, .y = 0, .z = kTolerance}, kTolerance / 1024);
   const Vec3 onto_end = onto.result.position;
   EXPECT_NEAR(
       ComputeDistanceToSolid(floor, floor.pose_at_step_start, onto_end).distance,
@@ -3031,7 +3035,7 @@ TEST(MoveParticle, PuckFlushInFloor_SlideOntoItAndOffKeepsItsVelocity) {
   EXPECT_EQ(off.result.hit_count, 0);
   CheckVec3Equal(off.result.velocity.for_this_step, kUnitX);
   CheckVec3Equal(off.result.velocity.for_next_step, kUnitX);
-  ExpectVec3Near(off.result.position, {.x = 0.55, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  CheckVec3IsNear(off.result.position, {.x = 0.55, .y = 0, .z = kTolerance}, kTolerance / 1024);
   const Vec3 off_end = off.result.position;
   EXPECT_NEAR(ComputeDistanceToSolid(floor, floor.pose_at_step_start, off_end).distance, kTolerance, kTolerance / 1024);
 }
@@ -3281,7 +3285,7 @@ TEST(MoveParticle, DrumStandingOnFloor_GrooveStopsAndLetsSlideAround) {
   CheckNearRelative(along_floor.result.hit_fraction, 0.5 - kTolerance, 1);
   CheckBothVelocitiesNear(along_floor.result, {}, 1e-15);
   const Vec3 groove = {.x = 0.5 + kTolerance, .y = 0, .z = kTolerance};
-  ExpectVec3Near(along_floor.result.position, groove, kTolerance / 1024);
+  CheckVec3IsNear(along_floor.result.position, groove, kTolerance / 1024);
   const MoveParticleCall down_wall = ComputeMoveWith(
       "DrumStandingOnFloor",
       {.position = {.x = 0.5 + kTolerance, .y = 0, .z = 0.7}, .velocity = -kUnitZ, .step_duration = 1}
@@ -3292,7 +3296,7 @@ TEST(MoveParticle, DrumStandingOnFloor_GrooveStopsAndLetsSlideAround) {
   EXPECT_EQ(down_wall.result.face, SolidFace::kHighZ);
   CheckNearRelative(down_wall.result.hit_fraction, 0.7 - kTolerance, 1);
   CheckBothVelocitiesNear(down_wall.result, {}, 1e-15);
-  ExpectVec3Near(down_wall.result.position, groove, kTolerance / 1024);
+  CheckVec3IsNear(down_wall.result.position, groove, kTolerance / 1024);
   const MoveParticleCall around =
       ComputeMoveWith("DrumStandingOnFloor", {.position = groove, .velocity = kUnitY, .step_duration = 0.25});
   ASSERT_EQ(around.error, ContactError::kNone);
@@ -3369,7 +3373,7 @@ TEST(MoveParticle, StackedBoxes_SlideDownTheSeamKeepsItsVelocity) {
   EXPECT_EQ(call.result.hit_count, 0);
   CheckVec3Equal(call.result.velocity.for_this_step, -kUnitZ);
   CheckVec3Equal(call.result.velocity.for_next_step, -kUnitZ);
-  ExpectVec3Near(call.result.position, {.x = 0.5 + kTolerance, .y = 0, .z = 0.8}, kTolerance / 1024);
+  CheckVec3IsNear(call.result.position, {.x = 0.5 + kTolerance, .y = 0, .z = 0.8}, kTolerance / 1024);
 }
 
 TEST(MoveParticle, BoxesSideBySide_SlideAcrossTheSeamKeepsItsVelocity) {
@@ -3382,7 +3386,7 @@ TEST(MoveParticle, BoxesSideBySide_SlideAcrossTheSeamKeepsItsVelocity) {
   EXPECT_EQ(sliding.result.hit_count, 0);
   CheckVec3Equal(sliding.result.velocity.for_this_step, kUnitX);
   CheckVec3Equal(sliding.result.velocity.for_next_step, kUnitX);
-  ExpectVec3Near(sliding.result.position, {.x = 0.8, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  CheckVec3IsNear(sliding.result.position, {.x = 0.8, .y = 0, .z = kTolerance}, kTolerance / 1024);
   const MoveParticleCall pressed = ComputeMoveWith(
       "BoxesSideBySide",
       {.position = {.x = 0.2, .y = 0, .z = kTolerance}, .velocity = {.x = 1, .y = 0, .z = -0.16}, .step_duration = 0.6}
@@ -3392,7 +3396,7 @@ TEST(MoveParticle, BoxesSideBySide_SlideAcrossTheSeamKeepsItsVelocity) {
   EXPECT_EQ(pressed.result.face, SolidFace::kHighZ);
   EXPECT_EQ(pressed.result.solid_index, 0U);
   CheckBothVelocitiesNear(pressed.result, kUnitX, 1e-15);
-  ExpectVec3Near(pressed.result.position, {.x = 0.8, .y = 0, .z = kTolerance}, kTolerance / 1024);
+  CheckVec3IsNear(pressed.result.position, {.x = 0.8, .y = 0, .z = kTolerance}, kTolerance / 1024);
 }
 
 TEST(MoveParticle, BoxFlushInFloor_SlideOntoItKeepsItsVelocity) {
@@ -3841,7 +3845,7 @@ TEST(ApplyHit, TurningCylinderRimHit_StaysWhereTheSearchStopped) {
   ASSERT_EQ(ApplyHit(inputs, first_hit, &move, &failure), ContactError::kNone);
   EXPECT_EQ(move.result.face, SolidFace::kHighRim);
   const Vec3 hit_position = move.result.reaction.hit_position;
-  ExpectVec3Near(hit_position, inputs.start_position + velocity * first_hit.elapsed, kTolerance / 1024);
+  CheckVec3IsNear(hit_position, inputs.start_position + velocity * first_hit.elapsed, kTolerance / 1024);
   const Solid& cylinder = scene.solids.at(0);
   const double hit_distance =
       ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), hit_position).distance;  // m
@@ -3865,7 +3869,7 @@ TEST(MoveParticle, TurningCylinderRimHit_UsedWhereTheSearchStopped) {
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.face, SolidFace::kHighRim);
   const Vec3 hit_position = call.result.reaction.hit_position;
-  ExpectVec3Near(hit_position, inputs.start_position + velocity * first_hit.elapsed, kTolerance / 1024);
+  CheckVec3IsNear(hit_position, inputs.start_position + velocity * first_hit.elapsed, kTolerance / 1024);
   const Solid& cylinder = scene.solids.at(0);
   const double hit_distance =
       ComputeDistanceToSolid(cylinder, ComputeSolidPose(cylinder, first_hit.elapsed), hit_position).distance;  // m
@@ -3919,7 +3923,7 @@ TEST(MoveParticle, FloorRisingUnderSixtyDegreeWall_CarriesParticleAlongApex) {
       .y = 0,
       .z = 0.1 + kTolerance,
   };
-  ExpectVec3Near(result.position, expected_end, kTolerance / 1024);
+  CheckVec3IsNear(result.position, expected_end, kTolerance / 1024);
   CheckAtRestGapOfEverySolid(ToSolidContactInputs(scene), result.position);
 }
 
@@ -4110,20 +4114,20 @@ TEST(MoveParticle, DomainBoxEdgeWithFriction_SameAsFlatSolids) {
     const SolidContactResult flats = ComputeEdgeSceneResult("FlatSolidsEdgeWithFriction", draw.friction, draw.velocity);
     EXPECT_EQ(box.hit_count, 1);
     EXPECT_EQ(flats.hit_count, 1);
-    ExpectVec3Near(box.velocity.for_next_step, flats.velocity.for_next_step, 1e-15);
-    ExpectVec3Near(box.position, flats.position, kTolerance / 1024);
+    CheckVec3IsNear(box.velocity.for_next_step, flats.velocity.for_next_step, 1e-15);
+    CheckVec3IsNear(box.position, flats.position, kTolerance / 1024);
   }
-  ExpectVec3Near(
+  CheckVec3IsNear(
       ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 0.5, .z = -1}).velocity.for_next_step,
       {},
       1e-15
   );
-  ExpectVec3Near(
+  CheckVec3IsNear(
       ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", 2, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
       {},
       1e-15
   );
-  ExpectVec3Near(
+  CheckVec3IsNear(
       ComputeEdgeSceneResult("DomainBoxEdgeWithFriction", 0.5, {.x = -1, .y = 2, .z = -1}).velocity.for_next_step,
       {.x = 0, .y = 1, .z = 0},
       1e-15
@@ -4248,7 +4252,7 @@ TEST(MoveParticle, CoincidentReactingFloorsNormalsApartByRounding_NoSecondReacti
     EXPECT_EQ(call.result.hit_count, 1);
     CheckBothVelocitiesNear(call.result, {.x = 1, .y = 0, .z = 0}, 1e-15);
     EXPECT_EQ(call.result.reaction.solid_index, 1U);
-    ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 1}, 1e-15);
+    CheckVec3IsNear(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 1}, 1e-15);
   }
 }
 
@@ -4386,7 +4390,7 @@ TEST(MoveParticle, EightCoincidentFloorsAndWall_TwoHits) {
     ASSERT_EQ(call.error, ContactError::kNone) << floor_count;
     EXPECT_EQ(call.result.hit_count, 2) << floor_count;
     CheckBothVelocitiesNear(call.result, {}, 0);
-    ExpectVec3Near(call.result.position, {.x = 0.5 - kTolerance, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
+    CheckVec3IsNear(call.result.position, {.x = 0.5 - kTolerance, .y = 0, .z = kTolerance}, kAtRestGapTolerance);
     EXPECT_NEAR(call.result.hit_fraction, 0.05 - kTolerance / 0.2, 1e-15) << floor_count;
   }
 }
@@ -4630,7 +4634,7 @@ TEST(MoveParticle, RoughGroundOnWedgeFloor_RougherOneActs) {
   const MoveParticleCall reacting = ComputeMove(BuildOrderedScene({reacting_floor, side}, inputs));
   ASSERT_EQ(reacting.error, ContactError::kNone);
   EXPECT_EQ(reacting.result.reaction.solid_index, 0U);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       reacting.result.reaction.velocity_for_next_step_change,
       {.x = 0, .y = -0.223094010768, .z = 1.115470053838},
       1e-12
@@ -4767,7 +4771,7 @@ TEST(MoveParticle, TwoReactingSolidsInCrease_IsSecondReactingSolid) {
   ASSERT_EQ(call.error, ContactError::kNone);
   EXPECT_EQ(call.result.hit_count, 1);
   EXPECT_EQ(call.result.reaction.solid_index, 0U);
-  ExpectVec3Near(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2.5773502691896262}, 1e-15);
+  CheckVec3IsNear(call.result.reaction.velocity_for_next_step_change, {.x = 0, .y = 0, .z = 2.5773502691896262}, 1e-15);
 }
 
 TEST(MoveParticle, StartInsideAndLeaving_IsOneHitWithoutChange) {
@@ -5043,7 +5047,7 @@ TEST(MoveToRestGapOfNearSurfaces, OneNearSolid_MovesAlongItsNormalBitForBit) {
 // used_count surfaces.
 void CheckCorrection(const SmallestCorrection& correction, Vec3 expected_change, int used_count) {
   ASSERT_TRUE(correction.is_found);
-  ExpectVec3Near(correction.change, expected_change, 1e-12);
+  CheckVec3IsNear(correction.change, expected_change, 1e-12);
   EXPECT_EQ(correction.used_count, used_count);
 }
 
@@ -5428,7 +5432,7 @@ TEST(ApplySettleAtEnd, SixtyDegreeWedgeBothNearAtEnd_EndsAtRestGapOfBoth) {
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   ParticleMove move = BuildMoveAfterOneHit({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
   ApplySettleAtEnd(inputs, &move);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       move.result.position,
       {.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
       kAtRestGapTolerance
@@ -5443,7 +5447,7 @@ TEST(ApplySettleAtEnd, UntouchedNearSolid_IsMovedOffToo) {
   const SolidContactInputs inputs = ToSolidContactInputs(scene);
   ParticleMove move = BuildMoveAfterOneHit({.x = std::numbers::sqrt3 / 2 * kTolerance, .y = 0, .z = kTolerance / 2});
   ApplySettleAtEnd(inputs, &move);
-  ExpectVec3Near(
+  CheckVec3IsNear(
       move.result.position,
       {.x = std::numbers::sqrt3 * kTolerance, .y = 0, .z = kTolerance},
       kAtRestGapTolerance

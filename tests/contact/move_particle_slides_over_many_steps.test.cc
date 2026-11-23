@@ -38,7 +38,7 @@ TEST(MoveParticle, SlowSlideIntoSliverWedge_FiftyStepsNeverInNarrowGap) {
   }
   EXPECT_EQ(failed_steps, 0);
   CheckBothVelocitiesNear(result, {}, 1e-15);
-  ExpectVec3Near(result.position, {.x = 205368709 * kTolerance, .y = 0, .z = kTolerance}, kTolerance);
+  CheckVec3IsNear(result.position, {.x = 205368709 * kTolerance, .y = 0, .z = kTolerance}, kTolerance);
 }
 
 TEST(MoveParticle, SlidesTenThousandSteps_NeverStartsInside) {

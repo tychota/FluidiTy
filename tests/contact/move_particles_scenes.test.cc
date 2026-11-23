@@ -130,7 +130,7 @@ void CheckSameErrorAsMain(const MainComparisonCase& old_case, const ZUpMove& mov
 // share is 0.4 - tol / 10 = 0.3999999999069.
 void CheckSameHitAsMain(const MainComparisonCase& old_case, const ZUpMove& move) {
   const Vec3 normal = ToZUp(old_case.old_normal_out_of_solid);
-  ExpectVec3Near(move.result.normal_out_of_solid, normal, 0x1p-52);
+  CheckVec3IsNear(move.result.normal_out_of_solid, normal, 0x1p-52);
   if (old_case.old_hit_fraction == 0) {
     EXPECT_EQ(move.result.hit_fraction, 0);
     return;
@@ -151,15 +151,15 @@ void CheckSameMoveAsMain(const MainComparisonCase& old_case, const ZUpMove& move
   if (old_case.old_has_hit) {
     CheckSameHitAsMain(old_case, move);
   }
-  ExpectVec3Near(move.result.position, ToZUp(old_case.old_position), 1.25 * kTolerance);
+  CheckVec3IsNear(move.result.position, ToZUp(old_case.old_position), 1.25 * kTolerance);
   const double largest_speed = std::max({
       ComputeLargestAxis(old_case.velocity_for_next_step),
       ComputeLargestAxis(old_case.velocity_for_this_step),
       ComputeLargestAxis(old_case.solid_velocity),
   });  // m/s
   const double velocity_bound = 0x1p-40 * largest_speed;  // m/s
-  ExpectVec3Near(move.result.velocity.for_next_step, ToZUp(old_case.old_velocity_for_next_step), velocity_bound);
-  ExpectVec3Near(move.result.velocity.for_this_step, ToZUp(old_case.old_velocity_for_this_step), velocity_bound);
+  CheckVec3IsNear(move.result.velocity.for_next_step, ToZUp(old_case.old_velocity_for_next_step), velocity_bound);
+  CheckVec3IsNear(move.result.velocity.for_this_step, ToZUp(old_case.old_velocity_for_this_step), velocity_bound);
 }
 
 TEST(MoveParticle, SlidingOffFrictionlessSphere_SmallStepsLastHitNearAnalyticAngle) {

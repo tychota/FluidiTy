@@ -70,7 +70,7 @@ TEST(MoveParticle, FastParticleThinPlate_IsStopped) {
       contact_tolerance / 1024 / path_length
   );
   EXPECT_NEAR(result.position.z, 5e-5 + contact_tolerance, contact_tolerance / 1024);
-  ExpectVec3Near(result.velocity.for_this_step, {}, 1e-12);
+  CheckVec3IsNear(result.velocity.for_this_step, {}, 1e-12);
 }
 
 // --- The squeeze cap reads a solid's speed by its length ---
@@ -106,8 +106,8 @@ TEST(MoveParticle, SlidingFloorUnderSide_SqueezeCapReadsTheFloorsSpeedByItsLengt
   ASSERT_EQ(MoveParticle(ToSolidContactInputs(carried_scene), &result, &failure), ContactError::kNone);
   EXPECT_EQ(result.hit_count, 1);
   const Vec3 escape_velocity = {.x = 1 / std::tan(wedge_angle), .y = 0, .z = 1};  // m/s
-  ExpectVec3Near(result.velocity.for_this_step, escape_velocity, 1e-9 * escape_velocity.x);
-  ExpectVec3Near(result.velocity.for_next_step, escape_velocity, 1e-9 * escape_velocity.x);
+  CheckVec3IsNear(result.velocity.for_this_step, escape_velocity, 1e-9 * escape_velocity.x);
+  CheckVec3IsNear(result.velocity.for_next_step, escape_velocity, 1e-9 * escape_velocity.x);
   const MoveParticleCase squeezed_scene = BuildSlidingFloorUnderSide(0.4);
   EXPECT_EQ(MoveParticle(ToSolidContactInputs(squeezed_scene), &result, &failure), ContactError::kTooCloseToCall);
   EXPECT_EQ(failure.close_call, ContactCloseCall::kSqueezedBetweenSolids);

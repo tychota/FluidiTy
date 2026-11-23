@@ -270,8 +270,8 @@ struct SharpSurfaceResult {
 
 // Fails the calling test unless both velocities are within tolerance of expected on each axis.
 inline void CheckBothVelocitiesNear(const SolidContactResult& result, Vec3 expected, double tolerance) {
-  ExpectVec3Near(result.velocity.for_next_step, expected, tolerance);
-  ExpectVec3Near(result.velocity.for_this_step, expected, tolerance);
+  CheckVec3IsNear(result.velocity.for_next_step, expected, tolerance);
+  CheckVec3IsNear(result.velocity.for_this_step, expected, tolerance);
 }
 
 }  // namespace fluidity::contact

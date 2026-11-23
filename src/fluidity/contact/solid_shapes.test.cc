@@ -161,8 +161,8 @@ TEST(ToSolid, DomainBox_OriginIsCentreAndHalfSizeIsHalfExtent) {
   const Solid solid = ToSolid(domain_box, 1);
 
   EXPECT_EQ(solid.shape, SolidShape::kDomainBox);
-  ExpectVec3Near(solid.pose_at_step_start.origin, {.x = 1, .y = 2, .z = 3}, 0);
-  ExpectVec3Near(solid.half_size, {.x = 1, .y = 2, .z = 3}, 0);
+  CheckVec3IsNear(solid.pose_at_step_start.origin, {.x = 1, .y = 2, .z = 3}, 0);
+  CheckVec3IsNear(solid.half_size, {.x = 1, .y = 2, .z = 3}, 0);
   CheckSameMat3(solid.pose_at_step_start.axes, kIdentity);
   EXPECT_FALSE(solid.closed.top);
   EXPECT_TRUE(solid.closed.bottom);
@@ -620,8 +620,8 @@ TEST(ComputeSolidPose, QuarterTurnAboutZ_SendsSolidXToWorldY) {
 
   const SolidPose pose = ComputeSolidPose(solid, 1);
 
-  ExpectVec3Near(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
-  ExpectVec3Near(ToColumnY(pose.axes), {.x = -1, .y = 0, .z = 0}, 1e-15);
+  CheckVec3IsNear(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
+  CheckVec3IsNear(ToColumnY(pose.axes), {.x = -1, .y = 0, .z = 0}, 1e-15);
   CheckSameVec3(pose.origin, {.x = 0, .y = 0, .z = 0});
 }
 
@@ -638,8 +638,8 @@ TEST(ComputeSolidPose, TiltedSolidTurning_TurnsAboutWorldAxisNotOwnAxis) {
 
   const SolidPose pose = ComputeSolidPose(solid, 0.5);
 
-  ExpectVec3Near(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
-  ExpectVec3Near(ToColumnZ(pose.axes), {.x = 1, .y = 0, .z = 0}, 1e-15);
+  CheckVec3IsNear(ToColumnX(pose.axes), {.x = 0, .y = 1, .z = 0}, 1e-15);
+  CheckVec3IsNear(ToColumnZ(pose.axes), {.x = 1, .y = 0, .z = 0}, 1e-15);
 }
 
 TEST(ComputeSolidPose, ZeroElapsed_IsStartPose) {
@@ -1028,7 +1028,7 @@ void CheckFaceCaseNear(const Solid& solid, const FaceCase& face_case) {
   const DistanceToSolid distance = ComputeDistanceToSolid(solid, solid.pose_at_step_start, face_case.point);
   EXPECT_NEAR(distance.distance, face_case.distance, kRoundSolidTolerance);
   EXPECT_EQ(distance.face, face_case.face);
-  ExpectVec3Near(distance.normal_out_of_solid, face_case.normal_out_of_solid, kRoundSolidTolerance);
+  CheckVec3IsNear(distance.normal_out_of_solid, face_case.normal_out_of_solid, kRoundSolidTolerance);
 }
 
 // A sphere at {1, 2, 3} with radius 0.5 that does not move.
@@ -1132,7 +1132,7 @@ TEST(ComputeDistanceToSolid, TurnedSphere_NormalIsInWorldAxes) {
 
   EXPECT_NEAR(distance.distance, 0.125, kRoundSolidTolerance);
   EXPECT_EQ(distance.face, SolidFace::kCurved);
-  ExpectVec3Near(distance.normal_out_of_solid, {.x = 0, .y = 0.6, .z = 0.8}, kRoundSolidTolerance);
+  CheckVec3IsNear(distance.normal_out_of_solid, {.x = 0, .y = 0.6, .z = 0.8}, kRoundSolidTolerance);
 }
 
 TEST(ComputeDistanceToSolid, CylinderWall_IsRadialGap) {
@@ -1365,8 +1365,8 @@ TEST(ComputeDistanceToSolid, TiltedCylinderEachFace_ReportsItsFaceAndNormal) {
   const Vec3 own_x_axis = {.x = 0, .y = -0.8, .z = 0.6};
   const Vec3 own_y_axis = {.x = 1, .y = 0, .z = 0};
   const Vec3 own_z_axis = {.x = 0, .y = 0.6, .z = 0.8};
-  ExpectVec3Near(ToColumnX(solid.pose_at_step_start.axes), own_x_axis, kRoundSolidTolerance);
-  ExpectVec3Near(ToColumnY(solid.pose_at_step_start.axes), own_y_axis, kRoundSolidTolerance);
+  CheckVec3IsNear(ToColumnX(solid.pose_at_step_start.axes), own_x_axis, kRoundSolidTolerance);
+  CheckVec3IsNear(ToColumnY(solid.pose_at_step_start.axes), own_y_axis, kRoundSolidTolerance);
   const auto to_world = [&cylinder, own_x_axis, own_y_axis, own_z_axis](Vec3 own_point) {
     return cylinder.center + own_point.x * own_x_axis + own_point.y * own_y_axis + own_point.z * own_z_axis;
   };
@@ -1731,8 +1731,8 @@ TEST(ComputeSolidVelocitySample, TurningCylinder_VelocityAtNearestSurfacePoint) 
   EXPECT_TRUE(sample.has_solid);
   EXPECT_EQ(sample.side, PlateSide());
   EXPECT_EQ(sample.distance, 1);
-  ExpectVec3Near(sample.normal_out_of_solid, kUp, kRoundSolidTolerance);
-  ExpectVec3Near(sample.solid_velocity, {.x = 0, .y = -1, .z = 0}, kRoundSolidTolerance);
+  CheckVec3IsNear(sample.normal_out_of_solid, kUp, kRoundSolidTolerance);
+  CheckVec3IsNear(sample.solid_velocity, {.x = 0, .y = -1, .z = 0}, kRoundSolidTolerance);
 }
 
 TEST(ComputeSolidVelocitySample, MovingSphereAtElapsed_UsesPoseAtThatTime) {

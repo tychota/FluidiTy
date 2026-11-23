@@ -60,8 +60,8 @@ TEST(MoveParticles, SymmetricHitsOnReactingBox_SummedChangeHasNoAngularMomentum)
     angular_change_sum =
         angular_change_sum + math::Cross(reaction.hit_position, reaction.velocity_for_next_step_change);
   }
-  ExpectVec3Near(change_sum, {.x = -4, .y = 0, .z = 0}, 4 * 0x1p-44);
-  ExpectVec3Near(angular_change_sum, {}, 1e-15);
+  CheckVec3IsNear(change_sum, {.x = -4, .y = 0, .z = 0}, 4 * 0x1p-44);
+  CheckVec3IsNear(angular_change_sum, {}, 1e-15);
 }
 
 // Classifies a straight path from_centre + velocity t, 0 <= t <= step_duration, against a sphere of radius radius about
@@ -271,7 +271,7 @@ TEST(MoveParticle, RestingInRightAngledGrooveWithFriction_StaysAtRest) {
   const GrooveRun run = ComputeGrooveRun(0.5);
   EXPECT_EQ(run.move_count, 1000);
   EXPECT_EQ(run.exact_rest_count, 1000);
-  ExpectVec3Near(run.end_position, run.start_position, kTolerance / 64);
+  CheckVec3IsNear(run.end_position, run.start_position, kTolerance / 64);
 }
 
 TEST(MoveParticle, InRightAngledGrooveWithLowFriction_SlidesDownTheLine) {
@@ -286,7 +286,7 @@ TEST(MoveParticle, InRightAngledGrooveWithLowFriction_SlidesDownTheLine) {
             << " m/s, expected " << expected_speed << ", travel " << math::Dot(run.end_position, kGrooveDown) << " m\n";
   EXPECT_EQ(run.move_count, 1000);
   EXPECT_EQ(run.exact_rest_count, 0);
-  ExpectVec3Near(run.end_velocity, expected_speed * kGrooveDown, 1e-9);
+  CheckVec3IsNear(run.end_velocity, expected_speed * kGrooveDown, 1e-9);
   EXPECT_NEAR(math::Dot(run.end_position, kGrooveDown), expected_speed * 0.5, 0.01);
 }
 
@@ -324,7 +324,7 @@ TEST(MoveParticle, MainStartOnMiddleOfPlate_MovedOutWhereMainFailed) {
   ASSERT_EQ(move.error, ContactError::kNone);
   EXPECT_EQ(move.result.kind, ContactKind::kStartedInsideSolid);
   EXPECT_EQ(move.result.face, SolidFace::kHighZ);
-  ExpectVec3Near(move.result.position, {.x = 1 + kTolerance, .y = 0, .z = 0}, kTolerance / 64);
+  CheckVec3IsNear(move.result.position, {.x = 1 + kTolerance, .y = 0, .z = 0}, kTolerance / 64);
   CheckEqualAxes(move.result.velocity.for_next_step, {});
 }
 

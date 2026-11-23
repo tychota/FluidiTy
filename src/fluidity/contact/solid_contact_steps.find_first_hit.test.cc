@@ -49,7 +49,7 @@ void CheckFree(FirstHit first_hit) {
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.distance, defaults.distance);
   EXPECT_EQ(first_hit.at_hit.face, defaults.face);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, defaults.normal_out_of_solid, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, defaults.normal_out_of_solid, 0);
 }
 
 // Fails the calling test unless a distance reported at a rim hit is where the rim search stops: at least tol and at
@@ -83,7 +83,7 @@ TEST(FindFirstHit, FlatSolidAhead_HitsAtGapOverApproach) {
   EXPECT_EQ(first_hit.elapsed, (1 - 0.9) - kTolerance);
   CheckNearRelative(first_hit.elapsed, 0.1 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 2 * kTolerance);
 }
 
@@ -99,7 +99,7 @@ TEST(FindFirstHit, BoxFace_ReportsEnteringFace) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, (0.5 - kTolerance) / 2);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kLowX);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, kTolerance);
 }
 
@@ -122,7 +122,7 @@ TEST(FindFirstHit, BoxCornerTieAtEndOfStep_ReportsLowX) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kLowX);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
 }
 
 TEST(FindFirstHit, BoxEdgeGraze_StaysFree) {
@@ -169,7 +169,7 @@ TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace) {
   EXPECT_EQ(uncommitted.solid_index, 0U);
   EXPECT_EQ(uncommitted.elapsed, 0);
   EXPECT_EQ(uncommitted.at_hit.face, SolidFace::kLowZ);
-  ExpectVec3Near(uncommitted.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 0);
+  CheckVec3IsNear(uncommitted.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 0);
   EXPECT_EQ(uncommitted.at_hit.distance, 0.005 - 0.01);
 
   inputs.plate_side = {.plate_id = 5, .side = SolidSide::kAlongNormal};
@@ -177,7 +177,7 @@ TEST(FindFirstHit, CommittedPlate_UsesOnlyCommittedFace) {
   EXPECT_EQ(committed.solid_index, 0U);
   EXPECT_EQ(committed.elapsed, 0);
   EXPECT_EQ(committed.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(committed.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 0);
+  CheckVec3IsNear(committed.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 0);
   EXPECT_EQ(committed.at_hit.distance, -0.005 - 0.01);
 }
 
@@ -205,7 +205,7 @@ TEST(FindFirstHit, MovingSolid_UsesRelativeVelocity) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, (1 - 0.03125 - kTolerance) / 2);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 1, .y = 0, .z = 0}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, kTolerance);
 }
 
@@ -348,7 +348,7 @@ TEST(FindFirstHit, PushingIntoTouchedFace_HitsAtZero) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, kTolerance);
 }
 
@@ -427,7 +427,7 @@ TEST(FindFirstHit, MovingBoxEachFace_HitsThatFace) {
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
     EXPECT_EQ(first_hit.elapsed, (1 - kTolerance) / 2) << static_cast<int>(face_case.face);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 0);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 0);
     EXPECT_EQ(first_hit.at_hit.distance, kTolerance) << static_cast<int>(face_case.face);
   }
 }
@@ -449,7 +449,7 @@ TEST(FindFirstHit, TiltedMovingBoxEachFace_HitsThatFace) {
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
     CheckNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 0);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 0);
     EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 2 * kTolerance);
   }
 }
@@ -473,7 +473,7 @@ TEST(FindFirstHit, TiltedMovingPlateBothFaces_HitsThatFace) {
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
     CheckNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 1e-15);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, face_case.normal_out_of_solid, 1e-15);
     EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 2 * kTolerance);
   }
 }
@@ -492,7 +492,7 @@ TEST(FindFirstHit, TiltedMovingFlatSolid_HitsItsFace) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   CheckNearRelative(first_hit.elapsed, (1 - kTolerance) / 2, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, normal, 1e-15);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, normal, 1e-15);
 }
 
 TEST(FindFirstHit, DomainBoxEachSide_HitsThatSide) {
@@ -510,7 +510,7 @@ TEST(FindFirstHit, DomainBoxEachSide_HitsThatSide) {
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
     EXPECT_EQ(first_hit.elapsed, (0.5 - kTolerance) / 2) << static_cast<int>(face_case.face);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, -face_case.normal_out_of_solid, 0);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, -face_case.normal_out_of_solid, 0);
     EXPECT_EQ(first_hit.at_hit.distance, kTolerance) << static_cast<int>(face_case.face);
   }
 }
@@ -538,7 +538,7 @@ TEST(FindFirstHit, DomainBoxCorner_PushingIntoSecondSide_HitsIt) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kLowY);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 1, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 1, .z = 0}, 0);
 }
 
 TEST(FindFirstHit, DomainBoxCornerTie_ReportsLeftSide) {
@@ -927,7 +927,7 @@ TEST(FindFirstHit, CommittedAgainstNormal_HitsLowFaceFromBelow) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, (1 - kTolerance) / 2);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kLowZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 0);
 }
 
 TEST(FindFirstHit, Success_WritesNoCloseCall) {
@@ -980,7 +980,7 @@ TEST(FindFirstHit, SphereHeadOn_HitsAtGapOverSpeed) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -994,7 +994,7 @@ TEST(FindFirstHit, SphereGrazing_HitsAtQuadraticRoot) {
   CheckNearRelative(first_hit.elapsed, 2 - std::sqrt((0.5 + kTolerance) * (0.5 + kTolerance) - 0.09), 1);
   CheckNearRelative(first_hit.elapsed, 1.5999999988358469, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -0.8, .y = 0.6, .z = 0}, 1e-8);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -0.8, .y = 0.6, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -1054,7 +1054,7 @@ TEST(FindFirstHit, SphereTouchingPushingIn_HitsAtZero) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, kTolerance);
 }
 
@@ -1069,7 +1069,7 @@ TEST(FindFirstHit, MovingSphere_UsesRelativeVelocity) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -1092,7 +1092,7 @@ TEST(FindFirstHit, SpinningSphere_IsClosedForm) {
     EXPECT_EQ(first_hit.solid_index, 0U) << start_elapsed;
     CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   }
 }
 
@@ -1124,7 +1124,7 @@ TEST(FindFirstHit, MovingSphereEachDirection_HitsItsSurface) {
     EXPECT_EQ(first_hit.solid_index, 0U);
     CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, direction, 1e-8);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, direction, 1e-8);
     EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
   }
 }
@@ -1165,7 +1165,7 @@ TEST(FindFirstHit, SphereStartAtCentre_HitsAtZeroWithDegenerateNormal) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, -0.5);
 }
 
@@ -1199,7 +1199,7 @@ TEST(FindFirstHit, StartElapsed_SphereTouchingRuleUsesLaterPose) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, kTolerance);
 }
 
@@ -1232,7 +1232,7 @@ TEST(FindFirstHit, StartElapsed_SphereDeepStartUsesLaterPose) {
   const FirstHit first_hit = FindHit(inputs, {.start = {}, .velocity = kAtRest, .start_elapsed = 1, .duration = 1});
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, -0.5);
 }
 
@@ -1260,7 +1260,7 @@ TEST(FindFirstHit, CylinderWall_HitsAtRadialGap) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -1272,7 +1272,7 @@ TEST(FindFirstHit, CylinderCap_HitsAtHeightGap) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   CheckNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 1e-8);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = 1}, 1e-8);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -1344,7 +1344,7 @@ TEST(FindFirstHit, CylinderParallelToAxisInGrownRadius_HitsRim) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, 2 - std::sqrt(0.75) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0.5, .y = 0, .z = std::sqrt(0.75)}, 1e-5);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0.5, .y = 0, .z = std::sqrt(0.75)}, 1e-5);
   CheckRimHitDistance(first_hit.at_hit.distance);
 }
 
@@ -1359,7 +1359,7 @@ TEST(FindFirstHit, CylinderRimHeadOnAtFortyFiveDegrees_HitsAtOneTolerance) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_NEAR(first_hit.elapsed, 1 - std::sqrt(0.5) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighRim);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
   EXPECT_NEAR(first_hit.at_hit.distance, kTolerance, 0x1p-40);
 }
 
@@ -1431,7 +1431,7 @@ TEST(FindFirstHit, CylinderRimCornerStartMovingAway_IsFree) {
   EXPECT_EQ(approaching.solid_index, 0U);
   EXPECT_NEAR(approaching.elapsed, (0.9 - std::sqrt(0.5)) * kTolerance, kTolerance / 1024);
   EXPECT_EQ(approaching.at_hit.face, SolidFace::kHighRim);
-  ExpectVec3Near(approaching.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
+  CheckVec3IsNear(approaching.at_hit.normal_out_of_solid, {.x = std::sqrt(0.5), .y = 0, .z = std::sqrt(0.5)}, 1e-5);
   CheckRimHitDistance(approaching.at_hit.distance);
   CheckFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = -1, .y = 0, .z = 0}, .duration = 1}));
   CheckFree(FindHit(inputs, {.start = corner_start, .velocity = {.x = 1, .y = 0, .z = 0}, .duration = 1}));
@@ -1466,7 +1466,7 @@ TEST(FindFirstHit, SpinningCylinderAboutAxis_IsClosedForm) {
     EXPECT_EQ(first_hit.solid_index, 0U) << start_elapsed;
     CheckNearRelative(first_hit.elapsed, 1.5 - kTolerance, 1);
     EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-    ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
+    CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = -1, .y = 0, .z = 0}, 1e-8);
   }
 }
 
@@ -1481,7 +1481,7 @@ TEST(FindFirstHit, TiltedSpinningCylinder_IsClosedForm) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   CheckNearRelative(first_hit.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kHighZ);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, axis, 1e-8);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, axis, 1e-8);
 }
 
 // A cylinder of radius 2 m and half height 1 m along z, whose reach Length(half_size) is exactly 3 m, turning at
@@ -1590,7 +1590,7 @@ TEST(FindFirstHit, CylinderPathAlongAxis_HitsEachCap) {
   EXPECT_EQ(from_below.solid_index, 0U);
   CheckNearRelative(from_below.elapsed, 2 - kTolerance, 1);
   EXPECT_EQ(from_below.at_hit.face, SolidFace::kLowZ);
-  ExpectVec3Near(from_below.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 1e-8);
+  CheckVec3IsNear(from_below.at_hit.normal_out_of_solid, {.x = 0, .y = 0, .z = -1}, 1e-8);
 }
 
 TEST(FindFirstHit, CylinderMovingAwayFromCapOrWall_IsFree) {
@@ -1786,7 +1786,7 @@ TEST(FindFirstHit, CylinderStartAtCentre_HitsAtZeroWithDegenerateNormal) {
   EXPECT_EQ(first_hit.solid_index, 0U);
   EXPECT_EQ(first_hit.elapsed, 0);
   EXPECT_EQ(first_hit.at_hit.face, SolidFace::kCurved);
-  ExpectVec3Near(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 1, .z = 0}, 0);
+  CheckVec3IsNear(first_hit.at_hit.normal_out_of_solid, {.x = 0, .y = 1, .z = 0}, 0);
   EXPECT_EQ(first_hit.at_hit.distance, -0.5);
 }
 
@@ -1996,7 +1996,7 @@ void CheckEachCylinderFaceHit(Vec3 axis) {
     EXPECT_EQ(first_hit.solid_index, 0U) << static_cast<int>(face_case.face);
     CheckNearRelative(first_hit.elapsed, face_case.hit_elapsed, 1);
     EXPECT_EQ(first_hit.at_hit.face, face_case.face);
-    ExpectVec3Near(
+    CheckVec3IsNear(
         first_hit.at_hit.normal_out_of_solid,
         axes * face_case.own_normal_out_of_solid,
         face_case.normal_tolerance

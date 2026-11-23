@@ -4,9 +4,9 @@
 //   of repeatable test cases, and one list of the scenes MoveParticle is tested on.
 //
 // Idea: an analytic contact test passes a fixed contact tolerance, so its expected values can be written by hand,
-//   including the rest gap: a particle in contact rests one tolerance outside the surface. ExpectVec3Near fails the
+//   including the rest gap: a particle in contact rests one tolerance outside the surface. CheckVec3IsNear fails the
 //   calling test when any axis differs by more than the tolerance it is given.
-//   Example: ExpectVec3Near({1, 2, 3}, {1, 2, 3 + 1e-12}, 1e-9) passes.
+//   Example: CheckVec3IsNear({1, 2, 3}, {1, 2, 3 + 1e-12}, 1e-9) passes.
 //   A generated test set draws its numbers from one CaseGenerator in a fixed order, so every run and every platform
 //   tests the same cases.
 //   Every MoveParticle test reads its scene from BuildMoveParticleCases by name, so the tests of MoveParticles on
@@ -18,7 +18,7 @@
 //   them: every end at least tol / 2 outside every solid, beside a naive control that hits at the surface and has no
 //   settle.
 //
-// Owns:    kFixed, kTestContactTolerance, ExpectVec3Near, CaseGenerator, MoveParticleCase, ToSolidContactInputs,
+// Owns:    kFixed, kTestContactTolerance, CheckVec3IsNear, CaseGenerator, MoveParticleCase, ToSolidContactInputs,
 //          BuildMoveParticleCases, FindMoveParticleCase, kFarFromOriginContactTolerance, BuildObliqueCases,
 //          BuildRoundCases, EndDistanceCounts, ComputeEndDistanceCounts, BuildShorterStepCase
 // Uses:    Vec3 (base/vec3.h), Mat3, kIdentity (base/mat3.h), CPU-only guard (base/cpu_only.h), Solid, ToSolid and
@@ -64,9 +64,9 @@ inline constexpr double kTestContactTolerance = 0x1p-30;
 // Fails the calling test when an axis of actual differs from the same axis of expected by more than tolerance.
 //
 // Units: the unit of the two vectors; tolerance is in the same unit.
-// Example: ExpectVec3Near({1, 0, 0}, {1, 0, 1e-3}, 1e-6) fails on axis z.
+// Example: CheckVec3IsNear({1, 0, 0}, {1, 0, 1e-3}, 1e-6) fails on axis z.
 // Read: docs/method-paper/fluidity-method.typ <sec-contact-tolerance>
-inline void ExpectVec3Near(Vec3 actual, Vec3 expected, double tolerance) {
+inline void CheckVec3IsNear(Vec3 actual, Vec3 expected, double tolerance) {
   EXPECT_NEAR(actual.x, expected.x, tolerance) << "axis x";
   EXPECT_NEAR(actual.y, expected.y, tolerance) << "axis y";
   EXPECT_NEAR(actual.z, expected.z, tolerance) << "axis z";
