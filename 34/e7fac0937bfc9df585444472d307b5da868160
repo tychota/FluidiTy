@@ -1,0 +1,23 @@
+src/fluidity/grid/testing/grid_main_comparison_cases.h
+  s_4f0877e2acdcf0::t_bc95bca00f06cc 1-8217
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_7acee9581b0af6 552-563
+tests/grid/grid_main_comparison.test.cc
+  s_4f0877e2acdcf0::t_a3062899dddf45 1-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "34e7fac0937bfc9df585444472d307b5da868160",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
