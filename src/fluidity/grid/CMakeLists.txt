@@ -78,6 +78,7 @@ fluidity_add_test(
   LINKS
   fluidity_grid_testing
 )
+fluidity_add_test(cell_block_range_no_gpu_test SOURCES cell_block_range.no_gpu.test.cc LABEL no_gpu)
 fluidity_add_test(cell_size_factor_test SOURCES cell_size_rule.factor.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(cell_size_rule_test SOURCES cell_size_rule.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(corners_test SOURCES cell_corners.test.cc LABEL cpu LINKS fluidity_grid_testing)

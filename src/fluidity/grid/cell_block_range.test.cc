@@ -12,12 +12,18 @@
 #include <vector>
 
 #include "fluidity/base/axis.h"
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/stable_order.h"
 #include "fluidity/base/vec3.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/find_cell_at.h"
+#include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_memory_estimate.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
 #include "fluidity/grid/staggered_grid.h"
@@ -192,56 +198,6 @@ TEST(FindBorderBlocks, PieceOfSplitCornerBlockWithBorder_FindsEveryCellAtItsCent
   EXPECT_EQ(found_places, expected_places);
 }
 
-TEST(FindBorderBlocks, OutputOneShort_WritesFirstEntriesReturnsTotal) {
-  const std::vector<CellId> cells = BuildPlaneFourCells();
-  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
-  ASSERT_TRUE(test_grid.has_value());
-  const std::vector<CellBlockIndex> blocks = ToBlocks({0});
-  std::array<CellBlockIndex, 2> exact_output = {CellBlockIndex{99}, CellBlockIndex{99}};
-  std::array<CellBlockIndex, 1> short_output = {CellBlockIndex{99}};
-  const std::uint64_t count_before_exact_call = ComputeAllocationCount();
-  const std::expected<std::uint32_t, GridFailure> exact_total =
-      FindBorderBlocks(test_grid->grid, blocks, BorderWidth::kTouchingCells, exact_output);
-  const std::uint64_t count_after_exact_call = ComputeAllocationCount();
-  const std::expected<std::uint32_t, GridFailure> short_total =
-      FindBorderBlocks(test_grid->grid, blocks, BorderWidth::kTouchingCells, short_output);
-  const std::uint64_t count_after_short_call = ComputeAllocationCount();
-  ASSERT_TRUE(exact_total.has_value());
-  ASSERT_TRUE(short_total.has_value());
-  EXPECT_EQ(*exact_total, 2U);
-  EXPECT_EQ(exact_output.at(0).value, 1U);
-  EXPECT_EQ(exact_output.at(1).value, 2U);
-  EXPECT_EQ(*short_total, 2U);
-  EXPECT_EQ(short_output.at(0).value, 1U);
-  EXPECT_EQ(count_after_exact_call - count_before_exact_call, 0U);
-  EXPECT_EQ(count_after_short_call - count_after_exact_call, 0U);
-}
-
-// Checks that the vector form and the span form give the same border for the block set of `block` alone.
-void CheckFormsAgree(const StaggeredGrid& grid, std::uint32_t block, BorderWidth width) {
-  const std::vector<CellBlockIndex> blocks = ToBlocks({block});
-  const std::expected<std::vector<CellBlockIndex>, GridFailure> vector_border = FindBorderBlocks(grid, blocks, width);
-  std::array<CellBlockIndex, 3> span_border = {};
-  const std::expected<std::uint32_t, GridFailure> span_count = FindBorderBlocks(grid, blocks, width, span_border);
-  ASSERT_TRUE(vector_border.has_value());
-  ASSERT_TRUE(span_count.has_value());
-  ASSERT_EQ(*span_count, vector_border->size());
-  for (std::size_t entry = 0; entry < vector_border->size(); ++entry) {
-    EXPECT_EQ(span_border.at(entry).value, vector_border->at(entry).value);
-  }
-}
-
-TEST(FindBorderBlocks, TwoForms_GiveTheSameBorder) {
-  const std::vector<CellId> cells = BuildPlaneFourCells();
-  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
-  ASSERT_TRUE(test_grid.has_value());
-  for (const std::uint32_t block : {0U, 1U, 2U}) {
-    for (const BorderWidth width : {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths}) {
-      CheckFormsAgree(test_grid->grid, block, width);
-    }
-  }
-}
-
 TEST(FindBorderBlocks, VectorForm_AllocatesTwice) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
@@ -289,33 +245,311 @@ TEST(FindBorderBlocks, IndexBeyondTheGrid_IsBadInput) {
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   const std::vector<CellBlockIndex> blocks = ToBlocks({0, 3});
-  std::array<CellBlockIndex, 4> output = {};
   const std::expected<std::vector<CellBlockIndex>, GridFailure> border =
       FindBorderBlocks(test_grid->grid, blocks, BorderWidth::kTouchingCells);
-  const std::expected<std::uint32_t, GridFailure> total =
-      FindBorderBlocks(test_grid->grid, blocks, BorderWidth::kTouchingCells, output);
   ASSERT_FALSE(border.has_value());
-  ASSERT_FALSE(total.has_value());
   EXPECT_EQ(border.error().error, GridError::kBadInput);
-  EXPECT_EQ(total.error().error, GridError::kBadInput);
 }
 
-TEST(FindBorderBlocks, OutputOverTheSet_IsBadInput) {
+// Writes `blocks` to the start of `buffer`. It fails the calling test when the write fails.
+void WriteBlocksOrFail(Buffer<CellBlockIndex>& buffer, std::span<const CellBlockIndex> blocks) {
+  EXPECT_TRUE(WriteBuffer<CellBlockIndex>(blocks, buffer, 0).has_value());
+}
+
+// The buffer form on the rig's buffers: `so_far_count` entries of its first buffer are the set found so far, and the
+// border goes to its second buffer.
+std::expected<std::uint32_t, GridFailure>
+FindOnRig(BorderSearchRig& rig, CellBlockRange range, std::uint32_t so_far_count, BorderWidth width) {
+  return FindBorderBlocks(
+      rig.grid,
+      range,
+      rig.so_far_buffer,
+      so_far_count,
+      width,
+      rig.search_buffers,
+      rig.border_buffer
+  );
+}
+
+TEST(FindBorderBlocks, StackedBufferFormOnPlaneFourGrid_GivesBlocksOneTwo) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
-  // The set {0} is the first entry of the array, and the output is the whole array, so the walk would write over it.
-  std::array<CellBlockIndex, 3> shared = {CellBlockIndex{0}, CellBlockIndex{99}, CellBlockIndex{99}};
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::expected<std::uint32_t, GridFailure> count =
+      FindOnRig(*rig, {.first_block = 0, .block_count = 1}, 0, BorderWidth::kTouchingCells);
+  ASSERT_TRUE(count.has_value());
+  EXPECT_EQ(*count, 2U);
+  EXPECT_EQ(rig->border_buffer.data()[0].value, 1U);
+  EXPECT_EQ(rig->border_buffer.data()[1].value, 2U);
+}
+
+TEST(FindBorderBlocks, BorderSoFar_IsInTheList) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  // Block 2 alone has the border {0, 1}. Asked for range {0, 1} with block 2 so far, the layer is {2}: block 2 is in
+  // the list as border so far, and nothing else lies outside range plus it.
+  const std::vector<CellBlockIndex> so_far = ToBlocks({2});
+  const std::vector<CellBlockIndex> layer =
+      FindLayerOrFail(*rig, {.first_block = 0, .block_count = 2}, so_far, BorderWidth::kTouchingCells);
+  EXPECT_EQ(ToIndexes(layer), (std::vector<std::uint32_t>{2}));
+}
+
+TEST(FindBorderBlocks, StackedBufferFormShortOutput_WritesFirstEntriesReturnsTotal) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  std::expected<Buffer<CellBlockIndex>, BufferError> short_output = BuildBuffer<CellBlockIndex>(RunOn::kCpu, 1);
+  ASSERT_TRUE(short_output.has_value());
   const std::expected<std::uint32_t, GridFailure> total = FindBorderBlocks(
       test_grid->grid,
-      std::span<const CellBlockIndex>(shared.data(), 1),
+      {.first_block = 0, .block_count = 1},
+      rig->so_far_buffer,
+      0,
       BorderWidth::kTouchingCells,
-      std::span<CellBlockIndex>(shared)
+      rig->search_buffers,
+      *short_output
+  );
+  ASSERT_TRUE(total.has_value());
+  EXPECT_EQ(*total, 2U);
+  EXPECT_EQ(short_output->data()[0].value, 1U);
+}
+
+TEST(FindBorderBlocks, StackedBufferFormSameBufferTwice_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::vector<CellBlockIndex> so_far = ToBlocks({2});
+  WriteBlocksOrFail(rig->so_far_buffer, so_far);
+  const std::expected<std::uint32_t, GridFailure> total = FindBorderBlocks(
+      test_grid->grid,
+      {.first_block = 0, .block_count = 1},
+      rig->so_far_buffer,
+      1,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      rig->so_far_buffer
   );
   ASSERT_FALSE(total.has_value());
   EXPECT_EQ(total.error().error, GridError::kBadInput);
-  EXPECT_EQ(shared.at(0).value, 0U);
-  EXPECT_EQ(shared.at(1).value, 99U);
+  EXPECT_EQ(rig->so_far_buffer.data()[0].value, 2U);
+}
+
+TEST(FindBorderBlocks, BorderSoFarInsideRange_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::vector<CellBlockIndex> so_far = ToBlocks({1});
+  WriteBlocksOrFail(rig->so_far_buffer, so_far);
+  const std::expected<std::uint32_t, GridFailure> total =
+      FindOnRig(*rig, {.first_block = 0, .block_count = 2}, 1, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(total.has_value());
+  EXPECT_EQ(total.error().error, GridError::kBadInput);
+}
+
+TEST(FindBorderBlocks, BorderSoFarNotAscending_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  for (const std::vector<CellBlockIndex>& so_far : {ToBlocks({2, 1}), ToBlocks({1, 1})}) {
+    WriteBlocksOrFail(rig->so_far_buffer, so_far);
+    const std::expected<std::uint32_t, GridFailure> total =
+        FindOnRig(*rig, {.first_block = 0, .block_count = 1}, 2, BorderWidth::kTouchingCells);
+    ASSERT_FALSE(total.has_value());
+    EXPECT_EQ(total.error().error, GridError::kBadInput);
+  }
+}
+
+TEST(FindBorderBlocks, BorderSoFarIndexBeyondTheGrid_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::vector<CellBlockIndex> so_far = ToBlocks({1, 3});
+  WriteBlocksOrFail(rig->so_far_buffer, so_far);
+  const std::expected<std::uint32_t, GridFailure> total =
+      FindOnRig(*rig, {.first_block = 0, .block_count = 1}, 2, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(total.has_value());
+  EXPECT_EQ(total.error().error, GridError::kBadInput);
+}
+
+TEST(FindBorderBlocks, BorderSoFarCountAboveBufferSize_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::uint32_t count_above_size = static_cast<std::uint32_t>(rig->so_far_buffer.size()) + 1;
+  const std::expected<std::uint32_t, GridFailure> total =
+      FindOnRig(*rig, {.first_block = 0, .block_count = 1}, count_above_size, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(total.has_value());
+  EXPECT_EQ(total.error().error, GridError::kBadInput);
+}
+
+TEST(FindBorderBlocks, RangeBeyondTheGrid_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::expected<std::uint32_t, GridFailure> total =
+      FindOnRig(*rig, {.first_block = 2, .block_count = 2}, 0, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(total.has_value());
+  EXPECT_EQ(total.error().error, GridError::kBadInput);
+}
+
+TEST(FindBorderBlocks, SearchBuffersTooSmall_IsTooManyCellBlocks) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  std::expected<RunMemory, BufferError> small_memory = BuildRunMemory(RunOn::kCpu, 256);
+  ASSERT_TRUE(small_memory.has_value());
+  std::expected<BorderSearchBuffers, GridFailure> small_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, 2, *small_memory);
+  ASSERT_TRUE(small_buffers.has_value());
+  const std::expected<std::uint32_t, GridFailure> total = FindBorderBlocks(
+      test_grid->grid,
+      {.first_block = 0, .block_count = 1},
+      rig->so_far_buffer,
+      0,
+      BorderWidth::kTouchingCells,
+      *small_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(total.has_value());
+  EXPECT_EQ(total.error().error, GridError::kTooManyCellBlocks);
+}
+
+TEST(FindBorderBlocks, StackedBufferForm_AllocatesNothing) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::vector<CellBlockIndex> so_far = ToBlocks({2});
+  WriteBlocksOrFail(rig->so_far_buffer, so_far);
+  const std::uint64_t count_before_call = ComputeAllocationCount();
+  const std::expected<std::uint32_t, GridFailure> total =
+      FindOnRig(*rig, {.first_block = 0, .block_count = 1}, 1, BorderWidth::kFourCellWidths);
+  const std::uint64_t count_after_call = ComputeAllocationCount();
+  ASSERT_TRUE(total.has_value());
+  EXPECT_EQ(count_after_call - count_before_call, 0U);
+}
+
+TEST(FindBorderBlocks, SecondCallOnSameSearchBuffers_EqualsFreshBuffers) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> used_rig = BuildBorderSearchRig(test_grid->grid);
+  std::expected<BorderSearchRig, GridFailure> fresh_rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(used_rig.has_value());
+  ASSERT_TRUE(fresh_rig.has_value());
+  const CellBlockRange first_range = {.first_block = 0, .block_count = 1};
+  const CellBlockRange second_range = {.first_block = 2, .block_count = 1};
+  const std::vector<CellBlockIndex> no_blocks;
+  const std::vector<CellBlockIndex> first_layer =
+      FindLayerOrFail(*used_rig, first_range, no_blocks, BorderWidth::kFourCellWidths);
+  const std::vector<CellBlockIndex> second_layer =
+      FindLayerOrFail(*used_rig, second_range, no_blocks, BorderWidth::kFourCellWidths);
+  const std::vector<CellBlockIndex> fresh_layer =
+      FindLayerOrFail(*fresh_rig, second_range, no_blocks, BorderWidth::kFourCellWidths);
+  EXPECT_FALSE(first_layer.empty());
+  EXPECT_EQ(ToIndexes(second_layer), ToIndexes(fresh_layer));
+  EXPECT_EQ(ToIndexes(second_layer), (std::vector<std::uint32_t>{0, 1}));
+}
+
+// The bytes of the estimate's entries that live in the run's memory, as the arrays take them.
+std::uint64_t ComputeEstimateBytes(const std::vector<MemoryEstimateEntry>& estimate) {
+  return ComputeMemoryBytes(estimate, MemoryCounts(), MemoryWhere::kRunOn);
+}
+
+TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedBytes) {
+  const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(RunOn::kCpu, 1000);
+  ASSERT_EQ(estimate.size(), 1U);
+  EXPECT_EQ(ComputeEstimateBytes(estimate), 1000U);
+  std::expected<RunMemory, BufferError> run_memory =
+      BuildRunMemory(RunOn::kCpu, ComputeRunMemoryBytes(estimate, MemoryCounts(), MemoryWhere::kRunOn));
+  ASSERT_TRUE(run_memory.has_value());
+  const std::expected<BorderSearchBuffers, GridFailure> search_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, 1000, *run_memory);
+  ASSERT_TRUE(search_buffers.has_value());
+  EXPECT_EQ(search_buffers->marks().size(), 1000U);
+  EXPECT_EQ(sizeof(search_buffers->marks().data()[0]), 1U);
+}
+
+TEST(BuildBorderSearchBuffers, IntoRunMemory_HandsOutExactlyTheEstimate) {
+  const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(RunOn::kCpu, 1000);
+  std::expected<RunMemory, BufferError> run_memory =
+      BuildRunMemory(RunOn::kCpu, ComputeRunMemoryBytes(estimate, MemoryCounts(), MemoryWhere::kRunOn));
+  ASSERT_TRUE(run_memory.has_value());
+  ASSERT_EQ(run_memory->reserved_bytes(), 1024U);
+  const std::expected<BorderSearchBuffers, GridFailure> search_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, 1000, *run_memory);
+  ASSERT_TRUE(search_buffers.has_value());
+  EXPECT_EQ(search_buffers->max_cell_blocks(), 1000U);
+  EXPECT_EQ(search_buffers->run_on(), RunOn::kCpu);
+  EXPECT_EQ(run_memory->handed_out_bytes(), run_memory->reserved_bytes());
+}
+
+TEST(BuildBorderSearchMemoryEstimate, Gpu_CountsEveryArray) {
+  const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(RunOn::kGpu, 1000);
+  const OrderBuffersSize order_buffers_size = ComputeOrderBuffersSize(RunOn::kGpu);
+  ASSERT_EQ(estimate.size(), 4U);
+  EXPECT_EQ(
+      ComputeEstimateBytes(estimate),
+      1000U + 4004U + (std::uint64_t{order_buffers_size.bytes_per_item} * 1001U) + order_buffers_size.fixed_bytes
+          + sizeof(GridBuildStatus)
+  );
+  std::uint64_t piece_bytes = 0;
+  for (const MemoryEstimateEntry& entry : estimate) {
+    piece_bytes += ComputeRunMemoryPieceBytes(entry.given_count * entry.bytes_each);
+  }
+  EXPECT_EQ(piece_bytes, ComputeRunMemoryBytes(estimate, MemoryCounts(), MemoryWhere::kRunOn));
+}
+
+TEST(BuildBorderSearchBuffers, ZeroBlocks_IsBadInput) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 1024);
+  ASSERT_TRUE(run_memory.has_value());
+  const std::expected<BorderSearchBuffers, GridFailure> search_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, 0, *run_memory);
+  ASSERT_FALSE(search_buffers.has_value());
+  EXPECT_EQ(search_buffers.error().error, GridError::kBadInput);
+  EXPECT_EQ(run_memory->handed_out_bytes(), 0U);
+}
+
+TEST(BuildBorderSearchBuffers, AboveTheLimit_IsBadInput) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 1024);
+  ASSERT_TRUE(run_memory.has_value());
+  const std::expected<BorderSearchBuffers, GridFailure> search_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, kMaxCellBlocksLimit + 1, *run_memory);
+  ASSERT_FALSE(search_buffers.has_value());
+  EXPECT_EQ(search_buffers.error().error, GridError::kBadInput);
+}
+
+TEST(BuildBorderSearchBuffers, RunMemoryTooSmall_IsOutOfMemoryWithTheArrayBytes) {
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(RunOn::kCpu, 256);
+  ASSERT_TRUE(run_memory.has_value());
+  const std::expected<BorderSearchBuffers, GridFailure> search_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, 1000, *run_memory);
+  ASSERT_FALSE(search_buffers.has_value());
+  EXPECT_EQ(search_buffers.error().error, GridError::kOutOfMemory);
+  EXPECT_EQ(search_buffers.error().magnitude, 1000U);
+  EXPECT_EQ(run_memory->handed_out_bytes(), 0U);
 }
 
 TEST(BuildRangeWithBorder, RangeOfTheMiddleBlock_HasBothOthersAsBorder) {

@@ -3,15 +3,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <functional>
+#include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/check_can_run_on.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/stable_order.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/cell_block_range.h"
+#include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_memory_estimate.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
@@ -30,39 +38,6 @@ std::expected<void, GridFailure> CheckSortedBlocks(const StaggeredGrid& grid, st
     return std::unexpected(GridFailure{.error = GridError::kBadInput});
   }
   return {};
-}
-
-// Says whether two spans share an entry of memory. std::less gives a total order on pointers, also for pointers into
-// different arrays, where the built-in < does not.
-bool ComputeDoSpansOverlap(std::span<const CellBlockIndex> first, std::span<const CellBlockIndex> second) {
-  if (first.empty() || second.empty()) {
-    return false;
-  }
-  const std::less<> comes_before;
-  return comes_before(first.data(), second.data() + second.size())
-      && comes_before(second.data(), first.data() + first.size());
-}
-
-// Walks the blocks of the grid in ascending index and calls `visit` with each border block of `blocks` at `width`,
-// asked from each block's side (ComputeIsBorderBlock). Allocates nothing.
-void ApplyToBorderBlocks(
-    const StaggeredGrid& grid,
-    std::span<const CellBlockIndex> blocks,
-    BorderWidth width,
-    const auto& visit
-) {
-  assert(grid.run_on() == RunOn::kCpu);
-  const GridTables tables = grid.tables(RunOn::kCpu);
-  const BlockSet set = {
-      .range = {.first_block = 0, .block_count = 0},
-      .sorted_blocks = blocks.data(),
-      .sorted_count = static_cast<std::uint32_t>(blocks.size()),
-  };
-  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
-    if (ComputeIsBorderBlock(tables, set, CellBlockIndex{block}, width)) {
-      visit(CellBlockIndex{block});
-    }
-  }
 }
 
 // Runs the readers of `width` forward from every cell place and face place kept in `block`.
@@ -108,6 +83,67 @@ std::vector<CellBlockIndex> FindBorderByMarking(const GridTables& tables, const 
   return border_blocks;
 }
 
+// Checks the entries of the border blocks that a call of the buffer form was given: ascending with no repeat, each
+// below the grid's block count and none in the range. A block of the range cannot be border so far, since the list is
+// what lies outside it.
+std::expected<void, GridFailure>
+CheckBorderSoFar(const StaggeredGrid& grid, CellBlockRange range, std::span<const CellBlockIndex> border_so_far) {
+  bool is_ascending = true;
+  for (std::size_t entry = 1; entry < border_so_far.size(); ++entry) {
+    is_ascending = is_ascending && border_so_far[entry - 1].value < border_so_far[entry].value;
+  }
+  const bool is_below_count = border_so_far.empty() || border_so_far.back().value < grid.counts().cell_blocks;
+  const bool is_in_range = std::ranges::any_of(border_so_far, [range](CellBlockIndex block) {
+    return block.value >= range.first_block && block.value - range.first_block < range.block_count;
+  });
+  if (!is_ascending || !is_below_count || is_in_range) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
+  return {};
+}
+
+// Builds one array of the border search buffers as one memory piece of exactly byte_count bytes, which must be the
+// bytes of `item_count` items: an entry that says otherwise is an internal fault. An array already built is one too,
+// for an estimate that lists it twice.
+template <BufferValue Value>
+std::expected<void, GridFailure>
+BuildBorderArray(std::uint64_t byte_count, std::uint64_t item_count, RunMemory& run_memory, Buffer<Value>& array) {
+  if (byte_count != item_count * sizeof(Value) || array.size() != 0) {
+    return std::unexpected(GridFailure{.error = GridError::kInternalFault});
+  }
+  std::expected<Buffer<Value>, BufferError> built =
+      BuildBuffer<Value>(run_memory.run_on(), static_cast<std::size_t>(item_count), run_memory);
+  if (!built.has_value()) {
+    return std::unexpected(ToGridFailure(built.error(), byte_count));
+  }
+  array = std::move(*built);
+  return {};
+}
+
+// clang-tidy: a count of bytes and a count of items; the swappable-parameters check flags the two integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+// Builds the order buffers of the prefix sum over `item_count` items as one memory piece of exactly byte_count bytes.
+std::expected<void, GridFailure> BuildBorderOrderBuffers(
+    std::uint64_t byte_count,
+    std::uint64_t item_count,
+    RunMemory& run_memory,
+    std::optional<OrderBuffers>& order_buffers
+) {
+  const OrderBuffersSize size = ComputeOrderBuffersSize(run_memory.run_on());
+  const std::uint64_t expected_bytes = (std::uint64_t{size.bytes_per_item} * item_count) + size.fixed_bytes;
+  if (byte_count != expected_bytes || order_buffers.has_value()) {
+    return std::unexpected(GridFailure{.error = GridError::kInternalFault});
+  }
+  std::expected<OrderBuffers, BufferError> built =
+      BuildOrderBuffers(run_memory.run_on(), static_cast<std::size_t>(item_count), run_memory);
+  if (!built.has_value()) {
+    return std::unexpected(ToGridFailure(built.error(), byte_count));
+  }
+  order_buffers = std::move(*built);
+  return {};
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
 }  // namespace
 
 std::expected<std::vector<CellBlockRange>, GridFailure>
@@ -150,27 +186,122 @@ FindBorderBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> bloc
   return FindBorderByMarking(grid.tables(RunOn::kCpu), set, width);
 }
 
-std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
-    const StaggeredGrid& grid,
-    std::span<const CellBlockIndex> blocks,
-    BorderWidth width,
-    std::span<CellBlockIndex> border_blocks
-) {
-  const std::expected<void, GridFailure> check = CheckSortedBlocks(grid, blocks);
-  if (!check.has_value()) {
-    return std::unexpected(check.error());
+std::expected<BorderSearchBuffers, GridFailure>
+BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory& run_memory) {
+  // Steps: 1 the processor  2 the room  3 one memory piece per entry of the estimate, in its order  4 every array
+  // Step 1: a processor that cannot run is reported before the block is touched.
+  if (!CheckCanRunOn(run_on).has_value()) {
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
   }
-  // The walk searches `blocks` while it writes `border_blocks`, so an output over the set would change the set.
-  if (ComputeDoSpansOverlap(blocks, border_blocks)) {
+  // Requires: one processor (BuildBuffer from a RunMemory asserts it too).
+  assert(run_on == run_memory.run_on());
+
+  // Step 2: a room of 0 is a limit never filled in; one above the limit would overflow the 32-bit counts of the lists.
+  if (max_cell_blocks == 0 || max_cell_blocks > kMaxCellBlocksLimit) {
     return std::unexpected(GridFailure{.error = GridError::kBadInput});
   }
+
+  // Step 3: the pieces come from the estimate's own entries, so the arrays and the estimate cannot differ. On failure
+  // the pieces already taken stay in the block, and the arrays built so far are destroyed here.
+  BorderSearchBuffers search_buffers;
+  search_buffers.run_on_ = run_on;
+  const std::uint64_t block_count = max_cell_blocks;
+  for (const MemoryEstimateEntry& entry : BuildBorderSearchMemoryEstimate(run_on, max_cell_blocks)) {
+    const std::uint64_t byte_count = entry.given_count * entry.bytes_each;
+    std::expected<void, GridFailure> built = std::unexpected(GridFailure{.error = GridError::kInternalFault});
+    if (entry.name == kBorderMarksEntryName) {
+      built = BuildBorderArray(byte_count, block_count, run_memory, search_buffers.marks_);
+    } else if (entry.name == kBorderSumsEntryName) {
+      built = BuildBorderArray(byte_count, block_count + 1, run_memory, search_buffers.sums_);
+    } else if (entry.name == kBorderOrderBuffersEntryName) {
+      built = BuildBorderOrderBuffers(byte_count, block_count + 1, run_memory, search_buffers.order_buffers_);
+    } else if (entry.name == kBorderStatusEntryName) {
+      built = BuildBorderArray(byte_count, 1, run_memory, search_buffers.status_);
+    }
+    if (!built.has_value()) {
+      return std::unexpected(built.error());
+    }
+  }
+
+  // Step 4: an estimate that left an array out is a fault in FluidiTy, not an input.
+  const bool has_marks = search_buffers.marks_.size() == block_count;
+  const bool has_gpu_arrays = search_buffers.sums_.size() == block_count + 1
+      && search_buffers.order_buffers_.has_value() && search_buffers.status_.size() == 1;
+  if (!has_marks || (run_on == RunOn::kGpu && !has_gpu_arrays)) {
+    return std::unexpected(GridFailure{.error = GridError::kInternalFault});
+  }
+  search_buffers.max_cell_blocks_ = max_cell_blocks;
+  return search_buffers;
+}
+
+std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
+    const StaggeredGrid& grid,
+    CellBlockRange range,
+    const Buffer<CellBlockIndex>& border_so_far,
+    std::uint32_t border_so_far_count,
+    BorderWidth width,
+    BorderSearchBuffers& search_buffers,
+    Buffer<CellBlockIndex>& border_blocks
+) {
+  // Steps: 1 the processor  2 the shape of the arguments  3 the border so far  4 the room  5 the marks  6 the list
+  // Requires: every buffer on the processor of the grid, which the caller chose when it built them.
+  assert(border_so_far.run_on() == grid.run_on());
+  assert(border_blocks.run_on() == grid.run_on());
+  assert(search_buffers.run_on() == grid.run_on());
+
+  // Step 1: the form on the GPU is not built yet, and a GPU buffer cannot be read here.
+  if (grid.run_on() != RunOn::kCpu) {
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+  }
+
+  // Step 2: the search writes border_blocks while it reads the border so far, so one buffer for both would change
+  // the set it searches. The two buffers are different objects, or two pieces, which never overlap.
+  const std::uint32_t block_count = grid.counts().cell_blocks;
+  const bool is_range_inside_grid =
+      range.first_block <= block_count && range.block_count <= block_count - range.first_block;
+  const bool is_same_buffer = &border_blocks == &border_so_far
+      || (border_blocks.data() != nullptr && border_blocks.data() == border_so_far.data());
+  if (is_same_buffer || border_so_far_count > border_so_far.size() || !is_range_inside_grid) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
+
+  // Step 3: the entries must be ascending blocks outside the range, or the list would not hold them in order.
+  const std::span<const CellBlockIndex> border_so_far_entries(border_so_far.data(), border_so_far_count);
+  if (const std::expected<void, GridFailure> checked = CheckBorderSoFar(grid, range, border_so_far_entries);
+      !checked.has_value()) {
+    return std::unexpected(checked.error());
+  }
+
+  // Step 4: marks for fewer blocks than the grid has would be written past.
+  if (search_buffers.max_cell_blocks() < block_count) {
+    return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
+  }
+
+  // Step 5: the marks start at 0 for every block, also for the blocks of the set: a marking function stops at a block
+  // that is already marked and leaves its bigger blocks to whoever marked it, so a block marked here first would never
+  // pass its bigger blocks on. The blocks of the set are marked through their own cell places.
+  const GridTables tables = grid.tables(RunOn::kCpu);
+  std::uint8_t* const marks = search_buffers.marks_.data();
+  std::fill_n(marks, block_count, std::uint8_t{0});
+  for (std::uint32_t entry = 0; entry < range.block_count; ++entry) {
+    ApplyMarksFromBlock(tables, range.first_block + entry, width, marks);
+  }
+  for (const CellBlockIndex block : border_so_far_entries) {
+    ApplyMarksFromBlock(tables, block.value, width, marks);
+  }
+
+  // Step 6: the marked blocks outside the range, in index order. The first border_blocks.size() are written.
   std::uint32_t border_block_count = 0;
-  ApplyToBorderBlocks(grid, blocks, width, [&border_blocks, &border_block_count](CellBlockIndex block) {
+  for (std::uint32_t block = 0; block < block_count; ++block) {
+    const bool is_in_range = block >= range.first_block && block - range.first_block < range.block_count;
+    if (marks[block] == 0 || is_in_range) {
+      continue;
+    }
     if (border_block_count < border_blocks.size()) {
-      border_blocks[border_block_count] = block;
+      border_blocks.data()[border_block_count] = CellBlockIndex{block};
     }
     ++border_block_count;
-  });
+  }
   return border_block_count;
 }
 

@@ -150,4 +150,22 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
+std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks) {
+  // One byte per block, on both processors.
+  std::vector<MemoryEstimateEntry> estimate = {BuildGivenEntry(kBorderMarksEntryName, max_cell_blocks, 1, 1)};
+  if (run_on == RunOn::kCpu) {
+    return estimate;
+  }
+  // The sums and the order buffers hold one item more than the blocks, because a prefix sum writes its total after the
+  // last entry. Each array is one piece, so the order buffers are one entry of their exact bytes.
+  const std::uint64_t sum_item_count = std::uint64_t{max_cell_blocks} + 1;
+  const OrderBuffersSize order_buffers_size = ComputeOrderBuffersSize(RunOn::kGpu);
+  const std::uint64_t order_buffers_bytes =
+      (std::uint64_t{order_buffers_size.bytes_per_item} * sum_item_count) + order_buffers_size.fixed_bytes;
+  estimate.push_back(BuildGivenEntry(kBorderSumsEntryName, kOrderItemBytes * sum_item_count, 1, 1));
+  estimate.push_back(BuildGivenEntry(kBorderOrderBuffersEntryName, order_buffers_bytes, 1, 1));
+  estimate.push_back(BuildGivenEntry(kBorderStatusEntryName, sizeof(GridBuildStatus), 1, 1));
+  return estimate;
+}
+
 }  // namespace fluidity::grid

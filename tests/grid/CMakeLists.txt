@@ -63,6 +63,18 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  stacked_borders_in_grid_pieces_functional_test
+  SOURCES
+  stacked_borders_in_grid_pieces.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   cell_corners_on_random_grids_functional_test
   SOURCES
   cell_corners_on_random_grids.test.cc

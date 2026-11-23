@@ -78,6 +78,11 @@ inline constexpr std::string_view kBuilderSortKeysEntryName = "grid: builder buf
 inline constexpr std::string_view kBuilderOrderEntryName = "grid: builder buffers: order";
 inline constexpr std::string_view kBuilderSecondOrderEntryName = "grid: builder buffers: second order";
 inline constexpr std::string_view kBuilderOrderBuffersEntryName = "grid: builder buffers: order buffers";
+// The entries of BuildBorderSearchMemoryEstimate, the arrays of BorderSearchBuffers.
+inline constexpr std::string_view kBorderMarksEntryName = "grid: border marks";
+inline constexpr std::string_view kBorderSumsEntryName = "grid: border sums";
+inline constexpr std::string_view kBorderOrderBuffersEntryName = "grid: border order buffers";
+inline constexpr std::string_view kBorderStatusEntryName = "grid: border status";
 
 // Bytes of one item of each array, method paper <tab-grid-memory>, shared by the estimate and the builders, which
 // check each array's item type against them at compile time. A block id is 8 bytes, a block index 4.

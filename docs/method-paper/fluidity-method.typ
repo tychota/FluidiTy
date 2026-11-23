@@ -2191,7 +2191,11 @@ forward, one place at a time (`ApplyCellPlaceReadMarks`, `ApplyFacePlaceReadMark
 readers and marks every block they read, with its bigger blocks; marks are only ever set to 1, so places marked at
 once cannot conflict, and the marked blocks outside the set, in index order, are the border. A pass that runs several
 stages on one load needs stacked borders: the border of its last stage around the range, then the border of the stage
-before around the range plus that border, and so on. In a run in one piece the range is every block and the border is
+before around the range plus that border, and so on. The buffer form of `FindBorderBlocks` does one layer per call, in
+`BorderSearchBuffers` built once: it sets one mark byte per block to 0, runs the marking functions from every place of
+the range and of the layers so far, and lists the marked blocks outside the range. Every block of the layers so far is
+marked through its own cell places, so the list holds them without a merge, and the list of one call is the next
+call's layers so far. In a run in one piece the range is every block and the border is
 empty. A sum over the grid that is not a sum per destination is one partial sum per block, kept in the fixed block
 order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut into ranges.
 
@@ -2572,6 +2576,11 @@ record.
       [*GPU builder buffers, one set*], [], [*1,920, and 4,110 once*], [run],
       [*one GPU grid with lent builder buffers*], [], [*460, and one record*], [run],
       table.hline(stroke: 0.4pt),
+      [_border search:_ border marks], [given count], [1], [run],
+      [_border search, GPU:_ border sums], [given count], [4, and 4 once], [run],
+      [_border search, GPU:_ border order buffers], [given count], [6, and 4,102 once], [run],
+      [_border search, GPU:_ border status], [given count], [one record], [run],
+      table.hline(stroke: 0.4pt),
       [`CellValues` of `double`], [cell place], [512], [run],
       [`FaceValues` of `double`], [face place], [1,920], [run],
       [`CornerValues` of `double`], [corner place], [1,000], [run],
@@ -2582,6 +2591,11 @@ record.
     memory. Every entry names one array; the bold lines are totals. The value buffers at the end belong to the
     modules that keep values on the grid.],
 ) <tab-grid-memory>
+
+Border search (`BorderSearchBuffers`) keeps one mark byte per block on both processors. On the GPU it also keeps one
+word per block plus one for the exclusive prefix sum of the listed marks, the working buffers of that sum and one status
+record: 11 bytes per block, 4,106 bytes once and one record. A CPU run therefore needs 1 byte per block more for border
+search, and one set serves every call, since a call sets its marks first.
 
 A run on the GPU keeps two grids, the committed one and the one of the step's try, which share one set of builder
 buffers: 2 × 460 + 1,920 = 2,840 bytes per block, plus the 4,110 bytes and two status records once. A grid of

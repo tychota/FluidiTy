@@ -28,12 +28,13 @@
 //   cell block       4 x 4 x 4 cells kept together
 //   builder buffers  the temporary arrays a grid build uses
 //   piece map        for each block of a grid piece, the index of the same block in the whole grid; 4 bytes per block
-// Owns:    ToMemoryCounts, BuildGridMemoryEstimate
+// Owns:    ToMemoryCounts, BuildGridMemoryEstimate, BuildBorderSearchMemoryEstimate
 // Uses:    CPU-only guard (base/cpu_only.h), MemoryCounts, MemoryEstimateEntry (base/memory_count.h), RunOn
 //          (base/run_on.h), GridCounts, BuilderBuffersSharing (grid/staggered_grid.h)
 // Implementation uses: ComputeOrderBuffersSize (base/stable_order.h), the entry names and item bytes
 //          (grid/grid_buffers_internal.h), GridBuildStatus (grid/grid_build_status.h)
-// Used by: the step's run plan, and the grid's buffer builders, which take one memory piece for each entry
+// Used by: the step's memory budget, and the grid's buffer builders and BuildBorderSearchBuffers, which take one memory
+//          piece for each entry
 // Read:    docs/method-paper/fluidity-method.typ <sec-grid-memory>, <tab-grid-memory>
 
 #pragma once
@@ -94,5 +95,25 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
     BuilderBuffersSharing builder_buffers_sharing = BuilderBuffersSharing::kOnePerGrid
 );
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Builds the memory estimate of one BorderSearchBuffers for grids of at most max_cell_blocks blocks on `run_on`: one
+// entry per array, in the order BuildBorderSearchBuffers takes its memory pieces.
+//
+// Method: every entry is KeptFor::kWholeRun, MemoryWhere::kRunOn, copies 1, counted as a kGivenCount entry of exact
+//   bytes (bytes_each 1), and its name starts with "grid: ". Entries, in this order:
+//   1 border marks: max_cell_blocks bytes, one std::uint8_t per block, on both processors.
+//   On the GPU also:
+//   2 border sums: 4 x (max_cell_blocks + 1) bytes, one 0/1 word per block, then their exclusive prefix sum in place,
+//     the total one past the last.
+//   3 border order buffers: bytes_per_item x (max_cell_blocks + 1) + fixed_bytes of
+//   ComputeOrderBuffersSize(RunOn::kGpu),
+//     the working buffers of that prefix sum.
+//   4 border status: one GridBuildStatus.
+// Units: bytes, through ComputeMemoryBytes.
+// Example: on the CPU at 1,000 blocks, one entry of 1,000 bytes. On the GPU at 1,000 blocks, the kRunOn sum is
+//   1,000 + 4,004 + 6 x 1,001 + 4,096 + 192 = 15,298 bytes.
+// Fails: never.
+// Read: docs/method-paper/fluidity-method.typ <sec-grid-memory>, <tab-grid-memory>
+std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on, std::uint32_t max_cell_blocks);
 
 }  // namespace fluidity::grid

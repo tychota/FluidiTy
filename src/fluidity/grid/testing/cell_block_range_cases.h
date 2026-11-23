@@ -25,18 +25,25 @@
 //   around the point (6, 6, 6) m, the middle of the middle size-level-0 block, balls of smaller cells, each size level
 //   in a region of its own, far from the grid's edge.
 //
+//   The border search rig holds the room of the buffer form of FindBorderBlocks for one CPU grid: search buffers and
+//   two buffers of one entry per block, so a test finds one layer of a stacked border without repeating the set-up.
+//
 // Owns:    BuildPlaneFourCells, BuildDistantCornerCells, BuildCornerBeyondCells, BuildSplitCornerCells,
 //          BuildCarriedSumsCells, BuildNestedBallCells, FindDrawnAscendingBlocks, ToRangeBlocks, FindChosenBlockSets,
-//          ToBlocks
-// Uses:    CPU-only guard (base/cpu_only.h), ToCell (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure,
-//          ToUniformIndex (grid/testing/grid_support.h), BuildRanges (grid/cell_block_range.h), StaggeredGrid
-//          (grid/staggered_grid.h), GridFailure (grid/grid_error.h)
+//          ToBlocks, BorderSearchRig, BuildBorderSearchRig, FindLayerOrFail
+// Uses:    CPU-only guard (base/cpu_only.h), Buffer, WriteBuffer, ReadBuffer (base/buffer.h), RunMemory
+//          (base/run_memory.h), BuildBorderSearchMemoryEstimate (grid/grid_memory_estimate.h), ToCell
+//          (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure, ToUniformIndex (grid/testing/grid_support.h),
+//          BuildRanges (grid/cell_block_range.h), StaggeredGrid (grid/staggered_grid.h), GridFailure
+//          (grid/grid_error.h)
 // Used by: src/fluidity/grid/cell_block_range.test.cc, the functional tests of border blocks (tests/grid/)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 
 #pragma once
 
 #include "fluidity/base/cpu_only.h"
+
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -45,12 +52,18 @@
 #include <expected>
 #include <initializer_list>
 #include <random>
+#include <span>
 #include <utility>
 #include <vector>
 
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
+#include "fluidity/base/run_memory.h"
+#include "fluidity/base/run_on.h"
 #include "fluidity/grid/cell_block_range.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_memory_estimate.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/grid_support.h"
 #include "fluidity/grid/testing/staggered_grid_cases.h"
@@ -218,6 +231,75 @@ inline std::vector<CellBlockIndex> ToBlocks(std::initializer_list<std::uint32_t>
     blocks.push_back({.value = index});
   }
   return blocks;
+}
+
+// The room of the buffer form of FindBorderBlocks for one CPU grid: the block that the search buffers are pieces of,
+// the search buffers, and two buffers of one entry per block of the grid, one for the set found so far and one for the
+// border found.
+struct BorderSearchRig {
+  const StaggeredGrid& grid;  // The grid the room is for.
+  RunMemory run_memory;
+  BorderSearchBuffers search_buffers;
+  Buffer<CellBlockIndex> so_far_buffer;
+  Buffer<CellBlockIndex> border_buffer;
+};
+
+// Builds the rig of `grid`, a CPU grid of at least one block: search buffers for its block count and two buffers of
+// that many entries.
+inline std::expected<BorderSearchRig, GridFailure> BuildBorderSearchRig(const StaggeredGrid& grid) {
+  const std::uint32_t block_count = grid.counts().cell_blocks;
+  const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(RunOn::kCpu, block_count);
+  std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(
+      RunOn::kCpu,
+      ComputeRunMemoryBytes(estimate, ToMemoryCounts(grid.counts(), 0), MemoryWhere::kRunOn)
+  );
+  if (!run_memory.has_value()) {
+    return std::unexpected(GridFailure{.error = GridError::kOutOfMemory});
+  }
+  std::expected<BorderSearchBuffers, GridFailure> search_buffers =
+      BuildBorderSearchBuffers(RunOn::kCpu, block_count, *run_memory);
+  std::expected<Buffer<CellBlockIndex>, BufferError> so_far_buffer =
+      BuildBuffer<CellBlockIndex>(RunOn::kCpu, block_count);
+  std::expected<Buffer<CellBlockIndex>, BufferError> border_buffer =
+      BuildBuffer<CellBlockIndex>(RunOn::kCpu, block_count);
+  if (!search_buffers.has_value()) {
+    return std::unexpected(search_buffers.error());
+  }
+  if (!so_far_buffer.has_value() || !border_buffer.has_value()) {
+    return std::unexpected(GridFailure{.error = GridError::kOutOfMemory});
+  }
+  return BorderSearchRig{
+      .grid = grid,
+      .run_memory = std::move(*run_memory),
+      .search_buffers = std::move(*search_buffers),
+      .so_far_buffer = std::move(*so_far_buffer),
+      .border_buffer = std::move(*border_buffer),
+  };
+}
+
+// One layer of a stacked border by the buffer form: the blocks outside `range` that are in `so_far` or in the border
+// of range plus `so_far` at `width`, ascending. `so_far` is copied into the rig's first buffer. It fails the calling
+// test, and gives an empty list, when a call fails.
+inline std::vector<CellBlockIndex>
+FindLayerOrFail(BorderSearchRig& rig, CellBlockRange range, std::span<const CellBlockIndex> so_far, BorderWidth width) {
+  const std::expected<void, BufferError> written = WriteBuffer<CellBlockIndex>(so_far, rig.so_far_buffer, 0);
+  EXPECT_TRUE(written.has_value());
+  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(
+      rig.grid,
+      range,
+      rig.so_far_buffer,
+      static_cast<std::uint32_t>(so_far.size()),
+      width,
+      rig.search_buffers,
+      rig.border_buffer
+  );
+  EXPECT_TRUE(count.has_value());
+  if (!written.has_value() || !count.has_value() || *count > rig.border_buffer.size()) {
+    return {};
+  }
+  std::vector<CellBlockIndex> layer(*count);
+  EXPECT_TRUE(ReadBuffer<CellBlockIndex>(rig.border_buffer, 0, layer).has_value());
+  return layer;
 }
 
 }  // namespace fluidity::grid
