@@ -419,33 +419,46 @@ buffers and gets its own header).
 ```cpp
 struct RangeWithBorder {          // NEW. DECIDED word `border_cells`.
   CellBlockRange range;                         // A stage writes only values stored in these blocks.
-  std::vector<CellBlockIndex> border_blocks;    // FindBorderBlocks(grid, range's blocks, width). Ascending.
+  std::vector<CellBlockIndex> border_blocks;    // FindBorderBlocks(grid, range's blocks, kTouchingCells). Ascending.
 };
-// BorderWidth::kTouchingCells. Precondition (A17): grid.run_on() == RunOn::kCpu (it has no failure value; checked
-// by a debug assertion).
+// The range and its border at kTouchingCells. Changed (A112): one width, the transfer step's, which also covers, for
+// each face piece of the range, the cells that can list it as a nearby face (5.5); no width parameter. Runs the
+// forward form with marks of its own (A113). Precondition (A17): grid.run_on() == RunOn::kCpu and range inside the
+// grid's blocks (no failure value; checked by debug assertions).
 RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range);
 // Cuts the grid into consecutive ranges of at most max_blocks_per_range blocks. Reads only counts(): either processor.
-std::vector<CellBlockRange> BuildRanges(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range);
+// Changed (as built): fails kBadInput for max_blocks_per_range 0, which no cut can satisfy; no list then.
+std::expected<std::vector<CellBlockRange>, GridFailure> BuildRanges(const StaggeredGrid& grid,
+                                                                    std::uint32_t max_blocks_per_range);
 
-// NEW. The blocks outside `blocks` that a stage writing values stored in `blocks` may read, at `width` (3.7
-// BorderWidth, 5.5), in ascending index, each once. `blocks` is ascending with no repeats; it need not be a run,
-// so borders stack: the border of a stage before is FindBorderBlocks(grid, blocks + border found so far, its
-// width). CPU grid only (A17; a `Requires:` precondition checked by a debug assertion, A30, reconcile item 32;
-// it was kBadInput). Fails kBadInput when `blocks` is not ascending or holds an
-// index >= the grid's block count. Allocates the returned list; for planning and tests.
+// NEW. The blocks outside `blocks` that a stage writing values stored in `blocks` may read, at `width` (5.5), in
+// ascending index, each once. Changed (A111): every block a reader of that width reads, on the way or as a result,
+// from any place stored in `blocks` (active cell, face piece, corner place), with every bigger block up to size level
+// 0 of each block of the set and of each block read. `blocks` is ascending with no repeats; it need not be a run, so
+// borders stack: the border of a stage before is FindBorderBlocks(grid, blocks + border found so far, its width).
+// Changed (A113): runs the forward form, with marks of its own (one byte per block). CPU grid only (A17; a
+// `Requires:` precondition checked by a debug assertion, A30). Fails kBadInput when `blocks` is not ascending, repeats
+// a block or holds an index >= the grid's block count. Allocates the returned list and its marks; for planning and
+// tests.
 std::expected<std::vector<CellBlockIndex>, GridFailure> FindBorderBlocks(const StaggeredGrid& grid,
                                                                          std::span<const CellBlockIndex> blocks,
                                                                          BorderWidth width);
-// NEW. Same result, allocating nothing: writes the first border_blocks.size() border blocks and returns how many
-// there are in all. A count above border_blocks.size() means the span was too small; nothing beyond it is
-// written. Requires a CPU grid (A17; a `Requires:` precondition checked by a debug assertion, A30).
+// NEW. Same result, allocating nothing: writes the first border_blocks.size() border blocks and returns how many there
+// are in all. A count above border_blocks.size() means the span was too small; nothing beyond it is written. Changed
+// (A113): it has no memory for marks, so it keeps the per-block form (ComputeIsBorderBlock for every block of the
+// grid), whose cost per call is every block of the grid and every block under it, O(blocks x size levels), whatever
+// the set's size. Fails kBadInput as the form above, and when border_blocks shares memory with `blocks` (as built).
+// Requires a CPU grid (A17; debug assertion, A30). Whether it is retired once the buffer form runs the forward form
+// on the CPU is an owner question (grid plan Task 22b).
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(const StaggeredGrid& grid,
                                                            std::span<const CellBlockIndex> blocks,
                                                            BorderWidth width,
                                                            std::span<CellBlockIndex> border_blocks);
 
 // NEW (A17). Border search on either processor. Room to search the border of any block set of a grid with at most
-// max_cell_blocks blocks. Move-only.
+// max_cell_blocks blocks. Move-only. Changed (A113): holds the marks of the forward form, one byte per block, on both
+// processors; on the GPU also one word per block plus one for the prefix sum of the listed marks, an OrderBuffers for
+// it and a status record (entries in grid plan Task 22b; they replace the 4-byte `border marks` entry of 3.6).
 class BorderSearchBuffers {
  public:
   std::uint32_t max_cell_blocks() const;
@@ -461,10 +474,13 @@ std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on,
 // NEW (A17). Every block outside `range` that is in border_so_far or in the border, at `width`, of range plus
 // border_so_far: one more layer of a stacked border, merged with the layers before. Ascending, each once. Writes
 // the first border_blocks.size() entries and returns how many there are in all. Allocates nothing. Requires: every
-// buffer on grid.run_on() (debug assertion, A30). Fails kBadInput (border_so_far not ascending, holding a block of `range` or an index >= the grid's block count; border_blocks is border_so_far;
+// buffer on grid.run_on() (debug assertion, A30). Changed (A113): the forward form on both processors, in the marks
+// of search_buffers (5.5); every block of range plus border_so_far is marked through its own cell places, so the list
+// is the marked blocks outside `range` and holds the layers before without a merge. Fails kBadInput (border_so_far not
+// ascending, holding a block of `range` or an index >= the grid's block count; border_blocks is border_so_far;
 // border_so_far_count above its size), kTooManyCellBlocks (search_buffers too small for the grid),
-// kRunOnCallFailed. On the GPU only the count comes back. A stacked border is one call per layer with two output
-// buffers used in turn; no merge is needed between layers.
+// kRunOnCallFailed, kInternalFault (the prefix sum failed or the count read back is above the block count). On the GPU
+// only the count comes back. A stacked border is one call per layer with two output buffers used in turn.
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(const StaggeredGrid& grid, CellBlockRange range,
                                                            const Buffer<CellBlockIndex>& border_so_far,
                                                            std::uint32_t border_so_far_count, BorderWidth width,
@@ -727,7 +743,7 @@ reservation equals the bytes handed out for any room.
 
 `BuildBorderSearchMemoryEstimate(run_on, max_cell_blocks)` (NEW, A17; `grid: ` prefix, `KeptFor::kWholeRun`,
 `copies = 1`; changed A58: one entry per array, the ones with a fixed part `kGivenCount` of their exact bytes): `border marks`
-(given count `4 * (max_cell_blocks + 1)`, 1 B; was a per-block row plus `border marks end`), `where = kRunOn`; for
+(changed A113: given count `max_cell_blocks`, 1 B, one byte mark per block, see 3.4 and grid plan Task 22b; before A113 `4 * (max_cell_blocks + 1)`; was a per-block row plus `border marks end`), `where = kRunOn`; for
 `kGpu` also `border order buffers` (given count `bytes_per_item * (max_cell_blocks + 1) + fixed_bytes` of
 `ComputeOrderBuffersSize(kGpu)`, 1 B; the `OrderBuffers` of `BorderSearchBuffers`, reconcile item 28; was a
 per-block row plus `border order buffers, fixed part`) and `border status` (given count 1,
@@ -782,14 +798,14 @@ FacePlaceIndex FindNextFace(const GridTables& tables, FaceSearch* search);   // 
 
 // cell_block_range.h
 enum class BorderWidth : std::uint8_t {
-  kTouchingCells,    // Blocks storing an active cell that touches a cell of the set, or storing a face piece
-                     // of a cell of the set or of such a touching cell (5.1 step 5: a piece may be stored in its other cell's block). Enough
-                     // for nearby faces (5.4) and touching cells.
-  kFourCellWidths,   // Also every block FaceSearch can read from a face piece stored in the set. For
-                     // transfer's fills.
+  kTouchingCells,    // Every block a near reader reads, on the way or as a result, from any place stored in the
+                     // set (5.5, A111), with the cells that can list a face piece of the set as a nearby face
+                     // (A112). Enough for nearby faces (5.4), touching cells, corners and transfer.
+  kFourCellWidths,   // Also, from a face piece of the set, every cell near it and every block of its face
+                     // search. For transfer's fills.
 };
-// Precondition (A17): grid.run_on() == RunOn::kCpu, as the two-argument form.
-RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range, BorderWidth width);
+// Changed A112: BuildRangeWithBorder has one form, at kTouchingCells (3.4); the three-argument form was not built.
+// A stage that needs another width calls FindBorderBlocks.
 
 // weight_curve.h (S)
 // m2. Weighted spread, along one axis, of 27 same-size faces all kept: cell_width^2 / 4.         (particles)
@@ -1131,6 +1147,9 @@ separate code path. Transfer then computes, per axis, `fitted_velocity_change ro
 (sum weight * value * offset_from_mean) * inverse_weighted_spread`, the value at the particle as
 `sum weight * value - row . mean_offset`, and writes `value + row . offset_from_mean`, which keeps the
 particle's momentum exactly. `exact_velocity_change row = sum value * weight_change`.
+**Pivot floor and centred values (A114, 2026-11-23).** `kMinPivotShare` stays `1e-12`. A caller that fits values
+centres them on their weighted mean first: a requirement for the transfer design (with uncentred values a
+near-degenerate spread loses digits in the fitted row).
 
 Properties to state in the header and test, for every grid and every mask whose fit is not `kNone`: constants are
 reproduced for any kept set; linear fields are
@@ -1174,23 +1193,70 @@ one writer. A particle in a range cell can have nearby faces stored in a border 
 groups by destination face and reads the particles of border blocks (its design). In the one-piece run the
 range is `all_blocks()` and the border is empty.
 
-**Border blocks** (`FindBorderBlocks`). `kTouchingCells`: a block outside the set is in the border when it
-stores an active cell that touches a cell of the set, or stores a face piece of such a cell. The second part
-matters: a piece is stored with its smaller cell, and plane 4 of a block moves to plane 0 of its high
-same-size-level neighbour (5.1 step 5), so a nearby face of a cell touching the range can lie one block beyond that
-cell. `kFourCellWidths` adds every block `FaceSearch` reads from a face piece stored in the set: the 27
-same-level blocks around the piece's block and their bigger and smaller blocks. Both are computed by walking
-the grid's blocks once in index order and testing each against the sorted set through its own neighbour
-tables (the reverse of the same relation), so the result is ascending with no repeats and the walk allocates
-nothing. The per-block test is the shared `ComputeIsBorderBlock(tables, set, block, width)` of `border_block_steps.h`,
-through the block's own 27 same-size-level neighbours, its bigger block and its 8 smaller blocks (the grid's spatial
-index: no other search structure is built). **On the GPU (A17)** one thread per block marks it (outside the range,
-and in `border_so_far` or `ComputeIsBorderBlock`), an exclusive prefix sum over the marks gives each marked block its place,
-and a scatter writes the list; index order is kept, so the list is the CPU walk's, and only the count comes back.
+**Border blocks** (`FindBorderBlocks`; rule changed by A111 and A112, GPU mechanics by A113, 2026-11-23). A run in
+batches loads a range and its border into a grid piece, where every neighbour entry naming a block not loaded reads
+as none (5.8). The border of a block set at a width is every block outside the set that a reader of that width reads,
+on the way or as a result, from any place stored in the set (an active cell, a face piece or a corner place), so that
+a grid piece holding the set and its border answers every such reader as the whole grid does (A111). It includes
+every bigger block, up to size level 0, of each block of the set and of each block read: a stated superset, since a
+few of those lie on no walk, taken so that no rule per reader is needed. The earlier rule, from the set's cells only,
+was too small: a face piece between a small cell and a bigger cell can be stored at plane 0 of the block above its
+small cell, so reading its two cells reads the block below, which may hold no cell touching the set; a corner is
+stored at the smallest size level whose lattice holds it, in a block that may hold no cell touching the cell; and
+`FindCellAt` walks down from the size-level-0 block, so a piece of a size-level-1 block without its size-level-0
+block finds no cell. Measured cost: about 9 % more border blocks than a border of the places readers return
+(random grids, near width: 30.2 against 27.7 blocks per set; nested-ball grid, ranges of 16: 81.6 against 75.1).
+
+The readers of each width (`BorderWidth`, `border_block_steps.h`). `kTouchingCells`: from an active cell,
+`FindTouchingCells`, `FindFacePieces` of it and of each touching cell, `FindCornerPlaces`, `FindCellsAroundEdge`,
+`FindCellAt` for a position in its closed box, and `FindNearbyFaces` for a position that `FindCellAt` gives to it;
+from a face piece, `FindCellLow`, `FindCellHigh`, `FindCornerPlaces` and, for transfer, the cells of
+`FindCellsNearFace` at most one size level bigger than the face piece, the cells that can list it as a nearby face
+(A112; a cell two size levels bigger never lists it, since `FindNearbyFaces` keeps face pieces within one size level
+of the particle's cell); from a corner place, `ComputeCornerPosition`. `kFourCellWidths` adds, from a face piece,
+every cell of `FindCellsNearFace` and every block of the list `BuildFaceSearch` makes at the largest radius. That list
+depends only on the starting block, holds face pieces of size levels `l - 1`, `l` and `l + 1` only, and is the wide
+border's definition for face pieces; `FindNextFace` reads only its blocks, so a smaller radius is covered. A stage
+calls only these readers, from places stored in the set only, never a lookup by id; from a border place it needs a
+stacked layer. In a grid piece a reader called outside what the rule covers returns none, like the edge of the grid
+(A112): a stage cannot tell the two apart, so the designs that run in pieces keep their calls inside the rule. No
+reader goes from a corner place to the cells that have it as a corner: a stage that computes corner values from the
+surrounding cells needs more than the border promises (open point for the pressure and solids designs).
+
+**Transfer and the near width (A112).** `BuildRangeWithBorder` keeps one width, `kTouchingCells`, for the transfer
+step: it holds what a face piece of the range needs to weigh a particle, given the particle's `NearbyFaceSums`. Two
+conditions bind the transfer design: a particle's sums are computed in the range that holds the particle's cell and
+carried with the particle (the sums read faces two touching steps away, beyond the near border); and each particle
+is gathered in the range of `FindCellAt` at the exact position its weights use (a particle moved since it was grouped
+is grouped again first).
+
+**Two forms of one set.** `ComputeIsBorderBlock(tables, set, block, width)` (`border_block_steps.h`) asks one block
+from its own side, through the grid's neighbour tables and the readers themselves (no other search structure), and
+whether a block under it is in the set or read. `ApplyCellPlaceReadMarks` and `ApplyFacePlaceReadMarks` run the
+readers forward from one place of the set and write the value 1 into a per-block mark for every block read, with its
+bigger blocks; the marked blocks outside the set, in index order, are the border. The forward form costs per place
+of the set (about `10^5` table reads for a cell place) and nothing per block outside it; the per-block form costs,
+per call, every block of the grid and every block under it. The definition's evidence is the piece test: every reader
+of the width, from every place of the set, answers in a piece of the set and its border as on the whole grid
+(test support `FindFirstReaderDifference`, on tables built by `BuildPieceTables` and, from grid plan Task 24, on real
+grid pieces).
+
+**Forward form on every processor (A113; replaces the per-block mechanics of A17).** The vector form of
+`FindBorderBlocks` and `BuildRangeWithBorder` run the forward form with marks of their own; the buffer form runs it
+in the marks of `BorderSearchBuffers` (one byte per block) on both processors. The span form has no memory for marks
+and keeps the per-block form, its cost stated; it may be retired (owner question). `ComputeIsBorderBlock` stays as
+shared code, as the span form's method and as the comparator in tests. **On the GPU** the marks are set to 0, then
+one thread per place of the set (64 cell places and 240 face places per block of range plus `border_so_far`) runs
+the shared marking functions and writes only the value 1 into the marks. A marking function stops at a block already
+marked, since whoever marked it goes on to its bigger blocks, so the marks are never pre-set for the set or for
+`border_so_far`, and they do not depend on the order of the threads. A second launch, after the first has finished,
+writes 1 for each marked block outside the range, an exclusive prefix sum gives each its place and the ascending list
+is written; only the count comes back. Index order is kept, so the list is the CPU's.
 **Stacked borders:** a pass that runs several stages on one load needs, around the range, the border
 of its last stage, then around range plus that border the border of the stage before, and so on; each layer is
 one more `FindBorderBlocks` call on the set found so far (cell resize and batches, 5.8). The buffer form does one
-layer per call and merges it with the layers before, two output buffers used in turn.
+layer per call; every block of the set is marked through its own cell places, so its list (the marked blocks outside
+the range) holds the layers before without a merge; two output buffers are used in turn.
 
 **Sums over the grid** that are not sums per destination are one partial per cell block, in the fixed block
 order, kept in a `CellBlockValues<double>`, then `math::TreeSum` over the block partials (`changes-to-apply.md`,
@@ -1814,10 +1880,33 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
     `CellBlockRange` of the slab order (an x-y tile spanning every height), so `GridPiece` and `FindBorderBlocks`
     would gain a tile form; that is the later group's work, with no grid task in the first version. Source:
     `plan-decisions.md` A68.
+45. **(A111, A112) The border is every block a reader reads.** The border of a block set at a width is every block a
+    reader of that width reads, on the way or as a result, from any place stored in the set (active cell, face piece,
+    corner place), so that a grid piece holding the set and its border answers every such reader as the whole grid
+    does; it includes every bigger block up to size level 0 of each block of the set and of each block read (a stated
+    superset; about 9 % more border blocks). The near width also covers, for each face piece of the set, the cells
+    that can list it as a nearby face; `BuildRangeWithBorder` keeps one width, and the three-argument form of 3.7 is
+    not built. Binding the transfer design: a particle's sums are computed in the range holding its cell and carried
+    with it, and each particle is gathered in the range of `FindCellAt` at the exact position its weights use. A
+    reader called outside the rule in a grid piece returns none, like the grid's edge. Replaces the rule "from the
+    set's cells only" of 5.5 and the comment of `BorderWidth` in 3.7. Source: owner answers A111, A112 (2026-11-23).
+46. **(A113) Border search by forward marking.** One place of the set at a time runs the shared marking functions and
+    writes the value 1 into a per-block mark (one byte per block); the marked blocks outside the set, in index order,
+    are the border. On the GPU one thread per place, then a second launch, an exclusive prefix sum and the ascending
+    list; only the count comes back. The vector form, `BuildRangeWithBorder` and the buffer form (on both processors)
+    run it; the span form keeps the per-block form with its cost stated; `ComputeIsBorderBlock` stays as shared code
+    and as the comparator in tests. Replaces the per-block GPU mechanics of decision 20 and of A17; the
+    `BorderSearchBuffers` entries change (grid plan Task 22b). Source: owner answer A113 (2026-11-23); the split
+    between the forms is a plan decision.
+47. **(A114) Pivot floor.** `kMinPivotShare` stays `1e-12`; callers that fit values centre them on the weighted mean
+    (5.4), a requirement for the transfer design. Source: owner answer A114 (2026-11-23).
 
 **Open**
 
-None. (The former points 1, default room, and 2, order buffers size, are decided by decisions 28 and 30.)
+None for the grid. (The former points 1, default room, and 2, order buffers size, are decided by decisions 28 and
+30.) For the pressure and solids designs (5.5, A112): no reader goes from a corner place to the cells that have it as
+a corner, so a stage that computes corner values from the surrounding cells needs more than the border promises.
+Owner question (grid plan Task 22b): whether the span form of `FindBorderBlocks` is retired.
 
 **Decision (A78, A79; reshapes A72, A73, A77; 2026-11-15): the artist's wish is a refinement volume of factors.**
 The artist regions and the top-view map (A63) are removed. The rule reads one keyed volume of cell size factors over

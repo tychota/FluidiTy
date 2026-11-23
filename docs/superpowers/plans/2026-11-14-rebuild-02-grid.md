@@ -425,6 +425,10 @@ Structure, as Foundation and contact are built (`AGENTS.md` "Structure"):
   `ComputeNearbyFaceWeights` return 888 B and 1,152 B by value (one axis; 3,456 B for three axes held at once),
   above the default: their header says that a module whose GPU function calls them owns the stack entry for
   it, as contact owns its own. The grid's test runner of Task 20 measures the bytes.
+  **Changed A113 (2026-11-23):** the border search's marking function (Task 23) runs the readers per place and
+  holds their results (`FaceSearch`, `CellsNearFace` and others, several KB per thread), so it is the grid's one
+  exception: Task 23 adds a `MemoryWhere::kDriverStack` estimate entry for it, as contact does, pins the measured
+  bytes in its `gpu` test, and its `_gpu.h` header states the number in place of the "under 1,024 B" sentence.
 - **Working buffers.** A function that needs working memory has one form, which takes its buffers. The grid's
   build working memory is `GridBuilderBuffers` (Task 6b), which holds the `OrderBuffers` that every
   `BuildStableOrder` and `ComputeExclusivePrefixSum` of a build takes; border search has `BorderSearchBuffers`
@@ -2646,85 +2650,102 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 **Kind:** numerics
 
+**Decided before dispatch (2026-11-23):** the span form of `FindBorderBlocks` is retired in this task: the CPU
+buffer form (with `BorderSearchBuffers` holding the byte marks) covers the allocation-free use, and no caller
+keeps the per-block cost. `ComputeIsBorderBlock` stays as shared code and as the comparator in tests. Where the
+steps below say the span form "stays, with its cost stated", remove it and move its tests to the buffer form.
+
 **Files:**
-- Modify: `cell_block_range.h`, `cell_block_range_cpu.cc`, `cell_block_range_test.cc`,
-  `grid_memory_estimate.h`, `grid_memory_estimate.cc`, `grid_memory_estimate_test.cc`, build registration
-- Create: `native/fluidity/grid/cell_block_range_no_gpu_test.cc`
+- Modify: `src/fluidity/grid/cell_block_range.h`, `cell_block_range_cpu.cc`, `cell_block_range.test.cc`,
+  `grid_memory_estimate.h`, `grid_memory_estimate.cc`, `grid_memory_estimate.test.cc`,
+  `src/fluidity/grid/CMakeLists.txt`, `tests/grid/CMakeLists.txt`,
+  `tests/grid/cell_block_ranges_on_random_grids.test.cc`
+- Create: `src/fluidity/grid/cell_block_range.no_gpu.test.cc`; `tests/grid/stacked_borders_in_grid_pieces.test.cc`
+  (`TIER functional`, label `cpu`, links `fluidity_grid_testing`)
 
 **Interfaces:**
-- Consumes: Task 22a; `GridBuildStatus` (Task 6a); `BuildBuffer`, `BuildOrderBuffers`,
-  `ComputeOrderBuffersSize`, `CheckCanRunOn`.
-- Produces (design 3.4), running on `grid.run_on()` (CPU here, GPU in Task 23):
+- Consumes (as at `eeac8d37`): from `border_block_steps.h`, `BorderWidth`, `BlockSet`, `ComputeIsInBlockSet`,
+  `ComputeIsBorderBlock`, and `void ApplyCellPlaceReadMarks(const GridTables&, CellPlaceIndex, BorderWidth,
+  std::uint8_t* marks)` / `void ApplyFacePlaceReadMarks(const GridTables&, FacePlaceIndex, BorderWidth, std::uint8_t*
+  marks)`: one mark per block, each 0 or written by these functions; they write only 1 and stop at a block already
+  marked, leaving its bigger blocks to whoever marked it. From `cell_block_range.h`: `RangeWithBorder`,
+  `RangeWithBorder BuildRangeWithBorder(grid, range)` (asserts a CPU grid), `std::expected<std::vector<CellBlockRange>,
+  GridFailure> BuildRanges(grid, max_blocks_per_range)` (`kBadInput` for 0), the vector form and the span form of
+  `FindBorderBlocks` (the span form fails `kBadInput` when its output shares memory with the set). Test support:
+  `FindFirstReaderDifference(whole, set, border, width)`, `BuildPieceTables` (`testing/grid_piece_support.h`),
+  `FindRandomGridsWithCheckers` (`testing/grid_support.h`), `BuildNestedBallCells` (`testing/cell_block_range_cases.h`).
+  Base: `BuildBuffer(run_on, size, run_memory)`, `BuildOrderBuffers(run_on, max_count, run_memory)`,
+  `ComputeOrderBuffersSize`, `CheckCanRunOn`; `GridBuildStatus` (`grid_build_status.h`), `MemoryEstimateEntry`,
+  `ComputeRunMemoryBytes`, `ComputeRunMemoryPieceBytes`.
+- **Decided here (A113, the split between the forms).** The vector form of `FindBorderBlocks` and
+  `BuildRangeWithBorder` run the forward form with marks of their own (a vector of one byte per block); if the base of
+  this task still has them walking per block, change them first, under their existing tests. The span form has no
+  memory for marks and keeps the per-block walk; its `Work:` line says the cost per call is every block of the grid
+  and every block under it, O(blocks x size levels), whatever the set's size. Whether it is then retired is an owner
+  question; until answered it stays. The buffer form below runs the forward form on both processors.
+- Produces (design 3.4), running on `grid.run_on()` (CPU here, GPU in Task 23): `class BorderSearchBuffers` (move-only;
+  `max_cell_blocks()`, `run_on()`), `BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
+  run_memory)`, and the buffer form
+  `std::expected<std::uint32_t, GridFailure> FindBorderBlocks(const StaggeredGrid& grid, CellBlockRange range, const
+  Buffer<CellBlockIndex>& border_so_far, std::uint32_t border_so_far_count, BorderWidth width, BorderSearchBuffers&
+  search_buffers, Buffer<CellBlockIndex>& border_blocks)`, with the comments of design 3.4. `BuildBorderSearchBuffers`
+  fails `kRunOnCallFailed` (CheckCanRunOn failed; nothing taken), `kBadInput` (0 or above `kMaxCellBlocksLimit`),
+  `kOutOfMemory` (magnitude: the bytes of the array that did not fit), `kInternalFault` (the arrays do not match the
+  estimate's entries). The buffer form fails `kBadInput` (`border_so_far` not ascending, holding a block of `range` or
+  an index at or above the block count; `border_blocks` is `border_so_far`; `border_so_far_count` above its size),
+  `kTooManyCellBlocks` (search buffers too small for the grid), `kRunOnCallFailed`, `kInternalFault` (GPU: the prefix
+  sum failed or the count read back is above the block count).
+- Produces also, in `grid_memory_estimate.h`: `std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn
+  run_on, std::uint32_t max_cell_blocks)`.
+- **The buffer form, CPU** (Task 23 runs the same steps on the GPU): (1) the checks above; (2) set the marks of the
+  grid's blocks to 0, never pre-set for the set or for `border_so_far` (the early stop needs it); (3) for each block of
+  `range`, then of `border_so_far`, each of its 64 cell places runs `ApplyCellPlaceReadMarks` and each of its 240 face
+  places `ApplyFacePlaceReadMarks`, at `width`; (4) walk the marks in index order and list every marked block outside
+  `range`, writing the first `border_blocks.size()`. Every block of the set is marked through its own cell places, so
+  the list holds `border_so_far` without a merge. A stacked border is one call per layer, two output buffers in turn.
+- **Entries** of `BuildBorderSearchMemoryEstimate` (`grid: ` prefix, `KeptFor::kWholeRun`, `copies = 1`, `where =
+  kRunOn`), each one `kGivenCount` entry with `bytes_each = 1`. On both processors: `border marks` (`max_cell_blocks`
+  B, one `std::uint8_t` per block). For `kGpu` also: `border sums` (`4 * (max_cell_blocks + 1)` B: one 0/1 word per
+  block, then its exclusive prefix sum in place, the total one past the last), `border order buffers`
+  (`bytes_per_item * (max_cell_blocks + 1) + fixed_bytes` of `ComputeOrderBuffersSize(RunOn::kGpu)`) and `border
+  status` (`sizeof(GridBuildStatus)`). CPU total: `max_cell_blocks` B (it was `4 * max_cell_blocks + 4`).
 
-  ```cpp
-  // Room to search the border of any block set of a grid of at most max_cell_blocks blocks. Move-only.
-  class BorderSearchBuffers {
-   public:
-    std::uint32_t max_cell_blocks() const;
-    RunOn run_on() const;
-  };
-  // Builds them as memory pieces of run_memory, in the order of BuildBorderSearchMemoryEstimate's entries.
-  // Requires: run_on == run_memory.run_on() when run_on can run, checked by assert in debug builds.
-  // Fails: kRunOnCallFailed (CheckCanRunOn failed; nothing taken), kBadInput (0 or above kMaxCellBlocksLimit),
-  //        kOutOfMemory (magnitude is the bytes of the array that did not fit), kInternalFault (the arrays do
-  //        not match the estimate's entries).
-  std::expected<BorderSearchBuffers, GridFailure> BuildBorderSearchBuffers(RunOn run_on,
-                                                                           std::uint32_t max_cell_blocks,
-                                                                           RunMemory& run_memory);
-  // Every block outside `range` that is in border_so_far or in the border, at `width`, of range plus
-  // border_so_far: one more layer of a stacked border, merged with the layers before. Ascending, each once.
-  // Writes the first border_blocks.size() entries and returns how many there are in all. Allocates nothing.
-  // Requires: every buffer is on grid.run_on(), checked by assert in debug builds.
-  // Fails: kBadInput           border_so_far is not ascending, holds a block of `range` or an index at or above
-  //                            the grid's block count; border_blocks is border_so_far; border_so_far_count is
-  //                            above its size
-  //        kTooManyCellBlocks  search_buffers is too small for the grid
-  //        kRunOnCallFailed    a call to the GPU failed
-  //        kInternalFault      the prefix sum of the marks failed, or the count read back is above the grid's
-  //                            block count: a fault in the grid, not in the inputs
-  std::expected<std::uint32_t, GridFailure> FindBorderBlocks(const StaggeredGrid& grid, CellBlockRange range,
-                                                             const Buffer<CellBlockIndex>& border_so_far,
-                                                             std::uint32_t border_so_far_count, BorderWidth width,
-                                                             BorderSearchBuffers& search_buffers,
-                                                             Buffer<CellBlockIndex>& border_blocks);
-  ```
-  A stacked border is this call once per layer with two output buffers used in turn; no merge is needed
-  between layers.
-- Produces also, declared in `grid_memory_estimate.h` beside the grid's estimate (not in
-  `cell_block_range.h`): `std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on,
-  std::uint32_t max_cell_blocks)`.
-- **Entries** of `BuildBorderSearchMemoryEstimate` (`grid: ` prefix, `KeptFor::kWholeRun`, `copies = 1`,
-  `where = kRunOn`), each one `kGivenCount` entry with `bytes_each = 1`. On both processors: `border marks`
-  (`4 * (max_cell_blocks + 1)` B). For `kGpu` also: `border order buffers` (`bytes_per_item * (max_cell_blocks +
-  1) + fixed_bytes` of `ComputeOrderBuffersSize(RunOn::kGpu)`: an `OrderBuffers` built once and passed to every
-  prefix sum of the search) and `border status` (`sizeof(GridBuildStatus)`). CPU total: `4 * max_cell_blocks +
-  4` B, as the design states.
-- The CPU form uses the marks, in two passes, so the array the estimate counts is the array the code reads and
-  both processors mark by one rule: pass 1 writes for each block `b` the mark "outside `range`, and in
-  `border_so_far` or `ComputeIsBorderBlock(tables, {range, border_so_far, count}, b, width)`"; pass 2 walks the
-  marks in index order and appends.
-
-- [ ] **Step 1: Failing tests** (label `cpu`):
-  - `TEST(FindBorderBlocks, StackedBufferForm_EqualsSpanFormLayerByLayer)`: the 100 random grids, ranges from
-    `BuildRanges(grid, 4)`, layers (touching, touching, four widths, touching); at each layer the buffer form's
-    list equals `std::merge` of `border_so_far` and the span form on range plus `border_so_far`.
+- [ ] **Step 1: Failing tests.** Unit, label `cpu` (`cell_block_range.test.cc`, hand-written grids):
+  - `TEST(FindBorderBlocks, StackedBufferFormOnPlaneFourGrid_GivesBlocksOneTwo)`: the plane-four grid of
+    `cell_block_range.test.cc`, range `{0, 1}`, no border so far, `kTouchingCells`: list `{1, 2}`, count 2.
   - `TEST(FindBorderBlocks, StackedBufferFormShortOutput_WritesFirstEntriesReturnsTotal)`;
     `TEST(FindBorderBlocks, StackedBufferFormSameBufferTwice_IsBadInput)`;
     `TEST(FindBorderBlocks, BorderSoFarInsideRange_IsBadInput)`;
     `TEST(FindBorderBlocks, SearchBuffersTooSmall_IsTooManyCellBlocks)`;
-    `TEST(FindBorderBlocks, StackedBufferForm_AllocatesNothing)`.
-  - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedBytes)`: the CPU estimate at 1,000 blocks is one
-    entry of 4,004 B (`4 * max_cell_blocks + 4`), and the marks array of `BuildBorderSearchBuffers(kCpu, 1000,
-    run_memory)` holds 1,001 entries of 4 B.
+    `TEST(FindBorderBlocks, StackedBufferForm_AllocatesNothing)` (the `SOURCES` list the allocation counter).
+  - `TEST(FindBorderBlocks, SecondCallOnSameSearchBuffers_EqualsFreshBuffers)`: a call at `kFourCellWidths` on one
+    range, then a call on another range: the second list equals the one from new search buffers.
+  - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedBytes)`: the CPU estimate at 1,000 blocks is one entry of
+    1,000 B, and the marks of `BuildBorderSearchBuffers(kCpu, 1000, run_memory)` hold 1,000 entries of 1 B.
   - `TEST(BuildBorderSearchBuffers, IntoRunMemory_HandsOutExactlyTheEstimate)`: a CPU `RunMemory` of
-    `ComputeRunMemoryBytes` of the estimate at 1,000 blocks (4,096 B: one memory piece of 4,004 B rounded):
+    `ComputeRunMemoryBytes` of the estimate at 1,000 blocks (1,024 B: one memory piece of 1,000 B rounded):
     `handed_out_bytes() == reserved_bytes()`.
-  - `TEST(BuildBorderSearchMemoryEstimate, Gpu_CountsMarksOrderBuffersAndStatus)`: at 1,000 blocks the `kRunOn`
-    sum is `4004 + bytes_per_item * 1001 + fixed_bytes + sizeof(GridBuildStatus)`; the sum of
-    `ComputeRunMemoryPieceBytes` over the three entries equals `ComputeRunMemoryBytes` of the estimate.
+  - `TEST(BuildBorderSearchMemoryEstimate, Gpu_CountsEveryArray)`: at 1,000 blocks the `kRunOn` sum is `1000 + 4004 +
+    bytes_per_item * 1001 + fixed_bytes + sizeof(GridBuildStatus)`; the sum of `ComputeRunMemoryPieceBytes` over the
+    four entries equals `ComputeRunMemoryBytes` of the estimate.
   - `TEST(BuildBorderSearchBuffers, ZeroBlocks_IsBadInput)`.
-  Label `no_gpu`: `TEST(BuildBorderSearchBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed)` (a CPU `RunMemory`;
-  `handed_out_bytes() == 0`).
+  Label `no_gpu` (`cell_block_range.no_gpu.test.cc`):
+  `TEST(BuildBorderSearchBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed)` (a CPU `RunMemory`; `handed_out_bytes() == 0`).
+  Functional (`tests/grid/stacked_borders_in_grid_pieces.test.cc`); widths of four stages, found from the last stage
+  backwards: (touching, touching, four widths, touching):
+  - `TEST(FindBorderBlocks, StackedBufferForm_EqualsVectorFormLayerByLayer)`: the 100 random grids, ranges from
+    `BuildRanges(grid, 4)`: at each layer the buffer form's list equals `std::merge` of `border_so_far` and the vector
+    form on range plus `border_so_far`.
+  - `TEST(FindBorderBlocks, StackedLayersOfRandomGrids_AnswerAsTheWholeGrid)`: 5 of the random grids, the same ranges
+    and widths. Layer `j` is the buffer form's list `B_j` minus `B_(j-1)`. For each `j`,
+    `FindFirstReaderDifference(whole, range + B_(j-1), B_j - B_(j-1), width_j)` is empty: the piece of range plus the
+    layers so far answers every reader of that stage's width from every place of range plus the inner layers. The
+    last `j` is the piece the pass loads.
+  - `TEST(FindBorderBlocks, StackedLayersOfNestedBallRanges_AnswerAsTheWholeGrid)`: the nested-ball grid
+    (`BuildNestedBallCells`), ranges of 16, two layers (touching, four widths), the same check.
+  Remove, if still present, `StackedBorders_HoldEveryRead`, `EveryReaderFromEveryPlace_ReturnsPlacesOfSetPlusBorder`
+  and `FindNearbyFaces, RangeWithBorder_HoldsEveryFace` from `cell_block_ranges_on_random_grids.test.cc`: they check
+  only the places readers return, which the piece tests cover.
 - [ ] **Step 2: Run**, fail. **Step 3: Implement**. `Read:` `<sec-cell-blocks>`, `<sec-grid-memory>`.
 - [ ] **Step 4: Commit.** Subject: `Find stacked borders on buffers without allocating`. New names:
   `BorderSearchBuffers`, `BuildBorderSearchBuffers`, `BuildBorderSearchMemoryEstimate`, the buffer form of
@@ -2734,56 +2755,94 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 
 **Kind:** device
 
+**Decided before dispatch (2026-11-23):** the marks are plain bytes written with plain stores of the value 1
+(no atomics; the scan runs in a later launch); the marking function gets a `MemoryWhere::kDriverStack` estimate
+entry (Global Constraints "GPU stack", changed A113), not only a pinned number.
+
 **Files:**
-- Create: `native/fluidity/grid/cell_block_range_gpu.h` (private), `cell_block_range_gpu.cu` (private),
-  `cell_block_range_gpu_test.cc` (label `gpu`)
+- Create: `src/fluidity/grid/cell_block_range_gpu.h` (private), `cell_block_range_gpu.cu` (private);
+  `tests/grid/border_search_replay.test.cc` (`TIER functional`, label `cpu`); `tests/grid/stacked_borders.gpu.test.cc`
+  (`TIER functional`, label `gpu`, links `fluidity_base_testing`, `fluidity_grid_testing`; its `SOURCES` list the
+  allocation counter)
 - Modify: `cell_block_range_cpu.cc` (dispatch on `grid.run_on()`, the GPU sequence under
-  `#if defined(FLUIDITY_HAS_GPU)`), `border_block_steps.h`, `border_block_steps_test.cc`, build registration
+  `#if defined(FLUIDITY_HAS_GPU)`), `border_block_steps.h`, `border_block_steps.test.cc`,
+  `testing/grid_functions_runner_gpu.h` (table entries), `docs/gpu-runs.md`, both `CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: `BlockSet`, `ComputeIsInBlockSet`, `ComputeIsBorderBlock` (Task 22a), Task 22b, `GridBuildStatus`,
-  `ToFailureKey` (Task 7a); `ComputeExclusivePrefixSum` (with the `OrderBuffers` of `BorderSearchBuffers`),
-  `ReadBuffer`, `ToBufferError`, `ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`.
-- Shared per-item functions added to `border_block_steps.h`: `std::uint64_t
-  ComputeBorderSoFarFailureKey(...)` (step 2, one entry), `std::uint32_t ComputeBorderMark(...)` (step 3, one
-  block), `void ApplyBorderBlockWriteAt(...)` (step 5, one block).
-- Produces: the GPU path of the buffer form of `FindBorderBlocks` and of `BuildBorderSearchBuffers`; in
-  `cell_block_range_gpu.h`, `RunOnCallStatus ComputeLargestBorderSearchStackOnGpu(std::uint64_t* bytes_per_thread)` and
-  the "Stack:" sentence in the file header.
-- GPU-half functions, one per step: `ApplyBorderStatusResetOnGpu`, `CheckBorderSoFarOnGpu`,
-  `WriteBorderMarksOnGpu`, `WriteBorderBlocksOnGpu`.
-- **The parallel form:** (1) CPU: the same-buffer, count and room checks; a one-thread GPU function resets the
-  status. (2) One thread per `border_so_far` entry `i`: ascending, outside `range`, below the block count,
-  else `atomicMin(ToFailureKey(1, i, 0))` with `kBadInput`. (3) One thread per block `b` of the grid, which
-  writes mark 0 when step 2 failed, so the prefix sum of step 4 never adds stale words (the
-  count is known on the CPU from `grid.counts()`): mark = `b` outside `range` and (`b` in `border_so_far` or
-  `ComputeIsBorderBlock`). (4) `ComputeExclusivePrefixSum` in place over the block count (the total lands one
-  past the last block). (5) One thread per block: `b` was marked exactly when `sums[b + 1] != sums[b]`; a
-  marked `b` writes itself at `border_blocks[sums[b]]` when `sums[b] < border_blocks.size()`; `result_count`
-  is the total. (6) One `ReadBuffer` of the status: the count (or the failure) is all that comes back. Index
-  order of `b` is kept by the prefix sum, so the list is the CPU's.
+- Consumes (as at `eeac8d37`): `ApplyCellPlaceReadMarks`, `ApplyFacePlaceReadMarks`, `BlockSet`,
+  `ComputeIsInBlockSet`, `ComputeIsBorderBlock` (comparator only) of `border_block_steps.h`; Task 22b
+  (`BorderSearchBuffers` with its `border marks`, `border sums`, `border order buffers`, `border status`; the CPU
+  steps of the buffer form); `GridBuildStatus`, `ToFailureKey(int step, std::uint64_t position, std::uint8_t detail)`
+  (`grid_build_steps.h`); `ComputeExclusivePrefixSum(values, count, sums, OrderBuffers&)` (`base/stable_order.h`; in
+  place allowed), `ReadBuffer`, `ToBufferError`, `ComputeLaunchSize`, `ApplyGpuFunction`, `CheckGpuWork`. Tests:
+  `BuildRandomGridsOnBothProcessors`, `GridOnBothProcessors` (`testing/grid_functions_gpu_cases.h`),
+  `BuildNestedBallCells`, `WriteResultDigest`.
+- Shared per-item functions added to `border_block_steps.h` (`FLUIDITY_CPU_AND_GPU`; the CPU form of Task 22b is
+  rewritten to call them too):
+  - `std::uint64_t ComputeBorderSoFarFailureKey(...)` (step 2, one entry of `border_so_far`);
+  - `void ApplySetPlaceReadMarks(const GridTables& tables, CellBlockRange range, const CellBlockIndex* border_so_far,
+    std::uint32_t border_so_far_count, std::uint32_t set_place, BorderWidth width, std::uint8_t* marks)` (step 3, one
+    place of the set: set block `set_place / 304`, the range's blocks first, then `border_so_far`; place in the
+    block `set_place % 304`, below 64 a cell place, else face place `- 64`);
+  - `std::uint32_t ComputeListedMark(const std::uint8_t* marks, CellBlockRange range, std::uint32_t block)` (step 4: 1
+    when marked and outside `range`);
+  - `void ApplyBorderBlockWriteAt(...)` (step 6, one block).
+  Each is run by the `gpu` tests below through the GPU halves and listed, with the function that reaches it, in the
+  table at the head of `grid_functions_runner_gpu.h` (the tool test checks it).
+- Produces: the GPU path of the buffer form of `FindBorderBlocks` and of `BuildBorderSearchBuffers`; GPU halves
+  `ApplyBorderStatusResetOnGpu`, `ResetBorderMarksOnGpu`, `CheckBorderSoFarOnGpu`, `WriteBorderReadMarksOnGpu`,
+  `WriteListedMarksOnGpu`, `WriteBorderBlocksOnGpu`; in `cell_block_range_gpu.h`, `RunOnCallStatus
+  ComputeLargestBorderSearchStackOnGpu(std::uint64_t* bytes_per_thread)` and the "Stack:" sentence in the file header.
+- **The parallel form (A113, a forward pass).** (1) CPU: the same-buffer, count and room checks; a one-thread GPU
+  function resets the status; one thread per block of the grid sets its mark to 0. (2) One thread per `border_so_far`
+  entry `i`: ascending, outside `range`, below the block count, else `atomicMin(ToFailureKey(1, i, 0))` with
+  `kBadInput`. (3) One thread per place of the set, `(range.block_count + border_so_far_count) * 304` places (known on
+  the CPU): returns at once when step 2 failed, else `ApplySetPlaceReadMarks`. (4) A second launch, after step 3 has
+  finished: one thread per block writes `sums[b] = ComputeListedMark(...)`, 0 for every block when step 2 failed, so
+  the prefix sum adds no stale word. (5) `ComputeExclusivePrefixSum` in place over the block count with the
+  `OrderBuffers` of `BorderSearchBuffers` (the total lands one past the last block). (6) One thread per block: `b` is
+  listed exactly when `sums[b + 1] != sums[b]`; it writes itself at `border_blocks[sums[b]]` when `sums[b] <
+  border_blocks.size()`; the count is the total. (7) One `ReadBuffer` of the status: the count (or the failure) is all
+  that comes back. The prefix sum keeps index order, so the list is the CPU's.
+- **The marks' concurrent writes (stated in the header of `cell_block_range_gpu.cu` and at the marking functions).**
+  Threads of step 3 write only the byte value 1, with plain stores, never a read-modify-write. A thread that reads a
+  stale 0 writes 1 again and goes on to the bigger blocks; a thread that reads 1 stops, and whoever wrote that 1 goes
+  on. So after the launch the marks are those of any order of the places. This relies on a byte store on the GPU
+  leaving the neighbouring bytes unchanged, which CUDA guarantees; the header says so. Marks are never pre-set for the
+  set or for `border_so_far`.
+- **Stack.** The marking functions keep `TouchingCells`, `CellsNearFace`, `CellCorners` and, at `kFourCellWidths`, a
+  `FaceSearch` as locals, so step 3 needs more than the 1,024 B default stack (the per-block function measured 2.7 to
+  3.7 KB). The measured bytes go in the "Stack:" sentence and in `docs/gpu-runs.md`; how they are counted in the run's
+  memory is an owner question (until answered, the test pins the stated number).
 
-- [ ] **Step 1: Tests.** Label `cpu` (`border_block_steps_test.cc`):
-  `TEST(FindBorderBlocks, StaleLargeMarksWithBadBorderSoFar_PrefixSumAddsZeros)`: the marks array starts as
-  `0xFFFFFFFF` words; `border_so_far` is not ascending: after step 3 every mark is 0, the prefix sum returns
-  without error with a total of 0, and the failure is the CPU form's `kBadInput` of step 2.
-  `TEST(FindBorderBlocks, EveryThreadBlockAndThread_EqualsCpuStackedLayers)`: steps 2 to 5 replayed on CPU
-  buffers as Global Constraints "Replay tests" says; on Task 22b's grids, ranges and layers and the failing
-  inputs of `OnGpuFailures_EqualCpuFailures`: lists, counts and failures equal the CPU form's.
-  Label `gpu` (every grid built on both processors from one list; lists and counts read back go to
-  `WriteResultDigest`):
-  - `TEST(FindBorderBlocks, OnGpu_EqualsCpuStackedLayers)`: Task 22b's grids, ranges and layers.
+- [ ] **Step 1: Tests.** Unit, label `cpu` (`border_block_steps.test.cc`, the hand-written grids of the file):
+  - `TEST(ApplySetPlaceReadMarks, PlacesInAnyOrder_GiveTheSameMarks)`: the places of a set run in index order, in
+    reverse, and odd places before even ones give the same marks, byte for byte, as the CPU form.
+  - `TEST(FindBorderBlocks, StaleWordsWithBadBorderSoFar_PrefixSumAddsZeros)`: marks start as `0xFF` bytes and sums as
+    `0xFFFFFFFF` words; `border_so_far` is not ascending: after step 4 every word is 0, the prefix sum returns without
+    error with a total of 0, and the failure is the CPU form's `kBadInput`.
+  Functional, label `cpu` (`tests/grid/border_search_replay.test.cc`):
+  `TEST(FindBorderBlocks, EveryThreadBlockAndThread_EqualsCpuStackedLayers)`: steps 2 to 6 replayed on CPU buffers
+  as Global Constraints "Replay tests" says, marks starting as `0xFF` bytes; on Task 22b's grids, ranges and layers
+  and the failing inputs of `OnGpuFailures_EqualCpuFailures`: lists, counts and failures equal the CPU form's.
+  Label `gpu` (`tests/grid/stacked_borders.gpu.test.cc`; every grid built on both processors from one list; lists and
+  counts read back are compared with the CPU's by bits and go to `WriteResultDigest`):
+  - `TEST(FindBorderBlocks, OnGpuRandomGrids_SameBitsAsCpu)`: the random grids, ranges from `BuildRanges(grid, 4)`,
+    layers (touching, touching, four widths, touching): every layer's list and count.
+  - `TEST(FindBorderBlocks, OnGpuNestedBallRanges_SameBitsAsCpu)`: the nested-ball grid, ranges of 16, one layer at
+    each width, then two stacked (touching, four widths).
   - `TEST(FindBorderBlocks, OnGpuShortOutput_SameCountAsCpu)`: an output buffer of 3 entries.
-  - `TEST(FindBorderBlocks, OnGpuFailures_EqualCpuFailures)`: unsorted, inside-range, beyond-the-grid and
-    same-buffer inputs.
-  - `TEST(FindBorderBlocks, OnGpu_AllocatesNothing)`; `TEST(FindBorderBlocks, OnGpuTwice_GivesIdenticalBytes)`.
+  - `TEST(FindBorderBlocks, OnGpuFailures_EqualCpuFailures)`: unsorted, inside-range, beyond-the-grid and same-buffer.
+  - `TEST(FindBorderBlocks, OnGpu_AllocatesNothing)`; `TEST(FindBorderBlocks, OnGpuTwice_GivesIdenticalBytes)` (with
+    search buffers reused: the marks do not depend on thread timing).
   - `TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedGpuBytes)`: the drop in GPU free bytes across
-    `BuildRunMemory(RunOn::kGpu, ...)` of the estimate is at least `reserved_bytes()`; building the search
-    buffers into it leaves free bytes unchanged.
+    `BuildRunMemory(RunOn::kGpu, ...)` of the estimate is at least `reserved_bytes()`; building the search buffers into
+    it leaves free bytes unchanged.
   - `TEST(BuildBorderSearchBuffers, OnGpuIntoRunMemory_HandsOutExactlyTheEstimate)`: 1,000 blocks.
-  - `TEST(FindBorderBlocks, OnGpuFunctions_KeepUnderTheDefaultStack)`: at most 1,024.
+  - `TEST(FindBorderBlocks, OnGpuFunctions_KeepTheStatedStack)`: `ComputeLargestBorderSearchStackOnGpu` is at most the
+    bytes of the "Stack:" sentence.
 - [ ] **Step 2: Run** the gate. Expected: `PASS cuda`.
-- [ ] **Step 3: Commit.** Subject: `Find border blocks on the GPU through the neighbour tables`. Body: `GPU:
+- [ ] **Step 3: Commit.** Subject: `Find border blocks on the GPU by marking from each place of the set`. Body: `GPU:
   compiled, not run`; the `gpu` tests above by name.
 
 ### Task 24: Grid pieces for the batched run
@@ -2791,16 +2850,24 @@ chooses active cells) and cell resize both read; the passes that apply them belo
 **Kind:** integration
 
 **Files:**
-- Create: `native/fluidity/grid/grid_piece.h` (CPU only; the design puts `GridPiece` in `cell_block_range.h`,
-  it gets its own header because it owns buffers), `grid_piece_cpu.cc`, `grid_piece_steps.h` (S, private),
-  `grid_piece_test.cc` (its `SOURCES` list the allocation counter), `grid_piece_steps_test.cc` (label `cpu`)
-- Modify: `cell_block_range.h` (includes `grid_piece.h`, so the design's spelling holds), `docs/glossary.md`
-  (`grid piece`: one range of a whole grid with its border, loaded for a batch; not a face piece, not a memory
-  piece. `piece map`: for each block of a grid piece, its index in the whole grid), build registration
+- Create: `src/fluidity/grid/grid_piece.h` (CPU only; the design puts `GridPiece` in `cell_block_range.h`, it gets
+  its own header because it owns buffers), `grid_piece_cpu.cc`, `grid_piece_steps.h` (S, private), `grid_piece.test.cc`
+  (its `SOURCES` list the allocation counter), `grid_piece_steps.test.cc` (label `cpu`);
+  `tests/grid/grid_pieces_on_random_grids.test.cc` (`TIER functional`, label `cpu`);
+  `tests/grid/grid_piece_steps.gpu.test.cc` (`TIER functional`, label `gpu`)
+- Modify: `cell_block_range.h` (includes `grid_piece.h`, so the design's spelling holds), `testing/grid_piece_support.h`
+  and `.cc`, `testing/grid_functions_answers.h` and the GPU runner, `docs/glossary.md` (`grid piece`: one range of a
+  whole grid with its border, loaded for a batch; not a face piece, not a memory piece. `piece map`: for each block of
+  a grid piece, its index in the whole grid), both `CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: the table layouts (on `GridTables` in `grid_tables.h`, Task 7b), `ToGridBuffersArrays` and `BuildGridFromBuffers`
-  (`grid_buffers_internal.h`, Tasks 6b and 9a), `StaggeredGrid`, `TakeBuffers` (Task 9a), `FindBorderBlocks` (Tasks 22a, 22b), `FindSortedBlock`.
+- Consumes (as at `eeac8d37`): `GridTables` (`grid_tables.h`); `GridBuffersArrays& ToGridBuffersArrays(GridBuffers&)`
+  (its `piece_map` holds one entry per block) and `StaggeredGrid BuildGridFromBuffers(GridBuffers&&, GridFrame,
+  GridVersion, const GridCounts&)` (`grid_buffers_internal.h`); `StaggeredGrid`, `TakeBuffers(StaggeredGrid&&)`;
+  `FindCellLow`, `FindCellHigh`; `BuildRanges`, the vector form of `FindBorderBlocks` (Task 22a) and its buffer form
+  (Task 22b). Test support: `PieceTables`, `BuildPieceTables(const GridTables& whole, std::span<const CellBlockIndex>
+  loaded_blocks)` and `FindFirstReaderDifference` (`testing/grid_piece_support.h`): the paper's rules for a piece's
+  tables, which the real builder must equal; `FindRandomGridsWithCheckers`, `BuildNestedBallCells`.
 - Produces (design 3.4): `GridPiece` with its accessors, both `BuildGridPiece` forms, `GridBuffers
   TakeBuffers(GridPiece&& piece)`, by design 5.8 "Pieces keep the fixed order". The parameter of both forms is
   named `buffers`. Both forms run on `whole.run_on()`; the span form requires a CPU whole grid (`assert`).
@@ -2813,49 +2880,65 @@ chooses active cells) and cell resize both read; the passes that apply them belo
   // GridPiece member: the piece map on grid().run_on(), [grid().counts().cell_blocks] entries used, ascending.
   const Buffer<CellBlockIndex>& block_in_whole_grid_buffer() const;
   ```
-  `block_in_whole_grid()` (the span) is the map for a CPU grid piece and empty for a GPU one.
+  `block_in_whole_grid()` (the span) is the map for a CPU grid piece and empty for a GPU one. The map is the
+  `piece_map` array of `buffers`.
 - Shared, in `grid_piece_steps.h` (the CPU form writes every entry through them; Task 25 runs them per thread):
   - `CellBlockIndex ToPiecePlace(const CellBlockIndex* border_blocks, std::uint32_t border_block_count,
-    CellBlockRange range, std::uint32_t loaded_item)`: the index, in the grid piece, of loaded item
-    `loaded_item` (items below `border_block_count` are border entries, the rest are the range's blocks in
-    order). A border entry `i` below the range is at `i`; one above it at `i + range.block_count`; the range's
-    block `k` at (border entries below the range, by binary search) `+ k`. Each item's place is computed
-    alone, so the map needs no sort.
+    CellBlockRange range, std::uint32_t loaded_item)`: the index, in the grid piece, of loaded item `loaded_item`
+    (items below `border_block_count` are border entries, the rest the range's blocks in order). A border entry `i`
+    below the range is at `i`, one above it at `i + range.block_count`; the range's block `k` at (border entries
+    below the range, by binary search) `+ k`. Each item's place is computed alone, so the map needs no sort.
   - `std::uint32_t ToPieceNeighbour(const CellBlockIndex* map, std::uint32_t count, std::uint32_t
     whole_neighbour)`: binary search in the map; `kNoIndex` when the block is not loaded.
-  - `FacePieceKind ComputePieceFaceKind(const GridTables& whole, const CellBlockIndex* map, std::uint32_t
-    count, CellBlockIndex piece_block, int face_place_in_block)`: the whole grid's kind, except
-    `kOutsidePiece` for a `kBetweenCells` face piece whose other cell's block is not loaded; a plane-4 place
-    stays `kNotAPiece` when its high neighbour exists in the whole grid but is not loaded (design 5.8).
-- A loaded block's neighbour that `ToPieceNeighbour` should find and does not (a block of the range missing
-  from the map the same call wrote) is `kInternalFault`; `kBadInput` stays for the border list a caller passes.
+  - `FacePieceKind ComputePieceFaceKind(const GridTables& whole, const CellBlockIndex* map, std::uint32_t count,
+    CellBlockIndex piece_block, int face_place_in_block)`: the rule of `BuildPieceTables`: the whole grid's kind,
+    except `kOutsidePiece` for a `kBetweenCells` face piece whose `cell_low` or `cell_high` lies in a block not loaded;
+    a plane-4 place stays `kNotAPiece` when its high neighbour exists in the whole grid but is not loaded (design 5.8).
+- A loaded block's neighbour that `ToPieceNeighbour` should find and does not (a block of the range missing from the
+  map the same call wrote) is `kInternalFault`; `kBadInput` stays for the border list a caller passes.
+- **Decided here: the piece test on real pieces.** `testing/grid_piece_support.h` gains `struct PieceTablesView {
+  GridTables tables; std::span<const CellBlockIndex> block_in_whole; }` and `FindFirstReaderDifference(const
+  GridTables& whole, const PieceTablesView& piece, std::span<const CellBlockIndex> set, BorderWidth width)`: the same
+  readers and comparison as the existing form, on tables a caller gives. The existing form becomes `BuildPieceTables`
+  plus this form, its answers unchanged.
+- **What a piece answers (A111, A112).** Every reader of the border's width, from every place of the set the border
+  was found for, answers as on the whole grid. A reader called outside that rule returns none, like the edge of the
+  grid, and a stage cannot tell the two apart; the header says so.
 - **Worked example for the header:** whole grid of blocks 0..9, range `{4, 3}`, border `{1, 2, 8}`: the piece
   map is `[1, 2, 4, 5, 6, 8]`, `range()` is `{2, 3}`, `range_in_whole_grid()` is `{4, 3}`.
 
-- [ ] **Step 1: Failing tests** (label `cpu`):
-  - `TEST(ToPiecePlace, RangeBetweenBorderEntries_GivesAscendingMap)` (`grid_piece_steps_test.cc`): the worked
-    example, each of the 6 items alone.
-  - `TEST(ToPieceNeighbour, BlockNotLoaded_IsNoIndex)`.
-  - `TEST(BuildGridPiece, KeepsWholeGridOrder)`: the 100 random grids, ranges from `BuildRanges(grid, 4)`,
-    borders stacked twice (touching, four widths): `block_in_whole_grid` ascending; `range()` is a run and maps
-    to `range_in_whole_grid()`; per block, cell states and face kinds equal the whole grid's except
-    `kOutsidePiece` exactly where the other cell's block was not loaded; a plane-4 place whose high neighbour
-    exists in the whole grid but was not loaded is `kNotAPiece`.
-  - `TEST(BuildGridPiece, SameWeightsAsWholeGrid)`: 100 positions in range cells, all axes, all kept: the lists
-    map to the whole grid's through `block_in_whole_grid` (place within block unchanged) and every weight
-    field is byte-identical.
-  - `TEST(BuildGridPiece, BlockSumsInPieceOrder_EqualWholeGrid)`: per-block partial = ordered sum over the
-    block's active cells of `ComputeCellCenter(...).z * ComputeCellWidth(...)`; whole-grid total =
-    `math::TreeSum` over the partials; for 3 cuts (`max_blocks_per_range` 1, 3, 7) partials computed in grid
-    pieces are placed at `range_in_whole_grid` and tree-summed: identical bytes.
+- [ ] **Step 1: Failing tests.** Unit, label `cpu`:
+  - `TEST(ToPiecePlace, RangeBetweenBorderEntries_GivesAscendingMap)` (`grid_piece_steps.test.cc`): the worked
+    example, each of the 6 items alone. `TEST(ToPieceNeighbour, BlockNotLoaded_IsNoIndex)`.
+  - `TEST(BuildGridPiece, PlaneFourGridRangeOfBlockC_EqualsPieceTables)` (`grid_piece.test.cc`): the plane-four grid
+    of `cell_block_range.test.cc`, range `{2, 1}` with its near border: every table equals `BuildPieceTables`'.
   - `TEST(BuildGridPiece, AboveBuffersRoom_IsTooManyCellBlocks)`;
     `TEST(BuildGridPiece, BorderBlockInsideRange_IsBadInput)`;
     `TEST(FindCellAt, InPieceOutsideLoadedBlocks_IsNoIndex)`; `TEST(BuildGridPiece, AnyPiece_AllocatesNothing)`.
-  - `TEST(BuildGridPiece, BufferForm_EqualsSpanForm)`: the grids of `KeepsWholeGridOrder`, border from the
-    buffer form of `FindBorderBlocks` on CPU buffers: the same tables, map and counts as the span form.
+  Functional, label `cpu` (`tests/grid/grid_pieces_on_random_grids.test.cc`); the 100 random grids and the
+  nested-ball grid, ranges from `BuildRanges(grid, 4)` (16 for the nested-ball grid), borders stacked twice (touching,
+  then four widths, found by the vector form):
+  - `TEST(BuildGridPiece, RealPieces_EqualPieceTables)`: frame, version, block ids, the three neighbour arrays, cell
+    states, face piece kinds and the map equal those of `BuildPieceTables(whole, range + border)`, byte for byte;
+    `range()` is a run and maps to `range_in_whole_grid()`.
+  - `TEST(BuildGridPiece, RealPieces_AnswerAsTheWholeGrid)`: on 5 random grids and the nested-ball grid, on the real
+    piece's tables: `FindFirstReaderDifference(whole, piece, range, kTouchingCells)` and
+    `FindFirstReaderDifference(whole, piece, range + first layer, kFourCellWidths)` are empty.
+  - `TEST(BuildGridPiece, SameWeightsAsWholeGrid)`: 100 positions that `FindCellAt` gives to range cells, all axes,
+    all kept: the lists map to the whole grid's through `block_in_whole_grid` (place within block unchanged) and
+    every weight field is byte-identical.
+  - `TEST(BuildGridPiece, BlockSumsInPieceOrder_EqualWholeGrid)`: per-block partial = ordered sum over the block's
+    active cells of `ComputeCellCenter(...).z * ComputeCellWidth(...)`; whole-grid total = `math::TreeSum` over the
+    partials; for 3 cuts (`max_blocks_per_range` 1, 3, 7) partials computed in grid pieces are placed at
+    `range_in_whole_grid` and tree-summed: identical bytes.
+  - `TEST(BuildGridPiece, BufferForm_EqualsSpanForm)`: border from the buffer form of `FindBorderBlocks` on CPU
+    buffers: the same tables, map and counts as the span form.
+  Label `gpu` (`tests/grid/grid_piece_steps.gpu.test.cc`): `TEST(BuildGridPiece, StepsOnGpu_SameBitsAsCpu)`: answer
+  functions in `grid_functions_answers.h` run `ToPiecePlace`, `ToPieceNeighbour` and `ComputePieceFaceKind` per item
+  on the GPU for the pieces of 10 random grids; the results equal the CPU's by bits (the tool test then finds them).
 - [ ] **Step 2: Run**, fail. **Step 3: Implement** (allocates nothing). `Read:` `<sec-cell-blocks>`.
 - [ ] **Step 4: Commit.** Subject: `Build a grid piece that keeps the whole grid's block order`. New names:
-  `GridPiece`, `BuildGridPiece` (two forms), `TakeBuffers(GridPiece&&)`.
+  `GridPiece`, `BuildGridPiece` (two forms), `TakeBuffers(GridPiece&&)`, `PieceTablesView`.
 
 ### Task 25: Grid pieces on the GPU
 
