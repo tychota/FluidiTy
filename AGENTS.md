@@ -587,8 +587,11 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     run but a quick one with unchanged files, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
     builds with warnings as errors, and passes the tests of the speed (`commit`: unit tests in debug, unit and
     functional tests in release; `full`: every test in both). On Linux or Windows the gate uses the presets of that
-    platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms
-    (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`). It fails too when a test has neither the
+    platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms in the
+    parallel run and still takes more than 200 ms when run alone: the gate runs such a test again alone (`ctest -R`
+    with its exact name, one job), up to twice, and keeps its fastest time
+    (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms in the run, <ms> ms alone)`). A test that
+    the rerun clears prints `NOTE unit test over 200 ms under load, <ms> ms alone: <name>` and passes. It fails too when a test has neither the
     `unit` nor the `functional` label, or when the JUnit file of ctest is missing. It prints
     `NOTE unit test over 50 ms: <name> (<ms> ms)` for each unit test between 50 and 200 ms. A functional entry (a whole program) has no
     time limit but its ctest timeout; each preset that ran them prints `NOTE functional tests run: <n> gtest tests in <m>

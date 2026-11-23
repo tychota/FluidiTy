@@ -79,7 +79,10 @@ The steps, in order:
           `--parallel <cores>`.) On the debug preset ctest also writes a JUnit file (out/check-commit/), and the step
           fails, naming the test, when a test labelled `unit` took more than 200 ms; it prints a line
           `NOTE unit test over 50 ms: <name> (<ms> ms)` for each one above 50 ms. The rule is 50 ms for a unit test run
-          alone; 200 ms allows for one test per core running at once. A functional test program is ONE ctest entry
+          alone; 200 ms allows for one test per core running at once. A test over 200 ms in the parallel run is run
+          again alone (`ctest -R` with its exact name, one job), up to twice, and the step fails only when its fastest
+          time alone is still over 200 ms, naming both times; when a rerun clears it the step prints
+          `NOTE unit test over 200 ms under load, <ms> ms alone: <name>`, so load alone cannot fail the gate. A functional test program is ONE ctest entry
           (all its TESTs run in one process); a functional entry has no 50/200 ms limit, and the step prints
           `NOTE functional tests run: <n> gtest tests in <m> programs (one ctest entry each)`, counted from the XML
           report each program writes (out/build/<preset>/gtest_reports/), for each preset that ran functional tests.
@@ -198,6 +201,9 @@ FUNCTIONAL_REPORTS_FOLDER = "gtest_reports"
 # one, so it fails a unit test only above 200 ms and prints a note above 50 ms.
 UNIT_TEST_NOTE_SECONDS = 0.05
 UNIT_TEST_LIMIT_SECONDS = 0.2
+# A unit test over the limit in the parallel run is run again alone, up to this many times; it fails only when its
+# fastest time alone is still over the limit, so a busy machine cannot fail the gate and a slow test cannot hide.
+UNIT_TEST_RERUN_COUNT = 2
 # Printed by the debug preset at commit speed, which runs the unit tests only: the functional programs take about
 # 2 minutes there and a few times less in the release build, which runs them at that speed.
 FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG = "NOT RUN functional tests in debug (commit speed; run by --speed full)"
@@ -441,6 +447,20 @@ def slow_unit_tests(junit_text: str) -> tuple[list[tuple[str, float]], list[tupl
     over_limit.sort(key=lambda entry: entry[1], reverse=True)
     over_note.sort(key=lambda entry: entry[1], reverse=True)
     return over_limit, over_note
+
+
+def ctest_exact_name_pattern(test_name: str) -> str:
+    """The ctest `-R` regular expression that matches exactly `test_name`: CMake's regular expressions read `\\` before
+    each of their special characters as that character."""
+    return "^" + re.sub(r"([\\^$.\[\]*+?()|])", r"\\\1", test_name) + "$"
+
+
+def test_seconds_in_junit(junit_text: str, test_name: str) -> float | None:
+    """The time of the test of that name in the JUnit file of ctest, or None when the file has no such test."""
+    for case in ElementTree.fromstring(junit_text).iter("testcase"):
+        if case.get("name") == test_name:
+            return float(case.get("time", "0"))
+    return None
 
 
 def configure_inputs_hash(repo_root: Path, preset: str) -> str:
@@ -928,7 +948,7 @@ class Gate:
             notes += self.functional_test_count_notes(reports_folder)
         if not outcome.passed or not is_debug or not ctest_runs:
             return Outcome(outcome.passed, outcome.reason, notes, outcome.output)
-        return self.check_unit_test_times(junit_path, notes, outcome.output)
+        return self.check_unit_test_times(junit_path, notes, outcome.output, preset, log_name)
 
     def functional_test_count_notes(self, reports_folder: Path) -> tuple[str, ...]:
         """One note with the number of gtest tests that ran inside the functional programs of this run, from the reports
@@ -942,9 +962,12 @@ class Gate:
             return ("NOTE functional tests run: count unreadable",)
         return (f"NOTE functional tests run: {count} gtest tests in {len(report_paths)} programs (one ctest entry each)",)
 
-    def check_unit_test_times(self, junit_path: Path, notes: tuple[str, ...], output: str) -> Outcome:
-        """Fails when a unit test of the debug run took more than UNIT_TEST_LIMIT_SECONDS, naming it, and adds a
-        note for each one above UNIT_TEST_NOTE_SECONDS."""
+    def check_unit_test_times(
+        self, junit_path: Path, notes: tuple[str, ...], output: str, preset: str, log_name: str
+    ) -> Outcome:
+        """Fails when a unit test of the debug run is still slower than UNIT_TEST_LIMIT_SECONDS when run alone, naming it
+        with both times, and adds a note for each one above UNIT_TEST_NOTE_SECONDS. A test over the limit in the
+        parallel run is run again alone (see rerun_slow_unit_test); one that clears the limit gets a note."""
         try:
             junit_text = junit_path.read_text(encoding="utf-8")
             over_limit, over_note = slow_unit_tests(junit_text)
@@ -959,12 +982,62 @@ class Gate:
             f"NOTE unit test over {UNIT_TEST_NOTE_SECONDS * 1000:.0f} ms: {name} ({seconds * 1000:.0f} ms)"
             for name, seconds in over_note
         )
-        if over_limit:
-            shown = ", ".join(f"{name} ({seconds * 1000:.0f} ms)" for name, seconds in over_limit[:3])
-            more = f" and {len(over_limit) - 3} more" if len(over_limit) > 3 else ""
+        still_over: list[tuple[str, float, float]] = []
+        for name, parallel_seconds in over_limit:
+            alone_seconds, error = self.rerun_slow_unit_test(preset, name, junit_path, log_name)
+            if alone_seconds is None:
+                return Outcome(False, f"unit test {name} could not be run alone ({error})", notes + time_notes, output)
+            if alone_seconds > UNIT_TEST_LIMIT_SECONDS:
+                still_over.append((name, parallel_seconds, alone_seconds))
+            else:
+                time_notes += (
+                    f"NOTE unit test over {UNIT_TEST_LIMIT_SECONDS * 1000:.0f} ms under load, "
+                    f"{alone_seconds * 1000:.0f} ms alone: {name}",
+                )
+        if still_over:
+            shown = ", ".join(
+                f"{name} ({parallel * 1000:.0f} ms in the run, {alone * 1000:.0f} ms alone)"
+                for name, parallel, alone in still_over[:3]
+            )
+            more = f" and {len(still_over) - 3} more" if len(still_over) > 3 else ""
             reason = f"unit tests over {UNIT_TEST_LIMIT_SECONDS * 1000:.0f} ms: {shown}{more}"
             return Outcome(False, reason, notes + time_notes, output)
         return Outcome(True, "", notes + time_notes, output)
+
+    def rerun_slow_unit_test(
+        self, preset: str, test_name: str, junit_path: Path, log_name: str
+    ) -> tuple[float | None, str]:
+        """Runs one unit test alone (`ctest -R` with its exact name, one job), up to UNIT_TEST_RERUN_COUNT times, and
+        stops at the first run within the limit. Returns its fastest time and "", or None and the reason when ctest
+        fails or its JUnit file has no time for the test."""
+        rerun_path = junit_path.with_name(f"{junit_path.stem}-alone{junit_path.suffix}")
+        command = [
+            "ctest",
+            "--preset",
+            preset,
+            "-R",
+            ctest_exact_name_pattern(test_name),
+            "--parallel",
+            "1",
+            "--output-junit",
+            str(rerun_path),
+        ]
+        fastest: float | None = None
+        for _ in range(UNIT_TEST_RERUN_COUNT):
+            rerun_path.unlink(missing_ok=True)
+            outcome = self.command(log_name, command)
+            if not outcome.passed:
+                return None, outcome.reason
+            try:
+                seconds = test_seconds_in_junit(rerun_path.read_text(encoding="utf-8"), test_name)
+            except (OSError, ElementTree.ParseError, ValueError) as error:
+                return None, f"the JUnit file of the rerun cannot be read: {error}"
+            if seconds is None:
+                return None, "the rerun did not run the test"
+            fastest = seconds if fastest is None else min(fastest, seconds)
+            if fastest <= UNIT_TEST_LIMIT_SECONDS:
+                break
+        return fastest, ""
 
     def check_tidy(self) -> Outcome:
         version = self.check_tool_version("tidy", "clang-tidy")

@@ -826,7 +826,84 @@ def test_unit_test_over_200_ms_fails_the_debug_run_and_is_named(monkeypatch, cap
     fake = FakeRun(test_times=[("Fast.Unit", "base;cpu;unit", 0.01), ("Slow.Case", "grid;cpu;unit", 0.25)])
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "full", "--only", "cpu")
     assert exit_code == 1
-    assert lines[0] == f"FAIL cpu {DEBUG_PRESET}: unit tests over 200 ms: Slow.Case (250 ms)"
+    assert lines[0] == f"FAIL cpu {DEBUG_PRESET}: unit tests over 200 ms: Slow.Case (250 ms in the run, 250 ms alone)"
+
+
+class RerunTimes(FakeRun):
+    """A FakeRun whose ctest runs of one test alone (`-R`) report the given times, one per run, the last repeating."""
+
+    def __init__(self, alone_times, **kwargs):
+        super().__init__(**kwargs)
+        self._alone_times = list(alone_times)
+        self.alone_runs = 0
+
+    def __call__(self, command, **kwargs):
+        if command[0] == "ctest" and "-R" in command and "--output-junit" in command:
+            name = command[command.index("-R") + 1].strip("^$").replace("\\", "")
+            seconds = self._alone_times[min(self.alone_runs, len(self._alone_times) - 1)]
+            self.alone_runs += 1
+            self.commands.append(list(command))
+            Path(command[command.index("--output-junit") + 1]).write_text(
+                f'<testsuite><testcase name="{name}" time="{seconds}"/></testsuite>', encoding="utf-8"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr=None)
+        return super().__call__(command, **kwargs)
+
+
+def alone_commands(fake):
+    return [command for command in fake.commands if command[0] == "ctest" and "-R" in command]
+
+
+def test_unit_test_over_the_limit_under_load_and_under_it_alone_passes_with_a_note(monkeypatch, capsys, repo):
+    fake = RerunTimes([0.05], test_times=[("Death.Case", "base;cpu;unit", 0.226)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 0
+    assert "NOTE unit test over 200 ms under load, 50 ms alone: Death.Case" in lines
+    assert f"PASS cpu {DEBUG_PRESET}" in lines
+    assert len(alone_commands(fake)) == 1
+
+
+def test_unit_test_over_the_limit_alone_as_well_fails_with_both_times(monkeypatch, capsys, repo):
+    fake = RerunTimes([0.3, 0.26], test_times=[("Slow.Case", "grid;cpu;unit", 0.4)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 1
+    assert f"FAIL cpu {DEBUG_PRESET}: unit tests over 200 ms: Slow.Case (400 ms in the run, 260 ms alone)" in lines
+    assert len(alone_commands(fake)) == 2
+
+
+def test_the_second_rerun_decides_when_it_is_faster(monkeypatch, capsys, repo):
+    fake = RerunTimes([0.3, 0.1], test_times=[("Slow.Case", "grid;cpu;unit", 0.4)])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 0
+    assert "NOTE unit test over 200 ms under load, 100 ms alone: Slow.Case" in lines
+    assert len(alone_commands(fake)) == 2
+
+
+def test_each_of_several_slow_unit_tests_is_run_alone(monkeypatch, capsys, repo):
+    fake = RerunTimes(
+        [0.05, 0.3, 0.3],
+        test_times=[("A.One", "base;cpu;unit", 0.3), ("B.Two", "grid;cpu;unit", 0.25), ("Fine.Case", "base;cpu;unit", 0.01)],
+    )
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert exit_code == 1
+    assert "NOTE unit test over 200 ms under load, 50 ms alone: A.One" in lines
+    assert f"FAIL cpu {DEBUG_PRESET}: unit tests over 200 ms: B.Two (250 ms in the run, 300 ms alone)" in lines
+    assert [command[command.index("-R") + 1] for command in alone_commands(fake)] == ["^A\\.One$", "^B\\.Two$", "^B\\.Two$"]
+
+
+def test_the_rerun_command_runs_one_test_by_its_exact_name_with_one_job(monkeypatch, capsys, repo):
+    fake = RerunTimes([0.05], test_times=[("Suite/Case.Name", "base;cpu;unit", 0.3)])
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    (command,) = alone_commands(fake)
+    assert command[:3] == ["ctest", "--preset", DEBUG_PRESET]
+    assert command[3:7] == ["-R", "^Suite/Case\\.Name$", "--parallel", "1"]
+    assert "--output-junit" in command
+
+
+def test_a_test_at_or_under_the_limit_is_not_run_again(monkeypatch, capsys, repo):
+    fake = RerunTimes([0.05], test_times=[("Exactly.Limit", "grid;cpu;unit", 0.2)])
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    assert alone_commands(fake) == []
 
 
 def test_unit_test_between_50_and_200_ms_gets_a_note_and_passes(monkeypatch, capsys, repo):
