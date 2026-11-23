@@ -1,0 +1,41 @@
+src/fluidity/grid/grid_values.gpu.test.cc
+  s_4f0877e2acdcf0::t_ba170277153a80 20,42
+tests/grid/sloped_surface_scene.gpu.test.cc
+  s_4f0877e2acdcf0::t_60d0557cec435e 229-239,253,258-263,283,290-294,342-343
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_a64b7440758cf3::t_40f4fbfe252ff9 109-112
+tests/grid/apply_grid_version.gpu.test.cc
+  s_a64b7440758cf3::t_36453b747aee02 3-4,65,73-76
+tests/grid/find_cell_at.gpu.test.cc
+  s_a64b7440758cf3::t_5a4fbefcc2b818 110-120
+tests/grid/grid_piece_steps.gpu.test.cc
+  s_a64b7440758cf3::t_3ec9ba4e47f70c 11,74-88,110-118,137,143,146-147
+tests/grid/grid_pieces.gpu.test.cc
+  s_a64b7440758cf3::t_7eb4bf00e75ac5 496-497
+tests/grid/stacked_borders.gpu.test.cc
+  s_a64b7440758cf3::t_fb6328a146ebb5 181-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d093332e64880d8a06b62325d9e21de9abcccdb5",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_a64b7440758cf3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a00a812cd83a89997",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
