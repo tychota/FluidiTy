@@ -1,0 +1,35 @@
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_7c835ed9e1c0ca 57-59,81,83,118-133,170,1019-1020,1219,1227-1229,1231-1232,1237-1243,1246-1248,1250,1252,1296-1297,1301,1510-1514
+tools/check_rules_test.py
+  s_461d33f6c47063::t_9c0d899c58d962 4,1468-1548
+tools/check_message_test.py
+  s_461d33f6c47063::t_8d519dd343241a 41,45-61
+AGENTS.md
+  s_461d33f6c47063::t_3b5d6692c08adf 573-576
+tools/check_message.py
+  s_461d33f6c47063::t_73195d3dd312df 6-9,38-50,92-94,100,107-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "79239e29971ff6027593a476ef8089854e3e9015",
+  "prompts": {},
+  "sessions": {
+    "s_461d33f6c47063": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aebebd2b944ef2aa8",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
