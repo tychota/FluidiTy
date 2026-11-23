@@ -1,0 +1,42 @@
+src/fluidity/grid/grid_piece_internal.h
+  s_4f0877e2acdcf0::t_3a3a2f3c8aa425 1-72
+  s_4f0877e2acdcf0::t_7f428bc06b0031 73
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_916cd5d426461e 252-268,273-279
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_7c7539497d7ff3 19,113,165-167
+src/fluidity/grid/grid_piece.h
+  s_4f0877e2acdcf0::t_71938bc4cc41fd 169-170,177
+src/fluidity/grid/grid_piece_cpu.cc
+  s_4f0877e2acdcf0::t_b44a224a06a067 5-6,22-23,27,142,144-158,161-162,168-169,171-172,174,177-179,183-198,205,216,275,279,305,347
+src/fluidity/grid/grid_piece_gpu.h
+  s_4f0877e2acdcf0::t_59ab8ea6f16296 68-70,78,98-99
+src/fluidity/grid/grid_piece_internal.test.cc
+  s_4f0877e2acdcf0::t_1753f4665ad09e 1-104
+src/fluidity/grid/grid_piece_steps.h
+  s_4f0877e2acdcf0::t_2f26713c805fa4 147-149
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_ffa37a17528b61 21-22,40,44,46,172-229
+src/fluidity/grid/testing/grid_piece_support.test.cc
+  s_4f0877e2acdcf0::t_ae9a76579e21ad 1-85
+tests/grid/grid_piece_steps_in_every_thread_order.test.cc
+  s_4f0877e2acdcf0::t_f4ff620688f6df 18,20,42-82,84-85,88-89,105-110,162-163,175-176,198-241
+tests/grid/grid_pieces.gpu.test.cc
+  s_4f0877e2acdcf0::t_7d00f88c4c18d3 22,584-590,592-600,603-604,611-627,655
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d2e4b20b77c690d438da2e6aada24c16ae19448e",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
