@@ -1,0 +1,35 @@
+src/fluidity/grid/cell_corners.h
+  s_4f0877e2acdcf0::t_368fab12031eda 29-30,303-304
+src/fluidity/grid/face_search.h
+  s_4f0877e2acdcf0::t_90d10ec3bf0c0c 6-8
+src/fluidity/grid/find_cell_at.h
+  s_4f0877e2acdcf0::t_f8b367399b75d1 223-228
+src/fluidity/grid/cell_size_rule.h
+  s_24efe7e51408c6::t_417a28d644e5d6 102,488,562-564,667-671
+src/fluidity/grid/nearby_face_weights.h
+  s_24efe7e51408c6::t_e36d7efc6be801 88-91,133,162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "770ad7089c7ef1010a4a5ef787f73cc3ade02134",
+  "prompts": {},
+  "sessions": {
+    "s_24efe7e51408c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a749fc31912354fdf",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
