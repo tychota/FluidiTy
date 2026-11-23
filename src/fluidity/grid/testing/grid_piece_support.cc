@@ -40,7 +40,7 @@ namespace fluidity::grid {
 namespace {
 
 // The block of the piece that holds whole grid block `whole_block`, or kNoIndex when the piece did not load it.
-std::uint32_t FindPieceBlock(const PieceTablesView& piece, std::uint32_t whole_block) {
+std::uint32_t FindPieceBlock(const LoadedPieceTables& piece, std::uint32_t whole_block) {
   const auto found = std::ranges::lower_bound(piece.block_in_whole, whole_block, {}, &CellBlockIndex::value);
   if (found == piece.block_in_whole.end() || found->value != whole_block) {
     return kNoIndex;
@@ -49,7 +49,7 @@ std::uint32_t FindPieceBlock(const PieceTablesView& piece, std::uint32_t whole_b
 }
 
 // The whole grid's place for a place of the piece, both of places_per_block places per block; kNoIndex stays.
-std::uint32_t ToWholePlace(const PieceTablesView& piece, std::uint32_t piece_place, std::uint32_t places_per_block) {
+std::uint32_t ToWholePlace(const LoadedPieceTables& piece, std::uint32_t piece_place, std::uint32_t places_per_block) {
   if (piece_place == kNoIndex) {
     return kNoIndex;
   }
@@ -58,7 +58,7 @@ std::uint32_t ToWholePlace(const PieceTablesView& piece, std::uint32_t piece_pla
 }
 
 // The piece's place for a place of the whole grid; kNoIndex when its block was not loaded.
-std::uint32_t ToPiecePlace(const PieceTablesView& piece, std::uint32_t whole_place, std::uint32_t places_per_block) {
+std::uint32_t ToPiecePlace(const LoadedPieceTables& piece, std::uint32_t whole_place, std::uint32_t places_per_block) {
   if (whole_place == kNoIndex) {
     return kNoIndex;
   }
@@ -72,7 +72,7 @@ std::uint32_t ToPiecePlace(const PieceTablesView& piece, std::uint32_t whole_pla
 // The two sets of tables of one comparison.
 struct TablesPair {
   const GridTables& whole;
-  const PieceTablesView& piece;
+  const LoadedPieceTables& piece;
   GridTables piece_tables;
 };
 
@@ -80,7 +80,7 @@ struct TablesPair {
 // not null.
 template <typename PlaceIndex>
 std::vector<std::uint32_t>
-ToWholeList(const PlaceIndex* places, int count, const PieceTablesView* piece, std::uint32_t places_per_block) {
+ToWholeList(const PlaceIndex* places, int count, const LoadedPieceTables* piece, std::uint32_t places_per_block) {
   std::vector<std::uint32_t> whole_places;
   whole_places.reserve(static_cast<std::size_t>(count));
   for (int entry = 0; entry < count; ++entry) {
@@ -196,7 +196,7 @@ struct NearbyFacesAnswer {
 };
 
 NearbyFacesAnswer
-FindNearbyFacesAnswer(const GridTables& tables, const PieceTablesView* piece, Vec3 position, Axis axis) {
+FindNearbyFacesAnswer(const GridTables& tables, const LoadedPieceTables* piece, Vec3 position, Axis axis) {
   NearbyFacesAnswer answer;
   const NearbyFaceList list = FindNearbyFaces(tables, position, axis, CellBlockIndex{kNoIndex}, &answer.error);
   answer.faces = ToWholeList(list.faces, list.count, piece, kFacePlacesPerBlock);
@@ -392,7 +392,7 @@ std::optional<std::string> FindFaceWeightDifference(
 // Finds the cells of FindCellsNearFace(face) at most one size level bigger than the face piece, in the tables of
 // `tables`, as whole grid indexes: `piece` is null for the whole grid's own tables.
 std::vector<std::uint32_t>
-FindTransferCells(const GridTables& tables, const PieceTablesView* piece, FacePlaceIndex face) {
+FindTransferCells(const GridTables& tables, const LoadedPieceTables* piece, FacePlaceIndex face) {
   const int face_size_level = static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(face)));
   const CellsNearFace cells_near_face = FindCellsNearFace(tables, face);
   std::vector<std::uint32_t> transfer_cells;
@@ -515,12 +515,12 @@ PieceTables BuildPieceTables(const GridTables& whole, std::span<const CellBlockI
   piece.block_in_whole.assign(loaded_blocks.begin(), loaded_blocks.end());
   // Step 2.
   const GridTables no_tables;
-  const PieceTablesView loaded_view = {
+  const LoadedPieceTables loaded_tables = {
       .tables = no_tables,
       .block_in_whole = piece.block_in_whole,
   };
-  const auto to_piece_entry = [&loaded_view](std::uint32_t whole_block) {
-    return whole_block == kNoIndex ? kNoIndex : FindPieceBlock(loaded_view, whole_block);
+  const auto to_piece_entry = [&loaded_tables](std::uint32_t whole_block) {
+    return whole_block == kNoIndex ? kNoIndex : FindPieceBlock(loaded_tables, whole_block);
   };
   for (const CellBlockIndex loaded_block : loaded_blocks) {
     const std::uint64_t block = loaded_block.value;
@@ -542,7 +542,8 @@ PieceTables BuildPieceTables(const GridTables& whole, std::span<const CellBlockI
       if (kind == FacePieceKind::kBetweenCells) {
         const std::uint32_t low_block = ToCellBlockIndex(FindCellLow(whole, face)).value;
         const std::uint32_t high_block = ToCellBlockIndex(FindCellHigh(whole, face)).value;
-        if (FindPieceBlock(loaded_view, low_block) == kNoIndex || FindPieceBlock(loaded_view, high_block) == kNoIndex) {
+        if (FindPieceBlock(loaded_tables, low_block) == kNoIndex
+            || FindPieceBlock(loaded_tables, high_block) == kNoIndex) {
           kind = FacePieceKind::kOutsidePiece;
         }
       }
@@ -660,7 +661,7 @@ std::optional<std::string> FindFirstTableDifference(const GridPiece& piece, cons
 
 std::optional<std::string> FindFirstReaderDifference(
     const GridTables& whole,
-    const PieceTablesView& piece,
+    const LoadedPieceTables& piece,
     std::span<const CellBlockIndex> set,
     BorderWidth width
 ) {
@@ -689,8 +690,8 @@ std::optional<std::string> FindFirstReaderDifference(
   loaded_blocks.insert(loaded_blocks.end(), border.begin(), border.end());
   std::ranges::sort(loaded_blocks, {}, &CellBlockIndex::value);
   const PieceTables piece = BuildPieceTables(whole, loaded_blocks);
-  const PieceTablesView view = {.tables = piece.ToTables(), .block_in_whole = piece.block_in_whole};
-  return FindFirstReaderDifference(whole, view, set, width);
+  const LoadedPieceTables loaded_tables = {.tables = piece.ToTables(), .block_in_whole = piece.block_in_whole};
+  return FindFirstReaderDifference(whole, loaded_tables, set, width);
 }
 
 }  // namespace fluidity::grid

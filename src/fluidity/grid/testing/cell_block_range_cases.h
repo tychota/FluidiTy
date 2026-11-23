@@ -29,14 +29,14 @@
 //   two buffers of one entry per block, so a test finds one layer of a stacked border without repeating the set-up.
 //
 // Owns:    BuildPlaneFourCells, BuildDistantCornerCells, BuildCornerBeyondCells, BuildSplitCornerCells,
-//          BuildCarriedSumsCells, BuildNestedBallCells, FindDrawnAscendingBlocks, ToRangeBlocks, FindChosenBlockSets,
-//          ToBlocks, BorderSearchRig, BuildBorderSearchRig, FindLayerOrFail, kLayerWidths, kNestedBallLayerWidths,
-//          BuildTestedRanges, BuildNestedBallTestedRanges
+//          BuildCarriedSumsCells, BuildNestedBallCells, BuildTouchingCellsInManyBlocks, FindDrawnAscendingBlocks,
+//          ToRangeBlocks, FindChosenBlockSets, ToBlocks, BorderSearchRig, BuildBorderSearchRig, FindLayerOrFail,
+//          kLayerWidths, kNestedBallLayerWidths, BuildTestedRanges, BuildNestedBallTestedRanges
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, WriteBuffer, ReadBuffer (base/buffer.h), RunMemory
 //          (base/run_memory.h), BuildBorderSearchMemoryEstimate (grid/grid_memory_estimate.h), ToCell
 //          (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure, ToUniformIndex (grid/testing/grid_support.h),
 //          BuildRanges (grid/cell_block_range.h), StaggeredGrid (grid/staggered_grid.h), GridFailure
-//          (grid/grid_error.h)
+//          (grid/grid_error.h), ToName (grid/grid_error_message.h)
 // Used by: src/fluidity/grid/cell_block_range.test.cc, the functional tests of border blocks (tests/grid/)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 
@@ -63,6 +63,7 @@
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/cell_block_range.h"
 #include "fluidity/grid/grid_error.h"
+#include "fluidity/grid/grid_error_message.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_memory_estimate.h"
 #include "fluidity/grid/staggered_grid.h"
@@ -225,6 +226,19 @@ FindChosenBlockSets(std::uint64_t grid_entry, const StaggeredGrid& grid) {
   return sets;
 }
 
+// The cells {4 i, 0, 0} and {4 i + 3, 0, 0} of one size level for i = 0 .. block_count - 1: block i of the first size
+// level holds two cells, and the last cell of each block touches the first cell of the next, so the border of a run of
+// blocks holds the block after it. A grid of this many blocks makes a set larger than one marking launch cheaply.
+inline std::vector<CellId> BuildTouchingCellsInManyBlocks(std::int32_t block_count) {
+  std::vector<CellId> cells;
+  cells.reserve(std::size_t{2} * static_cast<std::size_t>(block_count));
+  for (std::int32_t block = 0; block < block_count; ++block) {
+    cells.push_back(ToCell(0, 4 * block, 0, 0));
+    cells.push_back(ToCell(0, (4 * block) + 3, 0, 0));
+  }
+  return cells;
+}
+
 // The block indexes of a list, in the order given.
 inline std::vector<CellBlockIndex> ToBlocks(std::initializer_list<std::uint32_t> indexes) {
   std::vector<CellBlockIndex> blocks;
@@ -294,7 +308,7 @@ FindLayerOrFail(BorderSearchRig& rig, CellBlockRange range, std::span<const Cell
       rig.search_buffers,
       rig.border_buffer
   );
-  EXPECT_TRUE(count.has_value());
+  EXPECT_TRUE(count.has_value()) << (count.has_value() ? "" : ToName(count.error().error));
   if (!written.has_value() || !count.has_value() || *count > rig.border_buffer.size()) {
     return {};
   }

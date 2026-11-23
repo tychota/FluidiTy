@@ -219,18 +219,20 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 // Method: the forward form, in the border marks of `search_buffers`. 1 Set the marks of the grid's blocks to 0, so
 //   that they hold only what this call's places read: a mark left from an earlier call would add a block to the list
 //   silently. The marking functions read no mark (border_block_steps.h), so threads never read what others write; a
-//   GPU form must keep it so, and must not stop at a block that is already marked. 2 Check the entries of
-//   `border_so_far`. 3 For each block of `range`, then of `border_so_far`, run ApplyCellPlaceReadMarks for each of its
-//   64 cell places and ApplyFacePlaceReadMarks for each of its 240 face places at `width` (ApplySetPlaceReadMarks, for
-//   one place of the set). 4 Walk the marks in index order and list each marked block outside `range`. Every block of
-//   the set is marked through its own cell places, so the list holds `border_so_far` without a merge. On the GPU the
-//   steps are launches of one stream: 1 one thread resets the status record and one thread for each block clears its
-//   mark; 2 one thread for each entry offers its failure key to the record; 3 one thread for each place of the set
-//   marks, and stops at once when the record holds a key, so the marks are written only with the value 1, with plain
-//   stores, and no thread reads a mark; 4 after that launch has finished, one thread for each block writes its listed
-//   mark (0 when the record holds a key), an exclusive prefix sum gives each listed block its place, and one thread for
-//   each block writes the ascending list and the total into the record, which is the only thing read back. The prefix
-//   sum keeps index order, so the list is the CPU's.
+//   GPU form must keep it so, and a marking function writes the value 1 for every block it reads, tested against none.
+//   2 Check the entries of `border_so_far`. 3 For each block of `range`, then of `border_so_far`, run
+//   ApplyCellPlaceReadMarks for each of its 64 cell places and ApplyFacePlaceReadMarks for each of its 240 face places
+//   at `width` (ApplySetPlaceReadMarks, for one place of the set). 4 Walk the marks in index order and list each marked
+//   block outside `range`. Every block of the set is marked through its own cell places, so the list holds
+//   `border_so_far` without a merge. On the GPU the steps are launches of one stream: 1 one thread resets the status
+//   record and one thread for each block clears its mark; 2 one thread for each entry offers its failure key to the
+//   record; 3 one thread for each place of the set marks, and stops at once when the record holds a key, so the marks
+//   are written only with the value 1, with plain stores, and no thread reads a mark; the places run in launches of at
+//   most kSetBlocksPerMarkingLaunch blocks of the set each (2,048), one after the other, which changes no mark; 4 after
+//   the last launch has finished, one thread for each block writes its listed mark (0 when the record holds a key), an
+//   exclusive prefix sum gives each listed block its place, and one thread for each block writes the ascending list and
+//   the total into the record, which is the only thing read back. The prefix sum keeps index order, so the list is the
+//   CPU's.
 // Work: for each place of `range` plus `border_so_far`, one marking function, as the vector form of FindBorderBlocks,
 //   whose Work line gives the cost; and, whatever the set, one write and one read of each of the grid's block marks.
 // Example: the grid of the file header of border_block_steps.h, range {0, 1} (block 0) and no border so far give the
@@ -244,10 +246,16 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //        kTooManyCellBlocks search_buffers.max_cell_blocks() is below the grid's block count. Nothing is written. It is
 //                           checked before the entries of border_so_far, so a call that fails both ways gives this
 //                           error on either processor.
+//        kTooManyCellBlocks also: `range` plus border_so_far_count has more than kMaxSetBlocks blocks
+//                           (14,128,181), so a place of the set would not fit the 32-bit place index. Checked on both
+//                           processors by ComputeIsSetWithinPlaceLimit, before the entries of border_so_far and before
+//                           anything is written.
 //        kRunOnCallFailed   GPU only: a GPU call failed
 //        kInternalFault     GPU only: the prefix sum failed on a size, or the count read back is above the block count
 //        On failure border_blocks holds no result; after kRunOnCallFailed the marks and the arrays of
-//        `search_buffers` are unspecified, as every buffer of a failed GPU call.
+//        `search_buffers` are unspecified, as every buffer of a failed GPU call. If a launch of the marking fails after
+//        earlier ones marked, nothing is written to the output (no list, no count), and the next call clears the marks
+//        first.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     const StaggeredGrid& grid,

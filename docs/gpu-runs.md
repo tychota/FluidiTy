@@ -205,6 +205,10 @@ a driver stack entry of that many bytes for every resident thread (about 55,296 
 stack. The marks are bytes that many threads set to 1 at once with plain stores and nobody reads: if
 `OnGpuTwice_GivesIdenticalBytes` or the comparison with the CPU differs, by a block missing or extra in a list, suspect that
 first (a byte store that touched its neighbours), then a missing wait between the marking launch and the scan.
+The marking runs in launches of at most 2,048 blocks of the set each (`kSetBlocksPerMarkingLaunch`), each waited for, so
+no launch runs near the 2 seconds after which the display driver stops a GPU function; `cudaErrorLaunchTimeout` here
+means a chunk of 2,048 dense blocks took that long, and the constant should come down. A set of more than 14,128,181
+blocks (range plus border so far, the most whose places fit 32 bits) fails with `kTooManyCellBlocks` before any launch.
 
 To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
 programs of the `linux-release-cuda` build:

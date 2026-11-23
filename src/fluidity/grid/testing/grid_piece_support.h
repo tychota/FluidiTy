@@ -17,7 +17,7 @@
 //   one size-level-1 block. A piece of that block alone has no bigger block for it, so FindCellAt finds no cell in
 //   it: the piece needs block 0 too.
 //
-// Owns:    PieceTables, PieceTablesView, BuildPieceTables, FindFirstTableDifference, PieceBuffersRoom,
+// Owns:    PieceTables, LoadedPieceTables, BuildPieceTables, FindFirstTableDifference, PieceBuffersRoom,
 //          BuildPieceBuffersRoom, FindBorderByReadMarks, FindFirstReaderDifference
 // Uses:    CPU-only guard (base/cpu_only.h), GridPiece (grid/grid_piece.h), BorderWidth, ApplyCellPlaceReadMarks,
 //          ApplyFacePlaceReadMarks (grid/border_block_steps.h), GridTables, GridFrame, CellState, FacePieceKind
@@ -69,7 +69,7 @@ struct PieceTables {
 
 // The tables of a grid piece that a caller gives, with the piece map: what FindFirstReaderDifference reads. Both
 // parts belong to the caller and must outlive the call.
-struct PieceTablesView {
+struct LoadedPieceTables {
   GridTables tables;
   std::span<const CellBlockIndex> block_in_whole;  // [piece block]: the whole grid's index, ascending.
 };
@@ -156,7 +156,7 @@ std::optional<std::string> FindFirstReaderDifference(
 //   in the piece.
 std::optional<std::string> FindFirstReaderDifference(
     const GridTables& whole,
-    const PieceTablesView& piece,
+    const LoadedPieceTables& piece,
     std::span<const CellBlockIndex> set,
     BorderWidth width
 );

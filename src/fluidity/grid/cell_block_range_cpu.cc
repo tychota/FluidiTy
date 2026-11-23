@@ -194,18 +194,24 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderS
       call_status != RunOnCallStatus::kDone) {
     return std::unexpected(ToCallFailure(call_status));
   }
-  // Step 3: the threads stop at once when step 2 failed.
-  if (const RunOnCallStatus call_status = WriteBorderReadMarksOnGpu(
-          search.tables,
-          search.range,
-          search.border_so_far,
-          search.border_so_far_count,
-          search.width,
-          status,
-          search.marks
-      );
-      call_status != RunOnCallStatus::kDone) {
-    return std::unexpected(ToCallFailure(call_status));
+  // Step 3: one launch for each chunk of the set, each waited for. The threads stop at once when step 2 failed. A chunk
+  // that fails ends the call here: the marks of the earlier chunks give no list, and the next call clears them.
+  const std::uint32_t set_block_count = search.range.block_count + search.border_so_far_count;
+  const std::uint32_t chunk_count = ComputeMarkingChunkCount(set_block_count, kSetBlocksPerMarkingLaunch);
+  for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+    if (const RunOnCallStatus call_status = WriteBorderReadMarksOnGpu(
+            search.tables,
+            search.range,
+            search.border_so_far,
+            search.border_so_far_count,
+            ComputeMarkingChunk(set_block_count, chunk_index, kSetBlocksPerMarkingLaunch),
+            search.width,
+            status,
+            search.marks
+        );
+        call_status != RunOnCallStatus::kDone) {
+      return std::unexpected(ToCallFailure(call_status));
+    }
   }
   // Step 4: after a failure of step 2 every word is 0, so the prefix sum adds no word of an earlier call.
   if (const RunOnCallStatus call_status =
@@ -382,7 +388,7 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     BorderSearchBuffers& search_buffers,
     Buffer<CellBlockIndex>& border_blocks
 ) {
-  // Steps: 1 the shape of the arguments  2 the room  3 the border so far  4 the marks  5 the list
+  // Steps: 1 the shape of the arguments  2 the room and the set's places  3 the border so far  4 the marks  5 the list
   // Requires: every buffer on the processor of the grid, which the caller chose when it built them.
   assert(border_so_far.run_on() == grid.run_on());
   assert(border_blocks.run_on() == grid.run_on());
@@ -403,6 +409,13 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
   // far before it has cleared the marks, so the room is checked first on both processors, and a call that fails both
   // ways gives the same error on both.
   if (search_buffers.max_cell_blocks() < block_count) {
+    return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
+  }
+
+  // Step 2 (b): the places of the set are 32-bit numbers (ApplySetPlaceReadMarks): a set of more blocks than
+  // kMaxSetBlocks would wrap them onto low places and miss border blocks. Both processors ask the same function, before
+  // any mark is written. A valid call has a range of at most the grid's blocks, so only a long border so far gets here.
+  if (!ComputeIsSetWithinPlaceLimit(range.block_count, border_so_far_count)) {
     return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
   }
 

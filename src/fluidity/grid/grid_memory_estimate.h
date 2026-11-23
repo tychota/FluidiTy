@@ -19,8 +19,10 @@
 //   GPU grid, tables and piece map    456 + 4 = 460 bytes for each grid
 //   GPU builder buffers               512 + 512 + 256 + 256 + 64 x 6 = 1,920 bytes once, plus 4 + 4 + (4,096 + 6)
 //                                     = 4,110 bytes once, plus one build status record for each grid
-//   The grid has no entry held by the driver (MemoryWhere::kDriverStack): its GPU functions keep under the driver's
-//   default stack of 1,024 bytes per thread. A module that computes nearby-face weights on the GPU declares its own.
+//   The grid's build and check have no entry held by the driver (MemoryWhere::kDriverStack): their GPU functions keep
+//   under the driver's default stack of 1,024 bytes per thread. The border search has one, which
+//   BuildBorderSearchStackEstimate (grid/cell_block_range.h) gives. A module that computes nearby-face weights on the
+//   GPU declares its own.
 //
 // Words:
 //   memory estimate  the list of entries of a module or a run: every array it will allocate

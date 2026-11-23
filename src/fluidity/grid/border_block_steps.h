@@ -34,7 +34,9 @@
 //   border width  how far the readers of a stage read: kTouchingCells or kFourCellWidths
 // Owns:    BorderWidth, BlockSet, ComputeIsInBlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks,
 //          ApplyFacePlaceReadMarks, kPlacesPerSetBlock, ComputeBorderSoFarFailureKey, ApplySetPlaceReadMarks,
-//          ComputeListedMark, ApplyBorderBlockWriteAt; and, for this header's own functions only,
+//          ComputeListedMark, ApplyBorderBlockWriteAt, kMaxSetBlocks, kSetBlocksPerMarkingLaunch, SetPlaceChunk,
+//          ComputeIsSetWithinPlaceLimit, ComputeMarkingChunkCount, ComputeMarkingChunk; and, for this header's own
+//          functions only,
 //          ComputeSmallerBlockPosition, ComputeIsPositionWithin, ComputeIsBlockSetAroundOneBlock,
 //          ComputeIsBlockSetUnderNear, ComputeIsBlockSetUnderWide, ComputeIsBlockSetAround,
 //          ComputeHasFacePieceInBlockSet, ComputeIsBiggerCellBesideTouchingSet, ComputeIsCellOfBlockRead,
@@ -53,6 +55,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/grid/cell_corners.h"
@@ -889,6 +892,80 @@ FLUIDITY_CPU_AND_GPU constexpr void ApplyFacePlaceReadMarks(
 inline constexpr std::uint32_t kPlacesPerSetBlock =
     static_cast<std::uint32_t>(kCellPlacesPerBlock) + static_cast<std::uint32_t>(kFacePlacesPerBlock);
 
+// The most blocks a set can hold so that every place of the set is a 32-bit number: ApplySetPlaceReadMarks takes its
+// place as a std::uint32_t. This is 14,128,181 blocks. The grid's own limit on blocks (kMaxCellBlocksLimit) keeps only
+// the 240 face places of each block in 32 bits, not these 304, so a set of a range plus a long border so far can pass
+// this count, and a place beyond it would wrap onto a low place and leave its reads unmarked.
+inline constexpr std::uint32_t kMaxSetBlocks = std::numeric_limits<std::uint32_t>::max() / kPlacesPerSetBlock;
+static_assert(
+    std::uint64_t{kMaxSetBlocks} * kPlacesPerSetBlock - 1 <= std::numeric_limits<std::uint32_t>::max(),
+    "the last place of the largest set is a 32-bit number"
+);
+static_assert(
+    (std::uint64_t{kMaxSetBlocks} + 1) * kPlacesPerSetBlock - 1 > std::numeric_limits<std::uint32_t>::max(),
+    "one more block would have a place that is not a 32-bit number"
+);
+
+// The most blocks of the set that one marking launch of the GPU form runs places for. The value follows from the GPU
+// function that marks: it keeps 255 registers, so one thread block of 256 threads is resident on each multiprocessor,
+// about 9,000 threads at once on a 36-multiprocessor card; a dense block costs that card about 70 to 270 microseconds
+// (up to 10^5 dependent table reads for each of its active cell places); so 2,048 blocks take about 0.15 to 0.55 s,
+// far below the 2 s after which the display watchdog of Windows ends a GPU function, and 622,592 threads are still
+// many passes of the resident ones. A longer set runs in several launches. The marks do not depend on the order of the
+// places, so the chunks change no result.
+inline constexpr std::uint32_t kSetBlocksPerMarkingLaunch = 2048;
+
+// The places of one chunk of a set: the places first_set_place to first_set_place + set_place_count - 1, in the numbers
+// ApplySetPlaceReadMarks takes.
+struct SetPlaceChunk {
+  std::uint32_t first_set_place = 0;
+  std::uint32_t set_place_count = 0;
+};
+
+// clang-tidy: two counts of blocks, or a count and an index; the swappable-parameters check flags the integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+// Computes whether a set of range_block_count + border_so_far_count blocks has every place in 32 bits: the sum, made in
+// 64 bits so a huge count cannot wrap, is at most kMaxSetBlocks. Both processors ask it before they write anything.
+// Example: 14,128,181 blocks fit; 14,128,182 do not.
+FLUIDITY_CPU_AND_GPU constexpr bool
+ComputeIsSetWithinPlaceLimit(std::uint64_t range_block_count, std::uint64_t border_so_far_count) noexcept {
+  return range_block_count + border_so_far_count <= kMaxSetBlocks;
+}
+
+// Computes how many chunks of set_blocks_per_chunk blocks cover a set of set_block_count blocks: the last chunk may be
+// shorter. A set of no block has no chunk.
+// Example: 5 blocks in chunks of 2 give 3.
+// Requires: set_blocks_per_chunk is at least 1; set_block_count is at most kMaxSetBlocks.
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
+ComputeMarkingChunkCount(std::uint32_t set_block_count, std::uint32_t set_blocks_per_chunk) noexcept {
+  return (set_block_count / set_blocks_per_chunk) + (set_block_count % set_blocks_per_chunk == 0 ? 0U : 1U);
+}
+
+// Computes the places of chunk `chunk_index`: its blocks are set_blocks_per_chunk blocks of the set from block
+// chunk_index x set_blocks_per_chunk, or fewer at the end of the set, and their places are kPlacesPerSetBlock each.
+// Together the chunks below ComputeMarkingChunkCount hold every place of the set once, in order. A chunk index at or
+// above the count gives no place.
+// Example: 5 blocks in chunks of 2: chunk 2 is block 4 alone, places 1,216 to 1,519.
+// Requires: set_blocks_per_chunk is at least 1; set_block_count is at most kMaxSetBlocks.
+FLUIDITY_CPU_AND_GPU constexpr SetPlaceChunk ComputeMarkingChunk(
+    std::uint32_t set_block_count,
+    std::uint32_t chunk_index,
+    std::uint32_t set_blocks_per_chunk
+) noexcept {
+  const std::uint64_t first_block = std::uint64_t{chunk_index} * set_blocks_per_chunk;
+  if (first_block >= set_block_count) {
+    return {.first_set_place = 0, .set_place_count = 0};
+  }
+  const std::uint64_t blocks_left = set_block_count - first_block;
+  const std::uint64_t chunk_blocks = blocks_left < set_blocks_per_chunk ? blocks_left : set_blocks_per_chunk;
+  return {
+      .first_set_place = static_cast<std::uint32_t>(first_block * kPlacesPerSetBlock),
+      .set_place_count = static_cast<std::uint32_t>(chunk_blocks * kPlacesPerSetBlock),
+  };
+}
+
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
 // clang-tidy: a count of blocks and an entry index; the swappable-parameters check flags the two integers.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 // Computes the failure key of entry `index` of the border so far, or kNoFailureKey: step 2 of the GPU pass, one thread
@@ -927,10 +1004,12 @@ FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeBorderSoFarFailureKey(
 //   set_place at or above the set's places does nothing.
 // Ties: as the two marking functions: only the value 1 is written and no mark is read, so threads that run this for
 //   different places at once, into the same marks, cannot conflict, and the marks do not depend on their order. The
-//   marks must hold 0 before the first place and nothing may mark the blocks of the set beforehand.
+//   marks must hold 0 before the first place and nothing may mark the blocks of the set beforehand. The places run in
+//   chunks (ComputeMarkingChunk), which changes nothing for the same reason.
 // Example: range {4, 2}, border_so_far {9}: set_place 0 is cell place 0 of block 4, set_place 304 is cell place 0 of
 //   block 5, set_place 608 is cell place 0 of block 9, and set_place 64 is face place 0 of block 4.
-// Requires: border_so_far holds border_so_far_count entries that passed ComputeBorderSoFarFailureKey; `marks` holds
+// Requires: the set holds at most kMaxSetBlocks blocks (ComputeIsSetWithinPlaceLimit), so set_place does not wrap;
+//   border_so_far holds border_so_far_count entries that passed ComputeBorderSoFarFailureKey; `marks` holds
 //   tables.block_count entries, each 0 or written by these marking functions; the tables are those of a whole grid.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr void ApplySetPlaceReadMarks(

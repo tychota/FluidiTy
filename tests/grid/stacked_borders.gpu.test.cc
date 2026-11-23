@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -47,6 +48,9 @@ namespace {
 constexpr int kGridCount = 10;
 constexpr std::uint32_t kRangeBlocks = 4;
 constexpr std::uint32_t kNestedBallRangeBlocks = 16;
+
+// A block index that no list holds: what a failed call must leave in the output buffer.
+constexpr std::uint32_t kGuardBlock = 0xABCD1234U;
 
 // One layer of a stacked border as a comparison sees it: the count and the entries that were written.
 struct BorderLayerResult {
@@ -102,6 +106,10 @@ void CheckLayersOfRanges(
     std::ranges::move(cpu_range_layers, std::back_inserter(cpu_layers));
     std::ranges::move(gpu_range_layers, std::back_inserter(gpu_layers));
   }
+  const bool is_some_layer_filled = std::ranges::any_of(cpu_layers, [](const BorderLayerResult& layer) {
+    return layer.count > 0;
+  });
+  EXPECT_TRUE(is_some_layer_filled) << name << ": every layer is empty, so the comparison shows nothing";
   CheckSameResults(
       std::span<const BorderLayerResult>(cpu_layers),
       std::span<const BorderLayerResult>(gpu_layers),
@@ -131,6 +139,23 @@ TEST(FindBorderBlocks, OnGpuNestedBallRanges_SameBitsAsCpu) {
   CheckLayersOfRanges(*grid, ranges, touching, "nested ball, touching");
   CheckLayersOfRanges(*grid, ranges, four_widths, "nested ball, four widths");
   CheckLayersOfRanges(*grid, ranges, kNestedBallLayerWidths, "nested ball, stacked");
+}
+
+// A grid of 4,097 blocks of two cells each and ranges of more blocks than one marking launch holds (2,048): the marking
+// runs in two launches or more, and the lists are the CPU's, with a second layer on top of the first.
+TEST(FindBorderBlocks, OnGpuMoreBlocksThanOneLaunch_SameBitsAsCpu) {
+  constexpr std::int32_t kBlockCount = 4097;
+  const std::optional<GridOnBothProcessors> grid =
+      BuildGridOnBothProcessors(ToUnitFrame(3), BuildTouchingCellsInManyBlocks(kBlockCount));
+  ASSERT_TRUE(grid.has_value());
+  ASSERT_EQ(grid->on_cpu.grid.counts().cell_blocks, static_cast<std::uint32_t>(kBlockCount));
+  const std::array<CellBlockRange, 3> ranges = {
+      CellBlockRange{.first_block = 0, .block_count = 3000},
+      CellBlockRange{.first_block = 1000, .block_count = 2100},
+      CellBlockRange{.first_block = 0, .block_count = kSetBlocksPerMarkingLaunch + 1},
+  };
+  const std::array<BorderWidth, 2> layer_widths = {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths};
+  CheckLayersOfRanges(*grid, ranges, layer_widths, "4,097 blocks, more than one launch");
 }
 
 // The count and the entries written by one call whose output buffer holds only `room` entries.
@@ -179,37 +204,84 @@ TEST(FindBorderBlocks, OnGpuShortOutput_SameCountAsCpu) {
   WriteDigestOfResults("border search on the GPU, short output", std::span<const BorderLayerResult>(on_gpu));
 }
 
-// The error of one call with a bad border so far, or 0 when it succeeded.
-GridError FindErrorOfBadList(const StaggeredGrid& grid, std::span<const CellBlockIndex> bad_list, bool is_same_buffer) {
-  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(grid);
-  EXPECT_TRUE(rig.has_value());
-  if (!rig.has_value() || !WriteBuffer<CellBlockIndex>(bad_list, rig->so_far_buffer, 0).has_value()) {
-    return GridError::kInternalFault;
+// What one failed call left behind: its error (kNone when it succeeded) and whether the buffer it was told to write is
+// as it was before the call.
+struct FailedCall {
+  GridError error = GridError::kNone;
+  bool is_output_unchanged = false;
+};
+
+// The block range of every call that follows a bad border so far.
+constexpr CellBlockRange kFailureTestRange = {.first_block = 2, .block_count = 2};
+
+// The whole content of a buffer of block indexes, or an empty list when it cannot be read.
+std::vector<CellBlockIndex> ReadAllEntries(const Buffer<CellBlockIndex>& buffer) {
+  std::vector<CellBlockIndex> entries(buffer.size());
+  if (!ReadBuffer<CellBlockIndex>(buffer, 0, entries).has_value()) {
+    return {};
   }
-  const CellBlockRange range = {.first_block = 2, .block_count = 2};
-  Buffer<CellBlockIndex>& output = is_same_buffer ? rig->so_far_buffer : rig->border_buffer;
-  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(
-      grid,
-      range,
-      rig->so_far_buffer,
-      static_cast<std::uint32_t>(bad_list.size()),
-      BorderWidth::kTouchingCells,
-      rig->search_buffers,
-      output
-  );
-  return count.has_value() ? GridError::kNone : count.error().error;
+  return entries;
 }
 
-// Expects the GPU grid and the CPU grid to fail with kBadInput on `bad_list`, given as the border so far.
+// One call with `bad_list` as the border so far on the buffers of `rig`. The output buffer holds a guard value in every
+// entry first (when it is not the list's own buffer), so a failed call that wrote a block shows.
+FailedCall FindFailureOfBadList(BorderSearchRig& rig, std::span<const CellBlockIndex> bad_list, bool is_same_buffer) {
+  EXPECT_TRUE(WriteBuffer<CellBlockIndex>(bad_list, rig.so_far_buffer, 0).has_value());
+  Buffer<CellBlockIndex>& output = is_same_buffer ? rig.so_far_buffer : rig.border_buffer;
+  if (!is_same_buffer) {
+    const std::vector<CellBlockIndex> guard(output.size(), CellBlockIndex{kGuardBlock});
+    EXPECT_TRUE(WriteBuffer<CellBlockIndex>(guard, output, 0).has_value());
+  }
+  const std::vector<CellBlockIndex> before = ReadAllEntries(output);
+  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(
+      rig.grid,
+      kFailureTestRange,
+      rig.so_far_buffer,
+      static_cast<std::uint32_t>(bad_list.size()),
+      BorderWidth::kTouchingCells,
+      rig.search_buffers,
+      output
+  );
+  const std::vector<CellBlockIndex> after = ReadAllEntries(output);
+  const bool is_unchanged = !before.empty() && ToLayerResult(before).blocks == ToLayerResult(after).blocks;
+  return {.error = count.has_value() ? GridError::kNone : count.error().error, .is_output_unchanged = is_unchanged};
+}
+
+// Expects a call with `bad_list` to fail with kBadInput on the rig and to leave the output buffer as it was, then makes
+// a good call on the same buffers and returns the border it finds.
+std::vector<CellBlockIndex> FindGoodLayerAfterBadList(BorderSearchRig& rig, std::span<const CellBlockIndex> bad_list) {
+  const FailedCall failed = FindFailureOfBadList(rig, bad_list, false);
+  EXPECT_EQ(failed.error, GridError::kBadInput);
+  EXPECT_TRUE(failed.is_output_unchanged) << "a failed call wrote into the output buffer";
+  return FindLayerOrFail(rig, kFailureTestRange, {}, BorderWidth::kTouchingCells);
+}
+
+// Expects the GPU grid and the CPU grid to fail with kBadInput on `bad_list`, given as the border so far, to write
+// nothing, and to find the same border in the call that follows on the same buffers.
 void CheckBadListFailsOnBothProcessors(const GridOnBothProcessors& grid, std::span<const CellBlockIndex> bad_list) {
-  const GridError on_cpu = FindErrorOfBadList(grid.on_cpu.grid, bad_list, false);
-  const GridError on_gpu = FindErrorOfBadList(grid.on_gpu.grid, bad_list, false);
-  EXPECT_EQ(on_cpu, GridError::kBadInput);
-  EXPECT_EQ(on_gpu, on_cpu);
+  std::expected<BorderSearchRig, GridFailure> on_cpu = BuildBorderSearchRig(grid.on_cpu.grid);
+  std::expected<BorderSearchRig, GridFailure> on_gpu = BuildBorderSearchRig(grid.on_gpu.grid);
+  ASSERT_TRUE(on_cpu.has_value());
+  ASSERT_TRUE(on_gpu.has_value());
+  const std::vector<CellBlockIndex> cpu_layer = FindGoodLayerAfterBadList(*on_cpu, bad_list);
+  const std::vector<CellBlockIndex> gpu_layer = FindGoodLayerAfterBadList(*on_gpu, bad_list);
+  EXPECT_EQ(ToLayerResult(gpu_layer).blocks, ToLayerResult(cpu_layer).blocks);
+}
+
+// Expects a call with one buffer given as both the border so far and the output to fail with kBadInput and to leave the
+// buffer as it was.
+void CheckSameBufferFails(const StaggeredGrid& grid) {
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::array<CellBlockIndex, 1> good_list = {CellBlockIndex{5}};
+  const FailedCall same_buffer = FindFailureOfBadList(*rig, good_list, true);
+  EXPECT_EQ(same_buffer.error, GridError::kBadInput);
+  EXPECT_TRUE(same_buffer.is_output_unchanged);
 }
 
 // A border so far that is not ascending, holds a block of the range, or holds a block beyond the grid, and one buffer
-// given as both input and output: the GPU's error is the CPU's.
+// given as both input and output: the GPU's error is the CPU's, no failed call writes the output, and a call after a
+// failure on the same buffers gives the same list as the CPU's.
 TEST(FindBorderBlocks, OnGpuFailures_EqualCpuFailures) {
   const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
   ASSERT_EQ(grids.size(), 1U);
@@ -225,9 +297,26 @@ TEST(FindBorderBlocks, OnGpuFailures_EqualCpuFailures) {
     SCOPED_TRACE(bad_list.back().value);
     CheckBadListFailsOnBothProcessors(grids.front(), bad_list);
   }
-  const std::array<CellBlockIndex, 1> good_list = {CellBlockIndex{5}};
-  EXPECT_EQ(FindErrorOfBadList(grids.front().on_cpu.grid, good_list, true), GridError::kBadInput);
-  EXPECT_EQ(FindErrorOfBadList(grids.front().on_gpu.grid, good_list, true), GridError::kBadInput);
+  CheckSameBufferFails(grids.front().on_cpu.grid);
+  CheckSameBufferFails(grids.front().on_gpu.grid);
+}
+
+// A set of no block (an empty range and no border so far) finds no block, on the GPU as on the CPU, and the buffers
+// work in the call after it.
+TEST(FindBorderBlocks, OnGpuEmptySet_FindsNoBlock) {
+  const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
+  ASSERT_EQ(grids.size(), 1U);
+  const CellBlockRange empty_range = {.first_block = 1, .block_count = 0};
+  std::vector<BorderLayerResult> layers_after_the_empty_set;
+  for (const StaggeredGrid* grid : {&grids.front().on_cpu.grid, &grids.front().on_gpu.grid}) {
+    std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(*grid);
+    ASSERT_TRUE(rig.has_value());
+    EXPECT_TRUE(FindLayerOrFail(*rig, empty_range, {}, BorderWidth::kFourCellWidths).empty());
+    layers_after_the_empty_set.push_back(
+        ToLayerResult(FindLayerOrFail(*rig, kFailureTestRange, {}, BorderWidth::kTouchingCells))
+    );
+  }
+  EXPECT_EQ(layers_after_the_empty_set.back().blocks, layers_after_the_empty_set.front().blocks);
 }
 
 // Expects one call on the GPU to allocate nothing on the CPU: the calls are counted apart.

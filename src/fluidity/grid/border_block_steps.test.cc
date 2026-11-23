@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <numeric>
 #include <vector>
 
@@ -333,6 +334,167 @@ TEST(FindBorderBlocks, StaleWordsWithBadBorderSoFar_PrefixSumAddsZeros) {
   );
   ASSERT_FALSE(count.has_value());
   EXPECT_EQ(count.error().error, GridError::kBadInput);
+}
+
+// The limit of a set, as arithmetic: 304 places for each block, and 2^32 / 304 blocks, whose last place is a 32-bit
+// number, while one block more has a place that wraps.
+static_assert(kPlacesPerSetBlock == 304);
+static_assert(kMaxSetBlocks == 14'128'181);
+static_assert(std::uint64_t{kMaxSetBlocks} * kPlacesPerSetBlock == 4'294'967'024ULL);
+constexpr std::uint64_t kPlaceCountOf32Bits = 4'294'967'296ULL;
+static_assert(std::uint64_t{kMaxSetBlocks} * kPlacesPerSetBlock <= kPlaceCountOf32Bits);
+static_assert((std::uint64_t{kMaxSetBlocks} + 1) * kPlacesPerSetBlock > kPlaceCountOf32Bits);
+// The grid's own block limit is above it, which is why the set needs its own check.
+static_assert(kMaxCellBlocksLimit > kMaxSetBlocks);
+static_assert(kSetBlocksPerMarkingLaunch == 2048);
+
+TEST(ComputeIsSetWithinPlaceLimit, CountsJustBelowAtAndAboveTheLimit_FitUpToTheLimit) {
+  EXPECT_TRUE(ComputeIsSetWithinPlaceLimit(0, 0));
+  EXPECT_TRUE(ComputeIsSetWithinPlaceLimit(kMaxSetBlocks - 1, 0));
+  EXPECT_TRUE(ComputeIsSetWithinPlaceLimit(kMaxSetBlocks, 0));
+  EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(kMaxSetBlocks + 1, 0));
+  // The range and the border so far add up: 1 block of range and the rest as entries.
+  EXPECT_TRUE(ComputeIsSetWithinPlaceLimit(1, kMaxSetBlocks - 1));
+  EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(1, kMaxSetBlocks));
+  EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(0, std::uint64_t{kMaxSetBlocks} + 1));
+  EXPECT_TRUE(ComputeIsSetWithinPlaceLimit(kMaxCellBlocksLimit - 4'000'000, 0));
+  EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(kMaxCellBlocksLimit, 0));
+}
+
+TEST(ComputeIsSetWithinPlaceLimit, CountsThatWouldWrapIn32Bits_DoNotFit) {
+  const std::uint64_t largest_count = std::numeric_limits<std::uint32_t>::max();
+  EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(largest_count, largest_count));
+  EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(largest_count, 2));
+}
+
+TEST(ComputeMarkingChunk, ChunksOfTwoOverFiveBlocks_HoldEveryPlaceOnceInOrder) {
+  constexpr std::uint32_t kBlocks = 5;
+  constexpr std::uint32_t kBlocksPerChunk = 2;
+  ASSERT_EQ(ComputeMarkingChunkCount(kBlocks, kBlocksPerChunk), 3U);
+  std::uint32_t next_place = 0;
+  for (std::uint32_t chunk_index = 0; chunk_index < 3; ++chunk_index) {
+    const SetPlaceChunk chunk = ComputeMarkingChunk(kBlocks, chunk_index, kBlocksPerChunk);
+    EXPECT_EQ(chunk.first_set_place, next_place);
+    EXPECT_EQ(chunk.set_place_count, (chunk_index == 2 ? 1U : 2U) * kPlacesPerSetBlock);
+    next_place += chunk.set_place_count;
+  }
+  EXPECT_EQ(next_place, kBlocks * kPlacesPerSetBlock);
+  const SetPlaceChunk beyond = ComputeMarkingChunk(kBlocks, 3, kBlocksPerChunk);
+  EXPECT_EQ(beyond.set_place_count, 0U);
+}
+
+TEST(ComputeMarkingChunk, SetsAroundTheChunkSize_NeedTheRightCount) {
+  EXPECT_EQ(ComputeMarkingChunkCount(0, kSetBlocksPerMarkingLaunch), 0U);
+  EXPECT_EQ(ComputeMarkingChunkCount(1, kSetBlocksPerMarkingLaunch), 1U);
+  EXPECT_EQ(ComputeMarkingChunkCount(kSetBlocksPerMarkingLaunch, kSetBlocksPerMarkingLaunch), 1U);
+  EXPECT_EQ(ComputeMarkingChunkCount(kSetBlocksPerMarkingLaunch + 1, kSetBlocksPerMarkingLaunch), 2U);
+  // The largest set: its last chunk ends at its last place, which is a 32-bit number.
+  const std::uint32_t chunk_count = ComputeMarkingChunkCount(kMaxSetBlocks, kSetBlocksPerMarkingLaunch);
+  const SetPlaceChunk last = ComputeMarkingChunk(kMaxSetBlocks, chunk_count - 1, kSetBlocksPerMarkingLaunch);
+  EXPECT_EQ(
+      std::uint64_t{last.first_set_place} + last.set_place_count,
+      std::uint64_t{kMaxSetBlocks} * kPlacesPerSetBlock
+  );
+}
+
+// The block numbers a replay wrote: its first `count` entries.
+std::vector<std::uint32_t> ToWrittenList(const BorderReplayResult& replay) {
+  std::vector<std::uint32_t> numbers;
+  for (std::uint32_t entry = 0; entry < replay.count && entry < replay.border_blocks.size(); ++entry) {
+    numbers.push_back(replay.border_blocks[entry].value);
+  }
+  return numbers;
+}
+
+// The set of the plane-four grid, block 0 as the range and block 2 as the border so far, replayed with one block for
+// each marking launch (two launches), then with the GPU's own chunk: the same list and count, in both widths and in
+// both thread orders.
+void CheckOneBlockLaunchesEqualOneLaunch(const GridTables& tables, BorderWidth width, ReplayLaunch launch) {
+  const std::array<CellBlockIndex, 1> border_so_far = {CellBlockIndex{2}};
+  BorderReplayInputs inputs = {
+      .range = {.first_block = 0, .block_count = 1},
+      .border_so_far = border_so_far,
+      .width = width,
+      .border_block_room = 3,
+  };
+  const BorderReplayResult one_launch = ComputeBorderSearchReplay(tables, inputs, launch, MarksAtStart::kCleared);
+  inputs.set_blocks_per_marking_launch = 1;
+  const BorderReplayResult two_launches = ComputeBorderSearchReplay(tables, inputs, launch, MarksAtStart::kCleared);
+  EXPECT_GT(one_launch.count, 0U);
+  EXPECT_EQ(two_launches.count, one_launch.count);
+  EXPECT_EQ(two_launches.listed_words, one_launch.listed_words);
+  EXPECT_EQ(ToWrittenList(two_launches), ToWrittenList(one_launch));
+}
+
+TEST(ComputeBorderSearchReplay, ChunksOfOneBlock_GiveTheListOfOneLaunch) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), BuildPlaneFourCells()));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
+  for (const BorderWidth width : {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths}) {
+    for (const LaunchOrder order : kLaunchOrders) {
+      CheckOneBlockLaunchesEqualOneLaunch(tables, width, {.order = order, .thread_count = 0});
+    }
+  }
+}
+
+// A set of no block (an empty range, no border so far) runs no marking launch: the list is empty on the replay and on
+// the CPU form.
+TEST(FindBorderBlocks, EmptySet_FindsNoBlock) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), BuildPlaneFourCells()));
+  ASSERT_TRUE(test_grid.has_value());
+  const BorderReplayInputs inputs = {
+      .range = {.first_block = 1, .block_count = 0},
+      .border_so_far = {},
+      .width = BorderWidth::kTouchingCells,
+      .border_block_room = 3,
+  };
+  const BorderReplayResult replay =
+      ComputeBorderSearchReplay(test_grid->grid.tables(RunOn::kCpu), inputs, kGpuLaunch, MarksAtStart::kCleared);
+  EXPECT_EQ(replay.count, 0U);
+  EXPECT_EQ(replay.failure_key, kNoFailureKey);
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::vector<CellBlockIndex> cpu_layer =
+      FindLayerOrFail(*rig, {.first_block = 1, .block_count = 0}, {}, BorderWidth::kFourCellWidths);
+  EXPECT_TRUE(cpu_layer.empty());
+}
+
+// A border so far of kMaxSetBlocks + 1 entries is a set that no 32-bit place index can hold: both processors fail the
+// call with kTooManyCellBlocks, before the entries are read. At kMaxSetBlocks - 1 entries and one block of range the
+// set fits, so the call goes on to the entries, and the first one is a block of the range: kBadInput.
+TEST(FindBorderBlocks, SetAboveThePlaceLimit_IsTooManyCellBlocks) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), BuildPlaneFourCells()));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  std::expected<Buffer<CellBlockIndex>, BufferError> long_list =
+      BuildBuffer<CellBlockIndex>(RunOn::kCpu, std::size_t{kMaxSetBlocks} + 1);
+  ASSERT_TRUE(long_list.has_value());
+  const std::array<CellBlockIndex, 1> block_of_the_range = {CellBlockIndex{0}};
+  ASSERT_TRUE(WriteBuffer<CellBlockIndex>(block_of_the_range, *long_list, 0).has_value());
+  const CellBlockRange range = {.first_block = 0, .block_count = 1};
+  const std::expected<std::uint32_t, GridFailure> above = FindBorderBlocks(
+      test_grid->grid,
+      range,
+      *long_list,
+      kMaxSetBlocks,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(above.has_value());
+  EXPECT_EQ(above.error().error, GridError::kTooManyCellBlocks);
+  const std::expected<std::uint32_t, GridFailure> at_limit = FindBorderBlocks(
+      test_grid->grid,
+      range,
+      *long_list,
+      kMaxSetBlocks - 1,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(at_limit.has_value());
+  EXPECT_EQ(at_limit.error().error, GridError::kBadInput);
 }
 
 }  // namespace

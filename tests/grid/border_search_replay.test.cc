@@ -33,6 +33,12 @@ constexpr std::size_t kReplayGridCount = 10;
 constexpr std::uint32_t kRangeBlocks = 4;
 constexpr std::uint32_t kNestedBallRangeBlocks = 16;
 
+// A small marking launch, so the sets of these grids take several launches as a large set does.
+constexpr std::uint32_t kSmallSetBlocksPerLaunch = 3;
+// The grid of many blocks, each holding two cells, and the range that is more than one marking launch of the GPU.
+constexpr std::int32_t kManyBlocksGridBlockCount = 4097;
+constexpr std::uint32_t kManyBlocksRangeBlocks = 3000;
+
 // The launches every layer is replayed with: the GPU's own launch in forward and in reverse order, and a launch of
 // 1,000 threads, so each thread walks several items as the grid-stride loop of a GPU function does.
 constexpr std::array<ReplayLaunch, 3> kReplayLaunches = {
@@ -66,7 +72,26 @@ std::vector<std::uint32_t> ToWrittenBlockNumbers(const BorderReplayResult& repla
   return ToBlockNumberList(std::span<const CellBlockIndex>(replay.border_blocks.data(), written));
 }
 
-// Replays one layer of a stacked border in every launch and expects the CPU form's list and count, entry for entry.
+// Replays one call with `inputs` in `launch` and expects the CPU form's list and count, entry for entry.
+void CheckReplayEqualsCpuList(
+    const GridTables& tables,
+    const BorderReplayInputs& inputs,
+    ReplayLaunch launch,
+    std::span<const CellBlockIndex> cpu_layer
+) {
+  SCOPED_TRACE(
+      testing::Message() << "order " << static_cast<int>(launch.order) << ", threads " << launch.thread_count
+                         << ", blocks per marking launch " << inputs.set_blocks_per_marking_launch
+  );
+  const BorderReplayResult replay = ComputeBorderSearchReplay(tables, inputs, launch, MarksAtStart::kCleared);
+  EXPECT_EQ(replay.failure_key, kNoFailureKey);
+  EXPECT_EQ(replay.count, cpu_layer.size());
+  EXPECT_EQ(replay.prefix_total, cpu_layer.size());
+  EXPECT_EQ(ToWrittenBlockNumbers(replay), ToBlockNumberList(cpu_layer));
+}
+
+// Replays one layer of a stacked border in every launch, at the GPU's own marking launch size and again split into
+// launches of 3 blocks of the set (in the first and the last launch shape), and expects the CPU form's list and count.
 void CheckReplayEqualsCpuLayer(
     const StaggeredGrid& grid,
     CellBlockRange range,
@@ -75,22 +100,18 @@ void CheckReplayEqualsCpuLayer(
     std::span<const CellBlockIndex> cpu_layer
 ) {
   const GridTables tables = grid.tables(RunOn::kCpu);
+  BorderReplayInputs inputs = {
+      .range = range,
+      .border_so_far = border_so_far,
+      .width = width,
+      .border_block_room = static_cast<std::uint32_t>(cpu_layer.size()),
+  };
   for (const ReplayLaunch launch : kReplayLaunches) {
-    SCOPED_TRACE(
-        testing::Message() << "order " << static_cast<int>(launch.order) << ", threads " << launch.thread_count
-    );
-    const BorderReplayInputs inputs = {
-        .range = range,
-        .border_so_far = border_so_far,
-        .width = width,
-        .border_block_room = static_cast<std::uint32_t>(cpu_layer.size()),
-    };
-    const BorderReplayResult replay = ComputeBorderSearchReplay(tables, inputs, launch, MarksAtStart::kCleared);
-    EXPECT_EQ(replay.failure_key, kNoFailureKey);
-    EXPECT_EQ(replay.count, cpu_layer.size());
-    EXPECT_EQ(replay.prefix_total, cpu_layer.size());
-    EXPECT_EQ(ToWrittenBlockNumbers(replay), ToBlockNumberList(cpu_layer));
+    CheckReplayEqualsCpuList(tables, inputs, launch, cpu_layer);
   }
+  inputs.set_blocks_per_marking_launch = kSmallSetBlocksPerLaunch;
+  CheckReplayEqualsCpuList(tables, inputs, kReplayLaunches.front(), cpu_layer);
+  CheckReplayEqualsCpuList(tables, inputs, kReplayLaunches.back(), cpu_layer);
 }
 
 // Replays every layer of the stacked border of `range`, the layer j on the list of the layer j - 1, and expects the CPU
@@ -149,6 +170,24 @@ TEST(FindBorderBlocks, EveryThreadOnNestedBall_EqualsCpuStackedLayers) {
     SCOPED_TRACE(testing::Message() << "nested ball, range from block " << range.first_block);
     CheckStackedLayers(*rig, range, kNestedBallLayerWidths);
   }
+}
+
+// A grid of 4,097 blocks, a range of 3,000 of them (more than the 2,048 blocks of one marking launch of the GPU) and a
+// second layer on top of it: the replay, which splits the marking at the GPU's own chunk size (and at 3 blocks), equals
+// the CPU form's lists.
+TEST(FindBorderBlocks, EveryThreadOnMoreBlocksThanOneLaunch_EqualsCpuStackedLayers) {
+  const std::vector<CellId> cells = BuildTouchingCellsInManyBlocks(kManyBlocksGridBlockCount);
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(3), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  ASSERT_EQ(test_grid->grid.counts().cell_blocks, static_cast<std::uint32_t>(kManyBlocksGridBlockCount));
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const CellBlockRange range = {.first_block = 0, .block_count = kManyBlocksRangeBlocks};
+  ASSERT_GT(range.block_count, kSetBlocksPerMarkingLaunch);
+  const std::vector<CellBlockIndex> first_layer = FindLayerOrFail(*rig, range, {}, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(first_layer.empty()) << "the border must hold a block, or the comparison shows nothing";
+  const std::array<BorderWidth, 2> layer_widths = {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths};
+  CheckStackedLayers(*rig, range, layer_widths);
 }
 
 // Expects the replay of one bad border so far, in every launch, to fail as the CPU form's call does: a count of 0, no

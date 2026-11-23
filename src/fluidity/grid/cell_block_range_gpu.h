@@ -20,9 +20,9 @@
 //   CellCorners and, at kFourCellWidths, a FaceSearch), more than the driver's default of 1,024 B per thread. The
 //   compiler gave the largest GPU function of this file, WriteBorderReadMarks, 3,600 bytes of stack and 255 registers
 //   per thread on sm_120 (3,048 bytes on sm_86 and sm_89), and no local memory beyond the stack (cuobjdump
-//   --dump-resource-usage); the others keep none. kBorderSearchStackBytes is the number that a test pins. The driver
-//   grows the stack at the first launch; BuildBorderSearchStackEstimate (grid/cell_block_range.h) gives the run's
-//   memory plan the entry for it.
+//   --dump-resource-usage, release build); the others keep none. kBorderSearchStackBytes is the number that a test
+//   pins. The driver grows the stack at the first launch; BuildBorderSearchStackEstimate (grid/cell_block_range.h)
+//   gives the run's memory plan the entry for it.
 //
 // Owns:    ApplyBorderStatusResetOnGpu, ResetBorderMarksOnGpu, CheckBorderSoFarOnGpu, WriteBorderReadMarksOnGpu,
 //          WriteListedMarksOnGpu, WriteBorderBlocksOnGpu, kBorderSearchStackBytes,
@@ -69,20 +69,27 @@ RunOnCallStatus CheckBorderSoFarOnGpu(
     GridBuildStatus* status
 );
 
-// Step 3: one thread for each place of the set, (range.block_count + border_so_far_count) x kPlacesPerSetBlock places,
-// returns at once when the failure key of *status is set, and otherwise runs ApplySetPlaceReadMarks. The threads write
-// only the byte value 1, with plain stores, never a read-modify-write and never a read of a mark, so two threads that
-// write one mark at once write the same value to a byte whose neighbours a byte store leaves unchanged (CUDA
-// guarantees it); the marks are those of any order of the places. No thread tests a mark to stop early. The scan of the
-// marks, step 4, starts after this function's launch has finished: the launches share one stream.
-// Requires: marks is GPU memory of tables.block_count bytes, all 0; tables, border_so_far and status are GPU memory;
-//   the places fit the 32-bit place index (the grid's block limit keeps them there).
-// Fails: kCallFailed  the GPU function did not start
+// Step 3, once for each chunk of the set (ComputeMarkingChunk): one thread for each place of the chunk, which is
+// `chunk.set_place_count` places from the set's place `chunk.first_set_place` (kPlacesPerSetBlock for each block of
+// `range`, then of the border so far), returns at once when the failure key of *status is set, and otherwise runs
+// ApplySetPlaceReadMarks. The threads write only the byte value 1, with plain stores, never a read-modify-write and
+// never a read of a mark, so two threads that write one mark at once write the same value to a byte whose neighbours a
+// byte store leaves unchanged (CUDA guarantees it); the marks are those of any order of the places, so the chunks may
+// run in any split. No thread tests a mark to stop early. The function waits for its launch to end, so the chunk is
+// complete when it returns, and step 4 starts after the last chunk. A chunk with no place launches nothing.
+// If a chunk fails after earlier chunks marked, the function returns the failure, the caller starts no later chunk,
+// and the output is not written: the marks hold a part of the result, but step 4 and step 6 never run, so no list or
+// count is written; the next call clears the marks in its step 1. Requires: marks is GPU memory of tables.block_count
+// bytes, all 0 at the first chunk; tables, border_so_far and status
+//   are GPU memory; the chunks are those of a set of at most kMaxSetBlocks blocks, so every place fits the 32-bit place
+//   index (the caller checks ComputeIsSetWithinPlaceLimit before step 1).
+// Fails: kCallFailed  a GPU function did not start, or the GPU work failed
 RunOnCallStatus WriteBorderReadMarksOnGpu(
     const GridTables& tables,
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
     std::uint32_t border_so_far_count,
+    SetPlaceChunk chunk,
     BorderWidth width,
     const GridBuildStatus* status,
     std::uint8_t* marks

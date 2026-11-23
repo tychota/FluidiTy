@@ -100,6 +100,10 @@
 //   grid/cell_block_range_gpu.cu (stacked_borders.gpu.test.cc):
 //   ComputeBorderSoFarFailureKey, ApplySetPlaceReadMarks, ComputeListedMark, ApplyBorderBlockWriteAt
 //
+// Reached by the GPU border search's calling half, FindBorderBlocks on a GPU grid (stacked_borders.gpu.test.cc): the
+//   checks and the launch split that it makes before and between the GPU functions:
+//   ComputeIsSetWithinPlaceLimit, ComputeMarkingChunkCount, ComputeMarkingChunk
+//
 // Reached by ComputeReadMarksResult (border_blocks.gpu.test.cc): ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
 //   ApplyReadMark, ApplyPlaceReadMark
 //

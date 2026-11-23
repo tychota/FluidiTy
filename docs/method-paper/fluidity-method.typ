@@ -2200,19 +2200,25 @@ call's layers so far. On the GPU the same call is a forward pass of launches in 
 and one thread per block clears its mark. One thread per entry of the layers so far offers its failure key with an
 integer atomic minimum: an entry not above the one before it, at or above the block count, or inside the range. One
 thread per place of the set (304 per block: 64 cell places and 240 face places, the range's blocks first) runs the
-marking function and stops at once when a key was offered. These threads write only the byte value 1, with plain
-stores, to marks that no thread reads: a marking function writes the whole chain of bigger blocks every time and tests
-no mark, and a byte store leaves the neighbouring bytes unchanged, so the marks after the launch are those of any order
-of the places. The marks are never set for the set beforehand. The scan is a later launch, so it starts after every mark
-was written: one thread per block writes 1 for a marked block outside the range (0 for every block after a failure, so
-the prefix sum adds no word of an earlier call), an exclusive prefix sum gives each listed block its place, and one
-thread per block writes itself there and the total into the status. Only the status comes back, so the list is the
-CPU's, in index order. The thread that runs the marking functions keeps their results (the touching cells, the cells
-near a face, the corners and, at four cell widths, a face search) as locals, so it needs a stack above the driver's
-default of 1,024 bytes per thread, which the driver holds for every resident thread outside the run's memory; the memory
-plan counts it as a driver stack entry. In a run in one piece the range is every block and the border is
-empty. A sum over the grid that is not a sum per destination is one partial sum per block, kept in the fixed block
-order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut into ranges.
+marking function and stops at once when a key was offered. A place is a 32-bit number, so a set may hold at most
+14,128,181 blocks; a call with more fails with `kTooManyCellBlocks` before anything is written, on both processors,
+since a larger place would wrap onto a low one and its reads would go unmarked. The places run in launches of at most
+2,048 blocks of the set each, one after the other, each waited for: a dense block costs the card about 70 to 270
+microseconds, and a single launch over a range of 100,000 blocks would pass the 2 seconds after which the display driver
+of Windows ends a GPU function. The marks do not depend on the order of the places, so the launches change no result; a
+launch that fails stops the ones after it and writes no list. The marking threads write only the byte value 1, with
+plain stores, to marks that no thread reads: a marking function writes the whole chain of bigger blocks every time and
+tests no mark, and a byte store leaves the neighbouring bytes unchanged, so the marks after the launch are those of
+any order of the places. The marks are never set for the set beforehand. The scan is a later launch, so it starts
+after every mark was written: one thread per block writes 1 for a marked block outside the range (0 for every block
+after a failure, so the prefix sum adds no word of an earlier call), an exclusive prefix sum gives each listed block
+its place, and one thread per block writes itself there and the total into the status. Only the status comes back, so
+the list is the CPU's, in index order. The thread that runs the marking functions keeps their results (the touching
+cells, the cells near a face, the corners and, at four cell widths, a face search) as locals, so it needs a stack
+above the driver's default of 1,024 bytes per thread, which the driver holds for every resident thread outside the
+run's memory; the memory plan counts it as a driver stack entry. In a run in one piece the range is every block and
+the border is empty. A sum over the grid that is not a sum per destination is one partial sum per block, kept in the
+fixed block order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut into ranges.
 
 *Grid pieces.* A grid piece (`GridPiece`) is one range of a whole grid with its border, built as a grid of its own for
 a run in batches. It lists its blocks in the whole grid's fixed order, never the range first. The border blocks lie
@@ -2618,7 +2624,8 @@ search, and one set serves every call, since a call sets its marks first.
 A run on the GPU keeps two grids, the committed one and the one of the step's try, which share one set of builder
 buffers: 2 × 460 + 1,920 = 2,840 bytes per block, plus the 4,110 bytes and two status records once. A grid of
 1,000,000 blocks (64 million cell places) and its try therefore take about 2.84 GB. The grid's own GPU functions keep
-under the driver's default stack of 1,024 bytes per thread, so the grid has no entry held by the driver. A GPU
+under the driver's default stack of 1,024 bytes per thread, so the grid's build and check have no entry held by the
+driver; the border search has one (`BuildBorderSearchStackEstimate`). A GPU
 function that computes nearby-face weights keeps 1,152 bytes per thread for one axis, or 3,456 for three, which is
 above that default, so the module it belongs to counts a stack held by the driver, as contact does for its particle
 visit.

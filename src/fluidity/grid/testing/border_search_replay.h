@@ -16,7 +16,8 @@
 // Owns:    MarksAtStart, BorderReplayInputs, BorderReplayResult, ComputeBorderSearchReplay
 // Uses:    CPU-only guard (base/cpu_only.h), ReplayLaunch, ApplyEveryThreadOfLaunch, ApplyEveryThreadOfSizedLaunch
 //          (grid/testing/thread_replay.h), BorderWidth, ComputeBorderSoFarFailureKey,
-//          ApplySetPlaceReadMarks, ComputeListedMark, ApplyBorderBlockWriteAt, kPlacesPerSetBlock
+//          ApplySetPlaceReadMarks, ComputeListedMark, ApplyBorderBlockWriteAt, kSetBlocksPerMarkingLaunch,
+//          ComputeMarkingChunkCount, ComputeMarkingChunk, SetPlaceChunk
 //          (grid/border_block_steps.h), ComputeResetBuildStatus (grid/grid_build_steps.h), Buffer, OrderBuffers,
 //          GridTables
 // Used by: grid/border_block_steps.test.cc and tests/grid/border_search_replay.test.cc
@@ -60,6 +61,9 @@ struct BorderReplayInputs {
   std::span<const CellBlockIndex> border_so_far;
   BorderWidth width = BorderWidth::kTouchingCells;
   std::uint32_t border_block_room = 0;  // Entries the list may hold.
+  // Blocks of the set that one replayed marking launch runs places for: the chunks of ComputeMarkingChunk. The GPU's
+  // own is kSetBlocksPerMarkingLaunch; a small one makes a small set take several launches, as a large set does.
+  std::uint32_t set_blocks_per_marking_launch = kSetBlocksPerMarkingLaunch;
 };
 
 // What one replayed call leaves behind.
@@ -116,23 +120,28 @@ inline BorderReplayResult ComputeBorderSearchReplay(
     status.failure_key = std::min(status.failure_key, failure_key);
     return true;
   });
-  // Step 3: one thread for each place of the set; after a failure of step 2 a thread stops at once.
-  const std::size_t place_count = std::size_t{inputs.range.block_count + border_so_far_count} * kPlacesPerSetBlock;
-  ApplyEveryThreadOfLaunch(place_count, launch, [&](std::size_t set_place) {
-    if (status.failure_key != kNoFailureKey) {
-      return false;
-    }
-    ApplySetPlaceReadMarks(
-        tables,
-        inputs.range,
-        inputs.border_so_far.data(),
-        border_so_far_count,
-        static_cast<std::uint32_t>(set_place),
-        inputs.width,
-        marks.data()
-    );
-    return true;
-  });
+  // Step 3: one launch for each chunk of the set, one thread for each place of the chunk; after a failure of step 2 a
+  // thread stops at once.
+  const std::uint32_t set_block_count = inputs.range.block_count + border_so_far_count;
+  const std::uint32_t chunk_count = ComputeMarkingChunkCount(set_block_count, inputs.set_blocks_per_marking_launch);
+  for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+    const SetPlaceChunk chunk = ComputeMarkingChunk(set_block_count, chunk_index, inputs.set_blocks_per_marking_launch);
+    ApplyEveryThreadOfLaunch(chunk.set_place_count, launch, [&](std::size_t item) {
+      if (status.failure_key != kNoFailureKey) {
+        return false;
+      }
+      ApplySetPlaceReadMarks(
+          tables,
+          inputs.range,
+          inputs.border_so_far.data(),
+          border_so_far_count,
+          chunk.first_set_place + static_cast<std::uint32_t>(item),
+          inputs.width,
+          marks.data()
+      );
+      return true;
+    });
+  }
   // Step 4, after step 3 has finished: one thread for each block writes its listed mark, 0 after a failure.
   ApplyEveryThreadOfLaunch(block_count, launch, [&](std::size_t block) {
     const bool has_failed = status.failure_key != kNoFailureKey;

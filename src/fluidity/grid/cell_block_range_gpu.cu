@@ -15,9 +15,12 @@
 // block, those of the set included, and nothing sets them for the set or for the border so far: the blocks of the
 // set are marked through their own cell places. The scan of the marks (WriteListedMarks) is a later launch of the same
 // stream, so it starts after the marking launch has finished.
-// Stack: the thread of WriteBorderReadMarks keeps the results of the readers as locals (see the header), STACK_BYTES
-// bytes of stack on sm_120; the other functions keep no array. The launch bound of one thread block of
-// kThreadBlockSize threads for each multiprocessor makes the compiler fit that thread block into the registers of a
+// Chunks: step 3 is one launch for each chunk of kSetBlocksPerMarkingLaunch blocks of the set (the CPU half calls
+// WriteBorderReadMarksOnGpu once for each chunk), each followed by a wait, so no launch runs long enough for the
+// display watchdog and a failed chunk stops the ones after it.
+// Stack: the thread of WriteBorderReadMarks keeps the results of the readers as locals (see the header), 3,600 bytes of
+// stack on sm_120 (kBorderSearchStackBytes); the other functions keep no array. The launch bound of one thread block
+// of kThreadBlockSize threads for each multiprocessor makes the compiler fit that thread block into the registers of a
 // multiprocessor, so the launch never fails for lack of registers.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 
@@ -86,13 +89,14 @@ __global__ void __launch_bounds__(kThreadBlockSize) CheckBorderSoFar(
   }
 }
 
-// Step 3: one item per place of the set. After a failure of step 2 no thread marks anything. The marking functions are
-// long: see the Stack sentence of the file header.
+// Step 3: one item per place of the chunk of the set. After a failure of step 2 no thread marks anything. The marking
+// functions are long: see the Stack sentence of the file header.
 __global__ void __launch_bounds__(kThreadBlockSize, 1) WriteBorderReadMarks(
     GridTables tables,
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
     std::uint32_t border_so_far_count,
+    SetPlaceChunk chunk,
     BorderWidth width,
     const GridBuildStatus* status,
     std::uint8_t* marks
@@ -101,14 +105,13 @@ __global__ void __launch_bounds__(kThreadBlockSize, 1) WriteBorderReadMarks(
     return;
   }
   const GridStride stride = ComputeGridStride();
-  const std::size_t place_count = std::size_t{range.block_count + border_so_far_count} * kPlacesPerSetBlock;
-  for (std::size_t set_place = stride.first_item; set_place < place_count; set_place += stride.item_step) {
+  for (std::size_t item = stride.first_item; item < chunk.set_place_count; item += stride.item_step) {
     ApplySetPlaceReadMarks(
         tables,
         range,
         border_so_far,
         border_so_far_count,
-        static_cast<std::uint32_t>(set_place),
+        chunk.first_set_place + static_cast<std::uint32_t>(item),
         width,
         marks
     );
@@ -202,25 +205,32 @@ RunOnCallStatus WriteBorderReadMarksOnGpu(
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
     std::uint32_t border_so_far_count,
+    SetPlaceChunk chunk,
     BorderWidth width,
     const GridBuildStatus* status,
     std::uint8_t* marks
 ) {
-  const std::size_t place_count = std::size_t{range.block_count + border_so_far_count} * kPlacesPerSetBlock;
-  if (place_count == 0) {
+  if (chunk.set_place_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
-      WriteBorderReadMarks,
-      ComputeLaunchSize(place_count),
-      tables,
-      range,
-      border_so_far,
-      border_so_far_count,
-      width,
-      status,
-      marks
-  );
+  if (const RunOnCallStatus started = ApplyGpuFunction(
+          WriteBorderReadMarks,
+          ComputeLaunchSize(chunk.set_place_count),
+          tables,
+          range,
+          border_so_far,
+          border_so_far_count,
+          chunk,
+          width,
+          status,
+          marks
+      );
+      started != RunOnCallStatus::kDone) {
+    return started;
+  }
+  // The wait ends this chunk before the next one starts, so a chunk that fails is reported here and no later chunk
+  // runs, and the display watchdog sees each chunk as a launch of its own.
+  return CheckGpuWork();
 }
 
 RunOnCallStatus WriteListedMarksOnGpu(

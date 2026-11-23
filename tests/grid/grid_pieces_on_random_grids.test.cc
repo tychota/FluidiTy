@@ -184,25 +184,29 @@ TEST(BuildGridPiece, RealPieces_EqualPieceTables) {
 }
 
 // The tables and the piece map of `piece`, as the readers take them.
-PieceTablesView ToTablesView(const GridPiece& piece) {
+LoadedPieceTables ToLoadedPieceTables(const GridPiece& piece) {
   return {.tables = piece.grid().tables(RunOn::kCpu), .block_in_whole = piece.block_in_whole_grid()};
 }
 
 // Checks that every reader of the width, from every place of the range, answers in the piece as on the whole grid: the
 // range at kTouchingCells, and the range plus the first layer at kFourCellWidths.
 void CheckPieceAnswersAsWholeGrid(const StaggeredGrid& whole, const GridPiece& piece, const StackedBorder& stacked) {
-  const PieceTablesView view = ToTablesView(piece);
+  const LoadedPieceTables loaded_tables = ToLoadedPieceTables(piece);
   const std::optional<std::string> touching_difference = FindFirstReaderDifference(
       whole.tables(RunOn::kCpu),
-      view,
+      loaded_tables,
       ToRangeBlocks(stacked.range),
       BorderWidth::kTouchingCells
   );
   EXPECT_FALSE(touching_difference.has_value()) << touching_difference.value_or("");
   const std::vector<CellBlockIndex> set_with_first_layer =
       BuildMergedBlocks(ToRangeBlocks(stacked.range), stacked.first_layer);
-  const std::optional<std::string> wide_difference =
-      FindFirstReaderDifference(whole.tables(RunOn::kCpu), view, set_with_first_layer, BorderWidth::kFourCellWidths);
+  const std::optional<std::string> wide_difference = FindFirstReaderDifference(
+      whole.tables(RunOn::kCpu),
+      loaded_tables,
+      set_with_first_layer,
+      BorderWidth::kFourCellWidths
+  );
   EXPECT_FALSE(wide_difference.has_value()) << wide_difference.value_or("");
 }
 
@@ -263,7 +267,7 @@ void CheckListsMapThroughPieceMap(std::span<const CellBlockIndex> map, const Lis
 // Finds the lists of a position and axis on the whole grid and in the piece, and checks that they map to each other.
 // Gives nothing when a search failed or the lists differ in length, which fails the test.
 std::optional<ListsOfOnePosition>
-FindSameLists(const GridTables& whole, const PieceTablesView& piece, Vec3 position, Axis axis) {
+FindSameLists(const GridTables& whole, const LoadedPieceTables& piece, Vec3 position, Axis axis) {
   GridError whole_error = GridError::kNone;
   GridError piece_error = GridError::kNone;
   const CellBlockIndex no_start = {.value = kNoIndex};
@@ -334,7 +338,7 @@ void CheckSameFaceWeight(const FaceWeight& whole, const FaceWeight& piece) {
 
 // Checks that, for one position and axis, the list and the weights of all kept faces are the whole grid's: the lists
 // map through the piece map, and every field of the weights has the same bits.
-void CheckSameWeights(const GridTables& whole, const PieceTablesView& piece, Vec3 position, Axis axis) {
+void CheckSameWeights(const GridTables& whole, const LoadedPieceTables& piece, Vec3 position, Axis axis) {
   const std::optional<ListsOfOnePosition> lists = FindSameLists(whole, piece, position, axis);
   if (!lists.has_value()) {
     return;
@@ -380,7 +384,7 @@ void CheckPieceGivesSameWeights(const StaggeredGrid& whole_grid, const GridPiece
   if (cells.empty()) {
     return;
   }
-  const PieceTablesView view = ToTablesView(piece);
+  const LoadedPieceTables loaded_tables = ToLoadedPieceTables(piece);
   std::mt19937_64 generator(stacked.range.first_block + 1000U);
   int checked_positions = 0;
   for (int draw = 0; draw < kPositionCount; ++draw) {
@@ -391,7 +395,7 @@ void CheckPieceGivesSameWeights(const StaggeredGrid& whole_grid, const GridPiece
     }
     ++checked_positions;
     for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
-      CheckSameWeights(whole, view, position, axis);
+      CheckSameWeights(whole, loaded_tables, position, axis);
     }
   }
   EXPECT_GT(checked_positions, kPositionCount / 2);
