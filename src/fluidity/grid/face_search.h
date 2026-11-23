@@ -3,8 +3,9 @@
 // Purpose: give every stage the active cells near a face piece and a search that lists, one by one, the face pieces of
 //   its axis within a radius, from the tables of one grid version, on the CPU or the GPU.
 //
-// Idea: around a face piece. Its cells near a face are its two cells and their touching cells, at most 112, in a plain
-//   fixed array (FindCellsNearFace). A face search walks the face pieces of its axis, one size level bigger, the same
+// Idea: two questions about the surroundings of one face piece. Which cells can list it? Its two cells and their
+//   touching cells, at most 112, in a plain fixed array (FindCellsNearFace). Which face pieces lie near it? A face
+//   search walks the face pieces of its axis, one size level bigger, the same
 //   or one smaller, within a radius of at most 4 of its widths (BuildFaceSearch, FindNextFace). It reads at most 270
 //   blocks, chosen by position around its block, and stores where the walk is, not a list.
 //

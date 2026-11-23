@@ -85,9 +85,10 @@
 //          ComputeKeptFaceWeight, ComputeIsCandidateFace, ComputeIsCompleteNeighbourhood, CholeskyInverse,
 //          ComputeCholeskySolution, ComputeCholeskyInverse, kFindNearbyFacesCallBytes
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Mat3 (base/mat3.h), math::Floor, math::Sqrt,
-//          math::IsFinite (base/scalar_math.h), Vec3 (base/vec3.h), FindCellAt (grid/find_cell_at.h), FindCellBlock,
-//          GridTables, ToCellId, ToSizeLevel, ToAxis, ComputeCellWidth, ComputeFacePosition, ComputeFaceArea
-//          (grid/grid_tables.h), ComputeFaceCenterInQuarterWidths (grid/face_search.h), FindFacePieces,
+//          math::IsFinite (base/scalar_math.h), Vec3 (base/vec3.h), FindCellAt (grid/find_cell_at.h), GridTables,
+//          GridFrame, ToCellId, ToSizeLevel, ToAxis, ComputeCellWidth, ComputeFacePosition, ComputeFaceArea,
+//          FindCellLow, FindCellHigh (grid/grid_tables.h), ComputeFaceCenterInQuarterWidths, QuarterWidthPoint
+//          (grid/face_search.h), FindFacePieces,
 //          FindTouchingCells (grid/touching_cells.h), GridError (grid/grid_error.h), ComputeWeightCurve,
 //          kMaxNearbyFaces, kMinWeightSum, kMinPivotShare (grid/weight_curve.h), the id types (grid/grid_ids.h)
 // Used by: the transfer step and the tests of the grid
@@ -129,7 +130,7 @@ struct NearbyFaceList {
 static_assert(sizeof(NearbyFaceList) == 888, "a list is 24 bytes and 216 indexes of 4 bytes");
 static_assert(std::is_trivially_copyable_v<NearbyFaceList>);
 
-// Which faces of a list the caller keeps: bit i of word i / 64 set means face i of the list is kept.
+// Which faces of a list the caller keeps: bit i % 64 of word i / 64 set means face i of the list is kept.
 struct NearbyFaceMask {
   // NOLINTNEXTLINE(modernize-avoid-c-arrays): a plain array, since GPU code cannot call std::array's member functions.
   std::uint64_t bits[4];
@@ -158,8 +159,7 @@ enum class NearbyFaceFit : std::uint8_t {
 //   1.999999 gives -1, clamped to 0; 3.0 gives 4, clamped to 3.
 // Requires: cell_width is finite and above 0; cell_coord is the coordinate that FindCellAt's cell has on this axis.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
-// clang-tidy: the width and the coordinate are no longer combined in one expression, so the swappable-parameters check
-// flags them.
+// clang-tidy: three doubles side by side are flagged as swappable; the callers pass them in this fixed order.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 FLUIDITY_CPU_AND_GPU inline int ComputeCandidateWindowQuarter(
     double position_on_axis,

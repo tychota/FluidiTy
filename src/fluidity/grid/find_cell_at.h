@@ -220,12 +220,12 @@ FindCellAtCoord(const GridTables& tables, BiasedSmallestCellCoord coord) noexcep
 //   -kMaxCoord 2^(L - 1) <= f < (kMaxCoord + 1) 2^(L - 1), gives kNoIndex before f becomes an integer. So does a
 //   kAbsent place. The walk never meets kInsideBiggerCell: it starts at size level 0 and goes down only below
 //   kSplit places.
-//   Rounding. f is the one definition of "inside". The window quarter of <sec-nearby-faces> divides the same
-//   difference by h_l = 2^(L - 1 - l) w_min, which scales the quotient by a power of two. x - origin and the quotient
-//   are each correctly rounded, within 2^-53 of their value (file header, "Precision"). So f never decreases as x
-//   grows, and the quotient is within (2^-52 + 2^-106) |q| of the exact q. A position farther than that, about
-//   2^-52 |x - origin| m, from every side therefore lies in its exact cell; a nearer one may land on either side. The
-//   error scales with |x - origin|, not with |x|. When c w_min and the side origin + c w_min are both doubles, a
+//   Rounding. f is the one definition of "inside". The window quarter of <sec-nearby-faces> divides the same difference
+//   by h_l = 2^(L - 1 - l) w_min, which scales the quotient by a power of two. x - origin and the quotient are each
+//   correctly rounded, within 2^-53 of their value (the "Precision" paragraph of grid/grid_tables.h). So f never
+//   decreases as x grows, and the quotient is within (2^-52 + 2^-106) |q| of the exact q. A position farther than that,
+//   about 2^-52 |x - origin| m, from every side therefore lies in its exact cell; a nearer one may land on either side.
+//   The error scales with |x - origin|, not with |x|. When c w_min and the side origin + c w_min are both doubles, a
 //   position on the side gives f = c exactly and lies in the cell above. With origin 0 and h_0 a power of two nothing
 //   rounds, so every position lies in its exact cell. One exception holds in every frame: a negative quotient of at
 //   most 2^-1075 in size, a position within 2^-1075 w_min below the origin, rounds to -0 and lies in cell 0, not -1.

@@ -99,7 +99,7 @@ struct CellSizeSettings {
   // this many smallest widths from the nearest solid get the smallest width whatever the factor; beyond, the solid
   // term grows in proportion to the distance. 2 by the method paper.
   double solid_reach_in_cell_widths = 2.0;
-  // No unit, positive. c_u of the shear term, 0.25 by the method paper: a starting value, to be
+  // No unit, positive. The scale of the shear term (papers: c_u), 0.25 by the method paper: a starting value, to be
   // calibrated against scenes.
   double shear_width_factor = 0.25;
 };
@@ -485,6 +485,7 @@ ComputeRefinementBoxReachesOutside(std::int64_t index, unsigned layer, std::int3
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
 FLUIDITY_CPU_AND_GPU constexpr int
 ComputeCellSizeFactorCode(const RefinementFactors& volume, SizeLevel smallest_size_level, CellId cell) noexcept {
+  // Steps: 1 check the volume  2 choose the layer  3 find the entry  4 treat the outside
   // Step 1: a volume that can be read. 2^20 per axis keeps the product of three counts below 2^60, in 64 bits.
   constexpr std::int32_t kMaxCount = 1'048'576;  // 2^20.
   constexpr std::int32_t kMaxSpacingLog2 = 31;
@@ -558,8 +559,9 @@ ComputeCellSizeFactorCode(const RefinementFactors& volume, SizeLevel smallest_si
 //   origin / 2) / (biggest_cell_width / 2) per axis; the halves keep the difference finite for every finite position
 //   and origin. A cell of size level l at coordinate c has its centre at (c + 1/2) 2^-l, exact. The squared distance
 //   is Dot(centre - q, centre - q). A smaller squared distance wins; on an equal one the cell whose id comes first
-//   in the fixed order wins (ComesBefore), so the answer does not depend on the order of the search. Cells of one
-//   size are found in their fixed order anyway; a big cell may be found after a small cell that it comes before.
+//   in the fixed order wins (ComesBefore), so the answer does not depend on the order of the search. The search
+//   visits z, then y, then x, which is the fixed order for cells of one size; a big cell may be found after a small
+//   cell that it comes before, and the tie rule settles that.
 //   Range. When FindCellAt finds a cell at a searched position, its offset from the origin is at most (kMaxCoord +
 //   1) biggest widths, so |q| stays below 2^19, every centre below 2^18 + 1, each square below 2^40 and their sum
 //   finite. A q that is not finite therefore comes only when no searched position finds a cell: kNoIndex at once.
@@ -662,11 +664,11 @@ FindNearestCommittedCell(const GridTables& committed, Vec3 position) noexcept {
 //   level, read as one size level and give 0. The result is always a size level of the frame. Integers only, so the
 //   CPU and the GPU agree whenever FindNearestCommittedCell does.
 // Units: position in m, world.
-// Example: size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0}, 3 size levels, biggest
-//   cells 1 m wide, smallest_size_level 2. From (-0.5, 0.5, 0.5) the searched position (0.5, 0.5, 0.5) finds the big
-//   cell: 1. From (2.25, 0.25, 0.25) the searched position (1.25, 0.25, 0.25) finds the small cell {2,0,0}: 2, and 1
-//   with smallest_size_level 1; the small cell {3,0,0}, whose centre is only 0.5 m away, holds no searched
-//   position. (10, 10, 10) finds no cell: 2.
+// Example: the size-level-0 cell {0,0,0} beside the 8 size-level-1 cells of the size-level-0 cell {1,0,0},
+//   3 size levels, biggest cells 1 m wide, smallest_size_level 2. From (-0.5, 0.5, 0.5) the searched position
+//   (0.5, 0.5, 0.5) finds the big cell: 1. From (2.25, 0.25, 0.25) the searched position (1.25, 0.25, 0.25) finds the
+//   small cell {2,0,0}: 2, and 1 with smallest_size_level 1; the small cell {3,0,0}, whose centre is only 0.5 m away,
+//   holds no searched position. (10, 10, 10) finds no cell: 2.
 // Requires: as FindNearestCommittedCell. Any position and any smallest_size_level.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>, <sec-cell-sizes>
 FLUIDITY_CPU_AND_GPU inline SizeLevel

@@ -26,7 +26,8 @@
 //   its corner at {1,1,1} m is 125 + (10 + 2) 5 + 2 = 187.
 //   A corner position is origin + m h_l, with m the integer coordinate of the corner's lattice point at its block's
 //   size level l, |m| <= 2^18: the same two correctly rounded operations, a product then a sum, after integer
-//   arithmetic only. The product is exact when k <= 34, as m needs at most 19 bits. The same point at size level
+//   arithmetic only. The product is exact when the width's significand has at most 34 bits (k of the "Precision"
+//   paragraph of grid/grid_tables.h), as m needs at most 19 bits. The same point at size level
 //   l + j has the coordinate m 2^j and the width h_l / 2^j, so the product is the same number, rounded the same way:
 //   the position does not depend on which size level's lattice it is computed from. A point has one corner place, so
 //   a corner reached from any cell or face piece gives one double on each axis, the same bits on the CPU and the GPU.
@@ -299,7 +300,8 @@ FLUIDITY_CPU_AND_GPU constexpr FaceCorners FindCornerPlaces(const GridTables& ta
 // Computes the position of a corner place, in m, world: origin + m h_l on each axis, for the coordinate m of its
 // lattice point at its block's size level l, 4 times the block coordinate plus the lattice coordinate 0..4.
 //
-// Method: integer arithmetic gives m, then one product and one sum per axis, as the file header's "Precision" says.
+// Method: integer arithmetic gives m, then one product and one sum per axis,
+//   as the paragraph on a corner position in the file header says.
 // Units: m, world. Exact when m h_l and its sum with the origin are doubles, as with origin 0 and h_0 = 1 m; else
 //   within 2^-53 (|m h_l| + |result|). The same corner place, so the same point, gives the same bits on the CPU and the
 //   GPU, whichever cell or face piece it was found from.
