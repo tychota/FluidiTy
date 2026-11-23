@@ -19,6 +19,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -580,31 +581,50 @@ TEST(BuildGridPiece, OnGpuTwice_GivesIdenticalBytes) {
   }
 }
 
-// Expects two big pieces to be equal and names the first entry that differs in each table: the comparison of words that
-// CheckSameResults makes would hold hundreds of megabytes here, and thousands of megabytes of names on a failure.
+// The threads of the largest launch: 65,535 thread blocks of 256 (ComputeLaunchSize in grid/grid_piece_gpu.cu), the
+// number a thread's entries repeat after in a grid-stride loop.
+constexpr std::uint64_t kLargestLaunchThreadCount = 16776960;
+
+// Expects two big pieces to be equal. A failure names the table, the range, the number of differing entries and where
+// the first and the last differ (FindEntryDifferences): the comparison of words that CheckSameResults makes would hold
+// hundreds of megabytes here, and thousands of megabytes of names on a failure.
 template <typename Entry>
-void CheckSameEntries(const std::vector<Entry>& on_cpu, const std::vector<Entry>& on_gpu, const std::string& table) {
-  ASSERT_EQ(on_gpu.size(), on_cpu.size()) << table;
-  const auto [cpu_entry, gpu_entry] = std::ranges::mismatch(on_cpu, on_gpu);
-  if (cpu_entry != on_cpu.end()) {
-    ADD_FAILURE() << table << "[" << (cpu_entry - on_cpu.begin()) << "]: CPU " << static_cast<std::uint64_t>(*cpu_entry)
-                  << ", GPU " << static_cast<std::uint64_t>(*gpu_entry);
-  }
+void CheckSameEntries(
+    const std::vector<Entry>& on_cpu,
+    const std::vector<Entry>& on_gpu,
+    const EntryTablePlaces& places,
+    CellBlockRange range
+) {
+  const std::optional<std::string> difference =
+      FindEntryDifferences(std::span<const Entry>(on_cpu), std::span<const Entry>(on_gpu), places, range);
+  EXPECT_FALSE(difference.has_value()) << difference.value_or("");
 }
 
-// Checks that two pieces have the same scalars and the same entry in every table.
-void CheckSameBigPiece(const PieceReadBack& on_cpu, const PieceReadBack& on_gpu) {
+// Checks that two pieces have the same scalars and the same entry in every table, for the piece built for `range`.
+void CheckSameBigPiece(const PieceReadBack& on_cpu, const PieceReadBack& on_gpu, CellBlockRange range) {
   EXPECT_EQ(on_gpu.version, on_cpu.version);
   EXPECT_EQ(on_gpu.block_count, on_cpu.block_count);
   EXPECT_EQ(on_gpu.range_first_block, on_cpu.range_first_block);
   EXPECT_EQ(on_gpu.active_cells, on_cpu.active_cells);
   EXPECT_EQ(on_gpu.face_pieces, on_cpu.face_pieces);
   EXPECT_EQ(on_gpu.active_cells_per_size_level, on_cpu.active_cells_per_size_level);
-  CheckSameEntries(on_cpu.map, on_gpu.map, "map");
-  CheckSameEntries(on_cpu.block_ids, on_gpu.block_ids, "block ids");
-  CheckSameEntries(on_cpu.neighbours, on_gpu.neighbours, "neighbours");
-  CheckSameEntries(on_cpu.cell_states, on_gpu.cell_states, "cell states");
-  CheckSameEntries(on_cpu.face_piece_kinds, on_gpu.face_piece_kinds, "face piece kinds");
+  const auto places_of = [](std::string_view name, std::uint64_t places_per_block) {
+    return EntryTablePlaces{
+        .name = name,
+        .places_per_block = places_per_block,
+        .thread_count = kLargestLaunchThreadCount,
+    };
+  };
+  CheckSameEntries(on_cpu.map, on_gpu.map, places_of("map", 1), range);
+  CheckSameEntries(on_cpu.block_ids, on_gpu.block_ids, places_of("block ids", 1), range);
+  CheckSameEntries(on_cpu.neighbours, on_gpu.neighbours, places_of("neighbours", 36), range);
+  CheckSameEntries(on_cpu.cell_states, on_gpu.cell_states, places_of("cell states", kCellPlacesPerBlock), range);
+  CheckSameEntries(
+      on_cpu.face_piece_kinds,
+      on_gpu.face_piece_kinds,
+      places_of("face piece kinds", kFacePlacesPerBlock),
+      range
+  );
 }
 
 // A grid of more blocks than one wave of threads has places for: 72,000 blocks have 17,280,000 face places, above the
@@ -632,7 +652,7 @@ TEST(BuildGridPiece, OnGpuMoreFacePlacesThanThreads_EqualCpuPiece) {
   ASSERT_EQ(pieces.on_gpu.size(), ranges.size());
   for (std::size_t piece = 0; piece < ranges.size(); ++piece) {
     SCOPED_TRACE(piece);
-    CheckSameBigPiece(pieces.on_cpu[piece], pieces.on_gpu[piece]);
+    CheckSameBigPiece(pieces.on_cpu[piece], pieces.on_gpu[piece], ranges[piece]);
   }
   EXPECT_GT(pieces.on_cpu.back().range_first_block, 0U);
 }

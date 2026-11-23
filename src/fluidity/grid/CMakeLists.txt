@@ -16,6 +16,7 @@ fluidity_add_headers(
   grid_memory_estimate.h
   grid_piece.h
   grid_piece_gpu.h
+  grid_piece_internal.h
   grid_piece_steps.h
   grid_tables.h
   grid_values.h
@@ -109,6 +110,7 @@ fluidity_add_test(
   fluidity_grid_testing
 )
 fluidity_add_test(grid_piece_steps_test SOURCES grid_piece_steps.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(grid_piece_internal_test SOURCES grid_piece_internal.test.cc LABEL cpu LINKS fluidity_grid_testing)
 # Replaces the nothrow allocation functions for the whole program, so it shares its program with no other test.
 fluidity_add_test(grid_out_of_memory_test SOURCES staggered_grid.out_of_memory.test.cc LABEL cpu)
 fluidity_add_test(grid_shared_gpu_compile_test SOURCES grid_tables.shared.gpu_compile.test.cu LABEL no_gpu)
@@ -160,5 +162,8 @@ fluidity_add_test(
 )
 fluidity_add_test(grid_tables_test SOURCES grid_tables.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_support_test SOURCES testing/grid_support.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(
+  grid_piece_support_test SOURCES testing/grid_piece_support.test.cc LABEL cpu LINKS fluidity_grid_testing
+)
 fluidity_add_test(touching_cells_test SOURCES touching_cells.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(weight_curve_test SOURCES weight_curve.test.cc LABEL cpu LINKS fluidity_grid_testing)

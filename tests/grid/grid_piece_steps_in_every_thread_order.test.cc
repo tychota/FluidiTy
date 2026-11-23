@@ -15,7 +15,9 @@
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_piece.h"
+#include "fluidity/grid/grid_piece_internal.h"
 #include "fluidity/grid/grid_piece_steps.h"
+#include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/cell_block_range_cases.h"
 #include "fluidity/grid/testing/grid_piece_cases.h"
@@ -37,21 +39,54 @@ constexpr std::array<ReplayLaunch, 4> kReplayLaunches = {
     ReplayLaunch{.order = LaunchOrder::kReverse, .thread_count = 7},
 };
 
-// The counts of the record of a replay, as a GridCounts: the blocks, the active cells of each size level, the active
-// cells (their sum) and the face pieces.
-GridCounts ToCountsOfReplay(const PieceReplayResult& replay) {
-  GridCounts counts{};
-  counts.cell_blocks = replay.loaded_count;
-  for (std::size_t size_level = 0; size_level < kMaxSizeLevels; ++size_level) {
-    counts.active_cells_per_size_level[size_level] = replay.status.active_cells_per_size_level[size_level];
-    counts.active_cells += replay.status.active_cells_per_size_level[size_level];
+// What one build of a piece is asked for: the range, the border list and the room of the buffers.
+struct PieceBuildInputs {
+  CellBlockRange range;
+  std::span<const CellBlockIndex> border;
+  std::uint32_t max_cell_blocks;  // Blocks the buffers have room for.
+};
+
+// The end of a build on the GPU, replayed: the host's checks of the range and of the room, then the launches of the
+// steps in `launch`, then the reading of the status, with the code the GPU build runs (CheckPieceRangeAndRoom,
+// ToPieceBuildSummary). A failed check gives its failure before any launch, as on the GPU.
+std::expected<PieceBuildSummary, GridFailure>
+ComputeReplayedBuild(const StaggeredGrid& whole, const PieceBuildInputs& inputs, ReplayLaunch launch) {
+  const GridTables whole_tables = whole.tables(RunOn::kCpu);
+  const std::expected<void, GridFailure> checked =
+      CheckPieceRangeAndRoom(whole_tables.block_count, inputs.range, inputs.border.size(), inputs.max_cell_blocks);
+  if (!checked.has_value()) {
+    return std::unexpected(checked.error());
   }
-  counts.face_pieces = replay.status.face_pieces;
-  return counts;
+  const PieceReplayResult replay = ComputeGridPieceReplay(whole_tables, inputs.range, inputs.border, launch);
+  return ToPieceBuildSummary(replay.status, replay.loaded_count, static_cast<std::uint32_t>(inputs.border.size()));
 }
 
-// Checks that one replay of the build of the piece of `range` and `border` has the tables, the piece map, the counts
-// and the start of the range that the CPU builder gives, byte for byte.
+// Checks that two failures have the same error, cells and magnitude.
+void CheckSameFailure(const GridFailure& actual, const GridFailure& expected) {
+  EXPECT_EQ(actual.error, expected.error);
+  EXPECT_EQ(actual.cell.value, expected.cell.value);
+  EXPECT_EQ(actual.other_cell.value, expected.other_cell.value);
+  EXPECT_EQ(actual.magnitude, expected.magnitude);
+}
+
+// Checks that the replayed build and the CPU builder give the same result for the inputs: the same failure in every
+// field, or the same counts and start of the range.
+void CheckReplayedBuildEqualsCpuBuild(const StaggeredGrid& whole, const PieceBuildInputs& inputs, ReplayLaunch launch) {
+  std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(inputs.max_cell_blocks);
+  ASSERT_TRUE(room.has_value());
+  const std::expected<GridPiece, GridFailure> piece = BuildGridPiece(whole, inputs.range, inputs.border, room->buffers);
+  const std::expected<PieceBuildSummary, GridFailure> replayed = ComputeReplayedBuild(whole, inputs, launch);
+  ASSERT_EQ(replayed.has_value(), piece.has_value());
+  if (!piece.has_value()) {
+    CheckSameFailure(replayed.error(), piece.error());
+    return;
+  }
+  EXPECT_EQ(ToGridCountFields(replayed->counts), ToGridCountFields(piece->grid().counts()));
+  EXPECT_EQ(replayed->range_start_in_piece, piece->range().first_block);
+}
+
+// Checks that one replay of the build of the piece of `range` and `border` has the tables and the piece map that the
+// CPU builder gives, byte for byte, and the counts and the start of the range through the host's reading of the status.
 void CheckReplayEqualsCpuPiece(
     const StaggeredGrid& whole,
     CellBlockRange range,
@@ -67,8 +102,12 @@ void CheckReplayEqualsCpuPiece(
   ASSERT_EQ(replay.status.failure_key, kNoFailureKey);
   const std::optional<std::string> difference = FindFirstTableDifference(*piece, replay.tables);
   EXPECT_FALSE(difference.has_value()) << difference.value_or("");
-  EXPECT_EQ(ToGridCountFields(ToCountsOfReplay(replay)), ToGridCountFields(piece->grid().counts()));
-  EXPECT_EQ(replay.status.result_count, piece->range().first_block);
+  const PieceBuildInputs inputs = {
+      .range = range,
+      .border = border,
+      .max_cell_blocks = range.block_count + static_cast<std::uint32_t>(border.size()),
+  };
+  CheckReplayedBuildEqualsCpuBuild(whole, inputs, launch);
 }
 
 // The steps replayed on the CPU, in every thread order, give the piece of the CPU builder: the tables, the map and
@@ -120,8 +159,8 @@ FailedReplay FindFailureOfReplay(
   return {.failure_step = ToFailureStep(replay.status.failure_key), .is_anything_written = !is_all_unwritten};
 }
 
-// Checks that the CPU builder fails with kBadInput for `border` and that the replay fails at step 1 of the failure keys
-// (the border) in every launch and writes nothing in the arrays.
+// Checks that the CPU builder fails with kBadInput for `border`, that the replay fails at step 1 of the failure keys
+// (the border) in every launch and writes nothing in the arrays, and that the replayed build ends in the CPU's failure.
 void CheckBadBorderFailsLikeCpuBuilder(const StaggeredGrid& whole, std::span<const CellBlockIndex> border) {
   const CellBlockRange range = {.first_block = 4, .block_count = 3};
   std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(10);
@@ -133,6 +172,8 @@ void CheckBadBorderFailsLikeCpuBuilder(const StaggeredGrid& whole, std::span<con
     const FailedReplay failed = FindFailureOfReplay(whole, range, border, launch);
     EXPECT_EQ(failed.failure_step, kPieceBorderStep);
     EXPECT_FALSE(failed.is_anything_written);
+    const PieceBuildInputs inputs = {.range = range, .border = border, .max_cell_blocks = 10};
+    CheckReplayedBuildEqualsCpuBuild(whole, inputs, launch);
   }
 }
 
@@ -151,6 +192,50 @@ TEST(BuildGridPiece, StepsReplayedWithBadBorder_FailLikeCpuBuilder) {
   for (const std::vector<CellBlockIndex>& border : bad_borders) {
     SCOPED_TRACE(border.back().value);
     CheckBadBorderFailsLikeCpuBuilder(test_grid->grid, border);
+  }
+}
+
+// A range past the grid, a room too small, both at once, and a bad border list with too little room. The checks of the
+// range and of the room come first on both processors, in the order range, room, border list.
+TEST(BuildGridPiece, StepsReplayedWithBadRangeOrRoom_FailLikeCpuBuilder) {
+  const std::vector<CellId> cells = BuildCellsInBlocksOfTheirOwn(10);
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const std::vector<CellBlockIndex> border = ToBlocks({1, 2, 8});
+  const std::vector<CellBlockIndex> bad_border = ToBlocks({2, 1, 8});
+  struct Case {
+    PieceBuildInputs inputs;
+    GridError expected_error = GridError::kNone;
+  };
+  const auto make_case = [](CellBlockRange range,
+                            std::span<const CellBlockIndex> border_list,
+                            std::uint32_t max_cell_blocks,
+                            GridError expected_error) {
+    return Case{
+        .inputs = {.range = range, .border = border_list, .max_cell_blocks = max_cell_blocks},
+        .expected_error = expected_error,
+    };
+  };
+  const std::array<Case, 5> cases = {
+      make_case({.first_block = 8, .block_count = 3}, border, 10, GridError::kBadInput),
+      make_case({.first_block = 4, .block_count = 3}, border, 5, GridError::kTooManyCellBlocks),
+      make_case({.first_block = 9, .block_count = 3}, border, 5, GridError::kBadInput),
+      make_case({.first_block = 4, .block_count = 3}, bad_border, 5, GridError::kTooManyCellBlocks),
+      make_case({.first_block = 4, .block_count = 3}, border, 6, GridError::kNone),
+  };
+  for (const Case& current : cases) {
+    SCOPED_TRACE(
+        testing::Message() << "range from block " << current.inputs.range.first_block << ", room "
+                           << current.inputs.max_cell_blocks
+    );
+    std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(current.inputs.max_cell_blocks);
+    ASSERT_TRUE(room.has_value());
+    const std::expected<GridPiece, GridFailure> piece =
+        BuildGridPiece(test_grid->grid, current.inputs.range, current.inputs.border, room->buffers);
+    EXPECT_EQ(piece.has_value() ? GridError::kNone : piece.error().error, current.expected_error);
+    for (const ReplayLaunch launch : kReplayLaunches) {
+      CheckReplayedBuildEqualsCpuBuild(test_grid->grid, current.inputs, launch);
+    }
   }
 }
 

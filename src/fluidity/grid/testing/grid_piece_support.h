@@ -18,7 +18,8 @@
 //   it: the piece needs block 0 too.
 //
 // Owns:    PieceTables, LoadedPieceTables, BuildPieceTables, FindFirstTableDifference, PieceBuffersRoom,
-//          BuildPieceBuffersRoom, FindBorderByReadMarks, FindFirstReaderDifference
+//          BuildPieceBuffersRoom, FindBorderByReadMarks, FindFirstReaderDifference, EntryTablePlaces,
+//          FindEntryDifferences
 // Uses:    CPU-only guard (base/cpu_only.h), GridPiece (grid/grid_piece.h), BorderWidth, ApplyCellPlaceReadMarks,
 //          ApplyFacePlaceReadMarks (grid/border_block_steps.h), GridTables, GridFrame, CellState, FacePieceKind
 //          (grid/grid_tables.h), the id types (grid/grid_ids.h), StaggeredGrid (grid/staggered_grid.h), TestGrid
@@ -36,10 +37,13 @@
 // The guard comes first, so GPU code that includes this file stops at the guard before any library header.
 #include "fluidity/base/cpu_only.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fluidity/base/run_on.h"
@@ -164,5 +168,63 @@ std::optional<std::string> FindFirstReaderDifference(
     std::span<const CellBlockIndex> set,
     BorderWidth width
 );
+
+// How the entries of one table of a grid piece are laid out, so a difference can be placed: which block and which place
+// of the block holds an entry, and which GPU thread of the largest launch handles it.
+struct EntryTablePlaces {
+  std::string_view name;  // The table, as the report names it.
+  std::uint64_t places_per_block = 1;  // Entries of one piece block: 1, 36, 64 or 240.
+  std::uint64_t thread_count = 1;  // Threads of the launch that writes the table, for the thread of each entry.
+};
+
+// Describes how two copies of one table of a grid piece differ, for a test of a very large piece whose failure must be
+// read in one run. Gives the table's name, the range of the whole grid the piece was built for, the number of
+// differing entries, and for the first and for the last differing entry its index, its piece block (index / places per
+// block), its place in the block (index % places per block), its thread (index % thread count) and both values in
+// hexadecimal. Empty when the copies are equal. Differing sizes are reported by their sizes alone.
+// Example: tables of 5 entries that differ at 1 and 3, with 2 places per block and 4 threads, give "... 2 of 5
+//   entries differ; first index 1 (block 0, place 1, thread 1: CPU 0x2, GPU 0x9); last index 3 (block 1, place 1,
+//   thread 3: ...)".
+template <typename Entry>
+std::optional<std::string> FindEntryDifferences(
+    std::span<const Entry> on_cpu,
+    std::span<const Entry> on_gpu,
+    const EntryTablePlaces& places,
+    CellBlockRange range
+) {
+  std::ostringstream message;
+  message << places.name << " (range from block " << range.first_block << ", " << range.block_count << " blocks): ";
+  if (on_cpu.size() != on_gpu.size()) {
+    message << "the CPU table has " << on_cpu.size() << " entries and the GPU table " << on_gpu.size();
+    return message.str();
+  }
+  std::uint64_t differing_count = 0;
+  std::size_t first_index = 0;
+  std::size_t last_index = 0;
+  for (std::size_t index = 0; index < on_cpu.size(); ++index) {
+    if (on_cpu[index] == on_gpu[index]) {
+      continue;
+    }
+    if (differing_count == 0) {
+      first_index = index;
+    }
+    last_index = index;
+    ++differing_count;
+  }
+  if (differing_count == 0) {
+    return std::nullopt;
+  }
+  const auto describe_entry = [&](std::size_t index) {
+    message << "index " << index << " (block " << index / places.places_per_block << ", place "
+            << index % places.places_per_block << ", thread " << index % places.thread_count << ": CPU 0x" << std::hex
+            << static_cast<std::uint64_t>(on_cpu[index]) << ", GPU 0x" << static_cast<std::uint64_t>(on_gpu[index])
+            << std::dec << ")";
+  };
+  message << differing_count << " of " << on_cpu.size() << " entries differ; first ";
+  describe_entry(first_index);
+  message << "; last ";
+  describe_entry(last_index);
+  return message.str();
+}
 
 }  // namespace fluidity::grid

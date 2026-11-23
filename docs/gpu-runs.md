@@ -249,19 +249,34 @@ What to look at first, in this order:
 
 1. **`BuildGridPiece.OnGpuFunctions_KeepUnderTheDefaultStack`.** The stack digest should be 0. A value above 1,024 means
    the compiler changed and the piece build needs a stack reserve and an estimate entry as the border search has.
-2. **A failure of `OnGpuRandomGrids_EqualCpuPiece` or `OnGpuNestedBallRanges_EqualCpuPiece`.** The log names the piece, the
-   table, the place and both values. `range_first_block` wrong: the atomic count of border entries below the range
-   (function 2). `map` wrong: function 3 (a border list that was not ascending would also stop it). `neighbours` wrong
-   only for some entries: the binary search of the piece map (function 4). `cell_states` right but `active_cells` wrong:
-   the atomic adds of function 5. `face_piece_kinds` right but `face_pieces` wrong: the per-thread sum of function 6.
-   A difference in `face_piece_kinds` at kind `kOutsidePiece` points to the piece map read by function 6.
-3. **`OnGpuFailures_EqualCpuFailures`.** Each bad border list must give `kBadInput`, too little room `kTooManyCellBlocks`,
-   with cells zero, as on the CPU; `OnGpuAfterFailure_BuildsTheCpuPiece` builds a good piece into the same buffers after
-   a failure. `kRunOnCallFailed` here means the atomic minimum on the key or the reset.
+2. **A failure of `OnGpuRandomGrids_EqualCpuPiece` or `OnGpuNestedBallRanges_EqualCpuPiece`.** The log names the piece,
+   the table, the place and both values. The piece number counts two pieces for each tested range, the one with the
+   near border and then the one with the stacked border, in the order the tests build their ranges
+   (`BuildTestedRanges`). Read the failure by table:
+   - `range_first_block` wrong: the count of border entries below the range, made by function 2.
+   - `map` wrong: function 3. A border list that was not ascending would also stop it.
+   - `neighbours` wrong, and nothing else: function 4.
+   - `active_cells_per_size_level` wrong while `cell_states` are right: the 64-bit adds of function 5.
+   - `face_pieces` wrong while `face_piece_kinds` are right: the sum of function 6.
+   - Every table wrong at once: suspect the read back of the GPU's piece, or the one-cell room, before the six GPU
+     functions.
+3. **`OnGpuFailures_EqualCpuFailures` and `OnGpuAfterFailure_BuildsTheCpuPiece`.** Each bad border list must give
+   `kBadInput`, too little room `kTooManyCellBlocks`, with cells zero, as on the CPU; the second test builds a good
+   piece into the same buffers after a failure. `kRunOnCallFailed` here means a GPU function did not start or the
+   GPU work failed. `kInternalFault` means the code that reads the status record rejected it; the CPU runs that code on
+   the replayed record (`grid_piece_steps_in_every_thread_order_functional_test`), so a difference points at the GPU's
+   record, not at the reading.
 4. **`OnGpuTwice_GivesIdenticalBytes` and `OnGpu_AllocatesNothing`.** A difference between the two passes means a result
    depends on thread timing; nothing should. The allocation test makes one call before counting.
 5. **`OnGpuMoreFacePlacesThanThreads_EqualCpuPiece`.** 72,000 blocks, more face places than threads of the largest
    launch, so each thread of function 6 has several places. A difference only here points to the grid-stride loop.
+   For each table that differs the log gives: the table, the range tested (first block and block count), how many
+   entries differ, and for the first and the last differing entry its index, its piece block, its place in the
+   block, its thread (the index modulo 16,776,960) and both values in hexadecimal. Indexes at or above 16,776,960 in
+   `face piece kinds` (17,280,000 places) point to the second pass of the grid-stride loop; a scatter of entries
+   points to a different defect. Write down the run time too. The test needs several gigabytes of GPU memory for the two
+   grids, their pieces and the read back copies; the largest room a grid may hold (17,895,697 blocks) needs more
+   than 16 GB, so no test builds it and it cannot happen on the RTX 5060 Ti with 16 GB.
 
 One thing about `sloped_surface_scene_on_gpu_functional_test` (one test, `StaggeredGrid.SlopedSurfaceInBoxOnGpu_EqualsCpu`):
 it runs the pieces of the grid module together on one scene, a box of liquid with a sloped surface (9,584 cells in 218

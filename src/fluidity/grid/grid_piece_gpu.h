@@ -65,10 +65,9 @@ RunOnCallStatus CheckPieceBorderOnGpu(PieceLoad load, std::uint32_t whole_block_
 
 // Function 3: one thread for each loaded item (load.range.block_count + load.border_block_count of them) writes the
 // piece map entry of its item with ApplyPieceMapWriteAt, or returns at once when the failure key of *status is set, so
-// a bad border list writes nothing. Nothing is launched for 0 items. Requires: map is GPU memory of that many entries;
-// load.border_blocks is GPU memory; status is GPU memory that launch
-// 2
-//   has finished.
+// a bad border list writes nothing. Nothing is launched for 0 items.
+// Requires: map is GPU memory of that many entries; load.border_blocks is GPU memory; status is GPU memory that
+//   launch 2 has finished.
 // Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus WritePieceMapOnGpu(PieceLoad load, const GridBuildStatus* status, CellBlockIndex* map);
 
@@ -76,8 +75,7 @@ RunOnCallStatus WritePieceMapOnGpu(PieceLoad load, const GridBuildStatus* status
 // ApplyPieceBlockCopyAt, and offers the failure key of a fault to *status with an integer atomic minimum. A thread
 // returns at once when the key is set. Nothing is launched for 0 blocks.
 // Requires: whole is the tables of the whole grid, GPU memory; blocks.map is the piece map function 3 wrote,
-// blocks.count
-//   entries; `piece` is GPU memory with room for blocks.count blocks; status is GPU memory.
+//   blocks.count entries; `piece` is GPU memory with room for blocks.count blocks; status is GPU memory.
 // Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus
 CopyPieceBlocksOnGpu(const GridTables& whole, PieceBlocks blocks, PieceTableArrays piece, GridBuildStatus* status);
@@ -97,8 +95,8 @@ CopyPieceCellStatesOnGpu(const GridTables& whole, PieceBlocks blocks, CellState*
 // error of any function since the call began is reported here. Nothing is launched for 0 blocks. The launch is not cut
 // into chunks: a thread does a bounded amount of work (two reads of the whole grid's tables to find the two cells of a
 // face piece and two binary searches of the piece map), so a launch over the most blocks a room may hold, 17,895,697,
-// is a launch like the grid build's own over the face places of its room. Requires: as function 4; face_piece_kinds is
-// GPU memory of 240 entries for each piece block; blocks.count is at most
+// is a launch like the grid build's own over the face places of its room.
+// Requires: as function 4; face_piece_kinds is GPU memory of 240 entries for each piece block; blocks.count is at most
 //   kMaxCellBlocksLimit, so every face place fits 32 bits and is below kNoIndex.
 // Fails: kCallFailed  a GPU function did not start, or the GPU work failed
 RunOnCallStatus WritePieceFaceKindsOnGpu(
