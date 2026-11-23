@@ -14,8 +14,11 @@
 //   Proof of the bound, in quarter widths from the low corner of the cell, along the axis and across it:
 //   1. The smallest face is a square of half a cell width; its places are half-width places, at even planes and odd
 //   centres.
-//   2. A face lies on a side of the cell or of a touching cell: at most 6 planes inside the window and -4..8.
-//   3. Across, it covers a half-width place whose centre lies in the window and in -3..7: at most 6 on each axis.
+//   2. A face lies on a side of the cell or of a touching cell: at most 6 planes inside the window and -4..8. A
+//   bigger touching cell has far sides at -8 or 12, and the window never reaches them: it lies within -5..9.
+//   3. Across, it covers a half-width place whose centre lies in the window and in -3..7: at most 6 on each axis. A
+//   face of the cell's size level is counted at the place one quarter beside its centre (centre 2 gives 1 or 3), a
+//   bigger face at a place that every window holding its centre also holds.
 //   4. Faces of one axis never overlap, so each place holds at most one: 6 x 6 x 6 = 216, less the 4 places of the
 //      plane through the cell's own middle, where no face can lie: 212.
 //   The largest count known is 124, and it is the exact maximum where only two cell sizes meet. Running out of room is
@@ -227,10 +230,14 @@ ApplyNearbyFaceInsert(NearbyFaceList& list, FacePlaceIndex face, int max_faces) 
 // Units: m, world.
 // Example: a grid whose candidates at one position are 124, with max_faces 100, gives kInternalFault and count 0; with
 //   max_faces 124 it gives all 124.
-// Requires: as FindCellAt; max_faces is 0..kMaxNearbyFaces; `error` is not null.
+// Requires: as FindCellAt, and every block index entry of the tables is kNoIndex or below block_count, as in every
+//   built grid (the touching cell and face piece tables are read too); max_faces is 0..kMaxNearbyFaces; `error` is not
+//   null.
 // Fails: kPositionOutsideGrid  no active cell contains the position
 //        kInternalFault        more candidates than max_faces
-//        On failure the list has count 0, and no entry from max_faces on was written.
+//        On failure the list has count 0, and no entry from max_faces on was written. Every other field of the list
+//        means nothing: `cell` is place 0 (a valid index) or the position's cell, `axis` may be Axis{0} or the asked
+//        axis, and `faces` may hold a part of the list.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
 FLUIDITY_CPU_AND_GPU inline NearbyFaceList FindNearbyFacesWithRoom(
     const GridTables& tables,
@@ -301,8 +308,9 @@ FLUIDITY_CPU_AND_GPU inline NearbyFaceList FindNearbyFacesWithRoom(
 // Method: the face pieces of this axis that belong to the active cell holding the position, or to a cell touching
 //   it, whose own size level is the cell's minus 1, the same or plus 1, and whose centre x_f satisfies
 //   -1.5 h < x_f - x_p <= 1.5 h on each axis, h the cell's width. The test is made in whole quarter widths
-//   (ComputeIsInCandidateWindow), so a position on a cell side or centre, or a rounding step from one, gives the same
-//   faces as its neighbours: among cells of one size, always 27. A face exactly 1.5 h away is listed and has weight 0.
+//   (ComputeIsInCandidateWindow), so a position on a cell side or centre, or a rounding step from one, gives 27 faces
+//   among cells of one size, as its neighbours do. Across a quarter boundary the set changes by whole faces: faces that
+//   enter or leave the list there have weight 0 at the boundary. A face exactly 1.5 h away is listed and has weight 0.
 //   At most 212 faces in any valid grid (file header); the list holds kMaxNearbyFaces = 216.
 // Units: m, world.
 // Order: ascending FacePlaceIndex.
@@ -312,7 +320,9 @@ FLUIDITY_CPU_AND_GPU inline NearbyFaceList FindNearbyFacesWithRoom(
 //   built grid. Any position and any `near`. `error` is not null.
 // Fails: kPositionOutsideGrid  no active cell contains the position
 //        kInternalFault        more candidates than the list holds: a broken table, never a grid
-//        On failure the list has count 0 and `*error` says why; otherwise `*error` is kNone.
+//        On failure the list has count 0 and `*error` says why; otherwise `*error` is kNone. Every other field of the
+//        list means nothing on failure: `cell` is place 0 (a valid index) or the position's cell, and `axis` may be
+//        Axis{0} or the asked axis.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
 FLUIDITY_CPU_AND_GPU inline NearbyFaceList
 FindNearbyFaces(const GridTables& tables, Vec3 position, Axis axis, CellBlockIndex near, GridError* error) noexcept {
@@ -369,7 +379,10 @@ struct FaceWeight {
       weight;  // No unit, never negative; 0 for a face exactly 1.5 widths away. Kept weights of one axis add up to 1.
   Vec3 offset;  // m. The face's position minus the position.
   Vec3 offset_from_mean;  // m. offset - mean_offset. Use this one in fits and in writes.
-  Vec3 weight_change;  // 1/m. Derivative of `weight` with respect to the position.
+  // 1/m. Derivative of `weight` with respect to the position. Its size is about |g| / W, with g the face's raw change
+  // and W the kept faces' raw weight sum, so with a small W (fit kMeanOnly) it grows without bound as W goes to 0:
+  // a caller that fits a change from it decides for itself whether it can trust the change there.
+  Vec3 weight_change;
 };
 
 // The sums of a particle's kept faces on one axis that a face needs to compute the weight the particle gives it. A
@@ -408,8 +421,8 @@ struct RawFaceWeight {
 //   g_f = -(area_f / h^3) (Q'(d_x) Q(d_y) Q(d_z), Q(d_x) Q'(d_y) Q(d_z), Q(d_x) Q(d_y) Q'(d_z)). The area in cell
 //   faces is area_f / h^2 and the change's scale is that divided by h; each product is taken left to right.
 // Units: m, world; `cell_width` in m.
-// Example: a face of the cell's size at d = (0.25, 0, 0): w_f = 0.6875 x 0.75 x 0.75 = 0.38671875, and g_f has x
-//   x entry -(1 / h) x (-0.5) x 0.75 x 0.75 = 0.28125 / h.
+// Example: a face of the cell's size at d = (0.25, 0, 0): w_f = 0.6875 x 0.75 x 0.75 = 0.38671875, and the x entry
+//   of g_f is -(1 / h) x (-0.5) x 0.75 x 0.75 = 0.28125 / h.
 // Requires: `face` is a place of block 0..tables.block_count - 1; `cell_width` is finite and above 0; `position` is
 //   finite.
 // Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
@@ -609,8 +622,12 @@ FLUIDITY_CPU_AND_GPU inline CholeskyInverse ComputeCholeskyInverse(Mat3 matrix) 
 //   (ComputeCholeskyInverse). The fit is kMeanOnly when a pivot is at most kMinPivotShare times the trace or W is
 //   below kMinWeightSum, else kFull, and the inverse is that of the scaled matrix times 1 / (h x h).
 //   The faces' raw weights are computed again at each step, with the same operations, so no per-face memory is held.
+//   Each kept face's raw weight is computed in 3 passes and its position 5 times (once in the sums pass, twice in each
+//   of the two passes that scale the weight and take the offset); another pass over the faces would add to that.
 //   What rounding allows for a fit of values. A kFull fit can still be badly conditioned: the pivot floor lets a spread
-//   through whose largest and smallest eigenvalues differ by a factor of up to about 1e12 (the condition number). The
+//   through whose largest and smallest eigenvalues differ by a typical factor of about 1e12 when it is flat along an
+//   axis (the condition number); the floor is on the pivots, not on the eigenvalues, so no bound is derived for a
+//   spread flat along another direction. The
 //   scaled weights times the offsets from the mean add up to about 1e-16 h, not to 0. A value v on every face adds
 //   v times that sum to the moment, and the inverse spread magnifies it, so the fitted matrix row of a field whose
 //   values are about v is off by about 1e-16 x condition number x v / h, whatever its slope. A caller that fits values
@@ -656,7 +673,9 @@ FLUIDITY_CPU_AND_GPU inline NearbyFaceWeights ComputeNearbyFaceWeights(
     raw_weight_change_sum.y += raw.weight_change.y;
     raw_weight_change_sum.z += raw.weight_change.z;
   }
-  // No kept face has weight (or the sum is not a number): nothing below may divide by it.
+  // A sum that is not a number would read as "no kept face has weight" below; the contract excludes it.
+  assert(math::IsFinite(weight_sum));
+  // No kept face has weight: nothing below may divide by it.
   if (!(weight_sum > 0.0)) {
     return weights;
   }
@@ -765,7 +784,9 @@ ComputeFaceWeight(const GridTables& tables, const NearbyFaceWeights& weights, in
 //   the face piece exactly when FindCellLow or FindCellHigh is the cell or one of its touching cells. A place that
 //   holds no face piece, a side of the grid's edge with no cell and a side of a block a grid piece did not load all
 //   give kNoIndex, which is never the cell and never in the touching cells. The test costs one FindTouchingCells and
-//   is made last, after the window test has left out most faces.
+//   is made last, after the window test has left out most faces. Each call finds the cell's id, its three window
+//   quarters, its centre and its width again, so a caller that asks about many faces for one position pays for that in
+//   every call.
 // Requires: `face` is a place of block 0..tables.block_count - 1; `cell` is the active cell FindCellAt gives for
 //   `position`; `position` is finite.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>
