@@ -1,0 +1,54 @@
+src/fluidity/grid/border_block_steps.h
+  s_4f0877e2acdcf0::t_2282a792751251 895-964
+  s_4f0877e2acdcf0::t_22e26630a3eb7f 37-39,58,965-968,1007-1008,1011-1012
+docs/glossary.md
+  s_4f0877e2acdcf0::t_d6fd4214eb1deb 171
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_0a72d478f23b3c 208-211
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_8886bd2ffd3764 2203-2221,2627-2628
+src/fluidity/grid/border_block_steps.test.cc
+  s_4f0877e2acdcf0::t_a3d37ba368bac6 10,339-499
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_8f0778034c1f71 222-235,249-252,256-258
+src/fluidity/grid/cell_block_range_cpu.cc
+  s_4f0877e2acdcf0::t_5034d2cfe5e626 197-214,391,415-421
+src/fluidity/grid/cell_block_range_gpu.cu
+  s_4f0877e2acdcf0::t_e151aa85ea2f68 18-23,92-93,99,108,114,208,213,216-233
+src/fluidity/grid/cell_block_range_gpu.h
+  s_4f0877e2acdcf0::t_c4e0d4e7d52ae6 23-25,72-86,92
+src/fluidity/grid/grid_memory_estimate.h
+  s_4f0877e2acdcf0::t_4f1458d3667ac8 22-25
+src/fluidity/grid/testing/border_search_replay.h
+  s_4f0877e2acdcf0::t_c88904a7f9c9a9 19-20,64-66,123-144
+src/fluidity/grid/testing/cell_block_range_cases.h
+  s_4f0877e2acdcf0::t_d9b519cf95eae0 32-34,39,66,229-241,311
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_a264587ea266ee 103-106
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_2f35048d7502dd 43,52,61,75,83,199,395,518,522-523,545-546,664,693-694
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_78065863565d85 20,72,159
+tests/grid/border_search_replay.test.cc
+  s_4f0877e2acdcf0::t_1876b98df8bd2c 36-41,75-94,103-108,110,112-114,175-192
+tests/grid/grid_pieces_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_47b2ccd1471a4c 187,194,197,204-209,270,341,387,398
+tests/grid/stacked_borders.gpu.test.cc
+  s_4f0877e2acdcf0::t_ebc73b0f20d2fd 17,52-54,109-112,144-160,207-221,223-235,237-239,242,245-256,259-260,262-279,283-284,300-319
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "54ab4bb425249d588b3b9a56b45fbd4c42f6453d",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
