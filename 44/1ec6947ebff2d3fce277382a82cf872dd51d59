@@ -1,0 +1,21 @@
+src/fluidity/grid/cell_size_rule.h
+  s_4f0877e2acdcf0::t_c0c94a9039984c 102-103
+src/fluidity/grid/grid_values.h
+  s_4f0877e2acdcf0::t_324d8be2055a61 27-28,225-226,321-322,356-357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "441ec6947ebff2d3fce277382a82cf872dd51d59",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
