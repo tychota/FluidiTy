@@ -3,8 +3,10 @@
 Usage: uv run python tools/check_message.py [<commit> | --range A..B | --file PATH]   (default: HEAD)
 
 A message fails when:
-- the subject is longer than 72 columns, the line after it is not blank, or a body line is longer than 72 columns (a
-  line that is only a URL, and an indented code line, are exempt);
+- the subject is longer than 72 columns, the line after it is not blank, or a body line is longer than 72 columns
+  (columns as check_rules.display_columns counts them: a wide character is 2, a tab goes to a multiple of 8). A line
+  that is only a URL is exempt, and so is an indented line (4 spaces or a tab) that is one unbroken word, such as a
+  path, because it cannot be wrapped; an indented line of several words is not;
 - the last paragraph has a trailer line, `Key: value` with Key one of TRAILER_KEYS or ending in `-by`; the literal
   last line `GPU: compiled, not run` is not a trailer (its key is no trailer key), so it passes;
 - it names a tool or a model (TOOL_WORDS) as a whole word, in any case, outside a backtick span and outside a token
@@ -33,7 +35,19 @@ import check_rules
 
 SUBJECT_LIMIT = 72
 BODY_LIMIT = 72
-TRAILER_KEYS = ("Co-Authored-By", "Signed-off-by", "Assisted-by", "Generated-by", "Claude-Session", "Reviewed-by")
+TRAILER_KEYS = (
+    "Co-Authored-By",
+    "Signed-off-by",
+    "Assisted-by",
+    "Generated-by",
+    "Claude-Session",
+    "Reviewed-by",
+    "Change-Id",
+    "Session",
+    "Session-Id",
+    "Model",
+    "Models",
+)
 ALLOWED_LAST_LINE = "GPU: compiled, not run"
 TOOL_WORDS = (
     "claude",
@@ -75,18 +89,26 @@ def is_trailer_key(key: str) -> bool:
 
 def find_layout_problems(lines: Sequence[str]) -> list[str]:
     problems = []
-    if len(lines[0]) > SUBJECT_LIMIT:
-        problems.append(f"the subject has {len(lines[0])} columns; the limit is {SUBJECT_LIMIT}")
+    subject_columns = check_rules.display_columns(lines[0])
+    if subject_columns > SUBJECT_LIMIT:
+        problems.append(f"the subject has {subject_columns} columns; the limit is {SUBJECT_LIMIT}")
     if len(lines) > 1 and lines[1].strip():
         problems.append("the line after the subject is not blank")
     too_long = [
         number
         for number, line in enumerate(lines[1:], start=2)
-        if len(line) > BODY_LIMIT and not line.startswith(("    ", "\t")) and not _URL_ONLY_LINE.match(line)
+        if check_rules.display_columns(line) > BODY_LIMIT and not _is_unbreakable_line(line)
     ]
     if too_long:
         problems.append(f"{len(too_long)} body lines are over {BODY_LIMIT} columns, the first is line {too_long[0]}")
     return problems
+
+
+def _is_unbreakable_line(line: str) -> bool:
+    """A line that cannot be wrapped: only a URL, or an indented line (4 spaces or a tab) of one word."""
+    if _URL_ONLY_LINE.match(line):
+        return True
+    return line.startswith(("    ", "\t")) and len(line.split()) == 1
 
 
 def find_trailer_problems(lines: Sequence[str]) -> list[str]:

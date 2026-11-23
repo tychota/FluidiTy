@@ -54,8 +54,9 @@ are read from the path below the repository (--repository), so a clone inside a 
   `tests/<module>/` counts as a file of the folder `fluidity/<module>`: it may include that folder's private GPU
   headers, as a test beside them could.
 - `compiler-include` applies to every C++ file: an `#include` inside an `#if`, `#ifdef`, `#ifndef` or `#elif` block
-  whose condition names `__clang__`, `__clang_analyzer__`, `__GNUC__`, `_MSC_VER`, `__apple_build_version__` or
-  `__has_include` fails, in any branch of the block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
+  whose condition names a `__clang...__` or `__GNUC...__` macro (`__clang__`, `__clang_analyzer__`, `__clang_major__`,
+  `__GNUC_MINOR__`), `_MSC_...`, `__apple_build_version__`, `_LIBCPP_VERSION`, `__GLIBCXX__` or `__has_include`, or a
+  macro that the file defines under such a condition, fails, in any branch of the block. tools/run_tidy.py lists the headers of a file with the build compiler and keys its cache on that list, so
   it must be the list that clang-tidy sees.
 - `one-word-comment` applies to C++ files under src and tests. `test-helper-verb` applies to the functions defined in
   test files (`.test.` in the name, or a `testing` or `tests` folder): it is `verb` for them, and the same
@@ -77,7 +78,9 @@ import re
 import subprocess
 import sys
 import tokenize
+import unicodedata
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -110,6 +113,22 @@ TEST_CODE_FOLDER = "testing"
 TESTS_FOLDER = "tests"
 # `cpu_and_gpu.h` ends in `_gpu` but is the shared mark every shared header includes, not a private GPU header.
 SHARED_STEM_SUFFIX = "_and_gpu"
+
+
+def display_columns(text: str) -> int:
+    """The columns `text` takes on a terminal: a wide character (East Asian width W or F) takes 2, a combining mark 0,
+    a tab goes to the next multiple of 8, any other character 1. `len` counts code points, which is not the same."""
+    columns = 0
+    for character in text:
+        if character == "\t":
+            columns += 8 - columns % 8
+        elif unicodedata.combining(character):
+            continue
+        elif unicodedata.east_asian_width(character) in ("W", "F"):
+            columns += 2
+        else:
+            columns += 1
+    return columns
 
 
 def is_private_gpu_stem(stem: str) -> bool:
@@ -148,7 +167,7 @@ RULE_TABLE = (
     Rule("compiler-include", FAIL, "C++ files", "the tidy cache lists the headers the build compiler sees"),
     Rule("one-word-comment", FAIL, "C++ files under src and tests", "a one-word comment says nothing the code does not"),
     Rule("test-helper-verb", FAIL, "functions defined in test files", "a test helper starts with an allowed verb"),
-    Rule("paper-line-length", FAIL, "docs/method-paper/*.typ", "a paper line is at most 120 columns"),
+    Rule("paper-line-length", FAIL, "docs/method-paper/*.typ", "a paper line is at most 120 columns (wide characters count 2)"),
     Rule("test-name-and", NOTE, "TEST names in C++ files", "a test that checks two things should be two tests"),
     Rule("many-inputs", NOTE, "functions of test files and private helpers", "more than four inputs hide the call"),
     Rule("short-local", NOTE, "C++ files", "a one-letter variable or parameter says nothing; the project uses none"),
@@ -997,8 +1016,8 @@ def _declared_function(statement: str) -> _Declared | None:
 
 # A macro call at namespace scope (`TEST(Suite, Name)`, `INSTANTIATE_TEST_SUITE_P(...)`) is not a function.
 _MACRO_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
-# Names a test file must spell as GoogleTest and the C runtime ask.
-TEST_FRAMEWORK_NAMES = {"main", "SetUp", "TearDown", "PrintTo"}
+# Names a test file must spell as GoogleTest, Abseil and the C runtime ask.
+TEST_FRAMEWORK_NAMES = {"main", "SetUp", "TearDown", "PrintTo", "AbslStringify", "AbslHashValue"}
 _BARE_BOOL_PARAMETER = re.compile(r"^(?:const\s+)?bool\b(?!\s*[&*(<])")
 
 
@@ -1197,7 +1216,7 @@ def _check_private_gpu_includes(path: Path, text: str, lines: list[ScannedLine],
 # The predefined macros and operators that differ between the build compiler and the clang-tidy preprocessor:
 # `__clang_analyzer__` is defined by clang-tidy alone, and `__has_include` can answer differently for a standard header.
 _COMPILER_MACROS = re.compile(
-    r"\b(?:__clang__|__clang_analyzer__|__GNUC__|_MSC_VER|__apple_build_version__|__has_include|__has_include_next)\b"
+    r"\b(?:__clang\w*__|__GNUC\w*__|_MSC_\w+|__apple_build_version__|__has_include(?:_next)?|_LIBCPP_VERSION|__GLIBCXX__)\b"
 )
 _CONDITION_OPENER = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b")
 _CONDITION_BRANCH = re.compile(r"^\s*#\s*(?:elif|elifdef|elifndef)\b")
@@ -1205,18 +1224,32 @@ _CONDITION_ELSE = re.compile(r"^\s*#\s*else\b")
 _CONDITION_CLOSER = re.compile(r"^\s*#\s*endif\b")
 
 
+_DEFINED_MACRO = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)(.*)$")
+
+
 def _check_compiler_includes(lines: list[ScannedLine], reporter: _Reporter) -> None:
-    """Fails an `#include` inside a conditional block whose condition names a compiler macro.
+    """Fails an `#include` inside a conditional block whose condition names a compiler macro, or a macro that the file
+    defines under such a condition or from one (`#define FLUIDITY_IS_CLANG 1` inside `#if defined(__clang__)`).
 
     Each open block is one flag: True once a condition of the block (the `#if` or any `#elif`) names a compiler
     macro. The `#else` branch of such a block depends on the compiler as well, so the flag stays on for it."""
     open_blocks: list[bool] = []
+    dependent_macros: set[str] = set()
+
+    def names_compiler(code: str) -> bool:
+        if _COMPILER_MACROS.search(code):
+            return True
+        return any(re.search(rf"\b{re.escape(name)}\b", code) for name in dependent_macros)
+
     for line in lines:
         code = line.code
+        defined = _DEFINED_MACRO.match(code)
+        if defined and (any(open_blocks) or names_compiler(defined.group(2))):
+            dependent_macros.add(defined.group(1))
         if _CONDITION_OPENER.match(code):
-            open_blocks.append(_COMPILER_MACROS.search(code) is not None)
+            open_blocks.append(names_compiler(code))
         elif _CONDITION_BRANCH.match(code):
-            if open_blocks and _COMPILER_MACROS.search(code):
+            if open_blocks and names_compiler(code):
                 open_blocks[-1] = True
         elif _CONDITION_CLOSER.match(code):
             if open_blocks:
@@ -1260,11 +1293,12 @@ def _check_paper_line_length(path: Path, text: str, reporter: _Reporter) -> None
     """Fails a line of a method-paper Typst file over PAPER_LINE_LIMIT columns, unless PAPER_LONG_LINE_EXEMPTIONS
     lists it."""
     for number, line in enumerate(text.splitlines(), start=1):
-        if len(line) <= PAPER_LINE_LIMIT:
+        columns = display_columns(line)
+        if columns <= PAPER_LINE_LIMIT:
             continue
         if any(path.name == name and marker in line for name, marker, _reason in PAPER_LONG_LINE_EXEMPTIONS):
             continue
-        reporter.add(number, FAIL, "paper-line-length", f"the line has {len(line)} columns; the limit is {PAPER_LINE_LIMIT}")
+        reporter.add(number, FAIL, "paper-line-length", f"the line has {columns} columns; the limit is {PAPER_LINE_LIMIT}")
 
 
 # Words of a comment that name the process that made the code, not what the code does.
@@ -1473,8 +1507,11 @@ def _check_files_in_processes(file_paths: Sequence[Path], context: _WorkerContex
     global _worker_context
     _worker_context = context
     try:
-        with multiprocessing.get_context("fork").Pool(min(len(file_paths), os.cpu_count() or 1)) as pool:
-            per_file = pool.map(_check_file_in_worker, file_paths, chunksize=4)
+        workers = min(len(file_paths), os.cpu_count() or 1)
+        # A worker killed by a signal or by the out-of-memory killer raises BrokenProcessPool here; a Pool would wait for
+        # it forever.
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork")) as executor:
+            per_file = list(executor.map(_check_file_in_worker, file_paths, chunksize=4))
     finally:
         _worker_context = None
     return [finding for findings in per_file for finding in findings]

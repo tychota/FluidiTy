@@ -1,6 +1,7 @@
 """Tests for tools/check_rules.py. Each test builds a small tree and checks the findings."""
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -1464,3 +1465,84 @@ def test_the_real_glossary_allows_size_level_for_level_from_its_say_column():
     (level,) = [entry for entry in entries if entry.words == ("level",)]
     assert ("size", "level") in level.allowed_phrases
     assert all(len(phrase) > 1 for phrase in level.allowed_phrases)
+
+
+# compiler-include: more macros, and macros defined from them; wide characters; a killed worker -------------------
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "__clang_major__ >= 19",
+        "__GNUC_MINOR__ > 2",
+        "defined(_LIBCPP_VERSION)",
+        "defined(__GLIBCXX__)",
+        "_MSC_FULL_VER > 1",
+    ],
+)
+def test_include_under_a_condition_on_a_compiler_version_macro_fails(tmp_path, glossary, condition):
+    write(tmp_path, "a.cc", f'#if {condition}\n#include "x.h"\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == ["compiler-include"]
+
+
+@pytest.mark.parametrize("condition", ["__cplusplus >= 202302L", "FLUIDITY_HAS_GPU", "defined(CLANG_NAMED_THING)"])
+def test_include_under_a_condition_on_a_language_or_project_macro_passes(tmp_path, glossary, condition):
+    write(tmp_path, "a.cc", f'#if {condition}\n#include "x.h"\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == []
+
+
+def test_include_under_a_macro_defined_under_a_compiler_condition_fails(tmp_path, glossary):
+    text = '#if defined(__clang__)\n#define FLUIDITY_IS_CLANG 1\n#endif\n#if FLUIDITY_IS_CLANG\n#include "x.h"\n#endif\n'
+    write(tmp_path, "a.cc", text)
+    assert rules(run(tmp_path, glossary)) == ["compiler-include"]
+
+
+def test_include_under_a_macro_defined_as_a_compiler_macro_fails(tmp_path, glossary):
+    write(tmp_path, "a.cc", '#define FLUIDITY_COMPILER __GNUC__\n#ifdef FLUIDITY_COMPILER\n#include "x.h"\n#endif\n')
+    assert rules(run(tmp_path, glossary)) == ["compiler-include"]
+
+
+def test_include_under_a_macro_defined_without_a_compiler_condition_passes(tmp_path, glossary):
+    write(tmp_path, "a.cc", '#define FLUIDITY_FAST 1\n#if FLUIDITY_FAST\n#include "x.h"\n#endif\n')
+    assert run(tmp_path, glossary) == []
+
+
+def test_paper_line_counts_a_wide_character_as_two_columns(tmp_path, glossary):
+    write(tmp_path / "docs" / "method-paper", "a.typ", "\u4e2d" * 60 + "\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+    write(tmp_path / "docs" / "method-paper", "b.typ", "\u4e2d" * 61 + "\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == ["paper-line-length"]
+
+
+def test_display_columns():
+    assert check_rules.display_columns("abc") == 3
+    assert check_rules.display_columns("\u00e9") == 1
+    assert check_rules.display_columns("e\u0301") == 1
+    assert check_rules.display_columns("\u4e2d") == 2
+    assert check_rules.display_columns("\tx") == 9
+    assert check_rules.display_columns("ab\tx") == 9
+
+
+def test_a_worker_that_dies_makes_the_scan_fail_instead_of_hang(tmp_path, glossary, monkeypatch):
+    from concurrent.futures.process import BrokenProcessPool
+
+    for number in range(check_rules.PARALLEL_MIN_FILES + 4):
+        write(tmp_path / "src", f"file{number:02d}.cc", "int fine;\n")
+
+    def die(file_path, context):
+        os._exit(1)
+
+    monkeypatch.setattr(check_rules, "_check_file", die)
+    with pytest.raises(BrokenProcessPool):
+        run(tmp_path, glossary)
+
+
+@pytest.mark.parametrize("name", ["AbslStringify", "AbslHashValue", "PrintTo"])
+def test_a_free_function_that_abseil_or_googletest_asks_for_is_not_a_test_helper_to_rename(tmp_path, glossary, name):
+    write(tmp_path / "src", "a.test.cc", f"void {name}(const int& value, int* sink);\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == []
+
+
+def test_another_free_function_in_a_test_file_still_fails_the_verb_rule(tmp_path, glossary):
+    write(tmp_path / "src", "a.test.cc", "void Frobnicate(const int& value, int* sink);\n")
+    assert rules(run(tmp_path, glossary), "FAIL") == ["test-helper-verb"]

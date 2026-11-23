@@ -570,8 +570,10 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     `tools/check_commit.py` list them in one place); at `commit` and `full` speed it always runs.
   - `PASS message`: `tools/check_message.py` accepts the message of every commit the push would send, that is, of
     `@{upstream}..HEAD`, or of `HEAD` alone when the branch has no upstream or nothing is unpushed. A message passes
-    with a subject of at most 72 columns, a blank line after it, body lines of at most 72, no trailer line (the
-    literal last line `GPU: compiled, not run` is not one), no tool or model name (not counted inside a backtick span
+    with a subject of at most 72 columns, a blank line after it, body lines of at most 72 (columns as a terminal
+    shows them: a wide character counts 2 and a tab goes to a multiple of 8; a line that is only a URL, and an
+    indented line of one unbroken word, are the only exempt ones), no trailer line (`Co-Authored-By`, `Assisted-by`,
+    `Change-Id`, `Session`, `Model` and any `...-by`; the literal last line `GPU: compiled, not run` is not one), no tool or model name (not counted inside a backtick span
     or in a token with a `/`, such as a branch name), no process word (brief, review, reviewer, fixup, subagent,
     agent, each also in its regular inflections: `reviews`, `reviewed`), no `fixup!`, `squash!` or `amend!` subject,
     and no word the glossary bans. The step runs when the working tree has no change, so run the gate again after the

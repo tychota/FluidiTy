@@ -38,8 +38,25 @@ def test_body_line_over_72_columns_fails_and_counts_once():
 
 
 @pytest.mark.parametrize("line", ["https://example.org/" + "a" * 80, "    " + "x" * 90, "\t" + "x" * 90])
-def test_long_url_and_code_lines_are_exempt(line):
+def test_long_url_and_unbroken_indented_lines_are_exempt(line):
     assert problems(f"Subject\n\n{line}\n") == []
+
+
+@pytest.mark.parametrize("line", ["    " + "word " * 20, "\t" + "word " * 20, "    https://a.b/c and " + "x" * 80])
+def test_an_indented_line_of_several_words_is_not_exempt(line):
+    assert problems(f"Subject\n\n{line}\n") == ["1 body lines are over 72 columns, the first is line 3"]
+
+
+def test_lines_are_counted_in_columns_not_code_points():
+    assert problems("Subject\n\n" + "\u00e9" * 72 + "\n") == []
+    assert problems("Subject\n\n" + "\u4e2d" * 37 + "\n") == ["1 body lines are over 72 columns, the first is line 3"]
+    assert problems("\u4e2d" * 37 + "\n") == ["the subject has 74 columns; the limit is 72"]
+    assert problems("Subject\n\n\t" + "word " * 14 + "\n") == ["1 body lines are over 72 columns, the first is line 3"]
+
+
+@pytest.mark.parametrize("trailer", ["Change-Id: I1234", "Session: abc", "Model: x", "Models: x, y", "Session-Id: 1"])
+def test_other_session_and_review_trailers_fail(trailer):
+    assert any("trailer line" in found for found in problems(f"Subject\n\nBody text.\n\n{trailer}\n"))
 
 
 @pytest.mark.parametrize(
