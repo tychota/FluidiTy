@@ -24,7 +24,8 @@
 // Owns:    RangeWithBorder, BuildRangeWithBorder, BuildRanges, FindBorderBlocks (vector form and buffer form),
 //          BorderSearchBuffers, BuildBorderSearchBuffers, BuildBorderSearchStackEstimate
 // Uses:    CPU-only guard (base/cpu_only.h), BorderWidth (grid/border_block_steps.h), StaggeredGrid
-//          (grid/staggered_grid.h), GridFailure (grid/grid_error.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h),
+//          (grid/staggered_grid.h), GridPiece (grid/grid_piece.h, included for the callers of this header),
+//          GridFailure (grid/grid_error.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h),
 //          Buffer (base/buffer.h), RunMemory (base/run_memory.h), OrderBuffers (base/stable_order.h), RunOn
 //          (base/run_on.h), GridBuildStatus (grid/grid_build_status.h), MemoryEstimateEntry (base/memory_count.h)
 // Implementation uses: BlockSet, ComputeIsInBlockSet, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
@@ -54,6 +55,7 @@
 #include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_piece.h"
 #include "fluidity/grid/staggered_grid.h"
 
 namespace fluidity::grid {

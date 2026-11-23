@@ -2220,7 +2220,9 @@ before or after the range, so the range is a run of the piece too, and a sum per
 in the same order as in the whole grid. The piece copies the whole grid's tables block by block. A neighbour that was
 not loaded becomes "none"; a `kBetweenCells` face piece whose other cell lies in a block not loaded becomes
 `kOutsidePiece`; and a plane-4 place stays `kNotAPiece` when its high neighbour exists in the whole grid but was not
-loaded, so a grid piece never has a face piece that the whole grid does not have.
+loaded, so a grid piece never has a face piece that the whole grid does not have. The piece map says, for each block of
+the piece, its index in the whole grid, and the range keeps both spellings: as a run of the piece and as a run of the
+whole grid. Each entry of the map and of the tables is written from the loaded block alone, so no sort is needed.
 
 *Where a corner is stored.* The pressure solve and the solids keep values at cell corners. A corner is a point of the
 5 × 5 × 5 lattice of every block whose box holds it, sides included, so one point can be a lattice point of several

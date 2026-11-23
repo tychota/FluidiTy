@@ -156,7 +156,8 @@ struct GridBuffersArrays {
   Buffer<std::uint32_t> bigger_and_smaller_blocks;
   Buffer<CellState> cell_states;  // 64 per block, one per cell place.
   Buffer<FacePieceKind> face_piece_kinds;  // 240 per block, one per face place.
-  Buffer<std::uint32_t> piece_map;  // One per block.
+  // One per block: the index in the whole grid of each block of a grid piece. A whole grid's build leaves it unwritten.
+  Buffer<CellBlockIndex> piece_map;
   Buffer<GridBuildStatus> build_status;  // On the GPU one record; empty on the CPU.
   GridBuilderBuffers* builder_buffers = nullptr;  // Lent by the caller of BuildGridBuffers; never owned.
 };
@@ -185,6 +186,9 @@ struct GridBuilderBuffersArrays {
 // The arrays of `buffers`. The grid module's code gets at them only this way.
 GridBuffersArrays& ToGridBuffersArrays(GridBuffers& buffers);
 const GridBuffersArrays& ToGridBuffersArrays(const GridBuffers& buffers);
+
+// The arrays of the buffers of `grid`, for the grid piece that reads its own piece map.
+const GridBuffersArrays& ToGridBuffersArrays(const StaggeredGrid& grid);
 
 // The arrays of `builder_buffers`. The grid module's code gets at them only this way.
 GridBuilderBuffersArrays& ToGridBuilderBuffersArrays(GridBuilderBuffers& builder_buffers);

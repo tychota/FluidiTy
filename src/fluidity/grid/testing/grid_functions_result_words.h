@@ -317,6 +317,12 @@ inline void ApplyWordsOf(const BorderBlockResult& result, ResultWords& words) {
   words.Add("is_border", result.is_border);
 }
 
+inline void ApplyWordsOf(const PieceStepResult& result, ResultWords& words) {
+  words.Add("piece_place", result.piece_place);
+  words.Add("piece_neighbour", result.piece_neighbour);
+  words.Add("face_kind", result.face_kind);
+}
+
 inline void ApplyWordsOf(const ReadMarksResult& result, ResultWords& words) {
   int block = 0;
   for (const std::uint8_t mark : result.marks) {

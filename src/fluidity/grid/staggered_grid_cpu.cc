@@ -772,6 +772,10 @@ BuildGridFromBuffers(GridBuffers&& buffers, GridFrame frame, GridVersion version
   return {std::move(buffers), frame, version, counts};
 }
 
+const GridBuffersArrays& ToGridBuffersArrays(const StaggeredGrid& grid) {
+  return ToGridBuffersArrays(grid.buffers_);
+}
+
 GridBuffers TakeBuffers(StaggeredGrid&& grid) {
   GridBuffers buffers = std::move(grid.buffers_);
   grid.version_ = GridVersion{};

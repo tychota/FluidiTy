@@ -16,12 +16,14 @@
 //          FormulaQuery, FormulaResult, CellPlaceFacts, FacePlaceFacts, EdgeQuery, FaceSearchQuery, FaceSearchWalk,
 //          kMaxFaceSearchWalkFaces, BorderBlockQuery, BorderBlockResult, ComputeBorderBlockResult, MarkedPlaceKind,
 //          kMaxMarkedBlocks, ReadMarksQuery, ReadMarksResult, ComputeReadMarksResult,
+//          PieceStepSet, PieceStepQuery, PieceStepResult, ComputePieceStepResult,
 //          FindCellsAtPosition, ComputeNearbyFaceResult, ComputeFaceWeightResult,
 //          ComputeFormulaResult, ComputeCellPlaceFacts, ComputeFacePlaceFacts, FindCellCornersOf, FindFaceCornersOf,
 //          ComputeCornerPositionOf, FindCellsAroundEdgeOf, FindTouchingCellsOf, FindFacePiecesOf, FindCellsNearFaceOf,
 //          FindFaceSearchWalk
 // Uses:    BorderWidth, BlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
-//          (grid/border_block_steps.h),
+//          (grid/border_block_steps.h), ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind
+//          (grid/grid_piece_steps.h),
 //          Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Vec3 (base/vec3.h), CellCorners,
 //          FaceCorners, ComputeCornerPosition, FindCellsAroundEdge, CellsAroundEdge (grid/cell_corners.h),
 //          ComputeCellWidthsBySizeLevel, ComputeReferenceSpeed (grid/cell_size_rule.h), CellsNearFace,
@@ -51,6 +53,7 @@
 #include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_piece_steps.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
 #include "fluidity/grid/touching_cells.h"
@@ -351,6 +354,51 @@ ComputeReadMarksResult(const GridTables& tables, const ReadMarksQuery& query) {
     ApplyFacePlaceReadMarks(tables, FacePlaceIndex{query.place}, query.width, result.marks);
   }
   return result;
+}
+
+// The lists of one grid piece that the piece steps read, as pointers where the caller runs: the border blocks and the
+// range that a piece was built from, and the piece map it holds.
+struct PieceStepSet {
+  CellBlockRange range;
+  const CellBlockIndex* border_blocks;  // border_block_count entries, ascending, outside the range.
+  std::uint32_t border_block_count;
+  const CellBlockIndex* map;  // loaded_block_count entries, ascending: border_block_count + range.block_count.
+  std::uint32_t loaded_block_count;
+};
+
+// The query of the piece steps: one loaded item, one neighbour entry of the whole grid and one face place of a piece
+// block. Fields that the step does not read for this query are still valid values.
+struct PieceStepQuery {
+  std::uint32_t loaded_item;  // Below border_block_count + range.block_count.
+  std::uint32_t whole_neighbour;  // A block index of the whole grid, or kNoIndex.
+  std::uint32_t piece_block;  // Below loaded_block_count.
+  std::uint32_t face_place_in_block;  // 0..kFacePlacesPerBlock - 1.
+};
+
+// What the three piece steps give for one PieceStepQuery. Integers only, so the result has no padding and compares by
+// its bits.
+struct PieceStepResult {
+  std::uint32_t piece_place;  // ToPiecePlace for loaded_item.
+  std::uint32_t piece_neighbour;  // ToPieceNeighbour for whole_neighbour.
+  std::uint32_t face_kind;  // ComputePieceFaceKind for the place, as the FacePieceKind number.
+};
+
+// Answers one PieceStepQuery against `set`, whose lists must be readable where the caller runs, on the tables of the
+// whole grid.
+FLUIDITY_CPU_AND_GPU inline PieceStepResult
+ComputePieceStepResult(const GridTables& whole, const PieceStepSet& set, const PieceStepQuery& query) {
+  const FacePieceKind kind = ComputePieceFaceKind(
+      whole,
+      set.map,
+      set.loaded_block_count,
+      CellBlockIndex{query.piece_block},
+      static_cast<int>(query.face_place_in_block)
+  );
+  return {
+      .piece_place = ToPiecePlace(set.border_blocks, set.border_block_count, set.range, query.loaded_item).value,
+      .piece_neighbour = ToPieceNeighbour(set.map, set.loaded_block_count, query.whole_neighbour),
+      .face_kind = static_cast<std::uint32_t>(kind),
+  };
 }
 
 }  // namespace fluidity::grid

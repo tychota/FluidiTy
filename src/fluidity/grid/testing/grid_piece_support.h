@@ -17,10 +17,12 @@
 //   one size-level-1 block. A piece of that block alone has no bigger block for it, so FindCellAt finds no cell in
 //   it: the piece needs block 0 too.
 //
-// Owns:    PieceTables, BuildPieceTables, FindBorderByReadMarks, FindFirstReaderDifference
-// Uses:    CPU-only guard (base/cpu_only.h), BorderWidth, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
-//          (grid/border_block_steps.h), GridTables, GridFrame, CellState,
-//          FacePieceKind (grid/grid_tables.h), the id types (grid/grid_ids.h)
+// Owns:    PieceTables, PieceTablesView, BuildPieceTables, FindFirstTableDifference, PieceBuffersRoom,
+//          BuildPieceBuffersRoom, FindBorderByReadMarks, FindFirstReaderDifference
+// Uses:    CPU-only guard (base/cpu_only.h), GridPiece (grid/grid_piece.h), BorderWidth, ApplyCellPlaceReadMarks,
+//          ApplyFacePlaceReadMarks (grid/border_block_steps.h), GridTables, GridFrame, CellState, FacePieceKind
+//          (grid/grid_tables.h), the id types (grid/grid_ids.h), StaggeredGrid (grid/staggered_grid.h), TestGrid
+//          (grid/testing/grid_support.h)
 // Implementation uses: FindCellAt (grid/find_cell_at.h), FindTouchingCells, FindFacePieces (grid/touching_cells.h),
 //          FindCornerPlaces, FindCellsAroundEdge, ComputeCornerPosition (grid/cell_corners.h), FindCellsNearFace,
 //          BuildFaceSearch, FindNextFace (grid/face_search.h), FindNearbyFaces, ToMaskOfAll, ComputeNearbyFaceWeights,
@@ -42,7 +44,10 @@
 
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_piece.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/staggered_grid.h"
+#include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
 
@@ -62,6 +67,13 @@ struct PieceTables {
   [[nodiscard]] GridTables ToTables() const;
 };
 
+// The tables of a grid piece that a caller gives, with the piece map: what FindFirstReaderDifference reads. Both
+// parts belong to the caller and must outlive the call.
+struct PieceTablesView {
+  GridTables tables;
+  std::span<const CellBlockIndex> block_in_whole;  // [piece block]: the whole grid's index, ascending.
+};
+
 // Builds the tables of the piece made of `loaded_blocks` of `whole`, as method paper <sec-cell-blocks> builds a grid
 // piece: block by block in the whole grid's order; a neighbour entry naming a block not loaded becomes kNoIndex; a
 // kBetweenCells face piece whose cell_low or cell_high lies in a block not loaded becomes kOutsidePiece; every other
@@ -71,6 +83,25 @@ struct PieceTables {
 // Requires: `whole` are the tables of a CPU grid; loaded_blocks is ascending with no repeat, each below its block
 //   count. A list that breaks this fails the calling test and gives empty tables.
 PieceTables BuildPieceTables(const GridTables& whole, std::span<const CellBlockIndex> loaded_blocks);
+
+// Grid buffers on the CPU, and the owner of their memory and of the builder buffers lent to them. The owner is declared
+// first, so it is destroyed last.
+struct PieceBuffersRoom {
+  TestGrid owner;
+  GridBuffers buffers;
+};
+
+// Builds grid buffers with room for `max_cell_blocks` blocks (at least 1) on the CPU, empty. Fails the calling test and
+// gives nothing when they cannot be built.
+std::optional<PieceBuffersRoom> BuildPieceBuffersRoom(std::uint32_t max_cell_blocks);
+
+// Finds the first table of a real grid piece that differs from the tables built by BuildPieceTables, byte for byte:
+// the frame, the version, the block ids, the three neighbour arrays, the cell states, the face piece kinds, the piece
+// map and the counts of the piece's grid. Empty when every one is the same.
+// Example: the piece of BuildGridPiece for range {2, 1} and border {0, 1} against BuildPieceTables of the loaded blocks
+//   {0, 1, 2} gives no difference.
+// Requires: the piece is on the CPU; `expected` was built from the loaded blocks of the piece.
+std::optional<std::string> FindFirstTableDifference(const GridPiece& piece, const PieceTables& expected);
 
 // Finds the border of `set` at `width` by the forward form, as a GPU pass will: every cell place and face place of the
 // set marks the blocks its readers read (ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks, border_block_steps.h), and
@@ -113,6 +144,20 @@ std::optional<std::string> FindFirstReaderDifference(
     const GridTables& whole,
     std::span<const CellBlockIndex> set,
     std::span<const CellBlockIndex> border,
+    BorderWidth width
+);
+
+// The same readers and comparison as the form above, on the tables of a piece that a caller gives, such as a grid
+// piece that BuildGridPiece built: the piece must hold `set` and its border.
+// Example: for the piece of block 1 and the border {0}, the view of BuildGridPiece's tables gives no difference.
+// Requires: `whole` are the tables of a CPU grid; piece.block_in_whole is ascending and below its block count, one
+// entry
+//   for each block of piece.tables; `set` is ascending and below the whole grid's block count, and every block of it is
+//   in the piece.
+std::optional<std::string> FindFirstReaderDifference(
+    const GridTables& whole,
+    const PieceTablesView& piece,
+    std::span<const CellBlockIndex> set,
     BorderWidth width
 );
 

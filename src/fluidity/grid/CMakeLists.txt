@@ -14,6 +14,8 @@ fluidity_add_headers(
   grid_error_message.h
   grid_ids.h
   grid_memory_estimate.h
+  grid_piece.h
+  grid_piece_steps.h
   grid_tables.h
   grid_values.h
   nearby_face_weights.h
@@ -24,7 +26,7 @@ fluidity_add_headers(
 )
 
 target_sources(
-  fluidity PRIVATE cell_block_range_cpu.cc grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_values_cpu.cc staggered_grid_cpu.cc
+  fluidity PRIVATE cell_block_range_cpu.cc grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_piece_cpu.cc grid_values_cpu.cc staggered_grid_cpu.cc
 )
 fluidity_add_gpu_sources(cell_block_range_gpu.cu staggered_grid_gpu.cu)
 # ptxas prints the stack frame and the spills of each GPU function for each architecture, so every compile of the file
@@ -94,6 +96,18 @@ fluidity_add_test(grid_buffers_no_gpu_test SOURCES staggered_grid.buffers.no_gpu
 fluidity_add_test(grid_error_test SOURCES grid_error.test.cc LABEL cpu)
 fluidity_add_test(grid_ids_test SOURCES grid_ids.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_memory_estimate_test SOURCES grid_memory_estimate.test.cc LABEL cpu)
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  grid_piece_test
+  SOURCES
+  grid_piece.test.cc
+  testing/allocation_counter.cc
+  LABEL
+  cpu
+  LINKS
+  fluidity_grid_testing
+)
+fluidity_add_test(grid_piece_steps_test SOURCES grid_piece_steps.test.cc LABEL cpu)
 # Replaces the nothrow allocation functions for the whole program, so it shares its program with no other test.
 fluidity_add_test(grid_out_of_memory_test SOURCES staggered_grid.out_of_memory.test.cc LABEL cpu)
 fluidity_add_test(grid_shared_gpu_compile_test SOURCES grid_tables.shared.gpu_compile.test.cu LABEL no_gpu)

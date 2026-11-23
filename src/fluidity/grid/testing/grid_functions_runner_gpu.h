@@ -16,7 +16,8 @@
 //          FindFaceCornersOnGpu, ComputeCornerPositionsOnGpu, FindCellsAroundEdgesOnGpu, FindTouchingCellsOnGpu,
 //          FindFacePiecesOnGpu, FindCellsNearFacesOnGpu, WalkFaceSearchesOnGpu, ComputeFormulasOnGpu,
 //          ComputeCellPlaceFactsOnGpu, ComputeFacePlaceFactsOnGpu,
-//          ComputeBorderBlockResultsOnGpu, ComputeReadMarksResultsOnGpu, RunnerFunctionInfo, ReadRunnerFunctionInfo,
+//          ComputeBorderBlockResultsOnGpu, ComputeReadMarksResultsOnGpu, ComputePieceStepResultsOnGpu,
+//          RunnerFunctionInfo, ReadRunnerFunctionInfo,
 //          ReadLastRunnerFailure
 // Uses:    RunOnCallStatus (base/run_on_call.h), GridTables (grid/grid_tables.h), the queries and results of
 //          grid/testing/grid_functions_answers.h
@@ -101,6 +102,9 @@
 //
 // Reached by ComputeReadMarksResult (border_blocks.gpu.test.cc): ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
 //   ApplyReadMark, ApplyPlaceReadMark
+//
+// Reached by ComputePieceStepResult, which names ToPiecePlace, ToPieceNeighbour and ComputePieceFaceKind itself
+//   (grid_piece_steps.gpu.test.cc)
 
 #pragma once
 
@@ -209,6 +213,19 @@ RunOnCallStatus ComputeBorderBlockResultsOnGpu(
     BorderBlockResult* results
 );
 
+// Runs ComputePieceStepResult over the queries, against one grid piece's lists: the border blocks and the piece map
+// that the caller holds on the CPU in `set`, which this runner copies to the GPU, so the lists are GPU pointers when a
+// GPU thread reads them. The pointers of `set` are read on the CPU only.
+// Requires: as above, set.border_blocks and set.map readable for their counts (a null pointer only for a count of 0),
+//   each query meeting the preconditions of the three steps, and `tables` the whole grid's tables on the GPU.
+RunOnCallStatus ComputePieceStepResultsOnGpu(
+    const GridTables& tables,
+    const PieceStepSet& set,
+    const PieceStepQuery* queries,
+    int count,
+    PieceStepResult* results
+);
+
 // What cudaFuncGetAttributes says about one GPU function of the runners.
 struct RunnerFunctionInfo {
   std::string name;  // The runner that starts it.
@@ -218,10 +235,10 @@ struct RunnerFunctionInfo {
 };
 
 // Reads cudaFuncGetAttributes of the GPU function of every runner above, in the order of the runners, then the border
-// block runner and the read marks runner. Loading the attributes loads the code image for the device, so it fails when
-// the binary has none for this GPU. It launches nothing, so it says nothing about whether the stack is enough: the
-// runners themselves show that. Writes `functions` only on success. Fails: kCallFailed  a GPU call failed, for example
-// because the code was built for another GPU
+// block runner, the read marks runner and the piece step runner. Loading the attributes loads the code image for the
+// device, so it fails when the binary has none for this GPU. It launches nothing, so it says nothing about whether the
+// stack is enough: the runners themselves show that. Writes `functions` only on success. Fails: kCallFailed  a GPU call
+// failed, for example because the code was built for another GPU
 RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* functions);
 
 // The text of the last CUDA call that failed in a runner of this thread, such as "copy of the results to the CPU:

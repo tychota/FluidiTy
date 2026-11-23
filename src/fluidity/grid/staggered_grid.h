@@ -344,6 +344,7 @@ class StaggeredGrid {
   friend StaggeredGrid
   BuildGridFromBuffers(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);
   friend GridBuffers TakeBuffers(StaggeredGrid&& grid);
+  friend const GridBuffersArrays& ToGridBuffersArrays(const StaggeredGrid& grid);
   friend std::expected<StaggeredGrid, GridFailure> ReadGrid(const StaggeredGrid& grid, GridBuffers& cpu_buffers);
 
   StaggeredGrid(GridBuffers&& buffers, GridFrame frame, GridVersion version, const GridCounts& counts);

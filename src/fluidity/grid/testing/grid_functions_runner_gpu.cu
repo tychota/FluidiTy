@@ -76,6 +76,21 @@ __global__ void ComputeEveryBorderBlockResult(
   }
 }
 
+// results[index] = ComputePieceStepResult(tables, set, queries[index]) for index below count. `set` holds GPU pointers:
+// the runner copied the border blocks and the piece map to the GPU.
+__global__ void ComputeEveryPieceStepResult(
+    GridTables tables,
+    PieceStepSet set,
+    const PieceStepQuery* queries,
+    int count,
+    PieceStepResult* results
+) {
+  const GridStride stride = ComputeGridStride();
+  for (std::size_t index = stride.first_item; index < static_cast<std::size_t>(count); index += stride.item_step) {
+    results[index] = ComputePieceStepResult(tables, set, queries[index]);
+  }
+}
+
 // Starts ComputeEveryResult as ApplyGpuFunction does, one thread per query, and records the error of a launch that did
 // not start: ApplyGpuFunction reads cudaGetLastError and clears it, so its name would be lost.
 template <typename Query, typename Result, Result (*ComputeResult)(const GridTables&, const Query&)>
@@ -147,6 +162,22 @@ template <typename Query, typename Result, Result (*ComputeResult)(const GridTab
 RunOnCallStatus AddFunctionInfo(std::string name, std::vector<RunnerFunctionInfo>& functions) {
   cudaFuncAttributes attributes{};
   const cudaError_t error = cudaFuncGetAttributes(&attributes, ComputeEveryResult<Query, Result, ComputeResult>);
+  if (error != cudaSuccess) {
+    return RecordFailure(ToRunOnCallStatus(error), "attributes of " + name, error);
+  }
+  functions.push_back({
+      .name = std::move(name),
+      .local_bytes = static_cast<std::uint64_t>(attributes.localSizeBytes),
+      .register_count = attributes.numRegs,
+      .most_threads_per_block = attributes.maxThreadsPerBlock,
+  });
+  return RunOnCallStatus::kDone;
+}
+
+// Reads the attributes of ComputeEveryPieceStepResult and adds them to `functions`.
+RunOnCallStatus AddPieceStepFunctionInfo(std::string name, std::vector<RunnerFunctionInfo>& functions) {
+  cudaFuncAttributes attributes{};
+  const cudaError_t error = cudaFuncGetAttributes(&attributes, ComputeEveryPieceStepResult);
   if (error != cudaSuccess) {
     return RecordFailure(ToRunOnCallStatus(error), "attributes of " + name, error);
   }
@@ -282,6 +313,112 @@ RunOnCallStatus ComputeReadMarksResultsOnGpu(
   return RunOneThreadPerQuery<ReadMarksQuery, ReadMarksResult, ComputeReadMarksResult>(tables, queries, count, results);
 }
 
+RunOnCallStatus ComputePieceStepResultsOnGpu(
+    const GridTables& tables,
+    const PieceStepSet& set,
+    const PieceStepQuery* queries,
+    int count,
+    PieceStepResult* results
+) {
+  FindLastFailure().clear();
+  // Steps: 1 the GPU memory  2 the lists and the queries  3 the GPU function  4 the results back
+  // Step 1: one array for the border blocks followed by the piece map (none when both are empty), the queries and the
+  // results.
+  const auto query_count = static_cast<std::size_t>(count);
+  const std::size_t list_count = std::size_t{set.border_block_count} + set.loaded_block_count;
+  GpuArray<CellBlockIndex> gpu_lists;
+  GpuArray<PieceStepQuery> gpu_queries;
+  GpuArray<PieceStepResult> gpu_results;
+  if (list_count > 0) {
+    if (const RunOnCallStatus status = BuildGpuArray(gpu_lists, list_count, "allocation of the lists");
+        status != RunOnCallStatus::kDone) {
+      return status;
+    }
+  }
+  if (const RunOnCallStatus status = BuildGpuArray(gpu_queries, query_count, "allocation of the queries");
+      status != RunOnCallStatus::kDone) {
+    return status;
+  }
+  if (const RunOnCallStatus status = BuildGpuArray(gpu_results, query_count, "allocation of the results");
+      status != RunOnCallStatus::kDone) {
+    return status;
+  }
+
+  // Step 2: the lists and the queries go to the GPU; the set refers to the GPU copy of the lists.
+  PieceStepSet gpu_set = set;
+  if (list_count > 0) {
+    gpu_set.border_blocks = gpu_lists.values();
+    gpu_set.map = gpu_lists.values() + set.border_block_count;
+    if (set.border_block_count > 0) {
+      if (const RunOnCallStatus status = ToRecordedStatus(
+              cudaMemcpy(
+                  gpu_lists.values(),
+                  set.border_blocks,
+                  sizeof(CellBlockIndex) * set.border_block_count,
+                  cudaMemcpyHostToDevice
+              ),
+              "copy of the border blocks to the GPU"
+          );
+          status != RunOnCallStatus::kDone) {
+        return status;
+      }
+    }
+    if (set.loaded_block_count > 0) {
+      if (const RunOnCallStatus status = ToRecordedStatus(
+              cudaMemcpy(
+                  gpu_lists.values() + set.border_block_count,
+                  set.map,
+                  sizeof(CellBlockIndex) * set.loaded_block_count,
+                  cudaMemcpyHostToDevice
+              ),
+              "copy of the piece map to the GPU"
+          );
+          status != RunOnCallStatus::kDone) {
+        return status;
+      }
+    }
+  }
+  if (const RunOnCallStatus status = ToRecordedStatus(
+          cudaMemcpy(gpu_queries.values(), queries, sizeof(PieceStepQuery) * query_count, cudaMemcpyHostToDevice),
+          "copy of the queries to the GPU"
+      );
+      status != RunOnCallStatus::kDone) {
+    return status;
+  }
+
+  // Step 3: one thread per query.
+  const LaunchSize launch_size = ComputeLaunchSize(query_count);
+  ComputeEveryPieceStepResult<<<launch_size.thread_block_count, launch_size.thread_block_size>>>(
+      tables,
+      gpu_set,
+      gpu_queries.values(),
+      count,
+      gpu_results.values()
+  );
+  if (const RunOnCallStatus status = ToRecordedStatus(cudaGetLastError(), "start of the GPU function");
+      status != RunOnCallStatus::kDone) {
+    return status;
+  }
+
+  // Step 4: the copy waits for the GPU function, so an error while it ran reports here.
+  if (const RunOnCallStatus status = ToRecordedStatus(
+          cudaMemcpy(results, gpu_results.values(), sizeof(PieceStepResult) * query_count, cudaMemcpyDeviceToHost),
+          "copy of the results to the CPU, which also waits for the GPU function"
+      );
+      status != RunOnCallStatus::kDone) {
+    return status;
+  }
+  if (const RunOnCallStatus status = gpu_lists.values() == nullptr ? RunOnCallStatus::kDone : gpu_lists.Free();
+      status != RunOnCallStatus::kDone) {
+    return RecordFailure(status, "freeing the lists", cudaGetLastError());
+  }
+  if (const RunOnCallStatus status = gpu_queries.Free(); status != RunOnCallStatus::kDone) {
+    return RecordFailure(status, "freeing the queries", cudaGetLastError());
+  }
+  const RunOnCallStatus status = gpu_results.Free();
+  return status == RunOnCallStatus::kDone ? status : RecordFailure(status, "freeing the results", cudaGetLastError());
+}
+
 RunOnCallStatus ComputeBorderBlockResultsOnGpu(
     const GridTables& tables,
     CellBlockRange range,
@@ -377,7 +514,7 @@ RunOnCallStatus ComputeBorderBlockResultsOnGpu(
 RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* functions) {
   FindLastFailure().clear();
   std::vector<RunnerFunctionInfo> read;
-  const std::array<RunOnCallStatus, 16> statuses = {
+  const std::array<RunOnCallStatus, 17> statuses = {
       AddFunctionInfo<FindCellAtQuery, FoundCells, FindCellsAtPosition>("FindCellsAtOnGpu", read),
       AddFunctionInfo<NearbyFaceQuery, NearbyFaceResult, ComputeNearbyFaceResult>(
           "ComputeNearbyFaceResultsOnGpu",
@@ -400,6 +537,7 @@ RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* function
       AddFunctionInfo<FacePlaceIndex, FacePlaceFacts, ComputeFacePlaceFacts>("ComputeFacePlaceFactsOnGpu", read),
       AddBorderBlockFunctionInfo("ComputeBorderBlockResultsOnGpu", read),
       AddFunctionInfo<ReadMarksQuery, ReadMarksResult, ComputeReadMarksResult>("ComputeReadMarksResultsOnGpu", read),
+      AddPieceStepFunctionInfo("ComputePieceStepResultsOnGpu", read),
   };
   for (const RunOnCallStatus status : statuses) {
     if (status != RunOnCallStatus::kDone) {
