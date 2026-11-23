@@ -1,0 +1,30 @@
+docs/superpowers/specs/modules/owner-answers.md
+  s_4f0877e2acdcf0::t_8a48192f34509a 123-126
+docs/superpowers/specs/modules/02-grid-design.md
+  s_4f0877e2acdcf0::t_b83fa5be6a7811 1196-1254,1258-1259
+  s_4f0877e2acdcf0::t_2d459a3e8e11d8 422,424-427,430-442,446-452,459-460,477-480,482-483
+  s_4f0877e2acdcf0::t_3b539510a28af9 746,801-805,807-808
+  s_4f0877e2acdcf0::t_346cf8827c0e54 1883-1902,1906-1909
+  s_4f0877e2acdcf0::t_11afbc3774694d 461,1150-1152
+docs/superpowers/plans/2026-11-14-rebuild-02-grid.md
+  s_4f0877e2acdcf0::t_0d8a6db63f51d8 2659-2660,2663-2664,2667-2715,2720-2724,2726,2728-2730,2734-2748,2763-2766,2768-2769,2772-2833,2835-2837,2839-2840,2842-2843,2845,2853-2861,2864-2870,2883-2884,2887-2890,2893-2906,2910-2914,2918-2938,2941
+  s_4f0877e2acdcf0::t_dd3dcb178cebc6 2661-2662,2732-2733
+  s_4f0877e2acdcf0::t_5b0aabd4c7e140 428-431,2653-2657,2758-2760
+  s_4f0877e2acdcf0::t_6354a999ba9904 2761
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "25cc4f54b3be2384199dd4d903c99ab7cdccf0ee",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
