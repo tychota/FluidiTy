@@ -1,0 +1,31 @@
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_4b9e28984d5d72 458
+tests/grid/cell_block_ranges_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_5e32e9d088283d 130,147,169,206
+src/fluidity/grid/testing/grid_piece_support.h
+  s_a4110847de8b88::t_bfd5cc95fc2251 97-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "66942324d6f448a1a5d7674c4297d9ece999976b",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_a4110847de8b88": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a90eed857685e3bc7",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
