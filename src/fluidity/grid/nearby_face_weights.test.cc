@@ -64,6 +64,22 @@ TEST(FindNearbyFaces, AllNeighboursSplit_Has76) {
   CheckEveryAxisHasCount(ToTablesOf(test_grid), {.x = 1.5, .y = 1.5, .z = 1.5}, 76);
 }
 
+// Checks that the faces of `list` are the faces of the checker's candidates for the size-level-1 cell {2,2,2} in the
+// window (1, 0, 1), on the Y axis, as places in ascending order.
+void CheckListIsTheCheckersList(const GridTables& tables, const GeometricGrid& checker, const NearbyFaceList& list) {
+  std::vector<std::uint32_t> listed_places(static_cast<std::size_t>(list.count));
+  for (int entry = 0; entry < list.count; ++entry) {
+    listed_places[static_cast<std::size_t>(entry)] = list.faces[entry].value;
+  }
+  const std::vector<GeometricFacePiece> candidates = checker.NearbyFaces(ToCell(1, 2, 2, 2), {1, 0, 1}, Axis::kY);
+  std::vector<std::uint32_t> checker_places(candidates.size());
+  std::ranges::transform(candidates, checker_places.begin(), [&tables](const GeometricFacePiece& piece) {
+    return FindFacePlace(tables, piece.id).value;
+  });
+  std::ranges::sort(checker_places);
+  EXPECT_EQ(listed_places, checker_places);
+}
+
 TEST(FindNearbyFaces, TwoSizesWorstCase_Has124) {
   const std::vector<CellId> cells = BuildTwoSizesWorstCaseCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToTwoSizesWorstCaseFrame(), cells));
@@ -76,6 +92,7 @@ TEST(FindNearbyFaces, TwoSizesWorstCase_Has124) {
   EXPECT_EQ(list.axis, Axis::kY);
   EXPECT_EQ(list.cell_width, 2.0);
   CheckFacesAreAscending(list);
+  CheckListIsTheCheckersList(ToTablesOf(test_grid), GeometricGrid(ToTwoSizesWorstCaseFrame(), cells), list);
 }
 
 TEST(FindNearbyFacesWithRoom, MoreFacesThanRoom_IsInternalFault) {
@@ -188,6 +205,25 @@ TEST(FindNearbyFaces, CoarserNeighbour_ListsThePlaneOfTheWindowQuarter) {
   CheckXFaceCentresAre(tables, {.x = 0.8, .y = 0.25, .z = 0.25}, expected_centres);
 }
 
+// Checks that FindNearbyFaces puts a position in `expected_cell` and in quarter `expected_quarter_x` of it along X,
+// the window the 27 faces are counted in.
+void CheckPositionIsInCellAndQuarter(
+    const GridTables& tables,
+    Vec3 position,
+    CellId expected_cell,
+    int expected_quarter_x
+) {
+  GridError error = GridError::kInternalFault;
+  const NearbyFaceList list = FindNearbyFaces(tables, position, Axis::kX, CellBlockIndex{kNoIndex}, &error);
+  ASSERT_EQ(error, GridError::kNone);
+  EXPECT_EQ(ToCellId(tables, list.cell).value, expected_cell.value);
+  const std::int32_t cell_coord_x = ToCellCoord(expected_cell).x;
+  EXPECT_EQ(
+      ComputeCandidateWindowQuarter(position.x, tables.frame.origin.x, list.cell_width, cell_coord_x),
+      expected_quarter_x
+  );
+}
+
 // The origin and the width have no short binary fraction, so a test of float offsets would list 36 faces here.
 TEST(FindNearbyFaces, CellCentreInNonDyadicFrame_Has27) {
   const GridFrame frame = {
@@ -204,6 +240,7 @@ TEST(FindNearbyFaces, CellCentreInNonDyadicFrame_Has27) {
     const double position_x = ComputeMovedByRoundingSteps(centre_x, steps);
     const Vec3 position = {.x = position_x, .y = position_y_and_z, .z = position_y_and_z};
     CheckEveryAxisHasCount(ToTablesOf(test_grid), position, 27);
+    CheckPositionIsInCellAndQuarter(ToTablesOf(test_grid), position, ToCell(0, -28, 2, 2), steps < 0 ? 1 : 2);
   }
 }
 
@@ -222,6 +259,9 @@ TEST(FindNearbyFaces, OneStepBelowCellSide_Has27) {
   for (const double position_x : {std::nextafter(side_x, 0.0), side_x, std::nextafter(side_x, 2.0)}) {
     const Vec3 position = {.x = position_x, .y = position_y_and_z, .z = position_y_and_z};
     CheckEveryAxisHasCount(ToTablesOf(test_grid), position, 27);
+    // x - origin of the position one step below the side rounds to the side (2.125), so FindCellAt gives all three
+    // positions to cell 34, in its first quarter.
+    CheckPositionIsInCellAndQuarter(ToTablesOf(test_grid), position, ToCell(0, 34, 10, 10), 0);
   }
 }
 
@@ -560,6 +600,7 @@ TEST(ComputeNearbyFaceWeights, FacesOnOnePlane_IsMeanOnly) {
   const NearbyFaceMask plane_mask = BuildMaskOfFacesAt(tables, all_kept, Axis::kX, 3.0 - position.x);
   const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, all_kept.list, position, plane_mask);
   EXPECT_EQ(weights.fit, NearbyFaceFit::kMeanOnly);
+  EXPECT_FALSE(weights.is_complete);
   EXPECT_GT(weights.weight_sum, kMinWeightSum);
   CheckMatrixIsNear(weights.inverse_weighted_spread, Mat3{}, 0.0);
   CheckWeightsAddUp(tables, weights);
@@ -616,6 +657,84 @@ TEST(ComputeNearbyFaceWeights, SmallWeightSumWithFullRankSpread_IsMeanOnly) {
   EXPECT_EQ(weights.fit, NearbyFaceFit::kMeanOnly);
   CheckMatrixIsNear(weights.inverse_weighted_spread, Mat3{}, 0.0);
   CheckWeightsAddUp(tables, weights);
+}
+
+// The 8 faces in the corners of the lattice at x offsets -0.6 and 0.4 of the position {2.6, 2.7, 2.8} of the unit grid,
+// as a list and a mask. Moving the position within its quarter of the cell, here to {x, y, 2.8} with x in [2.5, 2.75)
+// and y in [2.5, 2.75), leaves the list as it is.
+struct CornerFaces {
+  NearbyFaceMask mask;
+  NearbyFaceList list;
+};
+
+CornerFaces BuildCornerFacesOfTheBasePosition(const GridTables& tables) {
+  const Vec3 base_position = {.x = 2.6, .y = 2.7, .z = 2.8};
+  const NearbyFaceWeights all_kept = FindWeightsOfAllFaces(tables, base_position, Axis::kX);
+  const NearbyFaceMask mask = BuildMaskOfFacesWhere(tables, all_kept, [](Vec3 offset) {
+    return (ComputeIsNearOffset(offset.x, -0.6) || ComputeIsNearOffset(offset.x, 0.4))
+        && (ComputeIsNearOffset(offset.y, -1.2) || ComputeIsNearOffset(offset.y, 0.8))
+        && (ComputeIsNearOffset(offset.z, -1.3) || ComputeIsNearOffset(offset.z, 0.7));
+  });
+  return {.mask = mask, .list = all_kept.list};
+}
+
+// Computes the weights of the corner faces at the position {x, y, 2.8}.
+NearbyFaceWeights
+ComputeCornerFaceWeightsAt(const GridTables& tables, const CornerFaces& corner, double position_x, double position_y) {
+  const Vec3 position = {.x = position_x, .y = position_y, .z = 2.8};
+  return ComputeNearbyFaceWeights(tables, corner.list, position, corner.mask);
+}
+
+// Finds the smallest double y, in [2.70, 2.75], at which the weight sum of the corner faces at {2.6, y, 2.8} is at
+// least kMinWeightSum. The sum grows with y: it is 0.0981 at y = 2.70 and 0.1057 at y = 2.75.
+double FindYWhereWeightSumIsAtLeastTheMinimum(const GridTables& tables, const CornerFaces& corner) {
+  double below = 2.70;
+  double upper = 2.75;
+  for (int step = 0; step < 60; ++step) {
+    const double middle = 0.5 * (below + upper);
+    if (ComputeCornerFaceWeightsAt(tables, corner, 2.6, middle).weight_sum < kMinWeightSum) {
+      below = middle;
+    } else {
+      upper = middle;
+    }
+  }
+  return upper;
+}
+
+// Finds the first x, going up from 2.6 a double at a time, at which the weight sum of the corner faces at {x, y, 2.8}
+// equals `target`, or 0 when none of the next 1,000 doubles does. The sum falls by about 0.01 per metre of x, so a step
+// of x moves it by less than a step of the sum near 0.1, and the doubles of the sum there are met one after the
+// other.
+double FindXWithWeightSum(const GridTables& tables, const CornerFaces& corner, double position_y, double target) {
+  double position_x = 2.6;
+  for (int step = 0; step < 1000; ++step) {
+    if (ComputeCornerFaceWeightsAt(tables, corner, position_x, position_y).weight_sum == target) {
+      return position_x;
+    }
+    position_x = std::nextafter(position_x, 3.0);
+  }
+  return 0.0;
+}
+
+// The weight sum exactly equal to kMinWeightSum fits in full, and the double just below it keeps the mean only: the
+// test is "at least the minimum", so the sum on the line is on the fitted side.
+TEST(ComputeNearbyFaceWeights, WeightSumExactlyTheMinimum_IsFull) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildUniformFiveByFiveGrid();
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = ToTablesOf(test_grid);
+  const CornerFaces corner = BuildCornerFacesOfTheBasePosition(tables);
+  const double position_y = FindYWhereWeightSumIsAtLeastTheMinimum(tables, corner);
+  const double just_below_minimum = std::nextafter(kMinWeightSum, 0.0);
+  const double x_at_minimum = FindXWithWeightSum(tables, corner, position_y, kMinWeightSum);
+  ASSERT_GT(x_at_minimum, 0.0);
+  const NearbyFaceWeights at_minimum = ComputeCornerFaceWeightsAt(tables, corner, x_at_minimum, position_y);
+  EXPECT_EQ(at_minimum.weight_sum, kMinWeightSum);
+  EXPECT_EQ(at_minimum.fit, NearbyFaceFit::kFull);
+  const double x_below_minimum = FindXWithWeightSum(tables, corner, position_y, just_below_minimum);
+  ASSERT_GT(x_below_minimum, 0.0);
+  const NearbyFaceWeights below_minimum = ComputeCornerFaceWeightsAt(tables, corner, x_below_minimum, position_y);
+  EXPECT_EQ(below_minimum.weight_sum, just_below_minimum);
+  EXPECT_EQ(below_minimum.fit, NearbyFaceFit::kMeanOnly);
 }
 
 // The two-plane scenario of the fit's limit: a unit grid, X axis, position {2.5 - 2e-6, 2.5, 2.5}, only the 9 faces at
@@ -723,6 +842,48 @@ TEST(ComputeCholeskyInverse, FlatMatrix_IsNotInvertible) {
   const CholeskyInverse result = ComputeCholeskyInverse(matrix);
   EXPECT_FALSE(result.is_invertible);
   EXPECT_EQ(result.inverse.xx, 0.0);
+}
+
+// Builds a diagonal matrix whose pivot number `pivot_entry` (0, 1 or 2, the entries xx, yy and zz) is exactly the
+// limit, 1e-12 of the trace as the factorisation computes it, and whose other two entries are 1. The pivot is found by
+// repeating pivot = 1e-12 x ((xx + yy) + zz), which settles on a double that equals its own limit.
+Mat3 BuildDiagonalMatrixWithPivotAtTheLimit(int pivot_entry, double pivot) {
+  std::array<double, 3> diagonal = {1.0, 1.0, 1.0};
+  diagonal.at(static_cast<std::size_t>(pivot_entry)) = pivot;
+  return {
+      .xx = diagonal[0],
+      .xy = 0.0,
+      .xz = 0.0,
+      .yx = 0.0,
+      .yy = diagonal[1],
+      .yz = 0.0,
+      .zx = 0.0,
+      .zy = 0.0,
+      .zz = diagonal[2],
+  };
+}
+
+double FindPivotEqualToItsLimit(int pivot_entry) {
+  double pivot = 2e-12;
+  for (int step = 0; step < 8; ++step) {
+    const Mat3 matrix = BuildDiagonalMatrixWithPivotAtTheLimit(pivot_entry, pivot);
+    pivot = kMinPivotShare * ((matrix.xx + matrix.yy) + matrix.zz);
+  }
+  return pivot;
+}
+
+// A pivot exactly equal to its limit is too small ("at most" the limit), and the next double above it is not, for the
+// first, second and third pivot in turn.
+TEST(ComputeCholeskyInverse, PivotExactlyAtTheLimit_IsNotInvertible) {
+  for (const int pivot_entry : {0, 1, 2}) {
+    SCOPED_TRACE(pivot_entry);
+    const double pivot = FindPivotEqualToItsLimit(pivot_entry);
+    const Mat3 at_limit = BuildDiagonalMatrixWithPivotAtTheLimit(pivot_entry, pivot);
+    ASSERT_EQ(pivot, kMinPivotShare * ((at_limit.xx + at_limit.yy) + at_limit.zz));
+    EXPECT_FALSE(ComputeCholeskyInverse(at_limit).is_invertible);
+    const Mat3 above_limit = BuildDiagonalMatrixWithPivotAtTheLimit(pivot_entry, std::nextafter(pivot, 1.0));
+    EXPECT_TRUE(ComputeCholeskyInverse(above_limit).is_invertible);
+  }
 }
 
 TEST(ComputeCholeskyInverse, PivotJustAboveTheLimit_IsInvertible) {

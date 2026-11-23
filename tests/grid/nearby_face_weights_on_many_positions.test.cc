@@ -33,7 +33,8 @@ std::vector<CellId> BuildCentralCells() {
 }
 
 // Uniform 8^3 grid, cells 0.25 m wide, 1,000 random positions inside the central 4^3 cells: on every axis the 27 faces
-// give W = 1, a mean offset of 0 and a weighted spread of h^2 / 4 times the identity, to within 1e-14.
+// give W = 1, a mean offset of 0 and a weighted spread of h^2 / 4 times the identity, to within 1e-14, and an inverse
+// of 4 / h^2 times the identity.
 TEST(ComputeNearbyFaceWeights, CompleteSameSize_MatchesClosedForm) {
   const GridFrame frame = {
       .origin = {.x = 0, .y = 0, .z = 0},

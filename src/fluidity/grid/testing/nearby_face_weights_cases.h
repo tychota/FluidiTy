@@ -225,7 +225,8 @@ inline void CheckIsCompleteWithUnitWeightSum(const NearbyFaceWeights& weights, d
 }
 
 // Checks the closed form of the complete case within 1e-14: W = 1, the mean offset 0 within 1e-14 h, and the weighted
-// spread h^2 / 4 times the identity within 1e-14 h^2; also is_complete, a fit of kFull and 27 faces.
+// spread h^2 / 4 times the identity within 1e-14 h^2, and its inverse 4 / h^2 times the identity within a relative
+// 1e-12 (the factor 1 / h^2 of the fit); also is_complete, a fit of kFull and 27 faces.
 inline void CheckCompleteClosedForm(const NearbyFaceWeights& weights) {
   const double cell_width = weights.list.cell_width;
   CheckIsCompleteWithUnitWeightSum(weights, kWeightSumTolerance);
@@ -243,6 +244,19 @@ inline void CheckCompleteClosedForm(const NearbyFaceWeights& weights) {
       .zz = spread_diagonal,
   };
   CheckMatrixIsNear(weights.weighted_spread, expected_spread, 1e-14 * cell_width * cell_width);
+  const double inverse_diagonal = 1.0 / spread_diagonal;
+  const Mat3 expected_inverse = {
+      .xx = inverse_diagonal,
+      .xy = 0.0,
+      .xz = 0.0,
+      .yx = 0.0,
+      .yy = inverse_diagonal,
+      .yz = 0.0,
+      .zx = 0.0,
+      .zy = 0.0,
+      .zz = inverse_diagonal,
+  };
+  CheckMatrixIsNear(weights.inverse_weighted_spread, expected_inverse, 1e-12 * inverse_diagonal);
 }
 
 // Counts the kept faces whose weight is exactly 0.

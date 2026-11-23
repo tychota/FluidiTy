@@ -124,9 +124,15 @@ int CheckListMatchesChecker(
 }
 
 // Checks 50 positions of one random grid, 10 of them on a cell side or centre on every axis, and gives the largest
-// count.
-int CheckPositionsOfOneGrid(const GridTables& tables, const GeometricGrid& checker, const std::vector<CellId>& cells) {
-  std::mt19937_64 generator(cells.size() + 1);
+// count. The positions are drawn from a generator seeded with the grid's number, so grids with as many cells as one
+// another do not get the same draws.
+int CheckPositionsOfOneGrid(
+    const GridTables& tables,
+    const GeometricGrid& checker,
+    const std::vector<CellId>& cells,
+    std::size_t grid_number
+) {
+  std::mt19937_64 generator(grid_number + 1);
   int largest_count = 0;
   for (int draw = 0; draw < 50; ++draw) {
     const PlacedPosition placed = FindDrawnPosition(
@@ -155,7 +161,7 @@ TEST(FindNearbyFaces, RandomGrids_MatchGeometricChecker) {
     const GridTables tables = random_grids.grids[grid_entry].grid.tables(RunOn::kCpu);
     largest_count = std::max(
         largest_count,
-        CheckPositionsOfOneGrid(tables, random_grids.checkers[grid_entry], cell_lists[grid_entry])
+        CheckPositionsOfOneGrid(tables, random_grids.checkers[grid_entry], cell_lists[grid_entry], grid_entry)
     );
   }
   RecordProperty("largest_nearby_faces", largest_count);
