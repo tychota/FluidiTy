@@ -724,15 +724,12 @@ ComputeIsBorderBlock(const GridTables& tables, const BlockSet& set, CellBlockInd
 }
 
 // Marks `block` and each of its bigger blocks, up to size level 0: marks[b] = 1 for each, and nothing else is
-// written. kNoIndex marks nothing. It stops at a block already marked: whoever marked it goes on to its bigger blocks,
-// so when every call has returned every bigger block is marked, also when threads run it at once. For this header's
-// own functions only.
+// written. kNoIndex marks nothing. It reads no mark: it writes the whole chain every time, at most kMaxSizeLevels
+// bytes, so threads that run it at once only write the value 1 to bytes they never read. For this header's own
+// functions only.
 FLUIDITY_CPU_AND_GPU constexpr void
 ApplyReadMark(const GridTables& tables, std::uint32_t block, std::uint8_t* marks) noexcept {
   for (int size_level_step = 0; size_level_step < kMaxSizeLevels && block < tables.block_count; ++size_level_step) {
-    if (marks[block] != 0) {
-      return;
-    }
     marks[block] = 1;
     block = tables.bigger_block[block];
   }
@@ -759,11 +756,18 @@ ApplyPlaceReadMark(const GridTables& tables, PlaceIndex place, std::uint8_t* mar
 //   FindCornerPlaces(c). Each is marked with its bigger blocks (ApplyReadMark). FindCellsAroundEdge, FindCellAt and
 //   FindNearbyFaces read nothing more.
 //   The width does not change what an active cell reads; it is taken so both forms read alike.
+//   What a GPU pass must do. Two threads that write the value 1 to one byte at once are formally a data race in the
+//   CUDA memory model, and the result is right only because of how a byte store works, so the pass keeps to this: each
+//   thread writes only the value 1 to a byte and never reads a mark (ApplyReadMark reads none), and the launch that
+//   scans the marks, to list the border, starts after the marking launch has finished. No atomic is used, and the marks
+//   hold no other value, so a pass must not set marks for a set or for a border found earlier in the same array.
 // Ties: only the value 1 is written, so threads that run this for different places of one set at once, into the
 //   same marks, cannot conflict, and the marks do not depend on the order of the places.
 // Work: FindTouchingCells, 57 FindFacePieces, up to 56 x 24 x 2 FindCellLow or FindCellHigh, one FindCornerPlaces
-//   (up to 24 FindCellBlock searches) and up to about 2,800 marks of at most 16 reads each: up to about 10^5 table
-//   reads, moves and writes. It allocates nothing.
+//   (8 corners, each up to 8 blocks at each of up to 3 size levels: up to 192 FindCellBlock searches) and up to about
+//   2,800 marks of at most 16 reads each: up to about 10^5 table reads, moves and writes. It allocates nothing. A set
+//   of n places costs n times this, whatever the grid's size: the border of a set is found by calling this for each
+//   place of the set and one pass over the marks.
 // Example: in the grid of the file header, cell {3,3,0} of block A marks A, B (the touching cell {4,3,0}) and C (the
 //   +Y face piece of {4,3,0}, plane 0 of C).
 // Requires: `cell` is a cell place of block 0..tables.block_count - 1; `marks` holds tables.block_count entries, each 0
@@ -810,10 +814,12 @@ FLUIDITY_CPU_AND_GPU constexpr void ApplyCellPlaceReadMarks(
 //   two cells, of its corners (FindCornerPlaces), and of the cells of FindCellsNearFace(f): at kTouchingCells those
 //   at most one size level bigger than f, for transfer; at kFourCellWidths all of them, and every block of the list
 //   of BuildFaceSearch(f) at the largest radius. Each is marked with its bigger blocks (ApplyReadMark).
-// Ties: only the value 1 is written, as ApplyCellPlaceReadMarks.
-// Work: FindCellLow, FindCellHigh, FindCornerPlaces (up to 12 FindCellBlock searches), FindCellsNearFace (2
-//   FindTouchingCells and up to 112 sorted inserts) and up to 116 marks; at kFourCellWidths also BuildFaceSearch and
-//   up to 270 marks: up to about 4 x 10^4 table reads, moves and writes. It allocates nothing.
+// Ties: only the value 1 is written and no mark is read, as ApplyCellPlaceReadMarks, whose Method says what a GPU pass
+//   must do.
+// Work: FindCellLow, FindCellHigh, FindCornerPlaces (4 corners, each up to 8 blocks at each of up to 3 size levels: up
+//   to 96 FindCellBlock searches), FindCellsNearFace (2 FindTouchingCells and up to 112 sorted inserts) and up to 116
+//   marks; at kFourCellWidths also BuildFaceSearch and up to 270 marks: up to about 4 x 10^4 table reads, moves and
+//   writes. It allocates nothing.
 // Example: in the grid of the file header, the +Y face piece of {4,3,0}, kept in C, marks C, B (the block of its
 //   cell_low) and A: the cell {3,3,0} touches that cell_low, so its particles can list the face piece.
 // Requires: `face` is a face place of block 0..tables.block_count - 1; `marks` holds tables.block_count entries, each 0

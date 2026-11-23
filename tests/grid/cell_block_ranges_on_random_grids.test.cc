@@ -419,26 +419,40 @@ TEST(FindBorderBlocks, EveryBlockAlone_EqualsGeometricReadSet) {
 constexpr std::size_t kTwoFormsGridCount = 60;
 constexpr std::size_t kBlockAloneGridCount = 10;
 
+// The border of a set by the form that asks each block from its own side (ComputeIsBorderBlock): the form of
+// FindBorderBlocks that takes an output span, which has no working memory. It fails the calling test when the call
+// fails or the span is too short.
+std::vector<CellBlockIndex>
+FindBorderBlockByBlockOrFail(const StaggeredGrid& grid, std::span<const CellBlockIndex> blocks, BorderWidth width) {
+  std::vector<CellBlockIndex> border(grid.counts().cell_blocks);
+  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(grid, blocks, width, border);
+  EXPECT_TRUE(count.has_value());
+  const std::uint32_t border_count = count.value_or(0);
+  EXPECT_LE(border_count, border.size());
+  border.resize(std::min<std::size_t>(border_count, border.size()));
+  return border;
+}
+
 // Checks that the forward form (FindBorderByReadMarks) gives, for each chosen set of random grid `grid`, the borders
-// FindBorderBlocks found.
+// the form that asks each block from its own side finds.
 void CheckForwardFormOnChosenSets(std::size_t grid) {
   const GridTables tables = FindRandomGridsWithCheckers().grids.at(grid).grid.tables(RunOn::kCpu);
   const GridBorderCase& grid_case = FindGridBorderCases().at(grid);
   for (std::size_t set_number = 0; set_number < grid_case.sets.size(); ++set_number) {
     SCOPED_TRACE(testing::Message() << "random grid " << grid << ", set " << set_number);
     const std::vector<CellBlockIndex>& set = grid_case.sets.at(set_number);
-    EXPECT_EQ(
-        ToBlockNumbers(FindBorderByReadMarks(tables, set, BorderWidth::kTouchingCells)),
-        ToBlockNumbers(grid_case.touching_borders.at(set_number))
-    );
-    EXPECT_EQ(
-        ToBlockNumbers(FindBorderByReadMarks(tables, set, BorderWidth::kFourCellWidths)),
-        ToBlockNumbers(grid_case.wide_borders.at(set_number))
-    );
+    const StaggeredGrid& staggered_grid = FindRandomGridsWithCheckers().grids.at(grid).grid;
+    for (const BorderWidth width : {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths}) {
+      EXPECT_EQ(
+          ToBlockNumbers(FindBorderByReadMarks(tables, set, width)),
+          ToBlockNumbers(FindBorderBlockByBlockOrFail(staggered_grid, set, width))
+      );
+    }
   }
 }
 
-// Checks that the forward form and FindBorderBlocks give the same border for every block alone of random grid `grid`.
+// Checks that the forward form and the form that asks each block from its own side give the same border for every
+// block alone of random grid `grid`.
 void CheckForwardFormOnEveryBlockAlone(std::size_t grid) {
   const StaggeredGrid& staggered_grid = FindRandomGridsWithCheckers().grids.at(grid).grid;
   const GridTables tables = staggered_grid.tables(RunOn::kCpu);
@@ -448,16 +462,16 @@ void CheckForwardFormOnEveryBlockAlone(std::size_t grid) {
     for (const BorderWidth width : {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths}) {
       EXPECT_EQ(
           ToBlockNumbers(FindBorderByReadMarks(tables, set, width)),
-          ToBlockNumbers(FindBorderOrFail(staggered_grid, set, width))
+          ToBlockNumbers(FindBorderBlockByBlockOrFail(staggered_grid, set, width))
       );
     }
   }
 }
 
-// The form that asks each block from its own side (FindBorderBlocks, through ComputeIsBorderBlock) and the forward
-// form, in which every place of the set marks what its readers read (FindBorderByReadMarks, through
-// ApplyCellPlaceReadMarks and ApplyFacePlaceReadMarks), give the same border: for every chosen set of the first
-// 60 random grids, and for every block alone of the first 10, at both widths.
+// The form that asks each block from its own side (FindBorderBlocks with an output span, through
+// ComputeIsBorderBlock) and the forward form, in which every place of the set marks what its readers read
+// (FindBorderByReadMarks, through ApplyCellPlaceReadMarks and ApplyFacePlaceReadMarks), give the same border: for
+// every chosen set of the first 60 random grids, and for every block alone of the first 10, at both widths.
 TEST(FindBorderBlocks, BlockByBlockForm_EqualsForwardForm) {
   ASSERT_EQ(FindGridBorderCases().size(), kRandomGridCount);
   for (std::size_t grid = 0; grid < kTwoFormsGridCount; ++grid) {

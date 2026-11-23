@@ -214,6 +214,57 @@ TEST(FindBorderBlocks, OutputOneShort_WritesFirstEntriesReturnsTotal) {
   EXPECT_EQ(count_after_short_call - count_after_exact_call, 0U);
 }
 
+// Checks that the vector form and the span form give the same border for the block set of `block` alone.
+void CheckFormsAgree(const StaggeredGrid& grid, std::uint32_t block, BorderWidth width) {
+  const std::vector<CellBlockIndex> blocks = ToBlocks({block});
+  const std::expected<std::vector<CellBlockIndex>, GridFailure> vector_border = FindBorderBlocks(grid, blocks, width);
+  std::array<CellBlockIndex, 3> span_border = {};
+  const std::expected<std::uint32_t, GridFailure> span_count = FindBorderBlocks(grid, blocks, width, span_border);
+  ASSERT_TRUE(vector_border.has_value());
+  ASSERT_TRUE(span_count.has_value());
+  ASSERT_EQ(*span_count, vector_border->size());
+  for (std::size_t entry = 0; entry < vector_border->size(); ++entry) {
+    EXPECT_EQ(span_border.at(entry).value, vector_border->at(entry).value);
+  }
+}
+
+TEST(FindBorderBlocks, TwoForms_GiveTheSameBorder) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  for (const std::uint32_t block : {0U, 1U, 2U}) {
+    for (const BorderWidth width : {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths}) {
+      CheckFormsAgree(test_grid->grid, block, width);
+    }
+  }
+}
+
+TEST(FindBorderBlocks, VectorForm_AllocatesTwice) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const std::vector<CellBlockIndex> blocks = ToBlocks({0});
+  const std::uint64_t count_before_call = ComputeAllocationCount();
+  const std::expected<std::vector<CellBlockIndex>, GridFailure> border =
+      FindBorderBlocks(test_grid->grid, blocks, BorderWidth::kTouchingCells);
+  const std::uint64_t count_after_call = ComputeAllocationCount();
+  ASSERT_TRUE(border.has_value());
+  ASSERT_EQ(border->size(), 2U);
+  // The marks, and the list sized once.
+  EXPECT_EQ(count_after_call - count_before_call, 2U);
+}
+
+TEST(BuildRangeWithBorder, Call_AllocatesTwice) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const std::uint64_t count_before_call = ComputeAllocationCount();
+  const RangeWithBorder range_with_border = BuildRangeWithBorder(test_grid->grid, {.first_block = 0, .block_count = 1});
+  const std::uint64_t count_after_call = ComputeAllocationCount();
+  ASSERT_EQ(range_with_border.border_blocks.size(), 2U);
+  EXPECT_EQ(count_after_call - count_before_call, 2U);
+}
+
 TEST(FindBorderBlocks, UnsortedSet_IsBadInput) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));

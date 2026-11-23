@@ -65,6 +65,49 @@ void ApplyToBorderBlocks(
   }
 }
 
+// Runs the readers of `width` forward from every cell place and face place kept in `block`.
+void ApplyMarksFromBlock(const GridTables& tables, std::uint32_t block, BorderWidth width, std::uint8_t* marks) {
+  for (std::uint32_t place_in_block = 0; place_in_block < static_cast<std::uint32_t>(kCellPlacesPerBlock);
+       ++place_in_block) {
+    const CellPlaceIndex cell = {.value = (block * static_cast<std::uint32_t>(kCellPlacesPerBlock)) + place_in_block};
+    ApplyCellPlaceReadMarks(tables, cell, width, marks);
+  }
+  for (std::uint32_t place_in_block = 0; place_in_block < static_cast<std::uint32_t>(kFacePlacesPerBlock);
+       ++place_in_block) {
+    const FacePlaceIndex face = {.value = (block * static_cast<std::uint32_t>(kFacePlacesPerBlock)) + place_in_block};
+    ApplyFacePlaceReadMarks(tables, face, width, marks);
+  }
+}
+
+// Finds the border of `set` at `width` by running the readers forward from every place kept in the set, then one pass
+// over the marks in ascending index, which lists the marked blocks outside the set. Allocates one mark byte per block
+// of the grid, freed on return.
+// Work: for each place of the set, one marking function (border_block_steps.h), whose work does not depend on the
+// grid's size; then one read of each mark and one set test for each marked block. The set's size drives the marking, so
+// the cost does not grow with the grid times its size levels.
+std::vector<CellBlockIndex> FindBorderByMarking(const GridTables& tables, const BlockSet& set, BorderWidth width) {
+  std::vector<std::uint8_t> marks(tables.block_count, 0);
+  for (std::uint32_t entry = 0; entry < set.range.block_count; ++entry) {
+    ApplyMarksFromBlock(tables, set.range.first_block + entry, width, marks.data());
+  }
+  for (std::uint32_t entry = 0; entry < set.sorted_count; ++entry) {
+    ApplyMarksFromBlock(tables, set.sorted_blocks[entry].value, width, marks.data());
+  }
+  // The list is sized once, so a call allocates the marks and, when the border is not empty, the list: two times.
+  std::size_t border_block_count = 0;
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    border_block_count += marks[block] != 0 && !ComputeIsInBlockSet(set, CellBlockIndex{block}) ? 1U : 0U;
+  }
+  std::vector<CellBlockIndex> border_blocks;
+  border_blocks.reserve(border_block_count);
+  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
+    if (marks[block] != 0 && !ComputeIsInBlockSet(set, CellBlockIndex{block})) {
+      border_blocks.push_back(CellBlockIndex{block});
+    }
+  }
+  return border_blocks;
+}
+
 }  // namespace
 
 std::expected<std::vector<CellBlockRange>, GridFailure>
@@ -86,15 +129,11 @@ RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange r
   assert(grid.run_on() == RunOn::kCpu);
   assert(range.first_block <= grid.counts().cell_blocks);
   assert(range.block_count <= grid.counts().cell_blocks - range.first_block);
-  RangeWithBorder range_with_border = {.range = range, .border_blocks = {}};
-  const GridTables tables = grid.tables(RunOn::kCpu);
   const BlockSet set = {.range = range, .sorted_blocks = nullptr, .sorted_count = 0};
-  for (std::uint32_t block = 0; block < tables.block_count; ++block) {
-    if (ComputeIsBorderBlock(tables, set, CellBlockIndex{block}, BorderWidth::kTouchingCells)) {
-      range_with_border.border_blocks.push_back(CellBlockIndex{block});
-    }
-  }
-  return range_with_border;
+  return {
+      .range = range,
+      .border_blocks = FindBorderByMarking(grid.tables(RunOn::kCpu), set, BorderWidth::kTouchingCells),
+  };
 }
 
 std::expected<std::vector<CellBlockIndex>, GridFailure>
@@ -103,11 +142,12 @@ FindBorderBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> bloc
   if (!check.has_value()) {
     return std::unexpected(check.error());
   }
-  std::vector<CellBlockIndex> border_blocks;
-  ApplyToBorderBlocks(grid, blocks, width, [&border_blocks](CellBlockIndex block) {
-    border_blocks.push_back(block);
-  });
-  return border_blocks;
+  const BlockSet set = {
+      .range = {.first_block = 0, .block_count = 0},
+      .sorted_blocks = blocks.data(),
+      .sorted_count = static_cast<std::uint32_t>(blocks.size()),
+  };
+  return FindBorderByMarking(grid.tables(RunOn::kCpu), set, width);
 }
 
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(

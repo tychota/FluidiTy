@@ -20,7 +20,8 @@
 // Owns:    RangeWithBorder, BuildRangeWithBorder, BuildRanges, FindBorderBlocks (two forms)
 // Uses:    CPU-only guard (base/cpu_only.h), BorderWidth (grid/border_block_steps.h), StaggeredGrid
 //          (grid/staggered_grid.h), GridFailure (grid/grid_error.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h)
-// Implementation uses: BlockSet, ComputeIsBorderBlock (grid/border_block_steps.h), RunOn (base/run_on.h)
+// Implementation uses: BlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
+//          (grid/border_block_steps.h), RunOn (base/run_on.h)
 // Used by: the stages that run on one range of blocks, the grid pieces of a run in batches, and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 
@@ -61,7 +62,10 @@ BuildRanges(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range);
 // read, when the stage reads, from each place it writes, the places next to it (BorderWidth::kTouchingCells). This is
 // the width of the transfer step, which adds into each face piece of the range from the particles of the cells
 // that can list it.
-// Method: FindBorderBlocks of the range's blocks, with the width kTouchingCells.
+// Method: FindBorderBlocks of the range's blocks, with the width kTouchingCells, by the forward form.
+// Work: that of the vector form of FindBorderBlocks, for the places of the range's blocks.
+// Allocates the marks (one byte per block of the grid, freed on return) and the returned list, sized once: two
+// allocations, or one when the border is empty.
 // Example: the grid of the file header of border_block_steps.h and the range {0, 1} give the border blocks 1 and 2.
 // Requires: grid.run_on() == RunOn::kCpu, and range inside the grid's blocks (debug assertions).
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>
@@ -71,14 +75,20 @@ RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange r
 // index, each once. `blocks` need not be a run, so borders stack: the border of the stage before is
 // FindBorderBlocks of `blocks` plus the border found so far, at its own width.
 //
-// Method: one ascending walk over the grid's blocks. A block outside the set is listed when ComputeIsBorderBlock
-//   (border_block_steps.h) says a reader of the width reads it from a place kept in the set, an active cell, a face
-//   piece or a corner place, on the way or as a result, asked from the block's own side through the grid's neighbour
-//   tables, with no other search structure. The readers of each width are listed at BorderWidth; the border also
-//   holds every bigger block, up to size level 0, of each block of the set and of each block read, which the readers
-//   walk through. The proofs are at ComputeIsBorderBlock. A stage calls only those readers, and only from places kept
-//   in the set; a position for FindNearbyFaces must be one that FindCellAt gives to a cell of the set.
-// Work: per block of the grid, the walk asks the block and every block under it; see ComputeIsBorderBlock.
+// Method: the readers run forward from every place kept in the set. ApplyCellPlaceReadMarks and
+//   ApplyFacePlaceReadMarks (border_block_steps.h) mark every block that a reader of the width reads from one place,
+//   an active cell, a face piece or a corner place, on the way or as a result, with its bigger blocks; then one pass
+//   over the marks, in ascending block index, lists the marked blocks outside the set. The readers of each width are
+//   listed at BorderWidth; the border also holds every bigger block, up to size level 0, of each block of the set and
+//   of each block read, which the readers walk through. The proofs are at ComputeIsBorderBlock, which says the same
+//   from a block's side and gives the same set. A stage calls only those readers, and only from places kept in the
+//   set; a position for FindNearbyFaces must be one that FindCellAt gives to a cell of the set.
+// Work: for each of the 64 cell places and 240 face places of each block of the set, one marking function, which
+//   costs up to about 10^5 table reads (cell place) or 4 x 10^4 (face place) whatever the grid's size, and then one
+//   read of each of the grid's block marks. So it grows with the set, and with the grid only by that one pass over
+//   one byte per block, not with the grid times its size levels.
+// Allocates the marks (one byte per block of the grid, freed on return) and the returned list, sized once: two
+// allocations, or one when the border is empty.
 // Order: ascending block index, so the result is the same in every call on the same grid.
 // Example: one size level, cells 1 m wide, cells {3,3,0}, {4,3,0} and {6,6,0} in the blocks 0, 1 and 2: the border of
 //   {0} at kTouchingCells is {1, 2}. Block 2 holds the +Y face piece of {4,3,0}, kept at plane 0 of block 2. The
@@ -88,7 +98,6 @@ RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange r
 // Requires: grid.run_on() == RunOn::kCpu (debug assertion).
 // Fails: kBadInput  `blocks` is not ascending, repeats a block, or holds an index at or above the grid's block count.
 //        The result then holds the failure and no list.
-// Allocates only the returned list, for planning and tests.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 std::expected<std::vector<CellBlockIndex>, GridFailure>
 FindBorderBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> blocks, BorderWidth width);
@@ -97,6 +106,13 @@ FindBorderBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> bloc
 // them to `border_blocks`, in ascending index, and returns how many there are in all. A count above
 // border_blocks.size() means the span was too small; nothing beyond it is written.
 //
+// Method: one ascending walk over the grid's blocks, with no working memory. A block outside the set is listed when
+//   ComputeIsBorderBlock (border_block_steps.h) says a reader of the width reads it, asked from the block's own side
+//   through the grid's neighbour tables. The result is the same as the allocating form's.
+// Work: per block of the grid, the walk asks the block and every block under it, so the cost grows with the grid's
+//   block count times its size levels, whatever the set's size (see ComputeIsBorderBlock for each ask). A caller with
+//   many ranges should use the allocating form, or later the form that takes working buffers: this form has none to
+//   mark blocks with.
 // Example: a border of 5 blocks and a span of 4 write the first 4 and return 5; a span of 5 gets all 5.
 // Requires: grid.run_on() == RunOn::kCpu (debug assertion).
 // Fails: kBadInput  as the allocating form, or border_blocks shares memory with `blocks`: the walk searches the set
