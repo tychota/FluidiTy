@@ -99,8 +99,8 @@ struct CellSizeSettings {
   // this many smallest widths from the nearest solid get the smallest width whatever the factor; beyond, the solid
   // term grows in proportion to the distance. 2 by the method paper.
   double solid_reach_in_cell_widths = 2.0;
-  // No unit, positive. c_u of the shear term, 0.25 by the method paper: a starting value, to be calibrated against
-  // scenes.
+  // No unit, positive. c_u of the shear term, 0.25 by the method paper: a starting value, to be
+  // calibrated against scenes.
   double shear_width_factor = 0.25;
 };
 

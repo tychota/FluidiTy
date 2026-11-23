@@ -24,7 +24,8 @@
 //   room   the number of blocks the values were built for (`max_cell_blocks`)
 //   bound  the values hold the version and the block count of one grid
 // Owns:    GridValues, CellValues, FaceValues, CornerValues, CellBlockValues, BuildCellValues, BuildFaceValues,
-//          BuildCornerValues, BuildCellBlockValues, ApplyGridVersion, ReadValues, WriteValues, CheckGridVersion
+//          BuildCornerValues, BuildCellBlockValues, ApplyGridVersion, ReadValues, WriteValues, CheckGridVersion,
+//          GridValuesAccess (private to this header)
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, BufferValue, BuildBuffer, ReadBuffer, WriteBuffer
 //          (base/buffer.h), CheckCanRunOn (base/check_can_run_on.h), RunMemory (base/run_memory.h), RunOn
 //          (base/run_on.h), GridFailure (grid/grid_error.h), GridVersion and the places per block
@@ -221,7 +222,8 @@ class GridValuesAccess {
 // The only allocation of a value buffer.
 //
 // Method: CheckCanRunOn(run_on) first, then the room, then one memory piece of run_memory of
-//   ComputeRunMemoryPieceBytes(max_cell_blocks x places per block x sizeof(Value)) bytes. The piece is zero bytes.
+//   ComputeRunMemoryPieceBytes(max_cell_blocks x places per block x sizeof(Value)) bytes. Every byte of the piece is
+//   zero.
 //   Every Build...Values below is this one function for its places per block: 64, 240, 125 and 1.
 // Example: BuildFaceValues<double>(RunOn::kCpu, 1000, run_memory) takes 1,000 x 240 x 8 = 1,920,000 bytes of a fresh
 //   run_memory, and its max_cell_blocks() is 1000, its block_count() 0 and its grid_version().value 0.
@@ -316,8 +318,8 @@ BuildCellBlockValues(const StaggeredGrid& grid, RunMemory& run_memory) {
   return GridValuesAccess::BuildBoundGridValues<Value, 1>(grid, run_memory);
 }
 
-// Copies the bound part of `values` into CPU memory: a read from the GPU for GPU values. The only way values leave the
-// GPU.
+// Copies the bound part of `values` into CPU memory: a read from the GPU for GPU values. The only way values
+// leave the GPU.
 //
 // Method: checks the bind, then the span's size, then copies the first block_count() x places per block entries with
 //   the slice form of ReadBuffer. A moved-from or never-bound object is bound to no grid.
@@ -351,8 +353,8 @@ ReadValues(const GridValues<Value, kPlacesPerBlock>& values, std::type_identity_
   return {};
 }
 
-// Copies CPU memory into the bound part of `*values`: a write to the GPU for GPU values. The only way values enter the
-// GPU.
+// Copies CPU memory into the bound part of `*values`: a write to the GPU for GPU values. The only way values
+// enter the GPU.
 //
 // Method: as ReadValues, with the slice form of WriteBuffer. Places past the bound part are not touched.
 // Example: CellValues bound to a grid of 2 blocks take 128 entries.
