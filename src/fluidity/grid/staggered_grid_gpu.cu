@@ -8,7 +8,7 @@
 // adds of the counts: their final values do not depend on the order the threads apply them. Every call uses the default
 // stream, so each function sees what the one before it, and the stable orders and prefix sums between them, wrote.
 // Launches, the wait and statuses go through base/gpu_launch.cuh.
-// Stack: no function keeps a local array. The largest locals are the CellCheck of a sorted position (24 bytes), the
+// Stack: no function keeps a local array. The largest locals are the CellCheck of a sorted position (32 bytes), the
 // copy of GridTables of P10 (c) and P11, and the coordinates and loop counters of CheckSiblingsAt, CheckSizeStepAt and
 // ComputeFacePieceKind, all in registers or a few dozen bytes of stack; ComputeLargestBuildStackOnGpu reads what the
 // compiler gave.

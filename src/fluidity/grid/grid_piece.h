@@ -12,7 +12,7 @@
 //   loaded becomes kOutsidePiece. A place of the last plane of a block stays kNotAPiece when the whole grid's block
 //   beyond it was not loaded, so the piece never has a face piece that the whole grid does not have. The piece map
 //   says, for each block of the piece, its index in the whole grid.
-//   What a piece answers. Every reader of the border's width (BorderWidth, cell_block_range.h), called from a place
+//   What a piece answers. Every reader of the border's width (BorderWidth, border_block_steps.h), called from a place
 //   kept in the range, answers as on the whole grid: FindTouchingCells, FindFacePieces, FindCornerPlaces,
 //   FindCellsAroundEdge, FindCellAt for a position in the closed box of a cell of the range, FindNearbyFaces for a
 //   position that FindCellAt gives to a cell of the range, FindCellLow, FindCellHigh and FindCellsNearFace for a face
@@ -154,10 +154,10 @@ class GridPiece {
 //                           nothing is written.
 //        kTooManyCellBlocks the range's blocks plus the border blocks are more than buffers.max_cell_blocks(); cell
 //                           and other_cell are zero. The caller raises the room. Nothing is written.
-//        A call that fails in several ways reports the range first (empty, or not inside the grid), then the room, then
-//        the border list.
 //        kInternalFault     a neighbour entry names a block of the range that the piece map the same call wrote does
 //                           not hold: no input causes it, only a change to the builder.
+//        A call that fails in several ways reports the range first (empty, or not inside the grid), then the room, then
+//        the border list.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 std::expected<GridPiece, GridFailure> BuildGridPiece(
     const StaggeredGrid& whole,
@@ -169,8 +169,8 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
 // Builds the same piece as the span form, for a whole grid on any processor, with the border in a buffer on
 // whole.run_on(): the first border_block_count entries of `border_blocks`, such as a stacked FindBorderBlocks result.
 // A piece of a GPU grid is built on the GPU, and its tables and map stay there: six GPU functions
-// (grid/grid_piece_gpu.h) write the same bytes as the CPU builder, and only the status record comes back. Method paper
-// <sec-cell-blocks>.
+// (grid/grid_piece_gpu.h) run the per-item rules that the CPU builder runs, to write the same bytes, and only the
+// status record comes back. GPU: compiled, not run. Method paper <sec-cell-blocks>.
 // Example: the buffer form of FindBorderBlocks with range {4, 3} on a CPU whole grid of 10 blocks lists {1, 2, 8} and
 //   the count 3: the piece is the one of the span form.
 // Requires: border_blocks and `buffers` are on whole.run_on() (debug assertions); and, as in the span form,

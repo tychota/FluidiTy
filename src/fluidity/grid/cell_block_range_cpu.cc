@@ -64,8 +64,8 @@ void ApplyMarksFromBlock(const GridTables& tables, std::uint32_t block, BorderWi
 // over the marks in ascending index, which lists the marked blocks outside the set. Allocates one mark byte per block
 // of the grid, freed on return.
 // Work: for each place of the set, one marking function (border_block_steps.h), whose work does not depend on the
-// grid's size; then one read of each mark and one set test for each marked block. The set's size drives the marking, so
-// the cost does not grow with the grid times its size levels.
+// grid's size; then two passes over the marks, one to count and one to list, with one set test for each marked block.
+// The set's size drives the marking, so the cost does not grow with the grid times its size levels.
 std::vector<CellBlockIndex> FindBorderByMarking(const GridTables& tables, const BlockSet& set, BorderWidth width) {
   std::vector<std::uint8_t> marks(tables.block_count, 0);
   for (std::uint32_t entry = 0; entry < set.range.block_count; ++entry) {
@@ -170,7 +170,7 @@ GridFailure ToCallFailure(RunOnCallStatus call_status) {
 // Runs the GPU pass over the marks of `search` and returns the count of the list, or the failure.
 // Steps: 1 reset the status and the marks  2 check the border so far  3 mark from every place of the set  4 write the
 // listed marks  5 prefix sum  6 write the list and the count  7 read the status
-// Each step is one launch (step 5 several), in the one stream, so each sees what the step before wrote and the marking
+// Each step is one or more launches, in the one stream, so each sees what the step before wrote and the marking
 // launch has finished before the scan of the marks starts. Only the status record comes back.
 std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderSearch& search) {
   GridBuildStatus* const status = search.status->data();

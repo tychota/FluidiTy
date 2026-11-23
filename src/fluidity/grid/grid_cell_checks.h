@@ -118,10 +118,10 @@ std::expected<void, GridFailure> CheckCellListInputs(const GridInputs& inputs, c
 //   its big cell, with other_cell that big cell: the walk from the active cell at the low corner of that big cell
 //   comes first in the fixed order. When c is not eighth 0, or every cell above it down to size level 0 is eighth 0,
 //   the failure names c and its big cell. Either way the answer depends on the set of cells, not on the input order.
-//   Example: size level 0 {0,0,0} split, its size-level-1 cell {1,0,0} split too, and size level 2 {2,0,0}, eighth 0
+//   Example 1: size level 0 {0,0,0} split, its size-level-1 cell {1,0,0} split too, and size level 2 {2,0,0}, eighth 0
 //   of {1,0,0}, left out: {1,0,0} is eighth 1 of {0,0,0}, so the failure names size level 1 {1,0,0} and size level 0
 //   {0,0,0}, not the cell left out.
-// Example: the size-level-0 cell {0,0,0} and the size-level-2 cell {4,4,4}, sorted: kSizeStepRuleBroken at position
+// Example 2: the size-level-0 cell {0,0,0} and the size-level-2 cell {4,4,4}, sorted: kSizeStepRuleBroken at position
 //   1, cell size level 2 {4,4,4}, other_cell size level 0 {0,0,0}. With kRequire the same list is kSiblingCellMissing
 //   at position 1, cell size level 2 {5,4,4}, other_cell size level 1 {2,2,2}: step 3 comes before step 4. The 7
 //   size-level-1 cells of size level 0 {-1,0,0} without eighth 5 pass with kSkip; with kRequire they are

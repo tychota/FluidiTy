@@ -153,7 +153,7 @@ ComputeIsPositionWithin(BlockLocalCoord position, int lowest, int highest) noexc
   return is_x_within && is_y_within && is_z_within;
 }
 
-// Says whether the set holds one of the 27 blocks around `block`, kNoIndex for none. For this header's own
+// Says whether the set holds one of the 27 blocks around `block`; false when `block` is kNoIndex. For this header's own
 // functions only.
 FLUIDITY_CPU_AND_GPU constexpr bool
 ComputeIsBlockSetAroundOneBlock(const GridTables& tables, const BlockSet& set, std::uint32_t block) noexcept {
@@ -657,7 +657,8 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeIsBlockReadDirectly(
   return false;
 }
 
-// The most blocks ComputeIsBorderBlock keeps waiting to be asked: 7 per size level below the block plus 8, at most
+// The most blocks ComputeIsBorderBlock keeps waiting to be asked: the walk down from a size-level-0 block leaves at
+// most 7 waiting at each of 15 size levels it has passed and lists 8 more, 113, which fits 8 for each of the
 // 16 size levels. For this header's own functions only.
 inline constexpr int kMaxWaitingBlocks = 8 * kMaxSizeLevels;
 
@@ -845,7 +846,7 @@ FLUIDITY_CPU_AND_GPU constexpr void ApplyCellPlaceReadMarks(
 // Ties: only the value 1 is written and no mark is read, as ApplyCellPlaceReadMarks, whose Method says what a GPU pass
 //   must do.
 // Work: FindCellLow, FindCellHigh, FindCornerPlaces (4 corners, each up to 8 blocks at each of up to 3 size levels: up
-//   to 96 FindCellBlock searches), FindCellsNearFace (2 FindTouchingCells and up to 112 sorted inserts) and up to 116
+//   to 96 FindCellBlock searches), FindCellsNearFace (2 FindTouchingCells and up to 112 sorted inserts) and up to 119
 //   marks; at kFourCellWidths also BuildFaceSearch and up to 270 marks: up to about 4 x 10^4 table reads, moves and
 //   writes. It allocates nothing.
 // Example: in the grid of the file header, the +Y face piece of {4,3,0}, kept in C, marks C, B (the block of its
@@ -906,13 +907,13 @@ static_assert(
     "one more block would have a place that is not a 32-bit number"
 );
 
-// The most blocks of the set that one marking launch of the GPU form runs places for. The value follows from the GPU
-// function that marks: it keeps 255 registers, so one thread block of 256 threads is resident on each multiprocessor,
-// about 9,000 threads at once on a 36-multiprocessor card; a dense block costs that card about 70 to 270 microseconds
-// (up to 10^5 dependent table reads for each of its active cell places); so 2,048 blocks take about 0.15 to 0.55 s,
-// far below the 2 s after which the display watchdog of Windows ends a GPU function, and 622,592 threads are still
-// many passes of the resident ones. A longer set runs in several launches. The marks do not depend on the order of the
-// places, so the chunks change no result.
+// The most blocks of the set that one marking launch of the GPU form runs places for. The value is an estimate, not a
+// measurement: this GPU code has not run yet. The GPU function that marks keeps 255 registers, so one thread block of
+// 256 threads is resident on each multiprocessor, about 9,000 threads at once on a 36-multiprocessor card; a dense
+// block should cost that card about 70 to 270 microseconds (up to 10^5 dependent table reads for each of its active
+// cell places); so 2,048 blocks should take about 0.15 to 0.55 s, far below the 2 s after which the display watchdog
+// of Windows ends a GPU function, and 622,592 threads are still many passes of the resident ones. A longer set runs
+// in several launches. The marks do not depend on the order of the places, so the chunks change no result.
 inline constexpr std::uint32_t kSetBlocksPerMarkingLaunch = 2048;
 
 // The places of one chunk of a set: the places first_set_place to first_set_place + set_place_count - 1, in the numbers
@@ -975,9 +976,9 @@ FLUIDITY_CPU_AND_GPU constexpr SetPlaceChunk ComputeMarkingChunk(
 //   `block_count`, or when it is a block of `range`. The key is ToFailureKey(kIdStep, index, 0), whose step 1 is the
 //   one check of the pass; the smallest key over the entries names the first failing entry. The list is bad input
 //   whatever the entry, so no other detail is kept.
-// Example: range {0, 1}, 5 blocks, entries {2, 4, 3}: entry 2 fails (3 is not above 4), the key is ToFailureKey(1, 2,
-// 0).
-//   Entries {2, 0}: entry 1 fails twice over (below the entry before, and in the range), the key is the same one.
+// Example: range {0, 1}, 5 blocks, entries {2, 4, 3}: entry 2 fails (3 is not above 4), the key is
+//   ToFailureKey(1, 2, 0). Entries {2, 0}: entry 1 fails twice over (below the entry before, and in the range), the
+//   key is the same one.
 // Requires: `index` is below the entry count; `border_so_far` holds entries up to it.
 FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeBorderSoFarFailureKey(
     CellBlockRange range,

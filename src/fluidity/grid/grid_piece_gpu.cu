@@ -1,17 +1,18 @@
 // The GPU half of the build of a grid piece, private to grid/: the functions declared in grid/grid_piece_gpu.h.
 //
-// Thin GPU functions, one for each launch of the build, each a grid-stride loop (or one thread) over a per-item rule of
-// grid/grid_piece_steps.h, which a CPU test replays for every thread block and thread. The only operations between
-// threads are the integer atomic minimum of the failure key and the integer atomic adds of the counts, whose results do
-// not depend on the order the threads apply them. The calls use the default stream, so each sees what the one before it
-// wrote. Launches, the wait and statuses go through base/gpu_launch.cuh.
-// Writes: launch 2 writes only the status record, with atomics. Launch 3 writes the piece map entry that ToPiecePlace
-// gives its item, and no two items have one place. Launches 4 to 6 write the arrays of their own piece block, cell
-// place or face place, and the status record with atomics. No launch reads what another thread of the same launch
-// writes, except the failure key, which launches 3 and 4 read for a key of launch 2 only: another thread's key of
-// launch 4 never changes what a thread does (ComputeHasEarlierStepFailed ignores a key of the thread's own step). The
-// piece map that launches 4 to 6 read was written by launch 3, an earlier launch of the same stream. Read:
-// docs/method-paper/fluidity-method.typ <sec-cell-blocks>
+// Thin GPU functions, one for each of the build's six steps, each a grid-stride loop (or one thread) over a per-item
+// rule of grid/grid_piece_steps.h, which a CPU test replays for every thread block and thread. The only operations
+// between threads are the integer atomic minimum of the failure key and the integer atomic adds of the counts, whose
+// results do not depend on the order the threads apply them. The calls use the default stream, so each sees what the
+// one before it wrote. Launches, the wait and statuses go through base/gpu_launch.cuh.
+// Writes: function 2 writes only the status record, with atomics. Function 3 writes the piece map entry that
+// ToPiecePlace gives its item, and no two items have one place. Functions 4 to 6 write the arrays of their own piece
+// block, cell place or face place, and the status record with atomics. No function reads what another thread of the
+// same launch writes, except the failure key, which functions 3 and 4 read for a key of function 2 only: another
+// thread's key of function 4 never changes what a thread does (ComputeHasEarlierStepFailed ignores a key of the
+// thread's own step). The piece map that functions 4 to 6 read was written by function 3, an earlier launch of the
+// same stream.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 
 #include <cuda_runtime.h>
 
@@ -49,18 +50,18 @@ __device__ std::uint64_t ComputeCurrentFailureKey(const GridBuildStatus* status)
   return *static_cast<const volatile std::uint64_t*>(&status->failure_key);
 }
 
-// The step a launch tests against with ComputeHasEarlierStepFailed. Launches 3 and 4 stop for a key of launch 2 only: a
-// key of launch 4 that another thread offered must not stop a thread, or the keys left out could be smaller. Launches
-// 5 and 6 come after every keyed launch, so any key stops them.
+// The step a function tests against with ComputeHasEarlierStepFailed. Functions 3 and 4 stop for a key of function 2
+// only: a key of function 4 that another thread offered must not stop a thread, or the keys left out could be smaller.
+// Functions 5 and 6 come after every keyed function, so any key stops them.
 constexpr int kStopStepOfMapAndBlocks = kPieceFaultStep;
 constexpr int kStopStepOfStatesAndKinds = kPieceFaultStep + 1;
 
-// Launch 1, one thread.
+// Function 1, one thread.
 __global__ void ApplyPieceStatusReset(GridBuildStatus* status) {
   *status = ComputeResetBuildStatus();
 }
 
-// Launch 2: one item per border entry.
+// Function 2: one item per border entry.
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) CheckPieceBorder(PieceLoad load, std::uint32_t whole_block_count, GridBuildStatus* status) {
@@ -77,7 +78,7 @@ __global__ void __launch_bounds__(
   }
 }
 
-// Launch 3: one item per loaded item. After a failure of launch 2 no thread writes anything.
+// Function 3: one item per loaded item. After a failure of function 2 no thread writes anything.
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) WritePieceMap(PieceLoad load, const GridBuildStatus* status, CellBlockIndex* map) {
@@ -91,7 +92,7 @@ __global__ void __launch_bounds__(
   }
 }
 
-// Launch 4: one item per piece block.
+// Function 4: one item per piece block.
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) CopyPieceBlocks(GridTables whole, PieceBlocks blocks, PieceTableArrays piece, GridBuildStatus* status) {
@@ -108,7 +109,7 @@ __global__ void __launch_bounds__(
   }
 }
 
-// Launch 5: one item per cell place of the piece. An active cell adds 1 to the count of its size level.
+// Function 5: one item per cell place of the piece. An active cell adds 1 to the count of its size level.
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) CopyPieceCellStates(GridTables whole, PieceBlocks blocks, CellState* cell_states, GridBuildStatus* status) {
@@ -125,7 +126,7 @@ __global__ void __launch_bounds__(
   }
 }
 
-// Launch 6: one item per face place of the piece. A thread adds up the face pieces of its places and adds the sum to
+// Function 6: one item per face place of the piece. A thread adds up the face pieces of its places and adds the sum to
 // the record once.
 __global__ void __launch_bounds__(
     kThreadBlockSize

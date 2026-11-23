@@ -78,9 +78,10 @@ RunOnCallStatus CheckBorderSoFarOnGpu(
 // `range`, then of the border so far), returns at once when the failure key of *status is set, and otherwise runs
 // ApplySetPlaceReadMarks. The threads write only the byte value 1, with plain stores, never a read-modify-write and
 // never a read of a mark, so two threads that write one mark at once write the same value to a byte whose neighbours a
-// byte store leaves unchanged (CUDA guarantees it); the marks are those of any order of the places, so the chunks may
-// run in any split. No thread tests a mark to stop early. The function waits for its launch to end, so the chunk is
-// complete when it returns, and step 4 starts after the last chunk. A chunk with no place launches nothing.
+// byte store leaves unchanged (formally a data race in the CUDA memory model, as ApplyCellPlaceReadMarks says); the
+// marks are those of any order of the places, so the chunks may run in any split. No thread tests a mark to stop early.
+// The function waits for its launch to end, so the chunk is complete when it returns, and step 4 starts after the last
+// chunk. A chunk with no place launches nothing.
 // If a chunk fails after earlier chunks marked, the function returns the failure, the caller starts no later chunk,
 // and the output is not written: the marks hold a part of the result, but step 4 and step 6 never run, so no list or
 // count is written; the next call clears the marks in its step 1.

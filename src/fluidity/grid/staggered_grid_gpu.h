@@ -27,7 +27,7 @@
 //   `#if defined(FLUIDITY_HAS_GPU)`. It uses the C++20 subset and includes no CPU-only header.
 //
 // Stack: every function here keeps under the driver's default of 1,024 B per thread, so the grid has no entry held by
-//   the driver. The GPU functions keep no local array: a few indexes, a failure key, a CellCheck (24 bytes), a copy of
+//   the driver. The GPU functions keep no local array: a few indexes, a failure key, a CellCheck (32 bytes), a copy of
 //   GridTables and the coordinates of the rules of grid/grid_build_steps.h. ComputeLargestBuildStackOnGpu
 //   reads the bytes the compiler gave.
 //

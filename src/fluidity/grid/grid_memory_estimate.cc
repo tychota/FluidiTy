@@ -100,7 +100,7 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
   };
 
   if (run_on == RunOn::kCpu) {
-    // The CPU builder sorts the cell ids with std::sort in CPU memory and needs no OrderBuffers.
+    // The CPU builder sorts the cell ids with std::ranges::sort in CPU memory and needs no OrderBuffers.
     estimate.push_back(BuildCountedEntry(
         kBuilderCellIdsEntryName,
         CountedPer::kCellPlace,

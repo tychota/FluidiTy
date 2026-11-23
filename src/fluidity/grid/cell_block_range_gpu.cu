@@ -10,11 +10,12 @@
 // The marks' concurrent writes. The threads of step 3 (WriteBorderReadMarks) write only the byte value 1 into marks
 // that no thread reads, with plain stores, never a read-modify-write and never a test of a mark: the marking functions
 // (ApplyReadMark) write the whole chain of bigger blocks every time. So the marks after the launch are those of any
-// order of the places. This relies on a byte store on the GPU leaving the neighbouring bytes unchanged, which CUDA
-// guarantees; two stores of the same value to one byte leave that value. The marks are 0 before the launch for every
-// block, those of the set included, and nothing sets them for the set or for the border so far: the blocks of the
-// set are marked through their own cell places. The scan of the marks (WriteListedMarks) is a later launch of the same
-// stream, so it starts after the marking launch has finished.
+// order of the places. This relies on a byte store on the GPU leaving the neighbouring bytes unchanged; two stores of
+// the same value to one byte leave that value. Formally this is a data race in the CUDA memory model (see
+// ApplyCellPlaceReadMarks). The marks are 0 before the launch for every block, those of the set included, and nothing
+// sets them for the set or for the border so far: the blocks of the set are marked through their own cell places. The
+// scan of the marks (WriteListedMarks) is a later launch of the same stream, so it starts after the marking launch has
+// finished.
 // Chunks: step 3 is one launch for each chunk of kSetBlocksPerMarkingLaunch blocks of the set (the CPU half calls
 // WriteBorderReadMarksOnGpu once for each chunk), each followed by a wait, so no launch runs long enough for the
 // display watchdog and a failed chunk stops the ones after it.

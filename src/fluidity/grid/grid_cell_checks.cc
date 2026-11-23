@@ -62,7 +62,7 @@ std::expected<void, GridFailure> CheckGridFrame(GridFrame frame) {
   }
   // The smallest width must be a normal double, at least 2^-1022: every halving of the biggest width down to it is
   // then exact, and no position divided by it loses its cell to underflow. Below, halving rounds or gives 0. A frame
-  // that small is a bad scene value too (biggest cells 2^-1007 m wide with 16 size levels, say).
+  // that small is a bad scene value too (biggest cells 2^-1008 m wide with 16 size levels, say).
   const auto smallest_size_level = static_cast<SizeLevel>(frame.size_level_count - 1);
   if (ComputeCellWidth(frame, smallest_size_level) < std::numeric_limits<double>::min()) {
     return std::unexpected(ToBadInput());
@@ -491,7 +491,7 @@ std::expected<void, GridFailure> CheckCellListInputs(const GridInputs& inputs, c
   if (ComputeIsListInCellIds(input_cells, cell_ids)) {
     return std::unexpected(ToBadInput());
   }
-  // Requires: one processor. An empty list has none.
+  // The list must be on the buffers' processor, which only a caller's bug breaks; an empty list has none.
   const bool has_buffer_list = inputs.active_cell_buffer != nullptr;
   const bool is_list_on_processor = input_cells.empty()
       || (has_buffer_list ? inputs.active_cell_buffer->run_on() == buffers.run_on() : buffers.run_on() == RunOn::kCpu);
@@ -605,7 +605,7 @@ std::expected<GridCounts, GridFailure> ComputeGridCounts(const GridInputs& input
   const std::span<const CellId> input_cells = has_buffer_list
       ? std::span<const CellId>(inputs.active_cell_buffer->data(), inputs.active_cell_buffer_count)
       : inputs.active_cells;
-  // Requires: a CPU list. An empty list has no processor.
+  // The list must be in CPU memory, which only a caller's bug breaks; an empty list has no processor.
   const bool is_list_on_cpu =
       input_cells.empty() || !has_buffer_list || inputs.active_cell_buffer->run_on() == RunOn::kCpu;
   assert(is_list_on_cpu);

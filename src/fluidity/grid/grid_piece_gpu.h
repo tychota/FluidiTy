@@ -59,7 +59,7 @@ RunOnCallStatus ApplyPieceStatusResetOnGpu(GridBuildStatus* status);
 // with an integer atomic minimum, and adds 1 to status->result_count when the entry lies below the range
 // (ComputeIsBorderEntryBelowRange), so after a good list result_count is the first block of the range in the piece.
 // Both results are the same whatever the order of the threads. load.border_block_count 0 launches nothing.
-// Requires: load.border_blocks is GPU memory of load.border_block_count entries; status is GPU memory that launch
+// Requires: load.border_blocks is GPU memory of load.border_block_count entries; status is GPU memory that function
 //   1 reset.
 // Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus CheckPieceBorderOnGpu(PieceLoad load, std::uint32_t whole_block_count, GridBuildStatus* status);
@@ -68,7 +68,7 @@ RunOnCallStatus CheckPieceBorderOnGpu(PieceLoad load, std::uint32_t whole_block_
 // piece map entry of its item with ApplyPieceMapWriteAt, or returns at once when the failure key of *status is set, so
 // a bad border list writes nothing. Nothing is launched for 0 items.
 // Requires: map is GPU memory of that many entries; load.border_blocks is GPU memory; status is GPU memory that
-//   launch 2 has finished.
+//   function 2 has finished.
 // Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus WritePieceMapOnGpu(PieceLoad load, const GridBuildStatus* status, CellBlockIndex* map);
 

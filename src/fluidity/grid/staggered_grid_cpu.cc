@@ -947,7 +947,6 @@ std::expected<void, GridFailure> ApplySplitCellStepsInParallel(const ParallelBui
       !summed.has_value()) {
     return std::unexpected(ToGridFailure(summed.error(), 0));
   }
-  // (b) to (d).
   const std::uint64_t room_cell_places = std::uint64_t{kCellPlacesPerBlock} * build.max_cell_blocks;
   // (b) to (d), each made only once the one before it started: the writes of (c) and (d) rely on the key of (b).
   const RunOnCallStatus call_status = ApplyCallsInOrder(

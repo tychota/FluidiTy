@@ -22,7 +22,8 @@
 //   memory piece     the bytes of one buffer inside a RunMemory's block (base/run_memory.h)
 //   piece map        for each block of a grid piece, the index of the same block in the whole grid
 //   internal fault   a state the grid's own code should never reach; never reported as bad input
-// Owns:    the entry names and item bytes of BuildGridMemoryEstimate, GridArray, FindGridArray,
+// Owns:    the entry names of BuildGridMemoryEstimate and of BuildBorderSearchMemoryEstimate, the item bytes of the
+//          grid's arrays, GridArray, FindGridArray,
 //          ComputeIsBuilderBuffersArray, ComputeIsGridArrayOnProcessor, CheckGridArrayEntries, ToGridFailure,
 //          GridBuffersArrays, GridBuilderBuffersArrays, ToGridBuffersArrays, ToGridBuilderBuffersArrays,
 //          ComputeHasLoanOf, ComputeSmallerBlocksStart, BuildGridFromBuffers,

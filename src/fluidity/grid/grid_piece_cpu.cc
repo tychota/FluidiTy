@@ -201,9 +201,10 @@ GridFailure ToCallFailure(RunOnCallStatus call_status) {
 }
 
 // Builds the piece map and the tables of a piece on the GPU into `buffers`, and returns its counts and where its range
-// starts. Steps: 1 the checks of the range and the room  2 reset the record  3 check the border entries  4 write the
-// piece map  5 copy the blocks  6 copy the cell states  7 write the face piece kinds and wait  8 read the record.
-// Each step is one launch, in the one stream, so each sees what the step before wrote. Only the record comes back.
+// starts. Steps: 1 the checks of the range and the room  2 reset the record (GPU function 1 of grid_piece_gpu.h)
+// 3 check the border entries (function 2)  4 write the piece map (3)  5 copy the blocks (4)  6 copy the cell states (5)
+// 7 write the face piece kinds and wait (6)  8 read the record. Steps 2 to 7 are one launch each, in the one stream,
+// so each sees what the step before wrote. Only the record comes back.
 std::expected<PieceBuildSummary, GridFailure> BuildPieceTablesOnGpu(
     const StaggeredGrid& whole,
     CellBlockRange range,

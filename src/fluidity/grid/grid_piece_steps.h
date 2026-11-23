@@ -172,7 +172,7 @@ struct PieceTableArrays {
   FacePieceKind* face_piece_kinds;  // 240 per block.
 };
 
-// Computes the failure key of border entry `entry`, or kNoFailureKey: step 2 of the GPU build, one thread for each
+// Computes the failure key of border entry `entry`, or kNoFailureKey: GPU function 2 of the build, one thread for each
 // entry, and the check of a replay.
 //
 // Method: the rule of ComputeBorderSoFarFailureKey, which a border list and the border so far of a search share: an
@@ -199,7 +199,8 @@ ComputeIsBorderEntryBelowRange(PieceLoad load, std::uint32_t entry) noexcept {
   return load.border_blocks[entry].value < load.range.first_block ? 1U : 0U;
 }
 
-// Writes the piece map entry of loaded item `loaded_item`: step 3 of the GPU build, one thread for each loaded item.
+// Writes the piece map entry of loaded item `loaded_item`: GPU function 3 of the build, one thread for each loaded
+// item.
 //
 // Method: the entry is at the place ToPiecePlace gives the item, and holds the whole grid's index of the item: the
 //   border entry, or the range's first block plus the item's number among the range's blocks. Two items never have
@@ -220,8 +221,8 @@ ApplyPieceMapWriteAt(PieceLoad load, std::uint32_t loaded_item, CellBlockIndex* 
   };
 }
 
-// Copies the block id and the 36 neighbour entries of piece block `piece_block`, translated to the piece: step 4 of
-// the GPU build, one thread for each piece block. Gives the failure key of a fault, or kNoFailureKey.
+// Copies the block id and the 36 neighbour entries of piece block `piece_block`, translated to the piece: GPU function
+// 4 of the build, one thread for each piece block. Gives the failure key of a fault, or kNoFailureKey.
 //
 // Method: the 27 same-size-level entries, the bigger block and the 8 smaller blocks of the whole grid's block are each
 //   turned into a piece index by ToPieceNeighbour, kNoIndex staying kNoIndex. An entry that names a block of the range
@@ -230,7 +231,7 @@ ApplyPieceMapWriteAt(PieceLoad load, std::uint32_t loaded_item, CellBlockIndex* 
 //   reads the piece map and the whole grid's tables, and writes only the arrays of its own piece block.
 // Example: the piece map [1, 2, 4, 5, 6, 8], range {4, 3}: an entry naming whole block 5 is written as 3, one naming
 //   block 7 as kNoIndex, and one naming block 3 as kNoIndex.
-// Requires: blocks.map is written for every piece block (step 3 has finished); piece_block is below blocks.count;
+// Requires: blocks.map is written for every piece block (function 3 has finished); piece_block is below blocks.count;
 //   `piece` holds room for that block.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ApplyPieceBlockCopyAt(
@@ -266,15 +267,15 @@ FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ApplyPieceBlockCopyAt(
   return failure_key;
 }
 
-// Copies the state of one cell place of the piece and gives the size level of an active cell, else -1: step 5 of the
-// GPU build, one thread for each cell place of the piece.
+// Copies the state of one cell place of the piece and gives the size level of an active cell, else -1: GPU function 5
+// of the build, one thread for each cell place of the piece.
 //
 // Method: the place is cell place piece_cell_place % 64 of piece block piece_cell_place / 64, which is whole block
 //   map[that block]'s same place. The thread writes only the state of its own place, and the caller adds 1 to the
 //   count of the returned size level with an integer atomic add, so the counts do not depend on the order of threads.
 // Example: the piece map [1, 2, 4], piece_cell_place 64 + 5: the state of cell place 5 of whole block 2 is written to
-//   place 69, and the size level of that block is returned when the cell is active.
-// Requires: blocks.map is written (step 3 has finished); piece_cell_place is below 64 blocks.count; cell_states holds
+//   place 69, and the size level of that block is returned when the cell is active. Requires: blocks.map is written
+// (function 3 has finished); piece_cell_place is below 64 blocks.count; cell_states holds
 //   64 entries for each piece block.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr int ApplyPieceCellStateCopyAt(
@@ -296,13 +297,13 @@ FLUIDITY_CPU_AND_GPU constexpr int ApplyPieceCellStateCopyAt(
   return static_cast<int>(ToSizeLevel(whole, {.value = whole_block}));
 }
 
-// Writes the kind of one face place of the piece and gives 1 when it is a face piece, else 0: step 6 of the GPU build,
-// one thread for each face place of the piece.
+// Writes the kind of one face place of the piece and gives 1 when it is a face piece, else 0: GPU function 6 of
+// the build, one thread for each face place of the piece.
 //
 // Method: ComputePieceFaceKind for place piece_face_place % 240 of piece block piece_face_place / 240, written at the
 //   piece's own place. The thread reads the whole grid's tables and the piece map, and writes only its own place.
-// Example: as ComputePieceFaceKind; a kind other than kNotAPiece gives 1, kOutsidePiece included.
-// Requires: blocks.map is written (step 3 has finished); piece_face_place is below 240 blocks.count; face_piece_kinds
+// Example: as ComputePieceFaceKind; a kind other than kNotAPiece gives 1, kOutsidePiece included. Requires: blocks.map
+// is written (function 3 has finished); piece_face_place is below 240 blocks.count; face_piece_kinds
 //   holds 240 entries for each piece block.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr std::uint32_t ApplyPieceFaceKindWriteAt(
