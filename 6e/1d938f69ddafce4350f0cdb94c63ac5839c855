@@ -1,0 +1,25 @@
+src/fluidity/grid/nearby_face_weights.test.cc
+  s_4f0877e2acdcf0::t_65d9a293062c5b 67-82,95,208-226,243,262-264,603,662-739,847-888
+src/fluidity/grid/testing/nearby_face_weights_cases.h
+  s_4f0877e2acdcf0::t_9e8fa3d59fe978 228-229,247-259
+tests/grid/nearby_face_weights_on_many_positions.test.cc
+  s_4f0877e2acdcf0::t_fee25912c66afe 36-37
+tests/grid/nearby_faces.test.cc
+  s_4f0877e2acdcf0::t_dc754808310515 127-135,164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6e1d938f69ddafce4350f0cdb94c63ac5839c855",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
