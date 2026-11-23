@@ -1,0 +1,61 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_0d329554e142b6 170
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_da16f6bac1ebd9 160-161,196-208
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_c755974dab60d8 2199-2213,2598
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_ebac4e14f7adb2 4,29,33-35
+src/fluidity/grid/border_block_steps.h
+  s_4f0877e2acdcf0::t_736b9075e91d8a 36-41,48-50,60,887-995
+src/fluidity/grid/border_block_steps.test.cc
+  s_4f0877e2acdcf0::t_cdd8c5eafce568 5,9-10,13-18,21-24,26,193-337
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_a96b3e1f18c6fa 1,13-14,25,29-33,49,220-231,237,240-248,260-275
+src/fluidity/grid/cell_block_range.no_gpu.test.cc
+  s_4f0877e2acdcf0::t_b02cec07497d1e 10,29-34
+src/fluidity/grid/cell_block_range.test.cc
+  s_4f0877e2acdcf0::t_983bb0e5376843 708-715
+src/fluidity/grid/cell_block_range_cpu.cc
+  s_4f0877e2acdcf0::t_c217313c682166 26-31,94,97-101,148-253,344-375,385,391,402-431,438,445-455,458,461
+src/fluidity/grid/cell_block_range_gpu.cu
+  s_4f0877e2acdcf0::t_13398e611c4a5d 1-304
+src/fluidity/grid/cell_block_range_gpu.h
+  s_4f0877e2acdcf0::t_8cca0ce6154362 1-135
+src/fluidity/grid/grid_build_steps.test.cc
+  s_4f0877e2acdcf0::t_7be3009d2c547b 30
+src/fluidity/grid/testing/border_search_replay.h
+  s_4f0877e2acdcf0::t_0eed9a7bad182f 1-164
+src/fluidity/grid/testing/cell_block_range_cases.h
+  s_4f0877e2acdcf0::t_274f67740f4755 33-34,248-249,252,254,261,263,265,306-372
+src/fluidity/grid/testing/grid_build_steps_cases.h
+  s_4f0877e2acdcf0::t_79faa662ad1212 13-14,64
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_910b646441d08b 25,98-101
+src/fluidity/grid/testing/thread_replay.h
+  s_4f0877e2acdcf0::t_86c4dc94ead954 1-85
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_785ddcfda9d5dd 65-76,176-190
+tests/grid/border_search_replay.test.cc
+  s_4f0877e2acdcf0::t_3bc014ef187832 1,5-7,10-11,17-18,21,23,26,31-191,193-194,196-219
+tests/grid/grid_build_steps_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_66b5fb9e795630 29
+tests/grid/stacked_borders.gpu.test.cc
+  s_4f0877e2acdcf0::t_47f06eb5b420f3 1-360
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "70ac095dbd3b04f65ea16dd405ed751ed3faa457",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
