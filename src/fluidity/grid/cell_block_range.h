@@ -201,7 +201,9 @@ class BorderSearchBuffers {
 //                          usable GPU); nothing is taken
 //        kBadInput         max_cell_blocks is 0 or above kMaxCellBlocksLimit; nothing is taken
 //        kOutOfMemory      a piece does not fit in run_memory; the failure's magnitude is the bytes of the array that
-//                          did not fit
+//                          did not fit. On the GPU also: the GPU cannot give the stack of the marking function (the
+//                          driver's per-thread stack, raised here), and the magnitude is its bytes
+//                          (BuildBorderSearchStackEstimate)
 //        kInternalFault    the arrays and the estimate's entries do not match: no input causes it, only a change to
 //                          the estimate or to this function that leaves the other behind
 //        On failure no buffers are returned. Pieces taken before a failure stay in the block, which frees them with
@@ -276,7 +278,10 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
 // Method: the thread that runs the marking functions keeps their results as locals, more than the driver's default
 //   stack of 1,024 B per thread, and the driver gives each resident thread that stack, so the count is the GPU's
 //   resident threads, not the places of a set. The bytes per thread come from the compiled functions
-//   (cudaFuncGetAttributes). Nothing reserves the memory ahead: the driver grows the stack at the first launch.
+//   (cudaFuncGetAttributes). BuildBorderSearchBuffers on the GPU reserves the stack, so a GPU too full for it fails
+//   there with kOutOfMemory, not in a later search. The driver keeps one stack, sized for the largest per-thread need
+//   of any GPU function launched, so this entry added to another module's driver-stack entry (contact's) counts more
+//   than the driver takes: the sum is an upper bound, not the bytes taken.
 // Example: 55,296 resident threads of a 36-multiprocessor sm_120 card, times the bytes per thread of the compiled
 //   function (kBorderSearchStackBytes at most, grid/cell_block_range_gpu.h). RunOn::kCpu: 0.
 // Fails: kRunOnCallFailed  RunOn::kGpu cannot run (CheckCanRunOn), or a query of the GPU failed.

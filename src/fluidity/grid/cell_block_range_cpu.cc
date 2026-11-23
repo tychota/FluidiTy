@@ -302,6 +302,7 @@ FindBorderBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> bloc
 std::expected<BorderSearchBuffers, GridFailure>
 BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory& run_memory) {
   // Steps: 1 the processor  2 the room  3 one memory piece per entry of the estimate, in its order  4 every array
+  //   5 on the GPU, the stack of the marking function
   // Step 1: a processor that cannot run is reported before the block is touched.
   if (!CheckCanRunOn(run_on).has_value()) {
     return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
@@ -343,6 +344,28 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
   if (!has_marks || (run_on == RunOn::kGpu && !has_gpu_arrays)) {
     return std::unexpected(GridFailure{.error = GridError::kInternalFault});
   }
+
+#if defined(FLUIDITY_HAS_GPU)
+  // Step 5: the marking function's stack, taken now so that a GPU too full for it fails here, with the bytes it asked
+  // for, rather than in the first search as an empty list.
+  if (run_on == RunOn::kGpu) {
+    std::uint64_t bytes_per_thread = 0;
+    std::uint64_t resident_threads = 0;
+    if (ComputeLargestBorderSearchStackOnGpu(&bytes_per_thread) != RunOnCallStatus::kDone
+        || ComputeResidentThreadsOnGpu(&resident_threads) != RunOnCallStatus::kDone) {
+      return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+    }
+    const RunOnCallStatus reserved = ReserveBorderSearchStackOnGpu(bytes_per_thread);
+    if (reserved == RunOnCallStatus::kOutOfMemory) {
+      return std::unexpected(
+          GridFailure{.error = GridError::kOutOfMemory, .magnitude = bytes_per_thread * resident_threads}
+      );
+    }
+    if (reserved != RunOnCallStatus::kDone) {
+      return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+    }
+  }
+#endif
   search_buffers.max_cell_blocks_ = max_cell_blocks;
   return search_buffers;
 }

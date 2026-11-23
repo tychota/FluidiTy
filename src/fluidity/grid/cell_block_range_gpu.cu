@@ -290,6 +290,34 @@ RunOnCallStatus ComputeLargestBorderSearchStackOnGpu(std::uint64_t* bytes_per_th
   return RunOnCallStatus::kDone;
 }
 
+RunOnCallStatus ReserveBorderSearchStackOnGpu(std::uint64_t bytes_per_thread) {
+  // Steps: 1 the stack now  2 raise it  3 check what the driver gave
+  // Step 1.
+  std::size_t current_bytes = 0;
+  if (const cudaError_t error = cudaDeviceGetLimit(&current_bytes, cudaLimitStackSize); error != cudaSuccess) {
+    return ToRunOnCallStatus(error);
+  }
+  if (current_bytes >= bytes_per_thread) {
+    return RunOnCallStatus::kDone;
+  }
+  // Step 2: the driver takes the memory now, so a GPU too full to hold it says so here, at build time.
+  const cudaError_t set_error = cudaDeviceSetLimit(cudaLimitStackSize, static_cast<std::size_t>(bytes_per_thread));
+  if (set_error == cudaErrorMemoryAllocation) {
+    // Not a sticky error: reading it clears it, so the next GPU call does not report it again.
+    static_cast<void>(cudaGetLastError());
+    return RunOnCallStatus::kOutOfMemory;
+  }
+  if (set_error != cudaSuccess) {
+    return ToRunOnCallStatus(set_error);
+  }
+  // Step 3: the driver may round the value; it must not be below what the marking function needs.
+  std::size_t given_bytes = 0;
+  if (const cudaError_t error = cudaDeviceGetLimit(&given_bytes, cudaLimitStackSize); error != cudaSuccess) {
+    return ToRunOnCallStatus(error);
+  }
+  return given_bytes >= bytes_per_thread ? RunOnCallStatus::kDone : RunOnCallStatus::kCallFailed;
+}
+
 RunOnCallStatus ComputeResidentThreadsOnGpu(std::uint64_t* resident_threads) {
   int device = 0;
   if (const cudaError_t error = cudaGetDevice(&device); error != cudaSuccess) {

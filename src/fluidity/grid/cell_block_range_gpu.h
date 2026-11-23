@@ -21,12 +21,12 @@
 //   compiler gave the largest GPU function of this file, WriteBorderReadMarks, 3,600 bytes of stack and 255 registers
 //   per thread on sm_120 (3,048 bytes on sm_86 and sm_89), and no local memory beyond the stack (cuobjdump
 //   --dump-resource-usage, release build); the others keep none. kBorderSearchStackBytes is the number that a test
-//   pins. The driver grows the stack at the first launch; BuildBorderSearchStackEstimate (grid/cell_block_range.h)
-//   gives the run's memory plan the entry for it.
+//   pins. BuildBorderSearchBuffers reserves the stack (ReserveBorderSearchStackOnGpu), so a GPU too full for it fails
+//   there; BuildBorderSearchStackEstimate (grid/cell_block_range.h) gives the run's memory plan the entry for it.
 //
 // Owns:    ApplyBorderStatusResetOnGpu, ResetBorderMarksOnGpu, CheckBorderSoFarOnGpu, WriteBorderReadMarksOnGpu,
 //          WriteListedMarksOnGpu, WriteBorderBlocksOnGpu, kBorderSearchStackBytes,
-//          ComputeLargestBorderSearchStackOnGpu, ComputeResidentThreadsOnGpu
+//          ComputeLargestBorderSearchStackOnGpu, ComputeResidentThreadsOnGpu, ReserveBorderSearchStackOnGpu
 // Uses:    RunOnCallStatus (base/run_on_call.h), BorderWidth (grid/border_block_steps.h), GridBuildStatus
 //          (grid/grid_build_status.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h), GridTables
 //          (grid/grid_tables.h)
@@ -132,6 +132,15 @@ inline constexpr std::uint64_t kBorderSearchStackBytes = 3600;
 // (cudaFuncGetAttributes, localSizeBytes).
 // Fails: kCallFailed  a query failed; *bytes_per_thread is then unchanged
 RunOnCallStatus ComputeLargestBorderSearchStackOnGpu(std::uint64_t* bytes_per_thread);
+
+// Raises the per-thread stack of the current GPU to at least bytes_per_thread (cudaDeviceSetLimit with
+// cudaLimitStackSize), so the first marking launch never has to grow it. The CUDA manuals: the stack "will be
+// immediately resized", and a failure to provide the memory returns cudaErrorMemoryAllocation. The limit belongs to
+// the GPU's context, so every later GPU function of the process gets at least this stack; the driver keeps it until
+// the process ends or the limit is set again. A stack already large enough is left as it is.
+// Fails: kOutOfMemory  the GPU could not provide the stack; the error is cleared, so the next GPU call does not see it
+//        kCallFailed   another query or the setting failed, or the GPU gave a smaller stack than asked
+RunOnCallStatus ReserveBorderSearchStackOnGpu(std::uint64_t bytes_per_thread);
 
 // Reads the threads the current GPU can hold at once: maxThreadsPerMultiProcessor x multiProcessorCount, the number of
 // threads the driver keeps a stack for.

@@ -2625,7 +2625,9 @@ A run on the GPU keeps two grids, the committed one and the one of the step's tr
 buffers: 2 × 460 + 1,920 = 2,840 bytes per block, plus the 4,110 bytes and two status records once. A grid of
 1,000,000 blocks (64 million cell places) and its try therefore take about 2.84 GB. The grid's own GPU functions keep
 under the driver's default stack of 1,024 bytes per thread, so the grid's build and check have no entry held by the
-driver; the border search has one (`BuildBorderSearchStackEstimate`). A GPU
+driver; the border search has one (`BuildBorderSearchStackEstimate`), which `BuildBorderSearchBuffers` takes on the GPU
+so that a card too full for it fails there. The driver keeps one stack, sized for the largest need of any GPU function
+launched, so adding this entry to another module's entry of the same kind counts more than the driver takes. A GPU
 function that computes nearby-face weights keeps 1,152 bytes per thread for one axis, or 3,456 for three, which is
 above that default, so the module it belongs to counts a stack held by the driver, as contact does for its particle
 visit.

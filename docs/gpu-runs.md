@@ -197,18 +197,43 @@ Two things about `stacked_borders_on_gpu_functional_test` (the border search of 
 a GPU grid, compared with the CPU's list and count by bits). The GPU function that marks, one thread per place of the set
 (`WriteBorderReadMarks` in `cell_block_range_gpu.cu`), keeps the results of the readers as locals: 3,600 bytes of stack and
 255 registers per thread on `sm_120`, 3,048 bytes and 255 registers on `sm_86` and `sm_89` (`cuobjdump
---dump-resource-usage`, no local memory beyond the stack); the five others keep no stack. That is above the driver's default
-1,024 bytes; the driver grows the stack at the first launch. The memory plan counts it with `BuildBorderSearchStackEstimate`,
-a driver stack entry of that many bytes for every resident thread (about 55,296 threads on a 36-multiprocessor card, 199 MB);
-`FindBorderBlocks.OnGpuFunctions_KeepTheStatedStack` fails if the compiled function keeps more than `kBorderSearchStackBytes`
-(3,600). A launch that fails with `cudaErrorMemoryAllocation` at the first marking call means the card could not give that
-stack. The marks are bytes that many threads set to 1 at once with plain stores and nobody reads: if
-`OnGpuTwice_GivesIdenticalBytes` or the comparison with the CPU differs, by a block missing or extra in a list, suspect that
-first (a byte store that touched its neighbours), then a missing wait between the marking launch and the scan.
-The marking runs in launches of at most 2,048 blocks of the set each (`kSetBlocksPerMarkingLaunch`), each waited for, so
-no launch runs near the 2 seconds after which the display driver stops a GPU function; `cudaErrorLaunchTimeout` here
-means a chunk of 2,048 dense blocks took that long, and the constant should come down. A set of more than 14,128,181
-blocks (range plus border so far, the most whose places fit 32 bits) fails with `kTooManyCellBlocks` before any launch.
+--dump-resource-usage`, release build, no local memory beyond the stack); the five others keep no stack. That is above the
+driver's default 1,024 bytes. `BuildBorderSearchBuffers` raises the stack when the buffers are built (`ReserveBorderSearchStackOnGpu`,
+as contact does), so a card too full for it fails there with `kOutOfMemory`. The memory plan counts it with
+`BuildBorderSearchStackEstimate`, a driver stack entry of that many bytes for every resident thread (about 55,296 threads
+on a 36-multiprocessor card, 199 MB). The driver keeps one stack for the largest need of any GPU function, so summing this
+entry with contact's counts more than the driver takes. The marking runs in launches of at most 2,048 blocks of the set
+each (`kSetBlocksPerMarkingLaunch`), each waited for, and a set of more than 14,128,181 blocks fails with
+`kTooManyCellBlocks` before any launch.
+
+What to look at first, in this order:
+
+1. **A launch timeout.** Run the whole program, release preset, with no display on the card if you can. A
+   `cudaErrorLaunchTimeout` means one marking launch of 2,048 dense blocks took about 2 seconds; the test grids should
+   not, so tell us, and `kSetBlocksPerMarkingLaunch` should come down.
+2. **Empty lists, or a failure at the first marking call.** If every list is empty and `FindLayerOrFail` prints an
+   error name, the first marking launch failed. Rerun with `CUDA_LAUNCH_BLOCKING=1` to see which launch.
+3. **The stack digest.** `FindBorderBlocks.OnGpuFunctions_KeepTheStatedStack` writes the local bytes per thread. It should
+   be 3,600. If it is 0 or far below the `STACK` of `cuobjdump`, the estimate is wrong.
+4. **Resident threads and the bytes taken.** `ReserveBorderSearchStackOnGpu.FromTheDefault_TakesAboutTheEstimatedBytes`
+   writes a note with the bytes the GPU gave up and the estimate. Resident threads should be 55,296 on the 5060 Ti and the
+   bytes about 199 MB (a little less: the driver may already hold the default 1,024 bytes). The test is skipped if an
+   earlier test already raised the stack. The tolerance is 25 percent; if it fails, the note says by how much.
+5. **A list that differs from the CPU's.** A block missing from the GPU list points to the marking (the byte store, or
+   the number of places). An extra block points to the clear of the marks or a stale word of the scan. A right set of
+   blocks in the wrong places points to the prefix sum, which runs in place on `block_count + 1` words.
+6. **`OnGpuTwice_GivesIdenticalBytes`.** A difference means something depends on timing. Nothing should. Suspect the clear,
+   or the work areas of the prefix sum.
+7. **`OnGpuFailures_EqualCpuFailures`.** All four bad lists and the same buffer must give `kBadInput` on both processors,
+   the output buffer must be as it was, and the call after each failure must give the CPU's list. `kRunOnCallFailed` here
+   means the atomic minimum on the key or the reset.
+8. **`OnGpu_AllocatesNothing`.** It makes one call before counting. If it fails now, something in the search allocates on the
+   CPU.
+9. **`MatchesAllocatedGpuBytes` and `HandsOutExactlyTheEstimate`.** The free-byte equality after the build.
+10. **`OnGpuMoreBlocksThanOneLaunch_SameBitsAsCpu`.** It runs a set larger than one marking launch. A difference here and
+    nowhere else points to the split into launches.
+
+On another card (`sm_86`, `sm_89`) only compiled code exists: reread points 3 and 4 there.
 
 To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
 programs of the `linux-release-cuda` build:

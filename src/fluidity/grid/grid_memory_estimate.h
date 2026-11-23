@@ -22,7 +22,8 @@
 //   The grid's build and check have no entry held by the driver (MemoryWhere::kDriverStack): their GPU functions keep
 //   under the driver's default stack of 1,024 bytes per thread. The border search has one, which
 //   BuildBorderSearchStackEstimate (grid/cell_block_range.h) gives. A module that computes nearby-face weights on the
-//   GPU declares its own.
+//   GPU declares its own. The driver keeps one stack, sized for the largest need of any GPU function launched, so
+//   adding this entry to another module's driver-stack entry counts more than the driver takes.
 //
 // Words:
 //   memory estimate  the list of entries of a module or a run: every array it will allocate

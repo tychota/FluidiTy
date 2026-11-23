@@ -118,6 +118,55 @@ void CheckLayersOfRanges(
   WriteDigestOfResults("border search on the GPU, " + name, std::span<const BorderLayerResult>(gpu_layers));
 }
 
+// The share of the estimate's bytes the driver may differ by: it rounds the stack per thread and the memory it takes.
+constexpr double kStackToleranceFraction = 0.25;
+// The per-thread stack a GPU has before anything raises it.
+constexpr std::uint64_t kDefaultStackBytesPerThread = 1024;
+
+// The first test of the program: raising the driver's stack to what the marking function needs takes about the bytes of
+// the estimate's driver-stack entry from the GPU's free bytes (less the default stack the driver may already hold). The
+// free bytes before and after, and the estimate, go to the notes. If an earlier call already raised the stack, nothing
+// is left to measure and the test is skipped.
+TEST(ReserveBorderSearchStackOnGpu, FromTheDefault_TakesAboutTheEstimatedBytes) {
+  const std::expected<MemoryEstimateEntry, GridFailure> entry = BuildBorderSearchStackEstimate(RunOn::kGpu);
+  ASSERT_TRUE(entry.has_value());
+  const std::expected<MemoryAvailable, BufferError> before = ReadMemoryAvailable(RunOn::kGpu);
+  ASSERT_TRUE(before.has_value());
+  ASSERT_EQ(ReserveBorderSearchStackOnGpu(entry->bytes_each), RunOnCallStatus::kDone);
+  const std::expected<MemoryAvailable, BufferError> after = ReadMemoryAvailable(RunOn::kGpu);
+  ASSERT_TRUE(after.has_value());
+  const std::uint64_t taken_bytes = before->free_bytes - after->free_bytes;
+  const std::uint64_t estimated_bytes = ComputeMemoryBytes(std::span(&*entry, 1), MemoryCounts());
+  const std::uint64_t default_bytes = kDefaultStackBytesPerThread * entry->given_count;
+  WriteResultNote(
+      "border search stack: the GPU gave up " + std::to_string(taken_bytes) + " bytes; the estimate is "
+      + std::to_string(estimated_bytes) + " bytes (" + std::to_string(entry->bytes_each) + " x "
+      + std::to_string(entry->given_count) + " resident threads)"
+  );
+  if (taken_bytes == 0) {
+    GTEST_SKIP() << "the stack was raised before this test, so there is nothing to measure";
+  }
+  const auto estimated = static_cast<double>(estimated_bytes);
+  EXPECT_LE(static_cast<double>(taken_bytes), estimated * (1.0 + kStackToleranceFraction));
+  EXPECT_GE(
+      static_cast<double>(taken_bytes),
+      static_cast<double>(estimated_bytes - default_bytes) * (1.0 - kStackToleranceFraction)
+  );
+}
+
+// A second reserve of the same size takes nothing more.
+TEST(ReserveBorderSearchStackOnGpu, Twice_TakesNothingTheSecondTime) {
+  const std::expected<MemoryEstimateEntry, GridFailure> entry = BuildBorderSearchStackEstimate(RunOn::kGpu);
+  ASSERT_TRUE(entry.has_value());
+  ASSERT_EQ(ReserveBorderSearchStackOnGpu(entry->bytes_each), RunOnCallStatus::kDone);
+  const std::expected<MemoryAvailable, BufferError> before = ReadMemoryAvailable(RunOn::kGpu);
+  ASSERT_TRUE(before.has_value());
+  ASSERT_EQ(ReserveBorderSearchStackOnGpu(entry->bytes_each), RunOnCallStatus::kDone);
+  const std::expected<MemoryAvailable, BufferError> after = ReadMemoryAvailable(RunOn::kGpu);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->free_bytes, before->free_bytes);
+}
+
 // The random grids, the tested ranges of each (first, middle, last, whole grid), four layers.
 TEST(FindBorderBlocks, OnGpuRandomGrids_SameBitsAsCpu) {
   const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(kGridCount);
@@ -340,6 +389,18 @@ TEST(FindBorderBlocks, OnGpu_AllocatesNothing) {
       CellBlockRange{.first_block = 3, .block_count = 2},
       CellBlockRange{.first_block = 0, .block_count = rig->grid.counts().cell_blocks},
   };
+  // One call that is not counted: CUDA loads its code for the GPU functions and the driver sizes its stack at the first
+  // call, and either may allocate on the CPU. The grid build's allocation test does the same.
+  const std::expected<std::uint32_t, GridFailure> warm_up = FindBorderBlocks(
+      rig->grid,
+      ranges.front(),
+      rig->so_far_buffer,
+      0,
+      BorderWidth::kFourCellWidths,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_TRUE(warm_up.has_value());
   for (const CellBlockRange range : ranges) {
     CheckCallAllocatesNothing(*rig, range, BorderWidth::kTouchingCells);
     CheckCallAllocatesNothing(*rig, range, BorderWidth::kFourCellWidths);
@@ -386,6 +447,10 @@ MemoryCounts ToRoomMemoryCounts(std::uint32_t max_cell_blocks) {
 // free bytes; building the search buffers into it takes no more.
 TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedGpuBytes) {
   constexpr std::uint32_t kThousandBlocks = 1000;
+  // The stack that BuildBorderSearchBuffers reserves is raised first, so the free bytes below move only for the arrays.
+  const std::expected<MemoryEstimateEntry, GridFailure> stack_entry = BuildBorderSearchStackEstimate(RunOn::kGpu);
+  ASSERT_TRUE(stack_entry.has_value());
+  ASSERT_EQ(ReserveBorderSearchStackOnGpu(stack_entry->bytes_each), RunOnCallStatus::kDone);
   const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(RunOn::kGpu, kThousandBlocks);
   const std::size_t byte_count =
       ComputeRunMemoryBytes(estimate, ToRoomMemoryCounts(kThousandBlocks), MemoryWhere::kRunOn);
