@@ -1,0 +1,65 @@
+src/fluidity/grid/testing/border_block_cases.h
+  s_4f0877e2acdcf0::t_2aef363653fbc5 10-11
+src/fluidity/grid/testing/border_search_replay.h
+  s_4f0877e2acdcf0::t_87c1cec6388f6d 21-23
+src/fluidity/grid/testing/cell_block_range_cases.h
+  s_4f0877e2acdcf0::t_4895512dc97ef1 39-40,126-127
+src/fluidity/grid/testing/cell_size_rule_cases.h
+  s_4f0877e2acdcf0::t_c17226f8518b16 48
+src/fluidity/grid/testing/face_search_cases.h
+  s_4f0877e2acdcf0::t_39ac9256636ddb 10-11
+src/fluidity/grid/testing/grid_build_steps_cases.h
+  s_4f0877e2acdcf0::t_dc10e3b320a9bb 13,642-643,1013-1014
+src/fluidity/grid/testing/grid_functions_answers.h
+  s_4f0877e2acdcf0::t_fdd8887d7d3f98 22-23,229-230
+src/fluidity/grid/testing/grid_functions_gpu_cases.h
+  s_4f0877e2acdcf0::t_1e8ad07cec581b 9-10
+src/fluidity/grid/testing/grid_functions_result_words.h
+  s_4f0877e2acdcf0::t_77cdb8055a48b5 6,18-19
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_4f0877e2acdcf0::t_a11b22e12c1d4c 329-330
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_92945efaf8f313 20,24-25,38-39,57,63-64,66-67,81
+src/fluidity/grid/testing/grid_main_comparison_cases.h
+  s_4f0877e2acdcf0::t_460ca55a671b37 23-24
+src/fluidity/grid/testing/grid_piece_cases.h
+  s_4f0877e2acdcf0::t_ccc791ab970f5e 15,20-21
+src/fluidity/grid/testing/grid_piece_replay.h
+  s_4f0877e2acdcf0::t_8c448234093e35 21
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_94d400ad1d61f2 363-364
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_b9e5943ae8220a 21-22,26,123-124,145-146,149-150,161-162
+src/fluidity/grid/testing/grid_support.h
+  s_4f0877e2acdcf0::t_920f81d631dded 36-37,191,409-410,437-438
+src/fluidity/grid/testing/grid_support_cases.h
+  s_4f0877e2acdcf0::t_c36dffca4d6bda 71-72
+src/fluidity/grid/testing/nearby_face_weights_cases.h
+  s_4f0877e2acdcf0::t_c8e114f41a469b 98-99
+src/fluidity/grid/testing/nearby_faces_cases.h
+  s_4f0877e2acdcf0::t_f1ca75a4ac4e1a 13-14,16-17,104-105,369-370
+src/fluidity/grid/testing/sloped_surface_scene.h
+  s_4f0877e2acdcf0::t_3ad494303e0642 17-19,24
+tests/grid/shared_grid_functions.gpu.test.cc
+  s_4f0877e2acdcf0::t_4775da432cbae2 1,148-149
+tests/grid/sloped_surface_scene.gpu.test.cc
+  s_4f0877e2acdcf0::t_7396d116e79cd8 1
+tests/grid/sloped_surface_scene.test.cc
+  s_4f0877e2acdcf0::t_1dfbe3fac8e6f7 174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b934b4a02dc27b010418134f1fd28532eaf83d6",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
