@@ -7,8 +7,9 @@
 //   them are in find_cell_at.h, touching_cells.h, cell_corners.h and face_search.h.
 //
 // Idea: a grid's frame says where the cell with coordinate (0, 0, 0) starts, how wide the biggest cells are, and how
-//   many size levels the grid uses; a cell of size level l is h_0 / 2^l wide. Each cell place of a cell block holds
-//   one CellState: an active cell, a split cell, a place covered by an active cell one size level bigger, or no cell.
+//   many size levels the grid uses; a cell of size level l is h_0 / 2^l wide, h_0 being the width of the biggest
+//   cells. Each cell place of a cell block holds one CellState: an active cell, a split cell, a place covered by an
+//   active cell one size level bigger, or no cell.
 //   Each face place holds one FacePieceKind, which says whether a face piece is kept there and what lies on its two
 //   sides. Every face piece is kept once, at the size level of its smaller cell. Beside the per-place tables, each
 //   block lists the blocks around it: its 27 neighbours of the same size level, the block of the next bigger cells
@@ -16,6 +17,10 @@
 //   block ids followed by moves through these tables.
 //   Example: an active cell beside four active cells one size level smaller has, on that side, four face places of
 //   kind kBetweenCells at the smaller size level, and its own face place there is kNotAPiece.
+//   The two-size example used by the examples below: the active cell {0,0,0} of size level 0 beside the split cell
+//   {1,0,0} of size level 0, whose 8 cells {2..3, 0..1, 0..1} of size level 1 are active, in a frame with biggest
+//   cells 1 m wide. It has 9 active cells and 2 blocks: block 0 of size level 0 and block 1 of size level 1, whose
+//   cell place 64 + (4 z + y) * 4 + x holds the cell {x, y, z} of size level 1.
 //   Reading the tables. A place index gives its block, and the block id its size level and block coordinate, so a
 //   place's coordinate, width and centre follow with no search, by integer arithmetic and a few double operations. An
 //   id gives its place back by one binary search in the block ids (FindCellBlock). A face piece's two cells are the
@@ -167,7 +172,8 @@ FLUIDITY_CPU_AND_GPU constexpr double ComputeCellWidth(GridFrame frame, SizeLeve
 
 // Gives the size level of a block of the grid: the size level of its id.
 //
-// Example: in the grid of the two-size example below, block 0 is of size level 0 and block 1 of size level 1.
+// Example: in the grid of the two-size example above, block 0 is of size level 0 and block 1 is of
+//   size level 1.
 // Requires: block < tables.block_count.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr SizeLevel ToSizeLevel(const GridTables& tables, CellBlockIndex block) noexcept {
@@ -177,8 +183,8 @@ FLUIDITY_CPU_AND_GPU constexpr SizeLevel ToSizeLevel(const GridTables& tables, C
 
 // Finds a block of the grid by its id: FindSortedBlock over the block ids, kNoIndex when the grid has no such block.
 //
-// Example: in the grid of the two-size example below, the id of the size-level-1 block (0,0,0) is at index 1, and
-//   that of the size-level-1 block (1,0,0) gives kNoIndex.
+// Example: in the grid of the two-size example above, the id of the size-level-1 block (0,0,0) is at index
+//   1, and that of the size-level-1 block (1,0,0) gives kNoIndex.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellBlockIndex FindCellBlock(const GridTables& tables, CellBlockId block) noexcept {
   return FindSortedBlock(tables.block_ids, tables.block_count, block);
@@ -364,8 +370,8 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeCellCenter(const GridTables& tables, 
 //
 // Units: m, world. Two correctly rounded operations per axis: exact when m h_l, m = c along the axis and c + 1/2
 //   across, and its sum with the origin are doubles (file header, "Precision"), else within 2^-53 (|m h_l| + |result|).
-// Example: in the two-size example below, each of the 4 face pieces of the big cell's +X side lies at x = 1 m, with
-//   (y, z) one of (0.25, 0.25), (0.25, 0.75), (0.75, 0.25) and (0.75, 0.75) m.
+// Example: in the two-size example above, each of the 4 face pieces of the big cell's +X side lies at x =
+//   1 m, with (y, z) one of (0.25, 0.25), (0.25, 0.75), (0.75, 0.25) and (0.75, 0.75) m.
 // Requires: `face` is a place of block 0..tables.block_count - 1. Any kind: the position is the place's own.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeFacePosition(const GridTables& tables, FacePlaceIndex face) noexcept {
@@ -388,8 +394,8 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeFacePosition(const GridTables& tables
 // smaller cell. The whole face piece; no solid is taken off.
 //
 // Units: m2. One correctly rounded product: exact when h_l's significand needs at most 26 bits, as for h_0 = 1 m.
-// Example: in the two-size example below, each face piece of the big cell's +X side is 0.25 m2; the big cell's
-//   other sides are 1 m2.
+// Example: in the two-size example above, each face piece of the big cell's +X side is 0.25 m2; the big
+//   cell's other sides are 1 m2.
 // Requires: `face` is a place of block 0..tables.block_count - 1.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr double ComputeFaceArea(const GridTables& tables, FacePlaceIndex face) noexcept {
@@ -406,8 +412,8 @@ FLUIDITY_CPU_AND_GPU constexpr double ComputeFaceArea(const GridTables& tables, 
 //   -2^18, local 0 of a block at block coordinate -2^16 on that axis), where a packed id would name another cell. So
 //   only a kActive or kSplit place makes an id. A kSplit place carries no values: a stage that wants a cell carrying
 //   values checks that the place is kActive.
-// Example: in the two-size example below, place 0 gives the size-level-0 cell {0,0,0}; place 64 + 2, local (2, 0, 0)
-//   of block 1, gives the size-level-1 cell {2,0,0}; place 64, inside the big cell, gives CellId{0}.
+// Example: in the two-size example above, place 0 gives the size-level-0 cell {0,0,0}; place 64 + 2, local
+//   (2, 0, 0) of block 1, gives the size-level-1 cell {2,0,0}; place 64, inside the big cell, gives CellId{0}.
 // Requires: `cell` is a place of block 0..tables.block_count - 1.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellId ToCellId(const GridTables& tables, CellPlaceIndex cell) noexcept {
@@ -433,8 +439,8 @@ FLUIDITY_CPU_AND_GPU constexpr CellId ToCellId(const GridTables& tables, CellPla
 //   place at plane 0 of a block at block coordinate -2^16 is -2^18, outside the range. A face piece is kept at one of
 //   them only and has its high coordinate in range, so only a face piece makes an id, and no two places give the
 //   same id.
-// Example: in the two-size example below, X place 2 of block 1 gives ToFacePieceId(Axis::kX, SizeLevel{1}, {2, 0, 0});
-//   X place 1 of block 0, between the big cell and the split cell, gives FacePieceId{0}.
+// Example: in the two-size example above, X place 2 of block 1 gives ToFacePieceId(Axis::kX, SizeLevel{1},
+//   {2, 0, 0}); X place 1 of block 0, between the big cell and the split cell, gives FacePieceId{0}.
 // Requires: `face` is a place of block 0..tables.block_count - 1.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr FacePieceId ToFacePieceId(const GridTables& tables, FacePlaceIndex face) noexcept {
@@ -453,8 +459,8 @@ FLUIDITY_CPU_AND_GPU constexpr FacePieceId ToFacePieceId(const GridTables& table
 //   block below. FindActiveCellHolding then takes that place when it is kActive, else the active cell that covers it
 //   through the bigger block. It gives kNoIndex for kGridEdgeLow, where no cell lies on the low side, for kNotAPiece,
 //   and for kOutsidePiece when the low cell lies in a block the grid piece did not load.
-// Example: in the two-size example below, each of the 4 face pieces of the big cell's +X side gives place 0, the big
-//   cell, though the face pieces are kept at size level 1.
+// Example: in the two-size example above, each of the 4 face pieces of the big cell's +X side gives place
+//   0, the big cell, though the face pieces are kept at size level 1.
 // Requires: `face` is a place of block 0..tables.block_count - 1; every table of the grid is written.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellLow(const GridTables& tables, FacePlaceIndex face) noexcept {
@@ -479,8 +485,8 @@ FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellLow(const GridTables& tabl
 //   0 of the block above. FindActiveCellHolding then takes it as FindCellLow does. It gives kNoIndex for
 //   kGridEdgeHigh, where no cell lies on the high side, for kNotAPiece, and for kOutsidePiece when the high cell lies
 //   in a block the grid piece did not load.
-// Example: in the two-size example below, X place 2 + 5 of block 1, the face piece between the big cell and the small
-//   cell {2,1,0}, gives the place of that small cell, 64 + 4 + 2.
+// Example: in the two-size example above, X place 2 + 5 of block 1, the face piece between the big cell
+//   and the small cell {2,1,0}, gives the place of that small cell, 64 + 4 + 2.
 // Requires: `face` is a place of block 0..tables.block_count - 1; every table of the grid is written.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellHigh(const GridTables& tables, FacePlaceIndex face) noexcept {
@@ -505,8 +511,8 @@ FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellHigh(const GridTables& tab
 //   exact. Beside a bigger cell it is h_l + h_l / 2 = 3 s 2^(e - 1) for h_l = s 2^e: 3 s needs up to two bits more than
 //   s, so the result is correctly rounded, and exact when h_0's significand needs at most 51 bits (h_0 = 1 m, say,
 //   but not 0.7 m or 1 - 2^-53 m) (file header, "Precision").
-// Example: in the two-size example below, each face piece of the big cell's +X side is 0.5 + 0.25 = 0.75 m from the
-//   big cell's centre to the small cell's; a side of a lone cell 1 m wide gives 0.5 m.
+// Example: in the two-size example above, each face piece of the big cell's +X side is 0.5 + 0.25 = 0.75 m
+//   from the big cell's centre to the small cell's; a side of a lone cell 1 m wide gives 0.5 m.
 // Requires: `face` is a place of block 0..tables.block_count - 1; every table of the grid is written.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr double
@@ -529,8 +535,8 @@ ComputeCellCenterDistance(const GridTables& tables, FacePlaceIndex face) noexcep
 // Method: FindCellBlock of ToCellBlockId(cell), then ToCellPlaceIndex. A place inside a bigger cell or absent holds no
 //   cell, so its id is not found; nor is a value that is not a cell id (bit 63 clear or bits 61..62 set).
 //   A kSplit place is found, as ToCellId names it, so a stage that wants a cell carrying values checks kActive.
-// Example: in the two-size example below, size level 1 {2,1,0} is at place 64 + 4 + 2; size level 1 {0,0,0}, inside the
-//   big cell, gives kNoIndex; so does CellId{0}.
+// Example: in the two-size example above, size level 1 {2,1,0} is at place 64 + 4 + 2; size level 1
+//   {0,0,0}, inside the big cell, gives kNoIndex; so does CellId{0}.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellPlace(const GridTables& tables, CellId cell) noexcept {
   constexpr std::uint64_t kAxisBits = std::uint64_t{3} << kIdAxisShift;
@@ -557,9 +563,10 @@ FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellPlace(const GridTables& ta
 //   the axis. Otherwise, when c is local 0 along the axis, it can only be at plane 4 of the block below. Either place
 //   counts only when its kind is not kNotAPiece. A value that is not a face piece id, with bit 63 set or with axis
 //   bits 0, gives kNoIndex.
-// Example: in the two-size example below, ToFacePieceId(Axis::kX, SizeLevel{1}, {2, 0, 0}) is at X place 2 of block 1,
-//   240 + 2; ToFacePieceId(Axis::kX, SizeLevel{0}, {1, 0, 0}), the big cell's +X side as a whole, gives kNoIndex: its
-//   place is kNotAPiece, since the side is kept as 4 face pieces at size level 1. FacePieceId{0} gives kNoIndex.
+// Example: in the two-size example above, ToFacePieceId(Axis::kX, SizeLevel{1}, {2, 0, 0}) is at X place 2
+//   of block 1, 240 + 2; ToFacePieceId(Axis::kX, SizeLevel{0}, {1, 0, 0}), the big cell's +X side as a whole, gives
+//   kNoIndex: its place is kNotAPiece, since the side is kept as 4 face pieces at size level 1. FacePieceId{0}
+//   gives kNoIndex.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr FacePlaceIndex FindFacePlace(const GridTables& tables, FacePieceId piece) noexcept {
   const std::uint64_t axis_bits = (piece.value >> kIdAxisShift) & 3U;

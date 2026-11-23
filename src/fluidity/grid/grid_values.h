@@ -11,13 +11,13 @@
 //   nothing from the GPU and allocates nothing. A function that takes values and a grid compares grid_version() and
 //   block_count() with the grid's and fails with kWrongGridVersion when they differ. A grid piece has the whole grid's
 //   version, so values loaded for one piece are bound again at every load.
-//   What a bind checks: the version number only. The values remember that number and the block count, not the grid
-//   object, so two grid objects with the same version number cannot be told apart: values bound to one pass
-//   CheckGridVersion against the other. The caller must therefore know which grid its values belong to, and must not
-//   keep two grids at once with the same version number when it relies on that check.
+//   What a bind checks: only that the grid's block count fits the room. The values remember the grid's version number
+//   and block count, not the grid object, so two grid objects with the same version number cannot be told apart:
+//   values bound to one pass CheckGridVersion against the other. The caller must therefore know which grid its values
+//   belong to, and must not keep two grids at once with the same version number when it relies on that check.
 //   Example: values with room for 4 blocks, bound to a grid of 3 blocks: block_count() is 3, and a CellValues holds
-//   3 x 64 = 192 meaningful values. Bound to a grid of 2 blocks next, block_count() is 2 and the 192 values are
-//   unspecified.
+//   3 x 64 = 192 meaningful values. Bound to a grid of 2 blocks next, block_count() is 2 and the 192 values
+//   are unspecified.
 //
 // Words:
 //   place  the position of a value inside a cell block, as the grid's tables count them
@@ -222,8 +222,8 @@ class GridValuesAccess {
 // The only allocation of a value buffer.
 //
 // Method: CheckCanRunOn(run_on) first, then the room, then one memory piece of run_memory of
-//   ComputeRunMemoryPieceBytes(max_cell_blocks x places per block x sizeof(Value)) bytes. Every byte of the piece is
-//   zero.
+//   ComputeRunMemoryPieceBytes(max_cell_blocks x places per block x sizeof(Value)) bytes. Every byte of the piece
+//   is zero.
 //   Every Build...Values below is this one function for its places per block: 64, 240, 125 and 1.
 // Example: BuildFaceValues<double>(RunOn::kCpu, 1000, run_memory) takes 1,000 x 240 x 8 = 1,920,000 bytes of a fresh
 //   run_memory, and its max_cell_blocks() is 1000, its block_count() 0 and its grid_version().value 0.
@@ -329,8 +329,8 @@ BuildCellBlockValues(const StaggeredGrid& grid, RunMemory& run_memory) {
 //        kBadInput          cpu_values.size() differs from block_count() x places per block, or `cpu_values`
 //                           overlaps the values (the caller's mistake)
 //        kRunOnCallFailed   the copy from the GPU failed
-//        A failed check writes nothing: the span and the values are unchanged. After kRunOnCallFailed the span is
-//        unspecified.
+//        A failed check writes nothing: the span and the values are unchanged. After kRunOnCallFailed the span
+//        is unspecified.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 template <BufferValue Value, int kPlacesPerBlock>
 std::expected<void, GridFailure>

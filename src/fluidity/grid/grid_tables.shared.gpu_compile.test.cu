@@ -38,8 +38,8 @@ namespace {
 // writes split cells and the id 0 to `cell_ids`, block ids to `block_ids`, the neighbour tables of one block to
 // `block_tables` (27 + 1 + 8 entries per sorted block) and states and kinds to `written_cell_states` and
 // `written_face_piece_kinds`, and writes at least one integer per shared function to `results` and the doubles of
-// weight_curve.h, the grid table headers and cell_size_rule.h to `double_results`, so the compiler cannot drop any
-// call.
+// weight_curve.h, the grid table headers and cell_size_rule.h to `double_results`, so the compiler cannot drop
+// any call.
 __global__ void ComputeWithEverySharedGridFunction(
     const std::int32_t* values,
     CellBlockRange range,

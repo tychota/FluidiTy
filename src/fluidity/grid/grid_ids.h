@@ -31,8 +31,9 @@
 //          ComputeCellEighth, ComesBefore, ToCellBlockIndex, ToCellPlaceIndex; and, for this header's own functions
 //          only, the bit layout kIdCoordBitCount, kIdCoordMask, kIdSizeLevelShift, kIdSizeLevelMask, kIdAxisShift,
 //          kIdCellMark and the helpers ComputePackedId, ComputeUnpackedCoord, ComputeUnpackedSizeLevel,
-//          ComputeBiggerCellCoord, ComputeIsEarlierInFixedOrder, of which the grid's shared build steps
-//          (grid/grid_build_steps.h) also use kIdCellMark, kIdAxisShift and ComputeBiggerCellCoord
+//          ComputeBiggerCellCoord, ComputeIsEarlierInFixedOrder, of which grid/grid_tables.h, grid/grid_build_steps.h,
+//          grid/face_search.h and grid/cell_corners.h also use ComputePackedId, ComputeUnpackedCoord,
+//          ComputeUnpackedSizeLevel, kIdCellMark, kIdAxisShift and ComputeBiggerCellCoord
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h)
 // Used by: every grid table (grid/grid_tables.h), GridFailure (grid/grid_error.h), and the modules that keep values
 //          per cell, per face piece or per cell block
@@ -59,7 +60,8 @@ inline constexpr auto kMaxCoord = static_cast<std::int32_t>((1U << 18U) - 1U);
 inline constexpr std::uint32_t kNoIndex = 0xFFFFFFFF;  // No block, cell place or face place here.
 
 // The integer location of a cell, in cells of the cell's own size level. The cell of size level l at (i, j, k)
-// covers i h_l <= x < (i + 1) h_l from the grid's origin, and the same along y and z.
+// covers i w <= x < (i + 1) w from the grid's origin, where w is the cell width of that size level, and the same
+// along y and z.
 struct CellCoord {
   std::int32_t x;
   std::int32_t y;
@@ -123,9 +125,10 @@ struct CellBlockRange {
 
 // The bit layout of an id, from bit 63 down. Other modules never read or write these bits: they make and read ids with
 // ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockId and ToFacePieceId. The constants and helpers from here to
-// ComesBefore are for this header's functions. The grid's shared build steps (grid/grid_build_steps.h) also use three
-// of them: kIdCellMark and kIdAxisShift, to test bits 61..63 of an input id, and ComputeBiggerCellCoord, to halve raw
-// coordinates that may lie one past the range.
+// ComesBefore are for this header's functions. Four other grid headers also use some of them: grid/grid_build_steps.h
+// tests bits 61..63 of an input id with kIdCellMark and kIdAxisShift and halves raw coordinates that may lie one past
+// the range with ComputeBiggerCellCoord; grid/grid_tables.h, grid/face_search.h and grid/cell_corners.h pack and read
+// the id of a block they look for with ComputePackedId, ComputeUnpackedCoord and ComputeUnpackedSizeLevel.
 //   CellId, CellBlockId:  bit 63 set,  61..62 zero,      57..60 size level,  38..56 z,  19..37 y,  0..18 x
 //   FacePieceId:          bit 63 zero, 61..62 axis + 1,  57..60 size level,  38..56 z,  19..37 y,  0..18 x
 // A coordinate c is kept as c + kMaxCoord in 19 bits: -kMaxCoord..kMaxCoord are 0..2^19 - 2, and the last value,

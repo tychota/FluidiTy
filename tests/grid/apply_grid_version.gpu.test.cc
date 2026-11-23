@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Binds value buffers to 100 grids built on the GPU in turn: a bind launches and copies nothing, so the values read
 // back are the ones written before, each at its own place. The values read back go to WriteResultDigest.

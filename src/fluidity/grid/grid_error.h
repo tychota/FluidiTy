@@ -46,9 +46,10 @@ enum class GridError : std::uint8_t {
   // A state the grid's own code should never reach, checked in every build, such as more nearby-face candidates than
   // the list holds. No input causes it: it is a fault in FluidiTy, not in the scene, and never reported as bad input.
   kInternalFault,
-  // The run's memory or the processor could not hold a buffer. Only the grid builders and the two forms that copy a CPU
-  // list (the span form of CheckSizeStepRule and ComputeGridCounts) return it; the failure's magnitude is the number of
-  // bytes asked for.
+  // The run's memory or the processor could not hold an array. The functions that build the grid's buffers or values
+  // return it, so does BuildBorderSearchBuffers when the GPU cannot hold the stack of its marking functions, and so do
+  // the span forms of CheckSizeStepRule and ComputeGridCounts, which copy a CPU list; the failure's magnitude is the
+  // number of bytes asked for.
   // Last value.
   kOutOfMemory,
 };

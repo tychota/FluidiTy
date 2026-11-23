@@ -211,8 +211,8 @@ CellBlockId ToBlockOfSmallestCellAt(std::int32_t x) {
 }
 
 TEST(ToCellBlockId, CellAtLowCoordLimit_GivesTheBlockOfItsFloorQuarter) {
-  // floor(-262143 / 4) = -65536: that block holds the cells -262144..-262141, so -kMaxCoord..-kMaxCoord + 2 of the
-  // range.
+  // floor(-262143 / 4) = -65536: that block holds the cells -262144..-262141, so -kMaxCoord..-kMaxCoord + 2 of
+  // the range.
   const CellBlockId lowest_block = ToBlockOfSmallestCellAt(-kMaxCoord);
   EXPECT_NE(lowest_block.value, 0U);
   EXPECT_EQ(lowest_block.value, ToBlockOfSmallestCellAt(-kMaxCoord + 2).value);
