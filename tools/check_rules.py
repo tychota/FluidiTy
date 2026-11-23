@@ -26,6 +26,16 @@ verb catches its -s, -ed and -ing forms and a banned noun its plural; a longer w
 irregular form and the few inflected forms that are words of their own here (`WORDS_OF_THEIR_OWN`) do not match.
 String literals are never scanned; identifiers, comments and Python docstrings are.
 
+What a note for a word banned in one sense leaves out (the nearest other use is still noted): the word inside a longer
+form that the glossary itself says, that is, a phrase of the "Say" column of any row that holds the word and more
+(`size_level`, `SizeLevel` and `size level` for `level`; a hyphen between words joins them, `size-level-2`); the word
+inside the name of a library function or macro where it is written (`_LIBRARY_NAMES`: `floor(`, `std::floor`,
+`math::Floor`, `std::ranges::sort`, `std::lower_bound`, `RecordProperty(`, CUDA runtime names and qualifiers, CMake
+commands and variables); and a file name on a `Uses:`, `Used by:` or `Read:` line of a header and on the lines that
+continue it. A path or identifier of the old proof-of-concept code, written in backticks after the literal prefix
+`main:` (`main:native/src/sparse_mac_grid_3d.cc`), is not read at all, by the notes or by the banned words, in a
+comment or in a commit message.
+
 Which rules apply to which files (a deliberate choice, written down here). The folders `src`, `tests` and `testing`
 are read from the path below the repository (--repository), so a clone inside a folder named `tests` changes nothing:
 - `file-header`, `bare-bool` and `verb` apply to `.h` and `.cuh` files, where the public declarations are.
@@ -68,7 +78,7 @@ import subprocess
 import sys
 import tokenize
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -168,6 +178,9 @@ class NeverSayEntry:
     words: tuple[str, ...]
     spelled: str
     qualifier: str | None  # None: banned in every sense. Text: banned in that one sense only.
+    # Longer phrases that the glossary itself says (the "Say" column of any row) and that contain `words`, as `size
+    # level` holds `level`. A use of a one-sense word inside one of them is the allowed form, not a hit.
+    allowed_phrases: tuple[tuple[str, ...], ...] = ()
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -270,10 +283,16 @@ def contains_run(tokens: Sequence[str], phrase: Sequence[str]) -> bool:
     return False
 
 
+# A path or an identifier of the old proof-of-concept code, written in backticks after the literal prefix `main:` as in
+# `main:native/src/sparse_mac_grid_3d.cc`. Its words are the old code's own, so they are not read as ours.
+_OLD_CODE_NAME = re.compile(r"`main:[^`\n]*`")
+
+
 def comment_segments(comment_text: str) -> list[list[str]]:
-    """Word lists of a comment, one list per stretch without punctuation, so phrases do not span sentences."""
+    """Word lists of a comment, one list per stretch without punctuation, so phrases do not span sentences. A name of
+    the old code (`main:...` in backticks) is left out."""
     segments = []
-    for segment in re.split(r"[^A-Za-z0-9_\s]", comment_text):
+    for segment in re.split(r"[^A-Za-z0-9_\s]", _OLD_CODE_NAME.sub(" ", comment_text)):
         tokens: list[str] = []
         for run in _RUN.findall(segment):
             tokens.extend(split_name_words(run))
@@ -327,12 +346,40 @@ def _parse_never_say_cell(cell: str) -> list[NeverSayEntry]:
     return entries
 
 
+def _say_phrases(cell: str) -> list[tuple[str, ...]]:
+    """The words of each phrase of a "Say" cell, `size_level` and `SizeLevel` both as (size, level). A phrase of one
+    word is kept; the caller keeps only those longer than the word they allow."""
+    phrases = []
+    for raw in _split_at_outer_commas(cell):
+        words = tuple(split_name_words(raw.replace("`", "")))
+        if words:
+            phrases.append(words)
+    return phrases
+
+
+def _with_allowed_phrases(
+    entries: Sequence[NeverSayEntry], say_phrases: Sequence[tuple[str, ...]]
+) -> list[NeverSayEntry]:
+    """Gives each one-sense entry the Say phrases of the glossary that are longer than it and contain it."""
+    completed = []
+    for entry in entries:
+        if entry.qualifier is None:
+            completed.append(entry)
+            continue
+        allowed = {
+            phrase for phrase in say_phrases if len(phrase) > len(entry.words) and contains_run(phrase, entry.words)
+        }
+        completed.append(replace(entry, allowed_phrases=tuple(sorted(allowed))))
+    return completed
+
+
 def load_glossary(glossary_path: Path) -> list[NeverSayEntry]:
     """Reads the "Never say" column of every table. Every table must have the exact header, and there must be one.
 
     A glossary with no table would ban nothing, so every banned word would pass unseen: it is an error."""
     lines = glossary_path.read_text(encoding="utf-8").splitlines()
     entries: list[NeverSayEntry] = []
+    say_phrases: list[tuple[str, ...]] = []
     table_count = 0
     index = 0
     while index < len(lines):
@@ -354,9 +401,10 @@ def load_glossary(glossary_path: Path) -> list[NeverSayEntry]:
             if len(cells) != 3:
                 raise GlossaryError(f"{glossary_path}:{line_number}: expected 3 cells, found {len(cells)}")
             entries.extend(_parse_never_say_cell(cells[2]))
+            say_phrases.extend(_say_phrases(cells[0]))
     if table_count == 0:
         raise GlossaryError(f"{glossary_path}: no vocabulary table ('| Say | Plain meaning | Never say |') was found")
-    return entries
+    return _with_allowed_phrases(entries, say_phrases)
 
 
 def load_allowed_verbs(agents_path: Path) -> tuple[set[str], set[str]]:
@@ -647,22 +695,87 @@ def _entries_by_last_form(glossary: Sequence[NeverSayEntry]) -> dict[str, list[i
     return by_form
 
 
+# Names of library functions and macros, matched where they are written (a call, or the qualified name), so that the
+# word in them is not read as ours: the mathematical floor, the standard sorts and bounds, GoogleTest's
+# RecordProperty, the CUDA runtime and its qualifiers, CMake's commands and variables, and `math::Floor`, which
+# the glossary keeps (the "floor" row). The same word anywhere else is still read.
+_LIBRARY_NAMES = re.compile(
+    "|".join(
+        [
+            r"(?:\bstd)?::floor\b|\bfloor\(|\bmath::Floor\b",
+            r"\bstd::(?:ranges::)?(?:stable_)?sort\b|\b(?:ranges::)?(?:stable_)?sort\(",
+            r"\bstd::(?:ranges::)?(?:lower|upper)_bound\b|\b(?:lower|upper)_bound\(",
+            r"\bRecordProperty\(",
+            r"\bcuda[A-Z]\w*|\b__(?:global|device|host|shared|constant|managed|launch_bounds|syncthreads)__",
+            r"\bCMAKE_[A-Z0-9_]+\b|\btarget_\w+\(|\badd_(?:library|executable|test|custom_\w+)\(",
+        ]
+    )
+)
+# A header line that lists files: its label, and the lines under it that continue the list (indented further).
+_REFERENCE_LABEL = re.compile(r"^\s*(?:Uses|Used by|Read):")
+_REFERENCE_CONTINUATION = re.compile(r"^\s{4,}\S")
+_HYPHEN_BETWEEN_WORDS = re.compile(r"(?<=[A-Za-z0-9])-(?=[A-Za-z0-9])")
+_FILE_NAME = re.compile(r"[\w./+-]*\.(?:h|cuh|cc|cu|typ|md|py|txt|json|lean|cmake)\b")
+
+
+def _blank_matches(pattern: re.Pattern[str], text: str) -> str:
+    return pattern.sub(lambda match: " " * len(match.group(0)), text)
+
+
+def _has_use_outside_allowed_phrases(tokens: Sequence[str], entry: NeverSayEntry) -> bool:
+    """True when `entry` occurs in `tokens` somewhere that is not inside one of its allowed phrases (the glossary's own
+    longer forms, as `size level` for `level`)."""
+    covered: set[int] = set()
+    for phrase in entry.allowed_phrases:
+        width = len(phrase)
+        last_forms = matching_last_forms(phrase[-1])
+        for start in range(len(tokens) - width + 1):
+            if tuple(tokens[start : start + width - 1]) == phrase[:-1] and tokens[start + width - 1] in last_forms:
+                covered.update(range(start, start + width))
+    width = len(entry.words)
+    last_forms = matching_last_forms(entry.words[-1])
+    for start in range(len(tokens) - width + 1):
+        if tuple(tokens[start : start + width - 1]) == entry.words[:-1] and tokens[start + width - 1] in last_forms:
+            if not covered.issuperset(range(start, start + width)):
+                return True
+    return False
+
+
 def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], reporter: _Reporter) -> None:
     by_last_form = _entries_by_last_form(glossary)
+    in_reference_list = False
     for line in lines:
-        sequences: list[tuple[list[str], str]] = []
+        is_comment_only = not line.code.strip()
+        starts_reference_list = _REFERENCE_LABEL.match(line.comment) is not None
+        in_reference_list = starts_reference_list or (
+            in_reference_list and is_comment_only and _REFERENCE_CONTINUATION.match(line.comment) is not None
+        )
+        comment = line.comment
+        if in_reference_list:
+            comment = _blank_matches(_FILE_NAME, comment)
+        # Each sequence says where its words stand and whether a hyphen between two words joined them: `size-level-0`
+        # is read as `size level 0` for a word banned in one sense (an allowed form), and as three stretches for a word
+        # banned in every sense, as before.
+        sequences: list[tuple[list[str], str, bool]] = []
         if not _is_include_line(line.code):
-            for identifier in _identifiers(line.code):
-                sequences.append((split_name_words(identifier), "name"))
-        if not _is_literature_line(line.comment):
-            for segment in comment_segments(line.comment):
-                sequences.append((segment, "comment"))
-        for tokens, where in sequences:
+            for identifier in _identifiers(_blank_matches(_LIBRARY_NAMES, line.code)):
+                sequences.append((split_name_words(identifier), "name", False))
+        if not _is_literature_line(comment):
+            comment_without_library_names = _blank_matches(_LIBRARY_NAMES, comment)
+            for segment in comment_segments(comment_without_library_names):
+                sequences.append((segment, "comment", False))
+            for segment in comment_segments(_HYPHEN_BETWEEN_WORDS.sub(" ", comment_without_library_names)):
+                sequences.append((segment, "comment", True))
+        for tokens, where, is_hyphen_joined in sequences:
             # The glossary order is kept, so the findings come in the same order as when every entry was tried.
             candidates = sorted({position for token in set(tokens) for position in by_last_form.get(token, ())})
             for position in candidates:
                 entry = glossary[position]
+                if where == "comment" and is_hyphen_joined == (entry.qualifier is None):
+                    continue
                 if not contains_phrase(tokens, entry.words):
+                    continue
+                if entry.allowed_phrases and not _has_use_outside_allowed_phrases(tokens, entry):
                     continue
                 key = entry.spelled.lower()
                 if entry.qualifier is None:
@@ -672,7 +785,7 @@ def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], re
                     text = f"'{entry.spelled}' is banned in one sense only: {entry.qualifier}"
                     reporter.add(line.number, NOTE, "one-sense-word", text, key=key)
             for abbreviation in ABBREVIATIONS:
-                if contains_run(tokens, abbreviation):
+                if not is_hyphen_joined and contains_run(tokens, abbreviation):
                     spelled = "".join(abbreviation).upper()
                     reporter.add(
                         line.number, FAIL, "abbreviation", f"'{spelled}' is an abbreviation; spell it out", key=spelled
@@ -1139,7 +1252,10 @@ def _check_paper_line_length(path: Path, text: str, reporter: _Reporter) -> None
 
 
 # Words of a comment that name the process that made the code, not what the code does.
-PROCESS_COMMENT_WORDS = frozenset({"task", "brief", "review", "reviewer", "round", "plan", "ruling"})
+# `round` (rounding a number) is an ordinary word here, as in the message check; `task` is one too (a VS Code task), so
+# it counts only when a number follows (`Task 12`).
+PROCESS_COMMENT_WORDS = frozenset({"task", "brief", "review", "reviewer", "plan", "ruling"})
+_NUMBERED_TASK = re.compile(r"\btask\s+[0-9]", re.IGNORECASE)
 _COMMENT_WORD = re.compile(r"[A-Za-z]+")
 
 
@@ -1147,6 +1263,8 @@ def _note_process_words(lines: list[ScannedLine], reporter: _Reporter) -> None:
     """Notes a process word in a comment; `Task 12` and `Ruling 5` are caught by the word itself."""
     for line in lines:
         for word in dict.fromkeys(word.lower() for word in _COMMENT_WORD.findall(line.comment)):
+            if word == "task" and not _NUMBERED_TASK.search(line.comment):
+                continue
             if word in PROCESS_COMMENT_WORDS:
                 text = f"'{word}' in a comment names how the work was done; say what the code does"
                 reporter.add(line.number, NOTE, "process-word", text, key=word)

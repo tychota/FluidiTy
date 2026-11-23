@@ -472,6 +472,9 @@ when there are any, and that command writes the list: path, line, rule, the note
 those of the change being checked: the staged lines (`<base>` is `HEAD`) when the tree differs from `HEAD`, else the
 lines of `HEAD` itself (`<base>` is `HEAD~1`).
 
+- A NOTE for a word banned in one sense is quiet where the word is part of a form the glossary says (a phrase of its
+  "Say" column), where it is the name of a library function or macro at its call site (`floor(`, `std::ranges::sort`,
+  `RecordProperty(`), and in a file name of a `Uses:`, `Used by:` or `Read:` line.
 - Whoever hands a change in fixes every NOTE of it, or answers it in one line (why the line stays).
 - A rule is one entry in `RULE_TABLE` (id, level, files, reason) and one pair of tests: it fires, and it stays
   quiet on the nearest innocent text.

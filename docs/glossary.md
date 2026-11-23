@@ -14,7 +14,10 @@ How to read the tables:
   bans `row` unless it is part of the allowed phrase. A word without parentheses is banned everywhere. A banned word
   covers its regular inflections too: a banned verb its -s, -ed and -ing forms, a banned noun its plural; the rules
   check lists the few inflected forms that are words of their own (`WORDS_OF_THEIR_OWN` in `tools/check_rules.py`).
-  The rules check prints a note, not a failure, for a word banned in one sense.
+  The rules check prints a note, not a failure, for a word banned in one sense, and prints none when the word stands
+  inside a longer form of the **Say** column (`size_level`, `SizeLevel` or `size level` allows `level`). A path or
+  identifier of the old code is written in backticks after the prefix `main:`, as `main:native/src/sparse_mac_grid_3d.cc`;
+  the check does not read it.
 - A tool reads this file. Every vocabulary table keeps exactly the header `| Say | Plain meaning | Never say |`.
 
 A new word is added here in the same commit that first uses it. Words that are still being settled are not

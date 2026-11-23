@@ -821,10 +821,14 @@ def test_words_check_reports_the_same_findings_in_the_same_order_as_trying_every
 
     slow = check_rules._Reporter(Path("x.h"))
     for line in lines:
-        sequences = [(check_rules.split_name_words(name), "name") for name in check_rules._identifiers(line.code)]
-        sequences += [(segment, "comment") for segment in check_rules.comment_segments(line.comment)]
-        for tokens, where in sequences:
+        sequences = [(check_rules.split_name_words(name), "name", False) for name in check_rules._identifiers(line.code)]
+        sequences += [(segment, "comment", False) for segment in check_rules.comment_segments(line.comment)]
+        joined_comment = check_rules._HYPHEN_BETWEEN_WORDS.sub(" ", line.comment)
+        sequences += [(segment, "comment", True) for segment in check_rules.comment_segments(joined_comment)]
+        for tokens, where, is_hyphen_joined in sequences:
             for entry in entries:
+                if where == "comment" and is_hyphen_joined == (entry.qualifier is None):
+                    continue
                 if not check_rules.contains_phrase(tokens, entry.words):
                     continue
                 if entry.qualifier is None:
@@ -1099,7 +1103,7 @@ def test_names_that_are_not_one_letter_locals_are_quiet(tmp_path, glossary, text
     assert notes(tmp_path, glossary, "a.cc", text) == []
 
 
-@pytest.mark.parametrize("word", ["task", "Brief", "review", "reviewer", "round", "plan", "ruling"])
+@pytest.mark.parametrize("word", ["Brief", "review", "reviewer", "plan", "ruling"])
 def test_process_word_in_a_comment_is_a_note(tmp_path, glossary, word):
     assert notes(tmp_path, glossary, "a.cc", f"// As the {word} said.\nint fine;\n") == ["process-word"]
 
@@ -1109,6 +1113,11 @@ def test_process_word_in_a_comment_is_a_note(tmp_path, glossary, word):
 )
 def test_numbered_process_word_in_a_comment_is_a_note(tmp_path, glossary, text):
     assert notes(tmp_path, glossary, "a.cc", text) == ["process-word"]
+
+
+@pytest.mark.parametrize("text", ["// The round of the rounding.\n", "// A VS Code task builds it.\n", "// The task list.\n"])
+def test_round_and_an_unnumbered_task_are_ordinary_words(tmp_path, glossary, text):
+    assert notes(tmp_path, glossary, "a.cc", text) == []
 
 
 def test_process_word_in_code_or_inside_a_longer_word_is_quiet(tmp_path, glossary):
@@ -1155,7 +1164,7 @@ def repository(tmp_path: Path) -> Path:
 
 
 def test_notes_since_writes_the_notes_of_added_lines_sorted_with_their_source(repository, glossary, tmp_path_factory):
-    write(repository / "src", "a.cc", "// The plan.\nint fine;\n// The round.\n")
+    write(repository / "src", "a.cc", "// The plan.\nint fine;\n// The ruling.\n")
     write(repository / "src", "b.cc", "// A review.\n")
     destination = tmp_path_factory.mktemp("out") / "notes.json"
     exit_code = check_rules.main(
@@ -1165,7 +1174,7 @@ def test_notes_since_writes_the_notes_of_added_lines_sorted_with_their_source(re
     records = json.loads(destination.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert [(r["path"], r["line"], r["rule"], r["source_line"]) for r in records] == [
-        ("src/a.cc", 3, "process-word", "// The round."),
+        ("src/a.cc", 3, "process-word", "// The ruling."),
         ("src/b.cc", 1, "process-word", "// A review."),
     ]
     assert set(records[0]) == {"path", "line", "rule", "text", "source_line"}
@@ -1237,7 +1246,7 @@ def test_also_notes_since_writes_the_notes_and_keeps_the_usual_output(repository
 
 
 def test_also_notes_since_gives_the_list_that_notes_since_json_gives(repository, glossary, tmp_path_factory):
-    write(repository / "src", "a.cc", "// The plan.\nint fine;\n// The round.\n")
+    write(repository / "src", "a.cc", "// The plan.\nint fine;\n// The ruling.\n")
     write(repository / "src", "b.cc", "// A review.\n")
     folder = tmp_path_factory.mktemp("out")
     common = [str(repository / "src"), "--glossary", str(glossary), "--repository", str(repository)]
@@ -1271,3 +1280,167 @@ def test_a_test_file_of_a_clone_under_a_folder_named_tests_is_still_a_test_file(
 def test_a_fallthrough_comment_is_not_a_one_word_comment(tmp_path, glossary):
     write(tmp_path, "src/a.cc", "void Pick(int value) {\n  switch (value) {\n    case 1:\n      // fallthrough\n    case 2:\n      break;\n  }\n}\n")
     assert rules(run(tmp_path, glossary)) == []
+
+
+# Allowed forms, library names, reference lines and names of the old code ---------------------------------------
+
+
+@pytest.fixture
+def forms_glossary(tmp_path: Path) -> Path:
+    path = tmp_path / "forms_glossary.md"
+    path.write_text(
+        "# Glossary\n\n"
+        + GLOSSARY_HEADER
+        + "| `size_level`, `SizeLevel`, `size level` | 0 is the biggest. | level (alone) |\n"
+        + "| `side_low` | A side. | floor (for a side), lower (for a side), sort (for grouping) |\n"
+        + "| `piece_record` | Kept data. | Record (as a suffix), support (for this) |\n"
+        + "| `GridPiece` | A piece. | stencil, basis, mac, adaptive |\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "int size_level;\n",
+        "SizeLevel cell;\nint cell_size_level;\n",
+        "// The size level of a cell.\n",
+        "// Cells of size levels 1 to 3.\n",
+        "// A size-level-2 cell.\n",
+    ],
+)
+def test_a_one_sense_word_inside_a_form_the_glossary_says_is_quiet(tmp_path, forms_glossary, text):
+    assert notes(tmp_path, forms_glossary, "a.cc", text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["int level;\n", "// The water level.\n", "// A size and a level.\n", "// Size, level 2.\n", "int level_size;\n"],
+)
+def test_the_nearest_use_outside_the_glossarys_form_is_still_a_note(tmp_path, forms_glossary, text):
+    assert notes(tmp_path, forms_glossary, "a.cc", text) == ["one-sense-word"]
+
+
+def test_a_form_in_one_place_does_not_hide_the_word_in_another_on_the_same_line(tmp_path, forms_glossary):
+    assert notes(tmp_path, forms_glossary, "a.cc", "// The size level and the level.\n") == ["one-sense-word"]
+
+
+def test_a_say_phrase_of_one_word_allows_nothing(tmp_path):
+    glossary = tmp_path / "g.md"
+    glossary.write_text(GLOSSARY_HEADER + "| `sort` | A thing. | sort (for grouping) |\n", encoding="utf-8")
+    assert notes(tmp_path, glossary, "a.cc", "int sort;\n") == ["one-sense-word"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// The coordinate p - 4 floor(p / 4).\n",
+        "double q = std::floor(p);\n",
+        "// It calls `::floor` of the CUDA math library.\n",
+        "// Uses math::Floor.\n",
+        "std::ranges::sort(items);\n",
+        "// Orders them with std::sort, not by hand.\n",
+        "auto at = std::lower_bound(a, b, c);\n",
+        "// Found by std::ranges::upper_bound.\n",
+        "RecordProperty(\"checked\", 3);\n",
+        "// RecordProperty(name, value) writes it.\n",
+        "cudaGetLastError();\n",
+        "// target_link_libraries(a b) links them.\n",
+        "// CMAKE_CUDA_ARCHITECTURES lists them.\n",
+    ],
+)
+def test_a_library_name_at_its_call_site_is_quiet(tmp_path, forms_glossary, text):
+    assert notes(tmp_path, forms_glossary, "a.cc", text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// The floor of the room.\n",
+        "// A floor (a flat solid).\n",
+        "int floor;\n",
+        "int sort;\n",
+        "// Sort them by hand.\n",
+        "int lower;\n",
+        "int Record;\n",
+        "// The record of the run.\n",
+        "// The std::floor and the floor of a box.\n",
+        "int lower_bound_for_a_side;\n",
+    ],
+)
+def test_the_nearest_use_of_the_same_word_as_ours_is_still_a_note(tmp_path, forms_glossary, text):
+    assert notes(tmp_path, forms_glossary, "a.cc", text) == ["one-sense-word"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// Uses:    GridPiece (grid/grid_support.h)\n",
+        "// Used by: tests/grid/grid_support.test.cc\n",
+        "// Read:    docs/method-paper/support_notes.typ\n",
+        "// Uses:    Vec3 (base/vec3.h),\n//          Mat3 (base/grid_support.h)\n",
+    ],
+)
+def test_a_file_name_on_a_uses_used_by_or_read_line_is_not_prose(tmp_path, forms_glossary, text):
+    assert notes(tmp_path, forms_glossary, "a.h", text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// Uses:    the support of the weights\n",
+        "// Purpose: read grid_support.h\n",
+        "// Uses:    Vec3 (base/vec3.h)\n// The support of grid_support.h.\n",
+        "// Idea: x\n//   as in grid_support.h\n",
+    ],
+)
+def test_a_word_on_those_lines_or_a_file_name_elsewhere_is_still_a_note(tmp_path, forms_glossary, text):
+    assert notes(tmp_path, forms_glossary, "a.h", text) == ["one-sense-word"]
+
+
+def test_an_include_line_is_not_prose(tmp_path, forms_glossary):
+    assert notes(tmp_path, forms_glossary, "a.cc", '#include "fluidity/grid/grid_support.h"\n#include <support.h>\n') == []
+    assert notes(tmp_path, forms_glossary, "b.cc", "int support;\n") == ["one-sense-word"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// The old file is `main:native/src/sparse_mac_grid_3d.cc`.\n",
+        "// See `main:native/src/stencil_basis.cc` and `main:adaptive_grid`.\n",
+    ],
+)
+def test_a_name_of_the_old_code_in_backticks_after_main_is_allowed(tmp_path, forms_glossary, text):
+    write(tmp_path / "src", "a.cc", text)
+    assert rules(run(tmp_path, forms_glossary)) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// The old file is `native/src/sparse_mac_grid_3d.cc`.\n",
+        "// The old file is main:native/src/sparse_mac_grid_3d.cc.\n",
+        "// The old file is 'main:native/src/stencil.cc'.\n",
+        "// The `main:x.cc` file has a stencil.\n",
+        "// The `main: x.cc` file and `mac`.\n",
+    ],
+)
+def test_the_same_words_without_the_main_prefix_in_backticks_still_fail(tmp_path, forms_glossary, text):
+    write(tmp_path / "src", "a.cc", text)
+    assert "FAIL" in {finding.severity for finding in run(tmp_path, forms_glossary)}
+
+
+def test_a_message_may_name_a_file_of_the_old_code_after_main(forms_glossary):
+    import check_message
+
+    glossary = check_rules.load_glossary(forms_glossary)
+    assert check_message.check_message("Compare\n\nWith `main:native/src/stencil_grid.cc`.\n", glossary) == []
+    assert check_message.check_message("Compare\n\nWith `native/src/stencil_grid.cc`.\n", glossary) != []
+
+
+def test_the_real_glossary_allows_size_level_for_level_from_its_say_column():
+    entries = check_rules.load_glossary(check_rules.DEFAULT_GLOSSARY_PATH)
+    (level,) = [entry for entry in entries if entry.words == ("level",)]
+    assert ("size", "level") in level.allowed_phrases
+    assert all(len(phrase) > 1 for phrase in level.allowed_phrases)
