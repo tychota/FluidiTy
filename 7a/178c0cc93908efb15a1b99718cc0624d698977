@@ -1,0 +1,37 @@
+src/fluidity/grid/grid_buffers_internal.h
+  s_e5884d0bcfaf6a::t_13532973bd059c 28-29
+src/fluidity/grid/grid_build_steps.h
+  s_e5884d0bcfaf6a::t_cbfa02a8ba5fd4 74-75,1354-1355
+src/fluidity/grid/grid_memory_estimate.h
+  s_e5884d0bcfaf6a::t_61dcd673478031 112
+src/fluidity/grid/grid_memory_estimate.test.cc
+  s_e5884d0bcfaf6a::t_132ae1b11fe836 254-255
+src/fluidity/grid/staggered_grid.buffers.no_gpu.test.cc
+  s_e5884d0bcfaf6a::t_1f8642daa4b210 30-31
+src/fluidity/grid/staggered_grid.h
+  s_e5884d0bcfaf6a::t_7738e1c5350ec1 396-397,434
+src/fluidity/grid/staggered_grid_gpu.h
+  s_e5884d0bcfaf6a::t_db1d8c1c920068 1-2,17-18,305-306
+tests/grid/build_grid.gpu.test.cc
+  s_e5884d0bcfaf6a::t_18974e29f73c73 1
+tests/grid/grid_cell_checks.gpu.test.cc
+  s_e5884d0bcfaf6a::t_113ec759262de2 1,408-409
+tests/grid/grid_counts_on_buffers.test.cc
+  s_e5884d0bcfaf6a::t_f9e1eafe195c3b 30-31,170-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7a178c0cc93908efb15a1b99718cc0624d698977",
+  "prompts": {},
+  "sessions": {
+    "s_e5884d0bcfaf6a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ad027dcdf8aa093f0",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
