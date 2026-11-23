@@ -1,0 +1,25 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_a36ca14445b6ab 475-477
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_cb323685500b93 824-828,830-831,1106,1118-1122,1167,1177,1249,1283-1446
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_7d7aa634c1fc4d 29-38,81,181-183,286-290,292-293,295,349-375,382,404,407,698-743,746,748-759,761-769,774-775,778-779,788,1255-1258,1266-1267
+docs/glossary.md
+  s_4f0877e2acdcf0::t_c3a7c05c04ced3 17-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f24fc3aac22a7d3645ded04c2a7cceacfa4244f6",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
