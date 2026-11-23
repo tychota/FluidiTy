@@ -71,8 +71,8 @@
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), kNoFailureKey, GridBuildStatus (grid/grid_build_status.h),
 //          GridError (grid/grid_error.h), CellId, CellBlockId, CellBlockIndex, CellPlaceIndex, FacePlaceIndex,
 //          CellCoord, SizeLevel, kBlockWidthInCells, kMaxSizeLevels, kCellPlacesPerBlock, kFacePlacesPerBlock,
-//          kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel, ToCellBlockIndex,
-//          ToCellPlaceIndex,
+//          kNoIndex, ComesBefore, ComputeIsCoordInRange, ToCellId, ToCellCoord, ToSizeLevel,
+//          ToCellBlockIndex, ToCellPlaceIndex,
 //          ComputeBigCell, ComputeCellEighth, ComputeBiggerCellCoord and the id bit layout (grid/grid_ids.h),
 //          GridFrame, GridTables, CellState, FacePieceKind, FindSortedBlock (grid/grid_tables.h)
 // Used by: the grid's CPU builder, its GPU half and the counting of a list (grid/); private to grid/
@@ -1351,8 +1351,8 @@ ApplyCoverAnswerAt(const GridTables& tables, std::uint64_t* cover_answers, CellP
 
 // Copies the answer of one cell place into its state: method paper <proc-build-grid-in-parallel> step P10 (c), the
 // second launch, for one thread's item. Each place reads its own answer and writes its own state.
-// Requires: cover_answers[place.value] was written by ApplyCoverAnswerAt; cell_states has more than place.value
-//   entries.
+// Requires: cover_answers[place.value] was written by ApplyCoverAnswerAt; cell_states has more than
+//   place.value entries.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid-in-parallel>
 FLUIDITY_CPU_AND_GPU constexpr void
 ApplyCoverAnswerCopyAt(const std::uint64_t* cover_answers, CellState* cell_states, CellPlaceIndex place) noexcept {

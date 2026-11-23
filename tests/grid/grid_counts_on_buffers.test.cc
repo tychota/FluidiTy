@@ -27,8 +27,8 @@
 namespace fluidity::grid {
 namespace {
 
-// The room of the buffers the random grids are counted and built in: they have at most kMaxRandomGridCellBlocks (252)
-// blocks.
+// The room of the buffers the random grids are counted and built in: they have at most kMaxRandomGridCellBlocks
+// (252) blocks.
 constexpr std::uint32_t kRandomGridRoom = 4096;
 
 // The bytes of one whole array of grid buffers, as kept in memory: the address and the byte count.
@@ -167,8 +167,8 @@ TEST(ComputeGridCounts, IntoBuffers_AllocatesNothing) {
   EXPECT_EQ(counts_in_turn.different_count, 0U);
 }
 
-// 9 random grids spread by size (FindRandomGridsSpreadBySize), from the one with the most cells to the one with the
-// fewest.
+// 9 random grids spread by size (FindRandomGridsSpreadBySize), from the one with the most cells to the one with
+// the fewest.
 TEST(ComputeGridCounts, SpanForm_AllocatesOneArray) {
   const GridFrame frame = ToUnitFrame(kRandomGridSizeLevelCount);
   for (const std::size_t grid : FindRandomGridsSpreadBySize(9)) {

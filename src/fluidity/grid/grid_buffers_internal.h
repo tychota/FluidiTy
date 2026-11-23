@@ -25,8 +25,8 @@
 // Owns:    the entry names and item bytes of BuildGridMemoryEstimate, GridArray, FindGridArray,
 //          ComputeIsBuilderBuffersArray, ComputeIsGridArrayOnProcessor, CheckGridArrayEntries, ToGridFailure,
 //          GridBuffersArrays, GridBuilderBuffersArrays, ToGridBuffersArrays, ToGridBuilderBuffersArrays,
-//          ComputeHasLoanOf, ComputeSmallerBlocksStart, BuildGridFromBuffers, BuildGridBuilderBuffersFromEntries,
-//          BuildGridBuffersFromEntries
+//          ComputeHasLoanOf, ComputeSmallerBlocksStart, BuildGridFromBuffers,
+//          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, BufferError (base/buffer.h), MemoryEstimateEntry
 //          (base/memory_count.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h), OrderBuffers
 //          (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h), GridFailure (grid/grid_error.h),

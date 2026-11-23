@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Checks lists of active cells on the GPU (<proc-build-grid-in-parallel> P1 to P6 and the failure half of P12) and
 // compares every result with the CPU's: the same failure (error, cell, other_cell) or the same pass, and the same
@@ -405,8 +405,8 @@ TEST(BuildSortedCellList, OnGpu_SortedListEqualsCpu) {
 // A large list unlike the boxes of BuildLargeBoxOfCells: the size-level-1 cells 0..46 on each axis, 103,823 cells,
 // and size level 1 {10,10,10} a second time, shuffled with ApplyFixedShuffle(cells, 4712). Checked, it fails at step 2,
 // overlaps, so it leaves the key of step 2 at the position of the repeat in the status record. Every id differs from
-// the boxes' ids in its size level, so its sorted cell ids, sort keys and orders differ from theirs at almost every
-// place.
+// the boxes' ids in its size level, so its sorted cell ids, sort keys and orders differ from theirs at almost
+// every place.
 std::vector<CellId> BuildStaleLargeList() {
   constexpr std::int32_t kBoxWidth = 47;
   std::vector<CellId> cells = {ToCell(1, 10, 10, 10)};

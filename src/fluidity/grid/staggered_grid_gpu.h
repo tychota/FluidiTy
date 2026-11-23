@@ -1,5 +1,5 @@
-// The GPU half of the check of a cell list and of a grid build, private to grid/: what grid/staggered_grid_gpu.cu
-// defines.
+// The GPU half of the check of a cell list and of a grid build, private to grid/: what
+// grid/staggered_grid_gpu.cu defines.
 //
 // Purpose: let grid/grid_cell_checks.cc run method paper <proc-build-grid-in-parallel> steps P1 to P6, and the failure
 //   half of P12, and let the grid's builder run P7 to P12, without including a CUDA header.
@@ -14,8 +14,8 @@
 //   them, and the stable orders between them, in the order they are called. Each returns how its start went. An error
 //   while a GPU function runs is reported by the next wait: the wait at the end of each BuildStableOrder or
 //   ComputeExclusivePrefixSum for the functions before it, as BufferError kRunOnCallFailed, or the wait at the end of
-//   WriteFailureCellsOnGpu or WriteBuildStatusResultOnGpu for the rest. Either way the call fails with
-//   kRunOnCallFailed.
+//   WriteFailureCellsOnGpu or WriteBuildStatusResultOnGpu for the rest. Either way the call fails
+//   with kRunOnCallFailed.
 //   The functions of P7 to P11 read counts that only the GPU knows, the split cells and the blocks, from the status
 //   record, so no count comes back during a build. Their launches are sized on the CPU, from the active cells, the
 //   sort count or the room, and the threads beyond the count read from the record do nothing. After an earlier step's
@@ -302,8 +302,8 @@ RunOnCallStatus WriteFacePieceKindsOnGpu(
 // key, or, without a failure, active_cells as the sum of the 16 counts per size level. Then the CPU waits for the GPU.
 // Requires: the lists are the ones P2 to P6 checked, the sorted list the first count cell ids; all GPU memory.
 // Fails: kCallFailed  the GPU function did not start, or a GPU function started since the last wait (the last stable
-//                     order or prefix sum of P8 waits for the ones before it) failed while it ran; the record is then
-//                     unspecified
+//                     order or prefix sum of P8 waits for the ones before it) failed while it ran; the record is
+//                     then unspecified
 RunOnCallStatus WriteBuildStatusResultOnGpu(
     GridFrame frame,
     const CellId* input_cells,

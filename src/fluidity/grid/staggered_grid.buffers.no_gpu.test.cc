@@ -27,8 +27,8 @@ MemoryCounts BuildCounts(std::uint32_t cell_blocks) {
 }
 
 TEST(BuildGridBuilderBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed) {
-  // A CPU block of the GPU estimate's run-memory bytes: the GPU cannot run, so the call fails before it takes a memory
-  // piece.
+  // A CPU block of the GPU estimate's run-memory bytes: the GPU cannot run, so the call fails before it takes a
+  // memory piece.
   const std::vector<MemoryEstimateEntry> estimate = BuildGridMemoryEstimate(RunOn::kGpu, 1, 1000);
   const std::size_t gpu_bytes = ComputeRunMemoryBytes(estimate, BuildCounts(1000), MemoryWhere::kRunOn);
   std::expected<RunMemory, BufferError> cpu_run_memory = BuildRunMemory(RunOn::kCpu, gpu_bytes);

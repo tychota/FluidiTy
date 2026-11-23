@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Builds grids on the GPU (<proc-build-grid-in-parallel> P1 to P12) and compares each with the CPU's build of the same
 // list: the same failure (error, cell, other_cell), or the same frame, version, counts and bytes in the used part of

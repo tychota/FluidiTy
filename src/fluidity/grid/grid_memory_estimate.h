@@ -109,8 +109,7 @@ std::vector<MemoryEstimateEntry> BuildGridMemoryEstimate(
 //   2 border sums: 4 x (max_cell_blocks + 1) bytes, one 0/1 word per block, then their exclusive prefix sum in place,
 //     the total one past the last.
 //   3 border order buffers: bytes_per_item x (max_cell_blocks + 1) + fixed_bytes of
-//   ComputeOrderBuffersSize(RunOn::kGpu),
-//     the working buffers of that prefix sum.
+//     ComputeOrderBuffersSize(RunOn::kGpu), the working buffers of that prefix sum.
 //   4 border status: one GridBuildStatus.
 // Units: bytes, through ComputeMemoryBytes.
 // Example: on the CPU at 1,000 blocks, one entry of 1,000 bytes. On the GPU at 1,000 blocks, the kRunOn sum is

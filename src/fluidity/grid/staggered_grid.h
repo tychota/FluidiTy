@@ -393,8 +393,8 @@ class StaggeredGrid {
 //                             it; on the GPU also a builder array too small for the room, a size error from a stable
 //                             order, a prefix sum or a read of base/, more active and split cells than the sort by
 //                             block orders (kSortCountFaultKey), or a status record that contradicts itself or, without
-//                             a failure, counts more blocks than the room or other active cells than the list; zero
-//                             cells
+//                             a failure, counts more blocks than the room or other active cells than the list;
+//                             zero cells
 //        After a failed input check nothing is written; after a later failure the builder buffers' cell ids and the
 //        tables are unspecified.
 // Read: docs/method-paper/fluidity-method.typ <proc-build-grid>, <sec-parallel-build>,
@@ -431,8 +431,7 @@ GridBuffers TakeBuffers(StaggeredGrid&& grid);
 // Fails: kBadInput           `grid` holds no tables (version 0: moved from, or its buffers were taken back);
 //                            `cpu_buffers` is moved from (room 0) or is not on the CPU, checked in every build before
 //                            anything is written
-//        kTooManyCellBlocks  cpu_buffers.max_cell_blocks() is below grid.counts().cell_blocks; cell and other_cell
-//                            zero
+//        kTooManyCellBlocks  cpu_buffers.max_cell_blocks() is below grid.counts().cell_blocks; cell and other_cell zero
 //        kRunOnCallFailed    a read from the GPU failed
 //        kInternalFault      a state no input causes, checked in every build: a table array of `cpu_buffers` whose
 //                            size is not its room's, or a size error from a read of base/ after the sizes were checked

@@ -251,8 +251,8 @@ TEST(BuildGridMemoryEstimate, GpuSharedBuilderBuffers_CountedOnce) {
   const std::vector<MemoryEstimateEntry> estimate =
       BuildGridMemoryEstimate(RunOn::kGpu, 2, 1000, BuilderBuffersSharing::kOneForAllGrids);
   CheckSharedCopies(estimate, 5);
-  // Two grids of 460 bytes per block share one set of 1,920 bytes per block, with 4,096 + 6 + 8 once and two status
-  // records.
+  // Two grids of 460 bytes per block share one set of 1,920 bytes per block, with 4,096 + 6 + 8 once and two
+  // status records.
   const std::uint64_t expected_bytes =
       (1000U * ((2U * 460U) + 1920U)) + 4096U + 6U + 8U + (2U * sizeof(GridBuildStatus));
   EXPECT_EQ(ComputeMemoryBytes(estimate, counts, MemoryWhere::kRunOn), expected_bytes);
