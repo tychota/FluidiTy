@@ -125,7 +125,8 @@ class FakeRun:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "src" / "fluidity").mkdir(parents=True)
+    for module in ("base", "grid", "contact"):
+        (tmp_path / "src" / "fluidity" / module).mkdir(parents=True)
     (tmp_path / "src" / "fluidity" / "a.h").write_text(HEADER_WITH_KNOWN_LABELS, encoding="utf-8")
     (tmp_path / "docs" / "method-paper").mkdir(parents=True)
     (tmp_path / "docs" / "method-paper" / "fluidity-method.typ").write_text(PAPER_TEXT, encoding="utf-8")
@@ -808,6 +809,23 @@ def test_quick_runs_the_functional_tests_of_a_module_whose_tests_changed_in_the_
     assert "^unit$" not in functional_run and "--output-junit" not in functional_run
 
 
+@pytest.mark.parametrize("changed", ["tests/gird/a.test.cc", "tests/gird/b/c.cc"])
+def test_quick_fails_on_a_changed_file_under_a_tests_folder_that_is_not_a_module(monkeypatch, capsys, repo, changed):
+    fake = FakeRun(changed=[changed, "src/fluidity/base/a.h"])
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert exit_code == 1
+    assert (
+        f"FAIL cpu {DEBUG_PRESET}: changed files under tests/gird/, which is not a module folder of src/fluidity/; "
+        "no test would be selected"
+    ) in lines
+    assert ctest_commands(fake) == []
+
+
+def test_unknown_test_modules_lists_only_folders_without_a_module(repo):
+    changed = ["tests/grid/a.cc", "tests/zzz/a.cc", "tests/CMakeLists.txt", "src/fluidity/yyy/a.h", "tests/aaa/b/c.cc"]
+    assert check_commit.unknown_test_modules(changed, repo) == ["aaa", "zzz"]
+
+
 def test_quick_runs_no_functional_test_when_only_src_changed(monkeypatch, capsys, repo):
     fake = FakeRun(changed=["src/fluidity/grid/a.cc"])
     _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
@@ -1309,10 +1327,14 @@ def configured(repo):
     toolchain = repo / "out" / "conan" / DEBUG_PRESET / "conan_toolchain.cmake"
     toolchain.parent.mkdir(parents=True)
     toolchain.write_text("# toolchain\n", encoding="utf-8")
-    (build_folder / check_commit.CONFIGURE_STATE_FILE).write_text(
-        check_commit.configure_inputs_hash(repo, DEBUG_PRESET) + "\n", encoding="utf-8"
-    )
+    (build_folder / check_commit.CONFIGURE_STATE_FILE).write_text(configure_state_text(repo), encoding="utf-8")
     return repo
+
+
+def configure_state_text(repo, preset=DEBUG_PRESET, inputs_preset=None):
+    """What a passed configure stores: the inputs hash, and the hash of the CMakeCache.txt it left."""
+    cache = check_commit.Gate(repo).configure_cache_hash(preset)
+    return check_commit.configure_inputs_hash(repo, inputs_preset or preset) + "\n" + cache + "\n"
 
 
 def quick_cpu(monkeypatch, capsys, repo, fake, *extra):
@@ -1393,9 +1415,41 @@ def test_a_missing_file_of_the_last_configure_runs_conan_and_configure_again(mon
     assert len(conan_runs(fake)) == 1 and len(configure_runs(fake)) == 1
 
 
+def test_a_changed_cmake_cache_runs_conan_and_configure_again(monkeypatch, capsys, configured):
+    (configured / "out" / "build" / DEBUG_PRESET / "CMakeCache.txt").write_text("# a hand-run cmake -D\n", encoding="utf-8")
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert len(conan_runs(fake)) == 1 and len(configure_runs(fake)) == 1
+
+
+def test_a_state_file_without_the_cache_hash_runs_conan_and_configure_again(monkeypatch, capsys, configured):
+    state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
+    state.write_text(check_commit.configure_inputs_hash(configured, DEBUG_PRESET) + "\n", encoding="utf-8")
+    fake = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, fake)
+    assert len(conan_runs(fake)) == 1 and len(configure_runs(fake)) == 1
+
+
+def test_the_stored_state_holds_the_hash_of_the_cache_the_configure_left(monkeypatch, capsys, configured):
+    class WritesCache(FakeRun):
+        def __call__(self, command, **kwargs):
+            if command[0] == "cmake" and command[1] == "--preset":
+                (configured / "out" / "build" / DEBUG_PRESET / "CMakeCache.txt").write_text("# new\n", encoding="utf-8")
+            return super().__call__(command, **kwargs)
+
+    (configured / "conan.lock").write_text("{ }\n", encoding="utf-8")
+    quick_cpu(monkeypatch, capsys, configured, WritesCache())
+    state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
+    assert state.read_text(encoding="utf-8") == configure_state_text(configured)
+    assert "# new" in (configured / "out" / "build" / DEBUG_PRESET / "CMakeCache.txt").read_text(encoding="utf-8")
+    again = FakeRun()
+    quick_cpu(monkeypatch, capsys, configured, again)
+    assert configure_runs(again) == []
+
+
 def test_a_stored_hash_of_another_preset_does_not_count(monkeypatch, capsys, configured):
     state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
-    state.write_text(check_commit.configure_inputs_hash(configured, RELEASE_PRESET) + "\n", encoding="utf-8")
+    state.write_text(configure_state_text(configured, inputs_preset=RELEASE_PRESET), encoding="utf-8")
     fake = FakeRun()
     quick_cpu(monkeypatch, capsys, configured, fake)
     assert len(conan_runs(fake)) == 1
@@ -1474,7 +1528,7 @@ def test_quick_builds_everything_when_a_selected_module_makes_a_program_the_list
         "fluidity_add_test(\n  grid_unlisted_test\n  SOURCES a.cc\n)\n", encoding="utf-8"
     )
     state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
-    state.write_text(check_commit.configure_inputs_hash(configured, DEBUG_PRESET) + "\n", encoding="utf-8")
+    state.write_text(configure_state_text(configured), encoding="utf-8")
     fake = FakeRun(changed=["src/fluidity/grid/a.h"])
     quick_cpu(monkeypatch, capsys, configured, fake)
     assert configure_runs(fake) == []
@@ -1482,10 +1536,10 @@ def test_quick_builds_everything_when_a_selected_module_makes_a_program_the_list
 
 
 def test_a_program_of_an_unselected_module_missing_from_the_list_does_not_widen_the_build(monkeypatch, capsys, configured):
-    (configured / "src" / "fluidity" / "contact").mkdir()
+    (configured / "src" / "fluidity" / "contact").mkdir(exist_ok=True)
     (configured / "src" / "fluidity" / "contact" / "CMakeLists.txt").write_text("fluidity_add_test(contact_new_test)\n")
     state = configured / "out" / "build" / DEBUG_PRESET / check_commit.CONFIGURE_STATE_FILE
-    state.write_text(check_commit.configure_inputs_hash(configured, DEBUG_PRESET) + "\n", encoding="utf-8")
+    state.write_text(configure_state_text(configured), encoding="utf-8")
     fake = FakeRun(changed=["src/fluidity/grid/a.h"])
     quick_cpu(monkeypatch, capsys, configured, fake)
     assert "--target" in build_runs(fake)[0]

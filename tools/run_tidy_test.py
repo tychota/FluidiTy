@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -27,6 +28,7 @@ class FakeRun:
         raw_rules: dict[str, str] | None = None,
         listing_exit_code: int = 0,
         implicit_folders: tuple[str, ...] = (),
+        compiler_version_text: str = "fake-cc version 1\n",
     ):
         self.repo = repo
         self.dependencies = dependencies
@@ -41,6 +43,8 @@ class FakeRun:
         # The folders the compiler says it searches by itself, in the text of `-E -x c++ -v`.
         self.implicit_folders = implicit_folders
         self.asked_for_folders = 0
+        # What the compiler prints for `--version`.
+        self.compiler_version_text = compiler_version_text
         self.checked: list[str] = []
         # The files whose headers the compiler was asked to list.
         self.listed: list[str] = []
@@ -48,6 +52,8 @@ class FakeRun:
     def __call__(self, command, **kwargs):
         if command[:2] == ["clang-tidy", "--version"]:
             return subprocess.CompletedProcess(command, 0, stdout=VERSION_TEXT)
+        if command == [COMPILER, "--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout=self.compiler_version_text)
         if command[0] == COMPILER and "-v" in command:
             self.asked_for_folders += 1
             lines = ["#include <...> search starts here:", *(f" {folder}" for folder in self.implicit_folders)]
@@ -482,6 +488,51 @@ def test_a_new_clang_tidy_version_misses_the_record(monkeypatch, stored):
     third = FakeRun(stored, dependencies_of(stored))
     run(monkeypatch, stored, third)
     assert sorted(third.checked) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_new_compiler_version_text_misses_the_record(monkeypatch, stored):
+    hit = FakeRun(stored, dependencies_of(stored))
+    run(monkeypatch, stored, hit)
+    assert hit.listed == []
+    third = FakeRun(stored, dependencies_of(stored), compiler_version_text="fake-cc version 2\n")
+    run(monkeypatch, stored, third)
+    # The record no longer holds, so the headers are listed again; the key is the same, so nothing is checked again.
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+    assert third.checked == []
+
+
+def test_a_replaced_clang_tidy_binary_with_the_same_version_text_misses_the_record(monkeypatch, tmp_path, repo):
+    binary = tmp_path / "bin" / "clang-tidy"
+    binary.parent.mkdir()
+    binary.write_text("one\n", encoding="utf-8")
+    monkeypatch.setattr(run_tidy.shutil, "which", lambda name: str(binary) if name == "clang-tidy" else None)
+    make_old_records(monkeypatch, repo)
+    second = FakeRun(repo, dependencies_of(repo))
+    run(monkeypatch, repo, second)
+    assert second.checked == [] and second.listed == []
+    binary.write_text("two!\n", encoding="utf-8")
+    third = FakeRun(repo, dependencies_of(repo))
+    run(monkeypatch, repo, third)
+    assert sorted(third.listed) == ["a.cc", "b.cc", "c.cc"]
+
+
+def test_a_stamp_holds_the_size_the_times_and_the_inode(tmp_path):
+    header = tmp_path / "a.h"
+    header.write_text("// one\n", encoding="utf-8")
+    status = header.stat()
+    assert run_tidy.file_stamp(header) == [status.st_size, status.st_mtime_ns, status.st_ino, status.st_ctime_ns]
+
+
+def test_a_copy_that_keeps_the_size_and_the_modification_time_changes_the_stamp(tmp_path):
+    header = tmp_path / "a.h"
+    header.write_text("// one\n", encoding="utf-8")
+    before = run_tidy.file_stamp(header)
+    copy = tmp_path / "copy.h"
+    shutil.copy2(header, copy)
+    copy.replace(header)
+    after = run_tidy.file_stamp(header)
+    assert after[:2] == before[:2]
+    assert after != before
 
 
 def test_a_record_does_not_pass_a_file_whose_marker_is_gone(monkeypatch, stored):

@@ -533,8 +533,11 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     (`NOTE conan and configure: not run (their files are unchanged)`) while the build folder holds the hash of the
     contents of `conanfile.py`, `conan.lock`, `CMakePresets.json`, `CMakeUserPresets.json` (when there is one),
     `pyproject.toml`, `uv.lock`, every `CMakeLists.txt` and every file under `cmake/`. The hash stored after a pass is
-    that of the files as they were before Conan and the configure began. A compiler or SDK upgrade, and a configure
-    made by another tool (an IDE, a hand-run `cmake -D...`), are not in it, so run `--speed commit` after one. The gate
+    that of the files as they were before Conan and the configure began, and beside it the hash of the
+    `CMakeCache.txt` that the configure left, so a configure made by another tool (an IDE, a hand-run `cmake -D...`)
+    runs both again. A compiler or SDK upgrade is not in it, so run `--speed commit` after one. A changed file under a
+    `tests/<name>/` folder with no `src/fluidity/<name>/` folder stops the run (`FAIL cpu ...: changed files under
+    tests/<name>/, which is not a module folder of src/fluidity/`), because no test would be selected. The gate
     prints `NOTE modules: <names>` (or `all`, or `none`) and `NOT RUN <step> (quick)` for the release build, the
     paper and cuda, so a quick pass is never read as a full one. It never satisfies the commit rule: a quick run
     whose checks all passed exits with code 3, never 0, and prints `QUICK ONLY: not the commit gate` as its last
@@ -608,8 +611,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     the failures sorted by path. A file that passed is not checked again while nothing it depends on has changed
     (its text, the headers it includes, its compile command, the `.clang-tidy` files, the clang-tidy version); the
     cache is `out/tidy-cache/`, and `--no-cache` ignores it and stores nothing. After a pass the cache also keeps the
-    list of the file's headers with the size and modification time of each, of the file, of the `.clang-tidy` files and
-    of the compiler, the values of `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` and `SDKROOT`, and the names in the
+    list of the file's headers with the size, modification time, inode number and change time of each, of the file, of the
+    `.clang-tidy` files, of the compiler and of the clang-tidy binary, the `--version` text of the compiler, the values of `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` and `SDKROOT`, and the names in the
     folders where headers are looked for (the include folders, the folders of those variables and the folders the
     compiler searches by itself, which it is asked for once per run). No record is stored for a file that lists a
     generated header under `out/` (the Conan packages in `out/conan-home` excepted). While all of these are unchanged the

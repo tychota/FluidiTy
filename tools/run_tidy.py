@@ -31,7 +31,8 @@ the cache and stores nothing. A marker that was not used for 30 days is deleted 
 The stat record. Listing the headers means running the compiler's preprocessor on the file, which is most of the time
 of a run in which nothing changed. After a pass the run therefore also stores, for the file, the list of its
 dependencies with what the file system says about everything the key reads: the (size, modification time in
-nanoseconds) of the file, of each listed header, of each `.clang-tidy` file that applies and of the compiler; the
+nanoseconds, the inode number and the change time) of the file, of each listed header, of each `.clang-tidy` file that
+applies, of the compiler and of the clang-tidy binary, and the `--version` text of the compiler; the
 compile commands and the tidy options and version text; the values of the environment variables that add header
 folders or a sysroot (TIDY_ENVIRONMENT_VARIABLES); and a fingerprint of the folder layout, which is the sorted names
 in each folder where the compiler looks (every folder under an include folder of the repository, outside its out/
@@ -267,12 +268,14 @@ def clang_tidy_version_text() -> str:
 
 
 def file_stamp(path: Path) -> list[int] | None:
-    """The size and the modification time in nanoseconds of `path`, or None when it cannot be read."""
+    """The size, the modification time in nanoseconds, the inode number and the change time in nanoseconds of `path`, or
+    None when it cannot be read. A copy that keeps the modification time (`cp -p`, `rsync -a`, `touch -r`) of a file of
+    the same size gets another inode or change time, which no user tool can set."""
     try:
         status = path.stat()
     except OSError:
         return None
-    return [status.st_size, status.st_mtime_ns]
+    return [status.st_size, status.st_mtime_ns, status.st_ino, status.st_ctime_ns]
 
 
 def include_folders(compile_command: str, directory: Path) -> list[Path]:
@@ -344,13 +347,18 @@ class FileSystemMemo:
         root = repository.resolve()
         self.skipped = {root / "out", root / ".git"}
         self.remembered: dict[tuple[Path, bool], str] = {}
+        # What each compiler prints for `--version`, asked once per run: a Command Line Tools update changes it while the
+        # `/usr/bin/c++` shim that stamps the compiler stays the same file.
+        self.compiler_versions: dict[str, str] = (
+            share_compiler_folders_with.compiler_versions if share_compiler_folders_with else {}
+        )
         # The folders each compiler searches by itself, asked once per run; a memo made later can share them.
         self.compiler_folders: dict[tuple[str, tuple[str, ...]], tuple[str, ...]] = (
             share_compiler_folders_with.compiler_folders if share_compiler_folders_with else {}
         )
 
     def stamp(self, path: str) -> list[int] | None:
-        """The (size, modification time in nanoseconds) of `path`, read now: a stamp kept from earlier in the run
+        """The (size, modification time, inode, change time) of `path`, read now: a stamp kept from earlier in the run
         could hide a file that an editor saved since."""
         return file_stamp(Path(path))
 
@@ -362,6 +370,18 @@ class FileSystemMemo:
         if key not in self.compiler_folders:
             self.compiler_folders[key] = compiler_search_folders(compiler, options)
         return self.compiler_folders[key]
+
+    def compiler_version(self, compiler: str) -> str:
+        """The text `compiler --version` prints, asked once per run; empty when the compiler cannot be run."""
+        if compiler not in self.compiler_versions:
+            try:
+                completed = subprocess.run(
+                    [compiler, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+                )
+                self.compiler_versions[compiler] = completed.stdout or ""
+            except OSError:
+                self.compiler_versions[compiler] = ""
+        return self.compiler_versions[compiler]
 
     def fingerprint(self, folder: Path, with_subfolders: bool) -> str:
         key = (folder, with_subfolders)
@@ -399,14 +419,17 @@ def stat_snapshot(
     """What the file system says about everything that the key of `source` reads, without reading any contents (see
     "The stat record" in the module docstring)."""
     root = repository.resolve()
+    tidy_binary = shutil.which("clang-tidy")
     watched_with_subfolders: set[Path] = set()
     watched_alone: set[str] = {os.path.dirname(os.path.abspath(source))}
     compilers: dict[str, list[int] | None] = {}
+    compiler_versions: dict[str, str] = {}
     for command, directory in entries:
         words = shlex.split(command)
         found = shutil.which(words[0]) if words else None
         compilers[words[0] if words else ""] = memo.stamp(os.path.realpath(found)) if found else None
         if words:
+            compiler_versions[words[0]] = memo.compiler_version(words[0])
             watched_alone.update(memo.implicit_folders(words[0], search_options(words[1:])))
         for folder in include_folders(command, directory):
             resolved = folder.resolve()
@@ -432,6 +455,8 @@ def stat_snapshot(
         "dependencies": {name: memo.stamp(name) for name in dependency_names},
         "configs": {str(config): memo.stamp(str(config)) for config in config_files},
         "compilers": compilers,
+        "compiler_versions": compiler_versions,
+        "tidy_binary": memo.stamp(os.path.realpath(tidy_binary)) if tidy_binary else None,
         "environment": {name: os.environ.get(name) for name in TIDY_ENVIRONMENT_VARIABLES},
         "layout": layout,
     }

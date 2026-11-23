@@ -31,7 +31,10 @@ The speed (--speed, default commit):
           built; with none selected nothing is built. The list is read after Conan and the configure, which rewrite
           it. Conan and the configure do not run while the build folder holds a hash (gate-configure-hash) equal to the
           hash of the contents of conanfile.py, conan.lock, CMakePresets.json, CMakeUserPresets.json (when there is
-          one), pyproject.toml, uv.lock, every CMakeLists.txt and every file under cmake/; the line
+          one), pyproject.toml, uv.lock, every CMakeLists.txt and every file under cmake/, and, on a second line, the
+          hash of the CMakeCache.txt that the configure left (so a configure by an IDE or a hand-run `cmake -D...`
+          runs both again); a changed file under tests/<name>/ with no src/fluidity/<name>/ folder fails the debug
+          preset, because no test would be selected; the line
           `NOTE conan and configure: not run (their files are unchanged)` says so. A run of Conan and the configure
           that passed stores the hash of the files as they were before it began, at every speed; one that failed
           removes it. A compiler or SDK
@@ -389,6 +392,23 @@ def modules_of_changes(changed_paths: Sequence[str]) -> frozenset[str] | None:
         else:
             return None
     return frozenset(modules)
+
+
+def unknown_test_modules(changed_paths: Sequence[str], repo_root: Path) -> list[str]:
+    """The folders tests/<name>/ that hold a changed file although src/fluidity/<name>/ does not exist, sorted. The
+    label of such a name selects no test, and `ctest --no-tests=ignore` would pass without running any, so a typo in the
+    folder of a new test cannot be a quick pass."""
+    names = {
+        parts[1]
+        for parts in (Path(path).parts for path in changed_paths)
+        if parts[:1] == (FUNCTIONAL_TESTS_ROOT,) and len(parts) >= 3
+    }
+    return sorted(name for name in names if not (repo_root / Path(*MODULES_ROOT) / name).is_dir())
+
+
+def unknown_test_modules_reason(names: Sequence[str]) -> str:
+    listed = ", ".join(f"tests/{name}/" for name in names)
+    return f"changed files under {listed}, which is not a module folder of src/fluidity/; no test would be selected"
 
 
 def modules_with_changed_functional_tests(changed_paths: Sequence[str]) -> frozenset[str]:
@@ -806,30 +826,41 @@ class Gate:
     def configure_state_path(self, preset: str) -> Path:
         return self.repo_root / "out" / "build" / preset / CONFIGURE_STATE_FILE
 
+    def configure_cache_hash(self, preset: str) -> str:
+        """The SHA-256 of CMakeCache.txt of the build folder of `preset`, or "absent". A configure made by another tool
+        (an IDE, a hand-run `cmake -D...`) rewrites the cache without changing any file the inputs hash reads."""
+        try:
+            cache = (self.repo_root / "out" / "build" / preset / "CMakeCache.txt").read_bytes()
+        except OSError:
+            return "absent"
+        return hashlib.sha256(cache).hexdigest()
+
     def store_configure_state(self, preset: str, inputs_hash: str) -> None:
         """Keeps `inputs_hash`, the hash of the files as they were before the Conan install and the configure that just
-        passed began, so a file edited while they ran is not recorded as read. When it cannot be written the next quick
-        run runs both again."""
+        passed began, so a file edited while they ran is not recorded as read, and on a second line the hash of the
+        CMakeCache.txt that the configure left. When it cannot be written the next quick run runs both again."""
         state_path = self.configure_state_path(preset)
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_text(inputs_hash + "\n", encoding="utf-8")
+            state_path.write_text(f"{inputs_hash}\n{self.configure_cache_hash(preset)}\n", encoding="utf-8")
         except OSError:
             pass
 
     def configure_is_current(self, preset: str) -> bool:
         """True when the build folder of `preset` was configured with the files as they are now: Conan's toolchain file
-        and CMake's cache exist, and the hash that the last successful install and configure stored is the hash of the
-        files now (see configure_inputs_hash)."""
+        and CMake's cache exist, the hash that the last successful install and configure stored is the hash of the
+        files now (see configure_inputs_hash), and CMakeCache.txt is the one that configure left."""
         build_folder = self.repo_root / "out" / "build" / preset
         toolchain = self.repo_root / "out" / "conan" / preset / "conan_toolchain.cmake"
         if not (build_folder / "CMakeCache.txt").is_file() or not toolchain.is_file():
             return False
         try:
-            stored = self.configure_state_path(preset).read_text(encoding="utf-8").strip()
+            stored = self.configure_state_path(preset).read_text(encoding="utf-8").split()
         except OSError:
             return False
-        return stored == configure_inputs_hash(self.repo_root, preset)
+        if len(stored) != 2:
+            return False
+        return stored == [configure_inputs_hash(self.repo_root, preset), self.configure_cache_hash(preset)]
 
     def quick_build_targets(
         self, preset: str, modules: frozenset[str], functional_modules: frozenset[str]
@@ -893,6 +924,9 @@ class Gate:
         functional_modules: frozenset[str] = frozenset()
         if changed_modules_only and is_debug:
             changed = self.changed_paths()
+            unknown = unknown_test_modules(changed or (), self.repo_root)
+            if unknown:
+                return Outcome(False, unknown_test_modules_reason(unknown), notes, "")
             modules = None if changed is None else modules_of_changes(changed)
             # Labels are regular expressions; the anchors keep `grid` from matching another module's name and
             # `unit` from matching nothing else.
