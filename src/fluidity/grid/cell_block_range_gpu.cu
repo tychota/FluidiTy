@@ -30,6 +30,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "fluidity/base/gpu_launch.cuh"
 #include "fluidity/base/run_on_call.h"
@@ -151,6 +152,21 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBorderBlocks(
   }
 }
 
+// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning, so that
+// no earlier launch of the same call is still running (and writing) when the caller sees the failure.
+template <typename... Parameters>
+RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
+    void (*function)(Parameters...),
+    LaunchSize launch_size,
+    std::type_identity_t<Parameters>... arguments
+) {
+  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
+  if (started != RunOnCallStatus::kDone) {
+    static_cast<void>(CheckGpuWork());
+  }
+  return started;
+}
+
 // The launch of a GPU function that one thread runs.
 constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
 
@@ -168,7 +184,7 @@ cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
 }  // namespace
 
 RunOnCallStatus ApplyBorderStatusResetOnGpu(GridBuildStatus* status) {
-  return ApplyGpuFunction(ApplyBorderStatusReset, kOneThread, status);
+  return ApplyGpuFunctionAndWaitOnFailure(ApplyBorderStatusReset, kOneThread, status);
 }
 
 RunOnCallStatus ResetBorderMarksOnGpu(std::uint8_t* marks, std::uint32_t block_count) {
@@ -176,7 +192,7 @@ RunOnCallStatus ResetBorderMarksOnGpu(std::uint8_t* marks, std::uint32_t block_c
   if (block_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(ResetBorderMarks, ComputeLaunchSize(block_count), marks, block_count);
+  return ApplyGpuFunctionAndWaitOnFailure(ResetBorderMarks, ComputeLaunchSize(block_count), marks, block_count);
 }
 
 RunOnCallStatus CheckBorderSoFarOnGpu(
@@ -189,7 +205,7 @@ RunOnCallStatus CheckBorderSoFarOnGpu(
   if (border_so_far_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       CheckBorderSoFar,
       ComputeLaunchSize(border_so_far_count),
       range,
@@ -213,7 +229,7 @@ RunOnCallStatus WriteBorderReadMarksOnGpu(
   if (chunk.set_place_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  if (const RunOnCallStatus started = ApplyGpuFunction(
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WriteBorderReadMarks,
           ComputeLaunchSize(chunk.set_place_count),
           tables,
@@ -243,7 +259,15 @@ RunOnCallStatus WriteListedMarksOnGpu(
   if (block_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(WriteListedMarks, ComputeLaunchSize(block_count), marks, range, block_count, status, sums);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      WriteListedMarks,
+      ComputeLaunchSize(block_count),
+      marks,
+      range,
+      block_count,
+      status,
+      sums
+  );
 }
 
 RunOnCallStatus WriteBorderBlocksOnGpu(
@@ -255,7 +279,7 @@ RunOnCallStatus WriteBorderBlocksOnGpu(
 ) {
   // At least one thread, so a grid of no block still writes its total.
   const std::size_t item_count = block_count == 0 ? 1 : block_count;
-  if (const RunOnCallStatus started = ApplyGpuFunction(
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WriteBorderBlocks,
           ComputeLaunchSize(item_count),
           sums,
@@ -268,6 +292,10 @@ RunOnCallStatus WriteBorderBlocksOnGpu(
     return started;
   }
   // The wait reports an error of any function started since the prefix sum's wait.
+  return CheckGpuWork();
+}
+
+RunOnCallStatus WaitForBorderSearchOnGpu() {
   return CheckGpuWork();
 }
 

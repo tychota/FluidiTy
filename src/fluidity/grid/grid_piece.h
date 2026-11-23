@@ -18,20 +18,22 @@
 //   position that FindCellAt gives to a cell of the range, FindCellLow, FindCellHigh and FindCellsNearFace for a face
 //   piece of the range, ComputeCornerPosition for a corner place of the range; at kFourCellWidths also the face search
 //   from a face piece of the range. A reader called for a place outside that rule returns none, as at the edge of
-//   the grid, and a stage cannot tell the two apart: FindCellAt for a position outside the range's cells and their
-//   touching cells gives kNoIndex, and FindNearbyFaces then says kPositionOutsideGrid. So a stage calls readers only
-//   from places of its range, keeps every particle inside the closed boxes of the cells of its range, and reads a
-//   border place only when a layer of a stacked border covers it. A corner place has no reader to the cells that have
-//   it as a corner.
+//   the grid, and a stage cannot tell the two apart. FindCellAt for a position outside the range's cells may give a
+//   border cell, when the piece was built with a border that reaches it, or kNoIndex when no loaded block holds it;
+//   FindNearbyFaces then says kPositionOutsideGrid for the second. A stage relies on neither answer. So a stage calls
+//   readers only from places of its range, keeps every particle inside the closed boxes of the cells of its range, and
+//   reads a border place only when a layer of a stacked border covers it. A corner place has no reader to the cells
+//   that have it as a corner.
 //   Sums over the grid. In a batched run, each block's partial is written into the whole grid's block values (a
 //   CellBlockValues of the whole grid) at its whole-grid index, which the piece map gives; one tree sum then runs over
 //   all the block partials after the last batch (cell_block_range.h). A tree sum inside each piece, added up
 //   afterwards, does not give the whole grid's total bit for bit: the tree pairs partials by position.
 //   Mapping a place back. A cell place or a face place of the piece is in block p / N, where N is the places per block
-//   (kCellPlacesPerBlock or kFacePlacesPerBlock). Its whole-grid place is block_in_whole_grid()[p / N] * N + p % N: the
-//   piece map gives the block's whole-grid index and the place within the block is unchanged. Corner places of the
-//   range map the same way. Corner places of border blocks do not map through the piece map when the whole grid
-//   stores that corner in a block that was not loaded; match them by position or id (method paper
+//   (kCellPlacesPerBlock or kFacePlacesPerBlock). Its whole-grid place is block_in_whole_grid()[p / N] * N + p % N for
+//   a CPU piece: the piece map gives the block's whole-grid index and the place within the block is unchanged. A GPU
+//   piece keeps its map on the GPU (block_in_whole_grid_buffer()), and block_in_whole_grid() is empty for it. Corner
+//   places of the range map the same way. Corner places of border blocks do not map through the piece map when the
+//   whole grid stores that corner in a block that was not loaded; match them by position or id (method paper
 //   <sec-cell-blocks>, "A corner place belongs to one set of tables").
 //   Versions. A piece has the whole grid's version and its own block count, and values are checked against those two.
 //   Two pieces of one whole grid with the same block count cannot be told apart by that check, so values bound to one
@@ -146,12 +148,14 @@ class GridPiece {
 //   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
 //   result, stacked or not). A smaller list does not fail the call: readers then answer none where the whole grid has
 //   neighbours, as at the edge of the grid.
-// Fails: kBadInput          the range is not inside the whole grid's blocks, or border_blocks is not ascending, repeats
-//                           a block, holds an index at or above the whole grid's block count, or holds a block of
-//                           the range. The result then holds the failure and no piece; nothing is written.
+// Fails: kBadInput          the range is empty (block_count 0) or not inside the whole grid's blocks, or border_blocks
+//                           is not ascending, repeats a block, holds an index at or above the whole grid's block
+//                           count, or holds a block of the range. The result then holds the failure and no piece;
+//                           nothing is written.
 //        kTooManyCellBlocks the range's blocks plus the border blocks are more than buffers.max_cell_blocks(); cell
 //                           and other_cell are zero. The caller raises the room. Nothing is written.
-//        A call that fails in several ways reports the range first, then the room, then the border list.
+//        A call that fails in several ways reports the range first (empty, or not inside the grid), then the room, then
+//        the border list.
 //        kInternalFault     a neighbour entry names a block of the range that the piece map the same call wrote does
 //                           not hold: no input causes it, only a change to the builder.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
@@ -172,9 +176,12 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
 // Requires: border_blocks and `buffers` are on whole.run_on() (debug assertions); and, as in the span form,
 //   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
 //   result, stacked or not), since a smaller list does not fail the call and readers then answer none.
-// Fails: as the span form, and kBadInput for border_block_count above border_blocks.size();
+// Fails: as the span form, and kBadInput for border_block_count above border_blocks.size(), which is checked before
+//        the range, the room and the border list, on both processors;
 //        kRunOnCallFailed  a GPU function did not start or the GPU work failed (whole is on the GPU); nothing falls
-//                          back to the CPU, and the contents of `buffers` are unspecified.
+//                          back to the CPU, and the contents of `buffers` are unspecified. A GPU function that did not
+//                          start waits for the GPU's pending work before the call returns, so no earlier GPU function
+//                          of the call is still writing `buffers` when the caller sees the failure.
 //        kInternalFault    on the GPU, a record that contradicts the steps that wrote it: no input causes it.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 std::expected<GridPiece, GridFailure> BuildGridPiece(

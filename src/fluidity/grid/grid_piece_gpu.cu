@@ -19,6 +19,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "fluidity/base/gpu_launch.cuh"
 #include "fluidity/base/run_on_call.h"
@@ -143,6 +144,21 @@ __global__ void __launch_bounds__(
   }
 }
 
+// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning, so that
+// no earlier launch of the same call is still running (and writing) when the caller sees the failure.
+template <typename... Parameters>
+RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
+    void (*function)(Parameters...),
+    LaunchSize launch_size,
+    std::type_identity_t<Parameters>... arguments
+) {
+  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
+  if (started != RunOnCallStatus::kDone) {
+    static_cast<void>(CheckGpuWork());
+  }
+  return started;
+}
+
 // The launch of a GPU function that one thread runs.
 constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
 
@@ -160,7 +176,7 @@ cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
 }  // namespace
 
 RunOnCallStatus ApplyPieceStatusResetOnGpu(GridBuildStatus* status) {
-  return ApplyGpuFunction(ApplyPieceStatusReset, kOneThread, status);
+  return ApplyGpuFunctionAndWaitOnFailure(ApplyPieceStatusReset, kOneThread, status);
 }
 
 RunOnCallStatus CheckPieceBorderOnGpu(PieceLoad load, std::uint32_t whole_block_count, GridBuildStatus* status) {
@@ -168,7 +184,7 @@ RunOnCallStatus CheckPieceBorderOnGpu(PieceLoad load, std::uint32_t whole_block_
   if (load.border_block_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       CheckPieceBorder,
       ComputeLaunchSize(load.border_block_count),
       load,
@@ -182,7 +198,7 @@ RunOnCallStatus WritePieceMapOnGpu(PieceLoad load, const GridBuildStatus* status
   if (loaded_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(WritePieceMap, ComputeLaunchSize(loaded_count), load, status, map);
+  return ApplyGpuFunctionAndWaitOnFailure(WritePieceMap, ComputeLaunchSize(loaded_count), load, status, map);
 }
 
 RunOnCallStatus
@@ -190,7 +206,14 @@ CopyPieceBlocksOnGpu(const GridTables& whole, PieceBlocks blocks, PieceTableArra
   if (blocks.count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(CopyPieceBlocks, ComputeLaunchSize(blocks.count), whole, blocks, piece, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      CopyPieceBlocks,
+      ComputeLaunchSize(blocks.count),
+      whole,
+      blocks,
+      piece,
+      status
+  );
 }
 
 RunOnCallStatus
@@ -199,7 +222,14 @@ CopyPieceCellStatesOnGpu(const GridTables& whole, PieceBlocks blocks, CellState*
     return RunOnCallStatus::kDone;
   }
   const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * blocks.count;
-  return ApplyGpuFunction(CopyPieceCellStates, ComputeLaunchSize(place_count), whole, blocks, cell_states, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      CopyPieceCellStates,
+      ComputeLaunchSize(place_count),
+      whole,
+      blocks,
+      cell_states,
+      status
+  );
 }
 
 RunOnCallStatus WritePieceFaceKindsOnGpu(
@@ -212,7 +242,7 @@ RunOnCallStatus WritePieceFaceKindsOnGpu(
     return CheckGpuWork();
   }
   const std::size_t place_count = std::size_t{kFacePlacesPerBlock} * blocks.count;
-  if (const RunOnCallStatus started = ApplyGpuFunction(
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WritePieceFaceKinds,
           ComputeLaunchSize(place_count),
           whole,

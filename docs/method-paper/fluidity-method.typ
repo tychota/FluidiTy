@@ -2152,10 +2152,11 @@ reads them. And each particle is handled by the range that holds `FindCellAt` of
 particle grouped at an old position and moved since is grouped again first.
 
 In a grid piece, a reader called for a place outside what the rule covers gives none, the same answer as the edge of the
-grid. For a position outside the cells of the range and the cells that touch them, `FindCellAt` gives no cell and
-`FindNearbyFaces` says `kPositionOutsideGrid`, as for a particle that left the grid. A piece cannot tell the two apart,
-so a stage must not rely on that answer for a place outside its range, and keeps each particle inside the closed
-boxes of the cells of its range. There is also no reader from a corner place to the cells that have it as a corner: a
+grid. For a position outside the cells of the range, `FindCellAt` may give a border cell, when the piece was built
+with a border that reaches it, or no cell, when no loaded block holds it; for no cell `FindNearbyFaces` says
+`kPositionOutsideGrid`, as for a particle that left the grid. A piece cannot tell the two apart, so a stage must not
+rely on either answer for a place outside its range, and keeps each particle inside the closed boxes of the cells of
+its range. There is also no reader from a corner place to the cells that have it as a corner: a
 stage that computes a corner value from the cells around it needs those cells' blocks, which the border does not
 promise. The pressure solve and the solids keep values at corners (@sec-cell-blocks) and must write a corner from the
 cell that owns it, or add that reader to the rule.

@@ -89,10 +89,10 @@ namespace fluidity::grid {
 //   range that holds FindCellAt of the exact position its weights use: a particle grouped at an old position and moved
 //   since must be grouped again first, or it may lie in a cell outside the range whose list goes one step further.
 // Outside the rule. In a grid piece, a reader called for a place outside what the rule covers gives none, the answer
-//   of the edge of the grid and of a place that is not there: FindCellAt for a position outside the range's cells and
-//   their touching cells gives kNoIndex, and FindNearbyFaces then says kPositionOutsideGrid. A stage must not rely on
-//   that answer for a place outside its range, and keeps every particle inside the closed boxes of the cells of its
-//   range.
+//   of the edge of the grid and of a place that is not there. FindCellAt for a position outside the range's cells may
+//   give a border cell, when the piece was built with a border that reaches it, or kNoIndex when no loaded block holds
+//   it; FindNearbyFaces then says kPositionOutsideGrid for the second. A stage must rely on neither answer for a place
+//   outside its range, and keeps every particle inside the closed boxes of the cells of its range.
 // Corners. No reader goes from a corner place to the cells that have it as a corner. A stage that computes a corner
 //   value from the cells around the corner needs the blocks of those cells, which the border does not promise.
 enum class BorderWidth : std::uint8_t {
@@ -153,8 +153,8 @@ ComputeIsPositionWithin(BlockLocalCoord position, int lowest, int highest) noexc
   return is_x_within && is_y_within && is_z_within;
 }
 
-// Says whether the set holds one of the 27 blocks around `block`, kNoIndex for none. For this header's own functions
-// only.
+// Says whether the set holds one of the 27 blocks around `block`, kNoIndex for none. For this header's own
+// functions only.
 FLUIDITY_CPU_AND_GPU constexpr bool
 ComputeIsBlockSetAroundOneBlock(const GridTables& tables, const BlockSet& set, std::uint32_t block) noexcept {
   if (block == kNoIndex) {
@@ -887,8 +887,8 @@ FLUIDITY_CPU_AND_GPU constexpr void ApplyFacePlaceReadMarks(
   }
 }
 
-// The places of one block of a set that the forward form runs a thread for: its 64 cell places, then its 240 face
-// places.
+// The places of one block of a set that the forward form runs a thread for: its 64 cell places, then its 240
+// face places.
 inline constexpr std::uint32_t kPlacesPerSetBlock =
     static_cast<std::uint32_t>(kCellPlacesPerBlock) + static_cast<std::uint32_t>(kFacePlacesPerBlock);
 

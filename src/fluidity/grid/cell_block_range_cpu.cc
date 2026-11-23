@@ -196,7 +196,9 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderS
   }
   // Step 3: one launch for each chunk of the set, each waited for. The threads stop at once when step 2 failed. A chunk
   // that fails ends the call here: the marks of the earlier chunks give no list, and the next call clears them.
-  const std::uint32_t set_block_count = search.range.block_count + search.border_so_far_count;
+  // The caller checked ComputeIsSetWithinPlaceLimit, so the sum fits 32 bits.
+  const auto set_block_count =
+      static_cast<std::uint32_t>(std::uint64_t{search.range.block_count} + search.border_so_far_count);
   const std::uint32_t chunk_count = ComputeMarkingChunkCount(set_block_count, kSetBlocksPerMarkingLaunch);
   for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
     if (const RunOnCallStatus call_status = WriteBorderReadMarksOnGpu(
@@ -224,6 +226,8 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderS
   if (const std::expected<void, BufferError> summed =
           ComputeExclusivePrefixSum(*search.sums, search.block_count, *search.sums, *search.order_buffers);
       !summed.has_value()) {
+    // Steps 1 to 4 may still be running when the prefix sum's first launch fails.
+    static_cast<void>(WaitForBorderSearchOnGpu());
     return std::unexpected(ToGridFailure(summed.error(), 0));
   }
   // Step 6.
@@ -478,7 +482,8 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
   const GridTables tables = grid.tables(RunOn::kCpu);
   std::uint8_t* const marks = search_buffers.marks_.data();
   std::fill_n(marks, block_count, std::uint8_t{0});
-  const std::uint64_t set_place_count = std::uint64_t{range.block_count + border_so_far_count} * kPlacesPerSetBlock;
+  const std::uint64_t set_block_count = std::uint64_t{range.block_count} + border_so_far_count;
+  const std::uint64_t set_place_count = set_block_count * kPlacesPerSetBlock;
   for (std::uint64_t set_place = 0; set_place < set_place_count; ++set_place) {
     ApplySetPlaceReadMarks(
         tables,

@@ -10,7 +10,9 @@
 //   plain GPU pointers and counts: a thin grid-stride loop that calls a per-item rule of grid/border_block_steps.h,
 //   which a CPU test replays for every thread block and thread. The functions use the default stream, so the GPU runs
 //   them, and the prefix sum between them, in the order they are called. Each returns how its start went; an error
-//   while a GPU function runs is reported by the next wait, the prefix sum's or the last function's.
+//   while a GPU function runs is reported by the next wait, the prefix sum's or the last function's. A function whose
+//   launch does not start waits for the GPU before it returns kCallFailed, so no earlier launch of the call is still
+//   writing when the caller sees the failure.
 //   The count of the border is the only value that comes back: the last function leaves it in the status record, which
 //   the CPU half reads once. A bad border so far is the other: its failure key is there too.
 //   This header is used only when GPU code is compiled in, so the CPU file names it only under
@@ -26,7 +28,8 @@
 //
 // Owns:    ApplyBorderStatusResetOnGpu, ResetBorderMarksOnGpu, CheckBorderSoFarOnGpu, WriteBorderReadMarksOnGpu,
 //          WriteListedMarksOnGpu, WriteBorderBlocksOnGpu, kBorderSearchStackBytes,
-//          ComputeLargestBorderSearchStackOnGpu, ComputeResidentThreadsOnGpu, ReserveBorderSearchStackOnGpu
+//          WaitForBorderSearchOnGpu, ComputeLargestBorderSearchStackOnGpu, ComputeResidentThreadsOnGpu,
+//          ReserveBorderSearchStackOnGpu
 // Uses:    RunOnCallStatus (base/run_on_call.h), BorderWidth (grid/border_block_steps.h), GridBuildStatus
 //          (grid/grid_build_status.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h), GridTables
 //          (grid/grid_tables.h)
@@ -59,8 +62,9 @@ RunOnCallStatus ResetBorderMarksOnGpu(std::uint8_t* marks, std::uint32_t block_c
 
 // Step 2: one thread for each entry of the border so far offers ComputeBorderSoFarFailureKey of it to the failure key
 // of *status with an integer atomic minimum, so the key is the smallest of the entries whatever the order the threads
-// run in. border_so_far_count 0 launches nothing. Requires: border_so_far is GPU memory of border_so_far_count entries;
-// status is GPU memory that step 1 reset. Fails: kCallFailed  the GPU function did not start
+// run in. border_so_far_count 0 launches nothing.
+// Requires: border_so_far is GPU memory of border_so_far_count entries; status is GPU memory that step 1 reset.
+// Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus CheckBorderSoFarOnGpu(
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
@@ -79,8 +83,8 @@ RunOnCallStatus CheckBorderSoFarOnGpu(
 // complete when it returns, and step 4 starts after the last chunk. A chunk with no place launches nothing.
 // If a chunk fails after earlier chunks marked, the function returns the failure, the caller starts no later chunk,
 // and the output is not written: the marks hold a part of the result, but step 4 and step 6 never run, so no list or
-// count is written; the next call clears the marks in its step 1. Requires: marks is GPU memory of tables.block_count
-// bytes, all 0 at the first chunk; tables, border_so_far and status
+// count is written; the next call clears the marks in its step 1.
+// Requires: marks is GPU memory of tables.block_count bytes, all 0 at the first chunk; tables, border_so_far and status
 //   are GPU memory; the chunks are those of a set of at most kMaxSetBlocks blocks, so every place fits the 32-bit place
 //   index (the caller checks ComputeIsSetWithinPlaceLimit before step 1).
 // Fails: kCallFailed  a GPU function did not start, or the GPU work failed
@@ -123,6 +127,11 @@ RunOnCallStatus WriteBorderBlocksOnGpu(
     CellBlockIndex* border_blocks,
     GridBuildStatus* status
 );
+
+// Waits for every GPU call made so far. The host form of the border search calls it when the prefix sum between steps
+// 4 and 6 fails, so that no launch of steps 1 to 4 is still writing when the caller sees the failure.
+// Fails: kCallFailed  a GPU function or copy failed while the GPU ran it
+RunOnCallStatus WaitForBorderSearchOnGpu();
 
 // The local bytes per thread that the stack sentence of this file's header states, and that a test pins: the largest
 // local memory any GPU function of this file may keep. Bytes.

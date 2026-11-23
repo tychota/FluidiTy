@@ -128,7 +128,8 @@ FindBorderBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> bloc
 // Its arrays are pieces of the RunMemory it was built from, which must outlive it (base/run_memory.h).
 class BorderSearchBuffers {
  public:
-  // An empty object: max_cell_blocks() is 0 and no call takes it. BuildBorderSearchBuffers makes the real ones.
+  // An empty object: max_cell_blocks() is 0, so no call on a grid with blocks takes it (a grid of 0 blocks with the
+  // range {0, 0} does). BuildBorderSearchBuffers makes the real ones.
   BorderSearchBuffers() = default;
   BorderSearchBuffers(const BorderSearchBuffers&) = delete;
   BorderSearchBuffers& operator=(const BorderSearchBuffers&) = delete;
@@ -196,7 +197,9 @@ class BorderSearchBuffers {
 // for each entry of BuildBorderSearchMemoryEstimate(run_on, max_cell_blocks), in its order. This is the one
 // allocation of border search.
 // Example: on the CPU, 1,000 blocks take one piece of 1,000 bytes, which a run memory hands out as 1,024.
-// Requires: run_on == run_memory.run_on(), checked by assert in debug builds.
+// Requires: run_on == run_memory.run_on(), checked by assert in debug builds. The check of CheckCanRunOn(run_on)
+//   comes before that assert, so asking for a GPU that is not there fails with kRunOnCallFailed whatever the run
+//   memory.
 // Fails: kRunOnCallFailed  CheckCanRunOn(run_on) failed (a GPU asked for in a build without GPU code, or without a
 //                          usable GPU); nothing is taken
 //        kBadInput         max_cell_blocks is 0 or above kMaxCellBlocksLimit; nothing is taken
@@ -215,8 +218,8 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 // Finds one layer of a stacked border, on the processor of the grid: the blocks outside `range` that are in
 // `border_so_far` or in the border, at `width`, of `range` plus `border_so_far`. Writes the first
 // border_blocks.size() of them to `border_blocks`, in ascending index, each once, and returns how many there are in
-// all. A count above border_blocks.size() means the buffer was too small; nothing beyond it is written. Allocates
-// nothing.
+// all. A count above border_blocks.size() means the buffer was too small; nothing beyond it is written. The call
+// allocates nothing.
 //
 // Method: the forward form, in the border marks of `search_buffers`. 1 Set the marks of the grid's blocks to 0, so
 //   that they hold only what this call's places read: a mark left from an earlier call would add a block to the list
@@ -239,7 +242,9 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //   whose Work line gives the cost; and, whatever the set, one write and one read of each of the grid's block marks.
 // Example: the grid of the file header of border_block_steps.h, range {0, 1} (block 0) and no border so far give the
 //   list {1, 2} and the count 2. A stacked border is one call per layer, with two output buffers used in turn: the
-//   list of one call is the border so far of the next.
+//   list of one call is the border so far of the next. Call it with the width of the last stage first and that of the
+//   first stage last; the stage that a call serves reads only from places of `range` and of the lists of the calls
+//   before it.
 // Requires: every buffer on grid.run_on() (debug assertion). The grid and the range are those of every layer.
 // Fails: kBadInput          border_so_far is not ascending, holds a block of `range` or an index at or above the
 //                           grid's block count; border_blocks is border_so_far (the same buffer); border_so_far_count
@@ -252,7 +257,8 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //                           (14,128,181), so a place of the set would not fit the 32-bit place index. Checked on both
 //                           processors by ComputeIsSetWithinPlaceLimit, before the entries of border_so_far and before
 //                           anything is written.
-//        kRunOnCallFailed   GPU only: a GPU call failed
+//        kRunOnCallFailed   GPU only: a GPU call failed. A launch that did not start waits for the GPU's pending work
+//                           before the call returns, so no earlier launch of the call is still writing.
 //        kInternalFault     GPU only: the prefix sum failed on a size, or the count read back is above the block count
 //        On failure border_blocks holds no result; after kRunOnCallFailed the marks and the arrays of
 //        `search_buffers` are unspecified, as every buffer of a failed GPU call. If a launch of the marking fails after

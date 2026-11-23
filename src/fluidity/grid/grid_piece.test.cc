@@ -168,6 +168,23 @@ TEST(BuildGridPiece, RangeBeyondTheGrid_IsBadInput) {
   EXPECT_EQ(piece.error().error, GridError::kBadInput);
 }
 
+TEST(BuildGridPiece, EmptyRangeWithBorder_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(3);
+  ASSERT_TRUE(room.has_value());
+  GridBuffers& buffers = room->buffers;
+  const std::expected<GridPiece, GridFailure> piece = BuildGridPiece(
+      test_grid->grid,
+      {.first_block = 1, .block_count = 0},
+      std::vector<CellBlockIndex>{{.value = 0}},
+      buffers
+  );
+  ASSERT_FALSE(piece.has_value());
+  EXPECT_EQ(piece.error().error, GridError::kBadInput);
+}
+
 TEST(FindCellAt, InPieceOutsideLoadedBlocks_IsNoIndex) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));

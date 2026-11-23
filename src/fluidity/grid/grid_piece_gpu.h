@@ -14,7 +14,8 @@
 //   what an earlier one wrote: function 3 the border list, function 4 the piece map, functions 5 and 6 the piece map
 //   and the whole grid's tables. After a failure the later functions do nothing. The CPU half calls one function here
 //   for each step, then reads the status record once. An error while a GPU function runs is reported by the wait at
-//   the end of the last function.
+//   the end of the last function. A function whose launch does not start waits for the GPU before it returns
+//   kCallFailed, so no earlier launch of the call is still writing when the caller sees the failure.
 //   The threads share only the status record: its failure key, to which they offer keys with an integer atomic
 //   minimum, and its counts, to which they add with integer atomic adds, so neither the smallest key nor a count
 //   depends on the order the threads run in. No two threads of a launch write one place: function 3 writes the place

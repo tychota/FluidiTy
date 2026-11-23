@@ -86,6 +86,13 @@ TEST(CheckPieceRangeAndRoom, RangePastTheLastBlock_IsBadInput) {
   EXPECT_EQ(checked.error().error, GridError::kBadInput);
 }
 
+TEST(CheckPieceRangeAndRoom, EmptyRange_IsBadInput) {
+  const std::expected<void, GridFailure> checked =
+      CheckPieceRangeAndRoom(10, {.first_block = 4, .block_count = 0}, 3, 6);
+  ASSERT_FALSE(checked.has_value());
+  EXPECT_EQ(checked.error().error, GridError::kBadInput);
+}
+
 TEST(CheckPieceRangeAndRoom, RoomBelowRangeWithBorder_IsTooManyCellBlocks) {
   const std::expected<void, GridFailure> checked =
       CheckPieceRangeAndRoom(10, {.first_block = 4, .block_count = 3}, 3, 5);
