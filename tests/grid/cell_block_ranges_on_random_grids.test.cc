@@ -131,7 +131,7 @@ TEST(FindBorderBlocks, RandomSets_GiveAscendingBlocksOutsideTheSet) {
 }
 
 // The random grids, of the first ones, whose ranges are checked through pieces, and the blocks of one range.
-constexpr std::size_t kRangePieceGridCount = 6;
+constexpr std::size_t kRangePieceGridCount = 16;
 constexpr std::uint32_t kRangePieceBlocks = 3;
 
 // Checks that the piece of one range and its border (BuildRangeWithBorder) answers every reader of kTouchingCells, from
@@ -148,7 +148,7 @@ void CheckPieceOfRangeAnswersAsWholeGrid(const StaggeredGrid& grid, CellBlockRan
 }
 
 // In the piece of a range and its border, every reader of kTouchingCells, run from every place kept in the range,
-// answers as on the whole grid, including what transfer needs: every range of 3 blocks of the first 6 random grids.
+// answers as on the whole grid, including what transfer needs: every range of 3 blocks of the first 16 random grids.
 TEST(BuildRangeWithBorder, PiecesOfRandomGridRanges_AnswerAsTheWholeGrid) {
   const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
   ASSERT_GE(built.grids.size(), kRangePieceGridCount);

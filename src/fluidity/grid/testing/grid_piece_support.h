@@ -94,8 +94,8 @@ FindBorderByReadMarks(const GridTables& whole, std::span<const CellBlockIndex> s
 //     of the set that FindNearbyFaces lists on each of the three axes, and what f does to collect: ComputeFaceWeight(f,
 //     position, q, sums) with the position's sums made on the whole grid, as the transfer step carries them with the
 //     particle, which must give the same bits in the piece and on the whole grid. Every face piece of the set is run,
-//     so faces of every axis on both sides of a cell q are met. Transfer reads at kTouchingCells, so this part runs at
-//     that width only (a piece made for kFourCellWidths holds that piece's blocks as well);
+//     so faces of every axis on both sides of a cell q are met. Transfer reads at kTouchingCells; this part runs at
+//     both widths, as a piece made for kFourCellWidths holds that piece's blocks as well;
 //   - at kFourCellWidths also, from each face piece: FindCellsNearFace; the block list of BuildFaceSearch at the
 //     largest radius; and the face pieces of FindNextFace walked from it;
 //   - from each corner place: ComputeCornerPosition.

@@ -455,8 +455,7 @@ std::optional<std::string> FindBlockDifference(TransferEvidence& evidence, std::
     if (difference.has_value()) {
       return difference;
     }
-    // Transfer reads at kTouchingCells. A piece for kFourCellWidths holds that piece's blocks, so it answers alike.
-    difference = width == BorderWidth::kTouchingCells ? FindTransferDifference(evidence, face) : std::nullopt;
+    difference = FindTransferDifference(evidence, face);
     if (difference.has_value()) {
       return difference;
     }
