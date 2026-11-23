@@ -14,7 +14,6 @@
 
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/border_block_steps.h"
-#include "fluidity/grid/cell_block_range.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -27,21 +26,6 @@
 
 namespace fluidity::grid {
 namespace {
-
-// The widths of the layers of a pass of four stages of widths (touching, touching, four widths, touching), found from
-// the last stage backwards: layer 0 serves the last stage, layer 3 the first.
-constexpr std::array<BorderWidth, 4> kLayerWidths = {
-    BorderWidth::kTouchingCells,
-    BorderWidth::kFourCellWidths,
-    BorderWidth::kTouchingCells,
-    BorderWidth::kTouchingCells,
-};
-
-// The widths of the two layers of the nested-ball check: touching, then four widths.
-constexpr std::array<BorderWidth, 2> kNestedBallLayerWidths = {
-    BorderWidth::kTouchingCells,
-    BorderWidth::kFourCellWidths,
-};
 
 // The random grids compared with the vector form, the random grids checked through pieces, and the blocks of a range.
 constexpr std::size_t kVectorFormGridCount = 30;
@@ -74,58 +58,6 @@ std::vector<std::uint32_t> ToBlockNumberList(std::span<const CellBlockIndex> blo
     numbers.push_back(block.value);
   }
   return numbers;
-}
-
-// The ranges a grid is tested on: the first range, the middle range and the last range of BuildRanges(grid,
-// range_blocks), each once (fewer when the grid has fewer ranges), then the range of the whole grid. The first and the
-// last lie at the edges of the grid, where readers meet the end of the tables, and the last is often shorter than the
-// others. The middle range has a border on every side. The whole-grid range has an empty border. Testing every range
-// would take minutes, and the ranges between these differ from the middle one only in position.
-std::vector<CellBlockRange> BuildTestedRanges(const StaggeredGrid& grid, std::uint32_t range_blocks) {
-  const std::expected<std::vector<CellBlockRange>, GridFailure> ranges = BuildRanges(grid, range_blocks);
-  EXPECT_TRUE(ranges.has_value());
-  if (!ranges.has_value() || ranges->empty()) {
-    return {};
-  }
-  std::vector<CellBlockRange> tested_ranges;
-  for (const std::size_t position : {std::size_t{0}, ranges->size() / 2, ranges->size() - 1}) {
-    const CellBlockRange range = ranges->at(position);
-    const bool is_listed = std::ranges::any_of(tested_ranges, [range](CellBlockRange listed) {
-      return listed.first_block == range.first_block && listed.block_count == range.block_count;
-    });
-    if (!is_listed) {
-      tested_ranges.push_back(range);
-    }
-  }
-  const std::uint32_t block_count = grid.counts().cell_blocks;
-  const bool whole_grid_is_listed = std::ranges::any_of(tested_ranges, [block_count](CellBlockRange listed) {
-    return listed.first_block == 0 && listed.block_count == block_count;
-  });
-  if (!whole_grid_is_listed) {
-    tested_ranges.push_back({.first_block = 0, .block_count = block_count});
-  }
-  return tested_ranges;
-}
-
-// The ranges of the nested-ball grid: BuildTestedRanges plus every fourth range of BuildRanges, which the dense
-// layout of that grid makes worth the time.
-std::vector<CellBlockRange> BuildNestedBallTestedRanges(const StaggeredGrid& grid, std::uint32_t range_blocks) {
-  std::vector<CellBlockRange> tested_ranges = BuildTestedRanges(grid, range_blocks);
-  const std::expected<std::vector<CellBlockRange>, GridFailure> ranges = BuildRanges(grid, range_blocks);
-  EXPECT_TRUE(ranges.has_value());
-  if (!ranges.has_value()) {
-    return tested_ranges;
-  }
-  for (std::size_t position = 0; position < ranges->size(); position += 4) {
-    const CellBlockRange range = ranges->at(position);
-    const bool is_listed = std::ranges::any_of(tested_ranges, [range](CellBlockRange listed) {
-      return listed.first_block == range.first_block && listed.block_count == range.block_count;
-    });
-    if (!is_listed) {
-      tested_ranges.push_back(range);
-    }
-  }
-  return tested_ranges;
 }
 
 // The blocks of `kept` and of every `step`-th block of the grid outside `range`, ascending. A step of 1 gives every

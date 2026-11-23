@@ -26,6 +26,7 @@
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/grid_build_steps_cases.h"
 #include "fluidity/grid/testing/grid_support.h"
+#include "fluidity/grid/testing/thread_replay.h"
 
 namespace fluidity::grid {
 namespace {

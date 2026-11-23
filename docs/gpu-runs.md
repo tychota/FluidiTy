@@ -157,7 +157,8 @@ bits: places, counts and every double (the weights and face weights included, si
 `sqrt` and `floor` and the build forbids fused multiply-add). The programs are `build_grid_on_gpu_functional_test`,
 `cell_size_rule_on_gpu_functional_test`, `find_cell_at_on_gpu_functional_test`,
 `nearby_face_weights_on_gpu_functional_test`, `cell_surroundings_on_gpu_functional_test` and
-`shared_grid_functions_on_gpu_functional_test` and `border_blocks_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
+`shared_grid_functions_on_gpu_functional_test`, `border_blocks_on_gpu_functional_test` and
+`stacked_borders_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
 `fluidity_grid_testing`. What to look at first, in this order:
 
 1. **Does it build on Windows?** The runners start a GPU function that takes a function pointer as a template argument,
@@ -191,6 +192,19 @@ on `sm_120` (`cuobjdump --dump-resource-usage`, no local memory beyond the stack
 a block next to the set can cost up to about 2 million table reads (the `Work:` of `ComputeIsBorderBlock`), one thread
 does all of them, and the threads of a warp that meet different blocks wait for the slowest. If `cudaErrorLaunchTimeout`
 appears, run the card without a display attached.
+
+Two things about `stacked_borders_on_gpu_functional_test` (the border search of a range on the GPU, `FindBorderBlocks` on
+a GPU grid, compared with the CPU's list and count by bits). The GPU function that marks, one thread per place of the set
+(`WriteBorderReadMarks` in `cell_block_range_gpu.cu`), keeps the results of the readers as locals: 3,600 bytes of stack and
+255 registers per thread on `sm_120`, 3,048 bytes and 255 registers on `sm_86` and `sm_89` (`cuobjdump
+--dump-resource-usage`, no local memory beyond the stack); the five others keep no stack. That is above the driver's default
+1,024 bytes; the driver grows the stack at the first launch. The memory plan counts it with `BuildBorderSearchStackEstimate`,
+a driver stack entry of that many bytes for every resident thread (about 55,296 threads on a 36-multiprocessor card, 199 MB);
+`FindBorderBlocks.OnGpuFunctions_KeepTheStatedStack` fails if the compiled function keeps more than `kBorderSearchStackBytes`
+(3,600). A launch that fails with `cudaErrorMemoryAllocation` at the first marking call means the card could not give that
+stack. The marks are bytes that many threads set to 1 at once with plain stores and nobody reads: if
+`OnGpuTwice_GivesIdenticalBytes` or the comparison with the CPU differs, by a block missing or extra in a list, suspect that
+first (a byte store that touched its neighbours), then a missing wait between the marking launch and the scan.
 
 To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
 programs of the `linux-release-cuda` build:

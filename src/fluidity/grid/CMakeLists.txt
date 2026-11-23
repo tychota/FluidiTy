@@ -1,6 +1,7 @@
 fluidity_add_headers(
   border_block_steps.h
   cell_block_range.h
+  cell_block_range_gpu.h
   cell_corners.h
   cell_size_rule.h
   face_search.h
@@ -25,11 +26,13 @@ fluidity_add_headers(
 target_sources(
   fluidity PRIVATE cell_block_range_cpu.cc grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_values_cpu.cc staggered_grid_cpu.cc
 )
-fluidity_add_gpu_sources(staggered_grid_gpu.cu)
+fluidity_add_gpu_sources(cell_block_range_gpu.cu staggered_grid_gpu.cu)
 # ptxas prints the stack frame and the spills of each GPU function for each architecture, so every compile of the file
 # with CUDA shows the stack each one keeps against the driver's default (method paper <sec-grid-memory>).
 # Source properties are seen only in the folder that made the target, so the line names the library's folder.
-set_source_files_properties(staggered_grid_gpu.cu TARGET_DIRECTORY fluidity PROPERTIES COMPILE_OPTIONS "-Xptxas=-v")
+set_source_files_properties(
+  cell_block_range_gpu.cu staggered_grid_gpu.cu TARGET_DIRECTORY fluidity PROPERTIES COMPILE_OPTIONS "-Xptxas=-v"
+)
 
 # Test-only: the geometric checker and the random grids that grid tests compare the grid against. Never linked by
 # the library.
@@ -79,7 +82,6 @@ fluidity_add_test(
   fluidity_grid_testing
 )
 fluidity_add_test(cell_block_range_no_gpu_test SOURCES cell_block_range.no_gpu.test.cc LABEL no_gpu)
-fluidity_add_test(cell_block_range_gpu_test SOURCES cell_block_range.gpu.test.cc LABEL gpu LINKS fluidity_grid_testing)
 fluidity_add_test(cell_size_factor_test SOURCES cell_size_rule.factor.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(cell_size_rule_test SOURCES cell_size_rule.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(corners_test SOURCES cell_corners.test.cc LABEL cpu LINKS fluidity_grid_testing)

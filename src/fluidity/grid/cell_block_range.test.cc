@@ -705,5 +705,13 @@ TEST(BuildRangeWithBorder, ParticleSums_NeedAFaceBeyondTheNearBorder) {
   EXPECT_NE(piece_weights.weight_sum, weights.weight_sum);
 }
 
+TEST(BuildBorderSearchStackEstimate, OnCpu_CountsNothing) {
+  const std::expected<MemoryEstimateEntry, GridFailure> entry = BuildBorderSearchStackEstimate(RunOn::kCpu);
+  ASSERT_TRUE(entry.has_value());
+  EXPECT_EQ(entry->where, MemoryWhere::kDriverStack);
+  EXPECT_EQ(entry->kept_for, KeptFor::kWholeRun);
+  EXPECT_EQ(ComputeMemoryBytes(std::span<const MemoryEstimateEntry>(&*entry, 1), MemoryCounts()), 0U);
+}
+
 }  // namespace
 }  // namespace fluidity::grid

@@ -63,6 +63,18 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  border_search_replay_functional_test
+  SOURCES
+  border_search_replay.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   stacked_borders_in_grid_pieces_functional_test
   SOURCES
   stacked_borders_in_grid_pieces.test.cc
@@ -152,6 +164,21 @@ fluidity_add_test(
   border_blocks_on_gpu_functional_test
   SOURCES
   border_blocks.gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+# Counts every allocation of the program, so its allocation counter is part of the program, never of a library.
+fluidity_add_test(
+  stacked_borders_on_gpu_functional_test
+  SOURCES
+  stacked_borders.gpu.test.cc
+  ${PROJECT_SOURCE_DIR}/src/fluidity/grid/testing/allocation_counter.cc
   LABEL
   gpu
   TIER

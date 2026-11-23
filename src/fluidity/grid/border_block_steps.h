@@ -33,19 +33,21 @@
 //                 the set
 //   border width  how far the readers of a stage read: kTouchingCells or kFourCellWidths
 // Owns:    BorderWidth, BlockSet, ComputeIsInBlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks,
-//          ApplyFacePlaceReadMarks; and, for this header's own functions only, ComputeSmallerBlockPosition,
-//          ComputeIsPositionWithin, ComputeIsBlockSetAroundOneBlock, ComputeIsBlockSetUnderNear,
-//          ComputeIsBlockSetUnderWide, ComputeIsBlockSetAround, ComputeHasFacePieceInBlockSet,
-//          ComputeIsBiggerCellBesideTouchingSet, ComputeIsCellOfBlockRead, ComputeIsFacePieceOfBlockRead,
-//          ComputeReadCornerMask, ComputeIsReadCornerKeptIn, ComputeIsCornerOfBlockRead,
+//          ApplyFacePlaceReadMarks, kPlacesPerSetBlock, ComputeBorderSoFarFailureKey, ApplySetPlaceReadMarks,
+//          ComputeListedMark, ApplyBorderBlockWriteAt; and, for this header's own functions only,
+//          ComputeSmallerBlockPosition, ComputeIsPositionWithin, ComputeIsBlockSetAroundOneBlock,
+//          ComputeIsBlockSetUnderNear, ComputeIsBlockSetUnderWide, ComputeIsBlockSetAround,
+//          ComputeHasFacePieceInBlockSet, ComputeIsBiggerCellBesideTouchingSet, ComputeIsCellOfBlockRead,
+//          ComputeIsFacePieceOfBlockRead, ComputeReadCornerMask, ComputeIsReadCornerKeptIn, ComputeIsCornerOfBlockRead,
 //          ComputeIsBlockInFaceSearchOfSetBlock, ComputeIsBlockInFaceSearchOfBlockSet, ComputeIsBlockReadDirectly,
 //          kMaxWaitingBlocks, ApplyReadMark and ApplyPlaceReadMark
 // Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), CellCorners, FindCornerPlaces (grid/cell_corners.h),
 //          TouchingCells, CellFacePieces, FindTouchingCells, FindFacePieces (grid/touching_cells.h), FaceSearch,
 //          BuildFaceSearch, CellsNearFace, FindCellsNearFace, kMaxFaceSearchRadius (grid/face_search.h), GridTables,
 //          BlockLocalCoord, FindLocalCellPlace, FindCellLow, FindCellHigh, ToSizeLevel, ToAxis (grid/grid_tables.h),
-//          the id types and constants (grid/grid_ids.h)
-// Used by: cell_block_range_cpu.cc, the GPU border pass to come, and the tests of the grid
+//          ToFailureKey, kIdStep, kNoFailureKey (grid/grid_build_steps.h, grid/grid_build_status.h), the id types and
+//          constants (grid/grid_ids.h)
+// Used by: cell_block_range_cpu.cc, cell_block_range_gpu.cu, and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 
 #pragma once
@@ -55,6 +57,7 @@
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/grid/cell_corners.h"
 #include "fluidity/grid/face_search.h"
+#include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/touching_cells.h"
@@ -878,6 +881,115 @@ FLUIDITY_CPU_AND_GPU constexpr void ApplyFacePlaceReadMarks(
   const FaceSearch search = BuildFaceSearch(tables, face, kMaxFaceSearchRadius);
   for (int entry = 0; entry < search.block_count; ++entry) {
     ApplyReadMark(tables, search.blocks[entry].value, marks);
+  }
+}
+
+// The places of one block of a set that the forward form runs a thread for: its 64 cell places, then its 240 face
+// places.
+inline constexpr std::uint32_t kPlacesPerSetBlock =
+    static_cast<std::uint32_t>(kCellPlacesPerBlock) + static_cast<std::uint32_t>(kFacePlacesPerBlock);
+
+// clang-tidy: a count of blocks and an entry index; the swappable-parameters check flags the two integers.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+// Computes the failure key of entry `index` of the border so far, or kNoFailureKey: step 2 of the GPU pass, one thread
+// for each entry, and the check of the CPU form, which asks it of every entry.
+//
+// Method: an entry fails when it is not above the entry before it (the first entry has none), when it is at or above
+//   `block_count`, or when it is a block of `range`. The key is ToFailureKey(kIdStep, index, 0), whose step 1 is the
+//   one check of the pass; the smallest key over the entries names the first failing entry. The list is bad input
+//   whatever the entry, so no other detail is kept.
+// Example: range {0, 1}, 5 blocks, entries {2, 4, 3}: entry 2 fails (3 is not above 4), the key is ToFailureKey(1, 2,
+// 0).
+//   Entries {2, 0}: entry 1 fails twice over (below the entry before, and in the range), the key is the same one.
+// Requires: `index` is below the entry count; `border_so_far` holds entries up to it.
+FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeBorderSoFarFailureKey(
+    CellBlockRange range,
+    const CellBlockIndex* border_so_far,
+    std::uint32_t block_count,
+    std::uint32_t index
+) noexcept {
+  const std::uint32_t block = border_so_far[index].value;
+  const bool is_not_above_entry_before = index > 0 && border_so_far[index - 1].value >= block;
+  const bool is_beyond_grid = block >= block_count;
+  const bool is_in_range = block >= range.first_block && block - range.first_block < range.block_count;
+  if (is_not_above_entry_before || is_beyond_grid || is_in_range) {
+    return ToFailureKey(kIdStep, index, 0);
+  }
+  return kNoFailureKey;
+}
+
+// Marks every block that a reader of `width` reads from one place of a set: step 3 of the GPU pass, one thread for each
+// place, and the loop of the CPU form. The set is the blocks of `range`, then the blocks of `border_so_far`.
+//
+// Method: set_place counts the places of the set in order, kPlacesPerSetBlock for each block. The block is entry
+//   set_place / kPlacesPerSetBlock of the set; the place in that block, set_place % kPlacesPerSetBlock, is a cell place
+//   below 64 (ApplyCellPlaceReadMarks) and else the face place that many less 64 (ApplyFacePlaceReadMarks). A
+//   set_place at or above the set's places does nothing.
+// Ties: as the two marking functions: only the value 1 is written and no mark is read, so threads that run this for
+//   different places at once, into the same marks, cannot conflict, and the marks do not depend on their order. The
+//   marks must hold 0 before the first place and nothing may mark the blocks of the set beforehand.
+// Example: range {4, 2}, border_so_far {9}: set_place 0 is cell place 0 of block 4, set_place 304 is cell place 0 of
+//   block 5, set_place 608 is cell place 0 of block 9, and set_place 64 is face place 0 of block 4.
+// Requires: border_so_far holds border_so_far_count entries that passed ComputeBorderSoFarFailureKey; `marks` holds
+//   tables.block_count entries, each 0 or written by these marking functions; the tables are those of a whole grid.
+// Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>
+FLUIDITY_CPU_AND_GPU constexpr void ApplySetPlaceReadMarks(
+    const GridTables& tables,
+    CellBlockRange range,
+    const CellBlockIndex* border_so_far,
+    std::uint32_t border_so_far_count,
+    std::uint32_t set_place,
+    BorderWidth width,
+    std::uint8_t* marks
+) noexcept {
+  const std::uint32_t set_block_entry = set_place / kPlacesPerSetBlock;
+  const std::uint32_t place_in_block = set_place % kPlacesPerSetBlock;
+  if (set_block_entry >= range.block_count + border_so_far_count) {
+    return;
+  }
+  const std::uint32_t block = set_block_entry < range.block_count
+      ? range.first_block + set_block_entry
+      : border_so_far[set_block_entry - range.block_count].value;
+  constexpr auto kCellPlaces = static_cast<std::uint32_t>(kCellPlacesPerBlock);
+  constexpr auto kFacePlaces = static_cast<std::uint32_t>(kFacePlacesPerBlock);
+  if (place_in_block < kCellPlaces) {
+    ApplyCellPlaceReadMarks(tables, CellPlaceIndex{(block * kCellPlaces) + place_in_block}, width, marks);
+    return;
+  }
+  ApplyFacePlaceReadMarks(tables, FacePlaceIndex{(block * kFacePlaces) + place_in_block - kCellPlaces}, width, marks);
+}
+
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Computes the listed mark of `block`: 1 when the block is marked and outside `range`, else 0. Step 4 of the GPU pass,
+// one thread for each block, run after every mark of step 3 was written; the prefix sum then gives each listed block
+// its place.
+// Example: range {1, 2}, marks {1, 1, 1, 1, 0}: blocks 0 and 3 give 1, blocks 1 and 2 (in the range) and 4 give 0.
+// Requires: `block` is below the marks' count.
+FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
+ComputeListedMark(const std::uint8_t* marks, CellBlockRange range, std::uint32_t block) noexcept {
+  const bool is_in_range = block >= range.first_block && block - range.first_block < range.block_count;
+  return marks[block] != 0 && !is_in_range ? 1U : 0U;
+}
+
+// Writes block `block` of the border list when it is listed: step 6 of the GPU pass, one thread for each block, run
+// after the prefix sum of the listed marks.
+//
+// Method: `sums` holds the exclusive prefix sums of the listed marks, with the total one past the last block, so the
+//   block is listed exactly when sums[block + 1] differs from sums[block], and it is entry sums[block] of the list. An
+//   entry at or above `border_block_room` is not written, but still counted in the total.
+// Example: listed marks {1, 0, 0, 1}, so sums {0, 1, 1, 1, 2}: block 0 writes entry 0 and block 3 writes entry 1; with
+//   a room of 1, block 3 writes nothing and the total is still 2.
+// Requires: sums has block + 2 entries or more; border_blocks holds border_block_room entries.
+FLUIDITY_CPU_AND_GPU constexpr void ApplyBorderBlockWriteAt(
+    const std::uint32_t* sums,
+    std::uint32_t block,
+    std::uint32_t border_block_room,
+    CellBlockIndex* border_blocks
+) noexcept {
+  const std::uint32_t entry = sums[block];
+  if (sums[block + 1] != entry && entry < border_block_room) {
+    border_blocks[entry] = CellBlockIndex{block};
   }
 }
 

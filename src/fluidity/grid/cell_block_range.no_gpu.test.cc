@@ -7,6 +7,7 @@
 #include <expected>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/grid_error.h"
@@ -23,6 +24,12 @@ TEST(BuildBorderSearchBuffers, OnGpuWithoutAGpu_IsRunOnCallFailed) {
   ASSERT_FALSE(search_buffers.has_value());
   EXPECT_EQ(search_buffers.error().error, GridError::kRunOnCallFailed);
   EXPECT_EQ(cpu_run_memory->handed_out_bytes(), 0U);
+}
+
+TEST(BuildBorderSearchStackEstimate, OnGpuWithoutAGpu_IsRunOnCallFailed) {
+  const std::expected<MemoryEstimateEntry, GridFailure> entry = BuildBorderSearchStackEstimate(RunOn::kGpu);
+  ASSERT_FALSE(entry.has_value());
+  EXPECT_EQ(entry.error().error, GridError::kRunOnCallFailed);
 }
 
 }  // namespace

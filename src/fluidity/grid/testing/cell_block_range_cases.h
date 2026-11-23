@@ -30,7 +30,8 @@
 //
 // Owns:    BuildPlaneFourCells, BuildDistantCornerCells, BuildCornerBeyondCells, BuildSplitCornerCells,
 //          BuildCarriedSumsCells, BuildNestedBallCells, FindDrawnAscendingBlocks, ToRangeBlocks, FindChosenBlockSets,
-//          ToBlocks, BorderSearchRig, BuildBorderSearchRig, FindLayerOrFail
+//          ToBlocks, BorderSearchRig, BuildBorderSearchRig, FindLayerOrFail, kLayerWidths, kNestedBallLayerWidths,
+//          BuildTestedRanges, BuildNestedBallTestedRanges
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, WriteBuffer, ReadBuffer (base/buffer.h), RunMemory
 //          (base/run_memory.h), BuildBorderSearchMemoryEstimate (grid/grid_memory_estimate.h), ToCell
 //          (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure, ToUniformIndex (grid/testing/grid_support.h),
@@ -244,24 +245,24 @@ struct BorderSearchRig {
   Buffer<CellBlockIndex> border_buffer;
 };
 
-// Builds the rig of `grid`, a CPU grid of at least one block: search buffers for its block count and two buffers of
-// that many entries.
+// Builds the rig of `grid`, a grid of at least one block, on the processor of the grid: search buffers for its block
+// count and two buffers of that many entries.
 inline std::expected<BorderSearchRig, GridFailure> BuildBorderSearchRig(const StaggeredGrid& grid) {
   const std::uint32_t block_count = grid.counts().cell_blocks;
-  const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(RunOn::kCpu, block_count);
+  const std::vector<MemoryEstimateEntry> estimate = BuildBorderSearchMemoryEstimate(grid.run_on(), block_count);
   std::expected<RunMemory, BufferError> run_memory = BuildRunMemory(
-      RunOn::kCpu,
+      grid.run_on(),
       ComputeRunMemoryBytes(estimate, ToMemoryCounts(grid.counts(), 0), MemoryWhere::kRunOn)
   );
   if (!run_memory.has_value()) {
     return std::unexpected(GridFailure{.error = GridError::kOutOfMemory});
   }
   std::expected<BorderSearchBuffers, GridFailure> search_buffers =
-      BuildBorderSearchBuffers(RunOn::kCpu, block_count, *run_memory);
+      BuildBorderSearchBuffers(grid.run_on(), block_count, *run_memory);
   std::expected<Buffer<CellBlockIndex>, BufferError> so_far_buffer =
-      BuildBuffer<CellBlockIndex>(RunOn::kCpu, block_count);
+      BuildBuffer<CellBlockIndex>(grid.run_on(), block_count);
   std::expected<Buffer<CellBlockIndex>, BufferError> border_buffer =
-      BuildBuffer<CellBlockIndex>(RunOn::kCpu, block_count);
+      BuildBuffer<CellBlockIndex>(grid.run_on(), block_count);
   if (!search_buffers.has_value()) {
     return std::unexpected(search_buffers.error());
   }
@@ -300,6 +301,73 @@ FindLayerOrFail(BorderSearchRig& rig, CellBlockRange range, std::span<const Cell
   std::vector<CellBlockIndex> layer(*count);
   EXPECT_TRUE(ReadBuffer<CellBlockIndex>(rig.border_buffer, 0, layer).has_value());
   return layer;
+}
+
+// The widths of the layers of a pass of four stages of widths (touching, touching, four widths, touching), found from
+// the last stage backwards: layer 0 serves the last stage, layer 3 the first.
+inline constexpr std::array<BorderWidth, 4> kLayerWidths = {
+    BorderWidth::kTouchingCells,
+    BorderWidth::kFourCellWidths,
+    BorderWidth::kTouchingCells,
+    BorderWidth::kTouchingCells,
+};
+
+// The widths of the two layers of the nested-ball check: touching, then four widths.
+inline constexpr std::array<BorderWidth, 2> kNestedBallLayerWidths = {
+    BorderWidth::kTouchingCells,
+    BorderWidth::kFourCellWidths,
+};
+
+// The ranges a grid is tested on: the first range, the middle range and the last range of BuildRanges(grid,
+// range_blocks), each once (fewer when the grid has fewer ranges), then the range of the whole grid. The first and the
+// last lie at the edges of the grid, where readers meet the end of the tables, and the last is often shorter than the
+// others. The middle range has a border on every side. The whole-grid range has an empty border. Testing every range
+// would take minutes, and the ranges between these differ from the middle one only in position.
+inline std::vector<CellBlockRange> BuildTestedRanges(const StaggeredGrid& grid, std::uint32_t range_blocks) {
+  const std::expected<std::vector<CellBlockRange>, GridFailure> ranges = BuildRanges(grid, range_blocks);
+  EXPECT_TRUE(ranges.has_value());
+  if (!ranges.has_value() || ranges->empty()) {
+    return {};
+  }
+  std::vector<CellBlockRange> tested_ranges;
+  for (const std::size_t position : {std::size_t{0}, ranges->size() / 2, ranges->size() - 1}) {
+    const CellBlockRange range = ranges->at(position);
+    const bool is_listed = std::ranges::any_of(tested_ranges, [range](CellBlockRange listed) {
+      return listed.first_block == range.first_block && listed.block_count == range.block_count;
+    });
+    if (!is_listed) {
+      tested_ranges.push_back(range);
+    }
+  }
+  const std::uint32_t block_count = grid.counts().cell_blocks;
+  const bool whole_grid_is_listed = std::ranges::any_of(tested_ranges, [block_count](CellBlockRange listed) {
+    return listed.first_block == 0 && listed.block_count == block_count;
+  });
+  if (!whole_grid_is_listed) {
+    tested_ranges.push_back({.first_block = 0, .block_count = block_count});
+  }
+  return tested_ranges;
+}
+
+// The ranges of the nested-ball grid: BuildTestedRanges plus every fourth range of BuildRanges, which the dense
+// layout of that grid makes worth the time.
+inline std::vector<CellBlockRange> BuildNestedBallTestedRanges(const StaggeredGrid& grid, std::uint32_t range_blocks) {
+  std::vector<CellBlockRange> tested_ranges = BuildTestedRanges(grid, range_blocks);
+  const std::expected<std::vector<CellBlockRange>, GridFailure> ranges = BuildRanges(grid, range_blocks);
+  EXPECT_TRUE(ranges.has_value());
+  if (!ranges.has_value()) {
+    return tested_ranges;
+  }
+  for (std::size_t position = 0; position < ranges->size(); position += 4) {
+    const CellBlockRange range = ranges->at(position);
+    const bool is_listed = std::ranges::any_of(tested_ranges, [range](CellBlockRange listed) {
+      return listed.first_block == range.first_block && listed.block_count == range.block_count;
+    });
+    if (!is_listed) {
+      tested_ranges.push_back(range);
+    }
+  }
+  return tested_ranges;
 }
 
 }  // namespace fluidity::grid

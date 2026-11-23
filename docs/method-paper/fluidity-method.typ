@@ -2196,7 +2196,21 @@ before around the range plus that border, and so on. The buffer form of `FindBor
 block silently), runs the marking functions from every place of the range and of the layers so far, and lists the
 marked blocks outside the range. Every block of the layers so far is marked through its own cell places, so the list
 holds them without a merge, and the list of one call is the next
-call's layers so far. In a run in one piece the range is every block and the border is
+call's layers so far. On the GPU the same call is a forward pass of launches in one stream. One thread resets the status
+and one thread per block clears its mark. One thread per entry of the layers so far offers its failure key with an
+integer atomic minimum: an entry not above the one before it, at or above the block count, or inside the range. One
+thread per place of the set (304 per block: 64 cell places and 240 face places, the range's blocks first) runs the
+marking function and stops at once when a key was offered. These threads write only the byte value 1, with plain
+stores, to marks that no thread reads: a marking function writes the whole chain of bigger blocks every time and tests
+no mark, and a byte store leaves the neighbouring bytes unchanged, so the marks after the launch are those of any order
+of the places. The marks are never set for the set beforehand. The scan is a later launch, so it starts after every mark
+was written: one thread per block writes 1 for a marked block outside the range (0 for every block after a failure, so
+the prefix sum adds no word of an earlier call), an exclusive prefix sum gives each listed block its place, and one
+thread per block writes itself there and the total into the status. Only the status comes back, so the list is the
+CPU's, in index order. The thread that runs the marking functions keeps their results (the touching cells, the cells
+near a face, the corners and, at four cell widths, a face search) as locals, so it needs a stack above the driver's
+default of 1,024 bytes per thread, which the driver holds for every resident thread outside the run's memory; the memory
+plan counts it as a driver stack entry. In a run in one piece the range is every block and the border is
 empty. A sum over the grid that is not a sum per destination is one partial sum per block, kept in the fixed block
 order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut into ranges.
 
@@ -2581,6 +2595,7 @@ record.
       [_border search, GPU:_ border sums], [given count], [4, and 4 once], [run],
       [_border search, GPU:_ border order buffers], [given count], [6, and 4,102 once], [run],
       [_border search, GPU:_ border status], [given count], [one record], [run],
+      [_border search, GPU:_ GPU stack], [given count], [3,600 per resident thread], [driver],
       table.hline(stroke: 0.4pt),
       [`CellValues` of `double`], [cell place], [512], [run],
       [`FaceValues` of `double`], [face place], [1,920], [run],

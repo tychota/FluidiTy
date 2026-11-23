@@ -1,4 +1,4 @@
-// Ranges of cell blocks and the border blocks a range needs around it, on the CPU.
+// Ranges of cell blocks and the border blocks a range needs around it, on either processor.
 //
 // Purpose: cut a grid into ranges of consecutive blocks, and find, for any set of blocks, the blocks outside it that a
 //   stage writing values kept in the set may read, so a run can work on one range at a time.
@@ -10,7 +10,8 @@
 //   does, which defines the border. A pass that runs several stages on one load stacks borders: the border of its last
 //   stage is found around the range, then the border of the stage before around the range plus that border, and so
 //   on. The buffer form of FindBorderBlocks does one layer per call in memory that was built once, so a run in batches
-//   finds the layers of every range without allocating: the marks of the forward form are one byte per block.
+//   finds the layers of every range without allocating: the marks of the forward form are one byte per block. On the
+//   GPU it runs one thread for each place of the set, then one thread for each block, and only the count comes back.
 //   Example: a grid of 10 blocks cut with at most 4 blocks per range gives the ranges {0, 4}, {4, 4} and {8, 2}. In a
 //   run in one piece the range is every block and its border is empty.
 //
@@ -21,14 +22,15 @@
 //   border marks  one byte per block of the grid: 1 for a block that a reader read, or a bigger block of one
 //   layer         the blocks one stage of a stacked border adds around the blocks of the stages after it
 // Owns:    RangeWithBorder, BuildRangeWithBorder, BuildRanges, FindBorderBlocks (vector form and buffer form),
-//          BorderSearchBuffers, BuildBorderSearchBuffers
+//          BorderSearchBuffers, BuildBorderSearchBuffers, BuildBorderSearchStackEstimate
 // Uses:    CPU-only guard (base/cpu_only.h), BorderWidth (grid/border_block_steps.h), StaggeredGrid
 //          (grid/staggered_grid.h), GridFailure (grid/grid_error.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h),
 //          Buffer (base/buffer.h), RunMemory (base/run_memory.h), OrderBuffers (base/stable_order.h), RunOn
-//          (base/run_on.h), GridBuildStatus (grid/grid_build_status.h)
-// Implementation uses: BlockSet, ComputeIsInBlockSet, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
-//          (grid/border_block_steps.h), CheckCanRunOn (base/check_can_run_on.h), BuildBorderSearchMemoryEstimate
-//          (grid/grid_memory_estimate.h)
+//          (base/run_on.h), GridBuildStatus (grid/grid_build_status.h), MemoryEstimateEntry (base/memory_count.h)
+// Implementation uses: BlockSet, ComputeIsInBlockSet, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
+//          ComputeBorderSoFarFailureKey, ApplySetPlaceReadMarks, ComputeListedMark (grid/border_block_steps.h),
+//          CheckCanRunOn (base/check_can_run_on.h), BuildBorderSearchMemoryEstimate (grid/grid_memory_estimate.h), the
+//          GPU half (grid/cell_block_range_gpu.h)
 // Used by: the stages that run on one range of blocks, the grid pieces of a run in batches, and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 
@@ -44,6 +46,7 @@
 #include <vector>
 
 #include "fluidity/base/buffer.h"
+#include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/stable_order.h"
@@ -214,26 +217,35 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 // Method: the forward form, in the border marks of `search_buffers`. 1 Set the marks of the grid's blocks to 0, so
 //   that they hold only what this call's places read: a mark left from an earlier call would add a block to the list
 //   silently. The marking functions read no mark (border_block_steps.h), so threads never read what others write; a
-//   GPU form must keep it so, and must not stop at a block that is already marked. 2 For each block of `range`, then of
-//   `border_so_far`, run ApplyCellPlaceReadMarks for each of its 64 cell places and ApplyFacePlaceReadMarks for each of
-//   its 240 face places at `width` (border_block_steps.h). 3 Walk the marks in index order and list each marked block
-//   outside `range`. Every block of the set is marked through its own cell places, so the list holds `border_so_far`
-//   without a merge. A GPU does steps 2 and 3 as two launches, one thread per place and then one thread per block with
-//   a prefix sum and only the count comes back. That form is not built yet.
+//   GPU form must keep it so, and must not stop at a block that is already marked. 2 Check the entries of
+//   `border_so_far`. 3 For each block of `range`, then of `border_so_far`, run ApplyCellPlaceReadMarks for each of its
+//   64 cell places and ApplyFacePlaceReadMarks for each of its 240 face places at `width` (ApplySetPlaceReadMarks, for
+//   one place of the set). 4 Walk the marks in index order and list each marked block outside `range`. Every block of
+//   the set is marked through its own cell places, so the list holds `border_so_far` without a merge. On the GPU the
+//   steps are launches of one stream: 1 one thread resets the status record and one thread for each block clears its
+//   mark; 2 one thread for each entry offers its failure key to the record; 3 one thread for each place of the set
+//   marks, and stops at once when the record holds a key, so the marks are written only with the value 1, with plain
+//   stores, and no thread reads a mark; 4 after that launch has finished, one thread for each block writes its listed
+//   mark (0 when the record holds a key), an exclusive prefix sum gives each listed block its place, and one thread for
+//   each block writes the ascending list and the total into the record, which is the only thing read back. The prefix
+//   sum keeps index order, so the list is the CPU's.
 // Work: for each place of `range` plus `border_so_far`, one marking function, as the vector form of FindBorderBlocks,
 //   whose Work line gives the cost; and, whatever the set, one write and one read of each of the grid's block marks.
 // Example: the grid of the file header of border_block_steps.h, range {0, 1} (block 0) and no border so far give the
 //   list {1, 2} and the count 2. A stacked border is one call per layer, with two output buffers used in turn: the
 //   list of one call is the border so far of the next.
-// Requires: every buffer on grid.run_on() (debug assertion). The grid and the range are those of every layer. A call
-//   with a GPU grid fails with kRunOnCallFailed until the GPU pass exists.
+// Requires: every buffer on grid.run_on() (debug assertion). The grid and the range are those of every layer.
 // Fails: kBadInput          border_so_far is not ascending, holds a block of `range` or an index at or above the
 //                           grid's block count; border_blocks is border_so_far (the same buffer); border_so_far_count
-//                           is above border_so_far.size(); `range` is not inside the grid's blocks. Nothing is written.
-//        kTooManyCellBlocks search_buffers.max_cell_blocks() is below the grid's block count. Nothing is written.
-//        kRunOnCallFailed   the grid is on the GPU: its form is not built yet
-//        kInternalFault     GPU only: the prefix sum failed or the count read back is above the block count
-//        On failure border_blocks holds no result.
+//                           is above border_so_far.size(); `range` is not inside the grid's blocks. Nothing is written
+//                           on the CPU; on the GPU the entries are found bad by the pass itself, which writes no block.
+//        kTooManyCellBlocks search_buffers.max_cell_blocks() is below the grid's block count. Nothing is written. It is
+//                           checked before the entries of border_so_far, so a call that fails both ways gives this
+//                           error on either processor.
+//        kRunOnCallFailed   GPU only: a GPU call failed
+//        kInternalFault     GPU only: the prefix sum failed on a size, or the count read back is above the block count
+//        On failure border_blocks holds no result; after kRunOnCallFailed the marks and the arrays of
+//        `search_buffers` are unspecified, as every buffer of a failed GPU call.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     const StaggeredGrid& grid,
@@ -244,5 +256,21 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     BorderSearchBuffers& search_buffers,
     Buffer<CellBlockIndex>& border_blocks
 );
+
+// Builds the estimate entry of the stack the GPU's border search needs: "grid: GPU stack of the border search",
+// kGivenCount, kWholeRun, MemoryWhere::kDriverStack, the local bytes per thread of its largest GPU function
+// (bytes_each) for every thread the GPU can hold at once (given_count: threads per multiprocessor x multiprocessors).
+// For RunOn::kCpu the entry counts nothing. A plan that runs the border search on the GPU adds this entry to the
+// estimates of the search buffers.
+//
+// Method: the thread that runs the marking functions keeps their results as locals, more than the driver's default
+//   stack of 1,024 B per thread, and the driver gives each resident thread that stack, so the count is the GPU's
+//   resident threads, not the places of a set. The bytes per thread come from the compiled functions
+//   (cudaFuncGetAttributes). Nothing reserves the memory ahead: the driver grows the stack at the first launch.
+// Example: 55,296 resident threads of a 36-multiprocessor sm_120 card, times the bytes per thread of the compiled
+//   function (kBorderSearchStackBytes at most, grid/cell_block_range_gpu.h). RunOn::kCpu: 0.
+// Fails: kRunOnCallFailed  RunOn::kGpu cannot run (CheckCanRunOn), or a query of the GPU failed.
+// Read: docs/method-paper/fluidity-method.typ <sec-grid-memory>
+std::expected<MemoryEstimateEntry, GridFailure> BuildBorderSearchStackEstimate(RunOn run_on);
 
 }  // namespace fluidity::grid

@@ -23,6 +23,12 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
+#if defined(FLUIDITY_HAS_GPU)
+#include "fluidity/base/run_on_call.h"
+#include "fluidity/grid/cell_block_range_gpu.h"
+#include "fluidity/grid/grid_build_status.h"
+#endif
+
 namespace fluidity::grid {
 namespace {
 
@@ -85,19 +91,14 @@ std::vector<CellBlockIndex> FindBorderByMarking(const GridTables& tables, const 
 
 // Checks the entries of the border blocks that a call of the buffer form was given: ascending with no repeat, each
 // below the grid's block count and none in the range. A block of the range cannot be border so far, since the list is
-// what lies outside it.
+// what lies outside it. Each entry asks the rule that the GPU pass asks with one thread for each entry.
 std::expected<void, GridFailure>
 CheckBorderSoFar(const StaggeredGrid& grid, CellBlockRange range, std::span<const CellBlockIndex> border_so_far) {
-  bool is_ascending = true;
-  for (std::size_t entry = 1; entry < border_so_far.size(); ++entry) {
-    is_ascending = is_ascending && border_so_far[entry - 1].value < border_so_far[entry].value;
-  }
-  const bool is_below_count = border_so_far.empty() || border_so_far.back().value < grid.counts().cell_blocks;
-  const bool is_in_range = std::ranges::any_of(border_so_far, [range](CellBlockIndex block) {
-    return block.value >= range.first_block && block.value - range.first_block < range.block_count;
-  });
-  if (!is_ascending || !is_below_count || is_in_range) {
-    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  const std::uint32_t block_count = grid.counts().cell_blocks;
+  for (std::uint32_t entry = 0; entry < border_so_far.size(); ++entry) {
+    if (ComputeBorderSoFarFailureKey(range, border_so_far.data(), block_count, entry) != kNoFailureKey) {
+      return std::unexpected(GridFailure{.error = GridError::kBadInput});
+    }
   }
   return {};
 }
@@ -143,6 +144,112 @@ std::expected<void, GridFailure> BuildBorderOrderBuffers(
   return {};
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+#if defined(FLUIDITY_HAS_GPU)
+
+// What the GPU pass of one call works on: the pointers are GPU memory of the grid's processor.
+struct GpuBorderSearch {
+  GridTables tables{};
+  CellBlockRange range{};
+  const CellBlockIndex* border_so_far = nullptr;
+  std::uint32_t border_so_far_count = 0;
+  BorderWidth width = BorderWidth::kTouchingCells;
+  std::uint32_t block_count = 0;
+  std::uint8_t* marks = nullptr;
+  Buffer<std::uint32_t>* sums = nullptr;  // block_count + 1 words.
+  OrderBuffers* order_buffers = nullptr;
+  Buffer<GridBuildStatus>* status = nullptr;
+  Buffer<CellBlockIndex>* border_blocks = nullptr;
+};
+
+// The failure of a GPU-half call that did not start: kRunOnCallFailed, through the mapping of base/.
+GridFailure ToCallFailure(RunOnCallStatus call_status) {
+  return ToGridFailure(ToBufferError(call_status), 0);
+}
+
+// Runs the GPU pass over the marks of `search` and returns the count of the list, or the failure.
+// Steps: 1 reset the status and the marks  2 check the border so far  3 mark from every place of the set  4 write the
+// listed marks  5 prefix sum  6 write the list and the count  7 read the status
+// Each step is one launch (step 5 several), in the one stream, so each sees what the step before wrote and the marking
+// launch has finished before the scan of the marks starts. Only the status record comes back.
+std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderSearch& search) {
+  GridBuildStatus* const status = search.status->data();
+  std::uint32_t* const sums = search.sums->data();
+  // Step 1.
+  if (const RunOnCallStatus call_status = ApplyBorderStatusResetOnGpu(status); call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  if (const RunOnCallStatus call_status = ResetBorderMarksOnGpu(search.marks, search.block_count);
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // Step 2.
+  if (const RunOnCallStatus call_status = CheckBorderSoFarOnGpu(
+          search.range,
+          search.border_so_far,
+          search.border_so_far_count,
+          search.block_count,
+          status
+      );
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // Step 3: the threads stop at once when step 2 failed.
+  if (const RunOnCallStatus call_status = WriteBorderReadMarksOnGpu(
+          search.tables,
+          search.range,
+          search.border_so_far,
+          search.border_so_far_count,
+          search.width,
+          status,
+          search.marks
+      );
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // Step 4: after a failure of step 2 every word is 0, so the prefix sum adds no word of an earlier call.
+  if (const RunOnCallStatus call_status =
+          WriteListedMarksOnGpu(search.marks, search.range, search.block_count, status, sums);
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // Step 5: in place, the total one past the last block. The sizes were checked (the room, the buffers built for it),
+  // so an error here is a size error that no input causes, or a failed GPU call, which the mapping tells apart.
+  if (const std::expected<void, BufferError> summed =
+          ComputeExclusivePrefixSum(*search.sums, search.block_count, *search.sums, *search.order_buffers);
+      !summed.has_value()) {
+    return std::unexpected(ToGridFailure(summed.error(), 0));
+  }
+  // Step 6.
+  if (const RunOnCallStatus call_status = WriteBorderBlocksOnGpu(
+          sums,
+          search.block_count,
+          static_cast<std::uint32_t>(search.border_blocks->size()),
+          search.border_blocks->data(),
+          status
+      );
+      call_status != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(call_status));
+  }
+  // Step 7: the count, or the failure of step 2, is all that comes back.
+  GridBuildStatus read_status{};
+  if (const std::expected<void, BufferError> read =
+          ReadBuffer(*search.status, 0, std::span<GridBuildStatus>(&read_status, 1));
+      !read.has_value()) {
+    return std::unexpected(ToGridFailure(read.error(), sizeof(GridBuildStatus)));
+  }
+  // A key of step 2 means a bad border so far; the list holds nothing.
+  if (read_status.failure_key != kNoFailureKey) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
+  // The total is a count of blocks of the grid: a record that says otherwise contradicts the steps that wrote it.
+  if (read_status.result_count > search.block_count) {
+    return std::unexpected(GridFailure{.error = GridError::kInternalFault});
+  }
+  return read_status.result_count;
+}
+
+#endif
 
 }  // namespace
 
@@ -234,6 +341,38 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
   return search_buffers;
 }
 
+std::expected<MemoryEstimateEntry, GridFailure> BuildBorderSearchStackEstimate(RunOn run_on) {
+  MemoryEstimateEntry entry = {
+      .name = "grid: GPU stack of the border search",
+      .counted_per = CountedPer::kGivenCount,
+      .given_count = 0,
+      .bytes_each = 0,
+      .copies = 1,
+      .kept_for = KeptFor::kWholeRun,
+      .where = MemoryWhere::kDriverStack,
+  };
+  if (run_on == RunOn::kCpu) {
+    return entry;
+  }
+  if (!CheckCanRunOn(run_on).has_value()) {
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+  }
+#if defined(FLUIDITY_HAS_GPU)
+  std::uint64_t bytes_per_thread = 0;
+  std::uint64_t resident_threads = 0;
+  if (ComputeLargestBorderSearchStackOnGpu(&bytes_per_thread) != RunOnCallStatus::kDone
+      || ComputeResidentThreadsOnGpu(&resident_threads) != RunOnCallStatus::kDone) {
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+  }
+  entry.given_count = resident_threads;
+  entry.bytes_each = static_cast<std::uint32_t>(bytes_per_thread);
+  return entry;
+#else
+  // Without GPU code CheckCanRunOn never accepts the GPU, so no caller reaches this.
+  return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+#endif
+}
+
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     const StaggeredGrid& grid,
     CellBlockRange range,
@@ -243,18 +382,13 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     BorderSearchBuffers& search_buffers,
     Buffer<CellBlockIndex>& border_blocks
 ) {
-  // Steps: 1 the processor  2 the shape of the arguments  3 the border so far  4 the room  5 the marks  6 the list
+  // Steps: 1 the shape of the arguments  2 the room  3 the border so far  4 the marks  5 the list
   // Requires: every buffer on the processor of the grid, which the caller chose when it built them.
   assert(border_so_far.run_on() == grid.run_on());
   assert(border_blocks.run_on() == grid.run_on());
   assert(search_buffers.run_on() == grid.run_on());
 
-  // Step 1: the form on the GPU is not built yet, and a GPU buffer cannot be read here.
-  if (grid.run_on() != RunOn::kCpu) {
-    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
-  }
-
-  // Step 2: the search writes border_blocks while it reads the border so far, so one buffer for both would change
+  // Step 1: the search writes border_blocks while it reads the border so far, so one buffer for both would change
   // the set it searches. The two buffers are different objects, or two pieces, which never overlap.
   const std::uint32_t block_count = grid.counts().cell_blocks;
   const bool is_range_inside_grid =
@@ -265,37 +399,66 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     return std::unexpected(GridFailure{.error = GridError::kBadInput});
   }
 
-  // Step 3: the entries must be ascending blocks outside the range, or the list would not hold them in order.
+  // Step 2: marks for fewer blocks than the grid has would be written past. The GPU pass cannot tell a bad border so
+  // far before it has cleared the marks, so the room is checked first on both processors, and a call that fails both
+  // ways gives the same error on both.
+  if (search_buffers.max_cell_blocks() < block_count) {
+    return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
+  }
+
+  // Step 3: the entries must be ascending blocks outside the range, or the list would not hold them in order. A GPU
+  // grid runs the whole pass from here, steps 3 to 5 in its own launches: one thread for each entry asks the rule that
+  // the CPU form below asks of each entry in turn.
+  if (grid.run_on() == RunOn::kGpu) {
+#if defined(FLUIDITY_HAS_GPU)
+    return FindBorderBlocksOnGpu({
+        .tables = grid.tables(RunOn::kGpu),
+        .range = range,
+        .border_so_far = border_so_far.data(),
+        .border_so_far_count = border_so_far_count,
+        .width = width,
+        .block_count = block_count,
+        .marks = search_buffers.marks_.data(),
+        .sums = &search_buffers.sums_,
+        .order_buffers = &*search_buffers.order_buffers_,
+        .status = &search_buffers.status_,
+        .border_blocks = &border_blocks,
+    });
+#else
+    // Without GPU code no GPU grid or GPU search buffers can be built, so no caller reaches this.
+    return std::unexpected(GridFailure{.error = GridError::kRunOnCallFailed});
+#endif
+  }
   const std::span<const CellBlockIndex> border_so_far_entries(border_so_far.data(), border_so_far_count);
   if (const std::expected<void, GridFailure> checked = CheckBorderSoFar(grid, range, border_so_far_entries);
       !checked.has_value()) {
     return std::unexpected(checked.error());
   }
 
-  // Step 4: marks for fewer blocks than the grid has would be written past.
-  if (search_buffers.max_cell_blocks() < block_count) {
-    return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
-  }
-
-  // Step 5: the marks start at 0 for every block, also for the blocks of the set, so that they hold only what this
+  // Step 4: the marks start at 0 for every block, also for the blocks of the set, so that they hold only what this
   // call's places read: a mark left from an earlier call would add a block to the list silently. A marking function
   // reads no mark, so no call depends on the order of the marks. The blocks of the set are marked through their own
   // cell places.
   const GridTables tables = grid.tables(RunOn::kCpu);
   std::uint8_t* const marks = search_buffers.marks_.data();
   std::fill_n(marks, block_count, std::uint8_t{0});
-  for (std::uint32_t entry = 0; entry < range.block_count; ++entry) {
-    ApplyMarksFromBlock(tables, range.first_block + entry, width, marks);
-  }
-  for (const CellBlockIndex block : border_so_far_entries) {
-    ApplyMarksFromBlock(tables, block.value, width, marks);
+  const std::uint64_t set_place_count = std::uint64_t{range.block_count + border_so_far_count} * kPlacesPerSetBlock;
+  for (std::uint64_t set_place = 0; set_place < set_place_count; ++set_place) {
+    ApplySetPlaceReadMarks(
+        tables,
+        range,
+        border_so_far.data(),
+        border_so_far_count,
+        static_cast<std::uint32_t>(set_place),
+        width,
+        marks
+    );
   }
 
-  // Step 6: the marked blocks outside the range, in index order. The first border_blocks.size() are written.
+  // Step 5: the marked blocks outside the range, in index order. The first border_blocks.size() are written.
   std::uint32_t border_block_count = 0;
   for (std::uint32_t block = 0; block < block_count; ++block) {
-    const bool is_in_range = block >= range.first_block && block - range.first_block < range.block_count;
-    if (marks[block] == 0 || is_in_range) {
+    if (ComputeListedMark(marks, range, block) == 0) {
       continue;
     }
     if (border_block_count < border_blocks.size()) {

@@ -22,7 +22,7 @@
 //          grid/testing/grid_functions_answers.h
 // Used by: the GPU tests of the grid in tests/grid/ (find_cell_at.gpu.test.cc, nearby_face_weights.gpu.test.cc,
 //          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc,
-//          border_blocks.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
+//          border_blocks.gpu.test.cc, stacked_borders.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
 //          which defines the runners
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>, <sec-cell-blocks>, <sec-face-pieces>,
 //          <sec-nearby-faces>, <sec-face-search>
@@ -94,6 +94,10 @@
 //   ComputeIsBiggerCellBesideTouchingSet, ComputeIsCellOfBlockRead, ComputeIsFacePieceOfBlockRead,
 //   ComputeReadCornerMask, ComputeIsReadCornerKeptIn, ComputeIsCornerOfBlockRead, ComputeIsBlockInFaceSearchOfSetBlock,
 //   ComputeIsBlockInFaceSearchOfBlockSet, ComputeIsBlockReadDirectly, ComputeIsInBlockSet
+//
+// Reached by the GPU border search, FindBorderBlocks on a GPU grid, through the GPU functions of
+//   grid/cell_block_range_gpu.cu (stacked_borders.gpu.test.cc):
+//   ComputeBorderSoFarFailureKey, ApplySetPlaceReadMarks, ComputeListedMark, ApplyBorderBlockWriteAt
 //
 // Reached by ComputeReadMarksResult (border_blocks.gpu.test.cc): ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
 //   ApplyReadMark, ApplyPlaceReadMark

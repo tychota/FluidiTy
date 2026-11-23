@@ -2,14 +2,28 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <numeric>
 #include <vector>
 
+#include "fluidity/base/buffer.h"
+#include "fluidity/base/run_on.h"
+#include "fluidity/grid/cell_block_range.h"
+#include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_build_steps.h"
+#include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/staggered_grid.h"
+#include "fluidity/grid/testing/border_search_replay.h"
+#include "fluidity/grid/testing/cell_block_range_cases.h"
+#include "fluidity/grid/testing/grid_support.h"
 #include "fluidity/grid/testing/staggered_grid_cases.h"
+#include "fluidity/grid/testing/thread_replay.h"
 
 namespace fluidity::grid {
 namespace {
@@ -174,6 +188,151 @@ TEST(ComputeIsBorderBlock, SetOfTheLastBlock_HasBothOthersAtFourCellWidths) {
   EXPECT_TRUE(ComputeIsBorderBlock(tables, set, {.value = 0}, BorderWidth::kFourCellWidths));
   EXPECT_TRUE(ComputeIsBorderBlock(tables, set, {.value = 1}, BorderWidth::kFourCellWidths));
   EXPECT_FALSE(ComputeIsBorderBlock(tables, set, {.value = 2}, BorderWidth::kFourCellWidths));
+}
+
+// The marks of the places of the set, run in `places` order into zeroed marks.
+std::array<std::uint8_t, 3>
+ComputeMarksOfPlaces(const GridTables& tables, const std::vector<std::uint32_t>& places, BorderWidth width) {
+  const std::array<CellBlockIndex, 1> border_so_far = {CellBlockIndex{2}};
+  std::array<std::uint8_t, 3> marks = {0, 0, 0};
+  for (const std::uint32_t set_place : places) {
+    ApplySetPlaceReadMarks(
+        tables,
+        {.first_block = 0, .block_count = 1},
+        border_so_far.data(),
+        1,
+        set_place,
+        width,
+        marks.data()
+    );
+  }
+  return marks;
+}
+
+// The marks of the same set by the loops of the CPU form: every cell place and face place of block 0, then of block 2.
+std::array<std::uint8_t, 3> ComputeMarksOfBlocksByLoops(const GridTables& tables, BorderWidth width) {
+  std::array<std::uint8_t, 3> marks = {0, 0, 0};
+  for (const std::uint32_t block : {0U, 2U}) {
+    for (std::uint32_t place_in_block = 0; place_in_block < kCellPlacesPerBlock; ++place_in_block) {
+      ApplyCellPlaceReadMarks(tables, {.value = (block * kCellPlacesPerBlock) + place_in_block}, width, marks.data());
+    }
+    for (std::uint32_t place_in_block = 0; place_in_block < kFacePlacesPerBlock; ++place_in_block) {
+      ApplyFacePlaceReadMarks(tables, {.value = (block * kFacePlacesPerBlock) + place_in_block}, width, marks.data());
+    }
+  }
+  return marks;
+}
+
+// The launch of the GPU's own size, threads in launch order.
+constexpr ReplayLaunch kGpuLaunch = {.order = LaunchOrder::kForward, .thread_count = 0};
+
+TEST(ApplySetPlaceReadMarks, PlacesInAnyOrder_GiveTheSameMarks) {
+  const PlaneFourTables owner = BuildPlaneFourTables();
+  const GridTables tables = ToTables(owner);
+  // The set is block 0 (the range) and block 2 (the border so far): 608 places.
+  std::vector<std::uint32_t> in_order(std::size_t{2} * kPlacesPerSetBlock);
+  std::ranges::iota(in_order, 0U);
+  std::vector<std::uint32_t> in_reverse = in_order;
+  std::ranges::reverse(in_reverse);
+  std::vector<std::uint32_t> odd_before_even;
+  for (const std::uint32_t parity : {1U, 0U}) {
+    for (std::uint32_t place = parity; place < in_order.size(); place += 2) {
+      odd_before_even.push_back(place);
+    }
+  }
+  for (const BorderWidth width : {BorderWidth::kTouchingCells, BorderWidth::kFourCellWidths}) {
+    const std::array<std::uint8_t, 3> by_loops = ComputeMarksOfBlocksByLoops(tables, width);
+    EXPECT_EQ(ComputeMarksOfPlaces(tables, in_order, width), by_loops);
+    EXPECT_EQ(ComputeMarksOfPlaces(tables, in_reverse, width), by_loops);
+    EXPECT_EQ(ComputeMarksOfPlaces(tables, odd_before_even, width), by_loops);
+  }
+}
+
+TEST(ApplySetPlaceReadMarks, PlaceBeyondTheSet_MarksNothing) {
+  const PlaneFourTables owner = BuildPlaneFourTables();
+  const GridTables tables = ToTables(owner);
+  std::array<std::uint8_t, 3> marks = {0, 0, 0};
+  ApplySetPlaceReadMarks(
+      tables,
+      {.first_block = 0, .block_count = 1},
+      nullptr,
+      0,
+      kPlacesPerSetBlock,
+      BorderWidth::kTouchingCells,
+      marks.data()
+  );
+  EXPECT_EQ(marks, (std::array<std::uint8_t, 3>{0, 0, 0}));
+}
+
+TEST(ComputeBorderSoFarFailureKey, EntryNotAboveTheOneBefore_OffersItsPosition) {
+  const std::array<CellBlockIndex, 3> border_so_far = {CellBlockIndex{2}, CellBlockIndex{4}, CellBlockIndex{3}};
+  const CellBlockRange range = {.first_block = 0, .block_count = 1};
+  EXPECT_EQ(ComputeBorderSoFarFailureKey(range, border_so_far.data(), 5, 0), kNoFailureKey);
+  EXPECT_EQ(ComputeBorderSoFarFailureKey(range, border_so_far.data(), 5, 1), kNoFailureKey);
+  EXPECT_EQ(ComputeBorderSoFarFailureKey(range, border_so_far.data(), 5, 2), ToFailureKey(1, 2, 0));
+  // A block of the range, and a block at the grid's block count, fail too.
+  const std::array<CellBlockIndex, 2> bad_blocks = {CellBlockIndex{0}, CellBlockIndex{5}};
+  EXPECT_EQ(ComputeBorderSoFarFailureKey(range, bad_blocks.data(), 5, 0), ToFailureKey(1, 0, 0));
+  EXPECT_EQ(ComputeBorderSoFarFailureKey(range, bad_blocks.data(), 5, 1), ToFailureKey(1, 1, 0));
+}
+
+TEST(ComputeListedMark, MarkedBlockOutsideTheRange_IsOne) {
+  const std::array<std::uint8_t, 5> marks = {1, 1, 1, 1, 0};
+  const CellBlockRange range = {.first_block = 1, .block_count = 2};
+  EXPECT_EQ(ComputeListedMark(marks.data(), range, 0), 1U);
+  EXPECT_EQ(ComputeListedMark(marks.data(), range, 1), 0U);
+  EXPECT_EQ(ComputeListedMark(marks.data(), range, 2), 0U);
+  EXPECT_EQ(ComputeListedMark(marks.data(), range, 3), 1U);
+  EXPECT_EQ(ComputeListedMark(marks.data(), range, 4), 0U);
+}
+
+TEST(ApplyBorderBlockWriteAt, ListedBlockPastTheRoom_IsCountedNotWritten) {
+  const std::array<std::uint32_t, 5> sums = {0, 1, 1, 1, 2};
+  std::array<CellBlockIndex, 2> border_blocks = {CellBlockIndex{kNoIndex}, CellBlockIndex{kNoIndex}};
+  for (std::uint32_t block = 0; block < 4; ++block) {
+    ApplyBorderBlockWriteAt(sums.data(), block, 1, border_blocks.data());
+  }
+  EXPECT_EQ(border_blocks[0].value, 0U);
+  EXPECT_EQ(border_blocks[1].value, kNoIndex);
+}
+
+TEST(FindBorderBlocks, StaleWordsWithBadBorderSoFar_PrefixSumAddsZeros) {
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), BuildPlaneFourCells()));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
+  ASSERT_EQ(tables.block_count, 3U);
+  // The marks start as 0xFF bytes and the sums as 0xFFFFFFFF words inside the replay; the border so far {2, 1} is not
+  // ascending.
+  const std::array<CellBlockIndex, 2> border_so_far = {CellBlockIndex{2}, CellBlockIndex{1}};
+  const BorderReplayInputs inputs = {
+      .range = {.first_block = 0, .block_count = 1},
+      .border_so_far = border_so_far,
+      .width = BorderWidth::kTouchingCells,
+      .border_block_room = 3,
+  };
+  const BorderReplayResult replay = ComputeBorderSearchReplay(tables, inputs, kGpuLaunch, MarksAtStart::kCleared);
+  EXPECT_EQ(replay.listed_words, (std::vector<std::uint32_t>{0, 0, 0}));
+  EXPECT_EQ(replay.prefix_total, 0U);
+  EXPECT_EQ(replay.count, 0U);
+  EXPECT_EQ(replay.failure_key, ToFailureKey(1, 1, 0));
+  EXPECT_TRUE(std::ranges::all_of(replay.border_blocks, [](CellBlockIndex block) {
+    return block.value == kNoIndex;
+  }));
+  // The CPU form of the same call fails with kBadInput.
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  ASSERT_TRUE(WriteBuffer<CellBlockIndex>(border_so_far, rig->so_far_buffer, 0).has_value());
+  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(
+      test_grid->grid,
+      {.first_block = 0, .block_count = 1},
+      rig->so_far_buffer,
+      2,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(count.has_value());
+  EXPECT_EQ(count.error().error, GridError::kBadInput);
 }
 
 }  // namespace
