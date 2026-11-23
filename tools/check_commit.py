@@ -17,11 +17,14 @@ The speed (--speed, default commit):
           preset, their debug unit tests, and tidy (the cache makes it check only what changed). The modules are named by a line
           `NOTE modules: ...`. A changed file is one that differs from HEAD, staged or not, or is untracked. A change
           under src/fluidity/<module>/ selects that module's unit tests; a change under tests/<module>/ selects the
-          module too and also runs its functional tests (a line `NOTE functional tests: ...` names them); a change
+          module too and also runs its functional tests, in the release build, because they take over 20 s in the
+          debug build (a line `NOTE functional tests: ...` names them; the release preset builds and runs them alone,
+          and reads `NOT RUN <release preset> (quick)` when no such module is selected); a change
           elsewhere under src/ or tests/ or under cmake/, or to a top-level build file (CMakeLists.txt,
           CMakePresets.json, conanfile.py, conan.lock, pyproject.toml, uv.lock), selects the unit tests of every
           module; a change elsewhere (docs, tools) selects none. Only the test programs of the selected modules are
-          built (the unit programs, and the functional ones of a module whose tests changed; the list is
+          built (the unit programs in the debug preset, and the functional ones of a module whose tests changed in the release
+          preset; the list is
           out/build/<preset>/test_programs.txt, which CMake writes), so a quick run does not see a break in a module
           that is not selected; `NOTE built: <n> test programs` says so. With every module selected, with no list, or
           with a list that lacks a program that a CMakeLists.txt of a selected module makes, the whole preset is
@@ -69,6 +72,9 @@ The steps, in order:
           pyproject.toml, uv.lock, AGENTS.md, docs/glossary.md); a change that git cannot list runs it. The rules check and actionlint always run.
   cpu     (always, at commit and full speed) fetch the Conan packages (Conan keeps its home in out/conan-home), then configure, build and test the
           debug and the release CPU presets of the platform the gate runs on. ctest runs one test per core at once.
+          Which tests run: at commit speed the debug preset runs the unit tests only (label `unit`) and prints
+          `NOT RUN functional tests in debug (commit speed; run by --speed full)`, and the release preset runs the unit
+          and the functional tests; at full speed both presets run every test; --only cpu follows the speed.
           (A test preset cannot say "all cores" in a form that every CMake version accepts, so the gate passes
           `--parallel <cores>`.) On the debug preset ctest also writes a JUnit file (out/check-commit/), and the step
           fails, naming the test, when a test labelled `unit` took more than 200 ms; it prints a line
@@ -76,7 +82,7 @@ The steps, in order:
           alone; 200 ms allows for one test per core running at once. A functional test program is ONE ctest entry
           (all its TESTs run in one process); a functional entry has no 50/200 ms limit, and the step prints
           `NOTE functional tests run: <n> gtest tests in <m> programs (one ctest entry each)`, counted from the XML
-          report each program writes (out/build/<preset>/gtest_reports/).
+          report each program writes (out/build/<preset>/gtest_reports/), for each preset that ran functional tests.
   tidy    check that the clang-tidy on PATH is the pinned version, then clang-tidy, with the compile commands of the
           debug preset, over every tracked .cc file under src/ and tests/ that the CPU build compiles, and over each
           header-alone file (header_check/), so every header is checked by itself. A .cc file that only the CUDA
@@ -192,6 +198,9 @@ FUNCTIONAL_REPORTS_FOLDER = "gtest_reports"
 # one, so it fails a unit test only above 200 ms and prints a note above 50 ms.
 UNIT_TEST_NOTE_SECONDS = 0.05
 UNIT_TEST_LIMIT_SECONDS = 0.2
+# Printed by the debug preset at commit speed, which runs the unit tests only: the functional programs take about
+# 2 minutes there and a few times less in the release build, which runs them at that speed.
+FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG = "NOT RUN functional tests in debug (commit speed; run by --speed full)"
 
 PAPER_DIRECTORY = Path("docs") / "method-paper"
 PAPER_TYPST_FILE = PAPER_DIRECTORY / "fluidity-method.typ"
@@ -816,10 +825,13 @@ class Gate:
             return None
         return test_programs_to_build(programs_text, modules, functional_modules)
 
-    def check_cpu_preset(self, preset: str, changed_modules_only: bool = False) -> Outcome:
-        """Fetches the packages, configures, builds and tests `preset`. With `changed_modules_only` (a quick run) it
-        also runs only the tests of the modules that the changed files select (see modules_of_changes) and builds only
-        their test programs, says which on notes, and does not run Conan or configure again while the files they read
+    def check_cpu_preset(self, preset: str, speed: str = "full", changed_modules_only: bool = False) -> Outcome:
+        """Fetches the packages, configures, builds and tests `preset`. At commit speed the debug preset runs the unit
+        tests only (a note says the functional tests were not run), and the release preset runs every test; at full
+        speed both run every test. With `changed_modules_only` (a quick run) the debug preset runs only the unit tests
+        of the modules that the changed files select (see modules_of_changes), and the release preset only the
+        functional tests of the modules whose tests changed, which take too long in the debug build; each builds only
+        those test programs, says which on notes, and does not run Conan or configure again while the files they read
         are the ones of the last successful run (see configure_is_current)."""
         toolchain_folder = Path("out") / "conan" / preset
         build_type = "Debug" if "-debug-" in preset else "Release"
@@ -852,10 +864,14 @@ class Gate:
         if is_debug:
             ctest += ["--output-junit", str(junit_path)]
         ctest_runs: list[list[str]] = [ctest]
+        if is_debug and speed == "commit" and not changed_modules_only:
+            ctest_runs = [[*ctest, "-L", "^unit$"]]
+            notes = (FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG,)
         build_command = ["cmake", "--build", "--preset", preset]
         changed: list[str] | None = None
         modules: frozenset[str] | None = None
-        if changed_modules_only:
+        functional_modules: frozenset[str] = frozenset()
+        if changed_modules_only and is_debug:
             changed = self.changed_paths()
             modules = None if changed is None else modules_of_changes(changed)
             # Labels are regular expressions; the anchors keep `grid` from matching another module's name and
@@ -868,17 +884,21 @@ class Gate:
                 notes = (f"NOTE modules: {', '.join(names)}",)
                 module_label = "^(" + "|".join(re.escape(name) for name in names) + ")$"
                 ctest_runs = [[*ctest, "-L", module_label, "-L", "^unit$", "--no-tests=ignore"]]
-                functional = sorted(modules_with_changed_functional_tests(changed or ()))
-                if functional:
-                    notes += (f"NOTE functional tests: {', '.join(functional)}",)
-                    functional_label = "^(" + "|".join(re.escape(name) for name in functional) + ")$"
-                    ctest_runs.append(
-                        ["ctest", "--preset", preset, "--parallel", cores]
-                        + ["-L", functional_label, "-L", "^functional$", "--no-tests=ignore"]
-                    )
             else:
                 notes = ("NOTE modules: none",)
                 ctest_runs = []
+        elif changed_modules_only:
+            # The release preset at quick speed: the functional programs of the modules whose tests changed, and
+            # nothing else (the debug preset runs the unit tests).
+            changed = self.changed_paths()
+            functional_modules = modules_with_changed_functional_tests(changed or ())
+            modules = frozenset()
+            functional = sorted(functional_modules)
+            ctest_runs = []
+            if functional:
+                notes = (f"NOTE functional tests: {', '.join(functional)} (release build; debug takes over 20 s)",)
+                functional_label = "^(" + "|".join(re.escape(name) for name in functional) + ")$"
+                ctest_runs = [[*ctest, "-L", functional_label, "-L", "^functional$", "--no-tests=ignore"]]
         if is_debug:
             junit_path.parent.mkdir(parents=True, exist_ok=True)
             junit_path.unlink(missing_ok=True)
@@ -896,9 +916,7 @@ class Gate:
             self.store_configure_state(preset, inputs_hash)
         if changed_modules_only and modules is not None:
             # After the configure, which rewrites the list of test programs that this reads.
-            targets = self.quick_build_targets(
-                preset, modules, frozenset(modules_with_changed_functional_tests(changed or ()))
-            )
+            targets = self.quick_build_targets(preset, modules, functional_modules)
             if targets is not None:
                 notes += (f"NOTE built: {len(targets)} test programs",)
                 build_command = [*build_command, "--target", *targets] if targets else []
@@ -1170,7 +1188,13 @@ class Gate:
         changed_only = speed == "quick" and only is None
 
         def check_debug_preset() -> Outcome:
-            return self.check_cpu_preset(debug_preset, changed_modules_only=changed_only)
+            return self.check_cpu_preset(debug_preset, speed, changed_modules_only=changed_only)
+
+        def check_release_preset() -> Outcome:
+            return self.check_cpu_preset(release_preset, speed, changed_modules_only=changed_only)
+
+        # A quick run builds and runs the functional programs of a module whose tests changed in the release build only.
+        runs_functional_in_release = changed_only and bool(modules_with_changed_functional_tests(self.changed_paths() or ()))
 
         return [
             Check("format", "format", self.check_format),
@@ -1187,7 +1211,7 @@ class Gate:
                 unavailable_reason=self.message_unavailable_reason,
             ),
             Check("cpu", f"cpu {debug_preset}", check_debug_preset),
-            Check("cpu", f"cpu {release_preset}", lambda: self.check_cpu_preset(release_preset), in_quick=False),
+            Check("cpu", f"cpu {release_preset}", check_release_preset, in_quick=runs_functional_in_release),
             Check("tidy", "tidy", self.check_tidy),
             Check("paper", "paper", self.check_paper, in_quick=False),
             Check("cuda", "cuda", self.check_cuda, in_quick=False),

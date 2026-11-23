@@ -497,7 +497,9 @@ A commit lands only when all of these hold:
    `models: <model ids, comma separated>`; `tools/add_session_note.py` writes it ("Commands").
 
 A commit passes every part of this gate that exists at that commit, at the `commit` speed (see "Commands"):
-`quick` while working, `commit` before each commit, `full` before a push and in CI.
+`quick` while working, `commit` before each commit, `full` before a push and in CI. At `commit` the debug build runs
+the unit tests and the release build runs the unit and functional tests; `full` runs every test in both builds and
+must pass before a push.
 
 **GPU honesty.** Device code is "compiled, not run" until the owner's hardware run, which happens once, after
 all modules are written. Until then every module's status reads "GPU: compiled, not run". `docs/gpu-runs.md`
@@ -517,7 +519,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     their debug unit tests; tidy (the cache makes it check only what changed). A changed file differs from `HEAD` (staged or not) or is
     untracked. A change under `src/fluidity/<module>/` selects that module's unit tests; a change under
     `tests/<module>/` or under `src/fluidity/<module>/testing/` selects the module too and also runs its functional
-    tests (`NOTE functional tests: <names>`), because they use the shared test code of that folder; a
+    tests, in the release build because they take over 20 s in debug (`NOTE functional tests: <names>`), as they use
+    the shared test code of that folder; a
     change elsewhere under `src/` or `tests/` or under `cmake/`, or to a top-level build file, selects the unit tests
     of every module; a change to docs or tools selects none. Only the test programs of the selected modules are built
     (`NOTE built: <n> test programs`; with every module selected the whole preset is built, with none nothing is; the
@@ -536,8 +539,11 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     `pyproject.toml` or `uv.lock`. An untracked file counts as changed, but only with `--allow-dirty`, because the
     gate stops at `FAIL tree` for it otherwise.
   - `commit`, the default: every step below, with the parallel tests and the tidy cache. Run it before each commit.
-  - `full`: `commit` with `--no-cache`, so tidy checks every file. Run it before a push; CI uses it.
-  `--only <step>` works at every speed. At `quick` it runs the named step in full (every module's tests, both
+    The debug preset runs the unit tests only and prints `NOT RUN functional tests in debug (commit speed; run by
+    --speed full)`; the release preset runs the unit and the functional tests.
+  - `full`: `commit` with `--no-cache`, so tidy checks every file, and with every test (unit and functional) in
+    both presets. It must pass before a push; CI uses it.
+  `--only <step>` works at every speed, and `--only cpu` runs the tests of the speed. At `quick` it runs the named step in full (every module's tests, both
   presets), and the exit code is still 3.
   - `FAIL tree: unstaged or untracked: <paths>`: printed first, only when a file is untracked or has unstaged
     changes outside the ignored paths; every step is then `NOT RUN`. Staged changes are fine. With `--allow-dirty`
@@ -579,12 +585,14 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 
   - `PASS cpu macos-debug-cpu` and `PASS cpu macos-release-cpu`: Conan fetches the packages of `conan.lock` (at every
     run but a quick one with unchanged files, so a changed lockfile always reaches the build), and the strict CPU build of that preset configures,
-    builds with warnings as errors, and passes every test. On Linux or Windows the gate uses the presets of that
+    builds with warnings as errors, and passes the tests of the speed (`commit`: unit tests in debug, unit and
+    functional tests in release; `full`: every test in both). On Linux or Windows the gate uses the presets of that
     platform. On the debug preset the step also fails, naming the test, when a `unit` test took more than 200 ms
     (`FAIL cpu macos-debug-cpu: unit tests over 200 ms: <name> (<ms> ms)`). It fails too when a test has neither the
     `unit` nor the `functional` label, or when the JUnit file of ctest is missing. It prints
     `NOTE unit test over 50 ms: <name> (<ms> ms)` for each unit test between 50 and 200 ms. A functional entry (a whole program) has no
-    time limit but its ctest timeout; the step prints `NOTE functional tests run: <n> gtest tests in <m> programs`.
+    time limit but its ctest timeout; each preset that ran them prints `NOTE functional tests run: <n> gtest tests in <m>
+    programs`.
   - `PASS tidy`: the clang-tidy on `PATH` is the pinned version, and it reports nothing, with the debug preset's
     compile commands, on every tracked `.cc` file under `src/` and `tests/` that the CPU build compiles, and on each header
     compiled alone (`header_check/`). A `.cc` file that only the CUDA build compiles, such as a GPU-only test, is

@@ -153,6 +153,7 @@ def test_all_steps_pass_exits_zero(monkeypatch, capsys, repo):
         "PASS format",
         "PASS rules",
         "PASS message",
+        check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG,
         f"PASS cpu {DEBUG_PRESET}",
         f"PASS cpu {RELEASE_PRESET}",
         "PASS tidy",
@@ -508,10 +509,17 @@ def without_junit(command):
 def test_cpu_step_runs_ctest_with_one_job_per_core(monkeypatch, capsys, repo):
     monkeypatch.setattr(check_commit.os, "cpu_count", lambda: 7)
     fake = FakeRun()
-    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu", "--speed", "full")
     ctest_runs = [without_junit(command) for command in fake.commands if command[0] == "ctest"]
     assert ctest_runs == [
         ["ctest", "--preset", DEBUG_PRESET, "--parallel", "7"],
+        ["ctest", "--preset", RELEASE_PRESET, "--parallel", "7"],
+    ]
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    ctest_runs = [without_junit(command) for command in fake.commands if command[0] == "ctest"]
+    assert ctest_runs == [
+        ["ctest", "--preset", DEBUG_PRESET, "--parallel", "7", "-L", "^unit$"],
         ["ctest", "--preset", RELEASE_PRESET, "--parallel", "7"],
     ]
 
@@ -519,7 +527,7 @@ def test_cpu_step_runs_ctest_with_one_job_per_core(monkeypatch, capsys, repo):
 def test_cpu_step_runs_ctest_with_one_job_when_the_core_count_is_unknown(monkeypatch, capsys, repo):
     monkeypatch.setattr(check_commit.os, "cpu_count", lambda: None)
     fake = FakeRun()
-    run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    run_gate(monkeypatch, capsys, repo, fake, "--speed", "full", "--only", "cpu")
     assert ["ctest", "--preset", DEBUG_PRESET, "--parallel", "1"] in [without_junit(c) for c in fake.commands]
 
 
@@ -566,6 +574,14 @@ ALL_STEP_LINES = [
 ]
 
 
+# What the default speed prints: the same lines, and the note that the debug preset did not run the functional tests.
+COMMIT_STEP_LINES = [
+    *ALL_STEP_LINES[:3],
+    check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG,
+    *ALL_STEP_LINES[3:],
+]
+
+
 def ctest_commands(fake, preset=DEBUG_PRESET):
     return [command for command in fake.commands if command[:3] == ["ctest", "--preset", preset]]
 
@@ -602,14 +618,39 @@ def test_modules_of_changes(changed, expected):
 def test_commit_is_the_default_speed_and_runs_every_step(monkeypatch, capsys, repo):
     exit_code, lines = run_gate(monkeypatch, capsys, repo, FakeRun())
     assert exit_code == 0
-    assert lines == ALL_STEP_LINES
+    assert lines == COMMIT_STEP_LINES
 
 
-def test_commit_speed_runs_all_tests_and_uses_the_tidy_cache(monkeypatch, capsys, repo):
+def test_commit_speed_runs_unit_tests_in_debug_and_every_test_in_release(monkeypatch, capsys, repo):
     fake = FakeRun(changed=["src/fluidity/grid/a.cc"])
-    run_gate(monkeypatch, capsys, repo, fake, "--speed", "commit")
-    assert all("-L" not in command for command in ctest_commands(fake))
+    _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "commit")
+    (debug_ctest,) = ctest_commands(fake)
+    assert debug_ctest[debug_ctest.index("-L") :] == ["-L", "^unit$"]
+    (release_ctest,) = ctest_commands(fake, RELEASE_PRESET)
+    assert "-L" not in release_ctest
+    assert lines.count(check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG) == 1
     assert "--no-cache" not in tidy_commands(fake)[0]
+
+
+def test_the_not_run_line_names_the_speed_that_runs_the_functional_tests_and_comes_before_the_debug_result(
+    monkeypatch, capsys, repo
+):
+    _, lines = run_gate(monkeypatch, capsys, repo, FakeRun(), "--only", "cpu")
+    assert check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG == (
+        "NOT RUN functional tests in debug (commit speed; run by --speed full)"
+    )
+    assert lines == [check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG, f"PASS cpu {DEBUG_PRESET}", f"PASS cpu {RELEASE_PRESET}"]
+
+
+def test_only_cpu_follows_the_speed(monkeypatch, capsys, repo):
+    for speed, debug_runs_unit_only in (("commit", True), ("full", False), ("quick", False)):
+        fake = FakeRun()
+        _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", speed, "--only", "cpu")
+        (debug_ctest,) = ctest_commands(fake)
+        assert ("-L" in debug_ctest) is debug_runs_unit_only
+        assert (check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG in lines) is debug_runs_unit_only
+        (release_ctest,) = ctest_commands(fake, RELEASE_PRESET)
+        assert "-L" not in release_ctest
 
 
 def test_full_speed_runs_every_step_and_ignores_the_tidy_cache(monkeypatch, capsys, repo):
@@ -618,6 +659,8 @@ def test_full_speed_runs_every_step_and_ignores_the_tidy_cache(monkeypatch, caps
     assert exit_code == 0
     assert lines == ALL_STEP_LINES
     assert "--no-cache" in tidy_commands(fake)[0]
+    assert all("-L" not in command for preset in (DEBUG_PRESET, RELEASE_PRESET) for command in ctest_commands(fake, preset))
+    assert check_commit.FUNCTIONAL_TESTS_NOT_RUN_IN_DEBUG not in lines
 
 
 def test_quick_runs_the_debug_tests_of_the_changed_modules_and_names_what_it_left_out(monkeypatch, capsys, repo):
@@ -749,15 +792,20 @@ def test_modules_with_changed_functional_tests_are_those_with_a_change_under_tes
     assert check_commit.modules_with_changed_functional_tests(["src/fluidity/base/a.h"]) == frozenset()
 
 
-def test_quick_runs_the_functional_tests_of_a_module_whose_tests_changed(monkeypatch, capsys, repo):
+def test_quick_runs_the_functional_tests_of_a_module_whose_tests_changed_in_the_release_build(
+    monkeypatch, capsys, repo
+):
     fake = FakeRun(changed=["tests/grid/a.test.cc", "src/fluidity/base/a.h"])
     _, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
     assert "NOTE modules: base, grid" in lines
-    assert "NOTE functional tests: grid" in lines
-    unit_run, functional_run = ctest_commands(fake)
+    assert "NOTE functional tests: grid (release build; debug takes over 20 s)" in lines
+    assert f"NOT RUN cpu {RELEASE_PRESET} (quick)" not in lines
+    (unit_run,) = ctest_commands(fake)
     assert unit_run[unit_run.index("-L") + 1] == "^(base|grid)$" and "^unit$" in unit_run
+    assert "^functional$" not in unit_run
+    (functional_run,) = ctest_commands(fake, RELEASE_PRESET)
     assert functional_run[functional_run.index("-L") + 1] == "^(grid)$" and "^functional$" in functional_run
-    assert "^unit$" not in functional_run
+    assert "^unit$" not in functional_run and "--output-junit" not in functional_run
 
 
 def test_quick_runs_no_functional_test_when_only_src_changed(monkeypatch, capsys, repo):
@@ -776,7 +824,7 @@ def test_commit_speed_times_the_debug_run_only(monkeypatch, capsys, repo):
 
 def test_unit_test_over_200_ms_fails_the_debug_run_and_is_named(monkeypatch, capsys, repo):
     fake = FakeRun(test_times=[("Fast.Unit", "base;cpu;unit", 0.01), ("Slow.Case", "grid;cpu;unit", 0.25)])
-    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "full", "--only", "cpu")
     assert exit_code == 1
     assert lines[0] == f"FAIL cpu {DEBUG_PRESET}: unit tests over 200 ms: Slow.Case (250 ms)"
 
@@ -802,7 +850,7 @@ def test_unreadable_junit_file_fails_the_debug_run(monkeypatch, capsys, repo):
         def junit_text(self):
             return "not xml"
 
-    exit_code, lines = run_gate(monkeypatch, capsys, repo, NoJunit(), "--only", "cpu")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, NoJunit(), "--speed", "full", "--only", "cpu")
     assert exit_code == 1
     assert lines[0].startswith(f"FAIL cpu {DEBUG_PRESET}: the JUnit file of ctest cannot be read")
 
@@ -840,9 +888,35 @@ def test_functional_program_entries_are_not_timed_and_their_tests_are_counted(mo
     assert not any(line.startswith("NOTE unit test") for line in lines)
 
 
+def test_the_functional_count_note_is_printed_for_each_preset_that_ran_the_functional_tests(monkeypatch, capsys, repo):
+    class WritesReports(FakeRun):
+        def __call__(self, command, **kwargs):
+            if command[0] == "ctest":
+                reports = repo / "out" / "build" / command[2] / "gtest_reports"
+                reports.mkdir(parents=True, exist_ok=True)
+                (reports / "grid_functional_test.xml").write_text(
+                    '<?xml version="1.0"?><testsuites tests="5" failures="0"/>', encoding="utf-8"
+                )
+            return super().__call__(command, **kwargs)
+
+    note = "NOTE functional tests run: 5 gtest tests in 1 programs (one ctest entry each)"
+    _, full_lines = run_gate(monkeypatch, capsys, repo, WritesReports(), "--speed", "full", "--only", "cpu")
+    assert full_lines.count(note) == 2
+    # At commit speed the debug run has no functional test to count: the release run alone prints the note.
+    class WritesReleaseReports(WritesReports):
+        def __call__(self, command, **kwargs):
+            if command[:3] == ["ctest", "--preset", DEBUG_PRESET]:
+                return FakeRun.__call__(self, command, **kwargs)
+            return super().__call__(command, **kwargs)
+
+    _, commit_lines = run_gate(monkeypatch, capsys, repo, WritesReleaseReports(), "--only", "cpu")
+    assert commit_lines.count(note) == 1
+    assert commit_lines.index(note) > commit_lines.index(f"PASS cpu {DEBUG_PRESET}")
+
+
 def test_test_without_a_tier_label_fails_the_debug_run(monkeypatch, capsys, repo):
     fake = FakeRun(test_times=[("Fine.Case", "grid;cpu;unit", 0.01), ("Plain.Case", "grid;cpu", 0.01)])
-    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "cpu")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "full", "--only", "cpu")
     assert exit_code == 1
     assert lines[0] == f"FAIL cpu {DEBUG_PRESET}: tests without a tier label (unit or functional): Plain.Case"
 
@@ -855,7 +929,7 @@ def test_missing_junit_file_fails_the_debug_run(monkeypatch, capsys, repo):
                 Path(command[command.index("--output-junit") + 1]).unlink()
             return result
 
-    exit_code, lines = run_gate(monkeypatch, capsys, repo, DeletesJunit(), "--only", "cpu")
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, DeletesJunit(), "--speed", "full", "--only", "cpu")
     assert exit_code == 1
     assert lines[0].startswith(f"FAIL cpu {DEBUG_PRESET}: the JUnit file of ctest cannot be read")
 
@@ -1152,6 +1226,9 @@ def configured(repo):
     build_folder = repo / "out" / "build" / DEBUG_PRESET
     (build_folder / "CMakeCache.txt").write_text("# cache\n", encoding="utf-8")
     (build_folder / "test_programs.txt").write_text(PROGRAMS_TEXT, encoding="utf-8")
+    release_folder = repo / "out" / "build" / RELEASE_PRESET
+    release_folder.mkdir(parents=True, exist_ok=True)
+    (release_folder / "test_programs.txt").write_text(PROGRAMS_TEXT, encoding="utf-8")
     toolchain = repo / "out" / "conan" / DEBUG_PRESET / "conan_toolchain.cmake"
     toolchain.parent.mkdir(parents=True)
     toolchain.write_text("# toolchain\n", encoding="utf-8")
@@ -1284,8 +1361,9 @@ def test_quick_builds_only_the_unit_test_programs_of_the_changed_module(monkeypa
 def test_quick_builds_the_functional_programs_of_a_module_whose_tests_changed(monkeypatch, capsys, configured):
     fake = FakeRun(changed=["tests/grid/a.test.cc", "src/fluidity/contact/a.h"])
     quick_cpu(monkeypatch, capsys, configured, fake)
-    (build,) = build_runs(fake)
-    assert build[4:] == ["--target", "contact_test", "grid_big_functional_test", "grid_corners_test", "grid_test"]
+    debug_build, release_build = build_runs(fake)
+    assert debug_build[3:] == [DEBUG_PRESET, "--target", "contact_test", "grid_corners_test", "grid_test"]
+    assert release_build[3:] == [RELEASE_PRESET, "--target", "grid_big_functional_test"]
 
 
 class ConfigureWritesPrograms(FakeRun):
