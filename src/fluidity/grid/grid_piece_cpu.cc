@@ -1,7 +1,11 @@
-// The CPU builder of a grid piece: the piece map and the tables of the blocks of a range and of its border.
+// The builder of a grid piece: the piece map and the tables of the blocks of a range and of its border, on the CPU with
+// loops of its own over the rules of grid/grid_piece_steps.h, and on the GPU through the six GPU functions of
+// grid/grid_piece_gpu.h.
 //
-// Implementation uses: ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind (grid/grid_piece_steps.h),
-//   ToGridBuffersArrays, BuildGridFromBuffers (grid/grid_buffers_internal.h)
+// Implementation uses: ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind, PieceLoad, PieceBlocks, PieceTableArrays,
+//   kPieceBorderStep, kPieceFaultStep (grid/grid_piece_steps.h), ToGridBuffersArrays, BuildGridFromBuffers,
+//   ToGridFailure (grid/grid_buffers_internal.h), GridBuildStatus (grid/grid_build_status.h),
+//   ToFailureStep (grid/grid_build_steps.h), the GPU functions of grid/grid_piece_gpu.h
 
 #include <algorithm>
 #include <cassert>
@@ -21,6 +25,13 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 
+#if defined(FLUIDITY_HAS_GPU)
+#include "fluidity/base/run_on_call.h"
+#include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_build_steps.h"
+#include "fluidity/grid/grid_piece_gpu.h"
+#endif
+
 namespace fluidity::grid {
 namespace {
 
@@ -33,14 +44,30 @@ bool ComputeIsInRange(CellBlockRange range, std::uint32_t whole_block) {
   return whole_block >= range.first_block && whole_block - range.first_block < range.block_count;
 }
 
-// Checks the range against the whole grid's blocks, and the border list: ascending, each block once, inside the whole
-// grid and outside the range. Each failure is kBadInput, since the caller made the lists.
-std::expected<void, GridFailure>
-CheckRangeAndBorder(std::uint32_t whole_block_count, CellBlockRange range, std::span<const CellBlockIndex> border) {
+// Checks the range against the whole grid's blocks, then the room: the blocks of the range and of the border list
+// against the buffers' room. Both forms make these two checks first, and the GPU build makes them before its first
+// launch. The room check names no cell, since the caller raises the room.
+std::expected<void, GridFailure> CheckRangeAndRoom(
+    std::uint32_t whole_block_count,
+    CellBlockRange range,
+    std::uint64_t border_block_count,
+    std::uint32_t max_cell_blocks
+) {
   // A range past the last block names blocks the whole grid does not have.
   if (std::uint64_t{range.first_block} + range.block_count > whole_block_count) {
     return std::unexpected(ToFailure(GridError::kBadInput));
   }
+  // The buffers cannot hold the range and its border.
+  if (std::uint64_t{range.block_count} + border_block_count > max_cell_blocks) {
+    return std::unexpected(ToFailure(GridError::kTooManyCellBlocks));
+  }
+  return {};
+}
+
+// Checks the border list: ascending, each block once, inside the whole grid and outside the range. Each failure is
+// kBadInput, since the caller made the list.
+std::expected<void, GridFailure>
+CheckBorder(std::uint32_t whole_block_count, CellBlockRange range, std::span<const CellBlockIndex> border) {
   for (std::size_t entry = 0; entry < border.size(); ++entry) {
     const std::uint32_t block = border[entry].value;
     const bool is_ascending = entry == 0 || border[entry - 1].value < block;
@@ -130,6 +157,133 @@ WritePieceTables(const GridTables& whole, CellBlockRange range, std::uint32_t lo
   return result;
 }
 
+#if defined(FLUIDITY_HAS_GPU)
+
+// Every face place of a piece fits 32 bits and stays below kNoIndex, since a room holds at most kMaxCellBlocksLimit
+// blocks; the cell places, 64 per block, are fewer. The GPU threads number places with 32 bits.
+static_assert(
+    std::uint64_t{kMaxCellBlocksLimit} * kFacePlacesPerBlock < std::uint64_t{kNoIndex},
+    "a face place of a piece must fit 32 bits and stay below kNoIndex"
+);
+
+// What the GPU build of a piece found: the counts of the tables and where the range starts in the piece.
+struct PieceOnGpu {
+  GridCounts counts;
+  std::uint32_t range_start_in_piece;
+};
+
+// The failure of a GPU-half call that did not start: kRunOnCallFailed, through the mapping of base/.
+GridFailure ToCallFailure(RunOnCallStatus call_status) {
+  return ToGridFailure(ToBufferError(call_status), 0);
+}
+
+// Converts the status record that the GPU build left, read back by the CPU, to the piece's counts and the start of the
+// range in the piece, or to the failure. Requires: the record of a build of loaded_count blocks with a border of
+// border_block_count entries.
+std::expected<PieceOnGpu, GridFailure>
+ToPieceOfStatus(const GridBuildStatus& status, std::uint32_t loaded_count, std::uint32_t border_block_count) {
+  if (status.failure_key != kNoFailureKey) {
+    // Step 1 is a bad border list, which the caller made. A key of another step contradicts the steps that wrote it.
+    const bool is_bad_border = ToFailureStep(status.failure_key) == kPieceBorderStep;
+    return std::unexpected(ToFailure(is_bad_border ? GridError::kBadInput : GridError::kInternalFault));
+  }
+  PieceOnGpu piece = {.counts = {}, .range_start_in_piece = status.result_count};
+  piece.counts.cell_blocks = loaded_count;
+  for (std::size_t size_level = 0; size_level < kMaxSizeLevels; ++size_level) {
+    piece.counts.active_cells_per_size_level[size_level] = status.active_cells_per_size_level[size_level];
+    piece.counts.active_cells += status.active_cells_per_size_level[size_level];
+  }
+  piece.counts.face_pieces = status.face_pieces;
+  // Without a failure each count is within what the piece's places hold, and the border entries below the range are
+  // some of the border: a record that says otherwise contradicts the steps that wrote it.
+  const bool is_within_places = piece.counts.active_cells <= std::uint64_t{loaded_count} * kCellPlacesPerBlock
+      && piece.counts.face_pieces <= std::uint64_t{loaded_count} * kFacePlacesPerBlock
+      && piece.range_start_in_piece <= border_block_count;
+  if (!is_within_places) {
+    return std::unexpected(ToFailure(GridError::kInternalFault));
+  }
+  return piece;
+}
+
+// Builds the piece map and the tables of a piece on the GPU into `buffers`, and returns its counts and where its range
+// starts. Steps: 1 the checks of the range and the room  2 reset the record  3 check the border entries  4 write the
+// piece map  5 copy the blocks  6 copy the cell states  7 write the face piece kinds and wait  8 read the record.
+// Each step is one launch, in the one stream, so each sees what the step before wrote. Only the record comes back.
+std::expected<PieceOnGpu, GridFailure> BuildPieceTablesOnGpu(
+    const StaggeredGrid& whole,
+    CellBlockRange range,
+    const Buffer<CellBlockIndex>& border_blocks,
+    std::uint32_t border_block_count,
+    GridBuffers& buffers
+) {
+  const GridTables whole_tables = whole.tables(RunOn::kGpu);
+  // Step 1: as on the CPU, before anything runs on the GPU. The count of loaded blocks is at most the room, which is at
+  // most kMaxCellBlocksLimit, so it fits 32 bits.
+  if (const std::expected<void, GridFailure> checked =
+          CheckRangeAndRoom(whole_tables.block_count, range, border_block_count, buffers.max_cell_blocks());
+      !checked.has_value()) {
+    return std::unexpected(checked.error());
+  }
+  GridBuffersArrays& arrays = ToGridBuffersArrays(buffers);
+  // The estimate gives every GPU grid's buffers one status record: a buffer that has none is a fault of the builders.
+  if (arrays.build_status.size() != 1) {
+    return std::unexpected(ToFailure(GridError::kInternalFault));
+  }
+  const std::uint32_t loaded_count = range.block_count + border_block_count;
+  GridBuildStatus* const status = arrays.build_status.data();
+  const PieceLoad load = {
+      .range = range,
+      .border_blocks = border_blocks.data(),
+      .border_block_count = border_block_count
+  };
+  CellBlockIndex* const map = arrays.piece_map.data();
+  const PieceBlocks blocks = {.range = range, .map = map, .count = loaded_count};
+  std::uint32_t* const bigger_block = arrays.bigger_and_smaller_blocks.data();
+  const PieceTableArrays piece_arrays = {
+      .block_ids = arrays.block_ids.data(),
+      .same_size_level_blocks = arrays.same_size_level_neighbour_blocks.data(),
+      .bigger_block = bigger_block,
+      .smaller_blocks = bigger_block + ComputeSmallerBlocksStart(static_cast<std::uint32_t>(arrays.block_ids.size())),
+      .cell_states = arrays.cell_states.data(),
+      .face_piece_kinds = arrays.face_piece_kinds.data(),
+  };
+  // Steps 2 to 7, each started only once the one before started.
+  if (const RunOnCallStatus started = ApplyPieceStatusResetOnGpu(status); started != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(started));
+  }
+  if (const RunOnCallStatus started = CheckPieceBorderOnGpu(load, whole_tables.block_count, status);
+      started != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(started));
+  }
+  if (const RunOnCallStatus started = WritePieceMapOnGpu(load, status, map); started != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(started));
+  }
+  if (const RunOnCallStatus started = CopyPieceBlocksOnGpu(whole_tables, blocks, piece_arrays, status);
+      started != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(started));
+  }
+  if (const RunOnCallStatus started = CopyPieceCellStatesOnGpu(whole_tables, blocks, piece_arrays.cell_states, status);
+      started != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(started));
+  }
+  // The wait at the end of the last function reports an error of any function started since the first.
+  if (const RunOnCallStatus finished =
+          WritePieceFaceKindsOnGpu(whole_tables, blocks, piece_arrays.face_piece_kinds, status);
+      finished != RunOnCallStatus::kDone) {
+    return std::unexpected(ToCallFailure(finished));
+  }
+  // Step 8: the one transfer of the build.
+  GridBuildStatus read_status{};
+  if (const std::expected<void, BufferError> read =
+          ReadBuffer(arrays.build_status, 0, std::span<GridBuildStatus>(&read_status, 1));
+      !read.has_value()) {
+    return std::unexpected(ToGridFailure(read.error(), sizeof(GridBuildStatus)));
+  }
+  return ToPieceOfStatus(read_status, loaded_count, border_block_count);
+}
+
+#endif
+
 }  // namespace
 
 std::span<const CellBlockIndex> GridPiece::block_in_whole_grid() const {
@@ -153,21 +307,18 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
   assert(whole.run_on() == RunOn::kCpu);
   assert(buffers.run_on() == RunOn::kCpu);
   const GridTables whole_tables = whole.tables(RunOn::kCpu);
-  // Step 1. A range past the whole grid is checked first, the room next, then the border entries, so a list far above
-  // the room is not walked.
-  if (std::uint64_t{range.first_block} + range.block_count > whole_tables.block_count) {
-    return std::unexpected(ToFailure(GridError::kBadInput));
-  }
-  const std::uint64_t loaded_count = std::uint64_t{range.block_count} + border_blocks.size();
-  // The caller raises the room: the buffers cannot hold the range and its border. No cell is named.
-  if (loaded_count > buffers.max_cell_blocks()) {
-    return std::unexpected(ToFailure(GridError::kTooManyCellBlocks));
-  }
+  // Step 1. The range is checked first, the room next, then the border entries, so a list far above the room is not
+  // walked.
   if (const std::expected<void, GridFailure> checked =
-          CheckRangeAndBorder(whole_tables.block_count, range, border_blocks);
+          CheckRangeAndRoom(whole_tables.block_count, range, border_blocks.size(), buffers.max_cell_blocks());
       !checked.has_value()) {
     return std::unexpected(checked.error());
   }
+  if (const std::expected<void, GridFailure> checked = CheckBorder(whole_tables.block_count, range, border_blocks);
+      !checked.has_value()) {
+    return std::unexpected(checked.error());
+  }
+  const std::uint64_t loaded_count = std::uint64_t{range.block_count} + border_blocks.size();
   GridBuffersArrays& arrays = ToGridBuffersArrays(buffers);
   const auto loaded_block_count = static_cast<std::uint32_t>(loaded_count);
   // Step 2.
@@ -198,9 +349,25 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
   if (border_block_count > border_blocks.size()) {
     return std::unexpected(ToFailure(GridError::kBadInput));
   }
-  // The GPU form of a piece is not built here, and nothing falls back to the CPU.
+  // A GPU grid's piece is built on the GPU, and nothing falls back to the CPU.
   if (whole.run_on() != RunOn::kCpu) {
+#if defined(FLUIDITY_HAS_GPU)
+    const std::expected<PieceOnGpu, GridFailure> built =
+        BuildPieceTablesOnGpu(whole, range, border_blocks, border_block_count, buffers);
+    if (!built.has_value()) {
+      return std::unexpected(built.error());
+    }
+    StaggeredGrid grid =
+        BuildGridFromBuffers(std::move(buffers), whole.tables(RunOn::kGpu).frame, whole.version(), built->counts);
+    return GridPiece(
+        std::move(grid),
+        {.first_block = built->range_start_in_piece, .block_count = range.block_count},
+        range
+    );
+#else
+    // Without GPU code no GPU grid can be built, so no caller reaches this.
     return std::unexpected(ToFailure(GridError::kRunOnCallFailed));
+#endif
   }
   return BuildGridPiece(
       whole,

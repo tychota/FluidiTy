@@ -46,7 +46,8 @@
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer (base/buffer.h), GridBuffers, StaggeredGrid
 //          (grid/staggered_grid.h), GridFailure (grid/grid_error.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h)
 // Implementation uses: ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind (grid/grid_piece_steps.h),
-//          ToGridBuffersArrays, BuildGridFromBuffers (grid/grid_buffers_internal.h)
+//          ToGridBuffersArrays, BuildGridFromBuffers (grid/grid_buffers_internal.h), the GPU functions of
+//          grid/grid_piece_gpu.h
 // Used by: the batched run of the cell resize and of the pressure solve, and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 
@@ -163,15 +164,19 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
 
 // Builds the same piece as the span form, for a whole grid on any processor, with the border in a buffer on
 // whole.run_on(): the first border_block_count entries of `border_blocks`, such as a stacked FindBorderBlocks result.
-// A piece of a GPU grid is built on the GPU, and its tables stay there; only a CPU whole grid is built here.
-// Example: the buffer form of FindBorderBlocks with range {4, 3} on a CPU whole grid of 10 blocks lists {1, 2, 8} and
+// A piece of a GPU grid is built on the GPU, and its tables and map stay there: six GPU functions
+// (grid/grid_piece_gpu.h) write the same bytes as the CPU builder, and only the status record comes back. Method paper
+// <sec-cell-blocks>. Example: the buffer form of FindBorderBlocks with range {4, 3} on a CPU whole grid of 10 blocks
+// lists {1, 2, 8} and
 //   the count 3: the piece is the one of the span form.
 // Requires: border_blocks and `buffers` are on whole.run_on() (debug assertions); and, as in the span form,
 //   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
 //   result, stacked or not), since a smaller list does not fail the call and readers then answer none.
 // Fails: as the span form, and kBadInput for border_block_count above border_blocks.size();
-//        kRunOnCallFailed  whole is on the GPU: no GPU form of the piece is built here, and nothing falls back to the
-//                          CPU.
+//        kRunOnCallFailed  a GPU function did not start or the GPU work failed (whole is on the GPU); nothing falls
+//        back
+//                          to the CPU, and the contents of `buffers` are unspecified.
+//        kInternalFault    on the GPU, a record that contradicts the steps that wrote it: no input causes it.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 std::expected<GridPiece, GridFailure> BuildGridPiece(
     const StaggeredGrid& whole,

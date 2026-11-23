@@ -620,6 +620,23 @@ std::optional<PieceBuffersRoom> BuildPieceBuffersRoom(std::uint32_t max_cell_blo
   return PieceBuffersRoom{.owner = std::move(*owner), .buffers = std::move(buffers)};
 }
 
+std::optional<PieceBuffersRoom> BuildPieceBuffersRoom(RunOn run_on, std::uint32_t max_cell_blocks) {
+  if (run_on == RunOn::kCpu) {
+    return BuildPieceBuffersRoom(max_cell_blocks);
+  }
+  const std::vector<CellId> one_cell = {ToCellId(SizeLevel{0}, {.x = 0, .y = 0, .z = 0})};
+  std::expected<TestGrid, GridFailure> owner = BuildTestGrid(
+      ToInputs(ToUnitFrame(1), one_cell),
+      {.max_cell_blocks = std::max(max_cell_blocks, 1U), .run_on = run_on}
+  );
+  EXPECT_TRUE(owner.has_value());
+  if (!owner.has_value()) {
+    return std::nullopt;
+  }
+  GridBuffers buffers = TakeEmptyGridBuffers(owner);
+  return PieceBuffersRoom{.owner = std::move(*owner), .buffers = std::move(buffers)};
+}
+
 std::optional<std::string> FindFirstTableDifference(const GridPiece& piece, const PieceTables& expected) {
   const GridTables tables = piece.grid().tables(RunOn::kCpu);
   if (tables.block_count != expected.block_ids.size()) {

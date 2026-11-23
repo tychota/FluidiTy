@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
-#include <iterator>
 #include <optional>
 #include <random>
 #include <span>
@@ -29,90 +28,16 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
 #include "fluidity/grid/staggered_grid.h"
-#include "fluidity/grid/testing/border_block_cases.h"
 #include "fluidity/grid/testing/cell_block_range_cases.h"
+#include "fluidity/grid/testing/grid_piece_cases.h"
 #include "fluidity/grid/testing/grid_piece_support.h"
 #include "fluidity/grid/testing/grid_support.h"
-#include "fluidity/grid/testing/staggered_grid_cases.h"
 
 namespace fluidity::grid {
 namespace {
 
-// The random grids whose pieces are compared with the reference tables, the random grids whose pieces are asked the
-// readers, and the blocks of a range of each kind of grid.
-constexpr std::size_t kEqualityGridCount = 100;
-constexpr std::size_t kReaderGridCount = 5;
-constexpr std::uint32_t kRangeBlocks = 4;
-constexpr std::uint32_t kNestedBallRangeBlocks = 16;
 constexpr int kPositionCount = 100;
 constexpr std::array<std::uint32_t, 3> kCutBlocks = {1, 3, 7};
-
-// A grid of the tests and the ranges it is cut at.
-struct GridUnderTest {
-  const StaggeredGrid* grid;
-  std::vector<CellBlockRange> ranges;
-  std::string name;
-};
-
-// The nested-ball grid, built once per program.
-const TestGrid& FindNestedBallGrid() {
-  static const TestGrid built = [] {
-    const std::vector<CellId> cells = BuildNestedBallCells();
-    std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(4), cells));
-    EXPECT_TRUE(test_grid.has_value());
-    return std::move(*test_grid);
-  }();
-  return built;
-}
-
-// The grids and their ranges: the first `random_count` random grids, then the nested-ball grid.
-std::vector<GridUnderTest> BuildGridsUnderTest(std::size_t random_count, bool is_every_range) {
-  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-  EXPECT_GE(built.grids.size(), random_count);
-  std::vector<GridUnderTest> grids;
-  const auto find_ranges = [is_every_range](const StaggeredGrid& grid, std::uint32_t range_blocks) {
-    if (is_every_range) {
-      return BuildRanges(grid, range_blocks).value_or(std::vector<CellBlockRange>{});
-    }
-    return BuildTestedRanges(grid, range_blocks);
-  };
-  for (const std::size_t entry : FindRandomGridsSpreadBySize(random_count)) {
-    const StaggeredGrid& grid = built.grids.at(entry).grid;
-    grids.push_back(
-        {.grid = &grid, .ranges = find_ranges(grid, kRangeBlocks), .name = "random grid " + std::to_string(entry)}
-    );
-  }
-  const StaggeredGrid& ball = FindNestedBallGrid().grid;
-  grids.push_back({.grid = &ball, .ranges = find_ranges(ball, kNestedBallRangeBlocks), .name = "nested-ball grid"});
-  return grids;
-}
-
-// The blocks of two ascending lists that share no block, in ascending order.
-std::vector<CellBlockIndex>
-BuildMergedBlocks(std::span<const CellBlockIndex> first, std::span<const CellBlockIndex> second) {
-  std::vector<CellBlockIndex> merged;
-  std::ranges::merge(first, second, std::back_inserter(merged), {}, &CellBlockIndex::value, &CellBlockIndex::value);
-  return merged;
-}
-
-// A range and the two layers of its stacked border: the layer at kTouchingCells around the range, then the layer at
-// kFourCellWidths around the range plus the first layer.
-struct StackedBorder {
-  CellBlockRange range;
-  std::vector<CellBlockIndex> first_layer;
-  std::vector<CellBlockIndex> border;  // Both layers, ascending.
-};
-
-StackedBorder FindStackedBorder(const StaggeredGrid& grid, CellBlockRange range) {
-  const std::vector<CellBlockIndex> range_blocks = ToRangeBlocks(range);
-  StackedBorder stacked = {.range = range, .first_layer = {}, .border = {}};
-  stacked.first_layer = FindBorderOrFail(grid, range_blocks, BorderWidth::kTouchingCells);
-  const std::vector<CellBlockIndex> set_with_first_layer = BuildMergedBlocks(range_blocks, stacked.first_layer);
-  const std::vector<CellBlockIndex> second_layer =
-      FindBorderOrFail(grid, set_with_first_layer, BorderWidth::kFourCellWidths);
-  stacked.border = BuildMergedBlocks(stacked.first_layer, second_layer);
-  return stacked;
-}
 
 // Builds the piece of `range` and `border` into the buffers of `room` and fails the calling test when it cannot.
 std::optional<GridPiece> BuildPieceOrFail(
@@ -178,7 +103,7 @@ void CheckPieceEqualsReference(const StaggeredGrid& whole, const GridPiece& piec
 // The pieces of every range of every grid have the tables of BuildPieceTables for their blocks, byte for byte, and
 // their range is a run that maps to range_in_whole_grid. The buffers are used again for each piece.
 TEST(BuildGridPiece, RealPieces_EqualPieceTables) {
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kEqualityGridCount, true)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kEqualityGridCount, RangeChoice::kEveryRange)) {
     CheckEachPiece(under_test, CheckPieceEqualsReference);
   }
 }
@@ -212,7 +137,7 @@ void CheckPieceAnswersAsWholeGrid(const StaggeredGrid& whole, const GridPiece& p
 
 // Every reader of the width, from every place of the range, answers in the real piece as on the whole grid.
 TEST(BuildGridPiece, RealPieces_AnswerAsTheWholeGrid) {
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, false)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kTestedRanges)) {
     CheckEachPiece(under_test, CheckPieceAnswersAsWholeGrid);
   }
 }
@@ -404,7 +329,7 @@ void CheckPieceGivesSameWeights(const StaggeredGrid& whole_grid, const GridPiece
 // 100 positions that FindCellAt gives to cells of the range, with every face kept and every axis: the lists map to the
 // whole grid's through the piece map, and every weight is the same bits.
 TEST(BuildGridPiece, SameWeightsAsWholeGrid) {
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, false)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kTestedRanges)) {
     CheckEachPiece(under_test, CheckPieceGivesSameWeights);
   }
 }
@@ -461,7 +386,7 @@ double ComputeTotalOfWholeGrid(const GridTables& whole) {
 // The total of the block partials of the whole grid, and the total of the same partials computed in the pieces of
 // each cut and placed at range_in_whole_grid, are the same bits.
 TEST(BuildGridPiece, BlockSumsInPieceOrder_EqualWholeGrid) {
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, false)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kTestedRanges)) {
     const StaggeredGrid& grid = *under_test.grid;
     const double whole_total = ComputeTotalOfWholeGrid(grid.tables(RunOn::kCpu));
     std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(grid.counts().cell_blocks);
@@ -509,7 +434,7 @@ void CheckBlockOrderGivesWholeGridSum(
 // An ordered sum over the blocks of each piece, border included, has the bits of the same sum over the same blocks of
 // the whole grid.
 TEST(BuildGridPiece, OrderedSumOverPieceBlocks_EqualsWholeGridSum) {
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, true)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kEveryRange)) {
     CheckEachPiece(under_test, CheckBlockOrderGivesWholeGridSum);
   }
 }
@@ -529,7 +454,7 @@ bool ComputeHasBorderOnBothSides(const StackedBorder& stacked) {
 // the range first from the whole grid's order.
 TEST(BuildGridPiece, TestedRanges_IncludeBorderOnBothSides) {
   int ranges_with_border_on_both_sides = 0;
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, true)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kEveryRange)) {
     for (const CellBlockRange range : under_test.ranges) {
       if (ComputeHasBorderOnBothSides(FindStackedBorder(*under_test.grid, range))) {
         ++ranges_with_border_on_both_sides;
@@ -575,7 +500,7 @@ void CheckBufferPieceEqualsSpanPiece(const StaggeredGrid& grid, CellBlockRange r
 // The border from the buffer form of FindBorderBlocks gives the piece of the span form: the same tables, map and
 // counts.
 TEST(BuildGridPiece, BufferForm_EqualsSpanForm) {
-  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, false)) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kTestedRanges)) {
     std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(*under_test.grid);
     ASSERT_TRUE(rig.has_value());
     for (const CellBlockRange range : under_test.ranges) {

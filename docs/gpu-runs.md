@@ -157,8 +157,8 @@ bits: places, counts and every double (the weights and face weights included, si
 `sqrt` and `floor` and the build forbids fused multiply-add). The programs are `build_grid_on_gpu_functional_test`,
 `cell_size_rule_on_gpu_functional_test`, `find_cell_at_on_gpu_functional_test`,
 `nearby_face_weights_on_gpu_functional_test`, `cell_surroundings_on_gpu_functional_test` and
-`shared_grid_functions_on_gpu_functional_test`, `border_blocks_on_gpu_functional_test` and
-`stacked_borders_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
+`shared_grid_functions_on_gpu_functional_test`, `border_blocks_on_gpu_functional_test`,
+`stacked_borders_on_gpu_functional_test` and `grid_pieces_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
 `fluidity_grid_testing`. What to look at first, in this order:
 
 1. **Does it build on Windows?** The runners start a GPU function that takes a function pointer as a template argument,
@@ -234,6 +234,33 @@ What to look at first, in this order:
     nowhere else points to the split into launches.
 
 On another card (`sm_86`, `sm_89`) only compiled code exists: reread points 3 and 4 there.
+
+Two things about `grid_pieces_on_gpu_functional_test` (the buffer form of `BuildGridPiece` on a GPU grid, compared with the
+CPU's piece table for table by bits: version, counts, start of the range, piece map, block ids, the 36 neighbour entries,
+cell states, face piece kinds). Each of its six GPU functions (`grid_piece_gpu.cu`) is a thin loop of one thread per
+border entry, loaded item, piece block, cell place or face place. They keep no stack: the gate's `ptxas` lines give 0
+bytes of stack, no spill and at most 40 registers per thread on `sm_86`, `sm_89` and `sm_120`, so there is no driver
+stack entry and no reserve step. The face launch is not cut into chunks: a thread does a bounded amount of work, but a
+piece of the largest room (17,895,697 blocks, 4.3 billion face places) is one launch like the grid build's own; if
+`cudaErrorLaunchTimeout` ever shows there, cut it as the border marking is.
+
+What to look at first, in this order:
+
+1. **`BuildGridPiece.OnGpuFunctions_KeepUnderTheDefaultStack`.** The stack digest should be 0. A value above 1,024 means
+   the compiler changed and the piece build needs a stack reserve and an estimate entry as the border search has.
+2. **A failure of `OnGpuRandomGrids_EqualCpuPiece` or `OnGpuNestedBallRanges_EqualCpuPiece`.** The log names the piece, the
+   table, the place and both values. `range_first_block` wrong: the atomic count of border entries below the range
+   (function 2). `map` wrong: function 3 (a border list that was not ascending would also stop it). `neighbours` wrong
+   only for some entries: the binary search of the piece map (function 4). `cell_states` right but `active_cells` wrong:
+   the atomic adds of function 5. `face_piece_kinds` right but `face_pieces` wrong: the per-thread sum of function 6.
+   A difference in `face_piece_kinds` at kind `kOutsidePiece` points to the piece map read by function 6.
+3. **`OnGpuFailures_EqualCpuFailures`.** Each bad border list must give `kBadInput`, too little room `kTooManyCellBlocks`,
+   with cells zero, as on the CPU; `OnGpuAfterFailure_BuildsTheCpuPiece` builds a good piece into the same buffers after
+   a failure. `kRunOnCallFailed` here means the atomic minimum on the key or the reset.
+4. **`OnGpuTwice_GivesIdenticalBytes` and `OnGpu_AllocatesNothing`.** A difference between the two passes means a result
+   depends on thread timing; nothing should. The allocation test makes one call before counting.
+5. **`OnGpuMoreFacePlacesThanThreads_EqualCpuPiece`.** 72,000 blocks, more face places than threads of the largest
+   launch, so each thread of function 6 has several places. A difference only here points to the grid-stride loop.
 
 To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
 programs of the `linux-release-cuda` build:

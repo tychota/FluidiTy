@@ -107,6 +107,11 @@
 // Reached by ComputeReadMarksResult (border_blocks.gpu.test.cc): ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks,
 //   ApplyReadMark, ApplyPlaceReadMark
 //
+// Reached by the GPU build of a grid piece, BuildGridPiece on a GPU grid, through the GPU functions of
+//   grid/grid_piece_gpu.cu (grid_pieces.gpu.test.cc):
+//   ComputePieceBorderFailureKey, ComputeIsBorderEntryBelowRange, ApplyPieceMapWriteAt, ApplyPieceBlockCopyAt,
+//   ApplyPieceCellStateCopyAt, ApplyPieceFaceKindWriteAt
+//
 // Reached by ComputePieceStepResult, which names ToPiecePlace, ToPieceNeighbour and ComputePieceFaceKind itself
 //   (grid_piece_steps.gpu.test.cc)
 

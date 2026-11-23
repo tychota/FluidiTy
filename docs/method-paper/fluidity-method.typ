@@ -2230,6 +2230,22 @@ loaded, so a grid piece never has a face piece that the whole grid does not have
 the piece, its index in the whole grid, and the range keeps both spellings: as a run of the piece and as a run of the
 whole grid. Each entry of the map and of the tables is written from the loaded block alone, so no sort is needed.
 
+*Grid pieces on the GPU.* The buffer form builds the piece of a GPU whole grid on the GPU, from the whole grid's tables
+and a border list that stay there. The border list is already ascending and every loaded item has a place of its own, so
+the build needs no sort and no prefix sum: six launches in one stream, each after the one before has ended, and each
+thread writes places that no other thread of its launch writes. One thread resets the status record. One thread per
+border entry offers its failure key (an entry not above the one before it, at or above the whole grid's block count, or
+a block of the range) with an integer atomic minimum, and adds 1 to a count when its entry lies below the range, so the
+count is where the range starts in the piece. One thread per loaded item writes the piece map entry at the place
+`ToPiecePlace` gives its item. One thread per piece block copies its id and translates its 36 neighbour entries by a
+binary search of the piece map. One thread per cell place copies the state and adds 1 to the active cells of its size
+level with an integer atomic add. One thread per face place writes the kind, and each thread adds its face pieces to the
+record with one atomic add. A thread of a launch after the first stops at once when an earlier launch left a failure
+key, so a bad border list writes no array; only the record comes back, and the CPU reads it once. A place of the piece
+is a 32-bit number: a room holds at most 17,895,697 blocks, so the 240 face places of every block stay below
+$2^32 - 1$ and no product of a block count and a place count wraps. The counts are sums of integers, so they do not
+depend on the order of the threads, and the tables equal the CPU builder's byte for byte.
+
 *Where a corner is stored.* The pressure solve and the solids keep values at cell corners. A corner is a point of the
 5 × 5 × 5 lattice of every block whose box holds it, sides included, so one point can be a lattice point of several
 blocks: two blocks of one size level that share a side, or blocks of two size levels. It is stored once. Among the

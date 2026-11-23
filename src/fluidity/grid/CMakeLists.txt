@@ -15,6 +15,7 @@ fluidity_add_headers(
   grid_ids.h
   grid_memory_estimate.h
   grid_piece.h
+  grid_piece_gpu.h
   grid_piece_steps.h
   grid_tables.h
   grid_values.h
@@ -28,12 +29,12 @@ fluidity_add_headers(
 target_sources(
   fluidity PRIVATE cell_block_range_cpu.cc grid_cell_checks.cc grid_error_message.cc grid_memory_estimate.cc grid_piece_cpu.cc grid_values_cpu.cc staggered_grid_cpu.cc
 )
-fluidity_add_gpu_sources(cell_block_range_gpu.cu staggered_grid_gpu.cu)
+fluidity_add_gpu_sources(cell_block_range_gpu.cu grid_piece_gpu.cu staggered_grid_gpu.cu)
 # ptxas prints the stack frame and the spills of each GPU function for each architecture, so every compile of the file
 # with CUDA shows the stack each one keeps against the driver's default (method paper <sec-grid-memory>).
 # Source properties are seen only in the folder that made the target, so the line names the library's folder.
 set_source_files_properties(
-  cell_block_range_gpu.cu staggered_grid_gpu.cu TARGET_DIRECTORY fluidity PROPERTIES COMPILE_OPTIONS "-Xptxas=-v"
+  cell_block_range_gpu.cu grid_piece_gpu.cu staggered_grid_gpu.cu TARGET_DIRECTORY fluidity PROPERTIES COMPILE_OPTIONS "-Xptxas=-v"
 )
 
 # Test-only: the geometric checker and the random grids that grid tests compare the grid against. Never linked by
@@ -107,7 +108,7 @@ fluidity_add_test(
   LINKS
   fluidity_grid_testing
 )
-fluidity_add_test(grid_piece_steps_test SOURCES grid_piece_steps.test.cc LABEL cpu)
+fluidity_add_test(grid_piece_steps_test SOURCES grid_piece_steps.test.cc LABEL cpu LINKS fluidity_grid_testing)
 # Replaces the nothrow allocation functions for the whole program, so it shares its program with no other test.
 fluidity_add_test(grid_out_of_memory_test SOURCES staggered_grid.out_of_memory.test.cc LABEL cpu)
 fluidity_add_test(grid_shared_gpu_compile_test SOURCES grid_tables.shared.gpu_compile.test.cu LABEL no_gpu)

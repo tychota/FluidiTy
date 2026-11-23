@@ -42,6 +42,7 @@
 #include <string>
 #include <vector>
 
+#include "fluidity/base/run_on.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_piece.h"
@@ -94,6 +95,9 @@ struct PieceBuffersRoom {
 // Builds grid buffers with room for `max_cell_blocks` blocks (at least 1) on the CPU, empty. Fails the calling test and
 // gives nothing when they cannot be built.
 std::optional<PieceBuffersRoom> BuildPieceBuffersRoom(std::uint32_t max_cell_blocks);
+
+// The same on `run_on`. A grid on the GPU is built from one cell, so the buffers are the empty ones of that grid.
+std::optional<PieceBuffersRoom> BuildPieceBuffersRoom(RunOn run_on, std::uint32_t max_cell_blocks);
 
 // Finds the first table of a real grid piece that differs from the tables built by BuildPieceTables, byte for byte:
 // the frame, the version, the block ids, the three neighbour arrays, the cell states, the face piece kinds, the piece
