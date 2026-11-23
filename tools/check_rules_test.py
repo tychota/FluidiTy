@@ -1439,6 +1439,26 @@ def test_a_message_may_name_a_file_of_the_old_code_after_main(forms_glossary):
     assert check_message.check_message("Compare\n\nWith `native/src/stencil_grid.cc`.\n", glossary) != []
 
 
+def test_no_allowed_name_names_something_that_no_longer_exists():
+    names = check_rules.load_allowed_names(check_rules.DEFAULT_ALLOWED_NAMES_PATH)
+    scanned = [check_rules.REPO_ROOT / folder for folder in ("src", "tests")]
+    assert check_rules.find_stale_allowed_names(names, scanned) == []
+
+
+def test_an_allowed_name_that_no_scanned_file_uses_is_stale(tmp_path):
+    write(tmp_path / "src", "a.h", "inline int MoveParticle(int x);\n// RenamedHelper is only in a comment.\n")
+    write(tmp_path / "src", "b.cc", 'const char* text = "GoneHelper";\n')
+    names = {"MoveParticle", "RenamedHelper", "GoneHelper", "NeverWritten"}
+    stale = check_rules.find_stale_allowed_names(names, [tmp_path])
+    assert stale == ["GoneHelper", "NeverWritten", "RenamedHelper"]
+
+
+def test_an_allowed_name_used_in_any_scanned_file_is_not_stale(tmp_path):
+    write(tmp_path / "src", "a.h", "int A();\n")
+    write(tmp_path / "tests", "b.test.cc", "void B() { CheckVec3IsNear(1); }\n")
+    assert check_rules.find_stale_allowed_names({"A", "CheckVec3IsNear"}, [tmp_path]) == []
+
+
 def test_the_real_glossary_allows_size_level_for_level_from_its_say_column():
     entries = check_rules.load_glossary(check_rules.DEFAULT_GLOSSARY_PATH)
     (level,) = [entry for entry in entries if entry.words == ("level",)]

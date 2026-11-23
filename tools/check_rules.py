@@ -440,6 +440,22 @@ def load_allowed_names(allowed_names_path: Path | None) -> set[str]:
     return names
 
 
+def find_stale_allowed_names(allowed_names: Iterable[str], paths: Iterable[Path | str]) -> list[str]:
+    """The allowed names, sorted, that no C++ file under `paths` uses as an identifier, as a name declared or called
+    (a name in a comment or a string does not count). An exemption for a name that was renamed or deleted would stay
+    unseen and allow the next function that takes the name, so a test fails on each one."""
+    remaining = set(allowed_names)
+    for file_path in iter_files(Path(path) for path in paths):
+        if not remaining:
+            break
+        if file_path.suffix not in CPP_SUFFIXES:
+            continue
+        text = file_path.read_bytes().decode("utf-8", errors="replace")
+        for line in split_lines(file_path, text):
+            remaining.difference_update(_identifiers(line.code))
+    return sorted(remaining)
+
+
 # ---------------------------------------------------------------------------------------------------
 # Splitting a file into code and comments
 # ---------------------------------------------------------------------------------------------------
