@@ -549,3 +549,15 @@ fluidity_add_test(
   fluidity_base_testing
   fluidity_grid_testing
 )
+
+fluidity_add_test(
+  grid_main_comparison_functional_test
+  SOURCES
+  grid_main_comparison.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
