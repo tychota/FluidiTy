@@ -1,0 +1,19 @@
+tests/grid/sloped_surface_scene.test.cc
+  s_4f0877e2acdcf0::t_bba0bb426289d7 5-9,82-83,87-89,93-96,102-114,136,151,154-159,165-170,285,297,312-313,341-345,356,360-361,390-391
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eaa8d90abf8f909c2c7fb727f5f630d081966026",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
