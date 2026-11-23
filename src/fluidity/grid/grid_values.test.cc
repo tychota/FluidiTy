@@ -241,6 +241,43 @@ TEST(ApplyGridVersion, OtherGrid_FollowsTheGrid) {
   EXPECT_EQ(values->block_count(), 5U);
 }
 
+// A bind to a grid of fewer blocks than the last one takes the smaller count, and the same grid bound twice leaves the
+// version and the count as they are.
+TEST(ApplyGridVersion, SmallerGridThenSameGridTwice_FollowsTheGrid) {
+  const TestGrid big_grid = BuildGridOfBlocks(5, {.value = 8});
+  const TestGrid small_grid = BuildGridOfBlocks(2, {.value = 9});
+  RunMemory run_memory = BuildCpuRunMemory(kTwoMebibytes);
+  std::expected<CellValues<double>, GridFailure> values = BuildCellValues<double>(RunOn::kCpu, 8, run_memory);
+  ASSERT_TRUE(values.has_value());
+  ASSERT_TRUE(ApplyGridVersion(*values, big_grid.grid).has_value());
+  ASSERT_TRUE(ApplyGridVersion(*values, small_grid.grid).has_value());
+  EXPECT_EQ(values->grid_version().value, 9U);
+  EXPECT_EQ(values->block_count(), 2U);
+  ASSERT_TRUE(ApplyGridVersion(*values, small_grid.grid).has_value());
+  EXPECT_EQ(values->grid_version().value, 9U);
+  EXPECT_EQ(values->block_count(), 2U);
+}
+
+// A grid whose buffers were taken back has version 0 and no block: binding to it leaves the values bound to no grid, so
+// a read fails with kWrongGridVersion.
+TEST(ApplyGridVersion, GridWithItsBuffersTaken_BindsToNoGrid) {
+  const TestGrid bound_grid = BuildGridOfBlocks(3, {.value = 4});
+  TestGrid emptied_grid = BuildGridOfBlocks(2, {.value = 5});
+  const GridBuffers taken = TakeBuffers(std::move(emptied_grid.grid));
+  EXPECT_EQ(taken.max_cell_blocks(), 2U);
+  RunMemory run_memory = BuildCpuRunMemory(kTwoMebibytes);
+  std::expected<CellValues<double>, GridFailure> values = BuildCellValues<double>(RunOn::kCpu, 8, run_memory);
+  ASSERT_TRUE(values.has_value());
+  ASSERT_TRUE(ApplyGridVersion(*values, bound_grid.grid).has_value());
+  ASSERT_TRUE(ApplyGridVersion(*values, emptied_grid.grid).has_value());
+  EXPECT_EQ(values->grid_version().value, 0U);
+  EXPECT_EQ(values->block_count(), 0U);
+  std::vector<double> read;
+  const std::expected<void, GridFailure> result = ReadValues(*values, std::span<double>(read));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, GridError::kWrongGridVersion);
+}
+
 TEST(ApplyGridVersion, MoreBlocksThanRoom_IsTooManyCellBlocks) {
   const TestGrid small_grid = BuildGridOfBlocks(3, {.value = 4});
   const TestGrid big_grid = BuildGridOfBlocks(9, {.value = 5});
@@ -367,6 +404,45 @@ TEST(GridValues, MovedFrom_IsBoundToNoneWithNoRoom) {
   EXPECT_EQ(built->grid_version().value, 0U);
   EXPECT_EQ(built->block_count(), 0U);
   EXPECT_EQ(built->max_cell_blocks(), 0U);
+}
+
+// Move assignment gives the target the room, version and block count of the source, and leaves the source bound to no
+// grid with no room; a read of the source then fails with kWrongGridVersion.
+TEST(GridValues, MoveAssignment_TakesEverythingFromTheSource) {
+  const TestGrid first_grid = BuildGridOfBlocks(2, {.value = 6});
+  const TestGrid second_grid = BuildGridOfBlocks(3, {.value = 7});
+  RunMemory first_memory = BuildCpuRunMemory(kTwoMebibytes);
+  RunMemory second_memory = BuildCpuRunMemory(kTwoMebibytes);
+  std::expected<CellValues<double>, GridFailure> target = BuildCellValues<double>(first_grid.grid, first_memory);
+  std::expected<CellValues<double>, GridFailure> source = BuildCellValues<double>(RunOn::kCpu, 8, second_memory);
+  ASSERT_TRUE(target.has_value());
+  ASSERT_TRUE(source.has_value());
+  ASSERT_TRUE(ApplyGridVersion(*source, second_grid.grid).has_value());
+  *target = std::move(*source);
+  EXPECT_EQ(target->grid_version().value, 7U);
+  EXPECT_EQ(target->block_count(), 3U);
+  EXPECT_EQ(target->max_cell_blocks(), 8U);
+  EXPECT_EQ(source->grid_version().value, 0U);
+  EXPECT_EQ(source->block_count(), 0U);
+  EXPECT_EQ(source->max_cell_blocks(), 0U);
+  std::vector<double> read;
+  const std::expected<void, GridFailure> result = ReadValues(*source, std::span<double>(read));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().error, GridError::kWrongGridVersion);
+}
+
+// Moving an object onto itself changes nothing.
+TEST(GridValues, MoveAssignmentToItself_ChangesNothing) {
+  const TestGrid test_grid = BuildGridOfBlocks(2, {.value = 6});
+  RunMemory run_memory = BuildCpuRunMemory(kTwoMebibytes);
+  std::expected<CellValues<double>, GridFailure> built = BuildCellValues<double>(test_grid.grid, run_memory);
+  ASSERT_TRUE(built.has_value());
+  CellValues<double>& values = *built;
+  CellValues<double>& same_values = values;
+  values = std::move(same_values);
+  EXPECT_EQ(values.grid_version().value, 6U);
+  EXPECT_EQ(values.block_count(), 2U);
+  EXPECT_EQ(values.max_cell_blocks(), 2U);
 }
 
 TEST(BuildFaceValues, IntoRunMemory_TakesOnePieceOfPlacesTimesSize) {

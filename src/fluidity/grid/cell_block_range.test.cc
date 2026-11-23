@@ -321,6 +321,58 @@ TEST(FindBorderBlocks, StackedBufferFormShortOutput_WritesFirstEntriesReturnsTot
   EXPECT_EQ(short_output->data()[0].value, 1U);
 }
 
+// An empty range with block 2 so far: the layer is the border of block 2 (blocks 0 and 1, which an empty range does not
+// hold) and block 2 itself, which is in the list as border so far.
+TEST(FindBorderBlocks, EmptyRangeWithBorderSoFar_ListsTheBorderOfTheSet) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const std::vector<CellBlockIndex> layer =
+      FindLayerOrFail(*rig, {.first_block = 1, .block_count = 0}, ToBlocks({2}), BorderWidth::kTouchingCells);
+  EXPECT_EQ(ToIndexes(layer), (std::vector<std::uint32_t>{0, 1, 2}));
+}
+
+// An output buffer of exactly the border's 2 entries receives both and gives the count 2.
+TEST(FindBorderBlocks, OutputOfExactlyTheBorderSize_HoldsTheWholeBorder) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  std::expected<Buffer<CellBlockIndex>, BufferError> exact_output = BuildBuffer<CellBlockIndex>(RunOn::kCpu, 2);
+  ASSERT_TRUE(exact_output.has_value());
+  const std::expected<std::uint32_t, GridFailure> total = FindBorderBlocks(
+      test_grid->grid,
+      {.first_block = 0, .block_count = 1},
+      rig->so_far_buffer,
+      0,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      *exact_output
+  );
+  ASSERT_TRUE(total.has_value());
+  EXPECT_EQ(*total, 2U);
+  EXPECT_EQ(exact_output->data()[0].value, 1U);
+  EXPECT_EQ(exact_output->data()[1].value, 2U);
+}
+
+// A grid of no cell has no block: the whole-grid range is empty, and so is its border, in both forms.
+TEST(FindBorderBlocks, GridOfNoBlock_HasNoBorder) {
+  const std::vector<CellId> cells;
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  ASSERT_EQ(test_grid->grid.counts().cell_blocks, 0U);
+  const CellBlockRange all_blocks = test_grid->grid.all_blocks();
+  EXPECT_EQ(all_blocks.block_count, 0U);
+  EXPECT_TRUE(BuildRangeWithBorder(test_grid->grid, all_blocks).border_blocks.empty());
+  const std::expected<std::vector<CellBlockIndex>, GridFailure> border =
+      FindBorderBlocks(test_grid->grid, std::vector<CellBlockIndex>{}, BorderWidth::kFourCellWidths);
+  ASSERT_TRUE(border.has_value());
+  EXPECT_TRUE(border->empty());
+}
+
 TEST(FindBorderBlocks, StackedBufferFormSameBufferTwice_IsBadInput) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
