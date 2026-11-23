@@ -221,6 +221,8 @@ TEST(TakeBuffers, Piece_GivesBuffersForTheNextPiece) {
   EXPECT_EQ(ToIndexes(second->block_in_whole_grid()), (std::vector<std::uint32_t>{0, 1}));
 }
 
+// Counts the allocations of three calls on the same buffers: the span form, the buffer form, and a call that fails.
+// Each call and each give-back of the buffers allocates nothing.
 TEST(BuildGridPiece, AnyPiece_AllocatesNothing) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
@@ -228,13 +230,32 @@ TEST(BuildGridPiece, AnyPiece_AllocatesNothing) {
   std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(3);
   ASSERT_TRUE(room.has_value());
   GridBuffers& buffers = room->buffers;
+  const CellBlockRange range = {.first_block = 2, .block_count = 1};
   const std::vector<CellBlockIndex> border = ToBlocks({0, 1});
-  const std::uint64_t count_before_call = ComputeAllocationCount();
-  const std::expected<GridPiece, GridFailure> piece =
-      BuildGridPiece(test_grid->grid, {.first_block = 2, .block_count = 1}, border, buffers);
-  const std::uint64_t count_after_call = ComputeAllocationCount();
-  ASSERT_TRUE(piece.has_value());
-  EXPECT_EQ(count_after_call - count_before_call, 0U);
+  std::expected<Buffer<CellBlockIndex>, BufferError> border_buffer = BuildBuffer<CellBlockIndex>(RunOn::kCpu, 2);
+  ASSERT_TRUE(border_buffer.has_value());
+  ASSERT_TRUE(WriteBuffer<CellBlockIndex>(border, *border_buffer, 0).has_value());
+  const std::vector<CellBlockIndex> border_inside_range = ToBlocks({0, 2});
+  const std::uint64_t count_before_span_form = ComputeAllocationCount();
+  std::expected<GridPiece, GridFailure> span_piece = BuildGridPiece(test_grid->grid, range, border, buffers);
+  const std::uint64_t count_after_span_form = ComputeAllocationCount();
+  ASSERT_TRUE(span_piece.has_value());
+  buffers = TakeBuffers(std::move(*span_piece));
+  const std::uint64_t count_before_buffer_form = ComputeAllocationCount();
+  std::expected<GridPiece, GridFailure> buffer_piece =
+      BuildGridPiece(test_grid->grid, range, *border_buffer, 2, buffers);
+  const std::uint64_t count_after_buffer_form = ComputeAllocationCount();
+  ASSERT_TRUE(buffer_piece.has_value());
+  buffers = TakeBuffers(std::move(*buffer_piece));
+  const std::uint64_t count_before_failure = ComputeAllocationCount();
+  const std::expected<GridPiece, GridFailure> failed =
+      BuildGridPiece(test_grid->grid, range, border_inside_range, buffers);
+  const std::uint64_t count_after_failure = ComputeAllocationCount();
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(failed.error().error, GridError::kBadInput);
+  EXPECT_EQ(count_after_span_form - count_before_span_form, 0U);
+  EXPECT_EQ(count_after_buffer_form - count_before_buffer_form, 0U);
+  EXPECT_EQ(count_after_failure - count_before_failure, 0U);
 }
 
 }  // namespace

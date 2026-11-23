@@ -28,7 +28,7 @@ namespace fluidity::grid {
 namespace {
 
 // The random grids compared with the vector form, the random grids checked through pieces, and the blocks of a range.
-constexpr std::size_t kVectorFormGridCount = 30;
+constexpr std::size_t kVectorFormGridCount = 100;
 constexpr std::size_t kPieceGridCount = 5;
 constexpr std::uint32_t kRangeBlocks = 4;
 constexpr std::uint32_t kNestedBallRangeBlocks = 16;
@@ -96,7 +96,7 @@ void CheckBufferFormEqualsVectorForm(BorderSearchRig& rig, CellBlockRange range)
   }
 }
 
-// The tested ranges of each of 30 random grids, at four layers.
+// The tested ranges of each of 100 random grids, at four layers.
 TEST(FindBorderBlocks, StackedBufferForm_EqualsVectorFormLayerByLayer) {
   const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
   ASSERT_GE(built.grids.size(), kVectorFormGridCount);

@@ -155,7 +155,8 @@ FailedReplay FindFailureOfReplay(
   const PieceTables& tables = replay.tables;
   const bool is_all_unwritten = ComputeIsUnwritten(tables.block_in_whole) && ComputeIsUnwritten(tables.block_ids)
       && ComputeIsUnwritten(tables.cell_states) && ComputeIsUnwritten(tables.face_piece_kinds)
-      && ComputeIsUnwritten(tables.same_size_level_blocks);
+      && ComputeIsUnwritten(tables.same_size_level_blocks) && ComputeIsUnwritten(tables.bigger_block)
+      && ComputeIsUnwritten(tables.smaller_blocks);
   return {.failure_step = ToFailureStep(replay.status.failure_key), .is_anything_written = !is_all_unwritten};
 }
 

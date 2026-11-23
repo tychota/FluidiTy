@@ -37,6 +37,7 @@ namespace fluidity::grid {
 namespace {
 
 constexpr int kPositionCount = 100;
+constexpr int kMostDraws = 20 * kPositionCount;  // Draws of positions allowed for finding kPositionCount in range.
 constexpr std::array<std::uint32_t, 3> kCutBlocks = {1, 3, 7};
 
 // Builds the piece of `range` and `border` into the buffers of `room` and fails the calling test when it cannot.
@@ -302,7 +303,8 @@ bool ComputeIsInRangeCell(const GridTables& whole, Vec3 position, CellBlockRange
   return block >= range.first_block && block - range.first_block < range.block_count;
 }
 
-// Checks the weights at 100 positions that FindCellAt gives to cells of the range, on every axis.
+// Checks the weights at 100 positions that FindCellAt gives to cells of the range, on every axis. Positions are drawn
+// until 100 are checked, within kMostDraws draws.
 void CheckPieceGivesSameWeights(const StaggeredGrid& whole_grid, const GridPiece& piece, const StackedBorder& stacked) {
   const GridTables whole = whole_grid.tables(RunOn::kCpu);
   const std::vector<CellPlaceIndex> cells = FindActiveCellsOfRange(whole, stacked.range);
@@ -312,7 +314,7 @@ void CheckPieceGivesSameWeights(const StaggeredGrid& whole_grid, const GridPiece
   const LoadedPieceTables loaded_tables = ToLoadedPieceTables(piece);
   std::mt19937_64 generator(stacked.range.first_block + 1000U);
   int checked_positions = 0;
-  for (int draw = 0; draw < kPositionCount; ++draw) {
+  for (int draw = 0; draw < kMostDraws && checked_positions < kPositionCount; ++draw) {
     const CellPlaceIndex cell = cells.at(ToUniformIndex(generator(), cells.size()));
     const Vec3 position = FindDrawnPositionInCell(whole, cell, generator);
     if (!ComputeIsInRangeCell(whole, position, stacked.range)) {
@@ -323,7 +325,7 @@ void CheckPieceGivesSameWeights(const StaggeredGrid& whole_grid, const GridPiece
       CheckSameWeights(whole, loaded_tables, position, axis);
     }
   }
-  EXPECT_GT(checked_positions, kPositionCount / 2);
+  EXPECT_EQ(checked_positions, kPositionCount);
 }
 
 // 100 positions that FindCellAt gives to cells of the range, with every face kept and every axis: the lists map to the
@@ -398,12 +400,23 @@ TEST(BuildGridPiece, BlockSumsInPieceOrder_EqualWholeGrid) {
   }
 }
 
-// The sum of `partials` made one after the other, where each partial counts half as much as the one after it: unlike
-// a sum of a set, it gives other bits when the partials come in another order.
-double ComputeOrderedHalvingSum(std::span<const double> partials) {
+// The weight of the entry `position_in_list` of an ordered sum: a whole number from 1 to 1,024 taken from a fixed hash
+// of the position (Knuth's multiplicative hash, 2,654,435,761 times the position, the product divided by 1,024, modulo
+// 1,024), so the weights neither repeat in a short period nor shrink with the distance from the end of the list. A
+// double holds every weight exactly.
+double ComputeOrderedSumWeight(std::size_t position_in_list) {
+  const std::uint64_t product = std::uint64_t{2654435761U} * position_in_list;
+  return static_cast<double>(((product / 1024U) % 1024U) + 1U);
+}
+
+// The sum of `partials` made one after the other, each partial times the weight of its position in the list: unlike a
+// sum of a set, it gives other bits when two partials swap places anywhere in the list, whatever the length. (A sum
+// that halves the total before each addition forgets a partial 53 places back, so it cannot see a swap far from the end
+// of a long list.)
+double ComputeOrderedWeightedSum(std::span<const double> partials) {
   double total = 0;
-  for (const double partial : partials) {
-    total = (total * 0.5) + partial;
+  for (std::size_t position_in_list = 0; position_in_list < partials.size(); ++position_in_list) {
+    total += ComputeOrderedSumWeight(position_in_list) * partials[position_in_list];
   }
   return total;
 }
@@ -428,7 +441,7 @@ void CheckBlockOrderGivesWholeGridSum(
   for (const CellBlockIndex block : BuildMergedBlocks(ToRangeBlocks(stacked.range), stacked.border)) {
     whole_partials.push_back(ComputeBlockPartial(whole_tables, block.value));
   }
-  EXPECT_TRUE(ComputeIsSameBits(ComputeOrderedHalvingSum(piece_partials), ComputeOrderedHalvingSum(whole_partials)));
+  EXPECT_TRUE(ComputeIsSameBits(ComputeOrderedWeightedSum(piece_partials), ComputeOrderedWeightedSum(whole_partials)));
 }
 
 // An ordered sum over the blocks of each piece, border included, has the bits of the same sum over the same blocks of
