@@ -107,5 +107,16 @@ TEST(FindCellAt, OnGpu_EqualsCpu) {
   EXPECT_LT(found_count, position_count - (position_count / 10));
 }
 
+// A call with no query starts no GPU function and is done: it asks the GPU for nothing, so it cannot fail on an empty
+// launch.
+TEST(FindCellAt, OnGpuWithNoQuery_IsDone) {
+  const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
+  ASSERT_EQ(grids.size(), 1U);
+  EXPECT_EQ(
+      FindCellsAtOnGpu(grids.front().on_gpu.grid.tables(RunOn::kGpu), nullptr, 0, nullptr),
+      RunOnCallStatus::kDone
+  ) << ReadLastRunnerFailure();
+}
+
 }  // namespace
 }  // namespace fluidity::grid

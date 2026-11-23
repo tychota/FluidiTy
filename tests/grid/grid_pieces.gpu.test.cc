@@ -493,6 +493,8 @@ TEST(BuildGridPiece, OnGpu_AllocatesNothing) {
   };
   const std::vector<CellBlockIndex> warm_up_border =
       FindLayerOrFail(*rig, ranges.front(), {}, BorderWidth::kTouchingCells);
+  // An empty border would leave some GPU functions unloaded for the counted calls.
+  ASSERT_FALSE(warm_up_border.empty());
   {
     std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(RunOn::kGpu, block_count);
     ASSERT_TRUE(room.has_value());

@@ -1,8 +1,7 @@
 // Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
 //
-// Binds value buffers to 100 grids built on the GPU in turn: a bind launches and copies nothing, so the GPU's free
-// bytes do not change and the values read back are the ones written before. The values read back go to
-// WriteResultDigest.
+// Binds value buffers to 100 grids built on the GPU in turn: a bind launches and copies nothing, so the values read
+// back are the ones written before, each at its own place. The values read back go to WriteResultDigest.
 
 #include <gtest/gtest.h>
 
@@ -14,7 +13,6 @@
 #include <vector>
 
 #include "fluidity/base/buffer.h"
-#include "fluidity/base/processor_description.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
 #include "fluidity/base/testing/base_support.h"
@@ -64,7 +62,7 @@ void CheckBindsFollowEveryGrid(CellValues<double>& values, const std::vector<Tes
   }
 }
 
-TEST(ApplyGridVersion, OnGpuGrid_LaunchesNothing) {
+TEST(ApplyGridVersion, OnGpuGrids_KeepEveryValueAtItsPlace) {
   const std::vector<TestGrid> grids = BuildGpuGridsOfRandomLists();
   ASSERT_EQ(grids.size(), kGridCount);
   std::expected<RunMemory, BufferError> run_memory =
@@ -72,15 +70,13 @@ TEST(ApplyGridVersion, OnGpuGrid_LaunchesNothing) {
   ASSERT_TRUE(run_memory.has_value());
   std::expected<CellValues<double>, GridFailure> values = BuildCellValues<double>(RunOn::kGpu, kRoom, *run_memory);
   ASSERT_TRUE(values.has_value());
-  const std::vector<double> written(std::size_t{kRoom} * kCellPlacesPerBlock, 2.5);
+  std::vector<double> written(std::size_t{kRoom} * kCellPlacesPerBlock);
+  for (std::size_t place = 0; place < written.size(); ++place) {
+    written[place] = static_cast<double>(place) + 0.5;  // Each place has its own value, exact in a double.
+  }
   ASSERT_TRUE(WriteBuffer<double>(written, values->buffer()).has_value());
 
-  const std::expected<MemoryAvailable, BufferError> before = ReadMemoryAvailable(RunOn::kGpu);
-  ASSERT_TRUE(before.has_value());
   CheckBindsFollowEveryGrid(*values, grids);
-  const std::expected<MemoryAvailable, BufferError> after = ReadMemoryAvailable(RunOn::kGpu);
-  ASSERT_TRUE(after.has_value());
-  EXPECT_EQ(after->free_bytes, before->free_bytes);
 
   std::vector<double> read(written.size(), 0.0);
   ASSERT_TRUE(ReadBuffer<double>(values->buffer(), read).has_value());

@@ -226,6 +226,17 @@ void ApplyWeightResults(
   results.weights_on_gpu.insert(results.weights_on_gpu.end(), on_gpu.begin(), on_gpu.end());
 }
 
+// Names the weights of the positions of one range for a failure: the entry of a result is 3 x the place of the position
+// in this list + the axis (0 for X), so the failure text gives the position entries of the scene.
+std::string BuildWeightQueriesName(CellBlockRange range, std::span<const std::size_t> position_entries) {
+  std::string description = "weights of the positions of the range from block " + std::to_string(range.first_block)
+      + " (entry = 3 x place in the list + axis; positions";
+  for (const std::size_t position_entry : position_entries) {
+    description += " " + std::to_string(position_entry);
+  }
+  return description + ")";
+}
+
 // What the loop over the ranges works on: the grid on both processors, the positions, the memory and the results.
 struct RangeRun {
   const GridOnBothProcessors& grid;
@@ -239,10 +250,17 @@ struct RangeRun {
 void ApplyRange(RangeRun& run, CellBlockRange range, std::span<const std::size_t> position_entries) {
   MemoryOfBothProcessors& memory = run.memory;
   ResultsOfBothProcessors& results = run.results;
+  const std::size_t layers_before = results.layers_on_cpu.size();
   const std::vector<CellBlockIndex> border_on_cpu =
       FindStackedBorder(memory.search_on_cpu, range, results.layers_on_cpu);
   const std::vector<CellBlockIndex> border_on_gpu =
       FindStackedBorder(memory.search_on_gpu, range, results.layers_on_gpu);
+  CheckSameResults(
+      std::span<const BorderLayerResult>(results.layers_on_cpu).subspan(layers_before),
+      std::span<const BorderLayerResult>(results.layers_on_gpu).subspan(layers_before),
+      "layers of the stacked border of the range from block " + std::to_string(range.first_block)
+          + " (entry = layer 0 to 3 of kLayerWidths)"
+  );
   std::expected<GridPiece, GridFailure> piece_on_cpu =
       BuildGridPiece(run.grid.on_cpu.grid, range, border_on_cpu, memory.room_on_cpu.buffers);
   std::expected<GridPiece, GridFailure> piece_on_gpu = BuildGridPiece(
@@ -262,11 +280,17 @@ void ApplyRange(RangeRun& run, CellBlockRange range, std::span<const std::size_t
   ASSERT_TRUE(read_back.has_value());
   results.pieces_on_gpu.push_back(*read_back);
   const std::vector<NearbyFaceQuery> queries = BuildWeightQueries(run.positions, position_entries);
+  const std::size_t weights_before = results.weights_on_cpu.size();
   ApplyWeightResults(
       piece_on_cpu->grid().tables(RunOn::kCpu),
       piece_on_gpu->grid().tables(RunOn::kGpu),
       queries,
       results
+  );
+  CheckSameResults(
+      std::span<const NearbyFaceResult>(results.weights_on_cpu).subspan(weights_before),
+      std::span<const NearbyFaceResult>(results.weights_on_gpu).subspan(weights_before),
+      BuildWeightQueriesName(range, position_entries)
   );
   memory.room_on_cpu.buffers = TakeBuffers(std::move(*piece_on_cpu));
   memory.room_on_gpu.buffers = TakeBuffers(std::move(*piece_on_gpu));
@@ -315,22 +339,13 @@ void CheckWeightsInWholeGrid(const GridOnBothProcessors& grid, std::span<const V
   );
 }
 
-// Compares what the loop over the ranges collected, and writes the GPU's side to the digest.
+// Compares the grid pieces that the loop over the ranges collected (the layers and the weights were compared range by
+// range), and writes the GPU's side to the digest.
 void CheckResultsOfBothProcessors(const ResultsOfBothProcessors& results, std::size_t position_count) {
-  CheckSameResults(
-      std::span<const BorderLayerResult>(results.layers_on_cpu),
-      std::span<const BorderLayerResult>(results.layers_on_gpu),
-      "layers of the stacked borders"
-  );
   CheckSameResults(
       std::span<const PieceDigest>(results.pieces_on_cpu),
       std::span<const PieceDigest>(results.pieces_on_gpu),
       "grid pieces"
-  );
-  CheckSameResults(
-      std::span<const NearbyFaceResult>(results.weights_on_cpu),
-      std::span<const NearbyFaceResult>(results.weights_on_gpu),
-      "weights of the positions in the piece of their range"
   );
   EXPECT_EQ(results.weights_on_gpu.size(), position_count * kAxes.size());
   WriteDigestOfResults(

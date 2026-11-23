@@ -106,6 +106,10 @@ StartOneThreadPerQuery(const GridTables& tables, const Query* gpu_queries, int c
 template <typename Query, typename Result, Result (*ComputeResult)(const GridTables&, const Query&)>
 RunOnCallStatus RunOneThreadPerQuery(const GridTables& tables, const Query* queries, int count, Result* results) {
   FindLastFailure().clear();
+  // No query asks nothing: a launch of no thread block does not start, so the call ends before it.
+  if (count <= 0) {
+    return RunOnCallStatus::kDone;
+  }
   // Steps: 1 the GPU memory  2 the queries  3 the GPU function  4 the results back
   // Step 1: memory for the queries and the results.
   const auto query_count = static_cast<std::size_t>(count);

@@ -178,6 +178,22 @@ TEST(FindBorderBlocks, OnGpuRandomGrids_SameBitsAsCpu) {
   }
 }
 
+// A range of one block at the grid's end and one of the grid's first block, four layers: where the borders run into the
+// edge of the grid, the lists are the CPU's.
+TEST(FindBorderBlocks, OnGpuOneBlockAtTheGridsEnds_SameBitsAsCpu) {
+  const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(kGridCount);
+  ASSERT_EQ(grids.size(), static_cast<std::size_t>(kGridCount));
+  for (std::size_t grid = 0; grid < grids.size(); ++grid) {
+    SCOPED_TRACE(grid);
+    const std::uint32_t block_count = grids[grid].on_cpu.grid.counts().cell_blocks;
+    const std::array<CellBlockRange, 2> ranges = {
+        CellBlockRange{.first_block = 0, .block_count = 1},
+        CellBlockRange{.first_block = block_count - 1, .block_count = 1},
+    };
+    CheckLayersOfRanges(grids[grid], ranges, kLayerWidths, "random grid " + std::to_string(grid) + ", end blocks");
+  }
+}
+
 // The nested-ball grid, ranges of 16 blocks: one layer at each width, then two stacked layers (touching, four widths).
 TEST(FindBorderBlocks, OnGpuNestedBallRanges_SameBitsAsCpu) {
   const std::optional<GridOnBothProcessors> grid = BuildGridOnBothProcessors(ToUnitFrame(4), BuildNestedBallCells());

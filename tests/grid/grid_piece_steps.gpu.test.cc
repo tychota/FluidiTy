@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -70,8 +71,21 @@ std::vector<PieceStepQuery> BuildQueries(const GridTables& whole, std::span<cons
   return queries;
 }
 
-// The steps for every face place of the piece of one range: the GPU's bits are the CPU's.
-void CheckStepsOfRange(const GridOnBothProcessors& grid, CellBlockRange range, const std::string& name) {
+// Which of the two answers that tell a piece from the whole grid the CPU gave somewhere: a face place outside the
+// piece, and a neighbour that is not loaded. A test that saw neither compared answers that are the same everywhere.
+struct CpuAnswersSeen {
+  bool has_outside_piece_kind = false;
+  bool has_no_index_neighbour = false;
+};
+
+// The steps for every face place of the piece of one range: the GPU's bits are the CPU's. Records in `seen` what the
+// CPU's answers held.
+void CheckStepsOfRange(
+    const GridOnBothProcessors& grid,
+    CellBlockRange range,
+    const std::string& name,
+    CpuAnswersSeen& seen
+) {
   const StaggeredGrid& whole_grid = grid.on_cpu.grid;
   const RangeWithBorder range_with_border = BuildRangeWithBorder(whole_grid, range);
   std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(whole_grid.counts().cell_blocks);
@@ -93,6 +107,15 @@ void CheckStepsOfRange(const GridOnBothProcessors& grid, CellBlockRange range, c
   for (const PieceStepQuery& query : queries) {
     on_cpu.push_back(ComputePieceStepResult(whole, set, query));
   }
+  constexpr auto kOutsidePieceNumber = static_cast<std::uint32_t>(FacePieceKind::kOutsidePiece);
+  seen.has_outside_piece_kind =
+      seen.has_outside_piece_kind || std::ranges::any_of(on_cpu, [](const PieceStepResult& result) {
+        return result.face_kind == kOutsidePieceNumber;
+      });
+  seen.has_no_index_neighbour =
+      seen.has_no_index_neighbour || std::ranges::any_of(on_cpu, [](const PieceStepResult& result) {
+        return result.piece_neighbour == kNoIndex;
+      });
   std::vector<PieceStepResult> on_gpu(queries.size());
   const RunOnCallStatus status = ComputePieceStepResultsOnGpu(
       grid.on_gpu.grid.tables(RunOn::kGpu),
@@ -111,14 +134,17 @@ void CheckStepsOfRange(const GridOnBothProcessors& grid, CellBlockRange range, c
 TEST(BuildGridPiece, StepsOnGpu_SameBitsAsCpu) {
   const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(kGridCount);
   ASSERT_EQ(grids.size(), static_cast<std::size_t>(kGridCount));
+  CpuAnswersSeen seen;
   for (std::size_t grid_entry = 0; grid_entry < grids.size(); ++grid_entry) {
     for (const CellBlockRange range : BuildTestedRanges(grids[grid_entry].on_cpu.grid, kRangeBlocks)) {
       const std::string name =
           "grid " + std::to_string(grid_entry) + ", range from block " + std::to_string(range.first_block);
       SCOPED_TRACE(name);
-      CheckStepsOfRange(grids[grid_entry], range, name);
+      CheckStepsOfRange(grids[grid_entry], range, name, seen);
     }
   }
+  EXPECT_TRUE(seen.has_outside_piece_kind);
+  EXPECT_TRUE(seen.has_no_index_neighbour);
 }
 
 }  // namespace
