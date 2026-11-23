@@ -1,0 +1,62 @@
+src/fluidity/grid/grid_piece_steps.h
+  s_4f0877e2acdcf0::t_d7fe1ee6daee90 1-133
+src/fluidity/grid/grid_piece_cpu.cc
+  s_4f0877e2acdcf0::t_c42a70da4afaad 1-217
+src/fluidity/grid/grid_piece.h
+  s_4f0877e2acdcf0::t_cbd1dd1f6b6927 1-167
+  s_4f0877e2acdcf0::t_0a2a90828e1bb3 168-171
+docs/glossary.md
+  s_4f0877e2acdcf0::t_b6bd4d3164c07d 171-172
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_13271f147da3c4 2223-2225
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_9750101a8119ef 17-18,29,99-110
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_18552c85048691 27-28,58
+src/fluidity/grid/grid_buffers_internal.h
+  s_4f0877e2acdcf0::t_89d631d7dd397b 159-160,190-192
+src/fluidity/grid/grid_piece.test.cc
+  s_4f0877e2acdcf0::t_0ce28ed73ea8d8 1-203
+src/fluidity/grid/grid_piece_steps.test.cc
+  s_4f0877e2acdcf0::t_5da8ec0165e07d 1-50
+src/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_b9262eb9196a6a 347
+src/fluidity/grid/staggered_grid_cpu.cc
+  s_4f0877e2acdcf0::t_49f873c1eb42ba 775-778
+src/fluidity/grid/testing/grid_functions_answers.h
+  s_4f0877e2acdcf0::t_dfa3e3463af7d6 19,25-26,56,359-403
+src/fluidity/grid/testing/grid_functions_result_words.h
+  s_4f0877e2acdcf0::t_7a681ebc113a1c 320-325
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_4f0877e2acdcf0::t_76bb216790ac4c 79-93,177-192,316-421,517,540
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_b56b51f5746933 19-20,105-107,216-228,238-241
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_0f8466c6704757 10-11,23,31,34-36,43,52,57,61,75,83,198-199,394-395,517-523,545,579-660,663,667,682-695
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_20dfe0dd0af5d7 20-25,47,49-50,70-76,87-105,150-163
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_37293fcf04ce05 41-52,175-187
+tests/grid/grid_piece_steps.gpu.test.cc
+  s_4f0877e2acdcf0::t_f742dfd25a08db 1-125
+tests/grid/grid_pieces_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_3863be9fbb461a 1-519
+tests/grid/shared_grid_functions.gpu.test.cc
+  s_4f0877e2acdcf0::t_e21e9fffda40b6 251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7223081c3506d5f8f8b2e8348a1544acd052a1c3",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
