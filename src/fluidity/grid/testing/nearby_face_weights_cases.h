@@ -95,8 +95,8 @@ inline double ComputeLinearValue(LinearField field, Vec3 offset) {
 
 // Fits one matrix row to the values of a linear field on the kept faces, as the method paper's transfer does: the
 // inverse weighted spread times the sum of weight x value x offset from the mean. With kCentred the weighted mean of
-// the values (the weights added in list order) is taken off each value first, which changes nothing in exact
-// arithmetic.
+// the values (the weights added in list order) is taken off each value first, which changes nothing in
+// exact arithmetic.
 // Requires: weights.fit is kFull.
 inline Vec3 ComputeFittedMatrixRow(
     const GridTables& tables,

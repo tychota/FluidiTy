@@ -19,8 +19,8 @@
 //          PieceStepSet, PieceStepQuery, PieceStepResult, ComputePieceStepResult,
 //          FindCellsAtPosition, ComputeNearbyFaceResult, ComputeFaceWeightResult,
 //          ComputeFormulaResult, ComputeCellPlaceFacts, ComputeFacePlaceFacts, FindCellCornersOf, FindFaceCornersOf,
-//          ComputeCornerPositionOf, FindCellsAroundEdgeOf, FindTouchingCellsOf, FindFacePiecesOf, FindCellsNearFaceOf,
-//          FindFaceSearchWalk
+//          ComputeCornerPositionOf, FindCellsAroundEdgeOf, FindTouchingCellsOf, FindFacePiecesOf,
+//          FindCellsNearFaceOf, FindFaceSearchWalk
 // Uses:    BorderWidth, BlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
 //          (grid/border_block_steps.h), ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind
 //          (grid/grid_piece_steps.h),
@@ -226,8 +226,8 @@ FLUIDITY_CPU_AND_GPU inline FaceSearchWalk FindFaceSearchWalk(const GridTables& 
   return walk;
 }
 
-// The query of the formulas that need no table: one frame, one cell width, the speeds and counts of a build, and a big
-// cell.
+// The query of the formulas that need no table: one frame, one cell width, the speeds and counts of a build, and a
+// big cell.
 struct FormulaQuery {
   GridFrame frame{};  // ComputeCellWidthsBySizeLevel; frame.biggest_cell_width is also ComputeReferenceSpeed's width.
   double cell_width = 0;  // m. ComputeCompleteWeightedSpread.

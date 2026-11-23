@@ -18,7 +18,7 @@
 //          ApplyPieceMapWriteAt, ApplyPieceBlockCopyAt, ApplyPieceCellStateCopyAt, ApplyPieceFaceKindWriteAt
 //          (grid/grid_piece_steps.h), GridBuildStatus, kNoFailureKey (grid/grid_build_status.h),
 //          ComputeResetBuildStatus (grid/grid_build_steps.h), PieceTables (grid/testing/grid_piece_support.h),
-//          GridTables
+//          GridTables (grid/grid_tables.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h)
 // Used by: tests/grid/grid_piece_steps_in_every_thread_order.test.cc
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 

@@ -45,8 +45,7 @@ inline constexpr int kTestFactSetCount = 10000;
 
 // Builds fact set i = fact_set_index with the given cell size factor (no unit). The merge test's two flags stay false.
 //
-// Example: BuildTestCellSizeFacts(0, 1.0) has depth and distance +infinity, velocity change size 0 and both flags
-//   set.
+// Example: BuildTestCellSizeFacts(0, 1.0) has depth and distance +infinity, velocity change size 0 and both flags set.
 // Requires: fact_set_index is 0 or more.
 inline CellSizeFacts BuildTestCellSizeFacts(int fact_set_index, double cell_size_factor) {
   const bool has_no_surface_near = fact_set_index % 11 == 0;

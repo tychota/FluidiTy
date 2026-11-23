@@ -68,8 +68,8 @@ inline void ApplySmallCellsToList(CellId big_cell, std::vector<CellId>& cells) {
   }
 }
 
-// The size-level-0 cell {0,0,0} beside the 8 size-level-1 cells of size-level-0 cell {1,0,0}, in a frame of 2 size
-// levels.
+// The size-level-0 cell {0,0,0} beside the 8 size-level-1 cells of size-level-0 cell {1,0,0}, in a frame of 2
+// size levels.
 inline std::vector<CellId> BuildSplitCellBesideBigCell() {
   std::vector<CellId> cells = {ToCell(0, 0, 0, 0)};
   ApplySmallCellsToList(ToCell(0, 1, 0, 0), cells);

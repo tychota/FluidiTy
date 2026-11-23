@@ -7,7 +7,8 @@
 //   per test program, when a test first asks for the grid, since every test of a program asks for them.
 //
 // Owns:    BlockNumbers, ToBlockNumbers, ToBlockList, FindBorderOrFail, GridBorderCase, FindGridBorderCase
-// Uses:    CPU-only guard (base/cpu_only.h), FindBorderBlocks, BorderWidth (grid/cell_block_range.h),
+// Uses:    CPU-only guard (base/cpu_only.h), the border search steps (grid/border_block_steps.h), FindBorderBlocks,
+//          BorderWidth (grid/cell_block_range.h),
 //          FindChosenBlockSets (grid/testing/cell_block_range_cases.h), FindRandomGridsWithCheckers
 //          (grid/testing/grid_support.h), StaggeredGrid (grid/staggered_grid.h), GridFailure (grid/grid_error.h),
 //          CellBlockIndex (grid/grid_ids.h)

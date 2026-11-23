@@ -10,8 +10,7 @@
 //          BuildEverySizeLevelAtCoordLimits, kSameSizeLevelEntriesPerBlock, kSmallerBlocksPerBlock, TableVectors,
 //          BuildEmptyTables, ToBlock, ToCellPlace, ApplyFoundNeighbours, BuildSplitCells, ToBlockCoordByDivision,
 //          ToBlockCoord, ToSizeLevelNumber, ToBlockOfCell, BuildTablesOfCells, FacePieceWithKind,
-//          BuildFacePiecesOfTables, BuildFacePiecesOfChecker, kSiblingChecks, kReplayRoom, ReplayArrays,
-//          kGuardCount,
+//          BuildFacePiecesOfTables, BuildFacePiecesOfChecker, kSiblingChecks, kReplayRoom, ReplayArrays, kGuardCount,
 //          BuildReplayArrays, BuildReplayArrays, ToGuardCellId, kGuardSortKey, kGuardOrderEntry, kGuardCellState,
 //          kGuardFacePieceKind, ToGuardEntries, ToGuardEntries, ApplyGuardValues, ComputeAreGuardEntries,
 //          ComputeAreGuardsUnchanged, ToStaleCellId, ApplyStaleValues, ApplyStaleAllOnesWords,
@@ -640,8 +639,8 @@ inline void ApplyStaleValues(ReplayArrays& arrays) {
 }
 
 // Writes 0xFFFFFFFF words over the sort keys, both orders and the whole status record, its counts included, and the
-// stale id over the cell ids: a prefix sum that read two such words would pass 2^32 - 1 and fail. The guards keep their
-// patterns.
+// stale id over the cell ids: a prefix sum that read two such words would pass 2^32 - 1 and fail. The guards keep
+// their patterns.
 inline void ApplyStaleAllOnesWords(ReplayArrays& arrays) {
   ApplyStaleValues(arrays);
   std::fill_n(arrays.sort_keys.data(), arrays.sort_keys.size(), ~std::uint64_t{0});
@@ -1011,8 +1010,8 @@ inline void ApplyTableStepsByReplay(
     }
     return true;
   });
-  // Which blocks read only blocks of the tables or kNoIndex, found once after P9: nothing after it changes a block
-  // entry.
+  // Which blocks read only blocks of the tables or kNoIndex, found once after P9: nothing after it changes a
+  // block entry.
   std::vector<bool> is_block_in_range(block_count);
   for (std::uint32_t block = 0; block < block_count; ++block) {
     is_block_in_range[block] = ComputeAreTableEntriesInRange(tables, block);

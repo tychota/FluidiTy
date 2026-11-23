@@ -360,8 +360,8 @@ std::optional<std::string> FindListedFacesDifference(
 }
 
 // Compares what the face piece at whole place `face` does to collect from the particle of cell `cell`, in the piece and
-// on the whole grid: ComputeFaceWeight with the particle's sums made on the whole grid. The answers must have the same
-// bits.
+// on the whole grid: ComputeFaceWeight with the particle's sums made on the whole grid. The answers must have the
+// same bits.
 std::optional<std::string> FindFaceWeightDifference(
     const TablesPair& pair,
     FacePlaceIndex face,

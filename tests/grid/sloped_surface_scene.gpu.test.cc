@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Runs the whole grid module on the scene of grid/testing/sloped_surface_scene.h, a box of liquid with a sloped
 // surface, on the GPU, and expects the CPU's results with the same bits: the formulas use only + - * /, sqrt and floor,

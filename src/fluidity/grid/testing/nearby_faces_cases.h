@@ -10,11 +10,11 @@
 //          CheckEveryAxisHasCount, BuildFiveByFiveBoxAround, ComputeValueAlong, ToFaceOffsets, ComputeOffsetCountAt,
 //          PlacedPosition, ToPlacedPosition, kPlacedPositionStepsPerCell, kPlacedPositionStepsPerQuarter,
 //          ComputePositionAtStep, ToWindowMiddlePosition, CheckEveryWindowHasCount, FindLargestCountInEveryWindow,
-//          CandidateCountsOfCell, ComputeCandidateCountsInEveryWindow, FindLargestCandidateCount,
-//          CheckCountsMatchFindNearbyFaces,
+//          CandidateCountsOfCell, ComputeCandidateCountsInEveryWindow,
+//          FindLargestCandidateCount, CheckCountsMatchFindNearbyFaces,
 //          CheckFacesAreAscending, CheckEntriesFromAreZero, ComputeMovedByRoundingSteps, FindDrawnStepInCell,
-//          FindDrawnPosition, ToNonDyadicFrame, FindDrawnCoordinate, kNonDyadicSeed, BuildNonDyadicCells,
-//          FindDrawnNonDyadicPosition
+//          DrawnPlace, FindDrawnPosition, ToNonDyadicFrame, FindDrawnCoordinate, kNonDyadicSeed,
+//          BuildNonDyadicCells, FindDrawnNonDyadicPosition
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/nearby_face_weights.test.cc, tests/grid/nearby_faces.test.cc and
 //          tests/grid/nearby_face_weights_on_many_positions.test.cc
@@ -101,8 +101,8 @@ inline void CheckEveryAxisHasCount(const GridTables& tables, Vec3 position, int 
   }
 }
 
-// The size-level-0 cells of the box around a middle cell, 2 cells each way on every axis: the middle cell and its 124
-// others.
+// The size-level-0 cells of the box around a middle cell, 2 cells each way on every axis: the middle cell and its
+// 124 others.
 inline std::vector<CellId>
 BuildFiveByFiveBoxAround(std::int32_t middle_x, std::int32_t middle_y, std::int32_t middle_z) {
   std::vector<CellId> cells;
@@ -366,8 +366,8 @@ constexpr GridFrame ToNonDyadicFrame() {
   };
 }
 
-// Draws a position on one axis: a side or a centre of one of the 5 middle cells of the 9, moved by -3 to +3 rounding
-// steps.
+// Draws a position on one axis: a side or a centre of one of the 5 middle cells of the 9, moved by -3 to +3
+// rounding steps.
 // clang-tidy: an origin and the lowest cell; the swappable-parameters check flags the two numbers.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 inline double FindDrawnCoordinate(std::mt19937_64& generator, double origin_on_axis, std::int32_t lowest_cell) {

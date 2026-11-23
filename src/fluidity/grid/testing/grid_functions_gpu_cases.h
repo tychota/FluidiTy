@@ -6,8 +6,8 @@
 // Idea: a GPU test builds each grid twice from one list, on the CPU as the reference and on the GPU, and asks the same
 //   queries of both.
 //
-// Owns:    GridOnBothProcessors, BuildGridOnBothProcessors, BuildRandomGridsOnBothProcessors, FindActiveCellPlaces,
-//          FindFacePiecePlaces
+// Owns:    GridOnBothProcessors, BuildGridOnBothProcessors, BuildRandomGridsOnBothProcessors,
+//          FindActiveCellPlaces, FindFacePiecePlaces
 // Uses:    the headers it includes
 // Used by: tests/grid/find_cell_at.gpu.test.cc, tests/grid/nearby_face_weights.gpu.test.cc,
 //          tests/grid/cell_surroundings.gpu.test.cc and tests/grid/shared_grid_functions.gpu.test.cc

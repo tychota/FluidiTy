@@ -12,14 +12,13 @@
 //   stacked border  the layers of the borders of several stages, merged: the border of the last stage, then of the
 //                   stage before around range plus that border, and so on
 // Owns:    kEqualityGridCount, kReaderGridCount, kRangeBlocks, kNestedBallRangeBlocks, GridUnderTest,
-// FindNestedBallGrid,
-//          RangeChoice, BuildGridsUnderTest, BuildMergedBlocks, StackedBorder, FindStackedBorder
+//          FindNestedBallGrid, RangeChoice, BuildGridsUnderTest, BuildMergedBlocks, StackedBorder, FindStackedBorder
 // Uses:    CPU-only guard (base/cpu_only.h), StaggeredGrid (grid/staggered_grid.h), CellBlockIndex, CellBlockRange
 //          (grid/grid_ids.h), BorderWidth (grid/border_block_steps.h), BuildRanges, ToRangeBlocks
 //          (grid/cell_block_range.h and grid/testing/cell_block_range_cases.h), FindBorderOrFail
 //          (grid/testing/border_block_cases.h), TestGrid, BuildTestGrid, FindRandomGridsWithCheckers,
-//          FindRandomGridsSpreadBySize (grid/testing/grid_support.h), BuildNestedBallCells, ToInputs, ToUnitFrame
-//          (grid/testing/staggered_grid_cases.h)
+//          FindRandomGridsSpreadBySize (grid/testing/grid_support.h), GridFailure (grid/grid_error.h),
+//          BuildNestedBallCells, ToInputs, ToUnitFrame (grid/testing/staggered_grid_cases.h)
 // Used by: tests/grid/grid_pieces_on_random_grids.test.cc, tests/grid/grid_piece_steps_in_every_thread_order.test.cc
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 

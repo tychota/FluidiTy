@@ -20,8 +20,8 @@
 //   (position, 0.25, offset) for each position and axis (offset 0 along the axis and 0.5 along the two others) and
 //   printed, for each of the 27 results, the position index, the axis, the three lattice indexes, the weight and the
 //   three parts of the weight change with %.17g. The commit of main, the copy and the run are kMainNumbersCommit and
-//   kMainNumbersCommands below; their output became the entries below, in the order printed. The old code was not
-//   built.
+//   kMainNumbersCommands below; their output became the entries below, in the order printed. The old code was
+//   not built.
 //   Example: the first entry, position index 0 = {1, 1, 1} m, axis 0 (the old X faces), lattice indexes {3, 3, 3}, has
 //   weight 0.03125 and weight change {-0.5, -0.25, -0.25} 1/m. ToMainZUp turns a vector into this code's Z-up axes,
 //   (x, y, z) -> (x, -z, y), as the contact comparison does.

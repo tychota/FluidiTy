@@ -3,7 +3,7 @@
 //
 // Purpose: turn each result of grid_functions_answers.h into a list of 64-bit words, so a test compares a result of
 //   the GPU with the CPU's, bit for bit, and digests it, written once. A comparison that fails says which query and
-//   which field differed and shows both values, so one failing run on the owner's GPU is enough to see what is wrong.
+//   which field differed and shows both values, so one failing run on a GPU is enough to see what is wrong.
 //
 // Idea: each integer of a result goes in as it is and each double as its bits, in the order of the struct, whatever
 //   padding the struct holds. Two results are equal when their words are equal; for doubles that is equal bits, which
@@ -15,7 +15,8 @@
 // Words:
 //   result words  the fields of one result as 64-bit numbers, in the order of the struct
 //
-// Owns:    ResultWords, ToBitsOf, ApplyWordsOf (for each result of grid_functions_answers.h), ToResultWords,
+// Owns:    ResultWords, WordNames, ToBitsOf, ApplyWordsOf (for each result of grid_functions_answers.h),
+//          ToResultWords, kMostNamedDifferences, DifferenceReport, CheckNamedDifferences,
 //          CheckSameResults, WriteDigestOfResults
 // Uses:    Mat3 (base/mat3.h), Vec3 (base/vec3.h), WriteResultDigest (base/testing/base_support.h), CellCorners,
 //          FaceCorners, CellsAroundEdge (grid/cell_corners.h), CellsNearFace (grid/face_search.h), the results of

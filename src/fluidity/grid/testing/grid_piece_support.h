@@ -18,12 +18,12 @@
 //   it: the piece needs block 0 too.
 //
 // Owns:    PieceTables, LoadedPieceTables, BuildPieceTables, FindFirstTableDifference, PieceBuffersRoom,
-//          BuildPieceBuffersRoom, FindBorderByReadMarks, FindFirstReaderDifference, EntryTablePlaces,
-//          FindEntryDifferences
+//          BuildPieceBuffersRoom, FindBorderByReadMarks, FindFirstReaderDifference,
+//          EntryTablePlaces, FindEntryDifferences
 // Uses:    CPU-only guard (base/cpu_only.h), GridPiece (grid/grid_piece.h), BorderWidth, ApplyCellPlaceReadMarks,
 //          ApplyFacePlaceReadMarks (grid/border_block_steps.h), GridTables, GridFrame, CellState, FacePieceKind
 //          (grid/grid_tables.h), the id types (grid/grid_ids.h), StaggeredGrid (grid/staggered_grid.h), TestGrid
-//          (grid/testing/grid_support.h)
+//          (grid/testing/grid_support.h), RunOn (base/run_on.h)
 // Implementation uses: FindCellAt (grid/find_cell_at.h), FindTouchingCells, FindFacePieces (grid/touching_cells.h),
 //          FindCornerPlaces, FindCellsAroundEdge, ComputeCornerPosition (grid/cell_corners.h), FindCellsNearFace,
 //          BuildFaceSearch, FindNextFace (grid/face_search.h), FindNearbyFaces, ToMaskOfAll, ComputeNearbyFaceWeights,
@@ -120,8 +120,8 @@ std::vector<CellBlockIndex>
 FindBorderByReadMarks(const GridTables& whole, std::span<const CellBlockIndex> set, BorderWidth width);
 
 // Finds the first reader whose answer differs between the whole grid and the piece of `set` plus `border`, run from
-// a place kept in `set`; empty when every answer is the same. The readers of `width`, as border_block_steps.h lists
-// them:
+// a place kept in `set`; empty when every answer is the same. The readers of `width`, as border_block_steps.h
+// lists them:
 //   - from each active cell c: FindTouchingCells; FindFacePieces of c and of each cell touching it; FindCornerPlaces;
 //     FindCellsAroundEdge of its 12 edges; FindCellAt, with and without a block near it, at the 27 points of c's
 //     closed box (low, middle and high on each axis), which FindCellAt gives to c or to a cell touching c; and
@@ -142,12 +142,12 @@ FindBorderByReadMarks(const GridTables& whole, std::span<const CellBlockIndex> s
 //   the positions (place index plus position number, mod 3), so every axis is asked at a third of the cost. Its list is
 //   a filter of FindCellAt, FindTouchingCells and FindFacePieces of the cell and of its touching cells, all compared
 //   exhaustively, plus face positions read from the face's own block, so two positions add little; they are not the
-//   evidence. Places are compared through the whole grid's indexes: a piece place is mapped by its block's whole grid
-//   index.
+//   evidence. Places are compared through the whole grid's indexes: a piece place is mapped by its block's whole
+//   grid index.
 // Example: in the grid of the file header, the set {block 1} with the border {} gives "FindCellAt ...", and with the
 //   border {0} gives no difference.
-// Requires: `whole` are the tables of a CPU grid; `set` and `border` are ascending, disjoint, and below its block
-//   count.
+// Requires: `whole` are the tables of a CPU grid; `set` and `border` are ascending, disjoint, and below its
+//   block count.
 std::optional<std::string> FindFirstReaderDifference(
     const GridTables& whole,
     std::span<const CellBlockIndex> set,
@@ -158,8 +158,8 @@ std::optional<std::string> FindFirstReaderDifference(
 // The same readers and comparison as the form above, on the tables of a piece that a caller gives, such as a grid
 // piece that BuildGridPiece built: the piece must hold `set` and its border.
 // Example: for the piece of block 1 and the border {0}, the view of BuildGridPiece's tables gives no difference.
-// Requires: `whole` are the tables of a CPU grid; piece.block_in_whole is ascending and below its block count, one
-// entry
+// Requires: `whole` are the tables of a CPU grid; piece.block_in_whole is ascending and below its block count,
+// one entry
 //   for each block of piece.tables; `set` is ascending and below the whole grid's block count, and every block of it is
 //   in the piece.
 std::optional<std::string> FindFirstReaderDifference(

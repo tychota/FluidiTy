@@ -17,13 +17,12 @@
 //          FindFacePiecesOnGpu, FindCellsNearFacesOnGpu, WalkFaceSearchesOnGpu, ComputeFormulasOnGpu,
 //          ComputeCellPlaceFactsOnGpu, ComputeFacePlaceFactsOnGpu,
 //          ComputeBorderBlockResultsOnGpu, ComputeReadMarksResultsOnGpu, ComputePieceStepResultsOnGpu,
-//          RunnerFunctionInfo, ReadRunnerFunctionInfo,
-//          ReadLastRunnerFailure
+//          RunnerFunctionInfo, ReadRunnerFunctionInfo, ReadLastRunnerFailure
 // Uses:    RunOnCallStatus (base/run_on_call.h), GridTables (grid/grid_tables.h), the queries and results of
 //          grid/testing/grid_functions_answers.h
 // Used by: the GPU tests of the grid in tests/grid/ (find_cell_at.gpu.test.cc, nearby_face_weights.gpu.test.cc,
-//          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc,
-//          border_blocks.gpu.test.cc, stacked_borders.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
+//          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc, border_blocks.gpu.test.cc,
+//          grid_piece_steps.gpu.test.cc, sloped_surface_scene.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
 //          which defines the runners
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>, <sec-cell-blocks>, <sec-face-pieces>,
 //          <sec-nearby-faces>, <sec-face-search>
@@ -36,8 +35,8 @@
 // Reached by FindCellsAtPosition, which FindCellAt reaches (find_cell_at.gpu.test.cc):
 //   ComesBefore, ComputeBiggerCellCoord, ComputeCellWidth, ComputeIsEarlierInFixedOrder, ComputeLocalPlaceCoord,
 //   ComputePackedId, ComputeUnpackedCoord, ComputeUnpackedSizeLevel, FindActiveCellBelow, FindBiggestBlockFrom,
-//   FindCellAtCoord, FindCellBlock, FindSortedBlock, ToBiasedSmallestCellCoord, ToBiggestBlockId, ToCellBlockId,
-//   ToCellCoord
+//   FindCellAtCoord, FindCellBlock, FindSortedBlock, ToBiasedSmallestCellCoord, ToBiggestBlockId,
+//   ToCellBlockId, ToCellCoord
 //
 // Reached by ComputeNearbyFaceResult, through FindNearbyFaces and ComputeNearbyFaceWeights
 //   (nearby_face_weights.gpu.test.cc):
@@ -55,18 +54,17 @@
 // Reached by FindCellCornersOf, through FindCornerPlaces (cell_surroundings.gpu.test.cc):
 //   FindCornerPlaceInSizeLevel, FindCornerPlaceOfPoint
 //
-// Reached by FindCellsNearFaceOf, through FindCellsNearFace (cell_surroundings.gpu.test.cc):
-//   ApplyCellNearFaceInsert
+// Reached by FindCellsNearFaceOf, through FindCellsNearFace (cell_surroundings.gpu.test.cc): ApplyCellNearFaceInsert
 //
 // Reached by FindFaceSearchWalk, through BuildFaceSearch and FindNextFace (cell_surroundings.gpu.test.cc):
 //   ApplyFaceSearchBlockInsert, ComputeClampedFaceSearchRadius, ComputeIsCoordInRange,
 //   ComputeIsWithinQuarterRadius, FindBlockAtCoord
 //
-// Reached by ComputeFormulaResult, through ComputeCellWidthsBySizeLevel (shared_grid_functions.gpu.test.cc):
-//   ComputeTableSizeLevelCount
+// Reached by ComputeFormulaResult, through ComputeCellWidthsBySizeLevel
+//   (shared_grid_functions.gpu.test.cc): ComputeTableSizeLevelCount
 //
-// Reached by ComputeCellPlaceFacts, through ComputeCellCenter and FindCellPlace (shared_grid_functions.gpu.test.cc):
-//   ToCellPlaceIndex
+// Reached by ComputeCellPlaceFacts, through ComputeCellCenter and FindCellPlace
+//   (shared_grid_functions.gpu.test.cc): ToCellPlaceIndex
 //
 // Reached by the GPU build of a grid, StaggeredGrid with RunOn::kGpu (build_grid.gpu.test.cc, and every test that
 //   builds its grid on the GPU):
@@ -80,8 +78,7 @@
 //   ComputeIsCellPresent, ComputeIsCoveredByActiveBigCell, ComputeLocalCoordInNeighbour, ComputeNeighbourEntry,
 //   ComputeResetBuildStatus, ComputeRoomFailureKey, ComputeSortKeyOfCorner, ComputeSortedCellFailureKey,
 //   ComputeSplitCellCountToAdd, ComputeStoredCellState, FindBlockNeighbours, FindSortedBlockAt, FindSortedCell,
-//   FindSortedCellAt, ToBlockSortKey, ToCellSortKey, ToFailureDetail, ToFailureKey, ToFailurePosition,
-//   ToFailureStep
+//   FindSortedCellAt, ToBlockSortKey, ToCellSortKey, ToFailureDetail, ToFailureKey, ToFailurePosition, ToFailureStep
 //
 // Reached by the cell size rule runner, ComputeCellSizeRuleOnGpu and ComputeNewCellSizeLevelsOnGpu
 //   (cell_size_rule.gpu.test.cc):

@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Asks the shared grid functions that no other GPU test of the grid starts by name on the GPU, and expects the CPU's
 // results bit for bit: the formulas without a table (the complete weighted spread, the reference speed, the cell widths
@@ -145,8 +145,8 @@ ComputeFacePlaceFactsOnCpu(const GridTables& tables, std::span<const FacePlaceIn
   return results;
 }
 
-// Expects the CPU's facts of one active cell to say that the id is the cell of the list and its place is the place
-// asked.
+// Expects the CPU's facts of one active cell to say that the id is the cell of the list and its place is the
+// place asked.
 void CheckCellPlaceFactsOnCpu(const CellPlaceFacts& facts, CellId cell, CellPlaceIndex place) {
   EXPECT_EQ(facts.id.value, cell.value);
   EXPECT_EQ(facts.place_of_id.value, place.value);

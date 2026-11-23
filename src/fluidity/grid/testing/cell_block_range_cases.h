@@ -36,7 +36,8 @@
 //          (base/run_memory.h), BuildBorderSearchMemoryEstimate (grid/grid_memory_estimate.h), ToCell
 //          (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure, ToUniformIndex (grid/testing/grid_support.h),
 //          BuildRanges (grid/cell_block_range.h), StaggeredGrid (grid/staggered_grid.h), GridFailure
-//          (grid/grid_error.h), ToName (grid/grid_error_message.h)
+//          (grid/grid_error.h), ToName (grid/grid_error_message.h), MemoryEstimateEntry, MemoryWhere
+//          (base/memory_count.h), RunOn (base/run_on.h), ToMemoryCounts (grid/grid_memory_estimate.h)
 // Used by: src/fluidity/grid/cell_block_range.test.cc, the functional tests of border blocks (tests/grid/)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 
@@ -122,8 +123,8 @@ inline std::vector<CellId> BuildSplitCornerCells() {
   return cells;
 }
 
-// The carried-sums grid of the file header, for a frame of 2 size levels: 4 size-level-0 cells and 16 size-level-1
-// cells.
+// The carried-sums grid of the file header, for a frame of 2 size levels: 4 size-level-0 cells and 16
+// size-level-1 cells.
 inline std::vector<CellId> BuildCarriedSumsCells() {
   std::vector<CellId> cells = {ToCell(0, -2, 0, 0), ToCell(0, 0, 0, 0), ToCell(0, 1, 0, 0), ToCell(0, 3, 0, 0)};
   for (const std::int32_t split_x : {-1, 2}) {

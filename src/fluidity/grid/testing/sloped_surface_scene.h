@@ -14,12 +14,14 @@
 //   each lies inside a marked size level 2 cell, so each is on the sheet.
 //
 // Owns:    kSlopedSurfaceSeed, kSlopedSurfacePositionCount, kSlopedSurfaceRangeBlocks, kSlopedSurfaceSizeLevelCount,
-//          BuildSlopedSurfaceFrame, ComputeIsSlopedSurfaceCellMarked, BuildSlopedSurfaceCells,
+//          kSlopedSurfaceCellsAlongX, kSlopedSurfaceCellsAlongY, kSlopedSurfaceCellsAlongZ,
+//          kSlopedSurfaceSmallestCellWidth, BuildSlopedSurfaceFrame, ComputeIsSlopedSurfaceCellMarked,
+//          ComputeHasMarkedCellInside, BuildSlopedSurfaceCells,
 //          BuildSlopedSurfacePositions, FindRangeOfEachPosition
 // Uses:    CPU-only guard (base/cpu_only.h), Vec3 (base/vec3.h), ToUnitFrame, ToCell
 //          (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure, ToUniformIndex, ToUnitDouble
 //          (grid/testing/grid_support.h), ComputeSmallCell, ToCellCoord, ToCellBlockIndex (grid/grid_ids.h),
-//          FindCellAt (grid/find_cell_at.h)
+//          FindCellAt (grid/find_cell_at.h), GridFrame (grid/grid_tables.h), StaggeredGrid (grid/staggered_grid.h)
 // Used by: tests/grid/sloped_surface_scene.test.cc, tests/grid/sloped_surface_scene.gpu.test.cc
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-cell-blocks>
 

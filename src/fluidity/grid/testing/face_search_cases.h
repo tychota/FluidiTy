@@ -7,8 +7,8 @@
 //
 // Owns:    ToUnitFrame, ToCell, ToInputs, ToTablesOf, ApplySmallCellsToList, ToListedPlaces,
 //          FindGivenFaces, FindWalkedFaces, BuildCellWithEveryNeighbourSplit, BuildBiggerBlockBehindAbsentNeighbour,
-//          BuildThreeSizeCells, BuildBoxOfCells, BuildUniformBox, BuildSameSizePairWithEveryNeighbourSplit,
-//          ComputeLargestCellsNearFace
+//          BuildThreeSizeCells, BuildBoxOfCells, BuildUniformBox,
+//          BuildSameSizePairWithEveryNeighbourSplit, ComputeLargestCellsNearFace
 // Uses:    the headers it includes
 // Used by: src/fluidity/grid/face_search.test.cc and tests/grid/face_search_on_grids.test.cc
 // Read:    the test files that include it

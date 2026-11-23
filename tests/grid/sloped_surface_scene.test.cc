@@ -171,8 +171,7 @@ CellPlaceIndex ToWholeCell(CellPlaceIndex piece_cell, std::span<const CellBlockI
   return {.value = (whole_block * places_per_block) + (piece_cell.value % places_per_block)};
 }
 
-// Says whether two doubles have the same bits, or two vectors or matrices of doubles have the same bits in every
-// entry.
+// Says whether two doubles have the same bits, or two vectors or matrices of doubles have the same bits in every entry.
 bool ComputeHasSameBits(double first, double second) {
   return std::bit_cast<std::uint64_t>(first) == std::bit_cast<std::uint64_t>(second);
 }

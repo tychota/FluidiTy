@@ -326,8 +326,8 @@ RunOnCallStatus ComputePieceStepResultsOnGpu(
 ) {
   FindLastFailure().clear();
   // Steps: 1 the GPU memory  2 the lists and the queries  3 the GPU function  4 the results back
-  // Step 1: one array for the border blocks followed by the piece map (none when both are empty), the queries and the
-  // results.
+  // Step 1: one array for the border blocks followed by the piece map (none when both are empty), the queries and
+  // the results.
   const auto query_count = static_cast<std::size_t>(count);
   const std::size_t list_count = std::size_t{set.border_block_count} + set.loaded_block_count;
   GpuArray<CellBlockIndex> gpu_lists;

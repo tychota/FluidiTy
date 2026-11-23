@@ -18,8 +18,9 @@
 //          (grid/testing/thread_replay.h), BorderWidth, ComputeBorderSoFarFailureKey,
 //          ApplySetPlaceReadMarks, ComputeListedMark, ApplyBorderBlockWriteAt, kSetBlocksPerMarkingLaunch,
 //          ComputeMarkingChunkCount, ComputeMarkingChunk, SetPlaceChunk
-//          (grid/border_block_steps.h), ComputeResetBuildStatus (grid/grid_build_steps.h), Buffer, OrderBuffers,
-//          GridTables
+//          (grid/border_block_steps.h), ComputeResetBuildStatus (grid/grid_build_steps.h), Buffer (base/buffer.h),
+//          RunOn (base/run_on.h), OrderBuffers (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h),
+//          CellBlockIndex, kNoIndex (grid/grid_ids.h), GridTables (grid/grid_tables.h)
 // Used by: grid/border_block_steps.test.cc and tests/grid/border_search_replay.test.cc
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>
 

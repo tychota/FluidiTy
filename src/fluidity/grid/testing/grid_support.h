@@ -33,8 +33,8 @@
 //          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid,
 //          TestGrid, BuildTestGrid, TakeEmptyGridBuffers, kRandomGridSizeLevelCount, kMaxRandomGridCellBlocks,
 //          ToGridCountFields, ComputeIsSameUsedTables, ComputeIsSameGrid, FindRandomGridsSpreadBySize,
-//          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers, kMutatedGridCount,
-//          BuildMutatedGridCells,
+//          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers,
+//          kMutatedGridCount, BuildMutatedGridCells,
 //          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings, BuildLoneCellsAlongX, BuildSmallCellsOfEightBigCells,
 //          BuildTwoSizeFixtureCells, ComputeHasNoIndexPastCount, GeometricReadBlocks, BuildGeometricReadBlocks,
 //          FindDirectReadsGeometrically, FindBorderGeometrically
@@ -188,8 +188,7 @@ std::vector<CellId> BuildTwoSizeFixtureCells();
 // Method: rounds, in whole units of size level size_level_count - 1. A round first judges every cell on the list as
 //   it was when the round began, then splits the cells judged too big. To judge a cell it looks, with the checker's
 //   own lookup of the list by place, for a touching active cell two or more size levels smaller: it starts from the
-//   26 places of the cell's size level around it and goes down through the places that touch it and hold smaller
-//   cells.
+//   26 places of the cell's size level around it and goes down through the places that touch it and hold smaller cells.
 // Example: the size-level-0 cell {0,0,0} beside size-level-2 cells in its +X neighbour, 3 size levels: it becomes its
 //   8 size-level-1 cells, which differ by one size level from the size-level-2 cells.
 // Requires: every cell's size level is below size_level_count; the list has no repeated and no overlapping cells. In a
@@ -407,8 +406,8 @@ std::expected<TestGrid, GridFailure> BuildTestGrid(const GridInputs& inputs, con
 // The size levels of the frame the random grids are built in (BuildShuffledRandomGrids).
 inline constexpr int kRandomGridSizeLevelCount = 4;
 
-// The most cell blocks a random grid has (BuildShuffledRandomGrids): the room of a reference grid that keeps its own
-// memory.
+// The most cell blocks a random grid has (BuildShuffledRandomGrids): the room of a reference grid that keeps its
+// own memory.
 inline constexpr std::uint32_t kMaxRandomGridCellBlocks = 252;
 
 // Takes the empty buffers out of `owner`, a grid of no cells built with BuildTestGrid, so a test has grid buffers of
@@ -435,8 +434,8 @@ bool ComputeIsSameGrid(const StaggeredGrid& first, const StaggeredGrid& second);
 // Method: the kRandomGridCount entries are ordered by cell count, most cells first and the entry with the lower index
 //   first among equal counts. Position i = 0..count - 1 of the result takes the entry of rank floor(i x
 //   (kRandomGridCount - 1) / (count - 1)) in that order, in integer arithmetic, so every machine picks the same grids;
-//   a count of 1 takes rank 0. The first position is the entry with the most cells and the last the one with the
-//   fewest.
+//   a count of 1 takes rank 0. The first position is the entry with the most cells and the last the one with
+//   the fewest.
 // Example: count 4 takes ranks 0, 66, 132 and 199; count 3 takes ranks 0, 99 and 199.
 // Requires: 1 <= count <= kRandomGridCount; otherwise the result repeats entries or is empty.
 std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t count);
