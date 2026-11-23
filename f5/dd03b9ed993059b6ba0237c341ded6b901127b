@@ -1,0 +1,39 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_972d1e05262eb5 2143-2162
+src/fluidity/grid/border_block_steps.h
+  s_4f0877e2acdcf0::t_3936f89a356cc0 67-91,93-94
+src/fluidity/grid/cell_block_range.test.cc
+  s_4f0877e2acdcf0::t_33a0c1bba1668b 14,16,22,383-439
+src/fluidity/grid/testing/border_block_cases.h
+  s_4f0877e2acdcf0::t_96a03e6b6ab2e5 1-96
+src/fluidity/grid/testing/cell_block_range_cases.h
+  s_4f0877e2acdcf0::t_2fbc6c6027b961 19-23,29-30,110-121
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_0ee27e303c06d2 7,11,17,265-331,341-348,354-389,392-395,398,401-435,458-462,581-583
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_1cfd25a5460ba4 26-27,90-98,102-107
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_2642ea3a471b6d 39-50
+tests/grid/border_blocks_against_geometry.test.cc
+  s_4f0877e2acdcf0::t_0662f895bbd9a9 1-174
+tests/grid/border_blocks_in_grid_pieces.test.cc
+  s_4f0877e2acdcf0::t_00216a6aa6d1ec 19,28-29,54
+tests/grid/cell_block_ranges_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_18e8847aee1153 8,10,20,65,118-119,129-131,133-143,146-148,150-155,160-166,168-175,179-180,182,185-194,196-201,205-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f5dd03b9ed993059b6ba0237c341ded6b901127b",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
