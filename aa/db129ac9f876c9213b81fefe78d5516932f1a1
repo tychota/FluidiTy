@@ -1,0 +1,33 @@
+src/fluidity/grid/grid_error.h
+  s_4f0877e2acdcf0::t_ae7043b151f3b3 49-52
+src/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_ccd8fe638b965d 34-36,63-64,128-131
+src/fluidity/grid/grid_ids.test.cc
+  s_4f0877e2acdcf0::t_6680e7a98cfcbb 214-215
+src/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_b009ba8f42dc72 10-12,20-23,175-176,186-187,373-374,397-398,415-416,442-443,462-463,488-489,514-515,538-539,566-569
+src/fluidity/grid/grid_tables.shared.gpu_compile.test.cu
+  s_4f0877e2acdcf0::t_6c5aba0b1aac6c 41-42
+src/fluidity/grid/grid_values.gpu.test.cc
+  s_4f0877e2acdcf0::t_d52b0b0a7ef23c 1
+src/fluidity/grid/grid_values.h
+  s_4f0877e2acdcf0::t_85e66e62d42b01 14-17,19-20,225-226,332-333
+tests/grid/apply_grid_version.gpu.test.cc
+  s_4f0877e2acdcf0::t_291b996a796b5b 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aadb129ac9f876c9213b81fefe78d5516932f1a1",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
