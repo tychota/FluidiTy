@@ -23,6 +23,19 @@
 //   from places of its range, keeps every particle inside the closed boxes of the cells of its range, and reads a
 //   border place only when a layer of a stacked border covers it. A corner place has no reader to the cells that have
 //   it as a corner.
+//   Sums over the grid. In a batched run, each block's partial is written into the whole grid's block values (a
+//   CellBlockValues of the whole grid) at its whole-grid index, which the piece map gives; one tree sum then runs over
+//   all the block partials after the last batch (cell_block_range.h). A tree sum inside each piece, added up
+//   afterwards, does not give the whole grid's total bit for bit: the tree pairs partials by position.
+//   Mapping a place back. A cell place or a face place of the piece is in block p / N, where N is the places per block
+//   (kCellPlacesPerBlock or kFacePlacesPerBlock). Its whole-grid place is block_in_whole_grid()[p / N] * N + p % N: the
+//   piece map gives the block's whole-grid index and the place within the block is unchanged. Corner places of the
+//   range map the same way. Corner places of border blocks do not map through the piece map when the whole grid
+//   stores that corner in a block that was not loaded; match them by position or id (method paper
+//   <sec-cell-blocks>, "A corner place belongs to one set of tables").
+//   Versions. A piece has the whole grid's version and its own block count, and values are checked against those two.
+//   Two pieces of one whole grid with the same block count cannot be told apart by that check, so values bound to one
+//   piece must not be read through another: the caller keeps them apart and binds again at every load.
 //   Example: a whole grid of blocks 0..9, the range {4, 3} and the border {1, 2, 8}: the piece map is
 //   [1, 2, 4, 5, 6, 8], range() is {2, 3} and range_in_whole_grid() is {4, 3}.
 //
@@ -63,7 +76,9 @@ class GridPiece {
   GridPiece& operator=(GridPiece&& other) noexcept = default;
   ~GridPiece() = default;
 
-  // The loaded blocks as a grid. Its version() is the whole grid's version.
+  // The loaded blocks as a grid. Its version() is the whole grid's version, and so is that of every other piece of
+  // the same whole grid: a version check cannot tell two pieces apart that have the same block count. Values bound to
+  // one piece must not be read through another; the caller keeps them apart.
   [[nodiscard]] const StaggeredGrid& grid() const {
     return grid_;
   }
@@ -127,6 +142,9 @@ class GridPiece {
 // Example: a whole grid of blocks 0..9, range {4, 3}, border_blocks {1, 2, 8}: the piece has 6 blocks, its map is
 //   [1, 2, 4, 5, 6, 8], range() is {2, 3} and range_in_whole_grid() is {4, 3}.
 // Requires: whole.run_on() == RunOn::kCpu, and buffers.run_on() == RunOn::kCpu (debug assertions).
+//   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
+//   result, stacked or not). A smaller list does not fail the call: readers then answer none where the whole grid has
+//   neighbours, as at the edge of the grid.
 // Fails: kBadInput          the range is not inside the whole grid's blocks, or border_blocks is not ascending, repeats
 //                           a block, holds an index at or above the whole grid's block count, or holds a block of
 //                           the range. The result then holds the failure and no piece; nothing is written.
@@ -148,7 +166,9 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
 // A piece of a GPU grid is built on the GPU, and its tables stay there; only a CPU whole grid is built here.
 // Example: the buffer form of FindBorderBlocks with range {4, 3} on a CPU whole grid of 10 blocks lists {1, 2, 8} and
 //   the count 3: the piece is the one of the span form.
-// Requires: border_blocks and `buffers` are on whole.run_on() (debug assertions).
+// Requires: border_blocks and `buffers` are on whole.run_on() (debug assertions); and, as in the span form,
+//   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
+//   result, stacked or not), since a smaller list does not fail the call and readers then answer none.
 // Fails: as the span form, and kBadInput for border_block_count above border_blocks.size();
 //        kRunOnCallFailed  whole is on the GPU: no GPU form of the piece is built here, and nothing falls back to the
 //                          CPU.

@@ -77,6 +77,26 @@ TEST(BuildGridPiece, RangeBetweenBorderEntries_KeepsTheWholeGridsOrder) {
   EXPECT_EQ(piece->block_in_whole_grid_buffer().size(), 6U);
 }
 
+TEST(BuildGridPiece, RangeOfWholeGridWithoutBorder_EqualsWholeGrid) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const StaggeredGrid& whole = test_grid->grid;
+  std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(whole.counts().cell_blocks);
+  ASSERT_TRUE(room.has_value());
+  const std::expected<GridPiece, GridFailure> piece = BuildGridPiece(
+      whole,
+      {.first_block = 0, .block_count = whole.counts().cell_blocks},
+      std::vector<CellBlockIndex>{},
+      room->buffers
+  );
+  ASSERT_TRUE(piece.has_value());
+  EXPECT_TRUE(ComputeIsSameGrid(piece->grid(), whole));
+  EXPECT_EQ(ToIndexes(piece->block_in_whole_grid()), (std::vector<std::uint32_t>{0, 1, 2}));
+  EXPECT_EQ(piece->range().first_block, 0U);
+  EXPECT_EQ(piece->range().block_count, 3U);
+}
+
 TEST(BuildGridPiece, AboveBuffersRoom_IsTooManyCellBlocks) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
@@ -155,7 +175,8 @@ TEST(FindCellAt, InPieceOutsideLoadedBlocks_IsNoIndex) {
   std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(3);
   ASSERT_TRUE(room.has_value());
   GridBuffers& buffers = room->buffers;
-  // The piece of block 2 alone. The cell {3,3,0} lies in block 0, which it did not load.
+  // The piece of block 2 alone, with an empty border. It shows what a border that is too small does: the build
+  // succeeds, and the piece answers none where the whole grid has a cell, here in block 0, which it did not load.
   const std::expected<GridPiece, GridFailure> piece =
       BuildGridPiece(test_grid->grid, {.first_block = 2, .block_count = 1}, std::vector<CellBlockIndex>{}, buffers);
   ASSERT_TRUE(piece.has_value());

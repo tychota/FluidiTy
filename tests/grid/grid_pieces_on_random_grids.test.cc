@@ -473,6 +473,72 @@ TEST(BuildGridPiece, BlockSumsInPieceOrder_EqualWholeGrid) {
   }
 }
 
+// The sum of `partials` made one after the other, where each partial counts half as much as the one after it: unlike
+// a sum of a set, it gives other bits when the partials come in another order.
+double ComputeOrderedHalvingSum(std::span<const double> partials) {
+  double total = 0;
+  for (const double partial : partials) {
+    total = (total * 0.5) + partial;
+  }
+  return total;
+}
+
+// Checks that the sum of the partials of all the blocks of the piece, border included, taken in the piece's order, has
+// the same bits as the sum of the partials of the same blocks of the whole grid taken in the whole grid's order. The
+// sum depends on the order, so a piece that lists the range first, or any other order than the whole grid's, fails.
+void CheckBlockOrderGivesWholeGridSum(
+    const StaggeredGrid& whole,
+    const GridPiece& piece,
+    const StackedBorder& stacked
+) {
+  const GridTables piece_tables = piece.grid().tables(RunOn::kCpu);
+  const GridTables whole_tables = whole.tables(RunOn::kCpu);
+  std::vector<double> piece_partials;
+  piece_partials.reserve(piece_tables.block_count);
+  for (std::uint32_t block = 0; block < piece_tables.block_count; ++block) {
+    piece_partials.push_back(ComputeBlockPartial(piece_tables, block));
+  }
+  std::vector<double> whole_partials;
+  whole_partials.reserve(piece_tables.block_count);
+  for (const CellBlockIndex block : BuildMergedBlocks(ToRangeBlocks(stacked.range), stacked.border)) {
+    whole_partials.push_back(ComputeBlockPartial(whole_tables, block.value));
+  }
+  EXPECT_TRUE(ComputeIsSameBits(ComputeOrderedHalvingSum(piece_partials), ComputeOrderedHalvingSum(whole_partials)));
+}
+
+// An ordered sum over the blocks of each piece, border included, has the bits of the same sum over the same blocks of
+// the whole grid.
+TEST(BuildGridPiece, OrderedSumOverPieceBlocks_EqualsWholeGridSum) {
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, true)) {
+    CheckEachPiece(under_test, CheckBlockOrderGivesWholeGridSum);
+  }
+}
+
+// Says whether the border of `stacked` has a block before the range and a block after it in the whole grid's order.
+bool ComputeHasBorderOnBothSides(const StackedBorder& stacked) {
+  const bool is_before = std::ranges::any_of(stacked.border, [&stacked](CellBlockIndex block) {
+    return block.value < stacked.range.first_block;
+  });
+  const bool is_after = std::ranges::any_of(stacked.border, [&stacked](CellBlockIndex block) {
+    return block.value >= stacked.range.first_block + stacked.range.block_count;
+  });
+  return is_before && is_after;
+}
+
+// Some tested range has border blocks both before and after it, so the order test above can tell a piece that lists
+// the range first from the whole grid's order.
+TEST(BuildGridPiece, TestedRanges_IncludeBorderOnBothSides) {
+  int ranges_with_border_on_both_sides = 0;
+  for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, true)) {
+    for (const CellBlockRange range : under_test.ranges) {
+      if (ComputeHasBorderOnBothSides(FindStackedBorder(*under_test.grid, range))) {
+        ++ranges_with_border_on_both_sides;
+      }
+    }
+  }
+  EXPECT_GT(ranges_with_border_on_both_sides, 0);
+}
+
 // Checks that two pieces have the same grid, piece map and ranges.
 void CheckSamePieces(const GridPiece& span_piece, const GridPiece& buffer_piece, CellBlockRange range) {
   EXPECT_TRUE(ComputeIsSameGrid(span_piece.grid(), buffer_piece.grid()));

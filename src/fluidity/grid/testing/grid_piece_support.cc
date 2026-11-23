@@ -585,6 +585,26 @@ bool ComputeIsSameArray(const Value* first, const std::vector<Value>& second) {
   return second.empty() || std::memcmp(first, second.data(), second.size() * sizeof(Value)) == 0;
 }
 
+// Counts the active cells of each size level from the expected tables and compares them with the piece's counts.
+std::optional<std::string> FindActiveCellCountDifference(const GridCounts& counts, const PieceTables& expected) {
+  const GridTables expected_tables = expected.ToTables();
+  std::array<std::uint64_t, kMaxSizeLevels> expected_per_size_level{};
+  for (std::uint32_t block = 0; block < expected_tables.block_count; ++block) {
+    const auto size_level = static_cast<std::size_t>(ToSizeLevel(expected_tables, CellBlockIndex{block}));
+    for (std::uint32_t place = 0; place < kCellPlacesPerBlock; ++place) {
+      if (expected_tables.cell_states[(block * kCellPlacesPerBlock) + place] == CellState::kActive) {
+        ++expected_per_size_level.at(size_level);
+      }
+    }
+  }
+  for (std::size_t size_level = 0; size_level < kMaxSizeLevels; ++size_level) {
+    if (counts.active_cells_per_size_level[size_level] != expected_per_size_level.at(size_level)) {
+      return "active cells of size level " + std::to_string(size_level);
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 std::optional<PieceBuffersRoom> BuildPieceBuffersRoom(std::uint32_t max_cell_blocks) {
@@ -656,7 +676,10 @@ std::optional<std::string> FindFirstTableDifference(const GridPiece& piece, cons
       static_cast<std::uint64_t>(std::ranges::count(expected.cell_states, CellState::kActive));
   const bool is_same_counts = counts.cell_blocks == expected.block_ids.size() && counts.face_pieces == face_piece_count
       && counts.active_cells == active_cell_count;
-  return is_same_counts ? std::nullopt : std::optional<std::string>("counts");
+  if (!is_same_counts) {
+    return "counts";
+  }
+  return FindActiveCellCountDifference(counts, expected);
 }
 
 std::optional<std::string> FindFirstReaderDifference(
