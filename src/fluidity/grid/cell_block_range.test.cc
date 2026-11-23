@@ -451,26 +451,60 @@ TEST(FindBorderBlocks, StackedBufferForm_AllocatesNothing) {
   EXPECT_EQ(count_after_call - count_before_call, 0U);
 }
 
-TEST(FindBorderBlocks, SecondCallOnSameSearchBuffers_EqualsFreshBuffers) {
-  const std::vector<CellId> cells = BuildPlaneFourCells();
+// The cells {3,0,0}, {4,0,0} and {8,0,0} of 1 m cells, in the blocks 0, 1 and 2 along x:
+// block 0 holds x 0..3, block 1 holds x 4..7 and block 2 holds x 8..11.
+std::vector<CellId> BuildThreeCellLineCells() {
+  return {ToCell(0, 3, 0, 0), ToCell(0, 4, 0, 0), ToCell(0, 8, 0, 0)};
+}
+
+// The first call marks block 2, which the border of block 0 does not hold. If the second call did not clear the marks,
+// block 2 would join its list.
+TEST(FindBorderBlocks, SecondCallAfterMarkingOtherBlock_EqualsFreshBuffers) {
+  const std::vector<CellId> cells = BuildThreeCellLineCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   std::expected<BorderSearchRig, GridFailure> used_rig = BuildBorderSearchRig(test_grid->grid);
   std::expected<BorderSearchRig, GridFailure> fresh_rig = BuildBorderSearchRig(test_grid->grid);
   ASSERT_TRUE(used_rig.has_value());
   ASSERT_TRUE(fresh_rig.has_value());
+  const CellBlockRange middle_range = {.first_block = 1, .block_count = 1};
   const CellBlockRange first_range = {.first_block = 0, .block_count = 1};
-  const CellBlockRange second_range = {.first_block = 2, .block_count = 1};
   const std::vector<CellBlockIndex> no_blocks;
-  const std::vector<CellBlockIndex> first_layer =
-      FindLayerOrFail(*used_rig, first_range, no_blocks, BorderWidth::kFourCellWidths);
+  const std::vector<CellBlockIndex> middle_layer =
+      FindLayerOrFail(*used_rig, middle_range, no_blocks, BorderWidth::kFourCellWidths);
   const std::vector<CellBlockIndex> second_layer =
-      FindLayerOrFail(*used_rig, second_range, no_blocks, BorderWidth::kFourCellWidths);
+      FindLayerOrFail(*used_rig, first_range, no_blocks, BorderWidth::kFourCellWidths);
   const std::vector<CellBlockIndex> fresh_layer =
-      FindLayerOrFail(*fresh_rig, second_range, no_blocks, BorderWidth::kFourCellWidths);
-  EXPECT_FALSE(first_layer.empty());
-  EXPECT_EQ(ToIndexes(second_layer), ToIndexes(fresh_layer));
-  EXPECT_EQ(ToIndexes(second_layer), (std::vector<std::uint32_t>{0, 1}));
+      FindLayerOrFail(*fresh_rig, first_range, no_blocks, BorderWidth::kFourCellWidths);
+  EXPECT_EQ(ToIndexes(middle_layer), (std::vector<std::uint32_t>{0, 2}));
+  EXPECT_EQ(ToIndexes(fresh_layer), (std::vector<std::uint32_t>{1}));
+  EXPECT_EQ(ToIndexes(second_layer), (std::vector<std::uint32_t>{1}));
+}
+
+// Block 0 alone has the border {1} at both widths, since block 2 is 4 m or more from every face piece of block 0. A
+// pass of two stages, the last touching and the one before it four widths wide, needs {1, 2}: the earlier stage reads
+// from the places of block 1 as well, and from block 1 the four widths cover block 2.
+TEST(FindBorderBlocks, ThreeCellLineStackOfTwoLayers_IsWiderThanTheWideBorder) {
+  const std::vector<CellId> cells = BuildThreeCellLineCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const CellBlockRange range = {.first_block = 0, .block_count = 1};
+  const std::vector<CellBlockIndex> no_blocks;
+  const std::vector<CellBlockIndex> last_stage_layer =
+      FindLayerOrFail(*rig, range, no_blocks, BorderWidth::kTouchingCells);
+  const std::vector<CellBlockIndex> stack =
+      FindLayerOrFail(*rig, range, last_stage_layer, BorderWidth::kFourCellWidths);
+  const std::vector<CellBlockIndex> wide_border = FindLayerOrFail(*rig, range, no_blocks, BorderWidth::kFourCellWidths);
+  const std::vector<CellBlockIndex> blocks_of_range = ToBlocks({0});
+  const std::expected<std::vector<CellBlockIndex>, GridFailure> wide_border_by_vector =
+      FindBorderBlocks(test_grid->grid, blocks_of_range, BorderWidth::kFourCellWidths);
+  ASSERT_TRUE(wide_border_by_vector.has_value());
+  EXPECT_EQ(ToIndexes(last_stage_layer), (std::vector<std::uint32_t>{1}));
+  EXPECT_EQ(ToIndexes(stack), (std::vector<std::uint32_t>{1, 2}));
+  EXPECT_EQ(ToIndexes(wide_border), (std::vector<std::uint32_t>{1}));
+  EXPECT_EQ(ToIndexes(*wide_border_by_vector), (std::vector<std::uint32_t>{1}));
 }
 
 // The bytes of the estimate's entries that live in the run's memory, as the arrays take them.

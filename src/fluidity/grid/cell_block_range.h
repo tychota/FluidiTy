@@ -211,21 +211,22 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 // all. A count above border_blocks.size() means the buffer was too small; nothing beyond it is written. Allocates
 // nothing.
 //
-// Method: the forward form, in the border marks of `search_buffers`. 1 Set the marks of the grid's blocks to 0: never
-//   mark the blocks of the set first, since a marking function stops at a block that is already marked and leaves its
-//   bigger blocks to whoever marked it. 2 For each block of `range`, then of `border_so_far`, run
-//   ApplyCellPlaceReadMarks for each of its 64 cell places and ApplyFacePlaceReadMarks for each of its 240 face places
-//   at `width` (border_block_steps.h). 3 Walk the marks in index order and list each marked block outside `range`.
-//   Every block of the set is marked through its own cell places, so the list holds `border_so_far` without a merge.
-//   A GPU does steps 2 and 3 as two launches, one thread per place and then one thread per block with a prefix sum
-//   and only the count comes back. That form is not built yet.
+// Method: the forward form, in the border marks of `search_buffers`. 1 Set the marks of the grid's blocks to 0, so
+//   that they hold only what this call's places read: a mark left from an earlier call would add a block to the list
+//   silently. The marking functions read no mark (border_block_steps.h), so threads never read what others write; a
+//   GPU form must keep it so, and must not stop at a block that is already marked. 2 For each block of `range`, then of
+//   `border_so_far`, run ApplyCellPlaceReadMarks for each of its 64 cell places and ApplyFacePlaceReadMarks for each of
+//   its 240 face places at `width` (border_block_steps.h). 3 Walk the marks in index order and list each marked block
+//   outside `range`. Every block of the set is marked through its own cell places, so the list holds `border_so_far`
+//   without a merge. A GPU does steps 2 and 3 as two launches, one thread per place and then one thread per block with
+//   a prefix sum and only the count comes back. That form is not built yet.
 // Work: for each place of `range` plus `border_so_far`, one marking function, as the vector form of FindBorderBlocks,
 //   whose Work line gives the cost; and, whatever the set, one write and one read of each of the grid's block marks.
 // Example: the grid of the file header of border_block_steps.h, range {0, 1} (block 0) and no border so far give the
 //   list {1, 2} and the count 2. A stacked border is one call per layer, with two output buffers used in turn: the
 //   list of one call is the border so far of the next.
-// Requires: every buffer on grid.run_on() (debug assertion). The grid and the range are those of every layer. For now
-//   only a CPU grid is searched.
+// Requires: every buffer on grid.run_on() (debug assertion). The grid and the range are those of every layer. A call
+//   with a GPU grid fails with kRunOnCallFailed until the GPU pass exists.
 // Fails: kBadInput          border_so_far is not ascending, holds a block of `range` or an index at or above the
 //                           grid's block count; border_blocks is border_so_far (the same buffer); border_so_far_count
 //                           is above border_so_far.size(); `range` is not inside the grid's blocks. Nothing is written.

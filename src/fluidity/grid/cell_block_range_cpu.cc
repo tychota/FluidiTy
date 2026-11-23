@@ -277,9 +277,10 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
   }
 
-  // Step 5: the marks start at 0 for every block, also for the blocks of the set: a marking function stops at a block
-  // that is already marked and leaves its bigger blocks to whoever marked it, so a block marked here first would never
-  // pass its bigger blocks on. The blocks of the set are marked through their own cell places.
+  // Step 5: the marks start at 0 for every block, also for the blocks of the set, so that they hold only what this
+  // call's places read: a mark left from an earlier call would add a block to the list silently. A marking function
+  // reads no mark, so no call depends on the order of the marks. The blocks of the set are marked through their own
+  // cell places.
   const GridTables tables = grid.tables(RunOn::kCpu);
   std::uint8_t* const marks = search_buffers.marks_.data();
   std::fill_n(marks, block_count, std::uint8_t{0});

@@ -2192,9 +2192,10 @@ readers and marks every block they read, with its bigger blocks; marks are only 
 once cannot conflict, and the marked blocks outside the set, in index order, are the border. A pass that runs several
 stages on one load needs stacked borders: the border of its last stage around the range, then the border of the stage
 before around the range plus that border, and so on. The buffer form of `FindBorderBlocks` does one layer per call, in
-`BorderSearchBuffers` built once: it sets one mark byte per block to 0, runs the marking functions from every place of
-the range and of the layers so far, and lists the marked blocks outside the range. Every block of the layers so far is
-marked through its own cell places, so the list holds them without a merge, and the list of one call is the next
+`BorderSearchBuffers` built once: it sets one mark byte per block to 0 (a mark left from an earlier call would add a
+block silently), runs the marking functions from every place of the range and of the layers so far, and lists the
+marked blocks outside the range. Every block of the layers so far is marked through its own cell places, so the list
+holds them without a merge, and the list of one call is the next
 call's layers so far. In a run in one piece the range is every block and the border is
 empty. A sum over the grid that is not a sum per destination is one partial sum per block, kept in the fixed block
 order, then added by @proc-tree-sum, so a total is the same in one piece and in any cut into ranges.

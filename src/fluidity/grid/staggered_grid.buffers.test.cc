@@ -61,7 +61,7 @@ BuildEstimateWithout(std::vector<MemoryEstimateEntry> estimate, std::string_view
 // An entry no builder knows, as a later change to the estimate could add one.
 MemoryEstimateEntry BuildUnknownEntry() {
   return {
-      .name = "grid: border marks",
+      .name = "grid: entry no builder knows",
       .counted_per = CountedPer::kCellBlock,
       .given_count = 0,
       .bytes_each = 4,
