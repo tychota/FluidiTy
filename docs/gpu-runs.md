@@ -158,7 +158,8 @@ bits: places, counts and every double (the weights and face weights included, si
 `cell_size_rule_on_gpu_functional_test`, `find_cell_at_on_gpu_functional_test`,
 `nearby_face_weights_on_gpu_functional_test`, `cell_surroundings_on_gpu_functional_test` and
 `shared_grid_functions_on_gpu_functional_test`, `border_blocks_on_gpu_functional_test`,
-`stacked_borders_on_gpu_functional_test` and `grid_pieces_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
+`stacked_borders_on_gpu_functional_test`, `grid_pieces_on_gpu_functional_test` and
+`sloped_surface_scene_on_gpu_functional_test`. The GPU runners they share are compiled once, in the library
 `fluidity_grid_testing`. What to look at first, in this order:
 
 1. **Does it build on Windows?** The runners start a GPU function that takes a function pointer as a template argument,
@@ -261,6 +262,29 @@ What to look at first, in this order:
    depends on thread timing; nothing should. The allocation test makes one call before counting.
 5. **`OnGpuMoreFacePlacesThanThreads_EqualCpuPiece`.** 72,000 blocks, more face places than threads of the largest
    launch, so each thread of function 6 has several places. A difference only here points to the grid-stride loop.
+
+One thing about `sloped_surface_scene_on_gpu_functional_test` (one test, `StaggeredGrid.SlopedSurfaceInBoxOnGpu_EqualsCpu`):
+it runs the pieces of the grid module together on one scene, a box of liquid with a sloped surface (9,584 cells in 218
+blocks, 28 ranges of 8 blocks, 1,000 positions). It builds the scene's grid on both processors, then compares by bits the
+whole grid read back, each layer of each range's stacked touching border, each range's grid piece read back (counts,
+piece map and a digest of every table), and the weights of the three axes at the 1,000 positions, asked on the GPU's whole
+grid and in the GPU's piece of the range that holds each position. What to look at first, in this order:
+
+1. **Run the single-purpose programs first** (`build_grid_on_gpu_functional_test`, `stacked_borders_on_gpu_functional_test`,
+   `grid_pieces_on_gpu_functional_test`, `nearby_face_weights_on_gpu_functional_test`). A failure there names the one
+   function at fault with a smaller input; this test fails the same way on a bigger one.
+2. **Which comparison failed.** The message names the comparison: `weights of the 1,000 positions in the whole grid`
+   (the GPU weights function on the whole grid), `layers of the stacked borders` (the border search, one call per layer,
+   each on the list of the layer before), `grid pieces` (the piece build and its read back) or `weights of the positions
+   in the piece of their range` (the same weights function, on a piece's tables). Whole grid weights wrong while the
+   build test passes: the weights function and the sheet's mix of three size levels, which random grids reach less. A
+   piece wrong in `map_digest` or a table digest: see the points of `grid_pieces_on_gpu_functional_test`. A layer wrong
+   only in a late call: the list of the layer before was not read as it was written.
+3. **The whole grid read back first.** `ReadGrid` of the GPU grid is compared with the CPU's tables before any range; a
+   failure there is in the build, not in the borders or pieces.
+4. **Time.** The CPU takes about 6 s in release. The GPU runs 28 pieces and 28 weight launches of a few hundred
+   queries each (three per position), so a launch of the weights function that takes seconds points to the stack, as in
+   `nearby_face_weights_on_gpu_functional_test`.
 
 To read what the compiler gave each GPU function of the test programs, without a GPU, run in the CUDA container, on the
 programs of the `linux-release-cuda` build:

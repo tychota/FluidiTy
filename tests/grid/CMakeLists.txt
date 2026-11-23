@@ -111,6 +111,31 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  sloped_surface_scene_on_gpu_functional_test
+  SOURCES
+  sloped_surface_scene.gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
+  sloped_surface_scene_functional_test
+  SOURCES
+  sloped_surface_scene.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   cell_corners_on_random_grids_functional_test
   SOURCES
   cell_corners_on_random_grids.test.cc
