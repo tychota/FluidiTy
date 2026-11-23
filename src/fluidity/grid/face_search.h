@@ -88,7 +88,7 @@ ApplyCellNearFaceInsert(CellsNearFace& cells_near_face, CellPlaceIndex cell) noe
 //   at most 1 + 56 + 16 = 73.
 // Order: ascending CellPlaceIndex. The cells are inserted in this order: cell_low, cell_high, the touching cells of
 //   cell_low, then those of cell_high. When the list is full, the cells inserted later are left out.
-// Example: in the two-size example of the file header, the face piece at X place 2 of block 1, between the big cell
+// Example: in the two-size example of touching_cells.h, the face piece at X place 2 of block 1, between the big cell
 //   (place 0) and the small cell {2,0,0} (place 64 + 2), gives the 9 cells of the grid: 0, 64 + 2, 64 + 3, 64 + 6,
 //   64 + 7, 64 + 18, 64 + 19, 64 + 22 and 64 + 23.
 // Requires: every block index entry of the tables is kNoIndex or below block_count, as in every built grid. Any `face`:

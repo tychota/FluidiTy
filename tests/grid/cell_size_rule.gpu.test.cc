@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Runs the cell size rule and the size level of a new cell on the GPU and compares every result with the CPU's, bit
 // for bit: the method paper promises the same bytes on both processors (<sec-cell-size-rule>). Every GPU result goes

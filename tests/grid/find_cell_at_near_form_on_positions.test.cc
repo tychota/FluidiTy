@@ -77,8 +77,8 @@ struct RandomPositionCounts {
 
 // For 1,000 positions of one random grid in its box widened by one size-level-0 cell, half drawn freely and half on
 // the lattice of smallest cells, so on cell sides: the search agrees with the checker, and the near form agrees with
-// the search from the found cell's block, a block two moves from it, the last block, a drawn block, block_count and
-// kNoIndex.
+// the search from the found cell's block, a block two moves from it, the last block, a drawn block, block_count
+// and kNoIndex.
 RandomPositionCounts
 ComputeRandomPositionCounts(const GridTables& tables, const GeometricGrid& checker, std::uint64_t seed) {
   RandomPositionCounts counts;

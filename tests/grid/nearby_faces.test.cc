@@ -61,8 +61,8 @@ int CheckBoundOfOneGrid(
   return largest_count;
 }
 
-// 200 small random grids of 3 size levels: every active cell, all 64 windows, every axis, stays at or below the proven
-// bound.
+// 200 small random grids of 3 size levels: every active cell, all 64 windows, every axis, stays at or below the
+// proven bound.
 TEST(FindNearbyFaces, SmallRandomGrids_NeverExceedTheProvenBound) {
   constexpr int kSizeLevelCount = 3;
   constexpr int kBiggestCellsPerAxis = 2;

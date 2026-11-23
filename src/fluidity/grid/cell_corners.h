@@ -48,7 +48,8 @@
 // Uses:    Axis (base/axis.h), FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), Vec3 (base/vec3.h), GridTables, GridFrame,
 //          BlockLocalCoord, ToBlockLocalCoord, ComputeMovedAlongAxis, ComputeIsActiveCellPlace, FindLocalCellPlace,
 //          FindActiveCellHolding, ComputeLocalPlaceCoord, ComputeHighPlaceCoord, FindCellBlock, ToSizeLevel, ToAxis,
-//          ComputeCellWidth (grid/grid_tables.h), the id types and constants (grid/grid_ids.h)
+//          ComputeCellWidth (grid/grid_tables.h), the id types and constants (grid/grid_ids.h), math::kPositiveInfinity
+//          (base/scalar_math.h)
 // Used by: the viscosity solve, the grid's builders and the tests of the grid
 // Read:    docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 
@@ -104,7 +105,7 @@ struct LatticePoint {
 
 // Finds the corner place of a lattice point among the blocks of its own size level: of the up to 8 blocks whose
 // lattice holds it, the last in the fixed order. kNoIndex when the grid has none of them. For this header's own
-// functions, and for corners_test, whose search from the frame's smallest size level checks the bounded one.
+// functions, and for cell_corners.test.cc, whose search from the frame's smallest size level checks the bounded one.
 //
 // Method: on each axis the blocks b with 4 b <= p <= 4 b + 4: floor(p / 4), and floor(p / 4) - 1 as well when p is a
 //   multiple of 4. The search tries the higher one first on z, then y, then x, so the first block found is the last in

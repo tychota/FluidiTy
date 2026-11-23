@@ -7,6 +7,10 @@
 //   makes the coordinate positive. The coordinate gives the id of the size-level-0 block that holds it, and a walk
 //   down the block tables, from that block to the smaller blocks that cover the position, ends at the active cell
 //   (FindCellAt). A caller that has a block near the answer passes it, and the search starts there.
+//   The two-size example used below: 2 size levels, biggest cells 1 m wide, origin 0; the size-level-0 cell {0,0,0}
+//   active beside the 8 size-level-1 cells of the size-level-0 cell {1,0,0}. Block 0 is the size-level-0 block (0,0,0)
+//   and block 1 the size-level-1 block (0,0,0); the big cell is place 0 and the small cell {x, y, z} is place
+//   64 + (4 z + y) * 4 + x.
 //
 // Words:
 //   active cell     a cell that exists and is not split; it carries values

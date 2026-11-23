@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Asks FindNearbyFaces, ComputeNearbyFaceWeights and both forms of ComputeFaceWeight on the GPU for 10,000 positions of
 // random grids, on all three axes with random masks, and expects the CPU's results with the same bits in every field:

@@ -382,8 +382,8 @@ bool ComputeIsNearOffset(double actual, double expected) {
   return std::abs(actual - expected) < 1e-9;
 }
 
-// Builds the mask that keeps exactly the faces of a list whose offset from the position, in m, `is_kept_offset`
-// accepts.
+// Builds the mask that keeps exactly the faces of a list whose offset from the position, in m,
+// `is_kept_offset` accepts.
 template <typename IsKeptOffset>
 NearbyFaceMask
 BuildMaskOfFacesWhere(const GridTables& tables, const NearbyFaceWeights& weights, IsKeptOffset is_kept_offset) {
@@ -703,8 +703,7 @@ double FindYWhereWeightSumIsAtLeastTheMinimum(const GridTables& tables, const Co
 
 // Finds the first x, going up from 2.6 a double at a time, at which the weight sum of the corner faces at {x, y, 2.8}
 // equals `target`, or 0 when none of the next 1,000 doubles does. The sum falls by about 0.01 per metre of x, so a step
-// of x moves it by less than a step of the sum near 0.1, and the doubles of the sum there are met one after the
-// other.
+// of x moves it by less than a step of the sum near 0.1, and the doubles of the sum there are met one after the other.
 double FindXWithWeightSum(const GridTables& tables, const CornerFaces& corner, double position_y, double target) {
   double position_x = 2.6;
   for (int step = 0; step < 1000; ++step) {

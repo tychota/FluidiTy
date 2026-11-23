@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Asks the shared functions that find what lies around a cell or a face piece on the GPU, over every active cell and
 // every face piece of 10 random grids, and expects the CPU's results: the touching cells, the face pieces of a cell,

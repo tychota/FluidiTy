@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Asks FindCellAt on the GPU for 10,000 positions of random grids and expects the cell places of the CPU, in both forms
 // of the function: with and without a starting block. The tables of the GPU grid are built on the GPU, so this also
@@ -107,8 +107,8 @@ TEST(FindCellAt, OnGpu_EqualsCpu) {
   EXPECT_LT(found_count, position_count - (position_count / 10));
 }
 
-// A call with no query starts no GPU function and is done: it asks the GPU for nothing, so it cannot fail on an empty
-// launch.
+// A call with no query starts no GPU function and is done: it asks the GPU for nothing, so it cannot fail on an
+// empty launch.
 TEST(FindCellAt, OnGpuWithNoQuery_IsDone) {
   const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
   ASSERT_EQ(grids.size(), 1U);

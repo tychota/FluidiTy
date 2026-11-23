@@ -1,5 +1,5 @@
-// The faces near a position and the weights they get: the list a particle may give weight to, and what each kept face
-// gets.
+// The faces near a position and the weights they get: the list a particle may give weight to, and what each kept
+// face gets.
 //
 // Purpose: give the transfer step, for one position and one axis, the grid faces that can get weight from it, as a
 //   fixed list in ascending index order, from the tables of one grid version, on the CPU or the GPU; then, from the
@@ -12,8 +12,8 @@
 //   one size every position has 27 such faces. Where sizes change it has more, at most 212 in any valid grid. The
 //   caller then clears the bits of a mask for the faces it may not use.
 //   Proof of the bound, in quarter widths from the low corner of the cell, along the axis and across it:
-//   1. The smallest face is a square of half a cell width; its places are half-width places, at even planes and odd
-//   centres.
+//   1. The smallest face is a square of half a cell width; its places are half-width places, at even planes and
+//   odd centres.
 //   2. A face lies on a side of the cell or of a touching cell: at most 6 planes inside the window and -4..8. A
 //   bigger touching cell has far sides at -8 or 12, and the window never reaches them: it lies within -5..9.
 //   3. Across, it covers a half-width place whose centre lies in the window and in -3..7: at most 6 on each axis. A
@@ -219,8 +219,8 @@ ApplyNearbyFaceInsert(NearbyFaceList& list, FacePlaceIndex face, int max_faces) 
 }
 
 // Finds the candidates of one axis for a position, with room for only max_faces of them: the one writer of a list.
-// FindNearbyFaces is this function with kMaxNearbyFaces. For this header's own functions and the tests of the grid
-// only.
+// FindNearbyFaces is this function with kMaxNearbyFaces. For this header's own functions and the tests of the
+// grid only.
 //
 // Method: finds the cell with FindCellAt, then looks at every face piece of the cell and of each cell touching it. A
 //   face piece is a candidate when its axis is `axis`, its size level is the cell's minus 1, the same or plus 1, and
@@ -231,8 +231,8 @@ ApplyNearbyFaceInsert(NearbyFaceList& list, FacePlaceIndex face, int max_faces) 
 // Example: a grid whose candidates at one position are 124, with max_faces 100, gives kInternalFault and count 0; with
 //   max_faces 124 it gives all 124.
 // Requires: as FindCellAt, and every block index entry of the tables is kNoIndex or below block_count, as in every
-//   built grid (the touching cell and face piece tables are read too); max_faces is 0..kMaxNearbyFaces; `error` is not
-//   null.
+//   built grid (the touching cell and face piece tables are read too); max_faces is 0..kMaxNearbyFaces; `error` is
+//   not null.
 // Fails: kPositionOutsideGrid  no active cell contains the position
 //        kInternalFault        more candidates than max_faces
 //        On failure the list has count 0, and no entry from max_faces on was written. Every other field of the list
@@ -423,8 +423,8 @@ struct RawFaceWeight {
 // Units: m, world; `cell_width` in m.
 // Example: a face of the cell's size at d = (0.25, 0, 0): w_f = 0.6875 x 0.75 x 0.75 = 0.38671875, and the x entry
 //   of g_f is -(1 / h) x (-0.5) x 0.75 x 0.75 = 0.28125 / h.
-// Requires: `face` is a place of block 0..tables.block_count - 1; `cell_width` is finite and above 0; `position` is
-//   finite.
+// Requires: `face` is a place of block 0..tables.block_count - 1; `cell_width` is finite and above 0; `position`
+//   is finite.
 // Read: docs/method-paper/fluidity-method.typ <eq:scaled-weights>
 FLUIDITY_CPU_AND_GPU inline RawFaceWeight
 ComputeRawFaceWeight(const GridTables& tables, FacePlaceIndex face, Vec3 position, double cell_width) noexcept {
