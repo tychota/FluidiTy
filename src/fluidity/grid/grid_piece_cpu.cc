@@ -301,8 +301,8 @@ std::expected<GridPiece, GridFailure> BuildGridPiece(
   assert(whole.run_on() == RunOn::kCpu);
   assert(buffers.run_on() == RunOn::kCpu);
   const GridTables whole_tables = whole.tables(RunOn::kCpu);
-  // Step 1. The range is checked first, the room next, then the border entries, so a list far above the room is not
-  // walked.
+  // Step 1. The range is checked first, the room next, then the border entries, so a list far above the room is
+  // not walked.
   if (const std::expected<void, GridFailure> checked =
           CheckPieceRangeAndRoom(whole_tables.block_count, range, border_blocks.size(), buffers.max_cell_blocks());
       !checked.has_value()) {

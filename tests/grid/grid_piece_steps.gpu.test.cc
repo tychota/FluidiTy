@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Asks the three steps that write a grid piece (ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind,
 // grid/grid_piece_steps.h) for every face place of every block of real pieces of 10 random grids, on the GPU, and

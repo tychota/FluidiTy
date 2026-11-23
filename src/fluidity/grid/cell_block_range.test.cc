@@ -59,8 +59,8 @@ TEST(BuildRanges, TenBlocksAtMostFour_GiveRangesOfFourFourTwo) {
   EXPECT_EQ(ranges->at(2).block_count, 2U);
 }
 
-// Checks that the ranges of a cut follow each other from block 0 to the last block, each of 1 to max_blocks_per_range
-// blocks.
+// Checks that the ranges of a cut follow each other from block 0 to the last block, each of 1 to
+// max_blocks_per_range blocks.
 void CheckRangesCoverEveryBlockOnce(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range) {
   SCOPED_TRACE(testing::Message() << "at most " << max_blocks_per_range << " blocks per range");
   // A failed cut gives no range, so the last check below fails for it.
@@ -742,8 +742,8 @@ TEST(BuildRangeWithBorder, ParticleSums_NeedAFaceBeyondTheNearBorder) {
   ASSERT_TRUE(FindListedFaceIn(list, far_block, far_position));
   const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, list, position, ToMaskOfAll(list));
   EXPECT_GT(ComputeFaceWeight(tables, weights, far_position).weight, 0.0);
-  // In the piece of the range and its border the particle's cell is there, yet its sums differ: the far face piece is
-  // not.
+  // In the piece of the range and its border the particle's cell is there, yet its sums differ: the far face piece
+  // is not.
   std::vector<CellBlockIndex> loaded_blocks = range_with_border.border_blocks;
   loaded_blocks.push_back(range_block);
   std::ranges::sort(loaded_blocks, {}, &CellBlockIndex::value);

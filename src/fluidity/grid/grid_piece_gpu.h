@@ -29,8 +29,8 @@
 // Stack: every function here keeps under the driver's default of 1,024 B per thread, so a piece build has no entry held
 //   by the driver and no reserve step. The compiler gave every GPU function of this file 0 bytes of stack and no spill,
 //   and at most 40 registers per thread, on sm_86, sm_89 and sm_120 (the ptxas lines of the gate's cuda build,
-//   release). ComputeLargestGridPieceStackOnGpu reads the bytes the compiler gave, and a test pins them at 1,024 or
-//   less.
+//   release). ComputeLargestGridPieceStackOnGpu reads the bytes the compiler gave, and a test pins them at 1,024
+//   or less.
 //
 // Owns:    ApplyPieceStatusResetOnGpu, CheckPieceBorderOnGpu, WritePieceMapOnGpu, CopyPieceBlocksOnGpu,
 //          CopyPieceCellStatesOnGpu, WritePieceFaceKindsOnGpu, ComputeLargestGridPieceStackOnGpu
@@ -59,8 +59,8 @@ RunOnCallStatus ApplyPieceStatusResetOnGpu(GridBuildStatus* status);
 // with an integer atomic minimum, and adds 1 to status->result_count when the entry lies below the range
 // (ComputeIsBorderEntryBelowRange), so after a good list result_count is the first block of the range in the piece.
 // Both results are the same whatever the order of the threads. load.border_block_count 0 launches nothing.
-// Requires: load.border_blocks is GPU memory of load.border_block_count entries; status is GPU memory that launch 1
-//   reset.
+// Requires: load.border_blocks is GPU memory of load.border_block_count entries; status is GPU memory that launch
+//   1 reset.
 // Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus CheckPieceBorderOnGpu(PieceLoad load, std::uint32_t whole_block_count, GridBuildStatus* status);
 

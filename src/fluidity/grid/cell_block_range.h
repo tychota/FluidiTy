@@ -198,8 +198,8 @@ class BorderSearchBuffers {
 // allocation of border search.
 // Example: on the CPU, 1,000 blocks take one piece of 1,000 bytes, which a run memory hands out as 1,024.
 // Requires: run_on == run_memory.run_on(), checked by assert in debug builds. The check of CheckCanRunOn(run_on)
-//   comes before that assert, so asking for a GPU that is not there fails with kRunOnCallFailed whatever the run
-//   memory.
+//   comes before that assert, so asking for a GPU that is not there fails with kRunOnCallFailed whatever the
+//   run memory.
 // Fails: kRunOnCallFailed  CheckCanRunOn(run_on) failed (a GPU asked for in a build without GPU code, or without a
 //                          usable GPU); nothing is taken
 //        kBadInput         max_cell_blocks is 0 or above kMaxCellBlocksLimit; nothing is taken
@@ -209,8 +209,8 @@ class BorderSearchBuffers {
 //                          (BuildBorderSearchStackEstimate)
 //        kInternalFault    the arrays and the estimate's entries do not match: no input causes it, only a change to
 //                          the estimate or to this function that leaves the other behind
-//        On failure no buffers are returned. Pieces taken before a failure stay in the block, which frees them with
-//        itself.
+//        On failure no buffers are returned. Pieces taken before a failure stay in the block, which frees them
+//        with itself.
 // Read: docs/method-paper/fluidity-method.typ <sec-grid-memory>
 std::expected<BorderSearchBuffers, GridFailure>
 BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory& run_memory);
@@ -262,8 +262,8 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //        kInternalFault     GPU only: the prefix sum failed on a size, or the count read back is above the block count
 //        On failure border_blocks holds no result; after kRunOnCallFailed the marks and the arrays of
 //        `search_buffers` are unspecified, as every buffer of a failed GPU call. If a launch of the marking fails after
-//        earlier ones marked, nothing is written to the output (no list, no count), and the next call clears the marks
-//        first.
+//        earlier ones marked, nothing is written to the output (no list, no count), and the next call clears the
+//        marks first.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     const StaggeredGrid& grid,

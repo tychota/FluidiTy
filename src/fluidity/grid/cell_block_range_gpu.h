@@ -28,8 +28,8 @@
 //
 // Owns:    ApplyBorderStatusResetOnGpu, ResetBorderMarksOnGpu, CheckBorderSoFarOnGpu, WriteBorderReadMarksOnGpu,
 //          WriteListedMarksOnGpu, WriteBorderBlocksOnGpu, kBorderSearchStackBytes,
-//          WaitForBorderSearchOnGpu, ComputeLargestBorderSearchStackOnGpu, ComputeResidentThreadsOnGpu,
-//          ReserveBorderSearchStackOnGpu
+//          WaitForBorderSearchOnGpu, ComputeLargestBorderSearchStackOnGpu,
+//          ComputeResidentThreadsOnGpu, ReserveBorderSearchStackOnGpu
 // Uses:    RunOnCallStatus (base/run_on_call.h), BorderWidth (grid/border_block_steps.h), GridBuildStatus
 //          (grid/grid_build_status.h), CellBlockIndex, CellBlockRange (grid/grid_ids.h), GridTables
 //          (grid/grid_tables.h)
@@ -102,8 +102,8 @@ RunOnCallStatus WriteBorderReadMarksOnGpu(
 // Step 4: one thread for each block writes sums[block] = ComputeListedMark(marks, range, block), or 0 when the failure
 // key of *status is set, so the prefix sum that follows never adds a word of an earlier call. block_count 0 launches
 // nothing. sums[block_count] is the prefix sum's to write.
-// Requires: marks and sums are GPU memory, marks of block_count bytes and sums of block_count + 1 words; step 3 has
-//   finished.
+// Requires: marks and sums are GPU memory, marks of block_count bytes and sums of block_count + 1 words; step 3
+//   has finished.
 // Fails: kCallFailed  the GPU function did not start
 RunOnCallStatus WriteListedMarksOnGpu(
     const std::uint8_t* marks,

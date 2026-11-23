@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Builds grid pieces of a GPU whole grid with the buffer form of BuildGridPiece (six GPU functions: a reset, one thread
 // for each border entry, each loaded item, each piece block, each cell place and each face place) and expects the CPU's

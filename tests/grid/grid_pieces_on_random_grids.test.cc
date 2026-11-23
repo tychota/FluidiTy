@@ -180,8 +180,8 @@ struct ListsOfOnePosition {
   NearbyFaceList piece;
 };
 
-// Checks that the piece's list maps to the whole grid's through the piece map: the cell, the cell width and every face
-// place.
+// Checks that the piece's list maps to the whole grid's through the piece map: the cell, the cell width and every
+// face place.
 void CheckListsMapThroughPieceMap(std::span<const CellBlockIndex> map, const ListsOfOnePosition& lists) {
   for (int entry = 0; entry < lists.whole.count; ++entry) {
     EXPECT_EQ(ToWholePlace(map, lists.piece.faces[entry].value, kFacePlacesPerBlock), lists.whole.faces[entry].value);
@@ -359,8 +359,8 @@ void ApplyPlacedPartials(const GridPiece& piece, std::vector<double>& placed_par
   }
 }
 
-// Computes the total of the block partials of every range of one cut, each computed in its grid piece and placed at
-// range_in_whole_grid.
+// Computes the total of the block partials of every range of one cut, each computed in its grid piece and placed
+// at range_in_whole_grid.
 double ComputeTotalOfPieces(const StaggeredGrid& grid, std::uint32_t cut_blocks, PieceBuffersRoom& room) {
   std::vector<double> placed_partials(grid.counts().cell_blocks, 0.0);
   for (const CellBlockRange range : BuildRanges(grid, cut_blocks).value_or(std::vector<CellBlockRange>{})) {
@@ -494,8 +494,8 @@ void CheckSamePieces(const GridPiece& span_piece, const GridPiece& buffer_piece,
   EXPECT_EQ(buffer_piece.range_in_whole_grid().first_block, range.first_block);
 }
 
-// Checks that the piece built from the buffer form's border is the piece of the span form: the same tables, map and
-// counts.
+// Checks that the piece built from the buffer form's border is the piece of the span form: the same tables, map
+// and counts.
 void CheckBufferPieceEqualsSpanPiece(const StaggeredGrid& grid, CellBlockRange range, BorderSearchRig& rig) {
   const std::vector<CellBlockIndex> border = FindLayerOrFail(rig, range, {}, BorderWidth::kFourCellWidths);
   std::optional<PieceBuffersRoom> span_room = BuildPieceBuffersRoom(grid.counts().cell_blocks);
@@ -510,8 +510,8 @@ void CheckBufferPieceEqualsSpanPiece(const StaggeredGrid& grid, CellBlockRange r
   CheckSamePieces(*span_piece, *buffer_piece, range);
 }
 
-// The border from the buffer form of FindBorderBlocks gives the piece of the span form: the same tables, map and
-// counts.
+// The border from the buffer form of FindBorderBlocks gives the piece of the span form: the same tables, map
+// and counts.
 TEST(BuildGridPiece, BufferForm_EqualsSpanForm) {
   for (const GridUnderTest& under_test : BuildGridsUnderTest(kReaderGridCount, RangeChoice::kTestedRanges)) {
     std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(*under_test.grid);

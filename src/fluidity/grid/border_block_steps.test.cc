@@ -302,8 +302,8 @@ TEST(FindBorderBlocks, StaleWordsWithBadBorderSoFar_PrefixSumAddsZeros) {
   ASSERT_TRUE(test_grid.has_value());
   const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
   ASSERT_EQ(tables.block_count, 3U);
-  // The marks start as 0xFF bytes and the sums as 0xFFFFFFFF words inside the replay; the border so far {2, 1} is not
-  // ascending.
+  // The marks start as 0xFF bytes and the sums as 0xFFFFFFFF words inside the replay; the border so far {2, 1} is
+  // not ascending.
   const std::array<CellBlockIndex, 2> border_so_far = {CellBlockIndex{2}, CellBlockIndex{1}};
   const BorderReplayInputs inputs = {
       .range = {.first_block = 0, .block_count = 1},

@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Finds the borders of ranges on the GPU with the buffer form of FindBorderBlocks (one thread for each place of the
 // set, then one thread for each block) and expects the CPU's list and count, entry for entry, by bits. Every grid is

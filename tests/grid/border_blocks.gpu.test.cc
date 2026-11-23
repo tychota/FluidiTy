@@ -1,4 +1,4 @@
-// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on the owner's machine with a GPU.
+// Needs a CUDA GPU: label gpu. Built in the CUDA container, run only on a machine with a GPU.
 //
 // Asks the border block test (ComputeIsBorderBlock, grid/border_block_steps.h) of every block of the random grids on
 // the GPU, for a few block sets per grid and both border widths, and expects the CPU's answer bit for bit. The set's
@@ -8,8 +8,7 @@
 // under a unique name. A block next to the set can cost up to about 3 million table reads and moves at kTouchingCells
 // and 10 million at kFourCellWidths, and a block asks every block under it, so this test may take long on the GPU.
 // The second test runs the forward form (ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks), which the GPU border pass
-// will run, one thread per place of a range, and expects the CPU's marks bit for bit and their union to be the
-// border.
+// will run, one thread per place of a range, and expects the CPU's marks bit for bit and their union to be the border.
 
 #include <gtest/gtest.h>
 

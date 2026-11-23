@@ -144,8 +144,8 @@ FLUIDITY_CPU_AND_GPU constexpr FacePieceKind ComputePieceFaceKind(
 // The failure steps of a grid piece's build on the GPU, the high bits of a failure key (ToFailureKey).
 inline constexpr int kPieceBorderStep = 1;  // An entry of the border list that is not ascending, outside the range.
 inline constexpr int kPieceFaultStep = 2;  // A neighbour entry names a block of the range that the piece map lacks.
-// The border list's keys are built with kIdStep (ComputeBorderFailureKey in grid/border_block_steps.h) and read back
-// with kPieceBorderStep, so the two must be one number.
+// The border list's keys are built with kIdStep (ComputeBorderSoFarFailureKey in grid/border_block_steps.h) and read
+// back with kPieceBorderStep, so the two must be one number.
 static_assert(kPieceBorderStep == kIdStep, "the border step is the step the border keys are built with");
 
 // What a grid piece loads: the range and the border list, which the steps read and never write.
