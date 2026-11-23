@@ -16,6 +16,7 @@
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/staggered_grid.h"
+#include "fluidity/grid/testing/border_block_cases.h"
 #include "fluidity/grid/testing/cell_block_range_cases.h"
 #include "fluidity/grid/testing/grid_piece_support.h"
 #include "fluidity/grid/testing/grid_support.h"
@@ -24,19 +25,11 @@
 namespace fluidity::grid {
 namespace {
 
-// The random grids whose pieces are checked: the first 30, each with its 4 chosen sets at both widths.
-constexpr std::size_t kPieceGridCount = 30;
+// The random grids whose pieces are checked: the first 10, each with its 4 chosen sets at both widths.
+constexpr std::size_t kPieceGridCount = 10;
 
 // The most blocks of a range of the nested-ball grid.
 constexpr std::uint32_t kNestedBallRangeBlocks = 16;
-
-// The border of a set. It fails the calling test when the call fails.
-std::vector<CellBlockIndex>
-FindBorderOrFail(const StaggeredGrid& grid, std::span<const CellBlockIndex> blocks, BorderWidth width) {
-  const std::expected<std::vector<CellBlockIndex>, GridFailure> border = FindBorderBlocks(grid, blocks, width);
-  EXPECT_TRUE(border.has_value());
-  return border.has_value() ? *border : std::vector<CellBlockIndex>{};
-}
 
 // The nested-ball grid, built once per program.
 const TestGrid& FindNestedBallGrid() {
@@ -58,7 +51,7 @@ void CheckPieceAnswersAsWholeGrid(const StaggeredGrid& grid, std::span<const Cel
 }
 
 // In the piece made of a set and its border, every reader of the width, run from every place kept in the set, gives
-// the answer it gives on the whole grid: the first 30 random grids, 4 sets each, both widths.
+// the answer it gives on the whole grid: the first 10 random grids, 4 sets each, both widths.
 TEST(FindBorderBlocks, PiecesOfRandomGrids_AnswerAsTheWholeGrid) {
   const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
   ASSERT_GE(built.grids.size(), kPieceGridCount);

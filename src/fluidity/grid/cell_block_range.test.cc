@@ -11,12 +11,15 @@
 #include <span>
 #include <vector>
 
+#include "fluidity/base/axis.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/vec3.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/find_cell_at.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/nearby_face_weights.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/allocation_counter.h"
 #include "fluidity/grid/testing/cell_block_range_cases.h"
@@ -375,6 +378,63 @@ TEST(FindBorderGeometrically, SplitCornerGridFromSmallBlock_HasTheSizeLevelZeroB
 
 TEST(FindBorderGeometrically, CornerBeyondGrid_HasTheBlockKeepingTheCorners) {
   CheckGeometricBorder(2, BuildCornerBeyondCells(), {0}, {1, 2});
+}
+
+// The block that holds the active cell at `position` of the tables.
+CellBlockIndex FindBlockAt(const GridTables& tables, Vec3 position) {
+  return ToCellBlockIndex(FindCellAt(tables, position));
+}
+
+// Says whether a list holds a face piece kept in `block`; the entry is written to `position_in_list` when it does.
+bool FindListedFaceIn(const NearbyFaceList& list, CellBlockIndex block, int& position_in_list) {
+  for (int entry = 0; entry < list.count; ++entry) {
+    if (ToCellBlockIndex(list.faces[entry]).value == block.value) {
+      position_in_list = entry;
+      return true;
+    }
+  }
+  return false;
+}
+
+// A particle's sums need face pieces beyond the near border of the range that collects from it. The range is the
+// size-level-1 block of x in [2,4); the particle lies in the cell [0,1), a cell that can contribute to the face piece
+// at x = 2, and its list has the face piece at x = -0.5, kept in the block of x in [-2,0): not in the range, and not in
+// the near border. So the sums are made where the particle's cell is in the set, and carried.
+TEST(BuildRangeWithBorder, ParticleSums_NeedAFaceBeyondTheNearBorder) {
+  const std::vector<CellId> cells = BuildCarriedSumsCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(2), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
+  const CellBlockIndex range_block = FindBlockAt(tables, {.x = 2.25, .y = 0.25, .z = 0.25});
+  const CellBlockIndex far_block = FindBlockAt(tables, {.x = -0.25, .y = 0.25, .z = 0.25});
+  const RangeWithBorder range_with_border =
+      BuildRangeWithBorder(test_grid->grid, {.first_block = range_block.value, .block_count = 1});
+  const std::vector<std::uint32_t> border = ToIndexes(range_with_border.border_blocks);
+  ASSERT_NE(far_block.value, range_block.value);
+  EXPECT_EQ(std::ranges::count(border, far_block.value), 0);
+  const Vec3 position = {.x = 0.95, .y = 0.5, .z = 0.5};
+  GridError error = GridError::kNone;
+  const NearbyFaceList list = FindNearbyFaces(tables, position, Axis::kX, CellBlockIndex{kNoIndex}, &error);
+  ASSERT_EQ(error, GridError::kNone);
+  int range_position = -1;
+  int far_position = -1;
+  ASSERT_TRUE(FindListedFaceIn(list, range_block, range_position));
+  ASSERT_TRUE(FindListedFaceIn(list, far_block, far_position));
+  const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, list, position, ToMaskOfAll(list));
+  EXPECT_GT(ComputeFaceWeight(tables, weights, far_position).weight, 0.0);
+  // In the piece of the range and its border the particle's cell is there, yet its sums differ: the far face piece is
+  // not.
+  std::vector<CellBlockIndex> loaded_blocks = range_with_border.border_blocks;
+  loaded_blocks.push_back(range_block);
+  std::ranges::sort(loaded_blocks, {}, &CellBlockIndex::value);
+  const PieceTables piece = BuildPieceTables(tables, loaded_blocks);
+  const GridTables piece_tables = piece.ToTables();
+  const NearbyFaceList piece_list = FindNearbyFaces(piece_tables, position, Axis::kX, CellBlockIndex{kNoIndex}, &error);
+  ASSERT_EQ(error, GridError::kNone);
+  const NearbyFaceWeights piece_weights =
+      ComputeNearbyFaceWeights(piece_tables, piece_list, position, ToMaskOfAll(piece_list));
+  EXPECT_LT(piece_list.count, list.count);
+  EXPECT_NE(piece_weights.weight_sum, weights.weight_sum);
 }
 
 }  // namespace

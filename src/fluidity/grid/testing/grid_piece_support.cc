@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "fluidity/base/axis.h"
@@ -259,11 +262,73 @@ std::optional<std::string> FindFaceDifference(const TablesPair& pair, FacePlaceI
   }
 }
 
-// Compares, for the active cell at whole place `near_cell`, the face pieces of the set that FindNearbyFaces lists at
-// 2 positions of the cell, one axis each: what the transfer step reads to add into a face piece of the set from the
-// particles of a cell near it.
-std::optional<std::string>
-FindTransferDifference(const TablesPair& pair, CellPlaceIndex near_cell, const std::set<std::uint32_t>& set_blocks) {
+// The positions of a cell at which transfer is run, as fractions of the cell's width from its low corner, each in the
+// middle of its window quarter: quarters (0, 0, 0), (3, 3, 3), and the centre of the cell, the middle of quarter 2 on
+// each axis. Every axis meets its lowest quarter 0 and its highest quarter 3, and the centre.
+constexpr std::array<std::array<double, 3>, 3> kTransferFractions = {
+    std::array{0.125, 0.125, 0.125},
+    std::array{0.875, 0.875, 0.875},
+    std::array{0.5, 0.5, 0.5},
+};
+
+// One particle of a cell that can contribute to a face piece of the set: its position, the faces of the set that
+// FindNearbyFaces lists for it on each axis on the whole grid, and its sums on each axis, made on the whole grid as the
+// transfer step carries them with the particle.
+struct TransferParticle {
+  Vec3 position{};
+  std::array<std::vector<std::uint32_t>, 3> whole_faces;
+  std::array<NearbyFaceSums, 3> sums{};
+};
+
+// What the transfer evidence of one comparison keeps: the pair of tables, the blocks of the set, and the particles of
+// each cell met so far, by the cell's whole place.
+struct TransferEvidence {
+  const TablesPair& pair;
+  const std::set<std::uint32_t>& set_blocks;
+  std::map<std::uint32_t, std::vector<TransferParticle>> particles_of_cell;
+};
+
+// Says whether two doubles have the same bits.
+bool ComputeIsSameBits(double first, double second) {
+  return std::bit_cast<std::uint64_t>(first) == std::bit_cast<std::uint64_t>(second);
+}
+
+// Says whether two vectors have the same bits on each axis.
+bool ComputeIsSameVectorBits(Vec3 first, Vec3 second) {
+  return ComputeIsSameBits(first.x, second.x) && ComputeIsSameBits(first.y, second.y)
+      && ComputeIsSameBits(first.z, second.z);
+}
+
+// Makes the particles of the active cell at whole place `cell`: one at each of kTransferFractions, with the sums of
+// each axis made on the whole grid from a list that keeps every face.
+std::vector<TransferParticle> BuildTransferParticles(const GridTables& whole, CellPlaceIndex cell) {
+  std::vector<TransferParticle> particles;
+  for (const std::array<double, 3>& fractions : kTransferFractions) {
+    TransferParticle particle;
+    particle.position = ComputeCellPoint(whole, cell, fractions);
+    for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
+      GridError error = GridError::kNone;
+      const NearbyFaceList list = FindNearbyFaces(whole, particle.position, axis, CellBlockIndex{kNoIndex}, &error);
+      EXPECT_EQ(error, GridError::kNone);
+      const NearbyFaceWeights weights = ComputeNearbyFaceWeights(whole, list, particle.position, ToMaskOfAll(list));
+      particle.sums.at(static_cast<std::size_t>(axis)) = ToNearbyFaceSums(weights);
+      particle.whole_faces.at(static_cast<std::size_t>(axis)) =
+          ToWholeList(list.faces, list.count, nullptr, kFacePlacesPerBlock);
+    }
+    particles.push_back(particle);
+  }
+  return particles;
+}
+
+// Compares the faces of the set that FindNearbyFaces lists, on each axis, for every particle of the cell at whole place
+// `cell`, in the piece and on the whole grid (the whole grid's lists were made with the particles): what the transfer
+// step reads to add into a face piece of the set.
+std::optional<std::string> FindListedFacesDifference(
+    const TablesPair& pair,
+    const std::set<std::uint32_t>& set_blocks,
+    CellPlaceIndex cell,
+    const std::vector<TransferParticle>& particles
+) {
   const auto keep_set_faces = [&set_blocks](const std::vector<std::uint32_t>& faces) {
     std::vector<std::uint32_t> set_faces;
     for (const std::uint32_t face : faces) {
@@ -273,42 +338,101 @@ FindTransferDifference(const TablesPair& pair, CellPlaceIndex near_cell, const s
     }
     return set_faces;
   };
-  if (ToPiecePlace(pair.piece, near_cell.value, kCellPlacesPerBlock) == kNoIndex) {
-    return ToDifference("FindNearbyFaces for transfer", "cell near a face piece", near_cell.value, "not loaded");
-  }
-  constexpr std::array<std::array<double, 3>, 2> kPositionFractions = {{{0.5, 0.5, 0.5}, {0.1, 0.7, 0.4}}};
-  for (int position_number = 0; position_number < 2; ++position_number) {
-    const Vec3 position =
-        ComputeCellPoint(pair.whole, near_cell, kPositionFractions.at(static_cast<std::size_t>(position_number)));
-    const Axis axis = ToAskedAxis(near_cell, position_number);
-    const NearbyFacesAnswer whole_answer = FindNearbyFacesAnswer(pair.whole, nullptr, position, axis);
-    const NearbyFacesAnswer piece_answer = FindNearbyFacesAnswer(pair.piece_tables, &pair.piece, position, axis);
-    if (keep_set_faces(whole_answer.faces) != keep_set_faces(piece_answer.faces)) {
-      return ToDifference("FindNearbyFaces for transfer", "cell near a face piece", near_cell.value, "");
+  for (const TransferParticle& particle : particles) {
+    for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
+      const NearbyFacesAnswer piece_answer =
+          FindNearbyFacesAnswer(pair.piece_tables, &pair.piece, particle.position, axis);
+      if (keep_set_faces(particle.whole_faces.at(static_cast<std::size_t>(axis)))
+          != keep_set_faces(piece_answer.faces)) {
+        return ToDifference("FindNearbyFaces for transfer", "cell near a face piece", cell.value, "");
+      }
     }
   }
   return std::nullopt;
 }
 
-// Adds to `near_cells` the cells of FindCellsNearFace(face) at most one size level bigger than the face piece.
-void ApplyTransferCells(const GridTables& whole, FacePlaceIndex face, std::set<std::uint32_t>& near_cells) {
-  const int face_size_level = static_cast<int>(ToSizeLevel(whole, ToCellBlockIndex(face)));
-  const CellsNearFace cells_near_face = FindCellsNearFace(whole, face);
-  for (int entry = 0; entry < cells_near_face.count; ++entry) {
-    const CellPlaceIndex near_cell = cells_near_face.cells[entry];
-    if (static_cast<int>(ToSizeLevel(whole, ToCellBlockIndex(near_cell))) >= face_size_level - 1) {
-      near_cells.insert(near_cell.value);
-    }
+// Compares what the face piece at whole place `face` does to collect from the particle of cell `cell`, in the piece and
+// on the whole grid: ComputeFaceWeight with the particle's sums made on the whole grid. The answers must have the same
+// bits.
+std::optional<std::string> FindFaceWeightDifference(
+    const TablesPair& pair,
+    FacePlaceIndex face,
+    CellPlaceIndex cell,
+    const TransferParticle& particle
+) {
+  const FacePlaceIndex piece_face = {.value = ToPiecePlace(pair.piece, face.value, kFacePlacesPerBlock)};
+  const CellPlaceIndex piece_cell = {.value = ToPiecePlace(pair.piece, cell.value, kCellPlacesPerBlock)};
+  const NearbyFaceSums& sums = particle.sums.at(static_cast<std::size_t>(ToAxis(face)));
+  const FaceWeight whole_weight = ComputeFaceWeight(pair.whole, face, particle.position, cell, sums);
+  const FaceWeight piece_weight = ComputeFaceWeight(pair.piece_tables, piece_face, particle.position, piece_cell, sums);
+  const bool is_same = ToWholePlace(pair.piece, piece_weight.face.value, kFacePlacesPerBlock) == whole_weight.face.value
+      && ComputeIsSameBits(whole_weight.weight, piece_weight.weight)
+      && ComputeIsSameVectorBits(whole_weight.offset, piece_weight.offset)
+      && ComputeIsSameVectorBits(whole_weight.offset_from_mean, piece_weight.offset_from_mean)
+      && ComputeIsSameVectorBits(whole_weight.weight_change, piece_weight.weight_change);
+  if (!is_same) {
+    return ToDifference(
+        "ComputeFaceWeight",
+        "face piece",
+        face.value,
+        "particle of cell " + std::to_string(cell.value)
+    );
   }
+  return std::nullopt;
 }
 
-// Compares every reader from the places of one block of the set, and adds the cells transfer reads to `near_cells`.
-std::optional<std::string> FindBlockDifference(
-    const TablesPair& pair,
-    std::uint32_t block,
-    BorderWidth width,
-    std::set<std::uint32_t>& near_cells
-) {
+// Finds the cells of FindCellsNearFace(face) at most one size level bigger than the face piece, in the tables of
+// `tables`, as whole grid indexes: `piece` is null for the whole grid's own tables.
+std::vector<std::uint32_t> FindTransferCells(const GridTables& tables, const PieceTables* piece, FacePlaceIndex face) {
+  const int face_size_level = static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(face)));
+  const CellsNearFace cells_near_face = FindCellsNearFace(tables, face);
+  std::vector<std::uint32_t> transfer_cells;
+  for (int entry = 0; entry < cells_near_face.count; ++entry) {
+    const CellPlaceIndex near_cell = cells_near_face.cells[entry];
+    if (static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(near_cell))) >= face_size_level - 1) {
+      transfer_cells.push_back(
+          piece == nullptr ? near_cell.value : ToWholePlace(*piece, near_cell.value, kCellPlacesPerBlock)
+      );
+    }
+  }
+  return transfer_cells;
+}
+
+// Compares what transfer needs for the face piece at whole place `face` of the set: the cells that can contribute to
+// it (FindCellsNearFace at most one size level bigger), in the piece and on the whole grid; for each, the faces of the
+// set that FindNearbyFaces lists for its particles; and what the face does to collect from each particle,
+// ComputeFaceWeight with sums made on the whole grid, bit for bit. A block of a contributing cell that the piece lacks
+// shows as a cell missing from the piece's list.
+std::optional<std::string> FindTransferDifference(TransferEvidence& evidence, FacePlaceIndex face) {
+  const TablesPair& pair = evidence.pair;
+  const FacePlaceIndex piece_face = {.value = ToPiecePlace(pair.piece, face.value, kFacePlacesPerBlock)};
+  const std::vector<std::uint32_t> whole_cells = FindTransferCells(pair.whole, nullptr, face);
+  if (whole_cells != FindTransferCells(pair.piece_tables, &pair.piece, piece_face)) {
+    return ToDifference("FindCellsNearFace for transfer", "face piece", face.value, "");
+  }
+  for (const std::uint32_t whole_cell : whole_cells) {
+    const CellPlaceIndex cell = {.value = whole_cell};
+    if (!evidence.particles_of_cell.contains(whole_cell)) {
+      std::vector<TransferParticle> particles = BuildTransferParticles(pair.whole, cell);
+      std::optional<std::string> difference = FindListedFacesDifference(pair, evidence.set_blocks, cell, particles);
+      if (difference.has_value()) {
+        return difference;
+      }
+      evidence.particles_of_cell.emplace(whole_cell, std::move(particles));
+    }
+    for (const TransferParticle& particle : evidence.particles_of_cell.at(whole_cell)) {
+      std::optional<std::string> difference = FindFaceWeightDifference(pair, face, cell, particle);
+      if (difference.has_value()) {
+        return difference;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+// Compares every reader from the places of one block of the set, and the transfer evidence of each face piece of it.
+std::optional<std::string> FindBlockDifference(TransferEvidence& evidence, std::uint32_t block, BorderWidth width) {
+  const TablesPair& pair = evidence.pair;
   for (std::uint32_t place_in_block = 0; place_in_block < kCellPlacesPerBlock; ++place_in_block) {
     const CellPlaceIndex cell = {.value = (block * kCellPlacesPerBlock) + place_in_block};
     if (pair.whole.cell_states[cell.value] != CellState::kActive) {
@@ -331,7 +455,11 @@ std::optional<std::string> FindBlockDifference(
     if (difference.has_value()) {
       return difference;
     }
-    ApplyTransferCells(pair.whole, face, near_cells);
+    // Transfer reads at kTouchingCells. A piece for kFourCellWidths holds that piece's blocks, so it answers alike.
+    difference = width == BorderWidth::kTouchingCells ? FindTransferDifference(evidence, face) : std::nullopt;
+    if (difference.has_value()) {
+      return difference;
+    }
   }
   for (std::uint32_t place_in_block = 0; place_in_block < kCornerPlacesPerBlock; ++place_in_block) {
     const CornerPlaceIndex corner = {.value = (block * kCornerPlacesPerBlock) + place_in_block};
@@ -447,16 +575,12 @@ std::optional<std::string> FindFirstReaderDifference(
   const PieceTables piece = BuildPieceTables(whole, loaded_blocks);
   const TablesPair pair = {.whole = whole, .piece = piece, .piece_tables = piece.ToTables()};
   std::set<std::uint32_t> set_blocks;
-  std::set<std::uint32_t> near_cells;
   for (const CellBlockIndex block : set) {
     set_blocks.insert(block.value);
-    std::optional<std::string> difference = FindBlockDifference(pair, block.value, width, near_cells);
-    if (difference.has_value()) {
-      return difference;
-    }
   }
-  for (const std::uint32_t near_cell : near_cells) {
-    std::optional<std::string> difference = FindTransferDifference(pair, {.value = near_cell}, set_blocks);
+  TransferEvidence evidence = {.pair = pair, .set_blocks = set_blocks, .particles_of_cell = {}};
+  for (const CellBlockIndex block : set) {
+    std::optional<std::string> difference = FindBlockDifference(evidence, block.value, width);
     if (difference.has_value()) {
       return difference;
     }

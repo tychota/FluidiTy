@@ -23,7 +23,8 @@
 //          FacePieceKind (grid/grid_tables.h), the id types (grid/grid_ids.h)
 // Implementation uses: FindCellAt (grid/find_cell_at.h), FindTouchingCells, FindFacePieces (grid/touching_cells.h),
 //          FindCornerPlaces, FindCellsAroundEdge, ComputeCornerPosition (grid/cell_corners.h), FindCellsNearFace,
-//          BuildFaceSearch, FindNextFace (grid/face_search.h), FindNearbyFaces (grid/nearby_face_weights.h),
+//          BuildFaceSearch, FindNextFace (grid/face_search.h), FindNearbyFaces, ToMaskOfAll, ComputeNearbyFaceWeights,
+//          ToNearbyFaceSums, ComputeFaceWeight (grid/nearby_face_weights.h),
 //          FindCellLow, FindCellHigh, ComputeCellCenter, ComputeCellWidth (grid/grid_tables.h)
 // Used by: the tests of border blocks (tests/grid/, cell_block_range.test.cc)
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
@@ -86,15 +87,24 @@ FindBorderByReadMarks(const GridTables& whole, std::span<const CellBlockIndex> s
 //     FindCellsAroundEdge of its 12 edges; FindCellAt, with and without a block near it, at the 27 points of c's
 //     closed box (low, middle and high on each axis), which FindCellAt gives to c or to a cell touching c; and
 //     FindNearbyFaces at 2 positions of c's half-open box (its low corner, and 0.8, 0.3, 0.9 of its width from it);
-//   - from each face piece f: FindCellLow; FindCellHigh; FindCornerPlaces; and, for transfer, every cell q of
-//     FindCellsNearFace(f) at most one size level bigger than f, where FindNearbyFaces at 2 positions of q (its
-//     centre, and 0.1, 0.7, 0.4 of its width from its low corner) lists the same face pieces of the set;
+//   - from each face piece f: FindCellLow; FindCellHigh; FindCornerPlaces; and, for transfer, the cells q of
+//     FindCellsNearFace(f) at most one size level bigger than f, which must be the same in the piece and on the whole
+//     grid (a block of such a cell that the piece lacks shows here); then, for 3 positions of each q (window quarters
+//     (0, 0, 0), (3, 3, 3) and the centre: each axis meets its quarters 0 and 3), the face pieces
+//     of the set that FindNearbyFaces lists on each of the three axes, and what f does to collect: ComputeFaceWeight(f,
+//     position, q, sums) with the position's sums made on the whole grid, as the transfer step carries them with the
+//     particle, which must give the same bits in the piece and on the whole grid. Every face piece of the set is run,
+//     so faces of every axis on both sides of a cell q are met. Transfer reads at kTouchingCells, so this part runs at
+//     that width only (a piece made for kFourCellWidths holds that piece's blocks as well);
 //   - at kFourCellWidths also, from each face piece: FindCellsNearFace; the block list of BuildFaceSearch at the
 //     largest radius; and the face pieces of FindNextFace walked from it;
 //   - from each corner place: ComputeCornerPosition.
-//   FindNearbyFaces asks one axis per position, the axes taking turns over the cells and the positions (place index
-//   plus position number, mod 3), so every axis is asked at a third of the cost. Places are compared through the
-//   whole grid's indexes: a piece place is mapped by its block's whole grid index.
+//   FindNearbyFaces from the cells of the set asks one axis per position, the axes taking turns over the cells and
+//   the positions (place index plus position number, mod 3), so every axis is asked at a third of the cost. Its list is
+//   a filter of FindCellAt, FindTouchingCells and FindFacePieces of the cell and of its touching cells, all compared
+//   exhaustively, plus face positions read from the face's own block, so two positions add little; they are not the
+//   evidence. Places are compared through the whole grid's indexes: a piece place is mapped by its block's whole grid
+//   index.
 // Example: in the grid of the file header, the set {block 1} with the border {} gives "FindCellAt ...", and with the
 //   border {0} gives no difference.
 // Requires: `whole` are the tables of a CPU grid; `set` and `border` are ascending, disjoint, and below its block

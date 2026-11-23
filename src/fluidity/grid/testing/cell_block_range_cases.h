@@ -16,12 +16,18 @@
 //   split into their size-level-1 cells. Block 0 is the size-level-0 block, block 1 the size-level-1 block (0,0,0).
 //   Every place a reader returns from a place of block 1 is kept at size level 1, yet FindCellAt walks down from block
 //   0, so block 0 is in the border of block 1.
+//   The carried-sums grid, of 2 size levels, is one column of cells along x, 1 m wide at size level 0: the cells
+//   [-2,-1), [0,1), [1,2) and [3,4) are active, and [-1,0) and [2,3) are split into their 8 smaller cells. A particle
+//   of the cell [0,1) near x = 0.95 lists the face piece at x = -0.5, kept in the size-level-1 block of [-2,0), and the
+//   face piece at x = 2, kept in the size-level-1 block of [2,4): the second block alone is a range whose near border
+//   does not hold the first block.
 //   The nested-ball grid, of 4 size levels, is larger: the size-level-0 cells {0..11}^3, 27 size-level-0 blocks, and
 //   around the point (6, 6, 6) m, the middle of the middle size-level-0 block, balls of smaller cells, each size level
 //   in a region of its own, far from the grid's edge.
 //
 // Owns:    BuildPlaneFourCells, BuildDistantCornerCells, BuildCornerBeyondCells, BuildSplitCornerCells,
-//          BuildNestedBallCells, FindDrawnAscendingBlocks, ToRangeBlocks, FindChosenBlockSets, ToBlocks
+//          BuildCarriedSumsCells, BuildNestedBallCells, FindDrawnAscendingBlocks, ToRangeBlocks, FindChosenBlockSets,
+//          ToBlocks
 // Uses:    CPU-only guard (base/cpu_only.h), ToCell (grid/testing/staggered_grid_cases.h), BuildSizeStepClosure,
 //          ToUniformIndex (grid/testing/grid_support.h), BuildRanges (grid/cell_block_range.h), StaggeredGrid
 //          (grid/staggered_grid.h), GridFailure (grid/grid_error.h)
@@ -96,6 +102,18 @@ inline std::vector<CellId> BuildSplitCornerCells() {
           ));
         }
       }
+    }
+  }
+  return cells;
+}
+
+// The carried-sums grid of the file header, for a frame of 2 size levels: 4 size-level-0 cells and 16 size-level-1
+// cells.
+inline std::vector<CellId> BuildCarriedSumsCells() {
+  std::vector<CellId> cells = {ToCell(0, -2, 0, 0), ToCell(0, 0, 0, 0), ToCell(0, 1, 0, 0), ToCell(0, 3, 0, 0)};
+  for (const std::int32_t split_x : {-1, 2}) {
+    for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
+      cells.push_back(ToCell(1, (2 * split_x) + (cell_eighth % 2), (cell_eighth / 2) % 2, cell_eighth / 4));
     }
   }
   return cells;

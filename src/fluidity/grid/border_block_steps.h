@@ -64,12 +64,34 @@ namespace fluidity::grid {
 // How far the readers of a stage read from the places kept in its blocks. At either width a stage calls, from a place
 // kept in the set only, the readers listed here and no lookup by id, and the border also holds every bigger block,
 // up to size level 0, of each block of the set and of each block read (ComputeIsBorderBlock).
+//
+// What a stage may call, from a place of its range, at each width:
+//   - from an active cell: FindTouchingCells, FindFacePieces of it and of each touching cell, FindCornerPlaces,
+//     FindCellsAroundEdge, FindCellAt for a position in its closed box, and FindNearbyFaces for a position that
+//     FindCellAt gives to it;
+//   - from a face piece: its two cells (FindCellLow, FindCellHigh), its corners and, for transfer, the cells near it at
+//     most one size level bigger (FindCellsNearFace), where FindNearbyFaces can list it;
+//   - from a corner place: ComputeCornerPosition;
+//   - at kFourCellWidths also, from a face piece: every cell near it and the blocks of its face search.
+// The transfer step. The border at kTouchingCells holds what a face piece of the range needs to weigh a particle, given
+//   the particle's NearbyFaceSums: the sums are NOT in that promise. A particle's list holds face pieces of the
+//   cells that touch its own cell, which can lie beyond the near border of another range. Example: the cells [0,1) and
+//   [1,2) are active, [-1,0) and [2,3) are split. The range of the block of x in [2,4) holds the face piece at x = 2,
+//   and a particle of [0,1) near x = 0.95 lists it, and also the face piece at x = -0.5, which is not in the border.
+//   So a particle's sums are computed in the range that holds the particle's cell, where the cell is in the set, and
+//   carried with the particle; a face piece of another range reads the carried sums. Each particle is handled by the
+//   range that holds FindCellAt of the exact position its weights use: a particle grouped at an old position and moved
+//   since must be grouped again first, or it may lie in a cell outside the range whose list goes one step further.
+// Outside the rule. In a grid piece, a reader called for a place outside what the rule covers gives none, the answer
+//   of the edge of the grid and of a place that is not there: FindCellAt for a position outside the range's cells and
+//   their touching cells gives kNoIndex, and FindNearbyFaces then says kPositionOutsideGrid. A stage must not rely on
+//   that answer for a place outside its range, and keeps every particle inside the closed boxes of the cells of its
+//   range.
+// Corners. No reader goes from a corner place to the cells that have it as a corner. A stage that computes a corner
+//   value from the cells around the corner needs the blocks of those cells, which the border does not promise.
 enum class BorderWidth : std::uint8_t {
-  // From an active cell: FindTouchingCells, FindFacePieces of it and of each touching cell, FindCornerPlaces,
-  // FindCellsAroundEdge, FindCellAt for a position in its closed box, and FindNearbyFaces for a position that
-  // FindCellAt gives to it. From a face piece: its two cells, its corners, and, for transfer, the cells near it at
-  // most one size level bigger, where FindNearbyFaces can list it. From a corner place: ComputeCornerPosition. The
-  // width of transfer and of every stage that reads only the places next to the ones it writes.
+  // Every reader above but the last one. The width of transfer and of every stage that reads only the places next to
+  // the ones it writes.
   kTouchingCells,
   // Also, from a face piece: the blocks of a face search of four cell widths (BuildFaceSearch, FindNextFace) and every
   // cell near the face piece (FindCellsNearFace).

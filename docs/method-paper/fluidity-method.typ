@@ -2140,6 +2140,26 @@ the start, and `FindNextFace` reads only the blocks of the list, so a radius bel
 covered. A stage calls these readers from places kept in the set only, never a lookup by id; from a border place it
 needs a stacked layer.
 
+The border at `kTouchingCells` holds what a face piece of the range needs to weigh a particle, given the particle's
+sums (`NearbyFaceSums`); it does not hold what is needed to make the sums. A particle's list holds face pieces of
+the cells that touch its own cell, and those can lie beyond the near border of another range. Example: the cells
+$[0, 1)$ and $[1, 2)$ are active, and $[-1, 0)$ and $[2, 3)$ are split. The range of the block of $x$ in $[2, 4)$ holds
+the face piece at $x = 2$. A particle of $[0, 1)$ near $x = 0.95$ lists it, and also the face piece at $x = -0.5$, which
+is not in that range's border (unit test `ParticleSums_NeedAFaceBeyondTheNearBorder`). So the sums of a particle are
+made in the range that holds the particle's cell, where the cell is in the set, and carried with the particle. A face
+piece of another range reads the carried sums, so in a run in batches every range makes its sums before any range
+reads them. And each particle is handled by the range that holds `FindCellAt` of the exact position its weights use: a
+particle grouped at an old position and moved since is grouped again first.
+
+In a grid piece, a reader called for a place outside what the rule covers gives none, the same answer as the edge of the
+grid. For a position outside the cells of the range and the cells that touch them, `FindCellAt` gives no cell and
+`FindNearbyFaces` says `kPositionOutsideGrid`, as for a particle that left the grid. A piece cannot tell the two apart,
+so a stage must not rely on that answer for a place outside its range, and keeps each particle inside the closed
+boxes of the cells of its range. There is also no reader from a corner place to the cells that have it as a corner: a
+stage that computes a corner value from the cells around it needs those cells' blocks, which the border does not
+promise. The pressure solve and the solids keep values at corners (@sec-cell-blocks) and must write a corner from the
+cell that owns it, or add that reader to the rule.
+
 Three examples show what a border of returned places alone would miss. A face piece between a small cell and a
 bigger cell is kept at the small cell's size level, at plane 0 of the block above when the small cell sits at local 3
 of the block below (@sec-face-pieces): a stage that writes the face piece and reads its two cells reads the block
