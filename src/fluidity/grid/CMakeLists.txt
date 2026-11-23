@@ -156,6 +156,9 @@ fluidity_add_test(nearby_face_weights_test SOURCES nearby_face_weights.test.cc L
 fluidity_add_test(
   nearby_face_weights_face_seen_test SOURCES nearby_face_weights.face_seen.test.cc LABEL cpu LINKS fluidity_grid_testing
 )
+fluidity_add_test(
+  nearby_face_weights_two_sizes_test SOURCES nearby_face_weights.two_sizes.test.cc LABEL cpu LINKS fluidity_grid_testing
+)
 fluidity_add_test(face_search_test SOURCES face_search.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_values_test SOURCES grid_values.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_values_no_gpu_test SOURCES grid_values.no_gpu.test.cc LABEL no_gpu)
