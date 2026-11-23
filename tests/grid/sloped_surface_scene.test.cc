@@ -2,10 +2,11 @@
 // grid/testing/sloped_surface_scene.h), a sheet of small cells through a box of big ones.
 //
 // The checks, in order: the grid's counts equal ComputeGridCounts and the counts written out below; the grid is cut
-// into ranges of 8 blocks; for every range the stacked touching border is found with the buffer form of
-// FindBorderBlocks and the grid piece is built from the range and all layers; every reader of the touching width
-// answers in the piece as on the whole grid from every place of the range; and at the 1,000 positions, each taken in
-// the piece of the range that holds its cell, the weights of the three axes have the whole grid's bits and add up to 1.
+// into ranges of 8 blocks; for every range the stacked border of four layers (touching, four widths, touching,
+// touching) is found with the buffer form of FindBorderBlocks and the grid piece is built from the range and all
+// layers; every reader of the touching width and of the four-cell width answers in the piece as on the whole grid from
+// every place of the range; and at the 1,000 positions, each taken in the piece of the range that holds its cell, the
+// weights of the three axes have the whole grid's bits and add up to 1.
 
 #include "fluidity/grid/testing/sloped_surface_scene.h"
 
@@ -78,17 +79,37 @@ constexpr std::uint32_t kExpectedCellBlocks = 218;
 constexpr std::uint64_t kExpectedActiveCells = 9584;
 constexpr std::array<std::uint64_t, kSlopedSurfaceSizeLevelCount> kExpectedCellsPerSizeLevel = {288, 720, 8576};
 constexpr std::size_t kExpectedRangeCount = 28;
+constexpr std::size_t kExpectedRangesWithPositions = 27;
+constexpr std::uint64_t kExpectedMarkedCells = 7680;
 
 // The largest border of a range of 8 blocks, over the ranges of the scene: one layer, with no blocks found before it,
 // at the touching width and at the four-cell-width width. A change in the border rule shows here first. A range of 8
-// blocks of this scene has up to 8 x 26 same-size neighbours, fewer as the blocks of a range touch each other, so about
-// half of the 218 blocks for the touching width and more for the wider one is what the sheet's layers give.
+// blocks gives about half of the 218 blocks for the touching width and more for the wider one. Both numbers are
+// pinned from the border search on this scene, as a regression pin and not as a bound: a change to either is a change
+// of the border rule to look at.
 constexpr std::size_t kExpectedLargestNearBorder = 97;
 constexpr std::size_t kExpectedLargestWideBorder = 174;
+
+// The most blocks a piece of the scene holds: its range of 8 blocks and its stacked border of four layers. The stacked
+// total, not the first layer, sets the size of the piece's memory; the widest piece here holds all 218 blocks.
+constexpr std::uint32_t kExpectedLargestPieceBlocks = 218;
 
 // Checks one count of the grid against the number expected, naming it on failure.
 void CheckCount(const std::string& name, std::uint64_t actual, std::uint64_t expected) {
   EXPECT_EQ(actual, expected) << name;
+}
+
+// Counts the size level 2 cells of the box that the scene marks.
+std::uint64_t ComputeMarkedCellCount() {
+  std::uint64_t marked_count = 0;
+  for (std::int32_t cell_z = 0; cell_z < kSlopedSurfaceCellsAlongZ * 4; ++cell_z) {
+    for (std::int32_t cell_y = 0; cell_y < kSlopedSurfaceCellsAlongY * 4; ++cell_y) {
+      for (std::int32_t cell_x = 0; cell_x < kSlopedSurfaceCellsAlongX * 4; ++cell_x) {
+        marked_count += ComputeIsSlopedSurfaceCellMarked(cell_x, cell_z) ? 1 : 0;
+      }
+    }
+  }
+  return marked_count;
 }
 
 // Checks the grid's counts against ComputeGridCounts and against the numbers worked out from the scene.
@@ -112,6 +133,7 @@ void CheckGridCounts(const Scene& scene) {
   CheckCount("cell blocks", counts.cell_blocks, kExpectedCellBlocks);
   CheckCount("active cells", counts.active_cells, kExpectedActiveCells);
   CheckCount("ranges", scene.ranges.size(), kExpectedRangeCount);
+  CheckCount("marked size level 2 cells", ComputeMarkedCellCount(), kExpectedMarkedCells);
   std::uint64_t volume_in_smallest_cells = 0;
   for (std::size_t size_level = 0; size_level < kSlopedSurfaceSizeLevelCount; ++size_level) {
     const std::string name = "active cells of size level " + std::to_string(size_level);
@@ -126,15 +148,26 @@ void CheckGridCounts(const Scene& scene) {
 }
 
 // The place of a piece's face or cell in the whole grid: its block through the piece map, its place in the block kept.
+// A block the piece map does not hold fails the check and gives kNoIndex.
 FacePlaceIndex ToWholeFace(FacePlaceIndex piece_face, std::span<const CellBlockIndex> piece_map) {
   const auto places_per_block = static_cast<std::uint32_t>(kFacePlacesPerBlock);
-  const std::uint32_t whole_block = piece_map[piece_face.value / places_per_block].value;
+  const std::size_t piece_block = piece_face.value / places_per_block;
+  EXPECT_LT(piece_block, piece_map.size());
+  if (piece_block >= piece_map.size()) {
+    return {.value = kNoIndex};
+  }
+  const std::uint32_t whole_block = piece_map[piece_block].value;
   return {.value = (whole_block * places_per_block) + (piece_face.value % places_per_block)};
 }
 
 CellPlaceIndex ToWholeCell(CellPlaceIndex piece_cell, std::span<const CellBlockIndex> piece_map) {
   const auto places_per_block = static_cast<std::uint32_t>(kCellPlacesPerBlock);
-  const std::uint32_t whole_block = piece_map[piece_cell.value / places_per_block].value;
+  const std::size_t piece_block = piece_cell.value / places_per_block;
+  EXPECT_LT(piece_block, piece_map.size());
+  if (piece_block >= piece_map.size()) {
+    return {.value = kNoIndex};
+  }
+  const std::uint32_t whole_block = piece_map[piece_block].value;
   return {.value = (whole_block * places_per_block) + (piece_cell.value % places_per_block)};
 }
 
@@ -249,6 +282,7 @@ std::size_t CheckPositionsOfRange(
       SCOPED_TRACE(testing::Message() << "position " << entry << ", axis " << static_cast<int>(axis));
       const NearbyFaceWeights on_whole_grid = FindWeightsOfAllFaces(tables.whole, position, axis);
       const NearbyFaceWeights in_piece = FindWeightsOfAllFaces(tables.piece, position, axis);
+      EXPECT_EQ(on_whole_grid.list.cell_width, kSlopedSurfaceSmallestCellWidth);
       CheckWeightsAreWholeGrids(tables, in_piece, on_whole_grid);
       EXPECT_NEAR(ComputeKeptWeightTotal(tables.piece, in_piece), 1.0, kWeightSumTolerance);
     }
@@ -260,6 +294,7 @@ std::size_t CheckPositionsOfRange(
 struct RangeTotals {
   std::size_t largest_near_border = 0;
   std::size_t largest_wide_border = 0;
+  std::uint32_t largest_piece_blocks = 0;
   std::size_t ranges_with_positions = 0;
   std::size_t positions_checked = 0;
 };
@@ -274,8 +309,8 @@ struct RangeCheckContext {
   RangeTotals totals = {};
 };
 
-// Builds the stacked touching border of one range with the buffer form, builds the piece, and checks the readers and
-// the positions of the range against the whole grid. A range of 8 blocks also gives the sizes of its single-layer
+// Builds the stacked border of four layers of one range with the buffer form, builds the piece, and checks the readers
+// and the positions of the range against the whole grid. A range of 8 blocks also gives the sizes of its single-layer
 // borders to the totals.
 void CheckRange(RangeCheckContext& context, std::size_t range_entry) {
   const Scene& scene = context.scene;
@@ -303,6 +338,11 @@ void CheckRange(RangeCheckContext& context, std::size_t range_entry) {
   const std::optional<std::string> difference =
       FindFirstReaderDifference(whole, loaded, ToRangeBlocks(range), BorderWidth::kTouchingCells);
   EXPECT_FALSE(difference.has_value()) << difference.value_or("");
+  const std::optional<std::string> difference_at_four_widths =
+      FindFirstReaderDifference(whole, loaded, ToRangeBlocks(range), BorderWidth::kFourCellWidths);
+  EXPECT_FALSE(difference_at_four_widths.has_value()) << difference_at_four_widths.value_or("");
+  context.totals.largest_piece_blocks =
+      std::max(context.totals.largest_piece_blocks, piece->grid().counts().cell_blocks);
   const std::size_t position_count = CheckPositionsOfRange(scene, *piece, context.range_of_position, range_entry);
   context.totals.positions_checked += position_count;
   context.totals.ranges_with_positions += position_count > 0 ? 1 : 0;
@@ -313,9 +353,12 @@ void CheckRange(RangeCheckContext& context, std::size_t range_entry) {
 void CheckTotals(const RangeTotals& totals) {
   testing::Test::RecordProperty("largest_near_border", static_cast<int>(totals.largest_near_border));
   testing::Test::RecordProperty("largest_wide_border", static_cast<int>(totals.largest_wide_border));
+  testing::Test::RecordProperty("largest_piece_blocks", static_cast<int>(totals.largest_piece_blocks));
   testing::Test::RecordProperty("ranges_with_positions", static_cast<int>(totals.ranges_with_positions));
   CheckCount("largest near border", totals.largest_near_border, kExpectedLargestNearBorder);
   CheckCount("largest wide border", totals.largest_wide_border, kExpectedLargestWideBorder);
+  CheckCount("largest piece blocks", totals.largest_piece_blocks, kExpectedLargestPieceBlocks);
+  CheckCount("ranges with positions", totals.ranges_with_positions, kExpectedRangesWithPositions);
   CheckCount("positions checked", totals.positions_checked, kSlopedSurfacePositionCount);
 }
 
@@ -344,8 +387,8 @@ RangeTotals CheckEveryRange(const Scene& scene) {
   return context.totals;
 }
 
-// The whole module on the scene: the counts; then each range of 8 blocks with its stacked touching border, its piece,
-// the readers from its places and the positions it holds; then the largest borders and the coverage.
+// The whole module on the scene: the counts; then each range of 8 blocks with its stacked border of four layers, its
+// piece, the readers from its places and the positions it holds; then the largest borders and the coverage.
 TEST(StaggeredGrid, SlopedSurfaceInBox_PassesEveryCheck) {
   const Scene& scene = FindScene();
   CheckGridCounts(scene);
