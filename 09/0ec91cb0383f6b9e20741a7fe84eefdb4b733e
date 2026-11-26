@@ -1,0 +1,23 @@
+src/fluidity/grid/find_cell_at.h
+  s_4f0877e2acdcf0::t_26640094a00683 24
+docs/glossary.md
+  s_4f0877e2acdcf0::t_5f3c0759b507ca 171,173,205
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_82cfdf88de62ca 2096-2143,2168-2181,2382-2383,2466-2467,2488-2489,2563-2568,2570-2579,2629-2630,2723-2728,2733-2742,2891-2892,2906,2909-2911,2913,2918,2921,2928,2952-2957,2988,2993
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "090ec91cb0383f6b9e20741a7fe84eefdb4b733e",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
