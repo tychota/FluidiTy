@@ -21,7 +21,7 @@
 //          (base/vec3.h), GridFrame, GridTables, FindCellBlock, ToSizeLevel, ComputeCellWidth, ToCellId
 //          (grid/grid_tables.h), the id types and constants (grid/grid_ids.h)
 // Used by: the grid's builders, the particle stages and the tests of the grid
-// Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>
+// Read:    docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-cell-blocks>
 
 #pragma once
 

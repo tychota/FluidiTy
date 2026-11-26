@@ -2093,6 +2093,54 @@ covers it, size level $l - 1$; none at size level 0) and its 8 smaller blocks, b
 sorted list of block ids are the grid's whole spatial index: a search is a binary search in the block ids followed by
 moves through the tables.
 
+*Layouts.* A rewrite needs these exactly; the sources are `grid_ids.h`, `grid_tables.h`, `cell_corners.h` and
+`nearby_face_weights.h`.
+
+- The bits of an id, from bit 63 down. A cell id and a cell block id: bit 63 set, bits 61 to 62 zero, bits 57 to 60 the
+  size level, bits 38 to 56 the coordinate $k$, bits 19 to 37 the coordinate $j$, bits 0 to 18 the coordinate $i$.
+  A face piece id: bit 63 zero, bits 61 to 62 the axis plus 1 (X 1, Y 2, Z 3), then the same size level and
+  coordinate bits, the coordinate being that of the face piece's high cell. A coordinate $c$ is stored as $c + (2^18 -
+  1)$ in 19 bits, so $-(2^18 - 1)$ to $2^18 - 1$ are 0 to $2^19 - 2$; the last value, $2^19 - 1$, stands for $2^18$, the
+  high side of the last cell. Every cell id has bit 63 set and every face piece id an axis of 1 to 3, so the id 0 is
+  never valid.
+- The face places of a block, by block $b$, axis $a$ (X 0, Y 1, Z 2) and the plane $p$ along the axis (0 to 4, plane $p$
+  being the low side of the cell place $p$ of the block, so plane 4 is the block's high side): the face place is
+  $240 b + 80 a + q$, where, with $x$, $y$, $z$ the local coordinates, $x = p$ for X, $y = p$ for Y and $z = p$ for Z,
+  and $q = (4 z + y) times 5 + x$ for X, $q = (5 z + y) times 4 + x$ for Y, $q = (4 z + y) times 4 + x$ for Z.
+- The stored values. `CellState` is one byte: absent 0, inside a bigger cell 1, active 2, split 3. `FacePieceKind` is
+  one byte: not a piece 0, between cells 1, grid edge low 2 (an active cell on the high side only), grid edge high 3
+  (an active cell on the low side only), outside the piece 4 (only in a grid piece: a between-cells face piece whose
+  other cell lies in a block not loaded).
+- The neighbour tables, for block $b$. The 27 same-size-level neighbours are at $27 b + ((d_z + 1) times 3 + (d_y + 1))
+  times 3 + (d_x + 1)$ for the offset $(d_x, d_y, d_z)$ with each of $d_x$, $d_y$, $d_z$ in ${-1, 0, 1}$, entry 13
+  being the block itself. The 8 smaller blocks are at $8 b + e$, with $e = x + 2 y + 4 z$, each of $x$, $y$, $z$ being 0
+  for the low half of the block and 1 for the high half along that axis. Every entry is the index of a block or the none
+  value $2^32 - 1$ (`kNoIndex`), which no index of a place, block or corner ever equals.
+- The mask of a nearby-face list is four 64-bit words; bit $i mod 64$ of word $floor(i \/ 64)$ set means that face
+  $i$ of the list is kept. A list holds at most 216 faces in ascending face place index.
+- The 8 corners of a cell: corner $k$ is on the high side along X where bit 0 of $k$ is set, along Y where bit 1 is set,
+  along Z where bit 2 is set, and on the low side where the bit is clear, so corner 0 is the low corner and corner 7
+  the high one. The 4 corners of a face piece: of the two axes across the face piece, the lower first (Y and Z for an
+  X face piece, X and Z for Y, X and Y for Z), corner $k$ is on the high side of the first where bit 0 of $k$ is set and
+  of the second where bit 1 is set.
+- The cells around an edge: for a cell and two different axes, the edge is parallel to the third axis, on the high
+  side of the first axis where bit 0 of the quarter number (0 to 3) is set and on the high side of the second where
+  bit 1 is set, the low side otherwise. Entry 0 is the cell. Entry $k$ of 1 to 3 is the place of the cell's size level
+  moved across the first axis where bit 0 of $k$ is set and across the second where bit 1 is set, to the side the
+  quarter names, so entry 3 lies across both.
+
+*The state of a place whose block does not exist.* The state of a cell place of a block that exists is the one stored.
+A place just beyond a block (local coordinate $-1$ or 4 on one axis) lies in the same-size-level neighbour block when
+that block exists, and then has the state stored there. When that block does not exist, no cell of this size level lies
+there, and the place is inside a bigger cell when an active cell one size level bigger covers it, and absent
+otherwise. The cover is found through the bigger block: the block is the low or the high half of its bigger block along
+each axis, on the outer side of the half the covering place lies in the bigger block's neighbour of the same size level
+on that side (none gives absent), and on the inner side in the bigger block itself. Only an active bigger cell covers:
+a place inside a bigger cell covers nothing one size level down. A size-level-0 block has no bigger block, so such a
+place is absent; a neighbour beyond $plus.minus(2^18 - 1)$ has no entry, so nothing lies beyond the low limit, and
+beyond the high limit only a bigger cell. Every rule of the grid that reads the cell beside a place or an edge, the
+face piece kinds and the cells around an edge among them, reads this state.
+
 *Id versus index.* An id (`CellId`, `CellBlockId`, `FacePieceId`) names a place and a size in space; the same cell has
 the same id in every grid version, and the id 0 is never valid. An index (`CellPlaceIndex`, `FacePlaceIndex`,
 `CornerPlaceIndex`, `CellBlockIndex`) is a position in the arrays of one grid version: it depends on which blocks
@@ -2117,7 +2165,20 @@ and fails with `kWrongGridVersion` when they differ. A grid piece has the whole 
 piece are bound again at every load. `ReadValues` and `WriteValues` are the only copies between value buffers and CPU
 memory: they take the bound part only.
 
-*Ranges and border.* A stage works on a range: a run of consecutive blocks in the fixed order (`CellBlockRange`). It
+*Reading a grid back.* `ReadGrid` is the one explicit copy of a grid's tables, for tests, tools and a caller that
+accepts a transfer from the GPU. It copies the used part of the five tables (the block ids, the 27 neighbours, the
+bigger block and the 8 smaller blocks of each block, the 64 cell states and the 240 face piece kinds), 456 bytes per
+block, into the front of CPU buffers the caller supplies, and returns a grid on the CPU with the same frame, version
+and counts. Only the first `cell_blocks` blocks of each array are copied, so what lies beyond them in the destination
+is unspecified. The room of the destination may differ from the source's. It fails with `kBadInput` for a grid that
+holds no tables or for buffers that are moved from or not on the CPU, with `kTooManyCellBlocks` when the
+destination's room is below the grid's block count, and with `kRunOnCallFailed` when a read from the GPU fails; after
+a failure before the copy nothing is written.
+
+*Ranges and border.* A stage works on a range: a run of consecutive blocks in the fixed order (`CellBlockRange`).
+`BuildRanges` cuts the grid's blocks into consecutive ranges of at most a given number of blocks: every block is in
+exactly one range, every range but the last has that number of blocks, and a grid of no block gives no range; a number
+of 0 is `kBadInput`. It
 writes only values kept in blocks of the range, and it may read values of the range and of its border blocks. Since
 every face piece is kept in exactly one block, every value has one writer. A run in batches loads only the range and its
 border into a grid piece, where every neighbour entry naming a block not loaded reads as none. The border is defined by
@@ -2318,7 +2379,8 @@ $(0, 0, 0)$ m is index 125, though no small cell touches it: every corner of the
   ([Neighbour tables], [For each block, its 27 neighbours of the same size level, its bigger block and its 8 smaller
     blocks, by binary search in the block ids.]),
   ([Cell states], [Each cell place: active, split, inside a bigger cell, or absent.]),
-  ([Face piece kinds], [Each face place from the two cell places beside it (@sec-face-pieces); plane 4 is
+  ([Face piece kinds], [Each face place from the states of the two cell places beside it, a place of a block that does
+    not exist having the state of @sec-cell-blocks (@sec-face-pieces); plane 4 is
     `kNotAPiece` where the block of the same size level on the high side exists.]),
   closing: [On the GPU, the same steps run in parallel through the same shared rules (@proc-build-grid-in-parallel),
     and give the same tables byte for byte.],
@@ -2401,7 +2463,8 @@ holds the position $bold(x)_p$ and $bold(x)_f$ the centre of a face piece $f$.
   <proc-nearby-face-weights>,
   inputs: [the grid's tables, a position $bold(x)_p$, an axis, a cell block near the position, and the caller's
     kept mask.],
-  outputs: [`NearbyFaceWeights`: the candidates, the mask, $W$, $bold(G)$, $bold(m)$, $S$, its inverse and the fit.
+  outputs: [`NearbyFaceWeights`: the candidates, the mask, $W$, $bold(G)$, $bold(m)$, $S$, its inverse, the fit and
+    `is_complete` (all 27 faces kept, all of the cell's size; false when the fit is `kNone`).
     For each kept face, `ComputeFaceWeight` gives $hat(w)_f$, the offset, the offset from the mean and the weight's
     change.],
   fails: [no active cell holds the position (`kPositionOutsideGrid`), or more candidates than the list's 216 places
@@ -2422,8 +2485,8 @@ holds the position $bold(x)_p$ and $bold(x)_f$ the centre of a face piece $f$.
     bold(x)_p - bold(m)$.]),
   ([Spread], [$S$ of @eq:weighted-spread, in m².]),
   ([Fit], [Factorise $S \/ h^2$ by Cholesky. If a pivot is at most
-    `kMinPivotShare` times the trace or $W$ is below `kMinWeightSum`, it is `kMeanOnly`; else `kFull`, with
-    $S^(-1)$.]),
+    `kMinPivotShare` times the trace or is not finite, or $W$ is below `kMinWeightSum`, it is `kMeanOnly`;
+    else `kFull`, with $S^(-1)$.]),
 )
 
 *Candidates.* The candidates are the face pieces of the axis that belong to the cell holding the position or to a
@@ -2497,12 +2560,23 @@ computed by a Cholesky factorisation of $S \/ h^2$, and the result has one of th
 the identity, the constant a uniform grid uses in place of the inverse. Here the inverse is always measured from the
 faces kept, so the uniform case is the special case of one rule and never a separate path in the code.
 
-A transfer uses the weights this way, per axis, with $v_f$ the value on face $f$. The fitted change, one matrix row,
-is $bold(r) = (sum_f hat(w)_f v_f (bold(x)_f - bold(x)_p - bold(m))^T) S^(-1)$; the value at the particle is
-$v_p = sum_f hat(w)_f v_f - bold(r) dot bold(m)$; and a particle writes $v_p + bold(r) dot (bold(x)_f - bold(x)_p -
-bold(m))$ to face $f$ with weight $hat(w)_f$. Since the weighted offsets from the mean add up to zero, the written
-momentum is exactly the particle's. The exact change of the read value with the position is
+A transfer uses the weights this way, per axis, with $v_f$ the value on face $f$, $bar(v) = sum_f hat(w)_f v_f$ the
+weighted mean of the values, and $bold(m)$ the mean offset. The fitted change, one matrix row, is
+$bold(r) = (sum_f hat(w)_f (v_f - bar(v)) (bold(x)_f - bold(x)_p - bold(m))^T) S^(-1)$; the value at the particle is
+$v_p = bar(v) - bold(r) dot bold(m)$; and a particle writes $v_p + bold(r) dot (bold(x)_f - bold(x)_p - bold(m))$ to
+face $f$ with weight $hat(w)_f$. Since the weighted offsets from the mean add up to zero, the written momentum is
+exactly the particle's. The exact change of the read value with the position is
 $sum_f v_f (partial hat(w)_f) / (partial bold(x)_p)$.
+
+The values must be centred, $v_f - bar(v)$, where the fit is computed. In exact arithmetic the centred row equals the
+row made from $v_f$ alone, because $sum_f hat(w)_f (bold(x)_f - bold(x)_p - bold(m)) = 0$. In doubles that sum is
+about $10^(-16) h$, not 0, so a value $v$ on every face adds $v$ times it to the moment, and the inverse spread
+magnifies it: the row of a field of values about $v$ is off by about $10^(-16) kappa v \/ h$, with $kappa$ the condition
+number of $S$, whatever the field's slope. Centred, the error is that of the field's variation over a cell width. For
+example, on a unit grid with the position $(2.5 - 2 dot 10^(-6), 2.5, 2.5)$ and only the 9 faces at $x = 2$ and the 9
+at $x = 1$ kept, $kappa$ is near $6 dot 10^10$; for the field $1 + bold(b) dot (bold(x)_f - bold(x)_p)$ the row from
+the raw values is off by $8 dot 10^(-6)$ in length, and the row from the centred values is right to
+$5 dot 10^(-16)$.
 A face can also compute the weight one particle gives it (`ComputeFaceWeight` with the particle's sums for the
 face's axis, `NearbyFaceSums`: $W$, $bold(G)$ and $bold(m)$), with the same bits as the particle's own list. The
 face decides by the rule of the list whether the particle's list holds it: the face is a face piece of the
@@ -2552,7 +2626,8 @@ lies strictly within $r$ widths $h_l$ of the start's centre on each axis, $r <= 
 radius is taken as 4, and a radius that is not above 0, NaN included, finds nothing. The test is exact: both centres
 are integers in quarter widths of $h_l$, and the distance on each axis is compared with $4 r$. Two face pieces of one
 size level therefore find each other or neither, in any frame and on both processors. For example, in a grid of one
-size level, radius 1.5 around a face piece finds the $3 times 3 times 3$ face pieces of its axis centred on it.
+size level, radius 1.5 around a face piece finds the $3 times 3 times 3$ face pieces of its axis centred on it. The
+start itself is one of the face pieces the walk gives, whenever the radius is above 0.
 
 The search reads the blocks at three sets of positions around the start's block $B$, of size level $l$: the 27
 positions $B + d$ of size level $l$, the 27 positions of size level $l - 1$ around $floor(B\/2)$, and the 8 positions
@@ -2645,22 +2720,26 @@ under the driver's default stack of 1,024 bytes per thread, so the grid's build 
 driver; the border search has one (`BuildBorderSearchStackEstimate`), which `BuildBorderSearchBuffers` takes on the GPU
 so that a card too full for it fails there. The driver keeps one stack, sized for the largest need of any GPU function
 launched, so adding this entry to another module's entry of the same kind counts more than the driver takes. A GPU
-function that computes nearby-face weights keeps 1,152 bytes per thread for one axis, or 3,456 for three, which is
-above that default, so the module it belongs to counts a stack held by the driver, as contact does for its particle
-visit.
+function that computes nearby-face weights keeps 1,152 bytes per thread for one axis (a list of 888 bytes, its mask
+of 32 and 232 bytes of sums), or 3,456 for three. A call to `FindNearbyFaces` needs 1,216 bytes more while it runs:
+the list it builds (888), the touching cells of the cell (228) and its face pieces (100). With three axes held that is
+4,672 bytes at the moment of the call, and 5,560 when the caller keeps the returned list apart from the weights. All
+are above that default, so the module that calls them counts a stack held by the driver, as contact does for its
+particle visit, sized from these numbers plus its own locals.
 
 == Building the tables in parallel <sec-parallel-build>
 
 A run is all CPU or all GPU (@sec-run-on). In a GPU run the list of active cells is made on the GPU, the grid is
-built there, and the stages read it there. The cell list never leaves the GPU and no table comes back: the only value
-copied to the CPU is the build's status record, which holds the counts or the first failure. @proc-build-grid is
-written for one thread that walks the list in order. On the GPU many threads run at once, and a step whose result
-depended on which thread came first would give another grid from run to run. So each sequential step becomes the
-same five parts: compute a key for each item, put the items in a stable order by that key (@proc-stable-order),
-mark the items where something starts, take the exclusive prefix sum of the marks, and let each marked item write
-its result at the place its sum gives, a scatter. Each part is one thread per item, or a call of `BuildStableOrder`
-or `ComputeExclusivePrefixSum`, whose results do not depend on timing (@sec-stable-order). The only values threads
-share are an integer minimum and integer counts, and neither depends on the order in which threads add to them.
+built there, and the stages read it there. The cell list never leaves the GPU and no table comes back during a build:
+the only value copied to the CPU is the build's status record, which holds the counts or the first failure.
+@proc-build-grid is written for one thread that walks the list in order. On the GPU many threads run at once, and a step
+whose result depended on which thread came first would give another grid from run to run. So each sequential step
+becomes the same five parts: compute a key for each item, put the items in a stable order by that key
+(@proc-stable-order), mark the items where something starts, take the exclusive prefix sum of the marks, and let each
+marked item write its result at the place its sum gives, a scatter. Each part is one thread per item, or a call of
+`BuildStableOrder` or `ComputeExclusivePrefixSum`, whose results do not depend on timing (@sec-stable-order). The only
+values threads share are an integer minimum and integer counts, and neither depends on the order in which threads add to
+them.
 
 *Numbering the blocks.* Step 5 of @proc-build-grid lists the blocks in the fixed order. In parallel, every active
 and split cell takes the key of its block, and the stable order puts the cells of one block side by side, the blocks
@@ -2809,7 +2888,8 @@ what one thread handles. The code numbers them P1 to P12, apart from the steps o
     the status record, so no count comes back during the build: the launches of P9, P10 (a), (c) and P11 are sized
     for the room, P10 (b) for the sort count, and a thread past the count does nothing. Each launch starts only
     once the one before it started. P10 and P11 come after every keyed step, so any key stops them. Steps P1 to
-    P6, then the failure half of P12, are also the check of a list on the GPU before a build.],
+    P4 and P6, then the failure half of P12, are also the check of a list on the GPU before a build; P5, the
+    siblings, is skipped there.],
 )
 
 == The cell size rule <sec-cell-size-rule>
@@ -2823,29 +2903,29 @@ grid owns the formulas (`grid/cell_size_rule.h`); the passes that apply them to 
 and its distance $e$ to the nearest solid, both in metres and $+infinity$ when nothing is near; the size $G$ of its
 velocity change, in 1/s, how fast the velocity changes per metre around the cell; its cell size factor $f$, a positive
 number without unit; and two flags, whether the cell touches an air pocket and whether gas lies in or beside it
-(`wants_smallest_cells`). With $w_"min"$ the width of the smallest size level the settings allow
+(`wants_smallest_cells`). With $w_"floor"$ the width of the smallest size level the settings allow
 (`smallest_size_level`) and $w_"max" = h_0$ the width of size level 0, the wanted cell width is
 
-$ w & = w_"min" quad "if" d < n_"surface" w_"min" "or" e < n_"solid" w_"min", "and otherwise" \
-  w_"depth" & = w_"min" max(1, d / (n_"surface" w_"min")), \
-  w_"solid" & = w_"min" max(1, e / (n_"solid" w_"min")), \
+$ w & = w_"floor" quad "if" d < n_"surface" w_"floor" "or" e < n_"solid" w_"floor", "and otherwise" \
+  w_"depth" & = w_"floor" max(1, d / (n_"surface" w_"floor")), \
+  w_"solid" & = w_"floor" max(1, e / (n_"solid" w_"floor")), \
   w_"shear" & = cases(c_u U_"ref" \/ G & "if" G > 0, +infinity & "otherwise",) \
-  w & = max(w_"min", min(min(w_"depth", w_"solid", w_"shear") f, w_"max")), $ <eq:wanted-cell-width>
+  w & = max(w_"floor", min(min(w_"depth", w_"solid", w_"shear") f, w_"max")), $ <eq:wanted-cell-width>
 
 The first line keeps the smallest width, whatever the factor, at pockets and gas, within the surface reach and within
 the solid reach: for a cell that touches an air pocket, a cell with gas in or beside it, a cell less than $n_"surface"$
 smallest widths below the surface and a cell less than $n_"solid"$ smallest widths from the nearest solid. A fact or a
-reference speed that is not a number gives $w_"min"$ too, the side that keeps detail. The surface reach $n_"surface" =
+reference speed that is not a number gives $w_"floor"$ too, the side that keeps detail. The surface reach $n_"surface" =
 8$ and the solid reach $n_"solid" = 2$ count smallest cell widths, unlike the reach of a solid, and are settings
 (`surface_reach_in_cell_widths`, `solid_reach_in_cell_widths`). A negative depth or distance counts as the surface or
-the solid. The result always lies between $w_"min"$ and $w_"max"$.
+the solid. The result always lies between $w_"floor"$ and $w_"max"$.
 
 *Why these terms.* The flow changes fastest over short distances at the surface and beside a solid, so cells there
 stay the smallest. Beyond the surface reach or the solid reach, a term grows in proportion to the distance: a cell
 twice as deep may be twice as wide. The width then doubles only across $n$ cells of one size, so the number of cells
 across any depth is about the same at every size level, and the size changes slowly enough that the size-step rule
 (@sec-cell-sizes) rarely has to step in; where the shear term changes fast between neighbours, it does. For example,
-with $h_0 = 1$ m and 5 size levels, $w_"min" = 0.0625$ m: a depth of 1 m gives $0.0625 times 1 \/ 0.5 = 0.125$ m, a
+with $h_0 = 1$ m and 5 size levels, $w_"floor" = 0.0625$ m: a depth of 1 m gives $0.0625 times 1 \/ 0.5 = 0.125$ m, a
 distance of 0.5 m to a solid gives $0.0625 times 0.5 \/ 0.125 = 0.25$ m, and a cell with both gets the smaller,
 0.125 m. Away from both, the shear term keeps cells small where the velocity changes over a short distance: a cell is
 about as wide as the distance over which the velocity changes by $c_u U_"ref"$. Its factor $c_u = 0.25$
@@ -2869,7 +2949,12 @@ steps make one doubling, so the 49 factors run from $2^(-6)$ to $2^6$. The table
 library function: a power of two, started at $2^(-6)$ and doubled before every fourth factor, times the double nearest
 $2^0$, $2^(1\/4)$, $2^(1\/2)$ or $2^(3\/4)$, written as a hexadecimal literal. A double times a power of two is exact
 while the result stays in range, here $2^(-6)$ to $2^6$, so every machine holds the same 49 bit patterns. A code
-stored outside $-24$ to $24$ reads as the nearest limit, and outside the volume the code is 0, factor 1.
+stored outside $-24$ to $24$ reads as the nearest limit, and outside the volume the code is 0, factor 1. A factor
+of 0 or below, which no code gives, makes the wanted width the smallest width the settings allow.
+
+The volume (`RefinementFactors`) is usable with 1 to $2^20$ entries per axis, an entry spacing of 0 to 31 (as $m$
+below) and 1 to 16 layers that hold data; more layers than 16 read as 16. With a count outside 1 to $2^20$, a spacing
+outside 0 to 31, or no layer, every lookup returns code 0. A layer that is missing reads as 0.
 
 The smallest code over any box comes from layers of halved size. Layer 0 holds one code per entry, one entry for every
 $2^m$ smallest cells on each axis ($m$ is `entry_spacing_log2`), and layer $L$ has $ceil(n \/ 2^L)$ entries per axis for
@@ -2900,12 +2985,12 @@ cell, so any cut of the grid into batches gives each cell the same size level to
 $w = 0.125$ m gives size level 3, the double just below it gives 4, and 0.2 m gives 3.
 
 *New cells.* When liquid enters space with no cell, the step adds a cell there. The new cell borders air, so its depth
-is 0 and the rule wants $w_"min"$. It starts instead one size level smaller than its nearest committed cell, and later
+is 0 and the rule wants $w_"floor"$. It starts instead one size level smaller than its nearest committed cell, and later
 resizes bring it down to its wanted width.
 
 The nearest committed cell of a position $bold(x)$ is the nearest among the active cells of the committed grid that hold
 one of 27 searched positions, $bold(x) + (i, j, k) h_0$ with each of $i$, $j$, $k$ in ${-1, 0, 1}$, each found as any
-position finds its cell (@sec-cell-blocks). The cell whose centre is nearest $bold(x)$, by squared distance, wins; at an
+position finds its cell (@sec-cell-sizes). The cell whose centre is nearest $bold(x)$, by squared distance, wins; at an
 equal distance the cell that comes first in the fixed order wins, so the answer does not depend on the order of the
 search. The new cell's size level is that cell's size level plus one, but never smaller than the smallest size level the
 settings allow; when no searched position lies in an active cell, it is that smallest size level. A smallest size level
