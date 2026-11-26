@@ -1,0 +1,29 @@
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_d3362972a95645 153-308,376-377,380-383,394-395
+src/fluidity/grid/testing/grid_functions_gpu_cases.h
+  s_4f0877e2acdcf0::t_abf9a0f45b5f84 4-5,11,13,26-27,31,33,108-136
+tests/grid/build_grid.gpu.test.cc
+  s_4f0877e2acdcf0::t_cdfd6254e68cef 41,494,533-537,731
+tests/grid/grid_cell_checks.gpu.test.cc
+  s_4f0877e2acdcf0::t_766477c87ce4d6 39,324,336
+tests/grid/grid_pieces.gpu.test.cc
+  s_4f0877e2acdcf0::t_95157e56da02f2 667
+tests/grid/stacked_borders.gpu.test.cc
+  s_4f0877e2acdcf0::t_72b4ee9e06a37b 128-131,149-154,174-178,496-500,526-527,541
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0f259fc986b4d4141c9db6821f30d8e4beb2eb7",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
