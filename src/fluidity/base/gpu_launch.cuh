@@ -15,7 +15,8 @@
 //   thread per product, at most 65,535 thread blocks, and returns kDone or the status of the failed start.
 //
 // Owns:    ToRunOnCallStatus, ApplyGpuFunction, CheckGpuWork, GridStride, ComputeGridStride, GpuArray
-// Uses:    RunOnCallStatus and LaunchSize (base/run_on_call.h), the CUDA runtime
+// Uses:    RunOnCallStatus and LaunchSize (base/run_on_call.h), ApplyLastRunOnCallError (base/run_on_call_error.h), the
+//          CUDA runtime
 // Used by: every `<name>_gpu.cu` file; never a `.h` or `.cc` file, which the C++ compiler alone builds
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>
 
@@ -28,14 +29,21 @@
 #include <type_traits>
 
 #include "fluidity/base/run_on_call.h"
+#include "fluidity/base/run_on_call_error.h"
 
 namespace fluidity {
 
 // Converts the error of any CUDA call that allocates nothing (a launch, a wait, a copy, a fill) to a status:
 // cudaSuccess is kDone, anything else kCallFailed, even an error that names memory, because outputs may already be
 // partly written and kOutOfMemory promises that nothing was. An allocation reports kOutOfMemory itself (GpuArray).
+// The status values are all it gives back; the name and the text of the failed call (cudaGetErrorName and
+// cudaGetErrorString) are written by ApplyLastRunOnCallError (base/run_on_call_error.h), where a test reads them.
 inline RunOnCallStatus ToRunOnCallStatus(cudaError_t error) {
-  return error == cudaSuccess ? RunOnCallStatus::kDone : RunOnCallStatus::kCallFailed;
+  if (error == cudaSuccess) {
+    return RunOnCallStatus::kDone;
+  }
+  ApplyLastRunOnCallError(cudaGetErrorName(error), cudaGetErrorString(error));
+  return RunOnCallStatus::kCallFailed;
 }
 
 // Starts `function` on the GPU with `launch_size` and `arguments`, then checks that it started.
@@ -104,6 +112,7 @@ class GpuArray {
     // the GPU could not provide the memory, and nothing was written.
     if (error != cudaSuccess) {
       values_ = nullptr;
+      ApplyLastRunOnCallError(cudaGetErrorName(error), cudaGetErrorString(error));
       return RunOnCallStatus::kOutOfMemory;
     }
     return RunOnCallStatus::kDone;

@@ -15,6 +15,7 @@
 
 #include "fluidity/base/gpu_launch.cuh"
 #include "fluidity/base/run_on_call.h"
+#include "fluidity/base/run_on_call_error.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -24,16 +25,25 @@
 namespace fluidity::grid {
 namespace {
 
-// The text of the last failure, as ReadLastRunnerFailure gives it. Each runner of a thread clears it first.
-std::string& FindLastFailure() {
-  static thread_local std::string last_failure;
-  return last_failure;
+// The step of the last failure, as ReadLastRunnerFailure puts it before the error. Each runner of a thread clears it.
+std::string& FindLastStep() {
+  static thread_local std::string last_step;
+  return last_step;
 }
 
-// Records the failed CUDA call: its step, cudaGetErrorName and cudaGetErrorString of `error`. Returns `status`.
+// Clears the step and the last failed GPU call (base/run_on_call_error.h) at the start of a runner.
+void ApplyNoLastFailure() {
+  FindLastStep().clear();
+  ApplyNoRunOnCallError();
+}
+
+// Records the failed CUDA call: its step, and cudaGetErrorName and cudaGetErrorString of `error` in the error of
+// base/run_on_call_error.h. A call that left no error keeps the error an earlier helper recorded. Returns `status`.
 RunOnCallStatus RecordFailure(RunOnCallStatus status, std::string_view step, cudaError_t error) {
-  std::string& last_failure = FindLastFailure();
-  last_failure = std::string(step) + ": " + cudaGetErrorName(error) + " (" + cudaGetErrorString(error) + ")";
+  FindLastStep() = std::string(step);
+  if (error != cudaSuccess) {
+    ApplyLastRunOnCallError(cudaGetErrorName(error), cudaGetErrorString(error));
+  }
   return status;
 }
 
@@ -105,7 +115,7 @@ StartOneThreadPerQuery(const GridTables& tables, const Query* gpu_queries, int c
 // Copies the queries to the GPU, runs ComputeEveryResult with one thread per query, and copies the results back.
 template <typename Query, typename Result, Result (*ComputeResult)(const GridTables&, const Query&)>
 RunOnCallStatus RunOneThreadPerQuery(const GridTables& tables, const Query* queries, int count, Result* results) {
-  FindLastFailure().clear();
+  ApplyNoLastFailure();
   // No query asks nothing: a launch of no thread block does not start, so the call ends before it.
   if (count <= 0) {
     return RunOnCallStatus::kDone;
@@ -324,7 +334,7 @@ RunOnCallStatus ComputePieceStepResultsOnGpu(
     int count,
     PieceStepResult* results
 ) {
-  FindLastFailure().clear();
+  ApplyNoLastFailure();
   // Steps: 1 the GPU memory  2 the lists and the queries  3 the GPU function  4 the results back
   // Step 1: one array for the border blocks followed by the piece map (none when both are empty), the queries and
   // the results.
@@ -431,7 +441,7 @@ RunOnCallStatus ComputeBorderBlockResultsOnGpu(
     int count,
     BorderBlockResult* results
 ) {
-  FindLastFailure().clear();
+  ApplyNoLastFailure();
   // Steps: 1 the GPU memory  2 the set and the queries  3 the GPU function  4 the results back
   // Step 1: memory for the sorted list (none when it is empty), the queries and the results.
   const auto query_count = static_cast<std::size_t>(count);
@@ -516,7 +526,7 @@ RunOnCallStatus ComputeBorderBlockResultsOnGpu(
 }
 
 RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* functions) {
-  FindLastFailure().clear();
+  ApplyNoLastFailure();
   std::vector<RunnerFunctionInfo> read;
   const std::array<RunOnCallStatus, 17> statuses = {
       AddFunctionInfo<FindCellAtQuery, FoundCells, FindCellsAtPosition>("FindCellsAtOnGpu", read),
@@ -553,7 +563,12 @@ RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* function
 }
 
 std::string ReadLastRunnerFailure() {
-  return FindLastFailure();
+  const RunOnCallError error = FindLastRunOnCallError();
+  if (!error.has_error) {
+    return {};
+  }
+  const std::string& step = FindLastStep();
+  return (step.empty() ? std::string() : step + ": ") + error.name + " (" + error.text + ")";
 }
 
 }  // namespace fluidity::grid

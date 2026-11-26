@@ -8,6 +8,7 @@ fluidity_add_headers(
   check_can_run_on_math.h
   cpu_and_gpu.h
   cpu_only.h
+  run_on_call_error.h
   gpu_launch.cuh
   mat3.h
   memory_count.h
@@ -30,8 +31,8 @@ fluidity_add_headers(
   vec3.h
 )
 
-target_sources(fluidity PRIVATE buffer_cpu.cc check_can_run_on_cpu.cc memory_count.cc ordered_sums_cpu.cc
-               processor_description_cpu.cc run_memory_cpu.cc stable_order_cpu.cc)
+target_sources(fluidity PRIVATE buffer_cpu.cc check_can_run_on_cpu.cc run_on_call_error.cc memory_count.cc
+               ordered_sums_cpu.cc processor_description_cpu.cc run_memory_cpu.cc stable_order_cpu.cc)
 fluidity_add_gpu_sources(buffer_gpu.cu check_can_run_on_gpu.cu ordered_sums_gpu.cu processor_description_gpu.cu
                          stable_order_gpu.cu)
 
@@ -46,6 +47,7 @@ fluidity_add_test(check_can_run_on_math_test SOURCES check_can_run_on_math.test.
                   LINKS fluidity_base_testing)
 fluidity_add_test(base_support_test SOURCES testing/base_support.test.cc LABEL cpu LINKS fluidity_base_testing)
 fluidity_add_test(run_on_call_test SOURCES run_on_call.test.cc LABEL cpu)
+fluidity_add_test(run_on_call_error_test SOURCES run_on_call_error.test.cc LABEL cpu)
 fluidity_add_test(buffer_test SOURCES buffer.test.cc LABEL cpu LINKS fluidity_base_testing)
 fluidity_add_test(processor_description_test SOURCES processor_description.test.cc LABEL cpu)
 fluidity_add_test(memory_count_test SOURCES memory_count.test.cc LABEL cpu)

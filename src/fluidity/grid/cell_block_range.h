@@ -261,7 +261,9 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //                           anything is written.
 //        kRunOnCallFailed   GPU only: a GPU call failed. A launch that did not start waits for the GPU's pending work
 //                           before the call returns, so no earlier launch of the call is still writing.
-//        kInternalFault     GPU only: the prefix sum failed on a size, or the count read back is above the block count
+//        kInternalFault     GPU only: the prefix sum failed on a size, or the status record read back contradicts the
+//                           steps that wrote it: a failure key of a step other than the check of border_so_far, or a
+//                           count above the block count (ToBorderBlockCount, grid/cell_block_range_internal.h)
 //        On failure border_blocks holds no result; after kRunOnCallFailed the marks and the arrays of
 //        `search_buffers` are unspecified, as every buffer of a failed GPU call. If a launch of the marking fails after
 //        earlier ones marked, nothing is written to the output (no list, no count), and the next call clears the

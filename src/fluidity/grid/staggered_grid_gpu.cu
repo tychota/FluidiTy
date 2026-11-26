@@ -20,6 +20,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "fluidity/base/gpu_launch.cuh"
 #include "fluidity/base/run_on_call.h"
@@ -401,6 +402,22 @@ __global__ void WriteBuildStatusResult(
   ApplyBuildStatusResult(frame, input_cells, input_count, sorted_cells, count, status);
 }
 
+// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning, so that
+// no earlier launch of the same build or check is still running (and writing the grid or the builder buffers) when the
+// caller sees the failure.
+template <typename... Parameters>
+RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
+    void (*function)(Parameters...),
+    LaunchSize launch_size,
+    std::type_identity_t<Parameters>... arguments
+) {
+  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
+  if (started != RunOnCallStatus::kDone) {
+    static_cast<void>(CheckGpuWork());
+  }
+  return started;
+}
+
 // The launch of a GPU function that one thread runs.
 constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
 
@@ -418,7 +435,7 @@ cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
 }  // namespace
 
 RunOnCallStatus ApplyBuildStatusResetOnGpu(GridBuildStatus* status) {
-  return ApplyGpuFunction(ApplyBuildStatusReset, kOneThread, status);
+  return ApplyGpuFunctionAndWaitOnFailure(ApplyBuildStatusReset, kOneThread, status);
 }
 
 RunOnCallStatus
@@ -427,7 +444,14 @@ CheckCellIdsOnGpu(GridFrame frame, const CellId* input_cells, std::uint32_t inpu
   if (input_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(CheckCellIds, ComputeLaunchSize(input_count), frame, input_cells, input_count, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      CheckCellIds,
+      ComputeLaunchSize(input_count),
+      frame,
+      input_cells,
+      input_count,
+      status
+  );
 }
 
 RunOnCallStatus
@@ -435,7 +459,14 @@ WriteCellSortKeysOnGpu(const CellId* input_cells, std::uint32_t input_count, int
   if (input_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(WriteCellSortKeys, ComputeLaunchSize(input_count), input_cells, input_count, pass, sort_keys);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      WriteCellSortKeys,
+      ComputeLaunchSize(input_count),
+      input_cells,
+      input_count,
+      pass,
+      sort_keys
+  );
 }
 
 RunOnCallStatus
@@ -443,7 +474,14 @@ CopySortedCellsOnGpu(const CellId* input_cells, const std::uint32_t* order, std:
   if (count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(CopySortedCells, ComputeLaunchSize(count), input_cells, order, count, sorted_cells);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      CopySortedCells,
+      ComputeLaunchSize(count),
+      input_cells,
+      order,
+      count,
+      sorted_cells
+  );
 }
 
 RunOnCallStatus
@@ -451,7 +489,14 @@ CheckSortedCellsOnGpu(const CellId* sorted_cells, std::uint32_t count, int step,
   if (count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(CheckSortedPositions, ComputeLaunchSize(count), sorted_cells, count, step, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      CheckSortedPositions,
+      ComputeLaunchSize(count),
+      sorted_cells,
+      count,
+      step,
+      status
+  );
 }
 
 RunOnCallStatus WriteFailureCellsOnGpu(
@@ -462,8 +507,16 @@ RunOnCallStatus WriteFailureCellsOnGpu(
     std::uint32_t count,
     GridBuildStatus* status
 ) {
-  if (const RunOnCallStatus started =
-          ApplyGpuFunction(WriteFailureCells, kOneThread, frame, input_cells, input_count, sorted_cells, count, status);
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
+          WriteFailureCells,
+          kOneThread,
+          frame,
+          input_cells,
+          input_count,
+          sorted_cells,
+          count,
+          status
+      );
       started != RunOnCallStatus::kDone) {
     return started;
   }
@@ -481,7 +534,7 @@ RunOnCallStatus WriteSplitCellCountsOnGpu(
   if (active_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       WriteSplitCellCounts,
       ComputeLaunchSize(active_count),
       cell_ids,
@@ -498,7 +551,15 @@ RunOnCallStatus CheckCellPlacesOnGpu(
     std::uint32_t sort_count,
     GridBuildStatus* status
 ) {
-  return ApplyGpuFunction(CheckCellPlaces, kOneThread, sums, active_count, room_cell_places, sort_count, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      CheckCellPlaces,
+      kOneThread,
+      sums,
+      active_count,
+      room_cell_places,
+      sort_count,
+      status
+  );
 }
 
 RunOnCallStatus CheckBlockCountOnGpu(
@@ -507,7 +568,7 @@ RunOnCallStatus CheckBlockCountOnGpu(
     std::uint32_t max_cell_blocks,
     GridBuildStatus* status
 ) {
-  return ApplyGpuFunction(CheckBlockCount, kOneThread, sums, sort_count, max_cell_blocks, status);
+  return ApplyGpuFunctionAndWaitOnFailure(CheckBlockCount, kOneThread, sums, sort_count, max_cell_blocks, status);
 }
 
 RunOnCallStatus WriteSplitCellsOnGpu(
@@ -519,7 +580,14 @@ RunOnCallStatus WriteSplitCellsOnGpu(
   if (active_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(WriteSplitCells, ComputeLaunchSize(active_count), cell_ids, sums, active_count, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      WriteSplitCells,
+      ComputeLaunchSize(active_count),
+      cell_ids,
+      sums,
+      active_count,
+      status
+  );
 }
 
 RunOnCallStatus WriteSortTailOnGpu(
@@ -531,7 +599,14 @@ RunOnCallStatus WriteSortTailOnGpu(
   if (sort_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(WriteSortTail, ComputeLaunchSize(sort_count), cell_ids, active_count, sort_count, status);
+  return ApplyGpuFunctionAndWaitOnFailure(
+      WriteSortTail,
+      ComputeLaunchSize(sort_count),
+      cell_ids,
+      active_count,
+      sort_count,
+      status
+  );
 }
 
 RunOnCallStatus WriteBlockSortKeysOnGpu(
@@ -544,7 +619,7 @@ RunOnCallStatus WriteBlockSortKeysOnGpu(
   if (sort_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       WriteBlockSortKeys,
       ComputeLaunchSize(sort_count),
       cell_ids,
@@ -565,7 +640,7 @@ RunOnCallStatus WriteBlockStartMarksOnGpu(
   if (sort_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       WriteBlockStartMarks,
       ComputeLaunchSize(sort_count),
       cell_ids,
@@ -587,7 +662,7 @@ RunOnCallStatus WriteBlockIdsOnGpu(
   if (sort_count == 0) {
     return RunOnCallStatus::kDone;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       WriteBlockIds,
       ComputeLaunchSize(sort_count),
       block_ids,
@@ -607,7 +682,7 @@ RunOnCallStatus WriteBlockNeighboursOnGpu(
     std::uint32_t max_cell_blocks,
     GridBuildStatus* status
 ) {
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       WriteBlockNeighbours,
       ComputeLaunchSize(max_cell_blocks),
       block_ids,
@@ -628,7 +703,7 @@ RunOnCallStatus WriteCellStatesOnGpu(
     GridBuildStatus* status
 ) {
   const std::size_t room_cell_places = std::size_t{kCellPlacesPerBlock} * max_cell_blocks;
-  if (const RunOnCallStatus started = ApplyGpuFunction(
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WriteAbsentStates,
           ComputeLaunchSize(room_cell_places),
           cell_states,
@@ -640,7 +715,7 @@ RunOnCallStatus WriteCellStatesOnGpu(
   }
   // A launch of 0 thread blocks fails, and with no sorted entry there is no cell to place.
   if (sorted_entries.sort_count != 0) {
-    if (const RunOnCallStatus started = ApplyGpuFunction(
+    if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
             WriteSortedCellStates,
             ComputeLaunchSize(sorted_entries.sort_count),
             cell_states,
@@ -655,7 +730,7 @@ RunOnCallStatus WriteCellStatesOnGpu(
       return started;
     }
   }
-  if (const RunOnCallStatus started = ApplyGpuFunction(
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WriteCoverAnswers,
           ComputeLaunchSize(room_cell_places),
           tables,
@@ -666,7 +741,7 @@ RunOnCallStatus WriteCellStatesOnGpu(
       started != RunOnCallStatus::kDone) {
     return started;
   }
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       CopyCoverAnswers,
       ComputeLaunchSize(room_cell_places),
       cover_answers,
@@ -683,7 +758,7 @@ RunOnCallStatus WriteFacePieceKindsOnGpu(
     GridBuildStatus* status
 ) {
   const std::size_t room_face_places = std::size_t{kFacePlacesPerBlock} * max_cell_blocks;
-  return ApplyGpuFunction(
+  return ApplyGpuFunctionAndWaitOnFailure(
       WriteFacePieceKinds,
       ComputeLaunchSize(room_face_places),
       tables,
@@ -701,7 +776,7 @@ RunOnCallStatus WriteBuildStatusResultOnGpu(
     std::uint32_t count,
     GridBuildStatus* status
 ) {
-  if (const RunOnCallStatus started = ApplyGpuFunction(
+  if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WriteBuildStatusResult,
           kOneThread,
           frame,

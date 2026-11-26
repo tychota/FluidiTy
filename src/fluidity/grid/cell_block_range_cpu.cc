@@ -16,7 +16,10 @@
 #include "fluidity/base/stable_order.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/cell_block_range.h"
+#include "fluidity/grid/cell_block_range_internal.h"
 #include "fluidity/grid/grid_buffers_internal.h"
+#include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_memory_estimate.h"
@@ -26,7 +29,6 @@
 #if defined(FLUIDITY_HAS_GPU)
 #include "fluidity/base/run_on_call.h"
 #include "fluidity/grid/cell_block_range_gpu.h"
-#include "fluidity/grid/grid_build_status.h"
 #endif
 
 namespace fluidity::grid {
@@ -248,20 +250,26 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderS
       !read.has_value()) {
     return std::unexpected(ToGridFailure(read.error(), sizeof(GridBuildStatus)));
   }
-  // A key of step 2 means a bad border so far; the list holds nothing.
-  if (read_status.failure_key != kNoFailureKey) {
-    return std::unexpected(GridFailure{.error = GridError::kBadInput});
-  }
-  // The total is a count of blocks of the grid: a record that says otherwise contradicts the steps that wrote it.
-  if (read_status.result_count > search.block_count) {
-    return std::unexpected(GridFailure{.error = GridError::kInternalFault});
-  }
-  return read_status.result_count;
+  return ToBorderBlockCount(read_status, search.block_count);
 }
 
 #endif
 
 }  // namespace
+
+std::expected<std::uint32_t, GridFailure> ToBorderBlockCount(const GridBuildStatus& status, std::uint32_t block_count) {
+  if (status.failure_key != kNoFailureKey) {
+    // The id step checks the border so far, which the caller made. A key of another step contradicts the steps that
+    // wrote the record: no input gives one.
+    const bool is_bad_border = ToFailureStep(status.failure_key) == kIdStep;
+    return std::unexpected(GridFailure{.error = is_bad_border ? GridError::kBadInput : GridError::kInternalFault});
+  }
+  // The total is a count of blocks of the grid: a record that says otherwise contradicts the steps that wrote it.
+  if (status.result_count > block_count) {
+    return std::unexpected(GridFailure{.error = GridError::kInternalFault});
+  }
+  return status.result_count;
+}
 
 std::expected<std::vector<CellBlockRange>, GridFailure>
 BuildRanges(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range) {

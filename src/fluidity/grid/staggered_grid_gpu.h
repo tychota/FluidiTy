@@ -11,7 +11,9 @@
 //   integer atomic minimum, and its counts, to which they add with integer atomic adds, so neither the smallest key nor
 //   a count depends on the order the threads run in. Each function's comment says which places one thread writes and
 //   reads, and why no two threads of a launch write one place. The functions use the default stream, so the GPU runs
-//   them, and the stable orders between them, in the order they are called. Each returns how its start went. An error
+//   them, and the stable orders between them, in the order they are called. Each returns how its start went; a function
+//   whose launch did not start waits for the GPU's pending work before it returns kCallFailed, so no earlier launch of
+//   the build or the check is still writing the grid or the builder buffers when the caller sees the failure. An error
 //   while a GPU function runs is reported by the next wait: the wait at the end of each BuildStableOrder or
 //   ComputeExclusivePrefixSum for the functions before it, as BufferError kRunOnCallFailed, or the wait at the end of
 //   WriteFailureCellsOnGpu or WriteBuildStatusResultOnGpu for the rest. Either way the call fails

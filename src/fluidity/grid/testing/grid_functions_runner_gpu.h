@@ -10,7 +10,8 @@
 //   the first launch, as the compiler's frame size for the function says. ReadRunnerFunctionInfo reads those frame
 //   sizes, and ptxas prints them in the build log (`-Xptxas=-v`).
 //   When a runner fails, the status is only kCallFailed or kOutOfMemory; ReadLastRunnerFailure says which CUDA call
-//   failed and with which error.
+//   failed and with which error, from the error of base/run_on_call_error.h, which every failed call of
+//   base/gpu_launch.cuh writes.
 //
 // Owns:    FindCellsAtOnGpu, ComputeNearbyFaceResultsOnGpu, ComputeFaceWeightResultsOnGpu, FindCellCornersOnGpu,
 //          FindFaceCornersOnGpu, ComputeCornerPositionsOnGpu, FindCellsAroundEdgesOnGpu, FindTouchingCellsOnGpu,

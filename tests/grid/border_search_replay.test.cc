@@ -15,7 +15,9 @@
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/cell_block_range.h"
+#include "fluidity/grid/cell_block_range_internal.h"
 #include "fluidity/grid/grid_build_status.h"
+#include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
@@ -72,6 +74,14 @@ std::vector<std::uint32_t> ToWrittenBlockNumbers(const BorderReplayResult& repla
   return ToBlockNumberList(std::span<const CellBlockIndex>(replay.border_blocks.data(), written));
 }
 
+// The status record that a replay left: its failure key and the count it wrote, as the GPU's last launch writes them.
+GridBuildStatus ToReplayStatus(const BorderReplayResult& replay) {
+  GridBuildStatus status = ComputeResetBuildStatus();
+  status.failure_key = replay.failure_key;
+  status.result_count = replay.count;
+  return status;
+}
+
 // Replays one call with `inputs` in `launch` and expects the CPU form's list and count, entry for entry.
 void CheckReplayEqualsCpuList(
     const GridTables& tables,
@@ -85,6 +95,10 @@ void CheckReplayEqualsCpuList(
   );
   const BorderReplayResult replay = ComputeBorderSearchReplay(tables, inputs, launch, MarksAtStart::kCleared);
   EXPECT_EQ(replay.failure_key, kNoFailureKey);
+  const std::expected<std::uint32_t, GridFailure> read_count =
+      ToBorderBlockCount(ToReplayStatus(replay), tables.block_count);
+  ASSERT_TRUE(read_count.has_value());
+  EXPECT_EQ(*read_count, cpu_layer.size());
   EXPECT_EQ(replay.count, cpu_layer.size());
   EXPECT_EQ(replay.prefix_total, cpu_layer.size());
   EXPECT_EQ(ToWrittenBlockNumbers(replay), ToBlockNumberList(cpu_layer));
@@ -190,6 +204,13 @@ TEST(FindBorderBlocks, EveryThreadOnMoreBlocksThanOneLaunch_EqualsCpuStackedLaye
   CheckStackedLayers(*rig, range, layer_widths);
 }
 
+// Expects the status record a failed replay left to read as bad input, the way the search on the GPU reads it.
+void CheckReplayStatusIsBadInput(const BorderReplayResult& replay, std::uint32_t block_count) {
+  const std::expected<std::uint32_t, GridFailure> read_count = ToBorderBlockCount(ToReplayStatus(replay), block_count);
+  ASSERT_FALSE(read_count.has_value());
+  EXPECT_EQ(read_count.error().error, GridError::kBadInput);
+}
+
 // Expects the replay of one bad border so far, in every launch, to fail as the CPU form's call does: a count of 0, no
 // list written, and a failure key.
 void CheckBadBorderSoFarFails(
@@ -208,6 +229,7 @@ void CheckBadBorderSoFarFails(
     const BorderReplayResult replay =
         ComputeBorderSearchReplay(grid.tables(RunOn::kCpu), inputs, launch, MarksAtStart::kCleared);
     EXPECT_NE(replay.failure_key, kNoFailureKey);
+    CheckReplayStatusIsBadInput(replay, block_count);
     EXPECT_EQ(replay.count, 0U);
     EXPECT_EQ(replay.prefix_total, 0U);
     EXPECT_TRUE(std::ranges::all_of(replay.border_blocks, [](CellBlockIndex block) {

@@ -1,6 +1,7 @@
 fluidity_add_headers(
   border_block_steps.h
   cell_block_range.h
+  cell_block_range_internal.h
   cell_block_range_gpu.h
   cell_corners.h
   cell_size_rule.h
@@ -111,6 +112,7 @@ fluidity_add_test(
 )
 fluidity_add_test(grid_piece_steps_test SOURCES grid_piece_steps.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(grid_piece_internal_test SOURCES grid_piece_internal.test.cc LABEL cpu LINKS fluidity_grid_testing)
+fluidity_add_test(cell_block_range_internal_test SOURCES cell_block_range_internal.test.cc LABEL cpu LINKS fluidity_grid_testing)
 # Replaces the nothrow allocation functions for the whole program, so it shares its program with no other test.
 fluidity_add_test(grid_out_of_memory_test SOURCES staggered_grid.out_of_memory.test.cc LABEL cpu)
 fluidity_add_test(grid_shared_gpu_compile_test SOURCES grid_tables.shared.gpu_compile.test.cu LABEL no_gpu)
