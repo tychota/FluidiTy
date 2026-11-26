@@ -1,0 +1,114 @@
+docs/superpowers/specs/modules/08-solids-design.md
+  s_4f0877e2acdcf0::t_b3c46a6fe7af89 862-884
+docs/superpowers/specs/modules/owner-questions-round-3.md
+  s_4f0877e2acdcf0::t_a1818e7fd9c0ce 1-73,76-82,84-105,109-115,118,120-127
+  s_4f0877e2acdcf0::t_7c5812901cb2e5 106-108,116-117,119
+  s_4f0877e2acdcf0::t_e0915a2fcd6b28 74-75,83
+docs/superpowers/specs/modules/05-pressure-design.md
+  s_4f0877e2acdcf0::t_b3c46a6fe7af89 1081-1101
+docs/superpowers/specs/modules/04-transfer-design.md
+  s_4f0877e2acdcf0::t_0f25d600d5b7db 488-533
+  s_4f0877e2acdcf0::t_cd05ddd3942f21 406
+docs/superpowers/specs/modules/02-grid-design.md
+  s_4f0877e2acdcf0::t_ff9fd8258b3c7d 509-512
+  s_4f0877e2acdcf0::t_7e100631ac8576 1329-1334
+  s_4f0877e2acdcf0::t_979bcfb47dc66b 1611
+  s_4f0877e2acdcf0::t_cf5e8480cad65c 1197-1198
+  s_4f0877e2acdcf0::t_78879eaf740075 458-462
+  s_4f0877e2acdcf0::t_b5e4e0abb27c0c 2106-2109
+  s_4f0877e2acdcf0::t_6521a5d9d1a4b5 756
+  s_4f0877e2acdcf0::t_959772710edd91 817-820
+  s_4f0877e2acdcf0::t_87156353d9e6f4 1550-1565
+  s_4f0877e2acdcf0::t_122504f690388b 614-617
+  s_4f0877e2acdcf0::t_aab9fb47d31810 892-898
+  s_4f0877e2acdcf0::t_7b576d6fefb017 1038-1043,1046-1047,1049-1064
+  s_4f0877e2acdcf0::t_faebba5890536f 482
+  s_4f0877e2acdcf0::t_898834b2c14093 659,662-663,665-673
+  s_4f0877e2acdcf0::t_26ca8883c9cfe8 978-985
+  s_4f0877e2acdcf0::t_851cc5d8c8ee49 1579-1585
+  s_4f0877e2acdcf0::t_32502e9952a3e5 868-875
+  s_4f0877e2acdcf0::t_6df74f5271d61e 1018
+  s_4f0877e2acdcf0::t_ecea8b50fac113 2119-2122
+  s_4f0877e2acdcf0::t_7749f6c978bf43 601-608
+  s_4f0877e2acdcf0::t_541076dbda1a3f 2294-2359
+  s_4f0877e2acdcf0::t_28257cda861106 954-955,958-964
+  s_4f0877e2acdcf0::t_afcbf3a3df7b93 374-380
+  s_4f0877e2acdcf0::t_e522f3ee380054 569-577
+  s_4f0877e2acdcf0::t_8d34e98c761b33 858-861
+  s_4f0877e2acdcf0::t_b303c680e6d8fe 1682
+  s_4f0877e2acdcf0::t_e0bdc257cd1f61 60-79
+  s_4f0877e2acdcf0::t_f57ab3e283b4b9 1262-1265
+  s_4f0877e2acdcf0::t_ca284e1d5a0c3a 14,2055,2067,2159,2208
+  s_4f0877e2acdcf0::t_4a8dd7ed15a8cc 1354-1360
+  s_4f0877e2acdcf0::t_3e26f4ff63ee19 126
+  s_4f0877e2acdcf0::t_16d8fec66b4d7e 1679
+  s_4f0877e2acdcf0::t_ddfb46e06d7625 1603-1606
+  s_4f0877e2acdcf0::t_7714a5be616156 201,203,209-211,213-221,224-226,230-235,238,242-250
+  s_4f0877e2acdcf0::t_6da654e6ad0fe8 1420-1423
+  s_4f0877e2acdcf0::t_6e126815884852 1486-1489
+  s_4f0877e2acdcf0::t_c7e06fe2d2308d 2066,2068
+  s_4f0877e2acdcf0::t_af7448e3e1e022 2053-2054
+  s_4f0877e2acdcf0::t_475c57164fe9b6 285-286,288
+  s_4f0877e2acdcf0::t_db2f3ac424d7b0 400-402
+  s_4f0877e2acdcf0::t_157dc976aba10f 142-147
+  s_4f0877e2acdcf0::t_491599923bb7b6 162-164
+  s_4f0877e2acdcf0::t_8bdb0e49521a66 437-439
+  s_4f0877e2acdcf0::t_af97363fc547e8 526-528,534-536,539,542-544,547-550,556-561
+  s_4f0877e2acdcf0::t_124a970e12df97 721-724
+  s_4f0877e2acdcf0::t_e85ba7094c7989 1078-1081,1083-1089,1091-1094
+  s_4f0877e2acdcf0::t_001b5af1dbf4cb 21-22
+  s_4f0877e2acdcf0::t_1464d3e0b59ffc 914-917,921-927,929-931
+  s_4f0877e2acdcf0::t_3ee22f53bb45a2 1800
+  s_4f0877e2acdcf0::t_03f4d92e923b55 743-745
+  s_4f0877e2acdcf0::t_0919c8f7374213 956-957
+  s_4f0877e2acdcf0::t_a5b70e22fc827d 1075-1076
+  s_4f0877e2acdcf0::t_b69226129c74e7 1966-1967
+  s_4f0877e2acdcf0::t_398899e1374414 1044-1045
+  s_4f0877e2acdcf0::t_9a6c27aec401eb 387-391,396-397,399,403-405
+  s_4f0877e2acdcf0::t_630a54e0f8f42f 935
+  s_4f0877e2acdcf0::t_5e68a006bee1cb 2156-2158
+  s_4f0877e2acdcf0::t_486ccbf4b8ac1d 2214-2248,2251-2281
+  s_4f0877e2acdcf0::t_86dfe1df89b226 674
+  s_4f0877e2acdcf0::t_dd797b8006987b 12-13,15
+  s_4f0877e2acdcf0::t_cae526b220bdf4 769-771
+  s_4f0877e2acdcf0::t_f634f5168e6ba1 415-417
+  s_4f0877e2acdcf0::t_2dc034b428da26 1444-1453,1456-1476
+  s_4f0877e2acdcf0::t_08c359bb726f9b 89-93
+  s_4f0877e2acdcf0::t_c624336d56ffea 2210
+  s_4f0877e2acdcf0::t_60198e559a45cd 1622-1633
+  s_4f0877e2acdcf0::t_041c3006dcca1e 1296-1303
+  s_4f0877e2acdcf0::t_5ab760be2d074c 1342-1343
+  s_4f0877e2acdcf0::t_8fbe71600afd27 1684
+  s_4f0877e2acdcf0::t_ab5b35039f221c 1277-1284
+  s_4f0877e2acdcf0::t_656051a6875aae 1003-1005,1008-1009,1011-1013,1019-1021,1024
+  s_4f0877e2acdcf0::t_3a792f4fe60aca 1784-1799,1801-1827
+  s_4f0877e2acdcf0::t_2b1e366e8a8cb2 2173-2174
+  s_4f0877e2acdcf0::t_f4fe20f83cdc11 251,1184-1185
+docs/superpowers/specs/modules/11-cell-resize-and-batches-design.md
+  s_4f0877e2acdcf0::t_053e7d1b57fac1 1945
+  s_4f0877e2acdcf0::t_041077a968202d 816-818,857-894,1345-1348
+docs/superpowers/specs/modules/03-particles-design.md
+  s_4f0877e2acdcf0::t_6b22edf0775444 638-654
+docs/superpowers/plans/2026-11-14-rebuild-02-grid.md
+  s_4f0877e2acdcf0::t_479cade27db652 29-36
+docs/superpowers/specs/modules/10-step-design.md
+  s_4f0877e2acdcf0::t_56e530703e3e0e 1752-1755
+  s_4f0877e2acdcf0::t_8b85fa538f7d58 1346-1350,1353-1380
+  s_4f0877e2acdcf0::t_041077a968202d 1351-1352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "76543a7df0712dac1f7c8cd6af87dd199fa568bf",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
