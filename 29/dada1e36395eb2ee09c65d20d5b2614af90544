@@ -1,0 +1,45 @@
+src/fluidity/grid/border_block_steps.h
+  s_4f0877e2acdcf0::t_0ca00a5703e9eb 76-77,95-98,675-678
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_bf530ac12e3b75 89-91
+src/fluidity/grid/cell_corners.h
+  s_4f0877e2acdcf0::t_2dc75412b287ec 16-18,40-45
+src/fluidity/grid/face_search.h
+  s_4f0877e2acdcf0::t_edc9c244f16452 11-14
+src/fluidity/grid/find_cell_at.h
+  s_4f0877e2acdcf0::t_256539425c15fc 243-244,268
+src/fluidity/grid/grid_error.h
+  s_4f0877e2acdcf0::t_afcf29334f2e89 10-13,17
+src/fluidity/grid/grid_ids.h
+  s_4f0877e2acdcf0::t_56f309518ed211 60
+src/fluidity/grid/grid_piece.h
+  s_4f0877e2acdcf0::t_c2515e2f7e5b8a 17-31,42-45,155-156
+src/fluidity/grid/grid_tables.h
+  s_4f0877e2acdcf0::t_9f27448eb386d7 39-46,186-187,360-361,388-389,414-415,434-435,463-464,485-486,513-514,541-542
+src/fluidity/grid/grid_values.h
+  s_4f0877e2acdcf0::t_e20505da34f48a 142,145-151
+src/fluidity/grid/nearby_face_weights.h
+  s_4f0877e2acdcf0::t_ee344c26294584 64-66,70-74,849-850,857-859
+src/fluidity/grid/staggered_grid.h
+  s_4f0877e2acdcf0::t_443334390700ed 431-432
+src/fluidity/grid/testing/grid_piece_support.h
+  s_4f0877e2acdcf0::t_e9e119811a1ff6 127-128
+src/fluidity/grid/touching_cells.h
+  s_4f0877e2acdcf0::t_b32bff5be24494 15-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "29dada1e36395eb2ee09c65d20d5b2614af90544",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
