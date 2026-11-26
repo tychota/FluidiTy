@@ -1,0 +1,30 @@
+docs/superpowers/specs/modules/00-how-to-update-a-module-design.md
+  s_4f0877e2acdcf0::t_791a9895620ce1 36-38
+docs/superpowers/specs/modules/00-how-to-write-a-module-design.md
+  s_4f0877e2acdcf0::t_796a6077ff58a5 78
+  s_4f0877e2acdcf0::t_9da651fe9a41d3 79-80
+  s_4f0877e2acdcf0::t_791a9895620ce1 99-101,106-107,112-116,125-127
+docs/superpowers/sdd/how-to-run-a-module.md
+  s_4f0877e2acdcf0::t_791a9895620ce1 1-2,4-45,48-51
+  s_4f0877e2acdcf0::t_e43c039cffdb52 3,46-47
+docs/superpowers/sdd/dispatch-template.md
+  s_4f0877e2acdcf0::t_791a9895620ce1 1-39
+docs/superpowers/specs/modules/00-how-to-write-a-module-plan.md
+  s_4f0877e2acdcf0::t_d470680915f8ce 66-69,73-80,84-112,129-137,146-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "97b3ca2b92cdab2b159ddbcb9d916fba5626382a",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
