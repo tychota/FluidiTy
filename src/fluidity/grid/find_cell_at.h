@@ -240,7 +240,8 @@ FindCellAtCoord(const GridTables& tables, BiasedSmallestCellCoord coord) noexcep
 //   would pack into the id of {0,0,0}, give kNoIndex. With biggest cells 4 m wide and 1 size level, x = -2^-1074 m
 //   gives cell 0: its quotient -2^-1076 rounds to -0.
 // Requires: the tables of a built grid, whose frame passed the frame check (GridFrame): size_level_count 1..16, a
-//   normal smallest width, every table written. Any position.
+//   normal smallest width, every table written. Any position: this reader is total. Its answer kNoIndex is no place:
+//   check for it before ToSizeLevel, ToCellId, ComputeCellCenter or any other reader that requires a place.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-cell-blocks>, <sec-nearby-faces>
 FLUIDITY_CPU_AND_GPU inline CellPlaceIndex FindCellAt(const GridTables& tables, Vec3 position) noexcept {
   const BiasedSmallestCellCoord coord = ToBiasedSmallestCellCoord(tables.frame, position);
@@ -264,7 +265,7 @@ FLUIDITY_CPU_AND_GPU inline CellPlaceIndex FindCellAt(const GridTables& tables, 
 // Example: in the two-size example above, {1.0, 0.25, 0.25} m with `near` 0, 1, 2 or kNoIndex gives the place of the
 //   size-level-1 cell {2,0,0}, 64 + 2.
 // Requires: as FindCellAt. Any position and any `near`: a block of another part of the grid, an index of no block or
-//   kNoIndex never changes the answer.
+//   kNoIndex never changes the answer. The answer can be kNoIndex: check for it as at the other form.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU inline CellPlaceIndex
 FindCellAt(const GridTables& tables, Vec3 position, CellBlockIndex near) noexcept {

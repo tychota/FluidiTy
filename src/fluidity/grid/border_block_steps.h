@@ -73,8 +73,8 @@ namespace fluidity::grid {
 //
 // What a stage may call, from a place of its range, at each width:
 //   - from an active cell: FindTouchingCells, FindFacePieces of it and of each touching cell, FindCornerPlaces,
-//     FindCellsAroundEdge, FindCellAt for a position in its closed box, and FindNearbyFaces for a position that
-//     FindCellAt gives to it;
+//     FindCellsAroundEdge, FindCellAt for a position of its low sides or inside it (a position on a high side belongs
+//     to the next cell, which touches it), and FindNearbyFaces for a position that FindCellAt gives to it;
 //   - from a face piece: its two cells (FindCellLow, FindCellHigh), its corners and, for transfer, the cells near it at
 //     most one size level bigger (FindCellsNearFace), where FindNearbyFaces can list it;
 //   - from a corner place: ComputeCornerPosition;
@@ -92,7 +92,10 @@ namespace fluidity::grid {
 //   of the edge of the grid and of a place that is not there. FindCellAt for a position outside the range's cells may
 //   give a border cell, when the piece was built with a border that reaches it, or kNoIndex when no loaded block holds
 //   it; FindNearbyFaces then says kPositionOutsideGrid for the second. A stage must rely on neither answer for a place
-//   outside its range, and keeps every particle inside the closed boxes of the cells of its range.
+//   outside its range, and keeps every particle in a cell of its range as FindCellAt gives the cell. A cell owns its
+//   low sides and not its high sides: a position on the high side of a cell of the range belongs to the next cell,
+//   which may be a border cell, and FindNearbyFaces for it lists fewer face pieces with no error. A caller can check
+//   ToCellBlockIndex(list.cell) against the range.
 // Corners. No reader goes from a corner place to the cells that have it as a corner. A stage that computes a corner
 //   value from the cells around the corner needs the blocks of those cells, which the border does not promise.
 enum class BorderWidth : std::uint8_t {
@@ -669,9 +672,10 @@ inline constexpr int kMaxWaitingBlocks = 8 * kMaxSizeLevels;
 //   "Ranges and border"):
 //   kTouchingCells. From an active cell c: FindTouchingCells(c); FindFacePieces of c and of each cell t touching c,
 //   which also goes through the block of the small cells across a split side of t; FindCornerPlaces(c);
-//   FindCellsAroundEdge(c), whose cells touch c; FindCellAt for a position in c's closed box, which gives c or a cell
-//   touching c; FindNearbyFaces for a position that FindCellAt gives to c, which lists face pieces of c and of the
-//   cells touching c. From a face piece f: FindCellLow(f), FindCellHigh(f) and FindCornerPlaces(f); and, for transfer,
+//   FindCellsAroundEdge(c), whose cells touch c; FindCellAt for a position of c's low sides or inside c (a position
+//   on a high side belongs to the next cell), which gives c or a cell touching c; FindNearbyFaces for a position
+//   that FindCellAt gives to c, which lists face pieces of c and of the cells touching c.
+//   From a face piece f: FindCellLow(f), FindCellHigh(f) and FindCornerPlaces(f); and, for transfer,
 //   the cells of FindCellsNearFace(f) at most one size level bigger than f, with what FindNearbyFaces reads from a
 //   position in such a cell q to list f. A cell two size levels bigger than f never lists it: FindNearbyFaces keeps
 //   only face pieces of size levels level(q) - 1 to level(q) + 1, and level(f) = level(q) + 2. FindNearbyFaces lists

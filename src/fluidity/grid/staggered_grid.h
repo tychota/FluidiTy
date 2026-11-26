@@ -428,6 +428,8 @@ GridBuffers TakeBuffers(StaggeredGrid&& grid);
 //   destination whose arrays do not have its room's size are the two failures no run on the CPU reaches.
 // Example: a grid of 2 blocks in a room of 252, read into buffers of room 4,096, gives a grid with the same version
 //   and counts whose first 2 blocks hold the same tables; max_cell_blocks() of the result is 4,096.
+// Requires: nothing about the processor of `cpu_buffers`: a wrong processor is a status here (kBadInput, in every
+//   build), the one function of the grid where it is not a debug assertion.
 // Fails: kBadInput           `grid` holds no tables (version 0: moved from, or its buffers were taken back);
 //                            `cpu_buffers` is moved from (room 0) or is not on the CPU, checked in every build before
 //                            anything is written

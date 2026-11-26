@@ -61,11 +61,17 @@
 //   What the caller of the face form must guarantee. The face cannot see the particle's kept mask, so the sums are the
 //   particle's, made from a mask, and the face form gives a listed face the weight it would have had if the particle
 //   had kept it. The caller therefore keeps the rule of its mask decidable from the face alone, without the face's
-//   position in the list or the other faces of the list, and applies that rule itself: it asks about a face only when
-//   the particle's mask would keep it, and it never uses what it gets for a face the particle left out. It passes the
+//   position in the list or the other faces of the list, and applies that rule itself. It may ask about any face,
+//   a face its mask leaves out too, to learn whether the particle reaches it (a weight above 0), but it never adds
+//   the weight of a face the particle left out to a sum, since the sums did not count it. It passes the
 //   sums of the face's own axis (the sums of ToAxis(face)), the exact double position the weights were made for, and
 //   the active cell that holds that position. When a particle comes to a face through FindCellsNearFace, the face is
 //   among the particle's candidates by construction.
+//   Total readers and readers with preconditions. FindNearbyFaces is total: any position, a position of no cell
+//   included, gives a list or the error kPositionOutsideGrid. ComputeNearbyFaceWeights, ToNearbyFaceSums and the list
+//   form of ComputeFaceWeight need the output of the function before them in that order (their Requires say which).
+//   The face form of ComputeFaceWeight needs a place of a block below block_count and sums made for the position, and
+//   is the only one that answers for a face the caller's mask leaves out.
 //
 // Words:
 //   candidate       a face that may get weight from a position, before any face is left out
@@ -840,16 +846,17 @@ ComputeIsCandidateFace(const GridTables& tables, FacePlaceIndex face, Vec3 posit
 //   is left (`!(sums.weight_sum > 0)`, the fit kNone of the list form) the weight and the change are 0 and so is
 //   offset_from_mean, and `offset` is still the face's position minus the position.
 //   The face cannot see the particle's kept mask. It gives a listed face the weight the face would have had if the
-//   particle had kept it, so the caller asks only about faces its mask keeps (file header, "What the caller of the face
-//   form must guarantee").
+//   particle had kept it, so a caller that adds this weight to a sum adds it only for a face its mask keeps (file
+//   header, "What the caller of the face form must guarantee").
 // Units: as FaceWeight; `position` in m, world.
 // Ties: a face exactly 1.5 widths away on the high side is a candidate and has weight 0.
 // Example: unit grid (h = 1 m), position {2.5, 2.5, 2.5}, X axis, all 27 faces kept: the face at offset {-0.5, 0, 0}
 //   gets 0.28125, as the list gives it. A face 3 cells away is no candidate: weight 0, every vector 0, face echoed.
 // Requires: `sums` is from ToNearbyFaceSums of the weights of the face's axis (ToAxis(face)), made for exactly
 //   `position`, `cell` and `tables`, from a mask whose rule the caller can also apply to the face alone; `cell` is the
-//   active cell FindCellAt gives for `position`; `face` is a place of block 0..tables.block_count - 1, and the
-//   particle's mask keeps it if it is a candidate. The caller, not this function, knows the particle's mask.
+//   active cell FindCellAt gives for `position`; `face` is a place of block 0..tables.block_count - 1 (check for
+//   kNoIndex first). Any face is allowed, a face the particle's mask leaves out too: the result is then the weight
+//   the face would have had, and the caller, which alone knows the mask, must not add it to a sum.
 // Read: docs/method-paper/fluidity-method.typ <sec-nearby-faces>, <eq:scaled-weights>
 FLUIDITY_CPU_AND_GPU inline FaceWeight ComputeFaceWeight(
     const GridTables& tables,

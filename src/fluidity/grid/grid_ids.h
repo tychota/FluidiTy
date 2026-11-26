@@ -57,7 +57,7 @@ inline constexpr int kCornerPlacesPerBlock = 125;  // 5 x 5 x 5 corners of the b
 // The largest cell coordinate on each axis, at every size level: -kMaxCoord..kMaxCoord is the range of a cell. It
 // leaves room in the 19 bits an id keeps per axis for kMaxCoord + 1, the high side of the last cell.
 inline constexpr auto kMaxCoord = static_cast<std::int32_t>((1U << 18U) - 1U);
-inline constexpr std::uint32_t kNoIndex = 0xFFFFFFFF;  // No block, cell place or face place here.
+inline constexpr std::uint32_t kNoIndex = 0xFFFFFFFF;  // No block, cell place, face place or corner place here.
 
 // The integer location of a cell, in cells of the cell's own size level. The cell of size level l at (i, j, k)
 // covers i w <= x < (i + 1) w from the grid's origin, where w is the cell width of that size level, and the same

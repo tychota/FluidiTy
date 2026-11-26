@@ -13,8 +13,9 @@
 //   cell or face piece it is reached from (FindCornerPlaces), and the place gives the point back by
 //   ComputeCornerPosition. Under the size step rule a corner of a cell of size level l is stored at size level l + 2
 //   at most, so the search starts there. A corner place belongs to one set of tables: on a grid piece's border a
-//   corner may be stored at another size level than in the whole grid, so values are matched between a grid piece
-//   and the whole grid by position or id, never by corner place.
+//   corner may be stored at another size level than in the whole grid. There is no corner id, so a corner of a grid
+//   piece and a corner of the whole grid are matched by position (ComputeCornerPosition of each place), or through
+//   the piece map where the corner's block is loaded, never by the corner place alone.
 //   Example 1, a corner on the high side of a block: 1 size level, cells 1 m wide, origin 0, cells {3,0,0} (block 0)
 //   and {4,0,0} (block 1). The corner of {3,0,0} on its high x side at {4,0,0} m is lattice point (4, 0, 0) of block 0
 //   and (0, 0, 0) of block 1. It is stored in block 1, corner place 125. With {3,0,0} alone it is corner place 4.
@@ -36,6 +37,12 @@
 //   and block 1 the size-level-1 block (0,0,0). The big cell's +X side is four face pieces of 0.25 m2, kept at size
 //   level 1 (X places 2, 2 + 5, 2 + 20 and 2 + 25 of block 1). Each has FindCellLow = the big cell, at place 0, and a
 //   centre distance of 0.5 + 0.25 = 0.75 m.
+//   Which corner places hold a value. A corner place holds a value when FindCornerPlaces returns it for an active
+//   cell or a face piece: one place per corner, kept in the block this rule names. The other lattice points of a
+//   block hold no value (a block has 125 of them, a cell 8 corners).
+//   Readers. All are total: FindCornerPlaces (cell and face forms), ComputeCornerPosition and FindCellsAroundEdge give
+//   a defined answer for any index, kNoIndex included (an empty result, or +infinity for a position), when every
+//   block index entry of the tables is kNoIndex or below block_count, as in every built grid.
 //
 // Words:
 //   corner          a corner of a cell or of a face piece, as a point in space: corners of cells of two sizes or of

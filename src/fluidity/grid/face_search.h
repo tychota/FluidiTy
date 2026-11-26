@@ -8,6 +8,10 @@
 //   search walks the face pieces of its axis, one size level bigger, the same
 //   or one smaller, within a radius of at most 4 of its widths (BuildFaceSearch, FindNextFace). It reads at most 270
 //   blocks, chosen by position around its block, and stores where the walk is, not a list.
+//   Readers. All are total: FindCellsNearFace, BuildFaceSearch and FindNextFace give a defined answer for any face
+//   index, kNoIndex included (count 0, a search of no block, kNoIndex), when every block index entry of the tables
+//   is kNoIndex or below block_count, as in every built grid. The other functions are for this header's own
+//   functions only, and their Requires lines say what they need.
 //
 // Words:
 //   touching cell   an active cell that shares a side, an edge or a corner with a given cell

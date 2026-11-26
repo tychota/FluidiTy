@@ -12,6 +12,9 @@
 //   and block 1 the size-level-1 block (0,0,0). The big cell's +X side is four face pieces of 0.25 m2, kept at size
 //   level 1 (X places 2, 2 + 5, 2 + 20 and 2 + 25 of block 1). Each has FindCellLow = the big cell, at place 0, and a
 //   centre distance of 0.5 + 0.25 = 0.75 m.
+//   Readers. Both are total: FindTouchingCells and FindFacePieces give a defined answer for any cell index, kNoIndex
+//   included (count 0), when every block index entry of the tables is kNoIndex or below block_count, as in every
+//   built grid.
 //
 // Words:
 //   active cell     a cell that exists and is not split; it carries values

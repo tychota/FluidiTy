@@ -124,7 +124,8 @@ FindBorderByReadMarks(const GridTables& whole, std::span<const CellBlockIndex> s
 // lists them:
 //   - from each active cell c: FindTouchingCells; FindFacePieces of c and of each cell touching it; FindCornerPlaces;
 //     FindCellsAroundEdge of its 12 edges; FindCellAt, with and without a block near it, at the 27 points of c's
-//     closed box (low, middle and high on each axis), which FindCellAt gives to c or to a cell touching c; and
+//     closed box (low, middle and high on each axis; a high side belongs to the next cell), which FindCellAt gives to
+//     c or to a cell touching c; and
 //     FindNearbyFaces at 2 positions of c's half-open box (its low corner, and 0.8, 0.3, 0.9 of its width from it);
 //   - from each face piece f: FindCellLow; FindCellHigh; FindCornerPlaces; and, for transfer, the cells q of
 //     FindCellsNearFace(f) at most one size level bigger than f, which must be the same in the piece and on the whole

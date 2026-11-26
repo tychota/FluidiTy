@@ -86,7 +86,9 @@ BuildRanges(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range);
 // Allocates the marks (one byte per block of the grid, freed on return) and the returned list, sized once: two
 // allocations, or one when the border is empty.
 // Example: the grid of the file header of border_block_steps.h and the range {0, 1} give the border blocks 1 and 2.
-// Requires: grid.run_on() == RunOn::kCpu, and range inside the grid's blocks (debug assertions).
+// Requires: grid.run_on() == RunOn::kCpu, and range inside the grid's blocks (debug assertions). A range outside the
+//   grid is a precondition here because this function has no failure value, but a status (kBadInput) in BuildRanges,
+//   BuildGridPiece and the buffer form of FindBorderBlocks.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>
 RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range);
 

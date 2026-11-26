@@ -14,15 +14,21 @@
 //   says, for each block of the piece, its index in the whole grid.
 //   What a piece answers. Every reader of the border's width (BorderWidth, border_block_steps.h), called from a place
 //   kept in the range, answers as on the whole grid: FindTouchingCells, FindFacePieces, FindCornerPlaces,
-//   FindCellsAroundEdge, FindCellAt for a position in the closed box of a cell of the range, FindNearbyFaces for a
-//   position that FindCellAt gives to a cell of the range, FindCellLow, FindCellHigh and FindCellsNearFace for a face
-//   piece of the range, ComputeCornerPosition for a corner place of the range; at kFourCellWidths also the face search
-//   from a face piece of the range. A reader called for a place outside that rule returns none, as at the edge of
-//   the grid, and a stage cannot tell the two apart. FindCellAt for a position outside the range's cells may give a
-//   border cell, when the piece was built with a border that reaches it, or kNoIndex when no loaded block holds it;
-//   FindNearbyFaces then says kPositionOutsideGrid for the second. A stage relies on neither answer. So a stage calls
-//   readers only from places of its range, keeps every particle inside the closed boxes of the cells of its range, and
-//   reads a border place only when a layer of a stacked border covers it. A corner place has no reader to the cells
+//   FindCellsAroundEdge, FindCellAt for a position that gives a cell of the range, FindNearbyFaces for a position
+//   that FindCellAt gives to a cell of the range, FindCellLow and FindCellHigh for a face piece of the range,
+//   ComputeCornerPosition for a corner place of the range; at kFourCellWidths also the face search from a face piece
+//   of the range. FindCellsNearFace from a face piece of the range answers as the whole grid at kFourCellWidths; at
+//   kTouchingCells the near border covers only the cells of its list that are at most one size level bigger than the
+//   face piece, so the piece's list may miss other cells the whole grid's list holds, and a caller that counts the
+//   cells or sums over them needs kFourCellWidths for the full list. A reader called for a place outside that rule
+//   returns none, as at the edge of the grid, and a stage cannot tell the two apart. FindCellAt for a position outside
+//   the range's cells may give a border cell, when the piece was built with a border that reaches it, or kNoIndex when
+//   no loaded block holds it; FindNearbyFaces then says kPositionOutsideGrid for the second. A stage relies on neither
+//   answer. So a stage calls readers only from places of its range, keeps every particle in a cell of its range as
+//   FindCellAt gives the cell, and reads a border place only when a layer of a stacked border covers it. A cell owns
+//   its low sides and not its high sides: a position on the high side of a cell of the range belongs to the next cell,
+//   which may be a border cell, and FindNearbyFaces for it lists fewer face pieces with no error. A caller can check a
+//   particle with ToCellBlockIndex(list.cell) against range(). A corner place has no reader to the cells
 //   that have it as a corner.
 //   Sums over the grid. In a batched run, each block's partial is written into the whole grid's block values (a
 //   CellBlockValues of the whole grid) at its whole-grid index, which the piece map gives; one tree sum then runs over
@@ -33,8 +39,10 @@
 //   a CPU piece: the piece map gives the block's whole-grid index and the place within the block is unchanged. A GPU
 //   piece keeps its map on the GPU (block_in_whole_grid_buffer()), and block_in_whole_grid() is empty for it. Corner
 //   places of the range map the same way. Corner places of border blocks do not map through the piece map when the
-//   whole grid stores that corner in a block that was not loaded; match them by position or id (method paper
-//   <sec-cell-blocks>, "A corner place belongs to one set of tables").
+//   whole grid stores that corner in a block that was not loaded. There is no corner id: match a corner of a piece
+//   with a corner of the whole grid by position (ComputeCornerPosition of each place gives the same bits), or
+//   through the piece map where the corner's block is loaded (method paper <sec-cell-blocks>, "A corner place
+//   belongs to one set of tables").
 //   Versions. A piece has the whole grid's version and its own block count, and values are checked against those two.
 //   Two pieces of one whole grid with the same block count cannot be told apart by that check, so values bound to one
 //   piece must not be read through another: the caller keeps them apart and binds again at every load.
@@ -144,7 +152,8 @@ class GridPiece {
 // Order: the blocks of the piece are in ascending whole grid index, and the range is a run of them.
 // Example: a whole grid of blocks 0..9, range {4, 3}, border_blocks {1, 2, 8}: the piece has 6 blocks, its map is
 //   [1, 2, 4, 5, 6, 8], range() is {2, 3} and range_in_whole_grid() is {4, 3}.
-// Requires: whole.run_on() == RunOn::kCpu, and buffers.run_on() == RunOn::kCpu (debug assertions).
+// Requires: whole.run_on() == RunOn::kCpu, and buffers.run_on() == RunOn::kCpu (debug assertions: a processor is a
+//   precondition). A range outside the grid or a bad border list is data, so a status (kBadInput) below.
 //   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
 //   result, stacked or not). A smaller list does not fail the call: readers then answer none where the whole grid has
 //   neighbours, as at the edge of the grid.

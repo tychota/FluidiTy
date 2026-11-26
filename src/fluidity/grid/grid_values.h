@@ -139,10 +139,16 @@ class GridValues {
 // One value per cell place, meaningful where the cell is active (CellState::kActive).
 template <BufferValue Value>
 using CellValues = GridValues<Value, kCellPlacesPerBlock>;
-// One value per face place (FacePlaceIndex).
+// One value per face place (FacePlaceIndex), meaningful where a face piece is kept (the kind is not kNotAPiece).
 template <BufferValue Value>
 using FaceValues = GridValues<Value, kFacePlacesPerBlock>;
-// One value per corner place (CornerPlaceIndex).
+// One value per corner place (CornerPlaceIndex). A corner place holds a value when FindCornerPlaces returns it for an
+// active cell or a face piece: one place per corner, kept in the block that the corner rule names (cell_corners.h).
+// The other lattice points of a block hold no value, though the buffer has room for all 125 of them. A corner of a
+// cell of a range may be kept in a border block that holds no cell touching it, so a stage that fills corner values
+// from its cells and writes only places kept in its range never writes that corner: a value that is a function of
+// position can be written for all 125 places of each block of the range, from ComputeCornerPosition, so that every
+// place that stores a point holds the same value.
 template <BufferValue Value>
 using CornerValues = GridValues<Value, kCornerPlacesPerBlock>;
 // One value per cell block (CellBlockIndex).

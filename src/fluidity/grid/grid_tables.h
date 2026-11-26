@@ -36,6 +36,14 @@
 //   product; s^2 needs at most 2 k bits, so it is exact when k <= 26. A centre distance adds two exact half widths
 //   once: h_l, exact, between cells of one size; 3/2 h_l beside a bigger cell, where 3 s needs k + 1 or k + 2 bits,
 //   so it is correctly rounded, and exact when k <= 51.
+//   Total readers and readers with preconditions. A total reader gives a defined answer for any index, kNoIndex and
+//   a place of no block included, and any id: FindSortedBlock (for a sorted list as its Requires says), FindCellBlock,
+//   FindCellPlace, FindFacePlace and ComputeIsActiveCellPlace. A reader with a precondition needs a place of a block
+//   below block_count, checked by a debug assertion only: ToSizeLevel, ToCellId, ToFacePieceId, FindCellLow,
+//   FindCellHigh, ComputeCellCenter, ComputeFacePosition, ComputeFaceArea and ComputeCellCenterDistance. The total
+//   searches (FindCellAt, FindCellLow, FindCellHigh, FindTouchingCells and the others of this folder) give kNoIndex
+//   at the edge of the grid, so the next call needs a check for kNoIndex first, as in
+//   `if (cell.value != kNoIndex) { ToCellId(tables, cell); }`.
 //
 // Words:
 //   active cell     a cell that exists and is not split; it carries values
@@ -175,6 +183,8 @@ FLUIDITY_CPU_AND_GPU constexpr double ComputeCellWidth(GridFrame frame, SizeLeve
 // Example: in the grid of the two-size example above, block 0 is of size level 0 and block 1 is of
 //   size level 1.
 // Requires: block < tables.block_count.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindCellBlock gives it for a block the grid lacks).
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr SizeLevel ToSizeLevel(const GridTables& tables, CellBlockIndex block) noexcept {
   assert(block.value < tables.block_count);
@@ -347,6 +357,8 @@ FindActiveCellHolding(const GridTables& tables, std::uint32_t block, BlockLocalC
 // Example: in a frame of origin (-2, 0.5, 8) and biggest cells 1 m wide, the size-level-1 place (3, 1, 0) has its
 //   centre at (-0.25, 1.25, 8.25).
 // Requires: `cell` is a place of block 0..tables.block_count - 1. Any state: the centre is the place's own.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindCellAt and FindCellPlace give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-sizes>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeCellCenter(const GridTables& tables, CellPlaceIndex cell) noexcept {
   const std::uint32_t block = ToCellBlockIndex(cell).value;
@@ -373,6 +385,8 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeCellCenter(const GridTables& tables, 
 // Example: in the two-size example above, each of the 4 face pieces of the big cell's +X side lies at x =
 //   1 m, with (y, z) one of (0.25, 0.25), (0.25, 0.75), (0.75, 0.25) and (0.75, 0.75) m.
 // Requires: `face` is a place of block 0..tables.block_count - 1. Any kind: the position is the place's own.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first.
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeFacePosition(const GridTables& tables, FacePlaceIndex face) noexcept {
   const CellBlockIndex block = ToCellBlockIndex(face);
@@ -397,6 +411,8 @@ FLUIDITY_CPU_AND_GPU constexpr Vec3 ComputeFacePosition(const GridTables& tables
 // Example: in the two-size example above, each face piece of the big cell's +X side is 0.25 m2; the big
 //   cell's other sides are 1 m2.
 // Requires: `face` is a place of block 0..tables.block_count - 1.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindFacePlace and FindNextFace give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr double ComputeFaceArea(const GridTables& tables, FacePlaceIndex face) noexcept {
   const CellBlockIndex block = ToCellBlockIndex(face);
@@ -415,6 +431,8 @@ FLUIDITY_CPU_AND_GPU constexpr double ComputeFaceArea(const GridTables& tables, 
 // Example: in the two-size example above, place 0 gives the size-level-0 cell {0,0,0}; place 64 + 2, local
 //   (2, 0, 0) of block 1, gives the size-level-1 cell {2,0,0}; place 64, inside the big cell, gives CellId{0}.
 // Requires: `cell` is a place of block 0..tables.block_count - 1.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindCellAt and FindCellHigh give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellId ToCellId(const GridTables& tables, CellPlaceIndex cell) noexcept {
   const std::uint32_t block = ToCellBlockIndex(cell).value;
@@ -442,6 +460,8 @@ FLUIDITY_CPU_AND_GPU constexpr CellId ToCellId(const GridTables& tables, CellPla
 // Example: in the two-size example above, X place 2 of block 1 gives ToFacePieceId(Axis::kX, SizeLevel{1},
 //   {2, 0, 0}); X place 1 of block 0, between the big cell and the split cell, gives FacePieceId{0}.
 // Requires: `face` is a place of block 0..tables.block_count - 1.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindFacePlace and FindNextFace give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr FacePieceId ToFacePieceId(const GridTables& tables, FacePlaceIndex face) noexcept {
   const CellBlockIndex block = ToCellBlockIndex(face);
@@ -462,6 +482,8 @@ FLUIDITY_CPU_AND_GPU constexpr FacePieceId ToFacePieceId(const GridTables& table
 // Example: in the two-size example above, each of the 4 face pieces of the big cell's +X side gives place
 //   0, the big cell, though the face pieces are kept at size level 1.
 // Requires: `face` is a place of block 0..tables.block_count - 1; every table of the grid is written.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindFacePlace and FindNextFace give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellLow(const GridTables& tables, FacePlaceIndex face) noexcept {
   assert(ToCellBlockIndex(face).value < tables.block_count);
@@ -488,6 +510,8 @@ FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellLow(const GridTables& tabl
 // Example: in the two-size example above, X place 2 + 5 of block 1, the face piece between the big cell
 //   and the small cell {2,1,0}, gives the place of that small cell, 64 + 4 + 2.
 // Requires: `face` is a place of block 0..tables.block_count - 1; every table of the grid is written.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindFacePlace and FindNextFace give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>, <sec-cell-blocks>
 FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellHigh(const GridTables& tables, FacePlaceIndex face) noexcept {
   assert(ToCellBlockIndex(face).value < tables.block_count);
@@ -514,6 +538,8 @@ FLUIDITY_CPU_AND_GPU constexpr CellPlaceIndex FindCellHigh(const GridTables& tab
 // Example: in the two-size example above, each face piece of the big cell's +X side is 0.5 + 0.25 = 0.75 m
 //   from the big cell's centre to the small cell's; a side of a lone cell 1 m wide gives 0.5 m.
 // Requires: `face` is a place of block 0..tables.block_count - 1; every table of the grid is written.
+//   kNoIndex, or an index of no block, breaks this; a debug assertion is the only check, and a release build or a GPU
+//   function reads beyond the tables. Check for kNoIndex first (FindFacePlace and FindNextFace give it).
 // Read: docs/method-paper/fluidity-method.typ <sec-face-pieces>
 FLUIDITY_CPU_AND_GPU constexpr double
 ComputeCellCenterDistance(const GridTables& tables, FacePlaceIndex face) noexcept {

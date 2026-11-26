@@ -7,11 +7,14 @@
 //   room for the cell blocks, a position outside the grid, or a fault in FluidiTy itself. Each way is a GridError.
 //   GridFailure holds the error, one number and up to two cell ids for the cases that need them. It is a plain struct
 //   that never allocates. Code shared with the GPU, such as the search for nearby faces, reports through a GridError,
-//   so this header may not include a host-only header. The text of each value is in grid/grid_error_message.h, which
+//   so this header may not include a host-only header. A value that is data, such as a range, a frame or a list, is
+//   reported as a status (kBadInput and the others). A condition only a bug in the caller breaks, such as a buffer on
+//   the wrong processor, is a precondition checked by assert; ReadGrid is the stated exception and reports a wrong
+//   processor as kBadInput in every build. The text of each value is in grid/grid_error_message.h, which
 //   only the CPU may include.
 //
 // Words:
-//   cell block  a fixed chunk of cells
+//   cell block  4 x 4 x 4 cells of one size level, the unit the grid's tables are kept in
 //   size step rule  neighbouring cells differ by at most one size level
 // Owns:    GridError, GridFailure
 // Uses:    CellId (grid/grid_ids.h)
