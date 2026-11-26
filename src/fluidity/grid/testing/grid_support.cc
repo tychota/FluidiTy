@@ -1315,7 +1315,12 @@ const RandomGridsWithCheckers& FindRandomGridsWithCheckers() {
     for (std::size_t grid = 0; grid < all_grids.size(); ++grid) {
       all_grids.at(grid) = grid;
     }
-    RandomGridsWithCheckers grids_with_checkers = {.grids = BuildReferenceGrids(all_grids), .checkers = {}};
+    RandomGridsWithCheckers grids_with_checkers = {
+        .grids = BuildReferenceGrids(all_grids),
+        .checkers = {},
+        .frames = {},
+        .cell_lists = {},
+    };
     const GridFrame frame = {
         .origin = {.x = 0, .y = 0, .z = 0},
         .biggest_cell_width = 1.0,
@@ -1324,6 +1329,206 @@ const RandomGridsWithCheckers& FindRandomGridsWithCheckers() {
     grids_with_checkers.checkers.reserve(kRandomGridCount);
     for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
       grids_with_checkers.checkers.emplace_back(frame, BuildShuffledRandomGrids().at(grid));
+      grids_with_checkers.frames.push_back(frame);
+      grids_with_checkers.cell_lists.push_back(BuildShuffledRandomGrids().at(grid));
+    }
+    return grids_with_checkers;
+  }();
+  return built;
+}
+
+namespace {
+
+// What makes one grid of the second set: the list of cells it is made from, its frame, and the move of its cells.
+struct FramedGridSpec {
+  std::uint64_t seed;  // Of BuildRandomGridCells; the shuffle uses seed + 1000.
+  int size_level_count;
+  int biggest_cells_per_axis;  // Of BuildRandomGridCells.
+  Vec3 origin;  // m.
+  double biggest_cell_width;  // m.
+  std::array<std::int32_t, 3> cell_move;  // Size-level-0 cells added to x, y and z; 2^l times that at size level l.
+};
+
+// The frames and moves of the second set. Origins and widths are no multiples of a power of two; moves go to negative
+// coordinates and to thousands of cells; the size level counts are 2 to 6. The largest coordinate at a size level
+// stays below kMaxCoord: 3,000 x 2^2 and 10,000 x 2^4 at the last size level of the grids that move that far.
+constexpr std::array<FramedGridSpec, kFramedRandomGridCount> kFramedGridSpecs = {
+    {
+        {
+            .seed = 101,
+            .size_level_count = 3,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = 0.3, .y = 0.1, .z = -0.7},
+            .biggest_cell_width = 0.7,
+            .cell_move = {0, 0, 0},
+        },
+        {
+            .seed = 102,
+            .size_level_count = 4,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = -5.3, .y = 2.1, .z = 7.9},
+            .biggest_cell_width = 1.3,
+            .cell_move = {-7, 3, -5},
+        },
+        {
+            .seed = 103,
+            .size_level_count = 5,
+            .biggest_cells_per_axis = 2,
+            .origin = {.x = -100.7, .y = 33.3, .z = -0.1},
+            .biggest_cell_width = 0.35,
+            .cell_move = {10000, -10000, 2500},
+        },
+        {
+            .seed = 104,
+            .size_level_count = 4,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = 1000.1, .y = -2000.3, .z = 12.7},
+            .biggest_cell_width = 3.0,
+            .cell_move = {100, -250, 31},
+        },
+        {
+            .seed = 105,
+            .size_level_count = 3,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = -0.1, .y = -0.1, .z = -0.1},
+            .biggest_cell_width = 0.1,
+            .cell_move = {-3, -3, -3},
+        },
+        {
+            .seed = 106,
+            .size_level_count = 5,
+            .biggest_cells_per_axis = 2,
+            .origin = {.x = 0.7, .y = -0.7, .z = 0.7},
+            .biggest_cell_width = 2.5,
+            .cell_move = {-1, -1, -1},
+        },
+        {
+            .seed = 107,
+            .size_level_count = 4,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = -3.3, .y = 4.4, .z = -5.5},
+            .biggest_cell_width = 0.9,
+            .cell_move = {-2, -2, -2},
+        },
+        {
+            .seed = 108,
+            .size_level_count = 3,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = 1234.567, .y = 0.5, .z = -0.25},
+            .biggest_cell_width = 1.1,
+            .cell_move = {3000, -3000, 2000},
+        },
+        {
+            .seed = 109,
+            .size_level_count = 2,
+            .biggest_cells_per_axis = 4,
+            .origin = {.x = -0.3, .y = -0.3, .z = 0.3},
+            .biggest_cell_width = 0.6,
+            .cell_move = {-2, -2, -2},
+        },
+        {
+            .seed = 110,
+            .size_level_count = 6,
+            .biggest_cells_per_axis = 2,
+            .origin = {.x = -7.1, .y = 3.3, .z = 5.9},
+            .biggest_cell_width = 0.45,
+            .cell_move = {-5, 17, -33},
+        },
+        {
+            .seed = 111,
+            .size_level_count = 4,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = 1000.3, .y = -1000.7, .z = 0.3},
+            .biggest_cell_width = 1.7,
+            .cell_move = {10, -20, 30},
+        },
+        {
+            .seed = 112,
+            .size_level_count = 3,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = 2.2, .y = 2.2, .z = 2.2},
+            .biggest_cell_width = 5.0,
+            .cell_move = {1, 1, 1},
+        },
+        {
+            .seed = 113,
+            .size_level_count = 5,
+            .biggest_cells_per_axis = 2,
+            .origin = {.x = -2.9, .y = 8.1, .z = -0.4},
+            .biggest_cell_width = 0.2,
+            .cell_move = {-100, 50, 25},
+        },
+        {
+            .seed = 114,
+            .size_level_count = 4,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = -0.7, .y = 0.7, .z = -0.7},
+            .biggest_cell_width = 1.9,
+            .cell_move = {0, -1, 2},
+        },
+        {
+            .seed = 115,
+            .size_level_count = 6,
+            .biggest_cells_per_axis = 2,
+            .origin = {.x = 0.9, .y = -0.9, .z = 0.9},
+            .biggest_cell_width = 0.3,
+            .cell_move = {-9, -9, -9},
+        },
+        {
+            .seed = 116,
+            .size_level_count = 4,
+            .biggest_cells_per_axis = 3,
+            .origin = {.x = -9.9, .y = 9.9, .z = -9.9},
+            .biggest_cell_width = 0.3,
+            .cell_move = {-9, -9, -9},
+        },
+    },
+};
+
+// The random list of `spec`, each cell moved by the spec's cells at its own size level, then shuffled.
+std::vector<CellId> BuildFramedGridCells(const FramedGridSpec& spec) {
+  std::vector<CellId> cells = BuildRandomGridCells(spec.seed, spec.size_level_count, spec.biggest_cells_per_axis);
+  for (CellId& cell : cells) {
+    const SizeLevel size_level = ToSizeLevel(cell);
+    const CellCoord cell_coord = ToCellCoord(cell);
+    const auto cells_per_biggest_cell =
+        static_cast<std::int32_t>(std::uint32_t{1} << static_cast<unsigned>(size_level));
+    cell = ToCellId(
+        size_level,
+        {
+            .x = cell_coord.x + (spec.cell_move[0] * cells_per_biggest_cell),
+            .y = cell_coord.y + (spec.cell_move[1] * cells_per_biggest_cell),
+            .z = cell_coord.z + (spec.cell_move[2] * cells_per_biggest_cell),
+        }
+    );
+  }
+  ApplyFixedShuffle(cells, spec.seed + 1000);
+  return cells;
+}
+
+}  // namespace
+
+const RandomGridsWithCheckers& FindFramedRandomGridsWithCheckers() {
+  static const RandomGridsWithCheckers built = [] {
+    RandomGridsWithCheckers grids_with_checkers = {.grids = {}, .checkers = {}, .frames = {}, .cell_lists = {}};
+    for (const FramedGridSpec& spec : kFramedGridSpecs) {
+      const GridFrame frame = {
+          .origin = spec.origin,
+          .biggest_cell_width = spec.biggest_cell_width,
+          .size_level_count = static_cast<std::uint8_t>(spec.size_level_count),
+      };
+      std::vector<CellId> cells = BuildFramedGridCells(spec);
+      const GridInputs inputs = {.frame = frame, .active_cells = cells, .version = {.value = 1}};
+      std::expected<TestGrid, GridFailure> framed_grid =
+          BuildTestGrid(inputs, {.max_cell_blocks = kMaxFramedGridCellBlocks});
+      EXPECT_TRUE(framed_grid.has_value()) << "framed random grid, seed " << spec.seed;
+      if (!framed_grid.has_value()) {
+        continue;
+      }
+      grids_with_checkers.grids.push_back(std::move(*framed_grid));
+      grids_with_checkers.checkers.emplace_back(frame, cells);
+      grids_with_checkers.frames.push_back(frame);
+      grids_with_checkers.cell_lists.push_back(std::move(cells));
     }
     return grids_with_checkers;
   }();

@@ -111,6 +111,18 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  stacked_borders_in_framed_grid_pieces_functional_test
+  SOURCES
+  stacked_borders_in_framed_grid_pieces.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   sloped_surface_scene_on_gpu_functional_test
   SOURCES
   sloped_surface_scene.gpu.test.cc

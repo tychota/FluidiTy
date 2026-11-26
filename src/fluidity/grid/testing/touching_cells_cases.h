@@ -20,12 +20,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <span>
@@ -101,6 +103,7 @@ ToAscendingFacePlaces(const GridTables& tables, const std::vector<FacePieceId>& 
 struct CellSurfaceSums {
   std::array<double, 6> side_areas{};  // m2.
   std::array<double, 3> area_vector{};  // m2, indexed by axis (x, y, z).
+  std::array<double, 3> absolute_area_sums{};  // m2, indexed by axis: the sum of the face areas, all counted positive.
   int foreign_face_count = 0;
 };
 
@@ -120,8 +123,24 @@ ComputeCellSurfaceSums(const GridTables& tables, CellPlaceIndex cell, const Cell
     }
     sums.side_areas.at((2 * axis) + (is_on_high_side ? 1 : 0)) += face_area;
     sums.area_vector.at(axis) += is_on_high_side ? face_area : -face_area;
+    sums.absolute_area_sums.at(axis) += face_area;
   }
   return sums;
+}
+
+// The largest over the three axes of |sum of the signed areas| / (eps * sum of the absolute areas) of a cell's face
+// pieces; 0 when an axis has no face piece.
+inline double ComputeAreaSumRoundingRatio(const CellSurfaceSums& sums) {
+  double largest_ratio = 0.0;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const double absolute_area_sum = sums.absolute_area_sums.at(axis);
+    if (absolute_area_sum > 0.0) {
+      const double sum_ratio =
+          std::abs(sums.area_vector.at(axis)) / (std::numeric_limits<double>::epsilon() * absolute_area_sum);
+      largest_ratio = std::max(largest_ratio, sum_ratio);
+    }
+  }
+  return largest_ratio;
 }
 
 // What one grid's active cells got wrong, property by property: a count of cells each.
@@ -134,14 +153,51 @@ struct ActiveCellReaderMistakes {
   std::size_t face_pieces_out_of_order = 0;
   std::size_t face_entries_past_count_not_no_index = 0;
   std::size_t sides_not_covered_once = 0;  // A side whose face piece areas do not sum to the cell's face area.
-  std::size_t surfaces_not_closed = 0;  // Signed areas that do not sum to {0, 0, 0}, or a face of another cell.
+  std::size_t surfaces_not_closed = 0;  // Signed areas that do not sum to exactly {0, 0, 0}, or a face of another cell.
+  // Signed areas whose sum on an axis is above kClosedSurfaceRoundingFactor * eps * (sum of the absolute areas), or a
+  // face of another cell.
+  std::size_t surfaces_beyond_rounding_bound = 0;
 };
+
+// The signed face areas around a cell are added in list order. When the frame's width is no power of two, the areas
+// of faces of different sizes are rounded products of widths, so their sum is zero only up to rounding. Each area
+// carries a relative error of at most eps and each addition adds at most eps of the running sum, which is at most
+// the sum of the absolute areas. The sum is held to 4 * eps * (sum of the absolute areas), per axis. Where the frame
+// is a power of two every area is exact and the sum is exactly zero, which the tests of those grids demand.
+inline constexpr double kClosedSurfaceRoundingFactor = 4.0;
 
 // The largest lists the grids gave, to show that bigger and smaller cells were met.
 struct LargestCounts {
   int touching_cells = 0;
   int face_pieces = 0;
+  // The largest |sum of the signed areas on an axis| / (eps * sum of the absolute areas on that axis) met. The
+  // bound is kClosedSurfaceRoundingFactor.
+  double area_sum_rounding_ratio = 0.0;
 };
+
+// Counts into `mistakes` whether the six sides of a cell are each covered once by its face pieces and whether its
+// surface is closed, exactly and up to rounding, and keeps the largest rounding ratio in `largest_counts`.
+inline void ApplySurfaceMistakes(
+    const CellSurfaceSums& sums,
+    double cell_width,
+    ActiveCellReaderMistakes& mistakes,
+    LargestCounts& largest_counts
+) {
+  const double cell_face_area = cell_width * cell_width;
+  const bool is_every_side_covered = std::ranges::all_of(sums.side_areas, [cell_face_area](double side_area) {
+    return side_area == cell_face_area;
+  });
+  mistakes.sides_not_covered_once += is_every_side_covered ? 0 : 1;
+  const bool is_closed = sums.foreign_face_count == 0 && std::ranges::all_of(sums.area_vector, [](double area_sum) {
+                           return area_sum == 0.0;
+                         });
+  mistakes.surfaces_not_closed += is_closed ? 0 : 1;
+  const double cell_rounding_ratio = ComputeAreaSumRoundingRatio(sums);
+  largest_counts.area_sum_rounding_ratio = std::max(largest_counts.area_sum_rounding_ratio, cell_rounding_ratio);
+  const bool is_within_rounding_bound =
+      sums.foreign_face_count == 0 && cell_rounding_ratio <= kClosedSurfaceRoundingFactor;
+  mistakes.surfaces_beyond_rounding_bound += is_within_rounding_bound ? 0 : 1;
+}
 
 // Checks FindTouchingCells and FindFacePieces at every active cell of one grid against the checker.
 inline ActiveCellReaderMistakes FindActiveCellReaderMistakes(
@@ -183,16 +239,7 @@ inline ActiveCellReaderMistakes FindActiveCellReaderMistakes(
     largest_counts.face_pieces = std::max(largest_counts.face_pieces, face_pieces.count);
     // The six sides and the closed surface.
     const CellSurfaceSums sums = ComputeCellSurfaceSums(tables, cell, face_pieces);
-    const double cell_width = ComputeCellWidth(tables.frame, ToSizeLevel(cell_id));
-    const double cell_face_area = cell_width * cell_width;
-    const bool is_every_side_covered = std::ranges::all_of(sums.side_areas, [cell_face_area](double side_area) {
-      return side_area == cell_face_area;
-    });
-    mistakes.sides_not_covered_once += is_every_side_covered ? 0 : 1;
-    const bool is_closed = sums.foreign_face_count == 0 && std::ranges::all_of(sums.area_vector, [](double area_sum) {
-                             return area_sum == 0.0;
-                           });
-    mistakes.surfaces_not_closed += is_closed ? 0 : 1;
+    ApplySurfaceMistakes(sums, ComputeCellWidth(tables.frame, ToSizeLevel(cell_id)), mistakes, largest_counts);
   }
   return mistakes;
 }

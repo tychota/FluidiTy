@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -120,6 +122,48 @@ Vec3 ComputeCellPoint(const GridTables& tables, CellPlaceIndex cell, std::array<
   };
 }
 
+// The most spacings of doubles at the size of the terms of a corner that its position may be stepped up.
+constexpr double kMostSpacingsUp = 4.0;
+
+// A position of a cell that FindCellAt on the whole grid assigns to that cell: ComputeCellPoint, with a coordinate
+// stepped up by std::nextafter until the grid's own rule gives it to the cell.
+//
+// A cell owns the positions FindCellAt gives it, decided in the grid's own arithmetic, f = floor((x - origin) /
+// width) (<sec-cell-sizes>). The low corner origin + c width is a product and a sum that round, and in a frame that
+// is no power of two the rounded corner may be assigned to the cell before. Its error is a few spacings of doubles at
+// M, the larger of |origin| and |c width| on that axis, however small the corner is: a corner of about 0.0125 formed
+// from terms near 0.7 is off by about 1e-16, which is 16 to 17 doubles at 0.0125 but under one spacing at 0.7. So
+// the limit is a distance: the position lies at most kMostSpacingsUp * spacing(M) above the computed corner, else the
+// test fails. Each axis is tried with the two other coordinates at the centre of the cell, which are far from any
+// side, so the axes do not disturb one another.
+Vec3 FindPointAssignedToCell(const GridTables& whole, CellPlaceIndex cell, std::array<double, 3> width_fractions) {
+  const Vec3 point = ComputeCellPoint(whole, cell, width_fractions);
+  const Vec3 center = ComputeCellCenter(whole, cell);
+  const std::array<double, 3> origin = {whole.frame.origin.x, whole.frame.origin.y, whole.frame.origin.z};
+  const std::array<double, 3> computed = {point.x, point.y, point.z};
+  std::array<double, 3> coordinates = computed;
+  constexpr double kInfinity = std::numeric_limits<double>::infinity();
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    std::array<double, 3> probe = {center.x, center.y, center.z};
+    const double term_size = std::max(std::abs(origin.at(axis)), std::abs(computed.at(axis) - origin.at(axis)));
+    const double most_distance_up = kMostSpacingsUp * (std::nextafter(term_size, kInfinity) - term_size);
+    for (;;) {
+      probe.at(axis) = coordinates.at(axis);
+      const bool is_assigned =
+          FindCellAt(whole, {.x = probe.at(0), .y = probe.at(1), .z = probe.at(2)}).value == cell.value;
+      const double next_coordinate = std::nextafter(coordinates.at(axis), kInfinity);
+      if (is_assigned || next_coordinate - computed.at(axis) > most_distance_up) {
+        break;
+      }
+      coordinates.at(axis) = next_coordinate;
+    }
+    EXPECT_LE(coordinates.at(axis) - computed.at(axis), most_distance_up) << "axis " << axis;
+  }
+  const Vec3 assigned = {.x = coordinates.at(0), .y = coordinates.at(1), .z = coordinates.at(2)};
+  EXPECT_EQ(FindCellAt(whole, assigned).value, cell.value) << "cell at whole place " << cell.value;
+  return assigned;
+}
+
 // Compares FindTouchingCells, FindFacePieces of the cell and of each touching cell, FindCornerPlaces and
 // FindCellsAroundEdge from the active cell at whole place `cell`.
 std::optional<std::string> FindCellListDifference(const TablesPair& pair, CellPlaceIndex cell) {
@@ -209,12 +253,13 @@ Axis ToAskedAxis(CellPlaceIndex cell, int position_number) {
   return static_cast<Axis>((cell.value + static_cast<std::uint32_t>(position_number)) % 3);
 }
 
-// Compares FindNearbyFaces at 2 positions of the half-open box of the active cell at whole place `cell`, one axis each.
+// Compares FindNearbyFaces at 2 positions of the active cell at whole place `cell`, one axis each: its low corner, or
+// the next doubles up where FindCellAt gives the computed corner to another cell, and a position inside it.
 std::optional<std::string> FindCellNearbyFacesDifference(const TablesPair& pair, CellPlaceIndex cell) {
   constexpr std::array<std::array<double, 3>, 2> kPositionFractions = {{{0.0, 0.0, 0.0}, {0.8, 0.3, 0.9}}};
   for (int position_number = 0; position_number < 2; ++position_number) {
     const Vec3 position =
-        ComputeCellPoint(pair.whole, cell, kPositionFractions.at(static_cast<std::size_t>(position_number)));
+        FindPointAssignedToCell(pair.whole, cell, kPositionFractions.at(static_cast<std::size_t>(position_number)));
     const Axis axis = ToAskedAxis(cell, position_number);
     const NearbyFacesAnswer whole_answer = FindNearbyFacesAnswer(pair.whole, nullptr, position, axis);
     const NearbyFacesAnswer piece_answer = FindNearbyFacesAnswer(pair.piece_tables, &pair.piece, position, axis);
@@ -313,7 +358,7 @@ std::vector<TransferParticle> BuildTransferParticles(const GridTables& whole, Ce
   std::vector<TransferParticle> particles;
   for (const std::array<double, 3>& fractions : kTransferFractions) {
     TransferParticle particle;
-    particle.position = ComputeCellPoint(whole, cell, fractions);
+    particle.position = FindPointAssignedToCell(whole, cell, fractions);
     for (const Axis axis : {Axis::kX, Axis::kY, Axis::kZ}) {
       GridError error = GridError::kNone;
       const NearbyFaceList list = FindNearbyFaces(whole, particle.position, axis, CellBlockIndex{kNoIndex}, &error);

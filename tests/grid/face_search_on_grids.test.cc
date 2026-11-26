@@ -628,12 +628,12 @@ constexpr std::size_t kEveryFacePieceGridCount = 25;
 // grid, keeping 3, 5 or 8 tenths of its blocks and the chosen face pieces' blocks, the search from each chosen face
 // piece gives the whole grid's walk restricted to the kept blocks, and FindCellsNearFace stays within its bound. One
 // TEST checks all of these, because each TEST runs in a process of its own and would build the 200 grids again.
-TEST(GridTables, RandomGrids_FaceReadersMatchGeometricChecker) {
-  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-  ASSERT_EQ(built.grids.size(), kRandomGridCount);
+FaceReaderCases CheckFaceReadersMatchGeometricChecker(
+    const RandomGridsWithCheckers& built,
+    const std::vector<std::size_t>& every_piece_grids
+) {
   FaceReaderCases cases_met;
-  const std::vector<std::size_t> every_piece_grids = FindRandomGridsSpreadBySize(kEveryFacePieceGridCount);
-  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+  for (std::size_t grid = 0; grid < built.grids.size(); ++grid) {
     SCOPED_TRACE(testing::Message() << "random grid " << grid);
     const FacePiecesChecked face_pieces_checked =
         std::ranges::contains(every_piece_grids, grid) ? FacePiecesChecked::kEvery : FacePiecesChecked::kChosen;
@@ -668,10 +668,29 @@ TEST(GridTables, RandomGrids_FaceReadersMatchGeometricChecker) {
         mistakes.grid_piece_cells_near_face_past_the_bound
     );
   }
+  return cases_met;
+}
+
+TEST(GridTables, RandomGrids_FaceReadersMatchGeometricChecker) {
+  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
+  ASSERT_EQ(built.grids.size(), kRandomGridCount);
+  const FaceReaderCases cases_met =
+      CheckFaceReadersMatchGeometricChecker(built, FindRandomGridsSpreadBySize(kEveryFacePieceGridCount));
   RecordProperty("largest_cells_near_face_in_random_grids", cases_met.largest_cells_near_face);
   EXPECT_LE(cases_met.largest_cells_near_face, kMaxCellsNearFace);
   EXPECT_GT(cases_met.faces_behind_absent_neighbours, 0U);
   EXPECT_GT(cases_met.faces_two_size_levels_away, 0U);
+  EXPECT_GT(cases_met.grid_piece_walks, 0U);
+}
+
+// The same on the framed random grids, with a chosen set of face pieces in each (the face pieces of the 200 random
+// grids' size order do not apply): the face search and FindCellsNearFace in frames of other origins and widths.
+TEST(GridTables, FramedRandomGrids_FaceReadersMatchGeometricChecker) {
+  const RandomGridsWithCheckers& built = FindFramedRandomGridsWithCheckers();
+  ASSERT_EQ(built.grids.size(), kFramedRandomGridCount);
+  const FaceReaderCases cases_met = CheckFaceReadersMatchGeometricChecker(built, {});
+  EXPECT_LE(cases_met.largest_cells_near_face, kMaxCellsNearFace);
+  EXPECT_GT(cases_met.faces_behind_absent_neighbours, 0U);
   EXPECT_GT(cases_met.grid_piece_walks, 0U);
 }
 

@@ -33,7 +33,8 @@
 //          BuildShuffledRandomGrids, BuildSizeStepClosure, UnitBox, ToUnitBox, GeometricFacePiece, GeometricGrid,
 //          TestGrid, BuildTestGrid, TakeEmptyGridBuffers, kRandomGridSizeLevelCount, kMaxRandomGridCellBlocks,
 //          ToGridCountFields, ComputeIsSameUsedTables, ComputeIsSameGrid, FindRandomGridsSpreadBySize,
-//          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers,
+//          BuildReferenceGrids, RandomGridsWithCheckers, FindRandomGridsWithCheckers, kFramedRandomGridCount,
+//          kMaxFramedGridCellBlocks, FindFramedRandomGridsWithCheckers,
 //          kMutatedGridCount, BuildMutatedGridCells,
 //          BuildLargeBoxOfCells, BuildSizeStepBreakWithSiblings, BuildLoneCellsAlongX, BuildSmallCellsOfEightBigCells,
 //          BuildTwoSizeFixtureCells, ComputeHasNoIndexPastCount, GeometricReadBlocks, BuildGeometricReadBlocks,
@@ -444,10 +445,14 @@ std::vector<std::size_t> FindRandomGridsSpreadBySize(std::size_t count);
 // grid that fails to build fails the calling test and is left out.
 std::vector<TestGrid> BuildReferenceGrids(const std::vector<std::size_t>& grids);
 
-// The kRandomGridCount random grids, built as BuildReferenceGrids builds them, and the checker of each, in entry order.
+// A set of random grids, built as BuildReferenceGrids builds them, with the checker of each, the frame each is built in
+// and the list of cells each is built from, in entry order. FindRandomGridsWithCheckers gives the kRandomGridCount
+// grids of one frame; FindFramedRandomGridsWithCheckers gives grids of other frames.
 struct RandomGridsWithCheckers {
   std::vector<TestGrid> grids;
-  std::vector<GeometricGrid> checkers;  // In the random grids' frame: origin 0, biggest cells 1 m wide, 4 size levels.
+  std::vector<GeometricGrid> checkers;
+  std::vector<GridFrame> frames;
+  std::vector<std::vector<CellId>> cell_lists;  // In no particular order, as the grid was built from them.
 };
 
 // Finds the random grids and their checkers, built on the first call and kept for the test program.
@@ -458,6 +463,23 @@ struct RandomGridsWithCheckers {
 // Example: entry 0 holds the grid and the checker of BuildShuffledRandomGrids().at(0). A grid that fails to build
 //   fails the calling test and is left out, so a caller checks that kRandomGridCount grids are there.
 const RandomGridsWithCheckers& FindRandomGridsWithCheckers();
+
+// The number of grids FindFramedRandomGridsWithCheckers holds, and the room of each.
+inline constexpr std::size_t kFramedRandomGridCount = 16;
+inline constexpr std::uint32_t kMaxFramedGridCellBlocks = 6000;
+
+// Finds the second set of random grids: kFramedRandomGridCount grids, built and kept as FindRandomGridsWithCheckers
+// does, each in a frame of its own and from a random list moved away from the origin.
+//
+// Method: the frames have origins that are no multiple of a power of two (0.3, -5.3, 2.2 and so on, some negative on
+//   every axis), widths of the biggest cells that are no power of two (0.7, 1.3, 0.35, 3, 0.1), and 2 to 6 size levels.
+//   The list of entry i is BuildRandomGridCells for a seed of 101 + i, with each cell moved by a whole number of
+//   biggest cells on each axis, some by thousands and some to negative cell coordinates, then shuffled with
+//   ApplyFixedShuffle. The move keeps the list valid: a cell of size level l moves by a multiple of 2^l of its own
+//   cell coordinates, so siblings stay aligned. The first 200 random grids stay as they are; tests pin numbers on them.
+// Example: entry 1 is a grid of 4 size levels with origin {-5.3, 2.1, 7.9} and biggest cells 1.3 m wide, whose
+//   cells start at the size-level-0 coordinate {-7, 3, -5}.
+const RandomGridsWithCheckers& FindFramedRandomGridsWithCheckers();
 
 // Says whether every entry from `count` on is kNoIndex: the bytes past the list are fixed.
 template <typename PlaceArray>

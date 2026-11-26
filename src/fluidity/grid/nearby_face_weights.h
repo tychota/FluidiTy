@@ -644,6 +644,10 @@ FLUIDITY_CPU_AND_GPU inline CholeskyInverse ComputeCholeskyInverse(Mat3 matrix) 
 //   about 4e-12, S_yy and S_zz are 0.25 and the floor is 5e-13: the fit is kFull with a condition number near 6e10. For
 //   the field 1 + b . (x_f - x_p) the matrix row fitted from the values is off by 8e-6 in length (1e-16 x
 //   6e10 x 1 / 1 m, measured); fitted from the values minus their weighted mean it is right to 5e-16.
+//   Far from the origin. Every offset is a difference of absolute positions, each stored as a double, so its absolute
+//   error grows as eps times the distance from the frame's origin of coordinates (about 2 eps |coordinate|). The fit
+//   magnifies that by the condition number. At 1,300 m with cells of 3 m, a fitted value was off by 4e-12; a scene
+//   far from the origin loses that many digits, and a caller who needs them puts the frame's origin near the scene.
 // Units: position in m, world; the sums, the mean offset and the matrices as in NearbyFaceWeights.
 // Order: list order; the three passes (sums, mean, spread) each visit the kept faces in ascending list position.
 // Example: the complete case of the file header: W = 1, mean_offset = 0 and weighted_spread = h^2 / 4 times the

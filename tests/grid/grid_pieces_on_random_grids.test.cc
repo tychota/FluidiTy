@@ -28,6 +28,7 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
 #include "fluidity/grid/staggered_grid.h"
+#include "fluidity/grid/testing/border_block_cases.h"
 #include "fluidity/grid/testing/cell_block_range_cases.h"
 #include "fluidity/grid/testing/grid_piece_cases.h"
 #include "fluidity/grid/testing/grid_piece_support.h"

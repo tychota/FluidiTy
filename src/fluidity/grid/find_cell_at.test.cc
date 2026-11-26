@@ -68,6 +68,32 @@ TEST(FindCellAt, OnHighSide_BelongsToNext) {
   EXPECT_EQ(FindCellIdAt(tables, {.x = 1.5, .y = 0.25, .z = 0.25}).value, ToCell(1, 3, 0, 0).value);
 }
 
+// In a frame that is no power of two the computed low corner of a cell, origin + c width, rounds, and the grid's own
+// rule f = floor((x - origin) / width) may give that point to the cell before. A position belongs to the cell that
+// FindCellAt returns. Origin 0.3 m on x, width 0.7 m: for the cell at coordinate 2 the corner computed as the centre
+// minus half a width is just below the side, so it is in the cell at coordinate 1; the next double up is in cell 2.
+TEST(FindCellAt, ComputedLowCornerInFrameOfNoPowerOfTwo_BelongsToTheCellBefore) {
+  const GridFrame frame = {
+      .origin = {.x = 0.3, .y = 0.1, .z = -0.7},
+      .biggest_cell_width = 0.7,
+      .size_level_count = 1,
+  };
+  const std::vector<CellId> cells = {ToCell(0, 1, 0, 0), ToCell(0, 2, 0, 0)};
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(frame, cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
+  const CellPlaceIndex cell_place = FindCellPlace(tables, ToCell(0, 2, 0, 0));
+  ASSERT_NE(cell_place.value, kNoIndex);
+  const Vec3 center = ComputeCellCenter(tables, cell_place);
+  const double low_corner_x = center.x - (0.5 * frame.biggest_cell_width);
+  const double next_double_up_x = std::nextafter(low_corner_x, std::numeric_limits<double>::infinity());
+  EXPECT_EQ(FindCellIdAt(tables, {.x = low_corner_x, .y = center.y, .z = center.z}).value, ToCell(0, 1, 0, 0).value);
+  EXPECT_EQ(
+      FindCellIdAt(tables, {.x = next_double_up_x, .y = center.y, .z = center.z}).value,
+      ToCell(0, 2, 0, 0).value
+  );
+}
+
 // Below the big cell and above the small cells no cell exists.
 TEST(FindCellAt, OutsideEveryCell_IsNoIndex) {
   const std::vector<CellId> cells = BuildTwoSizeFixtureCells();

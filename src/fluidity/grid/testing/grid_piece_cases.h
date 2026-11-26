@@ -12,7 +12,7 @@
 //   stacked border  the layers of the borders of several stages, merged: the border of the last stage, then of the
 //                   stage before around range plus that border, and so on
 // Owns:    kEqualityGridCount, kReaderGridCount, kRangeBlocks, kNestedBallRangeBlocks, GridUnderTest,
-//          FindNestedBallGrid, RangeChoice, BuildGridsUnderTest, BuildMergedBlocks, StackedBorder, FindStackedBorder
+//          FindNestedBallGrid, RangeChoice, BuildGridsUnderTest, StackedBorder, FindStackedBorder
 // Uses:    CPU-only guard (base/cpu_only.h), StaggeredGrid (grid/staggered_grid.h), CellBlockIndex, CellBlockRange
 //          (grid/grid_ids.h), BorderWidth (grid/border_block_steps.h), BuildRanges, ToRangeBlocks
 //          (grid/cell_block_range.h and grid/testing/cell_block_range_cases.h), FindBorderOrFail
@@ -102,14 +102,6 @@ inline std::vector<GridUnderTest> BuildGridsUnderTest(std::size_t random_count, 
   const StaggeredGrid& ball = FindNestedBallGrid().grid;
   grids.push_back({.grid = &ball, .ranges = find_ranges(ball, kNestedBallRangeBlocks), .name = "nested-ball grid"});
   return grids;
-}
-
-// The blocks of two ascending lists that share no block, in ascending order.
-inline std::vector<CellBlockIndex>
-BuildMergedBlocks(std::span<const CellBlockIndex> first, std::span<const CellBlockIndex> second) {
-  std::vector<CellBlockIndex> merged;
-  std::ranges::merge(first, second, std::back_inserter(merged), {}, &CellBlockIndex::value, &CellBlockIndex::value);
-  return merged;
 }
 
 // A range and the two layers of its stacked border: the layer at kTouchingCells around the range, then the layer at

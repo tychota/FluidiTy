@@ -5,9 +5,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <expected>
 #include <limits>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "fluidity/base/axis.h"
@@ -55,13 +57,12 @@ FindRandomWeights(const GridTables& tables, const PlacedPosition& placed, Axis a
   return {.weights = weights, .has_weight = weights.fit != NearbyFaceFit::kNone};
 }
 
-// Calls `check` for each of the 3 axes at each of `positions_per_grid` positions of each of the 200 random grids, with
+// Calls `check` for each of the 3 axes at each of `positions_per_grid` positions of each grid of `random_grids`, with
 // a random mask, when some kept face has weight. Gives how many positions were checked.
 template <typename Check>
-int ApplyToRandomWeights(int positions_per_grid, Check check) {
-  const RandomGridsWithCheckers& random_grids = FindRandomGridsWithCheckers();
-  const std::vector<std::vector<CellId>>& cell_lists = BuildShuffledRandomGrids();
-  EXPECT_EQ(random_grids.grids.size(), kRandomGridCount);
+int ApplyToWeightsOfGrids(const RandomGridsWithCheckers& random_grids, int positions_per_grid, Check check) {
+  const std::vector<std::vector<CellId>>& cell_lists = random_grids.cell_lists;
+  EXPECT_EQ(random_grids.grids.size(), cell_lists.size());
   int checked_count = 0;
   for (std::size_t grid_entry = 0; grid_entry < random_grids.grids.size(); ++grid_entry) {
     const GridTables tables = random_grids.grids[grid_entry].grid.tables(RunOn::kCpu);
@@ -82,6 +83,21 @@ int ApplyToRandomWeights(int positions_per_grid, Check check) {
   return checked_count;
 }
 
+// The same on each of the 200 random grids.
+template <typename Check>
+int ApplyToRandomWeights(int positions_per_grid, Check check) {
+  EXPECT_EQ(FindRandomGridsWithCheckers().grids.size(), kRandomGridCount);
+  return ApplyToWeightsOfGrids(FindRandomGridsWithCheckers(), positions_per_grid, check);
+}
+
+// The same on each of the framed random grids, whose frames have a non-dyadic origin and a width that is no power of
+// two, and whose cells lie at negative and distant coordinates.
+template <typename Check>
+int ApplyToFramedRandomWeights(int positions_per_grid, Check check) {
+  EXPECT_EQ(FindFramedRandomGridsWithCheckers().grids.size(), kFramedRandomGridCount);
+  return ApplyToWeightsOfGrids(FindFramedRandomGridsWithCheckers(), positions_per_grid, check);
+}
+
 // The 200 random grids, 50 positions, random masks with at least one kept face of weight: the kept weights are never
 // negative, add up to 1 within 1e-14, and their changes add up to 0 within 1e-13 / h.
 TEST(ComputeNearbyFaceWeights, AnyKeptSet_WeightsSumToOne) {
@@ -92,27 +108,65 @@ TEST(ComputeNearbyFaceWeights, AnyKeptSet_WeightsSumToOne) {
   EXPECT_GT(checked_count, 20000);
 }
 
+// The framed random grids, 300 positions each: the same properties.
+TEST(ComputeNearbyFaceWeights, FramedRandomGridsAnyKeptSet_WeightsSumToOne) {
+  const int checked_count =
+      ApplyToFramedRandomWeights(300, [](const GridTables& tables, const NearbyFaceWeights& weights) {
+        CheckWeightsAddUp(tables, weights);
+      });
+  RecordProperty("checked_lists", checked_count);
+  EXPECT_GT(checked_count, 5000);
+}
+
+// The largest errors CheckLinearFieldIsReproduced met, each with the ratio to its bound (1 or less passes).
+struct LinearFieldMeasurements {
+  double largest_value_error = 0.0;
+  double largest_value_error_over_bound = 0.0;
+  double largest_matrix_row_error = 0.0;
+  double largest_matrix_row_error_over_bound = 0.0;
+};
+
 // Checks that a full fit reproduces the paper's linear field a + b . (x_f - x_p): the value at the particle, and the
-// matrix row fitted from the values.
+// matrix row fitted from the values. Records the largest errors in `measurements`.
 //
-// A fit with a nearly flat spread (a condition number of 1e6, say) is still kFull, and rounding in the moment is
-// magnified by that number in the inverse: the matrix row is off by about eps cond |value| / h, and the value at the
-// particle by eps cond |value|, as the documentation of ComputeNearbyFaceWeights says. The condition number is at most
-// trace(S) trace(S^-1), and the extra tolerance is 16 rounding steps of it, so a wrong fit, which is wrong by O(1),
-// still fails. The field is centred on the position, so its values stay at its base value a plus b h and do not grow
-// with the distance of the grid from the origin.
-void CheckLinearFieldIsReproduced(const GridTables& tables, const NearbyFaceWeights& weights) {
+// Two rounding sources, each with its own tolerance term.
+//
+// Rounding in the moment. A fit with a nearly flat spread (a condition number of 1e6, say) is still kFull, and
+// rounding in the moment is magnified by that number in the inverse: the matrix row is off by about eps cond |value| /
+// h, and the value at the particle by eps cond |value|, as the documentation of ComputeNearbyFaceWeights says. The
+// condition number is at most trace(S) trace(S^-1), and the term is 16 rounding steps of it, so a wrong fit, which is
+// wrong by O(1), still fails.
+//
+// Rounding of the positions. An offset is the difference of two absolute positions, each stored as a double of size
+// up to M = the largest |coordinate| among the particle and its faces, so each is exact only to eps M / 2 and an
+// offset carries an absolute error of at most 2 eps M. An offset error d changes the field value a + b . offset by at
+// most |b| d, a value error of |b| 2 eps M. The fit magnifies an error in its offsets by the condition number cond =
+// trace(S) trace(S^-1), as it does a rounding in the moment, so the value at the particle is off by up to cond |b| 2
+// eps M, and, as the row is a change per length, the row by up to cond |b| 2 eps M / h. A grid 1,300 m from the origin
+// with 3 m cells has 2 eps M = 5.8e-13 m. The field is centred on the position, so its values stay at a plus b h and
+// do not grow with the distance of the grid from the origin; only the offsets do.
+void CheckLinearFieldIsReproduced(
+    const GridTables& tables,
+    const NearbyFaceWeights& weights,
+    LinearFieldMeasurements& measurements
+) {
   constexpr LinearField kField = {.base_value = 0.7, .slope = {.x = 0.3, .y = -1.1, .z = 2.0}};
+  constexpr double kEpsilon = std::numeric_limits<double>::epsilon();
   if (weights.fit != NearbyFaceFit::kFull) {
     return;
   }
   double weighted_value_sum = 0.0;
   double largest_value = 0.0;
+  double largest_coordinate =
+      std::max({std::abs(weights.position.x), std::abs(weights.position.y), std::abs(weights.position.z)});
   for (int position_in_list = 0; position_in_list < weights.list.count; ++position_in_list) {
     if (!ComputeIsKept(weights.kept, position_in_list)) {
       continue;
     }
     const FaceWeight face_weight = ComputeFaceWeight(tables, weights, position_in_list);
+    const Vec3 face_position = ComputeFacePosition(tables, face_weight.face);
+    largest_coordinate =
+        std::max({largest_coordinate, std::abs(face_position.x), std::abs(face_position.y), std::abs(face_position.z)});
     const double value = ComputeLinearValue(kField, face_weight.offset);
     largest_value = std::max(largest_value, std::abs(value));
     weighted_value_sum += face_weight.weight * value;
@@ -123,21 +177,73 @@ void CheckLinearFieldIsReproduced(const GridTables& tables, const NearbyFaceWeig
   const double spread_trace = weights.weighted_spread.xx + weights.weighted_spread.yy + weights.weighted_spread.zz;
   const double inverse_trace =
       weights.inverse_weighted_spread.xx + weights.inverse_weighted_spread.yy + weights.inverse_weighted_spread.zz;
-  const double conditioning_error = 16.0 * std::numeric_limits<double>::epsilon() * spread_trace * inverse_trace;
+  const double condition_number_bound = spread_trace * inverse_trace;
+  const double conditioning_error = 16.0 * kEpsilon * condition_number_bound;
+  const double offset_error = 2.0 * kEpsilon * largest_coordinate;
+  const double position_rounding_value_error = condition_number_bound * slope_size * offset_error;
   const double cell_width = weights.list.cell_width;
-  const double value_tolerance =
-      (1e-13 * (kField.base_value + (slope_size * cell_width))) + (conditioning_error * largest_value);
-  EXPECT_NEAR(value_at_particle, kField.base_value, value_tolerance);
-  const double matrix_row_tolerance = (1e-11 * slope_size) + (conditioning_error * largest_value / cell_width);
-  EXPECT_LE(math::Length(fitted_matrix_row - kField.slope), matrix_row_tolerance);
+  const double value_tolerance = (1e-13 * (kField.base_value + (slope_size * cell_width)))
+      + (conditioning_error * largest_value) + position_rounding_value_error;
+  const double value_error = std::abs(value_at_particle - kField.base_value);
+  EXPECT_LE(value_error, value_tolerance);
+  const double matrix_row_tolerance = (1e-11 * slope_size) + (conditioning_error * largest_value / cell_width)
+      + (position_rounding_value_error / cell_width);
+  const double matrix_row_error = math::Length(fitted_matrix_row - kField.slope);
+  EXPECT_LE(matrix_row_error, matrix_row_tolerance);
+  measurements.largest_value_error = std::max(measurements.largest_value_error, value_error);
+  measurements.largest_value_error_over_bound =
+      std::max(measurements.largest_value_error_over_bound, value_error / value_tolerance);
+  measurements.largest_matrix_row_error = std::max(measurements.largest_matrix_row_error, matrix_row_error);
+  measurements.largest_matrix_row_error_over_bound =
+      std::max(measurements.largest_matrix_row_error_over_bound, matrix_row_error / matrix_row_tolerance);
+}
+
+// A number in scientific notation with 3 digits, so that an error of 4e-12 is visible in a report.
+std::string ToScientificText(double value) {
+  std::array<char, 32> text{};
+  std::snprintf(text.data(), text.size(), "%.3e", value);
+  return text.data();
+}
+
+// Records the numbers of `measurements` as properties of the running test.
+void ApplyLinearFieldMeasurementProperties(const LinearFieldMeasurements& measurements) {
+  testing::Test::RecordProperty("largest_value_error", ToScientificText(measurements.largest_value_error));
+  testing::Test::RecordProperty(
+      "largest_value_error_over_bound",
+      ToScientificText(measurements.largest_value_error_over_bound)
+  );
+  testing::Test::RecordProperty("largest_matrix_row_error", ToScientificText(measurements.largest_matrix_row_error));
+  testing::Test::RecordProperty(
+      "largest_matrix_row_error_over_bound",
+      ToScientificText(measurements.largest_matrix_row_error_over_bound)
+  );
 }
 
 // The value a + b . (x_f - x_p) on every face, the 200 random grids with random masks, only where the fit is kFull: the
 // value at the particle and the fitted matrix row are those of the field.
 TEST(ComputeNearbyFaceWeights, LinearField_IsReproduced) {
-  const int checked_count = ApplyToRandomWeights(20, CheckLinearFieldIsReproduced);
+  LinearFieldMeasurements measurements;
+  const int checked_count =
+      ApplyToRandomWeights(20, [&measurements](const GridTables& tables, const NearbyFaceWeights& weights) {
+        CheckLinearFieldIsReproduced(tables, weights, measurements);
+      });
   RecordProperty("checked_lists", checked_count);
+  ApplyLinearFieldMeasurementProperties(measurements);
   EXPECT_GT(checked_count, 5000);
+}
+
+// The framed random grids, 200 positions each: the value at the particle and the fitted matrix row are the field's,
+// within the bound that includes the rounding of positions up to 2,000 m from the origin. The measured errors are
+// recorded.
+TEST(ComputeNearbyFaceWeights, FramedRandomGridsLinearField_IsReproduced) {
+  LinearFieldMeasurements measurements;
+  const int checked_count =
+      ApplyToFramedRandomWeights(200, [&measurements](const GridTables& tables, const NearbyFaceWeights& weights) {
+        CheckLinearFieldIsReproduced(tables, weights, measurements);
+      });
+  RecordProperty("checked_lists", checked_count);
+  ApplyLinearFieldMeasurementProperties(measurements);
+  EXPECT_GT(checked_count, 1000);
 }
 
 // Checks that a face asking the particle's sums for its own weight gets the same bytes as the particle's list gives,
@@ -160,6 +266,13 @@ TEST(ComputeFaceWeight, SeenFromFace_IsBitIdentical) {
   const int checked_count = ApplyToRandomWeights(50, CheckFaceFormMatchesListForm);
   RecordProperty("checked_lists", checked_count);
   EXPECT_GT(checked_count, 20000);
+}
+
+// The framed random grids, 300 positions each: the face form agrees with the list form bit for bit.
+TEST(ComputeFaceWeight, FramedRandomGridsSeenFromFace_IsBitIdentical) {
+  const int checked_count = ApplyToFramedRandomWeights(300, CheckFaceFormMatchesListForm);
+  RecordProperty("checked_lists", checked_count);
+  EXPECT_GT(checked_count, 5000);
 }
 
 // Says whether the list holds the face.
@@ -381,6 +494,13 @@ TEST(ComputeNearbyFaceWeights, WeightChange_MatchesFiniteDifference) {
   const int checked_count = ApplyToRandomWeights(10, CheckWeightChangeMatchesDifference);
   RecordProperty("checked_lists", checked_count);
   EXPECT_GT(checked_count, 1000);
+}
+
+// The framed random grids, 100 positions each: the weight change is the derivative of the weight.
+TEST(ComputeNearbyFaceWeights, FramedRandomGridsWeightChange_MatchesFiniteDifference) {
+  const int checked_count = ApplyToFramedRandomWeights(100, CheckWeightChangeMatchesDifference);
+  RecordProperty("checked_lists", checked_count);
+  EXPECT_GT(checked_count, 500);
 }
 
 }  // namespace

@@ -51,11 +51,10 @@ void CheckPieceAnswersAsWholeGrid(const StaggeredGrid& grid, std::span<const Cel
 }
 
 // In the piece made of a set and its border, every reader of the width, run from every place kept in the set, gives
-// the answer it gives on the whole grid: the first 10 random grids, 4 sets each, both widths.
-TEST(FindBorderBlocks, PiecesOfRandomGrids_AnswerAsTheWholeGrid) {
-  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-  ASSERT_GE(built.grids.size(), kPieceGridCount);
-  for (std::size_t grid = 0; grid < kPieceGridCount; ++grid) {
+// the answer it gives on the whole grid: the first `grid_count` grids of `built`, 4 sets each, both widths.
+void CheckPiecesOfGridsAnswerAsTheWholeGrid(const RandomGridsWithCheckers& built, std::size_t grid_count) {
+  ASSERT_GE(built.grids.size(), grid_count);
+  for (std::size_t grid = 0; grid < grid_count; ++grid) {
     const StaggeredGrid& staggered_grid = built.grids.at(grid).grid;
     const std::vector<std::vector<CellBlockIndex>> sets = FindChosenBlockSets(grid, staggered_grid);
     for (std::size_t set = 0; set < sets.size(); ++set) {
@@ -65,6 +64,17 @@ TEST(FindBorderBlocks, PiecesOfRandomGrids_AnswerAsTheWholeGrid) {
       }
     }
   }
+}
+
+// The first 10 random grids, 4 sets each, both widths.
+TEST(FindBorderBlocks, PiecesOfRandomGrids_AnswerAsTheWholeGrid) {
+  CheckPiecesOfGridsAnswerAsTheWholeGrid(FindRandomGridsWithCheckers(), kPieceGridCount);
+}
+
+// All the framed random grids, 4 sets each, both widths: the sets are one block, a range of 8 blocks and two sparse
+// lists, in frames with a non-dyadic origin, widths that are no power of two and negative or distant coordinates.
+TEST(FindBorderBlocks, PiecesOfFramedRandomGrids_AnswerAsTheWholeGrid) {
+  CheckPiecesOfGridsAnswerAsTheWholeGrid(FindFramedRandomGridsWithCheckers(), kFramedRandomGridCount);
 }
 
 // The same on the nested-ball grid, for every range of a cut into ranges of 16 blocks, at both widths.

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 #include "fluidity/base/run_on.h"
@@ -20,43 +21,54 @@ namespace {
 // One mark per block of a grid: 1 for a block read, 0 for a block not read.
 using BlockMarks = std::vector<std::uint8_t>;
 
-// The blocks read in every random grid, found from the geometry once per program.
-const std::vector<GeometricReadBlocks>& FindGeometricReadBlocks() {
-  static const std::vector<GeometricReadBlocks> read_blocks_of_grids = [] {
-    const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-    std::vector<GeometricReadBlocks> found;
+// The blocks read in every grid of the set `built`, found from the geometry once per program for each set.
+const std::vector<GeometricReadBlocks>& FindGeometricReadBlocks(const RandomGridsWithCheckers& built) {
+  static std::map<const RandomGridsWithCheckers*, std::vector<GeometricReadBlocks>> read_blocks_of_sets;
+  std::vector<GeometricReadBlocks>& found = read_blocks_of_sets[&built];
+  if (found.empty()) {
     found.reserve(built.grids.size());
     for (std::size_t grid = 0; grid < built.grids.size(); ++grid) {
       found.push_back(BuildGeometricReadBlocks(built.checkers.at(grid), built.grids.at(grid).grid.tables(RunOn::kCpu)));
     }
-    return found;
-  }();
-  return read_blocks_of_grids;
+  }
+  return found;
 }
 
-// Checks that the border of each set of random grid `grid` at `width` is the one FindBorderGeometrically finds.
-void CheckBordersEqualGeometricBorders(std::size_t grid, BorderWidth width) {
-  const GridBorderCase& grid_case = FindGridBorderCase(grid);
+// Checks that the border of each set of grid `grid` of `built` at `width` is the one FindBorderGeometrically finds.
+void CheckBordersEqualGeometricBorders(const RandomGridsWithCheckers& built, std::size_t grid, BorderWidth width) {
+  const GridBorderCase& grid_case = FindGridBorderCase(built, grid);
   for (std::size_t set_number = 0; set_number < grid_case.sets.size(); ++set_number) {
     SCOPED_TRACE(testing::Message() << "random grid " << grid << ", set " << set_number);
     const std::vector<CellBlockIndex>& border = width == BorderWidth::kTouchingCells
         ? grid_case.touching_borders.at(set_number)
         : grid_case.wide_borders.at(set_number);
     const std::vector<CellBlockIndex> geometric_border =
-        FindBorderGeometrically(FindGeometricReadBlocks().at(grid), grid_case.sets.at(set_number), width);
+        FindBorderGeometrically(FindGeometricReadBlocks(built).at(grid), grid_case.sets.at(set_number), width);
     EXPECT_EQ(ToBlockNumbers(border), ToBlockNumbers(geometric_border));
   }
 }
 
 TEST(FindBorderBlocks, TouchingCells_EqualsGeometricReadSet) {
+  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
-    CheckBordersEqualGeometricBorders(grid, BorderWidth::kTouchingCells);
+    CheckBordersEqualGeometricBorders(built, grid, BorderWidth::kTouchingCells);
   }
 }
 
 TEST(FindBorderBlocks, FourCellWidths_EqualsGeometricReadSet) {
+  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
-    CheckBordersEqualGeometricBorders(grid, BorderWidth::kFourCellWidths);
+    CheckBordersEqualGeometricBorders(built, grid, BorderWidth::kFourCellWidths);
+  }
+}
+
+// The same on the framed random grids, whose cells lie at negative and distant coordinates in other frames.
+TEST(FindBorderBlocks, FramedRandomGridsAtBothWidths_EqualGeometricReadSet) {
+  const RandomGridsWithCheckers& built = FindFramedRandomGridsWithCheckers();
+  ASSERT_EQ(built.grids.size(), kFramedRandomGridCount);
+  for (std::size_t grid = 0; grid < built.grids.size(); ++grid) {
+    CheckBordersEqualGeometricBorders(built, grid, BorderWidth::kTouchingCells);
+    CheckBordersEqualGeometricBorders(built, grid, BorderWidth::kFourCellWidths);
   }
 }
 
@@ -85,15 +97,15 @@ std::array<BlockNumbers, 2> FindBlockBordersByReadMarks(const GridTables& tables
   return borders;
 }
 
-// Checks, for every block of random grid `grid` alone, that its border at each width, by the forward form, is the
+// Checks, for every block of grid `grid` of `built` alone, that its border at each width, by the forward form, is the
 // set of blocks it reads by the geometry (FindBorderGeometrically).
-void CheckEveryBlockAloneEqualsGeometricBorder(std::size_t grid) {
-  const GridTables tables = FindRandomGridsWithCheckers().grids.at(grid).grid.tables(RunOn::kCpu);
+void CheckEveryBlockAloneEqualsGeometricBorder(const RandomGridsWithCheckers& built, std::size_t grid) {
+  const GridTables tables = built.grids.at(grid).grid.tables(RunOn::kCpu);
   for (std::uint32_t block = 0; block < tables.block_count; ++block) {
     SCOPED_TRACE(testing::Message() << "random grid " << grid << ", block " << block);
     const std::vector<CellBlockIndex> set = {{.value = block}};
     const std::array<BlockNumbers, 2> borders = FindBlockBordersByReadMarks(tables, block);
-    const GeometricReadBlocks& read_blocks = FindGeometricReadBlocks().at(grid);
+    const GeometricReadBlocks& read_blocks = FindGeometricReadBlocks(built).at(grid);
     EXPECT_EQ(borders.at(0), ToBlockNumbers(FindBorderGeometrically(read_blocks, set, BorderWidth::kTouchingCells)));
     EXPECT_EQ(borders.at(1), ToBlockNumbers(FindBorderGeometrically(read_blocks, set, BorderWidth::kFourCellWidths)));
   }
@@ -104,9 +116,19 @@ void CheckEveryBlockAloneEqualsGeometricBorder(std::size_t grid) {
 // both widths. The border of a set is the union of the borders of its blocks with their bigger blocks, less the set,
 // in both computations, so this covers every set; BlockByBlockForm_EqualsForwardForm ties the other form to it.
 TEST(FindBorderBlocks, EveryBlockAlone_EqualsGeometricReadSet) {
-  ASSERT_EQ(FindGeometricReadBlocks().size(), kRandomGridCount);
+  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
+  ASSERT_EQ(FindGeometricReadBlocks(built).size(), kRandomGridCount);
   for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
-    CheckEveryBlockAloneEqualsGeometricBorder(grid);
+    CheckEveryBlockAloneEqualsGeometricBorder(built, grid);
+  }
+}
+
+// The same on every block of the framed random grids.
+TEST(FindBorderBlocks, EveryBlockAloneOfFramedRandomGrids_EqualsGeometricReadSet) {
+  const RandomGridsWithCheckers& built = FindFramedRandomGridsWithCheckers();
+  ASSERT_EQ(FindGeometricReadBlocks(built).size(), kFramedRandomGridCount);
+  for (std::size_t grid = 0; grid < built.grids.size(); ++grid) {
+    CheckEveryBlockAloneEqualsGeometricBorder(built, grid);
   }
 }
 
@@ -132,9 +154,13 @@ std::vector<FacePlaceIndex> FindSpreadFacePiecesKeptIn(const GridTables& tables,
 }
 
 // Checks that every face piece of a size level within one of the start's whose centre lies within 4 widths of `face`
-// in random grid `grid` is kept in a block of `held_blocks`.
-void CheckFacesWithinFourWidthsAreHeld(std::size_t grid, FacePlaceIndex face, const BlockNumbers& held_blocks) {
-  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
+// in grid `grid` of `built` is kept in a block of `held_blocks`.
+void CheckFacesWithinFourWidthsAreHeld(
+    const RandomGridsWithCheckers& built,
+    std::size_t grid,
+    FacePlaceIndex face,
+    const BlockNumbers& held_blocks
+) {
   const GridTables tables = built.grids.at(grid).grid.tables(RunOn::kCpu);
   const int start_size_level = static_cast<int>(ToSizeLevel(tables, ToCellBlockIndex(face)));
   for (const GeometricFacePiece& near_piece : built.checkers.at(grid).FacesWithin(ToFacePieceId(tables, face), 4.0)) {
@@ -153,21 +179,28 @@ void CheckFacesWithinFourWidthsAreHeld(std::size_t grid, FacePlaceIndex face, co
 
 // For a few face pieces kept in each set (FacesWithin looks at every face piece of the grid in each call), every face
 // within 4 widths is kept in the set or its border.
-TEST(FindBorderBlocks, FourCellWidths_HoldsEveryFaceWithinFourWidths) {
-  const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-  for (std::size_t grid = 0; grid < kRandomGridCount; ++grid) {
+void CheckFourCellWidthsHoldEveryFaceWithinFourWidths(const RandomGridsWithCheckers& built) {
+  for (std::size_t grid = 0; grid < built.grids.size(); ++grid) {
     const GridTables tables = built.grids.at(grid).grid.tables(RunOn::kCpu);
-    const GridBorderCase& grid_case = FindGridBorderCase(grid);
+    const GridBorderCase& grid_case = FindGridBorderCase(built, grid);
     for (std::size_t set_number = 0; set_number < grid_case.sets.size(); ++set_number) {
       SCOPED_TRACE(testing::Message() << "random grid " << grid << ", set " << set_number);
       const BlockNumbers set = ToBlockNumbers(grid_case.sets.at(set_number));
       BlockNumbers held_blocks = ToBlockNumbers(grid_case.wide_borders.at(set_number));
       held_blocks.insert(set.begin(), set.end());
       for (const FacePlaceIndex face : FindSpreadFacePiecesKeptIn(tables, set)) {
-        CheckFacesWithinFourWidthsAreHeld(grid, face, held_blocks);
+        CheckFacesWithinFourWidthsAreHeld(built, grid, face, held_blocks);
       }
     }
   }
+}
+
+TEST(FindBorderBlocks, FourCellWidths_HoldsEveryFaceWithinFourWidths) {
+  CheckFourCellWidthsHoldEveryFaceWithinFourWidths(FindRandomGridsWithCheckers());
+}
+
+TEST(FindBorderBlocks, FramedRandomGridsAtFourCellWidths_HoldEveryFaceWithinFourWidths) {
+  CheckFourCellWidthsHoldEveryFaceWithinFourWidths(FindFramedRandomGridsWithCheckers());
 }
 
 }  // namespace

@@ -30,6 +30,7 @@
 #include "fluidity/base/vec3.h"
 #include "fluidity/grid/border_block_steps.h"
 #include "fluidity/grid/cell_block_range.h"
+#include "fluidity/grid/find_cell_at.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_error_message.h"
 #include "fluidity/grid/grid_ids.h"
@@ -42,6 +43,7 @@
 #include "fluidity/grid/testing/grid_support.h"
 #include "fluidity/grid/testing/nearby_face_weights_cases.h"
 #include "fluidity/grid/testing/staggered_grid_cases.h"
+#include "fluidity/grid/testing/touching_cells_cases.h"
 
 namespace fluidity::grid {
 namespace {
@@ -296,6 +298,7 @@ struct RangeTotals {
   std::uint32_t largest_piece_blocks = 0;
   std::size_t ranges_with_positions = 0;
   std::size_t positions_checked = 0;
+  std::size_t pieces_smaller_than_grid = 0;  // Ranges whose piece holds fewer blocks than the whole grid.
 };
 
 // What the check of each range needs: the scene, the range of each position, the memory of the border search and of the
@@ -342,6 +345,9 @@ void CheckRange(RangeCheckContext& context, std::size_t range_entry) {
   EXPECT_FALSE(difference_at_four_widths.has_value()) << difference_at_four_widths.value_or("");
   context.totals.largest_piece_blocks =
       std::max(context.totals.largest_piece_blocks, piece->grid().counts().cell_blocks);
+  const bool is_piece_smaller_than_grid =
+      piece->grid().counts().cell_blocks < scene.test_grid.grid.counts().cell_blocks;
+  context.totals.pieces_smaller_than_grid += is_piece_smaller_than_grid ? 1 : 0;
   const std::size_t position_count = CheckPositionsOfRange(scene, *piece, context.range_of_position, range_entry);
   context.totals.positions_checked += position_count;
   context.totals.ranges_with_positions += position_count > 0 ? 1 : 0;
@@ -354,6 +360,10 @@ void CheckTotals(const RangeTotals& totals) {
   testing::Test::RecordProperty("largest_wide_border", static_cast<int>(totals.largest_wide_border));
   testing::Test::RecordProperty("largest_piece_blocks", static_cast<int>(totals.largest_piece_blocks));
   testing::Test::RecordProperty("ranges_with_positions", static_cast<int>(totals.ranges_with_positions));
+  testing::Test::RecordProperty("pieces_smaller_than_grid", static_cast<int>(totals.pieces_smaller_than_grid));
+  // A piece as big as the whole grid is compared with itself, so the comparison means something only for the pieces
+  // that lack blocks.
+  EXPECT_GT(totals.pieces_smaller_than_grid, 0U);
   CheckCount("largest near border", totals.largest_near_border, kExpectedLargestNearBorder);
   CheckCount("largest wide border", totals.largest_wide_border, kExpectedLargestWideBorder);
   CheckCount("largest piece blocks", totals.largest_piece_blocks, kExpectedLargestPieceBlocks);
@@ -392,6 +402,82 @@ TEST(StaggeredGrid, SlopedSurfaceInBox_PassesEveryCheck) {
   const Scene& scene = FindScene();
   CheckGridCounts(scene);
   CheckTotals(CheckEveryRange(scene));
+}
+
+// The cells of the scene of size level `size_level`, every k-th of them in list order so that about `count` are taken.
+// clang-tidy: a size level and a count; the swappable-parameters check flags the two numbers.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+std::vector<CellId> FindChosenCellsOfSizeLevel(const Scene& scene, int size_level, std::size_t count) {
+  std::vector<CellId> of_size_level;
+  for (const CellId cell : scene.cells) {
+    if (static_cast<int>(ToSizeLevel(cell)) == size_level) {
+      of_size_level.push_back(cell);
+    }
+  }
+  const std::size_t step = std::max<std::size_t>(1, of_size_level.size() / count);
+  std::vector<CellId> chosen;
+  for (std::size_t entry = 0; entry < of_size_level.size(); entry += step) {
+    chosen.push_back(of_size_level.at(entry));
+  }
+  return chosen;
+}
+
+// Checks that the nearby faces of each axis at `position`, all kept, are listed for the cell at `place` and give
+// weights that add up to 1.
+void CheckNearbyWeightsAddUpInCell(const GridTables& tables, Vec3 position, CellPlaceIndex place) {
+  for (const Axis axis : kAxes) {
+    GridError error = GridError::kInternalFault;
+    const NearbyFaceList list = FindNearbyFaces(tables, position, axis, CellBlockIndex{kNoIndex}, &error);
+    EXPECT_EQ(error, GridError::kNone);
+    const NearbyFaceWeights weights = ComputeNearbyFaceWeights(tables, list, position, ToMaskOfAll(list));
+    EXPECT_EQ(list.cell.value, place.value);
+    EXPECT_NEAR(ComputeKeptWeightTotal(tables, weights), 1.0, kWeightSumTolerance);
+  }
+}
+
+// Checks that FindCellAt at three positions inside a cell gives that cell, and that the nearby faces of each axis, all
+// kept, give weights that add up to 1.
+void CheckPositionsInCellAnswerAsTheCell(const GridTables& tables, CellId cell_id) {
+  const CellPlaceIndex place = FindCellPlace(tables, cell_id);
+  ASSERT_NE(place.value, kNoIndex);
+  const Vec3 center = ComputeCellCenter(tables, place);
+  const double width = ComputeCellWidth(tables.frame, ToSizeLevel(tables, ToCellBlockIndex(place)));
+  for (const double fraction : {-0.4, 0.0, 0.4}) {
+    const Vec3 position = {
+        .x = center.x + (fraction * width),
+        .y = center.y + (fraction * width),
+        .z = center.z + (fraction * width),
+    };
+    EXPECT_EQ(FindCellAt(tables, position).value, place.value) << "cell " << cell_id.value << ", " << fraction;
+    CheckNearbyWeightsAddUpInCell(tables, position, place);
+  }
+}
+
+// Cells of size levels 0, 1 and 2 of the scene, about 70 of each, against the geometric checker and against the
+// cell they were made from: the touching cells and the face pieces are the checker's, and positions inside each cell
+// give that cell and weights that add up to 1. The scene's 1,000 positions all lie in cells of size level 2.
+TEST(StaggeredGrid, SlopedSurfaceInBox_CellsOfEverySizeLevelAnswerAsTheChecker) {
+  const Scene& scene = FindScene();
+  const GridTables tables = scene.test_grid.grid.tables(RunOn::kCpu);
+  std::vector<CellId> chosen;
+  for (int size_level = 0; size_level < kSlopedSurfaceSizeLevelCount; ++size_level) {
+    const std::vector<CellId> of_size_level = FindChosenCellsOfSizeLevel(scene, size_level, 70);
+    EXPECT_GE(of_size_level.size(), 10U) << "size level " << size_level;
+    chosen.insert(chosen.end(), of_size_level.begin(), of_size_level.end());
+  }
+  const GeometricGrid checker(BuildSlopedSurfaceFrame(), scene.cells);
+  LargestCounts largest_counts;
+  const ActiveCellReaderMistakes mistakes = FindActiveCellReaderMistakes(tables, checker, chosen, largest_counts);
+  CheckNoMistake("FindTouchingCells: the checker's places", mistakes.touching_cells_not_the_checkers);
+  CheckNoMistake("FindTouchingCells: strictly ascending", mistakes.touching_cells_out_of_order);
+  CheckNoMistake("FindFacePieces: the checker's places", mistakes.face_pieces_not_the_checkers);
+  CheckNoMistake("FindFacePieces: the checker's ids", mistakes.face_piece_ids_not_the_checkers);
+  CheckNoMistake("EveryCellSide_IsCoveredOnce", mistakes.sides_not_covered_once);
+  CheckNoMistake("ClosedSurface_AreasCancel", mistakes.surfaces_not_closed);
+  EXPECT_GT(largest_counts.touching_cells, 26);
+  for (const CellId cell_id : chosen) {
+    CheckPositionsInCellAnswerAsTheCell(tables, cell_id);
+  }
 }
 
 }  // namespace

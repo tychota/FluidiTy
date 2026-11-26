@@ -2577,6 +2577,9 @@ example, on a unit grid with the position $(2.5 - 2 dot 10^(-6), 2.5, 2.5)$ and 
 at $x = 1$ kept, $kappa$ is near $6 dot 10^10$; for the field $1 + bold(b) dot (bold(x)_f - bold(x)_p)$ the row from
 the raw values is off by $8 dot 10^(-6)$ in length, and the row from the centred values is right to
 $5 dot 10^(-16)$.
+Offsets are differences of absolute positions, so their error grows with the distance from the frame's origin, about
+$2 epsilon |bold(x)|$; the fit magnifies it by $kappa$, and at 1300 m with 3 m cells a fitted value was off by
+$4 dot 10^(-12)$.
 A face can also compute the weight one particle gives it (`ComputeFaceWeight` with the particle's sums for the
 face's axis, `NearbyFaceSums`: $W$, $bold(G)$ and $bold(m)$), with the same bits as the particle's own list. The
 face decides by the rule of the list whether the particle's list holds it: the face is a face piece of the
