@@ -125,8 +125,10 @@ constexpr std::uint64_t kDefaultStackBytesPerThread = 1024;
 
 // The first test of the program: raising the driver's stack to what the marking function needs takes about the bytes of
 // the estimate's driver-stack entry from the GPU's free bytes (less the default stack the driver may already hold). The
-// free bytes before and after, and the estimate, go to the notes. If an earlier call already raised the stack, nothing
-// is left to measure and the test is skipped.
+// free bytes before and after, and the estimate, go to the notes. If the GPU gave up no bytes (an earlier call already
+// raised the stack, or the driver takes the stack later), nothing is left to measure: the test passes and writes a note
+// that says the estimate was not checked. It does not skip: a skipped TEST marks the whole program skipped in ctest,
+// which hides the outcome and the output of the other 14 (docs/gpu-runs.md, "A skipped line").
 TEST(ReserveBorderSearchStackOnGpu, FromTheDefault_TakesAboutTheEstimatedBytes) {
   const std::expected<MemoryEstimateEntry, GridFailure> entry = BuildBorderSearchStackEstimate(RunOn::kGpu);
   ASSERT_TRUE(entry.has_value());
@@ -144,7 +146,12 @@ TEST(ReserveBorderSearchStackOnGpu, FromTheDefault_TakesAboutTheEstimatedBytes) 
       + std::to_string(entry->given_count) + " resident threads)"
   );
   if (taken_bytes == 0) {
-    GTEST_SKIP() << "the stack was raised before this test, so there is nothing to measure";
+    WriteResultNote(
+        "border search stack: NOT CHECKED, the GPU gave up 0 bytes when the stack was raised (raised before, or the "
+        "driver takes it later), so the estimate of "
+        + std::to_string(estimated_bytes) + " bytes was not compared"
+    );
+    return;
   }
   const auto estimated = static_cast<double>(estimated_bytes);
   EXPECT_LE(static_cast<double>(taken_bytes), estimated * (1.0 + kStackToleranceFraction));
@@ -164,7 +171,11 @@ TEST(ReserveBorderSearchStackOnGpu, Twice_TakesNothingTheSecondTime) {
   ASSERT_EQ(ReserveBorderSearchStackOnGpu(entry->bytes_each), RunOnCallStatus::kDone);
   const std::expected<MemoryAvailable, BufferError> after = ReadMemoryAvailable(RunOn::kGpu);
   ASSERT_TRUE(after.has_value());
-  EXPECT_EQ(after->free_bytes, before->free_bytes);
+  CheckFreeBytesUnchanged(
+      before->free_bytes,
+      after->free_bytes,
+      "ReserveBorderSearchStackOnGpu.Twice_TakesNothingTheSecondTime"
+  );
 }
 
 // The random grids, the tested ranges of each (first, middle, last, whole grid), four layers.
@@ -482,7 +493,11 @@ TEST(BuildBorderSearchMemoryEstimate, MatchesAllocatedGpuBytes) {
   ASSERT_TRUE(search_buffers.has_value());
   const std::expected<MemoryAvailable, BufferError> after_build = ReadMemoryAvailable(RunOn::kGpu);
   ASSERT_TRUE(after_build.has_value());
-  EXPECT_EQ(after_build->free_bytes, after_reserve->free_bytes);
+  CheckFreeBytesUnchanged(
+      after_reserve->free_bytes,
+      after_build->free_bytes,
+      "BuildBorderSearchMemoryEstimate.MatchesAllocatedGpuBytes, the build"
+  );
   const std::array<std::uint64_t, 2> words = {run_memory->reserved_bytes(), run_memory->handed_out_bytes()};
   WriteResultDigest("BuildBorderSearchBuffers on the GPU, 1,000 blocks", std::span<const std::uint64_t>(words));
 }
@@ -508,8 +523,8 @@ TEST(BuildBorderSearchBuffers, OnGpuIntoRunMemory_HandsOutExactlyTheEstimate) {
 TEST(FindBorderBlocks, OnGpuFunctions_KeepTheStatedStack) {
   std::uint64_t bytes_per_thread = 0;
   ASSERT_EQ(ComputeLargestBorderSearchStackOnGpu(&bytes_per_thread), RunOnCallStatus::kDone);
-  EXPECT_LE(bytes_per_thread, kBorderSearchStackBytes);
-  EXPECT_GT(bytes_per_thread, 1024U);
+  EXPECT_LE(bytes_per_thread, kBorderSearchStackBytes) << "bytes of stack per thread on " << ReadGpuNameAndRuntime();
+  EXPECT_GT(bytes_per_thread, 1024U) << "bytes of stack per thread on " << ReadGpuNameAndRuntime();
   const std::array<std::uint64_t, 1> words = {bytes_per_thread};
   WriteResultDigest("border search stack bytes per thread on the GPU", std::span<const std::uint64_t>(words));
 }
@@ -523,7 +538,7 @@ TEST(BuildBorderSearchStackEstimate, OnGpu_IsTheStackForEveryResidentThread) {
   EXPECT_EQ(entry->where, MemoryWhere::kDriverStack);
   EXPECT_EQ(entry->given_count, resident_threads);
   EXPECT_GT(entry->bytes_each, 0U);
-  EXPECT_LE(entry->bytes_each, kBorderSearchStackBytes);
+  EXPECT_LE(entry->bytes_each, kBorderSearchStackBytes) << "bytes of stack per thread on " << ReadGpuNameAndRuntime();
 }
 
 }  // namespace

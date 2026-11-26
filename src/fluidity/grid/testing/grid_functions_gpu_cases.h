@@ -1,16 +1,16 @@
 // Test-only: the grids and places that the GPU tests of the shared grid functions share.
 //
 // Purpose: let each GPU test build the same random grids on both processors and list the places a runner is asked
-//   about, written once.
+//   about, written once; and give the GPU tests one way to say on which card a number was measured and to compare the
+//   card's free bytes.
 //
 // Idea: a GPU test builds each grid twice from one list, on the CPU as the reference and on the GPU, and asks the same
 //   queries of both.
 //
 // Owns:    GridOnBothProcessors, BuildGridOnBothProcessors, BuildRandomGridsOnBothProcessors,
-//          FindActiveCellPlaces, FindFacePiecePlaces
+//          FindActiveCellPlaces, FindFacePiecePlaces, ReadGpuNameAndRuntime, CheckFreeBytesUnchanged
 // Uses:    the headers it includes
-// Used by: tests/grid/find_cell_at.gpu.test.cc, tests/grid/nearby_face_weights.gpu.test.cc,
-//          tests/grid/cell_surroundings.gpu.test.cc and tests/grid/shared_grid_functions.gpu.test.cc
+// Used by: the GPU tests of tests/grid/ (*.gpu.test.cc)
 // Read:    the test files that include it
 
 #pragma once
@@ -23,10 +23,14 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "fluidity/base/processor_description.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/testing/base_support.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
@@ -99,6 +103,35 @@ inline std::vector<FacePlaceIndex> FindFacePiecePlaces(const GridTables& tables)
     }
   }
   return places;
+}
+
+// The GPU's name and the CUDA runtime version, for the failure message of a number that the compiler or the card
+// decides, such as the stack bytes of a GPU function. The name stands for the architecture: the RTX 5060 Ti is sm_120
+// (docs/gpu-runs.md).
+// Example: "NVIDIA GeForce RTX 5060 Ti, CUDA runtime 12.8".
+inline std::string ReadGpuNameAndRuntime() {
+  const ProcessorDescription description = ReadProcessorDescription(RunOn::kGpu);
+  return description.model + ", CUDA runtime " + description.runtime;
+}
+
+// Checks that the GPU's free bytes are the same before and after `work`, which must take no GPU memory. The check
+// stays exact: a tolerance wide enough for another program would hide a small allocation of the grid's own. The free
+// bytes are the card's, so a program that takes or gives back GPU memory meanwhile (on a card that drives the display:
+// the desktop, a browser) changes them too. A difference fails the calling test with both numbers and the difference,
+// and writes the same line to the notes (docs/gpu-runs.md, "A card that also drives the display").
+// Example: before 15,000,000,000 and after 14,997,902,848 free bytes: "<work>: the GPU's free bytes went from
+//   15000000000 to 14997902848, 2097152 fewer".
+inline void CheckFreeBytesUnchanged(std::uint64_t before_bytes, std::uint64_t after_bytes, std::string_view work) {
+  if (after_bytes == before_bytes) {
+    return;
+  }
+  const bool has_fewer = after_bytes < before_bytes;
+  const std::uint64_t difference = has_fewer ? before_bytes - after_bytes : after_bytes - before_bytes;
+  const std::string line = std::string(work) + ": the GPU's free bytes went from " + std::to_string(before_bytes)
+      + " to " + std::to_string(after_bytes) + ", " + std::to_string(difference) + (has_fewer ? " fewer" : " more")
+      + "; another program using the GPU also changes them";
+  WriteResultNote(line);
+  ADD_FAILURE() << line;
 }
 
 }  // namespace fluidity::grid

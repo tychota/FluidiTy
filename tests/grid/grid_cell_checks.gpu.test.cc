@@ -36,6 +36,7 @@
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/staggered_grid_gpu.h"
+#include "fluidity/grid/testing/grid_functions_gpu_cases.h"
 #include "fluidity/grid/testing/grid_support.h"
 
 namespace fluidity::grid {
@@ -320,7 +321,7 @@ TEST(CheckSizeStepRule, OnGpu_AllocatesNothing) {
   const std::vector<std::uint64_t> digest_words = ComputeRepeatedCheckWords(inputs, *gpu_buffers->buffers, 100);
   const std::expected<MemoryAvailable, BufferError> after = ReadMemoryAvailable(RunOn::kGpu);
   ASSERT_TRUE(after.has_value());
-  EXPECT_EQ(after->free_bytes, before->free_bytes);
+  CheckFreeBytesUnchanged(before->free_bytes, after->free_bytes, "CheckSizeStepRule.OnGpu_AllocatesNothing");
   WriteResultDigest("CheckSizeStepRule on the GPU, 100 calls", std::span<const std::uint64_t>(digest_words));
 }
 
@@ -332,7 +333,7 @@ TEST(CheckSizeStepRule, OnGpuFunctions_KeepUnderTheDefaultStack) {
   std::uint64_t largest_bytes = 0;
   ASSERT_EQ(ComputeLargestBuildStackOnGpu(&largest_bytes), RunOnCallStatus::kDone);
   RecordProperty("largest_stack_bytes", static_cast<int>(largest_bytes));
-  EXPECT_LT(largest_bytes, 1024U);
+  EXPECT_LT(largest_bytes, 1024U) << "bytes of stack per thread on " << ReadGpuNameAndRuntime();
   WriteResultDigest(
       "CheckSizeStepRule GPU functions, largest stack",
       std::span<const std::uint64_t>(&largest_bytes, 1)

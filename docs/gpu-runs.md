@@ -150,6 +150,162 @@ What a first run may show instead, and what it means:
 - Only the turning or spinning scenes fail, by a few rounding units: the GPU bound of the method paper's contact section
   is too tight for this card's sine; the printed difference and bound say by how much.
 
+## The grid's GPU tests: how to run them and what to send back
+
+### What may fail first: the build
+
+No CUDA file of the grid, and no header it shares with the CPU, has ever been
+compiled by `nvcc` with MSVC as the host compiler. CI compiles CUDA on Linux only, and Windows without CUDA. So the
+first run may stop at `build: FAIL cmake build`, before any test. That is not a failed test: nothing ran. Send the
+build log (the `cmake-build` file of `out/gpu-run/<UTC time>/`) whole, and the block. The first error in it is the one
+to fix; the rest often follow from it.
+
+All commands below are for PowerShell 7 (`pwsh`), from the repository root, on the machine with the RTX 5060 Ti.
+
+1. Before anything, record the card's state and close every program that uses the GPU (browsers, games, video):
+
+   ```powershell
+   New-Item -ItemType Directory -Force out | Out-Null
+   nvidia-smi > out\nvidia-smi-before.txt
+   ```
+
+2. The whole run: build, `cpu` tests, `gpu` tests twice, sanitizer. The grid's GPU tests are among them.
+
+   ```powershell
+   pwsh -NoProfile -ExecutionPolicy Bypass -File tools/run_gpu_tests.ps1
+   nvidia-smi > out\nvidia-smi-after.txt
+   ```
+
+3. After the script has built once, the grid's GPU tests alone (two `-L` options mean "both labels"):
+
+   ```powershell
+   uv run --frozen ctest --preset windows-release-cuda -L '^gpu$' -L '^grid$'
+   ```
+
+   The script's shell had loaded the Visual Studio environment and found the CUDA runtime DLL; a new shell needs the
+   folder of `cudart64_*.dll` on `PATH` again (`$env:PATH = "$env:CUDA_PATH\bin;$env:PATH"`, or `bin\x64` in newer
+   toolkits).
+
+4. One program alone, through ctest (prints its output when it fails):
+
+   ```powershell
+   uv run --frozen ctest --preset windows-release-cuda -R '^build_grid_on_gpu_functional_test$' --output-on-failure
+   ```
+
+   Or the program itself, with one TEST, and with the notes and digests written where you can find them:
+
+   ```powershell
+   $env:FLUIDITY_RESULT_NOTES_FILE = "$PWD\out\notes-alone.txt"
+   $env:FLUIDITY_RESULT_DIGEST_FILE = "$PWD\out\digests-alone.txt"
+   .\out\build\windows-release-cuda\tests\grid\build_grid_on_gpu_functional_test.exe --gtest_filter='BuildGrid.OnGpu_EqualsCpuTablesBitForBit'
+   ```
+
+   The programs of `tests/grid/` are in `out\build\windows-release-cuda\tests\grid\`; `grid_values_gpu_test.exe` is in
+   `out\build\windows-release-cuda\src\fluidity\grid\`. Without `--gtest_filter` the program runs all its TESTs.
+
+5. To find which launch failed, run one program with every launch waited for:
+
+   ```powershell
+   $env:CUDA_LAUNCH_BLOCKING = '1'
+   .\out\build\windows-release-cuda\tests\grid\stacked_borders_on_gpu_functional_test.exe
+   Remove-Item Env:CUDA_LAUNCH_BLOCKING
+   ```
+
+6. One program under the memory checker, as the script runs it:
+
+   ```powershell
+   compute-sanitizer --tool memcheck --error-exitcode 1 .\out\build\windows-release-cuda\tests\grid\grid_pieces_on_gpu_functional_test.exe
+   ```
+
+   `compute-sanitizer.exe` is in `$env:CUDA_PATH\compute-sanitizer\` when it is not on `PATH`.
+
+### Run times
+
+No GPU program has run, so their times are unknown. The table gives, as a hint of the CPU side's share,
+the time of the CPU program that checks the same functions, measured by the release gate on an Apple M3 Pro with every
+core busy (a GPU program builds its grids on the CPU too). ctest stops a program after 1,800 s and counts it failed.
+Under the memory checker a program runs 10 to 100 times slower (unknown here); the script has no time limit for that
+step. If one program has run under the checker for more than two hours, end the `compute-sanitizer.exe` process in Task
+Manager: the script counts that program as failed and goes on, and still prints the block. Pressing Ctrl+C in the
+script's window stops the script and loses the block.
+
+| program | TESTs | GPU time | CPU program of the same functions, release, M3 Pro |
+| --- | --- | --- | --- |
+| `build_grid_on_gpu_functional_test` | 11 | unknown | `build_grid_functional_test`, 7 s |
+| `grid_cell_checks_on_gpu_functional_test` | 9 | unknown | `grid_cell_checks_on_random_grids_functional_test`, 5 s |
+| `cell_size_rule_on_gpu_functional_test` | 2 | unknown | `cell_size_factor_on_many_inputs_functional_test`, under 0.1 s |
+| `find_cell_at_on_gpu_functional_test` | 2 | unknown | `find_cell_at_near_form_on_positions_functional_test`, 3 s |
+| `nearby_face_weights_on_gpu_functional_test` | 4 | unknown | `nearby_face_weights_on_random_grids_functional_test`, 5 s |
+| `cell_surroundings_on_gpu_functional_test` | 7 | unknown | touching cells 5 s, corners 4 s, face search 3 s |
+| `shared_grid_functions_on_gpu_functional_test` | 4 | unknown | none |
+| `border_blocks_on_gpu_functional_test` | 2 | unknown | `border_blocks_against_geometry_functional_test`, 23 s |
+| `stacked_borders_on_gpu_functional_test` | 15 | unknown | `stacked_borders_in_grid_pieces_functional_test`, 118 s |
+| `grid_pieces_on_gpu_functional_test` | 9 | unknown | `grid_pieces_on_random_grids_functional_test`, 53 s |
+| `grid_piece_steps_on_gpu_functional_test` | 1 | unknown | `grid_piece_steps_in_every_thread_order_functional_test`, 16 s |
+| `apply_grid_version_on_gpu_functional_test` | 1 | unknown | `apply_grid_version_on_random_grids_functional_test`, 2 s |
+| `sloped_surface_scene_on_gpu_functional_test` | 1 | unknown | `sloped_surface_scene_functional_test`, 14 s (about 6 s alone) |
+| `grid_values_gpu_test` | 1 | unknown | none (a unit test) |
+
+### A card that also drives the display
+
+Three things differ from a card that only computes:
+
+- *Free memory.* Five tests compare the GPU's free bytes before and after a piece of work and demand that they be
+  equal, because their point is that the work takes no GPU memory at all: `BuildGrid.IntoGpuBuffers_AllocatesNothing`
+  and `ComputeMemoryBytes.MatchesAllocatedGpuBytes` (`build_grid_on_gpu_functional_test`),
+  `CheckSizeStepRule.OnGpu_AllocatesNothing` (`grid_cell_checks_on_gpu_functional_test`),
+  `ReserveBorderSearchStackOnGpu.Twice_TakesNothingTheSecondTime` and `BuildBorderSearchMemoryEstimate.MatchesAllocatedGpuBytes`
+  (`stacked_borders_on_gpu_functional_test`). They stay exact: any tolerance large enough for another program would
+  hide an allocation of the grid's own, which is what they look for. The free bytes are the card's, not the program's,
+  so another program that allocates or frees GPU memory at that moment (the desktop, a browser, a video) changes them
+  too. Run with no other program using the GPU. A difference in these lines alone, on a card that drives the display,
+  is not a defect by itself: run that program alone (point 4) once or twice. A difference that comes back with the
+  same number of bytes is the grid's. Each failure message gives both numbers and the difference.
+- *The display timeout.* Windows stops a GPU call that keeps a display card busy for more than about 2 seconds
+  (Microsoft calls it TDR; the registry value `TdrDelay` under
+  `HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\GraphicsDrivers`, in seconds, default 2, read at start-up).
+  The error is `cudaErrorLaunchTimeout`, and from then on the program's GPU context is dead: every later TEST of that
+  program fails too, with errors that say nothing. Only the first failing TEST of a program can be trusted; read it
+  first. The launches most at risk are not cut into short pieces: the border runner of
+  `border_blocks_on_gpu_functional_test`, the face search walks of `cell_surroundings_on_gpu_functional_test`, and a
+  dense marking launch of 2,048 blocks in `stacked_borders_on_gpu_functional_test`. Best: drive the display from
+  another GPU (the processor's own graphics) during the run. Else raise `TdrDelay` (for example to 60) and restart
+  Windows, run, and set it back. Say which was done.
+- *A skipped line.* A program whose output contains `[  SKIPPED ]` is reported by ctest as skipped as a whole, even if
+  other TESTs of it failed, and its output is not printed. The script then reads `gpu tests: <passed>/<total> FAIL <n>
+  skipped or disabled`: that program's outcome is unknown, not passed. Run it alone (point 4) and send its full output.
+  No grid GPU test skips itself on purpose now: the one that did
+  (`ReserveBorderSearchStackOnGpu.FromTheDefault_TakesAboutTheEstimatedBytes`, when the driver gave up no bytes) passes
+  instead and writes the note `border search stack: NOT CHECKED, ...` (below).
+
+### Stack sizes
+
+The tests that pin the bytes of stack per thread a GPU function needs
+(`BuildGrid.OnGpuFunctions_KeepUnderTheDefaultStack`, `CheckSizeStepRule.OnGpuFunctions_KeepUnderTheDefaultStack`,
+`BuildGridPiece.OnGpuFunctions_KeepUnderTheDefaultStack`, `FindBorderBlocks.OnGpuFunctions_KeepTheStatedStack`,
+`BuildBorderSearchStackEstimate.OnGpu_IsTheStackForEveryResidentThread`) compare the driver's number with limits read
+from code built by `nvcc` 13.4.59 (the CUDA container) for `sm_120`, `sm_86` and `sm_89`. The script allows `nvcc` 12.8
+or newer, and another version may give other numbers. A failure message gives the measured bytes, the GPU's name and
+the CUDA runtime version; the RTX 5060 Ti is `sm_120`. A value a little above the limit with another toolkit is a
+finding to send back, not yet a defect; a value of 0 for the border search fails, because the estimate would then be 0.
+
+### What to send back
+
+After any run, PASS or FAIL:
+
+1. The block the script prints last, between the two lines of three backticks.
+2. The whole folder `out/gpu-run/<UTC time>/`, zipped: the logs of every command, `summary.txt`, `notes-first.txt`
+   (the timings and findings, including the free-memory and stack notes), `digests-first.txt` and `digests-second.txt`.
+3. `out\build\windows-release-cuda\Testing\Temporary\LastTest.log` (the full output of every test of the last ctest run)
+   and the folder `out\build\windows-release-cuda\gtest_reports\` (one XML file per program, with each TEST's time and
+   the recorded stack bytes, `largest_stack_bytes`).
+4. For a program that failed or was skipped: its full output from running it alone (point 4); for a GPU call error,
+   also its output with `CUDA_LAUNCH_BLOCKING=1` (point 5).
+5. `out\nvidia-smi-before.txt` and `out\nvidia-smi-after.txt`.
+6. If the build failed: the `cmake-build` log of the run folder, whole (it is in the zip of point 2, but say so).
+7. The versions: Windows (`winver`), Visual Studio and MSVC (`cl` prints its version), and whether the card drove the
+   display during the run.
+
 ## What to look for: grid (the GPU tests of the shared grid functions)
 
 The grid tests build every grid on the GPU and again on the CPU, ask the same questions of both, and demand the same
@@ -217,11 +373,14 @@ What to look at first, in this order:
 2. **Empty lists, or a failure at the first marking call.** If every list is empty and `FindLayerOrFail` prints an
    error name, the first marking launch failed. Rerun with `CUDA_LAUNCH_BLOCKING=1` to see which launch.
 3. **The stack digest.** `FindBorderBlocks.OnGpuFunctions_KeepTheStatedStack` writes the local bytes per thread. It should
-   be 3,600. If it is 0 or far below the `STACK` of `cuobjdump`, the estimate is wrong.
+   be 3,600. That number was read from code built by `nvcc` 13.4.59; another toolkit may give another one
+   ("Stack sizes" above). If it is 0 or far below the `STACK` of `cuobjdump`, the estimate is wrong.
 4. **Resident threads and the bytes taken.** `ReserveBorderSearchStackOnGpu.FromTheDefault_TakesAboutTheEstimatedBytes`
    writes a note with the bytes the GPU gave up and the estimate. Resident threads should be 55,296 on the 5060 Ti and the
-   bytes about 199 MB (a little less: the driver may already hold the default 1,024 bytes). The test is skipped if an
-   earlier test already raised the stack. The tolerance is 25 percent; if it fails, the note says by how much.
+   bytes about 199 MB (a little less: the driver may already hold the default 1,024 bytes). If the GPU gave up no bytes
+   at all, the test does not skip (a skip would hide the whole program): it passes and writes the note `border search
+   stack: NOT CHECKED, ...`. Send that note: it means the driver takes the stack later than the reserve, or an earlier
+   call raised it. The tolerance is 25 percent; if it fails, the note says by how much.
 5. **A list that differs from the CPU's.** A block missing from the GPU list points to the marking (the byte store, or
    the number of places). An extra block points to the clear of the marks or a stale word of the scan. A right set of
    blocks in the wrong places points to the prefix sum, which runs in place on `block_count + 1` words.
@@ -232,7 +391,8 @@ What to look at first, in this order:
    means the atomic minimum on the key or the reset.
 8. **`OnGpu_AllocatesNothing`.** It makes one call before counting. If it fails now, something in the search allocates on the
    CPU.
-9. **`MatchesAllocatedGpuBytes` and `HandsOutExactlyTheEstimate`.** The free-byte equality after the build.
+9. **`MatchesAllocatedGpuBytes` and `HandsOutExactlyTheEstimate`.** The free-byte equality after the build. On a card
+   that drives the display, read "A card that also drives the display" above before taking a difference as a defect.
 10. **`OnGpuMoreBlocksThanOneLaunch_SameBitsAsCpu`.** It runs a set larger than one marking launch. A difference here and
     nowhere else points to the split into launches.
 

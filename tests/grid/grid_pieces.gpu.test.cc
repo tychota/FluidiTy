@@ -664,7 +664,7 @@ TEST(BuildGridPiece, OnGpuMoreFacePlacesThanThreads_EqualCpuPiece) {
 TEST(BuildGridPiece, OnGpuFunctions_KeepUnderTheDefaultStack) {
   std::uint64_t bytes_per_thread = 0;
   ASSERT_EQ(ComputeLargestGridPieceStackOnGpu(&bytes_per_thread), RunOnCallStatus::kDone);
-  EXPECT_LE(bytes_per_thread, 1024U);
+  EXPECT_LE(bytes_per_thread, 1024U) << "bytes of stack per thread on " << ReadGpuNameAndRuntime();
   const std::array<std::uint64_t, 1> words = {bytes_per_thread};
   WriteResultDigest("grid piece stack bytes per thread on the GPU", std::span<const std::uint64_t>(words));
 }
