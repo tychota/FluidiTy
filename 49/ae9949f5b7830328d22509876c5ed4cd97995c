@@ -1,0 +1,55 @@
+src/fluidity/base/CMakeLists.txt
+  s_4f0877e2acdcf0::t_aaf146925fd3de 11,34-35,50
+src/fluidity/base/run_on_call_error.cc
+  s_4f0877e2acdcf0::t_caa14b13b167fc 1-44
+src/fluidity/base/run_on_call_error.h
+  s_4f0877e2acdcf0::t_5bb0faa32a4bc6 1-53
+src/fluidity/base/run_on_call_error.test.cc
+  s_4f0877e2acdcf0::t_a19100d63d1940 1-61
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_de353c86c50f6d 4,115
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_13ecaad3e6b92f 264-266
+src/fluidity/grid/cell_block_range_cpu.cc
+  s_4f0877e2acdcf0::t_a78311c1c5ecea 19,21-22,253,260-273
+src/fluidity/grid/cell_block_range_internal.h
+  s_4f0877e2acdcf0::t_6ac10f2174c5a9 1-44
+src/fluidity/grid/cell_block_range_internal.test.cc
+  s_4f0877e2acdcf0::t_1895612c418d0d 1-56
+src/fluidity/grid/staggered_grid_gpu.cu
+  s_4f0877e2acdcf0::t_5854396f9056e0 23,405-420,438,447-454,462-469,477-484,492-499,510-519,537,554-562,571,583-590,602-609,622,643,665,685,706,718,733,744,761,779
+src/fluidity/grid/staggered_grid_gpu.h
+  s_4f0877e2acdcf0::t_1f188de282f0a1 14-16
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_831f2d10dae2f4 13-14
+tests/grid/border_search_replay.test.cc
+  s_4f0877e2acdcf0::t_0cc048e9dd2e2d 18,20,77-84,98-101,207-213,232
+src/fluidity/base/gpu_launch.cuh
+  s_7bd1ffd849cae1::t_696f360f78e73c 18-19,32,39-40,42-46,115
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_7bd1ffd849cae1::t_dac6fa3d2fc461 18,28-31,34-41,43-46,118,337,444,529,566-571
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "49ae9949f5b7830328d22509876c5ed4cd97995c",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_7bd1ffd849cae1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab3c5558a6b9f77ee",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
