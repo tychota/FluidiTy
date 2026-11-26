@@ -644,7 +644,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   lands only then. 1 means that a check failed, or that a step named by `--only` could not run. 3 means a `quick` run whose checks all passed; it is
   not the commit gate and never satisfies the commit rule. `quick` never exits 0.
 - CI: `.github/workflows/checks.yml` describes the checks CI will run (format and rules, the CPU build on Linux, macOS
-  and Windows, and the CUDA compile). It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every
+  and Windows, and the CUDA compile). The `debug` jobs of the CPU build run the unit tests only, as the gate does at the
+  `commit` speed (functional tests take minutes in debug, and one passed the 1,800 s timeout on a Windows runner); the
+  `release` jobs run every test. It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every
   job green on Linux, macOS, Windows and the CUDA compile, so the Windows CPU code has been compiled and its tests run.
   No CI job runs GPU code, and the Windows CUDA build has never been compiled. The local gate remains the commit rule.
 - GPU targets: the CUDA presets compile for RTX 30 (`86-real`), RTX 40 (`89-real`) and RTX 50 (`120-real`, plus

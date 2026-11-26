@@ -9,10 +9,15 @@
 #   rules         The C++ and CUDA sources are clang-format 23.1 clean, tools/check_rules.py reports no FAIL under
 #                 src/, tests/ and docs/method-paper/, the pytest suite of tools/ passes, this file is accepted by
 #                 actionlint, and the message of every pushed commit passes tools/check_message.py.
-#   cpu           The strict CPU build (warnings as errors) of `<os>-<configuration>-cpu` configures, builds and passes
-#                 all its tests (a CPU build registers only `cpu` tests) on Linux (GCC 13), macOS (Xcode 16.4) and
-#                 Windows (VS 2022). The Windows job is the only place the Windows CPU code is compiled; the
-#                 Windows CUDA build has never been compiled or run, and the owner's hardware run is its first.
+#   cpu           The strict CPU build (warnings as errors) of `<os>-<configuration>-cpu` configures and builds on Linux
+#                 (GCC 13), macOS (Xcode 16.4) and Windows (VS 2022). A `release` job runs every test of the build (a
+#                 CPU build registers only `cpu` tests), unit and functional. A `debug` job runs only the tests
+#                 labelled `unit` and prints one line that says so: a functional program takes minutes in a debug
+#                 build, and on a runner `stacked_borders_in_grid_pieces_functional_test` alone ran past the 1,800 s
+#                 timeout of ctest on Windows. This is the speed `commit` of the local gate; the release job and the
+#                 local `--speed full` run the functional tests. The Windows job is the only place the Windows CPU
+#                 code is compiled; the Windows CUDA build has never been compiled or run, and the owner's hardware
+#                 run is its first.
 #   cuda-compile  Everything of `linux-release-cuda` compiles and links with nvcc, every `.cu` file and the `gpu` tests
 #                 included, and the tests labelled `cpu` and `no_gpu` pass.
 #
@@ -228,8 +233,17 @@ jobs:
       - name: Build
         run: uv run --frozen cmake --build --preset ${{ env.PRESET }}
 
+      # A debug build runs the unit tests only, as the gate at the speed `commit` does; the release build runs every
+      # test. ctest labels are regular expressions, so `^unit$` is exact.
       - name: Test
-        run: uv run --frozen ctest --preset ${{ env.PRESET }} --parallel 4
+        run: |
+          if ($env:BUILD_TYPE -eq 'Debug') {
+            'Functional tests are not run in a debug job: the release job and the local full gate run them.'
+            uv run --frozen ctest --preset $env:PRESET --parallel 4 -L '^unit$'
+          } else {
+            uv run --frozen ctest --preset $env:PRESET --parallel 4
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
   # The CUDA compile reuses the gate's `cuda` step instead of retyping it. That step builds
   # tools/cuda-container/Dockerfile and runs the container script of tools/check_commit.py, so the image digest
