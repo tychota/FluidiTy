@@ -1,0 +1,25 @@
+src/fluidity/grid/border_block_steps.test.cc
+  s_4f0877e2acdcf0::t_ecc6464eeee99d 234-237
+src/fluidity/grid/cell_block_range.test.cc
+  s_4f0877e2acdcf0::t_70818311da45c3 201,212-217,220,228-229
+src/fluidity/grid/staggered_grid.test.cc
+  s_4f0877e2acdcf0::t_f7f4c7d20f60e9 66-89
+src/fluidity/grid/testing/allocation_counter.h
+  s_4f0877e2acdcf0::t_281d93b6b1fc5a 24,34-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e0df182e7b00277e4758469011f9dde91b774b79",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
