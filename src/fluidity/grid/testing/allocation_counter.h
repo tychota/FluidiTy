@@ -21,6 +21,7 @@
 #include "fluidity/base/cpu_only.h"
 
 #include <cstdint>
+#include <version>
 
 namespace fluidity::grid {
 
@@ -29,5 +30,43 @@ namespace fluidity::grid {
 // Example: a read of 10, then two std::vector<int> of one element each, then a read gives 12. A request too large to
 //   hold, of any form, is counted and fails as its form says: null for a nothrow form, std::bad_alloc otherwise.
 std::uint64_t ComputeAllocationCount();
+
+// The iterator debug level of this build's standard library: the value of _ITERATOR_DEBUG_LEVEL of the MSVC library
+// (2 in a Debug build, 0 in a Release build), and 0 where the library has no such macro. <version> defines it first.
+#ifdef _ITERATOR_DEBUG_LEVEL
+inline constexpr int kIteratorDebugLevel = _ITERATOR_DEBUG_LEVEL;
+#else
+inline constexpr int kIteratorDebugLevel = 0;
+#endif
+
+// The std::vector objects a call constructs, for ComputeVectorAllocationCount.
+struct VectorObjectCounts {
+  // Vectors that hold a block of memory.
+  std::uint64_t with_memory = 0;
+  // Vectors that hold none because they were built by taking the block of another vector (the vector inside a
+  // std::expected that a function returns from a local vector, for one).
+  std::uint64_t without_memory = 0;
+};
+
+// Computes the number of allocations that the vectors of `vectors` make when they are constructed, at one iterator
+// debug level.
+//
+// Why: the MSVC library, when _ITERATOR_DEBUG_LEVEL is above 0, gives each vector object a small heap block, its
+//   container proxy, that the iterators of the vector point to. The proxy is allocated when the vector object is
+//   constructed, empty or not, and a vector built by a move gets its own. So one vector with memory costs 2
+//   allocations there and 1 elsewhere, and a vector without memory costs 1 there and none elsewhere. A test that reads
+//   ComputeAllocationCount around code that builds vectors states its count through this function, so the count stays
+//   exact on every build.
+//   Example: at level 0, 2 vectors with memory and 1 without cost 2; at level 2 they cost 5.
+constexpr std::uint64_t ComputeVectorAllocationCount(const VectorObjectCounts& vectors, int iterator_debug_level) {
+  const std::uint64_t proxy_count_per_vector = iterator_debug_level > 0 ? 1U : 0U;
+  const std::uint64_t vector_count = vectors.with_memory + vectors.without_memory;
+  return vectors.with_memory + (vector_count * proxy_count_per_vector);
+}
+
+// ComputeVectorAllocationCount at the iterator debug level of this build.
+constexpr std::uint64_t ComputeVectorAllocationCount(const VectorObjectCounts& vectors) {
+  return ComputeVectorAllocationCount(vectors, kIteratorDebugLevel);
+}
 
 }  // namespace fluidity::grid

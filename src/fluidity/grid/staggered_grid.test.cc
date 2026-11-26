@@ -63,6 +63,30 @@ TEST(ComputeAllocationCount, AlignedRequestNearSizeMax_FailsWithoutWrapping) {
   EXPECT_GE(ComputeAllocationCount() - count_after_no_throw_request, 1U);
 }
 
+// The counts of vectors that the tests state through ComputeVectorAllocationCount, at both ends of the levels.
+TEST(ComputeVectorAllocationCount, IteratorDebugLevelZero_CountsOnlyTheMemoryBlocks) {
+  EXPECT_EQ(ComputeVectorAllocationCount({.with_memory = 2, .without_memory = 1}, 0), 2U);
+  EXPECT_EQ(ComputeVectorAllocationCount({.without_memory = 3}, 0), 0U);
+}
+
+TEST(ComputeVectorAllocationCount, IteratorDebugLevelAboveZero_AddsOneProxyPerVector) {
+  EXPECT_EQ(ComputeVectorAllocationCount({.with_memory = 2, .without_memory = 1}, 2), 5U);
+  EXPECT_EQ(ComputeVectorAllocationCount({.with_memory = 2}, 1), 4U);
+  EXPECT_EQ(ComputeVectorAllocationCount({.without_memory = 3}, 2), 3U);
+}
+
+// A real vector made here costs what the helper says for this build.
+TEST(ComputeVectorAllocationCount, OneVectorOfThisBuild_CostsTheHelpersCount) {
+  // Read through volatiles, so an optimizing build cannot drop the allocation of a vector nobody reads.
+  const volatile std::size_t element_count = 4;
+  const std::uint64_t count_before_vector = ComputeAllocationCount();
+  const std::vector<int> values(element_count, 7);
+  const volatile int first_element = values.front();
+  const std::uint64_t count_after_vector = ComputeAllocationCount();
+  EXPECT_EQ(first_element, 7);
+  EXPECT_EQ(count_after_vector - count_before_vector, ComputeVectorAllocationCount({.with_memory = 1}));
+}
+
 // Size level 0 {0,0,0} beside the 8 size-level-1 cells of size level 0 {1,0,0}, 3 size levels. Blocks in the fixed
 // order: 0 is size level 0 (0,0,0), holding the active cell at place 0 and the split cell {1,0,0} at place 1; 1 is
 // size level 1 (0,0,0), whose cells x = 0..3 hold the small cells at x = 2..3, y and z 0..1. Block 1's bigger block is

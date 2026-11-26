@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
-#include <numeric>
 #include <vector>
 
 #include "fluidity/base/buffer.h"
@@ -232,7 +231,10 @@ TEST(ApplySetPlaceReadMarks, PlacesInAnyOrder_GiveTheSameMarks) {
   const GridTables tables = ToTables(owner);
   // The set is block 0 (the range) and block 2 (the border so far): 608 places.
   std::vector<std::uint32_t> in_order(std::size_t{2} * kPlacesPerSetBlock);
-  std::ranges::iota(in_order, 0U);
+  // A loop, because the standard library of Xcode 16.4 has no std::ranges::iota and clang-tidy rejects std::iota.
+  for (std::size_t place = 0; place < in_order.size(); ++place) {
+    in_order[place] = static_cast<std::uint32_t>(place);
+  }
   std::vector<std::uint32_t> in_reverse = in_order;
   std::ranges::reverse(in_reverse);
   std::vector<std::uint32_t> odd_before_even;

@@ -198,7 +198,7 @@ TEST(FindBorderBlocks, PieceOfSplitCornerBlockWithBorder_FindsEveryCellAtItsCent
   EXPECT_EQ(found_places, expected_places);
 }
 
-TEST(FindBorderBlocks, VectorForm_AllocatesTwice) {
+TEST(FindBorderBlocks, VectorForm_AllocatesTwoVectorsAndMovesOne) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
@@ -209,11 +209,15 @@ TEST(FindBorderBlocks, VectorForm_AllocatesTwice) {
   const std::uint64_t count_after_call = ComputeAllocationCount();
   ASSERT_TRUE(border.has_value());
   ASSERT_EQ(border->size(), 2U);
-  // The marks, and the list sized once.
-  EXPECT_EQ(count_after_call - count_before_call, 2U);
+  // The marks, and the list sized once: two vectors with memory. The list moves into the std::expected, which is a
+  // third vector object, without memory of its own.
+  EXPECT_EQ(
+      count_after_call - count_before_call,
+      ComputeVectorAllocationCount({.with_memory = 2, .without_memory = 1})
+  );
 }
 
-TEST(BuildRangeWithBorder, Call_AllocatesTwice) {
+TEST(BuildRangeWithBorder, Call_AllocatesTwoVectors) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
@@ -221,7 +225,8 @@ TEST(BuildRangeWithBorder, Call_AllocatesTwice) {
   const RangeWithBorder range_with_border = BuildRangeWithBorder(test_grid->grid, {.first_block = 0, .block_count = 1});
   const std::uint64_t count_after_call = ComputeAllocationCount();
   ASSERT_EQ(range_with_border.border_blocks.size(), 2U);
-  EXPECT_EQ(count_after_call - count_before_call, 2U);
+  // The marks and the list, built in place in the result.
+  EXPECT_EQ(count_after_call - count_before_call, ComputeVectorAllocationCount({.with_memory = 2}));
 }
 
 TEST(FindBorderBlocks, UnsortedSet_IsBadInput) {
