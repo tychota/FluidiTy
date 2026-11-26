@@ -1,0 +1,23 @@
+src/fluidity/grid/nearby_face_weights.two_sizes.test.cc
+  s_4f0877e2acdcf0::t_a1650ebbab33fd 246
+  s_4f0877e2acdcf0::t_e5ea0111da4f69 194,199,205,207-230,240,255,266,277,292,299,306,312,318,324,330
+  s_4f0877e2acdcf0::t_d2033676204d0d 1-193,195-198,200-204,206,231-239,241-245,247-254,256-265,267-276,278-291,293-298,300-305,307-311,313-317,319-323,325-329,331-337
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_2826bacba94d60 158-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ad3a8c5d3c51787c4009a6b25461828f8cc7923e",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
