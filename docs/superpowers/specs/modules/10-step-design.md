@@ -1343,6 +1343,41 @@ particles::ParticleFields& gas_markers, const GasLaw& law, const MarkerSettings&
 (every input in CPU memory, else `kBadInput`), used in both batched modes; `FindCellsToKeepActive` runs on the
 amounts' processor.
 
+**From the grid as built (2026-11-26)** (grid design 3.4, 3.8, 5.5, 5.8, 6, 11, 12):
+
+- **New cells and the size-step rule: open design point.** `grid::ComputeNewCellSizeLevel` does not keep the
+  size-step rule by itself: `FindNearestCommittedCell` looks at 27 positions one biggest cell width apart, and the
+  cell it finds may not touch the new cell, so a touching smaller cell can be missed. Example: a new cell beside
+  surface cells of size level 3, whose position one biggest width below finds a size-level-0 cell, can take size level 1
+  and break the rule; `BuildGrid` then fails `kSizeStepRuleBroken`, which 5.3 maps to `kStageFailed`. No grid
+  function closes the rule over a list of new cells (`cell_resize::FindCellsThatMustSplit` splits committed cells, on
+  the CPU). Owner question, to answer before the step's plan: should the grid's search look at nearer distances first
+  so that a touching small cell is found, or does the step own a closure over its new list, with a GPU form for the
+  marking pass?
+- **Driver-stack entries.** The grid now has one `kDriverStack` entry, `BuildBorderSearchStackEstimate`: the border
+  search's marking function keeps 3,600 B per thread, about 199 MB for the resident threads of a 36-multiprocessor
+  card; `BuildBorderSearchBuffers` raises the driver's stack once. The driver keeps one stack sized for the largest
+  need of any function launched, so summing the modules' entries (the grid's and contact's) overcounts. Whether the
+  run plan sums the `kDriverStack` entries or takes the largest is an open owner question; the plan uses the sum
+  meanwhile, the upper bound. The 3,600 B is read from the compiled code, not from a run: the plan treats it as a
+  floor until a GPU run confirms the reported bytes.
+- **Border sizes.** On the sloped-surface scene (218 blocks), a range of 8 blocks needs up to 97 blocks as near
+  border and 174 as wide border, about 12 times the range at the near width. The batch plan chooses its range size
+  with the border in mind and sizes piece buffers by the stacked total.
+- **Sums across batches.** Block partials go into whole-grid `CellBlockValues` at their whole-grid index (the piece
+  map gives it), and one tree sum runs after the last batch; a tree sum per piece, added up, is not bit-identical.
+- **Merge settings.** The four merge settings this design and cell resize expect in `grid::CellSizeSettings`
+  (`merge_width_share`, `merge_wait_duration`, `min_merge_wait_steps`, `max_cell_splits_per_resize`) are not declared
+  yet; they are added when cell resize is planned unless the owner says otherwise. The table of widths is
+  `grid::CellWidthsBySizeLevel`; `ComputeWantedCellWidth` takes `(facts, reference_speed, widths, settings)` and
+  `ComputeWantedSizeLevel` `(wanted_width, widths)`; `CellSizeFacts` defaults to "nothing near" (+infinity).
+- **Versions.** Values are matched to a grid by version number and block count only, so every built cell list, a
+  rejected try's included, gets a new version number. `ReadGrid` fails `kBadInput` in every build for a destination
+  not on the CPU.
+- **After `kRunOnCallFailed`** the CUDA context is treated as lost: do not rebuild into the same buffers and go on.
+  Grid operations wait for pending GPU work before they return this error, and the CUDA error's name is kept by
+  `base/run_on_call_error.h`.
+
 **Cell resize and batches (PROVIDED, 3):** reached only through `StepCallbacks`, which the I/O and CLI design
 sets: `cell_resize::ResizeCells` (`resize_cells`), `batches::ApplyStagesInBatches` (`run_stages`). Removed:
 `ChooseCellSize` (`choose_cell_size`; A41, the shared rule in grid), and, not in the first version (A64),
@@ -1714,7 +1749,10 @@ viscous liquid (stage 11, `kReadOneStepLate`) is read one step late" (11.26).
    version. Different: each new cell (not in the committed grid) takes `grid::ComputeNewCellSizeLevel(committed
    tables, its centre, new_cell_size_level)`: the level of the nearest committed active cell plus one, capped at
    `new_cell_size_level`, or `new_cell_size_level` when none is within the probes (A41, A61: a new cell borders
-   air, so its wanted width is the smallest; the cap keeps the size-step rule). It runs in the marking pass on the
+   air, so its wanted width is the smallest). Corrected (grid as built, 2026-11-26; grid Rulings 46, 48): the cap does
+   not keep the size-step rule; the cell found may not touch the new cell, and a nearer, smaller cell that touches it
+   can be missed, so the new list must be closed over the size-step rule before `BuildGrid` (open point, section 4
+   "From the grid as built"). It runs in the marking pass on the
    committed tables' processor (the GPU in a one-piece GPU run, the CPU copy in a batched GPU run): no copy.
    Replaced: "new cells take the level of `choose_cell_size`, else of the nearest committed active cell, else
    `new_cell_size_level`". Sibling cells come together (grid Q39); `grid::BuildGrid(inputs,

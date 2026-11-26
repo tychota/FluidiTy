@@ -859,6 +859,29 @@ grid's own processor: A17 builds a GPU run's grid on the GPU and `tables(RunOn::
 arrays, so `FindGridEdgesOpenToSky` reads `block_ids` in a GPU pass there (5.4 step 5); `grid::WriteValues`.
 Blocks are visited in the grid's fixed block order, which is also the order of the block partials.
 
+**From the grid as built (2026-11-26).** Corner places, for `distance_to_solid` at corners and the corner areas
+(grid design 3.7, 5.8, 12):
+
+- **One set of tables per corner place.** A corner place index belongs to one set of tables. On a grid piece's
+  border a corner may be stored at another size level, in another block, than in the whole grid (Ruling 55). There
+  is no corner id: a corner of a piece is matched with the whole grid's by position (`ComputeCornerPosition` of each
+  place gives the same bits) or through the piece map where the corner's block is loaded, never by corner place.
+- **No reader from a corner to its cells.** No reader goes from a corner place to the cells that have it as a corner
+  (A112). A stage that computes a corner value from the surrounding cells needs more than the border promises.
+- **Which corner places hold a value.** The tables have no kind per corner place; `CornerValues` holds a value at
+  every lattice place, 125 per block, used or not. A corner of a range's cell may be kept in a border block that holds
+  no cell touching it, so a fill driven by cells that writes only places kept in its range leaves that corner
+  unwritten, in every range. The rule the grid's headers give: a value that is a function of position is filled at
+  every lattice place of each block of the range from `ComputeCornerPosition`, so every place of one point holds the
+  same value and a piece's other storing place holds the right one; a corner value that is not a function of
+  position (a solve's result) needs a rule of its own, which this design states before its plan.
+- **Copies by block.** A copy of the range's blocks (a snapshot of a range) brings a corner of a range cell kept in a
+  border block only when that block's range is run, and brings the right value to a piece's other storing place only
+  under the position rule above.
+- **In a grid piece** a reader called outside the border rule returns none, like the edge of the grid. Block partials
+  of a batched run go into whole-grid `CellBlockValues` at their whole-grid index, with one tree sum after the last
+  batch.
+
 **Particles (PROVIDED, particles 3.1 to 3.3):** `ParticlesTry`, `BuildFieldsToRead(particles_try,
 material_index, cell_blocks)`, `BuildFieldsToChange` with `Field::kPlateSide`, `Field::kVelocityForNextStep`,
 `Field::kFittedVelocityChange`; `ParticleFields::cell_blocks`, `id`, `position`, `mass`, `size_level`,

@@ -635,6 +635,23 @@ and, for 3.8, the class `grid::GridPiece` (`grid()`, `range()`, `range_in_whole_
 with its blocks in the grid's fixed order (grid 3.4). `weighted_spread` is a word owned by grid; this module uses it only
 through `ComputeCompleteWeightedSpread`.
 
+**From the grid as built (2026-11-26)** (grid design 5.2, 5.8, 12):
+
+- **A position belongs to the cell `FindCellAt` returns.** A cell owns its low sides, not its high sides. A computed
+  cell corner (`origin + c * width`) or a position one rounding step below a side may belong to the neighbouring
+  cell, in frames whose origin or width is not a power of two especially (the grid's framed test grids needed one or
+  two `std::nextafter` steps up, up to 17 for a corner near zero). Grouping therefore uses `FindCellAt` at the exact
+  double position, never a cell computed from the position by hand, and a test position for a given cell is one
+  `FindCellAt` gives to that cell.
+- **In a grid piece** a reader called outside the border rule returns none, like the edge of the grid: `FindCellAt`
+  for a position outside the range's cells gives a border cell or `kNoIndex`, and a particle on the high side of a
+  range cell belongs to the next cell, possibly a border cell. A stage keeps each particle in a cell of its range as
+  `FindCellAt` gives it; a caller can check `ToCellBlockIndex` of the cell against `GridPiece::range()`.
+- **Versions of pieces.** Values (and recorded grid versions) are checked against a grid by version number and block
+  count only. A piece has the whole grid's version and its own block count, so two pieces of one whole grid with equal
+  block counts pass each other's check: loaded groups are bound again at every load and never read through another
+  piece (a load counter in a piece's version is an open owner question).
+
 **Transfer (PROVIDED, transfer 3):** `ParticlesToGrid`, `GridToParticles` and `MixParticleVelocity` change
 `velocity.for_next_step`, `velocity.for_this_step`, `fitted_velocity_change`, `flags` through
 `ParticleFieldsToChange`; `GridToParticles` turns `kHasOwnMotion` on and turns `kCarriesFittedChange` off when it

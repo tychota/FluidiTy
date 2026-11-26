@@ -26,6 +26,14 @@ untracked). Its section 3 is the contract. Programme design: `docs/design/progra
 6, 7, 8, 8a). Cross-module names: `docs/superpowers/specs/modules/shared-interface.md`, `plan-decisions.md` and
 `owner-answers.md` (planning checkout).
 
+## Status (2026-11-26)
+
+Every task of this plan is implemented and pushed to `rebuild`; the head commit of the module is "Run the grid's
+checks in frames that are not powers of two". The GPU code is compiled and has never run. The as-built record (the
+headers as they are, the tests, the deviations from the design and the deferred items) is the last section of the
+grid design, "12. As built (2026-11-26)", with the decisions taken while building in its section 11. The plan below is
+kept as written: its tasks are not updated to what was built.
+
 ## Revision 2026-11-19 after the pre-flight scan
 
 The scan is `.superpowers/sdd/2026-11-14-rebuild-02-grid/preflight.md` in the worktree. This revision rewrote

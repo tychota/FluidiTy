@@ -403,7 +403,7 @@ counts the material sets).
 | `CellBlockRange`, `FaceValues<T>`, `CellValues<T>` | the same names (grid 3.4, 3.6) |
 | `face_index` (`std::uint32_t`), owned by one block | `grid::FacePlaceIndex`, ordered by (block, axis, place in block). Not dense: a place with `FacePieceKind::kNotAPiece` is skipped |
 | `FaceWeight { face_index; weight (not normalised); weight_change; offset_from_particle; }` | `grid::FaceWeight { face; weight; offset; offset_from_mean; weight_change; }`, already scaled over the kept faces (grid 5.4, steps 5 to 7) |
-| `NearbyFaceWeights { faces; count; }`, `ComputeNearbyFaceWeights(grid, axis, position)` | `FindNearbyFaces(tables, position, axis, near, &error)` gives a `NearbyFaceList`; transfer clears mask bits; `ComputeNearbyFaceWeights(tables, list, position, kept)`; `ComputeFaceWeight(tables, weights, position_in_list)`. `kMaxNearbyFaces` is 76 |
+| `NearbyFaceWeights { faces; count; }`, `ComputeNearbyFaceWeights(grid, axis, position)` | `FindNearbyFaces(tables, position, axis, near, &error)` gives a `NearbyFaceList`; transfer clears mask bits; `ComputeNearbyFaceWeights(tables, list, position, kept)`; `ComputeFaceWeight(tables, weights, position_in_list)`. `kMaxNearbyFaces` is 216 (A105; it was 76) |
 | `ComputeFaceWeight(grid, face_index, position)`, the weight seen from one face | `grid::ComputeFaceWeight(tables, face, position, cell, sums)` with `grid::NearbyFaceSums` (grid 3.7) |
 | `CellRef`, `CellsNearFace`, `FindCellsNearFace`, `kMaxCellsNearFace` | `grid::CellsNearFace`, `FindCellsNearFace(tables, face)`, cells as `CellPlaceIndex`, `kMaxCellsNearFace = 112` (grid 3.7) |
 | `FindFacesNearFace`, `kMaxFacesNearFace` | `grid::FaceSearch`, `BuildFaceSearch(tables, face, radius)`, `FindNextFace` (grid 3.7). A walk, not a fixed list |
@@ -484,6 +484,52 @@ and `CellsFromParticles` of the set holding the liquid, after `ParticlesToGrid`.
 **For the sand module:** sand is a material set of its own (`solids::MaterialSetFaces` needs one
 `AtSolidFaces` rule per set, and sand's differs from snow's); it uses `kFillRadiiInCells` like every material
 (decision 4), so no sand-specific fill radius exists here.
+
+### From the grid as built (2026-11-26)
+
+What the grid's code decides and this design must follow (grid design 3.7, 5.4, 5.5, 12; A112, A114). The method
+sections below are not yet rewritten for it; the transfer plan applies it.
+
+- **Sums made in the particle's range, carried.** A particle's `NearbyFaceSums` (three fields: `weight_sum`,
+  `raw_weight_change_sum`, `mean_offset`; 56 B per axis, 168 B per particle) are computed in the range that holds
+  the particle's cell and carried with the particle. The near border does not cover them: they read faces two
+  touching steps away (A112; grid test `BuildRangeWithBorder.ParticleSums_NeedAFaceBeyondTheNearBorder`).
+- **Gathered where `FindCellAt` puts it.** Each particle is gathered in the range of `FindCellAt` at the exact double
+  position its weights use; a particle moved since it was grouped is grouped again first (A112). A cell owns its low
+  sides, not its high sides: a particle on the high side of a range cell belongs to the next cell, possibly a border
+  cell, where `FindNearbyFaces` lists fewer face pieces with no error. The stage checks `ToCellBlockIndex(list.cell)`
+  against the piece's range and fails otherwise.
+- **Centred values before a fit.** Values are centred on their weighted mean before a fit; the pivot floor stays
+  `kMinPivotShare = 1e-12` (A114). The fit takes `NearbyFaceWeights::fit` and `inverse_weighted_spread` from the
+  grid, so that "W below `kMinWeightSum` is `kMeanOnly`" is kept, and maps `kMeanOnly` to the module's own outcome.
+- **The face form of `ComputeFaceWeight`.** It needs the sums of the face's own axis (`ToAxis(face)`), the exact
+  double position the sums were made for, and the cell `FindCellAt` gives for it. It decides membership by the
+  list's rule, so it calls `FindTouchingCells` once for each candidate face that passes the window test, and
+  recomputes the cell's id, window quarters and width per call: a cost per particle and face. A cache per particle
+  (its touching cells, or the list itself) may be wanted; the transfer plan measures it before it fixes its passes.
+  `FindNearbyFaces` is one axis per call, so three calls repeat `FindCellAt`, `FindTouchingCells` and the face pieces
+  of up to 57 cells.
+- **The face form cannot know the caller's kept mask.** A listed face gets the weight it would have had if kept. The
+  mask rule must be decidable from the face alone (same plate side, `outside_solid`, value present), applied by
+  transfer, and the weight of a face the mask leaves out is never added to a sum. Asking about such a face is
+  allowed: a weight above 0 says the particle reaches it, which is the predicate 5.2 step 3 records the side with.
+- **Fills use the face search.** The fill walks `BuildFaceSearch` / `FindNextFace`, which give only face pieces of
+  size levels `l - 1`, `l` and `l + 1` (`l` the start's own), strictly within the radius, radius in the start's
+  widths, at most 4 (Ruling 56; owner confirmation open). The `kFourCellWidths` border is exactly the face search's
+  block set.
+- **Offsets far from the origin.** An offset is a difference of absolute positions and carries about `eps` times the
+  distance from the origin: 4e-12 on a fitted value at 1,300 m with 3 m cells (grid 5.4, Ruling 72). Tolerances of
+  transfer tests carry that term; offsets relative to the cell are an open owner question.
+- **Weights across a size change.** The weight a particle gives a face of another size than its cell: the distance
+  divided by the particle's cell width, times the face's area over that width squared (1/4 for a smaller face, 4 for
+  a bigger one). Checked by hand in exact fractions on a 1 m cell beside 0.5 m cells, list and face forms (grid test
+  `nearby_face_weights.two_sizes.test.cc`). `weight_change` grows like `1/W` as `W` goes to 0 in `kMeanOnly`.
+- **GPU stack.** A list is 888 B (`kMaxNearbyFaces = 216`); a thread holding three axes keeps 3,456 B, and a call to
+  `FindNearbyFaces` needs 1,216 B more (4,672 B, and 888 B more if the list is kept apart from the weights). Transfer
+  owns the `kDriverStack` entry of its GPU functions, sized from these numbers plus its own locals.
+- **In a grid piece.** A reader called outside the border rule returns none, like the edge of the grid; at the near
+  width `FindCellsNearFace` covers only the cells at most one size level bigger than the face piece (the cells that can
+  list it).
 
 ## 5. Method
 

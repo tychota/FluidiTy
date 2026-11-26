@@ -813,9 +813,9 @@ the step calls in stage 2), `CellPlaceIndex`, `FindCellPlace`, `FindFacePlace`, 
 `ComputeNearbyFaceWeights`, `ComputeFaceWeight`, `CellValues`, `FaceValues`, `CellBlockValues` (with
 `grid_version()`, `block_count()`, `buffer()`), `BuildCellValues(RunOn, std::uint32_t max_cell_blocks)` and the
 face and block forms, `ApplyGridVersion(values, grid)`, `ReadValues`, `WriteValues`, `CellBlockRange`,
-`BuildRanges`, `BorderWidth`, `FindBorderBlocks` (the span forms, CPU grid only: the allocating one returning
-`std::expected<std::vector<CellBlockIndex>, GridFailure>`, and the one writing into a
-`std::span<CellBlockIndex>` and returning the count), `GridPiece` (`grid()`, `range()`, `range_in_whole_grid()`,
+`BuildRanges`, `BorderWidth`, `FindBorderBlocks` (the vector form, CPU grid only, returning
+`std::expected<std::vector<CellBlockIndex>, GridFailure>`; the form writing into a `std::span<CellBlockIndex>` is
+retired, grid Ruling 66: a CPU run uses the buffer form with CPU buffers where it must not allocate), `GridPiece` (`grid()`, `range()`, `range_in_whole_grid()`,
 `block_in_whole_grid()`; blocks in the whole grid's fixed order), `BuildGridPiece(const StaggeredGrid& whole,
 CellBlockRange range, std::span<const CellBlockIndex> border_blocks, GridBuffers& storage)` (CPU whole grid),
 `TakeBuffers(GridPiece&&)`, `FacePieceKind::kOutsidePiece`, `BuildGridMemoryEstimate(RunOn run_on,
@@ -853,6 +853,44 @@ std::expected<GridBuilderBuffers, GridFailure> BuildGridBuilderBuffers(RunOn run
 std::expected<GridBuffers, GridFailure> BuildGridBuffers(const GridSettings& settings, GridBuilderBuffers& builder_buffers);
 enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids };
 ```
+
+**From the grid as built (2026-11-26)** (grid design 3.4, 3.8, 5.5, 5.8, 6, 11, 12):
+
+- **New cells and the size-step rule: open design point.** `grid::ComputeNewCellSizeLevel` does not keep the
+  size-step rule by itself (5.3 corrected): `FindNearestCommittedCell` looks at 27 positions one biggest cell width
+  apart, and the cell it finds may not touch the new cell, so a touching smaller cell can be missed. No grid function
+  closes the rule over a list of new cells, and `FindCellsThatMustSplit` splits committed cells on the CPU while the
+  step computes new levels in its marking pass on the grid's processor. Owner question, to answer before the step's
+  plan: should the grid's search look at nearer distances first so that a touching small cell is found, or does the
+  step own a closure over its new list, with a GPU form? This design owns a brute-force test of the nearest committed
+  cell on random grids (the grid has 8 and 10 hand cases for `ComputeNewCellSizeLevel` and
+  `FindNearestCommittedCell`).
+- **Border sizes.** On the sloped-surface scene (9,584 cells, 218 blocks, ranges of 8 blocks), a range of 8 blocks
+  needs up to 97 blocks as near border and 174 as wide border: about 12 times the range at the near width. Choose the
+  range size with the border in mind, and size piece buffers by the stacked total (range plus every layer). Layers are
+  found from the last stage's width to the first; range plus border so far above `kMaxSetBlocks = 14,128,181` blocks
+  fails `kTooManyCellBlocks`; an empty range is `kBadInput` in `BuildGridPiece`; a border list smaller than the stages
+  need is not detected (readers then answer none). The grid's piece tests run on 5 to 16 random grids of one frame and
+  16 framed grids: plan a piece test at the run's real range sizes.
+- **Sums across batches.** Each block's partial goes into a whole-grid `CellBlockValues` at its whole-grid index
+  (`block_in_whole_grid` gives it), and one `math::TreeSum` runs after the last batch. A tree sum per piece, added
+  up, is not bit-identical to the whole grid's.
+- **Pieces and versions.** Two pieces of one whole grid with equal block counts pass each other's version check:
+  values are bound again at every load and never read through another piece (a load counter in a piece's version is
+  an open owner question).
+- **Driver-stack entries.** The grid now has one `kDriverStack` entry, `BuildBorderSearchStackEstimate` (3,600 B per
+  thread for the border search's marking function, about 199 MB on a 36-multiprocessor card), to add to a GPU plan
+  beside `BuildBorderSearchMemoryEstimate`. Whether the step sums the modules' `kDriverStack` entries or takes the
+  largest (the driver keeps one stack, sized for the largest need) is an open owner question.
+- **Memory plan.** A CPU grid's `kRunOn` and `kCpu` entries come from one CPU `RunMemory` (the builders do not read
+  `where`); each `GridBuilderBuffers` keeps an 8-byte lent count outside every `RunMemory`.
+- **Cell size rule.** The four merge settings this design reads from `grid::CellSizeSettings`
+  (`merge_width_share`, `merge_wait_duration`, `min_merge_wait_steps`, `max_cell_splits_per_resize`) are not declared
+  yet: they are added when cell resize is planned, unless the owner says otherwise. The table of widths is
+  `grid::CellWidthsBySizeLevel` (this design writes `CellWidthsByLevel`); `ComputeWantedCellWidth` takes
+  `(facts, reference_speed, widths, settings)` and `ComputeWantedSizeLevel` `(wanted_width, widths)`. `CellSizeFacts`
+  has no `cell_width` field and defaults the depth and the distance to +infinity, "nothing near"; two of its four
+  flags are read only by this design's merge test.
 
 **Particles (PROVIDED, particles 3.1 to 3.8):** `ParticlesTry`, `ParticleFields`, `ParticleFieldsToChange`,
 `Field`, `FieldList`, `ToFieldList`, `BuildFieldsToRead`, `BuildFieldsToChange`, `ParticleAmounts`,
@@ -1304,8 +1342,10 @@ deep down) pay `8 x (depth / w) x A / w^2`.
 processor): the level of the nearest committed active cell plus one, capped at `smallest_size_level`
 (`grid::FindCellAt` probes at `position + {-1, 0, 1}^3 * biggest width`, nearest centre, ties in fixed cell order;
 `smallest_size_level` when none is found). This is rule 1 for a new cell: it borders air, so its depth is 0 and
-its wanted width `w_min` (A61); the cap keeps the size-step rule against the cell it grew from, and the next
-`ResizeCells` finishes the job. **Replaced** (A41): `ChooseCellSize` (a CPU callback with its one-piece GPU copies:
+its wanted width `w_min` (A61), and the next `ResizeCells` finishes the job. Corrected (grid as built, 2026-11-26;
+grid Rulings 46, 48): the cap does not keep the size-step rule; the cell found may not touch the new cell, and a
+nearer, smaller cell that touches it can be missed, so the step closes the rule over its new list (open point, section
+4 "From the grid as built"). **Replaced** (A41): `ChooseCellSize` (a CPU callback with its one-piece GPU copies:
 new cells read back, levels sent, a `ReadGrid` when no current copy was held) and the open question of a shared rule.
 
 ### 5.4 Remap between two grid versions, and conflict C2
@@ -1902,7 +1942,7 @@ terms), demanded within `1e-13` of the cell width.
 | Batch plan (changed, A15) | rows chosen so the whole-grid arrays are below and above the share; allowed bytes between the batched layout with solves in pieces and the one with whole solves; a solve piece below three layers; CPU rows above `allowed_cpu_bytes`; a layer wider than a batch; one and three material sets | `kWholeGridOnProcessor`, `kInPieces` (every row sum below `allowed_bytes`), `kBatchDoesNotFit`, `kStateDoesNotFitCpu`, `kBatchDoesNotFit`; `max_loaded_blocks` falls with each extra set; runs with no GPU (`BuildBatchPlan, WholeGridBelowShare_SolveOnProcessor`, `..., WholeGridAboveShare_SolveInPieces`, `..., FitsOnlyWithSolvesInPieces`, `..., SolvePieceBelowThreeLayers_IsBatchDoesNotFit`, `..., CpuRowsAboveAllowedCpu_IsStateDoesNotFitCpu`, `..., LayerWiderThanABatch_IsBatchDoesNotFit`, `..., MoreMaterialSets_FewerLoadedBlocks`, `..., RunOnGpuWithoutAGpu_StillPlans`) | exact |
 | Plan report (NEW, A15) | open-top wave; closed box | `bytes_on_processor`, `bytes_on_cpu` equal `ComputeMemoryBytes` of the rows by `where`; `solve_loads_per_iteration == 3 * solve_batch_count` (wave), `4 *` (box) (`BuildBatchPlan, ReportsBudgetsAndCopies`) | exact |
 | Stacked border (changed, A15: pass 1 only) | for each stage k of pass 1, the run parts after k null, on a mixed-size grid (deep tank after 5 resizes) | the arrays pass 1 wrote, batched against the same stages on the whole grid: same bytes (`ApplyStagesInBatches, PassOneStagePrefix_SameBytesAsWholeGrid`; replaces `EveryStagePrefix_SameBytesAsOnePiece`) | exact |
-| Stacked border, buffer form (NEW, A17) | 100 random grids, CPU buffers | `FindStackedBorder` equals the span form of `grid::FindBorderBlocks` layer by layer (`FindStackedBorder, PassOne_EqualsRepeatedFindBorderBlocks`) | exact |
+| Stacked border, buffer form (NEW, A17) | 100 random grids, CPU buffers | `FindStackedBorder` equals the vector form of `grid::FindBorderBlocks` layer by layer (the span form is retired, grid Ruling 66) (`FindStackedBorder, PassOne_EqualsRepeatedFindBorderBlocks`) | exact |
 | Piece map (NEW, A17) | loads of several ranges | `bytes_from_processor` grows by 4 B per loaded block per load (`WriteBatch, PieceMapReadBackOncePerLoad`) | exact |
 | Pass-1 geometry (NEW, A15) | after pass 1 | the whole buffers' snapshot rows equal `FindLiquidSurface` on the whole try (`ReadBatch, PassOneGeometryEqualsWholeGrid`) | exact |
 | Write-back (NEW) | one pass | border blocks of the whole try keep their bytes (`ReadBatch, WritesBackRangeBlocksOnly`) | exact |
