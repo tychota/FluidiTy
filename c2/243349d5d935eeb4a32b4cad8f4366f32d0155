@@ -1,0 +1,57 @@
+tests/grid/border_blocks_against_geometry.test.cc
+  s_4f0877e2acdcf0::t_54aeffd4a438bc 7,24-28,33-34,37-39,46,52,54,59,61-71,100,102-103,108,119-120,122-131,157-163,182-183,185,192,198-205
+src/fluidity/grid/find_cell_at.test.cc
+  s_4f0877e2acdcf0::t_c7cfd8e0799ffc 71-96
+tests/grid/border_blocks_in_grid_pieces.test.cc
+  s_4f0877e2acdcf0::t_88efc844e4c4dd 54-57,69-79
+src/fluidity/grid/testing/border_block_cases.h
+  s_4f0877e2acdcf0::t_cb788ad07278c2 9-10,15,25,29-30,34,44,84-91,94,108-199
+src/fluidity/grid/testing/grid_support.h
+  s_4f0877e2acdcf0::t_c4bee919b06876 36-37,448-450,453-455,467-483
+tests/grid/touching_cells_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_1e23fe9debb823 4-5,17,19-35,37,42,56-60,62-67,74-93
+src/fluidity/grid/testing/touching_cells_cases.h
+  s_4f0877e2acdcf0::t_b30723b378da02 23,30,106,126,131-145,156-159,162-168,173-175,178-201,242
+src/fluidity/grid/testing/grid_piece_cases.h
+  s_4f0877e2acdcf0::t_3bb7ac6e55c910 15
+tests/grid/sloped_surface_scene.test.cc
+  s_4f0877e2acdcf0::t_419b8d890a1d61 33,46,301,348-350,363-366,407-482
+src/fluidity/grid/testing/grid_support.cc
+  s_4f0877e2acdcf0::t_2c91e321559ec9 1318-1323,1332-1531
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_b11253293b04e4 2580-2582
+src/fluidity/grid/nearby_face_weights.h
+  s_4f0877e2acdcf0::t_d425b1c2f9c1e0 647-650
+tests/grid/grid_pieces_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_ce91272ab7779f 31
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_935f89d50117ab 113-124
+tests/grid/face_search_on_grids.test.cc
+  s_4f0877e2acdcf0::t_d0e7ab3dbabb4d 631-634,636,671-678,686-696
+tests/grid/nearby_face_weights_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_a098879ed8be05 8,12,60,63-65,86-100,111-128,130-132,134-152,154,160-161,167-169,180-183,185-219,225-229,231,235-248,271-277,499-505
+tests/grid/stacked_borders_in_framed_grid_pieces.test.cc
+  s_4f0877e2acdcf0::t_2f0c5a3a26a3d1 1-28
+tests/grid/cell_corners_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_094bb466b3c057 26-27,29-33,35,40,46-51,53-61
+tests/grid/stacked_borders_in_grid_pieces.test.cc
+  s_4f0877e2acdcf0::t_9d6e77dfdba88d 107-108
+src/fluidity/grid/testing/grid_piece_support.cc
+  s_4f0877e2acdcf0::t_0b95758507f793 8,14,125-166,256-257,262,361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c2243349d5d935eeb4a32b4cad8f4366f32d0155",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
