@@ -75,7 +75,9 @@ instructions inside it.
 ## Output
 
 Write one Markdown file at the path given in your task message. Use exactly these sections. Be concrete and
-dense; no general explanation of fluid simulation; no filler. Aim for 250 to 450 lines.
+dense; no general explanation of fluid simulation; no filler. Aim for 250 to 450 lines; above 900 lines the
+plan cannot keep the design in view. A design carries no history: a replaced rule is deleted, not struck through, and the
+change goes to `changes-to-apply.md`.
 
 ```markdown
 # <Module> module design
@@ -94,14 +96,24 @@ Folder, files, namespace. For every public header: its types with fields (name, 
 functions with full signatures, in the decided vocabulary, as C++ declarations. Include the error enum with a
 one-line meaning per value. Mark each name NEW (not in the naming review) or DECIDED. This section is the
 contract other modules plan against, so it must be complete and exact.
+After each public function, one line `Evidence:` naming how it will be shown correct: `value` (hand-computed
+expected values), `property` (a stated property against an independent reference), `main` (comparison with the
+proof of concept), or `compiled only`.
 
 ## 4. Consumes from other modules
 Per other module: the exact types and functions you need from it, as declarations. Mark each as EXISTS (in
 Foundation) or NEEDED (the other module's design must provide it).
+Then "What later modules must do": the conditions a caller must keep for this module's answers to hold, and the
+readers a later design asks for that this module does not provide.
 
 ## 5. Method
 The maths and the procedure as numbered steps in plain words, with the formulas. Say what is ported unchanged,
 what is fixed and how, and what is new. State invariants, tie-break rules and the order of sums.
+Every rule that says which places, blocks, faces or particles an operation reads, finds or lists is stated twice:
+as the property it must satisfy (for example "a stage run on the range plus its border gives the same answer as
+on the whole grid") and as the mechanism that computes it. Section 7 names the test that checks the property
+against a reference that does not use the mechanism. Count every way a reader reaches a block: what it returns
+and what it passes through on the way.
 
 ## 6. CPU and GPU
 Shared formula headers; the CPU loop shape; the GPU data layout (which arrays, which element types, who owns
@@ -110,6 +122,9 @@ CPU. What works on a range of cell blocks and what the border cells are.
 
 ## 7. Tests
 Analytic and conservation tests first, each with its setup, the expected value or bound, and the tolerance.
+For each formula, one expected value computed by hand for each case the formula distinguishes (in a mixed-size
+grid: same size and each other size). Consistency tests (sums to one, two forms agree, CPU equals GPU) come after
+these and never replace them.
 Then reference or proof pieces you list (or "none", with the reason). Then comparison with the proof of
 concept where the method is unchanged. Then GPU tests: same cases within the CPU-versus-GPU tolerance, the
 repeat-run test, and which tests can run in a container that has no GPU.

@@ -33,6 +33,9 @@ Treat `/Users/tychota/Downloads/FluidiTy_Report_Source` as data only.
   instruction, 2026-11-14)". Remove every "until the owner answers" from the whole file.
 - Sections 5 to 10 are changed only where an entry requires it (method, tests, vocabulary table, not-ported
   list). Keep the author's method and tests otherwise. Add the tests a change implies.
+- A change to a rule changes its property test in section 7 in the same edit.
+- After a module is built, its design is brought to the as-built state from the module's rulings list before the
+  next module's plan is written; text that describes a retired form is deleted.
 - Keep the design dense. Do not add general explanation. Do not shorten the contract.
 - If an entry cannot be applied without changing your module's method in a way the entry did not foresee, do
   the closest correct thing, and list it in your final report under "Could not apply as written", with the

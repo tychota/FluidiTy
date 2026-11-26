@@ -63,16 +63,53 @@ Rules for the tasks:
    logic can be reached in the container without a GPU (shared formulas, CPU-side packing, error paths).
    Device code is "compiled, not run": say so in the commit message of each such task.
 4. **Tests come from the design's section 7.** Every test listed there must appear in exactly one task, with
-   its setup, expected value and tolerance. Analytic and conservation tests first. Tests that compare with the
+   its setup, expected value and tolerance. Analytic and conservation tests first. Every formula gets at least one
+   test whose expected value is computed by hand (or by an independent script kept in the test's comment) for each
+   case the formula distinguishes (one size and mixed sizes; inside and on a side), and the task names one
+   plausible wrong formula that this test, and no consistency test, rejects. Tests that compare with the
    proof of concept say how to produce the old number (which test or tool on `main`, rotated to Z-up) and are
    never the only test of a task. A known-open test is committed with CTest `WILL_FAIL` and the label
    `known_open`, listed in `docs/known-open-physics.md`.
+4a. **Rules that define a set are tested before they are built.** Any rule that says which places, blocks, faces
+   or particles an operation reaches (a border, a search's block set, a candidate window, a completeness
+   condition, a bound on a count) gets its own task before the task that implements it. That task writes only the
+   defining test and a brute-force reference that computes the set from geometry or by running the readers
+   themselves (for a border: run every reader from every place of a piece holding only the range and its border,
+   and compare each answer with the whole grid), never by restating the rule's mechanics. The test passes against
+   the reference and fails against at least one smaller set. The implementing task then makes the same test pass.
+   Kind `definition`; Opus review asked "is the reference independent of the rule, and is the rule complete?"
 5. **What the implementer cannot decide alone** goes in the plan: file names, test names, constants, the order
    of sums, which `main` lines a formula is ported from, the fixed inputs of each test. What they can decide
    (bodies, local names) does not.
-6. **Each task names its difficulty**, on a line `**Kind:**` with one of: `mechanical` (build files, enums,
-   plumbing, docs), `numerics` (formulas, solvers, tolerances), `device` (CUDA code and its packing),
-   `integration` (several modules meeting). The coordinator uses it to choose the model for the task.
+5a. **Each task has a `Brief:` block** that is all an implementer needs besides `AGENTS.md`:
+    - **Design sections:** every design section the task implements or relies on (3.x, 5.x, the section 7 tests),
+      copied in full into the brief file at dispatch. A section named but not attached is a fault of the brief.
+    - **Consumes, checked:** each consumed name with the header that declares it on the branch; the coordinator
+      checks them against the code at dispatch.
+    - **Decided before dispatch:** every choice a reviewer would otherwise ask about (error code for each bad
+      input, struct shapes and sizes, stack and memory numbers as "measure and write" or as a value with its
+      source).
+    - **Tests: where and how big.** Unit tests beside their header, hand-written input, at most 50 ms in debug.
+      Functional tests in `tests/<module>/`, their sizes as numbers (grids, positions, ranges), chosen so the
+      program takes at most 60 s in release and finishes in debug within the 1,800 s entry timeout. Sizes are
+      never left to the implementer to cut; if they cannot fit, the implementer reports it.
+    - **If the design is wrong:** stop BLOCKED with a counterexample (grid, place, expected and actual set). Do not
+      implement a corrected rule until its defining test exists (rule 4a).
+6. **Each task names its Kind, its review and its dependencies.**
+   - `**Kind:**` one of `mechanical`, `numerics`, `device`, `integration`, `definition` (rule 4a).
+   - `**Review:**`
+     - For `definition`, `numerics`, `device` and `integration`: Opus, with two to five numbered questions the
+       reviewer answers with a traced example, always including "which plausible wrong implementation do the
+       tests accept?"
+     - For `mechanical`: Sonnet, scoped to the brief's numbers and the tests' sizes.
+     - For a comparison-only task: no separate review.
+     - Every review also checks each number and claim in a comment the diff adds (bytes, counts, bit positions,
+       "one launch") against the code.
+   - `**Needs:**` the tasks whose commits it builds on.
+   - `**Touches:**` the files it creates or changes. Two tasks with no `Needs` link and disjoint `Touches` may run
+     at once in separate worktrees.
+
+   Size tasks for an implementer run of 20 to 50 minutes. The implementer is Sonnet by default for every Kind.
 7. **Later modules that do not exist yet:** when your module's design says the step, I/O or another later
    module calls you, your tests call your functions directly with hand-built inputs. Do not stub other modules.
    When your module must change a file owned by an earlier module (a design entry marked NEW in that module),
@@ -89,8 +126,15 @@ Rules for the tasks:
    the tip; check the design section by section and record anything delivered differently; write the module's
    row in `docs/gpu-runs.md` as "compiled, not run" with the list of `gpu` tests to run at the end of the
    programme).
-10. **Proportion.** The plan is the set of decisions, not the program. Aim for 500 to 900 lines. If a task
-    needs more than about 60 lines, split it.
+10. **Proportion and currency.** The plan is the set of decisions, not the program: 500 to 900 lines, no task over
+    about 60 lines. The plan always reads as current. A revision rewrites the tasks it changes and adds one line to
+    `<plan name>-revisions.md` beside it (date, cause, tasks changed); it never adds a revision section to the plan
+    itself. When a ruling or a layout change makes a task stale, the task is rewritten before it is dispatched, not
+    translated in the dispatch.
+11. **Review findings.** Critical and Important are fixed in the task by a fresh agent given the findings and the
+    diff. A Minor finding that is a comment or name change or a test sharpening of a few lines is fixed by the same
+    fix agent when there is one; otherwise it is parked with file and line. A fault that can hang, crash or give a
+    wrong answer is never Minor.
 
 ## Self-review before you finish
 
@@ -99,6 +143,9 @@ Rules for the tasks:
 - Names and signatures are identical everywhere in the plan and identical to the design.
 - No step says "handle edge cases", "add tests", "TBD" or anything that decides nothing.
 - Each task can be executed by someone who reads only that task plus the header.
+- Every field and setting of every design 3.x struct is produced by a named task.
+- Every set-defining rule has a `definition` task before its implementing task.
+- No task asks the implementer to cut test sizes or keep a test under a time; sizes are numbers.
 
 ## Final report
 
