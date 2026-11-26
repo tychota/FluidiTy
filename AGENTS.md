@@ -125,6 +125,9 @@ particle and cell verbs of the glossary:
    the code.
 5. **Show a small example** with numbers wherever a contract is hard to picture.
 6. **Format.** 120 columns, clang-format 23.1, `//` comments.
+7. **True beside the code.** A comment that states a number (bytes, counts, bit positions) or says "one launch",
+   "every" or "never" must be true of the code beside it. Whoever changes the code checks those comments in the
+   same change.
 
 ### File header
 
@@ -320,6 +323,14 @@ The name of a CMake target does not have to follow the file name.
   that checks one call, or a short hand-written list of calls, on input written by hand is a unit test, even when
   the function under test builds a whole grid (`BuildGrid`).
 - `e2e/` is for runs through the public entry of the program. It holds only a `README.md` that says so for now.
+- Test sizes. A functional test program takes at most about 60 s in the release build, and it must finish in the
+  debug build within its 1,800 s ctest timeout. Its sizes (grids, positions, ranges) are written as numbers. Nobody
+  cuts a test's size to make it faster: if a size cannot fit, say so and stop.
+- Every formula has at least one test whose expected value is computed by hand, for each case the formula
+  distinguishes (for example the same cell size and mixed cell sizes). Tests that only check consistency (the parts
+  sum to one, two forms agree, CPU equals GPU) come after it and never replace it.
+- A rule that says which places, blocks, faces or particles an operation reaches is checked by a test against a
+  reference that finds the set without the rule's own steps: from geometry, or by running the readers themselves.
 
 A test file that holds both kinds is split: the unit tests stay where they are, the functional tests move to
 `tests/<module>/`, and a helper that both parts call goes to `src/fluidity/<module>/testing/<name>_cases.h`, written
@@ -514,6 +525,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
 
 ## Commands
 
+- Working here: never run `git stash` (all worktrees share one stash list). Run the gate in the foreground, and leave
+  no background process and no wait loop. Use `--speed quick` while working and the `commit` speed once before the
+  commit.
 - Gate for every commit. The gate checks what will be committed, so the order is: stage (`git add`), run the gate
   from the repository root, `uv run python tools/check_commit.py`, then commit. Add `--only <step>` to run one
   step: `format`, `rules`, `cpu`, `tidy`, `paper` or `cuda`. It prints one line per check, in this order.
@@ -649,6 +663,7 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   `release` jobs run every test. It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every
   job green on Linux, macOS, Windows and the CUDA compile, so the Windows CPU code has been compiled and its tests run.
   No CI job runs GPU code, and the Windows CUDA build has never been compiled. The local gate remains the commit rule.
+  A red CI run does not block work while the rewrite is in progress, but its result is read after every push.
 - GPU targets: the CUDA presets compile for RTX 30 (`86-real`), RTX 40 (`89-real`) and RTX 50 (`120-real`, plus
   `120-virtual`). The owner's hardware run is on an RTX 5060 Ti; it is not recorded yet in `docs/gpu-runs.md`, so
   even that card is untested today. RTX 30 and 40 are compiled for, unverified. On a machine with a GPU, the tests
