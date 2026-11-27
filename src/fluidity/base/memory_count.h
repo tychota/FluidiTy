@@ -96,11 +96,25 @@ struct MemoryCounts {
 // Read: docs/method-paper/fluidity-method.typ <sec-memory-estimate>
 std::uint64_t ComputeMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts);
 
-// Sums the bytes of the entries kept in `where` only. The step compares the kRunOn sum plus the kDriverStack sum with
-// the processor's memory and the kCpu sum with CPU memory. Saturation, kept_for and counted_per behave as in the
-// two-argument form.
+// Sums the bytes of the entries kept in `where` only. The step adds the kRunOn sum and the largest kDriverStack entry
+// (ComputeLargestEntryBytes) and compares that with the processor's memory, and compares the kCpu sum with CPU memory.
+// Saturation, kept_for and counted_per behave as in the two-argument form.
 std::uint64_t
 ComputeMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts, MemoryWhere where);
+
+// Computes the bytes of the largest single entry kept in `where`: 0 when no entry is kept there.
+//
+// Why: the GPU driver keeps one stack per thread, sized for the largest need of any function launched, so the
+//   entries of MemoryWhere::kDriverStack share that one stack. The total takes the largest of them, not their sum,
+//   which would count more than the driver takes.
+// Method: each entry's bytes are counted as in ComputeMemoryBytes, with saturation; the largest of them is returned.
+// Units: bytes.
+// Example: kDriverStack entries of 100, 700 and 300 bytes give 700, where their sum would give 1,100. Entries kept
+//   in another `where` are ignored.
+// Fails: never. Any overflow gives std::numeric_limits<std::uint64_t>::max().
+// Requires: nothing.
+std::uint64_t
+ComputeLargestEntryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts, MemoryWhere where);
 
 // Bytes. Every piece of a RunMemory starts at a multiple of this from the start of its block, and takes its byte
 // count rounded up to a multiple of it. 256 is the alignment the CUDA manual promises for cudaMalloc, so a piece is

@@ -175,7 +175,8 @@ TEST(ComputeMemoryBytes, SumOfEntriesOverflowing_Saturates) {
 }
 
 TEST(ComputeRunMemoryBytes, DriverStackEntry_IsNotInTheBlock) {
-  // The stack the driver holds for a GPU function counts in the total, never in the run's block.
+  // The stack the driver holds for a GPU function counts in the total (as the largest such entry), never in the
+  // run's block.
   const std::array estimate = {
       MemoryEstimateEntry{.name = "a: buffer", .given_count = 1000, .bytes_each = 4},
       MemoryEstimateEntry{
@@ -189,6 +190,46 @@ TEST(ComputeRunMemoryBytes, DriverStackEntry_IsNotInTheBlock) {
   EXPECT_EQ(ComputeRunMemoryBytes(estimate, no_counts, MemoryWhere::kRunOn), 4096U);
   EXPECT_EQ(ComputeMemoryBytes(estimate, no_counts, MemoryWhere::kDriverStack), 2048U * 12800U);
   EXPECT_EQ(ComputeMemoryBytes(estimate, no_counts), 4000U + (2048U * 12800U));
+}
+
+MemoryEstimateEntry BuildStackEntry(std::uint64_t byte_count, MemoryWhere where) {
+  return MemoryEstimateEntry{
+      .name = "stack",
+      .given_count = byte_count,
+      .bytes_each = 1,
+      .where = where,
+  };
+}
+
+TEST(ComputeLargestEntryBytes, NoEntry_IsZero) {
+  EXPECT_EQ(ComputeLargestEntryBytes({}, MemoryCounts{}, MemoryWhere::kDriverStack), 0U);
+}
+
+TEST(ComputeLargestEntryBytes, OneEntry_IsItsBytes) {
+  const std::array estimate = {BuildStackEntry(700, MemoryWhere::kDriverStack)};
+  EXPECT_EQ(ComputeLargestEntryBytes(estimate, MemoryCounts{}, MemoryWhere::kDriverStack), 700U);
+}
+
+TEST(ComputeLargestEntryBytes, MiddleEntryLargest_IsTheMiddleNotTheSum) {
+  // 100, 700, 300 bytes: the largest is 700, the sum would be 1,100.
+  const std::array estimate = {
+      BuildStackEntry(100, MemoryWhere::kDriverStack),
+      BuildStackEntry(700, MemoryWhere::kDriverStack),
+      BuildStackEntry(300, MemoryWhere::kDriverStack),
+  };
+  EXPECT_EQ(ComputeLargestEntryBytes(estimate, MemoryCounts{}, MemoryWhere::kDriverStack), 700U);
+  EXPECT_EQ(ComputeMemoryBytes(estimate, MemoryCounts{}, MemoryWhere::kDriverStack), 1100U);
+}
+
+TEST(ComputeLargestEntryBytes, EntriesOfAnotherWhere_AreIgnored) {
+  // The kRunOn entry of 5,000 bytes and the kCpu entry of 9,000 bytes do not count for kDriverStack.
+  const std::array estimate = {
+      BuildStackEntry(5000, MemoryWhere::kRunOn),
+      BuildStackEntry(200, MemoryWhere::kDriverStack),
+      BuildStackEntry(9000, MemoryWhere::kCpu),
+  };
+  EXPECT_EQ(ComputeLargestEntryBytes(estimate, MemoryCounts{}, MemoryWhere::kDriverStack), 200U);
+  EXPECT_EQ(ComputeLargestEntryBytes(estimate, MemoryCounts{}, MemoryWhere::kCpu), 9000U);
 }
 
 }  // namespace

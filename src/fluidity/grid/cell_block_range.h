@@ -294,8 +294,8 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
 //   resident threads, not the places of a set. The bytes per thread come from the compiled functions
 //   (cudaFuncGetAttributes). BuildBorderSearchBuffers on the GPU reserves the stack, so a GPU too full for it fails
 //   there with kOutOfMemory, not in a later search. The driver keeps one stack, sized for the largest per-thread need
-//   of any GPU function launched, so this entry added to another module's driver-stack entry (contact's) counts more
-//   than the driver takes: the sum is an upper bound, not the bytes taken.
+//   of any GPU function launched, so the total takes the largest driver-stack entry of its modules (this one or
+//   contact's), added to the kRunOn sum, not the sum of the driver-stack entries.
 // Example: 55,296 resident threads of a 36-multiprocessor sm_120 card, times the bytes per thread of the compiled
 //   function (kBorderSearchStackBytes at most, grid/cell_block_range_gpu.h). RunOn::kCpu: 0.
 // Fails: kRunOnCallFailed  RunOn::kGpu cannot run (CheckCanRunOn), or a query of the GPU failed.

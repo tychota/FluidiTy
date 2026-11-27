@@ -1,5 +1,6 @@
 #include "fluidity/base/memory_count.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -104,6 +105,18 @@ ComputeMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCo
     bytes_sum = AddSaturating(bytes_sum, ComputeEntryBytes(entry, counts));
   }
   return bytes_sum;
+}
+
+std::uint64_t
+ComputeLargestEntryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCounts& counts, MemoryWhere where) {
+  std::uint64_t largest_bytes = 0;
+  for (const MemoryEstimateEntry& entry : estimate) {
+    if (entry.where != where) {
+      continue;
+    }
+    largest_bytes = std::max(largest_bytes, ComputeEntryBytes(entry, counts));
+  }
+  return largest_bytes;
 }
 
 }  // namespace fluidity
