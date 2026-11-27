@@ -1,0 +1,25 @@
+docs/superpowers/plans/2026-11-14-rebuild-03-particles.md
+  s_7bd7312e192836::t_86aeede8b07e84 166,181-183,533
+docs/superpowers/specs/modules/03-particles-design.md
+  s_7bd7312e192836::t_654607a4994ee2 64-77,95,353,460,1363-1365
+docs/superpowers/specs/modules/changes-to-apply.md
+  s_7bd7312e192836::t_870f935cee8518 714-715
+docs/superpowers/specs/modules/owner-answers.md
+  s_7bd7312e192836::t_1d9c8b988ce1d4 144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c9f9c3314747c5e2cd339455e0dfd451696cb058",
+  "prompts": {},
+  "sessions": {
+    "s_7bd7312e192836": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "49f10b80-4cda-4758-80da-4f4b0b30b8a5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
