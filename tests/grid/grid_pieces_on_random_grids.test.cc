@@ -365,8 +365,12 @@ void ApplyPlacedPartials(const GridPiece& piece, std::vector<double>& placed_par
 double ComputeTotalOfPieces(const StaggeredGrid& grid, std::uint32_t cut_blocks, PieceBuffersRoom& room) {
   std::vector<double> placed_partials(grid.counts().cell_blocks, 0.0);
   for (const CellBlockRange range : BuildRanges(grid, cut_blocks).value_or(std::vector<CellBlockRange>{})) {
-    const RangeWithBorder range_with_border = BuildRangeWithBorder(grid, range);
-    std::optional<GridPiece> piece = BuildPieceOrFail(grid, range, range_with_border.border_blocks, room);
+    const std::expected<RangeWithBorder, GridFailure> built_range = BuildRangeWithBorder(grid, range);
+    if (!built_range.has_value()) {
+      ADD_FAILURE() << "BuildRangeWithBorder failed for a range of the cut";
+      return 0.0;
+    }
+    std::optional<GridPiece> piece = BuildPieceOrFail(grid, range, built_range->border_blocks, room);
     if (!piece.has_value()) {
       return 0.0;
     }

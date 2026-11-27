@@ -40,7 +40,10 @@ TEST(BuildGridPiece, PlaneFourGridRangeOfBlockC_EqualsPieceTables) {
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   const StaggeredGrid& whole = test_grid->grid;
-  const RangeWithBorder range_with_border = BuildRangeWithBorder(whole, {.first_block = 2, .block_count = 1});
+  const std::expected<RangeWithBorder, GridFailure> built_range =
+      BuildRangeWithBorder(whole, {.first_block = 2, .block_count = 1});
+  ASSERT_TRUE(built_range.has_value());
+  const RangeWithBorder& range_with_border = *built_range;
   ASSERT_EQ(range_with_border.border_blocks.size(), 2U);
   std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(3);
   ASSERT_TRUE(room.has_value());
@@ -183,6 +186,23 @@ TEST(BuildGridPiece, EmptyRangeWithBorder_IsBadInput) {
   );
   ASSERT_FALSE(piece.has_value());
   EXPECT_EQ(piece.error().error, GridError::kBadInput);
+}
+
+TEST(BuildGridPiece, EmptyRangeOnGridOfNoBlock_GivesPieceOfNoBlock) {
+  const std::vector<CellId> cells;
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  ASSERT_EQ(test_grid->grid.counts().cell_blocks, 0U);
+  std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(1);
+  ASSERT_TRUE(room.has_value());
+  const std::expected<GridPiece, GridFailure> piece = BuildGridPiece(
+      test_grid->grid,
+      {.first_block = 0, .block_count = 0},
+      std::vector<CellBlockIndex>{},
+      room->buffers
+  );
+  ASSERT_TRUE(piece.has_value());
+  EXPECT_EQ(piece->grid().counts().cell_blocks, 0U);
 }
 
 TEST(FindCellAt, InPieceOutsideLoadedBlocks_IsNoIndex) {

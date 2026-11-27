@@ -147,9 +147,9 @@ std::expected<void, GridFailure> CheckPieceRangeAndRoom(
     std::uint64_t border_block_count,
     std::uint32_t max_cell_blocks
 ) {
-  // An empty range would load only its border, which no stage can use. A range past the last block names blocks the
-  // whole grid does not have.
-  const bool is_range_empty = range.block_count == 0;
+  // An empty range would load only its border, which no stage can use, unless the whole grid has no block. A range past
+  // the last block names blocks the whole grid does not have.
+  const bool is_range_empty = range.block_count == 0 && whole_block_count != 0;
   if (is_range_empty || std::uint64_t{range.first_block} + range.block_count > whole_block_count) {
     return std::unexpected(ToFailure(GridError::kBadInput));
   }

@@ -87,7 +87,9 @@ void CheckStepsOfRange(
     CpuAnswersSeen& seen
 ) {
   const StaggeredGrid& whole_grid = grid.on_cpu.grid;
-  const RangeWithBorder range_with_border = BuildRangeWithBorder(whole_grid, range);
+  const std::expected<RangeWithBorder, GridFailure> built_range = BuildRangeWithBorder(whole_grid, range);
+  ASSERT_TRUE(built_range.has_value());
+  const RangeWithBorder& range_with_border = *built_range;
   std::optional<PieceBuffersRoom> room = BuildPieceBuffersRoom(whole_grid.counts().cell_blocks);
   ASSERT_TRUE(room.has_value());
   const std::expected<GridPiece, GridFailure> piece =

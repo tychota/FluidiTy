@@ -222,11 +222,17 @@ TEST(BuildRangeWithBorder, Call_AllocatesTwoVectors) {
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   const std::uint64_t count_before_call = ComputeAllocationCount();
-  const RangeWithBorder range_with_border = BuildRangeWithBorder(test_grid->grid, {.first_block = 0, .block_count = 1});
+  const std::expected<RangeWithBorder, GridFailure> built_range =
+      BuildRangeWithBorder(test_grid->grid, {.first_block = 0, .block_count = 1});
   const std::uint64_t count_after_call = ComputeAllocationCount();
-  ASSERT_EQ(range_with_border.border_blocks.size(), 2U);
-  // The marks and the list, built in place in the result.
-  EXPECT_EQ(count_after_call - count_before_call, ComputeVectorAllocationCount({.with_memory = 2}));
+  ASSERT_TRUE(built_range.has_value());
+  ASSERT_EQ(built_range->border_blocks.size(), 2U);
+  // The marks and the list, sized once: two vectors with memory. The list moves into the std::expected, which is a
+  // third vector object, without memory of its own.
+  EXPECT_EQ(
+      count_after_call - count_before_call,
+      ComputeVectorAllocationCount({.with_memory = 2, .without_memory = 1})
+  );
 }
 
 TEST(FindBorderBlocks, UnsortedSet_IsBadInput) {
@@ -326,17 +332,39 @@ TEST(FindBorderBlocks, StackedBufferFormShortOutput_WritesFirstEntriesReturnsTot
   EXPECT_EQ(short_output->data()[0].value, 1U);
 }
 
-// An empty range with block 2 so far: the layer is the border of block 2 (blocks 0 and 1, which an empty range does not
-// hold) and block 2 itself, which is in the list as border so far.
-TEST(FindBorderBlocks, EmptyRangeWithBorderSoFar_ListsTheBorderOfTheSet) {
+// An empty range is bad input on a grid with blocks, also with a border so far.
+TEST(FindBorderBlocks, EmptyRangeOnGridWithBlocksBufferForm_IsBadInput) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(test_grid->grid);
   ASSERT_TRUE(rig.has_value());
-  const std::vector<CellBlockIndex> layer =
-      FindLayerOrFail(*rig, {.first_block = 1, .block_count = 0}, ToBlocks({2}), BorderWidth::kTouchingCells);
-  EXPECT_EQ(ToIndexes(layer), (std::vector<std::uint32_t>{0, 1, 2}));
+  WriteBlocksOrFail(rig->so_far_buffer, ToBlocks({2}));
+  const std::expected<std::uint32_t, GridFailure> total =
+      FindOnRig(*rig, {.first_block = 1, .block_count = 0}, 1, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(total.has_value());
+  EXPECT_EQ(total.error().error, GridError::kBadInput);
+}
+
+TEST(FindBorderBlocks, EmptyRangeOnGridOfNoBlockBufferForm_FindsNoBlock) {
+  const std::vector<CellId> cells;
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  ASSERT_EQ(test_grid->grid.counts().cell_blocks, 0U);
+  const Buffer<CellBlockIndex> no_border_so_far;
+  Buffer<CellBlockIndex> no_border_blocks;
+  BorderSearchBuffers no_search_buffers;
+  const std::expected<std::uint32_t, GridFailure> total = FindBorderBlocks(
+      test_grid->grid,
+      {.first_block = 0, .block_count = 0},
+      no_border_so_far,
+      0,
+      BorderWidth::kFourCellWidths,
+      no_search_buffers,
+      no_border_blocks
+  );
+  ASSERT_TRUE(total.has_value());
+  EXPECT_EQ(*total, 0U);
 }
 
 // An output buffer of exactly the border's 2 entries receives both and gives the count 2.
@@ -363,19 +391,58 @@ TEST(FindBorderBlocks, OutputOfExactlyTheBorderSize_HoldsTheWholeBorder) {
   EXPECT_EQ(exact_output->data()[1].value, 2U);
 }
 
-// A grid of no cell has no block: the whole-grid range is empty, and so is its border, in both forms.
-TEST(FindBorderBlocks, GridOfNoBlock_HasNoBorder) {
+// A grid of no cell has no block: the empty range over it is accepted and its border is empty, in each form.
+TEST(BuildRangeWithBorder, EmptyRangeOnGridOfNoBlock_HasNoBorder) {
   const std::vector<CellId> cells;
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
   ASSERT_EQ(test_grid->grid.counts().cell_blocks, 0U);
   const CellBlockRange all_blocks = test_grid->grid.all_blocks();
   EXPECT_EQ(all_blocks.block_count, 0U);
-  EXPECT_TRUE(BuildRangeWithBorder(test_grid->grid, all_blocks).border_blocks.empty());
+  const std::expected<RangeWithBorder, GridFailure> built_range = BuildRangeWithBorder(test_grid->grid, all_blocks);
+  ASSERT_TRUE(built_range.has_value());
+  EXPECT_TRUE(built_range->border_blocks.empty());
+}
+
+TEST(FindBorderBlocks, EmptySetOnGridOfNoBlockVectorForm_HasNoBorder) {
+  const std::vector<CellId> cells;
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  ASSERT_EQ(test_grid->grid.counts().cell_blocks, 0U);
   const std::expected<std::vector<CellBlockIndex>, GridFailure> border =
       FindBorderBlocks(test_grid->grid, std::vector<CellBlockIndex>{}, BorderWidth::kFourCellWidths);
   ASSERT_TRUE(border.has_value());
   EXPECT_TRUE(border->empty());
+}
+
+TEST(BuildRangeWithBorder, RangeBeyondTheGrid_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const std::expected<RangeWithBorder, GridFailure> built_range =
+      BuildRangeWithBorder(test_grid->grid, {.first_block = 2, .block_count = 2});
+  ASSERT_FALSE(built_range.has_value());
+  EXPECT_EQ(built_range.error().error, GridError::kBadInput);
+}
+
+TEST(BuildRangeWithBorder, EmptyRangeOnGridWithBlocks_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const std::expected<RangeWithBorder, GridFailure> built_range =
+      BuildRangeWithBorder(test_grid->grid, {.first_block = 1, .block_count = 0});
+  ASSERT_FALSE(built_range.has_value());
+  EXPECT_EQ(built_range.error().error, GridError::kBadInput);
+}
+
+TEST(FindBorderBlocks, EmptySetOnGridWithBlocksVectorForm_IsBadInput) {
+  const std::vector<CellId> cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  const std::expected<std::vector<CellBlockIndex>, GridFailure> border =
+      FindBorderBlocks(test_grid->grid, std::vector<CellBlockIndex>{}, BorderWidth::kTouchingCells);
+  ASSERT_FALSE(border.has_value());
+  EXPECT_EQ(border.error().error, GridError::kBadInput);
 }
 
 TEST(FindBorderBlocks, StackedBufferFormSameBufferTwice_IsBadInput) {
@@ -647,7 +714,10 @@ TEST(BuildRangeWithBorder, RangeOfTheMiddleBlock_HasBothOthersAsBorder) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
-  const RangeWithBorder range_with_border = BuildRangeWithBorder(test_grid->grid, {.first_block = 1, .block_count = 1});
+  const std::expected<RangeWithBorder, GridFailure> built_range =
+      BuildRangeWithBorder(test_grid->grid, {.first_block = 1, .block_count = 1});
+  ASSERT_TRUE(built_range.has_value());
+  const RangeWithBorder& range_with_border = *built_range;
   EXPECT_EQ(range_with_border.range.first_block, 1U);
   EXPECT_EQ(range_with_border.range.block_count, 1U);
   // Block 0 holds the cell {3,3,0} that touches {4,3,0}; block 2 holds the +Y face piece of {4,3,0}.
@@ -658,7 +728,10 @@ TEST(BuildRangeWithBorder, EveryBlockOfTheGrid_HasNoBorder) {
   const std::vector<CellId> cells = BuildPlaneFourCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
   ASSERT_TRUE(test_grid.has_value());
-  const RangeWithBorder range_with_border = BuildRangeWithBorder(test_grid->grid, test_grid->grid.all_blocks());
+  const std::expected<RangeWithBorder, GridFailure> built_range =
+      BuildRangeWithBorder(test_grid->grid, test_grid->grid.all_blocks());
+  ASSERT_TRUE(built_range.has_value());
+  const RangeWithBorder& range_with_border = *built_range;
   EXPECT_TRUE(range_with_border.border_blocks.empty());
 }
 
@@ -732,8 +805,10 @@ TEST(BuildRangeWithBorder, ParticleSums_NeedAFaceBeyondTheNearBorder) {
   const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
   const CellBlockIndex range_block = FindBlockAt(tables, {.x = 2.25, .y = 0.25, .z = 0.25});
   const CellBlockIndex far_block = FindBlockAt(tables, {.x = -0.25, .y = 0.25, .z = 0.25});
-  const RangeWithBorder range_with_border =
+  const std::expected<RangeWithBorder, GridFailure> built_range =
       BuildRangeWithBorder(test_grid->grid, {.first_block = range_block.value, .block_count = 1});
+  ASSERT_TRUE(built_range.has_value());
+  const RangeWithBorder& range_with_border = *built_range;
   const std::vector<std::uint32_t> border = ToIndexes(range_with_border.border_blocks);
   ASSERT_NE(far_block.value, range_block.value);
   EXPECT_EQ(std::ranges::count(border, far_block.value), 0);

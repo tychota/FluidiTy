@@ -86,11 +86,12 @@ BuildRanges(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range);
 // Allocates the marks (one byte per block of the grid, freed on return) and the returned list, sized once: two
 // allocations, or one when the border is empty.
 // Example: the grid of the file header of border_block_steps.h and the range {0, 1} give the border blocks 1 and 2.
-// Requires: grid.run_on() == RunOn::kCpu, and range inside the grid's blocks (debug assertions). A range outside the
-//   grid is a precondition here because this function has no failure value, but a status (kBadInput) in BuildRanges,
-//   BuildGridPiece and the buffer form of FindBorderBlocks.
+// Requires: grid.run_on() == RunOn::kCpu (debug assertion).
+// Fails: kBadInput  `range` is not inside the grid's blocks, or it is empty (block_count 0) while the grid has blocks:
+//                   a range is data, so this is a status in every build. The empty range over a grid of no block is
+//                   accepted and gives no border. The result then holds the failure and no list.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>
-RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range);
+std::expected<RangeWithBorder, GridFailure> BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range);
 
 // Finds the blocks outside `blocks` that a stage writing values kept in `blocks` may read, at `width`, in ascending
 // index, each once. `blocks` need not be a run, so borders stack: the border of the stage before is
@@ -117,7 +118,8 @@ RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange r
 //   list the face piece. With 2 size levels and the size-level-0 cells {0..3}^3 all active but {0..2}^3, which are
 //   split, the border of the size-level-1 block (0,0,0), block 1, holds block 0, through which FindCellAt walks.
 // Requires: grid.run_on() == RunOn::kCpu (debug assertion).
-// Fails: kBadInput  `blocks` is not ascending, repeats a block, or holds an index at or above the grid's block count.
+// Fails: kBadInput  `blocks` is not ascending, repeats a block, holds an index at or above the grid's block count, or
+//        is empty while the grid has blocks (an empty set over a grid of no block is accepted and gives no border).
 //        The result then holds the failure and no list.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-face-pieces>, <sec-face-search>
 std::expected<std::vector<CellBlockIndex>, GridFailure>
@@ -250,8 +252,10 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 // Requires: every buffer on grid.run_on() (debug assertion). The grid and the range are those of every layer.
 // Fails: kBadInput          border_so_far is not ascending, holds a block of `range` or an index at or above the
 //                           grid's block count; border_blocks is border_so_far (the same buffer); border_so_far_count
-//                           is above border_so_far.size(); `range` is not inside the grid's blocks. Nothing is written
-//                           on the CPU; on the GPU the entries are found bad by the pass itself, which writes no block.
+//                           is above border_so_far.size(); `range` is not inside the grid's blocks, or is empty
+//                           (block_count 0) while the grid has blocks. The empty range over a grid of no block is
+//                           accepted and gives an empty list, whatever the width. Nothing is written on the CPU; on
+//                           the GPU the entries are found bad by the pass itself, which writes no block.
 //        kTooManyCellBlocks search_buffers.max_cell_blocks() is below the grid's block count. Nothing is written. It is
 //                           checked before the entries of border_so_far, so a call that fails both ways gives this
 //                           error on either processor.

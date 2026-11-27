@@ -137,7 +137,9 @@ constexpr std::uint32_t kRangePieceBlocks = 3;
 // Checks that the piece of one range and its border (BuildRangeWithBorder) answers every reader of kTouchingCells, from
 // every place of the range, as the whole grid does.
 void CheckPieceOfRangeAnswersAsWholeGrid(const StaggeredGrid& grid, CellBlockRange range) {
-  const RangeWithBorder range_with_border = BuildRangeWithBorder(grid, range);
+  const std::expected<RangeWithBorder, GridFailure> built_range = BuildRangeWithBorder(grid, range);
+  ASSERT_TRUE(built_range.has_value());
+  const RangeWithBorder& range_with_border = *built_range;
   const std::optional<std::string> difference = FindFirstReaderDifference(
       grid.tables(RunOn::kCpu),
       ToRangeBlocks(range),

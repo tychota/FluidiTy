@@ -34,9 +34,22 @@
 namespace fluidity::grid {
 namespace {
 
+// Says whether a range is one a call may take: inside the grid's blocks, and not empty unless the grid has no block.
+// The same rule as BuildGridPiece's: a range is data, so a bad one is a status (kBadInput), never an assertion.
+bool ComputeIsRangeAllowed(std::uint32_t block_count, CellBlockRange range) {
+  const bool is_inside_grid = range.first_block <= block_count && range.block_count <= block_count - range.first_block;
+  const bool is_empty_range_allowed = range.block_count != 0 || block_count == 0;
+  return is_inside_grid && is_empty_range_allowed;
+}
+
 // Checks the sorted list of a call: ascending with no repeat, and every index below the grid's block count. A failed
-// list is bad input because the walk's binary search needs the order and no block beyond the grid can be asked.
+// list is bad input because the walk's binary search needs the order and no block beyond the grid can be asked. A list
+// of no block is bad input unless the grid has no block, as for a range (ComputeIsRangeAllowed).
 std::expected<void, GridFailure> CheckSortedBlocks(const StaggeredGrid& grid, std::span<const CellBlockIndex> blocks) {
+  const bool is_empty_list_allowed = !blocks.empty() || grid.counts().cell_blocks == 0;
+  if (!is_empty_list_allowed) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
   bool is_ascending = true;
   for (std::size_t entry = 1; entry < blocks.size(); ++entry) {
     is_ascending = is_ascending && blocks[entry - 1].value < blocks[entry].value;
@@ -286,12 +299,13 @@ BuildRanges(const StaggeredGrid& grid, std::uint32_t max_blocks_per_range) {
   return ranges;
 }
 
-RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range) {
+std::expected<RangeWithBorder, GridFailure> BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range) {
   assert(grid.run_on() == RunOn::kCpu);
-  assert(range.first_block <= grid.counts().cell_blocks);
-  assert(range.block_count <= grid.counts().cell_blocks - range.first_block);
+  if (!ComputeIsRangeAllowed(grid.counts().cell_blocks, range)) {
+    return std::unexpected(GridFailure{.error = GridError::kBadInput});
+  }
   const BlockSet set = {.range = range, .sorted_blocks = nullptr, .sorted_count = 0};
-  return {
+  return RangeWithBorder{
       .range = range,
       .border_blocks = FindBorderByMarking(grid.tables(RunOn::kCpu), set, BorderWidth::kTouchingCells),
   };
@@ -432,11 +446,10 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
   // Step 1: the search writes border_blocks while it reads the border so far, so one buffer for both would change
   // the set it searches. The two buffers are different objects, or two pieces, which never overlap.
   const std::uint32_t block_count = grid.counts().cell_blocks;
-  const bool is_range_inside_grid =
-      range.first_block <= block_count && range.block_count <= block_count - range.first_block;
+  const bool is_range_allowed = ComputeIsRangeAllowed(block_count, range);
   const bool is_same_buffer = &border_blocks == &border_so_far
       || (border_blocks.data() != nullptr && border_blocks.data() == border_so_far.data());
-  if (is_same_buffer || border_so_far_count > border_so_far.size() || !is_range_inside_grid) {
+  if (is_same_buffer || border_so_far_count > border_so_far.size() || !is_range_allowed) {
     return std::unexpected(GridFailure{.error = GridError::kBadInput});
   }
 

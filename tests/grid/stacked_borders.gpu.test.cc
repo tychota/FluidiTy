@@ -377,22 +377,35 @@ TEST(FindBorderBlocks, OnGpuFailures_EqualCpuFailures) {
   CheckSameBufferFails(grids.front().on_gpu.grid);
 }
 
-// A set of no block (an empty range and no border so far) finds no block, on the GPU as on the CPU, and the buffers
-// work in the call after it.
-TEST(FindBorderBlocks, OnGpuEmptySet_FindsNoBlock) {
+// The error of one call of the buffer form with an empty range on `rig`'s grid, or kNone when the call succeeds.
+GridError FindEmptyRangeError(BorderSearchRig& rig) {
+  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(
+      rig.grid,
+      {.first_block = 1, .block_count = 0},
+      rig.so_far_buffer,
+      0,
+      BorderWidth::kFourCellWidths,
+      rig.search_buffers,
+      rig.border_buffer
+  );
+  return count.has_value() ? GridError::kNone : count.error().error;
+}
+
+// An empty range on a grid with blocks is bad input, on the GPU as on the CPU, and the buffers work in the call after
+// it.
+TEST(FindBorderBlocks, OnGpuEmptyRange_IsBadInputAsOnCpu) {
   const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
   ASSERT_EQ(grids.size(), 1U);
-  const CellBlockRange empty_range = {.first_block = 1, .block_count = 0};
-  std::vector<BorderLayerResult> layers_after_the_empty_set;
+  std::vector<BorderLayerResult> layers_after_the_empty_range;
   for (const StaggeredGrid* grid : {&grids.front().on_cpu.grid, &grids.front().on_gpu.grid}) {
     std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(*grid);
     ASSERT_TRUE(rig.has_value());
-    EXPECT_TRUE(FindLayerOrFail(*rig, empty_range, {}, BorderWidth::kFourCellWidths).empty());
-    layers_after_the_empty_set.push_back(
+    EXPECT_EQ(FindEmptyRangeError(*rig), GridError::kBadInput);
+    layers_after_the_empty_range.push_back(
         ToLayerResult(FindLayerOrFail(*rig, kFailureTestRange, {}, BorderWidth::kTouchingCells))
     );
   }
-  EXPECT_EQ(layers_after_the_empty_set.back().blocks, layers_after_the_empty_set.front().blocks);
+  EXPECT_EQ(layers_after_the_empty_range.back().blocks, layers_after_the_empty_range.front().blocks);
 }
 
 // Expects one call on the GPU to allocate nothing on the CPU: the calls are counted apart.

@@ -157,7 +157,8 @@ class GridPiece {
 //   border_blocks holds the border of the range for the width of every reader the stage will call (a FindBorderBlocks
 //   result, stacked or not). A smaller list does not fail the call: readers then answer none where the whole grid has
 //   neighbours, as at the edge of the grid.
-// Fails: kBadInput          the range is empty (block_count 0) or not inside the whole grid's blocks, or border_blocks
+// Fails: kBadInput          the range is empty (block_count 0) while the whole grid has blocks, or is not inside the
+//                           whole grid's blocks (the empty range over a grid of no block is accepted), or border_blocks
 //                           is not ascending, repeats a block, holds an index at or above the whole grid's block
 //                           count, or holds a block of the range. The result then holds the failure and no piece;
 //                           nothing is written.

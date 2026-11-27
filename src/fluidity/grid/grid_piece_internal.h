@@ -40,12 +40,13 @@ struct PieceBuildSummary {
   std::uint32_t range_start_in_piece;  // Border blocks below the range, so the index of the range's first block.
 };
 
-// Checks that the range is not empty and lies inside the whole grid's blocks, then the room: the blocks of the range
-// and of the border list against the buffers' room. Every build of a piece makes these two checks first, the GPU build
-// before its first launch. Changes nothing.
+// Checks that the range lies inside the whole grid's blocks, then the room: the blocks of the range and of the border
+// list against the buffers' room. Every build of a piece makes these two checks first, the GPU build
+// before its first launch. An empty range is bad input unless the whole grid has no block. Changes nothing.
 // Example: a whole grid of 10 blocks, range {8, 3}, any border: kBadInput. Range {4, 3}, 5 border blocks and a room of
 //   7: kTooManyCellBlocks.
-// Fails: kBadInput           the range is empty (block_count 0) or ends past the last block of the whole grid.
+// Fails: kBadInput           the range is empty (block_count 0) while the whole grid has blocks, or ends past the last
+//                            block of the whole grid.
 //        kTooManyCellBlocks  the range's blocks plus the border blocks are more than max_cell_blocks. No cell is named,
 //                            since the caller raises the room.
 //        A call that fails in both ways reports kBadInput.
