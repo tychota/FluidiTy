@@ -1,0 +1,29 @@
+docs/method-paper/fluidity-method.typ
+  s_56b1e1a5849079::t_5d40f16331bed4 699-723
+src/fluidity/contact/move_particles.h
+  s_56b1e1a5849079::t_3e46c6f003d1e1 173-175,191-197,219-227
+src/fluidity/contact/move_particles.test.cc
+  s_56b1e1a5849079::t_9a251476c63ab9 268-269,272-304,330-435
+src/fluidity/contact/move_particles_cpu.cc
+  s_56b1e1a5849079::t_8191bc08577a7c 81-85,112-121,130-135
+src/fluidity/contact/testing/move_particles_runs.h
+  s_56b1e1a5849079::t_2f4fbae362b4c8 22,232-239,256-257,260-265,286-287,312-315,317-318,323-324
+tests/contact/move_particles_on_gpu.test.cc
+  s_56b1e1a5849079::t_1bba100c783e06 159-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e740073d795e5a71b3079dd384c391eb8f9f7ed0",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
