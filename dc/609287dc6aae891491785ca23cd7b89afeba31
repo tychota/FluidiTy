@@ -1,0 +1,40 @@
+src/fluidity/grid/testing/grid_functions_runner_gpu.cu
+  s_4f0877e2acdcf0::t_76bb216790ac4c 536
+  s_4f0877e2acdcf0::t_b495196c929423 283-287,551
+src/fluidity/grid/testing/grid_functions_result_words.h
+  s_4f0877e2acdcf0::t_9c8c4381c8523b 23-24,52,208-212
+tests/grid/new_cell_neighbors.gpu.test.cc
+  s_4f0877e2acdcf0::t_20c2304580ae2d 1-69
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_9ad7913c29a918 514-526
+src/fluidity/grid/grid_tables.shared.gpu_compile.test.cu
+  s_4f0877e2acdcf0::t_02507eab0d6815 3,31,180-183
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_6aa88595c110ba 18,91-94,183-186
+src/fluidity/grid/new_cell_rule.h
+  s_4f0877e2acdcf0::t_7783b70b73c0ae 13-18,24-31,42-246
+tests/grid/new_cell_neighbors_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_2a5fe825789d0b 162-171,173,182,192-195
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_7f954158b84049 238
+src/fluidity/grid/new_cell_rule.test.cc
+  s_4f0877e2acdcf0::t_1539cd90b69ac1 13,38-44,49,51-52,55,60,62-63,77,81,85,89,93,97,101,105,109,113,117,121,125
+src/fluidity/grid/testing/grid_functions_answers.h
+  s_4f0877e2acdcf0::t_78f6f2411b679e 23,36,61,190-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dc609287dc6aae891491785ca23cd7b89afeba31",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
