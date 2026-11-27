@@ -1,0 +1,33 @@
+src/fluidity/particles/CMakeLists.txt
+  s_56b1e1a5849079::t_4da670842166cd 1,8
+src/fluidity/particles/particles.shared.gpu_compile.test.cu
+  s_56b1e1a5849079::t_183c48fb1fcfb3 1-2,7-8,21,49-62
+src/fluidity/particles/split_and_merge_math.h
+  s_56b1e1a5849079::t_df335425882d90 1-307
+src/fluidity/particles/split_and_merge_math.test.cc
+  s_56b1e1a5849079::t_f3caf0524515df 1-455
+src/fluidity/particles/testing/split_and_merge_cases.h
+  s_56b1e1a5849079::t_b5c3d7f2892b24 1-63
+tests/CMakeLists.txt
+  s_56b1e1a5849079::t_9d736aad1ca763 6
+tests/particles/CMakeLists.txt
+  s_56b1e1a5849079::t_22c5e18450a88c 1-9
+tests/particles/merge_energy_on_many_cases.test.cc
+  s_56b1e1a5849079::t_8801d4a9bd89fe 1-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6b3624a35ba7e324bbfe4247a03bcaa4b67b1c5",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
