@@ -1,0 +1,25 @@
+src/fluidity/base/processor_description_cpu.cc
+  s_4f0877e2acdcf0::t_c464cfc562c86c 15-16,34,41,318-322
+src/fluidity/grid/grid_piece_cpu.cc
+  s_4f0877e2acdcf0::t_8568410c12ad5a 233
+tools/run_tidy_test.py
+  s_4f0877e2acdcf0::t_e8069579324e1c 840
+src/fluidity/grid/cell_block_range_cpu.cc
+  s_4f0877e2acdcf0::t_41b6554e844a5e 475-479
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9a671b65cf1a0e8bdd66567b63b84686e3448073",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
