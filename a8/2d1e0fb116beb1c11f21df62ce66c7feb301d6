@@ -1,0 +1,54 @@
+docs/superpowers/specs/modules/changes-to-apply.md
+  s_4f0877e2acdcf0::t_b8c26a20bab529 271
+docs/superpowers/specs/modules/owner-questions-round-3.md
+  s_4f0877e2acdcf0::t_99e342eb69aac3 33
+  s_4f0877e2acdcf0::t_64e09b098e0188 17,101
+  s_4f0877e2acdcf0::t_0969a2fbcd2233 23,39,46,56,63,71,75,86,95,106,112,123,127,132,137,141,144,148
+docs/superpowers/specs/modules/04-transfer-design.md
+  s_4f0877e2acdcf0::t_7cf0b9d00209c1 419
+docs/superpowers/specs/modules/02-grid-design.md
+  s_4f0877e2acdcf0::t_7cf0b9d00209c1 1651-1654
+  s_4f0877e2acdcf0::t_f0da7dbeda6a69 526-527,572-575,579-581
+  s_4f0877e2acdcf0::t_47ca93e295ce35 2242,2255,2261-2263,2362,2367-2370
+  s_4f0877e2acdcf0::t_64e09b098e0188 2259,2289
+  s_4f0877e2acdcf0::t_90e1388cdf5c63 1061-1088
+  s_4f0877e2acdcf0::t_44b97f0c8cc4c4 1206,1605-1609,1621,1748-1749,1752,1909-1910,2009
+  s_4f0877e2acdcf0::t_93423634f04caf 510-513,560,1486-1488,2176,2180,2183-2184
+  s_4f0877e2acdcf0::t_cb21132ca32e28 2267,2271-2285
+  s_4f0877e2acdcf0::t_68d26cc0e8090a 1000-1002
+  s_4f0877e2acdcf0::t_3ac5d68ea350bf 561-562,614-615,2315
+  s_4f0877e2acdcf0::t_2bd5f6d0fd5cb0 2332
+  s_4f0877e2acdcf0::t_58466403d50b97 92,1015,1589
+docs/superpowers/sdd/resume-card-particles.md
+  s_4f0877e2acdcf0::t_e2523e563378e3 1-58
+docs/superpowers/specs/modules/11-cell-resize-and-batches-design.md
+  s_4f0877e2acdcf0::t_fd05bac183f2bd 137,349-350,809,861-863,875-876,879-880,885,1113-1114,2049,2357-2358
+  s_4f0877e2acdcf0::t_3ac5d68ea350bf 859-860,1337-1338
+  s_4f0877e2acdcf0::t_b8c26a20bab529 1339-1343
+docs/superpowers/plans/2026-11-14-rebuild-02-grid.md
+  s_4f0877e2acdcf0::t_99e342eb69aac3 29-39
+docs/superpowers/specs/modules/10-step-design.md
+  s_4f0877e2acdcf0::t_f1bc158ddc648d 2460
+  s_4f0877e2acdcf0::t_75ef83622f16f0 239-242,672-673,850-851,1178-1180,1349-1355,1359-1360,1369,1504-1506,1747-1749,1751-1753,1756-1767
+  s_4f0877e2acdcf0::t_81458f671953c2 1750,1754-1755,1768-1769,1787-1788,1798-1799,2355,2396,2571,2845-2846,2937-2938,2944-2945
+docs/superpowers/specs/modules/shared-interface.md
+  s_4f0877e2acdcf0::t_3547c5a1a2cf2f 1704-1708
+  s_4f0877e2acdcf0::t_7cf0b9d00209c1 1010-1012
+  s_4f0877e2acdcf0::t_0f5a5137ea1bb9 510-513,598,656,714,895
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a82d1e0fb116beb1c11f21df62ce66c7feb301d6",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
