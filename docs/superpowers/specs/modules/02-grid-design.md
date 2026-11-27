@@ -89,7 +89,7 @@ the grid's (or the buffers') `run_on()`. Changed (A30): this is a documented `Re
 debug assertion, never copied and never an error value (it was `kBadInput`). Changed (as built, 2026-11-26; Ruling
 33): `ReadGrid` is the stated exception, `kBadInput` in every build for a destination not on the CPU (3.3). The
 headers state the line once: an input that is data fails with a status; the processor of an object is a debug
-assertion; `ReadGrid` is the exception. Three pairs of neighbours still draw it differently (section 11, Open). A grid
+assertion; `ReadGrid` is the exception (A116). A grid
 operation
 on the GPU returns to the CPU only its `GridBuildStatus` record and, for border search, a count. A GPU grid keeps
 no CPU copy of its tables; `ReadGrid` is the one explicit copy. GPU tables, counts and failures equal the CPU
@@ -507,10 +507,10 @@ struct RangeWithBorder {          // NEW. DECIDED word `border_cells`.
 // The range and its border at kTouchingCells. Changed (A112): one width, the transfer step's, which also covers, for
 // each face piece of the range, the cells that can list it as a nearby face (5.5); no width parameter. Runs the
 // forward form with marks of its own (A113): two allocations, the marks and the list, or one when the border is
-// empty. Precondition (A17): grid.run_on() == RunOn::kCpu and range inside the grid's blocks (no failure value;
-// checked by debug assertions). A range outside the grid is a status (kBadInput) in BuildRanges, BuildGridPiece and the
-// buffer form of FindBorderBlocks: one of the three pairs still open (section 11, Open).
-RangeWithBorder BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range);
+// empty. Precondition (A17): grid.run_on() == RunOn::kCpu (checked by a debug assertion). Fails kBadInput (A116) for a
+// range that is not inside the grid's blocks, or is empty (block_count 0) while the grid has blocks; over a grid with no
+// block an empty range gives an empty result and no buffer is used. A range is data, so this is a status in every build.
+std::expected<RangeWithBorder, GridFailure> BuildRangeWithBorder(const StaggeredGrid& grid, CellBlockRange range);
 // Cuts the grid into consecutive ranges of at most max_blocks_per_range blocks. Reads only counts(): either processor.
 // Changed (as built): fails kBadInput for max_blocks_per_range 0, which no cut can satisfy; no list then.
 std::expected<std::vector<CellBlockRange>, GridFailure> BuildRanges(const StaggeredGrid& grid,
@@ -523,7 +523,8 @@ std::expected<std::vector<CellBlockRange>, GridFailure> BuildRanges(const Stagge
 // borders stack: the border of a stage before is FindBorderBlocks(grid, blocks + border found so far, its width).
 // Changed (A113): runs the forward form, with marks of its own (one byte per block). CPU grid only (A17; a
 // `Requires:` precondition checked by a debug assertion, A30). Fails kBadInput when `blocks` is not ascending, repeats
-// a block or holds an index >= the grid's block count. Allocates the returned list and its marks (two allocations,
+// a block or holds an index >= the grid's block count, or is empty while the grid has blocks (A116; an empty set over a
+// grid of no block is accepted and gives no border). Allocates the returned list and its marks (two allocations,
 // one when the border is empty); for planning and tests. The one form that takes a span of blocks: the form that
 // wrote into a caller's span is retired (as built, 2026-11-26; Ruling 66).
 std::expected<std::vector<CellBlockIndex>, GridFailure> FindBorderBlocks(const StaggeredGrid& grid,
@@ -556,7 +557,9 @@ std::vector<MemoryEstimateEntry> BuildBorderSearchMemoryEstimate(RunOn run_on,
 // Added (as built, 2026-11-26; Ruling 67). The stack entry of the GPU border search: "grid: GPU stack of the border
 // search", kGivenCount, kWholeRun, MemoryWhere::kDriverStack, the marking function's bytes per thread times the threads
 // the GPU holds at once (3,600 B x 55,296 = 199 MB on a 36-multiprocessor sm_120 card). RunOn::kCpu: an entry that
-// counts nothing. A plan that runs the border search on the GPU adds it to the search buffers' entries. Fails
+// counts nothing. A plan that runs the border search on the GPU adds it to the search buffers' entries; with the entries
+// of other modules the plan takes the largest kDriverStack entry, not their sum (A115; ComputeLargestEntryBytes).
+// Fails
 // kRunOnCallFailed (no usable GPU, or a query of it failed).
 std::expected<MemoryEstimateEntry, GridFailure> BuildBorderSearchStackEstimate(RunOn run_on);
 // NEW (A17). Every block outside `range` that is in border_so_far or in the border, at `width`, of range plus
@@ -566,11 +569,16 @@ std::expected<MemoryEstimateEntry, GridFailure> BuildBorderSearchStackEstimate(R
 // of search_buffers (5.5); every block of range plus border_so_far is marked through its own cell places, so the list
 // is the marked blocks outside `range` and holds the layers before without a merge. Fails kBadInput (border_so_far not
 // ascending, holding a block of `range` or an index >= the grid's block count; border_blocks is border_so_far;
-// border_so_far_count above its size; changed as built, 2026-11-26, section 12: `range` not inside the grid's blocks),
+// border_so_far_count above its size; `range` not inside the grid's blocks, or empty (block_count 0) while the grid has
+// blocks, A116; the empty range over a grid of no block is accepted and gives the count 0 at once, whatever the width
+// and the buffers, with no buffer read and no GPU function run; any border_so_far_count above 0 over such a grid is
+// bad input),
 // kTooManyCellBlocks (search_buffers too small for the grid; changed as built, 2026-11-26, Ruling 70: also range plus
 // border_so_far_count above kMaxSetBlocks = 14,128,181 blocks, so that every place of the set fits the 32-bit place
 // index at 304 places per block), kRunOnCallFailed, kInternalFault (the prefix sum failed, or the status record read
-// back holds a failure key of another step than the check of border_so_far or a count above the block count). Order of
+// back holds a failure key of another step than the check of border_so_far or a count above the block count; a GPU
+// search buffer set that lacks the arrays BuildBorderSearchBuffers makes, on a grid with blocks, fails here before any
+// launch). Order of
 // the checks (as built, 2026-11-26): the room and kMaxSetBlocks before the entries of border_so_far, so both processors
 // report the same error. On the GPU only the count comes back, and a launch that did not start waits for the GPU's
 // pending work before the call returns. A stacked border is one call per layer with two output buffers used in turn,
@@ -603,7 +611,8 @@ class GridPiece {
 // `range`, below the whole grid's block count, and holds the border of the range for the width of every reader the
 // stage will call (a FindBorderBlocks result, stacked or not); a smaller list does not fail the call, and readers then
 // answer none where the whole grid has neighbours (as built, 2026-11-26). Fails kBadInput (changed as built,
-// 2026-11-26: also an empty range, block_count 0), kTooManyCellBlocks (range plus border exceed
+// 2026-11-26: also an empty range, block_count 0, unless the grid has no block, A116), kTooManyCellBlocks (range plus
+// border exceed
 // buffers.max_cell_blocks(); `cell` zero), kInternalFault (a neighbour entry names a block of the range the piece map
 // does not hold). Order: the range (empty, or not inside the grid), then the room, then the border list.
 std::expected<GridPiece, GridFailure> BuildGridPiece(const StaggeredGrid& whole, CellBlockRange range,
@@ -988,8 +997,9 @@ corner value that is not a function of position needs a rule of its own (pressur
 Moved here from `cell_resize/cell_size_rule.h` (`CellSizeSettings`, `CellSizeFacts`, `ComputeWantedCellWidth`) and
 completed by `plan-decisions.md` "Owner answers A40–A64 applied" item 2. Every function is `FLUIDITY_CPU_AND_GPU`,
 allocates nothing, uses `math::` and no fused multiply-add. The grid owns the per-cell formulas; the pass that fills
-the facts and applies the hysteresis is cell resize's `ComputeCellSizeChanges`, and stage 2 of the step calls
-`ComputeNewCellSizeLevel` in its marking pass. `cell_resize::CellResizeSettings::cell_size` is a
+the facts and applies the hysteresis is cell resize's `ComputeCellSizeChanges`; the size of a new cell is not chosen
+here but by the fill from the top that `FindNewCellNeighbors` serves (header `new_cell_rule.h`, below; 5.9).
+`cell_resize::CellResizeSettings::cell_size` is a
 `grid::CellSizeSettings`. There is no `ChooseCellSize` callback (removed).
 
 ```cpp
@@ -1002,7 +1012,7 @@ struct CellSizeSettings {                     // NEW (A41). Chosen once per scen
 };
 // Not declared yet (as built, 2026-11-26): the four merge settings cell resize reads, merge_width_share (0.8),
 // merge_wait_duration (0.25 s), min_merge_wait_steps (8) and max_cell_splits_per_resize (1u << 16). They are added
-// when cell resize is planned, unless the owner wants them in the grid now (section 11, Open).
+// with cell resize (A124).
 struct CellWidthsBySizeLevel {                    // NEW. m. width[l] = ComputeCellWidth(frame, l), computed once on the CPU.
   double width[kMaxSizeLevels];               // Compared, never recomputed with log2 or pow on either processor.
   std::uint8_t size_level_count = 0;          // Changed (as built, 2026-11-26; section 12): default 0; readers
@@ -1048,21 +1058,34 @@ double ComputeWantedCellWidth(CellSizeFacts facts, double reference_speed, const
 // The biggest level (smallest index) whose width <= wanted_width, by comparison with widths.width;
 // size_level_count - 1 when wanted_width is below every width. Changed (as built, 2026-11-26): the width first.
 SizeLevel ComputeWantedSizeLevel(double wanted_width, const CellWidthsBySizeLevel& widths);
-// Added (as built, 2026-11-26). The committed active cell whose centre is nearest `position`, among the cells
-// FindCellAt finds at the 27 searched positions position + {-1, 0, 1}^3 * biggest width (z, then y, then x); distances
-// in biggest widths from the frame's origin; an equal distance goes to the cell first in the fixed order; kNoIndex
-// when no searched position finds a cell, or for tables of no grid. The cell found may not touch `position`.
-CellPlaceIndex FindNearestCommittedCell(const GridTables& committed, Vec3 position);
-// A cell that is not in the committed grid (stage ChooseActiveCells): the size level of FindNearestCommittedCell plus
-// one, capped at smallest_size_level (as built: smallest_size_level reads as at most the frame's last size level,
-// Ruling 47; the cap applies also when the cell found is smaller than smallest_size_level, Ruling 48);
-// smallest_size_level when none is found. It borders air, so its depth is 0 and its wanted width is w_min (A61).
-// Changed (as built, 2026-11-26; Rulings 46, 48): this does NOT keep the size step rule. The rule is kept only with the
-// cell found, which may not touch the new cell; a nearer, smaller cell that touches it can be missed (the searched
-// positions are one biggest width apart). The step that adds cells closes the size step rule over its new list, and
-// the cell list check turns down a list that breaks it. Whether the search should look at nearer distances first is
-// an open owner question (section 11, Open). Reads the tables on their own processor.
-SizeLevel ComputeNewCellSizeLevel(const GridTables& committed, Vec3 position, SizeLevel smallest_size_level);
+// What the committed cells around a box that is not in the grid say about it (header `new_cell_rule.h`; A118).
+struct NewCellNeighbors {
+  bool touches_much_smaller_cell;  // A committed cell two or more size levels smaller touches the box: split it.
+  bool touches_bigger_cell;        // A committed cell one or more size levels bigger touches the box.
+};
+// Gives the two facts about the box of `new_cell` (a CellId: size level and coordinate), a box that lies in space with
+// no cell. Empty space comes in whole biggest cells; a new cell starts as the whole empty biggest cell and is split into
+// its 8 children only while a committed cell two or more size levels smaller touches it. The facts are what that fill
+// needs from the committed grid. CPU and GPU, noexcept, integers only, no allocation, no recursion, fixed work.
+// Method: touches_bigger_cell looks up the low corner of each of the 26 places around the box at its size level
+// (FindCellAtCoord) and is true when the cell found has a size level at most the box's minus 1, since a touching cell
+// that big covers a whole neighbouring place. touches_much_smaller_cell looks up the low corner of each of the 56
+// half-width parts of those places that touch the box (4 per face place, 2 per edge place, 1 per corner place) and is
+// true when the cell found has a size level at least the box's plus 2; a split part has its cells covering it, so one of
+// them touches the box. No part look-up when the box's size level plus 2 is past the last size level. A place or part
+// outside the ids a size-level-0 cell can name counts as empty.
+// Cost: at most 82 look-ups (26 and 56), plus one debug look-up at the box.
+// Property: on a committed grid that obeys the size step rule, a biggest cell is empty or fully covered, and no box in an
+// empty biggest cell has both facts at once, so a box that must split never touches a bigger committed cell. The header
+// proves it, and the same argument gives that the new cells of one cube obey the rule between themselves. A caller
+// splits on touches_much_smaller_cell and treats both facts true as an internal fault of the committed grid.
+// Requires: the box lies in space with no committed cell (checked in debug builds); `committed` is a built grid.
+// Evidence: checked by brute force on 16 random grids (1,568 empty biggest cells, every one filled; tests
+// `FindNewCellNeighbors.*`, 14 unit tests, hand cases of 4 size levels, and the functional test
+// `new_cell_neighbors_on_random_grids`), and on the GPU against the CPU (`gpu`). Not proven, measured on the same 16
+// random grids with 0 breaking pairs: that new cells of neighbouring cubes, each filled on its own, obey the rule
+// between themselves. The step owns that check (step design 5, stage 2).
+NewCellNeighbors FindNewCellNeighbors(const GridTables& committed, CellId new_cell) noexcept;  // FLUIDITY_CPU_AND_GPU
 // REMOVED (A78, A79): CellSizeRegion, ArtistCellSizes, ComputeArtistSizeLevel. NEW: the refinement volume.
 inline constexpr int kCellSizeFactorStepsPerDoubling = 4;   // Code c means factor 2^(c / 4).
 inline constexpr int kMaxCellSizeFactorCode = 24;           // Codes -24..24: factors 1/64..64. 0 is factor 1.
@@ -1180,7 +1203,7 @@ Step). In a batched GPU run the step also keeps a CPU copy of the grid built wit
 (`step::FindCpuGridCopy`; `"step: grid copy on the CPU"`, two CPU buffers sharing one CPU `GridBuilderBuffers`).
 
 **Step and cell resize read the shared cell size rule (NEW, A41, A61–A63; 3.8):** stage 2 calls
-`ComputeNewCellSizeLevel` in its marking pass on the grid's processor; cell resize's `ComputeCellSizeChanges` fills
+`FindNewCellNeighbors` (A118) in its fill of new cells, on the grid's processor; cell resize's `ComputeCellSizeChanges` fills
 `CellSizeFacts` per active cell and calls `ComputeWantedCellWidth`, `ComputeWantedSizeLevel` and, for the
 refinement volume, `ComputeCellSizeFactorCode` (A78, A79); `ResizeCells` calls `ComputeReferenceSpeed` with `step::CommittedStepLimits::
 largest_liquid_speed`. The grid consumes nothing from them for this.
@@ -1460,8 +1483,9 @@ of the set is marked through its own cell places. **On the GPU (as built, 2026-1
 are: 1 one thread resets the status record and one thread per block clears its mark; 2 one thread per entry of
 `border_so_far` offers its failure key to the record; 3 one thread per place of the set (64 cell places and 240 face
 places per block of range plus `border_so_far`) runs the shared marking functions and writes only the value 1, with
-plain stores, and stops at once when the record holds a key; the places run in launches of at most
-`kSetBlocksPerMarkingLaunch = 2048` blocks of the set each, with `CheckGpuWork` after each, so that one launch stays
+plain stores, and stops at once when the record holds a key; the places run in shards, launches of at most
+`kSetBlocksPerMarkingLaunch = 2048` blocks of the set each (`SetPlaceShard`, `ComputeMarkingShard`,
+`ComputeMarkingShardCount`; A121), with `CheckGpuWork` after each, so that one launch stays
 short beside a display's watchdog (2,048 is an estimate from timings, not a proven bound); 4 after the last launch,
 one thread per block writes its listed mark (0 when the record holds a key), an exclusive prefix sum gives each listed
 block its place, and one thread per block writes the ascending list and the total into the record, the only thing
@@ -1562,7 +1586,7 @@ the whole grid as `block_in_whole_grid()[p / N] * N + p % N` (N the places per b
 do not map this way when the whole grid stores the corner in a block not loaded (3.7). A piece has the whole grid's
 version and its own block count, and values are checked against those two only: two pieces of one whole grid with
 the same block count pass each other's check, so the caller binds again at every load and never reads values of one
-piece through another (a load counter in the version is an open owner question, section 11).
+piece through another (no load counter is kept in the version, A124).
 
 ### 5.9 The shared cell size rule (NEW, A41, A61–A63)
 
@@ -1578,11 +1602,11 @@ widths of the surface (`depth < 8 w_min`, A61), where it stays `w_min`; the look
 (`ComputeCellSizeFactorCode`), so a thin zone inside a big cell is never missed and both processors agree. Pockets and gas take
 `w_min`, and so do the cells within the solid reach whatever their factor (A109) and a cell with a NaN fact or
 a NaN reference speed (A108); the reference speed has no floor (A110). A new cell borders air, so its depth is 0 and
-its wanted width `w_min` (A61); `ComputeNewCellSizeLevel` gives it the level of the nearest committed cell found at
-the 27 searched positions plus one, capped at the smallest, and the next resize refines it to `w_min`. Changed (as
-built, 2026-11-26; Rulings 46, 48): this does not keep the size-step rule, since the cell found may not touch the new
-cell and a nearer, smaller cell can be missed; the step that adds cells closes the rule over its new list (open
-owner question on the search order, section 11). Levels come from comparing the wanted
+its wanted width `w_min` (A61). Its size is not chosen from a nearby cell. Empty space comes in whole biggest cells; a
+new cell starts as the whole empty biggest cell and is split into its 8 children only while a committed cell two or more
+size levels smaller touches it (A118). `FindNewCellNeighbors` (3.8) gives the two facts that fill needs; the step owns
+the loop and the rule between new cells of neighbouring cubes (step design 5, stage 2). The result is the biggest cells
+that obey the size-step rule, and the next resize refines them to `w_min`. Levels come from comparing the wanted
 width with `CellWidthsBySizeLevel`, never from `log2`; every term is a local read and exact min and max, so CPU and GPU,
 and any batch cut, give the same bytes. The merge hysteresis, the held gradient and the curvature term are cell
 resize's (the last "later").
@@ -1594,8 +1618,7 @@ the start shapes alone, with the depth and solid distance at a cell's centre min
 cell's box (A78, A79); it splits
 every cell wider than `ComputeWantedCellWidth`, one level per pass, then closes the one-size-step rule
 (`CheckSizeStepRule` passes on the result). The grid's first version is built from `StartCells::cells` by
-`BuildGrid` like any version; `ComputeNewCellSizeLevel`'s "none found" case no longer decides a start grid (it
-remains for a new cell far from every committed cell). Under A65 every liquid cell then holds about eight particles
+`BuildGrid` like any version. Under A65 every liquid cell then holds about eight particles
 of its own size (rest volume `(w/2)³`), so the batch plan's 512 particles per full block hold at every level.
 
 ## 6. CPU and GPU
@@ -1625,9 +1648,10 @@ of its own size (rest volume `(w/2)³`), so the batch plan's 512 particles per f
   so the grid has one `kDriverStack` entry, `BuildBorderSearchStackEstimate` (about 199 MB on a 36-multiprocessor
   card), and `BuildBorderSearchBuffers` raises the driver's stack once. The build and piece functions stay under the
   default 1,024 B (0 B; 16 B for `CheckSortedPositions` on sm_120), pinned by three `OnGpuFunctions_KeepUnderTheDefaultStack`
-  tests. The driver keeps one stack sized for the largest need, so entries of several modules summed overcount
-  (section 11, Open). Every GPU function uses Foundation's `ComputeLaunchSize`: thread blocks of 256 threads, at most
-  65,535 of them, looping grid-stride; the border marking is also cut at 2,048 set blocks per launch (5.5). A launch
+  tests. The driver keeps one stack sized for the largest need, so a plan adds the `kRunOn` sum and the largest
+  `kDriverStack` entry of the modules, not their sum (A115; Foundation `ComputeLargestEntryBytes`). Every GPU function
+  uses Foundation's `ComputeLaunchSize`: thread blocks of 256 threads, at most 65,535 of them, looping grid-stride; the
+  border marking is also cut into shards of 2,048 set blocks, one launch each (5.5, A121). A launch
   that did not start makes the call wait for the GPU's pending work before it returns, in the build, the border
   search and the pieces alike, and the CUDA error's name is kept where a test can print it
   (`base/run_on_call_error.h`).
@@ -1721,10 +1745,11 @@ smallest level 4, far facts unless named):**
 | `ComputeReferenceSpeed, SlowLiquid_UsesGravityWaveSpeed` | (0.1, 9.81, 1); (5, 9.81, 1) | `sqrt(9.81)` bit for bit; 5 |
 | `ComputeCellSizeFactorTable, QuarterDoublings_AreExact` (A78) | | `factor[24] == 1`, `factor[28] == 2`, `factor[20] == 0.5`, `factor[0] == 0x1p-6` exactly |
 | `ComputeCellSizeFactorCode, NoVolume_IsZero`, `..., SmallCell_ReadsItsSample`, `..., BigCell_IsSmallestCodeOverItsBox`, `..., OutsideTheVolume_IsZero` (A78, A79) | frame 1 m, 5 levels, spacing 4 smallest cells (8 x 4 x 4 samples), a one-sample-wide line of code -8 at sample x 5 | 0; the sample's code; -8 for the level-0 cell holding x 5, 0 for the other; 0 |
-| `ComputeNewCellSizeLevel, NextToBigCell_IsOneSizeLevelSmaller` | level 0 cell beside 8 level-1 cells, smallest 2 | 1 beside level 0; 2 beside level 1; capped at 1 when smallest is 1; 2 when nothing is near |
+| `FindNewCellNeighbors, BiggestCellBesideSmallCells_MustSplit`, `..., SizeLevelOneCellBesideSmallCorner_MustSplit`, `..., CornerOnlyOfSmallestCell_MustSplit`, `..., CubeBesideSmallCells_FillsInTwoSizeLevels` (A118) | 13 hand cases (facts computed in comments) on a grid of 4 size levels with a size-level-0 cell, and cells split down to size level 3, beside the box; corner-only contact; boxes at the ends of the id range; the 17 boxes of one cube | the two facts of each case; places past the id range count as empty; a version that reads the box's own size level in place of the cell found's fails three of them |
+| `NewCellNeighbors, RandomGrids_TopDownFillMatchesTheReference` (A118) | 16 random grids, every empty biggest cell next to an occupied one (1,568), filled from the top by the function and, by brute force over the committed cells, by a reference | the function and the reference agree at every box; every filled cube's new cells overlap no committed cell and differ by at most 1 size level from every committed cell they touch and from each other; 0 cubes that cannot be filled; 0 breaking pairs between neighbouring cubes filled independently (measured, not proven) |
 | `ComputeWantedCellWidth, NegativeDepthOrDistance_IsSmallest` (NEW, A66) | depth `-0.03` alone; distance `-0.03` alone; depth `-0.03` with factor 4 | 0.0625; 0.0625; 0.0625, never NaN |
 | `ComputeWantedCellWidth, OnGpu_SameBytesAsCpu` (`gpu`) | 10,000 fact sets from a fixed formula | identical bytes, levels and factor codes (`ComputeCellSizeFactorCode` on the fixture above) |
-| `ComputeNewCellSizeLevel, OnGpu_SameBytesAsCpu` (`gpu`) | random 3-level grid on both processors, 10,000 positions | identical levels |
+| `FindNewCellNeighbors, HandCasesOnGpu_EqualCpu` (`gpu`; A118) | the hand cases of the CPU test on both processors | identical facts |
 
 **Reservation (NEW, A58; label `cpu` unless named):** `BuildGridBuffers, IntoRunMemory_HandsOutExactlyTheEstimate`
 (1,000 blocks, both sharings, CPU block and GPU piece list: handed out == reserved),
@@ -1881,8 +1906,8 @@ the old list: cited by author and year only (decision 11).
 | arena, capacity of the topology | `GridBuffers` (`BuildGridBuffers`, `TakeBuffers`); values bound with `ApplyGridVersion` | NEW |
 | (none) | `GridBuilderBuffers` (`BuildGridBuilderBuffers`), `BuilderBuffersSharing`: the builder buffers lent to several `GridBuffers` | NEW (reconcile) |
 | replaced 2026-11-14 (A29, A31): `ReleaseBuffers`, `GridScratch`, `BuildGridScratch`, `GridScratchSize`, `ComputeGridScratchSize`, `ScratchSharing { kOnePerBuffers, kOneForAllBuffers }`, `scratch_sharing`, "build scratch", the allocating `BuildGrid(inputs, settings)` | `TakeBuffers`, `GridBuilderBuffers`, `BuildGridBuilderBuffers`, `GridBuilderBuffersSize`, `ComputeGridBuilderBuffersSize`, `BuilderBuffersSharing { kOnePerGrid, kOneForAllGrids }`, `builder_buffers_sharing`, "builder buffers" (prose: "working buffers"), test-only `BuildTestGrid` | owner answers A29, A31 |
-| `cell_resize::CellSizeSettings`, `cell_resize::CellSizeFacts`, `cell_resize::ComputeWantedCellWidth`, `cell_resize::ChooseCellSize`, `step::StepCallbacks::choose_cell_size` | `grid::CellSizeSettings`, `grid::CellSizeFacts`, `grid::ComputeWantedCellWidth` (moved); the callback is removed: stage 2 calls `grid::ComputeNewCellSizeLevel` | owner answers A41, A61; `plan-decisions.md` item 2 |
-| (none) | `CellWidthsBySizeLevel`, `ComputeCellWidthsBySizeLevel`, `ComputeReferenceSpeed`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, (A78, A79) `CellSizeFactorTable`, `ComputeCellSizeFactorTable`, `RefinementFactors`, `ComputeCellSizeFactorCode`; glossary rows `wanted cell width`, `reference speed`, `cell size factor`, `refinement volume` | NEW (A41, A61–A63; A78, A79 replaced `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`) |
+| `cell_resize::CellSizeSettings`, `cell_resize::CellSizeFacts`, `cell_resize::ComputeWantedCellWidth`, `cell_resize::ChooseCellSize`, `step::StepCallbacks::choose_cell_size` | `grid::CellSizeSettings`, `grid::CellSizeFacts`, `grid::ComputeWantedCellWidth` (moved); the callback is removed: stage 2 calls `grid::FindNewCellNeighbors` serves the fill of new cells (A118) | owner answers A41, A61; `plan-decisions.md` item 2 |
+| (none) | `CellWidthsBySizeLevel`, `ComputeCellWidthsBySizeLevel`, `ComputeReferenceSpeed`, `ComputeWantedSizeLevel`, (A118) `NewCellNeighbors`, `FindNewCellNeighbors`, (A78, A79) `CellSizeFactorTable`, `ComputeCellSizeFactorTable`, `RefinementFactors`, `ComputeCellSizeFactorCode`; glossary rows `wanted cell width`, `reference speed`, `cell size factor`, `refinement volume` | NEW (A41, A61–A63; A78, A79 replaced `CellSizeRegion`, `ArtistCellSizes`, `ComputeArtistSizeLevel`) |
 | memory rows `prefix sum ends`, `order buffers, fixed part`, `border marks end`, `border order buffers, fixed part` | folded into the one entry of their array (`order`, `second order`, `order buffers`, `border marks`, `border order buffers`) | A58, reconcile ruling |
 | `kGridMemoryEstimate` (first draft) | `BuildGridMemoryEstimate` | NEW (every module's `Build<Module>MemoryEstimate`) |
 | `BlockIndex3D` | `CellBlockId` | DECIDED (`cell_block`, `id`) |
@@ -1981,7 +2006,7 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
    2026-11-14), Q39.
 7. **`active_cell` and `ChooseActiveCells`.** Proposed single meaning: the active cells are exactly the cells
    that exist and are not split; `ChooseActiveCells` produces that list (new cells arrive at a size chosen
-   by the shared cell size rule, `ComputeNewCellSizeLevel`, 3.8; changed 2026-11-15, A41, A61: no callback) and so
+   by the fill from the top that `FindNewCellNeighbors` serves, 3.8, 5.9; changed A41, A61, A118: no callback) and so
    makes a new `GridVersion` before `ParticlesToGrid`;
    `ResizeCells` changes sizes of existing cells after commit. Confirm, or name block existence differently.
    Decision: confirmed as proposed. Source: recommended option (owner's standing instruction, 2026-11-14), Q40.
@@ -2148,15 +2173,15 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
 
 36. **(A41, A61, A62, A63) The shared cell size rule is the grid's.** `cell_size_rule.h` (S) holds
     `CellSizeSettings` and `CellSizeFacts` (moved from cell resize), `CellWidthsBySizeLevel`, `ComputeReferenceSpeed`,
-    `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel`, ~~`CellSizeRegion`,
+    `ComputeWantedCellWidth`, `ComputeWantedSizeLevel`, ~~`CellSizeRegion`,
     `ArtistCellSizes`, `ComputeArtistSizeLevel`~~ (replaced by the refinement volume, decision below, A78, A79) (3.8, 5.9), built in grid plan Task 13a; the grid owns it because
     the step and cell resize both read it and both come after grid. The `ChooseCellSize` callback is removed
     (decision 7 amended). Plan decisions: `ComputeCellWidthsBySizeLevel`; `artist_size_level` 0 means none; regions
-    inclusive; ties of the new-cell probe by `ComesBefore`. Source: owner answers A41, A61, A62, A63;
+    inclusive. Source: owner answers A41, A61, A62, A63;
     `plan-decisions.md` "Owner answers A40–A64 applied", item 2. As built (2026-11-26): the rule also gives `w_min`
     for a NaN fact or reference speed (A108) and within the solid reach whatever the factor (A109), with no floor on
-    the reference speed (A110); `CellSizeSettings` has four fields, and the four merge settings are not declared yet
-    (section 11, Open); `ComputeNewCellSizeLevel` does not keep the size-step rule (Rulings 46, 48; 3.8, 5.9).
+    the reference speed (A110); `CellSizeSettings` has four fields, and the four merge settings are added with cell
+    resize (A124). The nearest-cell choice of a new cell's size is replaced by the fill from the top (decision 63).
 37. **(A58) One reserved block per run.** Every builder (`BuildGridBuilderBuffers`, `BuildGridBuffers`,
     `BuildBorderSearchBuffers`, all `Build...Values` forms) takes `RunMemory& run_memory` last, the block of the
     processor its arrays live on; every array is one piece and one estimate entry. An array of a per-item plus a
@@ -2214,8 +2239,7 @@ Each question keeps its text. "Recommended option" means: recommended option (ow
 Decisions taken while the grid was built (2026-11-20 to 2026-11-26), one line each:
 
 48. **Face search size levels.** The face search finds only face pieces of size levels `l - 1`, `l`, `l + 1`,
-    strictly within the radius, from at most 270 blocks chosen by position (3.7). Source: Ruling 56 (owner
-    confirmation open, below).
+    strictly within the radius, from at most 270 blocks chosen by position (3.7). Source: Ruling 56, confirmed by A124.
 49. **Pivot floor.** `1e-12` stays and callers centre values. Source: Ruling 59, confirmed by A114 (decision 47).
 50. **Overlapping span.** A caller's span that overlaps the values in `ReadValues` or `WriteValues` is `kBadInput`.
     Source: Ruling 60.
@@ -2228,54 +2252,41 @@ Decisions taken while the grid was built (2026-11-20 to 2026-11-26), one line ea
 54. **Forward marking on the GPU.** Source: Ruling 64, confirmed by A113 (decision 46).
 55. **Span form kept per block.** Source: Ruling 65; replaced by decision 56.
 56. **Span form retired.** `FindBorderBlocks` has a vector form and a buffer form only; `ComputeIsBorderBlock` is the
-    test comparator. Source: Ruling 66 (owner confirmation asked below).
+    test comparator. Source: Ruling 66, confirmed by A124.
 57. **Byte marks and a stack entry.** Border marks are plain bytes; the GPU marking function's stack is the grid's
     `kDriverStack` entry, `BuildBorderSearchStackEstimate`, reserved by `BuildBorderSearchBuffers`. Source: Ruling 67.
 58. **Gate tiers.** At commit speed the debug build runs unit tests only and the release build unit and functional
-    tests; full speed runs everything in both. Source: Ruling 68 (to be told to the owner, below).
+    tests; full speed runs everything in both. Source: Ruling 68, confirmed by A124.
 59. **Test budget.** A functional test program takes at most about 60 s in release and finishes in debug within the
-    1,800 s entry limit; stacked-border tests take each grid's first, middle, last and whole-grid range. Source:
-    Ruling 69.
+    1,800 s entry limit; stacked-border tests take each grid's first, middle, last and whole-grid range. The grid piece
+    tests stay at 5 to 16 random grids and the 16 framed grids; the stacked border program takes about 39 s in release.
+    Source: Ruling 69, A119.
 60. **32-bit set limit.** The border search keeps 32-bit place indexes and fails `kTooManyCellBlocks` above
     `kMaxSetBlocks = 14,128,181` blocks of range plus border so far. Source: Ruling 70.
 61. **Atomic adds of the GPU piece build.** One integer `atomicAdd` per active cell stays until a GPU run shows a cost.
-    Source: Ruling 71.
+    Source: Ruling 71, confirmed by A124.
 62. **Frames that are not powers of two.** The four failures of the framed test grids are assumptions of exact
     arithmetic in the tests, not faults of the grid: areas cancel within `4 eps` of their absolute sum; the
     linear-field tolerance carries the size of the coordinates, and the limit (`eps * |x|` per offset) is documented;
-    test positions are ones `FindCellAt` gives to the cell. Source: Ruling 72 (the limit to be told to the owner,
-    below).
+    test positions are ones `FindCellAt` gives to the cell. Source: Ruling 72; the limit is accepted (A124).
+
+63. **New cells are filled from the top (A118).** `ComputeNewCellSizeLevel` and `FindNearestCommittedCell` are removed.
+    The grid has `FindNewCellNeighbors` (3.8, 5.9): two facts about a box that is not in the grid, at most 82 look-ups,
+    CPU and GPU. The step owns the loop and the rule between new cells of neighbouring cubes. Source: A118.
+64. **One rule for a bad range (A116).** An input that is data fails with a status. `BuildRangeWithBorder` returns
+    `std::expected` with `kBadInput` for a range outside the grid. An empty range is `kBadInput` in every function that
+    takes a range, except over a grid with no block, where the result is empty and no buffer or GPU is used; unsound
+    border search buffers on a GPU grid fail before any launch. `ReadGrid`'s wrong-processor status is the one stated
+    exception. Later modules copy the rule. Source: A116.
+65. **The driver stack is counted as the largest entry (A115).** A plan adds the `kRunOn` sum and the largest
+    `kDriverStack` entry, by `ComputeLargestEntryBytes` (Foundation `base/memory_count.h`). Source: A115.
+66. **"Shard" for a launch's share (A121).** The share of a set that one GPU launch handles is a shard: `SetPlaceShard`,
+    `ComputeMarkingShard`, `ComputeMarkingShardCount`. "Chunk" stays banned for a piece of the grid and is kept for the
+    stable order. Source: A121.
 
 **Open**
 
-The former points 1, default room, and 2, order buffers size, are decided by decisions 28 and 30. Open for the
-owner (`owner-questions-round-3.md`):
-
-1. **New cells and the size-step rule** (Rulings 46, 48; 3.8, 5.9). "Should `FindNearestCommittedCell` look at nearer
-   distances first, so that a touching small cell is found, or does the step own a closure of the size-step rule over
-   its new cells, with a GPU form?" Until answered, the step's design states the closure as its own open point.
-2. **Face search size levels** (decision 48). "Confirm that the face search, and so the wide border and transfer's
-   fills, finds face pieces of size levels `l - 1` to `l + 1` only."
-3. **Driver-stack entries** (decision 57). "The driver keeps one stack sized for the largest need of any function
-   launched, but modules sum their `kDriverStack` entries (about 199 MB too many with contact's): sum, or take the
-   largest?"
-4. **Versions of pieces** (5.8). "Add a load counter to a piece's version, so that two pieces of one whole grid with
-   equal block counts are told apart?"
-5. **Merge settings** (3.8). "Declare `merge_width_share`, `merge_wait_duration`, `min_merge_wait_steps` and
-   `max_cell_splits_per_resize` in `CellSizeSettings` now, or when cell resize is planned?"
-6. **Status or precondition** (3, 3.4). Three pairs: a range outside the grid is `kBadInput` in `BuildRanges`, the
-   buffer form of `FindBorderBlocks` and `BuildGridPiece`, a debug assertion in `BuildRangeWithBorder`; a wrong
-   processor is `kBadInput` in every build only in `ReadGrid`; an empty range is `kBadInput` in `BuildGridPiece` and
-   accepted by the buffer form of `FindBorderBlocks` for a grid of 0 blocks. "Make them uniform as recommended
-   (`BuildRangeWithBorder` returns `std::expected` with `kBadInput`; `ReadGrid` stays the stated exception; an empty
-   range is bad input except for a grid with no block)?"
-7. **Offsets far from the origin** (5.4, decision 62). "Compute offsets from the cell, or accept the documented loss
-   of about `eps * |x|` per offset?"
-8. **Rulings taken without the owner, to confirm**: the span form retired (decision 56), P10 (c) as two launches
-   (Ruling 38), the edge rule of the refinement volume (Ruling 44), the gate tiers (decision 58).
-9. **The word "chunk"** in `SetPlaceChunk`, `ComputeMarkingChunk`, `ComputeMarkingChunkCount`, which the glossary bans
-   for a piece: "rename, or keep?"
-10. **One atomic add per active cell** in the GPU piece build (decision 61): "keep until a GPU run shows a cost?"
+None. The owner's answers A115 to A127 settle the points that were open (`owner-questions-round-3.md`).
 
 For the pressure and solids designs (3.7, A112): no reader goes from a corner place to the cells that have it as a
 corner, and a fill driven by cells leaves corners kept in a border block unwritten; carried into their designs.
@@ -2301,6 +2312,7 @@ Code commit "Run the grid's checks in frames that are not powers of two", folder
 cells and face pieces of a cell), `cell_corners.h` (corner places and the cells around an edge), `face_search.h`
 (`FindCellsNearFace` and the face search), `nearby_face_weights.h` (the list, the weights, the sums and the face
 form), `weight_curve.h` (the curve and the constants of the weights), `cell_size_rule.h` (the shared cell size rule),
+`new_cell_rule.h` (`NewCellNeighbors`, `FindNewCellNeighbors`),
 `grid_error.h` (`GridError`, `GridFailure`). CPU only: `grid_values.h` (value buffers and their binding),
 `staggered_grid.h` (settings, inputs, builder buffers, buffers, the grid, its build, checks, counts and `ReadGrid`),
 `cell_block_range.h` (ranges, border search, its buffers and its estimates), `grid_piece.h` (grid pieces),
@@ -2317,7 +2329,7 @@ functional tests in `tests/grid/`, one test program per ctest entry. 912 tests (
 build runs unit tests and the release build unit and functional tests; full speed runs all in both (decision 58).
 
 **No GPU code has run.** Every grid GPU function is compiled, never run. Device assertions have never been compiled
-(no debug CUDA preset); the `FLUIDITY_HAS_GPU` branches of host `.cc` files are never checked by clang-tidy;
+(no debug CUDA preset); the `FLUIDITY_HAS_GPU` branches of host `.cc` files are checked by a second clang-tidy run in the CUDA container (A120);
 `ReadGrid`'s failure paths on a GPU grid are reached only on hardware; the stack figures (3,600 B for the marking
 function, under 1,024 B for the others) come from `cuobjdump`, not from a run, and the 25 % tolerance of the
 stack free-memory test is a guess until the first run. The commands of the first run and what to send back are in
@@ -2331,7 +2343,6 @@ stack free-memory test is a guess until the first run. The commands of the first
   comments say "for the grid table headers only"; `GridValuesAccess` is public in `fluidity::grid` and listed as
   "private to this header".
 - The span forms of `ComputeGridCounts` and `CheckSizeStepRule` fail `kBadInput` above 2^32 - 1 cells.
-- The buffer form of `FindBorderBlocks` fails `kBadInput` for a range not inside the grid.
 - `BorderSearchBuffers` has a default constructor (an empty object) and a `marks()` reader.
 - `FaceSearch::blocks` is `CellBlockIndex[kMaxFaceSearchBlocks]` (4 padding bytes), not `std::uint32_t[270]`.
 - `Build...Values` fail `kBadInput` above `kMaxCellBlocksLimit`; a built value buffer has every byte zero; the grid
@@ -2348,12 +2359,12 @@ stack free-memory test is a guess until the first run. The commands of the first
 - One test variable is named `owner` (decision 3).
 
 **Deferred.**
-- The four merge settings of `CellSizeSettings` (3.8): added when cell resize is planned, unless the owner says
-  otherwise (section 11, Open 5).
+- The four merge settings of `CellSizeSettings` (3.8) are added with cell resize (A124).
 - GPU helpers copied per file: `ApplyLargerStack`, `kOneThread`, the atomic-pointer cast and the volatile key read
   in each of the three `.cu` files; to move to `base/gpu_launch.cuh` before another module's GPU half copies them.
 - Large test-support files: `testing/grid_support.cc` (1,901 lines: random lists, the geometric checker, test grids,
   comparisons, the geometric border), `grid_build_steps.test.cc`; to split.
-- The Windows CUDA build has never been compiled (CI compiles CUDA on Linux only); a compile-only Windows CUDA job is
-  wanted before the first GPU run.
-- `stacked_borders_in_grid_pieces` takes 108 to 114 s in release at 100 grids, over the 60 s budget (accepted).
+- The Windows CUDA build has a compile-only job in CI (A117), on the Windows 2022 image; it is not yet green and is
+  being brought to green before the first GPU run.
+- The stacked border program takes about 39 s in release (A119); pieces at real range sizes are tested in the batches
+  module.

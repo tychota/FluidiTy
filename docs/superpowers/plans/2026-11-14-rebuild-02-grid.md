@@ -26,13 +26,17 @@ untracked). Its section 3 is the contract. Programme design: `docs/design/progra
 6, 7, 8, 8a). Cross-module names: `docs/superpowers/specs/modules/shared-interface.md`, `plan-decisions.md` and
 `owner-answers.md` (planning checkout).
 
-## Status (2026-11-26)
+## Status (2026-11-27)
 
-Every task of this plan is implemented and pushed to `rebuild`; the head commit of the module is "Run the grid's
-checks in frames that are not powers of two". The GPU code is compiled and has never run. The as-built record (the
-headers as they are, the tests, the deviations from the design and the deferred items) is the last section of the
-grid design, "12. As built (2026-11-26)", with the decisions taken while building in its section 11. The plan below is
-kept as written: its tasks are not updated to what was built.
+Tasks 1 to 28 are implemented and pushed to `rebuild`. Task 28 replaced the size choice of a new cell: it removed
+`ComputeNewCellSizeLevel` and `FindNearestCommittedCell` and added `FindNewCellNeighbors`, the two facts about a box
+that is not in the grid (at most 82 look-ups, CPU and GPU), so that the step fills each empty biggest cell from the top.
+After it came the owner's answers of the third round: one rule for a bad range, the word "shard", the largest driver
+stack entry in a plan, a second clang-tidy run over GPU-only host code, and a stacked border program of about 39 s in
+release. The GPU code is compiled and the GPU tests are compiled, not run. The Windows CUDA compile job is in CI and is
+being brought to green. The as-built record (the headers as they are, the tests, the deviations from the design and the
+deferred items) is the last section of the grid design, "12. As built", with the decisions taken while building in its
+section 11. The plan below is kept as written: its tasks are not updated to what was built.
 
 ## Revision 2026-11-19 after the pre-flight scan
 

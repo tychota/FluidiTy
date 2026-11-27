@@ -416,7 +416,7 @@ The scaling this design describes in 5.1 is the grid's (5.4): transfer supplies 
 `GridFromParticles`, `GridSnapshot` and `CellsFromParticles` are built once per material set with the grid's
 `BuildFaceValues` and `BuildCellValues` for `max_cell_blocks` and bound to each grid version with
 `ApplyGridVersion` (grid, from the step's entry), so no stage allocates. Batched runs load the borders of
-section 6 with `grid::BorderWidth`, `BuildRangeWithBorder` and `FindBorderBlocks` in the grid's fixed block
+section 6 with `grid::BorderWidth`, `BuildRangeWithBorder` (which returns `std::expected`, A116) and `FindBorderBlocks` in the grid's fixed block
 order.
 
 **Particles (PROVIDED by particles 3.1 to 3.4).** `particles::ParticlesTry`, `material_count()`;

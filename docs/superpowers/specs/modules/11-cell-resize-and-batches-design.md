@@ -134,7 +134,7 @@ std::string_view ToName(CellResizeError error);
 (`fluidity::grid`, shared): `CellSizeSettings` and `CellSizeFacts` move there (this module's 2026-11-14 forms, with
 `ComputeWantedCellWidth(settings, frame, facts)` and `ComputeCellSizeChange(settings, frame, facts)`, are **replaced**),
 beside `CellWidthsByLevel`, `ComputeReferenceSpeed`, `ComputeWantedCellWidth(settings, widths, reference_speed,
-facts)`, `ComputeWantedSizeLevel`, `ComputeNewCellSizeLevel` and (A78, A79, replacing `CellSizeRegion`, `ArtistCellSizes`
+facts)`, `ComputeWantedSizeLevel` and (A78, A79, replacing `CellSizeRegion`, `ArtistCellSizes`
 and `ComputeArtistSizeLevel`) `RefinementFactors`, `CellSizeFactorTable`, `ComputeCellSizeFactorCode`, exactly as `plan-decisions.md` "Owner answers A40–A64 applied" item 2 declares them (grid
 design 3; the formulas are in 5.3 here). This module consumes them (section 4) and keeps the per-cell change, the
 velocity gradient and the pass.
@@ -346,8 +346,8 @@ std::vector<MemoryEstimateEntry> BuildCellResizeMemoryEstimate(std::uint32_t ing
 // mismatched_particle_count = 0;` (= particle_count.mismatched_particle_count); both 0 when the pass failed or found
 // nothing to do.
 step::ResizeResult ResizeCells(void* context, step::Simulation& simulation);
-// REMOVED (A41): ChooseCellSize and step::StepCallbacks::choose_cell_size. Stage 2 calls grid::ComputeNewCellSizeLevel
-// on the grid's processor; no copies (the one-piece copies of decision 35 are gone).
+// REMOVED (A41): ChooseCellSize and step::StepCallbacks::choose_cell_size. Stage 2 fills new cells from the top with
+// grid::FindNewCellNeighbors (A118) on the grid's processor; no copies (the one-piece copies of decision 35 are gone).
 ```
 
 **Not in the first version (A64)** (the plan's later group; text as of 2026-11-14):
@@ -806,7 +806,7 @@ built grid has 1 or more), `GridFailure`, `CellId`, `FacePieceId`, `CellBlockId`
 `ComputeGridCounts`, `CheckSizeStepRule`, NEW (A41, grid `cell_size_rule.h`, `plan-decisions.md` item 2):
 `CellSizeSettings`, `CellSizeFacts`, `CellWidthsByLevel`, (A78, A79) `RefinementFactors`, `CellSizeFactorTable`,
 `ComputeCellSizeFactorTable`, `ComputeCellSizeFactorCode`, `ComputeReferenceSpeed`,
-`ComputeWantedCellWidth`, `ComputeWantedSizeLevel` (and `ComputeNewCellSizeLevel`, which
+`ComputeWantedCellWidth`, `ComputeWantedSizeLevel` (and `FindNewCellNeighbors`, which
 the step calls in stage 2), `CellPlaceIndex`, `FindCellPlace`, `FindFacePlace`, `FindCellAt`, `FindTouchingCells`,
 `FindFacePieces`, `FindCellLow`, `FindCellHigh`, `ToAxis`, `ComputeFaceArea`, `ComputeCellWidth`,
 `ComputeCellCenter`, `ComputeCellCenterDistance`, `ComputeFacePosition`, `FindNearbyFaces`, `ToMaskOfAll`,
@@ -856,15 +856,11 @@ enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids }
 
 **From the grid as built (2026-11-26)** (grid design 3.4, 3.8, 5.5, 5.8, 6, 11, 12):
 
-- **New cells and the size-step rule: open design point.** `grid::ComputeNewCellSizeLevel` does not keep the
-  size-step rule by itself (5.3 corrected): `FindNearestCommittedCell` looks at 27 positions one biggest cell width
-  apart, and the cell it finds may not touch the new cell, so a touching smaller cell can be missed. No grid function
-  closes the rule over a list of new cells, and `FindCellsThatMustSplit` splits committed cells on the CPU while the
-  step computes new levels in its marking pass on the grid's processor. Owner question, to answer before the step's
-  plan: should the grid's search look at nearer distances first so that a touching small cell is found, or does the
-  step own a closure over its new list, with a GPU form? This design owns a brute-force test of the nearest committed
-  cell on random grids (the grid has 8 and 10 hand cases for `ComputeNewCellSizeLevel` and
-  `FindNearestCommittedCell`).
+- **New cells (A118).** The grid has `grid::FindNewCellNeighbors(committed, new_cell)`: two facts about a box that is
+  not in the grid, at most 82 look-ups, CPU and GPU. The step fills each empty biggest cell from the top in its marking pass
+  and owns the list of new cells and the rule between new cells of neighbouring cubes (measured as never broken on 16
+  random grids, not proven; step design 5.3). `FindCellsThatMustSplit` splits committed cells on the CPU and is not
+  involved. This design owns no test of new cells.
 - **Border sizes.** On the sloped-surface scene (9,584 cells, 218 blocks, ranges of 8 blocks), a range of 8 blocks
   needs up to 97 blocks as near border and 174 as wide border: about 12 times the range at the near width. Choose the
   range size with the border in mind, and size piece buffers by the stacked total (range plus every layer). Layers are
@@ -876,17 +872,17 @@ enum class BuilderBuffersSharing : std::uint8_t { kOnePerGrid, kOneForAllGrids }
   (`block_in_whole_grid` gives it), and one `math::TreeSum` runs after the last batch. A tree sum per piece, added
   up, is not bit-identical to the whole grid's.
 - **Pieces and versions.** Two pieces of one whole grid with equal block counts pass each other's version check:
-  values are bound again at every load and never read through another piece (a load counter in a piece's version is
-  an open owner question).
+  values are bound again at every load and never read through another piece (no load counter is kept in a piece's
+  version, A124).
 - **Driver-stack entries.** The grid now has one `kDriverStack` entry, `BuildBorderSearchStackEstimate` (3,600 B per
   thread for the border search's marking function, about 199 MB on a 36-multiprocessor card), to add to a GPU plan
-  beside `BuildBorderSearchMemoryEstimate`. Whether the step sums the modules' `kDriverStack` entries or takes the
-  largest (the driver keeps one stack, sized for the largest need) is an open owner question.
+  beside `BuildBorderSearchMemoryEstimate`. The run plan adds the `kRunOn` sum and the largest `kDriverStack` entry of the
+  modules, not their sum: the driver keeps one stack, sized for the largest need (A115).
 - **Memory plan.** A CPU grid's `kRunOn` and `kCpu` entries come from one CPU `RunMemory` (the builders do not read
   `where`); each `GridBuilderBuffers` keeps an 8-byte lent count outside every `RunMemory`.
 - **Cell size rule.** The four merge settings this design reads from `grid::CellSizeSettings`
   (`merge_width_share`, `merge_wait_duration`, `min_merge_wait_steps`, `max_cell_splits_per_resize`) are not declared
-  yet: they are added when cell resize is planned, unless the owner says otherwise. The table of widths is
+  yet: they are added with this design's plan (A124). The table of widths is
   `grid::CellWidthsBySizeLevel` (this design writes `CellWidthsByLevel`); `ComputeWantedCellWidth` takes
   `(facts, reference_speed, widths, settings)` and `ComputeWantedSizeLevel` `(wanted_width, widths)`. `CellSizeFacts`
   has no `cell_width` field and defaults the depth and the distance to +infinity, "nothing near"; two of its four
@@ -1114,8 +1110,8 @@ module:
     ```
     `CommitResize` in a batched GPU run requires `ApplyResizedCpuGridCopy` first (else `kBadInput`, nothing
     committed) and swaps the CPU copy pair with no copy. ~~`choose_cell_size` receives
-    `committed_grid.tables(RunOn::kCpu)`~~ **replaced** (A41): `choose_cell_size` is removed; stage 2 calls
-    `grid::ComputeNewCellSizeLevel`.
+    `committed_grid.tables(RunOn::kCpu)`~~ **replaced** (A41): `choose_cell_size` is removed; stage 2 fills new
+    cells with `grid::FindNewCellNeighbors` (A118).
 
 **I/O and CLI (PROVIDED, per `changes-to-apply.md` 12):** the scene file carries `CellResizeSettings` and
 `BatchSettings` with their defaults; the `run` and `resume` commands build `CellResize` and, for a batched
@@ -1338,15 +1334,13 @@ the number of cells below the band in a tank of surface area `A` is `∫ A dz / 
 toward 2). Scenes whose deep cells cannot coarsen (few levels, strong shear, refinement factors below 1, a solid or gas pocket
 deep down) pay `8 x (depth / w) x A / w^2`.
 
-**New cells** (stage `ChooseActiveCells`, grid `ComputeNewCellSizeLevel`, called by the step on the grid's
-processor): the level of the nearest committed active cell plus one, capped at `smallest_size_level`
-(`grid::FindCellAt` probes at `position + {-1, 0, 1}^3 * biggest width`, nearest centre, ties in fixed cell order;
-`smallest_size_level` when none is found). This is rule 1 for a new cell: it borders air, so its depth is 0 and
-its wanted width `w_min` (A61), and the next `ResizeCells` finishes the job. Corrected (grid as built, 2026-11-26;
-grid Rulings 46, 48): the cap does not keep the size-step rule; the cell found may not touch the new cell, and a
-nearer, smaller cell that touches it can be missed, so the step closes the rule over its new list (open point, section
-4 "From the grid as built"). **Replaced** (A41): `ChooseCellSize` (a CPU callback with its one-piece GPU copies:
-new cells read back, levels sent, a `ReadGrid` when no current copy was held) and the open question of a shared rule.
+**New cells** (stage `ChooseActiveCells`, grid `FindNewCellNeighbors`, called by the step on the grid's processor;
+A118): a new cell starts as the whole empty biggest cell and is split into its 8 children only while a committed cell two or
+more size levels smaller touches it. This is rule 1 for a new cell: it borders air, so its depth is 0 and its wanted
+width `w_min` (A61), and the next `ResizeCells` refines it. The step owns the loop and the size-step rule between new
+cells of neighbouring cubes (step design 5.3). **Replaced** (A41): `ChooseCellSize` (a CPU callback with its one-piece
+GPU copies: new cells read back, levels sent, a `ReadGrid` when no current copy was held) and the open question of a
+shared rule.
 
 ### 5.4 Remap between two grid versions, and conflict C2
 
@@ -2052,7 +2046,7 @@ below), [1] Jiang 2015 (what a split must keep), [6] Wang, Sun, Zhu 2026 (cells 
 | `PrepareAdaptiveLiquidCoreTransport3D` | `MoveGridOnlyLiquid`, callback `MoveGridOnlyLiquidInStep` | NEW (decision 12); not in the first version (A64) |
 | (none) | `ApplyGridOnlyRegionToGrid`, callback `ApplyGridOnlyRegionInStep` | NEW (decision 12; 2026-11-14); not in the first version (A64) |
 | (none) | `ComputeCellSizeChanges`, `CellSizeChangesPart`, `CellSizeChange::kMergeReady`, `kKeepsItsSize`, `ComputeVelocityGradientSize`, `velocity gradient size`, `reference speed`, `held_velocity_gradient_size`, `merge_ready_step_count`, `cell size region`, `cell size map`, `ResizeCellsReport::totals_before` / `totals_after` | NEW (A41, A62, A63, A64; decision 41) |
-| (none) | `ChooseCellSize` | removed (A41); grid `ComputeNewCellSizeLevel` |
+| (none) | `ChooseCellSize` | removed (A41); grid `FindNewCellNeighbors` (A118) |
 | `BlendLiquidBandCarrier3D`, `particle_weight` | step 3 of 5.5, `particle_share` | NEW |
 | `LiquidRemapInventory3D`, `inventory` | `GridOnlyAmounts` with `mass`, `rest_volume`, `current_volume`, `ingredient_volume` | VERIFIED, below (decision 3) |
 | `carrier_velocity`, `eulerian_carrier` | `velocity_after_pressure` (committed), `carried_velocity` | VERIFIED, below (decision 3) |
@@ -2360,8 +2354,8 @@ Q17 / C2: both grids, as question 4 below, `changes-to-apply.md` (03 Particles).
     real tables in a CPU run; version 0 and null arrays in a one-piece GPU run (then `ChooseCellSize` reads its own
     CPU copy); `FindCpuGridCopy(...)->tables(kCpu)` in a batched GPU run. The one-piece copies stay an owner question
     (Open 2). Decision: as listed. Source: `plan-decisions.md`, Reconcile pass item 13 and coordinator item (2).
-    **Replaced** by decision 41 (A41): `choose_cell_size` is removed; stage 2 calls `grid::ComputeNewCellSizeLevel` on
-    the grid's processor, with no copy.
+    **Replaced** by decision 41 (A41): `choose_cell_size` is removed; stage 2 fills new cells with `grid::FindNewCellNeighbors`
+    on the grid's processor, with no copy (A118).
 36. **(Reconcile) Grid buffers sized by the planner, one builder buffers.** The grid has no default room
     (`GridSettings::max_cell_blocks` 0 is `kBadInput`); the loaded try's grid buffers borrow the step's
     `grid::GridBuilderBuffers`, so `bytes_per_loaded_block` and `BuildBatchesMemoryEstimate` count

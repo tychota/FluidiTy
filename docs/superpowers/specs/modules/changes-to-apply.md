@@ -268,7 +268,7 @@ A design must no longer say "until the owner answers".
     `BuildContactStackEstimate(RunOn)` gives one entry, `MemoryWhere::kDriverStack`: the GPU stack of the particle
     visits, about 12.8 kB per resident thread, 707 MB on a 36-multiprocessor card. `BuildContactBuffers` on the GPU
     reserves it at once and fails `kOutOfMemory` with its bytes when the card cannot hold it; it stays with the GPU's
-    context for the rest of the process. The run plan compares the `kRunOn` sum plus the `kDriverStack` sum with the
+    context for the rest of the process. The run plan compares the `kRunOn` sum plus the largest `kDriverStack` entry (A115) with the
     GPU's memory. The failure array is 32 bytes per particle.
   - *GPU pass.* Steps 2, 4 and 6 of 5.5 are one fused pass on the GPU. If that pass moves particles itself, it calls
     `ComputeParticleMoveAt` (the speed and coordinate checks, then `MoveParticle`), not `MoveParticle`. Each
