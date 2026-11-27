@@ -22,6 +22,7 @@ fluidity_add_headers(
   grid_tables.h
   grid_values.h
   nearby_face_weights.h
+  new_cell_rule.h
   staggered_grid.h
   staggered_grid_gpu.h
   touching_cells.h
@@ -170,5 +171,6 @@ fluidity_add_test(grid_support_test SOURCES testing/grid_support.test.cc LABEL c
 fluidity_add_test(
   grid_piece_support_test SOURCES testing/grid_piece_support.test.cc LABEL cpu LINKS fluidity_grid_testing
 )
+fluidity_add_test(new_cell_rule_test SOURCES new_cell_rule.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(touching_cells_test SOURCES touching_cells.test.cc LABEL cpu LINKS fluidity_grid_testing)
 fluidity_add_test(weight_curve_test SOURCES weight_curve.test.cc LABEL cpu LINKS fluidity_grid_testing)

@@ -512,6 +512,18 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  new_cell_neighbors_on_random_grids_functional_test
+  SOURCES
+  new_cell_neighbors_on_random_grids.test.cc
+  LABEL
+  cpu
+  TIER
+  functional
+  LINKS
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   touching_cells_on_random_grids_functional_test
   SOURCES
   touching_cells_on_random_grids.test.cc
