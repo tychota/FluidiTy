@@ -1,0 +1,23 @@
+docs/glossary.md
+  s_56b1e1a5849079::t_5d066265ad0350 180-181,191
+docs/method-paper/figures/particle_grouping.typ
+  s_56b1e1a5849079::t_81bd0789e956bc 44
+docs/method-paper/fluidity-method.typ
+  s_56b1e1a5849079::t_789e24df9a9be5 3096-3113,3134-3135,3142-3181,3187-3192,3198-3207,3210-3226,3229-3230,3238-3239,3250,3255-3259,3266-3270,3279,3293-3294,3300,3333-3335,3352-3355,3364,3367-3371,3374-3375,3696,3724-3726,3729-3731
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "737654c8b3225acd8fbb2f9be1a99ee55a978107",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
