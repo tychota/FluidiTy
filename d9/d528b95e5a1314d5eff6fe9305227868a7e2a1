@@ -1,0 +1,27 @@
+src/fluidity/base/memory_count.cc
+  s_4f0877e2acdcf0::t_31d514c054b4f1 3,110-121
+src/fluidity/base/memory_count.h
+  s_4f0877e2acdcf0::t_cacb538165b6fa 99-101,105-118
+src/fluidity/base/memory_count.test.cc
+  s_4f0877e2acdcf0::t_5133b59f31cedc 178-179,195-234
+src/fluidity/grid/cell_block_range.h
+  s_4f0877e2acdcf0::t_db3765b27aa1a7 297-298
+src/fluidity/grid/grid_memory_estimate.h
+  s_4f0877e2acdcf0::t_a93320bc9d1d6e 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d9d528b95e5a1314d5eff6fe9305227868a7e2a1",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
