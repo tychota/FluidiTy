@@ -53,7 +53,7 @@ constexpr std::uint32_t kNestedBallRangeBlocks = 16;
 
 // A piece as a comparison sees it: everything the piece holds, read back from the processor it was built on.
 struct PieceReadBack {
-  std::uint32_t version = 0;
+  std::uint64_t version = 0;
   std::uint32_t block_count = 0;
   std::uint32_t range_first_block = 0;  // The range as a run of the piece.
   std::uint32_t range_first_block_in_whole_grid = 0;

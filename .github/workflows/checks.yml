@@ -432,4 +432,5 @@ jobs:
 
       # Every target, no test: `ctest` is never called in this job.
       - name: Build
-        run: uv run --frozen cmake --build --preset ${{ env.PRESET }}
+        # -k 0: keep building after an error, so one run lists every file MSVC or nvcc turns down.
+        run: uv run --frozen cmake --build --preset ${{ env.PRESET }} -- -k 0
