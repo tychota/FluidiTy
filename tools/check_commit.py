@@ -98,7 +98,11 @@ The steps, in order:
           the file's headers with the size and modification time of each (the stat record of tools/run_tidy.py), so a
           file whose list is unchanged is a hit without running the compiler to list its headers.
   paper   compile the method paper with typst, and check that every label named on a `Read:` line under src/ and tests/
-          (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper.
+          (<sec-...>, <fig-...>, <proc-...>, <eq-...> or <tab-...>, with `-` or `:`) is defined by the paper. The
+          compile fails when a figure, a table, a code block or a display equation is wider than the text area, or a
+          figure is taller than it (docs/method-paper/overflow_check.typ says what it measures and what it cannot see);
+          the step then prints the first such block as `FAIL paper: page <n>: <block> is <size>, and the text area is
+          <size>` and the number of others, and the log lists them all.
   cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run
           clang-tidy over the .cc files that only the CUDA build compiles (the list CMake writes to
           gpu_only_sources.txt), and run the tests labelled cpu and no_gpu. The container has no GPU, so GPU code is
@@ -305,6 +309,16 @@ class Check:
     in_quick: bool = True
     # Answers why the line cannot run now, as `NOT RUN <title> (<reason>)`, or None when it can.
     unavailable_reason: Callable[[], str | None] = lambda: None
+
+
+# A line of the failed compile that names one block outside the text area: `page 31: equation (4) is 381 pt wide, and
+# the text area is 300 pt`, written by docs/method-paper/overflow_check.typ.
+_BLOCK_OVERFLOW_LINE = re.compile(r"^page \d+: .+ is \d+ pt (?:wide|tall), and the text area is \d+ pt$")
+
+
+def block_overflow_findings(compile_output: str) -> list[str]:
+    """The blocks that the paper's overflow check named in the output of a failed compile, in the order printed."""
+    return [line for line in compile_output.splitlines() if _BLOCK_OVERFLOW_LINE.match(line)]
 
 
 def container_platform() -> str:
@@ -1125,7 +1139,11 @@ class Gate:
         (self.repo_root / PAPER_PDF).parent.mkdir(parents=True, exist_ok=True)
         compiled = self.command("paper", ["typst", "compile", PAPER_TYPST_FILE.as_posix(), PAPER_PDF.as_posix()])
         if not compiled.passed:
-            return compiled
+            overflows = block_overflow_findings(compiled.output)
+            if not overflows:
+                return compiled
+            more = f" (and {len(overflows) - 1} more; all are in the log)" if len(overflows) > 1 else ""
+            return Outcome(False, overflows[0] + more, output=compiled.output)
         defined = self.paper_labels()
         missing = []
         paths = sorted(path for folder in SOURCE_FOLDERS for path in (self.repo_root / folder).rglob("*"))

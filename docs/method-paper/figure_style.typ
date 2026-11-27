@@ -62,17 +62,28 @@
 )
 
 // Draws the figure `body` (a block of CeTZ draw calls) with the shared defaults. One unit is 0.92 cm, so a figure
-// drawn 11.5 units wide fills the 106 mm text width.
-#let figure-canvas(body) = {
-  set text(font: label-font, size: label-size, number-type: "lining")
-  cetz.canvas(length: 0.92cm, padding: 0.1, {
-    cetz.draw.set-style(
-      stroke: geometry-stroke + black,
-      mark: (fill: black, scale: arrow-scale),
-      content: (padding: 0.08),
-    )
-    body
-  })
+// drawn 11.5 units wide fills the 106 mm text width. A drawing a little wider than the text area is scaled down, the
+// labels with it, until it fits: a figure never runs into the margin (overflow_check.typ makes the paper fail when
+// one does). A drawing that fits is left at its own size.
+#let figure-canvas(body) = context {
+  let canvas = {
+    set text(font: label-font, size: label-size, number-type: "lining")
+    cetz.canvas(length: 0.92cm, padding: 0.1, {
+      cetz.draw.set-style(
+        stroke: geometry-stroke + black,
+        mark: (fill: black, scale: arrow-scale),
+        content: (padding: 0.08),
+      )
+      body
+    })
+  }
+  let text-width = page.width - page.margin.left.length - page.margin.right.length
+  let drawing-width = measure(canvas).width
+  if drawing-width > text-width {
+    scale(text-width / drawing-width * 100%, reflow: true, canvas)
+  } else {
+    canvas
+  }
 }
 
 // Oblique projection of a point (x, y, z) given in Z-up axes: X to the right, Y into the page drawn up and to

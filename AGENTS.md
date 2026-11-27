@@ -635,7 +635,8 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   - `PASS paper`: the method paper compiles with typst, and every label on a `Read:` line under `src/` and `tests/`,
     including its continuation lines, is defined in the paper. A label starts with its kind: `<sec-...>`,
     `<fig-...>`, `<proc-...>`, `<eq-...>` or `<tab-...>` (`:` may replace `-`); other text in angle brackets, such as
-    `<first author>`, is not a label.
+    `<first author>`, is not a label. The compile also fails, naming the page, when a figure, a table, a code block or
+    a display equation is wider than the text area or a figure is taller than it (`docs/method-paper/overflow_check.typ`).
   - `PASS cuda`: in the CUDA container (`tools/cuda-container/Dockerfile`), everything of the preset
     `linux-release-cuda` compiled and linked, every `.cu` file and the `gpu` tests included; clang-tidy reported
     nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`); the tests

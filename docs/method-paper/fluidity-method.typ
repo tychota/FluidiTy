@@ -15,6 +15,7 @@
 //
 // Page: A4, 11 pt text on a 106 mm measure, about 70 characters per line.
 
+#import "overflow_check.typ"
 #import "pseudocode.typ": procedure
 #import "figures/axes.typ": axes-figure
 #import "figures/buffer_crossings.typ": buffer-crossings-figure
@@ -38,6 +39,7 @@
 #let sans = ("Hermes Maia OT 3", "Libertinus Sans")
 #let mono = ("Triplicate OT A", "DejaVu Sans Mono")
 
+#show: overflow_check.install
 #set document(title: [FluidiTy: the method])
 #set page(
   paper: "a4",
@@ -1113,7 +1115,7 @@ $bold(n)_"own" dot bold(p)' = dot(g)$. The second-order advance is the positive 
 so that nothing cancels:
 
 $
-  s = (2 g) / (sqrt(dot(g)^2 + 2 K g) - dot(g)) quad "when" dot(g) <= 0, quad
+  s = (2 g) / (sqrt(dot(g)^2 + 2 K g) - dot(g)) quad "when" dot(g) <= 0, \
   s = (dot(g) + sqrt(dot(g)^2 + 2 K g)) / K quad "when" dot(g) > 0,
 $ <eq:second-order-advance>
 
@@ -1226,7 +1228,8 @@ wall's surface (unbounded in height) and $d_"cap"$ the signed distance to the ne
 
 $
   d_"wall" = rho - "radius", quad d_"cap" = |p_z| - "half_height", \
-  d = sqrt(max(d_"wall", 0)^2 + max(d_"cap", 0)^2) + min(max(d_"wall", d_"cap"), 0).
+  d = sqrt(max(d_"wall", 0)^2 + max(d_"cap", 0)^2) \
+    + min(max(d_"wall", d_"cap"), 0).
 $ <eq:cylinder-distance>
 
 The formula is written once for every region, so the CPU and the GPU compute it the same way; three branches only
@@ -1275,7 +1278,7 @@ $beta^2 - alpha gamma$ is computed in one of two forms, equal in exact arithmeti
 |bold(w)|^2 - (bold(q) dot bold(w))^2 = |bold(q) times bold(w)|^2$:
 
 $
-  Delta = beta^2 - alpha gamma quad "when" gamma <= R^2, quad
+  Delta = beta^2 - alpha gamma quad "when" gamma <= R^2, \
   Delta = alpha R^2 - |bold(q) times bold(w)|^2 quad "otherwise".
 $ <eq:sphere-discriminant>
 
@@ -1315,11 +1318,12 @@ and the space between the planes of the grown caps, so the path is inside it exa
 of the two is entered and left at most once along a straight path, as a box's face plane is:
 
 $
-  "wall:" & quad [t_"wall", t'_"wall"] = [gamma_rho / (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)),
-    (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)) / alpha_rho], \
+  "wall:" & quad [t_"wall", t'_"wall"] = \
+    & quad quad [gamma_rho / (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)), \
+    & quad quad quad (-beta_rho + sqrt(beta_rho^2 - alpha_rho gamma_rho)) / alpha_rho], \
   "caps:" & quad [t_"cap", t'_"cap"] = [(d_"cap" - "tol") / (-sigma_0 w_z), (|q_z| + H) / (-sigma_0 w_z)], \
-  "hit:" & quad t_"hit" = max(t_"wall", t_"cap") quad "when" t_"hit" <= t'_"wall", t_"hit" <= t'_"cap"
-    "and" t_"hit" <= "duration".
+  "hit:" & quad t_"hit" = max(t_"wall", t_"cap") \
+    & quad "when" t_"hit" <= t'_"wall", t_"hit" <= t'_"cap" "and" t_"hit" <= "duration".
 $ <eq:cylinder-hit-time>
 
 The wall interval comes from the sphere's quadratic in the x and y parts only: $alpha_rho = w_x^2 + w_y^2$,
@@ -1494,15 +1498,19 @@ $ a = bold(n) dot (bold(v) - bold(u)), $
 
 negative when the particle approaches. Then
 
-$
-  bold(v)' = bold(v) - a bold(n), quad s_"side" = |bold(v)' - bold(u)|, \
-  bold(v)'' = cases(
-    bold(v) & "if" a >= 0,
-    bold(v)' & "if" a < 0 "and" mu = 0,
-    bold(u) & "if" a < 0 "and" mu >= s_"side"\/(-a),
-    bold(v)' + (mu (-a)) / s_"side" (bold(u) - bold(v)') & "otherwise",
-  )
-$ <eq:contact-response>
+#[
+  // The longest line of this equation, with its number, is a few points wider than the text area at the body size.
+  #set text(size: 10pt)
+  $
+    bold(v)' = bold(v) - a bold(n), quad s_"side" = |bold(v)' - bold(u)|, \
+    bold(v)'' = cases(
+      bold(v) & "if" a >= 0,
+      bold(v)' & "if" a < 0 "and" mu = 0,
+      bold(u) & "if" a < 0 "and" mu >= s_"side"\/(-a),
+      bold(v)' + (mu (-a)) / s_"side" (bold(u) - bold(v)') & "otherwise",
+    )
+  $ <eq:contact-response>
+]
 
 A velocity that leaves or slides along the surface comes back unchanged, and a velocity with no sideways speed left
 sticks. The friction $mu$ is the particle's `friction` times the solid's `friction_scale`. In words: the speed into the
@@ -2355,6 +2363,7 @@ $(0, 0, 0)$ m is index 125, though no small cell touches it: every corner of the
 #procedure(
   [`BuildGrid` on the CPU, the tables of one grid version],
   <proc-build-grid>,
+  breakable: true,
   inputs: [the frame, the version (1 or more), the active cells in any order, and grid buffers with lent builder
     buffers.],
   outputs: [a grid that owns the buffers: the block ids in the fixed order, the neighbour tables, the cell states,
@@ -2667,6 +2676,7 @@ record.
 #figure(
   align(left, {
     set par(justify: false)
+    set table(inset: (x: 0.6em, y: 0.33em))
     table(
       columns: (1fr, auto, auto, auto),
       align: (left, left, right, left),
@@ -2909,11 +2919,13 @@ number without unit; and two flags, whether the cell touches an air pocket and w
 (`wants_smallest_cells`). With $w_"floor"$ the width of the smallest size level the settings allow
 (`smallest_size_level`) and $w_"max" = h_0$ the width of size level 0, the wanted cell width is
 
-$ w & = w_"floor" quad "if" d < n_"surface" w_"floor" "or" e < n_"solid" w_"floor", "and otherwise" \
+$ w & = w_"floor" quad "if" d < n_"surface" w_"floor" \
+    & quad "or" e < n_"solid" w_"floor", "and otherwise" \
   w_"depth" & = w_"floor" max(1, d / (n_"surface" w_"floor")), \
   w_"solid" & = w_"floor" max(1, e / (n_"solid" w_"floor")), \
   w_"shear" & = cases(c_u U_"ref" \/ G & "if" G > 0, +infinity & "otherwise",) \
-  w & = max(w_"floor", min(min(w_"depth", w_"solid", w_"shear") f, w_"max")), $ <eq:wanted-cell-width>
+  w & = max(w_"floor", \
+    & quad min(min(w_"depth", w_"solid", w_"shear") f, w_"max")), $ <eq:wanted-cell-width>
 
 The first line keeps the smallest width, whatever the factor, at pockets and gas, within the surface reach and within
 the solid reach: for a cell that touches an air pocket, a cell with gas in or beside it, a cell less than $n_"surface"$

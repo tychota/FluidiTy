@@ -1679,3 +1679,64 @@ def test_a_change_while_the_cuda_container_runs_fails_instead_of_passing(monkeyp
     assert any(command[:2] == ["docker", "run"] for command in fake.commands)
     assert len(tree_lines(lines)) == 1
     assert "PASS cuda" not in lines
+
+
+OVERFLOW_COMPILE_OUTPUT = (
+    "error: assertion failed: a block leaves the text area:\n"
+    "page 31: equation (4) is 381 pt wide, and the text area is 300 pt\n"
+    "page 9: figure 3 is 325 pt wide, and the text area is 300 pt\n"
+    "   ┌─ overflow_check.typ:86:4\n"
+)
+
+
+class TypstFailsWith(FakeRun):
+    """A FakeRun whose typst compile fails with the given output."""
+
+    def __init__(self, typst_output, **kwargs):
+        super().__init__(**kwargs)
+        self._typst_output = typst_output
+
+    def __call__(self, command, **kwargs):
+        completed = super().__call__(command, **kwargs)
+        if command[0] == "typst":
+            self.commands.append(list(command))
+            return subprocess.CompletedProcess(command, 1, stdout=self._typst_output, stderr=None)
+        return completed
+
+
+def test_a_block_outside_the_text_area_fails_the_paper_step_naming_the_first_one(monkeypatch, capsys, repo):
+    exit_code, lines = run_gate(
+        monkeypatch, capsys, repo, TypstFailsWith(OVERFLOW_COMPILE_OUTPUT), "--only", "paper"
+    )
+    assert exit_code == 1
+    assert lines == [
+        "FAIL paper: page 31: equation (4) is 381 pt wide, and the text area is 300 pt (and 1 more; all are in the log)"
+    ]
+
+
+def test_one_block_outside_the_text_area_is_named_without_a_count(monkeypatch, capsys, repo):
+    output = "error: assertion failed: a block leaves the text area:\npage 2: figure 1 is 723 pt tall, and the text area is 672 pt\n"
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, TypstFailsWith(output), "--only", "paper")
+    assert exit_code == 1
+    assert lines == ["FAIL paper: page 2: figure 1 is 723 pt tall, and the text area is 672 pt"]
+
+
+def test_the_log_of_the_paper_step_keeps_every_block_outside_the_text_area(monkeypatch, capsys, repo):
+    run_gate(monkeypatch, capsys, repo, TypstFailsWith(OVERFLOW_COMPILE_OUTPUT), "--only", "paper")
+    log = (repo / "out" / "check-commit" / "paper.log").read_text(encoding="utf-8")
+    assert "page 31: equation (4)" in log
+    assert "page 9: figure 3" in log
+
+
+def test_another_typst_error_fails_the_paper_step_as_before(monkeypatch, capsys, repo):
+    exit_code, lines = run_gate(
+        monkeypatch, capsys, repo, TypstFailsWith("error: unknown variable: x\n"), "--only", "paper"
+    )
+    assert exit_code == 1
+    assert len(lines) == 1
+    assert lines[0].startswith("FAIL paper: `typst compile docs/method-paper/fluidity-method.typ")
+
+
+def test_the_overflow_findings_are_read_only_from_whole_lines():
+    output = "see page 1: x is 5 pt wide, and the text area is 300 pt\npage 7: table is 454 pt wide, and the text area is 300 pt\n"
+    assert check_commit.block_overflow_findings(output) == ["page 7: table is 454 pt wide, and the text area is 300 pt"]
