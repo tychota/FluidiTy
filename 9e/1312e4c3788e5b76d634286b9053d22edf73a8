@@ -1,0 +1,25 @@
+docs/superpowers/specs/modules/03-particles-design.md
+  s_7bd7312e192836::t_d7bb420e9c895e 177,357,1017-1019,1145-1147,1155,1177,1179,1183
+docs/superpowers/plans/2026-11-14-rebuild-03-particles.md
+  s_7bd7312e192836::t_b39b002d8382ee 3-4,6-9,11-15,17-18,20-23,27-61,65-66,72,76-80,82,84-92,96-98,100-107,109-230,232-263,267-294,297-318,320-322,327-336,345-349,351-395,397-398,401-415,419-454,456-522,524-527,538-539,544-599,601-641,648-660,662-672,675-726
+  s_7bd7312e192836::t_d7bb420e9c895e 99,108,231,264-266,295-296,319,323-326,337-344,350,396,399-400,416-418,455,523,528-537,540-543,600,642-647,661,673-674
+  s_7bd7312e192836::t_a070f4837b7a97 727-730
+docs/superpowers/plans/2026-11-14-rebuild-03-particles-revisions.md
+  s_7bd7312e192836::t_5b210994ac076d 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9e1312e4c3788e5b76d634286b9053d22edf73a8",
+  "prompts": {},
+  "sessions": {
+    "s_7bd7312e192836": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "49f10b80-4cda-4758-80da-4f4b0b30b8a5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
