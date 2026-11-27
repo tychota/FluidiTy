@@ -24,8 +24,8 @@
 //          grid/testing/grid_functions_answers.h
 // Used by: the GPU tests of the grid in tests/grid/ (find_cell_at.gpu.test.cc, nearby_face_weights.gpu.test.cc,
 //          cell_surroundings.gpu.test.cc, shared_grid_functions.gpu.test.cc, border_blocks.gpu.test.cc,
-//          grid_piece_steps.gpu.test.cc, sloped_surface_scene.gpu.test.cc), and testing/grid_functions_runner_gpu.cu,
-//          which defines the runners
+//          grid_piece_steps.gpu.test.cc, sloped_surface_scene.gpu.test.cc, new_cell_neighbors.gpu.test.cc), and
+//          testing/grid_functions_runner_gpu.cu, which defines the runners
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>, <sec-cell-blocks>, <sec-face-pieces>,
 //          <sec-nearby-faces>, <sec-face-search>
 //

@@ -2732,8 +2732,9 @@ buffers: 2 × 460 + 1,920 = 2,840 bytes per block, plus the 4,110 bytes and two 
 under the driver's default stack of 1,024 bytes per thread, so the grid's build and check have no entry held by the
 driver; the border search has one (`BuildBorderSearchStackEstimate`), which `BuildBorderSearchBuffers` takes on the GPU
 so that a card too full for it fails there. The driver keeps one stack, sized for the largest need of any GPU function
-launched, so adding this entry to another module's entry of the same kind counts more than the driver takes. A GPU
-function that computes nearby-face weights keeps 1,152 bytes per thread for one axis (a list of 888 bytes, its mask
+launched, so a plan takes the largest of the entries of this kind, not their sum; that rule belongs to the run's
+plan, which comes later, and adding the entries counts more than the driver takes. A GPU function that computes
+nearby-face weights keeps 1,152 bytes per thread for one axis (a list of 888 bytes, its mask
 of 32 and 232 bytes of sums), or 3,456 for three. A call to `FindNearbyFaces` needs 1,216 bytes more while it runs:
 the list it builds (888), the touching cells of the cell (228) and its face pieces (100). With three axes held that is
 4,672 bytes at the moment of the call, and 5,560 when the caller keeps the returned list apart from the weights. All

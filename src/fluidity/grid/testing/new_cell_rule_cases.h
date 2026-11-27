@@ -15,7 +15,7 @@
 //          BuildRangeEndCases
 // Uses:    CPU-only guard (base/cpu_only.h), GridFrame (grid/grid_tables.h), NewCellNeighbors (grid/new_cell_rule.h),
 //          the id types and constants (grid/grid_ids.h)
-// Used by: src/fluidity/grid/new_cell_rule.test.cc
+// Used by: src/fluidity/grid/new_cell_rule.test.cc, tests/grid/new_cell_neighbors.gpu.test.cc
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
 
 #pragma once

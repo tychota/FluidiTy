@@ -29,12 +29,11 @@ namespace {
 
 // The random grids compared with the vector form, the random grids checked through pieces, and the blocks of a range.
 constexpr std::size_t kVectorFormGridCount = 40;
-constexpr std::size_t kPieceGridCount = 5;
-// How many of the kPieceGridCount grids (the first ones of the list, the biggest) each test goes through, and how
-// many of the nested-ball ranges (the first ones of the list; the whole list has 7). Measured alone in the release
-// build against a budget of about a minute for the program (it took 95 s). Stacked layers: 5 grids took 36.7 s, 2 grids
-// take 19.3 s. Nested-ball ranges: 7 ranges took 30.6 s, 3 ranges take 8.7 s. Bigger piece: 5 grids took 18.2 s, 2
-// grids take 9.8 s. The vector-form test (kVectorFormGridCount, 40 grids) takes 11.8 s. The whole program takes 53 s.
+// How many random grids spread by size each test goes through (2: ranks 0 and 199 of 200, the biggest grid and the
+// smallest), and how many of the nested-ball ranges (the first ones of the list; the whole list has 7). Measured alone
+// in the release build against a budget of about a minute for the program. Stacked layers: 2 grids take 12.8 s.
+// Nested-ball ranges: 3 ranges take 8.4 s. Bigger piece: 2 grids take 6.2 s. The vector-form test
+// (kVectorFormGridCount, 40 grids) takes 11.6 s. The whole program takes 39 s.
 constexpr std::size_t kStackedLayerGridCount = 2;
 constexpr std::size_t kBiggerPieceGridCount = 2;
 constexpr std::size_t kNestedBallRangeCount = 3;
@@ -112,8 +111,8 @@ TEST(FindBorderBlocks, StackedBufferForm_EqualsVectorFormLayerByLayer) {
 }
 
 TEST(FindBorderBlocks, StackedLayersOfRandomGrids_AnswerAsTheWholeGrid) {
-  const std::vector<std::size_t> spread_grids = FindRandomGridsSpreadBySize(kPieceGridCount);
-  const std::span<const std::size_t> grids = std::span(spread_grids).first(kStackedLayerGridCount);
+  const std::vector<std::size_t> spread_grids = FindRandomGridsSpreadBySize(kStackedLayerGridCount);
+  const std::span<const std::size_t> grids = spread_grids;
   CheckStackedLayersAnswerAsTheWholeGrid(FindRandomGridsWithCheckers(), grids, kRangeBlocks);
 }
 
@@ -154,13 +153,13 @@ void CheckMorePiecesChangeNoAnswer(BorderSearchRig& rig, CellBlockRange range, B
   }
 }
 
-// The property that CheckLayersAnswerAsWholeGrid relies on, on the tested ranges of the first kBiggerPieceGridCount of
-// 5 random grids spread by size, at both widths: a piece that already holds the range's border at a width answers every
-// reader of that width from the range as the whole grid, and so does every bigger piece.
+// The property that CheckLayersAnswerAsWholeGrid relies on, on the tested ranges of kBiggerPieceGridCount random grids
+// spread by size (the biggest and the smallest), at both widths: a piece that already holds the range's border at a
+// width answers every reader of that width from the range as the whole grid, and so does every bigger piece.
 TEST(FindBorderBlocks, BiggerPieceAfterTheBorder_GivesTheSameAnswers) {
   const RandomGridsWithCheckers& built = FindRandomGridsWithCheckers();
-  const std::vector<std::size_t> spread_grids = FindRandomGridsSpreadBySize(kPieceGridCount);
-  for (const std::size_t grid : std::span(spread_grids).first(kBiggerPieceGridCount)) {
+  const std::vector<std::size_t> spread_grids = FindRandomGridsSpreadBySize(kBiggerPieceGridCount);
+  for (const std::size_t grid : spread_grids) {
     const StaggeredGrid& staggered_grid = built.grids.at(grid).grid;
     std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(staggered_grid);
     ASSERT_TRUE(rig.has_value());

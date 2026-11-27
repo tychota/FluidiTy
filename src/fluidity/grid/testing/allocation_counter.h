@@ -32,7 +32,8 @@ namespace fluidity::grid {
 std::uint64_t ComputeAllocationCount();
 
 // The iterator debug level of this build's standard library: the value of _ITERATOR_DEBUG_LEVEL of the MSVC library
-// (2 in a Debug build, 0 in a Release build), and 0 where the library has no such macro. <version> defines it first.
+// (2 in a Debug build, 0 in a Release build), and 0 where the library has no such macro. The standard headers
+// included above define it first.
 #ifdef _ITERATOR_DEBUG_LEVEL
 inline constexpr int kIteratorDebugLevel = _ITERATOR_DEBUG_LEVEL;
 #else

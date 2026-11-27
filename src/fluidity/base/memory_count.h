@@ -105,8 +105,9 @@ ComputeMemoryBytes(std::span<const MemoryEstimateEntry> estimate, const MemoryCo
 // Computes the bytes of the largest single entry kept in `where`: 0 when no entry is kept there.
 //
 // Why: the GPU driver keeps one stack per thread, sized for the largest need of any function launched, so the
-//   entries of MemoryWhere::kDriverStack share that one stack. The total takes the largest of them, not their sum,
-//   which would count more than the driver takes.
+//   entries of MemoryWhere::kDriverStack share that one stack. A plan's total takes the largest of them, not their sum,
+//   which would count more than the driver takes. That rule belongs to the run's plan, which comes later; the
+//   two-argument ComputeMemoryBytes above still adds every entry.
 // Method: each entry's bytes are counted as in ComputeMemoryBytes, with saturation; the largest of them is returned.
 // Units: bytes.
 // Example: kDriverStack entries of 100, 700 and 300 bytes give 700, where their sum would give 1,100. Entries kept

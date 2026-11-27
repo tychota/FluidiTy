@@ -4,15 +4,15 @@
 // label no_gpu.
 //
 // The GPU function below is never launched. Compiling it in the CUDA container makes the CUDA compiler generate GPU
-// code for every function of cell_size_rule.h, grid_build_steps.h, grid_ids.h, the grid table headers and
-// weight_curve.h, the helpers those functions call included, and for CellBlockRange, GridFrame, CellState,
+// code for every function of cell_size_rule.h, grid_build_steps.h, grid_ids.h, new_cell_rule.h, the grid table headers
+// and weight_curve.h, the helpers those functions call included, and for CellBlockRange, GridFrame, CellState,
 // FacePieceKind, GridTables, TouchingCells, CellFacePieces, CellCorners, FaceCorners, CellsAroundEdge, CellsNearFace,
-// FaceSearch, WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel, CellSizeFacts,
-// CellSizeFactorTable and RefinementFactors read and written by GPU code. The integer results go to `results`, and the
-// double results of weight_curve.h, the grid table headers and cell_size_rule.h go to `double_results`. The CUDA
-// compiler generates GPU code for a shared function only where GPU code calls it, so each function is called here once.
-// A shared function that calls a CPU-only function fails to compile in the CUDA container. That compile is the proof;
-// the test only takes the function's address, which needs no GPU.
+// FaceSearch, NewCellNeighbors, WeightCurveValue, GridBuildStatus, CellCheck, CellSizeSettings, CellWidthsBySizeLevel,
+// CellSizeFacts, CellSizeFactorTable and RefinementFactors read and written by GPU code. The integer results go to
+// `results`, and the double results of weight_curve.h, the grid table headers and cell_size_rule.h go to
+// `double_results`. The CUDA compiler generates GPU code for a shared function only where GPU code calls it, so each
+// function is called here once. A shared function that calls a CPU-only function fails to compile in the CUDA
+// container. That compile is the proof; the test only takes the function's address, which needs no GPU.
 
 #include <gtest/gtest.h>
 

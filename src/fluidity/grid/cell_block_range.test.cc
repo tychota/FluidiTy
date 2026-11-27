@@ -211,7 +211,8 @@ TEST(FindBorderBlocks, VectorForm_AllocatesTwoVectorsAndMovesOne) {
   ASSERT_TRUE(border.has_value());
   ASSERT_EQ(border->size(), 2U);
   // The marks, and the list sized once: two vectors with memory. The list moves into the std::expected, which is a
-  // third vector object, without memory of its own.
+  // third vector object, without memory of its own. The count assumes that the list is built in place, by the return
+  // value optimization of its one named return, which every supported compiler applies.
   EXPECT_EQ(
       count_after_call - count_before_call,
       ComputeVectorAllocationCount({.with_memory = 2, .without_memory = 1})
@@ -229,7 +230,8 @@ TEST(BuildRangeWithBorder, Call_AllocatesTwoVectors) {
   ASSERT_TRUE(built_range.has_value());
   ASSERT_EQ(built_range->border_blocks.size(), 2U);
   // The marks and the list, sized once: two vectors with memory. The list moves into the std::expected, which is a
-  // third vector object, without memory of its own.
+  // third vector object, without memory of its own. The count assumes that the list is built in place, by the return
+  // value optimization of its one named return, which every supported compiler applies.
   EXPECT_EQ(
       count_after_call - count_before_call,
       ComputeVectorAllocationCount({.with_memory = 2, .without_memory = 1})
