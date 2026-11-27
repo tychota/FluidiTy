@@ -163,7 +163,8 @@ spread and check the worked numbers (offset 0.4330127018922193; two particles at
 
 ### Task 4: Errors, fields and field lists
 
-**Kind:** mechanical. **Review:** Sonnet, scoped to: the 13 values and their order, the bit values of `Field`, `ParticleSizeLevel`,
+**Kind:** mechanical. **Review:** Sonnet, scoped to: the 13 values and their order, the bit values of `Field`,
+`ParticleSizeLevel`,
 struct sizes asserted, the mapping of each `BufferError`.
 **Needs:** Task 2. **Touches:** `particles/particle_fields.h`, `particles_error.h`, `particles_error_message.h`,
 `particles_error_message.cc`, their tests, `particles/CMakeLists.txt`, `src/fluidity/CMakeLists.txt`.
