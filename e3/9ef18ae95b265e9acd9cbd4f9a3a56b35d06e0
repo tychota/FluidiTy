@@ -1,0 +1,29 @@
+docs/gpu-runs.md
+  s_4f0877e2acdcf0::t_25e6dd2f0c723a 123
+src/fluidity/base/gpu_launch.cuh
+  s_4f0877e2acdcf0::t_c70eb3672ec1f4 1-2,15-17,21-22,32,34,74-136
+src/fluidity/contact/move_particles_gpu.cu
+  s_4f0877e2acdcf0::t_0e4e996abaa15a 51,56,59,77
+src/fluidity/grid/cell_block_range_gpu.cu
+  s_4f0877e2acdcf0::t_5e003775813ec5 48,50,79
+src/fluidity/grid/grid_piece_gpu.cu
+  s_4f0877e2acdcf0::t_06aa356e62d4b4 57,69,83,91,100,108,118,128
+src/fluidity/grid/staggered_grid_gpu.cu
+  s_4f0877e2acdcf0::t_e6e1dec959373c 49,81,87,114-115,163,177,196,214-215,232,259,271,283,302,308,325,342,362,369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e39ef18ae95b265e9acd9cbd4f9a3a56b35d06e0",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
