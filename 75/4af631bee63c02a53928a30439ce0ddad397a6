@@ -1,0 +1,19 @@
+docs/superpowers/sdd/resume-card-particles.md
+  s_7bd7312e192836::t_4ba69c220c74c0 1,7,10-16,18,20-33,37-42,45-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "754af631bee63c02a53928a30439ce0ddad397a6",
+  "prompts": {},
+  "sessions": {
+    "s_7bd7312e192836": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "49f10b80-4cda-4758-80da-4f4b0b30b8a5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
