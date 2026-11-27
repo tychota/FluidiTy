@@ -36,6 +36,12 @@ continue it. A path or identifier of the old proof-of-concept code, written in b
 `main:` (`main:native/src/sparse_mac_grid_3d.cc`), is not read at all, by the notes or by the banned words, in a
 comment or in a commit message.
 
+A word banned in one sense can carry clauses after a `;` in its parentheses in the glossary (`noted only beside`,
+`quiet beside`, `allowed`, `quiet in files`, `noted only in names`, `noted only as the last word of a name`; the
+glossary's "How to read the tables" explains each). A use that the clauses place outside the banned sense is not
+noted. The clauses of the glossary are the only place where the senses are told apart; this tool has no special case
+for a word.
+
 Which rules apply to which files (a deliberate choice, written down here). The folders `src`, `tests` and `testing`
 are read from the path below the repository (--repository), so a clone inside a folder named `tests` changes nothing:
 - `file-header`, `bare-bool` and `verb` apply to `.h` and `.cuh` files, where the public declarations are.
@@ -200,6 +206,13 @@ class NeverSayEntry:
     # Longer phrases that the glossary itself says (the "Say" column of any row) and that contain `words`, as `size
     # level` holds `level`. A use of a one-sense word inside one of them is the allowed form, not a hit.
     allowed_phrases: tuple[tuple[str, ...], ...] = ()
+    # Where the glossary says the banned sense is, or is not (the clauses after `;` in the parentheses of the entry, see
+    # `_parse_sense_clauses`). Each word is lowercase; a name piece such as `SizeLevel` is two words.
+    noted_only_beside: frozenset[str] = frozenset()  # Noted only when one of these words is in the same stretch.
+    quiet_beside: frozenset[str] = frozenset()  # Not noted when one of these words is in the same stretch.
+    quiet_in_files: tuple[str, ...] = ()  # Not noted in a file whose path contains one of these.
+    is_noted_only_in_names: bool = False  # Not noted in a comment.
+    is_noted_only_as_name_suffix: bool = False  # Noted only as the last word of a name.
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -350,6 +363,43 @@ def _split_at_outer_commas(cell: str) -> list[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
+_NOTED_ONLY_IN_NAMES = "noted only in names"
+_NOTED_ONLY_AS_NAME_SUFFIX = "noted only as the last word of a name"
+
+
+def _word_list(text: str) -> list[str]:
+    """The lowercase words of a comma list: `side, sides` is two words, `size level` is the two words of one."""
+    return [word for item in text.split(",") for word in split_name_words(item)]
+
+
+def _parse_sense_clauses(qualifier: str, spelled: str) -> dict[str, object]:
+    """Splits the text in the parentheses of a one-sense entry into the sense and its clauses.
+
+    `sense; allowed: a b, c d; noted only beside: x, y; quiet beside: z; quiet in files: f, g; noted only in names;
+    noted only as the last word of a name`. The sense comes first and is what a note says. Every clause is optional,
+    and an unknown clause is an error, so a typo cannot silently allow a word."""
+    sense, *clauses = [part.strip() for part in qualifier.split(";")]
+    fields: dict[str, object] = {"qualifier": sense}
+    allowed: list[tuple[str, ...]] = []
+    for clause in clauses:
+        if clause == _NOTED_ONLY_IN_NAMES:
+            fields["is_noted_only_in_names"] = True
+        elif clause == _NOTED_ONLY_AS_NAME_SUFFIX:
+            fields["is_noted_only_as_name_suffix"] = True
+        elif clause.startswith("allowed:"):
+            allowed.extend(tuple(split_name_words(phrase)) for phrase in clause[len("allowed:") :].split(","))
+        elif clause.startswith("noted only beside:"):
+            fields["noted_only_beside"] = frozenset(_word_list(clause[len("noted only beside:") :]))
+        elif clause.startswith("quiet beside:"):
+            fields["quiet_beside"] = frozenset(_word_list(clause[len("quiet beside:") :]))
+        elif clause.startswith("quiet in files:"):
+            fields["quiet_in_files"] = tuple(item.strip() for item in clause[len("quiet in files:") :].split(","))
+        else:
+            raise GlossaryError(f"'{spelled}' has an unknown clause '{clause}' in its parentheses")
+    fields["allowed_phrases"] = tuple(phrase for phrase in allowed if phrase)
+    return fields
+
+
 def _parse_never_say_cell(cell: str) -> list[NeverSayEntry]:
     entries = []
     for raw in _split_at_outer_commas(cell):
@@ -360,8 +410,12 @@ def _parse_never_say_cell(cell: str) -> list[NeverSayEntry]:
             spelled, qualifier = match.group(1), match.group(2).strip()
         spelled = spelled.replace("`", "").strip()
         words = tuple(split_name_words(spelled))
-        if words:
-            entries.append(NeverSayEntry(words=words, spelled=spelled, qualifier=qualifier))
+        if not words:
+            continue
+        if qualifier is None:
+            entries.append(NeverSayEntry(words=words, spelled=spelled, qualifier=None))
+        else:
+            entries.append(NeverSayEntry(words=words, spelled=spelled, **_parse_sense_clauses(qualifier, spelled)))  # type: ignore[arg-type]
     return entries
 
 
@@ -388,6 +442,7 @@ def _with_allowed_phrases(
         allowed = {
             phrase for phrase in say_phrases if len(phrase) > len(entry.words) and contains_run(phrase, entry.words)
         }
+        allowed.update(entry.allowed_phrases)
         completed.append(replace(entry, allowed_phrases=tuple(sorted(allowed))))
     return completed
 
@@ -685,6 +740,7 @@ class _Reporter:
 
     def __init__(self, path: Path) -> None:
         self._path = str(path)
+        self.path = Path(path).as_posix()
         self._seen: dict[tuple[int, str, str], Finding] = {}
         self._order: list[tuple[int, str, str]] = []
 
@@ -776,6 +832,22 @@ def _has_use_outside_allowed_phrases(tokens: Sequence[str], entry: NeverSayEntry
     return False
 
 
+def _is_outside_the_banned_sense(entry: NeverSayEntry, tokens: Sequence[str], where: str, path_text: str) -> bool:
+    """True when the glossary's clauses for a one-sense `entry` say that this use, in `tokens` (the words of one name
+    or of one stretch of comment without punctuation) of a file at `path_text`, is not the banned sense."""
+    if entry.is_noted_only_in_names and where != "name":
+        return True
+    if entry.is_noted_only_as_name_suffix:
+        ends_the_name = len(tokens) > len(entry.words) and tokens[-1] in matching_last_forms(entry.words[-1])
+        if where != "name" or not ends_the_name:
+            return True
+    if entry.noted_only_beside and entry.noted_only_beside.isdisjoint(tokens):
+        return True
+    if entry.quiet_beside and not entry.quiet_beside.isdisjoint(tokens):
+        return True
+    return any(part in path_text for part in entry.quiet_in_files)
+
+
 def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], reporter: _Reporter) -> None:
     by_last_form = _entries_by_last_form(glossary)
     in_reference_list = False
@@ -811,6 +883,8 @@ def _check_words(lines: list[ScannedLine], glossary: Sequence[NeverSayEntry], re
                 if not contains_phrase(tokens, entry.words):
                     continue
                 if entry.allowed_phrases and not _has_use_outside_allowed_phrases(tokens, entry):
+                    continue
+                if entry.qualifier is not None and _is_outside_the_banned_sense(entry, tokens, where, reporter.path):
                     continue
                 key = entry.spelled.lower()
                 if entry.qualifier is None:

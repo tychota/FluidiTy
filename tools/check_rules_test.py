@@ -1546,3 +1546,144 @@ def test_a_free_function_that_abseil_or_googletest_asks_for_is_not_a_test_helper
 def test_another_free_function_in_a_test_file_still_fails_the_verb_rule(tmp_path, glossary):
     write(tmp_path / "src", "a.test.cc", "void Frobnicate(const int& value, int* sink);\n")
     assert rules(run(tmp_path, glossary), "FAIL") == ["test-helper-verb"]
+
+
+# Clauses of a one-sense entry: where its banned sense is -------------------------------------------------------
+
+
+def clause_glossary(tmp_path: Path, never_say: str) -> Path:
+    path = tmp_path / "clause_glossary.md"
+    path.write_text("# Glossary\n\n" + GLOSSARY_HEADER + f"| `thing` | A thing. | {never_say} |\n", encoding="utf-8")
+    return path
+
+
+def test_noted_only_beside_notes_the_banned_sense_and_not_the_ordinary_one(tmp_path):
+    glossary = clause_glossary(tmp_path, "floor (for a side; noted only beside: domain, closed)")
+    assert notes(tmp_path, glossary, "a.cc", "// The floor of the domain.\n") == ["one-sense-word"]
+    assert notes(tmp_path, glossary, "a.cc", "// A particle lands on the floor.\n") == []
+
+
+def test_noted_only_beside_reads_the_words_of_a_name(tmp_path):
+    glossary = clause_glossary(tmp_path, "floor (for a side; noted only beside: domain)")
+    assert notes(tmp_path, glossary, "a.cc", "int domain_floor;\n") == ["one-sense-word"]
+    assert notes(tmp_path, glossary, "a.cc", "int rising_floor;\n") == []
+
+
+def test_noted_only_beside_does_not_look_past_punctuation(tmp_path):
+    glossary = clause_glossary(tmp_path, "floor (for a side; noted only beside: domain)")
+    assert notes(tmp_path, glossary, "a.cc", "// The domain, and a floor.\n") == []
+
+
+def test_quiet_beside_hides_the_ordinary_sense_and_notes_the_rest(tmp_path):
+    glossary = clause_glossary(tmp_path, "wall (for a solid; quiet beside: cylinder, cap)")
+    assert notes(tmp_path, glossary, "a.cc", "// The wall of the cylinder.\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "int cap_wall;\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "// The wall pushes the particle.\n") == ["one-sense-word"]
+
+
+def test_allowed_phrase_hides_a_use_inside_it_and_notes_a_use_outside_it(tmp_path):
+    glossary = clause_glossary(tmp_path, "level (alone; allowed: iterator debug level, is level)")
+    assert notes(tmp_path, glossary, "a.cc", "// The iterator debug level.\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "bool is_level = true;\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "// The iterator debug level and the level.\n") == ["one-sense-word"]
+    assert notes(tmp_path, glossary, "a.cc", "// The level.\n") == ["one-sense-word"]
+
+
+def test_quiet_in_files_hides_the_word_in_a_file_whose_path_holds_the_part(tmp_path):
+    glossary = clause_glossary(tmp_path, "chunk (for a share; quiet in files: stable_order)")
+    assert notes(tmp_path, glossary, "stable_order_steps.h", "// A chunk of places.\n") == []
+    assert notes(tmp_path, glossary, "border_block_steps.h", "// A chunk of places.\n") == ["one-sense-word"]
+
+
+def test_noted_only_in_names_leaves_a_comment_quiet(tmp_path):
+    glossary = clause_glossary(tmp_path, "pinned (as a name; noted only in names)")
+    assert notes(tmp_path, glossary, "a.cc", "// Pinned bits.\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "int pinned_bits;\n") == ["one-sense-word"]
+
+
+def test_noted_only_as_the_last_word_of_a_name_notes_a_suffix_only(tmp_path):
+    glossary = clause_glossary(tmp_path, "Record (as a suffix; noted only as the last word of a name)")
+    assert notes(tmp_path, glossary, "a.cc", "struct StatusRecord {};\n") == ["one-sense-word"]
+    assert notes(tmp_path, glossary, "a.cc", "int record;\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "int record_count;\n") == []
+    assert notes(tmp_path, glossary, "a.cc", "// The status record.\n") == []
+
+
+def test_the_note_of_a_clause_entry_says_only_the_sense(tmp_path):
+    glossary = clause_glossary(tmp_path, "floor (for a side: x keeps the word; noted only beside: domain)")
+    write(tmp_path / "src", "a.cc", "// The floor of the domain.\n")
+    (finding,) = run(tmp_path, glossary)
+    assert finding.text == "'floor' is banned in one sense only: for a side: x keeps the word"
+
+
+def test_an_unknown_clause_is_a_glossary_error(tmp_path):
+    glossary = clause_glossary(tmp_path, "floor (for a side; noted only besides: domain)")
+    with pytest.raises(check_rules.GlossaryError):
+        check_rules.load_glossary(glossary)
+
+
+def test_a_clause_never_quiets_a_word_banned_in_every_sense(tmp_path):
+    path = tmp_path / "g.md"
+    path.write_text(GLOSSARY_HEADER + "| `thing` | A thing. | stencil, floor (for a side; quiet beside: rock) |\n", encoding="utf-8")
+    write(tmp_path / "src", "a.cc", "// A stencil beside a rock.\n")
+    assert rules(run(tmp_path, path), "FAIL") == ["banned-word"]
+
+
+# The real glossary's clauses ------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def real_glossary() -> list:
+    return check_rules.load_glossary(check_rules.DEFAULT_GLOSSARY_PATH)
+
+
+def real_notes(tmp_path: Path, name: str, text: str) -> list[str]:
+    write(tmp_path / "src", name, text)
+    return rules(check_rules.check_paths([tmp_path], check_rules.DEFAULT_GLOSSARY_PATH), "NOTE")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// A particle lands on the floor.\n",
+        "// Sorted by block id.\n",
+        "// The state of a cell.\n",
+        "// The source slice is checked.\n",
+        "// Reserves the bytes of the run.\n",
+        "// The data is stored in block 1.\n",
+        "// The upper box rests on the lower box.\n",
+        "// The wall of the cylinder reaches the particle.\n",
+    ],
+)
+def test_the_real_glossary_is_quiet_for_the_ordinary_sense(tmp_path, text):
+    assert real_notes(tmp_path, "a.cc", text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// The floor of the domain.\n",
+        "// Sort the particles into blocks.\n",
+        "// The state of the velocity field.\n",
+        "// A source of liquid in the cell.\n",
+        "// The reserve limit of the run.\n",
+        "// Store the run on disk.\n",
+        "// The upper side of the domain.\n",
+        "// The wall pushes the particle.\n",
+        "// The level of a cell.\n",
+    ],
+)
+def test_the_real_glossary_still_notes_the_banned_sense(tmp_path, text):
+    assert real_notes(tmp_path, "a.cc", text) == ["one-sense-word"]
+
+
+def test_the_real_glossary_keeps_chunk_for_the_stable_order_only(tmp_path):
+    assert real_notes(tmp_path, "stable_order_steps.h", "// A chunk of places.\n") == []
+    assert real_notes(tmp_path, "border_block_steps.h", "// A chunk of the set.\n") == ["one-sense-word"]
+
+
+def test_the_real_glossary_defines_shard_and_bans_chunk_for_it(real_glossary):
+    chunk_entries = [entry for entry in real_glossary if entry.words == ("chunk",)]
+    assert any("a share of a set" in (entry.qualifier or "") for entry in chunk_entries)
+    glossary_text = Path(check_rules.DEFAULT_GLOSSARY_PATH).read_text(encoding="utf-8")
+    assert glossary_text.count("| `shard` |") == 1
