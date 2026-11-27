@@ -1,0 +1,31 @@
+AGENTS.md
+  s_4f0877e2acdcf0::t_9f3a9da2224a94 638-639
+docs/method-paper/figure_style.typ
+  s_4f0877e2acdcf0::t_a6689f639a22a1 65-86
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_be9eb97b7e90e8 18,42,1118,1231-1232,1281,1321-1323,1325-1326,1501-1513,2366,2679,2922-2923,2927-2928
+docs/method-paper/overflow_check.typ
+  s_4f0877e2acdcf0::t_720b5baef172cf 1-88
+tools/check_commit.py
+  s_4f0877e2acdcf0::t_0a2de6bafc71a3 101-105,314-323,1142-1146
+tools/check_commit_test.py
+  s_4f0877e2acdcf0::t_3c2fb651c3cbac 1682-1742
+tools/paper_overflow_test.py
+  s_4f0877e2acdcf0::t_20260cad6d2a1d 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0a847ecaccd2d1a8ed82f570c40cc28927eaa779",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
