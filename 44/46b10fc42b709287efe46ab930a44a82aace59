@@ -1,0 +1,23 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_0958384762e93b 21-29,40,51-52,68-69,93,97,99,168,178,183,197-199,213,227,251,282,290,303,305-306,309
+tools/check_rules.py
+  s_4f0877e2acdcf0::t_bc5b2cb7a4e493 39-44,209-215,366-402,413-418,445,743,835-850,887-888
+tools/check_rules_test.py
+  s_4f0877e2acdcf0::t_a8057c0d91f23b 1549-1689
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4446b10fc42b709287efe46ab930a44a82aace59",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
