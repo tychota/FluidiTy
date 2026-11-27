@@ -2,8 +2,9 @@
 #
 # STATUS: this workflow is linted with actionlint (`uv run actionlint .github/workflows/checks.yml`) and has run on
 # GitHub on the scratch branch `rebuild-ci`: every job passed on Linux (GCC 13), macOS (Xcode 16.4), Windows (VS 2022)
-# and in the CUDA compile job, so the Windows CPU code has been compiled and its tests run. The commit rule stays the
-# local gate, `uv run python tools/check_commit.py`.
+# and in the Linux CUDA compile job, so the Windows CPU code has been compiled and its tests run. The job
+# `cuda-compile-windows` has not run yet. The commit rule stays the local gate,
+# `uv run python tools/check_commit.py`.
 #
 # What each job proves:
 #   rules         The C++ and CUDA sources are clang-format 23.1 clean, tools/check_rules.py reports no FAIL under
@@ -16,10 +17,19 @@
 #                 build, and on a runner `stacked_borders_in_grid_pieces_functional_test` alone ran past the 1,800 s
 #                 timeout of ctest on Windows. This is the speed `commit` of the local gate; the release job and the
 #                 local `--speed full` run the functional tests. The Windows job is the only place the Windows CPU
-#                 code is compiled; the Windows CUDA build has never been compiled or run, and the owner's hardware
-#                 run is its first.
+#                 code is compiled; the Windows CUDA build is compiled by `cuda-compile-windows` and never run, and the
+#                 owner's hardware run is its first run.
 #   cuda-compile  Everything of `linux-release-cuda` compiles and links with nvcc, every `.cu` file and the `gpu` tests
 #                 included, and the tests labelled `cpu` and `no_gpu` pass.
+#
+#   cuda-compile-windows
+#                 Everything of `windows-release-cuda` compiles and links with nvcc 13.4 and MSVC (Visual Studio 2022)
+#                 on a hosted runner: every target, every `.cu` file and the GPU tests included. It proves that the
+#                 CUDA code builds with the Windows host compiler and the Windows CUDA runtime library, the build the
+#                 owner's hardware run starts from (docs/gpu-runs.md). It runs NO test: the runner has no driver and no
+#                 GPU, and the `cpu` tests of the build already run in the Linux and CPU jobs. It does not prove that
+#                 the programs start (the runtime DLL, the driver) or that the code is right on a GPU. The toolkit is
+#                 assembled from NVIDIA's redistributable archives, not from the installer: see the job.
 #
 # NO CI JOB RUNS GPU CODE. A hosted runner has no GPU, so GPU code is compiled, not run (docs/gpu-runs.md records the
 # owner's hardware run). GPU tests are registered only in a CUDA build; the cpu jobs build none, and the CUDA job runs
@@ -269,3 +279,156 @@ jobs:
       # Conan packages and the build tree live in a Docker volume of this run and are fetched anew each time.
       - name: Gate step cuda
         run: uv run --frozen --no-dev python tools/check_commit.py --speed full --only cuda
+
+  # Compile only, on Windows. The toolkit is version 13.4.1, the one of the Linux container (tools/cuda-container/
+  # Dockerfile). NVIDIA publishes no Windows installer under that version, and the maintained setup action
+  # (Jimver/cuda-toolkit) lists versions only up to 13.3.1, so the job downloads the redistributable archives
+  # of release 13.4.1 (https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json) of the
+  # components that compiling and linking needs, checks the SHA-256 of each against the table below, and unpacks them
+  # into one folder with the layout of an installed toolkit. That is the compiler (nvcc, crt, nvvm, ptx compiler,
+  # fatbinary library, compiler advisor), the runtime (cudart with its headers and import library), the profiler API
+  # header and the C++ core libraries. It needs no driver and no installer, so it also leaves out the Visual Studio
+  # integration, which only MSBuild generators use; the presets use Ninja.
+  # UNVERIFIED until it has run on GitHub: the set of components may miss one that nvcc or FindCUDAToolkit wants; the
+  # failure would name the missing file.
+  cuda-compile-windows:
+    name: cuda-compile windows
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PRESET: windows-release-cuda
+      CUDA_VERSION: "13.4.1"
+      # The toolkit folder, kept by the cache below. It is outside the workspace so that no build step sees it as source.
+      CUDA_PATH: C:\cuda-toolkit-13.4.1
+      CONAN_HOME: ${{ github.workspace }}/out/conan-home
+      UV_PYTHON_PREFERENCE: only-managed
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      # The same step as in the `cpu` job: Ninja does not start a developer environment, and nvcc needs `cl` on PATH.
+      # The toolset is the newest of Visual Studio 2022, since this job does not pin the runner image.
+      - name: Select the compiler (MSVC from Visual Studio 2022, x64)
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -version '[17.0,18.0)' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -or !$installation) { throw 'Visual Studio 2022 C++ tools are required.' }
+          $devCmd = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          $script = Join-Path $env:RUNNER_TEMP 'vsdevcmd-environment.cmd'
+          @(
+            "@echo off",
+            "call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64",
+            "if errorlevel 1 exit /b 1",
+            "set"
+          ) | Set-Content -Path $script -Encoding ascii
+          $variables = & cmd.exe /d /c $script
+          if ($LASTEXITCODE) { throw 'VsDevCmd failed.' }
+          $nativeVariables = @(
+            'INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VCToolsInstallDir', 'VCToolsVersion',
+            'VisualStudioVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'WindowsSDKVersion',
+            'UniversalCRTSdkDir', 'UCRTVersion', 'VSCMD_VER', 'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH'
+          )
+          foreach ($line in $variables) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $Matches[1]
+              $value = $Matches[2]
+              if ($name -in $nativeVariables) {
+                "$name=$value" >> $env:GITHUB_ENV
+              }
+              if ($name -eq 'Path') {
+                $addedPaths = @($value -split ';' | Where-Object { $_ -and $_ -notin ($env:Path -split ';') })
+                [array]::Reverse($addedPaths)
+                $addedPaths >> $env:GITHUB_PATH
+              }
+            }
+          }
+
+      # The key names the release, so the folder is downloaded once for as long as the version and the component list
+      # below stay the same. Bump the `v1` when the list changes.
+      - name: Restore the CUDA toolkit
+        id: cuda-toolkit-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CUDA_PATH }}
+          key: cuda-toolkit-v1-${{ runner.os }}-${{ env.CUDA_VERSION }}
+
+      - name: Install the CUDA toolkit (13.4.1 redistributable archives, no driver)
+        if: steps.cuda-toolkit-cache.outputs.cache-hit != 'true'
+        run: |
+          # Path under compute/cuda/redist/ and SHA-256 of each archive, from redistrib_13.4.1.json.
+          $archives = [ordered]@{
+            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.4.59-archive.zip'                   = '06a4fe6ec543030c5e5a7b85493cda90612015d9fff2a54ed0227162c937ea46'
+            'cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.4.59-archive.zip'                     = 'f969a0e3b086a48f940563cd1b965cb5197fd9540c79cc952b1abfa479f9ede7'
+            'cuda_ctadvisor/windows-x86_64/cuda_ctadvisor-windows-x86_64-13.4.49-archive.zip'         = 'e9403ee381a0d543c0307d49f91dbdee8bb061236b234a1a55c3043a86299b83'
+            'libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.4.59-archive.zip'                       = 'a7a07bcc21cc05bce83eedebcbcd9b9f5418c58316b0fa28a57cb2c548b29841'
+            'libnvptxcompiler/windows-x86_64/libnvptxcompiler-windows-x86_64-13.4.59-archive.zip'     = '4de2e70b56ae5296b39317ebd55dbb814f2ac31506c4d3ef97bfbded1cdf8cc9'
+            'libnvfatbin/windows-x86_64/libnvfatbin-windows-x86_64-13.4.49-archive.zip'               = '831af09019e56b54bc4d4364a0cf7947c688acb05e186a52f8c73662cbeb4a42'
+            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.4.49-archive.zip'               = 'e6663f3d3e8949eedc2d5ab92c7c5b9fa3f2a222086d91c42bfc5a38bf2b0225'
+            'cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-13.4.49-archive.zip'   = '34c38ea6ee834a070ee605799f4488d2a3b05246a36e57ff1d429b11a2a9cc03'
+            'cccl/windows-x86_64/cccl-windows-x86_64-13.3.4.2.1-archive.zip'                          = 'ea3ebdd98d4d98819cc26b66bc5a0931004ed35ff18eea8b93e0bd2c8bfa5d7c'
+          }
+          $download = Join-Path $env:RUNNER_TEMP 'cuda-archives'
+          New-Item -ItemType Directory -Force -Path $download, $env:CUDA_PATH | Out-Null
+          foreach ($entry in $archives.GetEnumerator()) {
+            $file = Join-Path $download (Split-Path $entry.Key -Leaf)
+            Invoke-WebRequest -Uri "https://developer.download.nvidia.com/compute/cuda/redist/$($entry.Key)" -OutFile $file
+            $actual = (Get-FileHash -Algorithm SHA256 -Path $file).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) { throw "SHA-256 of $($entry.Key) is $actual, expected $($entry.Value)." }
+            # Each archive holds one folder (bin, include, lib, nvvm, ...) named after itself; its contents go
+            # into the toolkit folder, where the installer would put them.
+            $unpacked = Join-Path $download ([IO.Path]::GetFileNameWithoutExtension($file))
+            Expand-Archive -Path $file -DestinationPath $download -Force
+            Copy-Item -Path (Join-Path $unpacked '*') -Destination $env:CUDA_PATH -Recurse -Force
+          }
+
+      # CUDA_PATH and CUDAToolkit_ROOT are what CMake's CUDA support and FindCUDAToolkit read; bin has nvcc and the
+      # runtime DLL.
+      - name: Use the CUDA toolkit
+        run: |
+          "CUDA_PATH=$env:CUDA_PATH" >> $env:GITHUB_ENV
+          "CUDAToolkit_ROOT=$env:CUDA_PATH" >> $env:GITHUB_ENV
+          Join-Path $env:CUDA_PATH 'bin' >> $env:GITHUB_PATH
+
+      - name: Show the compilers
+        run: |
+          nvcc --version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cl 2>&1 | Select-Object -First 1
+
+      - name: Install the tools of uv.lock
+        run: uv sync --frozen
+
+      - name: Record the runner image version
+        run: '"IMAGE_VERSION=$env:ImageVersion" >> $env:GITHUB_ENV'
+
+      # Conan packages only, as in the `cpu` job, for the Release build type of this preset.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out/conan-home/p
+          key: conan-v1-${{ runner.os }}-${{ runner.arch }}-msvc-vs2022-cuda-Release-${{ env.IMAGE_VERSION }}-${{ hashFiles('conan.lock', 'conanfile.py') }}
+
+      - name: Detect the Conan profile
+        run: uv run --frozen conan profile detect --exist-ok
+
+      - name: Install the Conan packages
+        run: >
+          uv run --frozen conan install . --lockfile conan.lock -of out/conan/${{ env.PRESET }}
+          -s build_type=Release -s compiler.cppstd=23 -s:b compiler.cppstd=23 --build=missing
+
+      - name: Configure
+        run: uv run --frozen cmake --preset ${{ env.PRESET }}
+
+      # Every target, no test: `ctest` is never called in this job.
+      - name: Build
+        run: uv run --frozen cmake --build --preset ${{ env.PRESET }}
