@@ -137,6 +137,10 @@ the `rebuild` branch.
 | A125 | New note detectors (2026-11-27) | Neither is added (one-word lines inside multi-line comments; notes on Python tool code) |
 | A126 | The editor settings (2026-11-27) | Kept; the owner checks them in VS Code |
 | A127 | CI during the rewrite (2026-11-26) | A red CI run does not block work, and the CI workflow may change; its result is still read after each push |
+| A128 | An array changed in place by contact (2026-11-27) | Asked with three options (contact allows it; a third buffer; the step copies); the owner asked for the best of correctness, speed, memory and simplicity. Taken: `contact::MoveParticles` accepts an output that is exactly its own input array (`position` = `start_position`, `velocity_for_next_step` = `velocity.for_next_step`); any other overlap stays `kBadInput`. Each particle's inputs are copied before its outputs are written, on both processors, and the step design already passes the velocity so in every step. No memory, no copy. After a failed call the inputs are unspecified as well, and the try is dropped. First task of the particles plan, in contact |
+| A129 | The single-particle `SplitParticle` and `MergeParticles` (2026-11-27) | Removed. Since A67 every split and merge runs inside `AdjustParticleCount`; the formulas stay public and tested by value. Five error values go with them |
+| A130 | The count of splits with an incomplete neighbourhood (2026-11-27) | "Probably remove it but investigate the changes impact." Investigated and removed: nothing outside particles and the cell resize result reads it; no result changes. `AdjustParticleCount(particles_try, grid, cell_blocks)` takes one grid; `FindNeighbourhood` and `NeighbourhoodInputs` are gone. Cell resize no longer needs the solid arrays of the resized grid for this call |
+| A131 | The piece map of a grid piece on the GPU (2026-11-27) | `WriteParticleGroups` reads it back once per load (4 bytes per loaded block), keeps it in the loaded try's own table and reports it as one counted copy |
 
 ## Everything else
 

@@ -689,3 +689,29 @@ edited.
 - **13 Surface, foam and spray (design and plan).** The same wherever a buffer or a test is sized at the limit.
 - **11 Cell resize and batches.** `max_loaded_blocks` and any limit raised by `ApplyLimits` stay at or below the
   constant; a test at "limit + 1" uses the constant.
+
+## From the particles pre-flight (A128 to A131, 2026-11-27)
+
+Applied to `03-particles-design.md` the same day. The other documents below are not edited yet; each is changed
+when its module's plan is written.
+
+- **01 Contact (design 3.5, 5; done by the first task of the particles plan).** `MoveParticles` accepts an output
+  that is exactly its own input array: `MovedParticles::position == MoveParticlesInputs::start_position` and
+  `velocity_for_next_step == velocity.for_next_step` (the same pointer and count). Every other overlap stays
+  `kBadInput`. After a failed call the inputs written in place are unspecified too (A128).
+- **10 Step (design 5.5).** The call of stage 16 passes the velocity in place in every step and the position in
+  place after a regrouping in the same try; a failed stage leaves a try that can only be rejected (A128).
+- **11 Cell resize and batches (design 3, 5.1 step 6 and 7, 5.4; plan).** `particles::AdjustParticleCount(
+  particles_try, grid, cell_blocks)` takes the resized grid only; `NeighbourhoodInputs`, `FindNeighbourhood`,
+  `SplitParticle`, `MergeParticles` and `AdjustParticleCountResult::incomplete_split_count` do not exist (A129,
+  A130). Check whether step 6's `solids::ComputeSolidsAtFaces` on the resized grid still has a reader; if not,
+  delete it. `WriteBatch` adds `WriteParticleGroupsResult::copy_count` and `bytes_copied` to the copies it reports
+  (A131).
+- **08 Solids (design, "Cell resize and batches" paragraph).** `ComputeSolidsAtFaces` after a resize is no longer
+  called for particles.
+- **Every design that reads particle views.** `particles::BuildFieldsToRead` returns
+  `std::expected<ParticleFields, ParticlesFailure>` (the range rule of A116); a particle's size level is a
+  `grid::SizeLevel`.
+- **`shared-interface.md`** (rows "A complete neighbourhood", "Split, merge, count changes", the 3.5 list, the
+  `NeighbourhoodInputs` note, the `AdjustParticleCountResult` copy) and **`01b-mesh-solids-cross-module.md`** (row
+  3.1, 3.5): the same removals.
