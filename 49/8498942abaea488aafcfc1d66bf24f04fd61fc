@@ -1,0 +1,19 @@
+docs/superpowers/plans/2026-11-14-rebuild-03-particles.md
+  s_7bd7312e192836::t_15416858203e89 166-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "498498942abaea488aafcfc1d66bf24f04fd61fc",
+  "prompts": {},
+  "sessions": {
+    "s_7bd7312e192836": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "49f10b80-4cda-4758-80da-4f4b0b30b8a5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
