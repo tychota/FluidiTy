@@ -1,0 +1,33 @@
+src/fluidity/grid/border_block_steps.h
+  s_4f0877e2acdcf0::t_ac7088fd33cc0c 37-38,920,923,925,940-943,945-946,949-951,953-955,957-958,960,965,968,1013
+src/fluidity/grid/border_block_steps.test.cc
+  s_4f0877e2acdcf0::t_bde4be73f3a6cb 372,374-375,377-381,384,388-395,412,431
+src/fluidity/grid/cell_block_range_cpu.cc
+  s_4f0877e2acdcf0::t_e4848b3c0831fe 199-200,204-205,211
+src/fluidity/grid/cell_block_range_gpu.cu
+  s_4f0877e2acdcf0::t_695efb3f0a8bde 19-21,94,101,110,116,225,230,235,240,248-249
+src/fluidity/grid/cell_block_range_gpu.h
+  s_4f0877e2acdcf0::t_fa289e1432eee2 76-77,82-85,88-89,97
+src/fluidity/grid/testing/border_search_replay.h
+  s_4f0877e2acdcf0::t_27171e58c6184d 20,65,124,127-130,139
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_8041bb236dee23 103
+tests/grid/border_search_replay.test.cc
+  s_4f0877e2acdcf0::t_30ffdad2bd7cca 190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4e354a2e7c62fc1960bf6c6c7fa189155c6f3d59",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
