@@ -1,0 +1,25 @@
+docs/glossary.md
+  s_56b1e1a5849079::t_c542d7b8241321 177,182-187,225
+docs/method-paper/figures/particle_merge.typ
+  s_56b1e1a5849079::t_eaf02585cfaca6 1-65
+docs/method-paper/figures/particle_split.typ
+  s_56b1e1a5849079::t_fc03e3b33d5c20 1-93
+docs/method-paper/fluidity-method.typ
+  s_56b1e1a5849079::t_09602a8c4951e7 40-41,3353-3646
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b6d07173575f214c5f24dd8b2510ad579c39f0a0",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
