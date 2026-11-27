@@ -711,7 +711,8 @@ when its module's plan is written.
   called for particles.
 - **Every design that reads particle views.** `particles::BuildFieldsToRead` returns
   `std::expected<ParticleFields, ParticlesFailure>` (the range rule of A116); a particle's size level is a
-  `grid::SizeLevel`.
+  `particles::ParticleSizeLevel` (A132): whoever makes particles (I/O's start seeding, sources, gas markers) writes
+  `ToParticleSizeLevel(cell_size_level)`, and whoever compares it with a cell uses `ToSizeLevel(size_level)`.
 - **`shared-interface.md`** (rows "A complete neighbourhood", "Split, merge, count changes", the 3.5 list, the
   `NeighbourhoodInputs` note, the `AdjustParticleCountResult` copy) and **`01b-mesh-solids-cross-module.md`** (row
   3.1, 3.5): the same removals.

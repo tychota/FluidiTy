@@ -163,7 +163,7 @@ spread and check the worked numbers (offset 0.4330127018922193; two particles at
 
 ### Task 4: Errors, fields and field lists
 
-**Kind:** mechanical. **Review:** Sonnet, scoped to: the 13 values and their order, the bit values of `Field`,
+**Kind:** mechanical. **Review:** Sonnet, scoped to: the 13 values and their order, the bit values of `Field`, `ParticleSizeLevel`,
 struct sizes asserted, the mapping of each `BufferError`.
 **Needs:** Task 2. **Touches:** `particles/particle_fields.h`, `particles_error.h`, `particles_error_message.h`,
 `particles_error_message.cc`, their tests, `particles/CMakeLists.txt`, `src/fluidity/CMakeLists.txt`.
@@ -178,7 +178,9 @@ struct sizes asserted, the mapping of each `BufferError`.
   `ParticlesFailure` (`static_assert(sizeof == 24)`: error at 0, `material_index` at 4, `particle_id` at 8,
   `magnitude` at 16; declare the fields in that order) and `ParticlesFailure ToParticlesFailure(BufferError,
   std::uint64_t bytes_asked)` in the CPU-only message header. `kInternalFault`'s message says the fault is in
-  FluidiTy and asks for a report with the scene. `ParticleFields::size_level` is `const grid::SizeLevel*`.
+  FluidiTy and asks for a report with the scene. `ParticleSizeLevel` and its four functions
+  (design 3.1, A132) are declared in `particle_fields.h`; tests: `ToSizeLevel, RoundTrip_EveryLevel` (0..15),
+  `ComputeSmallerSizeLevel, LevelOne_IsLevelTwo`, `ComputeBiggerSizeLevel, LevelOne_IsLevelZero`.
 - Tests, unit: `ParticlesError, OutOfMemory_IsTheLastValue` (13th); `ToName, EveryError_LowerSnakeCase`;
   `ToMessage, EveryError_HasItsOwnText`; `ToParticlesFailure, EachBufferError_MapsAsStated`;
   `ToFieldList, ThreeFields_OrsTheirBits`; `HasField`; a `gpu_compile` test that includes both shared headers.
@@ -528,7 +530,7 @@ smaller set does each checker accept?
 
 **Brief:**
 - Design sections: 5.5 Property, 5.6 with its Property (steps 0 to 2 and 5), 5.11.
-- Decided: `struct CountRuleParticle { std::uint64_t id; Vec3 position; grid::SizeLevel size_level;
+- Decided: `struct CountRuleParticle { std::uint64_t id; Vec3 position; ParticleSizeLevel size_level;
   contact::PlateSide plate_side; std::uint8_t flags; std::uint8_t merge_wait_passes; }` (no snapshot type, so no
   later task is needed); `enum class ChunkOutcome { kMergesNow, kWaits, kLone }`; `struct CountRuleExpectation {
   std::vector<std::uint64_t> split_ids; std::vector<int> generations; std::vector<std::vector<std::uint64_t>>

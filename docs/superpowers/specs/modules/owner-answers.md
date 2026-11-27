@@ -141,6 +141,7 @@ the `rebuild` branch.
 | A129 | The single-particle `SplitParticle` and `MergeParticles` (2026-11-27) | Removed. Since A67 every split and merge runs inside `AdjustParticleCount`; the formulas stay public and tested by value. Five error values go with them |
 | A130 | The count of splits with an incomplete neighbourhood (2026-11-27) | "Probably remove it but investigate the changes impact." Investigated and removed: nothing outside particles and the cell resize result reads it; no result changes. `AdjustParticleCount(particles_try, grid, cell_blocks)` takes one grid; `FindNeighbourhood` and `NeighbourhoodInputs` are gone. Cell resize no longer needs the solid arrays of the resized grid for this call |
 | A131 | The piece map of a grid piece on the GPU (2026-11-27) | `WriteParticleGroups` reads it back once per load (4 bytes per loaded block), keeps it in the loaded try's own table and reports it as one counted copy |
+| A132 | The type and name of a particle's size level (2026-11-27) | A particle's size is not its cell's: an adaptive particle can differ from the grid. So it gets a type of its own, `particles::ParticleSizeLevel`, and keeps the simple field name `size_level` (not `made_for_size_level`, not `parent_cell_size_level`, not `size`). `ToSizeLevel(ParticleSizeLevel)` and `ToParticleSizeLevel(grid::SizeLevel)` are the only places where the two meet; code names a cell's value `cell_size_level`. Replaces the coordinator's ruling that used `grid::SizeLevel` |
 
 ## Everything else
 

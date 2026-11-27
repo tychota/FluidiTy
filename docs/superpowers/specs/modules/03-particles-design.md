@@ -61,6 +61,20 @@ inline constexpr std::uint32_t kMaxIngredientCount = 8;  // Limit per material. 
 inline constexpr std::uint8_t kCarriesFittedChange = 1;  // DECIDED word. Off: fitted_velocity_change is ignored.
 inline constexpr std::uint8_t kHasOwnMotion = 2;  // Off until the particle has been through one GridToParticles.
 
+// How big a particle is, as a step on the same ladder as the grid's cell sizes: eight particles of size level l
+// fill one cell of size level l. 0 is the biggest; each step halves the width. A type of its own (A132), because
+// a particle's size level can differ from the size level of the cell it is in, until the count rule splits or
+// merges it. Code names the cell's value cell_size_level, never size_level alone.
+enum class ParticleSizeLevel : std::uint8_t {};
+// The size level of the cells that particles of this size fill, and back: the only two places where a particle's
+// size level and a cell's meet.
+FLUIDITY_CPU_AND_GPU constexpr grid::SizeLevel ToSizeLevel(ParticleSizeLevel size_level) noexcept;
+FLUIDITY_CPU_AND_GPU constexpr ParticleSizeLevel ToParticleSizeLevel(grid::SizeLevel cell_size_level) noexcept;
+// One step smaller (the children of a split) and one step bigger (a merged particle). Requires: the step exists
+// (not below the frame's smallest level, not above 0), checked by assert.
+FLUIDITY_CPU_AND_GPU constexpr ParticleSizeLevel ComputeSmallerSizeLevel(ParticleSizeLevel size_level) noexcept;
+FLUIDITY_CPU_AND_GPU constexpr ParticleSizeLevel ComputeBiggerSizeLevel(ParticleSizeLevel size_level) noexcept;
+
 // Views of one material's arrays for one run of cell blocks. Pointers are CPU pointers when the particles were
 // built for RunOn::kCpu and GPU pointers for RunOn::kGpu. A null pointer means the material does not carry that
 // array. An index into these arrays is valid for one grouping_version only.
@@ -78,7 +92,7 @@ struct ParticleFields {
   const double* volume_ratio = nullptr;             // No unit, positive. Current volume / rest volume. Papers: J.
                                                     // DECIDED (A4).
   const std::uint8_t* flags = nullptr;              // kCarriesFittedChange | kHasOwnMotion.
-  const grid::SizeLevel* size_level = nullptr;      // Size level of the cells this particle was made for.
+  const ParticleSizeLevel* size_level = nullptr;    // The particle's own size (below). Not always its cell's level.
   // Resize passes this particle has waited, too small for its cell, for a chunk of eight; saturates at
   // 255; 0 when it matches its cell or was just made. Null for a material with CountRule::kKeepsItsCount.
   const std::uint8_t* merge_wait_passes = nullptr;
@@ -336,7 +350,7 @@ struct NewParticles {  // One entry per new particle, all spans the same length 
   std::span<const double> mass;                    // kg.
   std::span<const double> rest_volume;             // m3.
   std::span<const double> volume_ratio;            // No unit. Empty: 1.
-  std::span<const grid::SizeLevel> size_level;
+  std::span<const ParticleSizeLevel> size_level;
   std::span<const double> ingredient_fractions;    // Required when the material has several ingredients.
   std::span<const Mat3> springy_deformation;       // Required when carried. Same for the two below.
   std::span<const double> permanent_volume_change;
@@ -443,7 +457,7 @@ struct ParticlesSnapshot {  // DECIDED word. CPU-owned copy of the committed val
     // Constant during a step: always present.
     std::vector<std::uint64_t> id;
     std::vector<double> rest_volume;                 // m3.
-    std::vector<grid::SizeLevel> size_level;
+    std::vector<ParticleSizeLevel> size_level;
     std::vector<double> ingredient_fractions;        // Empty when ingredient_count is 1.
     // Present when asked (SnapshotFields) and carried.
     std::vector<double> mass;                        // kg. Field::kMass.
@@ -1346,6 +1360,8 @@ recommended option under the owner's standing instruction of 2026-11-14.
   faces near it. Source: A130.
 - **11.22** `WriteParticleGroups` reads the piece map of a GPU piece back once per load and returns the counted copy in
   `WriteParticleGroupsResult`. Source: A131.
-- **11.23** Coordinator rulings, 2026-11-27: `grid::SizeLevel` for size levels; the range rule of A116 in every function
+- **11.24** A particle's size level is its own type, `ParticleSizeLevel`, field `size_level`, converted to and from
+  `grid::SizeLevel` by `ToSizeLevel` and `ToParticleSizeLevel` (owner answer A132).
+- **11.23** Coordinator rulings, 2026-11-27: the range rule of A116 in every function
   taking a range, so `BuildFieldsToRead` returns `std::expected`; five error values that only the single forms returned
   are gone.
