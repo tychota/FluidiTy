@@ -1,0 +1,31 @@
+tests/grid/new_cell_neighbors_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_6d36fd08f7f64f 1-205
+tests/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_506bc7db0d578a 514-525
+src/fluidity/grid/CMakeLists.txt
+  s_4f0877e2acdcf0::t_251172581585e3 25,174
+src/fluidity/grid/testing/new_cell_rule_cases.h
+  s_4f0877e2acdcf0::t_a0e192b5d3f6aa 1-166
+src/fluidity/grid/new_cell_rule.test.cc
+  s_4f0877e2acdcf0::t_d9c37877887288 1-124
+src/fluidity/grid/new_cell_rule.h
+  s_4f0877e2acdcf0::t_415be8f4ed0c97 1-30
+src/fluidity/grid/testing/new_cell_rule_reference.h
+  s_4f0877e2acdcf0::t_5dd85973c5d65e 1-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "232390e8e339838f431ea918e32ae45c3d337053",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
