@@ -45,19 +45,9 @@
 namespace fluidity::grid {
 namespace {
 
-// The CUDA atomics take unsigned long long for 64 bits; std::uint64_t is unsigned long on Linux and unsigned long long
-// on Windows, both 64 bits wide.
-static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t), "the 64-bit atomics act on the 64-bit key");
-
-// The failure key of `status` as the CUDA atomics take it.
-__device__ unsigned long long* ToAtomicFailureKey(GridBuildStatus* status) {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
-  return reinterpret_cast<unsigned long long*>(&status->failure_key);
-}
-
-// Reads the failure key that step 2 wrote in an earlier launch. The volatile read goes to memory.
+// Says whether the failure key that step 2 wrote in an earlier launch holds a failure.
 __device__ bool ComputeHasFailed(const GridBuildStatus* status) {
-  return *static_cast<const volatile std::uint64_t*>(&status->failure_key) != kNoFailureKey;
+  return ComputeCurrentUint64(&status->failure_key) != kNoFailureKey;
 }
 
 // Step 1 (a), one thread.
@@ -86,7 +76,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) CheckBorderSoFar(
     const std::uint64_t failure_key =
         ComputeBorderSoFarFailureKey(range, border_so_far, block_count, static_cast<std::uint32_t>(entry));
     if (failure_key != kNoFailureKey) {
-      atomicMin(ToAtomicFailureKey(status), failure_key);
+      atomicMin(ToAtomicUint64(&status->failure_key), failure_key);
     }
   }
 }
@@ -151,35 +141,6 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBorderBlocks(
   for (std::size_t block = stride.first_item; block < block_count; block += stride.item_step) {
     ApplyBorderBlockWriteAt(sums, static_cast<std::uint32_t>(block), border_block_room, border_blocks);
   }
-}
-
-// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning, so that
-// no earlier launch of the same call is still running (and writing) when the caller sees the failure.
-template <typename... Parameters>
-RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
-    void (*function)(Parameters...),
-    LaunchSize launch_size,
-    std::type_identity_t<Parameters>... arguments
-) {
-  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
-  if (started != RunOnCallStatus::kDone) {
-    static_cast<void>(CheckGpuWork());
-  }
-  return started;
-}
-
-// The launch of a GPU function that one thread runs.
-constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
-
-// Reads the local memory per thread of one GPU function into *largest_bytes when it is larger.
-template <typename Function>
-cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
-  cudaFuncAttributes attributes{};
-  const cudaError_t error = cudaFuncGetAttributes(&attributes, function);
-  if (error == cudaSuccess) {
-    *largest_bytes = std::max<std::uint64_t>(*largest_bytes, attributes.localSizeBytes);
-  }
-  return error;
 }
 
 }  // namespace

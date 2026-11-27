@@ -34,22 +34,6 @@
 namespace fluidity::grid {
 namespace {
 
-// The CUDA atomics take unsigned long long for 64 bits; std::uint64_t is unsigned long on Linux and unsigned long long
-// on Windows, both 64 bits wide.
-static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t), "the 64-bit atomics act on the 64-bit fields");
-
-// A 64-bit field of `status` as the CUDA atomics take it.
-__device__ unsigned long long* ToAtomicField(std::uint64_t* field) {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
-  return reinterpret_cast<unsigned long long*>(field);
-}
-
-// Reads the failure key that other threads may be offering keys to at the same time. The volatile read goes to memory,
-// never a value the thread kept from before.
-__device__ std::uint64_t ComputeCurrentFailureKey(const GridBuildStatus* status) {
-  return *static_cast<const volatile std::uint64_t*>(&status->failure_key);
-}
-
 // The step a function tests against with ComputeHasEarlierStepFailed. Functions 3 and 4 stop for a key of function 2
 // only: a key of function 4 that another thread offered must not stop a thread, or the keys left out could be smaller.
 // Functions 5 and 6 come after every keyed function, so any key stops them.
@@ -70,7 +54,7 @@ __global__ void __launch_bounds__(
     const auto entry_number = static_cast<std::uint32_t>(entry);
     const std::uint64_t failure_key = ComputePieceBorderFailureKey(load, whole_block_count, entry_number);
     if (failure_key != kNoFailureKey) {
-      atomicMin(ToAtomicField(&status->failure_key), failure_key);
+      atomicMin(ToAtomicUint64(&status->failure_key), failure_key);
     }
     if (ComputeIsBorderEntryBelowRange(load, entry_number) != 0) {
       atomicAdd(&status->result_count, 1U);
@@ -82,7 +66,7 @@ __global__ void __launch_bounds__(
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) WritePieceMap(PieceLoad load, const GridBuildStatus* status, CellBlockIndex* map) {
-  if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kStopStepOfMapAndBlocks)) {
+  if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kStopStepOfMapAndBlocks)) {
     return;
   }
   const GridStride stride = ComputeGridStride();
@@ -96,7 +80,7 @@ __global__ void __launch_bounds__(
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) CopyPieceBlocks(GridTables whole, PieceBlocks blocks, PieceTableArrays piece, GridBuildStatus* status) {
-  if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kStopStepOfMapAndBlocks)) {
+  if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kStopStepOfMapAndBlocks)) {
     return;
   }
   const GridStride stride = ComputeGridStride();
@@ -104,7 +88,7 @@ __global__ void __launch_bounds__(
     const std::uint64_t failure_key =
         ApplyPieceBlockCopyAt(whole, blocks, piece, static_cast<std::uint32_t>(piece_block));
     if (failure_key != kNoFailureKey) {
-      atomicMin(ToAtomicField(&status->failure_key), failure_key);
+      atomicMin(ToAtomicUint64(&status->failure_key), failure_key);
     }
   }
 }
@@ -113,7 +97,7 @@ __global__ void __launch_bounds__(
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) CopyPieceCellStates(GridTables whole, PieceBlocks blocks, CellState* cell_states, GridBuildStatus* status) {
-  if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kStopStepOfStatesAndKinds)) {
+  if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kStopStepOfStatesAndKinds)) {
     return;
   }
   const GridStride stride = ComputeGridStride();
@@ -121,7 +105,7 @@ __global__ void __launch_bounds__(
   for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
     const int size_level = ApplyPieceCellStateCopyAt(whole, blocks, static_cast<std::uint32_t>(place), cell_states);
     if (size_level >= 0) {
-      atomicAdd(ToAtomicField(&status->active_cells_per_size_level[size_level]), 1ULL);
+      atomicAdd(ToAtomicUint64(&status->active_cells_per_size_level[size_level]), 1ULL);
     }
   }
 }
@@ -131,7 +115,7 @@ __global__ void __launch_bounds__(
 __global__ void __launch_bounds__(
     kThreadBlockSize
 ) WritePieceFaceKinds(GridTables whole, PieceBlocks blocks, FacePieceKind* face_piece_kinds, GridBuildStatus* status) {
-  if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kStopStepOfStatesAndKinds)) {
+  if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kStopStepOfStatesAndKinds)) {
     return;
   }
   const GridStride stride = ComputeGridStride();
@@ -141,37 +125,8 @@ __global__ void __launch_bounds__(
     face_piece_sum += ApplyPieceFaceKindWriteAt(whole, blocks, static_cast<std::uint32_t>(place), face_piece_kinds);
   }
   if (face_piece_sum != 0) {
-    atomicAdd(ToAtomicField(&status->face_pieces), face_piece_sum);
+    atomicAdd(ToAtomicUint64(&status->face_pieces), face_piece_sum);
   }
-}
-
-// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning, so that
-// no earlier launch of the same call is still running (and writing) when the caller sees the failure.
-template <typename... Parameters>
-RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
-    void (*function)(Parameters...),
-    LaunchSize launch_size,
-    std::type_identity_t<Parameters>... arguments
-) {
-  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
-  if (started != RunOnCallStatus::kDone) {
-    static_cast<void>(CheckGpuWork());
-  }
-  return started;
-}
-
-// The launch of a GPU function that one thread runs.
-constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
-
-// Reads the local memory per thread of one GPU function into *largest_bytes when it is larger.
-template <typename Function>
-cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
-  cudaFuncAttributes attributes{};
-  const cudaError_t error = cudaFuncGetAttributes(&attributes, function);
-  if (error == cudaSuccess) {
-    *largest_bytes = std::max<std::uint64_t>(*largest_bytes, attributes.localSizeBytes);
-  }
-  return error;
 }
 
 }  // namespace

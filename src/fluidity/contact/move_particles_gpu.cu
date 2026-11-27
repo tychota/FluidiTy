@@ -27,16 +27,6 @@
 namespace fluidity::contact {
 namespace {
 
-// The CUDA atomics take unsigned long long for 64 bits; std::uint64_t is unsigned long on Linux and unsigned long long
-// on Windows, both 64 bits wide.
-static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t), "the 64-bit atomics act on the 64-bit fields");
-
-// The 64-bit integer at `value` as the CUDA atomics take it.
-__device__ unsigned long long* ToAtomicInteger(std::uint64_t* value) {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
-  return reinterpret_cast<unsigned long long*>(value);
-}
-
 // Step 1, one thread: the counts start at {0, 0} and the search at no failure.
 __global__ void StartReduction(MoveParticleCounts* counts, FirstFailureMinima* minima) {
   *counts = MoveParticleCounts{};
@@ -58,15 +48,15 @@ __global__ void __launch_bounds__(
   for (std::size_t index = stride.first_item; index < call.particle_count; index += stride.item_step) {
     const ParticleVisit visit = ApplyParticleVisitAt(call, index);
     if (visit.has_failure) {
-      atomicMin(ToAtomicInteger(&minima->smallest_failing_id), visit.particle_id);
+      atomicMin(ToAtomicUint64(&minima->smallest_failing_id), visit.particle_id);
       atomicOr(&minima->has_failure, 1U);
       continue;
     }
     if (visit.counts.hit_count != 0) {
-      atomicAdd(ToAtomicInteger(&counts->hit_count), visit.counts.hit_count);
+      atomicAdd(ToAtomicUint64(&counts->hit_count), visit.counts.hit_count);
     }
     if (visit.counts.started_inside_count != 0) {
-      atomicAdd(ToAtomicInteger(&counts->started_inside_count), visit.counts.started_inside_count);
+      atomicAdd(ToAtomicUint64(&counts->started_inside_count), visit.counts.started_inside_count);
     }
   }
 }
@@ -84,7 +74,7 @@ __global__ void __launch_bounds__(
   const GridStride stride = ComputeGridStride();
   for (std::size_t index = stride.first_item; index < call.particle_count; index += stride.item_step) {
     if (ComputeIsFailureWithParticleId(call, index, smallest_failing_id)) {
-      atomicMin(ToAtomicInteger(&minima->smallest_failing_index), index);
+      atomicMin(ToAtomicUint64(&minima->smallest_failing_index), index);
     }
   }
 }
@@ -96,9 +86,6 @@ WriteFirstFailure(MoveParticlesCall call, const FirstFailureMinima* minima, Cont
   const FirstFailureMinima final_minima = *minima;
   *first_failure = ComputeFirstFailure(call, final_minima);
 }
-
-// The launch of a GPU function that one thread runs.
-constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
 
 }  // namespace
 

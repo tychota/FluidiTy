@@ -1,4 +1,5 @@
-// The plumbing every GPU half shares: starting a GPU function, waiting for the GPU, and reading CUDA errors.
+// The plumbing every GPU half shares: starting a GPU function, waiting for the GPU, reading CUDA errors, and the small
+// helpers that GPU functions of several files need.
 //
 // Purpose: give every `<name>_gpu.cu` file one way to start a GPU function and check it, one way to wait for the
 //   GPU, one way to walk the items of a thread and one holder of temporary GPU memory, so no launch goes unchecked
@@ -11,10 +12,14 @@
 //   call and frees it on every path. The pattern of a GPU half: each GPU function is a thin loop that calls a shared
 //   per-item function (marked FLUIDITY_CPU_AND_GPU), which CPU tests run over every item; the `.cu` file keeps only
 //   the launches, the waits and the memory.
+//   Three more helpers serve the GPU halves that run a chain of launches over one status record: a launch that waits
+//   when it did not start, a read of the stack a GPU function keeps, and the two accesses to a 64-bit value that
+//   other threads change (the atomic pointer and the read that goes to memory).
 //   Example: ApplyGpuFunction(MultiplyPairs, ComputeLaunchSize(count), first, second, count, products) starts one
 //   thread per product, at most 65,535 thread blocks, and returns kDone or the status of the failed start.
 //
-// Owns:    ToRunOnCallStatus, ApplyGpuFunction, CheckGpuWork, GridStride, ComputeGridStride, GpuArray
+// Owns:    ToRunOnCallStatus, ApplyGpuFunction, ApplyGpuFunctionAndWaitOnFailure, CheckGpuWork, kOneThread,
+//          ApplyLargerStack, ToAtomicUint64, ComputeCurrentUint64, GridStride, ComputeGridStride, GpuArray
 // Uses:    RunOnCallStatus and LaunchSize (base/run_on_call.h), ApplyLastRunOnCallError (base/run_on_call_error.h), the
 //          CUDA runtime
 // Used by: every `<name>_gpu.cu` file; never a `.h` or `.cc` file, which the C++ compiler alone builds
@@ -24,7 +29,9 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <type_traits>
 
@@ -68,6 +75,69 @@ RunOnCallStatus ApplyGpuFunction(
 // Fails: kCallFailed  a GPU function or copy failed while the GPU ran it
 inline RunOnCallStatus CheckGpuWork() {
   return ToRunOnCallStatus(cudaDeviceSynchronize());
+}
+
+// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning.
+//
+// Why: a call made of several launches (a build, a check) may have started earlier launches that are still running and
+//   still write its buffers. The caller that sees the failure may free or reuse those buffers at once, so it must not
+//   see the failure before the earlier launches have ended. The wait is for that; its own result is dropped, because
+//   the failure to report is the one of the launch.
+// Requires: the launch size and the arguments are those of ApplyGpuFunction.
+// Example: ApplyGpuFunctionAndWaitOnFailure(ResetMarks, ComputeLaunchSize(block_count), marks, block_count).
+// Fails: kCallFailed  the launch did not start, or an earlier GPU call left an error that this read reports
+template <typename... Parameters>
+RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
+    void (*function)(Parameters...),
+    LaunchSize launch_size,
+    std::type_identity_t<Parameters>... arguments
+) {
+  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
+  if (started != RunOnCallStatus::kDone) {
+    static_cast<void>(CheckGpuWork());
+  }
+  return started;
+}
+
+// The launch of a GPU function that one thread runs: one thread block of one thread.
+constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
+
+// Raises *largest_bytes to the local memory per thread of `function` when that is larger, and returns the CUDA error
+// of reading it. Fails with the error of cudaFuncGetAttributes, for a pointer that is no GPU function of this build.
+//
+// Why: a thread of a GPU function keeps its stack (arrays and spilled registers) in local memory, and the driver gives
+//   each thread a default stack of 1,024 bytes. A function that needs more than that is held by the driver, which
+//   must be told to give a larger stack before the launch. The caller reads the need of each function of one file with
+//   this and compares the largest with the default, so a function that outgrows it is noticed by a test.
+// Requires: `function` is a pointer to a GPU function; largest_bytes is not null.
+// Example: ApplyLargerStack(WritePieceMap, &largest_bytes) after ApplyLargerStack(CheckPieceBorder, &largest_bytes).
+template <typename Function>
+cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
+  cudaFuncAttributes attributes{};
+  const cudaError_t error = cudaFuncGetAttributes(&attributes, function);
+  if (error == cudaSuccess) {
+    *largest_bytes = std::max<std::uint64_t>(*largest_bytes, attributes.localSizeBytes);
+  }
+  return error;
+}
+
+// The CUDA atomics take unsigned long long for 64 bits; std::uint64_t is unsigned long on Linux and unsigned long long
+// on Windows, both 64 bits wide.
+static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t), "the 64-bit atomics act on 64-bit values");
+
+// The 64-bit value at `value` as the CUDA atomics take it: the same address, the type the atomics are declared with.
+// Requires: `value` is aligned to 8 bytes and is not null. Call it inside a GPU function.
+// Example: atomicMin(ToAtomicUint64(&status->failure_key), failure_key).
+__device__ inline unsigned long long* ToAtomicUint64(std::uint64_t* value) {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
+  return reinterpret_cast<unsigned long long*>(value);
+}
+
+// The value at `value` as it is in memory now, for a 64-bit value that other threads or an earlier launch change. The
+// volatile read goes to memory, never a copy that the thread kept from before. Call it inside a GPU function.
+// Requires: `value` is aligned to 8 bytes and is not null.
+__device__ inline std::uint64_t ComputeCurrentUint64(const std::uint64_t* value) {
+  return *static_cast<const volatile std::uint64_t*>(value);
 }
 
 // The items of one thread in a grid-stride loop: first_item, first_item + item_step, and so on.

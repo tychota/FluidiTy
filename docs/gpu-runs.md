@@ -120,7 +120,7 @@ The CPU tests run the per-particle and per-thread functions over every thread bl
 for the first time on the card. What a failure of each would look like:
 
 - The 64-bit `atomicMin`, the 32-bit `atomicOr` and the 64-bit `atomicAdd`, through the cast to `unsigned long
-  long` (`move_particles_gpu.cu`, `ToAtomicInteger`): `MoveParticlesOnGpuInLaunchSize.*` fail with a wrong particle id
+  long` (`base/gpu_launch.cuh`, `ToAtomicUint64`): `MoveParticlesOnGpuInLaunchSize.*` fail with a wrong particle id
   or wrong counts, or the counts of the set tests differ (`counts.hit_count: cpu ..., gpu ...`).
 - The reuse of the first-failure buffer for the minima, read whole and then written over by one thread
   (`StartReduction`, `WriteFirstFailure`): the failure tests report a failure with nonsense fields (an error 255, a

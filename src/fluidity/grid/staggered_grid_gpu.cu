@@ -33,22 +33,6 @@
 namespace fluidity::grid {
 namespace {
 
-// The CUDA atomics take unsigned long long for 64 bits; std::uint64_t is unsigned long on Linux and unsigned long long
-// on Windows, both 64 bits wide.
-static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t), "the 64-bit atomics act on the 64-bit key");
-
-// The failure key of `status` as the CUDA atomics take it.
-__device__ unsigned long long* ToAtomicFailureKey(GridBuildStatus* status) {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
-  return reinterpret_cast<unsigned long long*>(&status->failure_key);
-}
-
-// Reads the failure key that other threads may be offering keys to at the same time. The volatile read goes to memory,
-// never a value the thread kept from before.
-__device__ std::uint64_t ComputeCurrentFailureKey(const GridBuildStatus* status) {
-  return *static_cast<const volatile std::uint64_t*>(&status->failure_key);
-}
-
 // Step P1, one thread.
 __global__ void ApplyBuildStatusReset(GridBuildStatus* status) {
   *status = ComputeResetBuildStatus();
@@ -62,7 +46,7 @@ __global__ void __launch_bounds__(
   for (std::size_t index = stride.first_item; index < input_count; index += stride.item_step) {
     const std::uint64_t failure_key = ComputeCellIdFailureKey(frame, input_cells, index);
     if (failure_key != kNoFailureKey) {
-      atomicMin(ToAtomicFailureKey(status), failure_key);
+      atomicMin(ToAtomicUint64(&status->failure_key), failure_key);
     }
   }
 }
@@ -94,13 +78,13 @@ __global__ void __launch_bounds__(
 ) CheckSortedPositions(const CellId* sorted_cells, std::uint32_t count, int step, GridBuildStatus* status) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t position = stride.first_item; position < count; position += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), step)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), step)) {
       return;
     }
     const std::uint64_t failure_key =
         ComputeSortedCellFailureKey(sorted_cells, count, static_cast<std::uint32_t>(position), step);
     if (failure_key != kNoFailureKey) {
-      atomicMin(ToAtomicFailureKey(status), failure_key);
+      atomicMin(ToAtomicUint64(&status->failure_key), failure_key);
     }
   }
 }
@@ -127,7 +111,8 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteSplitCellCounts(
 ) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t position = stride.first_item; position < active_count; position += stride.item_step) {
-    const bool has_earlier_failure = ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kCellPlacesStep);
+    const bool has_earlier_failure =
+        ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kCellPlacesStep);
     split_cell_counts[position] =
         has_earlier_failure ? 0U : static_cast<std::uint32_t>(ComputeSplitCellCountToAdd(cell_ids[position]));
   }
@@ -175,7 +160,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteSplitCells(
 ) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t position = stride.first_item; position < active_count; position += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockCountStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kBlockCountStep)) {
       return;
     }
     ApplySplitCellWritesAt(cell_ids, sums, active_count, static_cast<std::uint32_t>(position));
@@ -189,7 +174,7 @@ __global__ void __launch_bounds__(
 ) WriteSortTail(CellId* cell_ids, std::uint32_t active_count, std::uint32_t sort_count, const GridBuildStatus* status) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t place = stride.first_item; place < sort_count; place += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockCountStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kBlockCountStep)) {
       return;
     }
     // Step 5 passed, so the active and split cells fit 64 max_cell_blocks, below 2^32.
@@ -208,7 +193,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBlockSortKeys(
 ) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t place = stride.first_item; place < sort_count; place += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockCountStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kBlockCountStep)) {
       return;
     }
     sort_keys[place] = ToBlockSortKey(cell_ids[place], pass);
@@ -226,7 +211,8 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBlockStartMarks(
 ) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t position = stride.first_item; position < sort_count; position += stride.item_step) {
-    const bool has_earlier_failure = ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockCountStep);
+    const bool has_earlier_failure =
+        ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kBlockCountStep);
     marks[position] =
         has_earlier_failure ? 0U : ComputeBlockStartMark(cell_ids, order, static_cast<std::uint32_t>(position));
   }
@@ -243,17 +229,11 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBlockIds(
 ) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t position = stride.first_item; position < sort_count; position += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockFaultStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kBlockFaultStep)) {
       return;
     }
     ApplyBlockIdWriteAt(block_ids, cell_ids, order, sums, static_cast<std::uint32_t>(position));
   }
-}
-
-// A 64-bit count of `status` as the CUDA atomics take it.
-__device__ unsigned long long* ToAtomicCount(std::uint64_t* count) {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the same 64 bits, as the atomics' type.
-  return reinterpret_cast<unsigned long long*>(count);
 }
 
 // The blocks of the build that the tables of the room hold: the block count of the status record, at most the room.
@@ -276,7 +256,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBlockNeighbours(
   const GridStride stride = ComputeGridStride();
   const std::uint32_t block_count = ComputeUsedBlockCount(status, max_cell_blocks);
   for (std::size_t block = stride.first_item; block < block_count; block += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kBlockFaultStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kBlockFaultStep)) {
       return;
     }
     const std::uint64_t failure_key = ApplyBlockNeighboursWriteAt(
@@ -288,7 +268,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteBlockNeighbours(
         smaller_blocks
     );
     if (failure_key != kNoFailureKey) {
-      atomicMin(ToAtomicFailureKey(status), failure_key);
+      atomicMin(ToAtomicUint64(&status->failure_key), failure_key);
     }
   }
 }
@@ -300,7 +280,7 @@ __global__ void __launch_bounds__(
   const GridStride stride = ComputeGridStride();
   const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * ComputeUsedBlockCount(status, max_cell_blocks);
   for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kTableEntryStep)) {
       return;
     }
     ApplyAbsentStateAt(cell_states, CellPlaceIndex{static_cast<std::uint32_t>(place)});
@@ -319,13 +299,13 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteSortedCellStates(
 ) {
   const GridStride stride = ComputeGridStride();
   for (std::size_t position = stride.first_item; position < sort_count; position += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kTableEntryStep)) {
       return;
     }
     const int size_level =
         ApplySortedCellStateAt(cell_states, cell_ids, order, sums, active_count, static_cast<std::uint32_t>(position));
     if (size_level >= 0) {
-      atomicAdd(ToAtomicCount(&status->active_cells_per_size_level[size_level]), 1ULL);
+      atomicAdd(ToAtomicUint64(&status->active_cells_per_size_level[size_level]), 1ULL);
     }
   }
 }
@@ -342,7 +322,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteCoverAnswers(
   tables.block_count = ComputeUsedBlockCount(status, max_cell_blocks);
   const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * tables.block_count;
   for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kTableEntryStep)) {
       return;
     }
     ApplyCoverAnswerAt(tables, cover_answers, CellPlaceIndex{static_cast<std::uint32_t>(place)});
@@ -359,7 +339,7 @@ __global__ void __launch_bounds__(kThreadBlockSize) CopyCoverAnswers(
   const GridStride stride = ComputeGridStride();
   const std::size_t place_count = std::size_t{kCellPlacesPerBlock} * ComputeUsedBlockCount(status, max_cell_blocks);
   for (std::size_t place = stride.first_item; place < place_count; place += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kTableEntryStep)) {
       return;
     }
     ApplyCoverAnswerCopyAt(cover_answers, cell_states, CellPlaceIndex{static_cast<std::uint32_t>(place)});
@@ -379,14 +359,14 @@ __global__ void __launch_bounds__(kThreadBlockSize) WriteFacePieceKinds(
   const std::size_t face_place_count = std::size_t{kFacePlacesPerBlock} * tables.block_count;
   std::uint64_t face_piece_sum = 0;
   for (std::size_t face = stride.first_item; face < face_place_count; face += stride.item_step) {
-    if (ComputeHasEarlierStepFailed(ComputeCurrentFailureKey(status), kTableEntryStep)) {
+    if (ComputeHasEarlierStepFailed(ComputeCurrentUint64(&status->failure_key), kTableEntryStep)) {
       return;
     }
     face_piece_sum +=
         ApplyFacePieceKindWriteAt(tables, face_piece_kinds, FacePlaceIndex{static_cast<std::uint32_t>(face)});
   }
   if (face_piece_sum != 0) {
-    atomicAdd(ToAtomicCount(&status->face_pieces), face_piece_sum);
+    atomicAdd(ToAtomicUint64(&status->face_pieces), face_piece_sum);
   }
 }
 
@@ -400,36 +380,6 @@ __global__ void WriteBuildStatusResult(
     GridBuildStatus* status
 ) {
   ApplyBuildStatusResult(frame, input_cells, input_count, sorted_cells, count, status);
-}
-
-// Starts a GPU function like ApplyGpuFunction and, when it did not start, waits for the GPU before returning, so that
-// no earlier launch of the same build or check is still running (and writing the grid or the builder buffers) when the
-// caller sees the failure.
-template <typename... Parameters>
-RunOnCallStatus ApplyGpuFunctionAndWaitOnFailure(
-    void (*function)(Parameters...),
-    LaunchSize launch_size,
-    std::type_identity_t<Parameters>... arguments
-) {
-  const RunOnCallStatus started = ApplyGpuFunction(function, launch_size, arguments...);
-  if (started != RunOnCallStatus::kDone) {
-    static_cast<void>(CheckGpuWork());
-  }
-  return started;
-}
-
-// The launch of a GPU function that one thread runs.
-constexpr LaunchSize kOneThread = {.thread_block_count = 1, .thread_block_size = 1};
-
-// Reads the local memory per thread of one GPU function into *largest_bytes when it is larger.
-template <typename Function>
-cudaError_t ApplyLargerStack(Function function, std::uint64_t* largest_bytes) {
-  cudaFuncAttributes attributes{};
-  const cudaError_t error = cudaFuncGetAttributes(&attributes, function);
-  if (error == cudaSuccess) {
-    *largest_bytes = std::max<std::uint64_t>(*largest_bytes, attributes.localSizeBytes);
-  }
-  return error;
 }
 
 }  // namespace
