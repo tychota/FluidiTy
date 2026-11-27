@@ -254,8 +254,10 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //                           grid's block count; border_blocks is border_so_far (the same buffer); border_so_far_count
 //                           is above border_so_far.size(); `range` is not inside the grid's blocks, or is empty
 //                           (block_count 0) while the grid has blocks. The empty range over a grid of no block is
-//                           accepted and gives an empty list, whatever the width. Nothing is written on the CPU; on
-//                           the GPU the entries are found bad by the pass itself, which writes no block.
+//                           accepted and gives the count 0 at once, whatever the width and the buffers: no buffer is
+//                           read and no GPU function runs. Nothing is written on the CPU; on the GPU the entries are
+//                           found bad by the pass itself, which writes no block. Over a grid of no block any
+//                           border_so_far_count above 0 is bad input, as every index is beyond the grid.
 //        kTooManyCellBlocks search_buffers.max_cell_blocks() is below the grid's block count. Nothing is written. It is
 //                           checked before the entries of border_so_far, so a call that fails both ways gives this
 //                           error on either processor.
@@ -265,7 +267,10 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //                           anything is written.
 //        kRunOnCallFailed   GPU only: a GPU call failed. A launch that did not start waits for the GPU's pending work
 //                           before the call returns, so no earlier launch of the call is still writing.
-//        kInternalFault     GPU only: the prefix sum failed on a size, or the status record read back contradicts the
+//        kInternalFault     GPU only: search_buffers lacks the arrays that BuildBorderSearchBuffers makes (they were
+//                           built for the CPU or moved from) and the grid has blocks; only a release build gets
+//                           here, as the debug assertions on the processors come first. Nothing is launched.
+//        kInternalFault also: the prefix sum failed on a size, or the status record read back contradicts the
 //                           steps that wrote it: a failure key of a step other than the check of border_so_far, or a
 //                           count above the block count (ToBorderBlockCount, grid/cell_block_range_internal.h)
 //        On failure border_blocks holds no result; after kRunOnCallFailed the marks and the arrays of

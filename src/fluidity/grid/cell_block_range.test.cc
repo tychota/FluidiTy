@@ -9,6 +9,7 @@
 #include <expected>
 #include <initializer_list>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "fluidity/base/axis.h"
@@ -365,6 +366,45 @@ TEST(FindBorderBlocks, EmptyRangeOnGridOfNoBlockBufferForm_FindsNoBlock) {
   );
   ASSERT_TRUE(total.has_value());
   EXPECT_EQ(*total, 0U);
+}
+
+// A moved-from object has no buffers: on a grid of no block it still gives the count 0, and a border so far on that
+// grid is bad input.
+TEST(FindBorderBlocks, MovedFromBuffersOnGridOfNoBlock_FindsNoBlockOrFailsOnBorderSoFar) {
+  const std::vector<CellId> cells;
+  const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), cells));
+  ASSERT_TRUE(test_grid.has_value());
+  ASSERT_EQ(test_grid->grid.counts().cell_blocks, 0U);
+  const std::vector<CellId> other_cells = BuildPlaneFourCells();
+  const std::expected<TestGrid, GridFailure> other_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), other_cells));
+  ASSERT_TRUE(other_grid.has_value());
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(other_grid->grid);
+  ASSERT_TRUE(rig.has_value());
+  const BorderSearchBuffers taken_buffers = std::move(rig->search_buffers);
+  ASSERT_EQ(rig->search_buffers.max_cell_blocks(), 0U);
+  const CellBlockRange empty_range = {.first_block = 0, .block_count = 0};
+  const std::expected<std::uint32_t, GridFailure> no_border = FindBorderBlocks(
+      test_grid->grid,
+      empty_range,
+      rig->so_far_buffer,
+      0,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_TRUE(no_border.has_value());
+  EXPECT_EQ(*no_border, 0U);
+  const std::expected<std::uint32_t, GridFailure> with_border_so_far = FindBorderBlocks(
+      test_grid->grid,
+      empty_range,
+      rig->so_far_buffer,
+      1,
+      BorderWidth::kTouchingCells,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(with_border_so_far.has_value());
+  EXPECT_EQ(with_border_so_far.error().error, GridError::kBadInput);
 }
 
 // An output buffer of exactly the border's 2 entries receives both and gives the count 2.

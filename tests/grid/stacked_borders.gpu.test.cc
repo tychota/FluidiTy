@@ -19,6 +19,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fluidity/base/buffer.h"
@@ -39,6 +40,7 @@
 #include "fluidity/grid/testing/cell_block_range_cases.h"
 #include "fluidity/grid/testing/grid_functions_gpu_cases.h"
 #include "fluidity/grid/testing/grid_functions_result_words.h"
+#include "fluidity/grid/testing/grid_support.h"
 #include "fluidity/grid/testing/staggered_grid_cases.h"
 
 namespace fluidity::grid {
@@ -406,6 +408,66 @@ TEST(FindBorderBlocks, OnGpuEmptyRange_IsBadInputAsOnCpu) {
     );
   }
   EXPECT_EQ(layers_after_the_empty_range.back().blocks, layers_after_the_empty_range.front().blocks);
+}
+
+// A GPU grid of no block takes the empty range {0, 0} and finds no block at once, whatever the buffers: also those of
+// a moved-from search buffers object, which has no arrays. A border so far over it is bad input.
+TEST(FindBorderBlocks, OnGpuGridOfNoBlockWithMovedFromBuffers_FindsNoBlock) {
+  const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
+  ASSERT_EQ(grids.size(), 1U);
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(grids.front().on_gpu.grid);
+  ASSERT_TRUE(rig.has_value());
+  const BorderSearchBuffers taken_buffers = std::move(rig->search_buffers);
+  ASSERT_EQ(rig->search_buffers.max_cell_blocks(), 0U);
+  ASSERT_EQ(rig->search_buffers.run_on(), RunOn::kGpu);
+  const std::vector<CellId> no_cells;
+  const std::expected<TestGrid, GridFailure> empty_grid =
+      BuildTestGrid(ToInputs(ToUnitFrame(1), no_cells), {.run_on = RunOn::kGpu});
+  ASSERT_TRUE(empty_grid.has_value());
+  ASSERT_EQ(empty_grid->grid.counts().cell_blocks, 0U);
+  const CellBlockRange empty_range = {.first_block = 0, .block_count = 0};
+  const std::expected<std::uint32_t, GridFailure> no_border = FindBorderBlocks(
+      empty_grid->grid,
+      empty_range,
+      rig->so_far_buffer,
+      0,
+      BorderWidth::kFourCellWidths,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_TRUE(no_border.has_value());
+  EXPECT_EQ(*no_border, 0U);
+  const std::expected<std::uint32_t, GridFailure> with_border_so_far = FindBorderBlocks(
+      empty_grid->grid,
+      empty_range,
+      rig->so_far_buffer,
+      1,
+      BorderWidth::kFourCellWidths,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(with_border_so_far.has_value());
+  EXPECT_EQ(with_border_so_far.error().error, GridError::kBadInput);
+}
+
+// Moved-from search buffers on a GPU grid with blocks: the room check fails with kTooManyCellBlocks before any launch.
+TEST(FindBorderBlocks, OnGpuMovedFromBuffers_FailBeforeAnyLaunch) {
+  const std::vector<GridOnBothProcessors> grids = BuildRandomGridsOnBothProcessors(1);
+  ASSERT_EQ(grids.size(), 1U);
+  std::expected<BorderSearchRig, GridFailure> rig = BuildBorderSearchRig(grids.front().on_gpu.grid);
+  ASSERT_TRUE(rig.has_value());
+  const BorderSearchBuffers taken_buffers = std::move(rig->search_buffers);
+  const std::expected<std::uint32_t, GridFailure> count = FindBorderBlocks(
+      rig->grid,
+      {.first_block = 0, .block_count = 1},
+      rig->so_far_buffer,
+      0,
+      BorderWidth::kFourCellWidths,
+      rig->search_buffers,
+      rig->border_buffer
+  );
+  ASSERT_FALSE(count.has_value());
+  EXPECT_EQ(count.error().error, GridError::kTooManyCellBlocks);
 }
 
 // Expects one call on the GPU to allocate nothing on the CPU: the calls are counted apart.

@@ -467,14 +467,28 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
     return std::unexpected(GridFailure{.error = GridError::kTooManyCellBlocks});
   }
 
+  // Step 2 (c): a grid of no block has no border, and the only range it takes is {0, 0}, so there is nothing to mark,
+  // search or write. The call answers at once on both processors, before any buffer is read or any GPU function runs,
+  // so buffers that were never built (default or moved-from) do no harm. A border so far can only name blocks beyond
+  // such a grid, which is bad input as in the forms below.
+  if (block_count == 0) {
+    if (border_so_far_count > 0) {
+      return std::unexpected(GridFailure{.error = GridError::kBadInput});
+    }
+    return 0U;
+  }
+
   // Step 3: the entries must be ascending blocks outside the range, or the list would not hold them in order. A GPU
   // grid runs the whole pass from here, steps 3 to 5 in its own launches: one thread for each entry asks the rule that
   // the CPU form below asks of each entry in turn.
   if (grid.run_on() == RunOn::kGpu) {
 #if defined(FLUIDITY_HAS_GPU)
-    // BuildBorderSearchBuffers fails with kInternalFault when GPU search buffers lack their order buffers, so a
-    // caller cannot reach this without them; the check keeps the optional's read safe all the same.
-    if (!search_buffers.order_buffers_.has_value()) {
+    // The arrays BuildBorderSearchBuffers checks in its step 4. Buffers that break Requires (built for the CPU, or
+    // moved from) lack them; in a release build, where the assertions above are gone, they would reach a launch on null
+    // pointers, so the call fails here instead.
+    const bool has_gpu_arrays = search_buffers.order_buffers_.has_value() && search_buffers.status_.size() == 1
+        && search_buffers.sums_.size() >= block_count + 1;
+    if (!has_gpu_arrays) {
       return std::unexpected(GridFailure{.error = GridError::kInternalFault});
     }
     return FindBorderBlocksOnGpu({
