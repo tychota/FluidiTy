@@ -174,9 +174,9 @@ std::string_view ToName(ParticlesError error);
 
 struct ParticlesFailure {  // The error value of every std::expected here (A2).
   ParticlesError error = ParticlesError::kNone;
+  std::uint32_t material_index = 0;  // At byte 4, so the struct is 24 bytes on both processors.
   std::uint64_t particle_id = 0;     // The failing particle; on the GPU the one with the lowest id. Zero when
                                      // no particle is involved.
-  std::uint32_t material_index = 0;
   double magnitude = 0;              // The offending value, or the amount by which a limit was passed.
 };
 
@@ -354,7 +354,7 @@ struct AddParticlesResult {
 // New particles wait in the try until GroupParticlesByBlock. They start with kHasOwnMotion off and
 // merge_wait_passes 0 when the material carries it; NewParticles has no span for it. DECIDED name.
 // No _gpu.cu: for both processors it validates the CPU spans, sums amounts on the CPU and writes the waiting list
-// with slice WriteBuffer (plan Task 11).
+// with slice WriteBuffer.
 // kBadInput, kWrongFields, kTooManyParticles, kIdsExhausted. On failure the try is unchanged.
 std::expected<AddParticlesResult, ParticlesFailure> AddParticles(
     ParticlesTry& particles_try, std::size_t material_index, const NewParticles& new_particles, AddReason reason);
@@ -1014,7 +1014,9 @@ These fix what 5.3 to 5.10 leave open. Every task follows them.
    buffers"` and `"particles: sum buffers"` (one entry each, `given_count` 1, `bytes_each = bytes_per_item x
    max_count + fixed_bytes` of `ComputeOrderBuffersSize` / `ComputeSumBuffersSize`), `"particles: lowest failing
    id"` (1 x 8) and `"particles: GPU failure"` (1 x `sizeof(ParticlesFailure)`). One function walks a material's
-   arrays for both `BuildParticles` and the estimate, so they cannot drift. One liquid: 407 B per particle.
+   arrays for both `BuildParticles` and the estimate, so they cannot drift. One liquid: 407 B per particle. On the
+   GPU the count rule adds `"particles: count rule counts"`: 4 B per particle and 4 B per cell place
+   (`max_cell_blocks * 64`), for the counts and places of its prefix sums.
 9. **Test fixtures and random values.** Tests draw values with `SplitMix64` (seed 20261114, doubles as
    `(x >> 11) * 0x1p-53`), never a `<random>` distribution, which differs between standard libraries.
 
@@ -1140,9 +1142,9 @@ unless stated; "rel" means relative to the largest term of the sum.
 | `WriteParticleGroups, LoadedSet_MatchesFilterReference` | property of 5.10: a piece of 3 range blocks and its border | the loaded ids equal the filtered whole try's, per block, in order | exact |
 | `BuildFieldsToRead, RangeOutsideGrid_IsBadInput` / `EmptyRange_IsBadInput` | a range past the last block / `{0, 0}` on a grid with blocks | `kBadInput` | exact |
 | `AddParticles, GivesConsecutiveIds_AndNoOwnMotion` | 5 particles | ids n..n+4, flag off, amounts returned | exact |
-| `AddParticles, OnCpu_NoCopyCounted` (A17, plan Task 11) | particles on the CPU | `copy_count` 0, `bytes_copied` 0 | exact |
-| `AddParticles, OnGpu_CopiesCountedPerArray` (A17, plan Task 11, label `gpu`) | 5 liquid particles | `copy_count` = the number of waiting-list arrays written (defaults included); `bytes_copied` = 5 x the sum of their `sizeof` | exact |
-| `ApplyParticleLimits, RaisedBlockLimit_ReallocatesBlockTables` / `LowerBlockLimit_IsBadInput` (plan Task 10) | `max_cell_blocks` 64 -> 128 with particle limits unchanged / 64 -> 32 | limits, counts, versions, next id kept; allocated bytes equal the entries at 128 blocks / `kBadInput`, particles unchanged | exact |
+| `AddParticles, OnCpu_NoCopyCounted` (A17) | particles on the CPU | `copy_count` 0, `bytes_copied` 0 | exact |
+| `AddParticles, OnGpu_CopiesCountedPerArray` (A17, label `gpu`) | 5 liquid particles | `copy_count` = the number of waiting-list arrays written (defaults included); `bytes_copied` = 5 x the sum of their `sizeof` | exact |
+| `ApplyParticleLimits, RaisedBlockLimit_ReallocatesBlockTables` / `LowerBlockLimit_IsBadInput` | `max_cell_blocks` 64 -> 128 with particle limits unchanged / 64 -> 32 | limits, counts, versions, next id kept; allocated bytes equal the entries at 128 blocks / `kBadInput`, particles unchanged | exact |
 | `RemoveParticles, MarkerNotNeeded_ReturnsAmounts` | gas markers, 3 removed with `kMarkerNotNeeded` | amounts of the three; dropped at the next grouping | exact |
 | `GroupParticlesByBlock, AnyInputOrder_SameResult` | same particles in 3 shuffles, mixed-size layout | identical arrays | bytes |
 | `GroupParticlesByBlock, InsideCell_IdsAscend` | 3 blocks of 2 sizes | `group_begin`, `cell_begin` and order as computed by hand | exact |
@@ -1150,7 +1152,7 @@ unless stated; "rel" means relative to the largest term of the sum.
 | `CheckGrouping, AfterAdd_IsStale` / `MovedTooFar` | as named | the two errors | exact |
 | `RejectTry, AfterEveryKindOfChange_ChangesNothing` | add, remove, split, merge, group, change each field, then reject | snapshot before equals snapshot after, including `next_particle_id` and versions | bytes |
 | `CommitTry, ChangedArraysOnly_NoCopy` | change velocity only | other arrays' buffer addresses unchanged; `state_version` + 1 | exact |
-| `CommitTry, ArrayWrittenForSomeBlocks_IsRefused` | change one block range only | `kArrayPartlyWritten` | exact |
+| `CommitTry, ArrayWrittenForSomeBlocks_IsPartlyWritten` | change one block range only | `kArrayPartlyWritten` | exact |
 | `AdjustParticleCount, ParticleInSmallerCells_IsSplitOnce` / `EightInBiggerCell_AreMerged` | a grid that splits / merges one region and a try grouped for it (5.6) | counts in the result; amounts unchanged | 1e-13 rel |
 | `AdjustParticleCount, DriftedIntoSmallerCells_IsSplitWithoutResize` | `CentreSplit` and a try grouped for it, the level-0 "split parent" at `P` | `mismatched_particle_count` 1, `split_count` 1, eight level-1 children; after grouping a second pass: `mismatched_particle_count` 0 | exact; amounts 1e-13 rel |
 | `AdjustParticleCount, TooLargeInSurfaceCell_SplitToSmallestInOnePass` | grid A of `ThreeLevelCascade` (level 2 = smallest); the level-0 "split parent" at `P` | one pass: 64 particles of level 2 (`split_count` 1), ids consecutive in descendant order, each m = 0.125; `kinetic_energy_change` 0 | mass and momentum 1e-15 rel; energy 1e-13 rel of the energy before |
@@ -1172,13 +1174,13 @@ unless stated; "rel" means relative to the largest term of the sum.
 | `BuildParticlesMemoryEstimate, EveryMaterialKind_MatchesAllocation` | the six layouts of 5.1 | sum of entries equals bytes allocated | exact |
 | `ReadSnapshot` then `BuildParticlesFromSnapshot` | all kinds | equal snapshots | bytes |
 | `BuildParticlesFromSnapshot, UngroupedMove_RestoresOrder` | `max_move_since_grouped > 0`; a particle moved into another cell since the last grouping; full snapshot, rebuild, one more step in both | same order, `group_begin`, `cell_begin`; the next step's committed bytes equal | bytes |
-| `BuildParticlesFromSnapshot, OutputSnapshot_IsRefused` | snapshot read with `kOutputSnapshotFields` | `kBadInput` | exact |
+| `BuildParticlesFromSnapshot, OutputSnapshot_IsBadInput` | snapshot read with `kOutputSnapshotFields` | `kBadInput` | exact |
 | `ReadSnapshot, OutputFields_CarryConstantArrays` | liquid mixture of 3, snow | `id`, `rest_volume`, `size_level`, fractions, `position`, `velocity_for_next_step`, `volume_ratio` filled; every other vector empty | exact |
-| `ReadSnapshot, ThisStepVelocity_IsRefused` | `kVelocityForThisStep` asked | `kWrongFields` | exact |
+| `ReadSnapshot, ThisStepVelocity_IsWrongFields` | `kVelocityForThisStep` asked | `kWrongFields` | exact |
 | `WriteParticleGroups` then `ReadParticleGroups`, `RoundTrip_SameBytes` | piece of 3 range blocks and 4 border blocks, all kinds | loaded `group_begin`, `cell_begin` as computed by hand; after changing positions in the loaded try and reading the range back, the whole try's range blocks equal the loaded values and border blocks are untouched | bytes |
 | `ReadParticleGroups, EveryRangeRead_CommitSucceeds` / `OneRangeMissing_IsPartlyWritten` | 3 ranges, velocity changed in each loaded try; read back all / all but one | `CommitTry` succeeds / `kArrayPartlyWritten` | exact |
 | `ReadParticleGroups, RemovedInLoaded_RemovedInWhole` | 2 particles removed in the loaded try, one in a border block | the range's one is dropped at the whole try's next grouping; the border one stays | exact |
-| `WriteParticleGroups, PieceTooFull_IsRefused` | loaded limit below the piece's count | `kTooManyParticles`; whole try unchanged | exact |
+| `WriteParticleGroups, PieceTooFull_IsTooManyParticles` | loaded limit below the piece's count | `kTooManyParticles`; whole try unchanged | exact |
 | `ParticleGroups, BatchedAndWhole_SameBytes` | a stage sequence that changes velocity and position, run on the whole try and in 1-, 2- and 5-block batches | identical committed arrays | bytes |
 | `ToName, EveryError_LowerSnakeCase` | every `ParticlesError` | the enumerator's name without `k`, lower snake case; all distinct | exact |
 
