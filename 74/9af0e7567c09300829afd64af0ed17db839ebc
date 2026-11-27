@@ -1,0 +1,31 @@
+docs/glossary.md
+  s_4f0877e2acdcf0::t_81078ceb7554d3 229
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_52bd42e2e55f56 3031-3043
+src/fluidity/grid/new_cell_rule.h
+  s_4f0877e2acdcf0::t_78d94217cf347b 166-168,205-216
+src/fluidity/grid/new_cell_rule.test.cc
+  s_4f0877e2acdcf0::t_19cfdaee253cd6 125-131
+src/fluidity/grid/testing/new_cell_rule_cases.h
+  s_4f0877e2acdcf0::t_af35c0ce31a71d 145-149
+tests/grid/new_cell_neighbors.gpu.test.cc
+  s_4f0877e2acdcf0::t_1a2a661e8f4bea 62
+tests/grid/new_cell_neighbors_on_random_grids.test.cc
+  s_4f0877e2acdcf0::t_2605dffe1a0fa9 32-34,40-42,56,147,150,208-233,236-260,264-266,268,274-276,279-280,283,285,288-295,300-301,309,315,318-319
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "749af0e7567c09300829afd64af0ed17db839ebc",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
