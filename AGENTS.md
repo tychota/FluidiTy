@@ -666,7 +666,9 @@ section 9 lists as open for a module, work on that name stops and the owner is a
   `commit` speed (functional tests take minutes in debug, and one passed the 1,800 s timeout on a Windows runner); the
   `release` jobs run every test. It is linted and has run on GitHub (scratch branch `rebuild-ci`), with every
   job green on Linux, macOS, Windows and the CUDA compile, so the Windows CPU code has been compiled and its tests run.
-  No CI job runs GPU code, and the Windows CUDA build has never been compiled. The local gate remains the commit rule.
+  No CI job runs GPU code. The job `cuda-compile windows` compiles and links the Windows CUDA build with nvcc and MSVC,
+  two files at a time, and runs no test, so the GPU code has been compiled on Windows and never run. The local gate
+  remains the commit rule.
   A red CI run does not block work while the rewrite is in progress, but its result is read after every push.
 - GPU targets: the CUDA presets compile for RTX 30 (`86-real`), RTX 40 (`89-real`) and RTX 50 (`120-real`, plus
   `120-virtual`). The owner's hardware run is on an RTX 5060 Ti; it is not recorded yet in `docs/gpu-runs.md`, so
