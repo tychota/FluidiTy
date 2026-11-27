@@ -144,9 +144,12 @@ void CheckNewCellsCoverCube(const CubeFill& fill, CellId cube, int size_level_co
   EXPECT_EQ(volume_sum, cube_width * cube_width * cube_width);
 }
 
-// How many cubes one grid had, and how many pairs of new cells of neighbouring cubes break the size step rule.
+// How many cubes one grid had, how many pairs of new cells each pair search looked at, and how many pairs of new cells
+// of neighbouring cubes break the size step rule.
 struct CubeCounts {
   std::size_t cube_count;
+  std::size_t same_cube_pair_count;
+  std::size_t neighbouring_cube_pair_count;
   std::size_t breaking_pair_count;
 };
 
@@ -222,17 +225,20 @@ int ToSizeLevelDifference(CellId first, CellId second) {
 
 // Checks by brute force that the new cells of one cube overlap in no volume, and that two of them that touch are at
 // most one size level apart. Together with CheckNewCellsCoverCube this says the cube is covered by cells that obey the
-// rule between themselves.
-void CheckNewCellsObeyRuleBetweenThemselves(const CubeFill& fill, int size_level_count) {
+// rule between themselves. Gives how many pairs it looked at.
+std::size_t CheckNewCellsObeyRuleBetweenThemselves(const CubeFill& fill, int size_level_count) {
   const std::vector<SmallestCellBox> boxes = ToBoxes(fill.new_cells, size_level_count);
+  std::size_t pair_count = 0;
   for (std::size_t first = 0; first < boxes.size(); ++first) {
     for (std::size_t second = first + 1; second < boxes.size(); ++second) {
+      ++pair_count;
       EXPECT_FALSE(ComputeBoxesOverlapInVolume(boxes.at(first), boxes.at(second)));
       if (ComputeBoxesTouch(boxes.at(first), boxes.at(second))) {
         EXPECT_LE(ToSizeLevelDifference(fill.new_cells.at(first), fill.new_cells.at(second)), 1);
       }
     }
   }
+  return pair_count;
 }
 
 // Says whether two cubes, as size-level-0 ids, are different and touch (at most one biggest cell apart on each axis).
@@ -243,14 +249,20 @@ bool ComputeAreCubesNeighbours(CellId first_cube, CellId second_cube) {
       && std::abs(first.z - second.z) <= 1;
 }
 
-// Counts the pairs, one new cell of each fill, that touch and are two or more size levels apart.
-std::size_t
-FindBreakingPairCountBetweenFills(const CubeFill& first_fill, const CubeFill& second_fill, int size_level_count) {
+// Counts the pairs, one new cell of each fill, that touch and are two or more size levels apart, and adds to
+// examined_pair_count every pair of one new cell of each fill that it looked at.
+std::size_t FindBreakingPairCountBetweenFills(
+    const CubeFill& first_fill,
+    const CubeFill& second_fill,
+    int size_level_count,
+    std::size_t& examined_pair_count
+) {
   const std::vector<SmallestCellBox> first_boxes = ToBoxes(first_fill.new_cells, size_level_count);
   const std::vector<SmallestCellBox> second_boxes = ToBoxes(second_fill.new_cells, size_level_count);
   std::size_t breaking_pair_count = 0;
   for (std::size_t first = 0; first < first_boxes.size(); ++first) {
     for (std::size_t second = 0; second < second_boxes.size(); ++second) {
+      ++examined_pair_count;
       if (ComputeBoxesTouch(first_boxes.at(first), second_boxes.at(second))
           && ToSizeLevelDifference(first_fill.new_cells.at(first), second_fill.new_cells.at(second)) >= 2) {
         ++breaking_pair_count;
@@ -265,7 +277,12 @@ FindBreakingPairCountBetweenFills(const CubeFill& first_fill, const CubeFill& se
 // the size step rule against every committed cell and between themselves. The pairs of new cells of two neighbouring
 // cubes, each filled on its own, that break the rule are counted and not expected: the step module owns that case.
 CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<CellId>& cell_list) {
-  CubeCounts counts = {.cube_count = 0, .breaking_pair_count = 0};
+  CubeCounts counts = {
+      .cube_count = 0,
+      .same_cube_pair_count = 0,
+      .neighbouring_cube_pair_count = 0,
+      .breaking_pair_count = 0,
+  };
   const FindFacts find_reference_facts = [&tables](CellId new_cell) {
     return ComputeNewCellNeighborsByAllCells(tables, new_cell);
   };
@@ -280,7 +297,7 @@ CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<Cell
     if (!fill.box_with_both_facts.has_value()) {
       CheckNewCellsCoverCube(fill, cube, size_level_count);
       CheckNewCellsObeySizeStepRule(committed_cells, fill, size_level_count);
-      CheckNewCellsObeyRuleBetweenThemselves(fill, size_level_count);
+      counts.same_cube_pair_count += CheckNewCellsObeyRuleBetweenThemselves(fill, size_level_count);
     }
     fills.push_back(fill);
     ++counts.cube_count;
@@ -288,8 +305,14 @@ CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<Cell
   for (std::size_t first = 0; first < cubes.size(); ++first) {
     for (std::size_t second = first + 1; second < cubes.size(); ++second) {
       if (ComputeAreCubesNeighbours(cubes.at(first), cubes.at(second))) {
-        counts.breaking_pair_count +=
-            FindBreakingPairCountBetweenFills(fills.at(first), fills.at(second), size_level_count);
+        const CubeFill& first_fill = fills.at(first);
+        const CubeFill& second_fill = fills.at(second);
+        counts.breaking_pair_count += FindBreakingPairCountBetweenFills(
+            first_fill,
+            second_fill,
+            size_level_count,
+            counts.neighbouring_cube_pair_count
+        );
       }
     }
   }
@@ -306,17 +329,27 @@ TEST(NewCellNeighbors, RandomGrids_TopDownFillMatchesTheReference) {
   }
   const std::vector<TestGrid> grids = BuildReferenceGrids(entries);
   ASSERT_EQ(grids.size(), kGridCount);
-  CubeCounts total = {.cube_count = 0, .breaking_pair_count = 0};
+  CubeCounts total = {
+      .cube_count = 0,
+      .same_cube_pair_count = 0,
+      .neighbouring_cube_pair_count = 0,
+      .breaking_pair_count = 0,
+  };
   for (std::size_t grid = 0; grid < kGridCount; ++grid) {
     SCOPED_TRACE(testing::Message() << "random grid " << grid);
     const GridTables tables = grids.at(grid).grid.tables(RunOn::kCpu);
     const CubeCounts counts = CheckEveryCubeOfGrid(tables, BuildShuffledRandomGrids().at(grid));
     total.cube_count += counts.cube_count;
+    total.same_cube_pair_count += counts.same_cube_pair_count;
+    total.neighbouring_cube_pair_count += counts.neighbouring_cube_pair_count;
     total.breaking_pair_count += counts.breaking_pair_count;
   }
   EXPECT_GT(total.cube_count, 0U);
-  std::cout << "pairs of new cells of neighbouring cubes that break the size step rule: " << total.breaking_pair_count
-            << "\n";
+  EXPECT_GT(total.same_cube_pair_count, 0U);
+  EXPECT_GT(total.neighbouring_cube_pair_count, 0U);
+  std::cout << "pairs of new cells examined: " << total.same_cube_pair_count << " in one cube, "
+            << total.neighbouring_cube_pair_count << " in neighbouring cubes; pairs of new cells of neighbouring cubes"
+            << " that break the size step rule: " << total.breaking_pair_count << "\n";
 }
 
 }  // namespace

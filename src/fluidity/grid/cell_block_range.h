@@ -268,7 +268,7 @@ BuildBorderSearchBuffers(RunOn run_on, std::uint32_t max_cell_blocks, RunMemory&
 //        kRunOnCallFailed   GPU only: a GPU call failed. A launch that did not start waits for the GPU's pending work
 //                           before the call returns, so no earlier launch of the call is still writing.
 //        kInternalFault     GPU only: search_buffers lacks the arrays that BuildBorderSearchBuffers makes (they were
-//                           built for the CPU or moved from) and the grid has blocks; only a release build gets
+//                           built for the CPU) and the grid has blocks; only a release build gets
 //                           here, as the debug assertions on the processors come first. Nothing is launched.
 //        kInternalFault also: the prefix sum failed on a size, or the status record read back contradicts the
 //                           steps that wrote it: a failure key of a step other than the check of border_so_far, or a

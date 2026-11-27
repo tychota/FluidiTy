@@ -210,7 +210,9 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeTouchesMuchSmallerCell(
 //   then touches C or is C, so by the rule D is at least B's width, hence covers the place of B's size beside B, and K
 //   touches D at four times its width or more, which the rule forbids. Likewise two new cells of one cube obey the
 //   rule between themselves: if X and Y touch and Y's size is two or more size levels smaller, the next bigger cell of
-//   Y was split by a committed cell K, and the same argument, with X in the place of C, says that K breaks the rule.
+//   Y was split by a committed cell K, and K breaks the rule as above with X in the place of C, except that what
+//   bounds the other cell's width is that the new cell X was not split, so no committed cell two or more size levels
+//   smaller touches it.
 // How a caller uses the two facts: split the box into its 8 small cells when touches_much_smaller_cell is true,
 //   whatever touches_bigger_cell says; otherwise the box is a new cell as it is. Both facts true at once cannot happen
 //   on a valid committed grid, so a caller treats it as an internal fault of the committed grid.

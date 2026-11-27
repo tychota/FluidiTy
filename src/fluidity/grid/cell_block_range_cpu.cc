@@ -483,8 +483,8 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
   // the CPU form below asks of each entry in turn.
   if (grid.run_on() == RunOn::kGpu) {
 #if defined(FLUIDITY_HAS_GPU)
-    // The arrays BuildBorderSearchBuffers checks in its step 4. Buffers that break Requires (built for the CPU, or
-    // moved from) lack them; in a release build, where the assertions above are gone, they would reach a launch on null
+    // The arrays BuildBorderSearchBuffers checks in its step 4. Buffers that break Requires (built for the CPU)
+    // lack them; in a release build, where the assertions above are gone, they would reach a launch on null
     // pointers, so the call fails here instead.
     const bool has_gpu_arrays = search_buffers.order_buffers_.has_value() && search_buffers.status_.size() == 1
         && search_buffers.sums_.size() >= block_count + 1;

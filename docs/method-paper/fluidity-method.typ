@@ -3036,11 +3036,12 @@ cell $N$, which is not empty, and $B$ meets $N$ in a face, an edge or a corner $
 which is a multiple of $2w$, while $G$ lies at an end of $B$ that is a multiple of $2w$ too, so $C$ meets $G$ and does
 not stop one width $w$ short of it. The committed cell $D$ of $N$ that lies at that point of $G$ therefore touches $C$
 or is $C$, so by the rule it is at least $w$ wide, and it covers the place of $B$'s size beside $B$. $K$ touches $D$,
-since both reach $G$, and is four times narrower or less, which the rule forbids. The same argument shows that two new
-cells of one cube obey the rule between themselves: if two touching leaves differ by two size levels or more, the next
-bigger cell of the smaller one was split by a committed cell $K$, and the bigger leaf plays the part of $C$. So a box
-that has to be split never touches a bigger committed cell, and the fill of a cube always succeeds. Both facts at once
-would mean that the committed grid breaks the rule, an internal fault of the grid and not a cube that cannot be
+since both reach $G$, and is four times narrower or less, which the rule forbids. Two new cells of one cube obey the
+rule between themselves by the same chain: if two touching leaves differ by two size levels or more, the next bigger
+cell of the smaller one was split by a committed cell $K$, and the bigger leaf plays the part of $C$, where what bounds
+the other cell's width is that it was not split, so no committed cell two or more size levels smaller touches it. So a
+box that has to be split never touches a bigger committed cell, and the fill of a cube always succeeds. Both facts at
+once would mean that the committed grid breaks the rule, an internal fault of the grid and not a cube that cannot be
 filled.
 
 *The start grid.* The grid of the first step comes from the same rule, read from the scene's start shapes instead of
