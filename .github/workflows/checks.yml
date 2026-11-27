@@ -433,4 +433,6 @@ jobs:
       # Every target, no test: `ctest` is never called in this job.
       - name: Build
         # -k 0: keep building after an error, so one run lists every file MSVC or nvcc turns down.
-        run: uv run --frozen cmake --build --preset ${{ env.PRESET }} -- -k 0
+        # -j 2: the hosted runner stopped answering after 50 minutes of this build at full width, which is what
+        # running out of memory looks like there; two compiles at once is an assumption that leaves room.
+        run: uv run --frozen cmake --build --preset ${{ env.PRESET }} -- -k 0 -j 2
