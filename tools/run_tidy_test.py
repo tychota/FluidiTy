@@ -837,5 +837,5 @@ def test_a_known_findings_file_that_cannot_be_read_fails_the_run(monkeypatch, re
 
 def test_the_known_findings_file_of_the_repository_is_well_formed():
     known = run_tidy.read_known_findings(Path(run_tidy.__file__).parent / "gpu_tidy_known_findings.txt")
-    assert known
+    # The list may be empty: every finding it once held has been fixed in the code.
     assert all(finding.path.startswith("src/") and finding.reason for finding in known.values())

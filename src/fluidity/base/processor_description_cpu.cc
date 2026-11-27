@@ -12,6 +12,8 @@
 #include "fluidity/base/run_on.h"
 
 #if defined(FLUIDITY_HAS_GPU)
+#include <array>
+
 #include "fluidity/base/processor_description_gpu.h"
 #include "fluidity/base/run_on_call.h"
 #endif
@@ -29,12 +31,14 @@
 #include <sys/utsname.h>
 
 #elif defined(__linux__)
+#include <linux/sysinfo.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
 
 #include <charconv>
 #include <fstream>
 #include <iterator>
+#include <system_error>
 #elif defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -311,11 +315,11 @@ ProcessorDescription ReadProcessorDescription(RunOn run_on) {
   }
 #if defined(FLUIDITY_HAS_GPU)
   constexpr std::size_t kTextSize = 256;
-  char model[kTextSize] = {};
-  char driver[kTextSize] = {};
-  char runtime[kTextSize] = {};
-  ReadGpuProcessorDescription(model, driver, runtime, kTextSize);
-  return {.model = model, .driver = driver, .runtime = runtime};
+  std::array<char, kTextSize> model = {};
+  std::array<char, kTextSize> driver = {};
+  std::array<char, kTextSize> runtime = {};
+  ReadGpuProcessorDescription(model.data(), driver.data(), runtime.data(), kTextSize);
+  return {.model = model.data(), .driver = driver.data(), .runtime = runtime.data()};
 #else
   // Not reached: CheckCanRunOn fails for the GPU in a build without GPU code.
   return {};

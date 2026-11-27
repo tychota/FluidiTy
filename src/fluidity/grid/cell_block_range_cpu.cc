@@ -472,6 +472,11 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocks(
   // the CPU form below asks of each entry in turn.
   if (grid.run_on() == RunOn::kGpu) {
 #if defined(FLUIDITY_HAS_GPU)
+    // BuildBorderSearchBuffers fails with kInternalFault when GPU search buffers lack their order buffers, so a
+    // caller cannot reach this without them; the check keeps the optional's read safe all the same.
+    if (!search_buffers.order_buffers_.has_value()) {
+      return std::unexpected(GridFailure{.error = GridError::kInternalFault});
+    }
     return FindBorderBlocksOnGpu({
         .tables = grid.tables(RunOn::kGpu),
         .range = range,

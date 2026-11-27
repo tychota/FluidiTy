@@ -5,7 +5,3 @@
 # is gone fails the check, so this list can only shrink. A finding that is not listed fails the check.
 #
 # <path> <check> <count>  # <reason: lines, and what clang-tidy asks for>
-src/fluidity/base/processor_description_cpu.cc misc-include-cleaner 2  # lines 153 and 182: include <system_error> for std::errc and <sys/sysinfo.h> for sysinfo
-src/fluidity/base/processor_description_cpu.cc modernize-avoid-c-arrays 3  # lines 314 to 316: the text buffers model, driver and runtime are C arrays, std::array is asked
-src/fluidity/grid/cell_block_range_cpu.cc bugprone-unchecked-optional-access 1  # line 471: *search_buffers.order_buffers_ is read without a check of the optional
-src/fluidity/grid/grid_piece_cpu.cc readability-trailing-comma 1  # line 233: the aggregate of border_block_count has no trailing comma

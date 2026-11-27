@@ -230,7 +230,7 @@ std::expected<PieceBuildSummary, GridFailure> BuildPieceTablesOnGpu(
   const PieceLoad load = {
       .range = range,
       .border_blocks = border_blocks.data(),
-      .border_block_count = border_block_count
+      .border_block_count = border_block_count,
   };
   CellBlockIndex* const map = arrays.piece_map.data();
   const PieceBlocks blocks = {.range = range, .map = map, .count = loaded_count};
