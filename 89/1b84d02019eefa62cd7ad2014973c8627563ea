@@ -1,0 +1,21 @@
+src/fluidity/contact/move_particles.h
+  s_56b1e1a5849079::t_2e8bb1ee9a6f06 230-231
+src/fluidity/contact/move_particles_steps.h
+  s_56b1e1a5849079::t_38dc9df1e2b7a8 193-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "891b84d02019eefa62cd7ad2014973c8627563ea",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
