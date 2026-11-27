@@ -59,7 +59,7 @@ void CheckHandCasesOnGpu(
   WriteDigestOfResults(name, std::span<const NewCellNeighbors>(on_gpu));
 }
 
-// The 12 hand cases of the near-small grid and the 2 of the range-end grid give the CPU's facts on the GPU.
+// The 13 hand cases of the near-small grid and the 2 of the range-end grid give the CPU's facts on the GPU.
 TEST(FindNewCellNeighbors, HandCasesOnGpu_EqualCpu) {
   CheckHandCasesOnGpu(BuildNearSmallCells(), BuildNearSmallCases(), "FindNewCellNeighbors on the GPU, near-small grid");
   CheckHandCasesOnGpu(BuildRangeEndCells(), BuildRangeEndCases(), "FindNewCellNeighbors on the GPU, range-end grid");

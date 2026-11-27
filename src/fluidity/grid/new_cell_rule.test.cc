@@ -122,6 +122,13 @@ TEST(FindNewCellNeighbors, CornerOnlyOfSmallestCell_MustSplit) {
   CheckNearSmallFacts(ToHandCell(0, 1, 1, -1));
 }
 
+// The cell {1,1,0} (x 1 to 2, y 1 to 2, z 0 to 1 m) meets the size-level-3 cells {7,7,0} and {7,7,1} along the edge
+// x = 1, y = 1 only, never across a face: much smaller, true. Along that edge it also meets {1,1,1} [1] and {3,3,1}
+// [2], and no cell has a size level below 0: not bigger, false.
+TEST(FindNewCellNeighbors, EdgeOnlyOfSmallestCells_MustSplit) {
+  CheckNearSmallFacts(ToHandCell(0, 1, 1, 0));
+}
+
 // Gives a hand case from a new cell and the two facts worked out for it.
 HandCase ToFillStep(CellId new_cell, bool touches_much_smaller_cell, bool touches_bigger_cell) {
   return {

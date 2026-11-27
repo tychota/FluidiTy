@@ -142,6 +142,11 @@ inline std::vector<HandCase> BuildNearSmallCases() {
       // The size-level-0 cell {1,1,-1} (x 1 to 2, y 1 to 2, z -1 to 0) meets the size-level-3 cell {7,7,0} [3] at the
       // point (1, 1, 0) only: much smaller.
       {.new_cell = ToHandCell(0, 1, 1, -1), .expected = kSplitIt},
+      // The size-level-0 cell {1,1,0} (x 1 to 2, y 1 to 2, z 0 to 1) meets no committed cell across a face or at a
+      // corner only. It meets the size-level-3 cells {7,7,0} and {7,7,1} [3] along the edge x = 1, y = 1 (z 0 to 0.25),
+      // so a much smaller cell touches along an edge: much smaller. Along the same edge it meets {1,1,1} [1] (z 0.5
+      // to 1) and {3,3,1} [2] (z 0.25 to 0.5), and no cell has a size level below 0: not bigger.
+      {.new_cell = ToHandCell(0, 1, 1, 0), .expected = kSplitIt},
   };
 }
 

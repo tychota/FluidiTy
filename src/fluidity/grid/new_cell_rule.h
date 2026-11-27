@@ -163,9 +163,9 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeTouchesBiggerCell(
 // 26 places around it that touch it. For this header's own functions only. Arguments as ComputeTouchesBiggerCell.
 //
 // Method: a part is one cell of size level `size_level` + 1 wide. A cell found in it with a size level of
-//   `size_level` + 2 or more is smaller than the part, so the part is split and every cell of it has that size
-//   level or more. One of them touches the box, because the part touches the box and its cells cover it. At most 56
-//   look-ups, none when `size_level` + 2 is past the last size level.
+//   `size_level` + 2 or more is smaller than the part, so the part is split and every cell of it has
+//   size level `size_level` + 2 or more. One of them touches the box, because the part touches the box and its cells
+//   cover it. At most 56 look-ups, none when `size_level` + 2 is past the last size level.
 FLUIDITY_CPU_AND_GPU constexpr bool ComputeTouchesMuchSmallerCell(
     const GridTables& committed,
     int size_level,
@@ -202,10 +202,18 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeTouchesMuchSmallerCell(
 // Finds the two facts the committed cells around a box that is not in the grid give about it: whether a committed cell
 // two or more size levels smaller touches it, and whether one that is bigger does.
 //
-// How a caller uses the two facts: split the box into its 8 small cells when touches_much_smaller_cell is true; when it
-//   is true and touches_bigger_cell is true too, the box cannot be split without breaking the size step rule against
-//   the bigger cell and cannot be left whole against the much smaller cell, so the cube cannot be filled and the try
-//   fails; otherwise the box is a new cell as it is.
+// Property: when the committed grid obeys the size step rule, a biggest cell is empty or fully covered, and no box
+//   inside an empty biggest cell has both facts at once. So a box that must split never touches a bigger committed
+//   cell. Why, in short: a box B must split because a committed cell K, at most a quarter of B's width, touches it, and
+//   K lies in another biggest cell N. A committed cell C at least twice as wide as B and touching B is aligned to its
+//   width, so it also meets the face, edge or corner that B shares with N. The committed cell D of N that lies there
+//   then touches C or is C, so by the rule D is at least B's width, hence covers the place of B's size beside B, and K
+//   touches D at four times its width or more, which the rule forbids. Likewise two new cells of one cube obey the
+//   rule between themselves: if X and Y touch and Y's size is two or more size levels smaller, the next bigger cell of
+//   Y was split by a committed cell K, and the same argument, with X in the place of C, says that K breaks the rule.
+// How a caller uses the two facts: split the box into its 8 small cells when touches_much_smaller_cell is true,
+//   whatever touches_bigger_cell says; otherwise the box is a new cell as it is. Both facts true at once cannot happen
+//   on a valid committed grid, so a caller treats it as an internal fault of the committed grid.
 // Method: integers only, no allocation, no recursion, fixed work. The box is the cell of `new_cell`; it and every place
 //   below are boxes of whole smallest cells of the frame.
 //   touches_bigger_cell: for each of the 26 places around the box at its size level, FindCellAtCoord at the place's low

@@ -3028,10 +3028,19 @@ $2 >= 0 + 2$, so the biggest cell must be split. No committed cell is bigger tha
 neighbour. Of its 8 small cells, the one at (2, 0, 0) touches the size-level-0 cell at (1, -1, 0), one size level
 bigger, and no cell of size level 3 reaches below $y = 0.75$ m, so it is not split and becomes a new cell as it is.
 
-A cube cannot be filled exactly when some box that has to be split also touches a committed cell one or more size
-levels bigger. Its 8 small cells, one size level smaller, would sit beside a committed cell two or more size levels
-bigger, and leaving it whole would break the size-step rule on the other side, against the much smaller cell. In every
-other case the fill succeeds. The step reports a cube that cannot be filled.
+A cube can always be filled when the committed grid obeys the size-step rule: no box inside an empty biggest cell has
+both facts at once. Take a box $B$ of width $w$ that has to be split, because a committed cell $K$ of width at most
+$w/4$ touches it, and suppose a committed cell $C$ of width at least $2w$ touches $B$ too. $K$ lies in another biggest
+cell $N$, which is not empty, and $B$ meets $N$ in a face, an edge or a corner $G$. $C$ is aligned to its own width,
+which is a multiple of $2w$, while $G$ lies at an end of $B$ that is a multiple of $2w$ too, so $C$ meets $G$ and does
+not stop one width $w$ short of it. The committed cell $D$ of $N$ that lies at that point of $G$ therefore touches $C$
+or is $C$, so by the rule it is at least $w$ wide, and it covers the place of $B$'s size beside $B$. $K$ touches $D$,
+since both reach $G$, and is four times narrower or less, which the rule forbids. The same argument shows that two new
+cells of one cube obey the rule between themselves: if two touching leaves differ by two size levels or more, the next
+bigger cell of the smaller one was split by a committed cell $K$, and the bigger leaf plays the part of $C$. So a box
+that has to be split never touches a bigger committed cell, and the fill of a cube always succeeds. Both facts at once
+would mean that the committed grid breaks the rule, an internal fault of the grid and not a cube that cannot be
+filled.
 
 *The start grid.* The grid of the first step comes from the same rule, read from the scene's start shapes instead of
 from particles. A cell's depth and distance are taken at its centre minus half its diagonal, a bound that no point of
