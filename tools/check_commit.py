@@ -105,7 +105,10 @@ The steps, in order:
           <size>` and the number of others, and the log lists them all.
   cuda    build the CUDA image, then, inside a container, build everything of the preset linux-release-cuda, run
           clang-tidy over the .cc files that only the CUDA build compiles (the list CMake writes to
-          gpu_only_sources.txt), and run the tests labelled cpu and no_gpu. The container has no GPU, so GPU code is
+          gpu_only_sources.txt), run tools/run_tidy.py, with the same cache, over the host .cc files that name
+          FLUIDITY_HAS_GPU (the debug tidy step never reads their GPU branches), and run the tests labelled cpu and
+          no_gpu. Findings of that second run that are listed in tools/gpu_tidy_known_findings.txt, each with its
+          reason, do not fail the step; a listed finding that is gone does. The container has no GPU, so GPU code is
           compiled, not run. Then every tracked .cc and .cu file under src/ and tests/ must appear in the CUDA build's compile
           commands, and every tracked .h and .cuh file under src/ and tests/ must be compiled alone there, as a header-alone
           file (header_check/<include path>.cc or .cu, which fluidity_add_headers writes): a file that is neither
@@ -250,7 +253,10 @@ TEST_CODE_FOLDER = "testing"
 # read-only here, so the build folder (-B) and the toolchain file (--toolchain) are given on the command line;
 # both take precedence over the preset's values. After the build it prints one `compiled: <path>` line per file of
 # the compile commands, which the gate compares with the tracked sources, and tidies the .cc files that only this
-# build compiles (CMake lists them in gpu_only_sources.txt), with the clang-tidy of uv.lock.
+# build compiles (CMake lists them in gpu_only_sources.txt), with the clang-tidy of uv.lock. It also tidies the host .cc
+# files that name FLUIDITY_HAS_GPU: the debug tidy step compiles them with the macro undefined, so only this build
+# reads their GPU branches. That run is tools/run_tidy.py, so it has the same .clang-tidy files and the same cache as the
+# debug step, kept in the volume (/out/tidy-cache).
 CONTAINER_SCRIPT = f"""
 set -euo pipefail
 export CONAN_HOME=/out/conan-home
@@ -271,6 +277,14 @@ python -c 'import json, sys; [print("{COMPILED_MARKER}" + entry["file"]) for ent
     /out/build/{CUDA_PRESET}/compile_commands.json
 # One path per line; with no path, nothing runs.
 xargs --no-run-if-empty clang-tidy -p /out/build/{CUDA_PRESET} --quiet < /out/build/{CUDA_PRESET}/gpu_only_sources.txt
+# The host files with a GPU branch, minus the ones tidied above; one path per line, and with no path nothing runs.
+# grep exits 1 for no match, which is an empty list here, and 2 for a real error, which stops the script.
+grep -rlF --include='*.cc' FLUIDITY_HAS_GPU /src/src /src/tests | sort > /out/gpu_branch_candidates.txt || [ "$?" -eq 1 ]
+grep -vxFf /out/build/{CUDA_PRESET}/gpu_only_sources.txt /out/gpu_branch_candidates.txt > /out/gpu_branch_sources.txt \\
+    || [ "$?" -eq 1 ]
+xargs --no-run-if-empty python /src/tools/run_tidy.py --build-folder /out/build/{CUDA_PRESET} --repository /src \\
+    --cache-folder /out/tidy-cache \\
+    --known-findings /src/tools/gpu_tidy_known_findings.txt < /out/gpu_branch_sources.txt
 # ctest labels are regular expressions: a bare `gpu` would also match `no_gpu`.
 ctest --test-dir /out/build/{CUDA_PRESET} --parallel "$(nproc)" -L '^(cpu|no_gpu)$' --no-tests=error --output-on-failure
 """

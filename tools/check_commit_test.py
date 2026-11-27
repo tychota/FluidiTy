@@ -336,6 +336,44 @@ def test_container_tidies_the_sources_only_the_cuda_build_compiles(monkeypatch, 
     assert "gpu_only_sources.txt" in script
 
 
+def container_script(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    run_gate(monkeypatch, capsys, repo, fake, "--only", "cuda")
+    return next(command for command in fake.commands if command[:2] == ["docker", "run"])[-1]
+
+
+def test_container_tidies_the_host_files_that_name_the_gpu_macro_with_the_cache_of_run_tidy(monkeypatch, capsys, repo):
+    script = container_script(monkeypatch, capsys, repo)
+    assert "FLUIDITY_HAS_GPU /src/src /src/tests" in script
+    assert "--include='*.cc'" in script
+    assert "python /src/tools/run_tidy.py --build-folder /out/build/linux-release-cuda --repository /src" in script
+    assert "--cache-folder /out/tidy-cache" in script
+
+
+def test_container_leaves_out_of_the_gpu_branch_run_the_files_it_tidies_already(monkeypatch, capsys, repo):
+    script = container_script(monkeypatch, capsys, repo)
+    assert "grep -vxFf /out/build/linux-release-cuda/gpu_only_sources.txt" in script
+
+
+def test_container_stops_when_the_search_for_gpu_branch_files_fails_and_not_when_it_finds_none(monkeypatch, capsys, repo):
+    script = container_script(monkeypatch, capsys, repo)
+    assert script.count('|| [ "$?" -eq 1 ]') == 2
+    assert "set -euo pipefail" in script
+
+
+def test_container_passes_the_known_findings_file_that_the_repository_has(monkeypatch, capsys, repo):
+    script = container_script(monkeypatch, capsys, repo)
+    assert "--known-findings /src/tools/gpu_tidy_known_findings.txt" in script
+    assert (check_commit.REPO_ROOT / "tools" / "gpu_tidy_known_findings.txt").is_file()
+
+
+def test_the_gpu_branch_tidy_is_part_of_the_cuda_step_and_not_of_the_quick_speed(monkeypatch, capsys, repo):
+    fake = FakeRun()
+    exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--speed", "quick")
+    assert "NOT RUN cuda (quick)" in lines
+    assert not any(command[:2] == ["docker", "run"] for command in fake.commands)
+
+
 def test_clang_format_version_other_than_pinned_fails_format(monkeypatch, capsys, repo):
     fake = FakeRun(versions={"clang-format": "19.1.5", "clang-tidy": "23.1.4"})
     exit_code, lines = run_gate(monkeypatch, capsys, repo, fake, "--only", "format")

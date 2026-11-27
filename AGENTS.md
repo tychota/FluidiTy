@@ -639,7 +639,10 @@ section 9 lists as open for a module, work on that name stops and the owner is a
     a display equation is wider than the text area or a figure is taller than it (`docs/method-paper/overflow_check.typ`).
   - `PASS cuda`: in the CUDA container (`tools/cuda-container/Dockerfile`), everything of the preset
     `linux-release-cuda` compiled and linked, every `.cu` file and the `gpu` tests included; clang-tidy reported
-    nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`); the tests
+    nothing on the `.cc` files that only this build compiles (CMake lists them in `gpu_only_sources.txt`) and nothing
+    but the findings of `tools/gpu_tidy_known_findings.txt` on the host `.cc` files that name `FLUIDITY_HAS_GPU`, whose
+    GPU branches the debug `tidy` step never reads (`tools/run_tidy.py`, the same cache, kept in the container's volume;
+    a listed finding that is gone fails, so the list only shrinks); the tests
     labelled `cpu` and `no_gpu` passed (`ctest -L '^(cpu|no_gpu)$'`); every tracked `.cc` and `.cu` file under
     `src/` and `tests/` is in this build's compile commands; and every tracked `.h` and `.cuh` file under `src/` is compiled
     alone there, through its header-alone file (`header_check/`), except a test header (a header directly in

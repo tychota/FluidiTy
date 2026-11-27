@@ -29,6 +29,7 @@ class FakeRun:
         listing_exit_code: int = 0,
         implicit_folders: tuple[str, ...] = (),
         compiler_version_text: str = "fake-cc version 1\n",
+        tidy_outputs: dict[str, str] | None = None,
     ):
         self.repo = repo
         self.dependencies = dependencies
@@ -45,6 +46,8 @@ class FakeRun:
         self.asked_for_folders = 0
         # What the compiler prints for `--version`.
         self.compiler_version_text = compiler_version_text
+        # What clang-tidy prints for a file, in place of the one line it prints by default for a failing file.
+        self.tidy_outputs = tidy_outputs or {}
         self.checked: list[str] = []
         # The files whose headers the compiler was asked to list.
         self.listed: list[str] = []
@@ -76,7 +79,8 @@ class FakeRun:
         if self.on_tidy is not None:
             self.on_tidy(name)
         code = 1 if name in self.failing else 0
-        return subprocess.CompletedProcess(command, code, stdout=f"warning in {name}\n" if code else "")
+        text = self.tidy_outputs.get(name, f"warning in {name}\n") if code else ""
+        return subprocess.CompletedProcess(command, code, stdout=text)
 
 
 @pytest.fixture
@@ -688,3 +692,150 @@ def test_a_stamp_is_read_again_each_time_it_is_asked(tmp_path):
     first = memo.stamp(str(header))
     header.write_text("// a longer text\n", encoding="utf-8")
     assert memo.stamp(str(header)) != first
+
+
+# Known findings ------------------------------------------------------------------------------------------------
+
+TIDY_LINE = "{path}:{line}:3: error: {text} [{check},-warnings-as-errors]\n"
+
+
+def finding_text(repo: Path, name: str, *findings: tuple[int, str]) -> str:
+    path = repo / "src" / "fluidity" / name
+    return "".join(TIDY_LINE.format(path=path, line=line, text="a problem", check=check) for line, check in findings)
+
+
+def run_with_findings(monkeypatch, repo: Path, outputs: dict[str, str], known_text: str):
+    fake = FakeRun(repo, dependencies_of(repo), failing=outputs, tidy_outputs=outputs)
+    known_file = repo / "known.txt"
+    known_file.write_text(known_text, encoding="utf-8")
+    results = run(monkeypatch, repo, fake, no_cache=True)
+    known = run_tidy.read_known_findings(known_file)
+    return run_tidy.settle_known_findings(results, known, repo), fake
+
+
+def test_a_file_whose_findings_are_all_known_passes_and_lists_them(monkeypatch, repo):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x"), (20, "bugprone-x"), (30, "modernize-y"))}
+    known = "src/fluidity/a.cc bugprone-x 2  # a reason\nsrc/fluidity/a.cc modernize-y 1  # another reason\n"
+    settled, _ = run_with_findings(monkeypatch, repo, outputs, known)
+    result = next(result for result in settled if result.path.endswith("a.cc"))
+    assert result.passed
+    assert result.known == (
+        "src/fluidity/a.cc:10: bugprone-x",
+        "src/fluidity/a.cc:20: bugprone-x",
+        "src/fluidity/a.cc:30: modernize-y",
+    )
+
+
+def test_one_more_finding_of_a_known_check_fails_the_file(monkeypatch, repo):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x"), (20, "bugprone-x"))}
+    settled, _ = run_with_findings(monkeypatch, repo, outputs, "src/fluidity/a.cc bugprone-x 1  # a reason\n")
+    result = next(result for result in settled if result.path.endswith("a.cc"))
+    assert not result.passed
+    assert "bugprone-x" in result.output
+
+
+def test_a_finding_of_another_check_fails_the_file(monkeypatch, repo):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x"), (11, "readability-z"))}
+    settled, _ = run_with_findings(monkeypatch, repo, outputs, "src/fluidity/a.cc bugprone-x 1  # a reason\n")
+    assert not next(result for result in settled if result.path.endswith("a.cc")).passed
+
+
+def test_a_finding_in_a_header_is_not_covered_by_the_lines_of_the_file(monkeypatch, repo):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x")) + finding_text(repo, "a.h", (1, "bugprone-x"))}
+    settled, _ = run_with_findings(monkeypatch, repo, outputs, "src/fluidity/a.cc bugprone-x 1  # a reason\n")
+    assert not next(result for result in settled if result.path.endswith("a.cc")).passed
+
+
+def test_a_diagnostic_without_a_check_fails_the_file(monkeypatch, repo):
+    path = repo / "src" / "fluidity" / "a.cc"
+    output = finding_text(repo, "a.cc", (10, "bugprone-x")) + f"{path}:5:1: error: unknown type name 'Foo'\n"
+    settled, _ = run_with_findings(monkeypatch, repo, {"a.cc": output}, "src/fluidity/a.cc bugprone-x 1  # a reason\n")
+    assert not next(result for result in settled if result.path.endswith("a.cc")).passed
+
+
+def test_a_known_finding_that_is_gone_fails_the_file_and_names_the_line(monkeypatch, repo):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x"))}
+    settled, _ = run_with_findings(monkeypatch, repo, outputs, "src/fluidity/a.cc bugprone-x 2  # a reason\n")
+    result = next(result for result in settled if result.path.endswith("a.cc"))
+    assert not result.passed
+    assert "known finding no longer reported: src/fluidity/a.cc bugprone-x: 2 listed, 1 found" in result.output
+
+
+def test_a_known_finding_of_a_file_that_now_passes_fails_it(monkeypatch, repo):
+    settled, _ = run_with_findings(monkeypatch, repo, {}, "src/fluidity/b.cc bugprone-x 1  # a reason\n")
+    result = next(result for result in settled if result.path.endswith("b.cc"))
+    assert not result.passed
+    assert "known finding no longer reported" in result.output
+
+
+def test_a_known_finding_of_a_file_that_is_not_in_the_run_is_not_read(monkeypatch, repo):
+    settled, _ = run_with_findings(monkeypatch, repo, {}, "src/fluidity/elsewhere.cc bugprone-x 1  # a reason\n")
+    assert all(result.passed for result in settled)
+
+
+def test_a_file_without_known_findings_keeps_its_failure(monkeypatch, repo):
+    outputs = {"c.cc": finding_text(repo, "c.cc", (10, "bugprone-x"))}
+    settled, _ = run_with_findings(monkeypatch, repo, outputs, "src/fluidity/a.cc bugprone-x 1  # a reason\n")
+    assert not next(result for result in settled if result.path.endswith("c.cc")).passed
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "src/a.cc bugprone-x 1\n",
+        "src/a.cc bugprone-x 0  # a reason\n",
+        "src/a.cc bugprone-x one  # a reason\n",
+        "src/a.cc bugprone-x 1  #\n",
+        "src/a.cc bugprone-x 1  # a\nsrc/a.cc bugprone-x 2  # b\n",
+    ],
+)
+def test_a_known_findings_file_needs_a_count_and_a_reason_and_no_repeat(tmp_path, text):
+    known_file = tmp_path / "known.txt"
+    known_file.write_text(text, encoding="utf-8")
+    with pytest.raises(run_tidy.KnownFindingsError):
+        run_tidy.read_known_findings(known_file)
+
+
+def test_comments_and_blank_lines_of_a_known_findings_file_are_skipped(tmp_path):
+    known_file = tmp_path / "known.txt"
+    known_file.write_text("# a comment\n\nsrc/a.cc bugprone-x 2  # why\n", encoding="utf-8")
+    assert run_tidy.read_known_findings(known_file) == {
+        ("src/a.cc", "bugprone-x"): run_tidy.KnownFinding("src/a.cc", "bugprone-x", 2, "why")
+    }
+
+
+def test_the_command_line_applies_the_known_findings_and_exits_zero(monkeypatch, repo, capsys):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x"))}
+    fake = FakeRun(repo, dependencies_of(repo), failing=outputs, tidy_outputs=outputs)
+    monkeypatch.setattr(run_tidy.subprocess, "run", fake)
+    known_file = repo / "known.txt"
+    known_file.write_text("src/fluidity/a.cc bugprone-x 1  # a reason\n", encoding="utf-8")
+    arguments = ["--build-folder", str(repo / "out" / "build" / "debug"), "--repository", str(repo), "--no-cache"]
+    exit_code = run_tidy.main([*arguments, "--known-findings", str(known_file), *map(str, sources(repo))])
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "src/fluidity/a.cc:10: bugprone-x" in output
+    assert "clang-tidy: 3 of 3 files passed" in output
+
+
+def test_without_the_option_the_same_finding_fails(monkeypatch, repo, capsys):
+    outputs = {"a.cc": finding_text(repo, "a.cc", (10, "bugprone-x"))}
+    fake = FakeRun(repo, dependencies_of(repo), failing=outputs, tidy_outputs=outputs)
+    monkeypatch.setattr(run_tidy.subprocess, "run", fake)
+    arguments = ["--build-folder", str(repo / "out" / "build" / "debug"), "--repository", str(repo), "--no-cache"]
+    assert run_tidy.main([*arguments, *map(str, sources(repo))]) == 1
+
+
+def test_a_known_findings_file_that_cannot_be_read_fails_the_run(monkeypatch, repo, capsys):
+    fake = FakeRun(repo, dependencies_of(repo))
+    monkeypatch.setattr(run_tidy.subprocess, "run", fake)
+    arguments = ["--build-folder", str(repo / "out" / "build" / "debug"), "--repository", str(repo), "--no-cache"]
+    exit_code = run_tidy.main([*arguments, "--known-findings", str(repo / "missing.txt"), *map(str, sources(repo))])
+    assert exit_code == 1
+    assert "known findings cannot be read" in capsys.readouterr().out
+
+
+def test_the_known_findings_file_of_the_repository_is_well_formed():
+    known = run_tidy.read_known_findings(Path(run_tidy.__file__).parent / "gpu_tidy_known_findings.txt")
+    assert known
+    assert all(finding.path.startswith("src/") and finding.reason for finding in known.values())

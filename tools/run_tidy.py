@@ -1,7 +1,7 @@
 """Runs clang-tidy over source files in parallel and skips the files that already passed.
 
 Usage: python tools/run_tidy.py --build-folder <folder> [--repository <folder>] [--cache-folder <folder>]
-                                [--jobs <n>] [--no-cache] <file>...
+                                [--jobs <n>] [--no-cache] [--known-findings <file>] <file>...
 
 Each file is one clang-tidy process, with as many at once as there are cores (--jobs). The output of each failing
 file is printed after all files finished, sorted by path, so two runs print the same text. The exit code is 0 when
@@ -56,6 +56,15 @@ whose contents change keeps neither its size nor its modification time. --no-cac
 
 A file whose dependency list cannot be made fails its check (it is never a pass and never checked unseen): the
 compiler fails, prints no dependency, does not list the file itself, or lists a file that does not exist.
+
+Known findings. With --known-findings <file>, a finding that the file lists does not fail its file. A line of the file is
+`<path> <check> <count>  # <reason>`: the path from the repository root, the clang-tidy check that reports, how many
+findings of that check the file has, and why they stay (a reason is required; a line that starts with `#` is a
+comment). A file whose findings are all listed, no more of a check than listed, passes and the run prints a
+`known findings` line for it; a finding that is not listed, or one more of a listed check, fails the file as before. A
+listed finding that clang-tidy no longer reports fails the file too, naming the line to remove, so the list never
+holds a finding that is gone. A file with known findings is never stored in the cache, so it is checked on every run.
+The list only covers the files of the run: a line for a file that this run did not check is not read.
 
 Assumption: the dependency list comes from the compiler of the compile command (the build compiler), not from the
 preprocessor of the pinned clang-tidy. The tool environment has no clang of the version of clang-tidy (the pip
@@ -120,11 +129,113 @@ _OPTIONS_TO_DROP = frozenset({"-c", "-MD", "-MMD", "-M", "-MM", "-MG", "-MP", "-
 
 @dataclass(frozen=True)
 class TidyResult:
-    """What one file's check gave: `passed`, and the text clang-tidy printed."""
+    """What one file's check gave: `passed`, and the text clang-tidy printed. `known` lists, as `path:line: check`, the
+    known findings (see "Known findings" above) that a pass let through."""
 
     path: str
     passed: bool
     output: str
+    known: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class KnownFinding:
+    """`count` findings of `check` that the file `path` (from the repository root) is allowed to have, for `reason`."""
+
+    path: str
+    check: str
+    count: int
+    reason: str
+
+
+class KnownFindingsError(Exception):
+    """The known-findings file cannot be read as a list of known findings."""
+
+
+# A line of the known-findings file: `src/a.cc some-check 2  # why`.
+_KNOWN_FINDING_LINE = re.compile(r"^(?P<path>\S+)\s+(?P<check>\S+)\s+(?P<count>[1-9][0-9]*)\s+#\s*(?P<reason>\S.*)$")
+# A finding of clang-tidy: `path:line:column: error: text [check,-warnings-as-errors]`, and any other diagnostic.
+_FINDING_LINE = re.compile(r"^(?P<path>.+?):(?P<line>\d+):\d+: (?:warning|error): .*\[(?P<checks>[^\]]+)\]$")
+_DIAGNOSTIC_LINE = re.compile(r"^.+?:\d+:\d+: (?:warning|error): ")
+
+
+def read_known_findings(path: Path) -> dict[tuple[str, str], KnownFinding]:
+    """Reads the known-findings file into a dictionary by (file path, check). A line that is not a comment and not
+    `<path> <check> <count>  # <reason>` is an error, and so is a second line for the same file and check."""
+    known: dict[tuple[str, str], KnownFinding] = {}
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = _KNOWN_FINDING_LINE.match(line.strip())
+        if match is None:
+            raise KnownFindingsError(f"{path}:{number}: expected `<path> <check> <count>  # <reason>`, got {line!r}")
+        finding = KnownFinding(match["path"], match["check"], int(match["count"]), match["reason"])
+        if (finding.path, finding.check) in known:
+            raise KnownFindingsError(f"{path}:{number}: {finding.path} {finding.check} is listed twice")
+        known[(finding.path, finding.check)] = finding
+    return known
+
+
+def relative_path(path_text: str, repository: Path) -> str:
+    """`path_text` from the repository root, when it is inside it, and as written otherwise."""
+    path = Path(path_text)
+    return path.relative_to(repository).as_posix() if path.is_relative_to(repository) else path.as_posix()
+
+
+def parse_findings(output: str, repository: Path) -> tuple[list[tuple[str, int, str]], bool]:
+    """The findings in clang-tidy's `output` as (path from the repository root, line, check), one for each check named
+    on a finding, and whether the output holds a diagnostic that names no check (a compile error, for one), which no
+    list can cover."""
+    findings: list[tuple[str, int, str]] = []
+    has_unnamed_diagnostic = False
+    for line in output.splitlines():
+        match = _FINDING_LINE.match(line)
+        if match is None:
+            has_unnamed_diagnostic = has_unnamed_diagnostic or _DIAGNOSTIC_LINE.match(line) is not None
+            continue
+        relative = relative_path(match["path"], repository)
+        for check in match["checks"].split(","):
+            if check != "-warnings-as-errors":
+                findings.append((relative, int(match["line"]), check))
+    return findings, has_unnamed_diagnostic
+
+
+def settle_known_findings(
+    results: Sequence[TidyResult], known: dict[tuple[str, str], KnownFinding], repository: Path
+) -> list[TidyResult]:
+    """Applies the known findings to the results of a run. A file whose findings are all known passes, with the known
+    findings in `known`. A file with a finding that is not known, or one more than listed, keeps its failure. A known
+    finding that the file no longer has fails it, naming the line to remove."""
+    settled = []
+    for result in results:
+        relative = relative_path(result.path, repository)
+        listed = {check: finding for (path, check), finding in known.items() if path == relative}
+        if not listed:
+            settled.append(result)
+            continue
+        findings, has_unnamed_diagnostic = parse_findings(result.output, repository)
+        counts: dict[str, int] = {}
+        for path, _, check in findings:
+            if path == relative:
+                counts[check] = counts.get(check, 0) + 1
+        # A finding in another file, in a header the file includes, is never covered by the lines for this file.
+        has_finding_elsewhere = any(path != relative for path, _, _ in findings)
+        gone = [
+            f"{relative} {check}: {finding.count} listed, {counts.get(check, 0)} found; remove or lower its line"
+            for check, finding in listed.items()
+            if counts.get(check, 0) < finding.count
+        ]
+        is_new = has_unnamed_diagnostic or has_finding_elsewhere or any(
+            check not in listed or count > listed[check].count for check, count in counts.items()
+        )
+        if gone:
+            settled.append(TidyResult(result.path, False, "known finding no longer reported: " + "; ".join(gone) + "\n"))
+        elif is_new:
+            settled.append(result)
+        else:
+            known_lines = tuple(f"{path}:{line}: {check}" for path, line, check in findings)
+            settled.append(TidyResult(result.path, True, "", known_lines))
+    return settled
 
 
 def tidy_arguments(path: Path) -> list[str]:
@@ -664,11 +775,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cache-folder", type=Path, default=None, help=f"default: <repository>/{DEFAULT_CACHE_FOLDER}")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="processes at once (default: cores)")
     parser.add_argument("--no-cache", action="store_true", help="check every file and store nothing")
+    parser.add_argument("--known-findings", type=Path, default=None, help="file of findings that do not fail a file")
     parser.add_argument("files", nargs="+", type=Path)
     arguments = parser.parse_args(argv)
     cache_folder = None if arguments.no_cache else arguments.cache_folder or arguments.repository / DEFAULT_CACHE_FOLDER
     files = [arguments.repository / path for path in arguments.files]
     results = run_tidy(files, arguments.build_folder, arguments.repository, cache_folder, arguments.jobs)
+    if arguments.known_findings is not None:
+        try:
+            known = read_known_findings(arguments.known_findings)
+        except (OSError, KnownFindingsError) as error:
+            print(f"clang-tidy: known findings cannot be read: {error}")
+            return 1
+        results = settle_known_findings(results, known, arguments.repository)
+    for result in results:
+        if result.known:
+            print(f"known findings (listed in {arguments.known_findings}): {result.path}")
+            print("".join(f"  {line}\n" for line in result.known), end="")
     failed = [result for result in results if not result.passed]
     for result in failed:
         print(f"clang-tidy failed: {result.path}")
