@@ -177,11 +177,6 @@ struct GpuBorderSearch {
   Buffer<CellBlockIndex>* border_blocks = nullptr;
 };
 
-// The failure of a GPU-half call that did not start: kRunOnCallFailed, through the mapping of base/.
-GridFailure ToCallFailure(RunOnCallStatus call_status) {
-  return ToGridFailure(ToBufferError(call_status), 0);
-}
-
 // Runs the GPU pass over the marks of `search` and returns the count of the list, or the failure.
 // Steps: 1 reset the status and the marks  2 check the border so far  3 mark from every place of the set  4 write the
 // listed marks  5 prefix sum  6 write the list and the count  7 read the status

@@ -25,13 +25,14 @@
 // Owns:    the entry names of BuildGridMemoryEstimate and of BuildBorderSearchMemoryEstimate, the item bytes of the
 //          grid's arrays, GridArray, FindGridArray,
 //          ComputeIsBuilderBuffersArray, ComputeIsGridArrayOnProcessor, CheckGridArrayEntries, ToGridFailure,
-//          GridBuffersArrays, GridBuilderBuffersArrays, ToGridBuffersArrays, ToGridBuilderBuffersArrays,
+//          ToCallFailure, GridBuffersArrays, GridBuilderBuffersArrays, ToGridBuffersArrays, ToGridBuilderBuffersArrays,
 //          ComputeHasLoanOf, ComputeSmallerBlocksStart, BuildGridFromBuffers,
 //          BuildGridBuilderBuffersFromEntries, BuildGridBuffersFromEntries
 // Uses:    CPU-only guard (base/cpu_only.h), Buffer, BufferError (base/buffer.h), MemoryEstimateEntry
-//          (base/memory_count.h), RunMemory (base/run_memory.h), RunOn (base/run_on.h), OrderBuffers
-//          (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h), GridFailure (grid/grid_error.h),
-//          CellBlockId, CellId, GridVersion (grid/grid_ids.h), CellState, FacePieceKind, GridFrame (grid/grid_tables.h)
+//          (base/memory_count.h), RunMemory (base/run_memory.h), RunOnCallStatus (base/run_on_call.h), RunOn
+//          (base/run_on.h), OrderBuffers (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h), GridFailure
+//          (grid/grid_error.h), CellBlockId, CellId, GridVersion (grid/grid_ids.h), CellState, FacePieceKind, GridFrame
+//          (grid/grid_tables.h)
 // Used by: grid/grid_memory_estimate.cc, which spells its entries with these names; grid/staggered_grid.h, which
 //          holds these arrays; the grid's builders, checks and tests
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-blocks>, <sec-grid-memory>, <tab-grid-memory>
@@ -52,6 +53,7 @@
 #include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/run_on_call.h"
 #include "fluidity/base/stable_order.h"
 #include "fluidity/grid/grid_build_status.h"
 #include "fluidity/grid/grid_error.h"
@@ -146,6 +148,12 @@ CheckGridArrayEntries(std::span<const MemoryEstimateEntry> estimate, RunOn run_o
 // give kRunOnCallFailed. A caller's span is not a build: ReadValues and WriteValues (grid/grid_values.h) report their
 // own kSizeMismatch, a span that overlaps the values, as kBadInput and do not call this for it.
 GridFailure ToGridFailure(BufferError error, std::uint64_t asked_bytes);
+
+// Converts the status of a GPU-half call that did not run to a grid failure: ToGridFailure of ToBufferError(status)
+// with no asked bytes, so kCallFailed gives kRunOnCallFailed and kOutOfMemory gives kOutOfMemory with magnitude 0. It
+// exists once here because the builds of the whole grid, of a piece and of a border search all report their failed
+// starts the same way. Call it only with a status other than kDone.
+GridFailure ToCallFailure(RunOnCallStatus call_status);
 
 // The arrays of one grid version, one per non-builder entry of BuildGridMemoryEstimate, for max_cell_blocks blocks.
 // On the CPU build_status is empty. A moved-from set holds empty buffers and a null builder_buffers.

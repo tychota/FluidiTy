@@ -195,11 +195,6 @@ static_assert(
     "a face place of a piece must fit 32 bits and stay below kNoIndex"
 );
 
-// The failure of a GPU-half call that did not start: kRunOnCallFailed, through the mapping of base/.
-GridFailure ToCallFailure(RunOnCallStatus call_status) {
-  return ToGridFailure(ToBufferError(call_status), 0);
-}
-
 // Builds the piece map and the tables of a piece on the GPU into `buffers`, and returns its counts and where its range
 // starts. Steps: 1 the checks of the range and the room  2 reset the record (GPU function 1 of grid_piece_gpu.h)
 // 3 check the border entries (function 2)  4 write the piece map (3)  5 copy the blocks (4)  6 copy the cell states (5)

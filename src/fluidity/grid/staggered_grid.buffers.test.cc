@@ -16,6 +16,7 @@
 #include "fluidity/base/memory_count.h"
 #include "fluidity/base/run_memory.h"
 #include "fluidity/base/run_on.h"
+#include "fluidity/base/run_on_call.h"
 #include "fluidity/grid/grid_buffers_internal.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_error_message.h"
@@ -452,6 +453,18 @@ TEST(ToGridFailure, RunMemoryTooSmall_IsOutOfMemoryWithTheBytesAsked) {
   const GridFailure failure = ToGridFailure(BufferError::kRunMemoryTooSmall, 4000);
   EXPECT_EQ(failure.error, GridError::kOutOfMemory);
   EXPECT_EQ(failure.magnitude, 4000U);
+}
+
+TEST(ToCallFailure, CallFailed_IsRunOnCallFailedWithNoBytes) {
+  const GridFailure failure = ToCallFailure(RunOnCallStatus::kCallFailed);
+  EXPECT_EQ(failure.error, GridError::kRunOnCallFailed);
+  EXPECT_EQ(failure.magnitude, 0U);
+}
+
+TEST(ToCallFailure, OutOfMemory_IsOutOfMemoryWithMagnitudeZero) {
+  const GridFailure failure = ToCallFailure(RunOnCallStatus::kOutOfMemory);
+  EXPECT_EQ(failure.error, GridError::kOutOfMemory);
+  EXPECT_EQ(failure.magnitude, 0U);
 }
 
 TEST(ComputeGridBuilderBuffersSize, Cpu_EqualsByteCount) {

@@ -444,6 +444,10 @@ CheckGridArrayEntries(std::span<const MemoryEstimateEntry> estimate, RunOn run_o
   return {};
 }
 
+GridFailure ToCallFailure(RunOnCallStatus call_status) {
+  return ToGridFailure(ToBufferError(call_status), 0);
+}
+
 GridFailure ToGridFailure(BufferError error, std::uint64_t asked_bytes) {
   switch (error) {
     case BufferError::kOutOfMemory:
@@ -905,11 +909,6 @@ struct ParallelBuild {
   GridBuilderBuffersArrays* builder_arrays = nullptr;
   OrderBuffers* order_buffers = nullptr;  // The builder buffers' order buffers; null when they have none.
 };
-
-// The failure of a GPU-half call that did not start: kRunOnCallFailed, through the mapping of base/.
-GridFailure ToCallFailure(RunOnCallStatus call_status) {
-  return ToGridFailure(ToBufferError(call_status), 0);
-}
 
 // Says whether the arrays of a build on the GPU have the sizes the builders give them for the room: every table of the
 // room, 64 cell ids and sort keys per block, 64 order entries per block plus 1 for the total of a prefix sum, the order
