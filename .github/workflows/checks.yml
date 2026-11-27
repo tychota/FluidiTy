@@ -293,7 +293,7 @@ jobs:
   # failure would name the missing file.
   cuda-compile-windows:
     name: cuda-compile windows
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 90
     defaults:
       run:
@@ -317,7 +317,8 @@ jobs:
           enable-cache: false
 
       # The same step as in the `cpu` job: Ninja does not start a developer environment, and nvcc needs `cl` on PATH.
-      # The toolset is the newest of Visual Studio 2022, since this job does not pin the runner image.
+      # The toolset is the newest of Visual Studio 2022. The job pins the windows-2022 image, as the `cpu windows` jobs
+      # do, because windows-latest no longer has Visual Studio 2022.
       - name: Select the compiler (MSVC from Visual Studio 2022, x64)
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
