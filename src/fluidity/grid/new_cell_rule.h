@@ -35,7 +35,9 @@ namespace fluidity::grid {
 struct NewCellNeighbors {
   // A committed cell two or more size levels smaller touches it: the new cell must be split.
   bool touches_much_smaller_cell;
-  // A committed cell one or more size levels bigger touches it: its small cells would break the size step rule.
+  // A committed cell one or more size levels bigger touches it. Read with the first fact: a box that is split has small
+  // cells one size level smaller, which would sit beside that cell two or more size levels bigger, and a box left whole
+  // beside a cell only one size level bigger obeys the rule.
   bool touches_bigger_cell;
 };
 
@@ -200,6 +202,10 @@ FLUIDITY_CPU_AND_GPU constexpr bool ComputeTouchesMuchSmallerCell(
 // Finds the two facts the committed cells around a box that is not in the grid give about it: whether a committed cell
 // two or more size levels smaller touches it, and whether one that is bigger does.
 //
+// How a caller uses the two facts: split the box into its 8 small cells when touches_much_smaller_cell is true; when it
+//   is true and touches_bigger_cell is true too, the box cannot be split without breaking the size step rule against
+//   the bigger cell and cannot be left whole against the much smaller cell, so the cube cannot be filled and the try
+//   fails; otherwise the box is a new cell as it is.
 // Method: integers only, no allocation, no recursion, fixed work. The box is the cell of `new_cell`; it and every place
 //   below are boxes of whole smallest cells of the frame.
 //   touches_bigger_cell: for each of the 26 places around the box at its size level, FindCellAtCoord at the place's low

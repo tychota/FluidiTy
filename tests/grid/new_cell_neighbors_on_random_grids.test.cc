@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 #include "fluidity/base/run_on.h"
@@ -23,53 +25,44 @@ namespace {
 // The number of random grids this test reads: the first 16 entries of the random grid list.
 constexpr std::size_t kGridCount = 16;
 
-// One box of the top-down fill of a cube that ended as a new cell, with the facts its committed neighbours gave and
-// whether the big cell it came from had to split.
-struct FilledCell {
-  CellId new_cell;
-  NewCellNeighbors facts;
-  bool big_cell_had_to_split;
-};
-
 // What the top-down fill of one empty biggest cell visited and produced.
 struct CubeFill {
   std::vector<CellId> visited_boxes;  // Every box asked about: the cube and each box made by a split.
-  std::vector<FilledCell> new_cells;  // The boxes that were not split.
+  std::vector<CellId> new_cells;  // The boxes that were not split.
+  // The box where the fill stopped because it had to split and also touches a bigger committed cell: its small cells
+  // would sit beside a committed cell two or more size levels bigger, and leaving it whole breaks the rule on the other
+  // side. Empty when the cube can be filled.
+  std::optional<CellId> stopped_box;
 };
 
 using FindFacts = std::function<NewCellNeighbors(CellId)>;
 
 // Fills one empty biggest cell from the top: asks about the cube, splits a box into its 8 small cells while a committed
-// cell two or more size levels smaller touches it, and repeats on the small cells.
+// cell two or more size levels smaller touches it, and repeats on the small cells. A cube cannot be filled exactly when
+// a box that has to be split (touches_much_smaller_cell) also touches a bigger committed cell (touches_bigger_cell);
+// the fill stops at that box. Otherwise the fill succeeds: a new cell beside a committed cell exactly one size level
+// bigger obeys the size step rule.
 CubeFill BuildCubeFill(CellId cube, const FindFacts& find_facts) {
   CubeFill fill;
-  std::vector<FilledCell> pending = {{.new_cell = cube, .facts = {}, .big_cell_had_to_split = false}};
+  std::vector<CellId> pending = {cube};
   while (!pending.empty()) {
-    const FilledCell box = pending.back();
+    const CellId box = pending.back();
     pending.pop_back();
-    const NewCellNeighbors facts = find_facts(box.new_cell);
-    fill.visited_boxes.push_back(box.new_cell);
+    const NewCellNeighbors facts = find_facts(box);
+    fill.visited_boxes.push_back(box);
     if (!facts.touches_much_smaller_cell) {
-      fill.new_cells.push_back(
-          {.new_cell = box.new_cell, .facts = facts, .big_cell_had_to_split = box.big_cell_had_to_split}
-      );
+      fill.new_cells.push_back(box);
       continue;
     }
+    if (facts.touches_bigger_cell) {
+      fill.stopped_box = box;
+      return fill;
+    }
     for (int cell_eighth = 0; cell_eighth < 8; ++cell_eighth) {
-      pending.push_back(
-          {.new_cell = ComputeSmallCell(box.new_cell, cell_eighth), .facts = {}, .big_cell_had_to_split = true}
-      );
+      pending.push_back(ComputeSmallCell(box, cell_eighth));
     }
   }
   return fill;
-}
-
-// Says whether a new cell of the fill has a bigger committed neighbour although the big cell it came from had to split:
-// the cube cannot be filled with cells that obey the size step rule.
-bool ComputeCubeCannotBeFilled(const CubeFill& fill) {
-  return std::ranges::any_of(fill.new_cells, [](const FilledCell& new_cell) {
-    return new_cell.big_cell_had_to_split && new_cell.facts.touches_bigger_cell;
-  });
 }
 
 // Gives the centre of the biggest cell at `cube_coord` as a world position.
@@ -145,8 +138,8 @@ std::vector<CellId> FindCubesToFill(const GridTables& tables, const std::vector<
 // cube's.
 void CheckNewCellsCoverCube(const CubeFill& fill, CellId cube, int size_level_count) {
   std::int64_t volume_sum = 0;
-  for (const FilledCell& filled : fill.new_cells) {
-    const std::int64_t width = ToSmallestCellBox(filled.new_cell, size_level_count).width;
+  for (const CellId new_cell : fill.new_cells) {
+    const std::int64_t width = ToSmallestCellBox(new_cell, size_level_count).width;
     volume_sum += width * width * width;
   }
   const std::int64_t cube_width = ToSmallestCellBox(cube, size_level_count).width;
@@ -169,22 +162,95 @@ void CheckFunctionMatchesReference(const GridTables& tables, const CubeFill& fil
   }
 }
 
-// Fills every empty biggest cell beside the cells of one grid with the reference's facts: the new cells cover each
-// cube and none is told to split, and the function gives the reference's facts at every box the fill asked about.
+// Finds the active cells of the grid.
+std::vector<CellId> FindCommittedCells(const GridTables& tables) {
+  std::vector<CellId> committed_cells;
+  const std::uint64_t place_count = std::uint64_t{tables.block_count} * kCellPlacesPerBlock;
+  for (std::uint64_t place = 0; place < place_count; ++place) {
+    if (tables.cell_states[place] == CellState::kActive) {
+      committed_cells.push_back(ToCellId(tables, CellPlaceIndex{static_cast<std::uint32_t>(place)}));
+    }
+  }
+  return committed_cells;
+}
+
+// Says whether two boxes overlap in volume.
+bool ComputeBoxesOverlapInVolume(const SmallestCellBox& first, const SmallestCellBox& second) {
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const bool is_apart = first.low.at(axis) + first.width <= second.low.at(axis)
+        || second.low.at(axis) + second.width <= first.low.at(axis);
+    if (is_apart) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Checks by brute force, with no look-up by place, that every new cell of a fill that succeeded lies beside committed
+// cells at most one size level apart and overlaps none of them.
+void CheckNewCellsObeySizeStepRule(
+    const std::vector<CellId>& committed_cells,
+    const CubeFill& fill,
+    int size_level_count
+) {
+  for (const CellId new_cell : fill.new_cells) {
+    const SmallestCellBox new_cell_box = ToSmallestCellBox(new_cell, size_level_count);
+    for (const CellId committed_cell : committed_cells) {
+      const SmallestCellBox committed_box = ToSmallestCellBox(committed_cell, size_level_count);
+      EXPECT_FALSE(ComputeBoxesOverlapInVolume(new_cell_box, committed_box));
+      if (ComputeBoxesTouch(new_cell_box, committed_box)) {
+        const int size_level_difference =
+            static_cast<int>(ToSizeLevel(new_cell)) - static_cast<int>(ToSizeLevel(committed_cell));
+        EXPECT_LE(std::abs(size_level_difference), 1);
+      }
+    }
+  }
+}
+
+// Checks by brute force that the box where a fill stopped touches a committed cell at least two size levels smaller and
+// one at least one size level bigger.
+void CheckStoppedBoxIsReallyBlocked(
+    const std::vector<CellId>& committed_cells,
+    CellId stopped_box,
+    int size_level_count
+) {
+  const SmallestCellBox stopped_box_box = ToSmallestCellBox(stopped_box, size_level_count);
+  const int stopped_size_level = static_cast<int>(ToSizeLevel(stopped_box));
+  bool has_much_smaller_cell = false;
+  bool has_bigger_cell = false;
+  for (const CellId committed_cell : committed_cells) {
+    if (!ComputeBoxesTouch(stopped_box_box, ToSmallestCellBox(committed_cell, size_level_count))) {
+      continue;
+    }
+    const int committed_size_level = static_cast<int>(ToSizeLevel(committed_cell));
+    has_much_smaller_cell = has_much_smaller_cell || committed_size_level >= stopped_size_level + 2;
+    has_bigger_cell = has_bigger_cell || committed_size_level <= stopped_size_level - 1;
+  }
+  EXPECT_TRUE(has_much_smaller_cell);
+  EXPECT_TRUE(has_bigger_cell);
+}
+
+// Fills every empty biggest cell beside the cells of one grid with the reference's facts. The function gives the
+// reference's facts at every box the fill asked about. When a fill succeeds, its new cells cover the cube and obey the
+// size step rule against every committed cell; when it stops, the box it stopped at is really blocked.
 CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<CellId>& cell_list) {
   CubeCounts counts = {.cube_count = 0, .cannot_be_filled_count = 0};
   const FindFacts find_reference_facts = [&tables](CellId new_cell) {
     return ComputeNewCellNeighborsByAllCells(tables, new_cell);
   };
+  const std::vector<CellId> committed_cells = FindCommittedCells(tables);
+  const int size_level_count = tables.frame.size_level_count;
   for (const CellId cube : FindCubesToFill(tables, cell_list)) {
     const CubeFill fill = BuildCubeFill(cube, find_reference_facts);
-    CheckNewCellsCoverCube(fill, cube, tables.frame.size_level_count);
     CheckFunctionMatchesReference(tables, fill);
-    for (const FilledCell& filled : fill.new_cells) {
-      EXPECT_FALSE(filled.facts.touches_much_smaller_cell);
+    if (fill.stopped_box.has_value()) {
+      CheckStoppedBoxIsReallyBlocked(committed_cells, *fill.stopped_box, size_level_count);
+      ++counts.cannot_be_filled_count;
+    } else {
+      CheckNewCellsCoverCube(fill, cube, size_level_count);
+      CheckNewCellsObeySizeStepRule(committed_cells, fill, size_level_count);
     }
     ++counts.cube_count;
-    counts.cannot_be_filled_count += ComputeCubeCannotBeFilled(fill) ? 1 : 0;
   }
   return counts;
 }
@@ -208,8 +274,7 @@ TEST(NewCellNeighbors, RandomGrids_TopDownFillMatchesTheReference) {
     total.cannot_be_filled_count += counts.cannot_be_filled_count;
   }
   EXPECT_GT(total.cube_count, 0U);
-  std::cout << "cubes that cannot be filled: " << total.cannot_be_filled_count << " of " << total.cube_count << " over "
-            << kGridCount << " grids\n";
+  std::cout << "cubes that cannot be filled: " << total.cannot_be_filled_count << " of " << total.cube_count << "\n";
 }
 
 }  // namespace
