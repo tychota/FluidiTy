@@ -1,0 +1,33 @@
+docs/method-paper/fluidity-method.typ
+  s_4f0877e2acdcf0::t_59ade1a1f1e754 2735-2737
+src/fluidity/base/memory_count.h
+  s_4f0877e2acdcf0::t_a61f31bf7e2842 108-110
+src/fluidity/grid/cell_block_range.test.cc
+  s_4f0877e2acdcf0::t_662322d54ed588 214-215,233-234
+src/fluidity/grid/grid_tables.shared.gpu_compile.test.cu
+  s_4f0877e2acdcf0::t_eb1f76320ce1f0 7-8,10-15
+src/fluidity/grid/testing/allocation_counter.h
+  s_4f0877e2acdcf0::t_7539b7c9adc3c4 35-36
+src/fluidity/grid/testing/grid_functions_runner_gpu.h
+  s_4f0877e2acdcf0::t_71765bbc43aeae 27-28
+src/fluidity/grid/testing/new_cell_rule_cases.h
+  s_4f0877e2acdcf0::t_9b05bcc143c313 18
+tests/grid/stacked_borders_in_grid_pieces.test.cc
+  s_4f0877e2acdcf0::t_a0bc7fb4d40dbc 32-36,114-115,156-158,161-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "826e54b72c6ac6be5626cbadade36f4d472169bf",
+  "prompts": {},
+  "sessions": {
+    "s_4f0877e2acdcf0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d4c4a54-668f-45ee-9a96-fd697734eaf5",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
